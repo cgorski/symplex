@@ -441,52 +441,6 @@ impl Arena {
         self.intern(ExprNode::Symbol(sym_id))
     }
 
-    /// Raw construction of an `Add` node — no canonicalization.
-    ///
-    /// Edge cases:
-    /// - 0 arguments → returns `self.zero`.
-    /// - 1 argument  → returns that argument unchanged.
-    #[allow(dead_code)]
-    pub(crate) fn raw_add(&mut self, args: &[ExprId]) -> ExprId {
-        match args.len() {
-            0 => self.zero,
-            1 => args[0],
-            _ => {
-                let children: SmallVec<[ExprId; 6]> = args.iter().copied().collect();
-                self.intern(ExprNode::Add(children))
-            }
-        }
-    }
-
-    /// Raw construction of a `Mul` node — no canonicalization.
-    ///
-    /// Edge cases:
-    /// - 0 arguments → returns `self.one`.
-    /// - 1 argument  → returns that argument unchanged.
-    #[allow(dead_code)]
-    pub(crate) fn raw_mul(&mut self, args: &[ExprId]) -> ExprId {
-        match args.len() {
-            0 => self.one,
-            1 => args[0],
-            _ => {
-                let children: SmallVec<[ExprId; 6]> = args.iter().copied().collect();
-                self.intern(ExprNode::Mul(children))
-            }
-        }
-    }
-
-    /// Raw construction of a `Pow` (exponentiation) node — no canonicalization.
-    #[allow(dead_code)]
-    pub(crate) fn raw_pow(&mut self, base: ExprId, exp: ExprId) -> ExprId {
-        self.intern(ExprNode::Pow(base, exp))
-    }
-
-    /// Raw construction of a `Neg` (unary negation) node — no canonicalization.
-    #[allow(dead_code)]
-    pub(crate) fn raw_neg(&mut self, expr: ExprId) -> ExprId {
-        self.intern(ExprNode::Neg(expr))
-    }
-
     /// Creates an `Add` node with full canonicalization.
     ///
     /// Flattens nested Adds, combines like terms, sorts by canonical
@@ -593,6 +547,7 @@ impl fmt::Debug for Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smallvec::smallvec;
 
     #[test]
     fn pre_interned_constants_are_distinct() {
@@ -630,8 +585,9 @@ mod tests {
         let mut a = Arena::new();
         let x = a.symbol("x");
         let y = a.symbol("y");
-        let add1 = a.raw_add(&[x, y]);
-        let add2 = a.raw_add(&[x, y]);
+        let children: SmallVec<[ExprId; 6]> = smallvec![x, y];
+        let add1 = a.intern(ExprNode::Add(children.clone()));
+        let add2 = a.intern(ExprNode::Add(children));
         assert_eq!(add1, add2);
     }
 
@@ -695,36 +651,6 @@ mod tests {
             }
             other => panic!("expected Num, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn raw_add_zero_args_returns_zero() {
-        let mut a = Arena::new();
-        let result = a.raw_add(&[]);
-        assert_eq!(result, a.zero);
-    }
-
-    #[test]
-    fn raw_add_one_arg_returns_arg() {
-        let mut a = Arena::new();
-        let x = a.symbol("x");
-        let result = a.raw_add(&[x]);
-        assert_eq!(result, x);
-    }
-
-    #[test]
-    fn raw_mul_zero_args_returns_one() {
-        let mut a = Arena::new();
-        let result = a.raw_mul(&[]);
-        assert_eq!(result, a.one);
-    }
-
-    #[test]
-    fn raw_mul_one_arg_returns_arg() {
-        let mut a = Arena::new();
-        let x = a.symbol("x");
-        let result = a.raw_mul(&[x]);
-        assert_eq!(result, x);
     }
 
     #[test]
@@ -806,7 +732,7 @@ mod tests {
         let mut a = Arena::new();
         let x = a.symbol("x");
         let y = a.symbol("y");
-        let sum = a.raw_add(&[x, y]);
+        let sum = a.intern(ExprNode::Add(smallvec![x, y]));
         let kids = a.children(sum);
         assert_eq!(kids.len(), 2);
         assert_eq!(kids[0], x);

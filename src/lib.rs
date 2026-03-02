@@ -21,25 +21,26 @@
 //!
 //! 7. **Extensible without inheritance.** Custom functions via registered rules.
 //!
-//! # Quick Start (Stage 1 — Arena API)
+//! # Quick Start
 //!
 //! ```
 //! use symplex::prelude::*;
+//! use symplex::syms;
 //!
-//! let mut arena = Arena::new();
-//! let x = arena.symbol("x");
-//! let two = arena.int(2);
-//! let x_sq = arena.pow(x, two);
-//! let two_x = arena.mul(&[two, x]);
-//! let expr = arena.add(&[x_sq, two_x, arena.one]);
-//! assert_eq!(arena.display(expr).to_string(), "1 + x**2 + 2*x");
+//! let ctx = Context::new();
+//! syms!(ctx; x, y);
+//! let expr = &x * &x + &x * 2 + 1;
+//! assert_eq!(format!("{expr}"), "1 + x**2 + 2*x");
 //! ```
 
 pub mod arena;
 pub mod canon;
 pub mod config;
+pub mod context;
 pub mod display;
 pub mod errors;
+pub mod expr;
+pub mod macros;
 pub mod node;
 pub mod sort_key;
 pub mod symbol;
@@ -52,6 +53,8 @@ pub mod symbol;
 pub mod prelude {
     pub use crate::arena::Arena;
     pub use crate::config::EvalConfig;
+    pub use crate::context::Context;
     pub use crate::errors::SymplexError;
+    pub use crate::expr::Ex;
     pub use crate::node::{CtxId, ExprId, ExprNode, NumId, SymbolId};
 }

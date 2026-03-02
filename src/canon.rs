@@ -37,7 +37,6 @@
 //! - Otherwise normalises to `Mul(−1, x)`.
 
 use num_bigint::BigInt;
-
 use num_rational::Ratio;
 use num_traits::{One, Pow as NumPow, Signed, Zero};
 use rustc_hash::FxHashMap;
@@ -266,13 +265,13 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 
     // Build the combined factors.
     let mut factors: SmallVec<[(ExprId, ExprId); 8]> = SmallVec::new();
-    for (base, exponents) in bases {
-        let combined_exp = if exponents.len() == 1 {
+    for (base, exponents) in &bases {
+        let combined_exp: ExprId = if exponents.len() == 1 {
             exponents[0]
         } else {
-            canon_add(arena, &exponents)
+            canon_add(arena, exponents)
         };
-        factors.push((base, combined_exp));
+        factors.push((*base, combined_exp));
     }
 
     // Sort factors by base SortKey.
@@ -571,7 +570,7 @@ mod tests {
         let x = s(&mut a, "x");
         let y = s(&mut a, "y");
         let z = s(&mut a, "z");
-        let inner = a.raw_add(&[x, y]);
+        let inner = a.intern(ExprNode::Add(smallvec![x, y]));
         let result = a.add(&[inner, z]);
         // Should be a flat x + y + z, not (x+y) + z.
         assert_eq!(display(&a, result), "x + y + z");
@@ -685,7 +684,7 @@ mod tests {
         let x = s(&mut a, "x");
         let y = s(&mut a, "y");
         let z = s(&mut a, "z");
-        let inner = a.raw_mul(&[x, y]);
+        let inner = a.intern(ExprNode::Mul(smallvec![x, y]));
         let result = a.mul(&[inner, z]);
         assert_eq!(display(&a, result), "x*y*z");
     }
