@@ -395,9 +395,10 @@ fn syms_macro_trailing_comma() {
 #[test]
 fn sym_macro_creates_symbol() {
     let ctx = Context::new();
-    sym!(ctx; t, positive, real);
-    // For now just a plain symbol; assumptions added in Stage 4.
+    sym!(ctx; t, Positive, Real);
     assert_eq!(format!("{t}"), "t");
+    assert_eq!(ctx.query(&t, Props::POSITIVE), Some(true));
+    assert_eq!(ctx.query(&t, Props::REAL), Some(true));
 }
 
 // ─── Complex expressions ──────────────────────────────────────────────────

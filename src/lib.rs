@@ -34,6 +34,15 @@
 //! ```
 
 pub mod arena;
+pub mod assumptions;
+
+// bitflags types don't auto-derive Default; provide it here so
+// Assumptions::default() (derived in assumptions.rs) works.
+impl Default for assumptions::Props {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
 pub mod canon;
 pub mod config;
 pub mod context;
@@ -52,6 +61,7 @@ pub mod symbol;
 /// ```
 pub mod prelude {
     pub use crate::arena::Arena;
+    pub use crate::assumptions::{Assumption, Assumptions, Props};
     pub use crate::config::EvalConfig;
     pub use crate::context::Context;
     pub use crate::errors::SymplexError;

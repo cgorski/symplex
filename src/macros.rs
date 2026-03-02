@@ -1,7 +1,7 @@
 //! Convenience macros for creating symbolic variables.
 //!
 //! These macros reduce boilerplate when declaring multiple symbols or
-//! symbols with assumptions (future stage).
+//! symbols with assumptions.
 
 /// Declare multiple symbolic variables at once.
 ///
@@ -28,10 +28,11 @@ macro_rules! syms {
     };
 }
 
-/// Declare a symbol with assumptions (placeholder for Stage 4).
+/// Declare a symbol with mathematical assumptions.
 ///
-/// Currently creates a plain symbol — assumption support will be added
-/// when the assumption engine is implemented.
+/// The first argument is the context, the second is the symbol name,
+/// and any additional identifiers are assumption variants applied to
+/// the symbol.
 ///
 /// # Examples
 ///
@@ -40,14 +41,17 @@ macro_rules! syms {
 /// use symplex::sym;
 ///
 /// let ctx = Context::new();
-/// sym!(ctx; t, positive, real);
-/// // For now, `t` is a plain symbol. Assumptions will be applied in Stage 4.
-/// assert_eq!(format!("{t}"), "t");
+/// sym!(ctx; t, Positive, Real);
+/// assert_eq!(ctx.query(&t, Props::POSITIVE), Some(true));
+/// assert_eq!(ctx.query(&t, Props::REAL), Some(true));
+/// // Inferred:
+/// assert_eq!(ctx.query(&t, Props::COMPLEX), Some(true));
 /// ```
 #[macro_export]
 macro_rules! sym {
     ($ctx:expr; $name:ident $(, $prop:ident)*) => {
-        let $name = $ctx.symbol(stringify!($name));
-        // TODO(stage4): apply assumptions [$( $prop ),*] to the symbol
+        let $name = $ctx.symbol_with(stringify!($name), &[
+            $( $crate::assumptions::Assumption::$prop, )*
+        ]);
     };
 }

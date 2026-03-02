@@ -10,6 +10,8 @@ use crate::node::SymbolId;
 pub struct SymbolTable {
     /// Symbol names indexed by [`SymbolId`].
     names: Vec<String>,
+    /// Per-symbol mathematical assumptions, parallel to `names`.
+    assumptions: Vec<crate::assumptions::Assumptions>,
     /// Reverse lookup from name to [`SymbolId`] for deduplication.
     lookup: FxHashMap<String, SymbolId>,
 }
@@ -25,6 +27,7 @@ impl SymbolTable {
     pub fn new() -> Self {
         Self {
             names: Vec::new(),
+            assumptions: Vec::new(),
             lookup: FxHashMap::default(),
         }
     }
@@ -40,6 +43,10 @@ impl SymbolTable {
 
         let id = SymbolId(self.names.len() as u32);
         self.names.push(name.to_owned());
+        self.assumptions.push(crate::assumptions::Assumptions {
+            known_true: crate::assumptions::Props::empty(),
+            known_false: crate::assumptions::Props::empty(),
+        });
         self.lookup.insert(name.to_owned(), id);
         id
     }
@@ -61,5 +68,15 @@ impl SymbolTable {
     /// Returns `true` if no symbols have been interned.
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
+    }
+
+    /// Set mathematical assumptions for a symbol.
+    pub fn set_assumptions(&mut self, id: SymbolId, a: crate::assumptions::Assumptions) {
+        self.assumptions[id.0 as usize] = a;
+    }
+
+    /// Get the stored assumptions for a symbol.
+    pub fn get_assumptions(&self, id: SymbolId) -> crate::assumptions::Assumptions {
+        self.assumptions[id.0 as usize]
     }
 }

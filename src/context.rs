@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use parking_lot::RwLock;
 
 use crate::arena::Arena;
+use crate::assumptions::{Assumption, AssumptionCache, Assumptions, Props};
 use crate::config::EvalConfig;
 use crate::node::CtxId;
 
@@ -37,6 +38,7 @@ static NEXT_CTX_ID: AtomicU32 = AtomicU32::new(0);
 pub struct Context {
     pub(crate) id: CtxId,
     pub(crate) arena: Arc<RwLock<Arena>>,
+    pub(crate) assumptions: Arc<RwLock<AssumptionCache>>,
 }
 
 impl Context {
@@ -51,6 +53,7 @@ impl Context {
         Context {
             id,
             arena: Arc::new(RwLock::new(Arena::with_config(config))),
+            assumptions: Arc::new(RwLock::new(AssumptionCache::new())),
         }
     }
 
@@ -69,6 +72,47 @@ impl Context {
             arena: self.arena.clone(),
             id,
         }
+    }
+
+    /// Create a symbol with mathematical assumptions.
+    pub fn symbol_with(&self, name: &str, assumptions: &[Assumption]) -> crate::expr::Ex {
+        assert!(!name.is_empty(), "symbol name cannot be empty");
+        let mut arena = self.arena.write();
+        let sym_id = arena.symbols.intern(name);
+        let expr_id = arena.intern(crate::node::ExprNode::Symbol(sym_id));
+
+        // Build assumption set from the provided assumptions.
+        let mut a = Assumptions {
+            known_true: Props::empty(),
+            known_false: Props::empty(),
+        };
+        for assumption in assumptions {
+            let (prop, value) = assumption.to_prop_value();
+            if value {
+                a.assert_true(prop);
+            } else {
+                a.assert_false(prop);
+            }
+        }
+
+        // Store on the symbol table.
+        arena.set_symbol_assumptions(sym_id, a);
+
+        // Also cache on the expression.
+        drop(arena);
+        self.assumptions.write().set_symbol_assumptions(expr_id, a);
+
+        crate::expr::Ex {
+            ctx_id: self.id,
+            arena: self.arena.clone(),
+            id: expr_id,
+        }
+    }
+
+    /// Query a mathematical property of an expression.
+    pub fn query(&self, ex: &crate::expr::Ex, prop: Props) -> Option<bool> {
+        let arena = self.arena.read();
+        self.assumptions.write().query(&arena, ex.id, prop)
     }
 
     /// Creates an integer expression.

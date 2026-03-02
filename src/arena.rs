@@ -69,7 +69,7 @@ pub struct Arena {
     num_dedup: FxHashMap<u64, SmallVec<[NumId; 2]>>,
 
     /// Interned symbol names.
-    symbols: SymbolTable,
+    pub(crate) symbols: SymbolTable,
 
     /// Evaluation-time configuration (guards against runaway computation).
     pub config: EvalConfig,
@@ -306,6 +306,20 @@ impl Arena {
     /// Panics if `id` was not produced by this arena's symbol table.
     pub fn symbol_name(&self, id: SymbolId) -> &str {
         self.symbols.name(id)
+    }
+
+    /// Get the stored assumptions for a symbol.
+    pub(crate) fn symbol_assumptions(&self, id: SymbolId) -> crate::assumptions::Assumptions {
+        self.symbols.get_assumptions(id)
+    }
+
+    /// Set assumptions for a symbol.
+    pub(crate) fn set_symbol_assumptions(
+        &mut self,
+        id: SymbolId,
+        a: crate::assumptions::Assumptions,
+    ) {
+        self.symbols.set_assumptions(id, a);
     }
 
     /// Returns the children of the node identified by `id`.
