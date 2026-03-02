@@ -32,10 +32,11 @@
 //! let x_sq = arena.pow(x, two);
 //! let two_x = arena.mul(&[two, x]);
 //! let expr = arena.add(&[x_sq, two_x, arena.one]);
-//! assert_eq!(arena.display(expr).to_string(), "x**2 + 2*x + 1");
+//! assert_eq!(arena.display(expr).to_string(), "1 + x**2 + 2*x");
 //! ```
 
 pub mod arena;
+pub mod canon;
 pub mod config;
 pub mod display;
 pub mod errors;

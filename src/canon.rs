@@ -1,0 +1,1122 @@
+//! Canonical-form constructors for arithmetic nodes.
+//!
+//! Each function here is the "canonical" entry-point called by the public
+//! [`Arena::add`], [`Arena::mul`], [`Arena::pow`], and [`Arena::neg`] methods.
+//!
+//! # Canonicalization rules
+//!
+//! ## Add
+//!
+//! 1. Flatten nested `Add` (explicit stack, no recursion).
+//! 2. Combine like terms: `2*x + 3*x → 5*x`.
+//! 3. Numeric constant collected separately, placed first if nonzero.
+//! 4. Remaining terms sorted by [`SortKey`].
+//! 5. Zero-coefficient terms dropped.
+//! 6. `NaN` propagation: any `NaN` term ⟹ result is `NaN`.
+//!
+//! ## Mul
+//!
+//! 1. Flatten nested `Mul` (explicit stack, no recursion).
+//! 2. Collect running numeric coefficient.
+//! 3. Combine like bases: `x * x → x²`, `x² * x³ → x⁵`.
+//! 4. Numeric coefficient placed first if ≠ 1.
+//! 5. Remaining factors sorted by [`SortKey`].
+//! 6. Zero propagation: any zero factor ⟹ result is `0` (unless ∞ involved ⟹ `NaN`).
+//! 7. `NaN` propagation.
+//!
+//! ## Pow
+//!
+//! - `x⁰ → 1`, `x¹ → x`, `1ˣ → 1`, `0^(pos) → 0`.
+//! - Numeric base/exp evaluated when exp is integer with `|exp| ≤ max_pow_exponent`.
+//! - `NaN` propagation.
+//!
+//! ## Neg
+//!
+//! - `Neg(Neg(x)) → x`, `Neg(Num(n)) → Num(−n)`.
+//! - `Neg(Add(…))` distributes: `−(a+b) → (−a)+(−b)`.
+//! - Otherwise normalises to `Mul(−1, x)`.
+
+use num_bigint::BigInt;
+
+use num_rational::Ratio;
+use num_traits::{One, Pow as NumPow, Signed, Zero};
+use rustc_hash::FxHashMap;
+use smallvec::{SmallVec, smallvec};
+
+use crate::arena::Arena;
+use crate::node::{ExprId, ExprNode};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Add
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Build a canonical `Add` node from the given summands.
+///
+/// Uses an explicit stack for flattening (never recurses) and an
+/// [`FxHashMap`] for like-term collection.
+pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
+    // Fast path: 0 or 1 arguments
+    if args.is_empty() {
+        return arena.zero;
+    }
+    if args.len() == 1 {
+        return args[0];
+    }
+
+    // Running numeric constant (the "coefficient of 1").
+    let mut constant: Ratio<BigInt> = Ratio::zero();
+
+    // Map: symbolic_key → accumulated coefficient.
+    let mut terms: FxHashMap<ExprId, Ratio<BigInt>> = FxHashMap::default();
+
+    // Track whether we've seen infinity / neg-infinity to handle oo − oo → NaN.
+    let mut has_pos_inf = false;
+    let mut has_neg_inf = false;
+
+    // Explicit stack for iterative flattening.
+    let mut stack: SmallVec<[ExprId; 16]> = SmallVec::from_slice(args);
+
+    while let Some(id) = stack.pop() {
+        match arena.node(id).clone() {
+            ExprNode::Add(children) => {
+                // Flatten: push children back onto the stack.
+                stack.extend_from_slice(&children);
+            }
+
+            ExprNode::NaN => {
+                return arena.nan;
+            }
+
+            ExprNode::Infinity => {
+                if has_neg_inf {
+                    return arena.nan; // oo + (-oo) → NaN
+                }
+                has_pos_inf = true;
+            }
+
+            ExprNode::NegInfinity => {
+                if has_pos_inf {
+                    return arena.nan; // (-oo) + oo → NaN
+                }
+                has_neg_inf = true;
+            }
+
+            ExprNode::ComplexInfinity => {
+                // zoo + anything finite is zoo, but zoo + zoo is NaN.
+                // Simplified: just treat as NaN for now.
+                return arena.nan;
+            }
+
+            ExprNode::Num(nid) => {
+                constant += arena.num(nid).clone();
+            }
+
+            ExprNode::Neg(inner) => {
+                // −x has coefficient −1, term x.
+                let neg_one: Ratio<BigInt> = -Ratio::one();
+                let (c, key) = arena.as_coeff_term(inner);
+                let combined = neg_one * c;
+                if key == arena.one {
+                    constant += combined;
+                } else {
+                    *terms.entry(key).or_insert_with(Ratio::zero) += combined;
+                }
+            }
+
+            _ => {
+                let (c, key) = arena.as_coeff_term(id);
+                if key == arena.one {
+                    constant += c;
+                } else {
+                    *terms.entry(key).or_insert_with(Ratio::zero) += c;
+                }
+            }
+        }
+    }
+
+    // Handle infinities: if we saw oo / -oo, they dominate finite terms.
+    if has_pos_inf {
+        return arena.infinity;
+    }
+    if has_neg_inf {
+        return arena.neg_infinity;
+    }
+
+    // Collect non-zero terms.
+    let non_zero_terms: SmallVec<[(ExprId, Ratio<BigInt>); 8]> =
+        terms.into_iter().filter(|(_, c)| !c.is_zero()).collect();
+
+    // Build the result argument list.
+    let mut result_args: SmallVec<[ExprId; 6]> = SmallVec::new();
+
+    // Numeric constant goes first (if nonzero).
+    if !constant.is_zero() {
+        let nid = arena.intern_num(constant);
+        result_args.push(arena.intern(ExprNode::Num(nid)));
+    }
+
+    // Reconstruct symbolic terms, then sort by the RECONSTRUCTED expr's
+    // sort key so that e.g. `x**2` (Pow, rank 20) sorts before `2*x`
+    // (Mul, rank 30).
+    let mut symbolic_args: SmallVec<[ExprId; 6]> = non_zero_terms
+        .into_iter()
+        .map(|(key, coeff)| arena.make_coeff_term(coeff, key))
+        .collect();
+    symbolic_args.sort_by(|a, b| arena.sort_key(*a).cmp(arena.sort_key(*b)));
+    result_args.extend(symbolic_args);
+
+    // Final assembly.
+    match result_args.len() {
+        0 => arena.zero,
+        1 => result_args[0],
+        _ => arena.intern(ExprNode::Add(result_args)),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mul
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Build a canonical `Mul` node from the given factors.
+///
+/// Uses an explicit stack for flattening and an [`FxHashMap`] for
+/// like-base combination.
+pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
+    // Fast path: 0 or 1 arguments
+    if args.is_empty() {
+        return arena.one;
+    }
+    if args.len() == 1 {
+        return args[0];
+    }
+
+    // Running numeric coefficient.
+    let mut coeff: Ratio<BigInt> = Ratio::one();
+
+    // Map: base → list of exponents to be summed.
+    let mut bases: FxHashMap<ExprId, SmallVec<[ExprId; 4]>> = FxHashMap::default();
+
+    // Track special values.
+    let saw_nan = false;
+    let mut saw_infinity = false; // any kind of infinity (oo, -oo, zoo)
+
+    // Explicit stack for iterative flattening.
+    let mut stack: SmallVec<[ExprId; 16]> = SmallVec::from_slice(args);
+
+    while let Some(id) = stack.pop() {
+        match arena.node(id).clone() {
+            ExprNode::Mul(children) => {
+                // Flatten: push children back onto the stack.
+                stack.extend_from_slice(&children);
+            }
+
+            ExprNode::NaN => {
+                return arena.nan;
+            }
+
+            ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
+                saw_infinity = true;
+                // Track sign for directed infinities.
+                match arena.node(id) {
+                    ExprNode::NegInfinity => {
+                        coeff = -coeff;
+                    }
+                    ExprNode::ComplexInfinity => {
+                        // zoo absorbs sign information.
+                        return handle_mul_with_zoo(arena, &mut stack, &coeff);
+                    }
+                    _ => {} // Infinity — no sign change.
+                }
+            }
+
+            ExprNode::Num(nid) => {
+                let val = arena.num(nid).clone();
+                coeff *= val;
+                if coeff.is_zero() {
+                    // 0 * anything: check for infinity → NaN.
+                    if saw_infinity {
+                        return arena.nan;
+                    }
+                    // Short-circuit: the rest doesn't matter.
+                    return arena.zero;
+                }
+            }
+
+            ExprNode::Neg(inner) => {
+                // −x contributes a factor of −1 to the coefficient
+                // and pushes x back for further processing.
+                coeff = -coeff;
+                stack.push(inner);
+            }
+
+            _ => {
+                let (base, exp) = arena.as_base_exp(id);
+                bases.entry(base).or_default().push(exp);
+            }
+        }
+    }
+
+    // If coefficient became zero during processing.
+    if coeff.is_zero() {
+        if saw_infinity || saw_nan {
+            return arena.nan;
+        }
+        return arena.zero;
+    }
+
+    // Build the combined factors.
+    let mut factors: SmallVec<[(ExprId, ExprId); 8]> = SmallVec::new();
+    for (base, exponents) in bases {
+        let combined_exp = if exponents.len() == 1 {
+            exponents[0]
+        } else {
+            canon_add(arena, &exponents)
+        };
+        factors.push((base, combined_exp));
+    }
+
+    // Sort factors by base SortKey.
+    factors.sort_by(|(a, _), (b, _)| arena.sort_key(*a).cmp(arena.sort_key(*b)));
+
+    // Build result argument list.
+    let mut result_args: SmallVec<[ExprId; 6]> = SmallVec::new();
+
+    // Numeric coefficient first (if not 1, or if there are no other factors).
+    let has_factors = !factors.is_empty();
+    if !coeff.is_one() || !has_factors {
+        let nid = arena.intern_num(coeff.clone());
+        result_args.push(arena.intern(ExprNode::Num(nid)));
+    }
+
+    // Then the symbolic factors.
+    for (base, exp) in factors {
+        if exp == arena.one {
+            result_args.push(base);
+        } else if arena.is_zero_structural(exp) {
+            // base^0 = 1 — skip this factor entirely.
+            continue;
+        } else {
+            let pow_id = canon_pow(arena, base, exp);
+            // canon_pow may have returned the base itself (if exp == 1 after
+            // simplification) or a Num (if fully evaluated). Push whatever it
+            // gives us, unless it's one.
+            if pow_id != arena.one {
+                result_args.push(pow_id);
+            }
+        }
+    }
+
+    // If infinity was seen and coefficient is nonzero.
+    if saw_infinity {
+        if coeff.is_negative() {
+            return arena.neg_infinity;
+        }
+        return arena.infinity;
+    }
+
+    // Final assembly.
+    match result_args.len() {
+        0 => arena.one,
+        1 => result_args[0],
+        _ => arena.intern(ExprNode::Mul(result_args)),
+    }
+}
+
+/// Helper for `Mul` when `zoo` (ComplexInfinity) is encountered.
+///
+/// `zoo * nonzero → zoo`, `zoo * 0 → NaN`.
+fn handle_mul_with_zoo(
+    arena: &mut Arena,
+    remaining: &mut SmallVec<[ExprId; 16]>,
+    coeff: &Ratio<BigInt>,
+) -> ExprId {
+    if coeff.is_zero() {
+        return arena.nan;
+    }
+    // Drain remaining to check for zeros or NaN.
+    while let Some(id) = remaining.pop() {
+        match arena.node(id).clone() {
+            ExprNode::NaN => return arena.nan,
+            ExprNode::Num(nid) => {
+                if arena.num(nid).is_zero() {
+                    return arena.nan;
+                }
+            }
+            ExprNode::Mul(children) => {
+                remaining.extend_from_slice(&children);
+            }
+            _ => {}
+        }
+    }
+    arena.intern(ExprNode::ComplexInfinity)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Pow
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Build a canonical `Pow` node.
+///
+/// Applies simple algebraic identities and, when both base and exponent
+/// are numeric with a small-enough integer exponent, evaluates the result.
+pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId {
+    // NaN propagation.
+    if base == arena.nan || exp == arena.nan {
+        return arena.nan;
+    }
+
+    // x^0 → 1 (for any non-NaN x).
+    if exp == arena.zero {
+        return arena.one;
+    }
+
+    // x^1 → x.
+    if exp == arena.one {
+        return base;
+    }
+
+    // 1^x → 1.
+    if base == arena.one {
+        return arena.one;
+    }
+
+    // 0^(positive numeric) → 0.
+    if base == arena.zero
+        && let Some(e) = arena.as_num(exp)
+        && e.is_positive()
+    {
+        return arena.zero;
+    }
+    // 0^0 was caught above (exp==zero). 0^negative → zoo? We leave
+    // it unevaluated for safety.
+
+    // Both numeric → try to evaluate.
+    if let (Some(b), Some(e)) = (arena.as_num(base).cloned(), arena.as_num(exp).cloned())
+        && let Some(result) = eval_numeric_pow(arena, &b, &e)
+    {
+        return result;
+    }
+
+    arena.intern(ExprNode::Pow(base, exp))
+}
+
+/// Try to evaluate `b ^ e` when both are rational, returning `None` if the
+/// exponent is not a suitably small integer.
+fn eval_numeric_pow(arena: &mut Arena, b: &Ratio<BigInt>, e: &Ratio<BigInt>) -> Option<ExprId> {
+    // Only evaluate when the exponent is an integer.
+    if !e.is_integer() {
+        return None;
+    }
+
+    let exp_int: BigInt = e.to_integer();
+
+    // Guard: don't evaluate if exponent is too large.
+    let max_exp = arena.config.max_pow_exponent as u64;
+    let abs_exp: BigInt = exp_int.abs();
+    if abs_exp > BigInt::from(max_exp) {
+        return None;
+    }
+
+    // b == 0 is handled by the caller.
+    if b.is_zero() {
+        return None;
+    }
+
+    let exp_u32: u32 = match abs_exp.try_into() {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+
+    // Compute |exp| power of numerator and denominator.
+    let numer: BigInt = b.numer().clone();
+    let denom: BigInt = b.denom().clone();
+
+    let pow_n: BigInt = NumPow::pow(numer, exp_u32);
+    let pow_d: BigInt = NumPow::pow(denom, exp_u32);
+
+    let result = if exp_int.is_negative() {
+        // b^(-n) = (denom^n) / (numer^n)
+        if pow_n.is_zero() {
+            // Would be division by zero → leave unevaluated.
+            return None;
+        }
+        Ratio::new(pow_d, pow_n)
+    } else {
+        Ratio::new(pow_n, pow_d)
+    };
+
+    // Check the digit count doesn't exceed the guard.
+    let digit_count = result.numer().to_string().len() + result.denom().to_string().len();
+    if digit_count > arena.config.max_result_digits {
+        return None;
+    }
+
+    let nid = arena.intern_num(result);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Neg
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Build a canonical negation.
+///
+/// Normalises `Neg` away wherever possible — the canonical form of a
+/// negated expression is typically `Mul(−1, expr)` or a folded numeric
+/// literal.
+pub(crate) fn canon_neg(arena: &mut Arena, expr: ExprId) -> ExprId {
+    match arena.node(expr).clone() {
+        // −(−x) → x (double negation).
+        ExprNode::Neg(inner) => inner,
+
+        // −(Num(n)) → Num(−n).
+        ExprNode::Num(nid) => {
+            let val = arena.num(nid).clone();
+            let neg_val = -val;
+            let neg_nid = arena.intern_num(neg_val);
+            arena.intern(ExprNode::Num(neg_nid))
+        }
+
+        // −NaN → NaN.
+        ExprNode::NaN => arena.nan,
+
+        // −∞ → −∞, −(−∞) → ∞
+        ExprNode::Infinity => arena.neg_infinity,
+        ExprNode::NegInfinity => arena.infinity,
+
+        // −zoo → zoo.
+        ExprNode::ComplexInfinity => arena.intern(ExprNode::ComplexInfinity),
+
+        // −(a + b + …) → (−a) + (−b) + …  (distribute negation).
+        ExprNode::Add(children) => {
+            let negated: SmallVec<[ExprId; 6]> = children
+                .iter()
+                .map(|&child| canon_neg(arena, child))
+                .collect();
+            canon_add(arena, &negated)
+        }
+
+        // −(c * a * b * …) where c is numeric → (−c) * a * b * …
+        ExprNode::Mul(ref children) if !children.is_empty() => {
+            if let ExprNode::Num(nid) = arena.node(children[0]) {
+                let nid = *nid;
+                let val = arena.num(nid).clone();
+                let neg_val = -val;
+                let neg_nid = arena.intern_num(neg_val);
+                let neg_coeff = arena.intern(ExprNode::Num(neg_nid));
+                let mut new_args: SmallVec<[ExprId; 6]> = smallvec![neg_coeff];
+                new_args.extend_from_slice(&children[1..]);
+                // Re-canonicalise in case the negated coefficient is 1 or 0.
+                canon_mul(arena, &new_args)
+            } else {
+                // No numeric leading factor — prepend −1.
+                let neg_one = arena.neg_one;
+                let mut all: SmallVec<[ExprId; 6]> = smallvec![neg_one];
+                let children = children.clone();
+                all.extend_from_slice(&children);
+                canon_mul(arena, &all)
+            }
+        }
+
+        // General case: represent as Mul(−1, expr).
+        _ => {
+            let neg_one = arena.neg_one;
+            canon_mul(arena, &[neg_one, expr])
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arena::Arena;
+
+    // ── helpers ─────────────────────────────────────────────────────────
+    fn s(arena: &mut Arena, name: &str) -> ExprId {
+        arena.symbol(name)
+    }
+    fn display(arena: &Arena, id: ExprId) -> String {
+        arena.display(id).to_string()
+    }
+
+    // ── Add canonicalization ────────────────────────────────────────────
+
+    #[test]
+    fn add_combines_like_terms() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let three = a.int(3);
+        let three_x = a.mul(&[three, x]);
+        let result = a.add(&[two_x, three_x]);
+        assert_eq!(display(&a, result), "5*x");
+    }
+
+    #[test]
+    fn add_combines_identical_symbols() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let result = a.add(&[x, x]);
+        assert_eq!(display(&a, result), "2*x");
+    }
+
+    #[test]
+    fn add_flattens_nested_add() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let y = s(&mut a, "y");
+        let z = s(&mut a, "z");
+        let inner = a.raw_add(&[x, y]);
+        let result = a.add(&[inner, z]);
+        // Should be a flat x + y + z, not (x+y) + z.
+        assert_eq!(display(&a, result), "x + y + z");
+    }
+
+    #[test]
+    fn add_drops_zeros() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let zero = a.zero;
+        let result = a.add(&[x, zero]);
+        assert_eq!(result, x);
+    }
+
+    #[test]
+    fn add_evaluates_numeric_sum() {
+        let mut a = Arena::new();
+        let two = a.int(2);
+        let three = a.int(3);
+        let result = a.add(&[two, three]);
+        assert_eq!(display(&a, result), "5");
+    }
+
+    #[test]
+    fn add_nan_propagates() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let nan = a.nan;
+        let result = a.add(&[x, nan]);
+        assert_eq!(result, a.nan);
+    }
+
+    #[test]
+    fn add_cancellation_to_zero() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let neg_x = a.neg(x);
+        let result = a.add(&[x, neg_x]);
+        assert_eq!(result, a.zero);
+    }
+
+    #[test]
+    fn add_numeric_and_symbolic() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let three = a.int(3);
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let result = a.add(&[x, two_x, three]);
+        assert_eq!(display(&a, result), "3 + 3*x");
+    }
+
+    #[test]
+    fn add_multiple_like_terms() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let ab = {
+            let aa = s(&mut a, "a");
+            let bb = s(&mut a, "b");
+            a.mul(&[aa, bb])
+        };
+        let e1 = ab;
+        let two = a.int(2);
+        let e2 = a.mul(&[two, ab]);
+        let five = a.int(5);
+        let e3 = a.mul(&[five, ab]);
+        let result = a.add(&[e1, e2, e3, x]);
+        assert_eq!(display(&a, result), "x + 8*a*b");
+    }
+
+    #[test]
+    fn add_oo_minus_oo_is_nan() {
+        let mut a = Arena::new();
+        let result = a.add(&[a.infinity, a.neg_infinity]);
+        assert_eq!(result, a.nan);
+    }
+
+    #[test]
+    fn add_oo_plus_finite_is_oo() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let result = a.add(&[a.infinity, x]);
+        assert_eq!(result, a.infinity);
+    }
+
+    // ── Mul canonicalization ────────────────────────────────────────────
+
+    #[test]
+    fn mul_combines_like_bases() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let result = a.mul(&[x, x]);
+        assert_eq!(display(&a, result), "x**2");
+    }
+
+    #[test]
+    fn mul_combines_powers() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let three = a.int(3);
+        let x3 = a.pow(x, three);
+        let result = a.mul(&[x2, x3]);
+        assert_eq!(display(&a, result), "x**5");
+    }
+
+    #[test]
+    fn mul_flattens_nested_mul() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let y = s(&mut a, "y");
+        let z = s(&mut a, "z");
+        let inner = a.raw_mul(&[x, y]);
+        let result = a.mul(&[inner, z]);
+        assert_eq!(display(&a, result), "x*y*z");
+    }
+
+    #[test]
+    fn mul_collects_numeric_coefficient() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let two = a.int(2);
+        let three = a.int(3);
+        let result = a.mul(&[two, x, three]);
+        assert_eq!(display(&a, result), "6*x");
+    }
+
+    #[test]
+    fn mul_by_zero() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let zero = a.zero;
+        let result = a.mul(&[x, zero]);
+        assert_eq!(result, a.zero);
+    }
+
+    #[test]
+    fn mul_by_one() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let one = a.one;
+        let result = a.mul(&[one, x]);
+        assert_eq!(result, x);
+    }
+
+    #[test]
+    fn mul_nan_propagates() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let nan = a.nan;
+        let result = a.mul(&[x, nan]);
+        assert_eq!(result, a.nan);
+    }
+
+    #[test]
+    fn mul_zero_times_infinity_is_nan() {
+        let mut a = Arena::new();
+        let result = a.mul(&[a.zero, a.infinity]);
+        assert_eq!(result, a.nan);
+    }
+
+    #[test]
+    fn mul_rational_coefficients() {
+        let mut a = Arena::new();
+        let r1 = a.rational(2, 3);
+        let r2 = a.rational(3, 4);
+        let result = a.mul(&[r1, r2]);
+        assert_eq!(display(&a, result), "1/2");
+    }
+
+    #[test]
+    fn mul_neg_neg_is_positive() {
+        let mut a = Arena::new();
+        let neg1 = a.int(-1);
+        let result = a.mul(&[neg1, neg1]);
+        assert_eq!(display(&a, result), "1");
+    }
+
+    // ── Pow canonicalization ────────────────────────────────────────────
+
+    #[test]
+    fn pow_x_zero_is_one() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let result = a.pow(x, a.zero);
+        assert_eq!(result, a.one);
+    }
+
+    #[test]
+    fn pow_x_one_is_x() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let result = a.pow(x, a.one);
+        assert_eq!(result, x);
+    }
+
+    #[test]
+    fn pow_one_x_is_one() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let result = a.pow(a.one, x);
+        assert_eq!(result, a.one);
+    }
+
+    #[test]
+    fn pow_zero_positive_is_zero() {
+        let mut a = Arena::new();
+        let base = a.zero;
+        let exp = a.int(5);
+        let result = a.pow(base, exp);
+        assert_eq!(result, a.zero);
+    }
+
+    #[test]
+    fn pow_evaluates_numeric() {
+        let mut a = Arena::new();
+        let base = a.int(2);
+        let exp = a.int(10);
+        let result = a.pow(base, exp);
+        assert_eq!(display(&a, result), "1024");
+    }
+
+    #[test]
+    fn pow_evaluates_rational() {
+        let mut a = Arena::new();
+        let half = a.rational(1, 2);
+        let exp = a.int(3);
+        let result = a.pow(half, exp);
+        assert_eq!(display(&a, result), "1/8");
+    }
+
+    #[test]
+    fn pow_evaluates_negative_exponent() {
+        let mut a = Arena::new();
+        let base = a.int(2);
+        let exp = a.int(-3);
+        let result = a.pow(base, exp);
+        assert_eq!(display(&a, result), "1/8");
+    }
+
+    #[test]
+    fn pow_nan_propagates_base() {
+        let mut a = Arena::new();
+        let base = a.nan;
+        let exp = a.int(2);
+        let result = a.pow(base, exp);
+        assert_eq!(result, a.nan);
+    }
+
+    #[test]
+    fn pow_nan_propagates_exp() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let result = a.pow(x, a.nan);
+        assert_eq!(result, a.nan);
+    }
+
+    #[test]
+    fn pow_non_integer_exp_stays_unevaluated() {
+        let mut a = Arena::new();
+        let base = a.int(4);
+        let exp = a.rational(1, 2);
+        let result = a.pow(base, exp);
+        // 4^(1/2) should NOT evaluate to 2 — that's simplification, not
+        // canonicalization.
+        assert_eq!(display(&a, result), "4**(1/2)");
+    }
+
+    #[test]
+    fn pow_huge_exponent_stays_unevaluated() {
+        let mut a = Arena::new();
+        let base = a.int(2);
+        let exp = a.int(5000);
+        let result = a.pow(base, exp);
+        // Exceeds max_pow_exponent (default 1000).
+        assert_eq!(display(&a, result), "2**5000");
+    }
+
+    // ── Neg canonicalization ────────────────────────────────────────────
+
+    #[test]
+    fn neg_double_negation() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let neg_x = a.neg(x);
+        let neg_neg_x = a.neg(neg_x);
+        assert_eq!(neg_neg_x, x);
+    }
+
+    #[test]
+    fn neg_numeric() {
+        let mut a = Arena::new();
+        let three = a.int(3);
+        let result = a.neg(three);
+        assert_eq!(display(&a, result), "-3");
+    }
+
+    #[test]
+    fn neg_distributes_over_add() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let y = s(&mut a, "y");
+        let sum = a.add(&[x, y]);
+        let result = a.neg(sum);
+        // -(x + y) → -x - y  which canonically is -x + (-y) = Add(-x, -y)
+        // Display: -x - y
+        // canon_neg distributes over Add: -(x+y) → Add(Mul(-1,x), Mul(-1,y))
+        // display detects Mul(-1, ...) as subtraction notation.
+        assert_eq!(display(&a, result), "-x - y");
+    }
+
+    #[test]
+    fn neg_of_mul() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let result = a.neg(two_x);
+        assert_eq!(display(&a, result), "-2*x");
+    }
+
+    #[test]
+    fn neg_of_symbol() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let result = a.neg(x);
+        assert_eq!(display(&a, result), "-x");
+    }
+
+    // ── Mixed / integration-style tests ─────────────────────────────────
+
+    #[test]
+    fn mixed_a_times_b_plus_b_times_a() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let y = s(&mut a, "y");
+        let xy = a.mul(&[x, y]);
+        let yx = a.mul(&[y, x]);
+        let result = a.add(&[xy, yx]);
+        assert_eq!(display(&a, result), "2*x*y");
+    }
+
+    #[test]
+    fn mixed_a_minus_a_is_zero() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let result = a.sub(x, x);
+        assert_eq!(result, a.zero);
+    }
+
+    #[test]
+    fn mixed_division() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let y = s(&mut a, "y");
+        let result = a.div(x, y);
+        assert_eq!(display(&a, result), "x*y**(-1)");
+    }
+
+    #[test]
+    fn mixed_x_plus_2x_plus_3() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let three = a.int(3);
+        let result = a.add(&[x, two_x, three]);
+        assert_eq!(display(&a, result), "3 + 3*x");
+    }
+
+    #[test]
+    fn mixed_polynomial_canonical_form() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let exp2 = a.int(2);
+        let x2 = a.pow(x, exp2);
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let one = a.int(1);
+        let result = a.add(&[x2, two_x, one]);
+        assert_eq!(display(&a, result), "1 + x**2 + 2*x");
+    }
+
+    #[test]
+    fn mixed_compound_collection() {
+        // a*b + b*a + a*b → 3*a*b  (SymPy test_arit0 inspired)
+        let mut a_arena = Arena::new();
+        let aa = s(&mut a_arena, "a");
+        let bb = s(&mut a_arena, "b");
+        let ab = a_arena.mul(&[aa, bb]);
+        let ba = a_arena.mul(&[bb, aa]);
+        let result = a_arena.add(&[ab, ba, ab]);
+        assert_eq!(display(&a_arena, result), "3*a*b");
+    }
+
+    #[test]
+    fn mixed_subtract_to_zero() {
+        // b*a − b − a*b + b → 0  (SymPy test_arit0 inspired)
+        let mut a = Arena::new();
+        let aa = s(&mut a, "a");
+        let bb = s(&mut a, "b");
+        let ba = a.mul(&[bb, aa]);
+        let neg_b = a.neg(bb);
+        let ab = a.mul(&[aa, bb]);
+        let neg_ab = a.neg(ab);
+        let result = a.add(&[ba, neg_b, neg_ab, bb]);
+        assert_eq!(result, a.zero);
+    }
+
+    #[test]
+    fn mixed_rational_arithmetic_in_add() {
+        // Rational(2) + a + Rational(5) → 7 + a
+        let mut a = Arena::new();
+        let sym_a = s(&mut a, "a");
+        let two = a.int(2);
+        let five = a.int(5);
+        let result = a.add(&[two, sym_a, five]);
+        assert_eq!(display(&a, result), "7 + a");
+    }
+
+    #[test]
+    fn mixed_mul_abc_times_2() {
+        let mut a = Arena::new();
+        let aa = s(&mut a, "a");
+        let bb = s(&mut a, "b");
+        let cc = s(&mut a, "c");
+        let two = a.int(2);
+        let result = a.mul(&[aa, bb, cc, two]);
+        assert_eq!(display(&a, result), "2*a*b*c");
+    }
+
+    #[test]
+    fn dedup_after_canonicalization() {
+        // Two separately constructed but mathematically equal expressions
+        // should produce the same ExprId.
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let e1 = a.add(&[x, x]); // 2*x
+        let two = a.int(2);
+        let e2 = a.mul(&[two, x]); // 2*x
+        assert_eq!(e1, e2, "canonical forms should hash-cons to same ExprId");
+    }
+
+    // ── Non-auto-evaluation tests ───────────────────────────────────────
+    // These verify our principle: constructors do NOT expand or evaluate
+    // beyond basic canonicalization.
+
+    #[test]
+    fn no_auto_expand_pow() {
+        // (x+1)^2 should NOT expand to x^2 + 2*x + 1.
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let sum = a.add(&[x, a.one]);
+        let exp = a.int(2);
+        let result = a.pow(sum, exp);
+        assert_eq!(display(&a, result), "(1 + x)**2");
+    }
+
+    #[test]
+    fn no_auto_distribute_mul_over_add() {
+        // x*(y + z) should NOT distribute to x*y + x*z.
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let y = s(&mut a, "y");
+        let z = s(&mut a, "z");
+        let sum = a.add(&[y, z]);
+        let result = a.mul(&[x, sum]);
+        assert_eq!(display(&a, result), "x*(y + z)");
+    }
+
+    #[test]
+    fn no_auto_eval_sin() {
+        // sin(0) should NOT auto-evaluate to 0.
+        let mut a = Arena::new();
+        let result = a.sin(a.zero);
+        assert_eq!(display(&a, result), "sin(0)");
+    }
+
+    #[test]
+    fn no_auto_eval_cos_pi() {
+        // cos(pi) should NOT auto-evaluate to -1.
+        let mut a = Arena::new();
+        let result = a.cos(a.pi);
+        assert_eq!(display(&a, result), "cos(pi)");
+    }
+
+    #[test]
+    fn no_auto_cancel_fraction() {
+        // (x^2 - 1) / (x - 1) should NOT auto-cancel to x + 1.
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let exp = a.int(2);
+        let x2 = a.pow(x, exp);
+        let numer = a.sub(x2, a.one);
+        let denom = a.sub(x, a.one);
+        let result = a.div(numer, denom);
+        // Should be (x^2 - 1) * (x - 1)^(-1), NOT x + 1.
+        let d = display(&a, result);
+        assert!(!d.contains("x + 1"), "should not auto-cancel: got '{d}'");
+    }
+
+    // ── Scaling tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn scaling_100_term_sum() {
+        let mut a = Arena::new();
+        let symbols: Vec<ExprId> = (0..100).map(|i| s(&mut a, &format!("x{i}"))).collect();
+        let result = a.add(&symbols);
+        // Just verify it doesn't blow up and has the right number of terms.
+        if let ExprNode::Add(args) = a.node(result) {
+            assert_eq!(args.len(), 100);
+        } else {
+            panic!("expected Add with 100 terms");
+        }
+    }
+
+    #[test]
+    fn scaling_1000_term_sum() {
+        let mut a = Arena::new();
+        let symbols: Vec<ExprId> = (0..1000).map(|i| s(&mut a, &format!("x{i}"))).collect();
+        let start = std::time::Instant::now();
+        let result = a.add(&symbols);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 500,
+            "1000-term sum took {elapsed:?}, expected < 500ms"
+        );
+        if let ExprNode::Add(args) = a.node(result) {
+            assert_eq!(args.len(), 1000);
+        }
+    }
+
+    #[test]
+    fn scaling_like_term_collection() {
+        // 1*x + 2*x + 3*x + … + 100*x → 5050*x
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let terms: Vec<ExprId> = (1..=100)
+            .map(|i| {
+                let coeff = a.int(i);
+                a.mul(&[coeff, x])
+            })
+            .collect();
+        let result = a.add(&terms);
+        assert_eq!(display(&a, result), "5050*x");
+    }
+}

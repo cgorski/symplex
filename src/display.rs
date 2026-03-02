@@ -23,7 +23,7 @@ use std::fmt;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::One;
+use num_traits::{One, Signed};
 
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode};
@@ -158,6 +158,8 @@ pub(crate) fn fmt_expr(
             let args = args.clone();
             for (i, &arg) in args.iter().enumerate() {
                 let child_node = arena.node(arg);
+
+                // Check for Neg(inner) — canonical only for raw nodes
                 if let ExprNode::Neg(inner) = child_node {
                     let inner = *inner;
                     if i == 0 {
@@ -166,6 +168,34 @@ pub(crate) fn fmt_expr(
                     } else {
                         write!(f, " - ")?;
                         fmt_expr(arena, f, inner, PREC_UNARY)?;
+                    }
+                }
+                // Check for Mul([-1, rest...]) — canonical form of negation
+                else if let ExprNode::Mul(mul_args) = child_node {
+                    let is_neg_one_mul = if !mul_args.is_empty() {
+                        if let ExprNode::Num(nid) = arena.node(mul_args[0]) {
+                            let r = arena.num(*nid);
+                            r == &Ratio::from(BigInt::from(-1))
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if is_neg_one_mul && mul_args.len() >= 2 {
+                        // Display as " - rest" where rest is the factors without -1
+                        if i == 0 {
+                            write!(f, "-")?;
+                        } else {
+                            write!(f, " - ")?;
+                        }
+                        // Print the remaining factors (skip the -1 coefficient)
+                        fmt_mul_factors(arena, f, &mul_args[1..])?;
+                    } else if i == 0 {
+                        fmt_expr(arena, f, arg, PREC_ADD)?;
+                    } else {
+                        write!(f, " + ")?;
+                        fmt_expr(arena, f, arg, PREC_ADD)?;
                     }
                 } else if i == 0 {
                     fmt_expr(arena, f, arg, PREC_ADD)?;
@@ -247,6 +277,16 @@ pub(crate) fn fmt_expr(
                 let en = arena.node(exp);
                 match en {
                     ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => PREC_POW + 1,
+                    // Negative numbers or non-integer rationals need parens.
+                    // Num has PREC_ATOM (100), so we must exceed that to force parens.
+                    ExprNode::Num(nid) => {
+                        let r = arena.num(*nid);
+                        if r.is_negative() || !r.denom().is_one() {
+                            PREC_ATOM + 1
+                        } else {
+                            PREC_POW
+                        }
+                    }
                     _ => PREC_POW,
                 }
             };
@@ -501,6 +541,7 @@ mod tests {
         let y = a.symbol("y");
         let neg_y = a.neg(y);
         let expr = a.add(&[x, neg_y]);
+        // canon_neg turns neg(y) into Mul(-1, y); display detects this as subtraction.
         assert_display!(a, expr, "x - y");
     }
 
@@ -511,7 +552,8 @@ mod tests {
         let y = a.symbol("y");
         let neg_x = a.neg(x);
         let expr = a.add(&[neg_x, y]);
-        assert_display!(a, expr, "-x + y");
+        // Canonical Add sorts: y (symbol, rank 10) before Mul(-1, x) (Mul, rank 30).
+        assert_display!(a, expr, "y - x");
     }
 
     // -- Mul -----------------------------------------------------------------
@@ -593,7 +635,9 @@ mod tests {
         let y = a.symbol("y");
         let sum = a.add(&[x, y]);
         let neg = a.neg(sum);
-        assert_display!(a, neg, "-(x + y)");
+        // canon_neg distributes over Add: -(x + y) → Add(Mul(-1,x), Mul(-1,y))
+        // display detects Mul(-1, ...) as subtraction notation.
+        assert_display!(a, neg, "-x - y");
     }
 
     // -- Functions -----------------------------------------------------------
@@ -653,7 +697,8 @@ mod tests {
         let z = a.symbol("z");
         let xy = a.mul(&[x, y]);
         let sum = a.add(&[xy, z]);
-        assert_display!(a, sum, "x*y + z");
+        // Canonical Add sorts: z (symbol, rank 10) before x*y (Mul, rank 30).
+        assert_display!(a, sum, "z + x*y");
     }
 
     #[test]
@@ -664,6 +709,7 @@ mod tests {
         let z = a.symbol("z");
         let sum = a.add(&[x, y]);
         let prod = a.mul(&[sum, z]);
-        assert_display!(a, prod, "(x + y)*z");
+        // Canonical Mul sorts: z (symbol, rank 10) before (x+y) (Add, rank 40).
+        assert_display!(a, prod, "z*(x + y)");
     }
 }

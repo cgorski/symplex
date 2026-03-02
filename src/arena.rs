@@ -20,6 +20,7 @@ use num_rational::Ratio;
 use num_traits::{One, Zero};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use crate::config::EvalConfig;
@@ -59,6 +60,13 @@ pub struct Arena {
     /// produced that hash.  On lookup the candidates are compared by value to
     /// handle hash collisions.
     dedup: FxHashMap<u64, SmallVec<[ExprId; 2]>>,
+
+    /// Numeric literal deduplication map.
+    ///
+    /// Maps a `u64` hash of a [`Ratio<BigInt>`] to the set of [`NumId`]s that
+    /// produced that hash. On lookup the candidates are compared by value to
+    /// handle hash collisions.
+    num_dedup: FxHashMap<u64, SmallVec<[NumId; 2]>>,
 
     /// Interned symbol names.
     symbols: SymbolTable,
@@ -124,6 +132,7 @@ impl Arena {
             numbers: Vec::new(),
             sort_keys: Vec::new(),
             dedup: FxHashMap::default(),
+            num_dedup: FxHashMap::default(),
             symbols: SymbolTable::new(),
             config,
             // Temporary placeholders — will be overwritten immediately below.
@@ -175,6 +184,13 @@ impl Arena {
         hasher.finish()
     }
 
+    /// Computes a `u64` hash for a [`Ratio<BigInt>`] using the `FxHasher`.
+    fn hash_num(value: &Ratio<BigInt>) -> u64 {
+        let mut hasher = rustc_hash::FxHasher::default();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// Interns an [`ExprNode`], returning its canonical [`ExprId`].
     ///
     /// If a structurally identical node has already been interned, the
@@ -207,17 +223,23 @@ impl Arena {
     /// Interns a rational number, returning its [`NumId`].
     ///
     /// If the same value is already present the existing [`NumId`] is
-    /// returned.  A linear scan is used since the number table is typically
-    /// very small.
+    /// returned.  A hash-map lookup is used for fast deduplication.
     pub fn intern_num(&mut self, value: Ratio<BigInt>) -> NumId {
-        // Linear scan for an existing match.
-        for (i, existing) in self.numbers.iter().enumerate() {
-            if *existing == value {
-                return NumId(i as u32);
+        let hash = Self::hash_num(&value);
+
+        // Check the num_dedup map for an existing match.
+        if let Some(candidates) = self.num_dedup.get(&hash) {
+            for &candidate in candidates {
+                if self.numbers[candidate.0 as usize] == value {
+                    return candidate;
+                }
             }
         }
+
+        // Not found — allocate a new slot.
         let id = NumId(self.numbers.len() as u32);
         self.numbers.push(value);
+        self.num_dedup.entry(hash).or_default().push(id);
         id
     }
 
@@ -295,6 +317,100 @@ impl Arena {
 }
 
 // ---------------------------------------------------------------------------
+// Decomposition helpers (used by canonicalization)
+// ---------------------------------------------------------------------------
+
+impl Arena {
+    /// Decompose an expression into `(coefficient, symbolic_term)`.
+    ///
+    /// - `Num(n)` → `(n, self.one)`
+    /// - `Mul([Num(n), rest...])` → `(n, Mul(rest))` or `(n, rest[0])` if single
+    /// - `Neg(x)` → `(-1, x)`
+    /// - anything else → `(1, itself)`
+    pub(crate) fn as_coeff_term(&mut self, id: ExprId) -> (Ratio<BigInt>, ExprId) {
+        match self.node(id).clone() {
+            ExprNode::Num(nid) => (self.num(nid).clone(), self.one),
+            ExprNode::Neg(inner) => {
+                let neg_one = -Ratio::<BigInt>::one();
+                (neg_one, inner)
+            }
+            ExprNode::Mul(args) if !args.is_empty() => {
+                if let ExprNode::Num(nid) = self.node(args[0]) {
+                    let coeff = self.num(*nid).clone();
+                    let rest = &args[1..];
+                    let term = match rest.len() {
+                        0 => self.one,
+                        1 => rest[0],
+                        _ => {
+                            let sv: SmallVec<[ExprId; 6]> = rest.iter().copied().collect();
+                            self.intern(ExprNode::Mul(sv))
+                        }
+                    };
+                    (coeff, term)
+                } else {
+                    (Ratio::one(), id)
+                }
+            }
+            _ => (Ratio::one(), id),
+        }
+    }
+
+    /// Decompose an expression into `(base, exponent)`.
+    ///
+    /// - `Pow(base, exp)` → `(base, exp)`
+    /// - anything else → `(itself, self.one)`
+    pub(crate) fn as_base_exp(&self, id: ExprId) -> (ExprId, ExprId) {
+        match self.node(id) {
+            ExprNode::Pow(base, exp) => (*base, *exp),
+            _ => (id, self.one),
+        }
+    }
+
+    /// Construct `coefficient * term`, simplifying trivial cases.
+    ///
+    /// - coeff == 0 → self.zero
+    /// - coeff == 1 → term
+    /// - coeff == -1 → Neg(term) (via raw intern, not canonical neg)
+    /// - otherwise → Mul([Num(coeff), term])
+    pub(crate) fn make_coeff_term(&mut self, coeff: Ratio<BigInt>, term: ExprId) -> ExprId {
+        if coeff.is_zero() {
+            return self.zero;
+        }
+        if coeff == Ratio::one() {
+            return term;
+        }
+        let coeff_id = {
+            let nid = self.intern_num(coeff);
+            self.intern(ExprNode::Num(nid))
+        };
+        if term == self.one {
+            return coeff_id;
+        }
+        // Build Mul([coeff, term])
+        let sv: SmallVec<[ExprId; 6]> = smallvec::smallvec![coeff_id, term];
+        self.intern(ExprNode::Mul(sv))
+    }
+
+    /// Check if an expression is a numeric literal and return its value.
+    pub(crate) fn as_num(&self, id: ExprId) -> Option<&Ratio<BigInt>> {
+        match self.node(id) {
+            ExprNode::Num(nid) => Some(self.num(*nid)),
+            _ => None,
+        }
+    }
+
+    /// Structural zero check — O(1), just compares ExprId.
+    pub fn is_zero_structural(&self, id: ExprId) -> bool {
+        id == self.zero
+    }
+
+    /// Structural one check — O(1).
+    pub fn is_one_structural(&self, id: ExprId) -> bool {
+        id == self.one
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Convenience construction helpers
 // ---------------------------------------------------------------------------
 
@@ -325,14 +441,13 @@ impl Arena {
         self.intern(ExprNode::Symbol(sym_id))
     }
 
-    /// Creates a raw `Add` node from the given arguments.
-    ///
-    /// **Stage 1**: no canonicalisation or simplification is performed.
+    /// Raw construction of an `Add` node — no canonicalization.
     ///
     /// Edge cases:
     /// - 0 arguments → returns `self.zero`.
     /// - 1 argument  → returns that argument unchanged.
-    pub fn add(&mut self, args: &[ExprId]) -> ExprId {
+    #[allow(dead_code)]
+    pub(crate) fn raw_add(&mut self, args: &[ExprId]) -> ExprId {
         match args.len() {
             0 => self.zero,
             1 => args[0],
@@ -343,14 +458,13 @@ impl Arena {
         }
     }
 
-    /// Creates a raw `Mul` node from the given arguments.
-    ///
-    /// **Stage 1**: no canonicalisation or simplification is performed.
+    /// Raw construction of a `Mul` node — no canonicalization.
     ///
     /// Edge cases:
     /// - 0 arguments → returns `self.one`.
     /// - 1 argument  → returns that argument unchanged.
-    pub fn mul(&mut self, args: &[ExprId]) -> ExprId {
+    #[allow(dead_code)]
+    pub(crate) fn raw_mul(&mut self, args: &[ExprId]) -> ExprId {
         match args.len() {
             0 => self.one,
             1 => args[0],
@@ -361,14 +475,53 @@ impl Arena {
         }
     }
 
-    /// Creates a raw `Pow` (exponentiation) node.
-    pub fn pow(&mut self, base: ExprId, exp: ExprId) -> ExprId {
+    /// Raw construction of a `Pow` (exponentiation) node — no canonicalization.
+    #[allow(dead_code)]
+    pub(crate) fn raw_pow(&mut self, base: ExprId, exp: ExprId) -> ExprId {
         self.intern(ExprNode::Pow(base, exp))
     }
 
-    /// Creates a raw `Neg` (unary negation) node.
-    pub fn neg(&mut self, expr: ExprId) -> ExprId {
+    /// Raw construction of a `Neg` (unary negation) node — no canonicalization.
+    #[allow(dead_code)]
+    pub(crate) fn raw_neg(&mut self, expr: ExprId) -> ExprId {
         self.intern(ExprNode::Neg(expr))
+    }
+
+    /// Creates an `Add` node with full canonicalization.
+    ///
+    /// Flattens nested Adds, combines like terms, sorts by canonical
+    /// order, drops zero-coefficient terms, propagates NaN.
+    pub fn add(&mut self, args: &[ExprId]) -> ExprId {
+        // Canonical implementation in canon.rs
+        crate::canon::canon_add(self, args)
+    }
+
+    /// Creates a `Mul` node with full canonicalization.
+    pub fn mul(&mut self, args: &[ExprId]) -> ExprId {
+        crate::canon::canon_mul(self, args)
+    }
+
+    /// Creates a `Pow` node with canonicalization.
+    pub fn pow(&mut self, base: ExprId, exp: ExprId) -> ExprId {
+        crate::canon::canon_pow(self, base, exp)
+    }
+
+    /// Creates a `Neg` node with canonicalization.
+    pub fn neg(&mut self, expr: ExprId) -> ExprId {
+        crate::canon::canon_neg(self, expr)
+    }
+
+    /// Creates a division expression `a / b` as `a * b^(-1)`.
+    pub fn div(&mut self, a: ExprId, b: ExprId) -> ExprId {
+        let neg_one = self.neg_one;
+        let b_inv = self.pow(b, neg_one);
+        self.mul(&[a, b_inv])
+    }
+
+    /// Creates a subtraction expression `a - b` as `a + neg(b)`.
+    pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
+        let neg_b = self.neg(b);
+        self.add(&[a, neg_b])
     }
 
     /// Creates a `Sin` node.
@@ -420,6 +573,20 @@ impl Default for Arena {
 }
 
 // ---------------------------------------------------------------------------
+// Debug
+// ---------------------------------------------------------------------------
+
+impl fmt::Debug for Arena {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Arena")
+            .field("node_count", &self.nodes.len())
+            .field("num_count", &self.numbers.len())
+            .field("symbol_count", &self.symbols.len())
+            .finish()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -463,8 +630,8 @@ mod tests {
         let mut a = Arena::new();
         let x = a.symbol("x");
         let y = a.symbol("y");
-        let add1 = a.add(&[x, y]);
-        let add2 = a.add(&[x, y]);
+        let add1 = a.raw_add(&[x, y]);
+        let add2 = a.raw_add(&[x, y]);
         assert_eq!(add1, add2);
     }
 
@@ -531,32 +698,32 @@ mod tests {
     }
 
     #[test]
-    fn add_zero_args_returns_zero() {
+    fn raw_add_zero_args_returns_zero() {
         let mut a = Arena::new();
-        let result = a.add(&[]);
+        let result = a.raw_add(&[]);
         assert_eq!(result, a.zero);
     }
 
     #[test]
-    fn add_one_arg_returns_arg() {
+    fn raw_add_one_arg_returns_arg() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let result = a.add(&[x]);
+        let result = a.raw_add(&[x]);
         assert_eq!(result, x);
     }
 
     #[test]
-    fn mul_zero_args_returns_one() {
+    fn raw_mul_zero_args_returns_one() {
         let mut a = Arena::new();
-        let result = a.mul(&[]);
+        let result = a.raw_mul(&[]);
         assert_eq!(result, a.one);
     }
 
     #[test]
-    fn mul_one_arg_returns_arg() {
+    fn raw_mul_one_arg_returns_arg() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let result = a.mul(&[x]);
+        let result = a.raw_mul(&[x]);
         assert_eq!(result, x);
     }
 
@@ -574,7 +741,14 @@ mod tests {
         let mut a = Arena::new();
         let x = a.symbol("x");
         let nx = a.neg(x);
-        assert_eq!(*a.node(nx), ExprNode::Neg(x));
+        // canon_neg normalizes Neg(x) to Mul(-1, x).
+        if let ExprNode::Mul(args) = a.node(nx) {
+            assert_eq!(args.len(), 2);
+            assert_eq!(args[0], a.neg_one, "first factor should be -1");
+            assert_eq!(args[1], x, "second factor should be x");
+        } else {
+            panic!("expected Mul node, got {:?}", a.node(nx));
+        }
     }
 
     #[test]
@@ -632,7 +806,7 @@ mod tests {
         let mut a = Arena::new();
         let x = a.symbol("x");
         let y = a.symbol("y");
-        let sum = a.add(&[x, y]);
+        let sum = a.raw_add(&[x, y]);
         let kids = a.children(sum);
         assert_eq!(kids.len(), 2);
         assert_eq!(kids[0], x);
@@ -668,8 +842,10 @@ mod tests {
 
     #[test]
     fn with_config_uses_custom_config() {
-        let mut cfg = EvalConfig::default();
-        cfg.max_pow_exponent = 42;
+        let cfg = EvalConfig {
+            max_pow_exponent: 42,
+            ..EvalConfig::default()
+        };
         let a = Arena::with_config(cfg);
         assert_eq!(a.config.max_pow_exponent, 42);
     }
@@ -679,5 +855,35 @@ mod tests {
         let a = Arena::default();
         // Should have pre-interned at least the 9 constants.
         assert!(a.node_count() >= 9);
+    }
+
+    #[test]
+    fn add_zero_args_returns_zero() {
+        let mut a = Arena::new();
+        let result = a.add(&[]);
+        assert_eq!(result, a.zero);
+    }
+
+    #[test]
+    fn add_one_arg_returns_arg() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let result = a.add(&[x]);
+        assert_eq!(result, x);
+    }
+
+    #[test]
+    fn mul_zero_args_returns_one() {
+        let mut a = Arena::new();
+        let result = a.mul(&[]);
+        assert_eq!(result, a.one);
+    }
+
+    #[test]
+    fn mul_one_arg_returns_arg() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let result = a.mul(&[x]);
+        assert_eq!(result, x);
     }
 }

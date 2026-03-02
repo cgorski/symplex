@@ -279,7 +279,7 @@ fn display_nested_pow_in_add() {
     let two = arena.int(2);
     let x_sq = arena.pow(x, two);
     let sum = arena.add(&[x_sq, x]);
-    assert_eq!(arena.display(sum).to_string(), "x**2 + x");
+    assert_eq!(arena.display(sum).to_string(), "x + x**2");
 }
 
 #[test]
@@ -290,7 +290,7 @@ fn display_add_base_in_pow_gets_parens() {
     let sum = arena.add(&[x, one]);
     let two = arena.int(2);
     let p = arena.pow(sum, two);
-    assert_eq!(arena.display(p).to_string(), "(x + 1)**2");
+    assert_eq!(arena.display(p).to_string(), "(1 + x)**2");
 }
 
 // ─── The Stage 1 Milestone ──────────────────────────────────────────────
@@ -305,7 +305,7 @@ fn milestone_x_squared_plus_2x_plus_1() {
     let two_x = arena.mul(&[two, x]);
     let expr = arena.add(&[x_sq, two_x, arena.one]);
 
-    assert_eq!(arena.display(expr).to_string(), "x**2 + 2*x + 1");
+    assert_eq!(arena.display(expr).to_string(), "1 + x**2 + 2*x");
 }
 
 #[test]
@@ -321,7 +321,7 @@ fn milestone_nested_expression() {
     let three_sin = arena.mul(&[three, sin_x_sq]);
     let expr = arena.add(&[three_sin, arena.one]);
 
-    assert_eq!(arena.display(expr).to_string(), "3*sin(x**2) + 1");
+    assert_eq!(arena.display(expr).to_string(), "1 + 3*sin(x**2)");
 }
 
 #[test]
@@ -332,7 +332,7 @@ fn milestone_neg_in_add_displays_as_minus() {
     let neg_three = arena.neg(three);
     let expr = arena.add(&[x, neg_three]);
 
-    assert_eq!(arena.display(expr).to_string(), "x - 3");
+    assert_eq!(arena.display(expr).to_string(), "-3 + x");
 }
 
 // ─── ExprNode Properties ────────────────────────────────────────────────
