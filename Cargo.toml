@@ -1,0 +1,36 @@
+[package]
+name = "symplex"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93.0"
+license = "MIT OR Apache-2.0"
+description = "A fast, correct symbolic mathematics library for Rust"
+repository = "https://github.com/symplex-rs/symplex"
+keywords = ["symbolic", "math", "algebra", "cas", "calculus"]
+categories = ["mathematics", "science"]
+
+[dependencies]
+num-bigint = "0.4"
+num-rational = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
+smallvec = "1.13"
+rustc-hash = "2.1"
+bitflags = "2.11"
+parking_lot = "0.12"
+thiserror = "2.0"
+
+[dependencies.astro-float]
+version = "0.9"
+optional = true
+
+[features]
+default = ["evalf"]
+evalf = ["dep:astro-float"]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "canonicalization"
+harness = false
