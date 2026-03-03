@@ -997,7 +997,10 @@ impl Ex {
         items[0].wrap(id)
     }
 
-    /// Format this expression as a LaTeX string.
+    /// Convert this expression to a standalone serializable [`ExprTree`](crate::tree::ExprTree).
+    ///
+    /// The tree can be serialized to JSON (or any serde format) and
+    /// deserialized back via [`Context::from_tree()`](crate::context::Context::from_tree).
     ///
     /// # Examples
     ///
@@ -1005,49 +1008,37 @@ impl Ex {
     /// use symplex::prelude::*;
     ///
     /// let x = symplex::var("x");
-    /// let expr = x.powi(2);
-    /// assert_eq!(expr.to_latex(), "x^{2}");
+    /// let tree = x.powi(2).to_tree();
+    /// let json = serde_json::to_string(&tree).unwrap();
+    /// assert!(json.contains("Pow"));
     /// ```
-    pub fn to_latex(&self) -> String {
+    pub fn to_tree(&self) -> crate::tree::ExprTree {
         let inner = self.inner.read();
-        crate::format::format_expr(&inner.arena, self.id, &crate::format::PrintOptions::latex())
+        crate::tree::expr_to_tree(&inner.arena, self.id)
     }
 
-    /// Format this expression as a Markdown string (with Unicode symbols).
+    /// Serialize this expression to a JSON string.
+    ///
+    /// This is a convenience shorthand for
+    /// `serde_json::to_string(&expr.to_tree()).unwrap()`.
     ///
     /// # Examples
     ///
     /// ```
     /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let expr = ctx.pi();
-    /// assert_eq!(expr.to_markdown(), "π");
-    /// ```
-    pub fn to_markdown(&self) -> String {
-        let inner = self.inner.read();
-        crate::format::format_expr(
-            &inner.arena,
-            self.id,
-            &crate::format::PrintOptions::markdown(),
-        )
-    }
-
-    /// Format this expression using custom [`PrintOptions`](crate::format::PrintOptions).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    /// use symplex::format::{PrintOptions, PrintMode};
     ///
     /// let x = symplex::var("x");
-    /// let opts = PrintOptions { mode: PrintMode::LaTeX };
-    /// assert_eq!(x.powi(2).render(&opts), "x^{2}");
+    /// let json = x.powi(2).to_json();
+    /// assert!(json.contains("\"type\":\"Pow\""));
     /// ```
-    pub fn render(&self, opts: &crate::format::PrintOptions) -> String {
-        let inner = self.inner.read();
-        crate::format::format_expr(&inner.arena, self.id, opts)
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(&self.to_tree()).expect("ExprTree serialization should not fail")
+    }
+
+    /// Serialize this expression to a pretty-printed JSON string.
+    pub fn to_json_pretty(&self) -> String {
+        serde_json::to_string_pretty(&self.to_tree())
+            .expect("ExprTree serialization should not fail")
     }
 
     /// Apply a transformation repeatedly until the expression stops changing,

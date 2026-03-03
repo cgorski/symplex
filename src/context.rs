@@ -243,6 +243,57 @@ impl Context {
         f(&mut guard.arena)
     }
 
+    // ── Deserialization ────────────────────────────────────────────────
+
+    /// Convert a serialized [`ExprTree`](crate::tree::ExprTree) back into
+    /// an expression handle in this context.
+    ///
+    /// The resulting expression is fully canonicalized.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.powi(2) + 1;
+    /// let tree = expr.to_tree();
+    /// let back = ctx.from_tree(&tree);
+    /// assert_eq!(format!("{back}"), format!("{expr}"));
+    /// ```
+    pub fn from_tree(&self, tree: &crate::tree::ExprTree) -> crate::expr::Ex {
+        let mut inner = self.inner.write();
+        let id = crate::tree::tree_to_expr(&mut inner.arena, tree);
+        drop(inner);
+        self.make_ex(id)
+    }
+
+    /// Parse a JSON string into an expression in this context.
+    ///
+    /// This is a convenience shorthand for deserializing an
+    /// [`ExprTree`](crate::tree::ExprTree) from JSON and converting it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the JSON is malformed or doesn't represent a
+    /// valid `ExprTree`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let json = r#"{"type":"Symbol","name":"x"}"#;
+    /// let expr = ctx.from_json(json).unwrap();
+    /// assert_eq!(format!("{expr}"), "x");
+    /// ```
+    pub fn from_json(&self, json: &str) -> Result<crate::expr::Ex, serde_json::Error> {
+        let tree: crate::tree::ExprTree = serde_json::from_str(json)?;
+        Ok(self.from_tree(&tree))
+    }
+
     // ── Arena info ─────────────────────────────────────────────────────
 
     /// Number of interned expression nodes.

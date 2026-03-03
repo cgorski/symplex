@@ -196,23 +196,3 @@ fn parse_hyperbolic() {
         "got: {s}"
     );
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// LaTeX output
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn latex_inverse_trig() {
-    let x = symplex::var("x");
-    assert!(x.asin().to_latex().contains("\\arcsin"));
-    assert!(x.acos().to_latex().contains("\\arccos"));
-    assert!(x.atan().to_latex().contains("\\arctan"));
-}
-
-#[test]
-fn latex_hyperbolic() {
-    let x = symplex::var("x");
-    assert!(x.sinh().to_latex().contains("\\sinh"));
-    assert!(x.cosh().to_latex().contains("\\cosh"));
-    assert!(x.tanh().to_latex().contains("\\tanh"));
-}
