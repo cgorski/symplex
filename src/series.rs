@@ -169,7 +169,7 @@ mod tests {
     fn series_exp_x_around_zero_order_4() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        let expr = a.exp_fn(x);
+        let expr = a.exp(x);
         let zero = a.zero;
         // series(exp(x), x, 0, 4) = 1 + x + x^2/2 + x^3/6
         let result = series(&mut a, expr, x, zero, 4).unwrap();

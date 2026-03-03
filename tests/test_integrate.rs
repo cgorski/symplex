@@ -102,7 +102,7 @@ fn integrate_cos_x() {
 fn integrate_exp_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.exp_fn().integrate(&x);
+    let result = x.exp().integrate(&x);
     assert_eq!(format!("{result}"), "exp(x)");
 }
 

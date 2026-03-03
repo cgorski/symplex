@@ -145,8 +145,8 @@ impl Ex {
 
     /// Natural exponential: `e^self`.
     #[must_use = "returns a new expression; does not modify in place"]
-    pub fn exp_fn(&self) -> Ex {
-        let id = self.inner.write().arena.exp_fn(self.id);
+    pub fn exp(&self) -> Ex {
+        let id = self.inner.write().arena.exp(self.id);
         self.wrap(id)
     }
 
@@ -847,7 +847,7 @@ impl Ex {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let zero = ctx.int(0);
-    /// let expr = x.exp_fn();
+    /// let expr = x.exp();
     /// let s = expr.series(&x, &zero, 4).unwrap();
     /// let expanded = s.expand().eval();
     /// let result = format!("{expanded}");

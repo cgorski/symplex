@@ -263,7 +263,7 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         }
         ExprTree::Exp { arg } => {
             let x = tree_to_expr(arena, arg);
-            arena.exp_fn(x)
+            arena.exp(x)
         }
         ExprTree::Ln { arg } => {
             let x = tree_to_expr(arena, arg);
@@ -426,7 +426,7 @@ mod tests {
             a.sin(x),
             a.cos(x),
             a.tan(x),
-            a.exp_fn(x),
+            a.exp(x),
             a.ln(x),
             a.sqrt(x),
             a.abs(x),

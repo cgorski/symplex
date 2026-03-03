@@ -78,7 +78,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             }
             ExprNode::Exp(inner) => {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
-                eval_exp(arena, inner).unwrap_or_else(|| arena.exp_fn(inner))
+                eval_exp(arena, inner).unwrap_or_else(|| arena.exp(inner))
             }
             ExprNode::Ln(inner) => {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn eval_exp_zero() {
         let mut a = Arena::new();
-        let expr = a.exp_fn(a.zero);
+        let expr = a.exp(a.zero);
         let result = eval(&mut a, expr);
         assert_eq!(result, a.one, "exp(0) should be 1");
     }
@@ -641,7 +641,7 @@ mod tests {
     #[test]
     fn eval_exp_one() {
         let mut a = Arena::new();
-        let expr = a.exp_fn(a.one);
+        let expr = a.exp(a.one);
         let result = eval(&mut a, expr);
         assert_eq!(result, a.e_const, "exp(1) should be E");
     }
@@ -650,7 +650,7 @@ mod tests {
     fn eval_exp_symbolic_unchanged() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        let expr = a.exp_fn(x);
+        let expr = a.exp(x);
         let result = eval(&mut a, expr);
         assert_eq!(result, expr, "exp(x) should stay unevaluated");
     }
@@ -781,7 +781,7 @@ mod tests {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         // x * exp(0) → x * 1 → x
-        let exp_zero = a.exp_fn(a.zero);
+        let exp_zero = a.exp(a.zero);
         let expr = a.mul(&[x, exp_zero]);
         let result = eval(&mut a, expr);
         assert_eq!(result, x, "x * exp(0) should simplify to x");

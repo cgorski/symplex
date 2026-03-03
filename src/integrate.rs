@@ -256,11 +256,11 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
         ExprNode::Exp(inner) => {
             if inner == var {
                 // ∫ exp(x) dx = exp(x)
-                return arena.exp_fn(var);
+                return arena.exp(var);
             }
             // Try u-substitution: if inner = a*x + b, ∫ exp(a*x+b) dx = exp(a*x+b)/a
             if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
-                let exp_inner = arena.exp_fn(inner);
+                let exp_inner = arena.exp(inner);
                 let a_id = rational_to_expr(arena, &a);
                 return arena.div(exp_inner, a_id);
             }
@@ -449,7 +449,7 @@ mod tests {
     fn integrate_exp_x() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        let expr = a.exp_fn(x);
+        let expr = a.exp(x);
         let result = integrate(&mut a, expr, x);
         assert_eq!(display(&a, result), "exp(x)");
     }
@@ -514,7 +514,7 @@ mod tests {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         // ∫ x·exp(x) dx = x·exp(x) - exp(x) = (x-1)·exp(x)
-        let exp_x = a.exp_fn(x);
+        let exp_x = a.exp(x);
         let expr = a.mul(&[x, exp_x]);
         let result = integrate(&mut a, expr, x);
         let s = display(&a, result);
@@ -571,7 +571,7 @@ mod tests {
         let x = sym(&mut a, "x");
         let two = a.int(2);
         let two_x = a.mul(&[two, x]);
-        let expr = a.exp_fn(two_x);
+        let expr = a.exp(two_x);
         let result = integrate(&mut a, expr, x);
         let s = display(&a, result);
         assert!(s.contains("exp"), "should contain exp: {s}");

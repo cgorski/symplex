@@ -657,8 +657,8 @@ impl Arena {
 
     /// Creates an `Exp` (natural exponential) node.
     ///
-    /// Named `exp_fn` to avoid conflict with `std::f64::exp`.
-    pub fn exp_fn(&mut self, expr: ExprId) -> ExprId {
+    /// Named `exp` — computes e^x.
+    pub fn exp(&mut self, expr: ExprId) -> ExprId {
         self.intern(ExprNode::Exp(expr))
     }
 
@@ -895,7 +895,7 @@ mod tests {
         let t = a.tan(x);
         assert_eq!(*a.node(t), ExprNode::Tan(x));
 
-        let e = a.exp_fn(x);
+        let e = a.exp(x);
         assert_eq!(*a.node(e), ExprNode::Exp(x));
 
         let l = a.ln(x);

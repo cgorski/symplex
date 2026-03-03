@@ -216,7 +216,7 @@ fn diff_cos_of_3x() {
 fn diff_exp_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.exp_fn().diff(&x);
+    let result = x.exp().diff(&x);
     assert_eq!(format!("{result}"), "exp(x)");
 }
 
@@ -235,7 +235,7 @@ fn diff_exp_of_2x() {
     let x = ctx.symbol("x");
     // d/dx(exp(2*x)) = 2*exp(2*x)
     let two_x = &x * 2;
-    let result = two_x.exp_fn().diff(&x);
+    let result = two_x.exp().diff(&x);
     let s = format!("{result}");
     assert!(s.contains("2"), "should contain 2, got: {s}");
     assert!(s.contains("exp"), "should contain exp, got: {s}");

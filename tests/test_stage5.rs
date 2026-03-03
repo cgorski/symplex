@@ -66,7 +66,7 @@ fn subs_in_cos() {
 fn subs_in_exp() {
     let ctx = Context::new();
     syms!(ctx; x, y);
-    let expr = x.exp_fn();
+    let expr = x.exp();
     let result = expr.subs(&x, &y);
     assert_eq!(format!("{result}"), "exp(y)");
 }

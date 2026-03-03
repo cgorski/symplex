@@ -228,7 +228,7 @@ fn diff_node(
             if arena.is_zero_structural(di) {
                 return arena.zero;
             }
-            let exp_f = arena.exp_fn(inner);
+            let exp_f = arena.exp(inner);
             arena.mul(&[exp_f, di])
         }
 
@@ -626,7 +626,7 @@ mod tests {
     fn diff_exp_x() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        let expr = a.exp_fn(x);
+        let expr = a.exp(x);
         let result = diff(&mut a, expr, x);
         assert_eq!(display(&a, result), "exp(x)");
     }
@@ -647,7 +647,7 @@ mod tests {
         let two = a.int(2);
         let two_x = a.mul(&[two, x]);
         // d/dx(exp(2*x)) = 2*exp(2*x)
-        let expr = a.exp_fn(two_x);
+        let expr = a.exp(two_x);
         let result = diff(&mut a, expr, x);
         let s = display(&a, result);
         assert!(s.contains("exp"), "should contain exp, got: {s}");

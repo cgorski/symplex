@@ -625,7 +625,7 @@ mod tests {
     fn exp_zero() {
         let mut a = Arena::new();
         let zero = a.zero;
-        let expr = a.exp_fn(zero);
+        let expr = a.exp(zero);
         assert_evalf_eq(&a, expr, 10, "1");
     }
 
@@ -633,7 +633,7 @@ mod tests {
     fn exp_one() {
         let mut a = Arena::new();
         let one = a.one;
-        let expr = a.exp_fn(one);
+        let expr = a.exp(one);
         assert_evalf_starts_with(&a, expr, 15, "2.71828182845904");
     }
 

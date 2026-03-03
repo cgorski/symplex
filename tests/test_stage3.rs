@@ -326,10 +326,10 @@ fn ln_method() {
 }
 
 #[test]
-fn exp_fn_method() {
+fn exp_method() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.exp_fn();
+    let result = x.exp();
     assert_eq!(format!("{result}"), "exp(x)");
 }
 

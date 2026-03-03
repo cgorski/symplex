@@ -10,7 +10,7 @@ use symplex::prelude::*;
 fn simplify_exp_ln() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let expr = x.ln().exp_fn();
+    let expr = x.ln().exp();
     assert_eq!(format!("{}", expr.simplify()), "x");
 }
 
@@ -18,7 +18,7 @@ fn simplify_exp_ln() {
 fn simplify_ln_exp() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let expr = x.exp_fn().ln();
+    let expr = x.exp().ln();
     assert_eq!(format!("{}", expr.simplify()), "x");
 }
 

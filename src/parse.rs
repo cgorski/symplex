@@ -320,7 +320,7 @@ impl<'a> Parser<'a> {
             "sin" => Ok(arena.sin(arg)),
             "cos" => Ok(arena.cos(arg)),
             "tan" => Ok(arena.tan(arg)),
-            "exp" => Ok(arena.exp_fn(arg)),
+            "exp" => Ok(arena.exp(arg)),
             "ln" | "log" => Ok(arena.ln(arg)),
             "sqrt" => Ok(arena.sqrt(arg)),
             "abs" => Ok(arena.abs(arg)),

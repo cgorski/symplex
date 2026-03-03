@@ -12,7 +12,7 @@ fn series_exp_x_order_4() {
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
     // exp(x) around 0, order 4: 1 + x + x^2/2 + x^3/6
-    let s = x.exp_fn().series(&x, &zero, 4).unwrap();
+    let s = x.exp().series(&x, &zero, 4).unwrap();
     let result = s.expand().eval();
     let text = format!("{result}");
     assert!(text.contains("1"), "constant term 1: {text}");

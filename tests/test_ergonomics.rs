@@ -97,7 +97,7 @@ fn maclaurin_sin() {
 #[test]
 fn maclaurin_exp() {
     let x = symplex::var("x");
-    let s = x.exp_fn().maclaurin(&x, 3).unwrap();
+    let s = x.exp().maclaurin(&x, 3).unwrap();
     let result = s.expand().eval();
     let text = format!("{result}");
     assert!(text.contains("1"), "should have constant term: {text}");

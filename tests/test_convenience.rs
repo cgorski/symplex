@@ -143,7 +143,7 @@ fn integrate_x_sin_x() {
 #[test]
 fn integrate_x_exp_x() {
     let x = symplex::var("x");
-    let expr = &x * &x.exp_fn();
+    let expr = &x * &x.exp();
     let result = expr.integrate(&x);
     let s = format!("{result}");
     // ∫ x·exp(x) dx = x·exp(x) - exp(x)

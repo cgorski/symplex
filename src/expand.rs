@@ -86,7 +86,7 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Sin(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::sin),
             ExprNode::Cos(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::cos),
             ExprNode::Tan(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::tan),
-            ExprNode::Exp(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::exp_fn),
+            ExprNode::Exp(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::exp),
             ExprNode::Ln(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::ln),
             ExprNode::Sqrt(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::sqrt),
             ExprNode::Abs(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::abs),

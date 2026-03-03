@@ -487,7 +487,7 @@ pub(crate) fn rule_pythagorean(arena: &mut Arena) -> Rule {
 fn rule_exp_ln(arena: &mut Arena) -> Rule {
     let (w_expr, w_id) = arena.wild();
     let ln_w = arena.ln(w_expr);
-    let exp_ln_w = arena.exp_fn(ln_w);
+    let exp_ln_w = arena.exp(ln_w);
 
     let mut wilds = FxHashMap::default();
     wilds.insert(w_expr, w_id);
@@ -501,7 +501,7 @@ fn rule_exp_ln(arena: &mut Arena) -> Rule {
 /// Build the inverse function rule: `ln(exp(w)) → w`.
 fn rule_ln_exp(arena: &mut Arena) -> Rule {
     let (w_expr, w_id) = arena.wild();
-    let exp_w = arena.exp_fn(w_expr);
+    let exp_w = arena.exp(w_expr);
     let ln_exp_w = arena.ln(exp_w);
 
     let mut wilds = FxHashMap::default();

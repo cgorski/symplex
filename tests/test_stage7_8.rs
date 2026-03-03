@@ -246,14 +246,14 @@ fn eval_tan_zero() {
 #[test]
 fn eval_exp_zero() {
     let ctx = Context::new();
-    let expr = ctx.int(0).exp_fn();
+    let expr = ctx.int(0).exp();
     assert!(expr.eval().is_one_structural(), "exp(0) should eval to 1");
 }
 
 #[test]
 fn eval_exp_one_gives_e() {
     let ctx = Context::new();
-    let expr = ctx.int(1).exp_fn();
+    let expr = ctx.int(1).exp();
     let result = expr.eval();
     assert_eq!(format!("{result}"), "E", "exp(1) should eval to E");
 }
@@ -396,7 +396,7 @@ fn eval_exp_zero_in_product() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // x * exp(0) → x * 1 → x
-    let expr = &x * &ctx.int(0).exp_fn();
+    let expr = &x * &ctx.int(0).exp();
     let evaled = expr.eval();
     assert_eq!(evaled, x, "x * exp(0) should eval to x");
 }
@@ -541,7 +541,7 @@ fn evalf_cos_zero_is_one() {
 #[test]
 fn evalf_exp_one_is_e() {
     let ctx = Context::new();
-    let expr = ctx.int(1).exp_fn();
+    let expr = ctx.int(1).exp();
     let result = expr.evalf(15).unwrap();
     assert!(result.starts_with("2.71828182845904"), "exp(1): {result}");
 }

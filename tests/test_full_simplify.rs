@@ -24,7 +24,7 @@ fn full_simplify_trig_identity() {
 #[test]
 fn full_simplify_exp_ln() {
     let x = symplex::var("x");
-    let expr = x.ln().exp_fn();
+    let expr = x.ln().exp();
     assert_eq!(format!("{}", expr.full_simplify()), "x");
 }
 
