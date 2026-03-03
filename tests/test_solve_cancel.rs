@@ -75,16 +75,23 @@ fn solve_quadratic_double_root() {
 }
 
 #[test]
-fn solve_quadratic_no_real_roots() {
-    // x^2 + 1 = 0 → no real roots
+fn solve_quadratic_complex_roots() {
+    // x^2 + 1 = 0 → complex roots ±i
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = expr!(x ^ 2 + 1);
     let roots = expr.solve(&x).unwrap();
-    assert!(
-        roots.is_empty(),
-        "expected no real roots for x^2 + 1, got {} root(s)",
+    assert_eq!(
+        roots.len(),
+        2,
+        "expected 2 complex roots for x^2 + 1, got {}",
         roots.len()
+    );
+    let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+    let joined = strs.join(", ");
+    assert!(
+        joined.contains("I"),
+        "roots of x^2+1 should contain I: {joined}"
     );
 }
 

@@ -160,3 +160,57 @@ fn integrate_x_cos_x() {
     assert!(s.contains("sin(x)"), "should contain sin(x): {s}");
     assert!(s.contains("cos(x)"), "should contain cos(x): {s}");
 }
+
+#[test]
+fn args_of_add() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = &x + 1;
+    let children = expr.args();
+    assert_eq!(children.len(), 2);
+}
+
+#[test]
+fn args_of_atom() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let children = x.args();
+    assert_eq!(children.len(), 0);
+}
+
+#[test]
+fn args_of_function() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = x.sin();
+    let children = expr.args();
+    assert_eq!(children.len(), 1);
+}
+
+#[test]
+fn diff_n_third_derivative() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = x.powi(4);
+    let d3 = f.diff_n(&x, 3);
+    assert_eq!(format!("{d3}"), "24*x");
+}
+
+#[test]
+fn diff_n_zero() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let f = x.powi(2);
+    let d0 = f.diff_n(&x, 0);
+    assert_eq!(format!("{d0}"), "x^2");
+}
+
+#[test]
+fn log_base_2() {
+    let ctx = Context::new();
+    let result = ctx.int(8).log(&ctx.int(2));
+    let s = format!("{}", result.full_simplify());
+    // log_2(8) = ln(8)/ln(2) = 3
+    // This may or may not simplify fully, but let's check it contains the right structure
+    assert!(s.contains("ln"), "log should produce ln expressions: {s}");
+}

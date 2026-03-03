@@ -230,6 +230,28 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Logarithm with arbitrary base: `log_base(self)`.
+    ///
+    /// Computed as `ln(self) / ln(base)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let result = x.log(&ctx.int(2));
+    /// let s = format!("{result}");
+    /// assert!(s.contains("ln"), "log should be expressed in terms of ln, got: {s}");
+    /// ```
+    #[must_use]
+    pub fn log(&self, base: &Ex) -> Ex {
+        let ln_self = self.ln();
+        let ln_base = base.ln();
+        &ln_self / &ln_base
+    }
+
     /// Principal square root: `√self`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn sqrt(&self) -> Ex {
@@ -420,6 +442,31 @@ impl Ex {
         self.query(Props::FINITE)
     }
 
+    /// Returns `Some(true)` if this expression is known to be ≥ 0.
+    pub fn is_nonnegative(&self) -> Option<bool> {
+        self.query(Props::NONNEGATIVE)
+    }
+
+    /// Returns `Some(true)` if this expression is known to be ≤ 0.
+    pub fn is_nonpositive(&self) -> Option<bool> {
+        self.query(Props::NONPOSITIVE)
+    }
+
+    /// Returns `Some(true)` if this expression is known to be imaginary.
+    pub fn is_imaginary(&self) -> Option<bool> {
+        self.query(Props::IMAGINARY)
+    }
+
+    /// Returns `Some(true)` if this expression is known to be complex.
+    pub fn is_complex(&self) -> Option<bool> {
+        self.query(Props::COMPLEX)
+    }
+
+    /// Returns `Some(true)` if this expression is known to be rational.
+    pub fn is_rational(&self) -> Option<bool> {
+        self.query(Props::RATIONAL)
+    }
+
     // ── Assumption mutation ────────────────────────────────────────
 
     /// Set a mathematical assumption on this expression (must be a symbol).
@@ -505,6 +552,28 @@ impl Ex {
         let _span = debug_span!("diff", expr = ?self.id, var = ?var.id).entered();
         let id = self.inner.write().arena.diff_wrt(self.id, var.id);
         self.wrap(id)
+    }
+
+    /// Compute the nth derivative with respect to `var`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = x.powi(4);
+    /// let d3 = f.diff_n(&x, 3);
+    /// assert_eq!(format!("{d3}"), "24*x");
+    /// ```
+    #[must_use]
+    pub fn diff_n(&self, var: &Ex, n: usize) -> Ex {
+        let mut result = self.clone();
+        for _ in 0..n {
+            result = result.diff(var);
+        }
+        result
     }
 
     /// Structural substitution: replace every occurrence of `old` with `new`.
@@ -1574,6 +1643,39 @@ impl Ex {
             crate::node::ExprNode::Add(children) => children.len(),
             _ => 1,
         }
+    }
+
+    /// Returns the direct children (arguments) of this expression.
+    ///
+    /// - For `Add`: returns the summands.
+    /// - For `Mul`: returns the factors.
+    /// - For `Pow`: returns `[base, exponent]`.
+    /// - For `Neg`: returns `[inner]`.
+    /// - For functions (sin, cos, etc.): returns `[argument]`.
+    /// - For atoms (numbers, symbols, constants): returns `[]`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x + 1;
+    /// let children = expr.args();
+    /// assert_eq!(children.len(), 2);
+    /// ```
+    pub fn args(&self) -> Vec<Ex> {
+        let inner = self.inner.read();
+        let child_ids = inner.arena.node(self.id).children();
+        child_ids
+            .iter()
+            .map(|&id| Ex {
+                ctx_id: self.ctx_id,
+                inner: Arc::clone(&self.inner),
+                id,
+            })
+            .collect()
     }
 
     /// Returns the structural type of this expression.

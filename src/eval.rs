@@ -482,7 +482,78 @@ fn eval_exp(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.e_const);
     }
 
+    // Euler's formula: exp(i*k*π) = cos(kπ) + i*sin(kπ)
+    // Detect if inner is i * (something that's a π-multiple)
+    if let Some(pi_coeff) = as_imaginary_pi_multiple(arena, inner) {
+        // We have exp(i * coeff * π)
+        // = cos(coeff*π) + i*sin(coeff*π)
+        // Build the angle as coeff*π and evaluate sin/cos
+        let coeff_id = {
+            let nid = arena.intern_num(pi_coeff.clone());
+            arena.intern(ExprNode::Num(nid))
+        };
+        let angle = arena.mul(&[coeff_id, arena.pi]);
+
+        let cos_val = eval_cos(arena, angle);
+        let sin_val = eval_sin(arena, angle);
+
+        if let (Some(c), Some(s)) = (cos_val, sin_val) {
+            // cos(kπ) + i*sin(kπ)
+            if s == arena.zero {
+                return Some(c); // Pure real
+            }
+            if c == arena.zero {
+                // Pure imaginary: i*sin(kπ)
+                return Some(arena.mul(&[arena.i_unit, s]));
+            }
+            // General: cos + i*sin
+            let i_sin = arena.mul(&[arena.i_unit, s]);
+            return Some(arena.add(&[c, i_sin]));
+        }
+    }
+
     None
+}
+
+/// Check if `id` is of the form `i * k * π` for some rational `k`.
+/// Returns `Some(k)` if so, `None` otherwise.
+fn as_imaginary_pi_multiple(arena: &mut Arena, id: ExprId) -> Option<Ratio<BigInt>> {
+    // The canonical form of i * k * π is Mul([k, π, I]) or variations
+    // (sorted by sort key: Num < Pi < ImaginaryUnit).
+    // We need to check if the expression is a product containing exactly
+    // one ImaginaryUnit factor and the rest forming a π-multiple.
+    let children = match arena.node(id).clone() {
+        ExprNode::Mul(children) => children,
+        _ => return None,
+    };
+
+    let mut has_i = false;
+    let mut remaining: Vec<ExprId> = Vec::new();
+    for &child in &children {
+        if child == arena.i_unit {
+            if has_i {
+                return None;
+            } // multiple i's
+            has_i = true;
+        } else {
+            remaining.push(child);
+        }
+    }
+    if !has_i {
+        return None;
+    }
+
+    // Build the product of the remaining factors and check if it's a π-multiple
+    let product = if remaining.is_empty() {
+        // Just i alone — not a π-multiple
+        return None;
+    } else if remaining.len() == 1 {
+        remaining[0]
+    } else {
+        arena.mul(&remaining)
+    };
+
+    as_pi_multiple(arena, product)
 }
 
 /// Evaluate `ln(inner)` for known special values.
@@ -598,6 +669,10 @@ fn integer_nth_root(val: &BigInt, n: u32) -> Option<Option<BigInt>> {
 
 /// Evaluate `abs(inner)` for known numeric values.
 fn eval_abs(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    // abs(i) = 1
+    if inner == arena.i_unit {
+        return Some(arena.one);
+    }
     if let Some(r) = arena.as_num(inner) {
         let r = r.clone();
         if r.is_negative() {
@@ -1360,5 +1435,41 @@ mod tests {
         let result = eval(&mut a, expr);
         let s = display(&a, result);
         assert!(s.contains("3"), "tan(π/3) should be √3, got: {s}");
+    }
+
+    // ── Euler's formula / complex eval ──────────────────────────────
+
+    #[test]
+    fn eval_exp_i_pi() {
+        let mut a = Arena::new();
+        let i = a.i_unit;
+        let pi = a.pi;
+        let i_pi = a.mul(&[i, pi]);
+        let expr = a.exp(i_pi);
+        let result = eval(&mut a, expr);
+        // exp(i*π) = -1
+        assert_eq!(display(&a, result), "-1");
+    }
+
+    #[test]
+    fn eval_exp_i_pi_over_2() {
+        let mut a = Arena::new();
+        let i = a.i_unit;
+        let half = a.rational(1, 2);
+        let pi = a.pi;
+        let half_pi = a.mul(&[half, pi]);
+        let i_half_pi = a.mul(&[i, half_pi]);
+        let expr = a.exp(i_half_pi);
+        let result = eval(&mut a, expr);
+        // exp(i*π/2) = i
+        assert_eq!(display(&a, result), "I");
+    }
+
+    #[test]
+    fn eval_abs_i() {
+        let mut a = Arena::new();
+        let expr = a.abs(a.i_unit);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "1");
     }
 }

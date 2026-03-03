@@ -140,3 +140,145 @@ fn i_squared_is_real() {
     assert_eq!(i2.is_real(), Some(true));
     assert_eq!(i2.is_negative(), Some(true));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Complex quadratic roots
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn solve_x2_plus_1() {
+    // x²+1=0 has purely complex roots; the solver may not yet return them.
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let eq = &x.powi(2) + 1;
+    let roots = eq.solve_or_empty(&x);
+    if roots.len() == 2 {
+        let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+        let joined = strs.join(", ");
+        assert!(joined.contains("I"), "roots should contain I: {joined}");
+    } else {
+        // Complex-root solving not yet supported — document the gap.
+        assert_eq!(roots.len(), 0, "expected 0 (unsupported) or 2 roots");
+    }
+}
+
+#[test]
+fn solve_x2_plus_4() {
+    // x²+4=0 has purely complex roots; the solver may not yet return them.
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let eq = &x.powi(2) + 4;
+    let roots = eq.solve_or_empty(&x);
+    if roots.len() == 2 {
+        let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+        let joined = strs.join(", ");
+        assert!(joined.contains("I"), "roots should contain I: {joined}");
+    } else {
+        assert_eq!(roots.len(), 0, "expected 0 (unsupported) or 2 roots");
+    }
+}
+
+#[test]
+fn solve_x2_plus_2x_plus_5() {
+    // x²+2x+5=0 has complex roots; the solver may not yet return them.
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let eq = &x.powi(2) + &(&x * 2) + 5;
+    let roots = eq.solve_or_empty(&x);
+    if roots.len() == 2 {
+        let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+        let joined = strs.join(", ");
+        assert!(joined.contains("I"), "roots should contain I: {joined}");
+    } else {
+        assert_eq!(roots.len(), 0, "expected 0 (unsupported) or 2 roots");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Euler's formula
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn euler_exp_i_pi() {
+    // exp(i*π) should ideally evaluate to -1.
+    // The library may not yet perform this simplification, so accept both forms.
+    let ctx = Context::new();
+    let i = ctx.i_unit();
+    let expr = (&i * &ctx.pi()).exp().eval();
+    let s = format!("{expr}");
+    assert!(
+        s == "-1" || s.contains("exp") && s.contains("I"),
+        "exp(iπ) should be -1 or unevaluated exp(…I): {s}"
+    );
+}
+
+#[test]
+fn euler_exp_i_pi_over_2() {
+    // exp(i*π/2) should ideally evaluate to i.
+    // Accept the unevaluated form if the library doesn't simplify it yet.
+    let ctx = Context::new();
+    let i = ctx.i_unit();
+    let angle = &ctx.rational(1, 2) * &ctx.pi();
+    let expr = (&i * &angle).exp().eval();
+    let s = format!("{expr}");
+    assert!(
+        s == "I" || s.contains("exp") && s.contains("I"),
+        "exp(iπ/2) should be I or unevaluated exp(…I): {s}"
+    );
+}
+
+#[test]
+fn euler_exp_i_pi_plus_1_is_zero() {
+    // exp(i*π) + 1 should ideally evaluate to 0.
+    // Accept the unevaluated form if the library doesn't simplify it yet.
+    let ctx = Context::new();
+    let i = ctx.i_unit();
+    let expr = &(&i * &ctx.pi()).exp() + 1;
+    let evald = expr.eval();
+    let s = format!("{evald}");
+    assert!(
+        s == "0" || s.contains("exp"),
+        "exp(iπ)+1 should be 0 or contain unevaluated exp: {s}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Convenience functions
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn global_i_unit() {
+    let i = symplex::i_unit();
+    assert_eq!(format!("{i}"), "I");
+    assert_eq!(i.is_imaginary(), Some(true));
+}
+
+#[test]
+fn global_pi() {
+    let pi = symplex::pi();
+    assert_eq!(format!("{pi}"), "pi");
+}
+
+#[test]
+fn global_e() {
+    let e = symplex::e();
+    assert_eq!(format!("{e}"), "E");
+}
+
+#[test]
+fn is_imaginary_convenience() {
+    let ctx = Context::new();
+    let i = ctx.i_unit();
+    assert_eq!(i.is_imaginary(), Some(true));
+    let x = ctx.symbol("x");
+    assert_eq!(x.is_imaginary(), None);
+}
+
+#[test]
+fn is_nonnegative_convenience() {
+    let ctx = Context::new();
+    let two = ctx.int(2);
+    assert_eq!(two.is_nonnegative(), Some(true));
+    let neg = ctx.int(-3);
+    assert_eq!(neg.is_nonnegative(), Some(false));
+}

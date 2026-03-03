@@ -399,20 +399,21 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
     // i^n reduction: i^0=1, i^1=i, i^2=-1, i^3=-i, then repeats with period 4.
     if base == arena.i_unit
         && let Some(exp_r) = arena.as_num(exp)
-            && exp_r.is_integer() {
-                use num_integer::Integer;
-                let exp_int = exp_r.to_integer();
-                let four = BigInt::from(4);
-                let remainder = exp_int.mod_floor(&four);
-                let r: u32 = remainder.try_into().unwrap_or(0);
-                return match r {
-                    0 => arena.one,
-                    1 => arena.i_unit,
-                    2 => arena.neg_one,
-                    3 => arena.neg(arena.i_unit),
-                    _ => unreachable!(),
-                };
-            }
+        && exp_r.is_integer()
+    {
+        use num_integer::Integer;
+        let exp_int = exp_r.to_integer();
+        let four = BigInt::from(4);
+        let remainder = exp_int.mod_floor(&four);
+        let r: u32 = remainder.try_into().unwrap_or(0);
+        return match r {
+            0 => arena.one,
+            1 => arena.i_unit,
+            2 => arena.neg_one,
+            3 => arena.neg(arena.i_unit),
+            _ => unreachable!(),
+        };
+    }
 
     // NaN propagation.
     if base == arena.nan || exp == arena.nan {

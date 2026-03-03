@@ -174,3 +174,51 @@ pub fn int(n: i64) -> expr::Ex {
 pub fn rational(p: i64, q: i64) -> expr::Ex {
     default_context().rational(p, q)
 }
+
+/// The constant π in the global default context.
+///
+/// # Examples
+///
+/// ```
+/// let pi = symplex::pi();
+/// assert_eq!(format!("{pi}"), "pi");
+/// ```
+pub fn pi() -> expr::Ex {
+    default_context().pi()
+}
+
+/// Euler's number e in the global default context.
+///
+/// # Examples
+///
+/// ```
+/// let e = symplex::e();
+/// assert_eq!(format!("{e}"), "E");
+/// ```
+pub fn e() -> expr::Ex {
+    default_context().e()
+}
+
+/// The imaginary unit i in the global default context.
+///
+/// # Examples
+///
+/// ```
+/// let i = symplex::i_unit();
+/// assert_eq!(format!("{i}"), "I");
+/// ```
+pub fn i_unit() -> expr::Ex {
+    default_context().i_unit()
+}
+
+/// Positive infinity in the global default context.
+///
+/// # Examples
+///
+/// ```
+/// let inf = symplex::infinity();
+/// assert_eq!(format!("{inf}"), "oo");
+/// ```
+pub fn infinity() -> expr::Ex {
+    default_context().infinity()
+}

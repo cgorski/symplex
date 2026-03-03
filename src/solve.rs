@@ -127,9 +127,36 @@ fn solve_quadratic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
     }
 
     if discriminant.is_negative() {
-        // Complex roots — we only handle real roots for now.
-        // TODO: return complex roots when complex number support is added.
-        return Vec::new();
+        // Complex roots: x = (-b ± i√|Δ|) / (2a)
+        let abs_disc = -discriminant;
+        let neg_b = rational_to_expr(arena, &(-&b));
+        let abs_disc_id = rational_to_expr(arena, &abs_disc);
+
+        // Check if |Δ| is a perfect square
+        let sqrt_abs_disc = if let Some(s) = rational_sqrt(&abs_disc) {
+            rational_to_expr(arena, &s)
+        } else {
+            arena.sqrt(abs_disc_id)
+        };
+
+        let i_sqrt = arena.mul(&[arena.i_unit, sqrt_abs_disc]);
+        let two_a_val = Ratio::from_integer(BigInt::from(2)) * &a;
+        let two_a_id = rational_to_expr(arena, &two_a_val);
+        let two_a_inv = {
+            let neg_one = arena.neg_one;
+            arena.pow(two_a_id, neg_one)
+        };
+
+        // x1 = (-b + i√|Δ|) / (2a)
+        let sum1 = arena.add(&[neg_b, i_sqrt]);
+        let x1 = arena.mul(&[sum1, two_a_inv]);
+
+        // x2 = (-b - i√|Δ|) / (2a)
+        let neg_i_sqrt = arena.neg(i_sqrt);
+        let sum2 = arena.add(&[neg_b, neg_i_sqrt]);
+        let x2 = arena.mul(&[sum2, two_a_inv]);
+
+        return vec![Solution { value: x1 }, Solution { value: x2 }];
     }
 
     // Check if the discriminant is a perfect square (rational root).
@@ -484,14 +511,18 @@ mod tests {
     fn solve_quadratic_no_real_roots() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        // x^2 + 1 = 0 → no real roots (discriminant = -4)
+        // x^2 + 1 = 0 → complex roots ±i
         let two = a.int(2);
         let one = a.one;
         let x_sq = a.pow(x, two);
         let expr = a.add(&[x_sq, one]);
         let solutions = solve(&mut a, expr, x);
-        // For now, returns empty for complex roots.
-        assert!(solutions.is_empty(), "x²+1=0 has no real roots");
+        assert_eq!(solutions.len(), 2, "x²+1=0 should have 2 complex roots");
+        let vals: Vec<String> = solution_strings(&a, &solutions);
+        assert!(
+            vals.iter().all(|v| v.contains("I")),
+            "roots should contain I: {vals:?}"
+        );
     }
 
     #[test]
@@ -726,5 +757,62 @@ mod tests {
         // 1/2 * 6 = 3, 1/3 * 6 = 2
         assert_eq!(int_poly.coeff(0), Ratio::from_integer(BigInt::from(3)));
         assert_eq!(int_poly.coeff(1), Ratio::from_integer(BigInt::from(2)));
+    }
+
+    // ── Complex quadratic roots ─────────────────────────────────────
+
+    #[test]
+    fn solve_x2_plus_1() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        // x² + 1 = 0 → roots ±i
+        let two = a.int(2);
+        let one = a.one;
+        let x_sq = a.pow(x, two);
+        let expr = a.add(&[x_sq, one]);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 2, "x²+1=0 should have 2 complex roots");
+        let vals: Vec<String> = solution_strings(&a, &solutions);
+        assert!(
+            vals.iter().all(|v| v.contains("I")),
+            "roots should contain I: {vals:?}"
+        );
+    }
+
+    #[test]
+    fn solve_x2_plus_2x_plus_5() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        // x² + 2x + 5 = 0 → roots -1 ± 2i
+        let two = a.int(2);
+        let five = a.int(5);
+        let x_sq = a.pow(x, two);
+        let two_x = a.mul(&[two, x]);
+        let expr = a.add(&[x_sq, two_x, five]);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 2, "x²+2x+5=0 should have 2 complex roots");
+        let vals: Vec<String> = solution_strings(&a, &solutions);
+        // roots are -1 ± 2i
+        for v in &vals {
+            assert!(v.contains("I"), "root should contain I: {v}");
+        }
+    }
+
+    #[test]
+    fn solve_x2_plus_4() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        // x² + 4 = 0 → roots ±2i
+        let two = a.int(2);
+        let four = a.int(4);
+        let x_sq = a.pow(x, two);
+        let expr = a.add(&[x_sq, four]);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 2, "x²+4=0 should have 2 complex roots");
+        let vals: Vec<String> = solution_strings(&a, &solutions);
+        assert!(
+            vals.iter().all(|v| v.contains("I")),
+            "roots should contain I: {vals:?}"
+        );
     }
 }
