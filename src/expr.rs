@@ -638,6 +638,19 @@ impl Ex {
     /// digits.
     ///
     /// Returns the decimal string representation of the evaluated expression.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SymplexError::FreeSymbol`] if the expression contains
+    /// unbound symbols (e.g., `x.evalf(10)` without substituting a value).
+    ///
+    /// Returns [`SymplexError::Unevaluable`] if the expression contains
+    /// nodes that cannot be evaluated to a finite number (infinity, NaN,
+    /// imaginary unit, unevaluated derivatives/integrals, user functions).
+    ///
+    /// Returns [`SymplexError::PrecisionExhausted`] if the requested
+    /// precision exceeds `EvalConfig::max_evalf_precision`, or if
+    /// intermediate computation produces NaN.
     #[must_use = "returns the numerical value as a string"]
     pub fn evalf(&self, digits: u32) -> Result<String, SymplexError> {
         let guard = self.inner.read();

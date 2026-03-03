@@ -389,21 +389,25 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 | 10 | Equation solver: linear, quadratic, rational root theorem |
 | 11 | Proc macros: expr!, rule! with Pratt parser |
 | Cleanup | Iterative display, #[must_use], proptest, deduplication |
+| Tier 0 | Foundation cleanup: i64/Ex div, #[non_exhaustive] errors, pub(crate) intern, free_symbols, convenience queries, max_evalf_precision |
+| Tier 1 | Test suites (solve/cancel), equals() improvement, error variant breakup (FreeSymbol/Unevaluable), proptest for diff/expand |
+| P1–P4 | Simplification rules (exp_ln, ln_exp, abs_abs), sub-expression matching in Add, collect(var), together(), more eval special values |
+| P5–P7 | Integration (power, trig, exp, linearity), Taylor series (with eval + pole detection), polynomial factoring (content extraction, multiplicity) |
 
 ---
 
 ## Known Limitations
 
-1. **Pattern matching is structural only.** `sin²(w) + cos²(w)` matches a 2-term Add but not inside `3 + sin²(x) + cos²(x)`.
-2. **No polynomial factoring.** GCD and rational root finding only.
+1. ~~**Pattern matching is structural only.**~~ **Resolved** — sub-expression matching in Add finds patterns within larger sums.
+2. ~~**No polynomial factoring.**~~ **Resolved** — `factor()` with content extraction and multiplicity handling.
 3. **Limited complex number support.** `ImaginaryUnit` exists but `evalf` errors on complex expressions.
-4. **No integration.** No antiderivatives.
-5. **No series expansion.** No Taylor/Laurent.
+4. ~~**No integration.**~~ **Resolved** — basic antiderivatives for polynomials, trig, exp.
+5. ~~**No series expansion.**~~ **Resolved** — Taylor series with pole detection.
 6. **No limit computation.** No Gruntz algorithm.
 7. **`solve()` is polynomial-only.** Transcendental equations not handled.
-8. **`simplify()` has limited rules.** Pythagorean identity only via built-in. More rules can be added via `rule!` macro.
+8. ~~**`simplify()` has limited rules.**~~ **Improved** — 4 rules plus sub-expression matching in Add.
 9. **`bigint_to_bigfloat` loses precision for integers > i128.** Falls back to f64.
-10. **No `collect()`, `together()`, or `factor_terms()` yet.**
+10. ~~**No `collect()`, `together()`, or `factor_terms()` yet.**~~ **Partially resolved** — `collect()` and `together()` implemented.
 11. **`expr!(1/2)` is a compile error.** By design — prevents silent Rust integer division. Use `ctx.rational(1, 2)`.
 12. **`expr!(x^2^3)` with nested integer powers causes type errors.** The inner `2^3` evaluates as integer arithmetic, not symbolic.
 
@@ -411,7 +415,7 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 
 ## Detailed Next Steps
 
-### Priority 1: More Simplification Rules (Immediate)
+### Priority 1: More Simplification Rules ✅ Completed
 
 **Goal:** Make `simplify()` useful for common mathematical identities.
 
@@ -444,7 +448,7 @@ abs(abs(w_)) => abs(w_)
 
 **Effort:** ~30 minutes. Blocked on nothing.
 
-### Priority 2: Sub-expression Matching in Add/Mul
+### Priority 2: Sub-expression Matching in Add/Mul ✅ Completed
 
 **Goal:** Enable `sin²(x) + cos²(x) → 1` inside larger sums like `3 + sin²(x) + cos²(x) → 4`.
 
@@ -460,7 +464,7 @@ abs(abs(w_)) => abs(w_)
 
 **Effort:** ~2 hours. Requires careful handling of the remaining terms.
 
-### Priority 3: `collect(var)` — Group by Powers of a Variable
+### Priority 3: `collect(var)` ✅ Completed
 
 **Goal:** `collect(x² + 2xy + y², x)` → `x² + 2y·x + y²` (grouped by powers of x).
 
@@ -474,7 +478,7 @@ abs(abs(w_)) => abs(w_)
 
 **Effort:** ~30 minutes. Uses existing Poly infrastructure.
 
-### Priority 4: `together()` — Common Denominator
+### Priority 4: `together()` ✅ Completed
 
 **Goal:** `1/x + 1/y` → `(x + y) / (x·y)`.
 
@@ -492,7 +496,7 @@ abs(abs(w_)) => abs(w_)
 
 **Effort:** ~1.5 hours.
 
-### Priority 5: Basic Integration
+### Priority 5: Basic Integration ✅ Completed
 
 **Goal:** Antiderivatives for polynomials, trig, exp, ln.
 
@@ -515,7 +519,7 @@ abs(abs(w_)) => abs(w_)
 
 **Effort:** ~4 hours for basic rules. Risch algorithm for rational functions is a separate large project.
 
-### Priority 6: Series Expansion
+### Priority 6: Series Expansion ✅ Completed
 
 **Goal:** `series(exp(x), x, 0, 5)` → `1 + x + x²/2 + x³/6 + x⁴/24 + O(x⁵)`.
 
@@ -531,7 +535,7 @@ abs(abs(w_)) => abs(w_)
 
 **Effort:** ~3 hours for Taylor expansion. Laurent series and asymptotic series are more complex.
 
-### Priority 7: Polynomial Factoring
+### Priority 7: Polynomial Factoring ✅ Completed
 
 **Goal:** `factor(x² - 1)` → `(x - 1)(x + 1)`.
 

@@ -16,6 +16,12 @@ Symbolic mathematics library for Rust.
 - **Polynomial algebra** — dense univariate over ℚ, arithmetic, Euclidean GCD
 - **Fraction cancellation** — GCD-based common factor elimination for rational expressions
 - **Equation solving** — linear, quadratic, and higher-degree polynomial equations via rational root theorem
+- **Integration** — antiderivatives for polynomials, trig, exp; linearity, constant factor extraction
+- **Taylor series** — expansion around a point with configurable order, pole detection
+- **Polynomial factoring** — rational root finding with content extraction and multiplicity handling
+- **Expression collection** — group terms by powers of a variable via `collect(var)`
+- **Common denominators** — combine fractions via `together()`
+- **Structural introspection** — `free_symbols()`, `contains()` for expression analysis
 - **Thread safety** — `Ex` is `Send + Sync`; the arena uses `parking_lot::RwLock`
 
 ## Quick Start
@@ -63,6 +69,19 @@ println!("{}", trig.simplify());             // 1
 let frac = expr!((x^2 - 1) / (x - 1));
 println!("{}", frac.cancel(&x));             // 1 + x
 
+// Integration
+let anti = expr!(x^2).integrate(&x);
+println!("{anti}");                              // 1/3*x^3
+
+// Taylor series
+let zero = ctx.int(0);
+let s = x.sin().series(&x, &zero, 4);
+println!("{}", s.expand().eval());               // x + -1/6*x^3
+
+// Factor polynomials
+let factored = (&x.powi(2) - 1).factor(&x);
+println!("{factored}");                          // (-1 + x)*(1 + x) or similar
+
 // Solve equations
 let eq = expr!(x^2 - 5*x + 6);
 let roots = eq.solve(&x);
@@ -105,16 +124,21 @@ ex.tan()        ex.exp_fn()   ex.ln()      ex.sqrt()    ex.abs()
 
 // Calculus
 ex.diff(&x)                                  // symbolic derivative
+ex.integrate(&x)                             // indefinite integral
 
 // Transformation
 ex.subs(&old, &new)                          // structural substitution
 ex.subs_map(&[(&x, &a), (&y, &b)])          // simultaneous substitution
 ex.expand()                                  // distribute products, expand powers
 ex.eval()                                    // evaluate known special values
-ex.simplify()                                // apply rewrite rules
+ex.simplify()                                // apply rewrite rules (with sub-expression matching)
 ex.simplify_trace()                          // simplify with step-by-step trace
 ex.cancel(&var)                              // cancel common polynomial factors
+ex.collect(&var)                             // group by powers of var
+ex.together()                                // common denominator for fractions
+ex.factor(&var)                              // factor polynomial into linear factors
 ex.solve(&var)                               // solve expr = 0 for var
+ex.series(&var, &point, order)               // Taylor series expansion
 
 // Numerical
 ex.evalf(50)                                 // → Result<String, SymplexError>
@@ -122,9 +146,16 @@ ex.evalf(50)                                 // → Result<String, SymplexError>
 // Queries
 ex.is_zero()                                 // → Option<bool>
 ex.is_positive()                             // → Option<bool>
+ex.is_negative()                             // → Option<bool>
+ex.is_real()                                 // → Option<bool>
+ex.is_integer()                              // → Option<bool>
+ex.is_nonzero()                              // → Option<bool>
+ex.is_finite()                               // → Option<bool>
 ex.query(Props::INTEGER)                     // → Option<bool>
-ex.equals(&other)                            // → Option<bool>
+ex.equals(&other)                            // → Option<bool> (with expand fallback)
 ex.is_zero_structural()                      // → bool (O(1))
+ex.free_symbols()                            // → Vec<Ex>
+ex.contains(&sub)                            // → bool
 ```
 
 ### Macros
