@@ -95,3 +95,70 @@ pub mod prelude {
     pub use crate::pattern::Step;
     pub use symplex_macros::{expr, rule};
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Global default context — convenience functions for quick usage
+// ═══════════════════════════════════════════════════════════════════════════
+
+use std::sync::OnceLock;
+
+/// The global default context, lazily initialized.
+static DEFAULT_CONTEXT: OnceLock<context::Context> = OnceLock::new();
+
+/// Returns a reference to the global default context.
+///
+/// The context is created on first access with default configuration.
+/// All expressions created via the free-standing [`symbol`], [`var`],
+/// [`int`], and [`rational`] functions share this context.
+pub fn default_context() -> &'static context::Context {
+    DEFAULT_CONTEXT.get_or_init(context::Context::new)
+}
+
+/// Create a symbolic variable in the global default context.
+///
+/// This is a convenience shorthand for
+/// `symplex::default_context().symbol(name)`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+///
+/// let x = symplex::var("x");
+/// let expr = x.powi(2);
+/// assert_eq!(format!("{expr}"), "x^2");
+/// ```
+pub fn var(name: &str) -> expr::Ex {
+    default_context().symbol(name)
+}
+
+/// Create a symbolic variable in the global default context.
+///
+/// Alias for [`var`].
+pub fn symbol(name: &str) -> expr::Ex {
+    var(name)
+}
+
+/// Create an integer expression in the global default context.
+///
+/// # Examples
+///
+/// ```
+/// let five = symplex::int(5);
+/// assert_eq!(format!("{five}"), "5");
+/// ```
+pub fn int(n: i64) -> expr::Ex {
+    default_context().int(n)
+}
+
+/// Create a rational expression in the global default context.
+///
+/// # Examples
+///
+/// ```
+/// let half = symplex::rational(1, 2);
+/// assert_eq!(format!("{half}"), "1/2");
+/// ```
+pub fn rational(p: i64, q: i64) -> expr::Ex {
+    default_context().rational(p, q)
+}

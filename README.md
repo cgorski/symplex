@@ -28,70 +28,69 @@ Symbolic mathematics library for Rust.
 
 ```rust
 use symplex::prelude::*;
-use symplex::syms;
 
-let ctx = Context::new();
-syms!(ctx; x, y);
+// ── Quick setup with free-standing functions ───────────────────────
+// No Context boilerplate needed for common usage.
+let x = symplex::var("x");
+let y = symplex::var("y");
 
-// Build expressions with natural math syntax via expr! macro
+// Or declare multiple variables at once:
+// use symplex::vars;
+// vars!(x, y, z);
+
+// ── Build expressions with natural math syntax ─────────────────────
 let f = expr!(x^2 + 2*x + 1);
 println!("{f}");                             // 1 + x^2 + 2*x
 
-// Or with standard Rust operators
-let g = &x * &x + &x * 2 + 1;
-assert_eq!(f, g);                            // same canonical form
-
-// Expand powers
+// ── Expand, differentiate, integrate ───────────────────────────────
 let cubed = expr!((x + 1)^3);
 println!("{}", cubed.expand());              // 1 + x^3 + 3*x + 3*x^2
 
-// Differentiate
 let deriv = expr!(x^3).diff(&x);
 println!("{deriv}");                         // 3*x^2
 
-// Evaluate derivative at a point
-let at_2 = deriv.subs(&x, &ctx.int(2));
+let anti = expr!(x^2).integrate(&x);
+println!("{anti}");                          // 1/3*x^3
+
+// ── Evaluate ───────────────────────────────────────────────────────
+let at_2 = deriv.subs_i64(&x, 2);
 println!("{at_2}");                          // 12
 
-// Evaluate special values
-let cos_pi = ctx.pi().cos().eval();
+let cos_pi = symplex::default_context().pi().cos().eval();
 println!("{cos_pi}");                        // -1
 
 // Arbitrary-precision numerical evaluation
-let pi_50 = ctx.pi().evalf(50).unwrap();
-println!("{pi_50}");                         // 3.1415926535897932384626433832795...
+let pi_50 = symplex::default_context().pi().evalf(50).unwrap();
+println!("{pi_50}");                         // 3.14159265358979...
 
-// Simplify trig identities
+// ── Simplify trig identities ───────────────────────────────────────
 let trig = expr!(sin(x)^2 + cos(x)^2);
 println!("{}", trig.simplify());             // 1
 
-// Cancel common factors
-let frac = expr!((x^2 - 1) / (x - 1));
-println!("{}", frac.cancel(&x));             // 1 + x
-
-// Integration
-let anti = expr!(x^2).integrate(&x);
-println!("{anti}");                              // 1/3*x^3
-
-// Taylor series
-let zero = ctx.int(0);
-let s = x.sin().series(&x, &zero, 4);
-println!("{}", s.expand().eval());               // x + -1/6*x^3
-
-// Factor polynomials
-let factored = (&x.powi(2) - 1).factor(&x);
-println!("{factored}");                          // (-1 + x)*(1 + x) or similar
-
-// Solve equations
+// ── Solve equations ────────────────────────────────────────────────
 let eq = expr!(x^2 - 5*x + 6);
 let roots = eq.solve(&x);
 for r in &roots {
     println!("x = {r}");                     // x = 2, x = 3
 }
 
-// Assumptions
+// ── Factor polynomials ─────────────────────────────────────────────
+let factored = (&x.powi(2) - 1).factor(&x);
+println!("{factored}");                      // (-1 + x)*(1 + x)
+
+// ── Taylor series ──────────────────────────────────────────────────
+let s = x.sin().maclaurin(&x, 4);
+println!("{}", s.expand().eval());           // x - 1/6*x^3
+
+// ── Structural introspection ───────────────────────────────────────
+let expr = &x.powi(2) + &y;
+println!("{:?}", expr.free_symbols().iter().map(|s| format!("{s}")).collect::<Vec<_>>());
+
+// ── Advanced: explicit Context for custom configuration ────────────
+let ctx = Context::new();
 let t = ctx.symbol_with("t", &[Assumption::Positive, Assumption::Real]);
-assert_eq!((&t + 1).is_positive(), Some(true));
+assert_eq!(t.is_positive(), Some(true));
+assert_eq!(t.is_real(), Some(true));
 ```
 
 ## API Reference

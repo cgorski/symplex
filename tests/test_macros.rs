@@ -38,7 +38,7 @@ fn expr_div() {
     let ctx = Context::new();
     syms!(ctx; x, y);
     let result = expr!(x / y);
-    assert_eq!(format!("{result}"), "x*y^(-1)");
+    assert_eq!(format!("{result}"), "x*1/y");
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn expr_power_negative() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(x ^ (-1));
-    assert_eq!(format!("{result}"), "x^(-1)");
+    assert_eq!(format!("{result}"), "1/x");
 }
 
 #[test]

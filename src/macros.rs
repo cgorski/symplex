@@ -55,3 +55,27 @@ macro_rules! sym {
         ]);
     };
 }
+
+/// Declare multiple symbolic variables using the global default context.
+///
+/// This is a convenience version of [`syms!`] that doesn't require
+/// passing a `Context` — it uses [`default_context()`](crate::default_context).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::vars;
+///
+/// vars!(x, y, z);
+/// let expr = &x + &y + &z;
+/// assert_eq!(format!("{expr}"), "x + y + z");
+/// ```
+#[macro_export]
+macro_rules! vars {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            let $name = $crate::var(stringify!($name));
+        )+
+    };
+}

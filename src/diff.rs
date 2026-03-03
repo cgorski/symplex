@@ -561,7 +561,7 @@ mod tests {
         let x = sym(&mut a, "x");
         let expr = a.ln(x);
         let result = diff(&mut a, expr, x);
-        assert_eq!(display(&a, result), "x^(-1)");
+        assert_eq!(display(&a, result), "1/x");
     }
 
     #[test]

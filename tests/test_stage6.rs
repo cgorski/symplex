@@ -226,7 +226,7 @@ fn diff_ln_x() {
     let x = ctx.symbol("x");
     let result = x.ln().diff(&x);
     // d/dx(ln(x)) = 1/x = x^(-1)
-    assert_eq!(format!("{result}"), "x^(-1)");
+    assert_eq!(format!("{result}"), "1/x");
 }
 
 #[test]

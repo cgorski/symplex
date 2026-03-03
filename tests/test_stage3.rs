@@ -134,7 +134,7 @@ fn div_ex_ex() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let quot = &x / &y;
-    assert_eq!(format!("{quot}"), "x*y^(-1)");
+    assert_eq!(format!("{quot}"), "x*1/y");
 }
 
 #[test]

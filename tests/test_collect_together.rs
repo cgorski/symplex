@@ -113,10 +113,7 @@ fn together_mixed_fraction_and_non_fraction() {
     let result = expr.together();
     let s = format!("{result}");
     // Should have x as denominator
-    assert!(
-        s.contains("x^(-1)") || s.contains("("),
-        "should combine: {s}"
-    );
+    assert!(s.contains("1/x") || s.contains("("), "should combine: {s}");
 }
 
 #[test]
@@ -125,5 +122,5 @@ fn together_single_fraction() {
     let x = ctx.symbol("x");
     // Just 1/x — it's a single term, not an Add, stays unchanged
     let result = x.powi(-1).together();
-    assert_eq!(format!("{result}"), "x^(-1)");
+    assert_eq!(format!("{result}"), "1/x");
 }

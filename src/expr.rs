@@ -334,6 +334,30 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Substitute a symbol with an integer value.
+    ///
+    /// Convenience shorthand for `self.subs(old, &ctx.int(n))` that
+    /// avoids needing to construct the integer expression manually.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = x.powi(2);
+    /// let result = expr.subs_i64(&x, 3);
+    /// assert_eq!(format!("{result}"), "9");
+    /// ```
+    #[must_use = "returns a new expression with substitutions applied"]
+    pub fn subs_i64(&self, old: &Ex, new: i64) -> Ex {
+        let mut inner = self.inner.write();
+        let new_id = inner.arena.int(new);
+        let id = inner.arena.subs_structural(self.id, old.id, new_id);
+        drop(inner);
+        self.wrap(id)
+    }
+
     /// Simultaneous substitution of multiple `(old, new)` pairs.
     ///
     /// All replacements happen "at once" — earlier substitutions do
@@ -604,6 +628,32 @@ impl Ex {
             .write()
             .arena
             .series_expr(self.id, var.id, point.id, order);
+        self.wrap(id)
+    }
+
+    /// Compute the Maclaurin series (Taylor series around 0) to the
+    /// given `order`.
+    ///
+    /// This is a convenience shorthand for `self.series(var, &zero, order)`
+    /// that avoids needing to construct a zero expression manually.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let s = x.sin().maclaurin(&x, 4);
+    /// let result = s.expand().eval();
+    /// let text = format!("{result}");
+    /// assert!(text.contains("x"), "should have x term: {text}");
+    /// ```
+    #[must_use = "returns the series expansion; does not modify in place"]
+    pub fn maclaurin(&self, var: &Ex, order: u32) -> Ex {
+        let mut inner = self.inner.write();
+        let zero = inner.arena.zero;
+        let id = inner.arena.series_expr(self.id, var.id, zero, order);
+        drop(inner);
         self.wrap(id)
     }
 

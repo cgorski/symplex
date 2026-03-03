@@ -213,6 +213,13 @@ fn expand_expr(
                         stack.push(WorkItem::Expr(rest_id, PREC_MUL));
                         stack.push(WorkItem::Lit(" - "));
                     }
+                } else if is_neg_coeff_mul(arena, arg) {
+                    let display_str = neg_coeff_mul_display(arena, arg);
+                    if i == 0 {
+                        stack.push(WorkItem::Owned(format!("-{display_str}")));
+                    } else {
+                        stack.push(WorkItem::Owned(format!(" - {display_str}")));
+                    }
                 } else if i == 0 {
                     stack.push(WorkItem::Expr(arg, PREC_ADD));
                 } else {
@@ -261,33 +268,52 @@ fn expand_expr(
 
         // ── Pow ────────────────────────────────────────────────────
         ExprNode::Pow(base, exp) => {
-            // Determine parenthesization for base.
-            let base_prec = match arena.node(base) {
-                ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) | ExprNode::Pow(_, _) => {
-                    PREC_POW + 1
-                }
-                _ => PREC_POW,
+            // Special case: x^(-1) → "1/x" for cleaner display.
+            let is_neg_one_exp = if let ExprNode::Num(nid) = arena.node(exp) {
+                *arena.num(*nid) == Ratio::from(BigInt::from(-1))
+            } else {
+                false
             };
 
-            // Determine parenthesization for exponent.
-            // Negative or fractional numeric exponents get parens.
-            let exp_prec = match arena.node(exp) {
-                ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => PREC_POW + 1,
-                ExprNode::Num(nid) => {
-                    let r = arena.num(*nid);
-                    if r.is_negative() || !r.is_integer() {
-                        PREC_ATOM + 1
-                    } else {
-                        PREC_POW
+            if is_neg_one_exp {
+                let base_prec = match arena.node(base) {
+                    ExprNode::Add(_)
+                    | ExprNode::Mul(_)
+                    | ExprNode::Neg(_)
+                    | ExprNode::Pow(_, _) => PREC_MUL + 1,
+                    _ => PREC_MUL,
+                };
+                stack.push(WorkItem::Expr(base, base_prec));
+                stack.push(WorkItem::Lit("1/"));
+            } else {
+                // Determine parenthesization for base.
+                let base_prec = match arena.node(base) {
+                    ExprNode::Add(_)
+                    | ExprNode::Mul(_)
+                    | ExprNode::Neg(_)
+                    | ExprNode::Pow(_, _) => PREC_POW + 1,
+                    _ => PREC_POW,
+                };
+
+                // Determine parenthesization for exponent.
+                let exp_prec = match arena.node(exp) {
+                    ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => PREC_POW + 1,
+                    ExprNode::Num(nid) => {
+                        let r = arena.num(*nid);
+                        if r.is_negative() || !r.is_integer() {
+                            PREC_ATOM + 1
+                        } else {
+                            PREC_POW
+                        }
                     }
-                }
-                _ => PREC_POW,
-            };
+                    _ => PREC_POW,
+                };
 
-            // Push in reverse: base ^ exp
-            stack.push(WorkItem::Expr(exp, exp_prec));
-            stack.push(WorkItem::Lit("^"));
-            stack.push(WorkItem::Expr(base, base_prec));
+                // Push in reverse: base ^ exp
+                stack.push(WorkItem::Expr(exp, exp_prec));
+                stack.push(WorkItem::Lit("^"));
+                stack.push(WorkItem::Expr(base, base_prec));
+            }
         }
 
         // ── Neg ────────────────────────────────────────────────────
@@ -377,6 +403,54 @@ fn push_mul_factors(arena: &Arena, factors: &[ExprId], _mul_prec: u8, stack: &mu
         if i > 0 {
             stack.push(WorkItem::Lit("*"));
         }
+    }
+}
+
+/// Check if `id` is a Mul node whose first factor is a negative number (not just -1).
+/// Returns true if the leading coefficient is negative and not equal to -1.
+fn is_neg_coeff_mul(arena: &Arena, id: ExprId) -> bool {
+    if let ExprNode::Mul(children) = arena.node(id)
+        && children.len() >= 2
+        && let Some(&first) = children.first()
+        && let ExprNode::Num(nid) = arena.node(first)
+    {
+        let r = arena.num(*nid);
+        return r.is_negative() && *r != Ratio::from(BigInt::from(-1));
+    }
+    false
+}
+
+/// Given a Mul whose first factor is a negative number (not -1),
+/// return the display string with the coefficient negated.
+/// Since we have &Arena (read-only), we build an Owned string representation.
+fn neg_coeff_mul_display(arena: &Arena, id: ExprId) -> String {
+    if let ExprNode::Mul(children) = arena.node(id)
+        && let Some(&first) = children.first()
+        && let ExprNode::Num(nid) = arena.node(first)
+    {
+        let r = arena.num(*nid);
+        let pos_r = -r.clone();
+        let coeff_str = if pos_r.denom() == &BigInt::from(1) {
+            format!("{}", pos_r.numer())
+        } else {
+            format!("{}/{}", pos_r.numer(), pos_r.denom())
+        };
+
+        // Build remaining factors
+        let rest: Vec<String> = children[1..]
+            .iter()
+            .map(|&child| arena.display(child).to_string())
+            .collect();
+
+        if rest.is_empty() {
+            coeff_str
+        } else if coeff_str == "1" {
+            rest.join("*")
+        } else {
+            format!("{}*{}", coeff_str, rest.join("*"))
+        }
+    } else {
+        arena.display(id).to_string()
     }
 }
 
@@ -642,7 +716,7 @@ mod tests {
         let x = a.symbol("x");
         let neg_one = a.int(-1);
         let p = a.pow(x, neg_one);
-        assert_display!(a, p, "x^(-1)");
+        assert_display!(a, p, "1/x");
     }
 
     // ── Neg ──────────────────────────────────────────────────────────

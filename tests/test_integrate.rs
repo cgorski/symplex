@@ -45,7 +45,7 @@ fn integrate_x_neg2() {
     let result = x.powi(-2).integrate(&x);
     // ∫ x^(-2) dx = x^(-1) / (-1) = -x^(-1)
     let s = format!("{result}");
-    assert!(s.contains("x^(-1)"), "should contain x^(-1): {s}");
+    assert!(s.contains("1/x"), "should contain 1/x: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
