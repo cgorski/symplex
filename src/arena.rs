@@ -487,6 +487,24 @@ impl Arena {
         self.mul(&[a, b_inv])
     }
 
+    /// Structural substitution: replace `old` with `new` in `expr`.
+    ///
+    /// Delegates to [`subs::subs`].
+    pub fn subs_structural(&mut self, expr: ExprId, old: ExprId, new: ExprId) -> ExprId {
+        crate::subs::subs(self, expr, old, new)
+    }
+
+    /// Simultaneous structural substitution of multiple pairs.
+    ///
+    /// Delegates to [`subs::subs_map`].
+    pub fn subs_map_structural(
+        &mut self,
+        expr: ExprId,
+        replacements: &[(ExprId, ExprId)],
+    ) -> ExprId {
+        crate::subs::subs_map(self, expr, replacements)
+    }
+
     /// Creates a subtraction expression `a - b` as `a + neg(b)`.
     pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
         let neg_b = self.neg(b);

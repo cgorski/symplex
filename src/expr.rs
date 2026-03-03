@@ -224,9 +224,38 @@ impl Ex {
         todo!("diff: symbolic differentiation not yet implemented")
     }
 
-    /// Substitute `var` with `replacement` in this expression.
-    pub fn subs(&self, _var: &Ex, _replacement: &Ex) -> Ex {
-        todo!("subs: symbolic substitution not yet implemented")
+    /// Structural substitution: replace every occurrence of `old` with `new`.
+    ///
+    /// This is **structural** — only exact node matches are replaced.
+    /// `(1/x).subs(x², 1)` returns `1/x` unchanged because `x²` does
+    /// not appear as a node in `x⁻¹`.
+    ///
+    /// The result is re-canonicalized, so like-term collection and
+    /// other invariants are maintained.
+    ///
+    /// Returns `self` unchanged (same `Ex`) if `old` does not appear.
+    pub fn subs(&self, old: &Ex, new: &Ex) -> Ex {
+        let id = self
+            .inner
+            .write()
+            .arena
+            .subs_structural(self.id, old.id, new.id);
+        self.wrap(id)
+    }
+
+    /// Simultaneous substitution of multiple `(old, new)` pairs.
+    ///
+    /// All replacements happen "at once" — earlier substitutions do
+    /// not affect later ones.
+    pub fn subs_map(&self, replacements: &[(&Ex, &Ex)]) -> Ex {
+        let pairs: smallvec::SmallVec<[(crate::node::ExprId, crate::node::ExprId); 4]> =
+            replacements.iter().map(|(o, n)| (o.id, n.id)).collect();
+        let id = self
+            .inner
+            .write()
+            .arena
+            .subs_map_structural(self.id, &pairs);
+        self.wrap(id)
     }
 
     /// Algebraic expansion (distribute products over sums, etc.).

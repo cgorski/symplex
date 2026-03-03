@@ -39,6 +39,7 @@ pub(crate) mod canon;
 pub(crate) mod display;
 pub(crate) mod node;
 pub(crate) mod sort_key;
+pub(crate) mod subs;
 pub(crate) mod symbol;
 
 // ── Public modules (stable API surface) ────────────────────────────────
