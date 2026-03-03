@@ -257,6 +257,63 @@ Symplex includes all capabilities unconditionally. Feature flags are avoided bec
 
 If a future dependency truly warrants a feature flag, document the justification here.
 
+### Why Ex uses Arc (not Copy)
+
+`Ex` is 16 bytes: `CtxId(u32)` + `Arc<RwLock<ContextInner>>(8)` + `ExprId(u32)`. It is `Clone` but not `Copy` because `Arc::clone` performs an atomic refcount increment — a side effect incompatible with `Copy` semantics.
+
+Alternatives evaluated and rejected:
+
+1. **Global arena + Copy index** — `Ex` would be just a `u32`. Breaks thread safety (global `Mutex` contention) or makes `Ex` `!Send` (thread-local arena). Rejected: violates "thread-safe from day one."
+2. **Lifetime parameter `Ex<'ctx>`** — Zero overhead, `Copy`-able. Rejected: expressions can't be stored in structs, returned from functions, or used in collections without lifetime gymnastics.
+3. **Implicit clone in operators** — Doesn't help: move semantics still consume the value. The `&` is needed to borrow, not to clone.
+
+The `expr!` macro eliminates `&` noise for expression building. Methods take `&self` so no `&` is needed on the receiver. The `&` only appears in binary operators between named variables (`&x + &y`), which is standard Rust.
+
+### Why the core library does not render LaTeX/Markdown/Typst
+
+The core crate computes; rendering belongs in a separate `symplex-format` crate (future). The core provides:
+
+1. **`Display` trait** — plain text output for debugging and simple display.
+2. **`ExprTree` (serde)** — the machine-readable interchange format. Any language (JavaScript, Python, a web frontend) can consume the JSON and render it however it wants.
+
+Rationale:
+- Separation of concerns: computing and rendering are different responsibilities.
+- Dependency footprint: LaTeX/Typst rendering may need template engines, Unicode tables, or format-specific logic that shouldn't inflate the core.
+- Versioning independence: a new output format ships as a new `symplex-format` version without touching `symplex`.
+
+### Type system assessment (advanced techniques evaluated)
+
+The following advanced type techniques were evaluated for symplex and rejected or deferred. This section exists to prevent re-evaluation of the same ideas.
+
+| Technique | Verdict | Reason |
+|-----------|---------|--------|
+| **Typestate for expression categories** (`Ex<Polynomial>`, `Ex<Rational>`) | ❌ Rejected | Classification happens at runtime; operations change categories; users fight the types |
+| **Newtype wrappers** (`SymbolEx`, `NumericEx`) | ❌ Rejected | Ergonomic cost exceeds safety benefit; runtime checks are 5ns |
+| **Sealed trait for ExprNode extension** | ❌ Rejected | Enum exhaustive matching already provides this guarantee |
+| **Const generics for precision** (`EvalResult<50>`) | ❌ Rejected | Precision is a runtime parameter (user input) |
+| **Builder with compile-time validation** | ❌ Rejected | Operations are simple single-step; builder adds ceremony |
+| **Type-level proof of math properties** (linearity, idempotency) | ❌ Rejected | Rust's type system cannot prove mathematical properties; use proptest |
+| **Macro-generated variant exhaustiveness** | 🟡 Deferred | Marginally useful at current scale (<30 variants); revisit at 40+ |
+| **Trait for custom user functions** (`MathFunction` trait) | ✅ Future | Genuinely useful for extensibility; design when adding function registration |
+
+What DOES provide compile-time correctness for symplex:
+- **Exhaustive `match` on `ExprNode`** — adding a variant without handling it everywhere is a compile error (28 variants × 14 files = ~400 match arms)
+- **`#[must_use]` on all transformations** — prevents silently discarding results
+- **`#[non_exhaustive]` on `SymplexError`** — allows adding error variants without breaking downstream
+- **Serde-derived `ExprTree`** — exhaustive matching on both ExprNode→ExprTree and ExprTree→ExprNode ensures serialization completeness
+- **Proptest for algebraic invariants** — 33 properties empirically verify mathematical correctness
+
+### Tracing and observability plan
+
+The library will use the `tracing` crate for zero-cost diagnostic logging. When no subscriber is registered (the default), each tracing call costs ~1ns (atomic load + predicted branch). When a subscriber captures events, the user opted in.
+
+Instrumentation levels:
+- `info` spans: around each public `Ex` method (`simplify`, `expand`, `solve`, `integrate`, `evalf`, `diff`, `factor`, `series`)
+- `debug` events: rule firings in simplify, polynomial degree in solve, precision in evalf
+- `trace` events: per-node processing in walk/diff/expand (extremely verbose, disabled by default)
+
+`tracing` is MIT-licensed, pure Rust, tiny (~50KB), and unconditionally included (no feature flag) per our "no feature flags" policy.
+
 ---
 
 ## Dependencies
@@ -393,6 +450,10 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 | Tier 1 | Test suites (solve/cancel), equals() improvement, error variant breakup (FreeSymbol/Unevaluable), proptest for diff/expand |
 | P1–P4 | Simplification rules (exp_ln, ln_exp, abs_abs), sub-expression matching in Add, collect(var), together(), more eval special values |
 | P5–P7 | Integration (power, trig, exp, linearity), Taylor series (with eval + pole detection), polynomial factoring (content extraction, multiplicity) |
+| Ergonomics | Global default context, vars! macro, subs_i64, maclaurin, display improvements (1/x, negative coefficients) |
+| Features | full_simplify (fixpoint), evalf_f64, assume(), sum_of/product_of, sqrt rule, integration by parts, runtime parser, definite integrals, degree/coeffs |
+| Math expansion | Inverse trig (asin, acos, atan) + hyperbolic (sinh, cosh, tanh): 6 new ExprNode variants across 17 files |
+| Serialization | ExprTree serde type with to_tree/from_tree/to_json/from_json round-trip; removed LaTeX/Markdown formatter (belongs in separate crate) |
 
 ---
 
@@ -567,15 +628,43 @@ abs(abs(w_)) => abs(w_)
 
 **Effort:** Linear systems ~4 hours. Newton's method ~2 hours.
 
+### Remaining Feature Priorities
+
+| Priority | Feature | Effort | Status |
+|----------|---------|--------|--------|
+| F1 | **`tracing` instrumentation** — zero-cost logging for all core operations | 1 hr | Not started |
+| F2 | **More simplification rules** — sinh²-cosh²=-1, inverse trig pairs (asin(sin(x))→x) | 30 min | Not started |
+| F3 | **MathFunction trait** — user-defined functions with derivative/eval/evalf callbacks | 3 hr | Design only |
+| F4 | **symplex-format crate** — LaTeX, Markdown, Typst rendering consuming ExprTree | 4 hr | Planned (separate crate) |
+| F5 | **REPL example binary** — `examples/repl.rs` using runtime parser | 30 min | Not started |
+| F6 | **More integration rules** — u-substitution for `sin(ax+b)`, `exp(ax)`, etc. | 2 hr | Not started |
+| F7 | **Polynomial GCD improvements** — multivariate, sparse representation | 8 hr | Not started |
+| F8 | **Limit computation** — basic limits via substitution + L'Hôpital | 4 hr | Not started |
+
 ### Infrastructure Tasks
 
-| Task | Where | Effort |
-|------|-------|--------|
-| Criterion benchmarks | `benches/canonicalization.rs` | 1 hour |
-| Split `assumptions.rs` | Into `assumptions/mod.rs`, `assumptions/inference.rs`, `assumptions/handlers.rs`, `assumptions/cache.rs` | 1 hour |
-| CI configuration | `.github/workflows/ci.yml` | 30 min |
-| `CancelToken` for timeouts | New `src/cancel.rs`, integrate into expand/solve/simplify | 2 hours |
-| Complex number support | Track re/im parts, complex evalf | 8 hours |
+| Task | Where | Effort | Status |
+|------|-------|--------|--------|
+| Criterion benchmarks | `benches/canonicalization.rs`, `benches/transforms.rs` | 1 hour | Not started |
+| Split `assumptions.rs` (1,743 lines) | Into `assumptions/mod.rs`, `assumptions/inference.rs`, `assumptions/handlers.rs`, `assumptions/cache.rs` | 1 hour | Not started |
+| CI configuration | `.github/workflows/ci.yml` — test + clippy + fmt | 30 min | Not started |
+| `CancelToken` for timeouts | New `src/cancel.rs`, integrate into expand/solve/simplify | 2 hours | Not started |
+| Complex number support | Track re/im parts, complex evalf | 8 hours | Not started |
+| Update README | Reflect all new features (inverse trig, hyperbolic, serde, parser, etc.) | 30 min | Not started |
+| CHANGELOG.md | For 0.1.0 release | 30 min | Not started |
+| Final API surface review | Scan all `pub fn` for consistency, naming, docs | 1 hour | Not started |
+
+### Release Checklist (0.1.0)
+
+- [ ] All infrastructure tasks complete (benchmarks, CI, split assumptions)
+- [ ] README fully up to date with all 60+ public methods
+- [ ] CHANGELOG.md written
+- [ ] Cargo.toml metadata polished (documentation link, etc.)
+- [ ] `cargo clippy` clean
+- [ ] `cargo fmt` clean
+- [ ] All doctests pass in isolation
+- [ ] Final API surface review — no accidental `pub` on internal types
+- [ ] Publish to crates.io
 
 ---
 
