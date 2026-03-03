@@ -455,6 +455,11 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 | Math expansion | Inverse trig (asin, acos, atan) + hyperbolic (sinh, cosh, tanh): 6 new ExprNode variants across 17 files |
 | Serialization | ExprTree serde type with to_tree/from_tree/to_json/from_json round-trip; removed LaTeX/Markdown formatter (belongs in separate crate) |
 | Sprint | Limits (L'Hôpital + series fallback), linear system solving (Gaussian elimination), u-substitution in integration, exposed as_numer_denom/is_polynomial/coeff/limit/solve_system |
+| API polish | Return type fix (limit/solve/series → Result), exp_fn→exp rename, removed Context::display, clippy/fmt clean |
+| Math sprint 1 | Inverse hyperbolics (asinh/acosh/atanh), nsolve, partial fractions, expand_trig, poly GCD/LCM, odd/even trig eval |
+| Sqrt removal | Removed Sqrt node variant, canonicalize Pow(E,x)→Exp(x), cbrt/nthroot convenience, display detection |
+| Math sprint 2 | Power-of-power rule, perfect nth root eval, irrational trig values, hyperbolic odd/even, log expansion |
+| Infrastructure | Criterion benchmarks (30), GitHub Actions CI, CHANGELOG.md |
 
 ---
 
@@ -467,7 +472,7 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 5. ~~**No series expansion.**~~ **Resolved** — Taylor series with pole detection.
 6. **No limit computation.** No Gruntz algorithm.
 7. **`solve()` is polynomial-only.** Transcendental equations not handled.
-8. ~~**`simplify()` has limited rules.**~~ **Improved** — 4 rules plus sub-expression matching in Add.
+8. ~~**`simplify()` has limited rules.**~~ **Improved** — 13 rules with sub-expression matching in Add and fixpoint iteration.
 9. **`bigint_to_bigfloat` loses precision for integers > i128.** Falls back to f64.
 10. ~~**No `collect()`, `together()`, or `factor_terms()` yet.**~~ **Partially resolved** — `collect()` and `together()` implemented.
 11. **`expr!(1/2)` is a compile error.** By design — prevents silent Rust integer division. Use `ctx.rational(1, 2)`.
@@ -638,22 +643,22 @@ abs(abs(w_)) => abs(w_)
 | F3 | **MathFunction trait** — user-defined functions with derivative/eval/evalf callbacks | 3 hr | Design only |
 | F4 | **symplex-format crate** — LaTeX, Markdown, Typst rendering consuming ExprTree | 4 hr | Planned (separate crate) |
 | F5 | **REPL example binary** — `examples/repl.rs` using runtime parser | 30 min | ✅ Done |
-| F6 | **More integration rules** — u-substitution for `sin(ax+b)`, `exp(ax)`, etc. | 2 hr | Not started |
-| F7 | **Polynomial GCD improvements** — multivariate, sparse representation | 8 hr | Not started |
-| F8 | **Limit computation** — basic limits via substitution + L'Hôpital | 4 hr | Not started |
+| F6 | **More integration rules** — u-substitution for `sin(ax+b)`, `exp(ax)`, etc. | 2 hr | ✅ Done |
+| F7 | **Polynomial GCD improvements** — multivariate, sparse representation | 8 hr | Not started (deferred to v0.2.0) |
+| F8 | **Limit computation** — basic limits via substitution + L'Hôpital | 4 hr | ✅ Done |
 
 ### Infrastructure Tasks
 
 | Task | Where | Effort | Status |
 |------|-------|--------|--------|
-| Criterion benchmarks | `benches/canonicalization.rs`, `benches/transforms.rs` | 1 hour | Not started |
-| Split `assumptions.rs` (1,743 lines) | Into `assumptions/mod.rs`, `assumptions/inference.rs`, `assumptions/handlers.rs`, `assumptions/cache.rs` | 1 hour | Not started |
-| CI configuration | `.github/workflows/ci.yml` — test + clippy + fmt | 30 min | Not started |
-| `CancelToken` for timeouts | New `src/cancel.rs`, integrate into expand/solve/simplify | 2 hours | Not started |
-| Complex number support | Track re/im parts, complex evalf | 8 hours | Not started |
-| Update README | Reflect all new features (inverse trig, hyperbolic, serde, parser, etc.) | 30 min | Partially done |
-| CHANGELOG.md | For 0.1.0 release | 30 min | Not started |
-| Final API surface review | Scan all `pub fn` for consistency, naming, docs | 1 hour | Not started |
+| Criterion benchmarks | `benches/canonicalization.rs`, `benches/transforms.rs` | 1 hour | ✅ Done |
+| Split `assumptions.rs` (1,743 lines) | Into `assumptions/mod.rs`, `assumptions/inference.rs`, `assumptions/handlers.rs`, `assumptions/cache.rs` | 1 hour | Not started (deferred to v0.2.0) |
+| CI configuration | `.github/workflows/ci.yml` — test + clippy + fmt | 30 min | ✅ Done |
+| `CancelToken` for timeouts | New `src/cancel.rs`, integrate into expand/solve/simplify | 2 hours | Not started (deferred to v0.2.0) |
+| Complex number support | Track re/im parts, complex evalf | 8 hours | Not started (deferred to v0.2.0) |
+| Update README | Reflect all new features (inverse trig, hyperbolic, serde, parser, etc.) | 30 min | ✅ Done |
+| CHANGELOG.md | For 0.1.0 release | 30 min | ✅ Done |
+| Final API surface review | Scan all `pub fn` for consistency, naming, docs | 1 hour | Partially done |
 
 ### Release Checklist (0.1.0)
 

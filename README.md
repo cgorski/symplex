@@ -5,27 +5,22 @@ Symbolic mathematics library for Rust.
 ## Features
 
 - **Expression building** — operator overloading (`+`, `-`, `*`, `/`, unary `-`), method chaining (`.pow()`, `.sin()`, `.diff()`), automatic canonicalization (flatten, sort, combine like terms)
-- **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax with auto-borrowing; `rule!(arena, "name", LHS => RHS)` for one-line rewrite rule definitions
+- **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax; `rule!(arena, "name", LHS => RHS)` for rewrite rules
+- **18 math functions** — sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, ln, abs, sqrt, cbrt, nthroot
 - **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
-- **Algebraic expansion** — distribute products over sums, expand integer powers of sums
-- **Exact evaluation** — known special values of trig/exp/ln at multiples of π, 0, 1, e
+- **Integration** — power rule, trig, exp, linearity, constant factor, integration by parts, u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), definite integrals
+- **Taylor series** — expansion around any point with configurable order and pole detection
+- **Limits** — direct substitution, L'Hôpital's rule (0/0 and ∞/∞), series fallback
+- **Equation solving** — polynomial (linear, quadratic, higher-degree via rational root theorem), linear systems (Gaussian elimination), numerical root finding (Newton's method)
+- **Simplification** — 13 rewrite rules with sub-expression matching, fixpoint iteration via `full_simplify()`
+- **Algebraic manipulation** — expand, factor, collect, together, cancel, partial fractions (`apart`), trig expansion (`expand_trig`), log expansion (`expand_log`)
+- **Exact evaluation** — 30+ special values for trig/exp/ln including irrational values (√2/2, √3/2), perfect nth root evaluation, odd/even function detection
 - **Arbitrary-precision numerical evaluation** — via `astro-float`, any number of decimal digits
 - **Assumption system** — 23 mathematical properties (positive, real, integer, etc.) with forward-chaining inference
-- **Structural substitution** — exact node replacement, simultaneous multi-substitution
 - **Pattern matching** — wild symbols, named rewrite rules, simplification with trace
-- **Polynomial algebra** — dense univariate over ℚ, arithmetic, Euclidean GCD
-- **Fraction cancellation** — GCD-based common factor elimination for rational expressions
-- **Equation solving** — linear, quadratic, and higher-degree polynomial equations via rational root theorem
-- **Integration** — antiderivatives for polynomials, trig, exp; linearity, constant factor extraction
-- **Taylor series** — expansion around a point with configurable order, pole detection
-- **Polynomial factoring** — rational root finding with content extraction and multiplicity handling
-- **Expression collection** — group terms by powers of a variable via `collect(var)`
-- **Common denominators** — combine fractions via `together()`
-- **Structural introspection** — `free_symbols()`, `contains()` for expression analysis
-- **Inverse trigonometric** — `asin`, `acos`, `atan` with derivatives and eval
-- **Hyperbolic functions** — `sinh`, `cosh`, `tanh` with derivatives, integration, and eval
-- **Serde serialization** — `to_tree()`, `to_json()`, `from_tree()`, `from_json()` for round-trip interchange
-- **REPL support** — interactive expression parsing via `cargo run --example repl`
+- **Polynomial algebra** — dense univariate over ℚ, arithmetic, Euclidean GCD/LCM, degree, coefficients
+- **Serde serialization** — `ExprTree` for JSON interchange with round-trip support
+- **Runtime parser** — `symplex::parse::parse(&ctx, "x^2 + 1")` for REPL and dynamic construction
 - **Zero-cost tracing** — diagnostic logging via the `tracing` crate
 - **Thread safety** — `Ex` is `Send + Sync`; the arena uses `parking_lot::RwLock`
 
@@ -34,68 +29,52 @@ Symbolic mathematics library for Rust.
 ```rust
 use symplex::prelude::*;
 
-// ── Quick setup with free-standing functions ───────────────────────
-// No Context boilerplate needed for common usage.
+// ── Quick setup — no Context boilerplate needed ────────────────
 let x = symplex::var("x");
 let y = symplex::var("y");
 
-// Or declare multiple variables at once:
-// use symplex::vars;
-// vars!(x, y, z);
-
-// ── Build expressions with natural math syntax ─────────────────────
+// ── Build expressions with natural math syntax ─────────────────
 let f = expr!(x^2 + 2*x + 1);
 println!("{f}");                             // 1 + x^2 + 2*x
 
-// ── Expand, differentiate, integrate ───────────────────────────────
-let cubed = expr!((x + 1)^3);
-println!("{}", cubed.expand());              // 1 + x^3 + 3*x + 3*x^2
-
+// ── Differentiate and integrate ────────────────────────────────
 let deriv = expr!(x^3).diff(&x);
 println!("{deriv}");                         // 3*x^2
 
 let anti = expr!(x^2).integrate(&x);
 println!("{anti}");                          // 1/3*x^3
 
-// ── Evaluate ───────────────────────────────────────────────────────
+// ── Evaluate at a point ────────────────────────────────────────
 let at_2 = deriv.subs_i64(&x, 2);
 println!("{at_2}");                          // 12
 
-let cos_pi = symplex::default_context().pi().cos().eval();
-println!("{cos_pi}");                        // -1
+// ── Taylor series ──────────────────────────────────────────────
+let s = x.sin().maclaurin(&x, 4).unwrap();
+println!("{}", s.expand().eval());           // x - 1/6*x^3
 
-// Arbitrary-precision numerical evaluation
-let pi_50 = symplex::default_context().pi().evalf(50).unwrap();
-println!("{pi_50}");                         // 3.14159265358979...
+// ── Limits ─────────────────────────────────────────────────────
+let lim = (&x.sin() / &x).limit(&x, &symplex::int(0)).unwrap();
+println!("{lim}");                           // 1
 
-// ── Simplify trig identities ───────────────────────────────────────
-let trig = expr!(sin(x)^2 + cos(x)^2);
-println!("{}", trig.simplify());             // 1
+// ── Solve equations ────────────────────────────────────────────
+let roots = expr!(x^2 - 5*x + 6).solve(&x).unwrap();
+for r in &roots { println!("x = {r}"); }    // x = 2, x = 3
 
-// ── Solve equations ────────────────────────────────────────────────
-let eq = expr!(x^2 - 5*x + 6);
-let roots = eq.solve(&x);
-for r in &roots {
-    println!("x = {r}");                     // x = 2, x = 3
-}
+// ── Numerical root finding ─────────────────────────────────────
+let root = (&x - &x.cos()).nsolve(&x, 1.0, 50, 1e-12).unwrap();
+println!("x = {root:.10}");                 // x = 0.7390851332
 
-// ── Factor polynomials ─────────────────────────────────────────────
+// ── Factor and simplify ────────────────────────────────────────
 let factored = (&x.powi(2) - 1).factor(&x);
 println!("{factored}");                      // (-1 + x)*(1 + x)
 
-// ── Taylor series ──────────────────────────────────────────────────
-let s = x.sin().maclaurin(&x, 4);
-println!("{}", s.expand().eval());           // x - 1/6*x^3
+let trig = expr!(sin(x)^2 + cos(x)^2);
+println!("{}", trig.simplify());             // 1
 
-// ── Structural introspection ───────────────────────────────────────
-let expr = &x.powi(2) + &y;
-println!("{:?}", expr.free_symbols().iter().map(|s| format!("{s}")).collect::<Vec<_>>());
-
-// ── Advanced: explicit Context for custom configuration ────────────
+// ── Advanced: explicit Context for custom configuration ────────
 let ctx = Context::new();
 let t = ctx.symbol_with("t", &[Assumption::Positive, Assumption::Real]);
 assert_eq!(t.is_positive(), Some(true));
-assert_eq!(t.is_real(), Some(true));
 ```
 
 ## API Reference
@@ -103,136 +82,169 @@ assert_eq!(t.is_real(), Some(true));
 ### Context
 
 ```rust
-let ctx = Context::new();
-let ctx = Context::with_config(EvalConfig { max_pow_exponent: 500, ..Default::default() });
+Context::new()                               // default configuration
+Context::with_config(EvalConfig { ... })     // custom limits
 
 ctx.symbol("x")                              // symbolic variable
 ctx.symbol_with("t", &[Assumption::Positive]) // variable with assumptions
 ctx.int(5)                                   // integer
 ctx.rational(1, 3)                           // exact fraction 1/3
-ctx.pi()                                     // π
-ctx.e()                                      // Euler's number
-ctx.query(&expr, Props::POSITIVE)            // query assumption → Option<bool>
-ctx.display(&expr)                           // format as String
-ctx.with_arena_mut(|arena| { ... })          // direct arena access (for rule!)
+ctx.pi() / ctx.e() / ctx.i_unit()           // constants
+ctx.infinity() / ctx.nan()                   // special values
+ctx.query(&expr, Props::POSITIVE)            // query assumption
+ctx.with_arena_mut(|arena| { ... })          // direct arena access
+ctx.solve_system(&[eq1, eq2], &[x, y])      // linear system solving
+ctx.from_tree(&tree) / ctx.from_json(json)   // deserialization
+ctx.node_count()                             // arena info
 ```
 
 ### Expression Methods
 
 ```rust
-// Arithmetic: +, -, *, / for Ex, &Ex, i64 (all combinations)
+// ── Math functions ─────────────────────────────────────────────
+ex.pow(&exp)    ex.powi(3)     ex.sin()      ex.cos()
+ex.tan()        ex.exp()       ex.ln()       ex.sqrt()
+ex.abs()        ex.asin()      ex.acos()     ex.atan()
+ex.sinh()       ex.cosh()      ex.tanh()     ex.asinh()
+ex.acosh()      ex.atanh()     ex.cbrt()     ex.nthroot(n)
 
-// Functions
-ex.pow(&exp)    ex.powi(3)    ex.sin()     ex.cos()
-ex.tan()        ex.exp_fn()   ex.ln()      ex.sqrt()    ex.abs()
-ex.asin()       ex.acos()     ex.atan()
-ex.sinh()       ex.cosh()     ex.tanh()
-
-// Calculus
+// ── Calculus ───────────────────────────────────────────────────
 ex.diff(&x)                                  // symbolic derivative
 ex.integrate(&x)                             // indefinite integral
+ex.definite_integral(&x, &lower, &upper)     // definite integral
+ex.series(&x, &point, order)                 // Taylor series → Result
+ex.maclaurin(&x, order)                      // Maclaurin series → Result
+ex.limit(&x, &point)                         // symbolic limit → Result
 
-// Transformation
+// ── Algebra ────────────────────────────────────────────────────
+ex.expand()                                  // distribute products
+ex.factor(&var)                              // polynomial factoring
+ex.collect(&var)                             // group by powers
+ex.together()                                // common denominator
+ex.cancel(&var)                              // cancel common factors
+ex.apart(&var)                               // partial fractions
+ex.expand_trig()                             // sin(a+b) → sin(a)cos(b)+...
+ex.expand_log()                              // ln(a*b) → ln(a)+ln(b)
+ex.solve(&var)                               // solve expr=0 → Result
+ex.nsolve(&var, guess, max_iter, tol)        // numerical root → Result
+
+// ── Simplification ─────────────────────────────────────────────
+ex.simplify()                                // one-pass rewrite rules
+ex.simplify_trace()                          // with step-by-step trace
+ex.full_simplify()                           // fixpoint: eval+expand+simplify
+ex.full_simplify_trace()                     // with accumulated trace
+ex.eval()                                    // evaluate special values
+
+// ── Substitution ───────────────────────────────────────────────
 ex.subs(&old, &new)                          // structural substitution
+ex.subs_i64(&old, n)                         // substitute with integer
 ex.subs_map(&[(&x, &a), (&y, &b)])          // simultaneous substitution
-ex.expand()                                  // distribute products, expand powers
-ex.eval()                                    // evaluate known special values
-ex.simplify()                                // apply rewrite rules (with sub-expression matching)
-ex.simplify_trace()                          // simplify with step-by-step trace
-ex.cancel(&var)                              // cancel common polynomial factors
-ex.collect(&var)                             // group by powers of var
-ex.together()                                // common denominator for fractions
-ex.factor(&var)                              // factor polynomial into linear factors
-ex.solve(&var)                               // solve expr = 0 for var
-ex.series(&var, &point, order)               // Taylor series expansion
 
-// Serialization
-ex.to_tree()                                 // → ExprTree (serde-serializable)
-ex.to_json()                                 // → String (JSON)
-ex.to_json_pretty()                          // → String (formatted JSON)
+// ── Numerical evaluation ───────────────────────────────────────
+ex.evalf(50)                                 // arbitrary precision → Result<String>
+ex.evalf_f64()                               // f64 convenience → Result<f64>
 
-// Collection
-Ex::sum_of(&ctx, iter)                       // sum a collection
-Ex::product_of(&ctx, iter)                   // multiply a collection
+// ── Queries ────────────────────────────────────────────────────
+ex.is_zero()        ex.is_positive()         ex.is_negative()
+ex.is_real()        ex.is_integer()          ex.is_nonzero()
+ex.is_finite()      ex.query(Props::...)     ex.equals(&other)
+ex.is_zero_structural()    ex.is_one_structural()
+ex.is_constant()    ex.is_polynomial(&var)
 
-// Utilities
-ex.apply_until_stable(max, f)                // generic fixpoint
-ex.term_count()                              // number of top-level terms
-
-// Numerical
-ex.evalf(50)                                 // → Result<String, SymplexError>
-
-// Queries
-ex.is_zero()                                 // → Option<bool>
-ex.is_positive()                             // → Option<bool>
-ex.is_negative()                             // → Option<bool>
-ex.is_real()                                 // → Option<bool>
-ex.is_integer()                              // → Option<bool>
-ex.is_nonzero()                              // → Option<bool>
-ex.is_finite()                               // → Option<bool>
-ex.query(Props::INTEGER)                     // → Option<bool>
-ex.equals(&other)                            // → Option<bool> (with expand fallback)
-ex.is_zero_structural()                      // → bool (O(1))
+// ── Introspection ──────────────────────────────────────────────
 ex.free_symbols()                            // → Vec<Ex>
 ex.contains(&sub)                            // → bool
+ex.degree(&var)                              // → Option<usize>
+ex.coeffs(&var)                              // → Option<Vec<Ex>>
+ex.coeff(&var, n)                            // → Option<Ex>
+ex.as_numer_denom()                          // → (Ex, Ex)
+ex.term_count()                              // → usize
+ex.poly_gcd(&other, &var)                    // → Option<Ex>
+ex.poly_lcm(&other, &var)                    // → Option<Ex>
+
+// ── Assumptions ────────────────────────────────────────────────
+ex.assume(Assumption::Positive)              // fluent chaining
+
+// ── Serialization ──────────────────────────────────────────────
+ex.to_tree()                                 // → ExprTree (serde)
+ex.to_json()                                 // → String (JSON)
+ex.to_json_pretty()                          // → String (formatted)
+
+// ── Collection ─────────────────────────────────────────────────
+Ex::sum_of(&ctx, iter)                       // sum expressions
+Ex::product_of(&ctx, iter)                   // multiply expressions
+
+// ── Utilities ──────────────────────────────────────────────────
+ex.apply_until_stable(max, f)                // generic fixpoint
+
+// ── Convenience (return fallback on failure) ───────────────────
+ex.limit_or_self(&x, &a)                    // limit or unchanged
+ex.solve_or_empty(&x)                       // solve or []
+ex.series_or_self(&x, &a, n)               // series or unchanged
+ex.maclaurin_or_self(&x, n)                 // maclaurin or unchanged
 ```
 
 ### Macros
 
 ```rust
-// Declarative macros
-syms!(ctx; x, y, z);                        // declare multiple symbols
-sym!(ctx; t, Positive, Real);               // declare with assumptions
-
-// Proc macros — natural math syntax
-expr!(x^2 + 2*x + 1)                        // build Ex with ^ for power
-expr!(sin(x)^2 + cos(x)^2)                  // function calls
-expr!((x + 1)^3 * y)                        // grouping with parens
-
-// Rewrite rule definition (inside ctx.with_arena_mut)
-rule!(arena, "pythagorean", sin(w_)^2 + cos(w_)^2 => 1)
-rule!(arena, "exp_ln", exp(ln(w_)) => w_)
-rule!(arena, "sqrt_sq", sqrt(w_^2) => abs(w_))
+expr!(x^2 + 2*x + 1)                        // build expression
+rule!(arena, "name", LHS => RHS)             // define rewrite rule
+syms!(ctx; x, y, z)                          // declare symbols (with context)
+sym!(ctx; t, Positive, Real)                 // symbol with assumptions
+vars!(x, y, z)                               // declare symbols (global context)
 ```
 
-The `expr!` macro auto-borrows identifiers (no `&` needed) and rewrites `^` to `.powi()` or `.pow()`. Integer literals stay as `i64`. Note: `expr!(1/2)` is a compile error — use `ctx.rational(1, 2)` for exact fractions.
+### Free-Standing Functions
 
-The `rule!` macro builds `Pattern`/`Rule` structs. Identifiers ending in `_` are wilds (match anything). Known constants (`pi`, `E`, `I`, `oo`, `nan`) are recognized. Unknown bare identifiers produce a compile error with a helpful message.
+```rust
+symplex::var("x")                            // global context symbol
+symplex::symbol("x")                         // alias for var
+symplex::int(5)                              // global context integer
+symplex::rational(1, 2)                      // global context rational
+symplex::default_context()                   // access global context
+symplex::parse::parse(&ctx, "x^2 + 1")      // runtime parser
+```
 
 ## Serialization
 
-Expressions can be serialized to JSON via `ExprTree`:
+Expressions can be serialized to JSON for interchange:
 
 ```rust
-let expr = x.powi(2) + 1;
-let json = expr.to_json();
-// {"type":"Add","terms":[{"type":"Num","numer":"1","denom":"1"},{"type":"Pow","base":{"type":"Symbol","name":"x"},"exp":{"type":"Num","numer":"2","denom":"1"}}]}
+use symplex::prelude::*;
 
+let ctx = Context::new();
+let x = ctx.symbol("x");
+let expr = &x.powi(2) + 1;
+
+// Serialize
+let json = expr.to_json();
+
+// Deserialize
 let back = ctx.from_json(&json).unwrap();
 assert_eq!(format!("{expr}"), format!("{back}"));
 ```
 
-For LaTeX, Markdown, or Typst rendering, use the `symplex-format` crate (planned).
+For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is planned.
 
-## Architecture
+## Simplification Rules (13)
 
-Expressions are stored in an arena-interned DAG with hash-consing. Every expression is an `ExprId` (4-byte index). Structurally identical expressions share the same `ExprId`, making equality comparison O(1).
+| # | Rule | Identity |
+|---|------|----------|
+| 1 | `sin(w)^2 + cos(w)^2 → 1` | Pythagorean |
+| 2 | `exp(ln(w)) → w` | Inverse pair |
+| 3 | `ln(exp(w)) → w` | Inverse pair |
+| 4 | `abs(abs(w)) → abs(w)` | Idempotent |
+| 5 | `(w^2)^(1/2) → abs(w)` | Square root of square |
+| 6 | `asin(sin(w)) → w` | Inverse trig |
+| 7 | `acos(cos(w)) → w` | Inverse trig |
+| 8 | `atan(tan(w)) → w` | Inverse trig |
+| 9 | `cosh(w)^2 - sinh(w)^2 → 1` | Hyperbolic Pythagorean |
+| 10 | `(a^m)^n → a^(m*n)` | Power of power |
+| 11 | `asinh(sinh(w)) → w` | Inverse hyperbolic |
+| 12 | `acosh(cosh(w)) → w` | Inverse hyperbolic |
+| 13 | `atanh(tanh(w)) → w` | Inverse hyperbolic |
 
-The user-facing `Ex` type holds an `Arc<RwLock<ContextInner>>` and an `ExprId`. It is 16 bytes, `Clone`, `Send`, and `Sync`.
-
-All tree traversals use explicit stacks (no recursion), so stack overflow cannot occur regardless of expression depth. Verified with 10,000-deep nested expressions.
-
-The codebase is ~17,500 lines across 25 modules with 732 tests. See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed architecture, module reference, concurrency model, and next steps.
-
-## Design Decisions
-
-**Construction is cheap; evaluation is explicit.** Building `x + y` canonicalizes (flatten, sort, combine like terms) but does not expand, evaluate functions, or apply identities. Call `.eval()`, `.expand()`, or `.simplify()` when you want those transformations.
-
-**No implicit float conversion.** There is no `Float` node type and no `From<f64>` for `Ex`. All symbolic computation uses exact `Ratio<BigInt>`. Floating-point results come only from `.evalf()`.
-
-**Structural substitution by default.** `.subs()` replaces exact node matches only. `(1/x).subs(x², 1)` returns `1/x` unchanged because `x²` does not appear as a node in `x⁻¹`. This prevents silent mathematical errors.
-
-**Number × Add distributes.** `2*(x+1)` canonicalizes to `2*x + 2`. This is required for `a - a = 0` to hold structurally. Symbolic products like `y*(x+1)` do not distribute — that is `.expand()`.
+All rules support sub-expression matching in Add (e.g., `3 + sin²(x) + cos²(x) → 4`).
 
 ## Dependencies
 
@@ -244,19 +256,19 @@ All dependencies are MIT or Apache-2.0 licensed. No C bindings. No LGPL.
 | `num-rational` | Exact rational numbers |
 | `num-integer` | GCD, LCM |
 | `num-traits` | Numeric trait vocabulary |
-| `smallvec` | Inline small vectors for expression children |
+| `smallvec` | Inline small vectors |
 | `rustc-hash` | Fast hash maps |
 | `bitflags` | Assumption property flags |
 | `parking_lot` | Fast locks |
 | `thiserror` | Error types |
-| `symplex-macros` | Proc macros (`expr!`, `rule!`); uses `syn`, `quote`, `proc-macro2` |
 | `astro-float` | Arbitrary-precision floats |
-| `serde` / `serde_json` | Expression serialization and deserialization |
+| `serde` / `serde_json` | Serialization |
 | `tracing` | Zero-cost diagnostic logging |
+| `symplex-macros` | Proc macros (`expr!`, `rule!`) |
 
 ## Dependencies Policy
 
-Symplex avoids feature flags unless absolutely necessary (e.g., a dependency requires a C toolchain or adds significant platform-specific constraints). All core capabilities, including numerical evaluation via `astro-float`, are always included. This keeps the maintenance burden low, eliminates conditional compilation complexity, and ensures every user gets the full API without configuration.
+Symplex avoids feature flags unless absolutely necessary. All core capabilities are always included.
 
 ## Requirements
 
