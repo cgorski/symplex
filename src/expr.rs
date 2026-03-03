@@ -220,8 +220,27 @@ impl Ex {
     // These will be filled in by later stages.
 
     /// Symbolic differentiation with respect to `var`.
-    pub fn diff(&self, _var: &Ex) -> Ex {
-        todo!("diff: symbolic differentiation not yet implemented")
+    ///
+    /// Computes the derivative using standard rules (linearity, product
+    /// rule, chain rule, power rule) for all supported node types.
+    ///
+    /// `var` should be a symbol expression (created via `ctx.symbol()`).
+    /// If `var` does not appear in the expression, the result is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = x.powi(3);
+    /// let deriv = expr.diff(&x);
+    /// assert_eq!(format!("{deriv}"), "3*x**2");
+    /// ```
+    pub fn diff(&self, var: &Ex) -> Ex {
+        let id = self.inner.write().arena.diff_wrt(self.id, var.id);
+        self.wrap(id)
     }
 
     /// Structural substitution: replace every occurrence of `old` with `new`.

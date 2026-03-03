@@ -505,6 +505,13 @@ impl Arena {
         crate::subs::subs_map(self, expr, replacements)
     }
 
+    /// Differentiate `expr` with respect to `var`.
+    ///
+    /// Delegates to [`diff::diff`].
+    pub fn diff_wrt(&mut self, expr: ExprId, var: ExprId) -> ExprId {
+        crate::diff::diff(self, expr, var)
+    }
+
     /// Creates a subtraction expression `a - b` as `a + neg(b)`.
     pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
         let neg_b = self.neg(b);
