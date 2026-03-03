@@ -8,12 +8,12 @@ Symbolic mathematics library for Rust.
 - **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax; `rule!(arena, "name", LHS => RHS)` for rewrite rules
 - **18 math functions** — sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, ln, abs, sqrt, cbrt, nthroot
 - **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
-- **Integration** — power rule, trig, exp, linearity, constant factor, integration by parts, u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), definite integrals
+- **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts, u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals
 - **Taylor series** — expansion around any point with configurable order and pole detection
 - **Limits** — direct substitution, L'Hôpital's rule (0/0 and ∞/∞), series fallback
 - **Equation solving** — polynomial (linear, quadratic, higher-degree via rational root theorem), linear systems (Gaussian elimination), numerical root finding (Newton's method)
-- **Simplification** — 13 rewrite rules with sub-expression matching, fixpoint iteration via `full_simplify()`
-- **Algebraic manipulation** — expand, factor, collect, together, cancel, partial fractions (`apart`), trig expansion (`expand_trig`), log expansion (`expand_log`)
+- **Simplification** — 16 rewrite rules (incl. sin/cos→tan ratio, exp combining) with sub-expression matching, fixpoint iteration via `full_simplify()`
+- **Algebraic manipulation** — expand, factor, collect, together, cancel, partial fractions (`apart`), trig expansion (`expand_trig`), log expansion (`expand_log`), logcombine
 - **Exact evaluation** — 30+ special values for trig/exp/ln including irrational values (√2/2, √3/2), perfect nth root evaluation, odd/even function detection
 - **Arbitrary-precision numerical evaluation** — via `astro-float`, any number of decimal digits
 - **Assumption system** — 23 mathematical properties (positive, real, integer, etc.) with forward-chaining inference
@@ -125,6 +125,7 @@ ex.cancel(&var)                              // cancel common factors
 ex.apart(&var)                               // partial fractions
 ex.expand_trig()                             // sin(a+b) → sin(a)cos(b)+...
 ex.expand_log()                              // ln(a*b) → ln(a)+ln(b)
+ex.logcombine()                              // ln(a)+ln(b) → ln(a*b)
 ex.solve(&var)                               // solve expr=0 → Result
 ex.nsolve(&var, guess, max_iter, tol)        // numerical root → Result
 
@@ -150,6 +151,7 @@ ex.is_real()        ex.is_integer()          ex.is_nonzero()
 ex.is_finite()      ex.query(Props::...)     ex.equals(&other)
 ex.is_zero_structural()    ex.is_one_structural()
 ex.is_constant()    ex.is_polynomial(&var)
+ex.expr_type()                               // → ExprType
 
 // ── Introspection ──────────────────────────────────────────────
 ex.free_symbols()                            // → Vec<Ex>
@@ -174,8 +176,13 @@ ex.to_json_pretty()                          // → String (formatted)
 Ex::sum_of(&ctx, iter)                       // sum expressions
 Ex::product_of(&ctx, iter)                   // multiply expressions
 
+// ── Class Methods ──────────────────────────────────────────────
+Ex::zero()                                   // additive identity
+Ex::one()                                    // multiplicative identity
+
 // ── Utilities ──────────────────────────────────────────────────
 ex.apply_until_stable(max, f)                // generic fixpoint
+ex.replace(closure)                          // user transformation walk
 
 // ── Convenience (return fallback on failure) ───────────────────
 ex.limit_or_self(&x, &a)                    // limit or unchanged
@@ -226,7 +233,7 @@ assert_eq!(format!("{expr}"), format!("{back}"));
 
 For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is planned.
 
-## Simplification Rules (13)
+## Simplification Rules (16)
 
 | # | Rule | Identity |
 |---|------|----------|
@@ -243,8 +250,11 @@ For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is pl
 | 11 | `asinh(sinh(w)) → w` | Inverse hyperbolic |
 | 12 | `acosh(cosh(w)) → w` | Inverse hyperbolic |
 | 13 | `atanh(tanh(w)) → w` | Inverse hyperbolic |
+| 14 | `sin(w)/cos(w) → tan(w)` | Trig ratio |
+| 15 | `sinh(w)/cosh(w) → tanh(w)` | Hyperbolic ratio |
+| 16 | `exp(a)*exp(b) → exp(a+b)` | Exp combining |
 
-All rules support sub-expression matching in Add (e.g., `3 + sin²(x) + cos²(x) → 4`).
+All rules support sub-expression matching in Add and Mul (e.g., `3 + sin²(x) + cos²(x) → 4`).
 
 ## Dependencies
 

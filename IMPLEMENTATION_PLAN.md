@@ -460,6 +460,7 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 | Sqrt removal | Removed Sqrt node variant, canonicalize Pow(E,x)→Exp(x), cbrt/nthroot convenience, display detection |
 | Math sprint 2 | Power-of-power rule, perfect nth root eval, irrational trig values, hyperbolic odd/even, log expansion |
 | Infrastructure | Criterion benchmarks (30), GitHub Actions CI, CHANGELOG.md |
+| Sprint A-D | Integration completeness (tan/ln/inverse trig-hyp/apart pipeline), 3 new simplify rules + Mul sub-match, complete unit circle eval, ergonomics (zero/one/expr_type/replace/logcombine), calculus example |
 
 ---
 
@@ -470,13 +471,14 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 3. **Limited complex number support.** `ImaginaryUnit` exists but `evalf` errors on complex expressions.
 4. ~~**No integration.**~~ **Resolved** — basic antiderivatives for polynomials, trig, exp.
 5. ~~**No series expansion.**~~ **Resolved** — Taylor series with pole detection.
-6. **No limit computation.** No Gruntz algorithm.
+6. ~~**No limit computation.**~~ **Resolved** — limits via direct substitution, L'Hôpital's rule, and series fallback. Gruntz algorithm not implemented.
 7. **`solve()` is polynomial-only.** Transcendental equations not handled.
-8. ~~**`simplify()` has limited rules.**~~ **Improved** — 13 rules with sub-expression matching in Add and fixpoint iteration.
+8. ~~**`simplify()` has limited rules.**~~ **Improved** — 16 rules with sub-expression matching in Add and Mul and fixpoint iteration.
 9. **`bigint_to_bigfloat` loses precision for integers > i128.** Falls back to f64.
 10. ~~**No `collect()`, `together()`, or `factor_terms()` yet.**~~ **Partially resolved** — `collect()` and `together()` implemented.
 11. **`expr!(1/2)` is a compile error.** By design — prevents silent Rust integer division. Use `ctx.rational(1, 2)`.
 12. **`expr!(x^2^3)` with nested integer powers causes type errors.** The inner `2^3` evaluates as integer arithmetic, not symbolic.
+13. **`replace()` closure cannot call locking methods.** The closure passed to `Ex::replace()` must not call methods that acquire the context lock (e.g., `.sin()`, `.expand()`), as this will deadlock.
 
 ---
 
@@ -646,6 +648,7 @@ abs(abs(w_)) => abs(w_)
 | F6 | **More integration rules** — u-substitution for `sin(ax+b)`, `exp(ax)`, etc. | 2 hr | ✅ Done |
 | F7 | **Polynomial GCD improvements** — multivariate, sparse representation | 8 hr | Not started (deferred to v0.2.0) |
 | F8 | **Limit computation** — basic limits via substitution + L'Hôpital | 4 hr | ✅ Done |
+| F9 | **logcombine()** — inverse of expand_log, combines logarithmic terms | 45 min | ✅ Done |
 
 ### Infrastructure Tasks
 
@@ -679,15 +682,15 @@ abs(abs(w_)) => abs(w_)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 1,159 passing, 0 failing, 0 warnings |
-| Public methods on `Ex` | 81 |
+| Tests | 1,233+ passing, 0 failing, 0 warnings |
+| Public methods on `Ex` | 87 |
 | Public methods on `Context` | 17 |
 | Free-standing functions | 5 |
-| Source code | 19,455 lines across 34 modules |
-| Test code | 6,323 lines across 27 test files |
+| Source code | 20,800+ lines across 35 modules |
+| Test code | 6,600+ lines across 28 test files |
 | ExprNode variants | 30 (21 non-atom + 9 atom) |
-| Simplification rules | 13 |
-| Eval special values | 30+ |
+| Simplification rules | 16 |
+| Eval special values | 46+ (complete unit circle) |
 | Criterion benchmarks | 30 |
 | Proptest properties | 33 |
 | Commits | 43 |
@@ -695,6 +698,8 @@ abs(abs(w_)) => abs(w_)
 ---
 
 ## Next Sprint: Math Depth & Ergonomics (Pre-0.1.0)
+
+> **Status: ✅ COMPLETED** — All 21 items implemented and tested. See commit history.
 
 This section documents the detailed gap analysis and implementation plan for the next development sprint, focused on math completeness and API ergonomics. This plan was produced by the full expert panel and should be executed before 0.1.0 evaluation.
 

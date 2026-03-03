@@ -99,3 +99,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `exp_fn` renamed to `exp` for consistency
 - `cargo clippy` clean, `cargo fmt` clean
 - GitHub Actions CI (test + clippy + fmt)
+
+**Sprint A-D: Math Depth & Ergonomics**
+- Integration: `∫ tan(x) dx`, `∫ ln(x) dx`, `∫ tanh(x) dx`, `∫ 1/(x²+1) dx → atan(x)`, `∫ 1/√(1-x²) dx → asin(x)`, `∫ 1/√(x²+1) dx → asinh(x)`, `∫ 1/√(x²-1) dx → acosh(x)`, `∫ 1/(1-x²) dx → atanh(x)`, partial fraction → integrate pipeline, extended by-parts for `ln(x)·polynomial`
+- Simplification: `sin(w)/cos(w) → tan(w)`, `sinh(w)/cosh(w) → tanh(w)`, `exp(a)*exp(b) → exp(a+b)` (16 rules total)
+- Mul sub-expression matching in rewrite rule engine (matches Add sub-match)
+- `logcombine()` method — inverse of `expand_log()`: `ln(a)+ln(b) → ln(a·b)`, `n·ln(a) → ln(aⁿ)`
+- Complete unit circle evaluation: all 16 standard sin/cos angles via quadrant reduction, `tan(π/6)=√3/3`, `tan(π/3)=√3`
+- `Ex::zero()` and `Ex::one()` class methods via global default context
+- `Ex::expr_type() → ExprType` structural classification enum
+- `Ex::replace(closure)` user-provided transformation walk via `walk_and_rebuild`
+- `examples/calculus.rs` comprehensive workflow example

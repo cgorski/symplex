@@ -535,12 +535,27 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
             arena.intern(ExprNode::Integral(expr, var))
         }
 
-        // Inverse trig and tanh: leave as unevaluated integrals
+        ExprNode::Tanh(inner) => {
+            if inner == var {
+                // ∫ tanh(x) dx = ln(cosh(x))
+                let cosh_x = arena.cosh(var);
+                return arena.ln(cosh_x);
+            }
+            // u-sub: if inner = a*x + b, ∫ tanh(a*x+b) dx = ln(cosh(a*x+b))/a
+            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+                let cosh_inner = arena.cosh(inner);
+                let ln_cosh = arena.ln(cosh_inner);
+                let a_id = rational_to_expr(arena, &a);
+                return arena.div(ln_cosh, a_id);
+            }
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
+        // Inverse trig and remaining hyperbolics: leave as unevaluated integrals
         // (their antiderivatives involve compositions that are complex to build)
         ExprNode::Asin(_)
         | ExprNode::Acos(_)
         | ExprNode::Atan(_)
-        | ExprNode::Tanh(_)
         | ExprNode::Asinh(_)
         | ExprNode::Acosh(_)
         | ExprNode::Atanh(_) => arena.intern(ExprNode::Integral(expr, var)),
@@ -931,5 +946,33 @@ mod tests {
         let s = display(&a, result);
         assert!(s.contains("ln"), "should contain ln: {s}");
         assert!(!s.contains("Integral"), "should not be unevaluated: {s}");
+    }
+
+    #[test]
+    fn integrate_tanh_x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let expr = a.tanh(x);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(
+            s.contains("ln") && s.contains("cosh"),
+            "∫ tanh(x) dx should be ln(cosh(x)), got: {s}"
+        );
+    }
+
+    #[test]
+    fn integrate_tanh_2x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let expr = a.tanh(two_x);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(
+            s.contains("ln") && s.contains("cosh"),
+            "∫ tanh(2x) dx should involve ln(cosh(2x)), got: {s}"
+        );
     }
 }
