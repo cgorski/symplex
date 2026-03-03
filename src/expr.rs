@@ -689,6 +689,77 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Compute a definite integral: `∫_lower^upper self dx`.
+    ///
+    /// Computes the antiderivative via [`integrate`](Ex::integrate),
+    /// then evaluates `F(upper) - F(lower)`. If the antiderivative
+    /// is unevaluated (returned an `Integral` node), the result will
+    /// contain unevaluated terms.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // ∫₀¹ x² dx = 1/3
+    /// let result = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    /// assert_eq!(format!("{result}"), "1/3");
+    /// ```
+    #[must_use = "returns the definite integral value"]
+    pub fn definite_integral(&self, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
+        let anti = self.integrate(var);
+        let f_upper = anti.subs(var, upper);
+        let f_lower = anti.subs(var, lower);
+        &f_upper - &f_lower
+    }
+
+    /// Return the degree of this expression as a polynomial in `var`.
+    ///
+    /// Returns `Some(n)` if the expression is a polynomial of degree `n`
+    /// in `var`, or `None` if it is not polynomial (e.g., contains `sin(x)`)
+    /// or is the zero polynomial.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// assert_eq!((&x.powi(3) + &x + 1).degree(&x), Some(3));
+    /// assert_eq!(x.sin().degree(&x), None);
+    /// ```
+    pub fn degree(&self, var: &Ex) -> Option<usize> {
+        let inner = self.inner.read();
+        inner.arena.degree_of(self.id, var.id)
+    }
+
+    /// Return the coefficients of this expression as a polynomial in `var`,
+    /// in ascending degree order: `[a_0, a_1, a_2, ...]`.
+    ///
+    /// Returns `None` if the expression is not polynomial in `var`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // x^2 + 3*x + 5 → coefficients [5, 3, 1]
+    /// let expr = &x.powi(2) + &x * 3 + 5;
+    /// let cs = expr.coeffs(&x).unwrap();
+    /// let strs: Vec<String> = cs.iter().map(|c| format!("{c}")).collect();
+    /// assert_eq!(strs, vec!["5", "3", "1"]);
+    /// ```
+    pub fn coeffs(&self, var: &Ex) -> Option<Vec<Ex>> {
+        let mut inner = self.inner.write();
+        let ids = inner.arena.coefficients_of(self.id, var.id)?;
+        drop(inner);
+        Some(ids.into_iter().map(|id| self.wrap(id)).collect())
+    }
+
     /// Compute the Taylor series around `point` to the given `order`.
     ///
     /// Returns the truncated polynomial with `order` terms:

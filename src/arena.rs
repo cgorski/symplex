@@ -589,6 +589,23 @@ impl Arena {
         crate::factor::factor(self, expr, var)
     }
 
+    /// Return the degree of `expr` as a polynomial in `var`.
+    ///
+    /// Returns `None` if not polynomial or if the zero polynomial.
+    /// Delegates to [`polybridge::poly_degree`].
+    pub fn degree_of(&self, expr: ExprId, var: ExprId) -> Option<usize> {
+        crate::polybridge::poly_degree(self, expr, var)
+    }
+
+    /// Return the coefficients of `expr` as a polynomial in `var`,
+    /// in ascending degree order.
+    ///
+    /// Returns `None` if not polynomial in `var`.
+    /// Delegates to [`polybridge::poly_coefficients`].
+    pub fn coefficients_of(&mut self, expr: ExprId, var: ExprId) -> Option<Vec<ExprId>> {
+        crate::polybridge::poly_coefficients(self, expr, var)
+    }
+
     /// Creates a subtraction expression `a - b` as `a + neg(b)`.
     pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
         let neg_b = self.neg(b);

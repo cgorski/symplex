@@ -54,6 +54,10 @@ pub(crate) mod subs;
 pub(crate) mod symbol;
 pub(crate) mod walk;
 
+// ── Public modules ─────────────────────────────────────────────────────
+/// Runtime expression parser — convert strings to symbolic expressions.
+pub mod parse;
+
 // ── Public modules (stable API surface) ────────────────────────────────
 pub mod assumptions;
 pub mod config;

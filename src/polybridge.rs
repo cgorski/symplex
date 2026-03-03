@@ -429,6 +429,36 @@ pub(crate) fn collect(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     poly_to_expr(arena, &poly, var)
 }
 
+/// Return the degree of `expr` as a polynomial in `var`.
+///
+/// Returns `None` if the expression is not polynomial in `var`
+/// or if it is the zero polynomial.
+pub(crate) fn poly_degree(arena: &Arena, expr: ExprId, var: ExprId) -> Option<usize> {
+    let poly = expr_to_poly(arena, expr, var)?;
+    poly.degree()
+}
+
+/// Return the coefficients of `expr` as a polynomial in `var`,
+/// in ascending degree order: `[a_0, a_1, a_2, ...]` where
+/// `expr = a_0 + a_1*var + a_2*var^2 + ...`.
+///
+/// Returns `None` if the expression is not polynomial in `var`.
+/// Returns an empty vec for the zero polynomial.
+pub(crate) fn poly_coefficients(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+) -> Option<Vec<ExprId>> {
+    let poly = expr_to_poly(arena, expr, var)?;
+    let rational_coeffs = poly.coeffs();
+    let mut result = Vec::with_capacity(rational_coeffs.len());
+    for c in rational_coeffs {
+        let nid = arena.intern_num(c.clone());
+        result.push(arena.intern(crate::node::ExprNode::Num(nid)));
+    }
+    Some(result)
+}
+
 /// Combine fractions over a common denominator.
 ///
 /// For an Add node, decomposes each term into numerator/denominator
