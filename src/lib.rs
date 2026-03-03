@@ -55,6 +55,8 @@ pub(crate) mod symbol;
 pub(crate) mod walk;
 
 // ── Public modules ─────────────────────────────────────────────────────
+/// Expression formatting for multiple output modes (plain text, LaTeX, Markdown).
+pub mod format;
 /// Runtime expression parser — convert strings to symbolic expressions.
 pub mod parse;
 

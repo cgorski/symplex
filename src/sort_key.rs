@@ -72,7 +72,13 @@ const FN_EXP: u8 = 3;
 const FN_LN: u8 = 4;
 const FN_SQRT: u8 = 5;
 const FN_ABS: u8 = 6;
-const FN_APPLY: u8 = 7;
+const FN_ASIN: u8 = 8;
+const FN_ACOS: u8 = 9;
+const FN_ATAN: u8 = 10;
+const FN_SINH: u8 = 11;
+const FN_COSH: u8 = 12;
+const FN_TANH: u8 = 13;
+const FN_APPLY: u8 = 14;
 
 // ---------------------------------------------------------------------------
 // Constant sub-rank bytes (used within the RANK_CONSTANT class)
@@ -175,7 +181,7 @@ impl fmt::Debug for SortKey {
 /// | 20   | `Pow`                                              |
 /// | 30   | `Mul`                                              |
 /// | 40   | `Add`                                              |
-/// | 50   | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Sqrt`, `Abs`, `Apply` |
+/// | 50   | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Sqrt`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Apply` |
 /// | 60   | `Derivative`                                       |
 /// | 70   | `Integral`                                         |
 /// | 80   | `Pi`, `E`, `ImaginaryUnit`                         |
@@ -274,6 +280,42 @@ pub fn compute_sort_key(
         ExprNode::Abs(x) => {
             key.push(RANK_FUNCTION);
             key.push(FN_ABS);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Asin(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ASIN);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Acos(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ACOS);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Atan(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ATAN);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Sinh(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_SINH);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Cosh(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_COSH);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Tanh(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_TANH);
             key.extend(get_key(*x).as_bytes());
         }
 

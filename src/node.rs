@@ -9,7 +9,7 @@
 //! referenced via [`NumId`] and [`SymbolId`] respectively, keeping the core
 //! node type small and cheap to clone.
 
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -138,6 +138,24 @@ pub enum ExprNode {
     /// Absolute value (or complex modulus): `|x|`.
     Abs(ExprId),
 
+    /// Inverse sine: `asin(x)` (arcsin).
+    Asin(ExprId),
+
+    /// Inverse cosine: `acos(x)` (arccos).
+    Acos(ExprId),
+
+    /// Inverse tangent: `atan(x)` (arctan).
+    Atan(ExprId),
+
+    /// Hyperbolic sine: `sinh(x)`.
+    Sinh(ExprId),
+
+    /// Hyperbolic cosine: `cosh(x)`.
+    Cosh(ExprId),
+
+    /// Hyperbolic tangent: `tanh(x)`.
+    Tanh(ExprId),
+
     // -- composite forms -----------------------------------------------------
     /// Application of a user‐defined or library function identified by
     /// [`SymbolId`] to a list of argument expressions.
@@ -189,7 +207,13 @@ impl ExprNode {
             | ExprNode::Exp(x)
             | ExprNode::Ln(x)
             | ExprNode::Sqrt(x)
-            | ExprNode::Abs(x) => smallvec![*x],
+            | ExprNode::Abs(x)
+            | ExprNode::Asin(x)
+            | ExprNode::Acos(x)
+            | ExprNode::Atan(x)
+            | ExprNode::Sinh(x)
+            | ExprNode::Cosh(x)
+            | ExprNode::Tanh(x) => smallvec![*x],
 
             // function application
             ExprNode::Apply(_, args) => {
@@ -248,6 +272,12 @@ impl fmt::Debug for ExprNode {
             ExprNode::Ln(x) => f.debug_tuple("Ln").field(x).finish(),
             ExprNode::Sqrt(x) => f.debug_tuple("Sqrt").field(x).finish(),
             ExprNode::Abs(x) => f.debug_tuple("Abs").field(x).finish(),
+            ExprNode::Asin(x) => f.debug_tuple("Asin").field(x).finish(),
+            ExprNode::Acos(x) => f.debug_tuple("Acos").field(x).finish(),
+            ExprNode::Atan(x) => f.debug_tuple("Atan").field(x).finish(),
+            ExprNode::Sinh(x) => f.debug_tuple("Sinh").field(x).finish(),
+            ExprNode::Cosh(x) => f.debug_tuple("Cosh").field(x).finish(),
+            ExprNode::Tanh(x) => f.debug_tuple("Tanh").field(x).finish(),
             ExprNode::Apply(sym, args) => f.debug_tuple("Apply").field(sym).field(args).finish(),
             ExprNode::Derivative(body, var) => {
                 f.debug_tuple("Derivative").field(body).field(var).finish()

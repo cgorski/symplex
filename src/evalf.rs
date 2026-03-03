@@ -212,6 +212,38 @@ fn eval_node(
             Ok(val.abs())
         }
 
+        // ── Inverse trig ──────────────────────────────────────────
+        ExprNode::Asin(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok(val.asin(prec, rm, cc))
+        }
+
+        ExprNode::Acos(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok(val.acos(prec, rm, cc))
+        }
+
+        ExprNode::Atan(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok(val.atan(prec, rm, cc))
+        }
+
+        // ── Hyperbolic ────────────────────────────────────────────
+        ExprNode::Sinh(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok(val.sinh(prec, rm, cc))
+        }
+
+        ExprNode::Cosh(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok(val.cosh(prec, rm, cc))
+        }
+
+        ExprNode::Tanh(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok(val.tanh(prec, rm, cc))
+        }
+
         // ── Unevaluable ────────────────────────────────────────────
         ExprNode::Apply(sid, _) => {
             let name = arena.symbol_name(*sid);

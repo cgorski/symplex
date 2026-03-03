@@ -260,6 +260,82 @@ fn diff_node(
             arena.intern(ExprNode::Derivative(id, v))
         }
 
+        // d/dx(asin(f)) = f' / sqrt(1 - f^2)
+        ExprNode::Asin(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let one = arena.one;
+            let two = arena.int(2);
+            let f_sq = arena.pow(inner, two);
+            let one_minus_f_sq = arena.sub(one, f_sq);
+            let sqrt_denom = arena.sqrt(one_minus_f_sq);
+            arena.div(df, sqrt_denom)
+        }
+
+        // d/dx(acos(f)) = -f' / sqrt(1 - f^2)
+        ExprNode::Acos(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let one = arena.one;
+            let two = arena.int(2);
+            let f_sq = arena.pow(inner, two);
+            let one_minus_f_sq = arena.sub(one, f_sq);
+            let sqrt_denom = arena.sqrt(one_minus_f_sq);
+            let frac = arena.div(df, sqrt_denom);
+            arena.neg(frac)
+        }
+
+        // d/dx(atan(f)) = f' / (1 + f^2)
+        ExprNode::Atan(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let one = arena.one;
+            let two = arena.int(2);
+            let f_sq = arena.pow(inner, two);
+            let one_plus_f_sq = arena.add(&[one, f_sq]);
+            arena.div(df, one_plus_f_sq)
+        }
+
+        // d/dx(sinh(f)) = cosh(f) * f'
+        ExprNode::Sinh(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let cosh_f = arena.intern(ExprNode::Cosh(inner));
+            arena.mul(&[cosh_f, df])
+        }
+
+        // d/dx(cosh(f)) = sinh(f) * f'
+        ExprNode::Cosh(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let sinh_f = arena.intern(ExprNode::Sinh(inner));
+            arena.mul(&[sinh_f, df])
+        }
+
+        // d/dx(tanh(f)) = (1 - tanh^2(f)) * f'
+        ExprNode::Tanh(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let tanh_f = arena.intern(ExprNode::Tanh(inner));
+            let two = arena.int(2);
+            let tanh_sq = arena.pow(tanh_f, two);
+            let one = arena.one;
+            let one_minus_tanh_sq = arena.sub(one, tanh_sq);
+            arena.mul(&[one_minus_tanh_sq, df])
+        }
+
         // ── Apply (user-defined function): leave unevaluated ───────
         ExprNode::Apply(_, _) => {
             let v = var_expr(arena, var);

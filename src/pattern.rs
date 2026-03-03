@@ -212,6 +212,24 @@ fn match_recursive(
             match_recursive(arena, pattern, pi, ei, bindings)
         }
         (ExprNode::Abs(pi), ExprNode::Abs(ei)) => match_recursive(arena, pattern, pi, ei, bindings),
+        (ExprNode::Asin(pi), ExprNode::Asin(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::Acos(pi), ExprNode::Acos(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::Atan(pi), ExprNode::Atan(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::Sinh(pi), ExprNode::Sinh(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::Cosh(pi), ExprNode::Cosh(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::Tanh(pi), ExprNode::Tanh(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
 
         // Apply: function name must match, then args positionally.
         (ExprNode::Apply(pf, ref pa), ExprNode::Apply(ef, ref ea)) => {

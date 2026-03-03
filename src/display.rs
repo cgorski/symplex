@@ -72,6 +72,12 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Ln(_)
         | ExprNode::Sqrt(_)
         | ExprNode::Abs(_)
+        | ExprNode::Asin(_)
+        | ExprNode::Acos(_)
+        | ExprNode::Atan(_)
+        | ExprNode::Sinh(_)
+        | ExprNode::Cosh(_)
+        | ExprNode::Tanh(_)
         | ExprNode::Apply(_, _)
         | ExprNode::Derivative(_, _)
         | ExprNode::Integral(_, _) => PREC_ATOM,
@@ -334,6 +340,12 @@ fn expand_expr(
         ExprNode::Ln(x) => push_func("ln", x, stack),
         ExprNode::Sqrt(x) => push_func("sqrt", x, stack),
         ExprNode::Abs(x) => push_func("abs", x, stack),
+        ExprNode::Asin(x) => push_func("asin", x, stack),
+        ExprNode::Acos(x) => push_func("acos", x, stack),
+        ExprNode::Atan(x) => push_func("atan", x, stack),
+        ExprNode::Sinh(x) => push_func("sinh", x, stack),
+        ExprNode::Cosh(x) => push_func("cosh", x, stack),
+        ExprNode::Tanh(x) => push_func("tanh", x, stack),
 
         // ── Apply (user-defined function) ──────────────────────────
         ExprNode::Apply(sym_id, ref args) => {

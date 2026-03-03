@@ -649,6 +649,36 @@ impl Arena {
         self.intern(ExprNode::Abs(expr))
     }
 
+    /// Creates an `Asin` (inverse sine / arcsin) node.
+    pub fn asin(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Asin(expr))
+    }
+
+    /// Creates an `Acos` (inverse cosine / arccos) node.
+    pub fn acos(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Acos(expr))
+    }
+
+    /// Creates an `Atan` (inverse tangent / arctan) node.
+    pub fn atan(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Atan(expr))
+    }
+
+    /// Creates a `Sinh` (hyperbolic sine) node.
+    pub fn sinh(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Sinh(expr))
+    }
+
+    /// Creates a `Cosh` (hyperbolic cosine) node.
+    pub fn cosh(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Cosh(expr))
+    }
+
+    /// Creates a `Tanh` (hyperbolic tangent) node.
+    pub fn tanh(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Tanh(expr))
+    }
+
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.
     ///
     /// Returns the string representation of the result, or an error if the

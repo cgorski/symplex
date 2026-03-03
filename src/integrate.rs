@@ -248,6 +248,28 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
             arena.intern(ExprNode::Integral(expr, var))
         }
 
+        ExprNode::Sinh(inner) => {
+            if inner == var {
+                // ∫ sinh(x) dx = cosh(x)
+                return arena.intern(ExprNode::Cosh(var));
+            }
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
+        ExprNode::Cosh(inner) => {
+            if inner == var {
+                // ∫ cosh(x) dx = sinh(x)
+                return arena.intern(ExprNode::Sinh(var));
+            }
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
+        // Inverse trig and tanh: leave as unevaluated integrals
+        // (their antiderivatives involve compositions that are complex to build)
+        ExprNode::Asin(_) | ExprNode::Acos(_) | ExprNode::Atan(_) | ExprNode::Tanh(_) => {
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
         // Everything else: unevaluated integral.
         _ => arena.intern(ExprNode::Integral(expr, var)),
     }

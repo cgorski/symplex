@@ -213,6 +213,56 @@ pub(crate) fn rebuild_with_cache(
         ExprNode::Sqrt(inner) => rebuild_unary(arena, id, inner, cache, Arena::sqrt),
         ExprNode::Abs(inner) => rebuild_unary(arena, id, inner, cache, Arena::abs),
 
+        // Unary: Asin, Acos, Atan, Sinh, Cosh, Tanh
+        ExprNode::Asin(inner) => {
+            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+            if new_inner == inner {
+                id
+            } else {
+                arena.intern(ExprNode::Asin(new_inner))
+            }
+        }
+        ExprNode::Acos(inner) => {
+            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+            if new_inner == inner {
+                id
+            } else {
+                arena.intern(ExprNode::Acos(new_inner))
+            }
+        }
+        ExprNode::Atan(inner) => {
+            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+            if new_inner == inner {
+                id
+            } else {
+                arena.intern(ExprNode::Atan(new_inner))
+            }
+        }
+        ExprNode::Sinh(inner) => {
+            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+            if new_inner == inner {
+                id
+            } else {
+                arena.intern(ExprNode::Sinh(new_inner))
+            }
+        }
+        ExprNode::Cosh(inner) => {
+            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+            if new_inner == inner {
+                id
+            } else {
+                arena.intern(ExprNode::Cosh(new_inner))
+            }
+        }
+        ExprNode::Tanh(inner) => {
+            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+            if new_inner == inner {
+                id
+            } else {
+                arena.intern(ExprNode::Tanh(new_inner))
+            }
+        }
+
         // Apply: user-defined function
         ExprNode::Apply(func_id, ref args) => {
             let new_args: SmallVec<[ExprId; 2]> = args

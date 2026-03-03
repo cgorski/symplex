@@ -74,7 +74,9 @@ pub enum BinOp {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// The set of built-in function names recognised by the parser.
-pub const KNOWN_FUNCTIONS: &[&str] = &["sin", "cos", "tan", "exp", "ln", "sqrt", "abs"];
+pub const KNOWN_FUNCTIONS: &[&str] = &[
+    "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "ln", "sqrt", "abs",
+];
 
 /// Returns `true` if `name` is a known built-in function.
 pub fn is_known_function(name: &str) -> bool {
@@ -107,7 +109,7 @@ impl MathExpr {
     }
 
     /// Returns `true` if this is an identifier ending in `_`.
-        #[cfg(test)]
+    #[cfg(test)]
     pub fn is_wild(&self) -> bool {
         match self {
             MathExpr::Ident(id) => id.to_string().ends_with('_'),

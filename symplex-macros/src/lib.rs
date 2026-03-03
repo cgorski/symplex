@@ -31,7 +31,8 @@ use syn::Ident;
 /// # Syntax
 ///
 /// - Operators: `+`, `-`, `*`, `/`, `^` (power)
-/// - Functions: `sin(x)`, `cos(x)`, `tan(x)`, `exp(x)`, `ln(x)`, `sqrt(x)`, `abs(x)`
+/// - Functions: `sin(x)`, `cos(x)`, `tan(x)`, `asin(x)`, `acos(x)`, `atan(x)`,
+///   `sinh(x)`, `cosh(x)`, `tanh(x)`, `exp(x)`, `ln(x)`, `sqrt(x)`, `abs(x)`
 /// - Parentheses for grouping
 /// - Integer literals
 /// - Unary minus: `-x`
@@ -148,6 +149,12 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 "sin" => quote! { sin },
                 "cos" => quote! { cos },
                 "tan" => quote! { tan },
+                "asin" => quote! { asin },
+                "acos" => quote! { acos },
+                "atan" => quote! { atan },
+                "sinh" => quote! { sinh },
+                "cosh" => quote! { cosh },
+                "tanh" => quote! { tanh },
                 "exp" => quote! { exp_fn },
                 "ln" => quote! { ln },
                 "sqrt" => quote! { sqrt },
@@ -434,6 +441,12 @@ impl RuleCodeGen {
                     "sin" => quote! { #arena.sin(#arg_temp) },
                     "cos" => quote! { #arena.cos(#arg_temp) },
                     "tan" => quote! { #arena.tan(#arg_temp) },
+                    "asin" => quote! { #arena.asin(#arg_temp) },
+                    "acos" => quote! { #arena.acos(#arg_temp) },
+                    "atan" => quote! { #arena.atan(#arg_temp) },
+                    "sinh" => quote! { #arena.sinh(#arg_temp) },
+                    "cosh" => quote! { #arena.cosh(#arg_temp) },
+                    "tanh" => quote! { #arena.tanh(#arg_temp) },
                     "exp" => quote! { #arena.exp_fn(#arg_temp) },
                     "ln" => quote! { #arena.ln(#arg_temp) },
                     "sqrt" => quote! { #arena.sqrt(#arg_temp) },

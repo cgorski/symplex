@@ -170,6 +170,48 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Inverse sine (arcsin): `asin(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn asin(&self) -> Ex {
+        let id = self.inner.write().arena.asin(self.id);
+        self.wrap(id)
+    }
+
+    /// Inverse cosine (arccos): `acos(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn acos(&self) -> Ex {
+        let id = self.inner.write().arena.acos(self.id);
+        self.wrap(id)
+    }
+
+    /// Inverse tangent (arctan): `atan(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn atan(&self) -> Ex {
+        let id = self.inner.write().arena.atan(self.id);
+        self.wrap(id)
+    }
+
+    /// Hyperbolic sine: `sinh(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn sinh(&self) -> Ex {
+        let id = self.inner.write().arena.sinh(self.id);
+        self.wrap(id)
+    }
+
+    /// Hyperbolic cosine: `cosh(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn cosh(&self) -> Ex {
+        let id = self.inner.write().arena.cosh(self.id);
+        self.wrap(id)
+    }
+
+    /// Hyperbolic tangent: `tanh(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn tanh(&self) -> Ex {
+        let id = self.inner.write().arena.tanh(self.id);
+        self.wrap(id)
+    }
+
     // ── Structural predicates ──────────────────────────────────────
 
     /// Returns `true` if this expression is structurally zero (O(1)).
@@ -953,6 +995,113 @@ impl Ex {
         let id = inner.arena.mul(&ids);
         drop(inner);
         items[0].wrap(id)
+    }
+
+    /// Format this expression as a LaTeX string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = x.powi(2);
+    /// assert_eq!(expr.to_latex(), "x^{2}");
+    /// ```
+    pub fn to_latex(&self) -> String {
+        let inner = self.inner.read();
+        crate::format::format_expr(&inner.arena, self.id, &crate::format::PrintOptions::latex())
+    }
+
+    /// Format this expression as a Markdown string (with Unicode symbols).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let expr = ctx.pi();
+    /// assert_eq!(expr.to_markdown(), "π");
+    /// ```
+    pub fn to_markdown(&self) -> String {
+        let inner = self.inner.read();
+        crate::format::format_expr(
+            &inner.arena,
+            self.id,
+            &crate::format::PrintOptions::markdown(),
+        )
+    }
+
+    /// Format this expression using custom [`PrintOptions`](crate::format::PrintOptions).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::format::{PrintOptions, PrintMode};
+    ///
+    /// let x = symplex::var("x");
+    /// let opts = PrintOptions { mode: PrintMode::LaTeX };
+    /// assert_eq!(x.powi(2).render(&opts), "x^{2}");
+    /// ```
+    pub fn render(&self, opts: &crate::format::PrintOptions) -> String {
+        let inner = self.inner.read();
+        crate::format::format_expr(&inner.arena, self.id, opts)
+    }
+
+    /// Apply a transformation repeatedly until the expression stops changing,
+    /// or `max_iterations` is reached.
+    ///
+    /// Returns the final expression and the number of iterations performed.
+    /// Useful for building custom simplification pipelines.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = (&x + 1).powi(2);
+    /// let (result, iters) = expr.apply_until_stable(10, |e| e.expand());
+    /// assert_eq!(format!("{result}"), "1 + x^2 + 2*x");
+    /// assert_eq!(iters, 1); // stabilized after 1 iteration
+    /// ```
+    pub fn apply_until_stable<F>(&self, max_iterations: usize, f: F) -> (Ex, usize)
+    where
+        F: Fn(&Ex) -> Ex,
+    {
+        let mut current = self.clone();
+        for i in 0..max_iterations {
+            let next = f(&current);
+            if next.id == current.id && next.ctx_id == current.ctx_id {
+                return (current, i);
+            }
+            current = next;
+        }
+        (current, max_iterations)
+    }
+
+    /// Returns the number of top-level terms in this expression.
+    ///
+    /// For an `Add` node, returns the number of summands.
+    /// For anything else, returns 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// assert_eq!((&x + 1).term_count(), 2);
+    /// assert_eq!(x.powi(2).term_count(), 1);
+    /// ```
+    pub fn term_count(&self) -> usize {
+        let inner = self.inner.read();
+        match inner.arena.node(self.id) {
+            crate::node::ExprNode::Add(children) => children.len(),
+            _ => 1,
+        }
     }
 
     /// Mathematical equality: attempts to determine if `self - other == 0`.

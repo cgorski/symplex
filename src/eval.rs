@@ -92,6 +92,30 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
                 eval_abs(arena, inner).unwrap_or_else(|| arena.abs(inner))
             }
+            ExprNode::Asin(inner) => {
+                let inner = cache.get(&inner).copied().unwrap_or(inner);
+                eval_asin(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Asin(inner)))
+            }
+            ExprNode::Acos(inner) => {
+                let inner = cache.get(&inner).copied().unwrap_or(inner);
+                eval_acos(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Acos(inner)))
+            }
+            ExprNode::Atan(inner) => {
+                let inner = cache.get(&inner).copied().unwrap_or(inner);
+                eval_atan(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Atan(inner)))
+            }
+            ExprNode::Sinh(inner) => {
+                let inner = cache.get(&inner).copied().unwrap_or(inner);
+                eval_sinh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Sinh(inner)))
+            }
+            ExprNode::Cosh(inner) => {
+                let inner = cache.get(&inner).copied().unwrap_or(inner);
+                eval_cosh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Cosh(inner)))
+            }
+            ExprNode::Tanh(inner) => {
+                let inner = cache.get(&inner).copied().unwrap_or(inner);
+                eval_tanh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Tanh(inner)))
+            }
             // Rebuild Add/Mul/Pow/Neg with evaluated children.
             ExprNode::Add(ref children) => {
                 let new: smallvec::SmallVec<[ExprId; 6]> = children
@@ -386,6 +410,76 @@ fn eval_abs(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
     }
 
+    None
+}
+
+fn eval_asin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if inner == arena.zero {
+        return Some(arena.zero);
+    } // asin(0) = 0
+    if inner == arena.one {
+        // asin(1) = π/2
+        let half = arena.rational(1, 2);
+        return Some(arena.mul(&[half, arena.pi]));
+    }
+    if inner == arena.neg_one {
+        // asin(-1) = -π/2
+        let neg_half = arena.rational(-1, 2);
+        return Some(arena.mul(&[neg_half, arena.pi]));
+    }
+    None
+}
+
+fn eval_acos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if inner == arena.one {
+        return Some(arena.zero);
+    } // acos(1) = 0
+    if inner == arena.zero {
+        // acos(0) = π/2
+        let half = arena.rational(1, 2);
+        return Some(arena.mul(&[half, arena.pi]));
+    }
+    if inner == arena.neg_one {
+        return Some(arena.pi);
+    } // acos(-1) = π
+    None
+}
+
+fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if inner == arena.zero {
+        return Some(arena.zero);
+    } // atan(0) = 0
+    if inner == arena.one {
+        // atan(1) = π/4
+        let quarter = arena.rational(1, 4);
+        return Some(arena.mul(&[quarter, arena.pi]));
+    }
+    if inner == arena.neg_one {
+        // atan(-1) = -π/4
+        let neg_quarter = arena.rational(-1, 4);
+        return Some(arena.mul(&[neg_quarter, arena.pi]));
+    }
+    None
+}
+
+fn eval_sinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if inner == arena.zero {
+        return Some(arena.zero);
+    } // sinh(0) = 0
+    None
+}
+
+fn eval_cosh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if inner == arena.zero {
+        return Some(arena.one);
+    } // cosh(0) = 1
+    None
+}
+
+fn eval_tanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if inner == arena.zero {
+        return Some(arena.zero);
+    } // tanh(0) = 0
     None
 }
 
