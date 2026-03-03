@@ -627,7 +627,7 @@ mod tests {
         bindings.insert(wid, x);
 
         let result = instantiate(&mut a, template, &wilds, &bindings);
-        assert_eq!(display(&a, result), "x**2");
+        assert_eq!(display(&a, result), "x^2");
     }
 
     // ── Rule application ────────────────────────────────────────────
@@ -716,7 +716,7 @@ mod tests {
         // matching terms among many) is a Stage 7 feature.
         assert_eq!(
             display(&a, result),
-            "3 + sin(x)**2 + cos(x)**2",
+            "3 + sin(x)^2 + cos(x)^2",
             "structural matching cannot find sub-patterns in larger Adds (known limitation)"
         );
         assert!(steps.is_empty(), "no rule should fire on a 3-term Add");

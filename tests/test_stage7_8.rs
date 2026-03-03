@@ -65,8 +65,8 @@ fn expand_x_plus_1_squared() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = (&x + 1).powi(2);
-    assert_eq!(format!("{expr}"), "(1 + x)**2");
-    assert_eq!(format!("{}", expr.expand()), "1 + x**2 + 2*x");
+    assert_eq!(format!("{expr}"), "(1 + x)^2");
+    assert_eq!(format!("{}", expr.expand()), "1 + x^2 + 2*x");
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn expand_x_plus_1_cubed() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = (&x + 1).powi(3);
-    assert_eq!(format!("{}", expr.expand()), "1 + x**3 + 3*x + 3*x**2");
+    assert_eq!(format!("{}", expr.expand()), "1 + x^3 + 3*x + 3*x^2");
 }
 
 #[test]
@@ -83,8 +83,8 @@ fn expand_x_plus_y_squared() {
     syms!(ctx; x, y);
     let expr = (&x + &y).powi(2);
     let expanded = format!("{}", expr.expand());
-    assert!(expanded.contains("x**2"), "should contain x^2: {expanded}");
-    assert!(expanded.contains("y**2"), "should contain y^2: {expanded}");
+    assert!(expanded.contains("x^2"), "should contain x^2: {expanded}");
+    assert!(expanded.contains("y^2"), "should contain y^2: {expanded}");
     assert!(
         expanded.contains("2*x*y") || expanded.contains("2*y*x"),
         "should contain 2xy: {expanded}"
@@ -117,7 +117,7 @@ fn expand_negative_power_not_expanded() {
     let expr = (&x + 1).powi(-2);
     let expanded = expr.expand();
     // Negative powers of sums should NOT be expanded.
-    assert_eq!(format!("{expanded}"), "(1 + x)**(-2)");
+    assert_eq!(format!("{expanded}"), "(1 + x)^(-2)");
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn expand_product_of_power() {
     let expr = &y * &(&x + 1).powi(2);
     let expanded = expr.expand();
     let s = format!("{expanded}");
-    assert!(!s.contains("**2)"), "power should be expanded: {s}");
+    assert!(!s.contains("^2)"), "power should be expanded: {s}");
     assert!(s.contains('y'), "should contain y: {s}");
 }
 

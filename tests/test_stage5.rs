@@ -117,7 +117,7 @@ fn subs_polynomial_symbol_for_symbol() {
     syms!(ctx; x, y);
     let expr = &x.powi(2) + &x * 2 + 1;
     let result = expr.subs(&x, &y);
-    assert_eq!(format!("{result}"), "1 + y**2 + 2*y");
+    assert_eq!(format!("{result}"), "1 + y^2 + 2*y");
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn subs_in_nested_function() {
     syms!(ctx; x, y);
     let expr = x.powi(2).sin();
     let result = expr.subs(&x, &y);
-    assert_eq!(format!("{result}"), "sin(y**2)");
+    assert_eq!(format!("{result}"), "sin(y^2)");
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn subs_in_deeply_nested() {
     // sin(cos(x^2))
     let expr = x.powi(2).cos().sin();
     let result = expr.subs(&x, &y);
-    assert_eq!(format!("{result}"), "sin(cos(y**2))");
+    assert_eq!(format!("{result}"), "sin(cos(y^2))");
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn subs_symbol_for_expression() {
     let replacement = &y + &z;
     let result = expr.subs(&x, &replacement);
     // (y + z)^2
-    assert_eq!(format!("{result}"), "(y + z)**2");
+    assert_eq!(format!("{result}"), "(y + z)^2");
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn subs_subexpression_for_symbol() {
     let inner = &x + &y;
     let expr = inner.powi(2);
     let result = expr.subs(&inner, &w);
-    assert_eq!(format!("{result}"), "w**2");
+    assert_eq!(format!("{result}"), "w^2");
 }
 
 // ─── Simultaneous substitution ────────────────────────────────────────────

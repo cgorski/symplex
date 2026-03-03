@@ -284,9 +284,9 @@ fn expand_expr(
                 _ => PREC_POW,
             };
 
-            // Push in reverse: base ** exp
+            // Push in reverse: base ^ exp
             stack.push(WorkItem::Expr(exp, exp_prec));
-            stack.push(WorkItem::Lit("**"));
+            stack.push(WorkItem::Lit("^"));
             stack.push(WorkItem::Expr(base, base_prec));
         }
 
@@ -449,7 +449,7 @@ impl Arena {
     /// let x = arena.symbol("x");
     /// let two = arena.int(2);
     /// let expr = arena.pow(x, two);
-    /// assert_eq!(arena.display(expr).to_string(), "x**2");
+    /// assert_eq!(arena.display(expr).to_string(), "x^2");
     /// ```
     pub fn display(&self, id: ExprId) -> impl fmt::Display + '_ {
         fmt::from_fn(move |f| fmt_expr(self, f, id, 0))
@@ -603,7 +603,7 @@ mod tests {
         let x = a.symbol("x");
         let two = a.int(2);
         let p = a.pow(x, two);
-        assert_display!(a, p, "x**2");
+        assert_display!(a, p, "x^2");
     }
 
     #[test]
@@ -614,7 +614,7 @@ mod tests {
         let sum = a.add(&[one, x]);
         let two = a.int(2);
         let p = a.pow(sum, two);
-        assert_display!(a, p, "(1 + x)**2");
+        assert_display!(a, p, "(1 + x)^2");
     }
 
     #[test]
@@ -624,7 +624,7 @@ mod tests {
         let y = a.symbol("y");
         let sum = a.add(&[x, y]);
         let p = a.pow(x, sum);
-        assert_display!(a, p, "x**(x + y)");
+        assert_display!(a, p, "x^(x + y)");
     }
 
     #[test]
@@ -633,7 +633,7 @@ mod tests {
         let x = a.int(4);
         let half = a.rational(1, 2);
         let p = a.pow(x, half);
-        assert_display!(a, p, "4**(1/2)");
+        assert_display!(a, p, "4^(1/2)");
     }
 
     #[test]
@@ -642,7 +642,7 @@ mod tests {
         let x = a.symbol("x");
         let neg_one = a.int(-1);
         let p = a.pow(x, neg_one);
-        assert_display!(a, p, "x**(-1)");
+        assert_display!(a, p, "x^(-1)");
     }
 
     // ── Neg ──────────────────────────────────────────────────────────
@@ -714,7 +714,7 @@ mod tests {
             a.pow(x, two)
         };
         let i = a.intern(ExprNode::Integral(x_sq, x));
-        assert_display!(a, i, "Integral(x**2, x)");
+        assert_display!(a, i, "Integral(x^2, x)");
     }
 
     // ── Composite ────────────────────────────────────────────────────

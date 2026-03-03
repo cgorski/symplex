@@ -38,7 +38,7 @@ fn expr_div() {
     let ctx = Context::new();
     syms!(ctx; x, y);
     let result = expr!(x / y);
-    assert_eq!(format!("{result}"), "x*y**(-1)");
+    assert_eq!(format!("{result}"), "x*y^(-1)");
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn expr_power_integer() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(x ^ 2);
-    assert_eq!(format!("{result}"), "x**2");
+    assert_eq!(format!("{result}"), "x^2");
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn expr_power_cubed() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(x ^ 3);
-    assert_eq!(format!("{result}"), "x**3");
+    assert_eq!(format!("{result}"), "x^3");
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn expr_power_negative() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(x ^ (-1));
-    assert_eq!(format!("{result}"), "x**(-1)");
+    assert_eq!(format!("{result}"), "x^(-1)");
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn expr_polynomial() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(x ^ 2 + 2 * x + 1);
-    assert_eq!(format!("{result}"), "1 + x**2 + 2*x");
+    assert_eq!(format!("{result}"), "1 + x^2 + 2*x");
 }
 
 // ── Functions ───────────────────────────────────────────────────────────
@@ -207,7 +207,7 @@ fn expr_sin_of_power() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(sin(x ^ 2));
-    assert_eq!(format!("{result}"), "sin(x**2)");
+    assert_eq!(format!("{result}"), "sin(x^2)");
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn expr_quadratic() {
     let result = expr!(x ^ 2 - 5 * x + 6);
     // Canonical form has terms sorted
     let s = format!("{result}");
-    assert!(s.contains("x**2"), "should contain x^2: {s}");
+    assert!(s.contains("x^2"), "should contain x^2: {s}");
     assert!(s.contains("5*x"), "should contain 5*x: {s}");
     assert!(s.contains("6"), "should contain 6: {s}");
 }
@@ -259,7 +259,7 @@ fn expr_right_associative_power() {
     // is unavailable on it).
     let result = expr!(x ^ 8);
     let s = format!("{result}");
-    assert_eq!(s, "x**8", "x^8 should display as x**8: {s}");
+    assert_eq!(s, "x^8", "x^8 should display as x^8: {s}");
 }
 
 // ── Reuse of variables ──────────────────────────────────────────────────
@@ -283,7 +283,7 @@ fn expr_with_pre_built_expression() {
     let x = ctx.symbol("x");
     let inner = &x + 1; // pre-built Ex
     let result = expr!(inner ^ 2);
-    assert_eq!(format!("{result}"), "(1 + x)**2");
+    assert_eq!(format!("{result}"), "(1 + x)^2");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -389,10 +389,7 @@ fn expr_then_diff() {
     let f = expr!(x ^ 3 + 2 * x + 1);
     let df = f.diff(&x);
     let s = format!("{df}");
-    assert!(
-        s.contains("3*x**2"),
-        "d/dx(x³+2x+1) should contain 3x²: {s}"
-    );
+    assert!(s.contains("3*x^2"), "d/dx(x³+2x+1) should contain 3x²: {s}");
     assert!(s.contains("2"), "should contain 2: {s}");
 }
 
@@ -411,7 +408,7 @@ fn expr_then_expand() {
     let x = ctx.symbol("x");
     let f = expr!((x + 1) ^ 2);
     let expanded = f.expand();
-    assert_eq!(format!("{expanded}"), "1 + x**2 + 2*x");
+    assert_eq!(format!("{expanded}"), "1 + x^2 + 2*x");
 }
 
 #[test]

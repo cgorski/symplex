@@ -347,10 +347,10 @@ mod tests {
         let sum = a.add(&[x, one]);
         let two = a.int(2);
         let expr = a.pow(sum, two);
-        assert_eq!(display(&a, expr), "(1 + x)**2");
+        assert_eq!(display(&a, expr), "(1 + x)^2");
 
         let result = expand(&mut a, expr);
-        assert_eq!(display(&a, result), "1 + x**2 + 2*x");
+        assert_eq!(display(&a, result), "1 + x^2 + 2*x");
     }
 
     #[test]
@@ -363,7 +363,7 @@ mod tests {
         let expr = a.pow(sum, three);
 
         let result = expand(&mut a, expr);
-        assert_eq!(display(&a, result), "1 + x**3 + 3*x + 3*x**2");
+        assert_eq!(display(&a, result), "1 + x^3 + 3*x + 3*x^2");
     }
 
     #[test]
@@ -378,8 +378,8 @@ mod tests {
         let result = expand(&mut a, expr);
         let s = display(&a, result);
         // (x + y)^2 = x^2 + 2*x*y + y^2
-        assert!(s.contains("x**2"), "should contain x^2, got: {s}");
-        assert!(s.contains("y**2"), "should contain y^2, got: {s}");
+        assert!(s.contains("x^2"), "should contain x^2, got: {s}");
+        assert!(s.contains("y^2"), "should contain y^2, got: {s}");
         assert!(
             s.contains("2*x*y") || s.contains("2*y*x"),
             "should contain 2*x*y, got: {s}"
@@ -420,7 +420,7 @@ mod tests {
         let expr = a.pow(sum, neg_two);
         // (x+1)^(-2) should NOT be expanded.
         let result = expand(&mut a, expr);
-        assert_eq!(display(&a, result), "(1 + x)**(-2)");
+        assert_eq!(display(&a, result), "(1 + x)^(-2)");
     }
 
     #[test]
@@ -466,7 +466,7 @@ mod tests {
         let result = expand(&mut a, expr);
         let s = display(&a, result);
         // y * (x^2 + 2x + 1) = x^2*y + 2*x*y + y
-        assert!(!s.contains("**2)"), "power should be expanded, got: {s}");
+        assert!(!s.contains("^2)"), "power should be expanded, got: {s}");
         assert!(s.contains('y'), "should contain y, got: {s}");
     }
 

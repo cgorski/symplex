@@ -360,9 +360,9 @@ proptest! {
         if !is_trivial {
             let powered = sum.powi(n);
             let s = format!("{powered}");
-            // The display should contain "**" indicating an unevaluated power,
+            // The display should contain "^" indicating an unevaluated power,
             // not a fully expanded polynomial.
-            prop_assert!(s.contains("**"),
+            prop_assert!(s.contains("^"),
                 "pow of non-trivial sum should stay unevaluated, got: {s}");
         }
     }

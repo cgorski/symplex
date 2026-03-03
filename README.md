@@ -29,7 +29,7 @@ syms!(ctx; x, y);
 
 // Build expressions with natural math syntax via expr! macro
 let f = expr!(x^2 + 2*x + 1);
-println!("{f}");                             // 1 + x**2 + 2*x
+println!("{f}");                             // 1 + x^2 + 2*x
 
 // Or with standard Rust operators
 let g = &x * &x + &x * 2 + 1;
@@ -37,11 +37,11 @@ assert_eq!(f, g);                            // same canonical form
 
 // Expand powers
 let cubed = expr!((x + 1)^3);
-println!("{}", cubed.expand());              // 1 + x**3 + 3*x + 3*x**2
+println!("{}", cubed.expand());              // 1 + x^3 + 3*x + 3*x^2
 
 // Differentiate
 let deriv = expr!(x^3).diff(&x);
-println!("{deriv}");                         // 3*x**2
+println!("{deriv}");                         // 3*x^2
 
 // Evaluate derivative at a point
 let at_2 = deriv.subs(&x, &ctx.int(2));

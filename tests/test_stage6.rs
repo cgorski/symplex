@@ -96,7 +96,7 @@ fn diff_x_cubed() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(3).diff(&x);
-    assert_eq!(format!("{result}"), "3*x**2");
+    assert_eq!(format!("{result}"), "3*x^2");
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn diff_x_to_the_fourth() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(4).diff(&x);
-    assert_eq!(format!("{result}"), "4*x**3");
+    assert_eq!(format!("{result}"), "4*x^3");
 }
 
 #[test]
@@ -226,7 +226,7 @@ fn diff_ln_x() {
     let x = ctx.symbol("x");
     let result = x.ln().diff(&x);
     // d/dx(ln(x)) = 1/x = x^(-1)
-    assert_eq!(format!("{result}"), "x**(-1)");
+    assert_eq!(format!("{result}"), "x^(-1)");
 }
 
 #[test]
@@ -308,7 +308,7 @@ fn diff_cubic_polynomial() {
     let expr = &x.powi(3) + &x.powi(2) * 2 + &x + 5;
     let result = expr.diff(&x);
     let s = format!("{result}");
-    assert!(s.contains("3*x**2"), "should contain 3*x^2, got: {s}");
+    assert!(s.contains("3*x^2"), "should contain 3*x^2, got: {s}");
     assert!(s.contains("4*x"), "should contain 4*x, got: {s}");
     assert!(s.contains('1'), "should contain 1, got: {s}");
 }
@@ -367,7 +367,7 @@ fn partial_derivative_y() {
     // ∂/∂y(x^2 * y) = x^2
     let expr = &x.powi(2) * &y;
     let result = expr.diff(&y);
-    assert_eq!(format!("{result}"), "x**2");
+    assert_eq!(format!("{result}"), "x^2");
 }
 
 #[test]

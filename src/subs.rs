@@ -201,7 +201,7 @@ mod tests {
         let xp = a.pow(x, two);
         let expr = a.sin(xp);
         let result = subs(&mut a, expr, x, y);
-        assert_eq!(display(&a, result), "sin(y**2)");
+        assert_eq!(display(&a, result), "sin(y^2)");
     }
 
     #[test]

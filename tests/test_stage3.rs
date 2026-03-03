@@ -134,7 +134,7 @@ fn div_ex_ex() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let quot = &x / &y;
-    assert_eq!(format!("{quot}"), "x*y**(-1)");
+    assert_eq!(format!("{quot}"), "x*y^(-1)");
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn polynomial_via_operators() {
     let x = ctx.symbol("x");
     let x_sq = x.powi(2);
     let expr = &x_sq + &x * 2 + 1;
-    assert_eq!(format!("{expr}"), "1 + x**2 + 2*x");
+    assert_eq!(format!("{expr}"), "1 + x^2 + 2*x");
 }
 
 // ─── Method chaining ─────────────────────────────────────────────────────
@@ -273,7 +273,7 @@ fn pow_method() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(3);
-    assert_eq!(format!("{result}"), "x**3");
+    assert_eq!(format!("{result}"), "x^3");
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn chained_sin_of_pow() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(2).sin();
-    assert_eq!(format!("{result}"), "sin(x**2)");
+    assert_eq!(format!("{result}"), "sin(x^2)");
 }
 
 #[test]
@@ -306,7 +306,7 @@ fn chained_expression_building() {
     let x = ctx.symbol("x");
     // 3*sin(x^2) + 1
     let result = &x.powi(2).sin() * 3 + 1;
-    assert_eq!(format!("{result}"), "1 + 3*sin(x**2)");
+    assert_eq!(format!("{result}"), "1 + 3*sin(x^2)");
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn no_auto_expand_via_operators() {
     let sum = &x + 1;
     let result = sum.powi(2);
     // Should stay as (1 + x)**2, NOT expand.
-    assert_eq!(format!("{result}"), "(1 + x)**2");
+    assert_eq!(format!("{result}"), "(1 + x)^2");
 }
 
 #[test]
@@ -413,7 +413,7 @@ fn quadratic_expression() {
     let ctx = Context::new();
     syms!(ctx; x);
     let expr = &x.powi(2) + &x * 5 + 6;
-    assert_eq!(format!("{expr}"), "6 + x**2 + 5*x");
+    assert_eq!(format!("{expr}"), "6 + x^2 + 5*x");
 }
 
 #[test]
@@ -432,7 +432,7 @@ fn nested_power() {
     let three = ctx.int(3);
     let result = x.pow(&two).pow(&three);
     // (x^2)^3 stays as-is — no power-of-power simplification yet.
-    assert_eq!(format!("{result}"), "(x**2)**3");
+    assert_eq!(format!("{result}"), "(x^2)^3");
 }
 
 #[test]

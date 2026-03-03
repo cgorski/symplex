@@ -696,7 +696,7 @@ mod tests {
         let mut a = Arena::new();
         let x = s(&mut a, "x");
         let result = a.mul(&[x, x]);
-        assert_eq!(display(&a, result), "x**2");
+        assert_eq!(display(&a, result), "x^2");
     }
 
     #[test]
@@ -708,7 +708,7 @@ mod tests {
         let three = a.int(3);
         let x3 = a.pow(x, three);
         let result = a.mul(&[x2, x3]);
-        assert_eq!(display(&a, result), "x**5");
+        assert_eq!(display(&a, result), "x^5");
     }
 
     #[test]
@@ -870,7 +870,7 @@ mod tests {
         let result = a.pow(base, exp);
         // 4^(1/2) should NOT evaluate to 2 — that's simplification, not
         // canonicalization.
-        assert_eq!(display(&a, result), "4**(1/2)");
+        assert_eq!(display(&a, result), "4^(1/2)");
     }
 
     #[test]
@@ -880,7 +880,7 @@ mod tests {
         let exp = a.int(5000);
         let result = a.pow(base, exp);
         // Exceeds max_pow_exponent (default 1000).
-        assert_eq!(display(&a, result), "2**5000");
+        assert_eq!(display(&a, result), "2^5000");
     }
 
     // ── Neg canonicalization ────────────────────────────────────────────
@@ -961,7 +961,7 @@ mod tests {
         let x = s(&mut a, "x");
         let y = s(&mut a, "y");
         let result = a.div(x, y);
-        assert_eq!(display(&a, result), "x*y**(-1)");
+        assert_eq!(display(&a, result), "x*y^(-1)");
     }
 
     #[test]
@@ -985,7 +985,7 @@ mod tests {
         let two_x = a.mul(&[two, x]);
         let one = a.int(1);
         let result = a.add(&[x2, two_x, one]);
-        assert_eq!(display(&a, result), "1 + x**2 + 2*x");
+        assert_eq!(display(&a, result), "1 + x^2 + 2*x");
     }
 
     #[test]
@@ -1060,7 +1060,7 @@ mod tests {
         let sum = a.add(&[x, a.one]);
         let exp = a.int(2);
         let result = a.pow(sum, exp);
-        assert_eq!(display(&a, result), "(1 + x)**2");
+        assert_eq!(display(&a, result), "(1 + x)^2");
     }
 
     #[test]

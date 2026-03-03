@@ -569,7 +569,7 @@ mod tests {
             Ratio::from_integer(BigInt::from(1)),
         ]);
         let expr = poly_to_expr(&mut a, &p, x);
-        assert_eq!(display(&a, expr), "1 + x**2 + 2*x");
+        assert_eq!(display(&a, expr), "1 + x^2 + 2*x");
     }
 
     #[test]

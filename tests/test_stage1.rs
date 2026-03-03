@@ -191,7 +191,7 @@ fn display_pow() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(2);
-    assert_eq!(format!("{result}"), "x**2");
+    assert_eq!(format!("{result}"), "x^2");
 }
 
 #[test]
@@ -216,7 +216,7 @@ fn display_nested_pow_in_add() {
     let x = ctx.symbol("x");
     let x_sq = x.powi(2);
     let sum = &x_sq + &x;
-    assert_eq!(format!("{sum}"), "x + x**2");
+    assert_eq!(format!("{sum}"), "x + x^2");
 }
 
 #[test]
@@ -225,7 +225,7 @@ fn display_add_base_in_pow_gets_parens() {
     let x = ctx.symbol("x");
     let sum = &x + 1;
     let result = sum.powi(2);
-    assert_eq!(format!("{result}"), "(1 + x)**2");
+    assert_eq!(format!("{result}"), "(1 + x)^2");
 }
 
 #[test]
@@ -243,7 +243,7 @@ fn milestone_x_squared_plus_2x_plus_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.powi(2) + &x * 2 + 1;
-    assert_eq!(format!("{expr}"), "1 + x**2 + 2*x");
+    assert_eq!(format!("{expr}"), "1 + x^2 + 2*x");
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn milestone_nested_expression() {
     let x = ctx.symbol("x");
     let sin_x_sq = x.powi(2).sin();
     let expr = &sin_x_sq * 3 + 1;
-    assert_eq!(format!("{expr}"), "1 + 3*sin(x**2)");
+    assert_eq!(format!("{expr}"), "1 + 3*sin(x^2)");
 }
 
 // ─── Ex Properties ──────────────────────────────────────────────────────
@@ -309,7 +309,7 @@ fn power_combination_in_mul() {
     let x2 = x.powi(2);
     let x3 = x.powi(3);
     let result = &x2 * &x3;
-    assert_eq!(format!("{result}"), "x**5");
+    assert_eq!(format!("{result}"), "x^5");
 }
 
 #[test]

@@ -388,7 +388,7 @@ mod tests {
         let result = walk_and_rebuild(&mut a, expr, &|_, id| {
             if id == x { Some(y) } else { None }
         });
-        assert_eq!(display(&a, result), "y**2");
+        assert_eq!(display(&a, result), "y^2");
     }
 
     #[test]

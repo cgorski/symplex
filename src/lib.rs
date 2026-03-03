@@ -30,7 +30,7 @@
 //! let ctx = Context::new();
 //! syms!(ctx; x, y);
 //! let expr = &x * &x + &x * 2 + 1;
-//! assert_eq!(format!("{expr}"), "1 + x**2 + 2*x");
+//! assert_eq!(format!("{expr}"), "1 + x^2 + 2*x");
 //! ```
 
 // ── Internal modules (not part of the public API) ──────────────────────

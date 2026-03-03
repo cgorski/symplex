@@ -435,7 +435,7 @@ mod tests {
         let three = a.int(3);
         let expr = a.pow(x, three);
         let result = diff(&mut a, expr, x);
-        assert_eq!(display(&a, result), "3*x**2");
+        assert_eq!(display(&a, result), "3*x^2");
     }
 
     #[test]
@@ -553,7 +553,7 @@ mod tests {
         let x = sym(&mut a, "x");
         let expr = a.ln(x);
         let result = diff(&mut a, expr, x);
-        assert_eq!(display(&a, result), "x**(-1)");
+        assert_eq!(display(&a, result), "x^(-1)");
     }
 
     #[test]
@@ -601,7 +601,7 @@ mod tests {
         let result = diff(&mut a, expr, x);
         // = 3*x^2 + 4*x + 1
         let s = display(&a, result);
-        assert!(s.contains("3*x**2"), "should contain 3*x^2, got: {s}");
+        assert!(s.contains("3*x^2"), "should contain 3*x^2, got: {s}");
         assert!(s.contains("4*x"), "should contain 4*x, got: {s}");
         assert!(s.contains('1'), "should contain 1, got: {s}");
     }

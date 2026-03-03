@@ -21,7 +21,7 @@
 //! let ctx = Context::new();
 //! let x = ctx.symbol("x");
 //! let expr = &x * &x + &x * 2 + 1;
-//! assert_eq!(format!("{expr}"), "1 + x**2 + 2*x");
+//! assert_eq!(format!("{expr}"), "1 + x^2 + 2*x");
 //! ```
 //!
 //! Methods are chainable:
@@ -32,7 +32,7 @@
 //! let ctx = Context::new();
 //! let x = ctx.symbol("x");
 //! let expr = x.powi(2).sin();
-//! assert_eq!(format!("{expr}"), "sin(x**2)");
+//! assert_eq!(format!("{expr}"), "sin(x^2)");
 //! ```
 //!
 //! ```
@@ -245,7 +245,7 @@ impl Ex {
     /// let x = ctx.symbol("x");
     /// let expr = x.powi(3);
     /// let deriv = expr.diff(&x);
-    /// assert_eq!(format!("{deriv}"), "3*x**2");
+    /// assert_eq!(format!("{deriv}"), "3*x^2");
     /// ```
     #[must_use = "returns the derivative as a new expression"]
     pub fn diff(&self, var: &Ex) -> Ex {
@@ -305,7 +305,7 @@ impl Ex {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let expr = (&x + 1).powi(2);
-    /// assert_eq!(format!("{}", expr.expand()), "1 + x**2 + 2*x");
+    /// assert_eq!(format!("{}", expr.expand()), "1 + x^2 + 2*x");
     /// ```
     #[must_use = "returns the expanded form; does not modify in place"]
     pub fn expand(&self) -> Ex {
