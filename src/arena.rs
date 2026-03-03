@@ -547,6 +547,23 @@ impl Arena {
         crate::polybridge::cancel(self, expr, var)
     }
 
+    /// Group an expression by powers of `var`.
+    ///
+    /// Converts to a univariate polynomial in `var` and rebuilds,
+    /// naturally grouping coefficients by power.
+    /// Returns unchanged if not polynomial in `var`.
+    /// Delegates to [`polybridge::collect`].
+    pub fn collect_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
+        crate::polybridge::collect(self, expr, var)
+    }
+
+    /// Combine fractions in an Add over a common denominator.
+    ///
+    /// Delegates to [`polybridge::together`].
+    pub fn together_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::polybridge::together(self, expr)
+    }
+
     /// Creates a subtraction expression `a - b` as `a + neg(b)`.
     pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
         let neg_b = self.neg(b);

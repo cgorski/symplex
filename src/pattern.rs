@@ -377,6 +377,49 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
             }
         }
 
+        // Sub-expression matching: if the node is an Add and no rule matched
+        // the whole node, try matching rules against subsets of the Add's children.
+        if rewritten == rebuilt {
+            if let ExprNode::Add(ref children) = arena.node(rebuilt).clone() {
+                if children.len() >= 2 {
+                    'sub_match: for rule in rules {
+                        // Only attempt if the rule's pattern root is an Add.
+                        if let ExprNode::Add(ref pat_children) =
+                            arena.node(rule.pattern.root).clone()
+                        {
+                            let k = pat_children.len();
+                            if k == 2 && children.len() >= 2 {
+                                // Try all pairs of children.
+                                for i in 0..children.len() {
+                                    for j in (i + 1)..children.len() {
+                                        let pair = arena.add(&[children[i], children[j]]);
+                                        if let Some(replacement) = rule.try_apply(arena, pair) {
+                                            // Build remaining terms.
+                                            let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
+                                                smallvec::SmallVec::new();
+                                            for (idx, &child) in children.iter().enumerate() {
+                                                if idx != i && idx != j {
+                                                    remaining.push(child);
+                                                }
+                                            }
+                                            remaining.push(replacement);
+                                            rewritten = arena.add(&remaining);
+                                            steps.push(Step {
+                                                rule_name: rule.name,
+                                                before: rebuilt,
+                                                after: rewritten,
+                                            });
+                                            break 'sub_match;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         cache.insert(id, rewritten);
     }
 
@@ -422,9 +465,59 @@ pub(crate) fn rule_pythagorean(arena: &mut Arena) -> Rule {
     Rule::new("pythagorean", pattern, arena.one)
 }
 
+/// Build the inverse function rule: `exp(ln(w)) → w`.
+fn rule_exp_ln(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let ln_w = arena.ln(w_expr);
+    let exp_ln_w = arena.exp_fn(ln_w);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: exp_ln_w,
+        wilds,
+    };
+    Rule::new("exp_ln", pattern, w_expr)
+}
+
+/// Build the inverse function rule: `ln(exp(w)) → w`.
+fn rule_ln_exp(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let exp_w = arena.exp_fn(w_expr);
+    let ln_exp_w = arena.ln(exp_w);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: ln_exp_w,
+        wilds,
+    };
+    Rule::new("ln_exp", pattern, w_expr)
+}
+
+/// Build the idempotent abs rule: `abs(abs(w)) → abs(w)`.
+fn rule_abs_abs(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let abs_w = arena.abs(w_expr);
+    let abs_abs_w = arena.abs(abs_w);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: abs_abs_w,
+        wilds,
+    };
+    Rule::new("abs_abs", pattern, abs_w)
+}
+
 /// Build a basic set of simplification rules.
 pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
-    vec![rule_pythagorean(arena)]
+    vec![
+        rule_pythagorean(arena),
+        rule_exp_ln(arena),
+        rule_ln_exp(arena),
+        rule_abs_abs(arena),
+    ]
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -706,20 +799,16 @@ mod tests {
         let rules = basic_rules(&mut a);
         let (result, steps) = apply_rules(&mut a, expr, &rules);
 
-        // Known limitation of Stage 6.5 structural matching: the
-        // Pythagorean pattern is `Add(sin²(w), cos²(w))` — a 2-term
-        // Add.  It does NOT match inside a 3-term Add like
-        // `Add(3, sin²(x), cos²(x))` because structural matching
-        // requires the same node shape.
-        //
-        // Sub-expression matching within larger Adds (finding two
-        // matching terms among many) is a Stage 7 feature.
+        // Sub-expression matching finds the Pythagorean pair inside
+        // the 3-term Add and reduces sin²(x) + cos²(x) → 1, then
+        // canonicalization combines 3 + 1 → 4.
         assert_eq!(
             display(&a, result),
-            "3 + sin(x)^2 + cos(x)^2",
-            "structural matching cannot find sub-patterns in larger Adds (known limitation)"
+            "4",
+            "sub-expression matching should find sin²+cos² inside larger Add"
         );
-        assert!(steps.is_empty(), "no rule should fire on a 3-term Add");
+        assert_eq!(steps.len(), 1, "one rule should fire (pythagorean)");
+        assert_eq!(steps[0].rule_name, "pythagorean");
     }
 
     // ── apply_rules tracing ─────────────────────────────────────────

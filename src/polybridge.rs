@@ -414,6 +414,106 @@ pub(crate) fn cancel(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     arena.mul(&[new_numer_expr, denom_inv])
 }
 
+/// Group an expression by powers of `var`.
+///
+/// Converts the expression to a univariate polynomial in `var`,
+/// then rebuilds it term-by-term. This naturally groups coefficients
+/// by power of `var`.
+///
+/// Returns the expression unchanged if it is not polynomial in `var`.
+pub(crate) fn collect(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    let poly = match expr_to_poly(arena, expr, var) {
+        Some(p) => p,
+        None => return expr,
+    };
+    poly_to_expr(arena, &poly, var)
+}
+
+/// Combine fractions over a common denominator.
+///
+/// For an Add node, decomposes each term into numerator/denominator
+/// via `as_numer_denom`, computes a common denominator (product of
+/// all unique denominators, simplified via polynomial GCD), scales
+/// each numerator, and rebuilds as `sum_of_numerators / common_denom`.
+///
+/// Returns the expression unchanged if it is not an Add, or if all
+/// terms already have denominator 1.
+pub(crate) fn together(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let node = arena.node(expr).clone();
+
+    let children = match node {
+        ExprNode::Add(ref ch) => ch.clone(),
+        _ => return expr,
+    };
+
+    // Decompose each term into (numerator, denominator).
+    let mut parts: Vec<(ExprId, ExprId)> = Vec::with_capacity(children.len());
+    let mut all_denom_one = true;
+    for &child in &children {
+        let (n, d) = as_numer_denom(arena, child);
+        if d != arena.one {
+            all_denom_one = false;
+        }
+        parts.push((n, d));
+    }
+
+    // If every term has denominator 1, nothing to do.
+    if all_denom_one {
+        return expr;
+    }
+
+    // Compute common denominator as the product of all distinct denominators.
+    // We deduplicate by ExprId to avoid multiplying the same denom twice.
+    let mut unique_denoms: Vec<ExprId> = Vec::new();
+    for &(_, d) in &parts {
+        if d != arena.one && !unique_denoms.contains(&d) {
+            unique_denoms.push(d);
+        }
+    }
+
+    let common_denom = if unique_denoms.len() == 1 {
+        unique_denoms[0]
+    } else {
+        arena.mul(&unique_denoms)
+    };
+
+    // Scale each numerator: numer_i * (common_denom / denom_i).
+    let mut scaled_numers: SmallVec<[ExprId; 6]> = SmallVec::new();
+    for &(n, d) in &parts {
+        if d == arena.one {
+            // numer * common_denom
+            let scaled = arena.mul(&[n, common_denom]);
+            scaled_numers.push(scaled);
+        } else {
+            // numer * (common_denom / denom) = numer * product_of_other_denoms
+            let mut other_denoms: Vec<ExprId> = Vec::new();
+            for &ud in &unique_denoms {
+                if ud != d {
+                    other_denoms.push(ud);
+                }
+            }
+            if other_denoms.is_empty() {
+                // denom IS the common denom, so scale factor is 1
+                scaled_numers.push(n);
+            } else {
+                let scale = if other_denoms.len() == 1 {
+                    other_denoms[0]
+                } else {
+                    arena.mul(&other_denoms)
+                };
+                let scaled = arena.mul(&[n, scale]);
+                scaled_numers.push(scaled);
+            }
+        }
+    }
+
+    // Sum the scaled numerators.
+    let numer_sum = arena.add(&scaled_numers);
+
+    // Build result: numer_sum / common_denom.
+    arena.div(numer_sum, common_denom)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════

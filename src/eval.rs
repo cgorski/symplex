@@ -6,18 +6,31 @@
 //! # What `eval` does
 //!
 //! - `sin(0)` → `0`
-//! - `sin(π)` → `0`
+//! - `sin(π/6)` → `1/2`
 //! - `sin(π/2)` → `1`
+//! - `sin(5π/6)` → `1/2`
+//! - `sin(π)` → `0`
+//! - `sin(7π/6)` → `-1/2`
+//! - `sin(3π/2)` → `-1`
+//! - `sin(11π/6)` → `-1/2`
 //! - `cos(0)` → `1`
-//! - `cos(π)` → `-1`
+//! - `cos(π/3)` → `1/2`
 //! - `cos(π/2)` → `0`
+//! - `cos(2π/3)` → `-1/2`
+//! - `cos(π)` → `-1`
+//! - `cos(4π/3)` → `-1/2`
+//! - `cos(3π/2)` → `0`
+//! - `cos(5π/3)` → `1/2`
 //! - `tan(0)` → `0`
+//! - `tan(π/4)` → `1`
+//! - `tan(3π/4)` → `-1`
 //! - `exp(0)` → `1`
 //! - `exp(1)` → `E`
 //! - `ln(1)` → `0`
 //! - `ln(E)` → `1`
 //! - `sqrt(0)` → `0`
 //! - `sqrt(1)` → `1`
+//! - `sqrt(p/q)` → `√p/√q` when both `p` and `q` are perfect squares
 //! - `abs(x)` → `x` when `x` is a non-negative number
 //! - `abs(x)` → `-x` when `x` is a negative number
 //!
@@ -150,18 +163,20 @@ fn as_pi_multiple(arena: &Arena, id: ExprId) -> Option<Ratio<BigInt>> {
     // c * π where c is numeric.
     if let ExprNode::Mul(ref children) = arena.node(id).clone()
         && children.len() == 2
-            && let ExprNode::Num(nid) = arena.node(children[0]) {
-                let nid = *nid;
-                if children[1] == arena.pi {
-                    return Some(arena.num(nid).clone());
-                }
-            }
+        && let ExprNode::Num(nid) = arena.node(children[0])
+    {
+        let nid = *nid;
+        if children[1] == arena.pi {
+            return Some(arena.num(nid).clone());
+        }
+    }
 
     // Numeric 0 (= 0 * π).
     if let Some(r) = arena.as_num(id)
-        && r.is_zero() {
-            return Some(Ratio::zero());
-        }
+        && r.is_zero()
+    {
+        return Some(Ratio::zero());
+    }
 
     None
 }
@@ -191,6 +206,26 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if coeff == Ratio::new(3.into(), 2.into()) {
         return Some(arena.neg_one);
     }
+    // sin(π/6) = 1/2
+    if coeff == Ratio::new(1.into(), 6.into()) {
+        let half = arena.rational(1, 2);
+        return Some(half);
+    }
+    // sin(5π/6) = 1/2
+    if coeff == Ratio::new(5.into(), 6.into()) {
+        let half = arena.rational(1, 2);
+        return Some(half);
+    }
+    // sin(7π/6) = -1/2
+    if coeff == Ratio::new(7.into(), 6.into()) {
+        let neg_half = arena.rational(-1, 2);
+        return Some(neg_half);
+    }
+    // sin(11π/6) = -1/2
+    if coeff == Ratio::new(11.into(), 6.into()) {
+        let neg_half = arena.rational(-1, 2);
+        return Some(neg_half);
+    }
 
     None
 }
@@ -218,6 +253,26 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if coeff == Ratio::new(3.into(), 2.into()) {
         return Some(arena.zero);
     }
+    // cos(π/3) = 1/2
+    if coeff == Ratio::new(1.into(), 3.into()) {
+        let half = arena.rational(1, 2);
+        return Some(half);
+    }
+    // cos(2π/3) = -1/2
+    if coeff == Ratio::new(2.into(), 3.into()) {
+        let neg_half = arena.rational(-1, 2);
+        return Some(neg_half);
+    }
+    // cos(4π/3) = -1/2
+    if coeff == Ratio::new(4.into(), 3.into()) {
+        let neg_half = arena.rational(-1, 2);
+        return Some(neg_half);
+    }
+    // cos(5π/3) = 1/2
+    if coeff == Ratio::new(5.into(), 3.into()) {
+        let half = arena.rational(1, 2);
+        return Some(half);
+    }
 
     None
 }
@@ -234,7 +289,14 @@ fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.zero);
     }
     // tan(π/2) is undefined — leave unevaluated.
-    // tan(π/4) = 1 — but only if we want to include this.
+    // tan(π/4) = 1
+    if coeff == Ratio::new(1.into(), 4.into()) {
+        return Some(arena.one);
+    }
+    // tan(3π/4) = -1
+    if coeff == Ratio::new(3.into(), 4.into()) {
+        return Some(arena.neg_one);
+    }
 
     None
 }
@@ -280,14 +342,33 @@ fn eval_sqrt(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
     // sqrt(n^2) for positive integer n.
     if let Some(r) = arena.as_num(inner)
-        && r.is_integer() && r.is_positive() {
-            let n = r.to_integer();
-            let sqrt_n = n.sqrt();
-            if &sqrt_n * &sqrt_n == n {
-                let nid = arena.intern_num(Ratio::from_integer(sqrt_n));
-                return Some(arena.intern(ExprNode::Num(nid)));
-            }
+        && r.is_integer()
+        && r.is_positive()
+    {
+        let n = r.to_integer();
+        let sqrt_n = n.sqrt();
+        if &sqrt_n * &sqrt_n == n {
+            let nid = arena.intern_num(Ratio::from_integer(sqrt_n));
+            return Some(arena.intern(ExprNode::Num(nid)));
         }
+    }
+
+    // sqrt(p/q) for perfect square p and q.
+    if let Some(r) = arena.as_num(inner)
+        && !r.is_integer()
+        && r.is_positive()
+    {
+        let r = r.clone();
+        let n = r.numer().abs();
+        let d = r.denom().abs();
+        let sqrt_n = n.sqrt();
+        let sqrt_d = d.sqrt();
+        if &sqrt_n * &sqrt_n == n && &sqrt_d * &sqrt_d == d {
+            let result = Ratio::new(sqrt_n, sqrt_d);
+            let nid = arena.intern_num(result);
+            return Some(arena.intern(ExprNode::Num(nid)));
+        }
+    }
 
     None
 }
@@ -644,5 +725,47 @@ mod tests {
         let first = eval(&mut a, expr);
         let second = eval(&mut a, first);
         assert_eq!(first, second, "eval should be idempotent");
+    }
+
+    #[test]
+    fn eval_sin_pi_over_6() {
+        let mut a = Arena::new();
+        let sixth = a.rational(1, 6);
+        let pi = a.pi;
+        let arg = a.mul(&[sixth, pi]);
+        let expr = a.sin(arg);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "1/2", "sin(π/6) should be 1/2");
+    }
+
+    #[test]
+    fn eval_cos_pi_over_3() {
+        let mut a = Arena::new();
+        let third = a.rational(1, 3);
+        let pi = a.pi;
+        let arg = a.mul(&[third, pi]);
+        let expr = a.cos(arg);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "1/2", "cos(π/3) should be 1/2");
+    }
+
+    #[test]
+    fn eval_tan_pi_over_4() {
+        let mut a = Arena::new();
+        let quarter = a.rational(1, 4);
+        let pi = a.pi;
+        let arg = a.mul(&[quarter, pi]);
+        let expr = a.tan(arg);
+        let result = eval(&mut a, expr);
+        assert_eq!(result, a.one, "tan(π/4) should be 1");
+    }
+
+    #[test]
+    fn eval_sqrt_rational_perfect_square() {
+        let mut a = Arena::new();
+        let nine_fourths = a.rational(9, 4);
+        let expr = a.sqrt(nine_fourths);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "3/2", "sqrt(9/4) should be 3/2");
     }
 }

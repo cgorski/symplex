@@ -498,6 +498,59 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Group an expression by powers of `var`.
+    ///
+    /// Converts the expression to a univariate polynomial in `var`
+    /// and rebuilds it, naturally grouping coefficients by power.
+    ///
+    /// Returns the expression unchanged if it is not polynomial in `var`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = &x * &y + &x.powi(2) + &y;
+    /// let collected = expr.collect(&x);
+    /// // Terms are grouped by powers of x.
+    /// assert_eq!(format!("{collected}"), "y + x^2 + x*y");
+    /// ```
+    #[must_use = "returns the collected form; does not modify in place"]
+    pub fn collect(&self, var: &Ex) -> Ex {
+        let id = self.inner.write().arena.collect_expr(self.id, var.id);
+        self.wrap(id)
+    }
+
+    /// Combine fractions over a common denominator.
+    ///
+    /// For a sum of terms, decomposes each into numerator/denominator,
+    /// computes a common denominator, scales each numerator, and
+    /// rebuilds as a single fraction.
+    ///
+    /// Returns the expression unchanged if it is not a sum or if all
+    /// terms already have denominator 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = &x.powi(-1) + &y.powi(-1);
+    /// let combined = expr.together();
+    /// // 1/x + 1/y → (x + y) / (x*y)
+    /// let s = format!("{combined}");
+    /// assert!(s.contains("x*y"), "should have common denom x*y: {s}");
+    /// ```
+    #[must_use = "returns the combined form; does not modify in place"]
+    pub fn together(&self) -> Ex {
+        let id = self.inner.write().arena.together_expr(self.id);
+        self.wrap(id)
+    }
+
     /// Numeric floating-point evaluation to the given number of decimal
     /// digits.
     ///
