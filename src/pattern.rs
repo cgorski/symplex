@@ -208,9 +208,6 @@ fn match_recursive(
         (ExprNode::Tan(pi), ExprNode::Tan(ei)) => match_recursive(arena, pattern, pi, ei, bindings),
         (ExprNode::Exp(pi), ExprNode::Exp(ei)) => match_recursive(arena, pattern, pi, ei, bindings),
         (ExprNode::Ln(pi), ExprNode::Ln(ei)) => match_recursive(arena, pattern, pi, ei, bindings),
-        (ExprNode::Sqrt(pi), ExprNode::Sqrt(ei)) => {
-            match_recursive(arena, pattern, pi, ei, bindings)
-        }
         (ExprNode::Abs(pi), ExprNode::Abs(ei)) => match_recursive(arena, pattern, pi, ei, bindings),
         (ExprNode::Asin(pi), ExprNode::Asin(ei)) => {
             match_recursive(arena, pattern, pi, ei, bindings)
@@ -538,8 +535,9 @@ fn rule_abs_abs(arena: &mut Arena) -> Rule {
 fn rule_sqrt_sq(arena: &mut Arena) -> Rule {
     let (w_expr, w_id) = arena.wild();
     let two = arena.int(2);
+    let half = arena.rational(1, 2);
     let w_sq = arena.pow(w_expr, two);
-    let sqrt_w_sq = arena.sqrt(w_sq);
+    let sqrt_w_sq = arena.pow(w_sq, half); // Pow(Pow(w, 2), 1/2)
     let abs_w = arena.abs(w_expr);
 
     let mut wilds = FxHashMap::default();

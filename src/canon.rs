@@ -391,6 +391,11 @@ fn handle_mul_with_zoo(
 /// Applies simple algebraic identities and, when both base and exponent
 /// are numeric with a small-enough integer exponent, evaluates the result.
 pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId {
+    // Pow(E, x) → Exp(x) — canonicalize e^x to exp(x)
+    if base == arena.e_const {
+        return arena.intern(ExprNode::Exp(exp));
+    }
+
     // NaN propagation.
     if base == arena.nan || exp == arena.nan {
         return arena.nan;
@@ -869,7 +874,7 @@ mod tests {
         let result = a.pow(base, exp);
         // 4^(1/2) should NOT evaluate to 2 — that's simplification, not
         // canonicalization.
-        assert_eq!(display(&a, result), "4^(1/2)");
+        assert_eq!(display(&a, result), "sqrt(4)");
     }
 
     #[test]

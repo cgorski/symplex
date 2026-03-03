@@ -161,6 +161,7 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 "exp" => quote! { exp },
                 "ln" => quote! { ln },
                 "sqrt" => quote! { sqrt },
+                "cbrt" => quote! { cbrt },
                 "abs" => quote! { abs },
                 _ => unreachable!(),
             };
@@ -456,6 +457,7 @@ impl RuleCodeGen {
                     "exp" => quote! { #arena.exp(#arg_temp) },
                     "ln" => quote! { #arena.ln(#arg_temp) },
                     "sqrt" => quote! { #arena.sqrt(#arg_temp) },
+                    "cbrt" => quote! { #arena.cbrt(#arg_temp) },
                     "abs" => quote! { #arena.abs(#arg_temp) },
                     _ => unreachable!(),
                 };

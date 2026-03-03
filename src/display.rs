@@ -70,7 +70,6 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Tan(_)
         | ExprNode::Exp(_)
         | ExprNode::Ln(_)
-        | ExprNode::Sqrt(_)
         | ExprNode::Abs(_)
         | ExprNode::Asin(_)
         | ExprNode::Acos(_)
@@ -277,6 +276,22 @@ fn expand_expr(
 
         // ── Pow ────────────────────────────────────────────────────
         ExprNode::Pow(base, exp) => {
+            // Detect Pow(x, 1/2) → display as sqrt(x)
+            let is_half_exp = if let ExprNode::Num(nid) = arena.node(exp) {
+                let r = arena.num(*nid);
+                *r == Ratio::new(BigInt::from(1), BigInt::from(2))
+            } else {
+                false
+            };
+
+            // Detect Pow(x, 1/3) → display as cbrt(x)
+            let is_third_exp = if let ExprNode::Num(nid) = arena.node(exp) {
+                let r = arena.num(*nid);
+                *r == Ratio::new(BigInt::from(1), BigInt::from(3))
+            } else {
+                false
+            };
+
             // Special case: x^(-1) → "1/x" for cleaner display.
             let is_neg_one_exp = if let ExprNode::Num(nid) = arena.node(exp) {
                 *arena.num(*nid) == Ratio::from(BigInt::from(-1))
@@ -284,7 +299,15 @@ fn expand_expr(
                 false
             };
 
-            if is_neg_one_exp {
+            if is_half_exp {
+                stack.push(WorkItem::Lit(")"));
+                stack.push(WorkItem::Expr(base, 0));
+                stack.push(WorkItem::Lit("sqrt("));
+            } else if is_third_exp {
+                stack.push(WorkItem::Lit(")"));
+                stack.push(WorkItem::Expr(base, 0));
+                stack.push(WorkItem::Lit("cbrt("));
+            } else if is_neg_one_exp {
                 let base_prec = match arena.node(base) {
                     ExprNode::Add(_)
                     | ExprNode::Mul(_)
@@ -341,7 +364,6 @@ fn expand_expr(
         ExprNode::Tan(x) => push_func("tan", x, stack),
         ExprNode::Exp(x) => push_func("exp", x, stack),
         ExprNode::Ln(x) => push_func("ln", x, stack),
-        ExprNode::Sqrt(x) => push_func("sqrt", x, stack),
         ExprNode::Abs(x) => push_func("abs", x, stack),
         ExprNode::Asin(x) => push_func("asin", x, stack),
         ExprNode::Acos(x) => push_func("acos", x, stack),
@@ -725,7 +747,7 @@ mod tests {
         let x = a.int(4);
         let half = a.rational(1, 2);
         let p = a.pow(x, half);
-        assert_display!(a, p, "4^(1/2)");
+        assert_display!(a, p, "sqrt(4)");
     }
 
     #[test]

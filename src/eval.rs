@@ -84,10 +84,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
                 eval_ln(arena, inner).unwrap_or_else(|| arena.ln(inner))
             }
-            ExprNode::Sqrt(inner) => {
-                let inner = cache.get(&inner).copied().unwrap_or(inner);
-                eval_sqrt(arena, inner).unwrap_or_else(|| arena.sqrt(inner))
-            }
+
             ExprNode::Abs(inner) => {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
                 eval_abs(arena, inner).unwrap_or_else(|| arena.abs(inner))
@@ -154,7 +151,10 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Pow(base, exp) => {
                 let nb = cache.get(&base).copied().unwrap_or(base);
                 let ne = cache.get(&exp).copied().unwrap_or(exp);
-                if nb == base && ne == exp {
+                // Detect Pow(integer, 1/2) and try perfect square root
+                if let Some(result) = eval_pow_root(arena, nb, ne) {
+                    result
+                } else if nb == base && ne == exp {
                     id
                 } else {
                     arena.pow(nb, ne)
@@ -382,8 +382,22 @@ fn eval_ln(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     None
 }
 
-/// Evaluate `sqrt(inner)` for known special values.
-fn eval_sqrt(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+/// Evaluate `Pow(base, exp)` when the exponent is a fractional 1/2 (square root)
+/// and the base is a numeric value with a perfect square root.
+fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId> {
+    // Check if the exponent is 1/2
+    let is_half = if let Some(r) = arena.as_num(exp) {
+        *r == Ratio::new(BigInt::from(1), BigInt::from(2))
+    } else {
+        false
+    };
+
+    if !is_half {
+        return None;
+    }
+
+    let inner = base;
+
     // sqrt(0) = 0
     if inner == arena.zero {
         return Some(arena.zero);

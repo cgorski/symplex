@@ -174,9 +174,6 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::Ln(x) => ExprTree::Ln {
             arg: Box::new(expr_to_tree(arena, x)),
         },
-        ExprNode::Sqrt(x) => ExprTree::Sqrt {
-            arg: Box::new(expr_to_tree(arena, x)),
-        },
         ExprNode::Abs(x) => ExprTree::Abs {
             arg: Box::new(expr_to_tree(arena, x)),
         },
@@ -285,8 +282,9 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             arena.ln(x)
         }
         ExprTree::Sqrt { arg } => {
+            // Legacy compatibility: convert to Pow(arg, 1/2)
             let x = tree_to_expr(arena, arg);
-            arena.sqrt(x)
+            arena.sqrt(x) // which now produces Pow(x, 1/2)
         }
         ExprTree::Abs { arg } => {
             let x = tree_to_expr(arena, arg);

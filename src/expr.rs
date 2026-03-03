@@ -164,6 +164,23 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Cube root: `∛self`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn cbrt(&self) -> Ex {
+        let id = self.inner.write().arena.cbrt(self.id);
+        self.wrap(id)
+    }
+
+    /// Nth root: `self^(1/n)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn nthroot(&self, n: i64) -> Ex {
+        let mut inner = self.inner.write();
+        let frac = inner.arena.rational(1, n);
+        let id = inner.arena.pow(self.id, frac);
+        drop(inner);
+        self.wrap(id)
+    }
+
     /// Absolute value (or complex modulus): `|self|`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn abs(&self) -> Ex {

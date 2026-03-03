@@ -708,9 +708,22 @@ impl Arena {
         self.intern(ExprNode::Ln(expr))
     }
 
-    /// Creates a `Sqrt` (principal square root) node.
+    /// Creates a principal square root node: `√expr` = `expr^(1/2)`.
     pub fn sqrt(&mut self, expr: ExprId) -> ExprId {
-        self.intern(ExprNode::Sqrt(expr))
+        let half = self.rational(1, 2);
+        self.pow(expr, half)
+    }
+
+    /// Creates a cube root node: `∛expr` = `expr^(1/3)`.
+    pub fn cbrt(&mut self, expr: ExprId) -> ExprId {
+        let third = self.rational(1, 3);
+        self.pow(expr, third)
+    }
+
+    /// Creates an nth-root node: `expr^(1/n)`.
+    pub fn nthroot(&mut self, expr: ExprId, n: i64) -> ExprId {
+        let frac = self.rational(1, n);
+        self.pow(expr, frac)
     }
 
     /// Creates an `Abs` (absolute value / complex modulus) node.
@@ -958,7 +971,9 @@ mod tests {
         assert_eq!(*a.node(l), ExprNode::Ln(x));
 
         let sq = a.sqrt(x);
-        assert_eq!(*a.node(sq), ExprNode::Sqrt(x));
+        // sqrt now produces Pow(x, 1/2)
+        let half = a.rational(1, 2);
+        assert_eq!(*a.node(sq), ExprNode::Pow(x, half));
 
         let ab = a.abs(x);
         assert_eq!(*a.node(ab), ExprNode::Abs(x));

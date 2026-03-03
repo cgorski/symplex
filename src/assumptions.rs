@@ -712,7 +712,6 @@ impl AssumptionCache {
             }
             ExprNode::Exp(inner) => self.compute_exp(arena, inner),
             ExprNode::Ln(inner) => self.compute_ln(arena, inner),
-            ExprNode::Sqrt(inner) => self.compute_sqrt(arena, inner),
             ExprNode::Abs(inner) => self.compute_abs(arena, inner),
             _ => Assumptions::default(),
         };
@@ -1155,33 +1154,6 @@ impl AssumptionCache {
 
         if inner_a.query(Props::FINITE) == Some(true) && inner_a.query(Props::NONZERO) == Some(true)
         {
-            a.known_true |= Props::FINITE;
-        }
-
-        a.known_true |= Props::COMMUTATIVE;
-        a.forward_chain();
-        a
-    }
-
-    fn compute_sqrt(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
-        let mut a = Assumptions::default();
-        let inner_a = self.compute(arena, inner);
-
-        // sqrt(nonneg) → nonneg, real
-        if inner_a.query(Props::NONNEGATIVE) == Some(true) {
-            a.known_true |= Props::NONNEGATIVE | Props::REAL;
-        }
-
-        // sqrt(positive) → positive, real
-        if inner_a.query(Props::POSITIVE) == Some(true) {
-            a.known_true |= Props::POSITIVE | Props::REAL;
-        }
-
-        if inner_a.query(Props::COMPLEX) == Some(true) {
-            a.known_true |= Props::COMPLEX;
-        }
-
-        if inner_a.query(Props::FINITE) == Some(true) {
             a.known_true |= Props::FINITE;
         }
 

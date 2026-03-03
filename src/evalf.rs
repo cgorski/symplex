@@ -157,6 +157,20 @@ fn eval_node(
         // ── Pow ────────────────────────────────────────────────────
         ExprNode::Pow(base, exp) => {
             let b = get_cached(cache, *base)?;
+
+            // Optimization: use sqrt for x^(1/2)
+            if let ExprNode::Num(nid) = arena.node(*exp) {
+                let r = arena.num(*nid);
+                if *r
+                    == num_rational::Ratio::new(
+                        num_bigint::BigInt::from(1),
+                        num_bigint::BigInt::from(2),
+                    )
+                {
+                    return Ok(b.sqrt(prec, rm));
+                }
+            }
+
             let e = get_cached(cache, *exp)?;
 
             // Special case: small integer exponents use powi for accuracy.
@@ -205,12 +219,6 @@ fn eval_node(
         ExprNode::Ln(inner) => {
             let val = get_cached(cache, *inner)?;
             Ok(val.ln(prec, rm, cc))
-        }
-
-        // ── Sqrt ───────────────────────────────────────────────────
-        ExprNode::Sqrt(inner) => {
-            let val = get_cached(cache, *inner)?;
-            Ok(val.sqrt(prec, rm))
         }
 
         // ── Abs ────────────────────────────────────────────────────

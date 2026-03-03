@@ -132,9 +132,6 @@ pub enum ExprNode {
     /// Natural logarithm: `ln(x)`.
     Ln(ExprId),
 
-    /// Principal square root: `√x`.
-    Sqrt(ExprId),
-
     /// Absolute value (or complex modulus): `|x|`.
     Abs(ExprId),
 
@@ -215,7 +212,6 @@ impl ExprNode {
             | ExprNode::Tan(x)
             | ExprNode::Exp(x)
             | ExprNode::Ln(x)
-            | ExprNode::Sqrt(x)
             | ExprNode::Abs(x)
             | ExprNode::Asin(x)
             | ExprNode::Acos(x)
@@ -282,7 +278,6 @@ impl fmt::Debug for ExprNode {
             ExprNode::Tan(x) => f.debug_tuple("Tan").field(x).finish(),
             ExprNode::Exp(x) => f.debug_tuple("Exp").field(x).finish(),
             ExprNode::Ln(x) => f.debug_tuple("Ln").field(x).finish(),
-            ExprNode::Sqrt(x) => f.debug_tuple("Sqrt").field(x).finish(),
             ExprNode::Abs(x) => f.debug_tuple("Abs").field(x).finish(),
             ExprNode::Asin(x) => f.debug_tuple("Asin").field(x).finish(),
             ExprNode::Acos(x) => f.debug_tuple("Acos").field(x).finish(),
@@ -402,7 +397,6 @@ mod tests {
             ExprNode::Tan(ExprId(1)),
             ExprNode::Exp(ExprId(1)),
             ExprNode::Ln(ExprId(1)),
-            ExprNode::Sqrt(ExprId(1)),
             ExprNode::Abs(ExprId(1)),
         ] {
             assert!(!node.is_atom());

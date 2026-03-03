@@ -241,18 +241,6 @@ fn diff_node(
             arena.div(di, inner)
         }
 
-        // ── Sqrt: d/dx(√f) = f' / (2·√f) ─────────────────────────
-        ExprNode::Sqrt(inner) => {
-            let di = get_deriv(cache, inner, arena);
-            if arena.is_zero_structural(di) {
-                return arena.zero;
-            }
-            let two = arena.int(2);
-            let sqrt_f = arena.sqrt(inner);
-            let denom = arena.mul(&[two, sqrt_f]);
-            arena.div(di, denom)
-        }
-
         // ── Abs: leave unevaluated ─────────────────────────────────
         // |f|' is not elementary without knowing the sign of f.
         ExprNode::Abs(_) => {

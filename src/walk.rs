@@ -210,7 +210,6 @@ pub(crate) fn rebuild_with_cache(
         ExprNode::Tan(inner) => rebuild_unary(arena, id, inner, cache, Arena::tan),
         ExprNode::Exp(inner) => rebuild_unary(arena, id, inner, cache, Arena::exp),
         ExprNode::Ln(inner) => rebuild_unary(arena, id, inner, cache, Arena::ln),
-        ExprNode::Sqrt(inner) => rebuild_unary(arena, id, inner, cache, Arena::sqrt),
         ExprNode::Abs(inner) => rebuild_unary(arena, id, inner, cache, Arena::abs),
 
         // Unary: Asin, Acos, Atan, Sinh, Cosh, Tanh

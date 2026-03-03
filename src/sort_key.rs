@@ -70,7 +70,6 @@ const FN_COS: u8 = 1;
 const FN_TAN: u8 = 2;
 const FN_EXP: u8 = 3;
 const FN_LN: u8 = 4;
-const FN_SQRT: u8 = 5;
 const FN_ABS: u8 = 6;
 const FN_ASIN: u8 = 8;
 const FN_ACOS: u8 = 9;
@@ -184,7 +183,7 @@ impl fmt::Debug for SortKey {
 /// | 20   | `Pow`                                              |
 /// | 30   | `Mul`                                              |
 /// | 40   | `Add`                                              |
-/// | 50   | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Sqrt`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Asinh`, `Acosh`, `Atanh`, `Apply` |
+/// | 50   | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Asinh`, `Acosh`, `Atanh`, `Apply` |
 /// | 60   | `Derivative`                                       |
 /// | 70   | `Integral`                                         |
 /// | 80   | `Pi`, `E`, `ImaginaryUnit`                         |
@@ -271,12 +270,6 @@ pub fn compute_sort_key(
         ExprNode::Ln(x) => {
             key.push(RANK_FUNCTION);
             key.push(FN_LN);
-            key.extend(get_key(*x).as_bytes());
-        }
-
-        ExprNode::Sqrt(x) => {
-            key.push(RANK_FUNCTION);
-            key.push(FN_SQRT);
             key.extend(get_key(*x).as_bytes());
         }
 
