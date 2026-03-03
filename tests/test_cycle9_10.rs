@@ -10,7 +10,7 @@ use symplex::prelude::*;
 fn u_sub_2x_exp_x_squared() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = (&(&x * 2) * &(&x.powi(2)).exp()).integrate(&x);
+    let result = (&(&x * 2) * &x.powi(2).exp()).integrate(&x);
     let s = format!("{result}");
     assert!(s.contains("exp"), "∫ 2x·exp(x²) dx should contain exp: {s}");
     assert!(!s.contains("Integral"), "should not be unevaluated: {s}");

@@ -1301,6 +1301,143 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Try multiple simplification strategies and return the simplest result.
+    ///
+    /// Unlike [`simplify`](Self::simplify) which applies a single pass of
+    /// rewrite rules, this tries eval, expand, factor_terms, trig_expand,
+    /// logcombine and more, then picks whichever result has the fewest
+    /// operations (nodes).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
+    /// assert_eq!(format!("{}", expr.smart_simplify()), "1");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn smart_simplify(&self) -> Ex {
+        let id = self.inner.write().arena.smart_simplify_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Count the number of operations (non-atom nodes) in this expression.
+    ///
+    /// Atoms (numbers, symbols, constants) count as 0.
+    /// Each operator or function application counts as 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// assert_eq!(x.count_ops(), 0);           // atom
+    /// assert_eq!((&x + 1).count_ops(), 1);    // one Add
+    /// assert_eq!(x.sin().powi(2).count_ops(), 2); // Sin + Pow
+    /// ```
+    pub fn count_ops(&self) -> usize {
+        let inner = self.inner.read();
+        inner.arena.count_ops(self.id)
+    }
+
+    /// Factor out the GCD of numeric coefficients from a sum.
+    ///
+    /// `2x + 2y → 2·(x + y)`, `6x² + 4x → 2·(3x² + 2x)`.
+    ///
+    /// Returns the expression unchanged if it is not an `Add` or if
+    /// the GCD of all coefficients is 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let y = ctx.symbol("y");
+    /// let expr = &x * 2 + &y * 2;
+    /// let factored = expr.factor_terms();
+    /// let s = format!("{factored}");
+    /// assert!(s.contains("2"), "should factor out 2: {s}");
+    /// ```
+    #[must_use = "returns the factored form; does not modify in place"]
+    pub fn factor_terms(&self) -> Ex {
+        let id = self.inner.write().arena.factor_terms_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Rationalize the denominator of a fraction containing square roots.
+    ///
+    /// - `1/√2 → √2/2`
+    /// - `1/(1 + √2) → √2 - 1`
+    ///
+    /// Returns the expression unchanged if the denominator contains
+    /// no square roots.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let expr = 1 / &ctx.int(2).sqrt();
+    /// let rationalized = expr.rationalize_denom();
+    /// let s = format!("{rationalized}");
+    /// assert!(s.contains("2"), "should rationalize: {s}");
+    /// ```
+    #[must_use = "returns the rationalized form; does not modify in place"]
+    pub fn rationalize_denom(&self) -> Ex {
+        let id = self.inner.write().arena.rationalize_denom_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Decompose this expression into its real part.
+    ///
+    /// Assumes unadorned symbols are real. Returns the real component
+    /// of the expression when written as `re + im·i`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let i = ctx.i_unit();
+    /// let z = &ctx.int(3) + &(&ctx.int(4) * &i);
+    /// assert_eq!(format!("{}", z.re()), "3");
+    /// ```
+    #[must_use]
+    pub fn re(&self) -> Ex {
+        let (re, _im) = self.inner.write().arena.as_real_imag_expr(self.id);
+        self.wrap(re)
+    }
+
+    /// Decompose this expression into its imaginary part.
+    ///
+    /// Assumes unadorned symbols are real. Returns the imaginary
+    /// coefficient (without the `i` factor) when the expression is
+    /// written as `re + im·i`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let i = ctx.i_unit();
+    /// let z = &ctx.int(3) + &(&ctx.int(4) * &i);
+    /// assert_eq!(format!("{}", z.im()), "4");
+    /// ```
+    #[must_use]
+    pub fn im(&self) -> Ex {
+        let (_re, im) = self.inner.write().arena.as_real_imag_expr(self.id);
+        self.wrap(im)
+    }
+
     /// Compute the polynomial GCD of `self` and `other` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.

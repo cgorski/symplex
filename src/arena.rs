@@ -670,6 +670,39 @@ impl Arena {
         crate::trig_combine::trig_combine(self, expr)
     }
 
+    /// Try multiple simplification strategies and return the simplest result.
+    /// Delegates to [`simplify_engine::smart_simplify`].
+    pub fn smart_simplify_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::simplify_engine::smart_simplify(self, expr)
+    }
+
+    /// Count the number of operations (non-atom nodes) in an expression.
+    /// Delegates to [`simplify_engine::count_ops`].
+    pub fn count_ops(&self, expr: ExprId) -> usize {
+        crate::simplify_engine::count_ops(self, expr)
+    }
+
+    /// Factor out the GCD of numeric coefficients from a sum.
+    /// `2x + 2y → 2(x + y)`.
+    /// Delegates to [`factor_terms::factor_terms`].
+    pub fn factor_terms_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::factor_terms::factor_terms(self, expr)
+    }
+
+    /// Rationalize the denominator of a fraction containing square roots.
+    /// `1/√2 → √2/2`, `1/(1+√2) → √2-1`.
+    /// Delegates to [`radsimp::rationalize_denom`].
+    pub fn rationalize_denom_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::radsimp::rationalize_denom(self, expr)
+    }
+
+    /// Decompose an expression into real and imaginary parts.
+    /// Returns `(re, im)` such that `expr = re + im * i`.
+    /// Delegates to [`complex::as_real_imag`].
+    pub fn as_real_imag_expr(&mut self, expr: ExprId) -> (ExprId, ExprId) {
+        crate::complex::as_real_imag(self, expr)
+    }
+
     /// Compute the polynomial GCD of `a` and `b` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.
