@@ -7,7 +7,7 @@
 //!
 //! # Quick start
 //!
-//! ```rust,ignore
+//! ```text
 //! let mut a = Arena::new();
 //! let x  = a.symbol("x");
 //! let two = a.int(2);

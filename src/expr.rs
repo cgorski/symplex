@@ -104,12 +104,14 @@ impl Ex {
     // ── Math functions ─────────────────────────────────────────────
 
     /// Raise to a symbolic power: `self ^ exp`.
+    #[must_use = "returns a new expression; does not modify in place"]
     pub fn pow(&self, exp: &Ex) -> Ex {
         let id = self.inner.write().arena.pow(self.id, exp.id);
         self.wrap(id)
     }
 
     /// Raise to an integer power: `self ^ n`.
+    #[must_use = "returns a new expression; does not modify in place"]
     pub fn powi(&self, n: i64) -> Ex {
         let mut inner = self.inner.write();
         let exp = inner.arena.int(n);
@@ -119,42 +121,49 @@ impl Ex {
     }
 
     /// Sine: `sin(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
     pub fn sin(&self) -> Ex {
         let id = self.inner.write().arena.sin(self.id);
         self.wrap(id)
     }
 
     /// Cosine: `cos(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
     pub fn cos(&self) -> Ex {
         let id = self.inner.write().arena.cos(self.id);
         self.wrap(id)
     }
 
     /// Tangent: `tan(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
     pub fn tan(&self) -> Ex {
         let id = self.inner.write().arena.tan(self.id);
         self.wrap(id)
     }
 
     /// Natural exponential: `e^self`.
+    #[must_use = "returns a new expression; does not modify in place"]
     pub fn exp_fn(&self) -> Ex {
         let id = self.inner.write().arena.exp_fn(self.id);
         self.wrap(id)
     }
 
     /// Natural logarithm: `ln(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
     pub fn ln(&self) -> Ex {
         let id = self.inner.write().arena.ln(self.id);
         self.wrap(id)
     }
 
     /// Principal square root: `√self`.
+    #[must_use = "returns a new expression; does not modify in place"]
     pub fn sqrt(&self) -> Ex {
         let id = self.inner.write().arena.sqrt(self.id);
         self.wrap(id)
     }
 
     /// Absolute value (or complex modulus): `|self|`.
+    #[must_use = "returns a new expression; does not modify in place"]
     pub fn abs(&self) -> Ex {
         let id = self.inner.write().arena.abs(self.id);
         self.wrap(id)
@@ -238,6 +247,7 @@ impl Ex {
     /// let deriv = expr.diff(&x);
     /// assert_eq!(format!("{deriv}"), "3*x**2");
     /// ```
+    #[must_use = "returns the derivative as a new expression"]
     pub fn diff(&self, var: &Ex) -> Ex {
         let id = self.inner.write().arena.diff_wrt(self.id, var.id);
         self.wrap(id)
@@ -253,6 +263,7 @@ impl Ex {
     /// other invariants are maintained.
     ///
     /// Returns `self` unchanged (same `Ex`) if `old` does not appear.
+    #[must_use = "returns a new expression with substitutions applied"]
     pub fn subs(&self, old: &Ex, new: &Ex) -> Ex {
         let id = self
             .inner
@@ -266,6 +277,7 @@ impl Ex {
     ///
     /// All replacements happen "at once" — earlier substitutions do
     /// not affect later ones.
+    #[must_use = "returns a new expression with substitutions applied"]
     pub fn subs_map(&self, replacements: &[(&Ex, &Ex)]) -> Ex {
         let pairs: smallvec::SmallVec<[(crate::node::ExprId, crate::node::ExprId); 4]> =
             replacements.iter().map(|(o, n)| (o.id, n.id)).collect();
@@ -295,6 +307,7 @@ impl Ex {
     /// let expr = (&x + 1).powi(2);
     /// assert_eq!(format!("{}", expr.expand()), "1 + x**2 + 2*x");
     /// ```
+    #[must_use = "returns the expanded form; does not modify in place"]
     pub fn expand(&self) -> Ex {
         let id = self.inner.write().arena.expand_expr(self.id);
         self.wrap(id)
@@ -319,6 +332,7 @@ impl Ex {
     /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
     /// assert_eq!(format!("{}", expr.simplify()), "1");
     /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
     pub fn simplify(&self) -> Ex {
         let (result, _steps) = self.simplify_trace();
         result
@@ -329,6 +343,7 @@ impl Ex {
     ///
     /// Each [`Step`](crate::pattern::Step) records the rule name, the
     /// sub-expression before, and the sub-expression after.
+    #[must_use = "returns the simplified form and trace"]
     pub fn simplify_trace(&self) -> (Ex, Vec<crate::pattern::Step>) {
         let mut inner = self.inner.write();
         let rules = crate::pattern::basic_rules(&mut inner.arena);
@@ -359,6 +374,7 @@ impl Ex {
     /// let expr = ctx.pi().cos();
     /// assert_eq!(format!("{}", expr.eval()), "-1");
     /// ```
+    #[must_use = "returns the evaluated form; does not modify in place"]
     pub fn eval(&self) -> Ex {
         let id = self.inner.write().arena.eval_expr(self.id);
         self.wrap(id)
@@ -368,6 +384,7 @@ impl Ex {
     /// digits.
     ///
     /// Returns the decimal string representation of the evaluated expression.
+    #[must_use = "returns the numerical value as a string"]
     #[cfg(feature = "evalf")]
     pub fn evalf(&self, digits: u32) -> Result<String, SymplexError> {
         let guard = self.inner.read();
@@ -379,6 +396,7 @@ impl Ex {
     ///
     /// Returns `Err(SymplexError::NotImplemented)` when the `evalf` feature
     /// is not enabled.
+    #[must_use = "returns the numerical value as a string"]
     #[cfg(not(feature = "evalf"))]
     pub fn evalf(&self, _digits: u32) -> Result<String, SymplexError> {
         Err(SymplexError::NotImplemented(

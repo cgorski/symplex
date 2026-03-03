@@ -13,7 +13,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```text
 //! let a = Arena::new();
 //! // ... build some expression ...
 //! println!("{}", a.display(expr_id));
@@ -435,7 +435,7 @@ impl Arena {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```text
     /// let arena = Arena::new();
     /// let x = arena.symbol("x");
     /// println!("{}", arena.display(x));

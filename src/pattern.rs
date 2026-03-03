@@ -18,7 +18,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```text
 //! // sin²(w) + cos²(w) → 1
 //! let rule = Rule::new(
 //!     "pythagorean",
