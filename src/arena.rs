@@ -657,6 +657,12 @@ impl Arena {
         crate::log_expand::expand_log(self, expr)
     }
 
+    /// Combine logarithmic terms: `ln(a)+ln(b) → ln(a*b)`, `n*ln(a) → ln(a^n)`.
+    /// Delegates to [`log_combine::log_combine`].
+    pub fn log_combine_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::log_combine::log_combine(self, expr)
+    }
+
     /// Compute the polynomial GCD of `a` and `b` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.

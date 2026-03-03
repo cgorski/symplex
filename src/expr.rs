@@ -59,6 +59,49 @@ use crate::display::fmt_expr;
 use crate::errors::SymplexError;
 use crate::node::{CtxId, ExprId};
 
+/// Structural classification of an expression node.
+///
+/// Returned by [`Ex::expr_type()`]. This collapses the internal
+/// `ExprNode` enum (30 variants) into a user-friendly classification.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::expr::ExprType;
+///
+/// let x = symplex::var("x");
+/// assert_eq!(x.expr_type(), ExprType::Symbol);
+/// assert_eq!((&x + 1).expr_type(), ExprType::Add);
+/// assert_eq!(x.sin().expr_type(), ExprType::Function);
+/// assert_eq!(symplex::int(42).expr_type(), ExprType::Number);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExprType {
+    /// A numeric literal (integer or rational).
+    Number,
+    /// A symbolic variable.
+    Symbol,
+    /// A mathematical constant (π, e, i, ∞, etc.).
+    Constant,
+    /// An n-ary sum.
+    Add,
+    /// An n-ary product.
+    Mul,
+    /// Exponentiation.
+    Pow,
+    /// Unary negation.
+    Neg,
+    /// A mathematical function (sin, cos, ln, exp, abs, etc.).
+    Function,
+    /// Application of a user-defined function.
+    Apply,
+    /// A formal derivative.
+    Derivative,
+    /// A formal integral.
+    Integral,
+}
+
 /// A symbolic expression handle.
 ///
 /// `Ex` wraps an [`ExprId`] together with a reference to the
@@ -89,6 +132,36 @@ impl Ex {
             inner: Arc::clone(&self.inner),
             id,
         }
+    }
+
+    /// The additive identity (0) in the global default context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let z = Ex::zero();
+    /// assert_eq!(format!("{z}"), "0");
+    /// assert!(z.is_zero_structural());
+    /// ```
+    pub fn zero() -> Ex {
+        crate::int(0)
+    }
+
+    /// The multiplicative identity (1) in the global default context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let o = Ex::one();
+    /// assert_eq!(format!("{o}"), "1");
+    /// assert!(o.is_one_structural());
+    /// ```
+    pub fn one() -> Ex {
+        crate::int(1)
     }
 
     /// Returns the raw [`ExprId`] inside this handle.
@@ -1110,6 +1183,28 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Combine logarithmic terms (inverse of [`expand_log`](Self::expand_log)).
+    ///
+    /// Applies: `ln(a) + ln(b) → ln(a·b)` and `n·ln(a) → ln(aⁿ)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = &x.ln() + &y.ln();
+    /// let combined = expr.logcombine();
+    /// let s = format!("{combined}");
+    /// assert!(s.contains("ln"), "should combine logs: {s}");
+    /// ```
+    #[must_use = "returns the combined form; does not modify in place"]
+    pub fn logcombine(&self) -> Ex {
+        let id = self.inner.write().arena.log_combine_expr(self.id);
+        self.wrap(id)
+    }
+
     /// Compute the polynomial GCD of `self` and `other` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.
@@ -1479,6 +1574,101 @@ impl Ex {
             crate::node::ExprNode::Add(children) => children.len(),
             _ => 1,
         }
+    }
+
+    /// Returns the structural type of this expression.
+    ///
+    /// Collapses the internal 30-variant `ExprNode` enum into a
+    /// user-friendly [`ExprType`] classification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::expr::ExprType;
+    ///
+    /// let x = symplex::var("x");
+    /// assert_eq!(x.expr_type(), ExprType::Symbol);
+    /// assert_eq!(x.sin().expr_type(), ExprType::Function);
+    /// assert_eq!((&x + 1).expr_type(), ExprType::Add);
+    /// ```
+    pub fn expr_type(&self) -> ExprType {
+        let inner = self.inner.read();
+        match inner.arena.node(self.id) {
+            crate::node::ExprNode::Num(_) => ExprType::Number,
+            crate::node::ExprNode::Symbol(_) => ExprType::Symbol,
+            crate::node::ExprNode::Pi
+            | crate::node::ExprNode::E
+            | crate::node::ExprNode::ImaginaryUnit
+            | crate::node::ExprNode::Infinity
+            | crate::node::ExprNode::NegInfinity
+            | crate::node::ExprNode::ComplexInfinity
+            | crate::node::ExprNode::NaN => ExprType::Constant,
+            crate::node::ExprNode::Add(_) => ExprType::Add,
+            crate::node::ExprNode::Mul(_) => ExprType::Mul,
+            crate::node::ExprNode::Pow(_, _) => ExprType::Pow,
+            crate::node::ExprNode::Neg(_) => ExprType::Neg,
+            crate::node::ExprNode::Sin(_)
+            | crate::node::ExprNode::Cos(_)
+            | crate::node::ExprNode::Tan(_)
+            | crate::node::ExprNode::Exp(_)
+            | crate::node::ExprNode::Ln(_)
+            | crate::node::ExprNode::Abs(_)
+            | crate::node::ExprNode::Asin(_)
+            | crate::node::ExprNode::Acos(_)
+            | crate::node::ExprNode::Atan(_)
+            | crate::node::ExprNode::Sinh(_)
+            | crate::node::ExprNode::Cosh(_)
+            | crate::node::ExprNode::Tanh(_)
+            | crate::node::ExprNode::Asinh(_)
+            | crate::node::ExprNode::Acosh(_)
+            | crate::node::ExprNode::Atanh(_) => ExprType::Function,
+            crate::node::ExprNode::Apply(_, _) => ExprType::Apply,
+            crate::node::ExprNode::Derivative(_, _) => ExprType::Derivative,
+            crate::node::ExprNode::Integral(_, _) => ExprType::Integral,
+        }
+    }
+
+    /// Walk the expression bottom-up, applying a user-provided transformation
+    /// at each node.
+    ///
+    /// The closure receives an [`Ex`] for each sub-expression. Return
+    /// `Some(replacement)` to replace it, or `None` to keep it unchanged.
+    ///
+    /// **Note:** The `Ex` values passed to the closure are suitable for
+    /// identity comparison (`==`) only. Do not call methods that mutate
+    /// or lock the context from inside the closure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = x.powi(2);
+    /// let replaced = expr.replace(|e| if *e == x { Some(y.clone()) } else { None });
+    /// assert_eq!(format!("{replaced}"), "y^2");
+    /// ```
+    #[must_use = "returns the transformed expression; does not modify in place"]
+    pub fn replace<F>(&self, f: F) -> Ex
+    where
+        F: Fn(&Ex) -> Option<Ex>,
+    {
+        let inner_clone = Arc::clone(&self.inner);
+        let ctx_id = self.ctx_id;
+        let result_id = {
+            let mut guard = self.inner.write();
+            crate::walk::walk_and_rebuild(&mut guard.arena, self.id, &|_arena, id| {
+                let tmp = Ex {
+                    ctx_id,
+                    inner: Arc::clone(&inner_clone),
+                    id,
+                };
+                f(&tmp).map(|ex| ex.id)
+            })
+        };
+        self.wrap(result_id)
     }
 
     /// Mathematical equality: attempts to determine if `self - other == 0`.

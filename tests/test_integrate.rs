@@ -135,11 +135,16 @@ fn integrate_constant_times_x() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn integrate_tan_unevaluated() {
+fn integrate_tan() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.tan().integrate(&x);
-    assert_eq!(format!("{result}"), "Integral(tan(x), x)");
+    let s = format!("{result}");
+    // ∫ tan(x) dx = -ln|cos(x)|
+    assert!(
+        s.contains("ln") && s.contains("cos"),
+        "expected -ln(abs(cos(x))), got: {s}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

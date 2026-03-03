@@ -441,6 +441,46 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
             }
         }
 
+        // Mul sub-expression matching: if the node is a Mul and no rule matched
+        // the whole node, try matching rules against subsets of the Mul's children.
+        if rewritten == rebuilt
+            && let ExprNode::Mul(ref children) = arena.node(rebuilt).clone()
+            && children.len() >= 2
+        {
+            'mul_sub_match: for rule in rules {
+                // Only attempt if the rule's pattern root is a Mul.
+                if let ExprNode::Mul(ref pat_children) = arena.node(rule.pattern.root).clone() {
+                    let k = pat_children.len();
+                    if k == 2 && children.len() >= 2 {
+                        // Try all pairs of children.
+                        for i in 0..children.len() {
+                            for j in (i + 1)..children.len() {
+                                let pair = arena.mul(&[children[i], children[j]]);
+                                if let Some(replacement) = rule.try_apply(arena, pair) {
+                                    // Build remaining factors.
+                                    let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
+                                        smallvec::SmallVec::new();
+                                    for (idx, &child) in children.iter().enumerate() {
+                                        if idx != i && idx != j {
+                                            remaining.push(child);
+                                        }
+                                    }
+                                    remaining.push(replacement);
+                                    rewritten = arena.mul(&remaining);
+                                    steps.push(Step {
+                                        rule_name: rule.name,
+                                        before: rebuilt,
+                                        after: rewritten,
+                                    });
+                                    break 'mul_sub_match;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         cache.insert(id, rewritten);
     }
 
@@ -680,6 +720,64 @@ fn rule_atanh_tanh(arena: &mut Arena) -> Rule {
 }
 
 /// Build a basic set of simplification rules.
+/// sin(w) / cos(w) → tan(w)
+/// Canonical form of sin(x)/cos(x) is Mul([Sin(x), Pow(Cos(x), -1)])
+fn rule_sin_div_cos(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let sin_w = arena.sin(w_expr);
+    let cos_w = arena.cos(w_expr);
+    let neg_one = arena.int(-1);
+    let cos_w_inv = arena.pow(cos_w, neg_one);
+    let pattern_expr = arena.mul(&[sin_w, cos_w_inv]);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: pattern_expr,
+        wilds,
+    };
+    Rule::new("sin_div_cos", pattern, arena.tan(w_expr))
+}
+
+/// sinh(w) / cosh(w) → tanh(w)
+fn rule_sinh_div_cosh(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let sinh_w = arena.sinh(w_expr);
+    let cosh_w = arena.cosh(w_expr);
+    let neg_one = arena.int(-1);
+    let cosh_w_inv = arena.pow(cosh_w, neg_one);
+    let pattern_expr = arena.mul(&[sinh_w, cosh_w_inv]);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: pattern_expr,
+        wilds,
+    };
+    Rule::new("sinh_div_cosh", pattern, arena.tanh(w_expr))
+}
+
+/// exp(a) * exp(b) → exp(a + b)
+fn rule_exp_mul(arena: &mut Arena) -> Rule {
+    let (a_expr, a_id) = arena.wild();
+    let (b_expr, b_id) = arena.wild();
+    let exp_a = arena.exp(a_expr);
+    let exp_b = arena.exp(b_expr);
+    let pattern_expr = arena.mul(&[exp_a, exp_b]);
+
+    let sum = arena.add(&[a_expr, b_expr]);
+    let template = arena.exp(sum);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(a_expr, a_id);
+    wilds.insert(b_expr, b_id);
+    let pattern = Pattern {
+        root: pattern_expr,
+        wilds,
+    };
+    Rule::new("exp_mul", pattern, template)
+}
+
 pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
     vec![
         rule_pythagorean(arena),
@@ -695,6 +793,9 @@ pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
         rule_asinh_sinh(arena),
         rule_acosh_cosh(arena),
         rule_atanh_tanh(arena),
+        rule_sin_div_cos(arena),
+        rule_sinh_div_cosh(arena),
+        rule_exp_mul(arena),
     ]
 }
 
@@ -1012,6 +1113,114 @@ mod tests {
             // before and after should be different
             assert_ne!(step.before, step.after);
         }
+    }
+
+    #[test]
+    fn mul_sub_match_exp_combine() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let z = sym(&mut a, "z");
+
+        // Build exp(x) * exp(y) * z
+        let exp_x = a.exp(x);
+        let exp_y = a.exp(y);
+        let expr = a.mul(&[exp_x, exp_y, z]);
+
+        let rules = basic_rules(&mut a);
+        let (result, steps) = apply_rules(&mut a, expr, &rules);
+
+        let result_str = display(&a, result);
+        // Should contain exp(x + y) and z multiplied together
+        assert!(
+            result_str.contains("exp("),
+            "result should contain exp: got {result_str}"
+        );
+        assert!(
+            result_str.contains("z"),
+            "result should contain z: got {result_str}"
+        );
+        assert!(
+            steps.iter().any(|s| s.rule_name == "exp_mul"),
+            "exp_mul rule should have fired"
+        );
+    }
+
+    #[test]
+    fn simplify_sin_over_cos() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+
+        // Build sin(x) * cos(x)^(-1)
+        let sin_x = a.sin(x);
+        let cos_x = a.cos(x);
+        let neg_one = a.int(-1);
+        let cos_x_inv = a.pow(cos_x, neg_one);
+        let expr = a.mul(&[sin_x, cos_x_inv]);
+
+        let rules = basic_rules(&mut a);
+        let (result, steps) = apply_rules(&mut a, expr, &rules);
+
+        assert_eq!(
+            display(&a, result),
+            "tan(x)",
+            "sin(x)/cos(x) should simplify to tan(x)"
+        );
+        assert!(steps.iter().any(|s| s.rule_name == "sin_div_cos"));
+    }
+
+    #[test]
+    fn simplify_sinh_over_cosh() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+
+        // Build sinh(x) * cosh(x)^(-1)
+        let sinh_x = a.sinh(x);
+        let cosh_x = a.cosh(x);
+        let neg_one = a.int(-1);
+        let cosh_x_inv = a.pow(cosh_x, neg_one);
+        let expr = a.mul(&[sinh_x, cosh_x_inv]);
+
+        let rules = basic_rules(&mut a);
+        let (result, steps) = apply_rules(&mut a, expr, &rules);
+
+        assert_eq!(
+            display(&a, result),
+            "tanh(x)",
+            "sinh(x)/cosh(x) should simplify to tanh(x)"
+        );
+        assert!(steps.iter().any(|s| s.rule_name == "sinh_div_cosh"));
+    }
+
+    #[test]
+    fn simplify_sin_over_cos_in_product() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+
+        // Build 2 * sin(x) / cos(x) = 2 * sin(x) * cos(x)^(-1)
+        let sin_x = a.sin(x);
+        let cos_x = a.cos(x);
+        let neg_one = a.int(-1);
+        let cos_x_inv = a.pow(cos_x, neg_one);
+        let expr = a.mul(&[two, sin_x, cos_x_inv]);
+
+        let rules = basic_rules(&mut a);
+        let (result, steps) = apply_rules(&mut a, expr, &rules);
+
+        let result_str = display(&a, result);
+        assert!(
+            result_str.contains("tan(x)"),
+            "2*sin(x)/cos(x) should simplify to 2*tan(x): got {result_str}"
+        );
+        assert!(
+            result_str.contains("2"),
+            "result should still contain factor 2: got {result_str}"
+        );
+        assert!(
+            steps.iter().any(|s| s.rule_name == "sin_div_cos"),
+            "sin_div_cos rule should have fired"
+        );
     }
 
     // ── Two-wild pattern ────────────────────────────────────────────

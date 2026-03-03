@@ -290,6 +290,39 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.mul(&[half, sqrt3]));
     }
 
+    // ── Quadrant reductions (covers all remaining standard angles) ──
+    // Q2: sin(π - x) = sin(x), for coeff in (1/2, 1)
+    let half = Ratio::new(1.into(), 2.into());
+    if coeff > half && coeff < Ratio::one() {
+        let reflected = Ratio::one() - &coeff;
+        let nid = arena.intern_num(reflected);
+        let coeff_id = arena.intern(ExprNode::Num(nid));
+        let reflected_id = arena.mul(&[coeff_id, arena.pi]);
+        return eval_sin(arena, reflected_id);
+    }
+    // Q3: sin(π + x) = -sin(x), for coeff in (1, 3/2)
+    let three_half = Ratio::new(3.into(), 2.into());
+    if coeff > Ratio::one() && coeff < three_half {
+        let reduced = &coeff - Ratio::one();
+        let nid = arena.intern_num(reduced);
+        let coeff_id = arena.intern(ExprNode::Num(nid));
+        let reduced_id = arena.mul(&[coeff_id, arena.pi]);
+        if let Some(val) = eval_sin(arena, reduced_id) {
+            return Some(arena.neg(val));
+        }
+    }
+    // Q4: sin(2π - x) = -sin(x), for coeff in (3/2, 2)
+    let two: Ratio<BigInt> = Ratio::from_integer(2.into());
+    if coeff > three_half && coeff < two {
+        let reduced = two - &coeff;
+        let nid = arena.intern_num(reduced);
+        let coeff_id = arena.intern(ExprNode::Num(nid));
+        let reduced_id = arena.mul(&[coeff_id, arena.pi]);
+        if let Some(val) = eval_sin(arena, reduced_id) {
+            return Some(arena.neg(val));
+        }
+    }
+
     None
 }
 
@@ -358,6 +391,39 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.mul(&[half, sqrt3]));
     }
 
+    // ── Quadrant reductions (covers all remaining standard angles) ──
+    // Q2: cos(π - x) = -cos(x), for coeff in (1/2, 1)
+    let half = Ratio::new(1.into(), 2.into());
+    if coeff > half && coeff < Ratio::one() {
+        let reflected = Ratio::one() - &coeff;
+        let nid = arena.intern_num(reflected);
+        let coeff_id = arena.intern(ExprNode::Num(nid));
+        let reflected_id = arena.mul(&[coeff_id, arena.pi]);
+        if let Some(val) = eval_cos(arena, reflected_id) {
+            return Some(arena.neg(val));
+        }
+    }
+    // Q3: cos(π + x) = -cos(x), for coeff in (1, 3/2)
+    let three_half = Ratio::new(3.into(), 2.into());
+    if coeff > Ratio::one() && coeff < three_half {
+        let reduced = &coeff - Ratio::one();
+        let nid = arena.intern_num(reduced);
+        let coeff_id = arena.intern(ExprNode::Num(nid));
+        let reduced_id = arena.mul(&[coeff_id, arena.pi]);
+        if let Some(val) = eval_cos(arena, reduced_id) {
+            return Some(arena.neg(val));
+        }
+    }
+    // Q4: cos(2π - x) = cos(x), for coeff in (3/2, 2)
+    let two: Ratio<BigInt> = Ratio::from_integer(2.into());
+    if coeff > three_half && coeff < two {
+        let reduced = two - &coeff;
+        let nid = arena.intern_num(reduced);
+        let coeff_id = arena.intern(ExprNode::Num(nid));
+        let reduced_id = arena.mul(&[coeff_id, arena.pi]);
+        return eval_cos(arena, reduced_id);
+    }
+
     None
 }
 
@@ -386,6 +452,20 @@ fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // tan(3π/4) = -1
     if coeff == Ratio::new(3.into(), 4.into()) {
         return Some(arena.neg_one);
+    }
+    // tan(π/6) = 1/√3 = √3/3
+    if coeff == Ratio::new(1.into(), 6.into()) {
+        let three = arena.int(3);
+        let half_exp = arena.rational(1, 2);
+        let sqrt3 = arena.pow(three, half_exp);
+        let third = arena.rational(1, 3);
+        return Some(arena.mul(&[third, sqrt3]));
+    }
+    // tan(π/3) = √3
+    if coeff == Ratio::new(1.into(), 3.into()) {
+        let three = arena.int(3);
+        let half_exp = arena.rational(1, 2);
+        return Some(arena.pow(three, half_exp));
     }
 
     None
@@ -1194,5 +1274,91 @@ mod tests {
         let tanh_x = a.tanh(x);
         let expected = a.neg(tanh_x);
         assert_eq!(result, expected, "tanh(-x) should be -tanh(x)");
+    }
+
+    // ── Sprint C: quadrant reductions & tan special values ──────────
+
+    #[test]
+    fn eval_sin_2pi_over_3() {
+        // sin(2π/3) = √3/2
+        let mut a = Arena::new();
+        let coeff = a.rational(2, 3);
+        let angle = a.mul(&[coeff, a.pi]);
+        let expr = a.sin(angle);
+        let result = eval(&mut a, expr);
+        let s = display(&a, result);
+        assert!(
+            s.contains("3") && s.contains("1/2"),
+            "sin(2π/3) should be √3/2, got: {s}"
+        );
+    }
+
+    #[test]
+    fn eval_sin_3pi_over_4() {
+        // sin(3π/4) = √2/2
+        let mut a = Arena::new();
+        let coeff = a.rational(3, 4);
+        let angle = a.mul(&[coeff, a.pi]);
+        let expr = a.sin(angle);
+        let result = eval(&mut a, expr);
+        let s = display(&a, result);
+        assert!(
+            s.contains("2") && s.contains("1/2"),
+            "sin(3π/4) should be √2/2, got: {s}"
+        );
+    }
+
+    #[test]
+    fn eval_cos_3pi_over_4() {
+        // cos(3π/4) = -√2/2
+        let mut a = Arena::new();
+        let coeff = a.rational(3, 4);
+        let angle = a.mul(&[coeff, a.pi]);
+        let expr = a.cos(angle);
+        let result = eval(&mut a, expr);
+        let s = display(&a, result);
+        assert!(
+            s.contains("2") && s.contains("1/2"),
+            "cos(3π/4) should be -√2/2, got: {s}"
+        );
+    }
+
+    #[test]
+    fn eval_cos_5pi_over_6() {
+        // cos(5π/6) = -√3/2
+        let mut a = Arena::new();
+        let coeff = a.rational(5, 6);
+        let angle = a.mul(&[coeff, a.pi]);
+        let expr = a.cos(angle);
+        let result = eval(&mut a, expr);
+        let s = display(&a, result);
+        assert!(
+            s.contains("3") && s.contains("1/2"),
+            "cos(5π/6) should be -√3/2, got: {s}"
+        );
+    }
+
+    #[test]
+    fn eval_tan_pi_over_6() {
+        // tan(π/6) = √3/3
+        let mut a = Arena::new();
+        let coeff = a.rational(1, 6);
+        let angle = a.mul(&[coeff, a.pi]);
+        let expr = a.tan(angle);
+        let result = eval(&mut a, expr);
+        let s = display(&a, result);
+        assert!(s.contains("3"), "tan(π/6) should involve √3, got: {s}");
+    }
+
+    #[test]
+    fn eval_tan_pi_over_3() {
+        // tan(π/3) = √3
+        let mut a = Arena::new();
+        let coeff = a.rational(1, 3);
+        let angle = a.mul(&[coeff, a.pi]);
+        let expr = a.tan(angle);
+        let result = eval(&mut a, expr);
+        let s = display(&a, result);
+        assert!(s.contains("3"), "tan(π/3) should be √3, got: {s}");
     }
 }
