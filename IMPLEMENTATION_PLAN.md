@@ -2,7 +2,7 @@
 
 ## Overview
 
-Symplex is a symbolic mathematics library for Rust. It provides an arena-interned expression tree with hash-consing, canonical ordering, a three-valued assumption system, symbolic differentiation, pattern matching, algebraic expansion, special-value evaluation, arbitrary-precision numerical evaluation, polynomial algebra with GCD, fraction cancellation, and polynomial equation solving.
+Symplex is a symbolic mathematics library for Rust. It provides an arena-interned expression tree with hash-consing, canonical ordering, a three-valued assumption system, symbolic differentiation, pattern matching with rewrite rules, algebraic expansion, special-value evaluation, arbitrary-precision numerical evaluation, polynomial algebra with GCD, fraction cancellation, polynomial equation solving, and proc macros for ergonomic expression building and rule definition.
 
 This document describes the architecture, design decisions, module responsibilities, data flow, concurrency model, and planned future work. It is intended to be sufficient for a new contributor to understand the codebase and begin development without prior context.
 
@@ -16,15 +16,16 @@ This document describes the architecture, design decisions, module responsibilit
 4. [Concurrency Model](#concurrency-model)
 5. [Canonicalization Rules](#canonicalization-rules)
 6. [Assumption System](#assumption-system)
-7. [Design Principles](#design-principles)
-8. [Design Decisions and Rationale](#design-decisions-and-rationale)
-9. [Dependencies](#dependencies)
-10. [Testing Strategy](#testing-strategy)
-11. [Public API Surface](#public-api-surface)
-12. [Build Stages Completed](#build-stages-completed)
-13. [Known Limitations](#known-limitations)
-14. [Planned Future Work](#planned-future-work)
-15. [File Layout](#file-layout)
+7. [Proc Macros](#proc-macros)
+8. [Design Principles](#design-principles)
+9. [Design Decisions and Rationale](#design-decisions-and-rationale)
+10. [Dependencies](#dependencies)
+11. [Testing Strategy](#testing-strategy)
+12. [Public API Surface](#public-api-surface)
+13. [Build Stages Completed](#build-stages-completed)
+14. [Known Limitations](#known-limitations)
+15. [Detailed Next Steps](#detailed-next-steps)
+16. [File Layout](#file-layout)
 
 ---
 
@@ -35,26 +36,28 @@ User code
     │
     ▼
 ┌──────────────────────────────────────────────────────┐
-│  Public API: Context, Ex, operators, macros          │
-│  (context.rs, expr.rs, macros.rs)                    │
+│  Public API: Context, Ex, operators, macros           │
+│  (context.rs, expr.rs, macros.rs)                     │
+│  Proc macros: expr!, rule!                            │
+│  (symplex-macros/)                                    │
 ├──────────────────────────────────────────────────────┤
-│  Assumption Engine: Props, Assumptions, cache        │
-│  (assumptions.rs)                                    │
+│  Assumption Engine: Props, Assumptions, cache         │
+│  (assumptions.rs)                                     │
 ├──────────────────────────────────────────────────────┤
-│  Transformations: diff, subs, expand, eval, evalf,   │
-│  pattern, solve, cancel                              │
-│  (diff.rs, subs.rs, expand.rs, eval.rs, evalf.rs,   │
-│   pattern.rs, solve.rs, polybridge.rs)               │
+│  Transformations: diff, subs, expand, eval, evalf,    │
+│  pattern, solve, cancel                               │
+│  (diff.rs, subs.rs, expand.rs, eval.rs, evalf.rs,    │
+│   pattern.rs, solve.rs, polybridge.rs)                │
 ├──────────────────────────────────────────────────────┤
-│  Canonicalization: Add, Mul, Pow, Neg                │
-│  (canon.rs)                                          │
+│  Canonicalization: Add, Mul, Pow, Neg                 │
+│  (canon.rs)                                           │
 ├──────────────────────────────────────────────────────┤
-│  Arena: hash-consing, interning, ExprNode, SortKey   │
-│  (arena.rs, node.rs, sort_key.rs, symbol.rs,         │
-│   display.rs, walk.rs)                               │
+│  Arena: hash-consing, interning, ExprNode, SortKey    │
+│  (arena.rs, node.rs, sort_key.rs, symbol.rs,          │
+│   display.rs, walk.rs)                                │
 ├──────────────────────────────────────────────────────┤
-│  Polynomial Algebra: Poly, GCD, bridge               │
-│  (poly.rs, polybridge.rs)                            │
+│  Polynomial Algebra: Poly, GCD, bridge                │
+│  (poly.rs, polybridge.rs)                             │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -64,37 +67,47 @@ Each layer only calls downward. There are no circular dependencies between modul
 
 ## Module Reference
 
-### Internal modules (`pub(crate)`)
+### Main crate: `symplex/src/` (23 modules, ~12,900 lines)
+
+#### Internal modules (`pub(crate)`)
 
 | Module | Lines | Responsibility |
 |--------|-------|----------------|
-| `arena.rs` | ~900 | Expression arena with hash-consing. Owns all nodes, numbers, sort keys, symbols. Pre-interns constants (0, 1, -1, π, e, i, ∞, NaN). Provides `intern()`, `node()`, `sort_key()`, convenience constructors (`int`, `symbol`, `add`, `mul`, `pow`, `neg`, `sin`, etc.), and delegate methods for all transformations. |
-| `node.rs` | ~400 | `ExprId(u32)`, `NumId(u32)`, `SymbolId(u32)`, `CtxId(u32)` newtypes. `ExprNode` enum with 22 variants (Num, Symbol, Add, Mul, Pow, Neg, Sin, Cos, Tan, Exp, Ln, Sqrt, Abs, Apply, Derivative, Integral, Pi, E, ImaginaryUnit, Infinity, NegInfinity, ComplexInfinity, NaN). Methods: `children()`, `is_atom()`. |
-| `canon.rs` | ~1150 | Canonical-form constructors: `canon_add`, `canon_mul`, `canon_pow`, `canon_neg`. Flattening via explicit stacks. Like-term collection via `FxHashMap`. Canonical sorting by `SortKey`. Number×Add distribution as final step of `canon_mul`. NaN/infinity propagation. |
-| `sort_key.rs` | ~450 | `SortKey` — a compact byte sequence for lexicographic canonical ordering. Class ranks: Num(0) < Symbol(10) < Pow(20) < Mul(30) < Add(40) < Function(50) < Derivative(60) < Integral(70) < Constant(80) < Special(90). Computed once at interning time via `compute_sort_key`. |
-| `symbol.rs` | ~75 | `SymbolTable` — string interning for symbol names. Parallel `Vec<Assumptions>` for per-symbol mathematical assumptions. |
-| `display.rs` | ~780 | Iterative (non-recursive) expression pretty-printer. Uses an explicit `Vec<WorkItem>` stack where each item is either a literal string or an expression to expand. Handles operator precedence, parenthesization, subtraction rendering (Mul(-1, x) → "- x"), negative/fractional exponent parens. |
-| `walk.rs` | ~490 | Shared iterative tree traversal infrastructure. `post_order_ids` — de-duplicated post-order traversal via explicit stack. `walk_and_rebuild` — bottom-up transformation with cache. `rebuild_with_cache` — reconstruct a node with substituted children through canonical constructors. `contains` and `free_symbols` utilities. |
-| `diff.rs` | ~660 | Symbolic differentiation. Iterative bottom-up via `post_order_ids`. Rules for all 22 node types. Product rule (n-ary), power rule (constant/variable/general exponent), chain rule for all transcendentals. |
-| `subs.rs` | ~340 | Structural substitution. `subs(expr, old, new)` replaces exact ExprId matches. `subs_map` for simultaneous substitution. Uses `walk_and_rebuild`. |
-| `expand.rs` | ~580 | Algebraic expansion. Distributes Mul over Add factors via incremental cross-multiplication. Expands `Pow(Add, positive_int)` via repeated multiplication. Iterative bottom-up. |
-| `eval.rs` | ~650 | Special-value evaluation. Recognizes rational multiples of π for sin/cos/tan. Known values: sin(0)=0, sin(π/2)=1, cos(0)=1, cos(π)=-1, exp(0)=1, exp(1)=E, ln(1)=0, ln(E)=1, sqrt(perfect squares), abs(numeric). |
-| `evalf.rs` | ~760 | Arbitrary-precision numerical evaluation via `astro-float`. Converts expressions to `BigFloat` bottom-up. Uses `Consts` cache for π and e. Integer exponents use `powi`; general exponents use `pow`. Formats via `convert_to_radix(Dec)`. Feature-gated behind `evalf`. |
-| `pattern.rs` | ~780 | Pattern matching and rewrite-rule engine. `WildId`, `Pattern`, `match_pattern` (structural, top-down with consistency checking), `instantiate` (template with wild substitution), `Rule` (named LHS→RHS with optional condition), `apply_rules` (bottom-up single-pass with trace), `Step` (trace entry). Built-in rule: Pythagorean identity. |
-| `poly.rs` | ~830 | Dense univariate polynomials over ℚ. `Poly` with `Vec<Ratio<BigInt>>` coefficients in ascending degree. Add, Sub, Neg, Mul, scale, div_rem (Euclidean division), GCD (Euclidean, monic-normalized), make_monic, eval (Horner). |
-| `polybridge.rs` | ~740 | Bridge between `ExprId` and `Poly`. `expr_to_poly` (iterative, returns None for non-polynomial expressions), `poly_to_expr`, `as_numer_denom` (separate positive/negative exponent factors), `cancel` (GCD-based common factor cancellation). |
-| `solve.rs` | ~720 | Equation solver. `solve(expr, var)` converts to Poly, dispatches by degree. Linear: -b/a. Quadratic: discriminant analysis, exact rational roots or symbolic sqrt. Higher degree: Rational Root Theorem with trial division, iterative factor extraction. |
+| `arena.rs` | 898 | Expression arena with hash-consing. Owns all nodes, numbers, sort keys, symbols. Pre-interns constants (0, 1, -1, π, e, i, ∞, NaN). Provides `intern()`, `node()`, `sort_key()`, convenience constructors, and delegate methods for all transformations. |
+| `node.rs` | 400 | `ExprId(u32)`, `NumId(u32)`, `SymbolId(u32)`, `CtxId(u32)` newtypes. `ExprNode` enum with 22 variants. Methods: `children()`, `is_atom()`. |
+| `canon.rs` | 1154 | Canonical-form constructors: `canon_add`, `canon_mul`, `canon_pow`, `canon_neg`. Flattening via explicit stacks. Like-term collection via `FxHashMap`. Canonical sorting by `SortKey`. Number×Add distribution. NaN/infinity propagation. |
+| `sort_key.rs` | 453 | `SortKey` — compact byte sequence for lexicographic canonical ordering. Class ranks: Num(0) < Symbol(10) < Pow(20) < Mul(30) < Add(40) < Function(50) < Derivative(60) < Integral(70) < Constant(80) < Special(90). |
+| `symbol.rs` | 77 | `SymbolTable` — string interning for symbol names. Parallel `Vec<Assumptions>` for per-symbol mathematical assumptions. |
+| `display.rs` | 782 | Iterative (non-recursive) expression pretty-printer. Uses an explicit `Vec<WorkItem>` stack. Handles operator precedence, parenthesization, subtraction rendering, negative/fractional exponent parens. Stack-safe for 10,000+ depth. |
+| `walk.rs` | 486 | Shared iterative tree traversal infrastructure. `post_order_ids`, `walk_and_rebuild`, `rebuild_with_cache`. Used by subs, diff, expand, eval, evalf, pattern. |
+| `diff.rs` | 658 | Symbolic differentiation. Iterative bottom-up. Rules for all 22 node types. N-ary product rule, power rule with chain rule, all transcendentals. |
+| `subs.rs` | 338 | Structural substitution. `subs(expr, old, new)` and `subs_map` for simultaneous replacement. Uses `walk_and_rebuild`. |
+| `expand.rs` | 577 | Algebraic expansion. Distributes Mul over Add via incremental cross-multiplication. Expands `Pow(Add, positive_int)` via repeated multiplication. |
+| `eval.rs` | 648 | Special-value evaluation. Recognizes rational multiples of π for sin/cos/tan. Known values for exp, ln, sqrt, abs at specific points. |
+| `evalf.rs` | 758 | Arbitrary-precision numerical evaluation via `astro-float`. Converts expressions to `BigFloat` bottom-up. Feature-gated behind `evalf`. |
+| `pattern.rs` | 777 | Pattern matching and rewrite-rule engine. `WildId`, `Pattern`, `match_pattern`, `instantiate`, `Rule`, `apply_rules`, `Step`. Built-in Pythagorean identity rule. |
+| `poly.rs` | 828 | Dense univariate polynomials over ℚ. Add, Sub, Neg, Mul, scale, div_rem, GCD (Euclidean, monic-normalized), eval (Horner). |
+| `polybridge.rs` | 742 | Bridge between `ExprId` and `Poly`. `expr_to_poly`, `poly_to_expr`, `as_numer_denom`, `cancel`. |
+| `solve.rs` | 725 | Equation solver. Linear, quadratic, higher-degree via Rational Root Theorem. Returns `Vec<Solution>`. |
 
-### Public modules
+#### Public modules
 
 | Module | Lines | Responsibility |
 |--------|-------|----------------|
-| `context.rs` | ~250 | `Context` — user-facing entry point. Owns `Arc<RwLock<ContextInner>>` containing `Arena` + `Mutex<AssumptionCache>`. Methods: `symbol`, `symbol_with`, `int`, `rational`, `pi`, `e`, `i_unit`, `infinity`, `nan`, `query`, `display`, `node_count`. |
-| `expr.rs` | ~740 | `Ex` — user-facing expression handle. 16 bytes: `CtxId + Arc + ExprId`. Clone (not Copy). Implements Add, Sub, Mul, Div, Neg for all combinations of `Ex`, `&Ex`, `i64`. Methods: `pow`, `powi`, `sin`, `cos`, `tan`, `exp_fn`, `ln`, `sqrt`, `abs`, `diff`, `subs`, `subs_map`, `expand`, `simplify`, `simplify_trace`, `eval`, `evalf`, `cancel`, `solve`, `is_zero`, `is_positive`, `query`, `equals`, `is_zero_structural`, `is_one_structural`. All transformation methods have `#[must_use]`. |
-| `assumptions.rs` | ~1740 | `Props` (bitflags, 23 properties), `Assumption` enum (user-facing), `Assumptions` struct (known_true + known_false as Props), `forward_chain` (fixpoint bitmask inference), `AssumptionCache` (FxHashMap<ExprId, Assumptions> with property handlers for all node types). |
-| `config.rs` | ~36 | `EvalConfig` — `max_pow_exponent`, `max_result_digits`, `max_evalf_precision`. |
-| `errors.rs` | ~29 | `SymplexError` — `ContradictoryAssumptions`, `PrecisionExhausted`, `Cancelled`, `DivisionByZero`, `NotImplemented`. |
-| `macros.rs` | ~57 | `syms!(ctx; x, y, z)` and `sym!(ctx; t, Positive, Real)` declarative macros. |
+| `context.rs` | 263 | `Context` — user-facing entry point. `Arc<RwLock<ContextInner>>`. Methods: `symbol`, `symbol_with`, `int`, `rational`, constants, `query`, `display`, `with_arena_mut`. |
+| `expr.rs` | 739 | `Ex` — expression handle. 16 bytes. Clone, Send, Sync. 28 public methods. All operators for Ex/&Ex/i64 combinations. All `#[must_use]` on transformations. |
+| `assumptions.rs` | 1743 | `Props` (bitflags, 23 properties), `Assumption` enum, `Assumptions` struct, `forward_chain`, `AssumptionCache` with handlers for all node types. |
+| `config.rs` | 36 | `EvalConfig` — `max_pow_exponent`, `max_result_digits`, `max_evalf_precision`. |
+| `errors.rs` | 29 | `SymplexError` — `ContradictoryAssumptions`, `PrecisionExhausted`, `Cancelled`, `DivisionByZero`, `NotImplemented`. |
+| `macros.rs` | 57 | `syms!` and `sym!` declarative macros. |
+| `lib.rs` | 95 | Module declarations, prelude, `__macro_support`, proc macro re-exports. |
+
+### Proc macro crate: `symplex-macros/` (~810 lines)
+
+| Module | Lines | Responsibility |
+|--------|-------|----------------|
+| `parse.rs` | 366 | Pratt parser for math expressions over `syn::ParseStream`. `MathExpr` AST, `BinOp` enum, precedence-climbing parser. Handles `+`, `-`, `*`, `/`, `^`, unary `-`, function calls, integer literals, parentheses. Right-associative `^`. |
+| `lib.rs` | 443 | Proc macro entry points. `expr!` — syntax sugar for building `Ex` values with auto-borrowing and `^` rewriting. `rule!` — builds `Pattern`/`Rule` from math syntax with wild (`_`-suffix) identifiers. Flat temporary generation to avoid double-mutable-borrow. |
 
 ---
 
@@ -102,7 +115,7 @@ Each layer only calls downward. There are no circular dependencies between modul
 
 ### ExprId and hash-consing
 
-Every expression is an `ExprId(u32)` — a 32-bit index into the arena's `nodes: Vec<ExprNode>`. Structurally identical expressions share the same `ExprId`, enforced by a deduplication map (`FxHashMap<u64, SmallVec<[ExprId; 2]>>`). This gives O(1) equality and O(1) hashing on expressions.
+Every expression is an `ExprId(u32)` — an index into the arena's `nodes: Vec<ExprNode>`. Structurally identical expressions share the same `ExprId`, enforced by a deduplication map (`FxHashMap<u64, SmallVec<[ExprId; 2]>>`). This gives O(1) equality and O(1) hashing.
 
 ### ExprNode
 
@@ -114,7 +127,7 @@ All exact numbers are `Ratio<BigInt>` from `num-rational`. There is no `Float` n
 
 ### Sort keys
 
-Each node has a precomputed `SortKey` (a byte sequence) stored in a parallel array. Sort keys encode class rank followed by node-specific data (value bytes for numbers, name bytes for symbols, child sort keys for composites). This makes canonical ordering comparison O(key length) with no tree traversal.
+Each node has a precomputed `SortKey` (byte sequence) stored in a parallel array. Sort keys encode class rank followed by node-specific data. Canonical ordering comparison is O(key length) with no tree traversal.
 
 ---
 
@@ -126,61 +139,72 @@ Arc<RwLock<ContextInner>>
   └── assumptions: Mutex<AssumptionCache>  (interior lock for cache)
 ```
 
-- **Expression construction** (operators, `add`, `mul`, etc.): acquires outer `write()` lock.
-- **Display, structural predicates** (`is_zero_structural`, `Display`): acquires outer `read()` lock.
-- **Assumption queries** (`is_positive`, `is_zero`, `query`): acquires outer `read()` lock + inner `assumptions.lock()`.
+- **Expression construction** (operators, `add`, `mul`, etc.): outer `write()` lock.
+- **Display, structural predicates**: outer `read()` lock.
+- **Assumption queries**: outer `read()` lock + inner `assumptions.lock()`.
 
 Lock ordering is structural (outer → inner). Deadlock is impossible by construction.
 
-`Ex` is `Send + Sync`. Multiple threads can share expressions and query assumptions concurrently. Expression construction serializes on the write lock but lock hold times are microseconds (single `intern()` call).
-
-Uses `parking_lot::RwLock` and `parking_lot::Mutex` for performance (no system call for uncontended cases).
+`Ex` is `Send + Sync`. Uses `parking_lot::RwLock` and `parking_lot::Mutex`.
 
 ---
 
 ## Canonicalization Rules
 
-### What constructors do
-
 | Constructor | Does | Does not |
 |---|---|---|
-| `add()` | Flatten nested Add. Sort by SortKey. Combine like terms (x+x→2x). Evaluate numeric sums (2+3→5). Drop zeros. Propagate NaN. | Expand powers. Evaluate functions. Apply identities. |
-| `mul()` | Flatten nested Mul. Sort by SortKey. Combine like bases (x·x→x²). Evaluate numeric products (2·3→6). Drop ones. Propagate NaN/zero. **Distribute Number×Add** (2·(x+y)→2x+2y). | Distribute symbolic×Add (x·(y+z) stays). Expand powers. Evaluate functions. |
-| `pow()` | x⁰→1. x¹→x. 1ˣ→1. 0^(positive)→0. numeric^small_int→computed (guarded by EvalConfig). Propagate NaN. | Expand (x+1)². Evaluate x^(1/2)→sqrt(x). |
-| `neg()` | Neg(Neg(x))→x. Neg(Num(n))→Num(-n). Neg(Add(...))→distribute. Neg(Mul(c,...))→absorb into coefficient. Otherwise→Mul(-1, x). | Nothing further. |
-| `sin()`, `cos()`, etc. | Construct unevaluated node. | Evaluate sin(0)→0. Apply identities. |
+| `add()` | Flatten nested Add. Sort by SortKey. Combine like terms. Evaluate numeric sums. Drop zeros. Propagate NaN. | Expand powers. Evaluate functions. Apply identities. |
+| `mul()` | Flatten nested Mul. Sort by SortKey. Combine like bases. Evaluate numeric products. Drop ones. Propagate NaN/zero. **Distribute Number×Add**. | Distribute symbolic×Add. Expand powers. Evaluate functions. |
+| `pow()` | x⁰→1. x¹→x. 1ˣ→1. 0^pos→0. numeric^small_int (guarded). NaN. | Expand (x+1)². Evaluate x^(1/2)→sqrt. |
+| `neg()` | Double-neg cancel. Numeric fold. Distribute over Add. Absorb into Mul coeff. Otherwise Mul(-1, x). | Nothing further. |
+| Functions | Construct unevaluated node. | Evaluate. Apply identities. |
 
-### Number×Add distribution
-
-When `canon_mul` produces a result of exactly `[Number, Add]`, the number is distributed over the Add's terms. This is required for correct like-term cancellation (e.g., `a - a = 0`). Symbolic factors are never distributed — that is the job of `.expand()`.
-
-This means `2*(x+1)` → `2*x + 2`, but `y*(x+1)` stays as `y*(x+1)`.
+Number×Add distribution: `2*(x+1)` → `2*x + 2`. Required for `a - a = 0`. Symbolic products stay: `y*(x+1)` unchanged.
 
 ---
 
 ## Assumption System
 
-23 mathematical properties tracked as two `bitflags` structs (`known_true` and `known_false`):
+23 properties tracked as two `bitflags` structs (`known_true`, `known_false`):
+commutative, complex, real, rational, integer, algebraic, transcendental, irrational, imaginary, positive, negative, nonnegative, nonpositive, zero, nonzero, even, odd, prime, composite, finite, infinite, hermitian, antihermitian.
 
+`forward_chain()` applies ~40 implication rules as bitmask operations until fixpoint. Property handlers compute assumptions for each node type (Num, Symbol, Add, Mul, Pow, constants, functions).
+
+---
+
+## Proc Macros
+
+### `expr!` — Expression builder
+
+Transforms math syntax into Rust code operating on `Ex` values:
+
+```rust
+let result = expr!(x^2 + 2*x + 1);
+// Expands to: ((&x).powi(2) + (&x) * 2 + 1)
 ```
-commutative, complex, real, rational, integer, algebraic, transcendental,
-irrational, imaginary, positive, negative, nonnegative, nonpositive,
-zero, nonzero, even, odd, prime, composite, finite, infinite,
-hermitian, antihermitian
+
+- All identifiers → auto-borrowed with `&`
+- `^` → `.powi(n)` for integer RHS, `.pow(&rhs)` for expression RHS
+- Known functions → method calls: `sin(x)` → `(&x).sin()`
+- Integer literals → kept as `i64` (operator impls handle coercion)
+- `Int / Int` → compile error (prevents silent Rust integer division)
+
+### `rule!` — Rewrite rule builder
+
+Builds `Pattern`/`Rule` structs from math syntax:
+
+```rust
+let r = rule!(arena, "pythagorean", sin(w_)^2 + cos(w_)^2 => 1);
 ```
 
-`forward_chain()` applies ~40 implication rules as bitmask operations until fixpoint:
-- Alpha rules: `integer → rational → real → complex → finite, commutative`
-- Contrapositives: `¬complex → ¬real → ¬integer`
-- Beta rules: `nonnegative ∧ nonzero → positive`
+- Identifiers ending in `_` are wilds (pattern variables)
+- Known constants: `pi`, `E`, `I`, `oo`, `nan`, `zoo`
+- Integer literals: `0` → `arena.zero`, `1` → `arena.one`, etc.
+- Unknown bare identifiers → compile error with helpful message
+- All sub-expressions emitted as flat `let __tN = arena.method(...)` bindings to avoid double-mutable-borrow
+- Type references via `::symplex::__macro_support::*`
 
-Property handlers compute assumptions for each node type:
-- `Num`: all properties from the rational value (sign, parity, primality)
-- `Symbol`: from stored user assumptions
-- `Add`: integer if all terms integer, positive if all nonneg with ≥1 positive
-- `Mul`: sign from negative count, zero if any factor zero
-- `Pow`: positive^real → positive, real^even → nonneg
-- Constants: Pi (positive, transcendental), E (positive, transcendental), I (imaginary, algebraic)
+Shared Pratt parser (~366 lines) handles both macros with standard mathematical precedence.
 
 ---
 
@@ -190,7 +214,7 @@ Property handlers compute assumptions for each node type:
 2. **Never silently wrong.** `Result::Err` over silent wrong answers. Structural substitution by default.
 3. **One representation per concept.** One assumption system. One polynomial type. One number type.
 4. **Thread-safe from day one.** `Arc<RwLock>`, `Ex` is `Send + Sync`.
-5. **No recursive tree walks.** All traversals use explicit stacks. Stack overflow is impossible. (Exception: `match_recursive` in pattern matching — patterns are small.)
+5. **No recursive tree walks.** All traversals use explicit stacks. Exception: `match_recursive` in pattern matching (patterns are small).
 6. **The compiler is the API contract.** `pub` = stable. `pub(crate)` = internal.
 7. **Extensible without inheritance.** Custom functions via name + registered rules.
 
@@ -198,29 +222,35 @@ Property handlers compute assumptions for each node type:
 
 ## Design Decisions and Rationale
 
-### Why `Ex` is Clone, not Copy
+### Why Ex is Clone, not Copy
 
-`Ex` stores an `Arc<RwLock<ContextInner>>` which is not `Copy`. This means operators work without any scoping mechanism (`with_ctx` was removed as dead architecture). The tradeoff: `&x + &y` instead of `x + y`. All operators are implemented for every combination of `Ex`, `&Ex`, and `i64`.
+`Ex` stores `Arc<RwLock<ContextInner>>` (not Copy). Operators work without scoping. The `expr!` macro mitigates the `&` noise via auto-borrowing.
 
 ### Why Number×Add distributes in canon_mul
 
-Without this, `Mul(-1, Add(-1, x))` stays opaque inside a sum, preventing `a - a = 0` from cancelling. proptest discovered this bug. The distribution matches SymPy's 20-year-proven `Mul.flatten` approach.
+Without this, `Mul(-1, Add(-1, x))` stays opaque inside a sum, preventing `a - a = 0`. Discovered by proptest. Matches SymPy's approach.
 
 ### Why no Float node type
 
-Mixing exact and inexact arithmetic creates precision confusion (a SymPy pain point). All symbolic computation uses exact `Ratio<BigInt>`. Floating-point results are only available through `evalf()`, which returns a `String`.
+Mixing exact and inexact arithmetic creates precision confusion. All symbolic computation uses exact `Ratio<BigInt>`. `evalf()` returns `String`.
 
-### Why a single RwLock instead of two
+### Why a single RwLock
 
-An earlier design used separate `Arc<RwLock<Arena>>` and `Arc<RwLock<AssumptionCache>>`. This was refactored to a single `Arc<RwLock<ContextInner>>` with the assumption cache as an interior `Mutex`. This makes lock ordering structural (outer → inner) and deadlock impossible by construction.
+Earlier design had two Arcs. Refactored to single `Arc<RwLock<ContextInner>>` with interior `Mutex<AssumptionCache>`. Lock ordering is structural. Deadlock impossible.
 
 ### Why iterative display
 
-The display module was rewritten from recursive `fmt_expr` to an explicit work-stack. This was the last Principle 5 violation. The iterative version handles 10,000-deep nested expressions without stack overflow.
+Rewritten from recursive to explicit work-stack. Handles 10,000-deep expressions. Last Principle 5 violation eliminated.
+
+### Why proc macros in a separate crate
+
+Rust requires proc-macro crates to be separate. The `symplex-macros` crate lives inside `symplex/symplex-macros/` as a path dependency. Re-exported via `pub use symplex_macros::*`.
 
 ---
 
 ## Dependencies
+
+### Main crate
 
 | Crate | Version | License | Purpose |
 |-------|---------|---------|---------|
@@ -233,40 +263,37 @@ The display module was rewritten from recursive `fmt_expr` to an explicit work-s
 | `bitflags` | 2.11 | MIT/Apache-2.0 | Assumption property flags |
 | `parking_lot` | 0.12 | MIT/Apache-2.0 | Fast RwLock/Mutex |
 | `thiserror` | 2.0 | MIT/Apache-2.0 | Error type derivation |
-| `astro-float` | 0.9 (optional) | MIT | Arbitrary-precision floats for evalf |
+| `astro-float` | 0.9 (optional) | MIT | Arbitrary-precision floats |
+| `symplex-macros` | 0.1 (path) | MIT/Apache-2.0 | Proc macros |
 
-Dev dependencies: `criterion` 0.5 (benchmarks), `proptest` 1.10 (property-based testing).
+### Proc macro crate
 
-All dependencies are MIT/Apache-2.0. No C bindings. No LGPL.
+| Crate | Version | License | Purpose |
+|-------|---------|---------|---------|
+| `syn` | 2 | MIT/Apache-2.0 | Token parsing |
+| `quote` | 1 | MIT/Apache-2.0 | Code generation |
+| `proc-macro2` | 1 | MIT/Apache-2.0 | Token manipulation |
+
+Dev dependencies: `criterion` 0.5, `proptest` 1.10.
+
+All MIT/Apache-2.0. No C bindings. No LGPL.
 
 ---
 
 ## Testing Strategy
 
-689 tests across these categories:
+732 tests across these categories:
 
 | Category | Count | Location |
 |----------|-------|----------|
-| Unit tests (in-module) | ~358 | `src/*.rs` `#[cfg(test)]` modules |
+| Unit tests (in-module) | ~358 | `src/*.rs` |
 | Property-based (proptest) | 23 | `tests/proptest_canon.rs` |
-| Integration (stage 1) | 36 | `tests/test_stage1.rs` |
-| Integration (stage 3) | 60 | `tests/test_stage3.rs` |
-| Integration (stage 5) | 35 | `tests/test_stage5.rs` |
-| Integration (stage 6) | 41 | `tests/test_stage6.rs` |
-| Integration (stages 7-8) | 71 | `tests/test_stage7_8.rs` |
+| Integration (stages 1,3,5,6,7-8) | 243 | `tests/test_stage*.rs` |
+| Proc macro integration | 43 | `tests/test_macros.rs` |
 | Regression | 5 | `tests/test_bug_regression.rs` |
 | Doctests | 14 | Inline in source |
 
-### proptest invariants verified
-
-- Canonicalization: idempotence, commutativity (Add/Mul), associativity (Add), identity elements, zero annihilator, double negation, self-subtraction, x + (-x) = 0.
-- Numeric: add/mul/pow correctness for random integers.
-- Display: never panics for random expression trees.
-- Assumptions: single-assertion consistency, forward-chain idempotence, merge-self is noop, integer property correctness.
-
-### Verification via substitution
-
-Several tests verify correctness by evaluating both the original and transformed expression at specific points and checking they agree.
+Proptest invariants: canonicalization idempotence/commutativity/associativity, identity elements, double negation, self-subtraction, numeric correctness, display safety, assumption consistency.
 
 ---
 
@@ -275,14 +302,14 @@ Several tests verify correctness by evaluating both the original and transformed
 ### Types
 
 ```rust
-pub struct Context;           // Entry point. Owns arena + assumption cache.
-pub struct Ex;                // Expression handle. Clone, Send, Sync. 16 bytes.
-pub struct Props;             // Bitflags for mathematical properties.
-pub enum Assumption;          // User-facing assumption specifier.
-pub struct Assumptions;       // Three-valued property storage.
-pub struct EvalConfig;        // Evaluation guard configuration.
-pub enum SymplexError;        // Error type.
-pub struct Step;              // Simplification trace entry.
+pub struct Context;       // Entry point
+pub struct Ex;            // Expression handle (Clone, Send, Sync, 16 bytes)
+pub struct Props;         // Bitflags (23 properties)
+pub enum Assumption;      // User-facing assumption specifier
+pub struct Assumptions;   // Three-valued property storage
+pub struct EvalConfig;    // Evaluation guards
+pub enum SymplexError;    // Errors
+pub struct Step;          // Simplification trace entry
 ```
 
 ### Context methods
@@ -294,130 +321,246 @@ ctx.symbol(name) -> Ex
 ctx.symbol_with(name, &[Assumption]) -> Ex
 ctx.int(n: i64) -> Ex
 ctx.rational(p, q) -> Ex
-ctx.pi() -> Ex
-ctx.e() -> Ex
-ctx.i_unit() -> Ex
-ctx.infinity() -> Ex
-ctx.nan() -> Ex
+ctx.pi() / ctx.e() / ctx.i_unit() / ctx.infinity() / ctx.nan() -> Ex
 ctx.query(&ex, Props) -> Option<bool>
 ctx.display(&ex) -> String
 ctx.node_count() -> usize
+ctx.with_arena_mut(|arena| { ... }) -> R
 ```
 
-### Ex methods
+### Ex methods (28 public, all transformations `#[must_use]`)
 
 ```rust
-// Construction (all #[must_use])
-ex.pow(&exp) -> Ex          ex.powi(n: i64) -> Ex
-ex.sin() -> Ex              ex.cos() -> Ex
-ex.tan() -> Ex              ex.exp_fn() -> Ex
-ex.ln() -> Ex               ex.sqrt() -> Ex
-ex.abs() -> Ex
+// Construction
+ex.pow(&exp)  ex.powi(n)  ex.sin()  ex.cos()  ex.tan()
+ex.exp_fn()   ex.ln()     ex.sqrt() ex.abs()
 
-// Transformation (all #[must_use])
-ex.diff(&var) -> Ex
-ex.subs(&old, &new) -> Ex
-ex.subs_map(&[(&old, &new)]) -> Ex
-ex.expand() -> Ex
-ex.simplify() -> Ex
-ex.simplify_trace() -> (Ex, Vec<Step>)
-ex.eval() -> Ex
-ex.evalf(digits: u32) -> Result<String, SymplexError>
-ex.cancel(&var) -> Ex
-ex.solve(&var) -> Vec<Ex>
+// Transformation
+ex.diff(&var)              ex.subs(&old, &new)
+ex.subs_map(&[...])       ex.expand()
+ex.simplify()             ex.simplify_trace()
+ex.eval()                 ex.evalf(digits)
+ex.cancel(&var)           ex.solve(&var)
 
 // Queries
-ex.is_zero() -> Option<bool>
-ex.is_positive() -> Option<bool>
-ex.query(Props) -> Option<bool>
-ex.equals(&other) -> Option<bool>
-ex.is_zero_structural() -> bool
-ex.is_one_structural() -> bool
-ex.id() -> ExprId
-ex.ctx_id() -> CtxId
+ex.is_zero() -> Option<bool>     ex.is_positive() -> Option<bool>
+ex.query(Props) -> Option<bool>  ex.equals(&other) -> Option<bool>
+ex.is_zero_structural() -> bool  ex.is_one_structural() -> bool
 
-// Operators: +, -, *, /, unary -
-// All for Ex⊕Ex, Ex⊕&Ex, &Ex⊕Ex, &Ex⊕&Ex, Ex⊕i64, i64⊕Ex, &Ex⊕i64, i64⊕&Ex
+// Operators: +, -, *, /, unary -  (all for Ex/&Ex/i64 combinations)
 ```
 
 ### Macros
 
 ```rust
-syms!(ctx; x, y, z);                    // Declare multiple symbols
+syms!(ctx; x, y, z);                    // Declare symbols
 sym!(ctx; t, Positive, Real);           // Declare with assumptions
+expr!(x^2 + 2*x + 1)                   // Build expression with math syntax
+rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 ```
 
 ---
 
 ## Build Stages Completed
 
-| Stage | Description | Key Deliverables |
-|-------|-------------|------------------|
-| 1 | Foundation skeleton | Arena, ExprNode, intern, SortKey, Display |
-| 2 | Canonicalization | Add/Mul/Pow/Neg with flatten/sort/combine, Number×Add distribution |
-| 3 | Context + operators | Context, Ex, +/-/*/÷ operators, syms!/sym! macros, prelude |
-| 4 | Assumptions | Props bitflags, forward_chain, 23 properties, handlers for all nodes |
-| 5 | Substitution | Structural subs, subs_map, iterative walk_and_rebuild |
-| 6 | Differentiation | All rules, chain rule, n-ary product rule, iterative |
-| 6.5 | Pattern matching | WildId, Pattern, match_pattern, Rule, apply_rules, Step, simplify_trace |
-| 7 | Expand + eval | Algebraic expansion, special-value evaluation table |
-| 8 | Numerical evaluation | astro-float integration, evalf(digits) |
-| 9 | Polynomial algebra | Poly type, arithmetic, Euclidean GCD, expr↔poly bridge, cancel() |
-| 10 | Equation solver | solve() for linear/quadratic/rational-root polynomials |
-| Cleanup | Quality | Iterative display, #[must_use], proptest, deduplicated rebuild_with_cache |
+| Stage | Description |
+|-------|-------------|
+| 1 | Arena, ExprNode, intern, SortKey, Display |
+| 2 | Canonicalization: Add/Mul/Pow/Neg, Number×Add distribution |
+| 3 | Context, Ex, operators, syms!/sym! macros, prelude |
+| 4 | Assumption engine: 23 properties, forward_chain, handlers |
+| 5 | Structural substitution, iterative walk_and_rebuild |
+| 6 | Differentiation: all rules, chain rule, n-ary product rule |
+| 6.5 | Pattern matching: wilds, rules, simplify, trace |
+| 7 | Expand (distribute, power expand) + eval (special values) |
+| 8 | Arbitrary-precision numerical evaluation (astro-float) |
+| 9 | Polynomial algebra: Poly, arithmetic, Euclidean GCD, expr↔poly bridge, cancel() |
+| 10 | Equation solver: linear, quadratic, rational root theorem |
+| 11 | Proc macros: expr!, rule! with Pratt parser |
+| Cleanup | Iterative display, #[must_use], proptest, deduplication |
 
 ---
 
 ## Known Limitations
 
-1. **Pattern matching is structural only.** `sin²(w) + cos²(w)` matches a 2-term Add but not a sub-expression inside a larger Add like `3 + sin²(x) + cos²(x)`. Sub-expression matching requires combinatorial search over Add/Mul terms.
-
-2. **Polynomial factoring is not implemented.** `cancel()` and `solve()` use GCD and Rational Root Theorem. Full factoring (Berlekamp, Cantor-Zassenhaus, Hensel lifting) is not yet available.
-
-3. **Complex number support is limited.** `ImaginaryUnit` exists as a node type, but `evalf` returns an error for complex expressions. Complex arithmetic is not implemented.
-
-4. **No integration.** Symbolic antiderivatives are not implemented.
-
-5. **No series expansion.** Taylor/Laurent series are not implemented.
-
-6. **No limit computation.** The Gruntz algorithm is not implemented.
-
-7. **`solve()` returns empty for non-polynomial equations.** Transcendental equations (e.g., `sin(x) = 0`) are not handled.
-
-8. **`simplify()` has one built-in rule** (Pythagorean identity). Additional trig, log, exp, and power identities are needed.
-
-9. **`bigint_to_bigfloat` loses precision for integers larger than i128.** Falls back to f64 conversion.
-
-10. **No `collect()`, `together()`, or `factor_terms()`.** These require polynomial infrastructure that is now available but the expression-level wrappers are not yet written.
+1. **Pattern matching is structural only.** `sin²(w) + cos²(w)` matches a 2-term Add but not inside `3 + sin²(x) + cos²(x)`.
+2. **No polynomial factoring.** GCD and rational root finding only.
+3. **Limited complex number support.** `ImaginaryUnit` exists but `evalf` errors on complex expressions.
+4. **No integration.** No antiderivatives.
+5. **No series expansion.** No Taylor/Laurent.
+6. **No limit computation.** No Gruntz algorithm.
+7. **`solve()` is polynomial-only.** Transcendental equations not handled.
+8. **`simplify()` has limited rules.** Pythagorean identity only via built-in. More rules can be added via `rule!` macro.
+9. **`bigint_to_bigfloat` loses precision for integers > i128.** Falls back to f64.
+10. **No `collect()`, `together()`, or `factor_terms()` yet.**
+11. **`expr!(1/2)` is a compile error.** By design — prevents silent Rust integer division. Use `ctx.rational(1, 2)`.
+12. **`expr!(x^2^3)` with nested integer powers causes type errors.** The inner `2^3` evaluates as integer arithmetic, not symbolic.
 
 ---
 
-## Planned Future Work
+## Detailed Next Steps
 
-### High priority (CAS capabilities)
+### Priority 1: More Simplification Rules (Immediate)
 
-- **Sub-expression matching in Add/Mul.** When a pattern has N terms and the expression has M > N, try C(M, N) subsets. Enables `sin²+cos²=1` inside larger sums.
-- **More simplification rules.** Log identities (ln(a*b)=ln(a)+ln(b) for positive a,b), exp/ln inverses, power simplification (x^a * x^b → x^(a+b) inside expressions), conditional rules using assumption system.
-- **`collect(var)`.** Group terms by powers of a variable. Uses `expr_to_poly` + `poly_to_expr`.
-- **`together()`.** Combine fractions over common denominator using polynomial LCM.
-- **Basic integration.** Antiderivatives for polynomials, trig, exp, ln. Risch algorithm for rational functions.
-- **Series expansion.** `series(expr, var, point, order)` for Taylor/Laurent expansion.
+**Goal:** Make `simplify()` useful for common mathematical identities.
 
-### Medium priority
+**Implementation:** Use the `rule!` macro in `pattern.rs`'s `basic_rules()` function. Each rule is one line.
 
-- **Polynomial factoring over ℤ.** Berlekamp + Hensel lifting for `factor()`.
-- **Limits.** Gruntz algorithm.
-- **More solve capabilities.** Systems of equations, transcendental equations via Newton's method.
-- **CancelToken.** Cooperative cancellation for long-running computations.
-- **Complex number support.** Track real/imaginary parts, complex evalf.
+**Rules to add:**
 
-### Low priority / infrastructure
+```
+// Inverse function pairs
+exp(ln(w_)) => w_
+ln(exp(w_)) => w_
 
-- **Criterion benchmarks.** Measure: 10K-term sum, (a+b)^20 expansion, deep-tree diff, evalf pi to 1000 digits.
-- **`compile()` → `CompiledExpr`.** Stack bytecode for fast repeated numerical evaluation.
-- **Split `assumptions.rs`.** At 1743 lines, it should become a directory module.
-- **LaTeX output.** `expr.latex()` → String.
-- **CI configuration.** GitHub Actions with clippy + test + proptest.
+// Trig at zero/pi (complements eval.rs for expressions inside larger contexts)
+sin(0) => 0
+cos(0) => 1
+tan(0) => 0
+
+// Power identities
+w_^0 => 1
+w_^1 => w_
+1^w_ => 1
+0^w_ => 0  (needs condition: w_ positive)
+
+// Double function
+sqrt(w_^2) => abs(w_)
+abs(abs(w_)) => abs(w_)
+```
+
+**Where to edit:** `src/pattern.rs`, function `basic_rules()`. Add each rule using `rule!(arena, ...)`. The proc macro handles all the Pattern/Wild boilerplate.
+
+**Effort:** ~30 minutes. Blocked on nothing.
+
+### Priority 2: Sub-expression Matching in Add/Mul
+
+**Goal:** Enable `sin²(x) + cos²(x) → 1` inside larger sums like `3 + sin²(x) + cos²(x) → 4`.
+
+**Implementation approach:**
+
+1. In `apply_rules` (pattern.rs), when a rule fails to match an `Add` node, try matching the rule's LHS against all C(N, K) subsets of the Add's K terms, where K is the number of terms in the pattern's Add.
+2. For K=2 (the common case), this is O(N²) where N is the number of terms in the expression's Add. Acceptable.
+3. If a subset matches, rebuild the Add with the matching terms replaced by the rule's RHS and the remaining terms kept.
+
+**Where to edit:** `src/pattern.rs`, function `apply_rules`. Add a new path after the current `try_apply` fails: if the node is an Add and the rule's pattern root is an Add, iterate over pairs of terms.
+
+**Key data structures:** The `match_pattern` function already handles matching. The new code just needs to try it on different subsets of the Add's children.
+
+**Effort:** ~2 hours. Requires careful handling of the remaining terms.
+
+### Priority 3: `collect(var)` — Group by Powers of a Variable
+
+**Goal:** `collect(x² + 2xy + y², x)` → `x² + 2y·x + y²` (grouped by powers of x).
+
+**Implementation:**
+
+1. Call `expr_to_poly(arena, expr, var)` to get a `Poly`.
+2. Call `poly_to_expr(arena, &poly, var)` to rebuild — this naturally groups by power.
+3. If `expr_to_poly` fails (not polynomial), return unchanged.
+
+**Where to edit:** Add `collect` to `polybridge.rs` and wire through `arena.rs` and `expr.rs`.
+
+**Effort:** ~30 minutes. Uses existing Poly infrastructure.
+
+### Priority 4: `together()` — Common Denominator
+
+**Goal:** `1/x + 1/y` → `(x + y) / (x·y)`.
+
+**Implementation:**
+
+1. Decompose each term of an Add via `as_numer_denom`.
+2. Compute the LCM of all denominators (as polynomial LCM = product / GCD).
+3. Scale each numerator appropriately.
+4. Sum the scaled numerators.
+5. Rebuild as `new_numer / new_denom`.
+
+**Where to edit:** Add `together` to `polybridge.rs`.
+
+**Prerequisite:** Need polynomial LCM, which is `a * b / gcd(a, b)`. The Poly crate already has GCD and Mul.
+
+**Effort:** ~1.5 hours.
+
+### Priority 5: Basic Integration
+
+**Goal:** Antiderivatives for polynomials, trig, exp, ln.
+
+**Implementation:**
+
+1. Create `src/integrate.rs`.
+2. Walk the expression bottom-up (like diff.rs).
+3. Rules:
+   - `∫ x^n dx = x^(n+1)/(n+1)` for n ≠ -1
+   - `∫ x^(-1) dx = ln(|x|)`
+   - `∫ sin(x) dx = -cos(x)`
+   - `∫ cos(x) dx = sin(x)`
+   - `∫ exp(x) dx = exp(x)`
+   - `∫ (f + g) dx = ∫f dx + ∫g dx` (linearity)
+   - `∫ c·f dx = c · ∫f dx` (constant factor)
+4. For expressions that don't match any rule, return an unevaluated `Integral` node.
+5. Chain rule substitution (integration by substitution) for simple cases.
+
+**Where to edit:** New file `src/integrate.rs`. Wire through `arena.rs` and `expr.rs`.
+
+**Effort:** ~4 hours for basic rules. Risch algorithm for rational functions is a separate large project.
+
+### Priority 6: Series Expansion
+
+**Goal:** `series(exp(x), x, 0, 5)` → `1 + x + x²/2 + x³/6 + x⁴/24 + O(x⁵)`.
+
+**Implementation:**
+
+1. Create `src/series.rs`.
+2. Use repeated differentiation + division by factorial: `f(a) + f'(a)(x-a) + f''(a)(x-a)²/2! + ...`
+3. Each term is computed by `diff` (already implemented) and `subs` (already implemented).
+4. Truncate at the requested order.
+5. Return as a `Poly` or as an `Ex` expression.
+
+**Where to edit:** New file `src/series.rs`.
+
+**Effort:** ~3 hours for Taylor expansion. Laurent series and asymptotic series are more complex.
+
+### Priority 7: Polynomial Factoring
+
+**Goal:** `factor(x² - 1)` → `(x - 1)(x + 1)`.
+
+**Implementation:**
+
+1. Find all rational roots via the existing `solve_rational_roots`.
+2. For each root r, factor out (x - r).
+3. Return the product of linear factors × remaining unfactored polynomial.
+4. For complete factoring over ℤ, implement Berlekamp's algorithm + Hensel lifting. This is a large project.
+
+**Where to edit:** Add to `poly.rs` or new `src/factor.rs`.
+
+**Effort:** ~2 hours for rational-root factoring. Berlekamp+Hensel is ~20 hours.
+
+### Priority 8: Equation Solving Improvements
+
+**Goal:** Systems of linear equations, and transcendental equations via Newton's method.
+
+**Implementation for linear systems:**
+
+1. Create `src/linalg.rs` with Gaussian elimination over `Ratio<BigInt>`.
+2. Input: list of linear expressions and list of variables.
+3. Build coefficient matrix, solve, return substitution map.
+
+**Implementation for Newton's method:**
+
+1. Use `diff` and `evalf` to iteratively refine a numerical root.
+2. Return as a numerical `Ex` value.
+
+**Effort:** Linear systems ~4 hours. Newton's method ~2 hours.
+
+### Infrastructure Tasks
+
+| Task | Where | Effort |
+|------|-------|--------|
+| Criterion benchmarks | `benches/canonicalization.rs` | 1 hour |
+| Split `assumptions.rs` | Into `assumptions/mod.rs`, `assumptions/inference.rs`, `assumptions/handlers.rs`, `assumptions/cache.rs` | 1 hour |
+| CI configuration | `.github/workflows/ci.yml` | 30 min |
+| `CancelToken` for timeouts | New `src/cancel.rs`, integrate into expand/solve/simplify | 2 hours |
+| Complex number support | Track re/im parts, complex evalf | 8 hours |
 
 ---
 
@@ -428,38 +571,44 @@ symplex/
 ├── Cargo.toml
 ├── README.md
 ├── IMPLEMENTATION_PLAN.md
+├── symplex-macros/                    Proc macro crate
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs                     expr!, rule! entry points + codegen
+│       └── parse.rs                   Shared Pratt parser
 ├── src/
-│   ├── lib.rs              Module declarations, prelude, Props Default impl
-│   ├── arena.rs            Expression arena + hash-consing
-│   ├── assumptions.rs      Three-valued property inference engine
-│   ├── canon.rs            Canonical-form constructors (Add, Mul, Pow, Neg)
-│   ├── config.rs           EvalConfig
-│   ├── context.rs          Context (user-facing entry point)
-│   ├── diff.rs             Symbolic differentiation
-│   ├── display.rs          Iterative expression pretty-printer
-│   ├── errors.rs           SymplexError
-│   ├── eval.rs             Special-value evaluation
-│   ├── evalf.rs            Arbitrary-precision numerical evaluation
-│   ├── expand.rs           Algebraic expansion
-│   ├── expr.rs             Ex (user-facing expression handle)
-│   ├── macros.rs           syms! and sym! macros
-│   ├── node.rs             ExprId, NumId, SymbolId, CtxId, ExprNode
-│   ├── pattern.rs          Pattern matching + rewrite rules
-│   ├── poly.rs             Dense univariate polynomials over ℚ
-│   ├── polybridge.rs       Expression ↔ Poly bridge + cancel()
-│   ├── solve.rs            Polynomial equation solver
-│   ├── sort_key.rs         Canonical ordering
-│   ├── subs.rs             Structural substitution
-│   ├── symbol.rs           Symbol table with string interning
-│   └── walk.rs             Shared iterative tree traversal
+│   ├── lib.rs                         Module declarations, prelude, __macro_support
+│   ├── arena.rs                       Expression arena + hash-consing
+│   ├── assumptions.rs                 Three-valued property inference engine
+│   ├── canon.rs                       Canonical-form constructors
+│   ├── config.rs                      EvalConfig
+│   ├── context.rs                     Context (user-facing entry point)
+│   ├── diff.rs                        Symbolic differentiation
+│   ├── display.rs                     Iterative expression pretty-printer
+│   ├── errors.rs                      SymplexError
+│   ├── eval.rs                        Special-value evaluation
+│   ├── evalf.rs                       Arbitrary-precision numerical evaluation
+│   ├── expand.rs                      Algebraic expansion
+│   ├── expr.rs                        Ex (expression handle)
+│   ├── macros.rs                      syms! and sym! declarative macros
+│   ├── node.rs                        ExprId, NumId, SymbolId, CtxId, ExprNode
+│   ├── pattern.rs                     Pattern matching + rewrite rules
+│   ├── poly.rs                        Dense univariate polynomials over ℚ
+│   ├── polybridge.rs                  Expression ↔ Poly bridge + cancel()
+│   ├── solve.rs                       Polynomial equation solver
+│   ├── sort_key.rs                    Canonical ordering
+│   ├── subs.rs                        Structural substitution
+│   ├── symbol.rs                      Symbol table
+│   └── walk.rs                        Shared iterative tree traversal
 ├── tests/
-│   ├── proptest_canon.rs   Property-based canonicalization tests
-│   ├── test_bug_regression.rs  Regression tests for proptest-discovered bugs
-│   ├── test_stage1.rs      Stage 1 integration tests
-│   ├── test_stage3.rs      Stage 3 integration tests
-│   ├── test_stage5.rs      Stage 5 integration tests
-│   ├── test_stage6.rs      Stage 6 integration tests
-│   └── test_stage7_8.rs    Stages 7-8 integration tests
+│   ├── proptest_canon.rs              Property-based tests
+│   ├── test_bug_regression.rs         Regression tests
+│   ├── test_macros.rs                 Proc macro integration tests
+│   ├── test_stage1.rs                 Stage 1 integration tests
+│   ├── test_stage3.rs                 Stage 3 integration tests
+│   ├── test_stage5.rs                 Stage 5 integration tests
+│   ├── test_stage6.rs                 Stage 6 integration tests
+│   └── test_stage7_8.rs              Stages 7-8 integration tests
 └── benches/
-    └── canonicalization.rs (stub)
+    └── canonicalization.rs            (stub)
 ```

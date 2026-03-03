@@ -60,6 +60,17 @@ pub mod errors;
 pub mod expr;
 pub mod macros;
 
+// ── Proc macro re-exports ──────────────────────────────────────────────
+pub use symplex_macros::{expr, rule};
+
+// ── Macro support (hidden internals used by generated code) ────────────
+#[doc(hidden)]
+pub mod __macro_support {
+    pub use crate::node::ExprNode;
+    pub use crate::pattern::{Pattern, Rule, WildId};
+    pub use rustc_hash::FxHashMap;
+}
+
 // bitflags types don't auto-derive Default; provide it here so
 // Assumptions::default() works.
 impl Default for assumptions::Props {
@@ -80,4 +91,5 @@ pub mod prelude {
     pub use crate::errors::SymplexError;
     pub use crate::expr::Ex;
     pub use crate::pattern::Step;
+    pub use symplex_macros::{expr, rule};
 }

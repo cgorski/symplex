@@ -30,8 +30,8 @@
 use rustc_hash::FxHashMap;
 
 use crate::arena::Arena;
-use crate::walk;
 use crate::node::{ExprId, ExprNode};
+use crate::walk;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WildId — pattern variable identifier
@@ -71,9 +71,9 @@ pub type Substitution = FxHashMap<WildId, ExprId>;
 #[derive(Clone, Debug)]
 pub struct Pattern {
     /// The root of the pattern expression (built in the arena).
-    pub(crate) root: ExprId,
+    pub root: ExprId,
     /// Which symbols in the pattern are wilds.
-    pub(crate) wilds: FxHashMap<ExprId, WildId>,
+    pub wilds: FxHashMap<ExprId, WildId>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -89,7 +89,7 @@ impl Arena {
     /// Returns the `ExprId` of the wild symbol and its `WildId`.
     /// The wild is represented as a regular symbol with a unique
     /// internal name (e.g., `_w0`, `_w1`, ...).
-    pub(crate) fn wild(&mut self) -> (ExprId, WildId) {
+    pub fn wild(&mut self) -> (ExprId, WildId) {
         let id = NEXT_WILD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let wid = WildId(id);
         let name = format!("_w{id}");

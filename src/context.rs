@@ -224,6 +224,21 @@ impl Context {
         inner.arena.display(ex.id).to_string()
     }
 
+    // ── Arena access ───────────────────────────────────────────────────
+
+    /// Run a closure with mutable access to the underlying arena.
+    ///
+    /// This is primarily used by the [`rule!`](crate::rule) macro to
+    /// build pattern expressions directly in the arena.  Most users
+    /// should prefer the higher-level `Ex` methods instead.
+    ///
+    /// The closure receives `&mut Arena` and can call any arena method.
+    /// The write lock is held for the duration of the closure.
+    pub fn with_arena_mut<R>(&self, f: impl FnOnce(&mut crate::arena::Arena) -> R) -> R {
+        let mut guard = self.inner.write();
+        f(&mut guard.arena)
+    }
+
     // ── Arena info ─────────────────────────────────────────────────────
 
     /// Number of interned expression nodes.

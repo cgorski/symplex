@@ -5,6 +5,7 @@ Symbolic mathematics library for Rust.
 ## Features
 
 - **Expression building** — operator overloading (`+`, `-`, `*`, `/`, unary `-`), method chaining (`.pow()`, `.sin()`, `.diff()`), automatic canonicalization (flatten, sort, combine like terms)
+- **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax with auto-borrowing; `rule!(arena, "name", LHS => RHS)` for one-line rewrite rule definitions
 - **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
 - **Algebraic expansion** — distribute products over sums, expand integer powers of sums
 - **Exact evaluation** — known special values of trig/exp/ln at multiples of π, 0, 1, e
@@ -26,16 +27,20 @@ use symplex::syms;
 let ctx = Context::new();
 syms!(ctx; x, y);
 
-// Arithmetic with operator overloading
-let expr = &x * &x + &x * 2 + 1;
-println!("{expr}");                          // 1 + x**2 + 2*x
+// Build expressions with natural math syntax via expr! macro
+let f = expr!(x^2 + 2*x + 1);
+println!("{f}");                             // 1 + x**2 + 2*x
+
+// Or with standard Rust operators
+let g = &x * &x + &x * 2 + 1;
+assert_eq!(f, g);                            // same canonical form
 
 // Expand powers
-let cubed = (&x + 1).powi(3);
+let cubed = expr!((x + 1)^3);
 println!("{}", cubed.expand());              // 1 + x**3 + 3*x + 3*x**2
 
 // Differentiate
-let deriv = x.powi(3).diff(&x);
+let deriv = expr!(x^3).diff(&x);
 println!("{deriv}");                         // 3*x**2
 
 // Evaluate derivative at a point
@@ -51,15 +56,16 @@ let pi_50 = ctx.pi().evalf(50).unwrap();
 println!("{pi_50}");                         // 3.1415926535897932384626433832795...
 
 // Simplify trig identities
-let trig = &x.sin().powi(2) + &x.cos().powi(2);
+let trig = expr!(sin(x)^2 + cos(x)^2);
 println!("{}", trig.simplify());             // 1
 
 // Cancel common factors
-let frac = (&x.powi(2) - 1) / (&x - 1);
+let frac = expr!((x^2 - 1) / (x - 1));
 println!("{}", frac.cancel(&x));             // 1 + x
 
 // Solve equations
-let roots = (&x.powi(2) - &x * 5 + 6).solve(&x);
+let eq = expr!(x^2 - 5*x + 6);
+let roots = eq.solve(&x);
 for r in &roots {
     println!("x = {r}");                     // x = 2, x = 3
 }
@@ -85,6 +91,7 @@ ctx.pi()                                     // π
 ctx.e()                                      // Euler's number
 ctx.query(&expr, Props::POSITIVE)            // query assumption → Option<bool>
 ctx.display(&expr)                           // format as String
+ctx.with_arena_mut(|arena| { ... })          // direct arena access (for rule!)
 ```
 
 ### Expression Methods
@@ -123,9 +130,24 @@ ex.is_zero_structural()                      // → bool (O(1))
 ### Macros
 
 ```rust
+// Declarative macros
 syms!(ctx; x, y, z);                        // declare multiple symbols
 sym!(ctx; t, Positive, Real);               // declare with assumptions
+
+// Proc macros — natural math syntax
+expr!(x^2 + 2*x + 1)                        // build Ex with ^ for power
+expr!(sin(x)^2 + cos(x)^2)                  // function calls
+expr!((x + 1)^3 * y)                        // grouping with parens
+
+// Rewrite rule definition (inside ctx.with_arena_mut)
+rule!(arena, "pythagorean", sin(w_)^2 + cos(w_)^2 => 1)
+rule!(arena, "exp_ln", exp(ln(w_)) => w_)
+rule!(arena, "sqrt_sq", sqrt(w_^2) => abs(w_))
 ```
+
+The `expr!` macro auto-borrows identifiers (no `&` needed) and rewrites `^` to `.powi()` or `.pow()`. Integer literals stay as `i64`. Note: `expr!(1/2)` is a compile error — use `ctx.rational(1, 2)` for exact fractions.
+
+The `rule!` macro builds `Pattern`/`Rule` structs. Identifiers ending in `_` are wilds (match anything). Known constants (`pi`, `E`, `I`, `oo`, `nan`) are recognized. Unknown bare identifiers produce a compile error with a helpful message.
 
 ## Architecture
 
@@ -133,9 +155,9 @@ Expressions are stored in an arena-interned DAG with hash-consing. Every express
 
 The user-facing `Ex` type holds an `Arc<RwLock<ContextInner>>` and an `ExprId`. It is 16 bytes, `Clone`, `Send`, and `Sync`.
 
-All tree traversals use explicit stacks (no recursion), so stack overflow cannot occur regardless of expression depth.
+All tree traversals use explicit stacks (no recursion), so stack overflow cannot occur regardless of expression depth. Verified with 10,000-deep nested expressions.
 
-See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed architecture documentation.
+The codebase is ~17,500 lines across 25 modules with 732 tests. See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed architecture, module reference, concurrency model, and next steps.
 
 ## Design Decisions
 
@@ -149,7 +171,7 @@ See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed architecture d
 
 ## Dependencies
 
-All dependencies are MIT or Apache-2.0 licensed. There are no C bindings or LGPL dependencies.
+All dependencies are MIT or Apache-2.0 licensed. No C bindings. No LGPL.
 
 | Crate | Purpose |
 |-------|---------|
@@ -162,6 +184,7 @@ All dependencies are MIT or Apache-2.0 licensed. There are no C bindings or LGPL
 | `bitflags` | Assumption property flags |
 | `parking_lot` | Fast locks |
 | `thiserror` | Error types |
+| `symplex-macros` | Proc macros (`expr!`, `rule!`); uses `syn`, `quote`, `proc-macro2` |
 | `astro-float` | Arbitrary-precision floats (optional, feature `evalf`) |
 
 ## Feature Flags
