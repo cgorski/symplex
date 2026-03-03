@@ -461,6 +461,7 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 | Math sprint 2 | Power-of-power rule, perfect nth root eval, irrational trig values, hyperbolic odd/even, log expansion |
 | Infrastructure | Criterion benchmarks (30), GitHub Actions CI, CHANGELOG.md |
 | Sprint A-D | Integration completeness (tan/ln/inverse trig-hyp/apart pipeline), 3 new simplify rules + Mul sub-match, complete unit circle eval, ergonomics (zero/one/expr_type/replace/logcombine), calculus example |
+| Cycles 4-8 | Complex number support (i²=-1, (-1)^½→I, complex quadratic roots, Euler's formula), transcendental solver (inversion peeling), integer sqrt simplification (√8→2√2), trig-hyp bridge, inverse trig integrals, general linear substitution, 6 new simplify rules, assumption handlers for 9 function types, node rebuilding fixes, SymPy-inspired improvements |
 
 ---
 
@@ -468,17 +469,18 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 
 1. ~~**Pattern matching is structural only.**~~ **Resolved** — sub-expression matching in Add finds patterns within larger sums.
 2. ~~**No polynomial factoring.**~~ **Resolved** — `factor()` with content extraction and multiplicity handling.
-3. **Limited complex number support.** `ImaginaryUnit` exists but `evalf` errors on complex expressions.
+3. ~~**Limited complex number support.**~~ **Significantly improved** — `i²=-1` canonicalization, `(-1)^(1/2)→I`, `(-n)^(1/2)→I√n`, complex quadratic roots, Euler's formula. `evalf` still errors on complex expressions (Tier 3 deferred).
 4. ~~**No integration.**~~ **Resolved** — basic antiderivatives for polynomials, trig, exp.
 5. ~~**No series expansion.**~~ **Resolved** — Taylor series with pole detection.
 6. ~~**No limit computation.**~~ **Resolved** — limits via direct substitution, L'Hôpital's rule, and series fallback. Gruntz algorithm not implemented.
-7. **`solve()` is polynomial-only.** Transcendental equations not handled.
+7. ~~**solve() is polynomial-only.**~~ **Improved** — transcendental solving via inversion peeling (exp, ln, sin, cos, tan, sqrt). General transcendental equations still limited.
 8. ~~**`simplify()` has limited rules.**~~ **Improved** — 16 rules with sub-expression matching in Add and Mul and fixpoint iteration.
 9. **`bigint_to_bigfloat` loses precision for integers > i128.** Falls back to f64.
 10. ~~**No `collect()`, `together()`, or `factor_terms()` yet.**~~ **Partially resolved** — `collect()` and `together()` implemented.
 11. **`expr!(1/2)` is a compile error.** By design — prevents silent Rust integer division. Use `ctx.rational(1, 2)`.
 12. **`expr!(x^2^3)` with nested integer powers causes type errors.** The inner `2^3` evaluates as integer arithmetic, not symbolic.
 13. **`replace()` closure cannot call locking methods.** The closure passed to `Ex::replace()` must not call methods that acquire the context lock (e.g., `.sin()`, `.expand()`), as this will deadlock.
+14. **No `as_real_imag` decomposition.** Expressions cannot be split into real and imaginary parts programmatically.
 
 ---
 
@@ -649,6 +651,10 @@ abs(abs(w_)) => abs(w_)
 | F7 | **Polynomial GCD improvements** — multivariate, sparse representation | 8 hr | Not started (deferred to v0.2.0) |
 | F8 | **Limit computation** — basic limits via substitution + L'Hôpital | 4 hr | ✅ Done |
 | F9 | **logcombine()** — inverse of expand_log, combines logarithmic terms | 45 min | ✅ Done |
+| F10 | **as_real_imag decomposition** — split expressions into real/imaginary parts | 4 hr | Not started |
+| F11 | **Complex numerical evaluation** — (real,imag) pair arithmetic in evalf | 8 hr | Not started (deferred) |
+| F12 | **Trig power reduction** — ∫ sin^n(x) dx recursive formula | 2 hr | Not started |
+| F13 | **General u-substitution** — SymPy-style find_substitutions | 4 hr | Not started |
 
 ### Infrastructure Tasks
 
@@ -682,15 +688,15 @@ abs(abs(w_)) => abs(w_)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 1,233+ passing, 0 failing, 0 warnings |
-| Public methods on `Ex` | 87 |
+| Tests | 1,380+ passing, 0 failing, 0 warnings |
+| Public methods on `Ex` | 94 |
 | Public methods on `Context` | 17 |
 | Free-standing functions | 5 |
-| Source code | 20,800+ lines across 35 modules |
-| Test code | 6,600+ lines across 28 test files |
+| Source code | 22,500+ lines across 36 modules |
+| Test code | 7,500+ lines across 30+ test files |
 | ExprNode variants | 30 (21 non-atom + 9 atom) |
-| Simplification rules | 16 |
-| Eval special values | 46+ (complete unit circle) |
+| Simplification rules | 23 |
+| Eval special values | 60+ |
 | Criterion benchmarks | 30 |
 | Proptest properties | 33 |
 | Commits | 43 |
@@ -840,7 +846,7 @@ Symplex is the only MIT/Apache-2.0 general-purpose CAS in Rust. There is no dire
 | V4 | **Code generation** — `to_rust_fn()`, `to_c()` for compiling expressions to numerical code | 4 hr | The killer feature for Rust CAS users |
 | V5 | **Matrix/Vector symbolic type** — symbolic matrices for robotics/physics | 8 hr | Key audience need |
 | V6 | **Complex number evalf** — full complex arithmetic support | 8 hr | Physics/engineering requirement |
-| V7 | **Assumption-gated simplify rules** — wire AssumptionCache into rule conditions | 1 hr | Makes conditional rules (log properties) correct |
+| V7 | **Assumption-gated simplify rules** — wire AssumptionCache into rule conditions | 1 hr | ✅ Partially done — conditional rules infrastructure + assumption handlers for all functions |
 
 ### v0.3.0+ Vision
 

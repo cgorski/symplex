@@ -406,28 +406,30 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
             }
 
             // General linear substitution: ∫ (ax+b)^n dx = (ax+b)^(n+1) / (a*(n+1))
-            if !exp_has_var && base_has_var
+            if !exp_has_var
+                && base_has_var
                 && let Some(a) = linear_coeff_of(arena, base, var, var_sym)
-                    && let Some(n) = arena.as_num(exp) {
-                        let n = n.clone();
-                        let neg_one = num_rational::Ratio::from_integer((-1).into());
-                        if n != neg_one {
-                            // ∫ (ax+b)^n dx = (ax+b)^(n+1) / (a*(n+1))
-                            let one = num_rational::Ratio::<num_bigint::BigInt>::one();
-                            let n_plus_1 = &n + &one;
-                            let n_plus_1_id = rational_to_expr(arena, &n_plus_1);
-                            let base_pow = arena.pow(base, n_plus_1_id);
-                            let denom_val = &a * &n_plus_1;
-                            let denom_id = rational_to_expr(arena, &denom_val);
-                            return arena.div(base_pow, denom_id);
-                        } else {
-                            // ∫ (ax+b)^(-1) dx = ln|ax+b| / a
-                            let abs_base = arena.abs(base);
-                            let ln_base = arena.ln(abs_base);
-                            let a_id = rational_to_expr(arena, &a);
-                            return arena.div(ln_base, a_id);
-                        }
-                    }
+                && let Some(n) = arena.as_num(exp)
+            {
+                let n = n.clone();
+                let neg_one = num_rational::Ratio::from_integer((-1).into());
+                if n != neg_one {
+                    // ∫ (ax+b)^n dx = (ax+b)^(n+1) / (a*(n+1))
+                    let one = num_rational::Ratio::<num_bigint::BigInt>::one();
+                    let n_plus_1 = &n + &one;
+                    let n_plus_1_id = rational_to_expr(arena, &n_plus_1);
+                    let base_pow = arena.pow(base, n_plus_1_id);
+                    let denom_val = &a * &n_plus_1;
+                    let denom_id = rational_to_expr(arena, &denom_val);
+                    return arena.div(base_pow, denom_id);
+                } else {
+                    // ∫ (ax+b)^(-1) dx = ln|ax+b| / a
+                    let abs_base = arena.abs(base);
+                    let ln_base = arena.ln(abs_base);
+                    let a_id = rational_to_expr(arena, &a);
+                    return arena.div(ln_base, a_id);
+                }
+            }
 
             // ── Standard form integrals (A3–A7) ───────────────────────
             if base_has_var
@@ -455,18 +457,20 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
             // Fallback: if base is an Add and exp is a small positive integer, expand and retry
             if let ExprNode::Add(_) = arena.node(base)
                 && let Some(n) = arena.as_num(exp)
-                    && n.is_integer() && n.is_positive() {
-                        let n_i64: i64 = n.to_integer().try_into().unwrap_or(0);
-                        if (2..=10).contains(&n_i64) {
-                            let expanded = crate::expand::expand(arena, expr);
-                            if expanded != expr {
-                                let result = integrate_node(arena, expanded, var, var_sym);
-                                if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
-                                    return result;
-                                }
-                            }
+                && n.is_integer()
+                && n.is_positive()
+            {
+                let n_i64: i64 = n.to_integer().try_into().unwrap_or(0);
+                if (2..=10).contains(&n_i64) {
+                    let expanded = crate::expand::expand(arena, expr);
+                    if expanded != expr {
+                        let result = integrate_node(arena, expanded, var, var_sym);
+                        if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
+                            return result;
                         }
                     }
+                }
+            }
 
             // General case: unevaluated.
             arena.intern(ExprNode::Integral(expr, var))

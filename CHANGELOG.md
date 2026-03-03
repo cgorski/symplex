@@ -110,3 +110,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Ex::expr_type() → ExprType` structural classification enum
 - `Ex::replace(closure)` user-provided transformation walk via `walk_and_rebuild`
 - `examples/calculus.rs` comprehensive workflow example
+
+**Cycle 6-8: Complex Numbers, Math Depth & SymPy-Inspired Improvements**
+- Complex number canonicalization: `i²=-1` via mod-4, `(-1)^(1/2)→I`, `(-n)^(1/2)→I·√n`
+- Complex quadratic roots: `x²+1=0 → [I, -I]`, `x²+2x+5=0 → [-1+2I, -1-2I]`
+- Euler's formula: `exp(i·k·π) = cos(kπ) + i·sin(kπ)`, all unit circle angles
+- Transcendental equation solving: `exp(x)=5→x=ln(5)`, `sin(x)=½→x=asin(½)`, `sqrt(x)=3→x=9`
+- Mul-factor solving: `x·(x-1)·(x+2)=0 → {0, 1, -2}`
+- Integer sqrt simplification: `√8→2√2`, `√12→2√3`, `√50→5√2`
+- Trig-hyperbolic bridge: `sin(ix)=i·sinh(x)`, `cos(ix)=cosh(x)`
+- Integration: `∫ asin(x)`, `∫ acos(x)`, `∫ atan(x)`, `∫ (ax+b)^n dx`, expand-then-retry
+- sinh/cosh linear u-substitution
+- `ln(-1)=iπ`, `ln(negative)=ln(|r|)+iπ`, `asin(1/2)=π/6`, `acos(1/2)=π/3`
+- 6 forward-direction inverse function simplification rules (23 total)
+- Assumption handlers for all 9 previously-unhandled function types
+- Imaginary inference in `compute_mul`: `real·imaginary→imaginary`
+- Node rebuilding fix in trig_expand, log_expand, log_combine
+- `Poly::content()` bug fix (was returning leading_coeff)
+- `expand()` now recurses through all 15 unary function types
+- Global convenience: `symplex::pi()`, `symplex::e()`, `symplex::i_unit()`, `symplex::infinity()`
+- `Ex::args()`, `Ex::diff_n()`, `Ex::log()`, `Ex::is_imaginary()`, `Ex::is_complex()`, `Ex::is_rational()`, `Ex::is_nonnegative()`, `Ex::is_nonpositive()`

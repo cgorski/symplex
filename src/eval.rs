@@ -669,16 +669,17 @@ fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId>
         if q_usize >= 2 && base_r.is_integer() && base_r.is_positive() {
             let n = base_r.to_integer();
             if let Some((k, m)) = extract_perfect_power(&n, q_usize)
-                && !k.is_one() {
-                    // n^(1/q) = k * m^(1/q)
-                    let k_id = arena.big_int(k);
-                    if m.is_one() {
-                        return Some(k_id); // perfect power
-                    }
-                    let m_id = arena.big_int(m);
-                    let root = arena.pow(m_id, exp);
-                    return Some(arena.mul(&[k_id, root]));
+                && !k.is_one()
+            {
+                // n^(1/q) = k * m^(1/q)
+                let k_id = arena.big_int(k);
+                if m.is_one() {
+                    return Some(k_id); // perfect power
                 }
+                let m_id = arena.big_int(m);
+                let root = arena.pow(m_id, exp);
+                return Some(arena.mul(&[k_id, root]));
+            }
         }
     }
 

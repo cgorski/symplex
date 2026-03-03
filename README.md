@@ -8,13 +8,14 @@ Symbolic mathematics library for Rust.
 - **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax; `rule!(arena, "name", LHS => RHS)` for rewrite rules
 - **18 math functions** — sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, ln, abs, sqrt, cbrt, nthroot
 - **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
-- **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts, u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals
+- **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts, u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals, inverse trig antiderivatives (asin, acos, atan), general linear substitution (ax+b)^n, expand-then-integrate fallback
 - **Taylor series** — expansion around any point with configurable order and pole detection
 - **Limits** — direct substitution, L'Hôpital's rule (0/0 and ∞/∞), series fallback
-- **Equation solving** — polynomial (linear, quadratic, higher-degree via rational root theorem), linear systems (Gaussian elimination), numerical root finding (Newton's method)
-- **Simplification** — 16 rewrite rules (incl. sin/cos→tan ratio, exp combining) with sub-expression matching, fixpoint iteration via `full_simplify()`
+- **Equation solving** — polynomial (linear, quadratic, higher-degree via rational root theorem), linear systems (Gaussian elimination), numerical root finding (Newton's method), transcendental equations via inversion peeling (exp, ln, sin, cos, tan, sqrt), Mul-factor solving
+- **Simplification** — 23 rewrite rules (incl. sin/cos→tan ratio, exp combining) with sub-expression matching, fixpoint iteration via `full_simplify()`
 - **Algebraic manipulation** — expand, factor, collect, together, cancel, partial fractions (`apart`), trig expansion (`expand_trig`), log expansion (`expand_log`), logcombine
-- **Exact evaluation** — 30+ special values for trig/exp/ln including irrational values (√2/2, √3/2), perfect nth root evaluation, odd/even function detection
+- **Exact evaluation** — 30+ special values for trig/exp/ln including irrational values (√2/2, √3/2), perfect nth root evaluation, odd/even function detection, integer sqrt simplification (√8→2√2), trig-hyperbolic bridge (sin(ix)=i·sinh(x))
+- **Complex numbers** — i²=-1 canonicalization, (-1)^(1/2)→i, (-n)^(1/2)→i√n, complex quadratic roots, Euler's formula exp(iπ)=-1
 - **Arbitrary-precision numerical evaluation** — via `astro-float`, any number of decimal digits
 - **Assumption system** — 23 mathematical properties (positive, real, integer, etc.) with forward-chaining inference
 - **Pattern matching** — wild symbols, named rewrite rules, simplification with trace
@@ -71,6 +72,15 @@ println!("{factored}");                      // (-1 + x)*(1 + x)
 let trig = expr!(sin(x)^2 + cos(x)^2);
 println!("{}", trig.simplify());             // 1
 
+// ── Complex numbers ─────────────────────────────────────────
+let i = ctx.i_unit();
+assert_eq!(format!("{}", i.powi(2)), "-1");                // i² = -1
+assert_eq!(format!("{}", ctx.int(-1).sqrt()), "I");        // √(-1) = i
+
+// Euler's formula
+let euler = (&i * &ctx.pi()).exp().eval();
+assert_eq!(format!("{euler}"), "-1");                       // e^(iπ) = -1
+
 // ── Advanced: explicit Context for custom configuration ────────
 let ctx = Context::new();
 let t = ctx.symbol_with("t", &[Assumption::Positive, Assumption::Real]);
@@ -110,6 +120,7 @@ ex.acosh()      ex.atanh()     ex.cbrt()     ex.nthroot(n)
 
 // ── Calculus ───────────────────────────────────────────────────
 ex.diff(&x)                                  // symbolic derivative
+ex.diff_n(&x, n)                             // nth derivative
 ex.integrate(&x)                             // indefinite integral
 ex.definite_integral(&x, &lower, &upper)     // definite integral
 ex.series(&x, &point, order)                 // Taylor series → Result
@@ -126,6 +137,7 @@ ex.apart(&var)                               // partial fractions
 ex.expand_trig()                             // sin(a+b) → sin(a)cos(b)+...
 ex.expand_log()                              // ln(a*b) → ln(a)+ln(b)
 ex.logcombine()                              // ln(a)+ln(b) → ln(a*b)
+ex.log(&base)                                // arbitrary-base logarithm
 ex.solve(&var)                               // solve expr=0 → Result
 ex.nsolve(&var, guess, max_iter, tol)        // numerical root → Result
 
@@ -149,6 +161,8 @@ ex.evalf_f64()                               // f64 convenience → Result<f64>
 ex.is_zero()        ex.is_positive()         ex.is_negative()
 ex.is_real()        ex.is_integer()          ex.is_nonzero()
 ex.is_finite()      ex.query(Props::...)     ex.equals(&other)
+ex.is_imaginary()   ex.is_complex()          ex.is_rational()
+ex.is_nonnegative() ex.is_nonpositive()
 ex.is_zero_structural()    ex.is_one_structural()
 ex.is_constant()    ex.is_polynomial(&var)
 ex.expr_type()                               // → ExprType
@@ -163,6 +177,7 @@ ex.as_numer_denom()                          // → (Ex, Ex)
 ex.term_count()                              // → usize
 ex.poly_gcd(&other, &var)                    // → Option<Ex>
 ex.poly_lcm(&other, &var)                    // → Option<Ex>
+ex.args()                                    // → Vec<Ex> (children)
 
 // ── Assumptions ────────────────────────────────────────────────
 ex.assume(Assumption::Positive)              // fluent chaining
@@ -209,6 +224,10 @@ symplex::symbol("x")                         // alias for var
 symplex::int(5)                              // global context integer
 symplex::rational(1, 2)                      // global context rational
 symplex::default_context()                   // access global context
+symplex::pi()                                // global context π
+symplex::e()                                 // global context e
+symplex::i_unit()                            // global context imaginary unit
+symplex::infinity()                          // global context ∞
 symplex::parse::parse(&ctx, "x^2 + 1")      // runtime parser
 ```
 
@@ -233,7 +252,7 @@ assert_eq!(format!("{expr}"), format!("{back}"));
 
 For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is planned.
 
-## Simplification Rules (16)
+## Simplification Rules (23)
 
 | # | Rule | Identity |
 |---|------|----------|

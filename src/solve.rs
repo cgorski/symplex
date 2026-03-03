@@ -81,9 +81,10 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
             // Not polynomial → try transcendental solving via inversion peeling.
             // Handles: exp(x)=c, ln(x)=c, sin(x)=c, sqrt(x)=c, etc.
             if let Some(solutions) = try_solve_by_inversion(arena, expr, var)
-                && !solutions.is_empty() {
-                    return solutions;
-                }
+                && !solutions.is_empty()
+            {
+                return solutions;
+            }
             return Vec::new();
         }
     };

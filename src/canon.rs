@@ -417,26 +417,44 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
 
     // (-1)^(n/2) → I^n, then reduce via mod-4 arithmetic.
     if base == arena.neg_one
-        && let Some(exp_r) = arena.as_num(exp) {
-            let denom = exp_r.denom();
-            let numer = exp_r.numer();
-            // Check if denominator is 2 (i.e., exponent is n/2)
-            if *denom == BigInt::from(2) {
-                // (-1)^(n/2) = I^n, then reduce I^n via mod-4
-                let n = numer.clone();
-                let four = BigInt::from(4);
-                use num_integer::Integer;
-                let remainder = n.mod_floor(&four);
-                let r: u32 = (&remainder).try_into().unwrap_or(0);
-                return match r {
-                    0 => arena.one,
-                    1 => arena.i_unit,
-                    2 => arena.neg_one,
-                    3 => arena.neg(arena.i_unit),
-                    _ => unreachable!(),
-                };
-            }
+        && let Some(exp_r) = arena.as_num(exp)
+    {
+        let denom = exp_r.denom();
+        let numer = exp_r.numer();
+        // Check if denominator is 2 (i.e., exponent is n/2)
+        if *denom == BigInt::from(2) {
+            // (-1)^(n/2) = I^n, then reduce I^n via mod-4
+            let n = numer.clone();
+            let four = BigInt::from(4);
+            use num_integer::Integer;
+            let remainder = n.mod_floor(&four);
+            let r: u32 = (&remainder).try_into().unwrap_or(0);
+            return match r {
+                0 => arena.one,
+                1 => arena.i_unit,
+                2 => arena.neg_one,
+                3 => arena.neg(arena.i_unit),
+                _ => unreachable!(),
+            };
         }
+    }
+
+    // (-n)^(1/2) → i * sqrt(n) for negative numeric n
+    // More generally, negative_rational^(1/2) → i * |negative_rational|^(1/2)
+    if let Some(base_r) = arena.as_num(base)
+        && base_r.is_negative()
+            && let Some(exp_r) = arena.as_num(exp)
+                && *exp_r == Ratio::new(1.into(), 2.into()) {
+                    // base is negative, exp is 1/2
+                    // result = i * |base|^(1/2)
+                    let abs_base = {
+                        let abs_val = -base_r.clone();
+                        let nid = arena.intern_num(abs_val);
+                        arena.intern(ExprNode::Num(nid))
+                    };
+                    let sqrt_abs = canon_pow(arena, abs_base, exp);
+                    return arena.mul(&[arena.i_unit, sqrt_abs]);
+                }
 
     // NaN propagation.
     if base == arena.nan || exp == arena.nan {
@@ -1301,5 +1319,36 @@ mod tests {
         let one = a.one;
         let result = a.pow(a.neg_one, one);
         assert_eq!(result, a.neg_one);
+    }
+
+    // ── (-n)^(1/2) → i * sqrt(n) ──────────────────────────────────────
+
+    #[test]
+    fn sqrt_neg_4_is_2i() {
+        let mut a = Arena::new();
+        let neg4 = a.int(-4);
+        let half = a.rational(1, 2);
+        let result = a.pow(neg4, half);
+        assert_eq!(display(&a, result), "sqrt(4)*I");
+    }
+
+    #[test]
+    fn sqrt_neg_2_is_i_sqrt_2() {
+        let mut a = Arena::new();
+        let neg2 = a.int(-2);
+        let half = a.rational(1, 2);
+        let result = a.pow(neg2, half);
+        let s = display(&a, result);
+        assert!(s.contains("I"), "expected I in {s}");
+        assert!(s.contains("sqrt(2)"), "expected sqrt(2) in {s}");
+    }
+
+    #[test]
+    fn sqrt_neg_9_is_3i() {
+        let mut a = Arena::new();
+        let neg9 = a.int(-9);
+        let half = a.rational(1, 2);
+        let result = a.pow(neg9, half);
+        assert_eq!(display(&a, result), "sqrt(9)*I");
     }
 }
