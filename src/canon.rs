@@ -415,6 +415,29 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         };
     }
 
+    // (-1)^(n/2) → I^n, then reduce via mod-4 arithmetic.
+    if base == arena.neg_one
+        && let Some(exp_r) = arena.as_num(exp) {
+            let denom = exp_r.denom();
+            let numer = exp_r.numer();
+            // Check if denominator is 2 (i.e., exponent is n/2)
+            if *denom == BigInt::from(2) {
+                // (-1)^(n/2) = I^n, then reduce I^n via mod-4
+                let n = numer.clone();
+                let four = BigInt::from(4);
+                use num_integer::Integer;
+                let remainder = n.mod_floor(&four);
+                let r: u32 = (&remainder).try_into().unwrap_or(0);
+                return match r {
+                    0 => arena.one,
+                    1 => arena.i_unit,
+                    2 => arena.neg_one,
+                    3 => arena.neg(arena.i_unit),
+                    _ => unreachable!(),
+                };
+            }
+        }
+
     // NaN propagation.
     if base == arena.nan || exp == arena.nan {
         return arena.nan;
@@ -1244,5 +1267,39 @@ mod tests {
         let term4 = a.pow(i, two); // i^2 = -1
         let result = a.add(&[term1, term2, term3, term4]);
         assert_eq!(display(&a, result), "2*I");
+    }
+
+    // ── (-1)^(n/2) reduction ───────────────────────────────────────────
+
+    #[test]
+    fn neg_one_to_half_is_i() {
+        let mut a = Arena::new();
+        let half = a.rational(1, 2);
+        let result = a.pow(a.neg_one, half);
+        assert_eq!(result, a.i_unit);
+    }
+
+    #[test]
+    fn neg_one_to_three_halves_is_neg_i() {
+        let mut a = Arena::new();
+        let three_halves = a.rational(3, 2);
+        let result = a.pow(a.neg_one, three_halves);
+        assert_eq!(display(&a, result), "-I");
+    }
+
+    #[test]
+    fn sqrt_neg_one_is_i() {
+        let mut a = Arena::new();
+        let half = a.rational(1, 2);
+        let result = a.pow(a.neg_one, half);
+        assert_eq!(result, a.i_unit);
+    }
+
+    #[test]
+    fn neg_one_to_one_is_neg_one() {
+        let mut a = Arena::new();
+        let one = a.one;
+        let result = a.pow(a.neg_one, one);
+        assert_eq!(result, a.neg_one);
     }
 }

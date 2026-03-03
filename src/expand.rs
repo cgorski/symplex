@@ -89,6 +89,21 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Exp(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::exp),
             ExprNode::Ln(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::ln),
             ExprNode::Abs(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::abs),
+            ExprNode::Asin(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::asin),
+            ExprNode::Acos(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::acos),
+            ExprNode::Atan(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::atan),
+            ExprNode::Sinh(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::sinh),
+            ExprNode::Cosh(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::cosh),
+            ExprNode::Tanh(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::tanh),
+            ExprNode::Asinh(inner) => {
+                rebuild_unary_expanded(arena, id, inner, &cache, Arena::asinh)
+            }
+            ExprNode::Acosh(inner) => {
+                rebuild_unary_expanded(arena, id, inner, &cache, Arena::acosh)
+            }
+            ExprNode::Atanh(inner) => {
+                rebuild_unary_expanded(arena, id, inner, &cache, Arena::atanh)
+            }
 
             // Everything else (atoms, Derivative, Integral, Apply): unchanged.
             _ => id,
@@ -572,5 +587,31 @@ mod tests {
         }
         // Should not overflow — uses iterative walker.
         let _result = expand(&mut a, expr);
+    }
+
+    #[test]
+    fn expand_inside_sinh() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.one;
+        let sum = a.add(&[x, one]);
+        let two = a.int(2);
+        let sq = a.pow(sum, two);
+        let expr = a.sinh(sq);
+        // sinh((x+1)^2) → expand inner → sinh(1 + x^2 + 2*x)
+        let result = expand(&mut a, expr);
+        let s = display(&a, result);
+        assert!(
+            s.starts_with("sinh("),
+            "should still be sinh(...), got: {s}"
+        );
+        assert!(
+            s.contains("x^2"),
+            "inner should be expanded to contain x^2, got: {s}"
+        );
+        assert!(
+            !s.contains("(1 + x)^2"),
+            "inner should no longer contain (1 + x)^2, got: {s}"
+        );
     }
 }

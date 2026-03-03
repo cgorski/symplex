@@ -230,6 +230,12 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.neg(sin_pos));
     }
 
+    // sin(i*x) = i*sinh(x) — trig-hyperbolic bridge
+    if let Some(real_part) = as_pure_imaginary(arena, inner) {
+        let sinh_val = arena.sinh(real_part);
+        return Some(arena.mul(&[arena.i_unit, sinh_val]));
+    }
+
     let coeff = as_pi_multiple(arena, inner)?;
 
     // Reduce modulo 2 (sin has period 2π).
@@ -331,6 +337,11 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // Even function: cos(-x) = cos(x)
     if let Some(pos_inner) = as_negated(arena, inner) {
         return Some(arena.cos(pos_inner));
+    }
+
+    // cos(i*x) = cosh(x) — trig-hyperbolic bridge
+    if let Some(real_part) = as_pure_imaginary(arena, inner) {
+        return Some(arena.cosh(real_part));
     }
 
     let coeff = as_pi_multiple(arena, inner)?;
@@ -575,22 +586,43 @@ fn eval_ln(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
     // ln(negative rational) = ln(|r|) + i*π  (principal branch)
     if let Some(r) = arena.as_num(inner)
-        && r.is_negative() {
-            let abs_r = -r.clone();
-            if abs_r.is_one() {
-                // Already handled above: ln(-1)
-            } else {
-                let abs_id = {
-                    let nid = arena.intern_num(abs_r);
-                    arena.intern(ExprNode::Num(nid))
-                };
-                let ln_abs = arena.ln(abs_id);
-                let i_pi = arena.mul(&[arena.i_unit, arena.pi]);
-                return Some(arena.add(&[ln_abs, i_pi]));
-            }
+        && r.is_negative()
+    {
+        let abs_r = -r.clone();
+        if abs_r.is_one() {
+            // Already handled above: ln(-1)
+        } else {
+            let abs_id = {
+                let nid = arena.intern_num(abs_r);
+                arena.intern(ExprNode::Num(nid))
+            };
+            let ln_abs = arena.ln(abs_id);
+            let i_pi = arena.mul(&[arena.i_unit, arena.pi]);
+            return Some(arena.add(&[ln_abs, i_pi]));
         }
+    }
 
     None
+}
+
+/// Factor out the largest perfect q-th power from n.
+/// Returns (k, m) such that n = k^q * m and m has no q-th power factors.
+fn extract_perfect_power(n: &BigInt, q: usize) -> Option<(BigInt, BigInt)> {
+    let mut k = BigInt::from(1);
+    let mut m = n.clone();
+    let mut d = BigInt::from(2);
+    while &d * &d <= m {
+        let mut power = BigInt::from(1);
+        for _ in 0..q {
+            power *= &d;
+        }
+        while (&m % &power).is_zero() {
+            m /= &power;
+            k *= &d;
+        }
+        d += 1;
+    }
+    Some((k, m))
 }
 
 /// Evaluate `Pow(base, exp)` when the exponent is a fractional 1/2 (square root)
@@ -627,6 +659,26 @@ fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId>
             let result = Ratio::new(rn, rd);
             let nid = arena.intern_num(result);
             return Some(arena.intern(ExprNode::Num(nid)));
+        }
+    }
+
+    // Partial extraction: n^(1/q) → k * m^(1/q) where n = k^q * m
+    if exp_r.numer().is_one() && !exp_r.denom().is_one() {
+        let q = exp_r.denom().clone();
+        let q_usize: usize = (&q).try_into().unwrap_or(0);
+        if q_usize >= 2 && base_r.is_integer() && base_r.is_positive() {
+            let n = base_r.to_integer();
+            if let Some((k, m)) = extract_perfect_power(&n, q_usize)
+                && !k.is_one() {
+                    // n^(1/q) = k * m^(1/q)
+                    let k_id = arena.big_int(k);
+                    if m.is_one() {
+                        return Some(k_id); // perfect power
+                    }
+                    let m_id = arena.big_int(m);
+                    let root = arena.pow(m_id, exp);
+                    return Some(arena.mul(&[k_id, root]));
+                }
         }
     }
 
@@ -850,6 +902,36 @@ fn eval_atanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Check if `id` is `i * something` (pure imaginary multiple).
+/// Returns the "something" if so.
+fn as_pure_imaginary(arena: &Arena, id: ExprId) -> Option<ExprId> {
+    if let ExprNode::Mul(ref children) = arena.node(id).clone() {
+        let mut has_i = false;
+        let mut others: Vec<ExprId> = Vec::new();
+        for &child in children {
+            if child == arena.i_unit {
+                if has_i {
+                    return None;
+                }
+                has_i = true;
+            } else {
+                others.push(child);
+            }
+        }
+        if has_i {
+            return Some(if others.len() == 1 {
+                others[0]
+            } else if others.is_empty() {
+                arena.one // just i alone → real part is 1
+            } else {
+                // Can't rebuild Mul without &mut Arena, skip multi-factor for now.
+                return None;
+            });
+        }
+    }
+    None
+}
 
 /// Detect if `id` represents a negated expression: `-x` or `Mul(-1, x)`.
 /// Returns `Some(positive_inner)` if negated, `None` otherwise.
@@ -1584,5 +1666,76 @@ mod tests {
         let expr = a.acos(neg_half);
         let result = eval(&mut a, expr);
         assert_eq!(display(&a, result), "2/3*pi");
+    }
+
+    // ── sqrt partial extraction ─────────────────────────────────────
+
+    #[test]
+    fn eval_sqrt_8() {
+        let mut a = Arena::new();
+        let eight = a.int(8);
+        let half = a.rational(1, 2);
+        let expr = a.pow(eight, half);
+        let result = eval(&mut a, expr);
+        let d = display(&a, result);
+        assert!(
+            d.contains("2") && d != "8^(1/2)",
+            "sqrt(8) should simplify to 2*sqrt(2), got: {d}"
+        );
+    }
+
+    #[test]
+    fn eval_sqrt_12() {
+        let mut a = Arena::new();
+        let twelve = a.int(12);
+        let half = a.rational(1, 2);
+        let expr = a.pow(twelve, half);
+        let result = eval(&mut a, expr);
+        let d = display(&a, result);
+        assert!(
+            d.contains("2") && d.contains("3"),
+            "sqrt(12) should simplify to 2*sqrt(3), got: {d}"
+        );
+    }
+
+    #[test]
+    fn eval_sqrt_50() {
+        let mut a = Arena::new();
+        let fifty = a.int(50);
+        let half = a.rational(1, 2);
+        let expr = a.pow(fifty, half);
+        let result = eval(&mut a, expr);
+        let d = display(&a, result);
+        assert!(
+            d.contains("5") && d.contains("2"),
+            "sqrt(50) should simplify to 5*sqrt(2), got: {d}"
+        );
+    }
+
+    // ── trig-hyperbolic bridge ──────────────────────────────────────
+
+    #[test]
+    fn eval_sin_ix() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let ix = a.mul(&[a.i_unit, x]);
+        let expr = a.sin(ix);
+        let result = eval(&mut a, expr);
+        let d = display(&a, result);
+        assert!(
+            d.contains("sinh") && d.contains("I"),
+            "sin(i*x) should be i*sinh(x), got: {d}"
+        );
+    }
+
+    #[test]
+    fn eval_cos_ix() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let ix = a.mul(&[a.i_unit, x]);
+        let expr = a.cos(ix);
+        let result = eval(&mut a, expr);
+        let d = display(&a, result);
+        assert!(d.contains("cosh"), "cos(i*x) should be cosh(x), got: {d}");
     }
 }

@@ -405,6 +405,30 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                 return arena.mul(&[expr, var]);
             }
 
+            // General linear substitution: ∫ (ax+b)^n dx = (ax+b)^(n+1) / (a*(n+1))
+            if !exp_has_var && base_has_var
+                && let Some(a) = linear_coeff_of(arena, base, var, var_sym)
+                    && let Some(n) = arena.as_num(exp) {
+                        let n = n.clone();
+                        let neg_one = num_rational::Ratio::from_integer((-1).into());
+                        if n != neg_one {
+                            // ∫ (ax+b)^n dx = (ax+b)^(n+1) / (a*(n+1))
+                            let one = num_rational::Ratio::<num_bigint::BigInt>::one();
+                            let n_plus_1 = &n + &one;
+                            let n_plus_1_id = rational_to_expr(arena, &n_plus_1);
+                            let base_pow = arena.pow(base, n_plus_1_id);
+                            let denom_val = &a * &n_plus_1;
+                            let denom_id = rational_to_expr(arena, &denom_val);
+                            return arena.div(base_pow, denom_id);
+                        } else {
+                            // ∫ (ax+b)^(-1) dx = ln|ax+b| / a
+                            let abs_base = arena.abs(base);
+                            let ln_base = arena.ln(abs_base);
+                            let a_id = rational_to_expr(arena, &a);
+                            return arena.div(ln_base, a_id);
+                        }
+                    }
+
             // ── Standard form integrals (A3–A7) ───────────────────────
             if base_has_var
                 && !exp_has_var
@@ -427,6 +451,22 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                     }
                 }
             }
+
+            // Fallback: if base is an Add and exp is a small positive integer, expand and retry
+            if let ExprNode::Add(_) = arena.node(base)
+                && let Some(n) = arena.as_num(exp)
+                    && n.is_integer() && n.is_positive() {
+                        let n_i64: i64 = n.to_integer().try_into().unwrap_or(0);
+                        if (2..=10).contains(&n_i64) {
+                            let expanded = crate::expand::expand(arena, expr);
+                            if expanded != expr {
+                                let result = integrate_node(arena, expanded, var, var_sym);
+                                if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
+                                    return result;
+                                }
+                            }
+                        }
+                    }
 
             // General case: unevaluated.
             arena.intern(ExprNode::Integral(expr, var))
@@ -563,14 +603,59 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
             arena.intern(ExprNode::Integral(expr, var))
         }
 
-        // Inverse trig and remaining hyperbolics: leave as unevaluated integrals
-        // (their antiderivatives involve compositions that are complex to build)
-        ExprNode::Asin(_)
-        | ExprNode::Acos(_)
-        | ExprNode::Atan(_)
-        | ExprNode::Asinh(_)
-        | ExprNode::Acosh(_)
-        | ExprNode::Atanh(_) => arena.intern(ExprNode::Integral(expr, var)),
+        ExprNode::Asin(inner) => {
+            if inner == var {
+                // ∫ asin(x) dx = x*asin(x) + sqrt(1-x²)
+                let asin_var = arena.asin(var);
+                let x_asin = arena.mul(&[var, asin_var]);
+                let one = arena.one;
+                let two = arena.int(2);
+                let x2 = arena.pow(var, two);
+                let one_minus_x2 = arena.sub(one, x2);
+                let half = arena.rational(1, 2);
+                let sqrt_term = arena.pow(one_minus_x2, half);
+                return arena.add(&[x_asin, sqrt_term]);
+            }
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
+        ExprNode::Acos(inner) => {
+            if inner == var {
+                // ∫ acos(x) dx = x*acos(x) - sqrt(1-x²)
+                let acos_var = arena.acos(var);
+                let x_acos = arena.mul(&[var, acos_var]);
+                let one = arena.one;
+                let two = arena.int(2);
+                let x2 = arena.pow(var, two);
+                let one_minus_x2 = arena.sub(one, x2);
+                let half = arena.rational(1, 2);
+                let sqrt_term = arena.pow(one_minus_x2, half);
+                return arena.sub(x_acos, sqrt_term);
+            }
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
+        ExprNode::Atan(inner) => {
+            if inner == var {
+                // ∫ atan(x) dx = x*atan(x) - 1/2*ln(1+x²)
+                let atan_var = arena.atan(var);
+                let x_atan = arena.mul(&[var, atan_var]);
+                let two = arena.int(2);
+                let x2 = arena.pow(var, two);
+                let one = arena.one;
+                let one_plus_x2 = arena.add(&[one, x2]);
+                let half = arena.rational(1, 2);
+                let ln_term = arena.ln(one_plus_x2);
+                let half_ln = arena.mul(&[half, ln_term]);
+                return arena.sub(x_atan, half_ln);
+            }
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
+        // Inverse hyperbolics: leave as unevaluated integrals
+        ExprNode::Asinh(_) | ExprNode::Acosh(_) | ExprNode::Atanh(_) => {
+            arena.intern(ExprNode::Integral(expr, var))
+        }
 
         // Everything else: unevaluated integral.
         _ => arena.intern(ExprNode::Integral(expr, var)),
@@ -1018,5 +1103,65 @@ mod tests {
             s.contains("sinh"),
             "∫ cosh(3x) dx should involve sinh, got: {s}"
         );
+    }
+
+    #[test]
+    fn integrate_2x_plus_1_cubed() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let one = a.one;
+        let two_x = a.mul(&[two, x]);
+        let inner = a.add(&[two_x, one]);
+        let three = a.int(3);
+        let expr = a.pow(inner, three);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        // ∫ (2x+1)^3 dx = (2x+1)^4 / 8
+        assert!(!s.contains("Integral"), "should not be unevaluated: {s}");
+    }
+
+    #[test]
+    fn integrate_x_plus_1_squared() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.one;
+        let inner = a.add(&[x, one]);
+        let two = a.int(2);
+        let expr = a.pow(inner, two);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        // ∫ (x+1)^2 dx should be resolved (linear sub or expand)
+        assert!(!s.contains("Integral"), "should not be unevaluated: {s}");
+    }
+
+    #[test]
+    fn integrate_asin_x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let expr = a.asin(x);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(s.contains("asin"), "should contain asin: {s}");
+    }
+
+    #[test]
+    fn integrate_atan_x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let expr = a.atan(x);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(s.contains("atan"), "should contain atan: {s}");
+    }
+
+    #[test]
+    fn integrate_acos_x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let expr = a.acos(x);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(s.contains("acos"), "should contain acos: {s}");
     }
 }

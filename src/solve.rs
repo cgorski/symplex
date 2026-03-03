@@ -55,10 +55,37 @@ pub struct Solution {
 /// Solutions are returned as symbolic expressions ([`ExprId`]) in the
 /// arena, fully canonicalized.
 pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solution> {
+    // Pre-check: if expr is a Mul, solve each factor independently.
+    // x*(x-1)*(x+2) = 0 → union of solutions for each factor
+    if let ExprNode::Mul(ref children) = arena.node(expr).clone() {
+        let mut solutions = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for &child in children {
+            let child_solutions = solve(arena, child, var);
+            for sol in child_solutions {
+                let key = format!("{:?}", sol.value);
+                if seen.insert(key) {
+                    solutions.push(sol);
+                }
+            }
+        }
+        if !solutions.is_empty() {
+            return solutions;
+        }
+    }
+
     // Step 1: Convert to polynomial.
     let poly = match polybridge::expr_to_poly(arena, expr, var) {
         Some(p) => p,
-        None => return Vec::new(), // Not polynomial → can't solve.
+        None => {
+            // Not polynomial → try transcendental solving via inversion peeling.
+            // Handles: exp(x)=c, ln(x)=c, sin(x)=c, sqrt(x)=c, etc.
+            if let Some(solutions) = try_solve_by_inversion(arena, expr, var)
+                && !solutions.is_empty() {
+                    return solutions;
+                }
+            return Vec::new();
+        }
     };
 
     // Step 2: Handle trivial cases.
@@ -78,6 +105,149 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
         1 => solve_linear(arena, &poly),
         2 => solve_quadratic(arena, &poly),
         _ => solve_rational_roots(arena, &poly),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Local helper: check if an expression contains a given variable
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn expr_contains_var(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
+    if expr == var {
+        return true;
+    }
+    for &child in arena.node(expr).children().iter() {
+        if expr_contains_var(arena, child, var) {
+            return true;
+        }
+    }
+    false
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Transcendental solving via inversion peeling
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to solve `expr = 0` by algebraic inversion.
+/// Restructures as `f(x) = c` and inverts `f`.
+fn try_solve_by_inversion(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+    // Only works for expressions with exactly one occurrence of var
+    // after some rearrangement.
+
+    let node = arena.node(expr).clone();
+
+    match node {
+        // a*f(x) + b = 0 → f(x) = -b/a
+        ExprNode::Add(ref children) => {
+            let mut dep = Vec::new();
+            let mut indep = Vec::new();
+            for &child in children {
+                if expr_contains_var(arena, child, var) {
+                    dep.push(child);
+                } else {
+                    indep.push(child);
+                }
+            }
+
+            if dep.len() != 1 {
+                return None; // Multiple var-dependent terms, can't simply invert
+            }
+
+            let f_of_x = dep[0];
+            // rhs = -sum(indep)
+            let rhs = if indep.is_empty() {
+                arena.zero
+            } else {
+                let sum_indep = arena.add(&indep);
+                arena.neg(sum_indep)
+            };
+
+            // Now solve f_of_x = rhs by peeling layers
+            solve_by_peeling(arena, f_of_x, rhs, var)
+        }
+        _ => None,
+    }
+}
+
+/// Peel layers off `lhs = rhs` to isolate `var`.
+fn solve_by_peeling(
+    arena: &mut Arena,
+    lhs: ExprId,
+    rhs: ExprId,
+    var: ExprId,
+) -> Option<Vec<Solution>> {
+    // Base case: lhs IS the variable
+    if lhs == var {
+        return Some(vec![Solution { value: rhs }]);
+    }
+
+    let node = arena.node(lhs).clone();
+    match node {
+        // c * f(x) = rhs → f(x) = rhs/c
+        ExprNode::Mul(ref children) => {
+            let mut dep = Vec::new();
+            let mut indep = Vec::new();
+            for &child in children {
+                if expr_contains_var(arena, child, var) {
+                    dep.push(child);
+                } else {
+                    indep.push(child);
+                }
+            }
+            if dep.len() != 1 || indep.is_empty() {
+                return None;
+            }
+            let coeff = arena.mul(&indep);
+            let new_rhs = arena.div(rhs, coeff);
+            solve_by_peeling(arena, dep[0], new_rhs, var)
+        }
+        // exp(f(x)) = rhs → f(x) = ln(rhs)
+        ExprNode::Exp(inner) => {
+            let new_rhs = arena.ln(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // ln(f(x)) = rhs → f(x) = exp(rhs)
+        ExprNode::Ln(inner) => {
+            let new_rhs = arena.exp(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // sin(f(x)) = rhs → f(x) = asin(rhs)  [principal value]
+        ExprNode::Sin(inner) => {
+            let new_rhs = arena.asin(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // cos(f(x)) = rhs → f(x) = acos(rhs)  [principal value]
+        ExprNode::Cos(inner) => {
+            let new_rhs = arena.acos(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // tan(f(x)) = rhs → f(x) = atan(rhs)
+        ExprNode::Tan(inner) => {
+            let new_rhs = arena.atan(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // f(x)^n = rhs → f(x) = rhs^(1/n)
+        ExprNode::Pow(inner_base, inner_exp) => {
+            if let Some(n) = arena.as_num(inner_exp) {
+                let n = n.clone();
+                if !n.is_zero() {
+                    let inv_n = Ratio::one() / n;
+                    let inv_n_id = {
+                        let nid = arena.intern_num(inv_n);
+                        arena.intern(ExprNode::Num(nid))
+                    };
+                    let new_rhs = arena.pow(rhs, inv_n_id);
+                    return solve_by_peeling(arena, inner_base, new_rhs, var);
+                }
+            }
+            None
+        }
+        // Neg(-f(x)) = rhs → f(x) = -rhs
+        ExprNode::Neg(inner) => {
+            let new_rhs = arena.neg(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        _ => None,
     }
 }
 
@@ -673,6 +843,127 @@ mod tests {
                 display(&a, val)
             );
         }
+    }
+
+    // ── Transcendental / inversion peeling ──────────────────────────
+
+    #[test]
+    fn solve_exp_x_eq_5() {
+        // exp(x) - 5 = 0 → x = ln(5)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let five = a.int(5);
+        let exp_x = a.exp(x);
+        let expr = a.sub(exp_x, five);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "exp(x)-5=0 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("ln") || val.contains("log"),
+            "solution should be ln(5): {val}"
+        );
+    }
+
+    #[test]
+    fn solve_ln_x_eq_2() {
+        // ln(x) - 2 = 0 → x = exp(2) = e^2
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let ln_x = a.ln(x);
+        let expr = a.sub(ln_x, two);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "ln(x)-2=0 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("exp") || val.contains("e") || val.contains("E"),
+            "solution should be exp(2): {val}"
+        );
+    }
+
+    #[test]
+    fn solve_sin_x_eq_half() {
+        // sin(x) - 1/2 = 0 → x = asin(1/2)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let half = {
+            let nid = a.intern_num(Ratio::new(BigInt::from(1), BigInt::from(2)));
+            a.intern(ExprNode::Num(nid))
+        };
+        let sin_x = a.sin(x);
+        let expr = a.sub(sin_x, half);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "sin(x)-1/2=0 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("asin") || val.contains("arcsin"),
+            "solution should be asin(1/2): {val}"
+        );
+    }
+
+    #[test]
+    fn solve_sqrt_x_eq_3() {
+        // sqrt(x) - 3 = 0 → x = 9
+        // sqrt(x) is x^(1/2)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let three = a.int(3);
+        let sqrt_x = a.sqrt(x);
+        let expr = a.sub(sqrt_x, three);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "sqrt(x)-3=0 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert_eq!(val, "9", "solution should be 9: {val}");
+    }
+
+    #[test]
+    fn solve_mul_factors() {
+        // x*(x-1)*(x+2) = 0 → roots 0, 1, -2
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.one;
+        let two = a.int(2);
+        let x_minus_1 = a.sub(x, one);
+        let x_plus_2 = a.add(&[x, two]);
+        let expr = a.mul(&[x, x_minus_1, x_plus_2]);
+        let solutions = solve(&mut a, expr, x);
+        assert!(
+            solutions.len() >= 3,
+            "x*(x-1)*(x+2)=0 should have 3 roots, got {}",
+            solutions.len()
+        );
+        let vals: Vec<String> = solution_strings(&a, &solutions);
+        assert!(
+            vals.contains(&"0".to_string()),
+            "should have root 0: {vals:?}"
+        );
+        assert!(
+            vals.contains(&"1".to_string()),
+            "should have root 1: {vals:?}"
+        );
+        assert!(
+            vals.contains(&"-2".to_string()),
+            "should have root -2: {vals:?}"
+        );
+    }
+
+    #[test]
+    fn solve_2_exp_x_minus_6() {
+        // 2*exp(x) - 6 = 0 → exp(x) = 3 → x = ln(3)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let six = a.int(6);
+        let exp_x = a.exp(x);
+        let two_exp_x = a.mul(&[two, exp_x]);
+        let expr = a.sub(two_exp_x, six);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "2*exp(x)-6=0 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("ln") || val.contains("log"),
+            "solution should be ln(3): {val}"
+        );
     }
 
     #[test]
