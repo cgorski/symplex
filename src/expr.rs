@@ -51,6 +51,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use crate::assumptions::Assumption;
 use crate::assumptions::Props;
 use crate::context::ContextInner;
 use crate::display::fmt_expr;
@@ -265,6 +266,43 @@ impl Ex {
         self.query(Props::FINITE)
     }
 
+    // ── Assumption mutation ────────────────────────────────────────
+
+    /// Set a mathematical assumption on this expression (must be a symbol).
+    ///
+    /// Returns `self` for fluent chaining. If this expression is not a
+    /// symbol, the assumption is silently ignored.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let t = symplex::var("t")
+    ///     .assume(Assumption::Positive)
+    ///     .assume(Assumption::Real);
+    /// assert_eq!(t.is_positive(), Some(true));
+    /// assert_eq!(t.is_real(), Some(true));
+    /// ```
+    pub fn assume(self, assumption: Assumption) -> Ex {
+        use crate::node::ExprNode;
+        let mut inner = self.inner.write();
+        if let ExprNode::Symbol(sid) = inner.arena.node(self.id) {
+            let sid = *sid;
+            let (prop, value) = assumption.to_prop_value();
+            let mut a = inner.arena.symbol_assumptions(sid).clone();
+            if value {
+                a.assert_true(prop);
+            } else {
+                a.assert_false(prop);
+            }
+            inner.arena.set_symbol_assumptions(sid, a);
+            inner.assumptions.lock().set_symbol_assumptions(self.id, a);
+        }
+        drop(inner);
+        self
+    }
+
     // ── Structural introspection ───────────────────────────────────
 
     /// Returns the set of free symbols in this expression.
@@ -431,10 +469,63 @@ impl Ex {
     #[must_use = "returns the simplified form and trace"]
     pub fn simplify_trace(&self) -> (Ex, Vec<crate::pattern::Step>) {
         let mut inner = self.inner.write();
-        let rules = crate::pattern::basic_rules(&mut inner.arena);
+        // Use cached rules if available, otherwise build and cache them.
+        if inner.cached_rules.is_none() {
+            inner.cached_rules = Some(crate::pattern::basic_rules(&mut inner.arena));
+        }
+        // Clone the rules out to release the immutable borrow on `inner`
+        // before we pass `&mut inner.arena` to `apply_rules`.
+        let rules = inner.cached_rules.as_ref().unwrap().clone();
         let (result_id, steps) = crate::pattern::apply_rules(&mut inner.arena, self.id, &rules);
         drop(inner);
         (self.wrap(result_id), steps)
+    }
+
+    /// Full simplification: repeatedly applies [`eval`](Ex::eval),
+    /// [`expand`](Ex::expand), and [`simplify`](Ex::simplify) until
+    /// the expression stops changing (fixpoint), or a maximum of 10
+    /// iterations is reached.
+    ///
+    /// This is the "just make this simpler" button — it composes all
+    /// available simplification passes into a single call.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// // (x+1)^2 - x^2 - 2*x simplifies to 1 after expand + canonicalization
+    /// let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
+    /// assert_eq!(format!("{}", expr.full_simplify()), "1");
+    /// ```
+    #[must_use = "returns the fully simplified form; does not modify in place"]
+    pub fn full_simplify(&self) -> Ex {
+        let (result, _steps) = self.full_simplify_trace();
+        result
+    }
+
+    /// Like [`full_simplify`](Ex::full_simplify), but also returns a
+    /// trace of all steps across all iterations.
+    #[must_use = "returns the fully simplified form and accumulated trace"]
+    pub fn full_simplify_trace(&self) -> (Ex, Vec<crate::pattern::Step>) {
+        const MAX_ITERATIONS: usize = 10;
+        let mut current = self.clone();
+        let mut all_steps: Vec<crate::pattern::Step> = Vec::new();
+
+        for _ in 0..MAX_ITERATIONS {
+            let evaled = current.eval();
+            let expanded = evaled.expand();
+            let (simplified, steps) = expanded.simplify_trace();
+            all_steps.extend(steps);
+
+            if simplified.id == current.id {
+                return (simplified, all_steps);
+            }
+            current = simplified;
+        }
+
+        (current, all_steps)
     }
 
     /// Exact evaluation of known special values.
@@ -705,6 +796,92 @@ impl Ex {
     pub fn evalf(&self, digits: u32) -> Result<String, SymplexError> {
         let guard = self.inner.read();
         crate::evalf::evalf(&guard.arena, self.id, digits)
+    }
+
+    /// Convenience: evaluate to an `f64`.
+    ///
+    /// Calls [`evalf`](Ex::evalf) with 16 digits of precision and
+    /// parses the result to `f64`. This avoids the common pattern of
+    /// `.evalf(15).unwrap().parse::<f64>().unwrap()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`evalf`](Ex::evalf), plus a
+    /// [`SymplexError::NotImplemented`] if the decimal string cannot
+    /// be parsed to `f64`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let val = x.powi(2).subs_i64(&x, 3).evalf_f64().unwrap();
+    /// assert!((val - 9.0).abs() < 1e-10);
+    /// ```
+    pub fn evalf_f64(&self) -> Result<f64, SymplexError> {
+        let s = self.evalf(16)?;
+        s.parse::<f64>().map_err(|e| {
+            SymplexError::NotImplemented(format!("could not parse '{}' as f64: {}", s, e))
+        })
+    }
+
+    // ── Collection reduction ───────────────────────────────────────
+
+    /// Sum a collection of expressions.
+    ///
+    /// All expressions must belong to the same context. Returns zero
+    /// if the iterator is empty (using the context of `ctx`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let terms: Vec<Ex> = (1..=4).map(|n| ctx.int(n)).collect();
+    /// let total = Ex::sum_of(&ctx, terms);
+    /// assert_eq!(format!("{total}"), "10");
+    /// ```
+    pub fn sum_of(ctx: &crate::context::Context, exprs: impl IntoIterator<Item = Ex>) -> Ex {
+        let items: Vec<Ex> = exprs.into_iter().collect();
+        if items.is_empty() {
+            return ctx.int(0);
+        }
+        let mut inner = items[0].inner.write();
+        let ids: smallvec::SmallVec<[crate::node::ExprId; 8]> =
+            items.iter().map(|e| e.id).collect();
+        let id = inner.arena.add(&ids);
+        drop(inner);
+        items[0].wrap(id)
+    }
+
+    /// Multiply a collection of expressions.
+    ///
+    /// All expressions must belong to the same context. Returns one
+    /// if the iterator is empty (using the context of `ctx`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let factors: Vec<Ex> = (1..=4).map(|n| ctx.int(n)).collect();
+    /// let total = Ex::product_of(&ctx, factors);
+    /// assert_eq!(format!("{total}"), "24");
+    /// ```
+    pub fn product_of(ctx: &crate::context::Context, exprs: impl IntoIterator<Item = Ex>) -> Ex {
+        let items: Vec<Ex> = exprs.into_iter().collect();
+        if items.is_empty() {
+            return ctx.int(1);
+        }
+        let mut inner = items[0].inner.write();
+        let ids: smallvec::SmallVec<[crate::node::ExprId; 8]> =
+            items.iter().map(|e| e.id).collect();
+        let id = inner.arena.mul(&ids);
+        drop(inner);
+        items[0].wrap(id)
     }
 
     /// Mathematical equality: attempts to determine if `self - other == 0`.

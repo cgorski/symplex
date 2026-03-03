@@ -510,6 +510,23 @@ fn rule_abs_abs(arena: &mut Arena) -> Rule {
     Rule::new("abs_abs", pattern, abs_w)
 }
 
+/// Build the rule: `sqrt(w^2) → abs(w)`.
+fn rule_sqrt_sq(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let two = arena.int(2);
+    let w_sq = arena.pow(w_expr, two);
+    let sqrt_w_sq = arena.sqrt(w_sq);
+    let abs_w = arena.abs(w_expr);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: sqrt_w_sq,
+        wilds,
+    };
+    Rule::new("sqrt_sq", pattern, abs_w)
+}
+
 /// Build a basic set of simplification rules.
 pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
     vec![
@@ -517,6 +534,7 @@ pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
         rule_exp_ln(arena),
         rule_ln_exp(arena),
         rule_abs_abs(arena),
+        rule_sqrt_sq(arena),
     ]
 }
 

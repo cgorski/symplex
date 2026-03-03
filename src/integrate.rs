@@ -27,6 +27,7 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use num_traits::One;
+use num_traits::Signed;
 
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode, SymbolId};
@@ -118,8 +119,58 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                 return arena.mul(&constants);
             }
 
+            // ── Integration by parts: ∫ u·dv = u·v - ∫ v·du ───────────
+            // Try when there are exactly 2 dependent factors:
+            // one that's a polynomial in var (u), and one that's directly
+            // integrable (dv).
+            if dependent.len() == 2 {
+                // Try both orderings: (dependent[0] as u, dependent[1] as dv)
+                // and vice versa.
+                for (u_idx, dv_idx) in [(0, 1), (1, 0)] {
+                    let u = dependent[u_idx];
+                    let dv = dependent[dv_idx];
+
+                    // Check that u is a polynomial in var (so du is simpler)
+                    let is_poly_u = is_polynomial_in(arena, u, var, var_sym);
+                    if !is_poly_u {
+                        continue;
+                    }
+
+                    // Check that dv is directly integrable
+                    let v = integrate_node(arena, dv, var, var_sym);
+                    if let ExprNode::Integral(_, _) = arena.node(v) {
+                        continue; // dv not integrable
+                    }
+
+                    // Compute du = d(u)/dx
+                    let du = crate::diff::diff(arena, u, var);
+
+                    // Compute ∫ v·du dx
+                    let v_du = arena.mul(&[v, du]);
+                    let integral_v_du = integrate_node(arena, v_du, var, var_sym);
+
+                    // Check if the remaining integral was resolved
+                    if let ExprNode::Integral(_, _) = arena.node(integral_v_du) {
+                        continue; // Remaining integral not solvable
+                    }
+
+                    // Success: ∫ u·dv = u·v - ∫ v·du
+                    let u_v = arena.mul(&[u, v]);
+                    let result = arena.sub(u_v, integral_v_du);
+
+                    // Re-include constant factors if any
+                    if constants.is_empty() {
+                        return result;
+                    } else {
+                        let mut all = constants.clone();
+                        all.push(result);
+                        return arena.mul(&all);
+                    }
+                }
+            }
+
             // General product of var-dependent terms — can't integrate without
-            // integration by parts or substitution (not implemented).
+            // further techniques.
             arena.intern(ExprNode::Integral(expr, var))
         }
 
@@ -220,6 +271,38 @@ fn contains_var(arena: &Arena, expr: ExprId, var: SymbolId) -> bool {
         stack.extend_from_slice(&children);
     }
     false
+}
+
+/// Check if an expression is a polynomial in the given variable.
+/// A polynomial is: the variable itself, a power of the variable with a
+/// non-negative integer exponent, a numeric constant, or sums/products of these.
+fn is_polynomial_in(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolId) -> bool {
+    if expr == var {
+        return true;
+    }
+    if !contains_var(arena, expr, var_sym) {
+        return true; // constant
+    }
+    match arena.node(expr).clone() {
+        ExprNode::Pow(base, exp) => {
+            if base == var {
+                // x^n where n is a non-negative integer
+                if let Some(r) = arena.as_num(exp) {
+                    return r.is_integer() && !r.is_negative();
+                }
+            }
+            false
+        }
+        ExprNode::Mul(children) => children
+            .iter()
+            .all(|&c| is_polynomial_in(arena, c, var, var_sym)),
+        ExprNode::Add(children) => children
+            .iter()
+            .all(|&c| is_polynomial_in(arena, c, var, var_sym)),
+        ExprNode::Neg(inner) => is_polynomial_in(arena, inner, var, var_sym),
+        ExprNode::Num(_) => true,
+        _ => false,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -342,5 +425,44 @@ mod tests {
         let expr = a.tan(x);
         let result = integrate(&mut a, expr, x);
         assert_eq!(display(&a, result), "Integral(tan(x), x)");
+    }
+
+    #[test]
+    fn integrate_x_sin_x_by_parts() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        // ∫ x·sin(x) dx = sin(x) - x·cos(x)
+        let sin_x = a.sin(x);
+        let expr = a.mul(&[x, sin_x]);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        // Should contain both sin(x) and cos(x) terms
+        assert!(s.contains("sin(x)"), "should contain sin(x): {s}");
+        assert!(s.contains("cos(x)"), "should contain cos(x): {s}");
+    }
+
+    #[test]
+    fn integrate_x_exp_x_by_parts() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        // ∫ x·exp(x) dx = x·exp(x) - exp(x) = (x-1)·exp(x)
+        let exp_x = a.exp_fn(x);
+        let expr = a.mul(&[x, exp_x]);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(s.contains("exp(x)"), "should contain exp(x): {s}");
+    }
+
+    #[test]
+    fn integrate_x_cos_x_by_parts() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        // ∫ x·cos(x) dx = x·sin(x) + cos(x)
+        let cos_x = a.cos(x);
+        let expr = a.mul(&[x, cos_x]);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(s.contains("sin(x)"), "should contain sin(x): {s}");
+        assert!(s.contains("cos(x)"), "should contain cos(x): {s}");
     }
 }
