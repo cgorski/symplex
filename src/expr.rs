@@ -442,23 +442,9 @@ impl Ex {
     ///
     /// Returns the decimal string representation of the evaluated expression.
     #[must_use = "returns the numerical value as a string"]
-    #[cfg(feature = "evalf")]
     pub fn evalf(&self, digits: u32) -> Result<String, SymplexError> {
         let guard = self.inner.read();
         crate::evalf::evalf(&guard.arena, self.id, digits)
-    }
-
-    /// Numeric floating-point evaluation to the given number of decimal
-    /// digits.
-    ///
-    /// Returns `Err(SymplexError::NotImplemented)` when the `evalf` feature
-    /// is not enabled.
-    #[must_use = "returns the numerical value as a string"]
-    #[cfg(not(feature = "evalf"))]
-    pub fn evalf(&self, _digits: u32) -> Result<String, SymplexError> {
-        Err(SymplexError::NotImplemented(
-            "evalf: enable the 'evalf' cargo feature for numeric evaluation".into(),
-        ))
     }
 
     /// Mathematical equality: attempts to determine if `self - other == 0`.

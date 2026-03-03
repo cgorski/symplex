@@ -84,7 +84,7 @@ Each layer only calls downward. There are no circular dependencies between modul
 | `subs.rs` | 338 | Structural substitution. `subs(expr, old, new)` and `subs_map` for simultaneous replacement. Uses `walk_and_rebuild`. |
 | `expand.rs` | 577 | Algebraic expansion. Distributes Mul over Add via incremental cross-multiplication. Expands `Pow(Add, positive_int)` via repeated multiplication. |
 | `eval.rs` | 648 | Special-value evaluation. Recognizes rational multiples of π for sin/cos/tan. Known values for exp, ln, sqrt, abs at specific points. |
-| `evalf.rs` | 758 | Arbitrary-precision numerical evaluation via `astro-float`. Converts expressions to `BigFloat` bottom-up. Feature-gated behind `evalf`. |
+| `evalf.rs` | 758 | Arbitrary-precision numerical evaluation via `astro-float`. Converts expressions to `BigFloat` bottom-up. |
 | `pattern.rs` | 777 | Pattern matching and rewrite-rule engine. `WildId`, `Pattern`, `match_pattern`, `instantiate`, `Rule`, `apply_rules`, `Step`. Built-in Pythagorean identity rule. |
 | `poly.rs` | 828 | Dense univariate polynomials over ℚ. Add, Sub, Neg, Mul, scale, div_rem, GCD (Euclidean, monic-normalized), eval (Horner). |
 | `polybridge.rs` | 742 | Bridge between `ExprId` and `Poly`. `expr_to_poly`, `poly_to_expr`, `as_numer_denom`, `cancel`. |
@@ -217,6 +217,7 @@ Shared Pratt parser (~366 lines) handles both macros with standard mathematical 
 5. **No recursive tree walks.** All traversals use explicit stacks. Exception: `match_recursive` in pattern matching (patterns are small).
 6. **The compiler is the API contract.** `pub` = stable. `pub(crate)` = internal.
 7. **Extensible without inheritance.** Custom functions via name + registered rules.
+8. **No feature flags unless absolutely necessary.** All capabilities are included unconditionally. Feature flags are reserved for dependencies that require a C toolchain, have LGPL licensing, or cause platform-specific build failures.
 
 ---
 
@@ -246,6 +247,16 @@ Rewritten from recursive to explicit work-stack. Handles 10,000-deep expressions
 
 Rust requires proc-macro crates to be separate. The `symplex-macros` crate lives inside `symplex/symplex-macros/` as a path dependency. Re-exported via `pub use symplex_macros::*`.
 
+### Why no feature flags
+
+Symplex includes all capabilities unconditionally. Feature flags are avoided because:
+
+1. **Maintenance cost.** Every feature flag multiplies the test matrix and creates conditional compilation branches that can silently diverge.
+2. **API clarity.** Users get the full API. No runtime "NotImplemented" errors from missing features.
+3. **The `astro-float` precedent.** It's pure Rust, MIT-licensed, adds minimal compile time, and numerical evaluation is a core CAS capability — not optional.
+
+If a future dependency truly warrants a feature flag, document the justification here.
+
 ---
 
 ## Dependencies
@@ -263,7 +274,7 @@ Rust requires proc-macro crates to be separate. The `symplex-macros` crate lives
 | `bitflags` | 2.11 | MIT/Apache-2.0 | Assumption property flags |
 | `parking_lot` | 0.12 | MIT/Apache-2.0 | Fast RwLock/Mutex |
 | `thiserror` | 2.0 | MIT/Apache-2.0 | Error type derivation |
-| `astro-float` | 0.9 (optional) | MIT | Arbitrary-precision floats |
+| `astro-float` | 0.9 | MIT | Arbitrary-precision floats |
 | `symplex-macros` | 0.1 (path) | MIT/Apache-2.0 | Proc macros |
 
 ### Proc macro crate

@@ -15,11 +15,6 @@
 //! precision to absorb rounding errors from intermediate computations.
 //! If a sub-expression cannot be evaluated (e.g., it contains free
 //! symbols), the function returns an error.
-//!
-//! # Feature gate
-//!
-//! This module is only compiled when the `evalf` cargo feature is
-//! enabled (it is enabled by default).
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -231,10 +226,7 @@ fn eval_node(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Look up a cached value, returning an error if not found.
-fn get_cached(
-    cache: &FxHashMap<ExprId, BigFloat>,
-    id: ExprId,
-) -> Result<&BigFloat, SymplexError> {
+fn get_cached(cache: &FxHashMap<ExprId, BigFloat>, id: ExprId) -> Result<&BigFloat, SymplexError> {
     cache.get(&id).ok_or_else(|| {
         SymplexError::NotImplemented(format!(
             "evalf: sub-expression {id:?} not in cache (likely contains free symbols)"
@@ -273,9 +265,10 @@ fn bigint_to_bigfloat(n: &BigInt, prec: usize) -> BigFloat {
     // Fallback: parse through f64 (loses precision for huge integers).
     let s = n.to_string();
     if let Ok(f) = s.parse::<f64>()
-        && f.is_finite() {
-            return BigFloat::from_f64(f, prec);
-        }
+        && f.is_finite()
+    {
+        return BigFloat::from_f64(f, prec);
+    }
     // Last resort.
     BigFloat::from_i32(0, prec)
 }

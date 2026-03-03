@@ -20,14 +20,7 @@ rustc-hash = "2.1"
 bitflags = "2.11"
 parking_lot = "0.12"
 thiserror = "2.0"
-
-[dependencies.astro-float]
-version = "0.9"
-optional = true
-
-[features]
-default = ["evalf"]
-evalf = ["dep:astro-float"]
+astro-float = "0.9"
 
 [dev-dependencies]
 criterion = "0.5"

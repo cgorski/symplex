@@ -185,13 +185,11 @@ All dependencies are MIT or Apache-2.0 licensed. No C bindings. No LGPL.
 | `parking_lot` | Fast locks |
 | `thiserror` | Error types |
 | `symplex-macros` | Proc macros (`expr!`, `rule!`); uses `syn`, `quote`, `proc-macro2` |
-| `astro-float` | Arbitrary-precision floats (optional, feature `evalf`) |
+| `astro-float` | Arbitrary-precision floats |
 
-## Feature Flags
+## Dependencies Policy
 
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `evalf` | yes | Numerical evaluation via `astro-float`. Disable for smaller binaries. |
+Symplex avoids feature flags unless absolutely necessary (e.g., a dependency requires a C toolchain or adds significant platform-specific constraints). All core capabilities, including numerical evaluation via `astro-float`, are always included. This keeps the maintenance burden low, eliminates conditional compilation complexity, and ensures every user gets the full API without configuration.
 
 ## Requirements
 

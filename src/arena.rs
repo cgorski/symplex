@@ -589,7 +589,6 @@ impl Arena {
     ///
     /// Returns the string representation of the result, or an error if the
     /// expression contains free symbols.
-    #[cfg(feature = "evalf")]
     pub fn evalf_expr(
         &self,
         expr: ExprId,
