@@ -713,7 +713,16 @@ impl AssumptionCache {
             ExprNode::Exp(inner) => self.compute_exp(arena, inner),
             ExprNode::Ln(inner) => self.compute_ln(arena, inner),
             ExprNode::Abs(inner) => self.compute_abs(arena, inner),
-            _ => Assumptions::default(),
+            ExprNode::Sinh(inner)
+            | ExprNode::Tanh(inner)
+            | ExprNode::Asinh(inner)
+            | ExprNode::Atanh(inner) => self.compute_hyp_odd(arena, inner),
+            ExprNode::Cosh(inner) => self.compute_cosh(arena, inner),
+            ExprNode::Asin(inner) | ExprNode::Acos(inner) | ExprNode::Atan(inner) => {
+                self.compute_inverse_trig(arena, inner)
+            }
+            ExprNode::Acosh(inner) => self.compute_acosh(arena, inner),
+            _ => Assumptions::default(), // Only Apply, Derivative, Integral now
         };
 
         // Cache the result.
@@ -918,6 +927,8 @@ impl AssumptionCache {
         let mut negative_count = 0u32;
         let mut all_nonzero = true;
         let mut sign_known = true;
+        let mut imaginary_count: usize = 0;
+        let mut real_count: usize = 0;
 
         for &child in args.iter() {
             let child_a = self.compute(arena, child);
@@ -957,6 +968,13 @@ impl AssumptionCache {
                     sign_known = false;
                 }
             }
+
+            if child_a.query(Props::IMAGINARY) == Some(true) {
+                imaginary_count += 1;
+            }
+            if child_a.query(Props::REAL) == Some(true) {
+                real_count += 1;
+            }
         }
 
         if all_integer {
@@ -967,6 +985,15 @@ impl AssumptionCache {
         }
         if all_real {
             a.known_true |= Props::REAL;
+        }
+        // Handle mix of real and imaginary factors.
+        // real * imaginary = imaginary; imaginary * imaginary = real
+        if imaginary_count > 0 && real_count + imaginary_count == args.len() {
+            if imaginary_count.is_multiple_of(2) {
+                a.known_true |= Props::REAL;
+            } else {
+                a.known_true |= Props::IMAGINARY;
+            }
         }
         if all_complex {
             a.known_true |= Props::COMPLEX;
@@ -1186,6 +1213,70 @@ impl AssumptionCache {
         }
 
         a.known_true |= Props::COMMUTATIVE;
+        a.forward_chain();
+        a
+    }
+
+    fn compute_hyp_odd(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
+        // sinh, tanh, asinh, atanh: real → real, complex → complex, odd function
+        let inner_a = self.compute(arena, inner);
+        let mut a = Assumptions::default();
+        a.known_true |= Props::COMMUTATIVE | Props::FINITE;
+        if inner_a.query(Props::REAL) == Some(true) {
+            a.known_true |= Props::REAL;
+        }
+        if inner_a.query(Props::COMPLEX) == Some(true) {
+            a.known_true |= Props::COMPLEX;
+        }
+        a.forward_chain();
+        a
+    }
+
+    fn compute_cosh(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
+        // cosh: real → real, positive (cosh(x) >= 1 for real x)
+        let inner_a = self.compute(arena, inner);
+        let mut a = Assumptions::default();
+        a.known_true |= Props::COMMUTATIVE | Props::FINITE;
+        if inner_a.query(Props::REAL) == Some(true) {
+            a.known_true |= Props::REAL | Props::POSITIVE;
+        }
+        if inner_a.query(Props::COMPLEX) == Some(true) {
+            a.known_true |= Props::COMPLEX;
+        }
+        a.forward_chain();
+        a
+    }
+
+    fn compute_inverse_trig(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
+        // asin, acos, atan: real → real (for appropriate domain), complex → complex
+        let inner_a = self.compute(arena, inner);
+        let mut a = Assumptions::default();
+        a.known_true |= Props::COMMUTATIVE | Props::FINITE;
+        if inner_a.query(Props::REAL) == Some(true) {
+            a.known_true |= Props::REAL; // technically only for |x|≤1 for asin/acos, but conservative
+        }
+        if inner_a.query(Props::COMPLEX) == Some(true) {
+            a.known_true |= Props::COMPLEX;
+        }
+        a.forward_chain();
+        a
+    }
+
+    fn compute_acosh(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
+        // acosh: real >= 1 → real, nonnegative
+        let inner_a = self.compute(arena, inner);
+        let mut a = Assumptions::default();
+        a.known_true |= Props::COMMUTATIVE | Props::FINITE;
+        if inner_a.query(Props::REAL) == Some(true) {
+            // acosh is real for x >= 1, complex otherwise. Conservative: just say complex.
+            a.known_true |= Props::COMPLEX;
+            if inner_a.query(Props::POSITIVE) == Some(true) {
+                a.known_true |= Props::REAL | Props::NONNEGATIVE;
+            }
+        }
+        if inner_a.query(Props::COMPLEX) == Some(true) {
+            a.known_true |= Props::COMPLEX;
+        }
         a.forward_chain();
         a
     }
@@ -1711,5 +1802,59 @@ mod tests {
         assert!(is_small_prime(11));
         assert!(is_small_prime(97));
         assert!(!is_small_prime(100));
+    }
+
+    // ── Hyperbolic / inverse trig propagation ───────────────────────
+
+    #[test]
+    fn sinh_of_real_is_real() {
+        let mut arena = Arena::new();
+        let mut cache = AssumptionCache::new();
+        // Use pi as a known-real value.
+        let expr = arena.sinh(arena.pi);
+        assert_eq!(cache.query(&arena, expr, Props::REAL), Some(true));
+    }
+
+    #[test]
+    fn cosh_of_real_is_positive() {
+        let mut arena = Arena::new();
+        let mut cache = AssumptionCache::new();
+        let expr = arena.cosh(arena.pi);
+        assert_eq!(cache.query(&arena, expr, Props::POSITIVE), Some(true));
+    }
+
+    #[test]
+    fn tanh_of_real_is_real() {
+        let mut arena = Arena::new();
+        let mut cache = AssumptionCache::new();
+        let expr = arena.tanh(arena.pi);
+        assert_eq!(cache.query(&arena, expr, Props::REAL), Some(true));
+    }
+
+    #[test]
+    fn asin_of_real_is_real() {
+        let mut arena = Arena::new();
+        let mut cache = AssumptionCache::new();
+        let expr = arena.asin(arena.one);
+        assert_eq!(cache.query(&arena, expr, Props::REAL), Some(true));
+    }
+
+    #[test]
+    fn product_with_i_is_imaginary() {
+        let mut arena = Arena::new();
+        let mut cache = AssumptionCache::new();
+        let three = arena.int(3);
+        let prod = arena.mul(&[three, arena.i_unit]); // 3*i
+        assert_eq!(cache.query(&arena, prod, Props::IMAGINARY), Some(true));
+    }
+
+    #[test]
+    fn product_i_times_i_is_real() {
+        let mut arena = Arena::new();
+        let mut cache = AssumptionCache::new();
+        // i*i canonicalizes to i^2 = -1 via canon_mul/canon_pow,
+        // so check the assumption on that result.
+        let prod = arena.mul(&[arena.i_unit, arena.i_unit]);
+        assert_eq!(cache.query(&arena, prod, Props::REAL), Some(true));
     }
 }

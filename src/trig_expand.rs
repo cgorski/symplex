@@ -70,7 +70,10 @@ pub(crate) fn expand_trig(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let ni = cache.get(&inner).copied().unwrap_or(inner);
                 if ni == inner { id } else { arena.neg(ni) }
             }
-            _ => id,
+            _ => {
+                // Rebuild any other node with cached children
+                crate::walk::rebuild_with_cache(arena, id, &cache)
+            }
         };
 
         cache.insert(id, expanded);
@@ -194,5 +197,22 @@ mod tests {
         let expr = a.exp(x);
         let result = expand_trig(&mut a, expr);
         assert_eq!(display(&a, result), "exp(x)");
+    }
+
+    #[test]
+    fn expand_trig_inside_exp() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let y = a.symbol("y");
+        let sum = a.add(&[x, y]);
+        let sin_sum = a.sin(sum);
+        let expr = a.exp(sin_sum);
+        let result = crate::trig_expand::expand_trig(&mut a, expr);
+        let s = a.display(result).to_string();
+        // sin(x+y) should be expanded even inside exp()
+        assert!(
+            !s.contains("sin(x + y)"),
+            "trig expansion should work inside exp(): {s}"
+        );
     }
 }

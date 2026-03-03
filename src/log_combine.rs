@@ -68,7 +68,10 @@ pub(crate) fn log_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let ni = cache.get(&inner).copied().unwrap_or(inner);
                 if ni == inner { id } else { arena.ln(ni) }
             }
-            _ => id,
+            _ => {
+                // Rebuild any other node with cached children
+                crate::walk::rebuild_with_cache(arena, id, &cache)
+            }
         };
 
         cache.insert(id, combined);
@@ -268,6 +271,24 @@ mod tests {
         // The two logs should be combined, so there shouldn't be two ln(
         let ln_count = s.matches("ln(").count();
         assert_eq!(ln_count, 1, "expected 1 ln term, got {ln_count} in: {s}");
+    }
+
+    #[test]
+    fn combine_logs_inside_exp() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let ln_x = a.ln(x);
+        let ln_y = a.ln(y);
+        let sum = a.add(&[ln_x, ln_y]);
+        let expr = a.exp(sum);
+        let result = log_combine(&mut a, expr);
+        let s = display(&a, result);
+        // ln(x)+ln(y) should be combined even inside exp()
+        assert!(
+            !s.contains("ln(x)"),
+            "log combination should work inside exp(): {s}"
+        );
     }
 
     #[test]

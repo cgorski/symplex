@@ -67,7 +67,10 @@ pub(crate) fn expand_log(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let ni = cache.get(&inner).copied().unwrap_or(inner);
                 if ni == inner { id } else { arena.neg(ni) }
             }
-            _ => id,
+            _ => {
+                // Rebuild any other node with cached children
+                crate::walk::rebuild_with_cache(arena, id, &cache)
+            }
         };
 
         cache.insert(id, expanded);
@@ -177,6 +180,23 @@ mod tests {
         let expr = a.ln(x);
         let result = expand_log(&mut a, expr);
         assert_eq!(display(&a, result), "ln(x)");
+    }
+
+    #[test]
+    fn expand_log_inside_sin() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let product = a.mul(&[x, y]);
+        let ln_product = a.ln(product);
+        let expr = a.sin(ln_product);
+        let result = expand_log(&mut a, expr);
+        let s = display(&a, result);
+        // ln(x*y) should be expanded even inside sin()
+        assert!(
+            !s.contains("ln(x*y)"),
+            "log expansion should work inside sin(): {s}"
+        );
     }
 
     #[test]

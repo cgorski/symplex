@@ -331,6 +331,14 @@ impl Poly {
 // GCD
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// GCD of two positive rationals: gcd(a/b, c/d) = gcd(a,c) / lcm(b,d).
+fn rational_gcd(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
+    use num_integer::Integer;
+    let numer_gcd = a.numer().gcd(b.numer());
+    let denom_lcm = a.denom().lcm(b.denom());
+    Ratio::new(numer_gcd, denom_lcm)
+}
+
 impl Poly {
     /// Compute the GCD of two polynomials using the Euclidean algorithm.
     ///
@@ -376,17 +384,33 @@ impl Poly {
         if self.is_zero() {
             return Ratio::zero();
         }
-        // For rational coefficients, content is 1 if any coefficient is rational
-        // and not all integer.  For integer polynomials, it's the GCD of the
-        // integer coefficients.  Since we're over QQ, we normalise to monic
-        // which is equivalent.
-        self.leading_coeff().unwrap().clone()
+        let coeffs: Vec<_> = (0..=self.degree().unwrap_or(0))
+            .map(|i| self.coeff(i))
+            .filter(|c| !c.is_zero())
+            .collect();
+        if coeffs.is_empty() {
+            return Ratio::one();
+        }
+        // GCD of rationals: gcd(a/b, c/d) = gcd(a,c) / lcm(b,d)
+        let mut result = coeffs[0].clone();
+        for c in &coeffs[1..] {
+            result = rational_gcd(&result, c);
+        }
+        if result.is_negative() {
+            -result
+        } else {
+            result
+        }
     }
 
     /// Compute the primitive part: `self / content`.
     #[must_use]
-    pub fn primitive_part(&self) -> Poly {
-        self.make_monic()
+    pub fn primitive_part(&self) -> Self {
+        let c = self.content();
+        if c.is_one() || c.is_zero() {
+            return self.clone();
+        }
+        self.scale(&(Ratio::one() / c))
     }
 }
 
@@ -824,5 +848,37 @@ mod tests {
         assert_eq!(g.eval(&ri(2)), ri(0));
         assert_eq!(g.eval(&ri(4)), ri(0));
         assert!(g.eval(&ri(1)) != ri(0), "x=1 should not be a root of gcd");
+    }
+
+    // ── Content / Primitive part ────────────────────────────────────
+
+    #[test]
+    fn content_of_2x_plus_4() {
+        // 2x + 4 → content = 2
+        let p = Poly::from_coeffs(vec![ri(4), ri(2)]);
+        assert_eq!(p.content(), ri(2));
+    }
+
+    #[test]
+    fn content_of_6x2_4x_2() {
+        // 6x² + 4x + 2 → content = 2
+        let p = Poly::from_coeffs(vec![ri(2), ri(4), ri(6)]);
+        assert_eq!(p.content(), ri(2));
+    }
+
+    #[test]
+    fn content_of_x_plus_1() {
+        // x + 1 → content = 1
+        let p = Poly::from_coeffs(vec![ri(1), ri(1)]);
+        assert_eq!(p.content(), ri(1));
+    }
+
+    #[test]
+    fn primitive_part_of_2x_plus_4() {
+        // 2x + 4 → primitive part = x + 2
+        let p = Poly::from_coeffs(vec![ri(4), ri(2)]);
+        let pp = p.primitive_part();
+        let expected = Poly::from_coeffs(vec![ri(2), ri(1)]);
+        assert_eq!(pp, expected);
     }
 }

@@ -396,6 +396,24 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return arena.intern(ExprNode::Exp(exp));
     }
 
+    // i^n reduction: i^0=1, i^1=i, i^2=-1, i^3=-i, then repeats with period 4.
+    if base == arena.i_unit
+        && let Some(exp_r) = arena.as_num(exp)
+            && exp_r.is_integer() {
+                use num_integer::Integer;
+                let exp_int = exp_r.to_integer();
+                let four = BigInt::from(4);
+                let remainder = exp_int.mod_floor(&four);
+                let r: u32 = remainder.try_into().unwrap_or(0);
+                return match r {
+                    0 => arena.one,
+                    1 => arena.i_unit,
+                    2 => arena.neg_one,
+                    3 => arena.neg(arena.i_unit),
+                    _ => unreachable!(),
+                };
+            }
+
     // NaN propagation.
     if base == arena.nan || exp == arena.nan {
         return arena.nan;
@@ -1154,5 +1172,76 @@ mod tests {
             .collect();
         let result = a.add(&terms);
         assert_eq!(display(&a, result), "5050*x");
+    }
+
+    // ── i^n reduction ──────────────────────────────────────────────
+
+    #[test]
+    fn i_squared_is_neg_one() {
+        let mut a = Arena::new();
+        let i = a.i_unit;
+        let two = a.int(2);
+        let result = a.pow(i, two);
+        assert_eq!(result, a.neg_one);
+    }
+
+    #[test]
+    fn i_cubed_is_neg_i() {
+        let mut a = Arena::new();
+        let i = a.i_unit;
+        let three = a.int(3);
+        let result = a.pow(i, three);
+        assert_eq!(display(&a, result), "-I");
+    }
+
+    #[test]
+    fn i_fourth_is_one() {
+        let mut a = Arena::new();
+        let i = a.i_unit;
+        let four = a.int(4);
+        let result = a.pow(i, four);
+        assert_eq!(result, a.one);
+    }
+
+    #[test]
+    fn i_to_neg_one() {
+        let mut a = Arena::new();
+        let i = a.i_unit;
+        let neg1 = a.int(-1);
+        let result = a.pow(i, neg1);
+        assert_eq!(display(&a, result), "-I");
+    }
+
+    #[test]
+    fn i_to_neg_two() {
+        let mut a = Arena::new();
+        let i = a.i_unit;
+        let neg2 = a.int(-2);
+        let result = a.pow(i, neg2);
+        assert_eq!(result, a.neg_one);
+    }
+
+    #[test]
+    fn i_to_100() {
+        let mut a = Arena::new();
+        let i = a.i_unit;
+        let hundred = a.int(100);
+        let result = a.pow(i, hundred);
+        assert_eq!(result, a.one);
+    }
+
+    #[test]
+    fn one_plus_i_squared() {
+        // (1+i)^2 = 1 + 2i + i^2 = 1 + 2i - 1 = 2*I
+        let mut a = Arena::new();
+        let one = a.one;
+        let i = a.i_unit;
+        let two = a.int(2);
+        let term1 = a.mul(&[one, one]); // 1
+        let term2 = a.mul(&[one, i]); // I
+        let term3 = a.mul(&[i, one]); // I
+        let term4 = a.pow(i, two); // i^2 = -1
+        let result = a.add(&[term1, term2, term3, term4]);
+        assert_eq!(display(&a, result), "2*I");
     }
 }
