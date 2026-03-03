@@ -524,6 +524,12 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                 // ∫ sinh(x) dx = cosh(x)
                 return arena.intern(ExprNode::Cosh(var));
             }
+            // u-sub: ∫ sinh(ax+b) dx = cosh(ax+b)/a
+            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+                let cosh_inner = arena.cosh(inner);
+                let a_id = rational_to_expr(arena, &a);
+                return arena.div(cosh_inner, a_id);
+            }
             arena.intern(ExprNode::Integral(expr, var))
         }
 
@@ -531,6 +537,12 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
             if inner == var {
                 // ∫ cosh(x) dx = sinh(x)
                 return arena.intern(ExprNode::Sinh(var));
+            }
+            // u-sub: ∫ cosh(ax+b) dx = sinh(ax+b)/a
+            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+                let sinh_inner = arena.sinh(inner);
+                let a_id = rational_to_expr(arena, &a);
+                return arena.div(sinh_inner, a_id);
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -973,6 +985,38 @@ mod tests {
         assert!(
             s.contains("ln") && s.contains("cosh"),
             "∫ tanh(2x) dx should involve ln(cosh(2x)), got: {s}"
+        );
+    }
+
+    #[test]
+    fn integrate_sinh_2x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let expr = a.sinh(two_x);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        // ∫ sinh(2x) dx = cosh(2x)/2
+        assert!(
+            s.contains("cosh"),
+            "∫ sinh(2x) dx should involve cosh, got: {s}"
+        );
+    }
+
+    #[test]
+    fn integrate_cosh_3x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let three = a.int(3);
+        let three_x = a.mul(&[three, x]);
+        let expr = a.cosh(three_x);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        // ∫ cosh(3x) dx = sinh(3x)/3
+        assert!(
+            s.contains("sinh"),
+            "∫ cosh(3x) dx should involve sinh, got: {s}"
         );
     }
 }

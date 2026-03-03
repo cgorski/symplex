@@ -720,6 +720,90 @@ fn rule_atanh_tanh(arena: &mut Arena) -> Rule {
     Rule::new("atanh_tanh", pattern, w_expr)
 }
 
+/// sin(asin(w)) → w
+fn rule_sin_asin(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let asin_w = arena.asin(w_expr);
+    let sin_asin_w = arena.sin(asin_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: sin_asin_w,
+        wilds,
+    };
+    Rule::new("sin_asin", pattern, w_expr)
+}
+
+/// cos(acos(w)) → w
+fn rule_cos_acos(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let acos_w = arena.acos(w_expr);
+    let cos_acos_w = arena.cos(acos_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: cos_acos_w,
+        wilds,
+    };
+    Rule::new("cos_acos", pattern, w_expr)
+}
+
+/// tan(atan(w)) → w
+fn rule_tan_atan(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let atan_w = arena.atan(w_expr);
+    let tan_atan_w = arena.tan(atan_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: tan_atan_w,
+        wilds,
+    };
+    Rule::new("tan_atan", pattern, w_expr)
+}
+
+/// sinh(asinh(w)) → w
+fn rule_sinh_asinh(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let asinh_w = arena.asinh(w_expr);
+    let sinh_asinh_w = arena.sinh(asinh_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: sinh_asinh_w,
+        wilds,
+    };
+    Rule::new("sinh_asinh", pattern, w_expr)
+}
+
+/// cosh(acosh(w)) → w
+fn rule_cosh_acosh(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let acosh_w = arena.acosh(w_expr);
+    let cosh_acosh_w = arena.cosh(acosh_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: cosh_acosh_w,
+        wilds,
+    };
+    Rule::new("cosh_acosh", pattern, w_expr)
+}
+
+/// tanh(atanh(w)) → w
+fn rule_tanh_atanh(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let atanh_w = arena.atanh(w_expr);
+    let tanh_atanh_w = arena.tanh(atanh_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: tanh_atanh_w,
+        wilds,
+    };
+    Rule::new("tanh_atanh", pattern, w_expr)
+}
+
 /// Build a basic set of simplification rules.
 /// sin(w) / cos(w) → tan(w)
 /// Canonical form of sin(x)/cos(x) is Mul([Sin(x), Pow(Cos(x), -1)])
@@ -837,6 +921,12 @@ pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
         rule_sinh_div_cosh(arena),
         rule_exp_mul(arena),
         rule_abs_positive(arena),
+        rule_sin_asin(arena),
+        rule_cos_acos(arena),
+        rule_tan_atan(arena),
+        rule_sinh_asinh(arena),
+        rule_cosh_acosh(arena),
+        rule_tanh_atanh(arena),
     ]
 }
 
@@ -1325,5 +1415,53 @@ mod tests {
         let (result, _) = apply_rules(&mut a, abs_x, &rules);
         // Symbol has unknown sign — should not fire
         assert_eq!(display(&a, result), "abs(x)");
+    }
+
+    #[test]
+    fn simplify_sin_asin() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let asin_x = a.asin(x);
+        let sin_asin_x = a.sin(asin_x);
+        let rules = basic_rules(&mut a);
+        let (result, steps) = apply_rules(&mut a, sin_asin_x, &rules);
+        assert_eq!(display(&a, result), "x");
+        assert!(steps.iter().any(|s| s.rule_name == "sin_asin"));
+    }
+
+    #[test]
+    fn simplify_cos_acos() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let acos_x = a.acos(x);
+        let cos_acos_x = a.cos(acos_x);
+        let rules = basic_rules(&mut a);
+        let (result, steps) = apply_rules(&mut a, cos_acos_x, &rules);
+        assert_eq!(display(&a, result), "x");
+        assert!(steps.iter().any(|s| s.rule_name == "cos_acos"));
+    }
+
+    #[test]
+    fn simplify_tan_atan() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let atan_x = a.atan(x);
+        let tan_atan_x = a.tan(atan_x);
+        let rules = basic_rules(&mut a);
+        let (result, steps) = apply_rules(&mut a, tan_atan_x, &rules);
+        assert_eq!(display(&a, result), "x");
+        assert!(steps.iter().any(|s| s.rule_name == "tan_atan"));
+    }
+
+    #[test]
+    fn simplify_sinh_asinh() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let asinh_x = a.asinh(x);
+        let sinh_asinh_x = a.sinh(asinh_x);
+        let rules = basic_rules(&mut a);
+        let (result, steps) = apply_rules(&mut a, sinh_asinh_x, &rules);
+        assert_eq!(display(&a, result), "x");
+        assert!(steps.iter().any(|s| s.rule_name == "sinh_asinh"));
     }
 }

@@ -567,6 +567,29 @@ fn eval_ln(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.one);
     }
 
+    // ln(-1) = i*π
+    if inner == arena.neg_one {
+        let i_pi = arena.mul(&[arena.i_unit, arena.pi]);
+        return Some(i_pi);
+    }
+
+    // ln(negative rational) = ln(|r|) + i*π  (principal branch)
+    if let Some(r) = arena.as_num(inner)
+        && r.is_negative() {
+            let abs_r = -r.clone();
+            if abs_r.is_one() {
+                // Already handled above: ln(-1)
+            } else {
+                let abs_id = {
+                    let nid = arena.intern_num(abs_r);
+                    arena.intern(ExprNode::Num(nid))
+                };
+                let ln_abs = arena.ln(abs_id);
+                let i_pi = arena.mul(&[arena.i_unit, arena.pi]);
+                return Some(arena.add(&[ln_abs, i_pi]));
+            }
+        }
+
     None
 }
 
@@ -701,6 +724,19 @@ fn eval_asin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let neg_half = arena.rational(-1, 2);
         return Some(arena.mul(&[neg_half, arena.pi]));
     }
+    // asin(1/2) = π/6
+    if let Some(r) = arena.as_num(inner) {
+        let half = Ratio::new(1.into(), 2.into());
+        if *r == half {
+            let sixth = arena.rational(1, 6);
+            return Some(arena.mul(&[sixth, arena.pi]));
+        }
+        let neg_half = Ratio::new((-1).into(), 2.into());
+        if *r == neg_half {
+            let neg_sixth = arena.rational(-1, 6);
+            return Some(arena.mul(&[neg_sixth, arena.pi]));
+        }
+    }
     None
 }
 
@@ -716,6 +752,20 @@ fn eval_acos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if inner == arena.neg_one {
         return Some(arena.pi);
     } // acos(-1) = π
+    // acos(1/2) = π/3
+    if let Some(r) = arena.as_num(inner) {
+        let half = Ratio::new(1.into(), 2.into());
+        if *r == half {
+            let third = arena.rational(1, 3);
+            return Some(arena.mul(&[third, arena.pi]));
+        }
+        let neg_half = Ratio::new((-1).into(), 2.into());
+        if *r == neg_half {
+            // acos(-1/2) = 2π/3
+            let two_thirds = arena.rational(2, 3);
+            return Some(arena.mul(&[two_thirds, arena.pi]));
+        }
+    }
     None
 }
 
@@ -733,6 +783,8 @@ fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let neg_quarter = arena.rational(-1, 4);
         return Some(arena.mul(&[neg_quarter, arena.pi]));
     }
+    // atan(1) is already handled (= π/4)
+    // atan(-1) is already handled (= -π/4) via odd function
     None
 }
 
@@ -1471,5 +1523,66 @@ mod tests {
         let expr = a.abs(a.i_unit);
         let result = eval(&mut a, expr);
         assert_eq!(display(&a, result), "1");
+    }
+
+    // ── ln of negatives ─────────────────────────────────────────────
+
+    #[test]
+    fn eval_ln_neg_one() {
+        let mut a = Arena::new();
+        let expr = a.ln(a.neg_one);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "pi*I");
+    }
+
+    #[test]
+    fn eval_ln_neg_two() {
+        let mut a = Arena::new();
+        let neg_two = a.rational(-2, 1);
+        let expr = a.ln(neg_two);
+        let result = eval(&mut a, expr);
+        let two = a.rational(2, 1);
+        let ln2 = a.ln(two);
+        let i_pi = a.mul(&[a.i_unit, a.pi]);
+        let expected = a.add(&[ln2, i_pi]);
+        assert_eq!(display(&a, result), display(&a, expected));
+    }
+
+    // ── inverse trig ────────────────────────────────────────────────
+
+    #[test]
+    fn eval_asin_half() {
+        let mut a = Arena::new();
+        let half = a.rational(1, 2);
+        let expr = a.asin(half);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "1/6*pi");
+    }
+
+    #[test]
+    fn eval_asin_neg_half() {
+        let mut a = Arena::new();
+        let neg_half = a.rational(-1, 2);
+        let expr = a.asin(neg_half);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "-1/6*pi");
+    }
+
+    #[test]
+    fn eval_acos_half() {
+        let mut a = Arena::new();
+        let half = a.rational(1, 2);
+        let expr = a.acos(half);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "1/3*pi");
+    }
+
+    #[test]
+    fn eval_acos_neg_half() {
+        let mut a = Arena::new();
+        let neg_half = a.rational(-1, 2);
+        let expr = a.acos(neg_half);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "2/3*pi");
     }
 }
