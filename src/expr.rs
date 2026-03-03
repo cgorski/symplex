@@ -899,6 +899,106 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Compute the limit of this expression as `var` approaches `point`.
+    ///
+    /// Uses direct substitution, L'Hôpital's rule (for 0/0 and ∞/∞),
+    /// and series expansion as fallbacks. Returns the expression
+    /// unchanged if the limit cannot be determined.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // lim_{x→0} sin(x)/x = 1
+    /// let expr = &x.sin() / &x;
+    /// let result = expr.limit(&x, &ctx.int(0));
+    /// assert_eq!(format!("{result}"), "1");
+    /// ```
+    #[must_use = "returns the limit value; does not modify in place"]
+    pub fn limit(&self, var: &Ex, point: &Ex) -> Ex {
+        let _span = debug_span!("limit", expr = ?self.id, var = ?var.id).entered();
+        let id = self
+            .inner
+            .write()
+            .arena
+            .limit_expr(self.id, var.id, point.id);
+        self.wrap(id)
+    }
+
+    /// Decompose this expression into (numerator, denominator).
+    ///
+    /// For `a / b` (expressed as `a * b^(-1)`), returns `(a, b)`.
+    /// For expressions without a denominator, returns `(self, 1)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = &x / &y;
+    /// let (n, d) = expr.as_numer_denom();
+    /// assert_eq!(format!("{n}"), "x");
+    /// assert_eq!(format!("{d}"), "y");
+    /// ```
+    pub fn as_numer_denom(&self) -> (Ex, Ex) {
+        let mut inner = self.inner.write();
+        let (n, d) = inner.arena.as_numer_denom_expr(self.id);
+        drop(inner);
+        (self.wrap(n), self.wrap(d))
+    }
+
+    /// Returns `true` if this expression is a polynomial in `var`.
+    ///
+    /// Equivalent to `self.degree(var).is_some()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// assert!((&x.powi(2) + 1).is_polynomial(&x));
+    /// assert!(!x.sin().is_polynomial(&x));
+    /// ```
+    pub fn is_polynomial(&self, var: &Ex) -> bool {
+        self.degree(var).is_some()
+    }
+
+    /// Extract the coefficient of `var^n` in this expression.
+    ///
+    /// Returns `None` if the expression is not polynomial in `var`.
+    /// Returns the zero expression if the coefficient is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.powi(2) * 3 + &x * 5 + 7;
+    /// assert_eq!(format!("{}", expr.coeff(&x, 2).unwrap()), "3");
+    /// assert_eq!(format!("{}", expr.coeff(&x, 1).unwrap()), "5");
+    /// assert_eq!(format!("{}", expr.coeff(&x, 0).unwrap()), "7");
+    /// ```
+    pub fn coeff(&self, var: &Ex, power: usize) -> Option<Ex> {
+        let cs = self.coeffs(var)?;
+        if power < cs.len() {
+            Some(cs[power].clone())
+        } else {
+            // Coefficient is zero for powers above the degree.
+            let inner = self.inner.read();
+            let zero = inner.arena.zero;
+            drop(inner);
+            Some(self.wrap(zero))
+        }
+    }
+
     /// Numeric floating-point evaluation to the given number of decimal
     /// digits.
     ///

@@ -606,6 +606,20 @@ impl Arena {
         crate::polybridge::poly_coefficients(self, expr, var)
     }
 
+    /// Compute the limit of `expr` as `var` approaches `point`.
+    ///
+    /// Delegates to [`limit::limit`].
+    pub fn limit_expr(&mut self, expr: ExprId, var: ExprId, point: ExprId) -> ExprId {
+        crate::limit::limit(self, expr, var, point)
+    }
+
+    /// Decompose `expr` into (numerator, denominator).
+    ///
+    /// Delegates to [`polybridge::as_numer_denom`].
+    pub fn as_numer_denom_expr(&mut self, expr: ExprId) -> (ExprId, ExprId) {
+        crate::polybridge::as_numer_denom(self, expr)
+    }
+
     /// Creates a subtraction expression `a - b` as `a + neg(b)`.
     pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
         let neg_b = self.neg(b);

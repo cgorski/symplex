@@ -220,14 +220,6 @@ impl Context {
         self.make_ex(id)
     }
 
-    // ── Display ────────────────────────────────────────────────────────
-
-    /// Format an expression as a string.
-    pub fn display(&self, ex: &crate::expr::Ex) -> String {
-        let inner = self.inner.read();
-        inner.arena.display(ex.id).to_string()
-    }
-
     // ── Arena access ───────────────────────────────────────────────────
 
     /// Run a closure with mutable access to the underlying arena.
@@ -292,6 +284,53 @@ impl Context {
     pub fn from_json(&self, json: &str) -> Result<crate::expr::Ex, serde_json::Error> {
         let tree: crate::tree::ExprTree = serde_json::from_str(json)?;
         Ok(self.from_tree(&tree))
+    }
+
+    // ── Linear system solving ──────────────────────────────────────────
+
+    /// Solve a system of linear equations.
+    ///
+    /// Each equation in `equations` is an expression that equals zero.
+    /// `variables` are the symbols to solve for.
+    ///
+    /// Returns `Some(vec![(var1, val1), (var2, val2), ...])` if a unique
+    /// solution exists, or `None` if the system is underdetermined,
+    /// overdetermined, or inconsistent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// // x + y = 3, x - y = 1  →  x = 2, y = 1
+    /// let eq1 = &x + &y - 3;
+    /// let eq2 = &x - &y - 1;
+    /// let solution = ctx.solve_system(&[eq1, eq2], &[x, y]).unwrap();
+    /// assert_eq!(solution.len(), 2);
+    /// assert_eq!(format!("{}", solution[0].1), "2");
+    /// assert_eq!(format!("{}", solution[1].1), "1");
+    /// ```
+    pub fn solve_system(
+        &self,
+        equations: &[crate::expr::Ex],
+        variables: &[crate::expr::Ex],
+    ) -> Option<Vec<(crate::expr::Ex, crate::expr::Ex)>> {
+        let eq_ids: Vec<crate::node::ExprId> = equations.iter().map(|e| e.id).collect();
+        let var_ids: Vec<crate::node::ExprId> = variables.iter().map(|v| v.id).collect();
+
+        let mut inner = self.inner.write();
+        let result = crate::linalg::solve_linear_system(&mut inner.arena, &eq_ids, &var_ids)?;
+        drop(inner);
+
+        Some(
+            result
+                .pairs
+                .into_iter()
+                .map(|(var_id, val_id)| (self.make_ex(var_id), self.make_ex(val_id)))
+                .collect(),
+        )
     }
 
     // ── Arena info ─────────────────────────────────────────────────────

@@ -43,6 +43,8 @@ pub(crate) mod evalf;
 pub(crate) mod expand;
 pub(crate) mod factor;
 pub(crate) mod integrate;
+pub(crate) mod limit;
+pub(crate) mod linalg;
 pub(crate) mod node;
 pub(crate) mod pattern;
 pub(crate) mod poly;

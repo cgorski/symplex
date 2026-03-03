@@ -454,6 +454,7 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 | Features | full_simplify (fixpoint), evalf_f64, assume(), sum_of/product_of, sqrt rule, integration by parts, runtime parser, definite integrals, degree/coeffs |
 | Math expansion | Inverse trig (asin, acos, atan) + hyperbolic (sinh, cosh, tanh): 6 new ExprNode variants across 17 files |
 | Serialization | ExprTree serde type with to_tree/from_tree/to_json/from_json round-trip; removed LaTeX/Markdown formatter (belongs in separate crate) |
+| Sprint | Limits (L'Hôpital + series fallback), linear system solving (Gaussian elimination), u-substitution in integration, exposed as_numer_denom/is_polynomial/coeff/limit/solve_system |
 
 ---
 
@@ -632,11 +633,11 @@ abs(abs(w_)) => abs(w_)
 
 | Priority | Feature | Effort | Status |
 |----------|---------|--------|--------|
-| F1 | **`tracing` instrumentation** — zero-cost logging for all core operations | 1 hr | Not started |
-| F2 | **More simplification rules** — sinh²-cosh²=-1, inverse trig pairs (asin(sin(x))→x) | 30 min | Not started |
+| F1 | **`tracing` instrumentation** — zero-cost logging for all core operations | 1 hr | ✅ Done |
+| F2 | **More simplification rules** — sinh²-cosh²=-1, inverse trig pairs (asin(sin(x))→x) | 30 min | ✅ Done |
 | F3 | **MathFunction trait** — user-defined functions with derivative/eval/evalf callbacks | 3 hr | Design only |
 | F4 | **symplex-format crate** — LaTeX, Markdown, Typst rendering consuming ExprTree | 4 hr | Planned (separate crate) |
-| F5 | **REPL example binary** — `examples/repl.rs` using runtime parser | 30 min | Not started |
+| F5 | **REPL example binary** — `examples/repl.rs` using runtime parser | 30 min | ✅ Done |
 | F6 | **More integration rules** — u-substitution for `sin(ax+b)`, `exp(ax)`, etc. | 2 hr | Not started |
 | F7 | **Polynomial GCD improvements** — multivariate, sparse representation | 8 hr | Not started |
 | F8 | **Limit computation** — basic limits via substitution + L'Hôpital | 4 hr | Not started |
@@ -650,7 +651,7 @@ abs(abs(w_)) => abs(w_)
 | CI configuration | `.github/workflows/ci.yml` — test + clippy + fmt | 30 min | Not started |
 | `CancelToken` for timeouts | New `src/cancel.rs`, integrate into expand/solve/simplify | 2 hours | Not started |
 | Complex number support | Track re/im parts, complex evalf | 8 hours | Not started |
-| Update README | Reflect all new features (inverse trig, hyperbolic, serde, parser, etc.) | 30 min | Not started |
+| Update README | Reflect all new features (inverse trig, hyperbolic, serde, parser, etc.) | 30 min | Partially done |
 | CHANGELOG.md | For 0.1.0 release | 30 min | Not started |
 | Final API surface review | Scan all `pub fn` for consistency, naming, docs | 1 hour | Not started |
 

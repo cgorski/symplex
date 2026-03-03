@@ -18,15 +18,15 @@ fn context_new_has_nonzero_node_count() {
 fn context_clone_shares_arena() {
     let ctx1 = Context::new();
     let x = ctx1.symbol("x");
-    let ctx2 = ctx1.clone();
-    assert_eq!(ctx2.display(&x), "x");
+    let _ctx2 = ctx1.clone();
+    assert_eq!(format!("{x}"), "x");
 }
 
 #[test]
 fn context_display_formats_correctly() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    assert_eq!(ctx.display(&x), "x");
+    assert_eq!(format!("{x}"), "x");
 }
 
 // ─── Ex basics ────────────────────────────────────────────────────────────

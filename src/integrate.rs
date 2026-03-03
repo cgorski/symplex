@@ -28,6 +28,7 @@ use smallvec::SmallVec;
 
 use num_traits::One;
 use num_traits::Signed;
+use num_traits::Zero;
 
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode, SymbolId};
@@ -228,7 +229,13 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                 let cos_x = arena.cos(var);
                 return arena.neg(cos_x);
             }
-            // Can't handle chain rule in general.
+            // Try u-substitution: if inner = a*x + b, ∫ sin(a*x+b) dx = -cos(a*x+b)/a
+            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+                let cos_inner = arena.cos(inner);
+                let neg_cos = arena.neg(cos_inner);
+                let a_id = rational_to_expr(arena, &a);
+                return arena.div(neg_cos, a_id);
+            }
             arena.intern(ExprNode::Integral(expr, var))
         }
 
@@ -237,6 +244,12 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                 // ∫ cos(x) dx = sin(x)
                 return arena.sin(var);
             }
+            // Try u-substitution: if inner = a*x + b, ∫ cos(a*x+b) dx = sin(a*x+b)/a
+            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+                let sin_inner = arena.sin(inner);
+                let a_id = rational_to_expr(arena, &a);
+                return arena.div(sin_inner, a_id);
+            }
             arena.intern(ExprNode::Integral(expr, var))
         }
 
@@ -244,6 +257,12 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
             if inner == var {
                 // ∫ exp(x) dx = exp(x)
                 return arena.exp_fn(var);
+            }
+            // Try u-substitution: if inner = a*x + b, ∫ exp(a*x+b) dx = exp(a*x+b)/a
+            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+                let exp_inner = arena.exp_fn(inner);
+                let a_id = rational_to_expr(arena, &a);
+                return arena.div(exp_inner, a_id);
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -325,6 +344,33 @@ fn is_polynomial_in(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolId)
         ExprNode::Num(_) => true,
         _ => false,
     }
+}
+
+/// Check if `expr` is a linear function of `var`: `a*var + b` where a ≠ 0.
+/// Returns `Some(a)` if linear, `None` otherwise.
+fn linear_coeff_of(
+    arena: &Arena,
+    expr: ExprId,
+    _var: ExprId,
+    _var_sym: SymbolId,
+) -> Option<num_rational::Ratio<num_bigint::BigInt>> {
+    // Try to convert to polynomial in var.
+    let poly = crate::polybridge::expr_to_poly(arena, expr, _var)?;
+    // Must be degree exactly 1.
+    if poly.degree()? != 1 {
+        return None;
+    }
+    let a = poly.coeff(1);
+    if a.is_zero() {
+        return None;
+    }
+    Some(a)
+}
+
+/// Convert a Ratio<BigInt> to an ExprId.
+fn rational_to_expr(arena: &mut Arena, r: &num_rational::Ratio<num_bigint::BigInt>) -> ExprId {
+    let nid = arena.intern_num(r.clone());
+    arena.intern(crate::node::ExprNode::Num(nid))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -486,5 +532,48 @@ mod tests {
         let s = display(&a, result);
         assert!(s.contains("sin(x)"), "should contain sin(x): {s}");
         assert!(s.contains("cos(x)"), "should contain cos(x): {s}");
+    }
+
+    #[test]
+    fn integrate_sin_2x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let expr = a.sin(two_x);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        // ∫ sin(2x) dx = -cos(2x)/2
+        assert!(s.contains("cos"), "should contain cos: {s}");
+        assert!(
+            s.contains("1/2") || s.contains("2"),
+            "should have factor of 1/2: {s}"
+        );
+    }
+
+    #[test]
+    fn integrate_cos_3x_plus_1() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let three = a.int(3);
+        let one = a.one;
+        let three_x = a.mul(&[three, x]);
+        let inner = a.add(&[three_x, one]);
+        let expr = a.cos(inner);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(s.contains("sin"), "should contain sin: {s}");
+    }
+
+    #[test]
+    fn integrate_exp_2x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let expr = a.exp_fn(two_x);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(s.contains("exp"), "should contain exp: {s}");
     }
 }
