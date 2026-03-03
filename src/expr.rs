@@ -333,7 +333,7 @@ impl Ex {
         if let ExprNode::Symbol(sid) = inner.arena.node(self.id) {
             let sid = *sid;
             let (prop, value) = assumption.to_prop_value();
-            let mut a = inner.arena.symbol_assumptions(sid).clone();
+            let mut a = inner.arena.symbol_assumptions(sid);
             if value {
                 a.assert_true(prop);
             } else {

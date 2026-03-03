@@ -303,10 +303,10 @@ fn contains_var(arena: &Arena, expr: ExprId, var: SymbolId) -> bool {
             continue;
         }
         visited.insert(id, ());
-        if let ExprNode::Symbol(sid) = arena.node(id) {
-            if *sid == var {
-                return true;
-            }
+        if let ExprNode::Symbol(sid) = arena.node(id)
+            && *sid == var
+        {
+            return true;
         }
         let children = arena.node(id).children();
         stack.extend_from_slice(&children);

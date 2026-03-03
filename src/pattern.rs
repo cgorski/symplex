@@ -397,39 +397,36 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
 
         // Sub-expression matching: if the node is an Add and no rule matched
         // the whole node, try matching rules against subsets of the Add's children.
-        if rewritten == rebuilt {
-            if let ExprNode::Add(ref children) = arena.node(rebuilt).clone() {
-                if children.len() >= 2 {
-                    'sub_match: for rule in rules {
-                        // Only attempt if the rule's pattern root is an Add.
-                        if let ExprNode::Add(ref pat_children) =
-                            arena.node(rule.pattern.root).clone()
-                        {
-                            let k = pat_children.len();
-                            if k == 2 && children.len() >= 2 {
-                                // Try all pairs of children.
-                                for i in 0..children.len() {
-                                    for j in (i + 1)..children.len() {
-                                        let pair = arena.add(&[children[i], children[j]]);
-                                        if let Some(replacement) = rule.try_apply(arena, pair) {
-                                            // Build remaining terms.
-                                            let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
-                                                smallvec::SmallVec::new();
-                                            for (idx, &child) in children.iter().enumerate() {
-                                                if idx != i && idx != j {
-                                                    remaining.push(child);
-                                                }
-                                            }
-                                            remaining.push(replacement);
-                                            rewritten = arena.add(&remaining);
-                                            steps.push(Step {
-                                                rule_name: rule.name,
-                                                before: rebuilt,
-                                                after: rewritten,
-                                            });
-                                            break 'sub_match;
+        if rewritten == rebuilt
+            && let ExprNode::Add(ref children) = arena.node(rebuilt).clone()
+            && children.len() >= 2
+        {
+            'sub_match: for rule in rules {
+                // Only attempt if the rule's pattern root is an Add.
+                if let ExprNode::Add(ref pat_children) = arena.node(rule.pattern.root).clone() {
+                    let k = pat_children.len();
+                    if k == 2 && children.len() >= 2 {
+                        // Try all pairs of children.
+                        for i in 0..children.len() {
+                            for j in (i + 1)..children.len() {
+                                let pair = arena.add(&[children[i], children[j]]);
+                                if let Some(replacement) = rule.try_apply(arena, pair) {
+                                    // Build remaining terms.
+                                    let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
+                                        smallvec::SmallVec::new();
+                                    for (idx, &child) in children.iter().enumerate() {
+                                        if idx != i && idx != j {
+                                            remaining.push(child);
                                         }
                                     }
+                                    remaining.push(replacement);
+                                    rewritten = arena.add(&remaining);
+                                    steps.push(Step {
+                                        rule_name: rule.name,
+                                        before: rebuilt,
+                                        after: rewritten,
+                                    });
+                                    break 'sub_match;
                                 }
                             }
                         }

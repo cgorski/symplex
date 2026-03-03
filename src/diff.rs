@@ -352,10 +352,10 @@ fn diff_node(
         // d/dx(∫ f dx) = f when the integration variable matches the
         // differentiation variable.
         ExprNode::Integral(body, int_var) => {
-            if let ExprNode::Symbol(int_sym) = arena.node(int_var) {
-                if *int_sym == var {
-                    return body;
-                }
+            if let ExprNode::Symbol(int_sym) = arena.node(int_var)
+                && *int_sym == var
+            {
+                return body;
             }
             // Different variable — leave as unevaluated derivative.
             let v = var_expr(arena, var);

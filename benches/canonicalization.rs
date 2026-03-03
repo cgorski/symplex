@@ -1,6 +1,6 @@
 //! Benchmarks for expression canonicalization.
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn canonicalization_benchmarks(_c: &mut Criterion) {
     // TODO: add benchmarks once the canonicalization module is implemented

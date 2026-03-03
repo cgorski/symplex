@@ -66,7 +66,10 @@ pub(crate) fn solve_linear_system(
     }
 
     // Gaussian elimination with partial pivoting.
+    // Indexed access is intentional — we need simultaneous access to the
+    // pivot row (matrix[col]) and the elimination row (matrix[row]).
     let cols = n_vars + 1;
+    #[allow(clippy::needless_range_loop)]
     for col in 0..n_vars.min(n_eqs) {
         // Find pivot.
         let mut pivot_row = None;
