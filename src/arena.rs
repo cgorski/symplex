@@ -569,6 +569,19 @@ impl Arena {
     pub fn abs(&mut self, expr: ExprId) -> ExprId {
         self.intern(ExprNode::Abs(expr))
     }
+
+    /// Evaluate `expr` numerically to `digits` decimal digits of precision.
+    ///
+    /// Returns the string representation of the result, or an error if the
+    /// expression contains free symbols.
+    #[cfg(feature = "evalf")]
+    pub fn evalf_expr(
+        &self,
+        expr: ExprId,
+        digits: u32,
+    ) -> Result<String, crate::errors::SymplexError> {
+        crate::evalf::evalf(self, expr, digits)
+    }
 }
 
 // ---------------------------------------------------------------------------

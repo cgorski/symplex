@@ -39,6 +39,8 @@ pub(crate) mod canon;
 pub(crate) mod diff;
 pub(crate) mod display;
 pub(crate) mod eval;
+#[cfg(feature = "evalf")]
+pub(crate) mod evalf;
 pub(crate) mod expand;
 pub(crate) mod node;
 pub(crate) mod pattern;

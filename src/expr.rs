@@ -367,10 +367,22 @@ impl Ex {
     /// Numeric floating-point evaluation to the given number of decimal
     /// digits.
     ///
-    /// Returns `Err(SymplexError::NotImplemented)` until Stage 8.
-    pub fn evalf(&self, _digits: u32) -> Result<Ex, SymplexError> {
+    /// Returns the decimal string representation of the evaluated expression.
+    #[cfg(feature = "evalf")]
+    pub fn evalf(&self, digits: u32) -> Result<String, SymplexError> {
+        let guard = self.inner.read();
+        crate::evalf::evalf(&guard.arena, self.id, digits)
+    }
+
+    /// Numeric floating-point evaluation to the given number of decimal
+    /// digits.
+    ///
+    /// Returns `Err(SymplexError::NotImplemented)` when the `evalf` feature
+    /// is not enabled.
+    #[cfg(not(feature = "evalf"))]
+    pub fn evalf(&self, _digits: u32) -> Result<String, SymplexError> {
         Err(SymplexError::NotImplemented(
-            "evalf: numeric evaluation not yet implemented".into(),
+            "evalf: enable the 'evalf' cargo feature for numeric evaluation".into(),
         ))
     }
 
