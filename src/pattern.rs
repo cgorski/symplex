@@ -27,6 +27,7 @@
 //! );
 //! ```
 
+use num_traits::Signed;
 use rustc_hash::FxHashMap;
 
 use crate::arena::Arena;
@@ -778,6 +779,45 @@ fn rule_exp_mul(arena: &mut Arena) -> Rule {
     Rule::new("exp_mul", pattern, template)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Conditional rule helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Condition: every wild-bound value in the substitution is a numeric
+/// literal whose value is strictly positive.  Non-numeric bindings
+/// (symbols, compound expressions) cause the condition to return `false`
+/// because we cannot determine their sign structurally.
+fn condition_wild_positive(arena: &Arena, subs: &Substitution) -> bool {
+    for &id in subs.values() {
+        if let ExprNode::Num(nid) = arena.node(id) {
+            if !arena.num(*nid).is_positive() {
+                return false;
+            }
+        } else {
+            // Non-numeric: sign unknown → reject.
+            return false;
+        }
+    }
+    true
+}
+
+/// `abs(w) → w` when `w` is a positive numeric literal.
+fn rule_abs_positive(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let abs_w = arena.abs(w_expr);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern { root: abs_w, wilds };
+
+    Rule {
+        name: "abs_positive",
+        pattern,
+        template: w_expr,
+        condition: Some(condition_wild_positive),
+    }
+}
+
 pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
     vec![
         rule_pythagorean(arena),
@@ -796,6 +836,7 @@ pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
         rule_sin_div_cos(arena),
         rule_sinh_div_cosh(arena),
         rule_exp_mul(arena),
+        rule_abs_positive(arena),
     ]
 }
 
@@ -1249,5 +1290,40 @@ mod tests {
         // wilds are bound.
         assert!(bindings.contains_key(&wid1));
         assert!(bindings.contains_key(&wid2));
+    }
+
+    // ── Conditional rules ───────────────────────────────────────────
+
+    #[test]
+    fn conditional_abs_positive() {
+        let mut a = Arena::new();
+        let five = a.int(5);
+        let abs_five = a.abs(five);
+        let rules = basic_rules(&mut a);
+        let (result, steps) = apply_rules(&mut a, abs_five, &rules);
+        assert_eq!(display(&a, result), "5");
+        assert!(!steps.is_empty(), "should have fired abs_positive rule");
+    }
+
+    #[test]
+    fn conditional_abs_negative_unchanged() {
+        let mut a = Arena::new();
+        let neg_five = a.int(-5);
+        let abs_neg = a.abs(neg_five);
+        let rules = basic_rules(&mut a);
+        let (result, _) = apply_rules(&mut a, abs_neg, &rules);
+        // Should NOT fire — -5 is not positive
+        assert_eq!(display(&a, result), "abs(-5)");
+    }
+
+    #[test]
+    fn conditional_abs_symbol_unchanged() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let abs_x = a.abs(x);
+        let rules = basic_rules(&mut a);
+        let (result, _) = apply_rules(&mut a, abs_x, &rules);
+        // Symbol has unknown sign — should not fire
+        assert_eq!(display(&a, result), "abs(x)");
     }
 }

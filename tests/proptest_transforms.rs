@@ -74,3 +74,81 @@ proptest! {
         );
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Integration roundtrip for polynomials
+// ═══════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #[test]
+    fn integrate_diff_roundtrip_polynomial(a in -10i64..10, b in -10i64..10, c in -10i64..10, eval_pt in -5i64..5) {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        // Build polynomial a*x^2 + b*x + c
+        let poly = &(&x.powi(2) * a) + &(&x * b) + c;
+        let integrated = poly.integrate(&x);
+        let roundtrip = integrated.diff(&x);
+        // Evaluate both at eval_pt and compare
+        let original_val = poly.subs_i64(&x, eval_pt);
+        let roundtrip_val = roundtrip.subs_i64(&x, eval_pt);
+        let orig_s = format!("{original_val}");
+        let rt_s = format!("{roundtrip_val}");
+        prop_assert_eq!(orig_s, rt_s, "integrate-then-diff should roundtrip for {}x²+{}x+{} at x={}", a, b, c, eval_pt);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Eval idempotence
+// ═══════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #[test]
+    fn eval_is_idempotent(k in 0i64..12) {
+        let ctx = Context::new();
+        // Evaluate sin(k*π/6) twice
+        let angle = &ctx.rational(k, 6) * &ctx.pi();
+        let first = angle.sin().eval();
+        let second = first.eval();
+        let s1 = format!("{first}");
+        let s2 = format!("{second}");
+        prop_assert_eq!(s1, s2, "eval should be idempotent for sin({}π/6)", k);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Simplify idempotence
+// ═══════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #[test]
+    fn simplify_is_idempotent(a in -3i64..3, b in -3i64..3) {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        // Build: a*sin(x)^2 + b*cos(x)^2
+        let expr = &(&x.sin().powi(2) * a) + &(&x.cos().powi(2) * b);
+        let first = expr.simplify();
+        let second = first.simplify();
+        let s1 = format!("{first}");
+        let s2 = format!("{second}");
+        prop_assert_eq!(s1, s2, "simplify should be idempotent");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Expand/logcombine quasi-roundtrip
+// ═══════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #[test]
+    fn expand_log_logcombine_roundtrip(a in 2i64..20, b in 2i64..20) {
+        let ctx = Context::new();
+        // ln(a*b) → expand → logcombine should give back ln(a*b)
+        let product = &ctx.int(a) * &ctx.int(b);
+        let ln_product = product.ln();
+        let expanded = ln_product.expand_log();
+        let recombined = expanded.logcombine();
+        let orig_s = format!("{ln_product}");
+        let recom_s = format!("{recombined}");
+        prop_assert_eq!(orig_s, recom_s, "expand_log then logcombine should roundtrip for ln({}*{})", a, b);
+    }
+}

@@ -2,7 +2,7 @@
 //!
 //! Run with: `cargo bench`
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use symplex::prelude::*;
 
 fn bench_canonicalization(c: &mut Criterion) {
@@ -218,6 +218,70 @@ fn bench_limit(c: &mut Criterion) {
     });
 }
 
+fn bench_integrate_polynomial(c: &mut Criterion) {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = x.powi(5);
+    c.bench_function("integrate_x5", |b| {
+        b.iter(|| {
+            let _ = black_box(&expr).integrate(black_box(&x));
+        })
+    });
+}
+
+fn bench_simplify_sin_cos_ratio(c: &mut Criterion) {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = &x.sin() / &x.cos();
+    c.bench_function("simplify_sin_div_cos", |b| {
+        b.iter(|| {
+            let _ = black_box(&expr).simplify();
+        })
+    });
+}
+
+fn bench_eval_unit_circle(c: &mut Criterion) {
+    let ctx = Context::new();
+    let angles: Vec<_> = (0..12)
+        .map(|k| {
+            let coeff = ctx.rational(k, 6);
+            (&coeff * &ctx.pi()).sin()
+        })
+        .collect();
+    c.bench_function("eval_unit_circle_12", |b| {
+        b.iter(|| {
+            for angle in &angles {
+                let _ = black_box(angle).eval();
+            }
+        })
+    });
+}
+
+fn bench_logcombine(c: &mut Criterion) {
+    let ctx = Context::new();
+    let vars: Vec<_> = ["a", "b", "c", "d", "e"]
+        .iter()
+        .map(|n| ctx.symbol(n).ln())
+        .collect();
+    let sum = &(&(&vars[0] + &vars[1]) + &vars[2]) + &(&vars[3] + &vars[4]);
+    c.bench_function("logcombine_5_terms", |b| {
+        b.iter(|| {
+            let _ = black_box(&sum).logcombine();
+        })
+    });
+}
+
+fn bench_full_simplify(c: &mut Criterion) {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = &(&x.sin().powi(2) + &x.cos().powi(2)) + &(&x.exp() * &(-&x).exp());
+    c.bench_function("full_simplify_trig_exp", |b| {
+        b.iter(|| {
+            let _ = black_box(&expr).full_simplify();
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_canonicalization,
@@ -231,5 +295,10 @@ criterion_group!(
     bench_parse,
     bench_factor,
     bench_limit,
+    bench_integrate_polynomial,
+    bench_simplify_sin_cos_ratio,
+    bench_eval_unit_circle,
+    bench_logcombine,
+    bench_full_simplify,
 );
 criterion_main!(benches);
