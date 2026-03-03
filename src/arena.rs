@@ -512,6 +512,21 @@ impl Arena {
         crate::diff::diff(self, expr, var)
     }
 
+    /// Algebraic expansion: distribute products over sums, expand
+    /// integer powers of sums.
+    ///
+    /// Delegates to [`expand::expand`].
+    pub fn expand_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::expand::expand(self, expr)
+    }
+
+    /// Exact evaluation of known special values (sin(0)→0, cos(π)→-1, etc.).
+    ///
+    /// Delegates to [`eval::eval`].
+    pub fn eval_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::eval::eval(self, expr)
+    }
+
     /// Creates a subtraction expression `a - b` as `a + neg(b)`.
     pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
         let neg_b = self.neg(b);

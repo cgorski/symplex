@@ -38,6 +38,8 @@ pub(crate) mod arena;
 pub(crate) mod canon;
 pub(crate) mod diff;
 pub(crate) mod display;
+pub(crate) mod eval;
+pub(crate) mod expand;
 pub(crate) mod node;
 pub(crate) mod pattern;
 pub(crate) mod sort_key;

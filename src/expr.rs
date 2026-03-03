@@ -277,9 +277,27 @@ impl Ex {
         self.wrap(id)
     }
 
-    /// Algebraic expansion (distribute products over sums, etc.).
+    /// Algebraic expansion (distribute products over sums, expand
+    /// integer powers of sums).
+    ///
+    /// - `a * (b + c)` → `a*b + a*c`
+    /// - `(a + b)^n` → multinomial expansion
+    ///
+    /// Does NOT evaluate functions, factor, or simplify.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = (&x + 1).powi(2);
+    /// assert_eq!(format!("{}", expr.expand()), "1 + x**2 + 2*x");
+    /// ```
     pub fn expand(&self) -> Ex {
-        todo!("expand: algebraic expansion not yet implemented")
+        let id = self.inner.write().arena.expand_expr(self.id);
+        self.wrap(id)
     }
 
     /// Simplification (identity application, trig identities, etc.).
@@ -319,9 +337,31 @@ impl Ex {
         (self.wrap(result_id), steps)
     }
 
-    /// Exact symbolic evaluation (rational arithmetic, known identities).
+    /// Exact evaluation of known special values.
+    ///
+    /// Replaces function applications with their exact values when the
+    /// arguments are known constants:
+    ///
+    /// - `sin(0)` → `0`, `sin(π)` → `0`, `sin(π/2)` → `1`
+    /// - `cos(0)` → `1`, `cos(π)` → `-1`
+    /// - `exp(0)` → `1`, `ln(1)` → `0`
+    /// - `sqrt(4)` → `2`, `abs(-3)` → `3`
+    ///
+    /// Only evaluates when the result is a simpler atom.
+    /// Does NOT evaluate `cos(π/4)` → `√2/2`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let expr = ctx.pi().cos();
+    /// assert_eq!(format!("{}", expr.eval()), "-1");
+    /// ```
     pub fn eval(&self) -> Ex {
-        todo!("eval: exact evaluation not yet implemented")
+        let id = self.inner.write().arena.eval_expr(self.id);
+        self.wrap(id)
     }
 
     /// Numeric floating-point evaluation to the given number of decimal
