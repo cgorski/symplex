@@ -46,6 +46,7 @@ pub(crate) mod node;
 pub(crate) mod pattern;
 pub(crate) mod poly;
 pub(crate) mod polybridge;
+pub(crate) mod solve;
 pub(crate) mod sort_key;
 pub(crate) mod subs;
 pub(crate) mod symbol;

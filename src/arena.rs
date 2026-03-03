@@ -527,6 +527,13 @@ impl Arena {
         crate::eval::eval(self, expr)
     }
 
+    /// Solve `expr = 0` for `var`.
+    ///
+    /// Returns a vector of solutions. Delegates to [`solve::solve`].
+    pub fn solve_for(&mut self, expr: ExprId, var: ExprId) -> Vec<crate::solve::Solution> {
+        crate::solve::solve(self, expr, var)
+    }
+
     /// Cancel common polynomial factors in a rational expression.
     ///
     /// `var` is the symbol to treat as the polynomial variable.

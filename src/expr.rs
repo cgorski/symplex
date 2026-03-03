@@ -380,6 +380,36 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Solve `self = 0` for the given variable.
+    ///
+    /// Returns a vector of values of `var` that make this expression
+    /// zero.  Supports linear, quadratic, and higher-degree polynomial
+    /// equations (via rational root finding).
+    ///
+    /// Returns an empty vector if:
+    /// - The expression is not polynomial in `var`.
+    /// - No closed-form solutions can be found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // Solve x² - 5x + 6 = 0
+    /// let expr = &x.powi(2) - &x * 5 + 6;
+    /// let solutions = expr.solve(&x);
+    /// assert_eq!(solutions.len(), 2);
+    /// ```
+    pub fn solve(&self, var: &Ex) -> Vec<Ex> {
+        let solutions = self.inner.write().arena.solve_for(self.id, var.id);
+        solutions
+            .into_iter()
+            .map(|sol| self.wrap(sol.value))
+            .collect()
+    }
+
     /// Cancel common polynomial factors in a rational expression.
     ///
     /// Decomposes the expression into numerator and denominator,
