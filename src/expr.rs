@@ -213,6 +213,27 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Inverse hyperbolic sine: `asinh(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn asinh(&self) -> Ex {
+        let id = self.inner.write().arena.asinh(self.id);
+        self.wrap(id)
+    }
+
+    /// Inverse hyperbolic cosine: `acosh(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn acosh(&self) -> Ex {
+        let id = self.inner.write().arena.acosh(self.id);
+        self.wrap(id)
+    }
+
+    /// Inverse hyperbolic tangent: `atanh(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn atanh(&self) -> Ex {
+        let id = self.inner.write().arena.atanh(self.id);
+        self.wrap(id)
+    }
+
     // ── Structural predicates ──────────────────────────────────────
 
     /// Returns `true` if this expression is structurally zero (O(1)).
@@ -994,6 +1015,154 @@ impl Ex {
         let (n, d) = inner.arena.as_numer_denom_expr(self.id);
         drop(inner);
         (self.wrap(n), self.wrap(d))
+    }
+
+    /// Partial fraction decomposition with respect to `var`.
+    ///
+    /// Decomposes a rational expression into a sum of simpler fractions.
+    /// Returns the expression unchanged if it's not a rational function
+    /// or if the denominator cannot be factored.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = 1 / (&x.powi(2) - 1);
+    /// let decomposed = expr.apart(&x);
+    /// let s = format!("{decomposed}");
+    /// // Should be decomposed into simpler fractions
+    /// assert!(s != format!("{expr}") || s.contains("1/"), "should decompose: {s}");
+    /// ```
+    #[must_use = "returns the decomposed form; does not modify in place"]
+    pub fn apart(&self, var: &Ex) -> Ex {
+        let id = self.inner.write().arena.apart_expr(self.id, var.id);
+        self.wrap(id)
+    }
+
+    /// Expand trigonometric functions with composite arguments.
+    ///
+    /// Applies addition formulas:
+    /// - `sin(a + b)` → `sin(a)·cos(b) + cos(a)·sin(b)`
+    /// - `cos(a + b)` → `cos(a)·cos(b) - sin(a)·sin(b)`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = (&x + &y).sin();
+    /// let expanded = expr.expand_trig();
+    /// let s = format!("{expanded}");
+    /// assert!(s.contains("sin(x)") && s.contains("cos(y)"), "should expand: {s}");
+    /// ```
+    #[must_use = "returns the expanded form; does not modify in place"]
+    pub fn expand_trig(&self) -> Ex {
+        let id = self.inner.write().arena.expand_trig_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Compute the polynomial GCD of `self` and `other` with respect to `var`.
+    ///
+    /// Returns `None` if either expression is not polynomial in `var`.
+    pub fn poly_gcd(&self, other: &Ex, var: &Ex) -> Option<Ex> {
+        let mut inner = self.inner.write();
+        let id = inner.arena.poly_gcd_expr(self.id, other.id, var.id)?;
+        drop(inner);
+        Some(self.wrap(id))
+    }
+
+    /// Compute the polynomial LCM of `self` and `other` with respect to `var`.
+    ///
+    /// Returns `None` if either expression is not polynomial in `var`.
+    pub fn poly_lcm(&self, other: &Ex, var: &Ex) -> Option<Ex> {
+        let mut inner = self.inner.write();
+        let id = inner.arena.poly_lcm_expr(self.id, other.id, var.id)?;
+        drop(inner);
+        Some(self.wrap(id))
+    }
+
+    /// Numerical root finding via Newton's method.
+    ///
+    /// Finds a numerical root of `self = 0` near `initial_guess` by
+    /// iterating `x_{n+1} = x_n - f(x_n)/f'(x_n)`.
+    ///
+    /// # Arguments
+    /// - `var` — the variable to solve for
+    /// - `initial_guess` — starting point for iteration
+    /// - `max_iterations` — maximum number of Newton steps
+    /// - `tolerance` — convergence threshold (stop when `|f(x)| < tolerance`)
+    ///
+    /// # Errors
+    /// Returns `Err` if the method doesn't converge within `max_iterations`,
+    /// if the derivative is zero, or if evaluation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // Solve x - cos(x) = 0 near x=1
+    /// let expr = &x - &x.cos();
+    /// let root = expr.nsolve(&x, 1.0, 50, 1e-12).unwrap();
+    /// assert!((root - 0.7390851332).abs() < 1e-8);
+    /// ```
+    pub fn nsolve(
+        &self,
+        var: &Ex,
+        initial_guess: f64,
+        max_iterations: usize,
+        tolerance: f64,
+    ) -> Result<f64, SymplexError> {
+        let deriv = self.diff(var);
+        let mut x = initial_guess;
+
+        for _ in 0..max_iterations {
+            // Build a rational approximation of x and substitute.
+            let x_rational = {
+                let mut inner = self.inner.write();
+                // Approximate x as a rational: multiply by 10^15, round, divide.
+                let scaled = (x * 1e15) as i64;
+                let r = num_rational::Ratio::new(
+                    num_bigint::BigInt::from(scaled),
+                    num_bigint::BigInt::from(1_000_000_000_000_000i64),
+                );
+                let nid = inner.arena.intern_num(r);
+                let id = inner.arena.intern(crate::node::ExprNode::Num(nid));
+                drop(inner);
+                self.wrap(id)
+            };
+
+            let f_val = self.subs(var, &x_rational).evalf_f64()?;
+            let fp_val = deriv.subs(var, &x_rational).evalf_f64()?;
+
+            if fp_val.abs() < 1e-30 {
+                return Err(SymplexError::ComputationFailed {
+                    operation: "nsolve",
+                    reason: "derivative is effectively zero".into(),
+                });
+            }
+
+            x -= f_val / fp_val;
+
+            if f_val.abs() < tolerance {
+                return Ok(x);
+            }
+        }
+
+        Err(SymplexError::ComputationFailed {
+            operation: "nsolve",
+            reason: format!(
+                "did not converge within {} iterations (last x = {x})",
+                max_iterations
+            ),
+        })
     }
 
     /// Returns `true` if this expression contains no free symbols

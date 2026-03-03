@@ -78,7 +78,10 @@ const FN_ATAN: u8 = 10;
 const FN_SINH: u8 = 11;
 const FN_COSH: u8 = 12;
 const FN_TANH: u8 = 13;
-const FN_APPLY: u8 = 14;
+const FN_ASINH: u8 = 14;
+const FN_ACOSH: u8 = 15;
+const FN_ATANH: u8 = 16;
+const FN_APPLY: u8 = 17;
 
 // ---------------------------------------------------------------------------
 // Constant sub-rank bytes (used within the RANK_CONSTANT class)
@@ -181,7 +184,7 @@ impl fmt::Debug for SortKey {
 /// | 20   | `Pow`                                              |
 /// | 30   | `Mul`                                              |
 /// | 40   | `Add`                                              |
-/// | 50   | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Sqrt`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Apply` |
+/// | 50   | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Sqrt`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Asinh`, `Acosh`, `Atanh`, `Apply` |
 /// | 60   | `Derivative`                                       |
 /// | 70   | `Integral`                                         |
 /// | 80   | `Pi`, `E`, `ImaginaryUnit`                         |
@@ -316,6 +319,24 @@ pub fn compute_sort_key(
         ExprNode::Tanh(x) => {
             key.push(RANK_FUNCTION);
             key.push(FN_TANH);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Asinh(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ASINH);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Acosh(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ACOSH);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Atanh(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ATANH);
             key.extend(get_key(*x).as_bytes());
         }
 

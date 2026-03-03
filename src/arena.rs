@@ -634,6 +634,47 @@ impl Arena {
         crate::polybridge::as_numer_denom(self, expr)
     }
 
+    /// Partial fraction decomposition of `expr` with respect to `var`.
+    ///
+    /// Delegates to [`apart::apart`].
+    pub fn apart_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
+        crate::apart::apart(self, expr, var)
+    }
+
+    /// Expand trigonometric functions with composite arguments.
+    ///
+    /// `sin(a+b) → sin(a)cos(b) + cos(a)sin(b)`, etc.
+    /// Delegates to [`trig_expand::expand_trig`].
+    pub fn expand_trig_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::trig_expand::expand_trig(self, expr)
+    }
+
+    /// Compute the polynomial GCD of `a` and `b` with respect to `var`.
+    ///
+    /// Returns `None` if either expression is not polynomial in `var`.
+    pub fn poly_gcd_expr(&mut self, a: ExprId, b: ExprId, var: ExprId) -> Option<ExprId> {
+        let pa = crate::polybridge::expr_to_poly(self, a, var)?;
+        let pb = crate::polybridge::expr_to_poly(self, b, var)?;
+        let g = crate::poly::Poly::gcd(&pa, &pb);
+        Some(crate::polybridge::poly_to_expr(self, &g, var))
+    }
+
+    /// Compute the polynomial LCM of `a` and `b` with respect to `var`.
+    ///
+    /// Returns `None` if either expression is not polynomial in `var`.
+    pub fn poly_lcm_expr(&mut self, a: ExprId, b: ExprId, var: ExprId) -> Option<ExprId> {
+        let pa = crate::polybridge::expr_to_poly(self, a, var)?;
+        let pb = crate::polybridge::expr_to_poly(self, b, var)?;
+        let g = crate::poly::Poly::gcd(&pa, &pb);
+        if g.is_zero() {
+            return None;
+        }
+        // lcm(a,b) = a * b / gcd(a,b)
+        let product = &pa * &pb;
+        let (lcm, _rem) = product.div_rem(&g);
+        Some(crate::polybridge::poly_to_expr(self, &lcm, var))
+    }
+
     /// Creates a subtraction expression `a - b` as `a + neg(b)`.
     pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
         let neg_b = self.neg(b);
@@ -705,6 +746,21 @@ impl Arena {
     /// Creates a `Tanh` (hyperbolic tangent) node.
     pub fn tanh(&mut self, expr: ExprId) -> ExprId {
         self.intern(ExprNode::Tanh(expr))
+    }
+
+    /// Creates an `Asinh` (inverse hyperbolic sine) node.
+    pub fn asinh(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Asinh(expr))
+    }
+
+    /// Creates an `Acosh` (inverse hyperbolic cosine) node.
+    pub fn acosh(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Acosh(expr))
+    }
+
+    /// Creates an `Atanh` (inverse hyperbolic tangent) node.
+    pub fn atanh(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Atanh(expr))
     }
 
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.

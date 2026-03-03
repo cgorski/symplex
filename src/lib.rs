@@ -34,6 +34,7 @@
 //! ```
 
 // ── Internal modules (not part of the public API) ──────────────────────
+pub(crate) mod apart;
 pub(crate) mod arena;
 pub(crate) mod canon;
 pub(crate) mod diff;
@@ -54,6 +55,7 @@ pub(crate) mod solve;
 pub(crate) mod sort_key;
 pub(crate) mod subs;
 pub(crate) mod symbol;
+pub(crate) mod trig_expand;
 pub(crate) mod walk;
 
 // ── Public modules ─────────────────────────────────────────────────────

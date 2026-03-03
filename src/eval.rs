@@ -116,6 +116,18 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
                 eval_tanh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Tanh(inner)))
             }
+            ExprNode::Asinh(inner) => {
+                let inner = cache.get(&inner).copied().unwrap_or(inner);
+                eval_asinh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Asinh(inner)))
+            }
+            ExprNode::Acosh(inner) => {
+                let inner = cache.get(&inner).copied().unwrap_or(inner);
+                eval_acosh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Acosh(inner)))
+            }
+            ExprNode::Atanh(inner) => {
+                let inner = cache.get(&inner).copied().unwrap_or(inner);
+                eval_atanh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Atanh(inner)))
+            }
             // Rebuild Add/Mul/Pow/Neg with evaluated children.
             ExprNode::Add(ref children) => {
                 let new: smallvec::SmallVec<[ExprId; 6]> = children
@@ -207,6 +219,12 @@ fn as_pi_multiple(arena: &Arena, id: ExprId) -> Option<Ratio<BigInt>> {
 
 /// Evaluate `sin(inner)` for known special values.
 fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    // Odd function: sin(-x) = -sin(x)
+    if let Some(pos_inner) = as_negated(arena, inner) {
+        let sin_pos = arena.sin(pos_inner);
+        return Some(arena.neg(sin_pos));
+    }
+
     let coeff = as_pi_multiple(arena, inner)?;
 
     // Reduce modulo 2 (sin has period 2π).
@@ -256,6 +274,11 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
 /// Evaluate `cos(inner)` for known special values.
 fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    // Even function: cos(-x) = cos(x)
+    if let Some(pos_inner) = as_negated(arena, inner) {
+        return Some(arena.cos(pos_inner));
+    }
+
     let coeff = as_pi_multiple(arena, inner)?;
 
     let two: Ratio<BigInt> = Ratio::from_integer(2.into());
@@ -303,6 +326,12 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
 /// Evaluate `tan(inner)` for known special values.
 fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    // Odd function: tan(-x) = -tan(x)
+    if let Some(pos_inner) = as_negated(arena, inner) {
+        let tan_pos = arena.tan(pos_inner);
+        return Some(arena.neg(tan_pos));
+    }
+
     let coeff = as_pi_multiple(arena, inner)?;
 
     let one_ratio: Ratio<BigInt> = Ratio::one();
@@ -483,9 +512,55 @@ fn eval_tanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     None
 }
 
+fn eval_asinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if inner == arena.zero {
+        return Some(arena.zero);
+    } // asinh(0) = 0
+    None
+}
+
+fn eval_acosh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if inner == arena.one {
+        return Some(arena.zero);
+    } // acosh(1) = 0
+    None
+}
+
+fn eval_atanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if inner == arena.zero {
+        return Some(arena.zero);
+    } // atanh(0) = 0
+    None
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Detect if `id` represents a negated expression: `-x` or `Mul(-1, x)`.
+/// Returns `Some(positive_inner)` if negated, `None` otherwise.
+fn as_negated(arena: &Arena, id: ExprId) -> Option<ExprId> {
+    match arena.node(id).clone() {
+        ExprNode::Neg(inner) => Some(inner),
+        ExprNode::Mul(ref children) if children.len() >= 2 => {
+            if let ExprNode::Num(nid) = arena.node(children[0]) {
+                let r = arena.num(*nid);
+                if r.is_negative() {
+                    // Leading negative coefficient: negate it and rebuild.
+                    let pos_coeff = -r.clone();
+                    if pos_coeff.is_one() {
+                        // Mul(-1, rest...) → rest (or Mul(rest...) if multiple)
+                        if children.len() == 2 {
+                            return Some(children[1]);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
 
 /// Compute `a mod m` in the range `[0, m)` for positive `m`.
 fn mod_positive(a: &Ratio<BigInt>, m: &Ratio<BigInt>) -> Ratio<BigInt> {

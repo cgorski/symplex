@@ -78,6 +78,9 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Sinh(_)
         | ExprNode::Cosh(_)
         | ExprNode::Tanh(_)
+        | ExprNode::Asinh(_)
+        | ExprNode::Acosh(_)
+        | ExprNode::Atanh(_)
         | ExprNode::Apply(_, _)
         | ExprNode::Derivative(_, _)
         | ExprNode::Integral(_, _) => PREC_ATOM,
@@ -346,6 +349,9 @@ fn expand_expr(
         ExprNode::Sinh(x) => push_func("sinh", x, stack),
         ExprNode::Cosh(x) => push_func("cosh", x, stack),
         ExprNode::Tanh(x) => push_func("tanh", x, stack),
+        ExprNode::Asinh(x) => push_func("asinh", x, stack),
+        ExprNode::Acosh(x) => push_func("acosh", x, stack),
+        ExprNode::Atanh(x) => push_func("atanh", x, stack),
 
         // ── Apply (user-defined function) ──────────────────────────
         ExprNode::Apply(sym_id, ref args) => {

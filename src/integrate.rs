@@ -285,9 +285,13 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
 
         // Inverse trig and tanh: leave as unevaluated integrals
         // (their antiderivatives involve compositions that are complex to build)
-        ExprNode::Asin(_) | ExprNode::Acos(_) | ExprNode::Atan(_) | ExprNode::Tanh(_) => {
-            arena.intern(ExprNode::Integral(expr, var))
-        }
+        ExprNode::Asin(_)
+        | ExprNode::Acos(_)
+        | ExprNode::Atan(_)
+        | ExprNode::Tanh(_)
+        | ExprNode::Asinh(_)
+        | ExprNode::Acosh(_)
+        | ExprNode::Atanh(_) => arena.intern(ExprNode::Integral(expr, var)),
 
         // Everything else: unevaluated integral.
         _ => arena.intern(ExprNode::Integral(expr, var)),

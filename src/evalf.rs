@@ -251,6 +251,22 @@ fn eval_node(
             Ok(val.tanh(prec, rm, cc))
         }
 
+        // ── Inverse hyperbolic ────────────────────────────────────
+        ExprNode::Asinh(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok(val.asinh(prec, rm, cc))
+        }
+
+        ExprNode::Acosh(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok(val.acosh(prec, rm, cc))
+        }
+
+        ExprNode::Atanh(inner) => {
+            let val = get_cached(cache, *inner)?;
+            Ok(val.atanh(prec, rm, cc))
+        }
+
         // ── Unevaluable ────────────────────────────────────────────
         ExprNode::Apply(sid, _) => {
             let name = arena.symbol_name(*sid);

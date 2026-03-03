@@ -156,6 +156,15 @@ pub enum ExprNode {
     /// Hyperbolic tangent: `tanh(x)`.
     Tanh(ExprId),
 
+    /// Inverse hyperbolic sine: `asinh(x)`.
+    Asinh(ExprId),
+
+    /// Inverse hyperbolic cosine: `acosh(x)`.
+    Acosh(ExprId),
+
+    /// Inverse hyperbolic tangent: `atanh(x)`.
+    Atanh(ExprId),
+
     // -- composite forms -----------------------------------------------------
     /// Application of a user‐defined or library function identified by
     /// [`SymbolId`] to a list of argument expressions.
@@ -213,7 +222,10 @@ impl ExprNode {
             | ExprNode::Atan(x)
             | ExprNode::Sinh(x)
             | ExprNode::Cosh(x)
-            | ExprNode::Tanh(x) => smallvec![*x],
+            | ExprNode::Tanh(x)
+            | ExprNode::Asinh(x)
+            | ExprNode::Acosh(x)
+            | ExprNode::Atanh(x) => smallvec![*x],
 
             // function application
             ExprNode::Apply(_, args) => {
@@ -278,6 +290,9 @@ impl fmt::Debug for ExprNode {
             ExprNode::Sinh(x) => f.debug_tuple("Sinh").field(x).finish(),
             ExprNode::Cosh(x) => f.debug_tuple("Cosh").field(x).finish(),
             ExprNode::Tanh(x) => f.debug_tuple("Tanh").field(x).finish(),
+            ExprNode::Asinh(x) => f.debug_tuple("Asinh").field(x).finish(),
+            ExprNode::Acosh(x) => f.debug_tuple("Acosh").field(x).finish(),
+            ExprNode::Atanh(x) => f.debug_tuple("Atanh").field(x).finish(),
             ExprNode::Apply(sym, args) => f.debug_tuple("Apply").field(sym).field(args).finish(),
             ExprNode::Derivative(body, var) => {
                 f.debug_tuple("Derivative").field(body).field(var).finish()

@@ -262,6 +262,30 @@ pub(crate) fn rebuild_with_cache(
                 arena.intern(ExprNode::Tanh(new_inner))
             }
         }
+        ExprNode::Asinh(inner) => {
+            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+            if new_inner == inner {
+                id
+            } else {
+                arena.intern(ExprNode::Asinh(new_inner))
+            }
+        }
+        ExprNode::Acosh(inner) => {
+            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+            if new_inner == inner {
+                id
+            } else {
+                arena.intern(ExprNode::Acosh(new_inner))
+            }
+        }
+        ExprNode::Atanh(inner) => {
+            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+            if new_inner == inner {
+                id
+            } else {
+                arena.intern(ExprNode::Atanh(new_inner))
+            }
+        }
 
         // Apply: user-defined function
         ExprNode::Apply(func_id, ref args) => {

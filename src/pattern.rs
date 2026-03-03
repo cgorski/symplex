@@ -230,6 +230,15 @@ fn match_recursive(
         (ExprNode::Tanh(pi), ExprNode::Tanh(ei)) => {
             match_recursive(arena, pattern, pi, ei, bindings)
         }
+        (ExprNode::Asinh(pi), ExprNode::Asinh(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::Acosh(pi), ExprNode::Acosh(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::Atanh(pi), ExprNode::Atanh(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
 
         // Apply: function name must match, then args positionally.
         (ExprNode::Apply(pf, ref pa), ExprNode::Apply(ef, ref ea)) => {

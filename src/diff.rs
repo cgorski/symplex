@@ -336,6 +336,47 @@ fn diff_node(
             arena.mul(&[one_minus_tanh_sq, df])
         }
 
+        // d/dx(asinh(f)) = f' / sqrt(f^2 + 1)
+        ExprNode::Asinh(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let one = arena.one;
+            let two = arena.int(2);
+            let f_sq = arena.pow(inner, two);
+            let f_sq_plus_1 = arena.add(&[f_sq, one]);
+            let sqrt_denom = arena.sqrt(f_sq_plus_1);
+            arena.div(df, sqrt_denom)
+        }
+
+        // d/dx(acosh(f)) = f' / sqrt(f^2 - 1)
+        ExprNode::Acosh(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let one = arena.one;
+            let two = arena.int(2);
+            let f_sq = arena.pow(inner, two);
+            let f_sq_minus_1 = arena.sub(f_sq, one);
+            let sqrt_denom = arena.sqrt(f_sq_minus_1);
+            arena.div(df, sqrt_denom)
+        }
+
+        // d/dx(atanh(f)) = f' / (1 - f^2)
+        ExprNode::Atanh(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let one = arena.one;
+            let two = arena.int(2);
+            let f_sq = arena.pow(inner, two);
+            let one_minus_f_sq = arena.sub(one, f_sq);
+            arena.div(df, one_minus_f_sq)
+        }
+
         // ── Apply (user-defined function): leave unevaluated ───────
         ExprNode::Apply(_, _) => {
             let v = var_expr(arena, var);

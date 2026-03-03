@@ -330,9 +330,12 @@ impl<'a> Parser<'a> {
             "sinh" => Ok(arena.sinh(arg)),
             "cosh" => Ok(arena.cosh(arg)),
             "tanh" => Ok(arena.tanh(arg)),
+            "asinh" | "arcsinh" => Ok(arena.asinh(arg)),
+            "acosh" | "arccosh" => Ok(arena.acosh(arg)),
+            "atanh" | "arctanh" => Ok(arena.atanh(arg)),
             _ => Err(ParseError {
                 message: format!(
-                    "unknown function '{}'. Supported: sin, cos, tan, exp, ln, log, sqrt, abs, asin, acos, atan, sinh, cosh, tanh",
+                    "unknown function '{}'. Supported: sin, cos, tan, exp, ln, log, sqrt, abs, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh",
                     name
                 ),
                 position: self.lexer.pos,
