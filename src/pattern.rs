@@ -611,6 +611,74 @@ fn rule_cosh_sinh_identity(arena: &mut Arena) -> Rule {
     Rule::new("cosh_sinh_identity", pattern, arena.one)
 }
 
+/// Power of power: `(w1^w2)^w3 → w1^(w2*w3)`.
+///
+/// Note: strictly valid for positive bases or integer exponents.
+/// May produce incorrect results for negative bases with fractional exponents.
+fn rule_pow_pow(arena: &mut Arena) -> Rule {
+    let (w1_expr, w1_id) = arena.wild();
+    let (w2_expr, w2_id) = arena.wild();
+    let (w3_expr, w3_id) = arena.wild();
+
+    let inner_pow = arena.pow(w1_expr, w2_expr);
+    let outer_pow = arena.pow(inner_pow, w3_expr);
+
+    let product = arena.mul(&[w2_expr, w3_expr]);
+    let template = arena.pow(w1_expr, product);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w1_expr, w1_id);
+    wilds.insert(w2_expr, w2_id);
+    wilds.insert(w3_expr, w3_id);
+    let pattern = Pattern {
+        root: outer_pow,
+        wilds,
+    };
+    Rule::new("pow_pow", pattern, template)
+}
+
+/// Build the inverse hyperbolic rule: `asinh(sinh(w)) → w`.
+fn rule_asinh_sinh(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let sinh_w = arena.sinh(w_expr);
+    let asinh_sinh_w = arena.asinh(sinh_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: asinh_sinh_w,
+        wilds,
+    };
+    Rule::new("asinh_sinh", pattern, w_expr)
+}
+
+/// Build the inverse hyperbolic rule: `acosh(cosh(w)) → w`.
+fn rule_acosh_cosh(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let cosh_w = arena.cosh(w_expr);
+    let acosh_cosh_w = arena.acosh(cosh_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: acosh_cosh_w,
+        wilds,
+    };
+    Rule::new("acosh_cosh", pattern, w_expr)
+}
+
+/// Build the inverse hyperbolic rule: `atanh(tanh(w)) → w`.
+fn rule_atanh_tanh(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let tanh_w = arena.tanh(w_expr);
+    let atanh_tanh_w = arena.atanh(tanh_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: atanh_tanh_w,
+        wilds,
+    };
+    Rule::new("atanh_tanh", pattern, w_expr)
+}
+
 /// Build a basic set of simplification rules.
 pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
     vec![
@@ -623,6 +691,10 @@ pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
         rule_acos_cos(arena),
         rule_atan_tan(arena),
         rule_cosh_sinh_identity(arena),
+        rule_pow_pow(arena),
+        rule_asinh_sinh(arena),
+        rule_acosh_cosh(arena),
+        rule_atanh_tanh(arena),
     ]
 }
 

@@ -649,6 +649,14 @@ impl Arena {
         crate::trig_expand::expand_trig(self, expr)
     }
 
+    /// Expand logarithmic expressions.
+    ///
+    /// `ln(a*b) → ln(a)+ln(b)`, `ln(a^n) → n*ln(a)`, etc.
+    /// Delegates to [`log_expand::expand_log`].
+    pub fn expand_log_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::log_expand::expand_log(self, expr)
+    }
+
     /// Compute the polynomial GCD of `a` and `b` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.

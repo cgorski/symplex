@@ -34,9 +34,14 @@
 //! - `abs(x)` → `x` when `x` is a non-negative number
 //! - `abs(x)` → `-x` when `x` is a negative number
 //!
-//! Only evaluates when the result is an exact atom (number or constant).
-//! Does **not** evaluate `cos(π/4)` → `√2/2` because that would create
-//! a more complex expression, violating our "eval returns simpler" rule.
+//! - `sin(π/4)` → `√2/2`
+//! - `sin(π/3)` → `√3/2`
+//! - `cos(π/4)` → `√2/2`
+//! - `cos(π/6)` → `√3/2`
+//! - `Pow(n, 1/k)` → exact integer when `n` is a perfect `k`th power
+//! - `sinh(-x)` → `-sinh(x)` (odd function)
+//! - `cosh(-x)` → `cosh(x)` (even function)
+//! - `tanh(-x)` → `-tanh(x)` (odd function)
 //!
 //! # Design
 //!
@@ -44,7 +49,7 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Signed, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
 use crate::arena::Arena;
@@ -151,7 +156,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Pow(base, exp) => {
                 let nb = cache.get(&base).copied().unwrap_or(base);
                 let ne = cache.get(&exp).copied().unwrap_or(exp);
-                // Detect Pow(integer, 1/2) and try perfect square root
+                // Detect Pow(base, 1/n) and try perfect nth root
                 if let Some(result) = eval_pow_root(arena, nb, ne) {
                     result
                 } else if nb == base && ne == exp {
@@ -268,6 +273,22 @@ fn eval_sin(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let neg_half = arena.rational(-1, 2);
         return Some(neg_half);
     }
+    // sin(π/4) = √2/2
+    if coeff == Ratio::new(1.into(), 4.into()) {
+        let two = arena.int(2);
+        let half_exp = arena.rational(1, 2);
+        let sqrt2 = arena.pow(two, half_exp);
+        let half = arena.rational(1, 2);
+        return Some(arena.mul(&[half, sqrt2]));
+    }
+    // sin(π/3) = √3/2
+    if coeff == Ratio::new(1.into(), 3.into()) {
+        let three = arena.int(3);
+        let half_exp = arena.rational(1, 2);
+        let sqrt3 = arena.pow(three, half_exp);
+        let half = arena.rational(1, 2);
+        return Some(arena.mul(&[half, sqrt3]));
+    }
 
     None
 }
@@ -319,6 +340,22 @@ fn eval_cos(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if coeff == Ratio::new(5.into(), 3.into()) {
         let half = arena.rational(1, 2);
         return Some(half);
+    }
+    // cos(π/4) = √2/2
+    if coeff == Ratio::new(1.into(), 4.into()) {
+        let two = arena.int(2);
+        let half_exp = arena.rational(1, 2);
+        let sqrt2 = arena.pow(two, half_exp);
+        let half = arena.rational(1, 2);
+        return Some(arena.mul(&[half, sqrt2]));
+    }
+    // cos(π/6) = √3/2
+    if coeff == Ratio::new(1.into(), 6.into()) {
+        let three = arena.int(3);
+        let half_exp = arena.rational(1, 2);
+        let sqrt3 = arena.pow(three, half_exp);
+        let half = arena.rational(1, 2);
+        return Some(arena.mul(&[half, sqrt3]));
     }
 
     None
@@ -385,59 +422,98 @@ fn eval_ln(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 /// Evaluate `Pow(base, exp)` when the exponent is a fractional 1/2 (square root)
 /// and the base is a numeric value with a perfect square root.
 fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId> {
-    // Check if the exponent is 1/2
-    let is_half = if let Some(r) = arena.as_num(exp) {
-        *r == Ratio::new(BigInt::from(1), BigInt::from(2))
-    } else {
-        false
-    };
+    let base_r = arena.as_num(base)?.clone();
+    let exp_r = arena.as_num(exp)?.clone();
 
-    if !is_half {
+    // exp must be 1/n for positive integer n ≥ 2
+    if *exp_r.numer() != BigInt::from(1) || exp_r.is_negative() {
+        return None;
+    }
+    let n: u32 = exp_r.denom().to_u32()?;
+    if n < 2 {
         return None;
     }
 
-    let inner = base;
-
-    // sqrt(0) = 0
-    if inner == arena.zero {
-        return Some(arena.zero);
-    }
-    // sqrt(1) = 1
-    if inner == arena.one {
-        return Some(arena.one);
-    }
-
-    // sqrt(n^2) for positive integer n.
-    if let Some(r) = arena.as_num(inner)
-        && r.is_integer()
-        && r.is_positive()
-    {
-        let n = r.to_integer();
-        let sqrt_n = n.sqrt();
-        if &sqrt_n * &sqrt_n == n {
-            let nid = arena.intern_num(Ratio::from_integer(sqrt_n));
+    // For integer base
+    if base_r.is_integer() && base_r.is_positive() {
+        let base_int = base_r.to_integer();
+        if let Some(Some(r)) = integer_nth_root(&base_int, n) {
+            let nid = arena.intern_num(Ratio::from_integer(r));
             return Some(arena.intern(ExprNode::Num(nid)));
         }
     }
 
-    // sqrt(p/q) for perfect square p and q.
-    if let Some(r) = arena.as_num(inner)
-        && !r.is_integer()
-        && r.is_positive()
-    {
-        let r = r.clone();
-        let n = r.numer().abs();
-        let d = r.denom().abs();
-        let sqrt_n = n.sqrt();
-        let sqrt_d = d.sqrt();
-        if &sqrt_n * &sqrt_n == n && &sqrt_d * &sqrt_d == d {
-            let result = Ratio::new(sqrt_n, sqrt_d);
+    // For rational base p/q, try root(p)/root(q)
+    if base_r.is_positive() && !base_r.is_integer() {
+        let numer = base_r.numer().clone();
+        let denom = base_r.denom().clone();
+        if let (Some(Some(rn)), Some(Some(rd))) =
+            (integer_nth_root(&numer, n), integer_nth_root(&denom, n))
+        {
+            let result = Ratio::new(rn, rd);
             let nid = arena.intern_num(result);
             return Some(arena.intern(ExprNode::Num(nid)));
         }
     }
 
+    // Handle base == 0 or base == 1 (which as_num covers)
+    if base_r.is_zero() {
+        return Some(arena.zero);
+    }
+    if base_r.is_one() {
+        return Some(arena.one);
+    }
+
     None
+}
+
+/// Try to find the exact integer nth root of `val`.
+///
+/// Returns `Some(Some(root))` if `val` is a perfect `n`th power,
+/// `Some(None)` if it is not a perfect power, and `None` if the input
+/// is invalid (e.g. negative).
+fn integer_nth_root(val: &BigInt, n: u32) -> Option<Option<BigInt>> {
+    if val.is_negative() {
+        return None;
+    }
+    if val.is_zero() {
+        return Some(Some(BigInt::from(0)));
+    }
+    if *val == BigInt::from(1) {
+        return Some(Some(BigInt::from(1)));
+    }
+
+    // Use Newton's method to find the integer nth root.
+    let mut x = val.clone();
+    let n_big = BigInt::from(n);
+    let n_minus_1 = BigInt::from(n - 1);
+
+    loop {
+        // x_new = ((n-1)*x + val / x^(n-1)) / n
+        let mut x_pow = BigInt::from(1);
+        for _ in 0..(n - 1) {
+            x_pow *= &x;
+        }
+        if x_pow.is_zero() {
+            return Some(None);
+        }
+        let x_new = (&n_minus_1 * &x + val / &x_pow) / &n_big;
+        if x_new >= x {
+            break;
+        }
+        x = x_new;
+    }
+
+    // Verify: x^n == val?
+    let mut check = BigInt::from(1);
+    for _ in 0..n {
+        check *= &x;
+    }
+    if check == *val {
+        Some(Some(x))
+    } else {
+        Some(None)
+    }
 }
 
 /// Evaluate `abs(inner)` for known numeric values.
@@ -506,6 +582,12 @@ fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 }
 
 fn eval_sinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    // Odd function: sinh(-x) = -sinh(x)
+    if let Some(pos_inner) = as_negated(arena, inner) {
+        let sinh_pos = arena.sinh(pos_inner);
+        return Some(arena.neg(sinh_pos));
+    }
+
     if inner == arena.zero {
         return Some(arena.zero);
     } // sinh(0) = 0
@@ -513,6 +595,11 @@ fn eval_sinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 }
 
 fn eval_cosh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    // Even function: cosh(-x) = cosh(x)
+    if let Some(pos_inner) = as_negated(arena, inner) {
+        return Some(arena.cosh(pos_inner));
+    }
+
     if inner == arena.zero {
         return Some(arena.one);
     } // cosh(0) = 1
@@ -520,6 +607,12 @@ fn eval_cosh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 }
 
 fn eval_tanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    // Odd function: tanh(-x) = -tanh(x)
+    if let Some(pos_inner) = as_negated(arena, inner) {
+        let tanh_pos = arena.tanh(pos_inner);
+        return Some(arena.neg(tanh_pos));
+    }
+
     if inner == arena.zero {
         return Some(arena.zero);
     } // tanh(0) = 0
@@ -683,19 +776,20 @@ mod tests {
     }
 
     #[test]
-    fn eval_cos_pi_over_4_unchanged() {
+    fn eval_cos_pi_over_4() {
         let mut a = Arena::new();
         let quarter = a.rational(1, 4);
         let pi = a.pi;
         let arg = a.mul(&[quarter, pi]);
         let expr = a.cos(arg);
         let result = eval(&mut a, expr);
-        // cos(π/4) = √2/2, but we don't evaluate that (would be more complex).
-        assert_eq!(
-            display(&a, result),
-            "cos(1/4*pi)",
-            "cos(π/4) should stay unevaluated"
-        );
+        // cos(π/4) = √2/2 = 1/2 * sqrt(2)
+        let two = a.int(2);
+        let half_exp = a.rational(1, 2);
+        let sqrt2 = a.pow(two, half_exp);
+        let half = a.rational(1, 2);
+        let expected = a.mul(&[half, sqrt2]);
+        assert_eq!(result, expected, "cos(π/4) should be √2/2");
     }
 
     // ── tan ──────────────────────────────────────────────────────────
@@ -950,5 +1044,155 @@ mod tests {
         let expr = a.sqrt(nine_fourths);
         let result = eval(&mut a, expr);
         assert_eq!(display(&a, result), "3/2", "sqrt(9/4) should be 3/2");
+    }
+
+    // ── nth root ────────────────────────────────────────────────────
+
+    #[test]
+    fn eval_cube_root_8() {
+        let mut a = Arena::new();
+        let eight = a.int(8);
+        let third = a.rational(1, 3);
+        let expr = a.pow(eight, third);
+        let result = eval(&mut a, expr);
+        let two = a.int(2);
+        assert_eq!(result, two, "8^(1/3) should be 2");
+    }
+
+    #[test]
+    fn eval_cube_root_27() {
+        let mut a = Arena::new();
+        let twenty_seven = a.int(27);
+        let third = a.rational(1, 3);
+        let expr = a.pow(twenty_seven, third);
+        let result = eval(&mut a, expr);
+        let three = a.int(3);
+        assert_eq!(result, three, "27^(1/3) should be 3");
+    }
+
+    #[test]
+    fn eval_fourth_root_16() {
+        let mut a = Arena::new();
+        let sixteen = a.int(16);
+        let quarter = a.rational(1, 4);
+        let expr = a.pow(sixteen, quarter);
+        let result = eval(&mut a, expr);
+        let two = a.int(2);
+        assert_eq!(result, two, "16^(1/4) should be 2");
+    }
+
+    #[test]
+    fn eval_cube_root_7_unchanged() {
+        let mut a = Arena::new();
+        let seven = a.int(7);
+        let third = a.rational(1, 3);
+        let expr = a.pow(seven, third);
+        let result = eval(&mut a, expr);
+        // 7 is not a perfect cube, should stay unevaluated
+        assert_eq!(result, expr, "7^(1/3) should stay unevaluated");
+    }
+
+    #[test]
+    fn eval_cube_root_rational_perfect() {
+        let mut a = Arena::new();
+        // (27/8)^(1/3) = 3/2
+        let base = a.rational(27, 8);
+        let third = a.rational(1, 3);
+        let expr = a.pow(base, third);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "3/2", "(27/8)^(1/3) should be 3/2");
+    }
+
+    // ── irrational trig special values ──────────────────────────────
+
+    #[test]
+    fn eval_sin_pi_over_4() {
+        let mut a = Arena::new();
+        let quarter = a.rational(1, 4);
+        let pi = a.pi;
+        let arg = a.mul(&[quarter, pi]);
+        let expr = a.sin(arg);
+        let result = eval(&mut a, expr);
+        // sin(π/4) = √2/2 = 1/2 * sqrt(2)
+        let two = a.int(2);
+        let half_exp = a.rational(1, 2);
+        let sqrt2 = a.pow(two, half_exp);
+        let half = a.rational(1, 2);
+        let expected = a.mul(&[half, sqrt2]);
+        assert_eq!(result, expected, "sin(π/4) should be √2/2");
+    }
+
+    #[test]
+    fn eval_sin_pi_over_3() {
+        let mut a = Arena::new();
+        let third = a.rational(1, 3);
+        let pi = a.pi;
+        let arg = a.mul(&[third, pi]);
+        let expr = a.sin(arg);
+        let result = eval(&mut a, expr);
+        // sin(π/3) = √3/2 = 1/2 * sqrt(3)
+        let three = a.int(3);
+        let half_exp = a.rational(1, 2);
+        let sqrt3 = a.pow(three, half_exp);
+        let half = a.rational(1, 2);
+        let expected = a.mul(&[half, sqrt3]);
+        assert_eq!(result, expected, "sin(π/3) should be √3/2");
+    }
+
+    #[test]
+    fn eval_cos_pi_over_6() {
+        let mut a = Arena::new();
+        let sixth = a.rational(1, 6);
+        let pi = a.pi;
+        let arg = a.mul(&[sixth, pi]);
+        let expr = a.cos(arg);
+        let result = eval(&mut a, expr);
+        // cos(π/6) = √3/2 = 1/2 * sqrt(3)
+        let three = a.int(3);
+        let half_exp = a.rational(1, 2);
+        let sqrt3 = a.pow(three, half_exp);
+        let half = a.rational(1, 2);
+        let expected = a.mul(&[half, sqrt3]);
+        assert_eq!(result, expected, "cos(π/6) should be √3/2");
+    }
+
+    // ── hyperbolic odd/even ─────────────────────────────────────────
+
+    #[test]
+    fn eval_sinh_neg_x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let neg_x = a.neg(x);
+        let expr = a.sinh(neg_x);
+        let result = eval(&mut a, expr);
+        // sinh(-x) = -sinh(x)
+        let sinh_x = a.sinh(x);
+        let expected = a.neg(sinh_x);
+        assert_eq!(result, expected, "sinh(-x) should be -sinh(x)");
+    }
+
+    #[test]
+    fn eval_cosh_neg_x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let neg_x = a.neg(x);
+        let expr = a.cosh(neg_x);
+        let result = eval(&mut a, expr);
+        // cosh(-x) = cosh(x)
+        let expected = a.cosh(x);
+        assert_eq!(result, expected, "cosh(-x) should be cosh(x)");
+    }
+
+    #[test]
+    fn eval_tanh_neg_x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let neg_x = a.neg(x);
+        let expr = a.tanh(neg_x);
+        let result = eval(&mut a, expr);
+        // tanh(-x) = -tanh(x)
+        let tanh_x = a.tanh(x);
+        let expected = a.neg(tanh_x);
+        assert_eq!(result, expected, "tanh(-x) should be -tanh(x)");
     }
 }

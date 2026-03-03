@@ -46,6 +46,7 @@ pub(crate) mod factor;
 pub(crate) mod integrate;
 pub(crate) mod limit;
 pub(crate) mod linalg;
+pub(crate) mod log_expand;
 pub(crate) mod node;
 pub(crate) mod pattern;
 pub(crate) mod poly;

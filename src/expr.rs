@@ -1083,6 +1083,33 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Expand logarithmic expressions.
+    ///
+    /// Applies logarithm properties:
+    /// - `ln(a * b)` → `ln(a) + ln(b)`
+    /// - `ln(a^n)` → `n * ln(a)`
+    /// - `ln(a / b)` → `ln(a) - ln(b)`
+    ///
+    /// These rules are valid for positive real arguments.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = (&x * &y).ln();
+    /// let expanded = expr.expand_log();
+    /// let s = format!("{expanded}");
+    /// assert!(s.contains("ln(x)") && s.contains("ln(y)"), "should expand: {s}");
+    /// ```
+    #[must_use = "returns the expanded form; does not modify in place"]
+    pub fn expand_log(&self) -> Ex {
+        let id = self.inner.write().arena.expand_log_expr(self.id);
+        self.wrap(id)
+    }
+
     /// Compute the polynomial GCD of `self` and `other` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.
