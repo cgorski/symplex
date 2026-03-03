@@ -22,6 +22,11 @@ Symbolic mathematics library for Rust.
 - **Expression collection** — group terms by powers of a variable via `collect(var)`
 - **Common denominators** — combine fractions via `together()`
 - **Structural introspection** — `free_symbols()`, `contains()` for expression analysis
+- **Inverse trigonometric** — `asin`, `acos`, `atan` with derivatives and eval
+- **Hyperbolic functions** — `sinh`, `cosh`, `tanh` with derivatives, integration, and eval
+- **Serde serialization** — `to_tree()`, `to_json()`, `from_tree()`, `from_json()` for round-trip interchange
+- **REPL support** — interactive expression parsing via `cargo run --example repl`
+- **Zero-cost tracing** — diagnostic logging via the `tracing` crate
 - **Thread safety** — `Ex` is `Send + Sync`; the arena uses `parking_lot::RwLock`
 
 ## Quick Start
@@ -120,6 +125,8 @@ ctx.with_arena_mut(|arena| { ... })          // direct arena access (for rule!)
 // Functions
 ex.pow(&exp)    ex.powi(3)    ex.sin()     ex.cos()
 ex.tan()        ex.exp_fn()   ex.ln()      ex.sqrt()    ex.abs()
+ex.asin()       ex.acos()     ex.atan()
+ex.sinh()       ex.cosh()     ex.tanh()
 
 // Calculus
 ex.diff(&x)                                  // symbolic derivative
@@ -138,6 +145,19 @@ ex.together()                                // common denominator for fractions
 ex.factor(&var)                              // factor polynomial into linear factors
 ex.solve(&var)                               // solve expr = 0 for var
 ex.series(&var, &point, order)               // Taylor series expansion
+
+// Serialization
+ex.to_tree()                                 // → ExprTree (serde-serializable)
+ex.to_json()                                 // → String (JSON)
+ex.to_json_pretty()                          // → String (formatted JSON)
+
+// Collection
+Ex::sum_of(&ctx, iter)                       // sum a collection
+Ex::product_of(&ctx, iter)                   // multiply a collection
+
+// Utilities
+ex.apply_until_stable(max, f)                // generic fixpoint
+ex.term_count()                              // number of top-level terms
 
 // Numerical
 ex.evalf(50)                                 // → Result<String, SymplexError>
@@ -179,6 +199,21 @@ The `expr!` macro auto-borrows identifiers (no `&` needed) and rewrites `^` to `
 
 The `rule!` macro builds `Pattern`/`Rule` structs. Identifiers ending in `_` are wilds (match anything). Known constants (`pi`, `E`, `I`, `oo`, `nan`) are recognized. Unknown bare identifiers produce a compile error with a helpful message.
 
+## Serialization
+
+Expressions can be serialized to JSON via `ExprTree`:
+
+```rust
+let expr = x.powi(2) + 1;
+let json = expr.to_json();
+// {"type":"Add","terms":[{"type":"Num","numer":"1","denom":"1"},{"type":"Pow","base":{"type":"Symbol","name":"x"},"exp":{"type":"Num","numer":"2","denom":"1"}}]}
+
+let back = ctx.from_json(&json).unwrap();
+assert_eq!(format!("{expr}"), format!("{back}"));
+```
+
+For LaTeX, Markdown, or Typst rendering, use the `symplex-format` crate (planned).
+
 ## Architecture
 
 Expressions are stored in an arena-interned DAG with hash-consing. Every expression is an `ExprId` (4-byte index). Structurally identical expressions share the same `ExprId`, making equality comparison O(1).
@@ -216,6 +251,8 @@ All dependencies are MIT or Apache-2.0 licensed. No C bindings. No LGPL.
 | `thiserror` | Error types |
 | `symplex-macros` | Proc macros (`expr!`, `rule!`); uses `syn`, `quote`, `proc-macro2` |
 | `astro-float` | Arbitrary-precision floats |
+| `serde` / `serde_json` | Expression serialization and deserialization |
+| `tracing` | Zero-cost diagnostic logging |
 
 ## Dependencies Policy
 

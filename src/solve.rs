@@ -72,6 +72,7 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
 
     // Step 3: Dispatch by degree.
     let degree = poly.degree().unwrap();
+    tracing::debug!(degree = degree, "polynomial degree determined");
 
     match degree {
         1 => solve_linear(arena, &poly),
@@ -259,6 +260,10 @@ fn solve_rational_roots(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         }
     }
 
+    tracing::debug!(
+        rational_roots = roots.len(),
+        "rational roots found via theorem"
+    );
     roots
 }
 

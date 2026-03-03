@@ -50,6 +50,7 @@ use std::ops;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use tracing::debug_span;
 
 use crate::assumptions::Assumption;
 use crate::assumptions::Props;
@@ -390,6 +391,7 @@ impl Ex {
     /// ```
     #[must_use = "returns the derivative as a new expression"]
     pub fn diff(&self, var: &Ex) -> Ex {
+        let _span = debug_span!("diff", expr = ?self.id, var = ?var.id).entered();
         let id = self.inner.write().arena.diff_wrt(self.id, var.id);
         self.wrap(id)
     }
@@ -474,6 +476,7 @@ impl Ex {
     /// ```
     #[must_use = "returns the expanded form; does not modify in place"]
     pub fn expand(&self) -> Ex {
+        let _span = debug_span!("expand", expr = ?self.id).entered();
         let id = self.inner.write().arena.expand_expr(self.id);
         self.wrap(id)
     }
@@ -499,6 +502,7 @@ impl Ex {
     /// ```
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn simplify(&self) -> Ex {
+        let _span = debug_span!("simplify", expr = ?self.id).entered();
         let (result, _steps) = self.simplify_trace();
         result
     }
@@ -543,6 +547,7 @@ impl Ex {
     /// ```
     #[must_use = "returns the fully simplified form; does not modify in place"]
     pub fn full_simplify(&self) -> Ex {
+        let _span = debug_span!("full_simplify", expr = ?self.id).entered();
         let (result, _steps) = self.full_simplify_trace();
         result
     }
@@ -594,6 +599,7 @@ impl Ex {
     /// ```
     #[must_use = "returns the evaluated form; does not modify in place"]
     pub fn eval(&self) -> Ex {
+        let _span = debug_span!("eval", expr = ?self.id).entered();
         let id = self.inner.write().arena.eval_expr(self.id);
         self.wrap(id)
     }
@@ -621,6 +627,7 @@ impl Ex {
     /// assert_eq!(solutions.len(), 2);
     /// ```
     pub fn solve(&self, var: &Ex) -> Vec<Ex> {
+        let _span = debug_span!("solve", expr = ?self.id, var = ?var.id).entered();
         let solutions = self.inner.write().arena.solve_for(self.id, var.id);
         solutions
             .into_iter()
@@ -651,6 +658,7 @@ impl Ex {
     /// ```
     #[must_use = "returns the cancelled form; does not modify in place"]
     pub fn cancel(&self, var: &Ex) -> Ex {
+        let _span = debug_span!("cancel", expr = ?self.id, var = ?var.id).entered();
         let id = self.inner.write().arena.cancel_expr(self.id, var.id);
         self.wrap(id)
     }
@@ -727,6 +735,7 @@ impl Ex {
     /// ```
     #[must_use = "returns the antiderivative; does not modify in place"]
     pub fn integrate(&self, var: &Ex) -> Ex {
+        let _span = debug_span!("integrate", expr = ?self.id, var = ?var.id).entered();
         let id = self.inner.write().arena.integrate_expr(self.id, var.id);
         self.wrap(id)
     }
@@ -827,6 +836,7 @@ impl Ex {
     /// ```
     #[must_use = "returns the series expansion; does not modify in place"]
     pub fn series(&self, var: &Ex, point: &Ex, order: u32) -> Ex {
+        let _span = debug_span!("series", expr = ?self.id, order = order).entered();
         let id = self
             .inner
             .write()
@@ -884,6 +894,7 @@ impl Ex {
     /// ```
     #[must_use = "returns the factored form; does not modify in place"]
     pub fn factor(&self, var: &Ex) -> Ex {
+        let _span = debug_span!("factor", expr = ?self.id, var = ?var.id).entered();
         let id = self.inner.write().arena.factor_expr(self.id, var.id);
         self.wrap(id)
     }
@@ -907,6 +918,7 @@ impl Ex {
     /// intermediate computation produces NaN.
     #[must_use = "returns the numerical value as a string"]
     pub fn evalf(&self, digits: u32) -> Result<String, SymplexError> {
+        let _span = debug_span!("evalf", expr = ?self.id, digits = digits).entered();
         let guard = self.inner.read();
         crate::evalf::evalf(&guard.arena, self.id, digits)
     }

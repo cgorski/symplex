@@ -545,6 +545,68 @@ fn rule_sqrt_sq(arena: &mut Arena) -> Rule {
     Rule::new("sqrt_sq", pattern, abs_w)
 }
 
+/// Build the inverse trig rule: `asin(sin(w)) → w`.
+fn rule_asin_sin(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let sin_w = arena.sin(w_expr);
+    let asin_sin_w = arena.asin(sin_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: asin_sin_w,
+        wilds,
+    };
+    Rule::new("asin_sin", pattern, w_expr)
+}
+
+/// Build the inverse trig rule: `acos(cos(w)) → w`.
+fn rule_acos_cos(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let cos_w = arena.cos(w_expr);
+    let acos_cos_w = arena.acos(cos_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: acos_cos_w,
+        wilds,
+    };
+    Rule::new("acos_cos", pattern, w_expr)
+}
+
+/// Build the inverse trig rule: `atan(tan(w)) → w`.
+fn rule_atan_tan(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let tan_w = arena.tan(w_expr);
+    let atan_tan_w = arena.atan(tan_w);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: atan_tan_w,
+        wilds,
+    };
+    Rule::new("atan_tan", pattern, w_expr)
+}
+
+/// Build the hyperbolic Pythagorean identity: `cosh(w)^2 - sinh(w)^2 → 1`.
+fn rule_cosh_sinh_identity(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let two = arena.int(2);
+    let sinh_w = arena.sinh(w_expr);
+    let cosh_w = arena.cosh(w_expr);
+    let sinh_sq = arena.pow(sinh_w, two);
+    let cosh_sq = arena.pow(cosh_w, two);
+    let neg_sinh_sq = arena.neg(sinh_sq);
+    let pattern_expr = arena.add(&[cosh_sq, neg_sinh_sq]);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: pattern_expr,
+        wilds,
+    };
+    Rule::new("cosh_sinh_identity", pattern, arena.one)
+}
+
 /// Build a basic set of simplification rules.
 pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
     vec![
@@ -553,6 +615,10 @@ pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
         rule_ln_exp(arena),
         rule_abs_abs(arena),
         rule_sqrt_sq(arena),
+        rule_asin_sin(arena),
+        rule_acos_cos(arena),
+        rule_atan_tan(arena),
+        rule_cosh_sinh_identity(arena),
     ]
 }
 

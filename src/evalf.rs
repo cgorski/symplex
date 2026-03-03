@@ -27,6 +27,7 @@ use crate::arena::Arena;
 use crate::errors::SymplexError;
 use crate::node::{ExprId, ExprNode};
 use crate::walk;
+use tracing::debug;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Public entry point
@@ -42,6 +43,12 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
     let binary_prec = (digits as usize) * 34 / 10 + 64;
     // Ensure a reasonable minimum.
     let prec = binary_prec.max(128);
+
+    debug!(
+        digits = digits,
+        binary_precision = prec,
+        "evalf: starting numerical evaluation"
+    );
 
     // Enforce the configured maximum precision.
     let max_prec = arena.config.max_evalf_precision as usize;
