@@ -28,11 +28,10 @@
 //! ```
 
 use rustc_hash::FxHashMap;
-use smallvec::SmallVec;
 
 use crate::arena::Arena;
-use crate::node::{ExprId, ExprNode};
 use crate::walk;
+use crate::node::{ExprId, ExprNode};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WildId — pattern variable identifier
@@ -385,121 +384,11 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
     (result, steps)
 }
 
-/// Rebuild a node with children from cache (same logic as walk.rs but
-/// we inline it here to avoid borrowing issues with the mutable arena).
+/// Rebuild a node with children looked up from the cache.
+///
+/// Delegates to [`walk::rebuild_with_cache`] to avoid code duplication.
 fn rebuild_with_cache(arena: &mut Arena, id: ExprId, cache: &FxHashMap<ExprId, ExprId>) -> ExprId {
-    let node = arena.node(id).clone();
-
-    match node {
-        ExprNode::Num(_)
-        | ExprNode::Symbol(_)
-        | ExprNode::Pi
-        | ExprNode::E
-        | ExprNode::ImaginaryUnit
-        | ExprNode::Infinity
-        | ExprNode::NegInfinity
-        | ExprNode::ComplexInfinity
-        | ExprNode::NaN => id,
-
-        ExprNode::Add(ref children) => {
-            let new: SmallVec<[ExprId; 6]> = children
-                .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                .collect();
-            if new == *children {
-                id
-            } else {
-                arena.add(&new)
-            }
-        }
-
-        ExprNode::Mul(ref children) => {
-            let new: SmallVec<[ExprId; 6]> = children
-                .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                .collect();
-            if new == *children {
-                id
-            } else {
-                arena.mul(&new)
-            }
-        }
-
-        ExprNode::Pow(b, e) => {
-            let nb = cache.get(&b).copied().unwrap_or(b);
-            let ne = cache.get(&e).copied().unwrap_or(e);
-            if nb == b && ne == e {
-                id
-            } else {
-                arena.pow(nb, ne)
-            }
-        }
-
-        ExprNode::Neg(i) => {
-            let ni = cache.get(&i).copied().unwrap_or(i);
-            if ni == i { id } else { arena.neg(ni) }
-        }
-        ExprNode::Sin(i) => {
-            let ni = cache.get(&i).copied().unwrap_or(i);
-            if ni == i { id } else { arena.sin(ni) }
-        }
-        ExprNode::Cos(i) => {
-            let ni = cache.get(&i).copied().unwrap_or(i);
-            if ni == i { id } else { arena.cos(ni) }
-        }
-        ExprNode::Tan(i) => {
-            let ni = cache.get(&i).copied().unwrap_or(i);
-            if ni == i { id } else { arena.tan(ni) }
-        }
-        ExprNode::Exp(i) => {
-            let ni = cache.get(&i).copied().unwrap_or(i);
-            if ni == i { id } else { arena.exp_fn(ni) }
-        }
-        ExprNode::Ln(i) => {
-            let ni = cache.get(&i).copied().unwrap_or(i);
-            if ni == i { id } else { arena.ln(ni) }
-        }
-        ExprNode::Sqrt(i) => {
-            let ni = cache.get(&i).copied().unwrap_or(i);
-            if ni == i { id } else { arena.sqrt(ni) }
-        }
-        ExprNode::Abs(i) => {
-            let ni = cache.get(&i).copied().unwrap_or(i);
-            if ni == i { id } else { arena.abs(ni) }
-        }
-
-        ExprNode::Apply(f, ref args) => {
-            let new: SmallVec<[ExprId; 2]> = args
-                .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
-                .collect();
-            if new == *args {
-                id
-            } else {
-                arena.intern(ExprNode::Apply(f, new))
-            }
-        }
-
-        ExprNode::Derivative(b, v) => {
-            let nb = cache.get(&b).copied().unwrap_or(b);
-            let nv = cache.get(&v).copied().unwrap_or(v);
-            if nb == b && nv == v {
-                id
-            } else {
-                arena.intern(ExprNode::Derivative(nb, nv))
-            }
-        }
-
-        ExprNode::Integral(b, v) => {
-            let nb = cache.get(&b).copied().unwrap_or(b);
-            let nv = cache.get(&v).copied().unwrap_or(v);
-            if nb == b && nv == v {
-                id
-            } else {
-                arena.intern(ExprNode::Integral(nb, nv))
-            }
-        }
-    }
+    crate::walk::rebuild_with_cache(arena, id, cache)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

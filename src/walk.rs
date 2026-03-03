@@ -129,7 +129,7 @@ pub(crate) fn walk_and_rebuild(
 ///
 /// When children have changed, uses the canonical constructors
 /// (`arena.add`, `arena.mul`, etc.) to maintain canonical form.
-fn rebuild_with_cache(arena: &mut Arena, id: ExprId, cache: &FxHashMap<ExprId, ExprId>) -> ExprId {
+pub(crate) fn rebuild_with_cache(arena: &mut Arena, id: ExprId, cache: &FxHashMap<ExprId, ExprId>) -> ExprId {
     let node = arena.node(id).clone();
 
     match node {

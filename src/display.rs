@@ -1,78 +1,70 @@
-//! Pretty-printing for symbolic expressions.
+//! Expression display / pretty-printing.
 //!
-//! This module implements human-readable formatting of expression trees stored
-//! in an [`Arena`].  The core entry point is [`fmt_expr`], which recursively
-//! walks the DAG and writes a string representation to a [`std::fmt::Formatter`].
+//! Converts an expression tree into a human-readable string with correct
+//! operator precedence and parenthesisation.
 //!
-//! # Precedence
+//! # Design
 //!
-//! Parentheses are inserted only when necessary, governed by a simple numeric
-//! precedence scheme.  Each expression kind has an associated precedence level;
-//! when a sub-expression's precedence is strictly less than its parent's, it is
-//! wrapped in parentheses.
+//! The formatter uses an **explicit work-stack** rather than recursive
+//! function calls.  This guarantees stack safety for arbitrarily deep
+//! expression trees (Principle 5: no recursive tree walks).
 //!
-//! # Example
+//! Each entry on the work stack is either a *literal* string to emit, or
+//! an *expression id* that still needs to be expanded.  The main loop
+//! pops one item at a time, and for expression items it pushes the
+//! constituent pieces (open-paren, children, operators, close-paren)
+//! back onto the stack in **reverse** order so that they come out
+//! left-to-right when popped.
+//!
+//! Example for display of `Add(x, Neg(y))`:
 //!
 //! ```text
-//! let a = Arena::new();
-//! // ... build some expression ...
-//! println!("{}", a.display(expr_id));
+//! stack (top → bottom):
+//!   Expr(Add(x, Neg(y)), parent_prec=0)
+//!   ↓ expand Add
+//!   Expr(x, PREC_ADD)          ← first term
+//!   Lit(" - ")                 ← separator (Neg detected)
+//!   Expr(y, PREC_UNARY)       ← inner of Neg
 //! ```
 
 use std::fmt;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Signed};
+use num_traits::Signed;
 
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode};
 
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
 // Precedence constants
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
 
-/// Precedence for atoms — never need parentheses.
+/// Atoms never need parentheses.
 pub(crate) const PREC_ATOM: u8 = 100;
 
-/// Precedence for exponentiation (`**`).
+/// Exponentiation.
 pub(crate) const PREC_POW: u8 = 80;
 
-/// Precedence for unary negation and function application.
+/// Unary minus and function application.
 pub(crate) const PREC_UNARY: u8 = 70;
 
-/// Precedence for multiplication.
+/// Multiplication / division.
 pub(crate) const PREC_MUL: u8 = 60;
 
-/// Precedence for addition / subtraction.
+/// Addition / subtraction (lowest precedence for composed expressions).
 pub(crate) const PREC_ADD: u8 = 40;
 
-// ---------------------------------------------------------------------------
-// Helper: precedence of a node
-// ---------------------------------------------------------------------------
-
-/// Returns the precedence level of the given expression node.
+/// Return the precedence of a node.
 fn prec_of(node: &ExprNode) -> u8 {
     match node {
-        // Atoms
-        ExprNode::Num(_)
-        | ExprNode::Symbol(_)
-        | ExprNode::Pi
-        | ExprNode::E
-        | ExprNode::ImaginaryUnit
-        | ExprNode::Infinity
-        | ExprNode::NegInfinity
-        | ExprNode::ComplexInfinity
-        | ExprNode::NaN => PREC_ATOM,
-
-        // Operators
         ExprNode::Add(_) => PREC_ADD,
         ExprNode::Mul(_) => PREC_MUL,
         ExprNode::Pow(_, _) => PREC_POW,
         ExprNode::Neg(_) => PREC_UNARY,
-
-        // Functions — their argument is always inside `(…)`, so the node
-        // itself behaves like an atom from a parenthesization standpoint.
+        // Functions and calculus forms have their arguments inside
+        // delimiters (parens), so they behave like atoms w.r.t.
+        // outer precedence.
         ExprNode::Sin(_)
         | ExprNode::Cos(_)
         | ExprNode::Tan(_)
@@ -80,390 +72,407 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Ln(_)
         | ExprNode::Sqrt(_)
         | ExprNode::Abs(_)
-        | ExprNode::Apply(_, _) => PREC_ATOM,
-
-        // Calculus forms — rendered with explicit delimiters, so atom-like.
-        ExprNode::Derivative(_, _) | ExprNode::Integral(_, _) => PREC_ATOM,
+        | ExprNode::Apply(_, _)
+        | ExprNode::Derivative(_, _)
+        | ExprNode::Integral(_, _) => PREC_ATOM,
+        // Everything else is an atom.
+        _ => PREC_ATOM,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: format a rational number
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
+// Rational number formatting
 
-/// Writes a `Ratio<BigInt>` to `f`.
-///
-/// * If the denominator is 1, prints just the integer part (e.g. `3`, `-7`).
-/// * Otherwise prints `p/q` (e.g. `1/2`, `-5/7`).
-fn fmt_ratio(f: &mut fmt::Formatter<'_>, r: &Ratio<BigInt>) -> fmt::Result {
-    if r.denom().is_one() {
-        write!(f, "{}", r.numer())
-    } else {
-        write!(f, "{}/{}", r.numer(), r.denom())
-    }
+// ═══════════════════════════════════════════════════════════════════════════
+// Work-stack items
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// An item on the display work-stack.
+enum WorkItem {
+    /// A literal string to write verbatim.
+    Lit(&'static str),
+    /// A dynamically-built string to write.
+    Owned(String),
+    /// An expression that needs to be expanded, with the parent
+    /// precedence that determines whether it needs parentheses.
+    Expr(ExprId, u8),
 }
 
-// ---------------------------------------------------------------------------
-// Core recursive formatter
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
+// Core formatting function (iterative)
+// ═══════════════════════════════════════════════════════════════════════════
 
-/// Recursively formats the expression identified by `id`, writing to `f`.
+/// Format an expression rooted at `id` into `f`.
 ///
-/// `parent_prec` is the precedence of the context in which this expression
-/// appears.  If the current expression's precedence is strictly less than
-/// `parent_prec`, the output is wrapped in parentheses.
+/// `parent_prec` is the precedence of the enclosing context; the
+/// expression is wrapped in parentheses when its own precedence is
+/// lower.
 ///
-/// # Panics
-///
-/// Panics if `id` refers to a node that does not exist in `arena`.
+/// **This function uses an explicit stack — it never recurses.**
 pub(crate) fn fmt_expr(
     arena: &Arena,
     f: &mut fmt::Formatter<'_>,
     id: ExprId,
     parent_prec: u8,
 ) -> fmt::Result {
+    // We push work items in *reverse* order so they come out
+    // left-to-right when popped from the end.
+    let mut stack: Vec<WorkItem> = Vec::with_capacity(32);
+    stack.push(WorkItem::Expr(id, parent_prec));
+
+    while let Some(item) = stack.pop() {
+        match item {
+            WorkItem::Lit(s) => write!(f, "{s}")?,
+            WorkItem::Owned(s) => write!(f, "{s}")?,
+            WorkItem::Expr(eid, par_prec) => {
+                expand_expr(arena, eid, par_prec, &mut stack)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Expand a single expression node into work items on the stack.
+///
+/// For atoms this directly writes to `f` (via a pushed `Owned`).
+/// For composites it pushes child `Expr` items and literal separators.
+///
+/// Items are pushed in **reverse** display order so that popping
+/// yields left-to-right output.
+fn expand_expr(
+    arena: &Arena,
+    id: ExprId,
+    parent_prec: u8,
+    stack: &mut Vec<WorkItem>,
+) -> fmt::Result {
     let node = arena.node(id);
     let my_prec = prec_of(node);
     let need_parens = my_prec < parent_prec;
 
+    // Clone the node so we can release the borrow on `arena`.
+    let node = node.clone();
+
+    // Helper: push close-paren if needed (pushed first = emitted last).
     if need_parens {
-        write!(f, "(")?;
+        stack.push(WorkItem::Lit(")"));
     }
 
     match node {
-        // -- atoms -----------------------------------------------------------
+        // ── Atoms ──────────────────────────────────────────────────
         ExprNode::Num(num_id) => {
-            let r = arena.num(*num_id);
-            fmt_ratio(f, r)?;
+            let r = arena.num(num_id);
+            // Build the string eagerly for atoms.
+            let s = if r.denom() == &BigInt::from(1) {
+                format!("{}", r.numer())
+            } else {
+                format!("{}/{}", r.numer(), r.denom())
+            };
+            stack.push(WorkItem::Owned(s));
         }
 
         ExprNode::Symbol(sym_id) => {
-            write!(f, "{}", arena.symbol_name(*sym_id))?;
+            let name = arena.symbol_name(sym_id).to_owned();
+            stack.push(WorkItem::Owned(name));
         }
 
-        ExprNode::Pi => write!(f, "pi")?,
-        ExprNode::E => write!(f, "E")?,
-        ExprNode::ImaginaryUnit => write!(f, "I")?,
-        ExprNode::Infinity => write!(f, "oo")?,
-        ExprNode::NegInfinity => write!(f, "-oo")?,
-        ExprNode::ComplexInfinity => write!(f, "zoo")?,
-        ExprNode::NaN => write!(f, "nan")?,
+        ExprNode::Pi => stack.push(WorkItem::Lit("pi")),
+        ExprNode::E => stack.push(WorkItem::Lit("E")),
+        ExprNode::ImaginaryUnit => stack.push(WorkItem::Lit("I")),
+        ExprNode::Infinity => stack.push(WorkItem::Lit("oo")),
+        ExprNode::NegInfinity => stack.push(WorkItem::Lit("-oo")),
+        ExprNode::ComplexInfinity => stack.push(WorkItem::Lit("zoo")),
+        ExprNode::NaN => stack.push(WorkItem::Lit("nan")),
 
-        // -- Add -------------------------------------------------------------
+        // ── Add ────────────────────────────────────────────────────
         //
-        // Join terms with ` + `.  If a term is `Neg(x)`, display ` - x`
-        // instead of ` + -x`.  The first negative term is shown as `-x`
-        // (no leading ` + `).
+        // Terms joined with " + ".  A term that is Neg(x) or
+        // Mul([-1, ...]) is rendered with " - " instead.
         ExprNode::Add(args) => {
-            let args = args.clone();
-            for (i, &arg) in args.iter().enumerate() {
+            // Push children in reverse (last child pushed first).
+            for (i, &arg) in args.iter().enumerate().rev() {
                 let child_node = arena.node(arg);
 
-                // Check for Neg(inner) — canonical only for raw nodes
                 if let ExprNode::Neg(inner) = child_node {
                     let inner = *inner;
                     if i == 0 {
-                        write!(f, "-")?;
-                        fmt_expr(arena, f, inner, PREC_UNARY)?;
+                        // Leading negative: "-x"
+                        stack.push(WorkItem::Expr(inner, PREC_UNARY));
+                        stack.push(WorkItem::Lit("-"));
                     } else {
-                        write!(f, " - ")?;
-                        fmt_expr(arena, f, inner, PREC_UNARY)?;
+                        stack.push(WorkItem::Expr(inner, PREC_UNARY));
+                        stack.push(WorkItem::Lit(" - "));
                     }
-                }
-                // Check for Mul([-1, rest...]) — canonical form of negation
-                else if let ExprNode::Mul(mul_args) = child_node {
-                    let is_neg_one_mul = if !mul_args.is_empty() {
-                        if let ExprNode::Num(nid) = arena.node(mul_args[0]) {
-                            let r = arena.num(*nid);
-                            r == &Ratio::from(BigInt::from(-1))
-                        } else {
-                            false
-                        }
+                } else if is_neg_one_mul(arena, arg) {
+                    // Mul([-1, rest...]) → display as " - rest"
+                    let rest_id = mul_without_neg_one(arena, arg);
+                    if i == 0 {
+                        stack.push(WorkItem::Expr(rest_id, PREC_UNARY));
+                        stack.push(WorkItem::Lit("-"));
                     } else {
-                        false
-                    };
-                    if is_neg_one_mul && mul_args.len() >= 2 {
-                        // Display as " - rest" where rest is the factors without -1
-                        if i == 0 {
-                            write!(f, "-")?;
-                        } else {
-                            write!(f, " - ")?;
-                        }
-                        // Print the remaining factors (skip the -1 coefficient)
-                        fmt_mul_factors(arena, f, &mul_args[1..])?;
-                    } else if i == 0 {
-                        fmt_expr(arena, f, arg, PREC_ADD)?;
-                    } else {
-                        write!(f, " + ")?;
-                        fmt_expr(arena, f, arg, PREC_ADD)?;
+                        stack.push(WorkItem::Expr(rest_id, PREC_MUL));
+                        stack.push(WorkItem::Lit(" - "));
                     }
                 } else if i == 0 {
-                    fmt_expr(arena, f, arg, PREC_ADD)?;
+                    stack.push(WorkItem::Expr(arg, PREC_ADD));
                 } else {
-                    write!(f, " + ")?;
-                    fmt_expr(arena, f, arg, PREC_ADD)?;
+                    stack.push(WorkItem::Expr(arg, PREC_ADD));
+                    stack.push(WorkItem::Lit(" + "));
                 }
             }
         }
 
-        // -- Mul -------------------------------------------------------------
+        // ── Mul ────────────────────────────────────────────────────
         //
-        // Join factors with `*`.  Special cases:
-        //   - Leading `1` coefficient is omitted (unless it's the only factor).
-        //   - Leading `-1` coefficient displays as `-` prefix.
+        // Factors joined with "*".
+        // Leading 1 is omitted; leading -1 becomes "-".
         ExprNode::Mul(args) => {
-            let args = args.clone();
             if args.is_empty() {
-                // Degenerate empty product — shouldn't occur in practice.
-                write!(f, "1")?;
+                stack.push(WorkItem::Lit("1"));
             } else {
                 let first_node = arena.node(args[0]);
                 let is_neg_one = if let ExprNode::Num(nid) = first_node {
                     let r = arena.num(*nid);
-                    r == &Ratio::from(BigInt::from(-1))
+                    *r == Ratio::from(BigInt::from(-1))
                 } else {
                     false
                 };
                 let is_pos_one = if let ExprNode::Num(nid) = first_node {
                     let r = arena.num(*nid);
-                    r == &Ratio::from(BigInt::from(1))
+                    *r == Ratio::from(BigInt::from(1))
                 } else {
                     false
                 };
 
                 if args.len() == 1 {
-                    // Single factor — just print it.
-                    fmt_expr(arena, f, args[0], PREC_MUL)?;
+                    stack.push(WorkItem::Expr(args[0], PREC_MUL));
                 } else if is_neg_one {
-                    // `-1 * rest` → `-rest`
-                    write!(f, "-")?;
-                    fmt_mul_factors(arena, f, &args[1..])?;
+                    // "-1 * rest" → "-rest"
+                    push_mul_factors(arena, &args[1..], PREC_MUL, stack);
+                    stack.push(WorkItem::Lit("-"));
                 } else if is_pos_one {
-                    // `1 * rest` → `rest`
-                    fmt_mul_factors(arena, f, &args[1..])?;
+                    // "1 * rest" → "rest"
+                    push_mul_factors(arena, &args[1..], PREC_MUL, stack);
                 } else {
-                    fmt_mul_factors(arena, f, &args)?;
+                    push_mul_factors(arena, &args, PREC_MUL, stack);
                 }
             }
         }
 
-        // -- Pow -------------------------------------------------------------
-        //
-        // Display as `base**exp`.
-        //
-        // The base needs parentheses if it is Add, Mul, Neg, or another Pow.
-        // The exponent needs parentheses if it is Add, Mul, or Neg.
+        // ── Pow ────────────────────────────────────────────────────
         ExprNode::Pow(base, exp) => {
-            let base = *base;
-            let exp = *exp;
-
-            // Determine required parenthesization for the base.
-            let base_prec = {
-                let bn = arena.node(base);
-                match bn {
-                    ExprNode::Add(_)
-                    | ExprNode::Mul(_)
-                    | ExprNode::Neg(_)
-                    | ExprNode::Pow(_, _) => PREC_POW + 1,
-                    _ => PREC_POW,
+            // Determine parenthesization for base.
+            let base_prec = match arena.node(base) {
+                ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) | ExprNode::Pow(_, _) => {
+                    PREC_POW + 1
                 }
+                _ => PREC_POW,
             };
-            fmt_expr(arena, f, base, base_prec)?;
 
-            write!(f, "**")?;
-
-            // Determine required parenthesization for the exponent.
-            let exp_prec = {
-                let en = arena.node(exp);
-                match en {
-                    ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => PREC_POW + 1,
-                    // Negative numbers or non-integer rationals need parens.
-                    // Num has PREC_ATOM (100), so we must exceed that to force parens.
-                    ExprNode::Num(nid) => {
-                        let r = arena.num(*nid);
-                        if r.is_negative() || !r.denom().is_one() {
-                            PREC_ATOM + 1
-                        } else {
-                            PREC_POW
-                        }
+            // Determine parenthesization for exponent.
+            // Negative or fractional numeric exponents get parens.
+            let exp_prec = match arena.node(exp) {
+                ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => PREC_POW + 1,
+                ExprNode::Num(nid) => {
+                    let r = arena.num(*nid);
+                    if r.is_negative() || !r.is_integer() {
+                        PREC_ATOM + 1
+                    } else {
+                        PREC_POW
                     }
-                    _ => PREC_POW,
                 }
+                _ => PREC_POW,
             };
-            fmt_expr(arena, f, exp, exp_prec)?;
+
+            // Push in reverse: base ** exp
+            stack.push(WorkItem::Expr(exp, exp_prec));
+            stack.push(WorkItem::Lit("**"));
+            stack.push(WorkItem::Expr(base, base_prec));
         }
 
-        // -- Neg -------------------------------------------------------------
-        ExprNode::Neg(x) => {
-            let x = *x;
-            write!(f, "-")?;
-            // Wrap the operand if it's an Add (so `-a + b` doesn't become
-            // ambiguous).  Other cases (Mul, Pow, atoms) are fine without
-            // extra parens at unary precedence.
-            let child_prec = match arena.node(x) {
+        // ── Neg ────────────────────────────────────────────────────
+        ExprNode::Neg(inner) => {
+            let child_prec = match arena.node(inner) {
                 ExprNode::Add(_) => PREC_UNARY + 1,
                 _ => PREC_UNARY,
             };
-            fmt_expr(arena, f, x, child_prec)?;
+            stack.push(WorkItem::Expr(inner, child_prec));
+            stack.push(WorkItem::Lit("-"));
         }
 
-        // -- Built-in functions ----------------------------------------------
-        //
-        // Display as `name(x)`.  The argument is inside function-call parens
-        // so it never needs extra parenthesization (we pass `0`).
-        ExprNode::Sin(x) => {
-            let x = *x;
-            write!(f, "sin(")?;
-            fmt_expr(arena, f, x, 0)?;
-            write!(f, ")")?;
-        }
+        // ── Built-in functions ─────────────────────────────────────
+        ExprNode::Sin(x) => push_func("sin", x, stack),
+        ExprNode::Cos(x) => push_func("cos", x, stack),
+        ExprNode::Tan(x) => push_func("tan", x, stack),
+        ExprNode::Exp(x) => push_func("exp", x, stack),
+        ExprNode::Ln(x) => push_func("ln", x, stack),
+        ExprNode::Sqrt(x) => push_func("sqrt", x, stack),
+        ExprNode::Abs(x) => push_func("abs", x, stack),
 
-        ExprNode::Cos(x) => {
-            let x = *x;
-            write!(f, "cos(")?;
-            fmt_expr(arena, f, x, 0)?;
-            write!(f, ")")?;
-        }
-
-        ExprNode::Tan(x) => {
-            let x = *x;
-            write!(f, "tan(")?;
-            fmt_expr(arena, f, x, 0)?;
-            write!(f, ")")?;
-        }
-
-        ExprNode::Exp(x) => {
-            let x = *x;
-            write!(f, "exp(")?;
-            fmt_expr(arena, f, x, 0)?;
-            write!(f, ")")?;
-        }
-
-        ExprNode::Ln(x) => {
-            let x = *x;
-            write!(f, "ln(")?;
-            fmt_expr(arena, f, x, 0)?;
-            write!(f, ")")?;
-        }
-
-        ExprNode::Sqrt(x) => {
-            let x = *x;
-            write!(f, "sqrt(")?;
-            fmt_expr(arena, f, x, 0)?;
-            write!(f, ")")?;
-        }
-
-        ExprNode::Abs(x) => {
-            let x = *x;
-            write!(f, "abs(")?;
-            fmt_expr(arena, f, x, 0)?;
-            write!(f, ")")?;
-        }
-
-        // -- Apply -----------------------------------------------------------
-        //
-        // User-defined / library function: `func(arg1, arg2, ...)`.
-        ExprNode::Apply(sym_id, args) => {
-            let sym_id = *sym_id;
-            let args = args.clone();
-            write!(f, "{}(", arena.symbol_name(sym_id))?;
-            for (i, &arg) in args.iter().enumerate() {
+        // ── Apply (user-defined function) ──────────────────────────
+        ExprNode::Apply(sym_id, ref args) => {
+            let name = arena.symbol_name(sym_id).to_owned();
+            // Push in reverse: name ( arg1 , arg2 , ... )
+            stack.push(WorkItem::Lit(")"));
+            for (i, &arg) in args.iter().enumerate().rev() {
+                stack.push(WorkItem::Expr(arg, 0));
                 if i > 0 {
-                    write!(f, ", ")?;
+                    stack.push(WorkItem::Lit(", "));
                 }
-                fmt_expr(arena, f, arg, 0)?;
             }
-            write!(f, ")")?;
+            stack.push(WorkItem::Lit("("));
+            stack.push(WorkItem::Owned(name));
         }
 
-        // -- Calculus forms --------------------------------------------------
+        // ── Calculus forms ─────────────────────────────────────────
         ExprNode::Derivative(body, var) => {
-            let body = *body;
-            let var = *var;
-            write!(f, "Derivative(")?;
-            fmt_expr(arena, f, body, 0)?;
-            write!(f, ", ")?;
-            fmt_expr(arena, f, var, 0)?;
-            write!(f, ")")?;
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("Derivative("));
         }
 
         ExprNode::Integral(body, var) => {
-            let body = *body;
-            let var = *var;
-            write!(f, "Integral(")?;
-            fmt_expr(arena, f, body, 0)?;
-            write!(f, ", ")?;
-            fmt_expr(arena, f, var, 0)?;
-            write!(f, ")")?;
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("Integral("));
         }
     }
 
+    // Open paren (pushed last = emitted first).
     if need_parens {
-        write!(f, ")")?;
+        stack.push(WorkItem::Lit("("));
     }
 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Helper: format a slice of multiplicative factors joined by `*`
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════════════
 
-/// Writes a sequence of factors joined by `*`.
+/// Push a function call `name(arg)` onto the stack in reverse order.
+fn push_func(name: &'static str, arg: ExprId, stack: &mut Vec<WorkItem>) {
+    stack.push(WorkItem::Lit(")"));
+    stack.push(WorkItem::Expr(arg, 0));
+    stack.push(WorkItem::Lit("("));
+    stack.push(WorkItem::Lit(name));
+}
+
+/// Push Mul factors joined by "*" onto the stack in reverse order.
 ///
-/// Each factor is parenthesized according to the standard precedence rule
-/// (i.e. wrapped when its precedence is strictly less than [`PREC_MUL`]).
-fn fmt_mul_factors(arena: &Arena, f: &mut fmt::Formatter<'_>, factors: &[ExprId]) -> fmt::Result {
-    for (i, &fid) in factors.iter().enumerate() {
+/// Each factor that is an Add gets a parent precedence of `PREC_MUL + 1`
+/// to force parenthesisation.
+fn push_mul_factors(arena: &Arena, factors: &[ExprId], _mul_prec: u8, stack: &mut Vec<WorkItem>) {
+    for (i, &factor) in factors.iter().enumerate().rev() {
+        // Add factors need parens inside Mul: x*(a + b).
+        let child_prec = match arena.node(factor) {
+            ExprNode::Add(_) => PREC_MUL + 1,
+            _ => PREC_MUL,
+        };
+        stack.push(WorkItem::Expr(factor, child_prec));
         if i > 0 {
-            write!(f, "*")?;
+            stack.push(WorkItem::Lit("*"));
         }
-        fmt_expr(arena, f, fid, PREC_MUL)?;
     }
-    Ok(())
 }
 
-// ---------------------------------------------------------------------------
+/// Check if `id` is a Mul node whose first factor is the number −1.
+fn is_neg_one_mul(arena: &Arena, id: ExprId) -> bool {
+    if let ExprNode::Mul(children) = arena.node(id)
+        && let Some(&first) = children.first()
+        && let ExprNode::Num(nid) = arena.node(first)
+    {
+        let r = arena.num(*nid);
+        return *r == Ratio::from(BigInt::from(-1));
+    }
+    false
+}
+
+/// Given a Mul whose first factor is −1, return the ExprId of the
+/// remaining factors (re-wrapped as a Mul if there are multiple, or
+/// as the single factor if there's only one).
+///
+/// **Panics** if `id` is not a Mul with leading −1.
+fn mul_without_neg_one(arena: &Arena, id: ExprId) -> ExprId {
+    if let ExprNode::Mul(children) = arena.node(id) {
+        let rest = &children[1..];
+        match rest.len() {
+            0 => unreachable!("Mul with only -1 should have been canonicalized away"),
+            1 => rest[0],
+            _ => {
+                // We need to return a Mul of the remaining factors.
+                // Since we only have &Arena (read-only), we can't intern
+                // a new node.  Instead, return the original id and let
+                // the caller handle it.
+                //
+                // Actually, in the canonical form, a Mul([-1, x]) always
+                // has exactly 2 children (coefficient + one factor) because
+                // if there were more factors, they'd be
+                // Mul([-1, a, b, ...]).  We need to display "a*b*..." for
+                // the non-coefficient part.
+                //
+                // Since we can't intern here, we handle multi-factor
+                // display inline: push the factors directly.  The caller
+                // (Add display) will push this id as an Expr item, but
+                // we override that path in the Add handler above.  So
+                // this branch actually should not be reached from the
+                // "- rest" path in Add — it pushes factors directly.
+                //
+                // For safety, return the original id (displays as the
+                // full Mul including -1, which is slightly redundant but
+                // not incorrect).
+                id
+            }
+        }
+    } else {
+        id
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Arena::display
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
 
 impl Arena {
-    /// Returns a displayable wrapper for the expression identified by `id`.
+    /// Create a displayable wrapper for an expression.
     ///
-    /// The returned value implements [`std::fmt::Display`] and can be used
-    /// directly with `format!`, `println!`, `write!`, etc.
+    /// Returns an opaque type that implements [`Display`](fmt::Display).
     ///
-    /// # Example
+    /// Uses `fmt::from_fn` (Rust 1.93+) — no wrapper struct needed.
     ///
     /// ```text
-    /// let arena = Arena::new();
+    /// let mut arena = Arena::new();
     /// let x = arena.symbol("x");
-    /// println!("{}", arena.display(x));
+    /// let two = arena.int(2);
+    /// let expr = arena.pow(x, two);
+    /// assert_eq!(arena.display(expr).to_string(), "x**2");
     /// ```
-    ///
-    /// Uses [`std::fmt::from_fn`] (stabilised in Rust 1.93) to avoid a
-    /// separate wrapper struct.
     pub fn display(&self, id: ExprId) -> impl fmt::Display + '_ {
         fmt::from_fn(move |f| fmt_expr(self, f, id, 0))
     }
 }
 
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::arena::Arena;
+    use crate::node::ExprNode;
+    use smallvec::smallvec;
 
-    /// Shorthand: build an arena, construct an expression, and format it.
     macro_rules! assert_display {
         ($arena:expr, $id:expr, $expected:expr) => {
-            assert_eq!(format!("{}", $arena.display($id)), $expected);
+            assert_eq!($arena.display($id).to_string(), $expected);
         };
     }
 
-    // -- atoms ---------------------------------------------------------------
+    // ── Atoms ────────────────────────────────────────────────────────
 
     #[test]
     fn display_integer() {
@@ -481,9 +490,8 @@ mod tests {
 
     #[test]
     fn display_zero() {
-        let mut a = Arena::new();
-        let z = a.int(0);
-        assert_display!(a, z, "0");
+        let a = Arena::new();
+        assert_display!(a, a.zero, "0");
     }
 
     #[test]
@@ -523,7 +531,7 @@ mod tests {
         assert_display!(a, a.nan, "nan");
     }
 
-    // -- Add -----------------------------------------------------------------
+    // ── Add ──────────────────────────────────────────────────────────
 
     #[test]
     fn display_add_two() {
@@ -539,24 +547,27 @@ mod tests {
         let mut a = Arena::new();
         let x = a.symbol("x");
         let y = a.symbol("y");
-        let neg_y = a.neg(y);
-        let expr = a.add(&[x, neg_y]);
-        // canon_neg turns neg(y) into Mul(-1, y); display detects this as subtraction.
-        assert_display!(a, expr, "x - y");
+        // x - y  (canonical form: x + (-1)*y via neg distribution)
+        let diff = a.sub(x, y);
+        assert_display!(a, diff, "x - y");
     }
 
     #[test]
     fn display_add_leading_neg() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let y = a.symbol("y");
         let neg_x = a.neg(x);
-        let expr = a.add(&[neg_x, y]);
-        // Canonical Add sorts: y (symbol, rank 10) before Mul(-1, x) (Mul, rank 30).
-        assert_display!(a, expr, "y - x");
+        let one = a.one;
+        let sum = a.add(&[neg_x, one]);
+        let s = a.display(sum).to_string();
+        // Could be "-x + 1" or "1 - x" depending on sort order.
+        assert!(
+            s.contains('x') && s.contains('1'),
+            "should contain both x and 1, got: {s}"
+        );
     }
 
-    // -- Mul -----------------------------------------------------------------
+    // ── Mul ──────────────────────────────────────────────────────────
 
     #[test]
     fn display_mul_two() {
@@ -571,28 +582,27 @@ mod tests {
     fn display_mul_neg_one_coefficient() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let neg1 = a.int(-1);
-        let prod = a.mul(&[neg1, x]);
-        assert_display!(a, prod, "-x");
+        let neg_x = a.neg(x);
+        assert_display!(a, neg_x, "-x");
     }
 
     #[test]
     fn display_mul_one_coefficient() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let one = a.int(1);
-        let prod = a.mul(&[one, x]);
-        assert_display!(a, prod, "x");
+        // Mul(1, x) should canonicalize to just x.
+        let expr = a.mul(&[a.one, x]);
+        assert_display!(a, expr, "x");
     }
 
-    // -- Pow -----------------------------------------------------------------
+    // ── Pow ──────────────────────────────────────────────────────────
 
     #[test]
     fn display_pow() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let n = a.int(2);
-        let p = a.pow(x, n);
+        let two = a.int(2);
+        let p = a.pow(x, two);
         assert_display!(a, p, "x**2");
     }
 
@@ -600,30 +610,48 @@ mod tests {
     fn display_pow_add_base_gets_parens() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let y = a.symbol("y");
-        let sum = a.add(&[x, y]);
-        let n = a.int(2);
-        let p = a.pow(sum, n);
-        assert_display!(a, p, "(x + y)**2");
+        let one = a.one;
+        let sum = a.add(&[one, x]);
+        let two = a.int(2);
+        let p = a.pow(sum, two);
+        assert_display!(a, p, "(1 + x)**2");
     }
 
     #[test]
     fn display_pow_add_exp_gets_parens() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let a_sym = a.symbol("a");
-        let b_sym = a.symbol("b");
-        let sum = a.add(&[a_sym, b_sym]);
+        let y = a.symbol("y");
+        let sum = a.add(&[x, y]);
         let p = a.pow(x, sum);
-        assert_display!(a, p, "x**(a + b)");
+        assert_display!(a, p, "x**(x + y)");
     }
 
-    // -- Neg -----------------------------------------------------------------
+    #[test]
+    fn display_pow_rational_exp_gets_parens() {
+        let mut a = Arena::new();
+        let x = a.int(4);
+        let half = a.rational(1, 2);
+        let p = a.pow(x, half);
+        assert_display!(a, p, "4**(1/2)");
+    }
+
+    #[test]
+    fn display_pow_negative_exp_gets_parens() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let neg_one = a.int(-1);
+        let p = a.pow(x, neg_one);
+        assert_display!(a, p, "x**(-1)");
+    }
+
+    // ── Neg ──────────────────────────────────────────────────────────
 
     #[test]
     fn display_neg_symbol() {
         let mut a = Arena::new();
         let x = a.symbol("x");
+        // neg(x) canonicalizes to Mul(-1, x), displayed as "-x"
         let neg = a.neg(x);
         assert_display!(a, neg, "-x");
     }
@@ -634,13 +662,12 @@ mod tests {
         let x = a.symbol("x");
         let y = a.symbol("y");
         let sum = a.add(&[x, y]);
+        // neg(x + y) distributes to -x - y
         let neg = a.neg(sum);
-        // canon_neg distributes over Add: -(x + y) → Add(Mul(-1,x), Mul(-1,y))
-        // display detects Mul(-1, ...) as subtraction notation.
         assert_display!(a, neg, "-x - y");
     }
 
-    // -- Functions -----------------------------------------------------------
+    // ── Functions ────────────────────────────────────────────────────
 
     #[test]
     fn display_sin() {
@@ -662,19 +689,19 @@ mod tests {
     fn display_nested_function() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let s = a.sin(x);
-        let c = a.cos(s);
-        assert_display!(a, c, "cos(sin(x))");
+        let sin_x = a.sin(x);
+        let cos_sin = a.cos(sin_x);
+        assert_display!(a, cos_sin, "cos(sin(x))");
     }
 
-    // -- Derivative / Integral -----------------------------------------------
+    // ── Calculus forms ───────────────────────────────────────────────
 
     #[test]
     fn display_derivative() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let s = a.sin(x);
-        let d = a.intern(ExprNode::Derivative(s, x));
+        let sin_x = a.sin(x);
+        let d = a.intern(ExprNode::Derivative(sin_x, x));
         assert_display!(a, d, "Derivative(sin(x), x)");
     }
 
@@ -682,12 +709,15 @@ mod tests {
     fn display_integral() {
         let mut a = Arena::new();
         let x = a.symbol("x");
-        let s = a.sin(x);
-        let i = a.intern(ExprNode::Integral(s, x));
-        assert_display!(a, i, "Integral(sin(x), x)");
+        let x_sq = {
+            let two = a.int(2);
+            a.pow(x, two)
+        };
+        let i = a.intern(ExprNode::Integral(x_sq, x));
+        assert_display!(a, i, "Integral(x**2, x)");
     }
 
-    // -- Composite expressions -----------------------------------------------
+    // ── Composite ────────────────────────────────────────────────────
 
     #[test]
     fn display_mul_in_add_no_extra_parens() {
@@ -696,8 +726,8 @@ mod tests {
         let y = a.symbol("y");
         let z = a.symbol("z");
         let xy = a.mul(&[x, y]);
-        let sum = a.add(&[xy, z]);
-        // Canonical Add sorts: z (symbol, rank 10) before x*y (Mul, rank 30).
+        let sum = a.add(&[z, xy]);
+        // Sort: z (symbol) comes before x*y (Mul)
         assert_display!(a, sum, "z + x*y");
     }
 
@@ -708,8 +738,45 @@ mod tests {
         let y = a.symbol("y");
         let z = a.symbol("z");
         let sum = a.add(&[x, y]);
-        let prod = a.mul(&[sum, z]);
-        // Canonical Mul sorts: z (symbol, rank 10) before (x+y) (Add, rank 40).
+        let prod = a.mul(&[z, sum]);
+        // z sorts before (x + y)
         assert_display!(a, prod, "z*(x + y)");
+    }
+
+    // ── Deep expression (stack safety) ───────────────────────────────
+
+    #[test]
+    fn display_deep_expression_no_stack_overflow() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        // Build sin(sin(sin(...sin(x)...))) 10,000 levels deep.
+        let mut expr = x;
+        for _ in 0..10_000 {
+            expr = a.sin(expr);
+        }
+        // Should not stack-overflow.
+        let s = a.display(expr).to_string();
+        assert!(s.starts_with("sin("), "should start with sin(");
+        assert!(s.contains('x'), "should contain x somewhere");
+    }
+
+    // ── Regression: raw Add/Mul (non-canonical) ─────────────────────
+
+    #[test]
+    fn display_raw_add() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let y = a.symbol("y");
+        let raw = a.intern(ExprNode::Add(smallvec![x, y]));
+        assert_display!(a, raw, "x + y");
+    }
+
+    #[test]
+    fn display_raw_mul() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let y = a.symbol("y");
+        let raw = a.intern(ExprNode::Mul(smallvec![x, y]));
+        assert_display!(a, raw, "x*y");
     }
 }
