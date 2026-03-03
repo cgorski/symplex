@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 260bf15d9e8a2698f6104c92b72e6c1afd8ebdd2b7febedec619c35f13a81b96 # shrinks to desc = Mul(Mul(Add(Int(0), Int(2)), Sym(0)), Add(Mul(Int(1), Sym(0)), Int(1)))
+cc 50528a13fa9e115b6b8ec51b1ebd3c528fe7086e62b53198fb67257a5d81c9de # shrinks to a = Int(-1), b = Mul(Int(-1), Int(1)), n = 2
+cc 45571a50f83facc7b73daf61f027490616aba293cc47731a91ef753662769651 # shrinks to desc = Mul(Add(Int(1), Add(Int(0), Sym(0))), Neg(Int(1)))
+cc 2610882c6f1b1f9a93bdbe9b807ef0c8ad7ac07f6da3e5d73111c69f65ac70da # shrinks to desc = Mul(Neg(Int(1)), Add(Sym(0), Int(-1)))

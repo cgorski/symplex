@@ -313,6 +313,39 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         return arena.infinity;
     }
 
+    // ── Distribution: Number * Add → distributed sum ──────────────
+    //
+    // When the final result is exactly `[Number, Add]` (a single numeric
+    // coefficient times a sum), distribute the coefficient over the
+    // Add's terms.  This matches SymPy's `Mul.flatten` final step and
+    // is required for correct like-term cancellation in `canon_add`.
+    //
+    // Without this, `Mul(-1, Add(-1, x))` would remain as a single
+    // opaque term inside a sum, preventing cancellation with the bare
+    // terms `-1` and `x`.
+    //
+    // Only `Number * Add` distributes — symbolic products like
+    // `x * (y + z)` are never distributed (that's `.expand()`).
+    //
+    // This does mean that `2*(x+1)` → `2 + 2*x` while `y*2*(x+1)`
+    // stays as `2*y*(x+1)`.  These are different canonical forms for
+    // expressions built with different grouping — which is consistent
+    // with SymPy's 20-year-proven approach.  Full normalisation across
+    // groupings is the job of `.expand()` (Stage 7).
+    if result_args.len() == 2 {
+        let first = result_args[0];
+        let second = result_args[1];
+        if let ExprNode::Num(_) = arena.node(first)
+            && let ExprNode::Add(add_children) = arena.node(second).clone()
+        {
+            let distributed: SmallVec<[ExprId; 6]> = add_children
+                .iter()
+                .map(|&child| canon_mul(arena, &[first, child]))
+                .collect();
+            return canon_add(arena, &distributed);
+        }
+    }
+
     // Final assembly.
     match result_args.len() {
         0 => arena.one,

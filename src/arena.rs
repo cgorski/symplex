@@ -384,8 +384,10 @@ impl Arena {
     ///
     /// - coeff == 0 → self.zero
     /// - coeff == 1 → term
-    /// - coeff == -1 → Neg(term) (via raw intern, not canonical neg)
-    /// - otherwise → Mul([Num(coeff), term])
+    /// - otherwise → canonical Mul([Num(coeff), term])
+    ///
+    /// Uses [`canon_mul`](crate::canon::canon_mul) to ensure the result
+    /// is properly flattened (no nested Mul nodes).
     pub(crate) fn make_coeff_term(&mut self, coeff: Ratio<BigInt>, term: ExprId) -> ExprId {
         if coeff.is_zero() {
             return self.zero;
@@ -400,9 +402,8 @@ impl Arena {
         if term == self.one {
             return coeff_id;
         }
-        // Build Mul([coeff, term])
-        let sv: SmallVec<[ExprId; 6]> = smallvec::smallvec![coeff_id, term];
-        self.intern(ExprNode::Mul(sv))
+        // Use canon_mul to ensure flattening (e.g., coeff * Mul([a, b]) → Mul([coeff, a, b]))
+        crate::canon::canon_mul(self, &[coeff_id, term])
     }
 
     /// Check if an expression is a numeric literal and return its value.

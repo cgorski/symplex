@@ -354,14 +354,19 @@ fn no_auto_expand_via_operators() {
 }
 
 #[test]
-fn no_auto_distribute_via_operators() {
+fn no_auto_distribute_symbolic_via_operators() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
+    let z = ctx.symbol("z");
     let sum = &x + &y;
-    let result = &ctx.int(2) * &sum;
-    // Should stay as 2*(x + y), NOT distribute.
-    assert_eq!(format!("{result}"), "2*(x + y)");
+    // Symbolic * Add does NOT distribute (that's .expand()).
+    let result = &z * &sum;
+    assert_eq!(format!("{result}"), "z*(x + y)");
+    // But numeric * Add DOES distribute (design choice for correct
+    // cancellation in a - a = 0).
+    let result2 = &ctx.int(2) * &sum;
+    assert_eq!(format!("{result2}"), "2*x + 2*y");
 }
 
 #[test]
