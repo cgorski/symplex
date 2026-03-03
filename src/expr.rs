@@ -225,8 +225,69 @@ impl Ex {
         inner.assumptions.lock().query(&inner.arena, self.id, prop)
     }
 
-    // ── Future stubs ───────────────────────────────────────────────
-    // These will be filled in by later stages.
+    /// Query whether this expression is negative.
+    ///
+    /// Returns `Some(true)` if provably negative, `Some(false)` if
+    /// provably not negative, or `None` if unknown.
+    pub fn is_negative(&self) -> Option<bool> {
+        self.query(Props::NEGATIVE)
+    }
+
+    /// Query whether this expression is real.
+    ///
+    /// Returns `Some(true)` if provably real, `Some(false)` if
+    /// provably not real, or `None` if unknown.
+    pub fn is_real(&self) -> Option<bool> {
+        self.query(Props::REAL)
+    }
+
+    /// Query whether this expression is an integer.
+    ///
+    /// Returns `Some(true)` if provably an integer, `Some(false)` if
+    /// provably not an integer, or `None` if unknown.
+    pub fn is_integer(&self) -> Option<bool> {
+        self.query(Props::INTEGER)
+    }
+
+    /// Query whether this expression is nonzero.
+    ///
+    /// Returns `Some(true)` if provably nonzero, `Some(false)` if
+    /// provably zero, or `None` if unknown.
+    pub fn is_nonzero(&self) -> Option<bool> {
+        self.query(Props::NONZERO)
+    }
+
+    /// Query whether this expression is finite.
+    ///
+    /// Returns `Some(true)` if provably finite, `Some(false)` if
+    /// provably not finite, or `None` if unknown.
+    pub fn is_finite(&self) -> Option<bool> {
+        self.query(Props::FINITE)
+    }
+
+    // ── Structural introspection ───────────────────────────────────
+
+    /// Returns the set of free symbols in this expression.
+    ///
+    /// Each symbol appears at most once. The order is deterministic
+    /// but unspecified.
+    pub fn free_symbols(&self) -> Vec<Ex> {
+        let inner = self.inner.read();
+        let expr_ids = crate::walk::free_symbols(&inner.arena, self.id);
+        drop(inner);
+        expr_ids.into_iter().map(|eid| self.wrap(eid)).collect()
+    }
+
+    /// Returns `true` if `needle` appears as a sub-expression of `self`.
+    ///
+    /// This is a structural check — it walks the expression DAG and
+    /// returns `true` if any node has the same [`ExprId`] as `needle`.
+    pub fn contains(&self, needle: &Ex) -> bool {
+        let inner = self.inner.read();
+        crate::walk::contains(&inner.arena, self.id, needle.id)
+    }
+
+    // ── Transformations ────────────────────────────────────────────
 
     /// Symbolic differentiation with respect to `var`.
     ///
@@ -654,72 +715,54 @@ macro_rules! impl_nary_binop_i64 {
 impl_nary_binop_i64!(Add, add, add);
 impl_nary_binop_i64!(Mul, mul, mul);
 
-// ── i64 Sub ────────────────────────────────────────────────────────────
+// ── Macro for binary i64 operators (Sub, Div) ──────────────────────────
+//
+// These go through `arena.sub(lhs, rhs)` / `arena.div(lhs, rhs)`.
 
-impl ops::Sub<i64> for Ex {
-    type Output = Ex;
-    fn sub(self, rhs: i64) -> Ex {
-        let mut inner = self.inner.write();
-        let rhs_id = inner.arena.int(rhs);
-        let id = inner.arena.sub(self.id, rhs_id);
-        drop(inner);
-        self.wrap(id)
-    }
+macro_rules! impl_binary_binop_i64 {
+    ($trait:ident, $method:ident, $arena_method:ident) => {
+        impl ops::$trait<i64> for Ex {
+            type Output = Ex;
+            fn $method(self, rhs: i64) -> Ex {
+                let mut inner = self.inner.write();
+                let rhs_id = inner.arena.int(rhs);
+                let id = inner.arena.$arena_method(self.id, rhs_id);
+                drop(inner);
+                self.wrap(id)
+            }
+        }
+        impl ops::$trait<i64> for &Ex {
+            type Output = Ex;
+            fn $method(self, rhs: i64) -> Ex {
+                let mut inner = self.inner.write();
+                let rhs_id = inner.arena.int(rhs);
+                let id = inner.arena.$arena_method(self.id, rhs_id);
+                drop(inner);
+                self.wrap(id)
+            }
+        }
+        impl ops::$trait<Ex> for i64 {
+            type Output = Ex;
+            fn $method(self, rhs: Ex) -> Ex {
+                let mut inner = rhs.inner.write();
+                let lhs_id = inner.arena.int(self);
+                let id = inner.arena.$arena_method(lhs_id, rhs.id);
+                drop(inner);
+                rhs.wrap(id)
+            }
+        }
+        impl ops::$trait<&Ex> for i64 {
+            type Output = Ex;
+            fn $method(self, rhs: &Ex) -> Ex {
+                let mut inner = rhs.inner.write();
+                let lhs_id = inner.arena.int(self);
+                let id = inner.arena.$arena_method(lhs_id, rhs.id);
+                drop(inner);
+                rhs.wrap(id)
+            }
+        }
+    };
 }
 
-impl ops::Sub<i64> for &Ex {
-    type Output = Ex;
-    fn sub(self, rhs: i64) -> Ex {
-        let mut inner = self.inner.write();
-        let rhs_id = inner.arena.int(rhs);
-        let id = inner.arena.sub(self.id, rhs_id);
-        drop(inner);
-        self.wrap(id)
-    }
-}
-
-impl ops::Sub<Ex> for i64 {
-    type Output = Ex;
-    fn sub(self, rhs: Ex) -> Ex {
-        let mut inner = rhs.inner.write();
-        let lhs_id = inner.arena.int(self);
-        let id = inner.arena.sub(lhs_id, rhs.id);
-        drop(inner);
-        rhs.wrap(id)
-    }
-}
-
-impl ops::Sub<&Ex> for i64 {
-    type Output = Ex;
-    fn sub(self, rhs: &Ex) -> Ex {
-        let mut inner = rhs.inner.write();
-        let lhs_id = inner.arena.int(self);
-        let id = inner.arena.sub(lhs_id, rhs.id);
-        drop(inner);
-        rhs.wrap(id)
-    }
-}
-
-// ── i64 Div ────────────────────────────────────────────────────────────
-
-impl ops::Div<i64> for Ex {
-    type Output = Ex;
-    fn div(self, rhs: i64) -> Ex {
-        let mut inner = self.inner.write();
-        let rhs_id = inner.arena.int(rhs);
-        let id = inner.arena.div(self.id, rhs_id);
-        drop(inner);
-        self.wrap(id)
-    }
-}
-
-impl ops::Div<i64> for &Ex {
-    type Output = Ex;
-    fn div(self, rhs: i64) -> Ex {
-        let mut inner = self.inner.write();
-        let rhs_id = inner.arena.int(rhs);
-        let id = inner.arena.div(self.id, rhs_id);
-        drop(inner);
-        self.wrap(id)
-    }
-}
+impl_binary_binop_i64!(Sub, sub, sub);
+impl_binary_binop_i64!(Div, div, div);

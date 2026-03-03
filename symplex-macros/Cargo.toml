@@ -10,6 +10,6 @@ description = "Proc macros for the symplex symbolic mathematics library"
 proc-macro = true
 
 [dependencies]
-syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+syn = { version = "2", features = ["parsing", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"

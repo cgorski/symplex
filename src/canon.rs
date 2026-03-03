@@ -196,7 +196,6 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     let mut bases: FxHashMap<ExprId, SmallVec<[ExprId; 4]>> = FxHashMap::default();
 
     // Track special values.
-    let saw_nan = false;
     let mut saw_infinity = false; // any kind of infinity (oo, -oo, zoo)
 
     // Explicit stack for iterative flattening.
@@ -257,7 +256,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 
     // If coefficient became zero during processing.
     if coeff.is_zero() {
-        if saw_infinity || saw_nan {
+        if saw_infinity {
             return arena.nan;
         }
         return arena.zero;

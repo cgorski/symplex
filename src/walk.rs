@@ -18,9 +18,8 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::arena::Arena;
-use crate::node::{ExprId, ExprNode};
-#[cfg(test)]
 use crate::node::SymbolId;
+use crate::node::{ExprId, ExprNode};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Post-order traversal
@@ -129,7 +128,11 @@ pub(crate) fn walk_and_rebuild(
 ///
 /// When children have changed, uses the canonical constructors
 /// (`arena.add`, `arena.mul`, etc.) to maintain canonical form.
-pub(crate) fn rebuild_with_cache(arena: &mut Arena, id: ExprId, cache: &FxHashMap<ExprId, ExprId>) -> ExprId {
+pub(crate) fn rebuild_with_cache(
+    arena: &mut Arena,
+    id: ExprId,
+    cache: &FxHashMap<ExprId, ExprId>,
+) -> ExprId {
     let node = arena.node(id).clone();
 
     match node {
@@ -251,8 +254,7 @@ fn rebuild_unary(
 /// rooted at `haystack`.
 ///
 /// Uses an explicit stack — never recurses.
-// Used in tests and future stages.
-#[cfg(test)]
+// Used for structural queries.
 pub(crate) fn contains(arena: &Arena, haystack: ExprId, needle: ExprId) -> bool {
     if haystack == needle {
         return true;
@@ -277,12 +279,12 @@ pub(crate) fn contains(arena: &Arena, haystack: ExprId, needle: ExprId) -> bool 
     false
 }
 
-/// Collect all free [`SymbolId`]s that appear in the expression tree.
+/// Collect the [`ExprId`] of every free symbol that appears in the
+/// expression tree.  Each symbol appears at most once.
 ///
 /// Uses an explicit stack — never recurses.
-// Used in tests and future stages.
-#[cfg(test)]
-pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<SymbolId> {
+// Used for structural queries.
+pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
     let mut result = Vec::new();
     let mut visited: FxHashMap<ExprId, ()> = FxHashMap::default();
     let mut seen_syms: FxHashMap<SymbolId, ()> = FxHashMap::default();
@@ -295,10 +297,11 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<SymbolId> {
         visited.insert(id, ());
 
         if let ExprNode::Symbol(sid) = arena.node(id)
-            && !seen_syms.contains_key(sid) {
-                seen_syms.insert(*sid, ());
-                result.push(*sid);
-            }
+            && !seen_syms.contains_key(sid)
+        {
+            seen_syms.insert(*sid, ());
+            result.push(id);
+        }
 
         let children = arena.node(id).children();
         stack.extend_from_slice(&children);

@@ -575,6 +575,49 @@ abs(abs(w_)) => abs(w_)
 
 ---
 
+## Development Conventions
+
+### Parallel work policy
+
+When multiple implementation tasks are in progress simultaneously (e.g., via parallel agents or contributors), each task **must** operate on a mutually exclusive set of files. If two tasks need to edit the same file, they must be serialized — one completes before the other begins. This prevents merge conflicts, stale-state overwrites, and silent data loss.
+
+When planning parallel work, list the file ownership explicitly:
+
+```text
+Task A: src/arena.rs (exclusive)
+Task B: src/walk.rs, src/context.rs (exclusive)
+Task C: symplex-macros/Cargo.toml, symplex-macros/src/parse.rs (exclusive)
+── BARRIER ──
+Task D: src/expr.rs (exclusive, depends on A+B)
+Task E: symplex-macros/src/lib.rs (exclusive, depends on C)
+```
+
+### Visibility defaults
+
+- New `Arena` methods default to `pub(crate)`. Promote to `pub` only when needed by `context.rs`, `expr.rs`, or generated macro code.
+- `intern()` and `intern_num()` are `pub(crate)`. External access goes through typed constructors (`int`, `symbol`, `sin`, etc.) or pre-interned constant fields.
+
+### Operator implementation via macros
+
+All `Ex` operator implementations use internal macros (`impl_nary_binop`, `impl_binary_binop`, `impl_nary_binop_i64`, `impl_binary_binop_i64`) to guarantee that every ownership combination (`Ex⊕Ex`, `&Ex⊕Ex`, `Ex⊕&Ex`, `&Ex⊕&Ex`, plus all `i64` variants) is generated uniformly. Never add manual operator impls — always extend or add a macro.
+
+### Error discipline
+
+- `SymplexError` is `#[non_exhaustive]`. New variants can be added without breaking downstream `match` arms.
+- `NotImplemented` is reserved for genuinely unimplemented features. Domain errors (free symbols, unevaluable nodes, precision limits) should get dedicated variants.
+- Every `Result`-returning method must have a `# Errors` doc section.
+
+### Test organization
+
+- Every new public method ships with at least 3 tests: happy path, edge case, and error/empty case.
+- Property-based tests (proptest) should cover algebraic invariants for new transformations.
+
+### Mathematical convention documentation
+
+Every non-obvious mathematical choice (e.g., `0^0 = 1`, `ComplexInfinity + finite = NaN`) must be documented in the Design Decisions section with rationale.
+
+---
+
 ## File Layout
 
 ```

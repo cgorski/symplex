@@ -10,13 +10,13 @@
 
 mod parse;
 
-use parse::{BinOp, MathExpr, RuleMacroInput, ExprMacroInput};
-use parse::{is_known_constant, is_known_function, KNOWN_FUNCTIONS};
+use parse::{BinOp, ExprMacroInput, MathExpr, RuleMacroInput};
+use parse::{KNOWN_FUNCTIONS, is_known_constant, is_known_function};
 
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
 use proc_macro2::Span;
-use quote::{quote, format_ident};
+use proc_macro2::TokenStream as TokenStream2;
+use quote::{format_ident, quote};
 use syn::Ident;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -69,17 +69,9 @@ pub fn expr(input: TokenStream) -> TokenStream {
 /// for expression RHS.  Known function names become method calls.
 fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
     match expr {
-        MathExpr::Int(n, _span) => {
-            let lit = proc_macro2::Literal::i64_unsuffixed(*n);
-            let lit = proc_macro2::TokenTree::Literal(lit);
-            let mut ts = TokenStream2::new();
-            ts.extend(std::iter::once(lit));
-            Ok(ts)
-        }
+        MathExpr::Int(n, _span) => Ok(quote! { #n }),
 
-        MathExpr::Ident(id) => {
-            Ok(quote! { (&#id) })
-        }
+        MathExpr::Ident(id) => Ok(quote! { (&#id) }),
 
         MathExpr::Neg(inner) => {
             let inner_code = generate_expr(inner)?;
@@ -153,13 +145,13 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
             }
             let arg_code = generate_expr(&args[0])?;
             let method = match name.as_str() {
-                "sin"  => quote! { sin },
-                "cos"  => quote! { cos },
-                "tan"  => quote! { tan },
-                "exp"  => quote! { exp_fn },
-                "ln"   => quote! { ln },
+                "sin" => quote! { sin },
+                "cos" => quote! { cos },
+                "tan" => quote! { tan },
+                "exp" => quote! { exp_fn },
+                "ln" => quote! { ln },
                 "sqrt" => quote! { sqrt },
-                "abs"  => quote! { abs },
+                "abs" => quote! { abs },
                 _ => unreachable!(),
             };
             Ok(quote! { (#arg_code).#method() })
@@ -224,13 +216,23 @@ fn generate_rule(input: &RuleMacroInput) -> syn::Result<TokenStream2> {
     let arena = &input.arena;
     let name = &input.name;
 
-    // Collect all wilds from LHS and RHS.
-    let mut all_wilds = input.lhs.collect_wilds();
+    // Collect wilds from LHS.
+    let lhs_wilds = input.lhs.collect_wilds();
+
+    // Validate that all RHS wilds also appear in LHS.
     for w in input.rhs.collect_wilds() {
-        if !all_wilds.iter().any(|existing| existing == &w) {
-            all_wilds.push(w);
+        if !lhs_wilds.iter().any(|existing| existing == &w) {
+            return Err(syn::Error::new_spanned(
+                &input.name,
+                format!(
+                    "wild '{}' appears in RHS but not in LHS — it will never be bound by matching",
+                    w
+                ),
+            ));
         }
     }
+
+    let all_wilds = lhs_wilds;
 
     let mut codegen = RuleCodeGen {
         arena: arena.clone(),
@@ -264,7 +266,12 @@ fn generate_rule(input: &RuleMacroInput) -> syn::Result<TokenStream2> {
     let wild_inserts: Vec<TokenStream2> = codegen
         .wild_names
         .iter()
-        .zip(codegen.wild_expr_idents.iter().zip(codegen.wild_wid_idents.iter()))
+        .zip(
+            codegen
+                .wild_expr_idents
+                .iter()
+                .zip(codegen.wild_wid_idents.iter()),
+        )
         .map(|(_, (expr_id, wid_id))| {
             quote! { __wilds.insert(#expr_id, #wid_id); }
         })
@@ -352,14 +359,12 @@ impl RuleCodeGen {
                 if is_known_constant(&name) {
                     let temp = self.fresh_temp();
                     let access = match name.as_str() {
-                        "pi"  => quote! { #arena.pi },
-                        "E"   => quote! { #arena.e_const },
-                        "I"   => quote! { #arena.i_unit },
-                        "oo"  => quote! { #arena.infinity },
+                        "pi" => quote! { #arena.pi },
+                        "E" => quote! { #arena.e_const },
+                        "I" => quote! { #arena.i_unit },
+                        "oo" => quote! { #arena.infinity },
                         "nan" => quote! { #arena.nan },
-                        "zoo" => {
-                            quote! { #arena.intern(::symplex::__macro_support::ExprNode::ComplexInfinity) }
-                        }
+                        "zoo" => quote! { #arena.complex_infinity },
                         _ => unreachable!(),
                     };
                     self.bindings.push(quote! { let #temp = #access; });
@@ -382,7 +387,8 @@ impl RuleCodeGen {
             MathExpr::Neg(inner) => {
                 let inner_temp = self.generate_arena_expr(inner)?;
                 let temp = self.fresh_temp();
-                self.bindings.push(quote! { let #temp = #arena.neg(#inner_temp); });
+                self.bindings
+                    .push(quote! { let #temp = #arena.neg(#inner_temp); });
                 Ok(temp)
             }
 
@@ -425,13 +431,13 @@ impl RuleCodeGen {
                 let temp = self.fresh_temp();
 
                 let call = match name.as_str() {
-                    "sin"  => quote! { #arena.sin(#arg_temp) },
-                    "cos"  => quote! { #arena.cos(#arg_temp) },
-                    "tan"  => quote! { #arena.tan(#arg_temp) },
-                    "exp"  => quote! { #arena.exp_fn(#arg_temp) },
-                    "ln"   => quote! { #arena.ln(#arg_temp) },
+                    "sin" => quote! { #arena.sin(#arg_temp) },
+                    "cos" => quote! { #arena.cos(#arg_temp) },
+                    "tan" => quote! { #arena.tan(#arg_temp) },
+                    "exp" => quote! { #arena.exp_fn(#arg_temp) },
+                    "ln" => quote! { #arena.ln(#arg_temp) },
                     "sqrt" => quote! { #arena.sqrt(#arg_temp) },
-                    "abs"  => quote! { #arena.abs(#arg_temp) },
+                    "abs" => quote! { #arena.abs(#arg_temp) },
                     _ => unreachable!(),
                 };
 

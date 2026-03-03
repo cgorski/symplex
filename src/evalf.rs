@@ -43,6 +43,15 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
     // Ensure a reasonable minimum.
     let prec = binary_prec.max(128);
 
+    // Enforce the configured maximum precision.
+    let max_prec = arena.config.max_evalf_precision as usize;
+    if prec > max_prec {
+        return Err(SymplexError::PrecisionExhausted {
+            requested: digits,
+            achieved: (max_prec * 10 / 34).saturating_sub(6) as u32,
+        });
+    }
+
     let rm = RoundingMode::ToEven;
     let mut cc = Consts::new().map_err(|e| {
         SymplexError::NotImplemented(format!("astro-float constants init failed: {e:?}"))

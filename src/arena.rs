@@ -102,6 +102,9 @@ pub struct Arena {
     /// Not-a-number (undefined / indeterminate).
     pub nan: ExprId,
 
+    /// Complex infinity (z∞ — undirected infinity in the complex plane).
+    pub complex_infinity: ExprId,
+
     // -- pre-interned constants (NumId) -------------------------------------
     /// [`NumId`] for the rational value 0.
     pub zero_num: NumId,
@@ -145,6 +148,7 @@ impl Arena {
             infinity: ExprId(0),
             neg_infinity: ExprId(0),
             nan: ExprId(0),
+            complex_infinity: ExprId(0),
             zero_num: NumId(0),
             one_num: NumId(0),
             neg_one_num: NumId(0),
@@ -167,6 +171,7 @@ impl Arena {
         arena.infinity = arena.intern(ExprNode::Infinity);
         arena.neg_infinity = arena.intern(ExprNode::NegInfinity);
         arena.nan = arena.intern(ExprNode::NaN);
+        arena.complex_infinity = arena.intern(ExprNode::ComplexInfinity);
 
         arena
     }
@@ -197,7 +202,7 @@ impl Arena {
     /// existing [`ExprId`] is returned.  Otherwise the node is appended to
     /// the arena, a sort key is computed, and the new [`ExprId`] is recorded
     /// in the dedup map.
-    pub fn intern(&mut self, node: ExprNode) -> ExprId {
+    pub(crate) fn intern(&mut self, node: ExprNode) -> ExprId {
         let hash = Self::hash_node(&node);
 
         // Check the dedup map for an existing equivalent node.
@@ -224,7 +229,7 @@ impl Arena {
     ///
     /// If the same value is already present the existing [`NumId`] is
     /// returned.  A hash-map lookup is used for fast deduplication.
-    pub fn intern_num(&mut self, value: Ratio<BigInt>) -> NumId {
+    pub(crate) fn intern_num(&mut self, value: Ratio<BigInt>) -> NumId {
         let hash = Self::hash_num(&value);
 
         // Check the num_dedup map for an existing match.
