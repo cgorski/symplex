@@ -37,12 +37,14 @@
 pub(crate) mod apart;
 pub(crate) mod arena;
 pub(crate) mod canon;
+pub(crate) mod complex;
 pub(crate) mod diff;
 pub(crate) mod display;
 pub(crate) mod eval;
 pub(crate) mod evalf;
 pub(crate) mod expand;
 pub(crate) mod factor;
+pub(crate) mod factor_terms;
 pub(crate) mod integrate;
 pub(crate) mod limit;
 pub(crate) mod linalg;

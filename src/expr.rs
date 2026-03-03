@@ -2075,3 +2075,105 @@ macro_rules! impl_binary_binop_i64 {
 
 impl_binary_binop_i64!(Sub, sub, sub);
 impl_binary_binop_i64!(Div, div, div);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// From<T> conversions — use the global default context
+// ═══════════════════════════════════════════════════════════════════════════
+
+macro_rules! impl_from_integer {
+    ($($t:ty),+) => {
+        $(
+            impl From<$t> for Ex {
+                fn from(n: $t) -> Self {
+                    crate::int(n as i64)
+                }
+            }
+        )+
+    };
+}
+
+impl_from_integer!(i8, i16, i32, i64, u8, u16, u32, isize);
+
+impl From<u64> for Ex {
+    fn from(n: u64) -> Self {
+        crate::int(n as i64)
+    }
+}
+
+impl From<usize> for Ex {
+    fn from(n: usize) -> Self {
+        crate::int(n as i64)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sum and Product trait implementations
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl std::iter::Sum for Ex {
+    fn sum<I: Iterator<Item = Ex>>(iter: I) -> Self {
+        let items: Vec<Ex> = iter.collect();
+        if items.is_empty() {
+            return Ex::zero();
+        }
+        let ctx_id = items[0].ctx_id;
+        let inner = Arc::clone(&items[0].inner);
+        let id = {
+            let mut guard = inner.write();
+            let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
+            guard.arena.add(&ids)
+        };
+        Ex { ctx_id, inner, id }
+    }
+}
+
+impl<'a> std::iter::Sum<&'a Ex> for Ex {
+    fn sum<I: Iterator<Item = &'a Ex>>(iter: I) -> Self {
+        let items: Vec<&Ex> = iter.collect();
+        if items.is_empty() {
+            return Ex::zero();
+        }
+        let ctx_id = items[0].ctx_id;
+        let inner = Arc::clone(&items[0].inner);
+        let id = {
+            let mut guard = inner.write();
+            let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
+            guard.arena.add(&ids)
+        };
+        Ex { ctx_id, inner, id }
+    }
+}
+
+impl std::iter::Product for Ex {
+    fn product<I: Iterator<Item = Ex>>(iter: I) -> Self {
+        let items: Vec<Ex> = iter.collect();
+        if items.is_empty() {
+            return Ex::one();
+        }
+        let ctx_id = items[0].ctx_id;
+        let inner = Arc::clone(&items[0].inner);
+        let id = {
+            let mut guard = inner.write();
+            let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
+            guard.arena.mul(&ids)
+        };
+        Ex { ctx_id, inner, id }
+    }
+}
+
+impl<'a> std::iter::Product<&'a Ex> for Ex {
+    fn product<I: Iterator<Item = &'a Ex>>(iter: I) -> Self {
+        let items: Vec<&Ex> = iter.collect();
+        if items.is_empty() {
+            return Ex::one();
+        }
+        let ctx_id = items[0].ctx_id;
+        let inner = Arc::clone(&items[0].inner);
+        let id = {
+            let mut guard = inner.write();
+            let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
+            guard.arena.mul(&ids)
+        };
+        Ex { ctx_id, inner, id }
+    }
+}

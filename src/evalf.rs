@@ -1,4 +1,4 @@
-//! Arbitrary-precision numerical evaluation.
+//! Arbitrary-precision numerical evaluation with complex number support.
 //!
 //! This module implements [`evalf`], which evaluates a symbolic expression
 //! to a decimal string with a specified number of significant digits,
@@ -8,8 +8,9 @@
 //!
 //! Evaluation is performed bottom-up using an explicit post-order
 //! traversal (no recursion).  Each sub-expression is evaluated to a
-//! [`BigFloat`] and cached, so shared sub-expressions (common in a
-//! hash-consed DAG) are only evaluated once.
+//! [`Complex`] (a pair of [`BigFloat`] values for the real and imaginary
+//! parts) and cached, so shared sub-expressions (common in a hash-consed
+//! DAG) are only evaluated once.
 //!
 //! The working precision is set higher than the requested output
 //! precision to absorb rounding errors from intermediate computations.
@@ -28,6 +29,13 @@ use crate::errors::SymplexError;
 use crate::node::{ExprId, ExprNode};
 use crate::walk;
 use tracing::debug;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Complex type
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A complex number represented as (real_part, imaginary_part).
+type Complex = (BigFloat, BigFloat);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Public entry point
@@ -66,7 +74,7 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
 
     // Post-order traversal — evaluate children before parents.
     let post_order = walk::post_order_ids(arena, expr);
-    let mut cache: FxHashMap<ExprId, BigFloat> = FxHashMap::default();
+    let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
 
     for &id in &post_order {
         let value = eval_node(arena, id, &cache, prec, rm, &mut cc)?;
@@ -77,14 +85,14 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
         SymplexError::NotImplemented("evalf: expression not found in cache".into())
     })?;
 
-    if result.is_nan() {
+    if result.0.is_nan() || result.1.is_nan() {
         return Err(SymplexError::PrecisionExhausted {
             requested: digits,
             achieved: 0,
         });
     }
 
-    format_decimal(result, digits, rm, &mut cc)
+    format_complex(result, digits, prec, rm, &mut cc)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -95,27 +103,25 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
 fn eval_node(
     arena: &Arena,
     id: ExprId,
-    cache: &FxHashMap<ExprId, BigFloat>,
+    cache: &FxHashMap<ExprId, Complex>,
     prec: usize,
     rm: RoundingMode,
     cc: &mut Consts,
-) -> Result<BigFloat, SymplexError> {
+) -> Result<Complex, SymplexError> {
     let node = arena.node(id);
 
     match node {
         // ── Atoms ──────────────────────────────────────────────────
         ExprNode::Num(nid) => {
             let r = arena.num(*nid);
-            Ok(ratio_to_bigfloat(r, prec, rm))
+            Ok((ratio_to_bigfloat(r, prec, rm), BigFloat::new(prec)))
         }
 
-        ExprNode::Pi => Ok(cc.pi(prec, rm).clone()),
+        ExprNode::Pi => Ok((cc.pi(prec, rm).clone(), BigFloat::new(prec))),
 
-        ExprNode::E => Ok(cc.e(prec, rm).clone()),
+        ExprNode::E => Ok((cc.e(prec, rm).clone(), BigFloat::new(prec))),
 
-        ExprNode::ImaginaryUnit => Err(SymplexError::Unevaluable {
-            reason: "complex numbers not yet supported".into(),
-        }),
+        ExprNode::ImaginaryUnit => Ok((BigFloat::new(prec), BigFloat::from_i32(1, prec))),
 
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
             Err(SymplexError::Unevaluable {
@@ -136,20 +142,20 @@ fn eval_node(
 
         // ── Add ────────────────────────────────────────────────────
         ExprNode::Add(children) => {
-            let mut sum = BigFloat::from_i32(0, prec);
+            let mut sum = c_zero(prec);
             for &child in children.iter() {
                 let val = get_cached(cache, child)?;
-                sum = sum.add(val, prec, rm);
+                sum = c_add(&sum, val, prec, rm);
             }
             Ok(sum)
         }
 
         // ── Mul ────────────────────────────────────────────────────
         ExprNode::Mul(children) => {
-            let mut product = BigFloat::from_i32(1, prec);
+            let mut product = c_one(prec);
             for &child in children.iter() {
                 let val = get_cached(cache, child)?;
-                product = product.mul(val, prec, rm);
+                product = c_mul(&product, val, prec, rm);
             }
             Ok(product)
         }
@@ -157,122 +163,203 @@ fn eval_node(
         // ── Pow ────────────────────────────────────────────────────
         ExprNode::Pow(base, exp) => {
             let b = get_cached(cache, *base)?;
-
-            // Optimization: use sqrt for x^(1/2)
-            if let ExprNode::Num(nid) = arena.node(*exp) {
-                let r = arena.num(*nid);
-                if *r
-                    == num_rational::Ratio::new(
-                        num_bigint::BigInt::from(1),
-                        num_bigint::BigInt::from(2),
-                    )
-                {
-                    return Ok(b.sqrt(prec, rm));
-                }
-            }
-
             let e = get_cached(cache, *exp)?;
 
-            // Special case: small integer exponents use powi for accuracy.
-            if let Some(n) = try_as_small_int(arena, *exp) {
-                if n >= 0 {
-                    return Ok(b.powi(n as usize, prec, rm));
-                } else {
-                    let pow_pos = b.powi((-n) as usize, prec, rm);
-                    let one = BigFloat::from_i32(1, prec);
-                    return Ok(one.div(&pow_pos, prec, rm));
+            let b_is_real = b.1.is_zero();
+            let e_is_real = e.1.is_zero();
+
+            // Optimization: use sqrt for x^(1/2) with non-negative real base.
+            if b_is_real
+                && !b.0.is_negative()
+                && let ExprNode::Num(nid) = arena.node(*exp)
+            {
+                let r = arena.num(*nid);
+                if *r == Ratio::new(BigInt::from(1), BigInt::from(2)) {
+                    return Ok((b.0.sqrt(prec, rm), BigFloat::new(prec)));
                 }
             }
 
-            // General case: b^e via the library's pow.
-            Ok(b.pow(e, prec, rm, cc))
+            // Optimization: small integer exponents.
+            if let Some(n) = try_as_small_int(arena, *exp) {
+                if b_is_real {
+                    // Real base with integer exponent: use real powi.
+                    if n >= 0 {
+                        return Ok((b.0.powi(n as usize, prec, rm), BigFloat::new(prec)));
+                    } else {
+                        let pow_pos = b.0.powi((-n) as usize, prec, rm);
+                        let one_bf = BigFloat::from_i32(1, prec);
+                        return Ok((one_bf.div(&pow_pos, prec, rm), BigFloat::new(prec)));
+                    }
+                } else {
+                    // Complex base with integer exponent: use c_powi.
+                    if n >= 0 {
+                        return Ok(c_powi(b, n as usize, prec, rm));
+                    } else {
+                        let pow_pos = c_powi(b, (-n) as usize, prec, rm);
+                        let one_c = c_one(prec);
+                        return Ok(c_div(&one_c, &pow_pos, prec, rm));
+                    }
+                }
+            }
+
+            // Real non-negative base with real exponent: use real pow.
+            if b_is_real && e_is_real && b.0.is_positive() {
+                return Ok((b.0.pow(&e.0, prec, rm, cc), BigFloat::new(prec)));
+            }
+
+            // General complex power: b^e = exp(e * ln(b)).
+            Ok(c_pow(b, e, prec, rm, cc))
         }
 
         // ── Neg ────────────────────────────────────────────────────
         ExprNode::Neg(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.neg())
+            Ok(c_neg(val, prec, rm))
         }
 
         // ── Trig ───────────────────────────────────────────────────
         ExprNode::Sin(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.sin(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.sin(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_sin(val, prec, rm, cc))
+            }
         }
 
         ExprNode::Cos(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.cos(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.cos(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_cos(val, prec, rm, cc))
+            }
         }
 
         ExprNode::Tan(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.tan(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.tan(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                let s = c_sin(val, prec, rm, cc);
+                let c = c_cos(val, prec, rm, cc);
+                Ok(c_div(&s, &c, prec, rm))
+            }
         }
 
         // ── Exp / Ln ───────────────────────────────────────────────
         ExprNode::Exp(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.exp(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.exp(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_exp(val, prec, rm, cc))
+            }
         }
 
         ExprNode::Ln(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.ln(prec, rm, cc))
+            if val.1.is_zero() && val.0.is_positive() {
+                Ok((val.0.ln(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_ln(val, prec, rm, cc))
+            }
         }
 
         // ── Abs ────────────────────────────────────────────────────
         ExprNode::Abs(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.abs())
+            if val.1.is_zero() {
+                Ok((val.0.abs(), BigFloat::new(prec)))
+            } else {
+                Ok((c_abs(val, prec, rm), BigFloat::new(prec)))
+            }
         }
 
         // ── Inverse trig ──────────────────────────────────────────
         ExprNode::Asin(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.asin(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.asin(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_asin(val, prec, rm, cc))
+            }
         }
 
         ExprNode::Acos(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.acos(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.acos(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_acos(val, prec, rm, cc))
+            }
         }
 
         ExprNode::Atan(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.atan(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.atan(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_atan(val, prec, rm, cc))
+            }
         }
 
         // ── Hyperbolic ────────────────────────────────────────────
         ExprNode::Sinh(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.sinh(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.sinh(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_sinh(val, prec, rm, cc))
+            }
         }
 
         ExprNode::Cosh(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.cosh(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.cosh(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_cosh(val, prec, rm, cc))
+            }
         }
 
         ExprNode::Tanh(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.tanh(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.tanh(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                let s = c_sinh(val, prec, rm, cc);
+                let c = c_cosh(val, prec, rm, cc);
+                Ok(c_div(&s, &c, prec, rm))
+            }
         }
 
         // ── Inverse hyperbolic ────────────────────────────────────
         ExprNode::Asinh(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.asinh(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.asinh(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_asinh(val, prec, rm, cc))
+            }
         }
 
         ExprNode::Acosh(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.acosh(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.acosh(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_acosh(val, prec, rm, cc))
+            }
         }
 
         ExprNode::Atanh(inner) => {
             let val = get_cached(cache, *inner)?;
-            Ok(val.atanh(prec, rm, cc))
+            if val.1.is_zero() {
+                Ok((val.0.atanh(prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                Ok(c_atanh(val, prec, rm, cc))
+            }
         }
 
         // ── Unevaluable ────────────────────────────────────────────
@@ -294,11 +381,285 @@ fn eval_node(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Complex arithmetic helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn c_zero(prec: usize) -> Complex {
+    (BigFloat::new(prec), BigFloat::new(prec))
+}
+
+fn c_one(prec: usize) -> Complex {
+    (BigFloat::from_i32(1, prec), BigFloat::new(prec))
+}
+
+fn c_i(prec: usize) -> Complex {
+    (BigFloat::new(prec), BigFloat::from_i32(1, prec))
+}
+
+fn c_from_real(r: BigFloat, prec: usize) -> Complex {
+    (r, BigFloat::new(prec))
+}
+
+fn c_add(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+    (a.0.add(&b.0, prec, rm), a.1.add(&b.1, prec, rm))
+}
+
+fn c_sub(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+    (a.0.sub(&b.0, prec, rm), a.1.sub(&b.1, prec, rm))
+}
+
+fn c_mul(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+    // (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+    let ac = a.0.mul(&b.0, prec, rm);
+    let bd = a.1.mul(&b.1, prec, rm);
+    let ad = a.0.mul(&b.1, prec, rm);
+    let bc = a.1.mul(&b.0, prec, rm);
+    (ac.sub(&bd, prec, rm), ad.add(&bc, prec, rm))
+}
+
+fn c_div(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+    // (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c²+d²)
+    let ac = a.0.mul(&b.0, prec, rm);
+    let bd = a.1.mul(&b.1, prec, rm);
+    let bc = a.1.mul(&b.0, prec, rm);
+    let ad = a.0.mul(&b.1, prec, rm);
+    let denom =
+        b.0.mul(&b.0, prec, rm)
+            .add(&b.1.mul(&b.1, prec, rm), prec, rm);
+    let re = ac.add(&bd, prec, rm).div(&denom, prec, rm);
+    let im = bc.sub(&ad, prec, rm).div(&denom, prec, rm);
+    (re, im)
+}
+
+#[allow(unused_variables)]
+fn c_neg(a: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+    (a.0.neg(), a.1.neg())
+}
+
+fn c_abs(a: &Complex, prec: usize, rm: RoundingMode) -> BigFloat {
+    // |z| = sqrt(re² + im²)
+    let re2 = a.0.mul(&a.0, prec, rm);
+    let im2 = a.1.mul(&a.1, prec, rm);
+    let sum = re2.add(&im2, prec, rm);
+    sum.sqrt(prec, rm)
+}
+
+fn c_exp(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // exp(a+bi) = exp(a)(cos(b) + i·sin(b))
+    let exp_a = z.0.exp(prec, rm, cc);
+    let cos_b = z.1.cos(prec, rm, cc);
+    let sin_b = z.1.sin(prec, rm, cc);
+    (exp_a.mul(&cos_b, prec, rm), exp_a.mul(&sin_b, prec, rm))
+}
+
+fn c_ln(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // ln(z) = ln|z| + i·arg(z)
+    let r = c_abs(z, prec, rm);
+    let theta = atan2_bf(&z.1, &z.0, prec, rm, cc);
+    (r.ln(prec, rm, cc), theta)
+}
+
+fn c_sin(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // sin(a+bi) = sin(a)cosh(b) + i·cos(a)sinh(b)
+    let sin_a = z.0.sin(prec, rm, cc);
+    let cos_a = z.0.cos(prec, rm, cc);
+    let cosh_b = z.1.cosh(prec, rm, cc);
+    let sinh_b = z.1.sinh(prec, rm, cc);
+    (sin_a.mul(&cosh_b, prec, rm), cos_a.mul(&sinh_b, prec, rm))
+}
+
+fn c_cos(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // cos(a+bi) = cos(a)cosh(b) - i·sin(a)sinh(b)
+    let cos_a = z.0.cos(prec, rm, cc);
+    let sin_a = z.0.sin(prec, rm, cc);
+    let cosh_b = z.1.cosh(prec, rm, cc);
+    let sinh_b = z.1.sinh(prec, rm, cc);
+    (
+        cos_a.mul(&cosh_b, prec, rm),
+        sin_a.mul(&sinh_b, prec, rm).neg(),
+    )
+}
+
+fn c_sinh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // sinh(a+bi) = sinh(a)cos(b) + i·cosh(a)sin(b)
+    let sinh_a = z.0.sinh(prec, rm, cc);
+    let cosh_a = z.0.cosh(prec, rm, cc);
+    let cos_b = z.1.cos(prec, rm, cc);
+    let sin_b = z.1.sin(prec, rm, cc);
+    (sinh_a.mul(&cos_b, prec, rm), cosh_a.mul(&sin_b, prec, rm))
+}
+
+fn c_cosh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // cosh(a+bi) = cosh(a)cos(b) + i·sinh(a)sin(b)
+    let cosh_a = z.0.cosh(prec, rm, cc);
+    let sinh_a = z.0.sinh(prec, rm, cc);
+    let cos_b = z.1.cos(prec, rm, cc);
+    let sin_b = z.1.sin(prec, rm, cc);
+    (cosh_a.mul(&cos_b, prec, rm), sinh_a.mul(&sin_b, prec, rm))
+}
+
+fn c_pow(base: &Complex, exp: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // base^exp = exp(exp * ln(base))
+    // Special case: base is zero.
+    if base.0.is_zero() && base.1.is_zero() {
+        // 0^0 = 1 by convention; 0^(positive) = 0.
+        if exp.0.is_zero() && exp.1.is_zero() {
+            return c_one(prec);
+        }
+        return c_zero(prec);
+    }
+    let ln_base = c_ln(base, prec, rm, cc);
+    let product = c_mul(exp, &ln_base, prec, rm);
+    c_exp(&product, prec, rm, cc)
+}
+
+fn c_powi(base: &Complex, n: usize, prec: usize, rm: RoundingMode) -> Complex {
+    if n == 0 {
+        return c_one(prec);
+    }
+    let mut result = c_one(prec);
+    let mut b = base.clone();
+    let mut exp = n;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = c_mul(&result, &b, prec, rm);
+        }
+        b = c_mul(&b, &b, prec, rm);
+        exp >>= 1;
+    }
+    result
+}
+
+fn c_sqrt(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    if z.0.is_zero() && z.1.is_zero() {
+        return c_zero(prec);
+    }
+    let half = c_from_real(
+        BigFloat::from_i32(1, prec).div(&BigFloat::from_i32(2, prec), prec, rm),
+        prec,
+    );
+    c_pow(z, &half, prec, rm, cc)
+}
+
+// ── Inverse trig (complex) ─────────────────────────────────────────
+
+fn c_asin(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // asin(z) = -i * ln(iz + sqrt(1 - z²))
+    let i_unit = c_i(prec);
+    let one = c_one(prec);
+    let z_sq = c_mul(z, z, prec, rm);
+    let one_minus_z_sq = c_sub(&one, &z_sq, prec, rm);
+    let sqrt_term = c_sqrt(&one_minus_z_sq, prec, rm, cc);
+    let iz = c_mul(&i_unit, z, prec, rm);
+    let sum = c_add(&iz, &sqrt_term, prec, rm);
+    let ln_sum = c_ln(&sum, prec, rm, cc);
+    let neg_i = c_neg(&i_unit, prec, rm);
+    c_mul(&neg_i, &ln_sum, prec, rm)
+}
+
+fn c_acos(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // acos(z) = pi/2 - asin(z)
+    let half_pi_val = cc.pi(prec, rm).div(&BigFloat::from_i32(2, prec), prec, rm);
+    let half_pi = c_from_real(half_pi_val, prec);
+    let asin_z = c_asin(z, prec, rm, cc);
+    c_sub(&half_pi, &asin_z, prec, rm)
+}
+
+fn c_atan(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // atan(z) = (i/2) * ln((i+z)/(i-z))
+    let i_unit = c_i(prec);
+    let two = c_from_real(BigFloat::from_i32(2, prec), prec);
+    let i_over_2 = c_div(&i_unit, &two, prec, rm);
+    let i_plus_z = c_add(&i_unit, z, prec, rm);
+    let i_minus_z = c_sub(&i_unit, z, prec, rm);
+    let ratio = c_div(&i_plus_z, &i_minus_z, prec, rm);
+    let ln_ratio = c_ln(&ratio, prec, rm, cc);
+    c_mul(&i_over_2, &ln_ratio, prec, rm)
+}
+
+// ── Inverse hyperbolic (complex) ──────────────────────────────────
+
+fn c_asinh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // asinh(z) = ln(z + sqrt(z² + 1))
+    let one = c_one(prec);
+    let z_sq = c_mul(z, z, prec, rm);
+    let z_sq_plus_one = c_add(&z_sq, &one, prec, rm);
+    let sqrt_term = c_sqrt(&z_sq_plus_one, prec, rm, cc);
+    let sum = c_add(z, &sqrt_term, prec, rm);
+    c_ln(&sum, prec, rm, cc)
+}
+
+fn c_acosh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // acosh(z) = ln(z + sqrt(z² - 1))
+    let one = c_one(prec);
+    let z_sq = c_mul(z, z, prec, rm);
+    let z_sq_minus_one = c_sub(&z_sq, &one, prec, rm);
+    let sqrt_term = c_sqrt(&z_sq_minus_one, prec, rm, cc);
+    let sum = c_add(z, &sqrt_term, prec, rm);
+    c_ln(&sum, prec, rm, cc)
+}
+
+fn c_atanh(z: &Complex, prec: usize, rm: RoundingMode, cc: &mut Consts) -> Complex {
+    // atanh(z) = (1/2) * ln((1+z)/(1-z))
+    let one = c_one(prec);
+    let two = c_from_real(BigFloat::from_i32(2, prec), prec);
+    let half = c_div(&one, &two, prec, rm);
+    let one_plus_z = c_add(&one, z, prec, rm);
+    let one_minus_z = c_sub(&one, z, prec, rm);
+    let ratio = c_div(&one_plus_z, &one_minus_z, prec, rm);
+    let ln_ratio = c_ln(&ratio, prec, rm, cc);
+    c_mul(&half, &ln_ratio, prec, rm)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Real-valued helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute atan2(y, x) using BigFloat arithmetic.
+fn atan2_bf(
+    y: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> BigFloat {
+    if x.is_zero() && y.is_zero() {
+        return BigFloat::new(prec);
+    }
+
+    let pi_val = cc.pi(prec, rm);
+    let two = BigFloat::from_i32(2, prec);
+    let half_pi = pi_val.div(&two, prec, rm);
+
+    if x.is_zero() {
+        return if y.is_positive() {
+            half_pi
+        } else {
+            half_pi.neg()
+        };
+    }
+
+    let ratio = y.div(x, prec, rm);
+    let atan_val = ratio.atan(prec, rm, cc);
+
+    if x.is_positive() {
+        atan_val
+    } else {
+        let pi_val2 = cc.pi(prec, rm);
+        if y.is_negative() {
+            atan_val.sub(&pi_val2, prec, rm)
+        } else {
+            atan_val.add(&pi_val2, prec, rm)
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Look up a cached value, returning an error if not found.
-fn get_cached(cache: &FxHashMap<ExprId, BigFloat>, id: ExprId) -> Result<&BigFloat, SymplexError> {
+fn get_cached(cache: &FxHashMap<ExprId, Complex>, id: ExprId) -> Result<&Complex, SymplexError> {
     cache.get(&id).ok_or_else(|| SymplexError::Unevaluable {
         reason: format!("sub-expression {id:?} not in cache (likely contains free symbols)"),
     })
@@ -359,8 +720,86 @@ fn try_as_small_int(arena: &Arena, id: ExprId) -> Option<i32> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Decimal formatting
+// Decimal / complex formatting
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Determine whether `part` is negligibly small compared to `other`.
+///
+/// Returns `true` if `part` is zero, or if its binary exponent is more
+/// than `digits * log2(10)` bits below `other`'s exponent (meaning it
+/// is below the requested output precision).
+fn is_negligible_part(part: &BigFloat, other: &BigFloat, digits: u32) -> bool {
+    if part.is_zero() {
+        return true;
+    }
+    if other.is_zero() {
+        return false;
+    }
+    match (part.exponent(), other.exponent()) {
+        (Some(p_exp), Some(o_exp)) => {
+            let bit_threshold = (digits as i64) * 34 / 10 + 4;
+            (o_exp as i64 - p_exp as i64) > bit_threshold
+        }
+        _ => false,
+    }
+}
+
+/// Format a complex result as a string.
+///
+/// If the imaginary part is negligible, formats as a real number.
+/// If the real part is negligible, formats as a pure imaginary number.
+/// Otherwise formats as `a + b*i` or `a - b*i`.
+fn format_complex(
+    z: &Complex,
+    digits: u32,
+    _prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<String, SymplexError> {
+    let re = &z.0;
+    let im = &z.1;
+
+    let re_negligible = is_negligible_part(re, im, digits);
+    let im_negligible = is_negligible_part(im, re, digits);
+
+    if re_negligible && im_negligible {
+        return Ok("0".to_string());
+    }
+
+    if im_negligible {
+        return format_decimal(re, digits, rm, cc);
+    }
+
+    if re_negligible {
+        // Pure imaginary.
+        let im_str = format_decimal(im, digits, rm, cc)?;
+        return if im_str == "1" {
+            Ok("i".to_string())
+        } else if im_str == "-1" {
+            Ok("-i".to_string())
+        } else {
+            Ok(format!("{im_str}*i"))
+        };
+    }
+
+    // Both parts present.
+    let re_str = format_decimal(re, digits, rm, cc)?;
+    if im.is_negative() {
+        let im_abs_str = format_decimal(&im.abs(), digits, rm, cc)?;
+        if im_abs_str == "1" {
+            Ok(format!("{re_str} - i"))
+        } else {
+            Ok(format!("{re_str} - {im_abs_str}*i"))
+        }
+    } else {
+        let im_str = format_decimal(im, digits, rm, cc)?;
+        if im_str == "1" {
+            Ok(format!("{re_str} + i"))
+        } else {
+            Ok(format!("{re_str} + {im_str}*i"))
+        }
+    }
+}
 
 /// Format a `BigFloat` as a decimal string with `digits` significant digits.
 ///
@@ -762,13 +1201,108 @@ mod tests {
     }
 
     #[test]
-    fn imaginary_unit_errors() {
+    fn imaginary_unit_works() {
         let a = Arena::new();
         let result = evalf(&a, a.i_unit, 10);
+        assert!(result.is_ok(), "evalf of i should work now");
+        let s = result.unwrap();
         assert!(
-            result.is_err(),
-            "evalf of i should error (complex not supported)"
+            s.contains("i") || s.contains("I"),
+            "should display as imaginary: {s}"
         );
+    }
+
+    // ── Complex number tests ────────────────────────────────────────
+
+    #[test]
+    fn evalf_one_plus_i() {
+        let mut a = Arena::new();
+        let one = a.one;
+        let i = a.i_unit;
+        let expr = a.add(&[one, i]);
+        let result = evalf(&a, expr, 10);
+        assert!(result.is_ok(), "evalf(1+i) should work: {:?}", result.err());
+        let s = result.unwrap();
+        assert!(
+            s.contains("i") || s.contains("I"),
+            "1+i should contain 'i': {s}"
+        );
+    }
+
+    #[test]
+    fn evalf_exp_i_pi() {
+        // e^(i*pi) ≈ -1
+        let mut a = Arena::new();
+        let i = a.i_unit;
+        let pi = a.pi;
+        let i_times_pi = a.mul(&[i, pi]);
+        let expr = a.exp(i_times_pi);
+        let result = evalf(&a, expr, 15);
+        assert!(
+            result.is_ok(),
+            "evalf(exp(i*pi)) should work: {:?}",
+            result.err()
+        );
+        let s = result.unwrap();
+        let val: f64 = s.parse().unwrap_or(999.0);
+        assert!(
+            (val - (-1.0)).abs() < 1e-10,
+            "exp(i*pi) should be ~-1, got: {s}"
+        );
+    }
+
+    #[test]
+    fn evalf_i_squared() {
+        // i^2 = -1 (may be canonicalized by the arena)
+        let mut a = Arena::new();
+        let i = a.i_unit;
+        let two = a.int(2);
+        let expr = a.pow(i, two);
+        let result = evalf(&a, expr, 10);
+        assert!(result.is_ok(), "evalf(i^2) should work: {:?}", result.err());
+        let s = result.unwrap();
+        let val: f64 = s.parse().unwrap_or(999.0);
+        assert!((val - (-1.0)).abs() < 1e-10, "i^2 should be -1, got: {s}");
+    }
+
+    #[test]
+    fn evalf_sqrt_neg_one() {
+        // sqrt(-1) = (-1)^(1/2) should give i
+        let mut a = Arena::new();
+        let neg_one = a.neg_one;
+        let expr = a.sqrt(neg_one);
+        let result = evalf(&a, expr, 10);
+        assert!(
+            result.is_ok(),
+            "evalf(sqrt(-1)) should work: {:?}",
+            result.err()
+        );
+        let s = result.unwrap();
+        assert!(
+            s.contains("i") || s.contains("I"),
+            "sqrt(-1) should be imaginary: {s}"
+        );
+    }
+
+    #[test]
+    fn evalf_abs_3_plus_4i() {
+        // |3 + 4i| = 5
+        let mut a = Arena::new();
+        let three = a.int(3);
+        let four = a.int(4);
+        let i = a.i_unit;
+        let four_i = a.mul(&[four, i]);
+        let sum = a.add(&[three, four_i]);
+        let expr = a.abs(sum);
+        let result = evalf(&a, expr, 10);
+        assert!(
+            result.is_ok(),
+            "evalf(|3+4i|) should work: {:?}",
+            result.err()
+        );
+        let s = result.unwrap();
+        let val: f64 = s.parse().unwrap_or(999.0);
+        assert!((val - 5.0).abs() < 1e-10, "|3+4i| should be 5, got: {s}");
     }
 
     // ── Composite expressions ───────────────────────────────────────
