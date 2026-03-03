@@ -33,26 +33,29 @@
 //! assert_eq!(format!("{expr}"), "1 + x**2 + 2*x");
 //! ```
 
-pub mod arena;
+// ── Internal modules (not part of the public API) ──────────────────────
+pub(crate) mod arena;
+pub(crate) mod canon;
+pub(crate) mod display;
+pub(crate) mod node;
+pub(crate) mod sort_key;
+pub(crate) mod symbol;
+
+// ── Public modules (stable API surface) ────────────────────────────────
 pub mod assumptions;
+pub mod config;
+pub mod context;
+pub mod errors;
+pub mod expr;
+pub mod macros;
 
 // bitflags types don't auto-derive Default; provide it here so
-// Assumptions::default() (derived in assumptions.rs) works.
+// Assumptions::default() works.
 impl Default for assumptions::Props {
     fn default() -> Self {
         Self::empty()
     }
 }
-pub mod canon;
-pub mod config;
-pub mod context;
-pub mod display;
-pub mod errors;
-pub mod expr;
-pub mod macros;
-pub mod node;
-pub mod sort_key;
-pub mod symbol;
 
 /// The symplex prelude — one import to get started.
 ///
@@ -60,11 +63,9 @@ pub mod symbol;
 /// use symplex::prelude::*;
 /// ```
 pub mod prelude {
-    pub use crate::arena::Arena;
     pub use crate::assumptions::{Assumption, Assumptions, Props};
     pub use crate::config::EvalConfig;
     pub use crate::context::Context;
     pub use crate::errors::SymplexError;
     pub use crate::expr::Ex;
-    pub use crate::node::{CtxId, ExprId, ExprNode, NumId, SymbolId};
 }

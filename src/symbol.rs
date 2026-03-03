@@ -65,11 +65,6 @@ impl SymbolTable {
         self.names.len()
     }
 
-    /// Returns `true` if no symbols have been interned.
-    pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
-    }
-
     /// Set mathematical assumptions for a symbol.
     pub fn set_assumptions(&mut self, id: SymbolId, a: crate::assumptions::Assumptions) {
         self.assumptions[id.0 as usize] = a;
