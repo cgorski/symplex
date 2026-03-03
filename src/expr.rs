@@ -623,16 +623,35 @@ impl Ex {
     /// let x = ctx.symbol("x");
     /// // Solve x² - 5x + 6 = 0
     /// let expr = &x.powi(2) - &x * 5 + 6;
-    /// let solutions = expr.solve(&x);
+    /// let solutions = expr.solve(&x).unwrap();
     /// assert_eq!(solutions.len(), 2);
     /// ```
-    pub fn solve(&self, var: &Ex) -> Vec<Ex> {
+    pub fn solve(&self, var: &Ex) -> Result<Vec<Ex>, SymplexError> {
         let _span = debug_span!("solve", expr = ?self.id, var = ?var.id).entered();
-        let solutions = self.inner.write().arena.solve_for(self.id, var.id);
-        solutions
+        let mut inner = self.inner.write();
+        // Check if the expression is polynomial in var.
+        let poly = crate::polybridge::expr_to_poly(&inner.arena, self.id, var.id);
+        if poly.is_none() {
+            return Err(SymplexError::ComputationFailed {
+                operation: "solve",
+                reason: "expression is not polynomial in the given variable".into(),
+            });
+        }
+        let solutions = inner.arena.solve_for(self.id, var.id);
+        drop(inner);
+        Ok(solutions
             .into_iter()
             .map(|sol| self.wrap(sol.value))
-            .collect()
+            .collect())
+    }
+
+    /// Solve `self = 0` for `var`, returning an empty vector on failure.
+    ///
+    /// This is a convenience wrapper around [`solve`](Ex::solve) that
+    /// returns `vec![]` if the solver fails (e.g., expression is not
+    /// polynomial). Use [`solve`](Ex::solve) for diagnostic information.
+    pub fn solve_or_empty(&self, var: &Ex) -> Vec<Ex> {
+        self.solve(var).unwrap_or_default()
     }
 
     /// Cancel common polynomial factors in a rational expression.
@@ -829,20 +848,29 @@ impl Ex {
     /// let x = ctx.symbol("x");
     /// let zero = ctx.int(0);
     /// let expr = x.exp_fn();
-    /// let s = expr.series(&x, &zero, 4);
+    /// let s = expr.series(&x, &zero, 4).unwrap();
     /// let expanded = s.expand().eval();
     /// let result = format!("{expanded}");
     /// assert!(result.contains("x"), "should have x term: {result}");
     /// ```
     #[must_use = "returns the series expansion; does not modify in place"]
-    pub fn series(&self, var: &Ex, point: &Ex, order: u32) -> Ex {
+    pub fn series(&self, var: &Ex, point: &Ex, order: u32) -> Result<Ex, SymplexError> {
         let _span = debug_span!("series", expr = ?self.id, order = order).entered();
         let id = self
             .inner
             .write()
             .arena
-            .series_expr(self.id, var.id, point.id, order);
-        self.wrap(id)
+            .series_expr(self.id, var.id, point.id, order)?;
+        Ok(self.wrap(id))
+    }
+
+    /// Compute a Taylor series, returning the expression unchanged on failure.
+    ///
+    /// Convenience wrapper around [`series`](Ex::series).
+    #[must_use = "returns the series expansion; does not modify in place"]
+    pub fn series_or_self(&self, var: &Ex, point: &Ex, order: u32) -> Ex {
+        self.series(var, point, order)
+            .unwrap_or_else(|_| self.clone())
     }
 
     /// Compute the Maclaurin series (Taylor series around 0) to the
@@ -857,18 +885,26 @@ impl Ex {
     /// use symplex::prelude::*;
     ///
     /// let x = symplex::var("x");
-    /// let s = x.sin().maclaurin(&x, 4);
+    /// let s = x.sin().maclaurin(&x, 4).unwrap();
     /// let result = s.expand().eval();
     /// let text = format!("{result}");
     /// assert!(text.contains("x"), "should have x term: {text}");
     /// ```
     #[must_use = "returns the series expansion; does not modify in place"]
-    pub fn maclaurin(&self, var: &Ex, order: u32) -> Ex {
+    pub fn maclaurin(&self, var: &Ex, order: u32) -> Result<Ex, SymplexError> {
         let mut inner = self.inner.write();
         let zero = inner.arena.zero;
-        let id = inner.arena.series_expr(self.id, var.id, zero, order);
+        let id = inner.arena.series_expr(self.id, var.id, zero, order)?;
         drop(inner);
-        self.wrap(id)
+        Ok(self.wrap(id))
+    }
+
+    /// Compute a Maclaurin series, returning the expression unchanged on failure.
+    ///
+    /// Convenience wrapper around [`maclaurin`](Ex::maclaurin).
+    #[must_use = "returns the series expansion; does not modify in place"]
+    pub fn maclaurin_or_self(&self, var: &Ex, order: u32) -> Ex {
+        self.maclaurin(var, order).unwrap_or_else(|_| self.clone())
     }
 
     /// Factor a polynomial expression into a product of linear factors.
@@ -914,18 +950,26 @@ impl Ex {
     /// let x = ctx.symbol("x");
     /// // lim_{x→0} sin(x)/x = 1
     /// let expr = &x.sin() / &x;
-    /// let result = expr.limit(&x, &ctx.int(0));
+    /// let result = expr.limit(&x, &ctx.int(0)).unwrap();
     /// assert_eq!(format!("{result}"), "1");
     /// ```
     #[must_use = "returns the limit value; does not modify in place"]
-    pub fn limit(&self, var: &Ex, point: &Ex) -> Ex {
+    pub fn limit(&self, var: &Ex, point: &Ex) -> Result<Ex, SymplexError> {
         let _span = debug_span!("limit", expr = ?self.id, var = ?var.id).entered();
         let id = self
             .inner
             .write()
             .arena
-            .limit_expr(self.id, var.id, point.id);
-        self.wrap(id)
+            .limit_expr(self.id, var.id, point.id)?;
+        Ok(self.wrap(id))
+    }
+
+    /// Compute a limit, returning the expression unchanged on failure.
+    ///
+    /// Convenience wrapper around [`limit`](Ex::limit).
+    #[must_use = "returns the limit value; does not modify in place"]
+    pub fn limit_or_self(&self, var: &Ex, point: &Ex) -> Ex {
+        self.limit(var, point).unwrap_or_else(|_| self.clone())
     }
 
     /// Decompose this expression into (numerator, denominator).
@@ -950,6 +994,23 @@ impl Ex {
         let (n, d) = inner.arena.as_numer_denom_expr(self.id);
         drop(inner);
         (self.wrap(n), self.wrap(d))
+    }
+
+    /// Returns `true` if this expression contains no free symbols
+    /// (i.e., it is a constant — a number, π, e, etc.).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert!(ctx.int(5).is_constant());
+    /// assert!(ctx.pi().is_constant());
+    /// assert!(!ctx.symbol("x").is_constant());
+    /// ```
+    pub fn is_constant(&self) -> bool {
+        self.free_symbols().is_empty()
     }
 
     /// Returns `true` if this expression is a polynomial in `var`.

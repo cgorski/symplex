@@ -32,6 +32,19 @@ pub enum SymplexError {
         reason: String,
     },
 
+    /// A symbolic computation could not produce a result.
+    ///
+    /// The `operation` field names the operation that failed (e.g., "limit",
+    /// "solve", "series"). The `reason` field provides a human-readable
+    /// explanation.
+    #[error("{operation} could not be computed: {reason}")]
+    ComputationFailed {
+        /// The name of the operation that failed.
+        operation: &'static str,
+        /// Human-readable description of why the computation failed.
+        reason: String,
+    },
+
     /// A feature or operation is not yet implemented.
     #[error("not implemented: {0}")]
     NotImplemented(String),

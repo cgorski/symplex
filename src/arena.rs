@@ -576,8 +576,16 @@ impl Arena {
     /// Compute the Taylor series of `expr` in `var` around `point`
     /// to the given `order` (number of terms).
     ///
+    /// Returns `Err` if the series cannot be computed (e.g., pole at the
+    /// expansion point).
     /// Delegates to [`series::series`].
-    pub fn series_expr(&mut self, expr: ExprId, var: ExprId, point: ExprId, order: u32) -> ExprId {
+    pub fn series_expr(
+        &mut self,
+        expr: ExprId,
+        var: ExprId,
+        point: ExprId,
+        order: u32,
+    ) -> Result<ExprId, crate::errors::SymplexError> {
         crate::series::series(self, expr, var, point, order)
     }
 
@@ -608,8 +616,14 @@ impl Arena {
 
     /// Compute the limit of `expr` as `var` approaches `point`.
     ///
+    /// Returns `Err` if the limit cannot be determined.
     /// Delegates to [`limit::limit`].
-    pub fn limit_expr(&mut self, expr: ExprId, var: ExprId, point: ExprId) -> ExprId {
+    pub fn limit_expr(
+        &mut self,
+        expr: ExprId,
+        var: ExprId,
+        point: ExprId,
+    ) -> Result<ExprId, crate::errors::SymplexError> {
         crate::limit::limit(self, expr, var, point)
     }
 

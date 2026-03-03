@@ -12,7 +12,7 @@ fn series_exp_x_order_4() {
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
     // exp(x) around 0, order 4: 1 + x + x^2/2 + x^3/6
-    let s = x.exp_fn().series(&x, &zero, 4);
+    let s = x.exp_fn().series(&x, &zero, 4).unwrap();
     let result = s.expand().eval();
     let text = format!("{result}");
     assert!(text.contains("1"), "constant term 1: {text}");
@@ -27,7 +27,7 @@ fn series_sin_x_order_4() {
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
     // sin(x) around 0, order 4: x - x^3/6
-    let s = x.sin().series(&x, &zero, 4);
+    let s = x.sin().series(&x, &zero, 4).unwrap();
     let result = s.expand().eval();
     let text = format!("{result}");
     assert!(text.contains("x"), "should have x term: {text}");
@@ -40,7 +40,7 @@ fn series_cos_x_order_4() {
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
     // cos(x) around 0, order 4: 1 - x^2/2
-    let s = x.cos().series(&x, &zero, 4);
+    let s = x.cos().series(&x, &zero, 4).unwrap();
     let result = s.expand().eval();
     let text = format!("{result}");
     assert!(text.contains("1"), "constant term 1: {text}");
@@ -53,7 +53,7 @@ fn series_polynomial_is_exact() {
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
     // series(x^2, x, 0, 5) should give exactly x^2
-    let s = x.powi(2).series(&x, &zero, 5);
+    let s = x.powi(2).series(&x, &zero, 5).unwrap();
     assert_eq!(format!("{s}"), "x^2");
 }
 
@@ -62,7 +62,7 @@ fn series_constant() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
-    let s = ctx.int(7).series(&x, &zero, 3);
+    let s = ctx.int(7).series(&x, &zero, 3).unwrap();
     assert_eq!(format!("{s}"), "7");
 }
 
@@ -71,7 +71,7 @@ fn series_order_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
-    let s = x.series(&x, &zero, 0);
+    let s = x.series(&x, &zero, 0).unwrap();
     assert_eq!(format!("{s}"), "0");
 }
 
@@ -80,7 +80,7 @@ fn series_x_around_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
-    let s = x.series(&x, &zero, 3);
+    let s = x.series(&x, &zero, 3).unwrap();
     assert_eq!(format!("{s}"), "x");
 }
 

@@ -40,9 +40,9 @@ pub(crate) fn series(
     var: ExprId,
     point: ExprId,
     order: u32,
-) -> ExprId {
+) -> Result<ExprId, crate::errors::SymplexError> {
     if order == 0 {
-        return arena.zero;
+        return Ok(arena.zero);
     }
 
     let mut terms: Vec<ExprId> = Vec::with_capacity(order as usize);
@@ -64,7 +64,10 @@ pub(crate) fn series(
             || value_at_point == arena.nan
             || value_at_point == arena.complex_infinity
         {
-            return expr;
+            return Err(crate::errors::SymplexError::ComputationFailed {
+                operation: "series",
+                reason: "pole detected at expansion point".into(),
+            });
         }
 
         // Compute the term: value_at_point * (x - a)^k / k!
@@ -105,11 +108,11 @@ pub(crate) fn series(
     }
 
     if terms.is_empty() {
-        arena.zero
+        Ok(arena.zero)
     } else if terms.len() == 1 {
-        terms[0]
+        Ok(terms[0])
     } else {
-        arena.add(&terms)
+        Ok(arena.add(&terms))
     }
 }
 
@@ -136,7 +139,7 @@ mod tests {
         let x = sym(&mut a, "x");
         let five = a.int(5);
         let zero = a.zero;
-        let result = series(&mut a, five, x, zero, 3);
+        let result = series(&mut a, five, x, zero, 3).unwrap();
         assert_eq!(display(&a, result), "5");
     }
 
@@ -146,7 +149,7 @@ mod tests {
         let x = sym(&mut a, "x");
         let zero = a.zero;
         // series(x, x, 0, 3) = 0 + 1*x + 0 = x
-        let result = series(&mut a, x, x, zero, 3);
+        let result = series(&mut a, x, x, zero, 3).unwrap();
         assert_eq!(display(&a, result), "x");
     }
 
@@ -158,7 +161,7 @@ mod tests {
         let x2 = a.pow(x, two);
         let zero = a.zero;
         // series(x^2, x, 0, 3) = 0 + 0*x + 2/2! * x^2 = x^2
-        let result = series(&mut a, x2, x, zero, 3);
+        let result = series(&mut a, x2, x, zero, 3).unwrap();
         assert_eq!(display(&a, result), "x^2");
     }
 
@@ -169,7 +172,7 @@ mod tests {
         let expr = a.exp_fn(x);
         let zero = a.zero;
         // series(exp(x), x, 0, 4) = 1 + x + x^2/2 + x^3/6
-        let result = series(&mut a, expr, x, zero, 4);
+        let result = series(&mut a, expr, x, zero, 4).unwrap();
         let expanded = crate::expand::expand(&mut a, result);
         let evaled = crate::eval::eval(&mut a, expanded);
         let s = display(&a, evaled);
@@ -186,7 +189,7 @@ mod tests {
         let expr = a.sin(x);
         let zero = a.zero;
         // series(sin(x), x, 0, 4) = x - x^3/6
-        let result = series(&mut a, expr, x, zero, 4);
+        let result = series(&mut a, expr, x, zero, 4).unwrap();
         let expanded = crate::expand::expand(&mut a, result);
         let evaled = crate::eval::eval(&mut a, expanded);
         let s = display(&a, evaled);
@@ -199,7 +202,7 @@ mod tests {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let zero = a.zero;
-        let result = series(&mut a, x, x, zero, 0);
+        let result = series(&mut a, x, x, zero, 0).unwrap();
         assert_eq!(result, a.zero);
     }
 
@@ -212,7 +215,7 @@ mod tests {
         let zero = a.zero;
         // series(x^3, x, 0, 5) should give exactly x^3
         // (higher-order terms are zero)
-        let result = series(&mut a, x3, x, zero, 5);
+        let result = series(&mut a, x3, x, zero, 5).unwrap();
         let s = display(&a, result);
         assert!(s.contains("x^3"), "should recover x^3: {s}");
     }

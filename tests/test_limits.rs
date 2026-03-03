@@ -7,7 +7,7 @@ fn limit_polynomial_direct() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // lim_{x→2} x^2 = 4
-    let result = x.powi(2).limit(&x, &ctx.int(2));
+    let result = x.powi(2).limit(&x, &ctx.int(2)).unwrap();
     assert_eq!(format!("{result}"), "4");
 }
 
@@ -17,7 +17,7 @@ fn limit_sin_x_over_x() {
     let x = ctx.symbol("x");
     // lim_{x→0} sin(x)/x = 1
     let expr = &x.sin() / &x;
-    let result = expr.limit(&x, &ctx.int(0));
+    let result = expr.limit(&x, &ctx.int(0)).unwrap();
     assert_eq!(format!("{result}"), "1");
 }
 
@@ -27,7 +27,7 @@ fn limit_x_sq_minus_1_over_x_minus_1() {
     let x = ctx.symbol("x");
     // lim_{x→1} (x^2-1)/(x-1) = 2
     let expr = (&x.powi(2) - 1) / (&x - 1);
-    let result = expr.limit(&x, &ctx.int(1));
+    let result = expr.limit(&x, &ctx.int(1)).unwrap();
     assert_eq!(format!("{result}"), "2");
 }
 
@@ -35,7 +35,7 @@ fn limit_x_sq_minus_1_over_x_minus_1() {
 fn limit_constant() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = ctx.int(5).limit(&x, &ctx.int(0));
+    let result = ctx.int(5).limit(&x, &ctx.int(0)).unwrap();
     assert_eq!(format!("{result}"), "5");
 }
 
@@ -44,7 +44,7 @@ fn limit_direct_substitution() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // lim_{x→3} (x+1) = 4
-    let result = (&x + 1).limit(&x, &ctx.int(3));
+    let result = (&x + 1).limit(&x, &ctx.int(3)).unwrap();
     assert_eq!(format!("{result}"), "4");
 }
 
@@ -52,6 +52,6 @@ fn limit_direct_substitution() {
 fn limit_cos_at_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.cos().limit(&x, &ctx.int(0));
+    let result = x.cos().limit(&x, &ctx.int(0)).unwrap();
     assert_eq!(format!("{result}"), "1");
 }

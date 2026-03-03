@@ -416,7 +416,7 @@ fn expr_then_solve() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = expr!(x ^ 2 - 5 * x + 6);
-    let roots = f.solve(&x);
+    let roots = f.solve(&x).unwrap();
     assert_eq!(roots.len(), 2);
     let vals: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     assert!(

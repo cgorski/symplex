@@ -20,7 +20,12 @@ use crate::node::{ExprId, ExprNode};
 const MAX_LHOPITAL: usize = 5;
 
 /// Compute the limit of `expr` as `var` approaches `point`.
-pub(crate) fn limit(arena: &mut Arena, expr: ExprId, var: ExprId, point: ExprId) -> ExprId {
+pub(crate) fn limit(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+) -> Result<ExprId, crate::errors::SymplexError> {
     // Step 1+2 combined: decompose into numerator/denominator first.
     //
     // We must check for indeterminate forms *before* doing a naive
@@ -46,33 +51,39 @@ pub(crate) fn limit(arena: &mut Arena, expr: ExprId, var: ExprId, point: ExprId)
             let ratio = arena.div(n_val, d_val);
             let result = crate::eval::eval(arena, ratio);
             if is_finite_number(arena, result) {
-                return result;
+                return Ok(result);
             }
         }
 
         // Try L'Hôpital if we have an indeterminate form.
         if let Some(r) = try_lhopital(arena, numer, denom, var, point, 0) {
-            return r;
+            return Ok(r);
         }
     } else {
         // No denominator — try plain direct substitution.
         let subst = crate::subs::subs(arena, expr, var, point);
         let evaled = crate::eval::eval(arena, subst);
         if is_finite_number(arena, evaled) {
-            return evaled;
+            return Ok(evaled);
         }
     }
 
     // Step 3: Series fallback.
     // Expand as Taylor series around the point, order 1 gives the limit.
-    let series_result = crate::series::series(arena, expr, var, point, 1);
-    let series_evaled = crate::eval::eval(arena, series_result);
-    if is_finite_number(arena, series_evaled) && series_evaled != expr {
-        return series_evaled;
+    if let Ok(series_result) = crate::series::series(arena, expr, var, point, 1) {
+        let series_evaled = crate::eval::eval(arena, series_result);
+        if is_finite_number(arena, series_evaled) && series_evaled != expr {
+            return Ok(series_evaled);
+        }
     }
 
-    // Step 4: Couldn't compute — return expression unchanged.
-    expr
+    // Step 4: Couldn't compute — return an error.
+    Err(crate::errors::SymplexError::ComputationFailed {
+        operation: "limit",
+        reason:
+            "could not determine the limit via substitution, L'Hôpital's rule, or series expansion"
+                .into(),
+    })
 }
 
 /// Try L'Hôpital's rule: lim f/g = lim f'/g' when f(a)=g(a)=0 or both →∞.
@@ -171,7 +182,7 @@ mod tests {
         let two = a.int(2);
         // lim_{x→2} x^2 = 4
         let x2 = a.pow(x, two);
-        let result = limit(&mut a, x2, x, two);
+        let result = limit(&mut a, x2, x, two).unwrap();
         assert_eq!(display(&a, result), "4");
     }
 
@@ -183,7 +194,7 @@ mod tests {
         // lim_{x→0} sin(x)/x = 1 (L'Hôpital: cos(x)/1 at x=0 = 1)
         let sin_x = a.sin(x);
         let expr = a.div(sin_x, x);
-        let result = limit(&mut a, expr, x, zero);
+        let result = limit(&mut a, expr, x, zero).unwrap();
         assert_eq!(display(&a, result), "1");
     }
 
@@ -193,7 +204,7 @@ mod tests {
         let x = sym(&mut a, "x");
         let five = a.int(5);
         let zero = a.zero;
-        let result = limit(&mut a, five, x, zero);
+        let result = limit(&mut a, five, x, zero).unwrap();
         assert_eq!(display(&a, result), "5");
     }
 
@@ -208,7 +219,7 @@ mod tests {
         let numer = a.sub(x2, one);
         let denom = a.sub(x, one);
         let expr = a.div(numer, denom);
-        let result = limit(&mut a, expr, x, one);
+        let result = limit(&mut a, expr, x, one).unwrap();
         assert_eq!(display(&a, result), "2");
     }
 
@@ -219,7 +230,7 @@ mod tests {
         let three = a.int(3);
         // lim_{x→3} (x+1) = 4
         let expr = a.add(&[x, a.one]);
-        let result = limit(&mut a, expr, x, three);
+        let result = limit(&mut a, expr, x, three).unwrap();
         assert_eq!(display(&a, result), "4");
     }
 }

@@ -12,7 +12,7 @@ fn solve_linear() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = expr!(x * 2 - 6);
-    let roots = expr.solve(&x);
+    let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 1, "expected 1 root, got {}", roots.len());
     assert_eq!(format!("{}", roots[0]), "3");
 }
@@ -23,7 +23,7 @@ fn solve_linear_negative() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = expr!(x + 3);
-    let roots = expr.solve(&x);
+    let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 1, "expected 1 root, got {}", roots.len());
     assert_eq!(format!("{}", roots[0]), "-3");
 }
@@ -34,7 +34,7 @@ fn solve_linear_rational() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = expr!(x * 3 - 1);
-    let roots = expr.solve(&x);
+    let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 1, "expected 1 root, got {}", roots.len());
     assert_eq!(format!("{}", roots[0]), "1/3");
 }
@@ -45,7 +45,7 @@ fn solve_quadratic_two_roots() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = expr!(x ^ 2 - 5 * x + 6);
-    let roots = expr.solve(&x);
+    let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 2, "expected 2 roots, got {}", roots.len());
     let vals: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     assert!(
@@ -64,7 +64,7 @@ fn solve_quadratic_double_root() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = expr!(x ^ 2 - 4 * x + 4);
-    let roots = expr.solve(&x);
+    let roots = expr.solve(&x).unwrap();
     assert!(
         !roots.is_empty(),
         "expected at least 1 root for double root equation"
@@ -80,7 +80,7 @@ fn solve_quadratic_no_real_roots() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = expr!(x ^ 2 + 1);
-    let roots = expr.solve(&x);
+    let roots = expr.solve(&x).unwrap();
     assert!(
         roots.is_empty(),
         "expected no real roots for x^2 + 1, got {} root(s)",
@@ -94,7 +94,7 @@ fn solve_cubic_rational_roots() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = expr!(x ^ 3 - 6 * x ^ 2 + 11 * x - 6);
-    let roots = expr.solve(&x);
+    let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 3, "expected 3 roots, got {}", roots.len());
     let vals: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     assert!(
@@ -113,16 +113,11 @@ fn solve_cubic_rational_roots() {
 
 #[test]
 fn solve_non_polynomial_returns_empty() {
-    // sin(x) = 0 → not polynomial, returns empty
+    // sin(x) = 0 → not polynomial, should error
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.sin();
-    let roots = expr.solve(&x);
-    assert!(
-        roots.is_empty(),
-        "expected empty for sin(x), got {} root(s)",
-        roots.len()
-    );
+    assert!(expr.solve(&x).is_err(), "non-polynomial should error");
 }
 
 #[test]
@@ -131,7 +126,7 @@ fn solve_constant_nonzero_no_solutions() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let five = ctx.int(5);
-    let roots = five.solve(&x);
+    let roots = five.solve(&x).unwrap();
     assert!(
         roots.is_empty(),
         "expected no solutions for constant 5, got {} root(s)",
@@ -145,7 +140,7 @@ fn solve_constant_zero_no_solutions() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
-    let roots = zero.solve(&x);
+    let roots = zero.solve(&x).unwrap();
     assert!(
         roots.is_empty(),
         "expected empty for 0=0 (infinite solutions), got {} root(s)",
@@ -159,7 +154,7 @@ fn solve_verify_quadratic_roots() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = expr!(x ^ 2 - 5 * x + 6);
-    let roots = expr.solve(&x);
+    let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 2, "expected 2 roots, got {}", roots.len());
     for root in &roots {
         let substituted = expr.subs(&x, root);
