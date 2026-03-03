@@ -662,15 +662,206 @@ abs(abs(w_)) => abs(w_)
 
 ### Release Checklist (0.1.0)
 
-- [ ] All infrastructure tasks complete (benchmarks, CI, split assumptions)
-- [ ] README fully up to date with all 60+ public methods
-- [ ] CHANGELOG.md written
+- [x] Benchmarks (30 Criterion benchmarks)
+- [x] CI (GitHub Actions: test + clippy + fmt)
+- [x] README fully up to date with all 81 public methods
+- [x] CHANGELOG.md written
+- [x] `cargo clippy` clean (0 warnings)
+- [x] `cargo fmt` clean (0 issues)
+- [x] All doctests pass in isolation
+- [x] Breaking API changes completed (`exp_fn` → `exp`, `Sqrt` removal, `Result` returns)
+- [ ] Split `assumptions.rs` (1,743 lines) — deferrable to 0.1.1
 - [ ] Cargo.toml metadata polished (documentation link, etc.)
-- [ ] `cargo clippy` clean
-- [ ] `cargo fmt` clean
-- [ ] All doctests pass in isolation
 - [ ] Final API surface review — no accidental `pub` on internal types
 - [ ] Publish to crates.io
+
+### Current Statistics (Commit 43)
+
+| Metric | Value |
+|--------|-------|
+| Tests | 1,159 passing, 0 failing, 0 warnings |
+| Public methods on `Ex` | 81 |
+| Public methods on `Context` | 17 |
+| Free-standing functions | 5 |
+| Source code | 19,455 lines across 34 modules |
+| Test code | 6,323 lines across 27 test files |
+| ExprNode variants | 30 (21 non-atom + 9 atom) |
+| Simplification rules | 13 |
+| Eval special values | 30+ |
+| Criterion benchmarks | 30 |
+| Proptest properties | 33 |
+| Commits | 43 |
+
+---
+
+## Next Sprint: Math Depth & Ergonomics (Pre-0.1.0)
+
+This section documents the detailed gap analysis and implementation plan for the next development sprint, focused on math completeness and API ergonomics. This plan was produced by the full expert panel and should be executed before 0.1.0 evaluation.
+
+### Sprint A: Integration Completeness
+
+**Gap analysis:** Our integration handles power rule, basic trig (sin/cos), exp, sinh/cosh, u-substitution for `f(ax+b)`, integration by parts for `x*trig` and `x*exp`, and linearity/constant factor. The following standard forms are missing:
+
+| # | Integral | Result | Implementation |
+|---|---------|--------|----------------|
+| A1 | `∫ tan(x) dx` | `-ln\|cos(x)\|` | Add `Tan` arm in `integrate_node` — rewrite as `sin/cos`, apply u-sub |
+| A2 | `∫ ln(x) dx` | `x*ln(x) - x` | Add `Ln` arm — by parts with `u=ln(x), dv=dx` |
+| A3 | `∫ 1/(x²+1) dx` | `atan(x)` | Pattern match `Pow(Add([x², 1]), -1)` in Pow arm |
+| A4 | `∫ 1/sqrt(1-x²) dx` | `asin(x)` | Pattern match `Pow(Add([1, Neg(Pow(x,2))]), -1/2)` |
+| A5 | `∫ 1/sqrt(x²+1) dx` | `asinh(x)` | Similar pattern match |
+| A6 | `∫ 1/sqrt(x²-1) dx` | `acosh(x)` | Similar pattern match |
+| A7 | `∫ 1/(1-x²) dx` | `atanh(x)` | Pattern match |
+| A8 | Wire apart→integrate | Decompose rational, integrate each term | In Mul arm, try `apart()` when integrand is rational |
+| A9 | Extended by-parts | `u=ln(x)` with `dv=polynomial` | Allow non-polynomial `u` in by-parts if `du` is simpler |
+
+**Files:** `src/integrate.rs` (all items), tests in `tests/test_integrate.rs`
+
+**Effort:** ~2 hours total
+
+### Sprint B: Simplification Depth
+
+**Gap analysis:** Our 13 simplify rules cover inverse function pairs, Pythagorean identities, and structural rules. Missing:
+
+| # | Rule | Type | Implementation |
+|---|------|------|----------------|
+| B1 | `sin(w)/cos(w) → tan(w)` | Ratio recognition | New simplify rule matching `Mul([Sin(w), Pow(Cos(w), -1)])` |
+| B2 | `sinh(w)/cosh(w) → tanh(w)` | Ratio recognition | Same pattern |
+| B3 | `exp(a)*exp(b) → exp(a+b)` | Exp combining | New rule — requires Mul sub-expression matching (B5) |
+| B4 | `logcombine()` method | Log collection | `ln(a)+ln(b) → ln(a*b)` — new method `Ex::logcombine()`, reverse of `expand_log()` |
+| B5 | Mul sub-expression matching | Infrastructure | Extend `apply_rules` in `pattern.rs` to try rule patterns against pairs of Mul factors (same mechanism as existing Add sub-match) |
+
+**Files:** `src/pattern.rs` (B1-B3, B5), new `src/log_combine.rs` (B4), `src/expr.rs` + `src/arena.rs` (wiring)
+
+**Effort:** ~2 hours total
+
+### Sprint C: Eval Completeness
+
+**Gap analysis:** We evaluate sin/cos at some unit circle angles but not all 16. Missing angles and the strategy to cover them:
+
+**Supplementary angle approach (covers all missing angles with ~10 lines):**
+- Add to `eval_sin`: if `coeff > 1/2 && coeff < 1`, compute `sin(π - kπ) = sin((1-k)π)` — i.e., reduce to the first quadrant using `sin(π-x) = sin(x)`.
+- Add to `eval_cos`: `cos(π-x) = -cos(x)`.
+- With these two symmetry rules plus existing values at 0, π/6, π/4, π/3, π/2, ALL 16 standard angles are covered automatically.
+
+**Additional missing eval values:**
+| # | Item | Values |
+|---|------|--------|
+| C1 | `sin(2π/3)`, `sin(3π/4)`, `sin(5π/4)`, etc. | All covered by supplementary angle rule |
+| C2 | `cos(2π/3)`, `cos(3π/4)`, `cos(5π/6)`, etc. | All covered by supplementary angle rule |
+| C3 | `tan(π/6) = √3/3`, `tan(π/3) = √3` | Add to `eval_tan` table |
+
+**Files:** `src/eval.rs`
+
+**Effort:** ~45 minutes total
+
+### Sprint D: Ergonomics
+
+| # | Item | Description | Effort |
+|---|------|-------------|--------|
+| D1 | `Ex::zero()`, `Ex::one()` | Class methods returning 0 and 1 using global default context | 5 min |
+| D2 | `Ex::expr_type() -> ExprType` | Structural query enum: `Number, Symbol, Constant, Add, Mul, Pow, Neg, Function, Derivative, Integral, Apply` | 15 min |
+| D3 | `Ex::replace(closure)` | `replace(\|e\| Option<Ex>)` — user-provided transformation walk using `walk_and_rebuild` infrastructure | 20 min |
+| D4 | `examples/calculus.rs` | Real workflow example showing diff→integrate→series→solve pipeline | 20 min |
+
+**Files:** `src/expr.rs` (D1-D3), `examples/calculus.rs` (D4)
+
+**Effort:** ~1 hour total
+
+### Sprint Summary
+
+| Sprint | Items | Effort | Impact |
+|--------|-------|--------|--------|
+| A (Integration) | 9 items | 2 hr | Handles all standard calculus textbook integrals |
+| B (Simplification) | 5 items | 2 hr | Ratio recognition, exp combining, logcombine, Mul sub-match |
+| C (Eval) | 3 items | 45 min | Complete unit circle (all 16 angles) |
+| D (Ergonomics) | 4 items | 1 hr | Convenience constructors, structural queries, examples |
+| **Total** | **21 items** | **~5.75 hr** | |
+
+After this sprint, the library will:
+- Integrate ALL standard forms from a calculus textbook (tan, ln, inverse trig/hyp, rational via apart)
+- Simplify trig ratios (`sin/cos → tan`) and exp products (`exp(a)*exp(b) → exp(a+b)`)
+- Evaluate the complete unit circle (all 16 standard trig angles)
+- Have convenience constructors (`zero`, `one`), structural queries (`expr_type`), and guided transformation (`replace`)
+
+### File Ownership Plan for Next Sprint
+
+```text
+BATCH 1 (parallel — mutually exclusive files):
+  Agent A: src/integrate.rs           — Sprint A items (all integration)
+  Agent B: src/pattern.rs             — Sprint B items B1-B3, B5 (rules + Mul sub-match)
+  Agent C: src/eval.rs                — Sprint C items (supplementary angles, tan values)
+
+BARRIER
+
+BATCH 2 (parallel — mutually exclusive NEW files):
+  Agent D: src/log_combine.rs (NEW)   — Sprint B item B4 (logcombine)
+  Agent E: examples/calculus.rs (NEW) — Sprint D item D4
+
+BARRIER
+
+BATCH 3 (sequential — shared files):
+  Self: src/lib.rs                    — register log_combine module
+  Self: src/arena.rs                  — delegation methods
+  Self: src/expr.rs                   — Sprint D items D1-D3 + wire logcombine
+
+BATCH 4 (parallel — NEW test files):
+  Agent F: tests/test_integration_complete.rs (NEW)
+  Agent G: tests/test_simplify_advanced.rs (NEW)
+```
+
+---
+
+## v0.2.0 Roadmap
+
+### Strategic Context
+
+Symplex is the only MIT/Apache-2.0 general-purpose CAS in Rust. There is no direct competitor. The closest alternative is Python interop with SymPy, which has massive overhead. Specialized crates (`num-bigint`, `egg`, `nalgebra`) handle only parts of what a CAS does.
+
+**Likely early adopters:**
+1. Robotics/control engineers — need symbolic Jacobians, coordinate transforms, code generation
+2. Physics students — need homework-level calculus, series, ODEs
+3. Compiler/PL researchers — need term rewriting, optimization
+4. Numerical algorithm developers — need to derive formulas then compile to fast code
+
+**The common thread:** Most Rust CAS users want to **derive a formula symbolically, then compile it to numerical code.** This differs from SymPy users who stay in the symbolic world.
+
+### v0.2.0 Feature Priorities
+
+| Priority | Feature | Effort | Rationale |
+|----------|---------|--------|-----------|
+| V1 | **`symplex-format` crate** — LaTeX, Markdown, Typst rendering consuming ExprTree | 4 hr | #1 user request; separate crate keeps core lean |
+| V2 | **`MathFunction` trait** — user-defined functions with derivative/eval/evalf callbacks | 3 hr | Extensibility; the one approved advanced type technique |
+| V3 | **CancelToken** — cooperative computation timeout | 2 hr | Safety for production use; prevents hangs |
+| V4 | **Code generation** — `to_rust_fn()`, `to_c()` for compiling expressions to numerical code | 4 hr | The killer feature for Rust CAS users |
+| V5 | **Matrix/Vector symbolic type** — symbolic matrices for robotics/physics | 8 hr | Key audience need |
+| V6 | **Complex number evalf** — full complex arithmetic support | 8 hr | Physics/engineering requirement |
+| V7 | **Assumption-gated simplify rules** — wire AssumptionCache into rule conditions | 1 hr | Makes conditional rules (log properties) correct |
+
+### v0.3.0+ Vision
+
+| Feature | Description |
+|---------|-------------|
+| ODE solver (`dsolve`) | Separation of variables, integrating factors, linear constant-coefficient |
+| Piecewise expressions | New node type with relational/boolean conditions |
+| E-graph simplification | Explore `egg` crate for optimal rewriting (MIT licensed) |
+| Gröbner bases | Multivariate polynomial system solving |
+| Laplace/Fourier transforms | Integral transforms for signal processing |
+| Sparse polynomials | Replace dense `Vec<Ratio>` with sparse representation |
+| CSE (common subexpression elimination) | Critical for code generation |
+| Python bindings (PyO3) | Expand audience beyond Rust |
+
+### Architecture Decisions for v0.2.0
+
+**Formatting:** The `symplex-format` crate will consume `ExprTree` (serde) from the core. It does NOT depend on `Ex` or `Arena` — only on the serialized tree structure. This means:
+- Core crate has zero formatting dependencies
+- Format crate can evolve independently
+- Third-party formatters can be built by anyone consuming ExprTree
+
+**User-defined functions:** The `MathFunction` trait will be registered on `Context` and stored alongside `Apply` nodes. When `diff` encounters `Apply(f, args)`, it checks if `f` has a registered `MathFunction` with a `derivative` callback. This avoids new ExprNode variants.
+
+**CancelToken:** A `Arc<AtomicBool>` threaded through recursive operations. Each loop iteration checks the flag. When set, operations return `Err(SymplexError::Cancelled)`. The token is optional — passing `None` means no timeout.
+
+**Code generation:** `Ex::to_rust_fn(args: &[&str]) -> String` produces a Rust function body that evaluates the expression numerically. This is the bridge between symbolic derivation and numerical execution that Rust users specifically need.
 
 ---
 
