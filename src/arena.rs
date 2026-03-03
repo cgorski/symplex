@@ -527,6 +527,14 @@ impl Arena {
         crate::eval::eval(self, expr)
     }
 
+    /// Cancel common polynomial factors in a rational expression.
+    ///
+    /// `var` is the symbol to treat as the polynomial variable.
+    /// Delegates to [`polybridge::cancel`].
+    pub fn cancel_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
+        crate::polybridge::cancel(self, expr, var)
+    }
+
     /// Creates a subtraction expression `a - b` as `a + neg(b)`.
     pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
         let neg_b = self.neg(b);

@@ -380,6 +380,33 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Cancel common polynomial factors in a rational expression.
+    ///
+    /// Decomposes the expression into numerator and denominator,
+    /// converts both to univariate polynomials in `var`, divides out
+    /// their GCD, and rebuilds the expression.
+    ///
+    /// Returns the expression unchanged if it is not a rational
+    /// function in `var` or if there is no common factor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // (x² - 1) / (x - 1) → x + 1
+    /// let expr = (&x.powi(2) - 1) / (&x - 1);
+    /// let cancelled = expr.cancel(&x);
+    /// assert_eq!(format!("{cancelled}"), "1 + x");
+    /// ```
+    #[must_use = "returns the cancelled form; does not modify in place"]
+    pub fn cancel(&self, var: &Ex) -> Ex {
+        let id = self.inner.write().arena.cancel_expr(self.id, var.id);
+        self.wrap(id)
+    }
+
     /// Numeric floating-point evaluation to the given number of decimal
     /// digits.
     ///
