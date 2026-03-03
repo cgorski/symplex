@@ -551,6 +551,89 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Compute the indefinite integral with respect to `var`.
+    ///
+    /// Supports power rule, trigonometric, exponential, linearity,
+    /// and constant factor extraction. For integrands that don't match
+    /// any known rule, returns an unevaluated `Integral(body, var)` node.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = x.powi(2);
+    /// let anti = expr.integrate(&x);
+    /// assert_eq!(format!("{anti}"), "1/3*x^3");
+    /// ```
+    #[must_use = "returns the antiderivative; does not modify in place"]
+    pub fn integrate(&self, var: &Ex) -> Ex {
+        let id = self.inner.write().arena.integrate_expr(self.id, var.id);
+        self.wrap(id)
+    }
+
+    /// Compute the Taylor series around `point` to the given `order`.
+    ///
+    /// Returns the truncated polynomial with `order` terms:
+    /// `f(a) + f'(a)(x-a) + f''(a)(x-a)²/2! + ...`
+    ///
+    /// If `point` is zero, this is a Maclaurin series.
+    /// Returns the original expression unchanged if expansion around
+    /// the point is not possible (e.g., pole at the expansion point).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let zero = ctx.int(0);
+    /// let expr = x.exp_fn();
+    /// let s = expr.series(&x, &zero, 4);
+    /// let expanded = s.expand().eval();
+    /// let result = format!("{expanded}");
+    /// assert!(result.contains("x"), "should have x term: {result}");
+    /// ```
+    #[must_use = "returns the series expansion; does not modify in place"]
+    pub fn series(&self, var: &Ex, point: &Ex, order: u32) -> Ex {
+        let id = self
+            .inner
+            .write()
+            .arena
+            .series_expr(self.id, var.id, point.id, order);
+        self.wrap(id)
+    }
+
+    /// Factor a polynomial expression into a product of linear factors.
+    ///
+    /// Finds rational roots via the equation solver, extracts content
+    /// (GCD of coefficients), and handles root multiplicities.
+    ///
+    /// Returns the expression unchanged if it is not polynomial in `var`
+    /// or if no rational roots can be found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.powi(2) - 1;
+    /// let factored = expr.factor(&x);
+    /// let s = format!("{factored}");
+    /// // Should be factored into (x-1)(x+1) form
+    /// assert!(!s.contains("x^2"), "should be factored: {s}");
+    /// ```
+    #[must_use = "returns the factored form; does not modify in place"]
+    pub fn factor(&self, var: &Ex) -> Ex {
+        let id = self.inner.write().arena.factor_expr(self.id, var.id);
+        self.wrap(id)
+    }
+
     /// Numeric floating-point evaluation to the given number of decimal
     /// digits.
     ///

@@ -272,8 +272,16 @@ fn diff_node(
             arena.intern(ExprNode::Derivative(id, v))
         }
 
-        // ── Integral: leave unevaluated ────────────────────────────
-        ExprNode::Integral(_, _) => {
+        // ── Integral: fundamental theorem of calculus ───────────────
+        // d/dx(∫ f dx) = f when the integration variable matches the
+        // differentiation variable.
+        ExprNode::Integral(body, int_var) => {
+            if let ExprNode::Symbol(int_sym) = arena.node(int_var) {
+                if *int_sym == var {
+                    return body;
+                }
+            }
+            // Different variable — leave as unevaluated derivative.
             let v = var_expr(arena, var);
             arena.intern(ExprNode::Derivative(id, v))
         }
@@ -654,5 +662,30 @@ mod tests {
         let s = display(&a, result);
         assert!(s.contains("sin"), "should contain sin, got: {s}");
         assert!(s.contains("cos"), "should contain cos, got: {s}");
+    }
+
+    // ── Fundamental theorem of calculus ──────────────────────────────
+
+    #[test]
+    fn diff_integral_fundamental_theorem() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        // d/dx(∫ x^2 dx) = x^2
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let integral = a.intern(crate::node::ExprNode::Integral(x2, x));
+        let result = diff(&mut a, integral, x);
+        assert_eq!(display(&a, result), "x^2");
+    }
+
+    #[test]
+    fn diff_integral_different_var_stays_unevaluated() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        // d/dx(∫ y dy) stays as Derivative(Integral(y, y), x)
+        let integral = a.intern(crate::node::ExprNode::Integral(y, y));
+        let result = diff(&mut a, integral, x);
+        assert_eq!(display(&a, result), "Derivative(Integral(y, y), x)");
     }
 }

@@ -564,6 +564,31 @@ impl Arena {
         crate::polybridge::together(self, expr)
     }
 
+    /// Compute the indefinite integral of `expr` with respect to `var`.
+    ///
+    /// Returns an unevaluated `Integral` node for integrands that
+    /// don't match any known rule.
+    /// Delegates to [`integrate::integrate`].
+    pub fn integrate_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
+        crate::integrate::integrate(self, expr, var)
+    }
+
+    /// Compute the Taylor series of `expr` in `var` around `point`
+    /// to the given `order` (number of terms).
+    ///
+    /// Delegates to [`series::series`].
+    pub fn series_expr(&mut self, expr: ExprId, var: ExprId, point: ExprId, order: u32) -> ExprId {
+        crate::series::series(self, expr, var, point, order)
+    }
+
+    /// Factor a polynomial expression into a product of linear factors.
+    ///
+    /// Returns the expression unchanged if no rational roots are found.
+    /// Delegates to [`factor::factor`].
+    pub fn factor_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
+        crate::factor::factor(self, expr, var)
+    }
+
     /// Creates a subtraction expression `a - b` as `a + neg(b)`.
     pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
         let neg_b = self.neg(b);
