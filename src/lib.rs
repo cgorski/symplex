@@ -39,9 +39,11 @@ pub(crate) mod canon;
 pub(crate) mod diff;
 pub(crate) mod display;
 pub(crate) mod node;
+pub(crate) mod pattern;
 pub(crate) mod sort_key;
 pub(crate) mod subs;
 pub(crate) mod symbol;
+pub(crate) mod walk;
 
 // ── Public modules (stable API surface) ────────────────────────────────
 pub mod assumptions;
@@ -70,4 +72,5 @@ pub mod prelude {
     pub use crate::context::Context;
     pub use crate::errors::SymplexError;
     pub use crate::expr::Ex;
+    pub use crate::pattern::Step;
 }

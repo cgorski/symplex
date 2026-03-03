@@ -46,7 +46,7 @@ pub(crate) fn diff(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     };
 
     // Phase 1: Compute a post-order traversal of the expression DAG.
-    let post_order = post_order_ids(arena, expr);
+    let post_order = crate::walk::post_order_ids(arena, expr);
 
     // Phase 2: For each node in post-order, compute its derivative
     // and store it in the cache.
@@ -290,37 +290,6 @@ fn get_deriv(cache: &FxHashMap<ExprId, ExprId>, id: ExprId, arena: &Arena) -> Ex
 /// Reconstruct the Symbol ExprId for the variable.
 fn var_expr(arena: &mut Arena, var: SymbolId) -> ExprId {
     arena.intern(ExprNode::Symbol(var))
-}
-
-/// Compute a post-order traversal of the expression DAG.
-/// Each ExprId appears at most once (deduplicated).
-fn post_order_ids(arena: &Arena, root: ExprId) -> Vec<ExprId> {
-    let mut result = Vec::new();
-    let mut visited: FxHashMap<ExprId, bool> = FxHashMap::default();
-    let mut stack: Vec<(ExprId, bool)> = vec![(root, false)];
-
-    while let Some((id, children_pushed)) = stack.last_mut() {
-        if visited.contains_key(id) {
-            stack.pop();
-            continue;
-        }
-
-        if !*children_pushed {
-            *children_pushed = true;
-            let children = arena.node(*id).children();
-            for &child in children.iter().rev() {
-                if !visited.contains_key(&child) {
-                    stack.push((child, false));
-                }
-            }
-        } else {
-            let id = stack.pop().unwrap().0;
-            visited.insert(id, true);
-            result.push(id);
-        }
-    }
-
-    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

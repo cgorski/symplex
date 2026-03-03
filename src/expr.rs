@@ -283,8 +283,40 @@ impl Ex {
     }
 
     /// Simplification (identity application, trig identities, etc.).
+    ///
+    /// Applies built-in rewrite rules (e.g., `sin²(x) + cos²(x) → 1`)
+    /// in a single bottom-up pass.  For fixpoint simplification, call
+    /// repeatedly until the result stops changing.
+    ///
+    /// ⚠️ **This function is heuristic.**  For deterministic
+    /// transformations, use `.expand()`, `.eval()`, or `.diff()` instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
+    /// assert_eq!(format!("{}", expr.simplify()), "1");
+    /// ```
     pub fn simplify(&self) -> Ex {
-        todo!("simplify: not yet implemented")
+        let (result, _steps) = self.simplify_trace();
+        result
+    }
+
+    /// Like [`simplify`](Ex::simplify), but also returns a trace of
+    /// which rules fired and what they changed.
+    ///
+    /// Each [`Step`](crate::pattern::Step) records the rule name, the
+    /// sub-expression before, and the sub-expression after.
+    pub fn simplify_trace(&self) -> (Ex, Vec<crate::pattern::Step>) {
+        let mut inner = self.inner.write();
+        let rules = crate::pattern::basic_rules(&mut inner.arena);
+        let (result_id, steps) = crate::pattern::apply_rules(&mut inner.arena, self.id, &rules);
+        drop(inner);
+        (self.wrap(result_id), steps)
     }
 
     /// Exact symbolic evaluation (rational arithmetic, known identities).
