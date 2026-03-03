@@ -1274,6 +1274,33 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Apply trigonometric product-to-sum and double-angle identities.
+    ///
+    /// - `sin(a)·cos(b) → ½[sin(a+b) + sin(a-b)]`
+    /// - `cos(a)·cos(b) → ½[cos(a-b) + cos(a+b)]`
+    /// - `sin(a)·sin(b) → ½[cos(a-b) - cos(a+b)]`
+    /// - `cos²(x) - sin²(x) → cos(2x)`
+    ///
+    /// This is the inverse of [`expand_trig`](Self::expand_trig).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.sin() * &x.cos();
+    /// let combined = expr.trig_combine();
+    /// let s = format!("{combined}");
+    /// assert!(s.contains("sin"), "should produce product-to-sum: {s}");
+    /// ```
+    #[must_use = "returns the combined form; does not modify in place"]
+    pub fn trig_combine(&self) -> Ex {
+        let id = self.inner.write().arena.trig_combine_expr(self.id);
+        self.wrap(id)
+    }
+
     /// Compute the polynomial GCD of `self` and `other` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.

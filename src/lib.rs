@@ -57,7 +57,9 @@ pub(crate) mod solve;
 pub(crate) mod sort_key;
 pub(crate) mod subs;
 pub(crate) mod symbol;
+pub(crate) mod trig_combine;
 pub(crate) mod trig_expand;
+pub(crate) mod trig_integ;
 pub(crate) mod walk;
 
 // ── Public modules ─────────────────────────────────────────────────────

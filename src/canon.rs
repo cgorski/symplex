@@ -443,18 +443,19 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
     // More generally, negative_rational^(1/2) → i * |negative_rational|^(1/2)
     if let Some(base_r) = arena.as_num(base)
         && base_r.is_negative()
-            && let Some(exp_r) = arena.as_num(exp)
-                && *exp_r == Ratio::new(1.into(), 2.into()) {
-                    // base is negative, exp is 1/2
-                    // result = i * |base|^(1/2)
-                    let abs_base = {
-                        let abs_val = -base_r.clone();
-                        let nid = arena.intern_num(abs_val);
-                        arena.intern(ExprNode::Num(nid))
-                    };
-                    let sqrt_abs = canon_pow(arena, abs_base, exp);
-                    return arena.mul(&[arena.i_unit, sqrt_abs]);
-                }
+        && let Some(exp_r) = arena.as_num(exp)
+        && *exp_r == Ratio::new(1.into(), 2.into())
+    {
+        // base is negative, exp is 1/2
+        // result = i * |base|^(1/2)
+        let abs_base = {
+            let abs_val = -base_r.clone();
+            let nid = arena.intern_num(abs_val);
+            arena.intern(ExprNode::Num(nid))
+        };
+        let sqrt_abs = canon_pow(arena, abs_base, exp);
+        return arena.mul(&[arena.i_unit, sqrt_abs]);
+    }
 
     // NaN propagation.
     if base == arena.nan || exp == arena.nan {

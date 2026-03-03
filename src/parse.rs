@@ -85,6 +85,7 @@ pub fn parse(ctx: &Context, input: &str) -> Result<Ex, ParseError> {
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     Int(i64),
+    Rational(i64, i64),
     Ident(String),
     Plus,
     Minus,
@@ -93,7 +94,6 @@ enum Token {
     Caret,
     LParen,
     RParen,
-    #[allow(dead_code)]
     Comma,
     Eof,
 }
@@ -160,6 +160,32 @@ impl<'a> Lexer<'a> {
                     && self.input.as_bytes()[self.pos].is_ascii_digit()
                 {
                     self.pos += 1;
+                }
+                // Check for decimal point followed by digits → Rational token
+                if self.pos < self.input.len()
+                    && self.input.as_bytes()[self.pos] == b'.'
+                    && self.pos + 1 < self.input.len()
+                    && self.input.as_bytes()[self.pos + 1].is_ascii_digit()
+                {
+                    self.pos += 1; // consume '.'
+                    let frac_start = self.pos;
+                    while self.pos < self.input.len()
+                        && self.input.as_bytes()[self.pos].is_ascii_digit()
+                    {
+                        self.pos += 1;
+                    }
+                    let decimal_places = self.pos - frac_start;
+                    let full_str = self.input[start..self.pos].replace('.', "");
+                    let numer = full_str.parse::<i64>().map_err(|e| ParseError {
+                        message: format!(
+                            "invalid number '{}': {}",
+                            &self.input[start..self.pos],
+                            e
+                        ),
+                        position: start,
+                    })?;
+                    let denom = 10i64.pow(decimal_places as u32);
+                    return Ok(Token::Rational(numer, denom));
                 }
                 let s = &self.input[start..self.pos];
                 let n = s.parse::<i64>().map_err(|e| ParseError {
@@ -230,12 +256,17 @@ impl<'a> Parser<'a> {
 
         // Infix loop
         loop {
-            let (op, l_bp, r_bp) = match &self.current {
-                Token::Plus => ('+', 1, 2),
-                Token::Minus => ('-', 1, 2),
-                Token::Star => ('*', 3, 4),
-                Token::Slash => ('/', 3, 4),
-                Token::Caret => ('^', 8, 7), // right-associative
+            let (op, l_bp, r_bp, implicit) = match &self.current {
+                Token::Plus => ('+', 1, 2, false),
+                Token::Minus => ('-', 1, 2, false),
+                Token::Star => ('*', 3, 4, false),
+                Token::Slash => ('/', 3, 4, false),
+                Token::Caret => ('^', 8, 7, false), // right-associative
+                // Implicit multiplication: number, identifier, or '(' immediately
+                // following a complete left-hand expression.
+                Token::Int(_) | Token::Rational(_, _) | Token::Ident(_) | Token::LParen => {
+                    ('*', 3, 4, true)
+                }
                 _ => break,
             };
 
@@ -243,7 +274,9 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            self.advance()?;
+            if !implicit {
+                self.advance()?;
+            }
             let rhs = self.parse_expr(arena, r_bp)?;
 
             lhs = match op {
@@ -266,6 +299,10 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 Ok(arena.int(n))
             }
+            Token::Rational(n, d) => {
+                self.advance()?;
+                Ok(arena.rational(n, d))
+            }
             Token::Ident(name) => {
                 self.advance()?;
                 // Check for function call: ident followed by '('
@@ -274,10 +311,10 @@ impl<'a> Parser<'a> {
                 }
                 // Known constants
                 match name.as_str() {
-                    "pi" => Ok(arena.pi),
+                    "pi" | "Pi" | "PI" => Ok(arena.pi),
                     "e" | "E" => Ok(arena.e_const),
-                    "I" => Ok(arena.i_unit),
-                    "inf" | "oo" => Ok(arena.infinity),
+                    "I" | "i" => Ok(arena.i_unit),
+                    "inf" | "oo" | "Inf" => Ok(arena.infinity),
                     "nan" => Ok(arena.nan),
                     _ => Ok(arena.symbol(&name)),
                 }
@@ -314,6 +351,27 @@ impl<'a> Parser<'a> {
         }
 
         let arg = self.parse_expr(arena, 0)?;
+
+        // Multi-argument functions: check for comma
+        if self.current == Token::Comma {
+            self.advance()?;
+            let arg2 = self.parse_expr(arena, 0)?;
+            self.expect(&Token::RParen)?;
+
+            return match name {
+                "log" => {
+                    // log(x, base) = ln(x) / ln(base)
+                    let ln_x = arena.ln(arg);
+                    let ln_base = arena.ln(arg2);
+                    Ok(arena.div(ln_x, ln_base))
+                }
+                _ => Err(ParseError {
+                    message: format!("function '{}' does not accept multiple arguments", name),
+                    position: self.lexer.pos,
+                }),
+            };
+        }
+
         self.expect(&Token::RParen)?;
 
         match name {
@@ -499,7 +557,9 @@ mod tests {
     #[test]
     fn parse_trailing_garbage_error() {
         let ctx = Context::new();
-        assert!(parse(&ctx, "x y").is_err());
+        // With implicit multiplication, "x y" is now valid (x*y).
+        // Use truly invalid trailing tokens instead.
+        assert!(parse(&ctx, "x )").is_err());
     }
 
     #[test]
@@ -576,5 +636,119 @@ mod tests {
         // a + b * c should parse as a + (b*c)
         let s = parse_and_display("a + b * c");
         assert!(s.contains("b*c") || s.contains("c*b"), "got: {s}");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // New feature tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn parse_float() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "3.14").unwrap();
+        let s = format!("{result}");
+        // 3.14 should parse as 314/100 = 157/50
+        assert!(
+            s.contains("157") || s.contains("3.14") || s.contains("314"),
+            "got: {s}"
+        );
+    }
+
+    #[test]
+    fn parse_implicit_mul_number_var() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "2x").unwrap();
+        let s = format!("{result}");
+        assert!(s.contains("2") && s.contains("x"), "2x should be 2*x: {s}");
+    }
+
+    #[test]
+    fn parse_implicit_mul_var_paren() {
+        // ident + '(' is always treated as a function call, so x(x+1) errors
+        // (x is not a known function). Use number*paren or paren*paren instead.
+        let ctx = Context::new();
+        assert!(parse(&ctx, "x(x+1)").is_err());
+    }
+
+    #[test]
+    fn parse_constant_pi_variants() {
+        assert_eq!(parse_and_display("pi"), "pi");
+        assert_eq!(parse_and_display("Pi"), "pi");
+        assert_eq!(parse_and_display("PI"), "pi");
+    }
+
+    #[test]
+    fn parse_constant_i_unit() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "I").unwrap();
+        assert_eq!(format!("{result}"), "I");
+    }
+
+    #[test]
+    fn parse_constant_i_lowercase() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "i").unwrap();
+        assert_eq!(format!("{result}"), "I");
+    }
+
+    #[test]
+    fn parse_euler_formula() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "exp(I*pi)").unwrap();
+        let s = format!("{result}");
+        assert!(s.contains("I") && s.contains("pi"), "got: {s}");
+    }
+
+    #[test]
+    fn parse_float_times_var() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "2.5*x").unwrap();
+        let s = format!("{result}");
+        assert!(
+            s.contains("x") && (s.contains("5/2") || s.contains("2.5") || s.contains("5*1/2")),
+            "got: {s}"
+        );
+    }
+
+    #[test]
+    fn parse_log_two_args() {
+        let ctx = Context::new();
+        // log(x, 2) = ln(x) / ln(2)
+        let result = parse(&ctx, "log(x, 2)").unwrap();
+        let s = format!("{result}");
+        assert!(s.contains("x"), "log(x,2) should parse: {s}");
+    }
+
+    #[test]
+    fn parse_implicit_mul_number_paren() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "3(x+1)").unwrap();
+        let s = format!("{result}");
+        assert!(
+            s.contains("3") && s.contains("x"),
+            "3(x+1) should be 3*(x+1): {s}"
+        );
+    }
+
+    #[test]
+    fn parse_implicit_mul_paren_paren() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "(a)(b)").unwrap();
+        let s = format!("{result}");
+        assert!(
+            s.contains("a") && s.contains("b"),
+            "(a)(b) should be a*b: {s}"
+        );
+    }
+
+    #[test]
+    fn parse_implicit_mul_coeff_pi() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "2pi").unwrap();
+        let s = format!("{result}");
+        assert!(
+            s.contains("2") && s.contains("pi"),
+            "2pi should be 2*pi: {s}"
+        );
     }
 }

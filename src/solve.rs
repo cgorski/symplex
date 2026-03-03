@@ -29,7 +29,7 @@ use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 
 use crate::arena::Arena;
-use crate::node::{ExprId, ExprNode};
+use crate::node::{ExprId, ExprNode, SymbolId};
 use crate::poly::Poly;
 use crate::polybridge;
 
@@ -81,6 +81,13 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
             // Not polynomial → try transcendental solving via inversion peeling.
             // Handles: exp(x)=c, ln(x)=c, sin(x)=c, sqrt(x)=c, etc.
             if let Some(solutions) = try_solve_by_inversion(arena, expr, var)
+                && !solutions.is_empty()
+            {
+                return solutions;
+            }
+            // Try change-of-variable: if expression is polynomial in f(x) for some f,
+            // substitute t = f(x), solve the polynomial, then back-substitute.
+            if let Some(solutions) = try_change_of_variable(arena, expr, var)
                 && !solutions.is_empty()
             {
                 return solutions;
@@ -561,6 +568,170 @@ fn divisors(n: &BigInt) -> Vec<BigInt> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Change-of-variable solving
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try solving by detecting that the expression is polynomial in some f(x).
+/// E.g., `exp(2x) - 3*exp(x) + 2` is polynomial in `t = exp(x)`: `t² - 3t + 2`.
+fn try_change_of_variable(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+    let var_sym = match arena.node(var) {
+        ExprNode::Symbol(sid) => *sid,
+        _ => return None,
+    };
+
+    // Collect candidate generators: inner functions applied to var
+    let candidates = collect_generators(arena, expr, var, var_sym);
+
+    for generator in candidates {
+        // Create a temporary variable for substitution
+        let t = arena.symbol("__t_subst");
+
+        // --- Simple case: direct structural substitution of generator → t ---
+        // This handles e.g. sin(x)^2 - sin(x) where walk_and_rebuild
+        // naturally replaces sin(x) inside Pow(sin(x), 2) as well.
+        let substituted = arena.subs_structural(expr, generator, t);
+
+        if !expr_contains_var(arena, substituted, var) {
+            let t_solutions = solve(arena, substituted, t);
+
+            if !t_solutions.is_empty() {
+                // Back-substitute: for each t = c, solve generator(var) = c.
+                // Use solve_by_peeling directly to avoid recursing into
+                // try_change_of_variable again (which would infinite-loop).
+                let mut var_solutions = Vec::new();
+                for t_sol in &t_solutions {
+                    if let Some(back_sols) = solve_by_peeling(arena, generator, t_sol.value, var) {
+                        for s in back_sols {
+                            var_solutions.push(s);
+                        }
+                    }
+                }
+                if !var_solutions.is_empty() {
+                    return Some(var_solutions);
+                }
+            }
+        }
+
+        // --- Advanced: detect exp(n*x) = exp(x)^n pattern ---
+        // exp(2*x) is Exp(Mul([2, x])) which does NOT structurally
+        // contain exp(x) = Exp(x), so simple substitution misses it.
+        // We rewrite exp(k*x) → exp(x)^k first, then substitute.
+        if let ExprNode::Exp(inner) = arena.node(generator).clone()
+            && inner == var
+        {
+            let rewritten = rewrite_exp_powers(arena, expr, var, generator);
+            if rewritten != expr {
+                let substituted2 = arena.subs_structural(rewritten, generator, t);
+                if !expr_contains_var(arena, substituted2, var) {
+                    let t_solutions = solve(arena, substituted2, t);
+                    if !t_solutions.is_empty() {
+                        let mut var_solutions = Vec::new();
+                        for t_sol in &t_solutions {
+                            if let Some(back_sols) =
+                                solve_by_peeling(arena, generator, t_sol.value, var)
+                            {
+                                for s in back_sols {
+                                    var_solutions.push(s);
+                                }
+                            }
+                        }
+                        if !var_solutions.is_empty() {
+                            return Some(var_solutions);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Collect candidate generator functions: exp(x), sin(x), cos(x), ln(x), x^(k), etc.
+fn collect_generators(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolId) -> Vec<ExprId> {
+    let mut generators = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    collect_gens_recursive(arena, expr, var, var_sym, &mut generators, &mut visited);
+    generators
+}
+
+fn collect_gens_recursive(
+    arena: &Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+    gens: &mut Vec<ExprId>,
+    visited: &mut std::collections::HashSet<ExprId>,
+) {
+    if !visited.insert(expr) {
+        return;
+    }
+    match arena.node(expr).clone() {
+        ExprNode::Exp(inner) if inner == var => {
+            if !gens.contains(&expr) {
+                gens.push(expr);
+            }
+        }
+        ExprNode::Sin(inner) | ExprNode::Cos(inner) | ExprNode::Tan(inner) if inner == var => {
+            if !gens.contains(&expr) {
+                gens.push(expr);
+            }
+        }
+        ExprNode::Ln(inner) if inner == var => {
+            if !gens.contains(&expr) {
+                gens.push(expr);
+            }
+        }
+        ExprNode::Pow(base, exp) if base == var && !expr_contains_var(arena, exp, var) => {
+            // x^(1/n) or x^k type
+            if !gens.contains(&expr) {
+                gens.push(expr);
+            }
+        }
+        ExprNode::Add(ref children) | ExprNode::Mul(ref children) => {
+            for &c in children {
+                collect_gens_recursive(arena, c, var, var_sym, gens, visited);
+            }
+        }
+        ExprNode::Pow(base, exp) => {
+            collect_gens_recursive(arena, base, var, var_sym, gens, visited);
+            collect_gens_recursive(arena, exp, var, var_sym, gens, visited);
+        }
+        ExprNode::Neg(inner)
+        | ExprNode::Exp(inner)
+        | ExprNode::Ln(inner)
+        | ExprNode::Sin(inner)
+        | ExprNode::Cos(inner)
+        | ExprNode::Tan(inner) => {
+            collect_gens_recursive(arena, inner, var, var_sym, gens, visited);
+        }
+        _ => {}
+    }
+}
+
+/// Rewrite `exp(k*x)` as `exp(x)^k` for small integer k throughout the expression.
+fn rewrite_exp_powers(arena: &mut Arena, expr: ExprId, var: ExprId, gen_exp_x: ExprId) -> ExprId {
+    let mut result = expr;
+    // Check small positive integer multiples: exp(k*x) → exp(x)^k
+    for k in 2i64..=6 {
+        let k_id = arena.int(k);
+        let k_var = arena.mul(&[k_id, var]);
+        let exp_k_var = arena.exp(k_var);
+        let gen_pow_k = arena.pow(gen_exp_x, k_id);
+        result = arena.subs_structural(result, exp_k_var, gen_pow_k);
+    }
+    // Also handle negative multiples: exp(-k*x) → exp(x)^(-k)
+    for k in [-1i64, -2, -3] {
+        let k_id = arena.int(k);
+        let k_var = arena.mul(&[k_id, var]);
+        let exp_k_var = arena.exp(k_var);
+        let gen_pow_k = arena.pow(gen_exp_x, k_id);
+        result = arena.subs_structural(result, exp_k_var, gen_pow_k);
+    }
+    result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -789,13 +960,23 @@ mod tests {
     }
 
     #[test]
-    fn solve_non_polynomial_returns_empty() {
+    fn solve_sin_x_eq_zero_via_change_of_variable() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
-        // sin(x) = 0 → not polynomial, returns empty.
+        // sin(x) = 0 → change-of-variable with t = sin(x) finds t = 0,
+        // then back-substitutes sin(x) = 0 → x = asin(0) = 0.
         let expr = a.sin(x);
         let solutions = solve(&mut a, expr, x);
-        assert!(solutions.is_empty());
+        assert_eq!(
+            solutions.len(),
+            1,
+            "sin(x)=0 should have 1 principal solution"
+        );
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val == "0" || val.contains("asin"),
+            "solution should be 0 or asin(0): {val}"
+        );
     }
 
     #[test]
@@ -996,6 +1177,108 @@ mod tests {
                 display(&a, val)
             );
         }
+    }
+
+    // ── Change-of-variable ──────────────────────────────────────────
+
+    #[test]
+    fn solve_exp_2x_minus_3_exp_x_plus_2() {
+        // exp(2x) - 3*exp(x) + 2 = 0
+        // Let t = exp(x): t² - 3t + 2 = (t-1)(t-2) = 0
+        // t = 1 → x = ln(1) = 0
+        // t = 2 → x = ln(2)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let three = a.int(3);
+
+        let two_x = a.mul(&[two, x]);
+        let exp_2x = a.exp(two_x);
+        let exp_x = a.exp(x);
+        let three_exp_x = a.mul(&[three, exp_x]);
+        let neg_three_exp_x = a.neg(three_exp_x);
+        let expr = a.add(&[exp_2x, neg_three_exp_x, two]);
+
+        let solutions = solve(&mut a, expr, x);
+        assert!(
+            solutions.len() >= 2,
+            "exp(2x)-3*exp(x)+2=0 should have 2 solutions, got {}: {:?}",
+            solutions.len(),
+            solution_strings(&a, &solutions)
+        );
+        let vals: Vec<String> = solution_strings(&a, &solutions);
+        // ln(1) may or may not simplify to 0 depending on canonicalization
+        assert!(
+            vals.contains(&"0".to_string()) || vals.contains(&"ln(1)".to_string()),
+            "should have root 0 or ln(1) (from exp(x)=1): {vals:?}"
+        );
+        let has_ln2 = vals.iter().any(|v| v.contains("ln") || v.contains("log"));
+        assert!(has_ln2, "should have root ln(2): {vals:?}");
+    }
+
+    #[test]
+    fn solve_sin_squared_minus_sin() {
+        // sin(x)^2 - sin(x) = 0
+        // Let t = sin(x): t² - t = t(t-1) = 0
+        // t = 0 → sin(x) = 0 → x = asin(0) = 0
+        // t = 1 → sin(x) = 1 → x = asin(1)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+
+        let sin_x = a.sin(x);
+        let sin_x_sq = a.pow(sin_x, two);
+        let expr = a.sub(sin_x_sq, sin_x);
+
+        let solutions = solve(&mut a, expr, x);
+        assert!(
+            solutions.len() >= 2,
+            "sin(x)^2-sin(x)=0 should have ≥2 solutions, got {}: {:?}",
+            solutions.len(),
+            solution_strings(&a, &solutions)
+        );
+        let vals: Vec<String> = solution_strings(&a, &solutions);
+        // One root should be 0 (from sin(x)=0 → x=asin(0)=0)
+        let has_zero = vals.contains(&"0".to_string());
+        // The other should involve asin (from sin(x)=1 → x=asin(1))
+        let has_asin = vals
+            .iter()
+            .any(|v| v.contains("asin") || v.contains("arcsin"));
+        assert!(
+            has_zero || has_asin,
+            "should have root 0 or asin(1): {vals:?}"
+        );
+    }
+
+    #[test]
+    fn solve_exp_quadratic_one_valid_root() {
+        // exp(2x) - 5*exp(x) + 6 = 0
+        // Let t = exp(x): t² - 5t + 6 = (t-2)(t-3) = 0
+        // t = 2 → x = ln(2)
+        // t = 3 → x = ln(3)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let five = a.int(5);
+        let six = a.int(6);
+
+        let two_x = a.mul(&[two, x]);
+        let exp_2x = a.exp(two_x);
+        let exp_x = a.exp(x);
+        let five_exp_x = a.mul(&[five, exp_x]);
+        let neg_five_exp_x = a.neg(five_exp_x);
+        let expr = a.add(&[exp_2x, neg_five_exp_x, six]);
+
+        let solutions = solve(&mut a, expr, x);
+        assert!(
+            solutions.len() >= 2,
+            "exp(2x)-5*exp(x)+6=0 should have 2 solutions, got {}: {:?}",
+            solutions.len(),
+            solution_strings(&a, &solutions)
+        );
+        let vals: Vec<String> = solution_strings(&a, &solutions);
+        let has_ln = vals.iter().all(|v| v.contains("ln") || v.contains("log"));
+        assert!(has_ln, "all roots should involve ln: {vals:?}");
     }
 
     // ── Helper tests ────────────────────────────────────────────────

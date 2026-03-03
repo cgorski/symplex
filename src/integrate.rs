@@ -225,6 +225,11 @@ fn try_standard_form_integral(
 
 /// Integrate a single node with respect to `var`.
 fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolId) -> ExprId {
+    // Try trig power/product integration first (sin^n, cos^n, sin^m*cos^n)
+    if let Some(result) = crate::trig_integ::try_trig_power_integral(arena, expr, var, var_sym) {
+        return result;
+    }
+
     let node = arena.node(expr).clone();
 
     match node {
@@ -354,6 +359,17 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                             return result;
                         }
                     }
+                }
+            }
+
+            // ── Try general u-substitution ──────────────────────────────
+            if let Some(result) = try_u_substitution(arena, &dependent, var, var_sym) {
+                if constants.is_empty() {
+                    return result;
+                } else {
+                    let mut all = constants.clone();
+                    all.push(result);
+                    return arena.mul(&all);
                 }
             }
 
@@ -743,6 +759,132 @@ fn linear_coeff_of(
 fn rational_to_expr(arena: &mut Arena, r: &num_rational::Ratio<num_bigint::BigInt>) -> ExprId {
     let nid = arena.intern_num(r.clone());
     arena.intern(crate::node::ExprNode::Num(nid))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// General u-substitution
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try general u-substitution on a product integrand.
+///
+/// For each dependent factor `g(u)` where `u = u(x)`, this checks
+/// whether the remaining factors equal `du/dx` times a constant `c`.
+/// When they do, `∫ c · (du/dx) · g(u) dx = c · G(u)` where `G` is
+/// the antiderivative of `g` with respect to `u`.
+///
+/// The technique works by:
+/// 1. Extracting candidate inner arguments from function / power nodes.
+/// 2. Computing `du/dx` via [`crate::diff::diff`].
+/// 3. Forming `remaining / du` and checking it is free of `var`.
+/// 4. Substituting `u → var` in the factor, integrating, then
+///    substituting back.
+fn try_u_substitution(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    for (i, &factor) in dependent.iter().enumerate() {
+        let candidates = u_sub_candidates(arena, factor, var_sym);
+
+        for u_expr in candidates {
+            // Skip the trivial u = var case (already handled elsewhere)
+            if u_expr == var {
+                continue;
+            }
+
+            // Compute du/dx
+            let du = crate::diff::diff(arena, u_expr, var);
+            if du == arena.zero {
+                continue;
+            }
+
+            // Product of the remaining dependent factors
+            let remaining_expr = remaining_product(arena, dependent, i);
+
+            // quotient = remaining / du — if free of var, we have our constant
+            let quotient = arena.div(remaining_expr, du);
+
+            // Try the raw quotient first; fall back to polynomial cancellation
+            let coeff = if !contains_var(arena, quotient, var_sym) {
+                quotient
+            } else {
+                let cancelled = arena.cancel_expr(quotient, var);
+                if !contains_var(arena, cancelled, var_sym) {
+                    cancelled
+                } else {
+                    continue;
+                }
+            };
+
+            // Replace u(x) → var inside the factor to get g(var),
+            // integrate g(var) w.r.t. var, then substitute var → u(x) back.
+            let g_of_var = arena.subs_structural(factor, u_expr, var);
+            let g_integrated = integrate_node(arena, g_of_var, var, var_sym);
+
+            // If the inner integral is unevaluated, this candidate didn't help
+            if matches!(arena.node(g_integrated), ExprNode::Integral(_, _)) {
+                continue;
+            }
+
+            // G(u) — substitute var back to u(x)
+            let antideriv = arena.subs_structural(g_integrated, var, u_expr);
+            return Some(arena.mul(&[coeff, antideriv]));
+        }
+    }
+    None
+}
+
+/// Collect candidate `u`-expressions from a single factor.
+///
+/// For function nodes (`sin`, `cos`, `exp`, …) the inner argument is
+/// returned.  For `Pow(base, exp)` the base is returned (enabling
+/// e.g. `u = x² + 1` inside `(x²+1)^{-1}`).
+fn u_sub_candidates(arena: &Arena, factor: ExprId, var_sym: SymbolId) -> SmallVec<[ExprId; 4]> {
+    let mut out: SmallVec<[ExprId; 4]> = SmallVec::new();
+    match arena.node(factor).clone() {
+        ExprNode::Sin(inner)
+        | ExprNode::Cos(inner)
+        | ExprNode::Tan(inner)
+        | ExprNode::Exp(inner)
+        | ExprNode::Ln(inner)
+        | ExprNode::Sinh(inner)
+        | ExprNode::Cosh(inner)
+        | ExprNode::Tanh(inner)
+        | ExprNode::Asin(inner)
+        | ExprNode::Acos(inner)
+        | ExprNode::Atan(inner)
+        | ExprNode::Asinh(inner)
+        | ExprNode::Acosh(inner)
+        | ExprNode::Atanh(inner)
+        | ExprNode::Abs(inner) => {
+            if contains_var(arena, inner, var_sym) {
+                out.push(inner);
+            }
+        }
+        ExprNode::Pow(base, _exp) => {
+            if contains_var(arena, base, var_sym) {
+                out.push(base);
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Build the product of all elements in `children` except index `skip`.
+fn remaining_product(arena: &mut Arena, children: &[ExprId], skip: usize) -> ExprId {
+    let parts: SmallVec<[ExprId; 4]> = children
+        .iter()
+        .enumerate()
+        .filter(|&(j, _)| j != skip)
+        .map(|(_, &c)| c)
+        .collect();
+    match parts.len() {
+        0 => arena.one,
+        1 => parts[0],
+        _ => arena.mul(&parts),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1167,5 +1309,74 @@ mod tests {
         let result = integrate(&mut a, expr, x);
         let s = display(&a, result);
         assert!(s.contains("acos"), "should contain acos: {s}");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // u-substitution tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn integrate_2x_exp_x_squared_u_sub() {
+        // ∫ 2x·exp(x²) dx = exp(x²)   [u = x², du = 2x dx]
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let x2 = a.pow(x, two);
+        let exp_x2 = a.exp(x2);
+        let expr = a.mul(&[two_x, exp_x2]);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(
+            s.contains("exp"),
+            "∫ 2x·exp(x²) dx should contain exp, got: {s}"
+        );
+        assert!(
+            !s.contains("Integral"),
+            "∫ 2x·exp(x²) dx should not be unevaluated, got: {s}"
+        );
+    }
+
+    #[test]
+    fn integrate_cos_x_exp_sin_x_u_sub() {
+        // ∫ cos(x)·exp(sin(x)) dx = exp(sin(x))   [u = sin(x), du = cos(x) dx]
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let sin_x = a.sin(x);
+        let cos_x = a.cos(x);
+        let exp_sin_x = a.exp(sin_x);
+        let expr = a.mul(&[cos_x, exp_sin_x]);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(
+            s.contains("exp"),
+            "∫ cos(x)·exp(sin(x)) dx should contain exp, got: {s}"
+        );
+        assert!(
+            !s.contains("Integral"),
+            "∫ cos(x)·exp(sin(x)) dx should not be unevaluated, got: {s}"
+        );
+    }
+
+    #[test]
+    fn integrate_x_over_x2_plus_1_u_sub() {
+        // ∫ x/(x²+1) dx = ½·ln(x²+1)   [u = x²+1, du = 2x dx]
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let one = a.one;
+        let x2_plus_1 = a.add(&[x2, one]);
+        let expr = a.div(x, x2_plus_1);
+        let result = integrate(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(
+            s.contains("ln"),
+            "∫ x/(x²+1) dx should contain ln, got: {s}"
+        );
+        assert!(
+            !s.contains("Integral"),
+            "∫ x/(x²+1) dx should not be unevaluated, got: {s}"
+        );
     }
 }

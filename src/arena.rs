@@ -663,6 +663,13 @@ impl Arena {
         crate::log_combine::log_combine(self, expr)
     }
 
+    /// Apply trig product-to-sum and double-angle identities.
+    /// `sin(a)*cos(b) → ½[sin(a+b)+sin(a-b)]`, etc.
+    /// Delegates to [`trig_combine::trig_combine`].
+    pub fn trig_combine_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::trig_combine::trig_combine(self, expr)
+    }
+
     /// Compute the polynomial GCD of `a` and `b` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.
