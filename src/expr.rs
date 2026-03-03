@@ -510,15 +510,32 @@ impl Ex {
 
     /// Mathematical equality: attempts to determine if `self - other == 0`.
     ///
+    /// Uses layered detection:
+    /// 1. Structural identity (same `ExprId` — O(1))
+    /// 2. Compute `self - other` and check if canonically zero
+    /// 3. Expand `self - other` and check again
+    ///
     /// Returns `Some(true)` if provably equal, `Some(false)` if provably
     /// not equal, or `None` if unknown.
     pub fn equals(&self, other: &Ex) -> Option<bool> {
-        // Structural equality is a fast path.
+        // Layer 1: structural identity (same arena node).
         if self.id == other.id && self.ctx_id == other.ctx_id {
             return Some(true);
         }
-        // Full mathematical equality requires the subtraction to be zero.
-        // For now, we can only check structurally.
+
+        // Layer 2: compute self - other and check if zero.
+        let diff = self - other;
+        if diff.is_zero_structural() {
+            return Some(true);
+        }
+
+        // Layer 3: expand the difference and check again.
+        let expanded = diff.expand();
+        if expanded.is_zero_structural() {
+            return Some(true);
+        }
+
+        // Could not determine equality.
         None
     }
 }

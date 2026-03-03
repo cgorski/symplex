@@ -106,25 +106,25 @@ fn eval_node(
 
         ExprNode::E => Ok(cc.e(prec, rm).clone()),
 
-        ExprNode::ImaginaryUnit => Err(SymplexError::NotImplemented(
-            "evalf: complex numbers not yet supported".into(),
-        )),
+        ExprNode::ImaginaryUnit => Err(SymplexError::Unevaluable {
+            reason: "complex numbers not yet supported".into(),
+        }),
 
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
-            Err(SymplexError::NotImplemented(
-                "evalf: cannot evaluate infinity to finite precision".into(),
-            ))
+            Err(SymplexError::Unevaluable {
+                reason: "cannot evaluate infinity to finite precision".into(),
+            })
         }
 
-        ExprNode::NaN => Err(SymplexError::NotImplemented(
-            "evalf: cannot evaluate NaN".into(),
-        )),
+        ExprNode::NaN => Err(SymplexError::Unevaluable {
+            reason: "cannot evaluate NaN".into(),
+        }),
 
         ExprNode::Symbol(sid) => {
             let name = arena.symbol_name(*sid);
-            Err(SymplexError::NotImplemented(format!(
-                "evalf: cannot evaluate free symbol '{name}'"
-            )))
+            Err(SymplexError::FreeSymbol {
+                name: name.to_owned(),
+            })
         }
 
         // ── Add ────────────────────────────────────────────────────
@@ -215,18 +215,18 @@ fn eval_node(
         // ── Unevaluable ────────────────────────────────────────────
         ExprNode::Apply(sid, _) => {
             let name = arena.symbol_name(*sid);
-            Err(SymplexError::NotImplemented(format!(
-                "evalf: cannot evaluate user function '{name}'"
-            )))
+            Err(SymplexError::Unevaluable {
+                reason: format!("cannot evaluate user function '{name}'"),
+            })
         }
 
-        ExprNode::Derivative(_, _) => Err(SymplexError::NotImplemented(
-            "evalf: cannot evaluate unevaluated derivative".into(),
-        )),
+        ExprNode::Derivative(_, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot evaluate unevaluated derivative".into(),
+        }),
 
-        ExprNode::Integral(_, _) => Err(SymplexError::NotImplemented(
-            "evalf: cannot evaluate unevaluated integral".into(),
-        )),
+        ExprNode::Integral(_, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot evaluate unevaluated integral".into(),
+        }),
     }
 }
 
@@ -236,10 +236,8 @@ fn eval_node(
 
 /// Look up a cached value, returning an error if not found.
 fn get_cached(cache: &FxHashMap<ExprId, BigFloat>, id: ExprId) -> Result<&BigFloat, SymplexError> {
-    cache.get(&id).ok_or_else(|| {
-        SymplexError::NotImplemented(format!(
-            "evalf: sub-expression {id:?} not in cache (likely contains free symbols)"
-        ))
+    cache.get(&id).ok_or_else(|| SymplexError::Unevaluable {
+        reason: format!("sub-expression {id:?} not in cache (likely contains free symbols)"),
     })
 }
 
