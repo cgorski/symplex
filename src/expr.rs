@@ -21,7 +21,7 @@
 //! let ctx = Context::new();
 //! let x = ctx.symbol("x");
 //! let expr = &x * &x + &x * 2 + 1;
-//! assert_eq!(format!("{expr}"), "1 + x^2 + 2*x");
+//! assert_eq!(format!("{expr}"), "x^2 + 2*x + 1");
 //! ```
 //!
 //! Methods are chainable:
@@ -453,7 +453,7 @@ impl<S: Sort> Expr<S> {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let expr = (&x + 1).powi(2);
-    /// assert_eq!(format!("{}", expr.expand()), "1 + x^2 + 2*x");
+    /// assert_eq!(format!("{}", expr.expand()), "x^2 + 2*x + 1");
     /// ```
     #[must_use = "returns the expanded form; does not modify in place"]
     pub fn expand(&self) -> Expr<S> {
@@ -672,7 +672,7 @@ impl<S: Sort> Expr<S> {
     /// let x = symplex::var("x");
     /// let expr = (&x + 1).powi(2);
     /// let (result, iters) = expr.apply_until_stable(10, |e| e.expand());
-    /// assert_eq!(format!("{result}"), "1 + x^2 + 2*x");
+    /// assert_eq!(format!("{result}"), "x^2 + 2*x + 1");
     /// assert_eq!(iters, 1); // stabilized after 1 iteration
     /// ```
     pub fn apply_until_stable<F>(&self, max_iterations: usize, f: F) -> (Expr<S>, usize)
@@ -1582,7 +1582,7 @@ impl Expr<Numeric> {
     /// let expr = &x * &y + &x.powi(2) + &y;
     /// let collected = expr.collect(&x);
     /// // Terms are grouped by powers of x.
-    /// assert_eq!(format!("{collected}"), "y + x^2 + x*y");
+    /// assert_eq!(format!("{collected}"), "x^2 + x*y + y");
     /// ```
     #[must_use = "returns the collected form; does not modify in place"]
     pub fn collect(&self, var: &Ex) -> Ex {
@@ -1637,7 +1637,7 @@ impl Expr<Numeric> {
     /// // (x² - 1) / (x - 1) → x + 1
     /// let expr = (&x.powi(2) - 1) / (&x - 1);
     /// let cancelled = expr.cancel(&x);
-    /// assert_eq!(format!("{cancelled}"), "1 + x");
+    /// assert_eq!(format!("{cancelled}"), "x + 1");
     /// ```
     #[must_use = "returns the cancelled form; does not modify in place"]
     pub fn cancel(&self, var: &Ex) -> Ex {

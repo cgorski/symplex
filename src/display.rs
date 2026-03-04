@@ -32,6 +32,7 @@ use std::fmt;
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::Signed;
+use smallvec::SmallVec;
 
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode};
@@ -146,6 +147,150 @@ pub(crate) fn fmt_expr(
     Ok(())
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Display ordering helpers for Add children
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Classification of a term for display ordering within Add.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum DisplayCategory {
+    /// Polynomial term — sorted by degree descending, then variable name.
+    Polynomial,
+    /// Function application (sin, cos, exp, etc.) — after polynomials.
+    Function,
+    /// Constant (number, pi, e, i) — displayed last.
+    Constant,
+}
+
+/// Compute a display sort key for an Add child.
+/// Returns (category, negative_degree, var_sort_key_bytes, canonical_sort_key_bytes).
+/// Sorted ascending: higher-degree polynomials first, then functions, then constants.
+fn display_sort_key(
+    arena: &Arena,
+    id: ExprId,
+) -> (DisplayCategory, i64, SmallVec<[u8; 24]>, SmallVec<[u8; 24]>) {
+    let cat = display_category(arena, id);
+    let degree = estimate_display_degree(arena, id);
+    let var_key = dominant_var_key(arena, id);
+    let canon_key = SmallVec::from_slice(arena.sort_key(id).as_bytes());
+    (cat, -(degree as i64), var_key, canon_key)
+}
+
+fn display_category(arena: &Arena, id: ExprId) -> DisplayCategory {
+    match arena.node(id) {
+        ExprNode::Num(_)
+        | ExprNode::Pi
+        | ExprNode::E
+        | ExprNode::ImaginaryUnit
+        | ExprNode::BoolTrue
+        | ExprNode::BoolFalse => DisplayCategory::Constant,
+        ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN => {
+            DisplayCategory::Constant
+        }
+        ExprNode::Symbol(_) => DisplayCategory::Polynomial,
+        ExprNode::Pow(base, exp) => {
+            // x^n with integer n → polynomial; x^(1/2) etc. → function-like
+            if matches!(arena.node(*base), ExprNode::Symbol(_)) {
+                if let Some(r) = arena.as_num(*exp) {
+                    if r.is_integer() {
+                        return DisplayCategory::Polynomial;
+                    }
+                }
+            }
+            DisplayCategory::Function
+        }
+        ExprNode::Mul(children) => {
+            // If any child is polynomial (Symbol or Pow(Symbol, int)), this is polynomial
+            for &child in children.iter() {
+                let child_cat = display_category(arena, child);
+                if child_cat == DisplayCategory::Polynomial {
+                    return DisplayCategory::Polynomial;
+                }
+            }
+            // Pure numeric Mul → constant
+            if children
+                .iter()
+                .all(|&c| matches!(arena.node(c), ExprNode::Num(_)))
+            {
+                DisplayCategory::Constant
+            } else {
+                DisplayCategory::Function
+            }
+        }
+        ExprNode::Neg(inner) => display_category(arena, *inner),
+        // All function nodes → Function category
+        _ => DisplayCategory::Function,
+    }
+}
+
+/// Estimate the polynomial degree of a term for display ordering.
+/// Higher degree terms should display first within the Polynomial category.
+fn estimate_display_degree(arena: &Arena, id: ExprId) -> u32 {
+    match arena.node(id) {
+        ExprNode::Num(_)
+        | ExprNode::Pi
+        | ExprNode::E
+        | ExprNode::ImaginaryUnit
+        | ExprNode::BoolTrue
+        | ExprNode::BoolFalse
+        | ExprNode::Infinity
+        | ExprNode::NegInfinity
+        | ExprNode::ComplexInfinity
+        | ExprNode::NaN => 0,
+        ExprNode::Symbol(_) => 1,
+        ExprNode::Pow(_base, exp) => {
+            if let Some(r) = arena.as_num(*exp) {
+                if r.is_integer() && !r.is_negative() {
+                    return r.to_integer().try_into().unwrap_or(1);
+                }
+            }
+            1
+        }
+        ExprNode::Mul(children) => {
+            // Degree is sum of degrees of variable factors
+            // e.g., x*y → degree 2, 3*x^2 → degree 2, 2*x → degree 1
+            let mut total_degree = 0u32;
+            for &child in children.iter() {
+                let d = estimate_display_degree(arena, child);
+                if d > 0 {
+                    total_degree += d;
+                }
+            }
+            total_degree
+        }
+        ExprNode::Neg(inner) => estimate_display_degree(arena, *inner),
+        _ => 0,
+    }
+}
+
+/// Get the sort key of the dominant variable in a term, for secondary ordering.
+/// For `3*x^2`, this returns the sort key of `x`.
+/// For `x*y`, this returns the sort key of `x` (first variable alphabetically).
+fn dominant_var_key(arena: &Arena, id: ExprId) -> SmallVec<[u8; 24]> {
+    match arena.node(id) {
+        ExprNode::Symbol(_) => SmallVec::from_slice(arena.sort_key(id).as_bytes()),
+        ExprNode::Pow(base, _) => {
+            if matches!(arena.node(*base), ExprNode::Symbol(_)) {
+                SmallVec::from_slice(arena.sort_key(*base).as_bytes())
+            } else {
+                SmallVec::new()
+            }
+        }
+        ExprNode::Mul(children) => {
+            // Find the first symbol/power-of-symbol child
+            for &child in children.iter() {
+                let key = dominant_var_key(arena, child);
+                if !key.is_empty() {
+                    return key;
+                }
+            }
+            SmallVec::new()
+        }
+        ExprNode::Neg(inner) => dominant_var_key(arena, *inner),
+        _ => SmallVec::new(),
+    }
+}
+
 /// Expand a single expression node into work items on the stack.
 ///
 /// For atoms this directly writes to `f` (via a pushed `Owned`).
@@ -202,8 +347,13 @@ fn expand_expr(
         // Terms joined with " + ".  A term that is Neg(x) or
         // Mul([-1, ...]) is rendered with " - " instead.
         ExprNode::Add(args) => {
+            // Sort children by display key (polynomial degree descending, then functions, then constants)
+            let mut display_order: SmallVec<[ExprId; 6]> = args.clone();
+            display_order
+                .sort_by(|a, b| display_sort_key(arena, *a).cmp(&display_sort_key(arena, *b)));
+
             // Push children in reverse (last child pushed first).
-            for (i, &arg) in args.iter().enumerate().rev() {
+            for (i, &arg) in display_order.iter().enumerate().rev() {
                 let child_node = arena.node(arg);
 
                 if let ExprNode::Neg(inner) = child_node {
@@ -828,7 +978,7 @@ mod tests {
         let sum = a.add(&[one, x]);
         let two = a.int(2);
         let p = a.pow(sum, two);
-        assert_display!(a, p, "(1 + x)^2");
+        assert_display!(a, p, "(x + 1)^2");
     }
 
     #[test]
@@ -941,8 +1091,8 @@ mod tests {
         let z = a.symbol("z");
         let xy = a.mul(&[x, y]);
         let sum = a.add(&[z, xy]);
-        // Sort: z (symbol) comes before x*y (Mul)
-        assert_display!(a, sum, "z + x*y");
+        // Sort: x*y (degree 2) comes before z (degree 1) in display order
+        assert_display!(a, sum, "x*y + z");
     }
 
     #[test]
@@ -992,5 +1142,22 @@ mod tests {
         let y = a.symbol("y");
         let raw = a.intern(ExprNode::Mul(smallvec![x, y]));
         assert_display!(a, raw, "x*y");
+    }
+
+    #[test]
+    fn display_polynomial_order() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let one = a.one;
+        let x2 = a.pow(x, two);
+        let two_x = a.mul(&[two, x]);
+        let expr = a.add(&[one, x2, two_x]);
+        let s = a.display(expr).to_string();
+        // Should display as x^2 + 2*x + 1 (descending degree), not 1 + x^2 + 2*x
+        assert!(
+            s.starts_with("x^2"),
+            "polynomial should display in descending degree order: {s}"
+        );
     }
 }

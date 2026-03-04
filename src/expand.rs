@@ -435,10 +435,10 @@ mod tests {
         let sum = a.add(&[x, one]);
         let two = a.int(2);
         let expr = a.pow(sum, two);
-        assert_eq!(display(&a, expr), "(1 + x)^2");
+        assert_eq!(display(&a, expr), "(x + 1)^2");
 
         let result = expand(&mut a, expr);
-        assert_eq!(display(&a, result), "1 + x^2 + 2*x");
+        assert_eq!(display(&a, result), "x^2 + 2*x + 1");
     }
 
     #[test]
@@ -451,7 +451,7 @@ mod tests {
         let expr = a.pow(sum, three);
 
         let result = expand(&mut a, expr);
-        assert_eq!(display(&a, result), "1 + x^3 + 3*x + 3*x^2");
+        assert_eq!(display(&a, result), "x^3 + 3*x^2 + 3*x + 1");
     }
 
     #[test]
@@ -496,7 +496,7 @@ mod tests {
         let expr = a.pow(sum, one);
         // (x+1)^1 = x+1 (canonical)
         let result = expand(&mut a, expr);
-        assert_eq!(display(&a, result), "1 + x");
+        assert_eq!(display(&a, result), "x + 1");
     }
 
     #[test]
@@ -508,7 +508,7 @@ mod tests {
         let expr = a.pow(sum, neg_two);
         // (x+1)^(-2) should NOT be expanded.
         let result = expand(&mut a, expr);
-        assert_eq!(display(&a, result), "(1 + x)^(-2)");
+        assert_eq!(display(&a, result), "(x + 1)^(-2)");
     }
 
     #[test]

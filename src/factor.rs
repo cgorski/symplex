@@ -220,7 +220,7 @@ mod tests {
         let one = a.one;
         let expr = a.add(&[x, one]);
         let result = factor(&mut a, expr, x);
-        assert_eq!(display(&a, result), "1 + x");
+        assert_eq!(display(&a, result), "x + 1");
     }
 
     #[test]
@@ -234,7 +234,7 @@ mod tests {
         let expr = a.add(&[x2, one]);
         let result = factor(&mut a, expr, x);
         // Should remain unfactored
-        assert_eq!(display(&a, result), "1 + x^2");
+        assert_eq!(display(&a, result), "x^2 + 1");
     }
 
     #[test]

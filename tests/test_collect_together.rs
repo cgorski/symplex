@@ -13,7 +13,7 @@ fn collect_polynomial() {
     // x^2 + 2*x + 1 collected in x — should stay the same (already grouped)
     let expr = &x.powi(2) + &x * 2 + 1;
     let collected = expr.collect(&x);
-    assert_eq!(format!("{collected}"), "1 + x^2 + 2*x");
+    assert_eq!(format!("{collected}"), "x^2 + 2*x + 1");
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn together_already_no_fractions() {
     // x + 1 — no fractions, should stay unchanged
     let expr = &x + 1;
     let result = expr.together();
-    assert_eq!(format!("{result}"), "1 + x");
+    assert_eq!(format!("{result}"), "x + 1");
 }
 
 #[test]

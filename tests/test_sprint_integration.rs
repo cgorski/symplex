@@ -444,7 +444,7 @@ fn replace_variable_exact() {
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     let expr = &x.powi(2) + &x + 1;
     let replaced = expr.replace(|e| if *e == x { Some(y.clone()) } else { None });
-    assert_eq!(format!("{replaced}"), "1 + y + y^2");
+    assert_eq!(format!("{replaced}"), "y^2 + y + 1");
 }
 
 #[test]

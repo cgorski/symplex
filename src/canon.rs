@@ -966,7 +966,7 @@ mod tests {
         let two = a.int(2);
         let two_x = a.mul(&[two, x]);
         let result = a.add(&[x, two_x, three]);
-        assert_eq!(display(&a, result), "3 + 3*x");
+        assert_eq!(display(&a, result), "3*x + 3");
     }
 
     #[test]
@@ -984,7 +984,7 @@ mod tests {
         let five = a.int(5);
         let e3 = a.mul(&[five, ab]);
         let result = a.add(&[e1, e2, e3, x]);
-        assert_eq!(display(&a, result), "x + 8*a*b");
+        assert_eq!(display(&a, result), "8*a*b + x");
     }
 
     #[test]
@@ -1285,7 +1285,7 @@ mod tests {
         let two_x = a.mul(&[two, x]);
         let three = a.int(3);
         let result = a.add(&[x, two_x, three]);
-        assert_eq!(display(&a, result), "3 + 3*x");
+        assert_eq!(display(&a, result), "3*x + 3");
     }
 
     #[test]
@@ -1298,7 +1298,7 @@ mod tests {
         let two_x = a.mul(&[two, x]);
         let one = a.int(1);
         let result = a.add(&[x2, two_x, one]);
-        assert_eq!(display(&a, result), "1 + x^2 + 2*x");
+        assert_eq!(display(&a, result), "x^2 + 2*x + 1");
     }
 
     #[test]
@@ -1335,7 +1335,7 @@ mod tests {
         let two = a.int(2);
         let five = a.int(5);
         let result = a.add(&[two, sym_a, five]);
-        assert_eq!(display(&a, result), "7 + a");
+        assert_eq!(display(&a, result), "a + 7");
     }
 
     #[test]
@@ -1373,7 +1373,7 @@ mod tests {
         let sum = a.add(&[x, a.one]);
         let exp = a.int(2);
         let result = a.pow(sum, exp);
-        assert_eq!(display(&a, result), "(1 + x)^2");
+        assert_eq!(display(&a, result), "(x + 1)^2");
     }
 
     #[test]

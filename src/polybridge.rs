@@ -701,7 +701,7 @@ mod tests {
             Ratio::from_integer(BigInt::from(2)),
         ]);
         let expr = poly_to_expr(&mut a, &p, x);
-        assert_eq!(display(&a, expr), "3 + 2*x");
+        assert_eq!(display(&a, expr), "2*x + 3");
     }
 
     #[test]
@@ -723,7 +723,7 @@ mod tests {
             Ratio::from_integer(BigInt::from(1)),
         ]);
         let expr = poly_to_expr(&mut a, &p, x);
-        assert_eq!(display(&a, expr), "1 + x^2 + 2*x");
+        assert_eq!(display(&a, expr), "x^2 + 2*x + 1");
     }
 
     #[test]
@@ -795,7 +795,7 @@ mod tests {
         let result = cancel(&mut a, expr, x);
         let s = display(&a, result);
         // Should simplify to x + 1.
-        assert_eq!(s, "1 + x", "cancel should give x + 1, got: {s}");
+        assert_eq!(s, "x + 1", "cancel should give x + 1, got: {s}");
     }
 
     #[test]
@@ -880,7 +880,7 @@ mod tests {
 
         let result = cancel(&mut a, expr, x);
         let s = display(&a, result);
-        assert_eq!(s, "1 + x", "cancel should give x + 1, got: {s}");
+        assert_eq!(s, "x + 1", "cancel should give x + 1, got: {s}");
     }
 
     #[test]

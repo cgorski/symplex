@@ -216,7 +216,7 @@ fn display_nested_pow_in_add() {
     let x = ctx.symbol("x");
     let x_sq = x.powi(2);
     let sum = &x_sq + &x;
-    assert_eq!(format!("{sum}"), "x + x^2");
+    assert_eq!(format!("{sum}"), "x^2 + x");
 }
 
 #[test]
@@ -225,7 +225,7 @@ fn display_add_base_in_pow_gets_parens() {
     let x = ctx.symbol("x");
     let sum = &x + 1;
     let result = sum.powi(2);
-    assert_eq!(format!("{result}"), "(1 + x)^2");
+    assert_eq!(format!("{result}"), "(x + 1)^2");
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn display_subtraction_rendering() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = &x - 3;
-    assert_eq!(format!("{result}"), "-3 + x");
+    assert_eq!(format!("{result}"), "x + -3");
 }
 
 // ─── The Stage 1 Milestone ──────────────────────────────────────────────
@@ -243,7 +243,7 @@ fn milestone_x_squared_plus_2x_plus_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.powi(2) + &x * 2 + 1;
-    assert_eq!(format!("{expr}"), "1 + x^2 + 2*x");
+    assert_eq!(format!("{expr}"), "x^2 + 2*x + 1");
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn milestone_nested_expression() {
     let x = ctx.symbol("x");
     let sin_x_sq = x.powi(2).sin();
     let expr = &sin_x_sq * 3 + 1;
-    assert_eq!(format!("{expr}"), "1 + 3*sin(x^2)");
+    assert_eq!(format!("{expr}"), "3*sin(x^2) + 1");
 }
 
 // ─── Ex Properties ──────────────────────────────────────────────────────
@@ -337,8 +337,8 @@ fn numbers_display_before_symbols() {
     let x = ctx.symbol("x");
     let result = &x + 3;
     let s = format!("{result}");
-    // Number should come first in canonical ordering.
-    assert!(s.starts_with('3'), "expected number first, got: {s}");
+    // Polynomial terms come first, constants last in canonical ordering.
+    assert!(s.starts_with('x'), "expected symbol first, got: {s}");
 }
 
 #[test]

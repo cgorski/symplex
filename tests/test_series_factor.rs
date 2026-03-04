@@ -139,7 +139,7 @@ fn factor_already_linear() {
     let x = ctx.symbol("x");
     let expr = &x + 1;
     let factored = expr.factor(&x);
-    assert_eq!(format!("{factored}"), "1 + x");
+    assert_eq!(format!("{factored}"), "x + 1");
 }
 
 #[test]

@@ -64,7 +64,7 @@ pub(crate) struct ContextInner {
 /// let ctx = Context::new();
 /// let x = ctx.symbol("x");
 /// let expr = &x + 1;
-/// assert_eq!(format!("{expr}"), "1 + x");
+/// assert_eq!(format!("{expr}"), "x + 1");
 /// ```
 #[derive(Clone)]
 pub struct Context {

@@ -23,7 +23,7 @@ fn subs_symbol_for_symbol() {
     syms!(ctx; x, y);
     let expr = &x + 1;
     let result = expr.subs(&x, &y);
-    assert_eq!(format!("{result}"), "1 + y");
+    assert_eq!(format!("{result}"), "y + 1");
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn subs_polynomial_symbol_for_symbol() {
     syms!(ctx; x, y);
     let expr = &x.powi(2) + &x * 2 + 1;
     let result = expr.subs(&x, &y);
-    assert_eq!(format!("{result}"), "1 + y^2 + 2*y");
+    assert_eq!(format!("{result}"), "y^2 + 2*y + 1");
 }
 
 #[test]

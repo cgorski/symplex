@@ -123,7 +123,7 @@ fn expr_with_integer_literal() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(x + 1);
-    assert_eq!(format!("{result}"), "1 + x");
+    assert_eq!(format!("{result}"), "x + 1");
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn expr_polynomial() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(x ^ 2 + 2 * x + 1);
-    assert_eq!(format!("{result}"), "1 + x^2 + 2*x");
+    assert_eq!(format!("{result}"), "x^2 + 2*x + 1");
 }
 
 // ── Functions ───────────────────────────────────────────────────────────
@@ -283,7 +283,7 @@ fn expr_with_pre_built_expression() {
     let x = ctx.symbol("x");
     let inner = &x + 1; // pre-built Ex
     let result = expr!(inner ^ 2);
-    assert_eq!(format!("{result}"), "(1 + x)^2");
+    assert_eq!(format!("{result}"), "(x + 1)^2");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -408,7 +408,7 @@ fn expr_then_expand() {
     let x = ctx.symbol("x");
     let f = expr!((x + 1) ^ 2);
     let expanded = f.expand();
-    assert_eq!(format!("{expanded}"), "1 + x^2 + 2*x");
+    assert_eq!(format!("{expanded}"), "x^2 + 2*x + 1");
 }
 
 #[test]

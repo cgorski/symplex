@@ -171,7 +171,7 @@ mod tests {
         let one = a.one;
         let expr = a.add(&[x, one]);
         let result = apart(&mut a, expr, x);
-        assert_eq!(display(&a, result), "1 + x");
+        assert_eq!(display(&a, result), "x + 1");
     }
 
     #[test]

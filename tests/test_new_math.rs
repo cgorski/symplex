@@ -28,7 +28,7 @@ fn apart_already_simple() {
     let x = ctx.symbol("x");
     let expr = &x + 1;
     let result = expr.apart(&x);
-    assert_eq!(format!("{result}"), "1 + x");
+    assert_eq!(format!("{result}"), "x + 1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

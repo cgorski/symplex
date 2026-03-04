@@ -51,7 +51,7 @@ fn simplify_pythagorean_in_sum_with_symbols() {
     // y + sin²(x) + cos²(x) → y + 1 = 1 + y
     let expr = &y + &x.sin().powi(2) + &x.cos().powi(2);
     let simplified = expr.simplify();
-    assert_eq!(format!("{simplified}"), "1 + y");
+    assert_eq!(format!("{simplified}"), "y + 1");
 }
 
 #[test]

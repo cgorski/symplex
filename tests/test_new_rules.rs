@@ -46,7 +46,7 @@ fn simplify_inverse_trig_nested() {
     // asin(sin(x)) + 1 should simplify to x + 1
     let expr = &x.sin().asin() + 1;
     let simplified = expr.simplify();
-    assert_eq!(format!("{simplified}"), "1 + x");
+    assert_eq!(format!("{simplified}"), "x + 1");
 }
 
 #[test]

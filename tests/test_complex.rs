@@ -85,7 +85,7 @@ fn complex_addition() {
     let sum = &z1 + &z2;
     let s = format!("{sum}");
     // (2+3i) + (4+5i) = 6+8i
-    assert_eq!(s, "6 + 8*I");
+    assert_eq!(s, "8*I + 6");
 }
 
 #[test]

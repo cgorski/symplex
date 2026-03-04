@@ -146,7 +146,7 @@ fn complex_addition() {
     let z1 = &ctx.int(2) + &(&ctx.int(3) * &i);
     let z2 = &ctx.int(4) + &(&ctx.int(5) * &i);
     let sum = &z1 + &z2;
-    assert_eq!(format!("{sum}"), "6 + 8*I");
+    assert_eq!(format!("{sum}"), "8*I + 6");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -286,7 +286,7 @@ fn integrate_asin_x_exact() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.asin().integrate(&x);
-    assert_eq!(format!("{result}"), "sqrt(1 - x^2) + x*asin(x)");
+    assert_eq!(format!("{result}"), "x*asin(x) + sqrt(-x^2 + 1)");
 }
 
 #[test]
@@ -309,7 +309,7 @@ fn integrate_acos_x_exact() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.acos().integrate(&x);
-    assert_eq!(format!("{result}"), "-sqrt(1 - x^2) + x*acos(x)");
+    assert_eq!(format!("{result}"), "x*acos(x) - sqrt(-x^2 + 1)");
 }
 
 #[test]
@@ -332,7 +332,7 @@ fn integrate_atan_x_exact() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.atan().integrate(&x);
-    assert_eq!(format!("{result}"), "-1/2*ln(1 + x^2) + x*atan(x)");
+    assert_eq!(format!("{result}"), "x*atan(x) - 1/2*ln(x^2 + 1)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -349,7 +349,7 @@ fn integrate_x_plus_1_squared() {
         !s.contains("Integral"),
         "∫ (x+1)² dx should be evaluated: {s}"
     );
-    assert_eq!(s, "1/3*(1 + x)^3");
+    assert_eq!(s, "1/3*(x + 1)^3");
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn integrate_2x_plus_1_cubed() {
         "∫ (2x+1)³ dx should not be unevaluated: {s}"
     );
     // (2x+1)^4 / (4·2) = 1/8·(1+2x)^4
-    assert_eq!(s, "1/8*(1 + 2*x)^4");
+    assert_eq!(s, "1/8*(2*x + 1)^4");
 }
 
 #[test]
@@ -377,7 +377,7 @@ fn integrate_x_plus_1_squared_verify_by_diff() {
     // Differentiating should give back (1+x)^2.
     let s = format!("{back}");
     assert!(
-        s.contains("1 + x") || s.contains("x + 1"),
+        s.contains("x + 1") || s.contains("x + 1"),
         "d/dx(∫(x+1)² dx) should recover (1+x)², got: {s}"
     );
 }

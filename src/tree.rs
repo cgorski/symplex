@@ -558,7 +558,7 @@ mod tests {
         let tree: ExprTree = serde_json::from_str(json).unwrap();
         let mut a = Arena::new();
         let expr = tree_to_expr(&mut a, &tree);
-        assert_eq!(display(&a, expr), "1 + x");
+        assert_eq!(display(&a, expr), "x + 1");
     }
 
     #[test]

@@ -185,7 +185,7 @@ fn cancel_common_factor() {
     let cancelled = expr.cancel(&x);
     assert_eq!(
         format!("{cancelled}"),
-        "1 + x",
+        "x + 1",
         "cancelling (x^2-1)/(x-1) should give 1 + x"
     );
 }
@@ -199,7 +199,7 @@ fn cancel_perfect_square() {
     let cancelled = expr.cancel(&x);
     assert_eq!(
         format!("{cancelled}"),
-        "1 + x",
+        "x + 1",
         "cancelling (x^2+2x+1)/(x+1) should give 1 + x"
     );
 }

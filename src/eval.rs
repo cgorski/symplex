@@ -1515,7 +1515,7 @@ mod tests {
         let cos_pi = a.cos(pi);
         let expr = a.add(&[x, cos_pi]);
         let result = eval(&mut a, expr);
-        assert_eq!(display(&a, result), "-1 + x");
+        assert_eq!(display(&a, result), "x + -1");
     }
 
     #[test]

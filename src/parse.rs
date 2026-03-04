@@ -18,7 +18,7 @@
 //!
 //! let ctx = Context::new();
 //! let expr = symplex::parse::parse(&ctx, "x^2 + 2*x + 1").unwrap();
-//! assert_eq!(format!("{expr}"), "1 + x^2 + 2*x");
+//! assert_eq!(format!("{expr}"), "x^2 + 2*x + 1");
 //! ```
 
 use std::sync::Arc;

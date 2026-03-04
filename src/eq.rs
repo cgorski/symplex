@@ -19,7 +19,7 @@ use std::fmt;
 ///
 /// let x = symplex::var("x");
 /// let eq = Equation::new(&x + 1, symplex::int(5));
-/// assert_eq!(format!("{eq}"), "1 + x = 5");
+/// assert_eq!(format!("{eq}"), "x + 1 = 5");
 /// ```
 #[derive(Clone)]
 pub struct Equation {

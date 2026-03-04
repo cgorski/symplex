@@ -41,7 +41,7 @@ fn full_simplify_nested_eval_then_simplify() {
 fn full_simplify_already_simple() {
     let x = symplex::var("x");
     let expr = &x + 1;
-    assert_eq!(format!("{}", expr.full_simplify()), "1 + x");
+    assert_eq!(format!("{}", expr.full_simplify()), "x + 1");
 }
 
 #[test]

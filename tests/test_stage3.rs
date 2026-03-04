@@ -161,7 +161,7 @@ fn add_ex_i64() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = &x + 1;
-    assert_eq!(format!("{result}"), "1 + x");
+    assert_eq!(format!("{result}"), "x + 1");
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn add_i64_ex() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = 1 + &x;
-    assert_eq!(format!("{result}"), "1 + x");
+    assert_eq!(format!("{result}"), "x + 1");
 }
 
 #[test]
@@ -193,7 +193,7 @@ fn sub_ex_i64() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = &x - 3;
-    assert_eq!(format!("{result}"), "-3 + x");
+    assert_eq!(format!("{result}"), "x + -3");
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn sub_i64_ex() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = 3 - &x;
-    assert_eq!(format!("{result}"), "3 - x");
+    assert_eq!(format!("{result}"), "-x + 3");
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn polynomial_via_operators() {
     let x = ctx.symbol("x");
     let x_sq = x.powi(2);
     let expr = &x_sq + &x * 2 + 1;
-    assert_eq!(format!("{expr}"), "1 + x^2 + 2*x");
+    assert_eq!(format!("{expr}"), "x^2 + 2*x + 1");
 }
 
 // ─── Method chaining ─────────────────────────────────────────────────────
@@ -306,7 +306,7 @@ fn chained_expression_building() {
     let x = ctx.symbol("x");
     // 3*sin(x^2) + 1
     let result = &x.powi(2).sin() * 3 + 1;
-    assert_eq!(format!("{result}"), "1 + 3*sin(x^2)");
+    assert_eq!(format!("{result}"), "3*sin(x^2) + 1");
 }
 
 #[test]
@@ -349,8 +349,8 @@ fn no_auto_expand_via_operators() {
     let x = ctx.symbol("x");
     let sum = &x + 1;
     let result = sum.powi(2);
-    // Should stay as (1 + x)**2, NOT expand.
-    assert_eq!(format!("{result}"), "(1 + x)^2");
+    // Should stay as (x + 1)**2, NOT expand.
+    assert_eq!(format!("{result}"), "(x + 1)^2");
 }
 
 #[test]
@@ -413,7 +413,7 @@ fn quadratic_expression() {
     let ctx = Context::new();
     syms!(ctx; x);
     let expr = &x.powi(2) + &x * 5 + 6;
-    assert_eq!(format!("{expr}"), "6 + x^2 + 5*x");
+    assert_eq!(format!("{expr}"), "x^2 + 5*x + 6");
 }
 
 #[test]

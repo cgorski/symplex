@@ -65,8 +65,8 @@ fn expand_x_plus_1_squared() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = (&x + 1).powi(2);
-    assert_eq!(format!("{expr}"), "(1 + x)^2");
-    assert_eq!(format!("{}", expr.expand()), "1 + x^2 + 2*x");
+    assert_eq!(format!("{expr}"), "(x + 1)^2");
+    assert_eq!(format!("{}", expr.expand()), "x^2 + 2*x + 1");
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn expand_x_plus_1_cubed() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = (&x + 1).powi(3);
-    assert_eq!(format!("{}", expr.expand()), "1 + x^3 + 3*x + 3*x^2");
+    assert_eq!(format!("{}", expr.expand()), "x^3 + 3*x^2 + 3*x + 1");
 }
 
 #[test]
@@ -106,8 +106,8 @@ fn expand_power_one_is_identity() {
     let x = ctx.symbol("x");
     let expr = (&x + 1).powi(1);
     // (x+1)^1 canonicalizes to x+1.
-    assert_eq!(format!("{expr}"), "1 + x");
-    assert_eq!(format!("{}", expr.expand()), "1 + x");
+    assert_eq!(format!("{expr}"), "x + 1");
+    assert_eq!(format!("{}", expr.expand()), "x + 1");
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn expand_negative_power_not_expanded() {
     let expr = (&x + 1).powi(-2);
     let expanded = expr.expand();
     // Negative powers of sums should NOT be expanded.
-    assert_eq!(format!("{expanded}"), "(1 + x)^(-2)");
+    assert_eq!(format!("{expanded}"), "(x + 1)^(-2)");
 }
 
 #[test]

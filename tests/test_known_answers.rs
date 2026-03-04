@@ -152,19 +152,19 @@ fn diff_x_exp_x() {
 #[test]
 fn diff_asin() {
     let x = symplex::var("x");
-    check(&x.asin().diff(&x), "1/sqrt(1 - x^2)");
+    check(&x.asin().diff(&x), "1/sqrt(-x^2 + 1)");
 }
 
 #[test]
 fn diff_acos() {
     let x = symplex::var("x");
-    check(&x.acos().diff(&x), "-1/sqrt(1 - x^2)");
+    check(&x.acos().diff(&x), "-1/sqrt(-x^2 + 1)");
 }
 
 #[test]
 fn diff_atan() {
     let x = symplex::var("x");
-    check(&x.atan().diff(&x), "1/(1 + x^2)");
+    check(&x.atan().diff(&x), "1/(x^2 + 1)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -186,7 +186,7 @@ fn diff_cosh() {
 #[test]
 fn diff_tanh() {
     let x = symplex::var("x");
-    check(&x.tanh().diff(&x), "1 - tanh(x)^2");
+    check(&x.tanh().diff(&x), "-tanh(x)^2 + 1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -196,19 +196,19 @@ fn diff_tanh() {
 #[test]
 fn diff_asinh() {
     let x = symplex::var("x");
-    check(&x.asinh().diff(&x), "1/sqrt(1 + x^2)");
+    check(&x.asinh().diff(&x), "1/sqrt(x^2 + 1)");
 }
 
 #[test]
 fn diff_acosh() {
     let x = symplex::var("x");
-    check(&x.acosh().diff(&x), "1/sqrt(-1 + x^2)");
+    check(&x.acosh().diff(&x), "1/sqrt(x^2 + -1)");
 }
 
 #[test]
 fn diff_atanh() {
     let x = symplex::var("x");
-    check(&x.atanh().diff(&x), "1/(1 - x^2)");
+    check(&x.atanh().diff(&x), "1/(-x^2 + 1)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -446,19 +446,19 @@ fn int_tanh() {
 #[test]
 fn int_asin() {
     let x = symplex::var("x");
-    check(&x.asin().integrate(&x), "sqrt(1 - x^2) + x*asin(x)");
+    check(&x.asin().integrate(&x), "x*asin(x) + sqrt(-x^2 + 1)");
 }
 
 #[test]
 fn int_acos() {
     let x = symplex::var("x");
-    check(&x.acos().integrate(&x), "-sqrt(1 - x^2) + x*acos(x)");
+    check(&x.acos().integrate(&x), "x*acos(x) - sqrt(-x^2 + 1)");
 }
 
 #[test]
 fn int_atan() {
     let x = symplex::var("x");
-    check(&x.atan().integrate(&x), "-1/2*ln(1 + x^2) + x*atan(x)");
+    check(&x.atan().integrate(&x), "x*atan(x) - 1/2*ln(x^2 + 1)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -512,7 +512,7 @@ fn int_x_sin() {
 #[test]
 fn int_x_exp() {
     let x = symplex::var("x");
-    check(&(&x * &x.exp()).integrate(&x), "-exp(x) + x*exp(x)");
+    check(&(&x * &x.exp()).integrate(&x), "x*exp(x) - exp(x)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -522,7 +522,7 @@ fn int_x_exp() {
 #[test]
 fn int_sin2() {
     let x = symplex::var("x");
-    check(&x.sin().powi(2).integrate(&x), "-1/2*sin(x)*cos(x) + 1/2*x");
+    check(&x.sin().powi(2).integrate(&x), "1/2*x - 1/2*sin(x)*cos(x)");
 }
 
 #[test]
@@ -556,7 +556,7 @@ fn int_cos3() {
 #[test]
 fn int_linear_pow() {
     let x = symplex::var("x");
-    check(&(&x * 2 + 1).powi(3).integrate(&x), "1/8*(1 + 2*x)^4");
+    check(&(&x * 2 + 1).powi(3).integrate(&x), "1/8*(2*x + 1)^4");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -566,7 +566,7 @@ fn int_linear_pow() {
 #[test]
 fn int_sum() {
     let x = symplex::var("x");
-    check(&(&x + &x.powi(2)).integrate(&x), "1/2*x^2 + 1/3*x^3");
+    check(&(&x + &x.powi(2)).integrate(&x), "1/3*x^3 + 1/2*x^2");
 }
 
 #[test]
@@ -1190,7 +1190,7 @@ fn eval_complex_addition() {
     let i = ctx.i_unit();
     let z1 = &ctx.int(2) + &(&ctx.int(3) * &i);
     let z2 = &ctx.int(4) + &(&ctx.int(5) * &i);
-    check(&(&z1 + &z2), "6 + 8*I");
+    check(&(&z1 + &z2), "8*I + 6");
 }
 
 #[test]
@@ -1222,7 +1222,7 @@ fn simp_sin2_cos2_plus_y() {
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     check(
         &(&y + &x.sin().powi(2) + &x.cos().powi(2)).simplify(),
-        "1 + y",
+        "y + 1",
     );
 }
 
@@ -1420,7 +1420,7 @@ fn full_simp_sin_0_plus_cos_0() {
 #[test]
 fn full_simp_already_simple() {
     let x = symplex::var("x");
-    check(&(&x + 1).full_simplify(), "1 + x");
+    check(&(&x + 1).full_simplify(), "x + 1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1586,19 +1586,19 @@ fn display_x_inv() {
 #[test]
 fn display_x_plus_1_canonical() {
     let x = symplex::var("x");
-    check(&(&x + 1), "1 + x");
+    check(&(&x + 1), "x + 1");
 }
 
 #[test]
 fn display_1_plus_x_canonical() {
     let x = symplex::var("x");
-    check(&(1 + &x), "1 + x");
+    check(&(1 + &x), "x + 1");
 }
 
 #[test]
 fn display_x2_plus_x_plus_1() {
     let x = symplex::var("x");
-    check(&(&x.powi(2) + &x + 1), "1 + x + x^2");
+    check(&(&x.powi(2) + &x + 1), "x^2 + x + 1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1827,7 +1827,7 @@ fn expand_trig_bare_sin_unchanged() {
 fn cancel_x2_minus_1_over_x_minus_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    check(&((x.powi(2) - 1) / (&x - 1)).cancel(&x), "1 + x");
+    check(&((x.powi(2) - 1) / (&x - 1)).cancel(&x), "x + 1");
 }
 
 #[test]
