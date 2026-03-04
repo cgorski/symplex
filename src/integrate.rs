@@ -223,6 +223,83 @@ fn try_standard_form_integral(
     None
 }
 
+/// Try integrating 1/(x²+bx+c) via completing the square.
+/// x²+bx+c = (x+b/2)² + (c - b²/4)
+/// If d = c - b²/4 > 0: ∫ 1/((x+b/2)²+d) dx = (1/√d)·atan((x+b/2)/√d)
+fn try_complete_square_integral(
+    arena: &mut Arena,
+    base: ExprId,
+    exp: ExprId,
+    var: ExprId,
+    _var_sym: SymbolId,
+) -> Option<ExprId> {
+    // exp must be -1
+    let exp_r = arena.as_num(exp)?;
+    if *exp_r != num_rational::Ratio::from_integer((-1).into()) {
+        return None;
+    }
+
+    // base must be a quadratic in var: ax² + bx + c
+    let poly = crate::polybridge::expr_to_poly(arena, base, var)?;
+    if poly.degree()? != 2 {
+        return None;
+    }
+
+    let a_coeff = poly.coeff(2);
+    let b_coeff = poly.coeff(1);
+    let c_coeff = poly.coeff(0);
+
+    // Normalize to monic: divide by a
+    if a_coeff.is_zero() {
+        return None;
+    }
+    let b = &b_coeff / &a_coeff;
+    let c = &c_coeff / &a_coeff;
+
+    // If there's no linear term, this is a standard form — let the other helper handle it.
+    if b.is_zero() {
+        return None;
+    }
+
+    // Complete the square: x² + bx + c = (x + b/2)² + (c - b²/4)
+    let half_b = &b / &num_rational::Ratio::from_integer(2.into());
+    let d = &c - &(&half_b * &half_b); // d = c - b²/4
+
+    if d.is_zero() || d.is_negative() {
+        return None; // Can't use atan form if d ≤ 0
+    }
+
+    // Build (x + b/2)
+    let half_b_id = {
+        let nid = arena.intern_num(half_b.clone());
+        arena.intern(crate::node::ExprNode::Num(nid))
+    };
+    let shifted = arena.add(&[var, half_b_id]);
+
+    // Build √d
+    let d_id = {
+        let nid = arena.intern_num(d.clone());
+        arena.intern(crate::node::ExprNode::Num(nid))
+    };
+    let half = arena.rational(1, 2);
+    let sqrt_d = arena.pow(d_id, half);
+
+    // Result: (1/(a·√d)) · atan((x+b/2)/√d)
+    let ratio = arena.div(shifted, sqrt_d);
+    let atan_result = arena.atan(ratio);
+
+    // Divide by a·√d
+    let a_id = {
+        let nid = arena.intern_num(a_coeff);
+        arena.intern(crate::node::ExprNode::Num(nid))
+    };
+    // Rebuild √d for the denominator (arena IDs are Copy, but let's be explicit)
+    let sqrt_d2 = arena.pow(d_id, half);
+    let a_sqrt_d = arena.mul(&[a_id, sqrt_d2]);
+
+    Some(arena.div(atan_result, a_sqrt_d))
+}
+
 /// Integrate a single node with respect to `var`.
 fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolId) -> ExprId {
     // Try trig power/product integration first (sin^n, cos^n, sin^m*cos^n)
@@ -452,6 +529,14 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                 && !exp_has_var
                 && let Some(result) =
                     try_standard_form_integral(arena, expr, base, exp, var, var_sym)
+            {
+                return result;
+            }
+
+            // ── Completing the square for 1/(ax²+bx+c) ───────────────
+            if base_has_var
+                && !exp_has_var
+                && let Some(result) = try_complete_square_integral(arena, base, exp, var, var_sym)
             {
                 return result;
             }
@@ -1378,5 +1463,38 @@ mod tests {
             !s.contains("Integral"),
             "∫ x/(x²+1) dx should not be unevaluated, got: {s}"
         );
+    }
+
+    #[test]
+    fn integrate_complete_square() {
+        // ∫ 1/(x²+2x+5) dx — should use completing the square
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let five = a.int(5);
+        let x2 = a.pow(x, two);
+        let two_x = a.mul(&[two, x]);
+        let quadratic = a.add(&[x2, two_x, five]);
+        let neg_one = a.int(-1);
+        let integrand = a.pow(quadratic, neg_one);
+        let result = integrate(&mut a, integrand, x);
+        let s = display(&a, result);
+        assert!(s.contains("atan"), "should use atan: {s}");
+    }
+
+    #[test]
+    fn integrate_complete_square_simple() {
+        // ∫ 1/(x²+x+1) dx
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let one = a.one;
+        let quadratic = a.add(&[x2, x, one]);
+        let neg_one = a.int(-1);
+        let integrand = a.pow(quadratic, neg_one);
+        let result = integrate(&mut a, integrand, x);
+        let s = display(&a, result);
+        assert!(s.contains("atan"), "should use atan: {s}");
     }
 }

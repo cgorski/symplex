@@ -26,6 +26,14 @@ pub(crate) fn limit(
     var: ExprId,
     point: ExprId,
 ) -> Result<ExprId, crate::errors::SymplexError> {
+    // Check for limit at infinity
+    if point == arena.infinity {
+        return limit_at_infinity(arena, expr, var, true);
+    }
+    if point == arena.neg_infinity {
+        return limit_at_infinity(arena, expr, var, false);
+    }
+
     // Step 1+2 combined: decompose into numerator/denominator first.
     //
     // We must check for indeterminate forms *before* doing a naive
@@ -149,6 +157,99 @@ fn try_lhopital(
 
     // Recurse with differentiated numerator/denominator.
     try_lhopital(arena, n_prime, d_prime, var, point, depth + 1)
+}
+
+/// Compute lim(x→∞) expr or lim(x→-∞) expr.
+///
+/// Strategies:
+/// 1. For rational functions P(x)/Q(x): compare leading degrees
+/// 2. For exp/ln compositions: direct evaluation of dominant terms
+/// 3. Substitution x = 1/t, compute lim(t→0+)
+pub(crate) fn limit_at_infinity(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    positive: bool, // true for +∞, false for -∞
+) -> Result<ExprId, crate::errors::SymplexError> {
+    // Strategy 1: Try substitution x = 1/t and take limit as t→0
+    // This converts lim(x→∞) to lim(t→0+)
+    let t = arena.symbol("__limit_t");
+    let one = arena.one;
+    let t_inv = arena.div(one, t); // 1/t
+
+    // For -∞: substitute x = -1/t
+    let sub_expr = if positive {
+        arena.subs_structural(expr, var, t_inv)
+    } else {
+        let neg_t_inv = arena.neg(t_inv);
+        arena.subs_structural(expr, var, neg_t_inv)
+    };
+
+    // Simplify the substituted expression
+    let simplified = crate::eval::eval(arena, sub_expr);
+    let expanded = crate::expand::expand(arena, simplified);
+    let evaled = crate::eval::eval(arena, expanded);
+
+    // Now take lim(t→0)
+    // First try direct substitution
+    let at_zero = arena.subs_structural(evaled, t, arena.zero);
+    let at_zero_eval = crate::eval::eval(arena, at_zero);
+
+    // Check if result is finite
+    if is_finite_result(arena, at_zero_eval) {
+        return Ok(at_zero_eval);
+    }
+
+    // Strategy 2: For rational functions, analyze degree
+    // Try as_numer_denom, get degrees of numerator and denominator in t
+    let (numer, denom) = crate::polybridge::as_numer_denom(arena, evaled);
+    if denom != arena.one {
+        // We have a fraction in t — try to determine the limit
+        let n_deg = crate::polybridge::poly_degree(arena, numer, t);
+        let d_deg = crate::polybridge::poly_degree(arena, denom, t);
+
+        if let (Some(nd), Some(dd)) = (n_deg, d_deg) {
+            if nd < dd {
+                // Numerator degree < denominator degree → limit is 0
+                // (in terms of t→0, this means the numerator vanishes faster)
+                // If numer has lower degree, numer→0 faster, limit = 0
+                return Ok(arena.zero);
+            }
+            if nd == dd {
+                // Same degree: limit is ratio of leading coefficients
+                // Cancel common factors and substitute t=0
+                let cancelled = crate::polybridge::cancel(arena, evaled, t);
+                let result = arena.subs_structural(cancelled, t, arena.zero);
+                let result = crate::eval::eval(arena, result);
+                if is_finite_result(arena, result) {
+                    return Ok(result);
+                }
+            }
+            // nd > dd: limit is ±∞ (in the original variable)
+            if nd > dd {
+                return Ok(arena.infinity);
+            }
+        }
+    }
+
+    // Strategy 3: Try L'Hôpital on the substituted form
+    // Use the existing limit machinery on lim(t→0)
+    let zero = arena.zero;
+    match limit(arena, evaled, t, zero) {
+        Ok(result) => Ok(result),
+        Err(_) => Err(crate::errors::SymplexError::ComputationFailed {
+            operation: "limit",
+            reason: "could not compute limit at infinity".into(),
+        }),
+    }
+}
+
+/// Check if a result is a finite number (not infinity, NaN, etc.)
+fn is_finite_result(arena: &Arena, id: ExprId) -> bool {
+    matches!(
+        arena.node(id),
+        ExprNode::Num(_) | ExprNode::Pi | ExprNode::E
+    )
 }
 
 /// Check if an expression is a finite number (not infinity, not NaN, not symbolic).

@@ -1350,10 +1350,12 @@ impl Ex {
 
     /// Factor out the GCD of numeric coefficients from a sum.
     ///
-    /// `2x + 2y → 2·(x + y)`, `6x² + 4x → 2·(3x² + 2x)`.
+    /// Returns `(gcd, inner)` where `self == gcd * inner` mathematically.
+    /// The inner expression has each coefficient divided by the GCD.
     ///
-    /// Returns the expression unchanged if it is not an `Add` or if
-    /// the GCD of all coefficients is 1.
+    /// Due to canonicalization (Number×Add distribution), reconstructing
+    /// `gcd * inner` may produce the original distributed form. Use the
+    /// returned pair directly for display or cancellation.
     ///
     /// # Examples
     ///
@@ -1363,15 +1365,14 @@ impl Ex {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let y = ctx.symbol("y");
-    /// let expr = &x * 2 + &y * 2;
-    /// let factored = expr.factor_terms();
-    /// let s = format!("{factored}");
-    /// assert!(s.contains("2"), "should factor out 2: {s}");
+    /// let expr = &x * 4 + &y * 6;
+    /// let (gcd, inner) = expr.factor_terms();
+    /// assert_eq!(format!("{gcd}"), "2");
+    /// // inner is 2x + 3y
     /// ```
-    #[must_use = "returns the factored form; does not modify in place"]
-    pub fn factor_terms(&self) -> Ex {
-        let id = self.inner.write().arena.factor_terms_expr(self.id);
-        self.wrap(id)
+    pub fn factor_terms(&self) -> (Ex, Ex) {
+        let (gcd_id, inner_id) = self.inner.write().arena.factor_terms_pair_expr(self.id);
+        (self.wrap(gcd_id), self.wrap(inner_id))
     }
 
     /// Rationalize the denominator of a fraction containing square roots.

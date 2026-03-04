@@ -14,35 +14,29 @@ use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 use smallvec::SmallVec;
 
-/// Factor out the GCD of numeric coefficients from an `Add` expression.
-///
-/// Given `c₁·t₁ + c₂·t₂ + ...`, computes `g = gcd(c₁, c₂, ...)` and
-/// returns `g · (t₁·c₁/g + t₂·c₂/g + ...)`.
-///
-/// If the expression is not an `Add`, returns it unchanged.
-pub(crate) fn factor_terms(arena: &mut Arena, expr: ExprId) -> ExprId {
+/// Factor out the GCD of numeric coefficients.
+/// Returns (gcd, inner) where expr == gcd * inner mathematically.
+/// The inner expression has each coefficient divided by gcd.
+pub(crate) fn factor_terms_pair(arena: &mut Arena, expr: ExprId) -> (Ratio<BigInt>, ExprId) {
     let node = arena.node(expr).clone();
     let children = match node {
         ExprNode::Add(ref children) if children.len() >= 2 => children.clone(),
-        _ => return expr,
+        _ => return (Ratio::one(), expr),
     };
 
-    // Decompose each child into (coefficient, term)
     let mut pairs: Vec<(Ratio<BigInt>, ExprId)> = Vec::new();
     for &child in &children {
         let (coeff, term) = arena.as_coeff_term(child);
         pairs.push((coeff, term));
     }
 
-    // Compute GCD of all coefficients
     let coeffs: Vec<&Ratio<BigInt>> = pairs.iter().map(|(c, _)| c).collect();
     let gcd = rational_gcd_multi(&coeffs);
 
     if gcd.is_one() || gcd.is_zero() {
-        return expr; // Nothing to factor
+        return (Ratio::one(), expr);
     }
 
-    // Factor out gcd: rebuild each term with coefficient / gcd
     let mut new_terms: SmallVec<[ExprId; 6]> = SmallVec::new();
     for (coeff, term) in &pairs {
         let new_coeff = coeff / &gcd;
@@ -51,11 +45,20 @@ pub(crate) fn factor_terms(arena: &mut Arena, expr: ExprId) -> ExprId {
     }
 
     let inner_sum = arena.add(&new_terms);
+    (gcd, inner_sum)
+}
+
+/// Factor out GCD and return as single expression (may re-distribute due to canonicalization).
+pub(crate) fn factor_terms(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let (gcd, inner) = factor_terms_pair(arena, expr);
+    if gcd.is_one() {
+        return inner;
+    }
     let gcd_id = {
         let nid = arena.intern_num(gcd);
         arena.intern(ExprNode::Num(nid))
     };
-    arena.mul(&[gcd_id, inner_sum])
+    arena.mul(&[gcd_id, inner])
 }
 
 /// Compute the GCD of a list of rational numbers.
@@ -123,6 +126,24 @@ mod tests {
     }
 
     #[test]
+    fn factor_2x_plus_2y_pair() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let two_y = a.mul(&[two, y]);
+        let expr = a.add(&[two_x, two_y]);
+        let (gcd, inner) = factor_terms_pair(&mut a, expr);
+        assert_eq!(gcd, Ratio::from_integer(BigInt::from(2)));
+        let inner_s = display(&a, inner);
+        assert!(
+            inner_s.contains("x") && inner_s.contains("y"),
+            "inner should contain x and y: {inner_s}"
+        );
+    }
+
+    #[test]
     fn factor_3x2_plus_6x() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
@@ -139,6 +160,23 @@ mod tests {
     }
 
     #[test]
+    fn factor_3x2_plus_6x_pair() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let three = a.int(3);
+        let six = a.int(6);
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let three_x2 = a.mul(&[three, x2]);
+        let six_x = a.mul(&[six, x]);
+        let expr = a.add(&[three_x2, six_x]);
+        let (gcd, inner) = factor_terms_pair(&mut a, expr);
+        assert_eq!(gcd, Ratio::from_integer(BigInt::from(3)));
+        let inner_s = display(&a, inner);
+        assert!(inner_s.contains("x"), "inner should contain x: {inner_s}");
+    }
+
+    #[test]
     fn factor_no_common() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
@@ -146,6 +184,17 @@ mod tests {
         let expr = a.add(&[x, y]);
         let result = factor_terms(&mut a, expr);
         assert_eq!(result, expr, "no common factor should leave unchanged");
+    }
+
+    #[test]
+    fn factor_no_common_pair() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let expr = a.add(&[x, y]);
+        let (gcd, inner) = factor_terms_pair(&mut a, expr);
+        assert!(gcd.is_one(), "gcd should be 1 when no common factor");
+        assert_eq!(inner, expr, "inner should be original expression");
     }
 
     #[test]
@@ -172,6 +221,25 @@ mod tests {
     }
 
     #[test]
+    fn factor_negative_coeffs_pair() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let neg_four = a.int(-4);
+        let neg_six = a.int(-6);
+        let t1 = a.mul(&[neg_four, x]);
+        let t2 = a.mul(&[neg_six, y]);
+        let expr = a.add(&[t1, t2]);
+        let (gcd, inner) = factor_terms_pair(&mut a, expr);
+        assert_eq!(gcd, Ratio::from_integer(BigInt::from(2)));
+        let inner_s = display(&a, inner);
+        assert!(
+            inner_s.contains("x") && inner_s.contains("y"),
+            "inner should contain x and y: {inner_s}"
+        );
+    }
+
+    #[test]
     fn factor_rational_coeffs() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
@@ -188,10 +256,42 @@ mod tests {
     }
 
     #[test]
+    fn factor_rational_coeffs_pair() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let half = a.rational(1, 2);
+        let three_halves = a.rational(3, 2);
+        let t1 = a.mul(&[half, x]);
+        let t2 = a.mul(&[three_halves, y]);
+        let expr = a.add(&[t1, t2]);
+        let (gcd, inner) = factor_terms_pair(&mut a, expr);
+        assert_eq!(
+            gcd,
+            Ratio::new(BigInt::from(1), BigInt::from(2)),
+            "gcd should be 1/2"
+        );
+        let inner_s = display(&a, inner);
+        assert!(
+            inner_s.contains("x") && inner_s.contains("y"),
+            "inner should contain x and y: {inner_s}"
+        );
+    }
+
+    #[test]
     fn factor_single_term_unchanged() {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let result = factor_terms(&mut a, x);
         assert_eq!(result, x);
+    }
+
+    #[test]
+    fn factor_single_term_unchanged_pair() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let (gcd, inner) = factor_terms_pair(&mut a, x);
+        assert!(gcd.is_one(), "gcd should be 1 for single term");
+        assert_eq!(inner, x, "inner should be the original expression");
     }
 }

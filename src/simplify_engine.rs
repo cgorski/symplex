@@ -54,10 +54,10 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     let s3_eval2 = crate::eval::eval(arena, s3_expand);
     let (s3, _) = crate::pattern::apply_rules(arena, s3_eval2, &rules);
 
-    // Strategy 4: eval → factor_terms → simplify
+    // Strategy 4: eval → factor_terms (use inner with reduced coefficients)
     let s4_eval = crate::eval::eval(arena, expr);
-    let s4_factor = crate::factor_terms::factor_terms(arena, s4_eval);
-    let (s4, _) = crate::pattern::apply_rules(arena, s4_factor, &rules);
+    let (_gcd, s4_inner) = crate::factor_terms::factor_terms_pair(arena, s4_eval);
+    let (s4, _) = crate::pattern::apply_rules(arena, s4_inner, &rules);
 
     // Strategy 5: eval → expand_trig → simplify
     let s5_eval = crate::eval::eval(arena, expr);

@@ -198,7 +198,7 @@ proptest! {
     /// factor_terms never panics
     #[test]
     fn stress_factor_terms(e in arb_expr(2)) {
-        let _ = e.factor_terms();
+        let (_gcd, _inner) = e.factor_terms();
     }
 
     // ═══════════════════════════════════════════════════════════════

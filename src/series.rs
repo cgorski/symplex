@@ -24,7 +24,7 @@ use num_bigint::BigInt;
 use num_rational::Ratio;
 
 use crate::arena::Arena;
-use crate::node::ExprId;
+use crate::node::{ExprId, ExprNode};
 
 /// Compute the Taylor series of `expr` in `var` around `point` to the
 /// given `order` (number of terms).
@@ -43,6 +43,13 @@ pub(crate) fn series(
 ) -> Result<ExprId, crate::errors::SymplexError> {
     if order == 0 {
         return Ok(arena.zero);
+    }
+
+    // Fast path: known Maclaurin series coefficients
+    if point == arena.zero {
+        if let Some(result) = try_known_maclaurin(arena, expr, var, order as usize) {
+            return Ok(result);
+        }
     }
 
     let mut terms: Vec<ExprId> = Vec::with_capacity(order as usize);
@@ -114,6 +121,107 @@ pub(crate) fn series(
     } else {
         Ok(arena.add(&terms))
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Known-coefficient fast paths
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to build a Maclaurin series using known coefficients.
+/// Returns None if the expression isn't a recognized elementary function.
+fn try_known_maclaurin(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    order: usize,
+) -> Option<ExprId> {
+    match arena.node(expr).clone() {
+        // sin(x): coefficients (-1)^k / (2k+1)! for odd terms
+        ExprNode::Sin(inner) if inner == var => {
+            let mut terms = Vec::new();
+            for k in 0..order {
+                let n = 2 * k + 1;
+                if n >= order {
+                    break;
+                }
+                let sign: i64 = if k % 2 == 0 { 1 } else { -1 };
+                let factorial = factorial_value(n as u64);
+                let coeff = Ratio::new(BigInt::from(sign), factorial);
+                let coeff_id = {
+                    let nid = arena.intern_num(coeff);
+                    arena.intern(ExprNode::Num(nid))
+                };
+                let power = arena.int(n as i64);
+                let var_pow = arena.pow(var, power);
+                let term = arena.mul(&[coeff_id, var_pow]);
+                terms.push(term);
+            }
+            if terms.is_empty() {
+                return Some(arena.zero);
+            }
+            Some(arena.add(&terms))
+        }
+        // cos(x): coefficients (-1)^k / (2k)! for even terms
+        ExprNode::Cos(inner) if inner == var => {
+            let mut terms = Vec::new();
+            for k in 0..order {
+                let n = 2 * k;
+                if n >= order {
+                    break;
+                }
+                let sign: i64 = if k % 2 == 0 { 1 } else { -1 };
+                let factorial = factorial_value(n as u64);
+                let coeff = Ratio::new(BigInt::from(sign), factorial);
+                let coeff_id = {
+                    let nid = arena.intern_num(coeff);
+                    arena.intern(ExprNode::Num(nid))
+                };
+                if n == 0 {
+                    terms.push(coeff_id);
+                } else {
+                    let power = arena.int(n as i64);
+                    let var_pow = arena.pow(var, power);
+                    let term = arena.mul(&[coeff_id, var_pow]);
+                    terms.push(term);
+                }
+            }
+            if terms.is_empty() {
+                return Some(arena.zero);
+            }
+            Some(arena.add(&terms))
+        }
+        // exp(x): coefficients 1/k!
+        ExprNode::Exp(inner) if inner == var => {
+            let mut terms = Vec::new();
+            for k in 0..order {
+                let factorial = factorial_value(k as u64);
+                let coeff = Ratio::new(BigInt::from(1), factorial);
+                let coeff_id = {
+                    let nid = arena.intern_num(coeff);
+                    arena.intern(ExprNode::Num(nid))
+                };
+                if k == 0 {
+                    terms.push(coeff_id);
+                } else {
+                    let power = arena.int(k as i64);
+                    let var_pow = arena.pow(var, power);
+                    let term = arena.mul(&[coeff_id, var_pow]);
+                    terms.push(term);
+                }
+            }
+            Some(arena.add(&terms))
+        }
+        _ => None,
+    }
+}
+
+/// Compute n! as BigInt.
+fn factorial_value(n: u64) -> BigInt {
+    let mut result = BigInt::from(1);
+    for i in 2..=n {
+        result *= BigInt::from(i);
+    }
+    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -218,5 +326,39 @@ mod tests {
         let result = series(&mut a, x3, x, zero, 5).unwrap();
         let s = display(&a, result);
         assert!(s.contains("x^3"), "should recover x^3: {s}");
+    }
+
+    #[test]
+    fn series_sin_fast_path() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let sin_x = a.sin(x);
+        let zero = a.zero;
+        // sin(x) Maclaurin order 6: x - x³/6 + x⁵/120
+        let result = series(&mut a, sin_x, x, zero, 6).unwrap();
+        let s = a.display(result).to_string();
+        assert!(s.contains("x"), "should contain x: {s}");
+    }
+
+    #[test]
+    fn series_cos_fast_path() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let cos_x = a.cos(x);
+        let zero = a.zero;
+        let result = series(&mut a, cos_x, x, zero, 5).unwrap();
+        let s = a.display(result).to_string();
+        assert!(s.contains("1"), "cos series starts with 1: {s}");
+    }
+
+    #[test]
+    fn series_exp_fast_path() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let exp_x = a.exp(x);
+        let zero = a.zero;
+        let result = series(&mut a, exp_x, x, zero, 5).unwrap();
+        let s = a.display(result).to_string();
+        assert!(s.contains("1") && s.contains("x"), "exp series: {s}");
     }
 }

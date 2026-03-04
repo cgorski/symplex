@@ -74,20 +74,19 @@ fn count_ops_complex() {
 
 #[test]
 fn factor_terms_basic() {
-    // Note: factor_terms extracts gcd=2 and rebuilds as 2*(2x+3y),
-    // but canon_mul's Number×Add distribution expands it back to 4x+6y.
-    // This is a known limitation — the factoring is correct but
-    // canonicalization undoes it. Verify it doesn't crash and produces
-    // an equivalent expression.
+    // factor_terms now returns (gcd, inner) where expr == gcd * inner.
+    // The inner expression has each coefficient divided by gcd.
     let x = symplex::var("x");
     let y = symplex::var("y");
     let expr = &x * 4 + &y * 6;
-    let factored = expr.factor_terms();
-    let s = format!("{factored}");
-    // Should still contain x and y (value preserved even if form unchanged)
+    let (gcd, inner) = expr.factor_terms();
+    let gcd_s = format!("{gcd}");
+    let inner_s = format!("{inner}");
+    assert_eq!(gcd_s, "2", "gcd should be 2: {gcd_s}");
+    // inner should contain x and y with reduced coefficients
     assert!(
-        s.contains("x") && s.contains("y"),
-        "factor_terms should preserve expression: {s}"
+        inner_s.contains("x") && inner_s.contains("y"),
+        "factor_terms inner should contain x and y: {inner_s}"
     );
 }
 
@@ -96,20 +95,23 @@ fn factor_terms_no_common() {
     let x = symplex::var("x");
     let y = symplex::var("y");
     let expr = &x + &y;
-    let factored = expr.factor_terms();
-    assert_eq!(format!("{factored}"), format!("{expr}"));
+    let (gcd, inner) = expr.factor_terms();
+    assert_eq!(format!("{gcd}"), "1");
+    assert_eq!(format!("{inner}"), format!("{expr}"));
 }
 
 #[test]
 fn factor_terms_all_same() {
     let x = symplex::var("x");
     let expr = &x * 6 + 12;
-    let factored = expr.factor_terms();
-    let s = format!("{factored}");
+    let (gcd, inner) = expr.factor_terms();
+    let gcd_s = format!("{gcd}");
+    let inner_s = format!("{inner}");
     assert!(
-        s.contains("6") || s.contains("3") || s.contains("2"),
-        "should factor: {s}"
+        gcd_s.contains("6") || gcd_s.contains("3") || gcd_s.contains("2"),
+        "gcd should factor: {gcd_s}"
     );
+    assert!(inner_s.contains("x"), "inner should contain x: {inner_s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

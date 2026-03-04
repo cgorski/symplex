@@ -689,6 +689,17 @@ impl Arena {
         crate::factor_terms::factor_terms(self, expr)
     }
 
+    /// Factor out the GCD of numeric coefficients, returning `(gcd, inner)` as expression IDs.
+    /// Delegates to [`factor_terms::factor_terms_pair`].
+    pub fn factor_terms_pair_expr(&mut self, expr: ExprId) -> (ExprId, ExprId) {
+        let (gcd, inner) = crate::factor_terms::factor_terms_pair(self, expr);
+        let gcd_id = {
+            let nid = self.intern_num(gcd);
+            self.intern(ExprNode::Num(nid))
+        };
+        (gcd_id, inner)
+    }
+
     /// Rationalize the denominator of a fraction containing square roots.
     /// `1/√2 → √2/2`, `1/(1+√2) → √2-1`.
     /// Delegates to [`radsimp::rationalize_denom`].
