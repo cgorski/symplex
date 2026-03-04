@@ -46,6 +46,7 @@
 
 use std::fmt;
 use std::hash;
+use std::marker::PhantomData;
 use std::ops;
 use std::sync::Arc;
 
@@ -59,9 +60,34 @@ use crate::display::fmt_expr;
 use crate::errors::SymplexError;
 use crate::node::{CtxId, ExprId};
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Sort system — compile-time expression typing
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Marker trait for expression sorts.
+///
+/// Sorts distinguish numeric expressions (which support arithmetic,
+/// calculus, etc.) from boolean expressions (comparisons, logic)
+/// at compile time. The sort is carried as a phantom type parameter
+/// on [`Expr`] and has zero runtime cost.
+pub trait Sort: 'static + Clone + Send + Sync {}
+
+/// Numeric sort: real, complex, and integer values.
+/// Supports arithmetic, calculus, and algebraic operations.
+#[derive(Clone)]
+pub struct Numeric;
+
+/// Boolean sort: true/false values from comparisons and logic.
+/// Supports `and`, `or`, `not` operations.
+#[derive(Clone)]
+pub struct Boolean;
+
+impl Sort for Numeric {}
+impl Sort for Boolean {}
+
 /// Structural classification of an expression node.
 ///
-/// Returned by [`Ex::expr_type()`]. This collapses the internal
+/// Returned by [`Expr::expr_type()`]. This collapses the internal
 /// `ExprNode` enum (30 variants) into a user-friendly classification.
 ///
 /// # Examples
@@ -102,38 +128,574 @@ pub enum ExprType {
     Integral,
 }
 
-/// A symbolic expression handle.
+/// A symbolic expression handle, parameterized by sort.
 ///
-/// `Ex` wraps an [`ExprId`] together with a reference to the
-/// [`ContextInner`] that owns the arena and assumption cache.
-/// It is cheaply cloneable and implements standard arithmetic operators.
+/// `Expr<Numeric>` (aliased as [`Ex`]) represents numeric expressions.
+/// `Expr<Boolean>` (aliased as [`BoolEx`]) represents boolean expressions.
 ///
-/// # Locking
-///
-/// - **Operators / construction methods** acquire the outer `RwLock` in
-///   write mode (exclusive access to the arena).
-/// - **Display / structural predicates** acquire the outer `RwLock` in
-///   read mode (shared access).
-/// - **Assumption queries** acquire the outer `RwLock` in read mode,
-///   then the inner `Mutex<AssumptionCache>` for cache mutation.
+/// The sort parameter is a phantom type — zero runtime cost.
+/// It prevents invalid operations at compile time:
+/// - `sin(bool_expr)` won't compile (sin is only on `Expr<Numeric>`)
+/// - `bool_expr + 1` won't compile (Add is only on `Expr<Numeric>`)
+/// - `numeric.and(other)` won't compile (and is only on `Expr<Boolean>`)
 #[derive(Clone)]
-pub struct Ex {
+pub struct Expr<S: Sort> {
     pub(crate) ctx_id: CtxId,
     pub(crate) inner: Arc<RwLock<ContextInner>>,
     pub(crate) id: ExprId,
+    pub(crate) _sort: PhantomData<S>,
 }
 
-impl Ex {
-    /// Helper — build a new `Ex` from the same context with a different id.
+/// A numeric expression — the primary type for symbolic math.
+pub type Ex = Expr<Numeric>;
+
+/// A boolean expression — comparisons and logical operations.
+pub type BoolEx = Expr<Boolean>;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// impl<S: Sort> Expr<S> — wrap helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<S: Sort> Expr<S> {
+    /// Helper — build a new Expr of the SAME sort from the same context.
     #[inline]
-    fn wrap(&self, id: ExprId) -> Ex {
-        Ex {
+    fn wrap(&self, id: ExprId) -> Expr<S> {
+        Expr {
             ctx_id: self.ctx_id,
             inner: Arc::clone(&self.inner),
             id,
+            _sort: PhantomData,
         }
     }
 
+    /// Helper — build a new Expr of a DIFFERENT sort from the same context.
+    #[inline]
+    fn wrap_as<T: Sort>(&self, id: ExprId) -> Expr<T> {
+        Expr {
+            ctx_id: self.ctx_id,
+            inner: Arc::clone(&self.inner),
+            id,
+            _sort: PhantomData,
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// impl<S: Sort> Expr<S> — Common (sort-preserving) methods
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<S: Sort> Expr<S> {
+    /// Returns the raw [`ExprId`] inside this handle.
+    #[inline]
+    pub fn id(&self) -> ExprId {
+        self.id
+    }
+
+    /// Returns the [`CtxId`] that this expression belongs to.
+    #[inline]
+    pub fn ctx_id(&self) -> CtxId {
+        self.ctx_id
+    }
+
+    // ── Structural predicates ──────────────────────────────────────
+
+    /// Returns `true` if this expression is structurally zero (O(1)).
+    pub fn is_zero_structural(&self) -> bool {
+        self.inner.read().arena.is_zero_structural(self.id)
+    }
+
+    /// Returns `true` if this expression is structurally one (O(1)).
+    pub fn is_one_structural(&self) -> bool {
+        self.inner.read().arena.is_one_structural(self.id)
+    }
+
+    // ── Structural introspection ───────────────────────────────────
+
+    /// Returns the set of free symbols in this expression.
+    ///
+    /// Each symbol appears at most once. The order is deterministic
+    /// but unspecified.
+    ///
+    /// Symbols are always numeric, so this returns `Vec<Ex>` regardless
+    /// of the sort of `self`.
+    pub fn free_symbols(&self) -> Vec<Ex> {
+        let inner = self.inner.read();
+        let expr_ids = crate::walk::free_symbols(&inner.arena, self.id);
+        drop(inner);
+        expr_ids
+            .into_iter()
+            .map(|eid| self.wrap_as::<Numeric>(eid))
+            .collect()
+    }
+
+    /// Returns `true` if `needle` appears as a sub-expression of `self`.
+    ///
+    /// This is a structural check — it walks the expression DAG and
+    /// returns `true` if any node has the same [`ExprId`] as `needle`.
+    pub fn contains(&self, needle: &Ex) -> bool {
+        let inner = self.inner.read();
+        crate::walk::contains(&inner.arena, self.id, needle.id)
+    }
+
+    /// Count the number of operations (non-atom nodes) in this expression.
+    ///
+    /// Atoms (numbers, symbols, constants) count as 0.
+    /// Each operator or function application counts as 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// assert_eq!(x.count_ops(), 0);           // atom
+    /// assert_eq!((&x + 1).count_ops(), 1);    // one Add
+    /// assert_eq!(x.sin().powi(2).count_ops(), 2); // Sin + Pow
+    /// ```
+    pub fn count_ops(&self) -> usize {
+        let inner = self.inner.read();
+        inner.arena.count_ops(self.id)
+    }
+
+    /// Returns the number of top-level terms in this expression.
+    ///
+    /// For an `Add` node, returns the number of summands.
+    /// For anything else, returns 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// assert_eq!((&x + 1).term_count(), 2);
+    /// assert_eq!(x.powi(2).term_count(), 1);
+    /// ```
+    pub fn term_count(&self) -> usize {
+        let inner = self.inner.read();
+        match inner.arena.node(self.id) {
+            crate::node::ExprNode::Add(children) => children.len(),
+            _ => 1,
+        }
+    }
+
+    /// Returns the direct children (arguments) of this expression.
+    ///
+    /// - For `Add`: returns the summands.
+    /// - For `Mul`: returns the factors.
+    /// - For `Pow`: returns `[base, exponent]`.
+    /// - For `Neg`: returns `[inner]`.
+    /// - For functions (sin, cos, etc.): returns `[argument]`.
+    /// - For atoms (numbers, symbols, constants): returns `[]`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x + 1;
+    /// let children = expr.args();
+    /// assert_eq!(children.len(), 2);
+    /// ```
+    pub fn args(&self) -> Vec<Expr<S>> {
+        let inner = self.inner.read();
+        let child_ids = inner.arena.node(self.id).children();
+        child_ids.iter().map(|&id| self.wrap(id)).collect()
+    }
+
+    /// Returns the structural type of this expression.
+    ///
+    /// Collapses the internal 30-variant `ExprNode` enum into a
+    /// user-friendly [`ExprType`] classification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::expr::ExprType;
+    ///
+    /// let x = symplex::var("x");
+    /// assert_eq!(x.expr_type(), ExprType::Symbol);
+    /// assert_eq!(x.sin().expr_type(), ExprType::Function);
+    /// assert_eq!((&x + 1).expr_type(), ExprType::Add);
+    /// ```
+    pub fn expr_type(&self) -> ExprType {
+        let inner = self.inner.read();
+        match inner.arena.node(self.id) {
+            crate::node::ExprNode::Num(_) => ExprType::Number,
+            crate::node::ExprNode::Symbol(_) => ExprType::Symbol,
+            crate::node::ExprNode::Pi
+            | crate::node::ExprNode::E
+            | crate::node::ExprNode::ImaginaryUnit
+            | crate::node::ExprNode::Infinity
+            | crate::node::ExprNode::NegInfinity
+            | crate::node::ExprNode::ComplexInfinity
+            | crate::node::ExprNode::NaN => ExprType::Constant,
+            crate::node::ExprNode::Add(_) => ExprType::Add,
+            crate::node::ExprNode::Mul(_) => ExprType::Mul,
+            crate::node::ExprNode::Pow(_, _) => ExprType::Pow,
+            crate::node::ExprNode::Neg(_) => ExprType::Neg,
+            crate::node::ExprNode::Sin(_)
+            | crate::node::ExprNode::Cos(_)
+            | crate::node::ExprNode::Tan(_)
+            | crate::node::ExprNode::Exp(_)
+            | crate::node::ExprNode::Ln(_)
+            | crate::node::ExprNode::Abs(_)
+            | crate::node::ExprNode::Asin(_)
+            | crate::node::ExprNode::Acos(_)
+            | crate::node::ExprNode::Atan(_)
+            | crate::node::ExprNode::Sinh(_)
+            | crate::node::ExprNode::Cosh(_)
+            | crate::node::ExprNode::Tanh(_)
+            | crate::node::ExprNode::Asinh(_)
+            | crate::node::ExprNode::Acosh(_)
+            | crate::node::ExprNode::Atanh(_)
+            | crate::node::ExprNode::Sign(_) => ExprType::Function,
+            crate::node::ExprNode::Apply(_, _) => ExprType::Apply,
+            crate::node::ExprNode::Derivative(_, _) => ExprType::Derivative,
+            crate::node::ExprNode::Integral(_, _) => ExprType::Integral,
+            crate::node::ExprNode::Factorial(_) | crate::node::ExprNode::Binomial(_, _) => {
+                ExprType::Function
+            }
+            crate::node::ExprNode::BoolTrue | crate::node::ExprNode::BoolFalse => {
+                ExprType::Constant
+            }
+            crate::node::ExprNode::Gt(_, _)
+            | crate::node::ExprNode::Ge(_, _)
+            | crate::node::ExprNode::Eq_(_, _)
+            | crate::node::ExprNode::Ne(_, _)
+            | crate::node::ExprNode::And(_)
+            | crate::node::ExprNode::Or(_)
+            | crate::node::ExprNode::Not(_)
+            | crate::node::ExprNode::Piecewise(_) => ExprType::Function,
+        }
+    }
+
+    // ── Substitution ───────────────────────────────────────────────
+
+    /// Structural substitution: replace every occurrence of `old` with `new`.
+    ///
+    /// This is **structural** — only exact node matches are replaced.
+    /// `(1/x).subs(x², 1)` returns `1/x` unchanged because `x²` does
+    /// not appear as a node in `x⁻¹`.
+    ///
+    /// The result is re-canonicalized, so like-term collection and
+    /// other invariants are maintained.
+    ///
+    /// Returns `self` unchanged (same `Expr`) if `old` does not appear.
+    #[must_use = "returns a new expression with substitutions applied"]
+    pub fn subs(&self, old: &Ex, new: &Ex) -> Expr<S> {
+        let id = self
+            .inner
+            .write()
+            .arena
+            .subs_structural(self.id, old.id, new.id);
+        self.wrap(id)
+    }
+
+    /// Substitute a symbol with an integer value.
+    ///
+    /// Convenience shorthand for `self.subs(old, &ctx.int(n))` that
+    /// avoids needing to construct the integer expression manually.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = x.powi(2);
+    /// let result = expr.subs_i64(&x, 3);
+    /// assert_eq!(format!("{result}"), "9");
+    /// ```
+    #[must_use = "returns a new expression with substitutions applied"]
+    pub fn subs_i64(&self, old: &Ex, new: i64) -> Expr<S> {
+        let mut inner = self.inner.write();
+        let new_id = inner.arena.int(new);
+        let id = inner.arena.subs_structural(self.id, old.id, new_id);
+        drop(inner);
+        self.wrap(id)
+    }
+
+    /// Simultaneous substitution of multiple `(old, new)` pairs.
+    ///
+    /// All replacements happen "at once" — earlier substitutions do
+    /// not affect later ones.
+    #[must_use = "returns a new expression with substitutions applied"]
+    pub fn subs_map(&self, replacements: &[(&Ex, &Ex)]) -> Expr<S> {
+        let pairs: smallvec::SmallVec<[(crate::node::ExprId, crate::node::ExprId); 4]> =
+            replacements.iter().map(|(o, n)| (o.id, n.id)).collect();
+        let id = self
+            .inner
+            .write()
+            .arena
+            .subs_map_structural(self.id, &pairs);
+        self.wrap(id)
+    }
+
+    // ── Transformations ────────────────────────────────────────────
+
+    /// Algebraic expansion (distribute products over sums, expand
+    /// integer powers of sums).
+    ///
+    /// - `a * (b + c)` → `a*b + a*c`
+    /// - `(a + b)^n` → multinomial expansion
+    ///
+    /// Does NOT evaluate functions, factor, or simplify.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = (&x + 1).powi(2);
+    /// assert_eq!(format!("{}", expr.expand()), "1 + x^2 + 2*x");
+    /// ```
+    #[must_use = "returns the expanded form; does not modify in place"]
+    pub fn expand(&self) -> Expr<S> {
+        let _span = debug_span!("expand", expr = ?self.id).entered();
+        let id = self.inner.write().arena.expand_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Exact evaluation of known special values.
+    ///
+    /// Replaces function applications with their exact values when the
+    /// arguments are known constants:
+    ///
+    /// - `sin(0)` → `0`, `sin(π)` → `0`, `sin(π/2)` → `1`
+    /// - `cos(0)` → `1`, `cos(π)` → `-1`
+    /// - `exp(0)` → `1`, `ln(1)` → `0`
+    /// - `sqrt(4)` → `2`, `abs(-3)` → `3`
+    ///
+    /// Only evaluates when the result is a simpler atom.
+    /// Does NOT evaluate `cos(π/4)` → `√2/2`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let expr = ctx.pi().cos();
+    /// assert_eq!(format!("{}", expr.eval()), "-1");
+    /// ```
+    #[must_use = "returns the evaluated form; does not modify in place"]
+    pub fn eval(&self) -> Expr<S> {
+        let _span = debug_span!("eval", expr = ?self.id).entered();
+        let id = self.inner.write().arena.eval_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Simplification (identity application, trig identities, etc.).
+    ///
+    /// Applies built-in rewrite rules (e.g., `sin²(x) + cos²(x) → 1`)
+    /// in a single bottom-up pass.  For fixpoint simplification, call
+    /// repeatedly until the result stops changing.
+    ///
+    /// ⚠️ **This function is heuristic.**  For deterministic
+    /// transformations, use `.expand()`, `.eval()`, or `.diff()` instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
+    /// assert_eq!(format!("{}", expr.simplify()), "1");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn simplify(&self) -> Expr<S> {
+        let _span = debug_span!("simplify", expr = ?self.id).entered();
+        let (result, _steps) = self.simplify_trace();
+        result
+    }
+
+    /// Like [`simplify`](Expr::simplify), but also returns a trace of
+    /// which rules fired and what they changed.
+    ///
+    /// Each [`Step`](crate::pattern::Step) records the rule name, the
+    /// sub-expression before, and the sub-expression after.
+    #[must_use = "returns the simplified form and trace"]
+    pub fn simplify_trace(&self) -> (Expr<S>, Vec<crate::pattern::Step>) {
+        let mut inner = self.inner.write();
+        // Use cached rules if available, otherwise build and cache them.
+        if inner.cached_rules.is_none() {
+            inner.cached_rules = Some(crate::pattern::basic_rules(&mut inner.arena));
+        }
+        // Clone the rules out to release the immutable borrow on `inner`
+        // before we pass `&mut inner.arena` to `apply_rules`.
+        let rules = inner
+            .cached_rules
+            .as_ref()
+            .expect("cached_rules should be populated by is_none() check above")
+            .clone();
+        let (result_id, steps) = crate::pattern::apply_rules(&mut inner.arena, self.id, &rules);
+        drop(inner);
+        (self.wrap(result_id), steps)
+    }
+
+    /// Full simplification: repeatedly applies [`eval`](Expr::eval),
+    /// [`expand`](Expr::expand), and [`simplify`](Expr::simplify) until
+    /// the expression stops changing (fixpoint), or a maximum of 10
+    /// iterations is reached.
+    ///
+    /// This is the "just make this simpler" button — it composes all
+    /// available simplification passes into a single call.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// // (x+1)^2 - x^2 - 2*x simplifies to 1 after expand + canonicalization
+    /// let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
+    /// assert_eq!(format!("{}", expr.full_simplify()), "1");
+    /// ```
+    #[must_use = "returns the fully simplified form; does not modify in place"]
+    pub fn full_simplify(&self) -> Expr<S> {
+        let _span = debug_span!("full_simplify", expr = ?self.id).entered();
+        let (result, _steps) = self.full_simplify_trace();
+        result
+    }
+
+    /// Like [`full_simplify`](Expr::full_simplify), but also returns a
+    /// trace of all steps across all iterations.
+    #[must_use = "returns the fully simplified form and accumulated trace"]
+    pub fn full_simplify_trace(&self) -> (Expr<S>, Vec<crate::pattern::Step>) {
+        const MAX_ITERATIONS: usize = 10;
+        let mut current = self.clone();
+        let mut all_steps: Vec<crate::pattern::Step> = Vec::new();
+
+        for _ in 0..MAX_ITERATIONS {
+            let evaled = current.eval();
+            let expanded = evaled.expand();
+            let (simplified, steps) = expanded.simplify_trace();
+            all_steps.extend(steps);
+
+            if simplified.id == current.id {
+                return (simplified, all_steps);
+            }
+            current = simplified;
+        }
+
+        (current, all_steps)
+    }
+
+    /// Try multiple simplification strategies and return the simplest result.
+    ///
+    /// Unlike [`simplify`](Self::simplify) which applies a single pass of
+    /// rewrite rules, this tries eval, expand, factor_terms, trig_expand,
+    /// logcombine and more, then picks whichever result has the fewest
+    /// operations (nodes).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
+    /// assert_eq!(format!("{}", expr.smart_simplify()), "1");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn smart_simplify(&self) -> Expr<S> {
+        let id = self.inner.write().arena.smart_simplify_expr(self.id);
+        self.wrap(id)
+    }
+
+    // ── Serialization ──────────────────────────────────────────────
+
+    /// Convert this expression to a standalone serializable [`ExprTree`](crate::tree::ExprTree).
+    ///
+    /// The tree can be serialized to JSON (or any serde format) and
+    /// deserialized back via [`Context::from_tree()`](crate::context::Context::from_tree).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let tree = x.powi(2).to_tree();
+    /// let json = serde_json::to_string(&tree).unwrap();
+    /// assert!(json.contains("Pow"));
+    /// ```
+    pub fn to_tree(&self) -> crate::tree::ExprTree {
+        let inner = self.inner.read();
+        crate::tree::expr_to_tree(&inner.arena, self.id)
+    }
+
+    /// Serialize this expression to a JSON string.
+    ///
+    /// This is a convenience shorthand for
+    /// `serde_json::to_string(&expr.to_tree()).unwrap()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let json = x.powi(2).to_json();
+    /// assert!(json.contains("\"type\":\"Pow\""));
+    /// ```
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(&self.to_tree()).expect("ExprTree serialization should not fail")
+    }
+
+    /// Serialize this expression to a pretty-printed JSON string.
+    pub fn to_json_pretty(&self) -> String {
+        serde_json::to_string_pretty(&self.to_tree())
+            .expect("ExprTree serialization should not fail")
+    }
+
+    /// Apply a transformation repeatedly until the expression stops changing,
+    /// or `max_iterations` is reached.
+    ///
+    /// Returns the final expression and the number of iterations performed.
+    /// Useful for building custom simplification pipelines.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = (&x + 1).powi(2);
+    /// let (result, iters) = expr.apply_until_stable(10, |e| e.expand());
+    /// assert_eq!(format!("{result}"), "1 + x^2 + 2*x");
+    /// assert_eq!(iters, 1); // stabilized after 1 iteration
+    /// ```
+    pub fn apply_until_stable<F>(&self, max_iterations: usize, f: F) -> (Expr<S>, usize)
+    where
+        F: Fn(&Expr<S>) -> Expr<S>,
+    {
+        let mut current = self.clone();
+        for i in 0..max_iterations {
+            let next = f(&current);
+            if next.id == current.id && next.ctx_id == current.ctx_id {
+                return (current, i);
+            }
+            current = next;
+        }
+        (current, max_iterations)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// impl Expr<Numeric> — Numeric-specific methods
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Expr<Numeric> {
     /// The additive identity (0) in the global default context.
     ///
     /// # Examples
@@ -162,18 +724,6 @@ impl Ex {
     /// ```
     pub fn one() -> Ex {
         crate::int(1)
-    }
-
-    /// Returns the raw [`ExprId`] inside this handle.
-    #[inline]
-    pub fn id(&self) -> ExprId {
-        self.id
-    }
-
-    /// Returns the [`CtxId`] that this expression belongs to.
-    #[inline]
-    pub fn ctx_id(&self) -> CtxId {
-        self.ctx_id
     }
 
     // ── Math functions ─────────────────────────────────────────────
@@ -353,16 +903,145 @@ impl Ex {
         self.wrap(id)
     }
 
-    // ── Structural predicates ──────────────────────────────────────
-
-    /// Returns `true` if this expression is structurally zero (O(1)).
-    pub fn is_zero_structural(&self) -> bool {
-        self.inner.read().arena.is_zero_structural(self.id)
+    /// Decompose this expression into its real part.
+    ///
+    /// Assumes unadorned symbols are real. Returns the real component
+    /// of the expression when written as `re + im·i`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let i = ctx.i_unit();
+    /// let z = &ctx.int(3) + &(&ctx.int(4) * &i);
+    /// assert_eq!(format!("{}", z.re()), "3");
+    /// ```
+    #[must_use]
+    pub fn re(&self) -> Ex {
+        let (re, _im) = self.inner.write().arena.as_real_imag_expr(self.id);
+        self.wrap(re)
     }
 
-    /// Returns `true` if this expression is structurally one (O(1)).
-    pub fn is_one_structural(&self) -> bool {
-        self.inner.read().arena.is_one_structural(self.id)
+    /// Decompose this expression into its imaginary part.
+    ///
+    /// Assumes unadorned symbols are real. Returns the imaginary
+    /// coefficient (without the `i` factor) when the expression is
+    /// written as `re + im·i`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let i = ctx.i_unit();
+    /// let z = &ctx.int(3) + &(&ctx.int(4) * &i);
+    /// assert_eq!(format!("{}", z.im()), "4");
+    /// ```
+    #[must_use]
+    pub fn im(&self) -> Ex {
+        let (_re, im) = self.inner.write().arena.as_real_imag_expr(self.id);
+        self.wrap(im)
+    }
+
+    /// Compute the factorial of this expression: `self!`
+    ///
+    /// Creates a `Factorial` node. For non-negative integer arguments,
+    /// `.eval()` will compute the exact value using arbitrary-precision
+    /// arithmetic.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let result = symplex::int(5).factorial().eval();
+    /// assert_eq!(format!("{result}"), "120");
+    /// ```
+    #[must_use]
+    pub fn factorial(&self) -> Ex {
+        let id = self.inner.write().arena.factorial(self.id);
+        self.wrap(id)
+    }
+
+    /// Compute the binomial coefficient C(self, k).
+    ///
+    /// Creates a `Binomial(self, k)` node. For non-negative integer
+    /// arguments, `.eval()` will compute the exact value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let result = symplex::int(10).binomial(&symplex::int(3)).eval();
+    /// assert_eq!(format!("{result}"), "120");
+    /// ```
+    #[must_use]
+    pub fn binomial(&self, k: &Ex) -> Ex {
+        let id = self.inner.write().arena.binomial(self.id, k.id);
+        self.wrap(id)
+    }
+
+    // ── Relational operators (return BoolEx) ───────────────────────
+
+    /// Greater than: `self > other`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn gt(&self, other: &Ex) -> BoolEx {
+        let id = self.inner.write().arena.gt(self.id, other.id);
+        self.wrap_as(id)
+    }
+
+    /// Greater than or equal: `self >= other`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn ge(&self, other: &Ex) -> BoolEx {
+        let id = self.inner.write().arena.ge(self.id, other.id);
+        self.wrap_as(id)
+    }
+
+    /// Less than: `self < other` (implemented as `other > self`).
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn lt(&self, other: &Ex) -> BoolEx {
+        let id = self.inner.write().arena.gt(other.id, self.id);
+        self.wrap_as(id)
+    }
+
+    /// Less than or equal: `self <= other` (implemented as `other >= self`).
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn le(&self, other: &Ex) -> BoolEx {
+        let id = self.inner.write().arena.ge(other.id, self.id);
+        self.wrap_as(id)
+    }
+
+    /// Mathematical equality test (boolean-valued): `self == other`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn eq_expr(&self, other: &Ex) -> BoolEx {
+        let id = self.inner.write().arena.eq_(self.id, other.id);
+        self.wrap_as(id)
+    }
+
+    /// Not-equal test (boolean-valued): `self != other`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn ne_expr(&self, other: &Ex) -> BoolEx {
+        let id = self.inner.write().arena.ne_(self.id, other.id);
+        self.wrap_as(id)
+    }
+
+    /// Piecewise function from `(value, condition)` pairs.
+    ///
+    /// Returns the value of the first pair whose condition is true.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn piecewise(pairs: &[(&Ex, &BoolEx)]) -> Ex {
+        if pairs.is_empty() {
+            return Ex::zero();
+        }
+        let first = pairs[0].0;
+        let arena_pairs: Vec<(crate::node::ExprId, crate::node::ExprId)> =
+            pairs.iter().map(|(v, c)| (v.id, c.id)).collect();
+        let id = first.inner.write().arena.piecewise(&arena_pairs);
+        first.wrap(id)
     }
 
     // ── Assumption queries ─────────────────────────────────────────
@@ -511,29 +1190,38 @@ impl Ex {
         self
     }
 
-    // ── Structural introspection ───────────────────────────────────
-
-    /// Returns the set of free symbols in this expression.
+    /// Mathematical equality: attempts to determine if `self - other == 0`.
     ///
-    /// Each symbol appears at most once. The order is deterministic
-    /// but unspecified.
-    pub fn free_symbols(&self) -> Vec<Ex> {
-        let inner = self.inner.read();
-        let expr_ids = crate::walk::free_symbols(&inner.arena, self.id);
-        drop(inner);
-        expr_ids.into_iter().map(|eid| self.wrap(eid)).collect()
+    /// Uses layered detection:
+    /// 1. Structural identity (same `ExprId` — O(1))
+    /// 2. Compute `self - other` and check if canonically zero
+    /// 3. Expand `self - other` and check again
+    ///
+    /// Returns `Some(true)` if provably equal, `Some(false)` if provably
+    /// not equal, or `None` if unknown.
+    pub fn equals(&self, other: &Ex) -> Option<bool> {
+        // Layer 1: structural identity (same arena node).
+        if self.id == other.id && self.ctx_id == other.ctx_id {
+            return Some(true);
+        }
+
+        // Layer 2: compute self - other and check if zero.
+        let diff = self - other;
+        if diff.is_zero_structural() {
+            return Some(true);
+        }
+
+        // Layer 3: expand the difference and check again.
+        let expanded = diff.expand();
+        if expanded.is_zero_structural() {
+            return Some(true);
+        }
+
+        // Could not determine equality.
+        None
     }
 
-    /// Returns `true` if `needle` appears as a sub-expression of `self`.
-    ///
-    /// This is a structural check — it walks the expression DAG and
-    /// returns `true` if any node has the same [`ExprId`] as `needle`.
-    pub fn contains(&self, needle: &Ex) -> bool {
-        let inner = self.inner.read();
-        crate::walk::contains(&inner.arena, self.id, needle.id)
-    }
-
-    // ── Transformations ────────────────────────────────────────────
+    // ── Calculus ───────────────────────────────────────────────────
 
     /// Symbolic differentiation with respect to `var`.
     ///
@@ -611,349 +1299,6 @@ impl Ex {
         result
     }
 
-    /// Structural substitution: replace every occurrence of `old` with `new`.
-    ///
-    /// This is **structural** — only exact node matches are replaced.
-    /// `(1/x).subs(x², 1)` returns `1/x` unchanged because `x²` does
-    /// not appear as a node in `x⁻¹`.
-    ///
-    /// The result is re-canonicalized, so like-term collection and
-    /// other invariants are maintained.
-    ///
-    /// Returns `self` unchanged (same `Ex`) if `old` does not appear.
-    #[must_use = "returns a new expression with substitutions applied"]
-    pub fn subs(&self, old: &Ex, new: &Ex) -> Ex {
-        let id = self
-            .inner
-            .write()
-            .arena
-            .subs_structural(self.id, old.id, new.id);
-        self.wrap(id)
-    }
-
-    /// Substitute a symbol with an integer value.
-    ///
-    /// Convenience shorthand for `self.subs(old, &ctx.int(n))` that
-    /// avoids needing to construct the integer expression manually.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let x = symplex::var("x");
-    /// let expr = x.powi(2);
-    /// let result = expr.subs_i64(&x, 3);
-    /// assert_eq!(format!("{result}"), "9");
-    /// ```
-    #[must_use = "returns a new expression with substitutions applied"]
-    pub fn subs_i64(&self, old: &Ex, new: i64) -> Ex {
-        let mut inner = self.inner.write();
-        let new_id = inner.arena.int(new);
-        let id = inner.arena.subs_structural(self.id, old.id, new_id);
-        drop(inner);
-        self.wrap(id)
-    }
-
-    /// Simultaneous substitution of multiple `(old, new)` pairs.
-    ///
-    /// All replacements happen "at once" — earlier substitutions do
-    /// not affect later ones.
-    #[must_use = "returns a new expression with substitutions applied"]
-    pub fn subs_map(&self, replacements: &[(&Ex, &Ex)]) -> Ex {
-        let pairs: smallvec::SmallVec<[(crate::node::ExprId, crate::node::ExprId); 4]> =
-            replacements.iter().map(|(o, n)| (o.id, n.id)).collect();
-        let id = self
-            .inner
-            .write()
-            .arena
-            .subs_map_structural(self.id, &pairs);
-        self.wrap(id)
-    }
-
-    /// Algebraic expansion (distribute products over sums, expand
-    /// integer powers of sums).
-    ///
-    /// - `a * (b + c)` → `a*b + a*c`
-    /// - `(a + b)^n` → multinomial expansion
-    ///
-    /// Does NOT evaluate functions, factor, or simplify.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// let expr = (&x + 1).powi(2);
-    /// assert_eq!(format!("{}", expr.expand()), "1 + x^2 + 2*x");
-    /// ```
-    #[must_use = "returns the expanded form; does not modify in place"]
-    pub fn expand(&self) -> Ex {
-        let _span = debug_span!("expand", expr = ?self.id).entered();
-        let id = self.inner.write().arena.expand_expr(self.id);
-        self.wrap(id)
-    }
-
-    /// Simplification (identity application, trig identities, etc.).
-    ///
-    /// Applies built-in rewrite rules (e.g., `sin²(x) + cos²(x) → 1`)
-    /// in a single bottom-up pass.  For fixpoint simplification, call
-    /// repeatedly until the result stops changing.
-    ///
-    /// ⚠️ **This function is heuristic.**  For deterministic
-    /// transformations, use `.expand()`, `.eval()`, or `.diff()` instead.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    /// assert_eq!(format!("{}", expr.simplify()), "1");
-    /// ```
-    #[must_use = "returns the simplified form; does not modify in place"]
-    pub fn simplify(&self) -> Ex {
-        let _span = debug_span!("simplify", expr = ?self.id).entered();
-        let (result, _steps) = self.simplify_trace();
-        result
-    }
-
-    /// Like [`simplify`](Ex::simplify), but also returns a trace of
-    /// which rules fired and what they changed.
-    ///
-    /// Each [`Step`](crate::pattern::Step) records the rule name, the
-    /// sub-expression before, and the sub-expression after.
-    #[must_use = "returns the simplified form and trace"]
-    pub fn simplify_trace(&self) -> (Ex, Vec<crate::pattern::Step>) {
-        let mut inner = self.inner.write();
-        // Use cached rules if available, otherwise build and cache them.
-        if inner.cached_rules.is_none() {
-            inner.cached_rules = Some(crate::pattern::basic_rules(&mut inner.arena));
-        }
-        // Clone the rules out to release the immutable borrow on `inner`
-        // before we pass `&mut inner.arena` to `apply_rules`.
-        let rules = inner
-            .cached_rules
-            .as_ref()
-            .expect("cached_rules should be populated by is_none() check above")
-            .clone();
-        let (result_id, steps) = crate::pattern::apply_rules(&mut inner.arena, self.id, &rules);
-        drop(inner);
-        (self.wrap(result_id), steps)
-    }
-
-    /// Full simplification: repeatedly applies [`eval`](Ex::eval),
-    /// [`expand`](Ex::expand), and [`simplify`](Ex::simplify) until
-    /// the expression stops changing (fixpoint), or a maximum of 10
-    /// iterations is reached.
-    ///
-    /// This is the "just make this simpler" button — it composes all
-    /// available simplification passes into a single call.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let x = symplex::var("x");
-    /// // (x+1)^2 - x^2 - 2*x simplifies to 1 after expand + canonicalization
-    /// let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
-    /// assert_eq!(format!("{}", expr.full_simplify()), "1");
-    /// ```
-    #[must_use = "returns the fully simplified form; does not modify in place"]
-    pub fn full_simplify(&self) -> Ex {
-        let _span = debug_span!("full_simplify", expr = ?self.id).entered();
-        let (result, _steps) = self.full_simplify_trace();
-        result
-    }
-
-    /// Like [`full_simplify`](Ex::full_simplify), but also returns a
-    /// trace of all steps across all iterations.
-    #[must_use = "returns the fully simplified form and accumulated trace"]
-    pub fn full_simplify_trace(&self) -> (Ex, Vec<crate::pattern::Step>) {
-        const MAX_ITERATIONS: usize = 10;
-        let mut current = self.clone();
-        let mut all_steps: Vec<crate::pattern::Step> = Vec::new();
-
-        for _ in 0..MAX_ITERATIONS {
-            let evaled = current.eval();
-            let expanded = evaled.expand();
-            let (simplified, steps) = expanded.simplify_trace();
-            all_steps.extend(steps);
-
-            if simplified.id == current.id {
-                return (simplified, all_steps);
-            }
-            current = simplified;
-        }
-
-        (current, all_steps)
-    }
-
-    /// Exact evaluation of known special values.
-    ///
-    /// Replaces function applications with their exact values when the
-    /// arguments are known constants:
-    ///
-    /// - `sin(0)` → `0`, `sin(π)` → `0`, `sin(π/2)` → `1`
-    /// - `cos(0)` → `1`, `cos(π)` → `-1`
-    /// - `exp(0)` → `1`, `ln(1)` → `0`
-    /// - `sqrt(4)` → `2`, `abs(-3)` → `3`
-    ///
-    /// Only evaluates when the result is a simpler atom.
-    /// Does NOT evaluate `cos(π/4)` → `√2/2`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let expr = ctx.pi().cos();
-    /// assert_eq!(format!("{}", expr.eval()), "-1");
-    /// ```
-    #[must_use = "returns the evaluated form; does not modify in place"]
-    pub fn eval(&self) -> Ex {
-        let _span = debug_span!("eval", expr = ?self.id).entered();
-        let id = self.inner.write().arena.eval_expr(self.id);
-        self.wrap(id)
-    }
-
-    /// Solve `self = 0` for the given variable.
-    ///
-    /// Returns a vector of values of `var` that make this expression
-    /// zero.  Supports linear, quadratic, and higher-degree polynomial
-    /// equations (via rational root finding).
-    ///
-    /// Returns an empty vector if:
-    /// - The expression is not polynomial in `var`.
-    /// - No closed-form solutions can be found.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// // Solve x² - 5x + 6 = 0
-    /// let expr = &x.powi(2) - &x * 5 + 6;
-    /// let solutions = expr.solve(&x).unwrap();
-    /// assert_eq!(solutions.len(), 2);
-    /// ```
-    pub fn solve(&self, var: &Ex) -> Result<Vec<Ex>, SymplexError> {
-        let _span = debug_span!("solve", expr = ?self.id, var = ?var.id).entered();
-        let mut inner = self.inner.write();
-        // Check if the expression is polynomial in var.
-        let poly = crate::polybridge::expr_to_poly(&inner.arena, self.id, var.id);
-        if poly.is_none() {
-            return Err(SymplexError::ComputationFailed {
-                operation: "solve",
-                reason: "expression is not polynomial in the given variable".into(),
-            });
-        }
-        let solutions = inner.arena.solve_for(self.id, var.id);
-        drop(inner);
-        Ok(solutions
-            .into_iter()
-            .map(|sol| self.wrap(sol.value))
-            .collect())
-    }
-
-    /// Solve `self = 0` for `var`, returning an empty vector on failure.
-    ///
-    /// This is a convenience wrapper around [`solve`](Ex::solve) that
-    /// returns `vec![]` if the solver fails (e.g., expression is not
-    /// polynomial). Use [`solve`](Ex::solve) for diagnostic information.
-    pub fn solve_or_empty(&self, var: &Ex) -> Vec<Ex> {
-        self.solve(var).unwrap_or_default()
-    }
-
-    /// Cancel common polynomial factors in a rational expression.
-    ///
-    /// Decomposes the expression into numerator and denominator,
-    /// converts both to univariate polynomials in `var`, divides out
-    /// their GCD, and rebuilds the expression.
-    ///
-    /// Returns the expression unchanged if it is not a rational
-    /// function in `var` or if there is no common factor.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// // (x² - 1) / (x - 1) → x + 1
-    /// let expr = (&x.powi(2) - 1) / (&x - 1);
-    /// let cancelled = expr.cancel(&x);
-    /// assert_eq!(format!("{cancelled}"), "1 + x");
-    /// ```
-    #[must_use = "returns the cancelled form; does not modify in place"]
-    pub fn cancel(&self, var: &Ex) -> Ex {
-        let _span = debug_span!("cancel", expr = ?self.id, var = ?var.id).entered();
-        let id = self.inner.write().arena.cancel_expr(self.id, var.id);
-        self.wrap(id)
-    }
-
-    /// Group an expression by powers of `var`.
-    ///
-    /// Converts the expression to a univariate polynomial in `var`
-    /// and rebuilds it, naturally grouping coefficients by power.
-    ///
-    /// Returns the expression unchanged if it is not polynomial in `var`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
-    /// let expr = &x * &y + &x.powi(2) + &y;
-    /// let collected = expr.collect(&x);
-    /// // Terms are grouped by powers of x.
-    /// assert_eq!(format!("{collected}"), "y + x^2 + x*y");
-    /// ```
-    #[must_use = "returns the collected form; does not modify in place"]
-    pub fn collect(&self, var: &Ex) -> Ex {
-        let id = self.inner.write().arena.collect_expr(self.id, var.id);
-        self.wrap(id)
-    }
-
-    /// Combine fractions over a common denominator.
-    ///
-    /// For a sum of terms, decomposes each into numerator/denominator,
-    /// computes a common denominator, scales each numerator, and
-    /// rebuilds as a single fraction.
-    ///
-    /// Returns the expression unchanged if it is not a sum or if all
-    /// terms already have denominator 1.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
-    /// let expr = &x.powi(-1) + &y.powi(-1);
-    /// let combined = expr.together();
-    /// // 1/x + 1/y → (x + y) / (x*y)
-    /// let s = format!("{combined}");
-    /// assert!(s.contains("x*y"), "should have common denom x*y: {s}");
-    /// ```
-    #[must_use = "returns the combined form; does not modify in place"]
-    pub fn together(&self) -> Ex {
-        let id = self.inner.write().arena.together_expr(self.id);
-        self.wrap(id)
-    }
-
     /// Compute the indefinite integral with respect to `var`.
     ///
     /// Supports power rule, trigonometric, exponential, linearity,
@@ -1002,51 +1347,6 @@ impl Ex {
         let f_upper = anti.subs(var, upper);
         let f_lower = anti.subs(var, lower);
         &f_upper - &f_lower
-    }
-
-    /// Return the degree of this expression as a polynomial in `var`.
-    ///
-    /// Returns `Some(n)` if the expression is a polynomial of degree `n`
-    /// in `var`, or `None` if it is not polynomial (e.g., contains `sin(x)`)
-    /// or is the zero polynomial.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let x = symplex::var("x");
-    /// assert_eq!((&x.powi(3) + &x + 1).degree(&x), Some(3));
-    /// assert_eq!(x.sin().degree(&x), None);
-    /// ```
-    pub fn degree(&self, var: &Ex) -> Option<usize> {
-        let inner = self.inner.read();
-        inner.arena.degree_of(self.id, var.id)
-    }
-
-    /// Return the coefficients of this expression as a polynomial in `var`,
-    /// in ascending degree order: `[a_0, a_1, a_2, ...]`.
-    ///
-    /// Returns `None` if the expression is not polynomial in `var`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// // x^2 + 3*x + 5 → coefficients [5, 3, 1]
-    /// let expr = &x.powi(2) + &x * 3 + 5;
-    /// let cs = expr.coeffs(&x).unwrap();
-    /// let strs: Vec<String> = cs.iter().map(|c| format!("{c}")).collect();
-    /// assert_eq!(strs, vec!["5", "3", "1"]);
-    /// ```
-    pub fn coeffs(&self, var: &Ex) -> Option<Vec<Ex>> {
-        let mut inner = self.inner.write();
-        let ids = inner.arena.coefficients_of(self.id, var.id)?;
-        drop(inner);
-        Some(ids.into_iter().map(|id| self.wrap(id)).collect())
     }
 
     /// Compute the Taylor series around `point` to the given `order`.
@@ -1126,34 +1426,6 @@ impl Ex {
         self.maclaurin(var, order).unwrap_or_else(|_| self.clone())
     }
 
-    /// Factor a polynomial expression into a product of linear factors.
-    ///
-    /// Finds rational roots via the equation solver, extracts content
-    /// (GCD of coefficients), and handles root multiplicities.
-    ///
-    /// Returns the expression unchanged if it is not polynomial in `var`
-    /// or if no rational roots can be found.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// let expr = &x.powi(2) - 1;
-    /// let factored = expr.factor(&x);
-    /// let s = format!("{factored}");
-    /// // Should be factored into (x-1)(x+1) form
-    /// assert!(!s.contains("x^2"), "should be factored: {s}");
-    /// ```
-    #[must_use = "returns the factored form; does not modify in place"]
-    pub fn factor(&self, var: &Ex) -> Ex {
-        let _span = debug_span!("factor", expr = ?self.id, var = ?var.id).entered();
-        let id = self.inner.write().arena.factor_expr(self.id, var.id);
-        self.wrap(id)
-    }
-
     /// Compute the limit of this expression as `var` approaches `point`.
     ///
     /// Uses direct substitution, L'Hôpital's rule (for 0/0 and ∞/∞),
@@ -1191,54 +1463,7 @@ impl Ex {
         self.limit(var, point).unwrap_or_else(|_| self.clone())
     }
 
-    /// Decompose this expression into (numerator, denominator).
-    ///
-    /// For `a / b` (expressed as `a * b^(-1)`), returns `(a, b)`.
-    /// For expressions without a denominator, returns `(self, 1)`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
-    /// let expr = &x / &y;
-    /// let (n, d) = expr.as_numer_denom();
-    /// assert_eq!(format!("{n}"), "x");
-    /// assert_eq!(format!("{d}"), "y");
-    /// ```
-    pub fn as_numer_denom(&self) -> (Ex, Ex) {
-        let mut inner = self.inner.write();
-        let (n, d) = inner.arena.as_numer_denom_expr(self.id);
-        drop(inner);
-        (self.wrap(n), self.wrap(d))
-    }
-
-    /// Partial fraction decomposition with respect to `var`.
-    ///
-    /// Decomposes a rational expression into a sum of simpler fractions.
-    /// Returns the expression unchanged if it's not a rational function
-    /// or if the denominator cannot be factored.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// let expr = 1 / (&x.powi(2) - 1);
-    /// let decomposed = expr.apart(&x);
-    /// let s = format!("{decomposed}");
-    /// // Should be decomposed into simpler fractions
-    /// assert!(s != format!("{expr}") || s.contains("1/"), "should decompose: {s}");
-    /// ```
-    #[must_use = "returns the decomposed form; does not modify in place"]
-    pub fn apart(&self, var: &Ex) -> Ex {
-        let id = self.inner.write().arena.apart_expr(self.id, var.id);
-        self.wrap(id)
-    }
+    // ── Algebra ────────────────────────────────────────────────────
 
     /// Expand trigonometric functions with composite arguments.
     ///
@@ -1340,12 +1565,67 @@ impl Ex {
         self.wrap(id)
     }
 
-    /// Try multiple simplification strategies and return the simplest result.
+    /// Group an expression by powers of `var`.
     ///
-    /// Unlike [`simplify`](Self::simplify) which applies a single pass of
-    /// rewrite rules, this tries eval, expand, factor_terms, trig_expand,
-    /// logcombine and more, then picks whichever result has the fewest
-    /// operations (nodes).
+    /// Converts the expression to a univariate polynomial in `var`
+    /// and rebuilds it, naturally grouping coefficients by power.
+    ///
+    /// Returns the expression unchanged if it is not polynomial in `var`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = &x * &y + &x.powi(2) + &y;
+    /// let collected = expr.collect(&x);
+    /// // Terms are grouped by powers of x.
+    /// assert_eq!(format!("{collected}"), "y + x^2 + x*y");
+    /// ```
+    #[must_use = "returns the collected form; does not modify in place"]
+    pub fn collect(&self, var: &Ex) -> Ex {
+        let id = self.inner.write().arena.collect_expr(self.id, var.id);
+        self.wrap(id)
+    }
+
+    /// Combine fractions over a common denominator.
+    ///
+    /// For a sum of terms, decomposes each into numerator/denominator,
+    /// computes a common denominator, scales each numerator, and
+    /// rebuilds as a single fraction.
+    ///
+    /// Returns the expression unchanged if it is not a sum or if all
+    /// terms already have denominator 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = &x.powi(-1) + &y.powi(-1);
+    /// let combined = expr.together();
+    /// // 1/x + 1/y → (x + y) / (x*y)
+    /// let s = format!("{combined}");
+    /// assert!(s.contains("x*y"), "should have common denom x*y: {s}");
+    /// ```
+    #[must_use = "returns the combined form; does not modify in place"]
+    pub fn together(&self) -> Ex {
+        let id = self.inner.write().arena.together_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Cancel common polynomial factors in a rational expression.
+    ///
+    /// Decomposes the expression into numerator and denominator,
+    /// converts both to univariate polynomials in `var`, divides out
+    /// their GCD, and rebuilds the expression.
+    ///
+    /// Returns the expression unchanged if it is not a rational
+    /// function in `var` or if there is no common factor.
     ///
     /// # Examples
     ///
@@ -1354,33 +1634,69 @@ impl Ex {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    /// assert_eq!(format!("{}", expr.smart_simplify()), "1");
+    /// // (x² - 1) / (x - 1) → x + 1
+    /// let expr = (&x.powi(2) - 1) / (&x - 1);
+    /// let cancelled = expr.cancel(&x);
+    /// assert_eq!(format!("{cancelled}"), "1 + x");
     /// ```
-    #[must_use = "returns the simplified form; does not modify in place"]
-    pub fn smart_simplify(&self) -> Ex {
-        let id = self.inner.write().arena.smart_simplify_expr(self.id);
+    #[must_use = "returns the cancelled form; does not modify in place"]
+    pub fn cancel(&self, var: &Ex) -> Ex {
+        let _span = debug_span!("cancel", expr = ?self.id, var = ?var.id).entered();
+        let id = self.inner.write().arena.cancel_expr(self.id, var.id);
         self.wrap(id)
     }
 
-    /// Count the number of operations (non-atom nodes) in this expression.
+    /// Partial fraction decomposition with respect to `var`.
     ///
-    /// Atoms (numbers, symbols, constants) count as 0.
-    /// Each operator or function application counts as 1.
+    /// Decomposes a rational expression into a sum of simpler fractions.
+    /// Returns the expression unchanged if it's not a rational function
+    /// or if the denominator cannot be factored.
     ///
     /// # Examples
     ///
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
-    /// assert_eq!(x.count_ops(), 0);           // atom
-    /// assert_eq!((&x + 1).count_ops(), 1);    // one Add
-    /// assert_eq!(x.sin().powi(2).count_ops(), 2); // Sin + Pow
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = 1 / (&x.powi(2) - 1);
+    /// let decomposed = expr.apart(&x);
+    /// let s = format!("{decomposed}");
+    /// // Should be decomposed into simpler fractions
+    /// assert!(s != format!("{expr}") || s.contains("1/"), "should decompose: {s}");
     /// ```
-    pub fn count_ops(&self) -> usize {
-        let inner = self.inner.read();
-        inner.arena.count_ops(self.id)
+    #[must_use = "returns the decomposed form; does not modify in place"]
+    pub fn apart(&self, var: &Ex) -> Ex {
+        let id = self.inner.write().arena.apart_expr(self.id, var.id);
+        self.wrap(id)
+    }
+
+    /// Factor a polynomial expression into a product of linear factors.
+    ///
+    /// Finds rational roots via the equation solver, extracts content
+    /// (GCD of coefficients), and handles root multiplicities.
+    ///
+    /// Returns the expression unchanged if it is not polynomial in `var`
+    /// or if no rational roots can be found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.powi(2) - 1;
+    /// let factored = expr.factor(&x);
+    /// let s = format!("{factored}");
+    /// // Should be factored into (x-1)(x+1) form
+    /// assert!(!s.contains("x^2"), "should be factored: {s}");
+    /// ```
+    #[must_use = "returns the factored form; does not modify in place"]
+    pub fn factor(&self, var: &Ex) -> Ex {
+        let _span = debug_span!("factor", expr = ?self.id, var = ?var.id).entered();
+        let id = self.inner.write().arena.factor_expr(self.id, var.id);
+        self.wrap(id)
     }
 
     /// Factor out the GCD of numeric coefficients from a sum.
@@ -1435,56 +1751,13 @@ impl Ex {
         self.wrap(id)
     }
 
-    /// Decompose this expression into its real part.
-    ///
-    /// Assumes unadorned symbols are real. Returns the real component
-    /// of the expression when written as `re + im·i`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let i = ctx.i_unit();
-    /// let z = &ctx.int(3) + &(&ctx.int(4) * &i);
-    /// assert_eq!(format!("{}", z.re()), "3");
-    /// ```
-    #[must_use]
-    pub fn re(&self) -> Ex {
-        let (re, _im) = self.inner.write().arena.as_real_imag_expr(self.id);
-        self.wrap(re)
-    }
+    // ── Polynomial introspection ───────────────────────────────────
 
-    /// Decompose this expression into its imaginary part.
+    /// Return the degree of this expression as a polynomial in `var`.
     ///
-    /// Assumes unadorned symbols are real. Returns the imaginary
-    /// coefficient (without the `i` factor) when the expression is
-    /// written as `re + im·i`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let i = ctx.i_unit();
-    /// let z = &ctx.int(3) + &(&ctx.int(4) * &i);
-    /// assert_eq!(format!("{}", z.im()), "4");
-    /// ```
-    #[must_use]
-    pub fn im(&self) -> Ex {
-        let (_re, im) = self.inner.write().arena.as_real_imag_expr(self.id);
-        self.wrap(im)
-    }
-
-    /// Compile this expression into a callable closure for fast numerical evaluation.
-    ///
-    /// `var_names` specifies the variable-to-index mapping: the returned
-    /// closure takes `&[f64]` where index 0 corresponds to `var_names[0]`, etc.
-    ///
-    /// Returns `None` if the expression contains nodes that cannot be
-    /// numerically evaluated (e.g., `ImaginaryUnit`, unevaluated integrals).
+    /// Returns `Some(n)` if the expression is a polynomial of degree `n`
+    /// in `var`, or `None` if it is not polynomial (e.g., contains `sin(x)`)
+    /// or is the zero polynomial.
     ///
     /// # Examples
     ///
@@ -1492,23 +1765,113 @@ impl Ex {
     /// use symplex::prelude::*;
     ///
     /// let x = symplex::var("x");
-    /// let f = &x.powi(2) + 1;
-    /// let func = f.lambdify(&["x"]).expect("should compile");
-    /// assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
+    /// assert_eq!((&x.powi(3) + &x + 1).degree(&x), Some(3));
+    /// assert_eq!(x.sin().degree(&x), None);
     /// ```
-    pub fn lambdify(&self, var_names: &[&str]) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
+    pub fn degree(&self, var: &Ex) -> Option<usize> {
         let inner = self.inner.read();
-        crate::lambdify::lambdify(&inner.arena, self.id, var_names)
+        inner.arena.degree_of(self.id, var.id)
     }
 
-    /// Perform common subexpression elimination (CSE).
+    /// Return the coefficients of this expression as a polynomial in `var`,
+    /// in ascending degree order: `[a_0, a_1, a_2, ...]`.
     ///
-    /// Identifies repeated subexpressions and extracts them into named
-    /// temporaries (`__cse_0`, `__cse_1`, …), reducing redundant
-    /// computation when generating code.
+    /// Returns `None` if the expression is not polynomial in `var`.
     ///
-    /// Returns a list of `(name, value)` bindings and the rewritten
-    /// expression where common subexpressions are replaced by their names.
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // x^2 + 3*x + 5 → coefficients [5, 3, 1]
+    /// let expr = &x.powi(2) + &x * 3 + 5;
+    /// let cs = expr.coeffs(&x).unwrap();
+    /// let strs: Vec<String> = cs.iter().map(|c| format!("{c}")).collect();
+    /// assert_eq!(strs, vec!["5", "3", "1"]);
+    /// ```
+    pub fn coeffs(&self, var: &Ex) -> Option<Vec<Ex>> {
+        let mut inner = self.inner.write();
+        let ids = inner.arena.coefficients_of(self.id, var.id)?;
+        drop(inner);
+        Some(ids.into_iter().map(|id| self.wrap(id)).collect())
+    }
+
+    /// Extract the coefficient of `var^n` in this expression.
+    ///
+    /// Returns `None` if the expression is not polynomial in `var`.
+    /// Returns the zero expression if the coefficient is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.powi(2) * 3 + &x * 5 + 7;
+    /// assert_eq!(format!("{}", expr.coeff(&x, 2).unwrap()), "3");
+    /// assert_eq!(format!("{}", expr.coeff(&x, 1).unwrap()), "5");
+    /// assert_eq!(format!("{}", expr.coeff(&x, 0).unwrap()), "7");
+    /// ```
+    pub fn coeff(&self, var: &Ex, power: usize) -> Option<Ex> {
+        let cs = self.coeffs(var)?;
+        if power < cs.len() {
+            Some(cs[power].clone())
+        } else {
+            // Coefficient is zero for powers above the degree.
+            let inner = self.inner.read();
+            let zero = inner.arena.zero;
+            drop(inner);
+            Some(self.wrap(zero))
+        }
+    }
+
+    /// Decompose this expression into (numerator, denominator).
+    ///
+    /// For `a / b` (expressed as `a * b^(-1)`), returns `(a, b)`.
+    /// For expressions without a denominator, returns `(self, 1)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let expr = &x / &y;
+    /// let (n, d) = expr.as_numer_denom();
+    /// assert_eq!(format!("{n}"), "x");
+    /// assert_eq!(format!("{d}"), "y");
+    /// ```
+    pub fn as_numer_denom(&self) -> (Ex, Ex) {
+        let mut inner = self.inner.write();
+        let (n, d) = inner.arena.as_numer_denom_expr(self.id);
+        drop(inner);
+        (self.wrap(n), self.wrap(d))
+    }
+
+    /// Returns `true` if this expression contains no free symbols
+    /// (i.e., it is a constant — a number, π, e, etc.).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert!(ctx.int(5).is_constant());
+    /// assert!(ctx.pi().is_constant());
+    /// assert!(!ctx.symbol("x").is_constant());
+    /// ```
+    pub fn is_constant(&self) -> bool {
+        self.free_symbols().is_empty()
+    }
+
+    /// Returns `true` if this expression is a polynomial in `var`.
+    ///
+    /// Equivalent to `self.degree(var).is_some()`.
     ///
     /// # Examples
     ///
@@ -1516,23 +1879,11 @@ impl Ex {
     /// use symplex::prelude::*;
     ///
     /// let x = symplex::var("x");
-    /// let sin_x = x.sin();
-    /// let expr = &sin_x.powi(2) + &sin_x;
-    /// let (bindings, result) = expr.cse();
-    /// // sin(x) may be extracted as a common subexpression
-    /// let _ = format!("{result}");
+    /// assert!((&x.powi(2) + 1).is_polynomial(&x));
+    /// assert!(!x.sin().is_polynomial(&x));
     /// ```
-    pub fn cse(&self) -> (Vec<(Ex, Ex)>, Ex) {
-        let result = {
-            let mut guard = self.inner.write();
-            crate::cse::cse(&mut guard.arena, self.id)
-        };
-        let bindings = result
-            .bindings
-            .into_iter()
-            .map(|(name, val)| (self.wrap(name), self.wrap(val)))
-            .collect();
-        (bindings, self.wrap(result.expr))
+    pub fn is_polynomial(&self, var: &Ex) -> bool {
+        self.degree(var).is_some()
     }
 
     /// Compute the polynomial GCD of `self` and `other` with respect to `var`.
@@ -1553,6 +1904,58 @@ impl Ex {
         let id = inner.arena.poly_lcm_expr(self.id, other.id, var.id)?;
         drop(inner);
         Some(self.wrap(id))
+    }
+
+    // ── Solve ──────────────────────────────────────────────────────
+
+    /// Solve `self = 0` for the given variable.
+    ///
+    /// Returns a vector of values of `var` that make this expression
+    /// zero.  Supports linear, quadratic, and higher-degree polynomial
+    /// equations (via rational root finding).
+    ///
+    /// Returns an empty vector if:
+    /// - The expression is not polynomial in `var`.
+    /// - No closed-form solutions can be found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // Solve x² - 5x + 6 = 0
+    /// let expr = &x.powi(2) - &x * 5 + 6;
+    /// let solutions = expr.solve(&x).unwrap();
+    /// assert_eq!(solutions.len(), 2);
+    /// ```
+    pub fn solve(&self, var: &Ex) -> Result<Vec<Ex>, SymplexError> {
+        let _span = debug_span!("solve", expr = ?self.id, var = ?var.id).entered();
+        let mut inner = self.inner.write();
+        // Check if the expression is polynomial in var.
+        let poly = crate::polybridge::expr_to_poly(&inner.arena, self.id, var.id);
+        if poly.is_none() {
+            return Err(SymplexError::ComputationFailed {
+                operation: "solve",
+                reason: "expression is not polynomial in the given variable".into(),
+            });
+        }
+        let solutions = inner.arena.solve_for(self.id, var.id);
+        drop(inner);
+        Ok(solutions
+            .into_iter()
+            .map(|sol| self.wrap(sol.value))
+            .collect())
+    }
+
+    /// Solve `self = 0` for `var`, returning an empty vector on failure.
+    ///
+    /// This is a convenience wrapper around [`solve`](Ex::solve) that
+    /// returns `vec![]` if the solver fails (e.g., expression is not
+    /// polynomial). Use [`solve`](Ex::solve) for diagnostic information.
+    pub fn solve_or_empty(&self, var: &Ex) -> Vec<Ex> {
+        self.solve(var).unwrap_or_default()
     }
 
     /// Numerical root finding via Newton's method.
@@ -1634,26 +2037,15 @@ impl Ex {
         })
     }
 
-    /// Returns `true` if this expression contains no free symbols
-    /// (i.e., it is a constant — a number, π, e, etc.).
+    /// Solve an ODE represented as `self = 0`.
     ///
-    /// # Examples
+    /// `self` should contain formal derivative nodes (created via
+    /// [`formal_diff`](Self::formal_diff)). `func` is the dependent
+    /// variable (e.g., `y`) and `var` is the independent variable (e.g., `x`).
     ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// assert!(ctx.int(5).is_constant());
-    /// assert!(ctx.pi().is_constant());
-    /// assert!(!ctx.symbol("x").is_constant());
-    /// ```
-    pub fn is_constant(&self) -> bool {
-        self.free_symbols().is_empty()
-    }
-
-    /// Returns `true` if this expression is a polynomial in `var`.
-    ///
-    /// Equivalent to `self.degree(var).is_some()`.
+    /// Returns `Some((solution, constants))` where `solution` is the general
+    /// solution and `constants` are the arbitrary constants (C1, C2, etc.).
+    /// Returns `None` if the ODE type is not recognized.
     ///
     /// # Examples
     ///
@@ -1661,42 +2053,27 @@ impl Ex {
     /// use symplex::prelude::*;
     ///
     /// let x = symplex::var("x");
-    /// assert!((&x.powi(2) + 1).is_polynomial(&x));
-    /// assert!(!x.sin().is_polynomial(&x));
+    /// let y = symplex::var("y");
+    /// let dy = y.formal_diff(&x);  // y'
+    /// let ode = &dy + &(&y * 2);   // y' + 2y = 0
+    /// if let Some((sol, constants)) = ode.dsolve(&y, &x) {
+    ///     let s = format!("{sol}");
+    ///     assert!(s.contains("exp"), "solution should contain exp: {s}");
+    /// }
     /// ```
-    pub fn is_polynomial(&self, var: &Ex) -> bool {
-        self.degree(var).is_some()
+    pub fn dsolve(&self, func: &Ex, var: &Ex) -> Option<(Ex, Vec<Ex>)> {
+        let result = {
+            let mut guard = self.inner.write();
+            crate::ode::dsolve(&mut guard.arena, self.id, func.id, var.id)
+        };
+        result.map(|r| {
+            let solution = self.wrap(r.solution);
+            let constants = r.constants.into_iter().map(|c| self.wrap(c)).collect();
+            (solution, constants)
+        })
     }
 
-    /// Extract the coefficient of `var^n` in this expression.
-    ///
-    /// Returns `None` if the expression is not polynomial in `var`.
-    /// Returns the zero expression if the coefficient is zero.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// let expr = &x.powi(2) * 3 + &x * 5 + 7;
-    /// assert_eq!(format!("{}", expr.coeff(&x, 2).unwrap()), "3");
-    /// assert_eq!(format!("{}", expr.coeff(&x, 1).unwrap()), "5");
-    /// assert_eq!(format!("{}", expr.coeff(&x, 0).unwrap()), "7");
-    /// ```
-    pub fn coeff(&self, var: &Ex, power: usize) -> Option<Ex> {
-        let cs = self.coeffs(var)?;
-        if power < cs.len() {
-            Some(cs[power].clone())
-        } else {
-            // Coefficient is zero for powers above the degree.
-            let inner = self.inner.read();
-            let zero = inner.arena.zero;
-            drop(inner);
-            Some(self.wrap(zero))
-        }
-    }
+    // ── Numeric evaluation ─────────────────────────────────────────
 
     /// Numeric floating-point evaluation to the given number of decimal
     /// digits.
@@ -1748,6 +2125,65 @@ impl Ex {
         s.parse::<f64>().map_err(|e| {
             SymplexError::NotImplemented(format!("could not parse '{}' as f64: {}", s, e))
         })
+    }
+
+    // ── Code generation ────────────────────────────────────────────
+
+    /// Compile this expression into a callable closure for fast numerical evaluation.
+    ///
+    /// `var_names` specifies the variable-to-index mapping: the returned
+    /// closure takes `&[f64]` where index 0 corresponds to `var_names[0]`, etc.
+    ///
+    /// Returns `None` if the expression contains nodes that cannot be
+    /// numerically evaluated (e.g., `ImaginaryUnit`, unevaluated integrals).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let f = &x.powi(2) + 1;
+    /// let func = f.lambdify(&["x"]).expect("should compile");
+    /// assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
+    /// ```
+    pub fn lambdify(&self, var_names: &[&str]) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
+        let inner = self.inner.read();
+        crate::lambdify::lambdify(&inner.arena, self.id, var_names)
+    }
+
+    /// Perform common subexpression elimination (CSE).
+    ///
+    /// Identifies repeated subexpressions and extracts them into named
+    /// temporaries (`__cse_0`, `__cse_1`, …), reducing redundant
+    /// computation when generating code.
+    ///
+    /// Returns a list of `(name, value)` bindings and the rewritten
+    /// expression where common subexpressions are replaced by their names.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let sin_x = x.sin();
+    /// let expr = &sin_x.powi(2) + &sin_x;
+    /// let (bindings, result) = expr.cse();
+    /// // sin(x) may be extracted as a common subexpression
+    /// let _ = format!("{result}");
+    /// ```
+    pub fn cse(&self) -> (Vec<(Ex, Ex)>, Ex) {
+        let result = {
+            let mut guard = self.inner.write();
+            crate::cse::cse(&mut guard.arena, self.id)
+        };
+        let bindings = result
+            .bindings
+            .into_iter()
+            .map(|(name, val)| (self.wrap(name), self.wrap(val)))
+            .collect();
+        (bindings, self.wrap(result.expr))
     }
 
     // ── Collection reduction ───────────────────────────────────────
@@ -1808,193 +2244,7 @@ impl Ex {
         items[0].wrap(id)
     }
 
-    /// Convert this expression to a standalone serializable [`ExprTree`](crate::tree::ExprTree).
-    ///
-    /// The tree can be serialized to JSON (or any serde format) and
-    /// deserialized back via [`Context::from_tree()`](crate::context::Context::from_tree).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let x = symplex::var("x");
-    /// let tree = x.powi(2).to_tree();
-    /// let json = serde_json::to_string(&tree).unwrap();
-    /// assert!(json.contains("Pow"));
-    /// ```
-    pub fn to_tree(&self) -> crate::tree::ExprTree {
-        let inner = self.inner.read();
-        crate::tree::expr_to_tree(&inner.arena, self.id)
-    }
-
-    /// Serialize this expression to a JSON string.
-    ///
-    /// This is a convenience shorthand for
-    /// `serde_json::to_string(&expr.to_tree()).unwrap()`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let x = symplex::var("x");
-    /// let json = x.powi(2).to_json();
-    /// assert!(json.contains("\"type\":\"Pow\""));
-    /// ```
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(&self.to_tree()).expect("ExprTree serialization should not fail")
-    }
-
-    /// Serialize this expression to a pretty-printed JSON string.
-    pub fn to_json_pretty(&self) -> String {
-        serde_json::to_string_pretty(&self.to_tree())
-            .expect("ExprTree serialization should not fail")
-    }
-
-    /// Apply a transformation repeatedly until the expression stops changing,
-    /// or `max_iterations` is reached.
-    ///
-    /// Returns the final expression and the number of iterations performed.
-    /// Useful for building custom simplification pipelines.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let x = symplex::var("x");
-    /// let expr = (&x + 1).powi(2);
-    /// let (result, iters) = expr.apply_until_stable(10, |e| e.expand());
-    /// assert_eq!(format!("{result}"), "1 + x^2 + 2*x");
-    /// assert_eq!(iters, 1); // stabilized after 1 iteration
-    /// ```
-    pub fn apply_until_stable<F>(&self, max_iterations: usize, f: F) -> (Ex, usize)
-    where
-        F: Fn(&Ex) -> Ex,
-    {
-        let mut current = self.clone();
-        for i in 0..max_iterations {
-            let next = f(&current);
-            if next.id == current.id && next.ctx_id == current.ctx_id {
-                return (current, i);
-            }
-            current = next;
-        }
-        (current, max_iterations)
-    }
-
-    /// Returns the number of top-level terms in this expression.
-    ///
-    /// For an `Add` node, returns the number of summands.
-    /// For anything else, returns 1.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let x = symplex::var("x");
-    /// assert_eq!((&x + 1).term_count(), 2);
-    /// assert_eq!(x.powi(2).term_count(), 1);
-    /// ```
-    pub fn term_count(&self) -> usize {
-        let inner = self.inner.read();
-        match inner.arena.node(self.id) {
-            crate::node::ExprNode::Add(children) => children.len(),
-            _ => 1,
-        }
-    }
-
-    /// Returns the direct children (arguments) of this expression.
-    ///
-    /// - For `Add`: returns the summands.
-    /// - For `Mul`: returns the factors.
-    /// - For `Pow`: returns `[base, exponent]`.
-    /// - For `Neg`: returns `[inner]`.
-    /// - For functions (sin, cos, etc.): returns `[argument]`.
-    /// - For atoms (numbers, symbols, constants): returns `[]`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// let expr = &x + 1;
-    /// let children = expr.args();
-    /// assert_eq!(children.len(), 2);
-    /// ```
-    pub fn args(&self) -> Vec<Ex> {
-        let inner = self.inner.read();
-        let child_ids = inner.arena.node(self.id).children();
-        child_ids
-            .iter()
-            .map(|&id| Ex {
-                ctx_id: self.ctx_id,
-                inner: Arc::clone(&self.inner),
-                id,
-            })
-            .collect()
-    }
-
-    /// Returns the structural type of this expression.
-    ///
-    /// Collapses the internal 30-variant `ExprNode` enum into a
-    /// user-friendly [`ExprType`] classification.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    /// use symplex::expr::ExprType;
-    ///
-    /// let x = symplex::var("x");
-    /// assert_eq!(x.expr_type(), ExprType::Symbol);
-    /// assert_eq!(x.sin().expr_type(), ExprType::Function);
-    /// assert_eq!((&x + 1).expr_type(), ExprType::Add);
-    /// ```
-    pub fn expr_type(&self) -> ExprType {
-        let inner = self.inner.read();
-        match inner.arena.node(self.id) {
-            crate::node::ExprNode::Num(_) => ExprType::Number,
-            crate::node::ExprNode::Symbol(_) => ExprType::Symbol,
-            crate::node::ExprNode::Pi
-            | crate::node::ExprNode::E
-            | crate::node::ExprNode::ImaginaryUnit
-            | crate::node::ExprNode::Infinity
-            | crate::node::ExprNode::NegInfinity
-            | crate::node::ExprNode::ComplexInfinity
-            | crate::node::ExprNode::NaN => ExprType::Constant,
-            crate::node::ExprNode::Add(_) => ExprType::Add,
-            crate::node::ExprNode::Mul(_) => ExprType::Mul,
-            crate::node::ExprNode::Pow(_, _) => ExprType::Pow,
-            crate::node::ExprNode::Neg(_) => ExprType::Neg,
-            crate::node::ExprNode::Sin(_)
-            | crate::node::ExprNode::Cos(_)
-            | crate::node::ExprNode::Tan(_)
-            | crate::node::ExprNode::Exp(_)
-            | crate::node::ExprNode::Ln(_)
-            | crate::node::ExprNode::Abs(_)
-            | crate::node::ExprNode::Asin(_)
-            | crate::node::ExprNode::Acos(_)
-            | crate::node::ExprNode::Atan(_)
-            | crate::node::ExprNode::Sinh(_)
-            | crate::node::ExprNode::Cosh(_)
-            | crate::node::ExprNode::Tanh(_)
-            | crate::node::ExprNode::Asinh(_)
-            | crate::node::ExprNode::Acosh(_)
-            | crate::node::ExprNode::Atanh(_)
-            | crate::node::ExprNode::Sign(_) => ExprType::Function,
-            crate::node::ExprNode::Apply(_, _) => ExprType::Apply,
-            crate::node::ExprNode::Derivative(_, _) => ExprType::Derivative,
-            crate::node::ExprNode::Integral(_, _) => ExprType::Integral,
-            crate::node::ExprNode::Factorial(_) | crate::node::ExprNode::Binomial(_, _) => {
-                ExprType::Function
-            }
-        }
-    }
+    // ── Expression walking ─────────────────────────────────────────
 
     /// Walk the expression bottom-up, applying a user-provided transformation
     /// at each node.
@@ -2031,117 +2281,59 @@ impl Ex {
                     ctx_id,
                     inner: Arc::clone(&inner_clone),
                     id,
+                    _sort: PhantomData,
                 };
                 f(&tmp).map(|ex| ex.id)
             })
         };
         self.wrap(result_id)
     }
+}
 
-    /// Mathematical equality: attempts to determine if `self - other == 0`.
-    ///
-    /// Uses layered detection:
-    /// 1. Structural identity (same `ExprId` — O(1))
-    /// 2. Compute `self - other` and check if canonically zero
-    /// 3. Expand `self - other` and check again
-    ///
-    /// Returns `Some(true)` if provably equal, `Some(false)` if provably
-    /// not equal, or `None` if unknown.
-    pub fn equals(&self, other: &Ex) -> Option<bool> {
-        // Layer 1: structural identity (same arena node).
-        if self.id == other.id && self.ctx_id == other.ctx_id {
-            return Some(true);
-        }
+// ═══════════════════════════════════════════════════════════════════════════
+// impl Expr<Boolean> — Boolean-specific methods
+// ═══════════════════════════════════════════════════════════════════════════
 
-        // Layer 2: compute self - other and check if zero.
-        let diff = self - other;
-        if diff.is_zero_structural() {
-            return Some(true);
-        }
-
-        // Layer 3: expand the difference and check again.
-        let expanded = diff.expand();
-        if expanded.is_zero_structural() {
-            return Some(true);
-        }
-
-        // Could not determine equality.
-        None
-    }
-
-    /// Compute the factorial of this expression: `self!`
-    ///
-    /// Creates a `Factorial` node. For non-negative integer arguments,
-    /// `.eval()` will compute the exact value using arbitrary-precision
-    /// arithmetic.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let result = symplex::int(5).factorial().eval();
-    /// assert_eq!(format!("{result}"), "120");
-    /// ```
-    #[must_use]
-    pub fn factorial(&self) -> Ex {
-        let id = self.inner.write().arena.factorial(self.id);
+impl Expr<Boolean> {
+    /// Logical conjunction: `self & other`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn and(&self, other: &BoolEx) -> BoolEx {
+        let id = self.inner.write().arena.and(&[self.id, other.id]);
         self.wrap(id)
     }
 
-    /// Compute the binomial coefficient C(self, k).
-    ///
-    /// Creates a `Binomial(self, k)` node. For non-negative integer
-    /// arguments, `.eval()` will compute the exact value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let result = symplex::int(10).binomial(&symplex::int(3)).eval();
-    /// assert_eq!(format!("{result}"), "120");
-    /// ```
-    #[must_use]
-    pub fn binomial(&self, k: &Ex) -> Ex {
-        let id = self.inner.write().arena.binomial(self.id, k.id);
+    /// Logical disjunction: `self | other`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn or(&self, other: &BoolEx) -> BoolEx {
+        let id = self.inner.write().arena.or(&[self.id, other.id]);
         self.wrap(id)
     }
 
-    /// Solve an ODE represented as `self = 0`.
-    ///
-    /// `self` should contain formal derivative nodes (created via
-    /// [`formal_diff`](Self::formal_diff)). `func` is the dependent
-    /// variable (e.g., `y`) and `var` is the independent variable (e.g., `x`).
-    ///
-    /// Returns `Some((solution, constants))` where `solution` is the general
-    /// solution and `constants` are the arbitrary constants (C1, C2, etc.).
-    /// Returns `None` if the ODE type is not recognized.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let x = symplex::var("x");
-    /// let y = symplex::var("y");
-    /// let dy = y.formal_diff(&x);  // y'
-    /// let ode = &dy + &(&y * 2);   // y' + 2y = 0
-    /// if let Some((sol, constants)) = ode.dsolve(&y, &x) {
-    ///     let s = format!("{sol}");
-    ///     assert!(s.contains("exp"), "solution should contain exp: {s}");
-    /// }
-    /// ```
-    pub fn dsolve(&self, func: &Ex, var: &Ex) -> Option<(Ex, Vec<Ex>)> {
-        let result = {
-            let mut guard = self.inner.write();
-            crate::ode::dsolve(&mut guard.arena, self.id, func.id, var.id)
-        };
-        result.map(|r| {
-            let solution = self.wrap(r.solution);
-            let constants = r.constants.into_iter().map(|c| self.wrap(c)).collect();
-            (solution, constants)
-        })
+    /// Logical negation: `!self`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn not(&self) -> BoolEx {
+        let id = self.inner.write().arena.not(self.id);
+        self.wrap(id)
+    }
+
+    /// Convert to untyped numeric expression (escape hatch).
+    pub fn into_ex(self) -> Ex {
+        Ex {
+            ctx_id: self.ctx_id,
+            inner: self.inner,
+            id: self.id,
+            _sort: PhantomData,
+        }
+    }
+
+    /// Borrow as untyped numeric expression.
+    pub fn as_ex(&self) -> Ex {
+        Ex {
+            ctx_id: self.ctx_id,
+            inner: Arc::clone(&self.inner),
+            id: self.id,
+            _sort: PhantomData,
+        }
     }
 }
 
@@ -2149,15 +2341,15 @@ impl Ex {
 // PartialEq / Eq / Hash
 // ═══════════════════════════════════════════════════════════════════════════
 
-impl PartialEq for Ex {
+impl<S: Sort> PartialEq for Expr<S> {
     fn eq(&self, other: &Self) -> bool {
         self.ctx_id == other.ctx_id && self.id == other.id
     }
 }
 
-impl Eq for Ex {}
+impl<S: Sort> Eq for Expr<S> {}
 
-impl hash::Hash for Ex {
+impl<S: Sort> hash::Hash for Expr<S> {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.ctx_id.hash(state);
         self.id.hash(state);
@@ -2168,14 +2360,14 @@ impl hash::Hash for Ex {
 // Display / Debug
 // ═══════════════════════════════════════════════════════════════════════════
 
-impl fmt::Display for Ex {
+impl<S: Sort> fmt::Display for Expr<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let inner = self.inner.read();
         fmt_expr(&inner.arena, f, self.id, 0)
     }
 }
 
-impl fmt::Debug for Ex {
+impl<S: Sort> fmt::Debug for Expr<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Ex({:?}, {:?})", self.ctx_id, self.id)
     }
@@ -2436,7 +2628,12 @@ impl std::iter::Sum for Ex {
             let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
             guard.arena.add(&ids)
         };
-        Ex { ctx_id, inner, id }
+        Ex {
+            ctx_id,
+            inner,
+            id,
+            _sort: PhantomData,
+        }
     }
 }
 
@@ -2453,7 +2650,12 @@ impl<'a> std::iter::Sum<&'a Ex> for Ex {
             let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
             guard.arena.add(&ids)
         };
-        Ex { ctx_id, inner, id }
+        Ex {
+            ctx_id,
+            inner,
+            id,
+            _sort: PhantomData,
+        }
     }
 }
 
@@ -2470,7 +2672,12 @@ impl std::iter::Product for Ex {
             let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
             guard.arena.mul(&ids)
         };
-        Ex { ctx_id, inner, id }
+        Ex {
+            ctx_id,
+            inner,
+            id,
+            _sort: PhantomData,
+        }
     }
 }
 
@@ -2487,6 +2694,11 @@ impl<'a> std::iter::Product<&'a Ex> for Ex {
             let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
             guard.arena.mul(&ids)
         };
-        Ex { ctx_id, inner, id }
+        Ex {
+            ctx_id,
+            inner,
+            id,
+            _sort: PhantomData,
+        }
     }
 }

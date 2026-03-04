@@ -192,6 +192,18 @@ fn convert_node(
 
         // Combinatorial nodes are not polynomial.
         ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => None,
+
+        // Boolean, relational, logical, and piecewise nodes are not polynomial.
+        ExprNode::BoolTrue
+        | ExprNode::BoolFalse
+        | ExprNode::Gt(_, _)
+        | ExprNode::Ge(_, _)
+        | ExprNode::Eq_(_, _)
+        | ExprNode::Ne(_, _)
+        | ExprNode::And(_)
+        | ExprNode::Or(_)
+        | ExprNode::Not(_)
+        | ExprNode::Piecewise(_) => None,
     }
 }
 

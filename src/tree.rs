@@ -107,6 +107,38 @@ pub enum ExprTree {
     Atanh { arg: Box<ExprTree> },
     /// Sign function: 1 if positive, -1 if negative, 0 if zero.
     Sign { arg: Box<ExprTree> },
+    /// Boolean true.
+    BoolTrue,
+    /// Boolean false.
+    BoolFalse,
+    /// Greater than: lhs > rhs.
+    Gt {
+        lhs: Box<ExprTree>,
+        rhs: Box<ExprTree>,
+    },
+    /// Greater than or equal: lhs >= rhs.
+    Ge {
+        lhs: Box<ExprTree>,
+        rhs: Box<ExprTree>,
+    },
+    /// Mathematical equality test: lhs == rhs.
+    Eq_ {
+        lhs: Box<ExprTree>,
+        rhs: Box<ExprTree>,
+    },
+    /// Not equal: lhs != rhs.
+    Ne {
+        lhs: Box<ExprTree>,
+        rhs: Box<ExprTree>,
+    },
+    /// Logical conjunction (n-ary).
+    And { args: Vec<ExprTree> },
+    /// Logical disjunction (n-ary).
+    Or { args: Vec<ExprTree> },
+    /// Logical negation.
+    Not { arg: Box<ExprTree> },
+    /// Piecewise function: flattened [value₀, cond₀, value₁, cond₁, ...].
+    Piecewise { pieces: Vec<ExprTree> },
     /// Application of a named function.
     Apply { name: String, args: Vec<ExprTree> },
     /// Formal derivative.
@@ -228,6 +260,36 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::Binomial(n, k) => ExprTree::Apply {
             name: "binomial".to_owned(),
             args: vec![expr_to_tree(arena, n), expr_to_tree(arena, k)],
+        },
+        ExprNode::BoolTrue => ExprTree::BoolTrue,
+        ExprNode::BoolFalse => ExprTree::BoolFalse,
+        ExprNode::Gt(a, b) => ExprTree::Gt {
+            lhs: Box::new(expr_to_tree(arena, a)),
+            rhs: Box::new(expr_to_tree(arena, b)),
+        },
+        ExprNode::Ge(a, b) => ExprTree::Ge {
+            lhs: Box::new(expr_to_tree(arena, a)),
+            rhs: Box::new(expr_to_tree(arena, b)),
+        },
+        ExprNode::Eq_(a, b) => ExprTree::Eq_ {
+            lhs: Box::new(expr_to_tree(arena, a)),
+            rhs: Box::new(expr_to_tree(arena, b)),
+        },
+        ExprNode::Ne(a, b) => ExprTree::Ne {
+            lhs: Box::new(expr_to_tree(arena, a)),
+            rhs: Box::new(expr_to_tree(arena, b)),
+        },
+        ExprNode::And(children) => ExprTree::And {
+            args: children.iter().map(|&c| expr_to_tree(arena, c)).collect(),
+        },
+        ExprNode::Or(children) => ExprTree::Or {
+            args: children.iter().map(|&c| expr_to_tree(arena, c)).collect(),
+        },
+        ExprNode::Not(x) => ExprTree::Not {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Piecewise(children) => ExprTree::Piecewise {
+            pieces: children.iter().map(|&c| expr_to_tree(arena, c)).collect(),
         },
     }
 }
@@ -358,6 +420,45 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let b = tree_to_expr(arena, body);
             let v = tree_to_expr(arena, var);
             arena.intern(ExprNode::Integral(b, v))
+        }
+        ExprTree::BoolTrue => arena.bool_true,
+        ExprTree::BoolFalse => arena.bool_false,
+        ExprTree::Gt { lhs, rhs } => {
+            let l = tree_to_expr(arena, lhs);
+            let r = tree_to_expr(arena, rhs);
+            arena.gt(l, r)
+        }
+        ExprTree::Ge { lhs, rhs } => {
+            let l = tree_to_expr(arena, lhs);
+            let r = tree_to_expr(arena, rhs);
+            arena.ge(l, r)
+        }
+        ExprTree::Eq_ { lhs, rhs } => {
+            let l = tree_to_expr(arena, lhs);
+            let r = tree_to_expr(arena, rhs);
+            arena.eq_(l, r)
+        }
+        ExprTree::Ne { lhs, rhs } => {
+            let l = tree_to_expr(arena, lhs);
+            let r = tree_to_expr(arena, rhs);
+            arena.ne_(l, r)
+        }
+        ExprTree::And { args } => {
+            let ids: Vec<ExprId> = args.iter().map(|a| tree_to_expr(arena, a)).collect();
+            arena.and(&ids)
+        }
+        ExprTree::Or { args } => {
+            let ids: Vec<ExprId> = args.iter().map(|a| tree_to_expr(arena, a)).collect();
+            arena.or(&ids)
+        }
+        ExprTree::Not { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.not(x)
+        }
+        ExprTree::Piecewise { pieces } => {
+            let ids: Vec<ExprId> = pieces.iter().map(|p| tree_to_expr(arena, p)).collect();
+            let flat: smallvec::SmallVec<[ExprId; 6]> = ids.into_iter().collect();
+            arena.intern(ExprNode::Piecewise(flat))
         }
     }
 }

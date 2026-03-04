@@ -828,6 +828,40 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
             verify_node(arena, base, errors);
             verify_node(arena, exp, errors);
         }
+        ExprNode::And(ref children) | ExprNode::Or(ref children) => {
+            let label = if matches!(arena.node(id), ExprNode::And(_)) {
+                "And"
+            } else {
+                "Or"
+            };
+            // 1. Must have >= 2 children
+            if children.len() < 2 {
+                errors.push(format!(
+                    "{} with {} children (need >= 2)",
+                    label,
+                    children.len()
+                ));
+            }
+            // 2. Children must be sorted by SortKey
+            for i in 1..children.len() {
+                let key_prev = arena.sort_key(children[i - 1]);
+                let key_curr = arena.sort_key(children[i]);
+                if key_prev > key_curr {
+                    errors.push(format!(
+                        "{} children {}/{} not sorted: {:?} > {:?}",
+                        label,
+                        i - 1,
+                        i,
+                        key_prev,
+                        key_curr
+                    ));
+                }
+            }
+            // Recurse into children
+            for &child in children {
+                verify_node(arena, child, errors);
+            }
+        }
         // Atoms and functions: recurse into children
         _ => {
             for &child in arena.node(id).children().iter() {

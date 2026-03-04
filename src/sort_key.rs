@@ -48,6 +48,21 @@ const RANK_ADD: u8 = 40;
 /// (Sin, Cos, Tan, Exp, Ln, Sqrt, Abs, Apply).
 const RANK_FUNCTION: u8 = 50;
 
+/// Rank byte for relational operators (Gt, Ge, Eq_, Ne).
+const RANK_RELATIONAL: u8 = 55;
+
+/// Rank byte for logical conjunction (And).
+const RANK_AND: u8 = 56;
+
+/// Rank byte for logical disjunction (Or).
+const RANK_OR: u8 = 57;
+
+/// Rank byte for logical negation (Not).
+const RANK_NOT: u8 = 58;
+
+/// Rank byte for piecewise functions.
+const RANK_PIECEWISE: u8 = 59;
+
 /// Rank byte for formal derivative nodes.
 const RANK_DERIVATIVE: u8 = 60;
 
@@ -90,6 +105,8 @@ const FN_SIGN: u8 = 18;
 const CONST_PI: u8 = 0;
 const CONST_E: u8 = 1;
 const CONST_IMAGINARY_UNIT: u8 = 2;
+const CONST_BOOL_TRUE: u8 = 10;
+const CONST_BOOL_FALSE: u8 = 11;
 
 // ---------------------------------------------------------------------------
 // Special sub-rank bytes (used within the RANK_SPECIAL class)
@@ -408,6 +425,74 @@ pub fn compute_sort_key(
             key.push(FN_ABS + 2);
             key.extend(get_key(*n).as_bytes());
             key.extend(get_key(*k).as_bytes());
+        }
+
+        // -- boolean atoms ---------------------------------------------------
+        ExprNode::BoolTrue => {
+            key.push(RANK_CONSTANT);
+            key.push(CONST_BOOL_TRUE);
+        }
+
+        ExprNode::BoolFalse => {
+            key.push(RANK_CONSTANT);
+            key.push(CONST_BOOL_FALSE);
+        }
+
+        // -- relational operators --------------------------------------------
+        ExprNode::Gt(lhs, rhs) => {
+            key.push(RANK_RELATIONAL);
+            key.push(0); // Gt discriminant
+            key.extend(get_key(*lhs).as_bytes());
+            key.extend(get_key(*rhs).as_bytes());
+        }
+
+        ExprNode::Ge(lhs, rhs) => {
+            key.push(RANK_RELATIONAL);
+            key.push(1);
+            key.extend(get_key(*lhs).as_bytes());
+            key.extend(get_key(*rhs).as_bytes());
+        }
+
+        ExprNode::Eq_(lhs, rhs) => {
+            key.push(RANK_RELATIONAL);
+            key.push(2);
+            key.extend(get_key(*lhs).as_bytes());
+            key.extend(get_key(*rhs).as_bytes());
+        }
+
+        ExprNode::Ne(lhs, rhs) => {
+            key.push(RANK_RELATIONAL);
+            key.push(3);
+            key.extend(get_key(*lhs).as_bytes());
+            key.extend(get_key(*rhs).as_bytes());
+        }
+
+        // -- logical connectives ---------------------------------------------
+        ExprNode::And(children) => {
+            key.push(RANK_AND);
+            for &c in children {
+                key.extend(get_key(c).as_bytes());
+            }
+        }
+
+        ExprNode::Or(children) => {
+            key.push(RANK_OR);
+            for &c in children {
+                key.extend(get_key(c).as_bytes());
+            }
+        }
+
+        ExprNode::Not(inner) => {
+            key.push(RANK_NOT);
+            key.extend(get_key(*inner).as_bytes());
+        }
+
+        // -- piecewise -------------------------------------------------------
+        ExprNode::Piecewise(children) => {
+            key.push(RANK_PIECEWISE);
+            for &c in children {
+                key.extend(get_key(c).as_bytes());
+            }
         }
     }
 

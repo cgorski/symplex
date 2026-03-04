@@ -75,6 +75,7 @@ pub fn parse(ctx: &Context, input: &str) -> Result<Ex, ParseError> {
         ctx_id: ctx.id,
         inner: Arc::clone(&ctx.inner),
         id,
+        _sort: std::marker::PhantomData,
     })
 }
 

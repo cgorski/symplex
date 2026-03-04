@@ -200,6 +200,167 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     arena.binomial(nn, nk)
                 }
             }
+            // ── Boolean atoms ──────────────────────────────────────
+            ExprNode::BoolTrue | ExprNode::BoolFalse => id,
+
+            // ── Relational operators ───────────────────────────────
+            ExprNode::Gt(a, b) => {
+                let na = cache.get(&a).copied().unwrap_or(a);
+                let nb = cache.get(&b).copied().unwrap_or(b);
+                if let (Some(ra), Some(rb)) = (arena.as_num(na), arena.as_num(nb)) {
+                    if ra > rb {
+                        arena.bool_true
+                    } else {
+                        arena.bool_false
+                    }
+                } else if na == a && nb == b {
+                    id
+                } else {
+                    arena.gt(na, nb)
+                }
+            }
+            ExprNode::Ge(a, b) => {
+                let na = cache.get(&a).copied().unwrap_or(a);
+                let nb = cache.get(&b).copied().unwrap_or(b);
+                if let (Some(ra), Some(rb)) = (arena.as_num(na), arena.as_num(nb)) {
+                    if ra >= rb {
+                        arena.bool_true
+                    } else {
+                        arena.bool_false
+                    }
+                } else if na == a && nb == b {
+                    id
+                } else {
+                    arena.ge(na, nb)
+                }
+            }
+            ExprNode::Eq_(a, b) => {
+                let na = cache.get(&a).copied().unwrap_or(a);
+                let nb = cache.get(&b).copied().unwrap_or(b);
+                if let (Some(ra), Some(rb)) = (arena.as_num(na), arena.as_num(nb)) {
+                    if ra == rb {
+                        arena.bool_true
+                    } else {
+                        arena.bool_false
+                    }
+                } else if na == a && nb == b {
+                    id
+                } else {
+                    arena.eq_(na, nb)
+                }
+            }
+            ExprNode::Ne(a, b) => {
+                let na = cache.get(&a).copied().unwrap_or(a);
+                let nb = cache.get(&b).copied().unwrap_or(b);
+                if let (Some(ra), Some(rb)) = (arena.as_num(na), arena.as_num(nb)) {
+                    if ra != rb {
+                        arena.bool_true
+                    } else {
+                        arena.bool_false
+                    }
+                } else if na == a && nb == b {
+                    id
+                } else {
+                    arena.ne_(na, nb)
+                }
+            }
+
+            // ── Logical connectives ────────────────────────────────
+            ExprNode::And(ref children) => {
+                let new: smallvec::SmallVec<[ExprId; 6]> = children
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                // Short-circuit: if any child is BoolFalse → false;
+                // filter out BoolTrue; if all removed → true.
+                let mut filtered: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
+                for &c in &new {
+                    if c == arena.bool_false {
+                        // entire And is false
+                        cache.insert(id, arena.bool_false);
+                        continue;
+                    }
+                    if c == arena.bool_true {
+                        continue; // skip trivially true
+                    }
+                    filtered.push(c);
+                }
+                // Check if we short-circuited to false
+                if new.iter().any(|&c| c == arena.bool_false) {
+                    arena.bool_false
+                } else if filtered.is_empty() {
+                    arena.bool_true
+                } else if filtered.len() == 1 {
+                    filtered[0]
+                } else if filtered == *children {
+                    id
+                } else {
+                    arena.and(&filtered)
+                }
+            }
+            ExprNode::Or(ref children) => {
+                let new: smallvec::SmallVec<[ExprId; 6]> = children
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                // Short-circuit: if any child is BoolTrue → true;
+                // filter out BoolFalse; if all removed → false.
+                if new.iter().any(|&c| c == arena.bool_true) {
+                    arena.bool_true
+                } else {
+                    let filtered: smallvec::SmallVec<[ExprId; 6]> = new
+                        .iter()
+                        .copied()
+                        .filter(|&c| c != arena.bool_false)
+                        .collect();
+                    if filtered.is_empty() {
+                        arena.bool_false
+                    } else if filtered.len() == 1 {
+                        filtered[0]
+                    } else if filtered == *children {
+                        id
+                    } else {
+                        arena.or(&filtered)
+                    }
+                }
+            }
+            ExprNode::Not(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                if ni == arena.bool_true {
+                    arena.bool_false
+                } else if ni == arena.bool_false {
+                    arena.bool_true
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.not(ni)
+                }
+            }
+
+            // ── Piecewise ──────────────────────────────────────────
+            ExprNode::Piecewise(ref children) => {
+                let new: smallvec::SmallVec<[ExprId; 6]> = children
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                // Try to find the first piece whose condition is BoolTrue.
+                let mut result: Option<ExprId> = None;
+                for i in (0..new.len()).step_by(2) {
+                    let cond = new[i + 1];
+                    if cond == arena.bool_true {
+                        result = Some(new[i]);
+                        break;
+                    }
+                }
+                if let Some(val) = result {
+                    val
+                } else if new == *children {
+                    id
+                } else {
+                    arena.intern(ExprNode::Piecewise(new))
+                }
+            }
+
             // Everything else: unchanged.
             _ => id,
         };

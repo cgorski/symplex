@@ -160,6 +160,8 @@ fn match_recursive(
         (ExprNode::NegInfinity, ExprNode::NegInfinity) => true,
         (ExprNode::ComplexInfinity, ExprNode::ComplexInfinity) => true,
         (ExprNode::NaN, ExprNode::NaN) => true,
+        (ExprNode::BoolTrue, ExprNode::BoolTrue) => true,
+        (ExprNode::BoolFalse, ExprNode::BoolFalse) => true,
 
         // N-ary: Add, Mul — children must match positionally.
         // Since both pattern and expression are canonical (sorted),
@@ -239,6 +241,60 @@ fn match_recursive(
         }
         (ExprNode::Sign(pi), ExprNode::Sign(ei)) => {
             match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::Not(pi), ExprNode::Not(ei)) => match_recursive(arena, pattern, pi, ei, bindings),
+
+        // Binary relational.
+        (ExprNode::Gt(pa, pb), ExprNode::Gt(ea, eb)) => {
+            match_recursive(arena, pattern, pa, ea, bindings)
+                && match_recursive(arena, pattern, pb, eb, bindings)
+        }
+        (ExprNode::Ge(pa, pb), ExprNode::Ge(ea, eb)) => {
+            match_recursive(arena, pattern, pa, ea, bindings)
+                && match_recursive(arena, pattern, pb, eb, bindings)
+        }
+        (ExprNode::Eq_(pa, pb), ExprNode::Eq_(ea, eb)) => {
+            match_recursive(arena, pattern, pa, ea, bindings)
+                && match_recursive(arena, pattern, pb, eb, bindings)
+        }
+        (ExprNode::Ne(pa, pb), ExprNode::Ne(ea, eb)) => {
+            match_recursive(arena, pattern, pa, ea, bindings)
+                && match_recursive(arena, pattern, pb, eb, bindings)
+        }
+
+        // N-ary logical / piecewise.
+        (ExprNode::And(ref pc), ExprNode::And(ref ec)) => {
+            if pc.len() != ec.len() {
+                return false;
+            }
+            for (p, e) in pc.iter().zip(ec.iter()) {
+                if !match_recursive(arena, pattern, *p, *e, bindings) {
+                    return false;
+                }
+            }
+            true
+        }
+        (ExprNode::Or(ref pc), ExprNode::Or(ref ec)) => {
+            if pc.len() != ec.len() {
+                return false;
+            }
+            for (p, e) in pc.iter().zip(ec.iter()) {
+                if !match_recursive(arena, pattern, *p, *e, bindings) {
+                    return false;
+                }
+            }
+            true
+        }
+        (ExprNode::Piecewise(ref pc), ExprNode::Piecewise(ref ec)) => {
+            if pc.len() != ec.len() {
+                return false;
+            }
+            for (p, e) in pc.iter().zip(ec.iter()) {
+                if !match_recursive(arena, pattern, *p, *e, bindings) {
+                    return false;
+                }
+            }
+            true
         }
 
         // Apply: function name must match, then args positionally.

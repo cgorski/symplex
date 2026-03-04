@@ -118,7 +118,7 @@ pub mod prelude {
     pub use crate::context::Context;
     pub use crate::eq::Equation;
     pub use crate::errors::SymplexError;
-    pub use crate::expr::Ex;
+    pub use crate::expr::{BoolEx, Boolean, Ex, Expr, ExprType, Numeric, Sort};
     pub use crate::pattern::Step;
     pub use symplex_macros::{eq, expr, matrix, rule};
 }

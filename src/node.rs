@@ -172,6 +172,35 @@ pub enum ExprNode {
     /// Binomial coefficient: `C(n, k)` = n! / (k! * (n-k)!)
     Binomial(ExprId, ExprId),
 
+    // -- boolean atoms -------------------------------------------------------
+    /// Boolean true.
+    BoolTrue,
+    /// Boolean false.
+    BoolFalse,
+
+    // -- relational operators ------------------------------------------------
+    /// Greater than: `a > b`.
+    Gt(ExprId, ExprId),
+    /// Greater than or equal: `a >= b`.
+    Ge(ExprId, ExprId),
+    /// Mathematical equality test: `a == b` (boolean-valued).
+    Eq_(ExprId, ExprId),
+    /// Not equal: `a != b`.
+    Ne(ExprId, ExprId),
+
+    // -- logical connectives -------------------------------------------------
+    /// Logical conjunction (n-ary): `a && b && c`.
+    And(SmallVec<[ExprId; 6]>),
+    /// Logical disjunction (n-ary): `a || b || c`.
+    Or(SmallVec<[ExprId; 6]>),
+    /// Logical negation: `!a`.
+    Not(ExprId),
+
+    // -- piecewise -----------------------------------------------------------
+    /// Piecewise function: alternating `[value₀, cond₀, value₁, cond₁, ...]`.
+    /// Length is always even. Piece i has value at index 2*i and condition at 2*i+1.
+    Piecewise(SmallVec<[ExprId; 6]>),
+
     // -- composite forms -----------------------------------------------------
     /// Application of a user‐defined or library function identified by
     /// [`SymbolId`] to a list of argument expressions.
@@ -205,14 +234,24 @@ impl ExprNode {
             | ExprNode::Infinity
             | ExprNode::NegInfinity
             | ExprNode::ComplexInfinity
-            | ExprNode::NaN => smallvec![],
+            | ExprNode::NaN
+            | ExprNode::BoolTrue
+            | ExprNode::BoolFalse => smallvec![],
 
             // n‐ary
-            ExprNode::Add(ids) | ExprNode::Mul(ids) => ids.clone(),
+            ExprNode::Add(ids)
+            | ExprNode::Mul(ids)
+            | ExprNode::And(ids)
+            | ExprNode::Or(ids)
+            | ExprNode::Piecewise(ids) => ids.clone(),
 
             // binary
             ExprNode::Pow(a, b)
             | ExprNode::Binomial(a, b)
+            | ExprNode::Gt(a, b)
+            | ExprNode::Ge(a, b)
+            | ExprNode::Eq_(a, b)
+            | ExprNode::Ne(a, b)
             | ExprNode::Derivative(a, b)
             | ExprNode::Integral(a, b) => {
                 smallvec![*a, *b]
@@ -236,7 +275,8 @@ impl ExprNode {
             | ExprNode::Acosh(x)
             | ExprNode::Atanh(x)
             | ExprNode::Sign(x)
-            | ExprNode::Factorial(x) => smallvec![*x],
+            | ExprNode::Factorial(x)
+            | ExprNode::Not(x) => smallvec![*x],
 
             // function application
             ExprNode::Apply(_, args) => {
@@ -268,6 +308,8 @@ impl ExprNode {
                 | ExprNode::NegInfinity
                 | ExprNode::ComplexInfinity
                 | ExprNode::NaN
+                | ExprNode::BoolTrue
+                | ExprNode::BoolFalse
         )
     }
 }
@@ -306,6 +348,16 @@ impl fmt::Debug for ExprNode {
             ExprNode::Sign(id) => write!(f, "Sign({id:?})"),
             ExprNode::Factorial(id) => write!(f, "Factorial({id:?})"),
             ExprNode::Binomial(n, k) => write!(f, "Binomial({n:?}, {k:?})"),
+            ExprNode::BoolTrue => write!(f, "BoolTrue"),
+            ExprNode::BoolFalse => write!(f, "BoolFalse"),
+            ExprNode::Gt(a, b) => f.debug_tuple("Gt").field(a).field(b).finish(),
+            ExprNode::Ge(a, b) => f.debug_tuple("Ge").field(a).field(b).finish(),
+            ExprNode::Eq_(a, b) => f.debug_tuple("Eq_").field(a).field(b).finish(),
+            ExprNode::Ne(a, b) => f.debug_tuple("Ne").field(a).field(b).finish(),
+            ExprNode::And(ids) => f.debug_tuple("And").field(ids).finish(),
+            ExprNode::Or(ids) => f.debug_tuple("Or").field(ids).finish(),
+            ExprNode::Not(x) => f.debug_tuple("Not").field(x).finish(),
+            ExprNode::Piecewise(ids) => f.debug_tuple("Piecewise").field(ids).finish(),
             ExprNode::Apply(sym, args) => f.debug_tuple("Apply").field(sym).field(args).finish(),
             ExprNode::Derivative(body, var) => {
                 f.debug_tuple("Derivative").field(body).field(var).finish()

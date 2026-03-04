@@ -92,7 +92,32 @@ fn diff_node(
         | ExprNode::Infinity
         | ExprNode::NegInfinity
         | ExprNode::ComplexInfinity
-        | ExprNode::NaN => arena.zero,
+        | ExprNode::NaN
+        | ExprNode::BoolTrue
+        | ExprNode::BoolFalse => arena.zero,
+
+        // Boolean/relational/logic → 0 (not differentiable)
+        ExprNode::Gt(..)
+        | ExprNode::Ge(..)
+        | ExprNode::Eq_(..)
+        | ExprNode::Ne(..)
+        | ExprNode::And(_)
+        | ExprNode::Or(_)
+        | ExprNode::Not(_) => arena.zero,
+
+        // Piecewise: differentiate each value piece, keep conditions
+        ExprNode::Piecewise(ref children) => {
+            let children = children.clone();
+            let mut new_children = SmallVec::new();
+            for i in (0..children.len()).step_by(2) {
+                let val = children[i];
+                let cond = children[i + 1];
+                let dval = get_deriv(cache, val, arena);
+                new_children.push(dval);
+                new_children.push(cond);
+            }
+            arena.intern(ExprNode::Piecewise(new_children))
+        }
 
         // ── Add: linearity ─────────────────────────────────────────
         // d/dx(a + b + c) = da + db + dc

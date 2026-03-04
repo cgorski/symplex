@@ -407,6 +407,19 @@ fn eval_node(
         ExprNode::Integral(_, _) => Err(SymplexError::Unevaluable {
             reason: "cannot evaluate unevaluated integral".into(),
         }),
+
+        ExprNode::BoolTrue
+        | ExprNode::BoolFalse
+        | ExprNode::Gt(_, _)
+        | ExprNode::Ge(_, _)
+        | ExprNode::Eq_(_, _)
+        | ExprNode::Ne(_, _)
+        | ExprNode::And(_)
+        | ExprNode::Or(_)
+        | ExprNode::Not(_)
+        | ExprNode::Piecewise(_) => Err(SymplexError::Unevaluable {
+            reason: "boolean/piecewise expression".into(),
+        }),
     }
 }
 

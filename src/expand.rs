@@ -105,6 +105,79 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
                 rebuild_unary_expanded(arena, id, inner, &cache, Arena::atanh)
             }
             ExprNode::Sign(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::sign),
+            ExprNode::Not(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::not),
+
+            // Boolean atoms: unchanged.
+            ExprNode::BoolTrue | ExprNode::BoolFalse => id,
+
+            // Relational operators: rebuild binary with expanded children.
+            ExprNode::Gt(a, b) => {
+                let na = cache.get(&a).copied().unwrap_or(a);
+                let nb = cache.get(&b).copied().unwrap_or(b);
+                if na == a && nb == b {
+                    id
+                } else {
+                    arena.gt(na, nb)
+                }
+            }
+            ExprNode::Ge(a, b) => {
+                let na = cache.get(&a).copied().unwrap_or(a);
+                let nb = cache.get(&b).copied().unwrap_or(b);
+                if na == a && nb == b {
+                    id
+                } else {
+                    arena.ge(na, nb)
+                }
+            }
+            ExprNode::Eq_(a, b) => {
+                let na = cache.get(&a).copied().unwrap_or(a);
+                let nb = cache.get(&b).copied().unwrap_or(b);
+                if na == a && nb == b {
+                    id
+                } else {
+                    arena.eq_(na, nb)
+                }
+            }
+            ExprNode::Ne(a, b) => {
+                let na = cache.get(&a).copied().unwrap_or(a);
+                let nb = cache.get(&b).copied().unwrap_or(b);
+                if na == a && nb == b {
+                    id
+                } else {
+                    arena.ne_(na, nb)
+                }
+            }
+
+            // N-ary logical / piecewise: rebuild with expanded children.
+            ExprNode::And(ref children) => {
+                let new: SmallVec<[ExprId; 6]> = children
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                if new == *children {
+                    id
+                } else {
+                    arena.and(&new)
+                }
+            }
+            ExprNode::Or(ref children) => {
+                let new: SmallVec<[ExprId; 6]> = children
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                if new == *children { id } else { arena.or(&new) }
+            }
+            ExprNode::Piecewise(ref children) => {
+                let new: SmallVec<[ExprId; 6]> = children
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                if new == *children {
+                    id
+                } else {
+                    arena.intern(ExprNode::Piecewise(new))
+                }
+            }
 
             // Everything else (atoms, Derivative, Integral, Apply): unchanged.
             _ => id,

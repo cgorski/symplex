@@ -83,6 +83,11 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Apply(_, _)
         | ExprNode::Derivative(_, _)
         | ExprNode::Integral(_, _) => PREC_ATOM,
+        ExprNode::Or(_) => 10,
+        ExprNode::And(_) => 15,
+        ExprNode::Gt(_, _) | ExprNode::Ge(_, _) | ExprNode::Eq_(_, _) | ExprNode::Ne(_, _) => 20,
+        ExprNode::Not(_) => PREC_UNARY,
+        ExprNode::Piecewise(_) | ExprNode::BoolTrue | ExprNode::BoolFalse => PREC_ATOM,
         // Everything else is an atom.
         _ => PREC_ATOM,
     }
@@ -427,6 +432,71 @@ fn expand_expr(
             stack.push(WorkItem::Lit(", "));
             stack.push(WorkItem::Expr(body, 0));
             stack.push(WorkItem::Lit("Integral("));
+        }
+
+        // ── Boolean atoms ──────────────────────────────────────────
+        ExprNode::BoolTrue => stack.push(WorkItem::Lit("True")),
+        ExprNode::BoolFalse => stack.push(WorkItem::Lit("False")),
+
+        // ── Relational operators ───────────────────────────────────
+        ExprNode::Gt(lhs, rhs) => {
+            stack.push(WorkItem::Expr(rhs, 21));
+            stack.push(WorkItem::Lit(" > "));
+            stack.push(WorkItem::Expr(lhs, 21));
+        }
+        ExprNode::Ge(lhs, rhs) => {
+            stack.push(WorkItem::Expr(rhs, 21));
+            stack.push(WorkItem::Lit(" >= "));
+            stack.push(WorkItem::Expr(lhs, 21));
+        }
+        ExprNode::Eq_(lhs, rhs) => {
+            stack.push(WorkItem::Expr(rhs, 21));
+            stack.push(WorkItem::Lit(" == "));
+            stack.push(WorkItem::Expr(lhs, 21));
+        }
+        ExprNode::Ne(lhs, rhs) => {
+            stack.push(WorkItem::Expr(rhs, 21));
+            stack.push(WorkItem::Lit(" != "));
+            stack.push(WorkItem::Expr(lhs, 21));
+        }
+
+        // ── Logical connectives ────────────────────────────────────
+        ExprNode::And(children) => {
+            for (i, &child) in children.iter().enumerate().rev() {
+                stack.push(WorkItem::Expr(child, 16));
+                if i > 0 {
+                    stack.push(WorkItem::Lit(" & "));
+                }
+            }
+        }
+        ExprNode::Or(children) => {
+            for (i, &child) in children.iter().enumerate().rev() {
+                stack.push(WorkItem::Expr(child, 11));
+                if i > 0 {
+                    stack.push(WorkItem::Lit(" | "));
+                }
+            }
+        }
+        ExprNode::Not(inner) => {
+            stack.push(WorkItem::Expr(inner, PREC_UNARY));
+            stack.push(WorkItem::Lit("!"));
+        }
+
+        // ── Piecewise ──────────────────────────────────────────────
+        ExprNode::Piecewise(children) => {
+            stack.push(WorkItem::Lit(")"));
+            let n_pairs = children.len() / 2;
+            for i in (0..n_pairs).rev() {
+                let val = children[2 * i];
+                let cond = children[2 * i + 1];
+                stack.push(WorkItem::Expr(cond, 0));
+                stack.push(WorkItem::Lit(" if "));
+                stack.push(WorkItem::Expr(val, 0));
+                if i > 0 {
+                    stack.push(WorkItem::Lit(", "));
+                }
+            }
+            stack.push(WorkItem::Lit("Piecewise("));
         }
     }
 

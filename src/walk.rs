@@ -148,7 +148,9 @@ pub(crate) fn rebuild_with_cache(
         | ExprNode::Infinity
         | ExprNode::NegInfinity
         | ExprNode::ComplexInfinity
-        | ExprNode::NaN => id,
+        | ExprNode::NaN
+        | ExprNode::BoolTrue
+        | ExprNode::BoolFalse => id,
 
         // N-ary: Add, Mul
         ExprNode::Add(ref children) => {
@@ -316,6 +318,84 @@ pub(crate) fn rebuild_with_cache(
                 id
             } else {
                 arena.binomial(new_n, new_k)
+            }
+        }
+
+        // Binary relational: Gt, Ge, Eq_, Ne
+        ExprNode::Gt(a, b) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            if na == a && nb == b {
+                id
+            } else {
+                arena.gt(na, nb)
+            }
+        }
+        ExprNode::Ge(a, b) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            if na == a && nb == b {
+                id
+            } else {
+                arena.ge(na, nb)
+            }
+        }
+        ExprNode::Eq_(a, b) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            if na == a && nb == b {
+                id
+            } else {
+                arena.eq_(na, nb)
+            }
+        }
+        ExprNode::Ne(a, b) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            if na == a && nb == b {
+                id
+            } else {
+                arena.ne_(na, nb)
+            }
+        }
+
+        // Unary logical: Not
+        ExprNode::Not(inner) => rebuild_unary(arena, id, inner, cache, Arena::not),
+
+        // N-ary logical: And, Or
+        ExprNode::And(ref children) => {
+            let new_children: SmallVec<[ExprId; 6]> = children
+                .iter()
+                .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                .collect();
+            if new_children == *children {
+                id
+            } else {
+                arena.and(&new_children)
+            }
+        }
+        ExprNode::Or(ref children) => {
+            let new_children: SmallVec<[ExprId; 6]> = children
+                .iter()
+                .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                .collect();
+            if new_children == *children {
+                id
+            } else {
+                arena.or(&new_children)
+            }
+        }
+
+        // Piecewise
+        ExprNode::Piecewise(ref children) => {
+            let new_children: SmallVec<[ExprId; 6]> = children
+                .iter()
+                .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                .collect();
+            if new_children == *children {
+                id
+            } else {
+                arena.intern(ExprNode::Piecewise(new_children))
             }
         }
     }

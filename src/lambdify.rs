@@ -202,6 +202,16 @@ fn compile_recursive(
         ExprNode::Apply(_, _) | ExprNode::Derivative(_, _) | ExprNode::Integral(_, _) => {
             return None;
         }
+        ExprNode::BoolTrue
+        | ExprNode::BoolFalse
+        | ExprNode::Gt(_, _)
+        | ExprNode::Ge(_, _)
+        | ExprNode::Eq_(_, _)
+        | ExprNode::Ne(_, _)
+        | ExprNode::And(_)
+        | ExprNode::Or(_)
+        | ExprNode::Not(_)
+        | ExprNode::Piecewise(_) => return None,
     }
     Some(())
 }

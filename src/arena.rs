@@ -105,6 +105,12 @@ pub struct Arena {
     /// Complex infinity (z∞ — undirected infinity in the complex plane).
     pub complex_infinity: ExprId,
 
+    /// Boolean true.
+    pub bool_true: ExprId,
+
+    /// Boolean false.
+    pub bool_false: ExprId,
+
     // -- pre-interned constants (NumId) -------------------------------------
     /// [`NumId`] for the rational value 0.
     pub zero_num: NumId,
@@ -149,6 +155,8 @@ impl Arena {
             neg_infinity: ExprId(0),
             nan: ExprId(0),
             complex_infinity: ExprId(0),
+            bool_true: ExprId(0),
+            bool_false: ExprId(0),
             zero_num: NumId(0),
             one_num: NumId(0),
             neg_one_num: NumId(0),
@@ -172,6 +180,9 @@ impl Arena {
         arena.neg_infinity = arena.intern(ExprNode::NegInfinity);
         arena.nan = arena.intern(ExprNode::NaN);
         arena.complex_infinity = arena.intern(ExprNode::ComplexInfinity);
+
+        arena.bool_true = arena.intern(ExprNode::BoolTrue);
+        arena.bool_false = arena.intern(ExprNode::BoolFalse);
 
         arena
     }
@@ -854,6 +865,83 @@ impl Arena {
     /// Creates a `Binomial` node: `C(n, k)` = n! / (k! * (n-k)!)
     pub fn binomial(&mut self, n: ExprId, k: ExprId) -> ExprId {
         self.intern(ExprNode::Binomial(n, k))
+    }
+
+    /// Creates a `Gt` (greater than) node: `lhs > rhs`.
+    pub fn gt(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
+        self.intern(ExprNode::Gt(lhs, rhs))
+    }
+
+    /// Creates a `Ge` (greater than or equal) node: `lhs >= rhs`.
+    pub fn ge(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
+        self.intern(ExprNode::Ge(lhs, rhs))
+    }
+
+    /// Creates an `Eq_` (mathematical equality test) node: `lhs == rhs`.
+    pub fn eq_(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
+        self.intern(ExprNode::Eq_(lhs, rhs))
+    }
+
+    /// Creates a `Ne` (not equal) node: `lhs != rhs`.
+    pub fn ne_(&mut self, lhs: ExprId, rhs: ExprId) -> ExprId {
+        self.intern(ExprNode::Ne(lhs, rhs))
+    }
+
+    /// Creates an `And` (logical conjunction) node.
+    ///
+    /// Empty args → `BoolTrue`; single arg → that arg; otherwise n-ary `And`.
+    pub fn and(&mut self, args: &[ExprId]) -> ExprId {
+        if args.is_empty() {
+            return self.bool_true;
+        }
+        if args.len() == 1 {
+            return args[0];
+        }
+        self.intern(ExprNode::And(SmallVec::from_slice(args)))
+    }
+
+    /// Creates an `Or` (logical disjunction) node.
+    ///
+    /// Empty args → `BoolFalse`; single arg → that arg; otherwise n-ary `Or`.
+    pub fn or(&mut self, args: &[ExprId]) -> ExprId {
+        if args.is_empty() {
+            return self.bool_false;
+        }
+        if args.len() == 1 {
+            return args[0];
+        }
+        self.intern(ExprNode::Or(SmallVec::from_slice(args)))
+    }
+
+    /// Creates a `Not` (logical negation) node.
+    ///
+    /// Double negation eliminated: `Not(Not(x)) → x`.
+    /// Constants folded: `Not(true) → false`, `Not(false) → true`.
+    pub fn not(&mut self, expr: ExprId) -> ExprId {
+        // Double negation: Not(Not(x)) → x
+        if let ExprNode::Not(inner) = self.node(expr) {
+            return *inner;
+        }
+        // Not(BoolTrue) → BoolFalse
+        if expr == self.bool_true {
+            return self.bool_false;
+        }
+        if expr == self.bool_false {
+            return self.bool_true;
+        }
+        self.intern(ExprNode::Not(expr))
+    }
+
+    /// Creates a `Piecewise` node from `(value, condition)` pairs.
+    ///
+    /// Stored flat: `[value₀, cond₀, value₁, cond₁, …]`.
+    pub fn piecewise(&mut self, pairs: &[(ExprId, ExprId)]) -> ExprId {
+        let mut flat: SmallVec<[ExprId; 6]> = SmallVec::new();
+        for &(val, cond) in pairs {
+            flat.push(val);
+            flat.push(cond);
+        }
+        self.intern(ExprNode::Piecewise(flat))
     }
 
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.

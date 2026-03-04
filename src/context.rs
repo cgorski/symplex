@@ -98,6 +98,7 @@ impl Context {
             ctx_id: self.id,
             inner: Arc::clone(&self.inner),
             id,
+            _sort: std::marker::PhantomData,
         }
     }
 
@@ -221,6 +222,7 @@ impl Context {
             ctx_id: self.id,
             inner: Arc::clone(&self.inner),
             id: inner.arena.neg_infinity,
+            _sort: std::marker::PhantomData,
         }
     }
 

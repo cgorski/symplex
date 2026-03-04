@@ -7,22 +7,30 @@
 //! The grammar handled:
 //!
 //! ```text
-//! expr    := term (('+' | '-') term)*
-//! term    := unary (('*' | '/') unary)*
-//! unary   := '-' unary | power
-//! power   := primary ('^' power)?          // right-associative
-//! primary := INT | IDENT | IDENT '(' args ')' | '(' expr ')'
-//! args    := expr (',' expr)*
+//! expr    := logic_or
+//! logic_or  := logic_and (('||') logic_and)*
+//! logic_and := comparison (('&&') comparison)*
+//! comparison := addition (('>' | '<' | '>=' | '<=' | '==' | '!=') addition)*
+//! addition  := term (('+' | '-') term)*
+//! term      := unary (('*' | '/') unary)*
+//! unary     := '-' unary | '!' unary | power
+//! power     := primary ('^' power)?          // right-associative
+//! primary   := INT | IDENT | IDENT '(' args ')' | '(' expr ')'
+//! args      := expr (',' expr)*
 //! ```
 //!
 //! Operator precedence (ascending):
 //!
-//! | Level | Operators | Associativity |
-//! |-------|-----------|---------------|
-//! | 1     | `+`, `-`  | left          |
-//! | 2     | `*`, `/`  | left          |
-//! | 3     | unary `-` | prefix        |
-//! | 4     | `^`       | right         |
+//! | Level | Operators          | Associativity |
+//! |-------|--------------------|---------------|
+//! | 1     | `\|\|`             | left          |
+//! | 2     | `&&`               | left          |
+//! | 3     | `==`, `!=`         | left          |
+//! | 4     | `>`, `<`, `>=`,`<=`| left          |
+//! | 5     | `+`, `-`           | left          |
+//! | 6     | `*`, `/`           | left          |
+//! | 7     | unary `-`, `!`     | prefix        |
+//! | 8     | `^`                | right         |
 
 use proc_macro2::Span;
 use syn::parse::{Parse, ParseStream};
@@ -51,6 +59,9 @@ pub enum MathExpr {
     /// Unary negation: `-expr`.
     Neg(Box<MathExpr>),
 
+    /// Unary logical NOT: `!expr`.
+    LogicalNot(Box<MathExpr>),
+
     /// Function call: `sin(x)`, `cos(x + 1)`, etc.
     Func {
         name: String,
@@ -67,6 +78,16 @@ pub enum BinOp {
     Mul,
     Div,
     Pow,
+    // Comparison operators
+    Gt,
+    Lt,
+    Ge,
+    Le,
+    EqEq,
+    Ne,
+    // Logical operators
+    AndAnd,
+    OrOr,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -137,6 +158,7 @@ impl MathExpr {
                 rhs.collect_wilds_inner(wilds);
             }
             MathExpr::Neg(inner) => inner.collect_wilds_inner(wilds),
+            MathExpr::LogicalNot(inner) => inner.collect_wilds_inner(wilds),
             MathExpr::Func { args, .. } => {
                 for arg in args {
                     arg.collect_wilds_inner(wilds);
@@ -157,20 +179,30 @@ impl MathExpr {
 /// `left_bp` < `right_bp`.  For right-associative ops (like `^`),
 /// `left_bp` > `right_bp` (or equal, with a different check).
 ///
-/// We use the even/odd trick:
-///   left-assoc  op at level L: left_bp = 2*L-1, right_bp = 2*L
-///   right-assoc op at level L: left_bp = 2*L,   right_bp = 2*L-1
+/// Precedence levels (ascending):
+///   1: ||            (left-assoc)
+///   2: &&            (left-assoc)
+///   3: == !=         (left-assoc)
+///   4: > < >= <=     (left-assoc)
+///   5: + -           (left-assoc)
+///   6: * /           (left-assoc)
+///   7: unary - !     (prefix)
+///   8: ^             (right-assoc)
 fn infix_bp(op: BinOp) -> (u8, u8) {
     match op {
-        BinOp::Add | BinOp::Sub => (1, 2), // level 1, left-assoc
-        BinOp::Mul | BinOp::Div => (3, 4), // level 2, left-assoc
-        BinOp::Pow => (8, 7),              // level 4, right-assoc
+        BinOp::OrOr => (1, 2),                                   // level 1, left-assoc
+        BinOp::AndAnd => (3, 4),                                 // level 2, left-assoc
+        BinOp::EqEq | BinOp::Ne => (5, 6),                       // level 3, left-assoc
+        BinOp::Gt | BinOp::Lt | BinOp::Ge | BinOp::Le => (7, 8), // level 4, left-assoc
+        BinOp::Add | BinOp::Sub => (9, 10),                      // level 5, left-assoc
+        BinOp::Mul | BinOp::Div => (11, 12),                     // level 6, left-assoc
+        BinOp::Pow => (16, 15),                                  // level 8, right-assoc
     }
 }
 
-/// Prefix binding power for unary minus.
+/// Prefix binding power for unary minus and logical NOT.
 fn prefix_bp() -> u8 {
-    5 // between Mul/Div (3,4) and Pow (7,8)
+    13 // between Mul/Div (11,12) and Pow (15,16)
 }
 
 /// Parse a math expression from a `syn::ParseStream`.
@@ -217,12 +249,16 @@ fn parse_expr_bp(input: ParseStream, min_bp: u8) -> syn::Result<MathExpr> {
     Ok(lhs)
 }
 
-/// Parse a prefix expression (unary minus or a primary).
+/// Parse a prefix expression (unary minus, logical NOT, or a primary).
 fn parse_prefix(input: ParseStream) -> syn::Result<MathExpr> {
     if input.peek(Token![-]) {
         let _: Token![-] = input.parse()?;
         let operand = parse_expr_bp(input, prefix_bp())?;
         Ok(MathExpr::Neg(Box::new(operand)))
+    } else if input.peek(Token![!]) {
+        let _: Token![!] = input.parse()?;
+        let operand = parse_expr_bp(input, prefix_bp())?;
+        Ok(MathExpr::LogicalNot(Box::new(operand)))
     } else {
         parse_primary(input)
     }
@@ -281,7 +317,37 @@ fn parse_arg_list(input: ParseStream) -> syn::Result<Vec<MathExpr>> {
 
 /// Peek at the next token to see if it's a binary operator.
 /// Returns `None` if it's not.
+///
+/// Two-character operators (`>=`, `<=`, `==`, `!=`, `&&`, `||`) are
+/// checked before their single-character prefixes (`>`, `<`, `=`, etc.)
+/// so that `>=` is not misread as `>` followed by `=`.
 fn peek_binop(input: ParseStream) -> Option<BinOp> {
+    // Two-character operators first
+    if input.peek(Token![&&]) {
+        return Some(BinOp::AndAnd);
+    }
+    if input.peek(Token![||]) {
+        return Some(BinOp::OrOr);
+    }
+    if input.peek(Token![>=]) {
+        return Some(BinOp::Ge);
+    }
+    if input.peek(Token![<=]) {
+        return Some(BinOp::Le);
+    }
+    if input.peek(Token![==]) {
+        return Some(BinOp::EqEq);
+    }
+    if input.peek(Token![!=]) {
+        return Some(BinOp::Ne);
+    }
+    // Single-character operators
+    if input.peek(Token![>]) {
+        return Some(BinOp::Gt);
+    }
+    if input.peek(Token![<]) {
+        return Some(BinOp::Lt);
+    }
     if input.peek(Token![+]) {
         Some(BinOp::Add)
     } else if input.peek(Token![-]) {
@@ -314,6 +380,30 @@ fn consume_binop(input: ParseStream, op: BinOp) -> syn::Result<()> {
         }
         BinOp::Pow => {
             let _: Token![^] = input.parse()?;
+        }
+        BinOp::Gt => {
+            let _: Token![>] = input.parse()?;
+        }
+        BinOp::Lt => {
+            let _: Token![<] = input.parse()?;
+        }
+        BinOp::Ge => {
+            let _: Token![>=] = input.parse()?;
+        }
+        BinOp::Le => {
+            let _: Token![<=] = input.parse()?;
+        }
+        BinOp::EqEq => {
+            let _: Token![==] = input.parse()?;
+        }
+        BinOp::Ne => {
+            let _: Token![!=] = input.parse()?;
+        }
+        BinOp::AndAnd => {
+            let _: Token![&&] = input.parse()?;
+        }
+        BinOp::OrOr => {
+            let _: Token![||] = input.parse()?;
         }
     }
     Ok(())

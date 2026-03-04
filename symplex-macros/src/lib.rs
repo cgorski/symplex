@@ -106,6 +106,11 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
             Ok(quote! { (-(#inner_code)) })
         }
 
+        MathExpr::LogicalNot(inner) => {
+            let inner_code = generate_expr(inner)?;
+            Ok(quote! { (#inner_code).not() })
+        }
+
         MathExpr::BinOp { op, lhs, rhs } => {
             match op {
                 BinOp::Pow => {
@@ -140,6 +145,46 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                     let lhs_code = generate_expr(lhs)?;
                     let rhs_code = generate_expr(rhs)?;
                     Ok(quote! { ((#lhs_code) / (#rhs_code)) })
+                }
+                BinOp::Gt => {
+                    let lhs_code = generate_expr_as_ex(lhs)?;
+                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    Ok(quote! { (#lhs_code).gt(&(#rhs_code)) })
+                }
+                BinOp::Lt => {
+                    let lhs_code = generate_expr_as_ex(lhs)?;
+                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    Ok(quote! { (#lhs_code).lt(&(#rhs_code)) })
+                }
+                BinOp::Ge => {
+                    let lhs_code = generate_expr_as_ex(lhs)?;
+                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    Ok(quote! { (#lhs_code).ge(&(#rhs_code)) })
+                }
+                BinOp::Le => {
+                    let lhs_code = generate_expr_as_ex(lhs)?;
+                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    Ok(quote! { (#lhs_code).le(&(#rhs_code)) })
+                }
+                BinOp::EqEq => {
+                    let lhs_code = generate_expr_as_ex(lhs)?;
+                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    Ok(quote! { (#lhs_code).eq_expr(&(#rhs_code)) })
+                }
+                BinOp::Ne => {
+                    let lhs_code = generate_expr_as_ex(lhs)?;
+                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    Ok(quote! { (#lhs_code).ne_expr(&(#rhs_code)) })
+                }
+                BinOp::AndAnd => {
+                    let lhs_code = generate_expr(lhs)?;
+                    let rhs_code = generate_expr(rhs)?;
+                    Ok(quote! { (#lhs_code).and(&(#rhs_code)) })
+                }
+                BinOp::OrOr => {
+                    let lhs_code = generate_expr(lhs)?;
+                    let rhs_code = generate_expr(rhs)?;
+                    Ok(quote! { (#lhs_code).or(&(#rhs_code)) })
                 }
                 _ => {
                     let lhs_code = generate_expr(lhs)?;
@@ -472,6 +517,14 @@ impl RuleCodeGen {
                 Ok(temp)
             }
 
+            MathExpr::LogicalNot(inner) => {
+                let inner_temp = self.generate_arena_expr(inner)?;
+                let temp = self.fresh_temp();
+                self.bindings
+                    .push(quote! { let #temp = #arena.not(#inner_temp); });
+                Ok(temp)
+            }
+
             MathExpr::BinOp { op, lhs, rhs } => {
                 let lhs_temp = self.generate_arena_expr(lhs)?;
                 let rhs_temp = self.generate_arena_expr(rhs)?;
@@ -483,6 +536,14 @@ impl RuleCodeGen {
                     BinOp::Mul => quote! { #arena.mul(&[#lhs_temp, #rhs_temp]) },
                     BinOp::Div => quote! { #arena.div(#lhs_temp, #rhs_temp) },
                     BinOp::Pow => quote! { #arena.pow(#lhs_temp, #rhs_temp) },
+                    BinOp::Gt => quote! { #arena.gt(#lhs_temp, #rhs_temp) },
+                    BinOp::Lt => quote! { #arena.gt(#rhs_temp, #lhs_temp) },
+                    BinOp::Ge => quote! { #arena.ge(#lhs_temp, #rhs_temp) },
+                    BinOp::Le => quote! { #arena.ge(#rhs_temp, #lhs_temp) },
+                    BinOp::EqEq => quote! { #arena.eq_(#lhs_temp, #rhs_temp) },
+                    BinOp::Ne => quote! { #arena.ne_(#lhs_temp, #rhs_temp) },
+                    BinOp::AndAnd => quote! { #arena.and(&[#lhs_temp, #rhs_temp]) },
+                    BinOp::OrOr => quote! { #arena.or(&[#lhs_temp, #rhs_temp]) },
                 };
 
                 self.bindings.push(quote! { let #temp = #call; });
