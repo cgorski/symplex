@@ -143,6 +143,10 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "subfactorial",
     "factorial2",
     "bernoulli_number",
+    // Wave S: special elementary
+    "heaviside",
+    "dirac_delta",
+    "lambertw",
 ];
 
 /// Returns `true` if `name` is a known built-in function.

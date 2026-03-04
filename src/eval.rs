@@ -53,8 +53,9 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
 use crate::arena::{
-    Arena, FN_BELL, FN_BERNOULLI, FN_CATALAN, FN_EULER_NUMBER, FN_FACTORIAL2, FN_FALLING_FACTORIAL,
-    FN_FIBONACCI, FN_HARMONIC, FN_LUCAS, FN_RISING_FACTORIAL, FN_SUBFACTORIAL,
+    Arena, FN_BELL, FN_BERNOULLI, FN_CATALAN, FN_DIRAC_DELTA, FN_EULER_NUMBER, FN_FACTORIAL2,
+    FN_FALLING_FACTORIAL, FN_FIBONACCI, FN_HARMONIC, FN_HEAVISIDE, FN_LAMBERTW, FN_LUCAS,
+    FN_RISING_FACTORIAL, FN_SUBFACTORIAL,
 };
 use crate::node::{ExprId, ExprNode};
 use crate::walk;
@@ -486,6 +487,58 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             id
                         } else {
                             arena.euler_number(new_args[0])
+                        }
+                    }
+                    FN_HEAVISIDE if new_args.len() == 1 => {
+                        if let Some(r) = arena.as_num(new_args[0]).cloned() {
+                            if r.is_positive() {
+                                arena.one
+                            } else if r.is_negative() {
+                                arena.zero
+                            } else {
+                                // r.is_zero() — convention: Heaviside(0) = 1/2
+                                arena.rational(1, 2)
+                            }
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.heaviside(new_args[0])
+                        }
+                    }
+                    FN_DIRAC_DELTA if new_args.len() == 1 => {
+                        if let Some(r) = arena.as_num(new_args[0]).cloned() {
+                            if !r.is_zero() {
+                                arena.zero
+                            } else {
+                                // At zero, leave unevaluated
+                                if new_args[..] == args[..] {
+                                    id
+                                } else {
+                                    arena.dirac_delta(new_args[0])
+                                }
+                            }
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.dirac_delta(new_args[0])
+                        }
+                    }
+                    FN_LAMBERTW if new_args.len() == 1 => {
+                        if let Some(r) = arena.as_num(new_args[0]).cloned() {
+                            if r.is_zero() {
+                                arena.zero
+                            } else if new_args[..] == args[..] {
+                                id
+                            } else {
+                                arena.lambertw(new_args[0])
+                            }
+                        } else if new_args[0] == arena.e_const {
+                            // W(e) = 1
+                            arena.one
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.lambertw(new_args[0])
                         }
                     }
                     _ => {

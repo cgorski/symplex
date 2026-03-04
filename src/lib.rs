@@ -83,6 +83,8 @@ pub(crate) mod trig_combine;
 pub(crate) mod trig_expand;
 pub(crate) mod trig_integ;
 pub(crate) mod trigsimp;
+/// Vector calculus: gradient, divergence, curl, laplacian.
+pub mod vector;
 pub(crate) mod walk;
 
 // ── Public modules ─────────────────────────────────────────────────────

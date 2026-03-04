@@ -326,6 +326,10 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 "subfactorial" => quote! { subfactorial },
                 "factorial2" => quote! { factorial2 },
                 "bernoulli_number" => quote! { bernoulli_number },
+                // Wave S: special elementary
+                "heaviside" => quote! { heaviside },
+                "dirac_delta" => quote! { dirac_delta },
+                "lambertw" => quote! { lambertw },
                 _ => unreachable!(),
             };
             Ok(quote! { (#arg_code).#method() })

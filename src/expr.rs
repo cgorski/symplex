@@ -1219,6 +1219,29 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    // ── Special functions (Apply-based) ────────────────────────────
+
+    /// Heaviside step function: 0 for x<0, 1/2 for x=0, 1 for x>0.
+    #[must_use]
+    pub fn heaviside(&self) -> Ex {
+        let id = self.inner.write().arena.heaviside(self.id);
+        self.wrap(id)
+    }
+
+    /// Dirac delta distribution: 0 for x≠0, symbolic at x=0.
+    #[must_use]
+    pub fn dirac_delta(&self) -> Ex {
+        let id = self.inner.write().arena.dirac_delta(self.id);
+        self.wrap(id)
+    }
+
+    /// Lambert W function (principal branch): W(x)·exp(W(x)) = x.
+    #[must_use]
+    pub fn lambertw(&self) -> Ex {
+        let id = self.inner.write().arena.lambertw(self.id);
+        self.wrap(id)
+    }
+
     // ── Relational operators (return BoolEx) ───────────────────────
 
     /// Greater than: `self > other`.
@@ -2801,7 +2824,6 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn checkodesol(&self, solution: &Ex, func: &Ex, var: &Ex) -> bool {
-        
         {
             let mut guard = self.inner.write();
             crate::ode::checkodesol(&mut guard.arena, self.id, solution.id, func.id, var.id)
@@ -2833,6 +2855,42 @@ impl Expr<Boolean> {
     pub fn not(&self) -> BoolEx {
         let id = self.inner.write().arena.not(self.id);
         self.wrap(id)
+    }
+
+    /// Exclusive or: `self ⊕ other = (self ∧ ¬other) ∨ (¬self ∧ other)`.
+    #[must_use]
+    pub fn xor(&self, other: &BoolEx) -> BoolEx {
+        self.and(&other.not()).or(&self.not().and(other))
+    }
+
+    /// Logical implication: `self → other = ¬self ∨ other`.
+    #[must_use]
+    pub fn implies(&self, other: &BoolEx) -> BoolEx {
+        self.not().or(other)
+    }
+
+    /// Logical biconditional: `self ↔ other = (self → other) ∧ (other → self)`.
+    #[must_use]
+    pub fn equivalent(&self, other: &BoolEx) -> BoolEx {
+        self.implies(other).and(&other.implies(self))
+    }
+
+    /// NAND gate: `¬(self ∧ other)`.
+    #[must_use]
+    pub fn nand(&self, other: &BoolEx) -> BoolEx {
+        self.and(other).not()
+    }
+
+    /// NOR gate: `¬(self ∨ other)`.
+    #[must_use]
+    pub fn nor(&self, other: &BoolEx) -> BoolEx {
+        self.or(other).not()
+    }
+
+    /// If-then-else: `if self then a else b` = `(self ∧ a) ∨ (¬self ∧ b)`.
+    #[must_use]
+    pub fn ite(&self, then_: &BoolEx, else_: &BoolEx) -> BoolEx {
+        self.and(then_).or(&self.not().and(else_))
     }
 
     /// Convert to untyped numeric expression (escape hatch).
