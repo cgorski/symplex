@@ -23,10 +23,13 @@
 
 use std::sync::Arc;
 
+use num_bigint::BigInt;
+use num_rational::Ratio;
+
 use crate::arena::Arena;
 use crate::context::Context;
 use crate::expr::Ex;
-use crate::node::ExprId;
+use crate::node::{ExprId, ExprNode};
 
 /// Error returned when parsing fails.
 #[derive(Debug, Clone)]
@@ -85,8 +88,8 @@ pub fn parse(ctx: &Context, input: &str) -> Result<Ex, ParseError> {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
-    Int(i64),
-    Rational(i64, i64),
+    Int(BigInt),
+    Rational(Ratio<BigInt>),
     Ident(String),
     Plus,
     Minus,
@@ -177,7 +180,7 @@ impl<'a> Lexer<'a> {
                     }
                     let decimal_places = self.pos - frac_start;
                     let full_str = self.input[start..self.pos].replace('.', "");
-                    let numer = full_str.parse::<i64>().map_err(|e| ParseError {
+                    let numer = full_str.parse::<BigInt>().map_err(|e| ParseError {
                         message: format!(
                             "invalid number '{}': {}",
                             &self.input[start..self.pos],
@@ -185,11 +188,15 @@ impl<'a> Lexer<'a> {
                         ),
                         position: start,
                     })?;
-                    let denom = 10i64.pow(decimal_places as u32);
-                    return Ok(Token::Rational(numer, denom));
+                    let mut denom = BigInt::from(1);
+                    for _ in 0..decimal_places {
+                        denom *= 10;
+                    }
+                    let ratio = Ratio::new(numer, denom);
+                    return Ok(Token::Rational(ratio));
                 }
                 let s = &self.input[start..self.pos];
-                let n = s.parse::<i64>().map_err(|e| ParseError {
+                let n = s.parse::<BigInt>().map_err(|e| ParseError {
                     message: format!("invalid integer '{}': {}", s, e),
                     position: start,
                 })?;
@@ -223,13 +230,18 @@ impl<'a> Lexer<'a> {
 struct Parser<'a> {
     lexer: Lexer<'a>,
     current: Token,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Self {
         let mut lexer = Lexer::new(input);
         let current = lexer.next_token().unwrap_or(Token::Eof);
-        Parser { lexer, current }
+        Parser {
+            lexer,
+            current,
+            depth: 0,
+        }
     }
 
     fn advance(&mut self) -> Result<Token, ParseError> {
@@ -252,6 +264,14 @@ impl<'a> Parser<'a> {
 
     /// Parse an expression with minimum binding power `min_bp`.
     fn parse_expr(&mut self, arena: &mut Arena, min_bp: u8) -> Result<ExprId, ParseError> {
+        self.depth += 1;
+        if self.depth > 256 {
+            return Err(ParseError {
+                message: "expression nesting too deep (max 256 levels)".into(),
+                position: self.lexer.pos,
+            });
+        }
+
         // Prefix (atom or unary)
         let mut lhs = self.parse_prefix(arena)?;
 
@@ -265,7 +285,7 @@ impl<'a> Parser<'a> {
                 Token::Caret => ('^', 8, 7, false), // right-associative
                 // Implicit multiplication: number, identifier, or '(' immediately
                 // following a complete left-hand expression.
-                Token::Int(_) | Token::Rational(_, _) | Token::Ident(_) | Token::LParen => {
+                Token::Int(_) | Token::Rational(_) | Token::Ident(_) | Token::LParen => {
                     ('*', 3, 4, true)
                 }
                 _ => break,
@@ -290,6 +310,7 @@ impl<'a> Parser<'a> {
             };
         }
 
+        self.depth -= 1;
         Ok(lhs)
     }
 
@@ -298,11 +319,12 @@ impl<'a> Parser<'a> {
         match self.current.clone() {
             Token::Int(n) => {
                 self.advance()?;
-                Ok(arena.int(n))
+                Ok(arena.big_int(n))
             }
-            Token::Rational(n, d) => {
+            Token::Rational(ratio) => {
                 self.advance()?;
-                Ok(arena.rational(n, d))
+                let nid = arena.intern_num(ratio);
+                Ok(arena.intern(ExprNode::Num(nid)))
             }
             Token::Ident(name) => {
                 self.advance()?;
@@ -750,6 +772,393 @@ mod tests {
         assert!(
             s.contains("2") && s.contains("pi"),
             "2pi should be 2*pi: {s}"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Arbitrary-precision integer tests
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn parse_large_integer() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "99999999999999999999999999999").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "99999999999999999999999999999");
+    }
+
+    #[test]
+    fn parse_integer_beyond_i64_max() {
+        let ctx = Context::new();
+        // i64::MAX = 9223372036854775807 — this is one more
+        let result = parse(&ctx, "9223372036854775808").unwrap();
+        let s = format!("{result}");
+        assert_eq!(
+            s, "9223372036854775808",
+            "should handle integers > i64::MAX"
+        );
+    }
+
+    #[test]
+    fn parse_integer_beyond_i128_max() {
+        let ctx = Context::new();
+        // i128::MAX ≈ 1.7e38 — this is well beyond
+        let big = "123456789012345678901234567890123456789012345678901234567890";
+        let result = parse(&ctx, big).unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, big, "should handle integers > i128::MAX");
+    }
+
+    #[test]
+    fn parse_large_integer_arithmetic() {
+        let ctx = Context::new();
+        // (10^30)^2 should be 10^60
+        let result = parse(&ctx, "1000000000000000000000000000000^2").unwrap();
+        let evaled = result.eval();
+        let s = format!("{evaled}");
+        assert_eq!(
+            s, "1000000000000000000000000000000000000000000000000000000000000",
+            "large integer exponentiation should be exact"
+        );
+    }
+
+    #[test]
+    fn parse_negative_large_integer() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "-99999999999999999999999999999").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "-99999999999999999999999999999");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Arbitrary-precision decimal / rational tests
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn parse_many_decimal_places() {
+        let ctx = Context::new();
+        // This should not panic (was overflowing i64 before)
+        let result = parse(&ctx, "1.0000000000000000000001");
+        assert!(
+            result.is_ok(),
+            "parsing many decimal places should not panic"
+        );
+    }
+
+    #[test]
+    fn parse_decimal_exact_rational_simple() {
+        let ctx = Context::new();
+        // 0.5 should be exactly 1/2
+        let result = parse(&ctx, "0.5").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "1/2", "0.5 should parse as exact rational 1/2, got: {s}");
+    }
+
+    #[test]
+    fn parse_decimal_exact_rational_quarter() {
+        let ctx = Context::new();
+        // 0.25 should be exactly 1/4
+        let result = parse(&ctx, "0.25").unwrap();
+        let s = format!("{result}");
+        assert_eq!(
+            s, "1/4",
+            "0.25 should parse as exact rational 1/4, got: {s}"
+        );
+    }
+
+    #[test]
+    fn parse_decimal_exact_rational_third_approx() {
+        let ctx = Context::new();
+        // 0.333 should be exactly 333/1000
+        let result = parse(&ctx, "0.333").unwrap();
+        let s = format!("{result}");
+        assert_eq!(
+            s, "333/1000",
+            "0.333 should parse as exact rational 333/1000, got: {s}"
+        );
+    }
+
+    #[test]
+    fn parse_decimal_preserves_all_digits() {
+        let ctx = Context::new();
+        // 1.00000000000000000000000000000000001 — 34 zeros then 1
+        // numerator = 100000000000000000000000000000000001
+        // denominator = 10^35
+        // This must NOT lose any precision
+        let input = "1.00000000000000000000000000000000001";
+        let result = parse(&ctx, input).unwrap();
+        // Multiply by 10^35 — should give exactly 100000000000000000000000000000000001
+        let big_denom = parse(&ctx, "100000000000000000000000000000000000").unwrap();
+        let product = &result * &big_denom;
+        let s = format!("{}", product.eval());
+        assert_eq!(
+            s, "100000000000000000000000000000000001",
+            "1.00000000000000000000000000000000001 * 10^35 should be exact, got: {s}"
+        );
+    }
+
+    #[test]
+    fn parse_decimal_20_places_exact() {
+        let ctx = Context::new();
+        // bc: 314159265358979323846 / 2 = 157079632679489661923
+        // bc: 100000000000000000000 / 2 = 50000000000000000000
+        // GCD(314159265358979323846, 100000000000000000000) = 2
+        // Reduced: 157079632679489661923/50000000000000000000
+        let result = parse(&ctx, "3.14159265358979323846").unwrap();
+        let s = format!("{result}");
+        assert_eq!(
+            s, "157079632679489661923/50000000000000000000",
+            "20-digit decimal should be exact reduced rational"
+        );
+    }
+
+    #[test]
+    fn parse_decimal_20_places_multiply_back() {
+        let ctx = Context::new();
+        // Verify: 157079632679489661923/50000000000000000000 * 50000000000000000000
+        //       = 157079632679489661923 (bc-verified)
+        let result = parse(&ctx, "3.14159265358979323846").unwrap();
+        let denom = parse(&ctx, "50000000000000000000").unwrap();
+        let product = (&result * &denom).eval();
+        let s = format!("{product}");
+        assert_eq!(
+            s, "157079632679489661923",
+            "rational * denominator should recover exact numerator"
+        );
+    }
+
+    #[test]
+    fn parse_decimal_50_places_exact() {
+        let ctx = Context::new();
+        // 50 decimal places — well beyond any fixed-precision type
+        // Must parse without error AND produce an exact rational
+        let input = "3.14159265358979323846264338327950288419716939937510";
+        let result = parse(&ctx, input).unwrap();
+        // Multiply by 10^50 to recover the exact numerator
+        // bc: the full numerator is 314159265358979323846264338327950288419716939937510
+        let big = parse(&ctx, "100000000000000000000000000000000000000000000000000").unwrap();
+        let product = (&result * &big).eval();
+        let s = format!("{product}");
+        assert_eq!(
+            s, "314159265358979323846264338327950288419716939937510",
+            "50-digit decimal * 10^50 must recover exact integer (bc-verified)"
+        );
+    }
+
+    #[test]
+    fn parse_decimal_large_integer_part_and_fraction_exact() {
+        let ctx = Context::new();
+        // 123456789012345678901234567890.123456789012345678901234567890
+        // = 123456789012345678901234567890123456789012345678901234567890 / 10^30
+        // Verify by multiplying by 10^30
+        let result = parse(
+            &ctx,
+            "123456789012345678901234567890.123456789012345678901234567890",
+        )
+        .unwrap();
+        let denom = parse(&ctx, "1000000000000000000000000000000").unwrap(); // 10^30
+        let product = (&result * &denom).eval();
+        let s = format!("{product}");
+        assert_eq!(
+            s, "123456789012345678901234567890123456789012345678901234567890",
+            "large decimal * 10^30 must recover exact integer (bc-verified)"
+        );
+    }
+
+    #[test]
+    fn parse_decimal_used_in_arithmetic() {
+        let ctx = Context::new();
+        // 0.1 + 0.2 should be exactly 3/10 (no floating-point 0.30000000000000004 nonsense)
+        let result = parse(&ctx, "0.1 + 0.2").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "3/10", "0.1 + 0.2 should be exactly 3/10, got: {s}");
+    }
+
+    #[test]
+    fn parse_decimal_multiplication_exact() {
+        let ctx = Context::new();
+        // 0.1 * 0.1 should be exactly 1/100
+        let result = parse(&ctx, "0.1 * 0.1").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "1/100", "0.1 * 0.1 should be exactly 1/100, got: {s}");
+    }
+
+    #[test]
+    fn parse_decimal_vs_fraction_equivalence() {
+        let ctx = Context::new();
+        // 2.5 * x should be the same as 5/2 * x
+        let x = ctx.symbol("x");
+        let from_decimal = parse(&ctx, "2.5 * x").unwrap();
+        let five_halves = ctx.rational(5, 2);
+        let from_fraction = &five_halves * &x;
+        assert_eq!(
+            from_decimal, from_fraction,
+            "2.5*x and (5/2)*x should be identical expressions"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Edge cases and robustness
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn parse_zero_integer() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "0").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "0");
+    }
+
+    #[test]
+    fn parse_zero_decimal() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "0.0").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "0", "0.0 should parse as 0, got: {s}");
+    }
+
+    #[test]
+    fn parse_leading_zeros_integer() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "007").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "7", "007 should parse as 7, got: {s}");
+    }
+
+    #[test]
+    fn parse_leading_zeros_decimal() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "0.00100").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "1/1000", "0.00100 should parse as 1/1000, got: {s}");
+    }
+
+    #[test]
+    fn parse_deep_nesting_limit() {
+        let ctx = Context::new();
+        let deep = "(".repeat(300) + "1" + &")".repeat(300);
+        let result = parse(&ctx, &deep);
+        assert!(
+            result.is_err(),
+            "deeply nested input should return error, not stack overflow"
+        );
+    }
+
+    #[test]
+    fn parse_moderate_nesting_ok() {
+        let ctx = Context::new();
+        // 50 levels of nesting should be fine (well under 256 limit)
+        let expr = "(".repeat(50) + "x + 1" + &")".repeat(50);
+        let result = parse(&ctx, &expr);
+        assert!(result.is_ok(), "50 levels of nesting should be fine");
+    }
+
+    #[test]
+    fn parse_decimal_with_variable_exact_coeff() {
+        let ctx = Context::new();
+        // bc: 314/100 = 157/50 (GCD=2). So 3.14*x = 157/50*x
+        let result = parse(&ctx, "3.14 * x").unwrap();
+        let s = format!("{result}");
+        assert_eq!(
+            s, "157/50*x",
+            "3.14*x should have exact coefficient 157/50, got: {s}"
+        );
+    }
+
+    #[test]
+    fn parse_integer_one() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "1").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "1");
+    }
+
+    #[test]
+    fn parse_negative_decimal() {
+        let ctx = Context::new();
+        // -0.5 = -5/10 = -1/2
+        let result = parse(&ctx, "-0.5").unwrap();
+        let s = format!("{result}");
+        assert_eq!(s, "-1/2", "-0.5 should parse as -1/2, got: {s}");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // bc-verified: arithmetic on parsed arbitrary-precision values
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn parse_beyond_i64_arithmetic() {
+        let ctx = Context::new();
+        // bc: 9223372036854775808 + 1 = 9223372036854775809
+        let result = parse(&ctx, "9223372036854775808 + 1").unwrap();
+        let s = format!("{result}");
+        assert_eq!(
+            s, "9223372036854775809",
+            "i64::MAX+1 + 1 should be exact (bc-verified)"
+        );
+    }
+
+    #[test]
+    fn parse_beyond_i128() {
+        let ctx = Context::new();
+        // i128::MAX = 170141183460469231731687303715884105727
+        // bc: 170141183460469231731687303715884105727 + 1 = 170141183460469231731687303715884105728
+        let result = parse(&ctx, "170141183460469231731687303715884105728").unwrap();
+        let s = format!("{result}");
+        assert_eq!(
+            s, "170141183460469231731687303715884105728",
+            "i128::MAX+1 should parse and display exactly"
+        );
+    }
+
+    #[test]
+    fn parse_huge_integer_squared() {
+        let ctx = Context::new();
+        // bc: 99999999999999999999999999999 * 99999999999999999999999999999
+        //   = 9999999999999999999999999999800000000000000000000000000001
+        let base = parse(&ctx, "99999999999999999999999999999").unwrap();
+        let squared = base.powi(2).eval();
+        let s = format!("{squared}");
+        assert_eq!(
+            s, "9999999999999999999999999999800000000000000000000000000001",
+            "(10^29 - 1)^2 should be exact (bc-verified)"
+        );
+    }
+
+    #[test]
+    fn parse_tiny_number_exact() {
+        let ctx = Context::new();
+        // 0.000000000000000000000000000000000001 = 1/10^36
+        // bc: 10^36 = 1000000000000000000000000000000000000
+        // Verify: multiply by 10^36 should give exactly 1
+        let tiny = parse(&ctx, "0.000000000000000000000000000000000001").unwrap();
+        let big = parse(&ctx, "1000000000000000000000000000000000000").unwrap();
+        let product = (&tiny * &big).eval();
+        let s = format!("{product}");
+        assert_eq!(s, "1", "10^-36 * 10^36 should be exactly 1 (bc-verified)");
+    }
+
+    #[test]
+    fn parse_tiny_number_display() {
+        let ctx = Context::new();
+        // 0.000000000000000000000000000000000001 = 1/10^36
+        let tiny = parse(&ctx, "0.000000000000000000000000000000000001").unwrap();
+        let s = format!("{tiny}");
+        assert_eq!(
+            s, "1/1000000000000000000000000000000000000",
+            "10^-36 should display as exact fraction (bc-verified)"
+        );
+    }
+
+    #[test]
+    fn parse_large_integer_addition() {
+        let ctx = Context::new();
+        // bc: 123456789012345678901234567890 + 1 = 123456789012345678901234567891
+        let result = parse(&ctx, "123456789012345678901234567890 + 1").unwrap();
+        let s = format!("{result}");
+        assert_eq!(
+            s, "123456789012345678901234567891",
+            "large integer + 1 should be exact (bc-verified)"
         );
     }
 }
