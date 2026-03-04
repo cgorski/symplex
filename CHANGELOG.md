@@ -130,3 +130,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `expand()` now recurses through all 15 unary function types
 - Global convenience: `symplex::pi()`, `symplex::e()`, `symplex::i_unit()`, `symplex::infinity()`
 - `Ex::args()`, `Ex::diff_n()`, `Ex::log()`, `Ex::is_imaginary()`, `Ex::is_complex()`, `Ex::is_rational()`, `Ex::is_nonnegative()`, `Ex::is_nonpositive()`
+
+**Cycles 9-18: Advanced Features**
+- General u-substitution in integration (∫ 2x·exp(x²) dx, ∫ cos(x)·exp(sin(x)) dx)
+- Trig power integration: ∫ sin^n(x) dx, ∫ cos^n(x) dx via recursive reduction
+- Trig product-to-sum: sin(a)·cos(b) → ½[sin(a+b)+sin(a-b)] via `trig_combine()`
+- Change-of-variable solver: exp(2x)-3·exp(x)+2=0 via t=exp(x) substitution
+- Parser: float literals (3.14), implicit multiplication (2x), constant recognition (pi, I, E)
+- Complex numerical evaluation (evalf Tier 3): full (real, imag) pair arithmetic
+- `as_real_imag` decomposition: `re()` / `im()` methods
+- `factor_terms()`: extract GCD of numeric coefficients from sums
+- `From<i64/i32/u8/...>` for `Ex`, `Sum`/`Product` trait implementations
+- Symbolic `Matrix` type: construct, transpose, add, matmul, determinant, trace, Jacobian
+- `lambdify()`: compile expressions to `Box<dyn Fn(&[f64]) -> f64>`
+- Common subexpression elimination (`cse()`)
+- ODE solver (`dsolve`): separable, first-order linear, second-order constant-coefficient
+- `Equation` type with solve/subs/simplify and `eq!` macro
+- Factorial and Binomial node types with arbitrary-precision evaluation
+- Canonical invariant checker (`verify_canonical`) with debug_assert integration
+- Fixed `canon_mul` sort-order bug (sort by result sort key, not base sort key)
+- Code hardening: unwrap→expect with documented invariants, display.rs defensive fallback
+- `smart_simplify()` multi-strategy orchestrator with `count_ops()` measure
+- Denominator rationalization (`rationalize_denom()`)
+- `expr!` macro: constants (pi, E, I, oo), rationals (1/2), log(x, base)
+- `matrix!` macro for natural matrix construction
+- `eq!` macro for equation construction
+- `rule!` macro conditional guards (`if condition`)

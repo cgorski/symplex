@@ -5,17 +5,24 @@ Symbolic mathematics library for Rust.
 ## Features
 
 - **Expression building** — operator overloading (`+`, `-`, `*`, `/`, unary `-`), method chaining (`.pow()`, `.sin()`, `.diff()`), automatic canonicalization (flatten, sort, combine like terms)
-- **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax; `rule!(arena, "name", LHS => RHS)` for rewrite rules
+- **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax with constants (`pi`, `E`, `I`) and rationals (`1/2`); `rule!(arena, "name", LHS => RHS)` for rewrite rules; `matrix!` and `eq!` for matrices and equations
 - **18 math functions** — sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, ln, abs, sqrt, cbrt, nthroot
 - **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
 - **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts, u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals, inverse trig antiderivatives (asin, acos, atan), general linear substitution (ax+b)^n, expand-then-integrate fallback
 - **Taylor series** — expansion around any point with configurable order and pole detection
 - **Limits** — direct substitution, L'Hôpital's rule (0/0 and ∞/∞), series fallback
-- **Equation solving** — polynomial (linear, quadratic, higher-degree via rational root theorem), linear systems (Gaussian elimination), numerical root finding (Newton's method), transcendental equations via inversion peeling (exp, ln, sin, cos, tan, sqrt), Mul-factor solving
-- **Simplification** — 23 rewrite rules (incl. sin/cos→tan ratio, exp combining) with sub-expression matching, fixpoint iteration via `full_simplify()`
+- **Equation solving** — polynomial (linear, quadratic, higher-degree via rational root theorem), complex roots, linear systems (Gaussian elimination), numerical root finding (Newton's method), transcendental equations via inversion peeling (exp, ln, sin, cos, tan, sqrt) with change-of-variable, Mul-factor solving
+- **Simplification** — 23 rewrite rules (incl. sin/cos→tan ratio, exp combining, abs-positive) with sub-expression matching, fixpoint iteration via `full_simplify()`, multi-strategy `smart_simplify()`
 - **Algebraic manipulation** — expand, factor, collect, together, cancel, partial fractions (`apart`), trig expansion (`expand_trig`), log expansion (`expand_log`), logcombine
 - **Exact evaluation** — 30+ special values for trig/exp/ln including irrational values (√2/2, √3/2), perfect nth root evaluation, odd/even function detection, integer sqrt simplification (√8→2√2), trig-hyperbolic bridge (sin(ix)=i·sinh(x))
 - **Complex numbers** — i²=-1 canonicalization, (-1)^(1/2)→i, (-n)^(1/2)→i√n, complex quadratic roots, Euler's formula exp(iπ)=-1
+- **Complex decomposition** — `re()` / `im()` split expressions into real and imaginary parts
+- **Symbolic matrices** — construct, multiply, transpose, determinant, trace, Jacobian computation
+- **ODE solver** — separable, first-order linear, second-order constant-coefficient
+- **lambdify** — compile expressions to `Fn(f64) -> f64` closures for fast numerical evaluation
+- **Common subexpression elimination (CSE)** — extract shared subexpressions for code generation
+- **Factorial and binomial coefficients** — `n!` and `C(n,k)` with arbitrary-precision evaluation
+- **Denominator rationalization** — clear square roots from denominators
 - **Arbitrary-precision numerical evaluation** — via `astro-float`, any number of decimal digits
 - **Assumption system** — 23 mathematical properties (positive, real, integer, etc.) with forward-chaining inference
 - **Pattern matching** — wild symbols, named rewrite rules, simplification with trace
@@ -71,6 +78,10 @@ println!("{factored}");                      // (-1 + x)*(1 + x)
 
 let trig = expr!(sin(x)^2 + cos(x)^2);
 println!("{}", trig.simplify());             // 1
+
+// ── Matrices ─────────────────────────────────────────────────
+let m = matrix![[x, 1], [0, x^2]];
+println!("det = {}", m.det());              // x^3
 
 // ── Complex numbers ─────────────────────────────────────────
 let i = ctx.i_unit();
@@ -138,6 +149,8 @@ ex.expand_trig()                             // sin(a+b) → sin(a)cos(b)+...
 ex.expand_log()                              // ln(a*b) → ln(a)+ln(b)
 ex.logcombine()                              // ln(a)+ln(b) → ln(a*b)
 ex.log(&base)                                // arbitrary-base logarithm
+ex.factor_terms()                            // extract GCD of coefficients
+ex.rationalize_denom()                       // clear radicals from denominators
 ex.solve(&var)                               // solve expr=0 → Result
 ex.nsolve(&var, guess, max_iter, tol)        // numerical root → Result
 
@@ -146,7 +159,17 @@ ex.simplify()                                // one-pass rewrite rules
 ex.simplify_trace()                          // with step-by-step trace
 ex.full_simplify()                           // fixpoint: eval+expand+simplify
 ex.full_simplify_trace()                     // with accumulated trace
+ex.smart_simplify()                          // multi-strategy simplification
 ex.eval()                                    // evaluate special values
+ex.count_ops()                               // expression complexity
+
+// ── Complex decomposition ──────────────────────────────────────
+ex.re()                                      // real part
+ex.im()                                      // imaginary part
+
+// ── Code generation ────────────────────────────────────────────
+ex.lambdify(&["x", "y"])                     // compile to Fn(f64) → f64 closure
+ex.cse()                                     // common subexpression elimination
 
 // ── Substitution ───────────────────────────────────────────────
 ex.subs(&old, &new)                          // structural substitution
@@ -209,11 +232,38 @@ ex.maclaurin_or_self(&x, n)                 // maclaurin or unchanged
 ### Macros
 
 ```rust
-expr!(x^2 + 2*x + 1)                        // build expression
+expr!(x^2 + 2*x + 1)                        // build expression (supports pi, E, I, 1/2)
 rule!(arena, "name", LHS => RHS)             // define rewrite rule
 syms!(ctx; x, y, z)                          // declare symbols (with context)
 sym!(ctx; t, Positive, Real)                 // symbol with assumptions
 vars!(x, y, z)                               // declare symbols (global context)
+matrix![[a, b], [c, d]]                      // build Matrix
+eq!(lhs = rhs)                               // build Equation
+```
+
+### Matrix
+
+```rust
+Matrix::new(rows)                            // from nested vecs
+Matrix::identity(n)                          // n×n identity
+Matrix::zeros(n, m)                          // zero matrix
+m.transpose()                                // transpose
+m.det()                                      // determinant
+m.trace()                                    // trace
+m.matmul(&other)                             // matrix multiply
+m.diff(&var)                                 // element-wise differentiation
+m.subs(&old, &new)                           // element-wise substitution
+jacobian(&[f1, f2], &[x, y])                // Jacobian matrix
+```
+
+### Equation
+
+```rust
+Equation::new(lhs, rhs)                     // create equation
+eq.solve(&var)                               // solve for variable → Result
+eq.solve_or_empty(&var)                      // solve or []
+eq.subs(&old, &new)                          // substitute in both sides
+eq.simplify()                                // simplify both sides
 ```
 
 ### Free-Standing Functions
@@ -269,9 +319,16 @@ For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is pl
 | 11 | `asinh(sinh(w)) → w` | Inverse hyperbolic |
 | 12 | `acosh(cosh(w)) → w` | Inverse hyperbolic |
 | 13 | `atanh(tanh(w)) → w` | Inverse hyperbolic |
-| 14 | `sin(w)/cos(w) → tan(w)` | Trig ratio |
-| 15 | `sinh(w)/cosh(w) → tanh(w)` | Hyperbolic ratio |
-| 16 | `exp(a)*exp(b) → exp(a+b)` | Exp combining |
+| 14 | `sin(asin(w)) → w` | Forward-inverse trig |
+| 15 | `cos(acos(w)) → w` | Forward-inverse trig |
+| 16 | `tan(atan(w)) → w` | Forward-inverse trig |
+| 17 | `sinh(asinh(w)) → w` | Forward-inverse hyperbolic |
+| 18 | `cosh(acosh(w)) → w` | Forward-inverse hyperbolic |
+| 19 | `tanh(atanh(w)) → w` | Forward-inverse hyperbolic |
+| 20 | `sin(w)/cos(w) → tan(w)` | Trig ratio |
+| 21 | `sinh(w)/cosh(w) → tanh(w)` | Hyperbolic ratio |
+| 22 | `exp(a)*exp(b) → exp(a+b)` | Exp combining |
+| 23 | `abs(w) → w` (when w positive) | Abs-positive |
 
 All rules support sub-expression matching in Add and Mul (e.g., `3 + sin²(x) + cos²(x) → 4`).
 

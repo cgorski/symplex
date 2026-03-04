@@ -462,6 +462,8 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 | Infrastructure | Criterion benchmarks (30), GitHub Actions CI, CHANGELOG.md |
 | Sprint A-D | Integration completeness (tan/ln/inverse trig-hyp/apart pipeline), 3 new simplify rules + Mul sub-match, complete unit circle eval, ergonomics (zero/one/expr_type/replace/logcombine), calculus example |
 | Cycles 4-8 | Complex number support (i²=-1, (-1)^½→I, complex quadratic roots, Euler's formula), transcendental solver (inversion peeling), integer sqrt simplification (√8→2√2), trig-hyp bridge, inverse trig integrals, general linear substitution, 6 new simplify rules, assumption handlers for 9 function types, node rebuilding fixes, SymPy-inspired improvements |
+| Cycles 9-13 | General u-sub, trig power integration, trig combine, solver change-of-variable, parser improvements (float/implicit-mul/constants), complex evalf Tier 3, as_real_imag, factor_terms, From<T>/Sum/Product, bounded exhaustive verification, known-answer corpus, numerical cross-validation |
+| Cycles 14-18 | Equation type + eq! macro, Factorial/Binomial nodes, canonical invariant checker + canon_mul sort fix, code hardening, symbolic Matrix + matrix! macro + Jacobian, lambdify (expression→closure), CSE, ODE solver (separable/linear/2nd-order), expr! constants/rationals, rule! conditional guards |
 
 ---
 
@@ -481,6 +483,9 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 12. **`expr!(x^2^3)` with nested integer powers causes type errors.** The inner `2^3` evaluates as integer arithmetic, not symbolic.
 13. **`replace()` closure cannot call locking methods.** The closure passed to `Ex::replace()` must not call methods that acquire the context lock (e.g., `.sin()`, `.expand()`), as this will deadlock.
 14. **No `as_real_imag` decomposition.** Expressions cannot be split into real and imaginary parts programmatically.
+15. **`factor_terms` undone by Number×Add distribution.** `factor_terms(4x+6y)` extracts 2 but `canon_mul` distributes it back. A display-only factored form is needed.
+16. **ODE solver has no public `Ex`-level API.** Must use `ctx.with_arena_mut()` + `dsolve()` directly.
+17. **`lambdify` does not support complex expressions.** Returns `None` for expressions containing `I`.
 
 ---
 
@@ -655,6 +660,11 @@ abs(abs(w_)) => abs(w_)
 | F11 | **Complex numerical evaluation** — (real,imag) pair arithmetic in evalf | 8 hr | Not started (deferred) |
 | F12 | **Trig power reduction** — ∫ sin^n(x) dx recursive formula | 2 hr | Not started |
 | F13 | **General u-substitution** — SymPy-style find_substitutions | 4 hr | Not started |
+| F14 | **Limits at infinity** — dominant-term analysis for rational functions | 3 hr | Not started |
+| F15 | **Series known-coefficient fast paths** — sin/cos/exp without repeated differentiation | 2 hr | Not started |
+| F16 | **Completing the square in integration** — ∫ 1/(x²+bx+c) dx | 2 hr | Not started |
+| F17 | **Vector calculus** — gradient, divergence, curl on Matrix | 3 hr | Not started |
+| F18 | **ODE public API** — Ex-level dsolve with Equation input | 1 hr | Not started |
 
 ### Infrastructure Tasks
 
@@ -688,14 +698,16 @@ abs(abs(w_)) => abs(w_)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 1,380+ passing, 0 failing, 0 warnings |
-| Public methods on `Ex` | 94 |
+| Tests | 2,259 passing, 0 failing, 0 warnings |
+| Public methods on `Ex` | 103 |
 | Public methods on `Context` | 17 |
 | Free-standing functions | 5 |
-| Source code | 22,500+ lines across 36 modules |
-| Test code | 7,500+ lines across 30+ test files |
+| Source code | 28,700+ lines across 45 modules |
+| Test code | 14,500+ lines across 39 test files |
 | ExprNode variants | 30 (21 non-atom + 9 atom) |
 | Simplification rules | 23 |
+| Matrix methods | 26 |
+| Factorial/Binomial | arbitrary precision (no limit) |
 | Eval special values | 60+ |
 | Criterion benchmarks | 30 |
 | Proptest properties | 33 |
