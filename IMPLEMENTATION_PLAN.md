@@ -1,10 +1,66 @@
 # Symplex Implementation Plan
 
+> **For new developers:** Start with [Current Architecture](#current-architecture-020) 
+> to understand the codebase structure, then [Roadmap](#roadmap) for what's next.
+> The [SymPy Gap Analysis](#sympy-gap-analysis--priority-roadmap) shows where 
+> to focus for maximum impact.
+
 ## Overview
 
 Symplex is a symbolic mathematics library for Rust. It provides an arena-interned expression tree with hash-consing, canonical ordering, a three-valued assumption system, symbolic differentiation, pattern matching with rewrite rules, algebraic expansion, special-value evaluation, arbitrary-precision numerical evaluation, polynomial algebra with GCD, fraction cancellation, polynomial equation solving, and proc macros for ergonomic expression building and rule definition.
 
 This document describes the architecture, design decisions, module responsibilities, data flow, concurrency model, and planned future work. It is intended to be sufficient for a new contributor to understand the codebase and begin development without prior context.
+
+---
+
+## Current Architecture (0.2.0)
+
+### Codebase at a glance
+
+- **48,500+ total lines** across 45 source modules, 47 test files, 2 examples, 1 benchmark
+- **2,352 tests** — proptest (125 properties), known-answers (256), bounded exhaustive, numerical cross-validation, stress tests
+- **46 ExprNode variants** including 11 boolean/logic/piecewise (added in 0.2.0)
+- **Phantom-typed expression handles** — `Expr<Numeric>` (aliased `Ex`) and `Expr<Boolean>` (aliased `BoolEx`)
+
+### Six-layer architecture
+
+```text
+Layer 1: Public API        expr.rs (Ex/BoolEx methods), context.rs, eq.rs, matrix.rs
+Layer 2: Macros            symplex-macros/ (expr!, rule!, matrix!, eq!)
+Layer 3: Transformations   diff.rs, integrate.rs, expand.rs, eval.rs, pattern.rs, solve.rs,
+                           series.rs, limit.rs, simplify_engine.rs, trig_*.rs, log_*.rs
+Layer 4: Canonicalization  canon.rs (canon_add/mul/pow/neg/and/or/not + verify_canonical)
+Layer 5: Arena             arena.rs, node.rs (ExprNode enum), walk.rs, sort_key.rs, symbol.rs
+Layer 6: Types             assumptions.rs, config.rs, errors.rs
+```
+
+Each layer only calls downward. No circular dependencies.
+
+### Key design patterns
+
+1. **Arena hash-consing** — Every expression is an `ExprId(u32)` index into `Arena.nodes: Vec<ExprNode>`. Structurally identical expressions share the same ExprId. O(1) equality, O(1) hashing.
+
+2. **Canonical form** — Construction always canonicalizes: `Add` children sorted, like-terms merged, zeros dropped. `Mul` similar. `Pow(x,0)→1`, `Pow(x,1)→x`. `i^n` reduced mod 4. `(-1)^(1/2)→i`. Enforced by `canon_add/mul/pow/neg` + `verify_canonical` debug assertions.
+
+3. **Phantom-typed sorts** — `Expr<S: Sort>` carries a compile-time sort marker. `Expr<Numeric>` (= `Ex`) supports arithmetic/calculus. `Expr<Boolean>` (= `BoolEx`) supports logic. `sin(bool_expr)` is a compile error. Zero runtime cost.
+
+4. **Iterative walks** — All tree traversals use explicit stacks via `walk.rs` (`post_order_ids`, `walk_and_rebuild`). No recursion. Stack-safe for arbitrarily deep expressions.
+
+5. **Pattern rewriting** — 23 simplification rules in `basic_rules()`. Sub-expression matching in both Add and Mul nodes. Rules can have conditions (`condition: Option<fn(&Arena, &Substitution) -> bool>`).
+
+6. **Smart simplify** — `simplify_engine.rs` tries 7 strategies (eval, expand, factor_terms, trig_expand, logcombine, cancel) and picks the result with lowest `count_ops`.
+
+### How to add common things
+
+**New ExprNode variant** — Add to `node.rs` enum → compiler errors guide you to ~12 files that need match arms (sort_key, walk, display, diff, eval, evalf, tree, expr, polybridge, lambdify, expand, pattern). The canonical invariant checker (`verify_canonical`) catches structural violations.
+
+**New simplification rule** — Add a `fn rule_xxx(arena) -> Rule` in `pattern.rs`, add it to `basic_rules()`. Use `arena.wild()` for pattern variables. See existing rules for the pattern.
+
+**New integration form** — Add a match arm in `integrate_node()` in `integrate.rs`. Follow the existing patterns for u-substitution (`linear_coeff_of`) or by-parts.
+
+**New eval special value** — Add a case in the relevant `eval_xxx` function in `eval.rs`. Follow the `as_pi_multiple` / `Ratio` comparison pattern.
+
+**New Ex method** — Add to the appropriate impl block in `expr.rs`: `impl<S: Sort> Expr<S>` for sort-preserving ops, `impl Expr<Numeric>` for numeric-only, `impl Expr<Boolean>` for boolean-only.
 
 ---
 
@@ -710,23 +766,27 @@ abs(abs(w_)) => abs(w_)
 - [ ] Final API surface review — no accidental `pub` on internal types
 - [ ] Publish to crates.io
 
-### Current Statistics (Commit 43)
+### Current Statistics (Commit 71)
 
 | Metric | Value |
 |--------|-------|
 | Tests | 2,352 passing, 0 failing, 0 warnings |
-| Public methods on `Ex` | 103+ (numeric), 6 (boolean) |
+| Source | 30,575 lines across 45 modules |
+| Tests | 16,195 lines across 47 files |
+| Macros | 1,235 lines |
+| Total lines | 48,538 |
+| Public methods on `Ex` | 103+ (numeric) + 6 (boolean) |
 | Public methods on `Context` | 17 |
 | Free-standing functions | 5 |
-| Total lines | 48,500+ |
-| ExprNode variants | 44 |
+| ExprNode variants | 46 |
 | Simplification rules | 23 |
+| Integration forms | 30+ |
 | Matrix methods | 26 |
 | Factorial/Binomial | arbitrary precision (no limit) |
-| Eval special values | 60+ |
+| Eval special values | 86+ |
 | Criterion benchmarks | 30 |
-| Proptest properties | 33 |
-| Commits | 43 |
+| Proptest properties | 125 |
+| Commits | 71 |
 
 ---
 
@@ -849,7 +909,36 @@ BATCH 4 (parallel — NEW test files):
 
 ---
 
-## v0.2.0 Roadmap
+## Roadmap
+
+### 0.2.x series (incremental, non-breaking)
+
+| Version | Theme | Features | Est. |
+|---------|-------|----------|------|
+| 0.2.0 ✅ | Type safety | Phantom types, BoolEx, relationals, logic, piecewise, 11 new ExprNode variants | Done |
+| 0.2.1 | Completeness | Inequality solving (returns BoolEx), floor/ceil/min/max functions | ~500 lines |
+| 0.2.2 | Linear algebra | gradient/divergence/curl/laplacian, eigenvalues, characteristic polynomial | ~400 lines |
+| 0.2.3 | Discrete math | Symbolic Sum/Product nodes, closed-form evaluation (Gosper) | ~500 lines |
+| 0.2.4 | Roots | Cubic formula (Cardano), quartic formula (Ferrari) | ~300 lines |
+
+### 0.3.0 (major)
+
+| Feature | Description | Est. |
+|---------|-------------|------|
+| Set type | Interval, FiniteSet, Union, Intersection, EmptySet, Reals | ~800 lines |
+| Expr<SetValued> sort | Third phantom type marker for set-valued expressions | ~200 lines |
+| solveset | Returns Set instead of Vec<Ex> | ~300 lines |
+| as_relational ↔ as_set | Bidirectional bridge between boolean conditions and sets | ~200 lines |
+
+### 0.4.0+ (deep algorithms)
+
+| Feature | Description |
+|---------|-------------|
+| Gruntz algorithm | Robust limits at infinity |
+| Risch integration | Decision procedure for elementary antiderivatives |
+| Hensel factoring | Full polynomial factoring over ℤ |
+| Special functions | Gamma, erf, Bessel node types |
+| Multivariate polynomials | Gröbner bases, multivariate GCD |
 
 ### Strategic Context
 
@@ -863,38 +952,7 @@ Symplex is the only MIT/Apache-2.0 general-purpose CAS in Rust. There is no dire
 
 **The common thread:** Most Rust CAS users want to **derive a formula symbolically, then compile it to numerical code.** This differs from SymPy users who stay in the symbolic world.
 
-### v0.2.0 Feature Priorities
-
-| Priority | Feature | Effort | Status | Rationale |
-|----------|---------|--------|--------|-----------|
-| V1 | **`symplex-format` crate** — LaTeX, Markdown, Typst rendering consuming ExprTree | 4 hr | TODO | #1 user request; separate crate keeps core lean |
-| V2 | **`MathFunction` trait** — user-defined functions with derivative/eval/evalf callbacks | 3 hr | TODO | Extensibility; the one approved advanced type technique |
-| V3 | **CancelToken** — cooperative computation timeout | 2 hr | TODO | Safety for production use; prevents hangs |
-| V4 | **Code generation** — `to_rust_fn()`, `to_c()` for compiling expressions to numerical code | 4 hr | TODO | The killer feature for Rust CAS users |
-| V5 | **Relationals** — Gt, Ge, Eq_, Ne comparison operators | 2 hr | ✅ DONE | Foundation for piecewise and inequality solving |
-| V6 | **Logical connectives** — And, Or, Not with BoolEx type | 2 hr | ✅ DONE | Required for compound conditions |
-| V7 | **Piecewise expressions** — conditional branching with boolean guards | 3 hr | ✅ DONE | Physics/engineering requirement |
-| V8 | **Compile-time sort safety** — Expr<S: Sort> phantom types, BoolEx/Ex separation | 4 hr | ✅ DONE | Prevents boolean/numeric mixing at compile time |
-| V9 | **Inequality solving** — solve Gt/Ge/Lt/Le for intervals | 4 hr | TODO | Natural extension of relationals |
-| V10 | **Sets/Intervals** — SetValued sort, union/intersection/complement | 6 hr | TODO | Solution domains for inequalities |
-| V11 | **Vector calculus** — divergence, curl, gradient | 4 hr | TODO | Physics/robotics audience |
-| V12 | **Trig substitution** — ∫ √(a²-x²) dx, ∫ √(x²+a²) dx | 3 hr | TODO | Common integral forms |
-| V13 | **Assumption-gated simplify rules** — wire AssumptionCache into rule conditions | 1 hr | ✅ Partial | Conditional rules infrastructure + assumption handlers for all functions |
-
-### v0.3.0+ Vision
-
-| Feature | Description |
-|---------|-------------|
-| ODE solver (`dsolve`) | Separation of variables, integrating factors, linear constant-coefficient |
-| ~~Piecewise expressions~~ | ~~New node type with relational/boolean conditions~~ ✅ Done in 0.2.0 |
-| E-graph simplification | Explore `egg` crate for optimal rewriting (MIT licensed) |
-| Gröbner bases | Multivariate polynomial system solving |
-| Laplace/Fourier transforms | Integral transforms for signal processing |
-| Sparse polynomials | Replace dense `Vec<Ratio>` with sparse representation |
-| CSE (common subexpression elimination) | Critical for code generation |
-| Python bindings (PyO3) | Expand audience beyond Rust |
-
-### Architecture Decisions for v0.2.0
+### Architecture Decisions for Next Releases
 
 **Formatting:** The `symplex-format` crate will consume `ExprTree` (serde) from the core. It does NOT depend on `Ex` or `Arena` — only on the serialized tree structure. This means:
 - Core crate has zero formatting dependencies

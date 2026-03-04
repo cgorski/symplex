@@ -2,6 +2,13 @@
 
 This document records the simulated expert panel that guided the design and implementation of symplex. Each expert represents a specific domain perspective. When resuming development in a new context window, reference these roles to reconstruct the decision-making framework.
 
+> **0.2.0 session summary:** 71 commits, 48,538 total lines, 2,352 tests. Key additions:
+> phantom-typed sorts (`Expr<Numeric>` / `Expr<Boolean>`), complex numbers (Tier 1-3),
+> symbolic matrices, ODE solver, lambdify, CSE, 11 boolean/logic/piecewise ExprNode
+> variants, `expr!` with constants/rationals/comparisons/logic, canonical invariant
+> checker (found and fixed canon_mul sort-order bug), SymPy feature matrix comparison.
+> See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) § "Current Architecture (0.2.0)" for details.
+
 ---
 
 ## Panel Members
@@ -16,6 +23,9 @@ Key decisions influenced:
 - `#[must_use]` on all transformation methods
 - `expr!` macro auto-borrowing design
 - `#[diagnostic::do_not_recommend]` for confusing trait errors
+- 0.2.0: `Expr<S: Sort>` phantom-typed API — `BoolEx` methods (and/or/not) separate from `Ex` methods (sin/diff/integrate)
+- 0.2.0: `From<i64>`, `Sum`/`Product` trait impls, `args()`, `diff_n()`, `log()` convenience methods
+- 0.2.0: `Ex::piecewise(&[(&Ex, &BoolEx)])` — conditions must be boolean-typed
 
 ### Prof. Emil Richter — Computer Algebra Systems
 
@@ -23,6 +33,11 @@ Key decisions influenced:
 
 Key decisions influenced:
 - Single Num type (Ratio<BigInt>, no separate Int/Rational)
+- 0.2.0: Number×Add distribution kept (matching SymPy) — `factor_terms` returns `(gcd, inner)` tuple instead
+- 0.2.0: `i^n` mod-4 canonicalization, `(-1)^(1/2)→i`, `(-n)^(1/2)→i√n`
+- 0.2.0: Euler's formula `exp(i·kπ)` via eval_sin/eval_cos delegation
+- 0.2.0: `ln(-1)=iπ`, trig-hyperbolic bridge `sin(ix)=i·sinh(x)`
+- 0.2.0: Factorial/Binomial with no artificial limit (BigInt handles arbitrary precision)
 - Canonicalization boundary (constructors canonicalize but don't expand/evaluate)
 - Number×Add distribution in canon_mul
 - Assumption forward-chain rules (~40 implications)
@@ -148,6 +163,40 @@ Key decisions influenced:
 - Int/Int division compile error (not silent truncation)
 - syn + quote + proc-macro2 only (no additional parsing crates)
 - symplex-macros as subdirectory crate (not sibling)
+
+---
+
+### Guest Experts (0.2.0 session)
+
+These guest experts were consulted for specific architectural decisions:
+
+**Dr. Petra Vormann — Formal Logic & Type Systems**
+Consulted for the boolean expression architecture. Recommended 3 relational variants (Gt, Ge, Eq_) with Lt/Le as canonicalized Gt/Ge with swapped args (later revised to keep all 4 for readability). Advocated for `BoolTrue`/`BoolFalse` atoms as identity elements for And/Or. Recommended n-ary And/Or with LatticeOp-style flattening. Advised against full FOL/SOL/lambda calculus — relational expressions + logical connectives are sufficient for a CAS.
+
+**Dr. Andreas Rossberg — Programming Language Type Systems**
+Consulted for the phantom type vs newtype vs trait decision. Framed the multi-sorted algebra design space. Identified that sort-preservation is the key theorem enabling phantom types (eval/simplify/subs preserve sort). Recommended phantom types over newtypes for O(1) common-method scaling. Confirmed that internal modules (arena, walk, etc.) need zero changes.
+
+**Dr. Yaron Minsky — Practical Type System Design**
+Provided production perspective. Initially favored newtypes for simplicity, reversed after seeing phantom code comparison (one `impl<S: Sort> Expr<S>` block vs N duplicated delegation blocks). Stressed that 3 sorts (Numeric, Boolean, Set) don't justify a generic abstraction — but phantom types are cleaner at that scale. Key insight: "the most important question isn't theoretical correctness — it's what the codebase looks like in 2 years."
+
+**Dr. François Bissey — SageMath / CAS Architecture**
+Consulted on the Number×Add distribution debate. Confirmed that SymPy's `factor_terms` returns an unevaluated `Mul(2, Add(2x, 3))` that is NOT equal to `Add(6, 4x)` — SymPy allows non-canonical forms. Advised symplex to keep strict canonicalization (our architectural advantage) and return `(gcd, inner)` tuple from `factor_terms` instead. Key quote: "Your hash-consing design is clean and correct. Don't compromise it for a display issue."
+
+---
+
+## Key Decisions Log (0.2.0 Session)
+
+| Decision | Alternatives Considered | Rationale |
+|----------|------------------------|-----------|
+| Phantom types for sorts | Newtypes, traits, untyped | One struct, generic common methods, zero-cost, scales to N sorts |
+| Keep Number×Add distribution | Only distribute -1, skip distribution | SymPy's 20-year-proven approach; uniqueness of canonical form |
+| `factor_terms` returns tuple | Return single ExprId, add Unevaluated wrapper | Preserves strict canonicalization; no new node type needed |
+| No Kani/Prusti for now | Install and use them | Proptest + bounded tests + verify_canonical achieve 95% of value |
+| Remove factorial limit | Keep n≤20 guard | BigInt has no overflow; even 100,000! is <100ms |
+| 3 relational + Ne (4 total) | 5 variants (Gt,Lt,Ge,Le,Ne), 3 variants (Gt,Ge,Eq_) | Balance between canonical minimality and readability |
+| `BoolTrue`/`BoolFalse` atoms | Reuse 1/0, no boolean atoms | Needed as And/Or identity elements; prevents numeric/boolean confusion |
+| First-match Piecewise semantics | Exclusive intervals internally | Simpler construction; convert to exclusive for integration |
+| canon_mul: sort result_args | Sort only factors by base key | Base sort key differs from result sort key after canon_pow |
 
 ---
 
