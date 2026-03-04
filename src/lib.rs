@@ -41,6 +41,7 @@ extern crate self as symplex;
 pub(crate) mod apart;
 pub(crate) mod arena;
 pub(crate) mod canon;
+pub(crate) mod codegen;
 pub(crate) mod complex;
 pub(crate) mod cse;
 pub(crate) mod diff;

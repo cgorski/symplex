@@ -2515,6 +2515,26 @@ impl Expr<Numeric> {
         (bindings, self.wrap(result.expr))
     }
 
+    /// Generate a Rust function body as a string.
+    ///
+    /// The generated function takes `f64` arguments and returns `f64`.
+    /// Uses CSE (common subexpression elimination) for efficient code.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let f = x.powi(2) + 1;
+    /// let code = f.to_rust_fn("my_func", &["x"]).unwrap();
+    /// assert!(code.contains("pub fn my_func"));
+    /// ```
+    pub fn to_rust_fn(&self, name: &str, args: &[&str]) -> Result<String, SymplexError> {
+        let mut guard = self.inner.write();
+        guard.arena.to_rust_fn(self.id, name, args)
+    }
+
     // ── Collection reduction ───────────────────────────────────────
 
     /// Sum a collection of expressions.

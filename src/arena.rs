@@ -1150,6 +1150,19 @@ impl Arena {
     ) -> Result<String, crate::errors::SymplexError> {
         crate::evalf::evalf(self, expr, digits)
     }
+
+    /// Generate a Rust function as a string from an expression.
+    ///
+    /// The generated function takes `f64` arguments and returns `f64`.
+    /// Uses CSE (common subexpression elimination) for efficient code.
+    pub(crate) fn to_rust_fn(
+        &mut self,
+        expr: ExprId,
+        name: &str,
+        args: &[&str],
+    ) -> Result<String, crate::errors::SymplexError> {
+        crate::codegen::to_rust_fn(self, expr, name, args)
+    }
 }
 
 // ---------------------------------------------------------------------------

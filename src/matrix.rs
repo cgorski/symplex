@@ -400,6 +400,149 @@ impl Matrix {
             rows,
         }
     }
+
+    // ── Linear-algebra: minor, cofactor, adjugate, inverse ─────────────
+
+    /// Extract the minor matrix (row `row`, col `col` removed).
+    ///
+    /// The result is an `(n-1) × (n-1)` matrix formed by deleting the
+    /// specified row and column.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is not square or has dimension 1.
+    pub fn minor(&self, row: usize, col: usize) -> Matrix {
+        assert_eq!(
+            self.nrows, self.ncols,
+            "minor requires a square matrix, got {}×{}",
+            self.nrows, self.ncols
+        );
+        assert!(self.nrows > 1, "minor requires matrix dimension > 1");
+        let mut rows = Vec::new();
+        for (r, row_data) in self.rows.iter().enumerate() {
+            if r == row {
+                continue;
+            }
+            let mut new_row = Vec::new();
+            for (c, val) in row_data.iter().enumerate() {
+                if c == col {
+                    continue;
+                }
+                new_row.push(val.clone());
+            }
+            rows.push(new_row);
+        }
+        Matrix::new(rows)
+    }
+
+    /// Cofactor C(i, j) = (-1)^(i+j) * det(minor(i, j)).
+    pub fn cofactor(&self, row: usize, col: usize) -> Ex {
+        let minor_det = self.minor(row, col).det();
+        if (row + col) % 2 == 0 {
+            minor_det
+        } else {
+            -minor_det
+        }
+    }
+
+    /// Adjugate matrix (transpose of the cofactor matrix).
+    ///
+    /// `adj(A)[i][j] = cofactor(A, j, i)`.
+    pub fn adjugate(&self) -> Matrix {
+        let n = self.nrows();
+        assert_eq!(
+            n,
+            self.ncols(),
+            "adjugate requires a square matrix, got {}×{}",
+            self.nrows(),
+            self.ncols()
+        );
+        let mut rows = Vec::new();
+        for j in 0..n {
+            let mut row = Vec::new();
+            for i in 0..n {
+                row.push(self.cofactor(i, j)); // note: transposed
+            }
+            rows.push(row);
+        }
+        Matrix::new(rows)
+    }
+
+    /// Matrix inverse: A⁻¹ = adj(A) / det(A).
+    ///
+    /// Returns `None` if the matrix is singular (determinant is
+    /// structurally zero).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is not square.
+    pub fn inv(&self) -> Option<Matrix> {
+        assert_eq!(
+            self.nrows(),
+            self.ncols(),
+            "inverse requires a square matrix, got {}×{}",
+            self.nrows(),
+            self.ncols()
+        );
+        let d = self.det();
+        if d.is_zero_structural() {
+            return None;
+        }
+        // 1×1 special case: inverse is just [[1/a]]
+        if self.nrows() == 1 {
+            let one_over_det = &Ex::one() / &d;
+            return Some(Matrix::new(vec![vec![one_over_det]]));
+        }
+        let adj = self.adjugate();
+        let one_over_det = &Ex::one() / &d;
+        Some(adj.scale(&one_over_det))
+    }
+
+    // ── Characteristic polynomial & eigenvalues ────────────────────────
+
+    /// Characteristic polynomial: det(A − λI).
+    ///
+    /// Returns the polynomial as an [`Ex`] in the given variable `var`
+    /// (which plays the role of λ).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is not square.
+    pub fn char_poly(&self, var: &Ex) -> Ex {
+        let n = self.nrows();
+        assert_eq!(
+            n,
+            self.ncols(),
+            "char_poly requires a square matrix, got {}×{}",
+            self.nrows(),
+            self.ncols()
+        );
+        // Build A - λI
+        let mut rows = Vec::new();
+        for i in 0..n {
+            let mut row = Vec::new();
+            for j in 0..n {
+                let entry = self.rows[i][j].clone();
+                if i == j {
+                    row.push(&entry - var);
+                } else {
+                    row.push(entry);
+                }
+            }
+            rows.push(row);
+        }
+        let m = Matrix::new(rows);
+        m.det().expand()
+    }
+
+    /// Eigenvalues: solve `char_poly(var) = 0` for `var`.
+    ///
+    /// Returns a list of eigenvalues. If the solver cannot factor the
+    /// characteristic polynomial, the returned list may be empty.
+    pub fn eigenvals(&self, var: &Ex) -> Vec<Ex> {
+        let cp = self.char_poly(var);
+        cp.solve_or_empty(var)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
