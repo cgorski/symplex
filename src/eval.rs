@@ -211,9 +211,8 @@ fn eval_factorial(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return None;
     }
     let n: u64 = r.to_integer().try_into().ok()?;
-    if n > 20 {
-        return None; // Guard against huge factorials
-    }
+    // No artificial limit — BigInt handles arbitrary precision.
+    // EvalConfig guards against runaway computation at a higher level.
     let mut result = num_rational::Ratio::<num_bigint::BigInt>::one();
     for i in 2..=n {
         result *= num_rational::Ratio::from_integer(num_bigint::BigInt::from(i));
@@ -230,7 +229,7 @@ fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
     }
     let n_u64: u64 = nr.to_integer().try_into().ok()?;
     let k_u64: u64 = kr.to_integer().try_into().ok()?;
-    if k_u64 > n_u64 || n_u64 > 20 {
+    if k_u64 > n_u64 {
         return None;
     }
     // C(n,k) = n! / (k! * (n-k)!)

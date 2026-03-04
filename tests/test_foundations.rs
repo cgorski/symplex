@@ -167,18 +167,16 @@ fn factorial_display_compound_gets_parens() {
 }
 
 #[test]
-fn factorial_beyond_20_stays_unevaluated() {
-    // The evaluator guards against n > 20, so factorial(21) stays symbolic
+fn factorial_21_evaluates() {
+    // No artificial limit — BigInt handles arbitrary precision.
+    // 21! = 51090942171709440000
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let twenty_one = arena.int(21);
         let expr = arena.factorial(twenty_one);
         let result = arena.eval_expr(expr);
         let s = arena.display(result).to_string();
-        assert!(
-            s.contains("!"),
-            "factorial(21) should stay unevaluated: {s}"
-        );
+        assert_eq!(s, "51090942171709440000", "21! should evaluate: {s}");
     });
 }
 
