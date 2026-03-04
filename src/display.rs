@@ -82,6 +82,12 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Asinh(_)
         | ExprNode::Acosh(_)
         | ExprNode::Atanh(_)
+        | ExprNode::Floor(_)
+        | ExprNode::Ceiling(_)
+        | ExprNode::Min(_)
+        | ExprNode::Max(_)
+        | ExprNode::Sum(_, _, _, _)
+        | ExprNode::Product_(_, _, _, _)
         | ExprNode::Apply(_, _)
         | ExprNode::Derivative(_, _)
         | ExprNode::Integral(_, _) => PREC_ATOM,
@@ -193,9 +199,10 @@ fn display_category(arena: &Arena, id: ExprId) -> DisplayCategory {
             // x^n with integer n → polynomial; x^(1/2) etc. → function-like
             if matches!(arena.node(*base), ExprNode::Symbol(_))
                 && let Some(r) = arena.as_num(*exp)
-                    && r.is_integer() {
-                        return DisplayCategory::Polynomial;
-                    }
+                && r.is_integer()
+            {
+                return DisplayCategory::Polynomial;
+            }
             DisplayCategory::Function
         }
         ExprNode::Mul(children) => {
@@ -239,9 +246,11 @@ fn estimate_display_degree(arena: &Arena, id: ExprId) -> u32 {
         ExprNode::Symbol(_) => 1,
         ExprNode::Pow(_base, exp) => {
             if let Some(r) = arena.as_num(*exp)
-                && r.is_integer() && !r.is_negative() {
-                    return r.to_integer().try_into().unwrap_or(1);
-                }
+                && r.is_integer()
+                && !r.is_negative()
+            {
+                return r.to_integer().try_into().unwrap_or(1);
+            }
             1
         }
         ExprNode::Mul(children) => {
@@ -534,6 +543,54 @@ fn expand_expr(
         ExprNode::Acosh(x) => push_func("acosh", x, stack),
         ExprNode::Atanh(x) => push_func("atanh", x, stack),
         ExprNode::Sign(x) => push_func("sign", x, stack),
+        ExprNode::Floor(x) => push_func("floor", x, stack),
+        ExprNode::Ceiling(x) => push_func("ceiling", x, stack),
+
+        // ── Min / Max ──────────────────────────────────────────────
+        ExprNode::Min(ref args) => {
+            stack.push(WorkItem::Lit(")"));
+            for (i, &arg) in args.iter().enumerate().rev() {
+                stack.push(WorkItem::Expr(arg, 0));
+                if i > 0 {
+                    stack.push(WorkItem::Lit(", "));
+                }
+            }
+            stack.push(WorkItem::Lit("min("));
+        }
+        ExprNode::Max(ref args) => {
+            stack.push(WorkItem::Lit(")"));
+            for (i, &arg) in args.iter().enumerate().rev() {
+                stack.push(WorkItem::Expr(arg, 0));
+                if i > 0 {
+                    stack.push(WorkItem::Lit(", "));
+                }
+            }
+            stack.push(WorkItem::Lit("max("));
+        }
+
+        // ── Sum / Product ──────────────────────────────────────────
+        ExprNode::Sum(body, var, lo, hi) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(hi, 0));
+            stack.push(WorkItem::Lit(".."));
+            stack.push(WorkItem::Expr(lo, 0));
+            stack.push(WorkItem::Lit("="));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("Sum("));
+        }
+        ExprNode::Product_(body, var, lo, hi) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(hi, 0));
+            stack.push(WorkItem::Lit(".."));
+            stack.push(WorkItem::Expr(lo, 0));
+            stack.push(WorkItem::Lit("="));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("Product("));
+        }
 
         // ── Combinatorial ──────────────────────────────────────────
         ExprNode::Factorial(inner) => {

@@ -111,14 +111,15 @@ fn expr_to_rust(arena: &Arena, id: ExprId, var_names: &[&str]) -> Result<String,
             // Check if exponent is a small integer — use powi for efficiency
             if let Some(r) = arena.as_num(exp) {
                 if r.is_integer()
-                    && let Some(n) = r.numer().to_i64() {
-                        if (0..=10).contains(&n) {
-                            return Ok(format!("{b}.powi({n})"));
-                        }
-                        if (-10..0).contains(&n) {
-                            return Ok(format!("{b}.powi({n})"));
-                        }
+                    && let Some(n) = r.numer().to_i64()
+                {
+                    if (0..=10).contains(&n) {
+                        return Ok(format!("{b}.powi({n})"));
                     }
+                    if (-10..0).contains(&n) {
+                        return Ok(format!("{b}.powi({n})"));
+                    }
+                }
                 // Check for sqrt: exponent == 1/2
                 if *r.numer() == 1.into() && *r.denom() == 2.into() {
                     return Ok(format!("{b}.sqrt()"));
@@ -204,6 +205,36 @@ fn expr_to_rust(arena: &Arena, id: ExprId, var_names: &[&str]) -> Result<String,
             let code = expr_to_rust(arena, x, var_names)?;
             Ok(format!("{code}.signum()"))
         }
+        ExprNode::Floor(x) => {
+            let code = expr_to_rust(arena, x, var_names)?;
+            Ok(format!("{code}.floor()"))
+        }
+        ExprNode::Ceiling(x) => {
+            let code = expr_to_rust(arena, x, var_names)?;
+            Ok(format!("{code}.ceil()"))
+        }
+        ExprNode::Min(ref children) => {
+            if children.is_empty() {
+                return Ok("f64::INFINITY".to_string());
+            }
+            let mut code = expr_to_rust(arena, children[0], var_names)?;
+            for &c in &children[1..] {
+                let c_code = expr_to_rust(arena, c, var_names)?;
+                code = format!("{code}.min({c_code})");
+            }
+            Ok(code)
+        }
+        ExprNode::Max(ref children) => {
+            if children.is_empty() {
+                return Ok("f64::NEG_INFINITY".to_string());
+            }
+            let mut code = expr_to_rust(arena, children[0], var_names)?;
+            for &c in &children[1..] {
+                let c_code = expr_to_rust(arena, c, var_names)?;
+                code = format!("{code}.max({c_code})");
+            }
+            Ok(code)
+        }
         // Node types that cannot be meaningfully compiled to Rust f64 code
         ExprNode::ImaginaryUnit => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for imaginary unit".to_string(),
@@ -219,6 +250,12 @@ fn expr_to_rust(arena: &Arena, id: ExprId, var_names: &[&str]) -> Result<String,
         )),
         ExprNode::Integral(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for unevaluated Integral".to_string(),
+        )),
+        ExprNode::Sum(_, _, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for symbolic Sum".to_string(),
+        )),
+        ExprNode::Product_(_, _, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for symbolic Product".to_string(),
         )),
         ExprNode::Piecewise(ref branches) => {
             // Generate a chain of if/else expressions

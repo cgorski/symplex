@@ -409,6 +409,98 @@ fn eval_node(
             }
         }
 
+        // ── Floor ──────────────────────────────────────────────────
+        ExprNode::Floor(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "floor of complex number is not defined".into(),
+                });
+            }
+            // BigFloat::int() returns the integer part (truncation toward zero).
+            // floor(x) = x if x is integer, else truncate toward -infinity.
+            let truncated = val.0.int();
+            let result = if val.0.is_negative() && truncated != val.0 {
+                // For negative non-integers, floor = trunc - 1
+                truncated.sub(&BigFloat::from_i32(1, prec), prec, rm)
+            } else {
+                truncated
+            };
+            Ok((result, BigFloat::new(prec)))
+        }
+
+        // ── Ceiling ────────────────────────────────────────────────
+        ExprNode::Ceiling(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "ceiling of complex number is not defined".into(),
+                });
+            }
+            let truncated = val.0.int();
+            let result = if val.0.is_positive() && truncated != val.0 {
+                // For positive non-integers, ceil = trunc + 1
+                truncated.add(&BigFloat::from_i32(1, prec), prec, rm)
+            } else {
+                truncated
+            };
+            Ok((result, BigFloat::new(prec)))
+        }
+
+        // ── Min ────────────────────────────────────────────────────
+        ExprNode::Min(children) => {
+            if children.is_empty() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "min of empty set".into(),
+                });
+            }
+            let mut best = get_cached(cache, children[0])?.clone();
+            if !best.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "min requires real arguments".into(),
+                });
+            }
+            for &child in &children[1..] {
+                let val = get_cached(cache, child)?;
+                if !val.1.is_zero() {
+                    return Err(SymplexError::Unevaluable {
+                        reason: "min requires real arguments".into(),
+                    });
+                }
+                if val.0.sub(&best.0, prec, rm).is_negative() {
+                    best = val.clone();
+                }
+            }
+            Ok(best)
+        }
+
+        // ── Max ────────────────────────────────────────────────────
+        ExprNode::Max(children) => {
+            if children.is_empty() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "max of empty set".into(),
+                });
+            }
+            let mut best = get_cached(cache, children[0])?.clone();
+            if !best.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "max requires real arguments".into(),
+                });
+            }
+            for &child in &children[1..] {
+                let val = get_cached(cache, child)?;
+                if !val.1.is_zero() {
+                    return Err(SymplexError::Unevaluable {
+                        reason: "max requires real arguments".into(),
+                    });
+                }
+                if val.0.sub(&best.0, prec, rm).is_positive() {
+                    best = val.clone();
+                }
+            }
+            Ok(best)
+        }
+
         // ── Unevaluable ────────────────────────────────────────────
         ExprNode::Apply(sid, _) => {
             let name = arena.symbol_name(*sid);
@@ -423,6 +515,15 @@ fn eval_node(
 
         ExprNode::Integral(_, _) => Err(SymplexError::Unevaluable {
             reason: "cannot evaluate unevaluated integral".into(),
+        }),
+
+        ExprNode::Sum(_, _, _, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate symbolic Sum; call eval() first to reduce".into(),
+        }),
+
+        ExprNode::Product_(_, _, _, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate symbolic Product; call eval() first to reduce"
+                .into(),
         }),
 
         ExprNode::BoolTrue

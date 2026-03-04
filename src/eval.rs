@@ -552,6 +552,204 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
             }
 
+            // ── Floor ──────────────────────────────────────────────
+            ExprNode::Floor(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                if let Some(r) = arena.as_num(ni).cloned() {
+                    if r.is_integer() {
+                        ni
+                    } else {
+                        let p = r.numer().clone();
+                        let q = r.denom().clone();
+                        // Rust BigInt `/` truncates toward zero; adjust for negative
+                        let floor_val = if p.is_negative() && !(&p % &q).is_zero() {
+                            &p / &q - BigInt::from(1)
+                        } else {
+                            &p / &q
+                        };
+                        arena.big_int(floor_val)
+                    }
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.floor(ni)
+                }
+            }
+
+            // ── Ceiling ────────────────────────────────────────────
+            ExprNode::Ceiling(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                if let Some(r) = arena.as_num(ni).cloned() {
+                    if r.is_integer() {
+                        ni
+                    } else {
+                        let p = r.numer().clone();
+                        let q = r.denom().clone();
+                        // Rust BigInt `/` truncates toward zero; adjust for positive
+                        let ceil_val = if p.is_positive() && !(&p % &q).is_zero() {
+                            &p / &q + BigInt::from(1)
+                        } else {
+                            &p / &q
+                        };
+                        arena.big_int(ceil_val)
+                    }
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.ceiling(ni)
+                }
+            }
+
+            // ── Min ────────────────────────────────────────────────
+            ExprNode::Min(ref children) => {
+                let new: smallvec::SmallVec<[ExprId; 4]> = children
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                // If all args are numeric, return the smallest.
+                let all_numeric: Option<Vec<(Ratio<BigInt>, ExprId)>> = new
+                    .iter()
+                    .map(|&c| arena.as_num(c).cloned().map(|r| (r, c)))
+                    .collect();
+                if let Some(nums) = all_numeric {
+                    if let Some((_, min_id)) = nums.iter().min_by_key(|(r, _)| r.clone()) {
+                        *min_id
+                    } else {
+                        id
+                    }
+                } else if new[..] == children[..] {
+                    id
+                } else {
+                    arena.intern(ExprNode::Min(new))
+                }
+            }
+
+            // ── Max ────────────────────────────────────────────────
+            ExprNode::Max(ref children) => {
+                let new: smallvec::SmallVec<[ExprId; 4]> = children
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                // If all args are numeric, return the largest.
+                let all_numeric: Option<Vec<(Ratio<BigInt>, ExprId)>> = new
+                    .iter()
+                    .map(|&c| arena.as_num(c).cloned().map(|r| (r, c)))
+                    .collect();
+                if let Some(nums) = all_numeric {
+                    if let Some((_, max_id)) = nums.iter().max_by_key(|(r, _)| r.clone()) {
+                        *max_id
+                    } else {
+                        id
+                    }
+                } else if new[..] == children[..] {
+                    id
+                } else {
+                    arena.intern(ExprNode::Max(new))
+                }
+            }
+
+            // ── Sum: evaluate by substitution for finite integer bounds ─
+            ExprNode::Sum(body, sum_var, lo, hi) => {
+                let nbody = cache.get(&body).copied().unwrap_or(body);
+                let nvar = cache.get(&sum_var).copied().unwrap_or(sum_var);
+                let nlo = cache.get(&lo).copied().unwrap_or(lo);
+                let nhi = cache.get(&hi).copied().unwrap_or(hi);
+
+                let lo_int = arena.as_num(nlo).and_then(|r| {
+                    if r.is_integer() {
+                        r.numer().to_i64()
+                    } else {
+                        None
+                    }
+                });
+                let hi_int = arena.as_num(nhi).and_then(|r| {
+                    if r.is_integer() {
+                        r.numer().to_i64()
+                    } else {
+                        None
+                    }
+                });
+
+                if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int) {
+                    if hi_val < lo_val {
+                        // Empty range: sum is 0
+                        arena.zero
+                    } else if (hi_val - lo_val) <= 1000 {
+                        let mut terms = smallvec::SmallVec::<[ExprId; 8]>::new();
+                        for k in lo_val..=hi_val {
+                            let k_expr = arena.int(k);
+                            let substituted = arena.subs_structural(nbody, nvar, k_expr);
+                            let evaluated_term = eval(arena, substituted);
+                            terms.push(evaluated_term);
+                        }
+                        if terms.is_empty() {
+                            arena.zero
+                        } else {
+                            arena.add(&terms)
+                        }
+                    } else if nbody == body && nvar == sum_var && nlo == lo && nhi == hi {
+                        id
+                    } else {
+                        arena.intern(ExprNode::Sum(nbody, nvar, nlo, nhi))
+                    }
+                } else if nbody == body && nvar == sum_var && nlo == lo && nhi == hi {
+                    id
+                } else {
+                    arena.intern(ExprNode::Sum(nbody, nvar, nlo, nhi))
+                }
+            }
+
+            // ── Product_: evaluate by substitution for finite integer bounds
+            ExprNode::Product_(body, prod_var, lo, hi) => {
+                let nbody = cache.get(&body).copied().unwrap_or(body);
+                let nvar = cache.get(&prod_var).copied().unwrap_or(prod_var);
+                let nlo = cache.get(&lo).copied().unwrap_or(lo);
+                let nhi = cache.get(&hi).copied().unwrap_or(hi);
+
+                let lo_int = arena.as_num(nlo).and_then(|r| {
+                    if r.is_integer() {
+                        r.numer().to_i64()
+                    } else {
+                        None
+                    }
+                });
+                let hi_int = arena.as_num(nhi).and_then(|r| {
+                    if r.is_integer() {
+                        r.numer().to_i64()
+                    } else {
+                        None
+                    }
+                });
+
+                if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int) {
+                    if hi_val < lo_val {
+                        // Empty range: product is 1
+                        arena.one
+                    } else if (hi_val - lo_val) <= 1000 {
+                        let mut factors = smallvec::SmallVec::<[ExprId; 8]>::new();
+                        for k in lo_val..=hi_val {
+                            let k_expr = arena.int(k);
+                            let substituted = arena.subs_structural(nbody, nvar, k_expr);
+                            let evaluated_term = eval(arena, substituted);
+                            factors.push(evaluated_term);
+                        }
+                        if factors.is_empty() {
+                            arena.one
+                        } else {
+                            arena.mul(&factors)
+                        }
+                    } else if nbody == body && nvar == prod_var && nlo == lo && nhi == hi {
+                        id
+                    } else {
+                        arena.intern(ExprNode::Product_(nbody, nvar, nlo, nhi))
+                    }
+                } else if nbody == body && nvar == prod_var && nlo == lo && nhi == hi {
+                    id
+                } else {
+                    arena.intern(ExprNode::Product_(nbody, nvar, nlo, nhi))
+                }
+            }
+
             // Everything else: unchanged.
             _ => id,
         };

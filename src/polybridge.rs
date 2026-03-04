@@ -183,7 +183,9 @@ fn convert_node(
         | ExprNode::Exp(_)
         | ExprNode::Ln(_)
         | ExprNode::Abs(_)
-        | ExprNode::Sign(_) => {
+        | ExprNode::Sign(_)
+        | ExprNode::Floor(_)
+        | ExprNode::Ceiling(_) => {
             // If the function argument doesn't contain var, the whole
             // thing is a constant — but we can't represent transcendentals
             // as Ratio<BigInt>, so we fail.
@@ -191,6 +193,12 @@ fn convert_node(
         }
 
         ExprNode::Apply(_, _) | ExprNode::Derivative(_, _) | ExprNode::Integral(_, _) => None,
+
+        // Min/Max/Sum/Product are not polynomial.
+        ExprNode::Min(_)
+        | ExprNode::Max(_)
+        | ExprNode::Sum(_, _, _, _)
+        | ExprNode::Product_(_, _, _, _) => None,
 
         // Combinatorial nodes are not polynomial.
         ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => None,

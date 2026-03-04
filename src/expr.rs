@@ -361,7 +361,13 @@ impl<S: Sort> Expr<S> {
             | crate::node::ExprNode::Asinh(_)
             | crate::node::ExprNode::Acosh(_)
             | crate::node::ExprNode::Atanh(_)
-            | crate::node::ExprNode::Sign(_) => ExprType::Function,
+            | crate::node::ExprNode::Sign(_)
+            | crate::node::ExprNode::Floor(_)
+            | crate::node::ExprNode::Ceiling(_)
+            | crate::node::ExprNode::Min(_)
+            | crate::node::ExprNode::Max(_)
+            | crate::node::ExprNode::Sum(_, _, _, _)
+            | crate::node::ExprNode::Product_(_, _, _, _) => ExprType::Function,
             crate::node::ExprNode::Apply(_, _) => ExprType::Apply,
             crate::node::ExprNode::Derivative(_, _) => ExprType::Derivative,
             crate::node::ExprNode::Integral(_, _) => ExprType::Integral,
@@ -1008,6 +1014,111 @@ impl Expr<Numeric> {
     pub fn sign(&self) -> Ex {
         let id = self.inner.write().arena.sign(self.id);
         self.wrap(id)
+    }
+
+    /// Floor function: `⌊self⌋` (greatest integer ≤ self).
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn floor(&self) -> Ex {
+        let id = self.inner.write().arena.floor(self.id);
+        self.wrap(id)
+    }
+
+    /// Ceiling function: `⌈self⌉` (least integer ≥ self).
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn ceiling(&self) -> Ex {
+        let id = self.inner.write().arena.ceiling(self.id);
+        self.wrap(id)
+    }
+
+    /// Fractional part: `self - floor(self)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn frac(&self) -> Ex {
+        let fl = self.floor();
+        self - &fl
+    }
+
+    /// Remainder: `self - other * floor(self / other)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn rem(&self, other: &Ex) -> Ex {
+        let quotient = self / other;
+        let fl = quotient.floor();
+        self - &(other * &fl)
+    }
+
+    /// Binary minimum: `min(self, other)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn min_with(&self, other: &Ex) -> Ex {
+        let mut inner = self.inner.write();
+        let ids: smallvec::SmallVec<[crate::node::ExprId; 4]> =
+            smallvec::smallvec![self.id, other.id];
+        let id = inner.arena.intern(crate::node::ExprNode::Min(ids));
+        drop(inner);
+        self.wrap(id)
+    }
+
+    /// Binary maximum: `max(self, other)`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn max_with(&self, other: &Ex) -> Ex {
+        let mut inner = self.inner.write();
+        let ids: smallvec::SmallVec<[crate::node::ExprId; 4]> =
+            smallvec::smallvec![self.id, other.id];
+        let id = inner.arena.intern(crate::node::ExprNode::Max(ids));
+        drop(inner);
+        self.wrap(id)
+    }
+
+    /// N-ary minimum of a collection of expressions.
+    pub fn min_of(ctx: &crate::context::Context, exprs: impl IntoIterator<Item = Ex>) -> Ex {
+        let items: Vec<Ex> = exprs.into_iter().collect();
+        if items.is_empty() {
+            return ctx.infinity();
+        }
+        let mut inner = items[0].inner.write();
+        let ids: smallvec::SmallVec<[crate::node::ExprId; 4]> =
+            items.iter().map(|e| e.id).collect();
+        let id = inner.arena.intern(crate::node::ExprNode::Min(ids));
+        drop(inner);
+        items[0].wrap(id)
+    }
+
+    /// N-ary maximum of a collection of expressions.
+    pub fn max_of(ctx: &crate::context::Context, exprs: impl IntoIterator<Item = Ex>) -> Ex {
+        let items: Vec<Ex> = exprs.into_iter().collect();
+        if items.is_empty() {
+            return ctx.neg_infinity();
+        }
+        let mut inner = items[0].inner.write();
+        let ids: smallvec::SmallVec<[crate::node::ExprId; 4]> =
+            items.iter().map(|e| e.id).collect();
+        let id = inner.arena.intern(crate::node::ExprNode::Max(ids));
+        drop(inner);
+        items[0].wrap(id)
+    }
+
+    /// Symbolic summation: `Sum(body, var=lower..upper)`.
+    ///
+    /// When evaluated (`.eval()`), if `lower` and `upper` are concrete integers,
+    /// the sum is computed by substituting each integer value for `var` in `body`.
+    pub fn symbolic_sum(body: &Ex, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
+        let mut inner = body.inner.write();
+        let id = inner.arena.intern(crate::node::ExprNode::Sum(
+            body.id, var.id, lower.id, upper.id,
+        ));
+        drop(inner);
+        body.wrap(id)
+    }
+
+    /// Symbolic product: `Product(body, var=lower..upper)`.
+    ///
+    /// When evaluated (`.eval()`), if `lower` and `upper` are concrete integers,
+    /// the product is computed by substituting each integer value for `var` in `body`.
+    pub fn symbolic_product(body: &Ex, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
+        let mut inner = body.inner.write();
+        let id = inner.arena.intern(crate::node::ExprNode::Product_(
+            body.id, var.id, lower.id, upper.id,
+        ));
+        drop(inner);
+        body.wrap(id)
     }
 
     /// Decompose this expression into its real part.

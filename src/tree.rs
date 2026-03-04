@@ -109,6 +109,14 @@ pub enum ExprTree {
     Atanh { arg: Box<ExprTree> },
     /// Sign function: 1 if positive, -1 if negative, 0 if zero.
     Sign { arg: Box<ExprTree> },
+    /// Floor function: greatest integer <= x.
+    Floor { arg: Box<ExprTree> },
+    /// Ceiling function: least integer >= x.
+    Ceiling { arg: Box<ExprTree> },
+    /// N-ary minimum.
+    Min { args: Vec<ExprTree> },
+    /// N-ary maximum.
+    Max { args: Vec<ExprTree> },
     /// Boolean true.
     BoolTrue,
     /// Boolean false.
@@ -152,6 +160,20 @@ pub enum ExprTree {
     Integral {
         body: Box<ExprTree>,
         var: Box<ExprTree>,
+    },
+    /// Symbolic summation: Sum(body, var, lower, upper).
+    Sum {
+        body: Box<ExprTree>,
+        var: Box<ExprTree>,
+        lower: Box<ExprTree>,
+        upper: Box<ExprTree>,
+    },
+    /// Symbolic product: Product(body, var, lower, upper).
+    Product_ {
+        body: Box<ExprTree>,
+        var: Box<ExprTree>,
+        lower: Box<ExprTree>,
+        upper: Box<ExprTree>,
     },
 }
 
@@ -247,6 +269,18 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::Sign(x) => ExprTree::Sign {
             arg: Box::new(expr_to_tree(arena, x)),
         },
+        ExprNode::Floor(x) => ExprTree::Floor {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Ceiling(x) => ExprTree::Ceiling {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Min(children) => ExprTree::Min {
+            args: children.iter().map(|&c| expr_to_tree(arena, c)).collect(),
+        },
+        ExprNode::Max(children) => ExprTree::Max {
+            args: children.iter().map(|&c| expr_to_tree(arena, c)).collect(),
+        },
         ExprNode::Apply(sid, args) => ExprTree::Apply {
             name: arena.symbol_name(sid).to_owned(),
             args: args.iter().map(|&a| expr_to_tree(arena, a)).collect(),
@@ -258,6 +292,18 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::Integral(body, var) => ExprTree::Integral {
             body: Box::new(expr_to_tree(arena, body)),
             var: Box::new(expr_to_tree(arena, var)),
+        },
+        ExprNode::Sum(body, var, lo, hi) => ExprTree::Sum {
+            body: Box::new(expr_to_tree(arena, body)),
+            var: Box::new(expr_to_tree(arena, var)),
+            lower: Box::new(expr_to_tree(arena, lo)),
+            upper: Box::new(expr_to_tree(arena, hi)),
+        },
+        ExprNode::Product_(body, var, lo, hi) => ExprTree::Product_ {
+            body: Box::new(expr_to_tree(arena, body)),
+            var: Box::new(expr_to_tree(arena, var)),
+            lower: Box::new(expr_to_tree(arena, lo)),
+            upper: Box::new(expr_to_tree(arena, hi)),
         },
         ExprNode::Factorial(x) => ExprTree::Apply {
             name: "factorial".to_owned(),
@@ -419,6 +465,24 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let x = tree_to_expr(arena, arg);
             arena.sign(x)
         }
+        ExprTree::Floor { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.floor(x)
+        }
+        ExprTree::Ceiling { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.ceiling(x)
+        }
+        ExprTree::Min { args } => {
+            let ids: smallvec::SmallVec<[ExprId; 4]> =
+                args.iter().map(|a| tree_to_expr(arena, a)).collect();
+            arena.intern(ExprNode::Min(ids))
+        }
+        ExprTree::Max { args } => {
+            let ids: smallvec::SmallVec<[ExprId; 4]> =
+                args.iter().map(|a| tree_to_expr(arena, a)).collect();
+            arena.intern(ExprNode::Max(ids))
+        }
         ExprTree::Apply { name, args } => {
             let sym_id = arena.symbols.intern(name);
             let arg_ids: Vec<ExprId> = args.iter().map(|a| tree_to_expr(arena, a)).collect();
@@ -434,6 +498,30 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let b = tree_to_expr(arena, body);
             let v = tree_to_expr(arena, var);
             arena.intern(ExprNode::Integral(b, v))
+        }
+        ExprTree::Sum {
+            body,
+            var,
+            lower,
+            upper,
+        } => {
+            let b = tree_to_expr(arena, body);
+            let v = tree_to_expr(arena, var);
+            let lo = tree_to_expr(arena, lower);
+            let hi = tree_to_expr(arena, upper);
+            arena.intern(ExprNode::Sum(b, v, lo, hi))
+        }
+        ExprTree::Product_ {
+            body,
+            var,
+            lower,
+            upper,
+        } => {
+            let b = tree_to_expr(arena, body);
+            let v = tree_to_expr(arena, var);
+            let lo = tree_to_expr(arena, lower);
+            let hi = tree_to_expr(arena, upper);
+            arena.intern(ExprNode::Product_(b, v, lo, hi))
         }
         ExprTree::BoolTrue => arena.bool_true,
         ExprTree::BoolFalse => arena.bool_false,

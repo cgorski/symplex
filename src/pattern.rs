@@ -35,7 +35,6 @@ use crate::assumptions::Props;
 use crate::node::{ExprId, ExprNode};
 use crate::walk;
 
-
 // ═══════════════════════════════════════════════════════════════════════════
 // WildId — pattern variable identifier
 // ═══════════════════════════════════════════════════════════════════════════
@@ -326,6 +325,52 @@ fn match_recursive(
         (ExprNode::Binomial(pa, pb), ExprNode::Binomial(ea, eb)) => {
             match_recursive(arena, pattern, pa, ea, bindings)
                 && match_recursive(arena, pattern, pb, eb, bindings)
+        }
+
+        // Floor / Ceiling (unary).
+        (ExprNode::Floor(pi), ExprNode::Floor(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::Ceiling(pi), ExprNode::Ceiling(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+
+        // Min / Max (n-ary).
+        (ExprNode::Min(ref pc), ExprNode::Min(ref ec)) => {
+            if pc.len() != ec.len() {
+                return false;
+            }
+            for (p, e) in pc.iter().zip(ec.iter()) {
+                if !match_recursive(arena, pattern, *p, *e, bindings) {
+                    return false;
+                }
+            }
+            true
+        }
+        (ExprNode::Max(ref pc), ExprNode::Max(ref ec)) => {
+            if pc.len() != ec.len() {
+                return false;
+            }
+            for (p, e) in pc.iter().zip(ec.iter()) {
+                if !match_recursive(arena, pattern, *p, *e, bindings) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        // Sum / Product_ (4-ary).
+        (ExprNode::Sum(pb, pv, pl, ph), ExprNode::Sum(eb, ev, el, eh)) => {
+            match_recursive(arena, pattern, pb, eb, bindings)
+                && match_recursive(arena, pattern, pv, ev, bindings)
+                && match_recursive(arena, pattern, pl, el, bindings)
+                && match_recursive(arena, pattern, ph, eh, bindings)
+        }
+        (ExprNode::Product_(pb, pv, pl, ph), ExprNode::Product_(eb, ev, el, eh)) => {
+            match_recursive(arena, pattern, pb, eb, bindings)
+                && match_recursive(arena, pattern, pv, ev, bindings)
+                && match_recursive(arena, pattern, pl, el, bindings)
+                && match_recursive(arena, pattern, ph, eh, bindings)
         }
 
         // Any other combination: no match.

@@ -114,6 +114,12 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
                 rebuild_unary_expanded(arena, id, inner, &cache, Arena::atanh)
             }
             ExprNode::Sign(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::sign),
+            ExprNode::Floor(inner) => {
+                rebuild_unary_expanded(arena, id, inner, &cache, Arena::floor)
+            }
+            ExprNode::Ceiling(inner) => {
+                rebuild_unary_expanded(arena, id, inner, &cache, Arena::ceiling)
+            }
             ExprNode::Not(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::not),
 
             // Boolean atoms: unchanged.
@@ -192,6 +198,28 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
             }
 
+            ExprNode::Min(ref children) => {
+                let new: smallvec::SmallVec<[crate::node::ExprId; 4]> = children
+                    .iter()
+                    .map(|&c| *cache.get(&c).unwrap_or(&c))
+                    .collect();
+                if new[..] == children[..] {
+                    id
+                } else {
+                    arena.intern(ExprNode::Min(new))
+                }
+            }
+            ExprNode::Max(ref children) => {
+                let new: smallvec::SmallVec<[crate::node::ExprId; 4]> = children
+                    .iter()
+                    .map(|&c| *cache.get(&c).unwrap_or(&c))
+                    .collect();
+                if new[..] == children[..] {
+                    id
+                } else {
+                    arena.intern(ExprNode::Max(new))
+                }
+            }
             ExprNode::Derivative(body, var) => {
                 let new_body = *cache.get(&body).unwrap_or(&body);
                 let new_var = *cache.get(&var).unwrap_or(&var);
@@ -208,6 +236,28 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
                     id
                 } else {
                     arena.intern(ExprNode::Integral(new_body, new_var))
+                }
+            }
+            ExprNode::Sum(body, var, lo, hi) => {
+                let nb = *cache.get(&body).unwrap_or(&body);
+                let nv = *cache.get(&var).unwrap_or(&var);
+                let nl = *cache.get(&lo).unwrap_or(&lo);
+                let nh = *cache.get(&hi).unwrap_or(&hi);
+                if nb == body && nv == var && nl == lo && nh == hi {
+                    id
+                } else {
+                    arena.intern(ExprNode::Sum(nb, nv, nl, nh))
+                }
+            }
+            ExprNode::Product_(body, var, lo, hi) => {
+                let nb = *cache.get(&body).unwrap_or(&body);
+                let nv = *cache.get(&var).unwrap_or(&var);
+                let nl = *cache.get(&lo).unwrap_or(&lo);
+                let nh = *cache.get(&hi).unwrap_or(&hi);
+                if nb == body && nv == var && nl == lo && nh == hi {
+                    id
+                } else {
+                    arena.intern(ExprNode::Product_(nb, nv, nl, nh))
                 }
             }
             ExprNode::Apply(func_id, ref args) => {

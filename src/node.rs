@@ -109,6 +109,13 @@ pub enum ExprNode {
     /// An n‐ary product: `a · b · c · …`
     Mul(SmallVec<[ExprId; 6]>),
 
+    // -- n-ary min/max -------------------------------------------------------
+    /// N-ary minimum: min(a, b, c, ...).
+    Min(SmallVec<[ExprId; 4]>),
+
+    /// N-ary maximum: max(a, b, c, ...).
+    Max(SmallVec<[ExprId; 4]>),
+
     // -- binary operators ----------------------------------------------------
     /// Exponentiation: `base ^ exponent`.
     Pow(ExprId, ExprId),
@@ -116,6 +123,12 @@ pub enum ExprNode {
     // -- unary operators -----------------------------------------------------
     /// Unary arithmetic negation: `−x`.
     Neg(ExprId),
+
+    /// Floor function: ⌊x⌋ (greatest integer ≤ x).
+    Floor(ExprId),
+
+    /// Ceiling function: ⌈x⌉ (least integer ≥ x).
+    Ceiling(ExprId),
 
     /// Sine function: `sin(x)`.
     Sin(ExprId),
@@ -218,6 +231,12 @@ pub enum ExprNode {
     ///
     /// `Integral(body, var)` represents ∫ `body` d`var`.
     Integral(ExprId, ExprId),
+
+    /// Symbolic summation: Sum(body, var, lower, upper).
+    Sum(ExprId, ExprId, ExprId, ExprId),
+
+    /// Symbolic product: Product(body, var, lower, upper).
+    Product_(ExprId, ExprId, ExprId, ExprId),
 }
 
 impl ExprNode {
@@ -246,6 +265,9 @@ impl ExprNode {
                 ids.clone()
             }
 
+            // n-ary min/max (SmallVec<[ExprId; 4]> → SmallVec<[ExprId; 6]>)
+            ExprNode::Min(ids) | ExprNode::Max(ids) => ids.iter().copied().collect(),
+
             // piecewise — flatten pairs into children list
             ExprNode::Piecewise(pairs) => {
                 let mut result = SmallVec::new();
@@ -269,8 +291,15 @@ impl ExprNode {
                 smallvec![*a, *b]
             }
 
+            // 4-ary: Sum, Product_
+            ExprNode::Sum(a, b, c, d) | ExprNode::Product_(a, b, c, d) => {
+                smallvec![*a, *b, *c, *d]
+            }
+
             // unary
             ExprNode::Neg(x)
+            | ExprNode::Floor(x)
+            | ExprNode::Ceiling(x)
             | ExprNode::Sin(x)
             | ExprNode::Cos(x)
             | ExprNode::Tan(x)
@@ -326,6 +355,13 @@ impl ExprNode {
                 }
             }
 
+            // n-ary min/max
+            ExprNode::Min(ids) | ExprNode::Max(ids) => {
+                for &id in ids {
+                    f(id);
+                }
+            }
+
             // piecewise — flatten pairs
             ExprNode::Piecewise(pairs) => {
                 for &(val, cond) in pairs {
@@ -348,8 +384,18 @@ impl ExprNode {
                 f(*b);
             }
 
+            // 4-ary
+            ExprNode::Sum(a, b, c, d) | ExprNode::Product_(a, b, c, d) => {
+                f(*a);
+                f(*b);
+                f(*c);
+                f(*d);
+            }
+
             // unary
             ExprNode::Neg(x)
+            | ExprNode::Floor(x)
+            | ExprNode::Ceiling(x)
             | ExprNode::Sin(x)
             | ExprNode::Cos(x)
             | ExprNode::Tan(x)
@@ -396,6 +442,7 @@ impl ExprNode {
             ExprNode::Add(ids) | ExprNode::Mul(ids) | ExprNode::And(ids) | ExprNode::Or(ids) => {
                 ids.len()
             }
+            ExprNode::Min(ids) | ExprNode::Max(ids) => ids.len(),
             ExprNode::Piecewise(pairs) => pairs.len() * 2,
             ExprNode::Pow(..)
             | ExprNode::Atan2(..)
@@ -406,7 +453,10 @@ impl ExprNode {
             | ExprNode::Ne(..)
             | ExprNode::Derivative(..)
             | ExprNode::Integral(..) => 2,
+            ExprNode::Sum(..) | ExprNode::Product_(..) => 4,
             ExprNode::Neg(_)
+            | ExprNode::Floor(_)
+            | ExprNode::Ceiling(_)
             | ExprNode::Sin(_)
             | ExprNode::Cos(_)
             | ExprNode::Tan(_)
@@ -489,6 +539,10 @@ impl fmt::Debug for ExprNode {
             ExprNode::Asinh(x) => f.debug_tuple("Asinh").field(x).finish(),
             ExprNode::Acosh(x) => f.debug_tuple("Acosh").field(x).finish(),
             ExprNode::Atanh(x) => f.debug_tuple("Atanh").field(x).finish(),
+            ExprNode::Floor(x) => f.debug_tuple("Floor").field(x).finish(),
+            ExprNode::Ceiling(x) => f.debug_tuple("Ceiling").field(x).finish(),
+            ExprNode::Min(ids) => f.debug_tuple("Min").field(ids).finish(),
+            ExprNode::Max(ids) => f.debug_tuple("Max").field(ids).finish(),
             ExprNode::Sign(id) => write!(f, "Sign({id:?})"),
             ExprNode::Factorial(id) => write!(f, "Factorial({id:?})"),
             ExprNode::Binomial(n, k) => write!(f, "Binomial({n:?}, {k:?})"),
@@ -515,6 +569,20 @@ impl fmt::Debug for ExprNode {
             ExprNode::Integral(body, var) => {
                 f.debug_tuple("Integral").field(body).field(var).finish()
             }
+            ExprNode::Sum(body, var, lo, hi) => f
+                .debug_tuple("Sum")
+                .field(body)
+                .field(var)
+                .field(lo)
+                .field(hi)
+                .finish(),
+            ExprNode::Product_(body, var, lo, hi) => f
+                .debug_tuple("Product_")
+                .field(body)
+                .field(var)
+                .field(lo)
+                .field(hi)
+                .finish(),
         }
     }
 }

@@ -255,6 +255,57 @@ pub(crate) fn rebuild_with_cache(
             if ni == inner { id } else { arena.sign(ni) }
         }
 
+        ExprNode::Floor(inner) => rebuild_intern_unary!(arena, id, inner, cache, Floor),
+        ExprNode::Ceiling(inner) => rebuild_intern_unary!(arena, id, inner, cache, Ceiling),
+
+        ExprNode::Min(ref children) => {
+            let new_children: SmallVec<[ExprId; 4]> = children
+                .iter()
+                .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                .collect();
+            if new_children == *children {
+                id
+            } else {
+                arena.intern(ExprNode::Min(new_children))
+            }
+        }
+
+        ExprNode::Max(ref children) => {
+            let new_children: SmallVec<[ExprId; 4]> = children
+                .iter()
+                .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                .collect();
+            if new_children == *children {
+                id
+            } else {
+                arena.intern(ExprNode::Max(new_children))
+            }
+        }
+
+        ExprNode::Sum(body, var, lo, hi) => {
+            let nb = cache.get(&body).copied().unwrap_or(body);
+            let nv = cache.get(&var).copied().unwrap_or(var);
+            let nl = cache.get(&lo).copied().unwrap_or(lo);
+            let nh = cache.get(&hi).copied().unwrap_or(hi);
+            if nb == body && nv == var && nl == lo && nh == hi {
+                id
+            } else {
+                arena.intern(ExprNode::Sum(nb, nv, nl, nh))
+            }
+        }
+
+        ExprNode::Product_(body, var, lo, hi) => {
+            let nb = cache.get(&body).copied().unwrap_or(body);
+            let nv = cache.get(&var).copied().unwrap_or(var);
+            let nl = cache.get(&lo).copied().unwrap_or(lo);
+            let nh = cache.get(&hi).copied().unwrap_or(hi);
+            if nb == body && nv == var && nl == lo && nh == hi {
+                id
+            } else {
+                arena.intern(ExprNode::Product_(nb, nv, nl, nh))
+            }
+        }
+
         // Apply: user-defined function
         ExprNode::Apply(func_id, ref args) => {
             let new_args: SmallVec<[ExprId; 2]> = args

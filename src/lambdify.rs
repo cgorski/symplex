@@ -69,6 +69,10 @@ enum Instruction {
     Atanh,
     Sign,
     Atan2,
+    Floor,
+    Ceiling,
+    Min2,
+    Max2,
 }
 
 /// Recursively compile an expression into a list of stack-based instructions.
@@ -203,9 +207,43 @@ fn compile_recursive(
             compile_recursive(arena, inner, var_map, out)?;
             out.push(Instruction::Sign);
         }
+        ExprNode::Floor(inner) => {
+            compile_recursive(arena, inner, var_map, out)?;
+            out.push(Instruction::Floor);
+        }
+        ExprNode::Ceiling(inner) => {
+            compile_recursive(arena, inner, var_map, out)?;
+            out.push(Instruction::Ceiling);
+        }
+        ExprNode::Min(ref children) => {
+            if children.is_empty() {
+                out.push(Instruction::PushConst(f64::INFINITY));
+                return Some(());
+            }
+            compile_recursive(arena, children[0], var_map, out)?;
+            for &child in &children[1..] {
+                compile_recursive(arena, child, var_map, out)?;
+                out.push(Instruction::Min2);
+            }
+        }
+        ExprNode::Max(ref children) => {
+            if children.is_empty() {
+                out.push(Instruction::PushConst(f64::NEG_INFINITY));
+                return Some(());
+            }
+            compile_recursive(arena, children[0], var_map, out)?;
+            for &child in &children[1..] {
+                compile_recursive(arena, child, var_map, out)?;
+                out.push(Instruction::Max2);
+            }
+        }
 
         ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => return None,
-        ExprNode::Apply(_, _) | ExprNode::Derivative(_, _) | ExprNode::Integral(_, _) => {
+        ExprNode::Apply(_, _)
+        | ExprNode::Derivative(_, _)
+        | ExprNode::Integral(_, _)
+        | ExprNode::Sum(_, _, _, _)
+        | ExprNode::Product_(_, _, _, _) => {
             return None;
         }
         ExprNode::BoolTrue
@@ -332,6 +370,24 @@ fn execute(instructions: &[Instruction], args: &[f64]) -> f64 {
                 let x = stack.pop().unwrap_or(0.0);
                 let y = stack.pop().unwrap_or(0.0);
                 stack.push(y.atan2(x));
+            }
+            Instruction::Floor => {
+                let a = stack.pop().unwrap_or(0.0);
+                stack.push(a.floor());
+            }
+            Instruction::Ceiling => {
+                let a = stack.pop().unwrap_or(0.0);
+                stack.push(a.ceil());
+            }
+            Instruction::Min2 => {
+                let b = stack.pop().unwrap_or(f64::INFINITY);
+                let a = stack.pop().unwrap_or(f64::INFINITY);
+                stack.push(a.min(b));
+            }
+            Instruction::Max2 => {
+                let b = stack.pop().unwrap_or(f64::NEG_INFINITY);
+                let a = stack.pop().unwrap_or(f64::NEG_INFINITY);
+                stack.push(a.max(b));
             }
         }
     }

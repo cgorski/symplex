@@ -446,6 +446,35 @@ fn diff_node(
             let v = var_expr(arena, var);
             arena.intern(ExprNode::Derivative(id, v))
         }
+
+        // ── Floor/Ceiling: piecewise constant → derivative is 0 ────
+        ExprNode::Floor(_) | ExprNode::Ceiling(_) => arena.zero,
+
+        // ── Min/Max: complex piecewise derivative → leave unevaluated
+        ExprNode::Min(_) | ExprNode::Max(_) => {
+            let v = var_expr(arena, var);
+            arena.intern(ExprNode::Derivative(id, v))
+        }
+
+        // ── Sum: linearity — d/dx Sum(f, k, a, b) = Sum(d/dx f, k, a, b)
+        // assuming the summation variable k is not x.
+        ExprNode::Sum(body, sum_var, lo, hi) => {
+            if let ExprNode::Symbol(sum_sym) = arena.node(sum_var)
+                && *sum_sym == var
+            {
+                // Differentiating w.r.t. the summation variable itself — leave unevaluated.
+                let v = var_expr(arena, var);
+                return arena.intern(ExprNode::Derivative(id, v));
+            }
+            let dbody = get_deriv(cache, body, arena);
+            arena.intern(ExprNode::Sum(dbody, sum_var, lo, hi))
+        }
+
+        // ── Product_: leave as unevaluated derivative ──────────────
+        ExprNode::Product_(_, _, _, _) => {
+            let v = var_expr(arena, var);
+            arena.intern(ExprNode::Derivative(id, v))
+        }
     }
 }
 

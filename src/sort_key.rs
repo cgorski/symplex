@@ -66,8 +66,20 @@ const RANK_PIECEWISE: u8 = 59;
 /// Rank byte for formal derivative nodes.
 const RANK_DERIVATIVE: u8 = 60;
 
+/// Rank byte for n-ary minimum.
+const RANK_MIN: u8 = 62;
+
+/// Rank byte for n-ary maximum.
+const RANK_MAX: u8 = 63;
+
 /// Rank byte for formal integral nodes.
 const RANK_INTEGRAL: u8 = 70;
+
+/// Rank byte for symbolic summation.
+const RANK_SUM: u8 = 72;
+
+/// Rank byte for symbolic product.
+const RANK_PRODUCT: u8 = 73;
 
 /// Rank byte for mathematical constants (Pi, E, ImaginaryUnit).
 const RANK_CONSTANT: u8 = 80;
@@ -98,6 +110,8 @@ const FN_ATANH: u8 = 16;
 const FN_APPLY: u8 = 17;
 const FN_SIGN: u8 = 18;
 const FN_ATAN2: u8 = 19;
+const FN_FLOOR: u8 = 20;
+const FN_CEILING: u8 = 21;
 
 // ---------------------------------------------------------------------------
 // Constant sub-rank bytes (used within the RANK_CONSTANT class)
@@ -363,6 +377,48 @@ pub fn compute_sort_key(
             key.push(RANK_FUNCTION);
             key.push(FN_SIGN);
             key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Floor(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_FLOOR);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Ceiling(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_CEILING);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Min(children) => {
+            key.push(RANK_MIN);
+            for &child in children {
+                key.extend(get_key(child).as_bytes());
+            }
+        }
+
+        ExprNode::Max(children) => {
+            key.push(RANK_MAX);
+            for &child in children {
+                key.extend(get_key(child).as_bytes());
+            }
+        }
+
+        ExprNode::Sum(body, var, lo, hi) => {
+            key.push(RANK_SUM);
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*var).as_bytes());
+            key.extend(get_key(*lo).as_bytes());
+            key.extend(get_key(*hi).as_bytes());
+        }
+
+        ExprNode::Product_(body, var, lo, hi) => {
+            key.push(RANK_PRODUCT);
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*var).as_bytes());
+            key.extend(get_key(*lo).as_bytes());
+            key.extend(get_key(*hi).as_bytes());
         }
 
         ExprNode::Apply(sym, args) => {

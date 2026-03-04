@@ -976,6 +976,16 @@ impl Arena {
         self.intern(ExprNode::Sign(expr))
     }
 
+    /// Creates a `Floor` node: ⌊x⌋ (greatest integer ≤ x).
+    pub fn floor(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Floor(expr))
+    }
+
+    /// Creates a `Ceiling` node: ⌈x⌉ (least integer ≥ x).
+    pub fn ceiling(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Ceiling(expr))
+    }
+
     /// Creates an `Asin` (inverse sine / arcsin) node.
     pub fn asin(&mut self, expr: ExprId) -> ExprId {
         self.intern(ExprNode::Asin(expr))
