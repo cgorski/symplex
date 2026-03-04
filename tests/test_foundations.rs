@@ -35,7 +35,7 @@ fn factorial_of_5() {
 fn factorial_of_zero() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
-        let zero = arena.zero;
+        let zero = arena.int(0);
         let expr = arena.factorial(zero);
         let result = arena.eval_expr(expr);
         assert_eq!(arena.display(result).to_string(), "1");
@@ -46,7 +46,7 @@ fn factorial_of_zero() {
 fn factorial_of_one() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
-        let one = arena.one;
+        let one = arena.int(1);
         let expr = arena.factorial(one);
         let result = arena.eval_expr(expr);
         assert_eq!(arena.display(result).to_string(), "1");
@@ -155,7 +155,7 @@ fn factorial_display_compound_gets_parens() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let x = arena.symbol("x");
-        let one = arena.one;
+        let one = arena.int(1);
         let sum = arena.add(&[x, one]);
         let expr = arena.factorial(sum);
         let s = arena.display(expr).to_string();
@@ -246,7 +246,7 @@ fn binomial_n_choose_0() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let seven = arena.int(7);
-        let zero = arena.zero;
+        let zero = arena.int(0);
         let expr = arena.binomial(seven, zero);
         let result = arena.eval_expr(expr);
         assert_eq!(arena.display(result).to_string(), "1");
@@ -271,7 +271,7 @@ fn binomial_n_choose_1() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let eight = arena.int(8);
-        let one = arena.one;
+        let one = arena.int(1);
         let expr = arena.binomial(eight, one);
         let result = arena.eval_expr(expr);
         assert_eq!(arena.display(result).to_string(), "8");
@@ -307,7 +307,7 @@ fn binomial_0_choose_0() {
     // C(0, 0) = 1
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
-        let zero = arena.zero;
+        let zero = arena.int(0);
         let expr = arena.binomial(zero, zero);
         let result = arena.eval_expr(expr);
         assert_eq!(arena.display(result).to_string(), "1");
@@ -439,7 +439,7 @@ fn binomial_in_expression() {
     ctx.with_arena_mut(|arena| {
         let five = arena.int(5);
         let two = arena.int(2);
-        let one = arena.one;
+        let one = arena.int(1);
         let binom = arena.binomial(five, two);
         let sum = arena.add(&[binom, one]);
         let result = arena.eval_expr(sum);

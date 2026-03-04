@@ -452,13 +452,13 @@ impl RuleCodeGen {
                 let temp = self.fresh_temp();
                 match *n {
                     0 => {
-                        self.bindings.push(quote! { let #temp = #arena.zero; });
+                        self.bindings.push(quote! { let #temp = #arena.zero(); });
                     }
                     1 => {
-                        self.bindings.push(quote! { let #temp = #arena.one; });
+                        self.bindings.push(quote! { let #temp = #arena.one(); });
                     }
                     -1 => {
-                        self.bindings.push(quote! { let #temp = #arena.neg_one; });
+                        self.bindings.push(quote! { let #temp = #arena.neg_one(); });
                     }
                     _ => {
                         self.bindings.push(quote! { let #temp = #arena.int(#n); });
@@ -484,12 +484,12 @@ impl RuleCodeGen {
                 if is_known_constant(&name) {
                     let temp = self.fresh_temp();
                     let access = match name.as_str() {
-                        "pi" => quote! { #arena.pi },
-                        "E" => quote! { #arena.e_const },
-                        "I" => quote! { #arena.i_unit },
-                        "oo" => quote! { #arena.infinity },
-                        "nan" => quote! { #arena.nan },
-                        "zoo" => quote! { #arena.complex_infinity },
+                        "pi" => quote! { #arena.pi() },
+                        "E" => quote! { #arena.e_const() },
+                        "I" => quote! { #arena.i_unit() },
+                        "oo" => quote! { #arena.infinity() },
+                        "nan" => quote! { #arena.nan() },
+                        "zoo" => quote! { #arena.complex_infinity() },
                         _ => unreachable!(),
                     };
                     self.bindings.push(quote! { let #temp = #access; });

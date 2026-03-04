@@ -31,6 +31,8 @@ tracing = "0.1"
 [dev-dependencies]
 criterion = "0.5"
 proptest = "1.10"
+trybuild = "1"
+static_assertions = "1.1"
 
 [[bench]]
 name = "canonicalization"

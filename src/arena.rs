@@ -72,54 +72,54 @@ pub struct Arena {
     pub(crate) symbols: SymbolTable,
 
     /// Evaluation-time configuration (guards against runaway computation).
-    pub config: EvalConfig,
+    pub(crate) config: EvalConfig,
 
     // -- pre-interned constants (ExprId) ------------------------------------
     /// The integer zero (0).
-    pub zero: ExprId,
+    pub(crate) zero: ExprId,
 
     /// The integer one (1).
-    pub one: ExprId,
+    pub(crate) one: ExprId,
 
     /// The integer negative one (−1).
-    pub neg_one: ExprId,
+    pub(crate) neg_one: ExprId,
 
     /// The mathematical constant π.
-    pub pi: ExprId,
+    pub(crate) pi: ExprId,
 
     /// Euler's number *e*.
-    pub e_const: ExprId,
+    pub(crate) e_const: ExprId,
 
     /// The imaginary unit *i*.
-    pub i_unit: ExprId,
+    pub(crate) i_unit: ExprId,
 
     /// Positive infinity (+∞).
-    pub infinity: ExprId,
+    pub(crate) infinity: ExprId,
 
     /// Negative infinity (−∞).
-    pub neg_infinity: ExprId,
+    pub(crate) neg_infinity: ExprId,
 
     /// Not-a-number (undefined / indeterminate).
-    pub nan: ExprId,
+    pub(crate) nan: ExprId,
 
     /// Complex infinity (z∞ — undirected infinity in the complex plane).
-    pub complex_infinity: ExprId,
+    pub(crate) complex_infinity: ExprId,
 
     /// Boolean true.
-    pub bool_true: ExprId,
+    pub(crate) bool_true: ExprId,
 
     /// Boolean false.
-    pub bool_false: ExprId,
+    pub(crate) bool_false: ExprId,
 
     // -- pre-interned constants (NumId) -------------------------------------
     /// [`NumId`] for the rational value 0.
-    pub zero_num: NumId,
+    pub(crate) zero_num: NumId,
 
     /// [`NumId`] for the rational value 1.
-    pub one_num: NumId,
+    pub(crate) one_num: NumId,
 
     /// [`NumId`] for the rational value −1.
-    pub neg_one_num: NumId,
+    pub(crate) neg_one_num: NumId,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +185,114 @@ impl Arena {
         arena.bool_false = arena.intern(ExprNode::BoolFalse);
 
         arena
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public accessors for pre-interned constants
+// ---------------------------------------------------------------------------
+
+impl Arena {
+    /// Returns the pre-interned [`ExprId`] for integer zero (0).
+    #[inline]
+    pub fn zero(&self) -> ExprId {
+        self.zero
+    }
+
+    /// Returns the pre-interned [`ExprId`] for integer one (1).
+    #[inline]
+    pub fn one(&self) -> ExprId {
+        self.one
+    }
+
+    /// Returns the pre-interned [`ExprId`] for integer negative one (−1).
+    #[inline]
+    pub fn neg_one(&self) -> ExprId {
+        self.neg_one
+    }
+
+    /// Returns the pre-interned [`ExprId`] for the constant π.
+    #[inline]
+    pub fn pi(&self) -> ExprId {
+        self.pi
+    }
+
+    /// Returns the pre-interned [`ExprId`] for Euler's number *e*.
+    #[inline]
+    pub fn e_const(&self) -> ExprId {
+        self.e_const
+    }
+
+    /// Returns the pre-interned [`ExprId`] for the imaginary unit *i*.
+    #[inline]
+    pub fn i_unit(&self) -> ExprId {
+        self.i_unit
+    }
+
+    /// Returns the pre-interned [`ExprId`] for positive infinity (+∞).
+    #[inline]
+    pub fn infinity(&self) -> ExprId {
+        self.infinity
+    }
+
+    /// Returns the pre-interned [`ExprId`] for negative infinity (−∞).
+    #[inline]
+    pub fn neg_infinity(&self) -> ExprId {
+        self.neg_infinity
+    }
+
+    /// Returns the pre-interned [`ExprId`] for NaN.
+    #[inline]
+    pub fn nan(&self) -> ExprId {
+        self.nan
+    }
+
+    /// Returns the pre-interned [`ExprId`] for complex infinity (z∞).
+    #[inline]
+    pub fn complex_infinity(&self) -> ExprId {
+        self.complex_infinity
+    }
+
+    /// Returns the pre-interned [`ExprId`] for boolean true.
+    #[inline]
+    pub fn bool_true(&self) -> ExprId {
+        self.bool_true
+    }
+
+    /// Returns the pre-interned [`ExprId`] for boolean false.
+    #[inline]
+    pub fn bool_false(&self) -> ExprId {
+        self.bool_false
+    }
+
+    /// Returns the pre-interned [`NumId`] for the rational value 0.
+    #[inline]
+    pub fn zero_num(&self) -> NumId {
+        self.zero_num
+    }
+
+    /// Returns the pre-interned [`NumId`] for the rational value 1.
+    #[inline]
+    pub fn one_num(&self) -> NumId {
+        self.one_num
+    }
+
+    /// Returns the pre-interned [`NumId`] for the rational value −1.
+    #[inline]
+    pub fn neg_one_num(&self) -> NumId {
+        self.neg_one_num
+    }
+
+    /// Returns a reference to the evaluation configuration.
+    #[inline]
+    pub fn config(&self) -> &EvalConfig {
+        &self.config
+    }
+
+    /// Returns a mutable reference to the evaluation configuration.
+    #[inline]
+    pub fn config_mut(&mut self) -> &mut EvalConfig {
+        &mut self.config
     }
 }
 

@@ -286,7 +286,8 @@ fn cse_doesnt_crash_on_complex() {
 fn factorial_0() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
-        let expr = arena.factorial(arena.zero);
+        let zero = arena.int(0);
+        let expr = arena.factorial(zero);
         let result = arena.eval_expr(expr);
         assert_eq!(arena.display(result).to_string(), "1");
     });
@@ -296,7 +297,8 @@ fn factorial_0() {
 fn factorial_1() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
-        let expr = arena.factorial(arena.one);
+        let one = arena.int(1);
+        let expr = arena.factorial(one);
         let result = arena.eval_expr(expr);
         assert_eq!(arena.display(result).to_string(), "1");
     });
