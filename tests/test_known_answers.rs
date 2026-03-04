@@ -545,7 +545,7 @@ fn int_cos3() {
     let x = symplex::var("x");
     check(
         &x.cos().powi(3).integrate(&x),
-        "1/3*sin(x)*cos(x)^2 + 2/3*sin(x)",
+        "1/3*cos(x)^2*sin(x) + 2/3*sin(x)",
     );
 }
 

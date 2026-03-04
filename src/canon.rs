@@ -285,31 +285,57 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     factors.sort_by(|(a, _), (b, _)| arena.sort_key(*a).cmp(arena.sort_key(*b)));
 
     // Build result argument list.
+    //
+    // We defer adding the numeric coefficient until AFTER processing all
+    // factors, because a factor with exp == 1 whose base is a Num, or a
+    // `canon_pow` call that fully evaluates to a Num (e.g. 2^3 → 8),
+    // must be absorbed back into the running coefficient — not pushed as
+    // a separate Mul child.  Without this, expressions like
+    //     `rationalize_denom(1/(1+√2))`
+    // can produce `Mul([1, -1, √2])` (two Num children) instead of
+    // `Mul([-1, √2])`.
     let mut result_args: SmallVec<[ExprId; 6]> = SmallVec::new();
 
-    // Numeric coefficient first (if not 1, or if there are no other factors).
-    let has_factors = !factors.is_empty();
-    if !coeff.is_one() || !has_factors {
-        let nid = arena.intern_num(coeff.clone());
-        result_args.push(arena.intern(ExprNode::Num(nid)));
-    }
-
-    // Then the symbolic factors.
     for (base, exp) in factors {
         if exp == arena.one {
+            // If the base is itself a numeric literal, absorb it into the
+            // running coefficient instead of adding a second Num child.
+            if let Some(val) = arena.as_num(base) {
+                coeff *= val.clone();
+                continue;
+            }
             result_args.push(base);
         } else if arena.is_zero_structural(exp) {
             // base^0 = 1 — skip this factor entirely.
             continue;
         } else {
             let pow_id = canon_pow(arena, base, exp);
-            // canon_pow may have returned the base itself (if exp == 1 after
-            // simplification) or a Num (if fully evaluated). Push whatever it
-            // gives us, unless it's one.
-            if pow_id != arena.one {
-                result_args.push(pow_id);
+            if pow_id == arena.one {
+                continue;
             }
+            // canon_pow may have fully evaluated to a number
+            // (e.g. 2^3 → 8).  Absorb it into the coefficient.
+            if let Some(val) = arena.as_num(pow_id) {
+                coeff *= val.clone();
+                continue;
+            }
+            result_args.push(pow_id);
         }
+    }
+
+    // Re-check for zero after absorbing numeric factors.
+    if coeff.is_zero() {
+        if saw_infinity {
+            return arena.nan;
+        }
+        return arena.zero;
+    }
+
+    // Now prepend the numeric coefficient (if not 1, or if there are
+    // no symbolic factors left).
+    if !coeff.is_one() || result_args.is_empty() {
+        let nid = arena.intern_num(coeff.clone());
+        result_args.insert(0, arena.intern(ExprNode::Num(nid)));
     }
 
     // If infinity was seen and coefficient is nonzero.
@@ -319,6 +345,17 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         }
         return arena.infinity;
     }
+
+    // Re-sort result_args by the ACTUAL sort key of each entry.
+    //
+    // The `factors` list was sorted by *base* sort key, but
+    // `canon_pow(base, exp)` may return a node with a different type
+    // (and thus rank) than the base alone.  For example, `cos(x)` is a
+    // Function (rank 50) but `Pow(cos(x), -1)` is a Pow (rank 20).
+    // Sorting after construction ensures the final Mul children obey
+    // the canonical sort order — mirroring what `canon_add` already
+    // does for its reconstructed symbolic terms.
+    result_args.sort_by(|a, b| arena.sort_key(*a).cmp(arena.sort_key(*b)));
 
     // ── Distribution: Number * Add → distributed sum ──────────────
     //
@@ -359,17 +396,11 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         1 => result_args[0],
         _ => arena.intern(ExprNode::Mul(result_args)),
     };
-    // NOTE: canon_mul has a known sort-order edge case where result children
-    // may not be strictly sorted after base-exponent recombination. This is
-    // tracked but not yet fixed. Using tracing instead of debug_assert to
-    // avoid blocking tests while the issue is investigated.
-    #[cfg(debug_assertions)]
-    {
-        let errors = verify_canonical(arena, result);
-        if !errors.is_empty() {
-            tracing::debug!("canon_mul: non-canonical result: {:?}", errors);
-        }
-    }
+    debug_assert!(
+        verify_canonical(arena, result).is_empty(),
+        "canon_mul produced non-canonical result: {:?}",
+        verify_canonical(arena, result)
+    );
     result
 }
 
