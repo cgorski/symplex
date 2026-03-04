@@ -183,7 +183,34 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
             }
 
-            // Everything else (atoms, Derivative, Integral, Apply): unchanged.
+            ExprNode::Derivative(body, var) => {
+                let new_body = *cache.get(&body).unwrap_or(&body);
+                let new_var = *cache.get(&var).unwrap_or(&var);
+                if new_body == body && new_var == var {
+                    id
+                } else {
+                    arena.intern(ExprNode::Derivative(new_body, new_var))
+                }
+            }
+            ExprNode::Integral(body, var) => {
+                let new_body = *cache.get(&body).unwrap_or(&body);
+                let new_var = *cache.get(&var).unwrap_or(&var);
+                if new_body == body && new_var == var {
+                    id
+                } else {
+                    arena.intern(ExprNode::Integral(new_body, new_var))
+                }
+            }
+            ExprNode::Apply(func_id, ref args) => {
+                let new_args: smallvec::SmallVec<[crate::node::ExprId; 2]> =
+                    args.iter().map(|&a| *cache.get(&a).unwrap_or(&a)).collect();
+                if new_args == *args {
+                    id
+                } else {
+                    arena.intern(ExprNode::Apply(func_id, new_args))
+                }
+            }
+            // Keep the wildcard for truly inert nodes (atoms handled earlier)
             _ => id,
         };
 
@@ -691,5 +718,24 @@ mod tests {
             !s.contains("(1 + x)^2"),
             "inner should no longer contain (1 + x)^2, got: {s}"
         );
+    }
+
+    #[test]
+    fn expand_inside_derivative() {
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        let one = arena.int(1);
+        let sum = arena.add(&[x, one]); // x + 1
+        let two = arena.int(2);
+        let sq = arena.pow(sum, two); // (x+1)^2
+        let deriv = arena.intern(crate::node::ExprNode::Derivative(sq, x));
+        let expanded = expand(&mut arena, deriv);
+        // The body should be expanded: x^2 + 2x + 1
+        if let crate::node::ExprNode::Derivative(body, _) = arena.node(expanded) {
+            // body should NOT be (x+1)^2 anymore
+            assert_ne!(*body, sq, "body should be expanded inside Derivative");
+        } else {
+            panic!("result should still be a Derivative");
+        }
     }
 }

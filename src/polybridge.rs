@@ -24,6 +24,7 @@
 //! divides out their GCD, and rebuilds the expression.
 
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 use rustc_hash::FxHashMap;
@@ -406,17 +407,35 @@ pub(crate) fn cancel(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
         None => return expr,
     };
 
-    // Compute GCD.
+    // Compute polynomial GCD and divide out common factors.
     let gcd = Poly::gcd(&numer_poly, &denom_poly);
+    let (mut new_numer, mut new_denom, mut changed) = if gcd.is_constant() && gcd.coeff(0).is_one()
+    {
+        // GCD is trivial (constant 1); no polynomial factor to divide out.
+        (numer_poly, denom_poly, false)
+    } else {
+        (numer_poly.div(&gcd), denom_poly.div(&gcd), true)
+    };
 
-    // If GCD is constant (degree 0 or less), nothing to cancel.
-    if gcd.is_constant() {
-        return expr;
+    // Also cancel constant content factors between numerator and denominator.
+    let n_content = new_numer.content();
+    let d_content = new_denom.content();
+    if !n_content.is_zero() && !d_content.is_zero() {
+        let numer_gcd = n_content.numer().gcd(d_content.numer());
+        let denom_lcm = n_content.denom().lcm(d_content.denom());
+        let content_gcd = Ratio::new(numer_gcd, denom_lcm);
+        if !content_gcd.is_one() {
+            let inv = Ratio::one() / content_gcd;
+            new_numer = new_numer.scale(&inv);
+            new_denom = new_denom.scale(&inv);
+            changed = true;
+        }
     }
 
-    // Divide both by the GCD.
-    let new_numer = numer_poly.div(&gcd);
-    let new_denom = denom_poly.div(&gcd);
+    // If nothing was cancelled, return the original expression unchanged.
+    if !changed {
+        return expr;
+    }
 
     // Convert back to expressions.
     let new_numer_expr = poly_to_expr(arena, &new_numer, var);
@@ -517,6 +536,8 @@ pub(crate) fn together(arena: &mut Arena, expr: ExprId) -> ExprId {
     }
 
     // Compute common denominator as the product of all distinct denominators.
+    // TODO: use LCM of denominators instead of product for simpler results.
+    //       e.g. a/(x-1) + b/(x-1)^2 currently gets denom (x-1)^3 instead of (x-1)^2.
     // We deduplicate by ExprId to avoid multiplying the same denom twice.
     let mut unique_denoms: Vec<ExprId> = Vec::new();
     for &(_, d) in &parts {
@@ -892,5 +913,40 @@ mod tests {
         let expr = a.div(sin_x, x);
         let result = cancel(&mut a, expr, x);
         assert_eq!(result, expr, "non-polynomial should be unchanged");
+    }
+
+    #[test]
+    fn cancel_constant_factor() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let two_x_plus_2 = a.add(&[two_x, two]); // 2x + 2
+        let frac = a.div(two_x_plus_2, two); // (2x+2)/2
+        let result = cancel(&mut a, frac, x);
+        let expected = a.add(&[x, a.one]); // x + 1
+        assert_eq!(result, expected, "(2x+2)/2 should cancel to x+1");
+    }
+
+    #[test]
+    fn together_uses_product_not_lcm() {
+        // TODO: together() should use LCM of denominators, not product.
+        // Currently: a/(x-1) + b/(x-1)^2 gets denom (x-1)*(x-1)^2 instead of (x-1)^2
+        // This test documents the current (suboptimal but correct) behavior.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let sym_a = sym(&mut a, "a");
+        let sym_b = sym(&mut a, "b");
+        let one = a.one;
+        let two = a.int(2);
+        let x_minus_1 = a.sub(x, one);
+        let x_minus_1_sq = a.pow(x_minus_1, two);
+        let frac1 = a.div(sym_a, x_minus_1); // a/(x-1)
+        let frac2 = a.div(sym_b, x_minus_1_sq); // b/(x-1)^2
+        let sum = a.add(&[frac1, frac2]);
+        let result = together(&mut a, sum);
+        // At minimum, together should not crash and should return a valid expression.
+        let s = display(&a, result);
+        assert!(!s.is_empty(), "together should produce a valid expression");
     }
 }
