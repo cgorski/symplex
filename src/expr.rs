@@ -892,6 +892,106 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    // ── Reciprocal trig / hyperbolic convenience methods ───────────
+
+    /// Secant: `sec(x) = 1/cos(x)`.
+    #[must_use]
+    pub fn sec(&self) -> Ex {
+        let one_id = self.inner.read().arena.one();
+        let one = self.wrap(one_id);
+        &one / &self.cos()
+    }
+
+    /// Cosecant: `csc(x) = 1/sin(x)`.
+    #[must_use]
+    pub fn csc(&self) -> Ex {
+        let one_id = self.inner.read().arena.one();
+        let one = self.wrap(one_id);
+        &one / &self.sin()
+    }
+
+    /// Cotangent: `cot(x) = cos(x)/sin(x)`.
+    #[must_use]
+    pub fn cot(&self) -> Ex {
+        &self.cos() / &self.sin()
+    }
+
+    /// Inverse cotangent: `acot(x) = atan(1/x)`.
+    #[must_use]
+    pub fn acot(&self) -> Ex {
+        let one_id = self.inner.read().arena.one();
+        let one = self.wrap(one_id);
+        (&one / self).atan()
+    }
+
+    /// Inverse secant: `asec(x) = acos(1/x)`.
+    #[must_use]
+    pub fn asec(&self) -> Ex {
+        let one_id = self.inner.read().arena.one();
+        let one = self.wrap(one_id);
+        (&one / self).acos()
+    }
+
+    /// Inverse cosecant: `acsc(x) = asin(1/x)`.
+    #[must_use]
+    pub fn acsc(&self) -> Ex {
+        let one_id = self.inner.read().arena.one();
+        let one = self.wrap(one_id);
+        (&one / self).asin()
+    }
+
+    /// Hyperbolic cotangent: `coth(x) = cosh(x)/sinh(x)`.
+    #[must_use]
+    pub fn coth(&self) -> Ex {
+        &self.cosh() / &self.sinh()
+    }
+
+    /// Hyperbolic secant: `sech(x) = 1/cosh(x)`.
+    #[must_use]
+    pub fn sech(&self) -> Ex {
+        let one_id = self.inner.read().arena.one();
+        let one = self.wrap(one_id);
+        &one / &self.cosh()
+    }
+
+    /// Hyperbolic cosecant: `csch(x) = 1/sinh(x)`.
+    #[must_use]
+    pub fn csch(&self) -> Ex {
+        let one_id = self.inner.read().arena.one();
+        let one = self.wrap(one_id);
+        &one / &self.sinh()
+    }
+
+    /// Inverse hyperbolic cotangent: `acoth(x) = atanh(1/x)`.
+    #[must_use]
+    pub fn acoth(&self) -> Ex {
+        let one_id = self.inner.read().arena.one();
+        let one = self.wrap(one_id);
+        (&one / self).atanh()
+    }
+
+    /// Inverse hyperbolic secant: `asech(x) = acosh(1/x)`.
+    #[must_use]
+    pub fn asech(&self) -> Ex {
+        let one_id = self.inner.read().arena.one();
+        let one = self.wrap(one_id);
+        (&one / self).acosh()
+    }
+
+    /// Inverse hyperbolic cosecant: `acsch(x) = asinh(1/x)`.
+    #[must_use]
+    pub fn acsch(&self) -> Ex {
+        let one_id = self.inner.read().arena.one();
+        let one = self.wrap(one_id);
+        (&one / self).asinh()
+    }
+
+    /// Cardinal sine: `sinc(x) = sin(x)/x`, with `sinc(0) = 1` (requires limit).
+    #[must_use]
+    pub fn sinc(&self) -> Ex {
+        &self.sin() / self
+    }
+
     /// Sign function: 1 if positive, -1 if negative, 0 if zero.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn sign(&self) -> Ex {
