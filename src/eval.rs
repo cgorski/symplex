@@ -169,6 +169,27 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let ni = cache.get(&inner).copied().unwrap_or(inner);
                 if ni == inner { id } else { arena.neg(ni) }
             }
+            ExprNode::Factorial(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                if let Some(result) = eval_factorial(arena, ni) {
+                    result
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.factorial(ni)
+                }
+            }
+            ExprNode::Binomial(n, k) => {
+                let nn = cache.get(&n).copied().unwrap_or(n);
+                let nk = cache.get(&k).copied().unwrap_or(k);
+                if let Some(result) = eval_binomial(arena, nn, nk) {
+                    result
+                } else if nn == n && nk == k {
+                    id
+                } else {
+                    arena.binomial(nn, nk)
+                }
+            }
             // Everything else: unchanged.
             _ => id,
         };
@@ -184,6 +205,45 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Check if `id` is the constant `π`.
+fn eval_factorial(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let n: u64 = r.to_integer().try_into().ok()?;
+    if n > 20 {
+        return None; // Guard against huge factorials
+    }
+    let mut result = num_rational::Ratio::<num_bigint::BigInt>::one();
+    for i in 2..=n {
+        result *= num_rational::Ratio::from_integer(num_bigint::BigInt::from(i));
+    }
+    let nid = arena.intern_num(result);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
+    let nr = arena.as_num(n)?;
+    let kr = arena.as_num(k)?;
+    if !nr.is_integer() || !kr.is_integer() || nr.is_negative() || kr.is_negative() {
+        return None;
+    }
+    let n_u64: u64 = nr.to_integer().try_into().ok()?;
+    let k_u64: u64 = kr.to_integer().try_into().ok()?;
+    if k_u64 > n_u64 || n_u64 > 20 {
+        return None;
+    }
+    // C(n,k) = n! / (k! * (n-k)!)
+    let mut result = num_bigint::BigInt::from(1);
+    for i in 0..k_u64 {
+        result *= num_bigint::BigInt::from(n_u64 - i);
+        result /= num_bigint::BigInt::from(i + 1);
+    }
+    let ratio = num_rational::Ratio::from_integer(result);
+    let nid = arena.intern_num(ratio);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
 fn is_pi(arena: &Arena, id: ExprId) -> bool {
     id == arena.pi
 }
@@ -1738,5 +1798,33 @@ mod tests {
         let result = eval(&mut a, expr);
         let d = display(&a, result);
         assert!(d.contains("cosh"), "cos(i*x) should be cosh(x), got: {d}");
+    }
+
+    #[test]
+    fn eval_factorial_5() {
+        let mut a = Arena::new();
+        let five = a.int(5);
+        let expr = a.factorial(five);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "120");
+    }
+
+    #[test]
+    fn eval_factorial_0() {
+        let mut a = Arena::new();
+        let zero = a.zero;
+        let expr = a.factorial(zero);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "1");
+    }
+
+    #[test]
+    fn eval_binomial_5_2() {
+        let mut a = Arena::new();
+        let five = a.int(5);
+        let two = a.int(2);
+        let expr = a.binomial(five, two);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "10");
     }
 }

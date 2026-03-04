@@ -365,6 +365,19 @@ fn diff_node(
             arena.div(df, one_minus_f_sq)
         }
 
+        // Factorial: d/dx(n!) — leave as unevaluated derivative
+        // (factorial is typically of integer-valued expressions)
+        ExprNode::Factorial(_) => {
+            let v = var_expr(arena, var);
+            arena.intern(ExprNode::Derivative(id, v))
+        }
+
+        // Binomial: leave as unevaluated derivative
+        ExprNode::Binomial(_, _) => {
+            let v = var_expr(arena, var);
+            arena.intern(ExprNode::Derivative(id, v))
+        }
+
         // ── Apply (user-defined function): leave unevaluated ───────
         ExprNode::Apply(_, _) => {
             let v = var_expr(arena, var);

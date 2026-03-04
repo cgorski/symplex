@@ -188,6 +188,9 @@ fn convert_node(
         }
 
         ExprNode::Apply(_, _) | ExprNode::Derivative(_, _) | ExprNode::Integral(_, _) => None,
+
+        // Combinatorial nodes are not polynomial.
+        ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => None,
     }
 }
 

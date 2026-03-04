@@ -40,6 +40,8 @@ pub(crate) mod canon;
 pub(crate) mod complex;
 pub(crate) mod diff;
 pub(crate) mod display;
+/// Symbolic equation type (`lhs = rhs`).
+pub mod eq;
 pub(crate) mod eval;
 pub(crate) mod evalf;
 pub(crate) mod expand;

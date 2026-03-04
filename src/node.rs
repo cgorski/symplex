@@ -162,6 +162,13 @@ pub enum ExprNode {
     /// Inverse hyperbolic tangent: `atanh(x)`.
     Atanh(ExprId),
 
+    // -- combinatorial -------------------------------------------------------
+    /// Factorial: `n!`
+    Factorial(ExprId),
+
+    /// Binomial coefficient: `C(n, k)` = n! / (k! * (n-k)!)
+    Binomial(ExprId, ExprId),
+
     // -- composite forms -----------------------------------------------------
     /// Application of a user‐defined or library function identified by
     /// [`SymbolId`] to a list of argument expressions.
@@ -201,7 +208,10 @@ impl ExprNode {
             ExprNode::Add(ids) | ExprNode::Mul(ids) => ids.clone(),
 
             // binary
-            ExprNode::Pow(a, b) | ExprNode::Derivative(a, b) | ExprNode::Integral(a, b) => {
+            ExprNode::Pow(a, b)
+            | ExprNode::Binomial(a, b)
+            | ExprNode::Derivative(a, b)
+            | ExprNode::Integral(a, b) => {
                 smallvec![*a, *b]
             }
 
@@ -221,7 +231,8 @@ impl ExprNode {
             | ExprNode::Tanh(x)
             | ExprNode::Asinh(x)
             | ExprNode::Acosh(x)
-            | ExprNode::Atanh(x) => smallvec![*x],
+            | ExprNode::Atanh(x)
+            | ExprNode::Factorial(x) => smallvec![*x],
 
             // function application
             ExprNode::Apply(_, args) => {
@@ -288,6 +299,8 @@ impl fmt::Debug for ExprNode {
             ExprNode::Asinh(x) => f.debug_tuple("Asinh").field(x).finish(),
             ExprNode::Acosh(x) => f.debug_tuple("Acosh").field(x).finish(),
             ExprNode::Atanh(x) => f.debug_tuple("Atanh").field(x).finish(),
+            ExprNode::Factorial(id) => write!(f, "Factorial({id:?})"),
+            ExprNode::Binomial(n, k) => write!(f, "Binomial({n:?}, {k:?})"),
             ExprNode::Apply(sym, args) => f.debug_tuple("Apply").field(sym).field(args).finish(),
             ExprNode::Derivative(body, var) => {
                 f.debug_tuple("Derivative").field(body).field(var).finish()

@@ -375,6 +375,27 @@ fn expand_expr(
         ExprNode::Acosh(x) => push_func("acosh", x, stack),
         ExprNode::Atanh(x) => push_func("atanh", x, stack),
 
+        // ── Combinatorial ──────────────────────────────────────────
+        ExprNode::Factorial(inner) => {
+            // Display as "inner!" with parentheses if inner is compound
+            let needs_parens = !arena.node(inner).is_atom();
+            if needs_parens {
+                stack.push(WorkItem::Lit(")!"));
+                stack.push(WorkItem::Expr(inner, 0));
+                stack.push(WorkItem::Lit("("));
+            } else {
+                stack.push(WorkItem::Lit("!"));
+                stack.push(WorkItem::Expr(inner, 0));
+            }
+        }
+        ExprNode::Binomial(n, k) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(k, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(n, 0));
+            stack.push(WorkItem::Lit("C("));
+        }
+
         // ── Apply (user-defined function) ──────────────────────────
         ExprNode::Apply(sym_id, ref args) => {
             let name = arena.symbol_name(sym_id).to_owned();

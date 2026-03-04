@@ -830,6 +830,16 @@ impl Arena {
         self.intern(ExprNode::Atanh(expr))
     }
 
+    /// Creates a `Factorial` node: `n!`
+    pub fn factorial(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Factorial(expr))
+    }
+
+    /// Creates a `Binomial` node: `C(n, k)` = n! / (k! * (n-k)!)
+    pub fn binomial(&mut self, n: ExprId, k: ExprId) -> ExprId {
+        self.intern(ExprNode::Binomial(n, k))
+    }
+
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.
     ///
     /// Returns the string representation of the result, or an error if the

@@ -388,6 +388,20 @@ pub fn compute_sort_key(
             key.push(SPECIAL_NEG);
             key.extend(get_key(*x).as_bytes());
         }
+
+        // -- combinatorial ---------------------------------------------------
+        ExprNode::Factorial(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ABS + 1); // slot after last built-in function
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Binomial(n, k) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ABS + 2);
+            key.extend(get_key(*n).as_bytes());
+            key.extend(get_key(*k).as_bytes());
+        }
     }
 
     key

@@ -1892,6 +1892,9 @@ impl Ex {
             crate::node::ExprNode::Apply(_, _) => ExprType::Apply,
             crate::node::ExprNode::Derivative(_, _) => ExprType::Derivative,
             crate::node::ExprNode::Integral(_, _) => ExprType::Integral,
+            crate::node::ExprNode::Factorial(_) | crate::node::ExprNode::Binomial(_, _) => {
+                ExprType::Function
+            }
         }
     }
 

@@ -216,6 +216,14 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
             body: Box::new(expr_to_tree(arena, body)),
             var: Box::new(expr_to_tree(arena, var)),
         },
+        ExprNode::Factorial(x) => ExprTree::Apply {
+            name: "factorial".to_owned(),
+            args: vec![expr_to_tree(arena, x)],
+        },
+        ExprNode::Binomial(n, k) => ExprTree::Apply {
+            name: "binomial".to_owned(),
+            args: vec![expr_to_tree(arena, n), expr_to_tree(arena, k)],
+        },
     }
 }
 

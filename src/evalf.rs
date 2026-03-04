@@ -129,6 +129,12 @@ fn eval_node(
             })
         }
 
+        ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => {
+            Err(SymplexError::Unevaluable {
+                reason: "cannot numerically evaluate symbolic factorial/binomial; call eval() first to reduce".into(),
+            })
+        }
+
         ExprNode::NaN => Err(SymplexError::Unevaluable {
             reason: "cannot evaluate NaN".into(),
         }),

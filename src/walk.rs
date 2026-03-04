@@ -298,6 +298,18 @@ pub(crate) fn rebuild_with_cache(
                 arena.intern(ExprNode::Apply(func_id, new_args))
             }
         }
+
+        // Combinatorial: Factorial, Binomial
+        ExprNode::Factorial(inner) => rebuild_unary(arena, id, inner, cache, Arena::factorial),
+        ExprNode::Binomial(n, k) => {
+            let new_n = cache.get(&n).copied().unwrap_or(n);
+            let new_k = cache.get(&k).copied().unwrap_or(k);
+            if new_n == n && new_k == k {
+                id
+            } else {
+                arena.binomial(new_n, new_k)
+            }
+        }
     }
 }
 
