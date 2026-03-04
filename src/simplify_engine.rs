@@ -7,6 +7,7 @@
 use crate::arena::Arena;
 use crate::node::ExprId;
 use crate::walk;
+use num_traits::One;
 
 /// Count the number of operations (nodes) in an expression.
 ///
@@ -54,10 +55,17 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     let s3_eval2 = crate::eval::eval(arena, s3_expand);
     let (s3, _) = crate::pattern::apply_rules(arena, s3_eval2, &rules);
 
-    // Strategy 4: eval → factor_terms (use inner with reduced coefficients)
+    // Strategy 4: eval → factor_terms → simplify inner → multiply GCD back
     let s4_eval = crate::eval::eval(arena, expr);
-    let (_gcd, s4_inner) = crate::factor_terms::factor_terms_pair(arena, s4_eval);
-    let (s4, _) = crate::pattern::apply_rules(arena, s4_inner, &rules);
+    let (gcd, s4_inner) = crate::factor_terms::factor_terms_pair(arena, s4_eval);
+    let (s4_simplified, _) = crate::pattern::apply_rules(arena, s4_inner, &rules);
+    let s4 = if gcd.is_one() {
+        s4_simplified
+    } else {
+        let nid = arena.intern_num(gcd);
+        let gcd_id = arena.intern(crate::node::ExprNode::Num(nid));
+        arena.mul(&[gcd_id, s4_simplified])
+    };
 
     // Strategy 5: eval → expand_trig → simplify
     let s5_eval = crate::eval::eval(arena, expr);
@@ -219,5 +227,73 @@ mod tests {
             s.contains("1") && s.contains("x") && !s.contains("/"),
             "(x²-1)/(x-1) should simplify to x+1, got: {s}"
         );
+    }
+
+    /// Regression: Strategy 4 calls `factor_terms_pair` but discards the GCD,
+    /// entering only the GCD-stripped inner expression into the candidate pool.
+    /// Because `count_ops` is lower for the stripped version, it wins — producing
+    /// a result that is NOT mathematically equivalent to the input.
+    ///
+    /// For `6*x + 12`:
+    ///   factor_terms_pair → (gcd=6, inner=x+2)
+    ///   Strategy 4 keeps only `x+2`, which has 1 op vs 3 ops for `6*x+12`.
+    ///   So smart_simplify returns `x+2` instead of `6*x+12` (or `6*(x+2)`).
+    #[test]
+    fn smart_simplify_strategy4_discards_gcd() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let six = a.int(6);
+        let twelve = a.int(12);
+        let six_x = a.mul(&[six, x]);
+        let expr = a.add(&[six_x, twelve]); // 6*x + 12
+
+        // Confirm what factor_terms_pair returns
+        let eval_expr = crate::eval::eval(&mut a, expr);
+        let (gcd, inner) = crate::factor_terms::factor_terms_pair(&mut a, eval_expr);
+        let inner_s = display(&a, inner);
+        assert_eq!(
+            gcd,
+            num_rational::Ratio::from_integer(num_bigint::BigInt::from(6)),
+            "GCD should be 6"
+        );
+        assert!(
+            inner_s.contains("x") && inner_s.contains("2"),
+            "inner should be x+2, got: {inner_s}"
+        );
+
+        // Now run smart_simplify — the bug causes it to return x+2
+        let result = smart_simplify(&mut a, expr);
+        let result_s = display(&a, result);
+
+        // The simplified form must still contain the factor 6 (or be
+        // equivalent, e.g. "6*(x + 2)" or "6*x + 12").  If it equals
+        // just "x + 2" then Strategy 4's GCD was silently dropped.
+        let result_ops = count_ops(&a, result);
+        let inner_ops = count_ops(&a, inner);
+        assert!(
+            result_s.contains("6") || result_s.contains("12"),
+            "BUG: smart_simplify returned '{}' for 6*x+12 — \
+             the GCD factor 6 was discarded by Strategy 4 \
+             (result has {} ops vs inner's {} ops)",
+            result_s,
+            result_ops,
+            inner_ops
+        );
+    }
+
+    #[test]
+    fn smart_simplify_preserves_gcd_factor() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let six = a.int(6);
+        let twelve = a.int(12);
+        let six_x = a.mul(&[six, x]);
+        let expr = a.add(&[six_x, twelve]); // 6x + 12
+        let result = smart_simplify(&mut a, expr);
+        // The result must be mathematically equivalent to 6x + 12
+        // It must NOT be x + 2 (which drops the factor of 6)
+        let two = a.int(2);
+        let x_plus_2 = a.add(&[x, two]);
+        assert_ne!(result, x_plus_2, "smart_simplify must not drop GCD factor");
     }
 }

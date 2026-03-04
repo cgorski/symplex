@@ -50,7 +50,7 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
         }
     };
 
-    integrate_node(arena, expr, var, var_sym)
+    integrate_node(arena, expr, var, var_sym, 20)
 }
 
 /// Check whether `expr` is a suitable candidate for the `u` factor in
@@ -60,10 +60,27 @@ fn is_by_parts_candidate(arena: &Arena, expr: ExprId, var: ExprId, var_sym: Symb
     if is_polynomial_in(arena, expr, var, var_sym) {
         return true;
     }
-    if let ExprNode::Ln(inner) = arena.node(expr) {
-        return contains_var(arena, *inner, var_sym);
+    match arena.node(expr) {
+        ExprNode::Ln(inner)
+        | ExprNode::Asin(inner)
+        | ExprNode::Acos(inner)
+        | ExprNode::Atan(inner) => contains_var(arena, *inner, var_sym),
+        _ => false,
     }
-    false
+}
+
+/// LIATE priority for integration by parts: lower = better choice for u.
+/// L(og) = 1, I(nverse trig) = 2, A(lgebraic/polynomial) = 3,
+/// T(rig) = 4, E(xponential) = 5, other = 6.
+fn liate_rank(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolId) -> u8 {
+    match arena.node(expr) {
+        ExprNode::Ln(_) => 1,
+        ExprNode::Asin(_) | ExprNode::Acos(_) | ExprNode::Atan(_) => 2,
+        _ if is_polynomial_in(arena, expr, var, var_sym) => 3,
+        ExprNode::Sin(_) | ExprNode::Cos(_) | ExprNode::Tan(_) => 4,
+        ExprNode::Exp(_) | ExprNode::Sinh(_) | ExprNode::Cosh(_) | ExprNode::Tanh(_) => 5,
+        _ => 6,
+    }
 }
 
 /// Check whether `expr` is `Pow(var, 2)`, i.e. `x²`.
@@ -301,7 +318,17 @@ fn try_complete_square_integral(
 }
 
 /// Integrate a single node with respect to `var`.
-fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolId) -> ExprId {
+fn integrate_node(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> ExprId {
+    if depth == 0 {
+        return arena.intern(ExprNode::Integral(expr, var));
+    }
+
     // Try trig power/product integration first (sin^n, cos^n, sin^m*cos^n)
     if let Some(result) = crate::trig_integ::try_trig_power_integral(arena, expr, var, var_sym) {
         return result;
@@ -340,7 +367,7 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
         ExprNode::Add(ref children) => {
             let integrals: SmallVec<[ExprId; 6]> = children
                 .iter()
-                .map(|&child| integrate_node(arena, child, var, var_sym))
+                .map(|&child| integrate_node(arena, child, var, var_sym, depth - 1))
                 .collect();
             arena.add(&integrals)
         }
@@ -366,7 +393,7 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
 
             if !constants.is_empty() && dependent.len() == 1 {
                 // c * f(x) → c * ∫ f(x) dx
-                let inner_integral = integrate_node(arena, dependent[0], var, var_sym);
+                let inner_integral = integrate_node(arena, dependent[0], var, var_sym, depth - 1);
                 // Check if the inner integral is unevaluated
                 if let ExprNode::Integral(_, _) = arena.node(inner_integral) {
                     // Can't integrate the inner part — return unevaluated for whole
@@ -381,9 +408,17 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
             // one that's a by-parts candidate (u), and one that's directly
             // integrable (dv).
             if dependent.len() == 2 {
-                // Try both orderings: (dependent[0] as u, dependent[1] as dv)
-                // and vice versa.
-                for (u_idx, dv_idx) in [(0, 1), (1, 0)] {
+                // Try LIATE-preferred ordering: factor with lower LIATE rank as u first.
+                let orderings = {
+                    let r0 = liate_rank(arena, dependent[0], var, var_sym);
+                    let r1 = liate_rank(arena, dependent[1], var, var_sym);
+                    if r0 <= r1 {
+                        [(0usize, 1usize), (1, 0)]
+                    } else {
+                        [(1, 0), (0, 1)]
+                    }
+                };
+                for (u_idx, dv_idx) in orderings {
                     let u = dependent[u_idx];
                     let dv = dependent[dv_idx];
 
@@ -393,7 +428,7 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                     }
 
                     // Check that dv is directly integrable
-                    let v = integrate_node(arena, dv, var, var_sym);
+                    let v = integrate_node(arena, dv, var, var_sym, depth - 1);
                     if let ExprNode::Integral(_, _) = arena.node(v) {
                         continue; // dv not integrable
                     }
@@ -403,7 +438,7 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
 
                     // Compute ∫ v·du dx
                     let v_du = arena.mul(&[v, du]);
-                    let integral_v_du = integrate_node(arena, v_du, var, var_sym);
+                    let integral_v_du = integrate_node(arena, v_du, var, var_sym, depth - 1);
 
                     // Check if the remaining integral was resolved
                     if let ExprNode::Integral(_, _) = arena.node(integral_v_du) {
@@ -431,7 +466,7 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                 if denom != arena.one {
                     let decomposed = crate::apart::apart(arena, expr, var);
                     if decomposed != expr {
-                        let result = integrate_node(arena, decomposed, var, var_sym);
+                        let result = integrate_node(arena, decomposed, var, var_sym, depth - 1);
                         if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
                             return result;
                         }
@@ -440,7 +475,7 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
             }
 
             // ── Try general u-substitution ──────────────────────────────
-            if let Some(result) = try_u_substitution(arena, &dependent, var, var_sym) {
+            if let Some(result) = try_u_substitution(arena, &dependent, var, var_sym, depth - 1) {
                 if constants.is_empty() {
                     return result;
                 } else {
@@ -457,7 +492,7 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
 
         // ── Neg ────────────────────────────────────────────────────
         ExprNode::Neg(inner) => {
-            let inner_int = integrate_node(arena, inner, var, var_sym);
+            let inner_int = integrate_node(arena, inner, var, var_sym, depth - 1);
             arena.neg(inner_int)
         }
 
@@ -547,7 +582,7 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                 if denom != arena.one {
                     let decomposed = crate::apart::apart(arena, expr, var);
                     if decomposed != expr {
-                        let result = integrate_node(arena, decomposed, var, var_sym);
+                        let result = integrate_node(arena, decomposed, var, var_sym, depth - 1);
                         if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
                             return result;
                         }
@@ -565,7 +600,7 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
                 if (2..=10).contains(&n_i64) {
                     let expanded = crate::expand::expand(arena, expr);
                     if expanded != expr {
-                        let result = integrate_node(arena, expanded, var, var_sym);
+                        let result = integrate_node(arena, expanded, var, var_sym, depth - 1);
                         if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
                             return result;
                         }
@@ -868,6 +903,7 @@ fn try_u_substitution(
     dependent: &[ExprId],
     var: ExprId,
     var_sym: SymbolId,
+    depth: usize,
 ) -> Option<ExprId> {
     for (i, &factor) in dependent.iter().enumerate() {
         let candidates = u_sub_candidates(arena, factor, var_sym);
@@ -905,7 +941,7 @@ fn try_u_substitution(
             // Replace u(x) → var inside the factor to get g(var),
             // integrate g(var) w.r.t. var, then substitute var → u(x) back.
             let g_of_var = arena.subs_structural(factor, u_expr, var);
-            let g_integrated = integrate_node(arena, g_of_var, var, var_sym);
+            let g_integrated = integrate_node(arena, g_of_var, var, var_sym, depth);
 
             // If the inner integral is unevaluated, this candidate didn't help
             if matches!(arena.node(g_integrated), ExprNode::Integral(_, _)) {

@@ -313,6 +313,15 @@ fn match_recursive(
             true
         }
 
+        // Combinatorial.
+        (ExprNode::Factorial(pi), ExprNode::Factorial(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::Binomial(pa, pb), ExprNode::Binomial(ea, eb)) => {
+            match_recursive(arena, pattern, pa, ea, bindings)
+                && match_recursive(arena, pattern, pb, eb, bindings)
+        }
+
         // Any other combination: no match.
         _ => false,
     }
@@ -737,7 +746,20 @@ fn rule_pow_pow(arena: &mut Arena) -> Rule {
         root: outer_pow,
         wilds,
     };
-    Rule::new("pow_pow", pattern, template)
+    let mut r = Rule::new("pow_pow", pattern, template);
+    r.condition = Some(|arena, bindings| {
+        // Only fire when at least one bound value is a known integer
+        for &val in bindings.values() {
+            if let crate::node::ExprNode::Num(nid) = arena.node(val) {
+                let r = arena.num(*nid);
+                if r.is_integer() {
+                    return true;
+                }
+            }
+        }
+        false
+    });
+    r
 }
 
 /// Build the inverse hyperbolic rule: `asinh(sinh(w)) → w`.
@@ -754,18 +776,19 @@ fn rule_asinh_sinh(arena: &mut Arena) -> Rule {
     Rule::new("asinh_sinh", pattern, w_expr)
 }
 
-/// Build the inverse hyperbolic rule: `acosh(cosh(w)) → w`.
+/// Build the inverse hyperbolic rule: `acosh(cosh(w)) → abs(w)`.
 fn rule_acosh_cosh(arena: &mut Arena) -> Rule {
     let (w_expr, w_id) = arena.wild();
     let cosh_w = arena.cosh(w_expr);
     let acosh_cosh_w = arena.acosh(cosh_w);
+    let abs_w = arena.abs(w_expr);
     let mut wilds = FxHashMap::default();
     wilds.insert(w_expr, w_id);
     let pattern = Pattern {
         root: acosh_cosh_w,
         wilds,
     };
-    Rule::new("acosh_cosh", pattern, w_expr)
+    Rule::new("acosh_cosh", pattern, abs_w)
 }
 
 /// Build the inverse hyperbolic rule: `atanh(tanh(w)) → w`.
@@ -886,6 +909,25 @@ fn rule_sin_div_cos(arena: &mut Arena) -> Rule {
     Rule::new("sin_div_cos", pattern, arena.tan(w_expr))
 }
 
+/// cos(w) / sin(w) → 1/tan(w)  (i.e., Pow(tan(w), -1))
+fn rule_cos_div_sin(arena: &mut Arena) -> Rule {
+    let (w_expr, w_id) = arena.wild();
+    let cos_w = arena.cos(w_expr);
+    let sin_w = arena.sin(w_expr);
+    let neg_one = arena.int(-1);
+    let sin_w_inv = arena.pow(sin_w, neg_one);
+    let pattern_expr = arena.mul(&[cos_w, sin_w_inv]);
+    let tan_w = arena.tan(w_expr);
+    let template = arena.pow(tan_w, neg_one);
+    let mut wilds = FxHashMap::default();
+    wilds.insert(w_expr, w_id);
+    let pattern = Pattern {
+        root: pattern_expr,
+        wilds,
+    };
+    Rule::new("cos_div_sin", pattern, template)
+}
+
 /// sinh(w) / cosh(w) → tanh(w)
 fn rule_sinh_div_cosh(arena: &mut Arena) -> Rule {
     let (w_expr, w_id) = arena.wild();
@@ -971,15 +1013,13 @@ pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
         rule_ln_exp(arena),
         rule_abs_abs(arena),
         rule_sqrt_sq(arena),
-        rule_asin_sin(arena),
-        rule_acos_cos(arena),
-        rule_atan_tan(arena),
         rule_cosh_sinh_identity(arena),
         rule_pow_pow(arena),
         rule_asinh_sinh(arena),
         rule_acosh_cosh(arena),
         rule_atanh_tanh(arena),
         rule_sin_div_cos(arena),
+        rule_cos_div_sin(arena),
         rule_sinh_div_cosh(arena),
         rule_exp_mul(arena),
         rule_abs_positive(arena),
@@ -1525,5 +1565,63 @@ mod tests {
         let (result, steps) = apply_rules(&mut a, sinh_asinh_x, &rules);
         assert_eq!(display(&a, result), "x");
         assert!(steps.iter().any(|s| s.rule_name == "sinh_asinh"));
+    }
+
+    #[test]
+    fn pow_pow_blocked_for_fractional_exponents() {
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        let half = arena.rational(1, 2);
+        let third = arena.rational(1, 3);
+        let inner = arena.pow(x, half);
+        let expr = arena.pow(inner, third); // (x^(1/2))^(1/3)
+        let rules = basic_rules(&mut arena);
+        let (result, _) = apply_rules(&mut arena, expr, &rules);
+        // Should NOT simplify to x^(1/6) because no exponent is integer
+        assert_eq!(
+            result, expr,
+            "pow_pow should not fire for fractional exponents"
+        );
+    }
+
+    #[test]
+    fn pow_pow_fires_for_integer_exponent() {
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        let two = arena.int(2);
+        let three = arena.int(3);
+        let inner = arena.pow(x, two);
+        let expr = arena.pow(inner, three); // (x^2)^3
+        let rules = basic_rules(&mut arena);
+        let (result, _) = apply_rules(&mut arena, expr, &rules);
+        let six = arena.int(6);
+        let expected = arena.pow(x, six); // x^6
+        assert_eq!(
+            result, expected,
+            "pow_pow should fire for integer exponents"
+        );
+    }
+
+    #[test]
+    fn acosh_cosh_gives_abs() {
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        let cosh_x = arena.cosh(x);
+        let expr = arena.acosh(cosh_x);
+        let rules = basic_rules(&mut arena);
+        let (result, _) = apply_rules(&mut arena, expr, &rules);
+        let expected = arena.abs(x);
+        assert_eq!(result, expected, "acosh(cosh(x)) should give |x|");
+    }
+
+    #[test]
+    fn asin_sin_no_longer_simplifies() {
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        let sin_x = arena.sin(x);
+        let expr = arena.asin(sin_x);
+        let rules = basic_rules(&mut arena);
+        let (result, _) = apply_rules(&mut arena, expr, &rules);
+        assert_eq!(result, expr, "asin(sin(x)) should stay (rule removed)");
     }
 }

@@ -712,6 +712,18 @@ fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return Some(arena.pow(three, half_exp));
     }
 
+    // Q2 reduction: tan(π - x) = -tan(x) for coeff in (1/2, 1)
+    let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+    if coeff > half && coeff < Ratio::one() {
+        let reflected = Ratio::one() - &coeff;
+        let nid = arena.intern_num(reflected);
+        let coeff_id = arena.intern(ExprNode::Num(nid));
+        let reflected_angle = arena.mul(&[coeff_id, arena.pi()]);
+        if let Some(val) = eval_tan(arena, reflected_angle) {
+            return Some(arena.neg(val));
+        }
+    }
+
     None
 }
 
@@ -871,6 +883,27 @@ fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId>
     let n: u32 = exp_r.denom().to_u32()?;
     if n < 2 {
         return None;
+    }
+
+    // Odd roots of negative integers: (-n)^(1/k) = -(n^(1/k)) when k is odd
+    if base_r.is_negative() && base_r.is_integer() {
+        if let Some(exp_r) = arena.as_num(exp) {
+            let exp_r = exp_r.clone();
+            if *exp_r.numer() == BigInt::from(1) {
+                let k = exp_r.denom().clone();
+                // Check k is odd
+                if &k % BigInt::from(2) != BigInt::from(0) {
+                    let abs_base = -base_r.clone();
+                    let abs_base_id = {
+                        let nid = arena.intern_num(Ratio::from_integer(abs_base.to_integer()));
+                        arena.intern(ExprNode::Num(nid))
+                    };
+                    let root = arena.pow(abs_base_id, exp);
+                    let root_eval = eval(arena, root);
+                    return Some(arena.neg(root_eval));
+                }
+            }
+        }
     }
 
     // For integer base
@@ -1185,19 +1218,22 @@ fn as_pure_imaginary(arena: &Arena, id: ExprId) -> Option<ExprId> {
 
 /// Detect if `id` represents a negated expression: `-x` or `Mul(-1, x)`.
 /// Returns `Some(positive_inner)` if negated, `None` otherwise.
-fn as_negated(arena: &Arena, id: ExprId) -> Option<ExprId> {
+fn as_negated(arena: &mut Arena, id: ExprId) -> Option<ExprId> {
     match arena.node(id).clone() {
         ExprNode::Neg(inner) => Some(inner),
         ExprNode::Mul(ref children) if children.len() >= 2 => {
             if let ExprNode::Num(nid) = arena.node(children[0]) {
                 let r = arena.num(*nid);
                 if r.is_negative() {
-                    // Leading negative coefficient: negate it and rebuild.
                     let pos_coeff = -r.clone();
                     if pos_coeff.is_one() {
-                        // Mul(-1, rest...) → rest (or Mul(rest...) if multiple)
                         if children.len() == 2 {
                             return Some(children[1]);
+                        } else {
+                            // 3+ children: rebuild Mul without the -1
+                            let rest: smallvec::SmallVec<[crate::node::ExprId; 6]> =
+                                children[1..].iter().copied().collect();
+                            return Some(arena.mul(&rest));
                         }
                     }
                 }
@@ -2041,5 +2077,31 @@ mod tests {
         let expr = a.sign(a.zero);
         let result = eval(&mut a, expr);
         assert_eq!(display(&a, result), "0");
+    }
+
+    #[test]
+    fn eval_tan_two_thirds_pi() {
+        let mut arena = Arena::new();
+        let two_thirds = arena.rational(2, 3);
+        let angle = arena.mul(&[two_thirds, arena.pi()]);
+        let tan_expr = arena.tan(angle);
+        let result = eval(&mut arena, tan_expr);
+        // tan(2π/3) = -√3
+        let d = display(&arena, result);
+        assert!(
+            d.contains("3") || d.contains("sqrt"),
+            "tan(2π/3) should evaluate, got: {d}"
+        );
+    }
+
+    #[test]
+    fn eval_negative_cube_root() {
+        let mut arena = Arena::new();
+        let neg8 = arena.int(-8);
+        let third = arena.rational(1, 3);
+        let expr = arena.pow(neg8, third);
+        let result = eval(&mut arena, expr);
+        let expected = arena.int(-2);
+        assert_eq!(result, expected, "(-8)^(1/3) should be -2");
     }
 }

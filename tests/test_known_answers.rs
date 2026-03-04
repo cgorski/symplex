@@ -1287,19 +1287,19 @@ fn simp_tan_atan() {
 #[test]
 fn simp_asin_sin() {
     let x = symplex::var("x");
-    check(&x.sin().asin().simplify(), "x");
+    check(&x.sin().asin().simplify(), "asin(sin(x))");
 }
 
 #[test]
 fn simp_acos_cos() {
     let x = symplex::var("x");
-    check(&x.cos().acos().simplify(), "x");
+    check(&x.cos().acos().simplify(), "acos(cos(x))");
 }
 
 #[test]
 fn simp_atan_tan() {
     let x = symplex::var("x");
-    check(&x.tan().atan().simplify(), "x");
+    check(&x.tan().atan().simplify(), "atan(tan(x))");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

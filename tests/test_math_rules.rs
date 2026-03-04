@@ -41,7 +41,7 @@ fn simplify_asinh_sinh() {
 fn simplify_acosh_cosh() {
     let x = symplex::var("x");
     let expr = x.cosh().acosh();
-    assert_eq!(format!("{}", expr.simplify()), "x");
+    assert_eq!(format!("{}", expr.simplify()), "abs(x)");
 }
 
 #[test]
