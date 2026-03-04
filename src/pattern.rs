@@ -34,6 +34,8 @@ use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode};
 use crate::walk;
 
+use tracing;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // WildId — pattern variable identifier
 // ═══════════════════════════════════════════════════════════════════════════
@@ -463,6 +465,7 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
         let mut rewritten = rebuilt;
         for rule in rules {
             if let Some(replacement) = rule.try_apply(arena, rewritten) {
+                tracing::debug!(rule = rule.name, "rule fired");
                 steps.push(Step {
                     rule_name: rule.name,
                     before: rebuilt,
@@ -489,6 +492,11 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
                             for j in (i + 1)..children.len() {
                                 let pair = arena.add(&[children[i], children[j]]);
                                 if let Some(replacement) = rule.try_apply(arena, pair) {
+                                    tracing::debug!(
+                                        rule = rule.name,
+                                        node_type = "Add",
+                                        "sub-expression match found"
+                                    );
                                     // Build remaining terms.
                                     let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
                                         smallvec::SmallVec::new();
@@ -529,6 +537,11 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
                             for j in (i + 1)..children.len() {
                                 let pair = arena.mul(&[children[i], children[j]]);
                                 if let Some(replacement) = rule.try_apply(arena, pair) {
+                                    tracing::debug!(
+                                        rule = rule.name,
+                                        node_type = "Mul",
+                                        "sub-expression match found"
+                                    );
                                     // Build remaining factors.
                                     let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
                                         smallvec::SmallVec::new();

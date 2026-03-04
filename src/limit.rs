@@ -15,6 +15,7 @@
 
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode};
+use tracing;
 
 /// Maximum L'Hôpital iterations to prevent infinite loops.
 const MAX_LHOPITAL: usize = 5;
@@ -50,6 +51,14 @@ pub(crate) fn limit(
         let n_val = crate::eval::eval(arena, n_subst);
         let d_subst = crate::subs::subs(arena, denom, var, point);
         let d_val = crate::eval::eval(arena, d_subst);
+
+        let n_val_is_zero = arena.is_zero_structural(n_val);
+        let d_val_is_zero = arena.is_zero_structural(d_val);
+        tracing::debug!(
+            numer_at_point = ?n_val_is_zero,
+            denom_at_point = ?d_val_is_zero,
+            "limit: evaluated numer/denom at point"
+        );
 
         // If both are finite and denom is nonzero, compute directly.
         if is_finite_number(arena, n_val)
@@ -125,34 +134,64 @@ fn try_lhopital(
         return None;
     }
 
+    tracing::debug!(
+        depth = depth,
+        numer_zero = n_is_zero,
+        denom_zero = d_is_zero,
+        numer_inf = n_is_inf,
+        denom_inf = d_is_inf,
+        "L'Hôpital: indeterminate form detected"
+    );
+
     let n_prime = crate::diff::diff(arena, numer, var);
     let d_prime = crate::diff::diff(arena, denom, var);
 
-    // Try direct substitution of the differentiated ratio.
+    // After computing derivatives:
+    tracing::debug!("L'Hôpital: differentiated, trying substitution");
+
+    // Evaluate the differentiated num/denom SEPARATELY first so we can
+    // detect another 0/0 indeterminate form.  The combined-ratio path
+    // (`arena.div` then `eval`) can mis-canonicalize 0/0 → 0 because
+    // the arena sees `Mul([0, Pow(0,-1)])` and eagerly folds `0*_ → 0`.
+    let np_subst = crate::subs::subs(arena, n_prime, var, point);
+    let np_val = crate::eval::eval(arena, np_subst);
+    let dp_subst = crate::subs::subs(arena, d_prime, var, point);
+    let dp_val = crate::eval::eval(arena, dp_subst);
+
+    let np_zero = arena.is_zero_structural(np_val);
+    let dp_zero = arena.is_zero_structural(dp_val);
+
+    tracing::debug!(
+        np_finite = is_finite_number(arena, np_val),
+        dp_finite = is_finite_number(arena, dp_val),
+        np_zero = np_zero,
+        dp_zero = dp_zero,
+        "L'Hôpital: separate derivative evaluation"
+    );
+
+    // If both derivatives are still 0 at the point, it's another 0/0 —
+    // recurse immediately instead of trusting the canonicalized ratio.
+    if np_zero && dp_zero {
+        return try_lhopital(arena, n_prime, d_prime, var, point, depth + 1);
+    }
+
+    // If denom is nonzero and both are finite, compute the ratio directly.
+    if is_finite_number(arena, np_val) && is_finite_number(arena, dp_val) && !dp_zero {
+        let result_ratio = arena.div(np_val, dp_val);
+        let result = crate::eval::eval(arena, result_ratio);
+        if is_finite_number(arena, result) {
+            return Some(result);
+        }
+    }
+
+    // Try the combined ratio substitution as a fallback (works when the
+    // arena doesn't mis-canonicalize).
     let ratio = arena.div(n_prime, d_prime);
     let subst = crate::subs::subs(arena, ratio, var, point);
     let evaled = crate::eval::eval(arena, subst);
 
     if is_finite_number(arena, evaled) {
         return Some(evaled);
-    }
-
-    // Also try evaluating the differentiated num/denom separately,
-    // in case the combined ratio has the same canonicalization issue.
-    let np_subst = crate::subs::subs(arena, n_prime, var, point);
-    let np_val = crate::eval::eval(arena, np_subst);
-    let dp_subst = crate::subs::subs(arena, d_prime, var, point);
-    let dp_val = crate::eval::eval(arena, dp_subst);
-
-    if is_finite_number(arena, np_val)
-        && is_finite_number(arena, dp_val)
-        && !arena.is_zero_structural(dp_val)
-    {
-        let result_ratio = arena.div(np_val, dp_val);
-        let result = crate::eval::eval(arena, result_ratio);
-        if is_finite_number(arena, result) {
-            return Some(result);
-        }
     }
 
     // Recurse with differentiated numerator/denominator.
@@ -173,6 +212,10 @@ pub(crate) fn limit_at_infinity(
 ) -> Result<ExprId, crate::errors::SymplexError> {
     // Strategy 1: Try substitution x = 1/t and take limit as t→0
     // This converts lim(x→∞) to lim(t→0+)
+    tracing::debug!(
+        strategy = "substitution x=1/t",
+        "limit_at_infinity: trying reciprocal substitution"
+    );
     let t = arena.symbol("__limit_t");
     let one = arena.one;
     let t_inv = arena.div(one, t); // 1/t
@@ -209,6 +252,11 @@ pub(crate) fn limit_at_infinity(
         let d_deg = crate::polybridge::poly_degree(arena, denom, t);
 
         if let (Some(nd), Some(dd)) = (n_deg, d_deg) {
+            tracing::debug!(
+                numer_degree = nd,
+                denom_degree = dd,
+                "limit_at_infinity: degree comparison"
+            );
             if nd < dd {
                 // Numerator degree < denominator degree → limit is 0
                 // (in terms of t→0, this means the numerator vanishes faster)

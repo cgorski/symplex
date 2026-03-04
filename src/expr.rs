@@ -561,7 +561,6 @@ impl<S: Sort> Expr<S> {
     /// ```
     #[must_use = "returns the fully simplified form; does not modify in place"]
     pub fn full_simplify(&self) -> Expr<S> {
-        let _span = debug_span!("full_simplify", expr = ?self.id).entered();
         let (result, _steps) = self.full_simplify_trace();
         result
     }
@@ -570,23 +569,12 @@ impl<S: Sort> Expr<S> {
     /// trace of all steps across all iterations.
     #[must_use = "returns the fully simplified form and accumulated trace"]
     pub fn full_simplify_trace(&self) -> (Expr<S>, Vec<crate::pattern::Step>) {
-        const MAX_ITERATIONS: usize = 10;
-        let mut current = self.clone();
-        let mut all_steps: Vec<crate::pattern::Step> = Vec::new();
-
-        for _ in 0..MAX_ITERATIONS {
-            let evaled = current.eval();
-            let expanded = evaled.expand();
-            let (simplified, steps) = expanded.simplify_trace();
-            all_steps.extend(steps);
-
-            if simplified.id == current.id {
-                return (simplified, all_steps);
-            }
-            current = simplified;
-        }
-
-        (current, all_steps)
+        let _span = tracing::debug_span!("full_simplify_trace", expr = ?self.id).entered();
+        let (result_id, steps) = {
+            let mut guard = self.inner.write();
+            crate::simplify_engine::full_simplify_trace(&mut guard.arena, self.id)
+        };
+        (self.wrap(result_id), steps)
     }
 
     /// Try multiple simplification strategies and return the simplest result.
@@ -2124,10 +2112,31 @@ impl Expr<Numeric> {
     /// assert!((val - 9.0).abs() < 1e-10);
     /// ```
     pub fn evalf_f64(&self) -> Result<f64, SymplexError> {
+        let (re, im) = self.evalf_complex64()?;
+        if im.abs() > 1e-15 {
+            return Err(SymplexError::ComputationFailed {
+                operation: "evalf_f64",
+                reason: format!(
+                    "expression has nonzero imaginary part (im={im}); use evalf_complex64() for complex results"
+                ),
+            });
+        }
+        Ok(re)
+    }
+
+    /// Evaluates the expression to a complex f64 pair `(real, imaginary)`.
+    ///
+    /// Uses 16 decimal digits of precision internally. Returns both the
+    /// real and imaginary parts, correctly handling complex expressions
+    /// like `sqrt(-1)` → `(0.0, 1.0)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the expression contains free symbols or if
+    /// the arbitrary-precision engine fails.
+    pub fn evalf_complex64(&self) -> Result<(f64, f64), SymplexError> {
         let s = self.evalf(16)?;
-        s.parse::<f64>().map_err(|e| {
-            SymplexError::NotImplemented(format!("could not parse '{}' as f64: {}", s, e))
-        })
+        parse_complex_evalf_string(&s)
     }
 
     // ── Code generation ────────────────────────────────────────────
@@ -2701,6 +2710,128 @@ impl std::iter::Product for Ex {
             id,
             _sort: PhantomData,
         }
+    }
+}
+
+/// Parse the string output of `evalf()` into a complex (f64, f64) pair.
+///
+/// Handles formats:
+/// - `"3.14"` → `(3.14, 0.0)`
+/// - `"2.5*I"` → `(0.0, 2.5)`
+/// - `"-0.866*I"` → `(0.0, -0.866)`
+/// - `"1.5 + 2.3*I"` → `(1.5, 2.3)`
+/// - `"1.5 - 2.3*I"` → `(1.5, -2.3)`
+/// - `"-1 + 2*I"` → `(-1.0, 2.0)`
+/// - `"I"` → `(0.0, 1.0)`
+/// - `"-I"` → `(0.0, -1.0)`
+fn parse_complex_evalf_string(s: &str) -> Result<(f64, f64), SymplexError> {
+    let s = s.trim();
+
+    // Try pure real first
+    if let Ok(re) = s.parse::<f64>() {
+        return Ok((re, 0.0));
+    }
+
+    // Pure imaginary: "I", "-I", "2.5*I", "-0.866*I"
+    if s == "I" || s == "i" {
+        return Ok((0.0, 1.0));
+    }
+    if s == "-I" || s == "-i" {
+        return Ok((0.0, -1.0));
+    }
+    if let Some(coeff) = s.strip_suffix("*I").or_else(|| s.strip_suffix("*i")) {
+        if let Ok(im) = coeff.parse::<f64>() {
+            return Ok((0.0, im));
+        }
+    }
+
+    // Complex: "a + b*I" or "a - b*I"
+    // Find the last '+' or '-' that separates real and imaginary parts
+    // (not at position 0, which would be a negative sign on the real part)
+    let bytes = s.as_bytes();
+    let mut split_pos = None;
+    let mut split_is_minus = false;
+    for i in (1..bytes.len()).rev() {
+        if (bytes[i] == b'+' || bytes[i] == b'-')
+            && (bytes[i - 1] == b' ' || bytes[i - 1].is_ascii_digit())
+        {
+            split_pos = Some(i);
+            split_is_minus = bytes[i] == b'-';
+            break;
+        }
+    }
+
+    if let Some(pos) = split_pos {
+        let re_str = s[..pos].trim();
+        let im_part = s[pos + 1..].trim();
+        let im_str = im_part
+            .trim_end_matches("*I")
+            .trim_end_matches("*i")
+            .trim_end_matches('I')
+            .trim_end_matches('i')
+            .trim();
+
+        let re = re_str.parse::<f64>().map_err(|e| {
+            SymplexError::NotImplemented(format!("could not parse real part '{}': {}", re_str, e))
+        })?;
+
+        let im_val = if im_str.is_empty() {
+            1.0 // just "I" after the +/-
+        } else {
+            im_str.parse::<f64>().map_err(|e| {
+                SymplexError::NotImplemented(format!(
+                    "could not parse imaginary part '{}': {}",
+                    im_str, e
+                ))
+            })?
+        };
+
+        let im = if split_is_minus { -im_val } else { im_val };
+        return Ok((re, im));
+    }
+
+    Err(SymplexError::NotImplemented(format!(
+        "could not parse '{}' as complex number",
+        s
+    )))
+}
+
+#[cfg(test)]
+mod evalf_complex_tests {
+    #[test]
+    fn evalf_complex64_pure_real() {
+        let x = crate::var("x");
+        let expr = &x.powi(2) + 1;
+        let at_2 = expr.subs(&x, &crate::int(2));
+        let (re, im) = at_2.evalf_complex64().unwrap();
+        assert!((re - 5.0).abs() < 1e-10);
+        assert!(im.abs() < 1e-10);
+    }
+
+    #[test]
+    fn evalf_complex64_pure_imaginary() {
+        let i = crate::i_unit();
+        let (re, im) = i.evalf_complex64().unwrap();
+        assert!(re.abs() < 1e-10);
+        assert!((im - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn evalf_complex64_mixed() {
+        let _ctx = crate::default_context();
+        let expr = &crate::int(3) + &(&crate::int(4) * &crate::i_unit());
+        let (re, im) = expr.evalf_complex64().unwrap();
+        assert!((re - 3.0).abs() < 1e-10);
+        assert!((im - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn evalf_f64_rejects_complex() {
+        let i = crate::i_unit();
+        assert!(
+            i.evalf_f64().is_err(),
+            "evalf_f64 should reject pure imaginary"
+        );
     }
 }
 

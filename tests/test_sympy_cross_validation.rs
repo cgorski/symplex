@@ -155,21 +155,25 @@ fn approx_eq(a: f64, b: f64) -> bool {
     diff < TOLERANCE || diff / denom < TOLERANCE
 }
 
-/// Substitute variables and evaluate to f64.
-fn eval_at_point(expr: &Ex, ctx: &Context, subs: &HashMap<String, f64>) -> Option<f64> {
+/// Evaluate expression at a point, returning (re, im) or None.
+fn eval_at_point(expr: &Ex, ctx: &Context, subs: &HashMap<String, f64>) -> Option<(f64, f64)> {
     let mut result = expr.clone();
     for (var_name, val) in subs {
         let var = ctx.symbol(var_name);
-        let point_str = format!("{}", val);
+        let point_str = if *val == val.floor() && val.abs() < 1e15 {
+            format!("{}", *val as i64)
+        } else {
+            format!("{}", val)
+        };
         let point = symplex::parse::parse(ctx, &point_str).ok()?;
         result = result.subs(&var, &point);
     }
-    let result = result.eval();
-    let val = result.evalf_f64().ok()?;
-    if val.is_nan() || val.is_infinite() {
-        return None;
-    }
-    Some(val)
+    result.evalf_complex64().ok()
+}
+
+/// Check whether an actual (re, im) pair matches the expected NumValue.
+fn values_match(actual: (f64, f64), expected: &NumValue) -> bool {
+    approx_eq(actual.0, expected.re) && approx_eq(actual.1, expected.im)
 }
 
 /// Parse a "point" string that might be "0", "1", "oo", "pi", etc.
@@ -233,10 +237,10 @@ fn check_eval_points_strict(
         match eval_at_point(result, ctx, &pt.subs) {
             Some(val) => {
                 any_evaluated = true;
-                if !approx_eq(val, expected.re) {
+                if !values_match(val, expected) {
                     mismatches.push(format!(
-                        "at {:?}: symplex={}, sympy={}",
-                        pt.subs, val, expected.re
+                        "at {:?}: symplex=({}, {}i), sympy=({}, {}i)",
+                        pt.subs, val.0, val.1, expected.re, expected.im
                     ));
                 }
             }
@@ -246,8 +250,8 @@ fn check_eval_points_strict(
                 // We still count it — don't silently skip.
                 any_evaluated = true;
                 mismatches.push(format!(
-                    "at {:?}: symplex=<eval failed>, sympy={}",
-                    pt.subs, expected.re
+                    "at {:?}: symplex=<eval failed>, sympy=({}, {}i)",
+                    pt.subs, expected.re, expected.im
                 ));
             }
         }
@@ -274,18 +278,17 @@ fn check_eval_points_fixture_strict(result: &Ex, ctx: &Context, fixture: &Fixtur
             // No eval points — try direct value comparison
             if let Some(expected) = &fixture.value {
                 let evaled = result.clone().eval();
-                match evaled.evalf_f64() {
-                    Ok(val) if !val.is_nan() => {
-                        if approx_eq(val, expected.re) {
+                match evaled.evalf_complex64() {
+                    Ok(val) => {
+                        if values_match(val, expected) {
                             Status::Pass
                         } else {
                             Status::Fail(format!(
-                                "value mismatch: symplex={}, sympy={}",
-                                val, expected.re
+                                "value mismatch: symplex=({}, {}i), sympy=({}, {}i)",
+                                val.0, val.1, expected.re, expected.im
                             ))
                         }
                     }
-                    Ok(_) => Status::NotImplemented("evalf returned NaN".into()),
                     Err(e) => Status::NotImplemented(format!("evalf failed: {}", e)),
                 }
             } else {
@@ -330,7 +333,7 @@ fn check_eval_points_integration(
             _ => continue,
         };
         match eval_at_point(result, ctx, &pt.subs) {
-            Some(val) => pairs.push((val, expected, pt.subs.clone())),
+            Some(val) => pairs.push((val.0, expected, pt.subs.clone())),
             None => {
                 // Can't evaluate our antiderivative at this point.
                 // With difference method we need at least 2 points,

@@ -37,6 +37,8 @@ use num_traits::Zero;
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode, SymbolId};
 
+use tracing;
+
 /// Integrate `expr` with respect to `var`.
 ///
 /// Returns the antiderivative. If integration cannot be performed,
@@ -325,6 +327,8 @@ fn integrate_node(
     var_sym: SymbolId,
     depth: usize,
 ) -> ExprId {
+    tracing::trace!(depth = depth, "integrate_node entered");
+
     if depth == 0 {
         return arena.intern(ExprNode::Integral(expr, var));
     }
@@ -412,6 +416,7 @@ fn integrate_node(
                 let orderings = {
                     let r0 = liate_rank(arena, dependent[0], var, var_sym);
                     let r1 = liate_rank(arena, dependent[1], var, var_sym);
+                    tracing::debug!(u_rank = r0, dv_rank = r1, "by-parts LIATE ordering");
                     if r0 <= r1 {
                         [(0usize, 1usize), (1, 0)]
                     } else {
@@ -446,6 +451,7 @@ fn integrate_node(
                     }
 
                     // Success: ∫ u·dv = u·v - ∫ v·du
+                    tracing::debug!("integration by parts succeeded");
                     let u_v = arena.mul(&[u, v]);
                     let result = arena.sub(u_v, integral_v_du);
 
@@ -487,6 +493,7 @@ fn integrate_node(
 
             // General product of var-dependent terms — can't integrate without
             // further techniques.
+            tracing::debug!("integration: no strategy succeeded, returning unevaluated");
             arena.intern(ExprNode::Integral(expr, var))
         }
 
@@ -609,6 +616,7 @@ fn integrate_node(
             }
 
             // General case: unevaluated.
+            tracing::debug!("integration: no strategy succeeded, returning unevaluated");
             arena.intern(ExprNode::Integral(expr, var))
         }
 
@@ -798,7 +806,10 @@ fn integrate_node(
         }
 
         // Everything else: unevaluated integral.
-        _ => arena.intern(ExprNode::Integral(expr, var)),
+        _ => {
+            tracing::debug!("integration: no strategy succeeded, returning unevaluated");
+            arena.intern(ExprNode::Integral(expr, var))
+        }
     }
 }
 
@@ -950,6 +961,7 @@ fn try_u_substitution(
 
             // G(u) — substitute var back to u(x)
             let antideriv = arena.subs_structural(g_integrated, var, u_expr);
+            tracing::debug!("u-substitution succeeded");
             return Some(arena.mul(&[coeff, antideriv]));
         }
     }

@@ -1,13 +1,16 @@
 //! Simplification engine — try multiple strategies, keep shortest.
 //!
 //! This module provides [`count_ops`] for measuring expression complexity,
-//! and [`smart_simplify`] which tries multiple simplification strategies
-//! and returns the result with the lowest operation count.
+//! [`smart_simplify`] which tries multiple simplification strategies
+//! and returns the result with the lowest operation count, and
+//! [`full_simplify`] / [`full_simplify_trace`] which iterate
+//! eval → expand → simplify → **cancel** until convergence.
 
 use crate::arena::Arena;
 use crate::node::ExprId;
 use crate::walk;
 use num_traits::One;
+use tracing;
 
 /// Count the number of operations (nodes) in an expression.
 ///
@@ -43,17 +46,32 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
 
     // Strategy 1: eval only
     let s1 = crate::eval::eval(arena, expr);
+    tracing::trace!(
+        strategy = "eval",
+        ops = count_ops(arena, s1),
+        "strategy evaluated"
+    );
 
     // Strategy 2: eval → simplify
     let rules = crate::pattern::basic_rules(arena);
     let s2_eval = crate::eval::eval(arena, expr);
     let (s2, _) = crate::pattern::apply_rules(arena, s2_eval, &rules);
+    tracing::trace!(
+        strategy = "eval+rules",
+        ops = count_ops(arena, s2),
+        "strategy evaluated"
+    );
 
     // Strategy 3: eval → expand → simplify
     let s3_eval = crate::eval::eval(arena, expr);
     let s3_expand = crate::expand::expand(arena, s3_eval);
     let s3_eval2 = crate::eval::eval(arena, s3_expand);
     let (s3, _) = crate::pattern::apply_rules(arena, s3_eval2, &rules);
+    tracing::trace!(
+        strategy = "eval+expand+rules",
+        ops = count_ops(arena, s3),
+        "strategy evaluated"
+    );
 
     // Strategy 4: eval → factor_terms → simplify inner → multiply GCD back
     let s4_eval = crate::eval::eval(arena, expr);
@@ -66,17 +84,32 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         let gcd_id = arena.intern(crate::node::ExprNode::Num(nid));
         arena.mul(&[gcd_id, s4_simplified])
     };
+    tracing::trace!(
+        strategy = "eval+factor+rules",
+        ops = count_ops(arena, s4),
+        "strategy evaluated"
+    );
 
     // Strategy 5: eval → expand_trig → simplify
     let s5_eval = crate::eval::eval(arena, expr);
     let s5_trig = crate::trig_expand::expand_trig(arena, s5_eval);
     let s5_eval2 = crate::eval::eval(arena, s5_trig);
     let (s5, _) = crate::pattern::apply_rules(arena, s5_eval2, &rules);
+    tracing::trace!(
+        strategy = "eval+trig_expand+rules",
+        ops = count_ops(arena, s5),
+        "strategy evaluated"
+    );
 
     // Strategy 6: eval → logcombine → simplify
     let s6_eval = crate::eval::eval(arena, expr);
     let s6_log = crate::log_combine::log_combine(arena, s6_eval);
     let (s6, _) = crate::pattern::apply_rules(arena, s6_log, &rules);
+    tracing::trace!(
+        strategy = "eval+logcombine+rules",
+        ops = count_ops(arena, s6),
+        "strategy evaluated"
+    );
 
     // Strategy 7: eval → cancel with free symbols → simplify
     // For rational expressions like (x²-1)/(x-1) → x+1
@@ -97,24 +130,115 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         }
         best
     };
+    tracing::trace!(
+        strategy = "eval+cancel+rules",
+        ops = count_ops(arena, s7),
+        "strategy evaluated"
+    );
 
     // Collect candidates
     let candidates = [expr, s1, s2, s3, s4, s5, s6, s7];
+    let strategy_names = [
+        "original",
+        "eval",
+        "eval+rules",
+        "eval+expand+rules",
+        "eval+factor+rules",
+        "eval+trig_expand+rules",
+        "eval+logcombine+rules",
+        "eval+cancel+rules",
+    ];
 
     // Pick the one with lowest ops
-    let best = candidates
+    let best_idx = candidates
         .iter()
-        .copied()
-        .min_by_key(|&e| count_ops(arena, e))
-        .unwrap_or(expr);
+        .enumerate()
+        .min_by_key(|&(_, &e)| count_ops(arena, e))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let best = candidates[best_idx];
+    let strategy_name = strategy_names[best_idx];
 
     // Guard: don't return something much more complex than original
     let best_ops = count_ops(arena, best);
+
+    tracing::debug!(
+        winning_strategy = strategy_name,
+        ops_original = original_ops,
+        ops_result = best_ops,
+        "smart_simplify selected strategy"
+    );
+
     if original_ops > 0 && best_ops as f64 > 1.7 * original_ops as f64 {
         return expr;
     }
 
     best
+}
+
+/// Fully simplify an expression by iterating eval → expand → simplify → cancel.
+///
+/// This is the engine-level counterpart of `Expr::full_simplify`.  Unlike
+/// the original `full_simplify_trace` loop in `expr.rs`, this version
+/// includes a polynomial-cancellation step (via [`crate::polybridge::cancel`])
+/// after every simplify pass, so rational expressions like `(x²-4)/(x-2)`
+/// are reduced to `x+2`.
+pub(crate) fn full_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
+    full_simplify_trace(arena, expr).0
+}
+
+/// Like [`full_simplify`] but also returns the accumulated rewrite-rule
+/// trace (one [`crate::pattern::Step`] per rule firing).
+pub(crate) fn full_simplify_trace(
+    arena: &mut Arena,
+    expr: ExprId,
+) -> (ExprId, Vec<crate::pattern::Step>) {
+    const MAX_ITERATIONS: usize = 10;
+    let rules = crate::pattern::basic_rules(arena);
+    let mut current = expr;
+    let mut all_steps: Vec<crate::pattern::Step> = Vec::new();
+
+    for i in 0..MAX_ITERATIONS {
+        let evaled = crate::eval::eval(arena, current);
+
+        // ── try cancel BEFORE expand (preserves rational structure) ──
+        let free = crate::walk::free_symbols(arena, evaled);
+        let mut cancelled = evaled;
+        for &sym in &free {
+            cancelled = crate::polybridge::cancel(arena, cancelled, sym);
+        }
+        let cancelled_eval = crate::eval::eval(arena, cancelled);
+        let (cancelled_simp, cancel_steps) =
+            crate::pattern::apply_rules(arena, cancelled_eval, &rules);
+        all_steps.extend(cancel_steps);
+
+        // ── also try the classic path: expand → simplify ──
+        let expanded = crate::expand::expand(arena, evaled);
+        let expanded_eval = crate::eval::eval(arena, expanded);
+        let (expanded_simp, expand_steps) =
+            crate::pattern::apply_rules(arena, expanded_eval, &rules);
+        all_steps.extend(expand_steps);
+
+        // Pick whichever result has fewer operations.
+        let best = if count_ops(arena, cancelled_simp) <= count_ops(arena, expanded_simp) {
+            cancelled_simp
+        } else {
+            expanded_simp
+        };
+
+        tracing::debug!(
+            iteration = i,
+            changed = (best != current),
+            "full_simplify iteration"
+        );
+
+        if best == current {
+            return (best, all_steps);
+        }
+        current = best;
+    }
+
+    (current, all_steps)
 }
 
 #[cfg(test)]
@@ -279,6 +403,73 @@ mod tests {
             result_ops,
             inner_ops
         );
+    }
+
+    #[test]
+    fn smart_simplify_cancels_x2_minus_4_over_x_minus_2() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let four = a.int(4);
+        let x_sq = a.pow(x, two);
+        let numer = a.sub(x_sq, four); // x² - 4
+        let denom = a.sub(x, two); // x - 2
+        let expr = a.div(numer, denom); // (x²-4)/(x-2)
+        let result = smart_simplify(&mut a, expr);
+        let expected = a.add(&[x, two]); // x + 2
+        assert_eq!(
+            result,
+            expected,
+            "(x²-4)/(x-2) should smart_simplify to x+2, got: {}",
+            display(&a, result)
+        );
+    }
+
+    #[test]
+    fn full_simplify_cancels_x2_minus_4_over_x_minus_2() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let four = a.int(4);
+        let x_sq = a.pow(x, two);
+        let numer = a.sub(x_sq, four); // x² - 4
+        let denom = a.sub(x, two); // x - 2
+        let expr = a.div(numer, denom); // (x²-4)/(x-2)
+        let result = full_simplify(&mut a, expr);
+        let expected = a.add(&[x, two]); // x + 2
+        assert_eq!(
+            result,
+            expected,
+            "(x²-4)/(x-2) should full_simplify to x+2, got: {}",
+            display(&a, result)
+        );
+    }
+
+    #[test]
+    fn full_simplify_x2_minus_1_over_x_minus_1() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let numer = a.sub(x2, a.one); // x² - 1
+        let denom = a.sub(x, a.one); // x - 1
+        let expr = a.div(numer, denom);
+        let result = full_simplify(&mut a, expr);
+        let s = a.display(result).to_string();
+        assert!(
+            s.contains("1") && s.contains("x") && !s.contains("/"),
+            "(x²-1)/(x-1) should full_simplify to x+1, got: {s}"
+        );
+    }
+
+    #[test]
+    fn full_simplify_already_simple() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let expr = a.add(&[x, two]); // x + 2 — nothing to cancel
+        let result = full_simplify(&mut a, expr);
+        assert_eq!(result, expr, "x+2 should stay x+2 through full_simplify");
     }
 
     #[test]
