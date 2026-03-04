@@ -447,6 +447,24 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return arena.intern(ExprNode::Exp(exp));
     }
 
+    // Pow(Pow(a, b), c) → Pow(a, b*c) when both b and c are integers.
+    // This is mathematically safe for integer exponents (no branch cut issues).
+    // Critical for the Gruntz algorithm: ensures 1/(1/x) = Pow(Pow(x,-1),-1) → x.
+    // Matches SymPy's auto-simplification of nested powers at construction time.
+    if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone() {
+        if let (Some(b), Some(c)) = (arena.as_num(inner_exp), arena.as_num(exp)) {
+            let b = b.clone();
+            let c = c.clone();
+            if b.is_integer() && c.is_integer() {
+                tracing::trace!("canon_pow: flattening Pow(Pow(a,b),c) → Pow(a,b*c)");
+                let product = b * c;
+                let prod_id = arena.intern_num(product);
+                let prod_expr = arena.intern(ExprNode::Num(prod_id));
+                return canon_pow(arena, inner_base, prod_expr);
+            }
+        }
+    }
+
     // i^n reduction: i^0=1, i^1=i, i^2=-1, i^3=-i, then repeats with period 4.
     if base == arena.i_unit
         && let Some(exp_r) = arena.as_num(exp)

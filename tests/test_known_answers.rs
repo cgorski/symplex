@@ -126,7 +126,7 @@ fn diff_exp_x2() {
 #[test]
 fn diff_ln_x2() {
     let x = symplex::var("x");
-    check(&x.powi(2).ln().diff(&x), "2*x*1/x^2");
+    check(&x.powi(2).ln().diff(&x), "2*1/x");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

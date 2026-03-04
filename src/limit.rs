@@ -27,12 +27,18 @@ pub(crate) fn limit(
     var: ExprId,
     point: ExprId,
 ) -> Result<ExprId, crate::errors::SymplexError> {
-    // Check for limit at infinity
-    if point == arena.infinity {
-        return limit_at_infinity(arena, expr, var, true);
-    }
-    if point == arena.neg_infinity {
-        return limit_at_infinity(arena, expr, var, false);
+    // Check for limit at infinity — use Gruntz algorithm (the gold standard)
+    // with fallback to the polynomial degree + substitution approach.
+    if point == arena.infinity() || point == arena.neg_infinity() {
+        tracing::debug!("limit: at infinity, trying Gruntz algorithm first");
+        match crate::gruntz::gruntz(arena, expr, var, point) {
+            Ok(result) => return Ok(result),
+            Err(_) => {
+                tracing::debug!("limit: Gruntz failed, falling back to polynomial degree analysis");
+                let positive = point == arena.infinity();
+                return limit_at_infinity(arena, expr, var, positive);
+            }
+        }
     }
 
     // Step 1+2 combined: decompose into numerator/denominator first.
@@ -45,7 +51,7 @@ pub(crate) fn limit(
     // denominator *separately* at the point we sidestep this issue.
     let (numer, denom) = crate::polybridge::as_numer_denom(arena, expr);
 
-    if denom != arena.one {
+    if denom != arena.one() {
         // We have a genuine fraction — evaluate num and denom separately.
         let n_subst = crate::subs::subs(arena, numer, var, point);
         let n_val = crate::eval::eval(arena, n_subst);

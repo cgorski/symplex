@@ -431,8 +431,9 @@ fn nested_power() {
     let two = ctx.int(2);
     let three = ctx.int(3);
     let result = x.pow(&two).pow(&three);
-    // (x^2)^3 stays as-is — no power-of-power simplification yet.
-    assert_eq!(format!("{result}"), "(x^2)^3");
+    // canon_pow flattens Pow(Pow(a,b),c) → Pow(a,b*c) for integer exponents.
+    // (x^2)^3 = x^6, matching SymPy's behavior.
+    assert_eq!(format!("{result}"), "x^6");
 }
 
 #[test]
