@@ -1,0 +1,832 @@
+{
+  "generated_by": "SymPy 1.14.0",
+  "generated_at": "2026-03-04T10:09:45.011988",
+  "description": "Cross-validation fixtures: symplex results should match these numerical evaluations",
+  "fixtures": [
+    {
+      "category": "diff",
+      "input": "x**3 + 2*x + 1",
+      "sympy_result": "3*x**2 + 2",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 8.75,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 3.4699999999999998,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 14.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "diff",
+      "input": "sin(x)",
+      "sympy_result": "cos(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 0.0707372016677029,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.7648421872844884,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": -0.4161468365471424,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "diff",
+      "input": "cos(x)**2",
+      "sympy_result": "-2*sin(x)*cos(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": -0.1411200080598672,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": -0.9854497299884601,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 0.7568024953079282,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "diff",
+      "input": "exp(x)*sin(x)",
+      "sympy_result": "exp(x)*sin(x) + exp(x)*cos(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 4.787484522760849,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 2.837498137307049,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 3.6439173767888913,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "diff",
+      "input": "log(x**2 + 1)",
+      "sympy_result": "2*x/(x**2 + 1)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 0.9230769230769231,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.9395973154362416,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 0.8,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "diff",
+      "input": "atan(x)",
+      "sympy_result": "1/(x**2 + 1)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 0.3076923076923077,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.6711409395973155,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 0.2,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "diff",
+      "input": "sinh(x)",
+      "sympy_result": "cosh(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 2.352409615243247,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 1.255169005630943,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 3.7621956910836314,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "diff",
+      "input": "x**2*exp(x)",
+      "sympy_result": "x**2*exp(x) + 2*x*exp(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 23.52886761927484,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 3.8059926171192004,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 59.1124487914452,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "integrate",
+      "input": "x**2",
+      "sympy_result": "x**3/3",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 1.125,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.11433333333333333,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 2.6666666666666665,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "integrate",
+      "input": "sin(x)",
+      "sympy_result": "-cos(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": -0.0707372016677029,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": -0.7648421872844884,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 0.4161468365471424,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "integrate",
+      "input": "cos(x)",
+      "sympy_result": "sin(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 0.9974949866040544,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.644217687237691,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 0.9092974268256817,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "integrate",
+      "input": "exp(x)",
+      "sympy_result": "exp(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 4.4816890703380645,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 2.0137527074704766,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 7.38905609893065,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "integrate",
+      "input": "x*exp(x)",
+      "sympy_result": "(x - 1)*exp(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 2.2408445351690323,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": -0.6041258122411429,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 7.38905609893065,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "integrate",
+      "input": "x*sin(x)",
+      "sympy_result": "-x*cos(x) + sin(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 0.8913891841025001,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.10882815613854915,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 1.7415910999199664,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "integrate",
+      "input": "x*log(x)",
+      "sympy_result": "x**2*log(x)/2 - x**2/4",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": -0.10635175337831507,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": -0.20988536126498944,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 0.38629436111989063,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "integrate",
+      "input": "1/(x**2 + 1)",
+      "sympy_result": "atan(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 0.982793723247329,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.6107259643892087,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 1.1071487177940904,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "simplify",
+      "input": "sin(x)**2 + cos(x)**2",
+      "sympy_result": "1",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "simplify",
+      "input": "exp(log(x))",
+      "sympy_result": "x",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 1.5,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.7,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 2.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "simplify",
+      "input": "(x**2 - 1)/(x - 1)",
+      "sympy_result": "x + 1",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 2.5,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 1.7,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 3.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "simplify",
+      "input": "sin(x)/cos(x)",
+      "sympy_result": "tan(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 14.101419947171719,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.8422883804630794,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": -2.185039863261519,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "expand",
+      "input": "(x + 1)**2",
+      "sympy_result": "x**2 + 2*x + 1",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 6.25,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 2.89,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 9.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "expand",
+      "input": "(x + 1)**3",
+      "sympy_result": "x**3 + 3*x**2 + 3*x + 1",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 15.625,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 4.913,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": 27.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "expand",
+      "input": "sin(2*x)",
+      "sympy_result": "2*sin(x)*cos(x)",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": 0.1411200080598672,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.9854497299884601,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": -0.7568024953079282,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "expand",
+      "input": "cos(2*x)",
+      "sympy_result": "2*cos(x)**2 - 1",
+      "eval_points": [
+        {
+          "x": 1.5,
+          "value": {
+            "re": -0.9899924966004454,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.7,
+          "value": {
+            "re": 0.16996714290024095,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "value": {
+            "re": -0.6536436208636119,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "solve",
+      "input": "x**2 - 4",
+      "sympy_roots": [
+        {
+          "symbolic": "-2",
+          "re": -2.0,
+          "im": 0.0
+        },
+        {
+          "symbolic": "2",
+          "re": 2.0,
+          "im": 0.0
+        }
+      ]
+    },
+    {
+      "category": "solve",
+      "input": "x**2 - 5*x + 6",
+      "sympy_roots": [
+        {
+          "symbolic": "2",
+          "re": 2.0,
+          "im": 0.0
+        },
+        {
+          "symbolic": "3",
+          "re": 3.0,
+          "im": 0.0
+        }
+      ]
+    },
+    {
+      "category": "solve",
+      "input": "x**2 + 1",
+      "sympy_roots": [
+        {
+          "symbolic": "-I",
+          "re": 0.0,
+          "im": -1.0
+        },
+        {
+          "symbolic": "I",
+          "re": 0.0,
+          "im": 1.0
+        }
+      ]
+    },
+    {
+      "category": "eval",
+      "input": "sin(pi/6)",
+      "sympy_result": "1/2",
+      "value": {
+        "re": 0.5,
+        "im": 0.0
+      }
+    },
+    {
+      "category": "eval",
+      "input": "sin(pi/4)",
+      "sympy_result": "sqrt(2)/2",
+      "value": {
+        "re": 0.7071067811865476,
+        "im": 0.0
+      }
+    },
+    {
+      "category": "eval",
+      "input": "cos(pi/3)",
+      "sympy_result": "1/2",
+      "value": {
+        "re": 0.5,
+        "im": 0.0
+      }
+    },
+    {
+      "category": "eval",
+      "input": "tan(pi/4)",
+      "sympy_result": "1",
+      "value": {
+        "re": 1.0,
+        "im": 0.0
+      }
+    },
+    {
+      "category": "eval",
+      "input": "tan(2*pi/3)",
+      "sympy_result": "-sqrt(3)",
+      "value": {
+        "re": -1.7320508075688772,
+        "im": 0.0
+      }
+    },
+    {
+      "category": "eval",
+      "input": "exp(0)",
+      "sympy_result": "1",
+      "value": {
+        "re": 1.0,
+        "im": 0.0
+      }
+    },
+    {
+      "category": "eval",
+      "input": "log(1)",
+      "sympy_result": "0",
+      "value": {
+        "re": 0.0,
+        "im": 0.0
+      }
+    },
+    {
+      "category": "series",
+      "input": "sin(x)",
+      "sympy_result": "x**5/120 - x**3/6 + x",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "value": {
+            "re": 0.24740397135416667,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "series",
+      "input": "cos(x)",
+      "sympy_result": "x**4/24 - x**2/2 + 1",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "value": {
+            "re": 0.9689127604166666,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "series",
+      "input": "exp(x)",
+      "sympy_result": "x**5/120 + x**4/24 + x**3/6 + x**2/2 + x + 1",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "value": {
+            "re": 1.2840250651041667,
+            "im": 0.0
+          }
+        }
+      ]
+    }
+  ]
+}

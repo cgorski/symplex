@@ -136,7 +136,13 @@ impl<'a> Lexer<'a> {
             }
             b'*' => {
                 self.pos += 1;
-                Ok(Token::Star)
+                // Check for ** (SymPy-compatible power operator)
+                if self.pos < self.input.len() && self.input.as_bytes()[self.pos] == b'*' {
+                    self.pos += 1;
+                    Ok(Token::Caret) // ** treated same as ^
+                } else {
+                    Ok(Token::Star)
+                }
             }
             b'/' => {
                 self.pos += 1;
@@ -397,7 +403,9 @@ impl<'a> Parser<'a> {
 
         self.expect(&Token::RParen)?;
 
-        match name {
+        // Case-insensitive function name matching for SymPy compatibility
+        let name_lower = name.to_ascii_lowercase();
+        match name_lower.as_str() {
             "sin" => Ok(arena.sin(arg)),
             "cos" => Ok(arena.cos(arg)),
             "tan" => Ok(arena.tan(arg)),
@@ -1160,5 +1168,48 @@ mod tests {
             s, "123456789012345678901234567891",
             "large integer + 1 should be exact (bc-verified)"
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SymPy compatibility
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn parse_sympy_power_operator() {
+        assert_eq!(parse_and_display("x**2"), parse_and_display("x^2"));
+    }
+
+    #[test]
+    fn parse_sympy_double_star_in_expression() {
+        assert_eq!(
+            parse_and_display("3*x**2 + 2"),
+            parse_and_display("3*x^2 + 2")
+        );
+    }
+
+    #[test]
+    fn parse_sympy_abs_capital() {
+        assert_eq!(parse_and_display("Abs(x)"), parse_and_display("abs(x)"));
+    }
+
+    #[test]
+    fn parse_sympy_full_expression() {
+        let ctx = Context::new();
+        // SymPy output for integrate(x*ln(x))
+        let result = parse(&ctx, "x**2*log(x)/2 - x**2/4").unwrap();
+        let s = format!("{result}");
+        assert!(
+            s.contains("ln") && s.contains("x"),
+            "should parse SymPy integrate output: {s}"
+        );
+    }
+
+    #[test]
+    fn parse_sympy_trig_identity() {
+        let ctx = Context::new();
+        let result = parse(&ctx, "sin(x)**2 + cos(x)**2").unwrap();
+        // Should simplify to 1 via full_simplify
+        let simplified = result.full_simplify();
+        assert_eq!(format!("{simplified}"), "1");
     }
 }
