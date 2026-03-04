@@ -10,7 +10,7 @@
 
 mod parse;
 
-use parse::{BinOp, ExprMacroInput, MathExpr, RuleMacroInput};
+use parse::{BinOp, EqMacroInput, ExprMacroInput, MathExpr, MatrixMacroInput, RuleMacroInput};
 use parse::{KNOWN_FUNCTIONS, is_known_constant, is_known_function};
 
 use proc_macro::TokenStream;
@@ -37,6 +37,22 @@ use syn::Ident;
 /// - Integer literals
 /// - Unary minus: `-x`
 ///
+/// # Constants
+///
+/// The following identifiers are recognized as mathematical constants:
+/// - `pi`, `Pi`, `PI` → π
+/// - `E` → Euler's number e
+/// - `I` → imaginary unit i
+/// - `oo`, `inf` → positive infinity
+///
+/// # Rationals
+///
+/// `1/2`, `3/4`, etc. produce exact rational numbers (not Rust integer division).
+///
+/// # Multi-argument functions
+///
+/// - `log(x, base)` → logarithm of x with given base
+///
 /// # Examples
 ///
 /// ```ignore
@@ -51,7 +67,6 @@ use syn::Ident;
 ///
 /// # Limitations
 ///
-/// - `1/2` is Rust integer division (= 0).  Use `ctx.rational(1, 2)` for fractions.
 /// - Implicit multiplication (`2x`) is not supported.  Write `2*x`.
 /// - Only the listed built-in functions are recognised.
 #[proc_macro]
@@ -72,7 +87,16 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
     match expr {
         MathExpr::Int(n, _span) => Ok(quote! { #n }),
 
-        MathExpr::Ident(id) => Ok(quote! { (&#id) }),
+        MathExpr::Ident(id) => {
+            let name = id.to_string();
+            match name.as_str() {
+                "pi" | "Pi" | "PI" => Ok(quote! { ::symplex::pi() }),
+                "E" => Ok(quote! { ::symplex::e() }),
+                "I" => Ok(quote! { ::symplex::i_unit() }),
+                "oo" | "inf" => Ok(quote! { ::symplex::infinity() }),
+                _ => Ok(quote! { (&#id) }),
+            }
+        }
 
         MathExpr::Neg(inner) => {
             let inner_code = generate_expr(inner)?;
@@ -101,13 +125,14 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                     }
                 }
                 BinOp::Div => {
-                    // Check for Int / Int — emit compile error.
-                    if lhs.as_int().is_some() && rhs.as_int().is_some() {
-                        return Err(syn::Error::new(
-                            Span::call_site(),
-                            "integer / integer inside expr!() is Rust integer division, \
-                             which truncates. Use ctx.rational(p, q) for exact fractions.",
-                        ));
+                    if let (Some(p), Some(q)) = (lhs.as_int(), rhs.as_int()) {
+                        if q == 0 {
+                            return Err(syn::Error::new(
+                                Span::call_site(),
+                                "division by zero in expr!()",
+                            ));
+                        }
+                        return Ok(quote! { ::symplex::rational(#p, #q) });
                     }
                     let lhs_code = generate_expr(lhs)?;
                     let rhs_code = generate_expr(rhs)?;
@@ -128,11 +153,20 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
         }
 
         MathExpr::Func { name, span, args } => {
-            if !is_known_function(name) {
+            // Multi-argument functions
+            if name == "log" && args.len() == 2 {
+                let arg_code = generate_expr(&args[0])?;
+                // The base must be an Ex; bare integer literals from
+                // generate_expr would be i64, so promote them.
+                let base_code = generate_expr_as_ex(&args[1])?;
+                return Ok(quote! { (#arg_code).log(&(#base_code)) });
+            }
+
+            if !is_known_function(name) && name != "log" {
                 return Err(syn::Error::new(
                     *span,
                     format!(
-                        "unknown function '{}' in expr!(). Supported: {}",
+                        "unknown function '{}' in expr!(). Supported: {}, log",
                         name,
                         KNOWN_FUNCTIONS.join(", ")
                     ),
@@ -141,7 +175,7 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
             if args.len() != 1 {
                 return Err(syn::Error::new(
                     *span,
-                    format!("{}() takes exactly 1 argument", name),
+                    format!("{}() takes exactly 1 argument in expr!()", name),
                 ));
             }
             let arg_code = generate_expr(&args[0])?;
@@ -180,6 +214,7 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
 ///
 /// ```ignore
 /// rule!(arena, "rule_name", LHS_PATTERN => RHS_TEMPLATE)
+/// rule!(arena, "rule_name", LHS_PATTERN => RHS_TEMPLATE if condition_expr)
 /// ```
 ///
 /// - `arena` — an expression of type `&mut Arena`.
@@ -190,6 +225,8 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
 /// - Integer literals: `0`, `1`, `2`, `-3`, etc.
 /// - Functions: `sin`, `cos`, `tan`, `exp`, `ln`, `sqrt`, `abs`.
 /// - `=>` separates the pattern (LHS) from the template (RHS).
+/// - An optional `if <expr>` after the RHS specifies a condition
+///   function: `fn(&Arena, &Substitution) -> bool`.
 ///
 /// # Examples
 ///
@@ -209,7 +246,6 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
 /// - Only wilds (`w_`), integers, known constants, and known functions
 ///   are allowed.  Bare identifiers that are not wilds or constants
 ///   produce a compile error.
-/// - Conditions (`if ...`) are not yet supported.
 #[proc_macro]
 pub fn rule(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as RuleMacroInput);
@@ -290,6 +326,12 @@ fn generate_rule(input: &RuleMacroInput) -> syn::Result<TokenStream2> {
 
     let bindings = &codegen.bindings;
 
+    let condition_code = if let Some(cond) = &input.condition {
+        quote! { Some(#cond) }
+    } else {
+        quote! { None }
+    };
+
     Ok(quote! {
         {
             #(#bindings)*
@@ -297,14 +339,15 @@ fn generate_rule(input: &RuleMacroInput) -> syn::Result<TokenStream2> {
             let mut __wilds = ::symplex::__macro_support::FxHashMap::default();
             #(#wild_inserts)*
 
-            ::symplex::__macro_support::Rule::new(
-                #name,
-                ::symplex::__macro_support::Pattern {
+            ::symplex::__macro_support::Rule {
+                name: #name,
+                pattern: ::symplex::__macro_support::Pattern {
                     root: #lhs_temp,
                     wilds: __wilds,
                 },
-                #rhs_temp,
-            )
+                template: #rhs_temp,
+                condition: #condition_code,
+            }
         }
     })
 }
@@ -465,6 +508,89 @@ impl RuleCodeGen {
                 self.bindings.push(quote! { let #temp = #call; });
                 Ok(temp)
             }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// matrix! macro
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Build a symbolic matrix using natural math syntax.
+///
+/// # Examples
+///
+/// ```ignore
+/// use symplex::prelude::*;
+/// use symplex::matrix;
+///
+/// let x = symplex::var("x");
+/// let m = matrix![[x, 1], [0, x]];
+/// ```
+#[proc_macro]
+pub fn matrix(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as MatrixMacroInput);
+    match generate_matrix(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn generate_matrix(input: &MatrixMacroInput) -> syn::Result<TokenStream2> {
+    let mut row_codes = Vec::new();
+    for row in &input.rows {
+        let mut cell_codes = Vec::new();
+        for cell in row {
+            let cell_expr = generate_expr_as_ex(cell)?;
+            cell_codes.push(quote! { #cell_expr });
+        }
+        row_codes.push(quote! { vec![#(#cell_codes),*] });
+    }
+    Ok(quote! {
+        ::symplex::matrix::Matrix::new(vec![#(#row_codes),*])
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// eq! macro
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Build a symbolic equation using natural math syntax.
+///
+/// # Examples
+///
+/// ```ignore
+/// use symplex::prelude::*;
+/// use symplex::eq;
+///
+/// let x = symplex::var("x");
+/// let equation = eq!(x^2 + x = 6);
+/// ```
+#[proc_macro]
+pub fn eq(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as EqMacroInput);
+    match generate_eq(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn generate_eq(input: &EqMacroInput) -> syn::Result<TokenStream2> {
+    let lhs_code = generate_expr_as_ex(&input.lhs)?;
+    let rhs_code = generate_expr_as_ex(&input.rhs)?;
+    Ok(quote! {
+        ::symplex::eq::Equation::new(#lhs_code, #rhs_code)
+    })
+}
+
+/// Like [`generate_expr`] but guarantees the result is an `Ex`, even for
+/// bare integer literals (which `generate_expr` emits as plain `i64`).
+fn generate_expr_as_ex(expr: &MathExpr) -> syn::Result<TokenStream2> {
+    match expr {
+        MathExpr::Int(n, _) => Ok(quote! { ::symplex::int(#n) }),
+        _ => {
+            let code = generate_expr(expr)?;
+            Ok(quote! { { let __v: ::symplex::expr::Ex = (#code).clone(); __v } })
         }
     }
 }

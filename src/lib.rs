@@ -89,7 +89,7 @@ pub mod expr;
 pub mod macros;
 
 // ── Proc macro re-exports ──────────────────────────────────────────────
-pub use symplex_macros::{expr, rule};
+pub use symplex_macros::{eq, expr, matrix, rule};
 
 // ── Macro support (hidden internals used by generated code) ────────────
 #[doc(hidden)]
@@ -116,10 +116,11 @@ pub mod prelude {
     pub use crate::assumptions::{Assumption, Assumptions, Props};
     pub use crate::config::EvalConfig;
     pub use crate::context::Context;
+    pub use crate::eq::Equation;
     pub use crate::errors::SymplexError;
     pub use crate::expr::Ex;
     pub use crate::pattern::Step;
-    pub use symplex_macros::{expr, rule};
+    pub use symplex_macros::{eq, expr, matrix, rule};
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

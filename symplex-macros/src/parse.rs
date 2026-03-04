@@ -342,6 +342,7 @@ pub struct RuleMacroInput {
     pub name: syn::LitStr,
     pub lhs: MathExpr,
     pub rhs: MathExpr,
+    pub condition: Option<syn::Expr>,
 }
 
 impl Parse for RuleMacroInput {
@@ -359,11 +360,97 @@ impl Parse for RuleMacroInput {
         // Parse RHS (rest of input).
         let rhs = parse_math_expr(input)?;
 
+        let condition = if input.peek(Token![if]) {
+            input.parse::<Token![if]>()?;
+            Some(input.parse::<syn::Expr>()?)
+        } else {
+            None
+        };
+
         Ok(RuleMacroInput {
             arena,
             name,
             lhs,
             rhs,
+            condition,
         })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Matrix and Equation macro inputs
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Input for the `matrix!` macro: `[[expr, expr], [expr, expr]]`.
+pub struct MatrixMacroInput {
+    pub rows: Vec<Vec<MathExpr>>,
+}
+
+impl Parse for MatrixMacroInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        // When invoked as `matrix![[r0], [r1]]`, the outer `[]` is the
+        // macro-invocation delimiter so the input stream is `[r0], [r1]`.
+        // We therefore iterate directly over bracket-delimited rows
+        // without consuming an additional outer bracket group.
+
+        let mut rows = Vec::new();
+        while !input.is_empty() {
+            let row_content;
+            syn::bracketed!(row_content in input);
+
+            let mut row = Vec::new();
+            loop {
+                row.push(parse_math_expr(&row_content)?);
+                if row_content.is_empty() {
+                    break;
+                }
+                row_content.parse::<Token![,]>()?;
+                if row_content.is_empty() {
+                    break; // trailing comma
+                }
+            }
+            rows.push(row);
+
+            if input.is_empty() {
+                break;
+            }
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        // Validate: all rows must have the same length
+        if let Some(first_len) = rows.first().map(|r| r.len()) {
+            for (i, row) in rows.iter().enumerate() {
+                if row.len() != first_len {
+                    return Err(syn::Error::new(
+                        Span::call_site(),
+                        format!(
+                            "matrix! row {} has {} columns, but row 0 has {} columns",
+                            i,
+                            row.len(),
+                            first_len
+                        ),
+                    ));
+                }
+            }
+        }
+
+        Ok(MatrixMacroInput { rows })
+    }
+}
+
+/// Input for the `eq!` macro: `LHS = RHS`.
+pub struct EqMacroInput {
+    pub lhs: MathExpr,
+    pub rhs: MathExpr,
+}
+
+impl Parse for EqMacroInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let lhs = parse_math_expr(input)?;
+        input.parse::<Token![=]>()?;
+        let rhs = parse_math_expr(input)?;
+        Ok(EqMacroInput { lhs, rhs })
     }
 }
