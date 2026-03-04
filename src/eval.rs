@@ -338,23 +338,26 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             }
 
             // ── Piecewise ──────────────────────────────────────────
-            ExprNode::Piecewise(ref children) => {
-                let new: smallvec::SmallVec<[ExprId; 6]> = children
+            ExprNode::Piecewise(ref pairs) => {
+                let new: smallvec::SmallVec<[(ExprId, ExprId); 3]> = pairs
                     .iter()
-                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .map(|&(val, cond)| {
+                        let nv = cache.get(&val).copied().unwrap_or(val);
+                        let nc = cache.get(&cond).copied().unwrap_or(cond);
+                        (nv, nc)
+                    })
                     .collect();
                 // Try to find the first piece whose condition is BoolTrue.
                 let mut result: Option<ExprId> = None;
-                for i in (0..new.len()).step_by(2) {
-                    let cond = new[i + 1];
+                for &(val, cond) in &new {
                     if cond == arena.bool_true {
-                        result = Some(new[i]);
+                        result = Some(val);
                         break;
                     }
                 }
                 if let Some(val) = result {
                     val
-                } else if new == *children {
+                } else if new == *pairs {
                     id
                 } else {
                     arena.intern(ExprNode::Piecewise(new))

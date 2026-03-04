@@ -106,17 +106,14 @@ fn diff_node(
         | ExprNode::Not(_) => arena.zero,
 
         // Piecewise: differentiate each value piece, keep conditions
-        ExprNode::Piecewise(ref children) => {
-            let children = children.clone();
-            let mut new_children = SmallVec::new();
-            for i in (0..children.len()).step_by(2) {
-                let val = children[i];
-                let cond = children[i + 1];
+        ExprNode::Piecewise(ref pairs) => {
+            let pairs = pairs.clone();
+            let mut new_pairs = SmallVec::new();
+            for &(val, cond) in &pairs {
                 let dval = get_deriv(cache, val, arena);
-                new_children.push(dval);
-                new_children.push(cond);
+                new_pairs.push((dval, cond));
             }
-            arena.intern(ExprNode::Piecewise(new_children))
+            arena.intern(ExprNode::Piecewise(new_pairs))
         }
 
         // ── Add: linearity ─────────────────────────────────────────

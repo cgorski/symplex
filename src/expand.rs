@@ -167,12 +167,16 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
                     .collect();
                 if new == *children { id } else { arena.or(&new) }
             }
-            ExprNode::Piecewise(ref children) => {
-                let new: SmallVec<[ExprId; 6]> = children
+            ExprNode::Piecewise(ref pairs) => {
+                let new: SmallVec<[(ExprId, ExprId); 3]> = pairs
                     .iter()
-                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .map(|&(val, cond)| {
+                        let nv = cache.get(&val).copied().unwrap_or(val);
+                        let nc = cache.get(&cond).copied().unwrap_or(cond);
+                        (nv, nc)
+                    })
                     .collect();
-                if new == *children {
+                if new == *pairs {
                     id
                 } else {
                     arena.intern(ExprNode::Piecewise(new))

@@ -138,6 +138,17 @@ pub(crate) fn rebuild_with_cache(
 ) -> ExprId {
     let node = arena.node(id).clone();
 
+    macro_rules! rebuild_intern_unary {
+        ($arena:expr, $id:expr, $inner:expr, $cache:expr, $Variant:ident) => {{
+            let new_inner = $cache.get(&$inner).copied().unwrap_or($inner);
+            if new_inner == $inner {
+                $id
+            } else {
+                $arena.intern(ExprNode::$Variant(new_inner))
+            }
+        }};
+    }
+
     match node {
         // Atoms: no children.
         ExprNode::Num(_)
@@ -217,79 +228,16 @@ pub(crate) fn rebuild_with_cache(
         ExprNode::Ln(inner) => rebuild_unary(arena, id, inner, cache, Arena::ln),
         ExprNode::Abs(inner) => rebuild_unary(arena, id, inner, cache, Arena::abs),
 
-        // Unary: Asin, Acos, Atan, Sinh, Cosh, Tanh
-        ExprNode::Asin(inner) => {
-            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
-            if new_inner == inner {
-                id
-            } else {
-                arena.intern(ExprNode::Asin(new_inner))
-            }
-        }
-        ExprNode::Acos(inner) => {
-            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
-            if new_inner == inner {
-                id
-            } else {
-                arena.intern(ExprNode::Acos(new_inner))
-            }
-        }
-        ExprNode::Atan(inner) => {
-            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
-            if new_inner == inner {
-                id
-            } else {
-                arena.intern(ExprNode::Atan(new_inner))
-            }
-        }
-        ExprNode::Sinh(inner) => {
-            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
-            if new_inner == inner {
-                id
-            } else {
-                arena.intern(ExprNode::Sinh(new_inner))
-            }
-        }
-        ExprNode::Cosh(inner) => {
-            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
-            if new_inner == inner {
-                id
-            } else {
-                arena.intern(ExprNode::Cosh(new_inner))
-            }
-        }
-        ExprNode::Tanh(inner) => {
-            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
-            if new_inner == inner {
-                id
-            } else {
-                arena.intern(ExprNode::Tanh(new_inner))
-            }
-        }
-        ExprNode::Asinh(inner) => {
-            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
-            if new_inner == inner {
-                id
-            } else {
-                arena.intern(ExprNode::Asinh(new_inner))
-            }
-        }
-        ExprNode::Acosh(inner) => {
-            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
-            if new_inner == inner {
-                id
-            } else {
-                arena.intern(ExprNode::Acosh(new_inner))
-            }
-        }
-        ExprNode::Atanh(inner) => {
-            let new_inner = cache.get(&inner).copied().unwrap_or(inner);
-            if new_inner == inner {
-                id
-            } else {
-                arena.intern(ExprNode::Atanh(new_inner))
-            }
-        }
+        // Unary: Asin, Acos, Atan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh
+        ExprNode::Asin(inner) => rebuild_intern_unary!(arena, id, inner, cache, Asin),
+        ExprNode::Acos(inner) => rebuild_intern_unary!(arena, id, inner, cache, Acos),
+        ExprNode::Atan(inner) => rebuild_intern_unary!(arena, id, inner, cache, Atan),
+        ExprNode::Sinh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Sinh),
+        ExprNode::Cosh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Cosh),
+        ExprNode::Tanh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Tanh),
+        ExprNode::Asinh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Asinh),
+        ExprNode::Acosh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Acosh),
+        ExprNode::Atanh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Atanh),
 
         ExprNode::Sign(inner) => {
             let ni = cache.get(&inner).copied().unwrap_or(inner);
@@ -387,15 +335,19 @@ pub(crate) fn rebuild_with_cache(
         }
 
         // Piecewise
-        ExprNode::Piecewise(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children
+        ExprNode::Piecewise(ref pairs) => {
+            let new_pairs: SmallVec<[(ExprId, ExprId); 3]> = pairs
                 .iter()
-                .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                .map(|&(val, cond)| {
+                    let nv = cache.get(&val).copied().unwrap_or(val);
+                    let nc = cache.get(&cond).copied().unwrap_or(cond);
+                    (nv, nc)
+                })
                 .collect();
-            if new_children == *children {
+            if new_pairs == *pairs {
                 id
             } else {
-                arena.intern(ExprNode::Piecewise(new_children))
+                arena.intern(ExprNode::Piecewise(new_pairs))
             }
         }
     }

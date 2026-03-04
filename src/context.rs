@@ -234,14 +234,40 @@ impl Context {
 
     // ── Arena access ───────────────────────────────────────────────────
 
-    /// Run a closure with mutable access to the underlying arena.
+    /// Provides mutable access to the expression arena.
+    ///
+    /// The closure receives `&mut Arena` and can call any arena method
+    /// (e.g., `arena.add()`, `arena.sin()`, `arena.symbol()`).
     ///
     /// This is primarily used by the [`rule!`](crate::rule) macro to
     /// build pattern expressions directly in the arena.  Most users
     /// should prefer the higher-level `Ex` methods instead.
     ///
-    /// The closure receives `&mut Arena` and can call any arena method.
-    /// The write lock is held for the duration of the closure.
+    /// # Panics
+    ///
+    /// **Deadlock warning:** The write lock on the context is held for the
+    /// entire duration of the closure. If the closure captures and uses a
+    /// `Context` or `Ex` handle from the **same** context (calling methods
+    /// like `.sin()`, `.expand()`, `format!()`, or any operation that
+    /// acquires the lock), the thread will deadlock.
+    ///
+    /// **Safe:** Only call `Arena` methods inside the closure.
+    ///
+    /// **Unsafe (deadlocks):** Do NOT call `Context` methods, `Ex` methods,
+    /// or `format!("{}", some_ex)` inside the closure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let result = ctx.with_arena_mut(|arena| {
+    ///     let x = arena.symbol("x");
+    ///     let two = arena.int(2);
+    ///     arena.pow(x, two)
+    /// });
+    /// ```
     pub fn with_arena_mut<R>(&self, f: impl FnOnce(&mut crate::arena::Arena) -> R) -> R {
         let mut guard = self.inner.write();
         f(&mut guard.arena)

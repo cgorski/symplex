@@ -490,8 +490,9 @@ pub fn compute_sort_key(
         // -- piecewise -------------------------------------------------------
         ExprNode::Piecewise(children) => {
             key.push(RANK_PIECEWISE);
-            for &c in children {
-                key.extend(get_key(c).as_bytes());
+            for &(val, cond) in children {
+                key.extend(get_key(val).as_bytes());
+                key.extend(get_key(cond).as_bytes());
             }
         }
     }

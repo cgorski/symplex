@@ -39,7 +39,7 @@
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, Pow as NumPow, Signed, Zero};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::{SmallVec, smallvec};
 
 use crate::arena::Arena;
@@ -741,13 +741,13 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
             }
             // 5. No two children should have the same term key
             //    (like terms should be merged)
-            for i in 0..children.len() {
-                for j in (i + 1)..children.len() {
-                    let (_, key_i) = arena.as_coeff_term(children[i]);
-                    let (_, key_j) = arena.as_coeff_term(children[j]);
-                    if key_i == key_j {
+            {
+                let mut seen_keys = FxHashSet::default();
+                for (idx, &child) in children.iter().enumerate() {
+                    let (_, key) = arena.as_coeff_term(child);
+                    if !seen_keys.insert(key) {
                         errors.push(format!(
-                            "Add children {i}/{j} have same term key (like terms not merged)"
+                            "Add child {idx} has duplicate term key (like terms not merged)"
                         ));
                     }
                 }

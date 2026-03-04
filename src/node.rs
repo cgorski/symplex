@@ -197,9 +197,8 @@ pub enum ExprNode {
     Not(ExprId),
 
     // -- piecewise -----------------------------------------------------------
-    /// Piecewise function: alternating `[value₀, cond₀, value₁, cond₁, ...]`.
-    /// Length is always even. Piece i has value at index 2*i and condition at 2*i+1.
-    Piecewise(SmallVec<[ExprId; 6]>),
+    /// Piecewise function: each pair is (value, condition).
+    Piecewise(SmallVec<[(ExprId, ExprId); 3]>),
 
     // -- composite forms -----------------------------------------------------
     /// Application of a user‐defined or library function identified by
@@ -239,11 +238,19 @@ impl ExprNode {
             | ExprNode::BoolFalse => smallvec![],
 
             // n‐ary
-            ExprNode::Add(ids)
-            | ExprNode::Mul(ids)
-            | ExprNode::And(ids)
-            | ExprNode::Or(ids)
-            | ExprNode::Piecewise(ids) => ids.clone(),
+            ExprNode::Add(ids) | ExprNode::Mul(ids) | ExprNode::And(ids) | ExprNode::Or(ids) => {
+                ids.clone()
+            }
+
+            // piecewise — flatten pairs into children list
+            ExprNode::Piecewise(pairs) => {
+                let mut result = SmallVec::new();
+                for &(val, cond) in pairs {
+                    result.push(val);
+                    result.push(cond);
+                }
+                result
+            }
 
             // binary
             ExprNode::Pow(a, b)
@@ -357,7 +364,13 @@ impl fmt::Debug for ExprNode {
             ExprNode::And(ids) => f.debug_tuple("And").field(ids).finish(),
             ExprNode::Or(ids) => f.debug_tuple("Or").field(ids).finish(),
             ExprNode::Not(x) => f.debug_tuple("Not").field(x).finish(),
-            ExprNode::Piecewise(ids) => f.debug_tuple("Piecewise").field(ids).finish(),
+            ExprNode::Piecewise(pairs) => {
+                let mut d = f.debug_tuple("Piecewise");
+                for pair in pairs {
+                    d.field(pair);
+                }
+                d.finish()
+            }
             ExprNode::Apply(sym, args) => f.debug_tuple("Apply").field(sym).field(args).finish(),
             ExprNode::Derivative(body, var) => {
                 f.debug_tuple("Derivative").field(body).field(var).finish()

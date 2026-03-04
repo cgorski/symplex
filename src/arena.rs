@@ -1047,15 +1047,9 @@ impl Arena {
     }
 
     /// Creates a `Piecewise` node from `(value, condition)` pairs.
-    ///
-    /// Stored flat: `[value₀, cond₀, value₁, cond₁, …]`.
     pub fn piecewise(&mut self, pairs: &[(ExprId, ExprId)]) -> ExprId {
-        let mut flat: SmallVec<[ExprId; 6]> = SmallVec::new();
-        for &(val, cond) in pairs {
-            flat.push(val);
-            flat.push(cond);
-        }
-        self.intern(ExprNode::Piecewise(flat))
+        let collected: SmallVec<[(ExprId, ExprId); 3]> = pairs.iter().copied().collect();
+        self.intern(ExprNode::Piecewise(collected))
     }
 
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.

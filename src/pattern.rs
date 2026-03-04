@@ -290,7 +290,10 @@ fn match_recursive(
                 return false;
             }
             for (p, e) in pc.iter().zip(ec.iter()) {
-                if !match_recursive(arena, pattern, *p, *e, bindings) {
+                if !match_recursive(arena, pattern, p.0, e.0, bindings) {
+                    return false;
+                }
+                if !match_recursive(arena, pattern, p.1, e.1, bindings) {
                     return false;
                 }
             }

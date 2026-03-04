@@ -635,10 +635,7 @@ fn expand_expr(
         // ── Piecewise ──────────────────────────────────────────────
         ExprNode::Piecewise(children) => {
             stack.push(WorkItem::Lit(")"));
-            let n_pairs = children.len() / 2;
-            for i in (0..n_pairs).rev() {
-                let val = children[2 * i];
-                let cond = children[2 * i + 1];
+            for (i, &(val, cond)) in children.iter().enumerate().rev() {
                 stack.push(WorkItem::Expr(cond, 0));
                 stack.push(WorkItem::Lit(" if "));
                 stack.push(WorkItem::Expr(val, 0));

@@ -137,8 +137,8 @@ pub enum ExprTree {
     Or { args: Vec<ExprTree> },
     /// Logical negation.
     Not { arg: Box<ExprTree> },
-    /// Piecewise function: flattened [value₀, cond₀, value₁, cond₁, ...].
-    Piecewise { pieces: Vec<ExprTree> },
+    /// Piecewise function: list of (value, condition) pairs.
+    Piecewise { pieces: Vec<(ExprTree, ExprTree)> },
     /// Application of a named function.
     Apply { name: String, args: Vec<ExprTree> },
     /// Formal derivative.
@@ -289,7 +289,10 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
             arg: Box::new(expr_to_tree(arena, x)),
         },
         ExprNode::Piecewise(children) => ExprTree::Piecewise {
-            pieces: children.iter().map(|&c| expr_to_tree(arena, c)).collect(),
+            pieces: children
+                .iter()
+                .map(|&(val, cond)| (expr_to_tree(arena, val), expr_to_tree(arena, cond)))
+                .collect(),
         },
     }
 }
@@ -456,9 +459,11 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             arena.not(x)
         }
         ExprTree::Piecewise { pieces } => {
-            let ids: Vec<ExprId> = pieces.iter().map(|p| tree_to_expr(arena, p)).collect();
-            let flat: smallvec::SmallVec<[ExprId; 6]> = ids.into_iter().collect();
-            arena.intern(ExprNode::Piecewise(flat))
+            let pairs: smallvec::SmallVec<[(ExprId, ExprId); 3]> = pieces
+                .iter()
+                .map(|(val, cond)| (tree_to_expr(arena, val), tree_to_expr(arena, cond)))
+                .collect();
+            arena.intern(ExprNode::Piecewise(pairs))
         }
     }
 }
