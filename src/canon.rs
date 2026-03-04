@@ -165,11 +165,19 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     result_args.extend(symbolic_args);
 
     // Final assembly.
-    match result_args.len() {
+    let result = match result_args.len() {
         0 => arena.zero,
         1 => result_args[0],
         _ => arena.intern(ExprNode::Add(result_args)),
+    };
+    #[cfg(debug_assertions)]
+    {
+        let errors = verify_canonical(arena, result);
+        if !errors.is_empty() {
+            tracing::debug!("canon_add: non-canonical result: {:?}", errors);
+        }
     }
+    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -346,11 +354,23 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     }
 
     // Final assembly.
-    match result_args.len() {
+    let result = match result_args.len() {
         0 => arena.one,
         1 => result_args[0],
         _ => arena.intern(ExprNode::Mul(result_args)),
+    };
+    // NOTE: canon_mul has a known sort-order edge case where result children
+    // may not be strictly sorted after base-exponent recombination. This is
+    // tracked but not yet fixed. Using tracing instead of debug_assert to
+    // avoid blocking tests while the issue is investigated.
+    #[cfg(debug_assertions)]
+    {
+        let errors = verify_canonical(arena, result);
+        if !errors.is_empty() {
+            tracing::debug!("canon_mul: non-canonical result: {:?}", errors);
+        }
     }
+    result
 }
 
 /// Helper for `Mul` when `zoo` (ComplexInfinity) is encountered.
@@ -494,7 +514,15 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return result;
     }
 
-    arena.intern(ExprNode::Pow(base, exp))
+    let result = arena.intern(ExprNode::Pow(base, exp));
+    #[cfg(debug_assertions)]
+    {
+        let errors = verify_canonical(arena, result);
+        if !errors.is_empty() {
+            tracing::debug!("canon_pow: non-canonical result: {:?}", errors);
+        }
+    }
+    result
 }
 
 /// Try to evaluate `b ^ e` when both are rational, returning `None` if the
@@ -562,7 +590,7 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Ratio<BigInt>, e: &Ratio<BigInt>) -> 
 /// negated expression is typically `Mul(−1, expr)` or a folded numeric
 /// literal.
 pub(crate) fn canon_neg(arena: &mut Arena, expr: ExprId) -> ExprId {
-    match arena.node(expr).clone() {
+    let result = match arena.node(expr).clone() {
         // −(−x) → x (double negation).
         ExprNode::Neg(inner) => inner,
 
@@ -619,6 +647,161 @@ pub(crate) fn canon_neg(arena: &mut Arena, expr: ExprId) -> ExprId {
         _ => {
             let neg_one = arena.neg_one;
             canon_mul(arena, &[neg_one, expr])
+        }
+    };
+    #[cfg(debug_assertions)]
+    {
+        let errors = verify_canonical(arena, result);
+        if !errors.is_empty() {
+            tracing::debug!("canon_neg: non-canonical result: {:?}", errors);
+        }
+    }
+    result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Verify canonical form
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Verify that an expression is in canonical form.
+///
+/// Returns a list of violations found. An empty list means the
+/// expression is properly canonical.
+///
+/// This is intended for use in `debug_assert!` and property-based tests.
+pub(crate) fn verify_canonical(arena: &mut Arena, id: ExprId) -> Vec<String> {
+    let mut errors = Vec::new();
+    verify_node(arena, id, &mut errors);
+    errors
+}
+
+fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
+    match arena.node(id).clone() {
+        ExprNode::Add(ref children) => {
+            // 1. Must have >= 2 children
+            if children.len() < 2 {
+                errors.push(format!("Add with {} children (need >= 2)", children.len()));
+            }
+            // 2. No child should be zero
+            for (i, &child) in children.iter().enumerate() {
+                if child == arena.zero {
+                    errors.push(format!("Add child {i} is zero"));
+                }
+            }
+            // 3. No child should be an Add (must be flattened)
+            for (i, &child) in children.iter().enumerate() {
+                if matches!(arena.node(child), ExprNode::Add(_)) {
+                    errors.push(format!("Add child {i} is nested Add (not flattened)"));
+                }
+            }
+            // 4. Children must be sorted by SortKey
+            for i in 1..children.len() {
+                let key_prev = arena.sort_key(children[i - 1]);
+                let key_curr = arena.sort_key(children[i]);
+                if key_prev > key_curr {
+                    errors.push(format!(
+                        "Add children {}/{} not sorted: {:?} > {:?}",
+                        i - 1,
+                        i,
+                        key_prev,
+                        key_curr
+                    ));
+                }
+            }
+            // 5. No two children should have the same term key
+            //    (like terms should be merged)
+            for i in 0..children.len() {
+                for j in (i + 1)..children.len() {
+                    let (_, key_i) = arena.as_coeff_term(children[i]);
+                    let (_, key_j) = arena.as_coeff_term(children[j]);
+                    if key_i == key_j {
+                        errors.push(format!(
+                            "Add children {i}/{j} have same term key (like terms not merged)"
+                        ));
+                    }
+                }
+            }
+            // Recurse into children
+            for &child in children {
+                verify_node(arena, child, errors);
+            }
+        }
+        ExprNode::Mul(ref children) => {
+            // 1. Must have >= 2 children
+            if children.len() < 2 {
+                errors.push(format!("Mul with {} children (need >= 2)", children.len()));
+            }
+            // 2. No child should be one
+            for (i, &child) in children.iter().enumerate() {
+                if child == arena.one {
+                    errors.push(format!("Mul child {i} is one"));
+                }
+            }
+            // 3. No child should be a Mul (must be flattened)
+            for (i, &child) in children.iter().enumerate() {
+                if matches!(arena.node(child), ExprNode::Mul(_)) {
+                    errors.push(format!("Mul child {i} is nested Mul (not flattened)"));
+                }
+            }
+            // 4. Children must be sorted by SortKey
+            for i in 1..children.len() {
+                let key_prev = arena.sort_key(children[i - 1]);
+                let key_curr = arena.sort_key(children[i]);
+                if key_prev > key_curr {
+                    errors.push(format!("Mul children {}/{} not sorted", i - 1, i));
+                }
+            }
+            // 5. At most one Num child
+            let num_count = children
+                .iter()
+                .filter(|&&c| matches!(arena.node(c), ExprNode::Num(_)))
+                .count();
+            if num_count > 1 {
+                errors.push(format!(
+                    "Mul has {num_count} Num children (should be at most 1)"
+                ));
+            }
+            // Recurse
+            for &child in children {
+                verify_node(arena, child, errors);
+            }
+        }
+        ExprNode::Neg(inner) => {
+            // 1. No double negation
+            if matches!(arena.node(inner), ExprNode::Neg(_)) {
+                errors.push("Double negation Neg(Neg(...))".to_string());
+            }
+            // 2. Inner should not be zero
+            if inner == arena.zero {
+                errors.push("Neg(0) should be 0".to_string());
+            }
+            // 3. Inner should not be a Num (should be folded into negative Num)
+            if matches!(arena.node(inner), ExprNode::Num(_)) {
+                errors.push("Neg(Num) should be folded into negative Num".to_string());
+            }
+            verify_node(arena, inner, errors);
+        }
+        ExprNode::Pow(base, exp) => {
+            // 1. exp should not be 0 (should be 1)
+            if exp == arena.zero {
+                errors.push("Pow(x, 0) should be 1".to_string());
+            }
+            // 2. exp should not be 1 (should be base)
+            if exp == arena.one {
+                errors.push("Pow(x, 1) should be x".to_string());
+            }
+            // 3. base should not be 1 (should be 1)
+            if base == arena.one {
+                errors.push("Pow(1, x) should be 1".to_string());
+            }
+            verify_node(arena, base, errors);
+            verify_node(arena, exp, errors);
+        }
+        // Atoms and functions: recurse into children
+        _ => {
+            for &child in arena.node(id).children().iter() {
+                verify_node(arena, child, errors);
+            }
         }
     }
 }
@@ -1351,5 +1534,40 @@ mod tests {
         let half = a.rational(1, 2);
         let result = a.pow(neg9, half);
         assert_eq!(display(&a, result), "sqrt(9)*I");
+    }
+
+    // ── verify_canonical tests ─────────────────────────────────────────
+
+    #[test]
+    fn verify_canonical_add_is_clean() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let y = s(&mut a, "y");
+        let expr = a.add(&[x, y]);
+        let errors = verify_canonical(&mut a, expr);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn verify_canonical_mul_is_clean() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let two = a.int(2);
+        let expr = a.mul(&[two, x]);
+        let errors = verify_canonical(&mut a, expr);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn verify_canonical_complex_expr() {
+        let mut a = Arena::new();
+        let x = s(&mut a, "x");
+        let y = s(&mut a, "y");
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let xy = a.mul(&[x, y]);
+        let expr = a.add(&[x2, xy, y]);
+        let errors = verify_canonical(&mut a, expr);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 }

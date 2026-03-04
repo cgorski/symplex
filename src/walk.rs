@@ -55,7 +55,10 @@ pub(crate) fn post_order_ids(arena: &Arena, root: ExprId) -> Vec<ExprId> {
                 }
             }
         } else {
-            let id = stack.pop().unwrap().0;
+            let id = stack
+                .pop()
+                .expect("stack is non-empty: guarded by while-let on stack.last_mut()")
+                .0;
             visited.insert(id, ());
             result.push(id);
         }

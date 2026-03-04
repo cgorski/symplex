@@ -701,7 +701,11 @@ impl Ex {
         }
         // Clone the rules out to release the immutable borrow on `inner`
         // before we pass `&mut inner.arena` to `apply_rules`.
-        let rules = inner.cached_rules.as_ref().unwrap().clone();
+        let rules = inner
+            .cached_rules
+            .as_ref()
+            .expect("cached_rules should be populated by is_none() check above")
+            .clone();
         let (result_id, steps) = crate::pattern::apply_rules(&mut inner.arena, self.id, &rules);
         drop(inner);
         (self.wrap(result_id), steps)

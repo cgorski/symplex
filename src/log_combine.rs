@@ -104,7 +104,7 @@ fn combine_mul_ln(arena: &mut Arena, id: ExprId, original: &[ExprId], new: &[Exp
     }
 
     if ln_count == 1 && new.len() >= 2 {
-        let idx = ln_index.unwrap();
+        let idx = ln_index.expect("ln_index is Some when ln_count == 1");
         let ln_arg = match *arena.node(new[idx]) {
             ExprNode::Ln(inner) => inner,
             _ => unreachable!(),

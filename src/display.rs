@@ -536,7 +536,15 @@ fn mul_without_neg_one(arena: &Arena, id: ExprId) -> ExprId {
     if let ExprNode::Mul(children) = arena.node(id) {
         let rest = &children[1..];
         match rest.len() {
-            0 => unreachable!("Mul with only -1 should have been canonicalized away"),
+            0 => {
+                // Defensive fallback: Mul with only -1 should have been canonicalized.
+                // In release builds, display "-1" rather than panicking.
+                debug_assert!(
+                    false,
+                    "Mul with only -1 should have been canonicalized away"
+                );
+                children[0]
+            }
             1 => rest[0],
             _ => {
                 // We need to return a Mul of the remaining factors.
