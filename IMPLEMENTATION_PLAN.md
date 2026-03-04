@@ -303,6 +303,19 @@ What DOES provide compile-time correctness for symplex:
 - **Serde-derived `ExprTree`** — exhaustive matching on both ExprNode→ExprTree and ExprTree→ExprNode ensures serialization completeness
 - **Proptest for algebraic invariants** — 33 properties empirically verify mathematical correctness
 
+### Why phantom types for sort safety (not newtypes, not traits)
+
+Evaluated three approaches for preventing boolean/numeric mixing:
+
+1. **Newtypes** (`BoolEx(Ex)`) — simple but duplicates common methods per sort
+2. **Phantom types** (`Expr<S: Sort>`) — chosen: one struct, generic common methods, zero-cost
+3. **Traits** (`trait NumericExpr`, `trait BooleanExpr`) — too complex, orphan rules
+
+Phantom types scale to N sorts with O(1) common-method effort. Adding a new sort
+(e.g., `SetValued`) requires only a marker type + impl block. Internal modules
+(arena, walk, display, diff, eval) are completely unaffected — they operate on
+untyped `ExprId`. The sort safety lives exclusively at the public API boundary.
+
 ### Tracing and observability plan
 
 The library will use the `tracing` crate for zero-cost diagnostic logging. When no subscriber is registered (the default), each tracing call costs ~1ns (atomic load + predicted branch). When a subscriber captures events, the user opted in.
@@ -464,6 +477,7 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 | Cycles 4-8 | Complex number support (i²=-1, (-1)^½→I, complex quadratic roots, Euler's formula), transcendental solver (inversion peeling), integer sqrt simplification (√8→2√2), trig-hyp bridge, inverse trig integrals, general linear substitution, 6 new simplify rules, assumption handlers for 9 function types, node rebuilding fixes, SymPy-inspired improvements |
 | Cycles 9-13 | General u-sub, trig power integration, trig combine, solver change-of-variable, parser improvements (float/implicit-mul/constants), complex evalf Tier 3, as_real_imag, factor_terms, From<T>/Sum/Product, bounded exhaustive verification, known-answer corpus, numerical cross-validation |
 | Cycles 14-18 | Equation type + eq! macro, Factorial/Binomial nodes, canonical invariant checker + canon_mul sort fix, code hardening, symbolic Matrix + matrix! macro + Jacobian, lambdify (expression→closure), CSE, ODE solver (separable/linear/2nd-order), expr! constants/rationals, rule! conditional guards |
+| 0.2.0 | Phantom type system (Expr<S: Sort>), BoolEx, relationals (Gt/Ge/Eq_/Ne), logical connectives (And/Or/Not), BoolTrue/BoolFalse atoms, Piecewise expressions, compile-time sort safety, expr! comparison/logic operators |
 
 ---
 
@@ -486,6 +500,8 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 15. **`factor_terms` undone by Number×Add distribution.** `factor_terms(4x+6y)` extracts 2 but `canon_mul` distributes it back. A display-only factored form is needed.
 16. **ODE solver has no public `Ex`-level API.** Must use `ctx.with_arena_mut()` + `dsolve()` directly.
 17. **`lambdify` does not support complex expressions.** Returns `None` for expressions containing `I`.
+18. **Phantom type safety is API-level only.** Internal arena code is untyped (ExprId). Sort violations in rule implementations are caught by verify_canonical in debug builds, not at compile time.
+19. **No boolean symbols.** All symbols are Expr<Numeric>. Boolean-typed symbolic variables (e.g., a proposition `p`) are not supported.
 
 ---
 
@@ -698,13 +714,12 @@ abs(abs(w_)) => abs(w_)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 2,259 passing, 0 failing, 0 warnings |
-| Public methods on `Ex` | 103 |
+| Tests | 2,352 passing, 0 failing, 0 warnings |
+| Public methods on `Ex` | 103+ (numeric), 6 (boolean) |
 | Public methods on `Context` | 17 |
 | Free-standing functions | 5 |
-| Source code | 28,700+ lines across 45 modules |
-| Test code | 14,500+ lines across 39 test files |
-| ExprNode variants | 30 (21 non-atom + 9 atom) |
+| Total lines | 48,500+ |
+| ExprNode variants | 44 |
 | Simplification rules | 23 |
 | Matrix methods | 26 |
 | Factorial/Binomial | arbitrary precision (no limit) |
@@ -850,22 +865,28 @@ Symplex is the only MIT/Apache-2.0 general-purpose CAS in Rust. There is no dire
 
 ### v0.2.0 Feature Priorities
 
-| Priority | Feature | Effort | Rationale |
-|----------|---------|--------|-----------|
-| V1 | **`symplex-format` crate** — LaTeX, Markdown, Typst rendering consuming ExprTree | 4 hr | #1 user request; separate crate keeps core lean |
-| V2 | **`MathFunction` trait** — user-defined functions with derivative/eval/evalf callbacks | 3 hr | Extensibility; the one approved advanced type technique |
-| V3 | **CancelToken** — cooperative computation timeout | 2 hr | Safety for production use; prevents hangs |
-| V4 | **Code generation** — `to_rust_fn()`, `to_c()` for compiling expressions to numerical code | 4 hr | The killer feature for Rust CAS users |
-| V5 | **Matrix/Vector symbolic type** — symbolic matrices for robotics/physics | 8 hr | Key audience need |
-| V6 | **Complex number evalf** — full complex arithmetic support | 8 hr | Physics/engineering requirement |
-| V7 | **Assumption-gated simplify rules** — wire AssumptionCache into rule conditions | 1 hr | ✅ Partially done — conditional rules infrastructure + assumption handlers for all functions |
+| Priority | Feature | Effort | Status | Rationale |
+|----------|---------|--------|--------|-----------|
+| V1 | **`symplex-format` crate** — LaTeX, Markdown, Typst rendering consuming ExprTree | 4 hr | TODO | #1 user request; separate crate keeps core lean |
+| V2 | **`MathFunction` trait** — user-defined functions with derivative/eval/evalf callbacks | 3 hr | TODO | Extensibility; the one approved advanced type technique |
+| V3 | **CancelToken** — cooperative computation timeout | 2 hr | TODO | Safety for production use; prevents hangs |
+| V4 | **Code generation** — `to_rust_fn()`, `to_c()` for compiling expressions to numerical code | 4 hr | TODO | The killer feature for Rust CAS users |
+| V5 | **Relationals** — Gt, Ge, Eq_, Ne comparison operators | 2 hr | ✅ DONE | Foundation for piecewise and inequality solving |
+| V6 | **Logical connectives** — And, Or, Not with BoolEx type | 2 hr | ✅ DONE | Required for compound conditions |
+| V7 | **Piecewise expressions** — conditional branching with boolean guards | 3 hr | ✅ DONE | Physics/engineering requirement |
+| V8 | **Compile-time sort safety** — Expr<S: Sort> phantom types, BoolEx/Ex separation | 4 hr | ✅ DONE | Prevents boolean/numeric mixing at compile time |
+| V9 | **Inequality solving** — solve Gt/Ge/Lt/Le for intervals | 4 hr | TODO | Natural extension of relationals |
+| V10 | **Sets/Intervals** — SetValued sort, union/intersection/complement | 6 hr | TODO | Solution domains for inequalities |
+| V11 | **Vector calculus** — divergence, curl, gradient | 4 hr | TODO | Physics/robotics audience |
+| V12 | **Trig substitution** — ∫ √(a²-x²) dx, ∫ √(x²+a²) dx | 3 hr | TODO | Common integral forms |
+| V13 | **Assumption-gated simplify rules** — wire AssumptionCache into rule conditions | 1 hr | ✅ Partial | Conditional rules infrastructure + assumption handlers for all functions |
 
 ### v0.3.0+ Vision
 
 | Feature | Description |
 |---------|-------------|
 | ODE solver (`dsolve`) | Separation of variables, integrating factors, linear constant-coefficient |
-| Piecewise expressions | New node type with relational/boolean conditions |
+| ~~Piecewise expressions~~ | ~~New node type with relational/boolean conditions~~ ✅ Done in 0.2.0 |
 | E-graph simplification | Explore `egg` crate for optimal rewriting (MIT licensed) |
 | Gröbner bases | Multivariate polynomial system solving |
 | Laplace/Fourier transforms | Integral transforms for signal processing |

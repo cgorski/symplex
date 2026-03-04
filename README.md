@@ -4,8 +4,11 @@ Symbolic mathematics library for Rust.
 
 ## Features
 
+- **Type-safe expression system** — `Expr<Numeric>` (aliased `Ex`) and `Expr<Boolean>` (aliased `BoolEx`) prevent mixing boolean and numeric expressions at compile time
 - **Expression building** — operator overloading (`+`, `-`, `*`, `/`, unary `-`), method chaining (`.pow()`, `.sin()`, `.diff()`), automatic canonicalization (flatten, sort, combine like terms)
 - **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax with constants (`pi`, `E`, `I`) and rationals (`1/2`); `rule!(arena, "name", LHS => RHS)` for rewrite rules; `matrix!` and `eq!` for matrices and equations
+- **Boolean expressions** — relational comparisons (`>`, `<`, `>=`, `<=`, `==`, `!=`), logical connectives (`and`, `or`, `not`), `True`/`False` atoms
+- **Piecewise functions** — `Piecewise(value if condition, ...)` with differentiation and condition evaluation
 - **18 math functions** — sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, ln, abs, sqrt, cbrt, nthroot
 - **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
 - **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts, u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals, inverse trig antiderivatives (asin, acos, atan), general linear substitution (ax+b)^n, expand-then-integrate fallback
@@ -91,6 +94,17 @@ assert_eq!(format!("{}", ctx.int(-1).sqrt()), "I");        // √(-1) = i
 // Euler's formula
 let euler = (&i * &ctx.pi()).exp().eval();
 assert_eq!(format!("{euler}"), "-1");                       // e^(iπ) = -1
+
+// ── Boolean expressions (compile-time type safety) ──────────
+let cond: BoolEx = x.gt(&symplex::int(0));     // x > 0
+let both = cond.and(&x.lt(&symplex::int(10))); // 0 < x < 10
+// cond + 1;  // COMPILE ERROR: can't add boolean to number
+
+// ── Piecewise ──────────────────────────────────────────────
+let abs_x = Ex::piecewise(&[
+    (&x, &x.gt(&symplex::int(0))),
+    (&(-&x), &x.le(&symplex::int(0))),
+]);
 
 // ── Advanced: explicit Context for custom configuration ────────
 let ctx = Context::new();
@@ -229,6 +243,27 @@ ex.series_or_self(&x, &a, n)               // series or unchanged
 ex.maclaurin_or_self(&x, n)                 // maclaurin or unchanged
 ```
 
+### Boolean Expressions (`BoolEx`)
+
+```rust
+// ── Construction (returns BoolEx) ──────────────────────────
+ex.gt(&other)   ex.ge(&other)   ex.lt(&other)    ex.le(&other)
+ex.eq_expr(&other)               ex.ne_expr(&other)
+
+// ── Logic (on BoolEx) ──────────────────────────────────────
+bex.and(&other)                  // logical AND
+bex.or(&other)                   // logical OR
+bex.not()                        // logical NOT
+
+// ── Sort-preserving (on BoolEx) ────────────────────────────
+bex.eval()     bex.simplify()   bex.subs(&old, &new)
+bex.free_symbols()               bex.contains(&sub)
+
+// ── Escape hatches ─────────────────────────────────────────
+bex.into_ex()                    // convert to Ex (loses type safety)
+bex.as_ex()                      // borrow as Ex
+```
+
 ### Macros
 
 ```rust
@@ -331,6 +366,83 @@ For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is pl
 | 23 | `abs(w) → w` (when w positive) | Abs-positive |
 
 All rules support sub-expression matching in Add and Mul (e.g., `3 + sin²(x) + cos²(x) → 4`).
+
+## Feature Comparison with SymPy
+
+| Feature | symplex 0.2.0 | SymPy | Notes |
+|---------|:---:|:---:|-------|
+| **Core** | | | |
+| Expression tree | ✅ Hash-consed arena | ✅ Python objects | symplex: O(1) equality, structural sharing |
+| Assumption system | ✅ 23 properties | ✅ ~20 properties | Both use forward-chain inference |
+| Pattern matching/rewrite | ✅ 23 rules | ✅ Hundreds | SymPy has more rules; symplex has Mul sub-match |
+| Arbitrary-precision eval | ✅ astro-float | ✅ mpmath | Both arbitrary precision |
+| Serde/JSON serialization | ✅ ExprTree | ❌ | symplex only |
+| Thread safety | ✅ Send+Sync | ❌ | symplex only (Arc<RwLock>) |
+| Compile-time sort safety | ✅ Phantom types | ❌ | symplex: BoolEx vs Ex at compile time |
+| **Type System** | | | |
+| Numeric expressions | ✅ | ✅ | |
+| Boolean expressions | ✅ BoolEx | ✅ Boolean | symplex: compile-time; SymPy: runtime |
+| Relational (>, <, >=, <=) | ✅ | ✅ | |
+| Logical (And, Or, Not) | ✅ | ✅ | |
+| Piecewise functions | ✅ | ✅ | |
+| Set types (Interval, etc.) | ❌ | ✅ | Planned for 0.3.0 |
+| **Calculus** | | | |
+| Differentiation | ✅ All elementary | ✅ All elementary | Both complete for standard functions |
+| Integration (basic) | ✅ Power, trig, exp, ln | ✅ | |
+| Integration (by-parts) | ✅ | ✅ | |
+| Integration (u-sub) | ✅ General | ✅ General | |
+| Integration (trig powers) | ✅ sin^n, cos^n | ✅ | |
+| Integration (partial fracs) | ✅ | ✅ | |
+| Integration (trig sub) | ❌ | ✅ | Planned for 0.3.0 |
+| Integration (Risch algorithm) | ❌ | ✅ | Not planned |
+| Taylor/Maclaurin series | ✅ + fast paths | ✅ | symplex: known-coefficient optimization |
+| Limits (finite points) | ✅ L'Hôpital+series | ✅ Gruntz | SymPy more complete |
+| Limits (at infinity) | ✅ Basic | ✅ Gruntz | SymPy more complete |
+| **Algebra** | | | |
+| Expand | ✅ | ✅ | |
+| Factor (polynomial) | ✅ Rational roots | ✅ Full (Berlekamp) | SymPy more complete |
+| Collect | ✅ | ✅ | |
+| Together / Cancel | ✅ | ✅ | |
+| Partial fractions (apart) | ✅ | ✅ | |
+| Trig expand/combine | ✅ | ✅ | |
+| Log expand/combine | ✅ | ✅ | |
+| Factor terms (GCD extract) | ✅ | ✅ | |
+| Rationalize denominator | ✅ | ✅ | |
+| **Equation Solving** | | | |
+| Polynomial (linear, quadratic) | ✅ | ✅ | |
+| Polynomial (higher degree) | ✅ Rational roots | ✅ Full | SymPy more complete |
+| Complex roots | ✅ | ✅ | |
+| Transcendental (exp, ln, trig) | ✅ Inversion | ✅ | |
+| Change of variable | ✅ | ✅ | |
+| Linear systems | ✅ Gaussian | ✅ | |
+| Inequality solving | ❌ | ✅ | Planned |
+| Numerical (Newton) | ✅ | ✅ | |
+| **Complex Numbers** | | | |
+| i²=-1 canonicalization | ✅ | ✅ | |
+| √(-n) → i√n | ✅ | ✅ | |
+| Euler's formula | ✅ | ✅ | |
+| Complex evalf | ✅ (real,imag) pairs | ✅ mpmath | |
+| as_real_imag decomposition | ✅ | ✅ | |
+| **Special** | | | |
+| Factorial / Binomial | ✅ Arbitrary precision | ✅ | |
+| Sign function | ✅ | ✅ | |
+| Matrices | ✅ Basic | ✅ Full | SymPy: eigenvalues, Jordan form, etc. |
+| Jacobian | ✅ | ✅ | |
+| ODE solver | ✅ Basic (separable, const-coeff) | ✅ Full | SymPy much more complete |
+| CSE | ✅ | ✅ | |
+| lambdify (expr→closure) | ✅ | ✅ | symplex: compiled bytecode VM |
+| Code generation (to_rust_fn) | ❌ | ✅ (to Python/C/etc.) | Planned |
+| LaTeX output | ❌ (serde→external) | ✅ | By design: separate crate |
+| **Macros** | | | |
+| Expression builder (expr!) | ✅ | N/A | Rust-specific |
+| Pattern rules (rule!) | ✅ + conditions | N/A | |
+| Matrix builder (matrix!) | ✅ | N/A | |
+| Equation builder (eq!) | ✅ | N/A | |
+| **Infrastructure** | | | |
+| Test suite | 2,352 tests | ~15,000+ | |
+| Proptest / property-based | ✅ 125 properties | ❌ | symplex only |
+| Canonical invariant checker | ✅ | ❌ | symplex only |
+| Benchmarks (Criterion) | ✅ 35 | ✅ ASV | |
 
 ## Dependencies
 

@@ -5,9 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] — Unreleased
+## [0.2.0] — Unreleased
 
 ### Added
+
+**0.2.0: Type-Safe Boolean Expressions + Logic + Piecewise**
+- BREAKING: `Ex` is now a type alias for `Expr<Numeric>`, not a standalone struct
+- BREAKING: `gt()`, `ge()`, `lt()`, `le()`, `eq_expr()`, `ne_expr()` now return `BoolEx` (was `Ex`)
+- BREAKING: `and_expr()`, `or_expr()`, `not_expr()` renamed to `and()`, `or()`, `not()` and moved to `BoolEx`
+- BREAKING: `piecewise()` now takes `&[(&Ex, &BoolEx)]` (conditions must be boolean)
+- New `Expr<S: Sort>` phantom-typed expression handle — compile-time sort safety
+- New `BoolEx` type alias for `Expr<Boolean>` — boolean expressions
+- New `Sort` trait with `Numeric` and `Boolean` marker types
+- New ExprNode variants: `BoolTrue`, `BoolFalse`, `Gt`, `Ge`, `Eq_`, `Ne`, `And`, `Or`, `Not`, `Piecewise`
+- Boolean evaluation: `5 > 3` → `True`, `And(True, False)` → `False`
+- Piecewise differentiation: d/dx(Piecewise) differentiates each piece
+- `BoolEx::and()`, `BoolEx::or()`, `BoolEx::not()` — boolean operations
+- `BoolEx::eval()`, `BoolEx::simplify()`, `BoolEx::subs()` — sort-preserving
+- `BoolEx::into_ex()`, `BoolEx::as_ex()` — escape hatches
+- `expr!` macro: `>`, `<`, `>=`, `<=`, `!=`, `&&`, `||`, `!` operators
+- Canonicalization: And/Or flatten, sort, deduplicate; Not double-negation
+- Display: `True`, `False`, `x > 0`, `x & y`, `x | y`, `!x`, `Piecewise(...)`
 
 **Core Expression System**
 - Arena-interned expression DAG with hash-consing and O(1) equality
