@@ -1113,6 +1113,112 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    // ── Combinatorial functions (Apply-based) ──────────────────────
+
+    /// Double factorial: `self!!`.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    /// `0!! = 1`, `1!! = 1`, `(-1)!! = 1`.
+    #[must_use]
+    pub fn factorial2(&self) -> Ex {
+        let id = self.inner.write().arena.factorial2(self.id);
+        self.wrap(id)
+    }
+
+    /// Subfactorial (derangement count): `!self`.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    #[must_use]
+    pub fn subfactorial(&self) -> Ex {
+        let id = self.inner.write().arena.subfactorial(self.id);
+        self.wrap(id)
+    }
+
+    /// Rising factorial (Pochhammer symbol): `(self)_n`.
+    ///
+    /// `rising_factorial(x, n) = x * (x+1) * ... * (x+n-1)`.
+    #[must_use]
+    pub fn rising_factorial(&self, n: &Ex) -> Ex {
+        let id = self.inner.write().arena.rising_factorial(self.id, n.id);
+        self.wrap(id)
+    }
+
+    /// Falling factorial: `self^(n) = self * (self-1) * ... * (self-n+1)`.
+    #[must_use]
+    pub fn falling_factorial(&self, n: &Ex) -> Ex {
+        let id = self.inner.write().arena.falling_factorial(self.id, n.id);
+        self.wrap(id)
+    }
+
+    /// Fibonacci number: `F(self)`.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    /// `F(0) = 0`, `F(1) = 1`, `F(n) = F(n-1) + F(n-2)`.
+    #[must_use]
+    pub fn fibonacci(&self) -> Ex {
+        let id = self.inner.write().arena.fibonacci(self.id);
+        self.wrap(id)
+    }
+
+    /// Lucas number: `L(self)`.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    /// `L(0) = 2`, `L(1) = 1`, `L(n) = L(n-1) + L(n-2)`.
+    #[must_use]
+    pub fn lucas(&self) -> Ex {
+        let id = self.inner.write().arena.lucas(self.id);
+        self.wrap(id)
+    }
+
+    /// Bernoulli number: `B(self)`.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    /// `B(0) = 1`, `B(1) = -1/2`, `B(2) = 1/6`.
+    #[must_use]
+    pub fn bernoulli_number(&self) -> Ex {
+        let id = self.inner.write().arena.bernoulli_number(self.id);
+        self.wrap(id)
+    }
+
+    /// Harmonic number: `H(self) = 1 + 1/2 + ... + 1/self`.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    /// `H(0) = 0`.
+    #[must_use]
+    pub fn harmonic(&self) -> Ex {
+        let id = self.inner.write().arena.harmonic(self.id);
+        self.wrap(id)
+    }
+
+    /// Catalan number: `C(self) = (2n)! / ((n+1)! * n!)`.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    #[must_use]
+    pub fn catalan_number(&self) -> Ex {
+        let id = self.inner.write().arena.catalan_number(self.id);
+        self.wrap(id)
+    }
+
+    /// Bell number: `B(self)`.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    /// `B(0) = 1`, `B(1) = 1`, `B(2) = 2`, `B(3) = 5`.
+    #[must_use]
+    pub fn bell(&self) -> Ex {
+        let id = self.inner.write().arena.bell(self.id);
+        self.wrap(id)
+    }
+
+    /// Euler number: `E(self)`.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    /// Odd indices are 0. `E(0) = 1`, `E(2) = -1`, `E(4) = 5`.
+    #[must_use]
+    pub fn euler_number(&self) -> Ex {
+        let id = self.inner.write().arena.euler_number(self.id);
+        self.wrap(id)
+    }
+
     // ── Relational operators (return BoolEx) ───────────────────────
 
     /// Greater than: `self > other`.

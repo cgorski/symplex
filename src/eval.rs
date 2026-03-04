@@ -375,6 +375,127 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
             }
 
+            // ── Apply (named combinatorial functions) ──────────────
+            ExprNode::Apply(name_sid, ref args) => {
+                let new_args: smallvec::SmallVec<[ExprId; 2]> = args
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                let name = arena.symbols.name(name_sid).to_owned();
+                match name.as_str() {
+                    "factorial2" if new_args.len() == 1 => {
+                        if let Some(result) = eval_factorial2(arena, new_args[0]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.factorial2(new_args[0])
+                        }
+                    }
+                    "subfactorial" if new_args.len() == 1 => {
+                        if let Some(result) = eval_subfactorial(arena, new_args[0]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.subfactorial(new_args[0])
+                        }
+                    }
+                    "rising_factorial" if new_args.len() == 2 => {
+                        if let Some(result) = eval_rising_factorial(arena, new_args[0], new_args[1])
+                        {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.rising_factorial(new_args[0], new_args[1])
+                        }
+                    }
+                    "falling_factorial" if new_args.len() == 2 => {
+                        if let Some(result) =
+                            eval_falling_factorial(arena, new_args[0], new_args[1])
+                        {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.falling_factorial(new_args[0], new_args[1])
+                        }
+                    }
+                    "fibonacci" if new_args.len() == 1 => {
+                        if let Some(result) = eval_fibonacci(arena, new_args[0]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.fibonacci(new_args[0])
+                        }
+                    }
+                    "lucas" if new_args.len() == 1 => {
+                        if let Some(result) = eval_lucas(arena, new_args[0]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.lucas(new_args[0])
+                        }
+                    }
+                    "bernoulli" if new_args.len() == 1 => {
+                        if let Some(result) = eval_bernoulli(arena, new_args[0]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.bernoulli_number(new_args[0])
+                        }
+                    }
+                    "harmonic" if new_args.len() == 1 => {
+                        if let Some(result) = eval_harmonic(arena, new_args[0]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.harmonic(new_args[0])
+                        }
+                    }
+                    "catalan" if new_args.len() == 1 => {
+                        if let Some(result) = eval_catalan(arena, new_args[0]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.catalan_number(new_args[0])
+                        }
+                    }
+                    "bell" if new_args.len() == 1 => {
+                        if let Some(result) = eval_bell(arena, new_args[0]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.bell(new_args[0])
+                        }
+                    }
+                    "euler_number" if new_args.len() == 1 => {
+                        if let Some(result) = eval_euler_number(arena, new_args[0]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.euler_number(new_args[0])
+                        }
+                    }
+                    _ => {
+                        if new_args[..] == args[..] {
+                            id
+                        } else {
+                            let sv: smallvec::SmallVec<[ExprId; 2]> = new_args;
+                            arena.intern(ExprNode::Apply(name_sid, sv))
+                        }
+                    }
+                }
+            }
+
             // Everything else: unchanged.
             _ => id,
         };
@@ -424,6 +545,277 @@ fn eval_binomial(arena: &mut Arena, n: ExprId, k: ExprId) -> Option<ExprId> {
         result /= num_bigint::BigInt::from(i + 1);
     }
     let ratio = num_rational::Ratio::from_integer(result);
+    let nid = arena.intern_num(ratio);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Combinatorial helper functions
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Double factorial: n!! = n * (n-2) * (n-4) * ... * 1 (or 2).
+/// 0!! = 1, 1!! = 1, (-1)!! = 1.
+fn eval_factorial2(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() {
+        return None;
+    }
+    let n: i64 = r.to_integer().try_into().ok()?;
+    if n < -1 {
+        return None;
+    }
+    let mut result = BigInt::from(1);
+    let mut k = n;
+    while k > 1 {
+        result *= BigInt::from(k);
+        k -= 2;
+    }
+    let ratio = Ratio::from_integer(result);
+    let nid = arena.intern_num(ratio);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Subfactorial (derangement count): !n.
+/// Uses recurrence: !0 = 1, !1 = 0, !n = (n-1)(!(n-1) + !(n-2)).
+fn eval_subfactorial(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let n: u64 = r.to_integer().try_into().ok()?;
+    let result = if n == 0 {
+        BigInt::from(1)
+    } else {
+        let mut prev = BigInt::from(1); // !0
+        let mut curr = BigInt::from(0); // !1
+        for i in 2..=n {
+            let next = BigInt::from(i - 1) * (&curr + &prev);
+            prev = curr;
+            curr = next;
+        }
+        curr
+    };
+    let ratio = Ratio::from_integer(result);
+    let nid = arena.intern_num(ratio);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Rising factorial (Pochhammer): (x)_n = x * (x+1) * ... * (x+n-1).
+/// Works for rational x; n must be a non-negative integer.
+fn eval_rising_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Option<ExprId> {
+    let xr = arena.as_num(x_id)?.clone();
+    let nr = arena.as_num(n_id)?;
+    if !nr.is_integer() || nr.is_negative() {
+        return None;
+    }
+    let n: u64 = nr.to_integer().try_into().ok()?;
+    let mut result = Ratio::<BigInt>::one();
+    for i in 0..n {
+        result *= &xr + Ratio::from_integer(BigInt::from(i));
+    }
+    let nid = arena.intern_num(result);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Falling factorial: x^(n) = x * (x-1) * ... * (x-n+1).
+/// Works for rational x; n must be a non-negative integer.
+fn eval_falling_factorial(arena: &mut Arena, x_id: ExprId, n_id: ExprId) -> Option<ExprId> {
+    let xr = arena.as_num(x_id)?.clone();
+    let nr = arena.as_num(n_id)?;
+    if !nr.is_integer() || nr.is_negative() {
+        return None;
+    }
+    let n: u64 = nr.to_integer().try_into().ok()?;
+    let mut result = Ratio::<BigInt>::one();
+    for i in 0..n {
+        result *= &xr - Ratio::from_integer(BigInt::from(i));
+    }
+    let nid = arena.intern_num(result);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Fibonacci number F(n) using iterative computation.
+/// F(0) = 0, F(1) = 1, F(n) = F(n-1) + F(n-2).
+fn eval_fibonacci(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let n: u64 = r.to_integer().try_into().ok()?;
+    let result = if n == 0 {
+        BigInt::from(0)
+    } else {
+        let mut a = BigInt::from(0);
+        let mut b = BigInt::from(1);
+        for _ in 1..n {
+            let tmp = &a + &b;
+            a = b;
+            b = tmp;
+        }
+        b
+    };
+    let ratio = Ratio::from_integer(result);
+    let nid = arena.intern_num(ratio);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Lucas number L(n) using iterative computation.
+/// L(0) = 2, L(1) = 1, L(n) = L(n-1) + L(n-2).
+fn eval_lucas(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let n: u64 = r.to_integer().try_into().ok()?;
+    let result = if n == 0 {
+        BigInt::from(2)
+    } else {
+        let mut a = BigInt::from(2);
+        let mut b = BigInt::from(1);
+        for _ in 1..n {
+            let tmp = &a + &b;
+            a = b;
+            b = tmp;
+        }
+        b
+    };
+    let ratio = Ratio::from_integer(result);
+    let nid = arena.intern_num(ratio);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Bernoulli number B(n).
+/// B(0) = 1, and for n >= 1:
+///   B(n) = -1/(n+1) * sum_{k=0}^{n-1} C(n+1, k) * B(k)
+fn eval_bernoulli(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let n: u64 = r.to_integer().try_into().ok()?;
+    // Build table of B(0)..B(n)
+    let mut b_vals: Vec<Ratio<BigInt>> = Vec::with_capacity((n + 1) as usize);
+    b_vals.push(Ratio::one()); // B(0) = 1
+    for m in 1..=n {
+        // B(m) = -1/(m+1) * sum_{k=0}^{m-1} C(m+1, k) * B(k)
+        let mut sum = Ratio::<BigInt>::zero();
+        let mut binom = BigInt::from(1); // C(m+1, 0) = 1
+        for k in 0..m {
+            sum += Ratio::from_integer(binom.clone()) * &b_vals[k as usize];
+            // C(m+1, k+1) = C(m+1, k) * (m+1-k) / (k+1)
+            binom *= BigInt::from(m + 1 - k);
+            binom /= BigInt::from(k + 1);
+        }
+        let result = -sum / Ratio::from_integer(BigInt::from(m + 1));
+        b_vals.push(result);
+    }
+    let ratio = b_vals.into_iter().last().unwrap();
+    let nid = arena.intern_num(ratio);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Harmonic number H(n) = 1 + 1/2 + 1/3 + ... + 1/n.
+/// H(0) = 0.
+fn eval_harmonic(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let n: u64 = r.to_integer().try_into().ok()?;
+    let mut result = Ratio::<BigInt>::zero();
+    for k in 1..=n {
+        result += Ratio::new(BigInt::from(1), BigInt::from(k));
+    }
+    let nid = arena.intern_num(result);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Catalan number C(n) = (2n)! / ((n+1)! * n!).
+fn eval_catalan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let n: u64 = r.to_integer().try_into().ok()?;
+    // C(n) = C(2n, n) / (n+1) — compute using incremental binomial
+    let mut binom = BigInt::from(1); // C(2n, n) built incrementally
+    for i in 0..n {
+        binom *= BigInt::from(2 * n - i);
+        binom /= BigInt::from(i + 1);
+    }
+    let result = Ratio::new(binom, BigInt::from(n + 1));
+    let nid = arena.intern_num(result);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Bell number B(n) using the Bell triangle.
+/// B(0) = 1, B(1) = 1, B(2) = 2, B(3) = 5, B(4) = 15, B(5) = 52.
+fn eval_bell(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let n: u64 = r.to_integer().try_into().ok()?;
+    if n == 0 {
+        let nid = arena.intern_num(Ratio::from_integer(BigInt::from(1)));
+        return Some(arena.intern(ExprNode::Num(nid)));
+    }
+    // Bell triangle: row[0] = B(n-1), then row[j] = row[j-1] + prev_row[j-1]
+    let mut row = vec![BigInt::from(1)]; // B(0) = 1, start of row 1
+    for _ in 1..n {
+        let mut new_row = Vec::with_capacity(row.len() + 1);
+        new_row.push(row.last().unwrap().clone()); // first element = last of prev row
+        for j in 1..=row.len() {
+            let val = &new_row[j - 1] + &row[j - 1];
+            new_row.push(val);
+        }
+        row = new_row;
+    }
+    // B(n) = last element of the nth row = row.last()
+    let result = row.last().unwrap().clone();
+    let ratio = Ratio::from_integer(result);
+    let nid = arena.intern_num(ratio);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Euler number E(n). Odd indices give 0.
+/// E(0) = 1, E(2) = -1, E(4) = 5, E(6) = -61, ...
+/// Recurrence for even n >= 2: E(n) = -sum_{k=0,2,4,...,n-2} C(n, k) * E(k).
+fn eval_euler_number(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let n: u64 = r.to_integer().try_into().ok()?;
+    // Odd Euler numbers are 0
+    if n % 2 == 1 {
+        let nid = arena.intern_num(Ratio::from_integer(BigInt::from(0)));
+        return Some(arena.intern(ExprNode::Num(nid)));
+    }
+    // Build table of E(0), E(2), E(4), ..., E(n)
+    let half = (n / 2) as usize;
+    let mut e_vals: Vec<BigInt> = Vec::with_capacity(half + 1);
+    e_vals.push(BigInt::from(1)); // E(0) = 1
+    for m_half in 1..=half {
+        let m = (m_half * 2) as u64; // the actual index
+        // E(m) = -sum_{k=0,2,...,m-2} C(m, k) * E(k)
+        let mut sum = BigInt::from(0);
+        let mut binom = BigInt::from(1); // C(m, 0)
+        for k_half in 0..m_half {
+            let k = (k_half * 2) as u64;
+            sum += &binom * &e_vals[k_half];
+            // Advance binom from C(m, k) to C(m, k+2)
+            // C(m, k+1) = C(m, k) * (m-k) / (k+1)
+            // C(m, k+2) = C(m, k+1) * (m-k-1) / (k+2)
+            binom *= BigInt::from(m - k);
+            binom /= BigInt::from(k + 1);
+            binom *= BigInt::from(m - k - 1);
+            binom /= BigInt::from(k + 2);
+        }
+        e_vals.push(-sum);
+    }
+    let result = e_vals.last().unwrap().clone();
+    let ratio = Ratio::from_integer(result);
     let nid = arena.intern_num(ratio);
     Some(arena.intern(ExprNode::Num(nid)))
 }

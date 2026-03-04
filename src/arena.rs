@@ -1060,6 +1060,85 @@ impl Arena {
         self.intern(ExprNode::Piecewise(collected))
     }
 
+    // ── Combinatorial functions (Apply-based) ──────────────────────
+
+    /// Creates a `factorial2` (double factorial) node: `n!!`.
+    pub fn factorial2(&mut self, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("factorial2");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `subfactorial` (derangement count) node: `!n`.
+    pub fn subfactorial(&mut self, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("subfactorial");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `rising_factorial` (Pochhammer symbol) node: `(x)_n`.
+    pub fn rising_factorial(&mut self, x: ExprId, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("rising_factorial");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![x, n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `falling_factorial` node: `x^(n)`.
+    pub fn falling_factorial(&mut self, x: ExprId, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("falling_factorial");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![x, n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `fibonacci` node: `F(n)`.
+    pub fn fibonacci(&mut self, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("fibonacci");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `lucas` node: `L(n)`.
+    pub fn lucas(&mut self, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("lucas");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `bernoulli` (Bernoulli number) node: `B(n)`.
+    pub fn bernoulli_number(&mut self, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("bernoulli");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `harmonic` (harmonic number) node: `H(n)`.
+    pub fn harmonic(&mut self, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("harmonic");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `catalan` (Catalan number) node: `C(n)`.
+    pub fn catalan_number(&mut self, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("catalan");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `bell` (Bell number) node: `B(n)`.
+    pub fn bell(&mut self, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("bell");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates an `euler_number` node: `E(n)`.
+    pub fn euler_number(&mut self, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern("euler_number");
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.
     ///
     /// Returns the string representation of the result, or an error if the
