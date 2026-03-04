@@ -395,3 +395,94 @@ fn value_exp_ln() {
     let point = symplex::int(3);
     assert_simplify_preserves_value!(x.ln().exp(), x, point);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tests for newly added rules and features
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn rule_exp_log_denest() {
+    let x = symplex::var("x");
+    assert_simplifies_to!((&x.ln() * 3).exp(), "x^3");
+}
+
+#[test]
+fn rule_exp_log_denest_symbolic() {
+    let x = symplex::var("x");
+    let a = symplex::var("a");
+    assert_simplifies_to!((&x.ln() * &a).exp(), "x^a");
+}
+
+#[test]
+fn expand_trig_sin_2x() {
+    let x = symplex::var("x");
+    let expr = (&x * 2).sin();
+    let expanded = expr.expand_trig();
+    let s = format!("{expanded}");
+    assert!(
+        s.contains("sin") && s.contains("cos"),
+        "sin(2x) should expand to involve both sin and cos, got: {s}"
+    );
+}
+
+#[test]
+fn expand_trig_cos_2x() {
+    let x = symplex::var("x");
+    let expr = (&x * 2).cos();
+    let expanded = expr.expand_trig();
+    let s = format!("{expanded}");
+    assert!(
+        s.contains("sin") || s.contains("cos"),
+        "cos(2x) should expand, got: {s}"
+    );
+}
+
+#[test]
+fn expand_trig_sin_3x() {
+    let x = symplex::var("x");
+    let expr = (&x * 3).sin();
+    let expanded = expr.expand_trig();
+    let s = format!("{expanded}");
+    // Should be fully expanded — no remaining sin(2x) or sin(3x)
+    assert!(
+        !s.contains("3*x"),
+        "sin(3x) should be fully expanded, got: {s}"
+    );
+}
+
+#[test]
+fn trig_combine_double_angle() {
+    let x = symplex::var("x");
+    let expr = &(&x.sin() * &x.cos()) * 2;
+    let combined = expr.trig_combine();
+    let s = format!("{combined}");
+    assert!(!s.contains("sin(0)"), "should not contain sin(0), got: {s}");
+}
+
+#[test]
+fn together_with_lcm() {
+    let x = symplex::var("x");
+    let a = symplex::var("a");
+    let b = symplex::var("b");
+    // a/(x-1) + b/(x-1)^2 should have denom (x-1)^2, not (x-1)^3
+    let x_minus_1 = &x - 1;
+    let frac1 = &a / &x_minus_1;
+    let frac2 = &b / &x_minus_1.powi(2);
+    let sum = &frac1 + &frac2;
+    let result = sum.together();
+    let s = format!("{result}");
+    // Should NOT contain ^3 (which would indicate product-based denom)
+    assert!(!s.contains("^3"), "together should use LCM, got: {s}");
+}
+
+#[test]
+fn cos_div_sin_rule() {
+    let x = symplex::var("x");
+    let expr = &x.cos() / &x.sin();
+    let simplified = expr.simplify();
+    let s = format!("{simplified}");
+    assert!(
+        s.contains("tan"),
+        "cos(x)/sin(x) should simplify to involve tan, got: {s}"
+    );
+}
