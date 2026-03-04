@@ -1270,18 +1270,16 @@ Every non-obvious mathematical choice (e.g., `0^0 = 1`, `ComplexInfinity + finit
 
 ---
 
-## SymPy Feature Parity — Comprehensive Gap Analysis & Roadmap
+## SymPy Feature Parity — Detailed Chunk-by-Chunk Implementation Plan
 
-> **Source:** Full audit of all ~40 SymPy sub-packages cross-referenced against
-> the symplex feature inventory. SymPy version: 1.14.0 (local at `math/sympy/`).
+> **Source:** Full audit of all ~40 SymPy sub-packages (`math/sympy/sympy/`) cross-
+> referenced against every symplex public method and ExprNode variant. Every chunk
+> is ≤ 2 hours, most are ≤ 1 hour. No chunk depends on another unless marked.
+>
+> **LaTeX/Typst/MathML rendering** is deferred to a separate `symplex-format` crate.
+> It is NOT in this plan. The core crate provides `Display` + `ExprTree` (serde).
 
-### Current standing
-
-symplex covers the core algebra–calculus pipeline with a Rust-native architecture.
-For a pre-1.0 CAS, coverage is strong in 8 of SymPy's ~40 modules. The gaps below
-are ordered by user impact, not implementation difficulty.
-
-### What symplex does better than SymPy
+### What symplex already does better than SymPy
 
 | Feature | Description |
 |---------|-------------|
@@ -1300,121 +1298,584 @@ are ordered by user impact, not implementation difficulty.
 
 ---
 
-### Tier 1 — Critical parity gaps (users will leave without these)
+### Feature Matrix: symplex vs SymPy (function-level)
 
-These are features that every CAS user expects from day one. Missing any of
-these makes symplex unsuitable for homework, research, or production use.
+#### Elementary Functions
 
-| # | Feature | SymPy equivalent | Effort | Notes |
-|---|---------|-----------------|--------|-------|
-| 1 | **LaTeX output** (`to_latex()` on `Ex`) | `sympy.latex()` | 4–6 hr | #1 user request; string formatting only, no new math |
-| 2 | **`sec`, `csc`, `cot`** + inverse variants | `sec`, `csc`, `cot`, `asec`, `acsc`, `acot` | 2 hr | Convenience methods returning `1/cos(x)` etc. No new ExprNode variants needed |
-| 3 | **`floor`, `ceiling`** functions | `floor`, `ceiling` | 2 hr | 2 new ExprNode variants + eval rules for numeric args |
-| 4 | **`Min`, `Max`** functions | `Min`, `Max` | 2 hr | 2 new ExprNode variants + eval for numeric args + piecewise bridge |
-| 5 | **Cubic formula (Cardano)** | `roots()` for degree 3 | 4 hr | Depressed cubic → Cardano. Prerequisite for 3×3 eigenvalues |
-| 6 | **Quartic formula (Ferrari)** | `roots()` for degree 4 | 4 hr | Resolve cubic + Ferrari. Completes polynomial root finding through degree 4 |
-| 7 | **Eigenvalues / eigenvectors** (2×2, 3×3) | `Matrix.eigenvals()`, `eigenvects()` | 3 hr | Build characteristic polynomial, use existing `solve`. Requires cubic formula |
-| 8 | **Matrix inverse** | `Matrix.inv()` | 2 hr | Cofactor expansion + det (both already exist). Adjugate / det |
-| 9 | **Set types** (`Interval`, `FiniteSet`, `Union`, `EmptySet`, `Reals`) | `sympy.sets` | 8 hr | Foundation for solveset, inequality solving, domain specification |
-| 10 | **`Expr<SetValued>`** third phantom sort | — (SymPy is untyped) | 2 hr | Already designed in architecture docs. Marker type + impl block |
-| 11 | **Inequality solving** (polynomial, rational) | `reduce_inequalities()` | 6 hr | Returns `Interval` or `Union`. Requires Set types |
-| 12 | **Symbolic `Sum` and `Product`** nodes | `Sum`, `Product` | 4 hr | Unevaluated nodes with `.doit()`. Finite evaluation. Gosper deferred |
-| 13 | **Rust code generation** (`to_rust_fn()`) | `sympy.printing.rust` | 3 hr | CSE + flat `let` bindings → Rust function body string. Primary Rust CAS use case |
+| SymPy function | symplex | Status | Chunk # |
+|---|---|---|---|
+| `sin` | `Ex::sin()` | ✅ | — |
+| `cos` | `Ex::cos()` | ✅ | — |
+| `tan` | `Ex::tan()` | ✅ | — |
+| `cot` | — | ❌ | F1a |
+| `sec` | — | ❌ | F1a |
+| `csc` | — | ❌ | F1a |
+| `sinc` | — | ❌ | F1b |
+| `asin` | `Ex::asin()` | ✅ | — |
+| `acos` | `Ex::acos()` | ✅ | — |
+| `atan` | `Ex::atan()` | ✅ | — |
+| `acot` | — | ❌ | F1c |
+| `asec` | — | ❌ | F1c |
+| `acsc` | — | ❌ | F1c |
+| `atan2` | — | ❌ | F1d |
+| `sinh` | `Ex::sinh()` | ✅ | — |
+| `cosh` | `Ex::cosh()` | ✅ | — |
+| `tanh` | `Ex::tanh()` | ✅ | — |
+| `coth` | — | ❌ | F2a |
+| `sech` | — | ❌ | F2a |
+| `csch` | — | ❌ | F2a |
+| `asinh` | `Ex::asinh()` | ✅ | — |
+| `acosh` | `Ex::acosh()` | ✅ | — |
+| `atanh` | `Ex::atanh()` | ✅ | — |
+| `acoth` | — | ❌ | F2b |
+| `asech` | — | ❌ | F2b |
+| `acsch` | — | ❌ | F2b |
+| `exp` | `Ex::exp()` | ✅ | — |
+| `log` / `ln` | `Ex::ln()`, `Ex::log(base)` | ✅ | — |
+| `LambertW` | — | ❌ | F3a |
+| `sqrt` | `Ex::sqrt()` | ✅ | — |
+| `cbrt` | `Ex::cbrt()` | ✅ | — |
+| `root(x, n)` | `Ex::nthroot(n)` | ✅ | — |
+| `Abs` | `Ex::abs()` | ✅ | — |
+| `sign` | `Sign` node | ✅ | — |
+| `floor` | — | ❌ | F4a |
+| `ceiling` | — | ❌ | F4a |
+| `frac` | — | ❌ | F4b |
+| `Min` | — | ❌ | F5a |
+| `Max` | — | ❌ | F5a |
+| `Rem` | — | ❌ | F5b |
+| `re` | `Ex::re()` | ✅ | — |
+| `im` | `Ex::im()` | ✅ | — |
+| `arg` | — | ❌ | F6a |
+| `conjugate` | — | ❌ | F6a |
+| `Piecewise` | `Ex::piecewise()` | ✅ | — |
+| `factorial` | `Ex::factorial()` | ✅ | — |
+| `binomial` | `Ex::binomial()` | ✅ | — |
+| `subfactorial` | — | ❌ | F7a |
+| `factorial2` (double) | — | ❌ | F7a |
+| `RisingFactorial` | — | ❌ | F7b |
+| `FallingFactorial` | — | ❌ | F7b |
+| `fibonacci` | — | ❌ | F8a |
+| `lucas` | — | ❌ | F8a |
+| `bernoulli` | — | ❌ | F8b |
+| `harmonic` | — | ❌ | F8b |
+| `catalan` | — | ❌ | F8c |
+| `bell` | — | ❌ | F8c |
+| `euler` (number) | — | ❌ | F8d |
+| `Heaviside` | — | ❌ | F9a |
+| `DiracDelta` | — | ❌ | F9a |
 
-**Estimated total for Tier 1:** ~46 hours (roughly 2 focused sprints)
+#### Special Functions
+
+| SymPy function | symplex | Status | Chunk # |
+|---|---|---|---|
+| `gamma` | — | ❌ | S1a |
+| `loggamma` | — | ❌ | S1b |
+| `digamma` / `polygamma` | — | ❌ | S1c |
+| `beta` | — | ❌ | S1d |
+| `erf` | — | ❌ | S2a |
+| `erfc` | — | ❌ | S2a |
+| `erfi` | — | ❌ | S2b |
+| `erfinv` / `erfcinv` | — | ❌ | S2c |
+| `Ei` (exponential integral) | — | ❌ | S3a |
+| `li` / `Li` (log integral) | — | ❌ | S3a |
+| `Si` / `Ci` (sine/cosine integrals) | — | ❌ | S3b |
+| `zeta` (Riemann) | — | ❌ | S4a |
+| `polylog` | — | ❌ | S4b |
+| `besselj` / `bessely` / `besseli` / `besselk` | — | ❌ | S5a |
+| `airyai` / `airybi` | — | ❌ | S5b |
+| `legendre` / `assoc_legendre` | — | ❌ | S6a |
+| `hermite` | — | ❌ | S6b |
+| `chebyshevt` / `chebyshevu` | — | ❌ | S6c |
+| `laguerre` / `assoc_laguerre` | — | ❌ | S6d |
+| `elliptic_k` / `elliptic_e` / `elliptic_f` / `elliptic_pi` | — | ❌ | S7a |
+| `hyper` (hypergeometric pFq) | — | ❌ | S8a |
+| `meijerg` (Meijer G) | — | ❌ | S8b |
+
+#### Solvers
+
+| SymPy function | symplex | Status | Chunk # |
+|---|---|---|---|
+| `solve` (polynomial) | `Ex::solve()` | ✅ | — |
+| `solve` (transcendental) | `Ex::solve()` (partial) | 🟡 | — |
+| `nsolve` (numerical) | `Ex::nsolve()` | ✅ | — |
+| `linsolve` / `solve_linear_system` | `ctx.solve_system()` | ✅ | — |
+| `solveset` (returns Set) | — | ❌ | V3e |
+| `nonlinsolve` | — | ❌ | V6a |
+| `solve_poly_system` (Gröbner) | — | ❌ | V8b |
+| `checksol` | — | ❌ | V1a |
+| `dsolve` (ODE) | `dsolve()` (3 types) | 🟡 | — |
+| `classify_ode` | — | ❌ | V5a |
+| `checkodesol` | — | ❌ | V5b |
+| `pdsolve` (PDE) | — | ❌ | V9a |
+| `rsolve` (recurrence) | — | ❌ | V9b |
+| `reduce_inequalities` | — | ❌ | V3c |
+| `solve_univariate_inequality` | — | ❌ | V3d |
+| `diophantine` | — | ❌ | V9c |
+| Cubic formula (Cardano) | — | ❌ | V2a |
+| Quartic formula (Ferrari) | — | ❌ | V2b |
+
+#### Matrix / Linear Algebra
+
+| SymPy function | symplex | Status | Chunk # |
+|---|---|---|---|
+| Matrix construction | `Matrix::new`, `zeros`, `identity` | ✅ | — |
+| `transpose` | `Matrix::transpose()` | ✅ | — |
+| `det` | `Matrix::det()` | ✅ | — |
+| `trace` | `Matrix::trace()` | ✅ | — |
+| `matmul` | `Matrix::matmul()` | ✅ | — |
+| Jacobian | `jacobian()` | ✅ | — |
+| `inv` (inverse) | — | ❌ | M1a |
+| `eigenvals` | — | ❌ | M2a |
+| `eigenvects` | — | ❌ | M2b |
+| `char_poly` | — | ❌ | M2a |
+| `diagonalize` | — | ❌ | M2c |
+| `LUdecomposition` | — | ❌ | M3a |
+| `QRdecomposition` | — | ❌ | M3b |
+| `rref` (row echelon) | — | ❌ | M4a |
+| `nullspace` | — | ❌ | M4b |
+| `columnspace` | — | ❌ | M4c |
+| `rank` | — | ❌ | M4a |
+| `cofactor` / `adjugate` / `minor` | — | ❌ | M1a |
+| `norm` | — | ❌ | M5a |
+| `cross` / `dot` | — | ❌ | M5b |
+| `hstack` / `vstack` | — | ❌ | M5c |
+| `exp` (matrix exponential) | — | ❌ | M6a |
+| `jordan_form` | — | ❌ | M6b |
+| `is_symmetric` / `is_positive_definite` | — | ❌ | M5d |
+
+#### Simplification / Rewriting
+
+| SymPy function | symplex | Status | Chunk # |
+|---|---|---|---|
+| `simplify` | `Ex::simplify()` / `smart_simplify()` | ✅ | — |
+| `expand` | `Ex::expand()` | ✅ | — |
+| `expand_trig` | `Ex::expand_trig()` | ✅ | — |
+| `expand_log` | `Ex::expand_log()` | ✅ | — |
+| `logcombine` | `Ex::logcombine()` | ✅ | — |
+| `collect` | `Ex::collect()` | ✅ | — |
+| `together` | `Ex::together()` | ✅ | — |
+| `cancel` | `Ex::cancel()` | ✅ | — |
+| `apart` | `Ex::apart()` | ✅ | — |
+| `factor` | `Ex::factor()` | ✅ | — |
+| `factor_terms` | `Ex::factor_terms()` | ✅ | — |
+| `radsimp` / `rationalize_denom` | `Ex::rationalize_denom()` | ✅ | — |
+| `cse` | `Ex::cse()` | ✅ | — |
+| `trigsimp` | — (partial via `simplify`) | 🟡 | R1a |
+| `powsimp` | — | ❌ | R1b |
+| `powdenest` | — | ❌ | R1c |
+| `expand_power_exp` | — | ❌ | R2a |
+| `expand_power_base` | — | ❌ | R2b |
+| `expand_func` | — | ❌ | R2c |
+| `expand_complex` | — | ❌ | R2d |
+| `combsimp` | — | ❌ | R3a |
+| `gammasimp` | — | ❌ | R3b |
+| `nsimplify` | — | ❌ | R4a |
+| `separatevars` | — | ❌ | R4b |
+| `posify` | — | ❌ | R4c |
+| `sqrtdenest` | — | ❌ | R5a |
+| `rewrite(target)` protocol | — | ❌ | R6a |
+| `fu` (trig strategy set) | — | ❌ | R6b |
+| `collect_const` | — | ❌ | R7a |
+| `signsimp` | — | ❌ | R7b |
+
+#### Polynomial Algebra
+
+| SymPy function | symplex | Status | Chunk # |
+|---|---|---|---|
+| `Poly` type (univariate/ℚ) | `Poly` | ✅ | — |
+| `degree` | `Ex::degree()` | ✅ | — |
+| `coeffs` | `Ex::coeffs()` | ✅ | — |
+| `gcd` / `lcm` | `Ex::poly_gcd()`, `poly_lcm()` | ✅ | — |
+| `div` / `rem` / `quo` | `Poly::div_rem()` | ✅ | — |
+| `factor` (rational roots) | `Ex::factor()` | ✅ | — |
+| `factor` (Hensel/Zassenhaus) | — | ❌ | P1a–P1d |
+| `sqf` / `sqf_list` / `sqf_part` | — | ❌ | P2a |
+| `resultant` | — | ❌ | P3a |
+| `discriminant` | — | ❌ | P3b |
+| `groebner` / `GroebnerBasis` | — | ❌ | P4a–P4c |
+| `roots` (symbolic, all degrees) | — (degree ≤ 2 + rational) | 🟡 | V2a–V2b |
+| `real_roots` / `nroots` | — | ❌ | P5a |
+| `CRootOf` / `RootOf` | — | ❌ | P5b |
+| `count_roots` / `intervals` | — | ❌ | P5c |
+| `sturm` | — | ❌ | P5d |
+| Multivariate `Poly` | — | ❌ | P6a–P6c |
+| `content` / `primitive` / `monic` | `Poly::content()` etc. | ✅ | — |
+| `horner` | — | ❌ | P7a |
+| `interpolate` | — | ❌ | P7b |
+| `viete` | — | ❌ | P7c |
+| `cancel` (rational) | `Ex::cancel()` | ✅ | — |
+| `together` | `Ex::together()` | ✅ | — |
+| `apart` / `apart_list` | `Ex::apart()` | ✅ | — |
+
+#### Series / Limits / Sequences
+
+| SymPy function | symplex | Status | Chunk # |
+|---|---|---|---|
+| `series` | `Ex::series()` | ✅ | — |
+| `limit` | `Ex::limit()` | ✅ | — |
+| Gruntz algorithm | `gruntz.rs` | ✅ | — |
+| `O` / `Order` | — | ❌ | L1a |
+| `residue` | — | ❌ | L2a |
+| `fourier_series` | — | ❌ | L3a |
+| `fps` (formal power series) | — | ❌ | L4a |
+| `pade_approximant` | — | ❌ | L4b |
+| `sequence` / `SeqFormula` | — | ❌ | L5a |
+| `limit_seq` | — | ❌ | L5b |
+| `Sum` / `summation` | — | ❌ | C1a–C1c |
+| `Product` / `product` | — | ❌ | C2a–C2b |
+
+#### Sets / Logic
+
+| SymPy function | symplex | Status | Chunk # |
+|---|---|---|---|
+| `And` / `Or` / `Not` | `BoolEx::and/or/not` | ✅ | — |
+| `Gt` / `Ge` / `Lt` / `Le` / `Eq` / `Ne` | `Ex::gt/ge/lt/le/eq_expr/ne_expr` | ✅ | — |
+| `BoolTrue` / `BoolFalse` | ExprNode variants | ✅ | — |
+| `Xor` | — | ❌ | B1a |
+| `Implies` | — | ❌ | B1b |
+| `Equivalent` | — | ❌ | B1c |
+| `Nand` / `Nor` | — | ❌ | B1d |
+| `ITE` (if-then-else) | — | ❌ | B1e |
+| `to_cnf` / `to_dnf` / `to_nnf` | — | ❌ | B2a |
+| `satisfiable` (SAT) | — | ❌ | B2b |
+| `simplify_logic` | — | ❌ | B2c |
+| `Interval` | — | ❌ | T1a |
+| `FiniteSet` | — | ❌ | T1b |
+| `Union` | — | ❌ | T1c |
+| `Intersection` | — | ❌ | T1d |
+| `Complement` | — | ❌ | T1e |
+| `EmptySet` | — | ❌ | T1a |
+| `S.Reals` / `S.Integers` / etc. | — | ❌ | T1f |
+| `ProductSet` | — | ❌ | T2a |
+| `ImageSet` | — | ❌ | T2b |
+| `ConditionSet` | — | ❌ | T2c |
+| `Contains` | — | ❌ | T2d |
+| `Expr<SetValued>` sort | — | ❌ | T1a |
+
+#### Code Generation
+
+| SymPy function | symplex | Status | Chunk # |
+|---|---|---|---|
+| `lambdify` (to closure) | `Ex::lambdify()` | ✅ | — |
+| `cse` | `Ex::cse()` | ✅ | — |
+| `to_rust_fn()` (Rust source) | — | ❌ | G1a |
+| `to_c_fn()` (C source) | — | ❌ | G2a |
+| `to_python_fn()` (Python source) | — | ❌ | G2b |
+
+#### Vector Calculus
+
+| SymPy function | symplex | Status | Chunk # |
+|---|---|---|---|
+| `gradient` | — | ❌ | W1a |
+| `divergence` | — | ❌ | W1b |
+| `curl` | — | ❌ | W1c |
+| `laplacian` | — | ❌ | W1d |
+| `CoordSys3D` | — | ❌ | W2a |
+| `is_conservative` / `is_solenoidal` | — | ❌ | W2b |
+| `scalar_potential` | — | ❌ | W2c |
 
 ---
 
-### Tier 2 — High-value gaps (power users and STEM courses)
+### Chunk Definitions — Bite-Sized Implementation Units
 
-These unlock physics/engineering use cases and complete the linear algebra story.
+Every chunk is a self-contained unit of work. Chunks are grouped into
+waves that can be executed in parallel (mutually exclusive files).
 
-| # | Feature | SymPy equivalent | Effort | Notes |
-|---|---------|-----------------|--------|-------|
-| 14 | **`solveset`** returning `Set` | `sympy.solveset()` | 4 hr | Modern solver API wrapping existing `solve` + Set types |
-| 15 | **Special functions: `gamma`, `digamma`, `beta`** | `sympy.functions.special.gamma_functions` | 4 hr | New ExprNode variants or Apply nodes + eval/diff rules |
-| 16 | **Special functions: `erf`, `erfc`** | `sympy.functions.special.error_functions` | 3 hr | Error function + complementary. Key for statistics |
-| 17 | **Laplace transform / inverse** | `sympy.integrals.transforms` | 8 hr | Table-based approach for common forms. Full Meijer-G deferred |
-| 18 | **Vector calculus** (grad, div, curl, laplacian) | `sympy.vector` | 4 hr | Build on existing `Matrix`. `CoordSys3D` + differential operators |
-| 19 | **Matrix decompositions** (LU, QR) | `Matrix.LUdecomposition()`, `.QRdecomposition()` | 6 hr | Exact rational arithmetic over existing Matrix type |
-| 20 | **Matrix determinant via LU** (performance) | `Matrix.det(method='lu')` | 2 hr | Currently cofactor expansion (O(n!)). LU gives O(n³) |
-| 21 | **Full polynomial factoring** (Hensel/Zassenhaus) | `sympy.polys.factor` | 20 hr | Factor over ℤ. Major algorithm — Berlekamp + Hensel lifting |
-| 22 | **Gröbner bases** | `sympy.polys.groebner` | 15 hr | Buchberger's algorithm. Needed for multivariate polynomial systems |
-| 23 | **Multivariate polynomials** | `sympy.polys` sparse | 12 hr | Sparse representation + multivariate GCD |
-| 24 | **`rewrite()` protocol** | `expr.rewrite(exp)` | 4 hr | Convert trig↔exp, log↔exp. Enables more integration strategies |
-| 25 | **Fourier series** | `sympy.series.fourier_series` | 4 hr | Uses existing integration + trig |
-| 26 | **Recurrence relations** (`rsolve`) | `sympy.solvers.recurr` | 8 hr | Polynomial, rational, hypergeometric |
-| 27 | **PDE solving** (separation of variables) | `sympy.solvers.pde` | 8 hr | Basic separation of variables + classify |
+#### Wave A — Reciprocal Trig & Hyperbolic (no new nodes, ~3 hrs total)
 
-**Estimated total for Tier 2:** ~102 hours
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **F1a** | Add `sec()`, `csc()`, `cot()` as convenience methods on `Ex` returning `1/cos`, `1/sin`, `cos/sin` | `expr.rs` | 30 min | — |
+| **F1b** | Add `sinc()` method: `sinc(x) = sin(x)/x` with `sinc(0)=1` eval rule | `expr.rs`, `eval.rs` | 30 min | — |
+| **F1c** | Add `acot()`, `asec()`, `acsc()` methods using `atan(1/x)`, `acos(1/x)`, `asin(1/x)` | `expr.rs` | 30 min | — |
+| **F1d** | Add `atan2(y, x)` as `atan(y/x)` with quadrant adjustment via piecewise or `arg()` | `expr.rs` | 45 min | — |
+| **F2a** | Add `coth()`, `sech()`, `csch()` as `cosh/sinh`, `1/cosh`, `1/sinh` | `expr.rs` | 20 min | — |
+| **F2b** | Add `acoth()`, `asech()`, `acsch()` using inverse hyperbolic identities | `expr.rs` | 20 min | — |
+| **F2c** | Tests for all Wave A methods (positive + negative cases, eval at known points) | `tests/test_recip_trig.rs` | 45 min | F1a–F2b |
+
+#### Wave B — Floor, Ceiling, Min, Max, Rem (new nodes, ~4 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **F4a** | Add `Floor` and `Ceiling` ExprNode variants. Add to `node.rs`, update all match arms (~12 files): `sort_key`, `walk/for_each_child`, `display`, `diff` (→0 for non-integer args), `eval`, `evalf`, `tree`, `expr`, `polybridge`, `lambdify`, `expand`, `pattern` | `node.rs` + 12 files | 90 min | — |
+| **F4b** | Add `frac()` method: `frac(x) = x - floor(x)` using `Floor` from F4a | `expr.rs` | 15 min | F4a |
+| **F5a** | Add `Min` and `Max` ExprNode variants (n-ary). Same 12-file update. Eval rules: numeric args → smallest/largest. Diff → piecewise. | `node.rs` + 12 files | 90 min | — |
+| **F5b** | Add `Rem(a, b)` variant: `a mod b`. Eval for numeric args. Display as `a % b`. | `node.rs` + 12 files | 45 min | — |
+| **F5c** | Tests for Floor, Ceiling, Min, Max, Rem | `tests/test_floor_ceil_minmax.rs` | 30 min | F4a–F5b |
+
+#### Wave C — Cubic & Quartic Formulas (~4 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **V2a** | Cardano's cubic formula in `solve.rs`: depressed cubic `t³+pt+q=0`, substitution `x=t-b/(3a)`. Handle 3 cases: one real + two complex, three real (casus irreducibilis via trig), repeated root. | `solve.rs` | 120 min | — |
+| **V2b** | Ferrari's quartic formula in `solve.rs`: reduce to depressed quartic, solve resolvent cubic (uses V2a), extract 4 roots. | `solve.rs` | 90 min | V2a |
+| **V2c** | Tests for cubic + quartic: known roots, complex roots, repeated roots, degenerate cases | `tests/test_cubic_quartic.rs` | 30 min | V2a–V2b |
+
+#### Wave D — Matrix Inverse & Eigenvalues (~4 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **M1a** | `Matrix::inv()`: cofactor matrix + adjugate + 1/det. Also add `minor(i,j)`, `cofactor(i,j)`, `adjugate()`. Error if det=0. | `matrix.rs` | 60 min | — |
+| **M2a** | `Matrix::char_poly(&var)`: build `det(A - λI)` symbolically using existing `det()`. `Matrix::eigenvals(&var)`: solve `char_poly=0`. | `matrix.rs` | 60 min | V2a |
+| **M2b** | `Matrix::eigenvects(&var)`: for each eigenvalue, solve `(A-λI)x=0` via null space (RREF). Return `Vec<(eigenvalue, multiplicity, Vec<Matrix>)>`. | `matrix.rs` | 60 min | M2a, M4a |
+| **M2c** | Tests for inv, eigenvals, eigenvects: 2×2, 3×3, repeated eigenvalues, singular matrix | `tests/test_matrix_linalg.rs` | 30 min | M1a–M2b |
+
+#### Wave E — More Matrix Operations (~4 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **M3a** | `Matrix::lu()`: LU decomposition with partial pivoting over exact rationals. Returns `(L, U, perm)`. | `matrix.rs` | 75 min | — |
+| **M3b** | `Matrix::qr()`: QR decomposition via Gram-Schmidt. Returns `(Q, R)`. | `matrix.rs` | 60 min | — |
+| **M4a** | `Matrix::rref()`: row-reduced echelon form. `Matrix::rank()`: count non-zero rows after RREF. | `matrix.rs` | 45 min | — |
+| **M4b** | `Matrix::nullspace()`: solve `Ax=0` via RREF, return basis vectors. | `matrix.rs` | 30 min | M4a |
+| **M4c** | `Matrix::columnspace()`: non-zero columns of RREF as basis. | `matrix.rs` | 15 min | M4a |
+| **M5a** | `Matrix::norm()`: Frobenius norm (sqrt of sum of squares). | `matrix.rs` | 15 min | — |
+| **M5b** | `cross(a, b)` and `dot(a, b)` for 3-element column vectors. | `matrix.rs` | 20 min | — |
+| **M5c** | `Matrix::hstack(&[Matrix])` and `Matrix::vstack(&[Matrix])`. | `matrix.rs` | 20 min | — |
+| **M5d** | `Matrix::is_symmetric()`, `is_square()`. | `matrix.rs` | 15 min | — |
+| **M5e** | Tests for LU, QR, RREF, nullspace, norm, cross, dot | `tests/test_matrix_decomp.rs` | 30 min | M3a–M5d |
+
+#### Wave F — Rust Code Generation (~2 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **G1a** | `Ex::to_rust_fn(name, args)` → `String` of a Rust function body. Run CSE first, emit `let` bindings, emit return. Handle: +, -, *, /, pow, all trig, exp, ln, abs, sqrt. | new `src/codegen.rs` | 75 min | — |
+| **G1b** | Wire `codegen.rs` into `lib.rs`, `arena.rs`, `expr.rs`. Add `Ex::to_rust_fn()` public method. | `lib.rs`, `arena.rs`, `expr.rs` | 15 min | G1a |
+| **G1c** | Tests: generate Rust source, compile+eval at runtime (or just check string output) | `tests/test_codegen.rs` | 30 min | G1a–G1b |
+
+#### Wave G — Symbolic Sum & Product (~3 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **C1a** | Add `Sum` ExprNode variant: `Sum(body, var, lower, upper)` — 4-child node. Update all match arms. Display: `Sum(body, var=lower..upper)`. | `node.rs` + 12 files | 60 min | — |
+| **C1b** | `Sum::doit()`: evaluate finite sums by substituting `var=lower, lower+1, ..., upper` and summing. Leave infinite sums unevaluated. | `eval.rs` or new `src/concrete.rs` | 45 min | C1a |
+| **C1c** | `diff(Sum) = Sum(diff(body))`: linearity of differentiation through sums. | `diff.rs` | 15 min | C1a |
+| **C2a** | Add `Product_` ExprNode variant (same structure as Sum). Update all match arms. | `node.rs` + 12 files | 45 min | — |
+| **C2b** | `Product::doit()`: finite products by substitution and multiplying. | `eval.rs` or `concrete.rs` | 30 min | C2a |
+| **C2c** | Tests for Sum and Product: finite sums, known identities, diff, display | `tests/test_concrete.rs` | 30 min | C1a–C2b |
+
+#### Wave H — Set Types (Tier 1 architecture, ~6 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **T1a** | Define `SetValued` sort marker. Add `Expr<SetValued>` (= `SetEx`). Add `EmptySet`, `UniversalSet` ExprNode atoms. Add sort to phantom type system. | `expr.rs`, `node.rs` | 60 min | — |
+| **T1b** | Add `FiniteSet(SmallVec<[ExprId; 4]>)` ExprNode variant. Constructor from a list of elements. Canonicalize: sort + dedup. | `node.rs`, `canon.rs` | 45 min | T1a |
+| **T1c** | Add `Interval(lower, upper, left_open, right_open)` ExprNode variant. Display: `[a, b]`, `(a, b)`, etc. | `node.rs`, `display.rs` | 45 min | T1a |
+| **T1d** | Add `SetUnion(SmallVec<[ExprId; 4]>)` and `SetIntersection(SmallVec<[ExprId; 4]>)` variants. Canon: flatten, sort, dedup, identity/annihilator rules (LatticeOp pattern). | `node.rs`, `canon.rs` | 60 min | T1a |
+| **T1e** | Add `SetComplement(set, universe)` variant. | `node.rs` | 20 min | T1a |
+| **T1f** | Pre-intern singleton sets: `Reals`, `Integers`, `Rationals`, `Naturals`, `Complexes`. Add accessor methods on `Context`. | `arena.rs`, `context.rs` | 30 min | T1a |
+| **T1g** | Update all match arms (walk, sort_key, display, tree, eval, expand, pattern) for new set variants. | 10+ files | 45 min | T1a–T1f |
+| **T1h** | Tests for set construction, display, membership, union/intersection canonicalization | `tests/test_sets.rs` | 45 min | T1a–T1g |
+
+#### Wave I — Inequality Solving + solveset (~4 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **V3a** | `solve_poly_inequality(expr, var)`: find roots, test sign in each interval, return `Union` of `Interval`s. | new `src/inequalities.rs` | 75 min | T1a–T1g |
+| **V3b** | `solve_rational_inequality`: decompose `numer/denom`, solve each, intersect/union. | `inequalities.rs` | 45 min | V3a |
+| **V3c** | `reduce_inequalities(exprs, var)`: dispatch to poly or rational solver. | `inequalities.rs` | 30 min | V3a–V3b |
+| **V3d** | Wire into `Ex::solve_inequality(var)` public method returning `SetEx`. | `expr.rs`, `arena.rs` | 20 min | V3c |
+| **V3e** | `Ex::solveset(var)`: wraps existing `solve` but returns `FiniteSet` instead of `Vec`. | `expr.rs` | 30 min | T1b |
+| **V3f** | Tests for inequality solving: `x² > 4`, `1/x < 0`, `(x-1)(x+2) ≥ 0` | `tests/test_inequalities.rs` | 30 min | V3a–V3e |
+
+#### Wave J — Special Functions Tier 1: Gamma & Error (~4 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **S1a** | Add `Gamma` ExprNode variant. Eval: `Gamma(n) = (n-1)!` for positive integers. Diff: `Gamma(x) * digamma(x)`. Display: `Gamma(x)`. Update 12 match files. | `node.rs` + 12 files | 60 min | — |
+| **S1b** | Add `LogGamma` variant. `ln(Gamma(x))`. Diff: `digamma(x)`. | `node.rs` + 12 files | 30 min | S1a |
+| **S1c** | Add `Digamma` variant. `ψ(x) = Gamma'(x)/Gamma(x)`. Eval for positive integers: `ψ(n) = -γ + Σ(1/k, k=1..n-1)`. | `node.rs` + 12 files | 30 min | S1a |
+| **S1d** | Add `Beta(a, b)` variant: `Gamma(a)*Gamma(b)/Gamma(a+b)`. Eval for positive integers. | `node.rs` + 12 files | 30 min | S1a |
+| **S2a** | Add `Erf` and `Erfc` variants. `erf(x) = 2/√π · ∫₀ˣ e^{-t²} dt`. Eval: `erf(0)=0`, `erf(∞)=1`. Diff: `2/√π · e^{-x²}`. `erfc(x) = 1 - erf(x)`. | `node.rs` + 12 files | 60 min | — |
+| **S2b** | Wire gamma/beta/erf into `expr.rs` methods: `Ex::gamma()`, `Ex::erf()`, `Ex::erfc()`, `Ex::beta(&other)`, `Ex::digamma()` | `expr.rs` | 20 min | S1a–S2a |
+| **S2c** | Tests for gamma, beta, erf: eval at known values, diff, simplification | `tests/test_special_funcs.rs` | 30 min | S1a–S2b |
+
+#### Wave K — Simplification Depth (~3 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **R1a** | `trigsimp()`: dedicated trig simplification (beyond pattern rules). Try Pythagorean replacements exhaustively, double-angle formulas. | new `src/trigsimp.rs` | 60 min | — |
+| **R1b** | `powsimp()`: combine `x^a * x^b → x^(a+b)` for symbolic exponents (beyond current numeric-only merging in canon). | new `src/powsimp.rs` | 45 min | — |
+| **R1c** | `powdenest()`: `(x^a)^b → x^(a*b)` for symbolic exponents with appropriate assumption guards. | `powsimp.rs` | 30 min | R1b |
+| **R2a** | `expand_power_exp()`: `x^(a+b) → x^a * x^b`. New expand variant. | `expand.rs` | 20 min | — |
+| **R2b** | `expand_power_base()`: `(x*y)^n → x^n * y^n`. New expand variant. | `expand.rs` | 20 min | — |
+| **R6a** | `rewrite(target)` protocol: `sin(x).rewrite_as_exp()` → `(exp(ix) - exp(-ix))/(2i)`. Table of trig↔exp, trig↔hyp conversions. | new `src/rewrite.rs` | 60 min | — |
+| **R6c** | Tests for trigsimp, powsimp, expand variants, rewrite | `tests/test_simp_depth.rs` | 30 min | R1a–R6a |
+
+#### Wave L — Polynomial Depth (~6 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **P1a** | Square-free factorization: `sqf(poly)` → list of `(factor, multiplicity)`. Uses GCD with derivative. | `poly.rs` | 60 min | — |
+| **P1b** | Berlekamp's algorithm for factoring over `GF(p)`. | new `src/berlekamp.rs` | 90 min | — |
+| **P1c** | Hensel lifting: lift factorization from `GF(p)` to `ℤ`. | `berlekamp.rs` or new `src/hensel.rs` | 90 min | P1b |
+| **P1d** | Wire full factoring into `Poly::factor()` and `Ex::factor()`. | `poly.rs`, `polybridge.rs` | 30 min | P1a–P1c |
+| **P3a** | `resultant(f, g)`: compute via subresultant PRS or Euclidean GCD. | `poly.rs` | 45 min | — |
+| **P3b** | `discriminant(f)`: `resultant(f, f') / leading_coeff`. | `poly.rs` | 15 min | P3a |
+| **P5a** | `real_roots(poly)`: Sturm sequence-based real root isolation. | `poly.rs` | 60 min | — |
+| **P5d** | `sturm(poly)`: compute the Sturm sequence. Count sign changes for root counting. | `poly.rs` | 45 min | — |
+| **P7a** | `horner(poly, var)`: rewrite in Horner form for efficient evaluation. | `polybridge.rs` | 20 min | — |
+| **P7b** | `interpolate(points)`: Lagrange interpolation. | `poly.rs` | 30 min | — |
+| **P7c** | Tests for sqf, full factor, resultant, discriminant, real_roots, horner, interpolate | `tests/test_poly_depth.rs` | 30 min | P1a–P7b |
+
+#### Wave M — Vector Calculus (~3 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **W1a** | `gradient(f, [x, y, z])`: returns column `Matrix` of partial derivatives. | `matrix.rs` or new `src/vector.rs` | 30 min | — |
+| **W1b** | `divergence(F, [x, y, z])`: `∂F₁/∂x + ∂F₂/∂y + ∂F₃/∂z`. Takes `Matrix` (3×1). | `vector.rs` | 20 min | — |
+| **W1c** | `curl(F, [x, y, z])`: `∇ × F`. Returns `Matrix` (3×1). | `vector.rs` | 30 min | — |
+| **W1d** | `laplacian(f, [x, y, z])`: `∇²f = div(grad(f))`. | `vector.rs` | 15 min | W1a, W1b |
+| **W1e** | Tests for gradient, divergence, curl, laplacian with known vector fields | `tests/test_vector_calc.rs` | 30 min | W1a–W1d |
+
+#### Wave N — Logic Connectives (~2 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **B1a** | Add `Xor(SmallVec)` ExprNode variant. Canon: flatten, sort, dedup, cancel pairs. | `node.rs`, `canon.rs` + matches | 30 min | — |
+| **B1b** | Add `Implies(ExprId, ExprId)` variant. Canon: `Implies(a,b) = Or(Not(a), b)`. Or keep as node with eval. | `node.rs` + matches | 20 min | — |
+| **B1c** | Add `Equivalent(ExprId, ExprId)` variant: `a ↔ b = And(Implies(a,b), Implies(b,a))`. | `node.rs` + matches | 15 min | B1b |
+| **B1d** | `Nand` and `Nor` as convenience methods: `a.nand(b) = (a & b).not()`. No new nodes. | `expr.rs` | 10 min | — |
+| **B1e** | Tests for Xor, Implies, Equivalent, Nand, Nor | `tests/test_logic_ext.rs` | 30 min | B1a–B1d |
+
+#### Wave O — Complex Number Functions (~1.5 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **F6a** | `arg(z)` method: `atan2(im(z), re(z))`. `conjugate()` method: `re(z) - i*im(z)`. Both as convenience methods on `Ex`. | `expr.rs` | 30 min | — |
+| **F6b** | Tests for arg, conjugate at known points | `tests/test_complex_ext.rs` | 20 min | F6a |
+
+#### Wave P — Solver Utilities (~2 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **V1a** | `checksol(expr, var, val)`: substitute and check if result is zero. Public `Ex::check_solution(var, val) → bool`. | `expr.rs` | 20 min | — |
+| **V5a** | `classify_ode(expr, func, var)`: return which ODE type matches (separable, linear, 2nd-order CC). | `ode.rs` | 30 min | — |
+| **V5b** | `checkodesol(ode, sol, func, var)`: substitute solution back and verify. | `ode.rs` | 30 min | — |
+| **V5c** | Tests for checksol, classify_ode, checkodesol | `tests/test_solver_utils.rs` | 20 min | V1a–V5b |
+
+#### Wave Q — Missing Assumption Convenience Methods (~30 min total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **A1a** | Add `is_even()`, `is_odd()`, `is_prime()`, `is_composite()`, `is_algebraic()`, `is_transcendental()`, `is_irrational()`, `is_hermitian()` query methods on `Ex`. These just call `self.query(Props::EVEN)` etc. | `expr.rs` | 20 min | — |
+| **A1b** | Tests for new query methods | `tests/test_assume_queries.rs` | 10 min | A1a |
+
+#### Wave R — Combinatorial Functions (~2 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **F7a** | `subfactorial(n)` and `factorial2(n)` (double factorial) via `Apply` nodes + eval rules | `eval.rs` | 30 min | — |
+| **F7b** | `rising_factorial(x, n)` and `falling_factorial(x, n)` as `Apply` + eval | `eval.rs` | 30 min | — |
+| **F8a** | `fibonacci(n)` and `lucas(n)`: iterative computation for integer n | `eval.rs` | 20 min | — |
+| **F8b** | `bernoulli(n)` and `harmonic(n)` numbers | `eval.rs` | 20 min | — |
+| **F8c** | `catalan(n)` and `bell(n)` numbers | `eval.rs` | 15 min | — |
+| **F8d** | `euler_number(n)` | `eval.rs` | 10 min | — |
+| **F8e** | Tests for all combinatorial functions at known values | `tests/test_combinatorial.rs` | 30 min | F7a–F8d |
+
+#### Wave S — Heaviside, DiracDelta, LambertW (~1.5 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **F9a** | Add `Heaviside` and `DiracDelta` as `Apply` nodes. Eval: `Heaviside(x>0)=1`, `Heaviside(x<0)=0`. DiracDelta diff and integrate rules. | `eval.rs`, `integrate.rs` | 45 min | — |
+| **F3a** | Add `LambertW` as `Apply` node. Eval: `LambertW(0)=0`, `LambertW(e)=1`. Diff: `LambertW(x)/(x*(1+LambertW(x)))`. | `eval.rs`, `diff.rs` | 30 min | — |
+| **F9b** | Tests | `tests/test_special_elem.rs` | 15 min | F9a, F3a |
+
+#### Wave T — Series & Concrete Extensions (~2 hrs total)
+
+| Chunk | Description | File(s) | Time | Deps |
+|-------|-------------|---------|------|------|
+| **L1a** | Add `Order` (big-O) ExprNode: `O(x^n)` term for series truncation. Display: `O(x^n)`. Arithmetic: `O(x^a) + O(x^b) = O(x^min(a,b))`. | `node.rs`, `canon.rs` | 60 min | — |
+| **L2a** | `residue(expr, var, point)`: coefficient of `(x-a)^(-1)` in Laurent series. Uses `series()` with negative order. | `series.rs` or new `src/residue.rs` | 30 min | — |
+| **L3a** | `fourier_series(f, var, interval, n_terms)`: compute Fourier coefficients `a_n = 2/L · ∫f·cos(nπx/L)dx`, `b_n = 2/L · ∫f·sin(nπx/L)dx` using existing `definite_integral`. | new `src/fourier.rs` | 45 min | — |
+| **L5a** | Tests for Order, residue, fourier_series | `tests/test_series_ext.rs` | 15 min | L1a–L3a |
 
 ---
 
-### Tier 3 — Domain-specific features (nice to have, not blocking adoption)
+### Execution Order — Dependency Graph
 
-| # | Feature | SymPy equivalent | Effort |
-|---|---------|-----------------|--------|
-| 28 | Geometry engine (Point, Line, Circle, Polygon) | `sympy.geometry` | 20 hr |
-| 29 | Combinatorics / group theory | `sympy.combinatorics` | 40 hr |
-| 30 | Number theory (primality, factorization, modular) | `sympy.ntheory` | 30 hr |
-| 31 | Statistics / probability distributions | `sympy.stats` | 40 hr |
-| 32 | Physics packages (mechanics, quantum, units) | `sympy.physics` | 100+ hr |
-| 33 | Plotting (2D/3D, text-mode) | `sympy.plotting` | 20 hr |
-| 34 | Differential geometry (manifolds, curvature) | `sympy.diffgeom` | 30 hr |
-| 35 | Multi-format parser (LaTeX→Ex, Mathematica→Ex) | `sympy.parsing` | 15 hr |
-| 36 | Risch integration algorithm | `sympy.integrals.risch` | 60 hr |
-| 37 | Bessel / hypergeometric / elliptic functions | `sympy.functions.special` | 20 hr |
-| 38 | Formal power series / Padé approximants | `sympy.series.formal`, `approximants` | 8 hr |
-| 39 | Residues (complex analysis) | `sympy.series.residues` | 4 hr |
-| 40 | Diophantine equation solving | `sympy.solvers.diophantine` | 15 hr |
+```text
+INDEPENDENT (can run in any order):
+  Wave A (reciprocal trig)         ~3 hrs   files: expr.rs, eval.rs, tests/
+  Wave B (floor/ceil/min/max)      ~4 hrs   files: node.rs + 12, tests/
+  Wave C (cubic/quartic)           ~4 hrs   files: solve.rs, tests/
+  Wave F (Rust codegen)            ~2 hrs   files: new codegen.rs, tests/
+  Wave K (simplification depth)    ~3 hrs   files: new trigsimp/powsimp/rewrite.rs, expand.rs, tests/
+  Wave N (logic connectives)       ~2 hrs   files: node.rs, canon.rs, expr.rs, tests/
+  Wave O (complex functions)       ~1.5 hrs files: expr.rs, tests/
+  Wave P (solver utilities)        ~2 hrs   files: expr.rs, ode.rs, tests/
+  Wave Q (assumption methods)      ~0.5 hrs files: expr.rs, tests/
+  Wave R (combinatorial funcs)     ~2 hrs   files: eval.rs, tests/
+  Wave S (Heaviside/LambertW)      ~1.5 hrs files: eval.rs, integrate.rs, diff.rs, tests/
+  Wave T (series extensions)       ~2 hrs   files: node.rs, series.rs, new fourier.rs, tests/
 
----
+AFTER Wave C:
+  Wave D (matrix inv + eigen)      ~4 hrs   files: matrix.rs, tests/
 
-### Recommended sprint order
+AFTER Wave D:
+  Wave E (matrix decompositions)   ~4 hrs   files: matrix.rs, tests/
 
-**Sprint 1 — "Minimum Viable CAS Parity"** (items 1–6, 8, 13)
-Low-risk, high-reward additions. No architectural changes. All additive.
-- LaTeX output, sec/csc/cot, floor/ceiling, Min/Max
-- Cubic formula, matrix inverse, Rust codegen
-- *~22 hours, no breaking changes*
+AFTER Waves B + N:
+  Wave G (Sum/Product nodes)       ~3 hrs   files: node.rs, eval.rs, diff.rs, tests/
 
-**Sprint 2 — "Polynomial Completeness + Eigenvalues"** (items 5–7)
-Complete polynomial solving through degree 4. Unlock eigenvalues.
-- Quartic formula (requires cubic from Sprint 1)
-- Eigenvalues/eigenvectors 2×2 and 3×3
-- *~11 hours, requires Sprint 1 cubic*
+AFTER Wave G:
+  Wave H (Set types)               ~6 hrs   files: expr.rs, node.rs, canon.rs, arena.rs, + 10, tests/
 
-**Sprint 3 — "Sets + Inequality Foundation"** (items 9–12, 14)
-Biggest architectural change. New phantom sort, new ExprNode variants.
-- Set types, `Expr<SetValued>`, solveset
-- Inequality solving, symbolic Sum/Product
-- *~24 hours, architectural*
+AFTER Wave H:
+  Wave I (inequalities + solveset) ~4 hrs   files: new inequalities.rs, expr.rs, tests/
 
-**Sprint 4 — "Special Functions + Transforms"** (items 15–20)
-Unlock physics/engineering. Special functions, Laplace, vector calc.
-- gamma/beta/erf, Laplace transform
-- Vector calculus, matrix decompositions
-- *~27 hours*
+AFTER Wave B:
+  Wave J (gamma + erf)             ~4 hrs   files: node.rs + 12, expr.rs, tests/
 
-### SymPy module coverage projection
+AFTER Waves A + E:
+  Wave M (vector calculus)         ~3 hrs   files: new vector.rs, matrix.rs, tests/
 
-| SymPy module | Current | After Sprint 1 | After Sprint 3 | After Sprint 4 |
-|---|---|---|---|---|
-| `core` | 🟢 90% | 🟢 95% | 🟢 95% | 🟢 95% |
-| `calculus` | 🟡 60% | 🟡 60% | 🟡 65% | 🟢 75% |
-| `integrals` | 🟡 50% | 🟡 50% | 🟡 50% | 🟡 60% |
-| `solvers` | 🟡 40% | 🟡 55% | 🟢 70% | 🟢 75% |
-| `series` | 🟢 70% | 🟢 70% | 🟢 75% | 🟢 80% |
-| `simplify` | 🟡 50% | 🟡 55% | 🟡 60% | 🟡 65% |
-| `functions` | 🔴 15% | 🟡 25% | 🟡 30% | 🟡 45% |
-| `matrices` | 🟡 40% | 🟡 55% | 🟡 55% | 🟢 70% |
-| `sets` | 🔴 0% | 🔴 0% | 🟢 70% | 🟢 70% |
-| `logic` | 🟡 50% | 🟡 50% | 🟡 50% | 🟡 50% |
-| `polys` | 🟡 30% | 🟡 35% | 🟡 35% | 🟡 35% |
-| `concrete` | 🔴 0% | 🔴 0% | 🟡 40% | 🟡 40% |
-| `vector` | 🔴 0% | 🔴 0% | 🔴 0% | 🟡 60% |
-| `printing` | 🔴 5% | 🟡 30% | 🟡 35% | 🟡 40% |
-| `codegen` | 🟡 20% | 🟡 40% | 🟡 40% | 🟡 40% |
+AFTER Waves H + L:
+  Wave L (polynomial depth)        ~6 hrs   files: poly.rs, new berlekamp.rs, tests/
+```
+
+### Total effort estimate
+
+| Category | Chunks | Hours |
+|----------|--------|-------|
+| Elementary functions (Waves A, B, O, R, S) | 25 | ~12 |
+| Cubic/quartic solving (Wave C) | 3 | ~4 |
+| Matrix/linalg (Waves D, E) | 14 | ~8 |
+| Code generation (Wave F) | 3 | ~2 |
+| Simplification depth (Wave K) | 7 | ~3 |
+| Logic connectives (Wave N) | 5 | ~2 |
+| Solver utilities (Wave P) | 4 | ~2 |
+| Assumption queries (Wave Q) | 2 | ~0.5 |
+| Sum/Product (Wave G) | 6 | ~3 |
+| Set types (Wave H) | 8 | ~6 |
+| Inequality solving (Wave I) | 6 | ~4 |
+| Special functions (Wave J) | 7 | ~4 |
+| Series extensions (Wave T) | 4 | ~2 |
+| Polynomial depth (Wave L) | 11 | ~6 |
+| Vector calculus (Wave M) | 5 | ~3 |
+| **Total** | **110 chunks** | **~61.5 hrs** |
+
+### Coverage projection after all waves
+
+| SymPy module | Current | After all waves |
+|---|---|---|
+| `core` | 🟢 90% | 🟢 98% |
+| `calculus` | 🟡 60% | 🟢 80% |
+| `integrals` | 🟡 50% | 🟡 55% |
+| `solvers` | 🟡 40% | 🟢 75% |
+| `series` | 🟢 70% | 🟢 85% |
+| `simplify` | 🟡 50% | 🟢 75% |
+| `functions.elementary` | 🟡 35% | 🟢 85% |
+| `functions.special` | 🔴 0% | 🟡 25% |
+| `functions.combinatorial` | 🔴 10% | 🟡 60% |
+| `matrices` | 🟡 40% | 🟢 80% |
+| `sets` | 🔴 0% | 🟢 70% |
+| `logic` | 🟡 50% | 🟢 75% |
+| `polys` | 🟡 30% | 🟡 55% |
+| `concrete` | 🔴 0% | 🟡 50% |
+| `vector` | 🔴 0% | 🟡 60% |
+| `codegen` | 🟡 20% | 🟡 50% |
 
 ### Strategic context
 
@@ -1422,15 +1883,16 @@ Symplex is the only MIT/Apache-2.0 general-purpose CAS in Rust. The likely early
 adopters want to **derive a formula symbolically, then compile it to fast numerical
 code**. This differs from SymPy users who stay in the symbolic world.
 
-The recommended sprint order optimizes for this use case:
-1. Sprint 1 delivers **LaTeX** (for documentation) + **Rust codegen** (for compilation) + **trig completeness**
-2. Sprint 2 delivers **polynomial completeness** (cubic/quartic) + **eigenvalues**
-3. Sprint 3 delivers **sets** (the foundation for a modern solver API)
-4. Sprint 4 delivers **special functions** + **transforms** (physics/engineering)
+The chunk plan optimizes for this use case:
+- Waves A–C deliver **trig completeness** + **polynomial completeness** (cubic/quartic)
+- Waves D–E deliver **full linear algebra** (eigenvalues, LU, QR, inverse)
+- Wave F delivers **Rust code generation** (the bridge to numerical code)
+- Waves G–I deliver **sets + sums + inequality solving** (modern CAS foundation)
+- Waves J–T deliver **special functions + vector calculus + polynomial depth**
 
-After all 4 sprints, symplex would cover the core needs of robotics engineers,
-physics students, and numerical algorithm developers — the three most likely
-early-adopter groups for a Rust CAS.
+After all 15 waves (~61.5 hours), symplex would cover the core needs of robotics
+engineers, physics students, and numerical algorithm developers — the three most
+likely early-adopter groups for a Rust CAS.
 
 ## File Layout
 
