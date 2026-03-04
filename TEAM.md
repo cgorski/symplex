@@ -15,6 +15,14 @@ This document records the simulated expert panel that guided the design and impl
 > 5 critical bug fixes (smart_simplify GCD, pow_pow guard, asin_sin removal, acosh_cosh abs,
 > by-parts recursion), together() polynomial LCM, expand_trig sin(nx), 2 new simplification
 > rules, condition-guarded rules, 30 bc-verified parser tests, 5 concurrency tests, fuzz target.
+>
+> **Gruntz + cross-validation session:** 94 commits, 54,240 total lines, 2,425 tests.
+> Key additions: Complete Gruntz algorithm for limits at infinity (~1500 lines),
+> 263-fixture SymPy cross-validation (252 pass, 0 fail), arbitrary-precision parser
+> (BigInt/Ratio tokens), canon_pow Pow(Pow(a,b),c) flattening, comprehensive tracing
+> instrumentation (6 modules), ExprView compile-time deadlock prevention, 24 condition-
+> guarded simplification rules, LIATE-ordered integration by parts with depth limit,
+> function-expansion-as-series for Laurent-like leadterm extraction.
 
 ---
 

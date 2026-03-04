@@ -5,7 +5,7 @@ Symbolic mathematics library for Rust.
 ## Features
 
 - **Type-safe expression system** — `Expr<Numeric>` (aliased `Ex`) and `Expr<Boolean>` (aliased `BoolEx`) prevent mixing boolean and numeric expressions at compile time
-- **Expression building** — operator overloading (`+`, `-`, `*`, `/`, unary `-`), method chaining (`.pow()`, `.sin()`, `.diff()`), automatic canonicalization (flatten, sort, combine like terms)
+- **Expression building** — operator overloading (`+`, `-`, `*`, `/`, unary `-`), method chaining (`.pow()`, `.sin()`, `.diff()`), automatic canonicalization (flatten, sort, combine like terms, `Pow(Pow(a,b),c)→Pow(a,b*c)` for integer exponents — matching SymPy)
 - **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax with constants (`pi`, `E`, `I`) and rationals (`1/2`); `rule!(arena, "name", LHS => RHS)` for rewrite rules; `matrix!` and `eq!` for matrices and equations
 - **Boolean expressions** — relational comparisons (`>`, `<`, `>=`, `<=`, `==`, `!=`), logical connectives (`and`, `or`, `not`), `True`/`False` atoms
 - **Piecewise functions** — `Piecewise(value if condition, ...)` with differentiation and condition evaluation
@@ -13,7 +13,7 @@ Symbolic mathematics library for Rust.
 - **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
 - **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts (LIATE-ordered with recursion depth limit), u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals, inverse trig antiderivatives (asin, acos, atan), general linear substitution (ax+b)^n, expand-then-integrate fallback
 - **Taylor series** — expansion around any point with configurable order and pole detection
-- **Limits** — direct substitution, L'Hôpital's rule (0/0 and ∞/∞), series fallback
+- **Limits** — direct substitution, L'Hôpital's rule (0/0 and ∞/∞), series fallback, Gruntz algorithm for limits at infinity (exponential, logarithmic, polynomial growth rates)
 - **Equation solving** — polynomial (linear, quadratic, higher-degree via rational root theorem), complex roots, linear systems (Gaussian elimination), numerical root finding (Newton's method), transcendental equations via inversion peeling (exp, ln, sin, cos, tan, sqrt) with change-of-variable, Mul-factor solving
 - **Simplification** — 24 rewrite rules with condition guards (Pythagorean, inverse pairs, exp combining, exp-log denesting, trig ratios, abs-positive) with sub-expression matching in Add and Mul, fixpoint iteration via `full_simplify()`, multi-strategy `smart_simplify()`
 - **Algebraic manipulation** — expand, factor, collect, together, cancel, partial fractions (`apart`), trig expansion (`expand_trig`), log expansion (`expand_log`), logcombine
@@ -32,8 +32,9 @@ Symbolic mathematics library for Rust.
 - **Polynomial algebra** — dense univariate over ℚ, arithmetic, Euclidean GCD/LCM, degree, coefficients
 - **Serde serialization** — `ExprTree` for JSON interchange with round-trip support
 - **Runtime parser** — `symplex::parse::parse(&ctx, "x^2 + 1")` for REPL and dynamic construction
-- **Arbitrary-precision parser** — `symplex::parse::parse` handles integers and decimals of any size as exact `Ratio<BigInt>`, with recursion depth protection — `0.1 + 0.2 = 3/10` exactly
-- **Zero-cost tracing** — diagnostic logging via the `tracing` crate
+- **Arbitrary-precision parser** — `symplex::parse::parse` lexes integers and decimals of any size into `BigInt`/`Ratio` tokens, with recursion depth protection — `0.1 + 0.2 = 3/10` exactly
+- **Tracing** — zero-cost `tracing` instrumentation throughout all core operations (simplification rules, integration strategies, limit algorithm steps, canonicalization). Enable with `RUST_LOG=symplex=debug`.
+- **Gruntz algorithm** — the gold standard for computing symbolic limits at infinity, handling `exp(-x)→0`, `ln(x)/x→0`, `x·exp(-x)→0`, and all elementary exp-log functions
 - **Thread safety** — `Ex` is `Send + Sync`; the arena uses `parking_lot::RwLock`
 
 ## Quick Start
@@ -389,6 +390,7 @@ what symplex has and what's missing.
 | Compiled lambdify | Bytecode VM, not interpreted |
 | Arbitrary-precision parser | `0.1 + 0.2 = 3/10` exactly — no floating-point |
 | Type-safe ExprView | `replace()` closure gets non-locking view — deadlock impossible at compile time |
+| Gruntz algorithm in Rust | First Rust implementation of the Gruntz limit algorithm |
 
 ### Core features
 
@@ -415,7 +417,7 @@ what symplex has and what's missing.
 | Integration (completing square) | ✅ | ✅ | |
 | Taylor/Maclaurin series | ✅ | ✅ | symplex: known-coefficient fast paths |
 | Limits (L'Hôpital, series) | ✅ | ✅ | |
-| Limits at infinity | ✅ basic | ✅ Gruntz | SymPy more robust |
+| Limits at infinity | ✅ Gruntz | ✅ Gruntz | symplex: Gruntz algorithm; SymPy: also Gruntz |
 | Definite integrals | ✅ basic | ✅ full | SymPy handles improper integrals |
 | Risch algorithm | ❌ | ✅ | Not planned |
 | Integral transforms (Laplace, Fourier) | ❌ | ✅ | Future |
@@ -501,6 +503,8 @@ All dependencies are MIT or Apache-2.0 licensed. No C bindings. No LGPL.
 | `serde` / `serde_json` | Serialization |
 | `tracing` | Zero-cost diagnostic logging |
 | `symplex-macros` | Proc macros (`expr!`, `rule!`) |
+| `tracing-subscriber` | *(dev)* Subscriber for log output with env-filter |
+| `tracing-test` | *(dev)* Test harness for tracing assertions |
 
 ## Dependencies Policy
 

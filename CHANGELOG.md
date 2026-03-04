@@ -216,3 +216,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Testing: Parser fuzz target (`fuzz/fuzz_targets/fuzz_parser.rs`)
 - Testing: 30 bc-verified arbitrary-precision parser tests
 - Dev-dependencies: added `trybuild`, `static_assertions`
+
+**Gruntz Algorithm for Limits at Infinity**
+- Complete implementation of the Gruntz algorithm (~1500 lines in `gruntz.rs`)
+- MRV (Most Rapidly Varying) set computation with SubsSet tracking
+- Expression rewriting in terms of ω → 0 with dependency-ordered substitutions
+- Leading term extraction: structural + function-expansion-as-series for Laurent-like expressions
+- Growth rate comparison via mutual recursion (limitinf ↔ compare)
+- Sign determination with base cases for x, exp, polynomial powers
+- Handles all elementary exp-log functions: `exp(-x)→0`, `ln(x)/x→0`, `x·exp(-x)→0`
+- Gruntz is primary for limits at infinity; L'Hôpital remains primary for finite points
+- 18 unit tests covering polynomial, exponential, logarithmic, and finite-point limits
+
+**Canonicalization: Pow Flattening**
+- `canon_pow` now flattens `Pow(Pow(a,b),c) → Pow(a,b*c)` for integer exponents
+- Matches SymPy's auto-simplification at construction time
+- Critical for Gruntz algorithm: ensures `1/(1/x) = x`
+- `(x²)³ = x⁶` at construction time (was staying as `(x²)³`)
+
+**SymPy Cross-Validation (263 fixtures)**
+- Comprehensive cross-validation against SymPy 1.14.0
+- 37 categories: diff (59), integrate (34), definite_integral (15), simplify (21),
+  expand (14), solve (23), eval (15), series (10), limit (15), matrix (22),
+  algebra (28), evalf (4), special_func (3)
+- All comparisons are numerical (evaluate at same points, compare within tolerance)
+- Parser accepts SymPy syntax natively (`**` for power, `Abs()`, `log()`)
+- 252 pass, 0 fail, 2 not-implemented, 9 no-API
+- scripts/generate_sympy_fixtures.py generates fixtures from SymPy
+- tests/fixtures/sympy_cross_validation.json checked into repo
+
+**Tracing Instrumentation**
+- Added comprehensive tracing to 6 modules: pattern.rs, simplify_engine.rs,
+  integrate.rs, limit.rs, gruntz.rs, canon.rs
+- Enable with `RUST_LOG=symplex=debug` or per-module (e.g., `symplex::gruntz=trace`)
+- Gruntz tracing shows expression values, MRV sets, rewrite steps, leadterm extraction
+- Pattern tracing shows rule firings and sub-expression matches
+- Integration tracing shows strategy selection and LIATE ordering
+- Added `tracing-subscriber` and `tracing-test` as dev-dependencies

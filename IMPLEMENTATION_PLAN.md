@@ -17,8 +17,8 @@ This document describes the architecture, design decisions, module responsibilit
 
 ### Codebase at a glance
 
-- **48,538 total lines** across 45 source modules, 47 test files, 2 examples, 1 benchmark
-- **2,352 tests** — proptest (125 properties), known-answers (256), bounded exhaustive, numerical cross-validation, stress tests
+- **54,240 total lines** across 47 source modules, 50 test files, 2 examples, 1 benchmark
+- **2,425 tests** — proptest (131 properties), known-answers (256), bounded exhaustive, numerical cross-validation, SymPy cross-validation (252/263), stress tests
 - **46 ExprNode variants** including 11 boolean/logic/piecewise (added in 0.2.0)
 - **Phantom-typed expression handles** — `Expr<Numeric>` (aliased `Ex`) and `Expr<Boolean>` (aliased `BoolEx`)
 
@@ -49,6 +49,10 @@ Each layer only calls downward. No circular dependencies.
 5. **Pattern rewriting** — 23 simplification rules in `basic_rules()`. Sub-expression matching in both Add and Mul nodes. Rules can have conditions (`condition: Option<fn(&Arena, &Substitution) -> bool>`).
 
 6. **Smart simplify** — `simplify_engine.rs` tries 7 strategies (eval, expand, factor_terms, trig_expand, logcombine, cancel) and picks the result with lowest `count_ops`.
+
+7. **Gruntz limit algorithm** — Complete implementation of Dominik Gruntz's PhD algorithm for computing limits at infinity. Handles all exp-log functions via MRV (Most Rapidly Varying) set analysis. Falls back to L'Hôpital for finite-point limits. ~1500 lines in `gruntz.rs`.
+
+8. **Comprehensive tracing** — Zero-cost `tracing` instrumentation at debug/trace levels throughout simplification (rule firings), integration (strategy selection, LIATE ordering), limits (L'Hôpital steps, Gruntz MRV/rewrite/leadterm), and smart_simplify (strategy comparison). Enable with `RUST_LOG=symplex=debug`.
 
 ### Type system architecture
 
@@ -211,7 +215,7 @@ Each layer only calls downward. There are no circular dependencies between modul
 
 ## Module Reference
 
-### Main crate: `symplex/src/` (23 modules, ~12,900 lines)
+### Main crate: `symplex/src/` (47 modules, ~34,154 lines)
 
 #### Internal modules (`pub(crate)`)
 
@@ -229,6 +233,7 @@ Each layer only calls downward. There are no circular dependencies between modul
 | `expand.rs` | 577 | Algebraic expansion. Distributes Mul over Add via incremental cross-multiplication. Expands `Pow(Add, positive_int)` via repeated multiplication. |
 | `eval.rs` | 648 | Special-value evaluation. Recognizes rational multiples of π for sin/cos/tan. Known values for exp, ln, sqrt, abs at specific points. |
 | `evalf.rs` | 758 | Arbitrary-precision numerical evaluation via `astro-float`. Converts expressions to `BigFloat` bottom-up. |
+| `gruntz.rs` | 1500 | Gruntz algorithm for limits at infinity. MRV set computation, expression rewriting in terms of ω, leading term extraction, growth rate comparison. Handles all elementary exp-log functions. |
 | `pattern.rs` | 777 | Pattern matching and rewrite-rule engine. `WildId`, `Pattern`, `match_pattern`, `instantiate`, `Rule`, `apply_rules`, `Step`. Built-in Pythagorean identity rule. |
 | `poly.rs` | 828 | Dense univariate polynomials over ℚ. Add, Sub, Neg, Mul, scale, div_rem, GCD (Euclidean, monic-normalized), eval (Horner). |
 | `polybridge.rs` | 742 | Bridge between `ExprId` and `Poly`. `expr_to_poly`, `poly_to_expr`, `as_numer_denom`, `cancel`. |
@@ -623,6 +628,7 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 | Cycles 14-18 | Equation type + eq! macro, Factorial/Binomial nodes, canonical invariant checker + canon_mul sort fix, code hardening, symbolic Matrix + matrix! macro + Jacobian, lambdify (expression→closure), CSE, ODE solver (separable/linear/2nd-order), expr! constants/rationals, rule! conditional guards |
 | 0.2.0 | Phantom type system (Expr<S: Sort>), BoolEx, relationals (Gt/Ge/Eq_/Ne), logical connectives (And/Or/Not), BoolTrue/BoolFalse atoms, Piecewise expressions, compile-time sort safety, expr! comparison/logic operators |
 | Hardening | Parser BigInt/Ratio, ExprView deadlock fix, Piecewise type-safe pairs, smart_simplify GCD fix, by-parts LIATE+depth, pow_pow/acosh_cosh/asin_sin rule corrections, together() LCM, cancel() content factors, expand_trig sin(nx), trig_combine eval pass, exp_log_denest rule, cos_div_sin rule, verify_canonical O(n), rebuild_with_cache macro, 131 proptest properties, concurrency tests, fuzz target |
+| Gruntz | Complete Gruntz algorithm for limits at infinity. MRV set computation, expression rewriting in ω, leading term extraction, function-expansion-as-series for Laurent-like expressions. Handles exp(-x)→0, ln(x)/x→0, x·exp(-x)→0. canon_pow flattening for integer exponents. 263-fixture SymPy cross-validation (252 pass, 0 fail). Comprehensive tracing instrumentation. |
 
 ---
 
@@ -633,7 +639,7 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 3. ~~**Limited complex number support.**~~ **Significantly improved** — `i²=-1` canonicalization, `(-1)^(1/2)→I`, `(-n)^(1/2)→I√n`, complex quadratic roots, Euler's formula. `evalf` still errors on complex expressions (Tier 3 deferred).
 4. ~~**No integration.**~~ **Resolved** — basic antiderivatives for polynomials, trig, exp.
 5. ~~**No series expansion.**~~ **Resolved** — Taylor series with pole detection.
-6. ~~**No limit computation.**~~ **Resolved** — limits via direct substitution, L'Hôpital's rule, and series fallback. Gruntz algorithm not implemented.
+6. ~~**No limit computation.**~~ **Resolved** — limits via direct substitution, L'Hôpital's rule, series fallback, and Gruntz algorithm for limits at infinity.
 7. ~~**solve() is polynomial-only.**~~ **Improved** — transcendental solving via inversion peeling (exp, ln, sin, cos, tan, sqrt). General transcendental equations still limited.
 8. ~~**`simplify()` has limited rules.**~~ **Improved** — 24 rules with condition guards, sub-expression matching in Add and Mul, and fixpoint iteration.
 9. **`bigint_to_bigfloat` loses precision for integers > i128.** Falls back to f64.
@@ -651,6 +657,9 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 21. ~~**`smart_simplify` could return mathematically different expressions.**~~ **Resolved** — GCD factor is now preserved.
 22. ~~**Integration by-parts could stack overflow.**~~ **Resolved** — LIATE ordering + depth limit (20).
 23. ~~**Parser limited to i64 integers.**~~ **Resolved** — arbitrary-precision BigInt/Ratio parsing.
+24. ~~**Limits at infinity couldn't be computed.**~~ **Resolved** — Gruntz algorithm handles all exp-log functions. `lim(exp(-x), x→∞) = 0`, `lim(ln(x)/x, x→∞) = 0`, `lim(x·exp(-x), x→∞) = 0`.
+25. ~~**Parser limited to i64 integers and overflowed on 19+ decimal places.**~~ **Resolved** — Parser uses `BigInt`/`Ratio<BigInt>` for all numeric tokens. `0.1 + 0.2 = 3/10` exactly.
+26. ~~**`Pow(Pow(a,b),c)` not flattened during canonicalization.**~~ **Resolved** — `canon_pow` now flattens nested integer powers. `(x²)³ = x⁶` at construction time.
 
 ---
 
@@ -825,7 +834,7 @@ abs(abs(w_)) => abs(w_)
 | F11 | **Complex numerical evaluation** — (real,imag) pair arithmetic in evalf | 8 hr | Not started (deferred) |
 | F12 | **Trig power reduction** — ∫ sin^n(x) dx recursive formula | 2 hr | Not started |
 | F13 | **General u-substitution** — SymPy-style find_substitutions | 4 hr | Not started |
-| F14 | **Limits at infinity** — dominant-term analysis for rational functions | 3 hr | Not started |
+| F14 | **Limits at infinity** — dominant-term analysis for rational functions | 3 hr | ✅ Done (Gruntz algorithm) |
 | F15 | **Series known-coefficient fast paths** — sin/cos/exp without repeated differentiation | 2 hr | Not started |
 | F16 | **Completing the square in integration** — ∫ 1/(x²+bx+c) dx | 2 hr | Not started |
 | F17 | **Vector calculus** — gradient, divergence, curl on Matrix | 3 hr | Not started |
@@ -859,15 +868,15 @@ abs(abs(w_)) => abs(w_)
 - [ ] Final API surface review — no accidental `pub` on internal types
 - [ ] Publish to crates.io
 
-### Current Statistics (Commit 86)
+### Current Statistics (Commit 94)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 2,393 passing, 0 failing, 0 warnings |
-| Source | 31,900 lines across 46 modules |
-| Tests | 17,042 lines across 49 files |
+| Tests | 2,425 passing, 0 failing, 0 warnings |
+| Source | 34,154 lines across 47 modules |
+| Tests | 18,086 lines across 50 files |
 | Macros | 1,235 lines |
-| Total lines | 50,722 |
+| Total lines | 54,240 |
 | Public methods on `Ex` | 103+ (numeric) + 6 (boolean) |
 | Public methods on `Context` | 17 |
 | Free-standing functions | 5 |
@@ -876,10 +885,164 @@ abs(abs(w_)) => abs(w_)
 | Integration forms | 30+ (LIATE-ordered by-parts) |
 | Matrix methods | 26 |
 | Factorial/Binomial | arbitrary precision (no limit) |
-| Eval special values | 86+ (all tan quadrants) |
+| Eval special values | 86+ (all tan quadrants, full unit circle) |
 | Criterion benchmarks | 30 |
 | Proptest properties | 131 |
-| Commits | 86 |
+| SymPy cross-validation | 252/263 pass (0 failures) |
+| Gruntz algorithm | Complete (~1500 lines) |
+| Tracing instrumentation | 6 modules |
+| Commits | 94 |
+
+---
+
+## Next Steps for New Contributors
+
+> **If you're reading this in a new context window**, this section tells you
+> everything you need to know to continue development.
+
+### Available Macros and Helpers
+
+**Proc macros** (in `symplex-macros/`):
+- `expr!(x^2 + sin(x))` — build expressions with natural math syntax
+- `rule!(arena, "name", LHS => RHS)` — define rewrite rules with wilds (`w_` suffix)
+- `rule!(arena, "name", LHS => RHS if condition)` — conditional rules
+- `matrix![[a, b], [c, d]]` — matrix construction
+- `eq!(x^2 = 4)` — equation construction
+
+**Note:** The `rule!` macro CANNOT be used inside `src/` files (it generates `::symplex::` paths that don't resolve within the crate). Use `unary_compose_rule()` or manual `Rule::new()` for internal rules.
+
+**Internal helpers** (in `pattern.rs`):
+- `unary_compose_rule(arena, "name", outer_fn, inner_fn, template_fn)` — build `outer(inner(w)) → template(w)` rules in one line
+- `identity(arena, w)` — template function that returns the wild unchanged (for `f(g(w)) → w`)
+
+**Test helper macros** (in `tests/test_math_rules.rs`):
+- `assert_simplifies_to!(expr, "expected")` — verify simplification result
+- `assert_simplify_unchanged!(expr)` — verify expression is NOT simplified
+- `assert_simplify_preserves_value!(expr, var, point)` — verify simplification preserves numerical value
+
+### Tracing for Debugging
+
+Enable tracing in tests:
+
+```rust
+let _ = tracing_subscriber::fmt()
+    .with_env_filter("symplex::gruntz=debug")  // or symplex=debug for everything
+    .with_test_writer()
+    .try_init();
+```
+
+Key trace targets:
+- `symplex::gruntz` — MRV sets, rewrite steps, leadterm, sign determination
+- `symplex::pattern` — rule firings, sub-expression matching
+- `symplex::simplify_engine` — strategy comparison in smart_simplify
+- `symplex::integrate` — strategy selection, LIATE ordering, depth counter
+- `symplex::limit` — form detection, L'Hôpital steps
+
+### SymPy Cross-Validation
+
+**To regenerate fixtures:**
+```bash
+cd symplex && source .venv/bin/activate
+python3 scripts/generate_sympy_fixtures.py > tests/fixtures/sympy_cross_validation.json
+```
+
+**To run cross-validation:**
+```bash
+cargo test --test test_sympy_cross_validation -- --nocapture
+```
+
+Current: 252/263 pass, 0 fail, 2 not-implemented, 9 no-API.
+
+### How to Add a New Simplification Rule
+
+1. Choose the rule identity (e.g., `sin(2w) → 2·sin(w)·cos(w)`)
+2. If it fits the `outer(inner(w)) → template(w)` pattern, use `unary_compose_rule()`:
+   ```rust
+   unary_compose_rule(arena, "my_rule", Arena::sin, Arena::asin, identity)
+   ```
+3. Otherwise, build manually in a `fn rule_xxx(arena: &mut Arena) -> Rule` function
+4. Add to `basic_rules()` in `pattern.rs`
+5. Add condition guard if needed: `r.condition = Some(|arena, bindings| { ... })`
+6. Add positive test, negative test, and numerical validation test
+
+### How to Add a New Integration Form
+
+1. In `src/integrate.rs`, find `integrate_node()`
+2. Add a match arm for the new form
+3. Return the antiderivative as an `ExprId`
+4. If the form needs u-substitution, use `linear_coeff_of()` and the existing machinery
+5. Add SymPy cross-validation fixture in `scripts/generate_sympy_fixtures.py`
+
+### Immediate Priorities (to close remaining 11 cross-validation gaps)
+
+#### 1. `∫ sec²(x) dx = tan(x)` — 30 minutes
+**File:** `src/trig_integ.rs` or `src/integrate.rs`
+**The fix:** In the trig power integration, add a case for `cos(x)^(-2)`:
+```rust
+if n == -2 {
+    // ∫ cos(x)^(-2) dx = tan(x)
+    return arena.tan(var);
+}
+```
+Also add `sin(x)^(-2) → -cot(x)` if cot exists, or `-cos(x)/sin(x)`.
+**Test:** Add to `scripts/generate_sympy_fixtures.py`, regenerate, run cross-validation.
+
+#### 2. `∫ exp(x)·sin(x) dx` — Cyclic IBP — 2 hours
+**File:** `src/integrate.rs`
+**The algorithm:** Apply IBP twice:
+1. u=exp(x), dv=sin(x)dx → v=-cos(x), du=exp(x)dx
+   Result: -exp(x)cos(x) + ∫ exp(x)cos(x)dx
+2. u=exp(x), dv=cos(x)dx → v=sin(x), du=exp(x)dx
+   Result: -exp(x)cos(x) + exp(x)sin(x) - ∫ exp(x)sin(x)dx
+3. Let I = ∫ exp(x)sin(x)dx. Then I = -exp(x)cos(x) + exp(x)sin(x) - I
+4. Solve: 2I = exp(x)(sin(x) - cos(x)), I = exp(x)(sin(x) - cos(x))/2
+
+**Implementation:** After two IBP rounds, if the remaining integral equals the original (by ExprId comparison), solve the algebraic equation.
+
+#### 3. Matrix inverse — 3 hours
+**File:** `src/matrix.rs`
+**Algorithm:** For n×n matrix A:
+- Compute det(A)
+- Compute cofactor matrix: C[i][j] = (-1)^(i+j) · det(minor(A, i, j))
+- Adjugate = C^T (transpose of cofactor matrix)
+- A^(-1) = adj(A) / det(A)
+**Implementation:** Already have `det()`. Need `minor(i, j)` (matrix with row i and col j removed) and cofactor expansion.
+
+#### 4. Matrix eigenvalues (2×2) — 2 hours
+**File:** `src/matrix.rs`
+**Algorithm:** For 2×2 matrix [[a,b],[c,d]]:
+- Characteristic polynomial: λ² - (a+d)λ + (ad-bc) = 0
+- Use existing quadratic solver
+**Implementation:** Build the characteristic polynomial symbolically, call `solve()`.
+
+### Medium-Term Priorities
+
+#### 5. Cubic formula (Cardano) — 4 hours
+**File:** `src/solve.rs`
+**Enables:** 3×3 eigenvalues, irrational cubic roots
+**Algorithm:** For x³ + px + q = 0: x = ∛(-q/2 + √(q²/4 + p³/27)) + ∛(-q/2 - √(q²/4 + p³/27))
+**Note:** Requires depressed cubic form (substitute x = t - b/(3a) to eliminate x² term)
+
+#### 6. Code generation (`to_rust_fn`) — 4 hours
+**File:** New `src/codegen.rs`
+**The idea:** Given an expression and a list of variable names, generate a Rust function body:
+```rust
+let code = expr.to_rust_fn(&["x", "y"]);
+// Returns: "pub fn f(x: f64, y: f64) -> f64 { let t0 = x*x; t0*y.sin() + x.cos() }"
+```
+**Implementation:** Run CSE first, then emit each binding as a `let` statement, emit the final return.
+
+#### 7. Simplify API consolidation
+**Current:** `simplify()` (pattern rules only), `full_simplify()` (eval+cancel+expand+rules), `smart_simplify()` (7 strategies)
+**Proposed:** Rename `smart_simplify()` → `simplify()`, rename old `simplify()` → `apply_rules()`
+**Rationale:** Users expect `simplify()` to be the "do the best you can" function, like SymPy.
+
+#### 8. `rewrite()` protocol — 4 hours
+**File:** New `src/rewrite.rs`
+**The idea:** `expr.rewrite(RewriteTarget::Exp)` converts trig to exponential form:
+- `sin(x) → (exp(ix) - exp(-ix))/(2i)`
+- `cos(x) → (exp(ix) + exp(-ix))/2`
+**Enables:** Better integration (rewrite in exp form, integrate, convert back)
 
 ---
 
@@ -1027,7 +1190,7 @@ BATCH 4 (parallel — NEW test files):
 
 | Feature | Description |
 |---------|-------------|
-| Gruntz algorithm | Robust limits at infinity |
+| ~~Gruntz algorithm~~ | ✅ **Done** (Commit 94) — ~1500 lines, handles all exp-log functions |
 | Risch integration | Decision procedure for elementary antiderivatives |
 | Hensel factoring | Full polynomial factoring over ℤ |
 | Special functions | Gamma, erf, Bessel node types |
@@ -1120,7 +1283,7 @@ Based on comprehensive comparison with SymPy's ~40 modules.
 6. **Multivariate polynomials** — needed for systems
 7. **Full polynomial factoring** (Hensel, Zassenhaus) — factor over ℤ
 8. **Eigenvalues / eigenvectors** — linear algebra courses
-9. **Gruntz algorithm** — robust limits at infinity
+9. ~~**Gruntz algorithm** — robust limits at infinity~~ ✅ **Done** (Commit 94, ~1500 lines)
 10. **Special functions** (gamma, erf, Bessel) — physics/engineering
 11. **Vector calculus** (gradient, divergence, curl) — multivariable calc
 12. **Risch/heuristic integration** — handle more integrands
