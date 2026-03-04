@@ -121,3 +121,110 @@ fn regression_as_coeff_term_roundtrip() {
         "2*a*b - 2*a*b should be zero, got: {zero}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Regressions from Phase 5 bug audit
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Regression: smart_simplify dropped the GCD factor from factor_terms.
+/// Input: 6x + 12. Strategy 4 extracted (6, x+2), simplified x+2,
+/// and returned it — losing the factor of 6.
+#[test]
+fn regression_smart_simplify_gcd_dropped() {
+    let x = symplex::var("x");
+    let expr = &(&x * 6) + 12;
+    let result = expr.smart_simplify();
+    // Must be mathematically equal to 6x + 12
+    let point = symplex::rational(7, 10);
+    let val_orig = expr.subs(&x, &point).evalf_f64().unwrap();
+    let val_result = result.subs(&x, &point).evalf_f64().unwrap();
+    assert!(
+        (val_orig - val_result).abs() < 1e-10,
+        "smart_simplify(6x + 12) changed the value: {val_orig} vs {val_result}"
+    );
+}
+
+/// Regression: smart_simplify with GCD should still simplify inner expression.
+/// Input: 2*sin(x)^2 + 2*cos(x)^2 should become 2 (not stay as-is).
+#[test]
+fn regression_smart_simplify_gcd_with_pythagorean() {
+    let x = symplex::var("x");
+    let expr = &(&x.sin().powi(2) * 2) + &(&x.cos().powi(2) * 2);
+    let result = expr.smart_simplify();
+    let result_str = format!("{result}");
+    assert_eq!(
+        result_str, "2",
+        "2sin²+2cos² should smart_simplify to 2, got: {result_str}"
+    );
+}
+
+/// Regression: integration by-parts caused stack overflow on x·ln(x).
+/// The by-parts heuristic tried u=x, dv=ln(x) first, leading to
+/// ∫ v·du = ∫ (x·ln(x) - x) dx which contains the original integral.
+#[test]
+fn regression_by_parts_x_ln_x_no_crash() {
+    let x = symplex::var("x");
+    let expr = &x * &x.ln();
+    let result = expr.integrate(&x);
+    // Should produce a result (not crash, not unevaluated)
+    let result_str = format!("{result}");
+    assert!(
+        !result_str.contains("Integral"),
+        "∫ x·ln(x) dx should be integrable, got: {result_str}"
+    );
+    // Verify by differentiation
+    let deriv = result.diff(&x);
+    let point = symplex::int(2);
+    let val_orig = expr.subs(&x, &point).evalf_f64().unwrap();
+    let val_deriv = deriv.subs(&x, &point).evalf_f64().unwrap();
+    assert!(
+        (val_orig - val_deriv).abs() < 1e-8,
+        "d/dx(∫ x·ln(x) dx) should equal x·ln(x) at x=2: {val_orig} vs {val_deriv}"
+    );
+}
+
+/// Regression: pow_pow fired without checking if exponents are integers.
+/// ((-1)^2)^(1/2) should be 1, not -1.
+#[test]
+fn regression_pow_pow_negative_base() {
+    use symplex::prelude::*;
+    let x = symplex::var("x");
+    // (x^2)^(1/2) should give |x| via sqrt_sq, not x via pow_pow
+    let ctx = symplex::default_context();
+    let half = ctx.rational(1, 2);
+    let expr = x.powi(2).pow(&half);
+    let result = expr.simplify();
+    let result_str = format!("{result}");
+    assert_eq!(
+        result_str, "abs(x)",
+        "(x^2)^(1/2) should simplify to abs(x), got: {result_str}"
+    );
+}
+
+/// Regression: asin(sin(x)) was simplified to x for symbolic x,
+/// which is wrong when x ∉ [-π/2, π/2].
+#[test]
+fn regression_asin_sin_symbolic_not_simplified() {
+    let x = symplex::var("x");
+    let expr = x.sin().asin();
+    let result = expr.simplify();
+    let result_str = format!("{result}");
+    assert_eq!(
+        result_str, "asin(sin(x))",
+        "asin(sin(x)) should stay for symbolic x, got: {result_str}"
+    );
+}
+
+/// Regression: acosh(cosh(x)) was simplified to x instead of |x|.
+/// cosh is even, so acosh(cosh(-5)) = 5, not -5.
+#[test]
+fn regression_acosh_cosh_gives_abs() {
+    let x = symplex::var("x");
+    let expr = x.cosh().acosh();
+    let result = expr.simplify();
+    let result_str = format!("{result}");
+    assert_eq!(
+        result_str, "abs(x)",
+        "acosh(cosh(x)) should give |x|, got: {result_str}"
+    );
+}

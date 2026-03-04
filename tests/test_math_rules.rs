@@ -196,3 +196,202 @@ fn expand_log_bare_unchanged() {
     let expanded = expr.expand_log();
     assert_eq!(format!("{expanded}"), "ln(x)");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Test helper macros for ergonomic rule testing
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Assert that simplifying an expression produces the expected string output.
+macro_rules! assert_simplifies_to {
+    ($expr:expr, $expected:expr) => {
+        let result = ($expr).simplify();
+        assert_eq!(
+            format!("{result}"),
+            $expected,
+            "simplify({}) should give '{}', got '{result}'",
+            $expr,
+            $expected
+        );
+    };
+}
+
+/// Assert that simplifying an expression leaves it unchanged.
+macro_rules! assert_simplify_unchanged {
+    ($expr:expr) => {
+        let input_str = format!("{}", $expr);
+        let result = ($expr).simplify();
+        let result_str = format!("{result}");
+        assert_eq!(
+            input_str, result_str,
+            "simplify({input_str}) should be unchanged, got '{result_str}'"
+        );
+    };
+}
+
+/// Assert that simplifying preserves the mathematical value at a given point.
+macro_rules! assert_simplify_preserves_value {
+    ($expr:expr, $var:expr, $point:expr) => {
+        let result = ($expr).simplify();
+        let val_in = ($expr).subs(&$var, &$point).evalf_f64();
+        let val_out = result.subs(&$var, &$point).evalf_f64();
+        if let (Ok(v1), Ok(v2)) = (val_in, val_out) {
+            assert!(
+                (v1 - v2).abs() < 1e-8,
+                "simplify changed value at point: {v1} vs {v2}"
+            );
+        }
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Negative tests — verify rules DON'T fire when they shouldn't
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn neg_exp_ln_different_structure() {
+    // exp(ln(x) + 1) should NOT simplify to x (the +1 prevents matching)
+    let x = symplex::var("x");
+    let expr = (&x.ln() + 1).exp();
+    assert_simplify_unchanged!(expr);
+}
+
+#[test]
+fn neg_sqrt_sq_wrong_exponent() {
+    // sqrt(x^3) should NOT simplify to |x| (exponent is 3, not 2)
+    // It correctly becomes x^(3/2) instead.
+    let x = symplex::var("x");
+    let expr = x.powi(3).sqrt();
+    let result = format!("{}", expr.simplify());
+    assert_ne!(result, "abs(x)", "sqrt(x^3) must not simplify to abs(x)");
+    assert_ne!(result, "x", "sqrt(x^3) must not simplify to x");
+    assert_eq!(result, "x^(3/2)");
+}
+
+#[test]
+fn neg_sin_div_cos_different_args() {
+    // sin(x)/cos(y) should NOT become tan (different arguments)
+    let x = symplex::var("x");
+    let y = symplex::var("y");
+    let expr = &x.sin() / &y.cos();
+    assert_simplify_unchanged!(expr);
+}
+
+#[test]
+fn neg_exp_mul_not_both_exp() {
+    // exp(x) * sin(x) should NOT trigger exp combining
+    let x = symplex::var("x");
+    let expr = &x.exp() * &x.sin();
+    assert_simplify_unchanged!(expr);
+}
+
+#[test]
+fn neg_pow_pow_both_fractional() {
+    // (x^(1/2))^(1/3) should NOT become x^(1/6) (no integer exponent)
+    let x = symplex::var("x");
+    let ctx = symplex::default_context();
+    let half = ctx.rational(1, 2);
+    let third = ctx.rational(1, 3);
+    let expr = x.pow(&half).pow(&third);
+    assert_simplify_unchanged!(expr);
+}
+
+#[test]
+fn neg_abs_not_positive() {
+    // abs(x) should NOT simplify when x has no positivity assumption
+    let x = symplex::var("x");
+    let expr = x.abs();
+    assert_simplify_unchanged!(expr);
+}
+
+#[test]
+fn neg_pythagorean_wrong_functions() {
+    // sinh(x)^2 + cos(x)^2 should NOT simplify (mixed sinh/cos)
+    let x = symplex::var("x");
+    let expr = &x.sinh().powi(2) + &x.cos().powi(2);
+    assert_simplify_unchanged!(expr);
+}
+
+#[test]
+fn neg_cosh_sinh_wrong_sign() {
+    // cosh(x)^2 + sinh(x)^2 should NOT simplify to 1 (wrong sign, identity is cosh²-sinh²)
+    let x = symplex::var("x");
+    let expr = &x.cosh().powi(2) + &x.sinh().powi(2);
+    assert_simplify_unchanged!(expr);
+}
+
+#[test]
+fn neg_asin_sin_removed() {
+    // asin(sin(x)) should NOT simplify to x (rule removed for correctness)
+    let x = symplex::var("x");
+    assert_simplifies_to!(x.sin().asin(), "asin(sin(x))");
+}
+
+#[test]
+fn neg_acos_cos_removed() {
+    let x = symplex::var("x");
+    assert_simplifies_to!(x.cos().acos(), "acos(cos(x))");
+}
+
+#[test]
+fn neg_atan_tan_removed() {
+    let x = symplex::var("x");
+    assert_simplifies_to!(x.tan().atan(), "atan(tan(x))");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Positive tests using macros — verify rules DO fire correctly
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn pos_pythagorean_with_macro() {
+    let x = symplex::var("x");
+    assert_simplifies_to!(&x.sin().powi(2) + &x.cos().powi(2), "1");
+}
+
+#[test]
+fn pos_exp_ln_with_macro() {
+    let x = symplex::var("x");
+    assert_simplifies_to!(x.ln().exp(), "x");
+}
+
+#[test]
+fn pos_acosh_cosh_gives_abs() {
+    let x = symplex::var("x");
+    assert_simplifies_to!(x.cosh().acosh(), "abs(x)");
+}
+
+#[test]
+fn pos_sin_asin_still_works() {
+    let x = symplex::var("x");
+    assert_simplifies_to!(x.asin().sin(), "x");
+}
+
+#[test]
+fn pos_cos_acos_still_works() {
+    let x = symplex::var("x");
+    assert_simplifies_to!(x.acos().cos(), "x");
+}
+
+#[test]
+fn pos_asinh_sinh_still_works() {
+    let x = symplex::var("x");
+    assert_simplifies_to!(x.sinh().asinh(), "x");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Value-preservation tests using macro
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn value_pythagorean() {
+    let x = symplex::var("x");
+    let point = symplex::rational(7, 10);
+    assert_simplify_preserves_value!(&x.sin().powi(2) + &x.cos().powi(2), x, point);
+}
+
+#[test]
+fn value_exp_ln() {
+    let x = symplex::var("x");
+    let point = symplex::int(3);
+    assert_simplify_preserves_value!(x.ln().exp(), x, point);
+}

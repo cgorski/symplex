@@ -352,3 +352,132 @@ fn evalf_ln_2() {
     let result = symplex::int(2).ln().evalf(15).unwrap();
     assert!(result.starts_with("0.69314718"), "ln(2): {result}");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Per-rule numerical validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Helper: verify simplify preserves value at a point.
+fn check_simplify_value(
+    expr: &symplex::prelude::Ex,
+    var: &symplex::prelude::Ex,
+    point_num: i64,
+    point_den: i64,
+) {
+    let ctx = symplex::default_context();
+    let point = ctx.rational(point_num, point_den);
+    let simplified = expr.simplify();
+    let v1 = expr.subs(var, &point).evalf_f64().unwrap();
+    let v2 = simplified.subs(var, &point).evalf_f64().unwrap();
+    assert!(
+        (v1 - v2).abs() < 1e-8,
+        "simplify changed value at {point_num}/{point_den}: {v1} vs {v2} for '{expr}' → '{simplified}'"
+    );
+}
+
+#[test]
+fn value_rule_pythagorean() {
+    let x = symplex::var("x");
+    check_simplify_value(&(&x.sin().powi(2) + &x.cos().powi(2)), &x, 7, 10);
+}
+
+#[test]
+fn value_rule_exp_ln() {
+    let x = symplex::var("x");
+    check_simplify_value(&x.ln().exp(), &x, 3, 1);
+}
+
+#[test]
+fn value_rule_ln_exp() {
+    let x = symplex::var("x");
+    check_simplify_value(&x.exp().ln(), &x, 1, 2);
+}
+
+#[test]
+fn value_rule_abs_abs() {
+    let x = symplex::var("x");
+    check_simplify_value(&x.abs().abs(), &x, -3, 1);
+}
+
+#[test]
+fn value_rule_sqrt_sq() {
+    let x = symplex::var("x");
+    let ctx = symplex::default_context();
+    let half = ctx.rational(1, 2);
+    check_simplify_value(&x.powi(2).pow(&half), &x, -5, 2);
+}
+
+#[test]
+fn value_rule_cosh_sinh_identity() {
+    let x = symplex::var("x");
+    check_simplify_value(&(&x.cosh().powi(2) - &x.sinh().powi(2)), &x, 3, 2);
+}
+
+#[test]
+fn value_rule_sin_div_cos() {
+    let x = symplex::var("x");
+    check_simplify_value(&(&x.sin() / &x.cos()), &x, 1, 3);
+}
+
+#[test]
+fn value_rule_sinh_div_cosh() {
+    let x = symplex::var("x");
+    check_simplify_value(&(&x.sinh() / &x.cosh()), &x, 1, 2);
+}
+
+#[test]
+fn value_rule_exp_mul() {
+    let x = symplex::var("x");
+    let y = symplex::var("y");
+    let point_x = symplex::int(1);
+    let point_y = symplex::int(2);
+    let expr = &x.exp() * &y.exp();
+    let simplified = expr.simplify();
+    let v1 = expr
+        .subs(&x, &point_x)
+        .subs(&y, &point_y)
+        .evalf_f64()
+        .unwrap();
+    let v2 = simplified
+        .subs(&x, &point_x)
+        .subs(&y, &point_y)
+        .evalf_f64()
+        .unwrap();
+    assert!(
+        (v1 - v2).abs() < 1e-8,
+        "exp(x)*exp(y) value mismatch: {v1} vs {v2}"
+    );
+}
+
+#[test]
+fn value_rule_sin_asin() {
+    let x = symplex::var("x");
+    let _ctx = symplex::default_context();
+    let _point = _ctx.rational(1, 2);
+    check_simplify_value(&x.asin().sin(), &x, 1, 2);
+}
+
+#[test]
+fn value_rule_cos_acos() {
+    let x = symplex::var("x");
+    check_simplify_value(&x.acos().cos(), &x, 1, 2);
+}
+
+#[test]
+fn value_rule_tan_atan() {
+    let x = symplex::var("x");
+    check_simplify_value(&x.atan().tan(), &x, 3, 2);
+}
+
+#[test]
+fn value_rule_acosh_cosh() {
+    let x = symplex::var("x");
+    check_simplify_value(&x.cosh().acosh(), &x, -2, 1);
+}
+
+#[test]
+fn value_rule_pow_pow_integers() {
+    let x = symplex::var("x");
+    let expr = x.powi(2).powi(3); // (x^2)^3 = x^6
+    check_simplify_value(&expr, &x, 3, 2);
+}

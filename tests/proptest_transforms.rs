@@ -152,3 +152,107 @@ proptest! {
         prop_assert_eq!(orig_s, recom_s, "expand_log then logcombine should roundtrip for ln({}*{})", a, b);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Value-preservation properties for simplification
+// ═══════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+
+    /// simplify() must preserve mathematical value.
+    /// For random polynomial expressions, simplify(e) evaluated at a point
+    /// must equal e evaluated at the same point.
+    #[test]
+    fn simplify_preserves_value(a in -5i64..5, b in -5i64..5, c in -5i64..5) {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        // Build a polynomial: a*x^2 + b*x + c + sin(x)^2 + cos(x)^2
+        // The trig part should simplify to 1 via pythagorean rule
+        let expr = &((&x * a).powi(2)) + &(&(&x * b) + c);
+        let trig = &x.sin().powi(2) + &x.cos().powi(2);
+        let full = &expr + &trig;
+
+        let simplified = full.simplify();
+
+        // Evaluate both at x = 7/10 (avoid integer points where division by zero is common)
+        let point = ctx.rational(7, 10);
+        let val_orig = full.subs(&x, &point).evalf_f64();
+        let val_simp = simplified.subs(&x, &point).evalf_f64();
+
+        if let (Ok(v1), Ok(v2)) = (val_orig, val_simp) {
+            let diff = (v1 - v2).abs();
+            prop_assert!(diff < 1e-8,
+                "simplify changed value: {v1} vs {v2} for a={a}, b={b}, c={c}");
+        }
+    }
+
+    /// smart_simplify() must preserve mathematical value.
+    #[test]
+    fn smart_simplify_preserves_value(a in -3i64..3, b in -3i64..3) {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        // Build expression with numeric coefficients that trigger factor_terms
+        let expr = &(&x * (a * 2)) + (b * 2);
+
+        let simplified = expr.smart_simplify();
+
+        let point = ctx.rational(3, 7);
+        let val_orig = expr.subs(&x, &point).evalf_f64();
+        let val_simp = simplified.subs(&x, &point).evalf_f64();
+
+        if let (Ok(v1), Ok(v2)) = (val_orig, val_simp) {
+            let diff = (v1 - v2).abs();
+            prop_assert!(diff < 1e-8,
+                "smart_simplify changed value: {v1} vs {v2}");
+        }
+    }
+
+    /// full_simplify() must preserve mathematical value.
+    #[test]
+    fn full_simplify_preserves_value(a in 1i64..5, _b in 1i64..5) {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let expr = (&x + a).powi(2);
+
+        let simplified = expr.full_simplify();
+
+        let point = ctx.rational(1, 3);
+        let val_orig = expr.subs(&x, &point).evalf_f64();
+        let val_simp = simplified.subs(&x, &point).evalf_f64();
+
+        if let (Ok(v1), Ok(v2)) = (val_orig, val_simp) {
+            let diff = (v1 - v2).abs();
+            prop_assert!(diff < 1e-6,
+                "full_simplify changed value: {v1} vs {v2}");
+        }
+    }
+
+    /// Integration FTC: d/dx(∫ p(x)·ln(x) dx) should equal p(x)·ln(x).
+    #[test]
+    fn integrate_poly_ln_ftc(a in 1i64..4, n in 1i64..3) {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let poly_ln = &(&x.powi(n) * a) * &x.ln();
+
+        let integral = poly_ln.integrate(&x);
+        // Skip if integration returned unevaluated
+        let integral_str = format!("{integral}");
+        if integral_str.contains("Integral") {
+            return Ok(());  // Can't verify unevaluated integrals
+        }
+
+        let derivative = integral.diff(&x);
+
+        // Evaluate both at x = 2
+        let point = ctx.int(2);
+        let val_orig = poly_ln.subs(&x, &point).evalf_f64();
+        let val_deriv = derivative.subs(&x, &point).evalf_f64();
+
+        if let (Ok(v1), Ok(v2)) = (val_orig, val_deriv) {
+            let diff = (v1 - v2).abs();
+            prop_assert!(diff < 1e-6,
+                "FTC failed: d/dx(∫ x^{n}·ln(x) dx) ≠ x^{n}·ln(x) at x=2: {v1} vs {v2}");
+        }
+    }
+}
