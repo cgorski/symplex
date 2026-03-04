@@ -941,6 +941,14 @@ impl Arena {
         self.intern(ExprNode::Atan(expr))
     }
 
+    /// Creates an `Atan2` (two-argument arctangent) node: `atan2(y, x)`.
+    ///
+    /// Returns the angle in (-π, π] between the positive x-axis and
+    /// the point (x, y). Correctly handles all four quadrants.
+    pub fn atan2(&mut self, y: ExprId, x: ExprId) -> ExprId {
+        self.intern(ExprNode::Atan2(y, x))
+    }
+
     /// Creates a `Sinh` (hyperbolic sine) node.
     pub fn sinh(&mut self, expr: ExprId) -> ExprId {
         self.intern(ExprNode::Sinh(expr))

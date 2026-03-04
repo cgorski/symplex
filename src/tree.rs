@@ -93,6 +93,8 @@ pub enum ExprTree {
     Acos { arg: Box<ExprTree> },
     /// Inverse tangent.
     Atan { arg: Box<ExprTree> },
+    /// Two-argument arctangent: atan2(y, x).
+    Atan2 { y: Box<ExprTree>, x: Box<ExprTree> },
     /// Hyperbolic sine.
     Sinh { arg: Box<ExprTree> },
     /// Hyperbolic cosine.
@@ -219,6 +221,10 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         },
         ExprNode::Atan(x) => ExprTree::Atan {
             arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Atan2(y, x) => ExprTree::Atan2 {
+            y: Box::new(expr_to_tree(arena, y)),
+            x: Box::new(expr_to_tree(arena, x)),
         },
         ExprNode::Sinh(x) => ExprTree::Sinh {
             arg: Box::new(expr_to_tree(arena, x)),
@@ -379,6 +385,11 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::Atan { arg } => {
             let x = tree_to_expr(arena, arg);
             arena.atan(x)
+        }
+        ExprTree::Atan2 { y, x } => {
+            let yid = tree_to_expr(arena, y);
+            let xid = tree_to_expr(arena, x);
+            arena.atan2(yid, xid)
         }
         ExprTree::Sinh { arg } => {
             let x = tree_to_expr(arena, arg);

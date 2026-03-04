@@ -224,6 +224,10 @@ fn match_recursive(
         (ExprNode::Atan(pi), ExprNode::Atan(ei)) => {
             match_recursive(arena, pattern, pi, ei, bindings)
         }
+        (ExprNode::Atan2(py, px), ExprNode::Atan2(ey, ex)) => {
+            match_recursive(arena, pattern, py, ey, bindings)
+                && match_recursive(arena, pattern, px, ex, bindings)
+        }
         (ExprNode::Sinh(pi), ExprNode::Sinh(ei)) => {
             match_recursive(arena, pattern, pi, ei, bindings)
         }

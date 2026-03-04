@@ -315,6 +315,24 @@ fn diff_node(
             arena.div(df, one_plus_f_sq)
         }
 
+        // d/dvar(atan2(y, x)) = (x·dy - y·dx) / (x² + y²)
+        ExprNode::Atan2(y_id, x_id) => {
+            let dy = get_deriv(cache, y_id, arena);
+            let dx = get_deriv(cache, x_id, arena);
+            let both_zero = arena.is_zero_structural(dy) && arena.is_zero_structural(dx);
+            if both_zero {
+                return arena.zero;
+            }
+            let two = arena.int(2);
+            let x_sq = arena.pow(x_id, two);
+            let y_sq = arena.pow(y_id, two);
+            let denom = arena.add(&[x_sq, y_sq]);
+            let x_dy = arena.mul(&[x_id, dy]);
+            let y_dx = arena.mul(&[y_id, dx]);
+            let numer = arena.sub(x_dy, y_dx);
+            arena.div(numer, denom)
+        }
+
         // d/dx(sinh(f)) = cosh(f) * f'
         ExprNode::Sinh(inner) => {
             let df = get_deriv(cache, inner, arena);

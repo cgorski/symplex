@@ -92,6 +92,15 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Asin(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::asin),
             ExprNode::Acos(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::acos),
             ExprNode::Atan(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::atan),
+            ExprNode::Atan2(y, x) => {
+                let ny = cache.get(&y).copied().unwrap_or(y);
+                let nx = cache.get(&x).copied().unwrap_or(x);
+                if ny == y && nx == x {
+                    id
+                } else {
+                    arena.atan2(ny, nx)
+                }
+            }
             ExprNode::Sinh(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::sinh),
             ExprNode::Cosh(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::cosh),
             ExprNode::Tanh(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::tanh),

@@ -75,6 +75,7 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Asin(_)
         | ExprNode::Acos(_)
         | ExprNode::Atan(_)
+        | ExprNode::Atan2(_, _)
         | ExprNode::Sinh(_)
         | ExprNode::Cosh(_)
         | ExprNode::Tanh(_)
@@ -523,6 +524,13 @@ fn expand_expr(
         ExprNode::Asin(x) => push_func("asin", x, stack),
         ExprNode::Acos(x) => push_func("acos", x, stack),
         ExprNode::Atan(x) => push_func("atan", x, stack),
+        ExprNode::Atan2(y, x) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(x, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(y, 0));
+            stack.push(WorkItem::Lit("atan2("));
+        }
         ExprNode::Sinh(x) => push_func("sinh", x, stack),
         ExprNode::Cosh(x) => push_func("cosh", x, stack),
         ExprNode::Tanh(x) => push_func("tanh", x, stack),

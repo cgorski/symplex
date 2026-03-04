@@ -234,6 +234,15 @@ pub(crate) fn rebuild_with_cache(
         ExprNode::Asin(inner) => rebuild_intern_unary!(arena, id, inner, cache, Asin),
         ExprNode::Acos(inner) => rebuild_intern_unary!(arena, id, inner, cache, Acos),
         ExprNode::Atan(inner) => rebuild_intern_unary!(arena, id, inner, cache, Atan),
+        ExprNode::Atan2(y, x) => {
+            let ny = cache.get(&y).copied().unwrap_or(y);
+            let nx = cache.get(&x).copied().unwrap_or(x);
+            if ny == y && nx == x {
+                id
+            } else {
+                arena.atan2(ny, nx)
+            }
+        }
         ExprNode::Sinh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Sinh),
         ExprNode::Cosh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Cosh),
         ExprNode::Tanh(inner) => rebuild_intern_unary!(arena, id, inner, cache, Tanh),

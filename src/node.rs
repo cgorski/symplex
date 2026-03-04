@@ -144,6 +144,10 @@ pub enum ExprNode {
     /// Inverse tangent: `atan(x)` (arctan).
     Atan(ExprId),
 
+    /// Two-argument arctangent: `atan2(y, x)` — gives the angle in (-π, π].
+    /// Correctly handles all four quadrants, unlike `atan(y/x)`.
+    Atan2(ExprId, ExprId),
+
     /// Hyperbolic sine: `sinh(x)`.
     Sinh(ExprId),
 
@@ -254,6 +258,7 @@ impl ExprNode {
 
             // binary
             ExprNode::Pow(a, b)
+            | ExprNode::Atan2(a, b)
             | ExprNode::Binomial(a, b)
             | ExprNode::Gt(a, b)
             | ExprNode::Ge(a, b)
@@ -331,6 +336,7 @@ impl ExprNode {
 
             // binary
             ExprNode::Pow(a, b)
+            | ExprNode::Atan2(a, b)
             | ExprNode::Binomial(a, b)
             | ExprNode::Gt(a, b)
             | ExprNode::Ge(a, b)
@@ -392,6 +398,7 @@ impl ExprNode {
             }
             ExprNode::Piecewise(pairs) => pairs.len() * 2,
             ExprNode::Pow(..)
+            | ExprNode::Atan2(..)
             | ExprNode::Binomial(..)
             | ExprNode::Gt(..)
             | ExprNode::Ge(..)
@@ -475,6 +482,7 @@ impl fmt::Debug for ExprNode {
             ExprNode::Asin(x) => f.debug_tuple("Asin").field(x).finish(),
             ExprNode::Acos(x) => f.debug_tuple("Acos").field(x).finish(),
             ExprNode::Atan(x) => f.debug_tuple("Atan").field(x).finish(),
+            ExprNode::Atan2(y, x) => f.debug_tuple("Atan2").field(y).field(x).finish(),
             ExprNode::Sinh(x) => f.debug_tuple("Sinh").field(x).finish(),
             ExprNode::Cosh(x) => f.debug_tuple("Cosh").field(x).finish(),
             ExprNode::Tanh(x) => f.debug_tuple("Tanh").field(x).finish(),

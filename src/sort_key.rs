@@ -97,6 +97,7 @@ const FN_ACOSH: u8 = 15;
 const FN_ATANH: u8 = 16;
 const FN_APPLY: u8 = 17;
 const FN_SIGN: u8 = 18;
+const FN_ATAN2: u8 = 19;
 
 // ---------------------------------------------------------------------------
 // Constant sub-rank bytes (used within the RANK_CONSTANT class)
@@ -312,6 +313,13 @@ pub fn compute_sort_key(
         ExprNode::Atan(x) => {
             key.push(RANK_FUNCTION);
             key.push(FN_ATAN);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Atan2(y, x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ATAN2);
+            key.extend(get_key(*y).as_bytes());
             key.extend(get_key(*x).as_bytes());
         }
 

@@ -68,6 +68,7 @@ enum Instruction {
     Acosh,
     Atanh,
     Sign,
+    Atan2,
 }
 
 /// Recursively compile an expression into a list of stack-based instructions.
@@ -168,6 +169,11 @@ fn compile_recursive(
         ExprNode::Atan(inner) => {
             compile_recursive(arena, inner, var_map, out)?;
             out.push(Instruction::Atan);
+        }
+        ExprNode::Atan2(y, x) => {
+            compile_recursive(arena, y, var_map, out)?;
+            compile_recursive(arena, x, var_map, out)?;
+            out.push(Instruction::Atan2);
         }
         ExprNode::Sinh(inner) => {
             compile_recursive(arena, inner, var_map, out)?;
@@ -321,6 +327,11 @@ fn execute(instructions: &[Instruction], args: &[f64]) -> f64 {
             Instruction::Sign => {
                 let a = stack.pop().unwrap_or(0.0);
                 stack.push(a.signum());
+            }
+            Instruction::Atan2 => {
+                let x = stack.pop().unwrap_or(0.0);
+                let y = stack.pop().unwrap_or(0.0);
+                stack.push(y.atan2(x));
             }
         }
     }

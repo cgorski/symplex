@@ -173,6 +173,7 @@ fn convert_node(
         | ExprNode::Asin(_)
         | ExprNode::Acos(_)
         | ExprNode::Atan(_)
+        | ExprNode::Atan2(_, _)
         | ExprNode::Sinh(_)
         | ExprNode::Cosh(_)
         | ExprNode::Tanh(_)

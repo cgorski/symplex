@@ -310,6 +310,23 @@ fn eval_node(
             }
         }
 
+        // ── Atan2 ─────────────────────────────────────────────────
+        ExprNode::Atan2(y_id, x_id) => {
+            let yv = get_cached(cache, *y_id)?;
+            let xv = get_cached(cache, *x_id)?;
+            // Both args must be real for a real atan2 result.
+            if yv.1.is_zero() && xv.1.is_zero() {
+                Ok((atan2_bf(&yv.0, &xv.0, prec, rm, cc), BigFloat::new(prec)))
+            } else {
+                // Complex fallback: atan2 is not standard for complex args;
+                // compute as -i * ln((x + iy) / sqrt(x² + y²))
+                // but for now just use the real parts as a best-effort.
+                Err(SymplexError::Unevaluable {
+                    reason: "atan2 with complex arguments is not supported".into(),
+                })
+            }
+        }
+
         // ── Hyperbolic ────────────────────────────────────────────
         ExprNode::Sinh(inner) => {
             let val = get_cached(cache, *inner)?;

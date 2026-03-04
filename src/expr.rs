@@ -354,6 +354,7 @@ impl<S: Sort> Expr<S> {
             | crate::node::ExprNode::Asin(_)
             | crate::node::ExprNode::Acos(_)
             | crate::node::ExprNode::Atan(_)
+            | crate::node::ExprNode::Atan2(_, _)
             | crate::node::ExprNode::Sinh(_)
             | crate::node::ExprNode::Cosh(_)
             | crate::node::ExprNode::Tanh(_)
@@ -850,6 +851,16 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// Two-argument arctangent: `atan2(y, x)`.
+    ///
+    /// Returns the angle in (-π, π] between the positive x-axis and the
+    /// point (x, y). Correctly handles all four quadrants.
+    #[must_use]
+    pub fn atan2(&self, x: &Ex) -> Ex {
+        let id = self.inner.write().arena.atan2(self.id, x.id);
+        self.wrap(id)
+    }
+
     /// Hyperbolic sine: `sinh(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn sinh(&self) -> Ex {
@@ -1040,6 +1051,27 @@ impl Expr<Numeric> {
     pub fn im(&self) -> Ex {
         let (_re, im) = self.inner.write().arena.as_real_imag_expr(self.id);
         self.wrap(im)
+    }
+
+    /// Complex argument (phase angle): `arg(z) = atan2(im(z), re(z))`.
+    ///
+    /// Returns the angle in (-π, π] between the positive real axis and z.
+    /// Handles all four quadrants correctly.
+    #[must_use]
+    pub fn arg(&self) -> Ex {
+        let im = self.im();
+        let re = self.re();
+        im.atan2(&re)
+    }
+
+    /// Complex conjugate: `conjugate(a + bi) = a - bi`.
+    #[must_use]
+    pub fn conjugate(&self) -> Ex {
+        let re = self.re();
+        let im = self.im();
+        let i_id = self.inner.read().arena.i_unit();
+        let i_ex: Ex = self.wrap(i_id);
+        &re - &(&im * &i_ex)
     }
 
     /// Compute the factorial of this expression: `self!`
@@ -1260,6 +1292,54 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn is_rational(&self) -> Option<bool> {
         self.query(Props::RATIONAL)
+    }
+
+    /// Returns whether this expression is known to be even.
+    #[must_use]
+    pub fn is_even(&self) -> Option<bool> {
+        self.query(Props::EVEN)
+    }
+
+    /// Returns whether this expression is known to be odd.
+    #[must_use]
+    pub fn is_odd(&self) -> Option<bool> {
+        self.query(Props::ODD)
+    }
+
+    /// Returns whether this expression is known to be prime.
+    #[must_use]
+    pub fn is_prime(&self) -> Option<bool> {
+        self.query(Props::PRIME)
+    }
+
+    /// Returns whether this expression is known to be composite.
+    #[must_use]
+    pub fn is_composite(&self) -> Option<bool> {
+        self.query(Props::COMPOSITE)
+    }
+
+    /// Returns whether this expression is known to be algebraic.
+    #[must_use]
+    pub fn is_algebraic(&self) -> Option<bool> {
+        self.query(Props::ALGEBRAIC)
+    }
+
+    /// Returns whether this expression is known to be transcendental.
+    #[must_use]
+    pub fn is_transcendental(&self) -> Option<bool> {
+        self.query(Props::TRANSCENDENTAL)
+    }
+
+    /// Returns whether this expression is known to be irrational.
+    #[must_use]
+    pub fn is_irrational(&self) -> Option<bool> {
+        self.query(Props::IRRATIONAL)
+    }
+
+    /// Returns whether this expression is known to be hermitian.
+    #[must_use]
+    pub fn is_hermitian(&self) -> Option<bool> {
+        self.query(Props::HERMITIAN)
     }
 
     // ── Assumption mutation ────────────────────────────────────────

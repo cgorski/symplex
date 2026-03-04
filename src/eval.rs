@@ -106,6 +106,17 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
                 eval_atan(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Atan(inner)))
             }
+            ExprNode::Atan2(y, x) => {
+                let ny = cache.get(&y).copied().unwrap_or(y);
+                let nx = cache.get(&x).copied().unwrap_or(x);
+                if let Some(result) = eval_atan2(arena, ny, nx) {
+                    result
+                } else if ny == y && nx == x {
+                    id
+                } else {
+                    arena.atan2(ny, nx)
+                }
+            }
             ExprNode::Sinh(inner) => {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
                 eval_sinh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Sinh(inner)))
@@ -1121,6 +1132,63 @@ fn eval_atan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // atan(1) is already handled (= π/4)
     // atan(-1) is already handled (= -π/4) via odd function
     None
+}
+
+/// Evaluate `atan2(y, x)` with quadrant-aware logic.
+///
+/// When both arguments are numeric rationals, returns an exact symbolic
+/// result.  Returns `None` when no simplification is possible.
+fn eval_atan2(arena: &mut Arena, y: ExprId, x: ExprId) -> Option<ExprId> {
+    // Clone numeric values up-front so we can use arena mutably below.
+    let y_val = arena.as_num(y).cloned();
+    let x_val = arena.as_num(x).cloned();
+
+    match (y_val, x_val) {
+        (Some(yv), Some(xv)) => {
+            let y_zero = yv.is_zero();
+            let x_zero = xv.is_zero();
+            let y_pos = !yv.is_negative() && !y_zero;
+            let x_pos = !xv.is_negative() && !x_zero;
+            let y_neg = yv.is_negative();
+            let x_neg = xv.is_negative();
+
+            if y_zero && x_zero {
+                // atan2(0, 0) = 0 (convention)
+                Some(arena.zero)
+            } else if y_zero && x_pos {
+                // atan2(0, x>0) = 0
+                Some(arena.zero)
+            } else if y_zero && x_neg {
+                // atan2(0, x<0) = π
+                Some(arena.pi)
+            } else if y_pos && x_zero {
+                // atan2(y>0, 0) = π/2
+                let half = arena.rational(1, 2);
+                Some(arena.mul(&[half, arena.pi]))
+            } else if y_neg && x_zero {
+                // atan2(y<0, 0) = -π/2
+                let neg_half = arena.rational(-1, 2);
+                Some(arena.mul(&[neg_half, arena.pi]))
+            } else if x_pos {
+                // Quadrant I or IV: atan2(y, x) = atan(y/x)
+                let ratio = arena.div(y, x);
+                let atan_node = arena.atan(ratio);
+                Some(eval_atan(arena, ratio).unwrap_or(atan_node))
+            } else if x_neg && !y_neg {
+                // Quadrant II (y >= 0, x < 0): atan2(y, x) = atan(y/x) + π
+                let ratio = arena.div(y, x);
+                let atan_val = eval_atan(arena, ratio).unwrap_or_else(|| arena.atan(ratio));
+                Some(arena.add(&[atan_val, arena.pi]))
+            } else {
+                // Quadrant III (y < 0, x < 0): atan2(y, x) = atan(y/x) - π
+                let ratio = arena.div(y, x);
+                let atan_val = eval_atan(arena, ratio).unwrap_or_else(|| arena.atan(ratio));
+                let neg_pi = arena.neg(arena.pi);
+                Some(arena.add(&[atan_val, neg_pi]))
+            }
+        }
+        _ => None,
+    }
 }
 
 fn eval_sinh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
