@@ -46,6 +46,8 @@ pub mod eq;
 pub(crate) mod eval;
 pub(crate) mod evalf;
 pub(crate) mod expand;
+/// A non-locking, read-only view of an expression node for use in `replace()`.
+pub mod expr_view;
 pub(crate) mod factor;
 pub(crate) mod factor_terms;
 pub(crate) mod integrate;
@@ -119,6 +121,7 @@ pub mod prelude {
     pub use crate::eq::Equation;
     pub use crate::errors::SymplexError;
     pub use crate::expr::{BoolEx, Boolean, Ex, Expr, ExprType, Numeric, Sort};
+    pub use crate::expr_view::ExprView;
     pub use crate::pattern::Step;
     pub use symplex_macros::{eq, expr, matrix, rule};
 }

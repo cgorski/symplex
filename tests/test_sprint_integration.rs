@@ -430,7 +430,7 @@ fn replace_variable() {
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     let expr = &x.powi(2) + &x + 1;
-    let replaced = expr.replace(|e| if *e == x { Some(y.clone()) } else { None });
+    let replaced = expr.replace(|e| if e == &x { Some(y.clone()) } else { None });
     let s = format!("{replaced}");
     assert!(
         s.contains("y") && !s.contains("x"),
@@ -443,7 +443,7 @@ fn replace_variable_exact() {
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     let expr = &x.powi(2) + &x + 1;
-    let replaced = expr.replace(|e| if *e == x { Some(y.clone()) } else { None });
+    let replaced = expr.replace(|e| if e == &x { Some(y.clone()) } else { None });
     assert_eq!(format!("{replaced}"), "y^2 + y + 1");
 }
 
@@ -504,7 +504,7 @@ fn replace_then_differentiate() {
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     // Start with x^3, replace x→y, differentiate w.r.t. y
     let expr = x.powi(3);
-    let replaced = expr.replace(|e| if *e == x { Some(y.clone()) } else { None });
+    let replaced = expr.replace(|e| if e == &x { Some(y.clone()) } else { None });
     let deriv = replaced.diff(&y);
     assert_eq!(format!("{deriv}"), "3*y^2");
 }

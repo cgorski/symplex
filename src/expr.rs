@@ -2252,12 +2252,11 @@ impl Expr<Numeric> {
     /// Walk the expression bottom-up, applying a user-provided transformation
     /// at each node.
     ///
-    /// The closure receives an [`Ex`] for each sub-expression. Return
-    /// `Some(replacement)` to replace it, or `None` to keep it unchanged.
-    ///
-    /// **Note:** The `Ex` values passed to the closure are suitable for
-    /// identity comparison (`==`) only. Do not call methods that mutate
-    /// or lock the context from inside the closure.
+    /// The closure receives an [`ExprView`](crate::expr_view::ExprView) for
+    /// each sub-expression — a non-locking, read-only view that supports
+    /// identity comparison with [`Ex`] but cannot acquire any locks.
+    /// Return `Some(replacement)` to replace it, or `None` to keep it
+    /// unchanged.
     ///
     /// # Examples
     ///
@@ -2267,26 +2266,19 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     /// let expr = x.powi(2);
-    /// let replaced = expr.replace(|e| if *e == x { Some(y.clone()) } else { None });
+    /// let replaced = expr.replace(|e| if e == &x { Some(y.clone()) } else { None });
     /// assert_eq!(format!("{replaced}"), "y^2");
     /// ```
     #[must_use = "returns the transformed expression; does not modify in place"]
     pub fn replace<F>(&self, f: F) -> Ex
     where
-        F: Fn(&Ex) -> Option<Ex>,
+        F: Fn(crate::expr_view::ExprView<'_>) -> Option<Ex>,
     {
-        let inner_clone = Arc::clone(&self.inner);
-        let ctx_id = self.ctx_id;
         let result_id = {
             let mut guard = self.inner.write();
-            crate::walk::walk_and_rebuild(&mut guard.arena, self.id, &|_arena, id| {
-                let tmp = Ex {
-                    ctx_id,
-                    inner: Arc::clone(&inner_clone),
-                    id,
-                    _sort: PhantomData,
-                };
-                f(&tmp).map(|ex| ex.id)
+            crate::walk::walk_and_rebuild(&mut guard.arena, self.id, &|arena, id| {
+                let view = crate::expr_view::ExprView { id, arena };
+                f(view).map(|ex| ex.id)
             })
         };
         self.wrap(result_id)
