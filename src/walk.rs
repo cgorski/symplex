@@ -255,6 +255,21 @@ pub(crate) fn rebuild_with_cache(
             if ni == inner { id } else { arena.sign(ni) }
         }
 
+        ExprNode::Gamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, Gamma),
+        ExprNode::LogGamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, LogGamma),
+        ExprNode::Digamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, Digamma),
+        ExprNode::Erf(inner) => rebuild_intern_unary!(arena, id, inner, cache, Erf),
+        ExprNode::Erfc(inner) => rebuild_intern_unary!(arena, id, inner, cache, Erfc),
+        ExprNode::Beta(a, b) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            if na == a && nb == b {
+                id
+            } else {
+                arena.beta(na, nb)
+            }
+        }
+
         ExprNode::Floor(inner) => rebuild_intern_unary!(arena, id, inner, cache, Floor),
         ExprNode::Ceiling(inner) => rebuild_intern_unary!(arena, id, inner, cache, Ceiling),
 

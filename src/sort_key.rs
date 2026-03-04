@@ -112,6 +112,12 @@ const FN_SIGN: u8 = 18;
 const FN_ATAN2: u8 = 19;
 const FN_FLOOR: u8 = 20;
 const FN_CEILING: u8 = 21;
+const FN_GAMMA: u8 = 22;
+const FN_LOG_GAMMA: u8 = 23;
+const FN_DIGAMMA: u8 = 24;
+const FN_ERF: u8 = 25;
+const FN_ERFC: u8 = 26;
+const FN_BETA: u8 = 27;
 
 // ---------------------------------------------------------------------------
 // Constant sub-rank bytes (used within the RANK_CONSTANT class)
@@ -377,6 +383,43 @@ pub fn compute_sort_key(
             key.push(RANK_FUNCTION);
             key.push(FN_SIGN);
             key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Gamma(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_GAMMA);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::LogGamma(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_LOG_GAMMA);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Digamma(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_DIGAMMA);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Erf(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ERF);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Erfc(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ERFC);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Beta(a, b) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_BETA);
+            key.extend(get_key(*a).as_bytes());
+            key.extend(get_key(*b).as_bytes());
         }
 
         ExprNode::Floor(x) => {

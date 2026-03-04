@@ -147,6 +147,12 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "heaviside",
     "dirac_delta",
     "lambertw",
+    // Wave J: special functions
+    "gamma",
+    "log_gamma",
+    "digamma",
+    "erf",
+    "erfc",
 ];
 
 /// Returns `true` if `name` is a known built-in function.

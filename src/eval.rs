@@ -155,6 +155,63 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     arena.sign(ni)
                 }
             }
+            ExprNode::Gamma(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                if let Some(result) = eval_gamma(arena, ni) {
+                    result
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.gamma(ni)
+                }
+            }
+            ExprNode::LogGamma(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                if let Some(result) = eval_log_gamma(arena, ni) {
+                    result
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.log_gamma(ni)
+                }
+            }
+            ExprNode::Digamma(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                // Digamma is hard to evaluate symbolically without Euler-Mascheroni constant.
+                // Leave unevaluated.
+                if ni == inner { id } else { arena.digamma(ni) }
+            }
+            ExprNode::Erf(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                if let Some(result) = eval_erf(arena, ni) {
+                    result
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.erf(ni)
+                }
+            }
+            ExprNode::Erfc(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                if let Some(result) = eval_erfc(arena, ni) {
+                    result
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.erfc(ni)
+                }
+            }
+            ExprNode::Beta(a, b) => {
+                let na = cache.get(&a).copied().unwrap_or(a);
+                let nb = cache.get(&b).copied().unwrap_or(b);
+                if let Some(result) = eval_beta(arena, na, nb) {
+                    result
+                } else if na == a && nb == b {
+                    id
+                } else {
+                    arena.beta(na, nb)
+                }
+            }
             // Rebuild Add/Mul/Pow/Neg with evaluated children.
             ExprNode::Add(ref children) => {
                 let new: smallvec::SmallVec<[ExprId; 6]> = children
@@ -777,6 +834,100 @@ fn eval_factorial(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     for i in 2..=n {
         result *= num_rational::Ratio::from_integer(num_bigint::BigInt::from(i));
     }
+    let nid = arena.intern_num(result);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Gamma(n) for positive integer n → (n-1)!
+/// Gamma(1/2) → √π
+fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?.clone();
+    // Gamma(1/2) = √π
+    if *r.numer() == BigInt::from(1) && *r.denom() == BigInt::from(2) {
+        let pi = arena.pi;
+        let result = arena.sqrt(pi);
+        return Some(result);
+    }
+    // Positive integer: Gamma(n) = (n-1)!
+    if r.is_integer() && r.is_positive() {
+        let n: u64 = r.to_integer().try_into().ok()?;
+        let mut result = Ratio::<BigInt>::one();
+        for i in 2..n {
+            result *= Ratio::from_integer(BigInt::from(i));
+        }
+        let nid = arena.intern_num(result);
+        return Some(arena.intern(ExprNode::Num(nid)));
+    }
+    None
+}
+
+/// LogGamma(n) for positive integer n → ln((n-1)!)
+fn eval_log_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?.clone();
+    if !r.is_integer() || !r.is_positive() {
+        return None;
+    }
+    let n: u64 = r.to_integer().try_into().ok()?;
+    // (n-1)!
+    let mut fact = Ratio::<BigInt>::one();
+    for i in 2..n {
+        fact *= Ratio::from_integer(BigInt::from(i));
+    }
+    // ln(1) = 0 — handle n=1 and n=2 where (n-1)! = 1
+    if fact == Ratio::<BigInt>::one() {
+        return Some(arena.zero);
+    }
+    let nid = arena.intern_num(fact);
+    let fact_id = arena.intern(ExprNode::Num(nid));
+    Some(arena.ln(fact_id))
+}
+
+/// erf(0) → 0
+fn eval_erf(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if r.is_zero() {
+        return Some(arena.zero);
+    }
+    None
+}
+
+/// erfc(0) → 1
+fn eval_erfc(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if r.is_zero() {
+        return Some(arena.one);
+    }
+    None
+}
+
+/// Beta(a,b) for positive integers → (a-1)!(b-1)!/(a+b-1)!
+fn eval_beta(arena: &mut Arena, a: ExprId, b: ExprId) -> Option<ExprId> {
+    let ra = arena.as_num(a)?.clone();
+    let rb = arena.as_num(b)?.clone();
+    if !ra.is_integer() || !ra.is_positive() || !rb.is_integer() || !rb.is_positive() {
+        return None;
+    }
+    let a_u64: u64 = ra.to_integer().try_into().ok()?;
+    let b_u64: u64 = rb.to_integer().try_into().ok()?;
+
+    // B(a,b) = (a-1)!(b-1)! / (a+b-1)!
+    let mut numer = Ratio::<BigInt>::one();
+    for i in 2..a_u64 {
+        numer *= Ratio::from_integer(BigInt::from(i));
+    }
+    let mut b_fact = Ratio::<BigInt>::one();
+    for i in 2..b_u64 {
+        b_fact *= Ratio::from_integer(BigInt::from(i));
+    }
+    numer *= b_fact;
+
+    let ab = a_u64.checked_add(b_u64)?;
+    let mut denom = Ratio::<BigInt>::one();
+    for i in 2..ab {
+        denom *= Ratio::from_integer(BigInt::from(i));
+    }
+
+    let result = numer / denom;
     let nid = arena.intern_num(result);
     Some(arena.intern(ExprNode::Num(nid)))
 }

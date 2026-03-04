@@ -371,9 +371,14 @@ impl<S: Sort> Expr<S> {
             crate::node::ExprNode::Apply(_, _) => ExprType::Apply,
             crate::node::ExprNode::Derivative(_, _) => ExprType::Derivative,
             crate::node::ExprNode::Integral(_, _) => ExprType::Integral,
-            crate::node::ExprNode::Factorial(_) | crate::node::ExprNode::Binomial(_, _) => {
-                ExprType::Function
-            }
+            crate::node::ExprNode::Factorial(_)
+            | crate::node::ExprNode::Binomial(_, _)
+            | crate::node::ExprNode::Gamma(_)
+            | crate::node::ExprNode::LogGamma(_)
+            | crate::node::ExprNode::Digamma(_)
+            | crate::node::ExprNode::Erf(_)
+            | crate::node::ExprNode::Erfc(_)
+            | crate::node::ExprNode::Beta(_, _) => ExprType::Function,
             crate::node::ExprNode::BoolTrue | crate::node::ExprNode::BoolFalse => {
                 ExprType::Constant
             }
@@ -1187,6 +1192,91 @@ impl Expr<Numeric> {
 
     /// Compute the factorial of this expression: `self!`
     ///
+    // ── Special functions (native ExprNode variants) ───────────────
+
+    /// Gamma function: Γ(self).
+    ///
+    /// For positive integer arguments, `.eval()` computes `(n-1)!`.
+    /// `Gamma(1/2) = √π`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let result = symplex::int(5).gamma().eval();
+    /// assert_eq!(format!("{result}"), "24");
+    /// ```
+    #[must_use]
+    pub fn gamma(&self) -> Ex {
+        let id = self.inner.write().arena.gamma(self.id);
+        self.wrap(id)
+    }
+
+    /// Log-gamma function: ln(Γ(self)).
+    ///
+    /// For positive integer arguments, `.eval()` computes `ln((n-1)!)`.
+    #[must_use]
+    pub fn log_gamma(&self) -> Ex {
+        let id = self.inner.write().arena.log_gamma(self.id);
+        self.wrap(id)
+    }
+
+    /// Digamma function: ψ(self) = Γ'(self)/Γ(self).
+    #[must_use]
+    pub fn digamma(&self) -> Ex {
+        let id = self.inner.write().arena.digamma(self.id);
+        self.wrap(id)
+    }
+
+    /// Error function: erf(self) = 2/√π ∫₀ˢᵉˡᶠ e^(-t²) dt.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let result = symplex::int(0).erf().eval();
+    /// assert_eq!(format!("{result}"), "0");
+    /// ```
+    #[must_use]
+    pub fn erf(&self) -> Ex {
+        let id = self.inner.write().arena.erf(self.id);
+        self.wrap(id)
+    }
+
+    /// Complementary error function: erfc(self) = 1 - erf(self).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let result = symplex::int(0).erfc().eval();
+    /// assert_eq!(format!("{result}"), "1");
+    /// ```
+    #[must_use]
+    pub fn erfc(&self) -> Ex {
+        let id = self.inner.write().arena.erfc(self.id);
+        self.wrap(id)
+    }
+
+    /// Beta function: B(self, other) = Γ(self)Γ(other)/Γ(self+other).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let result = symplex::int(2).beta(&symplex::int(3)).eval();
+    /// assert_eq!(format!("{result}"), "1/12");
+    /// ```
+    #[must_use]
+    pub fn beta(&self, other: &Ex) -> Ex {
+        let id = self.inner.write().arena.beta(self.id, other.id);
+        self.wrap(id)
+    }
+
     /// Creates a `Factorial` node. For non-negative integer arguments,
     /// `.eval()` will compute the exact value using arbitrary-precision
     /// arithmetic.
@@ -1854,6 +1944,63 @@ impl Expr<Numeric> {
     #[must_use = "returns the series expansion; does not modify in place"]
     pub fn maclaurin_or_self(&self, var: &Ex, order: u32) -> Ex {
         self.maclaurin(var, order).unwrap_or_else(|_| self.clone())
+    }
+
+    /// Compute the residue of this expression at `var = point`.
+    ///
+    /// The residue is the coefficient of `1/(x-a)` in the Laurent series
+    /// expansion of the function around `a`. For a simple pole at `a`,
+    /// this equals `lim_{x→a} (x-a) * f(x)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // Res(1/x, x=0) = 1
+    /// let f = &ctx.int(1) / &x;
+    /// let result = f.residue(&x, &ctx.int(0)).unwrap();
+    /// assert_eq!(format!("{result}"), "1");
+    /// ```
+    #[must_use = "returns the residue value; does not modify in place"]
+    pub fn residue(&self, var: &Ex, point: &Ex) -> Result<Ex, SymplexError> {
+        let _span = debug_span!("residue", expr = ?self.id, var = ?var.id).entered();
+        let id = self
+            .inner
+            .write()
+            .arena
+            .residue_expr(self.id, var.id, point.id)?;
+        Ok(self.wrap(id))
+    }
+
+    /// Compute the Fourier series of this expression over \[-π, π\]
+    /// with `n_terms` harmonics.
+    ///
+    /// Returns the truncated Fourier trigonometric series:
+    /// `a₀/2 + Σ_{n=1}^{N} [aₙ cos(nx) + bₙ sin(nx)]`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = ctx.int(1);
+    /// let result = f.fourier_series(&x, 2);
+    /// // Fourier series of constant 1 should evaluate to ≈ 1
+    /// ```
+    #[must_use = "returns the Fourier series; does not modify in place"]
+    pub fn fourier_series(&self, var: &Ex, n_terms: u32) -> Ex {
+        let _span = debug_span!("fourier_series", expr = ?self.id, var = ?var.id).entered();
+        let id = self
+            .inner
+            .write()
+            .arena
+            .fourier_series_expr(self.id, var.id, n_terms);
+        self.wrap(id)
     }
 
     /// Compute the limit of this expression as `var` approaches `point`.

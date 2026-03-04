@@ -135,6 +135,24 @@ fn eval_node(
             })
         }
 
+        ExprNode::Gamma(_) | ExprNode::LogGamma(_) | ExprNode::Digamma(_) => {
+            Err(SymplexError::Unevaluable {
+                reason: "cannot numerically evaluate Gamma/LogGamma/Digamma; call eval() first to reduce".into(),
+            })
+        }
+
+        ExprNode::Erf(_) | ExprNode::Erfc(_) => {
+            Err(SymplexError::Unevaluable {
+                reason: "cannot numerically evaluate erf/erfc; call eval() first to reduce".into(),
+            })
+        }
+
+        ExprNode::Beta(_, _) => {
+            Err(SymplexError::Unevaluable {
+                reason: "cannot numerically evaluate Beta; call eval() first to reduce".into(),
+            })
+        }
+
         ExprNode::NaN => Err(SymplexError::Unevaluable {
             reason: "cannot evaluate NaN".into(),
         }),

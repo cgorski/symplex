@@ -408,6 +408,74 @@ fn diff_node(
             arena.div(df, one_minus_f_sq)
         }
 
+        // ── Gamma: d/dx(Γ(f)) = Γ(f) · ψ(f) · f' ────────────────
+        ExprNode::Gamma(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let gamma_f = arena.gamma(inner);
+            let digamma_f = arena.digamma(inner);
+            arena.mul(&[gamma_f, digamma_f, df])
+        }
+
+        // ── LogGamma: d/dx(lnΓ(f)) = ψ(f) · f' ──────────────────
+        ExprNode::LogGamma(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let digamma_f = arena.digamma(inner);
+            arena.mul(&[digamma_f, df])
+        }
+
+        // ── Digamma: d/dx(ψ(f)) → unevaluated (trigamma is complex)
+        ExprNode::Digamma(_) => {
+            let v = var_expr(arena, var);
+            arena.intern(ExprNode::Derivative(id, v))
+        }
+
+        // ── Erf: d/dx(erf(f)) = 2/√π · exp(-f²) · f' ────────────
+        ExprNode::Erf(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let two = arena.int(2);
+            let pi = arena.pi;
+            let sqrt_pi = arena.sqrt(pi);
+            let coeff = arena.div(two, sqrt_pi);
+            let two2 = arena.int(2);
+            let f_sq = arena.pow(inner, two2);
+            let neg_f_sq = arena.neg(f_sq);
+            let exp_neg_f_sq = arena.exp(neg_f_sq);
+            arena.mul(&[coeff, exp_neg_f_sq, df])
+        }
+
+        // ── Erfc: d/dx(erfc(f)) = -2/√π · exp(-f²) · f' ─────────
+        ExprNode::Erfc(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let two = arena.int(2);
+            let pi = arena.pi;
+            let sqrt_pi = arena.sqrt(pi);
+            let coeff = arena.div(two, sqrt_pi);
+            let neg_coeff = arena.neg(coeff);
+            let two2 = arena.int(2);
+            let f_sq = arena.pow(inner, two2);
+            let neg_f_sq = arena.neg(f_sq);
+            let exp_neg_f_sq = arena.exp(neg_f_sq);
+            arena.mul(&[neg_coeff, exp_neg_f_sq, df])
+        }
+
+        // ── Beta: leave as unevaluated derivative ──────────────────
+        ExprNode::Beta(_, _) => {
+            let v = var_expr(arena, var);
+            arena.intern(ExprNode::Derivative(id, v))
+        }
+
         // Factorial: d/dx(n!) — leave as unevaluated derivative
         // (factorial is typically of integer-valued expressions)
         ExprNode::Factorial(_) => {

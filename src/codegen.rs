@@ -242,6 +242,14 @@ fn expr_to_rust(arena: &Arena, id: ExprId, var_names: &[&str]) -> Result<String,
         ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for combinatorial functions".to_string(),
         )),
+        ExprNode::Gamma(_)
+        | ExprNode::LogGamma(_)
+        | ExprNode::Digamma(_)
+        | ExprNode::Erf(_)
+        | ExprNode::Erfc(_)
+        | ExprNode::Beta(_, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for special functions (gamma, erf, beta)".to_string(),
+        )),
         ExprNode::Apply(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for user-defined Apply nodes".to_string(),
         )),

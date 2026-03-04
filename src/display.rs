@@ -82,6 +82,12 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Asinh(_)
         | ExprNode::Acosh(_)
         | ExprNode::Atanh(_)
+        | ExprNode::Gamma(_)
+        | ExprNode::LogGamma(_)
+        | ExprNode::Digamma(_)
+        | ExprNode::Erf(_)
+        | ExprNode::Erfc(_)
+        | ExprNode::Beta(_, _)
         | ExprNode::Floor(_)
         | ExprNode::Ceiling(_)
         | ExprNode::Min(_)
@@ -543,6 +549,18 @@ fn expand_expr(
         ExprNode::Acosh(x) => push_func("acosh", x, stack),
         ExprNode::Atanh(x) => push_func("atanh", x, stack),
         ExprNode::Sign(x) => push_func("sign", x, stack),
+        ExprNode::Gamma(x) => push_func("Gamma", x, stack),
+        ExprNode::LogGamma(x) => push_func("LogGamma", x, stack),
+        ExprNode::Digamma(x) => push_func("Digamma", x, stack),
+        ExprNode::Erf(x) => push_func("erf", x, stack),
+        ExprNode::Erfc(x) => push_func("erfc", x, stack),
+        ExprNode::Beta(a, b) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(b, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(a, 0));
+            stack.push(WorkItem::Lit("B("));
+        }
         ExprNode::Floor(x) => push_func("floor", x, stack),
         ExprNode::Ceiling(x) => push_func("ceiling", x, stack),
 

@@ -251,6 +251,13 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 return Ok(quote! { (#x_code).falling_factorial(&(#n_code)) });
             }
 
+            // beta(a, b) → a.beta(&b)
+            if name == "beta" && args.len() == 2 {
+                let a_code = generate_expr_as_ex(&args[0])?;
+                let b_code = generate_expr_as_ex(&args[1])?;
+                return Ok(quote! { (#a_code).beta(&(#b_code)) });
+            }
+
             if !is_known_function(name)
                 && ![
                     "log",
@@ -261,13 +268,14 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                     "atan2",
                     "rising_factorial",
                     "falling_factorial",
+                    "beta",
                 ]
                 .contains(&name.as_str())
             {
                 return Err(syn::Error::new(
                     *span,
                     format!(
-                        "unknown function '{}' in expr!(). Supported: {}, log, diff, factorial, binomial, C, atan2, rising_factorial, falling_factorial",
+                        "unknown function '{}' in expr!(). Supported: {}, log, diff, factorial, binomial, C, atan2, rising_factorial, falling_factorial, beta",
                         name,
                         KNOWN_FUNCTIONS.join(", ")
                     ),
@@ -330,6 +338,12 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 "heaviside" => quote! { heaviside },
                 "dirac_delta" => quote! { dirac_delta },
                 "lambertw" => quote! { lambertw },
+                // Wave J: special functions (1-arg)
+                "gamma" => quote! { gamma },
+                "log_gamma" => quote! { log_gamma },
+                "digamma" => quote! { digamma },
+                "erf" => quote! { erf },
+                "erfc" => quote! { erfc },
                 _ => unreachable!(),
             };
             Ok(quote! { (#arg_code).#method() })

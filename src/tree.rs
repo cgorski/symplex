@@ -109,6 +109,18 @@ pub enum ExprTree {
     Atanh { arg: Box<ExprTree> },
     /// Sign function: 1 if positive, -1 if negative, 0 if zero.
     Sign { arg: Box<ExprTree> },
+    /// Gamma function: Γ(x).
+    Gamma { arg: Box<ExprTree> },
+    /// Log-gamma function: ln(Γ(x)).
+    LogGamma { arg: Box<ExprTree> },
+    /// Digamma function: ψ(x) = Γ'(x)/Γ(x).
+    Digamma { arg: Box<ExprTree> },
+    /// Error function: erf(x).
+    Erf { arg: Box<ExprTree> },
+    /// Complementary error function: erfc(x) = 1 - erf(x).
+    Erfc { arg: Box<ExprTree> },
+    /// Beta function: B(a, b) = Γ(a)Γ(b)/Γ(a+b).
+    Beta { a: Box<ExprTree>, b: Box<ExprTree> },
     /// Floor function: greatest integer <= x.
     Floor { arg: Box<ExprTree> },
     /// Ceiling function: least integer >= x.
@@ -268,6 +280,25 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         },
         ExprNode::Sign(x) => ExprTree::Sign {
             arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Gamma(x) => ExprTree::Gamma {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::LogGamma(x) => ExprTree::LogGamma {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Digamma(x) => ExprTree::Digamma {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Erf(x) => ExprTree::Erf {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Erfc(x) => ExprTree::Erfc {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Beta(a, b) => ExprTree::Beta {
+            a: Box::new(expr_to_tree(arena, a)),
+            b: Box::new(expr_to_tree(arena, b)),
         },
         ExprNode::Floor(x) => ExprTree::Floor {
             arg: Box::new(expr_to_tree(arena, x)),
@@ -464,6 +495,31 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::Sign { arg } => {
             let x = tree_to_expr(arena, arg);
             arena.sign(x)
+        }
+        ExprTree::Gamma { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.gamma(x)
+        }
+        ExprTree::LogGamma { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.log_gamma(x)
+        }
+        ExprTree::Digamma { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.digamma(x)
+        }
+        ExprTree::Erf { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.erf(x)
+        }
+        ExprTree::Erfc { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.erfc(x)
+        }
+        ExprTree::Beta { a, b } => {
+            let aid = tree_to_expr(arena, a);
+            let bid = tree_to_expr(arena, b);
+            arena.beta(aid, bid)
         }
         ExprTree::Floor { arg } => {
             let x = tree_to_expr(arena, arg);

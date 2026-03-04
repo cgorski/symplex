@@ -238,7 +238,14 @@ fn compile_recursive(
             }
         }
 
-        ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => return None,
+        ExprNode::Factorial(_)
+        | ExprNode::Binomial(_, _)
+        | ExprNode::Gamma(_)
+        | ExprNode::LogGamma(_)
+        | ExprNode::Digamma(_)
+        | ExprNode::Erf(_)
+        | ExprNode::Erfc(_)
+        | ExprNode::Beta(_, _) => return None,
         ExprNode::Apply(_, _)
         | ExprNode::Derivative(_, _)
         | ExprNode::Integral(_, _)

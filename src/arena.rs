@@ -1039,6 +1039,36 @@ impl Arena {
         self.intern(ExprNode::Atanh(expr))
     }
 
+    /// Creates a `Gamma` node: Γ(x).
+    pub fn gamma(&mut self, arg: ExprId) -> ExprId {
+        self.intern(ExprNode::Gamma(arg))
+    }
+
+    /// Creates a `LogGamma` node: ln(Γ(x)).
+    pub fn log_gamma(&mut self, arg: ExprId) -> ExprId {
+        self.intern(ExprNode::LogGamma(arg))
+    }
+
+    /// Creates a `Digamma` node: ψ(x) = Γ'(x)/Γ(x).
+    pub fn digamma(&mut self, arg: ExprId) -> ExprId {
+        self.intern(ExprNode::Digamma(arg))
+    }
+
+    /// Creates an `Erf` (error function) node.
+    pub fn erf(&mut self, arg: ExprId) -> ExprId {
+        self.intern(ExprNode::Erf(arg))
+    }
+
+    /// Creates an `Erfc` (complementary error function) node.
+    pub fn erfc(&mut self, arg: ExprId) -> ExprId {
+        self.intern(ExprNode::Erfc(arg))
+    }
+
+    /// Creates a `Beta` node: B(a, b) = Γ(a)Γ(b)/Γ(a+b).
+    pub fn beta(&mut self, a: ExprId, b: ExprId) -> ExprId {
+        self.intern(ExprNode::Beta(a, b))
+    }
+
     /// Creates a `Factorial` node: `n!`
     pub fn factorial(&mut self, expr: ExprId) -> ExprId {
         self.intern(ExprNode::Factorial(expr))
@@ -1220,6 +1250,27 @@ impl Arena {
         let sym_id = self.symbols.intern(FN_LAMBERTW);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![arg];
         self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    // ── Series extensions (residue, Fourier) ───────────────────────
+
+    /// Compute the residue of `expr` at `var = point`.
+    ///
+    /// Delegates to [`residue::residue`].
+    pub fn residue_expr(
+        &mut self,
+        expr: ExprId,
+        var: ExprId,
+        point: ExprId,
+    ) -> Result<ExprId, crate::errors::SymplexError> {
+        crate::residue::residue(self, expr, var, point)
+    }
+
+    /// Compute the Fourier series of `expr` over [-π, π] with `n_terms` harmonics.
+    ///
+    /// Delegates to [`fourier::fourier_series`].
+    pub fn fourier_series_expr(&mut self, expr: ExprId, var: ExprId, n_terms: u32) -> ExprId {
+        crate::fourier::fourier_series(self, expr, var, n_terms)
     }
 
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.

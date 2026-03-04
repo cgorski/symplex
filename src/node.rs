@@ -182,6 +182,25 @@ pub enum ExprNode {
     /// Sign function: `sign(x)` = 1 if x > 0, -1 if x < 0, 0 if x = 0.
     Sign(ExprId),
 
+    // -- special functions ---------------------------------------------------
+    /// Gamma function: Γ(x) = ∫₀^∞ t^(x-1) e^(-t) dt.
+    Gamma(ExprId),
+
+    /// Log-gamma function: ln(Γ(x)).
+    LogGamma(ExprId),
+
+    /// Digamma function: ψ(x) = Γ'(x)/Γ(x).
+    Digamma(ExprId),
+
+    /// Error function: erf(x) = 2/√π ∫₀ˣ e^(-t²) dt.
+    Erf(ExprId),
+
+    /// Complementary error function: erfc(x) = 1 - erf(x).
+    Erfc(ExprId),
+
+    /// Beta function: B(a,b) = Γ(a)Γ(b)/Γ(a+b).
+    Beta(ExprId, ExprId),
+
     // -- combinatorial -------------------------------------------------------
     /// Factorial: `n!`
     Factorial(ExprId),
@@ -282,6 +301,7 @@ impl ExprNode {
             ExprNode::Pow(a, b)
             | ExprNode::Atan2(a, b)
             | ExprNode::Binomial(a, b)
+            | ExprNode::Beta(a, b)
             | ExprNode::Gt(a, b)
             | ExprNode::Ge(a, b)
             | ExprNode::Eq_(a, b)
@@ -316,6 +336,11 @@ impl ExprNode {
             | ExprNode::Acosh(x)
             | ExprNode::Atanh(x)
             | ExprNode::Sign(x)
+            | ExprNode::Gamma(x)
+            | ExprNode::LogGamma(x)
+            | ExprNode::Digamma(x)
+            | ExprNode::Erf(x)
+            | ExprNode::Erfc(x)
             | ExprNode::Factorial(x)
             | ExprNode::Not(x) => smallvec![*x],
 
@@ -374,6 +399,7 @@ impl ExprNode {
             ExprNode::Pow(a, b)
             | ExprNode::Atan2(a, b)
             | ExprNode::Binomial(a, b)
+            | ExprNode::Beta(a, b)
             | ExprNode::Gt(a, b)
             | ExprNode::Ge(a, b)
             | ExprNode::Eq_(a, b)
@@ -412,6 +438,11 @@ impl ExprNode {
             | ExprNode::Acosh(x)
             | ExprNode::Atanh(x)
             | ExprNode::Sign(x)
+            | ExprNode::Gamma(x)
+            | ExprNode::LogGamma(x)
+            | ExprNode::Digamma(x)
+            | ExprNode::Erf(x)
+            | ExprNode::Erfc(x)
             | ExprNode::Factorial(x)
             | ExprNode::Not(x) => f(*x),
 
@@ -447,6 +478,7 @@ impl ExprNode {
             ExprNode::Pow(..)
             | ExprNode::Atan2(..)
             | ExprNode::Binomial(..)
+            | ExprNode::Beta(..)
             | ExprNode::Gt(..)
             | ExprNode::Ge(..)
             | ExprNode::Eq_(..)
@@ -473,6 +505,11 @@ impl ExprNode {
             | ExprNode::Acosh(_)
             | ExprNode::Atanh(_)
             | ExprNode::Sign(_)
+            | ExprNode::Gamma(_)
+            | ExprNode::LogGamma(_)
+            | ExprNode::Digamma(_)
+            | ExprNode::Erf(_)
+            | ExprNode::Erfc(_)
             | ExprNode::Factorial(_)
             | ExprNode::Not(_) => 1,
             ExprNode::Apply(_, args) => args.len(),
@@ -544,6 +581,12 @@ impl fmt::Debug for ExprNode {
             ExprNode::Min(ids) => f.debug_tuple("Min").field(ids).finish(),
             ExprNode::Max(ids) => f.debug_tuple("Max").field(ids).finish(),
             ExprNode::Sign(id) => write!(f, "Sign({id:?})"),
+            ExprNode::Gamma(x) => f.debug_tuple("Gamma").field(x).finish(),
+            ExprNode::LogGamma(x) => f.debug_tuple("LogGamma").field(x).finish(),
+            ExprNode::Digamma(x) => f.debug_tuple("Digamma").field(x).finish(),
+            ExprNode::Erf(x) => f.debug_tuple("Erf").field(x).finish(),
+            ExprNode::Erfc(x) => f.debug_tuple("Erfc").field(x).finish(),
+            ExprNode::Beta(a, b) => f.debug_tuple("Beta").field(a).field(b).finish(),
             ExprNode::Factorial(id) => write!(f, "Factorial({id:?})"),
             ExprNode::Binomial(n, k) => write!(f, "Binomial({n:?}, {k:?})"),
             ExprNode::BoolTrue => write!(f, "BoolTrue"),

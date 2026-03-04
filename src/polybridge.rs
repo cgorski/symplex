@@ -203,6 +203,14 @@ fn convert_node(
         // Combinatorial nodes are not polynomial.
         ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => None,
 
+        // Special functions are not polynomial.
+        ExprNode::Gamma(_)
+        | ExprNode::LogGamma(_)
+        | ExprNode::Digamma(_)
+        | ExprNode::Erf(_)
+        | ExprNode::Erfc(_)
+        | ExprNode::Beta(_, _) => None,
+
         // Boolean, relational, logical, and piecewise nodes are not polynomial.
         ExprNode::BoolTrue
         | ExprNode::BoolFalse
