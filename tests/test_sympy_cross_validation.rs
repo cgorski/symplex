@@ -5,6 +5,16 @@
 //! for ALL 13 categories (37 subcategories, 263 total fixtures):
 //!   diff, integrate, definite_integral, simplify, expand, solve,
 //!   eval, series, limit, matrix, algebra, evalf, special_func.
+//!
+//! === HONESTY POLICY ===
+//! PASS           = symplex matches SymPy numerically at ALL eval points (within tolerance)
+//! FAIL           = symplex produces a result but it's numerically WRONG compared to SymPy
+//! NOT_IMPLEMENTED = symplex returns an error or unevaluated form (honest: we tried, couldn't)
+//! UNSUPPORTED_API = symplex doesn't have the public API for this operation
+//!
+//! NO skipping because an eval point is "inconvenient".
+//! NO hiding wrong limit results as "inaccuracy".
+//! NO masking unevaluated integrals as "could not evaluate".
 
 use std::collections::HashMap;
 use symplex::prelude::*;
@@ -105,6 +115,29 @@ struct Eigenvalue {
     multiplicity: Option<u32>,
 }
 
+// ── Result statuses ────────────────────────────────────────────────────
+
+enum Status {
+    Pass,
+    Fail(String),
+    NotImplemented(String),
+    UnsupportedApi(String),
+}
+
+#[derive(Default, Clone)]
+struct CategoryStats {
+    passed: usize,
+    failed: usize,
+    not_impl: usize,
+    no_api: usize,
+}
+
+impl CategoryStats {
+    fn total(&self) -> usize {
+        self.passed + self.failed + self.not_impl + self.no_api
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 fn approx_eq(a: f64, b: f64) -> bool {
@@ -123,20 +156,16 @@ fn approx_eq(a: f64, b: f64) -> bool {
 }
 
 /// Substitute variables and evaluate to f64.
-/// Uses the parser to convert f64 values to exact rationals.
 fn eval_at_point(expr: &Ex, ctx: &Context, subs: &HashMap<String, f64>) -> Option<f64> {
     let mut result = expr.clone();
     for (var_name, val) in subs {
         let var = ctx.symbol(var_name);
-        // Use plain decimal format — scientific notation (e.g. 7e-01)
-        // confuses the parser because 'e' is Euler's number.
         let point_str = format!("{}", val);
         let point = symplex::parse::parse(ctx, &point_str).ok()?;
         result = result.subs(&var, &point);
     }
     let result = result.eval();
     let val = result.evalf_f64().ok()?;
-    // Reject NaN/Inf as "can't evaluate"
     if val.is_nan() || val.is_infinite() {
         return None;
     }
@@ -152,48 +181,42 @@ fn parse_point(ctx: &Context, s: &str) -> Option<Ex> {
     }
 }
 
-// ── Per-category statistics ────────────────────────────────────────────
-
-#[derive(Default, Clone)]
-struct CategoryStats {
-    passed: usize,
-    failed: usize,
-    skipped: usize,
-    unsupported: usize,
-}
-
-impl CategoryStats {
-    fn total(&self) -> usize {
-        self.passed + self.failed + self.skipped + self.unsupported
+/// Format a human-readable description for a fixture.
+fn fixture_desc(fixture: &Fixture) -> String {
+    let input = fixture.input.as_deref().unwrap_or("(none)");
+    let cat = &fixture.category;
+    let subcat = fixture.subcategory.as_deref().unwrap_or("");
+    if subcat.is_empty() {
+        format!("[{}] {}", cat, input)
+    } else {
+        format!("[{}:{}] {}", cat, subcat, input)
     }
 }
 
-// ── Result type for each fixture ───────────────────────────────────────
-
-enum FixtureResult {
-    Passed,
-    Failed(String),
-    Skipped(String),
-    Unsupported(String),
+/// Build the category key for grouping stats.
+fn cat_key(fixture: &Fixture) -> String {
+    let cat = fixture.category.as_str();
+    let subcat = fixture.subcategory.as_deref().unwrap_or("");
+    if subcat.is_empty() {
+        cat.to_string()
+    } else {
+        format!("{}:{}", cat, subcat)
+    }
 }
 
-// ── Eval-point comparison (standard: direct value match) ───────────────
+// ── Eval-point comparison (strict: no singularity excuses) ─────────────
 
-/// Check eval points by direct substitution and comparison.
-/// Skips individual points where evaluation fails (NaN, Inf, parse error).
-/// Returns Ok(true) if all evaluable points match, Ok(false) if mismatch,
-/// Err(reason) if no points could be evaluated at all.
-fn check_eval_points(
+/// Check eval points by direct substitution. EVERY point must match.
+/// If we can't evaluate at a point (our engine returns None), that's
+/// NotImplemented — not a silent skip.
+fn check_eval_points_strict(
     result: &Ex,
     ctx: &Context,
     eval_points: &[EvalPoint],
-    category: &str,
-    id: usize,
-    input: &str,
-    original: Option<&Ex>,
-) -> Result<bool, String> {
-    let mut all_ok = true;
+    fixture: &Fixture,
+) -> Status {
     let mut any_evaluated = false;
+    let mut mismatches: Vec<String> = Vec::new();
 
     for pt in eval_points {
         let expected = match &pt.value {
@@ -201,7 +224,8 @@ fn check_eval_points(
             None => continue,
         };
 
-        // Skip points where expected value is NaN or Inf
+        // Skip points where SymPy itself returned NaN or Inf
+        // (those are genuinely bad test points from the generator)
         if expected.re.is_nan() || expected.re.is_infinite() {
             continue;
         }
@@ -210,154 +234,153 @@ fn check_eval_points(
             Some(val) => {
                 any_evaluated = true;
                 if !approx_eq(val, expected.re) {
-                    // If we have the original expression, check whether it
-                    // can even be evaluated at this point.  When the original
-                    // yields None (singularity / domain error) or a value
-                    // that also disagrees with SymPy, the mismatch is due to
-                    // the eval point itself, not our transformation — skip it.
-                    if let Some(orig) = original {
-                        match eval_at_point(orig, ctx, &pt.subs) {
-                            None => {
-                                // Original can't evaluate here — singularity.
-                                continue;
-                            }
-                            Some(orig_val) if !approx_eq(orig_val, expected.re) => {
-                                // Original also disagrees — point is problematic.
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-                    println!(
-                        "  MISMATCH [{}] id={} '{}' at {:?}: symplex={}, sympy={}",
-                        category, id, input, pt.subs, val, expected.re
-                    );
-                    all_ok = false;
+                    mismatches.push(format!(
+                        "at {:?}: symplex={}, sympy={}",
+                        pt.subs, val, expected.re
+                    ));
                 }
             }
             None => {
-                // Can't evaluate at this point — skip silently.
-                // This handles singularities, domain errors, etc.
+                // Our engine can't evaluate at this point.
+                // This could be our bug or a genuinely hard point.
+                // We still count it — don't silently skip.
+                any_evaluated = true;
+                mismatches.push(format!(
+                    "at {:?}: symplex=<eval failed>, sympy={}",
+                    pt.subs, expected.re
+                ));
             }
         }
     }
 
     if !any_evaluated {
-        return Err("could not evaluate at any point".to_string());
+        return Status::NotImplemented(format!("no evaluable points for id={}", fixture.id));
     }
-    Ok(all_ok)
+
+    if mismatches.is_empty() {
+        Status::Pass
+    } else {
+        Status::Fail(mismatches.join("; "))
+    }
 }
 
-/// Shared helper: check eval points from a fixture, falling back to direct
-/// value comparison if no eval_points are present.
-fn check_eval_points_fixture(
-    result: &Ex,
-    ctx: &Context,
-    fixture: &Fixture,
-    category: &str,
-    input_str: &str,
-    original: Option<&Ex>,
-) -> FixtureResult {
+/// Standard fixture eval-point check, with fallback to direct value.
+fn check_eval_points_fixture_strict(result: &Ex, ctx: &Context, fixture: &Fixture) -> Status {
     match &fixture.eval_points {
         Some(points) if !points.is_empty() => {
-            match check_eval_points(
-                result, ctx, points, category, fixture.id, input_str, original,
-            ) {
-                Ok(true) => FixtureResult::Passed,
-                Ok(false) => FixtureResult::Failed("eval point mismatch".into()),
-                Err(reason) => FixtureResult::Skipped(reason),
-            }
+            check_eval_points_strict(result, ctx, points, fixture)
         }
         _ => {
-            // No eval points — try direct value comparison if available
+            // No eval points — try direct value comparison
             if let Some(expected) = &fixture.value {
                 let evaled = result.clone().eval();
                 match evaled.evalf_f64() {
                     Ok(val) if !val.is_nan() => {
                         if approx_eq(val, expected.re) {
-                            FixtureResult::Passed
+                            Status::Pass
                         } else {
-                            FixtureResult::Failed(format!(
+                            Status::Fail(format!(
                                 "value mismatch: symplex={}, sympy={}",
                                 val, expected.re
                             ))
                         }
                     }
-                    Ok(_) => FixtureResult::Skipped("evalf returned NaN".into()),
-                    Err(e) => FixtureResult::Skipped(format!("evalf failed: {}", e)),
+                    Ok(_) => Status::NotImplemented("evalf returned NaN".into()),
+                    Err(e) => Status::NotImplemented(format!("evalf failed: {}", e)),
                 }
             } else {
-                FixtureResult::Skipped("no eval points or expected value".into())
+                Status::NotImplemented("no eval points or expected value in fixture".into())
             }
         }
     }
 }
 
-// ── Integration-specific eval-point comparison ─────────────────────────
+// ── Integration eval-point comparison (difference method) ──────────────
 //
-// Antiderivatives are unique only up to a constant of integration.
-// SymPy picks one representative; symplex may pick a different one.
-// To compare correctly, we use a *difference* method:
-//   if F₁ and F₂ are both antiderivatives, then F₁(x) - F₂(x) = C for all x.
-// We compare F_symplex(xᵢ) - F_symplex(x₀) against F_sympy(xᵢ) - F_sympy(x₀).
+// Antiderivatives are unique only up to a constant, so we use:
+//   F_symplex(xᵢ) - F_symplex(x₀) vs F_sympy(xᵢ) - F_sympy(x₀)
+// This IS legitimate math. But if the result is unevaluated Integral(...),
+// that's NOT_IMPLEMENTED — not a skip.
 
 fn check_eval_points_integration(
     result: &Ex,
     ctx: &Context,
     eval_points: &[EvalPoint],
-    id: usize,
-    input: &str,
-) -> FixtureResult {
+    fixture: &Fixture,
+) -> Status {
+    // First: check if result is an unevaluated Integral node
+    let result_str = format!("{}", result);
+    if result_str.contains("Integral") || result_str.contains("integral") {
+        return Status::NotImplemented(format!(
+            "integration returned unevaluated form: {}",
+            if result_str.len() > 80 {
+                format!("{}...", &result_str[..80])
+            } else {
+                result_str
+            }
+        ));
+    }
+
     // Collect all evaluable (symplex_val, sympy_expected) pairs.
-    let mut pairs: Vec<(f64, f64)> = Vec::new();
+    let mut pairs: Vec<(f64, f64, HashMap<String, f64>)> = Vec::new();
 
     for pt in eval_points {
         let expected = match &pt.value {
             Some(v) if !v.re.is_nan() && !v.re.is_infinite() => v.re,
             _ => continue,
         };
-        if let Some(val) = eval_at_point(result, ctx, &pt.subs) {
-            pairs.push((val, expected));
+        match eval_at_point(result, ctx, &pt.subs) {
+            Some(val) => pairs.push((val, expected, pt.subs.clone())),
+            None => {
+                // Can't evaluate our antiderivative at this point.
+                // With difference method we need at least 2 points,
+                // so track this but don't immediately fail.
+            }
         }
     }
 
     if pairs.is_empty() {
-        return FixtureResult::Skipped("could not evaluate at any point".into());
+        return Status::NotImplemented(format!(
+            "could not evaluate integration result at any point for id={}",
+            fixture.id
+        ));
     }
 
-    // If only one point, fall back to direct comparison.
     if pairs.len() == 1 {
-        let (got, exp) = pairs[0];
+        // Only one evaluable point — can't use difference method.
+        // Fall back to direct comparison (may fail due to constant offset, that's fine).
+        let (got, exp, ref subs) = pairs[0];
         if approx_eq(got, exp) {
-            return FixtureResult::Passed;
+            return Status::Pass;
         }
-        // Could be a constant offset — can't tell with one point, so skip.
-        return FixtureResult::Skipped(
-            "only one eval point; cannot determine constant offset".into(),
-        );
+        return Status::NotImplemented(format!(
+            "only 1 eval point; cannot determine constant offset (symplex={}, sympy={}, at {:?})",
+            got, exp, subs
+        ));
     }
 
-    // Use the first point as reference.
-    let (ref_symplex, ref_sympy) = pairs[0];
-    let mut all_ok = true;
+    // Use first point as reference for difference method.
+    let (ref_symplex, ref_sympy, _) = pairs[0];
+    let mut mismatches: Vec<String> = Vec::new();
 
-    for (i, &(sx, sp)) in pairs.iter().enumerate().skip(1) {
+    for (i, &(sx, sp, ref subs)) in pairs.iter().enumerate().skip(1) {
         let symplex_diff = sx - ref_symplex;
         let sympy_diff = sp - ref_sympy;
         if !approx_eq(symplex_diff, sympy_diff) {
-            println!(
-                "  MISMATCH [integrate] id={} '{}' point {}: \
-                 symplex_diff={}, sympy_diff={} (offset issue)",
-                id, input, i, symplex_diff, sympy_diff
-            );
-            all_ok = false;
+            mismatches.push(format!(
+                "point {}: symplex_diff={}, sympy_diff={} (at {:?})",
+                i, symplex_diff, sympy_diff, subs
+            ));
         }
     }
 
-    if all_ok {
-        FixtureResult::Passed
+    if mismatches.is_empty() {
+        Status::Pass
     } else {
-        FixtureResult::Failed("integration eval point mismatch (difference method)".into())
+        Status::Fail(format!(
+            "integration difference method mismatch: {}",
+            mismatches.join("; ")
+        ))
     }
 }
 
@@ -374,53 +397,43 @@ fn cross_validate_against_sympy() {
 
     let ctx = Context::new();
     let mut stats: HashMap<String, CategoryStats> = HashMap::new();
-    let mut failure_details: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    let mut not_impls: Vec<String> = Vec::new();
 
     for fixture in &file.fixtures {
-        let cat = fixture.category.as_str();
-        let subcat = fixture.subcategory.as_deref().unwrap_or("");
-        let cat_key = if subcat.is_empty() {
-            cat.to_string()
-        } else {
-            format!("{}:{}", cat, subcat)
-        };
+        let key = cat_key(fixture);
+        let entry = stats.entry(key.clone()).or_default();
+        let desc = fixture_desc(fixture);
 
-        let entry = stats.entry(cat_key.clone()).or_default();
-
-        let result = process_fixture(&ctx, fixture, cat, subcat);
+        let result = process_fixture(&ctx, fixture);
         match result {
-            FixtureResult::Passed => entry.passed += 1,
-            FixtureResult::Failed(reason) => {
+            Status::Pass => {
+                entry.passed += 1;
+            }
+            Status::Fail(reason) => {
                 entry.failed += 1;
-                let msg = format!(
-                    "  FAIL id={} [{}] input={:?} — {}",
-                    fixture.id,
-                    cat_key,
-                    fixture.input.as_deref().unwrap_or("(none)"),
-                    reason
-                );
-                println!("{}", msg);
-                failure_details.push(msg);
+                let msg = format!("FAIL id={} {} — {}", fixture.id, desc, reason);
+                failures.push(msg);
             }
-            FixtureResult::Skipped(reason) => {
-                entry.skipped += 1;
-                println!("  SKIP id={} [{}] — {}", fixture.id, cat_key, reason);
+            Status::NotImplemented(reason) => {
+                entry.not_impl += 1;
+                let msg = format!("NOT_IMPL id={} {} — {}", fixture.id, desc, reason);
+                not_impls.push(msg);
             }
-            FixtureResult::Unsupported(reason) => {
-                entry.unsupported += 1;
-                println!("  UNSUPPORTED id={} [{}] — {}", fixture.id, cat_key, reason);
+            Status::UnsupportedApi(reason) => {
+                entry.no_api += 1;
+                let msg = format!("NO_API id={} {} — {}", fixture.id, desc, reason);
+                not_impls.push(msg);
             }
         }
     }
 
-    // ── Print report ───────────────────────────────────────────────
+    // ── Print summary table ────────────────────────────────────────
 
     println!("\n{}", "=".repeat(80));
-    println!("=== SymPy Cross-Validation ({}) ===", file.generated_by);
-    println!("{}", "=".repeat(80));
     println!(
-        "{:<25} | {:>7} | {:>7} | {:>7} | {:>11}",
-        "Category", "Passed", "Failed", "Skipped", "Unsupported"
+        "{:<30} {:>6} {:>6} {:>8} {:>7}",
+        "Category", "Pass", "Fail", "NotImpl", "NoAPI"
     );
     println!("{}", "-".repeat(80));
 
@@ -431,19 +444,19 @@ fn cross_validate_against_sympy() {
     for key in &sorted_keys {
         let s = &stats[key];
         println!(
-            "{:<25} | {:>7} | {:>7} | {:>7} | {:>11}",
-            key, s.passed, s.failed, s.skipped, s.unsupported
+            "{:<30} {:>6} {:>6} {:>8} {:>7}",
+            key, s.passed, s.failed, s.not_impl, s.no_api
         );
         total.passed += s.passed;
         total.failed += s.failed;
-        total.skipped += s.skipped;
-        total.unsupported += s.unsupported;
+        total.not_impl += s.not_impl;
+        total.no_api += s.no_api;
     }
 
     println!("{}", "-".repeat(80));
     println!(
-        "{:<25} | {:>7} | {:>7} | {:>7} | {:>11}",
-        "TOTAL", total.passed, total.failed, total.skipped, total.unsupported
+        "{:<30} {:>6} {:>6} {:>8} {:>7}",
+        "TOTAL", total.passed, total.failed, total.not_impl, total.no_api
     );
     println!("{}", "=".repeat(80));
     println!(
@@ -453,24 +466,44 @@ fn cross_validate_against_sympy() {
     );
     println!();
 
-    if !failure_details.is_empty() {
-        println!("=== Failure Details ===");
-        for msg in &failure_details {
+    // ── Print EVERY failure with details ───────────────────────────
+
+    if !failures.is_empty() {
+        println!("=== FAILURES (must fix) ===");
+        for msg in &failures {
             println!("{}", msg);
         }
         println!();
     }
 
+    // ── Print NOT_IMPLEMENTED / NO_API (informational) ─────────────
+
+    if !not_impls.is_empty() {
+        println!("=== NOT IMPLEMENTED / NO API (future work) ===");
+        for msg in &not_impls {
+            println!("{}", msg);
+        }
+        println!();
+    }
+
+    // ── Assert: only failures cause test to fail ───────────────────
+    // NotImplemented and NoAPI are informational — they measure
+    // future work, not regressions.
+
     assert_eq!(
         total.failed, 0,
-        "{} cross-validation fixture(s) FAILED (see details above)",
-        total.failed
+        "\n{} cross-validation fixture(s) FAILED.\n\
+         NotImplemented={} and NoAPI={} are informational (not failures).\n\
+         See FAILURES list above for details.",
+        total.failed, total.not_impl, total.no_api
     );
 }
 
 // ── Fixture dispatch ───────────────────────────────────────────────────
 
-fn process_fixture(ctx: &Context, fixture: &Fixture, cat: &str, subcat: &str) -> FixtureResult {
+fn process_fixture(ctx: &Context, fixture: &Fixture) -> Status {
+    let cat = fixture.category.as_str();
+    let subcat = fixture.subcategory.as_deref().unwrap_or("");
     match cat {
         "diff" => process_diff(ctx, fixture, subcat),
         "integrate" => process_integrate(ctx, fixture),
@@ -485,21 +518,21 @@ fn process_fixture(ctx: &Context, fixture: &Fixture, cat: &str, subcat: &str) ->
         "algebra" => process_algebra(ctx, fixture, subcat),
         "evalf" => process_evalf(ctx, fixture),
         "special_func" => process_special_func(ctx, fixture, subcat),
-        other => FixtureResult::Unsupported(format!("unknown category '{}'", other)),
+        other => Status::UnsupportedApi(format!("unknown category '{}'", other)),
     }
 }
 
 // ── diff ───────────────────────────────────────────────────────────────
 
-fn process_diff(ctx: &Context, fixture: &Fixture, subcat: &str) -> FixtureResult {
+fn process_diff(ctx: &Context, fixture: &Fixture, subcat: &str) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let result = match subcat {
@@ -519,59 +552,69 @@ fn process_diff(ctx: &Context, fixture: &Fixture, subcat: &str) -> FixtureResult
             expr.diff(&var)
         }
         _ => {
-            // basic, trig, exp_log, hyperbolic, chain_rule
             let var_name = fixture.variable.as_deref().unwrap_or("x");
             let var = ctx.symbol(var_name);
             expr.diff(&var)
         }
     };
 
-    check_eval_points_fixture(&result, ctx, fixture, "diff", input_str, None)
+    check_eval_points_fixture_strict(&result, ctx, fixture)
 }
 
 // ── integrate ──────────────────────────────────────────────────────────
-//
-// Uses the difference method for eval-point comparison, since antiderivatives
-// are only determined up to an additive constant.
 
-fn process_integrate(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_integrate(ctx: &Context, fixture: &Fixture) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let var_name = fixture.variable.as_deref().unwrap_or("x");
     let var = ctx.symbol(var_name);
     let result = expr.integrate(&var);
 
+    // Check for unevaluated Integral node FIRST
+    let result_str = format!("{}", result);
+    if result_str.contains("Integral") || result_str.contains("integral") {
+        return Status::NotImplemented(format!(
+            "integration returned unevaluated form: {}",
+            if result_str.len() > 100 {
+                format!("{}...", &result_str[..100])
+            } else {
+                result_str
+            }
+        ));
+    }
+
     match &fixture.eval_points {
         Some(points) if !points.is_empty() => {
-            check_eval_points_integration(&result, ctx, points, fixture.id, input_str)
+            check_eval_points_integration(&result, ctx, points, fixture)
         }
         _ => {
-            // No eval points — try direct value comparison if available
+            // No eval points — try direct value comparison
             if let Some(expected) = &fixture.value {
                 let evaled = result.eval();
                 match evaled.evalf_f64() {
                     Ok(val) if !val.is_nan() => {
                         if approx_eq(val, expected.re) {
-                            FixtureResult::Passed
+                            Status::Pass
                         } else {
-                            FixtureResult::Failed(format!(
+                            Status::Fail(format!(
                                 "integrate value: symplex={}, sympy={}",
                                 val, expected.re
                             ))
                         }
                     }
-                    _ => FixtureResult::Skipped("evalf failed for integrate result".into()),
+                    Ok(_) => Status::NotImplemented("integrate evalf returned NaN".into()),
+                    Err(e) => Status::NotImplemented(format!("integrate evalf failed: {}", e)),
                 }
             } else {
-                FixtureResult::Skipped("no eval points or expected value".into())
+                Status::NotImplemented("no eval points or expected value".into())
             }
         }
     }
@@ -579,15 +622,15 @@ fn process_integrate(ctx: &Context, fixture: &Fixture) -> FixtureResult {
 
 // ── definite_integral ──────────────────────────────────────────────────
 
-fn process_definite_integral(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_definite_integral(ctx: &Context, fixture: &Fixture) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let var_name = fixture.variable.as_deref().unwrap_or("x");
@@ -595,74 +638,90 @@ fn process_definite_integral(ctx: &Context, fixture: &Fixture) -> FixtureResult 
 
     let lower_str = match &fixture.lower {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no lower bound".into()),
+        None => return Status::NotImplemented("no lower bound in fixture".into()),
     };
     let upper_str = match &fixture.upper {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no upper bound".into()),
+        None => return Status::NotImplemented("no upper bound in fixture".into()),
     };
 
     let lower = match parse_point(ctx, lower_str) {
         Some(e) => e,
-        None => return FixtureResult::Skipped(format!("can't parse lower: {}", lower_str)),
+        None => return Status::NotImplemented(format!("can't parse lower bound: {}", lower_str)),
     };
     let upper = match parse_point(ctx, upper_str) {
         Some(e) => e,
-        None => return FixtureResult::Skipped(format!("can't parse upper: {}", upper_str)),
+        None => return Status::NotImplemented(format!("can't parse upper bound: {}", upper_str)),
     };
 
     let result = expr.definite_integral(&var, &lower, &upper);
+
+    // Check for unevaluated form
+    let result_str = format!("{}", result);
+    if result_str.contains("Integral") || result_str.contains("integral") {
+        return Status::NotImplemented(format!(
+            "definite integral returned unevaluated form: {}",
+            if result_str.len() > 100 {
+                format!("{}...", &result_str[..100])
+            } else {
+                result_str
+            }
+        ));
+    }
+
     let result = result.eval().full_simplify();
 
     if let Some(expected) = &fixture.value {
         match result.evalf_f64() {
             Ok(val) if !val.is_nan() => {
                 if approx_eq(val, expected.re) {
-                    FixtureResult::Passed
+                    Status::Pass
                 } else {
-                    FixtureResult::Failed(format!(
+                    Status::Fail(format!(
                         "definite_integral: symplex={}, sympy={}",
                         val, expected.re
                     ))
                 }
             }
-            Ok(_) => FixtureResult::Skipped("evalf returned NaN".into()),
-            Err(e) => FixtureResult::Skipped(format!("evalf failed: {}", e)),
+            Ok(_) => Status::NotImplemented("definite integral evalf returned NaN".into()),
+            Err(e) => Status::NotImplemented(format!("definite integral evalf failed: {}", e)),
         }
     } else {
-        FixtureResult::Skipped("no expected value".into())
+        Status::NotImplemented("no expected value in fixture".into())
     }
 }
 
 // ── simplify ───────────────────────────────────────────────────────────
+// Compare numerically at eval points. If symplex result evaluates to a
+// different number than SymPy's result at a given point, that's a FAIL.
+// Period. No "singularity detection" excuses.
 
-fn process_simplify(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_simplify(ctx: &Context, fixture: &Fixture) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let result = expr.full_simplify();
-
-    check_eval_points_fixture(&result, ctx, fixture, "simplify", input_str, Some(&expr))
+    check_eval_points_fixture_strict(&result, ctx, fixture)
 }
 
 // ── expand ─────────────────────────────────────────────────────────────
 
-fn process_expand(ctx: &Context, fixture: &Fixture, subcat: &str) -> FixtureResult {
+fn process_expand(ctx: &Context, fixture: &Fixture, subcat: &str) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let result = match subcat {
@@ -670,20 +729,23 @@ fn process_expand(ctx: &Context, fixture: &Fixture, subcat: &str) -> FixtureResu
         _ => expr.expand(),
     };
 
-    check_eval_points_fixture(&result, ctx, fixture, "expand", input_str, None)
+    check_eval_points_fixture_strict(&result, ctx, fixture)
 }
 
 // ── solve ──────────────────────────────────────────────────────────────
+// Every root symplex returns MUST satisfy the equation (residual < tol).
+// If a root doesn't satisfy the equation, that's a FAIL.
+// If we find fewer roots than SymPy, log as INFO (not failure).
 
-fn process_solve(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_solve(ctx: &Context, fixture: &Fixture) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let var_name = fixture.variable.as_deref().unwrap_or("x");
@@ -691,22 +753,18 @@ fn process_solve(ctx: &Context, fixture: &Fixture) -> FixtureResult {
 
     let sympy_roots = match &fixture.sympy_roots {
         Some(r) => r,
-        None => return FixtureResult::Skipped("no sympy_roots".into()),
+        None => return Status::NotImplemented("no sympy_roots in fixture".into()),
     };
 
     let roots = expr.solve_or_empty(&var);
 
     // Verify every symplex root actually makes the expression ≈ 0.
-    let mut all_ok = true;
+    let mut bad_roots: Vec<String> = Vec::new();
     for root in &roots {
         let residual = expr.subs(&var, root).eval();
         if let Ok(r) = residual.evalf_f64() {
             if !r.is_nan() && r.abs() > TOLERANCE {
-                println!(
-                    "  MISMATCH [solve] id={} '{}': root {} has residual {}",
-                    fixture.id, input_str, root, r
-                );
-                all_ok = false;
+                bad_roots.push(format!("root {} has residual {} (should be ~0)", root, r));
             }
         }
         // If we can't evaluate the residual, the root might be symbolic
@@ -725,24 +783,24 @@ fn process_solve(ctx: &Context, fixture: &Fixture) -> FixtureResult {
         );
     }
 
-    if all_ok {
-        FixtureResult::Passed
+    if bad_roots.is_empty() {
+        Status::Pass
     } else {
-        FixtureResult::Failed("some roots have non-zero residual".into())
+        Status::Fail(format!("bad roots: {}", bad_roots.join("; ")))
     }
 }
 
 // ── eval ───────────────────────────────────────────────────────────────
 
-fn process_eval(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_eval(ctx: &Context, fixture: &Fixture) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let result = expr.eval();
@@ -751,30 +809,30 @@ fn process_eval(ctx: &Context, fixture: &Fixture) -> FixtureResult {
         match result.evalf_f64() {
             Ok(val) if !val.is_nan() => {
                 if approx_eq(val, expected.re) {
-                    FixtureResult::Passed
+                    Status::Pass
                 } else {
-                    FixtureResult::Failed(format!("eval: symplex={}, sympy={}", val, expected.re))
+                    Status::Fail(format!("eval: symplex={}, sympy={}", val, expected.re))
                 }
             }
-            Ok(_) => FixtureResult::Skipped("evalf returned NaN".into()),
-            Err(e) => FixtureResult::Skipped(format!("evalf failed: {}", e)),
+            Ok(_) => Status::NotImplemented("eval evalf returned NaN".into()),
+            Err(e) => Status::NotImplemented(format!("eval evalf failed: {}", e)),
         }
     } else {
-        FixtureResult::Skipped("no expected value".into())
+        Status::NotImplemented("no expected value in fixture".into())
     }
 }
 
 // ── series ─────────────────────────────────────────────────────────────
 
-fn process_series(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_series(ctx: &Context, fixture: &Fixture) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let var_name = fixture.variable.as_deref().unwrap_or("x");
@@ -786,40 +844,38 @@ fn process_series(ctx: &Context, fixture: &Fixture) -> FixtureResult {
     let result = if point_str == "0" {
         match expr.maclaurin(&var, order) {
             Ok(s) => s,
-            Err(e) => return FixtureResult::Skipped(format!("maclaurin failed: {}", e)),
+            Err(e) => return Status::NotImplemented(format!("maclaurin failed: {}", e)),
         }
     } else {
         let point = match parse_point(ctx, point_str) {
             Some(p) => p,
-            None => return FixtureResult::Skipped(format!("can't parse point: {}", point_str)),
+            None => {
+                return Status::NotImplemented(format!("can't parse series point: {}", point_str));
+            }
         };
         match expr.series(&var, &point, order) {
             Ok(s) => s,
-            Err(e) => return FixtureResult::Skipped(format!("series failed: {}", e)),
+            Err(e) => return Status::NotImplemented(format!("series failed: {}", e)),
         }
     };
 
-    check_eval_points_fixture(&result, ctx, fixture, "series", input_str, None)
+    check_eval_points_fixture_strict(&result, ctx, fixture)
 }
 
 // ── limit ──────────────────────────────────────────────────────────────
-//
-// For limits, we first try our limit engine. If it succeeds, we verify
-// the result against the expected value. If our answer disagrees with
-// SymPy, we perform a numerical cross-check by evaluating the expression
-// near the limit point. If the numerical check confirms SymPy (not us),
-// we mark as "skipped" (engine limitation) rather than "failed" — the
-// engine produced a wrong answer, but we're honestly reporting it.
+// If our limit engine returns an error, that's NOT_IMPLEMENTED.
+// If it returns a VALUE but it's WRONG, that's a FAIL.
+// No "inaccuracy" euphemisms. No numerical cross-checks to excuse us.
 
-fn process_limit(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_limit(ctx: &Context, fixture: &Fixture) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let var_name = fixture.variable.as_deref().unwrap_or("x");
@@ -827,101 +883,49 @@ fn process_limit(ctx: &Context, fixture: &Fixture) -> FixtureResult {
 
     let point_str = match &fixture.point {
         Some(s) => s.as_str(),
-        None => return FixtureResult::Skipped("no point".into()),
+        None => return Status::NotImplemented("no limit point in fixture".into()),
     };
 
     let point = match parse_point(ctx, point_str) {
         Some(p) => p,
-        None => return FixtureResult::Skipped(format!("can't parse point: {}", point_str)),
+        None => return Status::NotImplemented(format!("can't parse limit point: {}", point_str)),
     };
 
-    let limit_result = match expr.limit(&var, &point) {
-        Ok(r) => r,
-        Err(e) => return FixtureResult::Skipped(format!("limit failed: {}", e)),
+    let expected = match &fixture.value {
+        Some(v) => v,
+        None => return Status::NotImplemented("no expected value for limit".into()),
     };
 
-    let limit_result = limit_result.eval();
-
-    if let Some(expected) = &fixture.value {
-        match limit_result.evalf_f64() {
-            Ok(val) if !val.is_nan() => {
-                if approx_eq(val, expected.re) {
-                    FixtureResult::Passed
-                } else {
-                    // Our limit engine gave a different answer than SymPy.
-                    // Cross-check numerically: evaluate expr near the point.
-                    let confirmed_sympy =
-                        numerical_limit_check(&expr, ctx, &var, point_str, expected.re);
-                    if confirmed_sympy {
-                        // SymPy is right, our engine is wrong — skip as limitation.
-                        FixtureResult::Skipped(format!(
-                            "limit engine inaccuracy: symplex={}, sympy={} \
-                             (numerical check confirms SymPy)",
-                            val, expected.re
+    match expr.limit(&var, &point) {
+        Ok(limit_result) => {
+            let limit_result = limit_result.eval();
+            match limit_result.evalf_f64() {
+                Ok(val) => {
+                    if val.is_nan() {
+                        Status::NotImplemented(format!(
+                            "limit result evaluated to NaN (input: {}, point: {})",
+                            input_str, point_str
                         ))
+                    } else if approx_eq(val, expected.re) {
+                        Status::Pass
                     } else {
-                        // Numerical check is inconclusive or agrees with us.
-                        // Still don't count as failure — results are ambiguous.
-                        FixtureResult::Skipped(format!(
-                            "limit disagreement: symplex={}, sympy={} (inconclusive)",
-                            val, expected.re
+                        Status::Fail(format!(
+                            "lim({}, {}->{}): symplex={}, sympy={}",
+                            input_str, var_name, point_str, val, expected.re
                         ))
                     }
                 }
-            }
-            Ok(_) => FixtureResult::Skipped("limit evalf returned NaN".into()),
-            Err(e) => FixtureResult::Skipped(format!("limit evalf failed: {}", e)),
-        }
-    } else {
-        FixtureResult::Skipped("no expected value".into())
-    }
-}
-
-/// Numerically verify a limit by evaluating the expression at points
-/// approaching the limit point, and checking if the values converge
-/// toward `expected`.
-fn numerical_limit_check(
-    expr: &Ex,
-    ctx: &Context,
-    var: &Ex,
-    point_str: &str,
-    expected: f64,
-) -> bool {
-    // Parse the point as f64 for numerical approach.
-    let target: f64 = match point_str {
-        "0" => 0.0,
-        "oo" | "inf" | "Infinity" => return false, // can't do simple numerical check at infinity
-        "-oo" | "-inf" | "-Infinity" => return false,
-        s => match s.parse::<f64>() {
-            Ok(v) => v,
-            Err(_) => return false,
-        },
-    };
-
-    // Evaluate at progressively closer points.
-    let offsets = [1e-3, 1e-5, 1e-7, 1e-9];
-    let mut close_vals: Vec<f64> = Vec::new();
-
-    for &eps in &offsets {
-        let test_val = target + eps;
-        let mut subs = HashMap::new();
-        // We need the variable name
-        let var_str = format!("{}", var);
-        subs.insert(var_str, test_val);
-        if let Some(v) = eval_at_point(expr, ctx, &subs) {
-            if !v.is_nan() && !v.is_infinite() {
-                close_vals.push(v);
+                Err(e) => Status::NotImplemented(format!(
+                    "limit result couldn't be evaluated: {} (input: {}, point: {})",
+                    e, input_str, point_str
+                )),
             }
         }
+        Err(e) => Status::NotImplemented(format!(
+            "limit engine returned error: {} (input: {}, point: {})",
+            e, input_str, point_str
+        )),
     }
-
-    if close_vals.len() < 2 {
-        return false;
-    }
-
-    // Check if the last (closest) value is near `expected`.
-    let last = *close_vals.last().unwrap();
-    (last - expected).abs() < 0.01 * expected.abs().max(1.0)
 }
 
 // ── matrix ─────────────────────────────────────────────────────────────
@@ -968,28 +972,26 @@ fn parse_matrix_from_json(
     Some(symplex::matrix::Matrix::new(mat_rows))
 }
 
-fn process_matrix(ctx: &Context, fixture: &Fixture, subcat: &str) -> FixtureResult {
+fn process_matrix(ctx: &Context, fixture: &Fixture, subcat: &str) -> Status {
     match subcat {
         "det" => process_matrix_det(ctx, fixture),
         "trace" => process_matrix_trace(ctx, fixture),
-        "inverse" => process_matrix_inverse(fixture),
-        "eigenvalue" => process_matrix_eigenvalue(fixture),
+        "inverse" => Status::UnsupportedApi("matrix inverse not in public API".into()),
+        "eigenvalue" => Status::UnsupportedApi("matrix eigenvalues not in public API".into()),
         "multiply" => process_matrix_multiply(ctx, fixture),
-        other => {
-            FixtureResult::Unsupported(format!("matrix subcategory '{}' not yet supported", other))
-        }
+        other => Status::UnsupportedApi(format!("matrix subcategory '{}' not supported", other)),
     }
 }
 
-fn process_matrix_det(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_matrix_det(ctx: &Context, fixture: &Fixture) -> Status {
     let rows = match &fixture.matrix {
         Some(m) => m,
-        None => return FixtureResult::Skipped("no matrix".into()),
+        None => return Status::NotImplemented("no matrix in fixture".into()),
     };
 
     let mat = match parse_matrix_from_json(ctx, rows) {
         Some(m) => m,
-        None => return FixtureResult::Skipped("can't parse matrix".into()),
+        None => return Status::NotImplemented("can't parse matrix".into()),
     };
 
     let det = mat.det().eval();
@@ -998,31 +1000,31 @@ fn process_matrix_det(ctx: &Context, fixture: &Fixture) -> FixtureResult {
         match det.evalf_f64() {
             Ok(val) if !val.is_nan() => {
                 if approx_eq(val, expected.re) {
-                    FixtureResult::Passed
+                    Status::Pass
                 } else {
-                    FixtureResult::Failed(format!(
+                    Status::Fail(format!(
                         "matrix det: symplex={}, sympy={}",
                         val, expected.re
                     ))
                 }
             }
-            Ok(_) => FixtureResult::Skipped("det evalf returned NaN".into()),
-            Err(e) => FixtureResult::Skipped(format!("det evalf failed: {}", e)),
+            Ok(_) => Status::NotImplemented("det evalf returned NaN".into()),
+            Err(e) => Status::NotImplemented(format!("det evalf failed: {}", e)),
         }
     } else {
-        FixtureResult::Skipped("no expected value".into())
+        Status::NotImplemented("no expected value for det".into())
     }
 }
 
-fn process_matrix_trace(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_matrix_trace(ctx: &Context, fixture: &Fixture) -> Status {
     let rows = match &fixture.matrix {
         Some(m) => m,
-        None => return FixtureResult::Skipped("no matrix".into()),
+        None => return Status::NotImplemented("no matrix in fixture".into()),
     };
 
     let mat = match parse_matrix_from_json(ctx, rows) {
         Some(m) => m,
-        None => return FixtureResult::Skipped("can't parse matrix".into()),
+        None => return Status::NotImplemented("can't parse matrix".into()),
     };
 
     let tr = mat.trace().eval();
@@ -1031,49 +1033,39 @@ fn process_matrix_trace(ctx: &Context, fixture: &Fixture) -> FixtureResult {
         match tr.evalf_f64() {
             Ok(val) if !val.is_nan() => {
                 if approx_eq(val, expected.re) {
-                    FixtureResult::Passed
+                    Status::Pass
                 } else {
-                    FixtureResult::Failed(format!(
+                    Status::Fail(format!(
                         "matrix trace: symplex={}, sympy={}",
                         val, expected.re
                     ))
                 }
             }
-            Ok(_) => FixtureResult::Skipped("trace evalf returned NaN".into()),
-            Err(e) => FixtureResult::Skipped(format!("trace evalf failed: {}", e)),
+            Ok(_) => Status::NotImplemented("trace evalf returned NaN".into()),
+            Err(e) => Status::NotImplemented(format!("trace evalf failed: {}", e)),
         }
     } else {
-        FixtureResult::Skipped("no expected value".into())
+        Status::NotImplemented("no expected value for trace".into())
     }
 }
 
-fn process_matrix_inverse(fixture: &Fixture) -> FixtureResult {
-    let _ = fixture;
-    FixtureResult::Unsupported("matrix inverse not in public API".into())
-}
-
-fn process_matrix_eigenvalue(fixture: &Fixture) -> FixtureResult {
-    let _ = fixture;
-    FixtureResult::Unsupported("matrix eigenvalues not in public API".into())
-}
-
-fn process_matrix_multiply(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_matrix_multiply(ctx: &Context, fixture: &Fixture) -> Status {
     let rows_a = match &fixture.matrix_a {
         Some(m) => m,
-        None => return FixtureResult::Skipped("no matrix_a".into()),
+        None => return Status::NotImplemented("no matrix_a in fixture".into()),
     };
     let rows_b = match &fixture.matrix_b {
         Some(m) => m,
-        None => return FixtureResult::Skipped("no matrix_b".into()),
+        None => return Status::NotImplemented("no matrix_b in fixture".into()),
     };
 
     let mat_a = match parse_matrix_from_json(ctx, rows_a) {
         Some(m) => m,
-        None => return FixtureResult::Skipped("can't parse matrix_a".into()),
+        None => return Status::NotImplemented("can't parse matrix_a".into()),
     };
     let mat_b = match parse_matrix_from_json(ctx, rows_b) {
         Some(m) => m,
-        None => return FixtureResult::Skipped("can't parse matrix_b".into()),
+        None => return Status::NotImplemented("can't parse matrix_b".into()),
     };
 
     let product = mat_a.matmul(&mat_b);
@@ -1081,13 +1073,13 @@ fn process_matrix_multiply(ctx: &Context, fixture: &Fixture) -> FixtureResult {
     if let Some(expected_rows) = &fixture.result_matrix {
         let expected_mat = match parse_matrix_from_json(ctx, expected_rows) {
             Some(m) => m,
-            None => return FixtureResult::Skipped("can't parse expected result_matrix".into()),
+            None => return Status::NotImplemented("can't parse expected result_matrix".into()),
         };
 
         let (nr, nc) = product.shape();
         let (enr, enc) = expected_mat.shape();
         if nr != enr || nc != enc {
-            return FixtureResult::Failed(format!(
+            return Status::Fail(format!(
                 "multiply shape mismatch: ({},{}) vs ({},{})",
                 nr, nc, enr, enc
             ));
@@ -1100,14 +1092,14 @@ fn process_matrix_multiply(ctx: &Context, fixture: &Fixture) -> FixtureResult {
                 match (got.evalf_f64(), exp.evalf_f64()) {
                     (Ok(g), Ok(e)) if !g.is_nan() && !e.is_nan() => {
                         if !approx_eq(g, e) {
-                            return FixtureResult::Failed(format!(
+                            return Status::Fail(format!(
                                 "multiply[{},{}]: symplex={}, sympy={}",
                                 i, j, g, e
                             ));
                         }
                     }
                     _ => {
-                        return FixtureResult::Skipped(format!(
+                        return Status::NotImplemented(format!(
                             "can't evalf multiply[{},{}]",
                             i, j
                         ));
@@ -1115,23 +1107,23 @@ fn process_matrix_multiply(ctx: &Context, fixture: &Fixture) -> FixtureResult {
                 }
             }
         }
-        FixtureResult::Passed
+        Status::Pass
     } else {
-        FixtureResult::Skipped("no expected result_matrix".into())
+        Status::NotImplemented("no expected result_matrix in fixture".into())
     }
 }
 
 // ── algebra ────────────────────────────────────────────────────────────
 
-fn process_algebra(ctx: &Context, fixture: &Fixture, subcat: &str) -> FixtureResult {
+fn process_algebra(ctx: &Context, fixture: &Fixture, subcat: &str) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let var_name = fixture.variable.as_deref().unwrap_or("x");
@@ -1144,50 +1136,42 @@ fn process_algebra(ctx: &Context, fixture: &Fixture, subcat: &str) -> FixtureRes
         "cancel" => expr.cancel(&var),
         "apart" => expr.apart(&var),
         other => {
-            return FixtureResult::Unsupported(format!(
+            return Status::UnsupportedApi(format!(
                 "algebra subcategory '{}' not supported",
                 other
             ));
         }
     };
 
-    check_eval_points_fixture(
-        &result,
-        ctx,
-        fixture,
-        &format!("algebra:{}", subcat),
-        input_str,
-        None,
-    )
+    check_eval_points_fixture_strict(&result, ctx, fixture)
 }
 
 // ── evalf ──────────────────────────────────────────────────────────────
 
-fn process_evalf(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_evalf(ctx: &Context, fixture: &Fixture) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
     let expr = match symplex::parse::parse(ctx, input_str) {
         Ok(e) => e,
-        Err(e) => return FixtureResult::Skipped(format!("parse error: {}", e)),
+        Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
     let digits = fixture.digits.unwrap_or(15);
     let sympy_result = match &fixture.sympy_result {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no sympy_result".into()),
+        None => return Status::NotImplemented("no sympy_result for evalf".into()),
     };
 
     match expr.evalf(digits) {
         Ok(result_str) => {
-            // Parse both as f64 for approximate comparison.
             let symplex_val: f64 = match result_str.parse() {
                 Ok(v) => v,
                 Err(_) => {
-                    return FixtureResult::Skipped(format!(
-                        "can't parse symplex evalf result: {}",
+                    return Status::NotImplemented(format!(
+                        "can't parse symplex evalf result as f64: {}",
                         result_str
                     ));
                 }
@@ -1195,59 +1179,60 @@ fn process_evalf(ctx: &Context, fixture: &Fixture) -> FixtureResult {
             let sympy_val: f64 = match sympy_result.parse() {
                 Ok(v) => v,
                 Err(_) => {
-                    return FixtureResult::Skipped(format!(
-                        "can't parse sympy result: {}",
+                    return Status::NotImplemented(format!(
+                        "can't parse sympy result as f64: {}",
                         sympy_result
                     ));
                 }
             };
 
             if symplex_val.is_nan() || sympy_val.is_nan() {
-                return FixtureResult::Skipped("NaN in evalf comparison".into());
+                return Status::NotImplemented("NaN in evalf comparison".into());
             }
 
             // For evalf, use tolerance based on number of digits.
-            // We're limited by f64 precision (~15 digits), so be generous.
             let evalf_tol = 10.0_f64.powi(-(digits.min(15) as i32) + 2);
             let diff = (symplex_val - sympy_val).abs();
             let rel = diff / sympy_val.abs().max(1e-30);
 
             if diff < evalf_tol || rel < evalf_tol {
-                FixtureResult::Passed
+                Status::Pass
             } else {
-                FixtureResult::Failed(format!(
+                Status::Fail(format!(
                     "evalf({} digits): symplex='{}', sympy='{}'",
                     digits, result_str, sympy_result
                 ))
             }
         }
-        Err(e) => FixtureResult::Skipped(format!("evalf failed: {}", e)),
+        Err(e) => Status::NotImplemented(format!("evalf({}) failed: {}", digits, e)),
     }
 }
 
 // ── special_func ───────────────────────────────────────────────────────
 
-fn process_special_func(ctx: &Context, fixture: &Fixture, subcat: &str) -> FixtureResult {
+fn process_special_func(ctx: &Context, fixture: &Fixture, subcat: &str) -> Status {
     match subcat {
         "factorial" => process_factorial(ctx, fixture),
-        other => FixtureResult::Unsupported(format!(
+        other => Status::UnsupportedApi(format!(
             "special_func subcategory '{}' not supported",
             other
         )),
     }
 }
 
-fn process_factorial(ctx: &Context, fixture: &Fixture) -> FixtureResult {
+fn process_factorial(ctx: &Context, fixture: &Fixture) -> Status {
     let input_str = match &fixture.input {
         Some(s) => s,
-        None => return FixtureResult::Skipped("no input".into()),
+        None => return Status::NotImplemented("no input field in fixture".into()),
     };
 
-    // Input is just an integer like "5", "10", "0"
     let n: i64 = match input_str.parse() {
         Ok(n) => n,
         Err(_) => {
-            return FixtureResult::Skipped(format!("can't parse factorial input: {}", input_str));
+            return Status::NotImplemented(format!(
+                "can't parse factorial input as integer: {}",
+                input_str
+            ));
         }
     };
 
@@ -1258,18 +1243,18 @@ fn process_factorial(ctx: &Context, fixture: &Fixture) -> FixtureResult {
         match result.evalf_f64() {
             Ok(val) if !val.is_nan() => {
                 if approx_eq(val, expected.re) {
-                    FixtureResult::Passed
+                    Status::Pass
                 } else {
-                    FixtureResult::Failed(format!(
+                    Status::Fail(format!(
                         "factorial({}): symplex={}, sympy={}",
                         n, val, expected.re
                     ))
                 }
             }
-            Ok(_) => FixtureResult::Skipped("factorial evalf returned NaN".into()),
-            Err(e) => FixtureResult::Skipped(format!("factorial evalf failed: {}", e)),
+            Ok(_) => Status::NotImplemented("factorial evalf returned NaN".into()),
+            Err(e) => Status::NotImplemented(format!("factorial evalf failed: {}", e)),
         }
     } else {
-        FixtureResult::Skipped("no expected value".into())
+        Status::NotImplemented("no expected value for factorial".into())
     }
 }
