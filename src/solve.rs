@@ -113,6 +113,8 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
     match degree {
         1 => solve_linear(arena, &poly),
         2 => solve_quadratic(arena, &poly),
+        3 => solve_cubic(arena, &poly),
+        4 => solve_quartic(arena, &poly),
         _ => solve_rational_roots(arena, &poly),
     }
 }
@@ -409,6 +411,326 @@ fn solve_quadratic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Cubic solver: a*x³ + b*x² + c*x + d = 0
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Solve a cubic polynomial. Tries rational roots first, then falls back
+/// to Cardano's formula for irrational / complex roots.
+fn solve_cubic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
+    let a = poly.coeff(3);
+    if a.is_zero() {
+        let quadratic = Poly::from_coeffs(vec![poly.coeff(0), poly.coeff(1), poly.coeff(2)]);
+        return solve_quadratic(arena, &quadratic);
+    }
+
+    // Try rational roots first — exact answers are preferable.
+    let rational_attempt = solve_rational_roots(arena, poly);
+    if !rational_attempt.is_empty() {
+        return rational_attempt;
+    }
+
+    // No rational roots — use Cardano's formula.
+    solve_cubic_cardano(arena, poly)
+}
+
+/// Pure Cardano's formula (no rational-root attempt) to avoid re-entry loops.
+fn solve_cubic_cardano(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
+    let a = poly.coeff(3);
+    let b = poly.coeff(2);
+    let c = poly.coeff(1);
+    let d = poly.coeff(0);
+
+    if a.is_zero() {
+        let quadratic = Poly::from_coeffs(vec![d, c, b]);
+        return solve_quadratic(arena, &quadratic);
+    }
+
+    let a_id = rational_to_expr(arena, &a);
+    let b_id = rational_to_expr(arena, &b);
+    let c_id = rational_to_expr(arena, &c);
+    let d_id = rational_to_expr(arena, &d);
+
+    let three = arena.int(3);
+    let nine = arena.int(9);
+    let twenty_seven = arena.int(27);
+    let two = arena.int(2);
+    let four = arena.int(4);
+
+    // Depress to t³ + pt + q = 0  via  x = t - b/(3a)
+    //   p = (3ac - b²) / (3a²)
+    //   q = (2b³ - 9abc + 27a²d) / (27a³)
+
+    // p_num = 3ac - b²
+    let tmp1 = arena.mul(&[three, a_id, c_id]);
+    let tmp2 = arena.mul(&[b_id, b_id]);
+    let p_num = arena.sub(tmp1, tmp2);
+    let p_den = arena.mul(&[three, a_id, a_id]);
+    let p = arena.div(p_num, p_den);
+
+    // q_num = 2b³ - 9abc + 27a²d
+    let tmp3 = arena.mul(&[two, b_id, b_id, b_id]);
+    let tmp4 = arena.mul(&[nine, a_id, b_id, c_id]);
+    let tmp4n = arena.neg(tmp4);
+    let tmp5 = arena.mul(&[twenty_seven, a_id, a_id, d_id]);
+    let q_num = arena.add(&[tmp3, tmp4n, tmp5]);
+    let q_den = arena.mul(&[twenty_seven, a_id, a_id, a_id]);
+    let q = arena.div(q_num, q_den);
+
+    // Discriminant: Δ = q²/4 + p³/27
+    let qq = arena.mul(&[q, q]);
+    let qq_over4 = arena.div(qq, four);
+    let ppp = arena.mul(&[p, p, p]);
+    let ppp_over27 = arena.div(ppp, twenty_seven);
+    let disc = arena.add(&[qq_over4, ppp_over27]);
+
+    // √Δ
+    let half = arena.rational(1, 2);
+    let sqrt_disc = arena.pow(disc, half);
+
+    // Cardano: t = cbrt(-q/2 + √Δ) + cbrt(-q/2 - √Δ)
+    let neg_q = arena.neg(q);
+    let neg_q_half = arena.div(neg_q, two);
+
+    let u_arg = arena.add(&[neg_q_half, sqrt_disc]);
+    let v_arg = arena.sub(neg_q_half, sqrt_disc);
+
+    let third = arena.rational(1, 3);
+    let u = arena.pow(u_arg, third);
+    let v = arena.pow(v_arg, third);
+
+    let t1 = arena.add(&[u, v]);
+
+    // Shift back: x = t - b/(3a)
+    let three_a = arena.mul(&[three, a_id]);
+    let shift = arena.div(b_id, three_a);
+    let x1 = arena.sub(t1, shift);
+
+    // Other two roots via cube roots of unity:
+    //   ω  = (-1 + i√3)/2
+    //   ω² = (-1 - i√3)/2
+    let omega_re = arena.rational(-1, 2);
+    let sqrt3 = arena.pow(three, half);
+    let sqrt3_half = arena.div(sqrt3, two);
+    let i_unit = arena.i_unit;
+    let omega_im = arena.mul(&[sqrt3_half, i_unit]);
+    let omega = arena.add(&[omega_re, omega_im]);
+    let omega2 = arena.sub(omega_re, omega_im);
+
+    let ou = arena.mul(&[omega, u]);
+    let o2v = arena.mul(&[omega2, v]);
+    let t2 = arena.add(&[ou, o2v]);
+    let o2u = arena.mul(&[omega2, u]);
+    let ov = arena.mul(&[omega, v]);
+    let t3 = arena.add(&[o2u, ov]);
+
+    let x2 = arena.sub(t2, shift);
+    let x3 = arena.sub(t3, shift);
+
+    // Simplify all roots through eval
+    let x1s = crate::eval::eval(arena, x1);
+    let x2s = crate::eval::eval(arena, x2);
+    let x3s = crate::eval::eval(arena, x3);
+
+    vec![
+        Solution { value: x1s },
+        Solution { value: x2s },
+        Solution { value: x3s },
+    ]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Quartic solver: Ferrari's method  a*x⁴ + b*x³ + c*x² + d*x + e = 0
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Solve a quartic polynomial. Tries rational roots first, then falls back
+/// to Ferrari's method.
+fn solve_quartic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
+    let a = poly.coeff(4);
+    if a.is_zero() {
+        let cubic = Poly::from_coeffs(vec![
+            poly.coeff(0),
+            poly.coeff(1),
+            poly.coeff(2),
+            poly.coeff(3),
+        ]);
+        return solve_cubic(arena, &cubic);
+    }
+
+    // Try rational roots first.
+    let rational_attempt = solve_rational_roots(arena, poly);
+    if !rational_attempt.is_empty() {
+        return rational_attempt;
+    }
+
+    // No rational roots — use Ferrari's method.
+    solve_quartic_ferrari(arena, poly)
+}
+
+/// Pure Ferrari's method (no rational-root attempt) to avoid re-entry loops.
+fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
+    let a = poly.coeff(4);
+    let b = poly.coeff(3);
+    let c = poly.coeff(2);
+    let d = poly.coeff(1);
+    let e = poly.coeff(0);
+
+    if a.is_zero() {
+        let cubic = Poly::from_coeffs(vec![e.clone(), d, c, b]);
+        return solve_cubic_cardano(arena, &cubic);
+    }
+
+    // Depress to t⁴ + pt² + qt + r = 0  via  x = t - b/(4a)
+    //   p = (8ac - 3b²) / (8a²)
+    //   q = (b³ - 4abc + 8a²d) / (8a³)
+    //   r = (-3b⁴ + 256a³e - 64a²bd + 16ab²c) / (256a⁴)
+
+    let a_id = rational_to_expr(arena, &a);
+    let b_id = rational_to_expr(arena, &b);
+    let c_id = rational_to_expr(arena, &c);
+    let d_id = rational_to_expr(arena, &d);
+    let e_id = rational_to_expr(arena, &e);
+
+    let two = arena.int(2);
+    let three = arena.int(3);
+    let four = arena.int(4);
+    let eight = arena.int(8);
+    let sixteen = arena.int(16);
+    let sixty_four = arena.int(64);
+    let two_fifty_six = arena.int(256);
+
+    // p = (8ac - 3b²) / (8a²)
+    let tmp_8ac = arena.mul(&[eight, a_id, c_id]);
+    let tmp_3bb = arena.mul(&[three, b_id, b_id]);
+    let p_num = arena.sub(tmp_8ac, tmp_3bb);
+    let p_den = arena.mul(&[eight, a_id, a_id]);
+    let p = arena.div(p_num, p_den);
+
+    // q = (b³ - 4abc + 8a²d) / (8a³)
+    let tmp_bbb = arena.mul(&[b_id, b_id, b_id]);
+    let tmp_4abc = arena.mul(&[four, a_id, b_id, c_id]);
+    let tmp_4abc_n = arena.neg(tmp_4abc);
+    let tmp_8aad = arena.mul(&[eight, a_id, a_id, d_id]);
+    let q_num = arena.add(&[tmp_bbb, tmp_4abc_n, tmp_8aad]);
+    let q_den = arena.mul(&[eight, a_id, a_id, a_id]);
+    let q = arena.div(q_num, q_den);
+
+    // r = (-3b⁴ + 256a³e - 64a²bd + 16ab²c) / (256a⁴)
+    let tmp_3b4 = arena.mul(&[three, b_id, b_id, b_id, b_id]);
+    let tmp_3b4_n = arena.neg(tmp_3b4);
+    let tmp_256a3e = arena.mul(&[two_fifty_six, a_id, a_id, a_id, e_id]);
+    let tmp_64a2bd = arena.mul(&[sixty_four, a_id, a_id, b_id, d_id]);
+    let tmp_64a2bd_n = arena.neg(tmp_64a2bd);
+    let tmp_16ab2c = arena.mul(&[sixteen, a_id, b_id, b_id, c_id]);
+    let r_num = arena.add(&[tmp_3b4_n, tmp_256a3e, tmp_64a2bd_n, tmp_16ab2c]);
+    let r_den = arena.mul(&[two_fifty_six, a_id, a_id, a_id, a_id]);
+    let r = arena.div(r_num, r_den);
+
+    // Resolvent cubic:  8m³ - 4pm² - 8rm + (4pr - q²) = 0
+    // We need the coefficients as rationals to build a Poly.
+    let resolvent_c3 = eight;
+    let neg_four = arena.neg(four);
+    let resolvent_c2 = arena.mul(&[neg_four, p]);
+    let neg_eight = arena.neg(eight);
+    let resolvent_c1 = arena.mul(&[neg_eight, r]);
+    let tmp_4pr = arena.mul(&[four, p, r]);
+    let tmp_qq = arena.mul(&[q, q]);
+    let tmp_qq_n = arena.neg(tmp_qq);
+    let resolvent_c0 = arena.add(&[tmp_4pr, tmp_qq_n]);
+
+    let resolvent_c3_e = crate::eval::eval(arena, resolvent_c3);
+    let resolvent_c2_e = crate::eval::eval(arena, resolvent_c2);
+    let resolvent_c1_e = crate::eval::eval(arena, resolvent_c1);
+    let resolvent_c0_e = crate::eval::eval(arena, resolvent_c0);
+
+    let rc3 = match arena.as_num(resolvent_c3_e) {
+        Some(v) => v.clone(),
+        None => return Vec::new(),
+    };
+    let rc2 = match arena.as_num(resolvent_c2_e) {
+        Some(v) => v.clone(),
+        None => return Vec::new(),
+    };
+    let rc1 = match arena.as_num(resolvent_c1_e) {
+        Some(v) => v.clone(),
+        None => return Vec::new(),
+    };
+    let rc0 = match arena.as_num(resolvent_c0_e) {
+        Some(v) => v.clone(),
+        None => return Vec::new(),
+    };
+
+    let resolvent_poly = Poly::from_coeffs(vec![rc0, rc1, rc2, rc3]);
+    let m_solutions = solve_cubic_cardano(arena, &resolvent_poly);
+
+    if m_solutions.is_empty() {
+        return Vec::new();
+    }
+
+    // Pick the first resolvent root m
+    let m = m_solutions[0].value;
+
+    // Factor into two quadratics via √(2m − p):
+    //   t² + k·t + (m − q/(2k)) = 0
+    //   t² − k·t + (m + q/(2k)) = 0
+    // where k = √(2m − p)
+    let half = arena.rational(1, 2);
+    let two_m = arena.mul(&[two, m]);
+    let two_m_minus_p = arena.sub(two_m, p);
+    let k = arena.pow(two_m_minus_p, half);
+
+    let two_k = arena.mul(&[two, k]);
+    let q_over_2k = arena.div(q, two_k);
+
+    // shift = b/(4a)
+    let four_a = arena.mul(&[four, a_id]);
+    let shift = arena.div(b_id, four_a);
+
+    // Quadratic 1:  t² + kt + (m - q/(2k)) = 0
+    let s1 = arena.sub(m, q_over_2k);
+    let kk = arena.mul(&[k, k]);
+    let four_s1 = arena.mul(&[four, s1]);
+    let disc1 = arena.sub(kk, four_s1);
+    let sqrt_disc1 = arena.pow(disc1, half);
+    let neg_k = arena.neg(k);
+
+    let sum1a = arena.add(&[neg_k, sqrt_disc1]);
+    let t1a = arena.div(sum1a, two);
+    let diff1b = arena.sub(neg_k, sqrt_disc1);
+    let t1b = arena.div(diff1b, two);
+
+    let x1 = arena.sub(t1a, shift);
+    let x2 = arena.sub(t1b, shift);
+
+    // Quadratic 2:  t² - kt + (m + q/(2k)) = 0
+    let s2 = arena.add(&[m, q_over_2k]);
+    let kk2 = arena.mul(&[k, k]);
+    let four_s2 = arena.mul(&[four, s2]);
+    let disc2 = arena.sub(kk2, four_s2);
+    let sqrt_disc2 = arena.pow(disc2, half);
+
+    let sum2a = arena.add(&[k, sqrt_disc2]);
+    let t2a = arena.div(sum2a, two);
+    let diff2b = arena.sub(k, sqrt_disc2);
+    let t2b = arena.div(diff2b, two);
+
+    let x3 = arena.sub(t2a, shift);
+    let x4 = arena.sub(t2b, shift);
+
+    // Simplify all roots
+    let x1s = crate::eval::eval(arena, x1);
+    let x2s = crate::eval::eval(arena, x2);
+    let x3s = crate::eval::eval(arena, x3);
+    let x4s = crate::eval::eval(arena, x4);
+
+    vec![
+        Solution { value: x1s },
+        Solution { value: x2s },
+        Solution { value: x3s },
+        Solution { value: x4s },
+    ]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Rational Root Theorem for higher-degree polynomials
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -480,12 +802,20 @@ fn solve_rational_roots(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         }
     }
 
-    // If remaining has degree ≤ 2, solve it too.
+    // If remaining has degree ≤ 4, solve it with the appropriate solver.
     if let Some(d) = remaining.degree() {
-        if d == 1 {
-            roots.extend(solve_linear(arena, &remaining));
-        } else if d == 2 {
-            roots.extend(solve_quadratic(arena, &remaining));
+        match d {
+            1 => roots.extend(solve_linear(arena, &remaining)),
+            2 => roots.extend(solve_quadratic(arena, &remaining)),
+            3 => {
+                // Use Cardano directly (skip rational-root re-entry to avoid infinite loop)
+                roots.extend(solve_cubic_cardano(arena, &remaining));
+            }
+            4 => {
+                // Use Ferrari directly
+                roots.extend(solve_quartic_ferrari(arena, &remaining));
+            }
+            _ => {}
         }
     }
 
