@@ -11,11 +11,11 @@ Symbolic mathematics library for Rust.
 - **Piecewise functions** — `Piecewise(value if condition, ...)` with differentiation and condition evaluation
 - **18 math functions** — sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, ln, abs, sqrt, cbrt, nthroot
 - **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
-- **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts, u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals, inverse trig antiderivatives (asin, acos, atan), general linear substitution (ax+b)^n, expand-then-integrate fallback
+- **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts (LIATE-ordered with recursion depth limit), u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals, inverse trig antiderivatives (asin, acos, atan), general linear substitution (ax+b)^n, expand-then-integrate fallback
 - **Taylor series** — expansion around any point with configurable order and pole detection
 - **Limits** — direct substitution, L'Hôpital's rule (0/0 and ∞/∞), series fallback
 - **Equation solving** — polynomial (linear, quadratic, higher-degree via rational root theorem), complex roots, linear systems (Gaussian elimination), numerical root finding (Newton's method), transcendental equations via inversion peeling (exp, ln, sin, cos, tan, sqrt) with change-of-variable, Mul-factor solving
-- **Simplification** — 23 rewrite rules (incl. sin/cos→tan ratio, exp combining, abs-positive) with sub-expression matching, fixpoint iteration via `full_simplify()`, multi-strategy `smart_simplify()`
+- **Simplification** — 24 rewrite rules with condition guards (Pythagorean, inverse pairs, exp combining, exp-log denesting, trig ratios, abs-positive) with sub-expression matching in Add and Mul, fixpoint iteration via `full_simplify()`, multi-strategy `smart_simplify()`
 - **Algebraic manipulation** — expand, factor, collect, together, cancel, partial fractions (`apart`), trig expansion (`expand_trig`), log expansion (`expand_log`), logcombine
 - **Exact evaluation** — 30+ special values for trig/exp/ln including irrational values (√2/2, √3/2), perfect nth root evaluation, odd/even function detection, integer sqrt simplification (√8→2√2), trig-hyperbolic bridge (sin(ix)=i·sinh(x))
 - **Complex numbers** — i²=-1 canonicalization, (-1)^(1/2)→i, (-n)^(1/2)→i√n, complex quadratic roots, Euler's formula exp(iπ)=-1
@@ -32,6 +32,7 @@ Symbolic mathematics library for Rust.
 - **Polynomial algebra** — dense univariate over ℚ, arithmetic, Euclidean GCD/LCM, degree, coefficients
 - **Serde serialization** — `ExprTree` for JSON interchange with round-trip support
 - **Runtime parser** — `symplex::parse::parse(&ctx, "x^2 + 1")` for REPL and dynamic construction
+- **Arbitrary-precision parser** — `symplex::parse::parse` handles integers and decimals of any size as exact `Ratio<BigInt>`, with recursion depth protection — `0.1 + 0.2 = 3/10` exactly
 - **Zero-cost tracing** — diagnostic logging via the `tracing` crate
 - **Thread safety** — `Ex` is `Send + Sync`; the arena uses `parking_lot::RwLock`
 
@@ -340,7 +341,7 @@ assert_eq!(format!("{expr}"), format!("{back}"));
 
 For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is planned.
 
-## Simplification Rules (23)
+## Simplification Rules (24)
 
 | # | Rule | Identity |
 |---|------|----------|
@@ -349,26 +350,25 @@ For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is pl
 | 3 | `ln(exp(w)) → w` | Inverse pair |
 | 4 | `abs(abs(w)) → abs(w)` | Idempotent |
 | 5 | `(w^2)^(1/2) → abs(w)` | Square root of square |
-| 6 | `asin(sin(w)) → w` | Inverse trig |
-| 7 | `acos(cos(w)) → w` | Inverse trig |
-| 8 | `atan(tan(w)) → w` | Inverse trig |
-| 9 | `cosh(w)^2 - sinh(w)^2 → 1` | Hyperbolic Pythagorean |
-| 10 | `(a^m)^n → a^(m*n)` | Power of power |
-| 11 | `asinh(sinh(w)) → w` | Inverse hyperbolic |
-| 12 | `acosh(cosh(w)) → w` | Inverse hyperbolic |
-| 13 | `atanh(tanh(w)) → w` | Inverse hyperbolic |
-| 14 | `sin(asin(w)) → w` | Forward-inverse trig |
-| 15 | `cos(acos(w)) → w` | Forward-inverse trig |
-| 16 | `tan(atan(w)) → w` | Forward-inverse trig |
-| 17 | `sinh(asinh(w)) → w` | Forward-inverse hyperbolic |
-| 18 | `cosh(acosh(w)) → w` | Forward-inverse hyperbolic |
-| 19 | `tanh(atanh(w)) → w` | Forward-inverse hyperbolic |
-| 20 | `sin(w)/cos(w) → tan(w)` | Trig ratio |
-| 21 | `sinh(w)/cosh(w) → tanh(w)` | Hyperbolic ratio |
-| 22 | `exp(a)*exp(b) → exp(a+b)` | Exp combining |
-| 23 | `abs(w) → w` (when w positive) | Abs-positive |
+| 6 | `cosh(w)^2 - sinh(w)^2 → 1` | Hyperbolic Pythagorean |
+| 7 | `(a^m)^n → a^(m*n)` | Power of power (when m or n is integer) |
+| 8 | `asinh(sinh(w)) → w` | Inverse hyperbolic |
+| 9 | `acosh(cosh(w)) → abs(w)` | Inverse hyperbolic |
+| 10 | `atanh(tanh(w)) → w` | Inverse hyperbolic |
+| 11 | `sin(asin(w)) → w` | Forward-inverse trig |
+| 12 | `cos(acos(w)) → w` | Forward-inverse trig |
+| 13 | `tan(atan(w)) → w` | Forward-inverse trig |
+| 14 | `sinh(asinh(w)) → w` | Forward-inverse hyperbolic |
+| 15 | `cosh(acosh(w)) → w` | Forward-inverse hyperbolic |
+| 16 | `tanh(atanh(w)) → w` | Forward-inverse hyperbolic |
+| 17 | `sin(w)/cos(w) → tan(w)` | Trig ratio |
+| 18 | `cos(w)/sin(w) → 1/tan(w)` | Trig ratio (complement) |
+| 19 | `sinh(w)/cosh(w) → tanh(w)` | Hyperbolic ratio |
+| 20 | `exp(a)*exp(b) → exp(a+b)` | Exp combining |
+| 21 | `exp(a*ln(b)) → b^a` | Exp-log denesting |
+| 22 | `abs(w) → w` (when w positive) | Abs-positive |
 
-All rules support sub-expression matching in Add and Mul (e.g., `3 + sin²(x) + cos²(x) → 4`).
+All rules support sub-expression matching in Add and Mul. Rules with mathematical preconditions use condition guards (e.g., `pow_pow` requires at least one integer exponent; `abs_positive` requires the argument to be known positive).
 
 ## Feature Comparison with SymPy
 
@@ -387,6 +387,8 @@ what symplex has and what's missing.
 | Proc macro DSL | `expr!()`, `rule!()`, `matrix!()`, `eq!()` |
 | Canonical invariant checker | Structural correctness verified in debug builds |
 | Compiled lambdify | Bytecode VM, not interpreted |
+| Arbitrary-precision parser | `0.1 + 0.2 = 3/10` exactly — no floating-point |
+| Type-safe ExprView | `replace()` closure gets non-locking view — deadlock impossible at compile time |
 
 ### Core features
 
@@ -394,7 +396,7 @@ what symplex has and what's missing.
 |---------|:---:|:---:|-----|
 | Expression tree | ✅ | ✅ | symplex: arena; SymPy: Python objects |
 | Assumptions (23 properties) | ✅ | ✅ | Comparable |
-| Simplification (23 rules) | ✅ | ✅ (hundreds) | SymPy has more rules |
+| Simplification (24 rules with condition guards) | ✅ | ✅ (hundreds) | SymPy has more rules |
 | Arbitrary-precision eval | ✅ | ✅ | Both via external lib |
 | Complex numbers | ✅ | ✅ | Both complete for Tier 1-2 |
 | Boolean expressions | ✅ | ✅ | symplex: typed; SymPy: runtime |
@@ -407,7 +409,7 @@ what symplex has and what's missing.
 |---------|:---:|:---:|-----|
 | Differentiation (all elementary) | ✅ | ✅ | |
 | Integration (power, trig, exp, ln) | ✅ | ✅ | |
-| Integration (by-parts, u-sub) | ✅ | ✅ | |
+| Integration (by-parts LIATE-ordered, u-sub) | ✅ | ✅ | |
 | Integration (trig powers) | ✅ | ✅ | |
 | Integration (partial fractions) | ✅ | ✅ | |
 | Integration (completing square) | ✅ | ✅ | |
@@ -424,7 +426,7 @@ what symplex has and what's missing.
 | Feature | symplex | SymPy | Gap |
 |---------|:---:|:---:|-----|
 | Expand / Factor / Collect | ✅ | ✅ | |
-| Together / Cancel / Apart | ✅ | ✅ | |
+| Together / Cancel / Apart | ✅ | ✅ | symplex: polynomial LCM for common denominator |
 | Trig/Log expand & combine | ✅ | ✅ | |
 | Polynomial solve (linear, quadratic) | ✅ | ✅ | |
 | Complex roots | ✅ | ✅ | |

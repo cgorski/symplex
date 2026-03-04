@@ -174,3 +174,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `matrix!` macro for natural matrix construction
 - `eq!` macro for equation construction
 - `rule!` macro conditional guards (`if condition`)
+
+**Hardening: Correctness, Safety, and Testing**
+- BREAKING: `replace()` now takes `Fn(ExprView<'_>) -> Option<Ex>` instead of `Fn(&Ex) -> Option<Ex>` — `ExprView` is a non-locking view type that makes deadlock structurally impossible at compile time
+- BREAKING: `Piecewise` node uses `SmallVec<[(ExprId, ExprId); 3]>` pairs instead of flat `SmallVec<[ExprId; 6]>` — invalid odd-length states are now unrepresentable
+- BREAKING: `ExprTree::Piecewise` serialization format changed from `Vec<ExprTree>` to `Vec<(ExprTree, ExprTree)>`
+- Fixed: `smart_simplify()` no longer drops GCD factor from `factor_terms` (was silently returning wrong results)
+- Fixed: Integration by-parts uses LIATE ordering with depth limit (20) — `∫ x·ln(x) dx` no longer stack overflows
+- Fixed: `pow_pow` rule now requires at least one integer exponent (was producing wrong results for negative bases with fractional exponents)
+- Fixed: Removed `asin(sin(w))→w`, `acos(cos(w))→w`, `atan(tan(w))→w` rules (incorrect outside principal branch)
+- Fixed: `acosh(cosh(w))` now correctly returns `|w|` instead of `w`
+- Fixed: `binom()` in trig power integration uses `BigInt` (was silently overflowing `i64`)
+- Fixed: `nsolve()` uses `Ratio::from_float` instead of lossy `(x * 1e15) as i64` cast
+- Fixed: `From<u64>` and `From<usize>` for `Ex` handle values > `i64::MAX` via `BigInt`
+- Fixed: `ExprId`/`NumId`/`SymbolId` allocation uses `try_from().expect()` instead of silent `as u32` truncation
+- Fixed: `cancel()` now cancels constant content factors (e.g., `(2x+2)/2 → x+1`)
+- Fixed: `expand()` now propagates into `Derivative`, `Integral`, and `Apply` nodes
+- Fixed: `eval_tan` quadrant reduction handles all standard angles (e.g., `tan(2π/3) = -√3`)
+- Fixed: Odd roots of negative integers evaluate correctly (`(-8)^(1/3) = -2`)
+- Fixed: `as_negated` handles 3+ child `Mul` nodes (`sin(-x*y) → -sin(x*y)`)
+- Fixed: Parser uses `BigInt`/`Ratio<BigInt>` for arbitrary-precision input (was limited to `i64`)
+- Fixed: Parser recursion depth limited to 256 (was unlimited, could stack overflow)
+- New rule: `cos(w)/sin(w) → 1/tan(w)` (complement to existing sin/cos→tan)
+- New rule: `exp(a*ln(b)) → b^a` (exp-log denesting)
+- New: `expand_trig` handles `sin(n*x)` and `cos(n*x)` for integer n ≥ 2
+- New: `trig_combine` runs eval pass to fold `sin(0)→0` artifacts
+- New: `together()` uses polynomial LCM for common denominator (with product fallback)
+- New: `ExprView` type for non-locking expression inspection
+- New: `unary_compose_rule()` helper reduces rule definition boilerplate
+- New: Arena constant fields changed from `pub` to `pub(crate)` with accessor methods
+- New: `verify_canonical` uses O(n) `FxHashSet` instead of O(n²) nested loop
+- New: `rebuild_with_cache` macro reduces inverse trig/hyperbolic boilerplate
+- New: `Factorial`/`Binomial` supported in pattern `match_recursive`
+- Testing: 5 concurrency tests (multi-thread construction, read+write, global context)
+- Testing: 4 proptest value-preservation properties (simplify, smart_simplify, full_simplify, FTC)
+- Testing: 15 per-rule numerical validation tests
+- Testing: 11 negative tests verifying rules don't fire incorrectly
+- Testing: 6 regression tests for critical bugs
+- Testing: 3 test helper macros (`assert_simplifies_to!`, `assert_simplify_unchanged!`, `assert_simplify_preserves_value!`)
+- Testing: Size assertion tests for ExprNode and Ex handle sizes
+- Testing: Parser fuzz target (`fuzz/fuzz_targets/fuzz_parser.rs`)
+- Testing: 30 bc-verified arbitrary-precision parser tests
+- Dev-dependencies: added `trybuild`, `static_assertions`

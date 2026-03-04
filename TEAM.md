@@ -8,6 +8,13 @@ This document records the simulated expert panel that guided the design and impl
 > variants, `expr!` with constants/rationals/comparisons/logic, canonical invariant
 > checker (found and fixed canon_mul sort-order bug), SymPy feature matrix comparison.
 > See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) § "Current Architecture (0.2.0)" for details.
+>
+> **Hardening session:** 86 commits, 50,722 total lines, 2,393 tests (131 proptest properties).
+> Key additions: ExprView (compile-time deadlock prevention), arbitrary-precision parser
+> (BigInt/Ratio tokens), Piecewise type-safe pairs, LIATE-ordered by-parts with depth limit,
+> 5 critical bug fixes (smart_simplify GCD, pow_pow guard, asin_sin removal, acosh_cosh abs,
+> by-parts recursion), together() polynomial LCM, expand_trig sin(nx), 2 new simplification
+> rules, condition-guarded rules, 30 bc-verified parser tests, 5 concurrency tests, fuzz target.
 
 ---
 
@@ -163,6 +170,27 @@ Key decisions influenced:
 - Int/Int division compile error (not silent truncation)
 - syn + quote + proc-macro2 only (no additional parsing crates)
 - symplex-macros as subdirectory crate (not sibling)
+
+### Dr. Yuki Tanaka — Concurrency & Lock-Free Systems
+
+15 years in concurrent systems (Tokio core team, crossbeam contributor). Specializes in lock protocol correctness, deadlock analysis, and lock-free data structures for Rust. Led the ExprView design that eliminates the `replace()` deadlock at the type level.
+
+Key decisions influenced:
+- ExprView<'a> wrapping (ExprId, &Arena) instead of Ex with Arc<RwLock>
+- parking_lot deadlock_detection feature flag for test-time detection
+- Two-phase walk design for replace() (snapshot under lock, transform outside)
+- Concurrency test suite (8-thread construction, concurrent read+write)
+
+### Dr. Miriam Voss — Adversarial Testing & Fuzzing
+
+Built the fuzzing infrastructure for rustc and cargo. Specializes in property-based testing, fuzzing, concurrency testing, and mutation testing. Designed the comprehensive test hardening strategy.
+
+Key decisions influenced:
+- Parser fuzz target (cargo-fuzz + libfuzzer-sys)
+- Value-preservation proptest properties for all simplification paths
+- Negative test methodology (verify rules DON'T fire incorrectly)
+- Test helper macros (assert_simplifies_to!, assert_simplify_unchanged!)
+- bc-verified test expectations for arbitrary-precision parser
 
 ---
 

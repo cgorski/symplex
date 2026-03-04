@@ -622,6 +622,7 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 | Cycles 9-13 | General u-sub, trig power integration, trig combine, solver change-of-variable, parser improvements (float/implicit-mul/constants), complex evalf Tier 3, as_real_imag, factor_terms, From<T>/Sum/Product, bounded exhaustive verification, known-answer corpus, numerical cross-validation |
 | Cycles 14-18 | Equation type + eq! macro, Factorial/Binomial nodes, canonical invariant checker + canon_mul sort fix, code hardening, symbolic Matrix + matrix! macro + Jacobian, lambdify (expression→closure), CSE, ODE solver (separable/linear/2nd-order), expr! constants/rationals, rule! conditional guards |
 | 0.2.0 | Phantom type system (Expr<S: Sort>), BoolEx, relationals (Gt/Ge/Eq_/Ne), logical connectives (And/Or/Not), BoolTrue/BoolFalse atoms, Piecewise expressions, compile-time sort safety, expr! comparison/logic operators |
+| Hardening | Parser BigInt/Ratio, ExprView deadlock fix, Piecewise type-safe pairs, smart_simplify GCD fix, by-parts LIATE+depth, pow_pow/acosh_cosh/asin_sin rule corrections, together() LCM, cancel() content factors, expand_trig sin(nx), trig_combine eval pass, exp_log_denest rule, cos_div_sin rule, verify_canonical O(n), rebuild_with_cache macro, 131 proptest properties, concurrency tests, fuzz target |
 
 ---
 
@@ -634,18 +635,22 @@ rule!(arena, "name", LHS => RHS)        // Define rewrite rule
 5. ~~**No series expansion.**~~ **Resolved** — Taylor series with pole detection.
 6. ~~**No limit computation.**~~ **Resolved** — limits via direct substitution, L'Hôpital's rule, and series fallback. Gruntz algorithm not implemented.
 7. ~~**solve() is polynomial-only.**~~ **Improved** — transcendental solving via inversion peeling (exp, ln, sin, cos, tan, sqrt). General transcendental equations still limited.
-8. ~~**`simplify()` has limited rules.**~~ **Improved** — 16 rules with sub-expression matching in Add and Mul and fixpoint iteration.
+8. ~~**`simplify()` has limited rules.**~~ **Improved** — 24 rules with condition guards, sub-expression matching in Add and Mul, and fixpoint iteration.
 9. **`bigint_to_bigfloat` loses precision for integers > i128.** Falls back to f64.
 10. ~~**No `collect()`, `together()`, or `factor_terms()` yet.**~~ **Partially resolved** — `collect()` and `together()` implemented.
 11. **`expr!(1/2)` is a compile error.** By design — prevents silent Rust integer division. Use `ctx.rational(1, 2)`.
 12. **`expr!(x^2^3)` with nested integer powers causes type errors.** The inner `2^3` evaluates as integer arithmetic, not symbolic.
-13. **`replace()` closure cannot call locking methods.** The closure passed to `Ex::replace()` must not call methods that acquire the context lock (e.g., `.sin()`, `.expand()`), as this will deadlock.
+13. ~~**`replace()` closure cannot call locking methods.**~~ **Resolved** — `replace()` now takes `ExprView` (non-locking view type), making deadlock structurally impossible at the type level.
 14. **No `as_real_imag` decomposition.** Expressions cannot be split into real and imaginary parts programmatically.
 15. **`factor_terms` undone by Number×Add distribution.** `factor_terms(4x+6y)` extracts 2 but `canon_mul` distributes it back. A display-only factored form is needed.
 16. **ODE solver has no public `Ex`-level API.** Must use `ctx.with_arena_mut()` + `dsolve()` directly.
 17. **`lambdify` does not support complex expressions.** Returns `None` for expressions containing `I`.
 18. **Phantom type safety is API-level only.** Internal arena code is untyped (ExprId). Sort violations in rule implementations are caught by verify_canonical in debug builds, not at compile time.
 19. **No boolean symbols.** All symbols are Expr<Numeric>. Boolean-typed symbolic variables (e.g., a proposition `p`) are not supported.
+20. ~~**`replace()` closure deadlock.**~~ **Resolved** — `ExprView` type eliminates deadlock at compile time.
+21. ~~**`smart_simplify` could return mathematically different expressions.**~~ **Resolved** — GCD factor is now preserved.
+22. ~~**Integration by-parts could stack overflow.**~~ **Resolved** — LIATE ordering + depth limit (20).
+23. ~~**Parser limited to i64 integers.**~~ **Resolved** — arbitrary-precision BigInt/Ratio parsing.
 
 ---
 
@@ -854,27 +859,27 @@ abs(abs(w_)) => abs(w_)
 - [ ] Final API surface review — no accidental `pub` on internal types
 - [ ] Publish to crates.io
 
-### Current Statistics (Commit 71)
+### Current Statistics (Commit 86)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 2,352 passing, 0 failing, 0 warnings |
-| Source | 30,575 lines across 45 modules |
-| Tests | 16,195 lines across 47 files |
+| Tests | 2,393 passing, 0 failing, 0 warnings |
+| Source | 31,900 lines across 46 modules |
+| Tests | 17,042 lines across 49 files |
 | Macros | 1,235 lines |
-| Total lines | 48,538 |
+| Total lines | 50,722 |
 | Public methods on `Ex` | 103+ (numeric) + 6 (boolean) |
 | Public methods on `Context` | 17 |
 | Free-standing functions | 5 |
 | ExprNode variants | 46 |
-| Simplification rules | 23 |
-| Integration forms | 30+ |
+| Simplification rules | 24 (with condition guards) |
+| Integration forms | 30+ (LIATE-ordered by-parts) |
 | Matrix methods | 26 |
 | Factorial/Binomial | arbitrary precision (no limit) |
-| Eval special values | 86+ |
+| Eval special values | 86+ (all tan quadrants) |
 | Criterion benchmarks | 30 |
-| Proptest properties | 125 |
-| Commits | 71 |
+| Proptest properties | 131 |
+| Commits | 86 |
 
 ---
 
@@ -1128,6 +1133,10 @@ Based on comprehensive comparison with SymPy's ~40 modules.
 - No recursion: explicit stacks prevent stack overflow
 - Canonical invariant checker: catches bugs at construction time
 - Proc macro DSL: expr!, rule!, matrix!, eq!
+- Arbitrary-precision parser (0.1+0.2=3/10 exactly)
+- Type-safe expression views (ExprView prevents deadlock at compile time)
+- Condition-guarded simplification rules (pow_pow, abs_positive)
+- LIATE-ordered integration by parts with depth limit
 
 ## File Layout
 
