@@ -17,7 +17,7 @@ This document describes the architecture, design decisions, module responsibilit
 
 ### Codebase at a glance
 
-- **48,500+ total lines** across 45 source modules, 47 test files, 2 examples, 1 benchmark
+- **48,538 total lines** across 45 source modules, 47 test files, 2 examples, 1 benchmark
 - **2,352 tests** — proptest (125 properties), known-answers (256), bounded exhaustive, numerical cross-validation, stress tests
 - **46 ExprNode variants** including 11 boolean/logic/piecewise (added in 0.2.0)
 - **Phantom-typed expression handles** — `Expr<Numeric>` (aliased `Ex`) and `Expr<Boolean>` (aliased `BoolEx`)
@@ -49,6 +49,94 @@ Each layer only calls downward. No circular dependencies.
 5. **Pattern rewriting** — 23 simplification rules in `basic_rules()`. Sub-expression matching in both Add and Mul nodes. Rules can have conditions (`condition: Option<fn(&Arena, &Substitution) -> bool>`).
 
 6. **Smart simplify** — `simplify_engine.rs` tries 7 strategies (eval, expand, factor_terms, trig_expand, logcombine, cancel) and picks the result with lowest `count_ops`.
+
+### Type system architecture
+
+The expression system uses **phantom-typed sorts** to prevent invalid compositions at compile time:
+
+```text
+Expr<S: Sort>     ← one generic struct, PhantomData<S>, zero runtime cost
+  │
+  ├── Expr<Numeric>    (type alias: Ex)       ← arithmetic, calculus, 103+ methods
+  ├── Expr<Boolean>    (type alias: BoolEx)   ← comparisons, logic, 6 methods
+  └── Expr<SetValued>  (type alias: SetEx)    ← intervals, unions (planned 0.3.0)
+
+Cross-sort bridges:
+  Ex::gt(&Ex) → BoolEx                       ← numeric comparison produces boolean
+  Ex::piecewise(&[(&Ex, &BoolEx)]) → Ex      ← boolean conditions, numeric values
+  SetEx::contains(&Ex) → BoolEx              ← planned: set membership test
+  BoolEx::as_set(&Ex) → SetEx                ← planned: condition-to-interval conversion
+
+Matrix — separate type (not in arena), adequate through 0.2.x
+  MatrixExpr in arena planned for 0.4.0+ (symbolic matrix algebra)
+```
+
+**Why phantom types (not newtypes, not traits):**
+- One `impl<S: Sort> Expr<S>` block for common methods (eval, simplify, subs, display)
+- Adding a sort = 3 lines (marker type + `impl Sort` + type alias)
+- Zero runtime cost (PhantomData is zero-sized)
+- Error messages show sort: `expected Expr<Numeric>, found Expr<Boolean>`
+
+**Why the arena stays untyped (ExprId, not NumericId/BooleanId):**
+- Piecewise alternates numeric/boolean children — can't use homogeneous typed IDs
+- Every internal module (walk, canon, diff, eval) would need sort generics
+- `verify_canonical` debug assertions catch sort violations during testing
+- Cost of typed arena >> benefit (API-level phantom types provide 99% of safety)
+
+**Compile-time guarantees we have:**
+| Guarantee | Mechanism |
+|-----------|-----------|
+| Sort safety (no sin(bool)) | Phantom types on Expr<S> |
+| Exhaustive node handling | Rust match on ExprNode enum |
+| No silent result discarding | #[must_use] on transformations |
+| Future-proof errors | #[non_exhaustive] on SymplexError |
+
+**Invariants enforced at debug/test time (not compile time):**
+| Invariant | Mechanism |
+|-----------|-----------|
+| Canonical form (sorted, flattened) | verify_canonical + debug_assert! |
+| Boolean children in And/Or | verify_canonical boolean check |
+| No boolean children in Add/Mul | verify_canonical numeric check |
+| Same-context ExprIds | Test methodology (global vs local context) |
+
+**Invariants NOT enforced (undecidable):**
+- Non-zero denominators, positive arguments for ln(), domain correctness
+
+### Mathematical object types — design decisions
+
+| Object | Architecture | Rationale |
+|--------|-------------|-----------|
+| **Scalars** | ExprNode variants in arena, `Expr<Numeric>` | Core use case, full infrastructure |
+| **Booleans** | ExprNode variants in arena, `Expr<Boolean>` | Needed for piecewise, conditionals |
+| **Sets** (planned) | ExprNode variants in arena, `Expr<SetValued>` | Algebraic/compositional, fits arena model |
+| **Matrices** | Separate `Matrix` struct (Vec<Vec<Ex>>) | Variable dimensions, eager operations |
+| **MatrixExpr** (0.4.0+) | ExprNode variants (Det, Transpose, MatMul) | Symbolic matrix algebra, deferred |
+| **Vectors** | 1-column Matrix | No separate type needed |
+| **Functions (λ)** | Not planned | Requires beta-reduction, too complex |
+
+### ExprNode scaling plan
+
+| Milestone | Variants | Strategy |
+|-----------|----------|----------|
+| 0.2.0 (current) | 46 | Flat enum, manual match arms |
+| 0.3.0 (sets) | ~56 | Same + LatticeOp shared pattern for Union/Intersection |
+| 0.4.0 (matrix-expr, special funcs) | ~70 | Consider define_function! macro |
+| 0.5.0+ | ~80+ | Consider sub-enum split if unmanageable |
+
+The flat ExprNode enum with compiler-enforced exhaustive matching is viable through ~80 variants. Match compiles to a jump table. Discriminant is 1 byte. Adding a variant requires ~12 file edits (mechanical, compiler catches every miss).
+
+### LatticeOp pattern (for 0.3.0)
+
+Four n-ary operations share the same algebraic structure:
+
+| Operation | Identity | Annihilator | Idempotent | Sort |
+|-----------|----------|-------------|------------|------|
+| And | True | False | Yes | Boolean |
+| Or | False | True | Yes | Boolean |
+| Union | EmptySet | Reals | Yes | Set |
+| Intersection | Reals | EmptySet | Yes | Set |
+
+All need: flatten nested same-kind, sort by SortKey, deduplicate, drop identity, short-circuit on annihilator. A shared `canon_lattice()` function handles the common logic (~100 lines), with each operation providing its specific identity/annihilator/flatten-check. Add and Mul do NOT fit this pattern (they have numeric coefficient merging and are not idempotent).
 
 ### How to add common things
 

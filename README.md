@@ -40,77 +40,80 @@ Symbolic mathematics library for Rust.
 ```rust
 use symplex::prelude::*;
 
-// ── Quick setup — no Context boilerplate needed ────────────────
-let x = symplex::var("x");
-let y = symplex::var("y");
+// ── Declare variables (one line) ───────────────────────────────
+vars!(x, y);
 
-// ── Build expressions with natural math syntax ─────────────────
+// ── Natural math syntax with expr! ─────────────────────────────
 let f = expr!(x^2 + 2*x + 1);
 println!("{f}");                             // 1 + x^2 + 2*x
 
-// ── Differentiate and integrate ────────────────────────────────
-let deriv = expr!(x^3).diff(&x);
-println!("{deriv}");                         // 3*x^2
+// ── Calculus ───────────────────────────────────────────────────
+let df = f.diff(&x);                        // 2 + 2*x
+let anti = expr!(x^2).integrate(&x);        // 1/3*x^3
+let series = x.sin().maclaurin(&x, 4).unwrap();
+println!("{}", series.expand());             // x - 1/6*x^3
 
-let anti = expr!(x^2).integrate(&x);
-println!("{anti}");                          // 1/3*x^3
-
-// ── Evaluate at a point ────────────────────────────────────────
-let at_2 = deriv.subs_i64(&x, 2);
-println!("{at_2}");                          // 12
-
-// ── Taylor series ──────────────────────────────────────────────
-let s = x.sin().maclaurin(&x, 4).unwrap();
-println!("{}", s.expand().eval());           // x - 1/6*x^3
-
-// ── Limits ─────────────────────────────────────────────────────
-let lim = (&x.sin() / &x).limit(&x, &symplex::int(0)).unwrap();
-println!("{lim}");                           // 1
+// ── Exact fractions (no floating-point) ────────────────────────
+let half_x = expr!(1/2 * x^2);              // 1/2*x^2
 
 // ── Solve equations ────────────────────────────────────────────
-let roots = expr!(x^2 - 5*x + 6).solve(&x).unwrap();
+let equation = eq!(x^2 - 5*x + 6 = 0);
+let roots = equation.solve(&x).unwrap();
 for r in &roots { println!("x = {r}"); }    // x = 2, x = 3
 
-// ── Numerical root finding ─────────────────────────────────────
-let root = (&x - &x.cos()).nsolve(&x, 1.0, 50, 1e-12).unwrap();
-println!("x = {root:.10}");                 // x = 0.7390851332
-
-// ── Factor and simplify ────────────────────────────────────────
-let factored = (&x.powi(2) - 1).factor(&x);
-println!("{factored}");                      // (-1 + x)*(1 + x)
-
+// ── Simplify ───────────────────────────────────────────────────
 let trig = expr!(sin(x)^2 + cos(x)^2);
 println!("{}", trig.simplify());             // 1
 
-// ── Matrices ─────────────────────────────────────────────────
+// ── Matrices ───────────────────────────────────────────────────
 let m = matrix![[x, 1], [0, x^2]];
-println!("det = {}", m.det());              // x^3
+println!("det = {}", m.det());               // x^3
 
-// ── Complex numbers ─────────────────────────────────────────
-let i = ctx.i_unit();
-assert_eq!(format!("{}", i.powi(2)), "-1");                // i² = -1
-assert_eq!(format!("{}", ctx.int(-1).sqrt()), "I");        // √(-1) = i
+// ── Complex numbers ────────────────────────────────────────────
+println!("{}", expr!(I^2));                  // -1
+println!("{}", expr!(exp(I * pi) + 1).eval()); // 0  (Euler's identity)
+println!("{}", symplex::int(-4).sqrt());     // 2*I
 
-// Euler's formula
-let euler = (&i * &ctx.pi()).exp().eval();
-assert_eq!(format!("{euler}"), "-1");                       // e^(iπ) = -1
-
-// ── Boolean expressions (compile-time type safety) ──────────
-let cond: BoolEx = x.gt(&symplex::int(0));     // x > 0
-let both = cond.and(&x.lt(&symplex::int(10))); // 0 < x < 10
-// cond + 1;  // COMPILE ERROR: can't add boolean to number
-
-// ── Piecewise ──────────────────────────────────────────────
-let abs_x = Ex::piecewise(&[
-    (&x, &x.gt(&symplex::int(0))),
-    (&(-&x), &x.le(&symplex::int(0))),
+// ── Type-safe booleans (compile-time guarantees) ───────────────
+let cond: BoolEx = expr!(x > 0 && x < 10);  // boolean expression
+let pw = Ex::piecewise(&[                    // piecewise function
+    (&x, &expr!(x > 0)),
+    (&(-&x), &expr!(x <= 0)),
 ]);
+// cond + 1;  // ← COMPILE ERROR: can't add boolean to number
+// cond.sin(); // ← COMPILE ERROR: sin() only on numeric expressions
 
-// ── Advanced: explicit Context for custom configuration ────────
-let ctx = Context::new();
-let t = ctx.symbol_with("t", &[Assumption::Positive, Assumption::Real]);
-assert_eq!(t.is_positive(), Some(true));
+// ── Compile expressions to fast closures ───────────────────────
+let f = expr!(x^2 + sin(x));
+let fast_f = f.lambdify(&["x"]).unwrap();
+println!("{:.6}", fast_f(&[1.0]));           // 1.841471
+
+// ── ODE solving ────────────────────────────────────────────────
+let ode = expr!(diff(y, x) + 2*y);          // y' + 2y = 0
+if let Some((sol, _)) = ode.dsolve(&y, &x) {
+    println!("y = {sol}");                   // C1*exp(-2*x)
+}
+
+// ── Arbitrary-precision evaluation ─────────────────────────────
+println!("{}", symplex::pi().evalf(50).unwrap());
+// 3.1415926535897932384626433832795028841971693993751
 ```
+
+### Ergonomic tips
+
+| Pattern | Recommended | Avoid |
+|---------|-------------|-------|
+| Build expressions | `expr!(x^2 + 1)` | `&x.powi(2) + 1` |
+| Create symbols | `vars!(x, y, z);` | `let x = ctx.symbol("x");` |
+| Fractions | `expr!(1/2)` | `ctx.rational(1, 2)` |
+| Equations | `eq!(x^2 = 4)` | `Equation::new(x.powi(2), int(4))` |
+| Matrices | `matrix![[a, b], [c, d]]` | `Matrix::new(vec![...])` |
+| Constants | `expr!(pi)`, `expr!(I)` | `ctx.pi()`, `ctx.i_unit()` |
+| Solve (no panic) | `eq.solve_or_empty(&x)` | `eq.solve(&x).unwrap()` |
+| Sum collection | `terms.into_iter().sum()` | manual loop with `&` |
+| Quick variables | `symplex::var("x")` | `Context::new()` + `ctx.symbol("x")` |
+
+**Note:** The `expr!` macro uses the global default context. If you use `Context::new()` for custom configuration, build expressions with method calls instead of `expr!`, or use `symplex::var()` / `symplex::int()` for all symbols and constants.
 
 ## API Reference
 
