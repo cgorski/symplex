@@ -27,6 +27,7 @@ pub(crate) fn trig_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Add(ref children) => try_combine_add_trig(arena, rebuilt, children),
             _ => rebuilt,
         };
+        let combined = crate::eval::eval(arena, combined); // fold sin(0)→0, cos(0)→1, etc.
         cache.insert(id, combined);
     }
 
@@ -350,5 +351,26 @@ mod tests {
         let sum = a.add(&[x, y]);
         let result = trig_combine(&mut a, sum);
         assert_eq!(result, sum, "non-trig should be unchanged");
+    }
+
+    #[test]
+    fn trig_combine_2sincos_clean() {
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        let two = arena.int(2);
+        let sin_x = arena.sin(x);
+        let cos_x = arena.cos(x);
+        let expr = arena.mul(&[two, sin_x, cos_x]); // 2*sin(x)*cos(x)
+        let result = trig_combine(&mut arena, expr);
+        let result_str = arena.display(result).to_string();
+        // Should be sin(2*x), NOT sin(0) + sin(2*x)
+        assert!(
+            !result_str.contains("sin(0)"),
+            "trig_combine should not leave sin(0) in result, got: {result_str}"
+        );
+        assert!(
+            result_str.contains("sin(2"),
+            "trig_combine(2sin(x)cos(x)) should produce sin(2x), got: {result_str}"
+        );
     }
 }

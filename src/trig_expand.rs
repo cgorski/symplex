@@ -28,11 +28,15 @@ pub(crate) fn expand_trig(arena: &mut Arena, expr: ExprId) -> ExprId {
         let expanded = match node {
             ExprNode::Sin(inner) => {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
-                expand_sin_add(arena, inner).unwrap_or_else(|| arena.sin(inner))
+                expand_sin_mul(arena, inner)
+                    .or_else(|| expand_sin_add(arena, inner))
+                    .unwrap_or_else(|| arena.sin(inner))
             }
             ExprNode::Cos(inner) => {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
-                expand_cos_add(arena, inner).unwrap_or_else(|| arena.cos(inner))
+                expand_cos_mul(arena, inner)
+                    .or_else(|| expand_cos_add(arena, inner))
+                    .unwrap_or_else(|| arena.cos(inner))
             }
             // Rebuild Add/Mul/Pow/Neg with expanded children.
             ExprNode::Add(ref children) => {
@@ -137,6 +141,76 @@ fn expand_cos_add(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
 }
 
+/// Expand `sin(inner)` when `inner` is `Mul(n, arg)` with integer n ≥ 2.
+///
+/// Rewrites `sin(n·x)` as `sin(x)·cos((n-1)·x) + cos(x)·sin((n-1)·x)` and
+/// recursively expands the result.
+fn expand_sin_mul(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let children = match arena.node(inner).clone() {
+        ExprNode::Mul(children) => children,
+        _ => return None,
+    };
+    if children.len() != 2 {
+        return None;
+    }
+    let n_ratio = arena.as_num(children[0])?.clone();
+    if !n_ratio.is_integer() {
+        return None;
+    }
+    let n_int: i64 = n_ratio.to_integer().try_into().ok()?;
+    if n_int < 2 || n_int > 20 {
+        return None;
+    }
+    let arg = children[1];
+    // sin(n*x) = sin(x)*cos((n-1)*x) + cos(x)*sin((n-1)*x)
+    let n_minus_1 = arena.int(n_int - 1);
+    let rest = arena.mul(&[n_minus_1, arg]);
+    let sin_a = arena.sin(arg);
+    let cos_b = arena.cos(rest);
+    let cos_a = arena.cos(arg);
+    let sin_b = arena.sin(rest);
+    let term1 = arena.mul(&[sin_a, cos_b]);
+    let term2 = arena.mul(&[cos_a, sin_b]);
+    let expanded = arena.add(&[term1, term2]);
+    // Recursively expand remaining trig(k*x) terms
+    Some(expand_trig(arena, expanded))
+}
+
+/// Expand `cos(inner)` when `inner` is `Mul(n, arg)` with integer n ≥ 2.
+///
+/// Rewrites `cos(n·x)` as `cos(x)·cos((n-1)·x) - sin(x)·sin((n-1)·x)` and
+/// recursively expands the result.
+fn expand_cos_mul(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let children = match arena.node(inner).clone() {
+        ExprNode::Mul(children) => children,
+        _ => return None,
+    };
+    if children.len() != 2 {
+        return None;
+    }
+    let n_ratio = arena.as_num(children[0])?.clone();
+    if !n_ratio.is_integer() {
+        return None;
+    }
+    let n_int: i64 = n_ratio.to_integer().try_into().ok()?;
+    if n_int < 2 || n_int > 20 {
+        return None;
+    }
+    let arg = children[1];
+    // cos(n*x) = cos(x)*cos((n-1)*x) - sin(x)*sin((n-1)*x)
+    let n_minus_1 = arena.int(n_int - 1);
+    let rest = arena.mul(&[n_minus_1, arg]);
+    let cos_a = arena.cos(arg);
+    let cos_b = arena.cos(rest);
+    let sin_a = arena.sin(arg);
+    let sin_b = arena.sin(rest);
+    let term1 = arena.mul(&[cos_a, cos_b]);
+    let term2 = arena.mul(&[sin_a, sin_b]);
+    let expanded = arena.sub(term1, term2);
+    // Recursively expand remaining trig(k*x) terms
+    Some(expand_trig(arena, expanded))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +287,70 @@ mod tests {
         assert!(
             !s.contains("sin(x + y)"),
             "trig expansion should work inside exp(): {s}"
+        );
+    }
+
+    #[test]
+    fn expand_trig_sin_2x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let mul_2x = a.mul(&[two, x]);
+        let sin_2x = a.sin(mul_2x);
+        let result = expand_trig(&mut a, sin_2x);
+        // sin(2x) = 2*sin(x)*cos(x)
+        let s = display(&a, result);
+        assert!(
+            s.contains("sin") && s.contains("cos"),
+            "sin(2x) should expand to 2*sin(x)*cos(x), got: {s}"
+        );
+    }
+
+    #[test]
+    fn expand_trig_cos_2x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let mul_2x = a.mul(&[two, x]);
+        let cos_2x = a.cos(mul_2x);
+        let result = expand_trig(&mut a, cos_2x);
+        let s = display(&a, result);
+        assert!(
+            s.contains("sin") || s.contains("cos"),
+            "cos(2x) should expand, got: {s}"
+        );
+    }
+
+    #[test]
+    fn expand_trig_sin_3x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let three = a.int(3);
+        let mul_3x = a.mul(&[three, x]);
+        let sin_3x = a.sin(mul_3x);
+        let result = expand_trig(&mut a, sin_3x);
+        let s = display(&a, result);
+        // Should be fully expanded with no sin(2*x) or cos(2*x) remaining
+        assert!(
+            !s.contains("2*x") && !s.contains("3*x"),
+            "sin(3x) should be fully expanded into sin(x) and cos(x) only, got: {s}"
+        );
+    }
+
+    #[test]
+    fn expand_trig_sin_bare_mul_not_integer() {
+        // sin(pi*x) should not be expanded (pi is not an integer coefficient)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let pi = a.symbol("pi");
+        let mul_pi_x = a.mul(&[pi, x]);
+        let expr = a.sin(mul_pi_x);
+        let result = expand_trig(&mut a, expr);
+        let s = display(&a, result);
+        // Should remain unexpanded
+        assert!(
+            !s.contains("cos"),
+            "sin(pi*x) should not be expanded, got: {s}"
         );
     }
 }

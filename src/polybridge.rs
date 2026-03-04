@@ -535,10 +535,7 @@ pub(crate) fn together(arena: &mut Arena, expr: ExprId) -> ExprId {
         return expr;
     }
 
-    // Compute common denominator as the product of all distinct denominators.
-    // TODO: use LCM of denominators instead of product for simpler results.
-    //       e.g. a/(x-1) + b/(x-1)^2 currently gets denom (x-1)^3 instead of (x-1)^2.
-    // We deduplicate by ExprId to avoid multiplying the same denom twice.
+    // Collect distinct denominators (deduplicated by ExprId).
     let mut unique_denoms: Vec<ExprId> = Vec::new();
     for &(_, d) in &parts {
         if d != arena.one && !unique_denoms.contains(&d) {
@@ -546,29 +543,114 @@ pub(crate) fn together(arena: &mut Arena, expr: ExprId) -> ExprId {
         }
     }
 
+    // Try polynomial LCM for a simpler common denominator; fall back to
+    // the product of distinct denominators when poly conversion fails.
+    if let Some(result) = try_together_poly_lcm(arena, &parts, &unique_denoms) {
+        return result;
+    }
+    together_product_fallback(arena, &parts, &unique_denoms)
+}
+
+/// Attempt to combine fractions using polynomial LCM of the denominators.
+///
+/// Returns `Some(combined_expr)` on success, `None` if polynomial conversion
+/// fails for any denominator (e.g. multiple variables, transcendental denoms).
+fn try_together_poly_lcm(
+    arena: &mut Arena,
+    parts: &[(ExprId, ExprId)],
+    unique_denoms: &[ExprId],
+) -> Option<ExprId> {
+    if unique_denoms.is_empty() {
+        return None;
+    }
+
+    // Find free variables across all denominators.
+    let mut all_syms: Vec<ExprId> = Vec::new();
+    for &d in unique_denoms {
+        all_syms.extend(walk::free_symbols(arena, d));
+    }
+    all_syms.sort_by_key(|id| id.0);
+    all_syms.dedup();
+
+    // Need exactly one variable for univariate polynomial operations.
+    if all_syms.len() != 1 {
+        return None;
+    }
+    let var = all_syms[0];
+
+    // Convert every distinct denominator to a Poly.
+    let mut denom_poly_map: Vec<(ExprId, Poly)> = Vec::new();
+    for &d in unique_denoms {
+        let p = expr_to_poly(arena, d, var)?;
+        denom_poly_map.push((d, p));
+    }
+
+    // Compute LCM of all denominator polynomials incrementally.
+    let mut lcm = denom_poly_map[0].1.clone();
+    for (_, p) in &denom_poly_map[1..] {
+        let g = Poly::gcd(&lcm, p);
+        if g.is_zero() {
+            return None;
+        }
+        // lcm(a, b) = (a / gcd(a, b)) * b
+        let a_over_g = lcm.div(&g);
+        lcm = &a_over_g * p;
+    }
+
+    let common_denom_expr = poly_to_expr(arena, &lcm, var);
+
+    // Build scaled numerators: numer_i * (lcm / denom_i).
+    let one_poly = Poly::constant(Ratio::one());
+    let mut scaled_numers: SmallVec<[ExprId; 6]> = SmallVec::new();
+    for &(n, d) in parts {
+        let d_poly = if d == arena.one {
+            &one_poly
+        } else {
+            match denom_poly_map.iter().find(|(id, _)| *id == d) {
+                Some((_, p)) => p,
+                None => return None,
+            }
+        };
+        let scale_poly = lcm.div(d_poly);
+        if scale_poly.degree() == Some(0) && scale_poly.coeff(0).is_one() {
+            // Scale factor is 1 — numerator unchanged.
+            scaled_numers.push(n);
+        } else {
+            let scale_expr = poly_to_expr(arena, &scale_poly, var);
+            let scaled = arena.mul(&[n, scale_expr]);
+            scaled_numers.push(scaled);
+        }
+    }
+
+    let numer_sum = arena.add(&scaled_numers);
+    Some(arena.div(numer_sum, common_denom_expr))
+}
+
+/// Fallback: use the product of distinct denominators as the common denominator.
+fn together_product_fallback(
+    arena: &mut Arena,
+    parts: &[(ExprId, ExprId)],
+    unique_denoms: &[ExprId],
+) -> ExprId {
     let common_denom = if unique_denoms.len() == 1 {
         unique_denoms[0]
     } else {
-        arena.mul(&unique_denoms)
+        arena.mul(unique_denoms)
     };
 
-    // Scale each numerator: numer_i * (common_denom / denom_i).
     let mut scaled_numers: SmallVec<[ExprId; 6]> = SmallVec::new();
-    for &(n, d) in &parts {
+    for &(n, d) in parts {
         if d == arena.one {
-            // numer * common_denom
             let scaled = arena.mul(&[n, common_denom]);
             scaled_numers.push(scaled);
         } else {
-            // numer * (common_denom / denom) = numer * product_of_other_denoms
             let mut other_denoms: Vec<ExprId> = Vec::new();
-            for &ud in &unique_denoms {
+            for &ud in unique_denoms {
                 if ud != d {
                     other_denoms.push(ud);
                 }
             }
             if other_denoms.is_empty() {
-                // denom IS the common denom, so scale factor is 1
                 scaled_numers.push(n);
             } else {
                 let scale = if other_denoms.len() == 1 {
@@ -582,10 +664,7 @@ pub(crate) fn together(arena: &mut Arena, expr: ExprId) -> ExprId {
         }
     }
 
-    // Sum the scaled numerators.
     let numer_sum = arena.add(&scaled_numers);
-
-    // Build result: numer_sum / common_denom.
     arena.div(numer_sum, common_denom)
 }
 
@@ -929,10 +1008,9 @@ mod tests {
     }
 
     #[test]
-    fn together_uses_product_not_lcm() {
-        // TODO: together() should use LCM of denominators, not product.
-        // Currently: a/(x-1) + b/(x-1)^2 gets denom (x-1)*(x-1)^2 instead of (x-1)^2
-        // This test documents the current (suboptimal but correct) behavior.
+    fn together_uses_lcm_not_product() {
+        // together() uses polynomial LCM so the denominator is minimal.
+        // a/(x-1) + b/(x-1)^2 should give denom (x-1)^2, not (x-1)^3.
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let sym_a = sym(&mut a, "a");
@@ -945,8 +1023,34 @@ mod tests {
         let frac2 = a.div(sym_b, x_minus_1_sq); // b/(x-1)^2
         let sum = a.add(&[frac1, frac2]);
         let result = together(&mut a, sum);
-        // At minimum, together should not crash and should return a valid expression.
         let s = display(&a, result);
-        assert!(!s.is_empty(), "together should produce a valid expression");
+        // The denominator should be (x-1)^2, so no ^3 should appear.
+        assert!(
+            !s.contains("^3"),
+            "together should use LCM not product. Got: {s}"
+        );
+    }
+
+    #[test]
+    fn together_simplifies_common_factors() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let sym_a = sym(&mut a, "a");
+        let sym_b = sym(&mut a, "b");
+        let one = a.one;
+        let x_minus_1 = a.sub(x, one);
+        let two = a.int(2);
+        let x_minus_1_sq = a.pow(x_minus_1, two);
+        let frac1 = a.div(sym_a, x_minus_1);
+        let frac2 = a.div(sym_b, x_minus_1_sq);
+        let sum = a.add(&[frac1, frac2]);
+        let result = together(&mut a, sum);
+        // After together + cancel, the denominator should be (x-1)^2, not (x-1)^3
+        let result_str = display(&a, result);
+        // The result should not have (x-1)^3 in it
+        assert!(
+            !result_str.contains("^3"),
+            "together should use LCM not product. Got: {result_str}"
+        );
     }
 }

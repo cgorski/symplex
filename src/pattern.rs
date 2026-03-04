@@ -598,49 +598,33 @@ pub(crate) fn rule_pythagorean(arena: &mut Arena) -> Rule {
     Rule::new("pythagorean", pattern, arena.one)
 }
 
-/// Build the inverse function rule: `exp(ln(w)) → w`.
-fn rule_exp_ln(arena: &mut Arena) -> Rule {
+/// Helper: build a rule matching `outer(inner(w)) → template(w)`.
+fn unary_compose_rule(
+    arena: &mut Arena,
+    name: &'static str,
+    outer_fn: fn(&mut Arena, ExprId) -> ExprId,
+    inner_fn: fn(&mut Arena, ExprId) -> ExprId,
+    template_fn: fn(&mut Arena, ExprId) -> ExprId,
+) -> Rule {
     let (w_expr, w_id) = arena.wild();
-    let ln_w = arena.ln(w_expr);
-    let exp_ln_w = arena.exp(ln_w);
-
+    let inner_w = inner_fn(arena, w_expr);
+    let pattern_expr = outer_fn(arena, inner_w);
+    let template = template_fn(arena, w_expr);
     let mut wilds = FxHashMap::default();
     wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: exp_ln_w,
-        wilds,
-    };
-    Rule::new("exp_ln", pattern, w_expr)
+    Rule::new(
+        name,
+        Pattern {
+            root: pattern_expr,
+            wilds,
+        },
+        template,
+    )
 }
 
-/// Build the inverse function rule: `ln(exp(w)) → w`.
-fn rule_ln_exp(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let exp_w = arena.exp(w_expr);
-    let ln_exp_w = arena.ln(exp_w);
-
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: ln_exp_w,
-        wilds,
-    };
-    Rule::new("ln_exp", pattern, w_expr)
-}
-
-/// Build the idempotent abs rule: `abs(abs(w)) → abs(w)`.
-fn rule_abs_abs(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let abs_w = arena.abs(w_expr);
-    let abs_abs_w = arena.abs(abs_w);
-
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: abs_abs_w,
-        wilds,
-    };
-    Rule::new("abs_abs", pattern, abs_w)
+/// Identity template: just returns the wild itself.
+fn identity(_arena: &mut Arena, w: ExprId) -> ExprId {
+    w
 }
 
 /// Build the rule: `sqrt(w^2) → abs(w)`.
@@ -659,48 +643,6 @@ fn rule_sqrt_sq(arena: &mut Arena) -> Rule {
         wilds,
     };
     Rule::new("sqrt_sq", pattern, abs_w)
-}
-
-/// Build the inverse trig rule: `asin(sin(w)) → w`.
-fn rule_asin_sin(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let sin_w = arena.sin(w_expr);
-    let asin_sin_w = arena.asin(sin_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: asin_sin_w,
-        wilds,
-    };
-    Rule::new("asin_sin", pattern, w_expr)
-}
-
-/// Build the inverse trig rule: `acos(cos(w)) → w`.
-fn rule_acos_cos(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let cos_w = arena.cos(w_expr);
-    let acos_cos_w = arena.acos(cos_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: acos_cos_w,
-        wilds,
-    };
-    Rule::new("acos_cos", pattern, w_expr)
-}
-
-/// Build the inverse trig rule: `atan(tan(w)) → w`.
-fn rule_atan_tan(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let tan_w = arena.tan(w_expr);
-    let atan_tan_w = arena.atan(tan_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: atan_tan_w,
-        wilds,
-    };
-    Rule::new("atan_tan", pattern, w_expr)
 }
 
 /// Build the hyperbolic Pythagorean identity: `cosh(w)^2 - sinh(w)^2 → 1`.
@@ -760,133 +702,6 @@ fn rule_pow_pow(arena: &mut Arena) -> Rule {
         false
     });
     r
-}
-
-/// Build the inverse hyperbolic rule: `asinh(sinh(w)) → w`.
-fn rule_asinh_sinh(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let sinh_w = arena.sinh(w_expr);
-    let asinh_sinh_w = arena.asinh(sinh_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: asinh_sinh_w,
-        wilds,
-    };
-    Rule::new("asinh_sinh", pattern, w_expr)
-}
-
-/// Build the inverse hyperbolic rule: `acosh(cosh(w)) → abs(w)`.
-fn rule_acosh_cosh(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let cosh_w = arena.cosh(w_expr);
-    let acosh_cosh_w = arena.acosh(cosh_w);
-    let abs_w = arena.abs(w_expr);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: acosh_cosh_w,
-        wilds,
-    };
-    Rule::new("acosh_cosh", pattern, abs_w)
-}
-
-/// Build the inverse hyperbolic rule: `atanh(tanh(w)) → w`.
-fn rule_atanh_tanh(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let tanh_w = arena.tanh(w_expr);
-    let atanh_tanh_w = arena.atanh(tanh_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: atanh_tanh_w,
-        wilds,
-    };
-    Rule::new("atanh_tanh", pattern, w_expr)
-}
-
-/// sin(asin(w)) → w
-fn rule_sin_asin(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let asin_w = arena.asin(w_expr);
-    let sin_asin_w = arena.sin(asin_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: sin_asin_w,
-        wilds,
-    };
-    Rule::new("sin_asin", pattern, w_expr)
-}
-
-/// cos(acos(w)) → w
-fn rule_cos_acos(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let acos_w = arena.acos(w_expr);
-    let cos_acos_w = arena.cos(acos_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: cos_acos_w,
-        wilds,
-    };
-    Rule::new("cos_acos", pattern, w_expr)
-}
-
-/// tan(atan(w)) → w
-fn rule_tan_atan(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let atan_w = arena.atan(w_expr);
-    let tan_atan_w = arena.tan(atan_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: tan_atan_w,
-        wilds,
-    };
-    Rule::new("tan_atan", pattern, w_expr)
-}
-
-/// sinh(asinh(w)) → w
-fn rule_sinh_asinh(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let asinh_w = arena.asinh(w_expr);
-    let sinh_asinh_w = arena.sinh(asinh_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: sinh_asinh_w,
-        wilds,
-    };
-    Rule::new("sinh_asinh", pattern, w_expr)
-}
-
-/// cosh(acosh(w)) → w
-fn rule_cosh_acosh(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let acosh_w = arena.acosh(w_expr);
-    let cosh_acosh_w = arena.cosh(acosh_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: cosh_acosh_w,
-        wilds,
-    };
-    Rule::new("cosh_acosh", pattern, w_expr)
-}
-
-/// tanh(atanh(w)) → w
-fn rule_tanh_atanh(arena: &mut Arena) -> Rule {
-    let (w_expr, w_id) = arena.wild();
-    let atanh_w = arena.atanh(w_expr);
-    let tanh_atanh_w = arena.tanh(atanh_w);
-    let mut wilds = FxHashMap::default();
-    wilds.insert(w_expr, w_id);
-    let pattern = Pattern {
-        root: tanh_atanh_w,
-        wilds,
-    };
-    Rule::new("tanh_atanh", pattern, w_expr)
 }
 
 /// Build a basic set of simplification rules.
@@ -967,6 +782,29 @@ fn rule_exp_mul(arena: &mut Arena) -> Rule {
     Rule::new("exp_mul", pattern, template)
 }
 
+/// exp(a * ln(b)) → b^a  (exp-log denesting)
+///
+/// Only matches when the argument to exp is a 2-child Mul where one
+/// child is ln(something). For 3+ child Mul (like exp(2*x*ln(y))),
+/// the pattern system's strict positional matching won't fire.
+fn rule_exp_log_denest(arena: &mut Arena) -> Rule {
+    let (a_expr, a_id) = arena.wild();
+    let (b_expr, b_id) = arena.wild();
+    let ln_b = arena.ln(b_expr);
+    let product = arena.mul(&[a_expr, ln_b]);
+    let pattern_expr = arena.exp(product);
+    let template = arena.pow(b_expr, a_expr);
+
+    let mut wilds = FxHashMap::default();
+    wilds.insert(a_expr, a_id);
+    wilds.insert(b_expr, b_id);
+    let pattern = Pattern {
+        root: pattern_expr,
+        wilds,
+    };
+    Rule::new("exp_log_denest", pattern, template)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Conditional rule helpers
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1009,26 +847,27 @@ fn rule_abs_positive(arena: &mut Arena) -> Rule {
 pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
     vec![
         rule_pythagorean(arena),
-        rule_exp_ln(arena),
-        rule_ln_exp(arena),
-        rule_abs_abs(arena),
+        unary_compose_rule(arena, "exp_ln", Arena::exp, Arena::ln, identity),
+        unary_compose_rule(arena, "ln_exp", Arena::ln, Arena::exp, identity),
+        unary_compose_rule(arena, "abs_abs", Arena::abs, Arena::abs, Arena::abs),
         rule_sqrt_sq(arena),
         rule_cosh_sinh_identity(arena),
         rule_pow_pow(arena),
-        rule_asinh_sinh(arena),
-        rule_acosh_cosh(arena),
-        rule_atanh_tanh(arena),
+        unary_compose_rule(arena, "asinh_sinh", Arena::asinh, Arena::sinh, identity),
+        unary_compose_rule(arena, "acosh_cosh", Arena::acosh, Arena::cosh, Arena::abs),
+        unary_compose_rule(arena, "atanh_tanh", Arena::atanh, Arena::tanh, identity),
         rule_sin_div_cos(arena),
         rule_cos_div_sin(arena),
         rule_sinh_div_cosh(arena),
         rule_exp_mul(arena),
+        rule_exp_log_denest(arena),
         rule_abs_positive(arena),
-        rule_sin_asin(arena),
-        rule_cos_acos(arena),
-        rule_tan_atan(arena),
-        rule_sinh_asinh(arena),
-        rule_cosh_acosh(arena),
-        rule_tanh_atanh(arena),
+        unary_compose_rule(arena, "sin_asin", Arena::sin, Arena::asin, identity),
+        unary_compose_rule(arena, "cos_acos", Arena::cos, Arena::acos, identity),
+        unary_compose_rule(arena, "tan_atan", Arena::tan, Arena::atan, identity),
+        unary_compose_rule(arena, "sinh_asinh", Arena::sinh, Arena::asinh, identity),
+        unary_compose_rule(arena, "cosh_acosh", Arena::cosh, Arena::acosh, identity),
+        unary_compose_rule(arena, "tanh_atanh", Arena::tanh, Arena::atanh, identity),
     ]
 }
 
@@ -1623,5 +1462,19 @@ mod tests {
         let rules = basic_rules(&mut arena);
         let (result, _) = apply_rules(&mut arena, expr, &rules);
         assert_eq!(result, expr, "asin(sin(x)) should stay (rule removed)");
+    }
+
+    #[test]
+    fn exp_log_denest_simplifies() {
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        let three = arena.int(3);
+        let ln_x = arena.ln(x);
+        let product = arena.mul(&[three, ln_x]);
+        let expr = arena.exp(product); // exp(3*ln(x))
+        let rules = basic_rules(&mut arena);
+        let (result, _) = apply_rules(&mut arena, expr, &rules);
+        let expected = arena.pow(x, three); // x^3
+        assert_eq!(result, expected, "exp(3*ln(x)) should simplify to x^3");
     }
 }

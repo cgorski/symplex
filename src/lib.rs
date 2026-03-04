@@ -33,6 +33,10 @@
 //! assert_eq!(format!("{expr}"), "x^2 + 2*x + 1");
 //! ```
 
+// ── Self-referencing extern crate so proc-macro-generated paths
+//    (`::symplex::__macro_support::…`) resolve inside the crate itself. ──
+extern crate self as symplex;
+
 // ── Internal modules (not part of the public API) ──────────────────────
 pub(crate) mod apart;
 pub(crate) mod arena;
