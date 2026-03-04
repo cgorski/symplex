@@ -1270,40 +1270,167 @@ Every non-obvious mathematical choice (e.g., `0^0 = 1`, `ComplexInfinity + finit
 
 ---
 
-## SymPy Gap Analysis — Priority Roadmap
+## SymPy Feature Parity — Comprehensive Gap Analysis & Roadmap
 
-Based on comprehensive comparison with SymPy's ~40 modules.
+> **Source:** Full audit of all ~40 SymPy sub-packages cross-referenced against
+> the symplex feature inventory. SymPy version: 1.14.0 (local at `math/sympy/`).
 
-### Critical gaps (typical CAS users expect these)
+### Current standing
 
-1. **Sets** (Interval, FiniteSet, Union, Reals) — foundation for solveset and domains
-2. **Symbolic sums & products** (Σ, Π with Gosper's algorithm for closed forms)
-3. **Inequality solving** — return relational expressions or intervals
-4. **Cubic/quartic formulas** — complete polynomial root finding
-5. **Definite integrals** (improper, with convergence)
-
-### High-priority gaps (power users and STEM students)
-
-6. **Multivariate polynomials** — needed for systems
-7. **Full polynomial factoring** (Hensel, Zassenhaus) — factor over ℤ
-8. **Eigenvalues / eigenvectors** — linear algebra courses
-9. ~~**Gruntz algorithm** — robust limits at infinity~~ ✅ **Done** (Commit 94, ~1500 lines)
-10. **Special functions** (gamma, erf, Bessel) — physics/engineering
-11. **Vector calculus** (gradient, divergence, curl) — multivariable calc
-12. **Risch/heuristic integration** — handle more integrands
+symplex covers the core algebra–calculus pipeline with a Rust-native architecture.
+For a pre-1.0 CAS, coverage is strong in 8 of SymPy's ~40 modules. The gaps below
+are ordered by user impact, not implementation difficulty.
 
 ### What symplex does better than SymPy
 
-- Arena hash-consing: O(1) equality, structural sharing
-- Compile-time sort safety: Expr<Numeric> vs Expr<Boolean>
-- Thread safety: Send + Sync
-- No recursion: explicit stacks prevent stack overflow
-- Canonical invariant checker: catches bugs at construction time
-- Proc macro DSL: expr!, rule!, matrix!, eq!
-- Arbitrary-precision parser (0.1+0.2=3/10 exactly)
-- Type-safe expression views (ExprView prevents deadlock at compile time)
-- Condition-guarded simplification rules (pow_pow, abs_positive)
-- LIATE-ordered integration by parts with depth limit
+| Feature | Description |
+|---------|-------------|
+| Arena hash-consing | O(1) equality, structural sharing, cache-friendly |
+| Compile-time sort safety | `Expr<Numeric>` vs `Expr<Boolean>` — mixing is a compile error |
+| Thread safety | `Ex` is `Send + Sync` — parallel computation safe |
+| No recursion | All tree walks use explicit stacks — no stack overflow |
+| Canonical invariant checker | Structural correctness verified in debug builds |
+| Proc macro DSL | `expr!()`, `rule!()`, `matrix!()`, `eq!()` |
+| Compiled lambdify | Bytecode VM, not interpreted |
+| Arbitrary-precision parser | `0.1 + 0.2 = 3/10` exactly — no floating-point |
+| Type-safe ExprView | `replace()` closure gets non-locking view — deadlock impossible |
+| Gruntz algorithm in Rust | First Rust implementation of the Gruntz limit algorithm |
+| Condition-guarded rules | `pow_pow`, `abs_positive`, `ln_exp` have mathematical preconditions |
+| LIATE-ordered IBP | Integration by parts with depth limit prevents stack overflow |
+
+---
+
+### Tier 1 — Critical parity gaps (users will leave without these)
+
+These are features that every CAS user expects from day one. Missing any of
+these makes symplex unsuitable for homework, research, or production use.
+
+| # | Feature | SymPy equivalent | Effort | Notes |
+|---|---------|-----------------|--------|-------|
+| 1 | **LaTeX output** (`to_latex()` on `Ex`) | `sympy.latex()` | 4–6 hr | #1 user request; string formatting only, no new math |
+| 2 | **`sec`, `csc`, `cot`** + inverse variants | `sec`, `csc`, `cot`, `asec`, `acsc`, `acot` | 2 hr | Convenience methods returning `1/cos(x)` etc. No new ExprNode variants needed |
+| 3 | **`floor`, `ceiling`** functions | `floor`, `ceiling` | 2 hr | 2 new ExprNode variants + eval rules for numeric args |
+| 4 | **`Min`, `Max`** functions | `Min`, `Max` | 2 hr | 2 new ExprNode variants + eval for numeric args + piecewise bridge |
+| 5 | **Cubic formula (Cardano)** | `roots()` for degree 3 | 4 hr | Depressed cubic → Cardano. Prerequisite for 3×3 eigenvalues |
+| 6 | **Quartic formula (Ferrari)** | `roots()` for degree 4 | 4 hr | Resolve cubic + Ferrari. Completes polynomial root finding through degree 4 |
+| 7 | **Eigenvalues / eigenvectors** (2×2, 3×3) | `Matrix.eigenvals()`, `eigenvects()` | 3 hr | Build characteristic polynomial, use existing `solve`. Requires cubic formula |
+| 8 | **Matrix inverse** | `Matrix.inv()` | 2 hr | Cofactor expansion + det (both already exist). Adjugate / det |
+| 9 | **Set types** (`Interval`, `FiniteSet`, `Union`, `EmptySet`, `Reals`) | `sympy.sets` | 8 hr | Foundation for solveset, inequality solving, domain specification |
+| 10 | **`Expr<SetValued>`** third phantom sort | — (SymPy is untyped) | 2 hr | Already designed in architecture docs. Marker type + impl block |
+| 11 | **Inequality solving** (polynomial, rational) | `reduce_inequalities()` | 6 hr | Returns `Interval` or `Union`. Requires Set types |
+| 12 | **Symbolic `Sum` and `Product`** nodes | `Sum`, `Product` | 4 hr | Unevaluated nodes with `.doit()`. Finite evaluation. Gosper deferred |
+| 13 | **Rust code generation** (`to_rust_fn()`) | `sympy.printing.rust` | 3 hr | CSE + flat `let` bindings → Rust function body string. Primary Rust CAS use case |
+
+**Estimated total for Tier 1:** ~46 hours (roughly 2 focused sprints)
+
+---
+
+### Tier 2 — High-value gaps (power users and STEM courses)
+
+These unlock physics/engineering use cases and complete the linear algebra story.
+
+| # | Feature | SymPy equivalent | Effort | Notes |
+|---|---------|-----------------|--------|-------|
+| 14 | **`solveset`** returning `Set` | `sympy.solveset()` | 4 hr | Modern solver API wrapping existing `solve` + Set types |
+| 15 | **Special functions: `gamma`, `digamma`, `beta`** | `sympy.functions.special.gamma_functions` | 4 hr | New ExprNode variants or Apply nodes + eval/diff rules |
+| 16 | **Special functions: `erf`, `erfc`** | `sympy.functions.special.error_functions` | 3 hr | Error function + complementary. Key for statistics |
+| 17 | **Laplace transform / inverse** | `sympy.integrals.transforms` | 8 hr | Table-based approach for common forms. Full Meijer-G deferred |
+| 18 | **Vector calculus** (grad, div, curl, laplacian) | `sympy.vector` | 4 hr | Build on existing `Matrix`. `CoordSys3D` + differential operators |
+| 19 | **Matrix decompositions** (LU, QR) | `Matrix.LUdecomposition()`, `.QRdecomposition()` | 6 hr | Exact rational arithmetic over existing Matrix type |
+| 20 | **Matrix determinant via LU** (performance) | `Matrix.det(method='lu')` | 2 hr | Currently cofactor expansion (O(n!)). LU gives O(n³) |
+| 21 | **Full polynomial factoring** (Hensel/Zassenhaus) | `sympy.polys.factor` | 20 hr | Factor over ℤ. Major algorithm — Berlekamp + Hensel lifting |
+| 22 | **Gröbner bases** | `sympy.polys.groebner` | 15 hr | Buchberger's algorithm. Needed for multivariate polynomial systems |
+| 23 | **Multivariate polynomials** | `sympy.polys` sparse | 12 hr | Sparse representation + multivariate GCD |
+| 24 | **`rewrite()` protocol** | `expr.rewrite(exp)` | 4 hr | Convert trig↔exp, log↔exp. Enables more integration strategies |
+| 25 | **Fourier series** | `sympy.series.fourier_series` | 4 hr | Uses existing integration + trig |
+| 26 | **Recurrence relations** (`rsolve`) | `sympy.solvers.recurr` | 8 hr | Polynomial, rational, hypergeometric |
+| 27 | **PDE solving** (separation of variables) | `sympy.solvers.pde` | 8 hr | Basic separation of variables + classify |
+
+**Estimated total for Tier 2:** ~102 hours
+
+---
+
+### Tier 3 — Domain-specific features (nice to have, not blocking adoption)
+
+| # | Feature | SymPy equivalent | Effort |
+|---|---------|-----------------|--------|
+| 28 | Geometry engine (Point, Line, Circle, Polygon) | `sympy.geometry` | 20 hr |
+| 29 | Combinatorics / group theory | `sympy.combinatorics` | 40 hr |
+| 30 | Number theory (primality, factorization, modular) | `sympy.ntheory` | 30 hr |
+| 31 | Statistics / probability distributions | `sympy.stats` | 40 hr |
+| 32 | Physics packages (mechanics, quantum, units) | `sympy.physics` | 100+ hr |
+| 33 | Plotting (2D/3D, text-mode) | `sympy.plotting` | 20 hr |
+| 34 | Differential geometry (manifolds, curvature) | `sympy.diffgeom` | 30 hr |
+| 35 | Multi-format parser (LaTeX→Ex, Mathematica→Ex) | `sympy.parsing` | 15 hr |
+| 36 | Risch integration algorithm | `sympy.integrals.risch` | 60 hr |
+| 37 | Bessel / hypergeometric / elliptic functions | `sympy.functions.special` | 20 hr |
+| 38 | Formal power series / Padé approximants | `sympy.series.formal`, `approximants` | 8 hr |
+| 39 | Residues (complex analysis) | `sympy.series.residues` | 4 hr |
+| 40 | Diophantine equation solving | `sympy.solvers.diophantine` | 15 hr |
+
+---
+
+### Recommended sprint order
+
+**Sprint 1 — "Minimum Viable CAS Parity"** (items 1–6, 8, 13)
+Low-risk, high-reward additions. No architectural changes. All additive.
+- LaTeX output, sec/csc/cot, floor/ceiling, Min/Max
+- Cubic formula, matrix inverse, Rust codegen
+- *~22 hours, no breaking changes*
+
+**Sprint 2 — "Polynomial Completeness + Eigenvalues"** (items 5–7)
+Complete polynomial solving through degree 4. Unlock eigenvalues.
+- Quartic formula (requires cubic from Sprint 1)
+- Eigenvalues/eigenvectors 2×2 and 3×3
+- *~11 hours, requires Sprint 1 cubic*
+
+**Sprint 3 — "Sets + Inequality Foundation"** (items 9–12, 14)
+Biggest architectural change. New phantom sort, new ExprNode variants.
+- Set types, `Expr<SetValued>`, solveset
+- Inequality solving, symbolic Sum/Product
+- *~24 hours, architectural*
+
+**Sprint 4 — "Special Functions + Transforms"** (items 15–20)
+Unlock physics/engineering. Special functions, Laplace, vector calc.
+- gamma/beta/erf, Laplace transform
+- Vector calculus, matrix decompositions
+- *~27 hours*
+
+### SymPy module coverage projection
+
+| SymPy module | Current | After Sprint 1 | After Sprint 3 | After Sprint 4 |
+|---|---|---|---|---|
+| `core` | 🟢 90% | 🟢 95% | 🟢 95% | 🟢 95% |
+| `calculus` | 🟡 60% | 🟡 60% | 🟡 65% | 🟢 75% |
+| `integrals` | 🟡 50% | 🟡 50% | 🟡 50% | 🟡 60% |
+| `solvers` | 🟡 40% | 🟡 55% | 🟢 70% | 🟢 75% |
+| `series` | 🟢 70% | 🟢 70% | 🟢 75% | 🟢 80% |
+| `simplify` | 🟡 50% | 🟡 55% | 🟡 60% | 🟡 65% |
+| `functions` | 🔴 15% | 🟡 25% | 🟡 30% | 🟡 45% |
+| `matrices` | 🟡 40% | 🟡 55% | 🟡 55% | 🟢 70% |
+| `sets` | 🔴 0% | 🔴 0% | 🟢 70% | 🟢 70% |
+| `logic` | 🟡 50% | 🟡 50% | 🟡 50% | 🟡 50% |
+| `polys` | 🟡 30% | 🟡 35% | 🟡 35% | 🟡 35% |
+| `concrete` | 🔴 0% | 🔴 0% | 🟡 40% | 🟡 40% |
+| `vector` | 🔴 0% | 🔴 0% | 🔴 0% | 🟡 60% |
+| `printing` | 🔴 5% | 🟡 30% | 🟡 35% | 🟡 40% |
+| `codegen` | 🟡 20% | 🟡 40% | 🟡 40% | 🟡 40% |
+
+### Strategic context
+
+Symplex is the only MIT/Apache-2.0 general-purpose CAS in Rust. The likely early
+adopters want to **derive a formula symbolically, then compile it to fast numerical
+code**. This differs from SymPy users who stay in the symbolic world.
+
+The recommended sprint order optimizes for this use case:
+1. Sprint 1 delivers **LaTeX** (for documentation) + **Rust codegen** (for compilation) + **trig completeness**
+2. Sprint 2 delivers **polynomial completeness** (cubic/quartic) + **eigenvalues**
+3. Sprint 3 delivers **sets** (the foundation for a modern solver API)
+4. Sprint 4 delivers **special functions** + **transforms** (physics/engineering)
+
+After all 4 sprints, symplex would cover the core needs of robotics engineers,
+physics students, and numerical algorithm developers — the three most likely
+early-adopter groups for a Rust CAS.
 
 ## File Layout
 
