@@ -183,6 +183,7 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
 /// includes a polynomial-cancellation step (via [`crate::polybridge::cancel`])
 /// after every simplify pass, so rational expressions like `(x²-4)/(x-2)`
 /// are reduced to `x+2`.
+#[allow(dead_code)]
 pub(crate) fn full_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     full_simplify_trace(arena, expr).0
 }

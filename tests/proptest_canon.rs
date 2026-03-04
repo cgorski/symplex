@@ -25,6 +25,9 @@ enum TreeDesc {
     Pow(Box<TreeDesc>, i64), // base ^ small integer
     Neg(Box<TreeDesc>),
     Sin(Box<TreeDesc>),
+    Cos(Box<TreeDesc>),
+    Exp(Box<TreeDesc>), // exp of small expression
+    Ln(Box<TreeDesc>),  // ln of positive expression
 }
 
 /// Build a `TreeDesc` into an actual expression in a context.
@@ -57,6 +60,18 @@ fn build(ctx: &Context, desc: &TreeDesc) -> Ex {
             let inner = build(ctx, inner);
             inner.sin()
         }
+        TreeDesc::Cos(inner) => {
+            let inner = build(ctx, inner);
+            inner.cos()
+        }
+        TreeDesc::Exp(inner) => {
+            let inner = build(ctx, inner);
+            inner.exp()
+        }
+        TreeDesc::Ln(inner) => {
+            let inner = build(ctx, inner);
+            inner.ln()
+        }
     }
 }
 
@@ -81,8 +96,14 @@ fn arb_tree(max_depth: u32) -> BoxedStrategy<TreeDesc> {
                 .prop_map(|(base, exp)| TreeDesc::Pow(Box::new(base), exp)),
             1 => recurse.clone()
                 .prop_map(|inner| TreeDesc::Neg(Box::new(inner))),
-            1 => recurse
+            1 => recurse.clone()
                 .prop_map(|inner| TreeDesc::Sin(Box::new(inner))),
+            1 => recurse.clone()
+                .prop_map(|inner| TreeDesc::Cos(Box::new(inner))),
+            1 => recurse.clone()
+                .prop_map(|inner| TreeDesc::Exp(Box::new(inner))),
+            1 => recurse
+                .prop_map(|inner| TreeDesc::Ln(Box::new(inner))),
         ]
         .boxed()
     }
@@ -468,6 +489,42 @@ proptest! {
         } else {
             prop_assert_eq!(expr.query(Props::ODD), Some(true));
             prop_assert_eq!(expr.query(Props::EVEN), Some(false));
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Simplification preserves value
+// ═══════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+
+    /// Simplification must preserve numerical value.
+    #[test]
+    fn simplify_preserves_value(desc in arb_tree(2)) {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let expr = build(&ctx, &desc);
+
+        // Try to evaluate at a test point
+        let test_val = ctx.rational(7, 10); // 0.7 — avoids poles at 0 and 1
+        let original_at_point = expr.subs(&x, &test_val);
+        let simplified = expr.simplify();
+        let simplified_at_point = simplified.subs(&x, &test_val);
+
+        // Only assert if both can be evaluated to f64
+        if let (Ok(orig_f), Ok(simp_f)) = (original_at_point.evalf_f64(), simplified_at_point.evalf_f64()) {
+            // Skip NaN/infinite results
+            if orig_f.is_finite() && simp_f.is_finite() && orig_f.abs() < 1e10 {
+                let diff = (orig_f - simp_f).abs();
+                let tol = 1e-10 * orig_f.abs().max(1.0);
+                prop_assert!(
+                    diff < tol,
+                    "simplify changed value: {} -> {}, original={}, simplified={}",
+                    orig_f, simp_f, format!("{expr}"), format!("{simplified}")
+                );
+            }
         }
     }
 }

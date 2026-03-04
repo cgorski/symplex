@@ -254,8 +254,12 @@ fn cse_no_common() {
     let y = symplex::var("y");
     let (bindings, result) = (&x + &y).cse();
     let _ = format!("{result}");
-    // No crash, bindings may or may not be empty
-    assert!(bindings.len() >= 0);
+    // x + y has no shared subexpressions — bindings should be empty
+    assert!(
+        bindings.is_empty(),
+        "simple x + y should have no CSE bindings, got {}",
+        bindings.len()
+    );
 }
 
 #[test]
@@ -265,8 +269,8 @@ fn cse_with_shared_subexpr() {
     let expr = &sin_x.powi(2) + &sin_x;
     let (bindings, result) = expr.cse();
     let _ = format!("{result}");
-    // sin(x) should potentially be extracted
-    assert!(bindings.len() >= 0);
+    // sin(x) appears in both terms — should be extracted
+    assert!(!bindings.is_empty(), "CSE should extract shared sin(x)");
 }
 
 #[test]

@@ -31,12 +31,10 @@ use crate::node::{ExprId, ExprNode};
 /// Maximum recursion depth for the Gruntz algorithm.
 const MAX_DEPTH: usize = 15;
 
-/// Counter for generating unique dummy variable names.
-static GRUNTZ_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn fresh_dummy(arena: &mut Arena) -> ExprId {
-    let n = GRUNTZ_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    arena.symbol(&format!("__gw{}", n))
+fn fresh_dummy(arena: &mut Arena, counter: &mut u32) -> ExprId {
+    let n = *counter;
+    *counter += 1;
+    arena.symbol(&format!("__gw{n}"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -82,11 +80,16 @@ impl SubsSet {
 
     /// Get or create a dummy for the given expression.
     /// Like SymPy's `SubsSet.__getitem__`: auto-creates on first access.
-    fn get_or_create_dummy(&mut self, expr: ExprId, arena: &mut Arena) -> ExprId {
+    fn get_or_create_dummy(
+        &mut self,
+        expr: ExprId,
+        arena: &mut Arena,
+        counter: &mut u32,
+    ) -> ExprId {
         if let Some(&d) = self.exprs.get(&expr) {
             return d;
         }
-        let d = fresh_dummy(arena);
+        let d = fresh_dummy(arena, counter);
         self.exprs.insert(expr, d);
         d
     }
@@ -133,6 +136,7 @@ fn compare(
     b: ExprId,
     x: ExprId,
     depth: usize,
+    counter: &mut u32,
 ) -> Result<GrowthOrder, crate::errors::SymplexError> {
     tracing::debug!(depth, "gruntz::compare: comparing growth rates");
 
@@ -141,7 +145,7 @@ fn compare(
     let ratio = arena.div(la, lb);
 
     tracing::trace!("gruntz::compare: computing limitinf of log ratio");
-    let c = limitinf(arena, ratio, x, depth + 1)?;
+    let c = limitinf(arena, ratio, x, depth + 1, counter)?;
 
     if arena.is_zero_structural(c) {
         tracing::debug!("gruntz::compare → Less (a grows slower)");
@@ -180,6 +184,7 @@ fn sign_at_inf(
     e: ExprId,
     x: ExprId,
     depth: usize,
+    counter: &mut u32,
 ) -> Result<i32, crate::errors::SymplexError> {
     if depth > MAX_DEPTH {
         tracing::warn!("gruntz::sign_at_inf: max depth exceeded");
@@ -220,7 +225,7 @@ fn sign_at_inf(
     }
 
     tracing::trace!("gruntz::sign_at_inf: computing limit to determine sign");
-    let lim = limitinf(arena, e, x, depth + 1)?;
+    let lim = limitinf(arena, e, x, depth + 1, counter)?;
     let result = sign_of_constant(arena, lim);
     tracing::debug!(sign = ?result, "gruntz::sign_at_inf result");
     result
@@ -304,6 +309,7 @@ fn mrv(
     e: ExprId,
     x: ExprId,
     depth: usize,
+    counter: &mut u32,
 ) -> Result<(SubsSet, ExprId), crate::errors::SymplexError> {
     if depth > MAX_DEPTH {
         tracing::warn!("gruntz::mrv: max depth exceeded");
@@ -326,7 +332,7 @@ fn mrv(
     if e == x {
         tracing::trace!("gruntz::mrv: e == x → MRV = {{x}}");
         let mut s = SubsSet::new();
-        let d = s.get_or_create_dummy(x, arena);
+        let d = s.get_or_create_dummy(x, arena, counter);
         return Ok((s, d));
     }
 
@@ -342,7 +348,7 @@ fn mrv(
                 kind = if is_add { "Add" } else { "Mul" },
                 "gruntz::mrv: processing n-ary node"
             );
-            mrv_nary(arena, e, &children_vec, x, depth, is_add)
+            mrv_nary(arena, e, &children_vec, x, depth, is_add, counter)
         }
 
         // ── Pow: handle x^n vs x^f(x) ──
@@ -354,10 +360,10 @@ fn mrv(
                 let ln_base = arena.ln(base);
                 let product = arena.mul(&[exp, ln_base]);
                 let as_exp = arena.exp(product);
-                mrv(arena, as_exp, x, depth + 1)
+                mrv(arena, as_exp, x, depth + 1, counter)
             } else {
                 // x^const: MRV is just MRV of base
-                let (s, rw_base) = mrv(arena, base, x, depth + 1)?;
+                let (s, rw_base) = mrv(arena, base, x, depth + 1, counter)?;
                 let rebuilt = arena.pow(rw_base, exp);
                 Ok((s, rebuilt))
             }
@@ -370,30 +376,30 @@ fn mrv(
             // SymPy: if exp(log(...)), simplify to avoid non-termination
             if let ExprNode::Ln(inner) = arena.node(arg).clone() {
                 tracing::trace!("gruntz::mrv: exp(ln(f)) → mrv(f)");
-                return mrv(arena, inner, x, depth + 1);
+                return mrv(arena, inner, x, depth + 1, counter);
             }
 
             // Check if the exponent goes to ±∞
-            let li = limitinf(arena, arg, x, depth + 1)?;
+            let li = limitinf(arena, arg, x, depth + 1, counter)?;
             let li_is_inf = is_infinite(arena, li);
 
             if li_is_inf {
                 tracing::debug!("gruntz::mrv: exp(arg) with arg → ∞ — new comparability class");
                 // exp(arg) creates a new comparability class
                 let mut s1 = SubsSet::new();
-                let e1 = s1.get_or_create_dummy(e, arena);
+                let e1 = s1.get_or_create_dummy(e, arena, counter);
 
                 // Also compute MRV of the exponent
-                let (s2, e2) = mrv(arena, arg, x, depth + 1)?;
+                let (s2, e2) = mrv(arena, arg, x, depth + 1, counter)?;
 
                 // Record the rewrite: dummy_for_exp(arg) = exp(rewritten_arg)
                 let exp_e2 = arena.exp(e2);
 
                 // Merge using mrv_max3 logic
-                mrv_max3(arena, s1, e1, s2, exp_e2, x, depth)
+                mrv_max3(arena, s1, e1, s2, exp_e2, x, depth, counter)
             } else {
                 tracing::debug!("gruntz::mrv: exp(arg) with arg → finite — same class as arg");
-                let (s, rw_arg) = mrv(arena, arg, x, depth + 1)?;
+                let (s, rw_arg) = mrv(arena, arg, x, depth + 1, counter)?;
                 let rebuilt = arena.exp(rw_arg);
                 Ok((s, rebuilt))
             }
@@ -402,71 +408,71 @@ fn mrv(
         // ── Ln: always in a lower comparability class ──
         ExprNode::Ln(inner) => {
             tracing::trace!("gruntz::mrv: Ln node — recurse into argument");
-            let (s, rw) = mrv(arena, inner, x, depth + 1)?;
+            let (s, rw) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.ln(rw)))
         }
 
         // ── Neg ──
         ExprNode::Neg(inner) => {
-            let (s, rw) = mrv(arena, inner, x, depth + 1)?;
+            let (s, rw) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.neg(rw)))
         }
 
         // ── Unary functions: recurse into argument ──
         ExprNode::Sin(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.sin(r)))
         }
         ExprNode::Cos(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.cos(r)))
         }
         ExprNode::Tan(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.tan(r)))
         }
         ExprNode::Asin(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.asin(r)))
         }
         ExprNode::Acos(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.acos(r)))
         }
         ExprNode::Atan(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.atan(r)))
         }
         ExprNode::Sinh(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.sinh(r)))
         }
         ExprNode::Cosh(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.cosh(r)))
         }
         ExprNode::Tanh(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.tanh(r)))
         }
         ExprNode::Abs(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.abs(r)))
         }
         ExprNode::Sign(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.sign(r)))
         }
         ExprNode::Asinh(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.asinh(r)))
         }
         ExprNode::Acosh(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.acosh(r)))
         }
         ExprNode::Atanh(inner) => {
-            let (s, r) = mrv(arena, inner, x, depth + 1)?;
+            let (s, r) = mrv(arena, inner, x, depth + 1, counter)?;
             Ok((s, arena.atanh(r)))
         }
 
@@ -474,7 +480,7 @@ fn mrv(
         _ => {
             tracing::trace!("gruntz::mrv: fallback — treating expression as atomic with x");
             let mut s = SubsSet::new();
-            let d = s.get_or_create_dummy(x, arena);
+            let d = s.get_or_create_dummy(x, arena, counter);
             // Substitute x → d in the whole expression
             let rw = crate::subs::subs(arena, e, x, d);
             Ok((s, rw))
@@ -492,6 +498,7 @@ fn mrv_nary(
     x: ExprId,
     depth: usize,
     is_add: bool,
+    counter: &mut u32,
 ) -> Result<(SubsSet, ExprId), crate::errors::SymplexError> {
     if children.is_empty() {
         return Ok((
@@ -524,10 +531,10 @@ fn mrv_nary(
     }
 
     // Process dependent children pairwise
-    let (mut combined_set, mut rw_first) = mrv(arena, dep[0], x, depth + 1)?;
+    let (mut combined_set, mut rw_first) = mrv(arena, dep[0], x, depth + 1, counter)?;
 
     for &child in &dep[1..] {
-        let (child_set, rw_child) = mrv(arena, child, x, depth + 1)?;
+        let (child_set, rw_child) = mrv(arena, child, x, depth + 1, counter)?;
 
         // Merge the two MRV sets
         let (merged, rw_a, rw_b) = mrv_max1(
@@ -538,6 +545,7 @@ fn mrv_nary(
             rw_child,
             x,
             depth,
+            counter,
         )?;
         combined_set = merged;
 
@@ -576,6 +584,7 @@ fn mrv_max1(
     e2: ExprId,
     x: ExprId,
     depth: usize,
+    counter: &mut u32,
 ) -> Result<(SubsSet, ExprId, ExprId), crate::errors::SymplexError> {
     if s1.is_empty() {
         return Ok((s2.clone(), e1, e2));
@@ -604,7 +613,7 @@ fn mrv_max1(
     }
 
     tracing::debug!("gruntz::mrv_max1: comparing MRV representatives");
-    match compare(arena, a_rep, b_rep, x, depth + 1)? {
+    match compare(arena, a_rep, b_rep, x, depth + 1, counter)? {
         GrowthOrder::Greater => {
             tracing::debug!(
                 "gruntz::mrv_max1: s1 grows faster — keeping s1, rewriting e2 with s1 dummies"
@@ -649,6 +658,7 @@ fn mrv_max3(
     exp_e2: ExprId,  // exp(rewritten_arg)
     x: ExprId,
     depth: usize,
+    counter: &mut u32,
 ) -> Result<(SubsSet, ExprId), crate::errors::SymplexError> {
     if s2.is_empty() {
         return Ok((s1, e1));
@@ -658,7 +668,7 @@ fn mrv_max3(
     let b_rep = *s2.exprs.keys().next().unwrap();
 
     tracing::debug!("gruntz::mrv_max3: comparing exp vs arg MRV");
-    match compare(arena, a_rep, b_rep, x, depth + 1)? {
+    match compare(arena, a_rep, b_rep, x, depth + 1, counter)? {
         GrowthOrder::Greater => {
             tracing::debug!("gruntz::mrv_max3: exp dominates — keeping exp as MRV");
             Ok((s1, e1))
@@ -715,6 +725,7 @@ fn rewrite(
     x: ExprId,
     wsym: ExprId,
     depth: usize,
+    counter: &mut u32,
 ) -> Result<(ExprId, ExprId), crate::errors::SymplexError> {
     if omega.is_empty() {
         return Ok((exps, arena.zero()));
@@ -743,7 +754,7 @@ fn rewrite(
     };
 
     // Determine sign of g's exponent
-    let sig = sign_at_inf(arena, g_exp, x, depth + 1).unwrap_or(1);
+    let sig = sign_at_inf(arena, g_exp, x, depth + 1, counter).unwrap_or(1);
     tracing::debug!(
         sign = sig,
         "gruntz::rewrite: sign of representative's exponent"
@@ -785,7 +796,7 @@ fn rewrite(
 
         // Compute c = lim(f_exp / g_exp, x → ∞)
         let ratio = arena.div(f_exp, g_exp);
-        let c = limitinf(arena, ratio, x, depth + 1)?;
+        let c = limitinf(arena, ratio, x, depth + 1, counter)?;
         let c_display = arena.display(c).to_string();
         let f_exp_display = arena.display(f_exp).to_string();
         let g_exp_display = arena.display(g_exp).to_string();
@@ -1167,6 +1178,7 @@ fn mrv_leadterm(
     e: ExprId,
     x: ExprId,
     depth: usize,
+    counter: &mut u32,
 ) -> Result<(ExprId, ExprId), crate::errors::SymplexError> {
     if depth > MAX_DEPTH {
         tracing::warn!("gruntz::mrv_leadterm: max depth exceeded");
@@ -1184,7 +1196,7 @@ fn mrv_leadterm(
     tracing::debug!(depth, expr = %e_display, "gruntz::mrv_leadterm: Step 1 — computing MRV set");
 
     // Step 1: Compute MRV set
-    let (omega, exps) = mrv(arena, e, x, depth + 1)?;
+    let (omega, exps) = mrv(arena, e, x, depth + 1, counter)?;
 
     if omega.is_empty() {
         return Ok((exps, arena.zero()));
@@ -1228,8 +1240,8 @@ fn mrv_leadterm(
 
     // Step 3: Rewrite in terms of w
     tracing::debug!("gruntz::mrv_leadterm: Step 3 — rewriting in terms of ω");
-    let w = fresh_dummy(arena);
-    let (f, logw) = rewrite(arena, exps, &omega, x, w, depth)?;
+    let w = fresh_dummy(arena, counter);
+    let (f, logw) = rewrite(arena, exps, &omega, x, w, depth, counter)?;
 
     let f_display = arena.display(f).to_string();
     let w_display = arena.display(w).to_string();
@@ -1257,6 +1269,7 @@ pub(crate) fn limitinf(
     e: ExprId,
     x: ExprId,
     depth: usize,
+    counter: &mut u32,
 ) -> Result<ExprId, crate::errors::SymplexError> {
     if depth > MAX_DEPTH {
         tracing::warn!(depth, "gruntz::limitinf: max recursion depth exceeded");
@@ -1280,7 +1293,7 @@ pub(crate) fn limitinf(
     tracing::debug!(depth, expr = %e_display, var = %x_display, "gruntz::limitinf: computing limit at infinity");
 
     // Compute leading term
-    let (c0, e0) = mrv_leadterm(arena, e, x, depth)?;
+    let (c0, e0) = mrv_leadterm(arena, e, x, depth, counter)?;
     let e0_eval = crate::eval::eval(arena, e0);
 
     let c0_display = arena.display(c0).to_string();
@@ -1298,7 +1311,7 @@ pub(crate) fn limitinf(
             0
         }
     } else {
-        sign_at_inf(arena, e0_eval, x, depth + 1).unwrap_or(0)
+        sign_at_inf(arena, e0_eval, x, depth + 1, counter).unwrap_or(0)
     };
 
     match e0_sign {
@@ -1307,7 +1320,7 @@ pub(crate) fn limitinf(
             Ok(arena.zero())
         }
         s if s < 0 => {
-            let c0_sign = sign_at_inf(arena, c0, x, depth + 1).unwrap_or(1);
+            let c0_sign = sign_at_inf(arena, c0, x, depth + 1, counter).unwrap_or(1);
             tracing::info!(c0_sign, "gruntz::limitinf: e0 < 0 → limit is ±∞");
             if c0_sign >= 0 {
                 Ok(arena.infinity())
@@ -1317,7 +1330,7 @@ pub(crate) fn limitinf(
         }
         _ => {
             tracing::debug!("gruntz::limitinf: e0 = 0 → recursing on coefficient c0");
-            limitinf(arena, c0, x, depth + 1)
+            limitinf(arena, c0, x, depth + 1, counter)
         }
     }
 }
@@ -1334,24 +1347,25 @@ pub(crate) fn gruntz(
     z0: ExprId,
 ) -> Result<ExprId, crate::errors::SymplexError> {
     tracing::info!("gruntz: entry point");
+    let mut gruntz_counter: u32 = 0;
 
     if z0 == arena.infinity() {
         tracing::debug!("gruntz: limit at +∞");
-        return limitinf(arena, e, z, 0);
+        return limitinf(arena, e, z, 0, &mut gruntz_counter);
     }
 
     if z0 == arena.neg_infinity() {
         tracing::debug!("gruntz: limit at -∞, substituting z = -x");
-        let x = fresh_dummy(arena);
+        let x = fresh_dummy(arena, &mut gruntz_counter);
         let neg_x = arena.neg(x);
         let e_sub = crate::subs::subs(arena, e, z, neg_x);
-        return limitinf(arena, e_sub, x, 0);
+        return limitinf(arena, e_sub, x, 0, &mut gruntz_counter);
     }
 
     let e_display = arena.display(e).to_string();
     let z0_display = arena.display(z0).to_string();
     tracing::debug!(expr = %e_display, z0 = %z0_display, "gruntz: finite-point limit, substituting z = z0 + 1/x");
-    let x = fresh_dummy(arena);
+    let x = fresh_dummy(arena, &mut gruntz_counter);
     let one = arena.one();
     let inv_x = arena.div(one, x);
     let z0_plus_inv_x = arena.add(&[z0, inv_x]);
@@ -1368,7 +1382,7 @@ pub(crate) fn gruntz(
 
     let simplified_display = arena.display(e_simplified).to_string();
     tracing::debug!(simplified = %simplified_display, "gruntz: finite-point expression simplified, calling limitinf");
-    limitinf(arena, e_simplified, x, 0)
+    limitinf(arena, e_simplified, x, 0, &mut gruntz_counter)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

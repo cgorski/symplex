@@ -293,6 +293,135 @@ impl ExprNode {
         }
     }
 
+    /// Calls `f` for each child [`ExprId`] without allocating.
+    ///
+    /// This is the zero-allocation alternative to [`children()`](Self::children).
+    /// Prefer this in hot paths (tree walks, display) where the allocation
+    /// from `children()` would be significant.
+    #[inline]
+    pub fn for_each_child(&self, mut f: impl FnMut(ExprId)) {
+        match self {
+            // atoms — no children
+            ExprNode::Num(_)
+            | ExprNode::Symbol(_)
+            | ExprNode::Pi
+            | ExprNode::E
+            | ExprNode::ImaginaryUnit
+            | ExprNode::Infinity
+            | ExprNode::NegInfinity
+            | ExprNode::ComplexInfinity
+            | ExprNode::NaN
+            | ExprNode::BoolTrue
+            | ExprNode::BoolFalse => {}
+
+            // n-ary
+            ExprNode::Add(ids) | ExprNode::Mul(ids) | ExprNode::And(ids) | ExprNode::Or(ids) => {
+                for &id in ids {
+                    f(id);
+                }
+            }
+
+            // piecewise — flatten pairs
+            ExprNode::Piecewise(pairs) => {
+                for &(val, cond) in pairs {
+                    f(val);
+                    f(cond);
+                }
+            }
+
+            // binary
+            ExprNode::Pow(a, b)
+            | ExprNode::Binomial(a, b)
+            | ExprNode::Gt(a, b)
+            | ExprNode::Ge(a, b)
+            | ExprNode::Eq_(a, b)
+            | ExprNode::Ne(a, b)
+            | ExprNode::Derivative(a, b)
+            | ExprNode::Integral(a, b) => {
+                f(*a);
+                f(*b);
+            }
+
+            // unary
+            ExprNode::Neg(x)
+            | ExprNode::Sin(x)
+            | ExprNode::Cos(x)
+            | ExprNode::Tan(x)
+            | ExprNode::Exp(x)
+            | ExprNode::Ln(x)
+            | ExprNode::Abs(x)
+            | ExprNode::Asin(x)
+            | ExprNode::Acos(x)
+            | ExprNode::Atan(x)
+            | ExprNode::Sinh(x)
+            | ExprNode::Cosh(x)
+            | ExprNode::Tanh(x)
+            | ExprNode::Asinh(x)
+            | ExprNode::Acosh(x)
+            | ExprNode::Atanh(x)
+            | ExprNode::Sign(x)
+            | ExprNode::Factorial(x)
+            | ExprNode::Not(x) => f(*x),
+
+            // function application
+            ExprNode::Apply(_, args) => {
+                for &id in args {
+                    f(id);
+                }
+            }
+        }
+    }
+
+    /// Returns the number of children without allocating.
+    #[inline]
+    pub fn child_count(&self) -> usize {
+        match self {
+            ExprNode::Num(_)
+            | ExprNode::Symbol(_)
+            | ExprNode::Pi
+            | ExprNode::E
+            | ExprNode::ImaginaryUnit
+            | ExprNode::Infinity
+            | ExprNode::NegInfinity
+            | ExprNode::ComplexInfinity
+            | ExprNode::NaN
+            | ExprNode::BoolTrue
+            | ExprNode::BoolFalse => 0,
+            ExprNode::Add(ids) | ExprNode::Mul(ids) | ExprNode::And(ids) | ExprNode::Or(ids) => {
+                ids.len()
+            }
+            ExprNode::Piecewise(pairs) => pairs.len() * 2,
+            ExprNode::Pow(..)
+            | ExprNode::Binomial(..)
+            | ExprNode::Gt(..)
+            | ExprNode::Ge(..)
+            | ExprNode::Eq_(..)
+            | ExprNode::Ne(..)
+            | ExprNode::Derivative(..)
+            | ExprNode::Integral(..) => 2,
+            ExprNode::Neg(_)
+            | ExprNode::Sin(_)
+            | ExprNode::Cos(_)
+            | ExprNode::Tan(_)
+            | ExprNode::Exp(_)
+            | ExprNode::Ln(_)
+            | ExprNode::Abs(_)
+            | ExprNode::Asin(_)
+            | ExprNode::Acos(_)
+            | ExprNode::Atan(_)
+            | ExprNode::Sinh(_)
+            | ExprNode::Cosh(_)
+            | ExprNode::Tanh(_)
+            | ExprNode::Asinh(_)
+            | ExprNode::Acosh(_)
+            | ExprNode::Atanh(_)
+            | ExprNode::Sign(_)
+            | ExprNode::Factorial(_)
+            | ExprNode::Not(_) => 1,
+            ExprNode::Apply(_, args) => args.len(),
+        }
+    }
+
     /// Returns `true` if this node is an atom (a leaf with no child
     /// expressions).
     ///

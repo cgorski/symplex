@@ -14,7 +14,7 @@
 //! - [`walk_and_rebuild`] — walk bottom-up, applying a transformation at
 //!   each node, and rebuild the tree with canonical constructors.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::arena::Arena;
@@ -35,22 +35,24 @@ use crate::node::{ExprId, ExprNode};
 /// Uses an explicit stack — never recurses.
 pub(crate) fn post_order_ids(arena: &Arena, root: ExprId) -> Vec<ExprId> {
     let mut result = Vec::new();
-    let mut visited: FxHashMap<ExprId, ()> = FxHashMap::default();
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
     // Stack entries: (id, children_pushed).
     let mut stack: Vec<(ExprId, bool)> = vec![(root, false)];
 
     while let Some((id, children_pushed)) = stack.last_mut() {
-        if visited.contains_key(id) {
+        if visited.contains(id) {
             stack.pop();
             continue;
         }
 
         if !*children_pushed {
             *children_pushed = true;
-            let children = arena.node(*id).children();
+            let node = arena.node(*id);
+            let mut child_buf: SmallVec<[ExprId; 6]> = SmallVec::new();
+            node.for_each_child(|c| child_buf.push(c));
             // Push children in reverse so they're processed left-to-right.
-            for &child in children.iter().rev() {
-                if !visited.contains_key(&child) {
+            for &child in child_buf.iter().rev() {
+                if !visited.contains(&child) {
                     stack.push((child, false));
                 }
             }
@@ -59,7 +61,7 @@ pub(crate) fn post_order_ids(arena: &Arena, root: ExprId) -> Vec<ExprId> {
                 .pop()
                 .expect("stack is non-empty: guarded by while-let on stack.last_mut()")
                 .0;
-            visited.insert(id, ());
+            visited.insert(id);
             result.push(id);
         }
     }
@@ -385,20 +387,19 @@ pub(crate) fn contains(arena: &Arena, haystack: ExprId, needle: ExprId) -> bool 
         return true;
     }
 
-    let mut visited: FxHashMap<ExprId, ()> = FxHashMap::default();
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
     let mut stack: Vec<ExprId> = vec![haystack];
 
     while let Some(id) = stack.pop() {
         if id == needle {
             return true;
         }
-        if visited.contains_key(&id) {
+        if visited.contains(&id) {
             continue;
         }
-        visited.insert(id, ());
+        visited.insert(id);
 
-        let children = arena.node(id).children();
-        stack.extend_from_slice(&children);
+        arena.node(id).for_each_child(|c| stack.push(c));
     }
 
     false
@@ -411,25 +412,24 @@ pub(crate) fn contains(arena: &Arena, haystack: ExprId, needle: ExprId) -> bool 
 // Used for structural queries.
 pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
     let mut result = Vec::new();
-    let mut visited: FxHashMap<ExprId, ()> = FxHashMap::default();
-    let mut seen_syms: FxHashMap<SymbolId, ()> = FxHashMap::default();
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
+    let mut seen_syms: FxHashSet<SymbolId> = FxHashSet::default();
     let mut stack: Vec<ExprId> = vec![root];
 
     while let Some(id) = stack.pop() {
-        if visited.contains_key(&id) {
+        if visited.contains(&id) {
             continue;
         }
-        visited.insert(id, ());
+        visited.insert(id);
 
         if let ExprNode::Symbol(sid) = arena.node(id)
-            && !seen_syms.contains_key(sid)
+            && !seen_syms.contains(sid)
         {
-            seen_syms.insert(*sid, ());
+            seen_syms.insert(*sid);
             result.push(id);
         }
 
-        let children = arena.node(id).children();
-        stack.extend_from_slice(&children);
+        arena.node(id).for_each_child(|c| stack.push(c));
     }
 
     result

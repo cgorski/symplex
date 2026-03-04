@@ -187,7 +187,6 @@ fn regression_by_parts_x_ln_x_no_crash() {
 /// ((-1)^2)^(1/2) should be 1, not -1.
 #[test]
 fn regression_pow_pow_negative_base() {
-    use symplex::prelude::*;
     let x = symplex::var("x");
     // (x^2)^(1/2) should give |x| via sqrt_sq, not x via pow_pow
     let ctx = symplex::default_context();

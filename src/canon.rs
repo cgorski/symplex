@@ -71,6 +71,7 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     // Track whether we've seen infinity / neg-infinity to handle oo − oo → NaN.
     let mut has_pos_inf = false;
     let mut has_neg_inf = false;
+    let mut has_zoo = false;
 
     // Explicit stack for iterative flattening.
     let mut stack: SmallVec<[ExprId; 16]> = SmallVec::from_slice(args);
@@ -87,23 +88,24 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
             }
 
             ExprNode::Infinity => {
-                if has_neg_inf {
-                    return arena.nan; // oo + (-oo) → NaN
+                if has_neg_inf || has_zoo {
+                    return arena.nan; // oo + (-oo) → NaN, oo + zoo → NaN
                 }
                 has_pos_inf = true;
             }
 
             ExprNode::NegInfinity => {
-                if has_pos_inf {
-                    return arena.nan; // (-oo) + oo → NaN
+                if has_pos_inf || has_zoo {
+                    return arena.nan; // (-oo) + oo → NaN, (-oo) + zoo → NaN
                 }
                 has_neg_inf = true;
             }
 
             ExprNode::ComplexInfinity => {
-                // zoo + anything finite is zoo, but zoo + zoo is NaN.
-                // Simplified: just treat as NaN for now.
-                return arena.nan;
+                if has_zoo || has_pos_inf || has_neg_inf {
+                    return arena.nan; // zoo + any infinity → NaN
+                }
+                has_zoo = true;
             }
 
             ExprNode::Num(nid) => {
@@ -133,12 +135,15 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         }
     }
 
-    // Handle infinities: if we saw oo / -oo, they dominate finite terms.
+    // Handle infinities: if we saw oo / -oo / zoo, they dominate finite terms.
     if has_pos_inf {
         return arena.infinity;
     }
     if has_neg_inf {
         return arena.neg_infinity;
+    }
+    if has_zoo {
+        return arena.complex_infinity;
     }
 
     // Collect non-zero terms.
@@ -531,8 +536,11 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return arena.nan;
     }
 
-    // x^0 → 1 (for any non-NaN x).
+    // x^0 → 1, except for indeterminate forms ∞^0, (-∞)^0, zoo^0.
     if exp == arena.zero {
+        if base == arena.infinity || base == arena.neg_infinity || base == arena.complex_infinity {
+            return arena.nan;
+        }
         return arena.one;
     }
 

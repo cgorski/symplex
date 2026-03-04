@@ -17,7 +17,7 @@ fn simplify_exp_ln() {
 #[test]
 fn simplify_ln_exp() {
     let ctx = Context::new();
-    let x = ctx.symbol("x");
+    let x = ctx.symbol_with("x", &[Assumption::Real]);
     let expr = x.exp().ln();
     assert_eq!(format!("{}", expr.simplify()), "x");
 }

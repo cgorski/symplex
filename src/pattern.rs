@@ -31,6 +31,7 @@ use num_traits::Signed;
 use rustc_hash::FxHashMap;
 
 use crate::arena::Arena;
+use crate::assumptions::Props;
 use crate::node::{ExprId, ExprNode};
 use crate::walk;
 
@@ -840,6 +841,33 @@ fn condition_wild_positive(arena: &Arena, subs: &Substitution) -> bool {
     true
 }
 
+/// Condition: every wild-bound value in the substitution is known to be real.
+///
+/// Numeric literals are always real.  Symbols are checked via their
+/// stored assumptions.  The constants π and *e* are real.  Anything
+/// else (compound expressions, imaginary unit, etc.) is conservatively
+/// rejected.
+fn condition_wild_real(arena: &Arena, subs: &Substitution) -> bool {
+    for &id in subs.values() {
+        match arena.node(id) {
+            ExprNode::Num(_) | ExprNode::Pi | ExprNode::E => {
+                // These are unconditionally real.
+            }
+            ExprNode::Symbol(sid) => {
+                let assumptions = arena.symbol_assumptions(*sid);
+                if assumptions.query(Props::REAL) != Some(true) {
+                    return false;
+                }
+            }
+            _ => {
+                // Compound or unknown expression: cannot confirm real → reject.
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// `abs(w) → w` when `w` is a positive numeric literal.
 fn rule_abs_positive(arena: &mut Arena) -> Rule {
     let (w_expr, w_id) = arena.wild();
@@ -861,7 +889,11 @@ pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
     vec![
         rule_pythagorean(arena),
         unary_compose_rule(arena, "exp_ln", Arena::exp, Arena::ln, identity),
-        unary_compose_rule(arena, "ln_exp", Arena::ln, Arena::exp, identity),
+        {
+            let mut r = unary_compose_rule(arena, "ln_exp", Arena::ln, Arena::exp, identity);
+            r.condition = Some(condition_wild_real);
+            r
+        },
         unary_compose_rule(arena, "abs_abs", Arena::abs, Arena::abs, Arena::abs),
         rule_sqrt_sq(arena),
         rule_cosh_sinh_identity(arena),

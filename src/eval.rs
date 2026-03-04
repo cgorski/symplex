@@ -1188,7 +1188,7 @@ fn eval_atanh(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
 /// Check if `id` is `i * something` (pure imaginary multiple).
 /// Returns the "something" if so.
-fn as_pure_imaginary(arena: &Arena, id: ExprId) -> Option<ExprId> {
+fn as_pure_imaginary(arena: &mut Arena, id: ExprId) -> Option<ExprId> {
     if let ExprNode::Mul(ref children) = arena.node(id).clone() {
         let mut has_i = false;
         let mut others: Vec<ExprId> = Vec::new();
@@ -1203,13 +1203,10 @@ fn as_pure_imaginary(arena: &Arena, id: ExprId) -> Option<ExprId> {
             }
         }
         if has_i {
-            return Some(if others.len() == 1 {
-                others[0]
-            } else if others.is_empty() {
-                arena.one // just i alone → real part is 1
-            } else {
-                // Can't rebuild Mul without &mut Arena, skip multi-factor for now.
-                return None;
+            return Some(match others.len() {
+                0 => arena.one,
+                1 => others[0],
+                _ => arena.mul(&others),
             });
         }
     }

@@ -1254,7 +1254,8 @@ fn simp_exp_ln() {
 
 #[test]
 fn simp_ln_exp() {
-    let x = symplex::var("x");
+    use symplex::prelude::Assumption;
+    let x = symplex::var("x").assume(Assumption::Real);
     check(&x.exp().ln().simplify(), "x");
 }
 

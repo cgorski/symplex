@@ -1,7 +1,5 @@
 //! Integration tests for advanced features (Cycles 16-18).
 
-use symplex::prelude::*;
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Matrix
 // ═══════════════════════════════════════════════════════════════════════════
@@ -32,7 +30,7 @@ fn matrix_det_2x2_numeric() {
 
 #[test]
 fn matrix_jacobian() {
-    use symplex::matrix::{Matrix, jacobian};
+    use symplex::matrix::jacobian;
     let x = symplex::var("x");
     let y = symplex::var("y");
     let f1 = &x.powi(2) * &y;
@@ -129,10 +127,14 @@ fn cse_extracts_common() {
     let sin_x = x.sin();
     let expr = &sin_x.powi(2) + &sin_x;
     let (bindings, result) = expr.cse();
-    // sin(x) should be extracted since it appears in both terms
-    // Not asserting exact number of bindings since canonicalization may merge
+    // Verify the result formats without panic
     let _ = format!("{result}");
-    assert!(bindings.len() >= 0); // at minimum doesn't crash
+    // sin(x) appears twice — CSE should extract at least one binding
+    // (canonicalization may affect exact count, so just verify non-empty)
+    assert!(
+        !bindings.is_empty(),
+        "CSE should extract shared sin(x) subexpression"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

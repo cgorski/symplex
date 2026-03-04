@@ -200,11 +200,13 @@ impl<S: Sort> Expr<S> {
     // ── Structural predicates ──────────────────────────────────────
 
     /// Returns `true` if this expression is structurally zero (O(1)).
+    #[must_use]
     pub fn is_zero_structural(&self) -> bool {
         self.inner.read().arena.is_zero_structural(self.id)
     }
 
     /// Returns `true` if this expression is structurally one (O(1)).
+    #[must_use]
     pub fn is_one_structural(&self) -> bool {
         self.inner.read().arena.is_one_structural(self.id)
     }
@@ -218,6 +220,7 @@ impl<S: Sort> Expr<S> {
     ///
     /// Symbols are always numeric, so this returns `Vec<Ex>` regardless
     /// of the sort of `self`.
+    #[must_use]
     pub fn free_symbols(&self) -> Vec<Ex> {
         let inner = self.inner.read();
         let expr_ids = crate::walk::free_symbols(&inner.arena, self.id);
@@ -232,6 +235,7 @@ impl<S: Sort> Expr<S> {
     ///
     /// This is a structural check — it walks the expression DAG and
     /// returns `true` if any node has the same [`ExprId`] as `needle`.
+    #[must_use]
     pub fn contains(&self, needle: &Ex) -> bool {
         let inner = self.inner.read();
         crate::walk::contains(&inner.arena, self.id, needle.id)
@@ -252,6 +256,7 @@ impl<S: Sort> Expr<S> {
     /// assert_eq!((&x + 1).count_ops(), 1);    // one Add
     /// assert_eq!(x.sin().powi(2).count_ops(), 2); // Sin + Pow
     /// ```
+    #[must_use]
     pub fn count_ops(&self) -> usize {
         let inner = self.inner.read();
         inner.arena.count_ops(self.id)
@@ -271,6 +276,7 @@ impl<S: Sort> Expr<S> {
     /// assert_eq!((&x + 1).term_count(), 2);
     /// assert_eq!(x.powi(2).term_count(), 1);
     /// ```
+    #[must_use]
     pub fn term_count(&self) -> usize {
         let inner = self.inner.read();
         match inner.arena.node(self.id) {
@@ -299,6 +305,7 @@ impl<S: Sort> Expr<S> {
     /// let children = expr.args();
     /// assert_eq!(children.len(), 2);
     /// ```
+    #[must_use]
     pub fn args(&self) -> Vec<Expr<S>> {
         let inner = self.inner.read();
         let child_ids = inner.arena.node(self.id).children();
@@ -321,6 +328,7 @@ impl<S: Sort> Expr<S> {
     /// assert_eq!(x.sin().expr_type(), ExprType::Function);
     /// assert_eq!((&x + 1).expr_type(), ExprType::Add);
     /// ```
+    #[must_use]
     pub fn expr_type(&self) -> ExprType {
         let inner = self.inner.read();
         match inner.arena.node(self.id) {
@@ -1038,6 +1046,7 @@ impl Expr<Numeric> {
     ///
     /// Returns `Some(true)` if provably positive, `Some(false)` if
     /// provably not positive, or `None` if unknown.
+    #[must_use]
     pub fn is_positive(&self) -> Option<bool> {
         let inner = self.inner.read();
         inner
@@ -1054,6 +1063,7 @@ impl Expr<Numeric> {
     ///
     /// Returns `Some(true)` if provably zero, `Some(false)` if provably
     /// nonzero, or `None` if unknown.
+    #[must_use]
     pub fn is_zero(&self) -> Option<bool> {
         let inner = self.inner.read();
         // Layer 1: structural.
@@ -1071,6 +1081,7 @@ impl Expr<Numeric> {
     ///
     /// Returns `Some(true)` if provably true, `Some(false)` if provably
     /// false, or `None` if unknown.
+    #[must_use]
     pub fn query(&self, prop: Props) -> Option<bool> {
         let inner = self.inner.read();
         inner.assumptions.lock().query(&inner.arena, self.id, prop)
@@ -1080,6 +1091,7 @@ impl Expr<Numeric> {
     ///
     /// Returns `Some(true)` if provably negative, `Some(false)` if
     /// provably not negative, or `None` if unknown.
+    #[must_use]
     pub fn is_negative(&self) -> Option<bool> {
         self.query(Props::NEGATIVE)
     }
@@ -1088,6 +1100,7 @@ impl Expr<Numeric> {
     ///
     /// Returns `Some(true)` if provably real, `Some(false)` if
     /// provably not real, or `None` if unknown.
+    #[must_use]
     pub fn is_real(&self) -> Option<bool> {
         self.query(Props::REAL)
     }
@@ -1096,6 +1109,7 @@ impl Expr<Numeric> {
     ///
     /// Returns `Some(true)` if provably an integer, `Some(false)` if
     /// provably not an integer, or `None` if unknown.
+    #[must_use]
     pub fn is_integer(&self) -> Option<bool> {
         self.query(Props::INTEGER)
     }
@@ -1104,6 +1118,7 @@ impl Expr<Numeric> {
     ///
     /// Returns `Some(true)` if provably nonzero, `Some(false)` if
     /// provably zero, or `None` if unknown.
+    #[must_use]
     pub fn is_nonzero(&self) -> Option<bool> {
         self.query(Props::NONZERO)
     }
@@ -1112,31 +1127,37 @@ impl Expr<Numeric> {
     ///
     /// Returns `Some(true)` if provably finite, `Some(false)` if
     /// provably not finite, or `None` if unknown.
+    #[must_use]
     pub fn is_finite(&self) -> Option<bool> {
         self.query(Props::FINITE)
     }
 
     /// Returns `Some(true)` if this expression is known to be ≥ 0.
+    #[must_use]
     pub fn is_nonnegative(&self) -> Option<bool> {
         self.query(Props::NONNEGATIVE)
     }
 
     /// Returns `Some(true)` if this expression is known to be ≤ 0.
+    #[must_use]
     pub fn is_nonpositive(&self) -> Option<bool> {
         self.query(Props::NONPOSITIVE)
     }
 
     /// Returns `Some(true)` if this expression is known to be imaginary.
+    #[must_use]
     pub fn is_imaginary(&self) -> Option<bool> {
         self.query(Props::IMAGINARY)
     }
 
     /// Returns `Some(true)` if this expression is known to be complex.
+    #[must_use]
     pub fn is_complex(&self) -> Option<bool> {
         self.query(Props::COMPLEX)
     }
 
     /// Returns `Some(true)` if this expression is known to be rational.
+    #[must_use]
     pub fn is_rational(&self) -> Option<bool> {
         self.query(Props::RATIONAL)
     }
@@ -1187,6 +1208,7 @@ impl Expr<Numeric> {
     ///
     /// Returns `Some(true)` if provably equal, `Some(false)` if provably
     /// not equal, or `None` if unknown.
+    #[must_use]
     pub fn equals(&self, other: &Ex) -> Option<bool> {
         // Layer 1: structural identity (same arena node).
         if self.id == other.id && self.ctx_id == other.ctx_id {
@@ -1709,6 +1731,7 @@ impl Expr<Numeric> {
     /// assert_eq!(format!("{gcd}"), "2");
     /// // inner is 2x + 3y
     /// ```
+    #[must_use]
     pub fn factor_terms(&self) -> (Ex, Ex) {
         let (gcd_id, inner_id) = self.inner.write().arena.factor_terms_pair_expr(self.id);
         (self.wrap(gcd_id), self.wrap(inner_id))
@@ -1756,6 +1779,7 @@ impl Expr<Numeric> {
     /// assert_eq!((&x.powi(3) + &x + 1).degree(&x), Some(3));
     /// assert_eq!(x.sin().degree(&x), None);
     /// ```
+    #[must_use]
     pub fn degree(&self, var: &Ex) -> Option<usize> {
         let inner = self.inner.read();
         inner.arena.degree_of(self.id, var.id)
@@ -1779,6 +1803,7 @@ impl Expr<Numeric> {
     /// let strs: Vec<String> = cs.iter().map(|c| format!("{c}")).collect();
     /// assert_eq!(strs, vec!["5", "3", "1"]);
     /// ```
+    #[must_use]
     pub fn coeffs(&self, var: &Ex) -> Option<Vec<Ex>> {
         let mut inner = self.inner.write();
         let ids = inner.arena.coefficients_of(self.id, var.id)?;
@@ -1803,6 +1828,7 @@ impl Expr<Numeric> {
     /// assert_eq!(format!("{}", expr.coeff(&x, 1).unwrap()), "5");
     /// assert_eq!(format!("{}", expr.coeff(&x, 0).unwrap()), "7");
     /// ```
+    #[must_use]
     pub fn coeff(&self, var: &Ex, power: usize) -> Option<Ex> {
         let cs = self.coeffs(var)?;
         if power < cs.len() {
@@ -1833,6 +1859,7 @@ impl Expr<Numeric> {
     /// assert_eq!(format!("{n}"), "x");
     /// assert_eq!(format!("{d}"), "y");
     /// ```
+    #[must_use]
     pub fn as_numer_denom(&self) -> (Ex, Ex) {
         let mut inner = self.inner.write();
         let (n, d) = inner.arena.as_numer_denom_expr(self.id);
@@ -1853,6 +1880,7 @@ impl Expr<Numeric> {
     /// assert!(ctx.pi().is_constant());
     /// assert!(!ctx.symbol("x").is_constant());
     /// ```
+    #[must_use]
     pub fn is_constant(&self) -> bool {
         self.free_symbols().is_empty()
     }
@@ -1870,6 +1898,7 @@ impl Expr<Numeric> {
     /// assert!((&x.powi(2) + 1).is_polynomial(&x));
     /// assert!(!x.sin().is_polynomial(&x));
     /// ```
+    #[must_use]
     pub fn is_polynomial(&self, var: &Ex) -> bool {
         self.degree(var).is_some()
     }
@@ -1877,6 +1906,7 @@ impl Expr<Numeric> {
     /// Compute the polynomial GCD of `self` and `other` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.
+    #[must_use]
     pub fn poly_gcd(&self, other: &Ex, var: &Ex) -> Option<Ex> {
         let mut inner = self.inner.write();
         let id = inner.arena.poly_gcd_expr(self.id, other.id, var.id)?;
@@ -1887,6 +1917,7 @@ impl Expr<Numeric> {
     /// Compute the polynomial LCM of `self` and `other` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.
+    #[must_use]
     pub fn poly_lcm(&self, other: &Ex, var: &Ex) -> Option<Ex> {
         let mut inner = self.inner.write();
         let id = inner.arena.poly_lcm_expr(self.id, other.id, var.id)?;
@@ -2345,6 +2376,18 @@ impl Expr<Boolean> {
 // PartialEq / Eq / Hash
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Structural identity comparison.
+///
+/// Two expressions are `==` if and only if they share the same arena node
+/// (same `ExprId` in the same `Context`). Because the arena uses hash-consing,
+/// canonically equivalent expressions (e.g., `x + 1` and `1 + x`) do share
+/// the same node and will compare equal.
+///
+/// **Important:** This is *not* mathematical equality. Expressions that are
+/// mathematically equal but structurally different (e.g., `(x+1)^2` and
+/// `x^2 + 2*x + 1`) will compare as *not equal* because they have different
+/// canonical forms. Use [`Expr::equals()`] for mathematical equality testing,
+/// or [`Expr::expand()`] to normalize before comparing.
 impl<S: Sort> PartialEq for Expr<S> {
     fn eq(&self, other: &Self) -> bool {
         self.ctx_id == other.ctx_id && self.id == other.id
@@ -2390,6 +2433,10 @@ macro_rules! impl_nary_binop {
         impl ops::$trait<Ex> for Ex {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
+                debug_assert_eq!(
+                    self.ctx_id, rhs.ctx_id,
+                    "cannot mix expressions from different contexts"
+                );
                 let id = self.inner.write().arena.$arena_method(&[self.id, rhs.id]);
                 self.wrap(id)
             }
@@ -2397,6 +2444,10 @@ macro_rules! impl_nary_binop {
         impl ops::$trait<&Ex> for Ex {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
+                debug_assert_eq!(
+                    self.ctx_id, rhs.ctx_id,
+                    "cannot mix expressions from different contexts"
+                );
                 let id = self.inner.write().arena.$arena_method(&[self.id, rhs.id]);
                 self.wrap(id)
             }
@@ -2404,6 +2455,10 @@ macro_rules! impl_nary_binop {
         impl ops::$trait<Ex> for &Ex {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
+                debug_assert_eq!(
+                    self.ctx_id, rhs.ctx_id,
+                    "cannot mix expressions from different contexts"
+                );
                 let id = self.inner.write().arena.$arena_method(&[self.id, rhs.id]);
                 self.wrap(id)
             }
@@ -2411,6 +2466,10 @@ macro_rules! impl_nary_binop {
         impl ops::$trait<&Ex> for &Ex {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
+                debug_assert_eq!(
+                    self.ctx_id, rhs.ctx_id,
+                    "cannot mix expressions from different contexts"
+                );
                 let id = self.inner.write().arena.$arena_method(&[self.id, rhs.id]);
                 self.wrap(id)
             }
@@ -2430,6 +2489,10 @@ macro_rules! impl_binary_binop {
         impl ops::$trait<Ex> for Ex {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
+                debug_assert_eq!(
+                    self.ctx_id, rhs.ctx_id,
+                    "cannot mix expressions from different contexts"
+                );
                 let id = self.inner.write().arena.$arena_method(self.id, rhs.id);
                 self.wrap(id)
             }
@@ -2437,6 +2500,10 @@ macro_rules! impl_binary_binop {
         impl ops::$trait<&Ex> for Ex {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
+                debug_assert_eq!(
+                    self.ctx_id, rhs.ctx_id,
+                    "cannot mix expressions from different contexts"
+                );
                 let id = self.inner.write().arena.$arena_method(self.id, rhs.id);
                 self.wrap(id)
             }
@@ -2444,6 +2511,10 @@ macro_rules! impl_binary_binop {
         impl ops::$trait<Ex> for &Ex {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
+                debug_assert_eq!(
+                    self.ctx_id, rhs.ctx_id,
+                    "cannot mix expressions from different contexts"
+                );
                 let id = self.inner.write().arena.$arena_method(self.id, rhs.id);
                 self.wrap(id)
             }
@@ -2451,6 +2522,10 @@ macro_rules! impl_binary_binop {
         impl ops::$trait<&Ex> for &Ex {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
+                debug_assert_eq!(
+                    self.ctx_id, rhs.ctx_id,
+                    "cannot mix expressions from different contexts"
+                );
                 let id = self.inner.write().arena.$arena_method(self.id, rhs.id);
                 self.wrap(id)
             }
@@ -2854,5 +2929,31 @@ impl<'a> std::iter::Product<&'a Ex> for Ex {
             id,
             _sort: PhantomData,
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FromStr — parse from string using the global default context
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl std::str::FromStr for Ex {
+    type Err = SymplexError;
+
+    /// Parse a mathematical expression string using the global default context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let expr: Ex = "x^2 + 1".parse().unwrap();
+    /// assert_eq!(format!("{expr}"), "x^2 + 1");
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let ctx = crate::default_context();
+        crate::parse::parse(ctx, s).map_err(|e| SymplexError::ComputationFailed {
+            operation: "parse",
+            reason: e.to_string(),
+        })
     }
 }
