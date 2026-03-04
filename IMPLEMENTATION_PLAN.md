@@ -868,34 +868,41 @@ abs(abs(w_)) => abs(w_)
 - [ ] Final API surface review — no accidental `pub` on internal types
 - [ ] Publish to crates.io
 
-### Current Statistics (Commit 106 — post Waves A–F)
+### Current Statistics (Commit 112 — post Waves A–T)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 2,934 passing, 0 failing, 0 warnings |
-| Source | 36,468 lines across 48 modules |
-| Tests | 24,165 lines across 67 files |
-| Macros | 1,338 lines |
-| Total lines | ~61,971 |
-| Public methods on `Ex` | 139+ (numeric) + 6 (boolean) |
+| Tests | 3,141 passing, 0 failing, 0 warnings |
+| Source | ~40,000 lines across 54 modules |
+| Tests | ~27,000 lines across 77 files |
+| Macros | ~1,400 lines |
+| Total lines | ~67,463 |
+| Public methods on `Ex` | 174+ (numeric) + 12 (boolean) |
 | Public methods on `Context` | 17 |
-| Free-standing functions | 5 |
-| ExprNode variants | 47 (`Atan2` added in Wave O) |
-| Simplification rules | 24 (with condition guards) |
+| Free-standing functions | 5 + vector calc (gradient, divergence, curl, laplacian, etc.) |
+| ExprNode variants | 59 (Atan2, Floor, Ceiling, Min, Max, Sum, Product_, Gamma, LogGamma, Digamma, Erf, Erfc, Beta added) |
+| Simplification rules | 24 (with condition guards) + trigsimp + powsimp + rewrite protocol |
 | Integration forms | 30+ (LIATE-ordered by-parts) |
-| Matrix methods | 32 (minor, cofactor, adjugate, inv, char_poly, eigenvals added Wave D) |
-| Combinatorial functions | 13 (factorial, binomial + 11 via Apply nodes from Wave R) |
-| Solver degree support | Degree 1–4 (Cardano cubic + Ferrari quartic from Wave C) |
-| Reciprocal trig/hyp | 13 methods (sec, csc, cot, + inverses + hyp + sinc from Wave A) |
-| `expr!` macro functions | 47 (up from 18, multi-arg: atan2, rising/falling factorial) |
-| Rust code generation | `to_rust_fn()` with CSE, piecewise, all elementary functions (Wave F) |
-| Eval special values | 86+ (all tan quadrants, full unit circle) |
+| Matrix methods | 44 (inv, eigenvals, char_poly, lu, qr, rref, rank, nullspace, columnspace, norm, cross, dot, hstack, vstack, is_symmetric added) |
+| Combinatorial functions | 16 (factorial, binomial + 11 Apply nodes + heaviside, dirac_delta, lambertw) |
+| Special functions | 6 ExprNode variants: Gamma, LogGamma, Digamma, Erf, Erfc, Beta |
+| Solver degree support | Degree 1–4 (Cardano cubic + Ferrari quartic) + checksol + classify_ode + checkodesol |
+| Reciprocal trig/hyp | 13 methods (sec, csc, cot, + inverses + hyp + sinc) |
+| Logic connectives | 6 methods on BoolEx: xor, implies, equivalent, nand, nor, ite |
+| `expr!` macro functions | 50+ (multi-arg: atan2, rising/falling factorial, beta) |
+| Rust code generation | `to_rust_fn()` with CSE, piecewise, all elementary functions |
+| Vector calculus | gradient, divergence, curl, laplacian, is_conservative, is_solenoidal |
+| Series extensions | residue (via limit), fourier_series (via integration) |
+| Floor/Ceiling/Min/Max | ExprNode variants with exact rational eval + canonicalization |
+| Symbolic Sum/Product | ExprNode variants with finite evaluation via substitution |
+| Eval special values | 86+ (all tan quadrants, full unit circle, Gamma(n), erf(0), Beta) |
 | Criterion benchmarks | 30 |
 | Proptest properties | 131+ (simplify_preserves_value added) |
 | SymPy cross-validation | 252/263 pass (0 failures) |
 | Gruntz algorithm | Complete (~1500 lines) |
 | Tracing instrumentation | 6 modules |
-| Commits | 106 |
+| Clippy warnings | 0 |
+| Commits | 112 |
 
 #### Waves completed
 
@@ -903,12 +910,30 @@ abs(abs(w_)) => abs(w_)
 |------|----------|-------------|
 | A | Reciprocal trig/hyp (sec, csc, cot, ...) + sinc — 13 methods | 16 |
 | Q | Assumption query methods (is_even, is_odd, is_prime, ...) — 8 methods | 17 |
-| O | Atan2 node (full quadrant support) + arg() + conjugate() | (included in Q tests) |
+| O | Atan2 node (full quadrant support) + arg() + conjugate() | (included in Q) |
 | C | Cubic (Cardano) + quartic (Ferrari) formula solving | 25 |
 | R | 11 combinatorial functions via Apply nodes | 18 |
-| Macro | `expr!` expanded to 47 functions + 3 multi-arg | 16 |
+| Macro | `expr!` expanded to 50+ functions + multi-arg | 16 |
 | D | Matrix inverse, cofactor, adjugate, char_poly, eigenvals | 21 |
 | F | Rust code generation (`to_rust_fn`) with CSE | 34 |
+| E | LU, QR, RREF, nullspace, columnspace, rank, norm, cross, dot, hstack, vstack | 24 |
+| K | trigsimp, powsimp, rewrite_as_exp, rewrite_as_trig | 16 |
+| P | check_solution, classify_ode, checkodesol + OdeType enum | 12 |
+| M | gradient, divergence, curl, laplacian, is_conservative, is_solenoidal | 16 |
+| N | xor, implies, equivalent, nand, nor, ite on BoolEx | 13 |
+| S | heaviside, dirac_delta, lambertw via Apply nodes | 22 |
+| B | Floor, Ceiling ExprNode variants + frac(), rem() convenience | 29 |
+| G | Min, Max ExprNode variants + symbolic Sum, Product nodes | 16 |
+| J | Gamma, LogGamma, Digamma, Erf, Erfc, Beta ExprNode variants | 26 |
+| T | residue() via limit, fourier_series() via integration | 9 |
+
+#### Waves deferred to next sprint
+
+| Wave | Features | Reason |
+|------|----------|--------|
+| H | Set types (Interval, FiniteSet, Union, Expr\<SetValued\>) | Architectural: new phantom sort, ~6 hrs |
+| I | Inequality solving (depends on H) | Blocked on H |
+| L | Full polynomial factoring (Berlekamp/Hensel) | Heavy algorithm, ~6 hrs |
 
 ---
 
