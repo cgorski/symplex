@@ -54,6 +54,7 @@ pub(crate) mod expand;
 pub mod expr_view;
 pub(crate) mod factor;
 pub(crate) mod factor_terms;
+pub(crate) mod gruntz;
 pub(crate) mod integrate;
 pub(crate) mod lambdify;
 pub(crate) mod limit;
