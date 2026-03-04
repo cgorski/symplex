@@ -230,13 +230,44 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 return Ok(quote! { (#n_code).binomial(&(#k_code)) });
             }
 
+            // atan2(y, x) → y.atan2(&x)
+            if name == "atan2" && args.len() == 2 {
+                let y_code = generate_expr_as_ex(&args[0])?;
+                let x_code = generate_expr_as_ex(&args[1])?;
+                return Ok(quote! { (#y_code).atan2(&(#x_code)) });
+            }
+
+            // rising_factorial(x, n) → x.rising_factorial(&n)
+            if name == "rising_factorial" && args.len() == 2 {
+                let x_code = generate_expr_as_ex(&args[0])?;
+                let n_code = generate_expr_as_ex(&args[1])?;
+                return Ok(quote! { (#x_code).rising_factorial(&(#n_code)) });
+            }
+
+            // falling_factorial(x, n) → x.falling_factorial(&n)
+            if name == "falling_factorial" && args.len() == 2 {
+                let x_code = generate_expr_as_ex(&args[0])?;
+                let n_code = generate_expr_as_ex(&args[1])?;
+                return Ok(quote! { (#x_code).falling_factorial(&(#n_code)) });
+            }
+
             if !is_known_function(name)
-                && !["log", "diff", "factorial", "binomial", "C"].contains(&name.as_str())
+                && ![
+                    "log",
+                    "diff",
+                    "factorial",
+                    "binomial",
+                    "C",
+                    "atan2",
+                    "rising_factorial",
+                    "falling_factorial",
+                ]
+                .contains(&name.as_str())
             {
                 return Err(syn::Error::new(
                     *span,
                     format!(
-                        "unknown function '{}' in expr!(). Supported: {}, log, diff, factorial, binomial, C",
+                        "unknown function '{}' in expr!(). Supported: {}, log, diff, factorial, binomial, C, atan2, rising_factorial, falling_factorial",
                         name,
                         KNOWN_FUNCTIONS.join(", ")
                     ),
@@ -268,6 +299,33 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 "cbrt" => quote! { cbrt },
                 "abs" => quote! { abs },
                 "sign" => quote! { sign },
+                // Wave A: reciprocal trig/hyp
+                "sec" => quote! { sec },
+                "csc" => quote! { csc },
+                "cot" => quote! { cot },
+                "acot" => quote! { acot },
+                "asec" => quote! { asec },
+                "acsc" => quote! { acsc },
+                "coth" => quote! { coth },
+                "sech" => quote! { sech },
+                "csch" => quote! { csch },
+                "acoth" => quote! { acoth },
+                "asech" => quote! { asech },
+                "acsch" => quote! { acsch },
+                "sinc" => quote! { sinc },
+                // Wave O: complex
+                "arg" => quote! { arg },
+                "conjugate" => quote! { conjugate },
+                // Wave R: combinatorial (1-arg)
+                "fibonacci" => quote! { fibonacci },
+                "lucas" => quote! { lucas },
+                "catalan_number" => quote! { catalan_number },
+                "bell" => quote! { bell },
+                "euler_number" => quote! { euler_number },
+                "harmonic" => quote! { harmonic },
+                "subfactorial" => quote! { subfactorial },
+                "factorial2" => quote! { factorial2 },
+                "bernoulli_number" => quote! { bernoulli_number },
                 _ => unreachable!(),
             };
             Ok(quote! { (#arg_code).#method() })

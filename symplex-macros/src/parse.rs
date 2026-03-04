@@ -96,8 +96,53 @@ pub enum BinOp {
 
 /// The set of built-in function names recognised by the parser.
 pub const KNOWN_FUNCTIONS: &[&str] = &[
-    "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
-    "exp", "ln", "sqrt", "cbrt", "abs", "sign",
+    // Original trig
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "sinh",
+    "cosh",
+    "tanh",
+    "asinh",
+    "acosh",
+    "atanh",
+    // Exp/log
+    "exp",
+    "ln",
+    "sqrt",
+    "cbrt",
+    "abs",
+    "sign",
+    // Wave A: reciprocal trig/hyp
+    "sec",
+    "csc",
+    "cot",
+    "acot",
+    "asec",
+    "acsc",
+    "coth",
+    "sech",
+    "csch",
+    "acoth",
+    "asech",
+    "acsch",
+    "sinc",
+    // Wave O: complex
+    "arg",
+    "conjugate",
+    // Wave R: combinatorial (1-arg)
+    "fibonacci",
+    "lucas",
+    "catalan_number",
+    "bell",
+    "euler_number",
+    "harmonic",
+    "subfactorial",
+    "factorial2",
+    "bernoulli_number",
 ];
 
 /// Returns `true` if `name` is a known built-in function.
