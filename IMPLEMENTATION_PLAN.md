@@ -868,30 +868,47 @@ abs(abs(w_)) => abs(w_)
 - [ ] Final API surface review — no accidental `pub` on internal types
 - [ ] Publish to crates.io
 
-### Current Statistics (Commit 94)
+### Current Statistics (Commit 106 — post Waves A–F)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 2,425 passing, 0 failing, 0 warnings |
-| Source | 34,154 lines across 47 modules |
-| Tests | 18,086 lines across 50 files |
-| Macros | 1,235 lines |
-| Total lines | 54,240 |
-| Public methods on `Ex` | 103+ (numeric) + 6 (boolean) |
+| Tests | 2,934 passing, 0 failing, 0 warnings |
+| Source | 36,468 lines across 48 modules |
+| Tests | 24,165 lines across 67 files |
+| Macros | 1,338 lines |
+| Total lines | ~61,971 |
+| Public methods on `Ex` | 139+ (numeric) + 6 (boolean) |
 | Public methods on `Context` | 17 |
 | Free-standing functions | 5 |
-| ExprNode variants | 46 |
+| ExprNode variants | 47 (`Atan2` added in Wave O) |
 | Simplification rules | 24 (with condition guards) |
 | Integration forms | 30+ (LIATE-ordered by-parts) |
-| Matrix methods | 26 |
-| Factorial/Binomial | arbitrary precision (no limit) |
+| Matrix methods | 32 (minor, cofactor, adjugate, inv, char_poly, eigenvals added Wave D) |
+| Combinatorial functions | 13 (factorial, binomial + 11 via Apply nodes from Wave R) |
+| Solver degree support | Degree 1–4 (Cardano cubic + Ferrari quartic from Wave C) |
+| Reciprocal trig/hyp | 13 methods (sec, csc, cot, + inverses + hyp + sinc from Wave A) |
+| `expr!` macro functions | 47 (up from 18, multi-arg: atan2, rising/falling factorial) |
+| Rust code generation | `to_rust_fn()` with CSE, piecewise, all elementary functions (Wave F) |
 | Eval special values | 86+ (all tan quadrants, full unit circle) |
 | Criterion benchmarks | 30 |
-| Proptest properties | 131 |
+| Proptest properties | 131+ (simplify_preserves_value added) |
 | SymPy cross-validation | 252/263 pass (0 failures) |
 | Gruntz algorithm | Complete (~1500 lines) |
 | Tracing instrumentation | 6 modules |
-| Commits | 94 |
+| Commits | 106 |
+
+#### Waves completed
+
+| Wave | Features | Tests added |
+|------|----------|-------------|
+| A | Reciprocal trig/hyp (sec, csc, cot, ...) + sinc — 13 methods | 16 |
+| Q | Assumption query methods (is_even, is_odd, is_prime, ...) — 8 methods | 17 |
+| O | Atan2 node (full quadrant support) + arg() + conjugate() | (included in Q tests) |
+| C | Cubic (Cardano) + quartic (Ferrari) formula solving | 25 |
+| R | 11 combinatorial functions via Apply nodes | 18 |
+| Macro | `expr!` expanded to 47 functions + 3 multi-arg | 16 |
+| D | Matrix inverse, cofactor, adjugate, char_poly, eigenvals | 21 |
+| F | Rust code generation (`to_rust_fn`) with CSE | 34 |
 
 ---
 
