@@ -46,10 +46,10 @@ pub(crate) fn series(
     }
 
     // Fast path: known Maclaurin series coefficients
-    if point == arena.zero {
-        if let Some(result) = try_known_maclaurin(arena, expr, var, order as usize) {
-            return Ok(result);
-        }
+    if point == arena.zero
+        && let Some(result) = try_known_maclaurin(arena, expr, var, order as usize)
+    {
+        return Ok(result);
     }
 
     let mut terms: Vec<ExprId> = Vec::with_capacity(order as usize);
