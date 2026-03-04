@@ -45,7 +45,7 @@ vars!(x, y);
 
 // ── Natural math syntax with expr! ─────────────────────────────
 let f = expr!(x^2 + 2*x + 1);
-println!("{f}");                             // 1 + x^2 + 2*x
+println!("{f}");                             // x^2 + 2*x + 1
 
 // ── Calculus ───────────────────────────────────────────────────
 let df = f.diff(&x);                        // 2 + 2*x
