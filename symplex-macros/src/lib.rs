@@ -52,6 +52,9 @@ use syn::Ident;
 /// # Multi-argument functions
 ///
 /// - `log(x, base)` → logarithm of x with given base
+/// - `diff(f, x)` → formal derivative of f with respect to x (unevaluated)
+/// - `factorial(n)` → n!
+/// - `binomial(n, k)` or `C(n, k)` → binomial coefficient C(n,k)
 ///
 /// # Examples
 ///
@@ -162,11 +165,33 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 return Ok(quote! { (#arg_code).log(&(#base_code)) });
             }
 
-            if !is_known_function(name) && name != "log" {
+            // diff(f, x) → formal derivative node (unevaluated)
+            if name == "diff" && args.len() == 2 {
+                let f_code = generate_expr(&args[0])?;
+                let var_code = generate_expr(&args[1])?;
+                return Ok(quote! { (#f_code).formal_diff(&(#var_code)) });
+            }
+
+            // factorial(n) → n.factorial()
+            if name == "factorial" && args.len() == 1 {
+                let arg_code = generate_expr_as_ex(&args[0])?;
+                return Ok(quote! { (#arg_code).factorial() });
+            }
+
+            // binomial(n, k) or C(n, k) → n.binomial(&k)
+            if (name == "binomial" || name == "C") && args.len() == 2 {
+                let n_code = generate_expr_as_ex(&args[0])?;
+                let k_code = generate_expr_as_ex(&args[1])?;
+                return Ok(quote! { (#n_code).binomial(&(#k_code)) });
+            }
+
+            if !is_known_function(name)
+                && !["log", "diff", "factorial", "binomial", "C"].contains(&name.as_str())
+            {
                 return Err(syn::Error::new(
                     *span,
                     format!(
-                        "unknown function '{}' in expr!(). Supported: {}, log",
+                        "unknown function '{}' in expr!(). Supported: {}, log, diff, factorial, binomial, C",
                         name,
                         KNOWN_FUNCTIONS.join(", ")
                     ),
@@ -585,9 +610,14 @@ fn generate_eq(input: &EqMacroInput) -> syn::Result<TokenStream2> {
 
 /// Like [`generate_expr`] but guarantees the result is an `Ex`, even for
 /// bare integer literals (which `generate_expr` emits as plain `i64`).
+///
+/// Function calls (including `diff`, `factorial`, `binomial`, `C`, `log`,
+/// and all single-arg functions) always return `Ex`, so we delegate
+/// directly to [`generate_expr`] for those.
 fn generate_expr_as_ex(expr: &MathExpr) -> syn::Result<TokenStream2> {
     match expr {
         MathExpr::Int(n, _) => Ok(quote! { ::symplex::int(#n) }),
+        MathExpr::Func { .. } => generate_expr(expr),
         _ => {
             let code = generate_expr(expr)?;
             Ok(quote! { { let __v: ::symplex::expr::Ex = (#code).clone(); __v } })

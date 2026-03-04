@@ -214,6 +214,16 @@ impl Context {
         self.make_ex(id)
     }
 
+    /// Negative infinity (-∞).
+    pub fn neg_infinity(&self) -> crate::expr::Ex {
+        let inner = self.inner.read();
+        crate::expr::Ex {
+            ctx_id: self.id,
+            inner: Arc::clone(&self.inner),
+            id: inner.arena.neg_infinity,
+        }
+    }
+
     /// Not-a-number.
     pub fn nan(&self) -> crate::expr::Ex {
         let id = self.inner.read().arena.nan;

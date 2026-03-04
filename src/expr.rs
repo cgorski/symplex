@@ -554,6 +554,34 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Create a formal (unevaluated) derivative node.
+    ///
+    /// Unlike [`diff`](Self::diff) which computes the derivative,
+    /// this creates a `Derivative(self, var)` node that represents
+    /// "the derivative of self with respect to var" without evaluating it.
+    /// This is used for constructing ODEs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let y = symplex::var("y");
+    /// let dy_dx = y.formal_diff(&x);
+    /// let s = format!("{dy_dx}");
+    /// assert!(s.contains("Derivative") || s.contains("d/d"), "got: {s}");
+    /// ```
+    #[must_use]
+    pub fn formal_diff(&self, var: &Ex) -> Ex {
+        let id = self
+            .inner
+            .write()
+            .arena
+            .intern(crate::node::ExprNode::Derivative(self.id, var.id));
+        self.wrap(id)
+    }
+
     /// Compute the nth derivative with respect to `var`.
     ///
     /// # Examples
@@ -2031,6 +2059,81 @@ impl Ex {
 
         // Could not determine equality.
         None
+    }
+
+    /// Compute the factorial of this expression: `self!`
+    ///
+    /// Creates a `Factorial` node. For non-negative integer arguments,
+    /// `.eval()` will compute the exact value using arbitrary-precision
+    /// arithmetic.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let result = symplex::int(5).factorial().eval();
+    /// assert_eq!(format!("{result}"), "120");
+    /// ```
+    #[must_use]
+    pub fn factorial(&self) -> Ex {
+        let id = self.inner.write().arena.factorial(self.id);
+        self.wrap(id)
+    }
+
+    /// Compute the binomial coefficient C(self, k).
+    ///
+    /// Creates a `Binomial(self, k)` node. For non-negative integer
+    /// arguments, `.eval()` will compute the exact value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let result = symplex::int(10).binomial(&symplex::int(3)).eval();
+    /// assert_eq!(format!("{result}"), "120");
+    /// ```
+    #[must_use]
+    pub fn binomial(&self, k: &Ex) -> Ex {
+        let id = self.inner.write().arena.binomial(self.id, k.id);
+        self.wrap(id)
+    }
+
+    /// Solve an ODE represented as `self = 0`.
+    ///
+    /// `self` should contain formal derivative nodes (created via
+    /// [`formal_diff`](Self::formal_diff)). `func` is the dependent
+    /// variable (e.g., `y`) and `var` is the independent variable (e.g., `x`).
+    ///
+    /// Returns `Some((solution, constants))` where `solution` is the general
+    /// solution and `constants` are the arbitrary constants (C1, C2, etc.).
+    /// Returns `None` if the ODE type is not recognized.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let y = symplex::var("y");
+    /// let dy = y.formal_diff(&x);  // y'
+    /// let ode = &dy + &(&y * 2);   // y' + 2y = 0
+    /// if let Some((sol, constants)) = ode.dsolve(&y, &x) {
+    ///     let s = format!("{sol}");
+    ///     assert!(s.contains("exp"), "solution should contain exp: {s}");
+    /// }
+    /// ```
+    pub fn dsolve(&self, func: &Ex, var: &Ex) -> Option<(Ex, Vec<Ex>)> {
+        let result = {
+            let mut guard = self.inner.write();
+            crate::ode::dsolve(&mut guard.arena, self.id, func.id, var.id)
+        };
+        result.map(|r| {
+            let solution = self.wrap(r.solution);
+            let constants = r.constants.into_iter().map(|c| self.wrap(c)).collect();
+            (solution, constants)
+        })
     }
 }
 
