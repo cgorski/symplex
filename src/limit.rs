@@ -201,23 +201,86 @@ fn try_lhopital(
 /// Compute lim(x→∞) expr or lim(x→-∞) expr.
 ///
 /// Strategies:
-/// 1. For rational functions P(x)/Q(x): compare leading degrees
-/// 2. For exp/ln compositions: direct evaluation of dominant terms
-/// 3. Substitution x = 1/t, compute lim(t→0+)
+/// 0. Direct polynomial degree comparison on the original expression
+/// 1. Substitution x = 1/t, together+cancel to clear nested fractions, lim(t→0)
+/// 2. Polynomial degree analysis on the substituted form
+/// 3. L'Hôpital on the substituted form
 pub(crate) fn limit_at_infinity(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     positive: bool, // true for +∞, false for -∞
 ) -> Result<ExprId, crate::errors::SymplexError> {
-    // Strategy 1: Try substitution x = 1/t and take limit as t→0
+    // ── Strategy 0: Direct polynomial degree comparison on original expr ──
+    // For rational functions p(x)/q(x), compare leading degrees directly
+    // without any substitution. This is the simplest and most robust approach.
+    tracing::debug!(
+        strategy = "direct degree comparison",
+        "limit_at_infinity: trying polynomial degree analysis on original expression"
+    );
+    let (orig_numer, orig_denom) = crate::polybridge::as_numer_denom(arena, expr);
+    if orig_denom != arena.one() {
+        let n_deg = crate::polybridge::poly_degree(arena, orig_numer, var);
+        let d_deg = crate::polybridge::poly_degree(arena, orig_denom, var);
+
+        if let (Some(nd), Some(dd)) = (n_deg, d_deg) {
+            tracing::debug!(
+                numer_degree = nd,
+                denom_degree = dd,
+                "limit_at_infinity: direct degree comparison"
+            );
+            if nd < dd {
+                // Numerator grows slower → limit is 0
+                return Ok(arena.zero());
+            }
+            if nd == dd {
+                // Same degree → ratio of leading coefficients
+                let n_coeffs = crate::polybridge::poly_coefficients(arena, orig_numer, var);
+                let d_coeffs = crate::polybridge::poly_coefficients(arena, orig_denom, var);
+                if let (Some(nc), Some(dc)) = (n_coeffs, d_coeffs) {
+                    if let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last()) {
+                        let ratio = arena.div(*n_lead, *d_lead);
+                        let result = crate::eval::eval(arena, ratio);
+                        if is_finite_result(arena, result) {
+                            // For -∞ with odd degree: negate if the sign flips
+                            // (but for equal degrees the sign doesn't flip)
+                            return Ok(result);
+                        }
+                    }
+                }
+            }
+            if nd > dd {
+                // Numerator grows faster → ±∞
+                if positive {
+                    return Ok(arena.infinity());
+                } else {
+                    return Ok(arena.neg_infinity());
+                }
+            }
+        }
+    } else {
+        // Expression is not a fraction — check if it's polynomial
+        let deg = crate::polybridge::poly_degree(arena, expr, var);
+        if let Some(d) = deg {
+            if d == 0 {
+                // Constant expression — the limit is the expression itself
+                let result = crate::eval::eval(arena, expr);
+                if is_finite_result(arena, result) {
+                    return Ok(result);
+                }
+            }
+            // For d > 0: polynomial → ±∞
+        }
+    }
+
+    // ── Strategy 1: Substitution x = 1/t, then together+cancel ──
     // This converts lim(x→∞) to lim(t→0+)
     tracing::debug!(
-        strategy = "substitution x=1/t",
+        strategy = "substitution x=1/t with together+cancel",
         "limit_at_infinity: trying reciprocal substitution"
     );
     let t = arena.symbol("__limit_t");
-    let one = arena.one;
+    let one = arena.one();
     let t_inv = arena.div(one, t); // 1/t
 
     // For -∞: substitute x = -1/t
@@ -228,14 +291,16 @@ pub(crate) fn limit_at_infinity(
         arena.subs_structural(expr, var, neg_t_inv)
     };
 
-    // Simplify the substituted expression
-    let simplified = crate::eval::eval(arena, sub_expr);
+    // Key fix: use together() to clear nested fractions like (1/t)/((1/t)+1),
+    // then cancel() to simplify, THEN expand and eval.
+    let together = crate::polybridge::together(arena, sub_expr);
+    let cancelled = crate::polybridge::cancel(arena, together, t);
+    let simplified = crate::eval::eval(arena, cancelled);
     let expanded = crate::expand::expand(arena, simplified);
     let evaled = crate::eval::eval(arena, expanded);
 
-    // Now take lim(t→0)
-    // First try direct substitution
-    let at_zero = arena.subs_structural(evaled, t, arena.zero);
+    // Now take lim(t→0) via direct substitution
+    let at_zero = arena.subs_structural(evaled, t, arena.zero());
     let at_zero_eval = crate::eval::eval(arena, at_zero);
 
     // Check if result is finite
@@ -243,8 +308,7 @@ pub(crate) fn limit_at_infinity(
         return Ok(at_zero_eval);
     }
 
-    // Strategy 2: For rational functions, analyze degree
-    // Try as_numer_denom, get degrees of numerator and denominator in t
+    // ── Strategy 2: Polynomial degree analysis on the substituted form ──
     let (numer, denom) = crate::polybridge::as_numer_denom(arena, evaled);
     if denom != arena.one {
         // We have a fraction in t — try to determine the limit
