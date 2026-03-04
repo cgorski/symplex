@@ -106,14 +106,10 @@ impl SubsSet {
     /// Union two SubsSets (merge b into self).
     fn union_with(&mut self, other: &SubsSet) {
         for (&expr, &dummy) in &other.exprs {
-            if !self.exprs.contains_key(&expr) {
-                self.exprs.insert(expr, dummy);
-            }
+            self.exprs.entry(expr).or_insert(dummy);
         }
         for (&dummy, &rewrite) in &other.rewrites {
-            if !self.rewrites.contains_key(&dummy) {
-                self.rewrites.insert(dummy, rewrite);
-            }
+            self.rewrites.entry(dummy).or_insert(rewrite);
         }
     }
 }
@@ -208,15 +204,13 @@ fn sign_at_inf(
     }
 
     // Pow(x, n) where n is a positive integer: positive for large x
-    if let ExprNode::Pow(base, exp) = arena.node(e).clone() {
-        if base == x {
-            if let Some(r) = arena.as_num(exp) {
-                if r.is_positive() {
-                    tracing::trace!("gruntz::sign_at_inf: x^(positive) → +1");
-                    return Ok(1);
-                }
-            }
-        }
+    if let ExprNode::Pow(base, exp) = arena.node(e).clone()
+        && base == x
+        && let Some(r) = arena.as_num(exp)
+        && r.is_positive()
+    {
+        tracing::trace!("gruntz::sign_at_inf: x^(positive) → +1");
+        return Ok(1);
     }
 
     if let ExprNode::Exp(_) = arena.node(e) {
@@ -576,6 +570,7 @@ fn mrv_nary(
 /// Returns `(merged_set, rewritten_e1, rewritten_e2)`.
 /// When one set dominates, the other's expressions are rewritten using
 /// the dominating set's dummies.
+#[allow(clippy::too_many_arguments)]
 fn mrv_max1(
     arena: &mut Arena,
     s1: &SubsSet,
@@ -600,11 +595,11 @@ fn mrv_max1(
     if a_rep == b_rep {
         let mut rw_e2 = e2;
         for (&expr, &d1_dummy) in &s1.exprs {
-            if let Some(&d2_dummy) = s2.exprs.get(&expr) {
-                if d1_dummy != d2_dummy {
-                    tracing::trace!("gruntz::mrv_max1: unifying dummy for shared key");
-                    rw_e2 = crate::subs::subs(arena, rw_e2, d2_dummy, d1_dummy);
-                }
+            if let Some(&d2_dummy) = s2.exprs.get(&expr)
+                && d1_dummy != d2_dummy
+            {
+                tracing::trace!("gruntz::mrv_max1: unifying dummy for shared key");
+                rw_e2 = crate::subs::subs(arena, rw_e2, d2_dummy, d1_dummy);
             }
         }
         let mut merged = s1.clone();
@@ -632,11 +627,11 @@ fn mrv_max1(
             tracing::debug!("gruntz::mrv_max1: same class — merging both sets");
             let mut rw_e2 = e2;
             for (&expr, &d1_dummy) in &s1.exprs {
-                if let Some(&d2_dummy) = s2.exprs.get(&expr) {
-                    if d1_dummy != d2_dummy {
-                        tracing::trace!("gruntz::mrv_max1: unifying dummy in Equal merge");
-                        rw_e2 = crate::subs::subs(arena, rw_e2, d2_dummy, d1_dummy);
-                    }
+                if let Some(&d2_dummy) = s2.exprs.get(&expr)
+                    && d1_dummy != d2_dummy
+                {
+                    tracing::trace!("gruntz::mrv_max1: unifying dummy in Equal merge");
+                    rw_e2 = crate::subs::subs(arena, rw_e2, d2_dummy, d1_dummy);
                 }
             }
             let mut merged = s1.clone();
@@ -650,6 +645,7 @@ fn mrv_max1(
 ///
 /// s1 contains exp(arg) itself, s2 contains MRV of arg.
 /// Returns the merged set with the correct rewrite tracked.
+#[allow(clippy::too_many_arguments)]
 fn mrv_max3(
     arena: &mut Arena,
     mut s1: SubsSet, // {exp(arg): d1}
@@ -1412,19 +1408,17 @@ fn expand_functions_as_series(arena: &mut Arena, expr: ExprId, w: ExprId, order:
             _ => false,
         };
 
-        if should_expand {
-            if let Ok(series) = crate::series::series(arena, id, w, zero, order) {
-                let expanded = crate::expand::expand(arena, series);
-                let evaled = crate::eval::eval(arena, expanded);
-                let old_display = arena.display(id).to_string();
-                let new_display = arena.display(evaled).to_string();
-                tracing::trace!(
-                    original = %old_display,
-                    series = %new_display,
-                    "gruntz::expand_functions_as_series: expanded function"
-                );
-                result = crate::subs::subs(arena, result, id, evaled);
-            }
+        if should_expand && let Ok(series) = crate::series::series(arena, id, w, zero, order) {
+            let expanded = crate::expand::expand(arena, series);
+            let evaled = crate::eval::eval(arena, expanded);
+            let old_display = arena.display(id).to_string();
+            let new_display = arena.display(evaled).to_string();
+            tracing::trace!(
+                original = %old_display,
+                series = %new_display,
+                "gruntz::expand_functions_as_series: expanded function"
+            );
+            result = crate::subs::subs(arena, result, id, evaled);
         }
     }
 

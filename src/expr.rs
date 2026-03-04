@@ -2476,6 +2476,7 @@ impl Expr<Numeric> {
     /// let func = f.lambdify(&["x"]).expect("should compile");
     /// assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
     /// ```
+    #[allow(clippy::type_complexity)]
     pub fn lambdify(&self, var_names: &[&str]) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
         let inner = self.inner.read();
         crate::lambdify::lambdify(&inner.arena, self.id, var_names)
@@ -3120,10 +3121,10 @@ fn parse_complex_evalf_string(s: &str) -> Result<(f64, f64), SymplexError> {
     if s == "-I" || s == "-i" {
         return Ok((0.0, -1.0));
     }
-    if let Some(coeff) = s.strip_suffix("*I").or_else(|| s.strip_suffix("*i")) {
-        if let Ok(im) = coeff.parse::<f64>() {
-            return Ok((0.0, im));
-        }
+    if let Some(coeff) = s.strip_suffix("*I").or_else(|| s.strip_suffix("*i"))
+        && let Ok(im) = coeff.parse::<f64>()
+    {
+        return Ok((0.0, im));
     }
 
     // Complex: "a + b*I" or "a - b*I"

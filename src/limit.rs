@@ -15,7 +15,6 @@
 
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode};
-use tracing;
 
 /// Maximum L'Hôpital iterations to prevent infinite loops.
 const MAX_LHOPITAL: usize = 5;
@@ -243,8 +242,8 @@ pub(crate) fn limit_at_infinity(
                 // Same degree → ratio of leading coefficients
                 let n_coeffs = crate::polybridge::poly_coefficients(arena, orig_numer, var);
                 let d_coeffs = crate::polybridge::poly_coefficients(arena, orig_denom, var);
-                if let (Some(nc), Some(dc)) = (n_coeffs, d_coeffs) {
-                    if let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last()) {
+                if let (Some(nc), Some(dc)) = (n_coeffs, d_coeffs)
+                    && let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last()) {
                         let ratio = arena.div(*n_lead, *d_lead);
                         let result = crate::eval::eval(arena, ratio);
                         if is_finite_result(arena, result) {
@@ -253,7 +252,6 @@ pub(crate) fn limit_at_infinity(
                             return Ok(result);
                         }
                     }
-                }
             }
             if nd > dd {
                 // Numerator grows faster → ±∞
@@ -267,8 +265,8 @@ pub(crate) fn limit_at_infinity(
     } else {
         // Expression is not a fraction — check if it's polynomial
         let deg = crate::polybridge::poly_degree(arena, expr, var);
-        if let Some(d) = deg {
-            if d == 0 {
+        if let Some(d) = deg
+            && d == 0 {
                 // Constant expression — the limit is the expression itself
                 let result = crate::eval::eval(arena, expr);
                 if is_finite_result(arena, result) {
@@ -276,7 +274,6 @@ pub(crate) fn limit_at_infinity(
                 }
             }
             // For d > 0: polynomial → ±∞
-        }
     }
 
     // ── Strategy 1: Substitution x = 1/t, then together+cancel ──

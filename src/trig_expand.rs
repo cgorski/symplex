@@ -158,7 +158,7 @@ fn expand_sin_mul(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return None;
     }
     let n_int: i64 = n_ratio.to_integer().try_into().ok()?;
-    if n_int < 2 || n_int > 20 {
+    if !(2..=20).contains(&n_int) {
         return None;
     }
     let arg = children[1];
@@ -193,7 +193,7 @@ fn expand_cos_mul(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         return None;
     }
     let n_int: i64 = n_ratio.to_integer().try_into().ok()?;
-    if n_int < 2 || n_int > 20 {
+    if !(2..=20).contains(&n_int) {
         return None;
     }
     let arg = children[1];

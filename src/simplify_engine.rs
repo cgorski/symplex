@@ -10,7 +10,6 @@ use crate::arena::Arena;
 use crate::node::ExprId;
 use crate::walk;
 use num_traits::One;
-use tracing;
 
 /// Count the number of operations (nodes) in an expression.
 ///

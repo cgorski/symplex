@@ -35,7 +35,6 @@ use crate::assumptions::Props;
 use crate::node::{ExprId, ExprNode};
 use crate::walk;
 
-use tracing;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WildId — pattern variable identifier

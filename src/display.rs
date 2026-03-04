@@ -191,13 +191,11 @@ fn display_category(arena: &Arena, id: ExprId) -> DisplayCategory {
         ExprNode::Symbol(_) => DisplayCategory::Polynomial,
         ExprNode::Pow(base, exp) => {
             // x^n with integer n → polynomial; x^(1/2) etc. → function-like
-            if matches!(arena.node(*base), ExprNode::Symbol(_)) {
-                if let Some(r) = arena.as_num(*exp) {
-                    if r.is_integer() {
+            if matches!(arena.node(*base), ExprNode::Symbol(_))
+                && let Some(r) = arena.as_num(*exp)
+                    && r.is_integer() {
                         return DisplayCategory::Polynomial;
                     }
-                }
-            }
             DisplayCategory::Function
         }
         ExprNode::Mul(children) => {
@@ -240,11 +238,10 @@ fn estimate_display_degree(arena: &Arena, id: ExprId) -> u32 {
         | ExprNode::NaN => 0,
         ExprNode::Symbol(_) => 1,
         ExprNode::Pow(_base, exp) => {
-            if let Some(r) = arena.as_num(*exp) {
-                if r.is_integer() && !r.is_negative() {
+            if let Some(r) = arena.as_num(*exp)
+                && r.is_integer() && !r.is_negative() {
                     return r.to_integer().try_into().unwrap_or(1);
                 }
-            }
             1
         }
         ExprNode::Mul(children) => {
@@ -350,8 +347,7 @@ fn expand_expr(
         ExprNode::Add(args) => {
             // Sort children by display key (polynomial degree descending, then functions, then constants)
             let mut display_order: SmallVec<[ExprId; 6]> = args.clone();
-            display_order
-                .sort_by(|a, b| display_sort_key(arena, *a).cmp(&display_sort_key(arena, *b)));
+            display_order.sort_by_key(|a| display_sort_key(arena, *a));
 
             // Push children in reverse (last child pushed first).
             for (i, &arg) in display_order.iter().enumerate().rev() {

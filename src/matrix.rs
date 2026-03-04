@@ -438,7 +438,7 @@ impl Matrix {
     /// Cofactor C(i, j) = (-1)^(i+j) * det(minor(i, j)).
     pub fn cofactor(&self, row: usize, col: usize) -> Ex {
         let minor_det = self.minor(row, col).det();
-        if (row + col) % 2 == 0 {
+        if (row + col).is_multiple_of(2) {
             minor_det
         } else {
             -minor_det

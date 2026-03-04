@@ -37,7 +37,6 @@ use num_traits::Zero;
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode, SymbolId};
 
-use tracing;
 
 /// Integrate `expr` with respect to `var`.
 ///

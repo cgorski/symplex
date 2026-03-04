@@ -110,8 +110,8 @@ fn expr_to_rust(arena: &Arena, id: ExprId, var_names: &[&str]) -> Result<String,
             let b = expr_to_rust(arena, base, var_names)?;
             // Check if exponent is a small integer — use powi for efficiency
             if let Some(r) = arena.as_num(exp) {
-                if r.is_integer() {
-                    if let Some(n) = r.numer().to_i64() {
+                if r.is_integer()
+                    && let Some(n) = r.numer().to_i64() {
                         if (0..=10).contains(&n) {
                             return Ok(format!("{b}.powi({n})"));
                         }
@@ -119,7 +119,6 @@ fn expr_to_rust(arena: &Arena, id: ExprId, var_names: &[&str]) -> Result<String,
                             return Ok(format!("{b}.powi({n})"));
                         }
                     }
-                }
                 // Check for sqrt: exponent == 1/2
                 if *r.numer() == 1.into() && *r.denom() == 2.into() {
                     return Ok(format!("{b}.sqrt()"));

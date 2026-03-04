@@ -1277,6 +1277,28 @@ All `Ex` operator implementations use internal macros (`impl_nary_binop`, `impl_
 - Every new public method ships with at least 3 tests: happy path, edge case, and error/empty case.
 - Property-based tests (proptest) should cover algebraic invariants for new transformations.
 
+### Apply vs ExprNode boundary
+
+Functions that are continuous over ℝ or ℂ and need symbolic differentiation or integration
+rules MUST be ExprNode variants (e.g., Sin, Cos, Exp, Gamma, Erf). Functions that are
+meaningful only at integer points and need no calculus rules should use `Apply` nodes with
+string-based dispatch (e.g., fibonacci, lucas, bell). This keeps the ExprNode enum lean
+while allowing easy addition of integer-valued sequences.
+
+When adding a new Apply function:
+1. Add a `pub(crate) const FN_NAME: &str = "name"` in `arena.rs`
+2. Add a constructor in `arena.rs` using the constant
+3. Add eval dispatch in `eval.rs` using the constant
+4. Add a convenience method on `Ex` in `expr.rs`
+
+### expr.rs size threshold
+
+Split `expr.rs` into multiple files when it exceeds 4,000 lines:
+- `expr.rs` — struct definition, Sort system, wrap helpers, common methods
+- `expr_ops.rs` — operator overloads (Add, Sub, Mul, Div, Neg, i64 variants)
+- `expr_transforms.rs` — calculus and algebra methods (diff, integrate, expand, etc.)
+- `expr_queries.rs` — introspection methods (is_*, degree, coeffs, etc.)
+
 ### No names in source code
 
 Never put personal names, author attributions, or team member references in source files, test files, comments, or doc comments. Use `git blame` for attribution. The only place names appear is `TEAM.md` (the design panel reference document). This keeps the codebase clean, avoids attribution disputes, and ensures automated tools don't flag name strings as PII.

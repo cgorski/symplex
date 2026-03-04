@@ -52,7 +52,10 @@ use num_rational::Ratio;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
-use crate::arena::Arena;
+use crate::arena::{
+    Arena, FN_BELL, FN_BERNOULLI, FN_CATALAN, FN_EULER_NUMBER, FN_FACTORIAL2, FN_FALLING_FACTORIAL,
+    FN_FIBONACCI, FN_HARMONIC, FN_LUCAS, FN_RISING_FACTORIAL, FN_SUBFACTORIAL,
+};
 use crate::node::{ExprId, ExprNode};
 use crate::walk;
 
@@ -297,7 +300,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     filtered.push(c);
                 }
                 // Check if we short-circuited to false
-                if new.iter().any(|&c| c == arena.bool_false) {
+                if new.contains(&arena.bool_false) {
                     arena.bool_false
                 } else if filtered.is_empty() {
                     arena.bool_true
@@ -316,7 +319,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     .collect();
                 // Short-circuit: if any child is BoolTrue → true;
                 // filter out BoolFalse; if all removed → false.
-                if new.iter().any(|&c| c == arena.bool_true) {
+                if new.contains(&arena.bool_true) {
                     arena.bool_true
                 } else {
                     let filtered: smallvec::SmallVec<[ExprId; 6]> = new
@@ -383,7 +386,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     .collect();
                 let name = arena.symbols.name(name_sid).to_owned();
                 match name.as_str() {
-                    "factorial2" if new_args.len() == 1 => {
+                    FN_FACTORIAL2 if new_args.len() == 1 => {
                         if let Some(result) = eval_factorial2(arena, new_args[0]) {
                             result
                         } else if new_args[..] == args[..] {
@@ -392,7 +395,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.factorial2(new_args[0])
                         }
                     }
-                    "subfactorial" if new_args.len() == 1 => {
+                    FN_SUBFACTORIAL if new_args.len() == 1 => {
                         if let Some(result) = eval_subfactorial(arena, new_args[0]) {
                             result
                         } else if new_args[..] == args[..] {
@@ -401,7 +404,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.subfactorial(new_args[0])
                         }
                     }
-                    "rising_factorial" if new_args.len() == 2 => {
+                    FN_RISING_FACTORIAL if new_args.len() == 2 => {
                         if let Some(result) = eval_rising_factorial(arena, new_args[0], new_args[1])
                         {
                             result
@@ -411,7 +414,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.rising_factorial(new_args[0], new_args[1])
                         }
                     }
-                    "falling_factorial" if new_args.len() == 2 => {
+                    FN_FALLING_FACTORIAL if new_args.len() == 2 => {
                         if let Some(result) =
                             eval_falling_factorial(arena, new_args[0], new_args[1])
                         {
@@ -422,7 +425,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.falling_factorial(new_args[0], new_args[1])
                         }
                     }
-                    "fibonacci" if new_args.len() == 1 => {
+                    FN_FIBONACCI if new_args.len() == 1 => {
                         if let Some(result) = eval_fibonacci(arena, new_args[0]) {
                             result
                         } else if new_args[..] == args[..] {
@@ -431,7 +434,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.fibonacci(new_args[0])
                         }
                     }
-                    "lucas" if new_args.len() == 1 => {
+                    FN_LUCAS if new_args.len() == 1 => {
                         if let Some(result) = eval_lucas(arena, new_args[0]) {
                             result
                         } else if new_args[..] == args[..] {
@@ -440,7 +443,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.lucas(new_args[0])
                         }
                     }
-                    "bernoulli" if new_args.len() == 1 => {
+                    FN_BERNOULLI if new_args.len() == 1 => {
                         if let Some(result) = eval_bernoulli(arena, new_args[0]) {
                             result
                         } else if new_args[..] == args[..] {
@@ -449,7 +452,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.bernoulli_number(new_args[0])
                         }
                     }
-                    "harmonic" if new_args.len() == 1 => {
+                    FN_HARMONIC if new_args.len() == 1 => {
                         if let Some(result) = eval_harmonic(arena, new_args[0]) {
                             result
                         } else if new_args[..] == args[..] {
@@ -458,7 +461,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.harmonic(new_args[0])
                         }
                     }
-                    "catalan" if new_args.len() == 1 => {
+                    FN_CATALAN if new_args.len() == 1 => {
                         if let Some(result) = eval_catalan(arena, new_args[0]) {
                             result
                         } else if new_args[..] == args[..] {
@@ -467,7 +470,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.catalan_number(new_args[0])
                         }
                     }
-                    "bell" if new_args.len() == 1 => {
+                    FN_BELL if new_args.len() == 1 => {
                         if let Some(result) = eval_bell(arena, new_args[0]) {
                             result
                         } else if new_args[..] == args[..] {
@@ -476,7 +479,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.bell(new_args[0])
                         }
                     }
-                    "euler_number" if new_args.len() == 1 => {
+                    FN_EULER_NUMBER if new_args.len() == 1 => {
                         if let Some(result) = eval_euler_number(arena, new_args[0]) {
                             result
                         } else if new_args[..] == args[..] {
@@ -801,9 +804,9 @@ fn eval_euler_number(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         // E(m) = -sum_{k=0,2,...,m-2} C(m, k) * E(k)
         let mut sum = BigInt::from(0);
         let mut binom = BigInt::from(1); // C(m, 0)
-        for k_half in 0..m_half {
+        for (k_half, e_val) in e_vals[..m_half].iter().enumerate() {
             let k = (k_half * 2) as u64;
-            sum += &binom * &e_vals[k_half];
+            sum += &binom * e_val;
             // Advance binom from C(m, k) to C(m, k+2)
             // C(m, k+1) = C(m, k) * (m-k) / (k+1)
             // C(m, k+2) = C(m, k+1) * (m-k-1) / (k+2)
@@ -1289,22 +1292,23 @@ fn eval_pow_root(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId>
     }
 
     // Odd roots of negative integers: (-n)^(1/k) = -(n^(1/k)) when k is odd
-    if base_r.is_negative() && base_r.is_integer() {
-        if let Some(exp_r) = arena.as_num(exp) {
-            let exp_r = exp_r.clone();
-            if *exp_r.numer() == BigInt::from(1) {
-                let k = exp_r.denom().clone();
-                // Check k is odd
-                if &k % BigInt::from(2) != BigInt::from(0) {
-                    let abs_base = -base_r.clone();
-                    let abs_base_id = {
-                        let nid = arena.intern_num(Ratio::from_integer(abs_base.to_integer()));
-                        arena.intern(ExprNode::Num(nid))
-                    };
-                    let root = arena.pow(abs_base_id, exp);
-                    let root_eval = eval(arena, root);
-                    return Some(arena.neg(root_eval));
-                }
+    if base_r.is_negative()
+        && base_r.is_integer()
+        && let Some(exp_r) = arena.as_num(exp)
+    {
+        let exp_r = exp_r.clone();
+        if *exp_r.numer() == BigInt::from(1) {
+            let k = exp_r.denom().clone();
+            // Check k is odd
+            if &k % BigInt::from(2) != BigInt::from(0) {
+                let abs_base = -base_r.clone();
+                let abs_base_id = {
+                    let nid = arena.intern_num(Ratio::from_integer(abs_base.to_integer()));
+                    arena.intern(ExprNode::Num(nid))
+                };
+                let root = arena.pow(abs_base_id, exp);
+                let root_eval = eval(arena, root);
+                return Some(arena.neg(root_eval));
             }
         }
     }

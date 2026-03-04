@@ -8,6 +8,10 @@ use crate::node::{ExprId, ExprNode};
 use num_traits::ToPrimitive;
 use std::collections::HashMap;
 
+/// Result type for [`lambdify`]: a boxed, thread-safe closure from `&[f64]` to `f64`,
+/// or `None` when the expression cannot be compiled.
+pub(crate) type LambdifyResult = Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>>;
+
 /// Compile `expr` into a closure that evaluates it numerically.
 ///
 /// `var_names` maps variable names to their positional index in the
@@ -16,11 +20,7 @@ use std::collections::HashMap;
 ///
 /// Returns `None` if the expression contains unresolvable nodes
 /// (e.g., unevaluated Integrals, user-defined Apply nodes).
-pub(crate) fn lambdify(
-    arena: &Arena,
-    expr: ExprId,
-    var_names: &[&str],
-) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
+pub(crate) fn lambdify(arena: &Arena, expr: ExprId, var_names: &[&str]) -> LambdifyResult {
     // Build a variable index map
     let var_map: HashMap<String, usize> = var_names
         .iter()

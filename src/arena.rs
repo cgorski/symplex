@@ -28,6 +28,20 @@ use crate::node::{ExprId, ExprNode, NumId, SymbolId};
 use crate::sort_key::{SortKey, compute_sort_key};
 use crate::symbol::SymbolTable;
 
+// ── Apply function name constants ──────────────────────────────────────
+// Use these instead of string literals to prevent typo bugs.
+pub(crate) const FN_FACTORIAL2: &str = "factorial2";
+pub(crate) const FN_SUBFACTORIAL: &str = "subfactorial";
+pub(crate) const FN_RISING_FACTORIAL: &str = "rising_factorial";
+pub(crate) const FN_FALLING_FACTORIAL: &str = "falling_factorial";
+pub(crate) const FN_FIBONACCI: &str = "fibonacci";
+pub(crate) const FN_LUCAS: &str = "lucas";
+pub(crate) const FN_BERNOULLI: &str = "bernoulli";
+pub(crate) const FN_HARMONIC: &str = "harmonic";
+pub(crate) const FN_CATALAN: &str = "catalan";
+pub(crate) const FN_BELL: &str = "bell";
+pub(crate) const FN_EULER_NUMBER: &str = "euler_number";
+
 // ---------------------------------------------------------------------------
 // Arena
 // ---------------------------------------------------------------------------
@@ -1064,77 +1078,77 @@ impl Arena {
 
     /// Creates a `factorial2` (double factorial) node: `n!!`.
     pub fn factorial2(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("factorial2");
+        let sym_id = self.symbols.intern(FN_FACTORIAL2);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
     /// Creates a `subfactorial` (derangement count) node: `!n`.
     pub fn subfactorial(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("subfactorial");
+        let sym_id = self.symbols.intern(FN_SUBFACTORIAL);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
     /// Creates a `rising_factorial` (Pochhammer symbol) node: `(x)_n`.
     pub fn rising_factorial(&mut self, x: ExprId, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("rising_factorial");
+        let sym_id = self.symbols.intern(FN_RISING_FACTORIAL);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![x, n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
     /// Creates a `falling_factorial` node: `x^(n)`.
     pub fn falling_factorial(&mut self, x: ExprId, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("falling_factorial");
+        let sym_id = self.symbols.intern(FN_FALLING_FACTORIAL);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![x, n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
     /// Creates a `fibonacci` node: `F(n)`.
     pub fn fibonacci(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("fibonacci");
+        let sym_id = self.symbols.intern(FN_FIBONACCI);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
     /// Creates a `lucas` node: `L(n)`.
     pub fn lucas(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("lucas");
+        let sym_id = self.symbols.intern(FN_LUCAS);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
     /// Creates a `bernoulli` (Bernoulli number) node: `B(n)`.
     pub fn bernoulli_number(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("bernoulli");
+        let sym_id = self.symbols.intern(FN_BERNOULLI);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
     /// Creates a `harmonic` (harmonic number) node: `H(n)`.
     pub fn harmonic(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("harmonic");
+        let sym_id = self.symbols.intern(FN_HARMONIC);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
     /// Creates a `catalan` (Catalan number) node: `C(n)`.
     pub fn catalan_number(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("catalan");
+        let sym_id = self.symbols.intern(FN_CATALAN);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
     /// Creates a `bell` (Bell number) node: `B(n)`.
     pub fn bell(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("bell");
+        let sym_id = self.symbols.intern(FN_BELL);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
     /// Creates an `euler_number` node: `E(n)`.
     pub fn euler_number(&mut self, n: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern("euler_number");
+        let sym_id = self.symbols.intern(FN_EULER_NUMBER);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
         self.intern(ExprNode::Apply(sym_id, args))
     }
@@ -1155,6 +1169,7 @@ impl Arena {
     ///
     /// The generated function takes `f64` arguments and returns `f64`.
     /// Uses CSE (common subexpression elimination) for efficient code.
+    #[allow(clippy::wrong_self_convention)]
     pub(crate) fn to_rust_fn(
         &mut self,
         expr: ExprId,

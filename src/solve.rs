@@ -1009,6 +1009,7 @@ fn collect_generators(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
     generators
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn collect_gens_recursive(
     arena: &Arena,
     expr: ExprId,
