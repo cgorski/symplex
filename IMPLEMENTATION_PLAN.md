@@ -952,6 +952,37 @@ Every non-obvious mathematical choice (e.g., `0^0 = 1`, `ComplexInfinity + finit
 
 ---
 
+## SymPy Gap Analysis — Priority Roadmap
+
+Based on comprehensive comparison with SymPy's ~40 modules.
+
+### Critical gaps (typical CAS users expect these)
+
+1. **Sets** (Interval, FiniteSet, Union, Reals) — foundation for solveset and domains
+2. **Symbolic sums & products** (Σ, Π with Gosper's algorithm for closed forms)
+3. **Inequality solving** — return relational expressions or intervals
+4. **Cubic/quartic formulas** — complete polynomial root finding
+5. **Definite integrals** (improper, with convergence)
+
+### High-priority gaps (power users and STEM students)
+
+6. **Multivariate polynomials** — needed for systems
+7. **Full polynomial factoring** (Hensel, Zassenhaus) — factor over ℤ
+8. **Eigenvalues / eigenvectors** — linear algebra courses
+9. **Gruntz algorithm** — robust limits at infinity
+10. **Special functions** (gamma, erf, Bessel) — physics/engineering
+11. **Vector calculus** (gradient, divergence, curl) — multivariable calc
+12. **Risch/heuristic integration** — handle more integrands
+
+### What symplex does better than SymPy
+
+- Arena hash-consing: O(1) equality, structural sharing
+- Compile-time sort safety: Expr<Numeric> vs Expr<Boolean>
+- Thread safety: Send + Sync
+- No recursion: explicit stacks prevent stack overflow
+- Canonical invariant checker: catches bugs at construction time
+- Proc macro DSL: expr!, rule!, matrix!, eq!
+
 ## File Layout
 
 ```

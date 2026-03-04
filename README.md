@@ -369,80 +369,113 @@ All rules support sub-expression matching in Add and Mul (e.g., `3 + sin²(x) + 
 
 ## Feature Comparison with SymPy
 
-| Feature | symplex 0.2.0 | SymPy | Notes |
-|---------|:---:|:---:|-------|
-| **Core** | | | |
-| Expression tree | ✅ Hash-consed arena | ✅ Python objects | symplex: O(1) equality, structural sharing |
-| Assumption system | ✅ 23 properties | ✅ ~20 properties | Both use forward-chain inference |
-| Pattern matching/rewrite | ✅ 23 rules | ✅ Hundreds | SymPy has more rules; symplex has Mul sub-match |
-| Arbitrary-precision eval | ✅ astro-float | ✅ mpmath | Both arbitrary precision |
-| Serde/JSON serialization | ✅ ExprTree | ❌ | symplex only |
-| Thread safety | ✅ Send+Sync | ❌ | symplex only (Arc<RwLock>) |
-| Compile-time sort safety | ✅ Phantom types | ❌ | symplex: BoolEx vs Ex at compile time |
-| **Type System** | | | |
-| Numeric expressions | ✅ | ✅ | |
-| Boolean expressions | ✅ BoolEx | ✅ Boolean | symplex: compile-time; SymPy: runtime |
-| Relational (>, <, >=, <=) | ✅ | ✅ | |
-| Logical (And, Or, Not) | ✅ | ✅ | |
-| Piecewise functions | ✅ | ✅ | |
-| Set types (Interval, etc.) | ❌ | ✅ | Planned for 0.3.0 |
-| **Calculus** | | | |
-| Differentiation | ✅ All elementary | ✅ All elementary | Both complete for standard functions |
-| Integration (basic) | ✅ Power, trig, exp, ln | ✅ | |
-| Integration (by-parts) | ✅ | ✅ | |
-| Integration (u-sub) | ✅ General | ✅ General | |
-| Integration (trig powers) | ✅ sin^n, cos^n | ✅ | |
-| Integration (partial fracs) | ✅ | ✅ | |
-| Integration (trig sub) | ❌ | ✅ | Planned for 0.3.0 |
-| Integration (Risch algorithm) | ❌ | ✅ | Not planned |
-| Taylor/Maclaurin series | ✅ + fast paths | ✅ | symplex: known-coefficient optimization |
-| Limits (finite points) | ✅ L'Hôpital+series | ✅ Gruntz | SymPy more complete |
-| Limits (at infinity) | ✅ Basic | ✅ Gruntz | SymPy more complete |
-| **Algebra** | | | |
-| Expand | ✅ | ✅ | |
-| Factor (polynomial) | ✅ Rational roots | ✅ Full (Berlekamp) | SymPy more complete |
-| Collect | ✅ | ✅ | |
-| Together / Cancel | ✅ | ✅ | |
-| Partial fractions (apart) | ✅ | ✅ | |
-| Trig expand/combine | ✅ | ✅ | |
-| Log expand/combine | ✅ | ✅ | |
-| Factor terms (GCD extract) | ✅ | ✅ | |
-| Rationalize denominator | ✅ | ✅ | |
-| **Equation Solving** | | | |
-| Polynomial (linear, quadratic) | ✅ | ✅ | |
-| Polynomial (higher degree) | ✅ Rational roots | ✅ Full | SymPy more complete |
+symplex covers the core algebra–calculus pipeline with a Rust-native architecture.
+SymPy has 20+ years of development and broader coverage. This matrix tracks both
+what symplex has and what's missing.
+
+### What symplex does that SymPy doesn't
+
+| Feature | Description |
+|---------|-------------|
+| Arena hash-consing | O(1) equality, structural sharing, cache-friendly |
+| Compile-time sort safety | `Expr<Numeric>` vs `Expr<Boolean>` — mixing is a compile error |
+| Thread safety | `Ex` is `Send + Sync` — parallel computation safe |
+| No recursion | All tree walks use explicit stacks — no stack overflow |
+| Proc macro DSL | `expr!()`, `rule!()`, `matrix!()`, `eq!()` |
+| Canonical invariant checker | Structural correctness verified in debug builds |
+| Compiled lambdify | Bytecode VM, not interpreted |
+
+### Core features
+
+| Feature | symplex | SymPy | Gap |
+|---------|:---:|:---:|-----|
+| Expression tree | ✅ | ✅ | symplex: arena; SymPy: Python objects |
+| Assumptions (23 properties) | ✅ | ✅ | Comparable |
+| Simplification (23 rules) | ✅ | ✅ (hundreds) | SymPy has more rules |
+| Arbitrary-precision eval | ✅ | ✅ | Both via external lib |
+| Complex numbers | ✅ | ✅ | Both complete for Tier 1-2 |
+| Boolean expressions | ✅ | ✅ | symplex: typed; SymPy: runtime |
+| Piecewise | ✅ | ✅ | |
+| JSON serialization | ✅ | ❌ | |
+
+### Calculus
+
+| Feature | symplex | SymPy | Gap |
+|---------|:---:|:---:|-----|
+| Differentiation (all elementary) | ✅ | ✅ | |
+| Integration (power, trig, exp, ln) | ✅ | ✅ | |
+| Integration (by-parts, u-sub) | ✅ | ✅ | |
+| Integration (trig powers) | ✅ | ✅ | |
+| Integration (partial fractions) | ✅ | ✅ | |
+| Integration (completing square) | ✅ | ✅ | |
+| Taylor/Maclaurin series | ✅ | ✅ | symplex: known-coefficient fast paths |
+| Limits (L'Hôpital, series) | ✅ | ✅ | |
+| Limits at infinity | ✅ basic | ✅ Gruntz | SymPy more robust |
+| Definite integrals | ✅ basic | ✅ full | SymPy handles improper integrals |
+| Risch algorithm | ❌ | ✅ | Not planned |
+| Integral transforms (Laplace, Fourier) | ❌ | ✅ | Future |
+| Trig substitution | ❌ | ✅ | Planned |
+
+### Algebra & Solving
+
+| Feature | symplex | SymPy | Gap |
+|---------|:---:|:---:|-----|
+| Expand / Factor / Collect | ✅ | ✅ | |
+| Together / Cancel / Apart | ✅ | ✅ | |
+| Trig/Log expand & combine | ✅ | ✅ | |
+| Polynomial solve (linear, quadratic) | ✅ | ✅ | |
 | Complex roots | ✅ | ✅ | |
-| Transcendental (exp, ln, trig) | ✅ Inversion | ✅ | |
-| Change of variable | ✅ | ✅ | |
-| Linear systems | ✅ Gaussian | ✅ | |
+| Higher-degree (rational roots) | ✅ | ✅ | |
+| Cubic/quartic formulas | ❌ | ✅ | Planned |
+| Transcendental solving | ✅ partial | ✅ full | |
+| Change-of-variable solve | ✅ | ✅ | |
+| Linear systems | ✅ | ✅ | |
 | Inequality solving | ❌ | ✅ | Planned |
-| Numerical (Newton) | ✅ | ✅ | |
-| **Complex Numbers** | | | |
-| i²=-1 canonicalization | ✅ | ✅ | |
-| √(-n) → i√n | ✅ | ✅ | |
-| Euler's formula | ✅ | ✅ | |
-| Complex evalf | ✅ (real,imag) pairs | ✅ mpmath | |
-| as_real_imag decomposition | ✅ | ✅ | |
-| **Special** | | | |
-| Factorial / Binomial | ✅ Arbitrary precision | ✅ | |
-| Sign function | ✅ | ✅ | |
-| Matrices | ✅ Basic | ✅ Full | SymPy: eigenvalues, Jordan form, etc. |
+| Multivariate polynomials | ❌ | ✅ | Planned |
+| Full factoring (Hensel) | ❌ | ✅ | Planned |
+| Gröbner bases | ❌ | ✅ | Future |
+| Sets / Intervals | ❌ | ✅ | Planned |
+
+### Matrices & Linear Algebra
+
+| Feature | symplex | SymPy | Gap |
+|---------|:---:|:---:|-----|
+| Dense symbolic matrix | ✅ | ✅ | |
+| Determinant / Inverse / Trace | ✅ | ✅ | |
+| Matrix multiply | ✅ | ✅ | |
 | Jacobian | ✅ | ✅ | |
-| ODE solver | ✅ Basic (separable, const-coeff) | ✅ Full | SymPy much more complete |
+| Eigenvalues / Eigenvectors | ❌ | ✅ | Planned |
+| Matrix decompositions (LU, QR) | ❌ | ✅ | Future |
+| Sparse matrices | ❌ | ✅ | Future |
+
+### Special Features
+
+| Feature | symplex | SymPy | Gap |
+|---------|:---:|:---:|-----|
+| Factorial / Binomial | ✅ | ✅ | symplex: arbitrary precision, no limit |
+| Sign function | ✅ | ✅ | |
+| ODE solver (basic) | ✅ | ✅ (full) | SymPy has dozens of methods |
 | CSE | ✅ | ✅ | |
-| lambdify (expr→closure) | ✅ | ✅ | symplex: compiled bytecode VM |
-| Code generation (to_rust_fn) | ❌ | ✅ (to Python/C/etc.) | Planned |
-| LaTeX output | ❌ (serde→external) | ✅ | By design: separate crate |
-| **Macros** | | | |
-| Expression builder (expr!) | ✅ | N/A | Rust-specific |
-| Pattern rules (rule!) | ✅ + conditions | N/A | |
-| Matrix builder (matrix!) | ✅ | N/A | |
-| Equation builder (eq!) | ✅ | N/A | |
-| **Infrastructure** | | | |
-| Test suite | 2,352 tests | ~15,000+ | |
-| Proptest / property-based | ✅ 125 properties | ❌ | symplex only |
-| Canonical invariant checker | ✅ | ❌ | symplex only |
-| Benchmarks (Criterion) | ✅ 35 | ✅ ASV | |
+| lambdify | ✅ | ✅ | symplex: bytecode VM |
+| Symbolic sums (Σ) | ❌ | ✅ | Planned |
+| Special functions (gamma, erf) | ❌ | ✅ | Future |
+| Vector calculus (grad, div, curl) | ❌ | ✅ | Planned |
+| Number theory | ❌ | ✅ | Not planned |
+| Statistics / Probability | ❌ | ✅ | Not planned |
+| LaTeX output | ❌ (serde) | ✅ | Separate crate planned |
+| Code generation (C, Python) | ❌ | ✅ | Separate crate planned |
+
+### Macros (Rust-specific, no SymPy equivalent)
+
+| Macro | What it does |
+|-------|-------------|
+| `expr!(x^2 + sin(x))` | Natural math syntax → Ex |
+| `expr!(x > 0 && y < 1)` | Comparisons → BoolEx |
+| `rule!(arena, "name", LHS => RHS)` | Pattern rewrite rules |
+| `matrix![[a, b], [c, d]]` | Matrix construction |
+| `eq!(x^2 + x = 6)` | Equation construction |
+| `expr!(1/2)` | Exact rationals |
+| `expr!(pi)`, `expr!(I)` | Mathematical constants |
 
 ## Dependencies
 
