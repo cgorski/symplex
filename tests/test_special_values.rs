@@ -4,8 +4,6 @@
 //! NaN propagation, and indeterminate power forms. They verify the recent
 //! canonicalization fixes produce correct results for every combination
 //! of special values in addition and exponentiation.
-//!
-//! Author: Viktor Draykov
 
 use symplex::prelude::*;
 use symplex::tree::ExprTree;

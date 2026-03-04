@@ -236,6 +236,19 @@ Consulted on the Number×Add distribution debate. Confirmed that SymPy's `factor
 
 ---
 
+## No Names in Source Code
+
+**Never put panel member names, author names, or reviewer names in source code, tests, comments, or doc comments.** The panel is a design-time tool only — it does not appear in shipped artifacts.
+
+- ❌ `//! Author: Dr. Aria Nakamura`
+- ❌ `// Reviewed by Emil Richter`
+- ❌ `// Viktor Draykov, testing expert`
+- ✅ `//! Tests for denominator rationalization and limit edge cases.`
+
+This includes `Author:` lines, attribution comments, `Reviewer:` tags, and any reference to a specific person. If credit is needed, use the git history. Source code comments should describe *what* and *why*, never *who*.
+
+---
+
 ## How to Use This Document
 
 When resuming development or discussing design decisions, reference the relevant expert:

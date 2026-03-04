@@ -8,7 +8,6 @@
 //!      don't interfere with each other.
 //!   4. Substitution correctness after walk changes.
 //!
-//! Author: Viktor Draykov, testing expert.
 
 use symplex::prelude::*;
 

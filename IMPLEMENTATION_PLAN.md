@@ -1260,6 +1260,10 @@ All `Ex` operator implementations use internal macros (`impl_nary_binop`, `impl_
 - Every new public method ships with at least 3 tests: happy path, edge case, and error/empty case.
 - Property-based tests (proptest) should cover algebraic invariants for new transformations.
 
+### No names in source code
+
+Never put personal names, author attributions, or team member references in source files, test files, comments, or doc comments. Use `git blame` for attribution. The only place names appear is `TEAM.md` (the design panel reference document). This keeps the codebase clean, avoids attribution disputes, and ensures automated tools don't flag name strings as PII.
+
 ### Mathematical convention documentation
 
 Every non-obvious mathematical choice (e.g., `0^0 = 1`, `ComplexInfinity + finite = NaN`) must be documented in the Design Decisions section with rationale.
