@@ -38,6 +38,7 @@ pub(crate) mod apart;
 pub(crate) mod arena;
 pub(crate) mod canon;
 pub(crate) mod complex;
+pub(crate) mod cse;
 pub(crate) mod diff;
 pub(crate) mod display;
 /// Symbolic equation type (`lhs = rhs`).
@@ -48,11 +49,16 @@ pub(crate) mod expand;
 pub(crate) mod factor;
 pub(crate) mod factor_terms;
 pub(crate) mod integrate;
+pub(crate) mod lambdify;
 pub(crate) mod limit;
 pub(crate) mod linalg;
 pub(crate) mod log_combine;
 pub(crate) mod log_expand;
+/// Symbolic matrix type and operations.
+pub mod matrix;
 pub(crate) mod node;
+/// Ordinary differential equation solver.
+pub mod ode;
 pub(crate) mod pattern;
 pub(crate) mod poly;
 pub(crate) mod polybridge;

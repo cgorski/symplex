@@ -1442,6 +1442,63 @@ impl Ex {
         self.wrap(im)
     }
 
+    /// Compile this expression into a callable closure for fast numerical evaluation.
+    ///
+    /// `var_names` specifies the variable-to-index mapping: the returned
+    /// closure takes `&[f64]` where index 0 corresponds to `var_names[0]`, etc.
+    ///
+    /// Returns `None` if the expression contains nodes that cannot be
+    /// numerically evaluated (e.g., `ImaginaryUnit`, unevaluated integrals).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let f = &x.powi(2) + 1;
+    /// let func = f.lambdify(&["x"]).expect("should compile");
+    /// assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
+    /// ```
+    pub fn lambdify(&self, var_names: &[&str]) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
+        let inner = self.inner.read();
+        crate::lambdify::lambdify(&inner.arena, self.id, var_names)
+    }
+
+    /// Perform common subexpression elimination (CSE).
+    ///
+    /// Identifies repeated subexpressions and extracts them into named
+    /// temporaries (`__cse_0`, `__cse_1`, …), reducing redundant
+    /// computation when generating code.
+    ///
+    /// Returns a list of `(name, value)` bindings and the rewritten
+    /// expression where common subexpressions are replaced by their names.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let sin_x = x.sin();
+    /// let expr = &sin_x.powi(2) + &sin_x;
+    /// let (bindings, result) = expr.cse();
+    /// // sin(x) may be extracted as a common subexpression
+    /// let _ = format!("{result}");
+    /// ```
+    pub fn cse(&self) -> (Vec<(Ex, Ex)>, Ex) {
+        let result = {
+            let mut guard = self.inner.write();
+            crate::cse::cse(&mut guard.arena, self.id)
+        };
+        let bindings = result
+            .bindings
+            .into_iter()
+            .map(|(name, val)| (self.wrap(name), self.wrap(val)))
+            .collect();
+        (bindings, self.wrap(result.expr))
+    }
+
     /// Compute the polynomial GCD of `self` and `other` with respect to `var`.
     ///
     /// Returns `None` if either expression is not polynomial in `var`.
