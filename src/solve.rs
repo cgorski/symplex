@@ -25,6 +25,7 @@
 //! returned (not an error — the solver simply couldn't find solutions).
 
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 
@@ -235,17 +236,40 @@ fn solve_by_peeling(
             solve_by_peeling(arena, inner, new_rhs, var)
         }
         // f(x)^n = rhs → f(x) = rhs^(1/n)
+        // When n is a positive even integer, also consider f(x) = -(rhs^(1/n))
         ExprNode::Pow(inner_base, inner_exp) => {
             if let Some(n) = arena.as_num(inner_exp) {
                 let n = n.clone();
                 if !n.is_zero() {
+                    let is_even_positive =
+                        n.is_integer() && n.is_positive() && n.to_integer().is_even();
                     let inv_n = Ratio::one() / n;
                     let inv_n_id = {
                         let nid = arena.intern_num(inv_n);
                         arena.intern(ExprNode::Num(nid))
                     };
-                    let new_rhs = arena.pow(rhs, inv_n_id);
-                    return solve_by_peeling(arena, inner_base, new_rhs, var);
+                    let pos_rhs = arena.pow(rhs, inv_n_id);
+
+                    if is_even_positive {
+                        let neg_rhs = arena.neg(pos_rhs);
+                        let mut solutions = Vec::new();
+                        if let Some(pos_sols) = solve_by_peeling(arena, inner_base, pos_rhs, var) {
+                            solutions.extend(pos_sols);
+                        }
+                        if let Some(neg_sols) = solve_by_peeling(arena, inner_base, neg_rhs, var) {
+                            for sol in neg_sols {
+                                if !solutions.iter().any(|s| s.value == sol.value) {
+                                    solutions.push(sol);
+                                }
+                            }
+                        }
+                        if solutions.is_empty() {
+                            return None;
+                        }
+                        return Some(solutions);
+                    } else {
+                        return solve_by_peeling(arena, inner_base, pos_rhs, var);
+                    }
                 }
             }
             None
@@ -1389,5 +1413,25 @@ mod tests {
             vals.iter().all(|v| v.contains("I")),
             "roots should contain I: {vals:?}"
         );
+    }
+
+    #[test]
+    fn solve_even_power_peeling_both_roots() {
+        // (2x + 1)^2 = 9  →  2x + 1 = ±3  →  x = 1 or x = -2
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.int(1);
+        let two = a.int(2);
+        let nine = a.int(9);
+        let two_x = a.mul(&[two, x]);
+        let inner = a.add(&[two_x, one]); // 2x + 1
+        let squared = a.pow(inner, two); // (2x + 1)^2
+        let neg_nine = a.neg(nine);
+        let expr = a.add(&[squared, neg_nine]); // (2x + 1)^2 - 9
+        let solutions = solve(&mut a, expr, x);
+        let mut vals: Vec<String> = solution_strings(&a, &solutions);
+        vals.sort();
+        assert_eq!(vals.len(), 2, "expected 2 solutions, got {vals:?}");
+        assert_eq!(vals, vec!["-2", "1"], "solutions: {vals:?}");
     }
 }

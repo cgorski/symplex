@@ -41,7 +41,10 @@ impl SymbolTable {
             return id;
         }
 
-        let id = SymbolId(self.names.len() as u32);
+        let id = SymbolId(
+            u32::try_from(self.names.len())
+                .expect("symbol table overflow: more than 4 billion symbols"),
+        );
         self.names.push(name.to_owned());
         self.assumptions.push(crate::assumptions::Assumptions {
             known_true: crate::assumptions::Props::empty(),

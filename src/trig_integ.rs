@@ -9,23 +9,27 @@
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode, SymbolId};
 
+use num_bigint::BigInt;
+use num_rational::Ratio;
+use num_traits::{One, Zero};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Compute binomial coefficient C(n, k) for small non-negative values.
-fn binom(n: u64, k: u64) -> i64 {
+/// Compute binomial coefficient C(n, k) using BigInt to avoid overflow.
+fn binom(n: u64, k: u64) -> BigInt {
     if k > n {
-        return 0;
+        return BigInt::zero();
     }
     if k == 0 || k == n {
-        return 1;
+        return BigInt::one();
     }
     // Use the smaller of k and n-k for efficiency
     let k = k.min(n - k);
-    let mut result: i64 = 1;
+    let mut result = BigInt::one();
     for i in 0..k {
-        result = result * (n - i) as i64 / (i + 1) as i64;
+        result = result * BigInt::from(n - i) / BigInt::from(i + 1);
     }
     result
 }
@@ -270,8 +274,10 @@ pub(crate) fn sin_cos_integrate(arena: &mut Arena, m: i64, n: i64, var: ExprId) 
             let power = n + 2 * j + 1;
 
             // coefficient: sign * C(k,j) / power
-            let numer = sign * c;
-            let coeff = arena.rational(numer, power);
+            let numer = BigInt::from(sign) * c;
+            let ratio = Ratio::new(numer, BigInt::from(power));
+            let num_id = arena.intern_num(ratio);
+            let coeff = arena.intern(ExprNode::Num(num_id));
 
             // cos^power(x)
             let cos_term = if power == 1 {
@@ -304,8 +310,10 @@ pub(crate) fn sin_cos_integrate(arena: &mut Arena, m: i64, n: i64, var: ExprId) 
             let sign: i64 = if j % 2 == 0 { 1 } else { -1 };
             let power = m + 2 * j + 1;
 
-            let numer = sign * c;
-            let coeff = arena.rational(numer, power);
+            let numer = BigInt::from(sign) * c;
+            let ratio = Ratio::new(numer, BigInt::from(power));
+            let num_id = arena.intern_num(ratio);
+            let coeff = arena.intern(ExprNode::Num(num_id));
 
             // sin^power(x)
             let sin_term = if power == 1 {
@@ -813,15 +821,15 @@ mod tests {
 
     #[test]
     fn binom_values() {
-        assert_eq!(binom(0, 0), 1);
-        assert_eq!(binom(1, 0), 1);
-        assert_eq!(binom(1, 1), 1);
-        assert_eq!(binom(4, 2), 6);
-        assert_eq!(binom(5, 0), 1);
-        assert_eq!(binom(5, 5), 1);
-        assert_eq!(binom(5, 3), 10);
-        assert_eq!(binom(6, 3), 20);
-        assert_eq!(binom(3, 5), 0); // k > n
+        assert_eq!(binom(0, 0), BigInt::from(1));
+        assert_eq!(binom(1, 0), BigInt::from(1));
+        assert_eq!(binom(1, 1), BigInt::from(1));
+        assert_eq!(binom(4, 2), BigInt::from(6));
+        assert_eq!(binom(5, 0), BigInt::from(1));
+        assert_eq!(binom(5, 5), BigInt::from(1));
+        assert_eq!(binom(5, 3), BigInt::from(10));
+        assert_eq!(binom(6, 3), BigInt::from(20));
+        assert_eq!(binom(3, 5), BigInt::from(0)); // k > n
     }
 
     #[test]

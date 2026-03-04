@@ -1997,14 +1997,17 @@ impl Expr<Numeric> {
 
         for _ in 0..max_iterations {
             // Build a rational approximation of x and substitute.
+            let r = match num_rational::Ratio::<num_bigint::BigInt>::from_float(x) {
+                Some(r) => r,
+                None => {
+                    return Err(SymplexError::ComputationFailed {
+                        operation: "nsolve",
+                        reason: format!("could not approximate x = {x} as rational"),
+                    });
+                }
+            };
             let x_rational = {
                 let mut inner = self.inner.write();
-                // Approximate x as a rational: multiply by 10^15, round, divide.
-                let scaled = (x * 1e15) as i64;
-                let r = num_rational::Ratio::new(
-                    num_bigint::BigInt::from(scaled),
-                    num_bigint::BigInt::from(1_000_000_000_000_000i64),
-                );
                 let nid = inner.arena.intern_num(r);
                 let id = inner.arena.intern(crate::node::ExprNode::Num(nid));
                 drop(inner);
@@ -2601,13 +2604,41 @@ impl_from_integer!(i8, i16, i32, i64, u8, u16, u32, isize);
 
 impl From<u64> for Ex {
     fn from(n: u64) -> Self {
-        crate::int(n as i64)
+        if n <= i64::MAX as u64 {
+            crate::int(n as i64)
+        } else {
+            let ctx = crate::default_context();
+            let id = {
+                let mut inner = ctx.inner.write();
+                inner.arena.big_int(num_bigint::BigInt::from(n))
+            };
+            Expr {
+                ctx_id: ctx.id,
+                inner: Arc::clone(&ctx.inner),
+                id,
+                _sort: PhantomData,
+            }
+        }
     }
 }
 
 impl From<usize> for Ex {
     fn from(n: usize) -> Self {
-        crate::int(n as i64)
+        if n <= i64::MAX as usize {
+            crate::int(n as i64)
+        } else {
+            let ctx = crate::default_context();
+            let id = {
+                let mut inner = ctx.inner.write();
+                inner.arena.big_int(num_bigint::BigInt::from(n))
+            };
+            Expr {
+                ctx_id: ctx.id,
+                inner: Arc::clone(&ctx.inner),
+                id,
+                _sort: PhantomData,
+            }
+        }
     }
 }
 

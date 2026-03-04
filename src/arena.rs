@@ -226,7 +226,10 @@ impl Arena {
         }
 
         // Not found — allocate a new slot.
-        let id = ExprId(self.nodes.len() as u32);
+        let id = ExprId(
+            u32::try_from(self.nodes.len())
+                .expect("arena overflow: more than 4 billion expression nodes"),
+        );
         let sort_key = self.compute_sort_key_for(&node);
         self.nodes.push(node);
         self.sort_keys.push(sort_key);
@@ -253,7 +256,10 @@ impl Arena {
         }
 
         // Not found — allocate a new slot.
-        let id = NumId(self.numbers.len() as u32);
+        let id = NumId(
+            u32::try_from(self.numbers.len())
+                .expect("arena overflow: more than 4 billion numeric literals"),
+        );
         self.numbers.push(value);
         self.num_dedup.entry(hash).or_default().push(id);
         id
