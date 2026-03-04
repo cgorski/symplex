@@ -105,6 +105,8 @@ pub enum ExprTree {
     Acosh { arg: Box<ExprTree> },
     /// Inverse hyperbolic tangent.
     Atanh { arg: Box<ExprTree> },
+    /// Sign function: 1 if positive, -1 if negative, 0 if zero.
+    Sign { arg: Box<ExprTree> },
     /// Application of a named function.
     Apply { name: String, args: Vec<ExprTree> },
     /// Formal derivative.
@@ -202,6 +204,9 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
             arg: Box::new(expr_to_tree(arena, x)),
         },
         ExprNode::Atanh(x) => ExprTree::Atanh {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Sign(x) => ExprTree::Sign {
             arg: Box::new(expr_to_tree(arena, x)),
         },
         ExprNode::Apply(sid, args) => ExprTree::Apply {
@@ -333,6 +338,10 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::Atanh { arg } => {
             let x = tree_to_expr(arena, arg);
             arena.atanh(x)
+        }
+        ExprTree::Sign { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.sign(x)
         }
         ExprTree::Apply { name, args } => {
             let sym_id = arena.symbols.intern(name);

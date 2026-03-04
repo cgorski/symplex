@@ -104,6 +104,7 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Atanh(inner) => {
                 rebuild_unary_expanded(arena, id, inner, &cache, Arena::atanh)
             }
+            ExprNode::Sign(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::sign),
 
             // Everything else (atoms, Derivative, Integral, Apply): unchanged.
             _ => id,

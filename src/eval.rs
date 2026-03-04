@@ -130,6 +130,16 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
                 eval_atanh(arena, inner).unwrap_or_else(|| arena.intern(ExprNode::Atanh(inner)))
             }
+            ExprNode::Sign(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                if let Some(result) = eval_sign(arena, ni) {
+                    result
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.sign(ni)
+                }
+            }
             // Rebuild Add/Mul/Pow/Neg with evaluated children.
             ExprNode::Add(ref children) => {
                 let new: smallvec::SmallVec<[ExprId; 6]> = children
@@ -819,6 +829,22 @@ fn eval_abs(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
     }
 
+    None
+}
+
+fn eval_sign(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    if let Some(r) = arena.as_num(inner) {
+        use num_traits::{Signed, Zero};
+        if r.is_positive() {
+            return Some(arena.one);
+        }
+        if r.is_negative() {
+            return Some(arena.neg_one);
+        }
+        if r.is_zero() {
+            return Some(arena.zero);
+        }
+    }
     None
 }
 
@@ -1825,5 +1851,31 @@ mod tests {
         let expr = a.binomial(five, two);
         let result = eval(&mut a, expr);
         assert_eq!(display(&a, result), "10");
+    }
+
+    #[test]
+    fn eval_sign_positive() {
+        let mut a = Arena::new();
+        let five = a.int(5);
+        let expr = a.sign(five);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "1");
+    }
+
+    #[test]
+    fn eval_sign_negative() {
+        let mut a = Arena::new();
+        let neg = a.int(-3);
+        let expr = a.sign(neg);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "-1");
+    }
+
+    #[test]
+    fn eval_sign_zero() {
+        let mut a = Arena::new();
+        let expr = a.sign(a.zero);
+        let result = eval(&mut a, expr);
+        assert_eq!(display(&a, result), "0");
     }
 }

@@ -180,7 +180,8 @@ fn convert_node(
         | ExprNode::Atanh(_)
         | ExprNode::Exp(_)
         | ExprNode::Ln(_)
-        | ExprNode::Abs(_) => {
+        | ExprNode::Abs(_)
+        | ExprNode::Sign(_) => {
             // If the function argument doesn't contain var, the whole
             // thing is a constant — but we can't represent transcendentals
             // as Ratio<BigInt>, so we fail.

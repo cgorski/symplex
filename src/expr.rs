@@ -346,6 +346,13 @@ impl Ex {
         self.wrap(id)
     }
 
+    /// Sign function: 1 if positive, -1 if negative, 0 if zero.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn sign(&self) -> Ex {
+        let id = self.inner.write().arena.sign(self.id);
+        self.wrap(id)
+    }
+
     // ── Structural predicates ──────────────────────────────────────
 
     /// Returns `true` if this expression is structurally zero (O(1)).
@@ -1978,7 +1985,8 @@ impl Ex {
             | crate::node::ExprNode::Tanh(_)
             | crate::node::ExprNode::Asinh(_)
             | crate::node::ExprNode::Acosh(_)
-            | crate::node::ExprNode::Atanh(_) => ExprType::Function,
+            | crate::node::ExprNode::Atanh(_)
+            | crate::node::ExprNode::Sign(_) => ExprType::Function,
             crate::node::ExprNode::Apply(_, _) => ExprType::Apply,
             crate::node::ExprNode::Derivative(_, _) => ExprType::Derivative,
             crate::node::ExprNode::Integral(_, _) => ExprType::Integral,

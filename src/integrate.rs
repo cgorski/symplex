@@ -757,8 +757,8 @@ fn integrate_node(arena: &mut Arena, expr: ExprId, var: ExprId, var_sym: SymbolI
             arena.intern(ExprNode::Integral(expr, var))
         }
 
-        // Inverse hyperbolics: leave as unevaluated integrals
-        ExprNode::Asinh(_) | ExprNode::Acosh(_) | ExprNode::Atanh(_) => {
+        // Inverse hyperbolics and sign: leave as unevaluated integrals
+        ExprNode::Asinh(_) | ExprNode::Acosh(_) | ExprNode::Atanh(_) | ExprNode::Sign(_) => {
             arena.intern(ExprNode::Integral(expr, var))
         }
 

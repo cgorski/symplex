@@ -368,6 +368,30 @@ fn eval_node(
             }
         }
 
+        // ── Sign ───────────────────────────────────────────────────
+        ExprNode::Sign(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if val.1.is_zero() {
+                // Real case: sign returns -1, 0, or 1
+                if val.0.is_zero() {
+                    Ok(c_zero(prec))
+                } else if val.0.is_negative() {
+                    Ok((BigFloat::from_i32(-1, prec), BigFloat::new(prec)))
+                } else {
+                    Ok((BigFloat::from_i32(1, prec), BigFloat::new(prec)))
+                }
+            } else {
+                // Complex case: sign(z) = z / |z|
+                let modulus = c_abs(val, prec, rm);
+                if modulus.is_zero() {
+                    Ok(c_zero(prec))
+                } else {
+                    let denom = (modulus, BigFloat::new(prec));
+                    Ok(c_div(val, &denom, prec, rm))
+                }
+            }
+        }
+
         // ── Unevaluable ────────────────────────────────────────────
         ExprNode::Apply(sid, _) => {
             let name = arena.symbol_name(*sid);

@@ -237,3 +237,15 @@ pub fn i_unit() -> expr::Ex {
 pub fn infinity() -> expr::Ex {
     default_context().infinity()
 }
+
+/// Negative infinity in the global default context.
+///
+/// # Examples
+///
+/// ```
+/// let neg_inf = symplex::neg_infinity();
+/// assert_eq!(format!("{neg_inf}"), "-oo");
+/// ```
+pub fn neg_infinity() -> expr::Ex {
+    default_context().neg_infinity()
+}

@@ -241,12 +241,15 @@ fn diff_node(
             arena.div(di, inner)
         }
 
-        // ── Abs: leave unevaluated ─────────────────────────────────
-        // |f|' is not elementary without knowing the sign of f.
-        ExprNode::Abs(_) => {
-            let v = var_expr(arena, var);
-            arena.intern(ExprNode::Derivative(id, v))
+        // d/dx(|f|) = sign(f) * f'
+        ExprNode::Abs(inner) => {
+            let inner_diff = cache.get(&inner).copied().unwrap_or(arena.zero);
+            let sign_f = arena.sign(inner);
+            arena.mul(&[sign_f, inner_diff])
         }
+
+        // d/dx(sign(f)) = 0 (piecewise, but zero almost everywhere)
+        ExprNode::Sign(_) => arena.zero,
 
         // d/dx(asin(f)) = f' / sqrt(1 - f^2)
         ExprNode::Asin(inner) => {

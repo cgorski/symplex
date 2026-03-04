@@ -289,6 +289,11 @@ pub(crate) fn rebuild_with_cache(
             }
         }
 
+        ExprNode::Sign(inner) => {
+            let ni = cache.get(&inner).copied().unwrap_or(inner);
+            if ni == inner { id } else { arena.sign(ni) }
+        }
+
         // Apply: user-defined function
         ExprNode::Apply(func_id, ref args) => {
             let new_args: SmallVec<[ExprId; 2]> = args

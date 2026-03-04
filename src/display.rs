@@ -374,6 +374,7 @@ fn expand_expr(
         ExprNode::Asinh(x) => push_func("asinh", x, stack),
         ExprNode::Acosh(x) => push_func("acosh", x, stack),
         ExprNode::Atanh(x) => push_func("atanh", x, stack),
+        ExprNode::Sign(x) => push_func("sign", x, stack),
 
         // ── Combinatorial ──────────────────────────────────────────
         ExprNode::Factorial(inner) => {

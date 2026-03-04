@@ -29,10 +29,10 @@ pub(crate) fn count_ops(arena: &Arena, expr: ExprId) -> usize {
 /// 1. eval only
 /// 2. eval → simplify (pattern rules)
 /// 3. eval → expand → simplify
-/// 4. eval → cancel (with dummy var) → simplify
+/// 4. eval → factor_terms → simplify
 /// 5. eval → expand_trig → simplify
 /// 6. eval → logcombine → simplify
-/// 7. eval → factor_terms → simplify
+/// 7. eval → cancel with free symbols → simplify
 ///
 /// The result with the lowest `count_ops` is returned.
 /// If the best result is more than 1.7× the complexity of the original,
@@ -70,8 +70,28 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     let s6_log = crate::log_combine::log_combine(arena, s6_eval);
     let (s6, _) = crate::pattern::apply_rules(arena, s6_log, &rules);
 
+    // Strategy 7: eval → cancel with free symbols → simplify
+    // For rational expressions like (x²-1)/(x-1) → x+1
+    let s7 = {
+        let evaled = crate::eval::eval(arena, expr);
+        let free = crate::walk::free_symbols(arena, evaled);
+        let mut best = evaled;
+        let mut best_ops = count_ops(arena, evaled);
+        for &sym in &free {
+            let cancelled = crate::polybridge::cancel(arena, evaled, sym);
+            let cancelled_eval = crate::eval::eval(arena, cancelled);
+            let (cancelled_simp, _) = crate::pattern::apply_rules(arena, cancelled_eval, &rules);
+            let ops = count_ops(arena, cancelled_simp);
+            if ops < best_ops {
+                best = cancelled_simp;
+                best_ops = ops;
+            }
+        }
+        best
+    };
+
     // Collect candidates
-    let candidates = [expr, s1, s2, s3, s4, s5, s6];
+    let candidates = [expr, s1, s2, s3, s4, s5, s6, s7];
 
     // Pick the one with lowest ops
     let best = candidates
@@ -180,5 +200,24 @@ mod tests {
         let expr = a.add(&[x2, xy, y]);
         // Pow + Mul + Add = 3
         assert_eq!(count_ops(&a, expr), 3);
+    }
+
+    #[test]
+    fn smart_simplify_cancel_rational() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let one = a.one;
+        // (x²-1)/(x-1) should simplify to x+1
+        let x2 = a.pow(x, two);
+        let numer = a.sub(x2, one);
+        let denom = a.sub(x, one);
+        let expr = a.div(numer, denom);
+        let result = smart_simplify(&mut a, expr);
+        let s = a.display(result).to_string();
+        assert!(
+            s.contains("1") && s.contains("x") && !s.contains("/"),
+            "(x²-1)/(x-1) should simplify to x+1, got: {s}"
+        );
     }
 }

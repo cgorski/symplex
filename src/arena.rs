@@ -796,6 +796,11 @@ impl Arena {
         self.intern(ExprNode::Abs(expr))
     }
 
+    /// Creates a `Sign` (sign function) node: 1 if x > 0, -1 if x < 0, 0 if x = 0.
+    pub fn sign(&mut self, expr: ExprId) -> ExprId {
+        self.intern(ExprNode::Sign(expr))
+    }
+
     /// Creates an `Asin` (inverse sine / arcsin) node.
     pub fn asin(&mut self, expr: ExprId) -> ExprId {
         self.intern(ExprNode::Asin(expr))

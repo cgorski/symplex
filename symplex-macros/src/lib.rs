@@ -222,6 +222,7 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 "sqrt" => quote! { sqrt },
                 "cbrt" => quote! { cbrt },
                 "abs" => quote! { abs },
+                "sign" => quote! { sign },
                 _ => unreachable!(),
             };
             Ok(quote! { (#arg_code).#method() })
@@ -527,6 +528,7 @@ impl RuleCodeGen {
                     "sqrt" => quote! { #arena.sqrt(#arg_temp) },
                     "cbrt" => quote! { #arena.cbrt(#arg_temp) },
                     "abs" => quote! { #arena.abs(#arg_temp) },
+                    "sign" => quote! { #arena.sign(#arg_temp) },
                     _ => unreachable!(),
                 };
 

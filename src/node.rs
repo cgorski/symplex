@@ -162,6 +162,9 @@ pub enum ExprNode {
     /// Inverse hyperbolic tangent: `atanh(x)`.
     Atanh(ExprId),
 
+    /// Sign function: `sign(x)` = 1 if x > 0, -1 if x < 0, 0 if x = 0.
+    Sign(ExprId),
+
     // -- combinatorial -------------------------------------------------------
     /// Factorial: `n!`
     Factorial(ExprId),
@@ -232,6 +235,7 @@ impl ExprNode {
             | ExprNode::Asinh(x)
             | ExprNode::Acosh(x)
             | ExprNode::Atanh(x)
+            | ExprNode::Sign(x)
             | ExprNode::Factorial(x) => smallvec![*x],
 
             // function application
@@ -299,6 +303,7 @@ impl fmt::Debug for ExprNode {
             ExprNode::Asinh(x) => f.debug_tuple("Asinh").field(x).finish(),
             ExprNode::Acosh(x) => f.debug_tuple("Acosh").field(x).finish(),
             ExprNode::Atanh(x) => f.debug_tuple("Atanh").field(x).finish(),
+            ExprNode::Sign(id) => write!(f, "Sign({id:?})"),
             ExprNode::Factorial(id) => write!(f, "Factorial({id:?})"),
             ExprNode::Binomial(n, k) => write!(f, "Binomial({n:?}, {k:?})"),
             ExprNode::Apply(sym, args) => f.debug_tuple("Apply").field(sym).field(args).finish(),
