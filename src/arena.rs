@@ -821,6 +821,39 @@ impl Arena {
         crate::simplify_engine::count_ops(self, expr)
     }
 
+    /// Dedicated trigonometric simplification.
+    ///
+    /// Tries multiple Pythagorean replacement strategies and picks the
+    /// result with the fewest operations.
+    /// Delegates to [`trigsimp::trigsimp`].
+    pub fn trigsimp_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::trigsimp::trigsimp(self, expr)
+    }
+
+    /// Combine like bases in products with symbolic exponents.
+    ///
+    /// `x^a * x^b → x^(a+b)` even when `a` and `b` are not numeric.
+    /// Delegates to [`powsimp::powsimp`].
+    pub fn powsimp_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::powsimp::powsimp(self, expr)
+    }
+
+    /// Rewrite trig functions as complex exponentials.
+    ///
+    /// `sin(x) → (exp(ix) − exp(−ix)) / (2i)`, etc.
+    /// Delegates to [`rewrite::rewrite_as_exp`].
+    pub fn rewrite_as_exp_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::rewrite::rewrite_as_exp(self, expr)
+    }
+
+    /// Rewrite complex exponentials as trig functions (Euler's formula).
+    ///
+    /// `exp(ix) → cos(x) + i·sin(x)`, etc.
+    /// Delegates to [`rewrite::rewrite_as_trig`].
+    pub fn rewrite_as_trig_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::rewrite::rewrite_as_trig(self, expr)
+    }
+
     /// Factor out the GCD of numeric coefficients from a sum.
     /// `2x + 2y → 2(x + y)`.
     /// Delegates to [`factor_terms::factor_terms`].

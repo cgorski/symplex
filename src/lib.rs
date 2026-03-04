@@ -70,7 +70,9 @@ pub mod ode;
 pub(crate) mod pattern;
 pub(crate) mod poly;
 pub(crate) mod polybridge;
+pub(crate) mod powsimp;
 pub(crate) mod radsimp;
+pub(crate) mod rewrite;
 pub(crate) mod series;
 pub(crate) mod simplify_engine;
 pub(crate) mod solve;
@@ -80,6 +82,7 @@ pub(crate) mod symbol;
 pub(crate) mod trig_combine;
 pub(crate) mod trig_expand;
 pub(crate) mod trig_integ;
+pub(crate) mod trigsimp;
 pub(crate) mod walk;
 
 // ── Public modules ─────────────────────────────────────────────────────

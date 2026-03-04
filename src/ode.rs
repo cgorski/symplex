@@ -350,6 +350,183 @@ fn contains_sym(arena: &Arena, expr: ExprId, sym: SymbolId) -> bool {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ODE classification
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// ODE classification result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OdeType {
+    /// y' = f(x) — simple separable, no y dependence
+    SimpleSeparable,
+    /// y' + a*y = f(x) — first-order linear with constant coefficients
+    FirstOrderLinearCC,
+    /// a*y'' + b*y' + c*y = 0 — second-order linear constant-coefficient homogeneous
+    SecondOrderLinearCCHomogeneous,
+    /// Unrecognized ODE type
+    Unknown,
+}
+
+/// Classify an ODE without solving it.
+///
+/// The ODE is given as `expr = 0` where `expr` may contain derivative nodes.
+/// Returns the recognized [`OdeType`].
+pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) -> OdeType {
+    match arena.node(var) {
+        ExprNode::Symbol(_) => {}
+        _ => return OdeType::Unknown,
+    };
+    let func_sym = match arena.node(func) {
+        ExprNode::Symbol(sid) => *sid,
+        _ => return OdeType::Unknown,
+    };
+
+    // Check for second-order: look for Derivative(Derivative(func, var), var)
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+
+    if expr_contains(arena, expr, d2y_dx2) {
+        // Try to verify it matches a*y'' + b*y' + c*y = 0 pattern
+        if let ExprNode::Add(ref children) = arena.node(expr).clone() {
+            let mut is_const_coeff_homogeneous = true;
+            let mut has_y2 = false;
+            for &child in children {
+                let (_coeff, term) = arena.as_coeff_term(child);
+                if term == d2y_dx2 {
+                    has_y2 = true;
+                } else if term == dy_dx {
+                    // OK — y' term
+                } else if term == func {
+                    // OK — y term
+                } else {
+                    is_const_coeff_homogeneous = false;
+                    break;
+                }
+            }
+            if has_y2 && is_const_coeff_homogeneous {
+                return OdeType::SecondOrderLinearCCHomogeneous;
+            }
+        }
+        // Even if we can't fully classify, it has a second derivative
+        return OdeType::Unknown;
+    }
+
+    // Check for first-order
+    if expr_contains(arena, expr, dy_dx) {
+        // Check if func appears outside derivative terms
+        if !contains_sym_outside_deriv(arena, expr, func_sym, dy_dx) {
+            return OdeType::SimpleSeparable;
+        }
+        // Check if it matches the first-order linear CC pattern: y' + a*y = f(x)
+        if let ExprNode::Add(ref children) = arena.node(expr).clone() {
+            let mut ok = true;
+            for &child in children {
+                let (_coeff, term) = arena.as_coeff_term(child);
+                if term == dy_dx || term == func {
+                    // Fine — linear terms
+                } else if contains_sym(arena, child, func_sym) {
+                    ok = false;
+                    break;
+                }
+                // Otherwise it's f(x) — acceptable
+            }
+            if ok {
+                return OdeType::FirstOrderLinearCC;
+            }
+        }
+        return OdeType::Unknown;
+    }
+
+    OdeType::Unknown
+}
+
+/// Check if `haystack` contains the sub-expression `needle` anywhere.
+fn expr_contains(arena: &Arena, haystack: ExprId, needle: ExprId) -> bool {
+    if haystack == needle {
+        return true;
+    }
+    let node = arena.node(haystack).clone();
+    for &child in node.children().iter() {
+        if expr_contains(arena, child, needle) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if `expr` contains `sym` in a position that is NOT inside `deriv_node`.
+///
+/// This detects whether `func` (as a bare symbol) appears outside derivative
+/// sub-expressions — i.e., `y` appears outside `dy/dx`.
+fn contains_sym_outside_deriv(
+    arena: &Arena,
+    expr: ExprId,
+    sym: SymbolId,
+    deriv_node: ExprId,
+) -> bool {
+    if expr == deriv_node {
+        // Skip — this is the derivative node, don't look inside
+        return false;
+    }
+    match arena.node(expr).clone() {
+        ExprNode::Symbol(s) => s == sym,
+        other => {
+            for &child in other.children().iter() {
+                if contains_sym_outside_deriv(arena, child, sym, deriv_node) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ODE solution verification
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Check whether a solution satisfies an ODE.
+///
+/// Substitutes the solution for `func`, differentiates as needed,
+/// and checks if the ODE expression evaluates to zero.
+///
+/// The ODE is given as `ode_expr = 0`.
+pub fn checkodesol(
+    arena: &mut Arena,
+    ode_expr: ExprId,
+    solution: ExprId,
+    func: ExprId,
+    var: ExprId,
+) -> bool {
+    // Build derivative nodes
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+
+    // Compute derivatives of the solution
+    let sol_d1 = crate::diff::diff(arena, solution, var);
+    let sol_d2 = crate::diff::diff(arena, sol_d1, var);
+
+    // Substitute second derivative first (more specific), then first, then func
+    let mut result = crate::subs::subs(arena, ode_expr, d2y_dx2, sol_d2);
+    result = crate::subs::subs(arena, result, dy_dx, sol_d1);
+    result = crate::subs::subs(arena, result, func, solution);
+
+    // Evaluate and simplify
+    result = crate::eval::eval(arena, result);
+    result = crate::expand::expand(arena, result);
+    result = crate::eval::eval(arena, result);
+
+    if result == arena.zero {
+        return true;
+    }
+
+    // Try another round of expand + eval for stubborn expressions
+    result = crate::expand::expand(arena, result);
+    result = crate::eval::eval(arena, result);
+
+    result == arena.zero
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

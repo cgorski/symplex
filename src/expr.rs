@@ -1861,6 +1861,93 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// Dedicated trigonometric simplification.
+    ///
+    /// Goes beyond the pattern-based rules in [`simplify`](Self::simplify)
+    /// by trying exhaustive Pythagorean replacements (sin²→1−cos² and
+    /// cos²→1−sin²) and picking the result with the fewest operations.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
+    /// assert_eq!(format!("{}", expr.trigsimp()), "1");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn trigsimp(&self) -> Ex {
+        let id = self.inner.write().arena.trigsimp_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Combine like bases in products with symbolic exponents.
+    ///
+    /// Extends the numeric power-merging done during canonicalization
+    /// to symbolic exponents: `x^a * x^b → x^(a+b)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, a, b) = (ctx.symbol("x"), ctx.symbol("a"), ctx.symbol("b"));
+    /// let expr = &x.pow(&a) * &x.pow(&b);
+    /// let result = expr.powsimp();
+    /// let s = format!("{result}");
+    /// assert!(s.contains("a + b") || s.contains("b + a"), "should combine: {s}");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn powsimp(&self) -> Ex {
+        let id = self.inner.write().arena.powsimp_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Rewrite trigonometric functions as complex exponentials.
+    ///
+    /// - `sin(x) → (exp(ix) − exp(−ix)) / (2i)`
+    /// - `cos(x) → (exp(ix) + exp(−ix)) / 2`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let result = x.sin().rewrite_as_exp();
+    /// let s = format!("{result}");
+    /// assert!(s.contains("exp") || s.contains("E"), "should contain exponentials: {s}");
+    /// ```
+    #[must_use = "returns the rewritten form; does not modify in place"]
+    pub fn rewrite_as_exp(&self) -> Ex {
+        let id = self.inner.write().arena.rewrite_as_exp_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Rewrite complex exponentials as trigonometric functions (Euler's formula).
+    ///
+    /// `exp(ix) → cos(x) + i·sin(x)`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let i = symplex::i_unit();
+    /// let expr = (&i * &x).exp();
+    /// let result = expr.rewrite_as_trig();
+    /// let s = format!("{result}");
+    /// assert!(s.contains("cos") && s.contains("sin"), "should contain trig: {s}");
+    /// ```
+    #[must_use = "returns the rewritten form; does not modify in place"]
+    pub fn rewrite_as_trig(&self) -> Ex {
+        let id = self.inner.write().arena.rewrite_as_trig_expr(self.id);
+        self.wrap(id)
+    }
+
     /// Group an expression by powers of `var`.
     ///
     /// Converts the expression to a univariate polynomial in `var`
@@ -2629,6 +2716,96 @@ impl Expr<Numeric> {
             })
         };
         self.wrap(result_id)
+    }
+
+    // ── Solver utilities ───────────────────────────────────────────
+
+    /// Check whether `val` is a solution of `self = 0` for variable `var`.
+    ///
+    /// Substitutes `val` for `var`, evaluates, and checks if the result is zero.
+    /// Returns `true` if the residual is zero (structurally or numerically),
+    /// `false` if definitely non-zero, or falls back to structural check.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::vars;
+    /// vars!(x);
+    /// let poly = expr!(x^2 - 4);
+    /// assert!(poly.check_solution(&x, &symplex::int(2)));
+    /// assert!(poly.check_solution(&x, &symplex::int(-2)));
+    /// assert!(!poly.check_solution(&x, &symplex::int(3)));
+    /// ```
+    #[must_use]
+    pub fn check_solution(&self, var: &Ex, val: &Ex) -> bool {
+        let substituted = self.subs(var, val).eval().simplify();
+        if substituted.is_zero_structural() {
+            return true;
+        }
+        // Try numerical evaluation
+        if let Ok(v) = substituted.evalf_f64() {
+            return v.abs() < 1e-10;
+        }
+        // Try expand + eval
+        let expanded = substituted.expand().eval();
+        expanded.is_zero_structural()
+    }
+
+    /// Classify an ODE represented as `self = 0`.
+    ///
+    /// `self` should contain formal derivative nodes (created via
+    /// [`formal_diff`](Self::formal_diff)). `func` is the dependent
+    /// variable (e.g., `y`) and `var` is the independent variable (e.g., `x`).
+    ///
+    /// Returns an [`OdeType`](crate::ode::OdeType) describing the
+    /// recognized ODE class, or [`OdeType::Unknown`](crate::ode::OdeType::Unknown)
+    /// if the form is not recognized.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::ode::OdeType;
+    ///
+    /// let x = symplex::var("x");
+    /// let y = symplex::var("y");
+    /// let dy = y.formal_diff(&x);
+    /// let ode = &dy - &x; // y' = x
+    /// assert_eq!(ode.classify_ode(&y, &x), OdeType::SimpleSeparable);
+    /// ```
+    #[must_use]
+    pub fn classify_ode(&self, func: &Ex, var: &Ex) -> crate::ode::OdeType {
+        let mut guard = self.inner.write();
+        crate::ode::classify_ode(&mut guard.arena, self.id, func.id, var.id)
+    }
+
+    /// Check whether `solution` satisfies the ODE `self = 0`.
+    ///
+    /// Substitutes the solution for `func` and its derivative for
+    /// `Derivative(func, var)`, then evaluates and checks whether the
+    /// residual is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let y = symplex::var("y");
+    /// let dy = y.formal_diff(&x);
+    /// let ode = &dy - &x; // y' - x = 0
+    /// // Solution: y = x²/2
+    /// let sol = &x.powi(2) / 2;
+    /// assert!(ode.checkodesol(&sol, &y, &x));
+    /// ```
+    #[must_use]
+    pub fn checkodesol(&self, solution: &Ex, func: &Ex, var: &Ex) -> bool {
+        
+        {
+            let mut guard = self.inner.write();
+            crate::ode::checkodesol(&mut guard.arena, self.id, solution.id, func.id, var.id)
+        }
     }
 }
 

@@ -596,6 +596,335 @@ impl Matrix {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Decompositions and subspaces
+//
+// Matrix algorithms naturally use index-based loops for row/column access.
+// ═══════════════════════════════════════════════════════════════════════════
+#[allow(clippy::needless_range_loop)]
+impl Matrix {
+    /// LU decomposition with partial pivoting over exact rationals.
+    /// Returns (L, U, perm) where perm is the row permutation vector.
+    /// L is lower triangular with 1s on diagonal, U is upper triangular.
+    /// P*A = L*U where P is the permutation matrix.
+    ///
+    /// Returns `None` if the matrix is not square or is singular.
+    pub fn lu(&self) -> Option<(Matrix, Matrix, Vec<usize>)> {
+        let n = self.nrows;
+        if n != self.ncols {
+            return None;
+        }
+
+        let mut perm: Vec<usize> = (0..n).collect();
+        let mut u: Vec<Vec<Ex>> = self.rows.clone();
+        let mut l: Vec<Vec<Ex>> = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| if i == j { Ex::one() } else { Ex::zero() })
+                    .collect()
+            })
+            .collect();
+
+        for k in 0..n {
+            // Partial pivoting: find first non-zero in column k, rows k..n
+            let mut pivot_row = None;
+            for i in k..n {
+                if !u[i][k].is_zero_structural() {
+                    pivot_row = Some(i);
+                    break;
+                }
+            }
+            let pivot_row = pivot_row?;
+
+            if pivot_row != k {
+                u.swap(k, pivot_row);
+                perm.swap(k, pivot_row);
+                // Swap the already-computed L multipliers (columns 0..k)
+                for j in 0..k {
+                    let tmp = l[k][j].clone();
+                    l[k][j] = l[pivot_row][j].clone();
+                    l[pivot_row][j] = tmp;
+                }
+            }
+
+            // Eliminate below pivot
+            for i in (k + 1)..n {
+                if u[i][k].is_zero_structural() {
+                    continue;
+                }
+                let factor = &u[i][k] / &u[k][k];
+                l[i][k] = factor.clone();
+                u[i][k] = Ex::zero();
+                for j in (k + 1)..n {
+                    let term = &factor * &u[k][j];
+                    u[i][j] = &u[i][j] - &term;
+                }
+            }
+        }
+
+        let l_mat = Matrix {
+            rows: l,
+            nrows: n,
+            ncols: n,
+        };
+        let u_mat = Matrix {
+            rows: u,
+            nrows: n,
+            ncols: n,
+        };
+        Some((l_mat, u_mat, perm))
+    }
+
+    /// Row-reduced echelon form via Gauss-Jordan elimination.
+    /// Returns (rref_matrix, pivot_columns).
+    /// Uses exact rational arithmetic.
+    pub fn rref(&self) -> (Matrix, Vec<usize>) {
+        let nrows = self.nrows;
+        let ncols = self.ncols;
+        let mut rows: Vec<Vec<Ex>> = self.rows.clone();
+        let mut pivots = Vec::new();
+        let mut pivot_row = 0;
+
+        for col in 0..ncols {
+            if pivot_row >= nrows {
+                break;
+            }
+
+            // Find a non-zero entry in this column at or below pivot_row
+            let mut found = None;
+            for i in pivot_row..nrows {
+                if !rows[i][col].is_zero_structural() {
+                    found = Some(i);
+                    break;
+                }
+            }
+
+            let found = match found {
+                Some(r) => r,
+                None => continue, // no pivot in this column
+            };
+
+            // Swap to pivot position
+            if found != pivot_row {
+                rows.swap(pivot_row, found);
+            }
+
+            // Scale pivot row so the pivot entry becomes 1
+            let pivot_val = rows[pivot_row][col].clone();
+            for j in 0..ncols {
+                rows[pivot_row][j] = &rows[pivot_row][j] / &pivot_val;
+            }
+
+            // Eliminate all other entries in this column
+            for i in 0..nrows {
+                if i == pivot_row {
+                    continue;
+                }
+                if !rows[i][col].is_zero_structural() {
+                    let factor = rows[i][col].clone();
+                    for j in 0..ncols {
+                        let term = &factor * &rows[pivot_row][j];
+                        rows[i][j] = &rows[i][j] - &term;
+                    }
+                }
+            }
+
+            pivots.push(col);
+            pivot_row += 1;
+        }
+
+        let mat = Matrix { rows, nrows, ncols };
+        (mat, pivots)
+    }
+
+    /// Rank of the matrix (number of pivot columns in RREF).
+    pub fn rank(&self) -> usize {
+        let (_, pivots) = self.rref();
+        pivots.len()
+    }
+
+    /// Null space (kernel): basis vectors for Ax = 0.
+    /// Returns column vectors as 1-column matrices.
+    pub fn nullspace(&self) -> Vec<Matrix> {
+        let (rref_mat, pivots) = self.rref();
+        let n = self.ncols;
+
+        let pivot_set: std::collections::HashSet<usize> = pivots.iter().copied().collect();
+        let free_vars: Vec<usize> = (0..n).filter(|c| !pivot_set.contains(c)).collect();
+
+        let mut basis = Vec::new();
+        for &free_col in &free_vars {
+            let mut entries = vec![Ex::zero(); n];
+            entries[free_col] = Ex::one();
+
+            // Back-substitute: for each pivot row, the pivot column gets
+            // the negation of the RREF entry in the free column.
+            for (pivot_idx, &pivot_col) in pivots.iter().enumerate() {
+                entries[pivot_col] = -rref_mat.get(pivot_idx, free_col);
+            }
+
+            basis.push(Matrix::col_vector(entries));
+        }
+
+        basis
+    }
+
+    /// Column space basis: the pivot columns of the original matrix.
+    pub fn columnspace(&self) -> Vec<Matrix> {
+        let (_, pivots) = self.rref();
+        pivots
+            .iter()
+            .map(|&col| {
+                let elems: Vec<Ex> = (0..self.nrows).map(|i| self.rows[i][col].clone()).collect();
+                Matrix::col_vector(elems)
+            })
+            .collect()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Utilities
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Matrix {
+    /// Frobenius norm: sqrt(sum of squares of all entries).
+    pub fn norm(&self) -> Ex {
+        let mut sum = Ex::zero();
+        for row in &self.rows {
+            for elem in row {
+                sum = sum + &(elem * elem);
+            }
+        }
+        sum.sqrt()
+    }
+
+    /// Is this matrix square?
+    pub fn is_square(&self) -> bool {
+        self.nrows == self.ncols
+    }
+
+    /// Is this matrix symmetric? (A = Aᵀ, checked structurally)
+    pub fn is_symmetric(&self) -> bool {
+        if self.nrows != self.ncols {
+            return false;
+        }
+        for i in 0..self.nrows {
+            for j in (i + 1)..self.ncols {
+                let diff = &self.rows[i][j] - &self.rows[j][i];
+                if !diff.is_zero_structural() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Stack matrices horizontally (side by side).
+    /// All matrices must have the same number of rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `matrices` is empty or row counts differ.
+    pub fn hstack(matrices: &[&Matrix]) -> Matrix {
+        assert!(!matrices.is_empty(), "hstack: need at least one matrix");
+        let nrows = matrices[0].nrows;
+        for (idx, m) in matrices.iter().enumerate() {
+            assert_eq!(
+                m.nrows, nrows,
+                "hstack: matrix {idx} has {} rows, expected {nrows}",
+                m.nrows
+            );
+        }
+        let ncols: usize = matrices.iter().map(|m| m.ncols).sum();
+        let rows: Vec<Vec<Ex>> = (0..nrows)
+            .map(|i| {
+                matrices
+                    .iter()
+                    .flat_map(|m| m.rows[i].iter().cloned())
+                    .collect()
+            })
+            .collect();
+        Matrix { rows, nrows, ncols }
+    }
+
+    /// Stack matrices vertically (on top of each other).
+    /// All matrices must have the same number of columns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `matrices` is empty or column counts differ.
+    pub fn vstack(matrices: &[&Matrix]) -> Matrix {
+        assert!(!matrices.is_empty(), "vstack: need at least one matrix");
+        let ncols = matrices[0].ncols;
+        for (idx, m) in matrices.iter().enumerate() {
+            assert_eq!(
+                m.ncols, ncols,
+                "vstack: matrix {idx} has {} cols, expected {ncols}",
+                m.ncols
+            );
+        }
+        let nrows: usize = matrices.iter().map(|m| m.nrows).sum();
+        let rows: Vec<Vec<Ex>> = matrices
+            .iter()
+            .flat_map(|m| m.rows.iter().cloned())
+            .collect();
+        Matrix { rows, nrows, ncols }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Free-standing vector operations
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Cross product of two 3×1 column vectors.
+///
+/// # Panics
+///
+/// Panics if either argument is not a 3×1 matrix.
+pub fn cross(a: &Matrix, b: &Matrix) -> Matrix {
+    assert!(
+        a.nrows() == 3 && a.ncols() == 1,
+        "cross: first argument must be a 3×1 column vector, got {}×{}",
+        a.nrows(),
+        a.ncols()
+    );
+    assert!(
+        b.nrows() == 3 && b.ncols() == 1,
+        "cross: second argument must be a 3×1 column vector, got {}×{}",
+        b.nrows(),
+        b.ncols()
+    );
+    let (a0, a1, a2) = (a.get(0, 0), a.get(1, 0), a.get(2, 0));
+    let (b0, b1, b2) = (b.get(0, 0), b.get(1, 0), b.get(2, 0));
+    Matrix::col_vector(vec![
+        a1 * b2 - a2 * b1,
+        a2 * b0 - a0 * b2,
+        a0 * b1 - a1 * b0,
+    ])
+}
+
+/// Dot product of two column vectors (n×1 matrices).
+///
+/// # Panics
+///
+/// Panics if either argument is not a column vector or lengths differ.
+pub fn dot(a: &Matrix, b: &Matrix) -> Ex {
+    assert_eq!(a.ncols(), 1, "dot: first argument must be a column vector");
+    assert_eq!(b.ncols(), 1, "dot: second argument must be a column vector");
+    assert_eq!(
+        a.nrows(),
+        b.nrows(),
+        "dot: vectors must have the same length ({} vs {})",
+        a.nrows(),
+        b.nrows()
+    );
+    let mut sum = a.get(0, 0) * b.get(0, 0);
+    for i in 1..a.nrows() {
+        sum = sum + &(a.get(i, 0) * b.get(i, 0));
+    }
+    sum
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Display
 // ═══════════════════════════════════════════════════════════════════════════
 
