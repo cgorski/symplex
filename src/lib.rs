@@ -42,6 +42,7 @@ extern crate self as symplex;
 // ── Internal modules (not part of the public API) ──────────────────────
 pub(crate) mod apart;
 pub(crate) mod arena;
+pub(crate) mod bernoulli;
 pub(crate) mod canon;
 pub(crate) mod codegen;
 pub(crate) mod combsimp;

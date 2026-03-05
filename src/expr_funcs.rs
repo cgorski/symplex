@@ -489,11 +489,12 @@ impl Expr<Numeric> {
         let mut inner = self.inner.write();
         let node = inner.arena.node(self.id).clone();
         if let crate::node::ExprNode::Sum(body, var, lower, upper) = node
-            && let Some(closed) = inner.arena.eval_sum_symbolic_expr(body, var, lower, upper) {
-                let result = crate::eval::eval(&mut inner.arena, closed);
-                drop(inner);
-                return self.wrap(result);
-            }
+            && let Some(closed) = inner.arena.eval_sum_symbolic_expr(body, var, lower, upper)
+        {
+            let result = crate::eval::eval(&mut inner.arena, closed);
+            drop(inner);
+            return self.wrap(result);
+        }
         drop(inner);
         self.clone()
     }
@@ -2395,8 +2396,12 @@ impl Expr<Numeric> {
     #[must_use = "returns the numerical value as a string"]
     pub fn evalf(&self, digits: u32) -> Result<String, SymplexError> {
         let _span = debug_span!("evalf", expr = ?self.id, digits = digits).entered();
-        let guard = self.inner.read();
-        crate::evalf::evalf(&guard.arena, self.id, digits)
+        // Reduce exact values before numerical evaluation.
+        // This ensures e.g. Gamma(5) → 24 (exact) rather than
+        // computing 23.9999... via Stirling series.
+        let evaled = self.eval();
+        let guard = evaled.inner.read();
+        crate::evalf::evalf(&guard.arena, evaled.id, digits)
     }
 
     /// Convenience: evaluate to an `f64`.
@@ -2421,7 +2426,10 @@ impl Expr<Numeric> {
     /// assert!((val - 9.0).abs() < 1e-10);
     /// ```
     pub fn evalf_f64(&self) -> Result<f64, SymplexError> {
-        let (re, im) = self.evalf_complex64()?;
+        // eval() first to reduce exact values (sin(0)→0, Gamma(5)→24, etc.)
+        // before numerical computation. The evalf_complex64 call below
+        // will work on the simplified expression.
+        let (re, im) = self.eval().evalf_complex64()?;
         if im.abs() > 1e-15 {
             return Err(SymplexError::ComputationFailed {
                 operation: "evalf_f64",

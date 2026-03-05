@@ -179,10 +179,9 @@ fn eval_node(
                     reason: "Gamma of complex argument not yet supported in evalf".into(),
                 });
             }
-            let x_val = bigfloat_to_f64(&val.0, rm, cc)?;
-            debug!(x = ?x_val, "evalf: Gamma via Lanczos");
-            let result = lanczos_gamma_f64(x_val)?;
-            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
+            debug!(prec, "evalf: Gamma via Stirling series");
+            let result = arb_gamma_real(&val.0, prec, rm, cc)?;
+            Ok((result, BigFloat::new(prec)))
         }
 
         ExprNode::LogGamma(inner) => {
@@ -756,39 +755,39 @@ fn eval_node(
                 match arena.node(cond_id) {
                     ExprNode::Gt(a, b) => {
                         if let (Some(av), Some(bv)) = (cache.get(a), cache.get(b))
-                            && av.1.is_zero() && bv.1.is_zero() {
-                                let diff = av.0.sub(&bv.0, prec, rm);
-                                if diff.is_positive() {
-                                    return eval_node_or_subtree(
-                                        arena, value_id, cache, prec, rm, cc,
-                                    );
-                                }
-                                continue; // condition is false
+                            && av.1.is_zero()
+                            && bv.1.is_zero()
+                        {
+                            let diff = av.0.sub(&bv.0, prec, rm);
+                            if diff.is_positive() {
+                                return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
                             }
+                            continue; // condition is false
+                        }
                     }
                     ExprNode::Ge(a, b) => {
                         if let (Some(av), Some(bv)) = (cache.get(a), cache.get(b))
-                            && av.1.is_zero() && bv.1.is_zero() {
-                                let diff = av.0.sub(&bv.0, prec, rm);
-                                if diff.is_positive() || diff.is_zero() {
-                                    return eval_node_or_subtree(
-                                        arena, value_id, cache, prec, rm, cc,
-                                    );
-                                }
-                                continue;
+                            && av.1.is_zero()
+                            && bv.1.is_zero()
+                        {
+                            let diff = av.0.sub(&bv.0, prec, rm);
+                            if diff.is_positive() || diff.is_zero() {
+                                return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
                             }
+                            continue;
+                        }
                     }
                     ExprNode::Eq_(a, b) => {
                         if let (Some(av), Some(bv)) = (cache.get(a), cache.get(b))
-                            && av.1.is_zero() && bv.1.is_zero() {
-                                let diff = av.0.sub(&bv.0, prec, rm);
-                                if diff.is_zero() {
-                                    return eval_node_or_subtree(
-                                        arena, value_id, cache, prec, rm, cc,
-                                    );
-                                }
-                                continue;
+                            && av.1.is_zero()
+                            && bv.1.is_zero()
+                        {
+                            let diff = av.0.sub(&bv.0, prec, rm);
+                            if diff.is_zero() {
+                                return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
                             }
+                            continue;
+                        }
                     }
                     ExprNode::Not(inner) => {
                         if *inner == arena.bool_true {
@@ -1349,6 +1348,189 @@ fn digamma_f64(x: f64) -> Result<f64, SymplexError> {
     result += 691.0 / (32760.0 * x_pow);
 
     Ok(result)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Arbitrary-precision Gamma via Stirling series
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute log Γ(z) for real z > 0 using the Stirling asymptotic series.
+///
+/// Algorithm:
+/// 1. Argument reduction — shift z by integer r until z + r ≥ 0.2 · p.
+/// 2. Stirling series:
+///    log Γ(z) = (z − ½) ln(z) − z + ½ ln(2π) + Σ B₂ₖ / [2k(2k−1) z^{2k−1}].
+/// 3. Undo shift:
+///    log Γ(z) = log Γ(z + r) − Σ_{i=0}^{r−1} ln(z + i).
+fn stirling_log_gamma(
+    z: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    tracing::debug!(prec, "stirling_log_gamma: entry");
+
+    let guard = 20; // extra guard bits
+    let wp = prec + guard;
+
+    // Determine how far to shift z for convergence.
+    let z_approx = bigfloat_to_f64(z, rm, cc)?;
+    let threshold = ((wp as f64) * 0.2).ceil() as i64;
+    let shift = if z_approx < threshold as f64 {
+        (threshold - z_approx.floor() as i64).max(0) as usize
+    } else {
+        0
+    };
+
+    tracing::trace!(
+        z_approx,
+        threshold,
+        shift,
+        "stirling_log_gamma: argument reduction"
+    );
+
+    // z_shifted = z + shift
+    let shift_bf = BigFloat::from_i128(shift as i128, wp);
+    let z_shifted = z.add(&shift_bf, wp, rm);
+
+    // Main Stirling formula:
+    //   log Γ(z) = (z − 1/2)·ln(z) − z + (1/2)·ln(2π) + Σ ...
+    let half = BigFloat::from_f64(0.5, wp);
+    let z_minus_half = z_shifted.sub(&half, wp, rm);
+    let log_z = z_shifted.ln(wp, rm, cc);
+
+    let mut result = z_minus_half.mul(&log_z, wp, rm);
+    result = result.sub(&z_shifted, wp, rm);
+
+    // (1/2) · ln(2π) at working precision.
+    let two = BigFloat::from_i32(2, wp);
+    let pi_val = cc.pi(wp, rm).clone();
+    let two_pi = two.mul(&pi_val, wp, rm);
+    let half_log_2pi = two_pi.ln(wp, rm, cc).mul(&half, wp, rm);
+    result = result.add(&half_log_2pi, wp, rm);
+
+    // Series: Σ_{k=1}^{N} B_{2k} / [2k(2k−1) · z^{2k−1}]
+    let z_sq = z_shifted.mul(&z_shifted, wp, rm);
+    let mut z_pow = z_shifted.clone(); // z^1 → z^3 → z^5 → …
+
+    // Upper bound on useful terms: safely below the divergence point πz.
+    let max_terms = ((wp as f64) * 0.35) as usize + 10;
+    let mut prev_term_exp: Option<i32> = None;
+
+    for k in 1..=max_terms {
+        let b2k = crate::bernoulli::bernoulli(2 * k);
+        if b2k.is_zero() {
+            continue;
+        }
+
+        // Advance z_pow: z^1, z^3, z^5, …
+        if k > 1 {
+            z_pow = z_pow.mul(&z_sq, wp, rm);
+        }
+
+        // term = B_{2k} / (2k · (2k−1) · z^{2k−1})
+        let b2k_bf = ratio_to_bigfloat(&b2k, wp, rm);
+        let denom_int = (2 * k * (2 * k - 1)) as i128;
+        let denom = BigFloat::from_i128(denom_int, wp);
+        let denom_full = denom.mul(&z_pow, wp, rm);
+        let term = b2k_bf.div(&denom_full, wp, rm);
+
+        // Divergence / convergence detection via binary exponents.
+        if let Some(t_exp) = term.exponent() {
+            if let Some(prev) = prev_term_exp
+                && t_exp > prev + 10 {
+                    tracing::trace!(k, "stirling series: diverging, stopping");
+                    break;
+                }
+            prev_term_exp = Some(t_exp);
+
+            // Term is negligible relative to accumulated result.
+            if let Some(r_exp) = result.exponent()
+                && (r_exp as i64 - t_exp as i64) > wp as i64 {
+                    tracing::trace!(k, "stirling series: converged");
+                    break;
+                }
+        }
+
+        result = result.add(&term, wp, rm);
+    }
+
+    // Undo argument reduction:
+    //   log Γ(z) = log Γ(z+shift) − Σ_{i=0}^{shift−1} ln(z + i)
+    for i in 0..shift {
+        let z_plus_i = z.add(&BigFloat::from_i128(i as i128, wp), wp, rm);
+        let log_zi = z_plus_i.ln(wp, rm, cc);
+        result = result.sub(&log_zi, wp, rm);
+    }
+
+    Ok(result)
+}
+
+/// Compute Γ(x) at arbitrary precision for real x.
+///
+/// For positive x, evaluates exp(stirling_log_gamma(x)).
+/// For negative non-integer x, applies the reflection formula
+/// Γ(z) = π / (sin(πz) · Γ(1 − z)).
+fn arb_gamma_real(
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    // Pole at zero.
+    if x.is_zero() {
+        return Err(SymplexError::Unevaluable {
+            reason: "Gamma at non-positive integer pole".into(),
+        });
+    }
+
+    let x_approx = bigfloat_to_f64(x, rm, cc)?;
+
+    // Detect non-positive integer poles via f64 approximation.
+    if x_approx <= 0.0 {
+        let rounded = x_approx.round();
+        if (rounded - x_approx).abs() < 1e-12 && rounded <= 0.0 {
+            return Err(SymplexError::Unevaluable {
+                reason: "Gamma at non-positive integer pole".into(),
+            });
+        }
+    }
+
+    if x_approx > 0.0 {
+        // Direct Stirling path.
+        tracing::debug!(x_approx, "arb_gamma_real: positive argument");
+        let log_gamma = stirling_log_gamma(x, prec, rm, cc)?;
+        Ok(log_gamma.exp(prec, rm, cc))
+    } else {
+        // Reflection: Γ(z) = π / (sin(πz) · Γ(1 − z))
+        tracing::debug!(x_approx, "arb_gamma_real: reflection formula");
+        let one = BigFloat::from_i32(1, prec);
+        let one_minus_x = one.sub(x, prec, rm);
+
+        let log_gamma_1mx = stirling_log_gamma(&one_minus_x, prec, rm, cc)?;
+        let gamma_1mx = log_gamma_1mx.exp(prec, rm, cc);
+
+        let pi_val = cc.pi(prec, rm).clone();
+        let pi_x = pi_val.mul(x, prec, rm);
+        let sin_pi_x = pi_x.sin(prec, rm, cc);
+
+        // Guard against the pole (sin(πz) ≈ 0 for integer z).
+        if sin_pi_x.is_zero() {
+            return Err(SymplexError::Unevaluable {
+                reason: "Gamma at non-positive integer pole".into(),
+            });
+        }
+        if let Some(s_exp) = sin_pi_x.exponent()
+            && (s_exp as i64) < -(prec as i64 / 2) {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Gamma at non-positive integer pole".into(),
+                });
+            }
+
+        let denom = sin_pi_x.mul(&gamma_1mx, prec, rm);
+        let pi_val2 = cc.pi(prec, rm).clone();
+        Ok(pi_val2.div(&denom, prec, rm))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
