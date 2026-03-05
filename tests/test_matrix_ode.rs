@@ -322,14 +322,13 @@ fn ode_type_exists() {
 }
 
 #[test]
-#[ignore] // BUG: dsolve returns None when called via arena (works via public Ex API)
 fn ode_via_arena_simple() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let x = arena.symbol("x");
         let y = arena.symbol("y");
         // Build y' (Derivative node)
-        let dy = arena.diff_wrt(y, x);
+        let dy = arena.formal_diff(y, x);
         // y' - x = 0 → y = x²/2 + C1
         let eq = arena.sub(dy, x);
         let result = symplex::ode::dsolve(arena, eq, y, x)
@@ -341,13 +340,12 @@ fn ode_via_arena_simple() {
 }
 
 #[test]
-#[ignore] // BUG: dsolve returns None when called via arena (works via public Ex API)
 fn ode_via_arena_exponential() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
         let x = arena.symbol("x");
         let y = arena.symbol("y");
-        let dy = arena.diff_wrt(y, x);
+        let dy = arena.formal_diff(y, x);
         let two = arena.int(2);
         let two_y = arena.mul(&[two, y]);
         // y' + 2y = 0 → y = C1*e^(-2x)

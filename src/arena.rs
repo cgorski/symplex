@@ -673,6 +673,16 @@ impl Arena {
         crate::diff::diff(self, expr, var)
     }
 
+    /// Create a formal (unevaluated) derivative node: d/d(var) expr.
+    ///
+    /// Unlike `diff_wrt` which evaluates the derivative using the chain rule,
+    /// this creates a symbolic `Derivative(expr, var)` node that stays
+    /// unevaluated. Used for ODE construction where the derivative is a
+    /// structural placeholder, not a computed value.
+    pub fn formal_diff(&mut self, expr: ExprId, var: ExprId) -> ExprId {
+        self.intern(ExprNode::Derivative(expr, var))
+    }
+
     /// Algebraic expansion: distribute products over sums, expand
     /// integer powers of sums.
     ///

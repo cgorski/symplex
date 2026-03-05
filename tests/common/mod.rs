@@ -502,6 +502,319 @@ pub fn assert_negative_at_rational(poly: &Ex, var: &Ex, p: i64, q: i64, label: &
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Domain classification
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Broad domain classification for an expression, determined by which
+/// node types appear in its tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExprDomain {
+    /// No variables — purely numeric.
+    Constant,
+    /// Only Add, Mul, Pow (non-negative integer exponents), Num, Symbol.
+    Polynomial,
+    /// Polynomial plus negative-integer Pow or explicit division.
+    Rational,
+    /// Contains trig functions but no Exp/Ln.
+    Trigonometric,
+    /// Contains Exp or Ln but no trig.
+    ExpLog,
+    /// Contains both trig and exp/log, or other special functions.
+    Mixed,
+}
+
+/// Feature flags accumulated during a tree walk for domain classification.
+struct DomainFlags {
+    has_symbol: bool,
+    has_trig: bool,
+    has_exp_ln: bool,
+    has_special: bool,
+    has_negative_pow: bool,
+    has_symbolic_pow: bool,
+}
+
+impl DomainFlags {
+    fn new() -> Self {
+        Self {
+            has_symbol: false,
+            has_trig: false,
+            has_exp_ln: false,
+            has_special: false,
+            has_negative_pow: false,
+            has_symbolic_pow: false,
+        }
+    }
+
+    fn classify(&self) -> ExprDomain {
+        if !self.has_symbol {
+            return ExprDomain::Constant;
+        }
+        if self.has_trig && self.has_exp_ln {
+            return ExprDomain::Mixed;
+        }
+        if self.has_special {
+            return ExprDomain::Mixed;
+        }
+        if self.has_trig {
+            return ExprDomain::Trigonometric;
+        }
+        if self.has_exp_ln {
+            return ExprDomain::ExpLog;
+        }
+        if self.has_negative_pow || self.has_symbolic_pow {
+            return ExprDomain::Rational;
+        }
+        ExprDomain::Polynomial
+    }
+}
+
+/// Classify the domain of an expression by inspecting its display string.
+///
+/// This is a pragmatic heuristic for tests — it examines the formatted
+/// expression for the presence of function names and structural patterns.
+/// It's not meant to be a rigorous mathematical classifier.
+pub fn classify_domain_from_display(expr: &Ex) -> ExprDomain {
+    let s = format!("{expr}");
+
+    let mut flags = DomainFlags::new();
+
+    // Check for variables (any letter that isn't part of a function name)
+    // Simple heuristic: if it contains single-letter tokens or known var patterns
+    for c in s.chars() {
+        if c.is_ascii_alphabetic() {
+            flags.has_symbol = true;
+            break;
+        }
+    }
+
+    // Check for trig functions
+    let trig_names = [
+        "sin(", "cos(", "tan(", "asin(", "acos(", "atan(",
+        "sinh(", "cosh(", "tanh(", "sec(", "csc(", "cot(",
+    ];
+    for name in &trig_names {
+        if s.contains(name) {
+            flags.has_trig = true;
+            break;
+        }
+    }
+
+    // Check for exp/ln
+    if s.contains("exp(") || s.contains("ln(") || s.contains("log(") {
+        flags.has_exp_ln = true;
+    }
+
+    // Check for special functions
+    let special_names = [
+        "Gamma(", "erf(", "erfc(", "Beta(", "DiracDelta(",
+        "Heaviside(", "lambertw(", "Digamma(",
+    ];
+    for name in &special_names {
+        if s.contains(name) {
+            flags.has_special = true;
+            break;
+        }
+    }
+
+    // Check for negative exponents (indicates rational)
+    if s.contains("^(-") || s.contains("^-") || s.contains("1/") {
+        flags.has_negative_pow = true;
+    }
+
+    flags.classify()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Canonical equality
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Maximum node-count expansion factor allowed during normalization.
+/// If a normalization step produces an expression > this factor × input size,
+/// we fall back to numerical comparison instead.
+const MAX_COMPLEXITY_FACTOR: usize = 5;
+
+/// Test whether two expressions are mathematically equal using a layered
+/// strategy:
+///
+/// 1. **Structural identity** — O(1) via display string comparison.
+/// 2. **Domain-specific normalization** — eval → normalize → zero check.
+/// 3. **Numerical fallback** — multi-point evaluation for mixed domains.
+///
+/// This is designed for TEST assertions. It is more expensive than simple
+/// string comparison but far more robust.
+///
+/// Returns `true` if the expressions are (very likely) mathematically equal,
+/// `false` if they are definitely not equal or if equality cannot be determined.
+pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
+    // Fast path: identical display strings
+    let sa = format!("{a}");
+    let sb = format!("{b}");
+    if sa == sb {
+        return true;
+    }
+
+    // Compute a - b and try to show it's zero
+    let diff = a - b;
+    let diff_eval = diff.eval();
+
+    // Check if eval alone resolved it
+    let sd = format!("{diff_eval}");
+    if sd == "0" {
+        return true;
+    }
+
+    // Classify the domain and apply targeted normalization
+    let domain = classify_domain_from_display(&diff_eval);
+
+    match domain {
+        ExprDomain::Constant => {
+            // Should have been caught by eval → "0" check above.
+            // Try evalf as last resort for numeric constants.
+            if let Ok(v) = diff_eval.evalf_f64() {
+                return v.abs() < 1e-12;
+            }
+            false
+        }
+        ExprDomain::Polynomial => {
+            // expand() produces canonical sum-of-monomials form
+            let expanded = diff_eval.expand();
+            let se = format!("{expanded}");
+            if se == "0" {
+                return true;
+            }
+            // If expand didn't reach zero, try full_simplify
+            let simplified = diff_eval.full_simplify();
+            let ss = format!("{simplified}");
+            if ss == "0" {
+                return true;
+            }
+            // Fall back to numerical
+            numerical_zero_test(&diff_eval)
+        }
+        ExprDomain::Rational => {
+            // cancel() produces canonical coprime p/q form
+            let x = symplex::var("x");
+            let cancelled = diff_eval.cancel(&x);
+            let sc = format!("{cancelled}");
+            if sc == "0" {
+                return true;
+            }
+            // Try together then cancel
+            let together = diff_eval.together().cancel(&x);
+            let st = format!("{together}");
+            if st == "0" {
+                return true;
+            }
+            numerical_zero_test(&diff_eval)
+        }
+        ExprDomain::Trigonometric => {
+            // Try trigsimp first
+            let tsimp = diff_eval.trigsimp();
+            let st = format!("{tsimp}");
+            if st == "0" {
+                return true;
+            }
+            // Try rewrite to exponential form and cancel
+            let as_exp = diff_eval.rewrite_as_exp();
+            let x = symplex::var("x");
+            let cancelled = as_exp.cancel(&x);
+            let sc = format!("{cancelled}");
+            if sc == "0" {
+                return true;
+            }
+            // Try full_simplify
+            let simplified = diff_eval.full_simplify();
+            let ss = format!("{simplified}");
+            if ss == "0" {
+                return true;
+            }
+            numerical_zero_test(&diff_eval)
+        }
+        ExprDomain::ExpLog => {
+            // Expand logs, then cancel
+            let expanded = diff_eval.expand_log().expand();
+            let se = format!("{expanded}");
+            if se == "0" {
+                return true;
+            }
+            let x = symplex::var("x");
+            let cancelled = expanded.cancel(&x);
+            let sc = format!("{cancelled}");
+            if sc == "0" {
+                return true;
+            }
+            numerical_zero_test(&diff_eval)
+        }
+        ExprDomain::Mixed => {
+            // Try cascaded simplification strategies
+            let strategies: Vec<Box<dyn Fn(&Ex) -> Ex>> = vec![
+                Box::new(|e: &Ex| e.trigsimp()),
+                Box::new(|e: &Ex| e.full_simplify()),
+                Box::new(|e: &Ex| e.smart_simplify()),
+                Box::new(|e: &Ex| {
+                    let x = symplex::var("x");
+                    e.rewrite_as_exp().cancel(&x)
+                }),
+            ];
+            for strat in &strategies {
+                let result = strat(&diff_eval);
+                let sr = format!("{result}");
+                if sr == "0" {
+                    return true;
+                }
+            }
+            // Numerical fallback
+            numerical_zero_test(&diff_eval)
+        }
+    }
+}
+
+/// Numerical zero test: evaluate at multiple points and check all values
+/// are near zero. Uses a larger point set than `assert_math_eq` for
+/// higher confidence.
+fn numerical_zero_test(expr: &Ex) -> bool {
+    let x = symplex::var("x");
+    let test_points: &[i64] = &[-7, -3, -2, 2, 3, 5, 7, 11];
+    let mut checked = 0usize;
+    for &pt in test_points {
+        if let Ok(v) = expr.subs_i64(&x, pt).eval().evalf_f64() {
+            if v.is_nan() || v.is_infinite() {
+                continue;
+            }
+            checked += 1;
+            if v.abs() > 1e-8 {
+                return false; // Definitely not zero
+            }
+        }
+    }
+    // If we checked at least 3 points and all were near zero, likely equal
+    checked >= 3
+}
+
+/// Assert that two expressions are mathematically equal using canonical
+/// equality testing. This is stronger than `assert_math_eq` (numerical
+/// only) because it tries symbolic normalization first.
+///
+/// Use this when you need high confidence that two expressions are equal,
+/// especially for polynomial, rational, and trigonometric expressions.
+pub fn assert_canonical_eq(a: &Ex, b: &Ex, label: &str) {
+    assert!(
+        canonical_eq(a, b),
+        "{label}: expressions are not canonically equal.\n  a = {a}\n  b = {b}\n  a - b = {}",
+        a - b
+    );
+}
+
+/// Assert that an expression is canonically equal to zero.
+pub fn assert_canonical_zero(expr: &Ex, label: &str) {
+    let zero = symplex::int(0);
+    assert!(
+        canonical_eq(expr, &zero),
+        "{label}: expression is not canonically zero: {expr}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Macros
 // ═══════════════════════════════════════════════════════════════════════════
 

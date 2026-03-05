@@ -415,6 +415,43 @@ impl Poly {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Calculus / square-free
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Poly {
+    /// Compute the formal derivative of this polynomial.
+    /// For p(x) = a_0 + a_1 x + a_2 x^2 + ... + a_n x^n,
+    /// p'(x) = a_1 + 2 a_2 x + ... + n a_n x^(n-1).
+    #[must_use]
+    pub fn derivative(&self) -> Poly {
+        if self.coeffs.len() <= 1 {
+            return Poly::zero();
+        }
+        let new_coeffs: Vec<Ratio<BigInt>> = self.coeffs[1..]
+            .iter()
+            .enumerate()
+            .map(|(i, c)| c * Ratio::from_integer(BigInt::from(i as i64 + 1)))
+            .collect();
+        Poly::from_coeffs(new_coeffs)
+    }
+
+    /// Compute the square-free part: p / gcd(p, p').
+    /// This removes repeated roots while preserving all distinct roots.
+    #[must_use]
+    pub fn square_free_part(&self) -> Poly {
+        if self.is_zero() {
+            return Poly::zero();
+        }
+        let dp = self.derivative();
+        if dp.is_zero() {
+            return self.clone(); // constant polynomial
+        }
+        let g = Poly::gcd(self, &dp);
+        self.div_rem(&g).0 // quotient only
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Display
 // ═══════════════════════════════════════════════════════════════════════════
 

@@ -492,7 +492,6 @@ fn solveset_with_rational_roots() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // BUG: solve_inequality fails on polynomials with no real roots (x²+1)
 fn solve_always_positive() {
     symplex::vars!(x);
     // x² + 1 > 0 should be true for all real x → UniversalSet or (-∞, ∞)
@@ -515,7 +514,6 @@ fn solve_always_positive() {
 }
 
 #[test]
-#[ignore] // BUG: solve_inequality fails on polynomials with no real roots (-(x²+1))
 fn solve_always_negative() {
     symplex::vars!(x);
     // -(x² + 1) > 0 should be false for all real x → EmptySet

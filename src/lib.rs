@@ -90,6 +90,7 @@ pub(crate) mod simplify_engine;
 pub(crate) mod solve;
 pub(crate) mod sort_key;
 pub(crate) mod subs;
+pub(crate) mod sturm;
 pub(crate) mod sum_eval;
 pub(crate) mod symbol;
 pub(crate) mod trig_combine;

@@ -19,7 +19,7 @@
 use rustc_hash::FxHashMap;
 
 use crate::arena::Arena;
-use crate::node::ExprId;
+use crate::node::{ExprId, ExprNode};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Structural substitution
@@ -80,6 +80,47 @@ pub(crate) fn subs_map(
     }
 
     crate::walk::walk_and_rebuild(arena, expr, &|_arena, id| map.get(&id).copied())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Evaluate formal derivatives
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Walk the expression tree bottom-up and concretely evaluate any
+/// `Derivative(inner, var)` nodes by calling [`crate::diff::diff`].
+///
+/// This is the *doit* pattern: formal derivative placeholders become
+/// concrete differentiation results.  Because the traversal is
+/// bottom-up, nested derivatives (e.g. `d/dx(d/dx(x²))`) are
+/// resolved from the inside out.
+///
+/// Nodes that are not `Derivative` are rebuilt with their (possibly
+/// updated) children, preserving canonical form.
+pub(crate) fn eval_derivatives(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let post_order = crate::walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+
+    for &id in &post_order {
+        let node = arena.node(id).clone();
+        match node {
+            ExprNode::Derivative(inner, var) => {
+                // Look up the rebuilt inner / var from the cache so
+                // that nested Derivatives are already resolved.
+                let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+                let new_var = cache.get(&var).copied().unwrap_or(var);
+                // Concretely differentiate.
+                let result = crate::diff::diff(arena, new_inner, new_var);
+                cache.insert(id, result);
+            }
+            _ => {
+                // Rebuild non-Derivative nodes with substituted children.
+                let new_id = crate::walk::rebuild_with_cache(arena, id, &cache);
+                cache.insert(id, new_id);
+            }
+        }
+    }
+
+    cache.get(&expr).copied().unwrap_or(expr)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -334,5 +375,56 @@ mod tests {
         assert!(s.starts_with("sin("), "should still start with sin(");
         assert!(s.contains('y'), "should contain y after substitution");
         assert!(!s.contains('x'), "should not contain x after substitution");
+    }
+
+    // ── eval_derivatives ────────────────────────────────────────────
+
+    #[test]
+    fn eval_derivatives_sin_x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        // Derivative(sin(x), x)  →  cos(x)
+        let sin_x = a.sin(x);
+        let formal = a.intern(crate::node::ExprNode::Derivative(sin_x, x));
+        let result = super::eval_derivatives(&mut a, formal);
+        assert_eq!(display(&a, result), "cos(x)");
+    }
+
+    #[test]
+    fn eval_derivatives_nested() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        // Derivative(Derivative(x^2, x), x)  →  d/dx(2x) = 2
+        let x2 = a.pow(x, two);
+        let d1 = a.intern(crate::node::ExprNode::Derivative(x2, x));
+        let d2 = a.intern(crate::node::ExprNode::Derivative(d1, x));
+        let result = super::eval_derivatives(&mut a, d2);
+        assert_eq!(display(&a, result), "2");
+    }
+
+    #[test]
+    fn eval_derivatives_no_derivative_unchanged() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        // x^2 + 1 — contains no Derivative nodes, should be unchanged
+        let x2 = a.pow(x, two);
+        let expr = a.add(&[x2, a.one]);
+        let result = super::eval_derivatives(&mut a, expr);
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn eval_derivatives_inside_add() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        // x + Derivative(x^2, x)  →  x + 2*x = 3*x
+        let x2 = a.pow(x, two);
+        let d = a.intern(crate::node::ExprNode::Derivative(x2, x));
+        let expr = a.add(&[x, d]);
+        let result = super::eval_derivatives(&mut a, expr);
+        assert_eq!(display(&a, result), "3*x");
     }
 }

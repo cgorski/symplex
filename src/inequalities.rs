@@ -40,6 +40,30 @@ pub(crate) fn solve_inequality(
 ) -> Result<ExprId, SymplexError> {
     tracing::debug!("solve_inequality: rel={:?}", rel);
 
+    // ── Sturm fast path: if the expression is polynomial, use Sturm
+    //    chains to detect the no-real-roots case without solving. ──
+    if let Some(poly) = crate::polybridge::expr_to_poly(arena, expr, var) {
+        let chain = crate::sturm::SturmChain::new(&poly);
+        if chain.has_no_real_roots() {
+            // The polynomial has no real roots ⇒ constant sign on ℝ.
+            let ls = chain.leading_sign_of_original();
+            let is_positive = ls > 0;
+            let is_negative = ls < 0;
+            let is_zero = ls == 0; // identically zero polynomial
+            let matches = match rel {
+                Relation::Gt => is_positive,
+                Relation::Ge => is_positive || is_zero, // 0 >= 0 is true
+                Relation::Lt => is_negative,
+                Relation::Le => is_negative || is_zero, // 0 <= 0 is true
+            };
+            return if matches {
+                Ok(arena.interval(arena.neg_infinity, arena.infinity, INTERVAL_BOTH_OPEN))
+            } else {
+                Ok(arena.empty_set)
+            };
+        }
+    }
+
     // Step 1: Find roots of expr = 0
     let solutions = crate::solve::solve(arena, expr, var);
     let roots: Vec<ExprId> = solutions.into_iter().map(|s| s.value).collect();
@@ -71,10 +95,9 @@ pub(crate) fn solve_inequality(
     );
 
     if root_vals.is_empty() {
-        return Err(SymplexError::ComputationFailed {
-            operation: "solve_inequality",
-            reason: "roots could not be evaluated numerically".to_string(),
-        });
+        // All roots were complex (no real roots) — the polynomial has
+        // constant sign on ℝ. Fall through to sign-probe logic.
+        return solve_no_roots(arena, expr, var, rel);
     }
 
     // Step 3: Build intervals by testing sign in each region.

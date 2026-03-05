@@ -24,7 +24,7 @@
 //! (`add`, `mul`, `pow`, `neg`, etc.), so all canonical-form invariants
 //! (like-term collection, Number*Add distribution, etc.) are preserved.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::arena::Arena;
@@ -53,6 +53,47 @@ pub(crate) fn diff(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
 
     for &id in &post_order {
+        let deriv = diff_node(arena, id, var_sym, &cache);
+        cache.insert(id, deriv);
+    }
+
+    cache.get(&expr).copied().unwrap_or(arena.zero)
+}
+
+/// Differentiate `expr` with respect to `var`, treating symbols in `deps`
+/// as dependent on `var`.
+///
+/// For any symbol `y` in `deps`, d/d(var)(y) returns `Derivative(y, var)`
+/// instead of zero.  All existing chain/product/sum rules automatically
+/// propagate these formal derivatives correctly.
+///
+/// Callers that don't need dependency awareness should use [`diff`] which
+/// passes an empty dependency set.
+pub(crate) fn diff_with_deps(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    deps: &FxHashSet<ExprId>,
+) -> ExprId {
+    let var_sym = match arena.node(var) {
+        ExprNode::Symbol(sid) => *sid,
+        _ => return arena.zero,
+    };
+
+    let post_order = crate::walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+
+    // Pre-seed the cache: for dependent symbols, their derivative is
+    // a formal Derivative node rather than zero.
+    for &dep_id in deps {
+        let formal = arena.intern(ExprNode::Derivative(dep_id, var));
+        cache.insert(dep_id, formal);
+    }
+
+    for &id in &post_order {
+        if cache.contains_key(&id) {
+            continue; // Already seeded (a dependent symbol)
+        }
         let deriv = diff_node(arena, id, var_sym, &cache);
         cache.insert(id, deriv);
     }
@@ -514,10 +555,31 @@ fn diff_node(
             arena.intern(ExprNode::Derivative(id, v))
         }
 
-        // ── Apply (user-defined function): leave unevaluated ───────
-        ExprNode::Apply(_, _) => {
-            let v = var_expr(arena, var);
-            arena.intern(ExprNode::Derivative(id, v))
+        // ── Apply (user-defined function): chain rule ──────────────
+        // d/dx(f(u₁,…,uₙ)) = Σᵢ (∂f/∂uᵢ) · (duᵢ/dx)
+        ExprNode::Apply(_func_sym, ref args) => {
+            let args_clone = args.clone();
+            let mut terms: SmallVec<[ExprId; 4]> = SmallVec::new();
+
+            for &arg in &args_clone {
+                let d_arg = get_deriv(cache, arg, arena);
+                if arena.is_zero_structural(d_arg) {
+                    continue;
+                }
+                // ∂f/∂(arg_i) — stays as formal Derivative since f is unknown
+                let partial = arena.intern(ExprNode::Derivative(id, arg));
+                terms.push(arena.mul(&[partial, d_arg]));
+            }
+
+            if terms.is_empty() {
+                // All argument derivatives are zero — f applied to
+                // constants is itself a constant.
+                arena.zero
+            } else if terms.len() == 1 {
+                terms[0]
+            } else {
+                arena.add(&terms)
+            }
         }
 
         // ── Derivative: leave as higher-order derivative ───────────
@@ -970,5 +1032,257 @@ mod tests {
         let integral = a.intern(crate::node::ExprNode::Integral(y, y));
         let result = diff(&mut a, integral, x);
         assert_eq!(display(&a, result), "Derivative(Integral(y, y), x)");
+    }
+
+    // ── Apply chain rule (Wave C) ───────────────────────────────────
+
+    #[test]
+    fn diff_apply_constant_arg_is_zero() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let three = a.int(3);
+        let f_sid = a.symbols.intern("f");
+        let apply = a.intern(ExprNode::Apply(f_sid, smallvec::smallvec![three]));
+        let result = diff(&mut a, apply, x);
+        assert_eq!(result, a.zero, "d/dx(f(3)) should be 0");
+    }
+
+    #[test]
+    fn diff_apply_identity_is_formal_derivative() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let f_sid = a.symbols.intern("f");
+        let apply = a.intern(ExprNode::Apply(f_sid, smallvec::smallvec![x]));
+        let result = diff(&mut a, apply, x);
+        let s = display(&a, result);
+        // d/dx(f(x)) = Derivative(f(x), x) · 1 = Derivative(f(x), x)
+        assert!(
+            s.contains("Derivative") && s.contains("f(x)"),
+            "d/dx(f(x)) should be Derivative(f(x), x), got: {s}"
+        );
+    }
+
+    #[test]
+    fn diff_apply_chain_rule_x_squared() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let x_sq = a.pow(x, two);
+        let f_sid = a.symbols.intern("f");
+        let apply = a.intern(ExprNode::Apply(f_sid, smallvec::smallvec![x_sq]));
+        let result = diff(&mut a, apply, x);
+        let s = display(&a, result);
+        // Should contain 2, x, and Derivative
+        assert!(
+            s.contains('2') && s.contains('x') && s.contains("Derivative"),
+            "d/dx(f(x²)) should contain 2, x, Derivative, got: {s}"
+        );
+    }
+
+    #[test]
+    fn diff_apply_chain_sin_x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let sin_x = a.sin(x);
+        let f_sid = a.symbols.intern("f");
+        let apply = a.intern(ExprNode::Apply(f_sid, smallvec::smallvec![sin_x]));
+        let result = diff(&mut a, apply, x);
+        let s = display(&a, result);
+        assert!(
+            s.contains("cos"),
+            "d/dx(f(sin(x))) should contain cos(x), got: {s}"
+        );
+    }
+
+    #[test]
+    fn diff_apply_other_symbol_is_zero() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let f_sid = a.symbols.intern("f");
+        let apply = a.intern(ExprNode::Apply(f_sid, smallvec::smallvec![y]));
+        let result = diff(&mut a, apply, x);
+        assert_eq!(result, a.zero, "d/dx(f(y)) should be 0");
+    }
+
+    #[test]
+    fn diff_known_apply_fibonacci_constant() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let ten = a.int(10);
+        let fib = a.fibonacci(ten);
+        let result = diff(&mut a, fib, x);
+        assert_eq!(result, a.zero, "d/dx(fibonacci(10)) should be 0");
+    }
+
+    #[test]
+    fn diff_known_apply_fibonacci_variable() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let fib = a.fibonacci(x);
+        let result = diff(&mut a, fib, x);
+        let s = display(&a, result);
+        assert!(
+            s.contains("Derivative") && s.contains("fibonacci"),
+            "d/dx(fibonacci(x)) should be formal Derivative, got: {s}"
+        );
+    }
+
+    #[test]
+    fn diff_apply_multiarg_chain_rule() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let x_sq = a.pow(x, two);
+        let f_sid = a.symbols.intern("f");
+        // f(x, x²)
+        let apply = a.intern(ExprNode::Apply(f_sid, smallvec::smallvec![x, x_sq]));
+        let result = diff(&mut a, apply, x);
+        let s = display(&a, result);
+        assert!(
+            s.contains("Derivative"),
+            "d/dx(f(x, x²)) should contain Derivative terms, got: {s}"
+        );
+    }
+
+    #[test]
+    fn diff_apply_all_constant_args_is_zero() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let five = a.int(5);
+        let seven = a.int(7);
+        let g_sid = a.symbols.intern("g");
+        let apply = a.intern(ExprNode::Apply(g_sid, smallvec::smallvec![five, seven]));
+        let result = diff(&mut a, apply, x);
+        assert_eq!(result, a.zero, "d/dx(g(5,7)) should be 0");
+    }
+
+    #[test]
+    fn diff_apply_no_args_is_zero() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let h_sid = a.symbols.intern("h");
+        let apply = a.intern(ExprNode::Apply(h_sid, smallvec::smallvec![]));
+        let result = diff(&mut a, apply, x);
+        assert_eq!(result, a.zero, "d/dx(h()) should be 0");
+    }
+
+    // ── Dependency-aware differentiation (Wave D) ───────────────────
+
+    #[test]
+    fn diff_with_deps_y_depends_on_x() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let mut deps = FxHashSet::default();
+        deps.insert(y);
+        let result = diff_with_deps(&mut a, y, x, &deps);
+        let s = display(&a, result);
+        assert!(
+            s.contains("Derivative") && s.contains('y') && s.contains('x'),
+            "d/dx(y) with deps={{y}} should be Derivative(y, x), got: {s}"
+        );
+    }
+
+    #[test]
+    fn diff_with_deps_y_squared() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let two = a.int(2);
+        let y_sq = a.pow(y, two);
+        let mut deps = FxHashSet::default();
+        deps.insert(y);
+        let result = diff_with_deps(&mut a, y_sq, x, &deps);
+        let s = display(&a, result);
+        assert!(
+            s.contains('2') && s.contains('y') && s.contains("Derivative"),
+            "d/dx(y²) with deps={{y}} should be 2*y*Derivative(y,x), got: {s}"
+        );
+    }
+
+    #[test]
+    fn diff_with_deps_implicit() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let two = a.int(2);
+        let x_sq = a.pow(x, two);
+        let y_sq = a.pow(y, two);
+        let expr = a.add(&[x_sq, y_sq]);
+        let mut deps = FxHashSet::default();
+        deps.insert(y);
+        let result = diff_with_deps(&mut a, expr, x, &deps);
+        let s = display(&a, result);
+        assert!(
+            s.contains('2') && s.contains('x') && s.contains("Derivative"),
+            "d/dx(x²+y²) with deps={{y}} should have 2*x and Derivative, got: {s}"
+        );
+    }
+
+    #[test]
+    fn diff_with_deps_sin_y() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let sin_y = a.sin(y);
+        let mut deps = FxHashSet::default();
+        deps.insert(y);
+        let result = diff_with_deps(&mut a, sin_y, x, &deps);
+        let s = display(&a, result);
+        assert!(
+            s.contains("cos") && s.contains("Derivative"),
+            "d/dx(sin(y)) with deps={{y}} should contain cos and Derivative, got: {s}"
+        );
+    }
+
+    #[test]
+    fn diff_with_deps_product_xy() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let xy = a.mul(&[x, y]);
+        let mut deps = FxHashSet::default();
+        deps.insert(y);
+        let result = diff_with_deps(&mut a, xy, x, &deps);
+        let s = display(&a, result);
+        assert!(
+            s.contains('y') && s.contains("Derivative"),
+            "d/dx(x*y) with deps={{y}} should contain y and Derivative, got: {s}"
+        );
+    }
+
+    #[test]
+    fn diff_with_deps_empty_is_zero() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let deps = FxHashSet::default();
+        let result = diff_with_deps(&mut a, y, x, &deps);
+        assert_eq!(result, a.zero, "d/dx(y) with empty deps should be 0");
+    }
+
+    #[test]
+    fn diff_with_deps_matches_plain_diff() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let x_sq = a.pow(x, two);
+        let sin_x2 = a.sin(x_sq);
+        let deps = FxHashSet::default();
+        let r1 = diff_with_deps(&mut a, sin_x2, x, &deps);
+        let r2 = diff(&mut a, sin_x2, x);
+        assert_eq!(r1, r2, "diff_with_deps with empty deps should match diff");
+    }
+
+    #[test]
+    fn diff_with_deps_var_not_symbol_returns_zero() {
+        let mut a = Arena::new();
+        let three = a.int(3);
+        let y = sym(&mut a, "y");
+        let deps = FxHashSet::default();
+        // var is a number, not a symbol — should return zero
+        let result = diff_with_deps(&mut a, y, three, &deps);
+        assert_eq!(result, a.zero);
     }
 }
