@@ -240,9 +240,11 @@ fn try_standard_form_integral(
     None
 }
 
-/// Try integrating 1/(x²+bx+c) via completing the square.
-/// x²+bx+c = (x+b/2)² + (c - b²/4)
-/// If d = c - b²/4 > 0: ∫ 1/((x+b/2)²+d) dx = (1/√d)·atan((x+b/2)/√d)
+/// Try integrating `(ax²+bx+c)^exp` via completing the square.
+///
+/// Handles two exponent values:
+/// - `exp = -1`:   `∫ 1/(ax²+bx+c) dx` → atan form
+/// - `exp = -1/2`: `∫ 1/√(ax²+bx+c) dx` → asinh / acosh / asin form
 fn try_complete_square_integral(
     arena: &mut Arena,
     base: ExprId,
@@ -250,9 +252,13 @@ fn try_complete_square_integral(
     var: ExprId,
     _var_sym: SymbolId,
 ) -> Option<ExprId> {
-    // exp must be -1
-    let exp_r = arena.as_num(exp)?;
-    if *exp_r != num_rational::Ratio::from_integer((-1).into()) {
+    let exp_r = arena.as_num(exp)?.clone();
+    let neg_one = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
+    let neg_half = num_rational::Ratio::<num_bigint::BigInt>::new((-1).into(), 2.into());
+
+    let is_neg_one = exp_r == neg_one;
+    let is_neg_half = exp_r == neg_half;
+    if !is_neg_one && !is_neg_half {
         return None;
     }
 
@@ -266,55 +272,279 @@ fn try_complete_square_integral(
     let b_coeff = poly.coeff(1);
     let c_coeff = poly.coeff(0);
 
-    // Normalize to monic: divide by a
     if a_coeff.is_zero() {
         return None;
     }
-    let b = &b_coeff / &a_coeff;
-    let c = &c_coeff / &a_coeff;
 
-    // If there's no linear term, this is a standard form — let the other helper handle it.
-    if b.is_zero() {
+    // ── exp = -1: ∫ 1/(ax²+bx+c) dx ───────────────────────────────
+    if is_neg_one {
+        // Normalize to monic: divide by a
+        let b = &b_coeff / &a_coeff;
+        let c = &c_coeff / &a_coeff;
+
+        // If there's no linear term, this is a standard form — let the other helper handle it.
+        if b.is_zero() {
+            return None;
+        }
+
+        // Complete the square: x² + bx + c = (x + b/2)² + (c - b²/4)
+        let half_b = &b / &num_rational::Ratio::from_integer(2.into());
+        let d = &c - &(&half_b * &half_b); // d = c - b²/4
+
+        if d.is_zero() || d.is_negative() {
+            return None; // Can't use atan form if d ≤ 0
+        }
+
+        // Build (x + b/2)
+        let half_b_id = {
+            let nid = arena.intern_num(half_b.clone());
+            arena.intern(crate::node::ExprNode::Num(nid))
+        };
+        let shifted = arena.add(&[var, half_b_id]);
+
+        // Build √d
+        let d_id = {
+            let nid = arena.intern_num(d.clone());
+            arena.intern(crate::node::ExprNode::Num(nid))
+        };
+        let half = arena.rational(1, 2);
+        let sqrt_d = arena.pow(d_id, half);
+
+        // Result: (1/(a·√d)) · atan((x+b/2)/√d)
+        let ratio = arena.div(shifted, sqrt_d);
+        let atan_result = arena.atan(ratio);
+
+        // Divide by a·√d
+        let a_id = {
+            let nid = arena.intern_num(a_coeff);
+            arena.intern(crate::node::ExprNode::Num(nid))
+        };
+        // Rebuild √d for the denominator (arena IDs are Copy, but let's be explicit)
+        let sqrt_d2 = arena.pow(d_id, half);
+        let a_sqrt_d = arena.mul(&[a_id, sqrt_d2]);
+
+        return Some(arena.div(atan_result, a_sqrt_d));
+    }
+
+    // ── exp = -1/2: ∫ 1/√(ax²+bx+c) dx ───────────────────────────
+    // Complete the square: ax²+bx+c = a·(x + b/(2a))² + (c − b²/(4a))
+    // Let u = x + b/(2a),  d = c − b²/(4a).
+    // Then ∫ 1/√(a·u² + d) du.
+    let two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+    let four_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(4.into());
+
+    let shift = &b_coeff / &(&a_coeff * &two_r); // b/(2a)
+    let d = &c_coeff - &(&b_coeff * &b_coeff / &(&a_coeff * &four_r)); // c − b²/(4a)
+
+    // Build u = x + b/(2a)
+    let u_expr = if shift.is_zero() {
+        var
+    } else {
+        let shift_id = rational_to_expr(arena, &shift);
+        arena.add(&[var, shift_id])
+    };
+
+    let half = arena.rational(1, 2);
+
+    if a_coeff.is_positive() {
+        // a > 0
+        let a_id = rational_to_expr(arena, &a_coeff);
+        let sqrt_a = arena.pow(a_id, half); // √a
+        let inv_sqrt_a = {
+            let neg_half_e = arena.rational(-1, 2);
+            arena.pow(a_id, neg_half_e)
+        }; // 1/√a
+
+        if d.is_positive() {
+            // a > 0, d > 0: (1/√a) · asinh(u·√a / √d)
+            let d_id = rational_to_expr(arena, &d);
+            let sqrt_d = arena.pow(d_id, half);
+            let u_sqrt_a = arena.mul(&[u_expr, sqrt_a]);
+            let arg = arena.div(u_sqrt_a, sqrt_d);
+            let asinh_val = arena.asinh(arg);
+            return Some(arena.mul(&[inv_sqrt_a, asinh_val]));
+        } else if d.is_negative() {
+            // a > 0, d < 0: (1/√a) · acosh(u·√a / √|d|)
+            let abs_d = d.abs();
+            let abs_d_id = rational_to_expr(arena, &abs_d);
+            let sqrt_abs_d = arena.pow(abs_d_id, half);
+            let u_sqrt_a = arena.mul(&[u_expr, sqrt_a]);
+            let arg = arena.div(u_sqrt_a, sqrt_abs_d);
+            let acosh_val = arena.acosh(arg);
+            return Some(arena.mul(&[inv_sqrt_a, acosh_val]));
+        } else {
+            // a > 0, d = 0: (1/√a) · ln|u|
+            let abs_u = arena.abs(u_expr);
+            let ln_u = arena.ln(abs_u);
+            return Some(arena.mul(&[inv_sqrt_a, ln_u]));
+        }
+    } else if a_coeff.is_negative() && d.is_positive() {
+        // a < 0, d > 0: (1/√|a|) · asin(u·√|a| / √d)
+        let abs_a = a_coeff.abs();
+        let abs_a_id = rational_to_expr(arena, &abs_a);
+        let sqrt_abs_a = arena.pow(abs_a_id, half);
+        let inv_sqrt_abs_a = {
+            let neg_half_e = arena.rational(-1, 2);
+            arena.pow(abs_a_id, neg_half_e)
+        };
+        let d_id = rational_to_expr(arena, &d);
+        let sqrt_d = arena.pow(d_id, half);
+        let u_sqrt_abs_a = arena.mul(&[u_expr, sqrt_abs_a]);
+        let arg = arena.div(u_sqrt_abs_a, sqrt_d);
+        let asin_val = arena.asin(arg);
+        return Some(arena.mul(&[inv_sqrt_abs_a, asin_val]));
+    }
+
+    None
+}
+
+/// Detect `sec(x)·tan(x)` and `csc(x)·cot(x)` patterns in a product.
+///
+/// - `sin(x) · cos(x)^{-2}` → `cos(x)^{-1}`   (∫ sec·tan dx = sec)
+/// - `cos(x) · sin(x)^{-2}` → `-sin(x)^{-1}`   (∫ csc·cot dx = −csc)
+fn try_trig_recip_product(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    if dependent.len() != 2 {
         return None;
     }
 
-    // Complete the square: x² + bx + c = (x + b/2)² + (c - b²/4)
-    let half_b = &b / &num_rational::Ratio::from_integer(2.into());
-    let d = &c - &(&half_b * &half_b); // d = c - b²/4
+    let neg_two = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-2).into());
 
-    if d.is_zero() || d.is_negative() {
-        return None; // Can't use atan form if d ≤ 0
+    for (i, j) in [(0usize, 1usize), (1, 0)] {
+        let node_i = arena.node(dependent[i]).clone();
+        let node_j = arena.node(dependent[j]).clone();
+
+        // Pattern: sin(g) · cos(g)^{-2} → cos(g)^{-1} [/ chain coeff]
+        if let ExprNode::Sin(inner_sin) = node_i
+            && let ExprNode::Pow(base_j, exp_j) = node_j
+                && let ExprNode::Cos(inner_cos) = arena.node(base_j).clone()
+                    && inner_sin == inner_cos
+                        && let Some(e) = arena.as_num(exp_j)
+                            && *e == neg_two {
+                                let neg_one_e = arena.int(-1);
+                                if inner_sin == var {
+                                    return Some(arena.pow(base_j, neg_one_e));
+                                } else if let Some(a) =
+                                    linear_coeff_of(arena, inner_sin, var, var_sym)
+                                {
+                                    let recip = arena.pow(base_j, neg_one_e);
+                                    let a_id = rational_to_expr(arena, &a);
+                                    return Some(arena.div(recip, a_id));
+                                }
+                            }
+
+        // Pattern: cos(g) · sin(g)^{-2} → −sin(g)^{-1} [/ chain coeff]
+        if let ExprNode::Cos(inner_cos) = node_i
+            && let ExprNode::Pow(base_j, exp_j) = node_j
+                && let ExprNode::Sin(inner_sin) = arena.node(base_j).clone()
+                    && inner_cos == inner_sin
+                        && let Some(e) = arena.as_num(exp_j)
+                            && *e == neg_two {
+                                let neg_one_e = arena.int(-1);
+                                if inner_cos == var {
+                                    let recip = arena.pow(base_j, neg_one_e);
+                                    return Some(arena.neg(recip));
+                                } else if let Some(a) =
+                                    linear_coeff_of(arena, inner_cos, var, var_sym)
+                                {
+                                    let recip = arena.pow(base_j, neg_one_e);
+                                    let neg_recip = arena.neg(recip);
+                                    let a_id = rational_to_expr(arena, &a);
+                                    return Some(arena.div(neg_recip, a_id));
+                                }
+                            }
     }
 
-    // Build (x + b/2)
-    let half_b_id = {
-        let nid = arena.intern_num(half_b.clone());
-        arena.intern(crate::node::ExprNode::Num(nid))
-    };
-    let shifted = arena.add(&[var, half_b_id]);
+    None
+}
 
-    // Build √d
-    let d_id = {
-        let nid = arena.intern_num(d.clone());
-        arena.intern(crate::node::ExprNode::Num(nid))
+/// Detect `x / √(ax²+bx+c)` and integrate using the decomposition:
+///
+///   `∫ x/√R dx = √R/a − (b/(2a))·∫ 1/√R dx`
+///
+/// where `R = ax²+bx+c`.
+fn try_x_over_sqrt_quadratic(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    if dependent.len() != 2 {
+        return None;
+    }
+
+    // Find which factor is var and which is Pow(quadratic, -1/2)
+    let pow_idx = if dependent[0] == var {
+        1
+    } else if dependent[1] == var {
+        0
+    } else {
+        return None;
     };
+
+    // Check the other factor is Pow(base, -1/2)
+    let (base, exp_id) = match arena.node(dependent[pow_idx]).clone() {
+        ExprNode::Pow(b, e) => (b, e),
+        _ => return None,
+    };
+
+    let exp_r = arena.as_num(exp_id)?.clone();
+    let neg_half = num_rational::Ratio::<num_bigint::BigInt>::new((-1).into(), 2.into());
+    if exp_r != neg_half {
+        return None;
+    }
+
+    // base must be quadratic in var
+    let poly = crate::polybridge::expr_to_poly(arena, base, var)?;
+    if poly.degree()? != 2 {
+        return None;
+    }
+
+    let a_coeff = poly.coeff(2);
+    let b_coeff = poly.coeff(1);
+
+    if a_coeff.is_zero() {
+        return None;
+    }
+
+    // √R = base^{1/2}
     let half = arena.rational(1, 2);
-    let sqrt_d = arena.pow(d_id, half);
+    let sqrt_r = arena.pow(base, half);
 
-    // Result: (1/(a·√d)) · atan((x+b/2)/√d)
-    let ratio = arena.div(shifted, sqrt_d);
-    let atan_result = arena.atan(ratio);
+    // First term: √R / a
+    let a_id = rational_to_expr(arena, &a_coeff);
+    let first_term = arena.div(sqrt_r, a_id);
 
-    // Divide by a·√d
-    let a_id = {
-        let nid = arena.intern_num(a_coeff);
-        arena.intern(crate::node::ExprNode::Num(nid))
-    };
-    // Rebuild √d for the denominator (arena IDs are Copy, but let's be explicit)
-    let sqrt_d2 = arena.pow(d_id, half);
-    let a_sqrt_d = arena.mul(&[a_id, sqrt_d2]);
+    if b_coeff.is_zero() {
+        // No linear term: ∫ x/√(ax²+c) dx = √(ax²+c)/a
+        return Some(first_term);
+    }
 
-    Some(arena.div(atan_result, a_sqrt_d))
+    // Need I_0 = ∫ 1/√R dx
+    let i_0 = integrate_node(
+        arena,
+        dependent[pow_idx],
+        var,
+        var_sym,
+        depth.saturating_sub(1),
+    );
+    if matches!(arena.node(i_0), ExprNode::Integral(_, _)) {
+        return None;
+    }
+
+    // b/(2a)
+    let two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+    let b_over_2a = &b_coeff / &(&a_coeff * &two_r);
+    let b_over_2a_id = rational_to_expr(arena, &b_over_2a);
+
+    // Result: √R/a − (b/(2a))·I_0
+    let second_term = arena.mul(&[b_over_2a_id, i_0]);
+    Some(arena.sub(first_term, second_term))
 }
 
 /// Attempt cyclic integration by parts for integrals like `∫ exp(x)·sin(x) dx`.
@@ -420,7 +650,13 @@ fn integrate_node(
 
     // Try trig power/product integration first (sin^n, cos^n, sin^m*cos^n)
     if let Some(result) = crate::trig_integ::try_trig_power_integral(arena, expr, var, var_sym) {
-        return result;
+        // Only use the trig-power result when it is fully evaluated;
+        // negative-exponent cases (e.g. sin·cos^{-2}) come back as
+        // unevaluated Integral nodes — fall through so the Mul handler
+        // can try sec·tan / csc·cot patterns and u-substitution.
+        if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
+            return result;
+        }
     }
 
     let node = arena.node(expr).clone();
@@ -475,6 +711,22 @@ fn integrate_node(
                 }
             }
 
+            // Normalize dependent factors: flatten Pow(Pow(a, m), n) → Pow(a, m·n)
+            // for rational exponents.  The canon layer only flattens when both
+            // exponents are integers (branch-cut safety), but for integration we
+            // need e.g. Pow(Pow(x²+1, 1/2), -1) → Pow(x²+1, -1/2).
+            for d in dependent.iter_mut() {
+                if let ExprNode::Pow(pow_base, pow_exp) = arena.node(*d).clone()
+                    && let ExprNode::Pow(inner_base, inner_exp) = arena.node(pow_base).clone()
+                        && let (Some(m), Some(n)) = (arena.as_num(inner_exp), arena.as_num(pow_exp))
+                        {
+                            let combined = m.clone() * n.clone();
+                            let combined_id = rational_to_expr(arena, &combined);
+                            let flattened = arena.pow(inner_base, combined_id);
+                            *d = flattened;
+                        }
+            }
+
             if dependent.is_empty() {
                 // All constant: ∫ c dx = c * x
                 return arena.mul(&[expr, var]);
@@ -491,6 +743,32 @@ fn integrate_node(
                 constants.push(inner_integral);
                 return arena.mul(&constants);
             }
+
+            // ── sec(x)·tan(x) and csc(x)·cot(x) forms ──────────────
+            if dependent.len() == 2
+                && let Some(result) = try_trig_recip_product(arena, &dependent, var, var_sym) {
+                    if constants.is_empty() {
+                        return result;
+                    } else {
+                        let mut all = constants.clone();
+                        all.push(result);
+                        return arena.mul(&all);
+                    }
+                }
+
+            // ── x/√(ax²+bx+c) form ──────────────────────────────────
+            if dependent.len() == 2
+                && let Some(result) =
+                    try_x_over_sqrt_quadratic(arena, &dependent, var, var_sym, depth)
+                {
+                    if constants.is_empty() {
+                        return result;
+                    } else {
+                        let mut all = constants.clone();
+                        all.push(result);
+                        return arena.mul(&all);
+                    }
+                }
 
             // ── DiracDelta sifting property: ∫ f(x)·δ(g(x)) dx = f(root)·H(g(x)) ──
             // Check if any factor in the product is a DiracDelta.
@@ -652,6 +930,25 @@ fn integrate_node(
 
         // ── Pow: power rule ────────────────────────────────────────
         ExprNode::Pow(base, exp) => {
+            // Flatten Pow(Pow(a, m), n) → Pow(a, m·n) when both m and n
+            // are rational.  The canon layer only does this for integer
+            // exponents (to avoid complex branch-cut issues), but for
+            // real-valued integration it is safe and necessary so that
+            // e.g.  1/√(x²+1) = Pow(Pow(x²+1, 1/2), -1) becomes
+            // Pow(x²+1, -1/2) and hits the standard-form / completing-
+            // the-square handlers.
+            if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone()
+                && let (Some(m), Some(n)) = (arena.as_num(inner_exp), arena.as_num(exp)) {
+                    let m = m.clone();
+                    let n = n.clone();
+                    let combined = &m * &n;
+                    let combined_id = rational_to_expr(arena, &combined);
+                    let flattened = arena.pow(inner_base, combined_id);
+                    if flattened != expr {
+                        return integrate_node(arena, flattened, var, var_sym, depth - 1);
+                    }
+                }
+
             let base_is_var = base == var;
             let exp_has_var = contains_var(arena, exp, var_sym);
             let base_has_var = contains_var(arena, base, var_sym);

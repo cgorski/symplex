@@ -910,6 +910,21 @@ impl Arena {
         crate::radsimp::rationalize_denom(self, expr)
     }
 
+    /// Separate variables in a multiplicative expression.
+    ///
+    /// Given a list of variables, partitions the top-level factors
+    /// by which variables they depend on. Returns a vec of
+    /// `(dependent_vars, product_of_factors)` pairs.
+    ///
+    /// Delegates to [`separatevars::separatevars`].
+    pub fn separatevars_expr(
+        &mut self,
+        expr: ExprId,
+        vars: &[ExprId],
+    ) -> Vec<(Vec<ExprId>, ExprId)> {
+        crate::separatevars::separatevars(self, expr, vars)
+    }
+
     /// Decompose an expression into real and imaginary parts.
     /// Returns `(re, im)` such that `expr = re + im * i`.
     /// Delegates to [`complex::as_real_imag`].

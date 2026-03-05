@@ -655,10 +655,29 @@ impl RuleCodeGen {
                         ),
                     ));
                 }
+
+                // Binary functions: beta(a, b), atan2(y, x)
+                if name == "beta" && args.len() == 2 {
+                    let a_temp = self.generate_arena_expr(&args[0])?;
+                    let b_temp = self.generate_arena_expr(&args[1])?;
+                    let temp = self.fresh_temp();
+                    self.bindings
+                        .push(quote! { let #temp = #arena.beta(#a_temp, #b_temp); });
+                    return Ok(temp);
+                }
+                if name == "atan2" && args.len() == 2 {
+                    let y_temp = self.generate_arena_expr(&args[0])?;
+                    let x_temp = self.generate_arena_expr(&args[1])?;
+                    let temp = self.fresh_temp();
+                    self.bindings
+                        .push(quote! { let #temp = #arena.atan2(#y_temp, #x_temp); });
+                    return Ok(temp);
+                }
+
                 if args.len() != 1 {
                     return Err(syn::Error::new(
                         *span,
-                        format!("{}() takes exactly 1 argument", name),
+                        format!("{}() takes exactly 1 argument in rule!()", name),
                     ));
                 }
 
@@ -666,6 +685,7 @@ impl RuleCodeGen {
                 let temp = self.fresh_temp();
 
                 let call = match name.as_str() {
+                    // Core trig
                     "sin" => quote! { #arena.sin(#arg_temp) },
                     "cos" => quote! { #arena.cos(#arg_temp) },
                     "tan" => quote! { #arena.tan(#arg_temp) },
@@ -678,13 +698,45 @@ impl RuleCodeGen {
                     "asinh" => quote! { #arena.asinh(#arg_temp) },
                     "acosh" => quote! { #arena.acosh(#arg_temp) },
                     "atanh" => quote! { #arena.atanh(#arg_temp) },
+                    // Exp/log/root
                     "exp" => quote! { #arena.exp(#arg_temp) },
                     "ln" => quote! { #arena.ln(#arg_temp) },
                     "sqrt" => quote! { #arena.sqrt(#arg_temp) },
                     "cbrt" => quote! { #arena.cbrt(#arg_temp) },
                     "abs" => quote! { #arena.abs(#arg_temp) },
                     "sign" => quote! { #arena.sign(#arg_temp) },
-                    _ => unreachable!(),
+                    // Wave B: Floor, Ceiling
+                    "floor" => quote! { #arena.floor(#arg_temp) },
+                    "ceiling" => quote! { #arena.ceiling(#arg_temp) },
+                    // Wave J: Special functions
+                    "gamma" => quote! { #arena.gamma(#arg_temp) },
+                    "log_gamma" => quote! { #arena.log_gamma(#arg_temp) },
+                    "digamma" => quote! { #arena.digamma(#arg_temp) },
+                    "erf" => quote! { #arena.erf(#arg_temp) },
+                    "erfc" => quote! { #arena.erfc(#arg_temp) },
+                    // Wave S/δ: Heaviside, DiracDelta, LambertW
+                    "heaviside" => quote! { #arena.heaviside(#arg_temp) },
+                    "dirac_delta" => quote! { #arena.dirac_delta(#arg_temp) },
+                    "lambertw" => quote! { #arena.lambertw(#arg_temp) },
+                    // Wave R: Combinatorial (1-arg, Apply-based but have arena methods)
+                    "fibonacci" => quote! { #arena.fibonacci(#arg_temp) },
+                    "lucas" => quote! { #arena.lucas(#arg_temp) },
+                    "catalan_number" => quote! { #arena.catalan_number(#arg_temp) },
+                    "bell" => quote! { #arena.bell(#arg_temp) },
+                    "euler_number" => quote! { #arena.euler_number(#arg_temp) },
+                    "harmonic" => quote! { #arena.harmonic(#arg_temp) },
+                    "subfactorial" => quote! { #arena.subfactorial(#arg_temp) },
+                    "factorial2" => quote! { #arena.factorial2(#arg_temp) },
+                    "bernoulli_number" => quote! { #arena.bernoulli_number(#arg_temp) },
+                    other => {
+                        return Err(syn::Error::new(
+                            *span,
+                            format!(
+                                "function '{}' is recognised but not yet supported in rule!()",
+                                other
+                            ),
+                        ));
+                    }
                 };
 
                 self.bindings.push(quote! { let #temp = #call; });

@@ -80,6 +80,7 @@ pub(crate) mod powsimp;
 pub(crate) mod radsimp;
 pub(crate) mod residue;
 pub(crate) mod rewrite;
+pub(crate) mod separatevars;
 pub(crate) mod series;
 pub(crate) mod simplify_engine;
 pub(crate) mod solve;

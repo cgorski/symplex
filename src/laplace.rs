@@ -304,17 +304,18 @@ fn try_table_forward(
             }
             // Affine case: arg = a*t + b where b ≠ 0
             if let Some(poly) = crate::polybridge::expr_to_poly(arena, arg, t)
-                && poly.degree() == Some(1) {
-                    let a_coeff = poly.coeff(1);
-                    let b_coeff = poly.coeff(0);
-                    if !a_coeff.is_zero() && !b_coeff.is_zero() {
-                        let a_id = rational_to_expr(arena, &a_coeff);
-                        let b_id = rational_to_expr(arena, &b_coeff);
-                        let s_minus_a = arena.sub(s, a_id);
-                        let exp_b = arena.exp(b_id);
-                        return Some(arena.div(exp_b, s_minus_a));
-                    }
+                && poly.degree() == Some(1)
+            {
+                let a_coeff = poly.coeff(1);
+                let b_coeff = poly.coeff(0);
+                if !a_coeff.is_zero() && !b_coeff.is_zero() {
+                    let a_id = rational_to_expr(arena, &a_coeff);
+                    let b_id = rational_to_expr(arena, &b_coeff);
+                    let s_minus_a = arena.sub(s, a_id);
+                    let exp_b = arena.exp(b_id);
+                    return Some(arena.div(exp_b, s_minus_a));
                 }
+            }
             None
         }
 
@@ -512,17 +513,20 @@ fn check_t_power(arena: &Arena, expr: ExprId, t: ExprId, t_sym: SymbolId) -> u64
         return 1;
     }
     if let ExprNode::Symbol(sid) = arena.node(expr)
-        && *sid == t_sym {
-            return 1;
-        }
+        && *sid == t_sym
+    {
+        return 1;
+    }
 
     // expr == Pow(t, n)
     if let ExprNode::Pow(base, exp) = arena.node(expr)
         && *base == t
-            && let Some(r) = arena.as_num(*exp)
-                && r.is_integer() && r.is_positive() {
-                    return r.to_integer().try_into().unwrap_or(0);
-                }
+        && let Some(r) = arena.as_num(*exp)
+        && r.is_integer()
+        && r.is_positive()
+    {
+        return r.to_integer().try_into().unwrap_or(0);
+    }
 
     0
 }
@@ -992,8 +996,81 @@ fn inverse_degree2(
     let alpha = -&b / Ratio::from_integer(BigInt::from(2));
     let beta_sq = &c - &(&b * &b) / Ratio::from_integer(BigInt::from(4));
 
-    if !beta_sq.is_positive() {
-        // Negative discriminant → real roots, partial fractions should handle it
+    if beta_sq.is_zero() {
+        // Repeated root (s + b/2)² — let inverse_power_form handle it
+        return None;
+    }
+
+    // ── Case 2b: β² < 0 → overdamped / real exponential forms ──
+    // (s-α)² - γ² where γ² = -β² = b²/4 - c
+    // L⁻¹{ k / (c₂·((s-α)² - γ²)) } = (k/(c₂·γ)) · exp(α·t) · sinh(γ·t)
+    if beta_sq.is_negative() {
+        let gamma_sq = -&beta_sq;
+        let gamma_sq_id = rational_to_expr(arena, &gamma_sq);
+        let gamma_id = {
+            let raw = arena.sqrt(gamma_sq_id);
+            crate::eval::eval(arena, raw)
+        };
+        let alpha_id = rational_to_expr(arena, &alpha);
+
+        if let Some(np) = &numer_poly {
+            let nd = np.degree().unwrap_or(0);
+            let c2_id = rational_to_expr(arena, &c2);
+
+            if nd == 0 {
+                let k = np.coeff(0);
+                let k_id = rational_to_expr(arena, &k);
+
+                let alpha_t = arena.mul(&[alpha_id, t]);
+                let exp_alpha_t = arena.exp(alpha_t);
+                let gamma_t = arena.mul(&[gamma_id, t]);
+                let sinh_gamma_t = arena.sinh(gamma_t);
+
+                let c2_gamma = arena.mul(&[c2_id, gamma_id]);
+                let scale = arena.div(k_id, c2_gamma);
+                return Some(arena.mul(&[scale, exp_alpha_t, sinh_gamma_t]));
+            }
+
+            if nd == 1 {
+                let a0 = np.coeff(0);
+                let a1 = np.coeff(1);
+
+                // Decompose: a₁·s + a₀ = a₁·(s - α) + (a₁·α + a₀)
+                let d_const = &a1 * &alpha + &a0;
+
+                let alpha_t = arena.mul(&[alpha_id, t]);
+                let exp_alpha_t = arena.exp(alpha_t);
+                let gamma_t = arena.mul(&[gamma_id, t]);
+                let sinh_gamma_t = arena.sinh(gamma_t);
+                let cosh_gamma_t = arena.cosh(gamma_t);
+
+                let mut terms = Vec::new();
+
+                // cosh term: (a₁/c₂) · exp(α·t) · cosh(γ·t)
+                if !a1.is_zero() {
+                    let a1_id = rational_to_expr(arena, &a1);
+                    let cosh_coeff = arena.div(a1_id, c2_id);
+                    terms.push(arena.mul(&[cosh_coeff, exp_alpha_t, cosh_gamma_t]));
+                }
+
+                // sinh term: (d_const/(c₂·γ)) · exp(α·t) · sinh(γ·t)
+                if !d_const.is_zero() {
+                    let d_id = rational_to_expr(arena, &d_const);
+                    let c2_gamma = arena.mul(&[c2_id, gamma_id]);
+                    let sinh_coeff = arena.div(d_id, c2_gamma);
+                    terms.push(arena.mul(&[sinh_coeff, exp_alpha_t, sinh_gamma_t]));
+                }
+
+                if terms.is_empty() {
+                    return Some(arena.zero);
+                } else if terms.len() == 1 {
+                    return Some(terms[0]);
+                } else {
+                    return Some(arena.add(&terms));
+                }
+            }
+        }
+
         return None;
     }
 

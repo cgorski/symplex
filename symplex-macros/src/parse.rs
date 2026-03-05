@@ -155,6 +155,9 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "digamma",
     "erf",
     "erfc",
+    "beta",
+    // Wave O: atan2 (binary)
+    "atan2",
 ];
 
 /// Returns `true` if `name` is a known built-in function.

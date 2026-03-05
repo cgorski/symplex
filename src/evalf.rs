@@ -77,8 +77,19 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
     let mut cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
 
     for &id in &post_order {
-        let value = eval_node(arena, id, &cache, prec, rm, &mut cc)?;
-        cache.insert(id, value);
+        match eval_node(arena, id, &cache, prec, rm, &mut cc) {
+            Ok(value) => {
+                cache.insert(id, value);
+            }
+            Err(e) => {
+                if id == expr {
+                    return Err(e);
+                }
+                // Non-root node failed — skip it.  Parent nodes
+                // (Sum, Product, Piecewise) will handle their own
+                // sub-tree evaluation with substitution.
+            }
+        }
     }
 
     let result = cache.get(&expr).ok_or_else(|| {
@@ -129,10 +140,36 @@ fn eval_node(
             })
         }
 
-        ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => {
-            Err(SymplexError::Unevaluable {
-                reason: "cannot numerically evaluate symbolic factorial/binomial; call eval() first to reduce".into(),
-            })
+        ExprNode::Factorial(_) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate symbolic factorial; call eval() first to reduce"
+                .into(),
+        }),
+
+        ExprNode::Binomial(n_id, k_id) => {
+            debug!("evalf: Binomial via Gamma");
+            let n_val = get_cached(cache, *n_id)?;
+            let k_val = get_cached(cache, *k_id)?;
+            if !n_val.1.is_zero() || !k_val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Binomial of complex arguments not yet supported in evalf".into(),
+                });
+            }
+            let n_f = bigfloat_to_f64(&n_val.0, rm, cc)?;
+            let k_f = bigfloat_to_f64(&k_val.0, rm, cc)?;
+            let numer = lanczos_gamma_f64(n_f + 1.0)?;
+            let denom = lanczos_gamma_f64(k_f + 1.0)? * lanczos_gamma_f64(n_f - k_f + 1.0)?;
+            if denom.abs() < 1e-300 {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Binomial denominator is zero (pole in Gamma)".into(),
+                });
+            }
+            let result = numer / denom;
+            if !result.is_finite() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Binomial result is not finite".into(),
+                });
+            }
+            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
         }
 
         ExprNode::Gamma(inner) => {
@@ -600,10 +637,7 @@ fn eval_node(
             }
             if val.0.is_zero() {
                 // H(0) = 0.5
-                Ok((
-                    BigFloat::from_f64(0.5, prec),
-                    BigFloat::new(prec),
-                ))
+                Ok((BigFloat::from_f64(0.5, prec), BigFloat::new(prec)))
             } else if val.0.is_negative() {
                 Ok(c_zero(prec))
             } else {
@@ -635,14 +669,147 @@ fn eval_node(
             reason: "cannot evaluate unevaluated integral".into(),
         }),
 
-        ExprNode::Sum(_, _, _, _) => Err(SymplexError::Unevaluable {
-            reason: "cannot numerically evaluate symbolic Sum; call eval() first to reduce".into(),
-        }),
+        ExprNode::Sum(body_id, var_id, lo_id, hi_id) => {
+            debug!("evalf: Sum — attempting finite evaluation");
+            let lo_val = get_cached(cache, *lo_id)?;
+            let hi_val = get_cached(cache, *hi_id)?;
+            if !lo_val.1.is_zero() || !hi_val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Sum bounds must be real".into(),
+                });
+            }
+            let lo_f = bigfloat_to_f64(&lo_val.0, rm, cc)?;
+            let hi_f = bigfloat_to_f64(&hi_val.0, rm, cc)?;
+            let lo_i = lo_f.round() as i64;
+            let hi_i = hi_f.round() as i64;
+            if (lo_f - lo_i as f64).abs() > 1e-9 || (hi_f - hi_i as f64).abs() > 1e-9 {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Sum bounds are not integers".into(),
+                });
+            }
+            if hi_i - lo_i > 10_000 {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Sum range too large for numerical evaluation (> 10000 terms)".into(),
+                });
+            }
+            let mut acc = c_zero(prec);
+            for i in lo_i..=hi_i {
+                let sub_val = (BigFloat::from_f64(i as f64, prec), BigFloat::new(prec));
+                let term =
+                    evalf_subtree_with_sub(arena, *body_id, *var_id, &sub_val, prec, rm, cc)?;
+                acc = c_add(&acc, &term, prec, rm);
+            }
+            debug!(lo = lo_i, hi = hi_i, "evalf: Sum evaluated");
+            Ok(acc)
+        }
 
-        ExprNode::Product_(_, _, _, _) => Err(SymplexError::Unevaluable {
-            reason: "cannot numerically evaluate symbolic Product; call eval() first to reduce"
-                .into(),
-        }),
+        ExprNode::Product_(body_id, var_id, lo_id, hi_id) => {
+            debug!("evalf: Product — attempting finite evaluation");
+            let lo_val = get_cached(cache, *lo_id)?;
+            let hi_val = get_cached(cache, *hi_id)?;
+            if !lo_val.1.is_zero() || !hi_val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Product bounds must be real".into(),
+                });
+            }
+            let lo_f = bigfloat_to_f64(&lo_val.0, rm, cc)?;
+            let hi_f = bigfloat_to_f64(&hi_val.0, rm, cc)?;
+            let lo_i = lo_f.round() as i64;
+            let hi_i = hi_f.round() as i64;
+            if (lo_f - lo_i as f64).abs() > 1e-9 || (hi_f - hi_i as f64).abs() > 1e-9 {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Product bounds are not integers".into(),
+                });
+            }
+            if hi_i - lo_i > 10_000 {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Product range too large for numerical evaluation (> 10000 terms)"
+                        .into(),
+                });
+            }
+            let mut acc = c_one(prec);
+            for i in lo_i..=hi_i {
+                let sub_val = (BigFloat::from_f64(i as f64, prec), BigFloat::new(prec));
+                let term =
+                    evalf_subtree_with_sub(arena, *body_id, *var_id, &sub_val, prec, rm, cc)?;
+                acc = c_mul(&acc, &term, prec, rm);
+            }
+            debug!(lo = lo_i, hi = hi_i, "evalf: Product evaluated");
+            Ok(acc)
+        }
+
+        ExprNode::Piecewise(pairs) => {
+            debug!(
+                branches = pairs.len(),
+                "evalf: Piecewise — evaluating conditions"
+            );
+            for &(value_id, cond_id) in pairs.iter() {
+                // Check if condition is literally BoolTrue
+                if cond_id == arena.bool_true {
+                    return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
+                }
+                // Check if condition is literally BoolFalse — skip
+                if cond_id == arena.bool_false {
+                    continue;
+                }
+                // Try to evaluate relational conditions numerically
+                match arena.node(cond_id) {
+                    ExprNode::Gt(a, b) => {
+                        if let (Some(av), Some(bv)) = (cache.get(a), cache.get(b))
+                            && av.1.is_zero() && bv.1.is_zero() {
+                                let diff = av.0.sub(&bv.0, prec, rm);
+                                if diff.is_positive() {
+                                    return eval_node_or_subtree(
+                                        arena, value_id, cache, prec, rm, cc,
+                                    );
+                                }
+                                continue; // condition is false
+                            }
+                    }
+                    ExprNode::Ge(a, b) => {
+                        if let (Some(av), Some(bv)) = (cache.get(a), cache.get(b))
+                            && av.1.is_zero() && bv.1.is_zero() {
+                                let diff = av.0.sub(&bv.0, prec, rm);
+                                if diff.is_positive() || diff.is_zero() {
+                                    return eval_node_or_subtree(
+                                        arena, value_id, cache, prec, rm, cc,
+                                    );
+                                }
+                                continue;
+                            }
+                    }
+                    ExprNode::Eq_(a, b) => {
+                        if let (Some(av), Some(bv)) = (cache.get(a), cache.get(b))
+                            && av.1.is_zero() && bv.1.is_zero() {
+                                let diff = av.0.sub(&bv.0, prec, rm);
+                                if diff.is_zero() {
+                                    return eval_node_or_subtree(
+                                        arena, value_id, cache, prec, rm, cc,
+                                    );
+                                }
+                                continue;
+                            }
+                    }
+                    ExprNode::Not(inner) => {
+                        if *inner == arena.bool_true {
+                            continue; // Not(True) = False
+                        }
+                        if *inner == arena.bool_false {
+                            return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // No condition was definitively true — try the last branch (often the "else")
+            if let Some(&(value_id, _)) = pairs.last() {
+                debug!("evalf: Piecewise — falling back to last branch");
+                return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
+            }
+            Err(SymplexError::Unevaluable {
+                reason: "cannot evaluate piecewise: no condition is definitively true".into(),
+            })
+        }
 
         ExprNode::BoolTrue
         | ExprNode::BoolFalse
@@ -652,9 +819,8 @@ fn eval_node(
         | ExprNode::Ne(_, _)
         | ExprNode::And(_)
         | ExprNode::Or(_)
-        | ExprNode::Not(_)
-        | ExprNode::Piecewise(_) => Err(SymplexError::Unevaluable {
-            reason: "boolean/piecewise expression".into(),
+        | ExprNode::Not(_) => Err(SymplexError::Unevaluable {
+            reason: "boolean expression".into(),
         }),
 
         ExprNode::EmptySet
@@ -667,6 +833,57 @@ fn eval_node(
             reason: "set-valued expressions cannot be numerically evaluated".into(),
         }),
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sub-tree evaluation helpers (Sum, Product, Piecewise)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Evaluate a sub-expression with one variable replaced by a given numeric
+/// value.  Used by `Sum` and `Product_` to iterate over finite ranges.
+fn evalf_subtree_with_sub(
+    arena: &Arena,
+    expr: ExprId,
+    var_id: ExprId,
+    var_value: &Complex,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    let post_order = walk::post_order_ids(arena, expr);
+    let mut sub_cache: FxHashMap<ExprId, Complex> = FxHashMap::default();
+    // Pre-load the substitution so `var_id` resolves to the numeric value.
+    sub_cache.insert(var_id, var_value.clone());
+
+    for &id in &post_order {
+        if sub_cache.contains_key(&id) {
+            continue; // already present (e.g. the substituted variable)
+        }
+        let value = eval_node(arena, id, &sub_cache, prec, rm, cc)?;
+        sub_cache.insert(id, value);
+    }
+
+    sub_cache
+        .get(&expr)
+        .cloned()
+        .ok_or_else(|| SymplexError::Unevaluable {
+            reason: "subtree evaluation with substitution failed".into(),
+        })
+}
+
+/// Return the cached value for `id`, or fall back to calling `eval_node`.
+fn eval_node_or_subtree(
+    arena: &Arena,
+    id: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<Complex, SymplexError> {
+    if let Some(val) = cache.get(&id) {
+        return Ok(val.clone());
+    }
+    eval_node(arena, id, cache, prec, rm, cc)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

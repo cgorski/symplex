@@ -25,7 +25,7 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::One;
+use num_traits::{One, Signed};
 use smallvec::SmallVec;
 
 use crate::arena::Arena;
@@ -396,45 +396,57 @@ fn expand_mul(arena: &mut Arena, factors: &[ExprId]) -> ExprId {
 // Pow expansion
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Expand `base^exp` when base is an Add and exp is a non-negative
-/// integer.  Otherwise returns the Pow unchanged.
+/// Expand `base^exp`:
 ///
-/// For Add bases with positive integer exponents, uses the multinomial
-/// theorem directly instead of repeated multiplication, giving
-/// O(C(n+k−1, k−1)) term generation instead of O(k^n) intermediate
-/// products.
+/// 1. **Multinomial**: `(a + b)^n` for non-negative integer `n`
+/// 2. **Power-of-product**: `(x·y)^n` → `x^n · y^n`
+/// 3. **Sum exponent**: `x^(a+b)` → `x^a · x^b`
 fn expand_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId {
-    // Only expand when exp is a positive integer.
+    // ── Step 1: Multinomial expansion for Add^positive_int ──
+    if let Some(result) = try_multinomial_expand(arena, base, exp) {
+        return result;
+    }
+
+    // ── Step 2: (x·y)^n → x^n · y^n ──
+    if let Some(result) = expand_power_base(arena, base, exp) {
+        return result;
+    }
+
+    // ── Step 3: x^(a+b) → x^a · x^b ──
+    if let Some(result) = expand_power_exp(arena, base, exp) {
+        return result;
+    }
+
+    arena.pow(base, exp)
+}
+
+/// Try multinomial/binomial expansion for `Add^positive_int`.
+///
+/// Returns `Some(expanded)` if base is Add and exp is a positive integer,
+/// otherwise `None`.
+fn try_multinomial_expand(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId> {
     let exp_val = match arena.as_num(exp) {
         Some(r) if r.is_integer() => {
-            let n: i64 = match r.to_integer().try_into() {
-                Ok(n) => n,
-                Err(_) => return arena.pow(base, exp),
-            };
+            let n: i64 = r.to_integer().try_into().ok()?;
             n
         }
-        _ => return arena.pow(base, exp),
+        _ => return None,
     };
 
-    // Only expand positive integer powers of sums.
     if exp_val <= 0 {
-        return arena.pow(base, exp);
+        return None;
     }
 
     let n = exp_val as usize;
 
-    // Only expand if base is an Add.
     let children = match arena.node(base).clone() {
         ExprNode::Add(ch) => ch,
-        _ => return arena.pow(base, exp),
+        _ => return None,
     };
 
-    // Guard: don't expand huge powers.
-    // With multinomial expansion the number of terms is C(n+k-1, k-1),
-    // which is manageable up to ~200 for small k.
     let max_expand = arena.config.max_pow_exponent.min(200);
     if n > max_expand {
-        return arena.pow(base, exp);
+        return None;
     }
 
     tracing::debug!(
@@ -444,10 +456,43 @@ fn expand_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId {
     );
 
     let k = children.len();
-    if k == 2 {
+    Some(if k == 2 {
         binomial_expand_terms(arena, &children, n)
     } else {
         multinomial_expand_terms(arena, &children, n)
+    })
+}
+
+/// Expand `(x·y·z)^n` → `x^n · y^n · z^n` when base is a product.
+///
+/// Only applies when the base is `Mul` and the exponent is **not** a
+/// positive integer.  Positive-integer exponents of products are already
+/// handled correctly by `canon_pow` / `canon_mul`, and expanding them
+/// here would create new `Pow` nodes that aren't visited in the current
+/// bottom-up pass, breaking expand-idempotency (e.g. `(-x)^2` would
+/// stay as `(-x)^2` on the first expand but become `x^2` on the second).
+fn expand_power_base(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId> {
+    // Skip when exponent is a positive integer — those cases are
+    // already fully handled by canonicalization or multinomial expansion.
+    if let Some(r) = arena.as_num(exp)
+        && r.is_integer() && r.is_positive() {
+            return None;
+        }
+    if let ExprNode::Mul(ref children) = arena.node(base).clone() {
+        let factors: Vec<ExprId> = children.iter().map(|&c| arena.pow(c, exp)).collect();
+        Some(arena.mul(&factors))
+    } else {
+        None
+    }
+}
+
+/// Expand `x^(a+b+c)` → `x^a · x^b · x^c` when exponent is a sum.
+fn expand_power_exp(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId> {
+    if let ExprNode::Add(ref children) = arena.node(exp).clone() {
+        let factors: Vec<ExprId> = children.iter().map(|&e| arena.pow(base, e)).collect();
+        Some(arena.mul(&factors))
+    } else {
+        None
     }
 }
 

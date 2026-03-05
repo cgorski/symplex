@@ -1718,6 +1718,37 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// Rational simplification: combine fractions and cancel.
+    ///
+    /// Equivalent to calling [`together`](Self::together) to combine
+    /// fractions over a common denominator, then [`cancel`](Self::cancel)
+    /// with each free symbol to remove common factors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // 1/x + 1/x → 2/x after ratsimp
+    /// let expr = &x.powi(-1) + &x.powi(-1);
+    /// let simplified = expr.ratsimp();
+    /// let s = format!("{simplified}");
+    /// assert!(s.contains("2"), "ratsimp should combine: {s}");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn ratsimp(&self) -> Ex {
+        let together = self.together();
+        // Try to cancel with each free symbol
+        let syms = together.free_symbols();
+        let mut result = together;
+        for sym in &syms {
+            result = result.cancel(sym);
+        }
+        result
+    }
+
     /// Partial fraction decomposition with respect to `var`.
     ///
     /// Decomposes a rational expression into a sum of simpler fractions.
@@ -1822,6 +1853,45 @@ impl Expr<Numeric> {
     pub fn rationalize_denom(&self) -> Ex {
         let id = self.inner.write().arena.rationalize_denom_expr(self.id);
         self.wrap(id)
+    }
+
+    /// Separate variables in a multiplicative expression.
+    ///
+    /// Given a list of variables, partitions the top-level factors
+    /// by which variables they depend on. Returns a vec of
+    /// `(dependent_vars, product_of_factors)` pairs.
+    ///
+    /// - Factors that depend on none of the listed vars get an empty
+    ///   dependency list (i.e. they are "constant" w.r.t. the vars).
+    /// - Factors that depend on exactly one var are grouped together.
+    /// - Factors that depend on multiple vars form a "mixed" group.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// // 2 * x * y  — each factor depends on different vars
+    /// let expr = &x * &y * 2;
+    /// let groups = expr.separatevars(&[&x, &y]);
+    /// assert!(groups.len() >= 2, "should separate into multiple groups");
+    /// ```
+    #[must_use]
+    pub fn separatevars(&self, vars: &[&Ex]) -> Vec<(Vec<Ex>, Ex)> {
+        let var_ids: Vec<crate::node::ExprId> = vars.iter().map(|v| v.id).collect();
+        let raw = self
+            .inner
+            .write()
+            .arena
+            .separatevars_expr(self.id, &var_ids);
+        raw.into_iter()
+            .map(|(dep_ids, prod_id)| {
+                let dep_exprs: Vec<Ex> = dep_ids.into_iter().map(|id| self.wrap(id)).collect();
+                (dep_exprs, self.wrap(prod_id))
+            })
+            .collect()
     }
 
     // ── Polynomial introspection ───────────────────────────────────
