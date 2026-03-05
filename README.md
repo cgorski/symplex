@@ -1,50 +1,6 @@
 # Symplex
 
-Symbolic mathematics library for Rust.
-
-## Features
-
-- **Type-safe expression system** — `Expr<Numeric>` (aliased `Ex`) and `Expr<Boolean>` (aliased `BoolEx`) prevent mixing boolean and numeric expressions at compile time
-- **Expression building** — operator overloading (`+`, `-`, `*`, `/`, unary `-`), method chaining (`.pow()`, `.sin()`, `.diff()`), automatic canonicalization (flatten, sort, combine like terms, `Pow(Pow(a,b),c)→Pow(a,b*c)` for integer exponents — matching SymPy)
-- **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax with constants (`pi`, `E`, `I`) and rationals (`1/2`); `rule!(arena, "name", LHS => RHS)` for rewrite rules; `matrix!` and `eq!` for matrices and equations
-- **Boolean expressions** — relational comparisons (`>`, `<`, `>=`, `<=`, `==`, `!=`), logical connectives (`and`, `or`, `not`), `True`/`False` atoms
-- **Piecewise functions** — `Piecewise(value if condition, ...)` with differentiation and condition evaluation
-- **31+ math functions** — sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, ln, abs, sqrt, cbrt, nthroot, sec, csc, cot, acot, asec, acsc, coth, sech, csch, acoth, asech, acsch, sinc, atan2
-- **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
-- **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts (LIATE-ordered with recursion depth limit), u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals, inverse trig antiderivatives (asin, acos, atan), general linear substitution (ax+b)^n, expand-then-integrate fallback, negative trig powers (sec², csc², sec⁴, …), cyclic IBP (exp·sin, exp·cos)
-- **Taylor series** — expansion around any point with configurable order and pole detection
-- **Limits** — direct substitution, L'Hôpital's rule (0/0 and ∞/∞), series fallback, Gruntz algorithm for limits at infinity (exponential, logarithmic, polynomial growth rates)
-- **Equation solving** — polynomial (linear, quadratic, cubic via Cardano, quartic via Ferrari, higher-degree via rational root theorem), complex roots, linear systems (Gaussian elimination), numerical root finding (Newton's method), transcendental equations via inversion peeling (exp, ln, sin, cos, tan, sqrt) with change-of-variable, Mul-factor solving
-- **Simplification** — 24 rewrite rules with condition guards (Pythagorean, inverse pairs, exp combining, exp-log denesting, trig ratios, abs-positive) with sub-expression matching in Add and Mul, fixpoint iteration via `full_simplify()`, multi-strategy `smart_simplify()`, trigsimp (6-strategy choice-set), powsimp (symbolic exponent merging), combsimp (factorial/binomial), nsimplify (closed-form detection from floats), rewrite protocol (trig↔exp via Euler's formula)
-- **Algebraic manipulation** — expand, factor, collect, together, cancel, partial fractions (`apart`), trig expansion (`expand_trig`), log expansion (`expand_log`), logcombine
-- **Laplace transforms** — forward (table-based + structural rules) and inverse (partial fractions + table) — first Rust CAS with bidirectional Laplace
-- **Fourier series** — computation via integration
-- **Special functions** — Gamma, LogGamma, Digamma, Erf, Erfc, Beta with eval/diff rules; Heaviside, DiracDelta, LambertW
-- **Combinatorial functions** — 11 functions via Apply nodes: fibonacci, lucas, bernoulli, harmonic, catalan, bell, euler_number, subfactorial, factorial2, rising_factorial, falling_factorial
-- **Vector calculus** — gradient, divergence, curl, laplacian, is_conservative, is_solenoidal
-- **Logic connectives** — xor, implies, equivalent, nand, nor, ite on BoolEx
-- **Floor/Ceiling/Min/Max** — ExprNode variants with exact rational eval and canonicalization
-- **Symbolic sums and products** — ExprNode variants with finite evaluation
-- **Rust code generation** — `to_rust_fn()` with CSE, piecewise, all elementary functions
-- **Exact evaluation** — 86+ special values for trig/exp/ln including irrational values (√2/2, √3/2), perfect nth root evaluation, odd/even function detection, integer sqrt simplification (√8→2√2), trig-hyperbolic bridge (sin(ix)=i·sinh(x)), Gamma(n), erf(0), Beta
-- **Complex numbers** — i²=-1 canonicalization, (-1)^(1/2)→i, (-n)^(1/2)→i√n, complex quadratic roots, Euler's formula exp(iπ)=-1
-- **Complex decomposition** — `re()` / `im()` split expressions into real and imaginary parts
-- **Symbolic matrices** — construct, multiply, transpose, determinant (LU-based for large), inverse, trace, Jacobian, eigenvalues, char_poly, cofactor, adjugate, LU/QR decomposition, RREF, rank, nullspace, columnspace, norm, cross, dot, hstack, vstack, is_symmetric
-- **ODE solver** — separable, first-order linear, second-order constant-coefficient
-- **lambdify** — compile expressions to `Fn(f64) -> f64` closures for fast numerical evaluation
-- **Common subexpression elimination (CSE)** — extract shared subexpressions for code generation
-- **Factorial and binomial coefficients** — `n!` and `C(n,k)` with arbitrary-precision evaluation
-- **Denominator rationalization** — clear square roots from denominators
-- **Arbitrary-precision numerical evaluation** — via `astro-float`, any number of decimal digits
-- **Assumption system** — 23 mathematical properties (positive, real, integer, etc.) with forward-chaining inference
-- **Pattern matching** — wild symbols, named rewrite rules, simplification with trace
-- **Polynomial algebra** — dense univariate over ℚ, arithmetic, Euclidean GCD/LCM, degree, coefficients
-- **Serde serialization** — `ExprTree` for JSON interchange with round-trip support
-- **Runtime parser** — `symplex::parse::parse(&ctx, "x^2 + 1")` for REPL and dynamic construction
-- **Arbitrary-precision parser** — `symplex::parse::parse` lexes integers and decimals of any size into `BigInt`/`Ratio` tokens, with recursion depth protection — `0.1 + 0.2 = 3/10` exactly
-- **Tracing** — zero-cost `tracing` instrumentation throughout all core operations (simplification rules, integration strategies, limit algorithm steps, canonicalization). Enable with `RUST_LOG=symplex=debug`.
-- **Gruntz algorithm** — the gold standard for computing symbolic limits at infinity, handling `exp(-x)→0`, `ln(x)/x→0`, `x·exp(-x)→0`, and all elementary exp-log functions
-- **Thread safety** — `Ex` is `Send + Sync`; the arena uses `parking_lot::RwLock`
+Symbolic mathematics library for Rust. Provides differentiation, integration, equation solving, matrix algebra, and code generation with thread-safe, arena-based expression management. Expressions use hash-consing for O(1) structural equality and automatic canonicalization. The type system separates numeric (`Ex`) and boolean (`BoolEx`) expressions at compile time.
 
 ## Quick Start
 
@@ -125,6 +81,70 @@ println!("{}", symplex::pi().evalf(50).unwrap());
 | Quick variables | `symplex::var("x")` | `Context::new()` + `ctx.symbol("x")` |
 
 **Note:** The `expr!` macro uses the global default context. If you use `Context::new()` for custom configuration, build expressions with method calls instead of `expr!`, or use `symplex::var()` / `symplex::int()` for all symbols and constants.
+
+## Installation
+
+```sh
+cargo add symplex
+```
+
+## Features
+
+- **Expression system** — type-safe `Ex` (numeric) and `BoolEx` (boolean) with operator overloading, method chaining, and automatic canonicalization. Proc macros for natural math syntax: `expr!()`, `rule!()`, `matrix![]`, `eq!()`.
+- **Calculus** — symbolic differentiation (chain/product rule, higher-order, partial), integration (by-parts, u-substitution, partial fractions, trig powers, cyclic IBP), Taylor series, and limits (L'Hôpital, Gruntz algorithm).
+- **Algebra & solving** — expand, factor, collect, together, cancel, apart, trig/log expansion. Polynomial solving through quartic (Cardano/Ferrari), transcendental equation solving, linear systems, numerical root finding.
+- **Simplification** — 24 rewrite rules with condition guards, fixpoint iteration (`full_simplify`), multi-strategy `smart_simplify`, trigsimp, powsimp, combsimp, nsimplify, and rewrite protocol (trig↔exp via Euler's formula).
+- **Matrices & linear algebra** — determinant, inverse, eigenvalues, LU/QR decomposition, RREF, nullspace, rank, Jacobian, vector calculus (gradient, divergence, curl, laplacian).
+- **Transforms & special functions** — forward/inverse Laplace, Fourier series, ODE solver (separable, linear, constant-coefficient). Gamma, Erf, Beta, LambertW, Heaviside, DiracDelta, and 11 combinatorial functions.
+- **Numerical & code generation** — `lambdify` compiles expressions to `Fn(f64) -> f64` closures, CSE for code generation, `to_rust_fn()`, arbitrary-precision evaluation via `astro-float`, runtime parser.
+- **Architecture** — arena hash-consing with O(1) equality, thread-safe (`Send + Sync`), no recursion (explicit stacks), assumption system (23 properties), pattern matching, serde serialization, zero-cost `tracing` instrumentation.
+
+<details>
+<summary>Full feature list</summary>
+
+- **Type-safe expression system** — `Expr<Numeric>` (aliased `Ex`) and `Expr<Boolean>` (aliased `BoolEx`) prevent mixing boolean and numeric expressions at compile time
+- **Expression building** — operator overloading (`+`, `-`, `*`, `/`, unary `-`), method chaining (`.pow()`, `.sin()`, `.diff()`), automatic canonicalization (flatten, sort, combine like terms, `Pow(Pow(a,b),c)→Pow(a,b*c)` for integer exponents)
+- **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax with constants (`pi`, `E`, `I`) and rationals (`1/2`); `rule!(arena, "name", LHS => RHS)` for rewrite rules; `matrix!` and `eq!` for matrices and equations
+- **Boolean expressions** — relational comparisons (`>`, `<`, `>=`, `<=`, `==`, `!=`), logical connectives (`and`, `or`, `not`), `True`/`False` atoms
+- **Piecewise functions** — `Piecewise(value if condition, ...)` with differentiation and condition evaluation
+- **31+ math functions** — sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, ln, abs, sqrt, cbrt, nthroot, sec, csc, cot, acot, asec, acsc, coth, sech, csch, acoth, asech, acsch, sinc, atan2
+- **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
+- **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts (LIATE-ordered with recursion depth limit), u-substitution, inverse trig/hyperbolic standard forms, partial fraction decomposition, definite integrals, inverse trig antiderivatives, general linear substitution, expand-then-integrate fallback, negative trig powers, cyclic IBP (exp·sin, exp·cos)
+- **Taylor series** — expansion around any point with configurable order and pole detection
+- **Limits** — direct substitution, L'Hôpital's rule (0/0 and ∞/∞), series fallback, Gruntz algorithm for limits at infinity
+- **Equation solving** — polynomial (linear, quadratic, cubic via Cardano, quartic via Ferrari, higher-degree via rational root theorem), complex roots, linear systems (Gaussian elimination), numerical root finding (Newton's method), transcendental equations via inversion peeling
+- **Simplification** — 24 rewrite rules with condition guards, fixpoint iteration via `full_simplify()`, multi-strategy `smart_simplify()`, trigsimp (6-strategy choice-set), powsimp, combsimp, nsimplify, rewrite protocol (trig↔exp via Euler's formula)
+- **Algebraic manipulation** — expand, factor, collect, together, cancel, partial fractions (`apart`), trig expansion (`expand_trig`), log expansion (`expand_log`), logcombine
+- **Laplace transforms** — forward (table-based + structural rules) and inverse (partial fractions + table)
+- **Fourier series** — computation via integration
+- **Special functions** — Gamma, LogGamma, Digamma, Erf, Erfc, Beta with eval/diff rules; Heaviside, DiracDelta, LambertW
+- **Combinatorial functions** — 11 functions via Apply nodes: fibonacci, lucas, bernoulli, harmonic, catalan, bell, euler_number, subfactorial, factorial2, rising_factorial, falling_factorial
+- **Vector calculus** — gradient, divergence, curl, laplacian, is_conservative, is_solenoidal
+- **Logic connectives** — xor, implies, equivalent, nand, nor, ite on BoolEx
+- **Floor/Ceiling/Min/Max** — ExprNode variants with exact rational eval and canonicalization
+- **Symbolic sums and products** — ExprNode variants with finite evaluation
+- **Rust code generation** — `to_rust_fn()` with CSE, piecewise, all elementary functions
+- **Exact evaluation** — 86+ special values for trig/exp/ln including irrational values, perfect nth root evaluation, odd/even function detection, integer sqrt simplification, trig-hyperbolic bridge
+- **Complex numbers** — i²=-1 canonicalization, (-1)^(1/2)→i, complex quadratic roots, Euler's formula
+- **Complex decomposition** — `re()` / `im()` split expressions into real and imaginary parts
+- **Symbolic matrices** — construct, multiply, transpose, determinant, inverse, trace, Jacobian, eigenvalues, char_poly, cofactor, adjugate, LU/QR decomposition, RREF, rank, nullspace, columnspace, norm, cross, dot, hstack, vstack, is_symmetric
+- **ODE solver** — separable, first-order linear, second-order constant-coefficient
+- **lambdify** — compile expressions to `Fn(f64) -> f64` closures for numerical evaluation
+- **Common subexpression elimination (CSE)** — extract shared subexpressions for code generation
+- **Factorial and binomial coefficients** — `n!` and `C(n,k)` with arbitrary-precision evaluation
+- **Denominator rationalization** — clear square roots from denominators
+- **Arbitrary-precision numerical evaluation** — via `astro-float`, any number of decimal digits
+- **Assumption system** — 23 mathematical properties (positive, real, integer, etc.) with forward-chaining inference
+- **Pattern matching** — wild symbols, named rewrite rules, simplification with trace
+- **Polynomial algebra** — dense univariate over ℚ, arithmetic, Euclidean GCD/LCM, degree, coefficients
+- **Serde serialization** — `ExprTree` for JSON interchange with round-trip support
+- **Runtime parser** — `symplex::parse::parse(&ctx, "x^2 + 1")` for REPL and dynamic construction
+- **Arbitrary-precision parser** — lexes integers and decimals of any size into `BigInt`/`Ratio` tokens, with recursion depth protection — `0.1 + 0.2 = 3/10` exactly
+- **Tracing** — zero-cost `tracing` instrumentation throughout all core operations. Enable with `RUST_LOG=symplex=debug`.
+- **Gruntz algorithm** — computing symbolic limits at infinity, handling `exp(-x)→0`, `ln(x)/x→0`, `x·exp(-x)→0`, and all elementary exp-log functions
+- **Thread safety** — `Ex` is `Send + Sync`; the arena uses `parking_lot::RwLock`
+
+</details>
 
 ## API Reference
 
@@ -380,7 +400,8 @@ For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is pl
 
 All rules support sub-expression matching in Add and Mul. Rules with mathematical preconditions use condition guards (e.g., `pow_pow` requires at least one integer exponent; `abs_positive` requires the argument to be known positive).
 
-## Feature Comparison with SymPy
+<details>
+<summary>Feature Comparison with SymPy</summary>
 
 symplex covers the core algebra–calculus pipeline with a Rust-native architecture.
 SymPy has 20+ years of development and broader coverage. This matrix tracks both
@@ -507,6 +528,8 @@ what symplex has and what's missing.
 | `eq!(x^2 + x = 6)` | Equation construction |
 | `expr!(1/2)` | Exact rationals |
 | `expr!(pi)`, `expr!(I)` | Mathematical constants |
+
+</details>
 
 ## Dependencies
 

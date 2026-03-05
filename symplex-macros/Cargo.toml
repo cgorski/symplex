@@ -5,6 +5,12 @@ edition = "2024"
 rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"
 description = "Proc macros for the symplex symbolic mathematics library"
+repository = "https://github.com/cgorski/symplex"
+homepage = "https://github.com/cgorski/symplex"
+documentation = "https://docs.rs/symplex"
+readme = "../README.md"
+keywords = ["symbolic", "math", "proc-macro"]
+categories = ["mathematics"]
 
 [lib]
 proc-macro = true
