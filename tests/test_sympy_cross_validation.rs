@@ -979,8 +979,8 @@ fn process_matrix(ctx: &Context, fixture: &Fixture, subcat: &str) -> Status {
     match subcat {
         "det" => process_matrix_det(ctx, fixture),
         "trace" => process_matrix_trace(ctx, fixture),
-        "inverse" => Status::UnsupportedApi("matrix inverse not in public API".into()),
-        "eigenvalue" => Status::UnsupportedApi("matrix eigenvalues not in public API".into()),
+        "inverse" => process_matrix_inverse(ctx, fixture),
+        "eigenvalue" => process_matrix_eigenvalue(ctx, fixture),
         "multiply" => process_matrix_multiply(ctx, fixture),
         other => Status::UnsupportedApi(format!("matrix subcategory '{}' not supported", other)),
     }
@@ -1114,6 +1114,124 @@ fn process_matrix_multiply(ctx: &Context, fixture: &Fixture) -> Status {
     } else {
         Status::NotImplemented("no expected result_matrix in fixture".into())
     }
+}
+
+fn process_matrix_inverse(ctx: &Context, fixture: &Fixture) -> Status {
+    let rows = match &fixture.matrix {
+        Some(m) => m,
+        None => return Status::NotImplemented("no matrix in fixture".into()),
+    };
+
+    let mat = match parse_matrix_from_json(ctx, rows) {
+        Some(m) => m,
+        None => return Status::NotImplemented("can't parse matrix".into()),
+    };
+
+    let inv = match mat.inv() {
+        Some(m) => m,
+        None => return Status::NotImplemented("matrix is singular (inv returned None)".into()),
+    };
+
+    if let Some(expected_rows) = &fixture.result_matrix {
+        let expected_mat = match parse_matrix_from_json(ctx, expected_rows) {
+            Some(m) => m,
+            None => return Status::NotImplemented("can't parse expected result_matrix".into()),
+        };
+
+        let (nr, nc) = inv.shape();
+        let (enr, enc) = expected_mat.shape();
+        if nr != enr || nc != enc {
+            return Status::Fail(format!(
+                "inverse shape mismatch: ({},{}) vs ({},{})",
+                nr, nc, enr, enc
+            ));
+        }
+
+        for i in 0..nr {
+            for j in 0..nc {
+                let got = inv.get(i, j).eval();
+                let exp = expected_mat.get(i, j).eval();
+                match (got.evalf_f64(), exp.evalf_f64()) {
+                    (Ok(g), Ok(e)) if !g.is_nan() && !e.is_nan() => {
+                        if !approx_eq(g, e) {
+                            return Status::Fail(format!(
+                                "inverse[{},{}]: symplex={}, sympy={}",
+                                i, j, g, e
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Status::NotImplemented(format!("can't evalf inverse[{},{}]", i, j));
+                    }
+                }
+            }
+        }
+        Status::Pass
+    } else {
+        Status::NotImplemented("no expected result_matrix for inverse".into())
+    }
+}
+
+fn process_matrix_eigenvalue(ctx: &Context, fixture: &Fixture) -> Status {
+    let rows = match &fixture.matrix {
+        Some(m) => m,
+        None => return Status::NotImplemented("no matrix in fixture".into()),
+    };
+
+    let mat = match parse_matrix_from_json(ctx, rows) {
+        Some(m) => m,
+        None => return Status::NotImplemented("can't parse matrix".into()),
+    };
+
+    let expected_eigs = match &fixture.eigenvalues {
+        Some(e) => e,
+        None => return Status::NotImplemented("no eigenvalues in fixture".into()),
+    };
+
+    let lambda = ctx.symbol("lambda");
+    let computed = mat.eigenvals(&lambda);
+
+    if computed.is_empty() {
+        return Status::NotImplemented("eigenvalue solver returned empty".into());
+    }
+
+    // Collect computed eigenvalues as f64
+    let mut computed_vals: Vec<f64> = Vec::new();
+    for ev in &computed {
+        match ev.evalf_f64() {
+            Ok(v) if !v.is_nan() => computed_vals.push(v),
+            _ => {
+                return Status::NotImplemented(format!("can't evalf eigenvalue: {}", ev));
+            }
+        }
+    }
+    computed_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Collect expected eigenvalues (with multiplicity) as f64
+    let mut expected_vals: Vec<f64> = Vec::new();
+    for ev in expected_eigs {
+        let mult = ev.multiplicity.unwrap_or(1);
+        for _ in 0..mult {
+            expected_vals.push(ev.re);
+        }
+    }
+    expected_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    if computed_vals.len() != expected_vals.len() {
+        return Status::Fail(format!(
+            "eigenvalue count mismatch: symplex={}, sympy={}",
+            computed_vals.len(),
+            expected_vals.len()
+        ));
+    }
+
+    for (i, (got, exp)) in computed_vals.iter().zip(expected_vals.iter()).enumerate() {
+        if !approx_eq(*got, *exp) {
+            return Status::Fail(format!("eigenvalue[{}]: symplex={}, sympy={}", i, got, exp));
+        }
+    }
+
+    Status::Pass
 }
 
 // ── algebra ────────────────────────────────────────────────────────────

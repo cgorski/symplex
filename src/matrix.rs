@@ -185,6 +185,36 @@ impl Matrix {
         );
         &self.rows[i]
     }
+
+    // ── Context-aware zero / one ───────────────────────────────────────
+    //
+    // These produce 0 and 1 in the *same* context as the matrix's
+    // elements, avoiding "cannot mix expressions from different contexts"
+    // panics when the matrix was built from a non-default Context.
+
+    /// Zero expression in the matrix's own context.
+    ///
+    /// Falls back to `Ex::zero()` (global context) for empty matrices.
+    fn ctx_zero(&self) -> Ex {
+        if let Some(elem) = self.rows.first().and_then(|r| r.first()) {
+            let zero_id = elem.inner.read().arena.zero();
+            elem.wrap(zero_id)
+        } else {
+            Ex::zero()
+        }
+    }
+
+    /// One expression in the matrix's own context.
+    ///
+    /// Falls back to `Ex::one()` (global context) for empty matrices.
+    fn ctx_one(&self) -> Ex {
+        if let Some(elem) = self.rows.first().and_then(|r| r.first()) {
+            let one_id = elem.inner.read().arena.one();
+            elem.wrap(one_id)
+        } else {
+            Ex::one()
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -320,12 +350,14 @@ impl Matrix {
         acc
     }
 
-    /// Determinant via cofactor expansion along the first row.
-    ///
     /// Determinant of a square matrix.
     ///
-    /// For small matrices (≤ 4×4) this uses cofactor expansion.
-    /// For larger matrices it switches to LU decomposition (O(n³)).
+    /// Dispatch strategy:
+    /// - 0×0 → 1 (empty product)
+    /// - 1×1 → element
+    /// - 2×2 → ad − bc
+    /// - 3×3 → cofactor expansion (hard-coded, fast)
+    /// - n ≥ 4 → Bareiss fraction-free elimination (O(n³))
     ///
     /// # Panics
     ///
@@ -336,14 +368,21 @@ impl Matrix {
             "Determinant requires a square matrix, got {}×{}",
             self.nrows, self.ncols
         );
-
-        // For small matrices, cofactor expansion is fine
-        if self.nrows <= 4 {
-            return self.det_cofactor();
+        let n = self.nrows;
+        match n {
+            0 => Ex::one(),
+            1 => self.get(0, 0).clone(),
+            2 => {
+                // ad - bc
+                let a = self.get(0, 0);
+                let b = self.get(0, 1);
+                let c = self.get(1, 0);
+                let d = self.get(1, 1);
+                &(a * d) - &(b * c)
+            }
+            3 => self.det_cofactor(), // hard-coded 3×3 is fast
+            _ => self.det_bareiss(),  // Bareiss for n ≥ 4
         }
-
-        // For larger matrices, use LU decomposition (O(n³))
-        self.det_lu()
     }
 
     /// Determinant via cofactor expansion (O(n!) — only for small matrices).
@@ -352,6 +391,7 @@ impl Matrix {
     }
 
     /// Determinant via LU decomposition (O(n³)).
+    #[allow(dead_code)]
     fn det_lu(&self) -> Ex {
         match self.lu() {
             Some((_, u, perm)) => {
@@ -373,6 +413,78 @@ impl Matrix {
             }
             None => Ex::zero(), // Singular matrix
         }
+    }
+
+    /// Determinant via Bareiss fraction-free elimination.
+    ///
+    /// O(n³) element operations. Uses exact division (Sylvester's identity)
+    /// to avoid introducing symbolic fractions. Superior to LU for symbolic
+    /// matrices because it doesn't accumulate denominators.
+    fn det_bareiss(&self) -> Ex {
+        let n = self.nrows();
+
+        // Work on a copy of the matrix entries
+        let mut m: Vec<Vec<Ex>> = (0..n)
+            .map(|i| (0..n).map(|j| self.get(i, j).clone()).collect())
+            .collect();
+
+        let mut sign = 1i64; // track row swaps
+        let mut prev_pivot = self.ctx_one();
+
+        for k in 0..n - 1 {
+            // Find pivot: first non-zero in column k, rows k..n
+            let pivot_row = Self::find_bareiss_pivot(&m, k, n);
+
+            match pivot_row {
+                None => return self.ctx_zero(), // singular matrix
+                Some(pr) if pr != k => {
+                    // Swap rows
+                    m.swap(k, pr);
+                    sign = -sign;
+                }
+                _ => {} // pivot is already in row k
+            }
+
+            let pivot = m[k][k].clone();
+
+            // Bareiss elimination
+            for i in (k + 1)..n {
+                for j in (k + 1)..n {
+                    // new[i][j] = (pivot * m[i][j] - m[i][k] * m[k][j]) / prev_pivot
+                    let numer = &(&pivot * &m[i][j]) - &(&m[i][k] * &m[k][j]);
+                    // Exact division by prev_pivot (guaranteed by Sylvester's identity)
+                    m[i][j] = (&numer / &prev_pivot).eval();
+                }
+                m[i][k] = self.ctx_zero(); // zero below pivot (optional but clean)
+            }
+
+            prev_pivot = pivot;
+        }
+
+        // Determinant is bottom-right element × sign
+        let det = m[n - 1][n - 1].clone();
+        if sign < 0 { -det } else { det }
+    }
+
+    /// Find a non-zero pivot in column k, rows k..n.
+    /// Uses 2-pass strategy: structural zero → eval zero.
+    #[allow(clippy::needless_range_loop)]
+    fn find_bareiss_pivot(m: &[Vec<Ex>], k: usize, n: usize) -> Option<usize> {
+        // Pass 1: find structurally non-zero entry
+        for i in k..n {
+            if !m[i][k].is_zero_structural() {
+                return Some(i);
+            }
+        }
+        // Pass 2: try eval().is_zero_structural()
+        for i in k..n {
+            let evaled = m[i][k].eval();
+            if !evaled.is_zero_structural() {
+                return Some(i);
+            }
+        }
+        // All entries appear to be zero
+        None
     }
 
     /// Recursive cofactor expansion helper.
@@ -527,11 +639,11 @@ impl Matrix {
         }
         // 1×1 special case: inverse is just [[1/a]]
         if self.nrows() == 1 {
-            let one_over_det = &Ex::one() / &d;
+            let one_over_det = &self.ctx_one() / &d;
             return Some(Matrix::new(vec![vec![one_over_det]]));
         }
         let adj = self.adjugate();
-        let one_over_det = &Ex::one() / &d;
+        let one_over_det = &self.ctx_one() / &d;
         Some(adj.scale(&one_over_det))
     }
 
