@@ -7,9 +7,10 @@
 //! eval → expand → simplify → **cancel** until convergence.
 
 use crate::arena::Arena;
-use crate::node::ExprId;
+use crate::node::{ExprId, ExprNode};
 use crate::walk;
 use num_traits::One;
+use num_traits::Signed;
 
 /// Count the number of operations (nodes) in an expression.
 ///
@@ -24,6 +25,80 @@ pub(crate) fn count_ops(arena: &Arena, expr: ExprId) -> usize {
         }
     }
     count
+}
+
+// ── Type-based strategy gating ─────────────────────────────────────────
+
+/// Flags indicating which node types appear in an expression.
+/// Used to skip irrelevant simplification strategies.
+struct ExprFlags {
+    has_trig: bool,
+    has_hyp: bool,
+    has_exp_ln: bool,
+    has_neg_pow: bool,
+    has_add: bool,
+    has_apply: bool,
+    is_atom: bool,
+    node_count: usize,
+}
+
+/// Compute expression flags in a single tree walk.
+fn compute_flags(arena: &Arena, expr: ExprId) -> ExprFlags {
+    let post_order = crate::walk::post_order_ids(arena, expr);
+    let mut flags = ExprFlags {
+        has_trig: false,
+        has_hyp: false,
+        has_exp_ln: false,
+        has_neg_pow: false,
+        has_add: false,
+        has_apply: false,
+        is_atom: post_order.len() == 1 && arena.node(expr).is_atom(),
+        node_count: post_order.len(),
+    };
+
+    for &id in &post_order {
+        match arena.node(id) {
+            ExprNode::Sin(_)
+            | ExprNode::Cos(_)
+            | ExprNode::Tan(_)
+            | ExprNode::Asin(_)
+            | ExprNode::Acos(_)
+            | ExprNode::Atan(_) => {
+                flags.has_trig = true;
+            }
+            ExprNode::Sinh(_)
+            | ExprNode::Cosh(_)
+            | ExprNode::Tanh(_)
+            | ExprNode::Asinh(_)
+            | ExprNode::Acosh(_)
+            | ExprNode::Atanh(_) => {
+                flags.has_hyp = true;
+            }
+            ExprNode::Exp(_) | ExprNode::Ln(_) => {
+                flags.has_exp_ln = true;
+            }
+            ExprNode::Pow(_, exp) => {
+                if let Some(r) = arena.as_num(*exp)
+                    && r.is_negative() {
+                        flags.has_neg_pow = true;
+                    }
+            }
+            ExprNode::Add(_) => flags.has_add = true,
+            ExprNode::Apply(_, _) => flags.has_apply = true,
+            _ => {}
+        }
+    }
+
+    flags
+}
+
+/// Helper: update `best` / `best_ops` if `candidate` has a lower op-count.
+fn update_best(arena: &Arena, best: &mut ExprId, best_ops: &mut usize, candidate: ExprId) {
+    let ops = count_ops(arena, candidate);
+    if ops < *best_ops {
+        *best = candidate;
+        *best_ops = ops;
+    }
 }
 
 /// Try multiple simplification strategies and return the "simplest" result.
@@ -41,133 +116,154 @@ pub(crate) fn count_ops(arena: &Arena, expr: ExprId) -> usize {
 /// If the best result is more than 1.7× the complexity of the original,
 /// the original is returned (to prevent "simplification" that makes things worse).
 pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
-    let original_ops = count_ops(arena, expr);
+    let flags = compute_flags(arena, expr);
 
-    // Strategy 1: eval only
+    // Early exit for atoms — nothing to simplify
+    if flags.is_atom {
+        tracing::debug!("smart_simplify: early exit for atom expression");
+        return expr;
+    }
+
+    let original_ops = count_ops(arena, expr);
+    let mut best = expr;
+    let mut best_ops = original_ops;
+
+    // Strategy 1: eval only (always try — cheap)
     let s1 = crate::eval::eval(arena, expr);
     tracing::trace!(
         strategy = "eval",
         ops = count_ops(arena, s1),
         "strategy evaluated"
     );
+    update_best(arena, &mut best, &mut best_ops, s1);
 
-    // Strategy 2: eval → simplify
-    let rules = crate::pattern::basic_rules(arena);
-    let s2_eval = crate::eval::eval(arena, expr);
-    let (s2, _) = crate::pattern::apply_rules(arena, s2_eval, &rules);
-    tracing::trace!(
-        strategy = "eval+rules",
-        ops = count_ops(arena, s2),
-        "strategy evaluated"
-    );
-
-    // Strategy 3: eval → expand → simplify
-    let s3_eval = crate::eval::eval(arena, expr);
-    let s3_expand = crate::expand::expand(arena, s3_eval);
-    let s3_eval2 = crate::eval::eval(arena, s3_expand);
-    let (s3, _) = crate::pattern::apply_rules(arena, s3_eval2, &rules);
-    tracing::trace!(
-        strategy = "eval+expand+rules",
-        ops = count_ops(arena, s3),
-        "strategy evaluated"
-    );
-
-    // Strategy 4: eval → factor_terms → simplify inner → multiply GCD back
-    let s4_eval = crate::eval::eval(arena, expr);
-    let (gcd, s4_inner) = crate::factor_terms::factor_terms_pair(arena, s4_eval);
-    let (s4_simplified, _) = crate::pattern::apply_rules(arena, s4_inner, &rules);
-    let s4 = if gcd.is_one() {
-        s4_simplified
+    // Strategy 2: eval → pattern rules (only if trig/exp/hyp present)
+    if flags.has_trig || flags.has_exp_ln || flags.has_hyp {
+        let rules = crate::pattern::basic_rules(arena);
+        let s2_eval = crate::eval::eval(arena, expr);
+        let (s2, _) = crate::pattern::apply_rules(arena, s2_eval, &rules);
+        tracing::trace!(
+            strategy = "eval+rules",
+            ops = count_ops(arena, s2),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s2);
     } else {
-        let nid = arena.intern_num(gcd);
-        let gcd_id = arena.intern(crate::node::ExprNode::Num(nid));
-        arena.mul(&[gcd_id, s4_simplified])
-    };
-    tracing::trace!(
-        strategy = "eval+factor+rules",
-        ops = count_ops(arena, s4),
-        "strategy evaluated"
-    );
+        tracing::debug!("smart_simplify: skipping pattern rules (no trig/exp/hyp nodes)");
+    }
 
-    // Strategy 5: eval → expand_trig → simplify
-    let s5_eval = crate::eval::eval(arena, expr);
-    let s5_trig = crate::trig_expand::expand_trig(arena, s5_eval);
-    let s5_eval2 = crate::eval::eval(arena, s5_trig);
-    let (s5, _) = crate::pattern::apply_rules(arena, s5_eval2, &rules);
-    tracing::trace!(
-        strategy = "eval+trig_expand+rules",
-        ops = count_ops(arena, s5),
-        "strategy evaluated"
-    );
+    // Strategy 3: eval → expand → simplify (always try — helps with polynomial algebra)
+    {
+        let rules = crate::pattern::basic_rules(arena);
+        let s3_eval = crate::eval::eval(arena, expr);
+        let s3_expand = crate::expand::expand(arena, s3_eval);
+        let s3_eval2 = crate::eval::eval(arena, s3_expand);
+        let (s3, _) = crate::pattern::apply_rules(arena, s3_eval2, &rules);
+        tracing::trace!(
+            strategy = "eval+expand+rules",
+            ops = count_ops(arena, s3),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s3);
+    }
 
-    // Strategy 6: eval → logcombine → simplify
-    let s6_eval = crate::eval::eval(arena, expr);
-    let s6_log = crate::log_combine::log_combine(arena, s6_eval);
-    let (s6, _) = crate::pattern::apply_rules(arena, s6_log, &rules);
-    tracing::trace!(
-        strategy = "eval+logcombine+rules",
-        ops = count_ops(arena, s6),
-        "strategy evaluated"
-    );
+    // Strategy 4: eval → factor_terms → simplify (only if has Add)
+    if flags.has_add {
+        let rules = crate::pattern::basic_rules(arena);
+        let s4_eval = crate::eval::eval(arena, expr);
+        let (gcd, s4_inner) = crate::factor_terms::factor_terms_pair(arena, s4_eval);
+        let (s4_simplified, _) = crate::pattern::apply_rules(arena, s4_inner, &rules);
+        let s4 = if gcd.is_one() {
+            s4_simplified
+        } else {
+            let nid = arena.intern_num(gcd);
+            let gcd_id = arena.intern(crate::node::ExprNode::Num(nid));
+            arena.mul(&[gcd_id, s4_simplified])
+        };
+        tracing::trace!(
+            strategy = "eval+factor+rules",
+            ops = count_ops(arena, s4),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s4);
+    } else {
+        tracing::debug!("smart_simplify: skipping factor_terms (no Add nodes)");
+    }
 
-    // Strategy 7: eval → cancel with free symbols → simplify
-    // For rational expressions like (x²-1)/(x-1) → x+1
-    let s7 = {
+    // Strategy 5: eval → expand_trig → simplify (only if has trig)
+    if flags.has_trig {
+        let rules = crate::pattern::basic_rules(arena);
+        let s5_eval = crate::eval::eval(arena, expr);
+        let s5_trig = crate::trig_expand::expand_trig(arena, s5_eval);
+        let s5_eval2 = crate::eval::eval(arena, s5_trig);
+        let (s5, _) = crate::pattern::apply_rules(arena, s5_eval2, &rules);
+        tracing::trace!(
+            strategy = "eval+trig_expand+rules",
+            ops = count_ops(arena, s5),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s5);
+    } else {
+        tracing::debug!("smart_simplify: skipping trig_expand (no trig nodes)");
+    }
+
+    // Strategy 6: eval → logcombine → simplify (only if has Ln nodes)
+    if flags.has_exp_ln {
+        let rules = crate::pattern::basic_rules(arena);
+        let s6_eval = crate::eval::eval(arena, expr);
+        let s6_log = crate::log_combine::log_combine(arena, s6_eval);
+        let (s6, _) = crate::pattern::apply_rules(arena, s6_log, &rules);
+        tracing::trace!(
+            strategy = "eval+logcombine+rules",
+            ops = count_ops(arena, s6),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s6);
+    } else {
+        tracing::debug!("smart_simplify: skipping logcombine (no exp/ln nodes)");
+    }
+
+    // Strategy 7: eval → cancel with free symbols → simplify (only if has neg powers / fractions)
+    if flags.has_neg_pow {
+        let rules = crate::pattern::basic_rules(arena);
         let evaled = crate::eval::eval(arena, expr);
         let free = crate::walk::free_symbols(arena, evaled);
-        let mut best = evaled;
-        let mut best_ops = count_ops(arena, evaled);
+        let mut cancel_best = evaled;
+        let mut cancel_best_ops = count_ops(arena, evaled);
         for &sym in &free {
             let cancelled = crate::polybridge::cancel(arena, evaled, sym);
             let cancelled_eval = crate::eval::eval(arena, cancelled);
             let (cancelled_simp, _) = crate::pattern::apply_rules(arena, cancelled_eval, &rules);
             let ops = count_ops(arena, cancelled_simp);
-            if ops < best_ops {
-                best = cancelled_simp;
-                best_ops = ops;
+            if ops < cancel_best_ops {
+                cancel_best = cancelled_simp;
+                cancel_best_ops = ops;
             }
         }
-        best
-    };
-    tracing::trace!(
-        strategy = "eval+cancel+rules",
-        ops = count_ops(arena, s7),
-        "strategy evaluated"
-    );
-
-    // Collect candidates
-    let candidates = [expr, s1, s2, s3, s4, s5, s6, s7];
-    let strategy_names = [
-        "original",
-        "eval",
-        "eval+rules",
-        "eval+expand+rules",
-        "eval+factor+rules",
-        "eval+trig_expand+rules",
-        "eval+logcombine+rules",
-        "eval+cancel+rules",
-    ];
-
-    // Pick the one with lowest ops
-    let best_idx = candidates
-        .iter()
-        .enumerate()
-        .min_by_key(|&(_, &e)| count_ops(arena, e))
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let best = candidates[best_idx];
-    let strategy_name = strategy_names[best_idx];
-
-    // Guard: don't return something much more complex than original
-    let best_ops = count_ops(arena, best);
+        tracing::trace!(
+            strategy = "eval+cancel+rules",
+            ops = cancel_best_ops,
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, cancel_best);
+    } else {
+        tracing::debug!("smart_simplify: skipping cancel (no negative-power nodes)");
+    }
 
     tracing::debug!(
-        winning_strategy = strategy_name,
         ops_original = original_ops,
         ops_result = best_ops,
-        "smart_simplify selected strategy"
+        node_count = flags.node_count,
+        has_trig = flags.has_trig,
+        has_hyp = flags.has_hyp,
+        has_exp_ln = flags.has_exp_ln,
+        has_neg_pow = flags.has_neg_pow,
+        has_add = flags.has_add,
+        has_apply = flags.has_apply,
+        "smart_simplify selected best"
     );
 
+    // Guard: don't return something much more complex than original
     if original_ops > 0 && best_ops as f64 > 1.7 * original_ops as f64 {
         return expr;
     }
@@ -486,5 +582,76 @@ mod tests {
         let two = a.int(2);
         let x_plus_2 = a.add(&[x, two]);
         assert_ne!(result, x_plus_2, "smart_simplify must not drop GCD factor");
+    }
+
+    // ── Tests for compute_flags ────────────────────────────────────────
+
+    #[test]
+    fn compute_flags_atom() {
+        let a = Arena::new();
+        let flags = compute_flags(&a, a.zero);
+        assert!(flags.is_atom);
+        assert!(!flags.has_trig);
+        assert!(!flags.has_hyp);
+        assert!(!flags.has_exp_ln);
+        assert!(!flags.has_neg_pow);
+        assert!(!flags.has_add);
+        assert!(!flags.has_apply);
+        assert_eq!(flags.node_count, 1);
+    }
+
+    #[test]
+    fn compute_flags_trig() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let sin_x = a.sin(x);
+        let flags = compute_flags(&a, sin_x);
+        assert!(flags.has_trig);
+        assert!(!flags.has_hyp);
+        assert!(!flags.has_exp_ln);
+        assert!(!flags.is_atom);
+    }
+
+    #[test]
+    fn compute_flags_exp_ln() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let ln_x = a.ln(x);
+        let exp_ln_x = a.exp(ln_x);
+        let flags = compute_flags(&a, exp_ln_x);
+        assert!(flags.has_exp_ln);
+        assert!(!flags.has_trig);
+    }
+
+    #[test]
+    fn compute_flags_neg_pow() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let neg_one = a.int(-1);
+        let recip = a.pow(x, neg_one);
+        let flags = compute_flags(&a, recip);
+        assert!(flags.has_neg_pow);
+        assert!(!flags.has_trig);
+    }
+
+    #[test]
+    fn compute_flags_add() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let sum = a.add(&[x, y]);
+        let flags = compute_flags(&a, sum);
+        assert!(flags.has_add);
+        assert!(!flags.has_trig);
+    }
+
+    #[test]
+    fn compute_flags_hyp() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let sinh_x = a.sinh(x);
+        let flags = compute_flags(&a, sinh_x);
+        assert!(flags.has_hyp);
+        assert!(!flags.has_trig);
     }
 }

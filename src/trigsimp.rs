@@ -13,6 +13,18 @@ use crate::node::{ExprId, ExprNode};
 use crate::simplify_engine::count_ops;
 use crate::walk;
 
+/// Walk the expression tree and return `true` if any node matches the predicate.
+/// Short-circuits on first match for efficiency.
+fn walk_has_node_type(arena: &Arena, expr: ExprId, predicate: impl Fn(&ExprNode) -> bool) -> bool {
+    let post_order = walk::post_order_ids(arena, expr);
+    for &id in &post_order {
+        if predicate(arena.node(id)) {
+            return true;
+        }
+    }
+    false
+}
+
 use rustc_hash::FxHashMap;
 
 /// Apply trigonometric simplification rules exhaustively.
@@ -26,6 +38,24 @@ use rustc_hash::FxHashMap;
 /// 5. trig_combine (product-to-sum, double-angle identities)
 /// 6. expand_trig then eval + pattern simplify
 pub(crate) fn trigsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
+    // Early exit: if no trig nodes, nothing to simplify
+    let has_trig = walk_has_node_type(arena, expr, |node| {
+        matches!(
+            node,
+            ExprNode::Sin(_)
+                | ExprNode::Cos(_)
+                | ExprNode::Tan(_)
+                | ExprNode::Asin(_)
+                | ExprNode::Acos(_)
+                | ExprNode::Atan(_)
+        )
+    });
+
+    if !has_trig {
+        tracing::debug!("trigsimp: skipping all strategies (no trig nodes)");
+        return expr;
+    }
+
     // Strategy 1: original expression (baseline)
     let s0 = expr;
 

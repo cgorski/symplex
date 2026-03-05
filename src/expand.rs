@@ -23,6 +23,9 @@
 //! so by the time we reach a `Mul` or `Pow`, the children are already
 //! in expanded form.
 
+use num_bigint::BigInt;
+use num_rational::Ratio;
+use num_traits::One;
 use smallvec::SmallVec;
 
 use crate::arena::Arena;
@@ -395,6 +398,11 @@ fn expand_mul(arena: &mut Arena, factors: &[ExprId]) -> ExprId {
 
 /// Expand `base^exp` when base is an Add and exp is a non-negative
 /// integer.  Otherwise returns the Pow unchanged.
+///
+/// For Add bases with positive integer exponents, uses the multinomial
+/// theorem directly instead of repeated multiplication, giving
+/// O(C(n+k−1, k−1)) term generation instead of O(k^n) intermediate
+/// products.
 fn expand_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId {
     // Only expand when exp is a positive integer.
     let exp_val = match arena.as_num(exp) {
@@ -413,22 +421,192 @@ fn expand_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId {
         return arena.pow(base, exp);
     }
 
+    let n = exp_val as usize;
+
     // Only expand if base is an Add.
-    if !matches!(arena.node(base), ExprNode::Add(_)) {
+    let children = match arena.node(base).clone() {
+        ExprNode::Add(ch) => ch,
+        _ => return arena.pow(base, exp),
+    };
+
+    // Guard: don't expand huge powers.
+    // With multinomial expansion the number of terms is C(n+k-1, k-1),
+    // which is manageable up to ~200 for small k.
+    let max_expand = arena.config.max_pow_exponent.min(200);
+    if n > max_expand {
         return arena.pow(base, exp);
     }
 
-    // Guard: don't expand huge powers (could create exponential terms).
-    let max_expand = arena.config.max_pow_exponent.min(20);
-    if (exp_val as usize) > max_expand {
-        return arena.pow(base, exp);
+    tracing::debug!(
+        "expand_pow: multinomial expansion for {}-term Add ^ {}",
+        children.len(),
+        n
+    );
+
+    let k = children.len();
+    if k == 2 {
+        binomial_expand_terms(arena, &children, n)
+    } else {
+        multinomial_expand_terms(arena, &children, n)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Multinomial / binomial expansion helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Expand `(a + b)^n` using the binomial theorem.
+///
+/// Produces `n + 1` terms: `Σ_{k=0}^{n} C(n,k) · a^(n−k) · b^k`.
+/// Binomial coefficients are computed incrementally via the multiplicative
+/// recurrence `C(n, k) = C(n, k−1) · (n−k+1) / k` to avoid factorial
+/// overflow.
+fn binomial_expand_terms(arena: &mut Arena, children: &[ExprId], n: usize) -> ExprId {
+    let a = children[0];
+    let b = children[1];
+
+    let mut coeff = BigInt::one(); // C(n, 0) = 1
+    let mut terms = Vec::with_capacity(n + 1);
+
+    // k=0: C(n,0) · a^n · b^0 = a^n
+    let a_pow_n = if n == 1 {
+        a
+    } else {
+        let exp_id = arena.int(n as i64);
+        arena.pow(a, exp_id)
+    };
+    terms.push(a_pow_n);
+
+    for k in 1..=n {
+        // C(n, k) = C(n, k-1) * (n - k + 1) / k
+        coeff *= BigInt::from(n - k + 1);
+        coeff /= BigInt::from(k);
+
+        // Build coefficient expression (skip if 1)
+        let mut factors: SmallVec<[ExprId; 4]> = SmallVec::new();
+        if coeff != BigInt::one() {
+            let coeff_r = Ratio::from_integer(coeff.clone());
+            let nid = arena.intern_num(coeff_r);
+            factors.push(arena.intern(ExprNode::Num(nid)));
+        }
+
+        // a^(n-k)
+        let a_exp = n - k;
+        if a_exp == 1 {
+            factors.push(a);
+        } else if a_exp >= 2 {
+            let exp_id = arena.int(a_exp as i64);
+            factors.push(arena.pow(a, exp_id));
+        }
+
+        // b^k
+        if k == 1 {
+            factors.push(b);
+        } else {
+            let exp_id = arena.int(k as i64);
+            factors.push(arena.pow(b, exp_id));
+        }
+
+        let term = if factors.len() == 1 {
+            factors[0]
+        } else {
+            arena.mul(&factors)
+        };
+        terms.push(term);
     }
 
-    // Expand via repeated multiplication:
-    // (a + b)^3 = (a + b) * (a + b) * (a + b)
-    // We build the factors list and call expand_mul which distributes.
-    let factors: Vec<ExprId> = (0..exp_val as usize).map(|_| base).collect();
-    expand_mul(arena, &factors)
+    arena.add(&terms)
+}
+
+/// Expand `(x₁ + x₂ + … + xₖ)^n` using the multinomial theorem.
+///
+/// Enumerates all weak compositions of `n` into `k` non-negative parts
+/// and produces one term per composition:
+///   `n! / (n₁! · … · nₖ!) · x₁^n₁ · … · xₖ^nₖ`.
+fn multinomial_expand_terms(arena: &mut Arena, children: &[ExprId], n: usize) -> ExprId {
+    let k = children.len();
+    let compositions = generate_compositions(n, k);
+    let mut terms = Vec::with_capacity(compositions.len());
+
+    for partition in &compositions {
+        // Compute multinomial coefficient n! / (n₁! · n₂! · … · nₖ!)
+        let coeff = multinomial_coeff(n, partition);
+
+        // Build term: coeff · x₁^n₁ · x₂^n₂ · … · xₖ^nₖ
+        let mut factors: SmallVec<[ExprId; 6]> = SmallVec::new();
+        if coeff != BigInt::one() {
+            let coeff_r = Ratio::from_integer(coeff);
+            let nid = arena.intern_num(coeff_r);
+            factors.push(arena.intern(ExprNode::Num(nid)));
+        }
+
+        for (i, &ni) in partition.iter().enumerate() {
+            if ni == 1 {
+                factors.push(children[i]);
+            } else if ni >= 2 {
+                let exp_id = arena.int(ni as i64);
+                factors.push(arena.pow(children[i], exp_id));
+            }
+            // ni == 0 → omit this variable from the product
+        }
+
+        let term = if factors.len() == 1 {
+            factors[0]
+        } else {
+            arena.mul(&factors)
+        };
+        terms.push(term);
+    }
+
+    arena.add(&terms)
+}
+
+/// Compute the multinomial coefficient `n! / (n₁! · n₂! · … · nₖ!)`.
+///
+/// Uses the product-of-binomials identity:
+///   `C(n; n₁,…,nₖ) = C(n, n₁) · C(n−n₁, n₂) · C(n−n₁−n₂, n₃) · …`
+fn multinomial_coeff(n: usize, partition: &[usize]) -> BigInt {
+    let mut result = BigInt::one();
+    let mut remaining = n;
+    for &ni in partition {
+        // C(remaining, ni) via multiplicative formula
+        for j in 0..ni {
+            result *= BigInt::from(remaining - j);
+            result /= BigInt::from(j + 1);
+        }
+        remaining -= ni;
+    }
+    result
+}
+
+/// Generate all weak compositions of `n` into `k` non-negative parts.
+///
+/// A weak composition is an ordered tuple `(n₁, …, nₖ)` where each
+/// `nᵢ ≥ 0` and `n₁ + … + nₖ = n`.  The count is `C(n+k−1, k−1)`.
+fn generate_compositions(n: usize, k: usize) -> Vec<Vec<usize>> {
+    let mut result = Vec::new();
+    let mut current = vec![0usize; k];
+    generate_compositions_inner(n, k, 0, &mut current, &mut result);
+    result
+}
+
+fn generate_compositions_inner(
+    remaining: usize,
+    k: usize,
+    pos: usize,
+    current: &mut Vec<usize>,
+    result: &mut Vec<Vec<usize>>,
+) {
+    if pos == k - 1 {
+        // Last slot gets whatever is remaining.
+        current[pos] = remaining;
+        result.push(current.clone());
+        return;
+    }
+    for i in 0..=remaining {
+        current[pos] = i;
+        generate_compositions_inner(remaining - i, k, pos + 1, current, result);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

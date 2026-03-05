@@ -349,6 +349,46 @@ fn bench_expand_binomial(c: &mut Criterion) {
     }
 }
 
+fn bench_expand_multinomial(c: &mut Criterion) {
+    let ctx = Context::new();
+    let a = ctx.symbol("a");
+    let b = ctx.symbol("b");
+    let cc = ctx.symbol("c");
+    let d = ctx.symbol("d");
+
+    // Binomial at higher powers (multinomial path handles these too)
+    for &n in &[30, 50, 100] {
+        let expr = (&a + &b).powi(n);
+        c.bench_function(&format!("expand_binomial_(a+b)^{n}"), |bench| {
+            bench.iter(|| black_box(&expr).expand())
+        });
+    }
+
+    // Trinomial expansions: (a + b + c)^n
+    for &n in &[3, 5, 8, 10, 15] {
+        let expr = (&a + &b + &cc).powi(n);
+        c.bench_function(&format!("expand_trinomial_(a+b+c)^{n}"), |bench| {
+            bench.iter(|| black_box(&expr).expand())
+        });
+    }
+
+    // Quadrinomial expansions: (a + b + c + d)^n
+    for &n in &[3, 5, 8] {
+        let expr = (&a + &b + &cc + &d).powi(n);
+        c.bench_function(&format!("expand_quadrinomial_(a+b+c+d)^{n}"), |bench| {
+            bench.iter(|| black_box(&expr).expand())
+        });
+    }
+
+    // Binomial with symbolic coefficients: (2a + 3b)^n
+    for &n in &[5, 10, 20] {
+        let expr = (&a * 2 + &b * 3).powi(n);
+        c.bench_function(&format!("expand_binomial_(2a+3b)^{n}"), |bench| {
+            bench.iter(|| black_box(&expr).expand())
+        });
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Matrix benchmarks
 // ═══════════════════════════════════════════════════════════════════════════
@@ -573,6 +613,7 @@ criterion_group!(
     bench_large_polynomial,
     bench_nested_functions,
     bench_expand_binomial,
+    bench_expand_multinomial,
     bench_matrix,
     bench_laplace,
     bench_special_functions,
