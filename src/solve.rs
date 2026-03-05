@@ -101,10 +101,10 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
             };
             if let Some(var_sym) = var_sym_opt
                 && let Some(solutions) = try_solve_lambert(arena, expr, var, var_sym)
-                    && !solutions.is_empty()
-                {
-                    return solutions;
-                }
+                && !solutions.is_empty()
+            {
+                return solutions;
+            }
             return Vec::new();
         }
     };
@@ -234,15 +234,50 @@ fn solve_by_peeling(
             let new_rhs = arena.exp(rhs);
             solve_by_peeling(arena, inner, new_rhs, var)
         }
-        // sin(f(x)) = rhs → f(x) = asin(rhs)  [principal value]
+        // sin(f(x)) = rhs → f(x) ∈ {asin(rhs), π - asin(rhs)}
         ExprNode::Sin(inner) => {
-            let new_rhs = arena.asin(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var)
+            tracing::debug!("solve_by_peeling: inverting sin, two branches");
+            let asin_rhs = arena.asin(rhs);
+            let pi = arena.pi;
+            let pi_minus_asin = arena.sub(pi, asin_rhs);
+            let mut solutions = Vec::new();
+            if let Some(sols) = solve_by_peeling(arena, inner, asin_rhs, var) {
+                solutions.extend(sols);
+            }
+            if let Some(sols) = solve_by_peeling(arena, inner, pi_minus_asin, var) {
+                for sol in sols {
+                    if !solutions.iter().any(|s| s.value == sol.value) {
+                        solutions.push(sol);
+                    }
+                }
+            }
+            if solutions.is_empty() {
+                None
+            } else {
+                Some(solutions)
+            }
         }
-        // cos(f(x)) = rhs → f(x) = acos(rhs)  [principal value]
+        // cos(f(x)) = rhs → f(x) ∈ {acos(rhs), -acos(rhs)}
         ExprNode::Cos(inner) => {
-            let new_rhs = arena.acos(rhs);
-            solve_by_peeling(arena, inner, new_rhs, var)
+            tracing::debug!("solve_by_peeling: inverting cos, two branches");
+            let acos_rhs = arena.acos(rhs);
+            let neg_acos = arena.neg(acos_rhs);
+            let mut solutions = Vec::new();
+            if let Some(sols) = solve_by_peeling(arena, inner, acos_rhs, var) {
+                solutions.extend(sols);
+            }
+            if let Some(sols) = solve_by_peeling(arena, inner, neg_acos, var) {
+                for sol in sols {
+                    if !solutions.iter().any(|s| s.value == sol.value) {
+                        solutions.push(sol);
+                    }
+                }
+            }
+            if solutions.is_empty() {
+                None
+            } else {
+                Some(solutions)
+            }
         }
         // tan(f(x)) = rhs → f(x) = atan(rhs)
         ExprNode::Tan(inner) => {
@@ -1549,18 +1584,25 @@ mod tests {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         // sin(x) = 0 → change-of-variable with t = sin(x) finds t = 0,
-        // then back-substitutes sin(x) = 0 → x = asin(0) = 0.
+        // then back-substitutes sin(x) = 0 → x ∈ {asin(0), π - asin(0)} = {0, π}.
         let expr = a.sin(x);
         let solutions = solve(&mut a, expr, x);
         assert_eq!(
             solutions.len(),
-            1,
-            "sin(x)=0 should have 1 principal solution"
+            2,
+            "sin(x)=0 should have 2 solutions (two branches), got {}",
+            solutions.len()
         );
-        let val = display(&a, solutions[0].value);
+        let vals: Vec<String> = solutions.iter().map(|s| display(&a, s.value)).collect();
+        // asin(0) is not auto-evaluated, so expect symbolic forms
         assert!(
-            val == "0" || val.contains("asin"),
-            "solution should be 0 or asin(0): {val}"
+            vals.iter().any(|v| v == "0" || v.contains("asin(0)")),
+            "should have root 0 or asin(0): {vals:?}"
+        );
+        assert!(
+            vals.iter()
+                .any(|v| v == "pi" || v.contains("pi") || v.contains("asin")),
+            "should have root involving pi or asin: {vals:?}"
         );
     }
 
@@ -1650,7 +1692,7 @@ mod tests {
 
     #[test]
     fn solve_sin_x_eq_half() {
-        // sin(x) - 1/2 = 0 → x = asin(1/2)
+        // sin(x) - 1/2 = 0 → x ∈ {asin(1/2), π - asin(1/2)}
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let half = {
@@ -1660,11 +1702,21 @@ mod tests {
         let sin_x = a.sin(x);
         let expr = a.sub(sin_x, half);
         let solutions = solve(&mut a, expr, x);
-        assert_eq!(solutions.len(), 1, "sin(x)-1/2=0 should have 1 solution");
-        let val = display(&a, solutions[0].value);
+        assert_eq!(
+            solutions.len(),
+            2,
+            "sin(x)-1/2=0 should have 2 solutions (two branches)"
+        );
+        let val0 = display(&a, solutions[0].value);
+        let val1 = display(&a, solutions[1].value);
         assert!(
-            val.contains("asin") || val.contains("arcsin"),
-            "solution should be asin(1/2): {val}"
+            val0.contains("asin") || val0.contains("arcsin"),
+            "first solution should contain asin(1/2): {val0}"
+        );
+        // Second branch should be π - asin(1/2)
+        assert!(
+            val1.contains("pi") || val1.contains("asin") || val1.contains("arcsin"),
+            "second solution should reference pi or asin: {val1}"
         );
     }
 

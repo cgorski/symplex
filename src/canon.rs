@@ -62,6 +62,20 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         return args[0];
     }
 
+    // Fast path: 2 numeric args → skip HashMap
+    if args.len() == 2 {
+        let (a, b) = (args[0], args[1]);
+        if let (Some(na), Some(nb)) = (arena.as_num(a), arena.as_num(b)) {
+            let sum = na.clone() + nb.clone();
+            if sum.is_zero() {
+                tracing::debug!("canon_add fast path: two numerics sum to zero");
+                return arena.zero;
+            }
+            let nid = arena.intern_num(sum);
+            return arena.intern(ExprNode::Num(nid));
+        }
+    }
+
     // Running numeric constant (the "coefficient of 1").
     let mut constant: Ratio<BigInt> = Ratio::zero();
 
@@ -189,6 +203,21 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 // Mul
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Check whether `id` is an `Add` node with at least one infinity child.
+fn is_add_with_infinity(arena: &Arena, id: ExprId) -> bool {
+    if let ExprNode::Add(ref children) = arena.node(id).clone() {
+        for &child in children {
+            match arena.node(child) {
+                ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 /// Build a canonical `Mul` node from the given factors.
 ///
 /// Uses an explicit stack for flattening and an [`FxHashMap`] for
@@ -200,6 +229,23 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     }
     if args.len() == 1 {
         return args[0];
+    }
+
+    // Fast path: 2 numeric args → skip HashMap
+    if args.len() == 2 {
+        let (a, b) = (args[0], args[1]);
+        if let (Some(na), Some(nb)) = (arena.as_num(a), arena.as_num(b)) {
+            let product = na.clone() * nb.clone();
+            if product.is_zero() {
+                tracing::debug!("canon_mul fast path: two numerics multiply to zero");
+                return arena.zero;
+            }
+            if product.is_one() {
+                return arena.one;
+            }
+            let nid = arena.intern_num(product);
+            return arena.intern(ExprNode::Num(nid));
+        }
     }
 
     // Running numeric coefficient.
@@ -248,6 +294,13 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
                     if saw_infinity {
                         return arena.nan;
                     }
+                    // 0 * Add(…∞…) → NaN: infinity hidden inside a sum
+                    if bases.keys().any(|&id| is_add_with_infinity(arena, id))
+                        || stack.iter().any(|&id| is_add_with_infinity(arena, id))
+                    {
+                        tracing::debug!("canon_mul: 0 * Add(…∞…) → NaN");
+                        return arena.nan;
+                    }
                     // Short-circuit: the rest doesn't matter.
                     return arena.zero;
                 }
@@ -270,6 +323,11 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     // If coefficient became zero during processing.
     if coeff.is_zero() {
         if saw_infinity {
+            return arena.nan;
+        }
+        // 0 * Add(…∞…) → NaN: infinity hidden inside a sum
+        if bases.keys().any(|&id| is_add_with_infinity(arena, id)) {
+            tracing::debug!("canon_mul: 0 * Add(…∞…) → NaN");
             return arena.nan;
         }
         return arena.zero;
@@ -331,6 +389,14 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     // Re-check for zero after absorbing numeric factors.
     if coeff.is_zero() {
         if saw_infinity {
+            return arena.nan;
+        }
+        // 0 * Add(…∞…) → NaN: infinity hidden inside a sum
+        if result_args
+            .iter()
+            .any(|&id| is_add_with_infinity(arena, id))
+        {
+            tracing::debug!("canon_mul: 0 * Add(…∞…) → NaN");
             return arena.nan;
         }
         return arena.zero;

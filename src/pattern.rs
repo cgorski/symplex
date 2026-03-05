@@ -491,6 +491,249 @@ pub struct Step {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Stripper-collector sub-expression matching
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Check whether `expr` is a bare wild (a pattern variable with no
+/// surrounding structure).
+fn is_bare_wild(wilds: &FxHashMap<ExprId, WildId>, expr: ExprId) -> bool {
+    wilds.contains_key(&expr)
+}
+
+/// Stripper-collector sub-expression match for Add nodes.
+///
+/// Classifies pattern sub-terms as "strippers" (structurally specific,
+/// may contain wilds) or "collectors" (bare wilds).  Scans subject
+/// children for structural matches with each stripper in O(n) per
+/// stripper, then collects the residual into the collector wild.
+///
+/// Returns `Some((replacement, matched_indices))` on success.
+fn try_stripper_collector_add(
+    arena: &mut Arena,
+    children: &[ExprId],
+    rule: &Rule,
+) -> Option<(ExprId, Vec<usize>)> {
+    let pat_children = match arena.node(rule.pattern.root).clone() {
+        ExprNode::Add(c) => c,
+        _ => return None,
+    };
+
+    // Only useful when the subject has strictly more children than
+    // the pattern (equal-length case is handled by full try_apply).
+    if children.len() <= pat_children.len() {
+        return None;
+    }
+
+    tracing::debug!(
+        "stripper-collector-add: {} pattern terms vs {} subject terms",
+        pat_children.len(),
+        children.len()
+    );
+
+    // Classify pattern children.
+    let mut strippers: Vec<ExprId> = Vec::new();
+    let mut collectors: Vec<ExprId> = Vec::new();
+
+    for &pc in pat_children.iter() {
+        if is_bare_wild(&rule.pattern.wilds, pc) {
+            collectors.push(pc);
+        } else {
+            strippers.push(pc);
+        }
+    }
+
+    // Need at least one stripper to anchor the match.
+    if strippers.is_empty() {
+        tracing::debug!("stripper-collector-add: no strippers, skipping");
+        return None;
+    }
+
+    // Support at most one collector for now.
+    if collectors.len() > 1 {
+        tracing::debug!("stripper-collector-add: multiple collectors, skipping");
+        return None;
+    }
+
+    // Match each stripper against subject children.
+    let mut bindings: Substitution = Substitution::default();
+    let mut matched_subject_indices: Vec<usize> = Vec::new();
+
+    for &stripper in &strippers {
+        let mut found = false;
+        for (subj_idx, &subj_child) in children.iter().enumerate() {
+            if matched_subject_indices.contains(&subj_idx) {
+                continue;
+            }
+
+            let mut trial_bindings = bindings.clone();
+            if match_recursive(arena, &rule.pattern, stripper, subj_child, &mut trial_bindings) {
+                // Verify consistency with previously-bound wilds.
+                let consistent = trial_bindings.iter().all(|(wid, eid)| {
+                    bindings.get(wid).is_none_or(|existing| *existing == *eid)
+                });
+                if consistent {
+                    tracing::debug!(
+                        "stripper-collector-add: stripper matched subject[{}]",
+                        subj_idx
+                    );
+                    bindings = trial_bindings;
+                    matched_subject_indices.push(subj_idx);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
+            tracing::debug!("stripper-collector-add: no match for a stripper");
+            return None;
+        }
+    }
+
+    // Collect remaining subject children.
+    let remaining: Vec<ExprId> = children
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !matched_subject_indices.contains(i))
+        .map(|(_, &c)| c)
+        .collect();
+
+    // Bind the collector wild to the residual (if present).
+    if collectors.len() == 1 {
+        let collector_wild = *rule.pattern.wilds.get(&collectors[0])?;
+        let residual = if remaining.is_empty() {
+            arena.zero
+        } else if remaining.len() == 1 {
+            remaining[0]
+        } else {
+            arena.add(&remaining)
+        };
+        bindings.insert(collector_wild, residual);
+        // Collector absorbs all remaining terms — mark everything matched.
+        matched_subject_indices = (0..children.len()).collect();
+    }
+    // When there is no collector the caller will handle the leftover
+    // children by appending the replacement to them.
+
+    // Check rule condition.
+    if let Some(cond) = rule.condition
+        && !cond(arena, &bindings) {
+            tracing::debug!("stripper-collector-add: condition rejected");
+            return None;
+        }
+
+    let replacement = instantiate(arena, rule.template, &rule.pattern.wilds, &bindings);
+    Some((replacement, matched_subject_indices))
+}
+
+/// Stripper-collector sub-expression match for Mul nodes.
+///
+/// Same algorithm as [`try_stripper_collector_add`] but for
+/// multiplicative n-ary nodes, using `arena.one` as the identity.
+fn try_stripper_collector_mul(
+    arena: &mut Arena,
+    children: &[ExprId],
+    rule: &Rule,
+) -> Option<(ExprId, Vec<usize>)> {
+    let pat_children = match arena.node(rule.pattern.root).clone() {
+        ExprNode::Mul(c) => c,
+        _ => return None,
+    };
+
+    if children.len() <= pat_children.len() {
+        return None;
+    }
+
+    tracing::debug!(
+        "stripper-collector-mul: {} pattern terms vs {} subject terms",
+        pat_children.len(),
+        children.len()
+    );
+
+    let mut strippers: Vec<ExprId> = Vec::new();
+    let mut collectors: Vec<ExprId> = Vec::new();
+
+    for &pc in pat_children.iter() {
+        if is_bare_wild(&rule.pattern.wilds, pc) {
+            collectors.push(pc);
+        } else {
+            strippers.push(pc);
+        }
+    }
+
+    if strippers.is_empty() {
+        tracing::debug!("stripper-collector-mul: no strippers, skipping");
+        return None;
+    }
+
+    if collectors.len() > 1 {
+        tracing::debug!("stripper-collector-mul: multiple collectors, skipping");
+        return None;
+    }
+
+    let mut bindings: Substitution = Substitution::default();
+    let mut matched_subject_indices: Vec<usize> = Vec::new();
+
+    for &stripper in &strippers {
+        let mut found = false;
+        for (subj_idx, &subj_child) in children.iter().enumerate() {
+            if matched_subject_indices.contains(&subj_idx) {
+                continue;
+            }
+
+            let mut trial_bindings = bindings.clone();
+            if match_recursive(arena, &rule.pattern, stripper, subj_child, &mut trial_bindings) {
+                let consistent = trial_bindings.iter().all(|(wid, eid)| {
+                    bindings.get(wid).is_none_or(|existing| *existing == *eid)
+                });
+                if consistent {
+                    tracing::debug!(
+                        "stripper-collector-mul: stripper matched subject[{}]",
+                        subj_idx
+                    );
+                    bindings = trial_bindings;
+                    matched_subject_indices.push(subj_idx);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
+            tracing::debug!("stripper-collector-mul: no match for a stripper");
+            return None;
+        }
+    }
+
+    let remaining: Vec<ExprId> = children
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !matched_subject_indices.contains(i))
+        .map(|(_, &c)| c)
+        .collect();
+
+    if collectors.len() == 1 {
+        let collector_wild = *rule.pattern.wilds.get(&collectors[0])?;
+        let residual = if remaining.is_empty() {
+            arena.one
+        } else if remaining.len() == 1 {
+            remaining[0]
+        } else {
+            arena.mul(&remaining)
+        };
+        bindings.insert(collector_wild, residual);
+        matched_subject_indices = (0..children.len()).collect();
+    }
+
+    if let Some(cond) = rule.condition
+        && !cond(arena, &bindings) {
+            tracing::debug!("stripper-collector-mul: condition rejected");
+            return None;
+        }
+
+    let replacement = instantiate(arena, rule.template, &rule.pattern.wilds, &bindings);
+    Some((replacement, matched_subject_indices))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // apply_rules — bottom-up rewriting with tracing
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -537,37 +780,67 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
             && let ExprNode::Add(ref children) = arena.node(rebuilt).clone()
             && children.len() >= 2
         {
-            'sub_match: for rule in rules {
-                // Only attempt if the rule's pattern root is an Add.
-                if let ExprNode::Add(ref pat_children) = arena.node(rule.pattern.root).clone() {
-                    let k = pat_children.len();
-                    if k == 2 && children.len() >= 2 {
-                        // Try all pairs of children.
-                        for i in 0..children.len() {
-                            for j in (i + 1)..children.len() {
-                                let pair = arena.add(&[children[i], children[j]]);
-                                if let Some(replacement) = rule.try_apply(arena, pair) {
-                                    tracing::debug!(
-                                        rule = rule.name,
-                                        node_type = "Add",
-                                        "sub-expression match found"
-                                    );
-                                    // Build remaining terms.
-                                    let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
-                                        smallvec::SmallVec::new();
-                                    for (idx, &child) in children.iter().enumerate() {
-                                        if idx != i && idx != j {
-                                            remaining.push(child);
+            'sub_match: {
+                // Try stripper-collector O(k·n) first.
+                for rule in rules {
+                    if let Some((replacement, matched_indices)) =
+                        try_stripper_collector_add(arena, children, rule)
+                    {
+                        tracing::debug!(
+                            rule = rule.name,
+                            node_type = "Add",
+                            "stripper-collector sub-expression match"
+                        );
+                        let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
+                            smallvec::SmallVec::new();
+                        for (idx, &child) in children.iter().enumerate() {
+                            if !matched_indices.contains(&idx) {
+                                remaining.push(child);
+                            }
+                        }
+                        remaining.push(replacement);
+                        rewritten = arena.add(&remaining);
+                        steps.push(Step {
+                            rule_name: rule.name,
+                            before: rebuilt,
+                            after: rewritten,
+                        });
+                        break 'sub_match;
+                    }
+                }
+
+                // Fall back to O(n²) pairwise enumeration for k=2 patterns.
+                for rule in rules {
+                    if let ExprNode::Add(ref pat_children) =
+                        arena.node(rule.pattern.root).clone()
+                    {
+                        let k = pat_children.len();
+                        if k == 2 && children.len() >= 2 {
+                            for i in 0..children.len() {
+                                for j in (i + 1)..children.len() {
+                                    let pair = arena.add(&[children[i], children[j]]);
+                                    if let Some(replacement) = rule.try_apply(arena, pair) {
+                                        tracing::debug!(
+                                            rule = rule.name,
+                                            node_type = "Add",
+                                            "sub-expression match found (pairwise fallback)"
+                                        );
+                                        let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
+                                            smallvec::SmallVec::new();
+                                        for (idx, &child) in children.iter().enumerate() {
+                                            if idx != i && idx != j {
+                                                remaining.push(child);
+                                            }
                                         }
+                                        remaining.push(replacement);
+                                        rewritten = arena.add(&remaining);
+                                        steps.push(Step {
+                                            rule_name: rule.name,
+                                            before: rebuilt,
+                                            after: rewritten,
+                                        });
+                                        break 'sub_match;
                                     }
-                                    remaining.push(replacement);
-                                    rewritten = arena.add(&remaining);
-                                    steps.push(Step {
-                                        rule_name: rule.name,
-                                        before: rebuilt,
-                                        after: rewritten,
-                                    });
-                                    break 'sub_match;
                                 }
                             }
                         }
@@ -582,37 +855,67 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
             && let ExprNode::Mul(ref children) = arena.node(rebuilt).clone()
             && children.len() >= 2
         {
-            'mul_sub_match: for rule in rules {
-                // Only attempt if the rule's pattern root is a Mul.
-                if let ExprNode::Mul(ref pat_children) = arena.node(rule.pattern.root).clone() {
-                    let k = pat_children.len();
-                    if k == 2 && children.len() >= 2 {
-                        // Try all pairs of children.
-                        for i in 0..children.len() {
-                            for j in (i + 1)..children.len() {
-                                let pair = arena.mul(&[children[i], children[j]]);
-                                if let Some(replacement) = rule.try_apply(arena, pair) {
-                                    tracing::debug!(
-                                        rule = rule.name,
-                                        node_type = "Mul",
-                                        "sub-expression match found"
-                                    );
-                                    // Build remaining factors.
-                                    let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
-                                        smallvec::SmallVec::new();
-                                    for (idx, &child) in children.iter().enumerate() {
-                                        if idx != i && idx != j {
-                                            remaining.push(child);
+            'mul_sub_match: {
+                // Try stripper-collector O(k·n) first.
+                for rule in rules {
+                    if let Some((replacement, matched_indices)) =
+                        try_stripper_collector_mul(arena, children, rule)
+                    {
+                        tracing::debug!(
+                            rule = rule.name,
+                            node_type = "Mul",
+                            "stripper-collector sub-expression match"
+                        );
+                        let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
+                            smallvec::SmallVec::new();
+                        for (idx, &child) in children.iter().enumerate() {
+                            if !matched_indices.contains(&idx) {
+                                remaining.push(child);
+                            }
+                        }
+                        remaining.push(replacement);
+                        rewritten = arena.mul(&remaining);
+                        steps.push(Step {
+                            rule_name: rule.name,
+                            before: rebuilt,
+                            after: rewritten,
+                        });
+                        break 'mul_sub_match;
+                    }
+                }
+
+                // Fall back to O(n²) pairwise enumeration for k=2 patterns.
+                for rule in rules {
+                    if let ExprNode::Mul(ref pat_children) =
+                        arena.node(rule.pattern.root).clone()
+                    {
+                        let k = pat_children.len();
+                        if k == 2 && children.len() >= 2 {
+                            for i in 0..children.len() {
+                                for j in (i + 1)..children.len() {
+                                    let pair = arena.mul(&[children[i], children[j]]);
+                                    if let Some(replacement) = rule.try_apply(arena, pair) {
+                                        tracing::debug!(
+                                            rule = rule.name,
+                                            node_type = "Mul",
+                                            "sub-expression match found (pairwise fallback)"
+                                        );
+                                        let mut remaining: smallvec::SmallVec<[ExprId; 6]> =
+                                            smallvec::SmallVec::new();
+                                        for (idx, &child) in children.iter().enumerate() {
+                                            if idx != i && idx != j {
+                                                remaining.push(child);
+                                            }
                                         }
+                                        remaining.push(replacement);
+                                        rewritten = arena.mul(&remaining);
+                                        steps.push(Step {
+                                            rule_name: rule.name,
+                                            before: rebuilt,
+                                            after: rewritten,
+                                        });
+                                        break 'mul_sub_match;
                                     }
-                                    remaining.push(replacement);
-                                    rewritten = arena.mul(&remaining);
-                                    steps.push(Step {
-                                        rule_name: rule.name,
-                                        before: rebuilt,
-                                        after: rewritten,
-                                    });
-                                    break 'mul_sub_match;
                                 }
                             }
                         }
