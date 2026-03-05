@@ -967,16 +967,109 @@ Key implementation details:
 - erfc computed directly for large x to avoid `1 - erf(x)` cancellation.
 - f64 Lanczos kept as fast path for `evalf_f64()`.
 
+##### Wave PM — Pattern Matching: Stripper-Collector Architecture (~3 hrs)
+
+Based on expert guidance referencing Benanav/Kapur/Narendran 1987 (AC matching
+complexity), Eker 1995 (bipartite matching), Maude's stripper-collector, and
+MatchPy's discrimination-net approach.
+
+**Background:** AC (associative-commutative) matching is NP-complete in general,
+but **linear patterns** (each wild appears at most once) are polynomial —
+O(|s|·|t|³). All 22 of our current simplification rules use linear or near-linear
+patterns with k=2. The current pairwise enumeration (O(n²) for k=2) works but
+does not scale to k=3+ or large n.
+
+**Architecture:** Three-layer strategy replacing the current positional + pairwise approach:
+
+1. **Fast path: ExprId structural matching** (current — keep as-is). Handles exact
+   positional matches after canonical sorting. Cost: O(pattern_size) per candidate.
+
+2. **Stripper-collector for AC layers** (new). For k-term patterns against n-term
+   Add/Mul nodes:
+   - Classify pattern subterms as "strippers" (structurally specific, may contain
+     wilds in inner positions) vs "collectors" (bare wilds absorbing residual).
+   - For each stripper: scan subject children for top-level structural match.
+     Extract candidate wild bindings from inner positions.
+   - Verify wild consistency across all strippers (same wild → same ExprId).
+   - Collector wild gets the remaining children as a new Add/Mul.
+   - Cost: O(n) scan per stripper + O(1) consistency check = O(k·n) total.
+   
+   Example: `sin(w)² + cos(w)²` against `a + b + sin(x)² + cos(x)² + c`:
+   - Stripper 1: scan for `Pow(Sin(_), 2)` → find `sin(x)²`, candidate w=x
+   - Stripper 2: check `Pow(Cos(x), 2)` exists → O(1) ExprId lookup
+   - Collector: residual `a + b + c`
+   - Result: match succeeds with w=x, replacement applied to residual
+
+3. **Bipartite matching fallback** (future, for complex patterns). Build bipartite
+   graph of pattern-subterm ↔ subject-subterm compatibility, use Hopcroft-Karp.
+   Only needed for nonlinear patterns with k≥3. Defer to v0.2.
+
+| Chunk | What | Time | Deps |
+|-------|------|------|------|
+| PM.1 | Classify pattern subterms: stripper vs collector | 30 min | None |
+| PM.2 | Structural scan: match stripper top-level shape against subject children | 45 min | PM.1 |
+| PM.3 | Wild extraction + consistency verification | 30 min | PM.2 |
+| PM.4 | Residual collection for collector wilds | 15 min | PM.3 |
+| PM.5 | Integrate into `apply_rules` in pattern.rs (replace pairwise enumeration) | 30 min | PM.4 |
+| PM.6 | Tests: k=2 against large Adds, k=3 patterns, performance comparison | 30 min | PM.5 |
+
+Key insight from expert: *"For internal simplification rules — which are
+author-controlled and can be structured to avoid pathological patterns — the
+stripper-collector + bipartite matching approach is both faster and sufficient."*
+SymPy's fully general greedy-backtracking is only needed for a user-facing
+`.match()` API, not for internal rule application.
+
+Future (v0.2): Discrimination net for many-to-one matching when rule set exceeds
+~50 rules. MatchPy achieves 60x speedups with this approach.
+
+##### Wave SC — Solver + Canonicalization Improvements (~6 hrs)
+
+Based on expert analysis of SymPy's `_tsolve`, `_solve_lambert`, and `unrad`
+dispatch, plus canonicalization gaps from the Add/Mul comparison.
+
+**Solver improvements:**
+
+| Chunk | What | Time | Deps |
+|-------|------|------|------|
+| SC.1 | LambertW solver: recognize 6 canonical forms of `a·log(b·X+c) + d·X = f` and `(b·X+c)·exp(d·X+g) = R`, solve via `X = -c/b + (a/d)·W(...)` | 2 hrs | None |
+| SC.2 | Multi-branch trig inverses: `sin(f(x))=c` → `{f(x)=asin(c), f(x)=π-asin(c)}`, `cos(f(x))=c` → `{f(x)=acos(c), f(x)=2π-acos(c)}` | 30 min | None |
+| SC.3 | `unrad` basic: for equations with `sqrt(...)`, isolate radical, square both sides, solve, verify (reject spurious roots via `check_solution`) | 1 hr | None |
+
+**Canonicalization improvements (from SymPy comparison):**
+
+| Chunk | What | Time | Deps |
+|-------|------|------|------|
+| SC.4 | Detect `0 * Add(…oo…) → NaN` — inspect Add children for hidden infinities in Mul | 15 min | None |
+| SC.5 | GCD extraction for numeric bases with rational exponents: `2^(1/3)·6^(1/4) → 2^(7/12)·3^(1/4)` | 1.5 hrs | None |
+| SC.6 | 2-arg fast paths for canon_add (Rational + Mul) and canon_mul (Rational × X) — skip HashMap for the most common construction pattern | 30 min | None |
+| SC.7 | Tests for all solver + canon improvements | 30 min | SC.1–SC.6 |
+
+##### Wave GC+ — Arena GC Refinements (~1 hr)
+
+Based on expert guidance on liveness measurement and compaction heuristics.
+
+| Chunk | What | Time | Deps |
+|-------|------|------|------|
+| GC.1 | `Arena::liveness_ratio(roots)` — BitVec-based trace, returns `live/total` ratio. O(live_nodes) time, O(total/8) memory. | 20 min | None |
+| GC.2 | `Arena::should_compact(roots)` — heuristic: arena > 100K nodes AND grown 2x since last compact AND liveness < 50% | 10 min | GC.1 |
+| GC.3 | `last_compact_size` field on Arena, set after each compact | 5 min | None |
+| GC.4 | `Context::liveness_ratio()` and `Context::should_compact()` public API | 10 min | GC.1–GC.3 |
+| GC.5 | Tests + tracing | 15 min | GC.1–GC.4 |
+
+Expert insight: *"The main thing you're missing is a cheap way to measure liveness
+so you can make informed compaction decisions — and a BitVec trace is the cleanest
+way to add that."* The trace is the same walk compact() already does, minus the copy.
+
 ##### Other deferred waves
 
 | Wave | Features | Reason | Est. effort |
 |------|----------|--------|-------------|
 | H-revisit | Deepen Set types (pairwise interval merging, membership queries) | Foundation exists from Wave ζ | 4 hrs |
 | L | Full polynomial factoring (Berlekamp/Hensel/Zassenhaus) | Heavy algorithm | 8 hrs |
-| GB | Gröbner bases for polynomial system solving | Requires multivariate Poly | 15 hrs |
-| ODE+ | Full separable, exact ODEs, undetermined coefficients, Bernoulli | Extends existing 3-type solver | 8 hrs |
-| LW | LambertW equation solver (6 canonical forms) | Extends transcendental solve | 4 hrs |
-| BF | Bessel functions (J, Y, I, K via _a/_b differentiation trick) | Physics use case | 6 hrs |
+| GB | Gröbner bases for polynomial system solving | Requires multivariate Poly; expert recommends Buchberger for practical use (2-5 vars, deg ≤ 10), F4 for larger | 15 hrs |
+| ODE+ | Full separable (`P(y)dy=Q(x)dx`), exact ODEs, undetermined coefficients, Bernoulli | Extends existing 3-type solver; expert identifies these as top 3 highest-value additions | 8 hrs |
+| LW | LambertW equation solver (6 canonical forms) | Extends transcendental solve; expert ranks as #1 most impactful solver improvement | 4 hrs |
+| BF | Bessel functions (J, Y, I, K via _a/_b differentiation trick) | Physics use case; expert confirms architecture is straightforward | 6 hrs |
 
 ---
 
