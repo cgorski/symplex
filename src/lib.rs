@@ -105,6 +105,8 @@ pub mod config;
 pub mod context;
 pub mod errors;
 pub mod expr;
+mod expr_funcs;
+mod expr_ops;
 pub mod macros;
 
 // ── Proc macro re-exports ──────────────────────────────────────────────
