@@ -2,7 +2,10 @@
 //!
 //! Solves first-order and second-order ODEs:
 //!
-//! - **Separable:** `dy/dx = f(x) * g(y)` → `∫ 1/g(y) dy = ∫ f(x) dx`
+//! - **Full separable:** `dy/dx = f(x) * g(y)` → `∫ 1/g(y) dy = ∫ f(x) dx`
+//! - **Simple separable:** `dy/dx = f(x)` (no y dependence)
+//! - **First-order linear (variable coefficient):** `y' + P(x)*y = Q(x)`
+//!   → `y = (1/μ) * [∫ Q(x)*μ dx + C1]` where `μ = exp(∫ P(x) dx)`
 //! - **First-order linear constant-coefficient:** `y' + a*y = f(x)`
 //!   → `y = e^(-ax) * ∫ f(x)*e^(ax) dx`
 //! - **Second-order linear constant-coefficient:** `y'' + b*y' + c*y = 0`
@@ -52,12 +55,18 @@ pub fn dsolve(
         return Some(result);
     }
 
-    // Type 2: First-order linear constant-coefficient: y' + a*y = f(x)
-    if let Some(result) = try_first_order_linear(arena, expr, func, var, func_sym, var_sym) {
+    // Type 2: General first-order linear (variable P(x)): y' + P(x)*y = Q(x)
+    if let Some(result) = try_first_order_linear_general(arena, expr, func, var, func_sym, var_sym)
+    {
         return Some(result);
     }
 
-    // Type 3: Simple separable: y' = f(x)  (no y dependence)
+    // Type 3: Full separable: y' = f(x)*g(y)
+    if let Some(result) = try_full_separable(arena, expr, func, var, func_sym, var_sym) {
+        return Some(result);
+    }
+
+    // Type 4: Simple separable: y' = f(x) (no y dependence) — fallback
     if let Some(result) = try_simple_separable(arena, expr, func, var, func_sym, var_sym) {
         return Some(result);
     }
@@ -335,6 +344,447 @@ fn try_first_order_linear(
     })
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Full separable: y' = f(x) * g(y)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Solve y' = f(x)*g(y) via separation of variables.
+///
+/// Algorithm:
+/// 1. Extract dy/dx from the ODE expression
+/// 2. Collect remaining terms as RHS (negated)
+/// 3. If RHS factors into x-only × y-only parts, separate them
+/// 4. For the common case g(y) = y: solution is y = C1·exp(∫f(x)dx)
+/// 5. Otherwise: implicit solution ∫(1/g(y))dy = ∫f(x)dx + C1
+fn try_full_separable(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    tracing::debug!("ode: trying full separable");
+
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+
+    // Extract dy/dx term and collect the rest as RHS
+    let children = match arena.node(expr).clone() {
+        ExprNode::Add(children) => children,
+        _ => return None,
+    };
+
+    let mut has_dy = false;
+    let mut dy_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut other_terms: Vec<ExprId> = Vec::new();
+
+    for &child in &children {
+        let (coeff, term) = arena.as_coeff_term(child);
+        if term == dy_dx {
+            has_dy = true;
+            dy_coeff += coeff;
+        } else {
+            other_terms.push(child);
+        }
+    }
+
+    use num_traits::Zero;
+    if !has_dy || dy_coeff.is_zero() {
+        return None;
+    }
+
+    // We need coefficient on y' to be 1 (or normalize)
+    if !dy_coeff.is_one() {
+        // Normalize: divide everything else by dy_coeff
+        let inv_coeff = num_rational::Ratio::<num_bigint::BigInt>::one() / &dy_coeff;
+        let inv_id = {
+            let nid = arena.intern_num(inv_coeff);
+            arena.intern(ExprNode::Num(nid))
+        };
+        let mut scaled = Vec::new();
+        for &t in &other_terms {
+            scaled.push(arena.mul(&[inv_id, t]));
+        }
+        other_terms = scaled;
+    }
+
+    // RHS = -(other_terms), i.e., y' = -other_terms
+    let rhs = if other_terms.is_empty() {
+        return None; // y' = 0 is handled by simple separable
+    } else {
+        let sum = arena.add(&other_terms);
+        arena.neg(sum)
+    };
+
+    // Now we need: rhs = f(x) * g(y) where f depends only on var and g only on func
+    // Check if rhs depends on func at all — if not, this is simple separable
+    if !contains_sym(arena, rhs, func_sym) {
+        return None; // Let simple separable handle it
+    }
+
+    // Try to factor rhs into x-only and y-only parts
+    let factors = collect_mul_factors(arena, rhs);
+
+    let mut x_factors: Vec<ExprId> = Vec::new();
+    let mut y_factors: Vec<ExprId> = Vec::new();
+
+    for &factor in &factors {
+        let has_x = contains_sym(arena, factor, var_sym);
+        let has_y = contains_sym(arena, factor, func_sym);
+
+        if has_x && has_y {
+            // Factor depends on both x and y — cannot separate
+            return None;
+        } else if has_y {
+            y_factors.push(factor);
+        } else {
+            // Pure x-factor or constant
+            x_factors.push(factor);
+        }
+    }
+
+    if y_factors.is_empty() {
+        return None; // No y dependence — let simple separable handle it
+    }
+
+    // f(x) = product of x_factors
+    let f_x = if x_factors.is_empty() {
+        arena.one
+    } else if x_factors.len() == 1 {
+        x_factors[0]
+    } else {
+        arena.mul(&x_factors)
+    };
+
+    // g(y) = product of y_factors
+    let g_y = if y_factors.len() == 1 {
+        y_factors[0]
+    } else {
+        arena.mul(&y_factors)
+    };
+
+    // Common case: g(y) = y → solution is y = C1·exp(∫f(x)dx)
+    if g_y == func {
+        let integral_fx = crate::integrate::integrate(arena, f_x, var);
+        let c1 = arena.symbol("C1");
+        let exponent = arena.add(&[integral_fx, c1]);
+        let solution = arena.exp(exponent);
+        return Some(OdeResult {
+            solution,
+            constants: vec![c1],
+        });
+    }
+
+    // Check if g(y) is a constant times y (e.g., 2*y or -y)
+    {
+        let (coeff, base) = arena.as_coeff_term(g_y);
+        if base == func {
+            // g(y) = coeff * y → ∫(1/(coeff*y))dy = (1/coeff)*ln(y)
+            // (1/coeff)*ln(y) = ∫f(x)dx + C1 → ln(y) = coeff*∫f(x)dx + C1
+            // → y = exp(coeff*∫f(x)dx + C1) = C1*exp(coeff*∫f(x)dx)
+            let coeff_id = {
+                let nid = arena.intern_num(coeff);
+                arena.intern(ExprNode::Num(nid))
+            };
+            let scaled_fx = arena.mul(&[coeff_id, f_x]);
+            let integral_fx = crate::integrate::integrate(arena, scaled_fx, var);
+            let c1 = arena.symbol("C1");
+            let exponent = arena.add(&[integral_fx, c1]);
+            let solution = arena.exp(exponent);
+            return Some(OdeResult {
+                solution,
+                constants: vec![c1],
+            });
+        }
+    }
+
+    // General case: ∫(1/g(y))dy = ∫f(x)dx + C1 (implicit solution)
+    // Build 1/g(y) as g(y)^(-1)
+    let neg_one = arena.int(-1);
+    let inv_gy = arena.pow(g_y, neg_one);
+
+    // We can't easily integrate w.r.t. y in this framework (integration variable
+    // must be the independent variable). Return an implicit form using Integral nodes.
+    let lhs_integral = arena.intern(ExprNode::Integral(inv_gy, func));
+    let rhs_integral = crate::integrate::integrate(arena, f_x, var);
+    let c1 = arena.symbol("C1");
+    // Solution expressed as: ∫(1/g(y))dy = ∫f(x)dx + C1
+    // We store the implicit solution as: ∫(1/g(y))dy - ∫f(x)dx - C1 = 0
+    // but for the user, return the RHS: ∫f(x)dx + C1
+    // Actually, we should try to solve for y. For now, if we can't get explicit,
+    // return the implicit equation as the "solution" expression (LHS - RHS).
+    let neg_rhs = arena.neg(rhs_integral);
+    let neg_c1 = arena.neg(c1);
+    let solution = arena.add(&[lhs_integral, neg_rhs, neg_c1]);
+    Some(OdeResult {
+        solution,
+        constants: vec![c1],
+    })
+}
+
+/// Collect multiplicative factors from an expression.
+/// If `expr` is `Mul(a, b, c)`, return `[a, b, c]`.
+/// If `expr` is `Neg(inner)`, return factors of inner with a `-1` prepended.
+/// Otherwise return `[expr]`.
+fn collect_mul_factors(arena: &mut Arena, expr: ExprId) -> Vec<ExprId> {
+    match arena.node(expr).clone() {
+        ExprNode::Mul(children) => children.to_vec(),
+        ExprNode::Neg(inner) => {
+            let neg_one = arena.int(-1);
+            let mut factors = vec![neg_one];
+            factors.extend(collect_mul_factors(arena, inner));
+            factors
+        }
+        _ => vec![expr],
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Variable-coefficient first-order linear: y' + P(x)*y = Q(x)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Solve y' + P(x)*y = Q(x) via integrating factor.
+///
+/// Algorithm:
+/// 1. Extract dy/dx from the ODE expression
+/// 2. Among remaining terms, find those containing func (y) → these give P(x)*y
+/// 3. Terms not containing func give -Q(x)
+/// 4. Extract P(x) by dividing the y-containing terms by func
+/// 5. Compute integrating factor: μ = exp(∫P(x)dx)
+/// 6. Solution: y = (1/μ)·[∫Q(x)·μ dx + C1]
+fn try_first_order_linear_general(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    tracing::debug!("ode: trying variable-coefficient first-order linear");
+
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+
+    let children = match arena.node(expr).clone() {
+        ExprNode::Add(children) => children,
+        _ => return None,
+    };
+
+    let mut has_dy = false;
+    let mut dy_coeff_rational = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut y_terms: Vec<ExprId> = Vec::new(); // terms that contain func (y)
+    let mut free_terms: Vec<ExprId> = Vec::new(); // terms free of func
+
+    for &child in &children {
+        let (coeff, term) = arena.as_coeff_term(child);
+        if term == dy_dx {
+            has_dy = true;
+            dy_coeff_rational += coeff;
+        } else if contains_sym(arena, child, func_sym) {
+            y_terms.push(child);
+        } else {
+            free_terms.push(child);
+        }
+    }
+
+    use num_traits::Zero;
+    if !has_dy || dy_coeff_rational.is_zero() {
+        return None;
+    }
+
+    // We need at least one y-term for this to be a linear ODE with y dependence.
+    // If there are no y-terms, it's simple separable.
+    if y_terms.is_empty() {
+        return None;
+    }
+
+    // Check that the y-terms are LINEAR in y: each y-term = something * y
+    // For each y-term, try to extract the coefficient of y.
+    let mut p_x_terms: Vec<ExprId> = Vec::new();
+
+    for &yt in &y_terms {
+        if let Some(px) = extract_coeff_of_func(arena, yt, func, func_sym, var_sym) {
+            p_x_terms.push(px);
+        } else {
+            // Non-linear in y
+            return None;
+        }
+    }
+
+    // Normalize by dy_coeff: divide P(x) and Q(x) by the coefficient of y'
+    if !dy_coeff_rational.is_one() {
+        let inv_coeff = num_rational::Ratio::<num_bigint::BigInt>::one() / &dy_coeff_rational;
+        let inv_id = {
+            let nid = arena.intern_num(inv_coeff);
+            arena.intern(ExprNode::Num(nid))
+        };
+        let mut scaled_p = Vec::new();
+        for &p in &p_x_terms {
+            scaled_p.push(arena.mul(&[inv_id, p]));
+        }
+        p_x_terms = scaled_p;
+
+        let mut scaled_f = Vec::new();
+        for &f in &free_terms {
+            scaled_f.push(arena.mul(&[inv_id, f]));
+        }
+        free_terms = scaled_f;
+    }
+
+    // P(x) = sum of p_x_terms
+    let p_x = if p_x_terms.is_empty() {
+        arena.zero
+    } else if p_x_terms.len() == 1 {
+        p_x_terms[0]
+    } else {
+        arena.add(&p_x_terms)
+    };
+
+    // Check that P(x) doesn't contain y (it shouldn't at this point, but verify)
+    if contains_sym(arena, p_x, func_sym) {
+        return None;
+    }
+
+    // Try the constant-coefficient path first for efficiency — if P(x) is a
+    // pure rational number, delegate to the existing constant-coefficient solver
+    // which handles the nonhomogeneous case (y' + a*y = Q(x)).
+    if let Some(_num_val) = arena.as_num(p_x) {
+        // P(x) is constant — let try_first_order_linear handle this
+        return try_first_order_linear(arena, expr, func, var, func_sym, var_sym);
+    }
+
+    // Check that P(x) actually depends on x — if it's constant, it would have
+    // been caught above (as a numeric). But it might be a symbolic constant.
+    // We proceed regardless.
+
+    // Q(x) = -(free_terms)  since expr = y' + P(x)*y + free_terms = 0
+    //                        means y' + P(x)*y = -free_terms = Q(x)
+    let q_x = if free_terms.is_empty() {
+        arena.zero
+    } else {
+        let sum = arena.add(&free_terms);
+        arena.neg(sum)
+    };
+
+    // Integrating factor: μ = exp(∫P(x)dx)
+    let int_px = crate::integrate::integrate(arena, p_x, var);
+
+    // Check if integration failed (returned an unevaluated Integral node)
+    if let ExprNode::Integral(_, _) = arena.node(int_px).clone() {
+        // Integration of P(x) failed — we can't compute the integrating factor
+        return None;
+    }
+
+    let mu = arena.exp(int_px);
+
+    // Solution: y = (1/μ) · [∫ Q(x)·μ dx + C1]
+    let neg_one = arena.int(-1);
+    let inv_mu = arena.pow(mu, neg_one);
+
+    let c1 = arena.symbol("C1");
+
+    if arena.is_zero_structural(q_x) {
+        // Homogeneous: y' + P(x)*y = 0 → y = C1 * exp(-∫P(x)dx)
+        let solution = arena.mul(&[c1, inv_mu]);
+        return Some(OdeResult {
+            solution,
+            constants: vec![c1],
+        });
+    }
+
+    // Nonhomogeneous: y = (1/μ) * [∫ Q(x)*μ dx + C1]
+    let integrand = arena.mul(&[q_x, mu]);
+    let integral = crate::integrate::integrate(arena, integrand, var);
+
+    let inner = arena.add(&[integral, c1]);
+    let solution = arena.mul(&[inv_mu, inner]);
+
+    Some(OdeResult {
+        solution,
+        constants: vec![c1],
+    })
+}
+
+/// Try to extract the coefficient of `func` (y) from an expression that should
+/// be of the form `P(x) * y`. Returns `Some(P(x))` if the expression is linear
+/// in y, `None` otherwise.
+fn extract_coeff_of_func(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    func_sym: SymbolId,
+    _var_sym: SymbolId,
+) -> Option<ExprId> {
+    // Case 1: expr is exactly y
+    if expr == func {
+        return Some(arena.one);
+    }
+
+    // Case 2: expr is Neg(y) → coefficient is -1
+    if let ExprNode::Neg(inner) = arena.node(expr).clone() {
+        if inner == func {
+            let neg_one = arena.int(-1);
+            return Some(neg_one);
+        }
+        // Neg(something) — recurse
+        if let Some(inner_coeff) = extract_coeff_of_func(arena, inner, func, func_sym, _var_sym) {
+            let result = arena.neg(inner_coeff);
+            return Some(result);
+        }
+        return None;
+    }
+
+    // Case 3: expr is Mul([...]) containing func exactly once
+    if let ExprNode::Mul(ref children) = arena.node(expr).clone() {
+        let mut found_y = false;
+        let mut other_factors: Vec<ExprId> = Vec::new();
+        let mut y_count = 0;
+
+        for &child in children {
+            if child == func {
+                y_count += 1;
+                if y_count > 1 {
+                    return None; // y^2 or higher — nonlinear
+                }
+                found_y = true;
+            } else if contains_sym(arena, child, func_sym) {
+                // A factor that contains y but isn't y itself — nonlinear
+                return None;
+            } else {
+                other_factors.push(child);
+            }
+        }
+
+        if found_y {
+            let coeff = if other_factors.is_empty() {
+                arena.one
+            } else if other_factors.len() == 1 {
+                other_factors[0]
+            } else {
+                arena.mul(&other_factors)
+            };
+            return Some(coeff);
+        }
+    }
+
+    // Case 4: expr = coeff_num * something_with_y
+    // Use as_coeff_term to peel off a numeric coefficient, then check the term
+    {
+        let (coeff, term) = arena.as_coeff_term(expr);
+        if !coeff.is_one() && term != expr
+            && let Some(inner_coeff) = extract_coeff_of_func(arena, term, func, func_sym, _var_sym)
+            {
+                let coeff_id = {
+                    let nid = arena.intern_num(coeff);
+                    arena.intern(ExprNode::Num(nid))
+                };
+                let result = arena.mul(&[coeff_id, inner_coeff]);
+                return Some(result);
+            }
+    }
+
+    None
+}
+
 /// Check if an expression contains a specific symbol.
 fn contains_sym(arena: &Arena, expr: ExprId, sym: SymbolId) -> bool {
     match arena.node(expr).clone() {
@@ -359,8 +809,12 @@ fn contains_sym(arena: &Arena, expr: ExprId, sym: SymbolId) -> bool {
 pub enum OdeType {
     /// y' = f(x) — simple separable, no y dependence
     SimpleSeparable,
+    /// y' = f(x)*g(y) — full separable
+    FullSeparable,
     /// y' + a*y = f(x) — first-order linear with constant coefficients
     FirstOrderLinearCC,
+    /// y' + P(x)*y = Q(x) — first-order linear with variable coefficients
+    FirstOrderLinearVC,
     /// a*y'' + b*y' + c*y = 0 — second-order linear constant-coefficient homogeneous
     SecondOrderLinearCCHomogeneous,
     /// Unrecognized ODE type
@@ -372,8 +826,8 @@ pub enum OdeType {
 /// The ODE is given as `expr = 0` where `expr` may contain derivative nodes.
 /// Returns the recognized [`OdeType`].
 pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) -> OdeType {
-    match arena.node(var) {
-        ExprNode::Symbol(_) => {}
+    let var_sym = match arena.node(var) {
+        ExprNode::Symbol(sid) => *sid,
         _ => return OdeType::Unknown,
     };
     let func_sym = match arena.node(func) {
@@ -417,23 +871,78 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
         if !contains_sym_outside_deriv(arena, expr, func_sym, dy_dx) {
             return OdeType::SimpleSeparable;
         }
-        // Check if it matches the first-order linear CC pattern: y' + a*y = f(x)
+
+        // Check if it matches a linear pattern: y' + P(x)*y = Q(x)
         if let ExprNode::Add(ref children) = arena.node(expr).clone() {
-            let mut ok = true;
+            let mut is_linear = true;
+            let mut has_var_coeff = false;
+
             for &child in children {
-                let (_coeff, term) = arena.as_coeff_term(child);
-                if term == dy_dx || term == func {
-                    // Fine — linear terms
+                let (coeff, term) = arena.as_coeff_term(child);
+                if term == dy_dx {
+                    // dy/dx term — fine
+                } else if term == func {
+                    // Constant coefficient on y — fine
                 } else if contains_sym(arena, child, func_sym) {
-                    ok = false;
-                    break;
+                    // Check if it's of the form P(x)*y (linear in y)
+                    if let Some(px) = extract_coeff_of_func(arena, child, func, func_sym, var_sym) {
+                        let _ = coeff; // suppress warning
+                        if contains_sym(arena, px, var_sym) {
+                            has_var_coeff = true;
+                        }
+                    } else {
+                        is_linear = false;
+                        break;
+                    }
                 }
                 // Otherwise it's f(x) — acceptable
             }
-            if ok {
+            if is_linear {
+                if has_var_coeff {
+                    return OdeType::FirstOrderLinearVC;
+                }
                 return OdeType::FirstOrderLinearCC;
             }
         }
+
+        // Check if it's a full separable: y' = f(x)*g(y)
+        // Quick check: if the RHS (after extracting y') factors cleanly
+        if let ExprNode::Add(ref children) = arena.node(expr).clone() {
+            let mut has_deriv = false;
+            let mut other_terms: Vec<ExprId> = Vec::new();
+
+            for &child in children {
+                let (_coeff, term) = arena.as_coeff_term(child);
+                if term == dy_dx {
+                    has_deriv = true;
+                } else {
+                    other_terms.push(child);
+                }
+            }
+
+            if has_deriv && !other_terms.is_empty() {
+                let rhs = if other_terms.len() == 1 {
+                    arena.neg(other_terms[0])
+                } else {
+                    let sum = arena.add(&other_terms);
+                    arena.neg(sum)
+                };
+                let factors = collect_mul_factors(arena, rhs);
+                let mut can_separate = true;
+                for &factor in &factors {
+                    let has_x = contains_sym(arena, factor, var_sym);
+                    let has_y = contains_sym(arena, factor, func_sym);
+                    if has_x && has_y {
+                        can_separate = false;
+                        break;
+                    }
+                }
+                if can_separate {
+                    return OdeType::FullSeparable;
+                }
+            }
+        }
+
         return OdeType::Unknown;
     }
 
@@ -597,6 +1106,37 @@ mod tests {
         let two_y = a.mul(&[two, y]);
         let expr = a.add(&[dy, two_y]);
         let result = dsolve(&mut a, expr, y, x).expect("should solve");
+        let s = display(&a, result.solution);
+        assert!(s.contains("C1"), "should have constant: {s}");
+        assert!(s.contains("exp"), "should contain exp: {s}");
+    }
+
+    #[test]
+    fn solve_full_separable_xy() {
+        // y' - x*y = 0 → y' = x*y → y = C1*exp(x²/2)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let dy = a.intern(ExprNode::Derivative(y, x));
+        let xy = a.mul(&[x, y]);
+        let expr = a.sub(dy, xy); // y' - x*y = 0
+        let result = dsolve(&mut a, expr, y, x).expect("should solve y' = xy");
+        let s = display(&a, result.solution);
+        assert!(s.contains("C1"), "should have constant: {s}");
+        assert!(s.contains("exp"), "should contain exp: {s}");
+    }
+
+    #[test]
+    fn solve_variable_coeff_linear_2xy() {
+        // y' + 2*x*y = 0 → y = C1*exp(-x²)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let dy = a.intern(ExprNode::Derivative(y, x));
+        let two = a.int(2);
+        let two_x_y = a.mul(&[two, x, y]);
+        let expr = a.add(&[dy, two_x_y]); // y' + 2*x*y = 0
+        let result = dsolve(&mut a, expr, y, x).expect("should solve y' + 2xy = 0");
         let s = display(&a, result.solution);
         assert!(s.contains("C1"), "should have constant: {s}");
         assert!(s.contains("exp"), "should contain exp: {s}");
