@@ -116,6 +116,12 @@ fn do_forward(
         return Ok(result);
     }
 
+    // ── Time-shift rule: L{H(t-a)·f(t)} = exp(-a·s)·L{f(t+a)} ──
+    // Must come before frequency shift so H(t-a)*exp(t) isn't consumed by freq_shift first.
+    if let Some(result) = try_time_shift(arena, expr, t, t_sym, s)? {
+        return Ok(result);
+    }
+
     // ── Try frequency shift: expr = exp(a*t) * g(t) ──
     if let Some(result) = try_freq_shift(arena, expr, t, t_sym, s)? {
         return Ok(result);
@@ -123,6 +129,11 @@ fn do_forward(
 
     // ── Try t^n * exp(at) pattern ──
     if let Some(result) = try_tn_exp(arena, expr, t, t_sym, s) {
+        return Ok(result);
+    }
+
+    // ── Frequency differentiation: L{t^n·f(t)} = (-1)^n · d^n/ds^n L{f(t)} ──
+    if let Some(result) = try_freq_diff(arena, expr, t, t_sym, s)? {
         return Ok(result);
     }
 
@@ -285,11 +296,25 @@ fn try_table_forward(
         }
 
         // Rule 3: exp(a*t) → 1/(s-a)
+        //         exp(a*t + b) → exp(b)/(s-a)  (affine extension)
         ExprNode::Exp(arg) => {
             if let Some(a) = extract_linear_coeff(arena, arg, t) {
                 let s_minus_a = arena.sub(s, a);
                 return Some(arena.div(arena.one, s_minus_a));
             }
+            // Affine case: arg = a*t + b where b ≠ 0
+            if let Some(poly) = crate::polybridge::expr_to_poly(arena, arg, t)
+                && poly.degree() == Some(1) {
+                    let a_coeff = poly.coeff(1);
+                    let b_coeff = poly.coeff(0);
+                    if !a_coeff.is_zero() && !b_coeff.is_zero() {
+                        let a_id = rational_to_expr(arena, &a_coeff);
+                        let b_id = rational_to_expr(arena, &b_coeff);
+                        let s_minus_a = arena.sub(s, a_id);
+                        let exp_b = arena.exp(b_id);
+                        return Some(arena.div(exp_b, s_minus_a));
+                    }
+                }
             None
         }
 
@@ -339,6 +364,167 @@ fn try_table_forward(
 
         _ => None,
     }
+}
+
+// ─── Time-shift rule ─────────────────────────────────────────────────────
+
+/// Try the time-shift rule: L{H(t-a)·f(t)} = exp(-a·s)·L{f(t+a)}
+///
+/// Detects a `Heaviside(t - a)` factor in a Mul node, shifts f(t) → f(t+a),
+/// transforms the shifted function, and multiplies by exp(-a·s).
+fn try_time_shift(
+    arena: &mut Arena,
+    expr: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+    s: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    let node = arena.node(expr).clone();
+
+    if let ExprNode::Mul(ref children) = node {
+        let kids = children.clone();
+        for (i, &child) in kids.iter().enumerate() {
+            if let ExprNode::Heaviside(h_arg) = arena.node(child).clone() {
+                // Check if h_arg is (t - a) for some constant a
+                if let Some(a) = extract_shift(arena, h_arg, t, t_sym) {
+                    tracing::debug!("laplace: time-shift detected with a={:?}", a);
+
+                    // Collect remaining factors as g(t)
+                    let remaining: Vec<ExprId> = kids
+                        .iter()
+                        .enumerate()
+                        .filter(|&(j, _)| j != i)
+                        .map(|(_, &c)| c)
+                        .collect();
+                    let g = if remaining.len() == 1 {
+                        remaining[0]
+                    } else if remaining.is_empty() {
+                        arena.one
+                    } else {
+                        arena.mul(&remaining)
+                    };
+
+                    // Substitute t → t + a in g
+                    let t_plus_a = arena.add(&[t, a]);
+                    let g_shifted = crate::subs::subs(arena, g, t, t_plus_a);
+
+                    // Recursively transform g_shifted
+                    let g_transform = do_forward(arena, g_shifted, t, t_sym, s)?;
+
+                    // Multiply by exp(-a*s)
+                    let a_s = arena.mul(&[a, s]);
+                    let neg_a_s = arena.neg(a_s);
+                    let exp_factor = arena.exp(neg_a_s);
+
+                    return Ok(Some(arena.mul(&[exp_factor, g_transform])));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Extract the shift amount `a` from an expression of the form `t - a`.
+///
+/// - If `expr == t`, returns `Some(0)` (shift by 0).
+/// - If `expr` is `Add(t, Neg(a))` or similar polynomial `t - a`, returns `Some(a)`.
+/// - Returns `None` if `expr` is not a simple linear shift of `t`.
+fn extract_shift(arena: &mut Arena, expr: ExprId, t: ExprId, _t_sym: SymbolId) -> Option<ExprId> {
+    // expr == t → shift by 0
+    if expr == t {
+        return Some(arena.zero);
+    }
+
+    // Try polynomial approach: expr should be t - a, i.e. linear with coeff 1
+    let poly = crate::polybridge::expr_to_poly(arena, expr, t)?;
+    if poly.degree()? != 1 {
+        return None;
+    }
+    // Coefficient of t must be 1
+    let a1 = poly.coeff(1);
+    if !a1.is_one() {
+        return None;
+    }
+    // Constant term is -a, so a = -constant
+    let c0 = poly.coeff(0);
+    let a_val = -c0;
+    let a_id = rational_to_expr(arena, &a_val);
+    Some(a_id)
+}
+
+// ─── Frequency differentiation ───────────────────────────────────────────
+
+/// Try the frequency differentiation rule: L{t^n·f(t)} = (-1)^n · d^n/ds^n L{f(t)}
+///
+/// Detects a `t` or `t^n` factor in a Mul node, transforms the remaining
+/// factors, then differentiates with respect to `s` `n` times, applying the
+/// (-1)^n sign.
+fn try_freq_diff(
+    arena: &mut Arena,
+    expr: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+    s: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    let node = arena.node(expr).clone();
+
+    if let ExprNode::Mul(ref children) = node {
+        let kids = children.clone();
+        for (i, &child) in kids.iter().enumerate() {
+            let n = check_t_power(arena, child, t, t_sym);
+            if n > 0 {
+                tracing::debug!("laplace: frequency differentiation detected, t^{}", n);
+
+                // Collect remaining factors as g(t)
+                let remaining: Vec<ExprId> = kids
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != i)
+                    .map(|(_, &c)| c)
+                    .collect();
+                let g = if remaining.len() == 1 {
+                    remaining[0]
+                } else if remaining.is_empty() {
+                    arena.one
+                } else {
+                    arena.mul(&remaining)
+                };
+
+                // L{t^n · g(t)} = (-1)^n · d^n/ds^n L{g(t)}
+                let g_transform = do_forward(arena, g, t, t_sym, s)?;
+                let mut result = g_transform;
+                for _ in 0..n {
+                    result = crate::diff::diff(arena, result, s);
+                    result = arena.neg(result);
+                }
+                return Ok(Some(result));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Check if `expr` is `t` or `t^n` for a positive integer n.
+/// Returns 0 if not a power of t, otherwise returns n.
+fn check_t_power(arena: &Arena, expr: ExprId, t: ExprId, t_sym: SymbolId) -> u64 {
+    // expr == t → n = 1
+    if expr == t {
+        return 1;
+    }
+    if let ExprNode::Symbol(sid) = arena.node(expr)
+        && *sid == t_sym {
+            return 1;
+        }
+
+    // expr == Pow(t, n)
+    if let ExprNode::Pow(base, exp) = arena.node(expr)
+        && *base == t
+            && let Some(r) = arena.as_num(*exp)
+                && r.is_integer() && r.is_positive() {
+                    return r.to_integer().try_into().unwrap_or(0);
+                }
+
+    0
 }
 
 // ─── Frequency shift ─────────────────────────────────────────────────────

@@ -492,6 +492,55 @@ fn integrate_node(
                 return arena.mul(&constants);
             }
 
+            // ── DiracDelta sifting property: ∫ f(x)·δ(g(x)) dx = f(root)·H(g(x)) ──
+            // Check if any factor in the product is a DiracDelta.
+            {
+                let all_children: SmallVec<[ExprId; 6]> = children.clone();
+                for (i, &child) in all_children.iter().enumerate() {
+                    if let ExprNode::DiracDelta(delta_arg) = arena.node(child).clone() {
+                        tracing::debug!(
+                            "integrate: detected DiracDelta factor in Mul, attempting sifting property"
+                        );
+
+                        // Collect the remaining factors as f(x)
+                        let other_factors: SmallVec<[ExprId; 4]> = all_children
+                            .iter()
+                            .enumerate()
+                            .filter(|&(j, _)| j != i)
+                            .map(|(_, &c)| c)
+                            .collect();
+                        let f_expr = if other_factors.len() == 1 {
+                            other_factors[0]
+                        } else if other_factors.is_empty() {
+                            arena.one
+                        } else {
+                            arena.mul(&other_factors)
+                        };
+
+                        // Simple case: δ(x) → root = 0
+                        if delta_arg == var {
+                            let f_at_0 = crate::subs::subs(arena, f_expr, var, arena.zero);
+                            let f_at_0_eval = crate::eval::eval(arena, f_at_0);
+                            let heaviside = arena.intern(ExprNode::Heaviside(var));
+                            return arena.mul(&[f_at_0_eval, heaviside]);
+                        }
+
+                        // General case: solve δ(g(x)) = 0, i.e. g(x) = 0 for x
+                        let solutions = crate::solve::solve(arena, delta_arg, var);
+                        if solutions.len() == 1 {
+                            let root = solutions[0].value;
+                            let f_at_root = crate::subs::subs(arena, f_expr, var, root);
+                            let f_at_root_eval = crate::eval::eval(arena, f_at_root);
+                            let heaviside = arena.intern(ExprNode::Heaviside(delta_arg));
+                            return arena.mul(&[f_at_root_eval, heaviside]);
+                        }
+
+                        // If we can't solve, fall through to other strategies
+                        break;
+                    }
+                }
+            }
+
             // ── Integration by parts: ∫ u·dv = u·v - ∫ v·du ───────────
             // Try when there are exactly 2 dependent factors:
             // one that's a by-parts candidate (u), and one that's directly
