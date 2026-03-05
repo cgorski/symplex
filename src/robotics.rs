@@ -179,3 +179,158 @@ pub fn fk_rotation(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
         ],
     ])
 }
+
+/// Rotation matrix about the x-axis by angle θ.
+///
+/// ```text
+/// Rx(θ) = | 1    0       0    |
+///          | 0  cos(θ)  -sin(θ)|
+///          | 0  sin(θ)   cos(θ)|
+/// ```
+pub fn rot_x(theta: &Ex) -> Matrix {
+    let zero = crate::int(0);
+    let one = crate::int(1);
+    let c = theta.cos();
+    let s = theta.sin();
+    Matrix::new(vec![
+        vec![one, zero.clone(), zero.clone()],
+        vec![zero.clone(), c.clone(), -&s],
+        vec![zero, s, c],
+    ])
+}
+
+/// Rotation matrix about the y-axis by angle θ.
+///
+/// ```text
+/// Ry(θ) = |  cos(θ)  0  sin(θ) |
+///          |    0     1    0     |
+///          | -sin(θ)  0  cos(θ)  |
+/// ```
+pub fn rot_y(theta: &Ex) -> Matrix {
+    let zero = crate::int(0);
+    let one = crate::int(1);
+    let c = theta.cos();
+    let s = theta.sin();
+    Matrix::new(vec![
+        vec![c.clone(), zero.clone(), s.clone()],
+        vec![zero.clone(), one, zero.clone()],
+        vec![-&s, zero, c],
+    ])
+}
+
+/// Rotation matrix about the z-axis by angle θ.
+///
+/// ```text
+/// Rz(θ) = | cos(θ)  -sin(θ)  0 |
+///          | sin(θ)   cos(θ)  0 |
+///          |   0        0     1 |
+/// ```
+pub fn rot_z(theta: &Ex) -> Matrix {
+    let zero = crate::int(0);
+    let one = crate::int(1);
+    let c = theta.cos();
+    let s = theta.sin();
+    Matrix::new(vec![
+        vec![c.clone(), -&s, zero.clone()],
+        vec![s, c, zero.clone()],
+        vec![zero.clone(), zero, one],
+    ])
+}
+
+/// Skew-symmetric matrix from a 3-vector [a, b, c].
+///
+/// Returns the 3×3 matrix such that skew(v) · w = v × w:
+/// ```text
+/// [ω]× = |  0  -c   b |
+///         |  c   0  -a |
+///         | -b   a   0 |
+/// ```
+pub fn skew3(a: &Ex, b: &Ex, c: &Ex) -> Matrix {
+    let zero = crate::int(0);
+    Matrix::new(vec![
+        vec![zero.clone(), -c, b.clone()],
+        vec![c.clone(), zero.clone(), -a],
+        vec![-b, a.clone(), zero],
+    ])
+}
+
+/// Build a 4×4 homogeneous transformation matrix from a 3×3 rotation
+/// matrix and a 3-element position vector.
+///
+/// ```text
+/// T = | R  p |
+///     | 0  1 |
+/// ```
+pub fn homogeneous(rotation: &Matrix, position: &[Ex; 3]) -> Matrix {
+    assert_eq!(rotation.shape(), (3, 3), "rotation must be 3×3");
+    let zero = crate::int(0);
+    let one = crate::int(1);
+    Matrix::new(vec![
+        vec![
+            rotation.get(0, 0).clone(),
+            rotation.get(0, 1).clone(),
+            rotation.get(0, 2).clone(),
+            position[0].clone(),
+        ],
+        vec![
+            rotation.get(1, 0).clone(),
+            rotation.get(1, 1).clone(),
+            rotation.get(1, 2).clone(),
+            position[1].clone(),
+        ],
+        vec![
+            rotation.get(2, 0).clone(),
+            rotation.get(2, 1).clone(),
+            rotation.get(2, 2).clone(),
+            position[2].clone(),
+        ],
+        vec![zero.clone(), zero.clone(), zero, one],
+    ])
+}
+
+/// Pure translation as a 4×4 homogeneous transformation matrix.
+///
+/// ```text
+/// T = | I  p |
+///     | 0  1 |
+/// ```
+pub fn translation(x: &Ex, y: &Ex, z: &Ex) -> Matrix {
+    let zero = crate::int(0);
+    let one = crate::int(1);
+    Matrix::new(vec![
+        vec![one.clone(), zero.clone(), zero.clone(), x.clone()],
+        vec![zero.clone(), one.clone(), zero.clone(), y.clone()],
+        vec![zero.clone(), zero.clone(), one, z.clone()],
+        vec![zero.clone(), zero.clone(), zero, crate::int(1)],
+    ])
+}
+
+/// Euler angle convention for rotation composition.
+///
+/// Supports common conventions: ZYX (aerospace/Tait-Bryan),
+/// ZXZ (classical), XYZ, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EulerConvention {
+    /// Aerospace (yaw-pitch-roll): R = Rz(φ) · Ry(θ) · Rx(ψ)
+    ZYX,
+    /// Classical: R = Rz(φ) · Rx(θ) · Rz(ψ)
+    ZXZ,
+    /// Roll-pitch-yaw: R = Rx(φ) · Ry(θ) · Rz(ψ)
+    XYZ,
+}
+
+/// Rotation matrix from Euler angles with specified convention.
+pub fn rot_euler(phi: &Ex, theta: &Ex, psi: &Ex, convention: EulerConvention) -> Matrix {
+    match convention {
+        EulerConvention::ZYX => {
+            // R = Rz(phi) * Ry(theta) * Rx(psi)
+            rot_z(phi).matmul(&rot_y(theta)).matmul(&rot_x(psi))
+        }
+        EulerConvention::ZXZ => {
+            rot_z(phi).matmul(&rot_x(theta)).matmul(&rot_z(psi))
+        }
+        EulerConvention::XYZ => {
+            rot_x(phi).matmul(&rot_y(theta)).matmul(&rot_z(psi))
+        }
+    }
+}

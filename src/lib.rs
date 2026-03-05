@@ -48,10 +48,14 @@ pub(crate) mod codegen;
 pub(crate) mod combsimp;
 pub(crate) mod compact;
 pub(crate) mod complex;
+/// Control systems: state-space models, transfer functions, stability analysis.
+pub mod control;
 pub(crate) mod convergence;
 pub(crate) mod cse;
 pub(crate) mod diff;
 pub(crate) mod display;
+/// Lagrangian dynamics: equations of motion, mass matrix, Coriolis, gravity.
+pub mod dynamics;
 /// Symbolic equation type (`lhs = rhs`).
 pub mod eq;
 pub(crate) mod eval;
@@ -81,10 +85,12 @@ pub(crate) mod pattern;
 pub(crate) mod poly;
 pub(crate) mod polybridge;
 pub(crate) mod powsimp;
+/// Symbolic quaternion algebra for attitude representation.
+pub mod quaternion;
 pub(crate) mod radsimp;
 pub(crate) mod residue;
 pub(crate) mod rewrite;
-/// Robotics kinematics: DH parameters, forward kinematics.
+/// Robotics kinematics: DH parameters, forward kinematics, rotations.
 pub mod robotics;
 pub(crate) mod separatevars;
 pub(crate) mod series;

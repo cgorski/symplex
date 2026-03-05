@@ -1168,6 +1168,47 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// Differentiate treating certain symbols as dependent on `var`.
+    ///
+    /// For any symbol `dep` in `dependent_vars`, `d/d(var)(dep)` returns
+    /// a formal `Derivative(dep, var)` instead of zero. This enables
+    /// implicit differentiation and ODE construction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let x = symplex::var("x");
+    /// let y = symplex::var("y");
+    /// let expr = &x.powi(2) + &y.powi(2);
+    /// let result = expr.diff_with_dependent(&x, &[&y]);
+    /// // d/dx(x² + y²) with y depending on x = 2x + 2y·dy/dx
+    /// ```
+    pub fn diff_with_dependent(&self, var: &Ex, dependent_vars: &[&Ex]) -> Ex {
+        let mut deps = rustc_hash::FxHashSet::default();
+        for dep in dependent_vars {
+            deps.insert(dep.id);
+        }
+        let id = {
+            let mut guard = self.inner.write();
+            crate::diff::diff_with_deps(&mut guard.arena, self.id, var.id, &deps)
+        };
+        self.wrap(id)
+    }
+
+    /// Concretely evaluate all formal `Derivative` nodes in this expression.
+    ///
+    /// This is the "doit" operation: each `Derivative(f, x)` node is replaced
+    /// by the result of actually differentiating `f` with respect to `x`.
+    /// Useful after substituting a solution into an ODE for verification.
+    pub fn eval_derivatives(&self) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            crate::subs::eval_derivatives(&mut guard.arena, self.id)
+        };
+        self.wrap(id)
+    }
+
     /// Compute the nth derivative with respect to `var`.
     ///
     /// # Examples

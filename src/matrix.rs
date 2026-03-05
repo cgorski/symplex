@@ -697,6 +697,34 @@ impl Matrix {
         let cp = self.char_poly(var);
         cp.solve_or_empty(var)
     }
+
+    /// Compute the integer power of a square matrix via repeated squaring.
+    ///
+    /// - `powi(0)` returns the identity matrix
+    /// - `powi(1)` returns a clone
+    /// - `powi(n)` for n ≥ 2 uses binary exponentiation
+    /// - Negative powers are not supported (use `inv()` + `powi()`)
+    pub fn powi(&self, n: u32) -> Matrix {
+        assert!(self.is_square(), "powi requires a square matrix");
+        if n == 0 {
+            return Matrix::identity(self.nrows);
+        }
+        if n == 1 {
+            return self.clone();
+        }
+        // Binary exponentiation
+        let mut result = Matrix::identity(self.nrows);
+        let mut base = self.clone();
+        let mut exp = n;
+        while exp > 0 {
+            if exp % 2 == 1 {
+                result = result.matmul(&base);
+            }
+            base = base.matmul(&base);
+            exp /= 2;
+        }
+        result
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -803,3 +803,456 @@ fn fk_rotation_orthogonal_multi_joint() {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Wave 1 — Rotation constructors
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn rot_x_identity() {
+    let zero = symplex::int(0);
+    let r = symplex::robotics::rot_x(&zero);
+    assert_eq!(r.shape(), (3, 3));
+    for i in 0..3 {
+        for j in 0..3 {
+            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (val - expected).abs() < 1e-10,
+                "rot_x(0)[{i},{j}] = {val}, expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rot_x_90deg() {
+    // Rx(π/2) = | 1  0   0 |
+    //           | 0  0  -1 |
+    //           | 0  1   0 |
+    let pi = symplex::pi();
+    let two = symplex::int(2);
+    let angle = &pi / &two;
+    let r = symplex::robotics::rot_x(&angle);
+    // (1,1) = cos(π/2) = 0
+    let val_11 = r.get(1, 1).eval().evalf_f64().unwrap();
+    assert!(
+        val_11.abs() < 1e-10,
+        "rot_x(π/2)[1,1] = {val_11}, expected 0"
+    );
+    // (1,2) = -sin(π/2) = -1
+    let val_12 = r.get(1, 2).eval().evalf_f64().unwrap();
+    assert!(
+        (val_12 - (-1.0)).abs() < 1e-10,
+        "rot_x(π/2)[1,2] = {val_12}, expected -1"
+    );
+    // (2,1) = sin(π/2) = 1
+    let val_21 = r.get(2, 1).eval().evalf_f64().unwrap();
+    assert!(
+        (val_21 - 1.0).abs() < 1e-10,
+        "rot_x(π/2)[2,1] = {val_21}, expected 1"
+    );
+}
+
+#[test]
+fn rot_y_identity() {
+    let zero = symplex::int(0);
+    let r = symplex::robotics::rot_y(&zero);
+    assert_eq!(r.shape(), (3, 3));
+    for i in 0..3 {
+        for j in 0..3 {
+            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (val - expected).abs() < 1e-10,
+                "rot_y(0)[{i},{j}] = {val}, expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rot_z_identity() {
+    let zero = symplex::int(0);
+    let r = symplex::robotics::rot_z(&zero);
+    assert_eq!(r.shape(), (3, 3));
+    for i in 0..3 {
+        for j in 0..3 {
+            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (val - expected).abs() < 1e-10,
+                "rot_z(0)[{i},{j}] = {val}, expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rot_z_90deg() {
+    // Rz(π/2) = | 0  -1  0 |
+    //           | 1   0  0 |
+    //           | 0   0  1 |
+    let pi = symplex::pi();
+    let two = symplex::int(2);
+    let angle = &pi / &two;
+    let r = symplex::robotics::rot_z(&angle);
+    // (0,0) = cos(π/2) = 0
+    let val_00 = r.get(0, 0).eval().evalf_f64().unwrap();
+    assert!(
+        val_00.abs() < 1e-10,
+        "rot_z(π/2)[0,0] = {val_00}, expected 0"
+    );
+    // (0,1) = -sin(π/2) = -1
+    let val_01 = r.get(0, 1).eval().evalf_f64().unwrap();
+    assert!(
+        (val_01 - (-1.0)).abs() < 1e-10,
+        "rot_z(π/2)[0,1] = {val_01}, expected -1"
+    );
+    // (1,0) = sin(π/2) = 1
+    let val_10 = r.get(1, 0).eval().evalf_f64().unwrap();
+    assert!(
+        (val_10 - 1.0).abs() < 1e-10,
+        "rot_z(π/2)[1,0] = {val_10}, expected 1"
+    );
+    // (2,2) = 1
+    let val_22 = r.get(2, 2).eval().evalf_f64().unwrap();
+    assert!(
+        (val_22 - 1.0).abs() < 1e-10,
+        "rot_z(π/2)[2,2] = {val_22}, expected 1"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Wave 1 — skew3
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn skew3_antisymmetric() {
+    let a = symplex::var("a");
+    let b = symplex::var("b");
+    let c = symplex::var("c");
+    let s = symplex::robotics::skew3(&a, &b, &c);
+    let st = s.transpose();
+    let sum = s.add(&st);
+
+    // Evaluate at concrete values to verify antisymmetry (S + S^T = 0)
+    let a_val = symplex::rational(3, 1);
+    let b_val = symplex::rational(5, 1);
+    let c_val = symplex::rational(7, 1);
+    for i in 0..3 {
+        for j in 0..3 {
+            let val = sum
+                .get(i, j)
+                .subs(&a, &a_val)
+                .subs(&b, &b_val)
+                .subs(&c, &c_val)
+                .eval()
+                .evalf_f64()
+                .unwrap();
+            assert!(
+                val.abs() < 1e-10,
+                "skew3 + skew3^T [{i},{j}] = {val}, expected 0"
+            );
+        }
+    }
+}
+
+#[test]
+fn skew3_cross_product() {
+    // skew3(1, 0, 0) * [0, 1, 0]^T should equal [0, 0, 1]^T (i × j = k)
+    let one = symplex::int(1);
+    let zero = symplex::int(0);
+    let s = symplex::robotics::skew3(&one, &zero, &zero);
+    let v = symplex::matrix::Matrix::col_vector(vec![zero.clone(), one.clone(), symplex::int(0)]);
+    let result = s.matmul(&v);
+    assert_eq!(result.shape(), (3, 1));
+    let r0 = result.get(0, 0).eval().evalf_f64().unwrap();
+    let r1 = result.get(1, 0).eval().evalf_f64().unwrap();
+    let r2 = result.get(2, 0).eval().evalf_f64().unwrap();
+    assert!(
+        r0.abs() < 1e-10,
+        "cross product x = {r0}, expected 0"
+    );
+    assert!(
+        r1.abs() < 1e-10,
+        "cross product y = {r1}, expected 0"
+    );
+    assert!(
+        (r2 - 1.0).abs() < 1e-10,
+        "cross product z = {r2}, expected 1"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Wave 1 — homogeneous & translation
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn homogeneous_identity() {
+    let zero = symplex::int(0);
+    let i3 = symplex::matrix::Matrix::identity(3);
+    let pos = [zero.clone(), zero.clone(), zero.clone()];
+    let h = symplex::robotics::homogeneous(&i3, &pos);
+    assert_eq!(h.shape(), (4, 4));
+    for i in 0..4 {
+        for j in 0..4 {
+            let val = h.get(i, j).eval().evalf_f64().unwrap();
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (val - expected).abs() < 1e-10,
+                "homogeneous(I3, [0,0,0])[{i},{j}] = {val}, expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn homogeneous_translation() {
+    let i3 = symplex::matrix::Matrix::identity(3);
+    let px = symplex::rational(4, 1);
+    let py = symplex::rational(5, 1);
+    let pz = symplex::rational(6, 1);
+    let pos = [px.clone(), py.clone(), pz.clone()];
+    let h = symplex::robotics::homogeneous(&i3, &pos);
+    // Last column should be [4, 5, 6, 1]
+    let expected_col = [4.0, 5.0, 6.0, 1.0];
+    for i in 0..4 {
+        let val = h.get(i, 3).eval().evalf_f64().unwrap();
+        assert!(
+            (val - expected_col[i]).abs() < 1e-10,
+            "homogeneous last col [{i}] = {val}, expected {}",
+            expected_col[i]
+        );
+    }
+}
+
+#[test]
+fn translation_pure() {
+    let t = symplex::robotics::translation(
+        &symplex::int(1),
+        &symplex::int(2),
+        &symplex::int(3),
+    );
+    assert_eq!(t.shape(), (4, 4));
+    // Check last column = [1, 2, 3, 1]
+    let expected = [1.0, 2.0, 3.0, 1.0];
+    for i in 0..4 {
+        let val = t.get(i, 3).eval().evalf_f64().unwrap();
+        assert!(
+            (val - expected[i]).abs() < 1e-10,
+            "translation last col [{i}] = {val}, expected {}",
+            expected[i]
+        );
+    }
+    // Check the rotation block is identity
+    for i in 0..3 {
+        for j in 0..3 {
+            let val = t.get(i, j).eval().evalf_f64().unwrap();
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (val - expected).abs() < 1e-10,
+                "translation rotation[{i},{j}] = {val}, expected {expected}"
+            );
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Wave 1 — Euler angles
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn rot_euler_zyx_identity() {
+    use symplex::robotics::EulerConvention;
+    let zero = symplex::int(0);
+    let r = symplex::robotics::rot_euler(&zero, &zero, &zero, EulerConvention::ZYX);
+    assert_eq!(r.shape(), (3, 3));
+    for i in 0..3 {
+        for j in 0..3 {
+            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (val - expected).abs() < 1e-10,
+                "rot_euler(0,0,0,ZYX)[{i},{j}] = {val}, expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rot_euler_zyx_numerical() {
+    use symplex::robotics::EulerConvention;
+    // phi=π/2, theta=0, psi=0 → Rz(π/2)·Ry(0)·Rx(0) = Rz(π/2)
+    let pi = symplex::pi();
+    let two = symplex::int(2);
+    let half_pi = &pi / &two;
+    let zero = symplex::int(0);
+
+    let r = symplex::robotics::rot_euler(&half_pi, &zero, &zero, EulerConvention::ZYX);
+    // Rz(π/2) = | 0  -1  0 |
+    //           | 1   0  0 |
+    //           | 0   0  1 |
+    let expected = [
+        [0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    for i in 0..3 {
+        for j in 0..3 {
+            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            assert!(
+                (val - expected[i][j]).abs() < 1e-10,
+                "rot_euler(π/2,0,0,ZYX)[{i},{j}] = {val}, expected {}",
+                expected[i][j]
+            );
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Wave 1 — Matrix powi
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn matrix_powi_identity() {
+    // M.powi(0) = I for any square matrix
+    let a = symplex::var("a");
+    let b = symplex::var("b");
+    let c = symplex::var("c");
+    let d = symplex::var("d");
+    let m = symplex::matrix::Matrix::new(vec![
+        vec![a.clone(), b.clone()],
+        vec![c.clone(), d.clone()],
+    ]);
+    let result = m.powi(0);
+    assert_eq!(result.shape(), (2, 2));
+    for i in 0..2 {
+        for j in 0..2 {
+            let val = result.get(i, j).eval().evalf_f64().unwrap();
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (val - expected).abs() < 1e-10,
+                "powi(0)[{i},{j}] = {val}, expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn matrix_powi_one() {
+    // M.powi(1) = M (numerically)
+    let m = symplex::matrix::Matrix::new(vec![
+        vec![symplex::int(1), symplex::int(2)],
+        vec![symplex::int(3), symplex::int(4)],
+    ]);
+    let result = m.powi(1);
+    let expected = [[1.0, 2.0], [3.0, 4.0]];
+    for i in 0..2 {
+        for j in 0..2 {
+            let val = result.get(i, j).eval().evalf_f64().unwrap();
+            assert!(
+                (val - expected[i][j]).abs() < 1e-10,
+                "powi(1)[{i},{j}] = {val}, expected {}",
+                expected[i][j]
+            );
+        }
+    }
+}
+
+#[test]
+fn matrix_powi_square() {
+    // M.powi(2) = M * M
+    let m = symplex::matrix::Matrix::new(vec![
+        vec![symplex::int(1), symplex::int(2)],
+        vec![symplex::int(3), symplex::int(4)],
+    ]);
+    let m2 = m.powi(2);
+    let m_times_m = m.matmul(&m);
+    for i in 0..2 {
+        for j in 0..2 {
+            let val = m2.get(i, j).eval().evalf_f64().unwrap();
+            let exp = m_times_m.get(i, j).eval().evalf_f64().unwrap();
+            assert!(
+                (val - exp).abs() < 1e-10,
+                "powi(2)[{i},{j}] = {val}, expected {exp}"
+            );
+        }
+    }
+}
+
+#[test]
+fn matrix_powi_cube() {
+    // M.powi(3) = M * M * M (verify numerically)
+    // M = | 1 2 |  =>  M^3 = | 37  54 |
+    //     | 3 4 |             | 81 118 |
+    let m = symplex::matrix::Matrix::new(vec![
+        vec![symplex::int(1), symplex::int(2)],
+        vec![symplex::int(3), symplex::int(4)],
+    ]);
+    let m3 = m.powi(3);
+    let expected = [[37.0, 54.0], [81.0, 118.0]];
+    for i in 0..2 {
+        for j in 0..2 {
+            let val = m3.get(i, j).eval().evalf_f64().unwrap();
+            assert!(
+                (val - expected[i][j]).abs() < 1e-10,
+                "powi(3)[{i},{j}] = {val}, expected {}",
+                expected[i][j]
+            );
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Wave 1 — diff_with_dependent / eval_derivatives
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn diff_with_dependent_basic() {
+    // d/dx(y) with deps={y} should produce Derivative(y, x)
+    let x = symplex::var("x");
+    let y = symplex::var("y");
+    let result = y.diff_with_dependent(&x, &[&y]);
+    let s = format!("{result}");
+    assert!(
+        s.contains("Derivative") || s.contains("d/d"),
+        "d/dx(y) with deps={{y}} should be a Derivative node, got: {s}"
+    );
+}
+
+#[test]
+fn diff_with_dependent_implicit() {
+    // d/dx(x² + y²) with deps={y} should contain Derivative
+    let x = symplex::var("x");
+    let y = symplex::var("y");
+    let expr = &x.powi(2) + &y.powi(2);
+    let result = expr.diff_with_dependent(&x, &[&y]);
+    let s = format!("{result}");
+    // Should contain both 2*x and a Derivative term involving y
+    assert!(
+        s.contains("Derivative") || s.contains("d/d"),
+        "d/dx(x²+y²) with deps={{y}} should contain Derivative, got: {s}"
+    );
+}
+
+#[test]
+fn eval_derivatives_simple() {
+    // eval_derivatives on sin(x).formal_diff(&x) should give cos(x)
+    let x = symplex::var("x");
+    let expr = x.sin();
+    let formal = expr.formal_diff(&x);
+    let evald = formal.eval_derivatives();
+
+    // Numerically verify at several points that evald == cos(x)
+    let test_vals: &[(i64, i64, f64)] = &[(1, 2, 0.5), (1, 1, 1.0), (2, 1, 2.0), (-1, 1, -1.0)];
+    for &(p, q, fval) in test_vals {
+        let xv = symplex::rational(p, q);
+        let got = evald.subs(&x, &xv).eval().evalf_f64().unwrap();
+        let expected = fval.cos();
+        assert!(
+            (got - expected).abs() < 1e-10,
+            "eval_derivatives(Derivative(sin(x),x)) at x={fval}: got {got}, expected {expected}"
+        );
+    }
+}
