@@ -1419,6 +1419,34 @@ impl Arena {
     pub(crate) fn solveset_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
         crate::inequalities::solveset(self, expr, var)
     }
+
+    // ── Closed-form sum evaluation ─────────────────────────────────
+
+    /// Attempt closed-form evaluation of `Σ_{var=lower}^{upper} body`.
+    ///
+    /// Delegates to [`sum_eval::eval_sum_symbolic`]. Returns `Some(result)`
+    /// if a closed form was found, `None` otherwise.
+    pub(crate) fn eval_sum_symbolic_expr(
+        &mut self,
+        body: ExprId,
+        var: ExprId,
+        lower: ExprId,
+        upper: ExprId,
+    ) -> Option<ExprId> {
+        crate::sum_eval::eval_sum_symbolic(self, body, var, lower, upper)
+    }
+
+    // ── Convergence testing ────────────────────────────────────────
+
+    /// Test whether the infinite series `Σ_{k=1}^{∞} body(var)` converges.
+    ///
+    /// Returns `Some(true)` if convergent, `Some(false)` if divergent,
+    /// `None` if the test is inconclusive.
+    ///
+    /// Delegates to [`convergence::is_convergent`].
+    pub(crate) fn is_convergent_expr(&mut self, body: ExprId, var: ExprId) -> Option<bool> {
+        crate::convergence::is_convergent(self, body, var)
+    }
 }
 
 // ---------------------------------------------------------------------------

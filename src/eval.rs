@@ -707,7 +707,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 }
             }
 
-            // ── Sum: evaluate by substitution for finite integer bounds ─
+            // ── Sum: try closed-form first, then finite substitution ───
             ExprNode::Sum(body, sum_var, lo, hi) => {
                 let nbody = cache.get(&body).copied().unwrap_or(body);
                 let nvar = cache.get(&sum_var).copied().unwrap_or(sum_var);
@@ -729,11 +729,25 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     }
                 });
 
-                if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int) {
-                    if hi_val < lo_val {
+                // Check for empty range before anything else
+                if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int)
+                    && hi_val < lo_val {
                         // Empty range: sum is 0
-                        arena.zero
-                    } else if (hi_val - lo_val) <= 1000 {
+                        cache.insert(id, arena.zero);
+                        continue;
+                    }
+
+                // Try closed-form symbolic evaluation (Faulhaber, geometric, etc.)
+                if let Some(closed) =
+                    crate::sum_eval::eval_sum_symbolic(arena, nbody, nvar, nlo, nhi)
+                {
+                    let result = eval(arena, closed);
+                    cache.insert(id, result);
+                    continue;
+                }
+
+                if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int) {
+                    if (hi_val - lo_val) <= 1000 {
                         let mut terms = smallvec::SmallVec::<[ExprId; 8]>::new();
                         for k in lo_val..=hi_val {
                             let k_expr = arena.int(k);
@@ -888,6 +902,70 @@ fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         let nid = arena.intern_num(result);
         return Some(arena.intern(ExprNode::Num(nid)));
     }
+
+    // Gamma recurrence for positive rationals > 1 with denom ∉ {1, 2}:
+    // Gamma(frac + n) = rising_factorial(frac, n) * Gamma(frac)
+    // where frac ∈ (0,1) and n ≥ 1.
+    if r.is_positive() && !r.is_integer() && *r.denom() != BigInt::from(2) {
+        let n_big = r.to_integer(); // floor for positive values
+        if n_big >= BigInt::from(1) {
+            let n: u64 = n_big.clone().try_into().ok()?;
+            let frac = &r - Ratio::from_integer(n_big);
+            // rising_factorial(frac, n) = frac * (frac+1) * … * (frac+n-1)
+            let mut product = Ratio::<BigInt>::one();
+            for i in 0..n {
+                product *= &frac + Ratio::from_integer(BigInt::from(i));
+            }
+            let frac_id = {
+                let nid = arena.intern_num(frac);
+                arena.intern(ExprNode::Num(nid))
+            };
+            // Try to evaluate the inner Gamma (e.g. Gamma(1/2) → √π)
+            let gamma_frac = eval_gamma(arena, frac_id).unwrap_or_else(|| arena.gamma(frac_id));
+            if product.is_one() {
+                return Some(gamma_frac);
+            }
+            let prod_nid = arena.intern_num(product);
+            let prod_node = arena.intern(ExprNode::Num(prod_nid));
+            return Some(arena.mul(&[prod_node, gamma_frac]));
+        }
+    }
+
+    // Gamma recurrence for negative non-integer rationals:
+    // Gamma(x) = Gamma(x+m) / (x·(x+1)·…·(x+m-1))
+    // where m = ⌈-x⌉ shifts x into (0, 1).
+    if r.is_negative() && !r.is_integer() {
+        let neg_r = -&r; // positive
+        // m = ceil(neg_r); since neg_r is positive and not an integer,
+        // ceil = floor + 1 = to_integer + 1.
+        let m_big = if neg_r.is_integer() {
+            neg_r.to_integer()
+        } else {
+            neg_r.to_integer() + BigInt::from(1)
+        };
+        let m: u64 = m_big.clone().try_into().ok()?;
+        let frac = &r + Ratio::from_integer(m_big); // frac ∈ (0, 1)
+        // Denominator product: x·(x+1)·…·(x+m-1)
+        let mut denom_product = Ratio::<BigInt>::one();
+        for i in 0..m {
+            denom_product *= &r + Ratio::from_integer(BigInt::from(i));
+        }
+        if denom_product.is_zero() {
+            return None; // pole — should not happen since r is not an integer
+        }
+        let frac_id = {
+            let nid = arena.intern_num(frac);
+            arena.intern(ExprNode::Num(nid))
+        };
+        // Try to evaluate the inner Gamma (handles half-integer base, etc.)
+        let gamma_frac = eval_gamma(arena, frac_id).unwrap_or_else(|| arena.gamma(frac_id));
+        // Gamma(r) = Gamma(frac) / denom_product = (1/denom_product) * Gamma(frac)
+        let inv_denom = Ratio::one() / denom_product;
+        let coeff_nid = arena.intern_num(inv_denom);
+        let coeff_node = arena.intern(ExprNode::Num(coeff_nid));
+        return Some(arena.mul(&[coeff_node, gamma_frac]));
+    }
+
     None
 }
 

@@ -438,6 +438,66 @@ impl Expr<Numeric> {
         body.wrap(id)
     }
 
+    /// Test whether the infinite series `Σ_{k=1}^{∞} self(var)` converges.
+    ///
+    /// Returns `Some(true)` if the series converges, `Some(false)` if it
+    /// diverges, or `None` if the test is inconclusive.
+    ///
+    /// Applies several tests in sequence: divergence test, p-series test,
+    /// and geometric series test.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let k = ctx.symbol("k");
+    /// // 1/k² converges (p-series with p=2)
+    /// let body = k.powi(-2);
+    /// assert_eq!(body.is_convergent(&k), Some(true));
+    /// ```
+    #[must_use]
+    pub fn is_convergent(&self, var: &Ex) -> Option<bool> {
+        let _span = debug_span!("is_convergent").entered();
+        let mut inner = self.inner.write();
+        inner.arena.is_convergent_expr(self.id, var.id)
+    }
+
+    /// Attempt closed-form evaluation of a symbolic sum.
+    ///
+    /// Given a sum `Σ_{var=lower}^{upper} body`, tries to find a closed-form
+    /// expression using Faulhaber formulas, geometric series, linearity, etc.
+    ///
+    /// Returns the closed form if found, or the original sum expression unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let k = ctx.symbol("k");
+    /// let n = ctx.symbol("n");
+    /// let s = Ex::symbolic_sum(&k, &k, &ctx.int(1), &n);
+    /// let closed = s.closed_form_sum();
+    /// // Should give n*(n+1)/2
+    /// ```
+    #[must_use]
+    pub fn closed_form_sum(&self) -> Ex {
+        let _span = debug_span!("closed_form_sum").entered();
+        let mut inner = self.inner.write();
+        let node = inner.arena.node(self.id).clone();
+        if let crate::node::ExprNode::Sum(body, var, lower, upper) = node
+            && let Some(closed) = inner.arena.eval_sum_symbolic_expr(body, var, lower, upper) {
+                let result = crate::eval::eval(&mut inner.arena, closed);
+                drop(inner);
+                return self.wrap(result);
+            }
+        drop(inner);
+        self.clone()
+    }
+
     /// Decompose this expression into its real part.
     ///
     /// Assumes unadorned symbols are real. Returns the real component
