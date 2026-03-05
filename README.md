@@ -167,24 +167,53 @@ ctx.from_tree(&tree) / ctx.from_json(json)   // deserialization
 ctx.node_count()                             // arena info
 ```
 
-### Expression Methods
+### Expression Methods (172 public methods)
 
 ```rust
-// ── Math functions ─────────────────────────────────────────────
+// ── Math functions (40+) ───────────────────────────────────────
 ex.pow(&exp)    ex.powi(3)     ex.sin()      ex.cos()
 ex.tan()        ex.exp()       ex.ln()       ex.sqrt()
 ex.abs()        ex.asin()      ex.acos()     ex.atan()
 ex.sinh()       ex.cosh()      ex.tanh()     ex.asinh()
 ex.acosh()      ex.atanh()     ex.cbrt()     ex.nthroot(n)
+ex.sec()        ex.csc()       ex.cot()      ex.sinc()
+ex.acot()       ex.asec()      ex.acsc()     ex.atan2(&x)
+ex.coth()       ex.sech()      ex.csch()
+ex.acoth()      ex.asech()     ex.acsch()
+ex.sign()       ex.floor()     ex.ceiling()  ex.frac()
+ex.rem(&other)  ex.log(&base)
+Ex::min_of(ctx, iter)          Ex::max_of(ctx, iter)
+ex.min_with(&other)            ex.max_with(&other)
+
+// ── Special functions ──────────────────────────────────────────
+ex.gamma()      ex.log_gamma()  ex.digamma()
+ex.erf()        ex.erfc()       ex.beta(&other)
+ex.factorial()  ex.binomial(&k) ex.factorial2()
+ex.subfactorial()               ex.rising_factorial(&n)
+ex.falling_factorial(&n)        ex.fibonacci()
+ex.lucas()      ex.bernoulli_number()  ex.harmonic()
+ex.catalan_number()  ex.bell()  ex.euler_number()
+ex.heaviside()  ex.dirac_delta()  ex.lambertw()
+
+// ── Symbolic sums & products ───────────────────────────────────
+Ex::symbolic_sum(body, var, lo, hi)          // unevaluated Σ
+Ex::symbolic_product(body, var, lo, hi)      // unevaluated Π
+ex.closed_form_sum()                         // try closed-form evaluation
+ex.is_convergent(&var)                       // convergence test
 
 // ── Calculus ───────────────────────────────────────────────────
 ex.diff(&x)                                  // symbolic derivative
 ex.diff_n(&x, n)                             // nth derivative
+ex.formal_diff(&x)                           // formal derivative (no eval)
 ex.integrate(&x)                             // indefinite integral
 ex.definite_integral(&x, &lower, &upper)     // definite integral
 ex.series(&x, &point, order)                 // Taylor series → Result
 ex.maclaurin(&x, order)                      // Maclaurin series → Result
 ex.limit(&x, &point)                         // symbolic limit → Result
+ex.residue(&x, &point)                       // residue via limit → Result
+ex.fourier_series(&x, n_terms)               // Fourier series
+ex.laplace(&t, &s)                           // forward Laplace → Result
+ex.inverse_laplace(&s, &t)                   // inverse Laplace → Result
 
 // ── Algebra ────────────────────────────────────────────────────
 ex.expand()                                  // distribute products
@@ -196,11 +225,27 @@ ex.apart(&var)                               // partial fractions
 ex.expand_trig()                             // sin(a+b) → sin(a)cos(b)+...
 ex.expand_log()                              // ln(a*b) → ln(a)+ln(b)
 ex.logcombine()                              // ln(a)+ln(b) → ln(a*b)
-ex.log(&base)                                // arbitrary-base logarithm
+ex.trig_combine()                            // sin(a)cos(b) → sum form
 ex.factor_terms()                            // extract GCD of coefficients
 ex.rationalize_denom()                       // clear radicals from denominators
+ex.ratsimp()                                 // rational simplification
+ex.separatevars(&[&x, &y])                  // separate variable dependencies
 ex.solve(&var)                               // solve expr=0 → Result
+ex.solve_or_empty(&var)                      // solve or []
 ex.nsolve(&var, guess, max_iter, tol)        // numerical root → Result
+
+// ── Inequality solving (returns SetEx) ─────────────────────────
+ex.solve_gt(&var)                            // solve expr > 0 → SetEx
+ex.solve_ge(&var)                            // solve expr ≥ 0 → SetEx
+ex.solve_lt(&var)                            // solve expr < 0 → SetEx
+ex.solve_le(&var)                            // solve expr ≤ 0 → SetEx
+ex.solveset(&var)                            // solve → FiniteSet (SetEx)
+
+// ── ODE solving ────────────────────────────────────────────────
+ex.dsolve(&func, &var)                       // → Option<(Ex, Vec<Ex>)>
+ex.check_solution(&var, &val)                // verify solution
+ex.classify_ode(&func, &var)                 // → OdeType
+ex.checkodesol(&sol, &func, &var)            // verify ODE solution
 
 // ── Simplification ─────────────────────────────────────────────
 ex.simplify()                                // one-pass rewrite rules
@@ -208,16 +253,25 @@ ex.simplify_trace()                          // with step-by-step trace
 ex.full_simplify()                           // fixpoint: eval+expand+simplify
 ex.full_simplify_trace()                     // with accumulated trace
 ex.smart_simplify()                          // multi-strategy simplification
+ex.trigsimp()                                // trig simplification (6 strategies)
+ex.powsimp()                                 // symbolic exponent merging
+ex.combsimp()                                // factorial/binomial simplification
+ex.nsimplify(tolerance)                      // closed-form from floats
+ex.rewrite_as_exp()                          // trig → exp (Euler's formula)
+ex.rewrite_as_trig()                         // exp → trig
 ex.eval()                                    // evaluate special values
 ex.count_ops()                               // expression complexity
 
 // ── Complex decomposition ──────────────────────────────────────
 ex.re()                                      // real part
 ex.im()                                      // imaginary part
+ex.arg()                                     // complex argument
+ex.conjugate()                               // complex conjugate
 
 // ── Code generation ────────────────────────────────────────────
 ex.lambdify(&["x", "y"])                     // compile to Fn(f64) → f64 closure
 ex.cse()                                     // common subexpression elimination
+ex.to_rust_fn("name", &["x", "y"])           // Rust source code generation
 
 // ── Substitution ───────────────────────────────────────────────
 ex.subs(&old, &new)                          // structural substitution
@@ -227,6 +281,7 @@ ex.subs_map(&[(&x, &a), (&y, &b)])          // simultaneous substitution
 // ── Numerical evaluation ───────────────────────────────────────
 ex.evalf(50)                                 // arbitrary precision → Result<String>
 ex.evalf_f64()                               // f64 convenience → Result<f64>
+ex.evalf_complex64()                         // complex (f64,f64) → Result
 
 // ── Queries ────────────────────────────────────────────────────
 ex.is_zero()        ex.is_positive()         ex.is_negative()
@@ -234,6 +289,9 @@ ex.is_real()        ex.is_integer()          ex.is_nonzero()
 ex.is_finite()      ex.query(Props::...)     ex.equals(&other)
 ex.is_imaginary()   ex.is_complex()          ex.is_rational()
 ex.is_nonnegative() ex.is_nonpositive()
+ex.is_even()        ex.is_odd()              ex.is_prime()
+ex.is_composite()   ex.is_algebraic()        ex.is_transcendental()
+ex.is_irrational()  ex.is_hermitian()
 ex.is_zero_structural()    ex.is_one_structural()
 ex.is_constant()    ex.is_polynomial(&var)
 ex.expr_type()                               // → ExprType
@@ -249,6 +307,10 @@ ex.term_count()                              // → usize
 ex.poly_gcd(&other, &var)                    // → Option<Ex>
 ex.poly_lcm(&other, &var)                    // → Option<Ex>
 ex.args()                                    // → Vec<Ex> (children)
+
+// ── Set construction (returns SetEx) ───────────────────────────
+ex.closed_interval(&end)                     // [a, b]
+ex.open_interval(&end)                       // (a, b)
 
 // ── Assumptions ────────────────────────────────────────────────
 ex.assume(Assumption::Positive)              // fluent chaining
@@ -288,6 +350,12 @@ ex.eq_expr(&other)               ex.ne_expr(&other)
 bex.and(&other)                  // logical AND
 bex.or(&other)                   // logical OR
 bex.not()                        // logical NOT
+bex.xor(&other)                  // exclusive OR
+bex.implies(&other)              // logical implication
+bex.equivalent(&other)           // logical equivalence (biconditional)
+bex.nand(&other)                 // NOT AND
+bex.nor(&other)                  // NOT OR
+bex.ite(&then_ex, &else_ex)     // if-then-else
 
 // ── Sort-preserving (on BoolEx) ────────────────────────────
 bex.eval()     bex.simplify()   bex.subs(&old, &new)
@@ -310,19 +378,41 @@ matrix![[a, b], [c, d]]                      // build Matrix
 eq!(lhs = rhs)                               // build Equation
 ```
 
-### Matrix
+### Matrix (44 methods)
 
 ```rust
 Matrix::new(rows)                            // from nested vecs
 Matrix::identity(n)                          // n×n identity
 Matrix::zeros(n, m)                          // zero matrix
 m.transpose()                                // transpose
-m.det()                                      // determinant
+m.det()                                      // determinant (LU-based for large)
 m.trace()                                    // trace
 m.matmul(&other)                             // matrix multiply
+m.inv()                                      // matrix inverse
+m.eigenvals(&var)                            // eigenvalues via char poly
+m.eigenvects(&var)                           // eigenvectors via null space
+m.char_poly(&var)                            // characteristic polynomial
+m.lu()                                       // LU decomposition
+m.qr()                                       // QR decomposition
+m.rref()                                     // row-reduced echelon form
+m.rank()                                     // matrix rank
+m.nullspace()                                // null space basis
+m.columnspace()                              // column space basis
+m.cofactor(i, j)                             // cofactor at (i,j)
+m.adjugate()                                 // adjugate matrix
+m.norm()                                     // Frobenius norm
+m.cross(&other)                              // cross product (3-vectors)
+m.dot(&other)                                // dot product
+Matrix::hstack(&[m1, m2])                    // horizontal concatenation
+Matrix::vstack(&[m1, m2])                    // vertical concatenation
+m.is_symmetric()                             // symmetry test
 m.diff(&var)                                 // element-wise differentiation
 m.subs(&old, &new)                           // element-wise substitution
 jacobian(&[f1, f2], &[x, y])                // Jacobian matrix
+gradient(&f, &[x, y, z])                     // gradient vector
+divergence(&field, &[x, y, z])               // divergence scalar
+curl(&field, &[x, y, z])                     // curl vector
+laplacian(&f, &[x, y, z])                    // Laplacian scalar
 ```
 
 ### Equation
@@ -333,6 +423,7 @@ eq.solve(&var)                               // solve for variable → Result
 eq.solve_or_empty(&var)                      // solve or []
 eq.subs(&old, &new)                          // substitute in both sides
 eq.simplify()                                // simplify both sides
+eq.check(&var, &val)                         // verify a solution
 ```
 
 ### Free-Standing Functions
@@ -348,6 +439,10 @@ symplex::e()                                 // global context e
 symplex::i_unit()                            // global context imaginary unit
 symplex::infinity()                          // global context ∞
 symplex::parse::parse(&ctx, "x^2 + 1")      // runtime parser
+gradient(&f, &[x, y, z])                     // gradient (free-standing)
+divergence(&field, &[x, y, z])               // divergence (free-standing)
+curl(&field, &[x, y, z])                     // curl (free-standing)
+laplacian(&f, &[x, y, z])                    // laplacian (free-standing)
 ```
 
 ## Serialization
@@ -371,7 +466,7 @@ assert_eq!(format!("{expr}"), format!("{back}"));
 
 For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is planned.
 
-## Simplification Rules (24)
+## Simplification Rules (24 + dedicated simplifiers)
 
 | # | Rule | Identity |
 |---|------|----------|
@@ -398,7 +493,7 @@ For LaTeX, Markdown, or Typst rendering, a separate `symplex-format` crate is pl
 | 21 | `exp(a*ln(b)) → b^a` | Exp-log denesting |
 | 22 | `abs(w) → w` (when w positive) | Abs-positive |
 
-All rules support sub-expression matching in Add and Mul. Rules with mathematical preconditions use condition guards (e.g., `pow_pow` requires at least one integer exponent; `abs_positive` requires the argument to be known positive).
+All rules support sub-expression matching in Add and Mul. Rules with mathematical preconditions use condition guards (e.g., `pow_pow` requires at least one integer exponent; `abs_positive` requires the argument to be known positive). Beyond pattern rules, dedicated simplifiers include: `trigsimp()` (6-strategy choice-set), `powsimp()` (symbolic exponent merging), `combsimp()` (factorial/binomial), `nsimplify()` (closed-form detection), `rewrite_as_exp()`/`rewrite_as_trig()` (Euler's formula), and `smart_simplify()` (multi-strategy orchestrator selecting lowest `count_ops`).
 
 <details>
 <summary>Feature Comparison with SymPy</summary>

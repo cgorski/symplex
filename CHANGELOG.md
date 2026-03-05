@@ -278,4 +278,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Laplace transform (forward table + structural rules) and inverse Laplace (partial fractions + table) (Wave Y)
 - `expr!` macro expanded to 50+ functions including atan2, beta, gamma, erf, etc.
 
-**Note:** The SymPy cross-validation suite (tests/test_sympy_cross_validation) should be re-run to capture improvements from Waves U–Y (sec² integration, cyclic IBP, Laplace transforms).
+**Set Types and Inequality Solving**
+- New `Expr<SetValued>` (aliased `SetEx`) — third phantom-typed sort for set-valued expressions
+- New ExprNode variants: `EmptySet`, `UniversalSet`, `Interval(lower, upper, flags)`, `FiniteSet(SmallVec)`, `SetUnion(SmallVec)`, `SetIntersection(SmallVec)`, `SetComplement(set, universe)` — 7 set variants total
+- Interval construction: `ex.closed_interval(&end)`, `ex.open_interval(&end)`
+- Set canonicalization: flatten nested unions/intersections, sort, dedup, identity/annihilator rules (LatticeOp pattern)
+- `Ex::solveset(&var)` — solve returning `SetEx` (FiniteSet) instead of `Vec<Ex>`
+- `Ex::solve_gt(&var)`, `solve_ge(&var)`, `solve_lt(&var)`, `solve_le(&var)` — polynomial inequality solving returning `SetEx` (unions of intervals)
+- New `src/inequalities.rs` module for polynomial and rational inequality solving
+
+**Additional Methods**
+- `Ex::ratsimp()` — rational simplification (cancel + together pipeline)
+- `Ex::separatevars(&[&x, &y])` — separate multiplicative variable dependencies
+- `Ex::evalf_complex64()` — complex numerical evaluation returning `(f64, f64)` pair
+- `Ex::closed_form_sum()` — attempt closed-form evaluation of symbolic sums
+- `Ex::is_convergent(&var)` — test series convergence
+
+**Note:** The SymPy cross-validation suite (tests/test_sympy_cross_validation) should be re-run to capture improvements from Waves U–Y (sec² integration, cyclic IBP, Laplace transforms) and the set type additions.
