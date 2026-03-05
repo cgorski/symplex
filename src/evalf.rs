@@ -656,6 +656,16 @@ fn eval_node(
         | ExprNode::Piecewise(_) => Err(SymplexError::Unevaluable {
             reason: "boolean/piecewise expression".into(),
         }),
+
+        ExprNode::EmptySet
+        | ExprNode::UniversalSet
+        | ExprNode::Interval(_, _, _)
+        | ExprNode::FiniteSet(_)
+        | ExprNode::SetUnion(_)
+        | ExprNode::SetIntersection(_)
+        | ExprNode::SetComplement(_, _) => Err(SymplexError::Unevaluable {
+            reason: "set-valued expressions cannot be numerically evaluated".into(),
+        }),
     }
 }
 

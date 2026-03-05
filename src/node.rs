@@ -262,7 +262,39 @@ pub enum ExprNode {
 
     /// Symbolic product: Product(body, var, lower, upper).
     Product_(ExprId, ExprId, ExprId, ExprId),
+
+    // -- set atoms --------------------------------------------------------
+    /// The empty set ∅.
+    EmptySet,
+    /// The universal set (all values).
+    UniversalSet,
+
+    // -- set constructors -------------------------------------------------
+    /// A closed/open interval [a, b] with flags encoding open/closed.
+    /// Bits: 0x01 = left_open, 0x02 = right_open.
+    Interval(ExprId, ExprId, u8),
+
+    /// A finite set of elements {a, b, c, ...}, sorted and deduplicated.
+    FiniteSet(SmallVec<[ExprId; 4]>),
+
+    /// Union of sets: A ∪ B ∪ C ∪ ...
+    SetUnion(SmallVec<[ExprId; 4]>),
+
+    /// Intersection of sets: A ∩ B ∩ C ∩ ...
+    SetIntersection(SmallVec<[ExprId; 4]>),
+
+    /// Set complement (relative): A \ B.
+    SetComplement(ExprId, ExprId),
 }
+
+/// Interval flag: left endpoint is open (excluded).
+pub const INTERVAL_LEFT_OPEN: u8 = 0x01;
+/// Interval flag: right endpoint is open (excluded).
+pub const INTERVAL_RIGHT_OPEN: u8 = 0x02;
+/// Interval flag: both endpoints are open.
+pub const INTERVAL_BOTH_OPEN: u8 = 0x03;
+/// Interval flag: both endpoints are closed.
+pub const INTERVAL_BOTH_CLOSED: u8 = 0x00;
 
 impl ExprNode {
     /// Returns all child [`ExprId`]s contained in this node.
@@ -283,7 +315,9 @@ impl ExprNode {
             | ExprNode::ComplexInfinity
             | ExprNode::NaN
             | ExprNode::BoolTrue
-            | ExprNode::BoolFalse => smallvec![],
+            | ExprNode::BoolFalse
+            | ExprNode::EmptySet
+            | ExprNode::UniversalSet => smallvec![],
 
             // n‐ary
             ExprNode::Add(ids) | ExprNode::Mul(ids) | ExprNode::And(ids) | ExprNode::Or(ids) => {
@@ -292,6 +326,11 @@ impl ExprNode {
 
             // n-ary min/max (SmallVec<[ExprId; 4]> → SmallVec<[ExprId; 6]>)
             ExprNode::Min(ids) | ExprNode::Max(ids) => ids.iter().copied().collect(),
+
+            // n-ary set ops (SmallVec<[ExprId; 4]> → SmallVec<[ExprId; 6]>)
+            ExprNode::FiniteSet(ids) | ExprNode::SetUnion(ids) | ExprNode::SetIntersection(ids) => {
+                ids.iter().copied().collect()
+            }
 
             // piecewise — flatten pairs into children list
             ExprNode::Piecewise(pairs) => {
@@ -313,7 +352,13 @@ impl ExprNode {
             | ExprNode::Eq_(a, b)
             | ExprNode::Ne(a, b)
             | ExprNode::Derivative(a, b)
-            | ExprNode::Integral(a, b) => {
+            | ExprNode::Integral(a, b)
+            | ExprNode::SetComplement(a, b) => {
+                smallvec![*a, *b]
+            }
+
+            // ternary-ish: Interval(a, b, _flags)
+            ExprNode::Interval(a, b, _) => {
                 smallvec![*a, *b]
             }
 
@@ -379,7 +424,9 @@ impl ExprNode {
             | ExprNode::ComplexInfinity
             | ExprNode::NaN
             | ExprNode::BoolTrue
-            | ExprNode::BoolFalse => {}
+            | ExprNode::BoolFalse
+            | ExprNode::EmptySet
+            | ExprNode::UniversalSet => {}
 
             // n-ary
             ExprNode::Add(ids) | ExprNode::Mul(ids) | ExprNode::And(ids) | ExprNode::Or(ids) => {
@@ -390,6 +437,13 @@ impl ExprNode {
 
             // n-ary min/max
             ExprNode::Min(ids) | ExprNode::Max(ids) => {
+                for &id in ids {
+                    f(id);
+                }
+            }
+
+            // n-ary set ops
+            ExprNode::FiniteSet(ids) | ExprNode::SetUnion(ids) | ExprNode::SetIntersection(ids) => {
                 for &id in ids {
                     f(id);
                 }
@@ -413,7 +467,13 @@ impl ExprNode {
             | ExprNode::Eq_(a, b)
             | ExprNode::Ne(a, b)
             | ExprNode::Derivative(a, b)
-            | ExprNode::Integral(a, b) => {
+            | ExprNode::Integral(a, b)
+            | ExprNode::SetComplement(a, b) => {
+                f(*a);
+                f(*b);
+            }
+
+            ExprNode::Interval(a, b, _) => {
                 f(*a);
                 f(*b);
             }
@@ -479,11 +539,16 @@ impl ExprNode {
             | ExprNode::ComplexInfinity
             | ExprNode::NaN
             | ExprNode::BoolTrue
-            | ExprNode::BoolFalse => 0,
+            | ExprNode::BoolFalse
+            | ExprNode::EmptySet
+            | ExprNode::UniversalSet => 0,
             ExprNode::Add(ids) | ExprNode::Mul(ids) | ExprNode::And(ids) | ExprNode::Or(ids) => {
                 ids.len()
             }
             ExprNode::Min(ids) | ExprNode::Max(ids) => ids.len(),
+            ExprNode::FiniteSet(ids) | ExprNode::SetUnion(ids) | ExprNode::SetIntersection(ids) => {
+                ids.len()
+            }
             ExprNode::Piecewise(pairs) => pairs.len() * 2,
             ExprNode::Pow(..)
             | ExprNode::Atan2(..)
@@ -494,7 +559,9 @@ impl ExprNode {
             | ExprNode::Eq_(..)
             | ExprNode::Ne(..)
             | ExprNode::Derivative(..)
-            | ExprNode::Integral(..) => 2,
+            | ExprNode::Integral(..)
+            | ExprNode::SetComplement(..)
+            | ExprNode::Interval(..) => 2,
             ExprNode::Sum(..) | ExprNode::Product_(..) => 4,
             ExprNode::Neg(_)
             | ExprNode::Floor(_)
@@ -552,6 +619,22 @@ impl ExprNode {
                 | ExprNode::NaN
                 | ExprNode::BoolTrue
                 | ExprNode::BoolFalse
+                | ExprNode::EmptySet
+                | ExprNode::UniversalSet
+        )
+    }
+
+    /// Returns `true` if this node is a set-valued expression.
+    pub fn is_set_node(&self) -> bool {
+        matches!(
+            self,
+            ExprNode::EmptySet
+                | ExprNode::UniversalSet
+                | ExprNode::Interval(..)
+                | ExprNode::FiniteSet(_)
+                | ExprNode::SetUnion(_)
+                | ExprNode::SetIntersection(_)
+                | ExprNode::SetComplement(..)
         )
     }
 }
@@ -640,6 +723,20 @@ impl fmt::Debug for ExprNode {
                 .field(lo)
                 .field(hi)
                 .finish(),
+            ExprNode::EmptySet => write!(f, "EmptySet"),
+            ExprNode::UniversalSet => write!(f, "UniversalSet"),
+            ExprNode::Interval(a, b, flags) => f
+                .debug_tuple("Interval")
+                .field(a)
+                .field(b)
+                .field(flags)
+                .finish(),
+            ExprNode::FiniteSet(ids) => f.debug_tuple("FiniteSet").field(ids).finish(),
+            ExprNode::SetUnion(ids) => f.debug_tuple("SetUnion").field(ids).finish(),
+            ExprNode::SetIntersection(ids) => f.debug_tuple("SetIntersection").field(ids).finish(),
+            ExprNode::SetComplement(a, b) => {
+                f.debug_tuple("SetComplement").field(a).field(b).finish()
+            }
         }
     }
 }

@@ -82,8 +82,14 @@ pub struct Numeric;
 #[derive(Clone)]
 pub struct Boolean;
 
+/// Set-valued sort: intervals, finite sets, unions.
+/// Supports set operations (union, intersection, complement).
+#[derive(Clone)]
+pub struct SetValued;
+
 impl Sort for Numeric {}
 impl Sort for Boolean {}
+impl Sort for SetValued {}
 
 /// Structural classification of an expression node.
 ///
@@ -126,6 +132,8 @@ pub enum ExprType {
     Derivative,
     /// A formal integral.
     Integral,
+    /// A set expression (interval, finite set, union, intersection, complement).
+    Set,
 }
 
 /// A symbolic expression handle, parameterized by sort.
@@ -151,6 +159,9 @@ pub type Ex = Expr<Numeric>;
 
 /// A boolean expression — comparisons and logical operations.
 pub type BoolEx = Expr<Boolean>;
+
+/// A set-valued expression — intervals, finite sets, unions.
+pub type SetEx = Expr<SetValued>;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // impl<S: Sort> Expr<S> — wrap helpers
@@ -392,6 +403,13 @@ impl<S: Sort> Expr<S> {
             | crate::node::ExprNode::Piecewise(_)
             | crate::node::ExprNode::Heaviside(_)
             | crate::node::ExprNode::DiracDelta(_) => ExprType::Function,
+            crate::node::ExprNode::EmptySet
+            | crate::node::ExprNode::UniversalSet
+            | crate::node::ExprNode::Interval(_, _, _)
+            | crate::node::ExprNode::FiniteSet(_)
+            | crate::node::ExprNode::SetUnion(_)
+            | crate::node::ExprNode::SetIntersection(_)
+            | crate::node::ExprNode::SetComplement(_, _) => ExprType::Set,
         }
     }
 
@@ -3191,6 +3209,52 @@ impl Expr<Numeric> {
             crate::ode::checkodesol(&mut guard.arena, self.id, solution.id, func.id, var.id)
         }
     }
+
+    // ── Set construction from numeric expressions ──────────────────
+
+    /// Create a closed interval `[self, end]`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let i = ctx.int(0).closed_interval(&ctx.int(1));
+    /// let s = format!("{i}");
+    /// assert!(s.contains("[") && s.contains("]"), "closed interval: {s}");
+    /// ```
+    #[must_use]
+    pub fn closed_interval(&self, end: &Ex) -> SetEx {
+        let id =
+            self.inner
+                .write()
+                .arena
+                .interval(self.id, end.id, crate::node::INTERVAL_BOTH_CLOSED);
+        self.wrap_as(id)
+    }
+
+    /// Create an open interval `(self, end)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let i = ctx.int(0).open_interval(&ctx.int(1));
+    /// let s = format!("{i}");
+    /// assert!(s.contains("(") && s.contains(")"), "open interval: {s}");
+    /// ```
+    #[must_use]
+    pub fn open_interval(&self, end: &Ex) -> SetEx {
+        let id =
+            self.inner
+                .write()
+                .arena
+                .interval(self.id, end.id, crate::node::INTERVAL_BOTH_OPEN);
+        self.wrap_as(id)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3256,6 +3320,85 @@ impl Expr<Boolean> {
     }
 
     /// Convert to untyped numeric expression (escape hatch).
+    pub fn into_ex(self) -> Ex {
+        Ex {
+            ctx_id: self.ctx_id,
+            inner: self.inner,
+            id: self.id,
+            _sort: PhantomData,
+        }
+    }
+
+    /// Borrow as untyped numeric expression.
+    pub fn as_ex(&self) -> Ex {
+        Ex {
+            ctx_id: self.ctx_id,
+            inner: Arc::clone(&self.inner),
+            id: self.id,
+            _sort: PhantomData,
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// impl Expr<SetValued> — Set-specific methods
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Expr<SetValued> {
+    /// Union: `self ∪ other`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    /// let b = ctx.interval(&ctx.int(2), &ctx.int(3), false, false);
+    /// let u = a.union(&b);
+    /// let s = format!("{u}");
+    /// assert!(!s.is_empty(), "union display: {s}");
+    /// ```
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn union(&self, other: &SetEx) -> SetEx {
+        let id = self.inner.write().arena.set_union(&[self.id, other.id]);
+        self.wrap(id)
+    }
+
+    /// Intersection: `self ∩ other`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    /// let e = ctx.empty_set();
+    /// let result = a.intersection(&e);
+    /// assert_eq!(format!("{result}"), "EmptySet");
+    /// ```
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn intersection(&self, other: &SetEx) -> SetEx {
+        let id = self
+            .inner
+            .write()
+            .arena
+            .set_intersection(&[self.id, other.id]);
+        self.wrap(id)
+    }
+
+    /// Relative complement: `self \ other`.
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn complement(&self, other: &SetEx) -> SetEx {
+        let id = self.inner.write().arena.set_complement(self.id, other.id);
+        self.wrap(id)
+    }
+
+    /// Convert to untyped numeric expression (escape hatch).
+    ///
+    /// This allows set-valued expressions to be embedded in contexts
+    /// that expect `Ex`. The underlying arena node is unchanged.
     pub fn into_ex(self) -> Ex {
         Ex {
             ctx_id: self.ctx_id,

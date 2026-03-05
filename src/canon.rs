@@ -457,17 +457,18 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
     // Critical for the Gruntz algorithm: ensures 1/(1/x) = Pow(Pow(x,-1),-1) → x.
     // Matches SymPy's auto-simplification of nested powers at construction time.
     if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone()
-        && let (Some(b), Some(c)) = (arena.as_num(inner_exp), arena.as_num(exp)) {
-            let b = b.clone();
-            let c = c.clone();
-            if b.is_integer() && c.is_integer() {
-                tracing::trace!("canon_pow: flattening Pow(Pow(a,b),c) → Pow(a,b*c)");
-                let product = b * c;
-                let prod_id = arena.intern_num(product);
-                let prod_expr = arena.intern(ExprNode::Num(prod_id));
-                return canon_pow(arena, inner_base, prod_expr);
-            }
+        && let (Some(b), Some(c)) = (arena.as_num(inner_exp), arena.as_num(exp))
+    {
+        let b = b.clone();
+        let c = c.clone();
+        if b.is_integer() && c.is_integer() {
+            tracing::trace!("canon_pow: flattening Pow(Pow(a,b),c) → Pow(a,b*c)");
+            let product = b * c;
+            let prod_id = arena.intern_num(product);
+            let prod_expr = arena.intern(ExprNode::Num(prod_id));
+            return canon_pow(arena, inner_base, prod_expr);
         }
+    }
 
     // i^n reduction: i^0=1, i^1=i, i^2=-1, i^3=-i, then repeats with period 4.
     if base == arena.i_unit
@@ -713,6 +714,196 @@ pub(crate) fn canon_neg(arena: &mut Arena, expr: ExprId) -> ExprId {
         }
     }
     result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Set constructors (canonical)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Build a canonical `Interval` node.
+///
+/// Handles degenerate cases:
+/// - If both endpoints are numeric and start > end → EmptySet.
+/// - If both endpoints are numeric and start == end:
+///   - both closed → FiniteSet({start})
+///   - any open → EmptySet
+pub(crate) fn canon_interval(arena: &mut Arena, start: ExprId, end: ExprId, flags: u8) -> ExprId {
+    use crate::node::{INTERVAL_LEFT_OPEN, INTERVAL_RIGHT_OPEN};
+
+    tracing::debug!(
+        "canon_interval: start={:?}, end={:?}, flags={}",
+        start,
+        end,
+        flags
+    );
+
+    // Try to compare endpoints numerically.
+    if let (Some(s), Some(e)) = (arena.as_num(start), arena.as_num(end)) {
+        let s = s.clone();
+        let e = e.clone();
+        use std::cmp::Ordering;
+        match s.cmp(&e) {
+            Ordering::Greater => {
+                // start > end → empty set
+                return arena.intern(ExprNode::EmptySet);
+            }
+            Ordering::Equal => {
+                // start == end
+                if flags & (INTERVAL_LEFT_OPEN | INTERVAL_RIGHT_OPEN) != 0 {
+                    // Any open endpoint on a point interval → empty
+                    return arena.intern(ExprNode::EmptySet);
+                } else {
+                    // Both closed, single point → FiniteSet({start})
+                    return arena.intern(ExprNode::FiniteSet(smallvec![start]));
+                }
+            }
+            Ordering::Less => {
+                // start < end: valid interval, fall through
+            }
+        }
+    }
+
+    arena.intern(ExprNode::Interval(start, end, flags))
+}
+
+/// Build a canonical `FiniteSet` node.
+///
+/// Sorts elements by sort key and deduplicates.
+/// An empty set of elements returns EmptySet.
+pub(crate) fn canon_finite_set(arena: &mut Arena, elements: &[ExprId]) -> ExprId {
+    tracing::debug!("canon_finite_set: {} elements", elements.len());
+
+    if elements.is_empty() {
+        return arena.intern(ExprNode::EmptySet);
+    }
+
+    // Deduplicate (ExprIds are hash-consed, so equality is ExprId equality).
+    let mut deduped: SmallVec<[ExprId; 4]> = SmallVec::new();
+    let mut seen = FxHashSet::default();
+    for &elem in elements {
+        if seen.insert(elem) {
+            deduped.push(elem);
+        }
+    }
+
+    // Sort by sort key for canonical ordering.
+    deduped.sort_by(|&a, &b| arena.sort_key(a).cmp(arena.sort_key(b)));
+
+    if deduped.len() == 1 {
+        // A single-element set is still a FiniteSet — don't collapse.
+    }
+
+    arena.intern(ExprNode::FiniteSet(deduped))
+}
+
+/// Build a canonical `SetUnion` node.
+///
+/// Follows the LatticeOp pattern:
+/// 1. Flatten nested SetUnion.
+/// 2. Remove EmptySet children (identity for union).
+/// 3. Short-circuit on UniversalSet (absorbing element for union).
+/// 4. Deduplicate and sort children by sort key.
+/// 5. Single child → return that child directly.
+pub(crate) fn canon_set_union(arena: &mut Arena, sets: &[ExprId]) -> ExprId {
+    tracing::debug!("canon_set_union: {} children", sets.len());
+
+    let mut flat: SmallVec<[ExprId; 4]> = SmallVec::new();
+
+    // Flatten and filter.
+    let mut stack: SmallVec<[ExprId; 8]> = sets.iter().copied().collect();
+    while let Some(s) = stack.pop() {
+        match arena.node(s).clone() {
+            ExprNode::SetUnion(children) => {
+                // Flatten nested union.
+                for &child in &children {
+                    stack.push(child);
+                }
+            }
+            ExprNode::EmptySet => {
+                // Identity element: skip.
+            }
+            ExprNode::UniversalSet => {
+                // Absorbing element: union with UniversalSet = UniversalSet.
+                return arena.intern(ExprNode::UniversalSet);
+            }
+            _ => {
+                flat.push(s);
+            }
+        }
+    }
+
+    if flat.is_empty() {
+        return arena.intern(ExprNode::EmptySet);
+    }
+
+    // Deduplicate.
+    let mut seen = FxHashSet::default();
+    flat.retain(|id| seen.insert(*id));
+
+    // Sort by sort key.
+    flat.sort_by(|&a, &b| arena.sort_key(a).cmp(arena.sort_key(b)));
+
+    if flat.len() == 1 {
+        return flat[0];
+    }
+
+    arena.intern(ExprNode::SetUnion(flat))
+}
+
+/// Build a canonical `SetIntersection` node.
+///
+/// Follows the LatticeOp pattern:
+/// 1. Flatten nested SetIntersection.
+/// 2. Remove UniversalSet children (identity for intersection).
+/// 3. Short-circuit on EmptySet (absorbing element for intersection).
+/// 4. Deduplicate and sort children by sort key.
+/// 5. Single child → return that child directly.
+pub(crate) fn canon_set_intersection(arena: &mut Arena, sets: &[ExprId]) -> ExprId {
+    tracing::debug!("canon_set_intersection: {} children", sets.len());
+
+    let mut flat: SmallVec<[ExprId; 4]> = SmallVec::new();
+
+    // Flatten and filter.
+    let mut stack: SmallVec<[ExprId; 8]> = sets.iter().copied().collect();
+    while let Some(s) = stack.pop() {
+        match arena.node(s).clone() {
+            ExprNode::SetIntersection(children) => {
+                // Flatten nested intersection.
+                for &child in &children {
+                    stack.push(child);
+                }
+            }
+            ExprNode::UniversalSet => {
+                // Identity element: skip.
+            }
+            ExprNode::EmptySet => {
+                // Absorbing element: intersection with EmptySet = EmptySet.
+                return arena.intern(ExprNode::EmptySet);
+            }
+            _ => {
+                flat.push(s);
+            }
+        }
+    }
+
+    if flat.is_empty() {
+        // Intersection of no sets: by convention, return UniversalSet
+        // (the identity element).
+        return arena.intern(ExprNode::UniversalSet);
+    }
+
+    // Deduplicate.
+    let mut seen = FxHashSet::default();
+    flat.retain(|id| seen.insert(*id));
+
+    // Sort by sort key.
+    flat.sort_by(|&a, &b| arena.sort_key(a).cmp(arena.sort_key(b)));
+
+    if flat.len() == 1 {
+        return flat[0];
+    }
+
+    arena.intern(ExprNode::SetIntersection(flat))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

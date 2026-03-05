@@ -163,7 +163,9 @@ pub(crate) fn rebuild_with_cache(
         | ExprNode::ComplexInfinity
         | ExprNode::NaN
         | ExprNode::BoolTrue
-        | ExprNode::BoolFalse => id,
+        | ExprNode::BoolFalse
+        | ExprNode::EmptySet
+        | ExprNode::UniversalSet => id,
 
         // N-ary: Add, Mul
         ExprNode::Add(ref children) => {
@@ -428,6 +430,63 @@ pub(crate) fn rebuild_with_cache(
                 id
             } else {
                 arena.intern(ExprNode::Piecewise(new_pairs))
+            }
+        }
+
+        // Set constructors
+        ExprNode::Interval(a, b, flags) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            if na == a && nb == b {
+                id
+            } else {
+                arena.intern(ExprNode::Interval(na, nb, flags))
+            }
+        }
+
+        ExprNode::FiniteSet(ref elems) => {
+            let new_elems: SmallVec<[ExprId; 4]> = elems
+                .iter()
+                .map(|&e| cache.get(&e).copied().unwrap_or(e))
+                .collect();
+            if new_elems == *elems {
+                id
+            } else {
+                arena.intern(ExprNode::FiniteSet(new_elems))
+            }
+        }
+
+        ExprNode::SetUnion(ref sets) => {
+            let new_sets: SmallVec<[ExprId; 4]> = sets
+                .iter()
+                .map(|&s| cache.get(&s).copied().unwrap_or(s))
+                .collect();
+            if new_sets == *sets {
+                id
+            } else {
+                arena.intern(ExprNode::SetUnion(new_sets))
+            }
+        }
+
+        ExprNode::SetIntersection(ref sets) => {
+            let new_sets: SmallVec<[ExprId; 4]> = sets
+                .iter()
+                .map(|&s| cache.get(&s).copied().unwrap_or(s))
+                .collect();
+            if new_sets == *sets {
+                id
+            } else {
+                arena.intern(ExprNode::SetIntersection(new_sets))
+            }
+        }
+
+        ExprNode::SetComplement(a, b) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            if na == a && nb == b {
+                id
+            } else {
+                arena.intern(ExprNode::SetComplement(na, nb))
             }
         }
     }

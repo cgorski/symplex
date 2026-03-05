@@ -291,6 +291,15 @@ fn expr_to_rust(arena: &Arena, id: ExprId, var_names: &[&str]) -> Result<String,
             "cannot generate Rust f64 code for boolean/relational node: {:?}",
             arena.node(id)
         ))),
+        ExprNode::EmptySet
+        | ExprNode::UniversalSet
+        | ExprNode::Interval(_, _, _)
+        | ExprNode::FiniteSet(_)
+        | ExprNode::SetUnion(_)
+        | ExprNode::SetIntersection(_)
+        | ExprNode::SetComplement(_, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for set-valued expressions".to_string(),
+        )),
     }
 }
 

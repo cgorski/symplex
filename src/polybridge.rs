@@ -224,6 +224,15 @@ fn convert_node(
         | ExprNode::Or(_)
         | ExprNode::Not(_)
         | ExprNode::Piecewise(_) => None,
+
+        // Set-valued nodes are not polynomial.
+        ExprNode::EmptySet
+        | ExprNode::UniversalSet
+        | ExprNode::Interval(_, _, _)
+        | ExprNode::FiniteSet(_)
+        | ExprNode::SetUnion(_)
+        | ExprNode::SetIntersection(_)
+        | ExprNode::SetComplement(_, _) => None,
     }
 }
 

@@ -121,6 +121,12 @@ pub struct Arena {
     /// Complex infinity (z∞ — undirected infinity in the complex plane).
     pub(crate) complex_infinity: ExprId,
 
+    /// The empty set ∅.
+    pub(crate) empty_set: ExprId,
+
+    /// The universal set.
+    pub(crate) universal_set: ExprId,
+
     /// Boolean true.
     pub(crate) bool_true: ExprId,
 
@@ -171,6 +177,8 @@ impl Arena {
             neg_infinity: ExprId(0),
             nan: ExprId(0),
             complex_infinity: ExprId(0),
+            empty_set: ExprId(0),
+            universal_set: ExprId(0),
             bool_true: ExprId(0),
             bool_false: ExprId(0),
             zero_num: NumId(0),
@@ -199,6 +207,9 @@ impl Arena {
 
         arena.bool_true = arena.intern(ExprNode::BoolTrue);
         arena.bool_false = arena.intern(ExprNode::BoolFalse);
+
+        arena.empty_set = arena.intern(ExprNode::EmptySet);
+        arena.universal_set = arena.intern(ExprNode::UniversalSet);
 
         arena
     }
@@ -1336,6 +1347,41 @@ impl Arena {
         args: &[&str],
     ) -> Result<String, crate::errors::SymplexError> {
         crate::codegen::to_rust_fn(self, expr, name, args)
+    }
+
+    // ── Set constructors ───────────────────────────────────────────
+
+    /// Build a canonical interval `[start, end]` (or open variants based on `flags`).
+    ///
+    /// Delegates to [`canon::canon_interval`] for degenerate-case handling.
+    pub(crate) fn interval(&mut self, start: ExprId, end: ExprId, flags: u8) -> ExprId {
+        crate::canon::canon_interval(self, start, end, flags)
+    }
+
+    /// Build a canonical finite set `{elems[0], elems[1], …}`.
+    ///
+    /// Sorts, deduplicates, and handles the empty case.
+    pub(crate) fn finite_set(&mut self, elems: &[ExprId]) -> ExprId {
+        crate::canon::canon_finite_set(self, elems)
+    }
+
+    /// Build a canonical set union `A ∪ B ∪ …`.
+    ///
+    /// Flattens nested unions, removes EmptySet, short-circuits on UniversalSet.
+    pub(crate) fn set_union(&mut self, sets: &[ExprId]) -> ExprId {
+        crate::canon::canon_set_union(self, sets)
+    }
+
+    /// Build a canonical set intersection `A ∩ B ∩ …`.
+    ///
+    /// Flattens nested intersections, removes UniversalSet, short-circuits on EmptySet.
+    pub(crate) fn set_intersection(&mut self, sets: &[ExprId]) -> ExprId {
+        crate::canon::canon_set_intersection(self, sets)
+    }
+
+    /// Build a set complement (relative): `set \ universe`.
+    pub(crate) fn set_complement(&mut self, set: ExprId, universe: ExprId) -> ExprId {
+        self.intern(ExprNode::SetComplement(set, universe))
     }
 }
 

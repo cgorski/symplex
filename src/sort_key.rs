@@ -33,60 +33,64 @@ use crate::node::{ExprId, ExprNode, NumId, SymbolId};
 const RANK_NUM: u8 = 0;
 
 /// Rank byte for symbolic names — sorts after numbers.
-const RANK_SYMBOL: u8 = 10;
+const RANK_SYMBOL: u8 = 20;
 
 /// Rank byte for exponentiation nodes.
-const RANK_POW: u8 = 20;
+const RANK_POW: u8 = 40;
 
 /// Rank byte for multiplication (product) nodes.
-const RANK_MUL: u8 = 30;
+const RANK_MUL: u8 = 60;
 
 /// Rank byte for addition (sum) nodes.
-const RANK_ADD: u8 = 40;
+const RANK_ADD: u8 = 80;
 
 /// Rank byte for built-in and user-defined function applications
 /// (Sin, Cos, Tan, Exp, Ln, Sqrt, Abs, Apply).
-const RANK_FUNCTION: u8 = 50;
+const RANK_FUNCTION: u8 = 100;
 
 /// Rank byte for relational operators (Gt, Ge, Eq_, Ne).
-const RANK_RELATIONAL: u8 = 55;
+const RANK_RELATIONAL: u8 = 110;
 
 /// Rank byte for logical conjunction (And).
-const RANK_AND: u8 = 56;
+const RANK_AND: u8 = 112;
 
 /// Rank byte for logical disjunction (Or).
-const RANK_OR: u8 = 57;
+const RANK_OR: u8 = 114;
 
 /// Rank byte for logical negation (Not).
-const RANK_NOT: u8 = 58;
+const RANK_NOT: u8 = 116;
 
 /// Rank byte for piecewise functions.
-const RANK_PIECEWISE: u8 = 59;
+const RANK_PIECEWISE: u8 = 118;
 
 /// Rank byte for formal derivative nodes.
-const RANK_DERIVATIVE: u8 = 60;
+const RANK_DERIVATIVE: u8 = 120;
 
 /// Rank byte for n-ary minimum.
-const RANK_MIN: u8 = 62;
+const RANK_MIN: u8 = 130;
 
 /// Rank byte for n-ary maximum.
-const RANK_MAX: u8 = 63;
+const RANK_MAX: u8 = 132;
 
 /// Rank byte for formal integral nodes.
-const RANK_INTEGRAL: u8 = 70;
+const RANK_INTEGRAL: u8 = 140;
 
 /// Rank byte for symbolic summation.
-const RANK_SUM: u8 = 72;
+const RANK_SUM: u8 = 150;
 
 /// Rank byte for symbolic product.
-const RANK_PRODUCT: u8 = 73;
+const RANK_PRODUCT: u8 = 152;
 
 /// Rank byte for mathematical constants (Pi, E, ImaginaryUnit).
-const RANK_CONSTANT: u8 = 80;
+const RANK_CONSTANT: u8 = 170;
+
+/// Rank byte for set-valued nodes (EmptySet, UniversalSet, Interval, FiniteSet,
+/// SetUnion, SetIntersection, SetComplement).
+const RANK_SET: u8 = 190;
 
 /// Rank byte for special sentinel values
 /// (Infinity, NegInfinity, ComplexInfinity, NaN, Neg).
-const RANK_SPECIAL: u8 = 90;
+const RANK_SPECIAL: u8 = 210;
 
 // ---------------------------------------------------------------------------
 // Function discriminant bytes (used within the RANK_FUNCTION class)
@@ -140,6 +144,18 @@ const SPECIAL_NEG_INFINITY: u8 = 1;
 const SPECIAL_COMPLEX_INFINITY: u8 = 2;
 const SPECIAL_NAN: u8 = 3;
 const SPECIAL_NEG: u8 = 4;
+
+// ---------------------------------------------------------------------------
+// Set sub-rank bytes (used within the RANK_SET class)
+// ---------------------------------------------------------------------------
+
+const SET_EMPTY: u8 = 0;
+const SET_UNIVERSAL: u8 = 1;
+const SET_INTERVAL: u8 = 2;
+const SET_FINITE_SET: u8 = 3;
+const SET_UNION: u8 = 4;
+const SET_INTERSECTION: u8 = 5;
+const SET_COMPLEMENT: u8 = 6;
 
 // ---------------------------------------------------------------------------
 // SortKey
@@ -219,16 +235,26 @@ impl fmt::Debug for SortKey {
 ///
 /// | Rank | Node kind(s)                                       |
 /// |------|----------------------------------------------------|
-/// |  0   | `Num`                                              |
-/// | 10   | `Symbol`                                           |
-/// | 20   | `Pow`                                              |
-/// | 30   | `Mul`                                              |
-/// | 40   | `Add`                                              |
-/// | 50   | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Asinh`, `Acosh`, `Atanh`, `Apply` |
-/// | 60   | `Derivative`                                       |
-/// | 70   | `Integral`                                         |
-/// | 80   | `Pi`, `E`, `ImaginaryUnit`                         |
-/// | 90   | `Infinity`, `NegInfinity`, `ComplexInfinity`, `NaN`, `Neg` |
+/// |   0  | `Num`                                              |
+/// |  20  | `Symbol`                                           |
+/// |  40  | `Pow`                                              |
+/// |  60  | `Mul`                                              |
+/// |  80  | `Add`                                              |
+/// | 100  | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Asinh`, `Acosh`, `Atanh`, `Apply` |
+/// | 110  | `Gt`, `Ge`, `Eq_`, `Ne` (relational)               |
+/// | 112  | `And`                                              |
+/// | 114  | `Or`                                               |
+/// | 116  | `Not`                                              |
+/// | 118  | `Piecewise`                                        |
+/// | 120  | `Derivative`                                       |
+/// | 130  | `Min`                                              |
+/// | 132  | `Max`                                              |
+/// | 140  | `Integral`                                         |
+/// | 150  | `Sum`                                              |
+/// | 152  | `Product_`                                         |
+/// | 170  | `Pi`, `E`, `ImaginaryUnit`                         |
+/// | 190  | `EmptySet`, `UniversalSet`, `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`, `SetComplement` |
+/// | 210  | `Infinity`, `NegInfinity`, `ComplexInfinity`, `NaN`, `Neg` |
 pub fn compute_sort_key(
     node: &ExprNode,
     get_key: impl Fn(ExprId) -> SortKey,
@@ -615,6 +641,57 @@ pub fn compute_sort_key(
                 key.extend(get_key(val).as_bytes());
                 key.extend(get_key(cond).as_bytes());
             }
+        }
+
+        // -- set atoms -------------------------------------------------------
+        ExprNode::EmptySet => {
+            key.push(RANK_SET);
+            key.push(SET_EMPTY);
+        }
+
+        ExprNode::UniversalSet => {
+            key.push(RANK_SET);
+            key.push(SET_UNIVERSAL);
+        }
+
+        // -- set constructors ------------------------------------------------
+        ExprNode::Interval(start, end, flags) => {
+            key.push(RANK_SET);
+            key.push(SET_INTERVAL);
+            key.push(*flags);
+            key.extend(get_key(*start).as_bytes());
+            key.extend(get_key(*end).as_bytes());
+        }
+
+        ExprNode::FiniteSet(elems) => {
+            key.push(RANK_SET);
+            key.push(SET_FINITE_SET);
+            for &elem in elems {
+                key.extend(get_key(elem).as_bytes());
+            }
+        }
+
+        ExprNode::SetUnion(sets) => {
+            key.push(RANK_SET);
+            key.push(SET_UNION);
+            for &s in sets {
+                key.extend(get_key(s).as_bytes());
+            }
+        }
+
+        ExprNode::SetIntersection(sets) => {
+            key.push(RANK_SET);
+            key.push(SET_INTERSECTION);
+            for &s in sets {
+                key.extend(get_key(s).as_bytes());
+            }
+        }
+
+        ExprNode::SetComplement(a, b) => {
+            key.push(RANK_SET);
+            key.push(SET_COMPLEMENT);
+            key.extend(get_key(*a).as_bytes());
+            key.extend(get_key(*b).as_bytes());
         }
     }
 

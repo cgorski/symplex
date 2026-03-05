@@ -102,6 +102,17 @@ impl Context {
         }
     }
 
+    /// Helper — wrap an [`ExprId`] into a user-facing [`SetEx`] handle.
+    #[inline]
+    fn make_set_ex(&self, id: ExprId) -> crate::expr::SetEx {
+        crate::expr::SetEx {
+            ctx_id: self.id,
+            inner: Arc::clone(&self.inner),
+            id,
+            _sort: std::marker::PhantomData,
+        }
+    }
+
     // ── Atom construction ──────────────────────────────────────────────
 
     /// Creates a symbolic variable.
@@ -230,6 +241,122 @@ impl Context {
     pub fn nan(&self) -> crate::expr::Ex {
         let id = self.inner.read().arena.nan;
         self.make_ex(id)
+    }
+
+    // ── Set construction ───────────────────────────────────────────────
+
+    /// The empty set ∅.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let e = ctx.empty_set();
+    /// assert_eq!(format!("{e}"), "EmptySet");
+    /// ```
+    pub fn empty_set(&self) -> crate::expr::SetEx {
+        let id = self.inner.read().arena.empty_set;
+        self.make_set_ex(id)
+    }
+
+    /// The universal set (all values).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let u = ctx.universal_set();
+    /// assert_eq!(format!("{u}"), "UniversalSet");
+    /// ```
+    pub fn universal_set(&self) -> crate::expr::SetEx {
+        let id = self.inner.read().arena.universal_set;
+        self.make_set_ex(id)
+    }
+
+    /// The real number line: `(-∞, ∞)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let r = ctx.reals();
+    /// let s = format!("{r}");
+    /// assert!(s.contains("-oo") && s.contains("oo"), "reals: {s}");
+    /// ```
+    pub fn reals(&self) -> crate::expr::SetEx {
+        let mut inner = self.inner.write();
+        let neg_inf = inner.arena.neg_infinity;
+        let inf = inner.arena.infinity;
+        let id = inner
+            .arena
+            .interval(neg_inf, inf, crate::node::INTERVAL_BOTH_OPEN);
+        drop(inner);
+        self.make_set_ex(id)
+    }
+
+    /// Create an interval with explicit open/closed flags.
+    ///
+    /// `left_open = true` means the left endpoint is excluded (open bracket).
+    /// `right_open = true` means the right endpoint is excluded (open bracket).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// // Closed interval [0, 1]
+    /// let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
+    /// let s = format!("{i}");
+    /// assert!(s.contains("[") && s.contains("]"), "closed interval: {s}");
+    ///
+    /// // Open interval (0, 1)
+    /// let i = ctx.interval(&ctx.int(0), &ctx.int(1), true, true);
+    /// let s = format!("{i}");
+    /// assert!(s.contains("(") && s.contains(")"), "open interval: {s}");
+    /// ```
+    pub fn interval(
+        &self,
+        start: &crate::expr::Ex,
+        end: &crate::expr::Ex,
+        left_open: bool,
+        right_open: bool,
+    ) -> crate::expr::SetEx {
+        let mut flags: u8 = 0;
+        if left_open {
+            flags |= crate::node::INTERVAL_LEFT_OPEN;
+        }
+        if right_open {
+            flags |= crate::node::INTERVAL_RIGHT_OPEN;
+        }
+        let id = self.inner.write().arena.interval(start.id, end.id, flags);
+        self.make_set_ex(id)
+    }
+
+    /// Create a finite set `{elements[0], elements[1], …}`.
+    ///
+    /// Elements are sorted and deduplicated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let s = ctx.finite_set(&[ctx.int(3), ctx.int(1), ctx.int(2)]);
+    /// let display = format!("{s}");
+    /// assert!(display.contains("{") && display.contains("}"), "finite set: {display}");
+    /// ```
+    pub fn finite_set(&self, elements: &[crate::expr::Ex]) -> crate::expr::SetEx {
+        let ids: Vec<ExprId> = elements.iter().map(|e| e.id).collect();
+        let id = self.inner.write().arena.finite_set(&ids);
+        self.make_set_ex(id)
     }
 
     // ── Arena access ───────────────────────────────────────────────────

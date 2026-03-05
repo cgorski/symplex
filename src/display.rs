@@ -726,6 +726,68 @@ fn expand_expr(
             }
             stack.push(WorkItem::Lit("Piecewise("));
         }
+
+        // ── Set atoms ──────────────────────────────────────────────
+        ExprNode::EmptySet => stack.push(WorkItem::Lit("EmptySet")),
+        ExprNode::UniversalSet => stack.push(WorkItem::Lit("UniversalSet")),
+
+        // ── Interval ───────────────────────────────────────────────
+        ExprNode::Interval(a, b, flags) => {
+            let left = if flags & crate::node::INTERVAL_LEFT_OPEN != 0 {
+                "("
+            } else {
+                "["
+            };
+            let right = if flags & crate::node::INTERVAL_RIGHT_OPEN != 0 {
+                ")"
+            } else {
+                "]"
+            };
+            stack.push(WorkItem::Owned(right.to_string()));
+            stack.push(WorkItem::Expr(b, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(a, 0));
+            stack.push(WorkItem::Owned(left.to_string()));
+        }
+
+        // ── Finite set ─────────────────────────────────────────────
+        ExprNode::FiniteSet(ref elems) => {
+            stack.push(WorkItem::Lit("}"));
+            for (i, &elem) in elems.iter().enumerate().rev() {
+                stack.push(WorkItem::Expr(elem, 0));
+                if i > 0 {
+                    stack.push(WorkItem::Lit(", "));
+                }
+            }
+            stack.push(WorkItem::Lit("{"));
+        }
+
+        // ── Set union ──────────────────────────────────────────────
+        ExprNode::SetUnion(ref sets) => {
+            for (i, &set) in sets.iter().enumerate().rev() {
+                stack.push(WorkItem::Expr(set, 0));
+                if i > 0 {
+                    stack.push(WorkItem::Lit(" ∪ "));
+                }
+            }
+        }
+
+        // ── Set intersection ───────────────────────────────────────
+        ExprNode::SetIntersection(ref sets) => {
+            for (i, &set) in sets.iter().enumerate().rev() {
+                stack.push(WorkItem::Expr(set, 0));
+                if i > 0 {
+                    stack.push(WorkItem::Lit(" ∩ "));
+                }
+            }
+        }
+
+        // ── Set complement ─────────────────────────────────────────
+        ExprNode::SetComplement(a, b) => {
+            stack.push(WorkItem::Expr(b, 0));
+            stack.push(WorkItem::Lit(" \\ "));
+            stack.push(WorkItem::Expr(a, 0));
+        }
     }
 
     // Open paren (pushed last = emitted first).

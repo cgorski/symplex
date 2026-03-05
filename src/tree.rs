@@ -191,6 +191,28 @@ pub enum ExprTree {
         lower: Box<ExprTree>,
         upper: Box<ExprTree>,
     },
+    /// The empty set ∅.
+    EmptySet,
+    /// The universal set.
+    UniversalSet,
+    /// A closed/open interval with flags encoding open/closed.
+    /// Bits: 0x01 = left_open, 0x02 = right_open.
+    Interval {
+        start: Box<ExprTree>,
+        end: Box<ExprTree>,
+        flags: u8,
+    },
+    /// A finite set of elements {a, b, c, ...}.
+    FiniteSet { elements: Vec<ExprTree> },
+    /// Union of sets: A ∪ B ∪ C ∪ ...
+    SetUnion { sets: Vec<ExprTree> },
+    /// Intersection of sets: A ∩ B ∩ C ∩ ...
+    SetIntersection { sets: Vec<ExprTree> },
+    /// Set complement (relative): A \ B.
+    SetComplement {
+        set: Box<ExprTree>,
+        universe: Box<ExprTree>,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -386,6 +408,26 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
                 .iter()
                 .map(|&(val, cond)| (expr_to_tree(arena, val), expr_to_tree(arena, cond)))
                 .collect(),
+        },
+        ExprNode::EmptySet => ExprTree::EmptySet,
+        ExprNode::UniversalSet => ExprTree::UniversalSet,
+        ExprNode::Interval(start, end, flags) => ExprTree::Interval {
+            start: Box::new(expr_to_tree(arena, start)),
+            end: Box::new(expr_to_tree(arena, end)),
+            flags,
+        },
+        ExprNode::FiniteSet(elems) => ExprTree::FiniteSet {
+            elements: elems.iter().map(|&e| expr_to_tree(arena, e)).collect(),
+        },
+        ExprNode::SetUnion(sets) => ExprTree::SetUnion {
+            sets: sets.iter().map(|&s| expr_to_tree(arena, s)).collect(),
+        },
+        ExprNode::SetIntersection(sets) => ExprTree::SetIntersection {
+            sets: sets.iter().map(|&s| expr_to_tree(arena, s)).collect(),
+        },
+        ExprNode::SetComplement(a, b) => ExprTree::SetComplement {
+            set: Box::new(expr_to_tree(arena, a)),
+            universe: Box::new(expr_to_tree(arena, b)),
         },
     }
 }
@@ -637,6 +679,33 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
                 .map(|(val, cond)| (tree_to_expr(arena, val), tree_to_expr(arena, cond)))
                 .collect();
             arena.intern(ExprNode::Piecewise(pairs))
+        }
+        ExprTree::EmptySet => arena.intern(ExprNode::EmptySet),
+        ExprTree::UniversalSet => arena.intern(ExprNode::UniversalSet),
+        ExprTree::Interval { start, end, flags } => {
+            let s = tree_to_expr(arena, start);
+            let e = tree_to_expr(arena, end);
+            arena.intern(ExprNode::Interval(s, e, *flags))
+        }
+        ExprTree::FiniteSet { elements } => {
+            let ids: smallvec::SmallVec<[ExprId; 4]> =
+                elements.iter().map(|e| tree_to_expr(arena, e)).collect();
+            arena.intern(ExprNode::FiniteSet(ids))
+        }
+        ExprTree::SetUnion { sets } => {
+            let ids: smallvec::SmallVec<[ExprId; 4]> =
+                sets.iter().map(|s| tree_to_expr(arena, s)).collect();
+            arena.intern(ExprNode::SetUnion(ids))
+        }
+        ExprTree::SetIntersection { sets } => {
+            let ids: smallvec::SmallVec<[ExprId; 4]> =
+                sets.iter().map(|s| tree_to_expr(arena, s)).collect();
+            arena.intern(ExprNode::SetIntersection(ids))
+        }
+        ExprTree::SetComplement { set, universe } => {
+            let s = tree_to_expr(arena, set);
+            let u = tree_to_expr(arena, universe);
+            arena.intern(ExprNode::SetComplement(s, u))
         }
     }
 }

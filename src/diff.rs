@@ -105,6 +105,15 @@ fn diff_node(
         | ExprNode::Or(_)
         | ExprNode::Not(_) => arena.zero,
 
+        // Set-valued nodes → 0 (not differentiable)
+        ExprNode::EmptySet
+        | ExprNode::UniversalSet
+        | ExprNode::Interval(..)
+        | ExprNode::FiniteSet(_)
+        | ExprNode::SetUnion(_)
+        | ExprNode::SetIntersection(_)
+        | ExprNode::SetComplement(..) => arena.zero,
+
         // Piecewise: differentiate each value piece, keep conditions
         ExprNode::Piecewise(ref pairs) => {
             let pairs = pairs.clone();

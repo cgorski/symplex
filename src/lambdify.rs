@@ -273,6 +273,13 @@ fn compile_recursive(
         | ExprNode::Or(_)
         | ExprNode::Not(_)
         | ExprNode::Piecewise(_) => return None,
+        ExprNode::EmptySet
+        | ExprNode::UniversalSet
+        | ExprNode::Interval(_, _, _)
+        | ExprNode::FiniteSet(_)
+        | ExprNode::SetUnion(_)
+        | ExprNode::SetIntersection(_)
+        | ExprNode::SetComplement(_, _) => return None,
     }
     Some(())
 }
