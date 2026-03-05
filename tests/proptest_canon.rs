@@ -528,3 +528,34 @@ proptest! {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Matrix determinant invariants
+// ═══════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(40))]
+
+    /// det(A) == det(Aᵀ) for any square matrix.
+    #[test]
+    fn det_transpose_invariant(
+        entries in proptest::array::uniform9(-5i64..6i64)
+    ) {
+        let data: Vec<Vec<Ex>> = entries
+            .chunks(3)
+            .map(|row| row.iter().map(|&v| symplex::int(v)).collect())
+            .collect();
+        let m = symplex::matrix::Matrix::new(data);
+        let mt = m.transpose();
+
+        let det_m = m.det().eval().simplify();
+        let det_mt = mt.det().eval().simplify();
+
+        if let (Ok(a), Ok(b)) = (det_m.evalf_f64(), det_mt.evalf_f64()) {
+            prop_assert!(
+                (a - b).abs() < 1e-10 * a.abs().max(1.0),
+                "det(A)={} != det(Aᵀ)={}", a, b
+            );
+        }
+    }
+}

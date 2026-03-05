@@ -37,7 +37,6 @@ use num_traits::Zero;
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode, SymbolId};
 
-
 /// Integrate `expr` with respect to `var`.
 ///
 /// Returns the antiderivative. If integration cannot be performed,
@@ -318,6 +317,93 @@ fn try_complete_square_integral(
     Some(arena.div(atan_result, a_sqrt_d))
 }
 
+/// Attempt cyclic integration by parts for integrals like `∫ exp(x)·sin(x) dx`.
+///
+/// After two IBP rounds (with u₂ = du₁, dv₂ = v₁), if the remaining
+/// integral is a constant multiple `c` of the original integrand we
+/// solve algebraically:
+///
+/// ```text
+///   I = boundary₁ − (boundary₂ − c·I)
+///   I(1 − c) = boundary₁ − boundary₂
+///   I = (boundary₁ − boundary₂) / (1 − c)
+/// ```
+fn try_cyclic_ibp(
+    arena: &mut Arena,
+    factors: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    if factors.len() != 2 || depth < 2 {
+        return None;
+    }
+
+    // Use LIATE ordering: lower rank = u (trig before exp)
+    let (u_idx, dv_idx) = {
+        let r0 = liate_rank(arena, factors[0], var, var_sym);
+        let r1 = liate_rank(arena, factors[1], var, var_sym);
+        if r0 <= r1 { (0, 1) } else { (1, 0) }
+    };
+    let u1 = factors[u_idx];
+    let dv1 = factors[dv_idx];
+
+    // Both must depend on var
+    if !contains_var(arena, u1, var_sym) || !contains_var(arena, dv1, var_sym) {
+        return None;
+    }
+
+    // ── Round 1: ∫ u1·dv1 dx = u1·v1 − ∫ v1·du1 dx ──────────────
+    let v1 = integrate_node(arena, dv1, var, var_sym, depth - 1);
+    if matches!(arena.node(v1), ExprNode::Integral(_, _)) {
+        return None;
+    }
+    let du1 = crate::diff::diff(arena, u1, var);
+    let boundary1 = arena.mul(&[u1, v1]); // u1·v1
+
+    // ── Round 2: ∫ v1·du1 dx  with u₂ = du1, dv₂ = v1 ───────────
+    let v2 = integrate_node(arena, v1, var, var_sym, depth - 1);
+    if matches!(arena.node(v2), ExprNode::Integral(_, _)) {
+        return None;
+    }
+    let du2 = crate::diff::diff(arena, du1, var); // u1''
+    let boundary2 = arena.mul(&[du1, v2]); // du1·v2
+
+    // remaining₂ body = v2 · du2
+    let remaining2 = arena.mul(&[v2, du2]);
+    let original = arena.mul(&[factors[0], factors[1]]);
+
+    // ── Check remaining₂ = c · original for some constant c ──────
+
+    // Fast path: c = −1 (covers exp·sin, exp·cos and similar)
+    let sum = arena.add(&[remaining2, original]);
+    if sum == arena.zero {
+        tracing::debug!("cyclic IBP detected (c = -1)");
+        let numerator = arena.sub(boundary1, boundary2);
+        let two = arena.int(2);
+        return Some(arena.div(numerator, two));
+    }
+
+    // Fast path: c = +1 would be degenerate (1−c = 0), skip.
+    let diff_check = arena.sub(remaining2, original);
+    if diff_check == arena.zero {
+        return None;
+    }
+
+    // General path: try polynomial cancellation on the ratio.
+    let ratio = arena.div(remaining2, original);
+    let cancelled = arena.cancel_expr(ratio, var);
+    if !contains_var(arena, cancelled, var_sym) && cancelled != arena.one {
+        tracing::debug!("cyclic IBP detected (general c)");
+        let numerator = arena.sub(boundary1, boundary2);
+        let one = arena.one;
+        let one_minus_c = arena.sub(one, cancelled);
+        return Some(arena.div(numerator, one_minus_c));
+    }
+
+    None
+}
+
 /// Integrate a single node with respect to `var`.
 fn integrate_node(
     arena: &mut Arena,
@@ -455,6 +541,19 @@ fn integrate_node(
                     let result = arena.sub(u_v, integral_v_du);
 
                     // Re-include constant factors if any
+                    if constants.is_empty() {
+                        return result;
+                    } else {
+                        let mut all = constants.clone();
+                        all.push(result);
+                        return arena.mul(&all);
+                    }
+                }
+            }
+
+            // ── Cyclic IBP: ∫ exp·sin, ∫ exp·cos, etc. ────────────
+            if dependent.len() == 2 {
+                if let Some(result) = try_cyclic_ibp(arena, &dependent, var, var_sym, depth) {
                     if constants.is_empty() {
                         return result;
                     } else {

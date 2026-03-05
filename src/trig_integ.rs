@@ -115,7 +115,9 @@ fn extract_cos_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> 
 ///
 /// - n = 0 → `x`
 /// - n = 1 → `−cos(x)`
-/// - n < 0 → unevaluated `∫ sin^n(x) dx`
+/// - n = −1 → `−ln|csc(x)+cot(x)|`
+/// - n ≤ −2 → upward reduction toward 0:
+///   `(1/(n+1))·cos(x)·sin^(n+1)(x) + (n+2)/(n+1)·∫sin^(n+2)(x)dx`
 /// - n ≥ 2 → `−(1/n)·cos(x)·sin^(n−1)(x) + (n−1)/n · ∫ sin^(n−2)(x) dx`
 pub(crate) fn sin_pow_integrate(arena: &mut Arena, n: i64, var: ExprId) -> ExprId {
     if n == 0 {
@@ -126,12 +128,39 @@ pub(crate) fn sin_pow_integrate(arena: &mut Arena, n: i64, var: ExprId) -> ExprI
         let cos_x = arena.cos(var);
         return arena.neg(cos_x);
     }
-    if n < 0 {
-        // Leave negative powers unevaluated for now.
+    if n == -1 {
+        // ∫ csc(x) dx = −ln|csc(x) + cot(x)|
         let sin_x = arena.sin(var);
-        let n_id = arena.int(n);
-        let integrand = arena.pow(sin_x, n_id);
-        return arena.intern(ExprNode::Integral(integrand, var));
+        let cos_x = arena.cos(var);
+        let neg_one_id = arena.int(-1);
+        let csc_x = arena.pow(sin_x, neg_one_id); // 1/sin(x)
+        let cot_x = arena.mul(&[cos_x, csc_x]); // cos(x)/sin(x)
+        let sum = arena.add(&[csc_x, cot_x]);
+        let abs_sum = arena.abs(sum);
+        let ln_val = arena.ln(abs_sum);
+        return arena.neg(ln_val);
+    }
+    if n < -1 {
+        // Upward reduction formula (recurse toward 0):
+        //   ∫ sin^n(x) dx = (1/(n+1))·cos(x)·sin^(n+1)(x)
+        //                  + (n+2)/(n+1) · ∫ sin^(n+2)(x) dx
+        let cos_x = arena.cos(var);
+        let sin_x = arena.sin(var);
+
+        // sin^(n+1)(x)  — note n+1 ≤ −1 here, never 0 or 1
+        let exp_id = arena.int(n + 1);
+        let sin_pow = arena.pow(sin_x, exp_id);
+
+        // First term: (1/(n+1)) · cos(x) · sin^(n+1)(x)
+        let inv = arena.rational(1, n + 1);
+        let first_term = arena.mul(&[inv, cos_x, sin_pow]);
+
+        // Second term: (n+2)/(n+1) · ∫ sin^(n+2)(x) dx
+        let coeff = arena.rational(n + 2, n + 1);
+        let recursive = sin_pow_integrate(arena, n + 2, var);
+        let second_term = arena.mul(&[coeff, recursive]);
+
+        return arena.add(&[first_term, second_term]);
     }
 
     // Recursive reduction:
@@ -169,7 +198,9 @@ pub(crate) fn sin_pow_integrate(arena: &mut Arena, n: i64, var: ExprId) -> ExprI
 ///
 /// - n = 0 → `x`
 /// - n = 1 → `sin(x)`
-/// - n < 0 → unevaluated `∫ cos^n(x) dx`
+/// - n = −1 → `ln|sec(x)+tan(x)|`
+/// - n ≤ −2 → upward reduction toward 0:
+///   `−(1/(n+1))·sin(x)·cos^(n+1)(x) + (n+2)/(n+1)·∫cos^(n+2)(x)dx`
 /// - n ≥ 2 → `(1/n)·sin(x)·cos^(n−1)(x) + (n−1)/n · ∫ cos^(n−2)(x) dx`
 pub(crate) fn cos_pow_integrate(arena: &mut Arena, n: i64, var: ExprId) -> ExprId {
     if n == 0 {
@@ -179,12 +210,37 @@ pub(crate) fn cos_pow_integrate(arena: &mut Arena, n: i64, var: ExprId) -> ExprI
         // ∫ cos(x) dx = sin(x)
         return arena.sin(var);
     }
-    if n < 0 {
-        // Leave negative powers unevaluated for now.
+    if n == -1 {
+        // ∫ sec(x) dx = ln|sec(x) + tan(x)|
         let cos_x = arena.cos(var);
-        let n_id = arena.int(n);
-        let integrand = arena.pow(cos_x, n_id);
-        return arena.intern(ExprNode::Integral(integrand, var));
+        let neg_one_id = arena.int(-1);
+        let sec_x = arena.pow(cos_x, neg_one_id); // 1/cos(x)
+        let tan_x = arena.tan(var);
+        let sum = arena.add(&[sec_x, tan_x]);
+        let abs_sum = arena.abs(sum);
+        return arena.ln(abs_sum);
+    }
+    if n < -1 {
+        // Upward reduction formula (recurse toward 0):
+        //   ∫ cos^n(x) dx = −(1/(n+1))·sin(x)·cos^(n+1)(x)
+        //                  + (n+2)/(n+1) · ∫ cos^(n+2)(x) dx
+        let sin_x = arena.sin(var);
+        let cos_x = arena.cos(var);
+
+        // cos^(n+1)(x)  — note n+1 ≤ −1 here, never 0 or 1
+        let exp_id = arena.int(n + 1);
+        let cos_pow = arena.pow(cos_x, exp_id);
+
+        // First term: −(1/(n+1)) · sin(x) · cos^(n+1)(x)
+        let neg_inv = arena.rational(-1, n + 1);
+        let first_term = arena.mul(&[neg_inv, sin_x, cos_pow]);
+
+        // Second term: (n+2)/(n+1) · ∫ cos^(n+2)(x) dx
+        let coeff = arena.rational(n + 2, n + 1);
+        let recursive = cos_pow_integrate(arena, n + 2, var);
+        let second_term = arena.mul(&[coeff, recursive]);
+
+        return arena.add(&[first_term, second_term]);
     }
 
     // Recursive reduction:
@@ -523,14 +579,20 @@ mod tests {
     }
 
     #[test]
-    fn sin_negative_is_unevaluated() {
+    fn sin_neg2_is_neg_cot() {
+        // ∫ sin^(-2)(x) dx = −cot(x) = −cos(x)/sin(x)
         let mut a = Arena::new();
         let x = a.symbol("x");
         let result = sin_pow_integrate(&mut a, -2, x);
-        // Should be an unevaluated Integral node
+        let s = a.display(result).to_string();
+        // Should NOT be unevaluated — should contain cos and sin
         assert!(
-            matches!(a.node(result), ExprNode::Integral(_, _)),
-            "expected unevaluated integral"
+            !s.contains("Integral"),
+            "expected evaluated result, got unevaluated: {s}"
+        );
+        assert!(
+            s.contains("cos") && s.contains("sin"),
+            "expected cos/sin terms for −cot(x), got: {s}"
         );
     }
 
@@ -579,13 +641,36 @@ mod tests {
     }
 
     #[test]
-    fn cos_negative_is_unevaluated() {
+    fn cos_neg1_is_ln_sec_tan() {
+        // ∫ cos^(-1)(x) dx = ∫ sec(x) dx = ln|sec(x)+tan(x)|
         let mut a = Arena::new();
         let x = a.symbol("x");
         let result = cos_pow_integrate(&mut a, -1, x);
+        let s = a.display(result).to_string();
         assert!(
-            matches!(a.node(result), ExprNode::Integral(_, _)),
-            "expected unevaluated integral"
+            !s.contains("Integral"),
+            "expected evaluated result, got unevaluated: {s}"
+        );
+        assert!(
+            s.contains("ln"),
+            "expected ln term for ln|sec+tan|, got: {s}"
+        );
+    }
+
+    #[test]
+    fn cos_neg2_is_tan() {
+        // ∫ cos^(-2)(x) dx = ∫ sec²(x) dx = tan(x)
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let result = cos_pow_integrate(&mut a, -2, x);
+        let s = a.display(result).to_string();
+        assert!(
+            !s.contains("Integral"),
+            "expected evaluated result, got unevaluated: {s}"
+        );
+        assert!(
+            s.contains("sin") && s.contains("cos"),
+            "expected sin/cos terms for tan(x), got: {s}"
         );
     }
 

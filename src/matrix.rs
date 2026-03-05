@@ -322,9 +322,10 @@ impl Matrix {
 
     /// Determinant via cofactor expansion along the first row.
     ///
-    /// This is a recursive algorithm suitable for small matrices
-    /// (roughly up to 8×8). For larger matrices, consider LU
-    /// decomposition or other factorisation approaches.
+    /// Determinant of a square matrix.
+    ///
+    /// For small matrices (≤ 4×4) this uses cofactor expansion.
+    /// For larger matrices it switches to LU decomposition (O(n³)).
     ///
     /// # Panics
     ///
@@ -335,11 +336,47 @@ impl Matrix {
             "Determinant requires a square matrix, got {}×{}",
             self.nrows, self.ncols
         );
-        self.det_inner(&self.rows)
+
+        // For small matrices, cofactor expansion is fine
+        if self.nrows <= 4 {
+            return self.det_cofactor();
+        }
+
+        // For larger matrices, use LU decomposition (O(n³))
+        self.det_lu()
+    }
+
+    /// Determinant via cofactor expansion (O(n!) — only for small matrices).
+    fn det_cofactor(&self) -> Ex {
+        self.det_cofactor_inner(&self.rows)
+    }
+
+    /// Determinant via LU decomposition (O(n³)).
+    fn det_lu(&self) -> Ex {
+        match self.lu() {
+            Some((_, u, perm)) => {
+                // det = product of U diagonal × sign of permutation
+                let mut det = u.get(0, 0).clone();
+                for i in 1..self.nrows() {
+                    det = &det * u.get(i, i);
+                }
+                // Count inversions in permutation to determine sign
+                let mut inversions = 0;
+                for i in 0..perm.len() {
+                    for j in (i + 1)..perm.len() {
+                        if perm[i] > perm[j] {
+                            inversions += 1;
+                        }
+                    }
+                }
+                if inversions % 2 == 1 { -det } else { det }
+            }
+            None => Ex::zero(), // Singular matrix
+        }
     }
 
     /// Recursive cofactor expansion helper.
-    fn det_inner(&self, m: &[Vec<Ex>]) -> Ex {
+    fn det_cofactor_inner(&self, m: &[Vec<Ex>]) -> Ex {
         let n = m.len();
         if n == 1 {
             return m[0][0].clone();
@@ -363,7 +400,7 @@ impl Matrix {
                         .collect()
                 })
                 .collect();
-            let cofactor = self.det_inner(&minor);
+            let cofactor = self.det_cofactor_inner(&minor);
             let term = &m[0][j] * &cofactor;
 
             result = Some(match result {
