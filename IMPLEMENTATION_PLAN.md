@@ -59,7 +59,7 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 | Public methods on `Context` | 17 |
 | Matrix methods | 44 |
 | Apply functions | 12 (integer-only: fibonacci, lucas, bernoulli, …) |
-| `expr!` macro functions | 62 (52 single-arg + 10 multi-arg) |
+| `expr!` macro functions | 65 (54 single-arg + 11 multi-arg) |
 | Simplification rules | 24 (with condition guards) |
 | Integration forms | 35+ |
 | Eval special values | 86+ |
