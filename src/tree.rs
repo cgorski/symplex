@@ -45,9 +45,17 @@ use crate::node::{ExprId, ExprNode};
 #[serde(tag = "type")]
 pub enum ExprTree {
     /// A rational number with arbitrary-precision numerator and denominator.
-    Num { numer: String, denom: String },
+    Num {
+        /// Numerator as a decimal string.
+        numer: String,
+        /// Denominator as a decimal string.
+        denom: String,
+    },
     /// A symbolic variable.
-    Symbol { name: String },
+    Symbol {
+        /// The variable name.
+        name: String,
+    },
     /// The constant π.
     Pi,
     /// Euler's number e.
@@ -63,132 +71,274 @@ pub enum ExprTree {
     /// Not-a-number.
     NaN,
     /// A sum of terms.
-    Add { terms: Vec<ExprTree> },
+    Add {
+        /// The summands.
+        terms: Vec<ExprTree>,
+    },
     /// A product of factors.
-    Mul { factors: Vec<ExprTree> },
+    Mul {
+        /// The multiplicands.
+        factors: Vec<ExprTree>,
+    },
     /// Exponentiation: base^exp.
     Pow {
+        /// The base expression.
         base: Box<ExprTree>,
+        /// The exponent expression.
         exp: Box<ExprTree>,
     },
     /// Negation: -inner.
-    Neg { inner: Box<ExprTree> },
+    Neg {
+        /// The negated expression.
+        inner: Box<ExprTree>,
+    },
     /// Sine.
-    Sin { arg: Box<ExprTree> },
+    Sin {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Cosine.
-    Cos { arg: Box<ExprTree> },
+    Cos {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Tangent.
-    Tan { arg: Box<ExprTree> },
+    Tan {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Natural exponential.
-    Exp { arg: Box<ExprTree> },
+    Exp {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Natural logarithm.
-    Ln { arg: Box<ExprTree> },
+    Ln {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Square root.
-    Sqrt { arg: Box<ExprTree> },
+    Sqrt {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Absolute value.
-    Abs { arg: Box<ExprTree> },
+    Abs {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Inverse sine.
-    Asin { arg: Box<ExprTree> },
+    Asin {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Inverse cosine.
-    Acos { arg: Box<ExprTree> },
+    Acos {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Inverse tangent.
-    Atan { arg: Box<ExprTree> },
+    Atan {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Two-argument arctangent: atan2(y, x).
-    Atan2 { y: Box<ExprTree>, x: Box<ExprTree> },
+    Atan2 {
+        /// The y coordinate.
+        y: Box<ExprTree>,
+        /// The x coordinate.
+        x: Box<ExprTree>,
+    },
     /// Hyperbolic sine.
-    Sinh { arg: Box<ExprTree> },
+    Sinh {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Hyperbolic cosine.
-    Cosh { arg: Box<ExprTree> },
+    Cosh {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Hyperbolic tangent.
-    Tanh { arg: Box<ExprTree> },
+    Tanh {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Inverse hyperbolic sine.
-    Asinh { arg: Box<ExprTree> },
+    Asinh {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Inverse hyperbolic cosine.
-    Acosh { arg: Box<ExprTree> },
+    Acosh {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Inverse hyperbolic tangent.
-    Atanh { arg: Box<ExprTree> },
+    Atanh {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Sign function: 1 if positive, -1 if negative, 0 if zero.
-    Sign { arg: Box<ExprTree> },
+    Sign {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Heaviside step function: H(x) = 0 for x<0, 1/2 for x=0, 1 for x>0.
-    Heaviside { arg: Box<ExprTree> },
+    Heaviside {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Dirac delta distribution: δ(x) = 0 for x≠0, symbolic at x=0.
-    DiracDelta { arg: Box<ExprTree> },
+    DiracDelta {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Gamma function: Γ(x).
-    Gamma { arg: Box<ExprTree> },
+    Gamma {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Log-gamma function: ln(Γ(x)).
-    LogGamma { arg: Box<ExprTree> },
+    LogGamma {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Digamma function: ψ(x) = Γ'(x)/Γ(x).
-    Digamma { arg: Box<ExprTree> },
+    Digamma {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Error function: erf(x).
-    Erf { arg: Box<ExprTree> },
+    Erf {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Complementary error function: erfc(x) = 1 - erf(x).
-    Erfc { arg: Box<ExprTree> },
+    Erfc {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Beta function: B(a, b) = Γ(a)Γ(b)/Γ(a+b).
-    Beta { a: Box<ExprTree>, b: Box<ExprTree> },
+    Beta {
+        /// First parameter.
+        a: Box<ExprTree>,
+        /// Second parameter.
+        b: Box<ExprTree>,
+    },
     /// Floor function: greatest integer <= x.
-    Floor { arg: Box<ExprTree> },
+    Floor {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Ceiling function: least integer >= x.
-    Ceiling { arg: Box<ExprTree> },
+    Ceiling {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// N-ary minimum.
-    Min { args: Vec<ExprTree> },
+    Min {
+        /// The candidate expressions.
+        args: Vec<ExprTree>,
+    },
     /// N-ary maximum.
-    Max { args: Vec<ExprTree> },
+    Max {
+        /// The candidate expressions.
+        args: Vec<ExprTree>,
+    },
     /// Boolean true.
     BoolTrue,
     /// Boolean false.
     BoolFalse,
     /// Greater than: lhs > rhs.
     Gt {
+        /// Left operand.
         lhs: Box<ExprTree>,
+        /// Right operand.
         rhs: Box<ExprTree>,
     },
     /// Greater than or equal: lhs >= rhs.
     Ge {
+        /// Left operand.
         lhs: Box<ExprTree>,
+        /// Right operand.
         rhs: Box<ExprTree>,
     },
     /// Mathematical equality test: lhs == rhs.
     Eq_ {
+        /// Left operand.
         lhs: Box<ExprTree>,
+        /// Right operand.
         rhs: Box<ExprTree>,
     },
     /// Not equal: lhs != rhs.
     Ne {
+        /// Left operand.
         lhs: Box<ExprTree>,
+        /// Right operand.
         rhs: Box<ExprTree>,
     },
     /// Logical conjunction (n-ary).
-    And { args: Vec<ExprTree> },
+    And {
+        /// The conjuncts.
+        args: Vec<ExprTree>,
+    },
     /// Logical disjunction (n-ary).
-    Or { args: Vec<ExprTree> },
+    Or {
+        /// The disjuncts.
+        args: Vec<ExprTree>,
+    },
     /// Logical negation.
-    Not { arg: Box<ExprTree> },
+    Not {
+        /// The negated expression.
+        arg: Box<ExprTree>,
+    },
     /// Piecewise function: list of (value, condition) pairs.
-    Piecewise { pieces: Vec<(ExprTree, ExprTree)> },
+    Piecewise {
+        /// List of (value, condition) pairs.
+        pieces: Vec<(ExprTree, ExprTree)>,
+    },
     /// Application of a named function.
-    Apply { name: String, args: Vec<ExprTree> },
+    Apply {
+        /// The function name.
+        name: String,
+        /// The function arguments.
+        args: Vec<ExprTree>,
+    },
     /// Formal derivative.
     Derivative {
+        /// The expression being differentiated.
         body: Box<ExprTree>,
+        /// The variable of differentiation.
         var: Box<ExprTree>,
     },
     /// Formal integral.
     Integral {
+        /// The integrand.
         body: Box<ExprTree>,
+        /// The variable of integration.
         var: Box<ExprTree>,
     },
     /// Symbolic summation: Sum(body, var, lower, upper).
     Sum {
+        /// The expression being summed.
         body: Box<ExprTree>,
+        /// The index variable.
         var: Box<ExprTree>,
+        /// Lower bound of summation.
         lower: Box<ExprTree>,
+        /// Upper bound of summation.
         upper: Box<ExprTree>,
     },
     /// Symbolic product: Product(body, var, lower, upper).
     Product_ {
+        /// The expression being multiplied.
         body: Box<ExprTree>,
+        /// The index variable.
         var: Box<ExprTree>,
+        /// Lower bound of the product.
         lower: Box<ExprTree>,
+        /// Upper bound of the product.
         upper: Box<ExprTree>,
     },
     /// The empty set ∅.
@@ -198,19 +348,33 @@ pub enum ExprTree {
     /// A closed/open interval with flags encoding open/closed.
     /// Bits: 0x01 = left_open, 0x02 = right_open.
     Interval {
+        /// Left endpoint.
         start: Box<ExprTree>,
+        /// Right endpoint.
         end: Box<ExprTree>,
+        /// Bitfield: 0x01 = left open, 0x02 = right open.
         flags: u8,
     },
     /// A finite set of elements {a, b, c, ...}.
-    FiniteSet { elements: Vec<ExprTree> },
+    FiniteSet {
+        /// The set elements.
+        elements: Vec<ExprTree>,
+    },
     /// Union of sets: A ∪ B ∪ C ∪ ...
-    SetUnion { sets: Vec<ExprTree> },
+    SetUnion {
+        /// The sets being united.
+        sets: Vec<ExprTree>,
+    },
     /// Intersection of sets: A ∩ B ∩ C ∩ ...
-    SetIntersection { sets: Vec<ExprTree> },
+    SetIntersection {
+        /// The sets being intersected.
+        sets: Vec<ExprTree>,
+    },
     /// Set complement (relative): A \ B.
     SetComplement {
+        /// The set to complement.
         set: Box<ExprTree>,
+        /// The universe set to complement within.
         universe: Box<ExprTree>,
     },
 }

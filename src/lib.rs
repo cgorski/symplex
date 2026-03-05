@@ -33,6 +33,8 @@
 //! assert_eq!(format!("{expr}"), "x^2 + 2*x + 1");
 //! ```
 
+#![warn(missing_docs)]
+
 // ── Self-referencing extern crate so proc-macro-generated paths
 //    (`::symplex::__macro_support::…`) resolve inside the crate itself. ──
 extern crate self as symplex;

@@ -7,14 +7,22 @@ pub enum SymplexError {
     /// Contradictory assumptions were specified for a symbol.
     #[error("contradictory assumptions for '{symbol}': cannot be both {a} and {b}")]
     ContradictoryAssumptions {
+        /// The symbol with conflicting assumptions.
         symbol: String,
+        /// The first conflicting property.
         a: String,
+        /// The second conflicting property.
         b: String,
     },
 
     /// Numerical evaluation could not achieve the requested precision.
     #[error("precision exhausted: requested {requested} digits, achieved {achieved}")]
-    PrecisionExhausted { requested: u32, achieved: u32 },
+    PrecisionExhausted {
+        /// Number of digits requested.
+        requested: u32,
+        /// Number of digits achieved before giving up.
+        achieved: u32,
+    },
 
     /// Numerical evaluation failed because the expression contains a free
     /// (unbound) symbol.

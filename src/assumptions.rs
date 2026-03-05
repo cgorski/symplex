@@ -96,37 +96,68 @@ bitflags! {
 /// and [`Context::symbol_with`](crate::context::Context::symbol_with).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Assumption {
+    /// Commutes under multiplication.
     Commutative,
+    /// Element of ℂ.
     Complex,
+    /// Element of ℝ.
     Real,
+    /// Element of ℚ.
     Rational,
+    /// Element of ℤ.
     Integer,
+    /// Root of a polynomial with rational coefficients.
     Algebraic,
+    /// Not algebraic (π, e, …).
     Transcendental,
+    /// Real but not rational.
     Irrational,
+    /// Pure imaginary (nonzero, real part is zero).
     Imaginary,
+    /// Strictly greater than zero.
     Positive,
+    /// Strictly less than zero.
     Negative,
+    /// Greater than or equal to zero.
     NonNegative,
+    /// Less than or equal to zero.
     NonPositive,
+    /// Equal to zero.
     Zero,
+    /// Not equal to zero.
     NonZero,
+    /// Divisible by 2 (integer).
     Even,
+    /// Not divisible by 2 (integer).
     Odd,
+    /// A prime number.
     Prime,
+    /// A composite number.
     Composite,
+    /// Bounded in absolute value.
     Finite,
+    /// Unbounded (±∞).
     Infinite,
+    /// Equal to its own conjugate transpose.
     Hermitian,
+    /// Equal to the negation of its conjugate transpose.
     AntiHermitian,
     // Negated forms
+    /// Assert not real.
     NotReal,
+    /// Assert not complex.
     NotComplex,
+    /// Assert not integer.
     NotInteger,
+    /// Assert not rational.
     NotRational,
+    /// Assert not positive.
     NotPositive,
+    /// Assert not negative.
     NotNegative,
+    /// Assert not zero (alias for `NonZero`-as-negation).
     NotZero,
+    /// Assert not finite.
     NotFinite,
 }
 
