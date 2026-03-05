@@ -55,6 +55,13 @@ pub fn dsolve(
         return Some(result);
     }
 
+    // Type 1b: Second-order CC nonhomogeneous: a*y'' + b*y' + c*y = f(x)
+    if let Some(result) =
+        try_second_order_cc_nonhomogeneous(arena, expr, func, var, func_sym, var_sym)
+    {
+        return Some(result);
+    }
+
     // Type 2: General first-order linear (variable P(x)): y' + P(x)*y = Q(x)
     if let Some(result) = try_first_order_linear_general(arena, expr, func, var, func_sym, var_sym)
     {
@@ -247,6 +254,298 @@ fn try_second_order_const_coeff(
             })
         }
         _ => None,
+    }
+}
+
+/// Solve the characteristic equation r² + b·r + c = 0 and construct the
+/// homogeneous solution of y'' + b·y' + c·y = 0.
+///
+/// This is extracted as a helper so that both the homogeneous and
+/// nonhomogeneous second-order solvers can reuse it.
+fn solve_characteristic_equation(
+    arena: &mut Arena,
+    b: num_rational::Ratio<num_bigint::BigInt>,
+    c: num_rational::Ratio<num_bigint::BigInt>,
+    var: ExprId,
+) -> Option<OdeResult> {
+    let r_var = arena.symbol("__r");
+    let two = arena.int(2);
+    let b_id = {
+        let nid = arena.intern_num(b);
+        arena.intern(ExprNode::Num(nid))
+    };
+    let c_id = {
+        let nid = arena.intern_num(c);
+        arena.intern(ExprNode::Num(nid))
+    };
+
+    let r_var_sq = arena.pow(r_var, two);
+    let b_r = arena.mul(&[b_id, r_var]);
+    let char_eq = arena.add(&[r_var_sq, b_r, c_id]);
+    let roots = crate::solve::solve(arena, char_eq, r_var);
+
+    let c1 = arena.symbol("C1");
+    let c2 = arena.symbol("C2");
+
+    match roots.len() {
+        2 => {
+            let r1 = roots[0].value;
+            let r2 = roots[1].value;
+            if r1 == r2 {
+                // Repeated root: y = (C1 + C2*x) * e^(r*x)
+                let rx = arena.mul(&[r1, var]);
+                let exp_rx = arena.exp(rx);
+                let c2_x = arena.mul(&[c2, var]);
+                let inner = arena.add(&[c1, c2_x]);
+                let solution = arena.mul(&[inner, exp_rx]);
+                Some(OdeResult {
+                    solution,
+                    constants: vec![c1, c2],
+                })
+            } else {
+                // Distinct roots: y = C1*e^(r1*x) + C2*e^(r2*x)
+                let r1x = arena.mul(&[r1, var]);
+                let r2x = arena.mul(&[r2, var]);
+                let exp_r1x = arena.exp(r1x);
+                let exp_r2x = arena.exp(r2x);
+                let term1 = arena.mul(&[c1, exp_r1x]);
+                let term2 = arena.mul(&[c2, exp_r2x]);
+                let solution = arena.add(&[term1, term2]);
+                Some(OdeResult {
+                    solution,
+                    constants: vec![c1, c2],
+                })
+            }
+        }
+        1 => {
+            // Single root (treat as repeated)
+            let r = roots[0].value;
+            let rx = arena.mul(&[r, var]);
+            let exp_rx = arena.exp(rx);
+            let c2_x = arena.mul(&[c2, var]);
+            let inner = arena.add(&[c1, c2_x]);
+            let solution = arena.mul(&[inner, exp_rx]);
+            Some(OdeResult {
+                solution,
+                constants: vec![c1, c2],
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Solve a·y'' + b·y' + c·y = f(x) where f(x) is a polynomial, via
+/// the method of undetermined coefficients.
+///
+/// Returns `None` when:
+/// - The expression is not an `Add` node.
+/// - The expression is not second-order (no y'' term).
+/// - The expression is homogeneous (no forcing terms) — let the
+///   dedicated homogeneous solver handle it.
+/// - The forcing term is not polynomial in `var`.
+/// - The characteristic equation cannot be solved.
+fn try_second_order_cc_nonhomogeneous(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    _var_sym: SymbolId,
+) -> Option<OdeResult> {
+    use num_traits::Zero;
+
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+
+    let children = match arena.node(expr).clone() {
+        ExprNode::Add(children) => children,
+        _ => return None,
+    };
+
+    let mut a_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut b_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut c_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut f_of_x_terms: Vec<ExprId> = Vec::new();
+
+    for &child in &children {
+        let (coeff, term) = arena.as_coeff_term(child);
+        if term == d2y_dx2 {
+            a_coeff += coeff;
+        } else if term == dy_dx {
+            b_coeff += coeff;
+        } else if term == func {
+            c_coeff += coeff;
+        } else if !contains_sym(arena, child, func_sym) {
+            // Term free of y and its derivatives — forcing f(x)
+            f_of_x_terms.push(child);
+        } else {
+            return None; // nonlinear or variable-coefficient term
+        }
+    }
+
+    if a_coeff.is_zero() {
+        return None; // Not second order
+    }
+
+    if f_of_x_terms.is_empty() {
+        return None; // Homogeneous — handled by try_second_order_const_coeff
+    }
+
+    // Normalise: divide through by a so the leading coefficient is 1.
+    let b = &b_coeff / &a_coeff;
+    let c = &c_coeff / &a_coeff;
+
+    // Build g(x) = sum of the forcing terms.  The ODE reads
+    //   y'' + b·y' + c·y + g(x)/a = 0   ⟹   rhs = −g(x)/a
+    let f_sum = if f_of_x_terms.len() == 1 {
+        f_of_x_terms[0]
+    } else {
+        arena.add(&f_of_x_terms)
+    };
+
+    // The forcing term must be polynomial in var.
+    let f_coeffs_expr = arena.coefficients_of(f_sum, var)?;
+    if f_coeffs_expr.is_empty() {
+        return None;
+    }
+
+    // Convert to rational and negate/scale: rhs_j = −f_j / a
+    let mut rhs_coeffs: Vec<num_rational::Ratio<num_bigint::BigInt>> = Vec::new();
+    for &cid in &f_coeffs_expr {
+        let val = arena.as_num(cid)?.clone();
+        rhs_coeffs.push(-val / &a_coeff);
+    }
+
+    // Particular solution via undetermined coefficients
+    let particular_coeffs = find_particular_polynomial(&b, &c, &rhs_coeffs)?;
+    let y_p = build_polynomial_expr(arena, &particular_coeffs, var);
+
+    // Homogeneous solution via the characteristic equation
+    let homo_result = solve_characteristic_equation(arena, b, c, var)?;
+
+    // General solution = homogeneous + particular
+    let solution = arena.add(&[homo_result.solution, y_p]);
+
+    Some(OdeResult {
+        solution,
+        constants: homo_result.constants,
+    })
+}
+
+/// Solve the undetermined-coefficients linear system for a polynomial
+/// particular solution of  y'' + b·y' + c·y = rhs(x).
+///
+/// `rhs_coeffs[j]` is the coefficient of x^j on the right-hand side,
+/// in ascending degree order.
+///
+/// Returns ascending-order coefficients of y_p, or `None` on failure.
+fn find_particular_polynomial(
+    b: &num_rational::Ratio<num_bigint::BigInt>,
+    c: &num_rational::Ratio<num_bigint::BigInt>,
+    rhs_coeffs: &[num_rational::Ratio<num_bigint::BigInt>],
+) -> Option<Vec<num_rational::Ratio<num_bigint::BigInt>>> {
+    use num_bigint::BigInt;
+    use num_rational::Ratio;
+    use num_traits::Zero;
+
+    let n = rhs_coeffs.len() - 1;
+
+    if !c.is_zero() {
+        // ── Case 1: c ≠ 0 ──────────────────────────────────────────────
+        // y_p = A_0 + A_1·x + … + A_n·x^n   (same degree as rhs)
+        //
+        // Matching x^j (j = n … 0):
+        //   (j+2)(j+1)·A_{j+2} + b·(j+1)·A_{j+1} + c·A_j = r_j
+        //
+        // Triangular system, solved top-down.
+        let mut a = vec![Ratio::<BigInt>::zero(); n + 1];
+        for j in (0..=n).rev() {
+            let a_j2 = if j + 2 <= n {
+                a[j + 2].clone()
+            } else {
+                Ratio::zero()
+            };
+            let a_j1 = if j + 1 <= n {
+                a[j + 1].clone()
+            } else {
+                Ratio::zero()
+            };
+            let factor2 =
+                Ratio::from_integer(BigInt::from(((j + 2) * (j + 1)) as i64)) * a_j2;
+            let factor1 =
+                Ratio::from_integer(BigInt::from((j + 1) as i64)) * b.clone() * a_j1;
+            a[j] = (rhs_coeffs[j].clone() - factor2 - factor1) / c.clone();
+        }
+        Some(a)
+    } else if !b.is_zero() {
+        // ── Case 2: c = 0, b ≠ 0 ───────────────────────────────────────
+        // Multiply trial by x:  y_p = B_0·x + B_1·x² + … + B_n·x^{n+1}
+        //
+        // Matching x^j (j = n … 0):
+        //   [(j+2)(j+1)·B_{j+1} if j < n] + b·(j+1)·B_j = r_j
+        let mut bb = vec![Ratio::<BigInt>::zero(); n + 1];
+        for j in (0..=n).rev() {
+            let deriv_term = if j < n {
+                Ratio::from_integer(BigInt::from(((j + 2) * (j + 1)) as i64))
+                    * bb[j + 1].clone()
+            } else {
+                Ratio::zero()
+            };
+            let denom =
+                Ratio::from_integer(BigInt::from((j + 1) as i64)) * b.clone();
+            if denom.is_zero() {
+                return None;
+            }
+            bb[j] = (rhs_coeffs[j].clone() - deriv_term) / denom;
+        }
+        // Shift: x·(B_0 + B_1·x + …) → coefficients [0, B_0, B_1, …]
+        let mut result = vec![Ratio::zero()];
+        result.extend(bb);
+        Some(result)
+    } else {
+        // ── Case 3: c = 0, b = 0 ───────────────────────────────────────
+        // y'' = rhs  ⟹  y_p = ∫∫ rhs dx dx
+        // Coefficient of x^{j+2} = r_j / ((j+1)(j+2))
+        let mut result = vec![Ratio::<BigInt>::zero(); 2];
+        for (j, r_j) in rhs_coeffs.iter().enumerate() {
+            let denom =
+                Ratio::from_integer(BigInt::from(((j + 1) * (j + 2)) as i64));
+            result.push(r_j.clone() / denom);
+        }
+        Some(result)
+    }
+}
+
+/// Build an arena polynomial expression from ascending-order rational
+/// coefficients: `coeffs[j]` is the coefficient of `var^j`.
+fn build_polynomial_expr(
+    arena: &mut Arena,
+    coeffs: &[num_rational::Ratio<num_bigint::BigInt>],
+    var: ExprId,
+) -> ExprId {
+    use num_traits::Zero;
+    let mut terms = Vec::new();
+    for (j, coeff) in coeffs.iter().enumerate() {
+        if coeff.is_zero() {
+            continue;
+        }
+        let x_pow_j = if j == 0 {
+            arena.one
+        } else if j == 1 {
+            var
+        } else {
+            let exp = arena.int(j as i64);
+            arena.pow(var, exp)
+        };
+        let term = arena.make_coeff_term(coeff.clone(), x_pow_j);
+        terms.push(term);
+    }
+    if terms.is_empty() {
+        arena.zero
+    } else if terms.len() == 1 {
+        terms[0]
+    } else {
+        arena.add(&terms)
     }
 }
 
@@ -817,6 +1116,8 @@ pub enum OdeType {
     FirstOrderLinearVC,
     /// a*y'' + b*y' + c*y = 0 — second-order linear constant-coefficient homogeneous
     SecondOrderLinearCCHomogeneous,
+    /// a*y'' + b*y' + c*y = f(x) — second-order linear constant-coefficient nonhomogeneous
+    SecondOrderLinearCCNonHomogeneous,
     /// Unrecognized ODE type
     Unknown,
 }
@@ -840,24 +1141,31 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
     let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
 
     if expr_contains(arena, expr, d2y_dx2) {
-        // Try to verify it matches a*y'' + b*y' + c*y = 0 pattern
+        // Try to verify it matches a*y'' + b*y' + c*y [+ f(x)] = 0 pattern
         if let ExprNode::Add(ref children) = arena.node(expr).clone() {
-            let mut is_const_coeff_homogeneous = true;
+            let mut all_const_coeff = true;
             let mut has_y2 = false;
+            let mut has_forcing = false;
             for &child in children {
                 let (_coeff, term) = arena.as_coeff_term(child);
                 if term == d2y_dx2 {
                     has_y2 = true;
                 } else if term == dy_dx {
-                    // OK — y' term
+                    // OK — y' term with constant coefficient
                 } else if term == func {
-                    // OK — y term
+                    // OK — y term with constant coefficient
+                } else if !contains_sym(arena, child, func_sym) {
+                    // Term free of y — nonhomogeneous forcing term
+                    has_forcing = true;
                 } else {
-                    is_const_coeff_homogeneous = false;
+                    all_const_coeff = false;
                     break;
                 }
             }
-            if has_y2 && is_const_coeff_homogeneous {
+            if has_y2 && all_const_coeff {
+                if has_forcing {
+                    return OdeType::SecondOrderLinearCCNonHomogeneous;
+                }
                 return OdeType::SecondOrderLinearCCHomogeneous;
             }
         }

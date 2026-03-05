@@ -725,6 +725,45 @@ impl Matrix {
         }
         result
     }
+
+    /// Kronecker (tensor) product: A ⊗ B.
+    ///
+    /// For A (m×n) and B (p×q), produces an (mp×nq) matrix.
+    pub fn kronecker(&self, other: &Matrix) -> Matrix {
+        let mut rows = Vec::new();
+        for i in 0..self.nrows {
+            for k in 0..other.nrows {
+                let mut row = Vec::new();
+                for j in 0..self.ncols {
+                    for l in 0..other.ncols {
+                        row.push(&self.rows[i][j] * &other.rows[k][l]);
+                    }
+                }
+                rows.push(row);
+            }
+        }
+        Matrix::new(rows)
+    }
+
+    /// Matrix exponential via truncated Taylor series: eᴬ ≈ Σₖ₌₀ⁿ Aᵏ/k!.
+    ///
+    /// This computes a symbolic approximation. For exact results on
+    /// diagonalizable matrices, use eigendecomposition externally.
+    ///
+    /// `order` controls the number of terms (default: 10 is good for most cases).
+    pub fn exp_series(&self, order: usize) -> Matrix {
+        assert!(self.is_square(), "matrix exp requires square matrix");
+        let n = self.nrows;
+        let mut result = Matrix::identity(n);
+        let mut a_power_over_factorial = Matrix::identity(n);
+        for k in 1..=order {
+            a_power_over_factorial = a_power_over_factorial.matmul(self);
+            let inv_k = crate::rational(1, k as i64);
+            a_power_over_factorial = a_power_over_factorial.scale(&inv_k);
+            result = result.add(&a_power_over_factorial);
+        }
+        result
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

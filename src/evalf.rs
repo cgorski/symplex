@@ -146,7 +146,7 @@ fn eval_node(
         }),
 
         ExprNode::Binomial(n_id, k_id) => {
-            debug!("evalf: Binomial via Gamma");
+            debug!(prec, "evalf: Binomial via arbitrary-precision Gamma");
             let n_val = get_cached(cache, *n_id)?;
             let k_val = get_cached(cache, *k_id)?;
             if !n_val.1.is_zero() || !k_val.1.is_zero() {
@@ -154,22 +154,24 @@ fn eval_node(
                     reason: "Binomial of complex arguments not yet supported in evalf".into(),
                 });
             }
-            let n_f = bigfloat_to_f64(&n_val.0, rm, cc)?;
-            let k_f = bigfloat_to_f64(&k_val.0, rm, cc)?;
-            let numer = lanczos_gamma_f64(n_f + 1.0)?;
-            let denom = lanczos_gamma_f64(k_f + 1.0)? * lanczos_gamma_f64(n_f - k_f + 1.0)?;
-            if denom.abs() < 1e-300 {
+            // C(n, k) = Gamma(n+1) / (Gamma(k+1) * Gamma(n-k+1))
+            let one_bf = BigFloat::from_i32(1, prec);
+            let n_plus_1 = n_val.0.add(&one_bf, prec, rm);
+            let k_plus_1 = k_val.0.add(&one_bf, prec, rm);
+            let n_minus_k = n_val.0.sub(&k_val.0, prec, rm);
+            let n_minus_k_plus_1 = n_minus_k.add(&one_bf, prec, rm);
+
+            let g_numer = arb_gamma_real(&n_plus_1, prec, rm, cc)?;
+            let g_k = arb_gamma_real(&k_plus_1, prec, rm, cc)?;
+            let g_nmk = arb_gamma_real(&n_minus_k_plus_1, prec, rm, cc)?;
+            let g_denom = g_k.mul(&g_nmk, prec, rm);
+            if g_denom.is_zero() {
                 return Err(SymplexError::Unevaluable {
                     reason: "Binomial denominator is zero (pole in Gamma)".into(),
                 });
             }
-            let result = numer / denom;
-            if !result.is_finite() {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Binomial result is not finite".into(),
-                });
-            }
-            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
+            let result = g_numer.div(&g_denom, prec, rm);
+            Ok((result, BigFloat::new(prec)))
         }
 
         ExprNode::Gamma(inner) => {
@@ -191,14 +193,39 @@ fn eval_node(
                     reason: "LogGamma of complex argument not yet supported in evalf".into(),
                 });
             }
-            let x = bigfloat_to_f64(&val.0, rm, cc)?;
-            let gamma = lanczos_gamma_f64(x)?;
-            if gamma <= 0.0 {
-                return Err(SymplexError::Unevaluable {
-                    reason: "LogGamma undefined for non-positive Gamma value".into(),
-                });
+            // Use arbitrary-precision Stirling series for log Γ(x).
+            // For positive x, compute directly; for negative x, use
+            // reflection: log Γ(x) = log(π) − log(sin(πx)) − log Γ(1−x).
+            let x_approx = bigfloat_to_f64(&val.0, rm, cc)?;
+            if x_approx <= 0.0 {
+                let rounded = x_approx.round();
+                if (rounded - x_approx).abs() < 1e-12 && rounded <= 0.0 {
+                    return Err(SymplexError::Unevaluable {
+                        reason: "LogGamma at non-positive integer pole".into(),
+                    });
+                }
+                // Reflection: ln Γ(x) = ln π − ln|sin(πx)| − ln Γ(1−x)
+                let one = BigFloat::from_i32(1, prec);
+                let one_minus_x = one.sub(&val.0, prec, rm);
+                let log_gamma_1mx = stirling_log_gamma(&one_minus_x, prec, rm, cc)?;
+                let pi_val = cc.pi(prec, rm).clone();
+                let pi_x = pi_val.mul(&val.0, prec, rm);
+                let sin_pi_x = pi_x.sin(prec, rm, cc);
+                let abs_sin = sin_pi_x.abs();
+                if abs_sin.is_zero() {
+                    return Err(SymplexError::Unevaluable {
+                        reason: "LogGamma at non-positive integer pole".into(),
+                    });
+                }
+                let ln_pi = cc.pi(prec, rm).clone().ln(prec, rm, cc);
+                let ln_abs_sin = abs_sin.ln(prec, rm, cc);
+                let result = ln_pi.sub(&ln_abs_sin, prec, rm).sub(&log_gamma_1mx, prec, rm);
+                Ok((result, BigFloat::new(prec)))
+            } else {
+                debug!(prec, "evalf: LogGamma via Stirling series");
+                let result = stirling_log_gamma(&val.0, prec, rm, cc)?;
+                Ok((result, BigFloat::new(prec)))
             }
-            Ok((f64_to_bigfloat(gamma.ln(), prec), BigFloat::new(prec)))
         }
 
         ExprNode::Digamma(inner) => {
@@ -220,10 +247,9 @@ fn eval_node(
                     reason: "erf of complex argument not yet supported in evalf".into(),
                 });
             }
-            let x_val = bigfloat_to_f64(&val.0, rm, cc)?;
-            debug!(x = ?x_val, "evalf: erf via series");
-            let result = erf_f64(x_val);
-            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
+            debug!(prec, "evalf: erf via arbitrary-precision series");
+            let result = arb_erf(&val.0, prec, rm, cc)?;
+            Ok((result, BigFloat::new(prec)))
         }
 
         ExprNode::Erfc(inner) => {
@@ -233,9 +259,11 @@ fn eval_node(
                     reason: "erfc of complex argument not yet supported in evalf".into(),
                 });
             }
-            let x = bigfloat_to_f64(&val.0, rm, cc)?;
-            let result = 1.0 - erf_f64(x);
-            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
+            debug!(prec, "evalf: erfc via arbitrary-precision series");
+            let erf_val = arb_erf(&val.0, prec, rm, cc)?;
+            let one = BigFloat::from_i32(1, prec);
+            let result = one.sub(&erf_val, prec, rm);
+            Ok((result, BigFloat::new(prec)))
         }
 
         ExprNode::Beta(a_id, b_id) => {
@@ -246,18 +274,20 @@ fn eval_node(
                     reason: "Beta of complex arguments not yet supported in evalf".into(),
                 });
             }
-            let a = bigfloat_to_f64(&a_val.0, rm, cc)?;
-            let b = bigfloat_to_f64(&b_val.0, rm, cc)?;
-            let ga = lanczos_gamma_f64(a)?;
-            let gb = lanczos_gamma_f64(b)?;
-            let gab = lanczos_gamma_f64(a + b)?;
-            let result = ga * gb / gab;
-            if !result.is_finite() {
+            // Beta(a,b) = Gamma(a)*Gamma(b)/Gamma(a+b) at arbitrary precision.
+            debug!(prec, "evalf: Beta via arbitrary-precision Gamma");
+            let ga = arb_gamma_real(&a_val.0, prec, rm, cc)?;
+            let gb = arb_gamma_real(&b_val.0, prec, rm, cc)?;
+            let a_plus_b = a_val.0.add(&b_val.0, prec, rm);
+            let gab = arb_gamma_real(&a_plus_b, prec, rm, cc)?;
+            if gab.is_zero() {
                 return Err(SymplexError::Unevaluable {
-                    reason: "Beta function result is not finite".into(),
+                    reason: "Beta function: Gamma(a+b) is zero".into(),
                 });
             }
-            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
+            let numer = ga.mul(&gb, prec, rm);
+            let result = numer.div(&gab, prec, rm);
+            Ok((result, BigFloat::new(prec)))
         }
 
         ExprNode::NaN => Err(SymplexError::Unevaluable {
@@ -1209,6 +1239,7 @@ fn f64_to_bigfloat(f: f64, prec: usize) -> BigFloat {
 }
 
 /// Lanczos approximation for the Gamma function (g=7, 9 coefficients).
+#[allow(dead_code)]
 #[allow(clippy::excessive_precision)]
 fn lanczos_gamma_f64(x: f64) -> Result<f64, SymplexError> {
     if x.is_nan() || x.is_infinite() {
@@ -1261,6 +1292,7 @@ fn lanczos_gamma_f64(x: f64) -> Result<f64, SymplexError> {
 }
 
 /// Error function via Taylor series (small |x|) or asymptotic expansion (large |x|).
+#[allow(dead_code)]
 fn erf_f64(x: f64) -> f64 {
     if x.abs() < 4.0 {
         // Taylor series: erf(x) = 2/sqrt(pi) * sum_{n=0}^{inf} (-1)^n * x^(2n+1) / (n! * (2n+1))
@@ -1530,6 +1562,116 @@ fn arb_gamma_real(
         let denom = sin_pi_x.mul(&gamma_1mx, prec, rm);
         let pi_val2 = cc.pi(prec, rm).clone();
         Ok(pi_val2.div(&denom, prec, rm))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Arbitrary-precision erf via Taylor series / asymptotic expansion
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute erf(x) at arbitrary precision for real x.
+///
+/// For small-to-moderate |x|, uses the Taylor series:
+///   erf(x) = (2/√π) Σ_{n=0}^{N} (-1)^n x^{2n+1} / (n! (2n+1))
+///
+/// For large |x|, uses the asymptotic expansion of erfc:
+///   erfc(x) = exp(-x²) / (x√π) · Σ_{n=0}^{N} (-1)^n (2n-1)!! / (2x²)^n
+///   erf(x) = sign(x) · (1 − erfc(|x|))
+fn arb_erf(
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    if x.is_zero() {
+        return Ok(BigFloat::new(prec));
+    }
+
+    let guard = 32;
+    let wp = prec + guard;
+
+    let x_approx = bigfloat_to_f64(x, rm, cc)?;
+    // Threshold: for |x| beyond this, the asymptotic expansion converges
+    // faster than the Taylor series. Roughly √(wp * ln(2) / 2).
+    let threshold = ((wp as f64) * 0.35).sqrt() + 2.0;
+
+    if x_approx.abs() < threshold {
+        // ── Taylor series ──────────────────────────────────────────
+        // erf(x) = (2/√π) · Σ_{n=0}^{N} prod_n / (2n+1)
+        // where prod_0 = x, prod_{n+1} = prod_n · (-x²) / (n+1)
+        let neg_x_sq = x.mul(x, wp, rm).neg();
+        let mut prod = x.clone(); // (-x²)^n · x / n!
+        let mut sum = x.clone();  // accumulator (first term = x)
+
+        let max_terms = (wp as f64 * 0.6) as usize + 60;
+        for n in 1..=max_terms {
+            // prod *= -x² / n
+            prod = prod.mul(&neg_x_sq, wp, rm);
+            prod = prod.div(&BigFloat::from_i32(n as i32, wp), wp, rm);
+
+            // term = prod / (2n+1)
+            let divisor = BigFloat::from_i32((2 * n + 1) as i32, wp);
+            let term = prod.div(&divisor, wp, rm);
+
+            // Convergence check
+            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent()) {
+                if (s_exp as i64 - t_exp as i64) > wp as i64 {
+                    break;
+                }
+            }
+
+            sum = sum.add(&term, wp, rm);
+        }
+
+        // Multiply by 2/√π
+        let two = BigFloat::from_i32(2, wp);
+        let pi_val = cc.pi(wp, rm).clone();
+        let sqrt_pi = pi_val.sqrt(wp, rm);
+        let two_over_sqrt_pi = two.div(&sqrt_pi, wp, rm);
+
+        Ok(sum.mul(&two_over_sqrt_pi, wp, rm))
+    } else {
+        // ── Asymptotic expansion for large |x| ────────────────────
+        // erfc(x) = exp(-x²)/(x√π) · Σ_{n=0}^{N} (-1)^n (2n-1)!! / (2x²)^n
+        let is_neg = x.is_negative();
+        let ax = x.abs();
+        let x_sq = ax.mul(&ax, wp, rm);
+        let two_x_sq = x_sq.mul(&BigFloat::from_i32(2, wp), wp, rm);
+
+        let mut sum = BigFloat::from_i32(1, wp);
+        let mut term = BigFloat::from_i32(1, wp);
+        let max_terms = wp / 2 + 30;
+
+        for n in 1..=max_terms {
+            // term *= -(2n-1) / (2x²)
+            let factor = BigFloat::from_i32(2 * n as i32 - 1, wp);
+            term = term.mul(&factor, wp, rm);
+            term = term.div(&two_x_sq, wp, rm);
+            term = term.neg();
+
+            // Divergence check: if |term| starts growing, stop
+            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent()) {
+                if t_exp > s_exp {
+                    break;
+                }
+            }
+
+            sum = sum.add(&term, wp, rm);
+        }
+
+        let exp_neg_x_sq = x_sq.neg().exp(wp, rm, cc);
+        let sqrt_pi = cc.pi(wp, rm).clone().sqrt(wp, rm);
+        let x_sqrt_pi = ax.mul(&sqrt_pi, wp, rm);
+        let erfc_val = exp_neg_x_sq.mul(&sum, wp, rm).div(&x_sqrt_pi, wp, rm);
+
+        let one = BigFloat::from_i32(1, wp);
+        let erf_val = one.sub(&erfc_val, wp, rm);
+
+        if is_neg {
+            Ok(erf_val.neg())
+        } else {
+            Ok(erf_val)
+        }
     }
 }
 

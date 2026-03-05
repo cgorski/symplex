@@ -1264,6 +1264,26 @@ fn classify_lambert_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option
         return None;
     }
 
+    // Neg(inner) — classify inner and negate the coefficient.
+    // This handles cases like `-(x*exp(x))` that remain as Neg nodes
+    // rather than being absorbed into a Mul with -1.
+    if let ExprNode::Neg(inner) = arena.node(term).clone() {
+        match classify_lambert_term(arena, inner, var)? {
+            LambertTermClass::Linear(c) => {
+                let neg_c = arena.neg(c);
+                return Some(LambertTermClass::Linear(neg_c));
+            }
+            LambertTermClass::ExpVar(c, b) => {
+                let neg_c = arena.neg(c);
+                return Some(LambertTermClass::ExpVar(neg_c, b));
+            }
+            LambertTermClass::VarExpVar(c, b) => {
+                let neg_c = arena.neg(c);
+                return Some(LambertTermClass::VarExpVar(neg_c, b));
+            }
+        }
+    }
+
     // Mul(factors...)
     if let ExprNode::Mul(children) = arena.node(term).clone() {
         let mut const_factors: Vec<ExprId> = Vec::new();

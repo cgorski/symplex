@@ -547,6 +547,127 @@ fn try_x_over_sqrt_quadratic(
     Some(arena.sub(first_term, second_term))
 }
 
+/// Try to integrate `(a² ± x²)^{1/2}` forms using trig substitution results.
+///
+/// Handles the three standard trig substitution patterns with positive
+/// half-exponent:
+/// - `∫ √(a²−x²) dx = ½(x·√(a²−x²) + a²·asin(x/a))`
+/// - `∫ √(x²+a²) dx = ½(x·√(x²+a²) + a²·asinh(x/a))`
+/// - `∫ √(x²−a²) dx = ½(x·√(x²−a²) − a²·acosh(x/a))`
+fn try_trig_sub_sqrt_integral(
+    arena: &mut Arena,
+    base: ExprId,
+    exp: ExprId,
+    var: ExprId,
+    _var_sym: SymbolId,
+) -> Option<ExprId> {
+    // ── Check exponent is 1/2 ──────────────────────────────────────
+    let exp_val = arena.as_num(exp)?.clone();
+    let pos_half = num_rational::Ratio::<num_bigint::BigInt>::new(1.into(), 2.into());
+    if exp_val != pos_half {
+        return None;
+    }
+
+    // ── Check base is Add with exactly 2 children ──────────────────
+    let children = match arena.node(base).clone() {
+        ExprNode::Add(c) if c.len() == 2 => c,
+        _ => return None,
+    };
+
+    // ── Classify each child ────────────────────────────────────────
+    let mut const_val: Option<num_rational::Ratio<num_bigint::BigInt>> = None;
+    let mut has_pos_x2 = false;
+    let mut has_neg_x2 = false;
+
+    for &child in children.iter() {
+        if let Some(n) = arena.as_num(child) {
+            const_val = Some(n.clone());
+        } else if is_var_squared(arena, child, var) {
+            has_pos_x2 = true;
+        } else if is_neg_var_squared(arena, child, var) {
+            has_neg_x2 = true;
+        } else {
+            return None;
+        }
+    }
+
+    let c_val = const_val?;
+    if !has_pos_x2 && !has_neg_x2 {
+        return None;
+    }
+
+    let a_squared = c_val.abs();
+    if a_squared.is_zero() {
+        return None;
+    }
+
+    let half = arena.rational(1, 2);
+    let a_sq_is_one = a_squared == num_rational::Ratio::<num_bigint::BigInt>::one();
+
+    // √(base) for reuse in the result
+    let sqrt_base = arena.pow(base, half);
+
+    // a² as an expression
+    let a_sq_expr = if a_sq_is_one {
+        arena.one
+    } else {
+        rational_to_expr(arena, &a_squared)
+    };
+
+    // x/a = x · (a²)^{-1/2}
+    let x_over_a = if a_sq_is_one {
+        var
+    } else {
+        let neg_half = arena.rational(-1, 2);
+        let a_inv = arena.pow(a_sq_expr, neg_half);
+        arena.mul(&[var, a_inv])
+    };
+
+    // ── Pattern: a² − x²  (c_val > 0, negative x²) ───────────────
+    // ∫ √(a²−x²) dx = ½(x·√(a²−x²) + a²·asin(x/a))
+    if has_neg_x2 && c_val.is_positive() {
+        let x_sqrt = arena.mul(&[var, sqrt_base]);
+        let asin_term = arena.asin(x_over_a);
+        let a_sq_asin = if a_sq_is_one {
+            asin_term
+        } else {
+            arena.mul(&[a_sq_expr, asin_term])
+        };
+        let sum = arena.add(&[x_sqrt, a_sq_asin]);
+        return Some(arena.mul(&[half, sum]));
+    }
+
+    // ── Pattern: x² + a²  (c_val > 0, positive x²) ───────────────
+    // ∫ √(x²+a²) dx = ½(x·√(x²+a²) + a²·asinh(x/a))
+    if has_pos_x2 && c_val.is_positive() {
+        let x_sqrt = arena.mul(&[var, sqrt_base]);
+        let asinh_term = arena.asinh(x_over_a);
+        let a_sq_asinh = if a_sq_is_one {
+            asinh_term
+        } else {
+            arena.mul(&[a_sq_expr, asinh_term])
+        };
+        let sum = arena.add(&[x_sqrt, a_sq_asinh]);
+        return Some(arena.mul(&[half, sum]));
+    }
+
+    // ── Pattern: x² − a²  (c_val < 0, positive x²) ───────────────
+    // ∫ √(x²−a²) dx = ½(x·√(x²−a²) − a²·acosh(x/a))
+    if has_pos_x2 && c_val.is_negative() {
+        let x_sqrt = arena.mul(&[var, sqrt_base]);
+        let acosh_term = arena.acosh(x_over_a);
+        let a_sq_acosh = if a_sq_is_one {
+            acosh_term
+        } else {
+            arena.mul(&[a_sq_expr, acosh_term])
+        };
+        let diff = arena.sub(x_sqrt, a_sq_acosh);
+        return Some(arena.mul(&[half, diff]));
+    }
+
+    None
+}
+
 /// Attempt cyclic integration by parts for integrals like `∫ exp(x)·sin(x) dx`.
 ///
 /// After two IBP rounds (with u₂ = du₁, dv₂ = v₁), if the remaining
@@ -1023,6 +1144,15 @@ fn integrate_node(
             if base_has_var
                 && !exp_has_var
                 && let Some(result) = try_complete_square_integral(arena, base, exp, var, var_sym)
+            {
+                return result;
+            }
+
+            // ── Trig substitution: √(a²±x²), √(x²±a²) ──────────────
+            if base_has_var
+                && !exp_has_var
+                && let Some(result) =
+                    try_trig_sub_sqrt_integral(arena, base, exp, var, var_sym)
             {
                 return result;
             }

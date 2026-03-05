@@ -169,6 +169,40 @@ impl StateSpace {
         }
         Some(true)
     }
+
+    /// Discretize using zero-order hold (ZOH).
+    ///
+    /// Aᵈ = eᴬᵈᵗ (matrix exponential)
+    /// Bᵈ = A⁻¹(eᴬᵈᵗ - I)B — computed via series to avoid inverting A.
+    ///
+    /// Uses series approximation for the matrix exponential.
+    /// `dt` is the sampling period (symbolic or numeric).
+    /// `order` is the Taylor series truncation order.
+    ///
+    /// The discrete-time B matrix is computed as:
+    ///   Bᵈ = (I·dt + A·dt²/2! + A²·dt³/3! + ...)B
+    /// which avoids requiring A to be invertible.
+    pub fn discretize_zoh(&self, dt: &Ex, order: usize) -> StateSpace {
+        let n = self.num_states();
+        let a_dt = self.a.scale(dt);
+        let exp_a_dt = a_dt.exp_series(order);
+
+        // Bᵈ = (I·dt + A·dt²/2! + A²·dt³/3! + ...)B
+        let ident = Matrix::identity(n);
+        let mut b_sum = ident.scale(dt);
+        let mut a_power = Matrix::identity(n);
+        for k in 2..=order {
+            a_power = a_power.matmul(&self.a);
+            let factorial: i64 = (1..=k as i64).product();
+            let coeff = crate::rational(1, factorial);
+            let dt_power = dt.powi(k as i64);
+            let term = a_power.scale(&(&coeff * &dt_power));
+            b_sum = b_sum.add(&term);
+        }
+        let b_d = b_sum.matmul(&self.b);
+
+        StateSpace::new(exp_a_dt, b_d, self.c.clone(), self.d.clone())
+    }
 }
 
 impl std::fmt::Display for StateSpace {
