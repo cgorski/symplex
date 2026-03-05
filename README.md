@@ -9,18 +9,27 @@ Symbolic mathematics library for Rust.
 - **Proc macros** — `expr!(x^2 + 2*x + 1)` for natural math syntax with constants (`pi`, `E`, `I`) and rationals (`1/2`); `rule!(arena, "name", LHS => RHS)` for rewrite rules; `matrix!` and `eq!` for matrices and equations
 - **Boolean expressions** — relational comparisons (`>`, `<`, `>=`, `<=`, `==`, `!=`), logical connectives (`and`, `or`, `not`), `True`/`False` atoms
 - **Piecewise functions** — `Piecewise(value if condition, ...)` with differentiation and condition evaluation
-- **18 math functions** — sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, ln, abs, sqrt, cbrt, nthroot
+- **31+ math functions** — sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, ln, abs, sqrt, cbrt, nthroot, sec, csc, cot, acot, asec, acsc, coth, sech, csch, acoth, asech, acsch, sinc, atan2
 - **Differentiation** — all elementary functions, chain rule, product rule, n-ary generalization, higher-order derivatives, partial derivatives
-- **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts (LIATE-ordered with recursion depth limit), u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals, inverse trig antiderivatives (asin, acos, atan), general linear substitution (ax+b)^n, expand-then-integrate fallback
+- **Integration** — power rule, trig, exp, tan, ln, linearity, constant factor, integration by parts (LIATE-ordered with recursion depth limit), u-substitution (`sin(ax+b)`, `cos(ax+b)`, `exp(ax+b)`), inverse trig/hyperbolic standard forms, partial fraction decomposition pipeline, definite integrals, inverse trig antiderivatives (asin, acos, atan), general linear substitution (ax+b)^n, expand-then-integrate fallback, negative trig powers (sec², csc², sec⁴, …), cyclic IBP (exp·sin, exp·cos)
 - **Taylor series** — expansion around any point with configurable order and pole detection
 - **Limits** — direct substitution, L'Hôpital's rule (0/0 and ∞/∞), series fallback, Gruntz algorithm for limits at infinity (exponential, logarithmic, polynomial growth rates)
-- **Equation solving** — polynomial (linear, quadratic, higher-degree via rational root theorem), complex roots, linear systems (Gaussian elimination), numerical root finding (Newton's method), transcendental equations via inversion peeling (exp, ln, sin, cos, tan, sqrt) with change-of-variable, Mul-factor solving
-- **Simplification** — 24 rewrite rules with condition guards (Pythagorean, inverse pairs, exp combining, exp-log denesting, trig ratios, abs-positive) with sub-expression matching in Add and Mul, fixpoint iteration via `full_simplify()`, multi-strategy `smart_simplify()`
+- **Equation solving** — polynomial (linear, quadratic, cubic via Cardano, quartic via Ferrari, higher-degree via rational root theorem), complex roots, linear systems (Gaussian elimination), numerical root finding (Newton's method), transcendental equations via inversion peeling (exp, ln, sin, cos, tan, sqrt) with change-of-variable, Mul-factor solving
+- **Simplification** — 24 rewrite rules with condition guards (Pythagorean, inverse pairs, exp combining, exp-log denesting, trig ratios, abs-positive) with sub-expression matching in Add and Mul, fixpoint iteration via `full_simplify()`, multi-strategy `smart_simplify()`, trigsimp (6-strategy choice-set), powsimp (symbolic exponent merging), combsimp (factorial/binomial), nsimplify (closed-form detection from floats), rewrite protocol (trig↔exp via Euler's formula)
 - **Algebraic manipulation** — expand, factor, collect, together, cancel, partial fractions (`apart`), trig expansion (`expand_trig`), log expansion (`expand_log`), logcombine
-- **Exact evaluation** — 30+ special values for trig/exp/ln including irrational values (√2/2, √3/2), perfect nth root evaluation, odd/even function detection, integer sqrt simplification (√8→2√2), trig-hyperbolic bridge (sin(ix)=i·sinh(x))
+- **Laplace transforms** — forward (table-based + structural rules) and inverse (partial fractions + table) — first Rust CAS with bidirectional Laplace
+- **Fourier series** — computation via integration
+- **Special functions** — Gamma, LogGamma, Digamma, Erf, Erfc, Beta with eval/diff rules; Heaviside, DiracDelta, LambertW
+- **Combinatorial functions** — 11 functions via Apply nodes: fibonacci, lucas, bernoulli, harmonic, catalan, bell, euler_number, subfactorial, factorial2, rising_factorial, falling_factorial
+- **Vector calculus** — gradient, divergence, curl, laplacian, is_conservative, is_solenoidal
+- **Logic connectives** — xor, implies, equivalent, nand, nor, ite on BoolEx
+- **Floor/Ceiling/Min/Max** — ExprNode variants with exact rational eval and canonicalization
+- **Symbolic sums and products** — ExprNode variants with finite evaluation
+- **Rust code generation** — `to_rust_fn()` with CSE, piecewise, all elementary functions
+- **Exact evaluation** — 86+ special values for trig/exp/ln including irrational values (√2/2, √3/2), perfect nth root evaluation, odd/even function detection, integer sqrt simplification (√8→2√2), trig-hyperbolic bridge (sin(ix)=i·sinh(x)), Gamma(n), erf(0), Beta
 - **Complex numbers** — i²=-1 canonicalization, (-1)^(1/2)→i, (-n)^(1/2)→i√n, complex quadratic roots, Euler's formula exp(iπ)=-1
 - **Complex decomposition** — `re()` / `im()` split expressions into real and imaginary parts
-- **Symbolic matrices** — construct, multiply, transpose, determinant, trace, Jacobian computation
+- **Symbolic matrices** — construct, multiply, transpose, determinant (LU-based for large), inverse, trace, Jacobian, eigenvalues, char_poly, cofactor, adjugate, LU/QR decomposition, RREF, rank, nullspace, columnspace, norm, cross, dot, hstack, vstack, is_symmetric
 - **ODE solver** — separable, first-order linear, second-order constant-coefficient
 - **lambdify** — compile expressions to `Fn(f64) -> f64` closures for fast numerical evaluation
 - **Common subexpression elimination (CSE)** — extract shared subexpressions for code generation
@@ -391,6 +400,7 @@ what symplex has and what's missing.
 | Arbitrary-precision parser | `0.1 + 0.2 = 3/10` exactly — no floating-point |
 | Type-safe ExprView | `replace()` closure gets non-locking view — deadlock impossible at compile time |
 | Gruntz algorithm in Rust | First Rust implementation of the Gruntz limit algorithm |
+| Laplace transform in Rust | First Rust CAS with bidirectional Laplace (forward + inverse) |
 
 ### Core features
 
@@ -398,7 +408,7 @@ what symplex has and what's missing.
 |---------|:---:|:---:|-----|
 | Expression tree | ✅ | ✅ | symplex: arena; SymPy: Python objects |
 | Assumptions (23 properties) | ✅ | ✅ | Comparable |
-| Simplification (24 rules with condition guards) | ✅ | ✅ (hundreds) | SymPy has more rules |
+| Simplification (24 rules + trigsimp + powsimp + combsimp + nsimplify) | ✅ | ✅ (hundreds) | SymPy has more rules |
 | Arbitrary-precision eval | ✅ | ✅ | Both via external lib |
 | Complex numbers | ✅ | ✅ | Both complete for Tier 1-2 |
 | Boolean expressions | ✅ | ✅ | symplex: typed; SymPy: runtime |
@@ -412,15 +422,18 @@ what symplex has and what's missing.
 | Differentiation (all elementary) | ✅ | ✅ | |
 | Integration (power, trig, exp, ln) | ✅ | ✅ | |
 | Integration (by-parts LIATE-ordered, u-sub) | ✅ | ✅ | |
-| Integration (trig powers) | ✅ | ✅ | |
+| Integration (trig powers sin^n, cos^n) | ✅ | ✅ | |
+| Integration (negative trig powers: sec², csc², sec⁴, …) | ✅ | ✅ | |
+| Integration (cyclic IBP: exp·sin, exp·cos) | ✅ | ✅ | |
 | Integration (partial fractions) | ✅ | ✅ | |
 | Integration (completing square) | ✅ | ✅ | |
 | Taylor/Maclaurin series | ✅ | ✅ | symplex: known-coefficient fast paths |
 | Limits (L'Hôpital, series) | ✅ | ✅ | |
 | Limits at infinity | ✅ Gruntz | ✅ Gruntz | symplex: Gruntz algorithm; SymPy: also Gruntz |
 | Definite integrals | ✅ basic | ✅ full | SymPy handles improper integrals |
+| Laplace / inverse Laplace transform | ✅ basic | ✅ full | symplex: table-based; SymPy: algorithmic |
+| Fourier series | ✅ basic | ✅ full | symplex: via integration |
 | Risch algorithm | ❌ | ✅ | Not planned |
-| Integral transforms (Laplace, Fourier) | ❌ | ✅ | Future |
 | Trig substitution | ❌ | ✅ | Planned |
 
 ### Algebra & Solving
@@ -431,13 +444,13 @@ what symplex has and what's missing.
 | Together / Cancel / Apart | ✅ | ✅ | symplex: polynomial LCM for common denominator |
 | Trig/Log expand & combine | ✅ | ✅ | |
 | Polynomial solve (linear, quadratic) | ✅ | ✅ | |
+| Cubic/quartic formulas | ✅ | ✅ | Cardano + Ferrari |
 | Complex roots | ✅ | ✅ | |
 | Higher-degree (rational roots) | ✅ | ✅ | |
-| Cubic/quartic formulas | ❌ | ✅ | Planned |
 | Transcendental solving | ✅ partial | ✅ full | |
 | Change-of-variable solve | ✅ | ✅ | |
 | Linear systems | ✅ | ✅ | |
-| Inequality solving | ❌ | ✅ | Planned |
+| Inequality solving | ❌ | ✅ | Planned (blocked on Set types) |
 | Multivariate polynomials | ❌ | ✅ | Planned |
 | Full factoring (Hensel) | ❌ | ✅ | Planned |
 | Gröbner bases | ❌ | ✅ | Future |
@@ -448,11 +461,13 @@ what symplex has and what's missing.
 | Feature | symplex | SymPy | Gap |
 |---------|:---:|:---:|-----|
 | Dense symbolic matrix | ✅ | ✅ | |
-| Determinant / Inverse / Trace | ✅ | ✅ | |
+| Determinant (LU-based for large) | ✅ | ✅ | |
+| Matrix inverse | ✅ | ✅ | |
 | Matrix multiply | ✅ | ✅ | |
 | Jacobian | ✅ | ✅ | |
-| Eigenvalues / Eigenvectors | ❌ | ✅ | Planned |
-| Matrix decompositions (LU, QR) | ❌ | ✅ | Future |
+| Eigenvalues / Eigenvectors | ✅ | ✅ | |
+| Matrix decompositions (LU, QR) | ✅ | ✅ | |
+| RREF, nullspace, columnspace, rank | ✅ | ✅ | |
 | Sparse matrices | ❌ | ✅ | Future |
 
 ### Special Features
@@ -464,9 +479,18 @@ what symplex has and what's missing.
 | ODE solver (basic) | ✅ | ✅ (full) | SymPy has dozens of methods |
 | CSE | ✅ | ✅ | |
 | lambdify | ✅ | ✅ | symplex: bytecode VM |
-| Symbolic sums (Σ) | ❌ | ✅ | Planned |
-| Special functions (gamma, erf) | ❌ | ✅ | Future |
-| Vector calculus (grad, div, curl) | ❌ | ✅ | Planned |
+| Special functions (gamma, erf) | ✅ basic | ✅ | Gamma, LogGamma, Digamma, Erf, Erfc, Beta |
+| Vector calculus (grad, div, curl) | ✅ | ✅ | gradient, divergence, curl, laplacian |
+| Symbolic sums (Σ) | ✅ | ✅ | Finite evaluation |
+| Floor / Ceiling / Min / Max | ✅ | ✅ | |
+| Laplace transforms | ✅ | ✅ | symplex: table-based forward + inverse |
+| Combinatorial (fibonacci, bernoulli, …) | ✅ | ✅ | 11 functions via Apply nodes |
+| Logic (Xor, Implies, Equivalent) | ✅ | ✅ | + nand, nor, ite |
+| combsimp | ✅ | ✅ | Factorial/binomial simplification |
+| nsimplify | ✅ | ✅ | Closed-form detection from floats |
+| trigsimp (choice-set) | ✅ | ✅ | 6-strategy selection |
+| powsimp | ✅ | ✅ | Symbolic exponent merging |
+| rewrite protocol (trig↔exp) | ✅ | ✅ | Euler's formula |
 | Number theory | ❌ | ✅ | Not planned |
 | Statistics / Probability | ❌ | ✅ | Not planned |
 | LaTeX output | ❌ (serde) | ✅ | Separate crate planned |

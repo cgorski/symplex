@@ -868,21 +868,21 @@ abs(abs(w_)) => abs(w_)
 - [ ] Final API surface review — no accidental `pub` on internal types
 - [ ] Publish to crates.io
 
-### Current Statistics (Commit 112 — post Waves A–T)
+### Current Statistics (post Waves A–Y)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 3,141 passing, 0 failing, 0 warnings |
-| Source | ~40,000 lines across 54 modules |
-| Tests | ~27,000 lines across 77 files |
+| Tests | ~3,218 passing, 0 failing, 0 warnings |
+| Source | ~43,000 lines across 57 modules |
+| Tests | ~28,000 lines across 80 files |
 | Macros | ~1,400 lines |
-| Total lines | ~67,463 |
-| Public methods on `Ex` | 174+ (numeric) + 12 (boolean) |
+| Total lines | ~70,000 |
+| Public methods on `Ex` | 180+ (numeric) + 12 (boolean) |
 | Public methods on `Context` | 17 |
 | Free-standing functions | 5 + vector calc (gradient, divergence, curl, laplacian, etc.) |
 | ExprNode variants | 59 (Atan2, Floor, Ceiling, Min, Max, Sum, Product_, Gamma, LogGamma, Digamma, Erf, Erfc, Beta added) |
-| Simplification rules | 24 (with condition guards) + trigsimp + powsimp + rewrite protocol |
-| Integration forms | 30+ (LIATE-ordered by-parts) |
+| Simplification rules | 24 (with condition guards) + trigsimp + powsimp + combsimp + nsimplify + rewrite protocol |
+| Integration forms | 35+ (LIATE-ordered by-parts, negative trig powers, cyclic IBP) |
 | Matrix methods | 44 (inv, eigenvals, char_poly, lu, qr, rref, rank, nullspace, columnspace, norm, cross, dot, hstack, vstack, is_symmetric added) |
 | Combinatorial functions | 16 (factorial, binomial + 11 Apply nodes + heaviside, dirac_delta, lambertw) |
 | Special functions | 6 ExprNode variants: Gamma, LogGamma, Digamma, Erf, Erfc, Beta |
@@ -895,14 +895,14 @@ abs(abs(w_)) => abs(w_)
 | Series extensions | residue (via limit), fourier_series (via integration) |
 | Floor/Ceiling/Min/Max | ExprNode variants with exact rational eval + canonicalization |
 | Symbolic Sum/Product | ExprNode variants with finite evaluation via substitution |
+| Laplace transforms | Forward (table + structural rules) and inverse (partial fractions + table) |
 | Eval special values | 86+ (all tan quadrants, full unit circle, Gamma(n), erf(0), Beta) |
 | Criterion benchmarks | 30 |
-| Proptest properties | 131+ (simplify_preserves_value added) |
-| SymPy cross-validation | 252/263 pass (0 failures) |
+| Proptest properties | 136+ (5 new proptests from Wave V) |
+| SymPy cross-validation | 252/263 pass (0 failures) — should be re-run post Waves U–Y |
 | Gruntz algorithm | Complete (~1500 lines) |
 | Tracing instrumentation | 6 modules |
 | Clippy warnings | 0 |
-| Commits | 112 |
 
 #### Waves completed
 
@@ -926,6 +926,10 @@ abs(abs(w_)) => abs(w_)
 | G | Min, Max ExprNode variants + symbolic Sum, Product nodes | 16 |
 | J | Gamma, LogGamma, Digamma, Erf, Erfc, Beta ExprNode variants | 26 |
 | T | residue() via limit, fourier_series() via integration | 9 |
+| U | Negative trig power integration (sec², csc², sec⁴, ...); cyclic IBP (exp·sin, exp·cos) | ~12 |
+| V | LU-based determinant for large matrices; 5 new proptests | ~10 |
+| X | combsimp (factorial/binomial simplification), nsimplify (closed-form from floats) | ~14 |
+| Y | Laplace transform (forward table + structural rules), inverse Laplace (partial fractions + table) | ~18 |
 
 #### Waves deferred to next sprint
 

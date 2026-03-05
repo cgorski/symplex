@@ -253,3 +253,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pattern tracing shows rule firings and sub-expression matches
 - Integration tracing shows strategy selection and LIATE ordering
 - Added `tracing-subscriber` and `tracing-test` as dev-dependencies
+
+**Waves A–Y: Feature Parity Sprint**
+- Reciprocal trig/hyperbolic: sec, csc, cot, acot, asec, acsc, coth, sech, csch, acoth, asech, acsch, sinc (Wave A)
+- Atan2 ExprNode variant with full quadrant eval; arg(), conjugate() complex methods (Wave O)
+- Assumption query methods: is_even, is_odd, is_prime, is_composite, is_algebraic, is_transcendental, is_irrational, is_hermitian (Wave Q)
+- Cubic (Cardano) and quartic (Ferrari) polynomial solving (Wave C)
+- 11 combinatorial functions via Apply nodes: fibonacci, lucas, bernoulli, harmonic, catalan, bell, euler_number, subfactorial, factorial2, rising_factorial, falling_factorial (Wave R)
+- Matrix inverse, cofactor, adjugate, char_poly, eigenvals (Wave D)
+- LU, QR decomposition; RREF, rank, nullspace, columnspace; norm, cross, dot, hstack, vstack, is_symmetric (Wave E)
+- Rust code generation: to_rust_fn() with CSE (Wave F)
+- trigsimp (6-strategy choice-set), powsimp (symbolic exponent merging), rewrite_as_exp/rewrite_as_trig (Euler's formula) (Wave K)
+- check_solution, classify_ode (OdeType enum), checkodesol (Wave P)
+- Vector calculus: gradient, divergence, curl, laplacian, is_conservative, is_solenoidal (Wave M)
+- Logic connectives on BoolEx: xor, implies, equivalent, nand, nor, ite (Wave N)
+- heaviside, dirac_delta, lambertw special functions (Wave S)
+- Floor, Ceiling ExprNode variants; frac(), rem() convenience; Min, Max n-ary nodes (Wave B)
+- Symbolic Sum and Product nodes with finite evaluation (Wave G)
+- Special functions: Gamma, LogGamma, Digamma, Erf, Erfc, Beta ExprNode variants with eval/diff rules (Wave J)
+- Residue computation via limit; Fourier series via integration (Wave T)
+- Negative trig power integration (sec², csc², sec⁴, ...); cyclic IBP for exp·sin, exp·cos (Wave U)
+- LU-based determinant for large matrices; 5 new proptests (Wave V)
+- combsimp (factorial/binomial simplification), nsimplify (closed-form detection from floats) (Wave X)
+- Laplace transform (forward table + structural rules) and inverse Laplace (partial fractions + table) (Wave Y)
+- `expr!` macro expanded to 50+ functions including atan2, beta, gamma, erf, etc.
+
+**Note:** The SymPy cross-validation suite (tests/test_sympy_cross_validation) should be re-run to capture improvements from Waves U–Y (sec² integration, cyclic IBP, Laplace transforms).
