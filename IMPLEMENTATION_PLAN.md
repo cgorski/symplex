@@ -1066,10 +1066,77 @@ way to add that."* The trace is the same walk compact() already does, minus the 
 |------|----------|--------|-------------|
 | H-revisit | Deepen Set types (pairwise interval merging, membership queries) | Foundation exists from Wave ζ | 4 hrs |
 | L | Full polynomial factoring (Berlekamp/Hensel/Zassenhaus) | Heavy algorithm | 8 hrs |
-| GB | Gröbner bases for polynomial system solving | Requires multivariate Poly; expert recommends Buchberger for practical use (2-5 vars, deg ≤ 10), F4 for larger | 15 hrs |
 | ODE+ | Full separable (`P(y)dy=Q(x)dx`), exact ODEs, undetermined coefficients, Bernoulli | Extends existing 3-type solver; expert identifies these as top 3 highest-value additions | 8 hrs |
 | LW | LambertW equation solver (6 canonical forms) | Extends transcendental solve; expert ranks as #1 most impactful solver improvement | 4 hrs |
 | BF | Bessel functions (J, Y, I, K via _a/_b differentiation trick) | Physics use case; expert confirms architecture is straightforward | 6 hrs |
+
+##### Wave GB — Gröbner Bases for Polynomial System Solving (~15 hrs)
+
+Based on expert guidance referencing Buchberger's algorithm with Gebauer-Möller
+criteria, the FGLM order conversion algorithm, Symbolica's Rust implementation,
+and Arnold's analysis of coefficient growth.
+
+**Algorithm choice:** Improved Buchberger with Gebauer-Möller criteria (lcm +
+chain criteria for redundant S-pair elimination) and degree-based selection
+strategy. F4 (matrix-based batched reduction) deferred to Phase 2 — it is
+10-100× faster but significantly more complex. F5 rejected due to implementation
+difficulty and correctness risk. Expert: *"Start with improved Buchberger. This
+provides a correct, debuggable baseline."*
+
+**Polynomial representation:** New `MultiPoly` type — sparse distributed, NOT
+recursive polynomial-over-polynomial. Expert: *"Buchberger's [algorithm is] more
+naturally implemented on a distributive representation."* The Isabelle
+formalization project confirmed this.
+
+**Coefficient domain:** Start with `Ratio<BigInt>` (exact rationals). Modular
+computation over F_p with CRT + rational reconstruction is the production
+optimization (Phase 2). Expert warns of coefficient explosion: Arnold's example
+produces ~80,000-digit intermediate coefficients from 4 polynomials, though the
+final result is simple. For our target (2-5 vars, deg ≤ 10), most practical
+systems avoid this.
+
+**System solving pipeline:** Compute GB in grevlex → FGLM convert to lex →
+extract univariate polynomial (guaranteed by elimination property) → solve with
+existing `Poly` machinery → back-substitute. Expert: *"Computing a lex Gröbner
+basis directly can be orders of magnitude slower than the grevlex + FGLM path."*
+
+Phase 1 — Foundation:
+
+| Chunk | What | Time | Deps |
+|-------|------|------|------|
+| GB.1 | `PackedExp` type: u64-packed exponents (8 bits per variable, up to 8 vars), total_degree, individual variable access, comparison for lex/grevlex | 1 hr | None |
+| GB.2 | `MonomialOrder` trait with `Lex` and `GrevLex` implementations. Lex: compare variable-by-variable left to right. GrevLex: compare total degree first, then reverse-lex tiebreak. | 1 hr | GB.1 |
+| GB.3 | `MultiPoly` type: `Vec<(PackedExp, Ratio<BigInt>)>` sorted by monomial order. Construction from coefficient map, display, leading term/monomial/coefficient, degree, is_zero. | 2 hrs | GB.1, GB.2 |
+| GB.4 | `MultiPoly` arithmetic: addition (merge sorted lists, combine like monomials), subtraction, scalar multiplication, polynomial multiplication (distribute + collect). | 3 hrs | GB.3 |
+| GB.5 | Multivariate polynomial division with remainder: given f and [g1,...,gk], compute quotients q1,...,qk and remainder r such that f = Σ qi·gi + r where no monomial of r is divisible by any leading monomial of gi. | 2 hrs | GB.4 |
+| GB.6 | Buchberger algorithm with Gebauer-Möller: S-polynomial computation, lcm criterion (if lcm(lt(fi), lt(fj)) = lt(fi)·lt(fj) then skip), chain criterion, degree-based pair selection, reduction loop until no new basis elements. | 3 hrs | GB.5 |
+| GB.7 | FGLM order conversion: given a grevlex GB for a zero-dimensional ideal, compute the lex GB by iterating over lex-ordered monomials, expressing each in the quotient ring basis via normal-form computation, detecting linear dependencies. | 2 hrs | GB.6 |
+| GB.8 | System solving pipeline: `solve_poly_system(equations, variables)` → compute grevlex GB → FGLM to lex → extract univariate in last variable → solve with `Poly` → back-substitute into remaining basis → recurse on n-1 variables. Wire into `Context::solve_system` for polynomial systems. | 1 hr | GB.7 |
+
+Phase 2 — Performance (deferred):
+
+| Chunk | What | Time |
+|-------|------|------|
+| GB.9 | F4 upgrade: replace individual Buchberger reductions with batched sparse matrix row echelon form (Macaulay matrix construction + Gaussian elimination) | 6 hrs |
+| GB.10 | Finite field arithmetic: `Zp` type for machine-word prime p, with add/sub/mul/div/inv | 2 hrs |
+| GB.11 | Modular GB computation: compute GB mod p for several lucky primes, detect unlucky primes via Hilbert function comparison | 3 hrs |
+| GB.12 | CRT + rational reconstruction: lift modular results to `Ratio<BigInt>` via Chinese Remainder Theorem and Farey rational map | 2 hrs |
+
+Key design details from expert guidance:
+- `PackedExp(u64)` with 8 bits per variable — monomial comparison is a single
+  integer operation for grevlex (compare packed total-degree prefix, then
+  reverse-compare remaining bits). Supports up to 8 variables with degrees ≤ 255.
+- Sorted `Vec` representation (not HashMap) — cache-friendly sequential access
+  dominates GB computation (reduction is the inner loop).
+- Gebauer-Möller criteria eliminate ~90% of S-pairs before expensive reduction.
+  Without these criteria, Buchberger's algorithm is impractical.
+- Degree-based selection (process lowest-degree S-pairs first) significantly
+  reduces reductions to zero, the main source of wasted work.
+- FGLM works only for zero-dimensional ideals (finitely many solutions) — this
+  is exactly the case for polynomial system solving. For positive-dimensional
+  ideals (infinitely many solutions), lex computation is needed directly.
+- The `sdiehl/groebner` Rust crate and Symbolica's `MultivariatePolynomial`
+  provide reference implementations.
 
 ---
 
