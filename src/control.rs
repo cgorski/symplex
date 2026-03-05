@@ -203,6 +203,96 @@ impl StateSpace {
 
         StateSpace::new(exp_a_dt, b_d, self.c.clone(), self.d.clone())
     }
+
+    // ── Advanced control: Riccati & pole placement ─────────────────────
+
+    /// Set up the continuous-time algebraic Riccati equation (CARE).
+    ///
+    /// Returns the residual matrix: AᵀP + PA − PBR⁻¹BᵀP + Q
+    /// which should equal zero when P is the solution.
+    ///
+    /// Returns `None` if R is singular.
+    pub fn riccati_residual(&self, p: &Matrix, q: &Matrix, r: &Matrix) -> Option<Matrix> {
+        let at = self.a.transpose();
+        let r_inv = r.inv()?;
+        let bt = self.b.transpose();
+
+        let term1 = at.matmul(p);           // AᵀP
+        let term2 = p.matmul(&self.a);       // PA
+        let term3 = p.matmul(&self.b)        // PBR⁻¹BᵀP
+            .matmul(&r_inv)
+            .matmul(&bt)
+            .matmul(p);
+
+        let residual = term1.add(&term2).sub(&term3).add(q);
+        Some(residual)
+    }
+
+    /// Pole placement via Ackermann's formula (single-input systems only).
+    ///
+    /// Given desired pole locations, computes feedback gain K such that
+    /// the eigenvalues of (A − BK) equal the desired poles.
+    ///
+    /// Only works for single-input (m=1) controllable systems.
+    /// The number of desired poles must equal the number of states.
+    ///
+    /// Returns `None` if the system is not single-input, not controllable,
+    /// or the controllability matrix is singular.
+    pub fn ackermann(&self, desired_poles: &[Ex]) -> Option<Matrix> {
+        if self.num_inputs() != 1 {
+            return None;
+        }
+        if !self.is_controllable() {
+            return None;
+        }
+
+        let n = self.num_states();
+        assert_eq!(
+            desired_poles.len(),
+            n,
+            "ackermann: need {} desired poles, got {}",
+            n,
+            desired_poles.len()
+        );
+
+        let ctrb = self.controllability_matrix();
+        let ctrb_inv = ctrb.inv()?;
+
+        // Build the desired characteristic polynomial:
+        // p(s) = (s − p₁)(s − p₂)···(s − pₙ)
+        // poly_coeffs[0] is the leading coefficient (1),
+        // poly_coeffs[k] is the coefficient of s^(n-k).
+        let mut poly_coeffs: Vec<Ex> = vec![crate::int(1)];
+        for pole in desired_poles {
+            let neg_pole = -(pole.clone());
+            let prev = poly_coeffs;
+            poly_coeffs = vec![crate::int(0); prev.len() + 1];
+            for (i, c) in prev.into_iter().enumerate() {
+                let c_neg_pole = &c * &neg_pole;
+                poly_coeffs[i] = poly_coeffs[i].clone() + c;
+                poly_coeffs[i + 1] = poly_coeffs[i + 1].clone() + c_neg_pole;
+            }
+        }
+
+        // Evaluate p(A) = poly_coeffs[0]·Aⁿ + poly_coeffs[1]·Aⁿ⁻¹ + ··· + poly_coeffs[n]·I
+        let mut p_a = Matrix::zeros(n, n);
+        for (i, coeff) in poly_coeffs.iter().enumerate() {
+            let power = (poly_coeffs.len() - 1 - i) as u32;
+            let a_power = self.a.powi(power);
+            p_a = p_a.add(&a_power.scale(coeff));
+        }
+
+        // K = eₙᵀ · C⁻¹ · p(A)
+        // where eₙᵀ is the last standard basis row vector,
+        // so eₙᵀ · C⁻¹ is the last row of C⁻¹.
+        let last_row: Vec<Ex> = (0..n)
+            .map(|j| ctrb_inv.get(n - 1, j).clone())
+            .collect();
+        let last_row_mat = Matrix::new(vec![last_row]); // 1×n
+
+        let k = last_row_mat.matmul(&p_a); // 1×n
+        Some(k)
+    }
 }
 
 impl std::fmt::Display for StateSpace {

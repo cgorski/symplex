@@ -77,6 +77,8 @@ pub(crate) mod log_combine;
 pub(crate) mod log_expand;
 /// Symbolic matrix type and operations.
 pub mod matrix;
+/// Sparse multivariate polynomials over ℚ.
+pub mod multipoly;
 pub(crate) mod node;
 pub(crate) mod nsimplify;
 /// Ordinary differential equation solver.

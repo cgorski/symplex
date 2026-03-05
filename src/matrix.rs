@@ -764,6 +764,62 @@ impl Matrix {
         }
         result
     }
+
+    // ── Cholesky decomposition & pseudo-inverse ────────────────────────
+
+    /// Cholesky decomposition for symmetric positive-definite matrices.
+    ///
+    /// Returns `L` such that `A = LLᵀ`, where `L` is lower triangular.
+    /// Returns `None` if a diagonal element becomes non-positive during
+    /// factorization (the matrix is not positive definite).
+    pub fn cholesky(&self) -> Option<Matrix> {
+        assert!(self.is_square(), "Cholesky requires a square matrix");
+        let n = self.nrows;
+        let zero = Ex::zero();
+        let mut l_rows: Vec<Vec<Ex>> = (0..n)
+            .map(|_| (0..n).map(|_| zero.clone()).collect())
+            .collect();
+
+        for j in 0..n {
+            // L[j][j] = sqrt(A[j][j] - sum(L[j][k]^2 for k < j))
+            let mut sum_sq = zero.clone();
+            for k in 0..j {
+                sum_sq = sum_sq + l_rows[j][k].powi(2);
+            }
+            let diag = self.get(j, j) - &sum_sq;
+            let diag_simplified = diag.simplify();
+            // For numeric matrices, check positive-definiteness
+            if let Ok(v) = diag_simplified.evalf_f64() {
+                if v <= 0.0 {
+                    return None;
+                }
+            }
+            l_rows[j][j] = diag_simplified.sqrt();
+
+            // L[i][j] = (A[i][j] - sum(L[i][k]*L[j][k] for k < j)) / L[j][j]
+            for i in (j + 1)..n {
+                let mut sum_prod = zero.clone();
+                for k in 0..j {
+                    sum_prod = sum_prod + &(&l_rows[i][k] * &l_rows[j][k]);
+                }
+                let num = self.get(i, j) - &sum_prod;
+                l_rows[i][j] = &num / &l_rows[j][j];
+            }
+        }
+
+        Some(Matrix::new(l_rows))
+    }
+
+    /// Moore–Penrose pseudo-inverse via `A⁺ = (AᵀA)⁻¹Aᵀ`.
+    ///
+    /// This formula is valid for full-column-rank matrices.
+    /// Returns `None` if `AᵀA` is singular.
+    pub fn pinv(&self) -> Option<Matrix> {
+        let at = self.transpose();
+        let ata = at.matmul(self);
+        let ata_inv = ata.inv()?;
+        Some(ata_inv.matmul(&at))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

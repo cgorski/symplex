@@ -1,0 +1,26 @@
+[package]
+name = "symplex-wasm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93.0"
+license = "MIT OR Apache-2.0"
+description = "WebAssembly bindings for symplex symbolic mathematics"
+repository = "https://github.com/cgorski/symplex"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+symplex = { version = "0.1.0", path = ".." }
+symplex-format = { version = "0.1.0", path = "../symplex-format" }
+wasm-bindgen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.web-sys]
+version = "0.3"
+features = ["console"]
+
+[profile.release]
+opt-level = "s"
+lto = true
