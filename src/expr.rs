@@ -2753,6 +2753,92 @@ impl Expr<Numeric> {
         self.solve(var).unwrap_or_default()
     }
 
+    /// Solve `self > 0` for `var`, returning the solution as a set.
+    ///
+    /// Uses the sign-chart method: finds roots, tests sign in each
+    /// region, and returns a union of intervals.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // x > 0 → (0, ∞)
+    /// let result = x.solve_gt(&x).unwrap();
+    /// let s = format!("{result}");
+    /// assert!(!s.contains("EmptySet"), "x > 0 should not be empty: {s}");
+    /// ```
+    pub fn solve_gt(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let id = self.inner.write().arena.solve_inequality_expr(
+            self.id,
+            var.id,
+            crate::inequalities::Relation::Gt,
+        )?;
+        Ok(self.wrap_as::<SetValued>(id))
+    }
+
+    /// Solve `self >= 0` for `var`, returning the solution as a set.
+    ///
+    /// Like [`solve_gt`](Ex::solve_gt), but includes the roots themselves
+    /// (where `self = 0`).
+    pub fn solve_ge(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let id = self.inner.write().arena.solve_inequality_expr(
+            self.id,
+            var.id,
+            crate::inequalities::Relation::Ge,
+        )?;
+        Ok(self.wrap_as::<SetValued>(id))
+    }
+
+    /// Solve `self < 0` for `var`, returning the solution as a set.
+    ///
+    /// Uses the sign-chart method with a strict less-than relation.
+    pub fn solve_lt(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let id = self.inner.write().arena.solve_inequality_expr(
+            self.id,
+            var.id,
+            crate::inequalities::Relation::Lt,
+        )?;
+        Ok(self.wrap_as::<SetValued>(id))
+    }
+
+    /// Solve `self <= 0` for `var`, returning the solution as a set.
+    ///
+    /// Like [`solve_lt`](Ex::solve_lt), but includes the roots themselves.
+    pub fn solve_le(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let id = self.inner.write().arena.solve_inequality_expr(
+            self.id,
+            var.id,
+            crate::inequalities::Relation::Le,
+        )?;
+        Ok(self.wrap_as::<SetValued>(id))
+    }
+
+    /// Solve `self = 0`, returning solutions as a `FiniteSet`.
+    ///
+    /// This is a set-valued variant of [`solve`](Ex::solve) — instead of
+    /// returning a `Vec<Ex>`, it returns a `SetEx` (a `FiniteSet` node).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let poly = &x.powi(2) - &x * 5 + 6;
+    /// let result = poly.solveset(&x);
+    /// let s = format!("{result}");
+    /// // Should contain {2, 3} or similar
+    /// assert!(!s.contains("EmptySet"), "solveset: {s}");
+    /// ```
+    pub fn solveset(&self, var: &Ex) -> SetEx {
+        let id = self.inner.write().arena.solveset_expr(self.id, var.id);
+        self.wrap_as::<SetValued>(id)
+    }
+
     /// Numerical root finding via Newton's method.
     ///
     /// Finds a numerical root of `self = 0` near `initial_guess` by

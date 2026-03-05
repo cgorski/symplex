@@ -1383,6 +1383,27 @@ impl Arena {
     pub(crate) fn set_complement(&mut self, set: ExprId, universe: ExprId) -> ExprId {
         self.intern(ExprNode::SetComplement(set, universe))
     }
+
+    // ── Inequality solving ─────────────────────────────────────────
+
+    /// Solve `expr rel 0` for `var`, returning the solution as a set `ExprId`.
+    ///
+    /// Delegates to [`inequalities::solve_inequality`].
+    pub(crate) fn solve_inequality_expr(
+        &mut self,
+        expr: ExprId,
+        var: ExprId,
+        rel: crate::inequalities::Relation,
+    ) -> Result<ExprId, crate::errors::SymplexError> {
+        crate::inequalities::solve_inequality(self, expr, var, rel)
+    }
+
+    /// Solve `expr = 0`, returning solutions as a `FiniteSet` `ExprId`.
+    ///
+    /// Delegates to [`inequalities::solveset`].
+    pub(crate) fn solveset_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
+        crate::inequalities::solveset(self, expr, var)
+    }
 }
 
 // ---------------------------------------------------------------------------

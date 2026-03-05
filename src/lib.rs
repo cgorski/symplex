@@ -58,6 +58,7 @@ pub(crate) mod factor;
 pub(crate) mod factor_terms;
 pub(crate) mod fourier;
 pub(crate) mod gruntz;
+pub(crate) mod inequalities;
 pub(crate) mod integrate;
 pub(crate) mod lambdify;
 pub(crate) mod laplace;
