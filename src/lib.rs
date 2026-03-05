@@ -70,6 +70,7 @@ pub(crate) mod gruntz;
 pub(crate) mod inequalities;
 pub(crate) mod integrate;
 pub(crate) mod lambdify;
+pub(crate) mod latex;
 pub(crate) mod laplace;
 pub(crate) mod limit;
 pub(crate) mod linalg;
