@@ -391,3 +391,133 @@ fn char_poly_non_square_panics() {
     ]);
     let _ = m.char_poly(&lambda);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Eigenvector verification: Av = λv
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn eigenvector_satisfies_eigenvalue_equation() {
+    // Matrix [[2,1],[1,2]] has eigenvalues 1 and 3.
+    // Eigenvector for λ=1: [1, -1]  (A*v = 1*v)
+    // Eigenvector for λ=3: [1,  1]  (A*v = 3*v)
+    let a = Matrix::new(vec![
+        vec![symplex::int(2), symplex::int(1)],
+        vec![symplex::int(1), symplex::int(2)],
+    ]);
+
+    // Verify eigenvalues first
+    let lambda = symplex::var("lambda");
+    let evals = a.eigenvals(&lambda);
+    assert_eq!(evals.len(), 2, "should have 2 eigenvalues");
+
+    // Eigenvector for λ=1: v = [1, -1]
+    let v1 = Matrix::col_vector(vec![symplex::int(1), symplex::int(-1)]);
+    let av1 = a.matmul(&v1).simplify();
+    let lv1 = v1.scale(&symplex::int(1)).simplify(); // 1 * v1
+    for i in 0..2 {
+        let diff = (av1.get(i, 0) - lv1.get(i, 0)).simplify();
+        assert!(
+            diff.is_zero_structural(),
+            "Av != λv for λ=1 at row {i}: Av={}, λv={}",
+            av1.get(i, 0),
+            lv1.get(i, 0)
+        );
+    }
+
+    // Eigenvector for λ=3: v = [1, 1]
+    let v3 = Matrix::col_vector(vec![symplex::int(1), symplex::int(1)]);
+    let av3 = a.matmul(&v3).simplify();
+    let lv3 = v3.scale(&symplex::int(3)).simplify(); // 3 * v3
+    for i in 0..2 {
+        let diff = (av3.get(i, 0) - lv3.get(i, 0)).simplify();
+        assert!(
+            diff.is_zero_structural(),
+            "Av != λv for λ=3 at row {i}: Av={}, λv={}",
+            av3.get(i, 0),
+            lv3.get(i, 0)
+        );
+    }
+}
+
+#[test]
+fn complex_eigenvalues_rotation_matrix() {
+    // Rotation matrix [[0, -1], [1, 0]] has eigenvalues ±i.
+    // Characteristic polynomial: λ² + 1 = 0 → no real roots.
+    let lambda = symplex::var("lambda");
+    let m = Matrix::new(vec![
+        vec![symplex::int(0), symplex::int(-1)],
+        vec![symplex::int(1), symplex::int(0)],
+    ]);
+
+    // Verify characteristic polynomial: λ² + 1
+    let cp = m.char_poly(&lambda);
+    // cp(0) should be 1 (det of original matrix)
+    let cp_at_0 = cp.subs(&lambda, &symplex::int(0)).simplify();
+    assert_eq!(
+        format!("{cp_at_0}"),
+        "1",
+        "cp(0) should be det = 1, got: {cp_at_0}"
+    );
+
+    // The solver returns complex eigenvalues ±i
+    let evals = m.eigenvals(&lambda);
+    assert_eq!(
+        evals.len(),
+        2,
+        "rotation matrix should have 2 eigenvalues (complex), got: {:?}",
+        evals.iter().map(|e| format!("{e}")).collect::<Vec<_>>()
+    );
+    let mut vals: Vec<String> = evals.iter().map(|e| format!("{e}")).collect();
+    vals.sort();
+    assert_eq!(
+        vals,
+        vec!["-I", "I"],
+        "eigenvalues of rotation matrix should be ±i, got: {vals:?}"
+    );
+
+    // Verify that λ² + 1 has no real roots by checking it's always positive for real λ
+    let cp_at_5 = cp.subs(&lambda, &symplex::int(5)).simplify();
+    let val = cp_at_5.evalf_f64().expect("cp(5) should evaluate");
+    assert!(val > 0.0, "cp(5) = 5² + 1 = 26, got {val}");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// det(A⁻¹) = 1/det(A) verification
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn det_inverse_equals_reciprocal_det() {
+    // For A = [[3,7],[1,5]], det(A) = 8, so det(A⁻¹) should be 1/8
+    let a = Matrix::new(vec![
+        vec![symplex::int(3), symplex::int(7)],
+        vec![symplex::int(1), symplex::int(5)],
+    ]);
+    let det_a = a.det();
+    assert_eq!(format!("{det_a}"), "8", "det(A) should be 8");
+
+    let inv_a = a.inv().expect("non-singular matrix should be invertible");
+    let det_inv = inv_a.simplify().det().simplify();
+    assert_eq!(
+        format!("{det_inv}"),
+        "1/8",
+        "det(A⁻¹) should be 1/det(A) = 1/8, got: {det_inv}"
+    );
+
+    // Also verify with a 3x3: upper-triangular [[1,2,3],[0,1,4],[0,0,1]], det=1
+    let b = Matrix::new(vec![
+        vec![symplex::int(1), symplex::int(2), symplex::int(3)],
+        vec![symplex::int(0), symplex::int(1), symplex::int(4)],
+        vec![symplex::int(0), symplex::int(0), symplex::int(1)],
+    ]);
+    let det_b = b.det();
+    assert_eq!(format!("{det_b}"), "1", "det(B) should be 1");
+
+    let inv_b = b.inv().expect("det=1 should be invertible");
+    let det_inv_b = inv_b.simplify().det().simplify();
+    assert_eq!(
+        format!("{det_inv_b}"),
+        "1",
+        "det(B⁻¹) should be 1/1 = 1, got: {det_inv_b}"
+    );
+}

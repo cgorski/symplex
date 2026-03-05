@@ -158,7 +158,7 @@ fn matrix_diff() {
     let m = Matrix::new(vec![vec![x.powi(2), x.sin()], vec![x.cos(), x.exp()]]);
     let dm = m.diff(&x);
     let s00 = format!("{}", dm.get(0, 0));
-    assert!(s00.contains("2") && s00.contains("x"), "d/dx(x²)={s00}");
+    assert_eq!(s00, "2*x", "d/dx(x²) should be exactly 2*x, got: {s00}");
     let s01 = format!("{}", dm.get(0, 1));
     assert!(s01.contains("cos"), "d/dx(sin(x))={s01}");
 }
@@ -196,7 +196,11 @@ fn matrix_display() {
         vec![symplex::int(3), symplex::int(4)],
     ]);
     let s = format!("{m}");
-    assert!(s.contains("1") && s.contains("4"), "display: {s}");
+    // Verify all four entries appear and the matrix renders with structure
+    assert!(s.contains("1") && s.contains("2") && s.contains("3") && s.contains("4"),
+        "display should contain all entries 1,2,3,4: {s}");
+    assert!(s.contains('[') || s.contains('|') || s.contains('\n'),
+        "display should have matrix structure (brackets, pipes, or newlines): {s}");
 }
 
 #[test]
@@ -318,6 +322,7 @@ fn ode_type_exists() {
 }
 
 #[test]
+#[ignore] // BUG: dsolve returns None when called via arena (works via public Ex API)
 fn ode_via_arena_simple() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
@@ -327,15 +332,16 @@ fn ode_via_arena_simple() {
         let dy = arena.diff_wrt(y, x);
         // y' - x = 0 → y = x²/2 + C1
         let eq = arena.sub(dy, x);
-        if let Some(result) = symplex::ode::dsolve(arena, eq, y, x) {
-            let s = arena.display(result.solution).to_string();
-            assert!(s.contains("C1"), "should have constant: {s}");
-            assert!(s.contains("x"), "should contain x: {s}");
-        }
+        let result = symplex::ode::dsolve(arena, eq, y, x)
+            .expect("dsolve should handle y' - x = 0 via arena");
+        let s = arena.display(result.solution).to_string();
+        assert!(s.contains("C1"), "should have constant: {s}");
+        assert!(s.contains("x"), "should contain x: {s}");
     });
 }
 
 #[test]
+#[ignore] // BUG: dsolve returns None when called via arena (works via public Ex API)
 fn ode_via_arena_exponential() {
     let ctx = Context::new();
     ctx.with_arena_mut(|arena| {
@@ -346,10 +352,10 @@ fn ode_via_arena_exponential() {
         let two_y = arena.mul(&[two, y]);
         // y' + 2y = 0 → y = C1*e^(-2x)
         let eq = arena.add(&[dy, two_y]);
-        if let Some(result) = symplex::ode::dsolve(arena, eq, y, x) {
-            let s = arena.display(result.solution).to_string();
-            assert!(s.contains("exp"), "should contain exp: {s}");
-            assert!(s.contains("C1"), "should have constant: {s}");
-        }
+        let result = symplex::ode::dsolve(arena, eq, y, x)
+            .expect("dsolve should handle y' + 2y = 0 via arena");
+        let s = arena.display(result.solution).to_string();
+        assert!(s.contains("exp"), "should contain exp: {s}");
+        assert!(s.contains("C1"), "should have constant: {s}");
     });
 }

@@ -3,6 +3,8 @@
 //! Uses a recursive expression generator to test algebraic laws
 //! and transformation invariants across the entire expression space.
 
+mod common;
+
 use proptest::prelude::*;
 use symplex::prelude::*;
 
@@ -19,6 +21,8 @@ fn arb_expr(depth: u32) -> impl Strategy<Value = Ex> {
         (-20i64..20).prop_map(|n| symplex::int(n)),
         Just(symplex::var("x")),
         Just(symplex::var("y")),
+        // Small rationals p/q
+        (-3i64..4, 1i64..4).prop_map(|(p, q)| symplex::rational(p, q)),
     ];
 
     leaf.prop_recursive(
@@ -35,7 +39,12 @@ fn arb_expr(depth: u32) -> impl Strategy<Value = Ex> {
                 inner.clone().prop_map(|a| -&a),
                 inner.clone().prop_map(|a| a.sin()),
                 inner.clone().prop_map(|a| a.cos()),
-                inner.clone().prop_map(|a| a.powi(2)),
+                // Exp and Abs (weight 1 each)
+                inner.clone().prop_map(|a| a.exp()),
+                inner.clone().prop_map(|a| a.abs()),
+                // powi with varied exponent
+                (inner.clone(), prop_oneof![Just(0i64), Just(1), Just(2), Just(3), Just(-1)])
+                    .prop_map(|(a, n)| a.powi(n)),
             ]
         },
     )
@@ -359,26 +368,35 @@ proptest! {
             "i^({}) should be -I", 4 * k + 3);
     }
 
-    /// (1+i)^2 == 2i
-    #[test]
-    fn one_plus_i_squared_always_2i(_dummy in 0..1u32) {
-        let i = symplex::i_unit();
-        let expr = (&symplex::int(1) + &i).powi(2).expand();
-        prop_assert_eq!(format!("{expr}"), "2*I");
-    }
+}
 
-    // ═══════════════════════════════════════════════════════════════
-    // Trig identities
-    // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// Converted from proptest with `_dummy in 0..1u32` to regular #[test]
+// ═══════════════════════════════════════════════════════════════
 
-    /// sin²(x) + cos²(x) simplifies to 1
-    #[test]
-    fn pythagorean_identity(_dummy in 0..1u32) {
-        let x = symplex::var("x");
-        let expr = &x.sin().powi(2) + &x.cos().powi(2);
-        let simplified = expr.simplify();
-        prop_assert_eq!(format!("{simplified}"), "1");
-    }
+/// (1+i)^2 == 2i
+#[test]
+fn one_plus_i_squared_always_2i() {
+    let i = symplex::i_unit();
+    let expr = (&symplex::int(1) + &i).powi(2).expand();
+    assert_eq!(format!("{expr}"), "2*I");
+}
+
+/// sin²(x) + cos²(x) simplifies to 1
+#[test]
+fn pythagorean_identity() {
+    let x = symplex::var("x");
+    let expr = &x.sin().powi(2) + &x.cos().powi(2);
+    let simplified = expr.simplify();
+    assert_eq!(format!("{simplified}"), "1");
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Trig identities (continued, proptest)
+// ═══════════════════════════════════════════════════════════════
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
 
     /// sin²(kx) + cos²(kx) simplifies to 1 for integer k
     #[test]
@@ -507,5 +525,61 @@ proptest! {
         let result = ea.powi(n);
         let expected = a.pow(n as u32);
         prop_assert_eq!(format!("{result}"), format!("{expected}"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Additional algebraic properties
+// ═══════════════════════════════════════════════════════════════
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    /// Product rule (numerical): d/dx(f*g) ≈ f'*g + f*g' at x=2
+    #[test]
+    fn product_rule_numerical(f in arb_polynomial(), g in arb_polynomial()) {
+        let x = symplex::var("x");
+        let fg = &f * &g;
+        let d_fg = fg.diff(&x);
+        let df = f.diff(&x);
+        let dg = g.diff(&x);
+        let product_rule = &(&df * &g) + &(&f * &dg);
+
+        let pt = symplex::int(2);
+        let mut bail = common::BailCounter::new("product_rule_numerical");
+        let lhs = d_fg.subs(&x, &pt).evalf_f64();
+        let rhs = product_rule.subs(&x, &pt).evalf_f64();
+        if let (Ok(l), Ok(r)) = (lhs, rhs) {
+            if l.is_finite() && r.is_finite() && l.abs() < 1e10 && r.abs() < 1e10 {
+                bail.check();
+                let diff = (l - r).abs();
+                let tol = 1e-8 * l.abs().max(r.abs()).max(1.0);
+                prop_assert!(diff < tol,
+                    "product rule: d/dx(f*g)={} but f'g+fg'={} for f={}, g={}", l, r, f, g);
+            } else {
+                bail.skip();
+            }
+        } else {
+            bail.skip();
+        }
+        bail.assert_not_vacuous();
+    }
+
+    /// Expand idempotence (full-depth): expand(expand(e)) displays same as expand(e)
+    #[test]
+    fn expand_idempotent_full(e in arb_expr(3)) {
+        let once = e.expand();
+        let twice = once.expand();
+        prop_assert_eq!(format!("{once}"), format!("{twice}"),
+            "expand should be idempotent for {}", e);
+    }
+
+    /// Substitution identity: e.subs(&x, &x) displays same as e
+    #[test]
+    fn substitution_identity(e in arb_expr(3)) {
+        let x = symplex::var("x");
+        let substituted = e.subs(&x, &x);
+        prop_assert_eq!(format!("{e}"), format!("{substituted}"),
+            "subs(x, x) should be identity");
     }
 }

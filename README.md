@@ -515,8 +515,8 @@ what symplex has and what's missing.
 | Compiled lambdify | Bytecode VM, not interpreted |
 | Arbitrary-precision parser | `0.1 + 0.2 = 3/10` exactly — no floating-point |
 | Type-safe ExprView | `replace()` closure gets non-locking view — deadlock impossible at compile time |
-| Gruntz algorithm in Rust | First Rust implementation of the Gruntz limit algorithm |
-| Laplace transform in Rust | First Rust CAS with bidirectional Laplace (forward + inverse) |
+| Gruntz algorithm in Rust | Rust implementation of the Gruntz limit algorithm |
+| Laplace transform in Rust | Bidirectional Laplace transform (forward + inverse) in Rust |
 
 ### Core features
 

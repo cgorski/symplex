@@ -40,13 +40,14 @@ fn verify_first_order(
     let sample_val = symplex::rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
-    if let Ok(val) = residual_at.evalf_f64() {
-        assert!(
-            val.abs() < 1e-6,
-            "First-order ODE residual should be ~0, got {val} at x={sample_x_num}/{sample_x_den}\n  \
-             solution (C=1): {concrete_sol}\n  residual: {residual_at}"
-        );
-    }
+    let val = residual_at.evalf_f64().expect(
+        "residual should evaluate to f64 for numerical ODE verification"
+    );
+    assert!(
+        val.abs() < 1e-6,
+        "First-order ODE residual should be ~0, got {val} at x={sample_x_num}/{sample_x_den}\n  \
+         solution (C=1): {concrete_sol}\n  residual: {residual_at}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -166,8 +167,9 @@ fn ode_existing_types_still_work() {
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode2 = &d2y + &y;
-    // This may or may not solve (complex roots), but should not panic
-    let _ = ode2.dsolve(&y, &x);
+    // Complex roots — should still return Some (even if trig/complex form)
+    let result2 = ode2.dsolve(&y, &x);
+    assert!(result2.is_some(), "y'' + y = 0 should return Some (second-order CC with complex roots)");
 
     // Regression: y' = x still works (simple separable)
     let ode3 = expr!(diff(y, x) - x);

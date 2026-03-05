@@ -46,12 +46,12 @@ fn dsolve_simple_separable() {
     let y = symplex::var("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &x; // y' - x = 0
-    if let Some((sol, constants)) = ode.dsolve(&y, &x) {
-        let s = format!("{sol}");
-        assert!(s.contains("C1"), "should have constant: {s}");
-        assert!(s.contains("x"), "should contain x: {s}");
-        assert!(!constants.is_empty(), "should have constants");
-    }
+    let (sol, constants) = ode.dsolve(&y, &x)
+        .expect("dsolve should handle y' - x = 0");
+    let s = format!("{sol}");
+    assert!(s.contains("C1"), "should have constant: {s}");
+    assert!(s.contains("x"), "should contain x: {s}");
+    assert!(!constants.is_empty(), "should have constants");
 }
 
 #[test]
@@ -61,11 +61,11 @@ fn dsolve_exponential_decay() {
     let y = symplex::var("y");
     let dy = y.formal_diff(&x);
     let ode = &dy + &(&y * 2); // y' + 2y = 0
-    if let Some((sol, _)) = ode.dsolve(&y, &x) {
-        let s = format!("{sol}");
-        assert!(s.contains("exp"), "should contain exp: {s}");
-        assert!(s.contains("C1"), "should have constant: {s}");
-    }
+    let (sol, _) = ode.dsolve(&y, &x)
+        .expect("dsolve should handle y' + 2y = 0");
+    let s = format!("{sol}");
+    assert!(s.contains("exp"), "should contain exp: {s}");
+    assert!(s.contains("C1"), "should have constant: {s}");
 }
 
 #[test]
@@ -73,10 +73,10 @@ fn dsolve_via_expr_macro() {
     let x = symplex::var("x");
     let y = symplex::var("y");
     let ode = expr!(diff(y, x) + 2 * y); // y' + 2y = 0
-    if let Some((sol, _)) = ode.dsolve(&y, &x) {
-        let s = format!("{sol}");
-        assert!(s.contains("exp") || s.contains("C1"), "solution: {s}");
-    }
+    let (sol, _) = ode.dsolve(&y, &x)
+        .expect("dsolve should handle y' + 2y = 0 via expr macro");
+    let s = format!("{sol}");
+    assert!(s.contains("exp") || s.contains("C1"), "solution: {s}");
 }
 
 #[test]
@@ -85,10 +85,10 @@ fn dsolve_dy_equals_zero() {
     let x = symplex::var("x");
     let y = symplex::var("y");
     let ode = y.formal_diff(&x); // y' = 0
-    if let Some((sol, _)) = ode.dsolve(&y, &x) {
-        let s = format!("{sol}");
-        assert!(s.contains("C1"), "should be constant: {s}");
-    }
+    let (sol, _) = ode.dsolve(&y, &x)
+        .expect("dsolve should handle y' = 0");
+    let s = format!("{sol}");
+    assert!(s.contains("C1"), "should be constant: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -169,10 +169,10 @@ fn ode_via_eq_macro() {
     // Build y' + y = 0 via eq! macro...
     // eq! doesn't support diff() yet, so build manually
     let ode = expr!(diff(y, x) + y);
-    if let Some((sol, _)) = ode.dsolve(&y, &x) {
-        let s = format!("{sol}");
-        assert!(s.contains("exp") || s.contains("C1"), "ODE solution: {s}");
-    }
+    let (sol, _) = ode.dsolve(&y, &x)
+        .expect("dsolve should handle y' + y = 0");
+    let s = format!("{sol}");
+    assert!(s.contains("exp") || s.contains("C1"), "ODE solution: {s}");
 }
 
 #[test]

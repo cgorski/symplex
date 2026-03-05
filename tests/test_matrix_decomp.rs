@@ -258,12 +258,11 @@ fn norm_identity() {
     let m = Matrix::identity(2);
     // Frobenius norm of 2x2 identity is sqrt(2)
     let n = m.norm();
-    if let Ok(v) = n.evalf_f64() {
-        assert!(
-            (v - std::f64::consts::SQRT_2).abs() < 1e-10,
-            "expected sqrt(2), got {v}"
-        );
-    }
+    let v = n.evalf_f64().expect("norm of identity should evaluate to f64");
+    assert!(
+        (v - std::f64::consts::SQRT_2).abs() < 1e-10,
+        "expected sqrt(2), got {v}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -4,5 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc 236d86e727fb8aba8feee7ace4a3ffe228422f55fa6b64bace6a709180f43065 # shrinks to e = Ex(ctx0, e1319)
-cc aee1b3ebab75790ac1bd7431ef31c150e00217f3042db48b6daa22ecdc7bd44f # shrinks to f = Ex(ctx0, e14), g = Ex(ctx0, e16)
+cc a680a6bf2077ed328c7c4881780151bbda3d5fac172001080c4d5ee217be4b3c # shrinks to coeffs = [1, -1, 1, -2]

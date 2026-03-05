@@ -417,7 +417,7 @@ Active limitations (not yet resolved):
 
 ### Strategic context
 
-symplex is the only MIT/Apache-2.0 general-purpose CAS in Rust. Likely early adopters:
+symplex is a MIT/Apache-2.0 general-purpose CAS for Rust. Likely early adopters:
 robotics/control engineers (symbolic Jacobians → code generation), physics students
 (calculus/series/ODEs), compiler/PL researchers (term rewriting), and numerical
 algorithm developers (derive formula → compile to fast code). The common thread:

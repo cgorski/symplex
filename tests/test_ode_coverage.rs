@@ -55,13 +55,14 @@ fn verify_first_order_numerically(
     let sample_val = symplex::rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
-    if let Ok(val) = residual_at.evalf_f64() {
-        assert!(
-            val.abs() < 1e-6,
-            "First-order ODE residual should be ~0, got {val} at x={sample_x_num}/{sample_x_den}\n  \
-             solution (C1=1): {concrete_sol}\n  residual: {residual_at}"
-        );
-    }
+    let val = residual_at.evalf_f64().expect(
+        "evalf_f64 should succeed for first-order ODE residual evaluation"
+    );
+    assert!(
+        val.abs() < 1e-6,
+        "First-order ODE residual should be ~0, got {val} at x={sample_x_num}/{sample_x_den}\n  \
+         solution (C1=1): {concrete_sol}\n  residual: {residual_at}"
+    );
 }
 
 /// For a second-order ODE `expr = 0`, verify the solution by substituting
@@ -96,13 +97,14 @@ fn verify_second_order_numerically(
     let sample_val = symplex::rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
-    if let Ok(val) = residual_at.evalf_f64() {
-        assert!(
-            val.abs() < 1e-4,
-            "Second-order ODE residual should be ~0, got {val} at x={sample_x_num}/{sample_x_den}\n  \
-             solution (C1=C2=1): {concrete_sol}\n  residual: {residual_at}"
-        );
-    }
+    let val = residual_at.evalf_f64().expect(
+        "evalf_f64 should succeed for second-order ODE residual evaluation"
+    );
+    assert!(
+        val.abs() < 1e-4,
+        "Second-order ODE residual should be ~0, got {val} at x={sample_x_num}/{sample_x_den}\n  \
+         solution (C1=C2=1): {concrete_sol}\n  residual: {residual_at}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

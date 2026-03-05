@@ -125,10 +125,9 @@ fn limit_at_infinity_polynomial_ratio() {
     let numer = &x.powi(2) * 3 + &x;
     let denom = x.powi(2) + 1;
     let expr = &numer / &denom;
-    let result = expr.limit(&x, &symplex::infinity());
-    if let Ok(v) = result {
-        assert_eq!(format!("{v}"), "3");
-    }
+    let result = expr.limit(&x, &symplex::infinity())
+        .expect("limit should succeed");
+    assert_eq!(format!("{result}"), "3");
 }
 
 #[test]
@@ -136,10 +135,9 @@ fn limit_exp_neg_x_at_infinity() {
     // exp(−x) → 0  as x → ∞
     let x = symplex::var("x");
     let expr = (-&x).exp();
-    let result = expr.limit(&x, &symplex::infinity());
-    if let Ok(v) = result {
-        assert_eq!(format!("{v}"), "0", "lim exp(-x) at ∞ should be 0");
-    }
+    let result = expr.limit(&x, &symplex::infinity())
+        .expect("limit should succeed");
+    assert_eq!(format!("{result}"), "0", "lim exp(-x) at ∞ should be 0");
 }
 
 #[test]

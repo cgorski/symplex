@@ -2,6 +2,8 @@
 
 use proptest::prelude::*;
 
+mod common;
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -20,6 +22,8 @@ proptest! {
         let x = symplex::var("x");
         let poly = &(&x.powi(2) * a) + &(&x * b) + c;
 
+        let mut bail = common::BailCounter::new("lambdify_matches_evalf");
+
         // lambdify path
         if let Some(f) = poly.lambdify(&["x"]) {
             let lambdify_result = f(&[pt as f64]);
@@ -27,12 +31,18 @@ proptest! {
             // evalf path
             let substituted = poly.subs_i64(&x, pt);
             if let Ok(evalf_result) = substituted.evalf_f64() {
+                bail.check();
                 let diff = (lambdify_result - evalf_result).abs();
                 prop_assert!(diff < 1e-6,
                     "lambdify vs evalf mismatch at x={pt}: {} vs {} for {}x²+{}x+{}",
                     lambdify_result, evalf_result, a, b, c);
+            } else {
+                bail.skip();
             }
+        } else {
+            bail.skip();
         }
+        bail.assert_not_vacuous();
     }
 
     /// lambdify of trig functions should match evalf
@@ -119,18 +129,25 @@ proptest! {
     fn sin_series_numerical(order in 3u32..8) {
         let x = symplex::var("x");
         let series = x.sin().maclaurin(&x, order);
+        let mut bail = common::BailCounter::new("sin_series_numerical");
         if let Ok(s) = series {
             let expanded = s.expand();
             // Evaluate at x=0.5
             let at_half = expanded.subs_i64(&x, 1); // use x=1 for integer sub
             if let Ok(val) = at_half.evalf_f64() {
+                bail.check();
                 let exact = 1.0f64.sin();
                 // Higher order should be more accurate
                 let tol = 1.0 / (order as f64);
                 prop_assert!((val - exact).abs() < tol,
                     "sin series order {order} at x=1: got {val}, expected {exact}");
+            } else {
+                bail.skip();
             }
+        } else {
+            bail.skip();
         }
+        bail.assert_not_vacuous();
     }
 
     /// exp series: verify numerically
@@ -138,15 +155,22 @@ proptest! {
     fn exp_series_numerical(order in 3u32..10) {
         let x = symplex::var("x");
         let series = x.exp().maclaurin(&x, order);
+        let mut bail = common::BailCounter::new("exp_series_numerical");
         if let Ok(s) = series {
             let expanded = s.expand();
             let at_one = expanded.subs_i64(&x, 1);
             if let Ok(val) = at_one.evalf_f64() {
+                bail.check();
                 let exact = 1.0f64.exp();
                 let tol = 3.0 / (order as f64).powi(2);
                 prop_assert!((val - exact).abs() < tol,
                     "exp series order {order} at x=1: got {val}, expected {exact}");
+            } else {
+                bail.skip();
             }
+        } else {
+            bail.skip();
         }
+        bail.assert_not_vacuous();
     }
 }

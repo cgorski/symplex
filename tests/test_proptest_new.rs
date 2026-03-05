@@ -1,6 +1,8 @@
 //! Property-based tests for Laplace roundtrip, inequality solving,
 //! compact preservation, and multinomial term counts.
 
+mod common;
+
 use proptest::prelude::*;
 use symplex::prelude::*;
 
@@ -17,6 +19,8 @@ proptest! {
         let s = symplex::var("s");
         let expr = (&t * a).exp() * c;
 
+        let mut bail = common::BailCounter::new("laplace_roundtrip");
+
         if let Ok(transformed) = expr.laplace(&t, &s) {
             if let Ok(recovered) = transformed.inverse_laplace(&s, &t) {
                 // Evaluate both at t=0.5
@@ -26,12 +30,22 @@ proptest! {
 
                 if let (Ok(o), Ok(r)) = (orig_val, recov_val) {
                     if o.is_finite() && r.is_finite() {
+                        bail.check();
                         prop_assert!((o - r).abs() < 1e-6 * o.abs().max(1.0),
                             "Laplace roundtrip failed: orig={}, recovered={}, c={}, a={}", o, r, c, a);
+                    } else {
+                        bail.skip();
                     }
+                } else {
+                    bail.skip();
                 }
+            } else {
+                bail.skip();
             }
+        } else {
+            bail.skip();
         }
+        bail.assert_not_vacuous();
     }
 }
 
@@ -88,12 +102,19 @@ proptest! {
         let orig_val = expr.subs(&x, &two).evalf_f64();
         let new_val = new_exprs[0].subs(&new_x, &new_two).evalf_f64();
 
+        let mut bail = common::BailCounter::new("compact_preserves_value");
         if let (Ok(o), Ok(n_v)) = (orig_val, new_val) {
             if o.is_finite() && n_v.is_finite() {
+                bail.check();
                 prop_assert!((o - n_v).abs() < 1e-10,
                     "compact changed value at x=2: {} → {} (a={}, b={}, n={})", o, n_v, a, b, n);
+            } else {
+                bail.skip();
             }
+        } else {
+            bail.skip();
         }
+        bail.assert_not_vacuous();
     }
 }
 

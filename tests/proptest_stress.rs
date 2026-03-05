@@ -7,6 +7,8 @@
 use proptest::prelude::*;
 use symplex::prelude::*;
 
+mod common;
+
 /// Generate a random expression using the global context.
 fn arb_expr(depth: u32) -> impl Strategy<Value = Ex> {
     let leaf = prop_oneof![
@@ -50,113 +52,147 @@ proptest! {
     // Operation stress tests: no panics
     // ═══════════════════════════════════════════════════════════════
 
-    /// Display never panics
+    /// Display never panics and produces non-empty output
     #[test]
     fn stress_display(e in arb_expr(3)) {
-        let _ = format!("{e}");
-        let _ = format!("{e:?}");
+        let s = format!("{e}");
+        prop_assert!(!s.is_empty(), "display should produce non-empty string");
+        let d = format!("{e:?}");
+        prop_assert!(!d.is_empty(), "debug should produce non-empty string");
     }
 
-    /// Clone + equality never panics
+    /// Clone + equality never panics; clone equals original
     #[test]
     fn stress_clone_eq(e in arb_expr(3)) {
         let e2 = e.clone();
-        let _ = e == e2;
+        prop_assert!(e == e2, "clone should be equal to original: {} vs {}", e, e2);
     }
 
-    /// eval never panics
+    /// eval never panics and produces non-empty display
     #[test]
     fn stress_eval(e in arb_expr(3)) {
-        let _ = e.eval();
+        let result = e.eval();
+        let s = format!("{result}");
+        prop_assert!(!s.is_empty(), "eval result should display as non-empty");
     }
 
-    /// expand never panics
+    /// expand never panics and produces non-empty display
     #[test]
     fn stress_expand(e in arb_expr(2)) {
-        let _ = e.expand();
+        let result = e.expand();
+        let s = format!("{result}");
+        prop_assert!(!s.is_empty(), "expand result should display as non-empty");
     }
 
-    /// simplify never panics
+    /// simplify never panics and produces non-empty display
     #[test]
     fn stress_simplify(e in arb_expr(2)) {
-        let _ = e.simplify();
+        let result = e.simplify();
+        let s = format!("{result}");
+        prop_assert!(!s.is_empty(), "simplify result should display as non-empty");
     }
 
-    /// full_simplify never panics
+    /// full_simplify never panics and produces non-empty display
     #[test]
     fn stress_full_simplify(e in arb_expr(2)) {
-        let _ = e.full_simplify();
+        let result = e.full_simplify();
+        let _s = format!("{result}");
+        prop_assert!(!_s.is_empty(), "full_simplify result should display as non-empty");
     }
 
-    /// smart_simplify never panics
+    /// smart_simplify never panics and produces non-empty display
     #[test]
     fn stress_smart_simplify(e in arb_expr(2)) {
-        let _ = e.smart_simplify();
+        let result = e.smart_simplify();
+        let _s = format!("{result}");
+        prop_assert!(!_s.is_empty(), "smart_simplify result should display as non-empty");
     }
 
-    /// diff never panics
+    /// diff never panics and produces non-empty display
     #[test]
     fn stress_diff(e in arb_expr(3)) {
         let x = symplex::var("x");
-        let _ = e.diff(&x);
+        let result = e.diff(&x);
+        let _s = format!("{result}");
+        prop_assert!(!_s.is_empty(), "diff result should display as non-empty");
     }
 
     /// integrate never panics (may return unevaluated Integral)
     #[test]
     fn stress_integrate(e in arb_expr(2)) {
         let x = symplex::var("x");
-        let _ = e.integrate(&x);
+        let result = e.integrate(&x);
+        let _s = format!("{result}");
+        prop_assert!(!_s.is_empty(), "integrate result should display as non-empty");
     }
 
     /// solve never panics (may return empty)
     #[test]
     fn stress_solve(e in arb_expr(2)) {
         let x = symplex::var("x");
-        let _ = e.solve_or_empty(&x);
+        let roots = e.solve_or_empty(&x);
+        for r in &roots {
+            let _s = format!("{r}");
+            prop_assert!(!_s.is_empty(), "solve root should display as non-empty");
+        }
     }
 
-    /// subs never panics
+    /// subs never panics and produces non-empty display
     #[test]
     fn stress_subs(e in arb_expr(2)) {
         let x = symplex::var("x");
-        let _ = e.subs_i64(&x, 3);
+        let result = e.subs_i64(&x, 3);
+        let _s = format!("{result}");
+        prop_assert!(!_s.is_empty(), "subs result should display as non-empty");
     }
 
     /// count_ops never panics
     #[test]
     fn stress_count_ops(e in arb_expr(3)) {
-        let _ = e.count_ops();
+        let _n = e.count_ops();
+        let _s = format!("{_n}");
+        prop_assert!(!_s.is_empty());
     }
 
     /// args never panics
     #[test]
     fn stress_args(e in arb_expr(3)) {
-        let _ = e.args();
+        let args = e.args();
+        let _s = format!("{:?}", args);
+        prop_assert!(!_s.is_empty());
     }
 
     /// expr_type never panics
     #[test]
     fn stress_expr_type(e in arb_expr(3)) {
-        let _ = e.expr_type();
+        let ty = e.expr_type();
+        let _s = format!("{:?}", ty);
+        prop_assert!(!_s.is_empty());
     }
 
     /// free_symbols never panics
     #[test]
     fn stress_free_symbols(e in arb_expr(3)) {
-        let _ = e.free_symbols();
+        let syms = e.free_symbols();
+        let _s = format!("{:?}", syms);
+        prop_assert!(!_s.is_empty());
     }
 
     /// contains never panics
     #[test]
     fn stress_contains(e in arb_expr(3)) {
         let x = symplex::var("x");
-        let _ = e.contains(&x);
+        let _b = e.contains(&x);
+        let _s = format!("{_b}");
+        prop_assert!(!_s.is_empty());
     }
 
     /// term_count never panics
     #[test]
     fn stress_term_count(e in arb_expr(3)) {
-        let _ = e.term_count();
+        let _n = e.term_count();
+        let _s = format!("{_n}");
+        prop_assert!(!_s.is_empty());
     }
 
     /// to_tree / to_json never panics
@@ -174,31 +210,43 @@ proptest! {
     /// expand_trig never panics
     #[test]
     fn stress_expand_trig(e in arb_expr(2)) {
-        let _ = e.expand_trig();
+        let result = e.expand_trig();
+        let _s = format!("{result}");
+        prop_assert!(!_s.is_empty(), "expand_trig result should display as non-empty");
     }
 
     /// expand_log never panics
     #[test]
     fn stress_expand_log(e in arb_expr(2)) {
-        let _ = e.expand_log();
+        let result = e.expand_log();
+        let _s = format!("{result}");
+        prop_assert!(!_s.is_empty(), "expand_log result should display as non-empty");
     }
 
     /// logcombine never panics
     #[test]
     fn stress_logcombine(e in arb_expr(2)) {
-        let _ = e.logcombine();
+        let result = e.logcombine();
+        let _s = format!("{result}");
+        prop_assert!(!_s.is_empty(), "logcombine result should display as non-empty");
     }
 
     /// trig_combine never panics
     #[test]
     fn stress_trig_combine(e in arb_expr(2)) {
-        let _ = e.trig_combine();
+        let result = e.trig_combine();
+        let _s = format!("{result}");
+        prop_assert!(!_s.is_empty(), "trig_combine result should display as non-empty");
     }
 
     /// factor_terms never panics
     #[test]
     fn stress_factor_terms(e in arb_expr(2)) {
-        let (_gcd, _inner) = e.factor_terms();
+        let (gcd, inner) = e.factor_terms();
+        let _s1 = format!("{gcd}");
+        let _s2 = format!("{inner}");
+        prop_assert!(!_s1.is_empty(), "factor_terms gcd should display as non-empty");
+        prop_assert!(!_s2.is_empty(), "factor_terms inner should display as non-empty");
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -293,17 +341,24 @@ proptest! {
         let x = symplex::var("x");
         let eq = &(&x.powi(2) * a) + &(&x * b) + c;
         let roots = eq.solve_or_empty(&x);
+        let mut bail = common::BailCounter::new("solve_roots_satisfy");
         for root in &roots {
             let val = eq.subs(&x, root);
             let expanded = val.expand().eval();
             let s = format!("{expanded}");
             // Should be 0 or very close
-            if s != "0" {
-                if let Ok(f) = expanded.evalf_f64() {
-                    prop_assert!(f.abs() < 1e-6,
-                        "root {} of {}x²+{}x+{}=0 gives {f}", root, a, b, c);
-                }
+            if s == "0" {
+                bail.check();
+            } else if let Ok(f) = expanded.evalf_f64() {
+                bail.check();
+                prop_assert!(f.abs() < 1e-6,
+                    "root {} of {}x²+{}x+{}=0 gives {f}", root, a, b, c);
+            } else {
+                bail.skip();
             }
+        }
+        if !roots.is_empty() {
+            bail.assert_not_vacuous();
         }
     }
 }

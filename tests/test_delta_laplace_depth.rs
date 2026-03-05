@@ -25,7 +25,7 @@ fn sifting_const_times_delta_x() {
     let result = integrand.integrate(&x);
     let s = format!("{result}");
     assert!(
-        s.contains("H") || s.contains("eaviside") || s.contains("5"),
+        s.contains("H") || s.contains("eaviside"),
         "∫5·δ(x)dx should be 5·H(x), got: {s}"
     );
 }
@@ -65,7 +65,7 @@ fn sifting_exp_times_delta_x() {
     let result = integrand.integrate(&x);
     let s = format!("{}", result.eval());
     assert!(
-        s.contains("H") || s.contains("eaviside") || s == "1",
+        s.contains("H") || s.contains("eaviside"),
         "∫exp(x)·δ(x)dx should be H(x), got: {s}"
     );
 }
@@ -74,13 +74,33 @@ fn sifting_exp_times_delta_x() {
 // Laplace time-shift: L{H(t-a)·f(t)} = exp(-a·s)·L{f(t+a)}
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Helper: numerically evaluate a Laplace result at a given s value (expressed
+/// as integer numerator / denominator) and check it is close to the expected value.
+fn verify_laplace_numerically(
+    result: &Ex,
+    s_var: &Ex,
+    s_num: i64,
+    s_den: i64,
+    expected: f64,
+    label: &str,
+) {
+    let s_val = symplex::rational(s_num, s_den);
+    let at_s = result.subs(s_var, &s_val);
+    let val = at_s.evalf_f64().expect(&format!(
+        "{label}: should evaluate numerically at s={s_num}/{s_den}"
+    ));
+    assert!(
+        (val - expected).abs() < 1e-2,
+        "{label}: at s={s_num}/{s_den}, expected {expected}, got {val}"
+    );
+}
+
 #[test]
 fn laplace_time_shift_heaviside_exp() {
     // L{H(t-2)·exp(t)} should apply time-shift and produce a result
-    let ctx = Context::new();
-    let t = ctx.symbol("t");
-    let s = ctx.symbol("s");
-    let two = ctx.int(2);
+    let t = symplex::var("t");
+    let s = symplex::var("s");
+    let two = symplex::int(2);
     let h = (&t - &two).heaviside();
     let f = t.exp();
     let integrand = &h * &f;
@@ -104,10 +124,9 @@ fn laplace_time_shift_heaviside_exp() {
 fn laplace_time_shift_heaviside_t() {
     // L{H(t-1)·t} — time-shift with f(t) = t
     // = exp(-s)·L{(t+1)} = exp(-s)·(1/s² + 1/s)
-    let ctx = Context::new();
-    let t = ctx.symbol("t");
-    let s = ctx.symbol("s");
-    let one = ctx.int(1);
+    let t = symplex::var("t");
+    let s = symplex::var("s");
+    let one = symplex::int(1);
     let h = (&t - &one).heaviside();
     let integrand = &h * &t;
     let result = integrand.laplace(&t, &s);
@@ -125,9 +144,8 @@ fn laplace_time_shift_heaviside_t() {
 #[test]
 fn laplace_t_times_exp_t() {
     // L{t·exp(t)} = -d/ds[1/(s-1)] = 1/(s-1)²
-    let ctx = Context::new();
-    let t = ctx.symbol("t");
-    let s = ctx.symbol("s");
+    let t = symplex::var("t");
+    let s = symplex::var("s");
     let integrand = &t * &t.exp();
     let result = integrand.laplace(&t, &s);
     assert!(
@@ -139,15 +157,16 @@ fn laplace_t_times_exp_t() {
         let d = format!("{r}");
         // Should involve (s-1) in some form
         assert!(d.contains("s"), "result should be a function of s: {d}");
+        // Numerical verification: at s=3, 1/(3-1)² = 1/4 = 0.25
+        verify_laplace_numerically(r, &s, 3, 1, 0.25, "L{t*exp(t)}");
     }
 }
 
 #[test]
 fn laplace_t_times_sin_t() {
     // L{t·sin(t)} = -d/ds[1/(s²+1)] = 2s/(s²+1)²
-    let ctx = Context::new();
-    let t = ctx.symbol("t");
-    let s = ctx.symbol("s");
+    let t = symplex::var("t");
+    let s = symplex::var("s");
     let integrand = &t * &t.sin();
     let result = integrand.laplace(&t, &s);
     assert!(
@@ -158,15 +177,16 @@ fn laplace_t_times_sin_t() {
     if let Ok(ref r) = result {
         let d = format!("{r}");
         assert!(d.contains("s"), "result should be a function of s: {d}");
+        // Numerical verification: at s=2, 2*2/(4+1)² = 4/25 = 0.16
+        verify_laplace_numerically(r, &s, 2, 1, 0.16, "L{t*sin(t)}");
     }
 }
 
 #[test]
 fn laplace_t_times_cos_t() {
     // L{t·cos(t)} = -d/ds[s/(s²+1)] = (s²-1)/(s²+1)²
-    let ctx = Context::new();
-    let t = ctx.symbol("t");
-    let s = ctx.symbol("s");
+    let t = symplex::var("t");
+    let s = symplex::var("s");
     let integrand = &t * &t.cos();
     let result = integrand.laplace(&t, &s);
     assert!(
@@ -174,4 +194,10 @@ fn laplace_t_times_cos_t() {
         "L{{t*cos(t)}} should succeed: {:?}",
         result.err()
     );
+    if let Ok(ref r) = result {
+        let d = format!("{r}");
+        assert!(d.contains("s"), "result should be a function of s: {d}");
+        // Numerical verification: at s=2, (4-1)/(4+1)² = 3/25 = 0.12
+        verify_laplace_numerically(r, &s, 2, 1, 0.12, "L{t*cos(t)}");
+    }
 }

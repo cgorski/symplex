@@ -1,4 +1,6 @@
-//! Property-based tests for diff() and expand().
+// Property-based tests for diff() and expand().
+
+mod common;
 
 use proptest::prelude::*;
 use symplex::prelude::*;
@@ -180,11 +182,16 @@ proptest! {
         let val_orig = full.subs(&x, &point).evalf_f64();
         let val_simp = simplified.subs(&x, &point).evalf_f64();
 
+        let mut bail = common::BailCounter::new("simplify_preserves_value");
         if let (Ok(v1), Ok(v2)) = (val_orig, val_simp) {
+            bail.check();
             let diff = (v1 - v2).abs();
             prop_assert!(diff < 1e-8,
                 "simplify changed value: {v1} vs {v2} for a={a}, b={b}, c={c}");
+        } else {
+            bail.skip();
         }
+        bail.assert_not_vacuous();
     }
 
     /// smart_simplify() must preserve mathematical value.
@@ -201,11 +208,16 @@ proptest! {
         let val_orig = expr.subs(&x, &point).evalf_f64();
         let val_simp = simplified.subs(&x, &point).evalf_f64();
 
+        let mut bail = common::BailCounter::new("smart_simplify_preserves_value");
         if let (Ok(v1), Ok(v2)) = (val_orig, val_simp) {
+            bail.check();
             let diff = (v1 - v2).abs();
             prop_assert!(diff < 1e-8,
                 "smart_simplify changed value: {v1} vs {v2}");
+        } else {
+            bail.skip();
         }
+        bail.assert_not_vacuous();
     }
 
     /// full_simplify() must preserve mathematical value.
@@ -221,11 +233,16 @@ proptest! {
         let val_orig = expr.subs(&x, &point).evalf_f64();
         let val_simp = simplified.subs(&x, &point).evalf_f64();
 
+        let mut bail = common::BailCounter::new("full_simplify_preserves_value");
         if let (Ok(v1), Ok(v2)) = (val_orig, val_simp) {
+            bail.check();
             let diff = (v1 - v2).abs();
             prop_assert!(diff < 1e-6,
                 "full_simplify changed value: {v1} vs {v2}");
+        } else {
+            bail.skip();
         }
+        bail.assert_not_vacuous();
     }
 
     /// Integration FTC: d/dx(∫ p(x)·ln(x) dx) should equal p(x)·ln(x).

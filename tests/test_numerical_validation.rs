@@ -5,16 +5,7 @@
 
 use symplex::prelude::*;
 
-/// Evaluate an expression at x=pt using substitution and evalf_f64.
-#[allow(dead_code)]
-fn eval_at(expr: &Ex, x: &Ex, pt: f64) -> Option<f64> {
-    // Substitute x → pt via rational approximation
-    let _ctx = symplex::default_context();
-    // Use integer points for exact evaluation
-    let pt_int = pt as i64;
-    let substituted = expr.subs_i64(x, pt_int);
-    substituted.evalf_f64().ok()
-}
+
 
 /// Check that two expressions have the same numerical value at several integer points.
 fn assert_numerically_equal(a: &Ex, b: &Ex, x: &Ex, points: &[i64], tolerance: f64, msg: &str) {
@@ -165,16 +156,15 @@ fn solve_verify_quadratic() {
     let x = symplex::var("x");
     let eq = &x.powi(2) - &(&x * 5) + 6;
     let roots = eq.solve_or_empty(&x);
+    assert!(!roots.is_empty(), "quadratic should have roots");
     for root in &roots {
         let val = eq.subs(&x, root);
-        let v = val.evalf_f64();
-        if let Ok(f) = v {
-            assert!(
-                f.abs() < 1e-10,
-                "root {} should make equation 0, got {f}",
-                root
-            );
-        }
+        let f = val.evalf_f64().expect("root evaluation should succeed");
+        assert!(
+            f.abs() < 1e-10,
+            "root {} should make equation 0, got {f}",
+            root
+        );
     }
 }
 
@@ -183,16 +173,15 @@ fn solve_verify_cubic() {
     let x = symplex::var("x");
     let eq = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6;
     let roots = eq.solve_or_empty(&x);
+    assert!(!roots.is_empty(), "cubic should have roots");
     for root in &roots {
         let val = eq.subs(&x, root);
-        let v = val.evalf_f64();
-        if let Ok(f) = v {
-            assert!(
-                f.abs() < 1e-10,
-                "root {} should make equation 0, got {f}",
-                root
-            );
-        }
+        let f = val.evalf_f64().expect("root evaluation should succeed");
+        assert!(
+            f.abs() < 1e-10,
+            "root {} should make equation 0, got {f}",
+            root
+        );
     }
 }
 
@@ -269,28 +258,26 @@ fn maclaurin_sin_approximates_at_small_x() {
     // The series x - x³/6 + x⁵/120 should be close
     // We can't easily substitute 0.1 so use x=1 where sin(1) ≈ 0.841
     // The 5th order Maclaurin of sin at x=1: 1 - 1/6 + 1/120 ≈ 0.8417
-    let series_at_1 = series.subs_i64(&x, 1).evalf_f64();
+    let approx = series.subs_i64(&x, 1).evalf_f64()
+        .expect("Maclaurin sin evaluation should succeed");
     let exact = 1.0f64.sin();
-    if let Ok(approx) = series_at_1 {
-        assert!(
-            (approx - exact).abs() < 0.01,
-            "sin Maclaurin at x=1: approx={approx}, exact={exact}"
-        );
-    }
+    assert!(
+        (approx - exact).abs() < 0.01,
+        "sin Maclaurin at x=1: approx={approx}, exact={exact}"
+    );
 }
 
 #[test]
 fn maclaurin_exp_approximates_at_small_x() {
     let x = symplex::var("x");
     let series = x.exp().maclaurin(&x, 6).unwrap().expand();
-    let series_at_1 = series.subs_i64(&x, 1).evalf_f64();
+    let approx = series.subs_i64(&x, 1).evalf_f64()
+        .expect("Maclaurin exp evaluation should succeed");
     let exact = 1.0f64.exp();
-    if let Ok(approx) = series_at_1 {
-        assert!(
-            (approx - exact).abs() < 0.01,
-            "exp Maclaurin at x=1: approx={approx}, exact={exact}"
-        );
-    }
+    assert!(
+        (approx - exact).abs() < 0.01,
+        "exp Maclaurin at x=1: approx={approx}, exact={exact}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -301,20 +288,16 @@ fn maclaurin_exp_approximates_at_small_x() {
 fn complex_i_squared_numerically() {
     let i = symplex::i_unit();
     let result = i.powi(2);
-    let v = result.evalf_f64();
-    if let Ok(f) = v {
-        assert!((f - (-1.0)).abs() < 1e-10, "i² should be -1: {f}");
-    }
+    let f = result.evalf_f64().expect("i² evaluation should succeed");
+    assert!((f - (-1.0)).abs() < 1e-10, "i² should be -1: {f}");
 }
 
 #[test]
 fn complex_one_plus_i_fourth() {
     let i = symplex::i_unit();
     let expr = (&symplex::int(1) + &i).powi(4).expand();
-    let v = expr.evalf_f64();
-    if let Ok(f) = v {
-        assert!((f - (-4.0)).abs() < 1e-10, "(1+i)⁴ should be -4: {f}");
-    }
+    let f = expr.evalf_f64().expect("(1+i)⁴ evaluation should succeed");
+    assert!((f - (-4.0)).abs() < 1e-10, "(1+i)⁴ should be -4: {f}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

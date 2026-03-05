@@ -38,6 +38,28 @@ fn matrix_jacobian() {
     let j = jacobian(&[f1, f2], &[x.clone(), y.clone()]);
     assert_eq!(j.nrows(), 2);
     assert_eq!(j.ncols(), 2);
+
+    // ∂(x²y)/∂x = 2xy
+    let j00 = format!("{}", j.get(0, 0));
+    assert!(
+        j00.contains("2") && j00.contains("x") && j00.contains("y"),
+        "∂(x²y)/∂x should be 2*x*y, got: {j00}"
+    );
+
+    // ∂(x²y)/∂y = x²
+    let j01 = format!("{}", j.get(0, 1));
+    assert_eq!(j01, "x^2", "∂(x²y)/∂y should be x^2, got: {j01}");
+
+    // ∂(x+y³)/∂x = 1
+    let j10 = format!("{}", j.get(1, 0));
+    assert_eq!(j10, "1", "∂(x+y³)/∂x should be 1, got: {j10}");
+
+    // ∂(x+y³)/∂y = 3y²
+    let j11 = format!("{}", j.get(1, 1));
+    assert!(
+        j11.contains("3") && j11.contains("y"),
+        "∂(x+y³)/∂y should be 3*y^2, got: {j11}"
+    );
 }
 
 #[test]
@@ -73,8 +95,12 @@ fn matrix_diff() {
     let x = symplex::var("x");
     let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]);
     let dm = m.diff(&x);
-    let s = format!("{}", dm.get(0, 0));
-    assert!(s.contains("x"), "d/dx(x²) should contain x: {s}");
+    // d/dx(x²) = 2*x
+    let s0 = format!("{}", dm.get(0, 0));
+    assert_eq!(s0, "2*x", "d/dx(x²) should be exactly 2*x, got: {s0}");
+    // d/dx(sin(x)) = cos(x)
+    let s1 = format!("{}", dm.get(0, 1));
+    assert_eq!(s1, "cos(x)", "d/dx(sin(x)) should be cos(x), got: {s1}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -128,12 +154,30 @@ fn cse_extracts_common() {
     let expr = &sin_x.powi(2) + &sin_x;
     let (bindings, result) = expr.cse();
     // Verify the result formats without panic
-    let _ = format!("{result}");
+    let result_s = format!("{result}");
     // sin(x) appears twice — CSE should extract at least one binding
-    // (canonicalization may affect exact count, so just verify non-empty)
     assert!(
         !bindings.is_empty(),
         "CSE should extract shared sin(x) subexpression"
+    );
+    // Verify one of the bindings contains sin(x)
+    let any_sin = bindings
+        .iter()
+        .any(|(_, val)| format!("{val}").contains("sin"));
+    assert!(
+        any_sin,
+        "at least one CSE binding should contain sin, bindings: {:?}",
+        bindings
+            .iter()
+            .map(|(name, val)| format!("{name} = {val}"))
+            .collect::<Vec<_>>()
+    );
+    // The result expression should reference the extracted binding variable(s),
+    // not repeat sin(x) literally
+    let result_sin_count = result_s.matches("sin").count();
+    assert!(
+        result_sin_count <= 1,
+        "CSE result should not repeat sin(x) — got {result_sin_count} occurrences in: {result_s}"
     );
 }
 

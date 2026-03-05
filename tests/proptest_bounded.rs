@@ -4,6 +4,7 @@
 //! inspired by bounded model checking (Kani). These are deterministic:
 //! they enumerate every case rather than sampling randomly.
 
+mod common;
 use symplex::prelude::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -50,6 +51,7 @@ fn exhaustive_linear_product() {
 #[test]
 fn exhaustive_quadratic_solve_verify() {
     let x = symplex::var("x");
+    let mut bail = common::BailCounter::new("exhaustive_quadratic_solve_verify");
     let mut total = 0;
     let mut solved = 0;
     for a in 1i64..=3 {
@@ -63,9 +65,12 @@ fn exhaustive_quadratic_solve_verify() {
                     let val = eq.subs(&x, root);
                     let val_s = format!("{}", val.expand().eval());
                     // The substituted value should be 0 or simplify to 0
-                    if val_s != "0" {
+                    if val_s == "0" {
+                        bail.check();
+                    } else {
                         // Try numerical check
                         if let Ok(f) = val.evalf_f64() {
+                            bail.check();
                             assert!(
                                 f.abs() < 1e-8,
                                 "root {} of {}x²+{}x+{}=0 gives {f}",
@@ -74,6 +79,8 @@ fn exhaustive_quadratic_solve_verify() {
                                 b,
                                 c
                             );
+                        } else {
+                            bail.skip();
                         }
                     }
                 }
@@ -82,6 +89,7 @@ fn exhaustive_quadratic_solve_verify() {
     }
     assert!(total > 100, "should check many quadratics: {total}");
     assert!(solved > 0, "should find some roots: {solved}");
+    bail.assert_not_vacuous();
 }
 
 /// For ALL integer pairs, verify that i^n has period 4.

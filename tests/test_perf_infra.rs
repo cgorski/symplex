@@ -429,12 +429,10 @@ fn sequential_limits_dont_interfere() {
     let r2 = expr2.limit(&x, &oo);
 
     // Each should give the correct result independently
-    if let Ok(v1) = r1 {
-        assert_eq!(format!("{v1}"), "0", "exp(-x) as x→∞ should be 0");
-    }
-    if let Ok(v2) = r2 {
-        assert_eq!(format!("{v2}"), "0", "1/x as x→∞ should be 0");
-    }
+    let v1 = r1.expect("limit should succeed");
+    assert_eq!(format!("{v1}"), "0", "exp(-x) as x→∞ should be 0");
+    let v2 = r2.expect("limit should succeed");
+    assert_eq!(format!("{v2}"), "0", "1/x as x→∞ should be 0");
 }
 
 #[test]
@@ -453,15 +451,12 @@ fn sequential_different_limits_no_cross_contamination() {
     let expr3 = &x / &(&x + 1);
     let r3 = expr3.limit(&x, &oo);
 
-    if let Ok(v1) = r1 {
-        assert_eq!(format!("{v1}"), "0", "5/x as x→∞ should be 0");
-    }
-    if let Ok(v2) = r2 {
-        assert_eq!(format!("{v2}"), "5", "constant 5 as x→∞ should be 5");
-    }
-    if let Ok(v3) = r3 {
-        assert_eq!(format!("{v3}"), "1", "x/(x+1) as x→∞ should be 1");
-    }
+    let v1 = r1.expect("limit should succeed");
+    assert_eq!(format!("{v1}"), "0", "5/x as x→∞ should be 0");
+    let v2 = r2.expect("limit should succeed");
+    assert_eq!(format!("{v2}"), "5", "constant 5 as x→∞ should be 5");
+    let v3 = r3.expect("limit should succeed");
+    assert_eq!(format!("{v3}"), "1", "x/(x+1) as x→∞ should be 1");
 }
 
 #[test]
@@ -470,25 +465,22 @@ fn gruntz_limit_finite_then_infinite_no_interference() {
     let x = ctx.symbol("x");
 
     // First: finite limit — lim(x→2) x^2 = 4
-    let r1 = x.powi(2).limit(&x, &ctx.int(2));
-    if let Ok(v) = &r1 {
-        assert_eq!(format!("{v}"), "4", "x^2 as x→2 should be 4");
-    }
+    let v1 = x.powi(2).limit(&x, &ctx.int(2))
+        .expect("limit should succeed");
+    assert_eq!(format!("{v1}"), "4", "x^2 as x→2 should be 4");
 
     // Second: infinite limit — lim(x→∞) 1/x = 0
     let oo = ctx.infinity();
     let expr = &ctx.int(1) / &x;
-    let r2 = expr.limit(&x, &oo);
-    if let Ok(v) = &r2 {
-        assert_eq!(format!("{v}"), "0", "1/x as x→∞ should be 0");
-    }
+    let v2 = expr.limit(&x, &oo)
+        .expect("limit should succeed");
+    assert_eq!(format!("{v2}"), "0", "1/x as x→∞ should be 0");
 
     // Third: finite again — lim(x→0) sin(x)/x = 1
     let sinc = &x.sin() / &x;
-    let r3 = sinc.limit(&x, &ctx.int(0));
-    if let Ok(v) = &r3 {
-        assert_eq!(format!("{v}"), "1", "sin(x)/x as x→0 should be 1");
-    }
+    let v3 = sinc.limit(&x, &ctx.int(0))
+        .expect("limit should succeed");
+    assert_eq!(format!("{v3}"), "1", "sin(x)/x as x→0 should be 1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

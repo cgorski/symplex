@@ -1,9 +1,11 @@
-//! Property-based tests for quality improvements (Wave V).
-//!
-//! V2: Cubic solver — all roots satisfy the polynomial.
-//! V3: Matrix inverse — A * A⁻¹ ≈ I for random integer matrices.
-//! V4: Codegen — generated code is syntactically valid Rust.
-//! Bonus: Determinant consistency — cofactor and LU paths agree.
+// Property-based tests for quality improvements (Wave V).
+//
+// V2: Cubic solver — all roots satisfy the polynomial.
+// V3: Matrix inverse — A * A⁻¹ ≈ I for random integer matrices.
+// V4: Codegen — generated code is syntactically valid Rust.
+// Bonus: Determinant consistency — cofactor and LU paths agree.
+
+mod common;
 
 use proptest::prelude::*;
 use symplex::prelude::*;
@@ -38,15 +40,25 @@ proptest! {
         let poly = &(&x.powi(3) * a) + &(&x.powi(2) * b) + &(&x * c) + d;
         let roots = poly.solve_or_empty(&x);
 
+        let mut bail = common::BailCounter::new("cubic_roots_satisfy_polynomial");
         for root in &roots {
             let val = poly.subs(&x, root).eval().simplify();
             if let Ok(v) = val.evalf_f64() {
+                bail.check();
                 prop_assert!(
                     v.abs() < 1e-6,
                     "root {} doesn't satisfy {}x³+{}x²+{}x+{}: residual={}",
                     root, a, b, c, d, v
                 );
+            } else {
+                bail.skip();
             }
+        }
+        if !roots.is_empty() {
+            // Symbolic-only roots legitimately fail evalf_f64 for some inputs;
+            // allow high skip rate — proptest coverage across 30 cases ensures
+            // non-vacuousness at the suite level.
+            bail.assert_skip_rate_below(1.0);
         }
     }
 
@@ -66,11 +78,13 @@ proptest! {
 
         if let Some(inv) = m.inv() {
             let product = m.matmul(&inv);
+            let mut bail = common::BailCounter::new("matrix_inverse_is_identity");
             // Check diagonal ≈ 1, off-diagonal ≈ 0
             for i in 0..3 {
                 for j in 0..3 {
                     let entry = product.get(i, j).eval().simplify();
                     if let Ok(v) = entry.evalf_f64() {
+                        bail.check();
                         let v: f64 = v;
                         if i == j {
                             prop_assert!(
@@ -85,9 +99,12 @@ proptest! {
                                 i, j, v
                             );
                         }
+                    } else {
+                        bail.skip();
                     }
                 }
             }
+            bail.assert_not_vacuous();
         }
         // If not invertible (det=0), that's fine — skip.
     }
@@ -143,15 +160,22 @@ proptest! {
         let ab = mat_a.matmul(&mat_b);
         let det_ab = ab.det().eval().simplify();
 
+        let mut bail = common::BailCounter::new("det_of_product");
         if let (Ok(lhs), Ok(rhs)) = (det_ab.evalf_f64(), product_of_dets.evalf_f64()) {
             if lhs.is_finite() && rhs.is_finite() {
+                bail.check();
                 let tol = 1e-6 * lhs.abs().max(rhs.abs()).max(1.0);
                 prop_assert!(
                     (lhs - rhs).abs() < tol,
                     "det(A·B) = {} but det(A)·det(B) = {} (diff={})",
                     lhs, rhs, (lhs - rhs).abs()
                 );
+            } else {
+                bail.skip();
             }
+        } else {
+            bail.skip();
         }
+        bail.assert_not_vacuous();
     }
 }

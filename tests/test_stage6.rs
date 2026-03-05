@@ -119,6 +119,13 @@ fn diff_x_to_the_minus_one() {
         "d/dx(1/x) should be negative, got: {s}"
     );
     assert!(s.contains("x"), "should contain x, got: {s}");
+    // Numerical verification: at x=2, d/dx(1/x) = -1/x² = -1/4 = -0.25
+    let val = result.subs(&x, &ctx.int(2)).evalf_f64()
+        .expect("derivative of 1/x should evaluate at x=2");
+    assert!(
+        (val - (-0.25)).abs() < 1e-10,
+        "d/dx(1/x) at x=2: expected -0.25, got {val}"
+    );
 }
 
 // ─── Product rule ─────────────────────────────────────────────────────────
@@ -184,6 +191,14 @@ fn diff_tan_x() {
         s.contains("tan"),
         "d/dx(tan(x)) should involve tan, got: {s}"
     );
+    // Numerical verification: at x=0.5, d/dx(tan(x)) = sec²(0.5) = 1/cos²(0.5)
+    let val = result.subs(&x, &ctx.rational(1, 2)).evalf_f64()
+        .expect("derivative of tan(x) should evaluate at x=1/2");
+    let expected = 1.0 / (0.5f64.cos().powi(2));
+    assert!(
+        (val - expected).abs() < 1e-8,
+        "d/dx(tan(x)) at x=0.5: expected {expected}, got {val}"
+    );
 }
 
 #[test]
@@ -192,6 +207,15 @@ fn diff_sin_of_x_squared() {
     let x = ctx.symbol("x");
     // d/dx(sin(x^2)) = 2*x*cos(x^2)
     let result = x.powi(2).sin().diff(&x);
+    // Numerical verification: at x=1, 2*1*cos(1²) = 2*cos(1) ≈ 1.0806
+    let val = result.subs(&x, &ctx.int(1)).evalf_f64()
+        .expect("derivative of sin(x²) should evaluate at x=1");
+    let expected = 2.0 * 1.0f64.cos();
+    assert!(
+        (val - expected).abs() < 1e-10,
+        "d/dx(sin(x²)) at x=1: expected {expected}, got {val}"
+    );
+    // Supplementary structural checks
     let s = format!("{result}");
     assert!(s.contains("2"), "should contain 2, got: {s}");
     assert!(s.contains("cos"), "should contain cos, got: {s}");
@@ -259,8 +283,15 @@ fn diff_sqrt_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.sqrt().diff(&x);
+    // Numerical verification: at x=4, 1/(2*√4) = 1/4 = 0.25
+    let val = result.subs(&x, &ctx.int(4)).evalf_f64()
+        .expect("derivative of sqrt(x) should evaluate at x=4");
+    assert!(
+        (val - 0.25).abs() < 1e-10,
+        "d/dx(√x) at x=4: expected 0.25, got {val}"
+    );
+    // Supplementary structural check
     let s = format!("{result}");
-    // d/dx(sqrt(x)) = 1/(2*sqrt(x))
     assert!(
         s.contains("sqrt") || s.contains("1/2"),
         "should involve sqrt or 1/2, got: {s}"

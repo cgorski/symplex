@@ -4,6 +4,8 @@
 //! - diff(integrate(f, x), x) == f (fundamental theorem of calculus)
 //! - expand(factor(f, x)) == expand(f) (factoring preserves polynomial identity)
 
+mod common;
+
 use proptest::prelude::*;
 use symplex::prelude::*;
 

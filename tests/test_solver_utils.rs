@@ -133,13 +133,12 @@ fn dsolve_then_checkodesol() {
     let dy = y.formal_diff(&x);
     // y' - x = 0
     let ode = &dy - &x;
-    if let Some((sol, _constants)) = ode.dsolve(&y, &x) {
-        // Substitute C1 = 0 to get a particular solution
-        let c1 = symplex::var("C1");
-        let particular = sol.subs(&c1, &symplex::int(0));
-        assert!(
-            ode.checkodesol(&particular, &y, &x),
-            "dsolve solution (with C1=0) should satisfy the ODE"
-        );
-    }
+    let (sol, _constants) = ode.dsolve(&y, &x).expect("dsolve should solve y' - x = 0");
+    // Substitute C1 = 0 to get a particular solution
+    let c1 = symplex::var("C1");
+    let particular = sol.subs(&c1, &symplex::int(0));
+    assert!(
+        ode.checkodesol(&particular, &y, &x),
+        "dsolve solution (with C1=0) should satisfy the ODE"
+    );
 }

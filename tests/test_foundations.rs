@@ -769,9 +769,9 @@ fn solve_quadratic_x2_eq_9() {
     let expr = x.powi(2) - 9;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²-9=0 should have 2 roots");
-    let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
-    let joined = strs.join(",");
-    assert!(joined.contains("3"), "should contain root 3: {joined}");
+    let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+    strs.sort();
+    assert_eq!(strs, vec!["-3", "3"], "roots of x²-9 should be exactly -3 and 3");
 }
 
 #[test]
@@ -781,9 +781,9 @@ fn solve_quadratic_x2_eq_neg1_complex() {
     let expr = x.powi(2) + 1;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²+1=0 should have 2 complex roots");
-    let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
-    let joined = strs.join(",");
-    assert!(joined.contains("I"), "should contain I: {joined}");
+    let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+    strs.sort();
+    assert_eq!(strs, vec!["-I", "I"], "roots of x²+1 should be exactly I and -I");
 }
 
 #[test]
@@ -814,12 +814,12 @@ fn pythagorean_identity_simplifies() {
 
 #[test]
 fn expand_square_binomial() {
-    // (x + 1)² should expand to 1 + x² + 2*x
+    // (x + 1)² should expand to x^2 + 2*x + 1
     let x = symplex::var("x");
     let expr = (&x + 1).powi(2);
     let expanded = expr.expand();
     let s = format!("{expanded}");
-    assert!(s.contains("x^2") || s.contains("x"), "should expand: {s}");
+    assert_eq!(s, "x^2 + 2*x + 1", "expand (x+1)² should be x^2 + 2*x + 1");
 }
 
 #[test]
@@ -829,7 +829,7 @@ fn to_expr_pattern_lhs_minus_rhs() {
     let three = symplex::int(3);
     let to_expr = &x - &three;
     let s = format!("{to_expr}");
-    assert!(s.contains("x") && s.contains("3"), "to_expr: {s}");
+    assert_eq!(s, "x + -3", "x - 3 canonical form");
 }
 
 #[test]
