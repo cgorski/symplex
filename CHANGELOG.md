@@ -295,3 +295,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Ex::is_convergent(&var)` — test series convergence
 
 **Note:** The SymPy cross-validation suite (tests/test_sympy_cross_validation) should be re-run to capture improvements from Waves U–Y (sec² integration, cyclic IBP, Laplace transforms) and the set type additions.
+
+**Test Quality Remediation**
+- Shared test infrastructure (`tests/common/mod.rs`): `assert_math_eq`, `assert_ftc`, `verify_roots`, `BailCounter`, `canonical_eq`, `assert_canonical_eq`, domain classification
+- 29 real-world workflow integration tests (`test_workflows.rs`): calculus optimization, Jacobian→lambdify, polynomial algebra chains, matrix eigenvalue verification, product/chain rule
+- 90 rewrite rule application tests (`test_rule_application.rs`): every one of 24 rules tested for positive match, negative match, value preservation, and trace verification
+- 52 hard math tests (`test_hard_math.rs`): hard integration (x²eˣ, cyclic IBP, sec²), hard solving (biquadratic, quartic), hard limits (sin(x)/x, (1+1/x)ˣ), hard series, multi-variable
+- Eliminated 48 silent-bailout anti-patterns across ~15 test files (if-let-Ok → expect)
+- Added bail counters to 21 proptest instances to detect vacuous test execution
+- Strengthened ~80 tautological `contains()` assertions with exact or numerical verification
+- Numerical verification added to all Laplace transform tests
+- Interior/exterior point checks added to all 24 inequality tests
+- Eigenvector verification (Av=λv), complex eigenvalue tests, det(A⁻¹)=1/det(A) tests
+- Codegen syntax verification (balanced braces/parens)
+- Expanded proptest `arb_expr` strategy: exp, abs, varied powi, rational coefficients
+- 3 new proptest properties: product rule, expand idempotence, substitution identity
+
+**Sturm Sequences for Exact Real Root Counting**
+- New `src/sturm.rs` module with `SturmChain` type for dense univariate polynomials over ℚ
+- Sturm chain construction via negated true remainders with primitive-part normalization
+- `has_no_real_roots()` — fast path using sign variations at ±∞ (leading coefficient inspection only)
+- `count_real_roots()`, `count_roots_in(a, b)` — exact Sturm-theorem-based counting
+- `isolate_roots_in(a, b, max_depth)` — bisection-based root isolation
+- `Poly::derivative()` — formal polynomial derivative
+- `Poly::square_free_part()` — p / gcd(p, p') for removing repeated roots
+- Inequality solver now uses Sturm fast-path for polynomials with no real roots
+
+**Apply Chain Rule in Differentiation**
+- `diff.rs`: Apply arm now implements proper chain rule d/dx(f(g(x))) = ∂f/∂g · g'(x)
+- Previously returned opaque `Derivative(f(g(x)), x)` blob; now decomposes correctly
+- `d/dx(f(constant))` now correctly returns 0 (was returning unevaluated Derivative)
+- `d/dx(fibonacci(x))` stays as formal Derivative (correct — no closed-form derivative)
+
+**Dependency-Aware Differentiation**
+- `diff_with_deps(arena, expr, var, deps)` — differentiate with a set of dependent symbols
+- Pre-seeds the derivative cache: for y ∈ deps, d/dx(y) = Derivative(y, x) instead of 0
+- Enables implicit differentiation: d/dx(x² + y²) = 2x + 2y·dy/dx when deps = {y}
+- Chain/product/sum rules automatically propagate formal derivatives through the tree
+- `eval_derivatives(arena, expr)` — .doit() pattern: concretely evaluate formal Derivative nodes
+- Infrastructure for exact ODE equation support (Bernoulli, exact equations)
+
+**Bug Fixes**
+- Fixed: `Arena` lacked `formal_diff()` — arena-level ODE construction required manual `intern(ExprNode::Derivative(...))`. Added `Arena::formal_diff(expr, var)` convenience method.
+- Fixed: Inequality solver returned `ComputationFailed` for polynomials with no real roots (e.g., x²+1 > 0). Complex roots from `solve()` were treated as "can't evaluate" instead of "no real roots." Now falls through to `solve_no_roots()` which correctly determines constant sign.
+- Fixed: `d/dx(Apply("f", [g(x)]))` returned opaque `Derivative` blob instead of applying chain rule. Now correctly produces `Derivative(f(g(x)), g(x)) · g'(x)`.

@@ -97,7 +97,7 @@ cargo add symplex
 - **Matrices & linear algebra** — determinant, inverse, eigenvalues, LU/QR decomposition, RREF, nullspace, rank, Jacobian, vector calculus (gradient, divergence, curl, laplacian).
 - **Transforms & special functions** — forward/inverse Laplace, Fourier series, ODE solver (separable, linear, constant-coefficient). Gamma, Erf, Beta, LambertW, Heaviside, DiracDelta, and 11 combinatorial functions.
 - **Numerical & code generation** — `lambdify` compiles expressions to `Fn(f64) -> f64` closures, CSE for code generation, `to_rust_fn()`, arbitrary-precision evaluation via `astro-float`, runtime parser.
-- **Architecture** — arena hash-consing with O(1) equality, thread-safe (`Send + Sync`), no recursion (explicit stacks), assumption system (23 properties), pattern matching, serde serialization, zero-cost `tracing` instrumentation.
+- **Architecture** — arena hash-consing with O(1) equality, thread-safe (`Send + Sync`), no recursion (explicit stacks), assumption system (23 properties), pattern matching, Sturm sequences for exact real root counting, serde serialization, zero-cost `tracing` instrumentation.
 
 <details>
 <summary>Full feature list</summary>
@@ -517,6 +517,8 @@ what symplex has and what's missing.
 | Type-safe ExprView | `replace()` closure gets non-locking view — deadlock impossible at compile time |
 | Gruntz algorithm in Rust | Rust implementation of the Gruntz limit algorithm |
 | Laplace transform in Rust | Bidirectional Laplace transform (forward + inverse) in Rust |
+| Sturm sequences in Rust | Exact real root counting over ℚ — no numerical root-finding needed |
+| Dependency-aware differentiation | `diff_with_deps` enables implicit differentiation with pre-seeded derivative cache |
 
 ### Core features
 
@@ -566,11 +568,11 @@ what symplex has and what's missing.
 | Transcendental solving | ✅ partial | ✅ full | |
 | Change-of-variable solve | ✅ | ✅ | |
 | Linear systems | ✅ | ✅ | |
-| Inequality solving | ❌ | ✅ | Planned (blocked on Set types) |
+| Inequality solving | ✅ basic | ✅ | symplex: polynomial, Sturm-based; SymPy: full |
 | Multivariate polynomials | ❌ | ✅ | Planned |
 | Full factoring (Hensel) | ❌ | ✅ | Planned |
 | Gröbner bases | ❌ | ✅ | Future |
-| Sets / Intervals | ❌ | ✅ | Planned |
+| Sets / Intervals | ✅ basic | ✅ | symplex: EmptySet, UniversalSet, Interval, FiniteSet, unions, intersections |
 
 ### Matrices & Linear Algebra
 

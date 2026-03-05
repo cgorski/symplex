@@ -13,7 +13,7 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 
 ### Build and test
 
-    cargo test          # 3,667 tests — all must pass
+    cargo test          # 3,798 tests — all must pass
     cargo clippy        # 0 warnings required
     cargo bench         # Criterion benchmarks (30)
 
@@ -49,11 +49,11 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 
 | Metric | Value |
 |--------|-------|
-| Tests | 3,667 passing, 0 failing, 0 clippy warnings |
-| Source | ~48,800 lines across 65 modules |
-| Tests | ~32,400 lines across 103 test files |
+| Tests | 3,798 passing, 0 failing, 0 clippy warnings |
+| Source | ~49,700 lines across 66 modules |
+| Tests | ~37,400 lines across 108 test files |
 | Macros | ~1,450 lines (symplex-macros crate) |
-| Total | ~85,000 lines |
+| Total | ~88,500 lines |
 | ExprNode variants | 66 (including 7 set-valued, 11 boolean) |
 | Public methods on `Ex` | 172 (numeric + boolean + set-valued) |
 | Public methods on `Context` | 17 |
@@ -64,7 +64,7 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 | Integration forms | 35+ |
 | Eval special values | 86+ |
 | Criterion benchmarks | 30 |
-| Proptest properties | 20+ |
+| Proptest properties | 22+ |
 
 ### Three phantom sorts
 
@@ -340,6 +340,8 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 | No feature flags | All capabilities included; feature flags reserved for C deps |
 | Single RwLock | Structural lock ordering; deadlock impossible by construction |
 | ExprView for replace() | Non-locking view type; deadlock impossible at compile time |
+| Sturm sequences for real root counting (not solve-and-filter) | Exact, avoids Wilkinson's polynomial problem, operates entirely in ℚ, O(n²) in degree |
+| Dependency parameter for diff (not arena/context storage) | Avoids arena mutation, no hash-consing complications, natural threading through explicit-stack walk |
 
 ---
 
@@ -347,15 +349,15 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 | Metric | Value |
 |--------|-------|
-| Tests | 3,667 passing, 0 failing |
+| Tests | 3,798 passing, 0 failing |
 | ExprNode variants | 66 |
-| Source modules | 65 |
-| Test files | 103 |
-| Total lines | ~85,000 (49K source + 32K test + 1.5K macros) |
+| Source modules | 66 |
+| Test files | 108 |
+| Total lines | ~88,500 (50K source + 37K test + 1.5K macros) |
 | Public methods (Ex/BoolEx/SetEx) | 172 |
 | Matrix methods | 44 |
 | Apply functions | 12 |
-| `expr!` functions | 62 |
+| `expr!` functions | 65 (54 single-arg + 11 multi-arg) |
 | Simplification rules | 24 (condition-guarded) |
 | Integration forms | 35+ |
 | Eval special values | 86+ |
@@ -372,17 +374,18 @@ Active limitations (not yet resolved):
 2. **`expr!(1/2)` is a compile error.** By design — prevents silent Rust integer division. Use `ctx.rational(1, 2)`.
 3. **`expr!(x^2^3)` nested integer powers.** Inner `2^3` evaluates as integer arithmetic, not symbolic.
 4. **`factor_terms` undone by Number×Add distribution.** `factor_terms(4x+6y)` extracts 2 but `canon_mul` distributes back. Needs display-only factored form.
-5. **ODE solver has no public Ex-level API.** Must use `ctx.with_arena_mut()` + `dsolve()` directly. — Fix: Wave ODE+
-6. **`lambdify` does not support complex expressions.** Returns `None` for expressions containing `I`.
-7. **Phantom type safety is API-level only.** Internal arena code is untyped. Sort violations caught by `verify_canonical` in debug builds, not at compile time.
-8. **No boolean symbols.** All symbols are `Expr<Numeric>`. Boolean-typed symbolic variables not supported.
-9. **No arbitrary-precision special function evaluation.** Gamma, erf, beta use f64 fast paths only. — Fix: Wave AP (Stirling series)
-10. **Pattern matching limited to linear patterns.** Nonlinear patterns (same wild twice) not supported. — Fix: Wave PM
-11. **No Risch integration.** Decision procedure for elementary antiderivatives not implemented.
-12. **No multivariate polynomials.** Gröbner bases not yet implemented. — Fix: Wave GB
-13. **No full Hensel/Zassenhaus factoring.** `factor()` uses rational root theorem only. — Fix: Wave L
-14. **Set types are foundation-only.** Interval merging, membership queries, and set arithmetic are minimal.
-15. **Laplace transforms are table-based.** No algorithmic fallback for forms outside the table.
+5. **`lambdify` does not support complex expressions.** Returns `None` for expressions containing `I`.
+6. **Phantom type safety is API-level only.** Internal arena code is untyped. Sort violations caught by `verify_canonical` in debug builds, not at compile time.
+7. **No boolean symbols.** All symbols are `Expr<Numeric>`. Boolean-typed symbolic variables not supported.
+8. **No arbitrary-precision special function evaluation.** Gamma, erf, beta use f64 fast paths only. — Fix: Wave AP (Stirling series)
+9. **Pattern matching limited to linear patterns.** Nonlinear patterns (same wild twice) not supported. — Fix: Wave PM
+10. **No Risch integration.** Decision procedure for elementary antiderivatives not implemented.
+11. **No multivariate polynomials.** Gröbner bases not yet implemented. — Fix: Wave GB
+12. **No full Hensel/Zassenhaus factoring.** `factor()` uses rational root theorem only. — Fix: Wave L
+13. **Set types are foundation-only.** Interval merging, membership queries, and set arithmetic are minimal.
+14. **Laplace transforms are table-based.** No algorithmic fallback for forms outside the table.
+15. **`diff_with_deps` is not exposed in public API.** Dependency-aware differentiation is `pub(crate)` only. The ODE solver uses it internally. Future: expose via `Ex::diff_assuming_depends(&y, &x, &[&y])` or similar.
+16. **Sturm-based inequality solving is a fast-path only.** The Sturm chain detects "no real roots" cases; full Sturm-based interval construction is not yet integrated into the sign-chart builder.
 
 ---
 
@@ -397,11 +400,13 @@ Active limitations (not yet resolved):
 | SC | LambertW solver (6 canonical forms) + multi-branch trig inverses + `unrad` | 6 hrs | High |
 | GC+ | Arena liveness ratio (BitVec trace) + compaction heuristics | 1 hr | Medium |
 
+> **Note:** The inequality solving foundation (Sturm sequences for exact real root counting and isolation) is now in place in `sturm.rs`. The immediate next step is integrating Sturm-based interval construction into the sign-chart builder in `inequalities.rs`.
+
 ### Near-term waves
 
 | Wave | Description | Est. |
 |------|-------------|------|
-| ODE+ | Full separable, exact ODEs, undetermined coefficients, Bernoulli, public API | 8 hrs |
+| ODE+ | Exact ODEs, Bernoulli, undetermined coefficients. Dependency-aware differentiation infrastructure (`diff_with_deps`, `eval_derivatives`) is now in place; the ODE solver can be extended to exact equations and Bernoulli using the dependent-symbol-flag approach. Public `Ex::dsolve()` API is live. | 8 hrs |
 | LW | LambertW equation solver (6 canonical forms) | 4 hrs |
 | BF | Bessel functions (J, Y, I, K) | 6 hrs |
 | GB | Gröbner bases: Buchberger+FGLM, `MultiPoly` type, system solving pipeline | 15 hrs |
@@ -427,7 +432,7 @@ algorithm developers (derive formula → compile to fast code). The common threa
 
 ## 10. Module Reference
 
-### Main crate: `symplex/src/` (65 modules)
+### Main crate: `symplex/src/` (66 modules)
 
 | Module | Responsibility |
 |--------|----------------|
@@ -487,6 +492,7 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | `solve.rs` | Equation solving: linear through quartic, transcendental, change-of-variable |
 | `sort_key.rs` | `SortKey` — compact byte sequences for canonical ordering |
 | `subs.rs` | Structural substitution (subs, subs_map) via walk_and_rebuild |
+| `sturm.rs` | Sturm sequences: exact real root counting and isolation for polynomials over ℚ |
 | `sum_eval.rs` | Symbolic sum/product evaluation (finite sums, convergence) |
 | `symbol.rs` | Symbol table — string interning + per-symbol assumptions |
 | `tree.rs` | `ExprTree` serde type for JSON interchange (to_tree/from_tree round-trip) |
