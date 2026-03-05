@@ -931,13 +931,52 @@ abs(abs(w_)) => abs(w_)
 | X | combsimp (factorial/binomial simplification), nsimplify (closed-form from floats) | ~14 |
 | Y | Laplace transform (forward table + structural rules), inverse Laplace (partial fractions + table) | ~18 |
 
-#### Waves deferred to next sprint
+#### Next sprint: planned waves
 
-| Wave | Features | Reason |
-|------|----------|--------|
-| H | Set types (Interval, FiniteSet, Union, Expr\<SetValued\>) | Architectural: new phantom sort, ~6 hrs |
-| I | Inequality solving (depends on H) | Blocked on H |
-| L | Full polynomial factoring (Berlekamp/Hensel) | Heavy algorithm, ~6 hrs |
+##### Wave AP — Arbitrary-Precision Special Functions (~9 hrs)
+
+Based on expert guidance referencing Johansson 2021 ("Arbitrary-precision computation
+of the gamma function"). The current f64 Lanczos/series implementations remain as fast
+paths for `evalf_f64()`. The Stirling-based path handles `evalf(n_digits)` for any
+requested precision.
+
+**Architecture:** Stirling series (not Lanczos, not Spouge) is the correct algorithm
+for arbitrary-precision Γ. Lanczos does not scale beyond f64. Spouge requires ~50%
+extra working precision due to catastrophic cancellation. Stirling uses 0.323p terms
+(fewest), Bernoulli number coefficients are cacheable across calls, and the same
+infrastructure extends to log Γ, ψ, and polygamma by term-by-term differentiation.
+
+| Chunk | What | Time | Deps |
+|-------|------|------|------|
+| AP.1 | Bernoulli number generator: exact `Ratio<BigInt>`, lazy cache, recurrence `B_n = -1/(n+1) Σ C(n+1,k) B_k` | 1.5 hrs | None |
+| AP.2 | Stirling series for log Γ(z): argument reduction (`\|z+r\| ≥ 0.2p`), series with Bernoulli coefficients, remainder bound by first omitted term | 2 hrs | AP.1 |
+| AP.3 | Γ(z) = exp(log Γ(z)), reflection Γ(z) = π/(sin(πz)·Γ(1-z)) for Re(z) < 0 | 30 min | AP.2 |
+| AP.4 | ψ(z) via differentiated Stirling: `ψ(z) = log(z) - 1/(2z) - Σ B_{2k}/(2k·z^{2k})` | 1 hr | AP.1 |
+| AP.5 | erf(x) Taylor series for `\|x\| < √(p/3)`, asymptotic erfc for `\|x\| ≥ √(p/3)`, crossover logic | 2 hrs | None |
+| AP.6 | erfc(x) direct computation (avoid `1 - erf` cancellation for large x) | 30 min | AP.5 |
+| AP.7 | Beta = exp(logΓ(a)+logΓ(b)-logΓ(a+b)), LogGamma = direct Stirling | 15 min | AP.2 |
+| AP.8 | Tests at 50, 100, 200 digit precision against known reference values | 1 hr | AP.1–AP.7 |
+
+Key implementation details:
+- Bernoulli numbers computed as exact `Ratio<BigInt>`, converted to BigFloat at
+  requested precision. Cache is precision-independent and grows lazily.
+- Argument reduction: shift z by integer r until `|z+r| ≥ β·p` (β ≈ 0.2).
+  Recover via `Γ(z) = Γ(z+r) / [z(z+1)···(z+r-1)]`.
+- erf crossover: Taylor for `|x| < √(p/3)`, asymptotic for `|x| ≥ √(p/3)`.
+  For 50 digits (p=166 bits), crossover at x ≈ 7.4.
+- erfc computed directly for large x to avoid `1 - erf(x)` cancellation.
+- f64 Lanczos kept as fast path for `evalf_f64()`.
+
+##### Other deferred waves
+
+| Wave | Features | Reason | Est. effort |
+|------|----------|--------|-------------|
+| H-revisit | Deepen Set types (pairwise interval merging, membership queries) | Foundation exists from Wave ζ | 4 hrs |
+| L | Full polynomial factoring (Berlekamp/Hensel/Zassenhaus) | Heavy algorithm | 8 hrs |
+| GB | Gröbner bases for polynomial system solving | Requires multivariate Poly | 15 hrs |
+| ODE+ | Full separable, exact ODEs, undetermined coefficients, Bernoulli | Extends existing 3-type solver | 8 hrs |
+| LW | LambertW equation solver (6 canonical forms) | Extends transcendental solve | 4 hrs |
+| BF | Bessel functions (J, Y, I, K via _a/_b differentiation trick) | Physics use case | 6 hrs |
 
 ---
 
