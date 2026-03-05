@@ -258,6 +258,20 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 return Ok(quote! { (#a_code).beta(&(#b_code)) });
             }
 
+            // min(a, b) → a.min_with(&b)
+            if name == "min" && args.len() == 2 {
+                let a = generate_expr_as_ex(&args[0])?;
+                let b = generate_expr_as_ex(&args[1])?;
+                return Ok(quote! { (#a).min_with(&(#b)) });
+            }
+
+            // max(a, b) → a.max_with(&b)
+            if name == "max" && args.len() == 2 {
+                let a = generate_expr_as_ex(&args[0])?;
+                let b = generate_expr_as_ex(&args[1])?;
+                return Ok(quote! { (#a).max_with(&(#b)) });
+            }
+
             if !is_known_function(name)
                 && ![
                     "log",
@@ -269,13 +283,15 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                     "rising_factorial",
                     "falling_factorial",
                     "beta",
+                    "min",
+                    "max",
                 ]
                 .contains(&name.as_str())
             {
                 return Err(syn::Error::new(
                     *span,
                     format!(
-                        "unknown function '{}' in expr!(). Supported: {}, log, diff, factorial, binomial, C, atan2, rising_factorial, falling_factorial, beta",
+                        "unknown function '{}' in expr!(). Supported: {}, log, diff, factorial, binomial, C, atan2, rising_factorial, falling_factorial, beta, min, max",
                         name,
                         KNOWN_FUNCTIONS.join(", ")
                     ),
@@ -287,7 +303,7 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                     format!("{}() takes exactly 1 argument in expr!()", name),
                 ));
             }
-            let arg_code = generate_expr(&args[0])?;
+            let arg_code = generate_expr_as_ex(&args[0])?;
             let method = match name.as_str() {
                 "sin" => quote! { sin },
                 "cos" => quote! { cos },
@@ -307,6 +323,8 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 "cbrt" => quote! { cbrt },
                 "abs" => quote! { abs },
                 "sign" => quote! { sign },
+                "floor" => quote! { floor },
+                "ceiling" => quote! { ceiling },
                 // Wave A: reciprocal trig/hyp
                 "sec" => quote! { sec },
                 "csc" => quote! { csc },
@@ -756,6 +774,15 @@ fn generate_eq(input: &EqMacroInput) -> syn::Result<TokenStream2> {
 fn generate_expr_as_ex(expr: &MathExpr) -> syn::Result<TokenStream2> {
     match expr {
         MathExpr::Int(n, _) => Ok(quote! { ::symplex::int(#n) }),
+        MathExpr::Neg(inner) => {
+            if let Some(n) = inner.as_int() {
+                let neg_n = -n;
+                Ok(quote! { ::symplex::int(#neg_n) })
+            } else {
+                let code = generate_expr(expr)?;
+                Ok(quote! { { let __v: ::symplex::expr::Ex = (#code).clone(); __v } })
+            }
+        }
         MathExpr::Func { .. } => generate_expr(expr),
         _ => {
             let code = generate_expr(expr)?;

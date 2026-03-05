@@ -637,6 +637,7 @@ impl<S: Sort> Expr<S> {
     /// let json = serde_json::to_string(&tree).unwrap();
     /// assert!(json.contains("Pow"));
     /// ```
+    #[must_use = "returns a serializable tree; does not modify in place"]
     pub fn to_tree(&self) -> crate::tree::ExprTree {
         let inner = self.inner.read();
         crate::tree::expr_to_tree(&inner.arena, self.id)
@@ -656,11 +657,13 @@ impl<S: Sort> Expr<S> {
     /// let json = x.powi(2).to_json();
     /// assert!(json.contains("\"type\":\"Pow\""));
     /// ```
+    #[must_use = "returns a JSON string; does not modify in place"]
     pub fn to_json(&self) -> String {
         serde_json::to_string(&self.to_tree()).expect("ExprTree serialization should not fail")
     }
 
     /// Serialize this expression to a pretty-printed JSON string.
+    #[must_use = "returns a JSON string; does not modify in place"]
     pub fn to_json_pretty(&self) -> String {
         serde_json::to_string_pretty(&self.to_tree())
             .expect("ExprTree serialization should not fail")
@@ -683,6 +686,7 @@ impl<S: Sort> Expr<S> {
     /// assert_eq!(format!("{result}"), "x^2 + 2*x + 1");
     /// assert_eq!(iters, 1); // stabilized after 1 iteration
     /// ```
+    #[must_use = "returns the stabilized expression and iteration count"]
     pub fn apply_until_stable<F>(&self, max_iterations: usize, f: F) -> (Expr<S>, usize)
     where
         F: Fn(&Expr<S>) -> Expr<S>,
@@ -715,6 +719,7 @@ impl Expr<Numeric> {
     /// assert_eq!(format!("{z}"), "0");
     /// assert!(z.is_zero_structural());
     /// ```
+    #[must_use]
     pub fn zero() -> Ex {
         crate::int(0)
     }
@@ -730,6 +735,7 @@ impl Expr<Numeric> {
     /// assert_eq!(format!("{o}"), "1");
     /// assert!(o.is_one_structural());
     /// ```
+    #[must_use]
     pub fn one() -> Ex {
         crate::int(1)
     }

@@ -116,6 +116,8 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "cbrt",
     "abs",
     "sign",
+    "floor",
+    "ceiling",
     // Wave A: reciprocal trig/hyp
     "sec",
     "csc",

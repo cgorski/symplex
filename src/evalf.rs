@@ -135,22 +135,91 @@ fn eval_node(
             })
         }
 
-        ExprNode::Gamma(_) | ExprNode::LogGamma(_) | ExprNode::Digamma(_) => {
-            Err(SymplexError::Unevaluable {
-                reason: "cannot numerically evaluate Gamma/LogGamma/Digamma; call eval() first to reduce".into(),
-            })
+        ExprNode::Gamma(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Gamma of complex argument not yet supported in evalf".into(),
+                });
+            }
+            let x = bigfloat_to_f64(&val.0, rm, cc)?;
+            let result = lanczos_gamma_f64(x)?;
+            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
         }
 
-        ExprNode::Erf(_) | ExprNode::Erfc(_) => {
-            Err(SymplexError::Unevaluable {
-                reason: "cannot numerically evaluate erf/erfc; call eval() first to reduce".into(),
-            })
+        ExprNode::LogGamma(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "LogGamma of complex argument not yet supported in evalf".into(),
+                });
+            }
+            let x = bigfloat_to_f64(&val.0, rm, cc)?;
+            let gamma = lanczos_gamma_f64(x)?;
+            if gamma <= 0.0 {
+                return Err(SymplexError::Unevaluable {
+                    reason: "LogGamma undefined for non-positive Gamma value".into(),
+                });
+            }
+            Ok((f64_to_bigfloat(gamma.ln(), prec), BigFloat::new(prec)))
         }
 
-        ExprNode::Beta(_, _) => {
-            Err(SymplexError::Unevaluable {
-                reason: "cannot numerically evaluate Beta; call eval() first to reduce".into(),
-            })
+        ExprNode::Digamma(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Digamma of complex argument not yet supported in evalf".into(),
+                });
+            }
+            let x = bigfloat_to_f64(&val.0, rm, cc)?;
+            let result = digamma_f64(x)?;
+            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
+        }
+
+        ExprNode::Erf(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "erf of complex argument not yet supported in evalf".into(),
+                });
+            }
+            let x = bigfloat_to_f64(&val.0, rm, cc)?;
+            let result = erf_f64(x);
+            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
+        }
+
+        ExprNode::Erfc(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "erfc of complex argument not yet supported in evalf".into(),
+                });
+            }
+            let x = bigfloat_to_f64(&val.0, rm, cc)?;
+            let result = 1.0 - erf_f64(x);
+            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
+        }
+
+        ExprNode::Beta(a_id, b_id) => {
+            let a_val = get_cached(cache, *a_id)?;
+            let b_val = get_cached(cache, *b_id)?;
+            if !a_val.1.is_zero() || !b_val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Beta of complex arguments not yet supported in evalf".into(),
+                });
+            }
+            let a = bigfloat_to_f64(&a_val.0, rm, cc)?;
+            let b = bigfloat_to_f64(&b_val.0, rm, cc)?;
+            let ga = lanczos_gamma_f64(a)?;
+            let gb = lanczos_gamma_f64(b)?;
+            let gab = lanczos_gamma_f64(a + b)?;
+            let result = ga * gb / gab;
+            if !result.is_finite() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Beta function result is not finite".into(),
+                });
+            }
+            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
         }
 
         ExprNode::NaN => Err(SymplexError::Unevaluable {
@@ -831,6 +900,196 @@ fn atan2_bf(
             atan_val.add(&pi_val2, prec, rm)
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Special function helpers (f64-based)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Convert a `BigFloat` to `f64` via decimal radix conversion.
+fn bigfloat_to_f64(bf: &BigFloat, rm: RoundingMode, cc: &mut Consts) -> Result<f64, SymplexError> {
+    if bf.is_zero() {
+        return Ok(0.0);
+    }
+    if bf.is_inf_pos() {
+        return Ok(f64::INFINITY);
+    }
+    if bf.is_inf_neg() {
+        return Ok(f64::NEG_INFINITY);
+    }
+    if bf.is_nan() {
+        return Err(SymplexError::Unevaluable {
+            reason: "NaN in BigFloat to f64 conversion".into(),
+        });
+    }
+
+    let (sign, mantissa, exponent) =
+        bf.convert_to_radix(Radix::Dec, rm, cc)
+            .map_err(|e| SymplexError::Unevaluable {
+                reason: format!("BigFloat to f64 conversion failed: {e:?}"),
+            })?;
+
+    // mantissa is [d1, d2, ...] representing 0.d1d2d3... × 10^exponent
+    let mut s = String::with_capacity(mantissa.len() + 8);
+    if sign == Sign::Neg {
+        s.push('-');
+    }
+    s.push_str("0.");
+    for &d in &mantissa {
+        s.push((b'0' + d) as char);
+    }
+    s.push('e');
+    s.push_str(&exponent.to_string());
+
+    s.parse::<f64>().map_err(|_| SymplexError::Unevaluable {
+        reason: "failed to parse BigFloat decimal representation as f64".into(),
+    })
+}
+
+/// Convert an `f64` to a `BigFloat` with the given precision.
+fn f64_to_bigfloat(f: f64, prec: usize) -> BigFloat {
+    BigFloat::from_f64(f, prec)
+}
+
+/// Lanczos approximation for the Gamma function (g=7, 9 coefficients).
+fn lanczos_gamma_f64(x: f64) -> Result<f64, SymplexError> {
+    if x.is_nan() || x.is_infinite() {
+        return Err(SymplexError::Unevaluable {
+            reason: "Gamma of special float value".into(),
+        });
+    }
+
+    // Reflection formula for x < 0.5:  Gamma(x) = pi / (sin(pi*x) * Gamma(1-x))
+    if x < 0.5 {
+        let reflected = lanczos_gamma_f64(1.0 - x)?;
+        let sin_pi_x = (std::f64::consts::PI * x).sin();
+        if sin_pi_x.abs() < 1e-300 {
+            return Err(SymplexError::Unevaluable {
+                reason: "Gamma at non-positive integer pole".into(),
+            });
+        }
+        let result = std::f64::consts::PI / (sin_pi_x * reflected);
+        if result.is_finite() {
+            return Ok(result);
+        }
+        return Err(SymplexError::Unevaluable {
+            reason: "Gamma at pole".into(),
+        });
+    }
+
+    // Lanczos approximation with g=7
+    const COEFFICIENTS: [f64; 9] = [
+        0.99999999999980993,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
+
+    let x = x - 1.0; // Lanczos uses Gamma(x+1) = x!
+    let t = x + 7.0 + 0.5; // g = 7
+
+    let mut sum = COEFFICIENTS[0];
+    for (i, &c) in COEFFICIENTS[1..].iter().enumerate() {
+        sum += c / (x + i as f64 + 1.0);
+    }
+
+    let result = (2.0 * std::f64::consts::PI).sqrt() * t.powf(x + 0.5) * (-t).exp() * sum;
+    Ok(result)
+}
+
+/// Error function via Taylor series (small |x|) or asymptotic expansion (large |x|).
+fn erf_f64(x: f64) -> f64 {
+    if x.abs() < 4.0 {
+        // Taylor series: erf(x) = 2/sqrt(pi) * sum_{n=0}^{inf} (-1)^n * x^(2n+1) / (n! * (2n+1))
+        let mut sum = 0.0;
+        let mut term = x; // first term: x
+        sum += term;
+        for n in 1..50 {
+            term *= -x * x / n as f64;
+            sum += term / (2 * n + 1) as f64;
+        }
+        sum * 2.0 / std::f64::consts::PI.sqrt()
+    } else {
+        // For large |x|, use complementary: erf(x) = 1 - erfc(x)
+        // erfc(x) ~ exp(-x^2)/(x*sqrt(pi)) * sum_{n=0} (-1)^n * (2n-1)!! / (2x^2)^n
+        let sign = x.signum();
+        let ax = x.abs();
+        let mut sum = 1.0;
+        let mut term = 1.0;
+        for n in 1..20 {
+            term *= -(2 * n - 1) as f64 / (2.0 * ax * ax);
+            if term.abs() < 1e-16 {
+                break;
+            }
+            sum += term;
+        }
+        let erfc = (-ax * ax).exp() / (ax * std::f64::consts::PI.sqrt()) * sum;
+        sign * (1.0 - erfc)
+    }
+}
+
+/// Digamma function via recurrence + asymptotic series.
+///
+/// Uses psi(x+1) = psi(x) + 1/x to shift x to a large value,
+/// then the asymptotic expansion:
+///   psi(x) ~ ln(x) - 1/(2x) - 1/(12x^2) + 1/(120x^4) - 1/(252x^6) + ...
+fn digamma_f64(x: f64) -> Result<f64, SymplexError> {
+    if x.is_nan() || x.is_infinite() {
+        return Err(SymplexError::Unevaluable {
+            reason: "Digamma of special float value".into(),
+        });
+    }
+
+    // Handle negative x via reflection: psi(1-x) - psi(x) = pi*cot(pi*x)
+    if x < 0.0 {
+        let sin_val = (std::f64::consts::PI * x).sin();
+        if sin_val.abs() < 1e-300 {
+            return Err(SymplexError::Unevaluable {
+                reason: "Digamma at non-positive integer pole".into(),
+            });
+        }
+        let cos_val = (std::f64::consts::PI * x).cos();
+        let psi_1mx = digamma_f64(1.0 - x)?;
+        return Ok(psi_1mx - std::f64::consts::PI * cos_val / sin_val);
+    }
+
+    // Use recurrence to shift x >= 8 for good convergence of asymptotic series
+    let mut result = 0.0;
+    let mut x = x;
+    while x < 8.0 {
+        if x.abs() < 1e-300 {
+            return Err(SymplexError::Unevaluable {
+                reason: "Digamma at non-positive integer pole".into(),
+            });
+        }
+        result -= 1.0 / x;
+        x += 1.0;
+    }
+
+    // Asymptotic expansion: psi(x) ~ ln(x) - 1/(2x) - sum B_{2k}/(2k * x^{2k})
+    // Bernoulli numbers: B2=1/6, B4=-1/30, B6=1/42, B8=-1/30, B10=5/66, B12=-691/2730
+    result += x.ln() - 0.5 / x;
+    let x2 = x * x;
+    let mut x_pow = x2; // x^2
+    // B2/(2*x^2) = 1/(12*x^2)
+    result -= 1.0 / (12.0 * x_pow);
+    x_pow *= x2; // x^4
+    result += 1.0 / (120.0 * x_pow);
+    x_pow *= x2; // x^6
+    result -= 1.0 / (252.0 * x_pow);
+    x_pow *= x2; // x^8
+    result += 1.0 / (240.0 * x_pow);
+    x_pow *= x2; // x^10
+    result -= 5.0 / (660.0 * x_pow);
+    x_pow *= x2; // x^12
+    result += 691.0 / (32760.0 * x_pow);
+
+    Ok(result)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

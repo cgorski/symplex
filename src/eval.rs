@@ -842,12 +842,40 @@ fn eval_factorial(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 /// Gamma(1/2) → √π
 fn eval_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     let r = arena.as_num(inner)?.clone();
-    // Gamma(1/2) = √π
-    if *r.numer() == BigInt::from(1) && *r.denom() == BigInt::from(2) {
+
+    // Half-integer: Gamma(p/2) for positive odd p.
+    // Uses: Gamma((2k+1)/2) = (2k-1)!! / 2^k · √π
+    // where (2k-1)!! = 1·3·5·…·(2k-1) (empty product = 1 when k=0).
+    if *r.denom() == BigInt::from(2) && r.is_positive() {
+        // p is guaranteed odd because the fraction is in lowest terms with denom 2.
+        let p = r.numer().clone();
+        // k = (p - 1) / 2
+        let k_big = (&p - BigInt::from(1)) / BigInt::from(2);
+        let k: u64 = k_big.try_into().ok()?;
+
+        // Compute (2k-1)!! = product of odd numbers 1, 3, 5, …, 2k-1.
+        let mut double_fact = BigInt::from(1);
+        for i in 0..k {
+            double_fact *= BigInt::from(2 * i + 1);
+        }
+
+        // coefficient = (2k-1)!! / 2^k
+        let two_pow_k = BigInt::from(1) << (k as usize);
+        let coeff = Ratio::new(double_fact, two_pow_k);
+
         let pi = arena.pi;
-        let result = arena.sqrt(pi);
+        let sqrt_pi = arena.sqrt(pi);
+
+        if coeff.is_one() {
+            return Some(sqrt_pi);
+        }
+
+        let coeff_id = arena.intern_num(coeff);
+        let coeff_node = arena.intern(ExprNode::Num(coeff_id));
+        let result = arena.mul(&[coeff_node, sqrt_pi]);
         return Some(result);
     }
+
     // Positive integer: Gamma(n) = (n-1)!
     if r.is_integer() && r.is_positive() {
         let n: u64 = r.to_integer().try_into().ok()?;
