@@ -273,6 +273,22 @@ fn diff_node(
         // d/dx(sign(f)) = 0 (piecewise, but zero almost everywhere)
         ExprNode::Sign(_) => arena.zero,
 
+        // d/dx(H(f)) = δ(f) · f'
+        ExprNode::Heaviside(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let delta = arena.intern(ExprNode::DiracDelta(inner));
+            arena.mul(&[delta, df])
+        }
+
+        // d/dx(δ(f)) = δ'(f) · f'  — we can't represent δ', so leave unevaluated
+        ExprNode::DiracDelta(_) => {
+            let v = var_expr(arena, var);
+            arena.intern(ExprNode::Derivative(id, v))
+        }
+
         // d/dx(asin(f)) = f' / sqrt(1 - f^2)
         ExprNode::Asin(inner) => {
             let df = get_deriv(cache, inner, arena);

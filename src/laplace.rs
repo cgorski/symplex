@@ -86,6 +86,23 @@ fn do_forward(
         return Ok(arena.neg(transformed));
     }
 
+    // ── Derivative rule: L{f'(t)} = s·F(s) - f(0) ──
+    tracing::debug!("laplace: trying derivative rule");
+    if let ExprNode::Derivative(body, deriv_var) = node
+        && deriv_var == t
+    {
+        // Transform the body: F(s) = L{f(t)}
+        let f_transform = do_forward(arena, body, t, t_sym, s)?;
+        let s_times_f = arena.mul(&[s, f_transform]);
+
+        // f(0): substitute t = 0 into the body and evaluate
+        let zero = arena.zero;
+        let f_at_0 = crate::subs::subs(arena, body, t, zero);
+        let f_at_0_eval = crate::eval::eval(arena, f_at_0);
+
+        return Ok(arena.sub(s_times_f, f_at_0_eval));
+    }
+
     // ── Factor out constants (terms not depending on t) ──
     let (coeff, body) = split_independent(arena, expr, t);
     if coeff != arena.one {
@@ -94,6 +111,7 @@ fn do_forward(
     }
 
     // ── Try table rules ──
+    tracing::debug!("laplace: trying table forward");
     if let Some(result) = try_table_forward(arena, expr, t, t_sym, s) {
         return Ok(result);
     }
@@ -250,17 +268,19 @@ fn try_table_forward(
         // Rule 2: t^n (positive integer n) → n!/s^(n+1)
         ExprNode::Pow(base, exp) if base == t => {
             if let Some(r) = arena.as_num(exp).cloned()
-                && r.is_integer() && r.is_positive() {
-                    let n_val = r.to_integer().try_into().ok()?;
-                    let fact = factorial_bigint(n_val);
-                    let fact_rat = Ratio::from_integer(fact);
-                    let fact_id = rational_to_expr(arena, &fact_rat);
+                && r.is_integer()
+                && r.is_positive()
+            {
+                let n_val = r.to_integer().try_into().ok()?;
+                let fact = factorial_bigint(n_val);
+                let fact_rat = Ratio::from_integer(fact);
+                let fact_id = rational_to_expr(arena, &fact_rat);
 
-                    let n_plus_1_rat = r + Ratio::one();
-                    let n_plus_1_id = rational_to_expr(arena, &n_plus_1_rat);
-                    let s_pow = arena.pow(s, n_plus_1_id);
-                    return Some(arena.div(fact_id, s_pow));
-                }
+                let n_plus_1_rat = r + Ratio::one();
+                let n_plus_1_id = rational_to_expr(arena, &n_plus_1_rat);
+                let s_pow = arena.pow(s, n_plus_1_id);
+                return Some(arena.div(fact_id, s_pow));
+            }
             None
         }
 
@@ -340,28 +360,29 @@ fn try_freq_shift(
         for (i, &child) in kids.iter().enumerate() {
             let child_node = arena.node(child).clone();
             if let ExprNode::Exp(arg) = child_node
-                && let Some(a) = extract_linear_coeff(arena, arg, t) {
-                    // Collect remaining factors (everything except this exp)
-                    let remaining: Vec<ExprId> = kids
-                        .iter()
-                        .enumerate()
-                        .filter(|&(j, _)| j != i)
-                        .map(|(_, &c)| c)
-                        .collect();
-                    let g = if remaining.len() == 1 {
-                        remaining[0]
-                    } else {
-                        arena.mul(&remaining)
-                    };
+                && let Some(a) = extract_linear_coeff(arena, arg, t)
+            {
+                // Collect remaining factors (everything except this exp)
+                let remaining: Vec<ExprId> = kids
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != i)
+                    .map(|(_, &c)| c)
+                    .collect();
+                let g = if remaining.len() == 1 {
+                    remaining[0]
+                } else {
+                    arena.mul(&remaining)
+                };
 
-                    // Compute G(s) = L{g(t)}
-                    let g_of_s = do_forward(arena, g, t, t_sym, s)?;
+                // Compute G(s) = L{g(t)}
+                let g_of_s = do_forward(arena, g, t, t_sym, s)?;
 
-                    // Substitute s → (s − a) in G(s) to get G(s − a)
-                    let s_shifted = arena.sub(s, a);
-                    let result = crate::subs::subs(arena, g_of_s, s, s_shifted);
-                    return Ok(Some(result));
-                }
+                // Substitute s → (s − a) in G(s) to get G(s − a)
+                let s_shifted = arena.sub(s, a);
+                let result = crate::subs::subs(arena, g_of_s, s, s_shifted);
+                return Ok(Some(result));
+            }
         }
     }
     Ok(None)
@@ -610,9 +631,10 @@ fn try_table_inverse(arena: &mut Arena, expr: ExprId, s: ExprId, t: ExprId) -> O
 
     // ── Higher-degree denominators: try to detect (s-a)^n form ──
     if deg >= 2
-        && let Some(result) = inverse_power_form(arena, numer, denom, &denom_poly, s, t) {
-            return Some(result);
-        }
+        && let Some(result) = inverse_power_form(arena, numer, denom, &denom_poly, s, t)
+    {
+        return Some(result);
+    }
 
     None
 }
@@ -879,56 +901,58 @@ fn inverse_power_form(
     let denom_node = arena.node(denom).clone();
     if let ExprNode::Pow(base, exp) = denom_node
         && let Some(r) = arena.as_num(exp).cloned()
-            && r.is_integer() && r.is_positive() {
-                let n_val: u64 = r.to_integer().try_into().ok()?;
+        && r.is_integer()
+        && r.is_positive()
+    {
+        let n_val: u64 = r.to_integer().try_into().ok()?;
 
-                // Check if base is linear in s: base = s - a
-                let base_poly = crate::polybridge::expr_to_poly(arena, base, s)?;
-                if base_poly.degree()? != 1 {
-                    return None;
-                }
-                let bc0 = base_poly.coeff(0);
-                let bc1 = base_poly.coeff(1);
-                if !bc1.is_one() {
-                    return None; // Only handle monic for now
-                }
-                let a_rat = -bc0;
+        // Check if base is linear in s: base = s - a
+        let base_poly = crate::polybridge::expr_to_poly(arena, base, s)?;
+        if base_poly.degree()? != 1 {
+            return None;
+        }
+        let bc0 = base_poly.coeff(0);
+        let bc1 = base_poly.coeff(1);
+        if !bc1.is_one() {
+            return None; // Only handle monic for now
+        }
+        let a_rat = -bc0;
 
-                // Numerator must be constant (no s)
-                if contains_var(arena, numer, s) {
-                    return None;
-                }
+        // Numerator must be constant (no s)
+        if contains_var(arena, numer, s) {
+            return None;
+        }
 
-                // L⁻¹{N / (s-a)^n} = N · t^(n-1) · exp(a·t) / (n-1)!
-                let a_id = rational_to_expr(arena, &a_rat);
-                let at = arena.mul(&[a_id, t]);
-                let exp_at = arena.exp(at);
+        // L⁻¹{N / (s-a)^n} = N · t^(n-1) · exp(a·t) / (n-1)!
+        let a_id = rational_to_expr(arena, &a_rat);
+        let at = arena.mul(&[a_id, t]);
+        let exp_at = arena.exp(at);
 
-                if n_val == 1 {
-                    // Simple: N · exp(a·t)
-                    if a_rat.is_zero() {
-                        return Some(numer);
-                    }
-                    return Some(arena.mul(&[numer, exp_at]));
-                }
-
-                // t^(n-1)
-                let n_minus_1 = arena.int(n_val as i64 - 1);
-                let t_pow = arena.pow(t, n_minus_1);
-
-                // (n-1)!
-                let fact = factorial_bigint(n_val - 1);
-                let fact_rat = Ratio::from_integer(fact);
-                let fact_id = rational_to_expr(arena, &fact_rat);
-
-                // result = numer * t^(n-1) * exp(at) / (n-1)!
-                let numer_t = arena.mul(&[numer, t_pow]);
-                let scaled = arena.div(numer_t, fact_id);
-                if a_rat.is_zero() {
-                    return Some(scaled);
-                }
-                return Some(arena.mul(&[scaled, exp_at]));
+        if n_val == 1 {
+            // Simple: N · exp(a·t)
+            if a_rat.is_zero() {
+                return Some(numer);
             }
+            return Some(arena.mul(&[numer, exp_at]));
+        }
+
+        // t^(n-1)
+        let n_minus_1 = arena.int(n_val as i64 - 1);
+        let t_pow = arena.pow(t, n_minus_1);
+
+        // (n-1)!
+        let fact = factorial_bigint(n_val - 1);
+        let fact_rat = Ratio::from_integer(fact);
+        let fact_id = rational_to_expr(arena, &fact_rat);
+
+        // result = numer * t^(n-1) * exp(at) / (n-1)!
+        let numer_t = arena.mul(&[numer, t_pow]);
+        let scaled = arena.div(numer_t, fact_id);
+        if a_rat.is_zero() {
+            return Some(scaled);
+        }
+        return Some(arena.mul(&[scaled, exp_at]));
+    }
 
     None
 }

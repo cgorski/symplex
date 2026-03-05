@@ -553,15 +553,16 @@ fn integrate_node(
 
             // ── Cyclic IBP: ∫ exp·sin, ∫ exp·cos, etc. ────────────
             if dependent.len() == 2
-                && let Some(result) = try_cyclic_ibp(arena, &dependent, var, var_sym, depth) {
-                    if constants.is_empty() {
-                        return result;
-                    } else {
-                        let mut all = constants.clone();
-                        all.push(result);
-                        return arena.mul(&all);
-                    }
+                && let Some(result) = try_cyclic_ibp(arena, &dependent, var, var_sym, depth)
+            {
+                if constants.is_empty() {
+                    return result;
+                } else {
+                    let mut all = constants.clone();
+                    all.push(result);
+                    return arena.mul(&all);
                 }
+            }
 
             // ── Try partial fraction decomposition for rational integrands ──
             {
@@ -775,6 +776,65 @@ fn integrate_node(
                 // ∫ exp(x) dx = exp(x)
                 return arena.exp(var);
             }
+
+            // ── Gaussian form: ∫ exp(a·x²+b·x+c) dx where a < 0 ──
+            // Result: √π/(2√(−a)) · exp(c − b²/(4a)) · erf((−2a·x−b)/(2√(−a)))
+            if let Some(poly) = crate::polybridge::expr_to_poly(arena, inner, var)
+                && poly.degree() == Some(2)
+            {
+                let coeffs = poly.coeffs(); // [c, b, a]
+                let a_coeff = &coeffs[2];
+                let b_coeff = &coeffs[1];
+                let c_coeff = &coeffs[0];
+
+                if a_coeff.is_negative() {
+                    // neg_a = -a (positive)
+                    let neg_a = -a_coeff.clone();
+                    let neg_a_expr = rational_to_expr(arena, &neg_a);
+
+                    // sqrt(-a)
+                    let sqrt_neg_a = arena.sqrt(neg_a_expr);
+
+                    let two = arena.int(2);
+
+                    // front = √π / (2·√(-a))
+                    let pi_id = arena.pi;
+                    let sqrt_pi = arena.sqrt(pi_id);
+                    let two_sqrt_neg_a = arena.mul(&[two, sqrt_neg_a]);
+                    let front = arena.div(sqrt_pi, two_sqrt_neg_a);
+
+                    // exp_factor = exp(c - b²/(4a))
+                    let b_expr = rational_to_expr(arena, b_coeff);
+                    let a_expr = rational_to_expr(arena, a_coeff);
+                    let c_expr = rational_to_expr(arena, c_coeff);
+
+                    let b_sq = arena.mul(&[b_expr, b_expr]);
+                    let four = arena.int(4);
+                    let four_a = arena.mul(&[four, a_expr]);
+                    let b_sq_over_4a = arena.div(b_sq, four_a);
+                    let exp_arg = arena.sub(c_expr, b_sq_over_4a);
+                    let exp_factor = arena.exp(exp_arg);
+
+                    // erf_arg = (-2a·x - b) / (2·√(-a))
+                    // Note: -2a is positive since a < 0
+                    let neg_two_a = {
+                        let two_r =
+                            num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+                        let val = -two_r * a_coeff;
+                        rational_to_expr(arena, &val)
+                    };
+                    let neg_2ax = arena.mul(&[neg_two_a, var]);
+                    let erf_numer = arena.sub(neg_2ax, b_expr);
+                    // recompute sqrt_neg_a fresh (the prior one may have been consumed)
+                    let sqrt_neg_a2 = arena.sqrt(neg_a_expr);
+                    let erf_denom = arena.mul(&[two, sqrt_neg_a2]);
+                    let erf_arg = arena.div(erf_numer, erf_denom);
+                    let erf_term = arena.erf(erf_arg);
+
+                    return arena.mul(&[front, exp_factor, erf_term]);
+                }
+            }
+
             // Try u-substitution: if inner = a*x + b, ∫ exp(a*x+b) dx = exp(a*x+b)/a
             if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
                 let exp_inner = arena.exp(inner);
@@ -897,10 +957,29 @@ fn integrate_node(
             arena.intern(ExprNode::Integral(expr, var))
         }
 
-        // Inverse hyperbolics and sign: leave as unevaluated integrals
-        ExprNode::Asinh(_) | ExprNode::Acosh(_) | ExprNode::Atanh(_) | ExprNode::Sign(_) => {
+        // ── DiracDelta: ∫δ(f(x))dx ────────────────────────────────
+        ExprNode::DiracDelta(inner) => {
+            // ∫δ(x)dx = H(x)
+            if inner == var {
+                return arena.intern(ExprNode::Heaviside(var));
+            }
+            // Linear case: ∫δ(ax+b)dx = H(ax+b) / |a|
+            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+                let h = arena.intern(ExprNode::Heaviside(inner));
+                let a_id = rational_to_expr(arena, &a);
+                let abs_a = arena.abs(a_id);
+                return arena.div(h, abs_a);
+            }
+            // Leave unevaluated
             arena.intern(ExprNode::Integral(expr, var))
         }
+
+        // Inverse hyperbolics, sign, Heaviside: leave as unevaluated integrals
+        ExprNode::Asinh(_)
+        | ExprNode::Acosh(_)
+        | ExprNode::Atanh(_)
+        | ExprNode::Sign(_)
+        | ExprNode::Heaviside(_) => arena.intern(ExprNode::Integral(expr, var)),
 
         // Everything else: unevaluated integral.
         _ => {

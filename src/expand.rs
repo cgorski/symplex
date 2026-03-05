@@ -114,6 +114,12 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
                 rebuild_unary_expanded(arena, id, inner, &cache, Arena::atanh)
             }
             ExprNode::Sign(inner) => rebuild_unary_expanded(arena, id, inner, &cache, Arena::sign),
+            ExprNode::Heaviside(inner) => {
+                rebuild_unary_expanded(arena, id, inner, &cache, Arena::heaviside)
+            }
+            ExprNode::DiracDelta(inner) => {
+                rebuild_unary_expanded(arena, id, inner, &cache, Arena::dirac_delta)
+            }
             ExprNode::Floor(inner) => {
                 rebuild_unary_expanded(arena, id, inner, &cache, Arena::floor)
             }

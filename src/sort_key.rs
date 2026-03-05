@@ -118,6 +118,8 @@ const FN_DIGAMMA: u8 = 24;
 const FN_ERF: u8 = 25;
 const FN_ERFC: u8 = 26;
 const FN_BETA: u8 = 27;
+const FN_HEAVISIDE: u8 = 28;
+const FN_DIRAC_DELTA: u8 = 29;
 
 // ---------------------------------------------------------------------------
 // Constant sub-rank bytes (used within the RANK_CONSTANT class)
@@ -382,6 +384,18 @@ pub fn compute_sort_key(
         ExprNode::Sign(x) => {
             key.push(RANK_FUNCTION);
             key.push(FN_SIGN);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Heaviside(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_HEAVISIDE);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::DiracDelta(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_DIRAC_DELTA);
             key.extend(get_key(*x).as_bytes());
         }
 

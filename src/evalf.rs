@@ -142,8 +142,9 @@ fn eval_node(
                     reason: "Gamma of complex argument not yet supported in evalf".into(),
                 });
             }
-            let x = bigfloat_to_f64(&val.0, rm, cc)?;
-            let result = lanczos_gamma_f64(x)?;
+            let x_val = bigfloat_to_f64(&val.0, rm, cc)?;
+            debug!(x = ?x_val, "evalf: Gamma via Lanczos");
+            let result = lanczos_gamma_f64(x_val)?;
             Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
         }
 
@@ -183,8 +184,9 @@ fn eval_node(
                     reason: "erf of complex argument not yet supported in evalf".into(),
                 });
             }
-            let x = bigfloat_to_f64(&val.0, rm, cc)?;
-            let result = erf_f64(x);
+            let x_val = bigfloat_to_f64(&val.0, rm, cc)?;
+            debug!(x = ?x_val, "evalf: erf via series");
+            let result = erf_f64(x_val);
             Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
         }
 
@@ -588,6 +590,35 @@ fn eval_node(
             Ok(best)
         }
 
+        // ── Heaviside ──────────────────────────────────────────────
+        ExprNode::Heaviside(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Heaviside of complex argument not supported in evalf".into(),
+                });
+            }
+            if val.0.is_zero() {
+                // H(0) = 0.5
+                Ok((
+                    BigFloat::from_f64(0.5, prec),
+                    BigFloat::new(prec),
+                ))
+            } else if val.0.is_negative() {
+                Ok(c_zero(prec))
+            } else {
+                Ok((BigFloat::from_i32(1, prec), BigFloat::new(prec)))
+            }
+        }
+
+        // ── DiracDelta ─────────────────────────────────────────────
+        // Distributional: zero everywhere except at a single point of measure zero.
+        ExprNode::DiracDelta(inner) => {
+            let _val = get_cached(cache, *inner)?;
+            // Numerically, δ(x) = 0 for all representable floats
+            Ok(c_zero(prec))
+        }
+
         // ── Unevaluable ────────────────────────────────────────────
         ExprNode::Apply(sid, _) => {
             let name = arena.symbol_name(*sid);
@@ -952,6 +983,7 @@ fn f64_to_bigfloat(f: f64, prec: usize) -> BigFloat {
 }
 
 /// Lanczos approximation for the Gamma function (g=7, 9 coefficients).
+#[allow(clippy::excessive_precision)]
 fn lanczos_gamma_f64(x: f64) -> Result<f64, SymplexError> {
     if x.is_nan() || x.is_infinite() {
         return Err(SymplexError::Unevaluable {

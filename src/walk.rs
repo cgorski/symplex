@@ -255,6 +255,9 @@ pub(crate) fn rebuild_with_cache(
             if ni == inner { id } else { arena.sign(ni) }
         }
 
+        ExprNode::Heaviside(inner) => rebuild_intern_unary!(arena, id, inner, cache, Heaviside),
+        ExprNode::DiracDelta(inner) => rebuild_intern_unary!(arena, id, inner, cache, DiracDelta),
+
         ExprNode::Gamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, Gamma),
         ExprNode::LogGamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, LogGamma),
         ExprNode::Digamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, Digamma),

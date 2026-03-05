@@ -549,6 +549,8 @@ fn expand_expr(
         ExprNode::Acosh(x) => push_func("acosh", x, stack),
         ExprNode::Atanh(x) => push_func("atanh", x, stack),
         ExprNode::Sign(x) => push_func("sign", x, stack),
+        ExprNode::Heaviside(x) => push_func("H", x, stack),
+        ExprNode::DiracDelta(x) => push_func("DiracDelta", x, stack),
         ExprNode::Gamma(x) => push_func("Gamma", x, stack),
         ExprNode::LogGamma(x) => push_func("LogGamma", x, stack),
         ExprNode::Digamma(x) => push_func("Digamma", x, stack),

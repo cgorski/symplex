@@ -389,7 +389,9 @@ impl<S: Sort> Expr<S> {
             | crate::node::ExprNode::And(_)
             | crate::node::ExprNode::Or(_)
             | crate::node::ExprNode::Not(_)
-            | crate::node::ExprNode::Piecewise(_) => ExprType::Function,
+            | crate::node::ExprNode::Piecewise(_)
+            | crate::node::ExprNode::Heaviside(_)
+            | crate::node::ExprNode::DiracDelta(_) => ExprType::Function,
         }
     }
 

@@ -47,7 +47,7 @@ fn heaviside_symbolic_stays() {
     let h = x.heaviside();
     let s = format!("{h}");
     assert!(
-        s.contains("heaviside"),
+        s.contains("H") || s.contains("heaviside") || s.contains("Heaviside"),
         "symbolic heaviside should stay unevaluated: {s}"
     );
 }
@@ -94,7 +94,7 @@ fn dirac_delta_at_zero_stays() {
     let s = format!("{result}");
     // Should stay unevaluated (not 0, not infinity)
     assert!(
-        s.contains("dirac_delta") || s.contains("delta"),
+        s.contains("DiracDelta") || s.contains("dirac_delta") || s.contains("delta"),
         "should be unevaluated at 0: {s}"
     );
 }
@@ -105,7 +105,7 @@ fn dirac_delta_symbolic_stays() {
     let d = x.dirac_delta();
     let s = format!("{d}");
     assert!(
-        s.contains("dirac_delta") || s.contains("delta"),
+        s.contains("DiracDelta") || s.contains("dirac_delta") || s.contains("delta"),
         "symbolic dirac_delta should stay unevaluated: {s}"
     );
 }

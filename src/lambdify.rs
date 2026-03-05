@@ -68,6 +68,8 @@ enum Instruction {
     Acosh,
     Atanh,
     Sign,
+    Heaviside,
+    DiracDelta,
     Atan2,
     Floor,
     Ceiling,
@@ -206,6 +208,14 @@ fn compile_recursive(
         ExprNode::Sign(inner) => {
             compile_recursive(arena, inner, var_map, out)?;
             out.push(Instruction::Sign);
+        }
+        ExprNode::Heaviside(inner) => {
+            compile_recursive(arena, inner, var_map, out)?;
+            out.push(Instruction::Heaviside);
+        }
+        ExprNode::DiracDelta(inner) => {
+            compile_recursive(arena, inner, var_map, out)?;
+            out.push(Instruction::DiracDelta);
         }
         ExprNode::Floor(inner) => {
             compile_recursive(arena, inner, var_map, out)?;
@@ -372,6 +382,21 @@ fn execute(instructions: &[Instruction], args: &[f64]) -> f64 {
             Instruction::Sign => {
                 let a = stack.pop().unwrap_or(0.0);
                 stack.push(a.signum());
+            }
+            Instruction::Heaviside => {
+                let a = stack.pop().unwrap_or(0.0);
+                stack.push(if a > 0.0 {
+                    1.0
+                } else if a < 0.0 {
+                    0.0
+                } else {
+                    0.5
+                });
+            }
+            Instruction::DiracDelta => {
+                // Distributional: pointwise evaluation is always 0
+                let _a = stack.pop().unwrap_or(0.0);
+                stack.push(0.0);
             }
             Instruction::Atan2 => {
                 let x = stack.pop().unwrap_or(0.0);

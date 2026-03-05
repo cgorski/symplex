@@ -205,6 +205,16 @@ fn expr_to_rust(arena: &Arena, id: ExprId, var_names: &[&str]) -> Result<String,
             let code = expr_to_rust(arena, x, var_names)?;
             Ok(format!("{code}.signum()"))
         }
+        ExprNode::Heaviside(x) => {
+            let code = expr_to_rust(arena, x, var_names)?;
+            Ok(format!(
+                "(if {code} > 0.0_f64 {{ 1.0_f64 }} else if {code} < 0.0_f64 {{ 0.0_f64 }} else {{ 0.5_f64 }})"
+            ))
+        }
+        ExprNode::DiracDelta(_x) => {
+            // Distributional: pointwise evaluation is always 0
+            Ok("0.0_f64".to_string())
+        }
         ExprNode::Floor(x) => {
             let code = expr_to_rust(arena, x, var_names)?;
             Ok(format!("{code}.floor()"))

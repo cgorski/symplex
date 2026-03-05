@@ -109,6 +109,10 @@ pub enum ExprTree {
     Atanh { arg: Box<ExprTree> },
     /// Sign function: 1 if positive, -1 if negative, 0 if zero.
     Sign { arg: Box<ExprTree> },
+    /// Heaviside step function: H(x) = 0 for x<0, 1/2 for x=0, 1 for x>0.
+    Heaviside { arg: Box<ExprTree> },
+    /// Dirac delta distribution: δ(x) = 0 for x≠0, symbolic at x=0.
+    DiracDelta { arg: Box<ExprTree> },
     /// Gamma function: Γ(x).
     Gamma { arg: Box<ExprTree> },
     /// Log-gamma function: ln(Γ(x)).
@@ -279,6 +283,12 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
             arg: Box::new(expr_to_tree(arena, x)),
         },
         ExprNode::Sign(x) => ExprTree::Sign {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Heaviside(x) => ExprTree::Heaviside {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::DiracDelta(x) => ExprTree::DiracDelta {
             arg: Box::new(expr_to_tree(arena, x)),
         },
         ExprNode::Gamma(x) => ExprTree::Gamma {
@@ -495,6 +505,14 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::Sign { arg } => {
             let x = tree_to_expr(arena, arg);
             arena.sign(x)
+        }
+        ExprTree::Heaviside { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.heaviside(x)
+        }
+        ExprTree::DiracDelta { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.dirac_delta(x)
         }
         ExprTree::Gamma { arg } => {
             let x = tree_to_expr(arena, arg);

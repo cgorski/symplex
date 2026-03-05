@@ -41,8 +41,7 @@ pub(crate) const FN_HARMONIC: &str = "harmonic";
 pub(crate) const FN_CATALAN: &str = "catalan";
 pub(crate) const FN_BELL: &str = "bell";
 pub(crate) const FN_EULER_NUMBER: &str = "euler_number";
-pub(crate) const FN_HEAVISIDE: &str = "heaviside";
-pub(crate) const FN_DIRAC_DELTA: &str = "dirac_delta";
+
 pub(crate) const FN_LAMBERTW: &str = "lambertw";
 
 // ---------------------------------------------------------------------------
@@ -1251,16 +1250,12 @@ impl Arena {
 
     /// Creates a `heaviside` (Heaviside step function) node: 0 for x<0, 1/2 for x=0, 1 for x>0.
     pub fn heaviside(&mut self, arg: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_HEAVISIDE);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![arg];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.intern(ExprNode::Heaviside(arg))
     }
 
     /// Creates a `dirac_delta` (Dirac delta distribution) node: 0 for x≠0, symbolic at x=0.
     pub fn dirac_delta(&mut self, arg: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_DIRAC_DELTA);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![arg];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.intern(ExprNode::DiracDelta(arg))
     }
 
     /// Creates a `lambertw` (Lambert W function, principal branch) node: W(x)·exp(W(x)) = x.

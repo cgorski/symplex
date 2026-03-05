@@ -247,6 +247,12 @@ fn match_recursive(
         (ExprNode::Sign(pi), ExprNode::Sign(ei)) => {
             match_recursive(arena, pattern, pi, ei, bindings)
         }
+        (ExprNode::Heaviside(pi), ExprNode::Heaviside(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
+        (ExprNode::DiracDelta(pi), ExprNode::DiracDelta(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
         (ExprNode::Not(pi), ExprNode::Not(ei)) => match_recursive(arena, pattern, pi, ei, bindings),
 
         // Binary relational.

@@ -184,6 +184,8 @@ fn convert_node(
         | ExprNode::Ln(_)
         | ExprNode::Abs(_)
         | ExprNode::Sign(_)
+        | ExprNode::Heaviside(_)
+        | ExprNode::DiracDelta(_)
         | ExprNode::Floor(_)
         | ExprNode::Ceiling(_) => {
             // If the function argument doesn't contain var, the whole

@@ -182,6 +182,12 @@ pub enum ExprNode {
     /// Sign function: `sign(x)` = 1 if x > 0, -1 if x < 0, 0 if x = 0.
     Sign(ExprId),
 
+    /// Heaviside step function: H(x) = 0 for x<0, 1/2 for x=0, 1 for x>0.
+    Heaviside(ExprId),
+
+    /// Dirac delta distribution: δ(x) = 0 for x≠0, symbolic at x=0.
+    DiracDelta(ExprId),
+
     // -- special functions ---------------------------------------------------
     /// Gamma function: Γ(x) = ∫₀^∞ t^(x-1) e^(-t) dt.
     Gamma(ExprId),
@@ -336,6 +342,8 @@ impl ExprNode {
             | ExprNode::Acosh(x)
             | ExprNode::Atanh(x)
             | ExprNode::Sign(x)
+            | ExprNode::Heaviside(x)
+            | ExprNode::DiracDelta(x)
             | ExprNode::Gamma(x)
             | ExprNode::LogGamma(x)
             | ExprNode::Digamma(x)
@@ -438,6 +446,8 @@ impl ExprNode {
             | ExprNode::Acosh(x)
             | ExprNode::Atanh(x)
             | ExprNode::Sign(x)
+            | ExprNode::Heaviside(x)
+            | ExprNode::DiracDelta(x)
             | ExprNode::Gamma(x)
             | ExprNode::LogGamma(x)
             | ExprNode::Digamma(x)
@@ -505,6 +515,8 @@ impl ExprNode {
             | ExprNode::Acosh(_)
             | ExprNode::Atanh(_)
             | ExprNode::Sign(_)
+            | ExprNode::Heaviside(_)
+            | ExprNode::DiracDelta(_)
             | ExprNode::Gamma(_)
             | ExprNode::LogGamma(_)
             | ExprNode::Digamma(_)
@@ -581,6 +593,8 @@ impl fmt::Debug for ExprNode {
             ExprNode::Min(ids) => f.debug_tuple("Min").field(ids).finish(),
             ExprNode::Max(ids) => f.debug_tuple("Max").field(ids).finish(),
             ExprNode::Sign(id) => write!(f, "Sign({id:?})"),
+            ExprNode::Heaviside(x) => f.debug_tuple("Heaviside").field(x).finish(),
+            ExprNode::DiracDelta(x) => f.debug_tuple("DiracDelta").field(x).finish(),
             ExprNode::Gamma(x) => f.debug_tuple("Gamma").field(x).finish(),
             ExprNode::LogGamma(x) => f.debug_tuple("LogGamma").field(x).finish(),
             ExprNode::Digamma(x) => f.debug_tuple("Digamma").field(x).finish(),
