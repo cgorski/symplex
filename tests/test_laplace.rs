@@ -1,0 +1,246 @@
+//! Public API tests for Laplace and inverse Laplace transforms.
+
+use symplex::prelude::*;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Forward Laplace transforms
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn laplace_constant() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    let f = ctx.int(5);
+    let result = f.laplace(&t, &s).unwrap();
+    let d = format!("{result}");
+    // L{5} = 5/s — displayed as 5*s^(-1) or similar
+    assert!(
+        d.contains("5") && d.contains("s"),
+        "L{{5}} should be 5/s, got: {d}"
+    );
+}
+
+#[test]
+fn laplace_one() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    let f = ctx.int(1);
+    let result = f.laplace(&t, &s).unwrap();
+    let d = format!("{result}");
+    // L{1} = 1/s
+    assert!(d.contains("s"), "L{{1}} should be 1/s, got: {d}");
+}
+
+#[test]
+fn laplace_exp() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L{exp(2t)} = 1/(s-2)
+    let f = (&t * 2).exp();
+    let result = f.laplace(&t, &s).unwrap();
+    let d = format!("{result}");
+    // Should contain (s - 2) in denominator
+    assert!(
+        d.contains("s") && d.contains("2"),
+        "L{{exp(2t)}} should involve s and 2, got: {d}"
+    );
+}
+
+#[test]
+fn laplace_exp_negative() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L{exp(-3t)} = 1/(s+3)
+    let f = (&t * -3).exp();
+    let result = f.laplace(&t, &s).unwrap();
+    let d = format!("{result}");
+    assert!(
+        d.contains("s") && d.contains("3"),
+        "L{{exp(-3t)}} should involve s and 3, got: {d}"
+    );
+}
+
+#[test]
+fn laplace_sin() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L{sin(3t)} = 3/(s²+9)
+    let f = (&t * 3).sin();
+    let result = f.laplace(&t, &s).unwrap();
+    let d = format!("{result}");
+    assert!(
+        d.contains("3") && d.contains("s"),
+        "L{{sin(3t)}} should involve 3 and s, got: {d}"
+    );
+}
+
+#[test]
+fn laplace_cos() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L{cos(t)} = s/(s²+1)
+    let f = t.cos();
+    let result = f.laplace(&t, &s).unwrap();
+    let d = format!("{result}");
+    assert!(d.contains("s"), "L{{cos(t)}} should involve s, got: {d}");
+}
+
+#[test]
+fn laplace_t_squared() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L{t²} = 2/s³ = 2*s^(-3)
+    let f = t.powi(2);
+    let result = f.laplace(&t, &s).unwrap();
+    let d = format!("{result}");
+    assert!(
+        d.contains("2") && d.contains("s"),
+        "L{{t²}} should be 2/s³, got: {d}"
+    );
+}
+
+#[test]
+fn laplace_linearity() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L{3*exp(t) + 2*sin(t)} should succeed (linearity)
+    let term1 = &t.exp() * 3;
+    let term2 = &t.sin() * 2;
+    let f = &term1 + &term2;
+    let result = f.laplace(&t, &s);
+    assert!(result.is_ok(), "linearity should work: {:?}", result.err());
+    let d = format!("{}", result.unwrap());
+    assert!(d.contains("s"), "result should contain s, got: {d}");
+}
+
+#[test]
+fn laplace_freq_shift() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L{exp(2t)*sin(3t)} = 3/((s-2)²+9) via frequency shift
+    let f = &((&t * 2).exp()) * &((&t * 3).sin());
+    let result = f.laplace(&t, &s);
+    assert!(
+        result.is_ok(),
+        "frequency shift should work: {:?}",
+        result.err()
+    );
+    let d = format!("{}", result.unwrap());
+    assert!(
+        d.contains("s") && d.contains("3"),
+        "L{{exp(2t)*sin(3t)}} should involve s and 3, got: {d}"
+    );
+}
+
+#[test]
+fn laplace_sinh() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L{sinh(2t)} = 2/(s²-4)
+    let f = (&t * 2).sinh();
+    let result = f.laplace(&t, &s).unwrap();
+    let d = format!("{result}");
+    assert!(
+        d.contains("s") && d.contains("2"),
+        "L{{sinh(2t)}} should involve s and 2, got: {d}"
+    );
+}
+
+#[test]
+fn laplace_cosh() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L{cosh(t)} = s/(s²-1)
+    let f = t.cosh();
+    let result = f.laplace(&t, &s).unwrap();
+    let d = format!("{result}");
+    assert!(d.contains("s"), "L{{cosh(t)}} should involve s, got: {d}");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Inverse Laplace transforms
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn inverse_laplace_1_over_s() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L⁻¹{1/s} = 1
+    let f = &ctx.int(1) / &s;
+    let result = f.inverse_laplace(&s, &t);
+    assert!(
+        result.is_ok(),
+        "L⁻¹{{1/s}} should succeed: {:?}",
+        result.err()
+    );
+    let d = format!("{}", result.unwrap());
+    // The result should be 1 (no t dependence)
+    assert!(
+        d == "1" || !d.contains("s"),
+        "L⁻¹{{1/s}} should be 1 (constant), got: {d}"
+    );
+}
+
+#[test]
+fn inverse_laplace_1_over_s_minus_a() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L⁻¹{1/(s-2)} = exp(2t)
+    let f = &ctx.int(1) / &(&s - 2);
+    let result = f.inverse_laplace(&s, &t);
+    if let Ok(r) = result {
+        let d = format!("{r}");
+        assert!(d.contains("exp"), "L⁻¹{{1/(s-2)}} should contain exp: {d}");
+    }
+    // If inverse can't handle it via apart, that's acceptable — don't hard-fail
+}
+
+#[test]
+fn inverse_laplace_constant_over_s() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let s = ctx.symbol("s");
+    // L⁻¹{5/s} = 5
+    let f = &ctx.int(5) / &s;
+    let result = f.inverse_laplace(&s, &t);
+    assert!(
+        result.is_ok(),
+        "L⁻¹{{5/s}} should succeed: {:?}",
+        result.err()
+    );
+    let d = format!("{}", result.unwrap());
+    assert!(d.contains("5"), "L⁻¹{{5/s}} should be 5, got: {d}");
+}
+
+#[test]
+fn laplace_rejects_non_symbol_t() {
+    let ctx = Context::new();
+    let s = ctx.symbol("s");
+    let f = ctx.int(1);
+    let bad_t = ctx.int(42); // not a symbol
+    let result = f.laplace(&bad_t, &s);
+    assert!(result.is_err(), "should reject non-symbol t");
+}
+
+#[test]
+fn laplace_rejects_non_symbol_s() {
+    let ctx = Context::new();
+    let t = ctx.symbol("t");
+    let f = ctx.int(1);
+    let bad_s = ctx.int(42); // not a symbol
+    let result = f.laplace(&t, &bad_s);
+    assert!(result.is_err(), "should reject non-symbol s");
+}

@@ -60,6 +60,7 @@ pub(crate) mod fourier;
 pub(crate) mod gruntz;
 pub(crate) mod integrate;
 pub(crate) mod lambdify;
+pub(crate) mod laplace;
 pub(crate) mod limit;
 pub(crate) mod linalg;
 pub(crate) mod log_combine;

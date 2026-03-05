@@ -2003,6 +2003,62 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// Compute the Laplace transform L{self}(s) with respect to time variable `t`.
+    ///
+    /// Uses a table-based approach supporting constants, polynomials in `t`,
+    /// exponentials, trigonometric and hyperbolic functions, plus linearity
+    /// and the frequency-shift property.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let t = ctx.symbol("t");
+    /// let s = ctx.symbol("s");
+    /// // L{exp(2t)} = 1/(s-2)
+    /// let result = (&t * 2).exp().laplace(&t, &s).unwrap();
+    /// ```
+    #[must_use = "returns the Laplace transform; does not modify in place"]
+    pub fn laplace(&self, t: &Ex, s: &Ex) -> Result<Ex, SymplexError> {
+        let _span = debug_span!("laplace", expr = ?self.id, t = ?t.id, s = ?s.id).entered();
+        let id = self
+            .inner
+            .write()
+            .arena
+            .laplace_transform_expr(self.id, t.id, s.id)?;
+        Ok(self.wrap(id))
+    }
+
+    /// Compute the inverse Laplace transform L⁻¹{self}(t) with respect to
+    /// frequency variable `s`.
+    ///
+    /// Uses partial fraction decomposition followed by table lookup for
+    /// each term.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let t = ctx.symbol("t");
+    /// let s = ctx.symbol("s");
+    /// // L⁻¹{1/s} = 1
+    /// let result = (&ctx.int(1) / &s).inverse_laplace(&s, &t).unwrap();
+    /// ```
+    #[must_use = "returns the inverse Laplace transform; does not modify in place"]
+    pub fn inverse_laplace(&self, s: &Ex, t: &Ex) -> Result<Ex, SymplexError> {
+        let _span = debug_span!("inverse_laplace", expr = ?self.id, s = ?s.id, t = ?t.id).entered();
+        let id = self
+            .inner
+            .write()
+            .arena
+            .inverse_laplace_transform_expr(self.id, s.id, t.id)?;
+        Ok(self.wrap(id))
+    }
+
     /// Compute the limit of this expression as `var` approaches `point`.
     ///
     /// Uses direct substitution, L'Hôpital's rule (for 0/0 and ∞/∞),

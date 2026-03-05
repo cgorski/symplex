@@ -1291,6 +1291,32 @@ impl Arena {
         crate::fourier::fourier_series(self, expr, var, n_terms)
     }
 
+    /// Compute the Laplace transform of `expr` with respect to time variable `t`,
+    /// producing a function of frequency variable `s`.
+    ///
+    /// Delegates to [`laplace::laplace_transform`].
+    pub fn laplace_transform_expr(
+        &mut self,
+        expr: ExprId,
+        t: ExprId,
+        s: ExprId,
+    ) -> Result<ExprId, crate::errors::SymplexError> {
+        crate::laplace::laplace_transform(self, expr, t, s)
+    }
+
+    /// Compute the inverse Laplace transform of `expr` (function of `s`)
+    /// back to a function of time variable `t`.
+    ///
+    /// Delegates to [`laplace::inverse_laplace_transform`].
+    pub fn inverse_laplace_transform_expr(
+        &mut self,
+        expr: ExprId,
+        s: ExprId,
+        t: ExprId,
+    ) -> Result<ExprId, crate::errors::SymplexError> {
+        crate::laplace::inverse_laplace_transform(self, expr, s, t)
+    }
+
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.
     ///
     /// Returns the string representation of the result, or an error if the
