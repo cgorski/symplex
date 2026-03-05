@@ -1,0 +1,16 @@
+[package]
+name = "symplex-build"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93.0"
+license = "MIT OR Apache-2.0"
+description = "Build-time code generation for symplex: derive symbolic equations and emit optimized no_std Rust"
+repository = "https://github.com/cgorski/symplex"
+readme = "README.md"
+keywords = ["robotics", "codegen", "embedded", "symbolic", "no-std"]
+categories = ["mathematics", "embedded", "development-tools::build-utils"]
+
+[dependencies]
+symplex = { version = "0.1.0", path = ".." }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }

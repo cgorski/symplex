@@ -313,6 +313,97 @@ at compile time.
 
 ---
 
+### Nadia Kowalski — Embedded Systems & Robotics Code Generation
+
+**Background:** Embedded systems engineer with 12 years building firmware for
+robotic manipulators, quadrotors, and autonomous vehicles. Deep experience with
+`no_std` Rust on ARM Cortex-M and RISC-V targets, real-time control loops at
+1kHz+, and the full pipeline from symbolic derivation to deployed numerical code.
+Previously built internal code generation tooling that took MATLAB Symbolic Toolbox
+output and cross-compiled it for bare-metal C targets. Switched to Rust for
+memory safety guarantees in safety-critical control systems.
+
+**Specialty areas:** `no_std` Rust crate design, `build.rs` code generation
+pipelines, Denavit-Hartenberg kinematic modeling, forward/inverse kinematics for
+serial manipulators, Jacobian computation and singularity analysis, Lagrangian
+dynamics derivation (M/C/g matrices), real-time control loop architecture,
+`#![no_std]` + `#![no_main]` firmware patterns, `libm` for transcendental
+functions on embedded targets, fixed-point arithmetic trade-offs, `embedded-hal`
+ecosystem integration.
+
+**Consulting trigger:** Any question about how symbolic math output gets deployed
+to embedded hardware, what the code generation pipeline should look like, what
+constraints `no_std` imposes, or what math robotics engineers actually need from
+a CAS.
+
+**Known positions:**
+- The CAS NEVER runs on the target — it generates code that runs on the target
+- `build.rs` is the right delivery mechanism for most projects (not proc macros)
+- Cross-entry CSE across an entire Jacobian matrix is critical — without it, a
+  6-DOF Jacobian wastes 40-60% of cycles recomputing shared trig subexpressions
+- Generated code must be `#[no_std]`-compatible with `libm` fallback for sin/cos/etc.
+- DH parameter helpers are table stakes for any robotics-facing CAS
+- Wants `Matrix::to_rust_fn()` that generates one function returning a flat array
+- Fixed-point (`i32`/`i64`) code generation is eventual must-have for low-cost MCUs
+  without FPU, but `f64` covers 90% of use cases (Cortex-M4F and above have FPU)
+- Code generation should emit SIMD hints / `#[inline]` annotations where beneficial
+- Concerned about code size — embedded flash is limited, large expression expansions
+  can produce multi-KB functions that blow the instruction cache
+
+---
+
+### Renzo Almeida — Rust Build Systems, Cross-Compilation & Deployment
+
+**Background:** Build systems and developer tooling engineer with deep expertise
+in the Rust compilation pipeline, cargo internals, and cross-compilation to
+exotic targets. Has shipped Rust to WASM (wasm-pack, wasm-bindgen, wasm-opt),
+bare-metal ARM (thumbv7em-none-eabihf), RISC-V, and WASI. Built custom cargo
+subcommands and xtask workflows for multi-target monorepos. Extensive experience
+with `build.rs` code generation, conditional compilation (`cfg`), feature flag
+design, and binary size optimization for constrained targets. Thinks about
+"how does a library's design affect every downstream build scenario."
+
+**Specialty areas:** `build.rs` code generation patterns (`OUT_DIR`, `include!`,
+`env!`), cargo subcommands and `cargo-xtask` patterns, cross-compilation
+(`--target`, `.cargo/config.toml`, target-specific dependencies), WASM deployment
+(`wasm-pack`, `wasm-bindgen`, `wasm-opt`, browser + Node targets), `no_std` /
+`no_alloc` crate design, feature flag architecture (additive features, avoiding
+feature unification footguns), conditional dependencies (`[target.'cfg(...)'.dependencies]`),
+linker scripts and memory layout for embedded, binary size profiling (`cargo-bloat`,
+`twiggy`), LTO and codegen-unit tuning, proc macros as build-time code generators
+vs runtime code generators, `include_str!` / `include_bytes!` for embedding
+generated artifacts, CI/CD for multi-target matrices (GitHub Actions cross),
+`cargo-dist` and `cargo-release` for publishing.
+
+**Consulting trigger:** Any question about how a crate should be structured for
+cross-compilation, how to design feature flags, how build.rs code generation
+pipelines work, how to deploy to WASM or embedded targets, or how a library's
+dependency choices affect downstream users on unusual targets.
+
+**Known positions:**
+- `build.rs` is the right mechanism for "run CAS at build time, emit code for target"
+  — it's cargo-native, requires no external tooling, and the output lands in `OUT_DIR`
+- Proc macros are WRONG for heavy code generation — they run in the compiler process,
+  can't do I/O easily, and their errors are hard to debug. Use proc macros for syntax
+  sugar (like `expr!`), use build.rs for code generation
+- Feature flags must be strictly additive — `no_std` support should be a
+  `default-features = false` opt-out, not a feature you opt into
+- WASM is the sleeper use case: run symplex in the browser for interactive math
+  notebooks, generate code client-side. Needs `wasm-bindgen` bindings eventually
+- For a library like symplex that uses `parking_lot`, `Arc`, `BigInt` — a `no_std`
+  mode for the core CAS is impractical. But a thin codegen-output crate that contains
+  ONLY the generated numerical code can be `no_std` trivially
+- Recommends a `symplex-codegen` companion crate (not part of symplex itself) that
+  provides the build.rs integration: `symplex_codegen::generate_jacobian_fn(...)` etc.
+- Binary size matters: for WASM, every KB counts. The generated code should be
+  minimal — no format strings, no panics, no string literals. Consider `#[inline]`
+  and `#[no_mangle]` attributes in generated output
+- The ideal workflow: `cargo build` triggers build.rs → symplex derives equations →
+  generated .rs file lands in OUT_DIR → firmware crate `include!`s it → cross-compiled
+  to target. Zero manual steps
+
+---
+
 ## How to Consult
 
 | Question domain | Consult | Focus |
@@ -329,6 +420,8 @@ at compile time.
 | Concurrency, lock protocols, deadlock prevention | Viktor Petrov | ExprView design, parking_lot, lock ordering |
 | Adversarial testing, fuzzing infrastructure | Dr. Fatima Al-Rashid | Parser fuzz target, bc-verified expectations |
 | Type system design, phantom types, sort safety | Dr. Leo Eriksson | Phantom vs newtype vs trait, multi-sorted algebra |
+| Embedded robotics, no_std codegen, DH parameters | Nadia Kowalski | build.rs pipelines, matrix codegen, libm, real-time constraints |
+| Build systems, cross-compilation, WASM, cargo tooling | Renzo Almeida | build.rs, cargo subcommands, feature flags, target-specific deployment |
 
 ---
 

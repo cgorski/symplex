@@ -4,8 +4,13 @@
 //! operations: construction, display, transpose, addition, scalar
 //! multiplication, matrix multiplication, determinant, and trace.
 
+use crate::errors::SymplexError;
 use crate::expr::Ex;
 use std::fmt;
+
+// Re-export codegen option types so users can access them from the public
+// `symplex::matrix` module (the `codegen` module itself is pub(crate)).
+pub use crate::codegen::{CodegenOptions, MathBackend, Precision};
 
 /// A dense matrix of symbolic expressions.
 ///
@@ -741,6 +746,64 @@ impl Matrix {
     /// Simplify every element via built-in rewrite rules.
     pub fn simplify(&self) -> Matrix {
         self.map(|elem| elem.simplify())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Code generation
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Matrix {
+    /// Generate a Rust function that computes this matrix and returns a flat array.
+    ///
+    /// Uses cross-entry common subexpression elimination for optimal performance.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::matrix::Matrix;
+    ///
+    /// let x = symplex::var("x");
+    /// let m = Matrix::new(vec![
+    ///     vec![x.sin(), x.cos()],
+    ///     vec![-x.cos(), x.sin()],
+    /// ]);
+    /// let code = m.to_rust_fn("rotation", &["x"]).unwrap();
+    /// assert!(code.contains("pub fn rotation"));
+    /// assert!(code.contains("[f64; 4]"));
+    /// ```
+    pub fn to_rust_fn(&self, name: &str, params: &[&str]) -> Result<String, SymplexError> {
+        self.to_rust_fn_with_options(name, params, &CodegenOptions::default())
+    }
+
+    /// Generate a Rust function with custom code generation options.
+    ///
+    /// See [`CodegenOptions`] for available settings (precision, math backend,
+    /// annotations, CSE toggle).
+    pub fn to_rust_fn_with_options(
+        &self,
+        name: &str,
+        params: &[&str],
+        options: &CodegenOptions,
+    ) -> Result<String, SymplexError> {
+        assert!(
+            !self.rows.is_empty() && !self.rows[0].is_empty(),
+            "cannot generate code for an empty matrix"
+        );
+        // Get the context from the first entry.
+        let first = &self.rows[0][0];
+        let mut guard = first.inner.write();
+        let arena = &mut guard.arena;
+        // Collect all ExprIds in row-major order.
+        let entry_ids: Vec<crate::node::ExprId> = self
+            .rows
+            .iter()
+            .flat_map(|row| row.iter().map(|e| e.id))
+            .collect();
+        crate::codegen::matrix_to_rust_fn(
+            arena, &entry_ids, self.nrows, self.ncols, name, params, options,
+        )
     }
 }
 

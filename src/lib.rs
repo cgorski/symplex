@@ -84,6 +84,8 @@ pub(crate) mod powsimp;
 pub(crate) mod radsimp;
 pub(crate) mod residue;
 pub(crate) mod rewrite;
+/// Robotics kinematics: DH parameters, forward kinematics.
+pub mod robotics;
 pub(crate) mod separatevars;
 pub(crate) mod series;
 pub(crate) mod simplify_engine;

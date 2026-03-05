@@ -2536,6 +2536,33 @@ impl Expr<Numeric> {
         guard.arena.to_rust_fn(self.id, name, args)
     }
 
+    /// Generate a Rust function body as a string with custom code generation options.
+    ///
+    /// See [`CodegenOptions`](crate::codegen::CodegenOptions) for available
+    /// settings (precision, math backend, annotations, CSE toggle).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use symplex::prelude::*;
+    /// use symplex::codegen::{CodegenOptions, Precision};
+    ///
+    /// let x = symplex::var("x");
+    /// let f = x.powi(2) + 1;
+    /// let opts = CodegenOptions { precision: Precision::F32, ..Default::default() };
+    /// let code = f.to_rust_fn_with_options("my_func", &["x"], &opts).unwrap();
+    /// assert!(code.contains("f32"));
+    /// ```
+    pub fn to_rust_fn_with_options(
+        &self,
+        name: &str,
+        args: &[&str],
+        options: &crate::codegen::CodegenOptions,
+    ) -> Result<String, SymplexError> {
+        let mut guard = self.inner.write();
+        crate::codegen::to_rust_fn_with_options(&mut guard.arena, self.id, name, args, options)
+    }
+
     // ── Collection reduction ───────────────────────────────────────
 
     /// Sum a collection of expressions.
