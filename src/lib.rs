@@ -42,6 +42,7 @@ pub(crate) mod apart;
 pub(crate) mod arena;
 pub(crate) mod canon;
 pub(crate) mod codegen;
+pub(crate) mod combsimp;
 pub(crate) mod complex;
 pub(crate) mod cse;
 pub(crate) mod diff;
@@ -66,6 +67,7 @@ pub(crate) mod log_expand;
 /// Symbolic matrix type and operations.
 pub mod matrix;
 pub(crate) mod node;
+pub(crate) mod nsimplify;
 /// Ordinary differential equation solver.
 pub mod ode;
 pub(crate) mod pattern;

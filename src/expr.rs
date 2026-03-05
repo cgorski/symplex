@@ -2163,6 +2163,48 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// Simplify combinatorial expressions (factorials, binomials).
+    ///
+    /// Cancels common factorial terms in products, detects binomial
+    /// coefficient patterns, and simplifies ratios like `n! / (n-1)!` → `n`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let result = symplex::int(5).factorial().eval();
+    /// let four_fact = symplex::int(4).factorial().eval();
+    /// let ratio = (&result / &four_fact).combsimp();
+    /// assert_eq!(format!("{ratio}"), "5");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn combsimp(&self) -> Ex {
+        let id = self.inner.write().arena.combsimp_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Find a simple closed-form for a numerical expression.
+    ///
+    /// Tries rational approximations (via continued fractions),
+    /// π-multiples, and square roots of small integers within the
+    /// given `tolerance`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let expr = symplex::rational(333333, 1000000);
+    /// let result = expr.nsimplify(1e-5);
+    /// assert_eq!(format!("{result}"), "1/3");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn nsimplify(&self, tolerance: f64) -> Ex {
+        let id = self.inner.write().arena.nsimplify_expr(self.id, tolerance);
+        self.wrap(id)
+    }
+
     /// Combine like bases in products with symbolic exponents.
     ///
     /// Extends the numeric power-merging done during canonicalization

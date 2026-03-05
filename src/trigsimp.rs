@@ -1,10 +1,12 @@
 //! Dedicated trigonometric simplification.
 //!
 //! Goes beyond the pattern-based rules in `pattern.rs` by trying
-//! exhaustive Pythagorean replacements and double-angle formulas.
-//! Multiple strategies are attempted and the result with the fewest
-//! operations (measured by [`count_ops`](crate::simplify_engine::count_ops))
-//! is returned.
+//! exhaustive Pythagorean replacements, double-angle formulas,
+//! trig combination, and trig expansion.
+//!
+//! Multiple strategies are attempted (choice-set approach) and the
+//! result with the fewest operations (measured by
+//! [`count_ops`](crate::simplify_engine::count_ops)) is returned.
 
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode};
@@ -15,25 +17,55 @@ use rustc_hash::FxHashMap;
 
 /// Apply trigonometric simplification rules exhaustively.
 ///
-/// Strategy: try several rewrite variants and keep the smallest.
+/// Strategy (choice-set): try several rewrite variants and keep the smallest.
 ///
-/// 1. Apply existing pattern rules (sin²+cos²→1, etc.)
-/// 2. Replace every sin²(x) with 1−cos²(x), then simplify
-/// 3. Replace every cos²(x) with 1−sin²(x), then simplify
+/// 1. Original expression (baseline)
+/// 2. Apply existing pattern rules (sin²+cos²→1, etc.)
+/// 3. Replace every sin²(x) with 1−cos²(x), then simplify
+/// 4. Replace every cos²(x) with 1−sin²(x), then simplify
+/// 5. trig_combine (product-to-sum, double-angle identities)
+/// 6. expand_trig then eval + pattern simplify
 pub(crate) fn trigsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
-    let strategies = [
-        apply_pattern_rules(arena, expr),
-        replace_sin2_with_1_minus_cos2(arena, expr),
-        replace_cos2_with_1_minus_sin2(arena, expr),
+    // Strategy 1: original expression (baseline)
+    let s0 = expr;
+
+    // Strategy 2: eval → pattern-rule simplification
+    let s1 = apply_pattern_rules(arena, expr);
+
+    // Strategy 3: sin²→1−cos² replacement
+    let s2 = replace_sin2_with_1_minus_cos2(arena, expr);
+
+    // Strategy 4: cos²→1−sin² replacement
+    let s3 = replace_cos2_with_1_minus_sin2(arena, expr);
+
+    // Strategy 5: trig_combine (product-to-sum, double-angle)
+    let s4 = strategy_trig_combine(arena, expr);
+
+    // Strategy 6: expand_trig then eval + simplify
+    let s5 = strategy_expand_trig_then_simplify(arena, expr);
+
+    let candidates = [s0, s1, s2, s3, s4, s5];
+    let _strategy_names = [
+        "original",
+        "pattern_rules",
+        "sin2_to_1_minus_cos2",
+        "cos2_to_1_minus_sin2",
+        "trig_combine",
+        "expand_trig_then_simplify",
     ];
 
-    strategies
-        .into_iter()
-        .min_by_key(|&id| count_ops(arena, id))
-        .unwrap_or(expr)
+    // Pick the candidate with the lowest operation count.
+    let best_idx = candidates
+        .iter()
+        .enumerate()
+        .min_by_key(|&(_, &e)| count_ops(arena, e))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    candidates[best_idx]
 }
 
-// ── Strategy 1: pattern rules ──────────────────────────────────────────
+// ── Strategy 2: pattern rules ──────────────────────────────────────────
 
 /// Eval → pattern-rule simplification (the standard simplify path).
 fn apply_pattern_rules(arena: &mut Arena, expr: ExprId) -> ExprId {
@@ -43,7 +75,7 @@ fn apply_pattern_rules(arena: &mut Arena, expr: ExprId) -> ExprId {
     result
 }
 
-// ── Strategy 2: sin²(x) → 1 − cos²(x) ────────────────────────────────
+// ── Strategy 3: sin²(x) → 1 − cos²(x) ────────────────────────────────
 
 /// Walk bottom-up and replace every `sin(x)^2` with `1 − cos(x)^2`,
 /// then run eval + pattern simplification on the result.
@@ -57,7 +89,7 @@ fn replace_sin2_with_1_minus_cos2(arena: &mut Arena, expr: ExprId) -> ExprId {
     result
 }
 
-// ── Strategy 3: cos²(x) → 1 − sin²(x) ────────────────────────────────
+// ── Strategy 4: cos²(x) → 1 − sin²(x) ────────────────────────────────
 
 /// Walk bottom-up and replace every `cos(x)^2` with `1 − sin(x)^2`,
 /// then run eval + pattern simplification on the result.
@@ -65,6 +97,31 @@ fn replace_cos2_with_1_minus_sin2(arena: &mut Arena, expr: ExprId) -> ExprId {
     let replaced = walk_replace_trig_square(arena, expr, TrigKind::Cos);
     let evaled = crate::eval::eval(arena, replaced);
     let expanded = crate::expand::expand(arena, evaled);
+    let evaled2 = crate::eval::eval(arena, expanded);
+    let rules = crate::pattern::basic_rules(arena);
+    let (result, _) = crate::pattern::apply_rules(arena, evaled2, &rules);
+    result
+}
+
+// ── Strategy 5: trig_combine ───────────────────────────────────────────
+
+/// Apply trig_combine (product-to-sum, double-angle) then eval + simplify.
+fn strategy_trig_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let evaled = crate::eval::eval(arena, expr);
+    let combined = crate::trig_combine::trig_combine(arena, evaled);
+    let evaled2 = crate::eval::eval(arena, combined);
+    let rules = crate::pattern::basic_rules(arena);
+    let (result, _) = crate::pattern::apply_rules(arena, evaled2, &rules);
+    result
+}
+
+// ── Strategy 6: expand_trig then simplify ──────────────────────────────
+
+/// Expand trig functions (addition formulas, multi-angle), then
+/// eval + pattern simplify.
+fn strategy_expand_trig_then_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let evaled = crate::eval::eval(arena, expr);
+    let expanded = crate::trig_expand::expand_trig(arena, evaled);
     let evaled2 = crate::eval::eval(arena, expanded);
     let rules = crate::pattern::basic_rules(arena);
     let (result, _) = crate::pattern::apply_rules(arena, evaled2, &rules);
@@ -205,5 +262,50 @@ mod tests {
 
         let result = trigsimp(&mut arena, expr);
         assert_eq!(display(&arena, result), "6");
+    }
+
+    #[test]
+    fn trigsimp_trig_combine_strategy() {
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let two = arena.int(2);
+        let sin_x = arena.sin(x);
+        let cos_x = arena.cos(x);
+        // 2*sin(x)*cos(x) should simplify via trig_combine to sin(2x)
+        let expr = arena.mul(&[two, sin_x, cos_x]);
+        let result = trigsimp(&mut arena, expr);
+        let result_ops = count_ops(&arena, result);
+        let expr_ops = count_ops(&arena, expr);
+        assert!(
+            result_ops <= expr_ops,
+            "trigsimp should not increase complexity: got {} ops vs original {} ops, result={}",
+            result_ops,
+            expr_ops,
+            display(&arena, result)
+        );
+    }
+
+    #[test]
+    fn trigsimp_picks_best_strategy() {
+        // Verify that the choice-set approach picks the simplest result
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let sin_x = arena.sin(x);
+        let cos_x = arena.cos(x);
+        let two = arena.int(2);
+        let sin2 = arena.pow(sin_x, two);
+        let cos2 = arena.pow(cos_x, two);
+        // cos²(x) - sin²(x) → cos(2x) via trig_combine
+        let expr = arena.sub(cos2, sin2);
+        let result = trigsimp(&mut arena, expr);
+        let result_ops = count_ops(&arena, result);
+        let expr_ops = count_ops(&arena, expr);
+        assert!(
+            result_ops <= expr_ops,
+            "trigsimp should simplify cos²-sin²: got {} ops, original {} ops, result={}",
+            result_ops,
+            expr_ops,
+            display(&arena, result)
+        );
     }
 }

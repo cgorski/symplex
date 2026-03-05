@@ -833,6 +833,24 @@ impl Arena {
         crate::trigsimp::trigsimp(self, expr)
     }
 
+    /// Simplify combinatorial expressions (factorials, binomials).
+    ///
+    /// Cancels common factorial terms in products, e.g.
+    /// `n! / (n-1)!` → `n`.
+    /// Delegates to [`combsimp::combsimp`].
+    pub fn combsimp_expr(&mut self, expr: ExprId) -> ExprId {
+        crate::combsimp::combsimp(self, expr)
+    }
+
+    /// Find a simple closed-form for a numerical expression.
+    ///
+    /// Tries rational approximations, π-multiples, and square roots
+    /// within the given `tolerance`.
+    /// Delegates to [`nsimplify::nsimplify`].
+    pub fn nsimplify_expr(&mut self, expr: ExprId, tol: f64) -> ExprId {
+        crate::nsimplify::nsimplify(self, expr, tol)
+    }
+
     /// Combine like bases in products with symbolic exponents.
     ///
     /// `x^a * x^b → x^(a+b)` even when `a` and `b` are not numeric.
