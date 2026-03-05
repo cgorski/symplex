@@ -572,6 +572,27 @@ impl Context {
     pub fn node_count(&self) -> usize {
         self.inner.read().arena.node_count()
     }
+
+    /// Compute the fraction of arena nodes reachable from the given root expressions.
+    ///
+    /// Returns a value between 0.0 and 1.0. A value of 0.3 means 70% of
+    /// arena nodes are unreachable (dead) and would be freed by `compact()`.
+    pub fn liveness_ratio(&self, roots: &[crate::expr::Ex]) -> f64 {
+        let root_ids: Vec<crate::node::ExprId> = roots.iter().map(|r| r.id).collect();
+        let inner = self.inner.read();
+        crate::compact::liveness_ratio(&inner.arena, &root_ids)
+    }
+
+    /// Heuristic: should the arena be compacted?
+    ///
+    /// Returns `true` when the arena has grown large (>100K nodes),
+    /// has doubled since the last compact, and less than 50% of nodes
+    /// are reachable from the given roots.
+    pub fn should_compact(&self, roots: &[crate::expr::Ex]) -> bool {
+        let root_ids: Vec<crate::node::ExprId> = roots.iter().map(|r| r.id).collect();
+        let inner = self.inner.read();
+        crate::compact::should_compact(&inner.arena, &root_ids)
+    }
 }
 
 impl Default for Context {

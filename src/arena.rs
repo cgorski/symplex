@@ -142,6 +142,9 @@ pub struct Arena {
 
     /// [`NumId`] for the rational value −1.
     pub(crate) neg_one_num: NumId,
+
+    /// Node count at the last `compact()` call. Used by `should_compact()` heuristic.
+    pub(crate) last_compact_size: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +187,7 @@ impl Arena {
             zero_num: NumId(0),
             one_num: NumId(0),
             neg_one_num: NumId(0),
+            last_compact_size: 0,
         };
 
         // 1. Intern the three fundamental numeric values.

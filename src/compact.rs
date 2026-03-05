@@ -4,6 +4,9 @@
 //! preserving structural sharing via hash-consing in the destination.
 //! This is the core primitive behind [`Context::compact()`](crate::context::Context::compact).
 //!
+//! [`liveness_ratio`] and [`should_compact`] provide lightweight heuristics
+//! for deciding *when* to compact without actually performing the copy.
+//!
 //! # Algorithm
 //!
 //! 1. Compute a post-order traversal of the source subtree (leaves first).
@@ -48,7 +51,80 @@ pub(crate) fn transfer_subtree(
         map.insert(old_id, new_id);
     }
 
+    // Record the destination arena size so should_compact() can detect
+    // when the arena has doubled since its last compaction.
+    dst.last_compact_size = dst.node_count();
+
     map[&root]
+}
+
+// ---------------------------------------------------------------------------
+// Liveness analysis
+// ---------------------------------------------------------------------------
+
+/// Compute the fraction of arena nodes reachable from the given roots.
+///
+/// Returns `live_count / total_count`.  Cost: O(live_nodes) time,
+/// O(total_nodes) memory for a temporary bitmap.
+/// Zero cost when not called.
+pub(crate) fn liveness_ratio(arena: &Arena, roots: &[ExprId]) -> f64 {
+    let total = arena.node_count();
+    if total == 0 {
+        return 1.0;
+    }
+
+    let mut alive = vec![false; total]; // simple bool vec
+    let mut stack: Vec<ExprId> = roots.to_vec();
+
+    while let Some(id) = stack.pop() {
+        let idx = id.0 as usize;
+        if idx < total && !alive[idx] {
+            alive[idx] = true;
+            arena.node(id).for_each_child(|child| {
+                if (child.0 as usize) < total && !alive[child.0 as usize] {
+                    stack.push(child);
+                }
+            });
+        }
+    }
+
+    let live = alive.iter().filter(|&&b| b).count();
+
+    tracing::trace!(
+        total_nodes = total,
+        live_nodes = live,
+        ratio = live as f64 / total as f64,
+        "liveness_ratio computed",
+    );
+
+    live as f64 / total as f64
+}
+
+/// Heuristic: should the arena be compacted?
+///
+/// Returns `true` when **all three** conditions hold:
+///
+/// 1. The arena has more than 100 000 nodes, **and**
+/// 2. The arena has grown to at least 2× its size at last compact, **and**
+/// 3. Less than 50 % of nodes are reachable from the given roots.
+pub(crate) fn should_compact(arena: &Arena, roots: &[ExprId]) -> bool {
+    let total = arena.node_count();
+    if total < 100_000 {
+        tracing::trace!(total_nodes = total, "should_compact: arena too small");
+        return false;
+    }
+    if total < arena.last_compact_size.saturating_mul(2) {
+        tracing::trace!(
+            total_nodes = total,
+            last_compact_size = arena.last_compact_size,
+            "should_compact: not yet doubled since last compact",
+        );
+        return false;
+    }
+    let ratio = liveness_ratio(arena, roots);
+    let verdict = ratio < 0.5;
+    tracing::trace!(ratio, verdict, "should_compact: liveness check",);
+    verdict
 }
 
 /// Transfer a single node, remapping its children and side-table references.
@@ -119,9 +195,7 @@ fn remap_node(
         ExprNode::Or(children) => ExprNode::Or(children.iter().map(&m).collect()),
         ExprNode::Min(children) => ExprNode::Min(children.iter().map(&m).collect()),
         ExprNode::Max(children) => ExprNode::Max(children.iter().map(&m).collect()),
-        ExprNode::FiniteSet(children) => {
-            ExprNode::FiniteSet(children.iter().map(&m).collect())
-        }
+        ExprNode::FiniteSet(children) => ExprNode::FiniteSet(children.iter().map(&m).collect()),
         ExprNode::SetUnion(children) => ExprNode::SetUnion(children.iter().map(&m).collect()),
         ExprNode::SetIntersection(children) => {
             ExprNode::SetIntersection(children.iter().map(&m).collect())

@@ -93,6 +93,18 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
             {
                 return solutions;
             }
+            // Try LambertW for mixed polynomial-exponential equations:
+            // x·exp(x) = c, x·exp(a·x) = c, exp(x) + x = c, etc.
+            let var_sym_opt = match arena.node(var) {
+                ExprNode::Symbol(sid) => Some(*sid),
+                _ => None,
+            };
+            if let Some(var_sym) = var_sym_opt
+                && let Some(solutions) = try_solve_lambert(arena, expr, var, var_sym)
+                    && !solutions.is_empty()
+                {
+                    return solutions;
+                }
             return Vec::new();
         }
     };
@@ -1087,6 +1099,224 @@ fn rewrite_exp_powers(arena: &mut Arena, expr: ExprId, var: ExprId, gen_exp_x: E
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// LambertW solving for mixed polynomial-exponential equations
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to solve equations involving mixed polynomial and exponential terms
+/// using the LambertW function.
+///
+/// Recognizes forms like:
+/// - `x·exp(x) = c`  →  `x = W(c)`
+/// - `x·exp(a·x) = c`  →  `x = W(a·c)/a`
+/// - `a·exp(b·x) + c·x + d = 0`  →  rearrange to Lambert form
+fn try_solve_lambert(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    _var_sym: SymbolId,
+) -> Option<Vec<Solution>> {
+    tracing::debug!("solve: trying LambertW");
+
+    // Get additive terms
+    let terms: Vec<ExprId> = match arena.node(expr).clone() {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![expr],
+    };
+
+    // Classify each term into categories
+    let mut constant_terms: Vec<ExprId> = Vec::new();
+    let mut linear_coeffs: Vec<ExprId> = Vec::new(); // A for A*var
+    let mut exp_terms: Vec<(ExprId, ExprId)> = Vec::new(); // (A, B) for A*exp(B*var)
+    let mut var_exp_terms: Vec<(ExprId, ExprId)> = Vec::new(); // (A, B) for A*var*exp(B*var)
+
+    for &term in &terms {
+        if !expr_contains_var(arena, term, var) {
+            constant_terms.push(term);
+            continue;
+        }
+
+        match classify_lambert_term(arena, term, var) {
+            Some(LambertTermClass::Linear(coeff)) => linear_coeffs.push(coeff),
+            Some(LambertTermClass::ExpVar(coeff, exp_coeff)) => {
+                exp_terms.push((coeff, exp_coeff));
+            }
+            Some(LambertTermClass::VarExpVar(coeff, exp_coeff)) => {
+                var_exp_terms.push((coeff, exp_coeff));
+            }
+            None => return None,
+        }
+    }
+
+    // Build constant sum (D)
+    let d = match constant_terms.len() {
+        0 => arena.zero,
+        1 => constant_terms[0],
+        _ => arena.add(&constant_terms),
+    };
+
+    // ── Pattern 1: A*var*exp(B*var) + D = 0 ──────────────────────────
+    // One mixed term, no exp-only or linear terms.
+    //   A*var*exp(B*var) = -D
+    //   var*exp(B*var) = -D/A
+    //   B*var*exp(B*var) = -B*D/A
+    //   B*var = W(-B*D/A)
+    //   var = W(-B*D/A) / B
+    if var_exp_terms.len() == 1 && exp_terms.is_empty() && linear_coeffs.is_empty() {
+        let (a, b) = var_exp_terms[0];
+        let neg_d = arena.neg(d);
+        let neg_d_over_a = arena.div(neg_d, a);
+        let b_arg = arena.mul(&[b, neg_d_over_a]);
+        let w = arena.lambertw(b_arg);
+        let solution = arena.div(w, b);
+        let solution = crate::eval::eval(arena, solution);
+        return Some(vec![Solution { value: solution }]);
+    }
+
+    // ── Pattern 2: A*exp(B*var) + C*var + D = 0 ──────────────────────
+    // One exp term, one (aggregate) linear coefficient, no mixed terms.
+    //   A*exp(B*var) = -(C*var + D)
+    //   let u = -(B*var + B*D/C):
+    //     u·exp(u) = A·B / (C·exp(B·D/C))
+    //     u = W(A·B / (C·exp(B·D/C)))
+    //     var = -W(…)/B - D/C
+    if exp_terms.len() == 1 && var_exp_terms.is_empty() && !linear_coeffs.is_empty() {
+        let (a_exp, b) = exp_terms[0];
+        let c = match linear_coeffs.len() {
+            1 => linear_coeffs[0],
+            _ => arena.add(&linear_coeffs),
+        };
+        let b_d = arena.mul(&[b, d]);
+        let b_d_over_c = arena.div(b_d, c);
+        let exp_bd_c = arena.exp(b_d_over_c);
+        let c_exp_bd_c = arena.mul(&[c, exp_bd_c]);
+        let a_b = arena.mul(&[a_exp, b]);
+        let w_arg = arena.div(a_b, c_exp_bd_c);
+        let w = arena.lambertw(w_arg);
+        let neg_w = arena.neg(w);
+        let neg_w_over_b = arena.div(neg_w, b);
+        let d_over_c = arena.div(d, c);
+        let solution = arena.sub(neg_w_over_b, d_over_c);
+        let solution = crate::eval::eval(arena, solution);
+        return Some(vec![Solution { value: solution }]);
+    }
+
+    None
+}
+
+/// Classification of a single additive term for LambertW analysis.
+enum LambertTermClass {
+    /// `A * var` — linear in the solve variable.
+    Linear(ExprId),
+    /// `A * exp(B * var)` — exponential in the solve variable.
+    ExpVar(ExprId, ExprId),
+    /// `A * var * exp(B * var)` — mixed polynomial-exponential.
+    VarExpVar(ExprId, ExprId),
+}
+
+/// Classify a single additive term (known to contain `var`) into a
+/// LambertW-relevant category, or return `None` if unrecognizable.
+fn classify_lambert_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option<LambertTermClass> {
+    // Bare var
+    if term == var {
+        return Some(LambertTermClass::Linear(arena.one));
+    }
+
+    // Bare exp(B*var)
+    if let ExprNode::Exp(inner) = arena.node(term).clone() {
+        if let Some(b) = extract_var_coeff_in_product(arena, inner, var) {
+            return Some(LambertTermClass::ExpVar(arena.one, b));
+        }
+        return None;
+    }
+
+    // Mul(factors...)
+    if let ExprNode::Mul(children) = arena.node(term).clone() {
+        let mut const_factors: Vec<ExprId> = Vec::new();
+        let mut has_var = false;
+        let mut exp_inner: Option<ExprId> = None;
+
+        for &child in &children {
+            if !expr_contains_var(arena, child, var) {
+                const_factors.push(child);
+            } else if child == var {
+                if has_var {
+                    return None;
+                } // var appears twice → var²
+                has_var = true;
+            } else {
+                match arena.node(child).clone() {
+                    ExprNode::Exp(inner) if expr_contains_var(arena, inner, var) => {
+                        if exp_inner.is_some() {
+                            return None;
+                        } // two exp factors
+                        exp_inner = Some(inner);
+                    }
+                    _ => return None, // unrecognized var-dependent factor
+                }
+            }
+        }
+
+        let coeff = match const_factors.len() {
+            0 => arena.one,
+            1 => const_factors[0],
+            _ => arena.mul(&const_factors),
+        };
+
+        match (has_var, exp_inner) {
+            (true, Some(inner)) => {
+                let b = extract_var_coeff_in_product(arena, inner, var)?;
+                Some(LambertTermClass::VarExpVar(coeff, b))
+            }
+            (true, None) => Some(LambertTermClass::Linear(coeff)),
+            (false, Some(inner)) => {
+                let b = extract_var_coeff_in_product(arena, inner, var)?;
+                Some(LambertTermClass::ExpVar(coeff, b))
+            }
+            (false, None) => None, // shouldn't happen (term contains var)
+        }
+    } else {
+        None
+    }
+}
+
+/// Extract the coefficient `k` such that `expr == k * var`.
+///
+/// Returns `Some(k)` if expr is `var` (k=1) or `Mul([..constants.., var])`.
+/// Returns `None` otherwise.
+fn extract_var_coeff_in_product(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+    if expr == var {
+        return Some(arena.one);
+    }
+    match arena.node(expr).clone() {
+        ExprNode::Mul(children) => {
+            let mut const_parts: Vec<ExprId> = Vec::new();
+            let mut found_var = false;
+            for &child in &children {
+                if child == var {
+                    if found_var {
+                        return None;
+                    }
+                    found_var = true;
+                } else if !expr_contains_var(arena, child, var) {
+                    const_parts.push(child);
+                } else {
+                    return None;
+                }
+            }
+            if !found_var {
+                return None;
+            }
+            match const_parts.len() {
+                0 => Some(arena.one),
+                1 => Some(const_parts[0]),
+                _ => Some(arena.mul(&const_parts)),
+            }
+        }
+        _ => None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1764,5 +1994,205 @@ mod tests {
         vals.sort();
         assert_eq!(vals.len(), 2, "expected 2 solutions, got {vals:?}");
         assert_eq!(vals, vec!["-2", "1"], "solutions: {vals:?}");
+    }
+
+    // ── LambertW solver ─────────────────────────────────────────────
+
+    #[test]
+    fn solve_lambert_x_exp_x_eq_1() {
+        // x·exp(x) - 1 = 0  →  x = W(1)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.one;
+        let exp_x = a.exp(x);
+        let x_exp_x = a.mul(&[x, exp_x]);
+        let expr = a.sub(x_exp_x, one);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "x·exp(x)=1 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("lambertw"),
+            "solution should be lambertw(1): {val}"
+        );
+    }
+
+    #[test]
+    fn solve_lambert_x_exp_x_eq_5() {
+        // x·exp(x) - 5 = 0  →  x = W(5)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let five = a.int(5);
+        let exp_x = a.exp(x);
+        let x_exp_x = a.mul(&[x, exp_x]);
+        let expr = a.sub(x_exp_x, five);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "x·exp(x)=5 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("lambertw"),
+            "solution should be lambertw(5): {val}"
+        );
+    }
+
+    #[test]
+    fn solve_lambert_x_exp_x_eq_0() {
+        // x·exp(x) = 0  →  factored as Mul([x, Exp(x)]);
+        // the Mul pre-check solves x=0 from the x factor.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let exp_x = a.exp(x);
+        let expr = a.mul(&[x, exp_x]);
+        let solutions = solve(&mut a, expr, x);
+        assert!(!solutions.is_empty(), "x·exp(x)=0 should have a solution");
+        let vals: Vec<String> = solution_strings(&a, &solutions);
+        assert!(
+            vals.contains(&"0".to_string()),
+            "should have root 0: {vals:?}"
+        );
+    }
+
+    #[test]
+    fn solve_lambert_2x_exp_x_eq_4() {
+        // 2·x·exp(x) - 4 = 0  →  x·exp(x) = 2  →  x = W(2)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let four = a.int(4);
+        let exp_x = a.exp(x);
+        let two_x_exp_x = a.mul(&[two, x, exp_x]);
+        let expr = a.sub(two_x_exp_x, four);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "2·x·exp(x)=4 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("lambertw"),
+            "solution should involve lambertw: {val}"
+        );
+    }
+
+    #[test]
+    fn solve_lambert_x_exp_2x_eq_3() {
+        // x·exp(2·x) - 3 = 0
+        // Multiply by 2: 2·x·exp(2·x) = 6 → 2·x = W(6) → x = W(6)/2
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let three = a.int(3);
+        let two_x = a.mul(&[two, x]);
+        let exp_2x = a.exp(two_x);
+        let x_exp_2x = a.mul(&[x, exp_2x]);
+        let expr = a.sub(x_exp_2x, three);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "x·exp(2x)=3 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("lambertw"),
+            "solution should involve lambertw: {val}"
+        );
+    }
+
+    #[test]
+    fn solve_lambert_exp_x_plus_x_eq_2() {
+        // exp(x) + x - 2 = 0  →  Pattern 2 (A=1, B=1, C=1, D=-2)
+        // Solution: x = 2 - W(exp(2))
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let exp_x = a.exp(x);
+        let sum = a.add(&[exp_x, x]);
+        let expr = a.sub(sum, two);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "exp(x)+x-2=0 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("lambertw"),
+            "solution should involve lambertw: {val}"
+        );
+    }
+
+    #[test]
+    fn solve_lambert_neg_exp_x_minus_x_plus_2() {
+        // -exp(x) - x + 2 = 0  is the same equation as exp(x) + x - 2 = 0
+        // Pattern 2 with A=-1, B=1, C=-1, D=2
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let exp_x = a.exp(x);
+        let neg_exp_x = a.neg(exp_x);
+        let neg_x = a.neg(x);
+        let expr = a.add(&[neg_exp_x, neg_x, two]);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "-exp(x)-x+2=0 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("lambertw"),
+            "solution should involve lambertw: {val}"
+        );
+    }
+
+    #[test]
+    fn solve_lambert_x_squared_exp_x_not_lambert() {
+        // x²·exp(x) - 1 = 0: NOT a LambertW pattern (x² instead of x).
+        // Solver should return empty gracefully.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.one;
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let exp_x = a.exp(x);
+        let x2_exp_x = a.mul(&[x2, exp_x]);
+        let expr = a.sub(x2_exp_x, one);
+        let solutions = solve(&mut a, expr, x);
+        // Should not panic; may return empty since it's not a recognized pattern
+        assert!(
+            solutions.is_empty(),
+            "x²·exp(x)=1 is not a simple LambertW pattern; got {} solutions",
+            solutions.len()
+        );
+    }
+
+    #[test]
+    fn solve_lambert_x_exp_x_eq_e_gives_1() {
+        // x·exp(x) - e = 0  →  x = W(e) = 1
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let e = a.e_const;
+        let exp_x = a.exp(x);
+        let x_exp_x = a.mul(&[x, exp_x]);
+        let expr = a.sub(x_exp_x, e);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "x·exp(x)=e should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert_eq!(val, "1", "W(e) should evaluate to 1: {val}");
+    }
+
+    #[test]
+    fn solve_lambert_preserves_existing_polynomial() {
+        // x^2 - 1 = 0 should still be solved by the polynomial path, not LambertW
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.one;
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let expr = a.sub(x2, one);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 2, "x²-1 should still give 2 roots");
+    }
+
+    #[test]
+    fn solve_lambert_preserves_existing_transcendental() {
+        // exp(x) - 5 = 0 should still be solved by inversion peeling
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let five = a.int(5);
+        let exp_x = a.exp(x);
+        let expr = a.sub(exp_x, five);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1, "exp(x)-5=0 should still give 1 root");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val.contains("ln"),
+            "solution should be ln(5), not lambertw: {val}"
+        );
     }
 }

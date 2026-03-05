@@ -1,0 +1,143 @@
+//! Integration tests for the LambertW function and LambertW-based equation solving.
+//!
+//! The LambertW function W(x) satisfies W(x)·exp(W(x)) = x.
+//!
+//! # Note on solve tests
+//!
+//! The public `Ex::solve()` / `Ex::solve_or_empty()` API currently gates on
+//! polynomial convertibility before dispatching to the internal solver.
+//! Transcendental solvers (inversion peeling, change-of-variable, LambertW)
+//! are exercised through the internal `solve::solve` function, which is
+//! tested via unit tests in `src/solve.rs`.  The integration tests here
+//! focus on LambertW *evaluation* and non-panic robustness through the
+//! public API.
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LambertW evaluation at known values
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn lambertw_eval_at_zero() {
+    // W(0) = 0 because 0·exp(0) = 0
+    let result = symplex::int(0).lambertw().eval();
+    assert_eq!(format!("{result}"), "0");
+}
+
+#[test]
+fn lambertw_eval_at_e() {
+    // W(e) = 1 because 1·exp(1) = e
+    let result = symplex::e().lambertw().eval();
+    assert_eq!(format!("{result}"), "1");
+}
+
+#[test]
+fn lambertw_symbolic_stays_symbolic() {
+    // W(5) has no closed form — should remain as lambertw(5)
+    let result = symplex::int(5).lambertw().eval();
+    let s = format!("{result}");
+    assert!(
+        s.contains("lambertw"),
+        "W(5) should stay symbolic, got: {s}"
+    );
+}
+
+#[test]
+fn lambertw_of_negative_stays_symbolic() {
+    // W(-1) has no simple closed form on the principal branch
+    let result = symplex::int(-1).lambertw().eval();
+    let s = format!("{result}");
+    assert!(
+        s.contains("lambertw"),
+        "W(-1) should stay symbolic, got: {s}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LambertW symbolic construction and display
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn lambertw_display_format() {
+    let expr = symplex::int(3).lambertw();
+    let s = format!("{expr}");
+    assert!(
+        s.contains("lambertw") && s.contains("3"),
+        "display should show lambertw(3), got: {s}"
+    );
+}
+
+#[test]
+fn lambertw_of_expression() {
+    // W(x + 1) should display sensibly and not panic
+    let x = symplex::var("x");
+    let expr = (&x + 1).lambertw();
+    let s = format!("{expr}");
+    assert!(
+        s.contains("lambertw"),
+        "W(x+1) should display with lambertw, got: {s}"
+    );
+}
+
+#[test]
+fn lambertw_nested_eval() {
+    // W(W(e)) = W(1) — since W(e)=1, W(W(e)) = W(1) which stays symbolic
+    let inner = symplex::e().lambertw().eval(); // = 1
+    let outer = inner.lambertw().eval(); // = W(1) ... but 1·exp(1) = e ≠ 1, so W(1) ≠ 1
+    // W(1) ≈ 0.5671; stays symbolic since no closed form
+    // But inner evaluated to 1, so this is W(1)
+    let s = format!("{outer}");
+    // W(1) should either stay as lambertw(1) or evaluate — either is fine
+    assert!(
+        s.contains("lambertw") || s.parse::<f64>().is_ok(),
+        "W(W(e)) = W(1) should be representable, got: {s}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Robustness: public solve_or_empty should not panic on transcendental eqs
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn solve_or_empty_no_panic_on_x_exp_x() {
+    // x·exp(x) - 1 is not polynomial, so public solve_or_empty returns []
+    // (the internal solver handles it — see unit tests in solve.rs).
+    // Key assertion: it must not panic.
+    let x = symplex::var("x");
+    let eq = &x * &x.exp() - 1;
+    let _roots = eq.solve_or_empty(&x);
+    // No panic = success
+}
+
+#[test]
+fn solve_or_empty_no_panic_on_exp_plus_linear() {
+    // exp(x) + x - 2 is not polynomial
+    let x = symplex::var("x");
+    let eq = x.exp() + &x - 2;
+    let _roots = eq.solve_or_empty(&x);
+    // No panic = success
+}
+
+#[test]
+fn solve_or_empty_no_panic_on_x2_exp_x() {
+    // x²·exp(x) - 1 is not polynomial and not a LambertW pattern either
+    let x = symplex::var("x");
+    let eq = x.powi(2) * &x.exp() - 1;
+    let _roots = eq.solve_or_empty(&x);
+    // No panic = success
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Polynomial solve still works (regression guard)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn polynomial_solve_unaffected() {
+    // x² - 1 = 0 → x = ±1 (polynomial path, must still work)
+    let x = symplex::var("x");
+    let eq = x.powi(2) - 1;
+    let roots = eq.solve_or_empty(&x);
+    assert_eq!(roots.len(), 2, "x²-1 should still yield 2 roots");
+    let mut vals: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+    vals.sort();
+    assert_eq!(vals, vec!["-1", "1"], "roots of x²-1: {vals:?}");
+}
