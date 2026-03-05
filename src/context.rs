@@ -498,6 +498,74 @@ impl Context {
         )
     }
 
+    // ── Arena compaction (generational GC) ─────────────────────────────
+
+    /// Create a new, compacted context containing only the expression
+    /// trees reachable from `roots`.
+    ///
+    /// Returns the new context and the corresponding root expressions
+    /// (in the same order as `roots`).  The old context remains valid —
+    /// existing expression handles continue to work.
+    ///
+    /// # Use Case
+    ///
+    /// After a heavy computation that creates thousands of intermediate
+    /// nodes, compact the handful of results into a fresh arena:
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // ... heavy computation creating many intermediates ...
+    /// let result = &x + 1;
+    /// let (new_ctx, new_exprs) = ctx.compact(&[result]);
+    /// // old ctx can be dropped — only the reachable nodes survive
+    /// assert_eq!(format!("{}", new_exprs[0]), "x + 1");
+    /// ```
+    pub fn compact(&self, roots: &[crate::expr::Ex]) -> (Context, Vec<crate::expr::Ex>) {
+        let new_ctx = Context::new();
+
+        if roots.is_empty() {
+            tracing::debug!("compact: 0 roots — returning empty context");
+            return (new_ctx, Vec::new());
+        }
+
+        let src_inner = self.inner.read();
+        let mut dst_inner = new_ctx.inner.write();
+
+        let mut map = rustc_hash::FxHashMap::default();
+        let mut new_roots = Vec::with_capacity(roots.len());
+
+        for root in roots {
+            let new_id = crate::compact::transfer_subtree(
+                &src_inner.arena,
+                &mut dst_inner.arena,
+                root.id,
+                &mut map,
+            );
+            new_roots.push(crate::expr::Ex {
+                ctx_id: new_ctx.id,
+                inner: Arc::clone(&new_ctx.inner),
+                id: new_id,
+                _sort: std::marker::PhantomData,
+            });
+        }
+
+        tracing::debug!(
+            src_nodes = src_inner.arena.node_count(),
+            dst_nodes = dst_inner.arena.node_count(),
+            roots = roots.len(),
+            transferred = map.len(),
+            "compact: arena compaction complete",
+        );
+
+        drop(dst_inner);
+        drop(src_inner);
+
+        (new_ctx, new_roots)
+    }
+
     // ── Arena info ─────────────────────────────────────────────────────
 
     /// Number of interned expression nodes.

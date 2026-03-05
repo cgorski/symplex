@@ -43,6 +43,7 @@ pub(crate) mod arena;
 pub(crate) mod canon;
 pub(crate) mod codegen;
 pub(crate) mod combsimp;
+pub(crate) mod compact;
 pub(crate) mod complex;
 pub(crate) mod cse;
 pub(crate) mod diff;
