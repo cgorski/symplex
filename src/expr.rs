@@ -1190,8 +1190,6 @@ impl Expr<Numeric> {
         &re - &(&im * &i_ex)
     }
 
-    /// Compute the factorial of this expression: `self!`
-    ///
     // ── Special functions (native ExprNode variants) ───────────────
 
     /// Gamma function: Γ(self).

@@ -552,8 +552,8 @@ fn integrate_node(
             }
 
             // ── Cyclic IBP: ∫ exp·sin, ∫ exp·cos, etc. ────────────
-            if dependent.len() == 2 {
-                if let Some(result) = try_cyclic_ibp(arena, &dependent, var, var_sym, depth) {
+            if dependent.len() == 2
+                && let Some(result) = try_cyclic_ibp(arena, &dependent, var, var_sym, depth) {
                     if constants.is_empty() {
                         return result;
                     } else {
@@ -562,7 +562,6 @@ fn integrate_node(
                         return arena.mul(&all);
                     }
                 }
-            }
 
             // ── Try partial fraction decomposition for rational integrands ──
             {

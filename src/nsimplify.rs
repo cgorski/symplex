@@ -89,7 +89,7 @@ fn find_rational(arena: &mut Arena, val: f64, tol: f64) -> Option<ExprId> {
         let p2 = a.checked_mul(p1)?.checked_add(p0)?;
         let q2 = a.checked_mul(q1)?.checked_add(q0)?;
 
-        if q2 > 10_000 || q2 < 0 {
+        if !(0..=10_000).contains(&q2) {
             break;
         }
         if q2 != 0 {
@@ -217,8 +217,8 @@ fn find_rational_sqrt(arena: &mut Arena, val: f64, tol: f64) -> Option<ExprId> {
         let ratio = abs_val / sqrt_n;
 
         // Use continued fractions to find a simple rational for ratio.
-        if let Some((p, q)) = find_rational_pair(ratio, tol / sqrt_n) {
-            if q <= 100 && p.unsigned_abs() <= 100 {
+        if let Some((p, q)) = find_rational_pair(ratio, tol / sqrt_n)
+            && q <= 100 && p.unsigned_abs() <= 100 {
                 let p_signed = sign * p;
                 // Build (p/q) * √n.
                 let half = arena.rational(1, 2);
@@ -235,7 +235,6 @@ fn find_rational_sqrt(arena: &mut Arena, val: f64, tol: f64) -> Option<ExprId> {
                     return Some(arena.mul(&[coeff, sqrt_expr]));
                 }
             }
-        }
     }
     None
 }
@@ -260,7 +259,7 @@ fn find_rational_pair(val: f64, tol: f64) -> Option<(i64, i64)> {
         let p2 = a.checked_mul(p1)?.checked_add(p0)?;
         let q2 = a.checked_mul(q1)?.checked_add(q0)?;
 
-        if q2 > 1000 || q2 < 0 {
+        if !(0..=1000).contains(&q2) {
             break;
         }
         if q2 != 0 {

@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 //! Combinatorial simplification.
 //!
 //! Simplifies expressions involving factorial and binomial coefficients.
@@ -80,39 +81,39 @@ fn simplify_factorial_mul(arena: &mut Arena, original: ExprId, children: &[ExprI
             }
             ExprNode::Pow(base, exp) => {
                 // Check for Pow(Factorial(arg), -1)
-                if let Some(val) = arena.as_num(exp) {
-                    if *val == neg_one {
-                        match arena.node(base).clone() {
-                            ExprNode::Factorial(arg) => {
-                                denom_facts.push(FactorialTerm {
-                                    child_idx: idx,
-                                    arg,
-                                });
-                            }
-                            ExprNode::Mul(ref mul_children) => {
-                                // Pow(Mul([Factorial(a), Factorial(b), ...]), -1)
-                                // Extract each Factorial child as a denom term.
-                                let mut all_factorial = true;
-                                let mut fact_args = Vec::new();
-                                for &mc in mul_children.iter() {
-                                    if let ExprNode::Factorial(arg) = arena.node(mc).clone() {
-                                        fact_args.push(arg);
-                                    } else {
-                                        all_factorial = false;
-                                        break;
-                                    }
-                                }
-                                if all_factorial {
-                                    for arg in fact_args {
-                                        denom_facts.push(FactorialTerm {
-                                            child_idx: idx,
-                                            arg,
-                                        });
-                                    }
-                                }
-                            }
-                            _ => {}
+                if let Some(val) = arena.as_num(exp)
+                    && *val == neg_one
+                {
+                    match arena.node(base).clone() {
+                        ExprNode::Factorial(arg) => {
+                            denom_facts.push(FactorialTerm {
+                                child_idx: idx,
+                                arg,
+                            });
                         }
+                        ExprNode::Mul(ref mul_children) => {
+                            // Pow(Mul([Factorial(a), Factorial(b), ...]), -1)
+                            // Extract each Factorial child as a denom term.
+                            let mut all_factorial = true;
+                            let mut fact_args = Vec::new();
+                            for &mc in mul_children.iter() {
+                                if let ExprNode::Factorial(arg) = arena.node(mc).clone() {
+                                    fact_args.push(arg);
+                                } else {
+                                    all_factorial = false;
+                                    break;
+                                }
+                            }
+                            if all_factorial {
+                                for arg in fact_args {
+                                    denom_facts.push(FactorialTerm {
+                                        child_idx: idx,
+                                        arg,
+                                    });
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

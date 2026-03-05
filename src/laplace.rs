@@ -249,8 +249,8 @@ fn try_table_forward(
 
         // Rule 2: t^n (positive integer n) → n!/s^(n+1)
         ExprNode::Pow(base, exp) if base == t => {
-            if let Some(r) = arena.as_num(exp).cloned() {
-                if r.is_integer() && r.is_positive() {
+            if let Some(r) = arena.as_num(exp).cloned()
+                && r.is_integer() && r.is_positive() {
                     let n_val = r.to_integer().try_into().ok()?;
                     let fact = factorial_bigint(n_val);
                     let fact_rat = Ratio::from_integer(fact);
@@ -261,7 +261,6 @@ fn try_table_forward(
                     let s_pow = arena.pow(s, n_plus_1_id);
                     return Some(arena.div(fact_id, s_pow));
                 }
-            }
             None
         }
 
@@ -340,8 +339,8 @@ fn try_freq_shift(
         let kids = children.clone();
         for (i, &child) in kids.iter().enumerate() {
             let child_node = arena.node(child).clone();
-            if let ExprNode::Exp(arg) = child_node {
-                if let Some(a) = extract_linear_coeff(arena, arg, t) {
+            if let ExprNode::Exp(arg) = child_node
+                && let Some(a) = extract_linear_coeff(arena, arg, t) {
                     // Collect remaining factors (everything except this exp)
                     let remaining: Vec<ExprId> = kids
                         .iter()
@@ -363,7 +362,6 @@ fn try_freq_shift(
                     let result = crate::subs::subs(arena, g_of_s, s, s_shifted);
                     return Ok(Some(result));
                 }
-            }
         }
     }
     Ok(None)
@@ -611,11 +609,10 @@ fn try_table_inverse(arena: &mut Arena, expr: ExprId, s: ExprId, t: ExprId) -> O
     }
 
     // ── Higher-degree denominators: try to detect (s-a)^n form ──
-    if deg >= 2 {
-        if let Some(result) = inverse_power_form(arena, numer, denom, &denom_poly, s, t) {
+    if deg >= 2
+        && let Some(result) = inverse_power_form(arena, numer, denom, &denom_poly, s, t) {
             return Some(result);
         }
-    }
 
     None
 }
@@ -880,9 +877,9 @@ fn inverse_power_form(
 ) -> Option<ExprId> {
     // Check if denom is Pow(base, exp) with positive integer exp
     let denom_node = arena.node(denom).clone();
-    if let ExprNode::Pow(base, exp) = denom_node {
-        if let Some(r) = arena.as_num(exp).cloned() {
-            if r.is_integer() && r.is_positive() {
+    if let ExprNode::Pow(base, exp) = denom_node
+        && let Some(r) = arena.as_num(exp).cloned()
+            && r.is_integer() && r.is_positive() {
                 let n_val: u64 = r.to_integer().try_into().ok()?;
 
                 // Check if base is linear in s: base = s - a
@@ -932,8 +929,6 @@ fn inverse_power_form(
                 }
                 return Some(arena.mul(&[scaled, exp_at]));
             }
-        }
-    }
 
     None
 }
