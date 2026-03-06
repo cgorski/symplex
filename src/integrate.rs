@@ -428,12 +428,11 @@ fn try_trig_recip_product(
                                 let neg_one_e = arena.int(-1);
                                 if inner_sin == var {
                                     return Some(arena.pow(base_j, neg_one_e));
-                                } else if let Some(a) =
-                                    linear_coeff_of(arena, inner_sin, var, var_sym)
+                                } else if let Some((a_expr, _)) =
+                                    symbolic_linear_coeff_of(arena, inner_sin, var, var_sym)
                                 {
                                     let recip = arena.pow(base_j, neg_one_e);
-                                    let a_id = rational_to_expr(arena, &a);
-                                    return Some(arena.div(recip, a_id));
+                                    return Some(arena.div(recip, a_expr));
                                 }
                             }
 
@@ -448,13 +447,12 @@ fn try_trig_recip_product(
                                 if inner_cos == var {
                                     let recip = arena.pow(base_j, neg_one_e);
                                     return Some(arena.neg(recip));
-                                } else if let Some(a) =
-                                    linear_coeff_of(arena, inner_cos, var, var_sym)
+                                } else if let Some((a_expr, _)) =
+                                    symbolic_linear_coeff_of(arena, inner_cos, var, var_sym)
                                 {
                                     let recip = arena.pow(base_j, neg_one_e);
                                     let neg_recip = arena.neg(recip);
-                                    let a_id = rational_to_expr(arena, &a);
-                                    return Some(arena.div(neg_recip, a_id));
+                                    return Some(arena.div(neg_recip, a_expr));
                                 }
                             }
     }
@@ -999,6 +997,32 @@ fn integrate_node(
         }
     }
 
+    // ── Trig identity rewrites ────────────────────────────────────
+    // Rewrite squared trig identities to forms with known antiderivatives.
+    if let ExprNode::Pow(trig_base, trig_exp) = arena.node(expr).clone()
+        && let Some(n_val) = arena.as_num(trig_exp)
+    {
+        let two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+        if *n_val == two_r {
+            // tan²(g) → sec²(g) − 1 = cos(g)^{-2} − 1
+            if let ExprNode::Tan(inner) = arena.node(trig_base).clone() {
+                let cos_inner = arena.cos(inner);
+                let neg_two = arena.int(-2);
+                let sec_sq = arena.pow(cos_inner, neg_two);
+                let rewritten = arena.sub(sec_sq, arena.one);
+                return integrate_node(arena, rewritten, var, var_sym, depth - 1);
+            }
+            // tanh²(g) → 1 − sech²(g) = 1 − cosh(g)^{-2}
+            if let ExprNode::Tanh(inner) = arena.node(trig_base).clone() {
+                let cosh_inner = arena.cosh(inner);
+                let neg_two = arena.int(-2);
+                let sech_sq = arena.pow(cosh_inner, neg_two);
+                let rewritten = arena.sub(arena.one, sech_sq);
+                return integrate_node(arena, rewritten, var, var_sym, depth - 1);
+            }
+        }
+    }
+
     let node = arena.node(expr).clone();
 
     match node {
@@ -1351,10 +1375,76 @@ fn integrate_node(
                 return arena.mul(&[expr, var]);
             }
 
+            // ── sech²(g) = cosh(g)^{-2} → tanh(g) / chain_coeff ──
+            if let ExprNode::Cosh(inner) = arena.node(base).clone()
+                && let Some(e_val) = arena.as_num(exp)
+            {
+                let neg_two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-2).into());
+                if *e_val == neg_two_r {
+                    if inner == var {
+                        return arena.tanh(var);
+                    }
+                    if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
+                        let tanh_inner = arena.tanh(inner);
+                        return arena.div(tanh_inner, a_expr);
+                    }
+                }
+            }
+
+            // ── csch²(g) = sinh(g)^{-2} → −coth(g) / chain_coeff ──
+            if let ExprNode::Sinh(inner) = arena.node(base).clone()
+                && let Some(e_val) = arena.as_num(exp)
+            {
+                let neg_two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-2).into());
+                if *e_val == neg_two_r {
+                    if inner == var {
+                        let cosh_v = arena.cosh(var);
+                        let sinh_v = arena.sinh(var);
+                        let neg1 = arena.int(-1);
+                        let sinh_inv = arena.pow(sinh_v, neg1);
+                        let coth_v = arena.mul(&[cosh_v, sinh_inv]);
+                        return arena.neg(coth_v);
+                    }
+                    if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
+                        let cosh_i = arena.cosh(inner);
+                        let sinh_i = arena.sinh(inner);
+                        let neg1 = arena.int(-1);
+                        let sinh_inv = arena.pow(sinh_i, neg1);
+                        let coth_i = arena.mul(&[cosh_i, sinh_inv]);
+                        let neg_coth = arena.neg(coth_i);
+                        return arena.div(neg_coth, a_expr);
+                    }
+                }
+            }
+
+            // ── ln(x)^n by parts: ∫ ln(x)^n dx = x·ln(x)^n − n·∫ ln(x)^(n−1) dx ──
+            if let ExprNode::Ln(inner) = arena.node(base).clone()
+                && inner == var && !exp_has_var
+                && let Some(n_val) = arena.as_num(exp)
+            {
+                let n_val = n_val.clone();
+                if n_val.is_integer() && n_val.is_positive() {
+                    let n_i64: i64 = n_val.to_integer().try_into().unwrap_or(0);
+                    if n_i64 >= 2 {
+                        let x_ln_n = arena.mul(&[var, expr]);
+                        let n_id = rational_to_expr(arena, &n_val);
+                        let n_minus_1 = {
+                            let v = &n_val - &num_rational::Ratio::<num_bigint::BigInt>::one();
+                            rational_to_expr(arena, &v)
+                        };
+                        let ln_x = arena.ln(var);
+                        let ln_nm1 = if n_i64 == 2 { ln_x } else { arena.pow(ln_x, n_minus_1) };
+                        let sub_int = integrate_node(arena, ln_nm1, var, var_sym, depth - 1);
+                        let n_times_sub = arena.mul(&[n_id, sub_int]);
+                        return arena.sub(x_ln_n, n_times_sub);
+                    }
+                }
+            }
+
             // General linear substitution: ∫ (ax+b)^n dx = (ax+b)^(n+1) / (a*(n+1))
             if !exp_has_var
                 && base_has_var
-                && let Some(a) = linear_coeff_of(arena, base, var, var_sym)
+                && let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, base, var, var_sym)
                 && let Some(n) = arena.as_num(exp)
             {
                 let n = n.clone();
@@ -1365,15 +1455,13 @@ fn integrate_node(
                     let n_plus_1 = &n + &one;
                     let n_plus_1_id = rational_to_expr(arena, &n_plus_1);
                     let base_pow = arena.pow(base, n_plus_1_id);
-                    let denom_val = &a * &n_plus_1;
-                    let denom_id = rational_to_expr(arena, &denom_val);
-                    return arena.div(base_pow, denom_id);
+                    let denom = arena.mul(&[a_expr, n_plus_1_id]);
+                    return arena.div(base_pow, denom);
                 } else {
                     // ∫ (ax+b)^(-1) dx = ln|ax+b| / a
                     let abs_base = arena.abs(base);
                     let ln_base = arena.ln(abs_base);
-                    let a_id = rational_to_expr(arena, &a);
-                    return arena.div(ln_base, a_id);
+                    return arena.div(ln_base, a_expr);
                 }
             }
 
@@ -1384,6 +1472,42 @@ fn integrate_node(
                     try_standard_form_integral(arena, expr, base, exp, var, var_sym)
             {
                 return result;
+            }
+
+            // ── Symbolic standard form: ∫ (x² + k)^{-1} dx ──────────
+            // where k is free of var (handles e.g. ∫ 1/(x²+a²) dx)
+            if base_has_var && !exp_has_var
+                && let Some(exp_val) = arena.as_num(exp)
+            {
+                let neg_one_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
+                if *exp_val == neg_one_r
+                    && let ExprNode::Add(ref ac) = arena.node(base).clone()
+                    && ac.len() == 2
+                {
+                    let (mut x2_found, mut k_id) = (false, None);
+                    for &ch in ac.iter() {
+                        if is_var_squared(arena, ch, var) {
+                            x2_found = true;
+                        } else if !contains_var(arena, ch, var_sym) {
+                            k_id = Some(ch);
+                        }
+                    }
+                    if x2_found
+                        && let Some(k) = k_id
+                        && arena.as_num(k).is_none()
+                    {
+                        // Only use symbolic path when k is NOT pure numeric
+                        // (numeric case is handled by try_standard_form_integral)
+                        // ∫ 1/(x²+k) dx = (1/√k)·atan(x/√k)
+                        let half = arena.rational(1, 2);
+                        let sqrt_k = arena.pow(k, half);
+                        let x_over_sk = arena.div(var, sqrt_k);
+                        let atan_val = arena.atan(x_over_sk);
+                        let neg_half = arena.rational(-1, 2);
+                        let inv_sk = arena.pow(k, neg_half);
+                        return arena.mul(&[inv_sk, atan_val]);
+                    }
+                }
             }
 
             // ── Completing the square for 1/(ax²+bx+c) ───────────────
@@ -1455,11 +1579,10 @@ fn integrate_node(
                 return arena.neg(cos_x);
             }
             // Try u-substitution: if inner = a*x + b, ∫ sin(a*x+b) dx = -cos(a*x+b)/a
-            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+            if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 let cos_inner = arena.cos(inner);
                 let neg_cos = arena.neg(cos_inner);
-                let a_id = rational_to_expr(arena, &a);
-                return arena.div(neg_cos, a_id);
+                return arena.div(neg_cos, a_expr);
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -1470,10 +1593,9 @@ fn integrate_node(
                 return arena.sin(var);
             }
             // Try u-substitution: if inner = a*x + b, ∫ cos(a*x+b) dx = sin(a*x+b)/a
-            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+            if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 let sin_inner = arena.sin(inner);
-                let a_id = rational_to_expr(arena, &a);
-                return arena.div(sin_inner, a_id);
+                return arena.div(sin_inner, a_expr);
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -1489,13 +1611,12 @@ fn integrate_node(
             }
             // Try u-substitution: if inner = a*x + b,
             // ∫ tan(a*x+b) dx = -ln|cos(a*x+b)| / a
-            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+            if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 let cos_inner = arena.cos(inner);
                 let abs_cos = arena.abs(cos_inner);
                 let ln_abs_cos = arena.ln(abs_cos);
                 let neg_ln = arena.neg(ln_abs_cos);
-                let a_id = rational_to_expr(arena, &a);
-                return arena.div(neg_ln, a_id);
+                return arena.div(neg_ln, a_expr);
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -1565,10 +1686,9 @@ fn integrate_node(
             }
 
             // Try u-substitution: if inner = a*x + b, ∫ exp(a*x+b) dx = exp(a*x+b)/a
-            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+            if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 let exp_inner = arena.exp(inner);
-                let a_id = rational_to_expr(arena, &a);
-                return arena.div(exp_inner, a_id);
+                return arena.div(exp_inner, a_expr);
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -1583,12 +1703,11 @@ fn integrate_node(
             }
             // Try u-substitution: if inner = a*x + b (linear),
             // ∫ ln(a*x+b) dx = ((a*x+b)·ln(a*x+b) - (a*x+b)) / a
-            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+            if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 let ln_inner = arena.ln(inner);
                 let inner_times_ln = arena.mul(&[inner, ln_inner]);
                 let diff = arena.sub(inner_times_ln, inner);
-                let a_id = rational_to_expr(arena, &a);
-                return arena.div(diff, a_id);
+                return arena.div(diff, a_expr);
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -1599,10 +1718,9 @@ fn integrate_node(
                 return arena.intern(ExprNode::Cosh(var));
             }
             // u-sub: ∫ sinh(ax+b) dx = cosh(ax+b)/a
-            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+            if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 let cosh_inner = arena.cosh(inner);
-                let a_id = rational_to_expr(arena, &a);
-                return arena.div(cosh_inner, a_id);
+                return arena.div(cosh_inner, a_expr);
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -1613,10 +1731,9 @@ fn integrate_node(
                 return arena.intern(ExprNode::Sinh(var));
             }
             // u-sub: ∫ cosh(ax+b) dx = sinh(ax+b)/a
-            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+            if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 let sinh_inner = arena.sinh(inner);
-                let a_id = rational_to_expr(arena, &a);
-                return arena.div(sinh_inner, a_id);
+                return arena.div(sinh_inner, a_expr);
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -1628,11 +1745,10 @@ fn integrate_node(
                 return arena.ln(cosh_x);
             }
             // u-sub: if inner = a*x + b, ∫ tanh(a*x+b) dx = ln(cosh(a*x+b))/a
-            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+            if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 let cosh_inner = arena.cosh(inner);
                 let ln_cosh = arena.ln(cosh_inner);
-                let a_id = rational_to_expr(arena, &a);
-                return arena.div(ln_cosh, a_id);
+                return arena.div(ln_cosh, a_expr);
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -1693,10 +1809,9 @@ fn integrate_node(
                 return arena.intern(ExprNode::Heaviside(var));
             }
             // Linear case: ∫δ(ax+b)dx = H(ax+b) / |a|
-            if let Some(a) = linear_coeff_of(arena, inner, var, var_sym) {
+            if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 let h = arena.intern(ExprNode::Heaviside(inner));
-                let a_id = rational_to_expr(arena, &a);
-                let abs_a = arena.abs(a_id);
+                let abs_a = arena.abs(a_expr);
                 return arena.div(h, abs_a);
             }
             // Leave unevaluated
@@ -1770,8 +1885,9 @@ fn is_polynomial_in(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolId)
     }
 }
 
-/// Check if `expr` is a linear function of `var`: `a*var + b` where a ≠ 0.
-/// Returns `Some(a)` if linear, `None` otherwise.
+/// Check if `expr` is a linear function of `var` with **numeric** coefficients.
+/// Returns `Some(a)` (the leading coefficient as `Ratio<BigInt>`) if linear, `None` otherwise.
+#[allow(dead_code)]
 fn linear_coeff_of(
     arena: &Arena,
     expr: ExprId,
@@ -1789,6 +1905,152 @@ fn linear_coeff_of(
         return None;
     }
     Some(a)
+}
+
+/// Check if `expr` is a linear function of `var`: `a*var + b` where a ≠ 0,
+/// with **symbolic** (possibly non-numeric) coefficients.
+///
+/// Returns `Some((a_expr, b_expr))` where `a_expr` is the coefficient of `var`
+/// and `b_expr` is the constant term — both as `ExprId`s that are free of `var`.
+fn symbolic_linear_coeff_of(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<(ExprId, ExprId)> {
+    // Fast path: try numeric first (covers the common numeric-coefficient case)
+    if let Some(a) = linear_coeff_of(arena, expr, var, var_sym) {
+        let a_id = rational_to_expr(arena, &a);
+        // Also extract constant term
+        if let Some(poly) = crate::polybridge::expr_to_poly(arena, expr, var) {
+            let b = poly.coeff(0);
+            let b_id = rational_to_expr(arena, &b);
+            return Some((a_id, b_id));
+        }
+        return Some((a_id, arena.zero));
+    }
+
+    // Case 1: expr == var → coefficient is 1, constant is 0
+    if expr == var {
+        return Some((arena.one, arena.zero));
+    }
+
+    // Case 2: Neg(inner) → negate coefficient and constant
+    if let ExprNode::Neg(inner) = arena.node(expr).clone() {
+        if let Some((coeff, constant)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
+            let neg_coeff = arena.neg(coeff);
+            let neg_const = arena.neg(constant);
+            return Some((neg_coeff, neg_const));
+        }
+        return None;
+    }
+
+    // Case 3: Mul containing var exactly once, all other factors free of var
+    if let ExprNode::Mul(ref children) = arena.node(expr).clone() {
+        let mut has_var = false;
+        let mut other_factors: SmallVec<[ExprId; 4]> = SmallVec::new();
+        let mut var_count = 0u32;
+
+        for &child in children {
+            if child == var {
+                var_count += 1;
+                if var_count > 1 {
+                    return None; // var² or higher
+                }
+                has_var = true;
+            } else if contains_var(arena, child, var_sym) {
+                return None; // Non-trivial var dependence
+            } else {
+                other_factors.push(child);
+            }
+        }
+
+        if has_var && var_count == 1 {
+            let coeff = match other_factors.len() {
+                0 => arena.one,
+                1 => other_factors[0],
+                _ => arena.mul(&other_factors),
+            };
+            return Some((coeff, arena.zero));
+        }
+    }
+
+    // Case 4: Add → separate var-containing and var-free terms
+    if let ExprNode::Add(ref children) = arena.node(expr).clone() {
+        let mut var_terms: SmallVec<[ExprId; 4]> = SmallVec::new();
+        let mut const_terms: SmallVec<[ExprId; 4]> = SmallVec::new();
+
+        for &child in children {
+            if contains_var(arena, child, var_sym) {
+                var_terms.push(child);
+            } else {
+                const_terms.push(child);
+            }
+        }
+
+        if var_terms.is_empty() {
+            return None; // No var dependence — not linear in var
+        }
+
+        // The var-containing part should be a single term of the form c*var
+        let var_part = if var_terms.len() == 1 {
+            var_terms[0]
+        } else {
+            arena.add(&var_terms)
+        };
+
+        // Try to extract coefficient from var_part (should be c*var)
+        let coeff = if var_part == var {
+            arena.one
+        } else if let ExprNode::Mul(ref mul_children) = arena.node(var_part).clone() {
+            let mut has_v = false;
+            let mut other: SmallVec<[ExprId; 4]> = SmallVec::new();
+            let mut vc = 0u32;
+            for &mc in mul_children {
+                if mc == var {
+                    vc += 1;
+                    if vc > 1 {
+                        return None;
+                    }
+                    has_v = true;
+                } else if contains_var(arena, mc, var_sym) {
+                    return None;
+                } else {
+                    other.push(mc);
+                }
+            }
+            if !has_v || vc != 1 {
+                return None;
+            }
+            match other.len() {
+                0 => arena.one,
+                1 => other[0],
+                _ => arena.mul(&other),
+            }
+        } else {
+            return None; // Can't decompose
+        };
+
+        // Verify coefficient is free of var
+        if contains_var(arena, coeff, var_sym) {
+            return None;
+        }
+
+        let constant = match const_terms.len() {
+            0 => arena.zero,
+            1 => const_terms[0],
+            _ => arena.add(&const_terms),
+        };
+
+        // Verify constant is free of var
+        if contains_var(arena, constant, var_sym) {
+            return None;
+        }
+
+        return Some((coeff, constant));
+    }
+
+    None
 }
 
 /// Convert a Ratio<BigInt> to an ExprId.
@@ -2449,5 +2711,100 @@ mod tests {
         let result = integrate(&mut a, integrand, x);
         let s = display(&a, result);
         assert!(s.contains("atan"), "should use atan: {s}");
+    }
+
+    #[test]
+    fn symbolic_linear_coeff_of_mul_a_x() {
+        // a*x should be detected as linear in x with coefficient a
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let param_a = sym(&mut a, "a");
+        let ax = a.mul(&[param_a, x]);
+        let var_sym = match a.node(x) {
+            ExprNode::Symbol(sid) => *sid,
+            _ => panic!("x should be a symbol"),
+        };
+        let result = super::symbolic_linear_coeff_of(&mut a, ax, x, var_sym);
+        assert!(result.is_some(), "a*x should be recognized as linear in x, node: {:?}", a.node(ax));
+        let (coeff, constant) = result.unwrap();
+        assert_eq!(coeff, param_a, "coefficient should be a, got {}", display(&a, coeff));
+        assert_eq!(constant, a.zero, "constant should be 0, got {}", display(&a, constant));
+    }
+
+    #[test]
+    fn symbolic_linear_coeff_of_add_ax_b() {
+        // a*x + b should be detected as linear in x with coefficient a, constant b
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let param_a = sym(&mut a, "a");
+        let param_b = sym(&mut a, "b");
+        let ax = a.mul(&[param_a, x]);
+        let ax_plus_b = a.add(&[ax, param_b]);
+        let var_sym = match a.node(x) {
+            ExprNode::Symbol(sid) => *sid,
+            _ => panic!("x should be a symbol"),
+        };
+        let result = super::symbolic_linear_coeff_of(&mut a, ax_plus_b, x, var_sym);
+        assert!(result.is_some(), "a*x+b should be recognized as linear in x, expr: {}", display(&a, ax_plus_b));
+        let (coeff, constant) = result.unwrap();
+        assert_eq!(coeff, param_a, "coefficient should be a, got {}", display(&a, coeff));
+        assert_eq!(constant, param_b, "constant should be b, got {}", display(&a, constant));
+    }
+
+    #[test]
+    fn symbolic_linear_coeff_of_bare_var() {
+        // x alone should be linear with coefficient 1
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let var_sym = match a.node(x) {
+            ExprNode::Symbol(sid) => *sid,
+            _ => panic!("x should be a symbol"),
+        };
+        let result = super::symbolic_linear_coeff_of(&mut a, x, x, var_sym);
+        assert!(result.is_some(), "x should be recognized as linear in x");
+        let (coeff, constant) = result.unwrap();
+        assert_eq!(coeff, a.one, "coefficient should be 1");
+        assert_eq!(constant, a.zero, "constant should be 0");
+    }
+
+    #[test]
+    fn integrate_sin_symbolic_coeff() {
+        // ∫ sin(a*x) dx should not be unevaluated
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let param_a = sym(&mut a, "a");
+        let ax = a.mul(&[param_a, x]);
+        let sin_ax = a.sin(ax);
+        let result = integrate(&mut a, sin_ax, x);
+        let s = display(&a, result);
+        assert!(!s.contains("Integral"), "∫sin(a*x)dx should not be unevaluated: {s}");
+        assert!(s.contains("cos"), "should contain cos: {s}");
+    }
+
+    #[test]
+    fn integrate_exp_symbolic_coeff() {
+        // ∫ exp(a*x) dx should not be unevaluated
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let param_a = sym(&mut a, "a");
+        let ax = a.mul(&[param_a, x]);
+        let exp_ax = a.exp(ax);
+        let result = integrate(&mut a, exp_ax, x);
+        let s = display(&a, result);
+        assert!(!s.contains("Integral"), "∫exp(a*x)dx should not be unevaluated: {s}");
+        assert!(s.contains("exp"), "should contain exp: {s}");
+    }
+
+    #[test]
+    fn integrate_cosh_symbolic_coeff() {
+        // ∫ cosh(a*x) dx should not be unevaluated
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let param_a = sym(&mut a, "a");
+        let ax = a.mul(&[param_a, x]);
+        let cosh_ax = a.cosh(ax);
+        let result = integrate(&mut a, cosh_ax, x);
+        let s = display(&a, result);
+        assert!(!s.contains("Integral"), "∫cosh(a*x)dx should not be unevaluated: {s}");
     }
 }

@@ -14,6 +14,7 @@
 use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode, SymbolId};
 use num_traits::One;
+use num_traits::Signed;
 
 /// An ODE representation: f(x, y, y', y'', ...) = 0
 /// For now, we support limited forms detected by pattern matching.
@@ -200,6 +201,15 @@ fn try_second_order_const_coeff(
     let b = &b_coeff / &a_coeff;
     let c = &c_coeff / &a_coeff;
 
+    // Check for complex roots: if disc = b² − 4c < 0, use Euler/trig form
+    {
+        let four_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(4.into());
+        let disc = &b * &b - &four_r * &c;
+        if disc.is_negative() {
+            return build_trig_homogeneous_solution(arena, &b, &disc, var);
+        }
+    }
+
     // Characteristic equation: r² + b*r + c = 0
     let r_var = arena.symbol("__r");
     let two = arena.int(2);
@@ -278,6 +288,15 @@ fn solve_characteristic_equation(
     c: num_rational::Ratio<num_bigint::BigInt>,
     var: ExprId,
 ) -> Option<OdeResult> {
+    // Check for complex roots: if disc = b² − 4c < 0, use Euler/trig form
+    {
+        let four_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(4.into());
+        let disc = &b * &b - &four_r * &c;
+        if disc.is_negative() {
+            return build_trig_homogeneous_solution(arena, &b, &disc, var);
+        }
+    }
+
     let r_var = arena.symbol("__r");
     let two = arena.int(2);
     let b_id = {
@@ -413,22 +432,42 @@ fn try_second_order_cc_nonhomogeneous(
         arena.add(&f_of_x_terms)
     };
 
-    // The forcing term must be polynomial in var.
-    let f_coeffs_expr = arena.coefficients_of(f_sum, var)?;
-    if f_coeffs_expr.is_empty() {
-        return None;
-    }
+    // Try polynomial forcing first
+    let y_p_poly = if let Some(f_coeffs_expr) = arena.coefficients_of(f_sum, var) {
+        if f_coeffs_expr.is_empty() {
+            None
+        } else {
+            let mut rhs_coeffs: Vec<num_rational::Ratio<num_bigint::BigInt>> = Vec::new();
+            let mut all_numeric = true;
+            for &cid in &f_coeffs_expr {
+                if let Some(val) = arena.as_num(cid) {
+                    rhs_coeffs.push(-val.clone() / &a_coeff);
+                } else {
+                    all_numeric = false;
+                    break;
+                }
+            }
+            if all_numeric {
+                find_particular_polynomial(&b, &c, &rhs_coeffs).map(|pc| build_polynomial_expr(arena, &pc, var))
+            } else {
+                None
+            }
+        }
+    } else {
+        None
+    };
 
-    // Convert to rational and negate/scale: rhs_j = −f_j / a
-    let mut rhs_coeffs: Vec<num_rational::Ratio<num_bigint::BigInt>> = Vec::new();
-    for &cid in &f_coeffs_expr {
-        let val = arena.as_num(cid)?.clone();
-        rhs_coeffs.push(-val / &a_coeff);
-    }
-
-    // Particular solution via undetermined coefficients
-    let particular_coeffs = find_particular_polynomial(&b, &c, &rhs_coeffs)?;
-    let y_p = build_polynomial_expr(arena, &particular_coeffs, var);
+    // If polynomial forcing didn't work, try trig/exp forcing
+    let y_p = if let Some(yp) = y_p_poly {
+        yp
+    } else {
+        // Compute rhs = -f_sum / a for trig/exp analysis
+        let neg_f_sum = arena.neg(f_sum);
+        let a_id = ode_ratio_to_expr(arena, &a_coeff);
+        let rhs_expr = arena.div(neg_f_sum, a_id);
+        let rhs_expr = crate::eval::eval(arena, rhs_expr);
+        try_undetermined_trig_exp(arena, rhs_expr, &b, &c, var)?
+    };
 
     // Homogeneous solution via the characteristic equation
     let homo_result = solve_characteristic_equation(arena, b, c, var)?;
@@ -640,7 +679,15 @@ fn try_first_order_linear(
         let sum = arena.add(&f_of_x);
         arena.neg(sum)
     };
-    let integrand = arena.mul(&[neg_f, exp_ax]);
+    // Simplify exp(a)*exp(b) → exp(a+b) before integrating
+    let integrand = if let ExprNode::Exp(neg_f_inner) = arena.node(neg_f).clone() {
+        let combined_arg = arena.add(&[neg_f_inner, ax]);
+        let combined_arg = crate::eval::eval(arena, combined_arg);
+        arena.exp(combined_arg)
+    } else {
+        arena.mul(&[neg_f, exp_ax])
+    };
+    let integrand = crate::eval::eval(arena, integrand);
     let integral = crate::integrate::integrate(arena, integrand, var);
 
     let c1 = arena.symbol("C1");
@@ -1002,6 +1049,8 @@ fn try_first_order_linear_general(
 
     // Nonhomogeneous: y = (1/μ) * [∫ Q(x)*μ dx + C1]
     let integrand = arena.mul(&[q_x, mu]);
+    // Simplify products of exponentials before integrating
+    let integrand = crate::eval::eval(arena, integrand);
     let integral = crate::integrate::integrate(arena, integrand, var);
 
     let inner = arena.add(&[integral, c1]);
@@ -1396,6 +1445,256 @@ fn contains_sym(arena: &Arena, expr: ExprId, sym: SymbolId) -> bool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Helpers for complex roots and undetermined coefficients
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Convert a `Ratio<BigInt>` to an arena `ExprId`.
+fn ode_ratio_to_expr(
+    arena: &mut Arena,
+    r: &num_rational::Ratio<num_bigint::BigInt>,
+) -> ExprId {
+    let nid = arena.intern_num(r.clone());
+    arena.intern(ExprNode::Num(nid))
+}
+
+/// Build the homogeneous solution in trigonometric form when the
+/// characteristic equation `r² + b·r + c = 0` has complex roots.
+///
+/// For discriminant `disc = b² − 4c < 0`:
+///   roots = α ± βi  where  α = −b/2,  β = √(−disc)/2
+///   solution = exp(α·x)·(C1·cos(β·x) + C2·sin(β·x))
+fn build_trig_homogeneous_solution(
+    arena: &mut Arena,
+    b: &num_rational::Ratio<num_bigint::BigInt>,
+    disc: &num_rational::Ratio<num_bigint::BigInt>,
+    var: ExprId,
+) -> Option<OdeResult> {
+    use num_traits::Zero;
+
+    let c1 = arena.symbol("C1");
+    let c2 = arena.symbol("C2");
+
+    // α = −b/2
+    let two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+    let alpha = -(b.clone()) / &two_r;
+
+    // β = √(−disc) / 2
+    let neg_disc = -(disc.clone());
+    let neg_disc_id = ode_ratio_to_expr(arena, &neg_disc);
+    let half = arena.rational(1, 2);
+    let sqrt_neg_disc = arena.pow(neg_disc_id, half);
+    let two_id = arena.int(2);
+    let beta_expr = arena.div(sqrt_neg_disc, two_id);
+    let beta_expr = crate::eval::eval(arena, beta_expr);
+
+    // β·x
+    let beta_x = arena.mul(&[beta_expr, var]);
+    let cos_bx = arena.cos(beta_x);
+    let sin_bx = arena.sin(beta_x);
+
+    let c1_cos = arena.mul(&[c1, cos_bx]);
+    let c2_sin = arena.mul(&[c2, sin_bx]);
+    let trig_part = arena.add(&[c1_cos, c2_sin]);
+
+    let solution = if alpha.is_zero() {
+        trig_part
+    } else {
+        let alpha_id = ode_ratio_to_expr(arena, &alpha);
+        let alpha_x = arena.mul(&[alpha_id, var]);
+        let exp_ax = arena.exp(alpha_x);
+        arena.mul(&[exp_ax, trig_part])
+    };
+
+    Some(OdeResult {
+        solution,
+        constants: vec![c1, c2],
+    })
+}
+
+/// Try to find a particular solution for `y'' + b·y' + c·y = rhs(x)`
+/// when rhs is a trigonometric or exponential function.
+///
+/// Handles:
+/// - `rhs = R·sin(ωx)` or `rhs = R·cos(ωx)` → undetermined coefficients
+/// - `rhs = R·exp(rx)` → undetermined coefficients (with resonance handling)
+fn try_undetermined_trig_exp(
+    arena: &mut Arena,
+    rhs: ExprId,
+    b: &num_rational::Ratio<num_bigint::BigInt>,
+    c: &num_rational::Ratio<num_bigint::BigInt>,
+    var: ExprId,
+) -> Option<ExprId> {
+    use num_traits::Zero;
+
+    let (coeff_r, term) = arena.as_coeff_term(rhs);
+    let node = arena.node(term).clone();
+
+    match node {
+        ExprNode::Sin(inner) => {
+            let (omega, constant) = extract_linear_numeric(arena, inner, var)?;
+            if !constant.is_zero() { return None; }
+            let zero_r = num_rational::Ratio::<num_bigint::BigInt>::zero();
+            try_trig_particular(arena, &coeff_r, &zero_r, &omega, b, c, var)
+        }
+        ExprNode::Cos(inner) => {
+            let (omega, constant) = extract_linear_numeric(arena, inner, var)?;
+            if !constant.is_zero() { return None; }
+            let zero_r = num_rational::Ratio::<num_bigint::BigInt>::zero();
+            try_trig_particular(arena, &zero_r, &coeff_r, &omega, b, c, var)
+        }
+        ExprNode::Exp(inner) => {
+            let (r_val, constant) = extract_linear_numeric(arena, inner, var)?;
+            if !constant.is_zero() { return None; }
+            try_exp_particular(arena, &coeff_r, &r_val, b, c, var)
+        }
+        _ => None,
+    }
+}
+
+/// Extract the numeric coefficient and constant from a linear expression.
+/// Returns `Some((a, b))` where `expr = a·var + b`, both rational.
+fn extract_linear_numeric(
+    arena: &Arena,
+    expr: ExprId,
+    var: ExprId,
+) -> Option<(num_rational::Ratio<num_bigint::BigInt>, num_rational::Ratio<num_bigint::BigInt>)> {
+    let poly = crate::polybridge::expr_to_poly(arena, expr, var)?;
+    if poly.degree()? != 1 { return None; }
+    Some((poly.coeff(1), poly.coeff(0)))
+}
+
+/// Compute a particular solution for `y'' + b·y' + c·y = P·sin(ωx) + Q·cos(ωx)`
+/// via the method of undetermined coefficients.
+fn try_trig_particular(
+    arena: &mut Arena,
+    p: &num_rational::Ratio<num_bigint::BigInt>,
+    q: &num_rational::Ratio<num_bigint::BigInt>,
+    omega: &num_rational::Ratio<num_bigint::BigInt>,
+    b: &num_rational::Ratio<num_bigint::BigInt>,
+    c: &num_rational::Ratio<num_bigint::BigInt>,
+    var: ExprId,
+) -> Option<ExprId> {
+    use num_traits::Zero;
+
+    let omega_sq = omega * omega;
+    let d = c - &omega_sq;        // c − ω²
+    let bw = b * omega;            // b·ω
+
+    let det = &d * &d + &bw * &bw; // (c−ω²)² + (bω)²
+
+    if !det.is_zero() {
+        // Non-resonance: y_p = α·sin(ωx) + β·cos(ωx)
+        let alpha = (&d * p + &bw * q) / &det;
+        let beta = (&d * q - &bw * p) / &det;
+
+        let omega_id = ode_ratio_to_expr(arena, omega);
+        let omega_x = arena.mul(&[omega_id, var]);
+
+        let mut terms = Vec::new();
+        if !alpha.is_zero() {
+            let alpha_id = ode_ratio_to_expr(arena, &alpha);
+            let sin_wx = arena.sin(omega_x);
+            terms.push(arena.mul(&[alpha_id, sin_wx]));
+        }
+        if !beta.is_zero() {
+            let beta_id = ode_ratio_to_expr(arena, &beta);
+            let cos_wx = arena.cos(omega_x);
+            terms.push(arena.mul(&[beta_id, cos_wx]));
+        }
+
+        match terms.len() {
+            0 => Some(arena.zero),
+            1 => Some(terms[0]),
+            _ => Some(arena.add(&terms)),
+        }
+    } else {
+        // Resonance: d = 0 and bω = 0 ⟹ b = 0 and c = ω²
+        if omega.is_zero() { return None; }
+        let two_omega = num_rational::Ratio::from_integer(
+            num_bigint::BigInt::from(2),
+        ) * omega;
+        let alpha = q / &two_omega;
+        let beta = -(p / &two_omega);
+
+        let omega_id = ode_ratio_to_expr(arena, omega);
+        let omega_x = arena.mul(&[omega_id, var]);
+
+        let mut inner_terms = Vec::new();
+        if !alpha.is_zero() {
+            let alpha_id = ode_ratio_to_expr(arena, &alpha);
+            let sin_wx = arena.sin(omega_x);
+            inner_terms.push(arena.mul(&[alpha_id, sin_wx]));
+        }
+        if !beta.is_zero() {
+            let beta_id = ode_ratio_to_expr(arena, &beta);
+            let cos_wx = arena.cos(omega_x);
+            inner_terms.push(arena.mul(&[beta_id, cos_wx]));
+        }
+
+        if inner_terms.is_empty() {
+            Some(arena.zero)
+        } else {
+            let inner = if inner_terms.len() == 1 {
+                inner_terms[0]
+            } else {
+                arena.add(&inner_terms)
+            };
+            Some(arena.mul(&[var, inner]))
+        }
+    }
+}
+
+/// Compute a particular solution for `y'' + b·y' + c·y = R·exp(r·x)`
+/// via the method of undetermined coefficients.
+fn try_exp_particular(
+    arena: &mut Arena,
+    coeff_r: &num_rational::Ratio<num_bigint::BigInt>,
+    r: &num_rational::Ratio<num_bigint::BigInt>,
+    b: &num_rational::Ratio<num_bigint::BigInt>,
+    c: &num_rational::Ratio<num_bigint::BigInt>,
+    var: ExprId,
+) -> Option<ExprId> {
+    use num_traits::Zero;
+
+    // Characteristic value at r: r² + b·r + c
+    let char_val = r * r + b * r + c;
+
+    let r_id = ode_ratio_to_expr(arena, r);
+    let rx = arena.mul(&[r_id, var]);
+    let exp_rx = arena.exp(rx);
+
+    if !char_val.is_zero() {
+        // Non-resonance: y_p = A·exp(rx) where A = R / (r²+br+c)
+        let a_val = coeff_r / &char_val;
+        let a_id = ode_ratio_to_expr(arena, &a_val);
+        Some(arena.mul(&[a_id, exp_rx]))
+    } else {
+        // r is a root of the characteristic equation.
+        let deriv_val = num_rational::Ratio::from_integer(
+            num_bigint::BigInt::from(2),
+        ) * r + b;
+        if !deriv_val.is_zero() {
+            // Single root: y_p = A·x·exp(rx) where A = R / (2r + b)
+            let a_val = coeff_r / &deriv_val;
+            let a_id = ode_ratio_to_expr(arena, &a_val);
+            let x_exp = arena.mul(&[var, exp_rx]);
+            Some(arena.mul(&[a_id, x_exp]))
+        } else {
+            // Double root: y_p = A·x²·exp(rx) where A = R / 2
+            let two_r_val = num_rational::Ratio::from_integer(
+                num_bigint::BigInt::from(2),
+            );
+            let a_val = coeff_r / &two_r_val;
+            let a_id = ode_ratio_to_expr(arena, &a_val);
+            let two_id = arena.int(2);
+            let x_sq = arena.pow(var, two_id);
+            let x2_exp = arena.mul(&[x_sq, exp_rx]);
+            Some(arena.mul(&[a_id, x2_exp]))
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ODE classification
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1704,16 +2003,16 @@ mod tests {
         let dy = a.intern(ExprNode::Derivative(y, x));
         let d2y = a.intern(ExprNode::Derivative(dy, x));
         let expr = a.add(&[d2y, y]);
-        let result = dsolve(&mut a, expr, y, x);
-        if let Some(r) = result {
-            let s = display(&a, r.solution);
-            assert!(
-                s.contains("C1") && s.contains("C2"),
-                "should have two constants: {s}"
-            );
-            assert!(s.contains("exp"), "should contain exp: {s}");
-        }
-        // It's OK if this doesn't solve yet — complex characteristic roots
+        let r = dsolve(&mut a, expr, y, x).expect("should solve y'' + y = 0");
+        let s = display(&a, r.solution);
+        assert!(
+            s.contains("C1") && s.contains("C2"),
+            "should have two constants: {s}"
+        );
+        assert!(
+            s.contains("cos") && s.contains("sin"),
+            "should use trig form (cos and sin): {s}"
+        );
     }
 
     #[test]

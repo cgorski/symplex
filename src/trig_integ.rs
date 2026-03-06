@@ -107,6 +107,46 @@ fn extract_cos_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> 
     }
 }
 
+/// Try to decompose `factor` into a sinh-power of `var`.
+///
+/// Returns `Some(exponent)` for:
+/// - `Sinh(var)` → 1
+/// - `Pow(Sinh(var), n)` → n  (when n is an integer)
+fn extract_sinh_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> {
+    match arena.node(factor).clone() {
+        ExprNode::Sinh(inner) if is_var(arena, inner, var) => Some(1),
+        ExprNode::Pow(base, exp) => {
+            if let ExprNode::Sinh(inner) = arena.node(base).clone()
+                && is_var(arena, inner, var)
+            {
+                return as_i64(arena, exp);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Try to decompose `factor` into a cosh-power of `var`.
+///
+/// Returns `Some(exponent)` for:
+/// - `Cosh(var)` → 1
+/// - `Pow(Cosh(var), n)` → n  (when n is an integer)
+fn extract_cosh_power(arena: &Arena, factor: ExprId, var: ExprId) -> Option<i64> {
+    match arena.node(factor).clone() {
+        ExprNode::Cosh(inner) if is_var(arena, inner, var) => Some(1),
+        ExprNode::Pow(base, exp) => {
+            if let ExprNode::Cosh(inner) = arena.node(base).clone()
+                && is_var(arena, inner, var)
+            {
+                return as_i64(arena, exp);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // sin^n integration
 // ═══════════════════════════════════════════════════════════════════════════
@@ -427,6 +467,38 @@ pub(crate) fn sin_cos_integrate(arena: &mut Arena, m: i64, n: i64, var: ExprId) 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Hyperbolic half-angle integration
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute `∫ sinh²(x) dx` using the half-angle identity:
+///   `sinh²(x) = (cosh(2x) − 1) / 2`
+///   `∫ sinh²(x) dx = sinh(2x)/4 − x/2`
+pub(crate) fn sinh_squared_integrate(arena: &mut Arena, var: ExprId) -> ExprId {
+    let two = arena.int(2);
+    let two_x = arena.mul(&[two, var]);
+    let sinh_2x = arena.sinh(two_x);
+    let quarter = arena.rational(1, 4);
+    let first_term = arena.mul(&[quarter, sinh_2x]);
+    let half = arena.rational(1, 2);
+    let second_term = arena.mul(&[half, var]);
+    arena.sub(first_term, second_term)
+}
+
+/// Compute `∫ cosh²(x) dx` using the half-angle identity:
+///   `cosh²(x) = (cosh(2x) + 1) / 2`
+///   `∫ cosh²(x) dx = sinh(2x)/4 + x/2`
+pub(crate) fn cosh_squared_integrate(arena: &mut Arena, var: ExprId) -> ExprId {
+    let two = arena.int(2);
+    let two_x = arena.mul(&[two, var]);
+    let sinh_2x = arena.sinh(two_x);
+    let quarter = arena.rational(1, 4);
+    let first_term = arena.mul(&[quarter, sinh_2x]);
+    let half = arena.rational(1, 2);
+    let second_term = arena.mul(&[half, var]);
+    arena.add(&[first_term, second_term])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Pattern-matching entry point
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -462,6 +534,20 @@ pub(crate) fn try_trig_power_integral(
         }
         return None;
     }
+
+    // ── Single factor: Pow(Sinh(var), n) — handle n=2 via half-angle ──
+    if let Some(n) = extract_sinh_power(arena, expr, var)
+        && n == 2 {
+            return Some(sinh_squared_integrate(arena, var));
+        }
+        // Other sinh powers not yet handled
+
+    // ── Single factor: Pow(Cosh(var), n) — handle n=2 via half-angle ──
+    if let Some(n) = extract_cosh_power(arena, expr, var)
+        && n == 2 {
+            return Some(cosh_squared_integrate(arena, var));
+        }
+        // Other cosh powers not yet handled
 
     // ── Product: Mul(...) containing sin/cos powers ────────────────
     if let ExprNode::Mul(ref children) = node {

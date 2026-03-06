@@ -436,6 +436,47 @@ impl Poly {
         Poly::from_coeffs(new_coeffs)
     }
 
+    /// Extended Euclidean algorithm for polynomials.
+    ///
+    /// Returns `(s, t, g)` such that `s * a + t * b = g` where
+    /// `g = gcd(a, b)`, normalised to be monic.
+    pub fn extended_gcd(a: &Poly, b: &Poly) -> (Poly, Poly, Poly) {
+        if b.is_zero() {
+            if a.is_zero() {
+                return (Poly::from_int(1), Poly::zero(), Poly::zero());
+            }
+            let lc_inv = Ratio::one() / a.leading_coeff().unwrap();
+            return (Poly::constant(lc_inv), Poly::zero(), a.make_monic());
+        }
+
+        let (mut r_prev, mut r_curr) = (a.clone(), b.clone());
+        let (mut s_prev, mut s_curr) = (Poly::from_int(1), Poly::zero());
+        let (mut t_prev, mut t_curr) = (Poly::zero(), Poly::from_int(1));
+
+        while !r_curr.is_zero() {
+            let (q, r_next) = r_prev.div_rem(&r_curr);
+            let s_next = &s_prev - &(&q * &s_curr);
+            let t_next = &t_prev - &(&q * &t_curr);
+
+            r_prev = r_curr;
+            r_curr = r_next;
+            s_prev = s_curr;
+            s_curr = s_next;
+            t_prev = t_curr;
+            t_curr = t_next;
+        }
+
+        // Normalise GCD to be monic.
+        if !r_prev.is_zero() {
+            let lc_inv = Ratio::one() / r_prev.leading_coeff().unwrap();
+            r_prev = r_prev.scale(&lc_inv);
+            s_prev = s_prev.scale(&lc_inv);
+            t_prev = t_prev.scale(&lc_inv);
+        }
+
+        (s_prev, t_prev, r_prev)
+    }
+
     /// Compute the square-free part: p / gcd(p, p').
     /// This removes repeated roots while preserving all distinct roots.
     #[must_use]
