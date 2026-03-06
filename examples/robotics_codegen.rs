@@ -32,31 +32,18 @@ fn main() {
     // Compute forward kinematics
     let t0 = Instant::now();
     let (px, py, _pz) = fk_position(&dh);
-    println!("FK position computed in {:?}", t0.elapsed());
-    println!("  x = {px}");
-    println!("  y = {py}");
+    println!("FK computed in {:?}", t0.elapsed());
 
-    // Compute the Jacobian
+    // Compute the Jacobian (note: takes &[&Ex] references)
     let t1 = Instant::now();
-    let jac = jacobian(
-        &[&px, &py],
-        &[&theta1, &theta2, &theta3],
-    );
-    println!("\nJacobian (2x3) computed in {:?}", t1.elapsed());
-    for i in 0..jac.nrows() {
-        for j in 0..jac.ncols() {
-            println!("  J[{i}][{j}] = {}", jac.get(i, j));
-        }
-    }
+    let jac = jacobian(&[&px, &py], &[&theta1, &theta2, &theta3]);
+    println!("Jacobian (2×3) in {:?}\n", t1.elapsed());
 
     // Generate optimized Rust code with cross-entry CSE
     let t2 = Instant::now();
     let code = jac
         .to_rust_fn("robot_jacobian", &["theta1", "theta2", "theta3"])
-        .expect("code generation should succeed");
-    println!("\nRust code generated in {:?}", t2.elapsed());
-    println!("Generated code ({} bytes):\n", code.len());
+        .expect("codegen");
+    println!("Code generated in {:?} ({} bytes)\n", t2.elapsed(), code.len());
     println!("{code}");
-
-    println!("✓ Pipeline complete: DH → FK → Jacobian → Optimized Rust Code");
 }

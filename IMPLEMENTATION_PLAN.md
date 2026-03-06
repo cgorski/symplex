@@ -349,19 +349,20 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 | Metric | Value |
 |--------|-------|
-| Tests | 3,798 passing, 0 failing |
+| Tests | 4,517 passing, 0 failing |
 | ExprNode variants | 66 |
-| Source modules | 66 |
-| Test files | 108 |
-| Total lines | ~88,500 (50K source + 37K test + 1.5K macros) |
-| Public methods (Ex/BoolEx/SetEx) | 172 |
-| Matrix methods | 44 |
+| Source modules | 76 |
+| Test files | 126 |
+| Total lines | ~115,000 (source + test + macros) |
+| Public methods (Ex/BoolEx/SetEx) | 172+ |
+| Matrix methods | 44+ |
 | Apply functions | 12 |
 | `expr!` functions | 65 (54 single-arg + 11 multi-arg) |
 | Simplification rules | 24 (condition-guarded) |
 | Integration forms | 35+ |
 | Eval special values | 86+ |
 | Solver degree support | 1–4 (Cardano cubic + Ferrari quartic) |
+| Examples | 8 (quickstart, calculus, control_system, robotics_codegen, solve_system, dynamics, latex_output, repl) |
 | Clippy warnings | 0 |
 
 ---
@@ -380,11 +381,11 @@ Active limitations (not yet resolved):
 8. **No arbitrary-precision special function evaluation.** Gamma, erf, beta use f64 fast paths only. — Fix: Wave AP (Stirling series)
 9. **Pattern matching limited to linear patterns.** Nonlinear patterns (same wild twice) not supported. — Fix: Wave PM
 10. **No Risch integration.** Decision procedure for elementary antiderivatives not implemented.
-11. **No multivariate polynomials.** Gröbner bases not yet implemented. — Fix: Wave GB
-12. **No full Hensel/Zassenhaus factoring.** `factor()` uses rational root theorem only. — Fix: Wave L
+11. ~~**No multivariate polynomials.** Gröbner bases not yet implemented.~~ — **RESOLVED** (Wave GB: `groebner.rs`, `multipoly.rs`, `polysys.rs`)
+12. ~~**No full Hensel/Zassenhaus factoring.** `factor()` uses rational root theorem only.~~ — **RESOLVED** (Kronecker's method for degree 2–6)
 13. **Set types are foundation-only.** Interval merging, membership queries, and set arithmetic are minimal.
 14. **Laplace transforms are table-based.** No algorithmic fallback for forms outside the table.
-15. **`diff_with_deps` is not exposed in public API.** Dependency-aware differentiation is `pub(crate)` only. The ODE solver uses it internally. Future: expose via `Ex::diff_assuming_depends(&y, &x, &[&y])` or similar.
+15. ~~**`diff_with_deps` is not exposed in public API.**~~ — **RESOLVED** (exposed as `Ex::diff_with_dependent()`)
 16. **Sturm-based inequality solving is a fast-path only.** The Sturm chain detects "no real roots" cases; full Sturm-based interval construction is not yet integrated into the sign-chart builder.
 
 ---
@@ -404,21 +405,21 @@ Active limitations (not yet resolved):
 
 ### Near-term waves
 
-| Wave | Description | Est. |
-|------|-------------|------|
-| ODE+ | Exact ODEs, Bernoulli, undetermined coefficients. Dependency-aware differentiation infrastructure (`diff_with_deps`, `eval_derivatives`) is now in place; the ODE solver can be extended to exact equations and Bernoulli using the dependent-symbol-flag approach. Public `Ex::dsolve()` API is live. | 8 hrs |
-| LW | LambertW equation solver (6 canonical forms) | 4 hrs |
-| BF | Bessel functions (J, Y, I, K) | 6 hrs |
-| GB | Gröbner bases: Buchberger+FGLM, `MultiPoly` type, system solving pipeline | 15 hrs |
-| L | Full polynomial factoring: Berlekamp + Hensel lifting + square-free | 8 hrs |
+| Wave | Description | Est. | Status |
+|------|-------------|------|--------|
+| ODE+ | Exact ODEs, Bernoulli, undetermined coefficients. Dependency-aware differentiation infrastructure (`diff_with_deps`, `eval_derivatives`) is now in place; the ODE solver can be extended to exact equations and Bernoulli using the dependent-symbol-flag approach. Public `Ex::solve_ode()` API is live. | 8 hrs | |
+| LW | LambertW equation solver (6 canonical forms) | 4 hrs | |
+| BF | Bessel functions (J, Y, I, K) | 6 hrs | |
+| GB | Gröbner bases: Buchberger+FGLM, `MultiPoly` type, system solving pipeline | 15 hrs | ✅ Done |
+| L | Full polynomial factoring: Berlekamp + Hensel lifting + square-free | 8 hrs | Partial (Kronecker) |
 
 ### Version roadmap
 
 | Version | Theme | Key features |
 |---------|-------|--------------|
-| 0.2.x | Completeness | Inequality solving, set operations, AP special functions |
+| 0.2.x | Completeness | Inequality solving, set operations, AP special functions, Gröbner bases ✅ |
 | 0.3.0 | Sets | Deep set types, solveset returns Set, interval arithmetic |
-| 0.4.0+ | Deep algorithms | Risch integration, Hensel factoring, multivariate GCD, matrix-expr in arena |
+| 0.4.0+ | Deep algorithms | Risch integration, full Hensel factoring, multivariate GCD, matrix-expr in arena |
 
 ### Strategic context
 
@@ -432,7 +433,7 @@ algorithm developers (derive formula → compile to fast code). The common threa
 
 ## 10. Module Reference
 
-### Main crate: `symplex/src/` (66 modules)
+### Main crate: `symplex/src/` (76 modules)
 
 | Module | Responsibility |
 |--------|----------------|
@@ -463,18 +464,22 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | `factor.rs` | Polynomial factoring (rational root theorem, content extraction) |
 | `factor_terms.rs` | GCD extraction from sums |
 | `fourier.rs` | Fourier series computation via integration |
+| `fourier_transform.rs` | Symbolic Fourier transform |
+| `groebner.rs` | Gröbner basis computation via Buchberger's algorithm with FGLM order conversion |
 | `gruntz.rs` | Gruntz algorithm for limits at infinity (~1,700 lines) |
 | `inequalities.rs` | Polynomial/rational inequality solving → SetEx |
 | `integrate.rs` | Symbolic integration (power, trig, exp, by-parts, u-sub, apart pipeline) |
 | `lambdify.rs` | Compile expressions to `Box<dyn Fn(&[f64]) -> f64>` closures |
 | `laplace.rs` | Forward/inverse Laplace transforms (table + structural rules) |
+| `latex.rs` | LaTeX rendering for `Ex`, `Matrix`, `Quaternion` (`to_latex`, `to_latex_inline`, `to_latex_display`) |
 | `lib.rs` | Module declarations, prelude, `__macro_support`, proc macro re-exports |
 | `limit.rs` | Symbolic limits (direct substitution, L'Hôpital, series, Gruntz dispatch) |
 | `linalg.rs` | Linear system solving (Gaussian elimination over exact rationals) |
 | `log_combine.rs` | Log combining: ln(a)+ln(b) → ln(ab) |
 | `log_expand.rs` | Log expansion: ln(ab) → ln(a)+ln(b) |
 | `macros.rs` | `syms!` and `sym!` declarative macros |
-| `matrix.rs` | Symbolic matrix: det, inv, eigen, LU, QR, RREF, rank, nullspace, 44 methods |
+| `matrix.rs` | Symbolic matrix: det, inv, eigen, LU, QR, RREF, rank, nullspace, Jacobian, codegen, 44+ methods |
+| `multipoly.rs` | Multivariate polynomials with generic monomial ordering (`Lex`, `GrLex`, `GrevLex`) |
 | `node.rs` | `ExprId(u32)`, `ExprNode` enum (66 variants), `children()`, `is_atom()` |
 | `nsimplify.rs` | Closed-form detection from floats (PSLQ-lite) |
 | `ode.rs` | ODE classification and solving (separable, linear, 2nd-order CC) |
@@ -482,10 +487,13 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | `pattern.rs` | Pattern matching, rewrite rules, `basic_rules()` (24 rules), sub-expr matching |
 | `poly.rs` | Dense univariate polynomials over ℚ (arithmetic, Euclidean GCD, Horner eval) |
 | `polybridge.rs` | Expression ↔ Poly bridge, cancel(), collect(), together() |
+| `polysys.rs` | Polynomial system solving: bridge from `Ex` to Gröbner basis pipeline |
 | `powsimp.rs` | Power simplification (symbolic exponent merging) |
+| `quaternion.rs` | Symbolic quaternion type for 3D rotations |
 | `radsimp.rs` | Denominator rationalization |
 | `residue.rs` | Residue computation via limit |
 | `rewrite.rs` | Rewrite protocol: trig↔exp (Euler's formula), trig↔hyp |
+| `robotics.rs` | DH parameter forward kinematics for serial robot arms |
 | `separatevars.rs` | Variable separation in products |
 | `series.rs` | Taylor/Maclaurin series expansion with pole detection |
 | `simplify_engine.rs` | Multi-strategy `smart_simplify` (7 strategies, picks lowest count_ops) |
@@ -502,6 +510,7 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | `trigsimp.rs` | Trig simplification (6-strategy choice-set) |
 | `vector.rs` | Vector calculus: gradient, divergence, curl, laplacian, conservative/solenoidal |
 | `walk.rs` | Shared iterative tree traversal: post_order_ids, walk_and_rebuild |
+| `z_transform.rs` | Z-transform for discrete-time signal analysis |
 
 ### Proc macro crate: `symplex-macros/` (~1,450 lines)
 

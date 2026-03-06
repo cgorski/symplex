@@ -339,3 +339,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed: `Arena` lacked `formal_diff()` — arena-level ODE construction required manual `intern(ExprNode::Derivative(...))`. Added `Arena::formal_diff(expr, var)` convenience method.
 - Fixed: Inequality solver returned `ComputationFailed` for polynomials with no real roots (e.g., x²+1 > 0). Complex roots from `solve()` were treated as "can't evaluate" instead of "no real roots." Now falls through to `solve_no_roots()` which correctly determines constant sign.
 - Fixed: `d/dx(Apply("f", [g(x)]))` returned opaque `Derivative` blob instead of applying chain rule. Now correctly produces `Derivative(f(g(x)), g(x)) · g'(x)`.
+
+**Gröbner Bases and Polynomial System Solving**
+- New `groebner.rs` module: Buchberger's algorithm with Gebauer-Möller criteria
+- `groebner_basis<O>()` computes reduced Gröbner bases for any monomial ordering
+- FGLM order conversion (grevlex → lex) for back-substitution solving
+- `is_zero_dimensional()` check for finite solution count
+- `MultiPoly<O: MonomialOrd>` refactored with generic monomial ordering
+  `Lex`, `GrLex`, `GrevLex` as zero-sized type parameters
+- `MonoKey<O>` wrapper for O(log n) leading term via BTreeMap
+- Multivariate polynomial division, S-polynomials, monic, primitive part
+- `multipoly_vars::<O>(n)` ring builder for ergonomic construction
+- `solve_polynomial_system()` full pipeline: grevlex GB → FGLM → lex → back-substitution
+- `symplex::solve_system(&[Ex], &[Ex])` top-level public function
+- New `polysys.rs` module bridging Gröbner bases to the `Ex` expression layer
+- Verified on Katsura-3 benchmark and circle-line intersection
+
+**Hensel Polynomial Factoring**
+- Square-free decomposition via Yun's algorithm
+- Rational root theorem with coprime pair enumeration
+- Kronecker's method for non-linear factors (degree 2–6)
+- Now factors: x⁴−1, x⁶−1, x⁴+5x²+6, x⁴+x²+1, cyclotomic-like polynomials
+
+**API Naming Overhaul (Breaking)**
+- All CAS-jargon method names replaced with Rust-idiomatic names:
+  `trigsimp` → `simplify_trig`, `evalf` → `eval_decimal`, `evalf_f64` → `eval_f64`,
+  `apart` → `partial_fractions`, `dsolve` → `solve_ode`, `lambdify` → `compile`, etc.
+- Old names deleted (not deprecated, not aliased — removed entirely)
+- Vector calculus functions now take `&[&Ex]` instead of `&[Ex]`
+  (`jacobian`, `gradient`, `divergence`, `curl`, `laplacian`)
+
+**Ergonomics Improvements**
+- Prelude expanded: `Matrix`, `Quaternion`, `StateSpace`, `TransferFunction`
+- `symplex::half()`, `third()`, `quarter()`, `two_thirds()` convenience fractions
+- `Ex::eval_f64_with(&[(&Ex, i64)])` multi-variable evaluation shortcut
+- `Ex::subs_map_i64(&[(&Ex, i64)])` multi-variable substitution
+- `CodegenOptions::no_std()`, `::embedded_f32()` named constructors
+- `TransferFunction::from_coeffs(&[i64], &[i64], &Ex)` convenience constructor
+- `Matrix::diag()`, `Matrix::from_i64()` convenience constructors
+- Matrix operator overloads: `+`, `-`, `*` (matmul), `Neg`, scalar multiply
+- MultiPoly integer arithmetic: `+ i64`, `- i64`, `* i64`
+- `Ex` methods for special functions: `bessel_j`/`bessel_y`/`bessel_i`/`bessel_k`, `legendre`, `chebyshev_t`/`chebyshev_u`, `hermite`, `laguerre`
+- `Ex::diff_with_dependent()` public API for dependency-aware differentiation
+- `z_transform` and `fourier_transform` modules now public
+
+**Lagrangian Dynamics**
+- New `dynamics.rs` module for robotic and mechanical system dynamics
+- `euler_lagrange()` — derive equations of motion from kinetic and potential energy
+- `mass_matrix()` — extract M(q) from kinetic energy via ∂²T/∂q̇ᵢ∂q̇ⱼ
+- `coriolis_matrix()` — compute C(q, q̇) via Christoffel symbols
+- `gravity_vector()` — compute g(q) = ∂V/∂q
+- `christoffel_symbols()` — Christoffel symbols of the first kind
+- `manipulator_equation()` — convenience returning (M, C, g) triple
+- `total_time_derivative()` — chain-rule time derivative for Lagrangian mechanics
+
+**Examples Overhaul (Wave P8)**
+- Rewritten `quickstart.rs`: uses `eval_f64_with`, `to_latex`, ~30 lines
+- Rewritten `robotics_codegen.rs`: uses `&[&Ex]` Jacobian API, streamlined output
+- Rewritten `control_system.rs`: uses `matrix!` macro, `from_coeffs`, concise
+- New `solve_system.rs`: circle-line intersection, two conics, cubic via Gröbner bases
+- New `dynamics.rs`: simple pendulum Euler-Lagrange equations, mass matrix, gravity vector
+- New `latex_output.rs`: LaTeX rendering for expressions, inline/display modes
+
+**Crate Cleanup**
+- Deleted `symplex-format` crate (superseded by `src/latex.rs` in core)
+- Updated `symplex-wasm` to use inherent `Ex::to_latex()` method
+- Updated `Cargo.toml`: keywords include "robotics", "groebner"
