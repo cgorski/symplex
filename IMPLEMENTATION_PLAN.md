@@ -13,20 +13,20 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 
 ### Build and test
 
-    cargo test --lib              # Fast loop: 1,193 lib tests in ~2s (3-4s wall after src/ change)
-    cargo test --all-targets      # Full suite: 4,560+ tests — all must pass (45s after src/ change)
+    cargo test --lib              # Fast loop: 1,319 lib tests in ~2s (3-4s wall after src/ change)
+    cargo test --all-targets      # Full suite: 5,500+ tests — all must pass (45s after src/ change)
     cargo clippy --all-targets -- -D warnings   # 0 warnings required
     cargo bench                   # Criterion benchmarks (27)
 
 ### Test timing and the fast development loop
 
-We have **131 integration test files** under `tests/`, each compiled as a separate
-binary by Cargo. Touching any `src/` file triggers relinking all 131 binaries,
+We have **146 integration test files** under `tests/`, each compiled as a separate
+binary by Cargo. Touching any `src/` file triggers relinking all 146 binaries,
 which takes ~40 seconds even though test execution itself is ~10 seconds.
 
 **Use the fast loop during development:**
 
-    cargo test --lib                           # 3-4s — covers 1,193 unit tests
+    cargo test --lib                           # 3-4s — covers 1,319 unit tests
     cargo test --lib --test test_foo           # 4-5s — add one targeted integration test
     cargo test --all-targets                   # 45s  — full suite, only before commits
 
@@ -39,8 +39,8 @@ which takes ~40 seconds even though test execution itself is ~10 seconds.
 | `cargo test --all-targets` | 45s | 10s |
 | `cargo test --all-targets` (cold) | 55s | N/A |
 
-The slow `--all-targets` is caused by linking 131 separate test binaries, not
-by test execution. The **structural fix** (consolidating 131 files into ~10-15
+The slow `--all-targets` is caused by linking 146 separate test binaries, not
+by test execution. The **structural fix** (consolidating 146 files into ~10-15
 thematic test crates) is tracked for post-0.2.0. Until then, use `--lib` for
 the inner loop and `--all-targets` as a commit gate only.
 
@@ -85,12 +85,12 @@ the inner loop and `--all-targets` as a commit gate only.
 
 | Metric | Value |
 |--------|-------|
-| Tests | 4,560+ passing, 0 failing |
-| Source | ~60,400 lines across 76 modules |
-| Tests | ~49,000 lines across 125 test files |
-| Examples | ~445 lines across 8 examples |
-| Companion crates | ~1,045 lines across 2 crates (symplex-build, symplex-wasm) |
-| Total | ~111,000 lines |
+| Tests | 1,319+ lib tests, 5,500+ total, 0 failing |
+| Source | ~72,800 lines across 82 modules |
+| Tests | ~57,300 lines across 146 test files |
+| Examples | ~3,950 lines across 18 examples |
+| Companion crates | ~1,085 lines across 2 crates (symplex-build, symplex-wasm) |
+| Total | ~136,600 lines |
 | ExprNode variants | 66 (including 7 set-valued, 11 boolean) |
 | Public methods on `Ex` | 175+ (numeric + boolean + set-valued) |
 | Public methods on `Context` | 17 |
@@ -98,13 +98,13 @@ the inner loop and `--all-targets` as a commit gate only.
 | Apply functions | 12 + 9 special functions (Bessel, Legendre, etc.) |
 | `expr!` macro functions | 65 (54 single-arg + 11 multi-arg) |
 | Simplification rules | 24 (with condition guards) |
-| Integration forms | 40+ |
+| Integration forms | 60+ |
 | Eval special values | 86+ |
 | Criterion benchmarks | 27 |
 | Proptest properties | 22+ |
-| Source modules | 76 |
-| Test files | 125 |
-| Examples | 8 |
+| Source modules | 82 |
+| Test files | 146 |
+| Examples | 18 |
 | Companion crates | 2 (symplex-build, symplex-wasm) |
 
 ### Three phantom sorts
@@ -390,27 +390,27 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 | Metric | Value |
 |--------|-------|
-| Tests | 1,193+ lib tests, 4,560+ total, 0 failing |
+| Tests | 1,319+ lib tests, 5,500+ total, 0 failing |
 | ExprNode variants | 66 |
-| Source modules | 77 |
-| Integration test files | 131 (each compiles as separate binary — see §1 timing notes) |
-| Source | ~63,000 lines across 77 modules |
-| Tests | ~49,000+ lines across 131 test files |
-| Examples | ~445 lines across 13 examples |
-| Companion crates | ~1,045 lines across 2 crates (symplex-build, symplex-wasm) |
-| Total | ~111,000 lines |
+| Source modules | 82 |
+| Integration test files | 146 (each compiles as separate binary — see §1 timing notes) |
+| Source | ~72,800 lines across 82 modules |
+| Tests | ~57,300 lines across 146 test files |
+| Examples | ~3,950 lines across 18 examples |
+| Companion crates | ~1,085 lines across 2 crates (symplex-build, symplex-wasm) |
+| Total | ~136,600 lines |
 | Public methods on `Ex` | 175+ (numeric + boolean + set-valued) |
 | Public methods on `Context` | 17 |
 | Matrix methods | 50+ (added operators, exp, kronecker, cholesky, pinv, diag, from_i64) |
 | Apply functions | 12 + 9 special functions (Bessel, Legendre, etc.) |
 | `expr!` functions | 65 (54 single-arg + 11 multi-arg) |
 | Simplification rules | 24 (condition-guarded) |
-| Integration forms | 40+ |
+| Integration forms | 60+ |
 | Eval special values | 86+ |
 | Criterion benchmarks | 27 |
 | Proptest properties | 22+ |
 | Solver degree support | 1–4 (Cardano cubic + Ferrari quartic) |
-| Examples | 13 |
+| Examples | 18 |
 | Clippy warnings | 0 (enforced: `cargo clippy --all-targets -- -D warnings`) |
 
 ---
@@ -428,7 +428,7 @@ Active limitations (not yet resolved):
 7. **No boolean symbols.** All symbols are `Expr<Numeric>`. Boolean-typed symbolic variables not supported.
 8. **No arbitrary-precision special function evaluation.** Gamma, erf, beta use f64 fast paths only. — Fix: Wave AP (Stirling series)
 9. **Pattern matching limited to linear patterns.** Nonlinear patterns (same wild twice) not supported. — Fix: Wave PM
-10. **No Risch integration.** Decision procedure for elementary antiderivatives not implemented.
+10. ~~**No Risch integration.**~~ — **PARTIALLY RESOLVED** (0.2.0: heurisch fallback integrator covers many elementary forms; full Risch decision procedure still not implemented)
 11. ~~**No multivariate polynomials.** Gröbner bases not yet implemented.~~ — **RESOLVED** (Wave GB: `groebner.rs`, `multipoly.rs`, `polysys.rs`)
 12. ~~**No full Hensel/Zassenhaus factoring.** `factor()` uses rational root theorem only.~~ — **PARTIALLY RESOLVED** (Kronecker's method for non-linear factors, square-free decomposition, rational root theorem)
 13. **Set types are foundation-only.** Interval merging, membership queries, and set arithmetic are minimal.
@@ -444,7 +444,15 @@ Active limitations (not yet resolved):
 23. ~~**`expr!` doesn't support fraction literals.**~~ — **RESOLVED** (same as #2)
 24. **2-DOF IK only.** Inverse kinematics limited to planar 2-DOF. General n-DOF IK requires Pieper decomposition (not yet implemented).
 25. **Number theory factorization uses trial division.** No Pollard rho or ECM for very large composites (>10^18). Adequate for most CAS use cases.
-26. **131 integration test binaries slow relink.** Touching any `src/` file triggers relinking all 131 test binaries (~40s). Use `cargo test --lib` for the fast loop. Structural fix (consolidate into ~10-15 thematic test crates) planned for post-0.2.0.
+26. **146 integration test binaries slow relink.** Touching any `src/` file triggers relinking all 146 test binaries (~40s). Use `cargo test --lib` for the fast loop. Structural fix (consolidate into ~10-15 thematic test crates) planned for post-0.2.0.
+27. ~~**No trig simplification beyond basic rules.**~~ — **RESOLVED** (0.2.0: Fu's trig simplification with 17 transforms + greedy orchestration in `fu.rs`)
+28. ~~**No hypergeometric summation.**~~ — **RESOLVED** (0.2.0: Gosper's algorithm for indefinite hypergeometric sums in `gosper.rs`)
+29. ~~**No formal power series.**~~ — **RESOLVED** (0.2.0: formal power series with closed-form coefficients in `formal_series.rs`)
+30. ~~**No finite difference methods.**~~ — **RESOLVED** (0.2.0: Fornberg algorithm for finite difference coefficients in `finite_diff.rs`)
+31. ~~**ODE solver limited to separable/linear/2nd-order CC.**~~ — **RESOLVED** (0.2.0: Bernoulli, Euler-Cauchy, variation of parameters, undetermined coefficients, ODE systems via matrix exp, nth-order reducible, homogeneous coefficient)
+32. ~~**Codegen lacks FMA/Horner/numerical optimization.**~~ — **RESOLVED** (0.2.0: FMA detection with `mul_add`, Horner-style powi expansion, sin_cos pairing, expm1/log1p/log2/exp2 optimization)
+33. ~~**No parametric integration.**~~ — **RESOLVED** (0.2.0: sin(a*x), exp(a*x), 1/(x²+a²) with piecewise wrapping for degenerate cases)
+34. ~~**No trig equation solving.**~~ — **RESOLVED** (0.2.0: sin(x)=c, cos(x)=c, tan(x)=c with domain validation)
 
 ---
 
@@ -454,14 +462,23 @@ Active limitations (not yet resolved):
 
 | Task | Description | Est. | Priority |
 |------|-------------|------|----------|
-| Display fix | `+ -N` → `- N` in Add display | 2-3 hrs | Critical |
-| Codegen fix | Constant folding, negation style | 3-4 hrs | Critical |
-| Matrix::to_latex | Add missing LaTeX method | 30 min | Critical |
-| Example overhaul | Rewrite 5 examples, add 4 new | 6-8 hrs | Critical |
-| README rewrite | 667 → 300 lines, hero code, accurate tables | 4-6 hrs | Critical |
-| CHANGELOG update | Log 20+ unlogged features | 2-3 hrs | High |
-| expr! fractions | Recognize half/third/quarter constants | 1-2 hrs | High |
+| ~~Display fix~~ | ~~`+ -N` → `- N` in Add display~~ | ~~done~~ | ~~DONE~~ |
+| ~~Codegen fix~~ | ~~Constant folding, negation style, FMA, Horner, sin_cos, numerical opts~~ | ~~done~~ | ~~DONE~~ |
+| ~~Matrix::to_latex~~ | ~~Add missing LaTeX method~~ | ~~done~~ | ~~DONE~~ |
+| ~~Example overhaul~~ | ~~Rewrite examples, add probe/calculus/integration examples~~ | ~~done~~ | ~~DONE~~ |
+| README rewrite | Update hero→flagship, new feature mentions, test counts | 2-3 hrs | High |
+| CHANGELOG update | Log 40+ unlogged features from development push | 2-3 hrs | High |
+| ~~expr! fractions~~ | ~~`expr!(1/2)` → `rational(1,2)`, `expr!(-1/2)` fixed~~ | ~~done~~ | ~~DONE~~ |
 | ~~Number theory~~ | ~~`ntheory` module: primality, factorization, divisors, modular arithmetic, CRT~~ | ~~done~~ | ~~DONE~~ |
+| ~~Fu trig simplification~~ | ~~17 transforms + greedy orchestration~~ | ~~done~~ | ~~DONE~~ |
+| ~~Gosper summation~~ | ~~Hypergeometric indefinite summation~~ | ~~done~~ | ~~DONE~~ |
+| ~~Formal power series~~ | ~~Closed-form coefficients~~ | ~~done~~ | ~~DONE~~ |
+| ~~Finite differences~~ | ~~Fornberg algorithm~~ | ~~done~~ | ~~DONE~~ |
+| ~~Heurisch integrator~~ | ~~Fallback integration for elementary forms~~ | ~~done~~ | ~~DONE~~ |
+| ~~ODE enhancements~~ | ~~Bernoulli, Euler-Cauchy, VoP, systems, undetermined coefficients~~ | ~~done~~ | ~~DONE~~ |
+| ~~Parametric integration~~ | ~~sin(a*x), exp(a*x), 1/(x²+a²) with piecewise degenerate cases~~ | ~~done~~ | ~~DONE~~ |
+| ~~Trig solving~~ | ~~sin(x)=c, cos(x)=c, tan(x)=c with domain validation~~ | ~~done~~ | ~~DONE~~ |
+| ~~Rothstein-Trager~~ | ~~Resultant, evaluation-interpolation, extended GCD~~ | ~~done~~ | ~~DONE~~ |
 
 ### Post-0.2.0 (audience expansion)
 
@@ -494,7 +511,7 @@ algorithm developers (derive formula → compile to fast code). The common threa
 
 ## 10. Module Reference
 
-### Main crate: `symplex/src/` (77 modules)
+### Main crate: `symplex/src/` (82 modules)
 
 | Module | Responsibility |
 |--------|----------------|
@@ -526,10 +543,15 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | `expr_view.rs` | `ExprView` — non-locking view type for `replace()` closures |
 | `factor.rs` | Polynomial factoring (rational root theorem, content extraction) |
 | `factor_terms.rs` | GCD extraction from sums |
+| `finite_diff.rs` | Finite difference coefficients (Fornberg algorithm) |
+| `formal_series.rs` | Formal power series with closed-form coefficient extraction |
 | `fourier.rs` | Fourier series computation via integration |
 | `fourier_transform.rs` | Table-based symbolic Fourier transform and inverse |
+| `fu.rs` | Fu's trig simplification (17 transforms + greedy orchestration) |
+| `gosper.rs` | Gosper's algorithm for hypergeometric indefinite summation |
 | `groebner.rs` | Buchberger's algorithm with Gebauer-Möller, FGLM order conversion |
 | `gruntz.rs` | Gruntz algorithm for limits at infinity (~1,700 lines) |
+| `heurisch.rs` | Heurisch fallback integrator for elementary antiderivatives |
 | `inequalities.rs` | Polynomial/rational inequality solving → SetEx |
 | `integrate.rs` | Symbolic integration (power, trig, exp, by-parts, u-sub, apart pipeline) |
 | `lambdify.rs` | Compile expressions to `Box<dyn Fn(&[f64]) -> f64>` closures |
@@ -576,7 +598,7 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | `walk.rs` | Shared iterative tree traversal: post_order_ids, walk_and_rebuild |
 | `z_transform.rs` | Table-based z-transform and inverse z-transform |
 
-### Proc macro crate: `symplex-macros/` (~1,450 lines)
+### Proc macro crate: `symplex-macros/` (~1,466 lines)
 
 | Module | Responsibility |
 |--------|----------------|

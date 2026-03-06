@@ -8,7 +8,7 @@ Symbolic mathematics library for Rust — calculus, algebra, Gröbner bases, rob
 
 ---
 
-## Hero Example
+## Flagship Example
 
 Define a 2-DOF planar robot arm with DH parameters, derive its symbolic Jacobian,
 and generate an optimized Rust function — all in 15 lines:
@@ -121,10 +121,11 @@ Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `exp
 **Core Algebra & Calculus:**
 
 - ✅ Symbolic differentiation (chain rule, product rule, all elementary functions)
-- ✅ Integration (by-parts, u-substitution, partial fractions, trig powers, cyclic IBP)
+- ✅ Integration (by-parts, u-substitution, partial fractions, trig powers, cyclic IBP, heurisch fallback, parametric, Heaviside)
 - ✅ Polynomial solving through quartic (Cardano/Ferrari) + Gröbner bases for systems
-- ✅ Simplification (24 rules + trig/power/combinatorial/numeric strategies)
-- ✅ Taylor/Maclaurin/Laurent series, limits (Gruntz algorithm)
+- ✅ Simplification (24 rules + Fu's trig simplification + power/combinatorial/numeric strategies)
+- ✅ Taylor/Maclaurin/Laurent series, limits (Gruntz algorithm), formal power series
+- ✅ Finite differences (Fornberg algorithm), Gosper hypergeometric summation
 - ✅ Exact rational arithmetic (`Ratio<BigInt>`) — no floating-point contamination
 
 **Linear Algebra:**
@@ -145,6 +146,7 @@ Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `exp
 - ✅ State-space and transfer function representations
 - ✅ Routh-Hurwitz stability, Ackermann pole placement
 - ✅ Zero-order hold discretization
+- ✅ ODE solving: separable, linear, Bernoulli, Euler-Cauchy, variation of parameters, undetermined coefficients, systems via matrix exp
 
 **Transforms & Special Functions:**
 
@@ -154,7 +156,7 @@ Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `exp
 
 **Code Generation & Output:**
 
-- ✅ `to_rust_fn()` with CodegenOptions (f32/f64, std/libm/no_std)
+- ✅ `to_rust_fn()` with CodegenOptions (f32/f64, std/libm/no_std), FMA detection, Horner powi, sin_cos pairing, expm1/log1p/log2/exp2 optimization
 - ✅ LaTeX rendering (`to_latex()` on expressions, matrices, quaternions)
 - ✅ JSON serialization for interchange
 - ✅ Runtime expression parser
@@ -168,7 +170,7 @@ Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `exp
 
 ## Examples
 
-All 12 examples are self-contained and print annotated output.
+All 18 examples are self-contained and print annotated output.
 Start with `quickstart` for a tour, or jump straight to `robotics_codegen`:
 
 ```
@@ -183,6 +185,10 @@ cargo run --example robotics_codegen    # DH → Jacobian → Rust code
 cargo run --example inverse_kinematics  # 2-DOF IK via Gröbner bases
 cargo run --example latex_output        # LaTeX rendering
 cargo run --example solve_system        # Gröbner-based polynomial systems
+cargo run --example ode_solving         # ODE classification and solving
+cargo run --example complex_numbers     # Complex arithmetic and Euler's formula
+cargo run --example laplace_transforms  # Forward/inverse Laplace transforms
+cargo run --example number_theory       # Primality, factorization, CRT
 cargo run --example repl                # Interactive REPL
 ```
 
@@ -195,11 +201,16 @@ A concise, honest comparison. For the full breakdown see
 |---------|:-------:|:-----:|
 | Expression system | ✅ Arena hash-consing | ✅ Python objects |
 | Differentiation | ✅ | ✅ |
-| Integration | ✅ (elementary) | ✅ (+ Risch) |
+| Integration | ✅ (elementary + heurisch) | ✅ (+ Risch) |
 | Polynomial solving (through quartic) | ✅ | ✅ |
 | Gröbner bases | ✅ Buchberger + FGLM | ✅ Buchberger + F5B |
 | Polynomial system solving | ✅ | ✅ |
 | Matrix algebra | ✅ 50+ methods | ✅ |
+| Trig simplification (Fu's algorithm) | ✅ (17 transforms) | ✅ |
+| ODE solving | ✅ (7 classes + systems) | ✅ |
+| Hypergeometric summation (Gosper) | ✅ | ✅ |
+| Formal power series | ✅ | ✅ |
+| Finite differences (Fornberg) | ✅ | ✅ |
 | Robotics (DH, FK, Jacobian, dynamics) | ✅ | ❌ (separate: mechanics) |
 | Control systems | ✅ | ✅ (control module) |
 | Rust code generation | ✅ | ❌ |
@@ -253,7 +264,7 @@ Rust 1.93+ (Edition 2024).
 Contributions are welcome. Please open an issue before starting large changes.
 
 ```
-cargo test                  # Run the full test suite
+cargo test                  # Run the full test suite (5,500+ tests)
 cargo test --doc            # Doc-tests only
 cargo bench                 # Benchmarks (criterion)
 RUST_LOG=symplex=debug cargo run --example quickstart  # With tracing output

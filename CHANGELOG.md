@@ -438,3 +438,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DELETED `symplex-format` crate — LaTeX rendering now in core (`src/latex.rs`)
 - Updated `symplex-wasm` to use inherent `Ex::to_latex()` method
 - Updated Cargo.toml: description mentions robotics, keywords include "groebner"
+
+**Code Generation Enhancements**
+- Post-CSE constant propagation eliminates trivial temps (e.g., `let t0 = 3.0;` → inline)
+- Subtraction style: generates `- x` instead of `+ (-x)` for cleaner output
+- Decimal fraction literals: emits `-0.25_f64` instead of `(-1_f64 / 4_f64)`
+- FMA detection: single-use products emit `a.mul_add(b, c)` via `mul_add`
+- Horner-style powi expansion for small exponents (3–6) — avoids `powi()` call overhead
+- sin_cos pairing: combined `sin`/`cos` calls on the same argument emit `x.sin_cos()`
+- Numerical optimization passes: `expm1`, `log1p`, `log2`, `exp2` for improved accuracy near zero/one
+
+**Integration Enhancements**
+- Parametric integration: `∫ sin(a*x) dx`, `∫ exp(a*x) dx`, `∫ 1/(x²+a²) dx` with symbolic coefficients
+- Piecewise wrapping for parametric degenerate cases (e.g., `a=0` branch in `∫ sin(a*x) dx`)
+- Special function table: `Si(x)` (sine integral), `Ci(x)` (cosine integral), `Ei(x)` (exponential integral), `li(x)` (logarithmic integral)
+- Trig identity rewrites in integrator: `tan²(x) → sec²(x)-1`, `sech²(x)`, `sinh²(x)`, `cosh²(x)`
+- Hyperbolic power integration: `∫ sinh^n(x) dx`, `∫ cosh^n(x) dx` via reduction formulas
+- `∫ ln(x)^n dx` by-parts with recursive reduction
+- `∫ ln(ln(x)) dx → x·ln(ln(x)) - li(x)` via special function table
+- Heurisch fallback integrator (`heurisch.rs`) — covers many elementary forms not handled by table/pattern methods
+- Heaviside integration: `∫ H(x)·f(x) dx` with proper piecewise handling
+
+**Calculus: New Modules**
+- Formal power series (`formal_series.rs`) with closed-form coefficient extraction and truncated arithmetic
+- Finite differences (`finite_diff.rs`) — Fornberg algorithm for finite difference coefficients at arbitrary stencil points
+- Gosper hypergeometric summation (`gosper.rs`) — indefinite summation of hypergeometric terms ∑ₖ t(k) when ratio t(k+1)/t(k) is rational
+
+**ODE Solver Enhancements**
+- Bernoulli equations: `y' + P(x)·y = Q(x)·yⁿ` via substitution `v = y^(1-n)`
+- Euler-Cauchy equations: `x²y'' + axy' + by = 0` via `x = eᵗ` transformation
+- Variation of parameters for second-order nonhomogeneous ODEs
+- ODE system solving: constant-coefficient systems `X' = AX` via matrix exponential
+- Homogeneous coefficient ODEs: `y' = f(y/x)` via `v = y/x` substitution
+- nth-order reducible ODEs: order reduction when the dependent variable is absent
+- Method of undetermined coefficients: trig, exponential, and polynomial forcing functions
+- Complex-to-trig conversion: `e^(a±bi)x` solutions automatically rewritten as `e^(ax)(cos(bx) ± sin(bx))`
+
+**Fu's Trig Simplification**
+- New `fu.rs` module implementing Fu's algorithm for trigonometric simplification
+- 17 individual transforms (TR1–TR13, TRmorrie, TRpower, CTR1–CTR4) covering all standard trig identities
+- Greedy orchestration: tries all applicable transforms at each step, picks lowest `count_ops`
+- Integrated into `simplify_trig()` as an additional strategy alongside existing 6-strategy choice-set
+
+**Rational Function Infrastructure**
+- Rothstein-Trager partial integration infrastructure: polynomial resultant computation, evaluation-interpolation for resultant roots
+- Extended GCD for univariate polynomials — enables proper separation of square-free factors
+- Improved conjugate pair detection in partial fraction decomposition for cleaner `atan`-based antiderivatives
+
+**Macro Improvements**
+- `expr!(1/2)` now emits `rational(1, 2)` — exact rational, not integer division
+- `expr!(-1/2)` fixed — correctly emits `rational(-1, 2)` instead of panicking
+
+**Trig Equation Solving**
+- `sin(x) = c` → `x = asin(c) + 2nπ` and `x = π - asin(c) + 2nπ` with domain validation (`|c| ≤ 1`)
+- `cos(x) = c` → `x = ±acos(c) + 2nπ` with domain validation
+- `tan(x) = c` → `x = atan(c) + nπ` (all real `c`)
+
+**Gröbner Basis Enhancements**
+- Symbolic fallback for irrational roots: when univariate remainder has irrational roots, falls back to `solve()` for radical expressions instead of returning only rational solutions
