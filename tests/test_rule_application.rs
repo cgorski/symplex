@@ -168,13 +168,13 @@ fn rule_ln_exp_fires_for_real_symbol() {
 }
 
 #[test]
-fn rule_ln_exp_blocked_for_unassumed_symbol() {
-    // Without real assumption, ln(exp(x)) should stay unchanged.
+fn rule_ln_exp_fires_for_unassumed_symbol() {
+    // ln(exp(x)) now simplifies to x for unassumed symbols (fires unless
+    // the variable is KNOWN to be non-real). This matches SymPy behavior.
     let x = symplex::var("x");
     let expr = x.exp().ln();
     let s = format!("{}", expr.simplify());
-    // It should NOT simplify to just "x" without the real assumption.
-    assert_eq!(s, "ln(exp(x))", "ln(exp(x)) should stay unchanged without real assumption");
+    assert_eq!(s, "x", "ln(exp(x)) should simplify to x for unassumed symbols");
 }
 
 #[test]

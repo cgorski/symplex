@@ -1,11 +1,19 @@
 //! Integration tests for the `ntheory` number-theory module.
+//!
+//! All tests use the **unified API** — one function name per operation,
+//! accepting `impl Into<BigInt>` and returning `BigInt`-typed results.
 
 use num_bigint::BigInt;
 use num_traits::One;
 use symplex::ntheory::*;
 
+/// Shorthand for `BigInt::from(n)`.
+fn bi(n: i64) -> BigInt {
+    BigInt::from(n)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
-// Primality — i64
+// Primality — small values (dispatches to i64 fast path internally)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -28,7 +36,6 @@ fn isprime_negative_and_zero() {
 
 #[test]
 fn isprime_known_large_primes() {
-    // A few known primes beyond small-prime range
     assert!(isprime(1_000_000_007));
     assert!(isprime(999_999_937));
     assert!(isprime(2_147_483_647)); // Mersenne prime 2^31 - 1
@@ -36,7 +43,6 @@ fn isprime_known_large_primes() {
 
 #[test]
 fn isprime_carmichael_numbers() {
-    // Carmichael numbers fool Fermat tests but not Miller-Rabin
     let carmichaels = [561, 1105, 1729, 2465, 2821, 6601, 8911];
     for &c in &carmichaels {
         assert!(!isprime(c), "Carmichael number {c} should not be prime");
@@ -44,7 +50,7 @@ fn isprime_carmichael_numbers() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Primality — BigInt
+// Primality — BigInt (same `isprime` function, larger values)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -52,7 +58,7 @@ fn isprime_bigint_small_primes() {
     let small_primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47];
     for &p in &small_primes {
         assert!(
-            isprime_bigint(&BigInt::from(p)),
+            isprime(BigInt::from(p)),
             "{p} should be prime (BigInt)"
         );
     }
@@ -63,7 +69,7 @@ fn isprime_bigint_small_composites() {
     let composites = [0, 1, 4, 6, 8, 9, 10, 12, 14, 15, 16, 18, 20, 21, 25];
     for &c in &composites {
         assert!(
-            !isprime_bigint(&BigInt::from(c)),
+            !isprime(BigInt::from(c)),
             "{c} should not be prime (BigInt)"
         );
     }
@@ -73,35 +79,32 @@ fn isprime_bigint_small_composites() {
 fn isprime_bigint_negative() {
     for n in -100..=1 {
         assert!(
-            !isprime_bigint(&BigInt::from(n)),
-            "isprime_bigint({n}) should be false"
+            !isprime(BigInt::from(n)),
+            "isprime(BigInt::from({n})) should be false"
         );
     }
 }
 
 #[test]
 fn isprime_bigint_mersenne_m31() {
-    // 2^31 - 1 = 2147483647 is a Mersenne prime
     let m31 = BigInt::from(2_147_483_647i64);
-    assert!(isprime_bigint(&m31));
+    assert!(isprime(m31));
 }
 
 #[test]
 fn isprime_bigint_mersenne_m61() {
-    // 2^61 - 1 = 2305843009213693951 is a Mersenne prime
-    // This is beyond i32 range but fits in i64
+    // 2^61 - 1 = 2305843009213693951 is a Mersenne prime (fits in i64)
     let m61 = BigInt::from(2u64.pow(61) - 1);
-    assert!(isprime_bigint(&m61));
+    assert!(isprime(m61));
 }
 
 #[test]
 fn isprime_bigint_large_composite() {
-    // Product of two large primes — must be composite
     let m31 = BigInt::from(2_147_483_647i64);
     let other_prime = BigInt::from(1_000_000_007i64);
     let product = &m31 * &other_prime;
     assert!(
-        !isprime_bigint(&product),
+        !isprime(product),
         "product of two primes should be composite"
     );
 }
@@ -111,19 +114,19 @@ fn isprime_bigint_carmichael() {
     let carmichaels = [561i64, 1105, 1729, 2465, 2821, 6601, 8911];
     for &c in &carmichaels {
         assert!(
-            !isprime_bigint(&BigInt::from(c)),
+            !isprime(BigInt::from(c)),
             "Carmichael number {c} should not be prime (BigInt)"
         );
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Factorization — i64
+// Factorization — returns Vec<(BigInt, u32)> for all inputs
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn factorint_large_power_of_two() {
-    assert_eq!(factorint(2_i64.pow(20)), vec![(2, 20)]);
+    assert_eq!(factorint(2_i64.pow(20)), vec![(bi(2), 20)]);
 }
 
 #[test]
@@ -131,7 +134,7 @@ fn factorint_product_of_primes() {
     // 2 * 3 * 5 * 7 * 11 * 13 = 30030
     assert_eq!(
         factorint(30030),
-        vec![(2, 1), (3, 1), (5, 1), (7, 1), (11, 1), (13, 1)]
+        vec![(bi(2), 1), (bi(3), 1), (bi(5), 1), (bi(7), 1), (bi(11), 1), (bi(13), 1)]
     );
 }
 
@@ -140,13 +143,13 @@ fn factorint_large_semiprime() {
     // 10007 and 10009 are both prime
     let n = 10007_i64 * 10009;
     let factors = factorint(n);
-    assert_eq!(factors, vec![(10007, 1), (10009, 1)]);
+    assert_eq!(factors, vec![(bi(10007), 1), (bi(10009), 1)]);
 }
 
 #[test]
 fn factorint_prime_cubed() {
-    assert_eq!(factorint(27), vec![(3, 3)]);
-    assert_eq!(factorint(125), vec![(5, 3)]);
+    assert_eq!(factorint(27), vec![(bi(3), 3)]);
+    assert_eq!(factorint(125), vec![(bi(5), 3)]);
 }
 
 #[test]
@@ -157,11 +160,15 @@ fn factorint_zero_and_one() {
 
 #[test]
 fn factorint_roundtrip() {
-    // Verify that the factorization multiplies back to the original
-    for n in [60, 360, 2310, 100_000, 123456789, 999_999_937] {
+    for n in [60i64, 360, 2310, 100_000, 123456789, 999_999_937] {
         let factors = factorint(n);
-        let product: i64 = factors.iter().map(|&(p, e)| p.pow(e)).product();
-        assert_eq!(product, n, "factorization of {n} doesn't multiply back");
+        let mut product = BigInt::one();
+        for (p, e) in &factors {
+            for _ in 0..*e {
+                product *= p;
+            }
+        }
+        assert_eq!(product, bi(n), "factorization of {n} doesn't multiply back");
     }
 }
 
@@ -169,76 +176,63 @@ fn factorint_roundtrip() {
 fn factorint_all_factors_are_prime() {
     for n in [60, 360, 2310, 100_000, 123456789] {
         let factors = factorint(n);
-        for &(p, _) in &factors {
-            assert!(isprime(p), "factor {p} of {n} is not prime");
+        for (p, _) in &factors {
+            assert!(isprime(p.clone()), "factor {p} of {n} is not prime");
         }
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Factorization — BigInt
-// ═══════════════════════════════════════════════════════════════════════════
+// ── factorint with BigInt input ──────────────────────────────────────────
 
 #[test]
 fn factorint_bigint_basic() {
-    let factors = factorint_bigint(&BigInt::from(60));
+    let factors = factorint(BigInt::from(60));
     assert_eq!(
         factors,
-        vec![
-            (BigInt::from(2), 2),
-            (BigInt::from(3), 1),
-            (BigInt::from(5), 1),
-        ]
+        vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]
     );
 }
 
 #[test]
 fn factorint_bigint_zero_and_one() {
-    assert_eq!(factorint_bigint(&BigInt::from(0)), vec![]);
-    assert_eq!(factorint_bigint(&BigInt::from(1)), vec![]);
+    assert_eq!(factorint(BigInt::from(0)), vec![]);
+    assert_eq!(factorint(BigInt::from(1)), vec![]);
 }
 
 #[test]
 fn factorint_bigint_negative() {
-    let factors = factorint_bigint(&BigInt::from(-60));
+    let factors = factorint(BigInt::from(-60));
     assert_eq!(
         factors,
-        vec![
-            (BigInt::from(2), 2),
-            (BigInt::from(3), 1),
-            (BigInt::from(5), 1),
-        ]
+        vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]
     );
 }
 
 #[test]
 fn factorint_bigint_prime_returns_itself() {
     let p = BigInt::from(104729i64);
-    let factors = factorint_bigint(&p);
+    let factors = factorint(p.clone());
     assert_eq!(factors, vec![(p, 1)]);
 }
 
 #[test]
 fn factorint_bigint_power_of_two_40() {
-    // 2^40 = 1099511627776
     let n = BigInt::from(1u64 << 40);
-    let factors = factorint_bigint(&n);
-    assert_eq!(factors, vec![(BigInt::from(2), 40)]);
+    let factors = factorint(n);
+    assert_eq!(factors, vec![(bi(2), 40)]);
 }
 
 #[test]
 fn factorint_bigint_mersenne_m31_is_prime() {
-    // 2^31 - 1 = 2147483647 is a Mersenne prime
     let m31 = BigInt::from(2_147_483_647i64);
-    let factors = factorint_bigint(&m31);
+    let factors = factorint(m31.clone());
     assert_eq!(factors, vec![(m31, 1)]);
 }
 
 #[test]
 fn factorint_bigint_mersenne_m61_is_prime() {
-    // 2^61 - 1 = 2305843009213693951 is a Mersenne prime
     let m61 = BigInt::from(2u64.pow(61) - 1);
-    let factors = factorint_bigint(&m61);
+    let factors = factorint(m61.clone());
     assert_eq!(factors, vec![(m61, 1)]);
 }
 
@@ -246,7 +240,7 @@ fn factorint_bigint_mersenne_m61_is_prime() {
 fn factorint_bigint_roundtrip() {
     for val in [60i64, 360, 2310, 100_000, 123456789, 999_999_937] {
         let n = BigInt::from(val);
-        let factors = factorint_bigint(&n);
+        let factors = factorint(n.clone());
         let mut product = BigInt::one();
         for (p, e) in &factors {
             for _ in 0..*e {
@@ -261,9 +255,9 @@ fn factorint_bigint_roundtrip() {
 fn factorint_bigint_all_factors_prime() {
     for val in [60i64, 360, 2310, 100_000, 123456789] {
         let n = BigInt::from(val);
-        let factors = factorint_bigint(&n);
+        let factors = factorint(n);
         for (p, _) in &factors {
-            assert!(isprime_bigint(p), "factor {p} of {val} is not prime");
+            assert!(isprime(p.clone()), "factor {p} of {val} is not prime");
         }
     }
 }
@@ -271,9 +265,8 @@ fn factorint_bigint_all_factors_prime() {
 #[test]
 fn factorint_bigint_beyond_f64_precision() {
     // 2^53 + 1 = 9007199254740993 is beyond exact f64 integer range.
-    // This verifies that no f64 truncation occurs.
     let n = BigInt::from(2u64.pow(53) + 1);
-    let factors = factorint_bigint(&n);
+    let factors = factorint(n.clone());
     let mut product = BigInt::one();
     for (p, e) in &factors {
         for _ in 0..*e {
@@ -285,82 +278,89 @@ fn factorint_bigint_beyond_f64_precision() {
         "factorization beyond f64 precision must be exact"
     );
     for (p, _) in &factors {
-        assert!(isprime_bigint(p), "factor {p} should be prime");
+        assert!(isprime(p.clone()), "factor {p} should be prime");
     }
 }
 
 #[test]
 fn factorint_bigint_large_semiprime() {
-    // Product of two known primes that individually fit in i64 but whose
-    // product exceeds what f64 can represent exactly.
     let p1 = BigInt::from(2_147_483_647i64); // 2^31 - 1, Mersenne prime
-    let p2 = BigInt::from(1_000_000_007i64); // known prime
+    let p2 = BigInt::from(1_000_000_007i64);
     let n = &p1 * &p2;
-    let factors = factorint_bigint(&n);
+    let factors = factorint(n);
     assert_eq!(factors, vec![(p2, 1), (p1, 1)]); // sorted ascending
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Next / previous prime
+// Next / previous prime — now returns BigInt
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn nextprime_sequence() {
-    let mut p = 2i64;
-    let mut primes = vec![p];
+    let mut p = bi(2);
+    let mut primes = vec![p.clone()];
     for _ in 0..9 {
         p = nextprime(p);
-        primes.push(p);
+        primes.push(p.clone());
     }
-    assert_eq!(primes, vec![2, 3, 5, 7, 11, 13, 17, 19, 23, 29]);
+    let expected: Vec<BigInt> = vec![2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
+        .into_iter()
+        .map(bi)
+        .collect();
+    assert_eq!(primes, expected);
 }
 
 #[test]
 fn prevprime_sequence() {
-    let mut p = 29i64;
-    let mut primes = vec![p];
+    let mut p = bi(29);
+    let mut primes = vec![p.clone()];
     while let Some(prev) = prevprime(p) {
-        primes.push(prev);
+        primes.push(prev.clone());
         p = prev;
     }
     primes.reverse();
-    assert_eq!(primes, vec![2, 3, 5, 7, 11, 13, 17, 19, 23, 29]);
+    let expected: Vec<BigInt> = vec![2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
+        .into_iter()
+        .map(bi)
+        .collect();
+    assert_eq!(primes, expected);
 }
 
 #[test]
 fn nextprime_prevprime_inverse() {
-    // For any prime p, prevprime(nextprime(p)) == p
     for &p in &[2, 3, 5, 7, 11, 97, 1009, 10007] {
         let next = nextprime(p);
-        assert_eq!(prevprime(next), Some(p));
+        assert_eq!(prevprime(next), Some(bi(p)));
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Divisors
+// Divisors — now returns Vec<BigInt>
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn divisors_prime() {
-    assert_eq!(divisors(13), vec![1, 13]);
+    assert_eq!(divisors(13), vec![bi(1), bi(13)]);
 }
 
 #[test]
 fn divisors_prime_power() {
-    assert_eq!(divisors(8), vec![1, 2, 4, 8]);
-    assert_eq!(divisors(27), vec![1, 3, 9, 27]);
+    assert_eq!(divisors(8), vec![bi(1), bi(2), bi(4), bi(8)]);
+    assert_eq!(divisors(27), vec![bi(1), bi(3), bi(9), bi(27)]);
 }
 
 #[test]
 fn divisor_sum_formula() {
     // For n = p1^e1 * ... * pk^ek, the sum of divisors equals
     // product of (p^(e+1) - 1) / (p - 1)
-    for &n in &[12, 60, 360, 2310, 100] {
+    for &n in &[12i64, 60, 360, 2310, 100] {
         let factors = factorint(n);
-        let expected: i64 = factors
-            .iter()
-            .map(|&(p, e)| (p.pow(e + 1) - 1) / (p - 1))
-            .product();
+        let mut expected = BigInt::one();
+        for (p, e) in &factors {
+            let num = p.pow(e + 1) - BigInt::one();
+            let den = p - BigInt::one();
+            expected *= num / den;
+        }
         assert_eq!(
             divisor_sum(n),
             expected,
@@ -374,7 +374,7 @@ fn divisor_count_formula() {
     // Number of divisors = product of (e_i + 1)
     for &n in &[12, 60, 360, 2310, 100, 1024] {
         let factors = factorint(n);
-        let expected: usize = factors.iter().map(|&(_, e)| (e + 1) as usize).product();
+        let expected: usize = factors.iter().map(|(_, e)| (e + 1) as usize).product();
         assert_eq!(
             divisor_count(n),
             expected,
@@ -384,7 +384,7 @@ fn divisor_count_formula() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Totient
+// Totient — now returns BigInt
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -399,10 +399,13 @@ fn totient_multiplicative() {
         (100, 21),
     ];
     for &(m, n) in pairs {
-        assert_eq!(gcd_int(m, n), 1, "precondition: gcd({m},{n})=1");
+        assert_eq!(gcd(m, n), bi(1), "precondition: gcd({m},{n})=1");
+        let phi_mn = totient(m * n);
+        let phi_m = totient(m);
+        let phi_n = totient(n);
         assert_eq!(
-            totient(m * n),
-            totient(m) * totient(n),
+            phi_mn,
+            &phi_m * &phi_n,
             "φ({m}·{n}) ≠ φ({m})·φ({n})"
         );
     }
@@ -411,28 +414,27 @@ fn totient_multiplicative() {
 #[test]
 fn totient_prime_power() {
     // φ(p^k) = p^k - p^(k-1) = p^(k-1) * (p-1)
-    assert_eq!(totient(8), 4);   // 2^3: 2^2 * 1 = 4
-    assert_eq!(totient(27), 18); // 3^3: 3^2 * 2 = 18
-    assert_eq!(totient(25), 20); // 5^2: 5^1 * 4 = 20
+    assert_eq!(totient(8), bi(4));   // 2^3: 2^2 * 1 = 4
+    assert_eq!(totient(27), bi(18)); // 3^3: 3^2 * 2 = 18
+    assert_eq!(totient(25), bi(20)); // 5^2: 5^1 * 4 = 20
 }
 
 #[test]
 fn totient_divisor_sum_identity() {
     // sum_{d | n} φ(d) = n
-    for &n in &[1, 6, 12, 30, 60, 100] {
+    for &n in &[1i64, 6, 12, 30, 60, 100] {
         let divs = divisors(n);
-        let sum: i64 = divs.iter().map(|&d| totient(d)).sum();
-        assert_eq!(sum, n, "Σ φ(d) for d|{n} should equal {n}");
+        let sum: BigInt = divs.iter().map(|d| totient(d.clone())).sum();
+        assert_eq!(sum, bi(n), "Σ φ(d) for d|{n} should equal {n}");
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Möbius
+// Möbius — still returns i8
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn mobius_squarefree() {
-    // Products of distinct primes
     assert_eq!(mobius(2), -1);     // 1 prime
     assert_eq!(mobius(3), -1);     // 1 prime
     assert_eq!(mobius(6), 1);      // 2 primes
@@ -443,9 +445,9 @@ fn mobius_squarefree() {
 #[test]
 fn mobius_sum_identity() {
     // sum_{d | n} μ(d) = 1 if n=1, else 0
-    for &n in &[1, 2, 6, 12, 30, 60] {
+    for &n in &[1i64, 2, 6, 12, 30, 60] {
         let divs = divisors(n);
-        let sum: i8 = divs.iter().map(|&d| mobius(d)).sum();
+        let sum: i8 = divs.iter().map(|d| mobius(d.clone())).sum();
         if n == 1 {
             assert_eq!(sum, 1);
         } else {
@@ -455,56 +457,70 @@ fn mobius_sum_identity() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Modular arithmetic
+// Modular arithmetic — now returns BigInt
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn mod_inverse_all_coprime_mod_7() {
-    for a in 1..7 {
+    for a in 1..7i64 {
         let inv = mod_inverse(a, 7).expect("should exist");
-        assert_eq!((a * inv) % 7, 1, "inverse of {a} mod 7 is wrong");
+        assert_eq!(
+            (bi(a) * &inv) % bi(7),
+            bi(1),
+            "inverse of {a} mod 7 is wrong"
+        );
     }
 }
 
 #[test]
-fn mod_pow_int_large() {
+fn mod_pow_large() {
     // Fermat's little theorem: a^(p-1) ≡ 1 (mod p)
     let p = 1_000_000_007i64;
-    assert_eq!(mod_pow_int(2, p - 1, p), 1);
-    assert_eq!(mod_pow_int(123456, p - 1, p), 1);
+    assert_eq!(mod_pow(2, p - 1, p), bi(1));
+    assert_eq!(mod_pow(123456, p - 1, p), bi(1));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CRT
+// CRT — BigInt version + i64 convenience
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn crt_two_congruences() {
-    // x ≡ 1 (mod 3), x ≡ 2 (mod 5) → x = 7
-    assert_eq!(crt(&[1, 2], &[3, 5]), Some(7));
+    let r: Vec<BigInt> = vec![bi(1), bi(2)];
+    let m: Vec<BigInt> = vec![bi(3), bi(5)];
+    assert_eq!(crt(&r, &m), Some(bi(7)));
 }
 
 #[test]
 fn crt_verification() {
-    let r = &[2, 3, 2];
-    let m = &[3, 5, 7];
-    let x = crt(r, m).unwrap();
+    let r: Vec<BigInt> = vec![bi(2), bi(3), bi(2)];
+    let m: Vec<BigInt> = vec![bi(3), bi(5), bi(7)];
+    let x = crt(&r, &m).unwrap();
     for i in 0..3 {
-        assert_eq!(x % m[i], r[i], "CRT solution fails congruence {i}");
+        assert_eq!(&x % &m[i], r[i], "CRT solution fails congruence {i}");
     }
 }
 
+#[test]
+fn crt_i64_convenience() {
+    assert_eq!(crt_i64(&[1, 2], &[3, 5]), Some(7));
+    assert_eq!(crt_i64(&[2, 3, 2], &[3, 5, 7]), Some(23));
+    // x ≡ 0 (mod 2) and x ≡ 1 (mod 4) has no solution
+    assert_eq!(crt_i64(&[0, 1], &[2, 4]), None);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
-// GCD / LCM
+// GCD / LCM — now `gcd` and `lcm`, returning BigInt
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn gcd_lcm_identity() {
     // gcd(a,b) * lcm(a,b) = |a*b|
-    for &(a, b) in &[(12, 8), (15, 25), (7, 13), (100, 75)] {
+    for &(a, b) in &[(12i64, 8), (15, 25), (7, 13), (100, 75)] {
+        let product = &gcd(a, b) * &lcm(a, b);
         assert_eq!(
-            gcd_int(a, b) * lcm_int(a, b),
-            (a * b).abs(),
+            product,
+            bi((a * b).abs()),
             "gcd·lcm ≠ |a·b| for ({a},{b})"
         );
     }
@@ -516,8 +532,7 @@ fn gcd_lcm_identity() {
 
 #[test]
 fn is_coprime_exhaustive_small() {
-    // 1 is coprime to everything
-    for n in 1..=20 {
+    for n in 1..=20i64 {
         assert!(is_coprime(1, n));
     }
 }
@@ -533,76 +548,45 @@ fn is_square_perfect_squares() {
 fn isqrt_consistency() {
     for n in 0..=1000i64 {
         let s = isqrt(n).unwrap();
-        assert!(s * s <= n);
-        assert!((s + 1) * (s + 1) > n);
+        assert!(&s * &s <= bi(n));
+        assert!((&s + bi(1)) * (&s + bi(1)) > bi(n));
     }
 }
 
 #[test]
 fn legendre_symbol_quadratic_residues_mod_11() {
-    // QRs mod 11: {1, 3, 4, 5, 9} — these have Legendre symbol 1
     let qr: Vec<i64> = (1..11).filter(|&a| legendre_symbol(a, 11) == 1).collect();
     assert_eq!(qr, vec![1, 3, 4, 5, 9]);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Expression-level integration — factorize_int (i64)
+// Expression-level integration — factorize (unified)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn factorize_int_via_expr() {
+fn factorize_via_expr() {
     let n = symplex::int(360);
-    let factors = n.factorize_int().unwrap();
-    assert_eq!(factors, vec![(2, 3), (3, 2), (5, 1)]);
+    let factors = n.factorize().unwrap();
+    assert_eq!(factors, vec![(bi(2), 3), (bi(3), 2), (bi(5), 1)]);
 }
 
 #[test]
-fn factorize_int_non_integer_returns_none() {
+fn factorize_non_integer_returns_none() {
     let half = symplex::rational(1, 2);
-    assert!(half.factorize_int().is_none());
+    assert!(half.factorize().is_none());
 }
 
 #[test]
-fn factorize_int_zero_returns_none() {
+fn factorize_zero_returns_none() {
     let zero = symplex::int(0);
-    assert!(zero.factorize_int().is_none());
+    assert!(zero.factorize().is_none());
 }
 
 #[test]
-fn factorize_int_prime_via_expr() {
+fn factorize_prime_via_expr() {
     let n = symplex::int(104729);
-    let factors = n.factorize_int().unwrap();
-    assert_eq!(factors, vec![(104729, 1)]);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Expression-level integration — factorize_int_bigint (arbitrary precision)
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn factorize_int_bigint_via_expr() {
-    let n = symplex::int(360);
-    let factors = n.factorize_int_bigint().unwrap();
-    assert_eq!(
-        factors,
-        vec![
-            (BigInt::from(2), 3),
-            (BigInt::from(3), 2),
-            (BigInt::from(5), 1),
-        ]
-    );
-}
-
-#[test]
-fn factorize_int_bigint_non_integer_returns_none() {
-    let half = symplex::rational(1, 2);
-    assert!(half.factorize_int_bigint().is_none());
-}
-
-#[test]
-fn factorize_int_bigint_zero_returns_none() {
-    let zero = symplex::int(0);
-    assert!(zero.factorize_int_bigint().is_none());
+    let factors = n.factorize().unwrap();
+    assert_eq!(factors, vec![(bi(104729), 1)]);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -647,7 +631,6 @@ fn is_prime_value_negative() {
 
 #[test]
 fn is_prime_value_mersenne_m31() {
-    // 2^31 - 1 = 2147483647 is a Mersenne prime
     let n = symplex::int(2_147_483_647);
     assert_eq!(n.is_prime_value(), Some(true));
 }
@@ -657,20 +640,15 @@ fn is_prime_value_mersenne_m31() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn factorize_int_does_not_go_through_f64() {
-    // 2^53 - 1 = 9007199254740991 — the largest integer exactly representable
-    // in f64.  We use 2^31 - 1 (Mersenne prime) to test that the factorize
-    // path works without floating-point conversion.
-    let n = symplex::int(2_147_483_647); // 2^31 - 1
-    let factors = n.factorize_int().unwrap();
-    // It's prime, so the only factor should be itself
-    assert_eq!(factors, vec![(2_147_483_647, 1)]);
+fn factorize_does_not_go_through_f64() {
+    // 2^31 - 1 = 2147483647 is a Mersenne prime
+    let n = symplex::int(2_147_483_647);
+    let factors = n.factorize().unwrap();
+    assert_eq!(factors, vec![(bi(2_147_483_647), 1)]);
 }
 
 #[test]
 fn is_prime_value_consistency_with_isprime() {
-    // For small values, is_prime_value on an expression should agree with
-    // the standalone isprime function.
     for v in -5..=200 {
         let expr = symplex::int(v);
         let via_expr = expr.is_prime_value();

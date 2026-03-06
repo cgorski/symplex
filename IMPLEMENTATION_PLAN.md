@@ -354,13 +354,13 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 | Metric | Value |
 |--------|-------|
-| Tests | 4,370 passing, 0 failing |
+| Tests | 1,191+ lib tests, 0 failing |
 | ExprNode variants | 66 |
-| Source modules | 76 |
-| Test files | 125 |
-| Source | ~60,400 lines across 76 modules |
-| Tests | ~49,000 lines across 125 test files |
-| Examples | ~445 lines across 8 examples |
+| Source modules | 77 |
+| Integration test files | 126 |
+| Source | ~60,400 lines across 77 modules |
+| Tests | ~49,000 lines across 126 test files |
+| Examples | ~445 lines across 13 examples |
 | Companion crates | ~1,045 lines across 2 crates (symplex-build, symplex-wasm) |
 | Total | ~111,000 lines |
 | Public methods on `Ex` | 175+ (numeric + boolean + set-valued) |
@@ -374,8 +374,8 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 | Criterion benchmarks | 27 |
 | Proptest properties | 22+ |
 | Solver degree support | 1–4 (Cardano cubic + Ferrari quartic) |
-| Examples | 8 (quickstart, calculus, control_system, robotics_codegen, solve_system, dynamics, latex_output, repl) |
-| Clippy warnings | 0 (1 pre-existing dead_code warning in sturm.rs) |
+| Examples | 13 |
+| Clippy warnings | 0 |
 
 ---
 
@@ -407,6 +407,7 @@ Active limitations (not yet resolved):
 22. **No Python bindings.** Rust-only API; no PyO3 wrapper.
 23. **`expr!` doesn't support fraction literals.** `expr!(1/2)` is a compile error (Rust integer division).
 24. **2-DOF IK only.** Inverse kinematics limited to planar 2-DOF. General n-DOF IK requires Pieper decomposition (not yet implemented).
+25. **Number theory factorization uses trial division.** No Pollard rho or ECM for very large composites (>10^18). Adequate for most CAS use cases.
 
 ---
 
@@ -423,6 +424,7 @@ Active limitations (not yet resolved):
 | README rewrite | 667 → 300 lines, hero code, accurate tables | 4-6 hrs | Critical |
 | CHANGELOG update | Log 20+ unlogged features | 2-3 hrs | High |
 | expr! fractions | Recognize half/third/quarter constants | 1-2 hrs | High |
+| ~~Number theory~~ | ~~`ntheory` module: primality, factorization, divisors, modular arithmetic, CRT~~ | ~~done~~ | ~~DONE~~ |
 
 ### Post-0.2.0 (audience expansion)
 
@@ -438,7 +440,7 @@ Active limitations (not yet resolved):
 
 | Version | Theme | Key features |
 |---------|-------|-------------|
-| 0.2.0 | Polish & Ship | Display fixes, API rename, examples, docs, Gröbner bases |
+| 0.2.0 | Polish & Ship | Display fixes, API rename, examples, docs, Gröbner bases, number theory |
 | 0.3.0 | Reach | Python bindings, basic plotting, WASM demo |
 | 0.4.0 | Depth | Sparse matrices, n-DOF IK, PDE solving, tensor calculus |
 | 1.0.0 | Stability | API freeze, comprehensive testing, documentation |
@@ -455,7 +457,7 @@ algorithm developers (derive formula → compile to fast code). The common threa
 
 ## 10. Module Reference
 
-### Main crate: `symplex/src/` (76 modules)
+### Main crate: `symplex/src/` (77 modules)
 
 | Module | Responsibility |
 |--------|----------------|
@@ -504,6 +506,7 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | `macros.rs` | `syms!` and `sym!` declarative macros |
 | `matrix.rs` | Symbolic matrix: det, inv, eigen, LU, QR, RREF, rank, nullspace, Jacobian, codegen, 50+ methods |
 | `multipoly.rs` | Sparse multivariate polynomials with generic monomial ordering MultiPoly\<O\> |
+| `ntheory.rs` | Number theory: primality, factorization, divisors, modular arithmetic, CRT |
 | `node.rs` | `ExprId(u32)`, `ExprNode` enum (66 variants), `children()`, `is_atom()` |
 | `nsimplify.rs` | Closed-form detection from floats (PSLQ-lite) |
 | `ode.rs` | ODE classification and solving (separable, linear, 2nd-order CC) |

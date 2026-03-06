@@ -4,7 +4,7 @@
 //! The type definitions live in `expr.rs`.
 
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
+use num_traits::Zero;
 use tracing::debug_span;
 
 use crate::assumptions::{Assumption, Props};
@@ -2954,48 +2954,8 @@ impl Expr<Numeric> {
 
     /// Factorize this integer expression into prime factors.
     ///
-    /// Evaluates the expression and, if it is an exact integer that fits
-    /// in `i64`, returns its prime factorization as `(prime, exponent)` pairs.
-    ///
-    /// This accesses the exact `Ratio<BigInt>` value in the arena — no
-    /// lossy `f64` conversion. Returns `None` if the expression is not an
-    /// integer or if the value exceeds `i64` range.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let n = Ex::zero() + symplex::int(60);
-    /// let factors = n.factorize_int().unwrap();
-    /// assert_eq!(factors, vec![(2, 2), (3, 1), (5, 1)]);
-    /// ```
-    pub fn factorize_int(&self) -> Option<Vec<(i64, u32)>> {
-        let evaled = self.eval();
-        let inner = evaled.inner.read();
-        let arena = &inner.arena;
-        match arena.node(evaled.id) {
-            crate::node::ExprNode::Num(nid) => {
-                let r = arena.num(*nid);
-                if !r.is_integer() {
-                    return None;
-                }
-                let n = r.numer();
-                if n.is_zero() {
-                    return None;
-                }
-                // Fast path: if it fits in i64, use the optimized i64 version
-                let ni = n.to_i64()?;
-                Some(crate::ntheory::factorint(ni))
-            }
-            _ => None,
-        }
-    }
-
     /// Evaluates the expression and, if it is an exact integer, returns its
-    /// prime factorization as `(BigInt_prime, exponent)` pairs.
-    ///
-    /// Unlike [`factorize_int`](Self::factorize_int), this handles
+    /// prime factorization as `(BigInt_prime, exponent)` pairs. Handles
     /// arbitrary-precision integers without any `f64` or `i64` truncation.
     /// Returns `None` if the expression is not an integer.
     ///
@@ -3006,13 +2966,13 @@ impl Expr<Numeric> {
     /// use num_bigint::BigInt;
     ///
     /// let n = symplex::int(60);
-    /// let factors = n.factorize_int_bigint().unwrap();
+    /// let factors = n.factorize().unwrap();
     /// assert_eq!(
     ///     factors,
     ///     vec![(BigInt::from(2), 2), (BigInt::from(3), 1), (BigInt::from(5), 1)]
     /// );
     /// ```
-    pub fn factorize_int_bigint(&self) -> Option<Vec<(BigInt, u32)>> {
+    pub fn factorize(&self) -> Option<Vec<(BigInt, u32)>> {
         let evaled = self.eval();
         let inner = evaled.inner.read();
         let arena = &inner.arena;
@@ -3026,10 +2986,28 @@ impl Expr<Numeric> {
                 if n.is_zero() {
                     return None;
                 }
-                Some(crate::ntheory::factorint_bigint(n))
+                Some(crate::ntheory::factorint(n.clone()))
             }
             _ => None,
         }
+    }
+
+    /// Deprecated: use [`factorize`](Self::factorize) instead.
+    #[deprecated(since = "0.2.0", note = "use `factorize()` which returns BigInt factors")]
+    pub fn factorize_int(&self) -> Option<Vec<(i64, u32)>> {
+        use num_traits::ToPrimitive;
+        self.factorize().map(|factors| {
+            factors
+                .into_iter()
+                .map(|(p, e)| (p.to_i64().unwrap_or(0), e))
+                .collect()
+        })
+    }
+
+    /// Deprecated: use [`factorize`](Self::factorize) instead.
+    #[deprecated(since = "0.2.0", note = "use `factorize()` — it is the same thing now")]
+    pub fn factorize_int_bigint(&self) -> Option<Vec<(BigInt, u32)>> {
+        self.factorize()
     }
 
     /// Check if this expression evaluates to a prime number.
@@ -3063,7 +3041,7 @@ impl Expr<Numeric> {
                     return None;
                 }
                 let n = r.numer();
-                Some(crate::ntheory::isprime_bigint(n))
+                Some(crate::ntheory::isprime(n.clone()))
             }
             _ => None,
         }

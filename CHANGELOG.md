@@ -409,6 +409,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rewrote: `quickstart.rs`, `control_system.rs`, `robotics_codegen.rs` with new API names
 - All examples use `matrix!` macro, new method names, `&[&Ex]` signatures
 
+**Number Theory Module**
+- New `ntheory` module with arbitrary-precision integer functions
+- `factorint` — prime factorization (trial division + BigInt Miller-Rabin)
+- `isprime` — deterministic Miller-Rabin primality testing
+- `nextprime`, `prevprime` — prime navigation
+- `divisors`, `divisor_count`, `divisor_sum` — divisor functions
+- `totient` — Euler's phi function
+- `mobius` — Möbius mu function
+- `mod_inverse` — modular multiplicative inverse via extended Euclidean
+- `crt` — Chinese Remainder Theorem
+- `mod_pow` — modular exponentiation
+- `gcd`, `lcm`, `is_coprime` — integer arithmetic
+- `primes_up_to` — Sieve of Eratosthenes
+- `legendre_symbol` — quadratic residue testing
+- `Ex::factorize()` — factorize integer expressions via exact BigInt (no f64 truncation)
+- `Ex::is_prime_value()` — primality test on expression values
+- All functions accept arbitrary-precision integers (`impl Into<BigInt>`)
+- New `examples/number_theory.rs`
+
+**Pre-Release Polish**
+- README rewritten: 667 → 272 lines with hero code, accurate SymPy comparison
+- REPL enhanced: `:solve`, `:latex`, `:factor`, `:diff` commands
+- Dead code warning fixed (SturmChain)
+- symplex-build marked experimental with README
+
 **Crate Cleanup**
 - DELETED `symplex-format` crate — LaTeX rendering now in core (`src/latex.rs`)
 - Updated `symplex-wasm` to use inherent `Ex::to_latex()` method

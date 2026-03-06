@@ -1,25 +1,39 @@
 //! Number theory functions: primality testing, factorization, divisors,
 //! modular arithmetic, and related operations.
 //!
-//! All functions operate on exact integers. The primary API uses `i64` for
-//! speed on common small inputs. BigInt-suffixed variants (`isprime_bigint`,
-//! `factorint_bigint`) handle arbitrary-precision integers without loss.
+//! **Unified API** — every function accepts arbitrary-precision integers via
+//! `impl Into<BigInt>`.  Small values that fit in `i64` automatically take
+//! an optimised fast path; truly large values use `BigInt` arithmetic.
+//!
+//! # Examples
+//!
+//! ```
+//! use symplex::ntheory::{factorint, isprime, gcd, nextprime};
+//! use num_bigint::BigInt;
+//!
+//! // Same function works for i64 …
+//! assert!(isprime(104729));
+//!
+//! // … and for BigInt
+//! let m61 = BigInt::from(2u64.pow(61) - 1);
+//! assert!(isprime(m61));
+//! ```
 
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Modular arithmetic helpers (internal, i64/u64 fast path)
+// Internal modular arithmetic helpers (u64 fast path)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Modular multiplication using 128-bit intermediates to avoid overflow.
-fn mod_mul(a: u64, b: u64, m: u64) -> u64 {
+fn mod_mul_u64(a: u64, b: u64, m: u64) -> u64 {
     ((a as u128 * b as u128) % m as u128) as u64
 }
 
-/// Modular exponentiation: `base^exp mod modulus` via binary method.
-fn mod_pow(base: u64, mut exp: u64, modulus: u64) -> u64 {
+/// Modular exponentiation: `base^exp mod modulus` via binary method (u64).
+fn mod_pow_u64(base: u64, mut exp: u64, modulus: u64) -> u64 {
     if modulus == 1 {
         return 0;
     }
@@ -36,7 +50,11 @@ fn mod_pow(base: u64, mut exp: u64, modulus: u64) -> u64 {
     result as u64
 }
 
-/// Miller-Rabin primality test with the given deterministic witnesses.
+// ═══════════════════════════════════════════════════════════════════════════
+// Internal Miller-Rabin helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Miller-Rabin primality test with the given deterministic witnesses (u64).
 ///
 /// For `n < 3.3×10²⁴`, the witnesses `[2,3,5,7,11,13,17,19,23,29,31,37]`
 /// give a deterministic (always-correct) result. Since `i64::MAX < 2⁶³`,
@@ -64,12 +82,12 @@ fn miller_rabin(n: u64, witnesses: &[u64]) -> bool {
         if a >= n {
             continue;
         }
-        let mut x = mod_pow(a, d, n);
+        let mut x = mod_pow_u64(a, d, n);
         if x == 1 || x == n - 1 {
             continue;
         }
         for _ in 0..r - 1 {
-            x = mod_mul(x, x, n);
+            x = mod_mul_u64(x, x, n);
             if x == n - 1 {
                 continue 'outer;
             }
@@ -78,10 +96,6 @@ fn miller_rabin(n: u64, witnesses: &[u64]) -> bool {
     }
     true
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// BigInt modular arithmetic helpers (internal)
-// ═══════════════════════════════════════════════════════════════════════════
 
 /// Miller-Rabin primality test on BigInt using `BigInt::modpow`.
 ///
@@ -131,50 +145,63 @@ fn miller_rabin_big(n: &BigInt, witnesses: &[u64]) -> bool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Extended Euclidean algorithm (internal)
+// Internal extended Euclidean algorithm
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Returns `(gcd, x, y)` such that `a*x + b*y = gcd`.
-fn extended_gcd(a: i64, b: i64) -> (i64, i64, i64) {
+/// Returns `(gcd, x, y)` such that `a*x + b*y = gcd` (i64).
+fn extended_gcd_i64(a: i64, b: i64) -> (i64, i64, i64) {
     if a == 0 {
         return (b, 0, 1);
     }
-    let (g, x1, y1) = extended_gcd(b % a, a);
+    let (g, x1, y1) = extended_gcd_i64(b % a, a);
     (g, y1 - (b / a) * x1, x1)
 }
 
+/// Returns `(gcd, x, y)` such that `a*x + b*y = gcd` (BigInt).
+fn extended_gcd_big(a: &BigInt, b: &BigInt) -> (BigInt, BigInt, BigInt) {
+    if a.is_zero() {
+        return (b.clone(), BigInt::zero(), BigInt::one());
+    }
+    let (g, x1, y1) = extended_gcd_big(&(b % a), a);
+    let coeff = (b / a) * &x1;
+    (g, &y1 - &coeff, x1)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
-// Public API — BigInt versions
+// Internal i64 fast-path implementations
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Deterministic primality test for arbitrary-precision integers.
-///
-/// Uses trial division for tiny factors, then a deterministic Miller-Rabin
-/// test with witnesses that are correct for all `n < 3.3×10²⁴`. For larger
-/// numbers, the test is probabilistic but with negligible error probability
-/// (the 12-witness set makes false positives astronomically unlikely).
-///
-/// # Examples
-///
-/// ```
-/// use symplex::ntheory::isprime_bigint;
-/// use num_bigint::BigInt;
-///
-/// assert!(isprime_bigint(&BigInt::from(2)));
-/// assert!(isprime_bigint(&BigInt::from(2_147_483_647i64))); // 2^31 - 1
-/// assert!(!isprime_bigint(&BigInt::from(4)));
-/// ```
-pub fn isprime_bigint(n: &BigInt) -> bool {
+/// Deterministic primality test (i64 fast path).
+fn isprime_i64(n: i64) -> bool {
+    if n < 2 {
+        return false;
+    }
+    if n < 4 {
+        return true;
+    }
+    if n % 2 == 0 || n % 3 == 0 {
+        return false;
+    }
+    // Quick check against small primes
+    let small_primes: [i64; 13] = [5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47];
+    for &p in &small_primes {
+        if n == p {
+            return true;
+        }
+        if n % p == 0 {
+            return false;
+        }
+    }
+    // Deterministic Miller-Rabin witnesses sufficient for all i64
+    let witnesses: [u64; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
+    miller_rabin(n as u64, &witnesses)
+}
+
+/// Primality test for BigInt values that do NOT fit in i64.
+fn isprime_big_internal(n: &BigInt) -> bool {
     if *n < BigInt::from(2) {
         return false;
     }
-
-    // If it fits in i64, use the fast path
-    if let Some(ni) = n.to_i64() {
-        return isprime(ni);
-    }
-
-    // For BigInt values that don't fit in i64, use BigInt path
     if n.is_even() {
         return false;
     }
@@ -202,169 +229,14 @@ pub fn isprime_bigint(n: &BigInt) -> bool {
     miller_rabin_big(n, &witnesses)
 }
 
-/// Returns the prime factorization of a BigInt `n` as `(prime, exponent)` pairs,
-/// sorted by prime in ascending order.
-///
-/// Returns an empty vector for `n ∈ {-1, 0, 1}`. Negative inputs are
-/// factored by absolute value.
-///
-/// # Examples
-///
-/// ```
-/// use symplex::ntheory::factorint_bigint;
-/// use num_bigint::BigInt;
-///
-/// let factors = factorint_bigint(&BigInt::from(60));
-/// assert_eq!(
-///     factors,
-///     vec![(BigInt::from(2), 2), (BigInt::from(3), 1), (BigInt::from(5), 1)]
-/// );
-/// ```
-pub fn factorint_bigint(n: &BigInt) -> Vec<(BigInt, u32)> {
-    if n.is_zero() {
-        return vec![];
-    }
-    let mut n = n.abs();
-    if n <= BigInt::one() {
-        return vec![];
-    }
-
-    let mut factors: Vec<(BigInt, u32)> = Vec::new();
-
-    // Trial division with a table of small primes
-    const SMALL_PRIMES: [u64; 25] = [
-        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83,
-        89, 97,
-    ];
-
-    for &p in &SMALL_PRIMES {
-        let bp = BigInt::from(p);
-        if &bp * &bp > n && n > BigInt::one() {
-            break;
-        }
-        let mut count = 0u32;
-        while (&n % &bp).is_zero() {
-            n /= &bp;
-            count += 1;
-        }
-        if count > 0 {
-            factors.push((bp, count));
-        }
-    }
-
-    // If the remaining cofactor fits in i64, delegate to the fast i64 path
-    // which uses u64/u128 arithmetic instead of BigInt divisions.
-    // This is the common case: most inputs or cofactors after small-prime
-    // extraction are well within i64 range.
-    if n > BigInt::one() {
-        if let Some(ni) = n.to_i64() {
-            for (p, e) in factorint(ni) {
-                factors.push((BigInt::from(p), e));
-            }
-            return factors;
-        }
-    }
-
-    // For cofactors that exceed i64, check if already prime to avoid
-    // O(sqrt(n)) BigInt divisions (e.g. Mersenne prime M61 ≈ 2.3×10^18).
-    if n > BigInt::one() && isprime_bigint(&n) {
-        factors.push((n, 1));
-        return factors;
-    }
-
-    // Continue trial division with odd numbers > 97 (only reached for
-    // composite cofactors larger than i64::MAX ≈ 9.2×10^18).
-    let mut d = BigInt::from(101u64);
-    let two = BigInt::from(2);
-    while &d * &d <= n {
-        let mut count = 0u32;
-        while (&n % &d).is_zero() {
-            n /= &d;
-            count += 1;
-        }
-        if count > 0 {
-            factors.push((d.clone(), count));
-            // After each successful factor extraction, check if the cofactor
-            // is now prime to short-circuit the remaining trial division.
-            if n > BigInt::one() && isprime_bigint(&n) {
-                factors.push((n, 1));
-                return factors;
-            }
-        }
-        d += &two;
-    }
-
-    if n > BigInt::one() {
-        factors.push((n, 1));
-    }
-
-    factors
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Public API — i64 versions (fast path)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Deterministic primality test for any `i64`.
-///
-/// Uses trial division for tiny factors, then a deterministic Miller-Rabin
-/// test with witnesses that are correct for all `n < 3.3×10²⁴`.
-///
-/// # Examples
-///
-/// ```
-/// use symplex::ntheory::isprime;
-/// assert!(isprime(2));
-/// assert!(isprime(104729));
-/// assert!(!isprime(104730));
-/// ```
-pub fn isprime(n: i64) -> bool {
-    if n < 2 {
-        return false;
-    }
-    if n < 4 {
-        return true;
-    }
-    if n % 2 == 0 || n % 3 == 0 {
-        return false;
-    }
-    // Quick check against small primes
-    let small_primes: [i64; 13] = [5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47];
-    for &p in &small_primes {
-        if n == p {
-            return true;
-        }
-        if n % p == 0 {
-            return false;
-        }
-    }
-    // Deterministic Miller-Rabin witnesses sufficient for all i64
-    let witnesses: [u64; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
-    miller_rabin(n as u64, &witnesses)
-}
-
-/// Returns the prime factorization of `n` as `(prime, exponent)` pairs,
-/// sorted by prime in ascending order.
-///
-/// Returns an empty vector for `n ∈ {-1, 0, 1}`. Negative inputs are
-/// factored by absolute value.
-///
-/// # Examples
-///
-/// ```
-/// use symplex::ntheory::factorint;
-/// assert_eq!(factorint(60), vec![(2, 2), (3, 1), (5, 1)]);
-/// assert_eq!(factorint(1), vec![]);
-/// assert_eq!(factorint(-12), vec![(2, 2), (3, 1)]);
-/// ```
-pub fn factorint(n: i64) -> Vec<(i64, u32)> {
+/// Factorize an i64 into `(prime, exponent)` pairs (i64 fast path).
+fn factorint_i64(n: i64) -> Vec<(i64, u32)> {
     if n == 0 {
         return vec![];
     }
     let mut n = n.unsigned_abs();
     let mut factors = Vec::new();
 
-    // Trial division with a table of small primes
     const SMALL_PRIMES: [u64; 25] = [
         2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83,
         89, 97,
@@ -404,39 +276,99 @@ pub fn factorint(n: i64) -> Vec<(i64, u32)> {
     factors
 }
 
-/// Returns the smallest prime strictly greater than `n`.
-///
-/// # Examples
-///
-/// ```
-/// use symplex::ntheory::nextprime;
-/// assert_eq!(nextprime(10), 11);
-/// assert_eq!(nextprime(11), 13);
-/// assert_eq!(nextprime(-5), 2);
-/// ```
-pub fn nextprime(n: i64) -> i64 {
+/// Factorize a BigInt that may exceed i64 range.
+fn factorint_big_internal(n: &BigInt) -> Vec<(BigInt, u32)> {
+    if n.is_zero() {
+        return vec![];
+    }
+    let mut n = n.abs();
+    if n <= BigInt::one() {
+        return vec![];
+    }
+
+    let mut factors: Vec<(BigInt, u32)> = Vec::new();
+
+    // Trial division with a table of small primes
+    const SMALL_PRIMES: [u64; 25] = [
+        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83,
+        89, 97,
+    ];
+
+    for &p in &SMALL_PRIMES {
+        let bp = BigInt::from(p);
+        if &bp * &bp > n && n > BigInt::one() {
+            break;
+        }
+        let mut count = 0u32;
+        while (&n % &bp).is_zero() {
+            n /= &bp;
+            count += 1;
+        }
+        if count > 0 {
+            factors.push((bp, count));
+        }
+    }
+
+    // If the remaining cofactor fits in i64, delegate to the fast i64 path
+    if n > BigInt::one() {
+        if let Some(ni) = n.to_i64() {
+            for (p, e) in factorint_i64(ni) {
+                factors.push((BigInt::from(p), e));
+            }
+            return factors;
+        }
+    }
+
+    // For cofactors that exceed i64, check if already prime to avoid
+    // O(sqrt(n)) BigInt divisions (e.g. Mersenne prime M61 ≈ 2.3×10^18).
+    if n > BigInt::one() && isprime_big_internal(&n) {
+        factors.push((n, 1));
+        return factors;
+    }
+
+    // Continue trial division with odd numbers > 97 (only reached for
+    // composite cofactors larger than i64::MAX ≈ 9.2×10^18).
+    let mut d = BigInt::from(101u64);
+    let two = BigInt::from(2);
+    while &d * &d <= n {
+        let mut count = 0u32;
+        while (&n % &d).is_zero() {
+            n /= &d;
+            count += 1;
+        }
+        if count > 0 {
+            factors.push((d.clone(), count));
+            // After each successful factor extraction, check if the cofactor
+            // is now prime to short-circuit the remaining trial division.
+            if n > BigInt::one() && isprime_big_internal(&n) {
+                factors.push((n, 1));
+                return factors;
+            }
+        }
+        d += &two;
+    }
+
+    if n > BigInt::one() {
+        factors.push((n, 1));
+    }
+
+    factors
+}
+
+/// Next prime after `n` (i64 fast path).
+fn nextprime_i64(n: i64) -> i64 {
     if n < 2 {
         return 2;
     }
     let mut candidate = if n % 2 == 0 { n + 1 } else { n + 2 };
-    while !isprime(candidate) {
+    while !isprime_i64(candidate) {
         candidate += 2;
     }
     candidate
 }
 
-/// Returns the largest prime strictly less than `n`, or `None` if no
-/// such prime exists (i.e. `n ≤ 2`).
-///
-/// # Examples
-///
-/// ```
-/// use symplex::ntheory::prevprime;
-/// assert_eq!(prevprime(10), Some(7));
-/// assert_eq!(prevprime(3), Some(2));
-/// assert_eq!(prevprime(2), None);
-/// ```
-pub fn prevprime(n: i64) -> Option<i64> {
+/// Previous prime before `n` (i64 fast path).
+fn prevprime_i64(n: i64) -> Option<i64> {
     if n <= 2 {
         return None;
     }
@@ -444,10 +376,192 @@ pub fn prevprime(n: i64) -> Option<i64> {
         return Some(2);
     }
     let mut candidate = if n % 2 == 0 { n - 1 } else { n - 2 };
-    while candidate >= 2 && !isprime(candidate) {
+    while candidate >= 2 && !isprime_i64(candidate) {
         candidate -= 2;
     }
     if candidate >= 2 {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+
+
+/// Integer square root (i64 fast path).
+fn isqrt_i64(n: i64) -> Option<i64> {
+    if n < 0 {
+        return None;
+    }
+    if n == 0 {
+        return Some(0);
+    }
+    let mut s = (n as f64).sqrt() as i64;
+    // Newton correction
+    while s * s > n {
+        s -= 1;
+    }
+    while (s + 1) * (s + 1) <= n {
+        s += 1;
+    }
+    Some(s)
+}
+
+/// Integer square root for BigInt via Newton's method.
+fn isqrt_big(n: &BigInt) -> Option<BigInt> {
+    if n.is_negative() {
+        return None;
+    }
+    if n.is_zero() {
+        return Some(BigInt::zero());
+    }
+    let one = BigInt::one();
+    let two = BigInt::from(2);
+    // Initial guess: use bit length for a rough sqrt
+    // sqrt(2^b) ≈ 2^(b/2)
+    let bit_len = n.bits();
+    let mut x = BigInt::one() << ((bit_len + 1) / 2) as usize;
+    loop {
+        // Newton step: x_new = (x + n/x) / 2
+        let x_new = (&x + n / &x) / &two;
+        if x_new >= x {
+            break;
+        }
+        x = x_new;
+    }
+    // Adjust for off-by-one
+    while &x * &x > *n {
+        x -= &one;
+    }
+    while (&x + &one) * (&x + &one) <= *n {
+        x += &one;
+    }
+    Some(x)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Public unified API
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Deterministic primality test for any integer.
+///
+/// Accepts any integer type (`i64`, `i32`, `u64`, `BigInt`, etc.) via
+/// `impl Into<BigInt>`. Values that fit in `i64` automatically use an
+/// optimised u64/u128 code path; larger values use BigInt arithmetic.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::isprime;
+/// use num_bigint::BigInt;
+///
+/// assert!(isprime(2));
+/// assert!(isprime(104729));
+/// assert!(!isprime(104730));
+///
+/// // Same function for BigInt
+/// let m61 = BigInt::from(2u64.pow(61) - 1);
+/// assert!(isprime(m61));
+/// ```
+pub fn isprime(n: impl Into<BigInt>) -> bool {
+    let n: BigInt = n.into();
+    // Fast path: if fits in i64, use optimized version
+    if let Some(n_i64) = n.to_i64() {
+        return isprime_i64(n_i64);
+    }
+    isprime_big_internal(&n)
+}
+
+/// Factorize an integer into prime factors.
+///
+/// Accepts any integer type (`i64`, `i32`, `u64`, `BigInt`, etc.).
+/// Returns `(prime, exponent)` pairs in ascending order of prime.
+/// Returns an empty vector for `n ∈ {-1, 0, 1}`. Negative inputs are
+/// factored by absolute value.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::factorint;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(
+///     factorint(60),
+///     vec![(BigInt::from(2), 2), (BigInt::from(3), 1), (BigInt::from(5), 1)]
+/// );
+/// assert_eq!(factorint(1), vec![]);
+/// assert_eq!(factorint(-12), vec![(BigInt::from(2), 2), (BigInt::from(3), 1)]);
+/// ```
+pub fn factorint(n: impl Into<BigInt>) -> Vec<(BigInt, u32)> {
+    let n: BigInt = n.into();
+    // Fast path: if fits in i64, use optimized version
+    if let Some(n_i64) = n.to_i64() {
+        return factorint_i64(n_i64)
+            .into_iter()
+            .map(|(p, e)| (BigInt::from(p), e))
+            .collect();
+    }
+    factorint_big_internal(&n)
+}
+
+/// Returns the smallest prime strictly greater than `n`.
+///
+/// Accepts any integer type.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::nextprime;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(nextprime(10), BigInt::from(11));
+/// assert_eq!(nextprime(11), BigInt::from(13));
+/// assert_eq!(nextprime(-5), BigInt::from(2));
+/// ```
+pub fn nextprime(n: impl Into<BigInt>) -> BigInt {
+    let n: BigInt = n.into();
+    if let Some(n_i64) = n.to_i64() {
+        return BigInt::from(nextprime_i64(n_i64));
+    }
+    // BigInt path
+    let two = BigInt::from(2);
+    if n < two {
+        return two;
+    }
+    let mut candidate = if n.is_even() { &n + 1 } else { &n + 2 };
+    while !isprime_big_internal(&candidate) {
+        candidate += &two;
+    }
+    candidate
+}
+
+/// Returns the largest prime strictly less than `n`, or `None` if no
+/// such prime exists (i.e. `n ≤ 2`).
+///
+/// Accepts any integer type.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::prevprime;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(prevprime(10), Some(BigInt::from(7)));
+/// assert_eq!(prevprime(3), Some(BigInt::from(2)));
+/// assert_eq!(prevprime(2), None);
+/// ```
+pub fn prevprime(n: impl Into<BigInt>) -> Option<BigInt> {
+    let n: BigInt = n.into();
+    if let Some(n_i64) = n.to_i64() {
+        return prevprime_i64(n_i64).map(BigInt::from);
+    }
+    // BigInt path (n > i64::MAX, so definitely > 2)
+    let two = BigInt::from(2);
+    let mut candidate = if n.is_even() { &n - 1 } else { &n - 2 };
+    while candidate >= two && !isprime_big_internal(&candidate) {
+        candidate -= &two;
+    }
+    if candidate >= two {
         Some(candidate)
     } else {
         None
@@ -462,23 +576,29 @@ pub fn prevprime(n: i64) -> Option<i64> {
 ///
 /// ```
 /// use symplex::ntheory::divisors;
-/// assert_eq!(divisors(12), vec![1, 2, 3, 4, 6, 12]);
-/// assert_eq!(divisors(-12), vec![1, 2, 3, 4, 6, 12]);
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(
+///     divisors(12),
+///     vec![1, 2, 3, 4, 6, 12].into_iter().map(BigInt::from).collect::<Vec<_>>()
+/// );
 /// ```
-pub fn divisors(n: i64) -> Vec<i64> {
-    if n == 0 {
+pub fn divisors(n: impl Into<BigInt>) -> Vec<BigInt> {
+    let n: BigInt = n.into();
+    if n.is_zero() {
         return vec![];
     }
-    let n_abs = n.unsigned_abs() as i64;
+    // Use the unified factorint (which already dispatches to the fast path)
+    let n_abs = n.abs();
     let factors = factorint(n_abs);
-    let mut divs = vec![1i64];
+    let mut divs = vec![BigInt::one()];
     for (p, e) in factors {
         let current_len = divs.len();
-        let mut power = 1i64;
+        let mut power = BigInt::one();
         for _ in 0..e {
-            power *= p;
+            power *= &p;
             for j in 0..current_len {
-                divs.push(divs[j] * power);
+                divs.push(&divs[j] * &power);
             }
         }
     }
@@ -495,8 +615,13 @@ pub fn divisors(n: i64) -> Vec<i64> {
 /// assert_eq!(divisor_count(12), 6);
 /// assert_eq!(divisor_count(1), 1);
 /// ```
-pub fn divisor_count(n: i64) -> usize {
-    divisors(n).len()
+pub fn divisor_count(n: impl Into<BigInt>) -> usize {
+    let n: BigInt = n.into();
+    if n.is_zero() {
+        return 0;
+    }
+    let factors = factorint(n.abs());
+    factors.iter().map(|(_, e)| (*e + 1) as usize).product()
 }
 
 /// Returns the sum of all positive divisors of `|n|`.
@@ -505,11 +630,14 @@ pub fn divisor_count(n: i64) -> usize {
 ///
 /// ```
 /// use symplex::ntheory::divisor_sum;
-/// assert_eq!(divisor_sum(12), 28);
-/// assert_eq!(divisor_sum(1), 1);
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(divisor_sum(12), BigInt::from(28));
+/// assert_eq!(divisor_sum(1), BigInt::from(1));
 /// ```
-pub fn divisor_sum(n: i64) -> i64 {
-    divisors(n).iter().sum()
+pub fn divisor_sum(n: impl Into<BigInt>) -> BigInt {
+    let divs = divisors(n);
+    divs.into_iter().fold(BigInt::zero(), |acc, d| acc + d)
 }
 
 /// Euler's totient function φ(n).
@@ -521,17 +649,20 @@ pub fn divisor_sum(n: i64) -> i64 {
 ///
 /// ```
 /// use symplex::ntheory::totient;
-/// assert_eq!(totient(12), 4);
-/// assert_eq!(totient(13), 12);  // prime ⟹ φ(p) = p − 1
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(totient(12), BigInt::from(4));
+/// assert_eq!(totient(13), BigInt::from(12));  // prime ⟹ φ(p) = p − 1
 /// ```
-pub fn totient(n: i64) -> i64 {
-    if n <= 0 {
-        return 0;
+pub fn totient(n: impl Into<BigInt>) -> BigInt {
+    let n: BigInt = n.into();
+    if n <= BigInt::zero() {
+        return BigInt::zero();
     }
-    let factors = factorint(n);
+    let factors = factorint(n.clone());
     let mut result = n;
     for (p, _) in factors {
-        result = result / p * (p - 1);
+        result = &result / &p * (&p - BigInt::one());
     }
     result
 }
@@ -553,8 +684,9 @@ pub fn totient(n: i64) -> i64 {
 /// assert_eq!(mobius(30), -1);  // 30 = 2·3·5 → (−1)³ = −1
 /// assert_eq!(mobius(4), 0);    // 4 = 2² → squared factor
 /// ```
-pub fn mobius(n: i64) -> i8 {
-    if n <= 0 {
+pub fn mobius(n: impl Into<BigInt>) -> i8 {
+    let n: BigInt = n.into();
+    if n <= BigInt::zero() {
         return 0;
     }
     let factors = factorint(n);
@@ -579,18 +711,23 @@ pub fn mobius(n: i64) -> i8 {
 ///
 /// ```
 /// use symplex::ntheory::mod_inverse;
-/// assert_eq!(mod_inverse(3, 7), Some(5));  // 3·5 = 15 ≡ 1 (mod 7)
-/// assert_eq!(mod_inverse(2, 4), None);     // gcd(2,4) = 2 ≠ 1
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(mod_inverse(3, 7), Some(BigInt::from(5)));  // 3·5 = 15 ≡ 1 (mod 7)
+/// assert_eq!(mod_inverse(2, 4), None);                   // gcd(2,4) = 2 ≠ 1
 /// ```
-pub fn mod_inverse(a: i64, n: i64) -> Option<i64> {
-    let (g, x, _) = extended_gcd(a, n);
-    if g != 1 {
+pub fn mod_inverse(a: impl Into<BigInt>, n: impl Into<BigInt>) -> Option<BigInt> {
+    let a: BigInt = a.into();
+    let n: BigInt = n.into();
+    let (g, x, _) = extended_gcd_big(&a, &n);
+    if !g.is_one() {
         return None;
     }
-    Some(((x % n) + n) % n)
+    let result = ((&x % &n) + &n) % &n;
+    Some(result)
 }
 
-/// Chinese Remainder Theorem.
+/// Chinese Remainder Theorem (BigInt version).
 ///
 /// Given a system of congruences `x ≡ remainders[i] (mod moduli[i])`,
 /// returns the unique solution modulo the LCM of the moduli, or `None`
@@ -600,17 +737,47 @@ pub fn mod_inverse(a: i64, n: i64) -> Option<i64> {
 ///
 /// ```
 /// use symplex::ntheory::crt;
-/// // x ≡ 2 (mod 3), x ≡ 3 (mod 5), x ≡ 2 (mod 7)  →  x = 23
-/// assert_eq!(crt(&[2, 3, 2], &[3, 5, 7]), Some(23));
+/// use num_bigint::BigInt;
+///
+/// let r: Vec<BigInt> = vec![2.into(), 3.into(), 2.into()];
+/// let m: Vec<BigInt> = vec![3.into(), 5.into(), 7.into()];
+/// assert_eq!(crt(&r, &m), Some(BigInt::from(23)));
 /// ```
-pub fn crt(remainders: &[i64], moduli: &[i64]) -> Option<i64> {
+pub fn crt(remainders: &[BigInt], moduli: &[BigInt]) -> Option<BigInt> {
+    if remainders.len() != moduli.len() || remainders.is_empty() {
+        return None;
+    }
+    let mut result = remainders[0].clone();
+    let mut modulus = moduli[0].clone();
+    for i in 1..remainders.len() {
+        let (g, p, _) = extended_gcd_big(&modulus, &moduli[i]);
+        if !((&remainders[i] - &result) % &g).is_zero() {
+            return None;
+        }
+        let step = &modulus * &((&remainders[i] - &result) / &g % (&moduli[i] / &g)) * &p;
+        result = &result + &step;
+        modulus = &modulus / &g * &moduli[i];
+        result = ((&result % &modulus) + &modulus) % &modulus;
+    }
+    Some(result)
+}
+
+/// Chinese Remainder Theorem — convenience wrapper for `i64` slices.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::crt_i64;
+/// assert_eq!(crt_i64(&[2, 3, 2], &[3, 5, 7]), Some(23));
+/// ```
+pub fn crt_i64(remainders: &[i64], moduli: &[i64]) -> Option<i64> {
     if remainders.len() != moduli.len() || remainders.is_empty() {
         return None;
     }
     let mut result = remainders[0];
     let mut modulus = moduli[0];
     for i in 1..remainders.len() {
-        let (g, p, _) = extended_gcd(modulus, moduli[i]);
+        let (g, p, _) = extended_gcd_i64(modulus, moduli[i]);
         if (remainders[i] - result) % g != 0 {
             return None;
         }
@@ -624,32 +791,36 @@ pub fn crt(remainders: &[i64], moduli: &[i64]) -> Option<i64> {
 
 /// Greatest common divisor of two integers.
 ///
-/// Wrapper around `num_integer::gcd`.
-///
 /// # Examples
 ///
 /// ```
-/// use symplex::ntheory::gcd_int;
-/// assert_eq!(gcd_int(12, 8), 4);
-/// assert_eq!(gcd_int(0, 5), 5);
+/// use symplex::ntheory::gcd;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(gcd(12, 8), BigInt::from(4));
+/// assert_eq!(gcd(0, 5), BigInt::from(5));
 /// ```
-pub fn gcd_int(a: i64, b: i64) -> i64 {
-    num_integer::gcd(a, b)
+pub fn gcd(a: impl Into<BigInt>, b: impl Into<BigInt>) -> BigInt {
+    let a: BigInt = a.into();
+    let b: BigInt = b.into();
+    num_integer::Integer::gcd(&a, &b)
 }
 
 /// Least common multiple of two integers.
 ///
-/// Wrapper around `num_integer::lcm`.
-///
 /// # Examples
 ///
 /// ```
-/// use symplex::ntheory::lcm_int;
-/// assert_eq!(lcm_int(4, 6), 12);
-/// assert_eq!(lcm_int(0, 5), 0);
+/// use symplex::ntheory::lcm;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(lcm(4, 6), BigInt::from(12));
+/// assert_eq!(lcm(0, 5), BigInt::from(0));
 /// ```
-pub fn lcm_int(a: i64, b: i64) -> i64 {
-    num_integer::lcm(a, b)
+pub fn lcm(a: impl Into<BigInt>, b: impl Into<BigInt>) -> BigInt {
+    let a: BigInt = a.into();
+    let b: BigInt = b.into();
+    num_integer::Integer::lcm(&a, &b)
 }
 
 /// Returns `true` if `a` and `b` are coprime (gcd = 1).
@@ -661,30 +832,33 @@ pub fn lcm_int(a: i64, b: i64) -> i64 {
 /// assert!(is_coprime(8, 15));
 /// assert!(!is_coprime(8, 12));
 /// ```
-pub fn is_coprime(a: i64, b: i64) -> bool {
-    gcd_int(a, b) == 1
+pub fn is_coprime(a: impl Into<BigInt>, b: impl Into<BigInt>) -> bool {
+    gcd(a, b).is_one()
 }
 
 /// Modular exponentiation: `base^exp mod modulus`.
 ///
-/// Returns 0 if `modulus` is 0 or 1. Works for non-negative exponents.
+/// Returns 0 if `modulus ≤ 0` or `exp < 0`. Works for non-negative
+/// exponents.
 ///
 /// # Examples
 ///
 /// ```
-/// use symplex::ntheory::mod_pow_int;
-/// assert_eq!(mod_pow_int(2, 10, 1000), 24);   // 1024 mod 1000
-/// assert_eq!(mod_pow_int(3, 4, 17), 13);       // 81 mod 17
+/// use symplex::ntheory::mod_pow;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(mod_pow(2, 10, 1000), BigInt::from(24));  // 1024 mod 1000
+/// assert_eq!(mod_pow(3, 4, 17), BigInt::from(13));     // 81 mod 17
 /// ```
-pub fn mod_pow_int(base: i64, exp: i64, modulus: i64) -> i64 {
-    if modulus <= 0 || exp < 0 {
-        return 0;
+pub fn mod_pow(base: impl Into<BigInt>, exp: impl Into<BigInt>, modulus: impl Into<BigInt>) -> BigInt {
+    let base: BigInt = base.into();
+    let exp: BigInt = exp.into();
+    let modulus: BigInt = modulus.into();
+    if modulus <= BigInt::zero() || exp < BigInt::zero() {
+        return BigInt::zero();
     }
-    mod_pow(
-        ((base % modulus) + modulus) as u64 % modulus as u64,
-        exp as u64,
-        modulus as u64,
-    ) as i64
+    let base_mod = ((&base % &modulus) + &modulus) % &modulus;
+    base_mod.modpow(&exp, &modulus)
 }
 
 /// Returns `true` if `n` is a perfect square.
@@ -698,18 +872,15 @@ pub fn mod_pow_int(base: i64, exp: i64, modulus: i64) -> i64 {
 /// assert!(is_square(144));
 /// assert!(!is_square(145));
 /// ```
-pub fn is_square(n: i64) -> bool {
-    if n < 0 {
+pub fn is_square(n: impl Into<BigInt>) -> bool {
+    let n: BigInt = n.into();
+    if n.is_negative() {
         return false;
     }
-    let s = (n as f64).sqrt() as i64;
-    // Check s-1, s, s+1 to guard against floating-point imprecision
-    for candidate in [s - 1, s, s + 1] {
-        if candidate >= 0 && candidate * candidate == n {
-            return true;
-        }
+    match isqrt_dispatch(&n) {
+        Some(s) => &s * &s == n,
+        None => false,
     }
-    false
 }
 
 /// Integer square root: the largest `s` such that `s² ≤ n`.
@@ -720,31 +891,31 @@ pub fn is_square(n: i64) -> bool {
 ///
 /// ```
 /// use symplex::ntheory::isqrt;
-/// assert_eq!(isqrt(0), Some(0));
-/// assert_eq!(isqrt(9), Some(3));
-/// assert_eq!(isqrt(10), Some(3));
-/// assert_eq!(isqrt(-1), None);
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(isqrt(0), Some(BigInt::from(0)));
+/// assert_eq!(isqrt(9), Some(BigInt::from(3)));
+/// assert_eq!(isqrt(10), Some(BigInt::from(3)));
+/// assert_eq!(isqrt(-1i64), None);
 /// ```
-pub fn isqrt(n: i64) -> Option<i64> {
-    if n < 0 {
-        return None;
+pub fn isqrt(n: impl Into<BigInt>) -> Option<BigInt> {
+    let n: BigInt = n.into();
+    isqrt_dispatch(&n)
+}
+
+/// Internal dispatch for isqrt.
+fn isqrt_dispatch(n: &BigInt) -> Option<BigInt> {
+    if let Some(n_i64) = n.to_i64() {
+        return isqrt_i64(n_i64).map(BigInt::from);
     }
-    if n == 0 {
-        return Some(0);
-    }
-    let mut s = (n as f64).sqrt() as i64;
-    // Newton correction
-    while s * s > n {
-        s -= 1;
-    }
-    while (s + 1) * (s + 1) <= n {
-        s += 1;
-    }
-    Some(s)
+    isqrt_big(n)
 }
 
 /// Returns all primes up to (and including) `limit` using the Sieve of
 /// Eratosthenes.
+///
+/// This function always uses `i64` because the sieve must be bounded by
+/// available memory.
 ///
 /// # Examples
 ///
@@ -774,7 +945,7 @@ pub fn primes_up_to(limit: i64) -> Vec<i64> {
     sieve
         .iter()
         .enumerate()
-        .filter_map(|(i, &is_prime)| if is_prime { Some(i as i64) } else { None })
+        .filter_map(|(i, &is_p)| if is_p { Some(i as i64) } else { None })
         .collect()
 }
 
@@ -797,18 +968,66 @@ pub fn primes_up_to(limit: i64) -> Vec<i64> {
 /// assert_eq!(legendre_symbol(3, 7), -1);
 /// assert_eq!(legendre_symbol(7, 7), 0);
 /// ```
-pub fn legendre_symbol(a: i64, p: i64) -> i8 {
-    assert!(p > 2 && isprime(p), "p must be an odd prime");
-    let a_mod = ((a % p) + p) % p;
-    if a_mod == 0 {
+pub fn legendre_symbol(a: impl Into<BigInt>, p: impl Into<BigInt>) -> i8 {
+    let a: BigInt = a.into();
+    let p: BigInt = p.into();
+    assert!(p > BigInt::from(2) && isprime_big_internal(&p) || p.to_i64().map_or(false, |pi| pi > 2 && isprime_i64(pi)),
+            "p must be an odd prime");
+    let a_mod = ((&a % &p) + &p) % &p;
+    if a_mod.is_zero() {
         return 0;
     }
-    let result = mod_pow(a_mod as u64, ((p - 1) / 2) as u64, p as u64);
-    if result == 1 {
+    let exp = (&p - BigInt::one()) / BigInt::from(2);
+    let result = a_mod.modpow(&exp, &p);
+    if result.is_one() {
         1
     } else {
         -1
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Deprecated aliases — ease migration for code that hasn't been updated yet
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Deprecated: use [`isprime`] instead (same function, now accepts any integer type).
+#[deprecated(since = "0.2.0", note = "use `isprime()` which now accepts BigInt directly")]
+pub fn isprime_bigint(n: &BigInt) -> bool {
+    if let Some(ni) = n.to_i64() {
+        return isprime_i64(ni);
+    }
+    isprime_big_internal(n)
+}
+
+/// Deprecated: use [`factorint`] instead (same function, now accepts any integer type).
+#[deprecated(since = "0.2.0", note = "use `factorint()` which now accepts BigInt directly")]
+pub fn factorint_bigint(n: &BigInt) -> Vec<(BigInt, u32)> {
+    factorint_big_internal(n)
+}
+
+/// Deprecated: use [`gcd`] instead.
+#[deprecated(since = "0.2.0", note = "use `gcd()` which now returns BigInt")]
+pub fn gcd_int(a: i64, b: i64) -> i64 {
+    num_integer::gcd(a, b)
+}
+
+/// Deprecated: use [`lcm`] instead.
+#[deprecated(since = "0.2.0", note = "use `lcm()` which now returns BigInt")]
+pub fn lcm_int(a: i64, b: i64) -> i64 {
+    num_integer::lcm(a, b)
+}
+
+/// Deprecated: use [`mod_pow`] instead.
+#[deprecated(since = "0.2.0", note = "use `mod_pow()` which now accepts BigInt")]
+pub fn mod_pow_int(base: i64, exp: i64, modulus: i64) -> i64 {
+    if modulus <= 0 || exp < 0 {
+        return 0;
+    }
+    mod_pow_u64(
+        ((base % modulus) + modulus) as u64 % modulus as u64,
+        exp as u64,
+        modulus as u64,
+    ) as i64
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -818,6 +1037,11 @@ pub fn legendre_symbol(a: i64, p: i64) -> i8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shorthand for BigInt::from.
+    fn bi(n: i64) -> BigInt {
+        BigInt::from(n)
+    }
 
     // ── isprime ────────────────────────────────────────────────────────
     #[test]
@@ -848,46 +1072,42 @@ mod tests {
         assert!(!isprime(9));
     }
 
-    // ── isprime_bigint ────────────────────────────────────────────────
+    // ── isprime with BigInt values ────────────────────────────────────
     #[test]
     fn test_isprime_bigint_small() {
-        assert!(isprime_bigint(&BigInt::from(2)));
-        assert!(isprime_bigint(&BigInt::from(3)));
-        assert!(!isprime_bigint(&BigInt::from(4)));
-        assert!(isprime_bigint(&BigInt::from(5)));
-        assert!(!isprime_bigint(&BigInt::from(0)));
-        assert!(!isprime_bigint(&BigInt::from(-7)));
+        assert!(isprime(BigInt::from(2)));
+        assert!(isprime(BigInt::from(3)));
+        assert!(!isprime(BigInt::from(4)));
+        assert!(isprime(BigInt::from(5)));
+        assert!(!isprime(BigInt::from(0)));
+        assert!(!isprime(BigInt::from(-7)));
     }
 
     #[test]
     fn test_isprime_bigint_mersenne_m31() {
-        // 2^31 - 1 = 2147483647 is a Mersenne prime
         let m31 = BigInt::from(2_147_483_647i64);
-        assert!(isprime_bigint(&m31));
+        assert!(isprime(m31));
     }
 
     #[test]
     fn test_isprime_bigint_mersenne_m61() {
-        // 2^61 - 1 = 2305843009213693951 is a Mersenne prime
         let m61 = BigInt::from(2u64.pow(61) - 1);
-        assert!(isprime_bigint(&m61));
+        assert!(isprime(m61));
     }
 
     #[test]
     fn test_isprime_bigint_large_composite() {
-        // (2^31 - 1) * (2^31 + 11) — composite, both factors beyond i32
         let m31 = BigInt::from(2_147_483_647i64);
-        let other = BigInt::from(2_147_483_659i64); // 2^31 + 11, which is prime
+        let other = BigInt::from(2_147_483_659i64);
         let product = &m31 * &other;
-        assert!(!isprime_bigint(&product));
+        assert!(!isprime(product));
     }
 
     #[test]
     fn test_isprime_bigint_carmichael() {
-        // Carmichael numbers should not fool our test
         for &c in &[561i64, 1105, 1729, 2465, 2821, 6601, 8911] {
             assert!(
-                !isprime_bigint(&BigInt::from(c)),
+                !isprime(BigInt::from(c)),
                 "Carmichael number {c} should not be prime"
             );
         }
@@ -896,7 +1116,7 @@ mod tests {
     // ── factorint ─────────────────────────────────────────────────────
     #[test]
     fn test_factorint_60() {
-        assert_eq!(factorint(60), vec![(2, 2), (3, 1), (5, 1)]);
+        assert_eq!(factorint(60), vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]);
     }
 
     #[test]
@@ -906,82 +1126,70 @@ mod tests {
 
     #[test]
     fn test_factorint_prime() {
-        assert_eq!(factorint(97), vec![(97, 1)]);
+        assert_eq!(factorint(97), vec![(bi(97), 1)]);
     }
 
     #[test]
     fn test_factorint_power_of_two() {
-        assert_eq!(factorint(1024), vec![(2, 10)]);
+        assert_eq!(factorint(1024), vec![(bi(2), 10)]);
     }
 
     #[test]
     fn test_factorint_negative() {
-        assert_eq!(factorint(-60), vec![(2, 2), (3, 1), (5, 1)]);
+        assert_eq!(factorint(-60), vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]);
     }
 
-    // ── factorint_bigint ──────────────────────────────────────────────
+    // ── factorint with BigInt input ───────────────────────────────────
     #[test]
     fn test_factorint_bigint_60() {
-        let factors = factorint_bigint(&BigInt::from(60));
+        let factors = factorint(BigInt::from(60));
         assert_eq!(
             factors,
-            vec![
-                (BigInt::from(2), 2),
-                (BigInt::from(3), 1),
-                (BigInt::from(5), 1),
-            ]
+            vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]
         );
     }
 
     #[test]
     fn test_factorint_bigint_zero_and_one() {
-        assert_eq!(factorint_bigint(&BigInt::from(0)), vec![]);
-        assert_eq!(factorint_bigint(&BigInt::from(1)), vec![]);
+        assert_eq!(factorint(BigInt::from(0)), vec![]);
+        assert_eq!(factorint(BigInt::from(1)), vec![]);
     }
 
     #[test]
     fn test_factorint_bigint_negative() {
-        let factors = factorint_bigint(&BigInt::from(-60));
+        let factors = factorint(BigInt::from(-60));
         assert_eq!(
             factors,
-            vec![
-                (BigInt::from(2), 2),
-                (BigInt::from(3), 1),
-                (BigInt::from(5), 1),
-            ]
+            vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]
         );
     }
 
     #[test]
     fn test_factorint_bigint_mersenne_prime_m31() {
-        // 2^31 - 1 = 2147483647 is prime, so factorization should be itself
         let m31 = BigInt::from(2_147_483_647i64);
-        let factors = factorint_bigint(&m31);
+        let factors = factorint(m31.clone());
         assert_eq!(factors, vec![(m31, 1)]);
     }
 
     #[test]
     fn test_factorint_bigint_m61_is_prime() {
-        // 2^61 - 1 = 2305843009213693951 is a Mersenne prime
         let m61 = BigInt::from(2u64.pow(61) - 1);
-        let factors = factorint_bigint(&m61);
+        let factors = factorint(m61.clone());
         assert_eq!(factors, vec![(m61, 1)]);
     }
 
     #[test]
     fn test_factorint_bigint_large_power_of_two() {
-        // 2^40 = 1099511627776
         let n = BigInt::from(1u64 << 40);
-        let factors = factorint_bigint(&n);
-        assert_eq!(factors, vec![(BigInt::from(2), 40)]);
+        let factors = factorint(n);
+        assert_eq!(factors, vec![(bi(2), 40)]);
     }
 
     #[test]
     fn test_factorint_bigint_roundtrip() {
-        // Verify factorization multiplies back to the original
         for val in [60i64, 360, 2310, 100_000, 123456789, 999_999_937] {
             let n = BigInt::from(val);
-            let factors = factorint_bigint(&n);
+            let factors = factorint(n.clone());
             let mut product = BigInt::one();
             for (p, e) in &factors {
                 for _ in 0..*e {
@@ -996,10 +1204,10 @@ mod tests {
     fn test_factorint_bigint_all_factors_prime() {
         for val in [60i64, 360, 2310, 100_000, 123456789] {
             let n = BigInt::from(val);
-            let factors = factorint_bigint(&n);
+            let factors = factorint(n);
             for (p, _) in &factors {
                 assert!(
-                    isprime_bigint(p),
+                    isprime(p.clone()),
                     "factor {p} of {val} is not prime"
                 );
             }
@@ -1008,11 +1216,8 @@ mod tests {
 
     #[test]
     fn test_factorint_bigint_beyond_f64_precision() {
-        // 2^53 + 1 is beyond f64 exact integer range — verifies no f64 truncation.
-        // 2^53 + 1 = 9007199254740993 = 3 × 2336171 × 1285207
-        // Let's just verify the roundtrip is exact.
         let n = BigInt::from(2u64.pow(53) + 1);
-        let factors = factorint_bigint(&n);
+        let factors = factorint(n.clone());
         let mut product = BigInt::one();
         for (p, e) in &factors {
             for _ in 0..*e {
@@ -1020,44 +1225,43 @@ mod tests {
             }
         }
         assert_eq!(product, n, "factorization beyond f64 precision must be exact");
-        // All factors should be prime
         for (p, _) in &factors {
-            assert!(isprime_bigint(p), "factor {p} should be prime");
+            assert!(isprime(p.clone()), "factor {p} should be prime");
         }
     }
 
     // ── nextprime / prevprime ─────────────────────────────────────────
     #[test]
     fn test_nextprime() {
-        assert_eq!(nextprime(10), 11);
-        assert_eq!(nextprime(11), 13);
+        assert_eq!(nextprime(10), bi(11));
+        assert_eq!(nextprime(11), bi(13));
     }
 
     #[test]
     fn test_nextprime_from_negative() {
-        assert_eq!(nextprime(-10), 2);
+        assert_eq!(nextprime(-10), bi(2));
     }
 
     #[test]
     fn test_prevprime() {
-        assert_eq!(prevprime(10), Some(7));
+        assert_eq!(prevprime(10), Some(bi(7)));
         assert_eq!(prevprime(2), None);
     }
 
     #[test]
     fn test_prevprime_3() {
-        assert_eq!(prevprime(3), Some(2));
+        assert_eq!(prevprime(3), Some(bi(2)));
     }
 
     // ── divisors ──────────────────────────────────────────────────────
     #[test]
     fn test_divisors_12() {
-        assert_eq!(divisors(12), vec![1, 2, 3, 4, 6, 12]);
+        assert_eq!(divisors(12), vec![bi(1), bi(2), bi(3), bi(4), bi(6), bi(12)]);
     }
 
     #[test]
     fn test_divisors_1() {
-        assert_eq!(divisors(1), vec![1]);
+        assert_eq!(divisors(1), vec![bi(1)]);
     }
 
     #[test]
@@ -1067,23 +1271,23 @@ mod tests {
 
     #[test]
     fn test_divisor_sum_12() {
-        assert_eq!(divisor_sum(12), 28);
+        assert_eq!(divisor_sum(12), bi(28));
     }
 
     // ── totient ───────────────────────────────────────────────────────
     #[test]
     fn test_totient_12() {
-        assert_eq!(totient(12), 4);
+        assert_eq!(totient(12), bi(4));
     }
 
     #[test]
     fn test_totient_prime() {
-        assert_eq!(totient(13), 12);
+        assert_eq!(totient(13), bi(12));
     }
 
     #[test]
     fn test_totient_1() {
-        assert_eq!(totient(1), 1);
+        assert_eq!(totient(1), bi(1));
     }
 
     // ── mobius ─────────────────────────────────────────────────────────
@@ -1098,33 +1302,46 @@ mod tests {
     // ── mod_inverse ───────────────────────────────────────────────────
     #[test]
     fn test_mod_inverse() {
-        assert_eq!(mod_inverse(3, 7), Some(5));
+        assert_eq!(mod_inverse(3, 7), Some(bi(5)));
         assert_eq!(mod_inverse(2, 4), None);
     }
 
     #[test]
     fn test_mod_inverse_verify() {
         let inv = mod_inverse(17, 43).unwrap();
-        assert_eq!((17 * inv) % 43, 1);
+        assert_eq!((bi(17) * &inv) % bi(43), bi(1));
     }
 
     // ── crt ───────────────────────────────────────────────────────────
     #[test]
     fn test_crt() {
-        assert_eq!(crt(&[2, 3, 2], &[3, 5, 7]), Some(23));
+        let r: Vec<BigInt> = vec![bi(2), bi(3), bi(2)];
+        let m: Vec<BigInt> = vec![bi(3), bi(5), bi(7)];
+        assert_eq!(crt(&r, &m), Some(bi(23)));
     }
 
     #[test]
     fn test_crt_no_solution() {
-        // x ≡ 0 (mod 2) and x ≡ 1 (mod 4) has no solution
-        assert_eq!(crt(&[0, 1], &[2, 4]), None);
+        let r: Vec<BigInt> = vec![bi(0), bi(1)];
+        let m: Vec<BigInt> = vec![bi(2), bi(4)];
+        assert_eq!(crt(&r, &m), None);
+    }
+
+    #[test]
+    fn test_crt_i64() {
+        assert_eq!(crt_i64(&[2, 3, 2], &[3, 5, 7]), Some(23));
+    }
+
+    #[test]
+    fn test_crt_i64_no_solution() {
+        assert_eq!(crt_i64(&[0, 1], &[2, 4]), None);
     }
 
     // ── gcd / lcm ────────────────────────────────────────────────────
     #[test]
     fn test_gcd_lcm() {
-        assert_eq!(gcd_int(12, 8), 4);
-        assert_eq!(lcm_int(4, 6), 12);
+        assert_eq!(gcd(12, 8), bi(4));
+        assert_eq!(lcm(4, 6), bi(12));
     }
 
     // ── is_coprime ───────────────────────────────────────────────────
@@ -1134,11 +1351,11 @@ mod tests {
         assert!(!is_coprime(8, 12));
     }
 
-    // ── mod_pow_int ──────────────────────────────────────────────────
+    // ── mod_pow ──────────────────────────────────────────────────────
     #[test]
-    fn test_mod_pow_int() {
-        assert_eq!(mod_pow_int(2, 10, 1000), 24);
-        assert_eq!(mod_pow_int(3, 4, 17), 13);
+    fn test_mod_pow() {
+        assert_eq!(mod_pow(2, 10, 1000), bi(24));
+        assert_eq!(mod_pow(3, 4, 17), bi(13));
     }
 
     // ── is_square / isqrt ────────────────────────────────────────────
@@ -1153,10 +1370,10 @@ mod tests {
 
     #[test]
     fn test_isqrt() {
-        assert_eq!(isqrt(0), Some(0));
-        assert_eq!(isqrt(9), Some(3));
-        assert_eq!(isqrt(10), Some(3));
-        assert_eq!(isqrt(-1), None);
+        assert_eq!(isqrt(0), Some(bi(0)));
+        assert_eq!(isqrt(9), Some(bi(3)));
+        assert_eq!(isqrt(10), Some(bi(3)));
+        assert_eq!(isqrt(-1i64), None);
     }
 
     // ── primes_up_to ─────────────────────────────────────────────────
