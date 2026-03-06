@@ -85,6 +85,8 @@ pub mod matrix;
 /// Sparse multivariate polynomials over ℚ.
 pub mod multipoly;
 pub(crate) mod node;
+/// Number theory: primality, factorization, divisors, modular arithmetic.
+pub mod ntheory;
 pub(crate) mod nsimplify;
 /// Ordinary differential equation solver.
 pub mod ode;

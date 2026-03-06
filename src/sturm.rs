@@ -23,6 +23,7 @@ pub(crate) struct SturmChain {
     chain: Vec<Poly>,
 }
 
+#[allow(dead_code)] // Used indirectly via Ex::count_real_roots() bridge; will be exposed publicly later
 impl SturmChain {
     /// Build a Sturm chain from polynomial `p`.
     ///
