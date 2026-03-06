@@ -66,6 +66,7 @@ pub mod expr_view;
 pub(crate) mod factor;
 pub(crate) mod factor_terms;
 pub(crate) mod fourier;
+pub(crate) mod fourier_transform;
 pub(crate) mod gruntz;
 pub(crate) mod inequalities;
 pub(crate) mod integrate;
@@ -111,6 +112,7 @@ pub(crate) mod trigsimp;
 /// Vector calculus: gradient, divergence, curl, laplacian.
 pub mod vector;
 pub(crate) mod walk;
+pub(crate) mod z_transform;
 
 // ── Public modules ─────────────────────────────────────────────────────
 /// Runtime expression parser — convert strings to symbolic expressions.

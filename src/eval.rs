@@ -53,8 +53,10 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
 use crate::arena::{
-    Arena, FN_BELL, FN_BERNOULLI, FN_CATALAN, FN_EULER_NUMBER, FN_FACTORIAL2, FN_FALLING_FACTORIAL,
-    FN_FIBONACCI, FN_HARMONIC, FN_LAMBERTW, FN_LUCAS, FN_RISING_FACTORIAL, FN_SUBFACTORIAL,
+    Arena, FN_BELL, FN_BERNOULLI, FN_BESSELJ, FN_BESSELY, FN_BESSELI, FN_BESSELK,
+    FN_CATALAN, FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_EULER_NUMBER, FN_FACTORIAL2,
+    FN_FALLING_FACTORIAL, FN_FIBONACCI, FN_HARMONIC, FN_HERMITE, FN_LAGUERRE,
+    FN_LAMBERTW, FN_LEGENDRE, FN_LUCAS, FN_RISING_FACTORIAL, FN_SUBFACTORIAL,
 };
 use crate::node::{ExprId, ExprNode};
 use crate::walk;
@@ -600,6 +602,185 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             arena.lambertw(new_args[0])
                         }
                     }
+                    // ── Bessel functions ────────────────────────────
+                    FN_BESSELJ if new_args.len() == 2 => {
+                        if let (Some(order_num), Some(arg_num)) = (
+                            arena.as_num(new_args[0]).cloned(),
+                            arena.as_num(new_args[1]).cloned(),
+                        ) {
+                            if arg_num.is_zero() {
+                                if order_num.is_zero() {
+                                    arena.one // J_0(0) = 1
+                                } else if order_num.is_positive() && order_num.is_integer() {
+                                    arena.zero // J_n(0) = 0 for integer n > 0
+                                } else {
+                                    arena.besselj(new_args[0], new_args[1])
+                                }
+                            } else {
+                                arena.besselj(new_args[0], new_args[1])
+                            }
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.besselj(new_args[0], new_args[1])
+                        }
+                    }
+                    FN_BESSELY if new_args.len() == 2 => {
+                        // Y_n(0) diverges, leave symbolic
+                        if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.bessely(new_args[0], new_args[1])
+                        }
+                    }
+                    FN_BESSELI if new_args.len() == 2 => {
+                        if let (Some(order_num), Some(arg_num)) = (
+                            arena.as_num(new_args[0]).cloned(),
+                            arena.as_num(new_args[1]).cloned(),
+                        ) {
+                            if arg_num.is_zero() {
+                                if order_num.is_zero() {
+                                    arena.one // I_0(0) = 1
+                                } else if order_num.is_positive() && order_num.is_integer() {
+                                    arena.zero // I_n(0) = 0 for integer n > 0
+                                } else {
+                                    arena.besseli(new_args[0], new_args[1])
+                                }
+                            } else {
+                                arena.besseli(new_args[0], new_args[1])
+                            }
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.besseli(new_args[0], new_args[1])
+                        }
+                    }
+                    FN_BESSELK if new_args.len() == 2 => {
+                        // K_n(0) diverges, leave symbolic
+                        if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.besselk(new_args[0], new_args[1])
+                        }
+                    }
+
+                    // ── Orthogonal polynomials ─────────────────────
+                    FN_LEGENDRE if new_args.len() == 2 => {
+                        if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
+                            if n_num.is_integer() && !n_num.is_negative() {
+                                if let Some(n_int) = n_num.to_integer().to_u64() {
+                                    if n_int <= 20 {
+                                        let x = new_args[1];
+                                        let result = eval_legendre(arena, n_int as usize, x);
+                                        result
+                                    } else {
+                                        arena.legendre(new_args[0], new_args[1])
+                                    }
+                                } else {
+                                    arena.legendre(new_args[0], new_args[1])
+                                }
+                            } else {
+                                arena.legendre(new_args[0], new_args[1])
+                            }
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.legendre(new_args[0], new_args[1])
+                        }
+                    }
+                    FN_CHEBYSHEV_T if new_args.len() == 2 => {
+                        if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
+                            if n_num.is_integer() && !n_num.is_negative() {
+                                if let Some(n_int) = n_num.to_integer().to_u64() {
+                                    if n_int <= 20 {
+                                        let x = new_args[1];
+                                        let result = eval_chebyshev_t(arena, n_int as usize, x);
+                                        result
+                                    } else {
+                                        arena.chebyshev_t(new_args[0], new_args[1])
+                                    }
+                                } else {
+                                    arena.chebyshev_t(new_args[0], new_args[1])
+                                }
+                            } else {
+                                arena.chebyshev_t(new_args[0], new_args[1])
+                            }
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.chebyshev_t(new_args[0], new_args[1])
+                        }
+                    }
+                    FN_CHEBYSHEV_U if new_args.len() == 2 => {
+                        if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
+                            if n_num.is_integer() && !n_num.is_negative() {
+                                if let Some(n_int) = n_num.to_integer().to_u64() {
+                                    if n_int <= 20 {
+                                        let x = new_args[1];
+                                        let result = eval_chebyshev_u(arena, n_int as usize, x);
+                                        result
+                                    } else {
+                                        arena.chebyshev_u(new_args[0], new_args[1])
+                                    }
+                                } else {
+                                    arena.chebyshev_u(new_args[0], new_args[1])
+                                }
+                            } else {
+                                arena.chebyshev_u(new_args[0], new_args[1])
+                            }
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.chebyshev_u(new_args[0], new_args[1])
+                        }
+                    }
+                    FN_HERMITE if new_args.len() == 2 => {
+                        if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
+                            if n_num.is_integer() && !n_num.is_negative() {
+                                if let Some(n_int) = n_num.to_integer().to_u64() {
+                                    if n_int <= 20 {
+                                        let x = new_args[1];
+                                        let result = eval_hermite(arena, n_int as usize, x);
+                                        result
+                                    } else {
+                                        arena.hermite(new_args[0], new_args[1])
+                                    }
+                                } else {
+                                    arena.hermite(new_args[0], new_args[1])
+                                }
+                            } else {
+                                arena.hermite(new_args[0], new_args[1])
+                            }
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.hermite(new_args[0], new_args[1])
+                        }
+                    }
+                    FN_LAGUERRE if new_args.len() == 2 => {
+                        if let Some(n_num) = arena.as_num(new_args[0]).cloned() {
+                            if n_num.is_integer() && !n_num.is_negative() {
+                                if let Some(n_int) = n_num.to_integer().to_u64() {
+                                    if n_int <= 20 {
+                                        let x = new_args[1];
+                                        let result = eval_laguerre(arena, n_int as usize, x);
+                                        result
+                                    } else {
+                                        arena.laguerre(new_args[0], new_args[1])
+                                    }
+                                } else {
+                                    arena.laguerre(new_args[0], new_args[1])
+                                }
+                            } else {
+                                arena.laguerre(new_args[0], new_args[1])
+                            }
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.laguerre(new_args[0], new_args[1])
+                        }
+                    }
+
                     _ => {
                         if new_args[..] == args[..] {
                             id
@@ -2222,6 +2403,164 @@ fn mod_positive(a: &Ratio<BigInt>, m: &Ratio<BigInt>) -> Ratio<BigInt> {
         result += m;
     }
     result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Orthogonal polynomial evaluation via recurrence relations
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Legendre polynomial P_n(x) via Bonnet's recurrence.
+/// P_0(x) = 1, P_1(x) = x, (k+1)·P_{k+1} = (2k+1)·x·P_k − k·P_{k-1}
+fn eval_legendre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
+    if n == 0 {
+        return arena.one;
+    }
+    if n == 1 {
+        return x;
+    }
+
+    let mut p_prev = arena.one;
+    let mut p_curr = x;
+
+    for k in 1..n {
+        let two_k_plus_1 = arena.int(2 * k as i64 + 1);
+        let k_val = arena.int(k as i64);
+        let k_plus_1 = arena.int(k as i64 + 1);
+
+        let term1 = arena.mul(&[two_k_plus_1, x, p_curr]);
+        let term2 = arena.mul(&[k_val, p_prev]);
+        let numer = arena.sub(term1, term2);
+        let p_next = arena.div(numer, k_plus_1);
+
+        // Expand and eval at each step to keep expressions manageable
+        let p_next = crate::expand::expand(arena, p_next);
+        let p_next = eval(arena, p_next);
+
+        p_prev = p_curr;
+        p_curr = p_next;
+    }
+
+    p_curr
+}
+
+/// Chebyshev polynomial of the first kind T_n(x) via recurrence.
+/// T_0(x) = 1, T_1(x) = x, T_{k+1} = 2·x·T_k − T_{k-1}
+fn eval_chebyshev_t(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
+    if n == 0 {
+        return arena.one;
+    }
+    if n == 1 {
+        return x;
+    }
+
+    let two = arena.int(2);
+    let mut t_prev = arena.one;
+    let mut t_curr = x;
+
+    for _ in 1..n {
+        let term1 = arena.mul(&[two, x, t_curr]);
+        let t_next = arena.sub(term1, t_prev);
+
+        let t_next = crate::expand::expand(arena, t_next);
+        let t_next = eval(arena, t_next);
+
+        t_prev = t_curr;
+        t_curr = t_next;
+    }
+
+    t_curr
+}
+
+/// Chebyshev polynomial of the second kind U_n(x) via recurrence.
+/// U_0(x) = 1, U_1(x) = 2x, U_{k+1} = 2·x·U_k − U_{k-1}
+fn eval_chebyshev_u(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
+    if n == 0 {
+        return arena.one;
+    }
+    let two = arena.int(2);
+    if n == 1 {
+        return arena.mul(&[two, x]);
+    }
+
+    let mut u_prev = arena.one;
+    let mut u_curr = arena.mul(&[two, x]);
+
+    for _ in 1..n {
+        let term1 = arena.mul(&[two, x, u_curr]);
+        let u_next = arena.sub(term1, u_prev);
+
+        let u_next = crate::expand::expand(arena, u_next);
+        let u_next = eval(arena, u_next);
+
+        u_prev = u_curr;
+        u_curr = u_next;
+    }
+
+    u_curr
+}
+
+/// Physicist's Hermite polynomial H_n(x) via recurrence.
+/// H_0(x) = 1, H_1(x) = 2x, H_{k+1} = 2·x·H_k − 2k·H_{k-1}
+fn eval_hermite(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
+    if n == 0 {
+        return arena.one;
+    }
+    let two = arena.int(2);
+    if n == 1 {
+        return arena.mul(&[two, x]);
+    }
+
+    let mut h_prev = arena.one;
+    let mut h_curr = arena.mul(&[two, x]);
+
+    for k in 1..n {
+        let two_k = arena.int(2 * k as i64);
+        let term1 = arena.mul(&[two, x, h_curr]);
+        let term2 = arena.mul(&[two_k, h_prev]);
+        let h_next = arena.sub(term1, term2);
+
+        let h_next = crate::expand::expand(arena, h_next);
+        let h_next = eval(arena, h_next);
+
+        h_prev = h_curr;
+        h_curr = h_next;
+    }
+
+    h_curr
+}
+
+/// Laguerre polynomial L_n(x) via recurrence.
+/// L_0(x) = 1, L_1(x) = 1−x, (k+1)·L_{k+1} = (2k+1−x)·L_k − k·L_{k-1}
+fn eval_laguerre(arena: &mut Arena, n: usize, x: ExprId) -> ExprId {
+    if n == 0 {
+        return arena.one;
+    }
+    if n == 1 {
+        return arena.sub(arena.one, x);
+    }
+
+    let mut l_prev = arena.one;
+    let mut l_curr = arena.sub(arena.one, x);
+
+    for k in 1..n {
+        let two_k_plus_1 = arena.int(2 * k as i64 + 1);
+        let k_val = arena.int(k as i64);
+        let k_plus_1 = arena.int(k as i64 + 1);
+
+        let coeff = arena.sub(two_k_plus_1, x); // (2k+1 − x)
+        let term1 = arena.mul(&[coeff, l_curr]);
+        let term2 = arena.mul(&[k_val, l_prev]);
+        let numer = arena.sub(term1, term2);
+        let l_next = arena.div(numer, k_plus_1);
+
+        let l_next = crate::expand::expand(arena, l_next);
+        let l_next = eval(arena, l_next);
+
+        l_prev = l_curr;
+        l_curr = l_next;
+    }
+
+    l_curr
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

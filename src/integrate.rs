@@ -668,6 +668,226 @@ fn try_trig_sub_sqrt_integral(
     None
 }
 
+/// Integrate a product of a linear polynomial times `(quadratic)^{-1}`:
+///
+///   `∫ (ax+b) / (cx²+dx+e) dx`
+///
+/// Decomposes the linear numerator as a multiple of the derivative of the
+/// quadratic denominator plus a constant remainder:
+///
+///   `ax+b = (a/(2c))·(2cx+d) + (b − ad/(2c))`
+///
+/// Then:
+///   - First part:  `(a/(2c)) · ln|cx²+dx+e|`
+///   - Second part: `(b − ad/(2c)) · ∫ 1/(cx²+dx+e) dx`  (completing the square)
+fn try_linear_over_quadratic(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    if dependent.len() != 2 {
+        return None;
+    }
+
+    // Identify linear factor and Pow(quadratic, -1) factor.
+    let (linear_idx, pow_idx) = {
+        let mut li = None;
+        let mut pi = None;
+        for (i, &d) in dependent.iter().enumerate() {
+            if let ExprNode::Pow(_, _) = arena.node(d) {
+                if pi.is_none() {
+                    pi = Some(i);
+                }
+            } else if li.is_none() {
+                li = Some(i);
+            }
+        }
+        (li?, pi?)
+    };
+
+    let linear = dependent[linear_idx];
+    let (pow_base, pow_exp) = match arena.node(dependent[pow_idx]).clone() {
+        ExprNode::Pow(b, e) => (b, e),
+        _ => return None,
+    };
+
+    // Exponent must be exactly −1.
+    let exp_val = arena.as_num(pow_exp)?.clone();
+    let neg_one = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
+    if exp_val != neg_one {
+        return None;
+    }
+
+    // linear must be degree 1 in var.
+    let lin_poly = crate::polybridge::expr_to_poly(arena, linear, var)?;
+    if lin_poly.degree()? != 1 {
+        return None;
+    }
+    let a_coeff = lin_poly.coeff(1);
+    let b_coeff = lin_poly.coeff(0);
+
+    // pow_base must be degree 2 in var.
+    let quad_poly = crate::polybridge::expr_to_poly(arena, pow_base, var)?;
+    if quad_poly.degree()? != 2 {
+        return None;
+    }
+    let c_coeff = quad_poly.coeff(2);
+    let d_coeff = quad_poly.coeff(1);
+
+    use num_traits::Zero;
+    if c_coeff.is_zero() || a_coeff.is_zero() {
+        return None;
+    }
+
+    // Decompose: ax+b = (a/(2c))·(2cx+d) + (b − ad/(2c))
+    let two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+    let a_over_2c = &a_coeff / &(&c_coeff * &two_r);
+    let remainder = &b_coeff - &(&a_coeff * &d_coeff / &(&c_coeff * &two_r));
+
+    let mut terms: Vec<ExprId> = Vec::new();
+
+    // First term: (a/(2c)) · ln|cx²+dx+e|
+    if !a_over_2c.is_zero() {
+        let coeff_id = rational_to_expr(arena, &a_over_2c);
+        let abs_quad = arena.abs(pow_base);
+        let ln_quad = arena.ln(abs_quad);
+        terms.push(arena.mul(&[coeff_id, ln_quad]));
+    }
+
+    // Second term: remainder · ∫ 1/(cx²+dx+e) dx
+    if !remainder.is_zero() {
+        let inv_quad = arena.pow(pow_base, pow_exp); // (quad)^{-1}
+        let inv_integral =
+            integrate_node(arena, inv_quad, var, var_sym, depth.saturating_sub(1));
+        if matches!(arena.node(inv_integral), ExprNode::Integral(_, _)) {
+            return None;
+        }
+        let rem_id = rational_to_expr(arena, &remainder);
+        terms.push(arena.mul(&[rem_id, inv_integral]));
+    }
+
+    match terms.len() {
+        0 => Some(arena.zero),
+        1 => Some(terms[0]),
+        _ => Some(arena.add(&terms)),
+    }
+}
+
+/// Check whether `expr` is a rational function of `sin(var)` and `cos(var)`.
+///
+/// A rational trig function may contain sin(var), cos(var), numeric
+/// constants, and arithmetic operations (+, ×, integer powers, negation).
+/// The integration variable must appear **only** inside sin/cos.
+fn is_rational_trig(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolId) -> bool {
+    if !contains_var(arena, expr, var_sym) {
+        return true; // constant → trivially rational
+    }
+    match arena.node(expr).clone() {
+        ExprNode::Sin(inner) if inner == var => true,
+        ExprNode::Cos(inner) if inner == var => true,
+        ExprNode::Add(children) => children
+            .iter()
+            .all(|&c| is_rational_trig(arena, c, var, var_sym)),
+        ExprNode::Mul(children) => children
+            .iter()
+            .all(|&c| is_rational_trig(arena, c, var, var_sym)),
+        ExprNode::Neg(inner) => is_rational_trig(arena, inner, var, var_sym),
+        ExprNode::Pow(base, exp) => {
+            if !contains_var(arena, exp, var_sym) {
+                if let Some(e) = arena.as_num(exp) {
+                    if e.is_integer() {
+                        return is_rational_trig(arena, base, var, var_sym);
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Apply the Weierstrass (half-angle tangent) substitution to integrate a
+/// rational function of `sin(var)` and `cos(var)`.
+///
+/// Substitution: `t = tan(var/2)`, giving
+///   - `sin(var) = 2t/(1+t²)`
+///   - `cos(var) = (1−t²)/(1+t²)`
+///   - `dx        = 2/(1+t²) dt`
+///
+/// After substitution the integrand becomes a rational function of `t`.
+fn try_weierstrass_substitution(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    if depth < 3 {
+        return None;
+    }
+    if !is_rational_trig(arena, expr, var, var_sym) {
+        return None;
+    }
+
+    tracing::debug!("trying Weierstrass substitution");
+
+    let t = arena.symbol("__wt");
+    let t_sym = match arena.node(t) {
+        ExprNode::Symbol(sid) => *sid,
+        _ => unreachable!(),
+    };
+
+    let two = arena.int(2);
+    let one = arena.one;
+    let t_sq = arena.pow(t, two);
+    let one_plus_t_sq = arena.add(&[one, t_sq]);
+
+    let sin_var = arena.sin(var);
+    let cos_var = arena.cos(var);
+
+    // sin(var) → 2t/(1+t²)
+    let two_t = arena.mul(&[two, t]);
+    let sin_sub = arena.div(two_t, one_plus_t_sq);
+
+    // cos(var) → (1−t²)/(1+t²)
+    let one_minus_t_sq = arena.sub(one, t_sq);
+    let cos_sub = arena.div(one_minus_t_sq, one_plus_t_sq);
+
+    // dx factor: 2/(1+t²)
+    let dx_factor = arena.div(two, one_plus_t_sq);
+
+    // Apply substitution
+    let mut sub_expr = arena.subs_structural(expr, sin_var, sin_sub);
+    sub_expr = arena.subs_structural(sub_expr, cos_var, cos_sub);
+
+    // Multiply by dx factor
+    let integrand_t = arena.mul(&[sub_expr, dx_factor]);
+
+    // Aggressively simplify / cancel
+    let integrand_t = crate::eval::eval(arena, integrand_t);
+    let integrand_t = crate::expand::expand(arena, integrand_t);
+    let integrand_t = crate::eval::eval(arena, integrand_t);
+    let integrand_t = arena.cancel_expr(integrand_t, t);
+    let integrand_t = crate::eval::eval(arena, integrand_t);
+
+    // Integrate w.r.t. t
+    let integral_t = integrate_node(arena, integrand_t, t, t_sym, depth.saturating_sub(2));
+
+    if matches!(arena.node(integral_t), ExprNode::Integral(_, _)) {
+        return None;
+    }
+
+    // Substitute back: t → tan(var/2)
+    let half = arena.rational(1, 2);
+    let half_var = arena.mul(&[half, var]);
+    let tan_half = arena.tan(half_var);
+    let result = arena.subs_structural(integral_t, t, tan_half);
+
+    Some(result)
+}
+
 /// Attempt cyclic integration by parts for integrals like `∫ exp(x)·sin(x) dx`.
 ///
 /// After two IBP rounds (with u₂ = du₁, dv₂ = v₁), if the remaining
@@ -891,6 +1111,20 @@ fn integrate_node(
                     }
                 }
 
+            // ── (linear) / (irreducible quadratic) ───────────────────
+            if dependent.len() == 2
+                && let Some(result) =
+                    try_linear_over_quadratic(arena, &dependent, var, var_sym, depth)
+                {
+                    if constants.is_empty() {
+                        return result;
+                    } else {
+                        let mut all = constants.clone();
+                        all.push(result);
+                        return arena.mul(&all);
+                    }
+                }
+
             // ── DiracDelta sifting property: ∫ f(x)·δ(g(x)) dx = f(root)·H(g(x)) ──
             // Check if any factor in the product is a DiracDelta.
             {
@@ -1028,6 +1262,19 @@ fn integrate_node(
 
             // ── Try general u-substitution ──────────────────────────────
             if let Some(result) = try_u_substitution(arena, &dependent, var, var_sym, depth - 1) {
+                if constants.is_empty() {
+                    return result;
+                } else {
+                    let mut all = constants.clone();
+                    all.push(result);
+                    return arena.mul(&all);
+                }
+            }
+
+            // ── Weierstrass substitution for rational trig functions ──
+            if let Some(result) =
+                try_weierstrass_substitution(arena, expr, var, var_sym, depth)
+            {
                 if constants.is_empty() {
                     return result;
                 } else {
@@ -1187,6 +1434,13 @@ fn integrate_node(
                         }
                     }
                 }
+            }
+
+            // ── Weierstrass substitution (Pow arm) ────────────────────
+            if let Some(result) =
+                try_weierstrass_substitution(arena, expr, var, var_sym, depth)
+            {
+                return result;
             }
 
             // General case: unevaluated.

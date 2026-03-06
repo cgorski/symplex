@@ -68,6 +68,16 @@ pub fn dsolve(
         return Some(result);
     }
 
+    // Type 2b: Exact first-order ODE: M(x,y) + N(x,y)·y' = 0 with ∂M/∂y = ∂N/∂x
+    if let Some(result) = try_exact_ode(arena, expr, func, var, func_sym, var_sym) {
+        return Some(result);
+    }
+
+    // Type 2c: Non-exact ODE with integrating factor μ(x) or μ(y)
+    if let Some(result) = try_integrating_factor_ode(arena, expr, func, var, func_sym, var_sym) {
+        return Some(result);
+    }
+
     // Type 3: Full separable: y' = f(x)*g(y)
     if let Some(result) = try_full_separable(arena, expr, func, var, func_sym, var_sym) {
         return Some(result);
@@ -1084,6 +1094,292 @@ fn extract_coeff_of_func(
     None
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Exact ODE solver: M(x,y)dx + N(x,y)dy = 0
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extract M(x,y) and N(x,y) from an ODE expression of the form `M + N·y' = 0`.
+///
+/// Returns `(M, N)` where M is the sum of terms not containing `dy/dx`
+/// and N is the total coefficient of `dy/dx`.
+///
+/// Returns `None` when the expression cannot be decomposed (e.g. `(y')²`).
+fn extract_m_n(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+) -> Option<(ExprId, ExprId)> {
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+
+    // Handle single-term expressions.
+    if expr == dy_dx {
+        return Some((arena.zero, arena.one));
+    }
+
+    let children = match arena.node(expr).clone() {
+        ExprNode::Add(c) => c,
+        _ => return None,
+    };
+
+    let mut m_terms: Vec<ExprId> = Vec::new();
+    let mut n_terms: Vec<ExprId> = Vec::new();
+
+    for &child in &children {
+        let (coeff, term) = arena.as_coeff_term(child);
+        if term == dy_dx {
+            // Simple numeric coefficient of dy/dx.
+            let coeff_id = {
+                let nid = arena.intern_num(coeff);
+                arena.intern(ExprNode::Num(nid))
+            };
+            n_terms.push(coeff_id);
+        } else if expr_contains(arena, child, dy_dx) {
+            // child contains dy/dx inside a product — try to peel it off.
+            if let ExprNode::Mul(ref mul_children) = arena.node(child).clone() {
+                let mut found_dy = false;
+                let mut other_factors: Vec<ExprId> = Vec::new();
+                for &mc in mul_children.iter() {
+                    if mc == dy_dx && !found_dy {
+                        found_dy = true;
+                    } else {
+                        other_factors.push(mc);
+                    }
+                }
+                if found_dy {
+                    let n_factor = match other_factors.len() {
+                        0 => arena.one,
+                        1 => other_factors[0],
+                        _ => arena.mul(&other_factors),
+                    };
+                    n_terms.push(n_factor);
+                } else {
+                    return None; // dy/dx in non-simple position
+                }
+            } else {
+                return None;
+            }
+        } else {
+            m_terms.push(child);
+        }
+    }
+
+    if n_terms.is_empty() {
+        return None; // No dy/dx term
+    }
+
+    let m_expr = match m_terms.len() {
+        0 => arena.zero,
+        1 => m_terms[0],
+        _ => arena.add(&m_terms),
+    };
+
+    let n_expr = match n_terms.len() {
+        1 => n_terms[0],
+        _ => arena.add(&n_terms),
+    };
+
+    Some((m_expr, n_expr))
+}
+
+/// Solve an exact first-order ODE: `M(x,y) + N(x,y)·y' = 0`
+/// where `∂M/∂y = ∂N/∂x`.
+///
+/// The potential function F(x,y) satisfying `∂F/∂x = M` and `∂F/∂y = N`
+/// is computed as:
+///   1. `F = ∫M dx + g(y)`
+///   2. `g'(y) = N − ∂(∫M dx)/∂y`
+///   3. `g(y) = ∫ g'(y) dy`
+///
+/// The implicit solution is `F(x,y) = C1`.  When possible the solver
+/// also tries to solve explicitly for `y`.
+fn try_exact_ode(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    tracing::debug!("ode: trying exact ODE");
+
+    let (m_expr, n_expr) = extract_m_n(arena, expr, func, var)?;
+
+    // At least one of M, N must depend on the dependent variable for this
+    // to be a genuinely exact ODE (otherwise the linear / separable solvers
+    // are better suited).
+    if !contains_sym(arena, m_expr, func_sym) && !contains_sym(arena, n_expr, func_sym) {
+        return None;
+    }
+
+    // ── Exactness check: ∂M/∂y = ∂N/∂x ───────────────────────────
+    let dm_dy = crate::diff::diff(arena, m_expr, func);
+    let dn_dx = crate::diff::diff(arena, n_expr, var);
+
+    let diff_check = arena.sub(dm_dy, dn_dx);
+    let diff_eval = crate::eval::eval(arena, diff_check);
+    let diff_expanded = crate::expand::expand(arena, diff_eval);
+    let diff_simplified = crate::eval::eval(arena, diff_expanded);
+
+    if diff_simplified != arena.zero {
+        return None; // Not exact
+    }
+
+    // ── Build potential function F(x,y) ───────────────────────────
+    // Step 1: F_partial = ∫ M dx  (treating y as constant)
+    let integral_m = crate::integrate::integrate(arena, m_expr, var);
+    if matches!(arena.node(integral_m), ExprNode::Integral(_, _)) {
+        return None; // Integration of M w.r.t. x failed
+    }
+
+    // Step 2: g'(y) = N − ∂(∫M dx)/∂y
+    let d_intm_dy = crate::diff::diff(arena, integral_m, func);
+    let g_prime = arena.sub(n_expr, d_intm_dy);
+    let g_prime = crate::eval::eval(arena, g_prime);
+    let g_prime = crate::expand::expand(arena, g_prime);
+    let g_prime = crate::eval::eval(arena, g_prime);
+
+    // g'(y) must be free of x.
+    if contains_sym(arena, g_prime, var_sym) {
+        return None;
+    }
+
+    // Step 3: g(y) = ∫ g'(y) dy
+    let g_y = crate::integrate::integrate(arena, g_prime, func);
+    if matches!(arena.node(g_y), ExprNode::Integral(_, _)) {
+        return None;
+    }
+
+    // F(x,y) = ∫M dx + g(y)
+    let potential = arena.add(&[integral_m, g_y]);
+    let potential = crate::eval::eval(arena, potential);
+
+    let c1 = arena.symbol("C1");
+
+    // Try to solve F(x,y) = C1 for y explicitly.
+    let f_minus_c1 = arena.sub(potential, c1);
+    let solutions = crate::solve::solve(arena, f_minus_c1, func);
+
+    if solutions.len() == 1 {
+        return Some(OdeResult {
+            solution: solutions[0].value,
+            constants: vec![c1],
+        });
+    }
+
+    // Return the implicit solution F(x,y) (the equation is F = C1).
+    Some(OdeResult {
+        solution: potential,
+        constants: vec![c1],
+    })
+}
+
+/// Attempt to find an integrating factor for a non-exact first-order ODE.
+///
+/// Given `M + N·y' = 0` with `∂M/∂y ≠ ∂N/∂x`:
+///
+/// 1. **μ = μ(x):**  if `(∂M/∂y − ∂N/∂x) / N` depends only on `x`,
+///    then `μ = exp(∫ that dx)`.
+/// 2. **μ = μ(y):**  if `(∂N/∂x − ∂M/∂y) / M` depends only on `y`,
+///    then `μ = exp(∫ that dy)`.
+///
+/// After multiplying through by μ the ODE becomes exact and is solved
+/// via [`try_exact_ode`].
+fn try_integrating_factor_ode(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    tracing::debug!("ode: trying integrating factor for non-exact ODE");
+
+    let (m_expr, n_expr) = extract_m_n(arena, expr, func, var)?;
+
+    // Need y-dependence for this to be meaningful.
+    if !contains_sym(arena, m_expr, func_sym) && !contains_sym(arena, n_expr, func_sym) {
+        return None;
+    }
+
+    let dm_dy = crate::diff::diff(arena, m_expr, func);
+    let dn_dx = crate::diff::diff(arena, n_expr, var);
+
+    let diff_mn = arena.sub(dm_dy, dn_dx); // ∂M/∂y − ∂N/∂x
+    let diff_eval = crate::eval::eval(arena, diff_mn);
+    let diff_expanded = crate::expand::expand(arena, diff_eval);
+    let diff_simplified = crate::eval::eval(arena, diff_expanded);
+
+    if diff_simplified == arena.zero {
+        // Already exact — delegate.
+        return try_exact_ode(arena, expr, func, var, func_sym, var_sym);
+    }
+
+    // ── Try μ(x): (∂M/∂y − ∂N/∂x) / N free of y ─────────────────
+    {
+        let ratio = arena.div(diff_simplified, n_expr);
+        let ratio = crate::eval::eval(arena, ratio);
+        let ratio = crate::expand::expand(arena, ratio);
+        let ratio = crate::eval::eval(arena, ratio);
+        let ratio_cancelled = arena.cancel_expr(ratio, var);
+
+        if !contains_sym(arena, ratio_cancelled, func_sym) {
+            let int_ratio = crate::integrate::integrate(arena, ratio_cancelled, var);
+            if !matches!(arena.node(int_ratio), ExprNode::Integral(_, _)) {
+                let mu = arena.exp(int_ratio);
+
+                // New M' = μ·M,  N' = μ·N
+                let new_m = arena.mul(&[mu, m_expr]);
+                let new_n = arena.mul(&[mu, n_expr]);
+
+                let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+                let n_dy = arena.mul(&[new_n, dy_dx]);
+                let new_expr = arena.add(&[new_m, n_dy]);
+                let new_expr = crate::eval::eval(arena, new_expr);
+
+                if let Some(result) =
+                    try_exact_ode(arena, new_expr, func, var, func_sym, var_sym)
+                {
+                    return Some(result);
+                }
+            }
+        }
+    }
+
+    // ── Try μ(y): (∂N/∂x − ∂M/∂y) / M free of x ─────────────────
+    {
+        let neg_diff = arena.neg(diff_simplified); // ∂N/∂x − ∂M/∂y
+        let ratio = arena.div(neg_diff, m_expr);
+        let ratio = crate::eval::eval(arena, ratio);
+        let ratio = crate::expand::expand(arena, ratio);
+        let ratio = crate::eval::eval(arena, ratio);
+        let ratio_cancelled = arena.cancel_expr(ratio, func);
+
+        if !contains_sym(arena, ratio_cancelled, var_sym) {
+            let int_ratio = crate::integrate::integrate(arena, ratio_cancelled, func);
+            if !matches!(arena.node(int_ratio), ExprNode::Integral(_, _)) {
+                let mu = arena.exp(int_ratio);
+
+                let new_m = arena.mul(&[mu, m_expr]);
+                let new_n = arena.mul(&[mu, n_expr]);
+
+                let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+                let n_dy = arena.mul(&[new_n, dy_dx]);
+                let new_expr = arena.add(&[new_m, n_dy]);
+                let new_expr = crate::eval::eval(arena, new_expr);
+
+                if let Some(result) =
+                    try_exact_ode(arena, new_expr, func, var, func_sym, var_sym)
+                {
+                    return Some(result);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Check if an expression contains a specific symbol.
 fn contains_sym(arena: &Arena, expr: ExprId, sym: SymbolId) -> bool {
     match arena.node(expr).clone() {
@@ -1114,6 +1410,8 @@ pub enum OdeType {
     FirstOrderLinearCC,
     /// y' + P(x)*y = Q(x) — first-order linear with variable coefficients
     FirstOrderLinearVC,
+    /// M(x,y) + N(x,y)·y' = 0 with ∂M/∂y = ∂N/∂x — exact first-order
+    ExactFirstOrder,
     /// a*y'' + b*y' + c*y = 0 — second-order linear constant-coefficient homogeneous
     SecondOrderLinearCCHomogeneous,
     /// a*y'' + b*y' + c*y = f(x) — second-order linear constant-coefficient nonhomogeneous
@@ -1210,6 +1508,21 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
                     return OdeType::FirstOrderLinearVC;
                 }
                 return OdeType::FirstOrderLinearCC;
+            }
+        }
+
+        // Check for exact ODE: M + N·y' = 0 with ∂M/∂y = ∂N/∂x
+        if let Some((m_ex, n_ex)) = extract_m_n(arena, expr, func, var) {
+            if contains_sym(arena, m_ex, func_sym) || contains_sym(arena, n_ex, func_sym) {
+                let dm_dy = crate::diff::diff(arena, m_ex, func);
+                let dn_dx = crate::diff::diff(arena, n_ex, var);
+                let check = arena.sub(dm_dy, dn_dx);
+                let check = crate::eval::eval(arena, check);
+                let check = crate::expand::expand(arena, check);
+                let check = crate::eval::eval(arena, check);
+                if check == arena.zero {
+                    return OdeType::ExactFirstOrder;
+                }
             }
         }
 

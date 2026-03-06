@@ -1,23 +1,26 @@
-//! Polynomial factoring via rational root finding.
+//! Polynomial factoring via rational root finding + Kronecker's method.
 //!
 //! This module implements [`factor`], which attempts to factor a
-//! polynomial expression over ℚ into a product of linear factors
-//! and a possibly irreducible remainder.
+//! polynomial expression over ℤ into a product of irreducible factors
+//! with their multiplicities.
 //!
 //! # Algorithm
 //!
 //! 1. Convert the expression to a [`Poly`] in the given variable.
-//! 2. Find all rational roots using the existing equation solver.
-//! 3. For each root `r`, divide out `(x - r)` from the polynomial.
-//! 4. Return the product of all `(x - r)` factors times the
-//!    remaining (unfactored) polynomial.
+//! 2. Call [`Poly::factor_over_z`] which performs:
+//!    a. Content extraction (GCD of all coefficients).
+//!    b. Square-free decomposition (Yun's algorithm).
+//!    c. Rational root extraction (Rational Root Theorem).
+//!    d. Higher-degree factor finding (Kronecker's method).
+//! 3. Convert the factors back to expressions and build the product.
+//! 4. If the poly-level factoring finds nothing new, fall back to
+//!    the expression-level solver for rational roots.
 //!
-//! # Limitations
+//! # Improvements over the previous version
 //!
-//! - Only finds rational roots. Irrational factors like `(x² + 1)`
-//!   remain unfactored.
-//! - Does not use Berlekamp's algorithm or Hensel lifting for
-//!   complete factoring over ℤ.
+//! - Finds non-linear factors (e.g. x²+1 in x⁴−1).
+//! - Handles repeated roots via square-free decomposition.
+//! - Extracts content for any polynomial, including linear ones.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -28,11 +31,10 @@ use crate::node::{ExprId, ExprNode};
 use crate::poly::Poly;
 use crate::polybridge;
 
-/// Factor a polynomial expression into a product of linear factors
-/// and a remainder.
+/// Factor a polynomial expression into a product of irreducible factors.
 ///
 /// Returns the expression unchanged if it is not polynomial in `var`
-/// or if no rational roots can be found.
+/// or if no factorisation can be found.
 pub(crate) fn factor(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     // Step 1: Convert to polynomial.
     let poly = match polybridge::expr_to_poly(arena, expr, var) {
@@ -50,27 +52,84 @@ pub(crate) fn factor(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
         None => return expr,
     };
 
+    // Step 2: Try enhanced polynomial factoring (SFD + rational roots + Kronecker).
+    let (content, factors) = poly.factor_over_z();
+
+    let nontrivial = factors.len() > 1
+        || factors.iter().any(|(_, m)| *m > 1)
+        || !content.is_one();
+
+    if nontrivial {
+        return build_factored_expr(arena, var, &content, &factors);
+    }
+
+    // Step 3: No non-trivial poly-level factoring found.
     if degree <= 1 {
         return expr; // Linear or constant — already factored.
     }
 
-    // Step 2: Extract content (GCD of all coefficients).
-    // This handles cases like 2*x^2 - 2 → content=2, primitive=x^2 - 1.
-    let content = poly_content(&poly);
+    // Step 4: Fallback — use the expression-level solver for rational roots.
+    // This catches edge cases that the poly-level approach may miss.
+    factor_via_solver(arena, expr, var, &poly)
+}
+
+/// Build a symbolic expression from the factored polynomial form.
+///
+/// Constructs `content * ∏ factor^mult`.
+fn build_factored_expr(
+    arena: &mut Arena,
+    var: ExprId,
+    content: &Ratio<BigInt>,
+    factors: &[(Poly, u32)],
+) -> ExprId {
+    let mut parts: Vec<ExprId> = Vec::new();
+
+    // Add content if it isn't 1.
+    if !content.is_one() {
+        let nid = arena.intern_num(content.clone());
+        let cid = arena.intern(ExprNode::Num(nid));
+        parts.push(cid);
+    }
+
+    // Add each factor (possibly raised to a power).
+    for (factor, mult) in factors {
+        let fexpr = polybridge::poly_to_expr(arena, factor, var);
+        if *mult == 1 {
+            parts.push(fexpr);
+        } else {
+            let exp = arena.int(*mult as i64);
+            parts.push(arena.pow(fexpr, exp));
+        }
+    }
+
+    match parts.len() {
+        0 => arena.one,
+        1 => parts[0],
+        _ => arena.mul(&parts),
+    }
+}
+
+/// Fallback factoring using the expression-level equation solver.
+///
+/// This is the original algorithm: find rational roots via `solve`,
+/// divide out the corresponding linear factors, and return the product.
+fn factor_via_solver(arena: &mut Arena, expr: ExprId, var: ExprId, poly: &Poly) -> ExprId {
+    // Extract content (GCD of all coefficients).
+    let content = poly_content(poly);
     let primitive = if content != Ratio::one() {
         poly.scale(&(Ratio::one() / &content))
     } else {
         poly.clone()
     };
 
-    // Step 3: Find rational roots of the primitive polynomial via the solver.
+    // Find rational roots of the primitive polynomial via the solver.
     let prim_expr = polybridge::poly_to_expr(arena, &primitive, var);
     let solutions = crate::solve::solve(arena, prim_expr, var);
     if solutions.is_empty() {
         return expr; // No rational roots found.
     }
 
-    // Step 4: For each root, divide out (x - root) repeatedly (handles multiplicity).
+    // For each root, divide out (x − root) repeatedly (handles multiplicity).
     let mut remaining = primitive;
     let mut factors: Vec<ExprId> = Vec::new();
 
@@ -81,7 +140,7 @@ pub(crate) fn factor(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
             _ => continue, // Non-rational root, skip.
         };
 
-        // Build the linear factor (x - r) as a Poly.
+        // Build the linear factor (x − r) as a Poly.
         let linear = Poly::from_coeffs(vec![-root_rational.clone(), Ratio::one()]);
 
         // Divide out this factor as many times as possible (multiplicity).
@@ -102,13 +161,13 @@ pub(crate) fn factor(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
         return expr; // No roots produced clean division.
     }
 
-    // Step 5: Build the result as content * product_of_factors * remainder.
+    // Build the result as content × product_of_factors × remainder.
     let remainder_expr = polybridge::poly_to_expr(arena, &remaining, var);
     let remainder_is_one = arena.is_one_structural(remainder_expr);
 
     let mut all_parts: Vec<ExprId> = Vec::new();
 
-    // Add content if != 1.
+    // Add content if ≠ 1.
     if content != Ratio::one() {
         let content_nid = arena.intern_num(content);
         let content_id = arena.intern(ExprNode::Num(content_nid));

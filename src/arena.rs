@@ -44,6 +44,19 @@ pub(crate) const FN_EULER_NUMBER: &str = "euler_number";
 
 pub(crate) const FN_LAMBERTW: &str = "lambertw";
 
+// ── Bessel function name constants ─────────────────────────────────────
+pub(crate) const FN_BESSELJ: &str = "besselj";
+pub(crate) const FN_BESSELY: &str = "bessely";
+pub(crate) const FN_BESSELI: &str = "besseli";
+pub(crate) const FN_BESSELK: &str = "besselk";
+
+// ── Orthogonal polynomial name constants ───────────────────────────────
+pub(crate) const FN_LEGENDRE: &str = "legendre";
+pub(crate) const FN_CHEBYSHEV_T: &str = "chebyshev_t";
+pub(crate) const FN_CHEBYSHEV_U: &str = "chebyshev_u";
+pub(crate) const FN_HERMITE: &str = "hermite";
+pub(crate) const FN_LAGUERRE: &str = "laguerre";
+
 // ---------------------------------------------------------------------------
 // Arena
 // ---------------------------------------------------------------------------
@@ -1305,6 +1318,73 @@ impl Arena {
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
+    // ── Bessel functions (Apply-based) ─────────────────────────────
+
+    /// Creates a `besselj` (Bessel function of the first kind) node: J_ν(x).
+    pub fn besselj(&mut self, order: ExprId, arg: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_BESSELJ);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![order, arg];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `bessely` (Bessel function of the second kind) node: Y_ν(x).
+    pub fn bessely(&mut self, order: ExprId, arg: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_BESSELY);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![order, arg];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `besseli` (modified Bessel function of the first kind) node: I_ν(x).
+    pub fn besseli(&mut self, order: ExprId, arg: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_BESSELI);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![order, arg];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `besselk` (modified Bessel function of the second kind) node: K_ν(x).
+    pub fn besselk(&mut self, order: ExprId, arg: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_BESSELK);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![order, arg];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    // ── Orthogonal polynomials (Apply-based) ───────────────────────
+
+    /// Creates a `legendre` (Legendre polynomial) node: P_n(x).
+    pub fn legendre(&mut self, n: ExprId, x: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_LEGENDRE);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, x];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `chebyshev_t` (Chebyshev polynomial of the first kind) node: T_n(x).
+    pub fn chebyshev_t(&mut self, n: ExprId, x: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_CHEBYSHEV_T);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, x];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `chebyshev_u` (Chebyshev polynomial of the second kind) node: U_n(x).
+    pub fn chebyshev_u(&mut self, n: ExprId, x: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_CHEBYSHEV_U);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, x];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `hermite` (physicist's Hermite polynomial) node: H_n(x).
+    pub fn hermite(&mut self, n: ExprId, x: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_HERMITE);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, x];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `laguerre` (Laguerre polynomial) node: L_n(x).
+    pub fn laguerre(&mut self, n: ExprId, x: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_LAGUERRE);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, x];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
     // ── Series extensions (residue, Fourier) ───────────────────────
 
     /// Compute the residue of `expr` at `var = point`.
@@ -1350,6 +1430,49 @@ impl Arena {
         t: ExprId,
     ) -> Result<ExprId, crate::errors::SymplexError> {
         crate::laplace::inverse_laplace_transform(self, expr, s, t)
+    }
+
+    /// Compute the Fourier transform of `expr` with respect to time variable `t`,
+    /// producing a function of frequency variable `omega`.
+    ///
+    /// Delegates to [`fourier_transform::fourier_transform`].
+    pub fn fourier_transform_expr(
+        &mut self,
+        expr: ExprId,
+        t: ExprId,
+        omega: ExprId,
+    ) -> Result<ExprId, crate::errors::SymplexError> {
+        crate::fourier_transform::fourier_transform(self, expr, t, omega)
+    }
+
+    /// Compute the inverse Fourier transform of `expr` (function of `omega`)
+    /// back to a function of time variable `t`.
+    ///
+    /// Delegates to [`fourier_transform::inverse_fourier_transform`].
+    pub fn inverse_fourier_transform_expr(
+        &mut self,
+        expr: ExprId,
+        omega: ExprId,
+        t: ExprId,
+    ) -> Result<ExprId, crate::errors::SymplexError> {
+        crate::fourier_transform::inverse_fourier_transform(self, expr, omega, t)
+    }
+
+    /// Compute the Laurent series of `expr` in `var` around `point` to the
+    /// given `order`.
+    ///
+    /// Returns `Ok(series)` if the Laurent series could be computed,
+    /// or `Err` if it could not.
+    ///
+    /// Delegates to [`series::laurent_series`].
+    pub fn laurent_series_expr(
+        &mut self,
+        expr: ExprId,
+        var: ExprId,
+        point: ExprId,
+        order: u32,
+    ) -> Result<ExprId, crate::errors::SymplexError> {
+        crate::series::laurent_series(self, expr, var, point, order)
     }
 
     /// Evaluate `expr` numerically to `digits` decimal digits of precision.

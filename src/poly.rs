@@ -23,6 +23,7 @@
 //! normalised to be monic (leading coefficient = 1).
 
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 use std::fmt;
@@ -449,6 +450,487 @@ impl Poly {
         let g = Poly::gcd(self, &dp);
         self.div_rem(&g).0 // quotient only
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Factoring over ℤ
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Poly {
+    /// Returns `true` if every coefficient is an integer (denominator 1).
+    pub fn has_integer_coeffs(&self) -> bool {
+        self.coeffs.iter().all(|c| c.denom().is_one())
+    }
+
+    /// Factor this polynomial over ℤ.
+    ///
+    /// Returns `(content, factors)` where:
+    /// - `content` is the rational GCD of all coefficients, with sign chosen
+    ///   so that each factor has a positive leading coefficient.
+    /// - `factors` is a list of `(irreducible_factor, multiplicity)` pairs.
+    ///
+    /// The original polynomial equals `content * ∏ factor^multiplicity`.
+    pub fn factor_over_z(&self) -> (Ratio<BigInt>, Vec<(Poly, u32)>) {
+        if self.is_zero() {
+            return (Ratio::zero(), vec![]);
+        }
+        if self.is_constant() {
+            return (self.coeff(0), vec![]);
+        }
+
+        // 1. Extract content and make primitive.
+        let mut content = self.content();
+        let mut prim = self.primitive_part();
+
+        // Ensure positive leading coefficient.
+        if prim.leading_coeff().map_or(false, |lc| lc.is_negative()) {
+            content = -content;
+            prim = -&prim;
+        }
+
+        let deg = prim.degree().unwrap_or(0);
+        if deg <= 1 {
+            return (content, vec![(prim, 1)]);
+        }
+
+        // 2. Square-free decomposition.
+        let sfd = square_free_decomposition(&prim);
+
+        // 3. Factor each square-free component into irreducibles.
+        let mut all_factors: Vec<(Poly, u32)> = Vec::new();
+        for (sf, mult) in sfd {
+            let irreducibles = factor_squarefree(&sf);
+            for irr in irreducibles {
+                all_factors.push((irr, mult));
+            }
+        }
+
+        if all_factors.is_empty() {
+            all_factors.push((prim, 1));
+        }
+
+        (content, all_factors)
+    }
+}
+
+// ── Square-free decomposition (Yun's algorithm) ────────────────────────
+
+/// Compute the square-free decomposition of a primitive polynomial with
+/// positive leading coefficient.
+///
+/// Returns `[(a₁, 1), (a₂, 2), …]` where `f = ∏ aᵢ^i` (up to a unit)
+/// and each `aᵢ` is square-free and pairwise coprime.
+fn square_free_decomposition(f: &Poly) -> Vec<(Poly, u32)> {
+    let deg = match f.degree() {
+        Some(d) if d >= 1 => d,
+        _ => return vec![],
+    };
+
+    let df = f.derivative();
+    if df.is_zero() {
+        // Shouldn't happen for degree ≥ 1 in characteristic 0.
+        return vec![(ensure_positive_lc(f), 1)];
+    }
+
+    let g = Poly::gcd(f, &df);
+
+    // If gcd is trivial (constant), f is already square-free.
+    if g.degree().unwrap_or(0) == 0 {
+        return vec![(ensure_positive_lc(f), 1)];
+    }
+
+    // Yun's iterative decomposition.
+    let mut w = f.div(&g); // product of all distinct irreducible factors
+    let mut c = g; //          ∏ pᵢ^(eᵢ−1)
+    let mut result: Vec<(Poly, u32)> = Vec::new();
+    let mut i = 1u32;
+
+    loop {
+        if w.degree().unwrap_or(0) == 0 {
+            break;
+        }
+
+        let y = Poly::gcd(&w, &c); // factors with multiplicity > i
+        let z = w.div(&y); //         factors with multiplicity exactly i
+
+        if z.degree().unwrap_or(0) > 0 {
+            // Normalize to primitive with positive leading coefficient.
+            let z_norm = ensure_positive_lc(&z.primitive_part());
+            result.push((z_norm, i));
+        }
+
+        w = y;
+        if c.degree().unwrap_or(0) > 0 && w.degree().unwrap_or(0) > 0 {
+            c = c.div(&w);
+        } else {
+            c = Poly::from_int(1);
+        }
+        i += 1;
+
+        // Safety bound.
+        if i > deg as u32 + 1 {
+            break;
+        }
+    }
+
+    if result.is_empty() {
+        result.push((ensure_positive_lc(f), 1));
+    }
+
+    result
+}
+
+/// Return a copy of `p` with positive leading coefficient.
+fn ensure_positive_lc(p: &Poly) -> Poly {
+    match p.leading_coeff() {
+        Some(lc) if lc.is_negative() => -p,
+        _ => p.clone(),
+    }
+}
+
+// ── Irreducible factoring of a square-free polynomial ──────────────────
+
+/// Factor a square-free, primitive polynomial into irreducible factors
+/// over ℤ using the Rational Root Theorem followed by Kronecker's method.
+fn factor_squarefree(f: &Poly) -> Vec<Poly> {
+    let deg = match f.degree() {
+        Some(d) if d >= 1 => d,
+        _ => return vec![f.clone()],
+    };
+
+    if deg == 1 {
+        return vec![ensure_positive_lc(f)];
+    }
+
+    // Step 1: extract all linear factors via the Rational Root Theorem.
+    let (mut remaining, mut factors) = extract_rational_roots(f);
+
+    if remaining.degree().unwrap_or(0) == 0 {
+        return factors;
+    }
+    if remaining.degree() == Some(1) {
+        factors.push(ensure_positive_lc(&remaining));
+        return factors;
+    }
+
+    // Step 2: Kronecker's method for degree-2 … degree-⌊n/2⌋.
+    let max_trial = (remaining.degree().unwrap_or(0) / 2).min(6);
+    for trial_deg in 2..=max_trial {
+        loop {
+            let rem_deg = remaining.degree().unwrap_or(0);
+            if rem_deg < 2 * trial_deg {
+                break;
+            }
+            match kronecker_find_factor(&remaining, trial_deg) {
+                Some((fac, quot)) => {
+                    // The factor might itself be reducible — recurse.
+                    factors.extend(factor_squarefree(&fac));
+                    remaining = quot;
+                }
+                None => break,
+            }
+        }
+        if remaining.degree().unwrap_or(0) < 2 {
+            break;
+        }
+    }
+
+    // Whatever remains is irreducible (or we couldn't split it further).
+    if remaining.degree().unwrap_or(0) >= 1 {
+        factors.push(ensure_positive_lc(&remaining));
+    }
+
+    factors
+}
+
+// ── Rational Root Theorem ──────────────────────────────────────────────
+
+/// Extract all linear factors using the Rational Root Theorem.
+///
+/// Returns `(remaining, linear_factors)`.
+fn extract_rational_roots(f: &Poly) -> (Poly, Vec<Poly>) {
+    let mut remaining = f.clone();
+    let mut factors: Vec<Poly> = Vec::new();
+
+    loop {
+        let deg = match remaining.degree() {
+            Some(d) if d >= 1 => d,
+            _ => break,
+        };
+
+        let a0 = remaining.coeff(0);
+
+        // Handle root at x = 0.
+        if a0.is_zero() {
+            remaining = remaining.div(&Poly::x());
+            factors.push(Poly::x());
+            continue;
+        }
+
+        // Need integer coefficients.
+        if !remaining.has_integer_coeffs() {
+            break;
+        }
+
+        let an = remaining.coeff(deg);
+        let a0_abs = a0.numer().abs();
+        let an_abs = an.numer().abs();
+
+        let p_divs = positive_divisors(&a0_abs);
+        let q_divs = positive_divisors(&an_abs);
+
+        // Safety cap.
+        if p_divs.is_empty() || q_divs.is_empty() {
+            break;
+        }
+        if p_divs.len() * q_divs.len() > 500 {
+            break;
+        }
+
+        let mut found = false;
+
+        'search: for p in &p_divs {
+            for q in &q_divs {
+                // Only consider coprime (p, q) to avoid redundant/non-primitive factors.
+                if p.gcd(q) != BigInt::one() {
+                    continue;
+                }
+                for &sign in &[1i64, -1i64] {
+                    let candidate = Ratio::new(
+                        p * BigInt::from(sign),
+                        q.clone(),
+                    );
+                    if remaining.eval(&candidate).is_zero() {
+                        // Build integer linear factor (q·x − sign·p).
+                        let int_factor = Poly::from_coeffs(vec![
+                            Ratio::from_integer(-(p * BigInt::from(sign))),
+                            Ratio::from_integer(q.clone()),
+                        ]);
+                        let prim_factor = int_factor.primitive_part();
+                        let prim_factor = ensure_positive_lc(&prim_factor);
+                        let (quot, rem) = remaining.div_rem(&prim_factor);
+                        if rem.is_zero() {
+                            remaining = if quot.has_integer_coeffs() {
+                                quot
+                            } else {
+                                // Normalize to integer coefficients.
+                                ensure_positive_lc(&quot.primitive_part())
+                            };
+                            factors.push(prim_factor);
+                            found = true;
+                            break 'search;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !found {
+            break;
+        }
+    }
+
+    (remaining, factors)
+}
+
+// ── Kronecker's method ─────────────────────────────────────────────────
+
+/// Try to find a non-trivial factor of `f` with degree exactly
+/// `trial_deg` using Kronecker's method.
+///
+/// Returns `Some((factor, quotient))` on success.
+fn kronecker_find_factor(f: &Poly, trial_deg: usize) -> Option<(Poly, Poly)> {
+    let f_deg = f.degree()?;
+    if trial_deg == 0 || trial_deg * 2 > f_deg {
+        return None;
+    }
+
+    let num_points = trial_deg + 1;
+
+    // Choose small integer evaluation points: 0, 1, −1, 2, −2, …
+    let eval_pts = small_integer_points(num_points);
+
+    // Evaluate f at each point (all results are integers).
+    let vals: Vec<BigInt> = eval_pts
+        .iter()
+        .map(|&x| {
+            let v = f.eval(&Ratio::from_integer(BigInt::from(x)));
+            // Integer-coeff poly at integer arg ⇒ integer.
+            v.numer().clone()
+        })
+        .collect();
+
+    // If any evaluation is zero, rational root extraction should have
+    // caught it already.  Skip to avoid infinite divisor enumeration.
+    if vals.iter().any(|v| v.is_zero()) {
+        return None;
+    }
+
+    // Signed divisors for each evaluation value.
+    let div_lists: Vec<Vec<BigInt>> = vals.iter().map(signed_divisors).collect();
+
+    // Bail out if any divisor list is empty (value too large) or
+    // total combinations exceed a practical limit.
+    if div_lists.iter().any(Vec::is_empty) {
+        return None;
+    }
+    let total: usize = div_lists
+        .iter()
+        .map(|d| d.len())
+        .try_fold(1usize, |acc, n| acc.checked_mul(n))
+        .unwrap_or(usize::MAX);
+    if total > 100_000 {
+        return None;
+    }
+
+    let mut indices = vec![0usize; num_points];
+    let mut count = 0usize;
+
+    loop {
+        // Build the current divisor combination.
+        let points: Vec<(i64, BigInt)> = (0..num_points)
+            .map(|i| (eval_pts[i], div_lists[i][indices[i]].clone()))
+            .collect();
+
+        if let Some(candidate) = lagrange_interpolate(&points) {
+            if candidate.degree() == Some(trial_deg) && candidate.has_integer_coeffs() {
+                let prim = ensure_positive_lc(&candidate.primitive_part());
+                if prim.degree() == Some(trial_deg) {
+                    let (quot, rem) = f.div_rem(&prim);
+                    if rem.is_zero() && quot.has_integer_coeffs() {
+                        return Some((prim, quot));
+                    }
+                }
+            }
+        }
+
+        // Advance odometer.
+        count += 1;
+        if count >= total {
+            break;
+        }
+        let mut carry = true;
+        for k in (0..num_points).rev() {
+            if carry {
+                indices[k] += 1;
+                if indices[k] >= div_lists[k].len() {
+                    indices[k] = 0;
+                } else {
+                    carry = false;
+                    break;
+                }
+            }
+        }
+        if carry {
+            break;
+        }
+    }
+
+    None
+}
+
+// ── Helper: Lagrange interpolation ─────────────────────────────────────
+
+/// Lagrange interpolation through `(xᵢ, yᵢ)` integer points.
+fn lagrange_interpolate(points: &[(i64, BigInt)]) -> Option<Poly> {
+    let n = points.len();
+    let mut result = Poly::zero();
+
+    for i in 0..n {
+        let (xi, yi) = &points[i];
+        if yi.is_zero() {
+            continue;
+        }
+
+        // L_i(x) = ∏_{j≠i} (x − xⱼ) / (xᵢ − xⱼ)
+        let mut basis = Poly::from_int(1);
+        let mut denom = BigInt::one();
+
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let xj = points[j].0;
+            let linear = Poly::from_coeffs(vec![
+                Ratio::from_integer(BigInt::from(-xj)),
+                Ratio::one(),
+            ]);
+            basis = &basis * &linear;
+            denom *= BigInt::from(*xi - xj);
+        }
+
+        if denom.is_zero() {
+            return None;
+        }
+
+        let scale = Ratio::new(yi.clone(), denom);
+        result = &result + &basis.scale(&scale);
+    }
+
+    Some(result)
+}
+
+// ── Helper: integer point generation ───────────────────────────────────
+
+/// Generate `n` distinct small integer points: 0, 1, −1, 2, −2, …
+fn small_integer_points(n: usize) -> Vec<i64> {
+    let mut pts = Vec::with_capacity(n);
+    pts.push(0);
+    let mut k = 1i64;
+    while pts.len() < n {
+        pts.push(k);
+        if pts.len() < n {
+            pts.push(-k);
+        }
+        k += 1;
+    }
+    pts
+}
+
+// ── Helper: integer divisors ───────────────────────────────────────────
+
+/// All positive divisors of `|n|` in ascending order.
+///
+/// Returns an empty list if `n` is zero or `|n|` exceeds an internal
+/// threshold (to keep Kronecker practical).
+fn positive_divisors(n: &BigInt) -> Vec<BigInt> {
+    if n.is_zero() {
+        return vec![];
+    }
+    let n_abs = n.abs();
+    // Bail out for very large values.
+    if n_abs > BigInt::from(1_000_000_000i64) {
+        return vec![];
+    }
+
+    let mut small = Vec::new();
+    let mut large = Vec::new();
+    let mut i = BigInt::one();
+    while &i * &i <= n_abs {
+        if (&n_abs % &i).is_zero() {
+            let complement = &n_abs / &i;
+            if complement != i {
+                large.push(complement);
+            }
+            small.push(i.clone());
+        }
+        i += 1;
+    }
+
+    large.reverse();
+    small.extend(large);
+    small
+}
+
+/// All signed (positive and negative) divisors of `|n|`.
+fn signed_divisors(n: &BigInt) -> Vec<BigInt> {
+    let pos = positive_divisors(n);
+    let mut result = Vec::with_capacity(pos.len() * 2);
+    for d in pos {
+        result.push(d.clone());
+        result.push(-d);
+    }
+    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -917,5 +1399,203 @@ mod tests {
         let pp = p.primitive_part();
         let expected = Poly::from_coeffs(vec![ri(2), ri(1)]);
         assert_eq!(pp, expected);
+    }
+
+    // ── Factoring over ℤ ────────────────────────────────────────────────
+
+    #[test]
+    fn has_integer_coeffs_true() {
+        let p = Poly::from_coeffs(vec![ri(1), ri(2), ri(3)]);
+        assert!(p.has_integer_coeffs());
+    }
+
+    #[test]
+    fn has_integer_coeffs_false() {
+        let p = Poly::from_coeffs(vec![r(1, 2), ri(1)]);
+        assert!(!p.has_integer_coeffs());
+    }
+
+    #[test]
+    fn factor_z_x2_minus_1() {
+        // x^2 - 1 = (x - 1)(x + 1)
+        let p = Poly::from_coeffs(vec![ri(-1), ri(0), ri(1)]);
+        let (content, factors) = p.factor_over_z();
+        assert_eq!(content, ri(1));
+        assert_eq!(factors.len(), 2, "should have 2 factors: {factors:?}");
+        // Verify product.
+        let mut product = Poly::from_int(1);
+        for (f, m) in &factors {
+            for _ in 0..*m {
+                product = &product * f;
+            }
+        }
+        product = product.scale(&content);
+        assert_eq!(product, p, "product of factors should equal original");
+    }
+
+    #[test]
+    fn factor_z_x2_plus_1_irreducible() {
+        // x^2 + 1 is irreducible over ℤ
+        let p = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]);
+        let (content, factors) = p.factor_over_z();
+        assert_eq!(content, ri(1));
+        assert_eq!(factors.len(), 1, "x^2+1 is irreducible: {factors:?}");
+        assert_eq!(factors[0].1, 1);
+    }
+
+    #[test]
+    fn factor_z_x4_minus_1() {
+        // x^4 - 1 = (x - 1)(x + 1)(x^2 + 1)
+        let p = Poly::from_coeffs(vec![ri(-1), ri(0), ri(0), ri(0), ri(1)]);
+        let (content, factors) = p.factor_over_z();
+        assert_eq!(content, ri(1));
+        assert!(
+            factors.len() >= 3,
+            "x^4-1 should have >= 3 factors: {factors:?}"
+        );
+        // Verify product.
+        let mut product = Poly::from_int(1);
+        for (f, m) in &factors {
+            for _ in 0..*m {
+                product = &product * f;
+            }
+        }
+        product = product.scale(&content);
+        assert_eq!(product, p, "product mismatch");
+    }
+
+    #[test]
+    fn factor_z_x4_plus_5x2_plus_6() {
+        // x^4 + 5x^2 + 6 = (x^2 + 2)(x^2 + 3)
+        let p = Poly::from_coeffs(vec![ri(6), ri(0), ri(5), ri(0), ri(1)]);
+        let (content, factors) = p.factor_over_z();
+        assert_eq!(content, ri(1));
+        assert_eq!(
+            factors.len(),
+            2,
+            "should factor into 2 quadratics: {factors:?}"
+        );
+        // Verify product.
+        let mut product = Poly::from_int(1);
+        for (f, m) in &factors {
+            for _ in 0..*m {
+                product = &product * f;
+            }
+        }
+        product = product.scale(&content);
+        assert_eq!(product, p, "product mismatch");
+    }
+
+    #[test]
+    fn factor_z_perfect_square() {
+        // x^2 + 2x + 1 = (x + 1)^2
+        let p = Poly::from_coeffs(vec![ri(1), ri(2), ri(1)]);
+        let (content, factors) = p.factor_over_z();
+        assert_eq!(content, ri(1));
+        assert_eq!(factors.len(), 1, "perfect square has 1 unique factor");
+        assert_eq!(factors[0].1, 2, "multiplicity should be 2");
+    }
+
+    #[test]
+    fn factor_z_6x2_plus_12x_plus_6() {
+        // 6x^2 + 12x + 6 = 6·(x + 1)^2
+        let p = Poly::from_coeffs(vec![ri(6), ri(12), ri(6)]);
+        let (content, factors) = p.factor_over_z();
+        assert_eq!(content, ri(6));
+        assert_eq!(factors.len(), 1);
+        assert_eq!(factors[0].1, 2);
+        assert_eq!(factors[0].0.degree(), Some(1));
+    }
+
+    #[test]
+    fn factor_z_cubic_three_roots() {
+        // x^3 - 6x^2 + 11x - 6 = (x-1)(x-2)(x-3)
+        let p = Poly::from_coeffs(vec![ri(-6), ri(11), ri(-6), ri(1)]);
+        let (content, factors) = p.factor_over_z();
+        assert_eq!(content, ri(1));
+        assert_eq!(factors.len(), 3, "should have 3 linear factors: {factors:?}");
+        // Verify product.
+        let mut product = Poly::from_int(1);
+        for (f, m) in &factors {
+            for _ in 0..*m {
+                product = &product * f;
+            }
+        }
+        product = product.scale(&content);
+        assert_eq!(product, p, "product mismatch");
+    }
+
+    #[test]
+    fn factor_z_x6_minus_1() {
+        // x^6 - 1 = (x-1)(x+1)(x^2-x+1)(x^2+x+1)
+        let mut coeffs = vec![ri(0); 7];
+        coeffs[0] = ri(-1);
+        coeffs[6] = ri(1);
+        let p = Poly::from_coeffs(coeffs);
+        let (content, factors) = p.factor_over_z();
+        assert_eq!(content, ri(1));
+        assert!(
+            factors.len() >= 4,
+            "x^6-1 should have >= 4 factors: {factors:?}"
+        );
+        // Verify product.
+        let mut product = Poly::from_int(1);
+        for (f, m) in &factors {
+            for _ in 0..*m {
+                product = &product * f;
+            }
+        }
+        product = product.scale(&content);
+        assert_eq!(product, p, "product mismatch");
+    }
+
+    #[test]
+    fn factor_z_constant() {
+        let p = Poly::from_int(42);
+        let (content, factors) = p.factor_over_z();
+        assert_eq!(content, ri(42));
+        assert!(factors.is_empty());
+    }
+
+    #[test]
+    fn factor_z_zero() {
+        let p = Poly::zero();
+        let (content, factors) = p.factor_over_z();
+        assert!(content.is_zero());
+        assert!(factors.is_empty());
+    }
+
+    #[test]
+    fn factor_z_linear() {
+        let p = Poly::from_coeffs(vec![ri(4), ri(2)]); // 2x + 4
+        let (content, factors) = p.factor_over_z();
+        assert_eq!(content, ri(2));
+        assert_eq!(factors.len(), 1);
+        assert_eq!(factors[0].1, 1);
+        // Factor should be (x + 2).
+        let f = &factors[0].0;
+        assert_eq!(f.eval(&ri(-2)), ri(0));
+    }
+
+    #[test]
+    fn factor_z_preserves_value_at_points() {
+        // x^4 + 5x^2 + 6
+        let p = Poly::from_coeffs(vec![ri(6), ri(0), ri(5), ri(0), ri(1)]);
+        let (content, factors) = p.factor_over_z();
+        for &x in &[-3i64, -2, -1, 0, 1, 2, 3] {
+            let xr = ri(x);
+            let original = p.eval(&xr);
+            let mut factored = content.clone();
+            for (f, m) in &factors {
+                let val = f.eval(&xr);
+                for _ in 0..*m {
+                    factored = &factored * &val;
+                }
+            }
+            assert_eq!(
+                original, factored,
+                "value mismatch at x={x}: orig={original}, factored={factored}"
+            );
+        }
     }
 }

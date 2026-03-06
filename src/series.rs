@@ -225,6 +225,76 @@ fn factorial_value(n: u64) -> BigInt {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Laurent series
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute a Laurent series expansion of `expr` in `var` around `point`
+/// to the given `order` (number of terms in the regular part).
+///
+/// A Laurent series extends a Taylor series to allow negative powers of
+/// `(x - a)`, i.e. poles. The result includes terms from `(x-a)^{-m}`
+/// up to `(x-a)^{order-1}` where `m` is the detected pole order.
+///
+/// # Algorithm
+///
+/// 1. First try a regular Taylor series — if it succeeds, return it
+///    (no pole, Laurent = Taylor).
+/// 2. Otherwise, multiply `expr` by `(x - a)^k` for `k = 1, 2, …, 5`
+///    until the Taylor series of the modified expression succeeds.
+/// 3. Divide the resulting Taylor series back by `(x - a)^k` to recover
+///    the Laurent series with negative-power terms.
+///
+/// Returns `Ok(series)` on success, `Err` if the expansion cannot be
+/// computed (e.g. essential singularity, or pole order > 5).
+pub(crate) fn laurent_series(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    order: u32,
+) -> Result<ExprId, crate::errors::SymplexError> {
+    // First try regular Taylor — if it works, there is no pole.
+    if let Ok(ts) = series(arena, expr, var, point, order) {
+        return Ok(ts);
+    }
+
+    // Build (var - point) once; reuse for each attempt.
+    let x_minus_a = if arena.is_zero_structural(point) {
+        var
+    } else {
+        arena.sub(var, point)
+    };
+
+    // Try multiplying by (x - a)^k for k = 1..=5 until the pole is
+    // cancelled and a Taylor series succeeds.
+    for k in 1u32..=5 {
+        let k_id = arena.int(k as i64);
+        let multiplier = arena.pow(x_minus_a, k_id);
+        let modified = arena.mul(&[expr, multiplier]);
+
+        // We request order + k terms so that after dividing back by
+        // (x-a)^k we still have `order` terms in the regular part.
+        if let Ok(ts) = series(arena, modified, var, point, order + k) {
+            // Divide back by (x - a)^k to restore the negative powers.
+            let neg_k = arena.int(-(k as i64));
+            let divisor = arena.pow(x_minus_a, neg_k);
+            let result = arena.mul(&[ts, divisor]);
+
+            // Expand so that the product distributes across the sum,
+            // giving explicit negative-power terms.
+            let result = crate::expand::expand(arena, result);
+            let result = crate::eval::eval(arena, result);
+            return Ok(result);
+        }
+    }
+
+    Err(crate::errors::SymplexError::ComputationFailed {
+        operation: "laurent_series",
+        reason: "could not determine pole order (tried up to order 5)".into(),
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
