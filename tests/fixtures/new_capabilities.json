@@ -1,0 +1,5603 @@
+{
+  "generated_by": "SymPy 1.14.0",
+  "generated_at": "2026-03-06T17:44:59.471481",
+  "fixture_count": 108,
+  "description": "Correctness audit fixtures for symplex new capabilities",
+  "categories": {
+    "definite_integral": "Definite integral values via F(hi)-F(lo)",
+    "ftc_check": "FTC verification: f(x) values and F(x) values at test points",
+    "simplify_verify": "Numerical equivalence of original and simplified expressions",
+    "gosper_sum": "Closed-form sums vs brute-force computation",
+    "series_verify": "Truncated series vs exact function at nearby points",
+    "ode_verify": "ODE solution residuals (should be zero)"
+  },
+  "fixtures": [
+    {
+      "id": 1,
+      "category": "definite_integral",
+      "subcategory": "basic",
+      "label": "x_squared",
+      "input": "x**2",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "x**3/3",
+      "definite_value": {
+        "re": 0.2916666666666667,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.390625,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.390625,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.5625,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5625,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.765625,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.765625,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "category": "definite_integral",
+      "subcategory": "basic",
+      "label": "x_cubed",
+      "input": "x**3",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "x**4/4",
+      "definite_value": {
+        "re": 0.234375,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.244140625,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.244140625,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.421875,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.421875,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.669921875,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.669921875,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "category": "definite_integral",
+      "subcategory": "basic",
+      "label": "sin_x",
+      "input": "sin(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "-cos(x)",
+      "definite_value": {
+        "re": 0.337280256022233,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.5850972729404622,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5850972729404622,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.6816387600233341,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.6816387600233341,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.7675435022360271,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.7675435022360271,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "category": "definite_integral",
+      "subcategory": "basic",
+      "label": "cos_x",
+      "input": "cos(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "sin(x)",
+      "definite_value": {
+        "re": 0.3620454462036935,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.8109631195052179,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.8109631195052179,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.7316888688738209,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.7316888688738209,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.6409968581633251,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.6409968581633251,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "category": "definite_integral",
+      "subcategory": "basic",
+      "label": "exp_x",
+      "input": "exp(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "exp(x)",
+      "definite_value": {
+        "re": 1.0695605577589171,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 1.8682459574322223,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.8682459574322223,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 2.117000016612675,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 2.117000016612675,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 2.398875293967098,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 2.398875293967098,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "category": "definite_integral",
+      "subcategory": "basic",
+      "label": "one_over_x",
+      "input": "1/x",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 2.0,
+      "antiderivative": "log(x)",
+      "definite_value": {
+        "re": 1.3862943611198906,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 1.1428571428571428,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.1428571428571428,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.25,
+          "integrand_value": {
+            "re": 0.8,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.8,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.625,
+          "integrand_value": {
+            "re": 0.6153846153846154,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.6153846153846154,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "category": "definite_integral",
+      "subcategory": "basic",
+      "label": "tan_x",
+      "input": "tan(x)",
+      "variable": "x",
+      "lo": 0.25,
+      "hi": 1.0,
+      "antiderivative": "-log(cos(x))",
+      "definite_value": {
+        "re": 0.5840454191385447,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.4375,
+          "integrand_value": {
+            "re": 0.4677300254523918,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.4677300254523918,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.7214844409909045,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.7214844409909045,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.8125,
+          "integrand_value": {
+            "re": 1.05572763941192,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.05572763941192,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "category": "definite_integral",
+      "subcategory": "basic",
+      "label": "ln_x",
+      "input": "log(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 2.0,
+      "antiderivative": "x*log(x) - x",
+      "definite_value": {
+        "re": 0.23286795139986327,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": -0.13353139262452263,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": -0.13353139262452263,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.25,
+          "integrand_value": {
+            "re": 0.22314355131420976,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.22314355131420976,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.625,
+          "integrand_value": {
+            "re": 0.4855078157817008,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.4855078157817008,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "category": "definite_integral",
+      "subcategory": "by_parts",
+      "label": "x_exp_x",
+      "input": "x*exp(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "(x - 1)*exp(x)",
+      "definite_value": {
+        "re": 0.8243606353500641,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 1.167653723395139,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.167653723395139,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.587750012459506,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.587750012459506,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 2.099015882221211,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 2.099015882221211,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "category": "definite_integral",
+      "subcategory": "by_parts",
+      "label": "x_sin_x",
+      "input": "x*sin(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "-x*cos(x) + sin(x)",
+      "definite_value": {
+        "re": 0.26053442128074017,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.36568579558778885,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.36568579558778885,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.5112290700175006,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5112290700175006,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.6716005644565236,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.6716005644565236,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "category": "definite_integral",
+      "subcategory": "by_parts",
+      "label": "x_cos_x",
+      "input": "x*cos(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "x*sin(x) + cos(x)",
+      "definite_value": {
+        "re": 0.264477959483562,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.5068519496907612,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5068519496907612,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.5487666516553656,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5487666516553656,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.5608722508929095,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5608722508929095,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "category": "definite_integral",
+      "subcategory": "by_parts",
+      "label": "x2_exp_x",
+      "input": "x**2*exp(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "(x**2 - 2*x + 2)*exp(x)",
+      "definite_value": {
+        "re": 0.6573802400838851,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.7297835771219618,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.7297835771219618,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.1908125093446296,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.1908125093446296,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 1.8366388969435594,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.8366388969435594,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "category": "definite_integral",
+      "subcategory": "by_parts",
+      "label": "x_ln_x",
+      "input": "x*log(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 2.0,
+      "antiderivative": "x**2*log(x)/2 - x**2/4",
+      "definite_value": {
+        "re": 0.5354377586898837,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": -0.1168399685464573,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": -0.1168399685464573,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.25,
+          "integrand_value": {
+            "re": 0.2789294391427622,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.2789294391427622,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.625,
+          "integrand_value": {
+            "re": 0.7889502006452638,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.7889502006452638,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "category": "definite_integral",
+      "subcategory": "by_parts",
+      "label": "ln_x_sq",
+      "input": "log(x)**2",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 2.0,
+      "antiderivative": "x*log(x)**2 - 2*x*log(x) + 2*x",
+      "definite_value": {
+        "re": 0.2549436180775756,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.017830632816244415,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.017830632816244415,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.25,
+          "integrand_value": {
+            "re": 0.04979304449311736,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.04979304449311736,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.625,
+          "integrand_value": {
+            "re": 0.23571783918511793,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.23571783918511793,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "category": "definite_integral",
+      "subcategory": "by_parts",
+      "label": "x2_sin_x",
+      "input": "x**2*sin(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "-x**2*cos(x) + 2*x*sin(x) + 2*cos(x)",
+      "definite_value": {
+        "re": 0.20804925357157747,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.22855362224236803,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.22855362224236803,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.38342180251312546,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.38342180251312546,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.5876504938994582,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5876504938994582,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "category": "definite_integral",
+      "subcategory": "by_parts",
+      "label": "x3_exp_x",
+      "input": "x**3*exp(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "(x**3 - 3*x**2 + 6*x - 6)*exp(x)",
+      "definite_value": {
+        "re": 0.5400509493698741,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.4561147357012262,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.4561147357012262,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.8931093820084721,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.8931093820084721,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 1.6070590348256144,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.6070590348256144,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "category": "definite_integral",
+      "subcategory": "trig_power",
+      "label": "sin2_x",
+      "input": "sin(x)**2",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "x/2 - sin(x)*cos(x)/2",
+      "definite_value": {
+        "re": 0.2330433894955537,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.34233881880236566,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.34233881880236566,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.46463139916614854,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.46463139916614854,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.589123027824746,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.589123027824746,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "category": "definite_integral",
+      "subcategory": "trig_power",
+      "label": "cos2_x",
+      "input": "cos(x)**2",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "x/2 + sin(x)*cos(x)/2",
+      "definite_value": {
+        "re": 0.2669566105044463,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.6576611811976343,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.6576611811976343,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.5353686008338514,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5353686008338514,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.41087697217525393,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.41087697217525393,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "category": "definite_integral",
+      "subcategory": "trig_power",
+      "label": "sin3_x",
+      "input": "sin(x)**3",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "cos(x)**3/3 - cos(x)",
+      "definite_value": {
+        "re": 0.16456605049432904,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.20030150930292318,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.20030150930292318,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.3167107707955203,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.3167107707955203,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.452177552024498,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.452177552024498,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "category": "definite_integral",
+      "subcategory": "trig_power",
+      "label": "sin4_x",
+      "input": "sin(x)**4",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "3*x/8 - sin(x)**3*cos(x)/4 - 3*sin(x)*cos(x)/8",
+      "definite_value": {
+        "re": 0.11847776692887839,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.11719586685899895,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.11719586685899895,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.21588233709109286,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.21588233709109286,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.3470659419133965,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.3470659419133965,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "category": "definite_integral",
+      "subcategory": "trig_power",
+      "label": "tan2_x",
+      "input": "tan(x)**2",
+      "variable": "x",
+      "lo": 0.25,
+      "hi": 1.0,
+      "antiderivative": "-x + sin(x)/cos(x)",
+      "definite_value": {
+        "re": 0.5520658034338659,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.4375,
+          "integrand_value": {
+            "re": 0.21877137670969507,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.21877137670969507,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.5205397985919579,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5205397985919579,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.8125,
+          "integrand_value": {
+            "re": 1.1145608486182648,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.1145608486182648,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "category": "definite_integral",
+      "subcategory": "trig_power",
+      "label": "sin_x_cos_x",
+      "input": "sin(x)*cos(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "sin(x)**2/2",
+      "definite_value": {
+        "re": 0.23911228560382053,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.4744923096777931,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.4744923096777931,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.4987474933020272,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.4987474933020272,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.49199297343696846,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.49199297343696846,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "category": "definite_integral",
+      "subcategory": "trig_power",
+      "label": "sin2_cos2",
+      "input": "sin(x)**2*cos(x)**2",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "x/8 - sin(2*x)*cos(2*x)/16",
+      "definite_value": {
+        "re": 0.11456562256667531,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.22514295194336673,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.22514295194336673,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.24874906207505568,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.24874906207505568,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.24205708591134953,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.24205708591134953,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "category": "definite_integral",
+      "subcategory": "rational",
+      "label": "inv_x2p1",
+      "input": "1/(x**2 + 1)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "atan(x)",
+      "definite_value": {
+        "re": 0.3217505543966422,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.7191011235955056,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.7191011235955056,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.64,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.64,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.5663716814159292,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5663716814159292,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "category": "definite_integral",
+      "subcategory": "rational",
+      "label": "inv_x2m1",
+      "input": "1/(x**2 - 1)",
+      "variable": "x",
+      "lo": 2.0,
+      "hi": 3.0,
+      "antiderivative": "log(x - 1)/2 - log(x + 1)/2",
+      "definite_value": {
+        "re": 0.2027325540540822,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 2.25,
+          "integrand_value": {
+            "re": 0.24615384615384617,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.24615384615384617,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.5,
+          "integrand_value": {
+            "re": 0.19047619047619047,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.19047619047619047,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.75,
+          "integrand_value": {
+            "re": 0.1523809523809524,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.1523809523809524,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "category": "definite_integral",
+      "subcategory": "rational",
+      "label": "x_over_x2p1_sq",
+      "input": "x/(x**2 + 1)**2",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "-1/(2*x**2 + 2)",
+      "definite_value": {
+        "re": 0.15,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.32319151622269915,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.32319151622269915,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.3072,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.3072,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.28067977132116845,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.28067977132116845,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "category": "definite_integral",
+      "subcategory": "sqrt",
+      "label": "inv_sqrt_1mx2",
+      "input": "1/sqrt(1 - x**2)",
+      "variable": "x",
+      "lo": 0.25,
+      "hi": 0.5,
+      "antiderivative": "asin(x)",
+      "definite_value": {
+        "re": 0.2709185204562202,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.3125,
+          "integrand_value": {
+            "re": 1.0527227119356304,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.0527227119356304,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.375,
+          "integrand_value": {
+            "re": 1.0787197799411874,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.0787197799411874,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.4375,
+          "integrand_value": {
+            "re": 1.1120768749710654,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.1120768749710654,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "category": "definite_integral",
+      "subcategory": "sqrt",
+      "label": "inv_sqrt_x2p1",
+      "input": "1/sqrt(x**2 + 1)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "asinh(x)",
+      "definite_value": {
+        "re": 0.4001617619599396,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.847998304005088,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.847998304005088,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.8,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.8,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.7525766947068778,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.7525766947068778,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "category": "definite_integral",
+      "subcategory": "sqrt",
+      "label": "x_over_sqrt_x2p1",
+      "input": "x/sqrt(x**2 + 1)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "sqrt(x**2 + 1)",
+      "definite_value": {
+        "re": 0.2961795736232002,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.52999894000318,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.52999894000318,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.6,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.6,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.658504607868518,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.658504607868518,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "category": "definite_integral",
+      "subcategory": "cyclic",
+      "label": "exp_sin",
+      "input": "exp(x)*sin(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "exp(x)*sin(x)/2 - exp(x)*cos(x)/2",
+      "definite_value": {
+        "re": 0.7375556503167557,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 1.0931056148756362,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.0931056148756362,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.4430292662932414,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.4430292662932414,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 1.8412411445589851,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.8412411445589851,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "category": "definite_integral",
+      "subcategory": "cyclic",
+      "label": "exp_cos",
+      "input": "exp(x)*cos(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "exp(x)*sin(x)/2 + exp(x)*cos(x)/2",
+      "definite_value": {
+        "re": 0.7593605536484718,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 1.5150785696422475,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.5150785696422475,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.5489853475611879,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.5489853475611879,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 1.5376715265585328,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.5376715265585328,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "category": "definite_integral",
+      "subcategory": "inv_trig",
+      "label": "asin_x",
+      "input": "asin(x)",
+      "variable": "x",
+      "lo": 0.25,
+      "hi": 0.5,
+      "antiderivative": "x*asin(x) + sqrt(1 - x**2)",
+      "definite_value": {
+        "re": 0.0964088912462142,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.3125,
+          "integrand_value": {
+            "re": 0.31782370392788073,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.31782370392788073,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.375,
+          "integrand_value": {
+            "re": 0.3843967744956391,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.3843967744956391,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.4375,
+          "integrand_value": {
+            "re": 0.4528165947449256,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.4528165947449256,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "category": "definite_integral",
+      "subcategory": "inv_trig",
+      "label": "acos_x",
+      "input": "acos(x)",
+      "variable": "x",
+      "lo": 0.25,
+      "hi": 0.5,
+      "antiderivative": "x*acos(x) - sqrt(1 - x**2)",
+      "definite_value": {
+        "re": 0.29629019045251,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.3125,
+          "integrand_value": {
+            "re": 1.252972622867016,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.252972622867016,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.375,
+          "integrand_value": {
+            "re": 1.1863995522992576,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.1863995522992576,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.4375,
+          "integrand_value": {
+            "re": 1.1179797320499711,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.1179797320499711,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "category": "definite_integral",
+      "subcategory": "inv_trig",
+      "label": "atan_x",
+      "input": "atan(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "x*atan(x) - log(x**2 + 1)/2",
+      "definite_value": {
+        "re": 0.31857254427417747,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.5585993153435624,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5585993153435624,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.6435011087932844,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.6435011087932844,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.7188299996216245,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.7188299996216245,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "category": "definite_integral",
+      "subcategory": "parametric",
+      "label": "sin_2x",
+      "input": "sin(2*x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "-cos(2*x)/2",
+      "definite_value": {
+        "re": 0.47822457120764106,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.9489846193555862,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.9489846193555862,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.9974949866040544,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.9974949866040544,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.9839859468739369,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.9839859468739369,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "category": "definite_integral",
+      "subcategory": "parametric",
+      "label": "exp_2x",
+      "input": "exp(2*x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "exp(2*x)/2",
+      "definite_value": {
+        "re": 2.3353871352358024,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 3.4903429574618414,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 3.4903429574618414,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 4.4816890703380645,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 4.4816890703380645,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 5.754602676005731,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 5.754602676005731,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "category": "definite_integral",
+      "subcategory": "parametric",
+      "label": "sin_3x",
+      "input": "sin(3*x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "-cos(3*x)/3",
+      "definite_value": {
+        "re": 0.3535765660893828,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.9540857816096938,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.9540857816096938,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.7780731968879212,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.7780731968879212,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.4939202986100892,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.4939202986100892,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "category": "definite_integral",
+      "subcategory": "parametric",
+      "label": "x_exp_2x",
+      "input": "x*exp(2*x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "(2*x - 1)*exp(2*x)/4",
+      "definite_value": {
+        "re": 1.8472640247326626,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 2.181464348413651,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 2.181464348413651,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 3.3612668027535486,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 3.3612668027535486,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 5.035277341505014,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 5.035277341505014,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "category": "definite_integral",
+      "subcategory": "hyperbolic",
+      "label": "sinh_x",
+      "input": "sinh(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "cosh(x)",
+      "definite_value": {
+        "re": 0.415454669608863,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.6664922644566161,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.6664922644566161,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.82231673193583,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.82231673193583,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.9910066371442947,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.9910066371442947,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "category": "definite_integral",
+      "subcategory": "hyperbolic",
+      "label": "cosh_x",
+      "input": "cosh(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "sinh(x)",
+      "definite_value": {
+        "re": 0.6541058881500541,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 1.2017536929756063,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.2017536929756063,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.2946832846768448,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.2946832846768448,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 1.4078686568228032,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.4078686568228032,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "category": "definite_integral",
+      "subcategory": "hyperbolic",
+      "label": "tanh_x",
+      "input": "tanh(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "x - log(tanh(x) + 1)",
+      "definite_value": {
+        "re": 0.31366632352474966,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.5545997223493823,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.5545997223493823,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.6351489523872873,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.6351489523872873,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.703905603936621,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.703905603936621,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "category": "definite_integral",
+      "subcategory": "hyperbolic",
+      "label": "sinh2_x",
+      "input": "sinh(x)**2",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "x*sinh(x)**2/2 - x*cosh(x)**2/2 + sinh(x)*cosh(x)/2",
+      "definite_value": {
+        "re": 0.36291480355080435,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.4442119385805079,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.4442119385805079,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.6762048076216237,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.6762048076216237,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.9820941548640439,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.9820941548640439,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "category": "definite_integral",
+      "subcategory": "linear_sub",
+      "label": "2x_plus_1_pow5",
+      "input": "(2*x + 1)**5",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "16*x**6/3 + 16*x**5 + 20*x**4 + 40*x**3/3 + 5*x**2 + x",
+      "definite_value": {
+        "re": 55.416666666666664,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 57.6650390625,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 57.6650390625,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 97.65625,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 97.65625,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 157.2763671875,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 157.2763671875,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 44,
+      "category": "definite_integral",
+      "subcategory": "linear_sub",
+      "label": "inv_3x_plus_2",
+      "input": "1/(3*x + 2)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "log(3*x + 2)/3",
+      "definite_value": {
+        "re": 0.11889164797957746,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.25806451612903225,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.25806451612903225,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.23529411764705882,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.23529411764705882,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.21621621621621623,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.21621621621621623,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "category": "definite_integral",
+      "subcategory": "linear_sub",
+      "label": "sqrt_2x_plus_1",
+      "input": "sqrt(2*x + 1)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "(2*x + 1)**(3/2)/3",
+      "definite_value": {
+        "re": 0.789241765986814,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 1.5,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.5,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.5811388300841898,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.5811388300841898,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 1.6583123951777,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.6583123951777,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "category": "definite_integral",
+      "subcategory": "u_sub",
+      "label": "2x_exp_x2",
+      "input": "2*x*exp(x**2)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "exp(x**2)",
+      "definite_value": {
+        "re": 1.4342564117713037,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 1.847380244264673,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.847380244264673,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 2.632581985440448,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 2.632581985440448,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 3.763091352916525,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 3.763091352916525,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "category": "definite_integral",
+      "subcategory": "u_sub",
+      "label": "cos_exp_sin",
+      "input": "exp(sin(x))*cos(x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "exp(sin(x))",
+      "definite_value": {
+        "re": 0.7046305282737695,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 1.4558130935314038,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.4558130935314038,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.4466331082663368,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.4466331082663368,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 1.3810067728191697,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.3810067728191697,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "category": "definite_integral",
+      "subcategory": "u_sub",
+      "label": "x_over_x2p1",
+      "input": "x/(x**2 + 1)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "log(x**2 + 1)/2",
+      "definite_value": {
+        "re": 0.2350018146228678,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.449438202247191,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.449438202247191,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.48,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.48,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.49557522123893805,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.49557522123893805,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "category": "definite_integral",
+      "subcategory": "complete_sq",
+      "label": "inv_x2_2x_5",
+      "input": "1/(x**2 + 2*x + 5)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "atan(x/2 + 1/2)/2",
+      "definite_value": {
+        "re": 0.07094852730208197,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.15058823529411763,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.15058823529411763,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.1415929203539823,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.1415929203539823,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.13305613305613306,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.13305613305613306,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "category": "ftc_check",
+      "subcategory": "basic",
+      "label": "x^2",
+      "input": "x**2",
+      "variable": "x",
+      "antiderivative": "x**3/3",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.25,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.041666666666666664,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.5625,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.140625,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.3333333333333333,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 2.25,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.125,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 4.0,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.6666666666666665,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 51,
+      "category": "ftc_check",
+      "subcategory": "basic",
+      "label": "sin(x)",
+      "input": "sin(x)",
+      "variable": "x",
+      "antiderivative": "-cos(x)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.479425538604203,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -0.8775825618903728,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.6816387600233341,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -0.7316888688738209,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.8414709848078965,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -0.5403023058681398,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.9974949866040544,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -0.0707372016677029,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 0.9092974268256817,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.4161468365471424,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 52,
+      "category": "ftc_check",
+      "subcategory": "basic",
+      "label": "cos(x)",
+      "input": "cos(x)",
+      "variable": "x",
+      "antiderivative": "sin(x)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.8775825618903728,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.479425538604203,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.7316888688738209,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.6816387600233341,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.5403023058681398,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.8414709848078965,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.0707372016677029,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.9974949866040544,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": -0.4161468365471424,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.9092974268256817,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 53,
+      "category": "ftc_check",
+      "subcategory": "basic",
+      "label": "exp(x)",
+      "input": "exp(x)",
+      "variable": "x",
+      "antiderivative": "exp(x)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 1.6487212707001282,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.6487212707001282,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 2.117000016612675,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.117000016612675,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 2.718281828459045,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.718281828459045,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 4.4816890703380645,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 4.4816890703380645,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 7.38905609893065,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 7.38905609893065,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 54,
+      "category": "ftc_check",
+      "subcategory": "by_parts",
+      "label": "x*exp(x)",
+      "input": "x*exp(x)",
+      "variable": "x",
+      "antiderivative": "(x - 1)*exp(x)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.8243606353500641,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -0.8243606353500641,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.587750012459506,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -0.5292500041531687,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 2.718281828459045,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 6.722533605507097,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.2408445351690323,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 14.7781121978613,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 7.38905609893065,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 55,
+      "category": "ftc_check",
+      "subcategory": "by_parts",
+      "label": "x*sin(x)",
+      "input": "x*sin(x)",
+      "variable": "x",
+      "antiderivative": "-x*cos(x) + sin(x)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.2397127693021015,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.04063425765901664,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.5112290700175006,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.1328721083679685,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.8414709848078965,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.3011686789397568,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 1.4962424799060816,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.8913891841025001,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 1.8185948536513634,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.7415910999199664,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 56,
+      "category": "ftc_check",
+      "subcategory": "by_parts",
+      "label": "ln(x)^2",
+      "input": "log(x)**2",
+      "variable": "x",
+      "antiderivative": "x*log(x)**2 - 2*x*log(x) + 2*x",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.48045301391820144,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.933373687519046,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.08276097481015172,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.9935938397852853,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.0,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.16440195389316542,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.030207606515255,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 0.48045301391820144,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.1883173055966214,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 57,
+      "category": "ftc_check",
+      "subcategory": "trig_power",
+      "label": "sin^2(x)",
+      "input": "sin(x)**2",
+      "variable": "x",
+      "antiderivative": "x/2 - sin(x)*cos(x)/2",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.22984884706593015,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.039632253798025874,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.46463139916614854,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.1256262533489864,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.7080734182735712,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.2726756432935796,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.9949962483002227,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.7147199979850332,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 0.8268218104318059,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.189200623826982,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 58,
+      "category": "ftc_check",
+      "subcategory": "trig_power",
+      "label": "cos^2(x)",
+      "input": "cos(x)**2",
+      "variable": "x",
+      "antiderivative": "x/2 + sin(x)*cos(x)/2",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.7701511529340699,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.4603677462019741,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.5353686008338514,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.6243737466510136,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.2919265817264288,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.7273243567064204,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.005003751699777272,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.7852800020149668,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 0.17317818956819403,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.8107993761730179,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 59,
+      "category": "ftc_check",
+      "subcategory": "trig_power",
+      "label": "tan^2(x)",
+      "input": "tan(x)**2",
+      "variable": "x",
+      "antiderivative": "-x + sin(x)/cos(x)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.29844641040952485,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.04630248984379051,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.8678719641803279,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.18159645994407247,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 2.4255188208147596,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.5574077246549022,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 198.85004452649247,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 12.601419947171719,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 4.774399204041917,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -4.185039863261519,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 60,
+      "category": "ftc_check",
+      "subcategory": "hyperbolic",
+      "label": "sinh^2(x)",
+      "input": "sinh(x)**2",
+      "variable": "x",
+      "antiderivative": "x*sinh(x)**2/2 - x*cosh(x)**2/2 + sinh(x)*cosh(x)/2",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.2715403174076219,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.043800298410950365,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.6762048076216237,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.15731986377370438,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 1.3810978455418157,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.4067151019617547,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 4.533830997888883,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.7544687318524754,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 13.154116418008243,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 5.822479299281938,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 61,
+      "category": "ftc_check",
+      "subcategory": "cyclic",
+      "label": "exp(x)*sin(x)",
+      "input": "exp(x)*sin(x)",
+      "variable": "x",
+      "antiderivative": "exp(x)*sin(x)/2 - exp(x)*cos(x)/2",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.7904390832136149,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -0.3282249766852771,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.4430292662932414,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -0.05297804063397328,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 2.2873552871788423,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.4093306736314786,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 4.470462379180405,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.076720117799981,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 6.71884969742825,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 4.896891009033804,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 62,
+      "category": "ftc_check",
+      "subcategory": "cyclic",
+      "label": "exp(x)*cos(x)",
+      "input": "exp(x)*cos(x)",
+      "variable": "x",
+      "antiderivative": "exp(x)*sin(x)/2 + exp(x)*cos(x)/2",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 1.4468890365841691,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.118664059898892,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.5489853475611879,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.4960073069272146,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 1.4686939399158851,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.8780246135473637,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.31702214358044367,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.3937422613804245,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": -3.074932320639359,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.8219586883944456,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 63,
+      "category": "ftc_check",
+      "subcategory": "rational",
+      "label": "1/(x^2+1)",
+      "input": "1/(x**2 + 1)",
+      "variable": "x",
+      "antiderivative": "atan(x)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.8,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.4636476090008061,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.64,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.6435011087932844,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.5,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.7853981633974483,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.3076923076923077,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.982793723247329,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 0.2,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.1071487177940904,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 64,
+      "category": "ftc_check",
+      "subcategory": "inv_trig",
+      "label": "asin(x)",
+      "input": "asin(x)",
+      "variable": "x",
+      "antiderivative": "x*asin(x) + sqrt(1 - x**2)",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "integrand_value": {
+            "re": 0.25268025514207865,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.031415900337374,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3333333333333333,
+          "integrand_value": {
+            "re": 0.3398369094541219,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.056088011400104,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.5235987755982989,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.1278247915835882,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 65,
+      "category": "ftc_check",
+      "subcategory": "inv_trig",
+      "label": "atan(x)",
+      "input": "atan(x)",
+      "variable": "x",
+      "antiderivative": "x*atan(x) - log(x**2 + 1)/2",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.4636476090008061,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.12025202884329818,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.6435011087932844,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.25948228028075354,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.7853981633974483,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.43882457311747564,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.982793723247329,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.8848630867001706,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 1.1071487177940904,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.4095784793711308,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 66,
+      "category": "ftc_check",
+      "subcategory": "parametric",
+      "label": "sin(2*x)",
+      "input": "sin(2*x)",
+      "variable": "x",
+      "antiderivative": "-cos(2*x)/2",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.8414709848078965,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -0.2701511529340699,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.9974949866040544,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": -0.03536860083385145,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.9092974268256817,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.2080734182735712,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.1411200080598672,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.4949962483002227,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": -0.7568024953079282,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.32682181043180597,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 67,
+      "category": "ftc_check",
+      "subcategory": "parametric",
+      "label": "exp(2*x)",
+      "input": "exp(2*x)",
+      "variable": "x",
+      "antiderivative": "exp(2*x)/2",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 2.718281828459045,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.3591409142295225,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 4.4816890703380645,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.2408445351690323,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 7.38905609893065,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 3.694528049465325,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 20.085536923187668,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 10.042768461593834,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 54.598150033144236,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 27.299075016572118,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 68,
+      "category": "ftc_check",
+      "subcategory": "hyperbolic",
+      "label": "sinh(x)",
+      "input": "sinh(x)",
+      "variable": "x",
+      "antiderivative": "cosh(x)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.5210953054937474,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.1276259652063807,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.82231673193583,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.2946832846768448,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 1.1752011936438014,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.5430806348152437,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 2.1292794550948173,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.352409615243247,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 3.6268604078470186,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 3.7621956910836314,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 69,
+      "category": "ftc_check",
+      "subcategory": "hyperbolic",
+      "label": "cosh(x)",
+      "input": "cosh(x)",
+      "variable": "x",
+      "antiderivative": "sinh(x)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 1.1276259652063807,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.5210953054937474,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.2946832846768448,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.82231673193583,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 1.5430806348152437,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.1752011936438014,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 2.352409615243247,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.1292794550948173,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 3.7621956910836314,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 3.6268604078470186,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 70,
+      "category": "ftc_check",
+      "subcategory": "hyperbolic",
+      "label": "tanh(x)",
+      "input": "tanh(x)",
+      "variable": "x",
+      "antiderivative": "x - log(tanh(x) + 1)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.46211715726000974,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.12011450695827752,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.6351489523872873,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.2582660974228071,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.7615941559557649,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.4337808304830272,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.9051482536448664,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.8554401710137968,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 0.9640275800758169,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.3250027473578645,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 71,
+      "category": "ftc_check",
+      "subcategory": "linear_sub",
+      "label": "(2x+1)^5",
+      "input": "(2*x + 1)**5",
+      "variable": "x",
+      "antiderivative": "16*x**6/3 + 16*x**5 + 20*x**4 + 40*x**3/3 + 5*x**2 + x",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 32.0,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 5.25,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 97.65625,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 20.26171875,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 243.0,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 60.666666666666664,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 1024.0,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 341.25,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 3125.0,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1302.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 72,
+      "category": "ftc_check",
+      "subcategory": "linear_sub",
+      "label": "sqrt(2x+1)",
+      "input": "sqrt(2*x + 1)",
+      "variable": "x",
+      "antiderivative": "(2*x + 1)**(3/2)/3",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 1.4142135623730951,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.9428090415820634,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 1.5811388300841898,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.3176156917368247,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 1.7320508075688772,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.7320508075688772,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 2.0,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.6666666666666665,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 2.23606797749979,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 3.7267799624996494,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 73,
+      "category": "ftc_check",
+      "subcategory": "u_sub",
+      "label": "2x*exp(x^2)",
+      "input": "2*x*exp(x**2)",
+      "variable": "x",
+      "antiderivative": "exp(x**2)",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 1.2840254166877414,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.2840254166877414,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 2.632581985440448,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 1.7550546569602985,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 5.43656365691809,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 2.718281828459045,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 28.463207509075577,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 9.487735836358526,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 218.39260013257694,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 54.598150033144236,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 74,
+      "category": "ftc_check",
+      "subcategory": "u_sub",
+      "label": "x/(x^2+1)",
+      "input": "x/(x**2 + 1)",
+      "variable": "x",
+      "antiderivative": "log(x**2 + 1)/2",
+      "eval_points": [
+        {
+          "x": 0.5,
+          "integrand_value": {
+            "re": 0.4,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.11157177565710488,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.48,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.22314355131420976,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "integrand_value": {
+            "re": 0.5,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.34657359027997264,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "integrand_value": {
+            "re": 0.46153846153846156,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.5893274981708231,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "integrand_value": {
+            "re": 0.4,
+            "im": 0.0
+          },
+          "antideriv_value": {
+            "re": 0.8047189562170501,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 75,
+      "category": "simplify_verify",
+      "subcategory": "trig_identity",
+      "label": "sin2+cos2=1",
+      "input": "sin(x)**2 + cos(x)**2",
+      "expected": "1",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.5,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 76,
+      "category": "simplify_verify",
+      "subcategory": "trig_identity",
+      "label": "tan2+1=sec2",
+      "input": "tan(x)**2 + 1",
+      "expected": "cos(x)**(-2)",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "original_value": {
+            "re": 1.06519949673285,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.06519949673285,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.5,
+          "original_value": {
+            "re": 1.2984464104095248,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.2984464104095248,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "original_value": {
+            "re": 3.4255188208147596,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 3.4255188208147596,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "original_value": {
+            "re": 199.85004452649247,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 199.85004452649247,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "original_value": {
+            "re": 5.774399204041917,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 5.774399204041917,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 77,
+      "category": "simplify_verify",
+      "subcategory": "trig_identity",
+      "label": "1-sin2=cos2",
+      "input": "1 - sin(x)**2",
+      "expected": "cos(x)**2",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "original_value": {
+            "re": 0.9387912809451864,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.9387912809451864,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.5,
+          "original_value": {
+            "re": 0.7701511529340699,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.7701511529340699,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "original_value": {
+            "re": 0.2919265817264288,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.2919265817264288,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "original_value": {
+            "re": 0.005003751699777272,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.005003751699777272,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "original_value": {
+            "re": 0.17317818956819403,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.17317818956819403,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 78,
+      "category": "simplify_verify",
+      "subcategory": "trig_identity",
+      "label": "cosh2-sinh2=1",
+      "input": "-sinh(x)**2 + cosh(x)**2",
+      "expected": "1",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.5,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 79,
+      "category": "simplify_verify",
+      "subcategory": "trig_identity",
+      "label": "2sin_cos=sin2x",
+      "input": "2*sin(x)*cos(x)",
+      "expected": "sin(2*x)",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "original_value": {
+            "re": 0.479425538604203,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.479425538604203,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.5,
+          "original_value": {
+            "re": 0.8414709848078965,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.8414709848078965,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "original_value": {
+            "re": 0.9092974268256817,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.9092974268256817,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "original_value": {
+            "re": 0.1411200080598672,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.1411200080598672,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "original_value": {
+            "re": -0.7568024953079282,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": -0.7568024953079282,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 80,
+      "category": "simplify_verify",
+      "subcategory": "trig_identity",
+      "label": "cos2x_identity",
+      "input": "-sin(x)**2 + cos(x)**2",
+      "expected": "cos(2*x)",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "original_value": {
+            "re": 0.8775825618903728,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.8775825618903728,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.5,
+          "original_value": {
+            "re": 0.5403023058681398,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.5403023058681398,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "original_value": {
+            "re": -0.4161468365471424,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": -0.4161468365471424,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "original_value": {
+            "re": -0.9899924966004454,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": -0.9899924966004454,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "original_value": {
+            "re": -0.6536436208636119,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": -0.6536436208636119,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 81,
+      "category": "simplify_verify",
+      "subcategory": "trig_identity",
+      "label": "exp_ln_x",
+      "input": "x",
+      "expected": "x",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "original_value": {
+            "re": 0.25,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.25,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.5,
+          "original_value": {
+            "re": 0.5,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.5,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "original_value": {
+            "re": 1.5,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.5,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "original_value": {
+            "re": 2.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 2.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 82,
+      "category": "simplify_verify",
+      "subcategory": "trig_identity",
+      "label": "ln_exp_x",
+      "input": "log(exp(x))",
+      "expected": "x",
+      "eval_points": [
+        {
+          "x": 0.25,
+          "original_value": {
+            "re": 0.25,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.25,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.5,
+          "original_value": {
+            "re": 0.5,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 0.5,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.0,
+          "original_value": {
+            "re": 1.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.0,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 1.5,
+          "original_value": {
+            "re": 1.5,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 1.5,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 2.0,
+          "original_value": {
+            "re": 2.0,
+            "im": 0.0
+          },
+          "simplified_value": {
+            "re": 2.0,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 83,
+      "category": "gosper_sum",
+      "label": "sum_k",
+      "input": "k",
+      "variable": "k",
+      "lo": 1,
+      "hi": 100,
+      "closed_form": "5050",
+      "closed_value": {
+        "re": 5050.0,
+        "im": 0.0
+      },
+      "brute_force_value": {
+        "re": 5050.0,
+        "im": 0.0
+      }
+    },
+    {
+      "id": 84,
+      "category": "gosper_sum",
+      "label": "sum_k2",
+      "input": "k**2",
+      "variable": "k",
+      "lo": 1,
+      "hi": 50,
+      "closed_form": "42925",
+      "closed_value": {
+        "re": 42925.0,
+        "im": 0.0
+      },
+      "brute_force_value": {
+        "re": 42925.0,
+        "im": 0.0
+      }
+    },
+    {
+      "id": 85,
+      "category": "gosper_sum",
+      "label": "sum_k3",
+      "input": "k**3",
+      "variable": "k",
+      "lo": 1,
+      "hi": 30,
+      "closed_form": "216225",
+      "closed_value": {
+        "re": 216225.0,
+        "im": 0.0
+      },
+      "brute_force_value": {
+        "re": 216225.0,
+        "im": 0.0
+      }
+    },
+    {
+      "id": 86,
+      "category": "gosper_sum",
+      "label": "sum_2k",
+      "input": "2**k",
+      "variable": "k",
+      "lo": 0,
+      "hi": 15,
+      "closed_form": "65535",
+      "closed_value": {
+        "re": 65535.0,
+        "im": 0.0
+      },
+      "brute_force_value": {
+        "re": 65535.0,
+        "im": 0.0
+      }
+    },
+    {
+      "id": 87,
+      "category": "gosper_sum",
+      "label": "sum_1_over_k_kp1",
+      "input": "1/(k*(k + 1))",
+      "variable": "k",
+      "lo": 1,
+      "hi": 100,
+      "closed_form": "100/101",
+      "closed_value": {
+        "re": 0.9900990099009901,
+        "im": 0.0
+      },
+      "brute_force_value": {
+        "re": 0.9900990099009901,
+        "im": 0.0
+      }
+    },
+    {
+      "id": 88,
+      "category": "gosper_sum",
+      "label": "sum_1_over_k_kp1_kp2",
+      "input": "1/(k*(k + 1)*(k + 2))",
+      "variable": "k",
+      "lo": 1,
+      "hi": 50,
+      "closed_form": "1325/5304",
+      "closed_value": {
+        "re": 0.24981146304675717,
+        "im": 0.0
+      },
+      "brute_force_value": {
+        "re": 0.24981146304675717,
+        "im": 0.0
+      }
+    },
+    {
+      "id": 89,
+      "category": "gosper_sum",
+      "label": "sum_fib_like",
+      "input": "k*(k + 1)/2",
+      "variable": "k",
+      "lo": 1,
+      "hi": 20,
+      "closed_form": "1540",
+      "closed_value": {
+        "re": 1540.0,
+        "im": 0.0
+      },
+      "brute_force_value": {
+        "re": 1540.0,
+        "im": 0.0
+      }
+    },
+    {
+      "id": 90,
+      "category": "gosper_sum",
+      "label": "sum_alternating_k",
+      "input": "(-1)**k*k",
+      "variable": "k",
+      "lo": 1,
+      "hi": 99,
+      "closed_form": "-50",
+      "closed_value": {
+        "re": -50.0,
+        "im": 0.0
+      },
+      "brute_force_value": {
+        "re": -50.0,
+        "im": 0.0
+      }
+    },
+    {
+      "id": 91,
+      "category": "series_verify",
+      "label": "sin_x",
+      "input": "sin(x)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 8,
+      "series_str": "-x**7/5040 + x**5/120 - x**3/6 + x",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 0.09983341664682815,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.0998334166468254,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 0.19866933079506122,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.1986693307936508,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 0.2955202066613396,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.29552020660714284,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 92,
+      "category": "series_verify",
+      "label": "cos_x",
+      "input": "cos(x)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 8,
+      "series_str": "-x**6/720 + x**4/24 - x**2/2 + 1",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 0.9950041652780258,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.9950041652777778,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 0.9800665778412416,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.9800665777777777,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 0.955336489125606,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.9553364875,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 93,
+      "category": "series_verify",
+      "label": "exp_x",
+      "input": "exp(x)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 8,
+      "series_str": "x**7/5040 + x**6/720 + x**5/120 + x**4/24 + x**3/6 + x**2/2 + x + 1",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 1.1051709180756477,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.1051709180753968,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 1.2214027581601699,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.221402758095238,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 1.3498588075760032,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.3498588058928571,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 94,
+      "category": "series_verify",
+      "label": "ln_1px",
+      "input": "log(x + 1)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 8,
+      "series_str": "x**7/7 - x**6/6 + x**5/5 - x**4/4 + x**3/3 - x**2/2 + x",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 0.09531017980432487,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.09531018095238095,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 0.18232155679395462,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.18232182857142856,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 0.26236426446749106,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.26237074285714285,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 95,
+      "category": "series_verify",
+      "label": "inv_1mx",
+      "input": "1/(1 - x)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 8,
+      "series_str": "x**7 + x**6 + x**5 + x**4 + x**3 + x**2 + x + 1",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 1.1111111111111112,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.1111111,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 1.25,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.2499968,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 1.4285714285714286,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.4284777,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 96,
+      "category": "series_verify",
+      "label": "atan_x",
+      "input": "atan(x)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 8,
+      "series_str": "-x**7/7 + x**5/5 - x**3/3 + x",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 0.09966865249116202,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.09966865238095238,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 0.19739555984988075,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.19739550476190476,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 0.2914567944778671,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.2914547571428571,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 97,
+      "category": "series_verify",
+      "label": "sinh_x",
+      "input": "sinh(x)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 8,
+      "series_str": "x**7/5040 + x**5/120 + x**3/6 + x",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 0.10016675001984403,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.10016675001984127,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 0.201336002541094,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.20133600253968253,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 0.3045202934471426,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.30452029339285713,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 98,
+      "category": "series_verify",
+      "label": "cosh_x",
+      "input": "cosh(x)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 8,
+      "series_str": "x**6/720 + x**4/24 + x**2/2 + 1",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 1.0050041680558035,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.0050041680555555,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 1.020066755619076,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.0200667555555556,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 1.0453385141288605,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.0453385125,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 99,
+      "category": "series_verify",
+      "label": "tanh_x",
+      "input": "tanh(x)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 8,
+      "series_str": "-17*x**7/315 + 2*x**5/15 - x**3/3 + x",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 0.09966799462495582,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.0996679946031746,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 0.197375320224904,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.19737530920634921,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 0.2913126124515909,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.29131219714285717,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 100,
+      "category": "series_verify",
+      "label": "sqrt_1px",
+      "input": "sqrt(x + 1)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 6,
+      "series_str": "7*x**5/256 - 5*x**4/128 + x**3/16 - x**2/8 + x/2 + 1",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 1.0488088481701516,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.0488088671875,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 1.0954451150103321,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.09544625,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 1.140175425099138,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 1.1401875390625,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "category": "series_verify",
+      "label": "asin_x",
+      "input": "asin(x)",
+      "variable": "x",
+      "point": 0.0,
+      "order": 8,
+      "series_str": "5*x**7/112 + 3*x**5/40 + x**3/6 + x",
+      "eval_points": [
+        {
+          "x": 0.1,
+          "exact_value": {
+            "re": 0.1001674211615598,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.10016742113095238,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.2,
+          "exact_value": {
+            "re": 0.2013579207903308,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.20135790476190477,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.3,
+          "exact_value": {
+            "re": 0.3046926540153975,
+            "im": 0.0
+          },
+          "series_value": {
+            "re": 0.3046920133928571,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 102,
+      "category": "definite_integral",
+      "subcategory": "parametric_concrete",
+      "label": "sin_ax_a2",
+      "input": "sin(2*x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "-cos(2*x)/2",
+      "definite_value": {
+        "re": 0.47822457120764106,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.9489846193555862,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.9489846193555862,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.9974949866040544,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.9974949866040544,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.9839859468739369,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.9839859468739369,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 103,
+      "category": "definite_integral",
+      "subcategory": "parametric_concrete",
+      "label": "exp_ax_a2",
+      "input": "exp(2*x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "exp(2*x)/2",
+      "definite_value": {
+        "re": 2.3353871352358024,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 3.4903429574618414,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 3.4903429574618414,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 4.4816890703380645,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 4.4816890703380645,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 5.754602676005731,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 5.754602676005731,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 104,
+      "category": "definite_integral",
+      "subcategory": "parametric_concrete",
+      "label": "sin_ax_a3",
+      "input": "sin(3*x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "-cos(3*x)/3",
+      "definite_value": {
+        "re": 0.3535765660893828,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.9540857816096938,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.9540857816096938,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.7780731968879212,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.7780731968879212,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.4939202986100892,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.4939202986100892,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 105,
+      "category": "definite_integral",
+      "subcategory": "parametric_concrete",
+      "label": "cos_ax_a2",
+      "input": "cos(2*x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "sin(2*x)/2",
+      "definite_value": {
+        "re": 0.033913221008892595,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.3153223623952687,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.3153223623952687,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.0707372016677029,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.0707372016677029,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": -0.17824605564949209,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": -0.17824605564949209,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 106,
+      "category": "definite_integral",
+      "subcategory": "parametric_concrete",
+      "label": "x_exp_ax_a2",
+      "input": "x*exp(2*x)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "(2*x - 1)*exp(2*x)/4",
+      "definite_value": {
+        "re": 1.8472640247326626,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 2.181464348413651,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 2.181464348413651,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 3.3612668027535486,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 3.3612668027535486,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 5.035277341505014,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 5.035277341505014,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 107,
+      "category": "definite_integral",
+      "subcategory": "parametric_concrete",
+      "label": "inv_x2pa2_a3",
+      "input": "1/(x**2 + 9)",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "atan(x/3)/3",
+      "definite_value": {
+        "re": 0.05220062566067178,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 0.1064891846921797,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.1064891846921797,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 0.10457516339869281,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.10457516339869281,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 0.1024,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 0.1024,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 108,
+      "category": "definite_integral",
+      "subcategory": "parametric_concrete",
+      "label": "ax2_a5",
+      "input": "5*x**2",
+      "variable": "x",
+      "lo": 0.5,
+      "hi": 1.0,
+      "antiderivative": "5*x**3/3",
+      "definite_value": {
+        "re": 1.4583333333333333,
+        "im": 0.0
+      },
+      "ftc_points": [
+        {
+          "x": 0.625,
+          "integrand_value": {
+            "re": 1.953125,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 1.953125,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.75,
+          "integrand_value": {
+            "re": 2.8125,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 2.8125,
+            "im": 0.0
+          }
+        },
+        {
+          "x": 0.875,
+          "integrand_value": {
+            "re": 3.828125,
+            "im": 0.0
+          },
+          "antideriv_deriv_value": {
+            "re": 3.828125,
+            "im": 0.0
+          }
+        }
+      ]
+    }
+  ]
+}
