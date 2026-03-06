@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"
-description = "A fast, correct symbolic mathematics library for Rust"
+description = "A fast, correct symbolic mathematics library for Rust with robotics code generation"
 repository = "https://github.com/cgorski/symplex"
 homepage = "https://github.com/cgorski/symplex"
 documentation = "https://docs.rs/symplex"
 readme = "README.md"
-keywords = ["symbolic", "math", "algebra", "cas", "calculus"]
-categories = ["mathematics", "science"]
+keywords = ["symbolic", "math", "cas", "robotics", "groebner"]
+categories = ["mathematics", "science", "development-tools::build-utils"]
 
 [dependencies]
 symplex-macros = { version = "0.1.0", path = "symplex-macros" }

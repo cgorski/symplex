@@ -5,7 +5,6 @@
 
 use wasm_bindgen::prelude::*;
 use symplex::prelude::*;
-use symplex_format::ToLatex;
 
 /// Initialize panic hook for better error messages in browser console.
 #[wasm_bindgen(start)]

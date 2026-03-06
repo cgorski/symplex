@@ -66,7 +66,8 @@ pub mod expr_view;
 pub(crate) mod factor;
 pub(crate) mod factor_terms;
 pub(crate) mod fourier;
-pub(crate) mod fourier_transform;
+/// Symbolic Fourier transform.
+pub mod fourier_transform;
 /// Gröbner basis computation via Buchberger's algorithm with FGLM order conversion.
 pub mod groebner;
 pub(crate) mod gruntz;
@@ -116,7 +117,8 @@ pub(crate) mod trigsimp;
 /// Vector calculus: gradient, divergence, curl, laplacian.
 pub mod vector;
 pub(crate) mod walk;
-pub(crate) mod z_transform;
+/// Z-transform for discrete-time signal analysis.
+pub mod z_transform;
 
 // ── Public modules ─────────────────────────────────────────────────────
 /// Runtime expression parser — convert strings to symbolic expressions.
@@ -162,12 +164,19 @@ pub mod prelude {
     pub use crate::assumptions::{Assumption, Assumptions, Props};
     pub use crate::config::EvalConfig;
     pub use crate::context::Context;
+    pub use crate::control::{StateSpace, TransferFunction};
     pub use crate::eq::Equation;
     pub use crate::errors::SymplexError;
     pub use crate::expr::{BoolEx, Boolean, Ex, Expr, ExprType, Numeric, SetEx, SetValued, Sort};
     pub use crate::expr_view::ExprView;
+    pub use crate::matrix::Matrix;
     pub use crate::pattern::Step;
+    pub use crate::quaternion::Quaternion;
     pub use symplex_macros::{eq, expr, matrix, rule};
+
+    // NOTE: `vars!`, `syms!`, and `sym!` are `#[macro_export]` macros and
+    // live at the crate root.  Use `use symplex::{vars, syms, sym};` or
+    // `use symplex::prelude::*; use symplex::vars;` to bring them in.
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -295,4 +304,34 @@ pub fn infinity() -> expr::Ex {
 /// ```
 pub fn neg_infinity() -> expr::Ex {
     default_context().neg_infinity()
+}
+
+/// One-half (1/2) as a symbolic expression.
+pub fn half() -> expr::Ex {
+    default_context().rational(1, 2)
+}
+
+/// One-third (1/3) as a symbolic expression.
+pub fn third() -> expr::Ex {
+    default_context().rational(1, 3)
+}
+
+/// One-quarter (1/4) as a symbolic expression.
+pub fn quarter() -> expr::Ex {
+    default_context().rational(1, 4)
+}
+
+/// Two-thirds (2/3) as a symbolic expression.
+pub fn two_thirds() -> expr::Ex {
+    default_context().rational(2, 3)
+}
+
+/// Solve a system of polynomial equations.
+///
+/// Convenience wrapper around [`polysys::solve_system_ex`].
+pub fn solve_system(
+    eqs: &[expr::Ex],
+    vars: &[expr::Ex],
+) -> Result<Vec<Vec<expr::Ex>>, errors::SymplexError> {
+    polysys::solve_system_ex(eqs, vars)
 }

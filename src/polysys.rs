@@ -8,6 +8,11 @@ use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, ToPrimitive, Zero};
 
+use crate::expr::Ex;
+use crate::node::{ExprId, ExprNode};
+use crate::walk;
+use rustc_hash::FxHashMap;
+
 /// Solve a system of multivariate polynomial equations over ℚ.
 ///
 /// Given polynomials p₁, …, pₖ in ℚ[x₀, …, x_{n-1}], finds all common
@@ -292,6 +297,223 @@ fn divisors(n: i64) -> Vec<i64> {
     }
     result.sort();
     result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Symbolic expression → MultiPoly bridge
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Convert a symbolic expression to a multivariate polynomial.
+///
+/// `var_map` maps each variable's [`ExprId`] to its column index in the
+/// exponent vector.  Returns `None` if the expression is not polynomial
+/// in the listed variables (e.g. contains `sin`, fractional powers, or
+/// symbols not in `var_map`).
+fn expr_to_multipoly(
+    arena: &crate::arena::Arena,
+    expr: ExprId,
+    num_vars: usize,
+    var_map: &FxHashMap<ExprId, usize>,
+) -> Option<MultiPoly<GrevLex>> {
+    // Trivial case: the expression is one of the variables.
+    if let Some(&idx) = var_map.get(&expr) {
+        return Some(MultiPoly::var(num_vars, idx));
+    }
+
+    let post_order = walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, MultiPoly<GrevLex>> = FxHashMap::default();
+
+    for &id in &post_order {
+        let poly = convert_node_multi(arena, id, num_vars, var_map, &cache)?;
+        cache.insert(id, poly);
+    }
+
+    cache.remove(&expr)
+}
+
+/// Convert a single expression node to a [`MultiPoly`], using previously
+/// converted children from `cache`.
+fn convert_node_multi(
+    arena: &crate::arena::Arena,
+    id: ExprId,
+    num_vars: usize,
+    var_map: &FxHashMap<ExprId, usize>,
+    cache: &FxHashMap<ExprId, MultiPoly<GrevLex>>,
+) -> Option<MultiPoly<GrevLex>> {
+    // The variable itself.
+    if let Some(&idx) = var_map.get(&id) {
+        return Some(MultiPoly::var(num_vars, idx));
+    }
+
+    let node = arena.node(id);
+
+    match node {
+        // Numeric literal → constant polynomial.
+        ExprNode::Num(nid) => {
+            let r = arena.num(*nid).clone();
+            Some(MultiPoly::constant(num_vars, r))
+        }
+
+        // Symbol not in var_map — cannot represent as polynomial.
+        ExprNode::Symbol(_) => None,
+
+        // Add: sum of child polynomials.
+        ExprNode::Add(children) => {
+            let mut result = MultiPoly::zero(num_vars);
+            for &child in children.iter() {
+                let child_poly = cache.get(&child)?;
+                result = result.add(child_poly);
+            }
+            Some(result)
+        }
+
+        // Mul: product of child polynomials.
+        ExprNode::Mul(children) => {
+            let mut result = MultiPoly::from_int(num_vars, 1);
+            for &child in children.iter() {
+                let child_poly = cache.get(&child)?;
+                result = result.mul(child_poly);
+            }
+            Some(result)
+        }
+
+        // Pow: base^exp where exp must be a non-negative integer constant.
+        ExprNode::Pow(base, exp) => {
+            let base_poly = cache.get(base)?;
+
+            // Exponent must not be one of the solve-variables.
+            if var_map.contains_key(exp) {
+                return None;
+            }
+
+            let exp_val = match arena.node(*exp) {
+                ExprNode::Num(nid) => arena.num(*nid).clone(),
+                _ => return None,
+            };
+            if !exp_val.is_integer() {
+                return None;
+            }
+            let n: i64 = exp_val.to_integer().try_into().ok()?;
+            if n < 0 {
+                return None;
+            }
+
+            let mut result = MultiPoly::from_int(num_vars, 1);
+            for _ in 0..n {
+                result = result.mul(base_poly);
+            }
+            Some(result)
+        }
+
+        // Neg: negate the child polynomial.
+        ExprNode::Neg(inner_id) => {
+            let inner_poly = cache.get(inner_id)?;
+            let neg_one = MultiPoly::from_int(num_vars, -1);
+            Some(neg_one.mul(inner_poly))
+        }
+
+        // Everything else is not polynomial.
+        _ => None,
+    }
+}
+
+/// Solve a system of polynomial equations given as symbolic expressions.
+///
+/// Converts each expression to a multivariate polynomial, computes a
+/// Gröbner basis, and finds all rational solutions via back-substitution.
+///
+/// # Arguments
+///
+/// * `eqs` — slice of symbolic expressions, each treated as `expr = 0`.
+/// * `vars` — slice of symbolic variables to solve for.
+///
+/// # Returns
+///
+/// A vector of solution vectors.  Each inner vector has one entry per
+/// variable in `vars`, in the same order.  An empty outer vector means
+/// the system is inconsistent (no rational solutions).
+///
+/// # Errors
+///
+/// Returns `Err` if an expression is not polynomial in the given
+/// variables, or if the ideal is not zero-dimensional.
+///
+/// # Example
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::polysys::solve_system_ex;
+///
+/// let x = symplex::var("x");
+/// let y = symplex::var("y");
+/// // Solve: x + y - 1 = 0  and  x - y = 0
+/// let solutions = solve_system_ex(
+///     &[&x + &y - 1, &x - &y],
+///     &[x, y],
+/// ).unwrap();
+/// ```
+pub fn solve_system_ex(
+    eqs: &[Ex],
+    vars: &[Ex],
+) -> Result<Vec<Vec<Ex>>, crate::errors::SymplexError> {
+    if eqs.is_empty() || vars.is_empty() {
+        return Ok(vec![vec![]]);
+    }
+
+    let first = &eqs[0];
+    let num_vars = vars.len();
+
+    // Build variable ExprId → column-index map.
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let var_map: FxHashMap<ExprId, usize> = var_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    // Convert each equation to MultiPoly<GrevLex>.
+    let inner = first.inner.read();
+    let arena = &inner.arena;
+
+    let mut polys = Vec::with_capacity(eqs.len());
+    for eq_expr in eqs {
+        match expr_to_multipoly(arena, eq_expr.id, num_vars, &var_map) {
+            Some(p) => polys.push(p),
+            None => {
+                return Err(crate::errors::SymplexError::ComputationFailed {
+                    operation: "solve_system_ex",
+                    reason: "expression is not polynomial in the given variables".into(),
+                });
+            }
+        }
+    }
+    drop(inner);
+
+    // Solve via Gröbner basis + back-substitution.
+    match solve_polynomial_system(&polys) {
+        Ok(solutions) => {
+            // Convert rational solutions back to Ex.
+            let result: Vec<Vec<Ex>> = solutions
+                .into_iter()
+                .map(|sol| {
+                    sol.into_iter()
+                        .map(|r| {
+                            let mut guard = first.inner.write();
+                            let nid = guard.arena.intern_num(r);
+                            let id = guard.arena.intern(ExprNode::Num(nid));
+                            drop(guard);
+                            first.wrap(id)
+                        })
+                        .collect()
+                })
+                .collect();
+            Ok(result)
+        }
+        Err(msg) => Err(crate::errors::SymplexError::ComputationFailed {
+            operation: "solve_system_ex",
+            reason: msg,
+        }),
+    }
 }
 
 #[cfg(test)]

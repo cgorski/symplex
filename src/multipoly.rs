@@ -616,17 +616,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
         }
     }
 
-    /// Polynomial division with remainder in one variable (treating others
-    /// as parameters).
-    ///
-    /// This is useful for univariate operations within a multivariate context.
-    pub fn div_rem_univariate(
-        &self,
-        _divisor: &MultiPoly<O>,
-        _var_index: usize,
-    ) -> (MultiPoly<O>, MultiPoly<O>) {
-        todo!("univariate division within multivariate ring")
-    }
+    // Removed: div_rem_univariate was a todo!() stub. Use reduce() for multivariate division.
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -879,6 +869,66 @@ impl<O: MonomialOrd> ops::Neg for MultiPoly<O> {
     fn neg(self) -> MultiPoly<O> {
         MultiPoly::neg(&self)
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Operator overloads: MultiPoly<O> with i64
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<O: MonomialOrd> ops::Add<i64> for &MultiPoly<O> {
+    type Output = MultiPoly<O>;
+    fn add(self, rhs: i64) -> MultiPoly<O> {
+        let c = MultiPoly::from_int(self.num_vars(), rhs);
+        MultiPoly::add(self, &c)
+    }
+}
+impl<O: MonomialOrd> ops::Add<i64> for MultiPoly<O> {
+    type Output = MultiPoly<O>;
+    fn add(self, rhs: i64) -> MultiPoly<O> { (&self) + rhs }
+}
+
+impl<O: MonomialOrd> ops::Sub<i64> for &MultiPoly<O> {
+    type Output = MultiPoly<O>;
+    fn sub(self, rhs: i64) -> MultiPoly<O> {
+        let c = MultiPoly::from_int(self.num_vars(), rhs);
+        MultiPoly::sub(self, &c)
+    }
+}
+impl<O: MonomialOrd> ops::Sub<i64> for MultiPoly<O> {
+    type Output = MultiPoly<O>;
+    fn sub(self, rhs: i64) -> MultiPoly<O> { (&self) - rhs }
+}
+
+impl<O: MonomialOrd> ops::Mul<i64> for &MultiPoly<O> {
+    type Output = MultiPoly<O>;
+    fn mul(self, rhs: i64) -> MultiPoly<O> {
+        let c = Ratio::from_integer(BigInt::from(rhs));
+        self.scale(&c)
+    }
+}
+impl<O: MonomialOrd> ops::Mul<i64> for MultiPoly<O> {
+    type Output = MultiPoly<O>;
+    fn mul(self, rhs: i64) -> MultiPoly<O> { (&self) * rhs }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ring builder
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Create variable polynomials for a ring with the given number of variables.
+///
+/// Returns a vector where element i is the polynomial xᵢ.
+///
+/// # Example
+/// ```
+/// use symplex::multipoly::*;
+/// let vars = multipoly_vars::<GrevLex>(2);
+/// let x = &vars[0];
+/// let y = &vars[1];
+/// let circle = x * x + y * y - 1;  // x² + y² - 1
+/// ```
+pub fn multipoly_vars<O: MonomialOrd>(num_vars: usize) -> Vec<MultiPoly<O>> {
+    (0..num_vars).map(|i| MultiPoly::var(num_vars, i)).collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

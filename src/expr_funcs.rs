@@ -1577,6 +1577,7 @@ impl Expr<Numeric> {
     /// let s = format!("{combined}");
     /// assert!(s.contains("ln"), "should combine logs: {s}");
     /// ```
+    #[doc(hidden)]
     #[must_use = "returns the combined form; does not modify in place"]
     pub fn logcombine(&self) -> Ex {
         let id = self.inner.write().arena.log_combine_expr(self.id);
@@ -1625,6 +1626,7 @@ impl Expr<Numeric> {
     /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
     /// assert_eq!(format!("{}", expr.trigsimp()), "1");
     /// ```
+    #[doc(hidden)]
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn trigsimp(&self) -> Ex {
         let id = self.inner.write().arena.trigsimp_expr(self.id);
@@ -1646,6 +1648,7 @@ impl Expr<Numeric> {
     /// let ratio = (&result / &four_fact).combsimp();
     /// assert_eq!(format!("{ratio}"), "5");
     /// ```
+    #[doc(hidden)]
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn combsimp(&self) -> Ex {
         let id = self.inner.write().arena.combsimp_expr(self.id);
@@ -1667,6 +1670,7 @@ impl Expr<Numeric> {
     /// let result = expr.nsimplify(1e-5);
     /// assert_eq!(format!("{result}"), "1/3");
     /// ```
+    #[doc(hidden)]
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn nsimplify(&self, tolerance: f64) -> Ex {
         let id = self.inner.write().arena.nsimplify_expr(self.id, tolerance);
@@ -1690,6 +1694,7 @@ impl Expr<Numeric> {
     /// let s = format!("{result}");
     /// assert!(s.contains("a + b") || s.contains("b + a"), "should combine: {s}");
     /// ```
+    #[doc(hidden)]
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn powsimp(&self) -> Ex {
         let id = self.inner.write().arena.powsimp_expr(self.id);
@@ -1839,6 +1844,7 @@ impl Expr<Numeric> {
     /// let s = format!("{simplified}");
     /// assert!(s.contains("2"), "ratsimp should combine: {s}");
     /// ```
+    #[doc(hidden)]
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn ratsimp(&self) -> Ex {
         let together = self.together();
@@ -1870,6 +1876,7 @@ impl Expr<Numeric> {
     /// // Should be decomposed into simpler fractions
     /// assert!(s != format!("{expr}") || s.contains("1/"), "should decompose: {s}");
     /// ```
+    #[doc(hidden)]
     #[must_use = "returns the decomposed form; does not modify in place"]
     pub fn apart(&self, var: &Ex) -> Ex {
         let id = self.inner.write().arena.apart_expr(self.id, var.id);
@@ -1980,6 +1987,7 @@ impl Expr<Numeric> {
     /// let groups = expr.separatevars(&[&x, &y]);
     /// assert!(groups.len() >= 2, "should separate into multiple groups");
     /// ```
+    #[doc(hidden)]
     #[must_use]
     pub fn separatevars(&self, vars: &[&Ex]) -> Vec<(Vec<Ex>, Ex)> {
         let var_ids: Vec<crate::node::ExprId> = vars.iter().map(|v| v.id).collect();
@@ -2292,6 +2300,7 @@ impl Expr<Numeric> {
     /// // Should contain {2, 3} or similar
     /// assert!(!s.contains("EmptySet"), "solveset: {s}");
     /// ```
+    #[doc(hidden)]
     pub fn solveset(&self, var: &Ex) -> SetEx {
         let id = self.inner.write().arena.solveset_expr(self.id, var.id);
         self.wrap_as::<SetValued>(id)
@@ -2324,6 +2333,7 @@ impl Expr<Numeric> {
     /// let root = expr.nsolve(&x, 1.0, 50, 1e-12).unwrap();
     /// assert!((root - 0.7390851332).abs() < 1e-8);
     /// ```
+    #[doc(hidden)]
     pub fn nsolve(
         &self,
         var: &Ex,
@@ -2403,6 +2413,7 @@ impl Expr<Numeric> {
     ///     assert!(s.contains("exp"), "solution should contain exp: {s}");
     /// }
     /// ```
+    #[doc(hidden)]
     pub fn dsolve(&self, func: &Ex, var: &Ex) -> Option<(Ex, Vec<Ex>)> {
         let result = {
             let mut guard = self.inner.write();
@@ -2434,6 +2445,7 @@ impl Expr<Numeric> {
     /// Returns [`SymplexError::PrecisionExhausted`] if the requested
     /// precision exceeds `EvalConfig::max_evalf_precision`, or if
     /// intermediate computation produces NaN.
+    #[doc(hidden)]
     #[must_use = "returns the numerical value as a string"]
     pub fn evalf(&self, digits: u32) -> Result<String, SymplexError> {
         let _span = debug_span!("evalf", expr = ?self.id, digits = digits).entered();
@@ -2466,6 +2478,7 @@ impl Expr<Numeric> {
     /// let val = x.powi(2).subs_i64(&x, 3).evalf_f64().unwrap();
     /// assert!((val - 9.0).abs() < 1e-10);
     /// ```
+    #[doc(hidden)]
     pub fn evalf_f64(&self) -> Result<f64, SymplexError> {
         // eval() first to reduce exact values (sin(0)→0, Gamma(5)→24, etc.)
         // before numerical computation. The evalf_complex64 call below
@@ -2492,6 +2505,7 @@ impl Expr<Numeric> {
     ///
     /// Returns `Err` if the expression contains free symbols or if
     /// the arbitrary-precision engine fails.
+    #[doc(hidden)]
     pub fn evalf_complex64(&self) -> Result<(f64, f64), SymplexError> {
         let s = self.evalf(16)?;
         parse_complex_evalf_string(&s)
@@ -2517,6 +2531,7 @@ impl Expr<Numeric> {
     /// let func = f.lambdify(&["x"]).expect("should compile");
     /// assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
     /// ```
+    #[doc(hidden)]
     #[allow(clippy::type_complexity)]
     pub fn lambdify(&self, var_names: &[&str]) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
         let inner = self.inner.read();
@@ -2780,6 +2795,7 @@ impl Expr<Numeric> {
     /// let sol = &x.powi(2) / 2;
     /// assert!(ode.checkodesol(&sol, &y, &x));
     /// ```
+    #[doc(hidden)]
     #[must_use]
     pub fn checkodesol(&self, solution: &Ex, func: &Ex, var: &Ex) -> bool {
         {
@@ -2832,6 +2848,122 @@ impl Expr<Numeric> {
                 .arena
                 .interval(self.id, end.id, crate::node::INTERVAL_BOTH_OPEN);
         self.wrap_as(id)
+    }
+
+    // ── Evaluation shortcuts (Wave P4) ─────────────────────────────
+
+    /// Substitute multiple integer values and evaluate to f64.
+    ///
+    /// Combines `subs_i64` for each variable, then `eval()`, then `evalf_f64()`.
+    pub fn eval_f64_with(&self, subs: &[(&Ex, i64)]) -> Result<f64, SymplexError> {
+        let mut result = self.clone();
+        for (var, val) in subs {
+            result = result.subs_i64(var, *val);
+        }
+        result.eval().evalf_f64()
+    }
+
+    /// Substitute multiple rational values and evaluate to f64.
+    pub fn eval_f64_with_rational(&self, subs: &[(&Ex, i64, i64)]) -> Result<f64, SymplexError> {
+        let ctx = crate::default_context();
+        let mut result = self.clone();
+        for (var, p, q) in subs {
+            let val = ctx.rational(*p, *q);
+            result = result.subs(var, &val);
+        }
+        result.eval().evalf_f64()
+    }
+
+    /// Substitute multiple integer values simultaneously.
+    pub fn subs_map_i64(&self, subs: &[(&Ex, i64)]) -> Ex {
+        let mut result = self.clone();
+        for (var, val) in subs {
+            result = result.subs_i64(var, *val);
+        }
+        result
+    }
+
+    // ── Special function methods (Wave P5) ─────────────────────────
+
+    /// Bessel function of the first kind: J_order(self).
+    pub fn bessel_j(&self, order: &Ex) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            guard.arena.besselj(order.id, self.id)
+        };
+        self.wrap(id)
+    }
+
+    /// Bessel function of the second kind: Y_order(self).
+    pub fn bessel_y(&self, order: &Ex) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            guard.arena.bessely(order.id, self.id)
+        };
+        self.wrap(id)
+    }
+
+    /// Modified Bessel function of the first kind: I_order(self).
+    pub fn bessel_i(&self, order: &Ex) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            guard.arena.besseli(order.id, self.id)
+        };
+        self.wrap(id)
+    }
+
+    /// Modified Bessel function of the second kind: K_order(self).
+    pub fn bessel_k(&self, order: &Ex) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            guard.arena.besselk(order.id, self.id)
+        };
+        self.wrap(id)
+    }
+
+    /// Legendre polynomial P_n(self).
+    pub fn legendre(&self, n: &Ex) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            guard.arena.legendre(n.id, self.id)
+        };
+        self.wrap(id)
+    }
+
+    /// Chebyshev polynomial of the first kind T_n(self).
+    pub fn chebyshev_t(&self, n: &Ex) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            guard.arena.chebyshev_t(n.id, self.id)
+        };
+        self.wrap(id)
+    }
+
+    /// Chebyshev polynomial of the second kind U_n(self).
+    pub fn chebyshev_u(&self, n: &Ex) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            guard.arena.chebyshev_u(n.id, self.id)
+        };
+        self.wrap(id)
+    }
+
+    /// Hermite polynomial H_n(self) (physicist's convention).
+    pub fn hermite(&self, n: &Ex) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            guard.arena.hermite(n.id, self.id)
+        };
+        self.wrap(id)
+    }
+
+    /// Laguerre polynomial L_n(self).
+    pub fn laguerre(&self, n: &Ex) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            guard.arena.laguerre(n.id, self.id)
+        };
+        self.wrap(id)
     }
 }
 

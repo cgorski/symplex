@@ -12,7 +12,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 symplex = { version = "0.1.0", path = ".." }
-symplex-format = { version = "0.1.0", path = "../symplex-format" }
 wasm-bindgen = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

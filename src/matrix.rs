@@ -118,6 +118,36 @@ impl Matrix {
             ncols: 1,
         }
     }
+
+    /// Create a diagonal matrix from a slice of expressions.
+    pub fn diag(entries: &[Ex]) -> Matrix {
+        let n = entries.len();
+        assert!(n > 0, "diag: entries must be non-empty");
+        let zero = crate::int(0);
+        let rows: Vec<Vec<Ex>> = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| {
+                        if i == j {
+                            entries[i].clone()
+                        } else {
+                            zero.clone()
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        Matrix::new(rows)
+    }
+
+    /// Create a matrix from a 2D slice of i64 values.
+    pub fn from_i64(rows: &[&[i64]]) -> Matrix {
+        let data: Vec<Vec<Ex>> = rows
+            .iter()
+            .map(|row| row.iter().map(|&v| crate::int(v)).collect())
+            .collect();
+        Matrix::new(data)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -244,7 +274,7 @@ impl Matrix {
     /// # Panics
     ///
     /// Panics if shapes differ.
-    pub fn add(&self, other: &Matrix) -> Matrix {
+    pub fn add_elementwise(&self, other: &Matrix) -> Matrix {
         assert_eq!(
             self.shape(),
             other.shape(),
@@ -271,7 +301,7 @@ impl Matrix {
     /// # Panics
     ///
     /// Panics if shapes differ.
-    pub fn sub(&self, other: &Matrix) -> Matrix {
+    pub fn sub_elementwise(&self, other: &Matrix) -> Matrix {
         assert_eq!(
             self.shape(),
             other.shape(),
@@ -291,6 +321,24 @@ impl Matrix {
             ncols: self.ncols,
             rows,
         }
+    }
+
+    /// Element-wise addition (convenience alias for operator `+`).
+    ///
+    /// Prefer using `m1 + m2` via the `Add` trait. This method is retained
+    /// for backward-compatibility with code written before operator
+    /// overloads were available.
+    pub fn add(&self, other: &Matrix) -> Matrix {
+        self.add_elementwise(other)
+    }
+
+    /// Element-wise subtraction (convenience alias for operator `-`).
+    ///
+    /// Prefer using `m1 - m2` via the `Sub` trait. This method is retained
+    /// for backward-compatibility with code written before operator
+    /// overloads were available.
+    pub fn sub(&self, other: &Matrix) -> Matrix {
+        self.sub_elementwise(other)
     }
 
     /// Scalar multiplication: multiply every element by `scalar`.
@@ -1303,6 +1351,132 @@ impl fmt::Debug for Matrix {
         write!(f, "Matrix({}×{}, ", self.nrows, self.ncols)?;
         fmt::Display::fmt(self, f)?;
         write!(f, ")")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Operator overloads
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Matrix + Matrix (element-wise addition)
+impl std::ops::Add for &Matrix {
+    type Output = Matrix;
+    fn add(self, rhs: &Matrix) -> Matrix {
+        self.add_elementwise(rhs)
+    }
+}
+impl std::ops::Add for Matrix {
+    type Output = Matrix;
+    fn add(self, rhs: Matrix) -> Matrix {
+        (&self).add_elementwise(&rhs)
+    }
+}
+impl std::ops::Add<&Matrix> for Matrix {
+    type Output = Matrix;
+    fn add(self, rhs: &Matrix) -> Matrix {
+        (&self).add_elementwise(rhs)
+    }
+}
+impl std::ops::Add<Matrix> for &Matrix {
+    type Output = Matrix;
+    fn add(self, rhs: Matrix) -> Matrix {
+        self.add_elementwise(&rhs)
+    }
+}
+
+// Matrix - Matrix (element-wise subtraction)
+impl std::ops::Sub for &Matrix {
+    type Output = Matrix;
+    fn sub(self, rhs: &Matrix) -> Matrix {
+        self.sub_elementwise(rhs)
+    }
+}
+impl std::ops::Sub for Matrix {
+    type Output = Matrix;
+    fn sub(self, rhs: Matrix) -> Matrix {
+        (&self).sub_elementwise(&rhs)
+    }
+}
+impl std::ops::Sub<&Matrix> for Matrix {
+    type Output = Matrix;
+    fn sub(self, rhs: &Matrix) -> Matrix {
+        (&self).sub_elementwise(rhs)
+    }
+}
+impl std::ops::Sub<Matrix> for &Matrix {
+    type Output = Matrix;
+    fn sub(self, rhs: Matrix) -> Matrix {
+        self.sub_elementwise(&rhs)
+    }
+}
+
+// Matrix * Matrix (matrix multiplication, NOT element-wise)
+impl std::ops::Mul for &Matrix {
+    type Output = Matrix;
+    fn mul(self, rhs: &Matrix) -> Matrix {
+        self.matmul(rhs)
+    }
+}
+impl std::ops::Mul for Matrix {
+    type Output = Matrix;
+    fn mul(self, rhs: Matrix) -> Matrix {
+        (&self).matmul(&rhs)
+    }
+}
+impl std::ops::Mul<&Matrix> for Matrix {
+    type Output = Matrix;
+    fn mul(self, rhs: &Matrix) -> Matrix {
+        (&self).matmul(rhs)
+    }
+}
+impl std::ops::Mul<Matrix> for &Matrix {
+    type Output = Matrix;
+    fn mul(self, rhs: Matrix) -> Matrix {
+        self.matmul(&rhs)
+    }
+}
+
+// -Matrix (negation)
+impl std::ops::Neg for &Matrix {
+    type Output = Matrix;
+    fn neg(self) -> Matrix {
+        let neg_one = crate::int(-1);
+        self.scale(&neg_one)
+    }
+}
+impl std::ops::Neg for Matrix {
+    type Output = Matrix;
+    fn neg(self) -> Matrix {
+        -&self
+    }
+}
+
+// Matrix * &Ex (scalar multiplication)
+impl std::ops::Mul<&Ex> for &Matrix {
+    type Output = Matrix;
+    fn mul(self, rhs: &Ex) -> Matrix {
+        self.scale(rhs)
+    }
+}
+impl std::ops::Mul<&Ex> for Matrix {
+    type Output = Matrix;
+    fn mul(self, rhs: &Ex) -> Matrix {
+        (&self).scale(rhs)
+    }
+}
+
+// Matrix * i64 (scalar multiplication by integer)
+impl std::ops::Mul<i64> for &Matrix {
+    type Output = Matrix;
+    fn mul(self, rhs: i64) -> Matrix {
+        let s = crate::int(rhs);
+        self.scale(&s)
+    }
+}
+impl std::ops::Mul<i64> for Matrix {
+    type Output = Matrix;
+    fn mul(self, rhs: i64) -> Matrix {
+        (&self) * rhs
     }
 }
 

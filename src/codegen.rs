@@ -59,6 +59,29 @@ impl Default for CodegenOptions {
     }
 }
 
+impl CodegenOptions {
+    /// Configuration for no_std embedded targets.
+    /// Uses cfg-gated math backend and adds #[inline].
+    pub fn no_std() -> Self {
+        Self {
+            math_backend: MathBackend::CfgGated,
+            inline: true,
+            ..Default::default()
+        }
+    }
+
+    /// Configuration for embedded f32 targets (e.g., Cortex-M4F).
+    /// Uses cfg-gated math backend, f32 precision, and #[inline].
+    pub fn embedded_f32() -> Self {
+        Self {
+            math_backend: MathBackend::CfgGated,
+            precision: Precision::F32,
+            inline: true,
+            ..Default::default()
+        }
+    }
+}
+
 impl Precision {
     /// The float type name, e.g. `"f64"` or `"f32"`.
     fn type_name(self) -> &'static str {

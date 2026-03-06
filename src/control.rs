@@ -343,6 +343,37 @@ impl TransferFunction {
         TransferFunction { num, den, var }
     }
 
+    /// Create a transfer function from coefficient slices.
+    ///
+    /// Coefficients are in ascending power order:
+    /// `coeffs[0] + coeffs[1]*s + coeffs[2]*s² + ...`
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use symplex::control::TransferFunction;
+    /// let s = symplex::var("s");
+    /// // G(s) = 1 / (s² + 3s + 2)
+    /// let g = TransferFunction::from_coeffs(&[1], &[2, 3, 1], &s);
+    /// ```
+    pub fn from_coeffs(num_coeffs: &[i64], den_coeffs: &[i64], var: &Ex) -> Self {
+        let build_poly = |coeffs: &[i64]| -> Ex {
+            let mut result = crate::int(0);
+            for (i, &c) in coeffs.iter().enumerate() {
+                if c != 0 {
+                    let term = if i == 0 {
+                        crate::int(c)
+                    } else {
+                        &crate::int(c) * &var.powi(i as i64)
+                    };
+                    result = &result + &term;
+                }
+            }
+            result
+        };
+        Self::new(build_poly(num_coeffs), build_poly(den_coeffs), var.clone())
+    }
+
     /// Poles: roots of the denominator polynomial.
     ///
     /// Returns an empty vector if the solver cannot find the roots.
