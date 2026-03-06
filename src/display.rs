@@ -395,6 +395,19 @@ fn expand_expr(
                     } else {
                         stack.push(WorkItem::Owned(format!(" - {display_str}")));
                     }
+                } else if let ExprNode::Num(nid) = child_node
+                    && arena.num(*nid).is_negative()
+                    && i > 0
+                {
+                    // Negative numeric literal: render "x + -3" as "x - 3"
+                    let r = arena.num(*nid);
+                    let pos_r = -r.clone();
+                    let abs_str = if pos_r.denom() == &BigInt::from(1) {
+                        format!("{}", pos_r.numer())
+                    } else {
+                        format!("{}/{}", pos_r.numer(), pos_r.denom())
+                    };
+                    stack.push(WorkItem::Owned(format!(" - {abs_str}")));
                 } else if i == 0 {
                     stack.push(WorkItem::Expr(arg, PREC_ADD));
                 } else {
@@ -1134,10 +1147,11 @@ mod tests {
     #[test]
     fn display_pow_rational_exp_gets_parens() {
         let mut a = Arena::new();
-        let x = a.int(4);
+        // Use a non-perfect-square so radical simplification doesn't reduce it
+        let x = a.int(5);
         let half = a.rational(1, 2);
         let p = a.pow(x, half);
-        assert_display!(a, p, "sqrt(4)");
+        assert_display!(a, p, "sqrt(5)");
     }
 
     #[test]
@@ -1299,5 +1313,39 @@ mod tests {
             s.starts_with("x^2"),
             "polynomial should display in descending degree order: {s}"
         );
+    }
+
+    // ── Subtraction display (negative-term cleanup) ─────────────────
+
+    #[test]
+    fn display_subtraction_clean() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let three = a.int(3);
+        let neg_three = a.neg(three);
+        let expr = a.add(&[x, neg_three]);
+        assert_eq!(a.display(expr).to_string(), "x - 3");
+    }
+
+    #[test]
+    fn display_subtraction_mul_neg_coeff() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let y = a.symbol("y");
+        let neg_y = a.neg(y);
+        let expr = a.add(&[x, neg_y]);
+        assert_eq!(a.display(expr).to_string(), "x - y");
+    }
+
+    #[test]
+    fn display_leading_negative() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let neg_x = a.neg(x);
+        let one = a.int(1);
+        let expr = a.add(&[neg_x, one]);
+        // Leading negative: "-x + 1" is acceptable
+        let s = a.display(expr).to_string();
+        assert!(!s.contains("+ -"), "should not have '+ -' pattern: {s}");
     }
 }

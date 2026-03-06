@@ -979,6 +979,37 @@ impl Matrix {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// LaTeX rendering
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Matrix {
+    /// Render this matrix as a LaTeX bmatrix.
+    ///
+    /// # Example
+    /// ```
+    /// use symplex::prelude::*;
+    /// let m = matrix![[1, 2], [3, 4]];
+    /// assert!(m.to_latex().contains(r"\begin{bmatrix}"));
+    /// ```
+    pub fn to_latex(&self) -> String {
+        let mut s = String::from(r"\begin{bmatrix} ");
+        for i in 0..self.nrows {
+            if i > 0 {
+                s.push_str(r" \\ ");
+            }
+            for j in 0..self.ncols {
+                if j > 0 {
+                    s.push_str(" & ");
+                }
+                s.push_str(&self.get(i, j).to_latex());
+            }
+        }
+        s.push_str(r" \end{bmatrix}");
+        s
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Decompositions and subspaces
 //
 // Matrix algorithms naturally use index-based loops for row/column access.

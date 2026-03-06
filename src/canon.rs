@@ -637,6 +637,35 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return result;
     }
 
+    // Radical simplification: extract perfect k-th power factors from
+    // positive integer bases with fractional exponents.
+    // E.g., sqrt(12) → 2*sqrt(3), cbrt(24) → 2*cbrt(3).
+    if let (Some(base_r), Some(exp_r)) = (arena.as_num(base).cloned(), arena.as_num(exp).cloned())
+        && base_r.is_integer()
+        && base_r.is_positive()
+        && !exp_r.is_integer()
+    {
+        let q: u32 = exp_r.denom().clone().try_into().unwrap_or(0);
+        let p: u32 = exp_r.numer().clone().try_into().unwrap_or(0);
+        let n: u64 = base_r.to_integer().try_into().unwrap_or(0);
+        if q > 1 && p > 0 && n > 1 {
+            let (outside, inside) = extract_perfect_power(n, q);
+            if outside > 1 && outside <= i64::MAX as u64 && inside <= i64::MAX as u64 {
+                if let Some(outside_pow) = outside.checked_pow(p) {
+                    if outside_pow <= i64::MAX as u64 {
+                        let outside_expr = arena.int(outside_pow as i64);
+                        if inside == 1 {
+                            return outside_expr;
+                        }
+                        let inside_base = arena.int(inside as i64);
+                        let inside_radical = arena.pow(inside_base, exp);
+                        return arena.mul(&[outside_expr, inside_radical]);
+                    }
+                }
+            }
+        }
+    }
+
     let result = arena.intern(ExprNode::Pow(base, exp));
     #[cfg(debug_assertions)]
     {
@@ -701,6 +730,33 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Ratio<BigInt>, e: &Ratio<BigInt>) -> 
 
     let nid = arena.intern_num(result);
     Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Extract perfect k-th power factors from `n`.
+///
+/// Returns `(outside, inside)` such that `outside^k * inside == n` and
+/// `inside` has no prime factor with exponent ≥ k.
+///
+/// # Examples
+///
+/// - `extract_perfect_power(12, 2)` → `(2, 3)` because 12 = 2²·3
+/// - `extract_perfect_power(8, 3)`  → `(2, 1)` because 8 = 2³
+/// - `extract_perfect_power(7, 2)`  → `(1, 7)` (7 is square-free)
+fn extract_perfect_power(mut n: u64, k: u32) -> (u64, u64) {
+    let mut outside = 1u64;
+    let mut d = 2u64;
+    loop {
+        let Some(dk) = d.checked_pow(k) else { break };
+        if dk > n {
+            break;
+        }
+        while n % dk == 0 {
+            n /= dk;
+            outside *= d;
+        }
+        d += 1;
+    }
+    (outside, n)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1458,14 +1514,13 @@ mod tests {
     }
 
     #[test]
-    fn pow_non_integer_exp_stays_unevaluated() {
+    fn pow_perfect_square_simplifies() {
         let mut a = Arena::new();
         let base = a.int(4);
         let exp = a.rational(1, 2);
         let result = a.pow(base, exp);
-        // 4^(1/2) should NOT evaluate to 2 — that's simplification, not
-        // canonicalization.
-        assert_eq!(display(&a, result), "sqrt(4)");
+        // 4^(1/2) = 2 via radical simplification (4 = 2²).
+        assert_eq!(display(&a, result), "2");
     }
 
     #[test]
@@ -1860,7 +1915,7 @@ mod tests {
         let neg4 = a.int(-4);
         let half = a.rational(1, 2);
         let result = a.pow(neg4, half);
-        assert_eq!(display(&a, result), "sqrt(4)*I");
+        assert_eq!(display(&a, result), "2*I");
     }
 
     #[test]
@@ -1880,7 +1935,7 @@ mod tests {
         let neg9 = a.int(-9);
         let half = a.rational(1, 2);
         let result = a.pow(neg9, half);
-        assert_eq!(display(&a, result), "sqrt(9)*I");
+        assert_eq!(display(&a, result), "3*I");
     }
 
     // ── verify_canonical tests ─────────────────────────────────────────
@@ -1916,5 +1971,83 @@ mod tests {
         let expr = a.add(&[x2, xy, y]);
         let errors = verify_canonical(&mut a, expr);
         assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    // ── Radical simplification ─────────────────────────────────────────
+
+    #[test]
+    fn sqrt_12_simplifies() {
+        let mut a = Arena::new();
+        let twelve = a.int(12);
+        let half = a.rational(1, 2);
+        let result = a.pow(twelve, half);
+        assert_eq!(display(&a, result), "2*sqrt(3)");
+    }
+
+    #[test]
+    fn sqrt_8_simplifies() {
+        let mut a = Arena::new();
+        let base = a.int(8);
+        let exp = a.rational(1, 2);
+        let result = a.pow(base, exp);
+        assert_eq!(display(&a, result), "2*sqrt(2)");
+    }
+
+    #[test]
+    fn sqrt_7_stays() {
+        let mut a = Arena::new();
+        let base = a.int(7);
+        let exp = a.rational(1, 2);
+        let result = a.pow(base, exp);
+        assert_eq!(display(&a, result), "sqrt(7)");
+    }
+
+    #[test]
+    fn sqrt_18_simplifies() {
+        let mut a = Arena::new();
+        let base = a.int(18);
+        let exp = a.rational(1, 2);
+        let result = a.pow(base, exp);
+        assert_eq!(display(&a, result), "3*sqrt(2)");
+    }
+
+    #[test]
+    fn sqrt_9_simplifies_to_3() {
+        let mut a = Arena::new();
+        let base = a.int(9);
+        let exp = a.rational(1, 2);
+        let result = a.pow(base, exp);
+        assert_eq!(display(&a, result), "3");
+    }
+
+    #[test]
+    fn cbrt_24_simplifies() {
+        let mut a = Arena::new();
+        let base = a.int(24);
+        let exp = a.rational(1, 3);
+        let result = a.pow(base, exp);
+        // 24 = 2³·3, so cbrt(24) = 2·cbrt(3)
+        assert_eq!(display(&a, result), "2*cbrt(3)");
+    }
+
+    #[test]
+    fn cbrt_8_simplifies_to_2() {
+        let mut a = Arena::new();
+        let base = a.int(8);
+        let exp = a.rational(1, 3);
+        let result = a.pow(base, exp);
+        assert_eq!(display(&a, result), "2");
+    }
+
+    #[test]
+    fn extract_perfect_power_basic() {
+        assert_eq!(extract_perfect_power(12, 2), (2, 3));
+        assert_eq!(extract_perfect_power(8, 2), (2, 2));
+        assert_eq!(extract_perfect_power(18, 2), (3, 2));
+        assert_eq!(extract_perfect_power(9, 2), (3, 1));
+        assert_eq!(extract_perfect_power(7, 2), (1, 7));
+        assert_eq!(extract_perfect_power(8, 3), (2, 1));
+        assert_eq!(extract_perfect_power(24, 3), (2, 3));
+        assert_eq!(extract_perfect_power(1, 2), (1, 1));
     }
 }

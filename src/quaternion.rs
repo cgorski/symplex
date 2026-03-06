@@ -262,6 +262,26 @@ impl Quaternion {
             z: self.z.simplify(),
         }
     }
+
+    /// Render this quaternion as LaTeX.
+    ///
+    /// # Example
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::quaternion::Quaternion;
+    /// let q = Quaternion::identity();
+    /// let latex = q.to_latex();
+    /// assert!(latex.contains(r"\mathbf{i}"));
+    /// ```
+    pub fn to_latex(&self) -> String {
+        format!(
+            "{} + {}\\mathbf{{i}} + {}\\mathbf{{j}} + {}\\mathbf{{k}}",
+            self.w.to_latex(),
+            self.x.to_latex(),
+            self.y.to_latex(),
+            self.z.to_latex()
+        )
+    }
 }
 
 impl std::fmt::Display for Quaternion {

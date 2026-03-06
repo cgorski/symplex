@@ -411,6 +411,23 @@ fn expr_to_rust(
             if children.is_empty() {
                 return Ok(format!("1{suffix}"));
             }
+            // Detect leading -1 coefficient: emit -(rest) instead of (-1_f64 * rest)
+            if children.len() >= 2 {
+                if let Some(r) = arena.as_num(children[0]) {
+                    if r.is_integer() && r.numer().to_i64() == Some(-1) {
+                        let rest: Result<Vec<String>, _> = children[1..]
+                            .iter()
+                            .map(|&c| expr_to_rust(arena, c, var_names, options))
+                            .collect();
+                        let rest = rest?;
+                        if rest.len() == 1 {
+                            return Ok(format!("(-{})", rest[0]));
+                        } else {
+                            return Ok(format!("-({})", rest.join(" * ")));
+                        }
+                    }
+                }
+            }
             let parts: Result<Vec<String>, _> = children
                 .iter()
                 .map(|&c| expr_to_rust(arena, c, var_names, options))
@@ -556,10 +573,81 @@ fn expr_to_rust(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Constant-folding helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to extract a concrete `f64` value from an expression node.
+///
+/// Returns `Some(v)` when the node is a numeric literal (`Num`), `Pi`, or `E`.
+fn try_const_eval_f64(arena: &Arena, id: ExprId) -> Option<f64> {
+    match arena.node(id) {
+        ExprNode::Num(nid) => {
+            let r = arena.num(*nid);
+            let n = r.numer().to_f64()?;
+            let d = r.denom().to_f64()?;
+            Some(n / d)
+        }
+        ExprNode::Pi => Some(std::f64::consts::PI),
+        ExprNode::E => Some(std::f64::consts::E),
+        _ => None,
+    }
+}
+
+/// Evaluate a named unary math function on a concrete `f64` value.
+fn eval_unary_f64(func: &str, val: f64) -> Option<f64> {
+    Some(match func {
+        "sin" => val.sin(),
+        "cos" => val.cos(),
+        "tan" => val.tan(),
+        "exp" => val.exp(),
+        "ln" => val.ln(),
+        "abs" => val.abs(),
+        "asin" => val.asin(),
+        "acos" => val.acos(),
+        "atan" => val.atan(),
+        "sinh" => val.sinh(),
+        "cosh" => val.cosh(),
+        "tanh" => val.tanh(),
+        "asinh" => val.asinh(),
+        "acosh" => val.acosh(),
+        "atanh" => val.atanh(),
+        "signum" => val.signum(),
+        "floor" => val.floor(),
+        "ceil" => val.ceil(),
+        "sqrt" => val.sqrt(),
+        "cbrt" => val.cbrt(),
+        _ => return None,
+    })
+}
+
+/// Format an `f64` as a Rust literal (always includes a decimal point).
+fn format_float(v: f64) -> String {
+    if v == 0.0 {
+        "0.0".to_string()
+    } else if v == 1.0 {
+        "1.0".to_string()
+    } else if v == -1.0 {
+        "-1.0".to_string()
+    } else {
+        // Ensure a decimal point so Rust sees it as a float literal.
+        let s = format!("{v}");
+        if s.contains('.') || s.contains('e') || s.contains('E') {
+            s
+        } else {
+            format!("{s}.0")
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Backend-aware emission helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Emit a unary math function call, resolving the argument first.
+///
+/// When the argument is a compile-time constant (numeric literal, π, or e),
+/// the function is evaluated eagerly and the result emitted as a float literal
+/// (constant folding).
 fn emit_unary(
     arena: &Arena,
     arg: ExprId,
@@ -567,6 +655,15 @@ fn emit_unary(
     var_names: &[&str],
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
+    // Constant folding: evaluate at codegen time when the argument is known.
+    if let Some(val) = try_const_eval_f64(arena, arg) {
+        if let Some(result) = eval_unary_f64(func, val) {
+            if result.is_finite() || result == 0.0 {
+                let suffix = options.precision.suffix();
+                return Ok(format!("{}{}", format_float(result), suffix));
+            }
+        }
+    }
     let code = expr_to_rust(arena, arg, var_names, options)?;
     emit_unary_call(&code, func, options)
 }
@@ -1186,5 +1283,67 @@ mod tests {
             code.contains("pub fn rot("),
             "expected function name, got:\n{code}"
         );
+    }
+
+    // ── Constant folding tests ─────────────────────────────────────
+
+    #[test]
+    fn codegen_constant_folds_cos_zero() {
+        let mut a = Arena::new();
+        let zero = a.int(0);
+        let cos_zero = a.cos(zero);
+        let code = expr_to_rust(&a, cos_zero, &[], &default_opts()).unwrap();
+        assert!(!code.contains(".cos()"), "should constant-fold cos(0): {code}");
+        assert!(code.contains("1.0"), "should produce 1.0: {code}");
+    }
+
+    #[test]
+    fn codegen_constant_folds_sin_zero() {
+        let mut a = Arena::new();
+        let zero = a.int(0);
+        let sin_zero = a.sin(zero);
+        let code = expr_to_rust(&a, sin_zero, &[], &default_opts()).unwrap();
+        assert!(!code.contains(".sin()"), "should constant-fold sin(0): {code}");
+        assert!(code.contains("0.0"), "should produce 0.0: {code}");
+    }
+
+    #[test]
+    fn codegen_constant_folds_exp_zero() {
+        let mut a = Arena::new();
+        let zero = a.int(0);
+        let exp_zero = a.exp(zero);
+        let code = expr_to_rust(&a, exp_zero, &[], &default_opts()).unwrap();
+        assert!(!code.contains(".exp()"), "should constant-fold exp(0): {code}");
+        assert!(code.contains("1.0"), "should produce 1.0: {code}");
+    }
+
+    #[test]
+    fn codegen_constant_folds_sin_pi() {
+        let mut a = Arena::new();
+        let pi = a.pi;
+        let sin_pi = a.sin(pi);
+        let code = expr_to_rust(&a, sin_pi, &[], &default_opts()).unwrap();
+        // sin(pi) ≈ 0 — should be constant-folded (not a .sin() call)
+        assert!(!code.contains(".sin()"), "should constant-fold sin(pi): {code}");
+    }
+
+    #[test]
+    fn codegen_no_fold_for_variable() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let sin_x = a.sin(x);
+        let code = expr_to_rust(&a, sin_x, &["x"], &default_opts()).unwrap();
+        assert!(code.contains(".sin()"), "variable arg should NOT be folded: {code}");
+    }
+
+    #[test]
+    fn codegen_neg_one_mul_emits_negation() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let neg_one = a.int(-1);
+        let product = a.mul(&[neg_one, x]);
+        let code = expr_to_rust(&a, product, &["x"], &default_opts()).unwrap();
+        assert!(!code.contains("-1"), "should not contain -1 literal: {code}");
+        assert!(code.contains("(-x)"), "should emit (-x): {code}");
     }
 }

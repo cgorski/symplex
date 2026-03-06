@@ -1204,6 +1204,7 @@ fn condition_wild_positive(arena: &Arena, subs: &Substitution) -> bool {
 /// stored assumptions.  The constants π and *e* are real.  Anything
 /// else (compound expressions, imaginary unit, etc.) is conservatively
 /// rejected.
+#[allow(dead_code)]
 fn condition_wild_real(arena: &Arena, subs: &Substitution) -> bool {
     for &id in subs.values() {
         match arena.node(id) {
@@ -1219,6 +1220,33 @@ fn condition_wild_real(arena: &Arena, subs: &Substitution) -> bool {
             _ => {
                 // Compound or unknown expression: cannot confirm real → reject.
                 return false;
+            }
+        }
+    }
+    true
+}
+
+/// Condition: every wild-bound value is *not known* to be non-real.
+///
+/// This is a weaker gate than [`condition_wild_real`]: it fires unless
+/// we have positive evidence that the value is **not** real (e.g. the
+/// symbol has an `Imaginary` assumption).  Unknown assumptions are
+/// treated as "probably real", which matches the common case where
+/// users don't annotate variables.
+fn condition_wild_not_known_nonreal(arena: &Arena, subs: &Substitution) -> bool {
+    for &id in subs.values() {
+        match arena.node(id) {
+            ExprNode::Num(_) | ExprNode::Pi | ExprNode::E => {
+                // These are unconditionally real.
+            }
+            ExprNode::Symbol(sid) => {
+                let assumptions = arena.symbol_assumptions(*sid);
+                if assumptions.query(Props::REAL) == Some(false) {
+                    return false;
+                }
+            }
+            _ => {
+                // Compound or unknown expression: we don't know, allow it.
             }
         }
     }
@@ -1248,7 +1276,7 @@ pub(crate) fn basic_rules(arena: &mut Arena) -> Vec<Rule> {
         unary_compose_rule(arena, "exp_ln", Arena::exp, Arena::ln, identity),
         {
             let mut r = unary_compose_rule(arena, "ln_exp", Arena::ln, Arena::exp, identity);
-            r.condition = Some(condition_wild_real);
+            r.condition = Some(condition_wild_not_known_nonreal);
             r
         },
         unary_compose_rule(arena, "abs_abs", Arena::abs, Arena::abs, Arena::abs),
@@ -1878,5 +1906,52 @@ mod tests {
         let (result, _) = apply_rules(&mut arena, expr, &rules);
         let expected = arena.pow(x, three); // x^3
         assert_eq!(result, expected, "exp(3*ln(x)) should simplify to x^3");
+    }
+
+    #[test]
+    fn ln_exp_fires_without_assumption() {
+        let mut arena = Arena::new();
+        let x = arena.symbol("x"); // no assumptions at all
+        let exp_x = arena.exp(x);
+        let expr = arena.ln(exp_x); // ln(exp(x))
+        let rules = basic_rules(&mut arena);
+        let (result, _) = apply_rules(&mut arena, expr, &rules);
+        assert_eq!(result, x, "ln(exp(x)) should simplify to x without assumptions");
+    }
+
+    #[test]
+    fn ln_exp_fires_with_real_assumption() {
+        use crate::assumptions::{Assumptions, Props};
+        use crate::node::ExprNode;
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        if let ExprNode::Symbol(sid) = *arena.node(x) {
+            let mut a = Assumptions::default();
+            a.assert_true(Props::REAL);
+            arena.set_symbol_assumptions(sid, a);
+        }
+        let exp_x = arena.exp(x);
+        let expr = arena.ln(exp_x);
+        let rules = basic_rules(&mut arena);
+        let (result, _) = apply_rules(&mut arena, expr, &rules);
+        assert_eq!(result, x, "ln(exp(x)) should simplify to x with Real assumption");
+    }
+
+    #[test]
+    fn ln_exp_blocked_for_imaginary() {
+        use crate::assumptions::{Assumptions, Props};
+        use crate::node::ExprNode;
+        let mut arena = Arena::new();
+        let x = arena.symbol("x");
+        if let ExprNode::Symbol(sid) = *arena.node(x) {
+            let mut a = Assumptions::default();
+            a.assert_true(Props::IMAGINARY);
+            arena.set_symbol_assumptions(sid, a);
+        }
+        let exp_x = arena.exp(x);
+        let expr = arena.ln(exp_x);
+        let rules = basic_rules(&mut arena);
+        let (result, _) = apply_rules(&mut arena, expr, &rules);
+        assert_eq!(result, expr, "ln(exp(x)) should NOT simplify for Imaginary x");
     }
 }

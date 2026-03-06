@@ -295,7 +295,11 @@ fn join_mul_factors(factors: &[String]) -> String {
         if i > 0 {
             let prev = &factors[i - 1];
             if looks_like_number(prev) && looks_like_number(f) {
+                // Two adjacent numbers need an explicit multiplication sign.
                 result.push_str(r" \cdot ");
+            } else if looks_like_number(prev) {
+                // Numeric coefficient followed by a non-numeric factor:
+                // use implicit multiplication (no separator), e.g. "3x^{2}".
             } else {
                 result.push(' ');
             }
@@ -1448,5 +1452,19 @@ mod tests {
         let expr = n.factorial();
         let latex = expr.to_latex();
         assert_eq!(latex, "n!");
+    }
+
+    // ── Mul coefficient spacing ────────────────────────────────────
+
+    #[test]
+    fn latex_coefficient_no_space() {
+        let x = symplex::var("x");
+        let expr = &x * 3; // 3*x
+        let latex = expr.to_latex();
+        // Should be "3x" — no "\cdot" for integer coefficient times variable
+        assert!(
+            !latex.contains(r"\cdot"),
+            "coefficient times variable shouldn't use cdot: {latex}"
+        );
     }
 }
