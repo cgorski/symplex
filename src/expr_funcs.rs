@@ -3187,11 +3187,285 @@ impl Expr<Numeric> {
             _ => None,
         }
     }
+
+    // ── Plotting API (Wave P6) ─────────────────────────────────────
+
+    /// Internal: domain-aware adaptive sampling for plotting.
+    ///
+    /// Uses [`calculus_util::singularities`] to find excluded points,
+    /// [`calculus_util::estimate_frequency`] to determine sampling density,
+    /// and [`sampling::sample_compiled`] for adaptive refinement.
+    fn sample_expression(&self, var: &Ex, a: f64, b: f64) -> crate::sampling::PlotData {
+        use crate::node::ExprNode;
+
+        // Step 1: Domain analysis (needs write lock for singularities)
+        let (excluded_points, min_points) = {
+            let mut inner = self.inner.write();
+            match inner.arena.node(var.id) {
+                ExprNode::Symbol(sid) => {
+                    let sid = *sid;
+                    let excluded = crate::calculus_util::singularities(
+                        &mut inner.arena,
+                        self.id,
+                        var.id,
+                        sid,
+                        (a, b),
+                    );
+                    let freq = crate::calculus_util::estimate_frequency(
+                        &inner.arena,
+                        self.id,
+                        var.id,
+                        sid,
+                    );
+                    let min_pts = match freq {
+                        Some(f) => {
+                            crate::sampling::min_points_for_frequency(f, (a, b))
+                        }
+                        None => 200,
+                    };
+                    (excluded, min_pts)
+                }
+                _ => (Vec::new(), 200),
+            }
+        }; // write lock dropped
+
+        // Step 2: Compile and sample (compile acquires a read lock)
+        let var_name = format!("{var}");
+        let compiled = self.compile(&[&var_name]);
+        match compiled {
+            Some(f) => {
+                let opts = crate::sampling::SampleOptions {
+                    min_points,
+                    ..Default::default()
+                };
+                let f_single = move |x: f64| -> f64 { f(&[x]) };
+                crate::sampling::sample_compiled(&f_single, (a, b), &excluded_points, &opts)
+            }
+            None => {
+                // Fallback: symbolic substitution
+                let n = min_points.max(2);
+                let step = (b - a) / (n as f64 - 1.0);
+                let points: Vec<(f64, f64)> = (0..n)
+                    .map(|i| {
+                        let x = a + i as f64 * step;
+                        let (p, q) = f64_to_rational_approx(x);
+                        let val = crate::default_context().rational(p, q);
+                        let y = self
+                            .subs(var, &val)
+                            .eval()
+                            .eval_f64()
+                            .unwrap_or(f64::NAN);
+                        (x, y)
+                    })
+                    .collect();
+                crate::sampling::PlotData {
+                    points,
+                    asymptotes: Vec::new(),
+                    excluded: excluded_points,
+                }
+            }
+        }
+    }
+
+    /// Generate ASCII art plot of this expression over `[a, b]`.
+    ///
+    /// Compiles the expression for fast numerical evaluation, performs
+    /// domain-aware adaptive sampling, and renders the result as a
+    /// character grid.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let plot = x.sin().textplot(&x, 0.0, 6.28);
+    /// assert!(!plot.is_empty());
+    /// ```
+    #[must_use]
+    pub fn textplot(&self, var: &Ex, a: f64, b: f64) -> String {
+        let plot_data = self.sample_expression(var, a, b);
+        crate::textplot::textplot(&plot_data.points, 60, 21, None)
+    }
+
+    /// Generate SVG plot of this expression over `[a, b]`.
+    ///
+    /// Returns a self-contained SVG string with axes, grid, and the
+    /// function curve rendered as a `<polyline>`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let svg = x.sin().to_svg(&x, 0.0, 6.28);
+    /// assert!(svg.contains("<svg"));
+    /// ```
+    #[must_use]
+    pub fn to_svg(&self, var: &Ex, a: f64, b: f64) -> String {
+        let plot_data = self.sample_expression(var, a, b);
+        let series = vec![(plot_data.points.as_slice(), "f(x)")];
+        let opts = crate::svg_plot::SvgPlotOptions::default();
+        crate::svg_plot::svg_plot(&series, &opts)
+    }
+
+    /// Generate TikZ/PGFplots code for this expression over `[a, b]`.
+    ///
+    /// Returns a string containing a complete `tikzpicture` environment
+    /// with axis options and coordinate data.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let tikz = x.sin().to_tikz(&x, 0.0, 6.28);
+    /// assert!(tikz.contains("\\begin{axis}"));
+    /// ```
+    #[must_use]
+    pub fn to_tikz(&self, var: &Ex, a: f64, b: f64) -> String {
+        let plot_data = self.sample_expression(var, a, b);
+        crate::tikz_plot::tikz_plot(
+            &[(&plot_data.points, "f(x)")],
+            None,
+            Some("x"),
+            Some("y"),
+            false,
+            false,
+        )
+    }
+
+    /// Generate `(x, y)` sample data for this expression over `[a, b]`.
+    ///
+    /// Compiles the expression to a closure and evaluates it at `n`
+    /// uniformly-spaced points. Points where the function is not finite
+    /// produce `NaN` y-values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let data = x.powi(2).plot_data(&x, 0.0, 1.0, 10);
+    /// assert_eq!(data.len(), 10);
+    /// ```
+    #[must_use]
+    pub fn plot_data(&self, var: &Ex, a: f64, b: f64, n: usize) -> Vec<(f64, f64)> {
+        // Extract variable name from the expression.
+        let var_name = format!("{var}");
+        let compiled = self.compile(&[&var_name]);
+        let n = n.max(2);
+        let step = (b - a) / (n as f64 - 1.0);
+
+        match compiled {
+            Some(f) => (0..n)
+                .map(|i| {
+                    let x = a + i as f64 * step;
+                    let y = f(&[x]);
+                    (x, y)
+                })
+                .collect(),
+            None => {
+                // Fallback: use symbolic substitution + eval_f64
+                (0..n)
+                    .map(|i| {
+                        let x = a + i as f64 * step;
+                        let (p, q) = f64_to_rational_approx(x);
+                        let val = crate::default_context().rational(p, q);
+                        let y = self
+                            .subs(var, &val)
+                            .eval()
+                            .eval_f64()
+                            .unwrap_or(f64::NAN);
+                        (x, y)
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// Export evaluation table as a [`DataTable`](crate::data_export::DataTable).
+    ///
+    /// Evaluates this expression at each point in `points` and returns
+    /// a two-column table (`x`, `f(x)`) suitable for export to CSV,
+    /// JSON, LaTeX, and other formats.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]);
+    /// assert_eq!(table.nrows(), 3);
+    /// ```
+    #[must_use]
+    pub fn eval_table(&self, var: &Ex, points: &[f64]) -> crate::data_export::DataTable {
+        let var_name = format!("{var}");
+        let compiled = self.compile(&[&var_name]);
+        match compiled {
+            Some(f) => {
+                crate::data_export::DataTable::from_evaluation("x", "f(x)", points, |x| f(&[x]))
+            }
+            None => {
+                let values: Vec<(f64, f64)> = points
+                    .iter()
+                    .map(|&x| {
+                        let (p, q) = f64_to_rational_approx(x);
+                        let val = crate::default_context().rational(p, q);
+                        let y = self
+                            .subs(var, &val)
+                            .eval()
+                            .eval_f64()
+                            .unwrap_or(f64::NAN);
+                        (x, y)
+                    })
+                    .collect();
+                crate::data_export::DataTable::from_points("x", "f(x)", &values)
+            }
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helper: parse complex evalf strings
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Convert an `f64` to a `(numerator, denominator)` rational approximation.
+///
+/// Uses a denominator of 10^9 for up to ~9 digits of decimal precision,
+/// then reduces by the GCD. This is used as a fallback when `compile()`
+/// fails and we need to substitute numeric values symbolically.
+fn f64_to_rational_approx(x: f64) -> (i64, i64) {
+    if x == 0.0 {
+        return (0, 1);
+    }
+    if !x.is_finite() {
+        return (if x > 0.0 { i64::MAX } else { i64::MIN }, 1);
+    }
+    // If the value is very close to an integer, just return it.
+    let rounded = x.round();
+    if (x - rounded).abs() < 1e-12 && rounded.abs() < i64::MAX as f64 {
+        return (rounded as i64, 1);
+    }
+    let denom: i64 = 1_000_000_000; // 10^9
+    let numer = (x * denom as f64).round() as i64;
+    let g = gcd_i64(numer.unsigned_abs(), denom as u64) as i64;
+    (numer / g, denom / g)
+}
+
+/// Simple GCD for unsigned 64-bit integers (Euclidean algorithm).
+fn gcd_i64(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a.max(1)
+}
 
 /// Parse the string output of `evalf()` into a complex (f64, f64) pair.
 ///

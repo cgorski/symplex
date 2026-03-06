@@ -43,6 +43,7 @@ extern crate self as symplex;
 pub(crate) mod apart;
 pub(crate) mod arena;
 pub(crate) mod bernoulli;
+pub(crate) mod calculus_util;
 pub(crate) mod canon;
 pub(crate) mod codegen;
 pub(crate) mod combsimp;
@@ -52,6 +53,8 @@ pub(crate) mod complex;
 pub mod control;
 pub(crate) mod convergence;
 pub(crate) mod cse;
+/// Data export utilities: CSV, TSV, JSON, Markdown, HTML, LaTeX table output.
+pub mod data_export;
 pub(crate) mod diff;
 pub(crate) mod display;
 /// Lagrangian dynamics: equations of motion, mass matrix, Coriolis, gravity.
@@ -112,6 +115,9 @@ pub(crate) mod residue;
 pub(crate) mod rewrite;
 /// Robotics kinematics: DH parameters, forward kinematics, rotations.
 pub mod robotics;
+/// Fourth-order Runge–Kutta integrator for systems of ODEs.
+pub(crate) mod rk4;
+pub(crate) mod sampling;
 pub(crate) mod separatevars;
 pub(crate) mod series;
 pub(crate) mod simplify_engine;
@@ -120,7 +126,13 @@ pub(crate) mod sort_key;
 pub(crate) mod subs;
 pub(crate) mod sturm;
 pub(crate) mod sum_eval;
+/// SVG plot rendering backend.
+pub(crate) mod svg_plot;
 pub(crate) mod symbol;
+/// ASCII art terminal plotting.
+pub(crate) mod textplot;
+/// TikZ/PGFplots rendering backend.
+pub(crate) mod tikz_plot;
 pub(crate) mod trig_combine;
 pub(crate) mod trig_expand;
 pub(crate) mod trig_integ;

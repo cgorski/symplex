@@ -160,6 +160,21 @@ pub(crate) fn fmt_expr(
     Ok(())
 }
 
+/// Convenience wrapper: format an expression to a `String`.
+///
+/// Equivalent to calling [`fmt_expr`] with precedence 0 and collecting
+/// the output into a heap-allocated string.
+#[allow(dead_code)]
+pub(crate) fn format_expr(arena: &Arena, id: ExprId) -> String {
+    struct FmtAdapter<'a>(&'a Arena, ExprId);
+    impl std::fmt::Display for FmtAdapter<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt_expr(self.0, f, self.1, 0)
+        }
+    }
+    format!("{}", FmtAdapter(arena, id))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Display ordering helpers for Add children
 // ═══════════════════════════════════════════════════════════════════════════
