@@ -59,6 +59,7 @@ pub fn finite_diff_weights(
     x0: ExprId,
 ) -> Vec<Vec<Vec<ExprId>>> {
     let n_points = x_list.len();
+    tracing::debug!("finite_diff: computing weights order={}, {} points", order, n_points);
     if n_points == 0 {
         return vec![Vec::new(); order + 1];
     }
@@ -165,6 +166,7 @@ pub fn apply_finite_diff(
     y_list: &[ExprId],
     x0: ExprId,
 ) -> ExprId {
+    tracing::debug!("finite_diff: applying order {} derivative", order);
     assert_eq!(
         x_list.len(),
         y_list.len(),

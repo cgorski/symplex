@@ -222,6 +222,7 @@ impl FormalPowerSeries {
     /// Truncate the formal power series to a polynomial of degree n.
     /// Returns the polynomial `Σ_{k=0}^{n-1} a_k * (x - point)^k`.
     pub fn truncate(&self, arena: &mut Arena, n: usize) -> ExprId {
+        tracing::trace!("fps: truncating to {} terms", n);
         let var = self.variable;
         let point = self.point;
         let is_maclaurin = arena.is_zero_structural(point);
@@ -277,6 +278,7 @@ pub(crate) fn fps_known_function(
     _var_sym: SymbolId,
     point: ExprId,
 ) -> Option<FormalPowerSeries> {
+    tracing::debug!("fps: attempting known-function match");
     // Only handle Maclaurin (point = 0) for known patterns
     if !arena.is_zero_structural(point) {
         return None;
@@ -508,6 +510,7 @@ pub(crate) fn fps_truncated(
     let mut factorial = Ratio::<BigInt>::one();
 
     for k in 0..order {
+        tracing::trace!("fps: computing coefficient k={}", k);
         // Evaluate k-th derivative at the point
         let subst = crate::subs::subs(arena, current_deriv, var, point);
         let evaled = crate::eval::eval(arena, subst);

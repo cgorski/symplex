@@ -182,6 +182,12 @@ pub(crate) fn gosper_normal(p: &Poly, q: &Poly) -> Option<(Poly, Poly, Poly)> {
 
     // Return (Z·A, B, C).
     let za = a.scale(&z);
+    tracing::debug!(
+        "gosper: normal form deg(A)={}, deg(B)={}, deg(C)={}",
+        za.degree().unwrap_or(0),
+        b.degree().unwrap_or(0),
+        c.degree().unwrap_or(0)
+    );
     Some((za, b, c))
 }
 
@@ -288,6 +294,7 @@ pub(crate) fn gosper_certificate(a: &Poly, b: &Poly, c: &Poly) -> Option<Poly> {
 
     // Compute the degree bound for x(k).
     let d = compute_degree_bound(a, &b_m1, c, deg_a, deg_bm, deg_c, n)?;
+    tracing::debug!("gosper: certificate degree bound d={}", d);
 
     let total_deg = n + d;
     let nrows = total_deg + 1;

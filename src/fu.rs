@@ -1277,10 +1277,12 @@ pub(crate) fn fu(arena: &mut Arena, expr: ExprId) -> ExprId {
     if has_tan(arena, result) {
         let rl1_result = rl1(arena, result);
         result = pick_best(arena, &[result, rl1_result]);
+        tracing::trace!("fu: RL1 produced measure {:?}", measure(arena, result));
     }
 
     // Step 3: If still has tan, apply TR2 (convert to sin/cos)
     if has_tan(arena, result) {
+        tracing::trace!("fu: applying TR2");
         let converted = tr2(arena, result);
         result = pick_best(arena, &[result, converted]);
     }
@@ -1290,6 +1292,7 @@ pub(crate) fn fu(arena: &mut Arena, expr: ExprId) -> ExprId {
         let rl2_result = rl2(arena, result);
 
         // Also try TRmorrie + TR8
+        tracing::trace!("fu: applying TRmorrie + TR8");
         let morrie_then_combine = {
             let t1 = tr_morrie(arena, result);
             let t2 = tr8(arena, t1);
@@ -1297,18 +1300,22 @@ pub(crate) fn fu(arena: &mut Arena, expr: ExprId) -> ExprId {
         };
 
         result = pick_best(arena, &[result, rl2_result, morrie_then_combine]);
+        tracing::trace!("fu: RL2 produced measure {:?}", measure(arena, result));
     }
 
     // Step 5: Try TR2i at the end (convert back to tan if simpler)
     let with_tan = tr2i(arena, result);
     result = pick_best(arena, &[result, with_tan]);
+    tracing::trace!("fu: TR2i final measure {:?}", measure(arena, result));
 
     // Step 6: Try Pythagorean substitutions as additional strategies
+    tracing::trace!("fu: applying Pythagorean substitutions");
     let pyth1 = pyth_sub_cos2(arena, result);
     let pyth2 = pyth_sub_sin2(arena, result);
     result = pick_best(arena, &[result, pyth1, pyth2]);
 
     // Step 7: Try TR5i (inverse power-reduction)
+    tracing::trace!("fu: applying TR5i");
     let inv_pr = tr5i(arena, result);
     result = pick_best(arena, &[result, inv_pr]);
 

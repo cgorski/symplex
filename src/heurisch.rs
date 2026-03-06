@@ -63,6 +63,9 @@ pub(crate) fn heurisch_integrate(
 
     // Try with increasing degree offsets (up to 2 retries).
     for degree_offset in 0..=2 {
+        if degree_offset > 0 {
+            tracing::debug!("heurisch: retry with degree_offset={}", degree_offset);
+        }
         if let Some(result) = heurisch_attempt(arena, expr, var, var_sym, degree_offset) {
             return Some(result);
         }
@@ -86,6 +89,7 @@ fn heurisch_attempt(
 ) -> Option<ExprId> {
     // ── Step 1: Collect components ──────────────────────────────────
     let components = collect_components(arena, expr, var_sym);
+    tracing::debug!("heurisch: collected {} components", components.len());
     if components.is_empty() {
         // Only the bare variable — fall back to simple power rule territory.
         // This shouldn't happen if we got here, but be safe.
@@ -123,6 +127,7 @@ fn heurisch_attempt(
 
     // ── Step 4: Degree bound ───────────────────────────────────────
     let degree_bound = compute_degree_bound(arena, &components, var_sym) + degree_offset;
+    tracing::debug!("heurisch: degree bound total={}, offset={}", degree_bound, degree_offset);
     if degree_bound > 12 {
         // Bail out if degree bound is too large (would create huge systems).
         return None;
@@ -135,6 +140,7 @@ fn heurisch_attempt(
     }
 
     let n_unknowns = monomials.len();
+    tracing::debug!("heurisch: {} monomials, {} unknowns", monomials.len(), n_unknowns);
     if n_unknowns > 60 {
         // Too many unknowns for reliable f64 solution.
         return None;
@@ -221,6 +227,7 @@ fn heurisch_attempt(
     }
 
     let n_rows = matrix_a.len();
+    tracing::debug!("heurisch: solving {}x{} numeric system", n_rows, n_unknowns);
     if n_rows < n_unknowns {
         // Not enough valid evaluation points.
         return None;
@@ -235,6 +242,7 @@ fn heurisch_attempt(
         .iter()
         .map(|&c| rationalize(c, 1000))
         .collect::<Option<Vec<_>>>()?;
+    tracing::debug!("heurisch: reconstructed {}/{} coefficients", rational_coeffs.len(), coeffs.len());
 
     // ── Step 10: Build symbolic candidate ──────────────────────────
     let candidate = build_candidate(arena, &monomials, &rational_coeffs, &components, &comp_syms);
@@ -263,6 +271,7 @@ fn heurisch_attempt(
         }
     }
 
+    tracing::debug!("heurisch: verification {}", if verified { "passed" } else { "failed" });
     if verified {
         Some(candidate)
     } else {

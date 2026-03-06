@@ -24,12 +24,15 @@ use crate::arena::Arena;
 use crate::node::{ExprId, ExprNode};
 use crate::poly::Poly;
 use crate::polybridge;
+use crate::solve::Solution;
 
 /// Decompose `expr` into partial fractions with respect to `var`.
 ///
 /// Returns the expression unchanged if it's not a rational function
 /// in `var` or if the denominator cannot be decomposed further.
 pub(crate) fn apart(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    tracing::debug!("apart: decomposing expression");
+
     // Step 1: Decompose into numerator / denominator.
     let (numer, denom) = polybridge::as_numer_denom(arena, expr);
 
@@ -71,6 +74,7 @@ pub(crate) fn apart(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
 
     // Step 4: Factor the denominator over ℤ.
     let (content, factors) = denom_poly.factor_over_z();
+    tracing::debug!("apart: found {} factors", factors.len());
 
     // If factoring produced nothing useful, try the root-based fallback.
     if factors.is_empty() {
@@ -321,6 +325,26 @@ fn try_root_based_apart(
     }
 
     let denom_deriv = denom_poly.derivative();
+
+    // ── Numeric log-to-real: try clean decomposition via f64 eval ──
+    if let Some(numeric_terms) =
+        try_log_to_real_numeric(arena, var, &solutions, remainder, &denom_deriv)
+    {
+        tracing::debug!(
+            "apart: numeric log_to_real succeeded with {} terms",
+            numeric_terms.len()
+        );
+        let mut partial_terms = numeric_terms;
+        if !quotient.is_zero() {
+            partial_terms.push(polybridge::poly_to_expr(arena, quotient, var));
+        }
+        return match partial_terms.len() {
+            0 => assemble_with_quotient_expr(arena, var, orig_frac, quotient),
+            1 => partial_terms[0],
+            _ => arena.add(&partial_terms),
+        };
+    }
+
     let i_unit = arena.i_unit;
 
     let mut partial_terms: Vec<ExprId> = Vec::new();
@@ -537,6 +561,361 @@ fn build_conjugate_pair_term(
     let lin_numer = crate::eval::eval(arena, lin_numer);
 
     Some(arena.div(lin_numer, quad_denom))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Numeric log-to-real conversion
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to decompose a rational function into clean real partial fractions
+/// using numeric evaluation of roots and `nsimplify` for exact coefficient
+/// recovery.
+///
+/// Returns `Some(terms)` if every root can be evaluated numerically and
+/// every coefficient can be recovered as a clean closed-form expression.
+/// Returns `None` on failure — the caller falls back to the symbolic
+/// approach.
+fn try_log_to_real_numeric(
+    arena: &mut Arena,
+    var: ExprId,
+    solutions: &[Solution],
+    remainder: &Poly,
+    denom_deriv: &Poly,
+) -> Option<Vec<ExprId>> {
+    let n_roots = solutions.len();
+    tracing::debug!("log_to_real: attempting numeric conversion for {} roots", n_roots);
+
+    // Evaluate all roots to complex f64.
+    let mut complex_vals: Vec<(f64, f64)> = Vec::with_capacity(n_roots);
+    for sol in solutions {
+        complex_vals.push(eval_complex_f64(arena, sol.value)?);
+    }
+
+    let tol = 1e-10;
+    let mut terms: Vec<ExprId> = Vec::new();
+    let mut used = vec![false; n_roots];
+    let mut n_pairs = 0usize;
+
+    // Pass A: Rational (exact Num) roots — handle exactly as before.
+    for (idx, sol) in solutions.iter().enumerate() {
+        if let ExprNode::Num(nid) = arena.node(sol.value) {
+            let root_val = arena.num(*nid).clone();
+            let numer_at = remainder.eval(&root_val);
+            let denom_at = denom_deriv.eval(&root_val);
+            if denom_at.is_zero() {
+                continue;
+            }
+            let residue = numer_at / denom_at;
+            if !residue.is_zero() {
+                let res_expr = rational_to_expr(arena, &residue);
+                let factor = arena.sub(var, sol.value);
+                terms.push(arena.div(res_expr, factor));
+            }
+            used[idx] = true;
+        }
+    }
+
+    // Pass B: Group remaining roots into conjugate pairs (or real irrationals).
+    for i in 0..n_roots {
+        if used[i] {
+            continue;
+        }
+        let (re_i, im_i) = complex_vals[i];
+
+        // Irrational real root.
+        if im_i.abs() < tol {
+            let root_exact = nsimplify_extended(arena, re_i, 1e-9);
+            if !is_clean_expr(arena, root_exact) {
+                tracing::trace!("log_to_real: irrational root nsimplify not clean, bailing");
+                return None;
+            }
+            let (n_re, _) = eval_poly_complex_f64(remainder, re_i, 0.0);
+            let (d_re, _) = eval_poly_complex_f64(denom_deriv, re_i, 0.0);
+            if d_re.abs() < 1e-15 {
+                return None;
+            }
+            let res_f64 = n_re / d_re;
+            if res_f64.abs() > tol {
+                let res_exact = nsimplify_extended(arena, res_f64, 1e-9);
+                if !is_clean_expr(arena, res_exact) {
+                    return None;
+                }
+                let factor = arena.sub(var, root_exact);
+                terms.push(arena.div(res_exact, factor));
+            }
+            used[i] = true;
+            continue;
+        }
+
+        // Complex root — find its conjugate partner.
+        let mut conj_idx = None;
+        for j in (i + 1)..n_roots {
+            if used[j] {
+                continue;
+            }
+            let (re_j, im_j) = complex_vals[j];
+            if (re_i - re_j).abs() < tol && (im_i + im_j).abs() < tol {
+                conj_idx = Some(j);
+                break;
+            }
+        }
+        let j = conj_idx?; // no conjugate found → bail
+        used[i] = true;
+        used[j] = true;
+        n_pairs += 1;
+
+        // Use the root with positive imaginary part.
+        let (alpha, beta) = if im_i > 0.0 {
+            (re_i, im_i)
+        } else {
+            (complex_vals[j].0, complex_vals[j].1.abs())
+        };
+
+        // Quadratic denominator: x² + p·x + q  with p = −2α, q = α²+β².
+        let p_f64 = -2.0 * alpha;
+        let q_f64 = alpha * alpha + beta * beta;
+        let p_exact = nsimplify_extended(arena, p_f64, 1e-9);
+        let q_exact = nsimplify_extended(arena, q_f64, 1e-9);
+
+        if !is_clean_expr(arena, p_exact) || !is_clean_expr(arena, q_exact) {
+            tracing::trace!("log_to_real: quadratic coeff nsimplify not clean, bailing");
+            return None;
+        }
+
+        tracing::debug!(
+            "log_to_real: recovered exact quadratic x² + {}·x + {}",
+            arena.display(p_exact),
+            arena.display(q_exact)
+        );
+
+        let two = arena.int(2);
+        let x_sq = arena.pow(var, two);
+        let p_x = arena.mul(&[p_exact, var]);
+        let quad_denom = arena.add(&[x_sq, p_x, q_exact]);
+        let quad_denom = crate::eval::eval(arena, quad_denom);
+
+        // Compute residue at α + βi via polynomial evaluation.
+        let (res_re, res_im) = {
+            let (n_re, n_im) = eval_poly_complex_f64(remainder, alpha, beta);
+            let (d_re, d_im) = eval_poly_complex_f64(denom_deriv, alpha, beta);
+            let mag_sq = d_re * d_re + d_im * d_im;
+            if mag_sq < 1e-20 {
+                return None;
+            }
+            (
+                (n_re * d_re + n_im * d_im) / mag_sq,
+                (n_im * d_re - n_re * d_im) / mag_sq,
+            )
+        };
+
+        // Linear numerator: 2a·x + (−2aα − 2bβ).
+        let a_coeff_f64 = 2.0 * res_re;
+        let b_const_f64 = -2.0 * res_re * alpha - 2.0 * res_im * beta;
+        let a_exact = nsimplify_extended(arena, a_coeff_f64, 1e-9);
+        let b_exact = nsimplify_extended(arena, b_const_f64, 1e-9);
+
+        if !is_clean_expr(arena, a_exact) || !is_clean_expr(arena, b_exact) {
+            tracing::trace!("log_to_real: numerator coeff nsimplify not clean, bailing");
+            return None;
+        }
+
+        let a_x = arena.mul(&[a_exact, var]);
+        let lin_numer = arena.add(&[a_x, b_exact]);
+        let lin_numer = crate::eval::eval(arena, lin_numer);
+
+        terms.push(arena.div(lin_numer, quad_denom));
+    }
+
+    // All roots must have been used.
+    if used.iter().any(|&u| !u) {
+        return None;
+    }
+
+    tracing::debug!(
+        "log_to_real: {} roots, {} conjugate pairs",
+        n_roots,
+        n_pairs
+    );
+    Some(terms)
+}
+
+/// Evaluate a symbolic expression to a complex `(re, im)` pair via `evalf`.
+fn eval_complex_f64(arena: &Arena, expr: ExprId) -> Option<(f64, f64)> {
+    let s = crate::evalf::evalf(arena, expr, 16).ok()?;
+    parse_evalf_complex(&s)
+}
+
+/// Parse the string output of `evalf` into `(re, im)` components.
+///
+/// Handles formats: `"1.23"`, `"4.56*i"`, `"i"`, `"-i"`,
+/// `"1.23 + 4.56*i"`, `"1.23 - 4.56*i"`, `"1.23 + i"`, `"1.23 - i"`.
+fn parse_evalf_complex(s: &str) -> Option<(f64, f64)> {
+    let s = s.trim();
+    if s == "0" {
+        return Some((0.0, 0.0));
+    }
+
+    // Pure real — no imaginary marker at all.
+    if !s.contains('i') {
+        return Some((s.parse::<f64>().ok()?, 0.0));
+    }
+
+    // Both parts present: look for " + " or " - " separating re and im.
+    if let Some(pos) = s.rfind(" + ") {
+        let tail = &s[pos + 3..];
+        if tail.contains('i') {
+            let re = s[..pos].parse::<f64>().ok()?;
+            let im_str = tail.trim_end_matches("*i").trim_end_matches('i');
+            let im = if im_str.is_empty() { 1.0 } else { im_str.parse::<f64>().ok()? };
+            return Some((re, im));
+        }
+    }
+    if let Some(pos) = s.rfind(" - ") {
+        let tail = &s[pos + 3..];
+        if tail.contains('i') {
+            let re = s[..pos].parse::<f64>().ok()?;
+            let im_str = tail.trim_end_matches("*i").trim_end_matches('i');
+            let im = if im_str.is_empty() { 1.0 } else { im_str.parse::<f64>().ok()? };
+            return Some((re, -im));
+        }
+    }
+
+    // Pure imaginary: "i", "-i", "3.5*i", "-3.5*i".
+    let im_str = s.trim_end_matches("*i").trim_end_matches('i');
+    if im_str.is_empty() {
+        return Some((0.0, 1.0));
+    }
+    if im_str == "-" {
+        return Some((0.0, -1.0));
+    }
+    Some((0.0, im_str.parse::<f64>().ok()?))
+}
+
+/// Evaluate a [`Poly`] at a complex point `z = (re, im)` using Horner's
+/// method, returning `(re, im)` of the result.
+fn eval_poly_complex_f64(poly: &Poly, z_re: f64, z_im: f64) -> (f64, f64) {
+    let deg = match poly.degree() {
+        Some(d) => d,
+        None => return (0.0, 0.0),
+    };
+    let mut acc_re = ratio_to_f64_approx(&poly.coeff(deg));
+    let mut acc_im = 0.0;
+    for k in (0..deg).rev() {
+        let t_re = acc_re * z_re - acc_im * z_im;
+        let t_im = acc_re * z_im + acc_im * z_re;
+        acc_re = t_re + ratio_to_f64_approx(&poly.coeff(k));
+        acc_im = t_im;
+    }
+    (acc_re, acc_im)
+}
+
+/// Best-effort conversion of a `Ratio<BigInt>` to `f64`.
+fn ratio_to_f64_approx(r: &Ratio<BigInt>) -> f64 {
+    let n: f64 = r.numer().to_string().parse().unwrap_or(0.0);
+    let d: f64 = r.denom().to_string().parse().unwrap_or(1.0);
+    if d == 0.0 { f64::NAN } else { n / d }
+}
+
+/// Convert an `f64` to a high-precision rational expression suitable for
+/// `nsimplify`.
+fn f64_to_rational_expr(arena: &mut Arena, val: f64) -> ExprId {
+    if val.abs() < 1e-15 {
+        return arena.zero;
+    }
+    let scale = 1_000_000_000_000i64; // 10^12
+    let numer = (val * scale as f64).round() as i64;
+    arena.rational(numer, scale)
+}
+
+/// Extended `nsimplify`: tries the standard strategies first, then
+/// `(a + b·√n) / c` patterns for small integers.
+fn nsimplify_extended(arena: &mut Arena, val: f64, tol: f64) -> ExprId {
+    if val.abs() < tol {
+        return arena.zero;
+    }
+    // Standard nsimplify.
+    let approx = f64_to_rational_expr(arena, val);
+    let standard = crate::nsimplify::nsimplify(arena, approx, tol);
+    if standard != approx {
+        return standard;
+    }
+    // Extended: (a + b√n) / c.
+    if let Some(expr) = find_rational_plus_sqrt(arena, val, tol) {
+        return expr;
+    }
+    standard
+}
+
+/// Try to express `val` as `(a + b·√n) / c` for small integer `a, b, c, n`.
+fn find_rational_plus_sqrt(arena: &mut Arena, val: f64, tol: f64) -> Option<ExprId> {
+    for n in 2..=20i64 {
+        let sqrt_n = (n as f64).sqrt();
+        let sqrt_n_int = sqrt_n.round() as i64;
+        if sqrt_n_int * sqrt_n_int == n {
+            continue; // perfect square
+        }
+        for c in 1..=12i64 {
+            let vc = val * c as f64;
+            for b in -8..=8i64 {
+                if b == 0 {
+                    continue;
+                }
+                let a_f64 = vc - b as f64 * sqrt_n;
+                let a = a_f64.round() as i64;
+                if a.unsigned_abs() > 100 {
+                    continue;
+                }
+                let reconstructed = (a as f64 + b as f64 * sqrt_n) / c as f64;
+                if (reconstructed - val).abs() < tol {
+                    return Some(build_rational_plus_sqrt_expr(arena, a, b, n, c));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Build the symbolic expression `(a + b·√n) / c`, simplified.
+fn build_rational_plus_sqrt_expr(
+    arena: &mut Arena,
+    a: i64,
+    b: i64,
+    n: i64,
+    c: i64,
+) -> ExprId {
+    let half = arena.rational(1, 2);
+    let n_expr = arena.int(n);
+    let sqrt_n = arena.pow(n_expr, half);
+
+    let b_sqrt = if b == 1 {
+        sqrt_n
+    } else if b == -1 {
+        arena.neg(sqrt_n)
+    } else {
+        let b_expr = arena.int(b);
+        arena.mul(&[b_expr, sqrt_n])
+    };
+
+    let numerator = if a == 0 {
+        b_sqrt
+    } else {
+        let a_expr = arena.int(a);
+        arena.add(&[a_expr, b_sqrt])
+    };
+
+    if c == 1 {
+        numerator
+    } else {
+        let c_expr = arena.int(c);
+        arena.div(numerator, c_expr)
+    }
+}
+
+/// Quick check that an nsimplified expression is "clean" (small, no
+/// nested radicals or huge fractions).
+fn is_clean_expr(arena: &Arena, expr: ExprId) -> bool {
+    let s = arena.display(expr).to_string();
+    s.len() < 50 && !s.contains("cbrt")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
