@@ -105,7 +105,7 @@ pub fn eval_numeric(expr_str: &str) -> Result<String, JsValue> {
     let expr = symplex::parse::parse(&ctx, expr_str)
         .map_err(|e| JsValue::from_str(&format!("Parse error: {e}")))?;
     let evaled = expr.eval();
-    match evaled.evalf_f64() {
+    match evaled.eval_f64() {
         Ok(v) => Ok(format!("{v}")),
         Err(_) => Ok(format!("{evaled}")),
     }
@@ -192,8 +192,9 @@ pub fn compute_jacobian(dh_json: &str) -> Result<String, JsValue> {
 
     let (x, y, z) = symplex::robotics::fk_position(&dh_refs);
     let theta_vars: Vec<Ex> = config.joints.iter().map(|j| ctx.symbol(&j.theta)).collect();
+    let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
 
-    let jac = symplex::matrix::jacobian(&[x, y, z], &theta_vars);
+    let jac = symplex::matrix::jacobian(&[&x, &y, &z], &theta_refs);
 
     let mut rows = Vec::new();
     for i in 0..jac.nrows() {
@@ -237,9 +238,10 @@ pub fn generate_jacobian_code(dh_json: &str) -> Result<String, JsValue> {
 
     let (x, y, z) = symplex::robotics::fk_position(&dh_refs);
     let theta_vars: Vec<Ex> = config.joints.iter().map(|j| ctx.symbol(&j.theta)).collect();
+    let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
     let param_names: Vec<&str> = config.joints.iter().map(|j| j.theta.as_str()).collect();
 
-    let jac = symplex::matrix::jacobian(&[x, y, z], &theta_vars);
+    let jac = symplex::matrix::jacobian(&[&x, &y, &z], &theta_refs);
 
     jac.to_rust_fn("jacobian", &param_names)
         .map_err(|e| JsValue::from_str(&format!("Codegen error: {e}")))

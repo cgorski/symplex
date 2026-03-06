@@ -19,7 +19,7 @@ fn verify_z_numerically(
 ) {
     let z_val = symplex::rational(z_num, z_den);
     let at_z = result.subs(z, &z_val).eval();
-    let val = at_z.evalf_f64().expect(&format!(
+    let val = at_z.eval_f64().expect(&format!(
         "{label}: should evaluate numerically at z={z_num}/{z_den}"
     ));
     assert!(
@@ -44,7 +44,7 @@ fn verify_z_transform_partial_sum(
     // Evaluate X(z) at z = r
     let r_val = symplex::rational(r_num, r_den);
     let xz_at_r = x_of_z.subs(z, &r_val).eval();
-    let xz_f64 = xz_at_r.evalf_f64().expect(&format!(
+    let xz_f64 = xz_at_r.eval_f64().expect(&format!(
         "{label}: X(z) should evaluate at z={r_num}/{r_den}"
     ));
 
@@ -53,7 +53,7 @@ fn verify_z_transform_partial_sum(
     for k in 0..num_terms {
         let k_val = symplex::int(k as i64);
         let x_at_k = x_of_n.subs(n, &k_val).eval();
-        if let Ok(xk) = x_at_k.evalf_f64() {
+        if let Ok(xk) = x_at_k.eval_f64() {
             let r_f64 = r_num as f64 / r_den as f64;
             let r_neg_k = r_f64.powi(-(k as i32));
             partial_sum += xk * r_neg_k;
@@ -255,7 +255,7 @@ fn inverse_z_transform_simple() {
     );
     // Verify: at n=3, result should be 8
     let at_3 = r.subs(&n, &symplex::int(3)).eval();
-    let val = at_3.evalf_f64().expect("should evaluate at n=3");
+    let val = at_3.eval_f64().expect("should evaluate at n=3");
     assert!(
         (val - 8.0).abs() < 1e-6,
         "Z⁻¹{{z/(z-2)}} at n=3 should be 8, got: {val}"
@@ -277,7 +277,7 @@ fn inverse_z_transform_unit_step() {
     let r = result.unwrap();
     // Verify: at n=5, result should be 1
     let at_5 = r.subs(&n, &symplex::int(5)).eval();
-    let val = at_5.evalf_f64().expect("should evaluate at n=5");
+    let val = at_5.eval_f64().expect("should evaluate at n=5");
     assert!(
         (val - 1.0).abs() < 1e-6,
         "Z⁻¹{{z/(z-1)}} at n=5 should be 1, got: {val}"
@@ -300,7 +300,7 @@ fn inverse_z_transform_scaled() {
     let r = result.unwrap();
     // Verify: at n=2, 3·2² = 12
     let at_2 = r.subs(&n, &symplex::int(2)).eval();
-    let val = at_2.evalf_f64().expect("should evaluate at n=2");
+    let val = at_2.eval_f64().expect("should evaluate at n=2");
     assert!(
         (val - 12.0).abs() < 1e-6,
         "Z⁻¹{{3z/(z-2)}} at n=2 should be 12, got: {val}"
@@ -444,8 +444,8 @@ fn roundtrip_z_transform_exponential() {
         let k_val = symplex::int(k);
         let orig_val = original.subs(&n, &k_val).eval();
         let rec_val = recovered.subs(&n, &k_val).eval();
-        let o = orig_val.evalf_f64().expect("original should evaluate");
-        let r = rec_val.evalf_f64().expect("recovered should evaluate");
+        let o = orig_val.eval_f64().expect("original should evaluate");
+        let r = rec_val.eval_f64().expect("recovered should evaluate");
         assert!(
             (o - r).abs() < 1e-6,
             "roundtrip at n={k}: original={o}, recovered={r}"
@@ -473,8 +473,8 @@ fn roundtrip_z_transform_integer_base() {
         let k_val = symplex::int(k);
         let orig_val = original.subs(&n, &k_val).eval();
         let rec_val = recovered.subs(&n, &k_val).eval();
-        let o = orig_val.evalf_f64().expect("original should evaluate");
-        let r = rec_val.evalf_f64().expect("recovered should evaluate");
+        let o = orig_val.eval_f64().expect("original should evaluate");
+        let r = rec_val.eval_f64().expect("recovered should evaluate");
         assert!(
             (o - r).abs() < 1e-6,
             "roundtrip at n={k}: original={o}, recovered={r}"

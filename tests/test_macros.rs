@@ -435,7 +435,7 @@ fn expr_then_evalf() {
     let x = ctx.symbol("x");
     let f = expr!(x ^ 2 + 1);
     let at_pi = f.subs(&x, &ctx.pi());
-    let result = at_pi.evalf(15).unwrap();
+    let result = at_pi.eval_decimal(15).unwrap();
     assert!(
         result.starts_with("10.8696"),
         "pi² + 1 ≈ 10.8696..., got: {result}"

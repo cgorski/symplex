@@ -148,7 +148,7 @@ proptest! {
         let product = &ctx.int(a) * &ctx.int(b);
         let ln_product = product.ln();
         let expanded = ln_product.expand_log();
-        let recombined = expanded.logcombine();
+        let recombined = expanded.log_combine();
         let orig_s = format!("{ln_product}");
         let recom_s = format!("{recombined}");
         prop_assert_eq!(orig_s, recom_s, "expand_log then logcombine should roundtrip for ln({}*{})", a, b);
@@ -179,8 +179,8 @@ proptest! {
 
         // Evaluate both at x = 7/10 (avoid integer points where division by zero is common)
         let point = ctx.rational(7, 10);
-        let val_orig = full.subs(&x, &point).evalf_f64();
-        let val_simp = simplified.subs(&x, &point).evalf_f64();
+        let val_orig = full.subs(&x, &point).eval_f64();
+        let val_simp = simplified.subs(&x, &point).eval_f64();
 
         let mut bail = common::BailCounter::new("simplify_preserves_value");
         if let (Ok(v1), Ok(v2)) = (val_orig, val_simp) {
@@ -205,8 +205,8 @@ proptest! {
         let simplified = expr.smart_simplify();
 
         let point = ctx.rational(3, 7);
-        let val_orig = expr.subs(&x, &point).evalf_f64();
-        let val_simp = simplified.subs(&x, &point).evalf_f64();
+        let val_orig = expr.subs(&x, &point).eval_f64();
+        let val_simp = simplified.subs(&x, &point).eval_f64();
 
         let mut bail = common::BailCounter::new("smart_simplify_preserves_value");
         if let (Ok(v1), Ok(v2)) = (val_orig, val_simp) {
@@ -230,8 +230,8 @@ proptest! {
         let simplified = expr.full_simplify();
 
         let point = ctx.rational(1, 3);
-        let val_orig = expr.subs(&x, &point).evalf_f64();
-        let val_simp = simplified.subs(&x, &point).evalf_f64();
+        let val_orig = expr.subs(&x, &point).eval_f64();
+        let val_simp = simplified.subs(&x, &point).eval_f64();
 
         let mut bail = common::BailCounter::new("full_simplify_preserves_value");
         if let (Ok(v1), Ok(v2)) = (val_orig, val_simp) {
@@ -263,8 +263,8 @@ proptest! {
 
         // Evaluate both at x = 2
         let point = ctx.int(2);
-        let val_orig = poly_ln.subs(&x, &point).evalf_f64();
-        let val_deriv = derivative.subs(&x, &point).evalf_f64();
+        let val_orig = poly_ln.subs(&x, &point).eval_f64();
+        let val_deriv = derivative.subs(&x, &point).eval_f64();
 
         if let (Ok(v1), Ok(v2)) = (val_orig, val_deriv) {
             let diff = (v1 - v2).abs();

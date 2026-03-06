@@ -104,14 +104,14 @@ fn main() {
     // ── 15. Numerical root finding ─────────────────────────────────────
     // Solve x = cos(x) numerically
     let transcendental = &x - &x.cos();
-    match transcendental.nsolve(&x, 1.0, 50, 1e-12) {
+    match transcendental.solve_numeric(&x, 1.0, 50, 1e-12) {
         Ok(root) => println!("\nNumerical root of x - cos(x) = 0: x ≈ {root:.10}"),
         Err(e) => println!("\nNumerical solve failed: {e}"),
     }
 
     // ── 16. Arbitrary-precision evaluation ─────────────────────────────
     let pi = symplex::default_context().pi();
-    match pi.evalf(30) {
+    match pi.eval_decimal(30) {
         Ok(s) => println!("\nπ to 30 digits: {s}"),
         Err(e) => println!("\nevalf failed: {e}"),
     }

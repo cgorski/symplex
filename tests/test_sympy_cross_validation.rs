@@ -168,7 +168,7 @@ fn eval_at_point(expr: &Ex, ctx: &Context, subs: &HashMap<String, f64>) -> Optio
         let point = symplex::parse::parse(ctx, &point_str).ok()?;
         result = result.subs(&var, &point);
     }
-    result.evalf_complex64().ok()
+    result.eval_complex64().ok()
 }
 
 /// Check whether an actual (re, im) pair matches the expected NumValue.
@@ -278,7 +278,7 @@ fn check_eval_points_fixture_strict(result: &Ex, ctx: &Context, fixture: &Fixtur
             // No eval points — try direct value comparison
             if let Some(expected) = &fixture.value {
                 let evaled = result.clone().eval();
-                match evaled.evalf_complex64() {
+                match evaled.eval_complex64() {
                     Ok(val) => {
                         if values_match(val, expected) {
                             Status::Pass
@@ -602,7 +602,7 @@ fn process_integrate(ctx: &Context, fixture: &Fixture) -> Status {
             // No eval points — try direct value comparison
             if let Some(expected) = &fixture.value {
                 let evaled = result.eval();
-                match evaled.evalf_f64() {
+                match evaled.eval_f64() {
                     Ok(val) if !val.is_nan() => {
                         if approx_eq(val, expected.re) {
                             Status::Pass
@@ -675,7 +675,7 @@ fn process_definite_integral(ctx: &Context, fixture: &Fixture) -> Status {
     let result = result.eval().full_simplify();
 
     if let Some(expected) = &fixture.value {
-        match result.evalf_f64() {
+        match result.eval_f64() {
             Ok(val) if !val.is_nan() => {
                 if approx_eq(val, expected.re) {
                     Status::Pass
@@ -765,7 +765,7 @@ fn process_solve(ctx: &Context, fixture: &Fixture) -> Status {
     let mut bad_roots: Vec<String> = Vec::new();
     for root in &roots {
         let residual = expr.subs(&var, root).eval();
-        if let Ok(r) = residual.evalf_f64() {
+        if let Ok(r) = residual.eval_f64() {
             if !r.is_nan() && r.abs() > TOLERANCE {
                 bad_roots.push(format!("root {} has residual {} (should be ~0)", root, r));
             }
@@ -809,7 +809,7 @@ fn process_eval(ctx: &Context, fixture: &Fixture) -> Status {
     let result = expr.eval();
 
     if let Some(expected) = &fixture.value {
-        match result.evalf_f64() {
+        match result.eval_f64() {
             Ok(val) if !val.is_nan() => {
                 if approx_eq(val, expected.re) {
                     Status::Pass
@@ -902,7 +902,7 @@ fn process_limit(ctx: &Context, fixture: &Fixture) -> Status {
     match expr.limit(&var, &point) {
         Ok(limit_result) => {
             let limit_result = limit_result.eval();
-            match limit_result.evalf_f64() {
+            match limit_result.eval_f64() {
                 Ok(val) => {
                     if val.is_nan() {
                         Status::NotImplemented(format!(
@@ -1000,7 +1000,7 @@ fn process_matrix_det(ctx: &Context, fixture: &Fixture) -> Status {
     let det = mat.det().eval();
 
     if let Some(expected) = &fixture.value {
-        match det.evalf_f64() {
+        match det.eval_f64() {
             Ok(val) if !val.is_nan() => {
                 if approx_eq(val, expected.re) {
                     Status::Pass
@@ -1033,7 +1033,7 @@ fn process_matrix_trace(ctx: &Context, fixture: &Fixture) -> Status {
     let tr = mat.trace().eval();
 
     if let Some(expected) = &fixture.value {
-        match tr.evalf_f64() {
+        match tr.eval_f64() {
             Ok(val) if !val.is_nan() => {
                 if approx_eq(val, expected.re) {
                     Status::Pass
@@ -1092,7 +1092,7 @@ fn process_matrix_multiply(ctx: &Context, fixture: &Fixture) -> Status {
             for j in 0..nc {
                 let got = product.get(i, j).eval();
                 let exp = expected_mat.get(i, j).eval();
-                match (got.evalf_f64(), exp.evalf_f64()) {
+                match (got.eval_f64(), exp.eval_f64()) {
                     (Ok(g), Ok(e)) if !g.is_nan() && !e.is_nan() => {
                         if !approx_eq(g, e) {
                             return Status::Fail(format!(
@@ -1151,7 +1151,7 @@ fn process_matrix_inverse(ctx: &Context, fixture: &Fixture) -> Status {
             for j in 0..nc {
                 let got = inv.get(i, j).eval();
                 let exp = expected_mat.get(i, j).eval();
-                match (got.evalf_f64(), exp.evalf_f64()) {
+                match (got.eval_f64(), exp.eval_f64()) {
                     (Ok(g), Ok(e)) if !g.is_nan() && !e.is_nan() => {
                         if !approx_eq(g, e) {
                             return Status::Fail(format!(
@@ -1198,7 +1198,7 @@ fn process_matrix_eigenvalue(ctx: &Context, fixture: &Fixture) -> Status {
     // Collect computed eigenvalues as f64
     let mut computed_vals: Vec<f64> = Vec::new();
     for ev in &computed {
-        match ev.evalf_f64() {
+        match ev.eval_f64() {
             Ok(v) if !v.is_nan() => computed_vals.push(v),
             _ => {
                 return Status::NotImplemented(format!("can't evalf eigenvalue: {}", ev));
@@ -1255,7 +1255,7 @@ fn process_algebra(ctx: &Context, fixture: &Fixture, subcat: &str) -> Status {
         "collect" => expr.collect(&var),
         "together" => expr.together(),
         "cancel" => expr.cancel(&var),
-        "apart" => expr.apart(&var),
+        "apart" => expr.partial_fractions(&var),
         other => {
             return Status::UnsupportedApi(format!(
                 "algebra subcategory '{}' not supported",
@@ -1286,7 +1286,7 @@ fn process_evalf(ctx: &Context, fixture: &Fixture) -> Status {
         None => return Status::NotImplemented("no sympy_result for evalf".into()),
     };
 
-    match expr.evalf(digits) {
+    match expr.eval_decimal(digits) {
         Ok(result_str) => {
             let symplex_val: f64 = match result_str.parse() {
                 Ok(v) => v,
@@ -1361,7 +1361,7 @@ fn process_factorial(ctx: &Context, fixture: &Fixture) -> Status {
     let result = n_expr.factorial().eval();
 
     if let Some(expected) = &fixture.value {
-        match result.evalf_f64() {
+        match result.eval_f64() {
             Ok(val) if !val.is_nan() => {
                 if approx_eq(val, expected.re) {
                     Status::Pass

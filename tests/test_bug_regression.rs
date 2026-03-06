@@ -136,8 +136,8 @@ fn regression_smart_simplify_gcd_dropped() {
     let result = expr.smart_simplify();
     // Must be mathematically equal to 6x + 12
     let point = symplex::rational(7, 10);
-    let val_orig = expr.subs(&x, &point).evalf_f64().unwrap();
-    let val_result = result.subs(&x, &point).evalf_f64().unwrap();
+    let val_orig = expr.subs(&x, &point).eval_f64().unwrap();
+    let val_result = result.subs(&x, &point).eval_f64().unwrap();
     assert!(
         (val_orig - val_result).abs() < 1e-10,
         "smart_simplify(6x + 12) changed the value: {val_orig} vs {val_result}"
@@ -175,8 +175,8 @@ fn regression_by_parts_x_ln_x_no_crash() {
     // Verify by differentiation
     let deriv = result.diff(&x);
     let point = symplex::int(2);
-    let val_orig = expr.subs(&x, &point).evalf_f64().unwrap();
-    let val_deriv = deriv.subs(&x, &point).evalf_f64().unwrap();
+    let val_orig = expr.subs(&x, &point).eval_f64().unwrap();
+    let val_deriv = deriv.subs(&x, &point).eval_f64().unwrap();
     assert!(
         (val_orig - val_deriv).abs() < 1e-8,
         "d/dx(∫ x·ln(x) dx) should equal x·ln(x) at x=2: {val_orig} vs {val_deriv}"

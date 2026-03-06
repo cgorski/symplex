@@ -25,8 +25,8 @@ proptest! {
             if let Ok(recovered) = transformed.inverse_laplace(&s, &t) {
                 // Evaluate both at t=0.5
                 let test_point = symplex::rational(1, 2);
-                let orig_val = expr.subs(&t, &test_point).evalf_f64();
-                let recov_val = recovered.subs(&t, &test_point).eval().simplify().evalf_f64();
+                let orig_val = expr.subs(&t, &test_point).eval_f64();
+                let recov_val = recovered.subs(&t, &test_point).eval().simplify().eval_f64();
 
                 if let (Ok(o), Ok(r)) = (orig_val, recov_val) {
                     if o.is_finite() && r.is_finite() {
@@ -99,8 +99,8 @@ proptest! {
         let two = ctx.int(2);
         let new_two = new_ctx.int(2);
         let new_x = new_ctx.symbol("x");
-        let orig_val = expr.subs(&x, &two).evalf_f64();
-        let new_val = new_exprs[0].subs(&new_x, &new_two).evalf_f64();
+        let orig_val = expr.subs(&x, &two).eval_f64();
+        let new_val = new_exprs[0].subs(&new_x, &new_two).eval_f64();
 
         let mut bail = common::BailCounter::new("compact_preserves_value");
         if let (Ok(o), Ok(n_v)) = (orig_val, new_val) {

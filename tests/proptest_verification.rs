@@ -25,12 +25,12 @@ proptest! {
         let mut bail = common::BailCounter::new("lambdify_matches_evalf");
 
         // lambdify path
-        if let Some(f) = poly.lambdify(&["x"]) {
+        if let Some(f) = poly.compile(&["x"]) {
             let lambdify_result = f(&[pt as f64]);
 
             // evalf path
             let substituted = poly.subs_i64(&x, pt);
-            if let Ok(evalf_result) = substituted.evalf_f64() {
+            if let Ok(evalf_result) = substituted.eval_f64() {
                 bail.check();
                 let diff = (lambdify_result - evalf_result).abs();
                 prop_assert!(diff < 1e-6,
@@ -51,7 +51,7 @@ proptest! {
         let x = symplex::var("x");
         let expr = &x.sin().powi(2) + &x.cos().powi(2);
 
-        if let Some(f) = expr.lambdify(&["x"]) {
+        if let Some(f) = expr.compile(&["x"]) {
             let result = f(&[pt as f64]);
             // sin²+cos² should be 1.0 everywhere
             prop_assert!((result - 1.0).abs() < 1e-10,
@@ -134,7 +134,7 @@ proptest! {
             let expanded = s.expand();
             // Evaluate at x=0.5
             let at_half = expanded.subs_i64(&x, 1); // use x=1 for integer sub
-            if let Ok(val) = at_half.evalf_f64() {
+            if let Ok(val) = at_half.eval_f64() {
                 bail.check();
                 let exact = 1.0f64.sin();
                 // Higher order should be more accurate
@@ -159,7 +159,7 @@ proptest! {
         if let Ok(s) = series {
             let expanded = s.expand();
             let at_one = expanded.subs_i64(&x, 1);
-            if let Ok(val) = at_one.evalf_f64() {
+            if let Ok(val) = at_one.eval_f64() {
                 bail.check();
                 let exact = 1.0f64.exp();
                 let tol = 3.0 / (order as f64).powi(2);

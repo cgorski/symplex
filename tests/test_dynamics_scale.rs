@@ -235,7 +235,7 @@ fn experiment_3dof_planar_arm_dynamics() {
     // ── Step 7: Simplify one mass matrix entry with trigsimp ────────────
     println!("\nStep 7: Simplifying M[0,0] with trigsimp...");
     let t0 = Instant::now();
-    let m00_simplified = mm.get(0, 0).trigsimp();
+    let m00_simplified = mm.get(0, 0).simplify_trig();
     let trigsimp_time = t0.elapsed();
     println!("  trigsimp(M[0,0]) completed in {:?}", trigsimp_time);
     println!(
@@ -283,7 +283,7 @@ fn experiment_3dof_planar_arm_dynamics() {
             };
             result = result.subs(var, &num);
         }
-        result.eval().evalf_f64().unwrap()
+        result.eval().eval_f64().unwrap()
     };
 
     // Check M is symmetric: M[0,1] == M[1,0]
@@ -501,15 +501,8 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     let t0_jac = Instant::now();
 
     let jac = jacobian(
-        &[px.clone(), py.clone(), pz.clone()],
-        &[
-            q1.clone(),
-            q2.clone(),
-            q3.clone(),
-            q4.clone(),
-            q5.clone(),
-            q6.clone(),
-        ],
+        &[&px, &py, &pz],
+        &[&q1, &q2, &q3, &q4, &q5, &q6],
     );
 
     let jac_time = t0_jac.elapsed();
@@ -543,7 +536,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
             .subs(&a2, &symplex::rational(4318, 10000))
             .subs(&d4, &symplex::rational(4331, 10000))
             .eval()
-            .evalf_f64()
+            .eval_f64()
             .unwrap()
     };
     let px_num = fk_eval(&px);
@@ -577,7 +570,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     // ── Step 7: Simplify a Jacobian entry ────────────────────────────────
     println!("\nStep 7: Simplifying J[0,0] with trigsimp...");
     let t0_trig = Instant::now();
-    let j00_simplified = jac.get(0, 0).trigsimp();
+    let j00_simplified = jac.get(0, 0).simplify_trig();
     let trig_jac_time = t0_trig.elapsed();
     println!("  trigsimp(J[0,0]) in {:?}", trig_jac_time);
     println!(

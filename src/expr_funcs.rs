@@ -1573,13 +1573,12 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     /// let expr = &x.ln() + &y.ln();
-    /// let combined = expr.logcombine();
+    /// let combined = expr.log_combine();
     /// let s = format!("{combined}");
     /// assert!(s.contains("ln"), "should combine logs: {s}");
     /// ```
-    #[doc(hidden)]
     #[must_use = "returns the combined form; does not modify in place"]
-    pub fn logcombine(&self) -> Ex {
+    pub fn log_combine(&self) -> Ex {
         let id = self.inner.write().arena.log_combine_expr(self.id);
         self.wrap(id)
     }
@@ -1624,11 +1623,10 @@ impl Expr<Numeric> {
     ///
     /// let x = symplex::var("x");
     /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    /// assert_eq!(format!("{}", expr.trigsimp()), "1");
+    /// assert_eq!(format!("{}", expr.simplify_trig()), "1");
     /// ```
-    #[doc(hidden)]
     #[must_use = "returns the simplified form; does not modify in place"]
-    pub fn trigsimp(&self) -> Ex {
+    pub fn simplify_trig(&self) -> Ex {
         let id = self.inner.write().arena.trigsimp_expr(self.id);
         self.wrap(id)
     }
@@ -1645,12 +1643,11 @@ impl Expr<Numeric> {
     ///
     /// let result = symplex::int(5).factorial().eval();
     /// let four_fact = symplex::int(4).factorial().eval();
-    /// let ratio = (&result / &four_fact).combsimp();
+    /// let ratio = (&result / &four_fact).simplify_combinatorial();
     /// assert_eq!(format!("{ratio}"), "5");
     /// ```
-    #[doc(hidden)]
     #[must_use = "returns the simplified form; does not modify in place"]
-    pub fn combsimp(&self) -> Ex {
+    pub fn simplify_combinatorial(&self) -> Ex {
         let id = self.inner.write().arena.combsimp_expr(self.id);
         self.wrap(id)
     }
@@ -1667,12 +1664,11 @@ impl Expr<Numeric> {
     /// use symplex::prelude::*;
     ///
     /// let expr = symplex::rational(333333, 1000000);
-    /// let result = expr.nsimplify(1e-5);
+    /// let result = expr.simplify_numeric(1e-5);
     /// assert_eq!(format!("{result}"), "1/3");
     /// ```
-    #[doc(hidden)]
     #[must_use = "returns the simplified form; does not modify in place"]
-    pub fn nsimplify(&self, tolerance: f64) -> Ex {
+    pub fn simplify_numeric(&self, tolerance: f64) -> Ex {
         let id = self.inner.write().arena.nsimplify_expr(self.id, tolerance);
         self.wrap(id)
     }
@@ -1690,13 +1686,12 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let (x, a, b) = (ctx.symbol("x"), ctx.symbol("a"), ctx.symbol("b"));
     /// let expr = &x.pow(&a) * &x.pow(&b);
-    /// let result = expr.powsimp();
+    /// let result = expr.simplify_powers();
     /// let s = format!("{result}");
     /// assert!(s.contains("a + b") || s.contains("b + a"), "should combine: {s}");
     /// ```
-    #[doc(hidden)]
     #[must_use = "returns the simplified form; does not modify in place"]
-    pub fn powsimp(&self) -> Ex {
+    pub fn simplify_powers(&self) -> Ex {
         let id = self.inner.write().arena.powsimp_expr(self.id);
         self.wrap(id)
     }
@@ -1838,15 +1833,14 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// // 1/x + 1/x → 2/x after ratsimp
+    /// // 1/x + 1/x → 2/x after simplify_rational
     /// let expr = &x.powi(-1) + &x.powi(-1);
-    /// let simplified = expr.ratsimp();
+    /// let simplified = expr.simplify_rational();
     /// let s = format!("{simplified}");
-    /// assert!(s.contains("2"), "ratsimp should combine: {s}");
+    /// assert!(s.contains("2"), "simplify_rational should combine: {s}");
     /// ```
-    #[doc(hidden)]
     #[must_use = "returns the simplified form; does not modify in place"]
-    pub fn ratsimp(&self) -> Ex {
+    pub fn simplify_rational(&self) -> Ex {
         let together = self.together();
         // Try to cancel with each free symbol
         let syms = together.free_symbols();
@@ -1871,14 +1865,13 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let expr = 1 / (&x.powi(2) - 1);
-    /// let decomposed = expr.apart(&x);
+    /// let decomposed = expr.partial_fractions(&x);
     /// let s = format!("{decomposed}");
     /// // Should be decomposed into simpler fractions
     /// assert!(s != format!("{expr}") || s.contains("1/"), "should decompose: {s}");
     /// ```
-    #[doc(hidden)]
     #[must_use = "returns the decomposed form; does not modify in place"]
-    pub fn apart(&self, var: &Ex) -> Ex {
+    pub fn partial_fractions(&self, var: &Ex) -> Ex {
         let id = self.inner.write().arena.apart_expr(self.id, var.id);
         self.wrap(id)
     }
@@ -1984,12 +1977,11 @@ impl Expr<Numeric> {
     /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     /// // 2 * x * y  — each factor depends on different vars
     /// let expr = &x * &y * 2;
-    /// let groups = expr.separatevars(&[&x, &y]);
+    /// let groups = expr.separate_vars(&[&x, &y]);
     /// assert!(groups.len() >= 2, "should separate into multiple groups");
     /// ```
-    #[doc(hidden)]
     #[must_use]
-    pub fn separatevars(&self, vars: &[&Ex]) -> Vec<(Vec<Ex>, Ex)> {
+    pub fn separate_vars(&self, vars: &[&Ex]) -> Vec<(Vec<Ex>, Ex)> {
         let var_ids: Vec<crate::node::ExprId> = vars.iter().map(|v| v.id).collect();
         let raw = self
             .inner
@@ -2198,7 +2190,7 @@ impl Expr<Numeric> {
         let poly = crate::polybridge::expr_to_poly(&inner.arena, self.id, var.id);
         if poly.is_none() {
             return Err(SymplexError::ComputationFailed {
-                operation: "solve",
+                operation: "solve_numeric",
                 reason: "expression is not polynomial in the given variable".into(),
             });
         }
@@ -2295,13 +2287,12 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let poly = &x.powi(2) - &x * 5 + 6;
-    /// let result = poly.solveset(&x);
+    /// let result = poly.solve_as_set(&x);
     /// let s = format!("{result}");
     /// // Should contain {2, 3} or similar
-    /// assert!(!s.contains("EmptySet"), "solveset: {s}");
+    /// assert!(!s.contains("EmptySet"), "solve_as_set: {s}");
     /// ```
-    #[doc(hidden)]
-    pub fn solveset(&self, var: &Ex) -> SetEx {
+    pub fn solve_as_set(&self, var: &Ex) -> SetEx {
         let id = self.inner.write().arena.solveset_expr(self.id, var.id);
         self.wrap_as::<SetValued>(id)
     }
@@ -2330,11 +2321,10 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// // Solve x - cos(x) = 0 near x=1
     /// let expr = &x - &x.cos();
-    /// let root = expr.nsolve(&x, 1.0, 50, 1e-12).unwrap();
+    /// let root = expr.solve_numeric(&x, 1.0, 50, 1e-12).unwrap();
     /// assert!((root - 0.7390851332).abs() < 1e-8);
     /// ```
-    #[doc(hidden)]
-    pub fn nsolve(
+    pub fn solve_numeric(
         &self,
         var: &Ex,
         initial_guess: f64,
@@ -2350,7 +2340,7 @@ impl Expr<Numeric> {
                 Some(r) => r,
                 None => {
                     return Err(SymplexError::ComputationFailed {
-                        operation: "nsolve",
+                        operation: "solve_numeric",
                         reason: format!("could not approximate x = {x} as rational"),
                     });
                 }
@@ -2363,12 +2353,12 @@ impl Expr<Numeric> {
                 self.wrap(id)
             };
 
-            let f_val = self.subs(var, &x_rational).evalf_f64()?;
-            let fp_val = deriv.subs(var, &x_rational).evalf_f64()?;
+            let f_val = self.subs(var, &x_rational).eval_f64()?;
+            let fp_val = deriv.subs(var, &x_rational).eval_f64()?;
 
             if fp_val.abs() < 1e-30 {
                 return Err(SymplexError::ComputationFailed {
-                    operation: "nsolve",
+                    operation: "solve_numeric",
                     reason: "derivative is effectively zero".into(),
                 });
             }
@@ -2381,7 +2371,7 @@ impl Expr<Numeric> {
         }
 
         Err(SymplexError::ComputationFailed {
-            operation: "nsolve",
+            operation: "solve_numeric",
             reason: format!(
                 "did not converge within {} iterations (last x = {x})",
                 max_iterations
@@ -2408,13 +2398,12 @@ impl Expr<Numeric> {
     /// let y = symplex::var("y");
     /// let dy = y.formal_diff(&x);  // y'
     /// let ode = &dy + &(&y * 2);   // y' + 2y = 0
-    /// if let Some((sol, constants)) = ode.dsolve(&y, &x) {
+    /// if let Some((sol, constants)) = ode.solve_ode(&y, &x) {
     ///     let s = format!("{sol}");
     ///     assert!(s.contains("exp"), "solution should contain exp: {s}");
     /// }
     /// ```
-    #[doc(hidden)]
-    pub fn dsolve(&self, func: &Ex, var: &Ex) -> Option<(Ex, Vec<Ex>)> {
+    pub fn solve_ode(&self, func: &Ex, var: &Ex) -> Option<(Ex, Vec<Ex>)> {
         let result = {
             let mut guard = self.inner.write();
             crate::ode::dsolve(&mut guard.arena, self.id, func.id, var.id)
@@ -2436,7 +2425,7 @@ impl Expr<Numeric> {
     /// # Errors
     ///
     /// Returns [`SymplexError::FreeSymbol`] if the expression contains
-    /// unbound symbols (e.g., `x.evalf(10)` without substituting a value).
+    /// unbound symbols (e.g., `x.eval_decimal(10)` without substituting a value).
     ///
     /// Returns [`SymplexError::Unevaluable`] if the expression contains
     /// nodes that cannot be evaluated to a finite number (infinity, NaN,
@@ -2445,10 +2434,9 @@ impl Expr<Numeric> {
     /// Returns [`SymplexError::PrecisionExhausted`] if the requested
     /// precision exceeds `EvalConfig::max_evalf_precision`, or if
     /// intermediate computation produces NaN.
-    #[doc(hidden)]
     #[must_use = "returns the numerical value as a string"]
-    pub fn evalf(&self, digits: u32) -> Result<String, SymplexError> {
-        let _span = debug_span!("evalf", expr = ?self.id, digits = digits).entered();
+    pub fn eval_decimal(&self, digits: u32) -> Result<String, SymplexError> {
+        let _span = debug_span!("eval_decimal", expr = ?self.id, digits = digits).entered();
         // Reduce exact values before numerical evaluation.
         // This ensures e.g. Gamma(5) → 24 (exact) rather than
         // computing 23.9999... via Stirling series.
@@ -2459,13 +2447,13 @@ impl Expr<Numeric> {
 
     /// Convenience: evaluate to an `f64`.
     ///
-    /// Calls [`evalf`](Ex::evalf) with 16 digits of precision and
+    /// Calls [`eval_decimal`](Ex::eval_decimal) with 16 digits of precision and
     /// parses the result to `f64`. This avoids the common pattern of
-    /// `.evalf(15).unwrap().parse::<f64>().unwrap()`.
+    /// `.eval_decimal(15).unwrap().parse::<f64>().unwrap()`.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`evalf`](Ex::evalf), plus a
+    /// Returns the same errors as [`eval_decimal`](Ex::eval_decimal), plus a
     /// [`SymplexError::NotImplemented`] if the decimal string cannot
     /// be parsed to `f64`.
     ///
@@ -2475,20 +2463,19 @@ impl Expr<Numeric> {
     /// use symplex::prelude::*;
     ///
     /// let x = symplex::var("x");
-    /// let val = x.powi(2).subs_i64(&x, 3).evalf_f64().unwrap();
+    /// let val = x.powi(2).subs_i64(&x, 3).eval_f64().unwrap();
     /// assert!((val - 9.0).abs() < 1e-10);
     /// ```
-    #[doc(hidden)]
-    pub fn evalf_f64(&self) -> Result<f64, SymplexError> {
+    pub fn eval_f64(&self) -> Result<f64, SymplexError> {
         // eval() first to reduce exact values (sin(0)→0, Gamma(5)→24, etc.)
-        // before numerical computation. The evalf_complex64 call below
+        // before numerical computation. The eval_complex64 call below
         // will work on the simplified expression.
-        let (re, im) = self.eval().evalf_complex64()?;
+        let (re, im) = self.eval().eval_complex64()?;
         if im.abs() > 1e-15 {
             return Err(SymplexError::ComputationFailed {
-                operation: "evalf_f64",
+                operation: "eval_f64",
                 reason: format!(
-                    "expression has nonzero imaginary part (im={im}); use evalf_complex64() for complex results"
+                    "expression has nonzero imaginary part (im={im}); use eval_complex64() for complex results"
                 ),
             });
         }
@@ -2505,9 +2492,8 @@ impl Expr<Numeric> {
     ///
     /// Returns `Err` if the expression contains free symbols or if
     /// the arbitrary-precision engine fails.
-    #[doc(hidden)]
-    pub fn evalf_complex64(&self) -> Result<(f64, f64), SymplexError> {
-        let s = self.evalf(16)?;
+    pub fn eval_complex64(&self) -> Result<(f64, f64), SymplexError> {
+        let s = self.eval_decimal(16)?;
         parse_complex_evalf_string(&s)
     }
 
@@ -2528,12 +2514,11 @@ impl Expr<Numeric> {
     ///
     /// let x = symplex::var("x");
     /// let f = &x.powi(2) + 1;
-    /// let func = f.lambdify(&["x"]).expect("should compile");
+    /// let func = f.compile(&["x"]).expect("should compile");
     /// assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
     /// ```
-    #[doc(hidden)]
     #[allow(clippy::type_complexity)]
-    pub fn lambdify(&self, var_names: &[&str]) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
+    pub fn compile(&self, var_names: &[&str]) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
         let inner = self.inner.read();
         crate::lambdify::lambdify(&inner.arena, self.id, var_names)
     }
@@ -2740,7 +2725,7 @@ impl Expr<Numeric> {
             return true;
         }
         // Try numerical evaluation
-        if let Ok(v) = substituted.evalf_f64() {
+        if let Ok(v) = substituted.eval_f64() {
             return v.abs() < 1e-10;
         }
         // Try expand + eval
@@ -2793,11 +2778,10 @@ impl Expr<Numeric> {
     /// let ode = &dy - &x; // y' - x = 0
     /// // Solution: y = x²/2
     /// let sol = &x.powi(2) / 2;
-    /// assert!(ode.checkodesol(&sol, &y, &x));
+    /// assert!(ode.check_ode_solution(&sol, &y, &x));
     /// ```
-    #[doc(hidden)]
     #[must_use]
-    pub fn checkodesol(&self, solution: &Ex, func: &Ex, var: &Ex) -> bool {
+    pub fn check_ode_solution(&self, solution: &Ex, func: &Ex, var: &Ex) -> bool {
         {
             let mut guard = self.inner.write();
             crate::ode::checkodesol(&mut guard.arena, self.id, solution.id, func.id, var.id)
@@ -2860,7 +2844,7 @@ impl Expr<Numeric> {
         for (var, val) in subs {
             result = result.subs_i64(var, *val);
         }
-        result.eval().evalf_f64()
+        result.eval().eval_f64()
     }
 
     /// Substitute multiple rational values and evaluate to f64.
@@ -2871,7 +2855,7 @@ impl Expr<Numeric> {
             let val = ctx.rational(*p, *q);
             result = result.subs(var, &val);
         }
-        result.eval().evalf_f64()
+        result.eval().eval_f64()
     }
 
     /// Substitute multiple integer values simultaneously.
@@ -3057,38 +3041,38 @@ fn parse_complex_evalf_string(s: &str) -> Result<(f64, f64), SymplexError> {
 #[cfg(test)]
 mod evalf_complex_tests {
     #[test]
-    fn evalf_complex64_pure_real() {
+    fn eval_complex64_pure_real() {
         let x = crate::var("x");
         let expr = &x.powi(2) + 1;
         let at_2 = expr.subs(&x, &crate::int(2));
-        let (re, im) = at_2.evalf_complex64().unwrap();
+        let (re, im) = at_2.eval_complex64().unwrap();
         assert!((re - 5.0).abs() < 1e-10);
         assert!(im.abs() < 1e-10);
     }
 
     #[test]
-    fn evalf_complex64_pure_imaginary() {
+    fn eval_complex64_pure_imaginary() {
         let i = crate::i_unit();
-        let (re, im) = i.evalf_complex64().unwrap();
+        let (re, im) = i.eval_complex64().unwrap();
         assert!(re.abs() < 1e-10);
         assert!((im - 1.0).abs() < 1e-10);
     }
 
     #[test]
-    fn evalf_complex64_mixed() {
+    fn eval_complex64_mixed() {
         let _ctx = crate::default_context();
         let expr = &crate::int(3) + &(&crate::int(4) * &crate::i_unit());
-        let (re, im) = expr.evalf_complex64().unwrap();
+        let (re, im) = expr.eval_complex64().unwrap();
         assert!((re - 3.0).abs() < 1e-10);
         assert!((im - 4.0).abs() < 1e-10);
     }
 
     #[test]
-    fn evalf_f64_rejects_complex() {
+    fn eval_f64_rejects_complex() {
         let i = crate::i_unit();
         assert!(
-            i.evalf_f64().is_err(),
-            "evalf_f64 should reject pure imaginary"
+            i.eval_f64().is_err(),
+            "eval_f64 should reject pure imaginary"
         );
     }
 }

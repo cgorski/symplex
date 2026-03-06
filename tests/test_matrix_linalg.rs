@@ -478,7 +478,7 @@ fn complex_eigenvalues_rotation_matrix() {
 
     // Verify that λ² + 1 has no real roots by checking it's always positive for real λ
     let cp_at_5 = cp.subs(&lambda, &symplex::int(5)).simplify();
-    let val = cp_at_5.evalf_f64().expect("cp(5) should evaluate");
+    let val = cp_at_5.eval_f64().expect("cp(5) should evaluate");
     assert!(val > 0.0, "cp(5) = 5² + 1 = 26, got {val}");
 }
 

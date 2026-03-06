@@ -128,7 +128,7 @@ fn sin_equation_two_branches_via_solveset() {
     // Use solveset() which accesses the full transcendental solver
     let half = symplex::rational(1, 2);
     let eq = &x.sin() - &half;
-    let result = eq.solveset(&x);
+    let result = eq.solve_as_set(&x);
     let s = format!("{result}");
     // Should contain at least two elements (not EmptySet)
     assert!(
@@ -148,7 +148,7 @@ fn cos_equation_two_branches_via_solveset() {
     // cos(x) = 1/2 → x ∈ {acos(1/2), -acos(1/2)}
     let half = symplex::rational(1, 2);
     let eq = &x.cos() - &half;
-    let result = eq.solveset(&x);
+    let result = eq.solve_as_set(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -165,7 +165,7 @@ fn sin_equation_branches_are_distinct() {
     symplex::vars!(x);
     let half = symplex::rational(1, 2);
     let eq = &x.sin() - &half;
-    let result = eq.solveset(&x);
+    let result = eq.solve_as_set(&x);
     let s = format!("{result}");
     // If we got a FiniteSet with two elements, they should differ
     // (FiniteSet displays as {a, b})
@@ -186,7 +186,7 @@ fn sin_equation_zero_via_solveset() {
     symplex::vars!(x);
     // sin(x) = 0 → solveset should find at least x = 0
     let eq = x.sin();
-    let result = eq.solveset(&x);
+    let result = eq.solve_as_set(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),

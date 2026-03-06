@@ -43,7 +43,7 @@ proptest! {
         let mut bail = common::BailCounter::new("cubic_roots_satisfy_polynomial");
         for root in &roots {
             let val = poly.subs(&x, root).eval().simplify();
-            if let Ok(v) = val.evalf_f64() {
+            if let Ok(v) = val.eval_f64() {
                 bail.check();
                 prop_assert!(
                     v.abs() < 1e-6,
@@ -83,7 +83,7 @@ proptest! {
             for i in 0..3 {
                 for j in 0..3 {
                     let entry = product.get(i, j).eval().simplify();
-                    if let Ok(v) = entry.evalf_f64() {
+                    if let Ok(v) = entry.eval_f64() {
                         bail.check();
                         let v: f64 = v;
                         if i == j {
@@ -161,7 +161,7 @@ proptest! {
         let det_ab = ab.det().eval().simplify();
 
         let mut bail = common::BailCounter::new("det_of_product");
-        if let (Ok(lhs), Ok(rhs)) = (det_ab.evalf_f64(), product_of_dets.evalf_f64()) {
+        if let (Ok(lhs), Ok(rhs)) = (det_ab.eval_f64(), product_of_dets.eval_f64()) {
             if lhs.is_finite() && rhs.is_finite() {
                 bail.check();
                 let tol = 1e-6 * lhs.abs().max(rhs.abs()).max(1.0);

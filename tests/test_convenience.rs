@@ -10,34 +10,34 @@ use symplex::prelude::*;
 #[test]
 fn evalf_f64_integer() {
     let five = symplex::int(5);
-    let val = five.evalf_f64().unwrap();
+    let val = five.eval_f64().unwrap();
     assert!((val - 5.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_f64_pi() {
     let ctx = Context::new();
-    let val = ctx.pi().evalf_f64().unwrap();
+    let val = ctx.pi().eval_f64().unwrap();
     assert!((val - std::f64::consts::PI).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_f64_expression() {
     let x = symplex::var("x");
-    let val = x.powi(2).subs_i64(&x, 3).evalf_f64().unwrap();
+    let val = x.powi(2).subs_i64(&x, 3).eval_f64().unwrap();
     assert!((val - 9.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_f64_free_symbol_errors() {
     let x = symplex::var("x");
-    assert!(x.evalf_f64().is_err());
+    assert!(x.eval_f64().is_err());
 }
 
 #[test]
 fn evalf_f64_rational() {
     let half = symplex::rational(1, 3);
-    let val = half.evalf_f64().unwrap();
+    let val = half.eval_f64().unwrap();
     assert!((val - 1.0 / 3.0).abs() < 1e-10);
 }
 
@@ -152,9 +152,9 @@ fn integrate_x_sin_x() {
 
     // Numerical FTC check: ∫₁² x·sin(x) dx ≈ F(2) - F(1)
     // where F is the antiderivative we just computed.
-    let f_at_2 = result.subs_i64(&x, 2).eval().evalf_f64()
+    let f_at_2 = result.subs_i64(&x, 2).eval().eval_f64()
         .expect("F(2) should evaluate");
-    let f_at_1 = result.subs_i64(&x, 1).eval().evalf_f64()
+    let f_at_1 = result.subs_i64(&x, 1).eval().eval_f64()
         .expect("F(1) should evaluate");
     let ftc_value = f_at_2 - f_at_1;
 
@@ -238,7 +238,7 @@ fn log_base_2() {
     let result = ctx.int(8).log(&ctx.int(2));
     // log_2(8) = ln(8)/ln(2) = 3
     // The symbolic form may not fully simplify, so verify numerically.
-    let val = result.eval().evalf_f64()
+    let val = result.eval().eval_f64()
         .expect("log_2(8) should evaluate to a float");
     assert!(
         (val - 3.0).abs() < 1e-9,

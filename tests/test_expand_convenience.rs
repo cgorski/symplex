@@ -114,7 +114,7 @@ fn ratsimp_combines_fractions() {
     let x = ctx.symbol("x");
     // 1/x + 1/x = 2/x
     let expr = &x.powi(-1) + &x.powi(-1);
-    let simplified = expr.ratsimp();
+    let simplified = expr.simplify_rational();
     let s = format!("{simplified}");
     assert!(
         s.contains("2"),
@@ -128,7 +128,7 @@ fn ratsimp_cancels_common_factor() {
     let x = ctx.symbol("x");
     // (x^2 - 1) / (x - 1) should simplify to x + 1
     let expr = (&x.powi(2) - 1) / (&x - 1);
-    let simplified = expr.ratsimp();
+    let simplified = expr.simplify_rational();
     let s = format!("{simplified}");
     assert!(
         s.contains("x") && s.contains("1"),
@@ -147,7 +147,7 @@ fn separatevars_independent_factors() {
     let y = ctx.symbol("y");
     // x * y — each factor depends on a different variable
     let expr = &x * &y;
-    let groups = expr.separatevars(&[&x, &y]);
+    let groups = expr.separate_vars(&[&x, &y]);
     // Should produce at least 2 groups (one for x, one for y)
     assert!(
         groups.len() >= 2,
@@ -162,7 +162,7 @@ fn separatevars_with_constant() {
     let x = ctx.symbol("x");
     // 3 * x — should have a constant group and an x group
     let expr = &x * 3;
-    let groups = expr.separatevars(&[&x]);
+    let groups = expr.separate_vars(&[&x]);
     let const_groups: Vec<_> = groups.iter().filter(|(deps, _)| deps.is_empty()).collect();
     let x_groups: Vec<_> = groups.iter().filter(|(deps, _)| !deps.is_empty()).collect();
     assert!(!const_groups.is_empty(), "3*x should have a constant group");
@@ -174,7 +174,7 @@ fn separatevars_non_mul_single_group() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // Just a symbol, not a Mul — should return a single group
-    let groups = x.separatevars(&[&x]);
+    let groups = x.separate_vars(&[&x]);
     assert_eq!(groups.len(), 1, "a single symbol should be one group");
     assert_eq!(groups[0].0.len(), 1, "should depend on x");
 }

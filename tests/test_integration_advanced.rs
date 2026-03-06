@@ -160,7 +160,7 @@ fn ode_exact_simple() {
     let n = &x + ctx.int(2) * &y;
     let ode_expr = &m + &n * &dy;
 
-    let result = ode_expr.dsolve(&y, &x);
+    let result = ode_expr.solve_ode(&y, &x);
     assert!(
         result.is_some(),
         "should solve exact ODE (2x+y) + (x+2y)y' = 0"
@@ -191,7 +191,7 @@ fn ode_exact_verify() {
 
     let ode_expr = &y + &x * &dy;
 
-    let result = ode_expr.dsolve(&y, &x);
+    let result = ode_expr.solve_ode(&y, &x);
     assert!(
         result.is_some(),
         "should solve y + x·y' = 0 (separable or exact)"
@@ -224,7 +224,7 @@ fn ode_exact_non_trivial() {
     let n = &x - y.powi(2);
     let ode_expr = &m + &n * &dy;
 
-    let result = ode_expr.dsolve(&y, &x);
+    let result = ode_expr.solve_ode(&y, &x);
     assert!(
         result.is_some(),
         "should solve exact ODE (x²+y) + (x−y²)y' = 0"
@@ -285,7 +285,7 @@ fn ode_integrating_factor_x() {
     // y' + y/x − x = 0
     let ode_expr = &dy + &y / &x - &x;
 
-    let result = ode_expr.dsolve(&y, &x);
+    let result = ode_expr.solve_ode(&y, &x);
     if let Some((sol, constants)) = result {
         let s = format!("{sol}");
         eprintln!("y' + y/x = x  solution: {s}");
@@ -313,7 +313,7 @@ fn ode_existing_simple_separable() {
     let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &x;
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "should solve y' = x");
     let (sol, _constants) = result.unwrap();
     let s = format!("{sol}");
@@ -332,7 +332,7 @@ fn ode_existing_first_order_linear() {
     let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy + ctx.int(2) * &y;
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "should solve y' + 2y = 0");
     let (sol, _) = result.unwrap();
     let s = format!("{sol}");
@@ -355,7 +355,7 @@ fn ode_existing_second_order_cc() {
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - ctx.int(3) * &dy + ctx.int(2) * &y;
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "should solve y'' − 3y' + 2y = 0");
     let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
@@ -374,7 +374,7 @@ fn ode_existing_separable_xy() {
     let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &x * &y;
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "should solve y' − xy = 0");
     let (sol, _) = result.unwrap();
     let s = format!("{sol}");
@@ -392,7 +392,7 @@ fn ode_existing_variable_coeff_linear() {
     let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy + ctx.int(2) * &x * &y;
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "should solve y' + 2xy = 0");
     let (sol, _) = result.unwrap();
     let s = format!("{sol}");

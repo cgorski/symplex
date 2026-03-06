@@ -23,7 +23,7 @@ fn assert_matrix_approx(mat: &Matrix, expected: &[f64], tol: f64) {
     );
     for i in 0..nr {
         for j in 0..nc {
-            let val = mat.get(i, j).simplify().evalf_f64().unwrap_or_else(|e| {
+            let val = mat.get(i, j).simplify().eval_f64().unwrap_or_else(|e| {
                 panic!("evalf_f64 failed at ({i},{j}): {e}");
             });
             let exp = expected[i * nc + j];
@@ -40,7 +40,7 @@ fn assert_matrix_near_zero(mat: &Matrix, tol: f64) {
     let (nr, nc) = mat.shape();
     for i in 0..nr {
         for j in 0..nc {
-            let val = mat.get(i, j).simplify().evalf_f64().unwrap_or_else(|e| {
+            let val = mat.get(i, j).simplify().eval_f64().unwrap_or_else(|e| {
                 panic!("evalf_f64 failed at ({i},{j}): {e}");
             });
             assert!(
@@ -67,7 +67,7 @@ fn cholesky_2x2() {
     let l = a.cholesky().expect("Cholesky should succeed for SPD matrix");
 
     // Verify L is lower triangular: L[0][1] should be 0
-    let l01 = l.get(0, 1).simplify().evalf_f64().unwrap();
+    let l01 = l.get(0, 1).simplify().eval_f64().unwrap();
     assert!(l01.abs() < 1e-10, "L[0][1] should be 0, got {l01}");
 
     // Verify L * Lᵀ = A
@@ -151,8 +151,8 @@ fn pinv_full_rank() {
     assert_eq!((nr, nc), (2, 2));
     for i in 0..nr {
         for j in 0..nc {
-            let pv = pinv.get(i, j).simplify().evalf_f64().unwrap();
-            let iv = inv.get(i, j).simplify().evalf_f64().unwrap();
+            let pv = pinv.get(i, j).simplify().eval_f64().unwrap();
+            let iv = inv.get(i, j).simplify().eval_f64().unwrap();
             assert!(
                 common::approx_eq(pv, iv, 1e-9),
                 "pinv[{i},{j}]={pv} != inv[{i},{j}]={iv}"
@@ -285,13 +285,13 @@ fn ackermann_simple() {
     let s = symplex::var("s");
     let mut eigs = a_cl.eigenvals(&s);
     eigs.sort_by(|a, b| {
-        let va = a.evalf_f64().unwrap_or(f64::NAN);
-        let vb = b.evalf_f64().unwrap_or(f64::NAN);
+        let va = a.eval_f64().unwrap_or(f64::NAN);
+        let vb = b.eval_f64().unwrap_or(f64::NAN);
         va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
     });
     assert_eq!(eigs.len(), 2, "Expected 2 eigenvalues");
-    let e0 = eigs[0].evalf_f64().unwrap();
-    let e1 = eigs[1].evalf_f64().unwrap();
+    let e0 = eigs[0].eval_f64().unwrap();
+    let e1 = eigs[1].eval_f64().unwrap();
     assert!(
         common::approx_eq(e0, -2.0, 1e-9),
         "First eigenvalue should be -2, got {e0}"

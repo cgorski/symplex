@@ -235,7 +235,7 @@ fn logcombine_two_logs() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let expr = &x.ln() + &y.ln();
-    let combined = expr.logcombine();
+    let combined = expr.log_combine();
     let s = format!("{combined}");
     assert!(
         s.contains("ln"),
@@ -249,7 +249,7 @@ fn logcombine_two_logs_exact() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let expr = &x.ln() + &y.ln();
-    let combined = expr.logcombine();
+    let combined = expr.log_combine();
     assert_eq!(format!("{combined}"), "ln(x*y)");
 }
 
@@ -261,7 +261,7 @@ fn logcombine_then_expand_roundtrip() {
     let product = &x * &y;
     let ln_product = product.ln();
     let expanded = ln_product.expand_log();
-    let recombined = expanded.logcombine();
+    let recombined = expanded.log_combine();
     let s = format!("{recombined}");
     assert!(
         s.contains("ln"),
@@ -279,7 +279,7 @@ fn logcombine_roundtrip_exact() {
     assert_eq!(format!("{ln_product}"), "ln(x*y)");
     let expanded = ln_product.expand_log();
     assert_eq!(format!("{expanded}"), "ln(x) + ln(y)");
-    let recombined = expanded.logcombine();
+    let recombined = expanded.log_combine();
     assert_eq!(format!("{recombined}"), "ln(x*y)");
 }
 
@@ -515,7 +515,7 @@ fn logcombine_preserves_simplification() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let combined = (&x.ln() + &y.ln()).logcombine();
+    let combined = (&x.ln() + &y.ln()).log_combine();
     assert_eq!(format!("{combined}"), "ln(x*y)");
     let deriv = combined.diff(&x);
     let simplified = deriv.full_simplify();

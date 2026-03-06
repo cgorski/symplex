@@ -40,7 +40,7 @@ fn verify_first_order(
     let sample_val = symplex::rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
-    let val = residual_at.evalf_f64().expect(
+    let val = residual_at.eval_f64().expect(
         "residual should evaluate to f64 for numerical ODE verification"
     );
     assert!(
@@ -60,7 +60,7 @@ fn ode_full_separable_dy_dx_eq_xy() {
     let x = symplex::var("x");
     let y = symplex::var("y");
     let ode = expr!(diff(y, x) - x * y);
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y' = xy should be solvable");
 
     let (sol, constants) = result.unwrap();
@@ -78,7 +78,7 @@ fn ode_full_separable_neg_xy() {
     let x = symplex::var("x");
     let y = symplex::var("y");
     let ode = expr!(diff(y, x) + x * y);
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y' = -xy should be solvable");
 
     let (sol, constants) = result.unwrap();
@@ -97,7 +97,7 @@ fn ode_full_separable_3xy() {
     let dy = y.formal_diff(&x);
     let three = symplex::int(3);
     let ode = &dy - &(&three * &x * &y);
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y' = 3xy should be solvable");
 
     let (sol, constants) = result.unwrap();
@@ -118,7 +118,7 @@ fn ode_variable_coeff_linear_homogeneous() {
     let x = symplex::var("x");
     let y = symplex::var("y");
     let ode = expr!(diff(y, x) + 2 * x * y);
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y' + 2xy = 0 should be solvable");
 
     let (sol, constants) = result.unwrap();
@@ -138,7 +138,7 @@ fn ode_variable_coeff_linear_3x_squared_y() {
     let three = symplex::int(3);
     let x_sq = x.powi(2);
     let ode = &dy + &(&three * &x_sq * &y);
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y' + 3x²y = 0 should be solvable");
 
     let (sol, constants) = result.unwrap();
@@ -160,7 +160,7 @@ fn ode_existing_types_still_work() {
 
     // Regression: y' + 2y = 0 (constant coeff) still works
     let ode = expr!(diff(y, x) + 2 * y);
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y' + 2y = 0 should still be solvable");
 
     // Regression: y'' + y = 0 still works (second-order CC)
@@ -168,13 +168,13 @@ fn ode_existing_types_still_work() {
     let d2y = dy.formal_diff(&x);
     let ode2 = &d2y + &y;
     // Complex roots — should still return Some (even if trig/complex form)
-    let result2 = ode2.dsolve(&y, &x);
+    let result2 = ode2.solve_ode(&y, &x);
     assert!(result2.is_some(), "y'' + y = 0 should return Some (second-order CC with complex roots)");
 
     // Regression: y' = x still works (simple separable)
     let ode3 = expr!(diff(y, x) - x);
     assert!(
-        ode3.dsolve(&y, &x).is_some(),
+        ode3.solve_ode(&y, &x).is_some(),
         "y' = x should still be solvable"
     );
 }
@@ -187,7 +187,7 @@ fn ode_constant_coeff_not_broken_by_new_dispatch() {
     let x = symplex::var("x");
     let y = symplex::var("y");
     let ode = expr!(diff(y, x) + 5 * y);
-    let (sol, constants) = ode.dsolve(&y, &x).expect("y' + 5y = 0 should solve");
+    let (sol, constants) = ode.solve_ode(&y, &x).expect("y' + 5y = 0 should solve");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
@@ -203,7 +203,7 @@ fn ode_no_y_dependence_still_simple_separable() {
     let y = symplex::var("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &(x.powi(2) + symplex::int(1));
-    let (sol, constants) = ode.dsolve(&y, &x).expect("y' = x² + 1 should be solvable");
+    let (sol, constants) = ode.solve_ode(&y, &x).expect("y' = x² + 1 should be solvable");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert_eq!(constants.len(), 1);

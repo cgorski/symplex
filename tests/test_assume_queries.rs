@@ -182,7 +182,7 @@ fn arg_first_quadrant() {
     let z = &symplex::int(1) + &symplex::i_unit();
     let a = z.arg().eval();
     // Should be atan2(1, 1) = π/4
-    let v = a.evalf_f64().expect("evalf should succeed for arg(1+i)");
+    let v = a.eval_f64().expect("evalf should succeed for arg(1+i)");
     assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
 }
 
@@ -191,7 +191,7 @@ fn arg_second_quadrant() {
     // arg(-1 + i) = 3π/4
     let z = &symplex::int(-1) + &symplex::i_unit();
     let a = z.arg().eval();
-    let v = a.evalf_f64().expect("evalf should succeed for arg(-1+i)");
+    let v = a.eval_f64().expect("evalf should succeed for arg(-1+i)");
     assert!(
         (v - 3.0 * std::f64::consts::FRAC_PI_4).abs() < 1e-10,
         "arg(-1+i) should be 3π/4, got {v}"
@@ -203,7 +203,7 @@ fn arg_negative_real() {
     // arg(-1) = π
     let z = symplex::int(-1);
     let a = z.arg().eval();
-    let v = a.evalf_f64().expect("evalf should succeed for arg(-1)");
+    let v = a.eval_f64().expect("evalf should succeed for arg(-1)");
     assert!(
         (v - std::f64::consts::PI).abs() < 1e-10,
         "arg(-1) should be π, got {v}"
@@ -215,7 +215,7 @@ fn atan2_basic() {
     // atan2(1, 1) = π/4
     let one = symplex::int(1);
     let result = one.atan2(&one).eval();
-    let v = result.evalf_f64().expect("evalf should succeed for atan2(1,1)");
+    let v = result.eval_f64().expect("evalf should succeed for atan2(1,1)");
     assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
 }
 
@@ -229,14 +229,14 @@ fn atan2_on_axes() {
     assert_eq!(format!("{}", zero.atan2(&one).eval()), "0");
     // atan2(1, 0) = π/2
     let r = one.atan2(&zero).eval();
-    let v = r.evalf_f64().expect("evalf should succeed for atan2(1,0)");
+    let v = r.eval_f64().expect("evalf should succeed for atan2(1,0)");
     assert!(
         (v - std::f64::consts::FRAC_PI_2).abs() < 1e-10,
         "atan2(1,0) should be π/2, got {v}"
     );
     // atan2(0, -1) = π
     let r = zero.atan2(&neg_one).eval();
-    let v = r.evalf_f64().expect("evalf should succeed for atan2(0,-1)");
+    let v = r.eval_f64().expect("evalf should succeed for atan2(0,-1)");
     assert!(
         (v - std::f64::consts::PI).abs() < 1e-10,
         "atan2(0,-1) should be π, got {v}"

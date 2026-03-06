@@ -51,7 +51,7 @@ fn verify_second_order_numerically(
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at
-        .evalf_f64()
+        .eval_f64()
         .expect("evalf_f64 should succeed for second-order ODE residual");
     assert!(
         val.abs() < 1e-4,
@@ -87,7 +87,7 @@ fn verify_first_order_numerically(
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at
-        .evalf_f64()
+        .eval_f64()
         .expect("evalf_f64 should succeed for first-order ODE residual");
     assert!(
         val.abs() < 1e-6,
@@ -113,7 +113,7 @@ fn ode_second_order_constant_rhs() {
     let one = symplex::int(1);
     let ode = &d2y + &y - &one; // y'' + y - 1 = 0
 
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y'' + y = 1 should be solvable");
 
     let (sol, constants) = result.unwrap();
@@ -146,7 +146,7 @@ fn ode_second_order_linear_rhs() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &dy + &y - &x; // y'' + y' + y - x = 0
 
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y'' + y' + y = x should be solvable");
 
     let (sol, constants) = result.unwrap();
@@ -180,7 +180,7 @@ fn ode_second_order_quadratic_rhs() {
     let x_sq = x.powi(2);
     let ode = &d2y + &y - &x_sq; // y'' + y - x² = 0
 
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y'' + y = x² should be solvable");
 
     let (sol, constants) = result.unwrap();
@@ -212,7 +212,7 @@ fn ode_second_order_nonhomogeneous_verify() {
     let ode = &d2y - &(&dy * 3) + &(&y * 2) - &six; // y'' - 3y' + 2y - 6 = 0
 
     let (sol, constants) = ode
-        .dsolve(&y, &x)
+        .solve_ode(&y, &x)
         .expect("y'' - 3y' + 2y = 6 should be solvable");
 
     // Verify at multiple points for robustness
@@ -227,7 +227,7 @@ fn ode_second_order_nonhomogeneous_verify() {
     let particular = sol.subs(&c1, &zero).subs(&c2, &zero);
     let particular_s = format!("{particular}");
     // The particular solution should simplify to 3
-    let particular_val = particular.evalf_f64();
+    let particular_val = particular.eval_f64();
     if let Ok(v) = particular_val {
         assert!(
             (v - 3.0).abs() < 1e-10,
@@ -249,7 +249,7 @@ fn ode_homogeneous_still_works() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y; // y'' + y = 0
 
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     // This should still solve (complex roots ±i)
     if let Some((sol, constants)) = result {
         let s = format!("{sol}");
@@ -263,7 +263,7 @@ fn ode_homogeneous_still_works() {
     // Another homogeneous: y'' - 3y' + 2y = 0
     let ode2 = &d2y - &(&dy * 3) + &(&y * 2);
     let (sol2, constants2) = ode2
-        .dsolve(&y, &x)
+        .solve_ode(&y, &x)
         .expect("y'' - 3y' + 2y = 0 should still be solvable");
     let s2 = format!("{sol2}");
     assert!(
@@ -326,7 +326,7 @@ fn ode_exponential_rhs() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y - &x.exp(); // y'' + y - exp(x) = 0
 
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     // It's OK if this returns None — we just must not return a wrong answer.
     // If it does return something, verify it numerically to ensure correctness.
     if let Some((sol, constants)) = result {
@@ -348,7 +348,7 @@ fn ode_first_order_still_works() {
     let ode = &dy + &y; // y' + y = 0
 
     let (sol, constants) = ode
-        .dsolve(&y, &x)
+        .solve_ode(&y, &x)
         .expect("y' + y = 0 should still be solvable");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have constant: {s}");
@@ -360,7 +360,7 @@ fn ode_first_order_still_works() {
     // Also: y' = x should still work (simple separable)
     let ode2 = &dy - &x; // y' - x = 0
     let (sol2, constants2) = ode2
-        .dsolve(&y, &x)
+        .solve_ode(&y, &x)
         .expect("y' = x should still be solvable");
     let s2 = format!("{sol2}");
     assert!(s2.contains("C1"), "should have constant: {s2}");
@@ -386,7 +386,7 @@ fn ode_distinct_roots_linear_forcing() {
     let ode = &d2y - &(&dy * 3) + &(&y * 2) - &x; // y'' - 3y' + 2y - x = 0
 
     let (sol, constants) = ode
-        .dsolve(&y, &x)
+        .solve_ode(&y, &x)
         .expect("y'' - 3y' + 2y = x should be solvable");
 
     let s = format!("{sol}");
@@ -416,7 +416,7 @@ fn ode_repeated_root_constant_forcing() {
     let ode = &d2y - &(&dy * 2) + &y - &four; // y'' - 2y' + y - 4 = 0
 
     let (sol, constants) = ode
-        .dsolve(&y, &x)
+        .solve_ode(&y, &x)
         .expect("y'' - 2y' + y = 4 should be solvable");
 
     let s = format!("{sol}");
@@ -446,7 +446,7 @@ fn ode_c_zero_constant_forcing() {
     let two = symplex::int(2);
     let ode = &d2y + &dy - &two; // y'' + y' - 2 = 0
 
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y'' + y' = 2 should be solvable");
 
     let (sol, constants) = result.unwrap();
@@ -469,7 +469,7 @@ fn ode_b_c_zero_constant_forcing() {
     let six = symplex::int(6);
     let ode = &d2y - &six; // y'' - 6 = 0
 
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y'' = 6 should be solvable");
 
     let (sol, constants) = result.unwrap();
@@ -494,12 +494,12 @@ fn ode_nonhomogeneous_checkodesol() {
 
     // y = 3 should be a particular solution
     let particular = symplex::int(3);
-    let ok = ode.checkodesol(&particular, &y, &x);
+    let ok = ode.check_ode_solution(&particular, &y, &x);
     assert!(ok, "y=3 should satisfy y'' - 3y' + 2y = 6");
 
     // y = 0 should NOT be a solution
     let wrong = symplex::int(0);
-    let not_ok = ode.checkodesol(&wrong, &y, &x);
+    let not_ok = ode.check_ode_solution(&wrong, &y, &x);
     assert!(!not_ok, "y=0 should NOT satisfy y'' - 3y' + 2y = 6");
 }
 
@@ -518,7 +518,7 @@ fn ode_scaled_leading_coefficient() {
     let four = symplex::int(4);
     let ode = &(&d2y * 2) + &(&y * 2) - &four; // 2y'' + 2y - 4 = 0
 
-    let result = ode.dsolve(&y, &x);
+    let result = ode.solve_ode(&y, &x);
     assert!(
         result.is_some(),
         "2y'' + 2y = 4 should be solvable (normalises to y'' + y = 2)"

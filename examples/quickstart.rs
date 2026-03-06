@@ -36,7 +36,7 @@ fn main() {
     let val = expr!(sin(x) + cos(x))
         .subs_i64(&x, 1)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     println!("sin(1) + cos(1) = {val:.6}");
 

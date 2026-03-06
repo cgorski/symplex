@@ -31,7 +31,7 @@ fn total_time_derivative_constant() {
 
     let c = symplex::int(5);
     let result = total_time_derivative(&c, &[(&q, &qd)], &[&qdd]);
-    let val = result.eval().evalf_f64().unwrap();
+    let val = result.eval().eval_f64().unwrap();
     assert_near(val, 0.0, 1e-12, "d/dt(5) should be 0");
 }
 
@@ -44,7 +44,7 @@ fn total_time_derivative_linear_q() {
 
     let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]);
     // Substitute qd = 7 and check
-    let val = result.subs(&qd, &symplex::int(7)).eval().evalf_f64().unwrap();
+    let val = result.subs(&qd, &symplex::int(7)).eval().eval_f64().unwrap();
     assert_near(val, 7.0, 1e-12, "d/dt(q) should be qd");
 }
 
@@ -62,7 +62,7 @@ fn total_time_derivative_q_squared() {
         .subs(&q, &symplex::int(3))
         .subs(&qd, &symplex::int(2))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(val, 12.0, 1e-12, "d/dt(q^2) = 2*q*qd at q=3, qd=2");
 }
@@ -85,7 +85,7 @@ fn total_time_derivative_kinetic_energy() {
         .subs(&qd, &symplex::int(3))
         .subs(&qdd, &symplex::int(5))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(val, 30.0, 1e-12, "d/dt(½m·qd²) = m·qd·qdd");
 }
@@ -117,7 +117,7 @@ fn euler_lagrange_free_particle() {
         .subs(&qdd, &symplex::int(4))
         .subs(&q, &symplex::int(0))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(val, 12.0, 1e-12, "Free particle: m·qdd = 3*4 = 12");
 }
@@ -147,7 +147,7 @@ fn euler_lagrange_spring() {
         .subs(&qd, &symplex::int(0))
         .subs(&qdd, &symplex::int(4))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(val, 23.0, 1e-12, "Spring: m·qdd + k·q = 2*4+5*3=23");
 }
@@ -181,7 +181,7 @@ fn euler_lagrange_pendulum() {
         .subs(&qd, &symplex::rational(1, 10))
         .subs(&qdd, &symplex::int(0))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
 
     // Expected: 9.8 * sin(0.5)
@@ -210,7 +210,7 @@ fn mass_matrix_single_dof() {
         .get(0, 0)
         .subs(&m, &symplex::int(7))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(val, 7.0, 1e-12, "M[0,0] = m = 7");
 }
@@ -242,7 +242,7 @@ fn mass_matrix_two_dof() {
         .subs(&m2, &symplex::int(2))
         .subs(&q2, &symplex::int(0))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(m00, 5.0, 1e-12, "M[0,0] = m1+m2 = 5");
 
@@ -251,7 +251,7 @@ fn mass_matrix_two_dof() {
         .get(1, 1)
         .subs(&m2, &symplex::int(2))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(m11, 2.0, 1e-12, "M[1,1] = m2 = 2");
 
@@ -261,7 +261,7 @@ fn mass_matrix_two_dof() {
         .subs(&m2, &symplex::int(2))
         .subs(&q2, &symplex::int(0))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(m01, 2.0, 1e-12, "M[0,1] = m2·cos(0) = 2");
 
@@ -271,7 +271,7 @@ fn mass_matrix_two_dof() {
         .subs(&m2, &symplex::int(2))
         .subs(&q2, &symplex::int(0))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(m10, m01, 1e-12, "M[1,0] = M[0,1] (symmetry)");
 }
@@ -300,7 +300,7 @@ fn gravity_vector_pendulum() {
         .subs(&l, &symplex::int(2))
         .subs(&q, &pi_over_6)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(val, -10.0, 1e-6, "dV/dq = -m*g*L*sin(pi/6) = -10");
 }
@@ -315,8 +315,8 @@ fn gravity_vector_zero_potential() {
     let gv = gravity_vector(&pe, &[&q1, &q2]);
     assert_eq!(gv.len(), 2);
 
-    let g0 = gv[0].eval().evalf_f64().unwrap();
-    let g1 = gv[1].eval().evalf_f64().unwrap();
+    let g0 = gv[0].eval().eval_f64().unwrap();
+    let g1 = gv[1].eval().eval_f64().unwrap();
     assert_near(g0, 0.0, 1e-12, "g[0] = 0 for zero potential");
     assert_near(g1, 0.0, 1e-12, "g[1] = 0 for zero potential");
 }
@@ -347,7 +347,7 @@ fn coriolis_matrix_constant_mass() {
         .subs(&q, &symplex::int(1))
         .subs(&qd, &symplex::int(2))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(val, 0.0, 1e-12, "C[0,0] = 0 for constant mass");
 }
@@ -392,7 +392,7 @@ fn coriolis_matrix_two_dof() {
         .subs(&q1d, &symplex::int(0))
         .subs(&q2d, &symplex::int(2))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(c01, -3.0, 1e-6, "C[0,1] = -m2*sin(q2)*q2d = -3");
 }
@@ -417,7 +417,7 @@ fn christoffel_symbols_constant_mass() {
     assert_eq!(cs[0].len(), 1);
     assert_eq!(cs[0][0].len(), 1);
 
-    let val = cs[0][0][0].eval().evalf_f64().unwrap();
+    let val = cs[0][0][0].eval().eval_f64().unwrap();
     assert_near(val, 0.0, 1e-12, "Christoffel[0][0][0] = 0 for constant M");
 }
 
@@ -448,7 +448,7 @@ fn manipulator_equation_free_particle() {
         .get(0, 0)
         .subs(&m, &symplex::int(5))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(m_val, 5.0, 1e-12, "M[0,0] = m = 5");
 
@@ -459,12 +459,12 @@ fn manipulator_equation_free_particle() {
         .subs(&q, &symplex::int(1))
         .subs(&qd, &symplex::int(1))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(c_val, 0.0, 1e-12, "C[0,0] = 0");
 
     // g[0] = 0
-    let g_val = grav[0].eval().evalf_f64().unwrap();
+    let g_val = grav[0].eval().eval_f64().unwrap();
     assert_near(g_val, 0.0, 1e-12, "g[0] = 0");
 }
 
@@ -488,7 +488,7 @@ fn manipulator_equation_spring_pendulum() {
         .get(0, 0)
         .subs(&m, &symplex::int(4))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(m_val, 4.0, 1e-12, "M = m = 4");
 
@@ -498,7 +498,7 @@ fn manipulator_equation_spring_pendulum() {
         .subs(&k, &symplex::int(3))
         .subs(&q, &symplex::int(2))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(g_val, 6.0, 1e-12, "g[0] = k*q = 6");
 }
@@ -550,7 +550,7 @@ fn euler_lagrange_matches_manipulator_equation() {
         .subs(&qd, &qd_val)
         .subs(&qdd, &qdd_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
 
     let manip_num = manip_result
@@ -561,7 +561,7 @@ fn euler_lagrange_matches_manipulator_equation() {
         .subs(&qd, &qd_val)
         .subs(&qdd, &qdd_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
 
     assert_near(
@@ -590,7 +590,7 @@ fn total_time_derivative_of_velocity() {
         .subs(&qd, &symplex::int(0))
         .subs(&q, &symplex::int(0))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(val, 42.0, 1e-12, "d/dt(qd) = qdd = 42");
 }
@@ -611,7 +611,7 @@ fn total_time_derivative_mixed() {
         .subs(&qd, &symplex::int(3))
         .subs(&qdd, &symplex::int(5))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(val, 19.0, 1e-12, "d/dt(q*qd) = qd²+q*qdd = 19");
 }
@@ -639,7 +639,7 @@ fn mass_matrix_is_symmetric() {
         .subs(&m2, &symplex::int(3))
         .subs(&q2, &pi_over_4)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     let m10 = mm
         .get(1, 0)
@@ -647,7 +647,7 @@ fn mass_matrix_is_symmetric() {
         .subs(&m2, &symplex::int(3))
         .subs(&q2, &pi_over_4)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(m01, m10, 1e-12, "Mass matrix must be symmetric: M[0,1] = M[1,0]");
 }
@@ -682,7 +682,7 @@ fn gravity_vector_two_dof() {
         .subs(&q1, &symplex::int(0))
         .subs(&q2, &symplex::int(0))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(g0, 0.0, 1e-10, "g[0] at q1=q2=0 should be 0 (sin(0)=0)");
 
@@ -698,7 +698,7 @@ fn gravity_vector_two_dof() {
         .subs(&q1, &pi_over_2)
         .subs(&q2, &symplex::int(0))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(g0_pi2, -30.0, 1e-6, "g[0] at q1=π/2,q2=0 = -30");
 
@@ -712,7 +712,7 @@ fn gravity_vector_two_dof() {
         .subs(&q1, &pi_over_2)
         .subs(&q2, &symplex::int(0))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert_near(g1_pi2, -10.0, 1e-6, "g[1] at q1=π/2,q2=0 = -10");
 }

@@ -86,8 +86,8 @@ fn hard_int_ln_x_squared() {
         for &pt_f in &[0.5, 1.5, 2.7] {
             let numer = (pt_f * 1000.0) as i64;
             let pt = ctx.rational(numer, 1000);
-            let orig_val = integrand.subs(&x, &pt).eval().evalf_f64();
-            let deriv_val = deriv.subs(&x, &pt).eval().evalf_f64();
+            let orig_val = integrand.subs(&x, &pt).eval().eval_f64();
+            let deriv_val = deriv.subs(&x, &pt).eval().eval_f64();
             if let (Ok(o), Ok(d)) = (orig_val, deriv_val) {
                 let scale = o.abs().max(d.abs()).max(1.0);
                 assert!(
@@ -129,8 +129,8 @@ fn hard_int_one_over_sqrt_1_minus_x2() {
         for &pt_f in &[0.3, 0.5, 0.7] {
             let numer = (pt_f * 1000.0) as i64;
             let pt = ctx.rational(numer, 1000);
-            let orig_val = integrand.subs(&x, &pt).eval().evalf_f64();
-            let deriv_val = deriv.subs(&x, &pt).eval().evalf_f64();
+            let orig_val = integrand.subs(&x, &pt).eval().eval_f64();
+            let deriv_val = deriv.subs(&x, &pt).eval().eval_f64();
             if let (Ok(o), Ok(d)) = (orig_val, deriv_val) {
                 let scale = o.abs().max(d.abs()).max(1.0);
                 assert!(
@@ -355,13 +355,13 @@ fn hard_simp_exp_ln_sum() {
         .subs(&x, &pt_x)
         .subs(&y, &pt_y)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("exp(ln(3)+ln(5)) should evaluate");
     let simplified_val = simplified
         .subs(&x, &pt_x)
         .subs(&y, &pt_y)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("simplified form should evaluate");
     assert!(
         (original_val - simplified_val).abs() < 1e-9,
@@ -409,13 +409,13 @@ fn hard_simp_difference_of_squares_cancel() {
         .subs(&x, &pt_x)
         .subs(&y, &pt_y)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("(25-9)/(5-3) should evaluate");
     let target_val = target
         .subs(&x, &pt_x)
         .subs(&y, &pt_y)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("5+3 should evaluate");
     assert!(
         (expr_val - target_val).abs() < 1e-9,
@@ -516,7 +516,7 @@ fn hard_limit_1_plus_1_over_x_to_x() {
             // If it got an answer, check it's e (= E)
             if s != "E" {
                 // Might be a numerical approximation — check if it's close to e
-                if let Ok(v) = r.evalf_f64() {
+                if let Ok(v) = r.eval_f64() {
                     assert!(
                         (v - std::f64::consts::E).abs() < 0.01,
                         "lim (1+1/x)^x should be e ≈ 2.718, got {v}"
@@ -590,8 +590,8 @@ fn hard_series_geometric() {
             // The key check: verify coefficients by evaluating at several points
             let ctx = symplex::default_context();
             let pt = ctx.rational(1, 10); // x = 0.1
-            let series_val = expanded.subs(&x, &pt).eval().evalf_f64();
-            let exact_val = f.subs(&x, &pt).eval().evalf_f64();
+            let series_val = expanded.subs(&x, &pt).eval().eval_f64();
+            let exact_val = f.subs(&x, &pt).eval().eval_f64();
             if let (Ok(sv), Ok(ev)) = (series_val, exact_val) {
                 // At x=0.1, error from truncation should be small
                 assert!(
@@ -624,8 +624,8 @@ fn hard_series_arctan() {
             // Verify numerically at a small point
             let ctx = symplex::default_context();
             let pt = ctx.rational(1, 4); // x = 0.25
-            let series_val = expanded.subs(&x, &pt).eval().evalf_f64();
-            let exact_val = x.atan().subs(&x, &pt).eval().evalf_f64();
+            let series_val = expanded.subs(&x, &pt).eval().eval_f64();
+            let exact_val = x.atan().subs(&x, &pt).eval().eval_f64();
             if let (Ok(sv), Ok(ev)) = (series_val, exact_val) {
                 assert!(
                     (sv - ev).abs() < 0.001,
@@ -651,8 +651,8 @@ fn hard_series_exp_coefficients() {
             // Series: 1 + 1 + 1/2 + 1/6 + 1/24 + 1/120 + 1/720 = 2.71806
             let ctx = symplex::default_context();
             let pt = ctx.rational(1, 2); // x = 0.5
-            let series_val = expanded.subs(&x, &pt).eval().evalf_f64();
-            let exact_val = x.exp().subs(&x, &pt).eval().evalf_f64();
+            let series_val = expanded.subs(&x, &pt).eval().eval_f64();
+            let exact_val = x.exp().subs(&x, &pt).eval().eval_f64();
             if let (Ok(sv), Ok(ev)) = (series_val, exact_val) {
                 assert!(
                     (sv - ev).abs() < 0.001,
@@ -678,8 +678,8 @@ fn hard_series_sin_odd_terms_only() {
             // Numerical verification at a small point
             let ctx = symplex::default_context();
             let pt = ctx.rational(1, 5); // x = 0.2
-            let series_val = expanded.subs(&x, &pt).eval().evalf_f64();
-            let exact_val = x.sin().subs(&x, &pt).eval().evalf_f64();
+            let series_val = expanded.subs(&x, &pt).eval().eval_f64();
+            let exact_val = x.sin().subs(&x, &pt).eval().eval_f64();
             if let (Ok(sv), Ok(ev)) = (series_val, exact_val) {
                 assert!(
                     (sv - ev).abs() < 1e-6,
@@ -727,8 +727,8 @@ fn negative_gaussian_integral_unevaluated() {
         let deriv = result.diff(&x);
         let ctx = symplex::default_context();
         let pt = ctx.rational(7, 10);
-        let orig_val = integrand.subs(&x, &pt).eval().evalf_f64();
-        let deriv_val = deriv.subs(&x, &pt).eval().evalf_f64();
+        let orig_val = integrand.subs(&x, &pt).eval().eval_f64();
+        let deriv_val = deriv.subs(&x, &pt).eval().eval_f64();
         if let (Ok(o), Ok(d)) = (orig_val, deriv_val) {
             let diff = (o - d).abs();
             let scale = o.abs().max(d.abs()).max(1.0);
@@ -758,13 +758,13 @@ fn negative_simple_sum_unchanged() {
         .subs(&x, &pt_x)
         .subs(&y, &pt_y)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("x+y at (7,11) should evaluate");
     let simp_val = simplified
         .subs(&x, &pt_x)
         .subs(&y, &pt_y)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("simplified x+y at (7,11) should evaluate");
     assert!(
         (orig_val - simp_val).abs() < 1e-12,
@@ -792,14 +792,14 @@ fn negative_simplify_product_not_destroyed() {
         .subs(&y, &ctx.int(3))
         .subs(&z, &ctx.int(5))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("x*y*z at (2,3,5)");
     let simp_val = simplified
         .subs(&x, &ctx.int(2))
         .subs(&y, &ctx.int(3))
         .subs(&z, &ctx.int(5))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("simplified x*y*z at (2,3,5)");
     assert!(
         (orig_val - 30.0).abs() < 1e-12,
@@ -831,7 +831,7 @@ fn multi_var_mixed_partial_derivative() {
         .subs(&x, &ctx.int(2))
         .subs(&y, &ctx.int(3))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("∂²(x²y³)/∂x∂y at (2,3) should evaluate");
     assert!(
         (val - 108.0).abs() < 1e-9,
@@ -845,7 +845,7 @@ fn multi_var_mixed_partial_derivative() {
         .subs(&x, &ctx.int(2))
         .subs(&y, &ctx.int(3))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("∂²(x²y³)/∂y∂x at (2,3) should evaluate");
     assert!(
         (val - val2).abs() < 1e-9,
@@ -858,7 +858,7 @@ fn multi_var_gradient_of_sum_of_squares() {
     // f = x² + y² + z²  →  ∇f = [2x, 2y, 2z]
     symplex::vars!(x, y, z);
     let f = expr!(x ^ 2 + y ^ 2 + z ^ 2);
-    let grad = gradient(&f, &[x.clone(), y.clone(), z.clone()]);
+    let grad = gradient(&f, &[&x, &y, &z]);
 
     assert_eq!(grad.nrows(), 3);
     assert_eq!(grad.ncols(), 1);
@@ -876,7 +876,7 @@ fn multi_var_gradient_of_sum_of_squares() {
         .subs(&y, &ctx.int(2))
         .subs(&z, &ctx.int(3))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("gradient component 0");
     let g1_val = grad
         .get(1, 0)
@@ -884,7 +884,7 @@ fn multi_var_gradient_of_sum_of_squares() {
         .subs(&y, &ctx.int(2))
         .subs(&z, &ctx.int(3))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("gradient component 1");
     let g2_val = grad
         .get(2, 0)
@@ -892,7 +892,7 @@ fn multi_var_gradient_of_sum_of_squares() {
         .subs(&y, &ctx.int(2))
         .subs(&z, &ctx.int(3))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("gradient component 2");
     assert!((g0_val - 2.0).abs() < 1e-12, "∂f/∂x at (1,2,3) = 2, got {g0_val}");
     assert!((g1_val - 4.0).abs() < 1e-12, "∂f/∂y at (1,2,3) = 4, got {g1_val}");
@@ -911,17 +911,17 @@ fn multi_var_jacobian_2x2() {
     let y = symplex::var("y");
     let f1 = &x.powi(2) + &y;
     let f2 = &x * &y;
-    let j = jacobian(&[f1, f2], &[x.clone(), y.clone()]);
+    let j = jacobian(&[&f1, &f2], &[&x, &y]);
 
     assert_eq!(j.nrows(), 2);
     assert_eq!(j.ncols(), 2);
 
     // Verify Jacobian entries numerically at (x,y) = (3,2)
     let ctx = symplex::default_context();
-    let j00 = j.get(0, 0).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().evalf_f64().expect("J[0,0]");
-    let j01 = j.get(0, 1).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().evalf_f64().expect("J[0,1]");
-    let j10 = j.get(1, 0).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().evalf_f64().expect("J[1,0]");
-    let j11 = j.get(1, 1).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().evalf_f64().expect("J[1,1]");
+    let j00 = j.get(0, 0).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[0,0]");
+    let j01 = j.get(0, 1).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[0,1]");
+    let j10 = j.get(1, 0).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[1,0]");
+    let j11 = j.get(1, 1).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[1,1]");
 
     assert!((j00 - 6.0).abs() < 1e-12, "J[0,0] at (3,2) should be 2*3=6, got {j00}");
     assert!((j01 - 1.0).abs() < 1e-12, "J[0,1] at (3,2) should be 1, got {j01}");
@@ -934,7 +934,7 @@ fn multi_var_jacobian_2x2() {
         .subs(&x, &ctx.int(3))
         .subs(&y, &ctx.int(2))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("Jacobian determinant");
     assert!(
         (det_val - 16.0).abs() < 1e-9,
@@ -1038,8 +1038,8 @@ fn hard_series_cos_even_terms_only() {
             let expanded = s.expand();
             let ctx = symplex::default_context();
             let pt = ctx.rational(1, 5); // x = 0.2
-            let series_val = expanded.subs(&x, &pt).eval().evalf_f64();
-            let exact_val = x.cos().subs(&x, &pt).eval().evalf_f64();
+            let series_val = expanded.subs(&x, &pt).eval().eval_f64();
+            let exact_val = x.cos().subs(&x, &pt).eval().eval_f64();
             if let (Ok(sv), Ok(ev)) = (series_val, exact_val) {
                 assert!(
                     (sv - ev).abs() < 1e-6,
@@ -1145,7 +1145,7 @@ fn hard_multi_var_laplacian_via_second_derivs() {
         .subs(&y, &ctx.int(2))
         .subs(&z, &ctx.int(3))
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .expect("laplacian at (1,2,3)");
     assert!(
         (val - 36.0).abs() < 1e-9,

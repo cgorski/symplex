@@ -10,14 +10,14 @@
 fn trigsimp_pythagorean() {
     symplex::vars!(x);
     let e = &x.sin().powi(2) + &x.cos().powi(2);
-    assert_eq!(format!("{}", e.trigsimp()), "1");
+    assert_eq!(format!("{}", e.simplify_trig()), "1");
 }
 
 #[test]
 fn trigsimp_in_larger_expr() {
     symplex::vars!(x);
     let e = &x.sin().powi(2) + &x.cos().powi(2) + &x;
-    let result = e.trigsimp();
+    let result = e.simplify_trig();
     let s = format!("{result}");
     assert_eq!(s, "x + 1");
 }
@@ -26,14 +26,14 @@ fn trigsimp_in_larger_expr() {
 fn trigsimp_pythagorean_plus_number() {
     symplex::vars!(x);
     let e = &x.sin().powi(2) + &x.cos().powi(2) + 5;
-    assert_eq!(format!("{}", e.trigsimp()), "6");
+    assert_eq!(format!("{}", e.simplify_trig()), "6");
 }
 
 #[test]
 fn trigsimp_leaves_bare_trig_alone() {
     symplex::vars!(x);
     let e = x.sin();
-    let result = e.trigsimp();
+    let result = e.simplify_trig();
     let s = format!("{result}");
     assert_eq!(s, "sin(x)");
 }
@@ -43,11 +43,11 @@ fn trigsimp_preserves_numeric_value() {
     // After trigsimp the expression should evaluate to the same number.
     symplex::vars!(x);
     let e = &x.sin().powi(2) + &x.cos().powi(2) + &x;
-    let val_before = e.subs(&x, &symplex::rational(7, 10)).evalf_f64().unwrap();
-    let result = e.trigsimp();
+    let val_before = e.subs(&x, &symplex::rational(7, 10)).eval_f64().unwrap();
+    let result = e.simplify_trig();
     let val_after = result
         .subs(&x, &symplex::rational(7, 10))
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert!(
         (val_before - val_after).abs() < 1e-10,
@@ -64,7 +64,7 @@ fn powsimp_symbolic_exponents() {
     symplex::vars!(x, a, b);
     // x^a * x^b should become x^(a+b)
     let e = &x.pow(&a) * &x.pow(&b);
-    let result = e.powsimp();
+    let result = e.simplify_powers();
     let s = format!("{result}");
     // Should contain a+b in the exponent
     assert!(
@@ -77,7 +77,7 @@ fn powsimp_symbolic_exponents() {
 fn powsimp_three_factors() {
     symplex::vars!(x, a, b, c);
     let e = &(&x.pow(&a) * &x.pow(&b)) * &x.pow(&c);
-    let result = e.powsimp();
+    let result = e.simplify_powers();
     let s = format!("{result}");
     // All three exponents should be combined
     assert!(
@@ -94,7 +94,7 @@ fn powsimp_three_factors() {
 fn powsimp_different_bases_untouched() {
     symplex::vars!(x, y, a, b);
     let e = &x.pow(&a) * &y.pow(&b);
-    let result = e.powsimp();
+    let result = e.simplify_powers();
     let s = format!("{result}");
     // Both bases should still be present
     assert!(
@@ -106,7 +106,7 @@ fn powsimp_different_bases_untouched() {
 #[test]
 fn powsimp_atom_unchanged() {
     symplex::vars!(x);
-    let result = x.powsimp();
+    let result = x.simplify_powers();
     assert_eq!(format!("{result}"), "x");
 }
 
@@ -144,12 +144,12 @@ fn rewrite_as_exp_preserves_value() {
     symplex::vars!(x);
     let e = x.sin();
     let val = symplex::rational(7, 10);
-    let orig_f = e.subs(&x, &val).evalf_f64().unwrap();
+    let orig_f = e.subs(&x, &val).eval_f64().unwrap();
     let rewritten = e.rewrite_as_exp();
-    let rw_f = rewritten.subs(&x, &val).evalf_f64();
+    let rw_f = rewritten.subs(&x, &val).eval_f64();
     // The rewritten form involves complex exponentials, so evalf_f64
     // might fail (complex intermediate). Use evalf_complex64 instead.
-    let rw_val: Result<(f64, f64), _> = rewritten.subs(&x, &val).evalf_complex64();
+    let rw_val: Result<(f64, f64), _> = rewritten.subs(&x, &val).eval_complex64();
     if let Ok((re, im)) = rw_val {
         assert!(
             im.abs() < 1e-10,
@@ -213,10 +213,10 @@ fn rewrite_roundtrip_numerical() {
     let back = as_exp.rewrite_as_trig().eval().simplify();
     // Compare numerically at x = 0.7
     let val = symplex::rational(7, 10);
-    let orig_f = e.subs(&x, &val).evalf_f64().unwrap();
+    let orig_f = e.subs(&x, &val).eval_f64().unwrap();
 
     // The roundtrip may produce complex intermediates, so try complex eval
-    let back_result: Result<(f64, f64), _> = back.subs(&x, &val).evalf_complex64();
+    let back_result: Result<(f64, f64), _> = back.subs(&x, &val).eval_complex64();
     if let Ok((re, im)) = back_result {
         assert!(
             (orig_f - re).abs() < 1e-10,

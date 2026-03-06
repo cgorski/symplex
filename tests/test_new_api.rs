@@ -199,7 +199,7 @@ fn re_im_of_pi() {
 fn lambdify_x_squared_plus_1() {
     let x = symplex::var("x");
     let f = &x.powi(2) + 1;
-    let func = f.lambdify(&["x"]).unwrap();
+    let func = f.compile(&["x"]).unwrap();
     assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
     assert!((func(&[0.0]) - 1.0).abs() < 1e-10);
 }
@@ -207,7 +207,7 @@ fn lambdify_x_squared_plus_1() {
 #[test]
 fn lambdify_sin() {
     let x = symplex::var("x");
-    let func = x.sin().lambdify(&["x"]).unwrap();
+    let func = x.sin().compile(&["x"]).unwrap();
     assert!((func(&[0.0])).abs() < 1e-10);
     assert!((func(&[std::f64::consts::FRAC_PI_2]) - 1.0).abs() < 1e-10);
 }
@@ -217,20 +217,20 @@ fn lambdify_two_vars() {
     let x = symplex::var("x");
     let y = symplex::var("y");
     let f = &x * &y + 1;
-    let func = f.lambdify(&["x", "y"]).unwrap();
+    let func = f.compile(&["x", "y"]).unwrap();
     assert!((func(&[3.0, 4.0]) - 13.0).abs() < 1e-10);
 }
 
 #[test]
 fn lambdify_complex_rejects() {
     let i = symplex::i_unit();
-    assert!(i.lambdify(&[]).is_none());
+    assert!(i.compile(&[]).is_none());
 }
 
 #[test]
 fn lambdify_pi_constant() {
     let f = symplex::pi();
-    let func = f.lambdify(&[]).unwrap();
+    let func = f.compile(&[]).unwrap();
     assert!((func(&[]) - std::f64::consts::PI).abs() < 1e-10);
 }
 
@@ -238,7 +238,7 @@ fn lambdify_pi_constant() {
 fn lambdify_consistency_with_evalf() {
     let x = symplex::var("x");
     let f = &x.sin().powi(2) + &x.cos().powi(2);
-    let func = f.lambdify(&["x"]).unwrap();
+    let func = f.compile(&["x"]).unwrap();
     for pt in [0.0, 0.5, 1.0, 2.0, 3.14] {
         assert!((func(&[pt]) - 1.0).abs() < 1e-10, "sin²+cos² at {pt}");
     }

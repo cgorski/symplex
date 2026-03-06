@@ -135,7 +135,7 @@ fn matrix_codegen_simple_jacobian() {
     let (x, y, _z) = fk_position(&params);
 
     // 2×2 Jacobian of (x, y) w.r.t. (theta1, theta2)
-    let j = jacobian(&[x, y], &[theta1.clone(), theta2.clone()]);
+    let j = jacobian(&[&x, &y], &[&theta1, &theta2]);
     assert_eq!(j.shape(), (2, 2));
 
     let code = j
@@ -210,7 +210,7 @@ fn matrix_codegen_numerical_correctness() {
     let (x, y, _z) = fk_position(&params);
 
     // 2×2 Jacobian of (x, y) w.r.t. (theta1, theta2)
-    let j = jacobian(&[x, y], &[theta1.clone(), theta2.clone()]);
+    let j = jacobian(&[&x, &y], &[&theta1, &theta2]);
 
     // Test point: θ1=0.3, θ2=0.5, L1=1, L2=0.8
     let t1_val: f64 = 0.3;
@@ -247,7 +247,7 @@ fn matrix_codegen_numerical_correctness() {
                 .subs(&l1, &l1_sub)
                 .subs(&l2, &l2_sub)
                 .eval()
-                .evalf_f64()
+                .eval_f64()
                 .unwrap();
             let idx = i * 2 + k;
             assert!(
@@ -288,8 +288,8 @@ fn matrix_codegen_3dof_robot() {
 
     // 3×3 Jacobian of (x, y, z) w.r.t. (θ1, θ2, θ3)
     let j = jacobian(
-        &[x, y, z],
-        &[theta1.clone(), theta2.clone(), theta3.clone()],
+        &[&x, &y, &z],
+        &[&theta1, &theta2, &theta3],
     );
     assert_eq!(j.shape(), (3, 3));
 
@@ -496,7 +496,7 @@ fn pipeline_dh_to_codegen_2dof() {
     let (x, y, _z) = fk_position(&dh);
 
     // Step 3: Build Jacobian of position w.r.t. joint angles
-    let j = jacobian(&[x, y], &[theta1.clone(), theta2.clone()]);
+    let j = jacobian(&[&x, &y], &[&theta1, &theta2]);
     assert_eq!(j.shape(), (2, 2));
 
     // Step 4: Generate code with cross-entry CSE
@@ -533,7 +533,7 @@ fn pipeline_dh_to_codegen_2dof() {
         .subs(&l1, &l1_sub)
         .subs(&l2, &l2_sub)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
 
     let expected_j01 = -l2_f * (t1 + t2).sin();
@@ -567,8 +567,8 @@ fn pipeline_dh_to_codegen_3dof() {
 
     // 3 position components × 3 joints = 3×3 = 9 entries
     let j = jacobian(
-        &[x, y, z],
-        &[theta1.clone(), theta2.clone(), theta3.clone()],
+        &[&x, &y, &z],
+        &[&theta1, &theta2, &theta3],
     );
     assert_eq!(j.shape(), (3, 3));
 
@@ -996,7 +996,7 @@ fn pipeline_dh_jacobian_numerical_at_zero() {
     ];
     let (x, y, _z) = fk_position(&dh);
 
-    let j = jacobian(&[x, y], &[theta1.clone(), theta2.clone()]);
+    let j = jacobian(&[&x, &y], &[&theta1, &theta2]);
 
     // At θ₁=0, θ₂=0, L1=1, L2=1:
     //   x = cos(0) + cos(0) = 2
@@ -1015,7 +1015,7 @@ fn pipeline_dh_jacobian_numerical_at_zero() {
             .subs(&l1, &len_one)
             .subs(&l2, &len_one)
             .eval()
-            .evalf_f64()
+            .eval_f64()
             .unwrap()
     };
 

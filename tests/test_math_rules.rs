@@ -232,8 +232,8 @@ macro_rules! assert_simplify_unchanged {
 macro_rules! assert_simplify_preserves_value {
     ($expr:expr, $var:expr, $point:expr) => {
         let result = ($expr).simplify();
-        let val_in = ($expr).subs(&$var, &$point).evalf_f64();
-        let val_out = result.subs(&$var, &$point).evalf_f64();
+        let val_in = ($expr).subs(&$var, &$point).eval_f64();
+        let val_out = result.subs(&$var, &$point).eval_f64();
         if let (Ok(v1), Ok(v2)) = (val_in, val_out) {
             assert!(
                 (v1 - v2).abs() < 1e-8,

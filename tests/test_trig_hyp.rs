@@ -153,21 +153,21 @@ fn integrate_cosh() {
 #[test]
 fn evalf_sinh_zero() {
     let ctx = Context::new();
-    let val = ctx.int(0).sinh().evalf_f64().unwrap();
+    let val = ctx.int(0).sinh().eval_f64().unwrap();
     assert!((val - 0.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_cosh_zero() {
     let ctx = Context::new();
-    let val = ctx.int(0).cosh().evalf_f64().unwrap();
+    let val = ctx.int(0).cosh().eval_f64().unwrap();
     assert!((val - 1.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_atan_one() {
     let ctx = Context::new();
-    let val = ctx.int(1).atan().evalf_f64().unwrap();
+    let val = ctx.int(1).atan().eval_f64().unwrap();
     assert!((val - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
 }
 

@@ -97,7 +97,7 @@ fn trigsimp_on_polynomial_is_noop() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let poly = x.powi(3) + &x + 1;
-    let result = poly.trigsimp();
+    let result = poly.simplify_trig();
     let original_s = format!("{poly}");
     let result_s = format!("{result}");
     assert_eq!(
@@ -112,7 +112,7 @@ fn trigsimp_on_exp_is_noop() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.exp();
-    let result = expr.trigsimp();
+    let result = expr.simplify_trig();
     let original_s = format!("{expr}");
     let result_s = format!("{result}");
     assert_eq!(
@@ -127,7 +127,7 @@ fn trigsimp_still_works() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.sin().powi(2) + x.cos().powi(2) + &x;
-    let result = expr.trigsimp();
+    let result = expr.simplify_trig();
     let s = format!("{result}");
     assert!(
         !s.contains("sin") && !s.contains("cos"),
@@ -141,7 +141,7 @@ fn trigsimp_pythagorean_identity() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.sin().powi(2) + x.cos().powi(2);
-    let result = expr.trigsimp();
+    let result = expr.simplify_trig();
     assert_eq!(format!("{result}"), "1");
 }
 
@@ -150,7 +150,7 @@ fn trigsimp_on_symbol_is_noop() {
     // Just a bare symbol — nothing to do
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.trigsimp();
+    let result = x.simplify_trig();
     assert_eq!(format!("{result}"), "x");
 }
 
@@ -159,7 +159,7 @@ fn trigsimp_on_number_is_noop() {
     // Just a number — nothing to do
     let ctx = Context::new();
     let n = ctx.int(42);
-    let result = n.trigsimp();
+    let result = n.simplify_trig();
     assert_eq!(format!("{result}"), "42");
 }
 

@@ -250,7 +250,7 @@ fn solve_negative_constant_le() {
 fn solveset_quadratic() {
     symplex::vars!(x);
     let poly = &x.powi(2) - &x * 5 + 6;
-    let result = poly.solveset(&x);
+    let result = poly.solve_as_set(&x);
     let s = format!("{result}");
     // x² - 5x + 6 = 0 → {2, 3}
     assert!(
@@ -260,11 +260,11 @@ fn solveset_quadratic() {
     assert!(s.contains("2"), "should contain root 2: {s}");
     assert!(s.contains("3"), "should contain root 3: {s}");
     // Verify roots: poly at x=2 → 4-10+6=0
-    let val_at_2 = poly.subs(&x, &symplex::int(2)).evalf_f64()
+    let val_at_2 = poly.subs(&x, &symplex::int(2)).eval_f64()
         .expect("eval at root 2 should succeed");
     assert!(val_at_2.abs() < 1e-10, "poly(2) should be 0, got {val_at_2}");
     // Verify roots: poly at x=3 → 9-15+6=0
-    let val_at_3 = poly.subs(&x, &symplex::int(3)).evalf_f64()
+    let val_at_3 = poly.subs(&x, &symplex::int(3)).eval_f64()
         .expect("eval at root 3 should succeed");
     assert!(val_at_3.abs() < 1e-10, "poly(3) should be 0, got {val_at_3}");
 }
@@ -273,12 +273,12 @@ fn solveset_quadratic() {
 fn solveset_linear() {
     symplex::vars!(x);
     let expr = &x - 7;
-    let result = expr.solveset(&x);
+    let result = expr.solve_as_set(&x);
     let s = format!("{result}");
     // x - 7 = 0 → {7}
     assert!(s.contains("7"), "should contain root 7: {s}");
     // Verify root
-    let val_at_7 = expr.subs(&x, &symplex::int(7)).evalf_f64()
+    let val_at_7 = expr.subs(&x, &symplex::int(7)).eval_f64()
         .expect("eval at root 7 should succeed");
     assert!(val_at_7.abs() < 1e-10, "expr(7) should be 0, got {val_at_7}");
 }
@@ -288,7 +288,7 @@ fn solveset_no_real_roots() {
     symplex::vars!(x);
     // x² + 1 = 0 has no real roots (only complex)
     let expr = &x.powi(2) + 1;
-    let result = expr.solveset(&x);
+    let result = expr.solve_as_set(&x);
     let s = format!("{result}");
     // The solver may or may not find complex roots; if it doesn't,
     // we should at least get something (possibly EmptySet or a set
@@ -304,7 +304,7 @@ fn solveset_no_real_roots() {
 fn solveset_constant_nonzero() {
     symplex::vars!(x);
     let five = symplex::int(5);
-    let result = five.solveset(&x);
+    let result = five.solve_as_set(&x);
     // 5 = 0 has no solutions → EmptySet
     assert_eq!(format!("{result}"), "EmptySet");
 }
@@ -451,7 +451,7 @@ fn solveset_with_context() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let poly = &x.powi(2) - &x * 5 + 6;
-    let result = poly.solveset(&x);
+    let result = poly.solve_as_set(&x);
     let s = format!("{result}");
     assert!(s.contains("2"), "should contain 2: {s}");
     assert!(s.contains("3"), "should contain 3: {s}");
@@ -479,7 +479,7 @@ fn solveset_with_rational_roots() {
     symplex::vars!(x);
     // 2x - 1 = 0 → x = 1/2
     let expr = &x * 2 - 1;
-    let result = expr.solveset(&x);
+    let result = expr.solve_as_set(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -542,14 +542,14 @@ fn solve_ge_includes_boundary() {
         "x²-4 >= 0 should have solutions: {s}"
     );
     // At the boundary x=2, x²-4 = 0 which satisfies >= 0
-    let val_at_2 = poly.subs(&x, &symplex::int(2)).evalf_f64()
+    let val_at_2 = poly.subs(&x, &symplex::int(2)).eval_f64()
         .expect("eval at boundary x=2 should succeed");
     assert!(
         val_at_2.abs() < 1e-10,
         "x²-4 at x=2 should be 0, got {val_at_2}"
     );
     // At the boundary x=-2, x²-4 = 0
-    let val_at_neg2 = poly.subs(&x, &symplex::int(-2)).evalf_f64()
+    let val_at_neg2 = poly.subs(&x, &symplex::int(-2)).eval_f64()
         .expect("eval at boundary x=-2 should succeed");
     assert!(
         val_at_neg2.abs() < 1e-10,

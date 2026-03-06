@@ -226,7 +226,7 @@ proptest! {
     /// logcombine never panics
     #[test]
     fn stress_logcombine(e in arb_expr(2)) {
-        let result = e.logcombine();
+        let result = e.log_combine();
         let _s = format!("{result}");
         prop_assert!(!_s.is_empty(), "logcombine result should display as non-empty");
     }
@@ -349,7 +349,7 @@ proptest! {
             // Should be 0 or very close
             if s == "0" {
                 bail.check();
-            } else if let Ok(f) = expanded.evalf_f64() {
+            } else if let Ok(f) = expanded.eval_f64() {
                 bail.check();
                 prop_assert!(f.abs() < 1e-6,
                     "root {} of {}x²+{}x+{}=0 gives {f}", root, a, b, c);

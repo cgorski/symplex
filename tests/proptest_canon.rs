@@ -514,7 +514,7 @@ proptest! {
         let simplified_at_point = simplified.subs(&x, &test_val);
 
         // Only assert if both can be evaluated to f64
-        if let (Ok(orig_f), Ok(simp_f)) = (original_at_point.evalf_f64(), simplified_at_point.evalf_f64()) {
+        if let (Ok(orig_f), Ok(simp_f)) = (original_at_point.eval_f64(), simplified_at_point.eval_f64()) {
             // Skip NaN/infinite results
             if orig_f.is_finite() && simp_f.is_finite() && orig_f.abs() < 1e10 {
                 let diff = (orig_f - simp_f).abs();
@@ -551,7 +551,7 @@ proptest! {
         let det_m = m.det().eval().simplify();
         let det_mt = mt.det().eval().simplify();
 
-        if let (Ok(a), Ok(b)) = (det_m.evalf_f64(), det_mt.evalf_f64()) {
+        if let (Ok(a), Ok(b)) = (det_m.eval_f64(), det_mt.eval_f64()) {
             prop_assert!(
                 (a - b).abs() < 1e-10 * a.abs().max(1.0),
                 "det(A)={} != det(Aᵀ)={}", a, b

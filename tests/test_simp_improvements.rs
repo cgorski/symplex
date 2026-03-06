@@ -16,7 +16,7 @@ fn trigsimp_uses_trig_combine() {
     vars!(x);
     // 2*sin(x)*cos(x) should simplify to sin(2x) via trig_combine strategy
     let e = &x.sin() * &x.cos() * 2;
-    let result = e.trigsimp();
+    let result = e.simplify_trig();
     let s = format!("{result}");
     // Should contain sin(2*x) or equivalent, and be no larger than original
     assert!(
@@ -31,7 +31,7 @@ fn trigsimp_uses_trig_combine() {
 fn trigsimp_pythagorean_still_works() {
     vars!(x);
     let e = &x.sin().powi(2) + &x.cos().powi(2);
-    let result = e.trigsimp();
+    let result = e.simplify_trig();
     assert_eq!(format!("{result}"), "1");
 }
 
@@ -39,7 +39,7 @@ fn trigsimp_pythagorean_still_works() {
 fn trigsimp_pythagorean_plus_constant() {
     vars!(x);
     let e = &x.sin().powi(2) + &x.cos().powi(2) + 5;
-    let result = e.trigsimp();
+    let result = e.simplify_trig();
     assert_eq!(format!("{result}"), "6");
 }
 
@@ -48,7 +48,7 @@ fn trigsimp_cos2_minus_sin2_double_angle() {
     vars!(x);
     // cos²(x) - sin²(x) should simplify via trig_combine to cos(2x)
     let e = &x.cos().powi(2) - &x.sin().powi(2);
-    let result = e.trigsimp();
+    let result = e.simplify_trig();
     let s = format!("{result}");
     assert!(
         result.count_ops() <= e.count_ops(),
@@ -62,7 +62,7 @@ fn trigsimp_cos2_minus_sin2_double_angle() {
 fn trigsimp_leaves_simple_trig_alone() {
     vars!(x);
     let e = x.sin();
-    let result = e.trigsimp();
+    let result = e.simplify_trig();
     assert_eq!(format!("{result}"), "sin(x)");
 }
 
@@ -72,7 +72,7 @@ fn trigsimp_expand_then_recombine() {
     // Start with sin(x)^2 which has 2 ops (Sin + Pow).
     // trigsimp should not bloat it.
     let e = x.sin().powi(2);
-    let result = e.trigsimp();
+    let result = e.simplify_trig();
     assert!(
         result.count_ops() <= e.count_ops(),
         "trigsimp should not bloat sin²(x): got {} ops vs {} ops, result = {}",
@@ -92,7 +92,7 @@ fn combsimp_factorial_ratio_concrete() {
     let five_fact = symplex::int(5).factorial().eval();
     let four_fact = symplex::int(4).factorial().eval();
     let ratio = &five_fact / &four_fact;
-    let result = ratio.combsimp();
+    let result = ratio.simplify_combinatorial();
     assert_eq!(format!("{result}"), "5");
 }
 
@@ -104,7 +104,7 @@ fn combsimp_factorial_ratio_symbolic() {
     let nm1 = &n - 1;
     let nm1_fact = nm1.factorial();
     let ratio = &n_fact / &nm1_fact;
-    let result = ratio.combsimp();
+    let result = ratio.simplify_combinatorial();
     assert_eq!(format!("{result}"), "n");
 }
 
@@ -113,7 +113,7 @@ fn combsimp_same_factorial_cancels() {
     vars!(n);
     let n_fact = n.factorial();
     let ratio = &n_fact / &n_fact;
-    let result = ratio.combsimp();
+    let result = ratio.simplify_combinatorial();
     assert_eq!(format!("{result}"), "1");
 }
 
@@ -125,7 +125,7 @@ fn combsimp_factorial_diff_2() {
     let nm2 = &n - 2;
     let nm2_fact = nm2.factorial();
     let ratio = &n_fact / &nm2_fact;
-    let result = ratio.combsimp();
+    let result = ratio.simplify_combinatorial();
     let s = format!("{result}");
     // Should not contain factorial notation
     assert!(
@@ -138,7 +138,7 @@ fn combsimp_factorial_diff_2() {
 fn combsimp_no_factorial_unchanged() {
     vars!(x, y);
     let e = &x + &y;
-    let result = e.combsimp();
+    let result = e.simplify_combinatorial();
     assert_eq!(format!("{result}"), format!("{e}"));
 }
 
@@ -150,7 +150,7 @@ fn combsimp_no_factorial_unchanged() {
 fn nsimplify_finds_rational() {
     // 0.333333 should become 1/3
     let expr = symplex::rational(333333, 1000000);
-    let result = expr.nsimplify(1e-5);
+    let result = expr.simplify_numeric(1e-5);
     assert_eq!(format!("{result}"), "1/3");
 }
 
@@ -158,7 +158,7 @@ fn nsimplify_finds_rational() {
 fn nsimplify_finds_pi() {
     // A rational approximation of π
     let expr = symplex::rational(314159265, 100000000);
-    let result = expr.nsimplify(1e-7);
+    let result = expr.simplify_numeric(1e-7);
     let s = format!("{result}");
     assert!(s.contains("pi"), "should find π, got: {s}");
 }
@@ -167,7 +167,7 @@ fn nsimplify_finds_pi() {
 fn nsimplify_finds_sqrt2() {
     // √2 ≈ 1.4142
     let expr = symplex::rational(14142, 10000);
-    let result = expr.nsimplify(1e-3);
+    let result = expr.simplify_numeric(1e-3);
     let s = format!("{result}");
     // Should produce 2^(1/2) or equivalent representation with ^ or 1/2
     assert!(s.contains("1/2") || s.contains("^"), "should find √2: {s}");
@@ -176,7 +176,7 @@ fn nsimplify_finds_sqrt2() {
 #[test]
 fn nsimplify_exact_integer() {
     let expr = symplex::int(7);
-    let result = expr.nsimplify(1e-10);
+    let result = expr.simplify_numeric(1e-10);
     assert_eq!(format!("{result}"), "7");
 }
 
@@ -184,7 +184,7 @@ fn nsimplify_exact_integer() {
 fn nsimplify_negative_rational() {
     // -1/7 ≈ -0.142857
     let expr = symplex::rational(-142857, 1000000);
-    let result = expr.nsimplify(1e-5);
+    let result = expr.simplify_numeric(1e-5);
     let s = format!("{result}");
     assert!(s == "-1/7", "should find -1/7, got: {s}");
 }
@@ -193,7 +193,7 @@ fn nsimplify_negative_rational() {
 fn nsimplify_half_pi() {
     // π/2 ≈ 1.5707963
     let expr = symplex::rational(15707963, 10000000);
-    let result = expr.nsimplify(1e-6);
+    let result = expr.simplify_numeric(1e-6);
     let s = format!("{result}");
     assert!(s.contains("pi"), "should find π/2, got: {s}");
 }
@@ -203,13 +203,13 @@ fn nsimplify_free_symbol_unchanged() {
     // An expression with free symbols can't be evaluated, so nsimplify
     // should return it unchanged.
     vars!(x);
-    let result = x.nsimplify(1e-10);
+    let result = x.simplify_numeric(1e-10);
     assert_eq!(format!("{result}"), "x");
 }
 
 #[test]
 fn nsimplify_zero() {
     let expr = symplex::int(0);
-    let result = expr.nsimplify(1e-10);
+    let result = expr.simplify_numeric(1e-10);
     assert_eq!(format!("{result}"), "0");
 }

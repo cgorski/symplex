@@ -29,7 +29,7 @@ fn workflow_calculus_optimization() {
 
     let mut crit_vals: Vec<f64> = crits
         .iter()
-        .map(|r| r.evalf_f64().expect("critical point evaluable"))
+        .map(|r| r.eval_f64().expect("critical point evaluable"))
         .collect();
     crit_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert!(
@@ -47,20 +47,20 @@ fn workflow_calculus_optimization() {
     let fpp = fp.diff(&x);
 
     // f''(1) = 6(1)-12 = -6 < 0  → local max
-    let fpp_at1 = fpp.subs_i64(&x, 1).eval().evalf_f64().expect("f''(1)");
+    let fpp_at1 = fpp.subs_i64(&x, 1).eval().eval_f64().expect("f''(1)");
     assert!(fpp_at1 < 0.0, "f''(1) should be negative (local max), got {fpp_at1}");
 
     // f''(3) = 6(3)-12 = 6 > 0  → local min
-    let fpp_at3 = fpp.subs_i64(&x, 3).eval().evalf_f64().expect("f''(3)");
+    let fpp_at3 = fpp.subs_i64(&x, 3).eval().eval_f64().expect("f''(3)");
     assert!(fpp_at3 > 0.0, "f''(3) should be positive (local min), got {fpp_at3}");
 
     // Step 4: verify function values  f(1)=5, f(3)=1
-    let f1 = f.subs_i64(&x, 1).eval().evalf_f64().expect("f(1)");
+    let f1 = f.subs_i64(&x, 1).eval().eval_f64().expect("f(1)");
     assert!(
         (f1 - 5.0).abs() < 1e-9,
         "f(1) should be 5, got {f1}"
     );
-    let f3 = f.subs_i64(&x, 3).eval().evalf_f64().expect("f(3)");
+    let f3 = f.subs_i64(&x, 3).eval().eval_f64().expect("f(3)");
     assert!(
         (f3 - 1.0).abs() < 1e-9,
         "f(3) should be 1, got {f3}"
@@ -117,8 +117,8 @@ fn workflow_diff_integrate_roundtrip_trig() {
     let mut diffs = Vec::new();
     for &(p, q) in pts {
         let pt = ctx.rational(p, q);
-        let gv = g.subs(&x, &pt).eval().evalf_f64().expect("g eval");
-        let fv = f.subs(&x, &pt).eval().evalf_f64().expect("f eval");
+        let gv = g.subs(&x, &pt).eval().eval_f64().expect("g eval");
+        let fv = f.subs(&x, &pt).eval().eval_f64().expect("f eval");
         diffs.push(gv - fv);
     }
     let c = diffs[0];
@@ -142,7 +142,7 @@ fn workflow_partial_fractions_pipeline() {
     let original = &symplex::int(1) / &(&x.powi(2) + &(&x * 3) + 2);
 
     // Step 1: partial fraction decomposition
-    let decomposed = original.apart(&x);
+    let decomposed = original.partial_fractions(&x);
 
     // Step 2: verify numerically that decomposed == original at several points
     for &pt in &[3i64, 5, 7] {
@@ -186,7 +186,7 @@ fn workflow_taylor_convergence() {
         (5, 10, 0.5_f64.sin()),
     ] {
         let pt = ctx.rational(num, denom);
-        let sv = series_expanded.subs(&x, &pt).eval().evalf_f64()
+        let sv = series_expanded.subs(&x, &pt).eval().eval_f64()
             .expect("series eval");
         let x_val = num as f64 / denom as f64;
         assert!(
@@ -207,7 +207,7 @@ fn workflow_taylor_exp_convergence() {
     let ctx = symplex::default_context();
     for &(num, denom) in &[(1i64, 10i64), (5, 10), (1, 1)] {
         let pt = ctx.rational(num, denom);
-        let sv = series_expanded.subs(&x, &pt).eval().evalf_f64()
+        let sv = series_expanded.subs(&x, &pt).eval().eval_f64()
             .expect("series eval");
         let x_val = num as f64 / denom as f64;
         let expected = x_val.exp();
@@ -237,7 +237,7 @@ fn workflow_solve_verify_substitute() {
     // Also verify expected values
     let mut root_vals: Vec<f64> = roots
         .iter()
-        .map(|r| r.evalf_f64().expect("root to f64"))
+        .map(|r| r.eval_f64().expect("root to f64"))
         .collect();
     root_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert!((root_vals[0] - 1.0).abs() < 1e-9, "root 1");
@@ -271,11 +271,11 @@ fn workflow_matrix_eigenvalue_properties() {
 
     // Step 1: trace and determinant
     let tr = m.trace();
-    let tr_val = tr.evalf_f64().expect("trace eval");
+    let tr_val = tr.eval_f64().expect("trace eval");
     assert!((tr_val - 4.0).abs() < 1e-9, "trace should be 4, got {tr_val}");
 
     let det = m.det();
-    let det_val = det.evalf_f64().expect("det eval");
+    let det_val = det.eval_f64().expect("det eval");
     assert!((det_val - 3.0).abs() < 1e-9, "det should be 3, got {det_val}");
 
     // Step 2: eigenvalues
@@ -284,7 +284,7 @@ fn workflow_matrix_eigenvalue_properties() {
 
     let mut eig_vals: Vec<f64> = eigs
         .iter()
-        .map(|e| e.evalf_f64().expect("eigenvalue eval"))
+        .map(|e| e.eval_f64().expect("eigenvalue eval"))
         .collect();
     eig_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
@@ -321,13 +321,13 @@ fn workflow_jacobian_to_lambdify() {
     let f2 = &x * &y.powi(2);
 
     // Step 1: compute Jacobian
-    let jac = jacobian(&[f1, f2], &[x.clone(), y.clone()]);
+    let jac = jacobian(&[&f1, &f2], &[&x, &y]);
     assert_eq!(jac.shape(), (2, 2));
 
     // J = [[2xy, x²], [y², 2xy]]
     // Step 2: lambdify J[0][0] = 2xy
     let j00 = jac.get(0, 0);
-    let j00_fn = j00.lambdify(&["x", "y"]).expect("lambdify J[0][0]");
+    let j00_fn = j00.compile(&["x", "y"]).expect("lambdify J[0][0]");
 
     // Step 3: evaluate at (x, y) = (3, 4)
     let val = j00_fn(&[3.0, 4.0]);
@@ -348,7 +348,7 @@ fn workflow_jacobian_to_lambdify() {
 
     // Step 5: also check J[1][1] = 2xy at (3,4) = 24
     let j11 = jac.get(1, 1);
-    let j11_fn = j11.lambdify(&["x", "y"]).expect("lambdify J[1][1]");
+    let j11_fn = j11.compile(&["x", "y"]).expect("lambdify J[1][1]");
     let val11 = j11_fn(&[3.0, 4.0]);
     assert!(
         (val11 - 24.0).abs() < 1e-9,
@@ -371,7 +371,7 @@ fn workflow_trig_simplify_chain() {
     let expanded = expr.expand();
 
     // Step 2: simplify / trigsimp
-    let simplified = expanded.trigsimp();
+    let simplified = expanded.simplify_trig();
 
     // Step 3: numerical verification that result ≈ 1 + sin(2x) at several points
     // (sin(x)+cos(x))² = sin²+2sincos+cos² = 1 + 2sin(x)cos(x) = 1 + sin(2x)
@@ -380,8 +380,8 @@ fn workflow_trig_simplify_chain() {
         let pt = ctx.rational(num, denom);
         let x_val = num as f64 / denom as f64;
 
-        let orig_val = expr.subs(&x, &pt).eval().evalf_f64().expect("orig eval");
-        let simp_val = simplified.subs(&x, &pt).eval().evalf_f64().expect("simp eval");
+        let orig_val = expr.subs(&x, &pt).eval().eval_f64().expect("orig eval");
+        let simp_val = simplified.subs(&x, &pt).eval().eval_f64().expect("simp eval");
         let expected = 1.0 + (2.0 * x_val).sin();
 
         assert!(
@@ -406,7 +406,7 @@ fn workflow_complex_euler() {
 
     // exp(i*π) should evaluate to -1
     let expr = (&i * &pi).exp().eval();
-    let (re, im) = expr.evalf_complex64().expect("exp(iπ) complex eval");
+    let (re, im) = expr.eval_complex64().expect("exp(iπ) complex eval");
     assert!(
         (re - (-1.0)).abs() < 1e-9,
         "Re(exp(iπ)) should be -1, got {re}"
@@ -419,7 +419,7 @@ fn workflow_complex_euler() {
     // exp(i*π) + 1 should be 0  (Euler's identity)
     let euler = &(&i * &pi).exp() + 1;
     let euler_evaled = euler.eval();
-    let (re2, im2) = euler_evaled.evalf_complex64().expect("euler identity eval");
+    let (re2, im2) = euler_evaled.eval_complex64().expect("euler identity eval");
     let mag = (re2 * re2 + im2 * im2).sqrt();
     assert!(
         mag < 1e-9,
@@ -435,7 +435,7 @@ fn workflow_complex_euler_i_squared() {
     assert_eq!(format!("{i_sq}"), "-1");
 
     // |i| = 1
-    let (re, im) = i.evalf_complex64().expect("i eval");
+    let (re, im) = i.eval_complex64().expect("i eval");
     let mag = (re * re + im * im).sqrt();
     assert!((mag - 1.0).abs() < 1e-9, "|i| should be 1, got {mag}");
 }
@@ -496,7 +496,7 @@ fn workflow_definite_integral_verification() {
 
     // ∫₀¹ x² dx = 1/3
     let result1 = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
-    let val1 = result1.eval().evalf_f64().expect("∫₀¹ x² dx");
+    let val1 = result1.eval().eval_f64().expect("∫₀¹ x² dx");
     assert!(
         (val1 - 1.0 / 3.0).abs() < 1e-9,
         "∫₀¹ x² dx should be 1/3, got {val1}"
@@ -504,7 +504,7 @@ fn workflow_definite_integral_verification() {
 
     // ∫₀^π sin(x) dx = 2
     let result2 = x.sin().definite_integral(&x, &ctx.int(0), &ctx.pi());
-    let val2 = result2.eval().evalf_f64().expect("∫₀^π sin(x) dx");
+    let val2 = result2.eval().eval_f64().expect("∫₀^π sin(x) dx");
     assert!(
         (val2 - 2.0).abs() < 1e-9,
         "∫₀^π sin(x) dx should be 2, got {val2}"
@@ -519,7 +519,7 @@ fn workflow_definite_integral_polynomial() {
     // ∫₁² (x² + x) dx = [x³/3 + x²/2]₁² = (8/3 + 2) - (1/3 + 1/2) = 23/6
     let expr = &x.powi(2) + &x;
     let result = expr.definite_integral(&x, &ctx.int(1), &ctx.int(2));
-    let val = result.eval().evalf_f64().expect("∫₁² (x²+x) dx");
+    let val = result.eval().eval_f64().expect("∫₁² (x²+x) dx");
     assert!(
         (val - 23.0 / 6.0).abs() < 1e-9,
         "∫₁² (x²+x) dx should be 23/6 ≈ 3.833, got {val}"
@@ -544,7 +544,7 @@ fn workflow_substitution_chain() {
     // Step 2: subs y → 3
     let step2 = step1.subs_i64(&y, 3).eval();
     // y⁴ + 2y + 1 = 81 + 6 + 1 = 88
-    let val = step2.evalf_f64().expect("final substitution");
+    let val = step2.eval_f64().expect("final substitution");
     assert!(
         (val - 88.0).abs() < 1e-9,
         "x²+2y+1 with x→y², y→3 should be 88, got {val}"
@@ -566,7 +566,7 @@ fn workflow_substitution_chain_trig() {
 
     // subs y → 4
     let step2 = step1.subs_i64(&y, 4).eval();
-    let val = step2.evalf_f64().expect("sin(π/2)+4 eval");
+    let val = step2.eval_f64().expect("sin(π/2)+4 eval");
     assert!(
         (val - 5.0).abs() < 1e-9,
         "sin(π/2) + 4 should be 5, got {val}"
@@ -583,7 +583,7 @@ fn workflow_lambdify_vs_evalf() {
     // f(x) = x³ + sin(x)
     let f = &x.powi(3) + &x.sin();
 
-    let func = f.lambdify(&["x"]).expect("lambdify x³+sin(x)");
+    let func = f.compile(&["x"]).expect("lambdify x³+sin(x)");
 
     let ctx = symplex::default_context();
     // 20 points from -3 to 3
@@ -596,7 +596,7 @@ fn workflow_lambdify_vs_evalf() {
         // evalf result — substitute a rational approximation
         let numer = (x_val * 10000.0).round() as i64;
         let pt = ctx.rational(numer, 10000);
-        let evalf_val = f.subs(&x, &pt).eval().evalf_f64().expect("evalf");
+        let evalf_val = f.subs(&x, &pt).eval().eval_f64().expect("evalf");
 
         assert!(
             common::approx_eq(lam_val, evalf_val, 1e-3),
@@ -609,7 +609,7 @@ fn workflow_lambdify_vs_evalf() {
 fn workflow_lambdify_vs_evalf_multivar() {
     symplex::vars!(x, y);
     let f = &x.powi(2) + &y.powi(2);
-    let func = f.lambdify(&["x", "y"]).expect("lambdify x²+y²");
+    let func = f.compile(&["x", "y"]).expect("lambdify x²+y²");
 
     for &(xv, yv) in &[(1.0, 2.0), (3.0, 4.0), (-1.0, 0.5), (0.0, 0.0)] {
         let lam_val = func(&[xv, yv]);
@@ -645,7 +645,7 @@ fn workflow_equation_solve_check() {
     // Also verify specific values
     let mut vals: Vec<f64> = roots
         .iter()
-        .map(|r| r.evalf_f64().expect("root eval"))
+        .map(|r| r.eval_f64().expect("root eval"))
         .collect();
     vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert!((vals[0] - 2.0).abs() < 1e-9, "root 1 should be 2, got {}", vals[0]);
@@ -690,8 +690,8 @@ fn workflow_series_then_integrate() {
     let ctx = symplex::default_context();
     for &(num, denom) in &[(3i64, 10i64), (7, 10), (14, 10)] {
         let pt = ctx.rational(num, denom);
-        let pv = poly.subs(&x, &pt).eval().evalf_f64().expect("poly eval");
-        let bv = back.subs(&x, &pt).eval().evalf_f64().expect("back eval");
+        let pv = poly.subs(&x, &pt).eval().eval_f64().expect("poly eval");
+        let bv = back.subs(&x, &pt).eval().eval_f64().expect("back eval");
         assert!(
             common::approx_eq(pv, bv, 1e-9),
             "FTC: poly at {num}/{denom}={pv}, d/dx(∫poly)={bv}"
@@ -702,7 +702,7 @@ fn workflow_series_then_integrate() {
     // expectation.  The polynomial is 1 + x + x²/2 + x³/6, so
     // ∫₀¹ (1 + x + x²/2 + x³/6) dx = 1 + 1/2 + 1/6 + 1/24 = 41/24 ≈ 1.70833
     let def_int = poly.definite_integral(&x, &symplex::int(0), &symplex::int(1));
-    let def_val = def_int.eval().evalf_f64().expect("definite integral");
+    let def_val = def_int.eval().eval_f64().expect("definite integral");
     let expected = 1.0 + 0.5 + 1.0 / 6.0 + 1.0 / 24.0;
     assert!(
         (def_val - expected).abs() < 1e-9,
@@ -753,8 +753,8 @@ fn workflow_product_rule_verification() {
     let ctx = symplex::default_context();
     for &(num, denom) in &[(1i64, 10i64), (5, 10), (10, 10), (15, 10)] {
         let pt = ctx.rational(num, denom);
-        let auto_val = dfg.subs(&x, &pt).eval().evalf_f64().expect("auto diff");
-        let man_val = manual.subs(&x, &pt).eval().evalf_f64().expect("manual diff");
+        let auto_val = dfg.subs(&x, &pt).eval().eval_f64().expect("auto diff");
+        let man_val = manual.subs(&x, &pt).eval().eval_f64().expect("manual diff");
         assert!(
             common::approx_eq(auto_val, man_val, 1e-9),
             "product rule at {num}/{denom}: auto={auto_val}, manual={man_val}"
@@ -775,8 +775,8 @@ fn workflow_chain_rule_verification() {
     let ctx = symplex::default_context();
     for &(num, denom) in &[(3i64, 10i64), (7, 10), (12, 10)] {
         let pt = ctx.rational(num, denom);
-        let dv = deriv.subs(&x, &pt).eval().evalf_f64().expect("deriv eval");
-        let ev = expected.subs(&x, &pt).eval().evalf_f64().expect("expected eval");
+        let dv = deriv.subs(&x, &pt).eval().eval_f64().expect("deriv eval");
+        let ev = expected.subs(&x, &pt).eval().eval_f64().expect("expected eval");
         assert!(
             common::approx_eq(dv, ev, 1e-9),
             "chain rule at {num}/{denom}: computed={dv}, expected={ev}"
@@ -814,7 +814,7 @@ fn workflow_matrix_inverse_verify() {
     ]);
 
     let det = m.det();
-    let det_val = det.evalf_f64().expect("det eval");
+    let det_val = det.eval_f64().expect("det eval");
     // det = 1(0-24) - 2(0-20) + 3(0-5) = -24 + 40 - 15 = 1
     assert!(
         (det_val - 1.0).abs() < 1e-9,
@@ -828,7 +828,7 @@ fn workflow_matrix_inverse_verify() {
     // Check diagonal entries are 1, off-diagonal are 0
     for i in 0..3 {
         for j in 0..3 {
-            let v = product.get(i, j).eval().evalf_f64().expect("product entry");
+            let v = product.get(i, j).eval().eval_f64().expect("product entry");
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (v - expected).abs() < 1e-8,

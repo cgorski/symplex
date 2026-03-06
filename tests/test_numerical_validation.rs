@@ -12,8 +12,8 @@ fn assert_numerically_equal(a: &Ex, b: &Ex, x: &Ex, points: &[i64], tolerance: f
     for &pt in points {
         let a_sub = a.subs_i64(x, pt);
         let b_sub = b.subs_i64(x, pt);
-        let a_val = a_sub.evalf_f64();
-        let b_val = b_sub.evalf_f64();
+        let a_val = a_sub.eval_f64();
+        let b_val = b_sub.eval_f64();
         match (a_val, b_val) {
             (Ok(av), Ok(bv)) => {
                 if av.is_nan() && bv.is_nan() {
@@ -159,7 +159,7 @@ fn solve_verify_quadratic() {
     assert!(!roots.is_empty(), "quadratic should have roots");
     for root in &roots {
         let val = eq.subs(&x, root);
-        let f = val.evalf_f64().expect("root evaluation should succeed");
+        let f = val.eval_f64().expect("root evaluation should succeed");
         assert!(
             f.abs() < 1e-10,
             "root {} should make equation 0, got {f}",
@@ -176,7 +176,7 @@ fn solve_verify_cubic() {
     assert!(!roots.is_empty(), "cubic should have roots");
     for root in &roots {
         let val = eq.subs(&x, root);
-        let f = val.evalf_f64().expect("root evaluation should succeed");
+        let f = val.eval_f64().expect("root evaluation should succeed");
         assert!(
             f.abs() < 1e-10,
             "root {} should make equation 0, got {f}",
@@ -239,8 +239,8 @@ fn log_expand_preserves_value() {
     // Substitute x=2, y=3
     let o = original.subs_i64(&x, 2).subs_i64(&y, 3);
     let e = expanded.subs_i64(&x, 2).subs_i64(&y, 3);
-    let ov = o.evalf_f64();
-    let ev = e.evalf_f64();
+    let ov = o.eval_f64();
+    let ev = e.eval_f64();
     if let (Ok(a), Ok(b)) = (ov, ev) {
         assert!((a - b).abs() < 1e-10, "ln(x*y) expand: {a} vs {b}");
     }
@@ -258,7 +258,7 @@ fn maclaurin_sin_approximates_at_small_x() {
     // The series x - x³/6 + x⁵/120 should be close
     // We can't easily substitute 0.1 so use x=1 where sin(1) ≈ 0.841
     // The 5th order Maclaurin of sin at x=1: 1 - 1/6 + 1/120 ≈ 0.8417
-    let approx = series.subs_i64(&x, 1).evalf_f64()
+    let approx = series.subs_i64(&x, 1).eval_f64()
         .expect("Maclaurin sin evaluation should succeed");
     let exact = 1.0f64.sin();
     assert!(
@@ -271,7 +271,7 @@ fn maclaurin_sin_approximates_at_small_x() {
 fn maclaurin_exp_approximates_at_small_x() {
     let x = symplex::var("x");
     let series = x.exp().maclaurin(&x, 6).unwrap().expand();
-    let approx = series.subs_i64(&x, 1).evalf_f64()
+    let approx = series.subs_i64(&x, 1).eval_f64()
         .expect("Maclaurin exp evaluation should succeed");
     let exact = 1.0f64.exp();
     assert!(
@@ -288,7 +288,7 @@ fn maclaurin_exp_approximates_at_small_x() {
 fn complex_i_squared_numerically() {
     let i = symplex::i_unit();
     let result = i.powi(2);
-    let f = result.evalf_f64().expect("i² evaluation should succeed");
+    let f = result.eval_f64().expect("i² evaluation should succeed");
     assert!((f - (-1.0)).abs() < 1e-10, "i² should be -1: {f}");
 }
 
@@ -296,7 +296,7 @@ fn complex_i_squared_numerically() {
 fn complex_one_plus_i_fourth() {
     let i = symplex::i_unit();
     let expr = (&symplex::int(1) + &i).powi(4).expand();
-    let f = expr.evalf_f64().expect("(1+i)⁴ evaluation should succeed");
+    let f = expr.eval_f64().expect("(1+i)⁴ evaluation should succeed");
     assert!((f - (-4.0)).abs() < 1e-10, "(1+i)⁴ should be -4: {f}");
 }
 
@@ -307,7 +307,7 @@ fn complex_one_plus_i_fourth() {
 #[test]
 fn evalf_pi_digits() {
     let pi = symplex::pi();
-    let result = pi.evalf(20).unwrap();
+    let result = pi.eval_decimal(20).unwrap();
     assert!(
         result.starts_with("3.14159265"),
         "π should start with 3.14159265: {result}"
@@ -317,7 +317,7 @@ fn evalf_pi_digits() {
 #[test]
 fn evalf_e_digits() {
     let e = symplex::e();
-    let result = e.evalf(20).unwrap();
+    let result = e.eval_decimal(20).unwrap();
     assert!(
         result.starts_with("2.71828182"),
         "e should start with 2.71828182: {result}"
@@ -326,13 +326,13 @@ fn evalf_e_digits() {
 
 #[test]
 fn evalf_sqrt_2() {
-    let result = symplex::int(2).sqrt().evalf(15).unwrap();
+    let result = symplex::int(2).sqrt().eval_decimal(15).unwrap();
     assert!(result.starts_with("1.41421356"), "√2: {result}");
 }
 
 #[test]
 fn evalf_ln_2() {
-    let result = symplex::int(2).ln().evalf(15).unwrap();
+    let result = symplex::int(2).ln().eval_decimal(15).unwrap();
     assert!(result.starts_with("0.69314718"), "ln(2): {result}");
 }
 
@@ -350,8 +350,8 @@ fn check_simplify_value(
     let ctx = symplex::default_context();
     let point = ctx.rational(point_num, point_den);
     let simplified = expr.simplify();
-    let v1 = expr.subs(var, &point).evalf_f64().unwrap();
-    let v2 = simplified.subs(var, &point).evalf_f64().unwrap();
+    let v1 = expr.subs(var, &point).eval_f64().unwrap();
+    let v2 = simplified.subs(var, &point).eval_f64().unwrap();
     assert!(
         (v1 - v2).abs() < 1e-8,
         "simplify changed value at {point_num}/{point_den}: {v1} vs {v2} for '{expr}' → '{simplified}'"
@@ -419,12 +419,12 @@ fn value_rule_exp_mul() {
     let v1 = expr
         .subs(&x, &point_x)
         .subs(&y, &point_y)
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     let v2 = simplified
         .subs(&x, &point_x)
         .subs(&y, &point_y)
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert!(
         (v1 - v2).abs() < 1e-8,

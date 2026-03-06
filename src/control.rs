@@ -155,11 +155,11 @@ impl StateSpace {
         let poles = self.poles(&s);
         for pole in &poles {
             // Try real evaluation first
-            if let Ok(val) = pole.evalf_f64() {
+            if let Ok(val) = pole.eval_f64() {
                 if val >= 0.0 {
                     return Some(false);
                 }
-            } else if let Ok((re, _im)) = pole.evalf_complex64() {
+            } else if let Ok((re, _im)) = pole.eval_complex64() {
                 if re >= 0.0 {
                     return Some(false);
                 }
@@ -578,7 +578,7 @@ pub fn is_routh_stable(coeffs: &[Ex]) -> Option<bool> {
     // Try to evaluate each entry numerically
     let mut values: Vec<f64> = Vec::with_capacity(first_col.len());
     for entry in &first_col {
-        if let Ok(val) = entry.evalf_f64() {
+        if let Ok(val) = entry.eval_f64() {
             values.push(val);
         } else {
             return None; // Can't evaluate symbolically

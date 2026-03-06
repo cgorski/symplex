@@ -259,7 +259,7 @@ fn workflow_matrix_jacobian() {
     let y = symplex::var("y");
     let f1 = expr!(x ^ 2 + y);
     let f2 = expr!(x * y);
-    let j = jacobian(&[f1, f2], &[x, y]);
+    let j = jacobian(&[&f1, &f2], &[&x, &y]);
     assert_eq!(j.nrows(), 2);
     assert_eq!(j.ncols(), 2);
 }

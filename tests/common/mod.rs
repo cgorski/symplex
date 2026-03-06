@@ -80,8 +80,8 @@ pub fn assert_math_eq_tol(
 ) {
     let mut checked = 0usize;
     for &pt in points {
-        let va = a.subs_i64(var, pt).eval().evalf_f64();
-        let vb = b.subs_i64(var, pt).eval().evalf_f64();
+        let va = a.subs_i64(var, pt).eval().eval_f64();
+        let vb = b.subs_i64(var, pt).eval().eval_f64();
         match (va, vb) {
             (Ok(av), Ok(bv)) => {
                 checked += 1;
@@ -122,8 +122,8 @@ pub fn assert_math_eq_rational(
     let mut checked = 0usize;
     for &(p, q) in points {
         let pt = ctx.rational(p, q);
-        let va = a.subs(var, &pt).eval().evalf_f64();
-        let vb = b.subs(var, &pt).eval().evalf_f64();
+        let va = a.subs(var, &pt).eval().eval_f64();
+        let vb = b.subs(var, &pt).eval().eval_f64();
         match (va, vb) {
             (Ok(av), Ok(bv)) => {
                 checked += 1;
@@ -185,8 +185,8 @@ pub fn assert_ftc_tol(integrand: &Ex, var: &Ex, tol: f64, label: &str) {
         let numer = (pt_f * 1000.0).round() as i64;
         let pt = ctx.rational(numer, 1000);
 
-        let original_val = integrand.subs(var, &pt).eval().evalf_f64();
-        let derived_val = deriv.subs(var, &pt).eval().evalf_f64();
+        let original_val = integrand.subs(var, &pt).eval().eval_f64();
+        let derived_val = deriv.subs(var, &pt).eval().eval_f64();
 
         match (original_val, derived_val) {
             (Ok(o), Ok(d)) => {
@@ -244,7 +244,7 @@ pub fn verify_roots(poly: &Ex, var: &Ex, roots: &[Ex], tol: f64) {
         }
 
         // Try real evaluation first
-        if let Ok(v) = substituted.evalf_f64() {
+        if let Ok(v) = substituted.eval_f64() {
             assert!(
                 v.abs() < tol,
                 "root {i} ({root}) doesn't satisfy poly '{poly}': residual = {v}"
@@ -253,7 +253,7 @@ pub fn verify_roots(poly: &Ex, var: &Ex, roots: &[Ex], tol: f64) {
         }
 
         // Fall back to complex evaluation
-        match substituted.evalf_complex64() {
+        match substituted.eval_complex64() {
             Ok((re, im)) => {
                 let mag = (re * re + im * im).sqrt();
                 assert!(
@@ -340,7 +340,7 @@ pub fn verify_ode_first_order(
             .subs(indep_var, &pt)
             .eval();
 
-        if let Ok(v) = residual.evalf_f64() {
+        if let Ok(v) = residual.eval_f64() {
             checked += 1;
             assert!(
                 v.abs() < tol,
@@ -446,7 +446,7 @@ impl BailCounter {
 pub fn eval_at_i64(expr: &Ex, var: &Ex, pt: i64) -> f64 {
     expr.subs_i64(var, pt)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap_or_else(|e| panic!("eval_at_i64({expr}, {var}={pt}) failed: {e}"))
 }
 
@@ -457,7 +457,7 @@ pub fn eval_at_rational(expr: &Ex, var: &Ex, p: i64, q: i64) -> f64 {
     let pt = ctx.rational(p, q);
     expr.subs(var, &pt)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap_or_else(|e| panic!("eval_at_rational({expr}, {var}={p}/{q}) failed: {e}"))
 }
 
@@ -670,7 +670,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
         ExprDomain::Constant => {
             // Should have been caught by eval → "0" check above.
             // Try evalf as last resort for numeric constants.
-            if let Ok(v) = diff_eval.evalf_f64() {
+            if let Ok(v) = diff_eval.eval_f64() {
                 return v.abs() < 1e-12;
             }
             false
@@ -709,7 +709,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
         }
         ExprDomain::Trigonometric => {
             // Try trigsimp first
-            let tsimp = diff_eval.trigsimp();
+            let tsimp = diff_eval.simplify_trig();
             let st = format!("{tsimp}");
             if st == "0" {
                 return true;
@@ -748,7 +748,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
         ExprDomain::Mixed => {
             // Try cascaded simplification strategies
             let strategies: Vec<Box<dyn Fn(&Ex) -> Ex>> = vec![
-                Box::new(|e: &Ex| e.trigsimp()),
+                Box::new(|e: &Ex| e.simplify_trig()),
                 Box::new(|e: &Ex| e.full_simplify()),
                 Box::new(|e: &Ex| e.smart_simplify()),
                 Box::new(|e: &Ex| {
@@ -777,7 +777,7 @@ fn numerical_zero_test(expr: &Ex) -> bool {
     let test_points: &[i64] = &[-7, -3, -2, 2, 3, 5, 7, 11];
     let mut checked = 0usize;
     for &pt in test_points {
-        if let Ok(v) = expr.subs_i64(&x, pt).eval().evalf_f64() {
+        if let Ok(v) = expr.subs_i64(&x, pt).eval().eval_f64() {
             if v.is_nan() || v.is_infinite() {
                 continue;
             }

@@ -120,7 +120,7 @@ fn diff_x_to_the_minus_one() {
     );
     assert!(s.contains("x"), "should contain x, got: {s}");
     // Numerical verification: at x=2, d/dx(1/x) = -1/x² = -1/4 = -0.25
-    let val = result.subs(&x, &ctx.int(2)).evalf_f64()
+    let val = result.subs(&x, &ctx.int(2)).eval_f64()
         .expect("derivative of 1/x should evaluate at x=2");
     assert!(
         (val - (-0.25)).abs() < 1e-10,
@@ -192,7 +192,7 @@ fn diff_tan_x() {
         "d/dx(tan(x)) should involve tan, got: {s}"
     );
     // Numerical verification: at x=0.5, d/dx(tan(x)) = sec²(0.5) = 1/cos²(0.5)
-    let val = result.subs(&x, &ctx.rational(1, 2)).evalf_f64()
+    let val = result.subs(&x, &ctx.rational(1, 2)).eval_f64()
         .expect("derivative of tan(x) should evaluate at x=1/2");
     let expected = 1.0 / (0.5f64.cos().powi(2));
     assert!(
@@ -208,7 +208,7 @@ fn diff_sin_of_x_squared() {
     // d/dx(sin(x^2)) = 2*x*cos(x^2)
     let result = x.powi(2).sin().diff(&x);
     // Numerical verification: at x=1, 2*1*cos(1²) = 2*cos(1) ≈ 1.0806
-    let val = result.subs(&x, &ctx.int(1)).evalf_f64()
+    let val = result.subs(&x, &ctx.int(1)).eval_f64()
         .expect("derivative of sin(x²) should evaluate at x=1");
     let expected = 2.0 * 1.0f64.cos();
     assert!(
@@ -284,7 +284,7 @@ fn diff_sqrt_x() {
     let x = ctx.symbol("x");
     let result = x.sqrt().diff(&x);
     // Numerical verification: at x=4, 1/(2*√4) = 1/4 = 0.25
-    let val = result.subs(&x, &ctx.int(4)).evalf_f64()
+    let val = result.subs(&x, &ctx.int(4)).eval_f64()
         .expect("derivative of sqrt(x) should evaluate at x=4");
     assert!(
         (val - 0.25).abs() < 1e-10,

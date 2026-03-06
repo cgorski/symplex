@@ -13,10 +13,10 @@ fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
 /// Helper: evaluate a quaternion's components to f64 values.
 fn quat_to_f64(q: &Quaternion) -> (f64, f64, f64, f64) {
     (
-        q.w.eval().evalf_f64().unwrap(),
-        q.x.eval().evalf_f64().unwrap(),
-        q.y.eval().evalf_f64().unwrap(),
-        q.z.eval().evalf_f64().unwrap(),
+        q.w.eval().eval_f64().unwrap(),
+        q.x.eval().eval_f64().unwrap(),
+        q.y.eval().eval_f64().unwrap(),
+        q.z.eval().eval_f64().unwrap(),
     )
 }
 
@@ -232,7 +232,7 @@ fn quaternion_norm_squared() {
         symplex::int(3),
         symplex::int(4),
     );
-    let n2 = q.norm_squared().eval().evalf_f64().unwrap();
+    let n2 = q.norm_squared().eval().eval_f64().unwrap();
     assert_close(n2, 30.0, 1e-12, "|q|²");
 }
 
@@ -271,7 +271,7 @@ fn quaternion_to_rotation_identity() {
 
     for i in 0..3 {
         for j in 0..3 {
-            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let val = r.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert_close(
                 val,
@@ -310,7 +310,7 @@ fn quaternion_to_rotation_180_z() {
 
     for i in 0..3 {
         for j in 0..3 {
-            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let val = r.get(i, j).eval().eval_f64().unwrap();
             assert_close(
                 val,
                 expected[i][j],
@@ -354,7 +354,7 @@ fn quaternion_from_axis_angle_z_90() {
 
     for i in 0..3 {
         for j in 0..3 {
-            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let val = r.get(i, j).eval().eval_f64().unwrap();
             assert_close(
                 val,
                 expected[i][j],
@@ -485,7 +485,7 @@ fn quaternion_normalize() {
         symplex::int(4),
     );
     let qn = q.normalize();
-    let norm_val = qn.norm_squared().eval().evalf_f64().unwrap();
+    let norm_val = qn.norm_squared().eval().eval_f64().unwrap();
     assert_close(norm_val, 1.0, 1e-10, "|normalize(q)|²");
 }
 
@@ -536,7 +536,7 @@ fn quaternion_from_axis_angle_x_90() {
 
     for i in 0..3 {
         for j in 0..3 {
-            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let val = r.get(i, j).eval().eval_f64().unwrap();
             assert_close(
                 val,
                 expected[i][j],
@@ -568,7 +568,7 @@ fn quaternion_rotation_matrix_orthogonal() {
 
     for i in 0..3 {
         for j in 0..3 {
-            let val = product.get(i, j).eval().evalf_f64().unwrap();
+            let val = product.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert_close(
                 val,
@@ -636,9 +636,9 @@ fn quaternion_norm_product() {
         symplex::int(-3),
     );
 
-    let norm_p = p.norm().eval().evalf_f64().unwrap();
-    let norm_q = q.norm().eval().evalf_f64().unwrap();
-    let norm_pq = p.mul(&q).norm().eval().evalf_f64().unwrap();
+    let norm_p = p.norm().eval().eval_f64().unwrap();
+    let norm_q = q.norm().eval().eval_f64().unwrap();
+    let norm_pq = p.mul(&q).norm().eval().eval_f64().unwrap();
 
     assert_close(norm_pq, norm_p * norm_q, 1e-10, "|p*q| = |p|*|q|");
 }

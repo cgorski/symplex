@@ -30,7 +30,7 @@
 //!         (&theta2, &symplex::int(0), &l2, &symplex::int(0)),
 //!     ]);
 //!
-//!     let j = jacobian(&[x, y], &[theta1, theta2]);
+//!     let j = jacobian(&[&x, &y], &[&theta1, &theta2]);
 //!
 //!     CodeGen::new()
 //!         .add_matrix_fn("jacobian", &j, &["theta1", "theta2"])
@@ -589,9 +589,10 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
             }
             "jacobian" => {
                 let (x, y, _z) = symplex::robotics::fk_position(&dh_params);
+                let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
                 let j = symplex::matrix::jacobian(
-                    &[x, y],
-                    &theta_vars,
+                    &[&x, &y],
+                    &theta_refs,
                 );
                 codegen = codegen.add_matrix_fn("jacobian", &j, &theta_names);
             }
@@ -733,7 +734,8 @@ impl RobotArmBuilder {
         let owned_names = self.theta_names_owned();
         let theta_names: Vec<&str> = owned_names.iter().map(|s| s.as_str()).collect();
         let (x, y, _z) = symplex::robotics::fk_position(&dh);
-        let j = symplex::matrix::jacobian(&[x, y], &thetas);
+        let theta_refs: Vec<&Ex> = thetas.iter().collect();
+        let j = symplex::matrix::jacobian(&[&x, &y], &theta_refs);
 
         self.codegen = self.codegen.add_matrix_fn(name, &j, &theta_names);
         self.generated_jacobian = true;

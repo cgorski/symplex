@@ -44,7 +44,7 @@ use crate::prelude::*;
 ///
 /// // d/dt(q) = qd
 /// let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]);
-/// let val = result.subs(&qd, &symplex::int(7)).eval().evalf_f64().unwrap();
+/// let val = result.subs(&qd, &symplex::int(7)).eval().eval_f64().unwrap();
 /// assert!((val - 7.0).abs() < 1e-12);
 /// ```
 pub fn total_time_derivative(

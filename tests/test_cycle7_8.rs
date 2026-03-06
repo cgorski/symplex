@@ -899,21 +899,21 @@ fn product_of_empty_is_one() {
 #[test]
 fn evalf_f64_integer() {
     let five = symplex::int(5);
-    let val = five.evalf_f64().unwrap();
+    let val = five.eval_f64().unwrap();
     assert!((val - 5.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_f64_pi() {
     let ctx = Context::new();
-    let val = ctx.pi().evalf_f64().unwrap();
+    let val = ctx.pi().eval_f64().unwrap();
     assert!((val - std::f64::consts::PI).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_f64_free_symbol_errors() {
     let x = symplex::var("x");
-    assert!(x.evalf_f64().is_err());
+    assert!(x.eval_f64().is_err());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1087,7 +1087,7 @@ fn workflow_diff_subs_evalf() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // f(x) = x^3, f'(2) = 12
-    let val = x.powi(3).diff(&x).subs_i64(&x, 2).evalf_f64().unwrap();
+    let val = x.powi(3).diff(&x).subs_i64(&x, 2).eval_f64().unwrap();
     assert!((val - 12.0).abs() < 1e-10);
 }
 
@@ -1098,7 +1098,7 @@ fn workflow_expand_diff_subs() {
     // (x+1)^3 expanded, differentiated, evaluated at x=1
     let expanded = (&x + 1).powi(3).expand();
     let d = expanded.diff(&x);
-    let val = d.subs_i64(&x, 1).evalf_f64().unwrap();
+    let val = d.subs_i64(&x, 1).eval_f64().unwrap();
     // d/dx((x+1)^3) = 3(x+1)^2 → at x=1: 3·4 = 12
     assert!((val - 12.0).abs() < 1e-10);
 }

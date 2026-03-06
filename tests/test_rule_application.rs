@@ -7,7 +7,7 @@
 //!   3. **Value preservation:** the transformation preserves numerical value.
 //!
 //! All tests work through the public `Expr` API (`.simplify()`,
-//! `.simplify_trace()`, `.evalf_f64()`, etc.) — no `mod common;` needed.
+//! `.simplify_trace()`, `.eval_f64()`, etc.) — no `mod common;` needed.
 
 use symplex::prelude::*;
 
@@ -72,8 +72,8 @@ macro_rules! assert_trace_empty {
 /// substitution point, the f64 values agree within tolerance.
 macro_rules! assert_value_preserved {
     ($expr:expr, $var:expr, $val:expr, $tol:expr) => {{
-        let before_val = ($expr).subs(&$var, &$val).evalf_f64();
-        let after_val = ($expr).simplify().subs(&$var, &$val).evalf_f64();
+        let before_val = ($expr).subs(&$var, &$val).eval_f64();
+        let after_val = ($expr).simplify().subs(&$var, &$val).eval_f64();
         match (before_val, after_val) {
             (Ok(v1), Ok(v2)) => {
                 assert!(
@@ -516,12 +516,12 @@ fn rule_exp_mul_value_preserved() {
     // Substitute a=1, b=2 and compare
     let one = ctx.int(1);
     let two = ctx.int(2);
-    let before_val = expr.subs(&a, &one).subs(&b, &two).evalf_f64().expect("evalf before");
+    let before_val = expr.subs(&a, &one).subs(&b, &two).eval_f64().expect("evalf before");
     let after_val = expr
         .simplify()
         .subs(&a, &one)
         .subs(&b, &two)
-        .evalf_f64()
+        .eval_f64()
         .expect("evalf after");
     assert!(
         (before_val - after_val).abs() < 1e-10,

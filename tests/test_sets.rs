@@ -581,7 +581,7 @@ fn diff_of_empty_set_is_zero() {
 fn evalf_of_set_errors() {
     let ctx = Context::new();
     let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
-    let result = i.as_ex().evalf(15);
+    let result = i.as_ex().eval_decimal(15);
     assert!(result.is_err(), "evalf on a set should error");
 }
 
@@ -589,7 +589,7 @@ fn evalf_of_set_errors() {
 fn evalf_of_empty_set_errors() {
     let ctx = Context::new();
     let e = ctx.empty_set();
-    let result = e.as_ex().evalf(15);
+    let result = e.as_ex().eval_decimal(15);
     assert!(result.is_err(), "evalf on empty set should error");
 }
 

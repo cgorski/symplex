@@ -69,7 +69,7 @@ fn exhaustive_quadratic_solve_verify() {
                         bail.check();
                     } else {
                         // Try numerical check
-                        if let Ok(f) = val.evalf_f64() {
+                        if let Ok(f) = val.eval_f64() {
                             bail.check();
                             assert!(
                                 f.abs() < 1e-8,
@@ -140,7 +140,7 @@ fn exhaustive_pythagorean_unit_circle() {
         // Try symbolic check first, fall back to numerical
         let s = format!("{simplified}");
         if s != "1" {
-            let val = simplified.evalf_f64().expect(&format!(
+            let val = simplified.eval_f64().expect(&format!(
                 "sin²({k}π/12) + cos²({k}π/12) should be evaluable"
             ));
             assert!(

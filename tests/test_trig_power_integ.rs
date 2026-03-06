@@ -18,8 +18,8 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
 
     // Evaluate both at x = 0.7 (avoids zeros and poles)
     let test_point = symplex::rational(7, 10);
-    let orig_val = integrand.subs(var, &test_point).evalf_f64();
-    let deriv_val = deriv.subs(var, &test_point).evalf_f64();
+    let orig_val = integrand.subs(var, &test_point).eval_f64();
+    let deriv_val = deriv.subs(var, &test_point).eval_f64();
 
     if let (Ok(o), Ok(d)) = (orig_val, deriv_val) {
         if o.is_finite() && d.is_finite() {

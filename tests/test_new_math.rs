@@ -13,7 +13,7 @@ fn apart_simple() {
     let x = ctx.symbol("x");
     // 1/(x^2 - 1) should decompose
     let expr = 1 / (&x.powi(2) - 1);
-    let decomposed = expr.apart(&x);
+    let decomposed = expr.partial_fractions(&x);
     let s = format!("{decomposed}");
     // Should NOT contain x^2 in denominator anymore
     assert!(
@@ -27,7 +27,7 @@ fn apart_already_simple() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x + 1;
-    let result = expr.apart(&x);
+    let result = expr.partial_fractions(&x);
     assert_eq!(format!("{result}"), "x + 1");
 }
 
@@ -41,7 +41,7 @@ fn nsolve_x_minus_cos_x() {
     let x = ctx.symbol("x");
     // x - cos(x) = 0 has a root near 0.739
     let expr = &x - &x.cos();
-    let root = expr.nsolve(&x, 1.0, 50, 1e-12).unwrap();
+    let root = expr.solve_numeric(&x, 1.0, 50, 1e-12).unwrap();
     assert!((root - 0.7390851332).abs() < 1e-6, "got: {root}");
 }
 
@@ -51,7 +51,7 @@ fn nsolve_x_squared_minus_2() {
     let x = ctx.symbol("x");
     // x^2 - 2 = 0 has root sqrt(2) ≈ 1.4142
     let expr = &x.powi(2) - 2;
-    let root = expr.nsolve(&x, 1.5, 50, 1e-12).unwrap();
+    let root = expr.solve_numeric(&x, 1.5, 50, 1e-12).unwrap();
     assert!(
         (root - std::f64::consts::SQRT_2).abs() < 1e-8,
         "got: {root}"
@@ -64,7 +64,7 @@ fn nsolve_exp_minus_2() {
     let x = ctx.symbol("x");
     // exp(x) - 2 = 0 → x = ln(2) ≈ 0.6931
     let expr = &x.exp() - 2;
-    let root = expr.nsolve(&x, 1.0, 50, 1e-12).unwrap();
+    let root = expr.solve_numeric(&x, 1.0, 50, 1e-12).unwrap();
     assert!((root - 2.0_f64.ln()).abs() < 1e-8, "got: {root}");
 }
 

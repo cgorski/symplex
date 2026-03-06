@@ -1,6 +1,6 @@
 //! Concrete evaluation tests for Floor, Ceiling, Min, Max, Sum, and Product_ variants.
 //!
-//! These tests focus on numeric evaluation (`.eval()` and `.evalf()`) to verify
+//! These tests focus on numeric evaluation (`.eval()` and `.eval_decimal()`) to verify
 //! that the new variants produce correct results for concrete inputs.
 
 use symplex::prelude::*;

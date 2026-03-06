@@ -259,7 +259,7 @@ fn transfer_function_dc_gain() {
     let tf = TransferFunction::new(symplex::int(5), &s + 2, s.clone());
 
     let gain = tf.dc_gain();
-    let val = gain.evalf_f64().unwrap();
+    let val = gain.eval_f64().unwrap();
     assert!(
         (val - 2.5).abs() < 1e-10,
         "DC gain should be 5/2 = 2.5, got: {val}"
@@ -282,14 +282,14 @@ fn transfer_function_series() {
     let gs = g1.series(&g2);
 
     // Evaluate at s=0: should be 1/((0+1)(0+2)) = 1/2
-    let val = gs.eval_at(&symplex::int(0)).evalf_f64().unwrap();
+    let val = gs.eval_at(&symplex::int(0)).eval_f64().unwrap();
     assert!(
         (val - 0.5).abs() < 1e-10,
         "Series DC gain should be 0.5, got: {val}"
     );
 
     // Evaluate at s=1: should be 1/((1+1)(1+2)) = 1/6
-    let val_1 = gs.eval_at(&symplex::int(1)).evalf_f64().unwrap();
+    let val_1 = gs.eval_at(&symplex::int(1)).eval_f64().unwrap();
     assert!(
         (val_1 - 1.0 / 6.0).abs() < 1e-10,
         "Series at s=1 should be 1/6, got: {val_1}"
@@ -311,7 +311,7 @@ fn transfer_function_parallel() {
 
     let gp = g1.parallel(&g2);
 
-    let val = gp.eval_at(&symplex::int(0)).evalf_f64().unwrap();
+    let val = gp.eval_at(&symplex::int(0)).eval_f64().unwrap();
     assert!(
         (val - 1.5).abs() < 1e-10,
         "Parallel DC gain should be 1.5, got: {val}"
@@ -334,7 +334,7 @@ fn transfer_function_feedback() {
 
     let gcl = g.feedback();
 
-    let val = gcl.eval_at(&symplex::int(0)).evalf_f64().unwrap();
+    let val = gcl.eval_at(&symplex::int(0)).eval_f64().unwrap();
     let expected = 10.0 / 11.0;
     assert!(
         (val - expected).abs() < 1e-10,
@@ -483,19 +483,19 @@ fn transfer_function_eval_at() {
     let s = symplex::var("s");
     let tf = TransferFunction::new(&s + 3, &s + 1, s.clone());
 
-    let val0 = tf.eval_at(&symplex::int(0)).evalf_f64().unwrap();
+    let val0 = tf.eval_at(&symplex::int(0)).eval_f64().unwrap();
     assert!(
         (val0 - 3.0).abs() < 1e-10,
         "G(0) should be 3, got: {val0}"
     );
 
-    let val1 = tf.eval_at(&symplex::int(1)).evalf_f64().unwrap();
+    let val1 = tf.eval_at(&symplex::int(1)).eval_f64().unwrap();
     assert!(
         (val1 - 2.0).abs() < 1e-10,
         "G(1) should be 2, got: {val1}"
     );
 
-    let val2 = tf.eval_at(&symplex::int(2)).evalf_f64().unwrap();
+    let val2 = tf.eval_at(&symplex::int(2)).eval_f64().unwrap();
     assert!(
         (val2 - 5.0 / 3.0).abs() < 1e-10,
         "G(2) should be 5/3, got: {val2}"
@@ -519,7 +519,7 @@ fn transfer_function_feedback_with() {
 
     let gcl = g.feedback_with(&h);
 
-    let val = gcl.eval_at(&symplex::int(0)).evalf_f64().unwrap();
+    let val = gcl.eval_at(&symplex::int(0)).eval_f64().unwrap();
     assert!(
         (val - 2.0).abs() < 1e-10,
         "Feedback_with DC gain should be 2.0, got: {val}"
@@ -594,7 +594,7 @@ fn state_space_char_poly_nonzero_at_non_root() {
     let s = symplex::var("s");
     let cp = ss.char_poly(&s);
     let at_zero = cp.subs(&s, &symplex::int(0)).simplify();
-    let val = at_zero.evalf_f64().unwrap();
+    let val = at_zero.eval_f64().unwrap();
     assert!(
         (val - 2.0).abs() < 1e-10,
         "char_poly(0) should be 2, got: {val}"
@@ -636,7 +636,7 @@ fn transfer_function_constant_dc_gain() {
     let s = symplex::var("s");
     let tf = TransferFunction::new(symplex::int(5), symplex::int(1), s.clone());
 
-    let gain = tf.dc_gain().evalf_f64().unwrap();
+    let gain = tf.dc_gain().eval_f64().unwrap();
     assert!(
         (gain - 5.0).abs() < 1e-10,
         "Constant TF DC gain should be 5, got: {gain}"

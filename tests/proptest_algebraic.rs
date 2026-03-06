@@ -547,8 +547,8 @@ proptest! {
 
         let pt = symplex::int(2);
         let mut bail = common::BailCounter::new("product_rule_numerical");
-        let lhs = d_fg.subs(&x, &pt).evalf_f64();
-        let rhs = product_rule.subs(&x, &pt).evalf_f64();
+        let lhs = d_fg.subs(&x, &pt).eval_f64();
+        let rhs = product_rule.subs(&x, &pt).eval_f64();
         if let (Ok(l), Ok(r)) = (lhs, rhs) {
             if l.is_finite() && r.is_finite() && l.abs() < 1e10 && r.abs() < 1e10 {
                 bail.check();

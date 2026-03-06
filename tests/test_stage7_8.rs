@@ -469,7 +469,7 @@ fn simplify_trace_records_steps() {
 fn evalf_integer() {
     let ctx = Context::new();
     let five = ctx.int(5);
-    let result = five.evalf(10).unwrap();
+    let result = five.eval_decimal(10).unwrap();
     assert_eq!(result, "5");
 }
 
@@ -477,14 +477,14 @@ fn evalf_integer() {
 fn evalf_rational() {
     let ctx = Context::new();
     let half = ctx.rational(1, 2);
-    let result = half.evalf(10).unwrap();
+    let result = half.eval_decimal(10).unwrap();
     assert_eq!(result, "0.5");
 }
 
 #[test]
 fn evalf_pi_15_digits() {
     let ctx = Context::new();
-    let result = ctx.pi().evalf(15).unwrap();
+    let result = ctx.pi().eval_decimal(15).unwrap();
     assert!(
         result.starts_with("3.14159265358979"),
         "pi to 15 digits: {result}"
@@ -494,7 +494,7 @@ fn evalf_pi_15_digits() {
 #[test]
 fn evalf_pi_50_digits() {
     let ctx = Context::new();
-    let result = ctx.pi().evalf(50).unwrap();
+    let result = ctx.pi().eval_decimal(50).unwrap();
     assert!(
         result.starts_with("3.1415926535897932384626433832795"),
         "pi to 50 digits: {result}"
@@ -504,7 +504,7 @@ fn evalf_pi_50_digits() {
 #[test]
 fn evalf_e_15_digits() {
     let ctx = Context::new();
-    let result = ctx.e().evalf(15).unwrap();
+    let result = ctx.e().eval_decimal(15).unwrap();
     assert!(
         result.starts_with("2.71828182845904"),
         "e to 15 digits: {result}"
@@ -515,7 +515,7 @@ fn evalf_e_15_digits() {
 fn evalf_sqrt_2() {
     let ctx = Context::new();
     let expr = ctx.int(2).sqrt();
-    let result = expr.evalf(20).unwrap();
+    let result = expr.eval_decimal(20).unwrap();
     assert!(
         result.starts_with("1.4142135623730950488"),
         "sqrt(2): {result}"
@@ -526,7 +526,7 @@ fn evalf_sqrt_2() {
 fn evalf_sin_zero_is_zero() {
     let ctx = Context::new();
     let expr = ctx.int(0).sin();
-    let result = expr.evalf(10).unwrap();
+    let result = expr.eval_decimal(10).unwrap();
     assert_eq!(result, "0");
 }
 
@@ -534,7 +534,7 @@ fn evalf_sin_zero_is_zero() {
 fn evalf_cos_zero_is_one() {
     let ctx = Context::new();
     let expr = ctx.int(0).cos();
-    let result = expr.evalf(10).unwrap();
+    let result = expr.eval_decimal(10).unwrap();
     assert_eq!(result, "1");
 }
 
@@ -542,7 +542,7 @@ fn evalf_cos_zero_is_one() {
 fn evalf_exp_one_is_e() {
     let ctx = Context::new();
     let expr = ctx.int(1).exp();
-    let result = expr.evalf(15).unwrap();
+    let result = expr.eval_decimal(15).unwrap();
     assert!(result.starts_with("2.71828182845904"), "exp(1): {result}");
 }
 
@@ -550,7 +550,7 @@ fn evalf_exp_one_is_e() {
 fn evalf_ln_one_is_zero() {
     let ctx = Context::new();
     let expr = ctx.int(1).ln();
-    let result = expr.evalf(10).unwrap();
+    let result = expr.eval_decimal(10).unwrap();
     assert_eq!(result, "0");
 }
 
@@ -558,7 +558,7 @@ fn evalf_ln_one_is_zero() {
 fn evalf_two_pow_ten() {
     let ctx = Context::new();
     let expr = ctx.int(2).powi(10);
-    let result = expr.evalf(10).unwrap();
+    let result = expr.eval_decimal(10).unwrap();
     assert!(result.starts_with("1024"), "2^10: {result}");
 }
 
@@ -566,7 +566,7 @@ fn evalf_two_pow_ten() {
 fn evalf_negative_pi() {
     let ctx = Context::new();
     let expr = -&ctx.pi();
-    let result = expr.evalf(10).unwrap();
+    let result = expr.eval_decimal(10).unwrap();
     assert!(result.starts_with("-3.14159265"), "-pi: {result}");
 }
 
@@ -574,21 +574,21 @@ fn evalf_negative_pi() {
 fn evalf_free_symbol_is_error() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.evalf(10);
+    let result = x.eval_decimal(10);
     assert!(result.is_err(), "evalf of free symbol should error");
 }
 
 #[test]
 fn evalf_infinity_is_error() {
     let ctx = Context::new();
-    let result = ctx.infinity().evalf(10);
+    let result = ctx.infinity().eval_decimal(10);
     assert!(result.is_err(), "evalf of infinity should error");
 }
 
 #[test]
 fn evalf_nan_is_error() {
     let ctx = Context::new();
-    let result = ctx.nan().evalf(10);
+    let result = ctx.nan().eval_decimal(10);
     assert!(result.is_err(), "evalf of NaN should error");
 }
 
@@ -599,7 +599,7 @@ fn evalf_after_subs() {
     // x^2 + 1 at x=3 → 10
     let expr = &x.powi(2) + 1;
     let at_3 = expr.subs(&x, &ctx.int(3));
-    let result = at_3.evalf(10).unwrap();
+    let result = at_3.eval_decimal(10).unwrap();
     assert!(result.starts_with("10"), "3^2 + 1 = 10, got: {result}");
 }
 
@@ -607,7 +607,7 @@ fn evalf_after_subs() {
 fn evalf_sin_pi_near_zero() {
     let ctx = Context::new();
     let expr = ctx.pi().sin();
-    let result = expr.evalf(20).unwrap();
+    let result = expr.eval_decimal(20).unwrap();
     let val: f64 = result.parse().unwrap_or(999.0);
     assert!(val.abs() < 1e-15, "sin(pi) should be ~0, got: {result}");
 }
@@ -618,7 +618,7 @@ fn evalf_pythagorean_identity_near_one() {
     let one = ctx.int(1);
     // sin^2(1) + cos^2(1) should be ~1
     let expr = &one.sin().powi(2) + &one.cos().powi(2);
-    let result = expr.evalf(15).unwrap();
+    let result = expr.eval_decimal(15).unwrap();
     let val: f64 = result.parse().unwrap_or(0.0);
     assert!(
         (val - 1.0).abs() < 1e-12,
@@ -637,7 +637,7 @@ fn workflow_diff_subs_evalf() {
     // d/dx(x^3) at x=2 → 3*4 = 12
     let deriv = x.powi(3).diff(&x);
     let at_2 = deriv.subs(&x, &ctx.int(2));
-    let result = at_2.evalf(10).unwrap();
+    let result = at_2.eval_decimal(10).unwrap();
     assert!(result.starts_with("12"), "got: {result}");
 }
 
@@ -661,7 +661,7 @@ fn workflow_eval_then_evalf() {
     let expr = ctx.pi().cos();
     let evaled = expr.eval();
     assert_eq!(format!("{evaled}"), "-1");
-    let result = evaled.evalf(10).unwrap();
+    let result = evaled.eval_decimal(10).unwrap();
     assert_eq!(result, "-1");
 }
 

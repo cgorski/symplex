@@ -139,18 +139,18 @@ fn bench_evalf(c: &mut Criterion) {
 
     c.bench_function("evalf_pi_50_digits", |b| {
         let pi = ctx.pi();
-        b.iter(|| pi.evalf(50));
+        b.iter(|| pi.eval_decimal(50));
     });
 
     c.bench_function("evalf_sqrt2_50_digits", |b| {
         let expr = ctx.int(2).sqrt();
-        b.iter(|| expr.evalf(50));
+        b.iter(|| expr.eval_decimal(50));
     });
 
     c.bench_function("evalf_sin_pi_over_7_50_digits", |b| {
         let x = &ctx.pi() / &ctx.int(7);
         let expr = x.sin();
-        b.iter(|| expr.evalf(50));
+        b.iter(|| expr.eval_decimal(50));
     });
 }
 
@@ -266,7 +266,7 @@ fn bench_logcombine(c: &mut Criterion) {
     let sum = &(&(&vars[0] + &vars[1]) + &vars[2]) + &(&vars[3] + &vars[4]);
     c.bench_function("logcombine_5_terms", |b| {
         b.iter(|| {
-            let _ = black_box(&sum).logcombine();
+            let _ = black_box(&sum).log_combine();
         })
     });
 }
@@ -474,12 +474,12 @@ fn bench_laplace(c: &mut Criterion) {
 fn bench_special_functions(c: &mut Criterion) {
     c.bench_function("evalf_gamma_3.5", |b| {
         let val = symplex::rational(7, 2);
-        b.iter(|| black_box(&val).gamma().evalf_f64())
+        b.iter(|| black_box(&val).gamma().eval_f64())
     });
 
     c.bench_function("evalf_erf_1", |b| {
         let one = symplex::int(1);
-        b.iter(|| black_box(&one).erf().evalf_f64())
+        b.iter(|| black_box(&one).erf().eval_f64())
     });
 
     c.bench_function("eval_gamma_half_integers", |b| {
@@ -531,7 +531,7 @@ fn bench_inequality(c: &mut Criterion) {
 
     c.bench_function("solveset_x2-5x+6", |b| {
         let expr = &x.powi(2) - &x * 5 + 6;
-        b.iter(|| black_box(&expr).solveset(&x))
+        b.iter(|| black_box(&expr).solve_as_set(&x))
     });
 }
 
@@ -557,7 +557,7 @@ fn bench_codegen(c: &mut Criterion) {
     c.bench_function("lambdify_poly_deg10", |b| {
         let terms: Vec<Ex> = (0..=10).map(|n| &x.powi(n) * (n + 1) as i64).collect();
         let poly = Ex::sum_of(&ctx, terms);
-        b.iter(|| black_box(&poly).lambdify(&["x"]))
+        b.iter(|| black_box(&poly).compile(&["x"]))
     });
 }
 
@@ -570,12 +570,12 @@ fn bench_trigsimp(c: &mut Criterion) {
 
     c.bench_function("trigsimp_sin2+cos2", |b| {
         let expr = &x.sin().powi(2) + &x.cos().powi(2);
-        b.iter(|| black_box(&expr).trigsimp())
+        b.iter(|| black_box(&expr).simplify_trig())
     });
 
     c.bench_function("trigsimp_sin2+cos2+x", |b| {
         let expr = &x.sin().powi(2) + &x.cos().powi(2) + &x;
-        b.iter(|| black_box(&expr).trigsimp())
+        b.iter(|| black_box(&expr).simplify_trig())
     });
 
     c.bench_function("powsimp_x^a*x^b", |b| {
@@ -583,7 +583,7 @@ fn bench_trigsimp(c: &mut Criterion) {
         let a = symplex::var("a");
         let bv = symplex::var("b");
         let expr = &x.pow(&a) * &x.pow(&bv);
-        b.iter(|| black_box(&expr).powsimp())
+        b.iter(|| black_box(&expr).simplify_powers())
     });
 
     c.bench_function("smart_simplify_trig", |b| {

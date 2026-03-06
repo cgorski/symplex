@@ -79,7 +79,7 @@ fn fourier_of_constant() {
     let f = symplex::int(1);
     let result = f.fourier_series(&x, 3);
     // Numerical check at a sample point
-    if let Ok(v) = result.subs(&x, &symplex::rational(1, 2)).evalf_f64() {
+    if let Ok(v) = result.subs(&x, &symplex::rational(1, 2)).eval_f64() {
         assert!(
             (v - 1.0).abs() < 0.1,
             "Fourier of 1 at x=0.5 should be ≈ 1, got {v}"
@@ -93,7 +93,7 @@ fn fourier_of_constant_at_zero() {
     symplex::vars!(x);
     let f = symplex::int(1);
     let result = f.fourier_series(&x, 2);
-    if let Ok(v) = result.subs(&x, &symplex::int(0)).evalf_f64() {
+    if let Ok(v) = result.subs(&x, &symplex::int(0)).eval_f64() {
         assert!(
             (v - 1.0).abs() < 0.1,
             "Fourier of 1 at x=0 should be ≈ 1, got {v}"

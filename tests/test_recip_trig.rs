@@ -105,7 +105,7 @@ fn csc_at_pi_over_2() {
 #[test]
 fn sec_numerical() {
     let val = symplex::rational(7, 10);
-    let result = val.sec().evalf_f64().unwrap();
+    let result = val.sec().eval_f64().unwrap();
     let expected = 1.0 / (0.7_f64).cos();
     assert!(
         (result - expected).abs() < 1e-10,
@@ -116,7 +116,7 @@ fn sec_numerical() {
 #[test]
 fn cot_numerical() {
     let val = symplex::rational(7, 10);
-    let result = val.cot().evalf_f64().unwrap();
+    let result = val.cot().eval_f64().unwrap();
     let expected = (0.7_f64).cos() / (0.7_f64).sin();
     assert!(
         (result - expected).abs() < 1e-10,
@@ -136,7 +136,7 @@ fn diff_sec() {
     // d/dx(1/cos(x)) = sin(x)/cos²(x) = sec(x)·tan(x)
     // Check numerically at x = 0.7
     let val = symplex::rational(7, 10);
-    let d_val = d.subs(&x, &val).evalf_f64().unwrap();
+    let d_val = d.subs(&x, &val).eval_f64().unwrap();
     let expected = (0.7_f64).sin() / (0.7_f64).cos().powi(2);
     assert!(
         (d_val - expected).abs() < 1e-10,

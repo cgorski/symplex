@@ -13,8 +13,8 @@ fn assert_rationalize_preserves_value(expr: &Ex, label: &str) {
     // Evaluate both at x = 3/2
     let test_point = symplex::rational(3, 2);
     let x = symplex::var("x");
-    let orig = expr.subs(&x, &test_point).evalf_f64();
-    let rat = rationalized.subs(&x, &test_point).evalf_f64();
+    let orig = expr.subs(&x, &test_point).eval_f64();
+    let rat = rationalized.subs(&x, &test_point).eval_f64();
 
     if let (Ok(o), Ok(r)) = (orig, rat) {
         if o.is_finite() && r.is_finite() {

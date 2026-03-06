@@ -39,8 +39,8 @@ fn main() {
     // Compute the Jacobian
     let t1 = Instant::now();
     let jac = jacobian(
-        &[px, py],
-        &[theta1.clone(), theta2.clone(), theta3.clone()],
+        &[&px, &py],
+        &[&theta1, &theta2, &theta3],
     );
     println!("\nJacobian (2x3) computed in {:?}", t1.elapsed());
     for i in 0..jac.nrows() {

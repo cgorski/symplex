@@ -107,7 +107,7 @@ fn sturm_x2_ge_0_universal() {
     );
     // x² is non-negative everywhere, so the solution should cover the whole line
     // Verify at specific points
-    let val0 = poly.subs(&x, &symplex::int(0)).evalf_f64()
+    let val0 = poly.subs(&x, &symplex::int(0)).eval_f64()
         .expect("eval at x=0 should succeed");
     assert!(val0.abs() < 1e-10, "x² at x=0 should be 0, got {val0}");
     common::assert_positive_at(&poly, &x, 1, "x² at x=1");

@@ -21,7 +21,7 @@ fn dh_matrix_identity_params() {
     // Evaluate every entry numerically and compare to identity
     for i in 0..4 {
         for j in 0..4 {
-            let val = t.get(i, j).eval().evalf_f64().unwrap();
+            let val = t.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (val - expected).abs() < 1e-12,
@@ -43,35 +43,35 @@ fn dh_matrix_pure_rotation() {
     let t = dh_matrix(&theta, &zero, &zero, &zero);
 
     // (0,0) = cos(π/2) = 0
-    let r00 = t.get(0, 0).eval().evalf_f64().unwrap();
+    let r00 = t.get(0, 0).eval().eval_f64().unwrap();
     assert!(
         r00.abs() < 1e-12,
         "cos(π/2) should be 0, got {r00}"
     );
 
     // (1,0) = sin(π/2) = 1
-    let r10 = t.get(1, 0).eval().evalf_f64().unwrap();
+    let r10 = t.get(1, 0).eval().eval_f64().unwrap();
     assert!(
         (r10 - 1.0).abs() < 1e-12,
         "sin(π/2) should be 1, got {r10}"
     );
 
     // (0,1) = -sin(π/2)cos(0) = -1
-    let r01 = t.get(0, 1).eval().evalf_f64().unwrap();
+    let r01 = t.get(0, 1).eval().eval_f64().unwrap();
     assert!(
         (r01 + 1.0).abs() < 1e-12,
         "-sin(π/2)cos(0) should be -1, got {r01}"
     );
 
     // (1,1) = cos(π/2)cos(0) = 0
-    let r11 = t.get(1, 1).eval().evalf_f64().unwrap();
+    let r11 = t.get(1, 1).eval().eval_f64().unwrap();
     assert!(
         r11.abs() < 1e-12,
         "cos(π/2)cos(0) should be 0, got {r11}"
     );
 
     // Last row is [0, 0, 0, 1]
-    let r33 = t.get(3, 3).eval().evalf_f64().unwrap();
+    let r33 = t.get(3, 3).eval().eval_f64().unwrap();
     assert!(
         (r33 - 1.0).abs() < 1e-12,
         "(3,3) should be 1, got {r33}"
@@ -91,20 +91,20 @@ fn dh_matrix_with_translation() {
     let one = symplex::int(1);
     let t = dh_matrix(&zero, &zero, &one, &zero);
 
-    let r03 = t.get(0, 3).eval().evalf_f64().unwrap();
+    let r03 = t.get(0, 3).eval().eval_f64().unwrap();
     assert!(
         (r03 - 1.0).abs() < 1e-12,
         "a·cos(0) should be 1, got {r03}"
     );
 
-    let r13 = t.get(1, 3).eval().evalf_f64().unwrap();
+    let r13 = t.get(1, 3).eval().eval_f64().unwrap();
     assert!(
         r13.abs() < 1e-12,
         "a·sin(0) should be 0, got {r13}"
     );
 
     // The rotation part should be identity (θ=0, α=0)
-    let r00 = t.get(0, 0).eval().evalf_f64().unwrap();
+    let r00 = t.get(0, 0).eval().eval_f64().unwrap();
     assert!(
         (r00 - 1.0).abs() < 1e-12,
         "cos(0) should be 1, got {r00}"
@@ -135,14 +135,14 @@ fn fk_chain_single_joint() {
                 .subs(&theta1, &theta_val)
                 .subs(&l1, &l_val)
                 .eval()
-                .evalf_f64()
+                .eval_f64()
                 .unwrap();
             let b = chain
                 .get(i, j)
                 .subs(&theta1, &theta_val)
                 .subs(&l1, &l_val)
                 .eval()
-                .evalf_f64()
+                .eval_f64()
                 .unwrap();
             assert!(
                 (a - b).abs() < 1e-10,
@@ -197,7 +197,7 @@ fn fk_chain_two_joint_planar() {
         .subs(&l1_sym, &l1_val)
         .subs(&l2_sym, &l2_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     let y_val = t
         .get(1, 3)
@@ -206,7 +206,7 @@ fn fk_chain_two_joint_planar() {
         .subs(&l1_sym, &l1_val)
         .subs(&l2_sym, &l2_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     let z_val = t
         .get(2, 3)
@@ -215,7 +215,7 @@ fn fk_chain_two_joint_planar() {
         .subs(&l1_sym, &l1_val)
         .subs(&l2_sym, &l2_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
 
     assert!(
@@ -270,7 +270,7 @@ fn fk_position_two_joint() {
         .subs(&l1_sym, &l1_val)
         .subs(&l2_sym, &l2_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     let y_val = y
         .subs(&theta1, &theta1_val)
@@ -278,7 +278,7 @@ fn fk_position_two_joint() {
         .subs(&l1_sym, &l1_val)
         .subs(&l2_sym, &l2_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     let z_val = z
         .subs(&theta1, &theta1_val)
@@ -286,7 +286,7 @@ fn fk_position_two_joint() {
         .subs(&l1_sym, &l1_val)
         .subs(&l2_sym, &l2_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
 
     assert!(
@@ -322,7 +322,7 @@ fn fk_jacobian_two_joint() {
     let (x, y, z) = fk_position(&params);
 
     // Jacobian of [x, y, z] w.r.t. [θ1, θ2]
-    let j = jacobian(&[x, y, z], &[theta1.clone(), theta2.clone()]);
+    let j = jacobian(&[&x, &y, &z], &[&theta1, &theta2]);
 
     assert_eq!(j.nrows(), 3);
     assert_eq!(j.ncols(), 2);
@@ -361,7 +361,7 @@ fn fk_jacobian_two_joint() {
             .subs(&l1_sym, &l1_val)
             .subs(&l2_sym, &l2_val)
             .eval()
-            .evalf_f64()
+            .eval_f64()
             .unwrap()
     };
 
@@ -451,7 +451,7 @@ fn fk_chain_three_joint() {
         .subs(&l2_sym, &l2_val)
         .subs(&l3_sym, &l3_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     let y_val = t
         .get(1, 3)
@@ -462,7 +462,7 @@ fn fk_chain_three_joint() {
         .subs(&l2_sym, &l2_val)
         .subs(&l3_sym, &l3_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
 
     assert!(
@@ -484,7 +484,7 @@ fn fk_chain_three_joint() {
         .subs(&l2_sym, &l2_val)
         .subs(&l3_sym, &l3_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     let r33 = t
         .get(3, 3)
@@ -495,7 +495,7 @@ fn fk_chain_three_joint() {
         .subs(&l2_sym, &l2_val)
         .subs(&l3_sym, &l3_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert!(r30.abs() < 1e-12, "T[3,0] should be 0, got {r30}");
     assert!((r33 - 1.0).abs() < 1e-12, "T[3,3] should be 1, got {r33}");
@@ -562,7 +562,7 @@ fn dh_matrix_symbolic_entries() {
         .subs(&a, &av)
         .subs(&alpha, &alv)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert!(
         (r00 - t_val.cos()).abs() < 1e-10,
@@ -578,7 +578,7 @@ fn dh_matrix_symbolic_entries() {
         .subs(&a, &av)
         .subs(&alpha, &alv)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     assert!(
         (r23 - d_val).abs() < 1e-10,
@@ -611,7 +611,7 @@ fn fk_rotation_extraction() {
 
     for i in 0..3 {
         for j in 0..3 {
-            let val = product.get(i, j).eval().evalf_f64().unwrap();
+            let val = product.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (val - expected).abs() < 1e-8,
@@ -646,7 +646,7 @@ fn dh_matrix_with_alpha() {
 
     for i in 0..4 {
         for j in 0..4 {
-            let val = t.get(i, j).eval().evalf_f64().unwrap();
+            let val = t.get(i, j).eval().eval_f64().unwrap();
             assert!(
                 (val - expected[i][j]).abs() < 1e-12,
                 "α=π/2 entry ({i},{j}): got {val}, expected {}",
@@ -668,14 +668,14 @@ fn dh_matrix_with_d_offset() {
     let d = symplex::int(5);
     let t = dh_matrix(&zero, &d, &zero, &zero);
 
-    let r23 = t.get(2, 3).eval().evalf_f64().unwrap();
+    let r23 = t.get(2, 3).eval().eval_f64().unwrap();
     assert!(
         (r23 - 5.0).abs() < 1e-12,
         "d offset: (2,3) should be 5, got {r23}"
     );
 
     // Rotation part is still identity
-    let r00 = t.get(0, 0).eval().evalf_f64().unwrap();
+    let r00 = t.get(0, 0).eval().eval_f64().unwrap();
     assert!(
         (r00 - 1.0).abs() < 1e-12,
         "(0,0) should be 1, got {r00}"
@@ -731,21 +731,21 @@ fn fk_chain_two_joint_3d() {
         .subs(&theta1, &t1_val)
         .subs(&theta2, &t2_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     let y = t
         .get(1, 3)
         .subs(&theta1, &t1_val)
         .subs(&theta2, &t2_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
     let z = t
         .get(2, 3)
         .subs(&theta1, &t1_val)
         .subs(&theta2, &t2_val)
         .eval()
-        .evalf_f64()
+        .eval_f64()
         .unwrap();
 
     assert!(
@@ -794,7 +794,7 @@ fn fk_rotation_orthogonal_multi_joint() {
 
     for i in 0..3 {
         for j in 0..3 {
-            let val = product.get(i, j).eval().evalf_f64().unwrap();
+            let val = product.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (val - expected).abs() < 1e-6,
@@ -815,7 +815,7 @@ fn rot_x_identity() {
     assert_eq!(r.shape(), (3, 3));
     for i in 0..3 {
         for j in 0..3 {
-            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let val = r.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (val - expected).abs() < 1e-10,
@@ -835,19 +835,19 @@ fn rot_x_90deg() {
     let angle = &pi / &two;
     let r = symplex::robotics::rot_x(&angle);
     // (1,1) = cos(π/2) = 0
-    let val_11 = r.get(1, 1).eval().evalf_f64().unwrap();
+    let val_11 = r.get(1, 1).eval().eval_f64().unwrap();
     assert!(
         val_11.abs() < 1e-10,
         "rot_x(π/2)[1,1] = {val_11}, expected 0"
     );
     // (1,2) = -sin(π/2) = -1
-    let val_12 = r.get(1, 2).eval().evalf_f64().unwrap();
+    let val_12 = r.get(1, 2).eval().eval_f64().unwrap();
     assert!(
         (val_12 - (-1.0)).abs() < 1e-10,
         "rot_x(π/2)[1,2] = {val_12}, expected -1"
     );
     // (2,1) = sin(π/2) = 1
-    let val_21 = r.get(2, 1).eval().evalf_f64().unwrap();
+    let val_21 = r.get(2, 1).eval().eval_f64().unwrap();
     assert!(
         (val_21 - 1.0).abs() < 1e-10,
         "rot_x(π/2)[2,1] = {val_21}, expected 1"
@@ -861,7 +861,7 @@ fn rot_y_identity() {
     assert_eq!(r.shape(), (3, 3));
     for i in 0..3 {
         for j in 0..3 {
-            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let val = r.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (val - expected).abs() < 1e-10,
@@ -878,7 +878,7 @@ fn rot_z_identity() {
     assert_eq!(r.shape(), (3, 3));
     for i in 0..3 {
         for j in 0..3 {
-            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let val = r.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (val - expected).abs() < 1e-10,
@@ -898,25 +898,25 @@ fn rot_z_90deg() {
     let angle = &pi / &two;
     let r = symplex::robotics::rot_z(&angle);
     // (0,0) = cos(π/2) = 0
-    let val_00 = r.get(0, 0).eval().evalf_f64().unwrap();
+    let val_00 = r.get(0, 0).eval().eval_f64().unwrap();
     assert!(
         val_00.abs() < 1e-10,
         "rot_z(π/2)[0,0] = {val_00}, expected 0"
     );
     // (0,1) = -sin(π/2) = -1
-    let val_01 = r.get(0, 1).eval().evalf_f64().unwrap();
+    let val_01 = r.get(0, 1).eval().eval_f64().unwrap();
     assert!(
         (val_01 - (-1.0)).abs() < 1e-10,
         "rot_z(π/2)[0,1] = {val_01}, expected -1"
     );
     // (1,0) = sin(π/2) = 1
-    let val_10 = r.get(1, 0).eval().evalf_f64().unwrap();
+    let val_10 = r.get(1, 0).eval().eval_f64().unwrap();
     assert!(
         (val_10 - 1.0).abs() < 1e-10,
         "rot_z(π/2)[1,0] = {val_10}, expected 1"
     );
     // (2,2) = 1
-    let val_22 = r.get(2, 2).eval().evalf_f64().unwrap();
+    let val_22 = r.get(2, 2).eval().eval_f64().unwrap();
     assert!(
         (val_22 - 1.0).abs() < 1e-10,
         "rot_z(π/2)[2,2] = {val_22}, expected 1"
@@ -948,7 +948,7 @@ fn skew3_antisymmetric() {
                 .subs(&b, &b_val)
                 .subs(&c, &c_val)
                 .eval()
-                .evalf_f64()
+                .eval_f64()
                 .unwrap();
             assert!(
                 val.abs() < 1e-10,
@@ -967,9 +967,9 @@ fn skew3_cross_product() {
     let v = symplex::matrix::Matrix::col_vector(vec![zero.clone(), one.clone(), symplex::int(0)]);
     let result = s.matmul(&v);
     assert_eq!(result.shape(), (3, 1));
-    let r0 = result.get(0, 0).eval().evalf_f64().unwrap();
-    let r1 = result.get(1, 0).eval().evalf_f64().unwrap();
-    let r2 = result.get(2, 0).eval().evalf_f64().unwrap();
+    let r0 = result.get(0, 0).eval().eval_f64().unwrap();
+    let r1 = result.get(1, 0).eval().eval_f64().unwrap();
+    let r2 = result.get(2, 0).eval().eval_f64().unwrap();
     assert!(
         r0.abs() < 1e-10,
         "cross product x = {r0}, expected 0"
@@ -997,7 +997,7 @@ fn homogeneous_identity() {
     assert_eq!(h.shape(), (4, 4));
     for i in 0..4 {
         for j in 0..4 {
-            let val = h.get(i, j).eval().evalf_f64().unwrap();
+            let val = h.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (val - expected).abs() < 1e-10,
@@ -1018,7 +1018,7 @@ fn homogeneous_translation() {
     // Last column should be [4, 5, 6, 1]
     let expected_col = [4.0, 5.0, 6.0, 1.0];
     for i in 0..4 {
-        let val = h.get(i, 3).eval().evalf_f64().unwrap();
+        let val = h.get(i, 3).eval().eval_f64().unwrap();
         assert!(
             (val - expected_col[i]).abs() < 1e-10,
             "homogeneous last col [{i}] = {val}, expected {}",
@@ -1038,7 +1038,7 @@ fn translation_pure() {
     // Check last column = [1, 2, 3, 1]
     let expected = [1.0, 2.0, 3.0, 1.0];
     for i in 0..4 {
-        let val = t.get(i, 3).eval().evalf_f64().unwrap();
+        let val = t.get(i, 3).eval().eval_f64().unwrap();
         assert!(
             (val - expected[i]).abs() < 1e-10,
             "translation last col [{i}] = {val}, expected {}",
@@ -1048,7 +1048,7 @@ fn translation_pure() {
     // Check the rotation block is identity
     for i in 0..3 {
         for j in 0..3 {
-            let val = t.get(i, j).eval().evalf_f64().unwrap();
+            let val = t.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (val - expected).abs() < 1e-10,
@@ -1070,7 +1070,7 @@ fn rot_euler_zyx_identity() {
     assert_eq!(r.shape(), (3, 3));
     for i in 0..3 {
         for j in 0..3 {
-            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let val = r.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (val - expected).abs() < 1e-10,
@@ -1100,7 +1100,7 @@ fn rot_euler_zyx_numerical() {
     ];
     for i in 0..3 {
         for j in 0..3 {
-            let val = r.get(i, j).eval().evalf_f64().unwrap();
+            let val = r.get(i, j).eval().eval_f64().unwrap();
             assert!(
                 (val - expected[i][j]).abs() < 1e-10,
                 "rot_euler(π/2,0,0,ZYX)[{i},{j}] = {val}, expected {}",
@@ -1129,7 +1129,7 @@ fn matrix_powi_identity() {
     assert_eq!(result.shape(), (2, 2));
     for i in 0..2 {
         for j in 0..2 {
-            let val = result.get(i, j).eval().evalf_f64().unwrap();
+            let val = result.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (val - expected).abs() < 1e-10,
@@ -1150,7 +1150,7 @@ fn matrix_powi_one() {
     let expected = [[1.0, 2.0], [3.0, 4.0]];
     for i in 0..2 {
         for j in 0..2 {
-            let val = result.get(i, j).eval().evalf_f64().unwrap();
+            let val = result.get(i, j).eval().eval_f64().unwrap();
             assert!(
                 (val - expected[i][j]).abs() < 1e-10,
                 "powi(1)[{i},{j}] = {val}, expected {}",
@@ -1171,8 +1171,8 @@ fn matrix_powi_square() {
     let m_times_m = m.matmul(&m);
     for i in 0..2 {
         for j in 0..2 {
-            let val = m2.get(i, j).eval().evalf_f64().unwrap();
-            let exp = m_times_m.get(i, j).eval().evalf_f64().unwrap();
+            let val = m2.get(i, j).eval().eval_f64().unwrap();
+            let exp = m_times_m.get(i, j).eval().eval_f64().unwrap();
             assert!(
                 (val - exp).abs() < 1e-10,
                 "powi(2)[{i},{j}] = {val}, expected {exp}"
@@ -1194,7 +1194,7 @@ fn matrix_powi_cube() {
     let expected = [[37.0, 54.0], [81.0, 118.0]];
     for i in 0..2 {
         for j in 0..2 {
-            let val = m3.get(i, j).eval().evalf_f64().unwrap();
+            let val = m3.get(i, j).eval().eval_f64().unwrap();
             assert!(
                 (val - expected[i][j]).abs() < 1e-10,
                 "powi(3)[{i},{j}] = {val}, expected {}",
@@ -1248,7 +1248,7 @@ fn eval_derivatives_simple() {
     let test_vals: &[(i64, i64, f64)] = &[(1, 2, 0.5), (1, 1, 1.0), (2, 1, 2.0), (-1, 1, -1.0)];
     for &(p, q, fval) in test_vals {
         let xv = symplex::rational(p, q);
-        let got = evald.subs(&x, &xv).eval().evalf_f64().unwrap();
+        let got = evald.subs(&x, &xv).eval().eval_f64().unwrap();
         let expected = fval.cos();
         assert!(
             (got - expected).abs() < 1e-10,

@@ -1690,49 +1690,49 @@ fn assume_symbol_with_assumption() {
 
 #[test]
 fn evalf_pi() {
-    let val = symplex::pi().evalf_f64().unwrap();
+    let val = symplex::pi().eval_f64().unwrap();
     assert!((val - std::f64::consts::PI).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_e() {
-    let val = symplex::e().evalf_f64().unwrap();
+    let val = symplex::e().eval_f64().unwrap();
     assert!((val - std::f64::consts::E).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_integer() {
-    let val = symplex::int(7).evalf_f64().unwrap();
+    let val = symplex::int(7).eval_f64().unwrap();
     assert!((val - 7.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_rational() {
-    let val = symplex::rational(1, 3).evalf_f64().unwrap();
+    let val = symplex::rational(1, 3).eval_f64().unwrap();
     assert!((val - 1.0 / 3.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_sinh_zero() {
-    let val = symplex::int(0).sinh().evalf_f64().unwrap();
+    let val = symplex::int(0).sinh().eval_f64().unwrap();
     assert!((val - 0.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_cosh_zero() {
-    let val = symplex::int(0).cosh().evalf_f64().unwrap();
+    let val = symplex::int(0).cosh().eval_f64().unwrap();
     assert!((val - 1.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_atan_one() {
-    let val = symplex::int(1).atan().evalf_f64().unwrap();
+    let val = symplex::int(1).atan().eval_f64().unwrap();
     assert!((val - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_free_symbol_errors() {
-    assert!(symplex::var("x").evalf_f64().is_err());
+    assert!(symplex::var("x").eval_f64().is_err());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1935,14 +1935,14 @@ fn equals_expand_needed() {
 #[test]
 fn nsolve_x_minus_cos_x() {
     let x = symplex::var("x");
-    let root = (&x - &x.cos()).nsolve(&x, 1.0, 50, 1e-12).unwrap();
+    let root = (&x - &x.cos()).solve_numeric(&x, 1.0, 50, 1e-12).unwrap();
     assert!((root - 0.7390851332).abs() < 1e-6, "got: {root}");
 }
 
 #[test]
 fn nsolve_x2_minus_2() {
     let x = symplex::var("x");
-    let root = (&x.powi(2) - 2).nsolve(&x, 1.5, 50, 1e-12).unwrap();
+    let root = (&x.powi(2) - 2).solve_numeric(&x, 1.5, 50, 1e-12).unwrap();
     assert!(
         (root - std::f64::consts::SQRT_2).abs() < 1e-8,
         "got: {root}"
@@ -1952,6 +1952,6 @@ fn nsolve_x2_minus_2() {
 #[test]
 fn nsolve_exp_minus_2() {
     let x = symplex::var("x");
-    let root = (&x.exp() - 2).nsolve(&x, 1.0, 50, 1e-12).unwrap();
+    let root = (&x.exp() - 2).solve_numeric(&x, 1.0, 50, 1e-12).unwrap();
     assert!((root - 2.0_f64.ln()).abs() < 1e-8, "got: {root}");
 }

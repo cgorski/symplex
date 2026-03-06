@@ -14,8 +14,8 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
     let deriv = anti.diff(var);
     let test_point = symplex::rational(7, 10);
     if let (Ok(o), Ok(d)) = (
-        integrand.subs(var, &test_point).evalf_f64(),
-        deriv.subs(var, &test_point).evalf_f64(),
+        integrand.subs(var, &test_point).eval_f64(),
+        deriv.subs(var, &test_point).eval_f64(),
     ) {
         if o.is_finite() && d.is_finite() {
             assert!(

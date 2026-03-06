@@ -18,8 +18,8 @@ fn matrix_exp_zero() {
     let ident = Matrix::identity(3);
     for i in 0..3 {
         for j in 0..3 {
-            let val = result.get(i, j).evalf_f64().unwrap();
-            let expected = ident.get(i, j).evalf_f64().unwrap();
+            let val = result.get(i, j).eval_f64().unwrap();
+            let expected = ident.get(i, j).eval_f64().unwrap();
             assert!(
                 common::approx_eq(val, expected, 1e-12),
                 "exp(0)[{i},{j}] = {val}, expected {expected}"
@@ -40,7 +40,7 @@ fn matrix_exp_identity_scaled() {
     let expected_diag = t_val.exp(); // e^0.1 ≈ 1.10517...
     for i in 0..n {
         for j in 0..n {
-            let val = result.get(i, j).eval().evalf_f64().unwrap();
+            let val = result.get(i, j).eval().eval_f64().unwrap();
             if i == j {
                 assert!(
                     common::approx_eq(val, expected_diag, 1e-10),
@@ -72,7 +72,7 @@ fn matrix_exp_nilpotent() {
     ];
     for i in 0..2 {
         for j in 0..2 {
-            let val = result.get(i, j).eval().evalf_f64().unwrap();
+            let val = result.get(i, j).eval().eval_f64().unwrap();
             assert!(
                 common::approx_eq(val, expected[i][j], 1e-14),
                 "exp(N)[{i},{j}] = {val}, expected {}",
@@ -96,10 +96,10 @@ fn matrix_exp_diagonal() {
 
     let expected_00 = a_val.exp();
     let expected_11 = b_val.exp();
-    let val_00 = result.get(0, 0).eval().evalf_f64().unwrap();
-    let val_01 = result.get(0, 1).eval().evalf_f64().unwrap();
-    let val_10 = result.get(1, 0).eval().evalf_f64().unwrap();
-    let val_11 = result.get(1, 1).eval().evalf_f64().unwrap();
+    let val_00 = result.get(0, 0).eval().eval_f64().unwrap();
+    let val_01 = result.get(0, 1).eval().eval_f64().unwrap();
+    let val_10 = result.get(1, 0).eval().eval_f64().unwrap();
+    let val_11 = result.get(1, 1).eval().eval_f64().unwrap();
 
     assert!(
         common::approx_eq(val_00, expected_00, 1e-8),
@@ -128,10 +128,10 @@ fn matrix_exp_2x2_numerical() {
     ]);
     let result = m.exp_series(10);
 
-    let val_00 = result.get(0, 0).eval().evalf_f64().unwrap();
-    let val_01 = result.get(0, 1).eval().evalf_f64().unwrap();
-    let val_10 = result.get(1, 0).eval().evalf_f64().unwrap();
-    let val_11 = result.get(1, 1).eval().evalf_f64().unwrap();
+    let val_00 = result.get(0, 0).eval().eval_f64().unwrap();
+    let val_01 = result.get(0, 1).eval().eval_f64().unwrap();
+    let val_10 = result.get(1, 0).eval().eval_f64().unwrap();
+    let val_11 = result.get(1, 1).eval().eval_f64().unwrap();
 
     assert!(common::approx_eq(val_00, 1.0, 1e-14), "got {val_00}");
     assert!(common::approx_eq(val_01, 1.0, 1e-14), "got {val_01}");
@@ -157,8 +157,8 @@ fn matrix_exp_series_converges() {
     // Just check that the results are numerically close (converging).
     for i in 0..2 {
         for j in 0..2 {
-            let v_low = low.get(i, j).eval().evalf_f64().unwrap();
-            let v_high = high.get(i, j).eval().evalf_f64().unwrap();
+            let v_low = low.get(i, j).eval().eval_f64().unwrap();
+            let v_high = high.get(i, j).eval().eval_f64().unwrap();
             // They should be close (within ~1e-4 for this small matrix)
             let diff = (v_low - v_high).abs();
             assert!(
@@ -208,7 +208,7 @@ fn kronecker_identity() {
     ];
     for i in 0..4 {
         for j in 0..4 {
-            let val = result.get(i, j).eval().evalf_f64().unwrap();
+            let val = result.get(i, j).eval().eval_f64().unwrap();
             assert!(
                 common::approx_eq(val, expected[i][j], 1e-14),
                 "A⊗I[{i},{j}] = {val}, expected {}",
@@ -234,7 +234,7 @@ fn kronecker_scalar() {
     let expected = [[3.0, 6.0], [12.0, 15.0]];
     for i in 0..2 {
         for j in 0..2 {
-            let val = result.get(i, j).eval().evalf_f64().unwrap();
+            let val = result.get(i, j).eval().eval_f64().unwrap();
             assert!(
                 common::approx_eq(val, expected[i][j], 1e-14),
                 "scalar⊗B[{i},{j}] = {val}, expected {}",
@@ -274,7 +274,7 @@ fn kronecker_known_values() {
     ];
     for i in 0..4 {
         for j in 0..4 {
-            let val = result.get(i, j).eval().evalf_f64().unwrap();
+            let val = result.get(i, j).eval().eval_f64().unwrap();
             assert!(
                 common::approx_eq(val, expected[i][j], 1e-14),
                 "kronecker[{i},{j}] = {val}, expected {}",
@@ -343,10 +343,10 @@ fn discretize_zoh_integrator() {
     let dt_val = 0.1_f64;
 
     // Check Aᵈ = [[1, 0.1], [0, 1]]
-    let ad_00 = ss_d.a.get(0, 0).eval().evalf_f64().unwrap();
-    let ad_01 = ss_d.a.get(0, 1).eval().evalf_f64().unwrap();
-    let ad_10 = ss_d.a.get(1, 0).eval().evalf_f64().unwrap();
-    let ad_11 = ss_d.a.get(1, 1).eval().evalf_f64().unwrap();
+    let ad_00 = ss_d.a.get(0, 0).eval().eval_f64().unwrap();
+    let ad_01 = ss_d.a.get(0, 1).eval().eval_f64().unwrap();
+    let ad_10 = ss_d.a.get(1, 0).eval().eval_f64().unwrap();
+    let ad_11 = ss_d.a.get(1, 1).eval().eval_f64().unwrap();
 
     assert!(
         common::approx_eq(ad_00, 1.0, 1e-10),
@@ -366,8 +366,8 @@ fn discretize_zoh_integrator() {
     );
 
     // Check Bᵈ = [[dt²/2], [dt]] = [[0.005], [0.1]]
-    let bd_00 = ss_d.b.get(0, 0).eval().evalf_f64().unwrap();
-    let bd_10 = ss_d.b.get(1, 0).eval().evalf_f64().unwrap();
+    let bd_00 = ss_d.b.get(0, 0).eval().eval_f64().unwrap();
+    let bd_10 = ss_d.b.get(1, 0).eval().eval_f64().unwrap();
 
     assert!(
         common::approx_eq(bd_00, dt_val * dt_val / 2.0, 1e-10),
@@ -389,7 +389,7 @@ fn matrix_exp_1x1() {
     // exp([[a]]) = [[eᵃ]] — check with a = 1/2
     let m = Matrix::new(vec![vec![symplex::rational(1, 2)]]);
     let result = m.exp_series(15);
-    let val = result.get(0, 0).eval().evalf_f64().unwrap();
+    let val = result.get(0, 0).eval().eval_f64().unwrap();
     let expected = 0.5_f64.exp();
     assert!(
         common::approx_eq(val, expected, 1e-10),
@@ -405,7 +405,7 @@ fn kronecker_1x1_times_1x1() {
     let result = a.kronecker(&b);
     assert_eq!(result.nrows(), 1);
     assert_eq!(result.ncols(), 1);
-    let val = result.get(0, 0).eval().evalf_f64().unwrap();
+    let val = result.get(0, 0).eval().eval_f64().unwrap();
     assert!(
         common::approx_eq(val, 21.0, 1e-14),
         "3⊗7 = {val}, expected 21"
@@ -420,10 +420,10 @@ fn matrix_exp_negative_entries() {
         vec![symplex::int(0), symplex::int(-2)],
     ]);
     let result = m.exp_series(20);
-    let val_00 = result.get(0, 0).eval().evalf_f64().unwrap();
-    let val_11 = result.get(1, 1).eval().evalf_f64().unwrap();
-    let val_01 = result.get(0, 1).eval().evalf_f64().unwrap();
-    let val_10 = result.get(1, 0).eval().evalf_f64().unwrap();
+    let val_00 = result.get(0, 0).eval().eval_f64().unwrap();
+    let val_11 = result.get(1, 1).eval().eval_f64().unwrap();
+    let val_01 = result.get(0, 1).eval().eval_f64().unwrap();
+    let val_10 = result.get(1, 0).eval().eval_f64().unwrap();
 
     assert!(
         common::approx_eq(val_00, (-1.0_f64).exp(), 1e-8),

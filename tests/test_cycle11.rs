@@ -9,7 +9,7 @@ use symplex::prelude::*;
 #[test]
 fn evalf_imaginary_unit() {
     let i = symplex::i_unit();
-    let result = i.evalf(10);
+    let result = i.eval_decimal(10);
     assert!(
         result.is_ok(),
         "evalf(i) should succeed: {:?}",
@@ -23,7 +23,7 @@ fn evalf_imaginary_unit() {
 fn evalf_one_plus_i() {
     let ctx = Context::new();
     let expr = &ctx.int(1) + &ctx.i_unit();
-    let result = expr.evalf(10);
+    let result = expr.eval_decimal(10);
     assert!(result.is_ok(), "evalf(1+i) should succeed");
     let s = result.unwrap();
     // Should contain both 1 and i
@@ -38,7 +38,7 @@ fn evalf_exp_i_pi_approx_neg_one() {
     let ctx = Context::new();
     let i = ctx.i_unit();
     let expr = (&i * &ctx.pi()).exp();
-    let result = expr.evalf(15);
+    let result = expr.eval_decimal(15);
     assert!(result.is_ok(), "evalf(exp(i*pi)) should succeed");
     let s = result.unwrap();
     // Should be approximately -1 (imaginary part near zero)
@@ -62,7 +62,7 @@ fn evalf_abs_3_plus_4i() {
     let ctx = Context::new();
     let i = ctx.i_unit();
     let z = &ctx.int(3) + &(&ctx.int(4) * &i);
-    let result = z.abs().evalf(10);
+    let result = z.abs().eval_decimal(10);
     assert!(result.is_ok(), "evalf(|3+4i|) should succeed");
     let s = result.unwrap();
     assert!(s.starts_with("5"), "|3+4i| should be 5: {s}");
@@ -84,7 +84,7 @@ fn evalf_abs_3_plus_4i_display() {
 #[test]
 fn evalf_pure_real_integer() {
     let ctx = Context::new();
-    let r = ctx.int(42).evalf(10);
+    let r = ctx.int(42).eval_decimal(10);
     assert!(r.is_ok());
     assert!(r.unwrap().starts_with("42"), "evalf(42) should be 42");
 }
@@ -92,7 +92,7 @@ fn evalf_pure_real_integer() {
 #[test]
 fn evalf_pi_digits() {
     let ctx = Context::new();
-    let r = ctx.pi().evalf(15);
+    let r = ctx.pi().eval_decimal(15);
     assert!(r.is_ok());
     let s = r.unwrap();
     assert!(
@@ -200,8 +200,8 @@ fn integrate_sin_squared_roundtrip_numerical() {
     let integral = x.sin().powi(2).integrate(&x);
     let deriv = integral.diff(&x);
     // Evaluate both at x=1 numerically
-    let original_at_1 = x.sin().powi(2).subs_i64(&x, 1).evalf_f64();
-    let roundtrip_at_1 = deriv.subs_i64(&x, 1).evalf_f64();
+    let original_at_1 = x.sin().powi(2).subs_i64(&x, 1).eval_f64();
+    let roundtrip_at_1 = deriv.subs_i64(&x, 1).eval_f64();
     assert!(original_at_1.is_ok(), "original evalf should work");
     assert!(roundtrip_at_1.is_ok(), "roundtrip evalf should work");
     let orig = original_at_1.unwrap();
@@ -735,7 +735,7 @@ fn workflow_parse_solve_evalf() {
     assert!(!roots.is_empty(), "x²-2=0 should have roots");
     // Try evalf on a root
     if let Some(root) = roots.first() {
-        let r = root.evalf(10);
+        let r = root.eval_decimal(10);
         assert!(r.is_ok(), "evalf of root should work: {:?}", r.err());
         let s = r.unwrap();
         // √2 ≈ 1.414...
@@ -756,8 +756,8 @@ fn workflow_build_diff_integrate() {
     let s = format!("{anti}");
     assert!(!s.contains("Integral"), "should integrate: {s}");
     // Verify numerically at x=1
-    let df_at_1 = df.subs_i64(&x, 1).evalf_f64();
-    let anti_diff_at_1 = anti.diff(&x).subs_i64(&x, 1).evalf_f64();
+    let df_at_1 = df.subs_i64(&x, 1).eval_f64();
+    let anti_diff_at_1 = anti.diff(&x).subs_i64(&x, 1).eval_f64();
     if let (Ok(a), Ok(b)) = (df_at_1, anti_diff_at_1) {
         assert!(
             (a - b).abs() < 1e-10,
@@ -776,7 +776,7 @@ fn workflow_complex_algebra_then_evalf() {
     assert_eq!(format!("{expanded}"), "-4", "(1+i)⁴ = -4");
 
     // evalf should confirm
-    let num = expanded.evalf(10);
+    let num = expanded.eval_decimal(10);
     assert!(num.is_ok());
     let s = num.unwrap();
     assert!(s.starts_with("-4"), "(1+i)⁴ evalf: {s}");
@@ -836,7 +836,7 @@ fn workflow_solve_verify_evalf() {
         );
     }
     // Verify roots are 1, 2, 3 via evalf
-    let mut root_vals: Vec<f64> = roots.iter().filter_map(|r| r.evalf_f64().ok()).collect();
+    let mut root_vals: Vec<f64> = roots.iter().filter_map(|r| r.eval_f64().ok()).collect();
     root_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(root_vals.len(), 3);
     assert!((root_vals[0] - 1.0).abs() < 1e-10, "first root should be 1");
@@ -932,8 +932,8 @@ fn workflow_integrate_polynomial_verify_by_diff() {
     let integral = f.integrate(&x);
     let deriv = integral.diff(&x);
     // Verify at x=2: f(2) = 12 + 4 + 1 = 17
-    let f_val = f.subs_i64(&x, 2).evalf_f64();
-    let d_val = deriv.subs_i64(&x, 2).evalf_f64();
+    let f_val = f.subs_i64(&x, 2).eval_f64();
+    let d_val = deriv.subs_i64(&x, 2).eval_f64();
     assert!(f_val.is_ok() && d_val.is_ok());
     let fv = f_val.unwrap();
     let dv = d_val.unwrap();
@@ -944,7 +944,7 @@ fn workflow_integrate_polynomial_verify_by_diff() {
 fn workflow_evalf_f64_convenience() {
     let ctx = Context::new();
     let pi = ctx.pi();
-    let val = pi.evalf_f64();
+    let val = pi.eval_f64();
     assert!(val.is_ok());
     let v = val.unwrap();
     assert!(

@@ -837,7 +837,7 @@ impl Matrix {
             let diag = self.get(j, j) - &sum_sq;
             let diag_simplified = diag.simplify();
             // For numeric matrices, check positive-definiteness
-            if let Ok(v) = diag_simplified.evalf_f64() {
+            if let Ok(v) = diag_simplified.eval_f64() {
                 if v <= 0.0 {
                     return None;
                 }
@@ -881,14 +881,14 @@ impl Matrix {
 /// # Panics
 ///
 /// Panics if `funcs` or `vars` is empty.
-pub fn jacobian(funcs: &[Ex], vars: &[Ex]) -> Matrix {
+pub fn jacobian(funcs: &[&Ex], vars: &[&Ex]) -> Matrix {
     assert!(!funcs.is_empty(), "jacobian: funcs must be non-empty");
     assert!(!vars.is_empty(), "jacobian: vars must be non-empty");
     let nrows = funcs.len();
     let ncols = vars.len();
     let rows: Vec<Vec<Ex>> = funcs
         .iter()
-        .map(|fi| vars.iter().map(|vj| fi.diff(vj)).collect())
+        .map(|fi| vars.iter().map(|vj| fi.diff(*vj)).collect())
         .collect();
     Matrix { rows, nrows, ncols }
 }
@@ -1790,7 +1790,7 @@ mod tests {
         let y = crate::var("y");
         let f1 = &x.powi(2) + &y; // f1 = x² + y
         let f2 = &x * &y; // f2 = x*y
-        let j = jacobian(&[f1, f2], &[x.clone(), y.clone()]);
+        let j = jacobian(&[&f1, &f2], &[&x, &y]);
         // J = [[2x, 1], [y, x]]
         assert_eq!(j.nrows(), 2);
         assert_eq!(j.ncols(), 2);

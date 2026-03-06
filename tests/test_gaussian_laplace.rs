@@ -50,8 +50,8 @@ fn integrate_exp_neg_x2_ftc() {
 
     // Evaluate both at x = 7/10
     let pt = ctx.rational(7, 10);
-    let orig = integrand.subs(&x, &pt).evalf_f64().unwrap();
-    let d = deriv.subs(&x, &pt).evalf_f64().unwrap();
+    let orig = integrand.subs(&x, &pt).eval_f64().unwrap();
+    let d = deriv.subs(&x, &pt).eval_f64().unwrap();
     assert!(
         (orig - d).abs() < 1e-8,
         "FTC violated: integrand={orig}, derivative={d}"
@@ -85,8 +85,8 @@ fn integrate_exp_neg_2x2_ftc() {
     let deriv = anti.diff(&x);
 
     let pt = ctx.rational(3, 10);
-    let orig = integrand.subs(&x, &pt).evalf_f64().unwrap();
-    let d = deriv.subs(&x, &pt).evalf_f64().unwrap();
+    let orig = integrand.subs(&x, &pt).eval_f64().unwrap();
+    let d = deriv.subs(&x, &pt).eval_f64().unwrap();
     assert!(
         (orig - d).abs() < 1e-8,
         "FTC violated: integrand={orig}, derivative={d}"
@@ -122,8 +122,8 @@ fn integrate_exp_neg_x2_plus_2x_ftc() {
     let deriv = anti.diff(&x);
 
     let pt = ctx.rational(1, 2);
-    let orig = integrand.subs(&x, &pt).evalf_f64().unwrap();
-    let d = deriv.subs(&x, &pt).evalf_f64().unwrap();
+    let orig = integrand.subs(&x, &pt).eval_f64().unwrap();
+    let d = deriv.subs(&x, &pt).eval_f64().unwrap();
     assert!(
         (orig - d).abs() < 1e-6,
         "FTC violated: integrand={orig}, derivative={d}"
@@ -159,8 +159,8 @@ fn integrate_exp_full_quadratic_ftc() {
     let deriv = anti.diff(&x);
 
     let pt = ctx.rational(4, 10);
-    let orig = integrand.subs(&x, &pt).evalf_f64().unwrap();
-    let d = deriv.subs(&x, &pt).evalf_f64().unwrap();
+    let orig = integrand.subs(&x, &pt).eval_f64().unwrap();
+    let d = deriv.subs(&x, &pt).eval_f64().unwrap();
     assert!(
         (orig - d).abs() < 1e-6,
         "FTC violated: integrand={orig}, derivative={d}"
@@ -202,8 +202,8 @@ fn laplace_derivative_of_sin() {
     // Compare numerically with L{cos(t)} = s/(s²+1)
     let cos_transform = t.cos().laplace(&t, &s).unwrap();
     let test_s = ctx.int(3);
-    let v1 = result.subs(&s, &test_s).evalf_f64().unwrap();
-    let v2 = cos_transform.subs(&s, &test_s).evalf_f64().unwrap();
+    let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
+    let v2 = cos_transform.subs(&s, &test_s).eval_f64().unwrap();
     assert!(
         (v1 - v2).abs() < 1e-10,
         "L{{sin'(t)}} should equal L{{cos(t)}}: {v1} vs {v2}"
@@ -227,8 +227,8 @@ fn laplace_derivative_of_exp() {
     let direct = (&f * 2).laplace(&t, &s).unwrap();
 
     let test_s = ctx.int(5);
-    let v1 = result.subs(&s, &test_s).evalf_f64().unwrap();
-    let v2 = direct.subs(&s, &test_s).evalf_f64().unwrap();
+    let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
+    let v2 = direct.subs(&s, &test_s).eval_f64().unwrap();
     assert!(
         (v1 - v2).abs() < 1e-10,
         "L{{d/dt exp(2t)}} should equal L{{2·exp(2t)}}: {v1} vs {v2}"
@@ -250,8 +250,8 @@ fn laplace_derivative_of_t() {
     let one_transform = ctx.int(1).laplace(&t, &s).unwrap();
 
     let test_s = ctx.int(4);
-    let v1 = result.subs(&s, &test_s).evalf_f64().unwrap();
-    let v2 = one_transform.subs(&s, &test_s).evalf_f64().unwrap();
+    let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
+    let v2 = one_transform.subs(&s, &test_s).eval_f64().unwrap();
     assert!(
         (v1 - v2).abs() < 1e-10,
         "L{{t'}} should equal L{{1}}: {v1} vs {v2}"
@@ -272,8 +272,8 @@ fn laplace_constant_times_derivative() {
     let expected = &t.cos().laplace(&t, &s).unwrap() * 3;
 
     let test_s = ctx.int(2);
-    let v1 = result.subs(&s, &test_s).evalf_f64().unwrap();
-    let v2 = expected.subs(&s, &test_s).evalf_f64().unwrap();
+    let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
+    let v2 = expected.subs(&s, &test_s).eval_f64().unwrap();
     assert!(
         (v1 - v2).abs() < 1e-10,
         "L{{3·sin'(t)}} should equal 3·L{{cos(t)}}: {v1} vs {v2}"
@@ -296,8 +296,8 @@ fn laplace_derivative_of_t_squared() {
     let direct = (&t * 2).laplace(&t, &s).unwrap();
 
     let test_s = ctx.int(3);
-    let v1 = result.subs(&s, &test_s).evalf_f64().unwrap();
-    let v2 = direct.subs(&s, &test_s).evalf_f64().unwrap();
+    let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
+    let v2 = direct.subs(&s, &test_s).eval_f64().unwrap();
     assert!(
         (v1 - v2).abs() < 1e-10,
         "L{{d/dt t²}} should equal L{{2t}}: {v1} vs {v2}"
@@ -321,8 +321,8 @@ fn laplace_derivative_of_cos() {
     let neg_sin_transform = (&t.sin() * -1).laplace(&t, &s).unwrap();
 
     let test_s = ctx.int(2);
-    let v1 = result.subs(&s, &test_s).evalf_f64().unwrap();
-    let v2 = neg_sin_transform.subs(&s, &test_s).evalf_f64().unwrap();
+    let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
+    let v2 = neg_sin_transform.subs(&s, &test_s).eval_f64().unwrap();
     assert!(
         (v1 - v2).abs() < 1e-10,
         "L{{cos'(t)}} should equal L{{-sin(t)}}: {v1} vs {v2}"
@@ -343,8 +343,8 @@ fn laplace_neg_derivative() {
     let expected = &t.cos().laplace(&t, &s).unwrap() * -1;
 
     let test_s = ctx.int(5);
-    let v1 = result.subs(&s, &test_s).evalf_f64().unwrap();
-    let v2 = expected.subs(&s, &test_s).evalf_f64().unwrap();
+    let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
+    let v2 = expected.subs(&s, &test_s).eval_f64().unwrap();
     assert!(
         (v1 - v2).abs() < 1e-10,
         "L{{-sin'(t)}} should equal -L{{cos(t)}}: {v1} vs {v2}"

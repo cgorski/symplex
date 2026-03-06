@@ -113,7 +113,7 @@ fn checkodesol_simple_separable() {
     // ODE: y' - x = 0  →  solution y = x²/2
     let ode = &dy - &x;
     let sol = &x.powi(2) / 2;
-    assert!(ode.checkodesol(&sol, &y, &x));
+    assert!(ode.check_ode_solution(&sol, &y, &x));
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn checkodesol_wrong_solution_rejected() {
     let dy = y.formal_diff(&x);
     // ODE: y' - x = 0  →  y = x is NOT a solution (y' = 1 ≠ x in general)
     let ode = &dy - &x;
-    assert!(!ode.checkodesol(&x, &y, &x));
+    assert!(!ode.check_ode_solution(&x, &y, &x));
 }
 
 #[test]
@@ -133,12 +133,12 @@ fn dsolve_then_checkodesol() {
     let dy = y.formal_diff(&x);
     // y' - x = 0
     let ode = &dy - &x;
-    let (sol, _constants) = ode.dsolve(&y, &x).expect("dsolve should solve y' - x = 0");
+    let (sol, _constants) = ode.solve_ode(&y, &x).expect("dsolve should solve y' - x = 0");
     // Substitute C1 = 0 to get a particular solution
     let c1 = symplex::var("C1");
     let particular = sol.subs(&c1, &symplex::int(0));
     assert!(
-        ode.checkodesol(&particular, &y, &x),
+        ode.check_ode_solution(&particular, &y, &x),
         "dsolve solution (with C1=0) should satisfy the ODE"
     );
 }
