@@ -67,6 +67,8 @@ pub(crate) mod factor;
 pub(crate) mod factor_terms;
 pub(crate) mod fourier;
 pub(crate) mod fourier_transform;
+/// Gröbner basis computation via Buchberger's algorithm with FGLM order conversion.
+pub mod groebner;
 pub(crate) mod gruntz;
 pub(crate) mod inequalities;
 pub(crate) mod integrate;
