@@ -50,7 +50,18 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
         }
     };
 
-    integrate_node(arena, expr, var, var_sym, 20)
+    let result = integrate_node(arena, expr, var, var_sym, 20);
+
+    // If the rule-based integrator returned an unevaluated Integral node,
+    // try the heuristic Risch integrator as a fallback.
+    if let ExprNode::Integral(_, _) = arena.node(result)
+        && let Some(heurisch_result) =
+            crate::heurisch::heurisch_integrate(arena, expr, var, var_sym)
+    {
+        return heurisch_result;
+    }
+
+    result
 }
 
 /// Check whether `expr` is a suitable candidate for the `u` factor in
@@ -1818,12 +1829,27 @@ fn integrate_node(
             arena.intern(ExprNode::Integral(expr, var))
         }
 
-        // Inverse hyperbolics, sign, Heaviside: leave as unevaluated integrals
+        // ── Heaviside: ∫ H(g(x)) dx ───────────────────────────────
+        ExprNode::Heaviside(inner) => {
+            // ∫ H(x) dx = x·H(x)
+            if inner == var {
+                return arena.mul(&[var, expr]);
+            }
+            // Linear case: ∫ H(ax+b) dx = (ax+b)·H(ax+b) / a
+            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
+                let h = arena.intern(ExprNode::Heaviside(inner));
+                let product = arena.mul(&[inner, h]);
+                return arena.div(product, a_expr);
+            }
+            // Leave unevaluated
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
+        // Inverse hyperbolics, sign: leave as unevaluated integrals
         ExprNode::Asinh(_)
         | ExprNode::Acosh(_)
         | ExprNode::Atanh(_)
-        | ExprNode::Sign(_)
-        | ExprNode::Heaviside(_) => arena.intern(ExprNode::Integral(expr, var)),
+        | ExprNode::Sign(_) => arena.intern(ExprNode::Integral(expr, var)),
 
         // Everything else: unevaluated integral.
         _ => {

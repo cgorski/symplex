@@ -90,8 +90,46 @@ pub(crate) fn apart(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
             let quot_expr = polybridge::poly_to_expr(arena, &quotient, var);
             return arena.add(&[quot_expr, frac]);
         }
-        // Try the root-based fallback for higher-degree factors.
+        // Try RT refinement to split the irreducible factor into smaller pieces.
         if factors[0].0.degree().unwrap_or(0) > 2 {
+            if let Some(rt_factors) = try_rt_refine(&remainder, &denom_poly) {
+                let content_inv = if content.is_one() {
+                    Ratio::one()
+                } else {
+                    Ratio::one() / &content
+                };
+                let scaled = remainder.scale(&content_inv);
+                let rt_terms = decompose_poly_fraction(&scaled, &rt_factors);
+                if !rt_terms.is_empty() {
+                    let mut result_terms: Vec<ExprId> = Vec::new();
+                    for (numer_p, factor_p, power) in &rt_terms {
+                        if numer_p.is_zero() {
+                            continue;
+                        }
+                        let numer_expr = polybridge::poly_to_expr(arena, numer_p, var);
+                        let factor_expr = polybridge::poly_to_expr(arena, factor_p, var);
+                        let denom_expr = if *power == 1 {
+                            factor_expr
+                        } else {
+                            let exp = arena.int(*power as i64);
+                            arena.pow(factor_expr, exp)
+                        };
+                        let term = arena.div(numer_expr, denom_expr);
+                        result_terms.push(term);
+                    }
+                    if !quotient.is_zero() {
+                        result_terms.push(polybridge::poly_to_expr(arena, &quotient, var));
+                    }
+                    if !result_terms.is_empty() {
+                        return if result_terms.len() == 1 {
+                            result_terms[0]
+                        } else {
+                            arena.add(&result_terms)
+                        };
+                    }
+                }
+            }
+            // Fall back to the root-based approach.
             let fb = try_root_based_apart(arena, var, &quotient, &remainder, &denom_poly);
             if fb != expr {
                 return fb;
@@ -111,7 +149,28 @@ pub(crate) fn apart(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     };
     let scaled_remainder = remainder.scale(&content_inv);
 
-    let terms = decompose_poly_fraction(&scaled_remainder, &factors);
+    let initial_terms = decompose_poly_fraction(&scaled_remainder, &factors);
+
+    if initial_terms.is_empty() {
+        return expr;
+    }
+
+    // Step 5b: Try RT refinement on any term whose denominator is still
+    //          a single irreducible factor of degree > 2.
+    let terms: Vec<(Poly, Poly, u32)> = initial_terms
+        .into_iter()
+        .flat_map(|(n, f, p)| {
+            if p == 1 && f.degree().unwrap_or(0) > 2
+                && let Some(sub_factors) = try_rt_refine(&n, &f)
+            {
+                let sub_terms = decompose_poly_fraction(&n, &sub_factors);
+                if !sub_terms.is_empty() {
+                    return sub_terms;
+                }
+            }
+            vec![(n, f, p)]
+        })
+        .collect();
 
     if terms.is_empty() {
         return expr;
@@ -317,7 +376,24 @@ fn try_root_based_apart(
             if used[j] {
                 continue;
             }
+            // Exact structural comparison.
             if solutions[j].value == conj_root {
+                conj_idx = Some(j);
+                break;
+            }
+            // Robust fallback: two roots are conjugates iff their
+            // sum and product are both real (contain no imaginary unit).
+            let other = solutions[j].value;
+            if !crate::walk::contains(arena, other, i_unit) {
+                continue;
+            }
+            let pair_sum = arena.add(&[root, other]);
+            let pair_sum = crate::eval::eval(arena, pair_sum);
+            let pair_prod = arena.mul(&[root, other]);
+            let pair_prod = crate::eval::eval(arena, pair_prod);
+            if !crate::walk::contains(arena, pair_sum, i_unit)
+                && !crate::walk::contains(arena, pair_prod, i_unit)
+            {
                 conj_idx = Some(j);
                 break;
             }
@@ -509,6 +585,197 @@ fn assemble_with_quotient(
     arena.add(&[frac, quot_expr])
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Rothstein-Trager factor refinement
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Attempt to split a polynomial `denom` into finer factors using the
+/// Rothstein-Trager resultant technique.
+///
+/// Given `N / D` with `D` squarefree of degree > 2, computes
+/// `R(t) = res_x(D, N − t·D')`, factors `R(t)` over ℤ, and for each
+/// factor `q_i(t)` computes the corresponding factor of `D` via
+/// `gcd(D, res_t(N − t·D', q_i(t)))`.
+///
+/// Returns `Some(factors)` if a non-trivial factorisation is found,
+/// `None` otherwise.
+fn try_rt_refine(numer: &Poly, denom: &Poly) -> Option<Vec<(Poly, u32)>> {
+    let d_deg = denom.degree()?;
+    if d_deg <= 2 {
+        return None;
+    }
+
+    let d_prime = denom.derivative();
+    if d_prime.is_zero() {
+        return None;
+    }
+
+    // R(t) = res_x(D, N − t·D')
+    let r_poly = Poly::resultant_poly(denom, numer, &d_prime);
+    if r_poly.is_zero() {
+        return None;
+    }
+
+    // Factor R(t) over ℤ.
+    let (_content, r_factors) = r_poly.factor_over_z();
+    if r_factors.len() <= 1 {
+        // R(t) is irreducible — no finer factorisation from this route.
+        return None;
+    }
+
+    // For each factor q_i(t) of R(t), compute the corresponding factor of D.
+    let mut d_subfactors: Vec<Poly> = Vec::new();
+    let mut remaining = denom.make_monic();
+
+    for (q_i, _mult) in &r_factors {
+        let q_deg = q_i.degree().unwrap_or(0);
+        if q_deg == 0 {
+            continue;
+        }
+        if remaining.degree().unwrap_or(0) == 0 {
+            break;
+        }
+
+        // H(x) = res_t(N(x) − t·D'(x),  q_i(t))
+        let h = compute_res_t_poly(numer, &d_prime, q_i);
+        if h.is_zero() {
+            continue;
+        }
+
+        let g = Poly::gcd(&remaining, &h);
+        let g_deg = g.degree().unwrap_or(0);
+        if g_deg > 0 && g_deg < remaining.degree().unwrap_or(0) {
+            d_subfactors.push(g.make_monic());
+            remaining = remaining.div(&g).make_monic();
+        }
+    }
+
+    // Include any leftover factor.
+    if remaining.degree().unwrap_or(0) > 0 {
+        d_subfactors.push(remaining.make_monic());
+    }
+
+    if d_subfactors.len() <= 1 {
+        return None;
+    }
+
+    Some(d_subfactors.into_iter().map(|f| (f, 1u32)).collect())
+}
+
+/// Compute `res_t(g(x) − t·h(x),  q(t))` as a polynomial in `x`.
+///
+/// For `P(t) = −h·t + g`  (degree 1 in t) and `Q(t) = q(t)`  (degree d):
+///
+/// ```text
+///   res_t(P, Q) = (−1)^d · Σ_{k=0}^{d} c_k · g^k · h^{d−k}
+/// ```
+///
+/// where `c_k` is the coefficient of `t^k` in `q(t)`.
+fn compute_res_t_poly(g: &Poly, h: &Poly, q: &Poly) -> Poly {
+    let d = q.degree().unwrap_or(0);
+    if d == 0 {
+        return Poly::constant(q.coeff(0));
+    }
+
+    let mut result = Poly::zero();
+    for k in 0..=d {
+        let c_k = q.coeff(k);
+        if c_k.is_zero() {
+            continue;
+        }
+        let g_power = poly_pow(g, k as u32);
+        let h_power = poly_pow(h, (d - k) as u32);
+        let term = (&g_power * &h_power).scale(&c_k);
+        result = &result + &term;
+    }
+
+    if !d.is_multiple_of(2) {
+        result = -&result;
+    }
+
+    result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Hermite reduction (standalone utility)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Hermite reduction for `numer / factor^power` where `factor` is
+/// squarefree.
+///
+/// Decomposes the integral:
+///
+/// ```text
+///   ∫ numer / factor^power  dx  =  A / factor^{power−1}  +  ∫ B / factor  dx
+/// ```
+///
+/// Returns `Some((A, factor^{power-1}, B, factor))` on success,
+/// `None` if `power ≤ 1` or if `factor` is not squarefree.
+///
+/// The caller is responsible for integrating `B / factor` (the
+/// logarithmic part with squarefree denominator).
+#[allow(dead_code)]
+pub(crate) fn hermite_reduce_factor(
+    numer: &Poly,
+    factor: &Poly,
+    power: u32,
+) -> Option<(Poly, Poly, Poly, Poly)> {
+    if power <= 1 || factor.is_zero() || numer.is_zero() {
+        return None;
+    }
+
+    let f = factor;
+    let f_prime = f.derivative();
+
+    // Extended GCD:  s·f + t·f' = 1  (works because f is squarefree).
+    let (_s, t, g) = Poly::extended_gcd(f, &f_prime);
+    if g.degree().unwrap_or(0) != 0 {
+        return None; // f is not squarefree
+    }
+
+    // Iterate, reducing multiplicity by 1 each step.
+    //   numer / f^k  =  d/dx( C / ((1−k)·f^{k−1}) )  +  D / f^{k−1}
+    //
+    // where  C ≡ numer·t  (mod f),
+    //        E = (numer − C·f') / f,
+    //        D = E + C' / (k − 1).
+    //
+    // The antiderivative accumulates  Σ C_j / ((1−j)·f^{j−1}).
+    let mut current_numer = numer.clone();
+    let mut current_power = power;
+    let mut rational_numer_acc = Poly::zero();
+
+    while current_power > 1 {
+        let k = current_power;
+
+        let c = (&current_numer * &t).rem(f);
+
+        let diff = &current_numer - &(&c * &f_prime);
+        let (e, rem) = diff.div_rem(f);
+        if !rem.is_zero() {
+            return None; // unexpected; bail
+        }
+
+        let c_prime = c.derivative();
+        let km1 = Ratio::from_integer(BigInt::from((k - 1) as i64));
+        let d = &e + &c_prime.scale(&(Ratio::one() / &km1));
+
+        // Accumulate C / ((1−k) · f^{k−1}) expressed over the common
+        // denominator f^{power−1}:
+        //   C / ((1−k) · f^{k−1})  =  C · f^{power−k} / ((1−k) · f^{power−1})
+        let one_minus_k = Ratio::from_integer(BigInt::from(1 - k as i64));
+        let f_extra = poly_pow(f, power - k);
+        let contrib = (&c * &f_extra).scale(&(Ratio::one() / &one_minus_k));
+        rational_numer_acc = &rational_numer_acc + &contrib;
+
+        current_numer = d;
+        current_power -= 1;
+    }
+
+    let rational_denom = poly_pow(f, power - 1);
+    Some((rational_numer_acc, rational_denom, current_numer, f.clone()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,5 +911,127 @@ mod tests {
             display(&a, decomp_at_3),
             "apart output must match original at x=3"
         );
+    }
+
+    // ── Rothstein-Trager infrastructure ─────────────────────────────
+
+    /// Helper: build Ratio<BigInt> from i64.
+    fn ri(n: i64) -> Ratio<BigInt> {
+        Ratio::from_integer(BigInt::from(n))
+    }
+
+    #[test]
+    fn rt_refine_x3_minus_x2_plus_x_minus_1() {
+        // D = x³ − x² + x − 1 = (x−1)(x²+1).
+        // R(t) factors over ℤ → RT finds the (x−1) and (x²+1) sub-factors.
+        let d = Poly::from_coeffs(vec![ri(-1), ri(1), ri(-1), ri(1)]);
+        let n = Poly::from_int(1);
+        let result = try_rt_refine(&n, &d);
+        assert!(result.is_some(), "RT should split x³−x²+x−1");
+        let factors = result.unwrap();
+        assert_eq!(factors.len(), 2, "should have 2 sub-factors: {factors:?}");
+        // Verify product.
+        let mut product = Poly::from_int(1);
+        for (f, m) in &factors {
+            for _ in 0..*m {
+                product = &product * f;
+            }
+        }
+        assert_eq!(
+            product.make_monic(),
+            d.make_monic(),
+            "product of RT sub-factors must reconstruct D"
+        );
+    }
+
+    #[test]
+    fn compute_res_t_poly_linear_factor() {
+        // g = 1, h = 3x² − 2x + 1 (= D' of x³−x²+x−1), q = 2t − 1.
+        // res_t(1 − t·h, 2t − 1) = (−1)^1 · (c₀·h + c₁·1)
+        //   where c₀ = −1, c₁ = 2  →  −(−h + 2) = h − 2 = 3x² − 2x − 1.
+        let g = Poly::from_int(1);
+        let h = Poly::from_coeffs(vec![ri(1), ri(-2), ri(3)]);
+        let q = Poly::from_coeffs(vec![ri(-1), ri(2)]); // 2t − 1
+        let res = compute_res_t_poly(&g, &h, &q);
+        let expected = Poly::from_coeffs(vec![ri(-1), ri(-2), ri(3)]); // 3x²−2x−1
+        assert_eq!(res, expected, "res_t should be 3x²−2x−1, got {res}");
+    }
+
+    #[test]
+    fn hermite_reduce_1_over_x2_plus_1_squared() {
+        // ∫ 1/(x²+1)² dx = x/(2(x²+1)) + ∫ 1/(2(x²+1)) dx
+        let numer = Poly::from_int(1);
+        let factor = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // x²+1
+        let result = hermite_reduce_factor(&numer, &factor, 2);
+        assert!(result.is_some(), "Hermite should reduce 1/(x²+1)²");
+        let (a_num, a_den, b_num, b_den) = result.unwrap();
+        // Rational part: A/D* = (x/2)/(x²+1) → A = x/2.
+        // Check that 2·A = x.
+        let two_a = a_num.scale(&ri(2));
+        assert_eq!(two_a, Poly::x(), "rational numer should be x/2, got {a_num}");
+        // Rational denom = x²+1
+        assert_eq!(a_den, factor, "rational denom should be x²+1");
+        // Logarithmic part: B/Ds = (1/2)/(x²+1) → B = 1/2.
+        let two_b = b_num.scale(&ri(2));
+        assert_eq!(two_b, Poly::from_int(1), "log numer should be 1/2, got {b_num}");
+        assert_eq!(b_den, factor, "log denom should be x²+1");
+    }
+
+    #[test]
+    fn hermite_reduce_trivial_for_squarefree() {
+        // When power = 1, Hermite reduction should return None.
+        let numer = Poly::from_int(1);
+        let factor = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]);
+        assert!(hermite_reduce_factor(&numer, &factor, 1).is_none());
+    }
+
+    #[test]
+    fn hermite_reduce_1_over_x_minus_1_cubed() {
+        // ∫ 1/(x−1)³ dx = −1/(2(x−1)²) + ∫ 0/(x−1) dx
+        // So rational part = −1/(2(x−1)²), log part = 0/(x−1).
+        let numer = Poly::from_int(1);
+        let factor = Poly::from_coeffs(vec![ri(-1), ri(1)]); // x − 1
+        let result = hermite_reduce_factor(&numer, &factor, 3);
+        assert!(result.is_some(), "Hermite should reduce 1/(x−1)³");
+        let (_a_num, a_den, b_num, _b_den) = result.unwrap();
+        // Rational denom should be (x−1)²
+        assert_eq!(a_den.degree(), Some(2));
+        // Logarithmic numer should be zero
+        assert!(b_num.is_zero(), "log numer should be 0 for 1/(x−1)³, got {b_num}");
+    }
+
+    #[test]
+    fn apart_quartic_decomposition_numerical() {
+        // Verify that apart(1/(x⁵+1)) decomposes correctly and the
+        // quartic piece is numerically accurate.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.one;
+        let five = a.int(5);
+        let x5 = a.pow(x, five);
+        let denom = a.add(&[x5, one]);
+        let expr = a.div(one, denom);
+        let result = apart(&mut a, expr, x);
+
+        // Decomposed form should differ from original.
+        assert_ne!(
+            display(&a, result),
+            display(&a, expr),
+            "apart should decompose 1/(x⁵+1)"
+        );
+
+        // Numerical check at x = 2, 3, 4.
+        for &val in &[2i64, 3, 4] {
+            let v = a.int(val);
+            let orig = crate::subs::subs(&mut a, expr, x, v);
+            let orig = crate::eval::eval(&mut a, orig);
+            let dec = crate::subs::subs(&mut a, result, x, v);
+            let dec = crate::eval::eval(&mut a, dec);
+            assert_eq!(
+                display(&a, orig),
+                display(&a, dec),
+                "apart(1/(x⁵+1)) must match at x={val}"
+            );
+        }
     }
 }

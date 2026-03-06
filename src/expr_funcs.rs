@@ -2952,6 +2952,90 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    // ── Formal power series ────────────────────────────────────────
+
+    /// Compute the formal power series of this expression about `point`.
+    ///
+    /// Returns a [`FormalPowerSeries`](crate::formal_series::FormalPowerSeries)
+    /// that provides access to individual coefficients and truncation.
+    ///
+    /// For known elementary functions (exp, sin, cos, sinh, cosh, ln(1+x),
+    /// atan, (1+x)^α, 1/(1-x)), returns a closed-form coefficient formula.
+    /// For other functions, falls back to computing Taylor coefficients.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let zero = ctx.int(0);
+    /// let series = x.exp().fps(&x, &zero);
+    /// assert!(series.has_closed_form());
+    /// ```
+    #[must_use]
+    pub fn fps(
+        &self,
+        var: &Ex,
+        point: &Ex,
+    ) -> crate::formal_series::FormalPowerSeries {
+        let mut inner = self.inner.write();
+        crate::formal_series::fps(&mut inner.arena, self.id, var.id, point.id)
+    }
+
+    /// Compute the formal power series about 0 (Maclaurin series).
+    ///
+    /// Convenience shorthand for `self.fps(var, &zero)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let series = x.sin().fps_maclaurin(&x);
+    /// assert!(series.has_closed_form());
+    /// ```
+    #[must_use]
+    pub fn fps_maclaurin(
+        &self,
+        var: &Ex,
+    ) -> crate::formal_series::FormalPowerSeries {
+        let mut inner = self.inner.write();
+        let zero = inner.arena.zero;
+        crate::formal_series::fps(&mut inner.arena, self.id, var.id, zero)
+    }
+
+    // ── Finite differences ─────────────────────────────────────────
+
+    /// Replace derivatives in this expression with finite difference
+    /// approximations.
+    ///
+    /// When encountering `Derivative(f, x)`, replaces it with the central
+    /// difference formula `(f(x + h/2) - f(x - h/2)) / h` where `h` is
+    /// the symbol `_h`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = x.powi(2).formal_diff(&x);
+    /// let finite = expr.differentiate_finite(&x);
+    /// let s = format!("{finite}");
+    /// assert!(s.contains("_h"), "should contain step size: {s}");
+    /// ```
+    #[must_use = "returns a new expression; does not modify in place"]
+    pub fn differentiate_finite(&self, var: &Ex) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            crate::finite_diff::differentiate_finite(&mut guard.arena, self.id, var.id)
+        };
+        self.wrap(id)
+    }
+
     /// Factorize this integer expression into prime factors.
     ///
     /// Evaluates the expression and, if it is an exact integer, returns its

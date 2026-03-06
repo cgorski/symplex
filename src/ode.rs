@@ -63,6 +63,18 @@ pub fn dsolve(
         return Some(result);
     }
 
+    // Type 1c: Euler-Cauchy: a·x²·y'' + b·x·y' + c·y = 0
+    if let Some(result) = try_euler_cauchy(arena, expr, func, var, func_sym, var_sym) {
+        return Some(result);
+    }
+
+    // Type 1d: Variation of parameters: y'' + p·y' + q·y = g(x) (fallback)
+    if let Some(result) =
+        try_variation_of_parameters(arena, expr, func, var, func_sym, var_sym)
+    {
+        return Some(result);
+    }
+
     // Type 2: General first-order linear (variable P(x)): y' + P(x)*y = Q(x)
     if let Some(result) = try_first_order_linear_general(arena, expr, func, var, func_sym, var_sym)
     {
@@ -76,6 +88,11 @@ pub fn dsolve(
 
     // Type 2c: Non-exact ODE with integrating factor μ(x) or μ(y)
     if let Some(result) = try_integrating_factor_ode(arena, expr, func, var, func_sym, var_sym) {
+        return Some(result);
+    }
+
+    // Type 2d: Bernoulli: y' + P(x)·y = Q(x)·y^n (n ≠ 0, 1)
+    if let Some(result) = try_bernoulli(arena, expr, func, var, func_sym, var_sym) {
         return Some(result);
     }
 
@@ -1695,6 +1712,582 @@ fn try_exp_particular(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Bernoulli equations: y' + P(x)·y = Q(x)·y^n  (n ≠ 0, 1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Solve Bernoulli equations: y' + P(x)·y = Q(x)·y^n (n ≠ 0, 1).
+///
+/// Substitution v = y^(1−n) transforms to a first-order linear ODE:
+///   v' + (1−n)·P(x)·v = (1−n)·Q(x)
+/// Solve for v, then recover y = v^(1/(1−n)).
+fn try_bernoulli(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    tracing::debug!("ode: trying Bernoulli");
+
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+
+    // Must be first-order (no second derivatives)
+    if expr_contains(arena, expr, d2y_dx2) {
+        return None;
+    }
+
+    let children = match arena.node(expr).clone() {
+        ExprNode::Add(children) => children,
+        _ => return None,
+    };
+
+    use num_traits::Zero;
+
+    let mut dy_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut p_x_terms: Vec<ExprId> = Vec::new();
+    let mut q_x_terms: Vec<(ExprId, num_rational::Ratio<num_bigint::BigInt>)> = Vec::new();
+
+    for &child in &children {
+        let (coeff, term) = arena.as_coeff_term(child);
+        if term == dy_dx {
+            dy_coeff += coeff;
+        } else if !contains_sym(arena, child, func_sym) {
+            return None; // Free terms not allowed in standard Bernoulli
+        } else if let Some(px) =
+            extract_coeff_of_func(arena, child, func, func_sym, var_sym)
+        {
+            p_x_terms.push(px);
+        } else if let Some((qx, n)) =
+            extract_bernoulli_term(arena, child, func, func_sym, var_sym)
+        {
+            q_x_terms.push((qx, n));
+        } else {
+            return None;
+        }
+    }
+
+    if dy_coeff.is_zero() || q_x_terms.is_empty() {
+        return None;
+    }
+
+    // All y^n terms must share the same exponent n ≠ 0, 1
+    let n_val = q_x_terms[0].1.clone();
+    if n_val.is_zero() || n_val.is_one() {
+        return None;
+    }
+    for (_, n) in &q_x_terms[1..] {
+        if *n != n_val {
+            return None;
+        }
+    }
+
+    // Normalize by dy_coeff
+    let inv_dy = num_rational::Ratio::<num_bigint::BigInt>::one() / &dy_coeff;
+    let inv_dy_id = ode_ratio_to_expr(arena, &inv_dy);
+
+    let p_raw = if p_x_terms.is_empty() {
+        arena.zero
+    } else if p_x_terms.len() == 1 {
+        p_x_terms[0]
+    } else {
+        arena.add(&p_x_terms)
+    };
+    let p_x = if dy_coeff.is_one() {
+        p_raw
+    } else {
+        let s = arena.mul(&[inv_dy_id, p_raw]);
+        crate::eval::eval(arena, s)
+    };
+
+    // Q_raw·y^n appears on the LHS: y' + P·y + Q_raw·y^n = 0
+    // So actual Q in y' + P·y = Q·y^n is −Q_raw
+    let q_sum: Vec<ExprId> = q_x_terms.iter().map(|(qx, _)| *qx).collect();
+    let q_raw = if q_sum.len() == 1 { q_sum[0] } else { arena.add(&q_sum) };
+    let neg_q_raw = arena.neg(q_raw);
+    let q_x = if dy_coeff.is_one() {
+        neg_q_raw
+    } else {
+        let s = arena.mul(&[inv_dy_id, neg_q_raw]);
+        crate::eval::eval(arena, s)
+    };
+
+    if contains_sym(arena, p_x, func_sym) || contains_sym(arena, q_x, func_sym) {
+        return None;
+    }
+
+    // Substitution: v = y^(1−n)
+    // Transformed ODE: v' + (1−n)·P·v = (1−n)·Q
+    let one_minus_n = num_rational::Ratio::<num_bigint::BigInt>::one() - &n_val;
+    let one_minus_n_id = ode_ratio_to_expr(arena, &one_minus_n);
+
+    let new_p = arena.mul(&[one_minus_n_id, p_x]);
+    let new_p = crate::eval::eval(arena, new_p);
+    let new_q = arena.mul(&[one_minus_n_id, q_x]);
+    let new_q = crate::eval::eval(arena, new_q);
+
+    // Build linear ODE for v: v' + new_p·v − new_q = 0
+    let v = arena.symbol("__v");
+    let dv = arena.intern(ExprNode::Derivative(v, var));
+    let pv = arena.mul(&[new_p, v]);
+    let neg_new_q = arena.neg(new_q);
+    let linear_expr = arena.add(&[dv, pv, neg_new_q]);
+
+    let v_sym = match arena.node(v) {
+        ExprNode::Symbol(sid) => *sid,
+        _ => return None,
+    };
+
+    // Solve the linear ODE for v (fall back to simple separable if P=0)
+    let v_result = try_first_order_linear_general(
+        arena, linear_expr, v, var, v_sym, var_sym,
+    )
+    .or_else(|| try_simple_separable(arena, linear_expr, v, var, v_sym, var_sym))?;
+
+    // Recover y = v^(1/(1−n))
+    let inv_one_minus_n = num_rational::Ratio::<num_bigint::BigInt>::one() / &one_minus_n;
+    let inv_id = ode_ratio_to_expr(arena, &inv_one_minus_n);
+    let solution = arena.pow(v_result.solution, inv_id);
+    let solution = crate::eval::eval(arena, solution);
+
+    Some(OdeResult {
+        solution,
+        constants: v_result.constants,
+    })
+}
+
+/// Try to extract a Bernoulli term Q(x)·y^n from an expression.
+///
+/// Returns `Some((Q(x), n))` where Q(x) is free of y and n is a rational
+/// constant.
+fn extract_bernoulli_term(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    func_sym: SymbolId,
+    _var_sym: SymbolId,
+) -> Option<(ExprId, num_rational::Ratio<num_bigint::BigInt>)> {
+    // Case 1: expr is y^n
+    if let ExprNode::Pow(base, exp) = arena.node(expr).clone()
+        && base == func
+    {
+        let n = arena.as_num(exp)?.clone();
+        return Some((arena.one, n));
+    }
+
+    // Case 2: expr is Mul([..., y^n, ...])
+    if let ExprNode::Mul(ref factors) = arena.node(expr).clone() {
+        let mut yn_idx = None;
+        let mut yn_exp = None;
+        for (i, &f) in factors.iter().enumerate() {
+            if let ExprNode::Pow(base, exp) = arena.node(f).clone()
+                && base == func
+                && let Some(n) = arena.as_num(exp)
+            {
+                yn_idx = Some(i);
+                yn_exp = Some(n.clone());
+                break;
+            }
+        }
+        if let (Some(idx), Some(n)) = (yn_idx, yn_exp) {
+            let mut other: Vec<ExprId> = Vec::new();
+            for (i, &f) in factors.iter().enumerate() {
+                if i != idx {
+                    if contains_sym(arena, f, func_sym) {
+                        return None;
+                    }
+                    other.push(f);
+                }
+            }
+            let qx = match other.len() {
+                0 => arena.one,
+                1 => other[0],
+                _ => arena.mul(&other),
+            };
+            return Some((qx, n));
+        }
+    }
+
+    // Case 3: numeric coefficient × something
+    {
+        let (coeff, term) = arena.as_coeff_term(expr);
+        if !coeff.is_one() && term != expr
+            && let Some((inner_qx, n)) =
+                extract_bernoulli_term(arena, term, func, func_sym, _var_sym)
+        {
+            let coeff_id = ode_ratio_to_expr(arena, &coeff);
+            let qx = arena.mul(&[coeff_id, inner_qx]);
+            return Some((qx, n));
+        }
+    }
+
+    // Case 4: Neg(something)
+    if let ExprNode::Neg(inner) = arena.node(expr).clone()
+        && let Some((inner_qx, n)) =
+            extract_bernoulli_term(arena, inner, func, func_sym, _var_sym)
+    {
+        let neg_qx = arena.neg(inner_qx);
+        return Some((neg_qx, n));
+    }
+
+    None
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Euler-Cauchy equations: a·x²·y'' + b·x·y' + c·y = 0
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Solve Euler-Cauchy equations: a·x²·y'' + b·x·y' + c·y = 0.
+///
+/// The characteristic equation is a·r(r−1) + b·r + c = 0, equivalently
+/// a·r² + (b−a)·r + c = 0.
+///
+/// - Distinct real roots r₁, r₂: y = C1·x^r₁ + C2·x^r₂
+/// - Repeated root r: y = (C1 + C2·ln(x))·x^r
+/// - Complex roots α ± βi: y = x^α·(C1·cos(β·ln(x)) + C2·sin(β·ln(x)))
+fn try_euler_cauchy(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    tracing::debug!("ode: trying Euler-Cauchy");
+
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+
+    if !expr_contains(arena, expr, d2y_dx2) {
+        return None;
+    }
+
+    let children = match arena.node(expr).clone() {
+        ExprNode::Add(children) => children,
+        _ => return None,
+    };
+
+    use num_traits::Zero;
+    let mut a_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut b_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut c_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+
+    let two_id = arena.int(2);
+    let x_sq = arena.pow(var, two_id);
+
+    for &child in &children {
+        let (coeff, term) = arena.as_coeff_term(child);
+        if term == func {
+            c_coeff += coeff;
+        } else if !contains_sym(arena, child, func_sym) {
+            return None; // Forcing term — only homogeneous supported
+        } else if let ExprNode::Mul(ref factors) = arena.node(term).clone() {
+            let has_d2 = factors.contains(&d2y_dx2);
+            let has_d1 = factors.contains(&dy_dx);
+            let has_xsq = factors.contains(&x_sq);
+            let has_xvar = factors.contains(&var);
+
+            // Collect factors that are not x²/x/y''/y'
+            let other: Vec<ExprId> = factors
+                .iter()
+                .copied()
+                .filter(|&f| f != d2y_dx2 && f != dy_dx && f != x_sq && f != var)
+                .collect();
+            for &of in &other {
+                if contains_sym(arena, of, func_sym)
+                    || contains_sym(arena, of, var_sym)
+                {
+                    return None;
+                }
+            }
+            let extra = if other.is_empty() {
+                num_rational::Ratio::<num_bigint::BigInt>::from_integer(1.into())
+            } else {
+                let e = if other.len() == 1 {
+                    other[0]
+                } else {
+                    arena.mul(&other)
+                };
+                arena.as_num(e)?.clone()
+            };
+
+            if has_d2 && has_xsq && !has_d1 && !has_xvar {
+                a_coeff += &coeff * &extra;
+            } else if has_d1 && has_xvar && !has_d2 && !has_xsq {
+                b_coeff += &coeff * &extra;
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+
+    if a_coeff.is_zero() {
+        return None;
+    }
+
+    // Characteristic equation: a·r² + (b−a)·r + c = 0
+    // Normalize: r² + ((b−a)/a)·r + c/a = 0
+    let p = (&b_coeff - &a_coeff) / &a_coeff;
+    let q = &c_coeff / &a_coeff;
+
+    let four = num_rational::Ratio::<num_bigint::BigInt>::from_integer(4.into());
+    let disc = &p * &p - &four * &q;
+
+    let c1 = arena.symbol("C1");
+    let c2 = arena.symbol("C2");
+
+    if disc.is_positive() {
+        // Distinct real roots — solve r² + p·r + q = 0
+        let r_var = arena.symbol("__r");
+        let r_sq = arena.pow(r_var, two_id);
+        let p_id = ode_ratio_to_expr(arena, &p);
+        let q_id = ode_ratio_to_expr(arena, &q);
+        let p_r = arena.mul(&[p_id, r_var]);
+        let char_eq = arena.add(&[r_sq, p_r, q_id]);
+        let roots = crate::solve::solve(arena, char_eq, r_var);
+
+        if roots.len() >= 2 {
+            let r1 = roots[0].value;
+            let r2 = roots[1].value;
+            let x_r1 = arena.pow(var, r1);
+            let x_r2 = arena.pow(var, r2);
+            let t1 = arena.mul(&[c1, x_r1]);
+            let t2 = arena.mul(&[c2, x_r2]);
+            let solution = arena.add(&[t1, t2]);
+            Some(OdeResult {
+                solution,
+                constants: vec![c1, c2],
+            })
+        } else {
+            None
+        }
+    } else if disc.is_zero() {
+        // Repeated root: r = −p/2
+        let two_r =
+            num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+        let r = -(&p) / &two_r;
+        let r_id = ode_ratio_to_expr(arena, &r);
+        let x_r = arena.pow(var, r_id);
+        let ln_x = arena.ln(var);
+        let c2_ln = arena.mul(&[c2, ln_x]);
+        let inner = arena.add(&[c1, c2_ln]);
+        let solution = arena.mul(&[inner, x_r]);
+        Some(OdeResult {
+            solution,
+            constants: vec![c1, c2],
+        })
+    } else {
+        // Complex roots α ± βi: α = −p/2, β = √(−disc)/2
+        let two_r =
+            num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+        let alpha = -(&p) / &two_r;
+        let neg_disc = -disc;
+        let neg_disc_id = ode_ratio_to_expr(arena, &neg_disc);
+        let half = arena.rational(1, 2);
+        let sqrt_neg_disc = arena.pow(neg_disc_id, half);
+        let two_expr = arena.int(2);
+        let beta = arena.div(sqrt_neg_disc, two_expr);
+        let beta = crate::eval::eval(arena, beta);
+
+        let ln_x = arena.ln(var);
+        let beta_ln_x = arena.mul(&[beta, ln_x]);
+        let cos_part = arena.cos(beta_ln_x);
+        let sin_part = arena.sin(beta_ln_x);
+        let c1_cos = arena.mul(&[c1, cos_part]);
+        let c2_sin = arena.mul(&[c2, sin_part]);
+        let trig_part = arena.add(&[c1_cos, c2_sin]);
+
+        let solution = if alpha.is_zero() {
+            trig_part
+        } else {
+            let alpha_id = ode_ratio_to_expr(arena, &alpha);
+            let x_alpha = arena.pow(var, alpha_id);
+            arena.mul(&[x_alpha, trig_part])
+        };
+
+        Some(OdeResult {
+            solution,
+            constants: vec![c1, c2],
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Variation of parameters: y'' + p·y' + q·y = g(x)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Solve y'' + p·y' + q·y = g(x) via variation of parameters.
+///
+/// Used as a fallback when undetermined coefficients fails (e.g., forcing
+/// function is tan(x), sec(x), etc.).
+///
+/// Given homogeneous solutions y₁, y₂:
+/// - Wronskian W computed via differentiation (with Abel's identity fallback)
+/// - Particular: y_p = −y₁·∫(y₂·g/W)dx + y₂·∫(y₁·g/W)dx
+fn try_variation_of_parameters(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    tracing::debug!("ode: trying variation of parameters");
+
+    use num_traits::Zero;
+
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+
+    let children = match arena.node(expr).clone() {
+        ExprNode::Add(children) => children,
+        _ => return None,
+    };
+
+    let mut a_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut b_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut c_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut f_terms: Vec<ExprId> = Vec::new();
+
+    for &child in &children {
+        let (coeff, term) = arena.as_coeff_term(child);
+        if term == d2y_dx2 {
+            a_coeff += coeff;
+        } else if term == dy_dx {
+            b_coeff += coeff;
+        } else if term == func {
+            c_coeff += coeff;
+        } else if !contains_sym(arena, child, func_sym) {
+            f_terms.push(child);
+        } else {
+            return None;
+        }
+    }
+
+    if a_coeff.is_zero() || f_terms.is_empty() {
+        return None;
+    }
+
+    let b = &b_coeff / &a_coeff;
+    let c = &c_coeff / &a_coeff;
+
+    // g(x) = −f_sum / a
+    let f_sum = if f_terms.len() == 1 {
+        f_terms[0]
+    } else {
+        arena.add(&f_terms)
+    };
+    let neg_f = arena.neg(f_sum);
+    let a_id = ode_ratio_to_expr(arena, &a_coeff);
+    let g_x = arena.div(neg_f, a_id);
+    let g_x = crate::eval::eval(arena, g_x);
+
+    // Solve homogeneous equation
+    let homo = solve_characteristic_equation(arena, b.clone(), c.clone(), var)?;
+    let (y1, y2) = extract_fundamental_solutions(arena, homo.solution, &homo.constants)?;
+
+    // Wronskian via symbolic differentiation
+    let y1_prime = crate::diff::diff(arena, y1, var);
+    let y2_prime = crate::diff::diff(arena, y2, var);
+    let w_term1 = arena.mul(&[y1, y2_prime]);
+    let w_term2 = arena.mul(&[y2, y1_prime]);
+    let wronskian = arena.sub(w_term1, w_term2);
+    let wronskian = crate::eval::eval(arena, wronskian);
+    let wronskian = crate::expand::expand(arena, wronskian);
+    let wronskian = crate::eval::eval(arena, wronskian);
+
+    // If W still depends on var (e.g. cos²+sin² unsimplified), use Abel's
+    // identity: W(x) = W(0)·exp(−b·x).
+    let wronskian = if contains_sym(arena, wronskian, var_sym) {
+        let w0 = crate::subs::subs(arena, wronskian, var, arena.zero);
+        let w0 = crate::eval::eval(arena, w0);
+        if w0 == arena.zero {
+            return None;
+        }
+        if b.is_zero() {
+            w0
+        } else {
+            let neg_b_id = ode_ratio_to_expr(arena, &(-b.clone()));
+            let neg_bx = arena.mul(&[neg_b_id, var]);
+            let exp_nbx = arena.exp(neg_bx);
+            arena.mul(&[w0, exp_nbx])
+        }
+    } else {
+        wronskian
+    };
+
+    if wronskian == arena.zero {
+        return None;
+    }
+
+    // y_p = −y₁·∫(y₂·g/W)dx + y₂·∫(y₁·g/W)dx
+    let y2_g = arena.mul(&[y2, g_x]);
+    let integrand1 = arena.div(y2_g, wronskian);
+    let integrand1 = crate::eval::eval(arena, integrand1);
+    let integral1 = crate::integrate::integrate(arena, integrand1, var);
+    if matches!(arena.node(integral1), ExprNode::Integral(_, _)) {
+        return None;
+    }
+
+    let y1_g = arena.mul(&[y1, g_x]);
+    let integrand2 = arena.div(y1_g, wronskian);
+    let integrand2 = crate::eval::eval(arena, integrand2);
+    let integral2 = crate::integrate::integrate(arena, integrand2, var);
+    if matches!(arena.node(integral2), ExprNode::Integral(_, _)) {
+        return None;
+    }
+
+    let term1 = arena.mul(&[y1, integral1]);
+    let neg_term1 = arena.neg(term1);
+    let term2 = arena.mul(&[y2, integral2]);
+    let y_p = arena.add(&[neg_term1, term2]);
+    let y_p = crate::eval::eval(arena, y_p);
+
+    let solution = arena.add(&[homo.solution, y_p]);
+    let solution = crate::eval::eval(arena, solution);
+
+    Some(OdeResult {
+        solution,
+        constants: homo.constants,
+    })
+}
+
+/// Extract fundamental solutions y₁ and y₂ from a homogeneous solution
+/// of the form C1·y₁ + C2·y₂ (or multiplied by a common factor).
+///
+/// Substitutes C1=1,C2=0 and C1=0,C2=1 to recover the individual solutions.
+fn extract_fundamental_solutions(
+    arena: &mut Arena,
+    homo_solution: ExprId,
+    constants: &[ExprId],
+) -> Option<(ExprId, ExprId)> {
+    if constants.len() != 2 {
+        return None;
+    }
+    let c1 = constants[0];
+    let c2 = constants[1];
+    let zero = arena.zero;
+    let one = arena.one;
+
+    let y1 = crate::subs::subs(arena, homo_solution, c1, one);
+    let y1 = crate::subs::subs(arena, y1, c2, zero);
+    let y1 = crate::eval::eval(arena, y1);
+
+    let y2 = crate::subs::subs(arena, homo_solution, c1, zero);
+    let y2 = crate::subs::subs(arena, y2, c2, one);
+    let y2 = crate::eval::eval(arena, y2);
+
+    if y1 == arena.zero || y2 == arena.zero {
+        return None;
+    }
+
+    Some((y1, y2))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ODE classification
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1715,6 +2308,12 @@ pub enum OdeType {
     SecondOrderLinearCCHomogeneous,
     /// a*y'' + b*y' + c*y = f(x) — second-order linear constant-coefficient nonhomogeneous
     SecondOrderLinearCCNonHomogeneous,
+    /// y' + P(x)·y = Q(x)·y^n (n ≠ 0, 1) — Bernoulli equation
+    Bernoulli,
+    /// a·x²·y'' + b·x·y' + c·y = 0 — Euler-Cauchy equation
+    EulerCauchy,
+    /// y'' + p·y' + q·y = g(x) solved via variation of parameters
+    VariationOfParameters,
     /// Unrecognized ODE type
     Unknown,
 }
@@ -1765,6 +2364,10 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
                 }
                 return OdeType::SecondOrderLinearCCHomogeneous;
             }
+        }
+        // Check for Euler-Cauchy: a·x²·y'' + b·x·y' + c·y = 0
+        if try_euler_cauchy(arena, expr, func, var, func_sym, var_sym).is_some() {
+            return OdeType::EulerCauchy;
         }
         // Even if we can't fully classify, it has a second derivative
         return OdeType::Unknown;
@@ -1822,6 +2425,40 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
             let check = crate::eval::eval(arena, check);
             if check == arena.zero {
                 return OdeType::ExactFirstOrder;
+            }
+        }
+
+        // Check for Bernoulli: y' + P(x)·y = Q(x)·y^n (n ≠ 0, 1)
+        if let ExprNode::Add(ref bn_children) = arena.node(expr).clone() {
+            let mut bn_has_dy = false;
+            let mut bn_has_yn = false;
+            let mut bn_ok = true;
+            let mut bn_has_free = false;
+            for &child in bn_children {
+                let (_, term) = arena.as_coeff_term(child);
+                if term == dy_dx {
+                    bn_has_dy = true;
+                } else if !contains_sym(arena, child, func_sym) {
+                    bn_has_free = true;
+                } else if extract_coeff_of_func(
+                    arena, child, func, func_sym, var_sym,
+                )
+                .is_some()
+                {
+                    // linear in y — OK
+                } else if extract_bernoulli_term(
+                    arena, child, func, func_sym, var_sym,
+                )
+                .is_some()
+                {
+                    bn_has_yn = true;
+                } else {
+                    bn_ok = false;
+                    break;
+                }
+            }
+            if bn_has_dy && bn_has_yn && bn_ok && !bn_has_free {
+                return OdeType::Bernoulli;
             }
         }
 

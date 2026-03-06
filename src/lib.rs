@@ -71,8 +71,13 @@ pub mod fourier_transform;
 /// Gröbner basis computation via Buchberger's algorithm with FGLM order conversion.
 pub mod groebner;
 pub(crate) mod gruntz;
+pub(crate) mod heurisch;
 pub(crate) mod inequalities;
 pub(crate) mod integrate;
+/// Formal power series representations and algorithms.
+pub mod formal_series;
+/// Finite difference methods: weights, application, and differentiation.
+pub mod finite_diff;
 pub(crate) mod lambdify;
 pub(crate) mod latex;
 pub(crate) mod laplace;

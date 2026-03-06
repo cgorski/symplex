@@ -491,6 +491,177 @@ impl Poly {
         let g = Poly::gcd(self, &dp);
         self.div_rem(&g).0 // quotient only
     }
+
+    /// Square-free factorisation via Yun's algorithm.
+    ///
+    /// Returns `[(f₁, 1), (f₂, 2), …]` where `self = content · ∏ fᵢ^i`
+    /// and each `fᵢ` is square-free and pairwise coprime.
+    /// Constant / zero polynomials return an empty list.
+    pub fn squarefree_factors(&self) -> Vec<(Poly, usize)> {
+        if self.is_zero() || self.is_constant() {
+            return vec![];
+        }
+        let mut content = self.content();
+        let mut prim = self.primitive_part();
+        if prim.leading_coeff().is_some_and(|lc| lc.is_negative()) {
+            content = -content;
+            prim = -&prim;
+        }
+        let _ = content; // content is separated out
+        square_free_decomposition(&prim)
+            .into_iter()
+            .map(|(f, m)| (f, m as usize))
+            .collect()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Resultant
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Poly {
+    /// Compute the resultant of two polynomials via the Euclidean algorithm.
+    ///
+    /// The resultant is zero iff the two polynomials share a common root
+    /// (including at infinity when one has smaller degree than expected).
+    ///
+    /// Uses the identity:
+    ///   `res(f, g) = (-1)^(mn) · lc(g)^(m - deg(r)) · res(g, r)`
+    /// where `r = f mod g`, `m = deg(f)`, `n = deg(g)`.
+    pub fn resultant(a: &Poly, b: &Poly) -> Ratio<BigInt> {
+        // Base cases.
+        if a.is_zero() || b.is_zero() {
+            return Ratio::zero();
+        }
+
+        let m = match a.degree() {
+            Some(d) => d,
+            None => return Ratio::zero(),
+        };
+        let n = match b.degree() {
+            Some(d) => d,
+            None => return Ratio::zero(),
+        };
+
+        // If both are constants: res = 1 (they share no root).
+        if m == 0 && n == 0 {
+            return Ratio::one();
+        }
+
+        // res(constant, g) = constant^deg(g).
+        if m == 0 {
+            return num_traits::pow(a.coeff(0), n);
+        }
+        if n == 0 {
+            return num_traits::pow(b.coeff(0), m);
+        }
+
+        // Ensure deg(a) >= deg(b); swap with sign correction.
+        if m < n {
+            let sign = if (m * n) % 2 == 0 {
+                Ratio::one()
+            } else {
+                -Ratio::<BigInt>::one()
+            };
+            return sign * Poly::resultant(b, a);
+        }
+
+        // Recursive step: r = a mod b.
+        let r = a.rem(b);
+
+        if r.is_zero() {
+            // gcd has positive degree → resultant is 0.
+            return Ratio::zero();
+        }
+
+        let s = r.degree().unwrap_or(0);
+        let sign = if (m * n) % 2 == 0 {
+            Ratio::one()
+        } else {
+            -Ratio::<BigInt>::one()
+        };
+        let lc_b = b.leading_coeff().unwrap().clone();
+        let factor = num_traits::pow(lc_b, m - s);
+
+        sign * factor * Poly::resultant(b, &r)
+    }
+
+    /// Compute `R(t) = res_x(f(x), g(x) − t · h(x))` as a polynomial in `t`
+    /// using evaluation–interpolation.
+    ///
+    /// The polynomial `g(x) − t · h(x)` is linear in the parameter `t`.
+    /// We evaluate at `t = 0, 1, 2, …, d` (where `d = deg_x(f)`) to obtain
+    /// `d+1` scalar resultants, then Lagrange-interpolate to recover `R(t)`.
+    ///
+    /// This avoids building bivariate polynomial infrastructure entirely.
+    pub fn resultant_poly(f: &Poly, g: &Poly, h: &Poly) -> Poly {
+        let d = match f.degree() {
+            Some(deg) => deg,
+            None => return Poly::zero(),
+        };
+
+        // We need d+1 evaluation points (R(t) has degree ≤ d in t).
+        let num_pts = d + 1;
+        let mut points: Vec<(i64, Ratio<BigInt>)> = Vec::with_capacity(num_pts);
+
+        for k in 0..num_pts {
+            let t_val = Ratio::from_integer(BigInt::from(k as i64));
+            // b_at_t(x) = g(x) − t_val · h(x)
+            let b_at_t = g - &h.scale(&t_val);
+            let res_val = Poly::resultant(f, &b_at_t);
+            points.push((k as i64, res_val));
+        }
+
+        lagrange_interpolate_rational(&points)
+    }
+}
+
+/// Lagrange interpolation through rational-valued points at integer abscissae.
+///
+/// Given `(x₀, y₀), …, (xₙ, yₙ)` with integer `xᵢ` and rational `yᵢ`,
+/// returns the unique polynomial of degree ≤ n passing through all points.
+pub(crate) fn lagrange_interpolate_rational(
+    points: &[(i64, Ratio<BigInt>)],
+) -> Poly {
+    let n = points.len();
+    if n == 0 {
+        return Poly::zero();
+    }
+
+    let mut result = Poly::zero();
+
+    for i in 0..n {
+        let (xi, yi) = &points[i];
+        if yi.is_zero() {
+            continue;
+        }
+
+        // L_i(x) = ∏_{j≠i} (x − xⱼ) / (xᵢ − xⱼ)
+        let mut basis = Poly::from_int(1);
+        let mut denom = BigInt::one();
+
+        for (j, (xj, _)) in points.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let linear = Poly::from_coeffs(vec![
+                Ratio::from_integer(BigInt::from(-*xj)),
+                Ratio::one(),
+            ]);
+            basis = &basis * &linear;
+            denom *= BigInt::from(*xi - *xj);
+        }
+
+        if denom.is_zero() {
+            // Duplicate x-values — shouldn't happen with our construction.
+            continue;
+        }
+
+        let scale = Ratio::new(yi.numer().clone() * denom.signum(), yi.denom().clone() * denom.abs());
+        result = &result + &basis.scale(&scale);
+    }
+
+    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1051,6 +1222,174 @@ mod tests {
 
     fn ri(n: i64) -> Ratio<BigInt> {
         Ratio::from_integer(BigInt::from(n))
+    }
+
+    // ── Resultant ───────────────────────────────────────────────────
+
+    #[test]
+    fn resultant_coprime() {
+        // res(x+1, x+2) = lc(x+1)^1 · (x+2)(root of x+1)
+        //               = 1 · ((-1)+2) = 1
+        let a = Poly::from_coeffs(vec![ri(1), ri(1)]); // x + 1
+        let b = Poly::from_coeffs(vec![ri(2), ri(1)]); // x + 2
+        let res = Poly::resultant(&a, &b);
+        assert_eq!(res, ri(1));
+    }
+
+    #[test]
+    fn resultant_common_root() {
+        // x^2-1 and x-1 share root x=1 → resultant = 0
+        let a = Poly::from_coeffs(vec![ri(-1), ri(0), ri(1)]); // x^2 - 1
+        let b = Poly::from_coeffs(vec![ri(-1), ri(1)]);         // x - 1
+        assert_eq!(Poly::resultant(&a, &b), ri(0));
+    }
+
+    #[test]
+    fn resultant_x2_plus_1_x_minus_1() {
+        // res(x^2+1, x-1) = (x^2+1) at x=1 = 2
+        let a = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // x^2 + 1
+        let b = Poly::from_coeffs(vec![ri(-1), ri(1)]);        // x - 1
+        let res = Poly::resultant(&a, &b);
+        assert_eq!(res, ri(2));
+    }
+
+    #[test]
+    fn resultant_two_quadratics() {
+        // res(x^2+1, x^2-1): roots of x^2-1 are ±1.
+        // res = (1+1)((-1)^2+1) = 2*2 = 4  (lc(a)^deg(b) * ∏ a(root_of_b))
+        let a = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // x^2+1
+        let b = Poly::from_coeffs(vec![ri(-1), ri(0), ri(1)]); // x^2-1
+        assert_eq!(Poly::resultant(&a, &b), ri(4));
+    }
+
+    #[test]
+    fn resultant_with_zero() {
+        let a = Poly::from_coeffs(vec![ri(1), ri(1)]); // x+1
+        assert_eq!(Poly::resultant(&a, &Poly::zero()), ri(0));
+        assert_eq!(Poly::resultant(&Poly::zero(), &a), ri(0));
+    }
+
+    #[test]
+    fn resultant_2x_plus_3_x_plus_1() {
+        // Sylvester: det [[2,3],[1,1]] = 2-3 = -1
+        let a = Poly::from_coeffs(vec![ri(3), ri(2)]); // 2x+3
+        let b = Poly::from_coeffs(vec![ri(1), ri(1)]); // x+1
+        assert_eq!(Poly::resultant(&a, &b), ri(-1));
+    }
+
+    #[test]
+    fn resultant_constant() {
+        let a = Poly::from_int(5);
+        let b = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // x^2+1
+        // res(5, x^2+1) = 5^2 = 25
+        assert_eq!(Poly::resultant(&a, &b), ri(25));
+    }
+
+    // ── Resultant polynomial (eval-interpolation) ───────────────────
+
+    #[test]
+    fn resultant_poly_linear_param() {
+        // f = x^2 + 1, g = x, h = 1  →  res_x(x^2+1, x - t)
+        // = (x^2+1) evaluated at x=t = t^2 + 1
+        let f = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // x^2+1
+        let g = Poly::x();                                      // x
+        let h = Poly::from_int(1);                               // 1
+        let r = Poly::resultant_poly(&f, &g, &h);
+        let expected = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // t^2+1
+        assert_eq!(r, expected, "res_x(x^2+1, x-t) should be t^2+1, got {r}");
+    }
+
+    #[test]
+    fn resultant_poly_x5_plus_1() {
+        // f = x^5+1, g = 1, h = 5x^4  →  R(t) = res_x(x^5+1, 1-5t·x^4)
+        // By calculation: R(t) = 1 - 3125·t^5
+        let mut f_coeffs = vec![ri(0); 6];
+        f_coeffs[0] = ri(1);
+        f_coeffs[5] = ri(1);
+        let f = Poly::from_coeffs(f_coeffs); // x^5+1
+
+        let g = Poly::from_int(1);
+
+        let mut h_coeffs = vec![ri(0); 5];
+        h_coeffs[4] = ri(5);
+        let h = Poly::from_coeffs(h_coeffs); // 5x^4
+
+        let r = Poly::resultant_poly(&f, &g, &h);
+        // R(t) should be 1 - 3125 t^5
+        assert_eq!(r.degree(), Some(5), "R(t) should have degree 5, got {:?}", r.degree());
+        assert_eq!(r.coeff(0), ri(1), "constant term should be 1");
+        assert_eq!(r.coeff(5), ri(-3125), "t^5 coeff should be -3125, got {}", r.coeff(5));
+        // Middle terms should be 0
+        for k in 1..5 {
+            assert_eq!(r.coeff(k), ri(0), "coeff of t^{k} should be 0");
+        }
+    }
+
+    // ── Squarefree factors ──────────────────────────────────────────
+
+    #[test]
+    fn squarefree_factors_square() {
+        // (x+1)^2 = x^2+2x+1
+        let p = Poly::from_coeffs(vec![ri(1), ri(2), ri(1)]);
+        let factors = p.squarefree_factors();
+        assert_eq!(factors.len(), 1);
+        assert_eq!(factors[0].1, 2);
+        assert_eq!(factors[0].0.degree(), Some(1));
+    }
+
+    #[test]
+    fn squarefree_factors_distinct() {
+        // (x-1)(x-2) = x^2-3x+2 — already squarefree
+        let p = Poly::from_coeffs(vec![ri(2), ri(-3), ri(1)]);
+        let factors = p.squarefree_factors();
+        assert_eq!(factors.len(), 1);
+        assert_eq!(factors[0].1, 1);
+    }
+
+    #[test]
+    fn squarefree_factors_mixed() {
+        // (x-1)^2*(x-2) = x^3-4x^2+5x-2
+        let x_minus = |n: i64| Poly::from_coeffs(vec![ri(-n), ri(1)]);
+        let p = &(&x_minus(1) * &x_minus(1)) * &x_minus(2);
+        let factors = p.squarefree_factors();
+        // Should have two factors: (x-1) with mult 2, (x-2) with mult 1
+        // or equivalently, something that reconstructs correctly
+        let mut product = Poly::from_int(1);
+        for (f, m) in &factors {
+            for _ in 0..*m {
+                product = &product * f;
+            }
+        }
+        let product_monic = product.make_monic();
+        let p_monic = p.make_monic();
+        assert_eq!(product_monic, p_monic,
+            "product of squarefree factors should reconstruct original");
+    }
+
+    // ── Lagrange interpolation (rational) ───────────────────────────
+
+    #[test]
+    fn lagrange_rational_constant() {
+        // f(x) = 5 → interpolate from (0,5), (1,5)
+        let pts = vec![(0i64, ri(5)), (1, ri(5))];
+        let p = lagrange_interpolate_rational(&pts);
+        assert_eq!(p, Poly::from_int(5));
+    }
+
+    #[test]
+    fn lagrange_rational_linear() {
+        // f(x) = 2x + 1 → (0,1), (1,3)
+        let pts = vec![(0i64, ri(1)), (1, ri(3))];
+        let p = lagrange_interpolate_rational(&pts);
+        assert_eq!(p, Poly::from_coeffs(vec![ri(1), ri(2)]));
+    }
+
+    #[test]
+    fn lagrange_rational_quadratic() {
+        // f(x) = x^2 → (0,0), (1,1), (2,4)
+        let pts = vec![(0i64, ri(0)), (1, ri(1)), (2, ri(4))];
+        let p = lagrange_interpolate_rational(&pts);
+        assert_eq!(p, Poly::from_coeffs(vec![ri(0), ri(0), ri(1)]));
     }
 
     // ── Construction ────────────────────────────────────────────────
