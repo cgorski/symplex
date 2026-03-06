@@ -13,9 +13,9 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 
 ### Build and test
 
-    cargo test          # 3,798 tests — all must pass
-    cargo clippy        # 0 warnings required
-    cargo bench         # Criterion benchmarks (30)
+    cargo test          # 4,370+ tests — all must pass
+    cargo clippy        # 0 warnings required (1 pre-existing dead_code warning in sturm.rs)
+    cargo bench         # Criterion benchmarks (27)
 
 ### Architecture: six layers (each layer only calls downward)
 
@@ -30,7 +30,7 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 
     1. src/node.rs        — ExprNode enum (66 variants), the core data model
     2. src/expr.rs         — Expr<S> struct, Sort system, type aliases
-    3. src/expr_funcs.rs   — all 172 public methods on Ex
+    3. src/expr_funcs.rs   — all 175+ public methods on Ex
     4. src/arena.rs        — hash-consing, intern(), constructors
     5. src/canon.rs        — canonicalization rules (what constructors do)
 
@@ -49,22 +49,27 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 
 | Metric | Value |
 |--------|-------|
-| Tests | 3,798 passing, 0 failing, 0 clippy warnings |
-| Source | ~49,700 lines across 66 modules |
-| Tests | ~37,400 lines across 108 test files |
-| Macros | ~1,450 lines (symplex-macros crate) |
-| Total | ~88,500 lines |
+| Tests | 4,370 passing, 0 failing |
+| Source | ~60,400 lines across 76 modules |
+| Tests | ~49,000 lines across 125 test files |
+| Examples | ~445 lines across 8 examples |
+| Companion crates | ~1,045 lines across 2 crates (symplex-build, symplex-wasm) |
+| Total | ~111,000 lines |
 | ExprNode variants | 66 (including 7 set-valued, 11 boolean) |
-| Public methods on `Ex` | 172 (numeric + boolean + set-valued) |
+| Public methods on `Ex` | 175+ (numeric + boolean + set-valued) |
 | Public methods on `Context` | 17 |
-| Matrix methods | 44 |
-| Apply functions | 12 (integer-only: fibonacci, lucas, bernoulli, …) |
+| Matrix methods | 50+ (added operators, exp, kronecker, cholesky, pinv, diag, from_i64) |
+| Apply functions | 12 + 9 special functions (Bessel, Legendre, etc.) |
 | `expr!` macro functions | 65 (54 single-arg + 11 multi-arg) |
 | Simplification rules | 24 (with condition guards) |
-| Integration forms | 35+ |
+| Integration forms | 40+ |
 | Eval special values | 86+ |
-| Criterion benchmarks | 30 |
+| Criterion benchmarks | 27 |
 | Proptest properties | 22+ |
+| Source modules | 76 |
+| Test files | 125 |
+| Examples | 8 |
+| Companion crates | 2 (symplex-build, symplex-wasm) |
 
 ### Three phantom sorts
 
@@ -349,21 +354,28 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 | Metric | Value |
 |--------|-------|
-| Tests | 4,517 passing, 0 failing |
+| Tests | 4,370 passing, 0 failing |
 | ExprNode variants | 66 |
 | Source modules | 76 |
-| Test files | 126 |
-| Total lines | ~115,000 (source + test + macros) |
-| Public methods (Ex/BoolEx/SetEx) | 172+ |
-| Matrix methods | 44+ |
-| Apply functions | 12 |
+| Test files | 125 |
+| Source | ~60,400 lines across 76 modules |
+| Tests | ~49,000 lines across 125 test files |
+| Examples | ~445 lines across 8 examples |
+| Companion crates | ~1,045 lines across 2 crates (symplex-build, symplex-wasm) |
+| Total | ~111,000 lines |
+| Public methods on `Ex` | 175+ (numeric + boolean + set-valued) |
+| Public methods on `Context` | 17 |
+| Matrix methods | 50+ (added operators, exp, kronecker, cholesky, pinv, diag, from_i64) |
+| Apply functions | 12 + 9 special functions (Bessel, Legendre, etc.) |
 | `expr!` functions | 65 (54 single-arg + 11 multi-arg) |
 | Simplification rules | 24 (condition-guarded) |
-| Integration forms | 35+ |
+| Integration forms | 40+ |
 | Eval special values | 86+ |
+| Criterion benchmarks | 27 |
+| Proptest properties | 22+ |
 | Solver degree support | 1–4 (Cardano cubic + Ferrari quartic) |
 | Examples | 8 (quickstart, calculus, control_system, robotics_codegen, solve_system, dynamics, latex_output, repl) |
-| Clippy warnings | 0 |
+| Clippy warnings | 0 (1 pre-existing dead_code warning in sturm.rs) |
 
 ---
 
@@ -382,44 +394,54 @@ Active limitations (not yet resolved):
 9. **Pattern matching limited to linear patterns.** Nonlinear patterns (same wild twice) not supported. — Fix: Wave PM
 10. **No Risch integration.** Decision procedure for elementary antiderivatives not implemented.
 11. ~~**No multivariate polynomials.** Gröbner bases not yet implemented.~~ — **RESOLVED** (Wave GB: `groebner.rs`, `multipoly.rs`, `polysys.rs`)
-12. ~~**No full Hensel/Zassenhaus factoring.** `factor()` uses rational root theorem only.~~ — **RESOLVED** (Kronecker's method for degree 2–6)
+12. ~~**No full Hensel/Zassenhaus factoring.** `factor()` uses rational root theorem only.~~ — **PARTIALLY RESOLVED** (Kronecker's method for non-linear factors, square-free decomposition, rational root theorem)
 13. **Set types are foundation-only.** Interval merging, membership queries, and set arithmetic are minimal.
 14. **Laplace transforms are table-based.** No algorithmic fallback for forms outside the table.
 15. ~~**`diff_with_deps` is not exposed in public API.**~~ — **RESOLVED** (exposed as `Ex::diff_with_dependent()`)
 16. **Sturm-based inequality solving is a fast-path only.** The Sturm chain detects "no real roots" cases; full Sturm-based interval construction is not yet integrated into the sign-chart builder.
+17. **Display: `+ -N` pattern.** Add displays `x + -3` instead of `x - 3`. Fix planned for next release.
+18. **Matrix::to_latex() missing.** LaTeX rendering exists for Ex but not Matrix or Quaternion.
+19. **Codegen doesn't constant-fold.** Generated code contains `0_f64.cos()` instead of `1.0`.
+20. **Gröbner solver only finds rational roots.** Systems with irrational solutions (x²-2=0 → √2) return empty.
+21. **No plotting/visualization.** No SVG, no matplotlib integration.
+22. **No Python bindings.** Rust-only API; no PyO3 wrapper.
+23. **`expr!` doesn't support fraction literals.** `expr!(1/2)` is a compile error (Rust integer division).
+24. **2-DOF IK only.** Inverse kinematics limited to planar 2-DOF. General n-DOF IK requires Pieper decomposition (not yet implemented).
 
 ---
 
 ## 9. Roadmap
 
-### Immediate waves (next sprint)
+### Immediate (0.2.0 release)
 
-| Wave | Description | Est. | Priority |
+| Task | Description | Est. | Priority |
 |------|-------------|------|----------|
-| AP | Arbitrary-precision Gamma/erf/beta via Stirling series + Bernoulli cache | 9 hrs | High |
-| PM | Stripper-collector pattern matching (replace pairwise enumeration) | 3 hrs | High |
-| SC | LambertW solver (6 canonical forms) + multi-branch trig inverses + `unrad` | 6 hrs | High |
-| GC+ | Arena liveness ratio (BitVec trace) + compaction heuristics | 1 hr | Medium |
+| Display fix | `+ -N` → `- N` in Add display | 2-3 hrs | Critical |
+| Codegen fix | Constant folding, negation style | 3-4 hrs | Critical |
+| Matrix::to_latex | Add missing LaTeX method | 30 min | Critical |
+| Example overhaul | Rewrite 5 examples, add 4 new | 6-8 hrs | Critical |
+| README rewrite | 667 → 300 lines, hero code, accurate tables | 4-6 hrs | Critical |
+| CHANGELOG update | Log 20+ unlogged features | 2-3 hrs | High |
+| expr! fractions | Recognize half/third/quarter constants | 1-2 hrs | High |
 
-> **Note:** The inequality solving foundation (Sturm sequences for exact real root counting and isolation) is now in place in `sturm.rs`. The immediate next step is integrating Sturm-based interval construction into the sign-chart builder in `inequalities.rs`.
+### Post-0.2.0 (audience expansion)
 
-### Near-term waves
-
-| Wave | Description | Est. | Status |
-|------|-------------|------|--------|
-| ODE+ | Exact ODEs, Bernoulli, undetermined coefficients. Dependency-aware differentiation infrastructure (`diff_with_deps`, `eval_derivatives`) is now in place; the ODE solver can be extended to exact equations and Bernoulli using the dependent-symbol-flag approach. Public `Ex::solve_ode()` API is live. | 8 hrs | |
-| LW | LambertW equation solver (6 canonical forms) | 4 hrs | |
-| BF | Bessel functions (J, Y, I, K) | 6 hrs | |
-| GB | Gröbner bases: Buchberger+FGLM, `MultiPoly` type, system solving pipeline | 15 hrs | ✅ Done |
-| L | Full polynomial factoring: Berlekamp + Hensel lifting + square-free | 8 hrs | Partial (Kronecker) |
+| Task | Description | Audiences Unlocked |
+|------|-------------|-------------------|
+| Basic 2D plotting (SVG) | Function graphs, Bode plots, pole-zero maps | EE, professors, students |
+| Python bindings (PyO3) | `import symplex` for Python users | ML, professors, quants |
+| General n-DOF IK (≥7-DOF) | Pieper decomposition, arm-angle parameterization | Robotics startups |
+| Sparse matrices (CSR/CSC) | Sparse eigenvalue, sparse LU | Controls engineers |
+| WASM demo | Browser-based CAS with LaTeX rendering | Marketing/discovery |
 
 ### Version roadmap
 
 | Version | Theme | Key features |
-|---------|-------|--------------|
-| 0.2.x | Completeness | Inequality solving, set operations, AP special functions, Gröbner bases ✅ |
-| 0.3.0 | Sets | Deep set types, solveset returns Set, interval arithmetic |
-| 0.4.0+ | Deep algorithms | Risch integration, full Hensel factoring, multivariate GCD, matrix-expr in arena |
+|---------|-------|-------------|
+| 0.2.0 | Polish & Ship | Display fixes, API rename, examples, docs, Gröbner bases |
+| 0.3.0 | Reach | Python bindings, basic plotting, WASM demo |
+| 0.4.0 | Depth | Sparse matrices, n-DOF IK, PDE solving, tensor calculus |
+| 1.0.0 | Stability | API freeze, comprehensive testing, documentation |
 
 ### Strategic context
 
@@ -448,38 +470,40 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | `complex.rs` | Complex number decomposition (re/im/arg/conjugate) |
 | `config.rs` | `EvalConfig` — max_pow_exponent, max_result_digits, max_evalf_precision |
 | `context.rs` | `Context` — user-facing entry point, Arc\<RwLock\<ContextInner\>\> |
+| `control.rs` | StateSpace, TransferFunction, Routh-Hurwitz, Ackermann, ZOH discretization |
 | `convergence.rs` | Series convergence testing |
 | `cse.rs` | Common subexpression elimination |
 | `diff.rs` | Symbolic differentiation (all 66 node types, chain rule, n-ary product rule) |
 | `display.rs` | Iterative (non-recursive) expression pretty-printer |
+| `dynamics.rs` | Euler-Lagrange, mass matrix, Christoffel symbols, Coriolis, gravity vector |
 | `eq.rs` | `Equation` type with solve/subs/simplify |
 | `errors.rs` | `SymplexError` — non-exhaustive error enum |
 | `eval.rs` | Special-value evaluation (86+ values, unit circle, Gamma(n), erf(0)) |
 | `evalf.rs` | Arbitrary-precision numerical evaluation via `astro-float` |
 | `expand.rs` | Algebraic expansion (distribute, power expand, multinomial) |
 | `expr.rs` | `Expr<S>` struct, `Sort` trait, phantom type aliases (Ex, BoolEx, SetEx) |
-| `expr_funcs.rs` | All 172 public methods on Ex/BoolEx/SetEx |
+| `expr_funcs.rs` | All 175+ public methods on Ex/BoolEx/SetEx |
 | `expr_ops.rs` | Operator overloads (Add/Sub/Mul/Div/Neg for all Ex/&Ex/i64 combos) |
 | `expr_view.rs` | `ExprView` — non-locking view type for `replace()` closures |
 | `factor.rs` | Polynomial factoring (rational root theorem, content extraction) |
 | `factor_terms.rs` | GCD extraction from sums |
 | `fourier.rs` | Fourier series computation via integration |
-| `fourier_transform.rs` | Symbolic Fourier transform |
-| `groebner.rs` | Gröbner basis computation via Buchberger's algorithm with FGLM order conversion |
+| `fourier_transform.rs` | Table-based symbolic Fourier transform and inverse |
+| `groebner.rs` | Buchberger's algorithm with Gebauer-Möller, FGLM order conversion |
 | `gruntz.rs` | Gruntz algorithm for limits at infinity (~1,700 lines) |
 | `inequalities.rs` | Polynomial/rational inequality solving → SetEx |
 | `integrate.rs` | Symbolic integration (power, trig, exp, by-parts, u-sub, apart pipeline) |
 | `lambdify.rs` | Compile expressions to `Box<dyn Fn(&[f64]) -> f64>` closures |
 | `laplace.rs` | Forward/inverse Laplace transforms (table + structural rules) |
-| `latex.rs` | LaTeX rendering for `Ex`, `Matrix`, `Quaternion` (`to_latex`, `to_latex_inline`, `to_latex_display`) |
+| `latex.rs` | LaTeX rendering via direct ExprNode matching (no Display parsing) |
 | `lib.rs` | Module declarations, prelude, `__macro_support`, proc macro re-exports |
 | `limit.rs` | Symbolic limits (direct substitution, L'Hôpital, series, Gruntz dispatch) |
 | `linalg.rs` | Linear system solving (Gaussian elimination over exact rationals) |
 | `log_combine.rs` | Log combining: ln(a)+ln(b) → ln(ab) |
 | `log_expand.rs` | Log expansion: ln(ab) → ln(a)+ln(b) |
 | `macros.rs` | `syms!` and `sym!` declarative macros |
-| `matrix.rs` | Symbolic matrix: det, inv, eigen, LU, QR, RREF, rank, nullspace, Jacobian, codegen, 44+ methods |
-| `multipoly.rs` | Multivariate polynomials with generic monomial ordering (`Lex`, `GrLex`, `GrevLex`) |
+| `matrix.rs` | Symbolic matrix: det, inv, eigen, LU, QR, RREF, rank, nullspace, Jacobian, codegen, 50+ methods |
+| `multipoly.rs` | Sparse multivariate polynomials with generic monomial ordering MultiPoly\<O\> |
 | `node.rs` | `ExprId(u32)`, `ExprNode` enum (66 variants), `children()`, `is_atom()` |
 | `nsimplify.rs` | Closed-form detection from floats (PSLQ-lite) |
 | `ode.rs` | ODE classification and solving (separable, linear, 2nd-order CC) |
@@ -487,20 +511,20 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | `pattern.rs` | Pattern matching, rewrite rules, `basic_rules()` (24 rules), sub-expr matching |
 | `poly.rs` | Dense univariate polynomials over ℚ (arithmetic, Euclidean GCD, Horner eval) |
 | `polybridge.rs` | Expression ↔ Poly bridge, cancel(), collect(), together() |
-| `polysys.rs` | Polynomial system solving: bridge from `Ex` to Gröbner basis pipeline |
+| `polysys.rs` | Polynomial system solving via Gröbner bases + back-substitution |
 | `powsimp.rs` | Power simplification (symbolic exponent merging) |
-| `quaternion.rs` | Symbolic quaternion type for 3D rotations |
+| `quaternion.rs` | Hamilton product, rotation matrix, axis-angle, angular velocity kinematics |
 | `radsimp.rs` | Denominator rationalization |
 | `residue.rs` | Residue computation via limit |
 | `rewrite.rs` | Rewrite protocol: trig↔exp (Euler's formula), trig↔hyp |
-| `robotics.rs` | DH parameter forward kinematics for serial robot arms |
+| `robotics.rs` | DH parameters, FK chain, rotations, Euler angles, skew3, 2-DOF IK |
 | `separatevars.rs` | Variable separation in products |
 | `series.rs` | Taylor/Maclaurin series expansion with pole detection |
 | `simplify_engine.rs` | Multi-strategy `smart_simplify` (7 strategies, picks lowest count_ops) |
 | `solve.rs` | Equation solving: linear through quartic, transcendental, change-of-variable |
 | `sort_key.rs` | `SortKey` — compact byte sequences for canonical ordering |
+| `sturm.rs` | Sturm sequences for exact polynomial real root counting |
 | `subs.rs` | Structural substitution (subs, subs_map) via walk_and_rebuild |
-| `sturm.rs` | Sturm sequences: exact real root counting and isolation for polynomials over ℚ |
 | `sum_eval.rs` | Symbolic sum/product evaluation (finite sums, convergence) |
 | `symbol.rs` | Symbol table — string interning + per-symbol assumptions |
 | `tree.rs` | `ExprTree` serde type for JSON interchange (to_tree/from_tree round-trip) |
@@ -510,7 +534,7 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | `trigsimp.rs` | Trig simplification (6-strategy choice-set) |
 | `vector.rs` | Vector calculus: gradient, divergence, curl, laplacian, conservative/solenoidal |
 | `walk.rs` | Shared iterative tree traversal: post_order_ids, walk_and_rebuild |
-| `z_transform.rs` | Z-transform for discrete-time signal analysis |
+| `z_transform.rs` | Table-based z-transform and inverse z-transform |
 
 ### Proc macro crate: `symplex-macros/` (~1,450 lines)
 
@@ -518,3 +542,19 @@ algorithm developers (derive formula → compile to fast code). The common threa
 |--------|----------------|
 | `lib.rs` | `expr!`, `rule!`, `matrix!`, `eq!` entry points + code generation |
 | `parse.rs` | Shared Pratt parser for math expressions (precedence climbing, right-assoc `^`) |
+
+---
+
+## Key Decisions Log
+
+| # | Decision | Alternatives Rejected | Rationale |
+|---|----------|----------------------|-----------|
+| 13 | **Buchberger over F5B for v1** | F5B (faster but less robust) | Simpler, well-understood, SymPy defaults to it |
+| 14 | **MultiPoly\<O\> generic ordering** | Runtime ordering, unsorted dict | O(log n) leading term via BTreeMap, zero-cost phantom type |
+| 15 | **Sin/cos ring for IK** (not Weierstrass) | Weierstrass (fewer vars, higher degree) | More robust (no θ=π singularity), cleaner interaction with elimination |
+| 16 | **Dense matrices for FGLM** | Sparse/Krylov | D ≤ 1024 for IK; dense is simpler and fast enough |
+| 17 | **Delete old API names** (not deprecate) | Keep as #[deprecated] | Pre-1.0, clean break. One name per operation. |
+| 18 | **Display: `^` not `**`** | Python-style `**` | Math notation, not programming notation |
+| 19 | **build.rs for codegen** (not proc macro) | Heavy proc macro | sqlx acknowledged proc-macro codegen as architecturally flawed |
+
+> Decisions 1–12 are in TEAM.md § Key Decisions Log. Decisions 13+ are added here as the project grows.

@@ -425,6 +425,91 @@ dependency choices affect downstream users on unusual targets.
 
 ---
 
+## Development Methodology
+
+### AI-Assisted Development
+
+symplex is developed using AI pair programming with Claude. Development sessions
+involve the full expert panel (simulated domain specialists) in real-time discussions
+to make architectural decisions, then implementation via parallel agent dispatch.
+
+### Session Structure
+
+A typical development session follows this pattern:
+
+1. **Team discussion** — The expert panel debates the design. Each member brings
+   their domain expertise. Disagreements are resolved through evidence and expert
+   consultation. No premature consensus.
+
+2. **Expert consultation** — For hard decisions, we formulate 3 questions for
+   external domain experts. Questions include full project context so the expert
+   doesn't need to know our codebase. Answers are incorporated into the design.
+
+3. **Wave planning** — Work is organized into waves with:
+   - Clear deliverables per wave
+   - File ownership (no two agents touch the same file)
+   - Dependency ordering (what must complete before what)
+   - Commit gates (cargo test must pass after each wave)
+
+4. **Parallel implementation** — Multiple agents are dispatched simultaneously,
+   each with exclusive file ownership. This prevents merge conflicts and enables
+   high throughput. A typical batch dispatches 3-5 agents in parallel.
+
+5. **Verification** — After each batch: `cargo test --lib` (fast), then
+   `cargo test --all-targets` (comprehensive). Commit only when green.
+
+### Parallel Agent Protocol
+
+When dispatching parallel agents for implementation:
+
+1. **Mutually exclusive file ownership.** Each agent is assigned specific files.
+   No two agents may edit the same file in the same batch. The dispatch message
+   explicitly states: "ONLY touch: file1.rs, file2.rs. Do NOT touch file3.rs."
+
+2. **Phase barriers.** When Agent A's output is needed by Agent B, they run in
+   sequential batches, not parallel. Commit Agent A's work before dispatching B.
+
+3. **Context for agents.** Each agent message includes:
+   - Which files they own exclusively
+   - What the existing code looks like (read first)
+   - Project conventions (testing, naming, no names in source)
+   - Expected deliverables and test count
+
+4. **Verify after each batch.** Run `cargo test` + `cargo clippy` after every
+   batch before proceeding. Never trust an agent's claim without verification.
+
+5. **Don't weaken tests to make them pass.** If a test fails, fix the root cause.
+
+### Bug Exposure Protocol
+
+When tests expose bugs during implementation:
+
+- **Quick fix (< 30 min):** Fix in the same wave.
+- **Real bug (30 min – 2 hours):** Fix in the same wave, document in CHANGELOG.
+- **Deep bug (> 2 hours):** Mark test `#[ignore]` with `// BUG: description`.
+  Open a tracking issue. Move to the next test.
+- **Circuit breaker:** If > 5 deep bugs found in one wave, pause and stabilize.
+
+### Expert Consultation Model
+
+For hard architectural decisions, we formulate questions for domain experts.
+Each question includes full context (the expert doesn't know our project):
+- What we're building and why
+- What we've already decided and why
+- The specific design question with options
+- What tradeoffs we're trying to evaluate
+
+We ask up to 3 questions per consultation round. Expert answers are discussed
+by the full panel before being incorporated into the design.
+
+### Naming Convention
+
+No team member names, author names, or reviewer names appear in source code,
+tests, comments, doc comments, CHANGELOG.md, or README.md. Team member names
+appear ONLY in this file (TEAM.md). Use `git blame` for code attribution.
+
+---
+
 ## Key Decisions Log
 
 | # | Decision | Alternatives Rejected | Rationale |
@@ -439,3 +524,12 @@ dependency choices affect downstream users on unusual targets.
 | 8 | **Ex is Clone, not Copy** (Arc-based) | Global arena + Copy index (!Send), lifetime parameter (ergonomic nightmare) | Thread-safe from day one; `expr!` macro mitigates `&` noise |
 | 9 | **No Float node type** | Mixed exact/inexact nodes | Prevents precision confusion; all symbolic math uses exact `Ratio<BigInt>` |
 | 10 | **ExprView for replace() closures** | Pass `&Ex` (deadlock risk), snapshot-then-transform | Non-locking view type makes deadlock structurally impossible at compile time |
+| 11 | **Sturm sequences for real root counting** (not solve-and-filter) | Numerical solve then filter | Exact, avoids Wilkinson's polynomial problem, operates entirely in ℚ, O(n²) in degree |
+| 12 | **Dependency parameter for diff** (not arena/context storage) | Store dependency info in arena or context | Avoids arena mutation, no hash-consing complications, natural threading through explicit-stack walk |
+| 13 | **Buchberger over F5B for v1** | F5B (faster but less robust) | Simpler, well-understood, SymPy defaults to it |
+| 14 | **MultiPoly\<O\> generic ordering** | Runtime ordering, unsorted dict | O(log n) leading term via BTreeMap, zero-cost phantom type |
+| 15 | **Sin/cos ring for IK** (not Weierstrass) | Weierstrass (fewer vars, higher degree) | More robust (no θ=π singularity), cleaner interaction with elimination |
+| 16 | **Dense matrices for FGLM** | Sparse/Krylov | D ≤ 1024 for IK; dense is simpler and fast enough |
+| 17 | **Delete old API names** (not deprecate) | Keep as #[deprecated] | Pre-1.0, clean break. One name per operation. |
+| 18 | **Display: `^` not `**`** | Python-style `**` | Math notation, not programming notation |
+| 19 | **build.rs for codegen** (not proc macro) | Heavy proc macro | sqlx acknowledged proc-macro codegen as architecturally flawed |
