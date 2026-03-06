@@ -33,9 +33,10 @@ fn main() {
 
     println!("LaTeX: {}", f.diff(&x).to_latex());
 
-    // Use y so it's not unused
-    let g = &x + &y;
-    println!("x + y = {g}");
+    // Partial derivatives
+    let f2 = expr!(x ^ 2 * y + y ^ 3);
+    println!("∂f/∂x = {}", f2.diff(&x));
+    println!("∂f/∂y = {}", f2.diff(&y));
 
     println!("\n✓ Done!");
 }

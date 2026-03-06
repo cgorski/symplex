@@ -39,6 +39,13 @@ fn main() {
     println!("  LaTeX:   {}", multi.to_latex());
     println!();
 
+    // Matrix LaTeX
+    let m = matrix![[1, 2], [3, 4]];
+    println!("Matrix:");
+    println!("  Display: {m}");
+    println!("  LaTeX:\n  {}", m.to_latex());
+    println!();
+
     // Inline and display modes
     let f = expr!(x ^ 2 + 1);
     println!("Inline:  {}", f.to_latex_inline());

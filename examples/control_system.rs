@@ -37,7 +37,11 @@ fn main() {
     );
 
     // Stability
-    println!("Stable: {:?}", sys.is_stable());
+    match sys.is_stable() {
+        Some(true) => println!("Stable: yes"),
+        Some(false) => println!("Stable: no"),
+        None => println!("Stable: undetermined"),
+    }
     println!("Controllable: {}", sys.is_controllable());
     println!("Observable: {}", sys.is_observable());
 
@@ -48,7 +52,11 @@ fn main() {
 
     // Routh-Hurwitz stability criterion
     let coeffs = [symplex::int(1), symplex::int(3), symplex::int(4)];
-    println!("Routh stable: {:?}", is_routh_stable(&coeffs));
+    match is_routh_stable(&coeffs) {
+        Some(true) => println!("Routh stable: yes"),
+        Some(false) => println!("Routh stable: no"),
+        None => println!("Routh stable: undetermined"),
+    }
 
     println!("\n✓ Done!");
 }

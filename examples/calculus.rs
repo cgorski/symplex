@@ -6,12 +6,13 @@
 //! Run with: `cargo run --example calculus`
 
 use symplex::prelude::*;
+use symplex::vars;
 
 fn main() {
     println!("=== Symplex Calculus Example ===\n");
 
     // ── 1. Create symbols ──────────────────────────────────────────────
-    let x = symplex::var("x");
+    vars!(x);
 
     // ── 2. Build a function and differentiate ──────────────────────────
     let f = expr!(x ^ 3 - 3 * x ^ 2 + 2 * x);
