@@ -1749,6 +1749,17 @@ fn integrate_node(
                 let x_ln_x = arena.mul(&[var, ln_var]);
                 return arena.sub(x_ln_x, var);
             }
+            // ∫ ln(ln(x)) dx = x·ln(ln(x)) − li(x)  (by parts:
+            // u = ln(ln(x)), dv = dx  →  du = 1/(x·ln(x)) dx, v = x)
+            if let ExprNode::Ln(ln_inner) = arena.node(inner).clone()
+                && ln_inner == var
+            {
+                let ln_x = arena.ln(var);
+                let ln_ln_x = arena.ln(ln_x);
+                let x_ln_ln_x = arena.mul(&[var, ln_ln_x]);
+                let li_x = make_apply(arena, "li", &[var]);
+                return arena.sub(x_ln_ln_x, li_x);
+            }
             // Try u-substitution: if inner = a*x + b (linear),
             // ∫ ln(a*x+b) dx = ((a*x+b)·ln(a*x+b) - (a*x+b)) / a
             if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {

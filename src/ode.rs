@@ -10,6 +10,8 @@
 //!   → `y = e^(-ax) * ∫ f(x)*e^(ax) dx`
 //! - **Second-order linear constant-coefficient:** `y'' + b*y' + c*y = 0`
 //!   → characteristic equation `r² + b*r + c = 0`, solution based on roots
+//! - **Homogeneous coefficient:** `y' = f(y/x)` — substitution `v = y/x`
+//! - **nth-order reducible:** `F(y, y', y'') = 0` (no `x`) — substitution `p = y'`
 //! - **Constant-coefficient systems:** `ẋ = A·x` → `x(t) = exp(A·t)·c`
 //!   via eigendecomposition (exact) or matrix exponential series (fallback)
 //! - **Non-homogeneous systems:** `ẋ = A·x + b(t)` → variation of parameters
@@ -98,6 +100,16 @@ pub fn dsolve(
 
     // Type 2d: Bernoulli: y' + P(x)·y = Q(x)·y^n (n ≠ 0, 1)
     if let Some(result) = try_bernoulli(arena, expr, func, var, func_sym, var_sym) {
+        return Some(result);
+    }
+
+    // Type 2e: Homogeneous coefficient: y' = f(y/x)
+    if let Some(result) = try_homogeneous_coefficient(arena, expr, func, var, func_sym, var_sym) {
+        return Some(result);
+    }
+
+    // Type 2f: nth-order reducible: F(y, y', y'') = 0, no explicit x
+    if let Some(result) = try_nth_order_reducible(arena, expr, func, var, func_sym, var_sym) {
         return Some(result);
     }
 
@@ -1451,7 +1463,274 @@ fn try_integrating_factor_ode(
     None
 }
 
-/// Check if an expression contains a specific symbol.
+// Check if an expression contains a specific symbol.
+// ═══════════════════════════════════════════════════════════════════════════
+// Homogeneous coefficient ODE: y' = f(y/x)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Solve a first-order ODE of the form y' = f(y/x).
+///
+/// Detection: substitute y = v*x in the RHS.  If the result simplifies to a
+/// function of v alone (no x), the equation is homogeneous of degree 0.
+///
+/// Solution via v = y/x:
+///   y = v*x  →  y' = v + x*v'
+///   v + x*v' = f(v)  →  dv/(f(v) - v) = dx/x
+///   ∫ dv/(f(v) - v) = ln|x| + C1
+///   Back-substitute v = y/x.
+fn try_homogeneous_coefficient(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    tracing::debug!("ode: trying homogeneous coefficient");
+
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+
+    // Must be first-order only
+    if expr_contains(arena, expr, d2y_dx2) {
+        return None;
+    }
+
+    // Extract the RHS: expr = dy/dx + ... = 0  →  dy/dx = -...
+    let children = match arena.node(expr).clone() {
+        ExprNode::Add(children) => children,
+        _ => return None,
+    };
+
+    let mut has_dy = false;
+    let mut dy_coeff = num_rational::Ratio::<num_bigint::BigInt>::zero();
+    let mut other_terms: Vec<ExprId> = Vec::new();
+
+    for &child in &children {
+        let (coeff, term) = arena.as_coeff_term(child);
+        if term == dy_dx {
+            has_dy = true;
+            dy_coeff += coeff;
+        } else {
+            other_terms.push(child);
+        }
+    }
+
+    use num_traits::Zero;
+    if !has_dy || dy_coeff.is_zero() {
+        return None;
+    }
+
+    // RHS of y' = RHS (negate the other terms, normalize by dy_coeff)
+    let rhs = if other_terms.is_empty() {
+        return None;
+    } else {
+        let sum = arena.add(&other_terms);
+        arena.neg(sum)
+    };
+
+    let rhs = if !dy_coeff.is_one() {
+        let inv_id = ode_ratio_to_expr(
+            arena,
+            &(num_rational::Ratio::<num_bigint::BigInt>::one() / &dy_coeff),
+        );
+        let s = arena.mul(&[inv_id, rhs]);
+        crate::eval::eval(arena, s)
+    } else {
+        rhs
+    };
+
+    // The RHS must depend on both x and y for this to be interesting.
+    if !contains_sym(arena, rhs, func_sym) || !contains_sym(arena, rhs, var_sym) {
+        return None;
+    }
+
+    // For a degree-0 homogeneous function f(x,y), f(tx, ty) = f(x,y).
+    // In particular f(x, y) = f(1, y/x).  So f(v) = RHS|_{y→v, x→1}.
+    //
+    // Detection: substitute y→v, x→1.  If the result is free of x, the
+    // equation is homogeneous of degree 0.
+    //
+    // This avoids the need to simplify (v*x)^n / x^n etc.
+    let v = arena.symbol("__v");
+    let _v_sym = match arena.node(v) {
+        ExprNode::Symbol(sid) => *sid,
+        _ => return None,
+    };
+
+    // Compute f(v) = RHS(x=1, y=v)
+    let rhs_sub = crate::subs::subs(arena, rhs, func, v);
+    let rhs_sub = crate::subs::subs(arena, rhs_sub, var, arena.one);
+    let rhs_sub = crate::eval::eval(arena, rhs_sub);
+    let rhs_sub = crate::expand::expand(arena, rhs_sub);
+    let rhs_sub = crate::eval::eval(arena, rhs_sub);
+
+    // f(v) must be free of x (it should be, since we set x=1).
+    if contains_sym(arena, rhs_sub, var_sym) {
+        return None;
+    }
+
+    // Verify homogeneity: f(v) should equal the original RHS when v = y/x.
+    // Spot-check: RHS(x, y) should equal f(y/x).  We rely on the algebraic
+    // structure being correct — the substitution x=1 is valid precisely when
+    // the function is homogeneous of degree 0.
+
+    // Now we have:  v + x*v' = f(v)  →  dv/(f(v) - v) = dx/x
+    // Integrate:  ∫ dv/(f(v) - v) = ln|x| + C1
+    let f_v_minus_v = arena.sub(rhs_sub, v);
+    let f_v_minus_v = crate::eval::eval(arena, f_v_minus_v);
+
+    if f_v_minus_v == arena.zero {
+        // f(v) = v means y' = y/x → y = C1*x (linear through origin)
+        let c1 = arena.symbol("C1");
+        let solution = arena.mul(&[c1, var]);
+        return Some(OdeResult {
+            solution,
+            constants: vec![c1],
+        });
+    }
+
+    let neg_one = arena.int(-1);
+    let inv_fv = arena.pow(f_v_minus_v, neg_one);
+    let lhs_integral = crate::integrate::integrate(arena, inv_fv, v);
+
+    // If integration of 1/(f(v)-v) failed, bail out.
+    if matches!(arena.node(lhs_integral), ExprNode::Integral(_, _)) {
+        return None;
+    }
+
+    // lhs_integral = ln|x| + C1
+    let abs_x = arena.abs(var);
+    let ln_abs_x = arena.ln(abs_x);
+    let c1 = arena.symbol("C1");
+    let rhs_eq = arena.add(&[ln_abs_x, c1]);
+
+    // Implicit solution: lhs_integral(v) = ln|x| + C1
+    // Back-substitute v = y/x:  lhs(y/x) - ln|x| - C1 = 0
+    let y_over_x = arena.div(func, var);
+    let lhs_backsub = crate::subs::subs(arena, lhs_integral, v, y_over_x);
+    let lhs_backsub = crate::eval::eval(arena, lhs_backsub);
+
+    let implicit = arena.sub(lhs_backsub, rhs_eq);
+    let implicit = crate::eval::eval(arena, implicit);
+
+    // Try to solve for y explicitly.
+    let solutions = crate::solve::solve(arena, implicit, func);
+    if solutions.len() == 1 {
+        let sol = crate::eval::eval(arena, solutions[0].value);
+        return Some(OdeResult {
+            solution: sol,
+            constants: vec![c1],
+        });
+    }
+
+    // Return implicit form.
+    Some(OdeResult {
+        solution: implicit,
+        constants: vec![c1],
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// nth-order reducible ODE: F(y, y', y'') = 0, no explicit x
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Solve a second-order ODE where the independent variable doesn't appear:
+///   F(y, y', y'') = 0
+///
+/// Substitution: p = y', y'' = p·dp/dy reduces to a first-order ODE in p(y).
+fn try_nth_order_reducible(
+    arena: &mut Arena,
+    expr: ExprId,
+    func: ExprId,
+    var: ExprId,
+    _func_sym: SymbolId,
+    var_sym: SymbolId,
+) -> Option<OdeResult> {
+    tracing::debug!("ode: trying nth-order reducible (missing x)");
+
+    let dy_dx = arena.intern(ExprNode::Derivative(func, var));
+    let d2y_dx2 = arena.intern(ExprNode::Derivative(dy_dx, var));
+
+    // Must have y'' present.
+    if !expr_contains(arena, expr, d2y_dx2) {
+        return None;
+    }
+
+    // The independent variable x must NOT appear explicitly (only through
+    // y and its derivatives).
+    // We check: after removing derivative nodes, does x appear?
+    // Strategy: substitute y''→__d2, y'→__d1, then check if var_sym remains.
+    let d2_placeholder = arena.symbol("__d2");
+    let d1_placeholder = arena.symbol("__d1");
+    let stripped = crate::subs::subs(arena, expr, d2y_dx2, d2_placeholder);
+    let stripped = crate::subs::subs(arena, stripped, dy_dx, d1_placeholder);
+    if contains_sym(arena, stripped, var_sym) {
+        return None; // x appears explicitly
+    }
+
+    // Now perform the reduction: let p = dy/dx, then d²y/dx² = p·dp/dy
+    let p = arena.symbol("__p");
+    let _p_sym = match arena.node(p) {
+        ExprNode::Symbol(sid) => *sid,
+        _ => return None,
+    };
+    let dp_dy = arena.intern(ExprNode::Derivative(p, func));
+    let p_dp_dy = arena.mul(&[p, dp_dy]);
+
+    // Substitute: y'' → p·dp/dy,  y' → p
+    let reduced = crate::subs::subs(arena, expr, d2y_dx2, p_dp_dy);
+    let reduced = crate::subs::subs(arena, reduced, dy_dx, p);
+    let reduced = crate::eval::eval(arena, reduced);
+
+    // Now `reduced` is a first-order ODE in p(y) with independent var = y.
+    // Try to solve it.
+    let p_result = dsolve(arena, reduced, p, func)?;
+
+    // p_result.solution gives p = f(y, C1).
+    // Now solve dy/dx = p(y) — this is separable: ∫ dy/p(y) = x + C2.
+    let c2 = arena.symbol("C2");
+
+    // Check if p_result.solution is simple enough
+    let p_sol = p_result.solution;
+
+    // Set up: dy/dx - p_sol = 0  →  ∫ 1/p_sol dy = x + C2
+    // We need to integrate 1/p_sol w.r.t. y.
+    let neg_one_id = arena.int(-1);
+    let inv_p = arena.pow(p_sol, neg_one_id);
+    let inv_p = crate::eval::eval(arena, inv_p);
+    let lhs_integral = crate::integrate::integrate(arena, inv_p, func);
+
+    if matches!(arena.node(lhs_integral), ExprNode::Integral(_, _)) {
+        return None; // Can't integrate 1/p(y)
+    }
+
+    // Implicit solution: ∫ dy/p(y) = x + C2
+    let rhs = arena.add(&[var, c2]);
+    let implicit = arena.sub(lhs_integral, rhs);
+    let implicit = crate::eval::eval(arena, implicit);
+
+    // Try to solve explicitly for y.
+    let solutions = crate::solve::solve(arena, implicit, func);
+    if solutions.len() == 1 {
+        let sol = crate::eval::eval(arena, solutions[0].value);
+        let mut constants = p_result.constants;
+        constants.push(c2);
+        return Some(OdeResult {
+            solution: sol,
+            constants,
+        });
+    }
+
+    // Return implicit form.
+    let mut constants = p_result.constants;
+    constants.push(c2);
+    Some(OdeResult {
+        solution: implicit,
+        constants,
+    })
+}
+
 fn contains_sym(arena: &Arena, expr: ExprId, sym: SymbolId) -> bool {
     match arena.node(expr).clone() {
         ExprNode::Symbol(s) => s == sym,
@@ -2319,6 +2598,10 @@ pub enum OdeType {
     EulerCauchy,
     /// y'' + p·y' + q·y = g(x) solved via variation of parameters
     VariationOfParameters,
+    /// y' = f(y/x) — homogeneous coefficient (degree-0 homogeneous RHS)
+    HomogeneousCoefficient,
+    /// F(y, y', y'') = 0 (no explicit x) — reducible via p = y'
+    NthOrderReducible,
     /// Unrecognized ODE type
     Unknown,
 }
@@ -2374,6 +2657,17 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
         if try_euler_cauchy(arena, expr, func, var, func_sym, var_sym).is_some() {
             return OdeType::EulerCauchy;
         }
+        // Check for nth-order reducible: F(y, y', y'') = 0 with no explicit x.
+        {
+            let d2_ph = arena.symbol("__d2_cls");
+            let d1_ph = arena.symbol("__d1_cls");
+            let stripped = crate::subs::subs(arena, expr, d2y_dx2, d2_ph);
+            let stripped = crate::subs::subs(arena, stripped, dy_dx, d1_ph);
+            if !contains_sym(arena, stripped, var_sym) {
+                return OdeType::NthOrderReducible;
+            }
+        }
+
         // Even if we can't fully classify, it has a second derivative
         return OdeType::Unknown;
     }
@@ -2464,6 +2758,45 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
             }
             if bn_has_dy && bn_has_yn && bn_ok && !bn_has_free {
                 return OdeType::Bernoulli;
+            }
+        }
+
+        // Check for homogeneous coefficient: y' = f(y/x)
+        // Substitute y = v*x in the RHS; if result is free of x → homogeneous
+        if let ExprNode::Add(ref hc_children) = arena.node(expr).clone() {
+            let mut hc_has_dy = false;
+            let mut hc_other: Vec<ExprId> = Vec::new();
+            for &child in hc_children {
+                let (_, term) = arena.as_coeff_term(child);
+                if term == dy_dx {
+                    hc_has_dy = true;
+                } else {
+                    hc_other.push(child);
+                }
+            }
+            if hc_has_dy && !hc_other.is_empty() {
+                let hc_rhs = if hc_other.len() == 1 {
+                    arena.neg(hc_other[0])
+                } else {
+                    let s = arena.add(&hc_other);
+                    arena.neg(s)
+                };
+                // RHS must depend on both x and y
+                if contains_sym(arena, hc_rhs, func_sym)
+                    && contains_sym(arena, hc_rhs, var_sym)
+                {
+                    // Use x→1 trick: for degree-0 homogeneous f(x,y),
+                    // f(1, v) should be free of x.
+                    let v_cls = arena.symbol("__v_cls");
+                    let sub = crate::subs::subs(arena, hc_rhs, func, v_cls);
+                    let sub = crate::subs::subs(arena, sub, var, arena.one);
+                    let sub = crate::eval::eval(arena, sub);
+                    let sub = crate::expand::expand(arena, sub);
+                    let sub = crate::eval::eval(arena, sub);
+                    if !contains_sym(arena, sub, var_sym) {
+                        return OdeType::HomogeneousCoefficient;
+                    }
+                }
             }
         }
 

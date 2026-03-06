@@ -211,8 +211,24 @@ pub(crate) fn to_rust_fn_with_options(
         params.join(", ")
     ));
 
-    // CSE bindings (skip pure-constant ones)
-    for &(i, binding_expr) in &kept_bindings {
+    // Detect sin/cos pairs for combined emission (not for Libm — no sincos intrinsic)
+    let (sin_cos_emit, sin_cos_skip) = if options.math_backend != MathBackend::Libm {
+        detect_sin_cos_pairs(arena, &kept_bindings)
+    } else {
+        (FxHashMap::default(), vec![false; kept_bindings.len()])
+    };
+
+    // CSE bindings (skip pure-constant ones, with sin_cos pairing)
+    for (pos, &(i, binding_expr)) in kept_bindings.iter().enumerate() {
+        if sin_cos_skip.get(pos).copied().unwrap_or(false) {
+            continue;
+        }
+        if let Some(&(sin_idx, cos_idx, arg)) = sin_cos_emit.get(&pos) {
+            let line =
+                emit_sin_cos_binding(arena, sin_idx, cos_idx, arg, args, options, &cse_constants)?;
+            lines.push(line);
+            continue;
+        }
         let code = expr_to_rust_cse(arena, binding_expr, args, options, &cse_constants)?;
         lines.push(format!("    let t{i} = {code};"));
     }
@@ -285,8 +301,24 @@ pub(crate) fn matrix_to_rust_fn(
         params.join(", ")
     ));
 
-    // CSE bindings (skip pure-constant ones)
-    for &(i, binding_expr) in &kept_bindings {
+    // Detect sin/cos pairs for combined emission (not for Libm)
+    let (sin_cos_emit, sin_cos_skip) = if options.math_backend != MathBackend::Libm {
+        detect_sin_cos_pairs(arena, &kept_bindings)
+    } else {
+        (FxHashMap::default(), vec![false; kept_bindings.len()])
+    };
+
+    // CSE bindings (skip pure-constant ones, with sin_cos pairing)
+    for (pos, &(i, binding_expr)) in kept_bindings.iter().enumerate() {
+        if sin_cos_skip.get(pos).copied().unwrap_or(false) {
+            continue;
+        }
+        if let Some(&(sin_idx, cos_idx, arg)) = sin_cos_emit.get(&pos) {
+            let line =
+                emit_sin_cos_binding(arena, sin_idx, cos_idx, arg, args, options, &cse_constants)?;
+            lines.push(line);
+            continue;
+        }
         let code = expr_to_rust_cse(arena, binding_expr, args, options, &cse_constants)?;
         lines.push(format!("    let t{i} = {code};"));
     }
@@ -352,6 +384,12 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
     lines.push(format!(
         "    #[inline] pub fn exp2(x: {ft}) -> {ft} {{ x.exp2() }}"
     ));
+    lines.push(format!(
+        "    #[inline] pub fn fma(a: {ft}, b: {ft}, c: {ft}) -> {ft} {{ a.mul_add(b, c) }}"
+    ));
+    lines.push(format!(
+        "    #[inline] pub fn sin_cos(x: {ft}) -> ({ft}, {ft}) {{ x.sin_cos() }}"
+    ));
     lines.push("}".to_string());
     lines.push(String::new());
     lines.push("#[cfg(not(feature = \"std\"))]".to_string());
@@ -399,6 +437,12 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
     ));
     lines.push(format!(
         "    #[inline] pub fn exp2(x: {ft}) -> {ft} {{ libm::exp2(x as f64) as {ft} }}"
+    ));
+    lines.push(format!(
+        "    #[inline] pub fn fma(a: {ft}, b: {ft}, c: {ft}) -> {ft} {{ libm::fma(a as f64, b as f64, c as f64) as {ft} }}"
+    ));
+    lines.push(format!(
+        "    #[inline] pub fn sin_cos(x: {ft}) -> ({ft}, {ft}) {{ (libm::sin(x as f64) as {ft}, libm::cos(x as f64) as {ft}) }}"
     ));
     lines.push("}".to_string());
 }
@@ -490,6 +534,33 @@ fn expr_to_rust_cse(
             if live.len() == 1 {
                 return expr_to_rust_cse(arena, live[0], var_names, options, cse_constants);
             }
+            // FMA detection: partition children into FMA-eligible Mul nodes and others
+            let mut fma_children: Vec<ExprId> = Vec::new();
+            let mut non_fma_children: Vec<ExprId> = Vec::new();
+            for &child in &live {
+                if let ExprNode::Mul(factors) = arena.node(child)
+                    && !is_neg_one_mul_codegen(arena, child)
+                    && factors.len() >= 2
+                {
+                    fma_children.push(child);
+                    continue;
+                }
+                non_fma_children.push(child);
+            }
+
+            if !fma_children.is_empty()
+                && (!non_fma_children.is_empty() || fma_children.len() >= 2)
+            {
+                return emit_fma_chain(
+                    arena,
+                    &fma_children,
+                    &non_fma_children,
+                    var_names,
+                    options,
+                    cse_constants,
+                );
+            }
+
             // Build parts with subtraction detection
             let mut parts = Vec::new();
             for (i, &child) in live.iter().enumerate() {
@@ -1142,8 +1213,188 @@ fn emit_mul_without_neg_one(
     }
 }
 
-/// Strip one level of outer parentheses when they wrap the entire string.
-#[must_use]
+// Strip one level of outer parentheses when they wrap the entire string.
+// ═══════════════════════════════════════════════════════════════════════════
+// FMA (fused multiply-add) emission
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Emit an FMA chain for an `Add` node that contains `Mul` children.
+///
+/// `fma_children` are the `Mul` children eligible for fusion.
+/// `non_fma_children` are everything else (negated products, plain terms, etc.).
+#[allow(clippy::too_many_arguments)]
+fn emit_fma_chain(
+    arena: &Arena,
+    fma_children: &[ExprId],
+    non_fma_children: &[ExprId],
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Result<String, SymplexError> {
+    // Build the accumulator from non-FMA children (or the first Mul if all are FMA)
+    let mut acc = if non_fma_children.is_empty() {
+        // Use the first FMA candidate as a plain product (no addend yet)
+        expr_to_rust_cse(arena, fma_children[0], var_names, options, cse_constants)?
+    } else if non_fma_children.len() == 1 {
+        let child = non_fma_children[0];
+        // Preserve negation for single non-FMA child
+        if matches!(arena.node(child), ExprNode::Neg(_)) {
+            if let ExprNode::Neg(inner) = arena.node(child).clone() {
+                let code = expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?;
+                format!("(-{code})")
+            } else {
+                unreachable!()
+            }
+        } else if is_neg_one_mul_codegen(arena, child) {
+            let code = emit_mul_without_neg_one(arena, child, var_names, options, cse_constants)?;
+            format!("(-{code})")
+        } else {
+            expr_to_rust_cse(arena, child, var_names, options, cse_constants)?
+        }
+    } else {
+        // Build a parenthesized sum of non-FMA children with subtraction detection
+        let mut parts = Vec::new();
+        for (i, &child) in non_fma_children.iter().enumerate() {
+            let (is_neg, code) = if matches!(arena.node(child), ExprNode::Neg(_)) {
+                if let ExprNode::Neg(inner) = arena.node(child).clone() {
+                    (
+                        true,
+                        expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?,
+                    )
+                } else {
+                    unreachable!()
+                }
+            } else if is_neg_one_mul_codegen(arena, child) {
+                (
+                    true,
+                    emit_mul_without_neg_one(arena, child, var_names, options, cse_constants)?,
+                )
+            } else {
+                (
+                    false,
+                    expr_to_rust_cse(arena, child, var_names, options, cse_constants)?,
+                )
+            };
+            if i == 0 {
+                if is_neg {
+                    parts.push(format!("-{code}"));
+                } else {
+                    parts.push(code);
+                }
+            } else if is_neg {
+                parts.push(format!(" - {code}"));
+            } else {
+                parts.push(format!(" + {code}"));
+            }
+        }
+        format!("({})", parts.join(""))
+    };
+
+    let start = if non_fma_children.is_empty() { 1 } else { 0 };
+    for &mul_child in &fma_children[start..] {
+        if let ExprNode::Mul(ref factors) = arena.node(mul_child).clone() {
+            let first_code =
+                expr_to_rust_cse(arena, factors[0], var_names, options, cse_constants)?;
+            let rest_code = if factors.len() == 2 {
+                expr_to_rust_cse(arena, factors[1], var_names, options, cse_constants)?
+            } else {
+                let parts: Result<Vec<String>, _> = factors[1..]
+                    .iter()
+                    .map(|&f| expr_to_rust_cse(arena, f, var_names, options, cse_constants))
+                    .collect();
+                format!("({})", parts?.join(" * "))
+            };
+            acc = emit_fma_call(&first_code, &rest_code, &acc, options);
+        }
+    }
+
+    Ok(acc)
+}
+
+/// Emit a single FMA (fused multiply-add) call: `a * b + c`.
+fn emit_fma_call(a: &str, b: &str, c: &str, options: &CodegenOptions) -> String {
+    match options.math_backend {
+        MathBackend::Std => format!("{a}.mul_add({b}, {c})"),
+        MathBackend::Libm => {
+            let ft = options.precision.type_name();
+            format!("libm::fma({a} as f64, {b} as f64, {c} as f64) as {ft}")
+        }
+        MathBackend::CfgGated => format!("math::fma({a}, {b}, {c})"),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sin/cos pairing helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Detect sin/cos pairs among CSE bindings that share the same argument.
+///
+/// Returns `(emit_map, skip_flags)`:
+/// - `emit_map`: position in `kept_bindings` → `(sin_cse_idx, cos_cse_idx, arg)`
+///   for the first of each pair (where the combined `sin_cos` call should be emitted).
+/// - `skip_flags`: `true` at positions that should be skipped (the second of each pair).
+#[allow(clippy::type_complexity)]
+fn detect_sin_cos_pairs(
+    arena: &Arena,
+    kept_bindings: &[(usize, ExprId)],
+) -> (FxHashMap<usize, (usize, usize, ExprId)>, Vec<bool>) {
+    let mut sin_map: FxHashMap<ExprId, (usize, usize)> = FxHashMap::default(); // arg → (cse_idx, pos)
+    let mut cos_map: FxHashMap<ExprId, (usize, usize)> = FxHashMap::default();
+
+    for (pos, &(cse_idx, binding_expr)) in kept_bindings.iter().enumerate() {
+        match arena.node(binding_expr) {
+            ExprNode::Sin(arg) => {
+                sin_map.insert(*arg, (cse_idx, pos));
+            }
+            ExprNode::Cos(arg) => {
+                cos_map.insert(*arg, (cse_idx, pos));
+            }
+            _ => {}
+        }
+    }
+
+    let mut emit_map: FxHashMap<usize, (usize, usize, ExprId)> = FxHashMap::default();
+    let mut skip_flags = vec![false; kept_bindings.len()];
+
+    for (&arg, &(sin_cse_idx, sin_pos)) in &sin_map {
+        if let Some(&(cos_cse_idx, cos_pos)) = cos_map.get(&arg) {
+            let (first, second) = if sin_pos < cos_pos {
+                (sin_pos, cos_pos)
+            } else {
+                (cos_pos, sin_pos)
+            };
+            emit_map.insert(first, (sin_cse_idx, cos_cse_idx, arg));
+            skip_flags[second] = true;
+        }
+    }
+
+    (emit_map, skip_flags)
+}
+
+/// Emit a sin_cos binding line for the given backend.
+fn emit_sin_cos_binding(
+    arena: &Arena,
+    sin_cse_idx: usize,
+    cos_cse_idx: usize,
+    arg: ExprId,
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Result<String, SymplexError> {
+    let arg_code = expr_to_rust_cse(arena, arg, var_names, options, cse_constants)?;
+    let call = match options.math_backend {
+        MathBackend::Std => format!("{arg_code}.sin_cos()"),
+        MathBackend::CfgGated => format!("math::sin_cos({arg_code})"),
+        MathBackend::Libm => {
+            // Libm: fall back to separate calls (handled by caller skipping pairing)
+            unreachable!("sin_cos pairing should not be used with Libm backend");
+        }
+    };
+    Ok(format!(
+        "    let (t{sin_cse_idx}, t{cos_cse_idx}) = {call};"
+    ))
+}
+
 fn strip_outer_parens(s: &str) -> &str {
     let bytes = s.as_bytes();
     if bytes.first() != Some(&b'(') || bytes.last() != Some(&b')') {
@@ -1217,6 +1468,10 @@ fn emit_powi(
     exp: i64,
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
+    // Horner-style expansion for small positive exponents (3..=6)
+    if let Some(expanded) = expand_powi(base_code, exp) {
+        return Ok(expanded);
+    }
     Ok(match options.math_backend {
         MathBackend::Std => format!("{base_code}.powi({exp})"),
         MathBackend::Libm => {
@@ -1225,6 +1480,19 @@ fn emit_powi(
         }
         MathBackend::CfgGated => format!("math::powi({base_code}, {exp})"),
     })
+}
+
+/// Expand `base.powi(n)` for small positive integer exponents (3..=6)
+/// into efficient multiplication chains.  Returns `None` for exponents
+/// that should keep the generic `powi` call.
+fn expand_powi(base: &str, n: i64) -> Option<String> {
+    match n {
+        3 => Some(format!("({base} * {base} * {base})")),
+        4 => Some(format!("{{ let _p2 = {base} * {base}; _p2 * _p2 }}")),
+        5 => Some(format!("{{ let _p2 = {base} * {base}; _p2 * _p2 * {base} }}")),
+        6 => Some(format!("{{ let _p2 = {base} * {base}; _p2 * _p2 * _p2 }}")),
+        _ => None,
+    }
 }
 
 /// Emit a powf call.

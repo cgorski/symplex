@@ -777,7 +777,7 @@ Sequential. One agent. All remaining files.
 **Agent owns exclusively:**
 - `IMPLEMENTATION_PLAN.md` (update Known Limitations, statistics)
 - `CHANGELOG.md` (add entries for all fixes and new docs)
-- `README.md` (update example count, verify hero example output, add link to tutorial)
+- `README.md` (update example count, verify flagship example output, add link to tutorial)
 
 **Tasks:**
 
@@ -800,7 +800,7 @@ Sequential. One agent. All remaining files.
    - Add: "Rewritten: All 10 existing examples with expanded coverage and narrative"
 
 3. **Update README.md:**
-   - Verify hero example output matches actual `cargo run --example robotics_codegen`
+   - Verify flagship example output matches actual `cargo run --example robotics_codegen`
    - Add link to tutorial: "📖 **[Tutorial](docs/tutorial/index.md)** — Start here"
    - Update example list with new examples
    - Update comparison table if any entries changed
@@ -952,7 +952,7 @@ When all phases complete, the following must be true:
 
 7. **No new Known Limitations introduced**
 
-8. **README hero example output matches actual `cargo run` output**
+8. **README flagship example output matches actual `cargo run` output**
 
 ---
 
