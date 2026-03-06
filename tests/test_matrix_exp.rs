@@ -70,13 +70,12 @@ fn matrix_exp_nilpotent() {
         [1.0, 1.0],
         [0.0, 1.0],
     ];
-    for i in 0..2 {
-        for j in 0..2 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = result.get(i, j).eval().eval_f64().unwrap();
             assert!(
-                common::approx_eq(val, expected[i][j], 1e-14),
-                "exp(N)[{i},{j}] = {val}, expected {}",
-                expected[i][j]
+                common::approx_eq(val, exp_val, 1e-14),
+                "exp(N)[{i},{j}] = {val}, expected {exp_val}",
             );
         }
     }
@@ -206,13 +205,12 @@ fn kronecker_identity() {
         [3.0, 0.0, 4.0, 0.0],
         [0.0, 3.0, 0.0, 4.0],
     ];
-    for i in 0..4 {
-        for j in 0..4 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = result.get(i, j).eval().eval_f64().unwrap();
             assert!(
-                common::approx_eq(val, expected[i][j], 1e-14),
-                "A⊗I[{i},{j}] = {val}, expected {}",
-                expected[i][j]
+                common::approx_eq(val, exp_val, 1e-14),
+                "A⊗I[{i},{j}] = {val}, expected {exp_val}",
             );
         }
     }
@@ -232,13 +230,12 @@ fn kronecker_scalar() {
     assert_eq!(result.ncols(), 2);
 
     let expected = [[3.0, 6.0], [12.0, 15.0]];
-    for i in 0..2 {
-        for j in 0..2 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = result.get(i, j).eval().eval_f64().unwrap();
             assert!(
-                common::approx_eq(val, expected[i][j], 1e-14),
-                "scalar⊗B[{i},{j}] = {val}, expected {}",
-                expected[i][j]
+                common::approx_eq(val, exp_val, 1e-14),
+                "scalar⊗B[{i},{j}] = {val}, expected {exp_val}",
             );
         }
     }
@@ -272,13 +269,12 @@ fn kronecker_known_values() {
         [0.0, 15.0, 0.0, 20.0],
         [18.0, 21.0, 24.0, 28.0],
     ];
-    for i in 0..4 {
-        for j in 0..4 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = result.get(i, j).eval().eval_f64().unwrap();
             assert!(
-                common::approx_eq(val, expected[i][j], 1e-14),
-                "kronecker[{i},{j}] = {val}, expected {}",
-                expected[i][j]
+                common::approx_eq(val, exp_val, 1e-14),
+                "kronecker[{i},{j}] = {val}, expected {exp_val}",
             );
         }
     }

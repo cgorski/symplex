@@ -1614,11 +1614,10 @@ fn arb_erf(
             let term = prod.div(&divisor, wp, rm);
 
             // Convergence check
-            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent()) {
-                if (s_exp as i64 - t_exp as i64) > wp as i64 {
+            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+                && (s_exp as i64 - t_exp as i64) > wp as i64 {
                     break;
                 }
-            }
 
             sum = sum.add(&term, wp, rm);
         }
@@ -1650,11 +1649,10 @@ fn arb_erf(
             term = term.neg();
 
             // Divergence check: if |term| starts growing, stop
-            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent()) {
-                if t_exp > s_exp {
+            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+                && t_exp > s_exp {
                     break;
                 }
-            }
 
             sum = sum.add(&term, wp, rm);
         }

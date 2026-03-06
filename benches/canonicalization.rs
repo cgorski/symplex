@@ -47,7 +47,7 @@ fn bench_diff(c: &mut Criterion) {
     });
 
     c.bench_function("diff_polynomial_deg10", |b| {
-        let terms: Vec<Ex> = (0..=10).map(|n| &x.powi(n) * (n + 1) as i64).collect();
+        let terms: Vec<Ex> = (0..=10).map(|n| &x.powi(n) * (n + 1)).collect();
         let poly = Ex::sum_of(&ctx, terms);
         b.iter(|| poly.diff(&x));
     });
@@ -544,7 +544,7 @@ fn bench_codegen(c: &mut Criterion) {
     let x = ctx.symbol("x");
 
     c.bench_function("codegen_poly_deg10", |b| {
-        let terms: Vec<Ex> = (0..=10).map(|n| &x.powi(n) * (n + 1) as i64).collect();
+        let terms: Vec<Ex> = (0..=10).map(|n| &x.powi(n) * (n + 1)).collect();
         let poly = Ex::sum_of(&ctx, terms);
         b.iter(|| black_box(&poly).to_rust_fn("f", &["x"]))
     });
@@ -555,7 +555,7 @@ fn bench_codegen(c: &mut Criterion) {
     });
 
     c.bench_function("lambdify_poly_deg10", |b| {
-        let terms: Vec<Ex> = (0..=10).map(|n| &x.powi(n) * (n + 1) as i64).collect();
+        let terms: Vec<Ex> = (0..=10).map(|n| &x.powi(n) * (n + 1)).collect();
         let poly = Ex::sum_of(&ctx, terms);
         b.iter(|| black_box(&poly).compile(&["x"]))
     });

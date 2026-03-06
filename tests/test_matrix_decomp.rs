@@ -151,8 +151,8 @@ fn lu_identity() {
     let m = Matrix::identity(3);
     let (l, u, perm) = m.lu().expect("identity should have LU");
     // L and U should both be identity for an identity input
-    for i in 0..3 {
-        assert_eq!(perm[i], i);
+    for (i, &p) in perm.iter().enumerate() {
+        assert_eq!(p, i);
         for j in 0..3 {
             let expected = if i == j { "1" } else { "0" };
             assert_eq!(format!("{}", l.get(i, j)), expected, "L[{i},{j}]");

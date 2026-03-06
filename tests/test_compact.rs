@@ -14,7 +14,7 @@ fn compact_reduces_node_count() {
     let big_count = ctx.node_count();
 
     // Keep only x.
-    let (new_ctx, new_exprs) = ctx.compact(&[x.clone()]);
+    let (new_ctx, new_exprs) = ctx.compact(std::slice::from_ref(&x));
     let small_count = new_ctx.node_count();
 
     assert!(
@@ -42,7 +42,7 @@ fn compact_preserves_assumptions() {
     let ctx = Context::new();
     let x = ctx.symbol_with("x", &[Assumption::Positive, Assumption::Real]);
 
-    let (_new_ctx, new_exprs) = ctx.compact(&[x.clone()]);
+    let (_new_ctx, new_exprs) = ctx.compact(std::slice::from_ref(&x));
     assert_eq!(new_exprs[0].is_positive(), Some(true));
     assert_eq!(new_exprs[0].is_real(), Some(true));
 }
@@ -160,7 +160,7 @@ fn compact_old_context_still_works() {
     let original_str = format!("{expr}");
 
     // Compact into a new context.
-    let (_new_ctx, _new_exprs) = ctx.compact(&[expr.clone()]);
+    let (_new_ctx, _new_exprs) = ctx.compact(std::slice::from_ref(&expr));
 
     // The original context and expressions should still be usable.
     assert_eq!(format!("{expr}"), original_str);

@@ -239,7 +239,7 @@ fn lambdify_consistency_with_evalf() {
     let x = symplex::var("x");
     let f = &x.sin().powi(2) + &x.cos().powi(2);
     let func = f.compile(&["x"]).unwrap();
-    for pt in [0.0, 0.5, 1.0, 2.0, 3.14] {
+    for pt in [0.0, 0.5, 1.0, 2.0, 3.15] {
         assert!((func(&[pt]) - 1.0).abs() < 1e-10, "sin²+cos² at {pt}");
     }
 }

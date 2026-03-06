@@ -795,12 +795,11 @@ fn is_rational_trig(arena: &Arena, expr: ExprId, var: ExprId, var_sym: SymbolId)
             .all(|&c| is_rational_trig(arena, c, var, var_sym)),
         ExprNode::Neg(inner) => is_rational_trig(arena, inner, var, var_sym),
         ExprNode::Pow(base, exp) => {
-            if !contains_var(arena, exp, var_sym) {
-                if let Some(e) = arena.as_num(exp) {
-                    if e.is_integer() {
-                        return is_rational_trig(arena, base, var, var_sym);
-                    }
-                }
+            if !contains_var(arena, exp, var_sym)
+                && let Some(e) = arena.as_num(exp)
+                && e.is_integer()
+            {
+                return is_rational_trig(arena, base, var, var_sym);
             }
             false
         }

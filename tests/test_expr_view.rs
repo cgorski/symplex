@@ -76,7 +76,7 @@ fn expr_view_partial_eq_with_expr() {
 
     let ten = symplex::int(10);
 
-    let result = expr.replace(|view| if view == &x { Some(ten.clone()) } else { None });
+    let result = expr.replace(|view| if view == x { Some(ten.clone()) } else { None });
     assert_eq!(format!("{result}"), "y + 10");
 }
 
@@ -87,7 +87,7 @@ fn expr_view_partial_eq_ref_variant() {
 
     let pi = symplex::pi();
 
-    let result = expr.replace(|view| if view == &x { Some(pi.clone()) } else { None });
+    let result = expr.replace(|view| if view == x { Some(pi.clone()) } else { None });
     // sin(x) → sin(pi); the sin constructor does not auto-evaluate
     let s = format!("{result}");
     assert!(s.contains("pi"), "should have replaced x with pi: {s}");

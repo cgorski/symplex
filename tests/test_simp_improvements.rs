@@ -78,7 +78,7 @@ fn trigsimp_expand_then_recombine() {
         "trigsimp should not bloat sin²(x): got {} ops vs {} ops, result = {}",
         result.count_ops(),
         e.count_ops(),
-        format!("{result}"),
+        result,
     );
 }
 

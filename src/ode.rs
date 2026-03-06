@@ -475,7 +475,7 @@ fn find_particular_polynomial(
             } else {
                 Ratio::zero()
             };
-            let a_j1 = if j + 1 <= n {
+            let a_j1 = if j < n {
                 a[j + 1].clone()
             } else {
                 Ratio::zero()
@@ -1512,17 +1512,17 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
         }
 
         // Check for exact ODE: M + N·y' = 0 with ∂M/∂y = ∂N/∂x
-        if let Some((m_ex, n_ex)) = extract_m_n(arena, expr, func, var) {
-            if contains_sym(arena, m_ex, func_sym) || contains_sym(arena, n_ex, func_sym) {
-                let dm_dy = crate::diff::diff(arena, m_ex, func);
-                let dn_dx = crate::diff::diff(arena, n_ex, var);
-                let check = arena.sub(dm_dy, dn_dx);
-                let check = crate::eval::eval(arena, check);
-                let check = crate::expand::expand(arena, check);
-                let check = crate::eval::eval(arena, check);
-                if check == arena.zero {
-                    return OdeType::ExactFirstOrder;
-                }
+        if let Some((m_ex, n_ex)) = extract_m_n(arena, expr, func, var)
+            && (contains_sym(arena, m_ex, func_sym) || contains_sym(arena, n_ex, func_sym))
+        {
+            let dm_dy = crate::diff::diff(arena, m_ex, func);
+            let dn_dx = crate::diff::diff(arena, n_ex, var);
+            let check = arena.sub(dm_dy, dn_dx);
+            let check = crate::eval::eval(arena, check);
+            let check = crate::expand::expand(arena, check);
+            let check = crate::eval::eval(arena, check);
+            if check == arena.zero {
+                return OdeType::ExactFirstOrder;
             }
         }
 

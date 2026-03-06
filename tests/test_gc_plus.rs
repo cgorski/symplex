@@ -7,7 +7,7 @@ fn liveness_ratio_all_live() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.powi(2) + &x + 1;
-    let ratio = ctx.liveness_ratio(&[expr.clone()]);
+    let ratio = ctx.liveness_ratio(std::slice::from_ref(&expr));
     assert!(ratio > 0.0, "should have some live nodes: {ratio}");
     assert!(ratio <= 1.0, "ratio must be <= 1.0: {ratio}");
 }
@@ -45,7 +45,7 @@ fn liveness_after_compact() {
     let _ = x.powi(10).expand().sin().cos();
     let expr = &x + 1;
 
-    let ratio_before = ctx.liveness_ratio(&[expr.clone()]);
+    let ratio_before = ctx.liveness_ratio(std::slice::from_ref(&expr));
 
     let (new_ctx, new_exprs) = ctx.compact(&[expr]);
     let ratio_after = new_ctx.liveness_ratio(&[new_exprs[0].clone()]);
@@ -66,7 +66,7 @@ fn liveness_ratio_empty_roots() {
     // With no roots, nothing is live — but the function should still not panic
     let ratio = ctx.liveness_ratio(&[]);
     assert!(
-        ratio >= 0.0 && ratio <= 1.0,
+        (0.0..=1.0).contains(&ratio),
         "ratio should be in [0, 1]: {ratio}"
     );
     // With no roots, zero nodes are reachable, so ratio should be 0
@@ -86,7 +86,7 @@ fn liveness_ratio_multiple_roots_increases_liveness() {
     let expr_y = y.cos();
 
     // Liveness with just one root
-    let ratio_one = ctx.liveness_ratio(&[expr_x.clone()]);
+    let ratio_one = ctx.liveness_ratio(std::slice::from_ref(&expr_x));
     // Liveness with both roots
     let ratio_both = ctx.liveness_ratio(&[expr_x, expr_y]);
 

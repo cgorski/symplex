@@ -142,6 +142,22 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                         }
                         return Ok(quote! { ::symplex::rational(#p, #q) });
                     }
+                    // Handle -Int / Int → rational(-n, q).
+                    // Due to precedence, `-1/2` parses as `Neg(1) / 2`.
+                    // Without this, the codegen emits `(-(1)) / (2)` which
+                    // is Rust integer division yielding 0.
+                    if let MathExpr::Neg(inner_lhs) = lhs.as_ref() {
+                        if let (Some(p), Some(q)) = (inner_lhs.as_int(), rhs.as_int()) {
+                            if q == 0 {
+                                return Err(syn::Error::new(
+                                    Span::call_site(),
+                                    "division by zero in expr!()",
+                                ));
+                            }
+                            let neg_p = -p;
+                            return Ok(quote! { ::symplex::rational(#neg_p, #q) });
+                        }
+                    }
                     let lhs_code = generate_expr(lhs)?;
                     let rhs_code = generate_expr(rhs)?;
                     Ok(quote! { ((#lhs_code) / (#rhs_code)) })

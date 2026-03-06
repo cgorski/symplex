@@ -239,13 +239,13 @@ fn try_table_forward(
             let z_minus_1 = arena.sub(z_var, arena.one);
             let two = arena.int(2);
             let denom = arena.pow(z_minus_1, two);
-            return Some(arena.div(z_var, denom));
+            Some(arena.div(z_var, denom))
         }
 
         // ── Rule 2: a^n → z/(z−a) ──
         ExprNode::Pow(base, exp) if exp == n_var && !contains_var(arena, base, n_var) => {
             let z_minus_a = arena.sub(z_var, base);
-            return Some(arena.div(z_var, z_minus_a));
+            Some(arena.div(z_var, z_minus_a))
         }
 
         // ── Rule 3: sin(ω·n) → z·sin(ω)/(z²−2z·cos(ω)+1) ──
@@ -291,7 +291,7 @@ fn try_table_forward(
         // ── Rule 5: Mul — check for compound patterns ──
         ExprNode::Mul(ref children) => {
             let kids = children.clone();
-            return try_mul_patterns(arena, &kids, n_var, n_sym, z_var);
+            try_mul_patterns(arena, &kids, n_var, n_sym, z_var)
         }
 
         _ => None,
@@ -392,8 +392,7 @@ fn try_mul_patterns(
     };
 
     // ── Pattern: n · a^n → a·z/(z−a)² ──
-    if has_n && pow_base.is_some() && trig.is_none() {
-        let a = pow_base.unwrap();
+    if has_n && let Some(a) = pow_base && trig.is_none() {
         let z_minus_a = arena.sub(z_var, a);
         let two = arena.int(2);
         let denom = arena.pow(z_minus_a, two);
@@ -419,52 +418,52 @@ fn try_mul_patterns(
     }
 
     // ── Pattern: a^n · sin(ω·n) → a·z·sin(ω)/(z²−2a·z·cos(ω)+a²) ──
-    if let Some((TrigKind::Sin, omega)) = trig {
-        if !has_n {
-            let a = pow_base.unwrap_or(arena.one);
-            let sin_omega = arena.sin(omega);
-            let cos_omega = arena.cos(omega);
-            let two = arena.int(2);
+    if let Some((TrigKind::Sin, omega)) = trig
+        && !has_n
+    {
+        let a = pow_base.unwrap_or(arena.one);
+        let sin_omega = arena.sin(omega);
+        let cos_omega = arena.cos(omega);
+        let two = arena.int(2);
 
-            // numerator: a·z·sin(ω)
-            let numer = arena.mul(&[a, z_var, sin_omega]);
+        // numerator: a·z·sin(ω)
+        let numer = arena.mul(&[a, z_var, sin_omega]);
 
-            // denominator: z² − 2a·z·cos(ω) + a²
-            let two_az_cos = arena.mul(&[two, a, z_var, cos_omega]);
-            let a_sq = arena.mul(&[a, a]);
-            let denom = build_quadratic_denom(arena, z_var, two_az_cos, a_sq);
+        // denominator: z² − 2a·z·cos(ω) + a²
+        let two_az_cos = arena.mul(&[two, a, z_var, cos_omega]);
+        let a_sq = arena.mul(&[a, a]);
+        let denom = build_quadratic_denom(arena, z_var, two_az_cos, a_sq);
 
-            let result = arena.div(numer, denom);
-            if const_factor != arena.one {
-                return Some(arena.mul(&[const_factor, result]));
-            }
-            return Some(result);
+        let result = arena.div(numer, denom);
+        if const_factor != arena.one {
+            return Some(arena.mul(&[const_factor, result]));
         }
+        return Some(result);
     }
 
     // ── Pattern: a^n · cos(ω·n) → z·(z−a·cos(ω))/(z²−2a·z·cos(ω)+a²) ──
-    if let Some((TrigKind::Cos, omega)) = trig {
-        if !has_n {
-            let a = pow_base.unwrap_or(arena.one);
-            let cos_omega = arena.cos(omega);
-            let two = arena.int(2);
+    if let Some((TrigKind::Cos, omega)) = trig
+        && !has_n
+    {
+        let a = pow_base.unwrap_or(arena.one);
+        let cos_omega = arena.cos(omega);
+        let two = arena.int(2);
 
-            // numerator: z·(z − a·cos(ω))
-            let a_cos = arena.mul(&[a, cos_omega]);
-            let z_minus_a_cos = arena.sub(z_var, a_cos);
-            let numer = arena.mul(&[z_var, z_minus_a_cos]);
+        // numerator: z·(z − a·cos(ω))
+        let a_cos = arena.mul(&[a, cos_omega]);
+        let z_minus_a_cos = arena.sub(z_var, a_cos);
+        let numer = arena.mul(&[z_var, z_minus_a_cos]);
 
-            // denominator: z² − 2a·z·cos(ω) + a²
-            let two_az_cos = arena.mul(&[two, a, z_var, cos_omega]);
-            let a_sq = arena.mul(&[a, a]);
-            let denom = build_quadratic_denom(arena, z_var, two_az_cos, a_sq);
+        // denominator: z² − 2a·z·cos(ω) + a²
+        let two_az_cos = arena.mul(&[two, a, z_var, cos_omega]);
+        let a_sq = arena.mul(&[a, a]);
+        let denom = build_quadratic_denom(arena, z_var, two_az_cos, a_sq);
 
-            let result = arena.div(numer, denom);
-            if const_factor != arena.one {
-                return Some(arena.mul(&[const_factor, result]));
-            }
-            return Some(result);
+        let result = arena.div(numer, denom);
+        if const_factor != arena.one {
+            return Some(arena.mul(&[const_factor, result]));
         }
+        return Some(result);
     }
 
     None
@@ -790,9 +789,8 @@ fn try_trig_inverse_structural(
                 }
             }
 
-            if has_z && sin_arg.is_some() {
+            if has_z && let Some(omega) = sin_arg {
                 // z·sin(ω) / denom → sin(ω·n)
-                let omega = sin_arg.unwrap();
                 let omega_n = arena.mul(&[omega, n_var]);
                 let result = arena.sin(omega_n);
                 if constants.is_empty() {

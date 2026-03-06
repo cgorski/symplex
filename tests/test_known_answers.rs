@@ -202,7 +202,7 @@ fn diff_asinh() {
 #[test]
 fn diff_acosh() {
     let x = symplex::var("x");
-    check(&x.acosh().diff(&x), "1/sqrt(x^2 + -1)");
+    check(&x.acosh().diff(&x), "1/sqrt(x^2 - 1)");
 }
 
 #[test]

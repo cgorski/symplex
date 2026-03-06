@@ -12,7 +12,7 @@ mod common;
 /// Generate a random expression using the global context.
 fn arb_expr(depth: u32) -> impl Strategy<Value = Ex> {
     let leaf = prop_oneof![
-        (-10i64..10).prop_map(|n| symplex::int(n)),
+        (-10i64..10).prop_map(symplex::int),
         Just(symplex::var("x")),
         Just(symplex::var("y")),
     ];

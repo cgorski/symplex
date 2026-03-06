@@ -7,6 +7,7 @@ use crate::arena::Arena;
 use crate::errors::SymplexError;
 use crate::node::{ExprId, ExprNode};
 use num_traits::ToPrimitive;
+use rustc_hash::FxHashMap;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CodegenOptions types
@@ -174,6 +175,19 @@ pub(crate) fn to_rust_fn_with_options(
         (Vec::new(), expr)
     };
 
+    // Post-CSE constant propagation: evaluate pure-constant bindings
+    let mut cse_constants: FxHashMap<usize, f64> = FxHashMap::default();
+    let mut kept_bindings: Vec<(usize, ExprId)> = Vec::new();
+    for (i, (_, binding_expr)) in bindings_list.iter().enumerate() {
+        if is_pure_constant(arena, *binding_expr, &cse_constants)
+            && let Some(val) = eval_constant_f64(arena, *binding_expr, &cse_constants)
+        {
+            cse_constants.insert(i, val);
+            continue;
+        }
+        kept_bindings.push((i, *binding_expr));
+    }
+
     let mut lines = Vec::new();
 
     // Cfg-gated math module
@@ -197,14 +211,15 @@ pub(crate) fn to_rust_fn_with_options(
         params.join(", ")
     ));
 
-    // CSE bindings
-    for (i, (_, binding_expr)) in bindings_list.iter().enumerate() {
-        let code = expr_to_rust(arena, *binding_expr, args, options)?;
+    // CSE bindings (skip pure-constant ones)
+    for &(i, binding_expr) in &kept_bindings {
+        let code = expr_to_rust_cse(arena, binding_expr, args, options, &cse_constants)?;
         lines.push(format!("    let t{i} = {code};"));
     }
 
-    // Final expression
-    let result_code = expr_to_rust(arena, final_expr, args, options)?;
+    // Final expression (strip unnecessary outer parens)
+    let result_code = expr_to_rust_cse(arena, final_expr, args, options, &cse_constants)?;
+    let result_code = strip_outer_parens(&result_code);
     lines.push(format!("    {result_code}"));
     lines.push("}".to_string());
 
@@ -234,6 +249,19 @@ pub(crate) fn matrix_to_rust_fn(
         (Vec::new(), entries.to_vec())
     };
 
+    // Post-CSE constant propagation: evaluate pure-constant bindings
+    let mut cse_constants: FxHashMap<usize, f64> = FxHashMap::default();
+    let mut kept_bindings: Vec<(usize, ExprId)> = Vec::new();
+    for (i, (_, binding_expr)) in bindings_list.iter().enumerate() {
+        if is_pure_constant(arena, *binding_expr, &cse_constants)
+            && let Some(val) = eval_constant_f64(arena, *binding_expr, &cse_constants)
+        {
+            cse_constants.insert(i, val);
+            continue;
+        }
+        kept_bindings.push((i, *binding_expr));
+    }
+
     let mut lines = Vec::new();
 
     // Cfg-gated math module
@@ -257,15 +285,15 @@ pub(crate) fn matrix_to_rust_fn(
         params.join(", ")
     ));
 
-    // CSE bindings
-    for (i, (_, binding_expr)) in bindings_list.iter().enumerate() {
-        let code = expr_to_rust(arena, *binding_expr, args, options)?;
+    // CSE bindings (skip pure-constant ones)
+    for &(i, binding_expr) in &kept_bindings {
+        let code = expr_to_rust_cse(arena, binding_expr, args, options, &cse_constants)?;
         lines.push(format!("    let t{i} = {code};"));
     }
 
     // Matrix entries
     for (i, &entry_id) in final_entries.iter().enumerate() {
-        let code = expr_to_rust(arena, entry_id, args, options)?;
+        let code = expr_to_rust_cse(arena, entry_id, args, options, &cse_constants)?;
         if i == 0 {
             lines.push(format!("    [{code},"));
         } else if i + 1 == total {
@@ -355,11 +383,22 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
 // Expression-to-Rust code generator
 // ═══════════════════════════════════════════════════════════════════════════
 
+#[cfg(test)]
 fn expr_to_rust(
     arena: &Arena,
     id: ExprId,
     var_names: &[&str],
     options: &CodegenOptions,
+) -> Result<String, SymplexError> {
+    expr_to_rust_cse(arena, id, var_names, options, &FxHashMap::default())
+}
+
+fn expr_to_rust_cse(
+    arena: &Arena,
+    id: ExprId,
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
 ) -> Result<String, SymplexError> {
     let prec = options.precision;
     let suffix = prec.suffix();
@@ -371,9 +410,10 @@ fn expr_to_rust(
                 let n = r.numer();
                 Ok(format!("{n}{suffix}"))
             } else {
-                let num = r.numer();
-                let den = r.denom();
-                Ok(format!("({num}{suffix} / {den}{suffix})"))
+                let n = r.numer().to_f64().unwrap_or(0.0);
+                let d = r.denom().to_f64().unwrap_or(1.0);
+                let val = n / d;
+                Ok(format!("{}{suffix}", format_float(val)))
             }
         }
         ExprNode::Symbol(sid) => {
@@ -385,7 +425,12 @@ fn expr_to_rust(
                 let idx: usize = idx_str.parse().map_err(|_| {
                     SymplexError::NotImplemented(format!("invalid CSE variable name: {sym_name}"))
                 })?;
-                Ok(format!("t{idx}"))
+                // Check if this CSE variable was resolved to a constant
+                if let Some(&val) = cse_constants.get(&idx) {
+                    Ok(format!("{}{suffix}", format_float(val)))
+                } else {
+                    Ok(format!("t{idx}"))
+                }
             } else {
                 Err(SymplexError::FreeSymbol {
                     name: sym_name.to_string(),
@@ -399,43 +444,103 @@ fn expr_to_rust(
         ExprNode::NaN | ExprNode::ComplexInfinity => Ok(prec.nan().to_string()),
         ExprNode::Add(ref children) => {
             if children.is_empty() {
-                return Ok(format!("0{suffix}"));
+                return Ok(format!("0.0{suffix}"));
             }
-            let parts: Result<Vec<String>, _> = children
+            // Filter out zero-valued children (from CSE constant propagation)
+            let live: Vec<ExprId> = children
                 .iter()
-                .map(|&c| expr_to_rust(arena, c, var_names, options))
+                .copied()
+                .filter(|&c| {
+                    try_resolve_constant(arena, c, cse_constants)
+                        .is_none_or(|v| v != 0.0)
+                })
                 .collect();
-            Ok(format!("({})", parts?.join(" + ")))
+            if live.is_empty() {
+                return Ok(format!("0.0{suffix}"));
+            }
+            if live.len() == 1 {
+                return expr_to_rust_cse(arena, live[0], var_names, options, cse_constants);
+            }
+            // Build parts with subtraction detection
+            let mut parts = Vec::new();
+            for (i, &child) in live.iter().enumerate() {
+                let (is_neg, code) = if matches!(arena.node(child), ExprNode::Neg(_)) {
+                    if let ExprNode::Neg(inner) = arena.node(child).clone() {
+                        (true, expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?)
+                    } else {
+                        unreachable!()
+                    }
+                } else if is_neg_one_mul_codegen(arena, child) {
+                    (true, emit_mul_without_neg_one(arena, child, var_names, options, cse_constants)?)
+                } else {
+                    (false, expr_to_rust_cse(arena, child, var_names, options, cse_constants)?)
+                };
+                if i == 0 {
+                    if is_neg {
+                        parts.push(format!("-{code}"));
+                    } else {
+                        parts.push(code);
+                    }
+                } else if is_neg {
+                    parts.push(format!(" - {code}"));
+                } else {
+                    parts.push(format!(" + {code}"));
+                }
+            }
+            Ok(format!("({})", parts.join("")))
         }
         ExprNode::Mul(ref children) => {
             if children.is_empty() {
-                return Ok(format!("1{suffix}"));
+                return Ok(format!("1.0{suffix}"));
             }
-            // Detect leading -1 coefficient: emit -(rest) instead of (-1_f64 * rest)
-            if children.len() >= 2 {
-                if let Some(r) = arena.as_num(children[0]) {
-                    if r.is_integer() && r.numer().to_i64() == Some(-1) {
-                        let rest: Result<Vec<String>, _> = children[1..]
-                            .iter()
-                            .map(|&c| expr_to_rust(arena, c, var_names, options))
-                            .collect();
-                        let rest = rest?;
-                        if rest.len() == 1 {
-                            return Ok(format!("(-{})", rest[0]));
-                        } else {
-                            return Ok(format!("-({})", rest.join(" * ")));
-                        }
-                    }
+            // Check for zero-valued children → whole product is 0
+            for &c in children.iter() {
+                if let Some(v) = try_resolve_constant(arena, c, cse_constants)
+                    && v == 0.0
+                {
+                    return Ok(format!("0.0{suffix}"));
                 }
             }
-            let parts: Result<Vec<String>, _> = children
+            // Filter out 1.0-valued children
+            let live: Vec<ExprId> = children
                 .iter()
-                .map(|&c| expr_to_rust(arena, c, var_names, options))
+                .copied()
+                .filter(|&c| {
+                    try_resolve_constant(arena, c, cse_constants)
+                        .is_none_or(|v| v != 1.0)
+                })
+                .collect();
+            if live.is_empty() {
+                return Ok(format!("1.0{suffix}"));
+            }
+            if live.len() == 1 {
+                return expr_to_rust_cse(arena, live[0], var_names, options, cse_constants);
+            }
+            // Detect leading -1 coefficient: emit -(rest) instead of (-1_f64 * rest)
+            if live.len() >= 2
+                && let Some(r) = arena.as_num(live[0])
+                && r.is_integer()
+                && r.numer().to_i64() == Some(-1)
+            {
+                let rest: Result<Vec<String>, _> = live[1..]
+                    .iter()
+                    .map(|&c| expr_to_rust_cse(arena, c, var_names, options, cse_constants))
+                    .collect();
+                let rest = rest?;
+                return if rest.len() == 1 {
+                    Ok(format!("(-{})", rest[0]))
+                } else {
+                    Ok(format!("-({})", rest.join(" * ")))
+                };
+            }
+            let parts: Result<Vec<String>, _> = live
+                .iter()
+                .map(|&c| expr_to_rust_cse(arena, c, var_names, options, cse_constants))
                 .collect();
             Ok(format!("({})", parts?.join(" * ")))
         }
         ExprNode::Pow(base, exp) => {
-            let b = expr_to_rust(arena, base, var_names, options)?;
+            let b = expr_to_rust_cse(arena, base, var_names, options, cse_constants)?;
             if let Some(r) = arena.as_num(exp) {
                 if r.is_integer()
                     && let Some(n) = r.numer().to_i64()
@@ -452,36 +557,36 @@ fn expr_to_rust(
                     return emit_unary_call(&b, "cbrt", options);
                 }
             }
-            let e = expr_to_rust(arena, exp, var_names, options)?;
+            let e = expr_to_rust_cse(arena, exp, var_names, options, cse_constants)?;
             emit_powf(&b, &e, options)
         }
         ExprNode::Neg(inner) => {
-            let inner_code = expr_to_rust(arena, inner, var_names, options)?;
+            let inner_code = expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?;
             Ok(format!("(-{inner_code})"))
         }
-        ExprNode::Sin(x) => emit_unary(arena, x, "sin", var_names, options),
-        ExprNode::Cos(x) => emit_unary(arena, x, "cos", var_names, options),
-        ExprNode::Tan(x) => emit_unary(arena, x, "tan", var_names, options),
-        ExprNode::Exp(x) => emit_unary(arena, x, "exp", var_names, options),
-        ExprNode::Ln(x) => emit_unary(arena, x, "ln", var_names, options),
-        ExprNode::Abs(x) => emit_unary(arena, x, "abs", var_names, options),
-        ExprNode::Asin(x) => emit_unary(arena, x, "asin", var_names, options),
-        ExprNode::Acos(x) => emit_unary(arena, x, "acos", var_names, options),
-        ExprNode::Atan(x) => emit_unary(arena, x, "atan", var_names, options),
+        ExprNode::Sin(x) => emit_unary(arena, x, "sin", var_names, options, cse_constants),
+        ExprNode::Cos(x) => emit_unary(arena, x, "cos", var_names, options, cse_constants),
+        ExprNode::Tan(x) => emit_unary(arena, x, "tan", var_names, options, cse_constants),
+        ExprNode::Exp(x) => emit_unary(arena, x, "exp", var_names, options, cse_constants),
+        ExprNode::Ln(x) => emit_unary(arena, x, "ln", var_names, options, cse_constants),
+        ExprNode::Abs(x) => emit_unary(arena, x, "abs", var_names, options, cse_constants),
+        ExprNode::Asin(x) => emit_unary(arena, x, "asin", var_names, options, cse_constants),
+        ExprNode::Acos(x) => emit_unary(arena, x, "acos", var_names, options, cse_constants),
+        ExprNode::Atan(x) => emit_unary(arena, x, "atan", var_names, options, cse_constants),
         ExprNode::Atan2(y, x) => {
-            let y_code = expr_to_rust(arena, y, var_names, options)?;
-            let x_code = expr_to_rust(arena, x, var_names, options)?;
+            let y_code = expr_to_rust_cse(arena, y, var_names, options, cse_constants)?;
+            let x_code = expr_to_rust_cse(arena, x, var_names, options, cse_constants)?;
             emit_atan2(&y_code, &x_code, options)
         }
-        ExprNode::Sinh(x) => emit_unary(arena, x, "sinh", var_names, options),
-        ExprNode::Cosh(x) => emit_unary(arena, x, "cosh", var_names, options),
-        ExprNode::Tanh(x) => emit_unary(arena, x, "tanh", var_names, options),
-        ExprNode::Asinh(x) => emit_unary(arena, x, "asinh", var_names, options),
-        ExprNode::Acosh(x) => emit_unary(arena, x, "acosh", var_names, options),
-        ExprNode::Atanh(x) => emit_unary(arena, x, "atanh", var_names, options),
-        ExprNode::Sign(x) => emit_unary(arena, x, "signum", var_names, options),
+        ExprNode::Sinh(x) => emit_unary(arena, x, "sinh", var_names, options, cse_constants),
+        ExprNode::Cosh(x) => emit_unary(arena, x, "cosh", var_names, options, cse_constants),
+        ExprNode::Tanh(x) => emit_unary(arena, x, "tanh", var_names, options, cse_constants),
+        ExprNode::Asinh(x) => emit_unary(arena, x, "asinh", var_names, options, cse_constants),
+        ExprNode::Acosh(x) => emit_unary(arena, x, "acosh", var_names, options, cse_constants),
+        ExprNode::Atanh(x) => emit_unary(arena, x, "atanh", var_names, options, cse_constants),
+        ExprNode::Sign(x) => emit_unary(arena, x, "signum", var_names, options, cse_constants),
         ExprNode::Heaviside(x) => {
-            let code = expr_to_rust(arena, x, var_names, options)?;
+            let code = expr_to_rust_cse(arena, x, var_names, options, cse_constants)?;
             let s = options.precision.suffix();
             Ok(format!(
                 "(if {code} > 0.0{s} {{ 1.0{s} }} else if {code} < 0.0{s} {{ 0.0{s} }} else {{ 0.5{s} }})"
@@ -491,15 +596,15 @@ fn expr_to_rust(
             let s = options.precision.suffix();
             Ok(format!("0.0{s}"))
         }
-        ExprNode::Floor(x) => emit_unary(arena, x, "floor", var_names, options),
-        ExprNode::Ceiling(x) => emit_unary(arena, x, "ceil", var_names, options),
+        ExprNode::Floor(x) => emit_unary(arena, x, "floor", var_names, options, cse_constants),
+        ExprNode::Ceiling(x) => emit_unary(arena, x, "ceil", var_names, options, cse_constants),
         ExprNode::Min(ref children) => {
             if children.is_empty() {
                 return Ok(prec.infinity().to_string());
             }
-            let mut code = expr_to_rust(arena, children[0], var_names, options)?;
+            let mut code = expr_to_rust_cse(arena, children[0], var_names, options, cse_constants)?;
             for &c in &children[1..] {
-                let c_code = expr_to_rust(arena, c, var_names, options)?;
+                let c_code = expr_to_rust_cse(arena, c, var_names, options, cse_constants)?;
                 code = emit_min(&code, &c_code, options);
             }
             Ok(code)
@@ -508,9 +613,9 @@ fn expr_to_rust(
             if children.is_empty() {
                 return Ok(prec.neg_infinity().to_string());
             }
-            let mut code = expr_to_rust(arena, children[0], var_names, options)?;
+            let mut code = expr_to_rust_cse(arena, children[0], var_names, options, cse_constants)?;
             for &c in &children[1..] {
-                let c_code = expr_to_rust(arena, c, var_names, options)?;
+                let c_code = expr_to_rust_cse(arena, c, var_names, options, cse_constants)?;
                 code = emit_max(&code, &c_code, options);
             }
             Ok(code)
@@ -546,7 +651,7 @@ fn expr_to_rust(
             "cannot generate Rust code for symbolic Product".to_string(),
         )),
         ExprNode::Piecewise(ref branches) => {
-            codegen_piecewise(arena, branches, var_names, options)
+            codegen_piecewise(arena, branches, var_names, options, cse_constants)
         }
         ExprNode::BoolTrue
         | ExprNode::BoolFalse
@@ -640,6 +745,171 @@ fn format_float(v: f64) -> String {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CSE constant propagation helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Check if an expression tree consists entirely of constant leaves.
+///
+/// Returns `true` when every leaf is a `Num`, `Pi`, or `E` node — or a CSE
+/// symbol that was already resolved to a constant value.
+fn is_pure_constant(arena: &Arena, id: ExprId, resolved: &FxHashMap<usize, f64>) -> bool {
+    let mut stack = vec![id];
+    while let Some(cur) = stack.pop() {
+        match arena.node(cur) {
+            ExprNode::Num(_) | ExprNode::Pi | ExprNode::E => {}
+            ExprNode::Symbol(sid) => {
+                let name = arena.symbols.name(*sid);
+                if let Some(idx_str) = name.strip_prefix("__cse_")
+                    && let Ok(idx) = idx_str.parse::<usize>()
+                    && resolved.contains_key(&idx)
+                {
+                    continue;
+                }
+                return false;
+            }
+            other => {
+                for child in other.children() {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Recursively evaluate a pure-constant expression to `f64`.
+fn eval_constant_f64(
+    arena: &Arena,
+    id: ExprId,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Option<f64> {
+    match arena.node(id).clone() {
+        ExprNode::Num(nid) => {
+            let r = arena.num(nid);
+            let n = r.numer().to_f64()?;
+            let d = r.denom().to_f64()?;
+            Some(n / d)
+        }
+        ExprNode::Pi => Some(std::f64::consts::PI),
+        ExprNode::E => Some(std::f64::consts::E),
+        ExprNode::Symbol(sid) => {
+            let name = arena.symbols.name(sid);
+            let idx_str = name.strip_prefix("__cse_")?;
+            let idx: usize = idx_str.parse().ok()?;
+            cse_constants.get(&idx).copied()
+        }
+        ExprNode::Add(ref children) => {
+            let mut sum = 0.0;
+            for &c in children {
+                sum += eval_constant_f64(arena, c, cse_constants)?;
+            }
+            Some(sum)
+        }
+        ExprNode::Mul(ref children) => {
+            let mut prod = 1.0;
+            for &c in children {
+                prod *= eval_constant_f64(arena, c, cse_constants)?;
+            }
+            Some(prod)
+        }
+        ExprNode::Neg(inner) => eval_constant_f64(arena, inner, cse_constants).map(|v| -v),
+        ExprNode::Pow(base, exp) => {
+            let b = eval_constant_f64(arena, base, cse_constants)?;
+            let e = eval_constant_f64(arena, exp, cse_constants)?;
+            Some(b.powf(e))
+        }
+        ExprNode::Sin(x) => eval_constant_f64(arena, x, cse_constants).map(|v| v.sin()),
+        ExprNode::Cos(x) => eval_constant_f64(arena, x, cse_constants).map(|v| v.cos()),
+        ExprNode::Tan(x) => eval_constant_f64(arena, x, cse_constants).map(|v| v.tan()),
+        ExprNode::Exp(x) => eval_constant_f64(arena, x, cse_constants).map(|v| v.exp()),
+        ExprNode::Ln(x) => eval_constant_f64(arena, x, cse_constants).map(|v| v.ln()),
+        ExprNode::Abs(x) => eval_constant_f64(arena, x, cse_constants).map(|v| v.abs()),
+        _ => None,
+    }
+}
+
+/// Try to resolve an expression to a known constant `f64`.
+///
+/// Checks direct numeric literals, Pi, E, and CSE symbols that were previously
+/// resolved to constant values.
+fn try_resolve_constant(
+    arena: &Arena,
+    id: ExprId,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Option<f64> {
+    if let Some(v) = try_const_eval_f64(arena, id) {
+        return Some(v);
+    }
+    if let ExprNode::Symbol(sid) = arena.node(id)
+        && let Some(idx_str) = arena.symbols.name(*sid).strip_prefix("__cse_")
+        && let Ok(idx) = idx_str.parse::<usize>()
+    {
+        return cse_constants.get(&idx).copied();
+    }
+    None
+}
+
+/// Check if `id` is a `Mul` node whose first factor is −1.
+fn is_neg_one_mul_codegen(arena: &Arena, id: ExprId) -> bool {
+    if let ExprNode::Mul(children) = arena.node(id)
+        && let Some(&first) = children.first()
+        && let ExprNode::Num(nid) = arena.node(first)
+    {
+        let r = arena.num(*nid);
+        return r.is_integer() && r.numer().to_i64() == Some(-1);
+    }
+    false
+}
+
+/// Emit the non-neg-one part of a `Mul([-1, rest...])` node.
+fn emit_mul_without_neg_one(
+    arena: &Arena,
+    id: ExprId,
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Result<String, SymplexError> {
+    if let ExprNode::Mul(ref children) = arena.node(id).clone() {
+        let rest: Result<Vec<String>, _> = children[1..]
+            .iter()
+            .map(|&c| expr_to_rust_cse(arena, c, var_names, options, cse_constants))
+            .collect();
+        let rest = rest?;
+        if rest.len() == 1 {
+            Ok(rest.into_iter().next().unwrap())
+        } else {
+            Ok(format!("({})", rest.join(" * ")))
+        }
+    } else {
+        expr_to_rust_cse(arena, id, var_names, options, cse_constants)
+    }
+}
+
+/// Strip one level of outer parentheses when they wrap the entire string.
+#[must_use]
+fn strip_outer_parens(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'(') || bytes.last() != Some(&b')') {
+        return s;
+    }
+    let inner = &s[1..s.len() - 1];
+    let mut depth: i32 = 0;
+    for c in inner.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return s;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth == 0 { inner } else { s }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Backend-aware emission helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -654,17 +924,17 @@ fn emit_unary(
     func: &str,
     var_names: &[&str],
     options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
 ) -> Result<String, SymplexError> {
     // Constant folding: evaluate at codegen time when the argument is known.
-    if let Some(val) = try_const_eval_f64(arena, arg) {
-        if let Some(result) = eval_unary_f64(func, val) {
-            if result.is_finite() || result == 0.0 {
-                let suffix = options.precision.suffix();
-                return Ok(format!("{}{}", format_float(result), suffix));
-            }
-        }
+    if let Some(val) = try_const_eval_f64(arena, arg)
+        && let Some(result) = eval_unary_f64(func, val)
+        && (result.is_finite() || result == 0.0)
+    {
+        let suffix = options.precision.suffix();
+        return Ok(format!("{}{}", format_float(result), suffix));
     }
-    let code = expr_to_rust(arena, arg, var_names, options)?;
+    let code = expr_to_rust_cse(arena, arg, var_names, options, cse_constants)?;
     emit_unary_call(&code, func, options)
 }
 
@@ -776,6 +1046,7 @@ fn codegen_piecewise(
     branches: &[(ExprId, ExprId)],
     var_names: &[&str],
     options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
 ) -> Result<String, SymplexError> {
     if branches.is_empty() {
         return Ok(options.precision.nan().to_string());
@@ -783,8 +1054,8 @@ fn codegen_piecewise(
 
     let mut parts = Vec::new();
     for (i, &(value, cond)) in branches.iter().enumerate() {
-        let val_code = expr_to_rust(arena, value, var_names, options)?;
-        let cond_code = bool_to_rust(arena, cond, var_names, options)?;
+        let val_code = expr_to_rust_cse(arena, value, var_names, options, cse_constants)?;
+        let cond_code = bool_to_rust(arena, cond, var_names, options, cse_constants)?;
         if i == 0 {
             parts.push(format!("if {cond_code} {{ {val_code} }}"));
         } else {
@@ -801,46 +1072,47 @@ fn bool_to_rust(
     id: ExprId,
     var_names: &[&str],
     options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
 ) -> Result<String, SymplexError> {
     match arena.node(id).clone() {
         ExprNode::BoolTrue => Ok("true".to_string()),
         ExprNode::BoolFalse => Ok("false".to_string()),
         ExprNode::Gt(a, b) => {
-            let la = expr_to_rust(arena, a, var_names, options)?;
-            let lb = expr_to_rust(arena, b, var_names, options)?;
+            let la = expr_to_rust_cse(arena, a, var_names, options, cse_constants)?;
+            let lb = expr_to_rust_cse(arena, b, var_names, options, cse_constants)?;
             Ok(format!("({la} > {lb})"))
         }
         ExprNode::Ge(a, b) => {
-            let la = expr_to_rust(arena, a, var_names, options)?;
-            let lb = expr_to_rust(arena, b, var_names, options)?;
+            let la = expr_to_rust_cse(arena, a, var_names, options, cse_constants)?;
+            let lb = expr_to_rust_cse(arena, b, var_names, options, cse_constants)?;
             Ok(format!("({la} >= {lb})"))
         }
         ExprNode::Eq_(a, b) => {
-            let la = expr_to_rust(arena, a, var_names, options)?;
-            let lb = expr_to_rust(arena, b, var_names, options)?;
+            let la = expr_to_rust_cse(arena, a, var_names, options, cse_constants)?;
+            let lb = expr_to_rust_cse(arena, b, var_names, options, cse_constants)?;
             Ok(format!("({la} == {lb})"))
         }
         ExprNode::Ne(a, b) => {
-            let la = expr_to_rust(arena, a, var_names, options)?;
-            let lb = expr_to_rust(arena, b, var_names, options)?;
+            let la = expr_to_rust_cse(arena, a, var_names, options, cse_constants)?;
+            let lb = expr_to_rust_cse(arena, b, var_names, options, cse_constants)?;
             Ok(format!("({la} != {lb})"))
         }
         ExprNode::And(ref children) => {
             let parts: Result<Vec<String>, _> = children
                 .iter()
-                .map(|&c| bool_to_rust(arena, c, var_names, options))
+                .map(|&c| bool_to_rust(arena, c, var_names, options, cse_constants))
                 .collect();
             Ok(format!("({})", parts?.join(" && ")))
         }
         ExprNode::Or(ref children) => {
             let parts: Result<Vec<String>, _> = children
                 .iter()
-                .map(|&c| bool_to_rust(arena, c, var_names, options))
+                .map(|&c| bool_to_rust(arena, c, var_names, options, cse_constants))
                 .collect();
             Ok(format!("({})", parts?.join(" || ")))
         }
         ExprNode::Not(inner) => {
-            let code = bool_to_rust(arena, inner, var_names, options)?;
+            let code = bool_to_rust(arena, inner, var_names, options, cse_constants)?;
             Ok(format!("(!{code})"))
         }
         _ => Err(SymplexError::NotImplemented(format!(
@@ -877,7 +1149,7 @@ mod tests {
         let mut a = Arena::new();
         let half = a.rational(1, 2);
         let code = expr_to_rust(&a, half, &[], &default_opts()).unwrap();
-        assert_eq!(code, "(1_f64 / 2_f64)");
+        assert_eq!(code, "0.5_f64");
     }
 
     #[test]

@@ -130,7 +130,7 @@ fn laplacian_of_x4() {
     let lap = laplacian(&f, &[&x]);
     let simplified = lap.eval().simplify();
     let s = format!("{simplified}");
-    assert!(s == "12*x^2" || s == "12*x^2", "got: {s}");
+    assert!(s == "12*x^2", "got: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -193,7 +193,7 @@ fn sub_ex_i64() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = &x - 3;
-    assert_eq!(format!("{result}"), "x + -3");
+    assert_eq!(format!("{result}"), "x - 3");
 }
 
 #[test]

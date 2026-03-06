@@ -2,6 +2,7 @@
 //!
 //! Pipeline: grevlex Buchberger → FGLM to lex → back-substitution.
 
+use crate::arena::Arena;
 use crate::groebner;
 use crate::multipoly::*;
 use num_bigint::BigInt;
@@ -75,7 +76,7 @@ pub fn solve_polynomial_system(
 
     // Step 4: FGLM to lex ordering
     let lex_gb = groebner::groebner_basis_lex(
-        &nonzero.iter().map(|p| p.clone()).collect::<Vec<_>>(),
+        &nonzero.to_vec(),
     );
 
     if lex_gb.is_empty() {
@@ -491,7 +492,7 @@ pub fn solve_system_ex(
 
     // Solve via Gröbner basis + back-substitution.
     match solve_polynomial_system(&polys) {
-        Ok(solutions) => {
+        Ok(solutions) if !solutions.is_empty() => {
             // Convert rational solutions back to Ex.
             let result: Vec<Vec<Ex>> = solutions
                 .into_iter()
@@ -509,11 +510,260 @@ pub fn solve_system_ex(
                 .collect();
             Ok(result)
         }
+        Ok(_empty) => {
+            // No rational roots found.  Fall back to symbolic solving
+            // which can discover irrational roots (e.g. √(3/2)).
+            solve_system_symbolic_fallback(first, &polys, &var_ids, num_vars)
+        }
         Err(msg) => Err(crate::errors::SymplexError::ComputationFailed {
             operation: "solve_system_ex",
             reason: msg,
         }),
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Symbolic fallback for irrational roots
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Fallback solver that uses the general symbolic equation solver to find
+/// irrational roots when the rational root theorem returns empty.
+///
+/// Computes a lex Gröbner basis, converts the univariate polynomials to
+/// symbolic expressions, solves them with [`crate::solve::solve`], then
+/// back-substitutes symbolically through the remaining basis elements.
+fn solve_system_symbolic_fallback(
+    first: &Ex,
+    polys: &[MultiPoly<GrevLex>],
+    var_ids: &[ExprId],
+    num_vars: usize,
+) -> Result<Vec<Vec<Ex>>, crate::errors::SymplexError> {
+    // Compute lex Gröbner basis.
+    let lex_gb = groebner::groebner_basis_lex(polys);
+
+    if lex_gb.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Perform symbolic triangular back-substitution under a write lock.
+    let mut guard = first.inner.write();
+    let arena = &mut guard.arena;
+
+    let solutions = solve_triangular_symbolic(arena, &lex_gb, var_ids, num_vars);
+    drop(guard);
+
+    // Wrap ExprId solutions as Ex.
+    let result: Vec<Vec<Ex>> = solutions
+        .into_iter()
+        .map(|sol| sol.into_iter().map(|id| first.wrap(id)).collect())
+        .collect();
+    Ok(result)
+}
+
+/// Symbolic triangular back-substitution through a lex Gröbner basis.
+///
+/// Like [`solve_triangular`] but uses the general symbolic solver instead
+/// of the rational root theorem, enabling discovery of irrational roots.
+fn solve_triangular_symbolic(
+    arena: &mut Arena,
+    basis: &[MultiPoly<Lex>],
+    var_ids: &[ExprId],
+    num_vars: usize,
+) -> Vec<Vec<ExprId>> {
+    if num_vars == 0 || basis.is_empty() {
+        return vec![vec![]];
+    }
+
+    let last_var_idx = num_vars - 1;
+    let last_var_id = var_ids[last_var_idx];
+
+    // Find a polynomial that is univariate in the last variable.
+    let univariate = basis.iter().find(|p| {
+        !p.is_zero()
+            && p.terms().all(|(exp, _)| {
+                exp.iter()
+                    .enumerate()
+                    .all(|(i, &e)| i == last_var_idx || e == 0)
+            })
+    });
+
+    let univariate = match univariate {
+        Some(u) => u,
+        None => return vec![],
+    };
+
+    // Convert univariate MultiPoly to a symbolic expression and solve.
+    let expr_id = univariate_multipoly_to_expr(arena, univariate, last_var_id, last_var_idx);
+    let roots = crate::solve::solve(arena, expr_id, last_var_id);
+
+    if roots.is_empty() {
+        return vec![];
+    }
+
+    let mut all_solutions = Vec::new();
+
+    for root in &roots {
+        if num_vars == 1 {
+            all_solutions.push(vec![root.value]);
+        } else {
+            // Convert remaining basis elements to symbolic expressions,
+            // substitute the root for the last variable, and recurse.
+            let mut reduced_exprs = Vec::new();
+            for p in basis {
+                let poly_expr = multipoly_to_expr(arena, p, var_ids);
+                let subst = crate::subs::subs(arena, poly_expr, last_var_id, root.value);
+                if !arena.is_zero_structural(subst) {
+                    reduced_exprs.push(subst);
+                }
+            }
+
+            let sub_solutions = solve_remaining_symbolic(
+                arena,
+                &reduced_exprs,
+                &var_ids[..last_var_idx],
+            );
+
+            for mut sub_sol in sub_solutions {
+                sub_sol.push(root.value);
+                all_solutions.push(sub_sol);
+            }
+        }
+    }
+
+    all_solutions
+}
+
+/// Recursively solve a set of symbolic expressions for the given variables.
+///
+/// Solves each variable from last to first.  For each solvable expression,
+/// substitutes the found root into the remaining expressions and recurses.
+fn solve_remaining_symbolic(
+    arena: &mut Arena,
+    exprs: &[ExprId],
+    var_ids: &[ExprId],
+) -> Vec<Vec<ExprId>> {
+    if var_ids.is_empty() {
+        return vec![vec![]];
+    }
+    if exprs.is_empty() {
+        return vec![vec![]];
+    }
+
+    let last_idx = var_ids.len() - 1;
+    let last_var = var_ids[last_idx];
+
+    // Try each expression to find one solvable for the last variable.
+    for (i, &expr) in exprs.iter().enumerate() {
+        // Check that the expression actually involves this variable.
+        if !crate::solve::expr_contains_var_pub(arena, expr, last_var) {
+            continue;
+        }
+
+        let roots = crate::solve::solve(arena, expr, last_var);
+        if roots.is_empty() {
+            continue;
+        }
+
+        let mut all_solutions = Vec::new();
+
+        for root in &roots {
+            if var_ids.len() == 1 {
+                all_solutions.push(vec![root.value]);
+            } else {
+                // Substitute this root into remaining expressions.
+                let mut reduced = Vec::new();
+                for (j, &e) in exprs.iter().enumerate() {
+                    if j == i {
+                        continue;
+                    }
+                    let subst = crate::subs::subs(arena, e, last_var, root.value);
+                    if !arena.is_zero_structural(subst) {
+                        reduced.push(subst);
+                    }
+                }
+
+                let sub_sols = solve_remaining_symbolic(
+                    arena,
+                    &reduced,
+                    &var_ids[..last_idx],
+                );
+
+                for mut sub_sol in sub_sols {
+                    sub_sol.push(root.value);
+                    all_solutions.push(sub_sol);
+                }
+            }
+        }
+
+        return all_solutions;
+    }
+
+    vec![]
+}
+
+/// Convert a univariate [`MultiPoly<Lex>`] (univariate in `var_idx`) to a
+/// symbolic expression in the arena.
+fn univariate_multipoly_to_expr(
+    arena: &mut Arena,
+    poly: &MultiPoly<Lex>,
+    var_id: ExprId,
+    var_idx: usize,
+) -> ExprId {
+    let mut terms = Vec::new();
+    for (exp, coeff) in poly.terms() {
+        let deg = exp[var_idx];
+        let coeff_id = ratio_to_expr(arena, coeff);
+        if deg == 0 {
+            terms.push(coeff_id);
+        } else if deg == 1 {
+            terms.push(arena.mul(&[coeff_id, var_id]));
+        } else {
+            let exp_id = arena.int(i64::from(deg));
+            let var_pow = arena.pow(var_id, exp_id);
+            terms.push(arena.mul(&[coeff_id, var_pow]));
+        }
+    }
+    if terms.is_empty() {
+        arena.zero
+    } else {
+        arena.add(&terms)
+    }
+}
+
+/// Convert a general [`MultiPoly<Lex>`] to a symbolic expression in the
+/// arena, using the given variable ExprIds.
+fn multipoly_to_expr(
+    arena: &mut Arena,
+    poly: &MultiPoly<Lex>,
+    var_ids: &[ExprId],
+) -> ExprId {
+    let mut terms = Vec::new();
+    for (exp, coeff) in poly.terms() {
+        let coeff_id = ratio_to_expr(arena, coeff);
+        let mut factors = vec![coeff_id];
+        for (i, &e) in exp.iter().enumerate() {
+            if e > 0 && i < var_ids.len() {
+                if e == 1 {
+                    factors.push(var_ids[i]);
+                } else {
+                    let exp_id = arena.int(i64::from(e));
+                    factors.push(arena.pow(var_ids[i], exp_id));
+                }
+            }
+        }
+        terms.push(arena.mul(&factors));
+    }
+    if terms.is_empty() {
+        arena.zero
+    } else {
+        arena.add(&terms)
+    }
+}
+
+/// Convert a `Ratio<BigInt>` to an expression in the arena.
+fn ratio_to_expr(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
+    let nid = arena.intern_num(r.clone());
+    arena.intern(ExprNode::Num(nid))
 }
 
 #[cfg(test)]

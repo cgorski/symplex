@@ -66,14 +66,14 @@ fn miller_rabin(n: u64, witnesses: &[u64]) -> bool {
     if n < 4 {
         return true;
     }
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         return false;
     }
 
     // Write n-1 as 2^r · d where d is odd
     let mut d = n - 1;
     let mut r = 0u32;
-    while d % 2 == 0 {
+    while d.is_multiple_of(2) {
         d /= 2;
         r += 1;
     }
@@ -246,7 +246,7 @@ fn factorint_i64(n: i64) -> Vec<(i64, u32)> {
             break;
         }
         let mut count = 0u32;
-        while n % p == 0 {
+        while n.is_multiple_of(p) {
             n /= p;
             count += 1;
         }
@@ -259,7 +259,7 @@ fn factorint_i64(n: i64) -> Vec<(i64, u32)> {
     let mut d = 101u64;
     while d * d <= n {
         let mut count = 0u32;
-        while n % d == 0 {
+        while n.is_multiple_of(d) {
             n /= d;
             count += 1;
         }
@@ -310,13 +310,13 @@ fn factorint_big_internal(n: &BigInt) -> Vec<(BigInt, u32)> {
     }
 
     // If the remaining cofactor fits in i64, delegate to the fast i64 path
-    if n > BigInt::one() {
-        if let Some(ni) = n.to_i64() {
-            for (p, e) in factorint_i64(ni) {
-                factors.push((BigInt::from(p), e));
-            }
-            return factors;
+    if n > BigInt::one()
+        && let Some(ni) = n.to_i64()
+    {
+        for (p, e) in factorint_i64(ni) {
+            factors.push((BigInt::from(p), e));
         }
+        return factors;
     }
 
     // For cofactors that exceed i64, check if already prime to avoid
@@ -420,7 +420,7 @@ fn isqrt_big(n: &BigInt) -> Option<BigInt> {
     // Initial guess: use bit length for a rough sqrt
     // sqrt(2^b) ≈ 2^(b/2)
     let bit_len = n.bits();
-    let mut x = BigInt::one() << ((bit_len + 1) / 2) as usize;
+    let mut x = BigInt::one() << bit_len.div_ceil(2) as usize;
     loop {
         // Newton step: x_new = (x + n/x) / 2
         let x_new = (&x + n / &x) / &two;
@@ -695,7 +695,7 @@ pub fn mobius(n: impl Into<BigInt>) -> i8 {
             return 0;
         }
     }
-    if factors.len() % 2 == 0 {
+    if factors.len().is_multiple_of(2) {
         1
     } else {
         -1
@@ -971,7 +971,7 @@ pub fn primes_up_to(limit: i64) -> Vec<i64> {
 pub fn legendre_symbol(a: impl Into<BigInt>, p: impl Into<BigInt>) -> i8 {
     let a: BigInt = a.into();
     let p: BigInt = p.into();
-    assert!(p > BigInt::from(2) && isprime_big_internal(&p) || p.to_i64().map_or(false, |pi| pi > 2 && isprime_i64(pi)),
+    assert!(p > BigInt::from(2) && isprime_big_internal(&p) || p.to_i64().is_some_and(|pi| pi > 2 && isprime_i64(pi)),
             "p must be an odd prime");
     let a_mod = ((&a % &p) + &p) % &p;
     if a_mod.is_zero() {

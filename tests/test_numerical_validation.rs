@@ -14,21 +14,19 @@ fn assert_numerically_equal(a: &Ex, b: &Ex, x: &Ex, points: &[i64], tolerance: f
         let b_sub = b.subs_i64(x, pt);
         let a_val = a_sub.eval_f64();
         let b_val = b_sub.eval_f64();
-        match (a_val, b_val) {
-            (Ok(av), Ok(bv)) => {
-                if av.is_nan() && bv.is_nan() {
-                    continue;
-                }
-                if av.is_infinite() && bv.is_infinite() && av.signum() == bv.signum() {
-                    continue;
-                }
-                let diff = (av - bv).abs();
-                assert!(
-                    diff < tolerance,
-                    "{msg} at x={pt}: {av} vs {bv} (diff={diff})"
-                );
+        // If either can't be evaluated, skip the point
+        if let (Ok(av), Ok(bv)) = (a_val, b_val) {
+            if av.is_nan() && bv.is_nan() {
+                continue;
             }
-            _ => {} // If either can't be evaluated, skip the point
+            if av.is_infinite() && bv.is_infinite() && av.signum() == bv.signum() {
+                continue;
+            }
+            let diff = (av - bv).abs();
+            assert!(
+                diff < tolerance,
+                "{msg} at x={pt}: {av} vs {bv} (diff={diff})"
+            );
         }
     }
 }

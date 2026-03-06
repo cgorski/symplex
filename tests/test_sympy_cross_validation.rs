@@ -765,10 +765,11 @@ fn process_solve(ctx: &Context, fixture: &Fixture) -> Status {
     let mut bad_roots: Vec<String> = Vec::new();
     for root in &roots {
         let residual = expr.subs(&var, root).eval();
-        if let Ok(r) = residual.eval_f64() {
-            if !r.is_nan() && r.abs() > TOLERANCE {
-                bad_roots.push(format!("root {} has residual {} (should be ~0)", root, r));
-            }
+        if let Ok(r) = residual.eval_f64()
+            && !r.is_nan()
+            && r.abs() > TOLERANCE
+        {
+            bad_roots.push(format!("root {} has residual {} (should be ~0)", root, r));
         }
         // If we can't evaluate the residual, the root might be symbolic
         // and correct — don't count as failure.

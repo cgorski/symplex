@@ -18,7 +18,7 @@ use symplex::prelude::*;
 /// and compatible with `prop_recursive`.
 fn arb_expr(depth: u32) -> impl Strategy<Value = Ex> {
     let leaf = prop_oneof![
-        (-20i64..20).prop_map(|n| symplex::int(n)),
+        (-20i64..20).prop_map(symplex::int),
         Just(symplex::var("x")),
         Just(symplex::var("y")),
         // Small rationals p/q

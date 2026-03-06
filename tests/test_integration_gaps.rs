@@ -20,15 +20,15 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
     if let (Ok(o), Ok(d)) = (
         integrand.subs(var, &test_point).eval_f64(),
         deriv.subs(var, &test_point).eval_f64(),
-    ) {
-        if o.is_finite() && d.is_finite() {
-            let diff = (o - d).abs();
-            let tol = 1e-8 * o.abs().max(1.0);
-            assert!(
-                diff < tol,
-                "{label}: FTC failed — integrand={o:.12}, deriv={d:.12}, diff={diff:.2e}",
-            );
-        }
+    )
+        && o.is_finite() && d.is_finite()
+    {
+        let diff = (o - d).abs();
+        let tol = 1e-8 * o.abs().max(1.0);
+        assert!(
+            diff < tol,
+            "{label}: FTC failed — integrand={o:.12}, deriv={d:.12}, diff={diff:.2e}",
+        );
     }
 }
 

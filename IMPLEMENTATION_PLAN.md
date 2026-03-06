@@ -13,9 +13,45 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 
 ### Build and test
 
-    cargo test          # 4,370+ tests — all must pass
-    cargo clippy        # 0 warnings required (1 pre-existing dead_code warning in sturm.rs)
-    cargo bench         # Criterion benchmarks (27)
+    cargo test --lib              # Fast loop: 1,193 lib tests in ~2s (3-4s wall after src/ change)
+    cargo test --all-targets      # Full suite: 4,560+ tests — all must pass (45s after src/ change)
+    cargo clippy --all-targets -- -D warnings   # 0 warnings required
+    cargo bench                   # Criterion benchmarks (27)
+
+### Test timing and the fast development loop
+
+We have **131 integration test files** under `tests/`, each compiled as a separate
+binary by Cargo. Touching any `src/` file triggers relinking all 131 binaries,
+which takes ~40 seconds even though test execution itself is ~10 seconds.
+
+**Use the fast loop during development:**
+
+    cargo test --lib                           # 3-4s — covers 1,193 unit tests
+    cargo test --lib --test test_foo           # 4-5s — add one targeted integration test
+    cargo test --all-targets                   # 45s  — full suite, only before commits
+
+**Timing breakdown (measured 2025-07):**
+
+| Command | After `touch src/lib.rs` | Warm (no changes) |
+|---------|--------------------------|-------------------|
+| `cargo test --lib` | 3.7s | 2.2s |
+| `cargo test --lib --test test_hard_math` | 4.4s | 2.3s |
+| `cargo test --all-targets` | 45s | 10s |
+| `cargo test --all-targets` (cold) | 55s | N/A |
+
+The slow `--all-targets` is caused by linking 131 separate test binaries, not
+by test execution. The **structural fix** (consolidating 131 files into ~10-15
+thematic test crates) is tracked for post-0.2.0. Until then, use `--lib` for
+the inner loop and `--all-targets` as a commit gate only.
+
+**Recommended agent verification protocol:**
+
+    cargo test --lib                                    # Always (fast)
+    cargo test --lib --test test_RELEVANT_FEATURE       # Targeted (fast)
+    cargo clippy --lib -- -D warnings                   # After src/ changes (fast)
+    # Only at phase gates:
+    cargo test --all-targets                            # Full (slow)
+    cargo clippy --all-targets -- -D warnings           # Full (slow)
 
 ### Architecture: six layers (each layer only calls downward)
 
@@ -49,7 +85,7 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 
 | Metric | Value |
 |--------|-------|
-| Tests | 4,370 passing, 0 failing |
+| Tests | 4,560+ passing, 0 failing |
 | Source | ~60,400 lines across 76 modules |
 | Tests | ~49,000 lines across 125 test files |
 | Examples | ~445 lines across 8 examples |
@@ -354,12 +390,12 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 | Metric | Value |
 |--------|-------|
-| Tests | 1,191+ lib tests, 0 failing |
+| Tests | 1,193+ lib tests, 4,560+ total, 0 failing |
 | ExprNode variants | 66 |
 | Source modules | 77 |
-| Integration test files | 126 |
-| Source | ~60,400 lines across 77 modules |
-| Tests | ~49,000 lines across 126 test files |
+| Integration test files | 131 (each compiles as separate binary — see §1 timing notes) |
+| Source | ~63,000 lines across 77 modules |
+| Tests | ~49,000+ lines across 131 test files |
 | Examples | ~445 lines across 13 examples |
 | Companion crates | ~1,045 lines across 2 crates (symplex-build, symplex-wasm) |
 | Total | ~111,000 lines |
@@ -375,7 +411,7 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 | Proptest properties | 22+ |
 | Solver degree support | 1–4 (Cardano cubic + Ferrari quartic) |
 | Examples | 13 |
-| Clippy warnings | 0 |
+| Clippy warnings | 0 (enforced: `cargo clippy --all-targets -- -D warnings`) |
 
 ---
 
@@ -384,7 +420,7 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 Active limitations (not yet resolved):
 
 1. **`bigint_to_bigfloat` loses precision for integers > i128.** Falls back to f64 intermediate.
-2. **`expr!(1/2)` is a compile error.** By design — prevents silent Rust integer division. Use `ctx.rational(1, 2)`.
+2. ~~**`expr!(1/2)` is a compile error.**~~ — **RESOLVED** (0.2.0: `expr!` macro now detects `int/int` and emits `rational(n,d)`)
 3. **`expr!(x^2^3)` nested integer powers.** Inner `2^3` evaluates as integer arithmetic, not symbolic.
 4. **`factor_terms` undone by Number×Add distribution.** `factor_terms(4x+6y)` extracts 2 but `canon_mul` distributes back. Needs display-only factored form.
 5. **`lambdify` does not support complex expressions.** Returns `None` for expressions containing `I`.
@@ -399,15 +435,16 @@ Active limitations (not yet resolved):
 14. **Laplace transforms are table-based.** No algorithmic fallback for forms outside the table.
 15. ~~**`diff_with_deps` is not exposed in public API.**~~ — **RESOLVED** (exposed as `Ex::diff_with_dependent()`)
 16. **Sturm-based inequality solving is a fast-path only.** The Sturm chain detects "no real roots" cases; full Sturm-based interval construction is not yet integrated into the sign-chart builder.
-17. **Display: `+ -N` pattern.** Add displays `x + -3` instead of `x - 3`. Fix planned for next release.
-18. **Matrix::to_latex() missing.** LaTeX rendering exists for Ex but not Matrix or Quaternion.
-19. **Codegen doesn't constant-fold.** Generated code contains `0_f64.cos()` instead of `1.0`.
-20. **Gröbner solver only finds rational roots.** Systems with irrational solutions (x²-2=0 → √2) return empty.
+17. ~~**Display: `+ -N` pattern.**~~ — **RESOLVED** (0.2.0: display already handles all Neg-child, neg-coeff, and neg-literal cases correctly)
+18. ~~**Matrix::to_latex() missing.**~~ — **RESOLVED** (exists at `matrix.rs:985`, verified working)
+19. ~~**Codegen doesn't constant-fold.**~~ — **RESOLVED** (0.2.0: post-CSE constant propagation eliminates trivial temps, dead-code elimination removes zero-product terms)
+20. ~~**Gröbner solver only finds rational roots.**~~ — **RESOLVED** (0.2.0: symbolic fallback via `solve()` for irrational univariate roots during Gröbner back-substitution)
 21. **No plotting/visualization.** No SVG, no matplotlib integration.
 22. **No Python bindings.** Rust-only API; no PyO3 wrapper.
-23. **`expr!` doesn't support fraction literals.** `expr!(1/2)` is a compile error (Rust integer division).
+23. ~~**`expr!` doesn't support fraction literals.**~~ — **RESOLVED** (same as #2)
 24. **2-DOF IK only.** Inverse kinematics limited to planar 2-DOF. General n-DOF IK requires Pieper decomposition (not yet implemented).
 25. **Number theory factorization uses trial division.** No Pollard rho or ECM for very large composites (>10^18). Adequate for most CAS use cases.
+26. **131 integration test binaries slow relink.** Touching any `src/` file triggers relinking all 131 test binaries (~40s). Use `cargo test --lib` for the fast loop. Structural fix (consolidate into ~10-15 thematic test crates) planned for post-0.2.0.
 
 ---
 

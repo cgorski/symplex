@@ -402,32 +402,31 @@ fn try_table_inverse(
         // Rule 3: 1/(iω − a) → exp(a·t)·H(t)
         // Represented as Pow(iω − a, -1) or as a Mul with Pow
         ExprNode::Pow(base, exp) => {
-            if let Some(r) = arena.as_num(exp).cloned() {
-                if r.is_negative() && r.is_integer() {
-                    if let Some(a) = extract_i_omega_minus_a(arena, base, omega) {
-                        let n_val = (-r.to_integer()).to_u64()?;
-                        if n_val >= 1 {
-                            let at = arena.mul(&[a, t]);
-                            let exp_at = arena.exp(at);
-                            let heaviside = arena.heaviside(t);
+            if let Some(r) = arena.as_num(exp).cloned()
+                && r.is_negative() && r.is_integer()
+                && let Some(a) = extract_i_omega_minus_a(arena, base, omega)
+            {
+                let n_val = (-r.to_integer()).to_u64()?;
+                if n_val >= 1 {
+                    let at = arena.mul(&[a, t]);
+                    let exp_at = arena.exp(at);
+                    let heaviside = arena.heaviside(t);
 
-                            if n_val == 1 {
-                                // 1/(iω − a) → exp(a·t)·H(t)
-                                return Some(arena.mul(&[exp_at, heaviside]));
-                            } else {
-                                // 1/(iω − a)^n → t^{n-1}·exp(a·t)·H(t) / (n-1)!
-                                let n_minus_1 = n_val - 1;
-                                let t_pow = if n_minus_1 == 1 {
-                                    t
-                                } else {
-                                    let exp_id = arena.int(n_minus_1 as i64);
-                                    arena.pow(t, exp_id)
-                                };
-                                let fact = factorial_expr(arena, n_minus_1);
-                                let numer = arena.mul(&[t_pow, exp_at, heaviside]);
-                                return Some(arena.div(numer, fact));
-                            }
-                        }
+                    if n_val == 1 {
+                        // 1/(iω − a) → exp(a·t)·H(t)
+                        return Some(arena.mul(&[exp_at, heaviside]));
+                    } else {
+                        // 1/(iω − a)^n → t^{n-1}·exp(a·t)·H(t) / (n-1)!
+                        let n_minus_1 = n_val - 1;
+                        let t_pow = if n_minus_1 == 1 {
+                            t
+                        } else {
+                            let exp_id = arena.int(n_minus_1 as i64);
+                            arena.pow(t, exp_id)
+                        };
+                        let fact = factorial_expr(arena, n_minus_1);
+                        let numer = arena.mul(&[t_pow, exp_at, heaviside]);
+                        return Some(arena.div(numer, fact));
                     }
                 }
             }
@@ -476,11 +475,11 @@ fn extract_i_omega_minus_a(arena: &mut Arena, base: ExprId, omega: ExprId) -> Op
 /// Check if `expr` is `i * omega`.
 fn is_i_times_omega(arena: &Arena, expr: ExprId, omega: ExprId) -> bool {
     let node = arena.node(expr);
-    if let ExprNode::Mul(children) = node {
-        if children.len() == 2 {
-            return (children[0] == arena.i_unit && children[1] == omega)
-                || (children[1] == arena.i_unit && children[0] == omega);
-        }
+    if let ExprNode::Mul(children) = node
+        && children.len() == 2
+    {
+        return (children[0] == arena.i_unit && children[1] == omega)
+            || (children[1] == arena.i_unit && children[0] == omega);
     }
     false
 }

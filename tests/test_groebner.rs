@@ -591,7 +591,7 @@ fn buchberger_single_polynomial() {
     let y = MultiPoly::<GrevLex>::var(2, 1);
 
     let f = (&x * &x).add(&y); // x² + y
-    let gb = groebner_basis(&[f.clone()]);
+    let gb = groebner_basis(std::slice::from_ref(&f));
     assert_eq!(gb.len(), 1);
     assert!(is_groebner_basis(&gb));
 

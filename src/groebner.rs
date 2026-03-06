@@ -203,19 +203,19 @@ fn pre_reduce<O: MonomialOrd>(input: &[MultiPoly<O>]) -> Vec<MultiPoly<O>> {
     loop {
         let mut changed = false;
         let mut new_result: Vec<MultiPoly<O>> = Vec::new();
-        for i in 0..result.len() {
+        for item in &result {
             // Reduce against predecessors already in new_result
             let others: Vec<&MultiPoly<O>> = new_result.iter().collect();
             let reduced = if others.is_empty() {
-                result[i].clone()
+                item.clone()
             } else {
-                result[i].reduce(&others)
+                item.reduce(&others)
             };
             if reduced.is_zero() {
                 changed = true; // element reduced to zero, removed
             } else {
                 let r = reduced.monic();
-                if r != result[i] {
+                if r != *item {
                     changed = true;
                 }
                 new_result.push(r);
@@ -698,10 +698,12 @@ enum EchelonResult {
 /// When a new vector is checked:
 ///   - If dependent: returns coefficients c such that nf = Σ c[i] * v_i
 ///   - If independent: adds it as a new echelon row
+type EchelonRow = (usize, Vec<Ratio<BigInt>>, Vec<Ratio<BigInt>>);
+
 struct IncrementalEchelon {
     d: usize,
     /// (pivot_column, vec_part, coeff_part)
-    rows: Vec<(usize, Vec<Ratio<BigInt>>, Vec<Ratio<BigInt>>)>,
+    rows: Vec<EchelonRow>,
     /// Number of independent vectors added so far.
     num_independent: usize,
 }

@@ -671,8 +671,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                                 if let Some(n_int) = n_num.to_integer().to_u64() {
                                     if n_int <= 20 {
                                         let x = new_args[1];
-                                        let result = eval_legendre(arena, n_int as usize, x);
-                                        result
+                                        eval_legendre(arena, n_int as usize, x)
                                     } else {
                                         arena.legendre(new_args[0], new_args[1])
                                     }
@@ -694,8 +693,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                                 if let Some(n_int) = n_num.to_integer().to_u64() {
                                     if n_int <= 20 {
                                         let x = new_args[1];
-                                        let result = eval_chebyshev_t(arena, n_int as usize, x);
-                                        result
+                                        eval_chebyshev_t(arena, n_int as usize, x)
                                     } else {
                                         arena.chebyshev_t(new_args[0], new_args[1])
                                     }
@@ -717,8 +715,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                                 if let Some(n_int) = n_num.to_integer().to_u64() {
                                     if n_int <= 20 {
                                         let x = new_args[1];
-                                        let result = eval_chebyshev_u(arena, n_int as usize, x);
-                                        result
+                                        eval_chebyshev_u(arena, n_int as usize, x)
                                     } else {
                                         arena.chebyshev_u(new_args[0], new_args[1])
                                     }
@@ -740,8 +737,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                                 if let Some(n_int) = n_num.to_integer().to_u64() {
                                     if n_int <= 20 {
                                         let x = new_args[1];
-                                        let result = eval_hermite(arena, n_int as usize, x);
-                                        result
+                                        eval_hermite(arena, n_int as usize, x)
                                     } else {
                                         arena.hermite(new_args[0], new_args[1])
                                     }
@@ -763,8 +759,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                                 if let Some(n_int) = n_num.to_integer().to_u64() {
                                     if n_int <= 20 {
                                         let x = new_args[1];
-                                        let result = eval_laguerre(arena, n_int as usize, x);
-                                        result
+                                        eval_laguerre(arena, n_int as usize, x)
                                     } else {
                                         arena.laguerre(new_args[0], new_args[1])
                                     }

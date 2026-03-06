@@ -644,13 +644,12 @@ fn dh_matrix_with_alpha() {
         [0.0, 0.0, 0.0, 1.0],
     ];
 
-    for i in 0..4 {
-        for j in 0..4 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = t.get(i, j).eval().eval_f64().unwrap();
             assert!(
-                (val - expected[i][j]).abs() < 1e-12,
-                "α=π/2 entry ({i},{j}): got {val}, expected {}",
-                expected[i][j]
+                (val - exp_val).abs() < 1e-12,
+                "α=π/2 entry ({i},{j}): got {val}, expected {exp_val}",
             );
         }
     }
@@ -1017,12 +1016,11 @@ fn homogeneous_translation() {
     let h = symplex::robotics::homogeneous(&i3, &pos);
     // Last column should be [4, 5, 6, 1]
     let expected_col = [4.0, 5.0, 6.0, 1.0];
-    for i in 0..4 {
+    for (i, &exp_val) in expected_col.iter().enumerate() {
         let val = h.get(i, 3).eval().eval_f64().unwrap();
         assert!(
-            (val - expected_col[i]).abs() < 1e-10,
-            "homogeneous last col [{i}] = {val}, expected {}",
-            expected_col[i]
+            (val - exp_val).abs() < 1e-10,
+            "homogeneous last col [{i}] = {val}, expected {exp_val}",
         );
     }
 }
@@ -1037,12 +1035,11 @@ fn translation_pure() {
     assert_eq!(t.shape(), (4, 4));
     // Check last column = [1, 2, 3, 1]
     let expected = [1.0, 2.0, 3.0, 1.0];
-    for i in 0..4 {
+    for (i, &exp_val) in expected.iter().enumerate() {
         let val = t.get(i, 3).eval().eval_f64().unwrap();
         assert!(
-            (val - expected[i]).abs() < 1e-10,
-            "translation last col [{i}] = {val}, expected {}",
-            expected[i]
+            (val - exp_val).abs() < 1e-10,
+            "translation last col [{i}] = {val}, expected {exp_val}",
         );
     }
     // Check the rotation block is identity
@@ -1098,13 +1095,12 @@ fn rot_euler_zyx_numerical() {
         [1.0, 0.0, 0.0],
         [0.0, 0.0, 1.0],
     ];
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = r.get(i, j).eval().eval_f64().unwrap();
             assert!(
-                (val - expected[i][j]).abs() < 1e-10,
-                "rot_euler(π/2,0,0,ZYX)[{i},{j}] = {val}, expected {}",
-                expected[i][j]
+                (val - exp_val).abs() < 1e-10,
+                "rot_euler(π/2,0,0,ZYX)[{i},{j}] = {val}, expected {exp_val}",
             );
         }
     }
@@ -1148,13 +1144,12 @@ fn matrix_powi_one() {
     ]);
     let result = m.powi(1);
     let expected = [[1.0, 2.0], [3.0, 4.0]];
-    for i in 0..2 {
-        for j in 0..2 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = result.get(i, j).eval().eval_f64().unwrap();
             assert!(
-                (val - expected[i][j]).abs() < 1e-10,
-                "powi(1)[{i},{j}] = {val}, expected {}",
-                expected[i][j]
+                (val - exp_val).abs() < 1e-10,
+                "powi(1)[{i},{j}] = {val}, expected {exp_val}",
             );
         }
     }
@@ -1192,13 +1187,12 @@ fn matrix_powi_cube() {
     ]);
     let m3 = m.powi(3);
     let expected = [[37.0, 54.0], [81.0, 118.0]];
-    for i in 0..2 {
-        for j in 0..2 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = m3.get(i, j).eval().eval_f64().unwrap();
             assert!(
-                (val - expected[i][j]).abs() < 1e-10,
-                "powi(3)[{i},{j}] = {val}, expected {}",
-                expected[i][j]
+                (val - exp_val).abs() < 1e-10,
+                "powi(3)[{i},{j}] = {val}, expected {exp_val}",
             );
         }
     }

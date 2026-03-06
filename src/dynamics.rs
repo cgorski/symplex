@@ -145,7 +145,7 @@ pub fn euler_lagrange(
 
         // Euler-Lagrange: d/dt(∂L/∂q̇ᵢ) - ∂L/∂qᵢ
         let eq_i = &dt_dl_dqi_dot - &dl_dqi;
-        equations.push(eq_i);
+        equations.push(eq_i.eval());
     }
 
     equations
@@ -193,7 +193,7 @@ pub fn mass_matrix(
         }
         rows.push(row);
     }
-    Matrix::new(rows)
+    Matrix::new(rows).eval()
 }
 
 /// Compute Christoffel symbols of the first kind from the mass matrix.
@@ -315,20 +315,20 @@ pub fn coriolis_matrix(
     let christoffel = christoffel_symbols(mass_mat, q_vars);
 
     let mut rows = Vec::with_capacity(n);
-    for i in 0..n {
+    for christoffel_i in christoffel.iter().take(n) {
         let mut row = Vec::with_capacity(n);
-        for j in 0..n {
+        for christoffel_ij in christoffel_i.iter().take(n) {
             // C_ij = Σₖ Γᵢⱼₖ · q̇ₖ
             let mut c_ij = symplex::int(0);
             for k in 0..n {
-                c_ij = &c_ij + &(&christoffel[i][j][k] * qdot_vars[k]);
+                c_ij = &c_ij + &(&christoffel_ij[k] * qdot_vars[k]);
             }
             row.push(c_ij);
         }
         rows.push(row);
     }
 
-    Matrix::new(rows)
+    Matrix::new(rows).eval()
 }
 
 /// Compute the gravity vector g(q) = ∂V/∂q.
@@ -360,7 +360,7 @@ pub fn gravity_vector(
     potential_energy: &Ex,
     q_vars: &[&Ex],
 ) -> Vec<Ex> {
-    q_vars.iter().map(|qi| potential_energy.diff(qi)).collect()
+    q_vars.iter().map(|qi| potential_energy.diff(qi).eval()).collect()
 }
 
 /// Compute the full manipulator equation components: M(q), C(q, q̇), g(q).
@@ -413,5 +413,5 @@ pub fn manipulator_equation(
     let m = mass_matrix(kinetic_energy, qdot_vars);
     let c = coriolis_matrix(&m, q_vars, qdot_vars);
     let g = gravity_vector(potential_energy, q_vars);
-    (m, c, g)
+    (m.eval(), c.eval(), g.into_iter().map(|e| e.eval()).collect())
 }

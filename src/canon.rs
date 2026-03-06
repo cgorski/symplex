@@ -650,18 +650,17 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         let n: u64 = base_r.to_integer().try_into().unwrap_or(0);
         if q > 1 && p > 0 && n > 1 {
             let (outside, inside) = extract_perfect_power(n, q);
-            if outside > 1 && outside <= i64::MAX as u64 && inside <= i64::MAX as u64 {
-                if let Some(outside_pow) = outside.checked_pow(p) {
-                    if outside_pow <= i64::MAX as u64 {
-                        let outside_expr = arena.int(outside_pow as i64);
-                        if inside == 1 {
-                            return outside_expr;
-                        }
-                        let inside_base = arena.int(inside as i64);
-                        let inside_radical = arena.pow(inside_base, exp);
-                        return arena.mul(&[outside_expr, inside_radical]);
-                    }
+            if outside > 1 && outside <= i64::MAX as u64 && inside <= i64::MAX as u64
+                && let Some(outside_pow) = outside.checked_pow(p)
+                && outside_pow <= i64::MAX as u64
+            {
+                let outside_expr = arena.int(outside_pow as i64);
+                if inside == 1 {
+                    return outside_expr;
                 }
+                let inside_base = arena.int(inside as i64);
+                let inside_radical = arena.pow(inside_base, exp);
+                return arena.mul(&[outside_expr, inside_radical]);
             }
         }
     }
@@ -745,12 +744,11 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Ratio<BigInt>, e: &Ratio<BigInt>) -> 
 fn extract_perfect_power(mut n: u64, k: u32) -> (u64, u64) {
     let mut outside = 1u64;
     let mut d = 2u64;
-    loop {
-        let Some(dk) = d.checked_pow(k) else { break };
+    while let Some(dk) = d.checked_pow(k) {
         if dk > n {
             break;
         }
-        while n % dk == 0 {
+        while n.is_multiple_of(dk) {
             n /= dk;
             outside *= d;
         }

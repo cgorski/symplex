@@ -308,12 +308,12 @@ fn quaternion_to_rotation_180_z() {
         [0.0, 0.0, 1.0],
     ];
 
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = r.get(i, j).eval().eval_f64().unwrap();
             assert_close(
                 val,
-                expected[i][j],
+                exp_val,
                 1e-12,
                 &format!("R_180z[{i}][{j}]"),
             );
@@ -352,12 +352,12 @@ fn quaternion_from_axis_angle_z_90() {
         [0.0, 0.0, 1.0],
     ];
 
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = r.get(i, j).eval().eval_f64().unwrap();
             assert_close(
                 val,
-                expected[i][j],
+                exp_val,
                 1e-10,
                 &format!("R_z90[{i}][{j}]"),
             );
@@ -534,12 +534,12 @@ fn quaternion_from_axis_angle_x_90() {
         [0.0, 1.0, 0.0],
     ];
 
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, expected_row) in expected.iter().enumerate() {
+        for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = r.get(i, j).eval().eval_f64().unwrap();
             assert_close(
                 val,
-                expected[i][j],
+                exp_val,
                 1e-10,
                 &format!("R_x90[{i}][{j}]"),
             );

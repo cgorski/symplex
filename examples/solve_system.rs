@@ -39,7 +39,7 @@ fn main() {
     println!("\n--- Cubic ---");
     let solutions = symplex::solve_system(
         &[expr!(x ^ 3 - 6 * x ^ 2 + 11 * x - 6)],
-        &[x.clone()],
+        std::slice::from_ref(&x),
     )
     .unwrap();
     println!(

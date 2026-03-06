@@ -19,9 +19,9 @@ fn verify_z_numerically(
 ) {
     let z_val = symplex::rational(z_num, z_den);
     let at_z = result.subs(z, &z_val).eval();
-    let val = at_z.eval_f64().expect(&format!(
-        "{label}: should evaluate numerically at z={z_num}/{z_den}"
-    ));
+    let val = at_z.eval_f64().unwrap_or_else(|_| {
+        panic!("{label}: should evaluate numerically at z={z_num}/{z_den}")
+    });
     assert!(
         (val - expected).abs() < 1e-3,
         "{label}: at z={z_num}/{z_den}, expected {expected}, got {val}"
@@ -30,6 +30,8 @@ fn verify_z_numerically(
 
 /// Verify a forward z-transform by comparing X(z) evaluated at z=r against
 /// the partial sum Σₖ₌₀^N x(k)·r⁻ᵏ for large N.
+// Test helper legitimately needs all these parameters
+#[allow(clippy::too_many_arguments)]
 fn verify_z_transform_partial_sum(
     x_of_n: &Ex,
     x_of_z: &Ex,
@@ -44,9 +46,9 @@ fn verify_z_transform_partial_sum(
     // Evaluate X(z) at z = r
     let r_val = symplex::rational(r_num, r_den);
     let xz_at_r = x_of_z.subs(z, &r_val).eval();
-    let xz_f64 = xz_at_r.eval_f64().expect(&format!(
-        "{label}: X(z) should evaluate at z={r_num}/{r_den}"
-    ));
+    let xz_f64 = xz_at_r.eval_f64().unwrap_or_else(|_| {
+        panic!("{label}: X(z) should evaluate at z={r_num}/{r_den}")
+    });
 
     // Compute partial sum Σₖ₌₀^N x(k) · r⁻ᵏ
     let mut partial_sum: f64 = 0.0;

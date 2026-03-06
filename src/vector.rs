@@ -10,7 +10,7 @@ use crate::matrix::Matrix;
 ///
 /// Returns an n×1 column vector of partial derivatives.
 pub fn gradient(f: &Ex, vars: &[&Ex]) -> Matrix {
-    let partials: Vec<Ex> = vars.iter().map(|v| f.diff(*v)).collect();
+    let partials: Vec<Ex> = vars.iter().map(|v| f.diff(v)).collect();
     Matrix::col_vector(partials)
 }
 
@@ -30,7 +30,7 @@ pub fn divergence(field: &Matrix, vars: &[&Ex]) -> Ex {
     let mut sum = Ex::zero();
     for (i, var) in vars.iter().enumerate() {
         let component = field.get(i, 0);
-        sum = &sum + &component.diff(*var);
+        sum = &sum + &component.diff(var);
     }
     sum
 }

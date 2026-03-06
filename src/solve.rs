@@ -135,6 +135,12 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
 // Local helper: check if an expression contains a given variable
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Check if an expression contains a given variable (public within crate).
+#[must_use]
+pub(crate) fn expr_contains_var_pub(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
+    expr_contains_var(arena, expr, var)
+}
+
 fn expr_contains_var(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
     if expr == var {
         return true;
@@ -236,6 +242,13 @@ fn solve_by_peeling(
         }
         // sin(f(x)) = rhs → f(x) ∈ {asin(rhs), π - asin(rhs)}
         ExprNode::Sin(inner) => {
+            // Domain check: sin(x) = c has no real solutions when |c| > 1
+            if let Some(c) = arena.as_num(rhs)
+                && c.abs() > Ratio::one()
+            {
+                tracing::debug!("solve_by_peeling: sin domain error, |c| > 1");
+                return Some(vec![]);
+            }
             tracing::debug!("solve_by_peeling: inverting sin, two branches");
             let asin_rhs = arena.asin(rhs);
             let pi = arena.pi;
@@ -259,6 +272,13 @@ fn solve_by_peeling(
         }
         // cos(f(x)) = rhs → f(x) ∈ {acos(rhs), -acos(rhs)}
         ExprNode::Cos(inner) => {
+            // Domain check: cos(x) = c has no real solutions when |c| > 1
+            if let Some(c) = arena.as_num(rhs)
+                && c.abs() > Ratio::one()
+            {
+                tracing::debug!("solve_by_peeling: cos domain error, |c| > 1");
+                return Some(vec![]);
+            }
             tracing::debug!("solve_by_peeling: inverting cos, two branches");
             let acos_rhs = arena.acos(rhs);
             let neg_acos = arena.neg(acos_rhs);

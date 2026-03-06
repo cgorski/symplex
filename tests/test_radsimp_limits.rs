@@ -16,15 +16,15 @@ fn assert_rationalize_preserves_value(expr: &Ex, label: &str) {
     let orig = expr.subs(&x, &test_point).eval_f64();
     let rat = rationalized.subs(&x, &test_point).eval_f64();
 
-    if let (Ok(o), Ok(r)) = (orig, rat) {
-        if o.is_finite() && r.is_finite() {
-            let diff = (o - r).abs();
-            let tol = 1e-10 * o.abs().max(1.0);
-            assert!(
-                diff < tol,
-                "{label}: value changed by rationalization — orig={o}, rationalized={r}"
-            );
-        }
+    if let (Ok(o), Ok(r)) = (orig, rat)
+        && o.is_finite() && r.is_finite()
+    {
+        let diff = (o - r).abs();
+        let tol = 1e-10 * o.abs().max(1.0);
+        assert!(
+            diff < tol,
+            "{label}: value changed by rationalization — orig={o}, rationalized={r}"
+        );
     }
 }
 

@@ -90,7 +90,7 @@ proptest! {
         let _ = x.powi(10).expand();
 
         let original_display = format!("{expr}");
-        let (new_ctx, new_exprs) = ctx.compact(&[expr.clone()]);
+        let (new_ctx, new_exprs) = ctx.compact(std::slice::from_ref(&expr));
         let new_display = format!("{}", new_exprs[0]);
 
         prop_assert_eq!(original_display, new_display);

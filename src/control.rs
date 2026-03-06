@@ -497,7 +497,7 @@ pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
     }
 
     // Number of columns in the Routh table
-    let num_cols = (n + 1) / 2;
+    let num_cols = n.div_ceil(2);
 
     // Build first row: even-indexed coefficients (a_n, a_{n-2}, a_{n-4}, ...)
     let mut row0: Vec<Ex> = Vec::with_capacity(num_cols);

@@ -829,7 +829,7 @@ fn to_expr_pattern_lhs_minus_rhs() {
     let three = symplex::int(3);
     let to_expr = &x - &three;
     let s = format!("{to_expr}");
-    assert_eq!(s, "x + -3", "x - 3 canonical form");
+    assert_eq!(s, "x - 3", "x - 3 canonical form");
 }
 
 #[test]

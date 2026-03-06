@@ -86,7 +86,7 @@ fn verify_laplace_numerically(
 ) {
     let s_val = symplex::rational(s_num, s_den);
     let at_s = result.subs(s_var, &s_val);
-    let val = at_s.eval_f64().expect(&format!(
+    let val = at_s.eval_f64().unwrap_or_else(|_| panic!(
         "{label}: should evaluate numerically at s={s_num}/{s_den}"
     ));
     assert!(

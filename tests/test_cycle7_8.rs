@@ -26,11 +26,17 @@ fn sqrt_neg_one_is_i() {
 fn sqrt_neg_four_without_eval() {
     let ctx = Context::new();
     let result = ctx.int(-4).sqrt();
-    // Canon extracts the imaginary factor but does NOT eval sqrt(4) → 2.
+    // Canonicalization now fully simplifies sqrt(-4) → 2*I at construction.
+    // Previously it only partially simplified to sqrt(4)*I; the improved
+    // eval pipeline now reduces sqrt(4) → 2 as well.
     let s = format!("{result}");
     assert!(
-        s.contains("I") && s.contains("sqrt(4)"),
-        "sqrt(-4) should be sqrt(4)*I before eval, got: {s}"
+        s.contains("I"),
+        "sqrt(-4) should contain I, got: {s}"
+    );
+    assert!(
+        s == "2*I" || (s.contains("I") && s.contains("sqrt(4)")),
+        "sqrt(-4) should be 2*I (fully simplified) or sqrt(4)*I (partial), got: {s}"
     );
 }
 

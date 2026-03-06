@@ -747,6 +747,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
         }
         ExprDomain::Mixed => {
             // Try cascaded simplification strategies
+            #[allow(clippy::type_complexity)]
             let strategies: Vec<Box<dyn Fn(&Ex) -> Ex>> = vec![
                 Box::new(|e: &Ex| e.simplify_trig()),
                 Box::new(|e: &Ex| e.full_simplify()),

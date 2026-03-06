@@ -483,7 +483,7 @@ impl Poly {
         let mut prim = self.primitive_part();
 
         // Ensure positive leading coefficient.
-        if prim.leading_coeff().map_or(false, |lc| lc.is_negative()) {
+        if prim.leading_coeff().is_some_and(|lc| lc.is_negative()) {
             content = -content;
             prim = -&prim;
         }
@@ -792,14 +792,14 @@ fn kronecker_find_factor(f: &Poly, trial_deg: usize) -> Option<(Poly, Poly)> {
             .map(|i| (eval_pts[i], div_lists[i][indices[i]].clone()))
             .collect();
 
-        if let Some(candidate) = lagrange_interpolate(&points) {
-            if candidate.degree() == Some(trial_deg) && candidate.has_integer_coeffs() {
-                let prim = ensure_positive_lc(&candidate.primitive_part());
-                if prim.degree() == Some(trial_deg) {
-                    let (quot, rem) = f.div_rem(&prim);
-                    if rem.is_zero() && quot.has_integer_coeffs() {
-                        return Some((prim, quot));
-                    }
+        if let Some(candidate) = lagrange_interpolate(&points)
+            && candidate.degree() == Some(trial_deg) && candidate.has_integer_coeffs()
+        {
+            let prim = ensure_positive_lc(&candidate.primitive_part());
+            if prim.degree() == Some(trial_deg) {
+                let (quot, rem) = f.div_rem(&prim);
+                if rem.is_zero() && quot.has_integer_coeffs() {
+                    return Some((prim, quot));
                 }
             }
         }
@@ -846,11 +846,11 @@ fn lagrange_interpolate(points: &[(i64, BigInt)]) -> Option<Poly> {
         let mut basis = Poly::from_int(1);
         let mut denom = BigInt::one();
 
-        for j in 0..n {
+        for (j, point_j) in points.iter().enumerate() {
             if i == j {
                 continue;
             }
-            let xj = points[j].0;
+            let xj = point_j.0;
             let linear = Poly::from_coeffs(vec![
                 Ratio::from_integer(BigInt::from(-xj)),
                 Ratio::one(),

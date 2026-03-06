@@ -140,11 +140,10 @@ pub fn fk_chain(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
 /// ```
 pub fn fk_position(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> (Ex, Ex, Ex) {
     let t = fk_chain(dh_params);
-    (
-        t.get(0, 3).clone(),
-        t.get(1, 3).clone(),
-        t.get(2, 3).clone(),
-    )
+    let px = t.get(0, 3).clone().eval();
+    let py = t.get(1, 3).clone().eval();
+    let pz = t.get(2, 3).clone().eval();
+    (px, py, pz)
 }
 
 /// Extract the 3×3 rotation submatrix from the forward-kinematics result.

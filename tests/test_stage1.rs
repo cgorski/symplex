@@ -233,7 +233,7 @@ fn display_subtraction_rendering() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = &x - 3;
-    assert_eq!(format!("{result}"), "x + -3");
+    assert_eq!(format!("{result}"), "x - 3");
 }
 
 // ─── The Stage 1 Milestone ──────────────────────────────────────────────

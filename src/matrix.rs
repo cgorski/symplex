@@ -831,24 +831,23 @@ impl Matrix {
         for j in 0..n {
             // L[j][j] = sqrt(A[j][j] - sum(L[j][k]^2 for k < j))
             let mut sum_sq = zero.clone();
-            for k in 0..j {
-                sum_sq = sum_sq + l_rows[j][k].powi(2);
+            for item in l_rows[j].iter().take(j) {
+                sum_sq = sum_sq + item.powi(2);
             }
             let diag = self.get(j, j) - &sum_sq;
             let diag_simplified = diag.simplify();
             // For numeric matrices, check positive-definiteness
-            if let Ok(v) = diag_simplified.eval_f64() {
-                if v <= 0.0 {
+            if let Ok(v) = diag_simplified.eval_f64()
+                && v <= 0.0 {
                     return None;
                 }
-            }
             l_rows[j][j] = diag_simplified.sqrt();
 
             // L[i][j] = (A[i][j] - sum(L[i][k]*L[j][k] for k < j)) / L[j][j]
             for i in (j + 1)..n {
                 let mut sum_prod = zero.clone();
-                for k in 0..j {
-                    sum_prod = sum_prod + &(&l_rows[i][k] * &l_rows[j][k]);
+                for (l_ik, l_jk) in l_rows[i].iter().zip(l_rows[j].iter()).take(j) {
+                    sum_prod = sum_prod + &(l_ik * l_jk);
                 }
                 let num = self.get(i, j) - &sum_prod;
                 l_rows[i][j] = &num / &l_rows[j][j];
@@ -888,7 +887,7 @@ pub fn jacobian(funcs: &[&Ex], vars: &[&Ex]) -> Matrix {
     let ncols = vars.len();
     let rows: Vec<Vec<Ex>> = funcs
         .iter()
-        .map(|fi| vars.iter().map(|vj| fi.diff(*vj)).collect())
+        .map(|fi| vars.iter().map(|vj| fi.diff(vj)).collect())
         .collect();
     Matrix { rows, nrows, ncols }
 }
@@ -1399,13 +1398,13 @@ impl std::ops::Add for &Matrix {
 impl std::ops::Add for Matrix {
     type Output = Matrix;
     fn add(self, rhs: Matrix) -> Matrix {
-        (&self).add_elementwise(&rhs)
+        self.add_elementwise(&rhs)
     }
 }
 impl std::ops::Add<&Matrix> for Matrix {
     type Output = Matrix;
     fn add(self, rhs: &Matrix) -> Matrix {
-        (&self).add_elementwise(rhs)
+        self.add_elementwise(rhs)
     }
 }
 impl std::ops::Add<Matrix> for &Matrix {
@@ -1425,13 +1424,13 @@ impl std::ops::Sub for &Matrix {
 impl std::ops::Sub for Matrix {
     type Output = Matrix;
     fn sub(self, rhs: Matrix) -> Matrix {
-        (&self).sub_elementwise(&rhs)
+        self.sub_elementwise(&rhs)
     }
 }
 impl std::ops::Sub<&Matrix> for Matrix {
     type Output = Matrix;
     fn sub(self, rhs: &Matrix) -> Matrix {
-        (&self).sub_elementwise(rhs)
+        self.sub_elementwise(rhs)
     }
 }
 impl std::ops::Sub<Matrix> for &Matrix {
@@ -1451,13 +1450,13 @@ impl std::ops::Mul for &Matrix {
 impl std::ops::Mul for Matrix {
     type Output = Matrix;
     fn mul(self, rhs: Matrix) -> Matrix {
-        (&self).matmul(&rhs)
+        self.matmul(&rhs)
     }
 }
 impl std::ops::Mul<&Matrix> for Matrix {
     type Output = Matrix;
     fn mul(self, rhs: &Matrix) -> Matrix {
-        (&self).matmul(rhs)
+        self.matmul(rhs)
     }
 }
 impl std::ops::Mul<Matrix> for &Matrix {
@@ -1492,7 +1491,7 @@ impl std::ops::Mul<&Ex> for &Matrix {
 impl std::ops::Mul<&Ex> for Matrix {
     type Output = Matrix;
     fn mul(self, rhs: &Ex) -> Matrix {
-        (&self).scale(rhs)
+        self.scale(rhs)
     }
 }
 

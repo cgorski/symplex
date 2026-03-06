@@ -254,21 +254,21 @@ fn display_sort_key(
 /// Check if `id` is Pow(base, negative_exponent).
 /// Returns (base_id, positive_exponent_id) if so.
 fn extract_negative_power(arena: &Arena, id: ExprId) -> Option<(ExprId, String)> {
-    if let ExprNode::Pow(base, exp) = arena.node(id) {
-        if let ExprNode::Num(nid) = arena.node(*exp) {
-            let r = arena.num(*nid);
-            if r.is_negative() {
-                let pos_r = -r.clone();
-                if pos_r.is_integer() {
-                    let n = pos_r.to_integer();
-                    return Some((*base, format!("{}", n)));
-                } else {
-                    return Some((*base, format!(
-                        "\\frac{{{}}}{{{}}}",
-                        pos_r.numer(),
-                        pos_r.denom()
-                    )));
-                }
+    if let ExprNode::Pow(base, exp) = arena.node(id)
+        && let ExprNode::Num(nid) = arena.node(*exp)
+    {
+        let r = arena.num(*nid);
+        if r.is_negative() {
+            let pos_r = -r.clone();
+            if pos_r.is_integer() {
+                let n = pos_r.to_integer();
+                return Some((*base, format!("{}", n)));
+            } else {
+                return Some((*base, format!(
+                    "\\frac{{{}}}{{{}}}",
+                    pos_r.numer(),
+                    pos_r.denom()
+                )));
             }
         }
     }
@@ -506,6 +506,25 @@ fn render_num_value(r: &Ratio<BigInt>) -> String {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Push a LaTeX function call `\name\left(arg\right)` onto the stack.
+/// If `id` is a trig/hyperbolic function node, return (`\funcname`, arg).
+fn trig_func_parts(arena: &Arena, id: ExprId) -> Option<(&'static str, ExprId)> {
+    match arena.node(id) {
+        ExprNode::Sin(x) => Some((r"\sin", *x)),
+        ExprNode::Cos(x) => Some((r"\cos", *x)),
+        ExprNode::Tan(x) => Some((r"\tan", *x)),
+        ExprNode::Sinh(x) => Some((r"\sinh", *x)),
+        ExprNode::Cosh(x) => Some((r"\cosh", *x)),
+        ExprNode::Tanh(x) => Some((r"\tanh", *x)),
+        ExprNode::Asin(x) => Some((r"\arcsin", *x)),
+        ExprNode::Acos(x) => Some((r"\arccos", *x)),
+        ExprNode::Atan(x) => Some((r"\arctan", *x)),
+        ExprNode::Asinh(x) => Some((r"\operatorname{asinh}", *x)),
+        ExprNode::Acosh(x) => Some((r"\operatorname{acosh}", *x)),
+        ExprNode::Atanh(x) => Some((r"\operatorname{atanh}", *x)),
+        _ => None,
+    }
+}
+
 fn push_latex_func(name: &'static str, arg: ExprId, stack: &mut Vec<LatexItem>) {
     stack.push(LatexItem::Lit(r"\right)"));
     stack.push(LatexItem::Expr(arg));
@@ -681,6 +700,16 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
                     )));
                     return;
                 }
+            }
+
+            // Trig function power: sin(x)^n → \sin^{n}\left(x\right)
+            if let Some((func_name, arg)) = trig_func_parts(arena, base) {
+                stack.push(LatexItem::Lit(r"\right)"));
+                stack.push(LatexItem::Expr(arg));
+                stack.push(LatexItem::Lit(r"}\left("));
+                stack.push(LatexItem::Expr(exp));
+                stack.push(LatexItem::Owned(format!("{}^{{", func_name)));
+                return;
             }
 
             // General case: base^{exp}
@@ -1361,7 +1390,7 @@ mod tests {
         let x = symplex::var("x");
         let expr = x.sin().powi(2);
         let latex = expr.to_latex();
-        assert_eq!(latex, r"\sin\left(x\right)^{2}");
+        assert_eq!(latex, r"\sin^{2}\left(x\right)");
     }
 
     #[test]

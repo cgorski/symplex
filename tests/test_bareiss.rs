@@ -46,21 +46,21 @@ fn bareiss_4x4_integer() {
         let mut out = [[0i64; 3]; 3];
         for i in 0..3 {
             let mut c = 0;
-            for j in 0..4 {
+            for (j, &val) in rows[i + 1].iter().enumerate() {
                 if j == skip_col {
                     continue;
                 }
-                out[i][c] = rows[i + 1][j];
+                out[i][c] = val;
                 c += 1;
             }
         }
         out
     }
 
-    let expected = rows[0][0] as i64 * det3(minor3(&rows, 0))
-        - rows[0][1] as i64 * det3(minor3(&rows, 1))
-        + rows[0][2] as i64 * det3(minor3(&rows, 2))
-        - rows[0][3] as i64 * det3(minor3(&rows, 3));
+    let expected = rows[0][0] * det3(minor3(&rows, 0))
+        - rows[0][1] * det3(minor3(&rows, 1))
+        + rows[0][2] * det3(minor3(&rows, 2))
+        - rows[0][3] * det3(minor3(&rows, 3));
 
     assert!(
         (d_val - expected as f64).abs() < 1e-6,
@@ -159,7 +159,7 @@ fn bareiss_4x4_needs_pivot_swap() {
     // det = -1 * 1 * det([[1,2,3],[2,1,0],[0,3,1]])  (minor of (1,0), sign (-1)^(1+0) = -1)
     let sub = matrix![[1, 2, 3], [2, 1, 0], [0, 3, 1]];
     let sub_det = sub.det().eval_f64().unwrap();
-    let expected = -1.0 * sub_det;
+    let expected = -sub_det;
     assert!(
         (d_val - expected).abs() < 1e-10,
         "4×4 with swap: got {d_val}, expected {expected}"

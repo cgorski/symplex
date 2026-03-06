@@ -652,7 +652,7 @@ fn is_prime_value_consistency_with_isprime() {
     for v in -5..=200 {
         let expr = symplex::int(v);
         let via_expr = expr.is_prime_value();
-        let direct = isprime(v as i64);
+        let direct = isprime(v);
         match via_expr {
             Some(b) => assert_eq!(
                 b, direct,

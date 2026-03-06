@@ -75,7 +75,7 @@ fn walk_finds_symbols_in_piecewise() {
     let pw = Ex::piecewise(&[(&y, &cond)]);
     let syms = pw.free_symbols();
     assert!(
-        syms.len() >= 1,
+        !syms.is_empty(),
         "should find at least y or x in piecewise, got {} symbols: {:?}",
         syms.len(),
         syms.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
