@@ -27,7 +27,7 @@
 //! constructed through canonical arena constructors to preserve
 //! invariants.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use num_traits::One;
@@ -54,14 +54,17 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
 
     // If the rule-based integrator returned an unevaluated Integral node,
     // try the heuristic Risch integrator as a fallback.
-    if let ExprNode::Integral(_, _) = arena.node(result)
+    let result = if let ExprNode::Integral(_, _) = arena.node(result)
         && let Some(heurisch_result) =
             crate::heurisch::heurisch_integrate(arena, expr, var, var_sym)
     {
-        return heurisch_result;
-    }
+        heurisch_result
+    } else {
+        result
+    };
 
-    result
+    // Piecewise wrapping for parametric degenerate cases
+    try_piecewise_wrap(arena, result, expr, var, var_sym)
 }
 
 /// Check whether `expr` is a suitable candidate for the `u` factor in
@@ -1318,6 +1321,11 @@ fn integrate_node(
                 }
             }
 
+            // ── Special function integration table ──────────────────
+            if let Some(result) = try_special_function_integral(arena, &dependent, &constants, var, var_sym) {
+                return result;
+            }
+
             // General product of var-dependent terms — can't integrate without
             // further techniques.
             tracing::debug!("integration: no strategy succeeded, returning unevaluated");
@@ -1378,6 +1386,12 @@ fn integrate_node(
                         arena.intern(ExprNode::Num(nid))
                     };
                     return arena.mul(&[recip, x_pow]);
+                } else {
+                    // Symbolic exponent: ∫ x^n dx = x^(n+1)/(n+1)
+                    let one_id = arena.one;
+                    let n_plus_1 = arena.add(&[exp, one_id]);
+                    let x_pow = arena.pow(var, n_plus_1);
+                    return arena.div(x_pow, n_plus_1);
                 }
             }
 
@@ -1575,6 +1589,29 @@ fn integrate_node(
                 try_weierstrass_substitution(arena, expr, var, var_sym, depth)
             {
                 return result;
+            }
+
+            // ── 1/ln(x) → li(x) (logarithmic integral) ──────────────
+            if let ExprNode::Ln(inner) = arena.node(base).clone()
+                && inner == var
+                && let Some(n_val) = arena.as_num(exp)
+            {
+                let neg_one_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
+                if *n_val == neg_one_r {
+                    return make_apply(arena, "li", &[var]);
+                }
+            }
+
+            // ── 1/(ax+b) with symbolic coefficients → ln|ax+b|/a ────
+            if let Some(n_val) = arena.as_num(exp) {
+                let neg_one_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
+                if *n_val == neg_one_r && base_has_var
+                    && let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, base, var, var_sym)
+                {
+                    let abs_base = arena.abs(base);
+                    let ln_abs = arena.ln(abs_base);
+                    return arena.div(ln_abs, a_expr);
+                }
             }
 
             // General case: unevaluated.
@@ -2216,6 +2253,239 @@ fn remaining_product(arena: &mut Arena, children: &[ExprId], skip: usize) -> Exp
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Piecewise parametric wrapping
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Attempt to wrap the integration result in a `Piecewise` for parametric
+/// degenerate cases.
+///
+/// When the result contains denominators involving free symbols (parameters
+/// other than the integration variable), we check if setting those parameters
+/// to specific values would cause division by zero.  For each such degenerate
+/// value, we substitute back into the original integrand, re-integrate the
+/// simplified form, and build a `Piecewise` node with explicit conditions.
+fn try_piecewise_wrap(
+    arena: &mut Arena,
+    result: ExprId,
+    original_integrand: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> ExprId {
+    // If result is an unevaluated Integral, nothing to wrap.
+    if matches!(arena.node(result), ExprNode::Integral(_, _)) {
+        return result;
+    }
+
+    // Collect denominator expressions from the result.
+    let denoms = collect_denominators(arena, result);
+    if denoms.is_empty() {
+        return result;
+    }
+
+    let mut wrapped = result;
+    let mut handled: Vec<(ExprId, ExprId)> = Vec::new();
+
+    for denom in &denoms {
+        let denom_syms = crate::walk::free_symbols(arena, *denom);
+        for sym_expr in &denom_syms {
+            // Skip the integration variable.
+            if let ExprNode::Symbol(sid) = arena.node(*sym_expr)
+                && *sid == var_sym
+            {
+                continue;
+            }
+
+            // Solve denom = 0 for this parameter symbol.
+            let solutions = crate::solve::solve(arena, *denom, *sym_expr);
+            for sol in &solutions {
+                let degen_val = sol.value;
+
+                // Avoid duplicate wrapping for the same (param, value) pair.
+                if handled.iter().any(|&(p, v)| p == *sym_expr && v == degen_val) {
+                    continue;
+                }
+
+                // Filter: skip if substituting this value makes the original
+                // integrand singular (these are poles of the problem, not
+                // artifacts of the antiderivative formula).
+                let integrand_at_degen =
+                    crate::subs::subs(arena, original_integrand, *sym_expr, degen_val);
+                let integrand_at_degen = crate::eval::eval(arena, integrand_at_degen);
+                if has_zero_denominator(arena, integrand_at_degen) {
+                    continue;
+                }
+
+                // Re-integrate the simplified integrand at the degenerate value.
+                let degen_result = integrate(arena, integrand_at_degen, var);
+                let degen_result = crate::eval::eval(arena, degen_result);
+
+                // Skip if re-integration returned unevaluated.
+                if matches!(arena.node(degen_result), ExprNode::Integral(_, _)) {
+                    continue;
+                }
+
+                // Build Piecewise: [(generic, Ne(param, degen)), (degen_result, True)]
+                let condition = arena.ne_(*sym_expr, degen_val);
+                let true_cond = arena.bool_true;
+                wrapped = arena.piecewise(&[
+                    (wrapped, condition),
+                    (degen_result, true_cond),
+                ]);
+
+                handled.push((*sym_expr, degen_val));
+            }
+        }
+    }
+
+    wrapped
+}
+
+/// Collect all denominator sub-expressions from an expression tree.
+///
+/// A "denominator" is the base of any `Pow(base, exp)` node where `exp`
+/// is a negative rational number.
+fn collect_denominators(arena: &Arena, expr: ExprId) -> Vec<ExprId> {
+    let mut denoms = Vec::new();
+    let mut stack: Vec<ExprId> = vec![expr];
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
+
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        if let ExprNode::Pow(base, exp) = arena.node(id).clone()
+            && let Some(r) = arena.as_num(exp)
+            && r.is_negative()
+        {
+            denoms.push(base);
+        }
+        arena.node(id).for_each_child(|c| stack.push(c));
+    }
+
+    denoms
+}
+
+/// Check if an expression contains a sub-expression that evaluates to
+/// division by zero (a denominator that is structurally zero, or NaN /
+/// ComplexInfinity atoms).
+fn has_zero_denominator(arena: &Arena, expr: ExprId) -> bool {
+    let mut stack: Vec<ExprId> = vec![expr];
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
+
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        if matches!(arena.node(id), ExprNode::NaN | ExprNode::ComplexInfinity) {
+            return true;
+        }
+        if let ExprNode::Pow(base, exp) = arena.node(id).clone()
+            && let Some(r) = arena.as_num(exp)
+            && r.is_negative() && arena.is_zero_structural(base)
+        {
+            return true;
+        }
+        arena.node(id).for_each_child(|c| stack.push(c));
+    }
+
+    false
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Special function integration table
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to match the integrand against known special function patterns.
+///
+/// Handles:
+/// - `sin(x)/x` → `Si(x)` (sine integral)
+/// - `cos(x)/x` → `Ci(x)` (cosine integral)
+/// - `exp(x)/x` → `Ei(x)` (exponential integral)
+/// - `exp(-x)/x` → `-Ei(-x)`
+fn try_special_function_integral(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    constants: &[ExprId],
+    var: ExprId,
+    _var_sym: SymbolId,
+) -> Option<ExprId> {
+    if dependent.len() != 2 {
+        return None;
+    }
+
+    // Identify which factor is Pow(var, -1) and which is the function.
+    let (func_factor, _inv_factor) = if is_inv_of_var(arena, dependent[0], var) {
+        (dependent[1], dependent[0])
+    } else if is_inv_of_var(arena, dependent[1], var) {
+        (dependent[0], dependent[1])
+    } else {
+        return None;
+    };
+
+    // Match the function factor against known special functions.
+    let sf_result = match arena.node(func_factor).clone() {
+        ExprNode::Sin(inner) if inner == var => {
+            Some(make_apply(arena, "Si", &[var]))
+        }
+        ExprNode::Cos(inner) if inner == var => {
+            Some(make_apply(arena, "Ci", &[var]))
+        }
+        ExprNode::Exp(inner) if inner == var => {
+            Some(make_apply(arena, "Ei", &[var]))
+        }
+        ExprNode::Exp(inner) => {
+            // exp(-x)/x → -Ei(-x)
+            if let ExprNode::Neg(neg_inner) = arena.node(inner).clone()
+                && neg_inner == var
+            {
+                let neg_var = arena.neg(var);
+                let ei = make_apply(arena, "Ei", &[neg_var]);
+                let neg_ei = arena.neg(ei);
+                return Some(wrap_with_constants(arena, neg_ei, constants));
+            }
+            None
+        }
+        _ => None,
+    };
+
+    sf_result.map(|r| wrap_with_constants(arena, r, constants))
+}
+
+/// Check if `expr` is `Pow(var, -1)`.
+fn is_inv_of_var(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
+    if let ExprNode::Pow(base, exp) = arena.node(expr)
+        && *base == var
+        && let Some(r) = arena.as_num(*exp)
+    {
+        return *r
+            == num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
+    }
+    false
+}
+
+/// Multiply a result by constant factors (if any).
+fn wrap_with_constants(arena: &mut Arena, result: ExprId, constants: &[ExprId]) -> ExprId {
+    if constants.is_empty() {
+        result
+    } else {
+        let mut all: SmallVec<[ExprId; 4]> = constants.iter().copied().collect();
+        all.push(result);
+        arena.mul(&all)
+    }
+}
+
+/// Create an `Apply` node for a named special function.
+fn make_apply(arena: &mut Arena, name: &str, args: &[ExprId]) -> ExprId {
+    let sym_node = arena.symbol(name);
+    let sid = match arena.node(sym_node) {
+        ExprNode::Symbol(s) => *s,
+        _ => unreachable!(),
+    };
+    let args_sv: SmallVec<[ExprId; 2]> = args.iter().copied().collect();
+    arena.intern(ExprNode::Apply(sid, args_sv))
+}
 
 #[cfg(test)]
 mod tests {

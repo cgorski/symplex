@@ -10,8 +10,13 @@
 //!   → `y = e^(-ax) * ∫ f(x)*e^(ax) dx`
 //! - **Second-order linear constant-coefficient:** `y'' + b*y' + c*y = 0`
 //!   → characteristic equation `r² + b*r + c = 0`, solution based on roots
+//! - **Constant-coefficient systems:** `ẋ = A·x` → `x(t) = exp(A·t)·c`
+//!   via eigendecomposition (exact) or matrix exponential series (fallback)
+//! - **Non-homogeneous systems:** `ẋ = A·x + b(t)` → variation of parameters
 
 use crate::arena::Arena;
+use crate::expr::Ex;
+use crate::matrix::Matrix;
 use crate::node::{ExprId, ExprNode, SymbolId};
 use num_traits::One;
 use num_traits::Signed;
@@ -2591,6 +2596,345 @@ pub fn checkodesol(
     result = crate::eval::eval(arena, result);
 
     result == arena.zero
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ODE System Solver (constant-coefficient systems: ẋ = Ax)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Solve a system of first-order constant-coefficient ODEs.
+///
+/// Given `dx/dt = A·x` where `A` is a constant n×n matrix,
+/// returns the general solution `x(t)` as a vector of `n` expressions,
+/// each containing arbitrary constants `C1, C2, ..., Cn`.
+///
+/// # Algorithm
+///
+/// 1. Verifies `A` is square with no entries depending on `t_var`.
+/// 2. For diagonal matrices, returns `[C1·exp(a₁₁·t), C2·exp(a₂₂·t), ...]`.
+/// 3. For general matrices, computes eigenvalues and eigenvectors:
+///    - Real eigenvalue λ with eigenvector v → `Cₖ·exp(λt)·v`
+///    - Complex conjugate pair α±βi → trig form with `cos(βt)`, `sin(βt)`
+/// 4. Falls back to matrix exponential series ([`Matrix::exp_series`]) when
+///    eigendecomposition does not produce enough eigenvalues.
+///
+/// # Returns
+///
+/// `Some(vec)` with the solution vector, or `None` if the matrix is not
+/// square, empty, or contains entries that depend on `t_var`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::matrix::Matrix;
+/// let t = symplex::var("t");
+/// let a = Matrix::new(vec![
+///     vec![symplex::int(0), symplex::int(1)],
+///     vec![symplex::int(-2), symplex::int(-3)],
+/// ]);
+/// let sol = symplex::ode::solve_ode_system(&a, &t).unwrap();
+/// assert_eq!(sol.len(), 2);
+/// ```
+pub fn solve_ode_system(
+    a_matrix: &Matrix,
+    t_var: &Ex,
+) -> Option<Vec<Ex>> {
+    let n = a_matrix.nrows();
+    if !a_matrix.is_square() || n == 0 {
+        return None;
+    }
+
+    // Verify constant coefficients: no entry may depend on t_var
+    for i in 0..n {
+        for j in 0..n {
+            if a_matrix.get(i, j).contains(t_var) {
+                return None;
+            }
+        }
+    }
+
+    // Special case: diagonal matrix → exact closed-form per component
+    if ode_system_is_diagonal(a_matrix, n) {
+        return Some(solve_ode_system_diagonal(a_matrix, t_var, n));
+    }
+
+    // Try eigenvalue-based exact solution
+    if let Some(sol) = solve_ode_system_eigen(a_matrix, t_var, n) {
+        return Some(sol);
+    }
+
+    // Fallback: truncated matrix exponential series
+    Some(solve_ode_system_series(a_matrix, t_var, n))
+}
+
+/// Solve a non-homogeneous system `dx/dt = A·x + b(t)`.
+///
+/// Computes the general solution as:
+///
+/// `x(t) = x_h(t) + x_p(t)`
+///
+/// where `x_h` is the homogeneous solution (from [`solve_ode_system`]) and
+/// `x_p` is a particular solution obtained via variation of parameters:
+///
+/// `x_p = exp(At) · ∫ exp(−At) · b(t) dt`
+///
+/// The matrix exponentials in the particular integral are computed with
+/// [`Matrix::exp_series`], so the result is a truncated approximation
+/// unless `b(t)` is polynomial.
+///
+/// # Returns
+///
+/// `None` if the homogeneous part cannot be solved or dimensions mismatch.
+pub fn solve_ode_system_nonhomogeneous(
+    a_matrix: &Matrix,
+    b_vec: &[Ex],
+    t_var: &Ex,
+) -> Option<Vec<Ex>> {
+    let n = a_matrix.nrows();
+    if !a_matrix.is_square() || n == 0 || b_vec.len() != n {
+        return None;
+    }
+
+    // Homogeneous part (exact when possible)
+    let x_h = solve_ode_system(a_matrix, t_var)?;
+
+    // Particular solution via variation of parameters:
+    //   x_p = exp(At) · ∫ exp(-At) · b(t) dt
+    let neg_one = crate::int(-1);
+    let neg_a = a_matrix.scale(&neg_one);
+    let neg_at = neg_a.scale(t_var);
+    let exp_neg_at = neg_at.exp_series(12);
+
+    let b_col = Matrix::col_vector(b_vec.to_vec());
+    let integrand_matrix = exp_neg_at.matmul(&b_col).eval();
+
+    // Integrate each component w.r.t. t
+    let mut integrated = Vec::with_capacity(n);
+    for i in 0..n {
+        integrated.push(integrand_matrix.get(i, 0).integrate(t_var).eval());
+    }
+    let integrated_col = Matrix::col_vector(integrated);
+
+    // Multiply by exp(At)
+    let at = a_matrix.scale(t_var);
+    let exp_at = at.exp_series(12);
+    let particular = exp_at.matmul(&integrated_col).eval();
+
+    // Combine: x = x_h + x_p
+    let mut solution = Vec::with_capacity(n);
+    for (i, x_h_i) in x_h.iter().enumerate() {
+        let xi: Ex = x_h_i + particular.get(i, 0);
+        solution.push(xi.eval());
+    }
+    Some(solution)
+}
+
+/// Returns `true` if every entry of `a_matrix` is free of `t_var`,
+/// meaning the system `ẋ = A·x` has constant coefficients.
+///
+/// Also returns `false` for non-square matrices.
+pub fn classify_ode_system_is_constant(a_matrix: &Matrix, t_var: &Ex) -> bool {
+    if !a_matrix.is_square() {
+        return false;
+    }
+    let n = a_matrix.nrows();
+    for i in 0..n {
+        for j in 0..n {
+            if a_matrix.get(i, j).contains(t_var) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+// ── ODE system helpers ─────────────────────────────────────────────────
+
+/// Check whether a matrix is diagonal (off-diagonal entries are structurally zero).
+fn ode_system_is_diagonal(m: &Matrix, n: usize) -> bool {
+    for i in 0..n {
+        for j in 0..n {
+            if i != j && !m.get(i, j).is_zero_structural() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Solve a diagonal system: each row decouples to `x_i' = a_{ii} x_i`.
+fn solve_ode_system_diagonal(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
+    (0..n)
+        .map(|i| {
+            let ci = crate::var(&format!("C{}", i + 1));
+            let aii = a_matrix.get(i, i);
+            if aii.is_zero_structural() {
+                ci // x_i' = 0 → x_i = constant
+            } else {
+                let exp_term = (aii * t_var).exp();
+                &ci * &exp_term
+            }
+        })
+        .collect()
+}
+
+/// Fallback: approximate solution via truncated matrix exponential series.
+fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
+    let m = a_matrix.scale(t_var);
+    let exp_m = m.exp_series(12);
+    let constants: Vec<Ex> = (1..=n)
+        .map(|i| crate::var(&format!("C{i}")))
+        .collect();
+    let c_vec = Matrix::col_vector(constants);
+    let result = exp_m.matmul(&c_vec);
+    (0..n).map(|i| result.get(i, 0).eval()).collect()
+}
+
+/// Eigenvalue-based exact solver for constant-coefficient systems.
+///
+/// Computes eigenvalues of `A`, then for each:
+/// - **Real λ**: finds eigenvector v via `null(A − λI)` and adds `C·exp(λt)·v`
+/// - **Complex α±βi**: builds two real modes using `cos(βt)` and `sin(βt)`
+///
+/// Returns `None` if fewer than `n` eigenvalues are found or if any
+/// eigenvector computation fails.
+fn solve_ode_system_eigen(
+    a_matrix: &Matrix,
+    t_var: &Ex,
+    n: usize,
+) -> Option<Vec<Ex>> {
+    let lambda_sym = crate::var("__ode_lambda");
+    let eigenvalues = a_matrix.eigenvals(&lambda_sym);
+
+    // Need at least n eigenvalues (counting algebraic multiplicity from solver)
+    if eigenvalues.len() < n {
+        return None;
+    }
+
+    let i_unit = crate::i_unit();
+    let zero_ex = crate::int(0);
+    let neg_i = -&i_unit;
+    let identity = Matrix::identity(n);
+
+    let mut solution: Vec<Ex> = (0..n).map(|_| crate::int(0)).collect();
+    let mut const_idx = 1_usize;
+    let mut used = vec![false; eigenvalues.len()];
+
+    for idx in 0..eigenvalues.len() {
+        if used[idx] {
+            continue;
+        }
+        used[idx] = true;
+
+        let ev = &eigenvalues[idx];
+
+        if ev.contains(&i_unit) {
+            // ── Complex eigenvalue α + βi ─────────────────────────────
+            // Extract real part: substitute I → 0
+            let alpha = ev.subs(&i_unit, &zero_ex).eval().simplify();
+            // Extract imaginary coefficient: (λ − α) · (−i) = β
+            let ev_minus_alpha = ev - &alpha;
+            let beta = (&ev_minus_alpha * &neg_i).eval().simplify();
+
+            // Find and mark the conjugate eigenvalue as processed
+            for j in (idx + 1)..eigenvalues.len() {
+                if !used[j] && eigenvalues[j].contains(&i_unit) {
+                    let alpha_j = eigenvalues[j]
+                        .subs(&i_unit, &zero_ex)
+                        .eval()
+                        .simplify();
+                    let ej_diff = &eigenvalues[j] - &alpha_j;
+                    let beta_j = (&ej_diff * &neg_i).eval().simplify();
+                    let beta_sum = (&beta + &beta_j).eval().simplify();
+                    if beta_sum.is_zero_structural() {
+                        used[j] = true;
+                        break;
+                    }
+                }
+            }
+
+            // Eigenvector via null(A − λI)
+            let ev_identity = identity.scale(ev);
+            let a_shifted = a_matrix.sub(&ev_identity).eval().simplify();
+            let null_basis = a_shifted.nullspace();
+            if null_basis.is_empty() {
+                return None;
+            }
+
+            // Decompose eigenvector into real and imaginary parts:
+            //   Re(v_i) = v_i with I → 0
+            //   Im(v_i) = (v_i − Re(v_i)) · (−I)
+            let mut u_re = Vec::with_capacity(n);
+            let mut w_im = Vec::with_capacity(n);
+            for row in 0..n {
+                let vi = null_basis[0].get(row, 0).eval().simplify();
+                let re = vi.subs(&i_unit, &zero_ex).eval().simplify();
+                let vi_minus_re = &vi - &re;
+                let im = (&vi_minus_re * &neg_i).eval().simplify();
+                u_re.push(re);
+                w_im.push(im);
+            }
+
+            // Two real-valued solution modes from the conjugate pair
+            let c_a = crate::var(&format!("C{const_idx}"));
+            let c_b = crate::var(&format!("C{}", const_idx + 1));
+            const_idx += 2;
+
+            let exp_alpha_t = if alpha.is_zero_structural() {
+                crate::int(1)
+            } else {
+                (&alpha * t_var).exp()
+            };
+            let cos_beta_t = (&beta * t_var).cos();
+            let sin_beta_t = (&beta * t_var).sin();
+
+            for row in 0..n {
+                // mode1[row] = e^(αt) · (cos(βt)·u[row] − sin(βt)·w[row])
+                // mode2[row] = e^(αt) · (sin(βt)·u[row] + cos(βt)·w[row])
+                let cu = &cos_beta_t * &u_re[row];
+                let sw = &sin_beta_t * &w_im[row];
+                let su = &sin_beta_t * &u_re[row];
+                let cw = &cos_beta_t * &w_im[row];
+
+                let m1 = &exp_alpha_t * &(&cu - &sw);
+                let m2 = &exp_alpha_t * &(&su + &cw);
+
+                let ca_m1 = &c_a * &m1;
+                let cb_m2 = &c_b * &m2;
+                let contrib = &ca_m1 + &cb_m2;
+                solution[row] = &solution[row] + &contrib;
+            }
+        } else {
+            // ── Real eigenvalue ───────────────────────────────────────
+            let ev_identity = identity.scale(ev);
+            let a_shifted = a_matrix.sub(&ev_identity).eval().simplify();
+            let null_basis = a_shifted.nullspace();
+            if null_basis.is_empty() {
+                return None;
+            }
+
+            let ci = crate::var(&format!("C{const_idx}"));
+            const_idx += 1;
+
+            let exp_ev_t = if ev.is_zero_structural() {
+                crate::int(1)
+            } else {
+                (ev * t_var).exp()
+            };
+
+            for (row, sol_row) in solution.iter_mut().enumerate().take(n) {
+                let vi = null_basis[0].get(row, 0).eval().simplify();
+                if !vi.is_zero_structural() {
+                    let exp_vi = &exp_ev_t * &vi;
+                    let ci_exp_vi = &ci * &exp_vi;
+                    *sol_row = &*sol_row + &ci_exp_vi;
+                }
+            }
+        }
+    }
+
+    let solution: Vec<Ex> = solution.into_iter().map(|s| s.eval()).collect();
+    Some(solution)
 }
 
 #[cfg(test)]

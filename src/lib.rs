@@ -68,6 +68,10 @@ pub(crate) mod factor_terms;
 pub(crate) mod fourier;
 /// Symbolic Fourier transform.
 pub mod fourier_transform;
+/// Fu's trig simplification algorithm (TR0–TR14, TRmorrie, TRpower).
+pub(crate) mod fu;
+/// Gosper's algorithm for closed-form hypergeometric summation.
+pub(crate) mod gosper;
 /// Gröbner basis computation via Buchberger's algorithm with FGLM order conversion.
 pub mod groebner;
 pub(crate) mod gruntz;

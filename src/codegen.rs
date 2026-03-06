@@ -340,6 +340,18 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
     lines.push(format!(
         "    #[inline] pub fn max(a: {ft}, b: {ft}) -> {ft} {{ a.max(b) }}"
     ));
+    lines.push(format!(
+        "    #[inline] pub fn expm1(x: {ft}) -> {ft} {{ x.exp_m1() }}"
+    ));
+    lines.push(format!(
+        "    #[inline] pub fn log1p(x: {ft}) -> {ft} {{ x.ln_1p() }}"
+    ));
+    lines.push(format!(
+        "    #[inline] pub fn log2(x: {ft}) -> {ft} {{ x.log2() }}"
+    ));
+    lines.push(format!(
+        "    #[inline] pub fn exp2(x: {ft}) -> {ft} {{ x.exp2() }}"
+    ));
     lines.push("}".to_string());
     lines.push(String::new());
     lines.push("#[cfg(not(feature = \"std\"))]".to_string());
@@ -376,6 +388,18 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
     lines.push(format!(
         "    #[inline] pub fn max(a: {ft}, b: {ft}) -> {ft} {{ libm::fmax(a as f64, b as f64) as {ft} }}"
     ));
+    lines.push(format!(
+        "    #[inline] pub fn expm1(x: {ft}) -> {ft} {{ libm::expm1(x as f64) as {ft} }}"
+    ));
+    lines.push(format!(
+        "    #[inline] pub fn log1p(x: {ft}) -> {ft} {{ libm::log1p(x as f64) as {ft} }}"
+    ));
+    lines.push(format!(
+        "    #[inline] pub fn log2(x: {ft}) -> {ft} {{ libm::log2(x as f64) as {ft} }}"
+    ));
+    lines.push(format!(
+        "    #[inline] pub fn exp2(x: {ft}) -> {ft} {{ libm::exp2(x as f64) as {ft} }}"
+    ));
     lines.push("}".to_string());
 }
 
@@ -402,6 +426,11 @@ fn expr_to_rust_cse(
 ) -> Result<String, SymplexError> {
     let prec = options.precision;
     let suffix = prec.suffix();
+
+    // Check for numerical optimization patterns before the main match.
+    if let Some(optimized) = try_numopt(arena, id, var_names, options, cse_constants) {
+        return optimized;
+    }
 
     match arena.node(id).clone() {
         ExprNode::Num(nid) => {
@@ -681,9 +710,237 @@ fn expr_to_rust_cse(
 // Constant-folding helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Try to extract a concrete `f64` value from an expression node.
+// Try to extract a concrete `f64` value from an expression node.
+//
+// Returns `Some(v)` when the node is a numeric literal (`Num`), `Pi`, or `E`.
+// ═══════════════════════════════════════════════════════════════════════════
+// Numerical optimization pattern detection
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to detect numerical optimization patterns and emit more precise code.
 ///
-/// Returns `Some(v)` when the node is a numeric literal (`Num`), `Pi`, or `E`.
+/// Returns `Some(Ok(code))` if a pattern matched, `Some(Err(..))` on error,
+/// or `None` if no pattern matched (fall through to the normal emitter).
+fn try_numopt(
+    arena: &Arena,
+    id: ExprId,
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Option<Result<String, SymplexError>> {
+    let node = arena.node(id);
+
+    // Pattern 1: exp(x) - 1 → x.exp_m1()
+    // Scans Add children for an Exp(x) and a −1 constant, even in N-ary sums.
+    if let ExprNode::Add(children) = node
+        && children.len() >= 2
+    {
+        let mut exp_idx = None;
+        let mut neg_one_idx = None;
+        for (i, &child) in children.iter().enumerate() {
+            if exp_idx.is_none()
+                && let ExprNode::Exp(_) = arena.node(child)
+            {
+                exp_idx = Some(i);
+            }
+            if neg_one_idx.is_none() && numopt_resolves_to(arena, child, cse_constants, -1.0) {
+                neg_one_idx = Some(i);
+            }
+        }
+        if let (Some(ei), Some(ni)) = (exp_idx, neg_one_idx)
+            && ei != ni
+        {
+            let x = match arena.node(children[ei]) {
+                ExprNode::Exp(x) => *x,
+                _ => unreachable!(),
+            };
+            return Some(emit_exp_m1_in_add(
+                arena, children, ei, ni, x, var_names, options, cse_constants,
+            ));
+        }
+    }
+
+    // Pattern 2: ln(1 + x) → x.ln_1p()
+    if let ExprNode::Ln(inner) = node
+        && let Some(r) = try_ln_1p(arena, *inner, var_names, options, cse_constants)
+    {
+        return Some(r);
+    }
+
+    // Pattern 3: ln(x) / ln(2) → x.log2()
+    if let ExprNode::Mul(children) = node
+        && children.len() == 2
+    {
+        if let Some(r) = try_log2(arena, children[0], children[1], var_names, options, cse_constants) {
+            return Some(r);
+        }
+        if let Some(r) = try_log2(arena, children[1], children[0], var_names, options, cse_constants) {
+            return Some(r);
+        }
+    }
+
+    // Pattern 4: 2^x → x.exp2()
+    if let ExprNode::Pow(base, exp) = node
+        && let Some(val) = try_resolve_constant(arena, *base, cse_constants)
+        && val == 2.0
+    {
+        let exp = *exp;
+        let x_code = expr_to_rust_cse(arena, exp, var_names, options, cse_constants);
+        return Some(x_code.and_then(|code| emit_numopt_call(&code, "exp2", "exp2", options)));
+    }
+
+    None
+}
+
+/// Check if the inner of `Ln` is `Add([1, x])` and emit `x.ln_1p()`.
+fn try_ln_1p(
+    arena: &Arena,
+    inner: ExprId,
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Option<Result<String, SymplexError>> {
+    if let ExprNode::Add(children) = arena.node(inner)
+        && children.len() == 2
+    {
+        if numopt_resolves_to(arena, children[0], cse_constants, 1.0) {
+            let x = children[1];
+            let x_code = expr_to_rust_cse(arena, x, var_names, options, cse_constants);
+            return Some(x_code.and_then(|code| emit_numopt_call(&code, "ln_1p", "log1p", options)));
+        }
+        if numopt_resolves_to(arena, children[1], cse_constants, 1.0) {
+            let x = children[0];
+            let x_code = expr_to_rust_cse(arena, x, var_names, options, cse_constants);
+            return Some(x_code.and_then(|code| emit_numopt_call(&code, "ln_1p", "log1p", options)));
+        }
+    }
+    None
+}
+
+/// Check if `maybe_ln` is `Ln(x)` and `maybe_inv` is `Pow(Ln(2), −1)`.
+fn try_log2(
+    arena: &Arena,
+    maybe_ln: ExprId,
+    maybe_inv_ln2: ExprId,
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Option<Result<String, SymplexError>> {
+    // maybe_ln must be Ln(x)
+    let x = match arena.node(maybe_ln) {
+        ExprNode::Ln(x) => *x,
+        _ => return None,
+    };
+
+    // maybe_inv_ln2 must be Pow(Ln(2), −1)
+    if let ExprNode::Pow(base, exp) = arena.node(maybe_inv_ln2) {
+        let base = *base;
+        let exp = *exp;
+        if !numopt_resolves_to(arena, exp, cse_constants, -1.0) {
+            return None;
+        }
+        if let ExprNode::Ln(ln_arg) = arena.node(base)
+            && let Some(val) = try_resolve_constant(arena, *ln_arg, cse_constants)
+            && val == 2.0
+        {
+            let x_code = expr_to_rust_cse(arena, x, var_names, options, cse_constants);
+            return Some(x_code.and_then(|code| emit_numopt_call(&code, "log2", "log2", options)));
+        }
+    }
+    None
+}
+
+/// Check if an expression resolves to a specific constant value.
+fn numopt_resolves_to(
+    arena: &Arena,
+    id: ExprId,
+    cse_constants: &FxHashMap<usize, f64>,
+    expected: f64,
+) -> bool {
+    if let Some(val) = try_resolve_constant(arena, id, cse_constants) {
+        return val == expected;
+    }
+    // Also check Neg(inner) for negative expected values.
+    if expected < 0.0
+        && let ExprNode::Neg(inner) = arena.node(id)
+        && let Some(val) = try_resolve_constant(arena, *inner, cse_constants)
+    {
+        return val == -expected;
+    }
+    false
+}
+
+/// Emit an `exp_m1` call inside an N-ary Add, combining with the remaining children.
+#[allow(clippy::too_many_arguments)]
+fn emit_exp_m1_in_add(
+    arena: &Arena,
+    children: &[ExprId],
+    exp_idx: usize,
+    neg_one_idx: usize,
+    x: ExprId,
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Result<String, SymplexError> {
+    let x_code = expr_to_rust_cse(arena, x, var_names, options, cse_constants)?;
+    let exp_m1_code = emit_numopt_call(&x_code, "exp_m1", "expm1", options)?;
+
+    // Collect remaining children (everything except the Exp and −1).
+    let remaining: Vec<ExprId> = children
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != exp_idx && i != neg_one_idx)
+        .map(|(_, &c)| c)
+        .collect();
+
+    if remaining.is_empty() {
+        return Ok(exp_m1_code);
+    }
+
+    // Build parts: exp_m1 first, then remaining children with sign detection.
+    let mut parts = Vec::new();
+    parts.push(exp_m1_code);
+
+    for &child in &remaining {
+        let (is_neg, code) = if matches!(arena.node(child), ExprNode::Neg(_)) {
+            if let ExprNode::Neg(inner) = arena.node(child).clone() {
+                (true, expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?)
+            } else {
+                unreachable!()
+            }
+        } else if is_neg_one_mul_codegen(arena, child) {
+            (true, emit_mul_without_neg_one(arena, child, var_names, options, cse_constants)?)
+        } else {
+            (false, expr_to_rust_cse(arena, child, var_names, options, cse_constants)?)
+        };
+
+        if is_neg {
+            parts.push(format!(" - {code}"));
+        } else {
+            parts.push(format!(" + {code}"));
+        }
+    }
+
+    Ok(format!("({})", parts.join("")))
+}
+
+/// Emit a numerical optimization function call with the correct backend syntax.
+fn emit_numopt_call(
+    arg_code: &str,
+    std_method: &str,
+    libm_name: &str,
+    options: &CodegenOptions,
+) -> Result<String, SymplexError> {
+    Ok(match options.math_backend {
+        MathBackend::Std => format!("{arg_code}.{std_method}()"),
+        MathBackend::Libm => {
+            let ft = options.precision.type_name();
+            format!("libm::{libm_name}({arg_code} as f64) as {ft}")
+        }
+        MathBackend::CfgGated => format!("math::{libm_name}({arg_code})"),
+    })
+}
+
 fn try_const_eval_f64(arena: &Arena, id: ExprId) -> Option<f64> {
     match arena.node(id) {
         ExprNode::Num(nid) => {

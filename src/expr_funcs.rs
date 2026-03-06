@@ -1633,6 +1633,63 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// Apply Fu's trig simplification algorithm.
+    ///
+    /// Tries 26+ named transforms (TR0–TR14, TRmorrie, TRpower, Pythagorean
+    /// substitutions) organized into rule lists, and picks the result with
+    /// the lowest `(trig_count, op_count)` measure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
+    /// assert_eq!(format!("{}", expr.fu()), "1");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn fu(&self) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            crate::fu::fu(&mut guard.arena, self.id)
+        };
+        self.wrap(id)
+    }
+
+    /// Attempt closed-form evaluation of a hypergeometric sum using Gosper's algorithm.
+    ///
+    /// Given a symbolic sum `Σ_{k=lower}^{upper} f(k)`, tries to find a
+    /// hypergeometric antidifference via Gosper's algorithm (1978).
+    /// Returns `Some(result)` with the closed-form expression, or `None`
+    /// if the sum is not Gosper-summable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let k = ctx.symbol("k");
+    /// let n = ctx.symbol("n");
+    /// let body = ctx.int(2).pow(&k);
+    /// let s = Ex::symbolic_sum(&body, &k, &ctx.int(0), &n);
+    /// // gosper_sum extracts bounds and body from a Sum node
+    /// let _result = s.gosper_sum(&k);
+    /// ```
+    #[must_use]
+    pub fn gosper_sum(&self, var: &Ex) -> Option<Ex> {
+        let mut inner = self.inner.write();
+        let node = inner.arena.node(self.id).clone();
+        if let crate::node::ExprNode::Sum(body, _sum_var, lower, upper) = node {
+            let result = crate::gosper::gosper_sum(&mut inner.arena, body, var.id, lower, upper);
+            drop(inner);
+            return result.map(|id| self.wrap(id));
+        }
+        drop(inner);
+        None
+    }
+
     /// Simplify combinatorial expressions (factorials, binomials).
     ///
     /// Cancels common factorial terms in products, detects binomial
