@@ -1,4 +1,5 @@
-//! Robotics kinematics helpers: DH parameters, forward kinematics, Jacobian.
+//! Robotics kinematics helpers: DH parameters, forward kinematics, Jacobian,
+//! and algebraic inverse kinematics.
 //!
 //! # Denavit-Hartenberg Convention
 //!
@@ -12,7 +13,12 @@
 //! Chaining these matrices gives the forward kinematics.
 
 use crate::matrix::Matrix;
+use crate::multipoly::{GrevLex, MultiPoly};
+use crate::polysys;
 use crate::prelude::*;
+use num_bigint::BigInt;
+use num_rational::Ratio;
+use num_traits::ToPrimitive;
 
 /// Build the standard Denavit-Hartenberg transformation matrix for one joint.
 ///
@@ -333,4 +339,115 @@ pub fn rot_euler(phi: &Ex, theta: &Ex, psi: &Ex, convention: EulerConvention) ->
             rot_x(phi).matmul(&rot_y(theta)).matmul(&rot_z(psi))
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2-DOF Planar Inverse Kinematics
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Convert an f64 value to a rational approximation by scaling to millionths.
+fn f64_to_ratio(v: f64) -> Ratio<BigInt> {
+    let scaled = (v * 1_000_000.0).round() as i64;
+    Ratio::new(BigInt::from(scaled), BigInt::from(1_000_000i64))
+}
+
+/// Solve 2-DOF planar inverse kinematics algebraically.
+///
+/// Given link lengths (`l1`, `l2`) and a target end-effector position
+/// (`target_x`, `target_y`), finds all joint angle pairs (θ₁, θ₂)
+/// satisfying the forward-kinematics equations:
+///
+/// ```text
+///   l1·cos(θ₁) + l2·cos(θ₁+θ₂) = target_x
+///   l1·sin(θ₁) + l2·sin(θ₁+θ₂) = target_y
+/// ```
+///
+/// Uses the sin/cos ring approach with Gröbner bases. Introduces four
+/// polynomial variables `(s₁, c₁, s₂, c₂)` representing `sin(θ₁)`,
+/// `cos(θ₁)`, `sin(θ₂)`, `cos(θ₂)`, together with Pythagorean
+/// constraints `s₁²+c₁²=1` and `s₂²+c₂²=1`.
+///
+/// The angle-addition identities expand the FK equations:
+/// ```text
+///   cos(θ₁+θ₂) = c₁·c₂ − s₁·s₂
+///   sin(θ₁+θ₂) = s₁·c₂ + c₁·s₂
+/// ```
+///
+/// Returns all solution branches as `(θ₁, θ₂)` pairs in radians.
+/// Returns an empty vec if the target is unreachable.
+pub fn inverse_kinematics_2dof(
+    l1: f64,
+    l2: f64,
+    target_x: f64,
+    target_y: f64,
+) -> Vec<(f64, f64)> {
+    // Variables: 0=s1, 1=c1, 2=s2, 3=c2
+    let nv = 4;
+
+    let rl1 = f64_to_ratio(l1);
+    let rl2 = f64_to_ratio(l2);
+    let rtx = f64_to_ratio(target_x);
+    let rty = f64_to_ratio(target_y);
+
+    let s1 = MultiPoly::<GrevLex>::var(nv, 0);
+    let c1 = MultiPoly::<GrevLex>::var(nv, 1);
+    let s2 = MultiPoly::<GrevLex>::var(nv, 2);
+    let c2 = MultiPoly::<GrevLex>::var(nv, 3);
+    let one = MultiPoly::<GrevLex>::from_int(nv, 1);
+
+    // Pythagorean constraints: s1^2 + c1^2 - 1 = 0, s2^2 + c2^2 - 1 = 0
+    let pyth1 = &(&s1 * &s1) + &(&c1 * &c1) - one.clone();
+    let pyth2 = &(&s2 * &s2) + &(&c2 * &c2) - one;
+
+    // FK x-equation: l1*c1 + l2*(c1*c2 - s1*s2) - tx = 0
+    let fk_x = {
+        let term1 = c1.scale(&rl1);
+        let cos12 = &(&c1 * &c2) - &(&s1 * &s2); // c1*c2 - s1*s2
+        let term2 = cos12.scale(&rl2);
+        let target_poly = MultiPoly::<GrevLex>::constant(nv, rtx.clone());
+        &(&term1 + &term2) - &target_poly
+    };
+
+    // FK y-equation: l1*s1 + l2*(s1*c2 + c1*s2) - ty = 0
+    let fk_y = {
+        let term1 = s1.scale(&rl1);
+        let sin12 = &(&s1 * &c2) + &(&c1 * &s2); // s1*c2 + c1*s2
+        let term2 = sin12.scale(&rl2);
+        let target_poly = MultiPoly::<GrevLex>::constant(nv, rty.clone());
+        &(&term1 + &term2) - &target_poly
+    };
+
+    let system = vec![fk_x, fk_y, pyth1, pyth2];
+
+    let solutions = match polysys::solve_polynomial_system(&system) {
+        Ok(sols) => sols,
+        Err(_) => return vec![],
+    };
+
+    // Convert (s1, c1, s2, c2) → (θ₁, θ₂)
+    let mut angles = Vec::new();
+    for sol in &solutions {
+        if sol.len() != 4 {
+            continue;
+        }
+        let s1_val = sol[0].to_f64().unwrap_or(0.0);
+        let c1_val = sol[1].to_f64().unwrap_or(0.0);
+        let s2_val = sol[2].to_f64().unwrap_or(0.0);
+        let c2_val = sol[3].to_f64().unwrap_or(0.0);
+
+        let theta1 = s1_val.atan2(c1_val);
+        let theta2 = s2_val.atan2(c2_val);
+
+        angles.push((theta1, theta2));
+    }
+
+    // Deduplicate solutions that are numerically close
+    angles.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    angles.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6);
+
+    angles
 }

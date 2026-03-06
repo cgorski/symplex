@@ -89,6 +89,8 @@ pub(crate) mod nsimplify;
 pub mod ode;
 pub(crate) mod pattern;
 pub(crate) mod poly;
+/// Polynomial system solving via Gröbner bases.
+pub mod polysys;
 pub(crate) mod polybridge;
 pub(crate) mod powsimp;
 /// Symbolic quaternion algebra for attitude representation.
