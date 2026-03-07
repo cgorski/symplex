@@ -1648,7 +1648,6 @@ impl Expr<Numeric> {
     /// let refined = expr.refine();
     /// assert_eq!(format!("{refined}"), format!("{x}"));
     /// ```
-    #[must_use = "returns the refined form; does not modify in place"]
     /// Render this expression as a 2D Unicode string for terminal display.
     ///
     /// Produces multi-line output with stacked fractions, superscripts,
@@ -1693,6 +1692,15 @@ impl Expr<Numeric> {
         crate::output::pretty::pretty_print(&inner.arena, self.id, crate::output::pretty::RenderMode::Ascii).render()
     }
 
+    /// Simplify an expression using assumptions.
+    ///
+    /// Unlike [`simplify`](Expr::simplify) which performs structural
+    /// rewriting, `refine` applies rewrites that are only valid under
+    /// certain assumptions (e.g., "x is positive").  Assumptions are
+    /// set on symbols via [`assume`](Expr::assume).
+    ///
+    /// See [`refine_with`](Self::refine_with) for temporary assumptions.
+    #[must_use = "returns the refined form; does not modify in place"]
     pub fn refine(&self) -> Ex {
         let mut inner = self.inner.write();
         let crate::api::context::ContextInner {
