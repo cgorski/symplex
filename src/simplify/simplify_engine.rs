@@ -126,6 +126,7 @@ fn update_best(arena: &Arena, best: &mut ExprId, best_ops: &mut usize, candidate
 /// 5. eval → expand_trig → simplify
 /// 6. eval → logcombine → simplify
 /// 7. eval → cancel with free symbols → simplify
+/// 8. eval → refine (assumption-aware, e.g. abs(x)→x when x≥0)
 ///
 /// The result with the lowest `count_ops` is returned.
 /// If the best result is more than 1.7× the complexity of the original,
@@ -261,6 +262,25 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         update_best(arena, &mut best, &mut best_ops, cancel_best);
     } else {
         tracing::debug!("smart_simplify: skipping cancel (no negative-power nodes)");
+    }
+
+    // Strategy 8: eval → refine (assumption-aware) (only if refinable nodes present)
+    if flags.has_abs || flags.has_sign || flags.has_floor_ceil || flags.has_pow {
+        let s8_eval = crate::transforms::eval::eval(arena, expr);
+        // refine needs &mut AssumptionCache — but smart_simplify only has &mut Arena.
+        // We build a temporary cache for this pass.  When called through the public
+        // Ex::simplify() path the real cache is used; here we create a fresh one
+        // that still reads symbol-level assumptions from the arena.
+        let mut temp_assumptions = crate::base::assumptions::AssumptionCache::new();
+        let s8 = crate::simplify::refine::refine_full(arena, &mut temp_assumptions, s8_eval);
+        tracing::trace!(
+            strategy = "eval+refine",
+            ops = count_ops(arena, s8),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s8);
+    } else {
+        tracing::debug!("smart_simplify: skipping refine (no abs/sign/floor/ceil/pow nodes)");
     }
 
     tracing::debug!(
