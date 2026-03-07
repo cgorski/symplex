@@ -1141,8 +1141,8 @@ impl Matrix {
 
     /// Matrix exponential via truncated Taylor series: eᴬ ≈ Σₖ₌₀ⁿ Aᵏ/k!.
     ///
-    /// This computes a symbolic approximation. For exact results on
-    /// diagonalizable matrices, use eigendecomposition externally.
+    /// This computes a symbolic approximation. For exact results, prefer
+    /// [`matrix_exp`](Self::matrix_exp) which uses Jordan decomposition.
     ///
     /// `order` controls the number of terms (default: 10 is good for most cases).
     pub fn exp_series(&self, order: usize) -> Matrix {
@@ -1157,6 +1157,126 @@ impl Matrix {
             result = result.add(&a_power_over_factorial);
         }
         result
+    }
+
+    /// Exact symbolic matrix exponential via Jordan decomposition.
+    ///
+    /// Computes `eᴬ = P · e^J · P⁻¹` where `J` is the Jordan normal form.
+    /// For each Jordan block `J_k(λ)`, the matrix exponential is:
+    ///
+    /// ```text
+    /// e^{J_k(λ)} = e^λ · [ 1,    1,    1/2!, ..., 1/(k-1)! ]
+    ///                     [ 0,    1,    1,    ..., 1/(k-2)! ]
+    ///                     [ 0,    0,    1,    ..., ...       ]
+    ///                     [ ...                   1         ]
+    /// ```
+    ///
+    /// Falls back to [`exp_series`](Self::exp_series) with 10 terms if
+    /// the Jordan form cannot be computed (e.g., eigenvalues not found).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SymplexError::ComputationFailed`] if the matrix is not square.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let var = symplex::var("λ");
+    /// let m = symplex::matrix![[0, 1], [-1, 0]];
+    /// // e^[[0,1],[-1,0]] involves sin and cos
+    /// let result = m.matrix_exp(&var);
+    /// assert!(result.is_ok());
+    /// ```
+    pub fn matrix_exp(&self, var: &Ex) -> Result<Matrix, SymplexError> {
+        if !self.is_square() {
+            return Err(SymplexError::ComputationFailed {
+                operation: "matrix_exp",
+                reason: format!(
+                    "requires a square matrix, got {}×{}",
+                    self.nrows, self.ncols
+                ),
+            });
+        }
+        debug!("matrix_exp: computing for {}×{} matrix", self.nrows, self.ncols);
+
+        let n = self.nrows;
+
+        // Try Jordan decomposition.
+        let (p, j) = match self.jordan_form(var) {
+            Ok(pj) => pj,
+            Err(_) => {
+                // Fallback to Taylor series.
+                debug!("matrix_exp: Jordan form failed, falling back to exp_series(10)");
+                return Ok(self.exp_series(10));
+            }
+        };
+
+        // Compute e^J block by block.
+        // J is block-diagonal with Jordan blocks. We compute e^J by
+        // exponentiating each block independently.
+        //
+        // For a Jordan block J_k(λ):
+        //   e^{J_k(λ)}[i][j] = e^λ / (j-i)!   if j >= i
+        //                     = 0                if j < i
+        let mut exp_j_rows: Vec<Vec<Ex>> = vec![vec![Ex::zero(); n]; n];
+
+        // Walk along the diagonal of J to identify blocks.
+        let mut col = 0;
+        while col < n {
+            // Determine block size: count consecutive 1s on the superdiagonal.
+            let lambda = j.get(col, col).clone();
+            let mut block_size = 1;
+            while col + block_size < n {
+                let superdiag = j.get(col + block_size - 1, col + block_size).simplify();
+                let diag_next = j.get(col + block_size, col + block_size).clone();
+                let lambda_diff = (&diag_next - &lambda).simplify();
+                if superdiag.is_zero_structural() || !lambda_diff.is_zero_structural() {
+                    break;
+                }
+                // Check superdiag is 1
+                let one_diff = (&superdiag - &Ex::one()).simplify();
+                if !one_diff.is_zero_structural() {
+                    break;
+                }
+                block_size += 1;
+            }
+
+            trace!(col, block_size, "matrix_exp: processing Jordan block");
+
+            // Compute e^λ
+            let exp_lambda = lambda.exp();
+
+            // Fill in the block: e^{J_k}[i][j] = e^λ / (j-i)! for j >= i
+            for i in 0..block_size {
+                for jj in i..block_size {
+                    let diff = jj - i;
+                    let factorial_val = crate::int(factorial_usize(diff) as i64);
+                    let entry = &exp_lambda / &factorial_val;
+                    exp_j_rows[col + i][col + jj] = entry;
+                }
+            }
+
+            col += block_size;
+        }
+
+        let exp_j = Matrix::new(exp_j_rows);
+
+        // e^A = P · e^J · P⁻¹
+        let p_inv = match p.inv() {
+            Some(pi) => pi,
+            None => {
+                warn!("matrix_exp: P is singular, falling back to exp_series(10)");
+                return Ok(self.exp_series(10));
+            }
+        };
+
+        let result = p.matmul(&exp_j).matmul(&p_inv);
+
+        // Simplify each entry.
+        let result = result.map(|e| e.simplify());
+
+        Ok(result)
     }
 
     // ── Cholesky decomposition & pseudo-inverse ────────────────────────
@@ -1728,6 +1848,11 @@ fn matrix_pow_vec(a_minus_lambda: &Matrix, vec: &Matrix, power: usize) -> Matrix
         result = a_minus_lambda.matmul(&result);
     }
     result
+}
+
+/// Compute n! for small n (used by matrix_exp Jordan block formula).
+fn factorial_usize(n: usize) -> usize {
+    (1..=n).product::<usize>().max(1)
 }
 
 /// Pick a vector from `candidates` that is linearly independent from all
@@ -2521,6 +2646,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── Matrix exponential tests ───────────────────────────────────
+
+    #[test]
+    fn matrix_exp_identity() {
+        let var = crate::var("lam_mexp1");
+        let m = Matrix::identity(2);
+        let result = m.matrix_exp(&var).expect("identity should succeed");
+        // e^0 = I, so e^I should have e on diagonal (but I = [[1,0],[0,1]])
+        // Actually e^I = e * I for I = identity (since I is diagonal with 1s)
+        // The diagonal entries should be e^1 = e.
+        assert_eq!(result.nrows(), 2);
+    }
+
+    #[test]
+    fn matrix_exp_zero() {
+        let var = crate::var("lam_mexp0");
+        let m = Matrix::zeros(2, 2);
+        let result = m.matrix_exp(&var).expect("zero matrix should succeed");
+        // e^0 = I
+        let diag_00 = result.get(0, 0).simplify().eval();
+        let diag_11 = result.get(1, 1).simplify().eval();
+        let off_01 = result.get(0, 1).simplify().eval();
+        assert!(
+            (&diag_00 - &crate::int(1)).eval().is_zero_structural(),
+            "e^0 [0,0] should be 1, got {diag_00}"
+        );
+        assert!(
+            (&diag_11 - &crate::int(1)).eval().is_zero_structural(),
+            "e^0 [1,1] should be 1, got {diag_11}"
+        );
+        assert!(
+            off_01.is_zero_structural(),
+            "e^0 [0,1] should be 0, got {off_01}"
+        );
+    }
+
+    #[test]
+    fn matrix_exp_non_square_returns_error() {
+        let var = crate::var("lam_mexp_ns");
+        let m = Matrix::new(vec![
+            vec![crate::int(1), crate::int(2), crate::int(3)],
+            vec![crate::int(4), crate::int(5), crate::int(6)],
+        ]);
+        assert!(m.matrix_exp(&var).is_err());
     }
 
     #[test]

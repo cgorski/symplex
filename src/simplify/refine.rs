@@ -198,33 +198,36 @@ fn refine_pow_immut(
     let two = Ratio::from(BigInt::from(2));
 
     // ── Pattern: Pow(Pow(inner, 2), 1/2) = sqrt(x²) ───────────────
-    let exp_num = arena.as_num(exp)?;
-    if *exp_num == half {
-        if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone() {
-            if let Some(inner_exp_num) = arena.as_num(inner_exp) {
-                if *inner_exp_num == two {
-                    // sqrt(x²) where x > 0 → x
-                    let inner_props = prop_cache.get(&inner_base)?;
-                    if inner_props.is_positive == Some(true) {
-                        tracing::debug!("refine: sqrt(x²) -> x (positive)");
-                        return Some(inner_base);
+    // Only applies when exponent is literally 1/2.
+    if let Some(exp_num) = arena.as_num(exp) {
+        if *exp_num == half {
+            if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone() {
+                if let Some(inner_exp_num) = arena.as_num(inner_exp) {
+                    if *inner_exp_num == two {
+                        // sqrt(x²) where x > 0 → x
+                        if let Some(inner_props) = prop_cache.get(&inner_base) {
+                            if inner_props.is_positive == Some(true) {
+                                tracing::debug!("refine: sqrt(x²) -> x (positive)");
+                                return Some(inner_base);
+                            }
+                        }
+                        // sqrt(x²) where x ∈ ℝ → abs(x) — needs arena.abs(),
+                        // handled in mutable pass.
                     }
-                    // sqrt(x²) where x ∈ ℝ → abs(x) — needs arena.abs(),
-                    // handled in mutable pass.
                 }
             }
         }
     }
 
-    // ── Pattern: base^exp where exp is even integer → |base|^exp ───
+    // ── Pattern: base^exp where exp is known even → simplify ───────
     // Special case: (-1)^(even) → 1
-    let exp_props = prop_cache.get(&exp)?;
-    if exp_props.is_even == Some(true) {
-        // Check if base is literally -1
-        if let Some(base_num) = arena.as_num(base) {
-            if *base_num == Ratio::from(BigInt::from(-1)) {
-                tracing::debug!("refine: (-1)^(even) -> 1");
-                return Some(arena.one);
+    if let Some(exp_props) = prop_cache.get(&exp) {
+        if exp_props.is_even == Some(true) {
+            if let Some(base_num) = arena.as_num(base) {
+                if *base_num == Ratio::from(BigInt::from(-1)) {
+                    tracing::debug!("refine: (-1)^(even) -> 1");
+                    return Some(arena.one);
+                }
             }
         }
     }
@@ -505,7 +508,6 @@ mod tests {
     // ── (-1)^(even) ────────────────────────────────────────────────
 
     #[test]
-    #[ignore = "Even assumption inference through AssumptionCache::query not yet propagating for symbolic exponents — tracked for follow-up"]
     fn refine_neg_one_to_even_power() {
         let n = var_with("n_ref_even", Assumption::Even);
         let neg_one = crate::int(-1);

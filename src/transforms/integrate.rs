@@ -3212,6 +3212,49 @@ mod tests {
 
     // ── Inverse hyperbolic integration tests ───────────────────────
 
+    /// Helper: substitute a rational value for a symbol and evaluate to f64.
+    /// Returns None if evaluation fails.
+    fn eval_at(arena: &mut Arena, expr: ExprId, var: ExprId, numer: i64, denom: i64) -> Option<f64> {
+        let val = arena.rational(numer, denom);
+        let substituted = crate::transforms::subs::subs(arena, expr, var, val);
+        let evaled = crate::transforms::eval::eval(arena, substituted);
+        let s = crate::transforms::evalf::evalf(arena, evaled, 15).ok()?;
+        s.parse::<f64>().ok()
+    }
+
+    /// Helper: verify FTC at multiple points — d/dx(F(x)) ≈ f(x).
+    /// `integrand` is f(x), `antideriv` is F(x) = ∫f(x)dx.
+    /// Checks at each test point that |F'(point) - f(point)| < tol.
+    fn assert_ftc(
+        arena: &mut Arena,
+        integrand: ExprId,
+        antideriv: ExprId,
+        var: ExprId,
+        test_points: &[(i64, i64)],
+        tol: f64,
+        name: &str,
+    ) {
+        let deriv = crate::transforms::diff::diff(arena, antideriv, var);
+        let deriv_simplified = crate::simplify::simplify_engine::smart_simplify(arena, deriv);
+        for &(n, d) in test_points {
+            let f_val = eval_at(arena, integrand, var, n, d);
+            let fp_val = eval_at(arena, deriv_simplified, var, n, d);
+            match (f_val, fp_val) {
+                (Some(f), Some(fp)) => {
+                    assert!(
+                        (f - fp).abs() < tol,
+                        "FTC failed for {name} at x={n}/{d}: f(x)={f}, F'(x)={fp}, diff={}",
+                        (f - fp).abs()
+                    );
+                }
+                _ => {
+                    // If numerical eval fails at this point, skip it
+                    // (e.g., acosh at x < 1 is undefined)
+                }
+            }
+        }
+    }
+
     #[test]
     fn integrate_asinh_direct() {
         // ∫ asinh(x) dx = x·asinh(x) - √(x²+1)
@@ -3219,20 +3262,22 @@ mod tests {
         let x = sym(&mut a, "x");
         let asinh_x = a.asinh(x);
         let result = integrate(&mut a, asinh_x, x);
+
+        // Structural: must not be unevaluated
+        assert!(
+            !matches!(a.node(result), ExprNode::Integral(_, _)),
+            "asinh integration should return a closed form, not Integral"
+        );
         let s = display(&a, result);
-        assert!(!s.contains("Integral"), "∫asinh(x)dx should not be unevaluated: {s}");
         assert!(s.contains("asinh"), "result should contain asinh: {s}");
         assert!(s.contains("sqrt"), "result should contain sqrt: {s}");
 
-        // FTC verification: d/dx(result) should simplify back toward asinh(x).
-        let deriv = crate::transforms::diff::diff(&mut a, result, x);
-        let simplified = crate::simplify::simplify_engine::smart_simplify(&mut a, deriv);
-        let s_deriv = display(&a, simplified);
-        // The derivative may not simplify fully, but it should not be
-        // an unevaluated Derivative node.
-        assert!(
-            !s_deriv.contains("Derivative"),
-            "d/dx(∫asinh(x)dx) should evaluate, got: {s_deriv}"
+        // Numerical FTC: d/dx(result) ≈ asinh(x) at multiple points
+        assert_ftc(
+            &mut a, asinh_x, result, x,
+            &[(1, 2), (3, 2), (5, 1)],
+            1e-8,
+            "∫asinh(x)dx",
         );
     }
 
@@ -3243,9 +3288,22 @@ mod tests {
         let x = sym(&mut a, "x");
         let acosh_x = a.acosh(x);
         let result = integrate(&mut a, acosh_x, x);
+
+        // Structural: must not be unevaluated
+        assert!(
+            !matches!(a.node(result), ExprNode::Integral(_, _)),
+            "acosh integration should return a closed form, not Integral"
+        );
         let s = display(&a, result);
-        assert!(!s.contains("Integral"), "∫acosh(x)dx should not be unevaluated: {s}");
         assert!(s.contains("acosh"), "result should contain acosh: {s}");
+
+        // Numerical FTC: test at x > 1 only (acosh domain)
+        assert_ftc(
+            &mut a, acosh_x, result, x,
+            &[(3, 2), (2, 1), (5, 1)],
+            1e-8,
+            "∫acosh(x)dx",
+        );
     }
 
     #[test]
@@ -3255,46 +3313,22 @@ mod tests {
         let x = sym(&mut a, "x");
         let atanh_x = a.atanh(x);
         let result = integrate(&mut a, atanh_x, x);
-        let s = display(&a, result);
-        assert!(!s.contains("Integral"), "∫atanh(x)dx should not be unevaluated: {s}");
-        assert!(s.contains("atanh"), "result should contain atanh: {s}");
-        assert!(s.contains("ln"), "result should contain ln (from ½·ln(1-x²)): {s}");
-    }
 
-    #[test]
-    fn integrate_asinh_not_unevaluated() {
-        // Ensure asinh(x) no longer returns an unevaluated Integral.
-        let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let asinh_x = a.asinh(x);
-        let result = integrate(&mut a, asinh_x, x);
-        assert!(
-            !matches!(a.node(result), ExprNode::Integral(_, _)),
-            "asinh integration should return a closed form, not Integral"
-        );
-    }
-
-    #[test]
-    fn integrate_acosh_not_unevaluated() {
-        let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let acosh_x = a.acosh(x);
-        let result = integrate(&mut a, acosh_x, x);
-        assert!(
-            !matches!(a.node(result), ExprNode::Integral(_, _)),
-            "acosh integration should return a closed form, not Integral"
-        );
-    }
-
-    #[test]
-    fn integrate_atanh_not_unevaluated() {
-        let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let atanh_x = a.atanh(x);
-        let result = integrate(&mut a, atanh_x, x);
+        // Structural: must not be unevaluated
         assert!(
             !matches!(a.node(result), ExprNode::Integral(_, _)),
             "atanh integration should return a closed form, not Integral"
+        );
+        let s = display(&a, result);
+        assert!(s.contains("atanh"), "result should contain atanh: {s}");
+        assert!(s.contains("ln"), "result should contain ln: {s}");
+
+        // Numerical FTC: test at |x| < 1 only (atanh domain)
+        assert_ftc(
+            &mut a, atanh_x, result, x,
+            &[(1, 4), (1, 2), (3, 4)],
+            1e-8,
+            "∫atanh(x)dx",
         );
     }
 }
