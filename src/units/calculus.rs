@@ -298,3 +298,19 @@ impl_int_wrt!(Force, Length => Energy);
 impl_int_wrt!(Stiffness, Length => Force);
 impl_int_wrt!(Momentum, Velocity => Energy);  // ∫p dv = KE
 impl_int_wrt!(AngularMomentum, AngularVelocity => Energy);
+
+// ── Angle-based derivatives (for robotics Jacobians) ──
+// Differentiating w.r.t. Angle preserves dimension (Angle is dimensionless in SI)
+impl_diff_wrt!(Length, Angle => Length);
+impl_diff_wrt!(Velocity, Angle => Velocity);
+impl_diff_wrt!(Acceleration, Angle => Acceleration);
+impl_diff_wrt!(Force, Angle => Force);
+impl_diff_wrt!(Torque, Angle => Torque);
+impl_diff_wrt!(AngularMomentum, Angle => AngularMomentum);
+impl_diff_wrt!(MomentOfInertia, Angle => MomentOfInertia);
+
+// Angle-based integration
+impl_int_wrt!(Torque, Angle => Energy);      // ∫τ dθ = work done
+impl_int_wrt!(Length, Angle => Length);       // Arc length integration
+impl_int_wrt!(Force, Angle => Force);
+impl_int_wrt!(AngularMomentum, Angle => AngularMomentum);

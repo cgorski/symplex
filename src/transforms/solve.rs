@@ -79,6 +79,13 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
     let poly = match polybridge::expr_to_poly(arena, expr, var) {
         Some(p) => p,
         None => {
+            // Try symbolic linear solver first: handles a*x + b = 0 where a, b
+            // are symbolic (not numeric) expressions, e.g. k*x - F = 0 → x = F/k.
+            if let Some(solutions) = try_solve_linear_symbolic(arena, expr, var)
+                && !solutions.is_empty()
+            {
+                return solutions;
+            }
             // Not polynomial → try transcendental solving via inversion peeling.
             // Handles: exp(x)=c, ln(x)=c, sin(x)=c, sqrt(x)=c, etc.
             if let Some(solutions) = try_solve_by_inversion(arena, expr, var)
@@ -1358,6 +1365,70 @@ fn classify_lambert_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option
 ///
 /// Returns `Some(k)` if expr is `var` (k=1) or `Mul([..constants.., var])`.
 /// Returns `None` otherwise.
+// ═══════════════════════════════════════════════════════════════════════════
+// Symbolic linear solver: a*x + b = 0 where a, b may be symbolic
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to solve a linear equation with symbolic coefficients.
+///
+/// Given `expr = 0`, solve for `var` when `expr` is linear in `var` but
+/// the coefficients may be symbolic (not just numbers).
+/// For example: `k*x - F = 0` → `x = F/k`.
+///
+/// Returns `Some(solutions)` if `expr` is linear in `var`, `None` otherwise.
+pub(crate) fn try_solve_linear_symbolic(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+    // Get the Add children (or treat expr as a single-term sum).
+    let terms: Vec<ExprId> = match arena.node(expr).clone() {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![expr],
+    };
+
+    let mut coeff_parts: Vec<ExprId> = Vec::new(); // coefficients of var
+    let mut const_parts: Vec<ExprId> = Vec::new(); // terms without var
+
+    for &term in &terms {
+        if !expr_contains_var(arena, term, var) {
+            // Term doesn't contain var — it's part of the constant.
+            const_parts.push(term);
+            continue;
+        }
+
+        // Term contains var — try to extract a linear coefficient.
+        if let Some(coeff) = extract_var_coeff_in_product(arena, term, var) {
+            coeff_parts.push(coeff);
+        } else {
+            // var appears in a non-linear way (e.g. var^2, sin(var))
+            return None;
+        }
+    }
+
+    if coeff_parts.is_empty() {
+        return None;
+    }
+
+    // Build total coefficient: sum of all var-coefficients.
+    let coeff = if coeff_parts.len() == 1 {
+        coeff_parts[0]
+    } else {
+        arena.add(&coeff_parts)
+    };
+
+    // Build constant: sum of all non-var terms.
+    let constant = if const_parts.is_empty() {
+        arena.zero
+    } else if const_parts.len() == 1 {
+        const_parts[0]
+    } else {
+        arena.add(&const_parts)
+    };
+
+    // Solution: var = -constant / coeff
+    let neg_const = arena.neg(constant);
+    let solution = arena.div(neg_const, coeff);
+
+    Some(vec![Solution { value: solution }])
+}
+
 fn extract_var_coeff_in_product(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
     if expr == var {
         return Some(arena.one);
@@ -2286,5 +2357,53 @@ mod tests {
             val.contains("ln"),
             "solution should be ln(5), not lambertw: {val}"
         );
+    }
+
+    // ── Symbolic linear ─────────────────────────────────────────────
+
+    #[test]
+    fn solve_symbolic_linear_kx_minus_f() {
+        let mut a = Arena::new();
+        let k = sym(&mut a, "k");
+        let x = sym(&mut a, "x");
+        let f = sym(&mut a, "F");
+        // k*x - F = 0, solve for x → x = F/k
+        let kx = a.mul(&[k, x]);
+        let expr = a.sub(kx, f);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1);
+        let s = display(&a, solutions[0].value);
+        assert!(s.contains('F') && s.contains('k'), "Expected F/k, got: {s}");
+    }
+
+    #[test]
+    fn solve_symbolic_linear_bare_var() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let c = sym(&mut a, "c");
+        // x + c = 0, solve for x → x = -c
+        let expr = a.add(&[x, c]);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1);
+        let s = display(&a, solutions[0].value);
+        // Should be -c or (-1)*c or similar
+        assert!(s.contains('c'), "Expected -c, got: {s}");
+    }
+
+    #[test]
+    fn solve_symbolic_linear_multiple_terms() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let p = sym(&mut a, "a");
+        let b = sym(&mut a, "b");
+        let c = sym(&mut a, "c");
+        // a*x + b*x + c = 0 → x = -c/(a+b)
+        let ax = a.mul(&[p, x]);
+        let bx = a.mul(&[b, x]);
+        let expr = a.add(&[ax, bx, c]);
+        let solutions = solve(&mut a, expr, x);
+        assert_eq!(solutions.len(), 1);
+        let s = display(&a, solutions[0].value);
+        assert!(s.contains('c'), "Expected -c/(a+b), got: {s}");
     }
 }

@@ -101,42 +101,42 @@ macro_rules! define_quantity {
             pub fn dim_symbol_str() -> &'static str { $dim_sym }
 
             /// Apply simplify, preserving dimension.
-            pub fn simplify(self) -> Self { $name(self.0.simplify()) }
+            pub fn simplify(&self) -> Self { $name(self.0.simplify()) }
 
             /// Apply expand, preserving dimension.
-            pub fn expand(self) -> Self { $name(self.0.expand()) }
+            pub fn expand(&self) -> Self { $name(self.0.expand()) }
 
             /// Apply eval, preserving dimension.
-            pub fn eval(self) -> Self { $name(self.0.eval()) }
+            pub fn eval(&self) -> Self { $name(self.0.eval()) }
 
             /// Substitute a variable.
-            pub fn subs(self, var: &Ex, val: &Ex) -> Self { $name(self.0.subs(var, val)) }
+            pub fn subs(&self, var: &Ex, val: &Ex) -> Self { $name(self.0.subs(var, val)) }
 
             // ── Dimension-preserving manipulation ──────────────────────
 
             /// Full multi-pass simplification, preserving dimension.
-            pub fn simplify_full(self) -> Self { $name(self.0.full_simplify()) }
+            pub fn simplify_full(&self) -> Self { $name(self.0.full_simplify()) }
 
             /// Trigonometric simplification, preserving dimension.
-            pub fn simplify_trig(self) -> Self { $name(self.0.simplify_trig()) }
+            pub fn simplify_trig(&self) -> Self { $name(self.0.simplify_trig()) }
 
             /// Power/exponent simplification, preserving dimension.
-            pub fn simplify_powers(self) -> Self { $name(self.0.simplify_powers()) }
+            pub fn simplify_powers(&self) -> Self { $name(self.0.simplify_powers()) }
 
             /// Rational simplification, preserving dimension.
-            pub fn simplify_rational(self) -> Self { $name(self.0.simplify_rational()) }
+            pub fn simplify_rational(&self) -> Self { $name(self.0.simplify_rational()) }
 
             /// Expand trigonometric identities, preserving dimension.
-            pub fn expand_trig(self) -> Self { $name(self.0.expand_trig()) }
+            pub fn expand_trig(&self) -> Self { $name(self.0.expand_trig()) }
 
             /// Expand logarithmic identities, preserving dimension.
-            pub fn expand_log(self) -> Self { $name(self.0.expand_log()) }
+            pub fn expand_log(&self) -> Self { $name(self.0.expand_log()) }
 
             /// Combine logarithmic terms, preserving dimension.
-            pub fn log_combine(self) -> Self { $name(self.0.log_combine()) }
+            pub fn log_combine(&self) -> Self { $name(self.0.log_combine()) }
 
             /// Combine trigonometric terms, preserving dimension.
-            pub fn trig_combine(self) -> Self { $name(self.0.trig_combine()) }
+            pub fn trig_combine(&self) -> Self { $name(self.0.trig_combine()) }
 
             /// Factor with respect to a variable, preserving dimension.
             pub fn factor(&self, var: &Ex) -> Self { $name(self.0.factor(var)) }
@@ -148,13 +148,13 @@ macro_rules! define_quantity {
             pub fn cancel(&self, var: &Ex) -> Self { $name(self.0.cancel(var)) }
 
             /// Combine fractions over a common denominator, preserving dimension.
-            pub fn together(self) -> Self { $name(self.0.together()) }
+            pub fn together(&self) -> Self { $name(self.0.together()) }
 
             /// Partial-fraction decomposition with respect to a variable, preserving dimension.
             pub fn partial_fractions(&self, var: &Ex) -> Self { $name(self.0.partial_fractions(var)) }
 
             /// Rationalize the denominator, preserving dimension.
-            pub fn rationalize_denom(self) -> Self { $name(self.0.rationalize_denom()) }
+            pub fn rationalize_denom(&self) -> Self { $name(self.0.rationalize_denom()) }
 
             // ── Calculus — returns raw Ex ──────────────────────────────
 

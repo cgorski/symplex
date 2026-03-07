@@ -394,13 +394,27 @@ fn expand_expr(
                         stack.push(WorkItem::Lit(" - "));
                     }
                 } else if is_neg_one_mul(arena, arg) {
-                    // Mul([-1, rest...]) → display as " - rest"
-                    let rest_id = mul_without_neg_one(arena, arg);
+                    // Mul([-1, rest...]) → display as " - rest..."
+                    // We extract the non-(-1) factors and push them
+                    // directly to avoid the double-negation bug that
+                    // occurs when mul_without_neg_one can't intern a
+                    // new Mul node for the 3+-factor case.
+                    let rest: SmallVec<[ExprId; 6]> =
+                        if let ExprNode::Mul(children) = arena.node(arg) {
+                            SmallVec::from_slice(&children[1..])
+                        } else {
+                            unreachable!("is_neg_one_mul confirmed Mul")
+                        };
                     if i == 0 {
-                        stack.push(WorkItem::Expr(rest_id, PREC_UNARY));
+                        // Leading negative: "-rest..."
+                        if rest.len() == 1 {
+                            stack.push(WorkItem::Expr(rest[0], PREC_UNARY));
+                        } else {
+                            push_mul_factors(arena, &rest, PREC_MUL, stack);
+                        }
                         stack.push(WorkItem::Lit("-"));
                     } else {
-                        stack.push(WorkItem::Expr(rest_id, PREC_MUL));
+                        push_mul_factors(arena, &rest, PREC_MUL, stack);
                         stack.push(WorkItem::Lit(" - "));
                     }
                 } else if is_neg_coeff_mul(arena, arg) {
@@ -914,55 +928,6 @@ fn is_neg_one_mul(arena: &Arena, id: ExprId) -> bool {
         return *r == Ratio::from(BigInt::from(-1));
     }
     false
-}
-
-/// Given a Mul whose first factor is −1, return the ExprId of the
-/// remaining factors (re-wrapped as a Mul if there are multiple, or
-/// as the single factor if there's only one).
-///
-/// **Panics** if `id` is not a Mul with leading −1.
-fn mul_without_neg_one(arena: &Arena, id: ExprId) -> ExprId {
-    if let ExprNode::Mul(children) = arena.node(id) {
-        let rest = &children[1..];
-        match rest.len() {
-            0 => {
-                // Defensive fallback: Mul with only -1 should have been canonicalized.
-                // In release builds, display "-1" rather than panicking.
-                debug_assert!(
-                    false,
-                    "Mul with only -1 should have been canonicalized away"
-                );
-                children[0]
-            }
-            1 => rest[0],
-            _ => {
-                // We need to return a Mul of the remaining factors.
-                // Since we only have &Arena (read-only), we can't intern
-                // a new node.  Instead, return the original id and let
-                // the caller handle it.
-                //
-                // Actually, in the canonical form, a Mul([-1, x]) always
-                // has exactly 2 children (coefficient + one factor) because
-                // if there were more factors, they'd be
-                // Mul([-1, a, b, ...]).  We need to display "a*b*..." for
-                // the non-coefficient part.
-                //
-                // Since we can't intern here, we handle multi-factor
-                // display inline: push the factors directly.  The caller
-                // (Add display) will push this id as an Expr item, but
-                // we override that path in the Add handler above.  So
-                // this branch actually should not be reached from the
-                // "- rest" path in Add — it pushes factors directly.
-                //
-                // For safety, return the original id (displays as the
-                // full Mul including -1, which is slightly redundant but
-                // not incorrect).
-                id
-            }
-        }
-    } else {
-        id
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -2279,6 +2279,15 @@ impl Expr<Numeric> {
         // Check if the expression is polynomial in var.
         let poly = crate::poly::polybridge::expr_to_poly(&inner.arena, self.id, var.id);
         if poly.is_none() {
+            // Not a numeric polynomial — try symbolic linear solve as fallback.
+            // This handles cases like k*x - F = 0 where coefficients are symbolic.
+            if let Some(solutions) = crate::transforms::solve::try_solve_linear_symbolic(
+                &mut inner.arena, self.id, var.id,
+            ) {
+                let wrapped: Vec<Ex> = solutions.into_iter().map(|sol| self.wrap(sol.value)).collect();
+                drop(inner);
+                return Ok(wrapped);
+            }
             return Err(SymplexError::ComputationFailed {
                 operation: "solve_numeric",
                 reason: "expression is not polynomial in the given variable".into(),
