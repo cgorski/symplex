@@ -756,9 +756,9 @@ impl Matrix {
     /// characteristic polynomials of degree ≥ 5, the solver may not
     /// return all roots and the list can be incomplete.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the matrix is not square.
+    /// Returns [`SymplexError::ComputationFailed`] if the matrix is not square.
     ///
     /// # Examples
     ///
@@ -766,18 +766,21 @@ impl Matrix {
     /// use symplex::prelude::*;
     /// let var = symplex::var("λ");
     /// let m = symplex::matrix![[2, 1], [0, 3]];
-    /// let evs = m.eigenvects(&var);
+    /// let evs = m.eigenvects(&var).unwrap();
     /// for (val, mult, vecs) in &evs {
     ///     assert!(!vecs.is_empty());
     /// }
     /// ```
-    pub fn eigenvects(&self, var: &Ex) -> Vec<(Ex, usize, Vec<Matrix>)> {
-        assert!(
-            self.is_square(),
-            "eigenvects requires a square matrix, got {}×{}",
-            self.nrows,
-            self.ncols
-        );
+    pub fn eigenvects(&self, var: &Ex) -> Result<Vec<(Ex, usize, Vec<Matrix>)>, SymplexError> {
+        if !self.is_square() {
+            return Err(SymplexError::ComputationFailed {
+                operation: "eigenvects",
+                reason: format!(
+                    "requires a square matrix, got {}×{}",
+                    self.nrows, self.ncols
+                ),
+            });
+        }
         let n = self.nrows;
         let eye = Matrix::identity(n);
 
@@ -802,33 +805,29 @@ impl Matrix {
             result.push((eigenval, alg_mult, vecs));
         }
 
-        result
+        Ok(result)
     }
 
     /// Check whether the matrix is diagonalizable.
     ///
     /// A matrix is diagonalizable iff for every eigenvalue the geometric
     /// multiplicity (dimension of eigenspace) equals the algebraic
-    /// multiplicity.  Returns `false` if the eigenvalue solver cannot
+    /// multiplicity.  Returns `Ok(false)` if the eigenvalue solver cannot
     /// find all roots.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the matrix is not square.
-    pub fn is_diagonalizable(&self, var: &Ex) -> bool {
-        assert!(
-            self.is_square(),
-            "is_diagonalizable requires a square matrix"
-        );
-        let eigvs = self.eigenvects(var);
+    /// Returns [`SymplexError::ComputationFailed`] if the matrix is not square.
+    pub fn is_diagonalizable(&self, var: &Ex) -> Result<bool, SymplexError> {
+        let eigvs = self.eigenvects(var)?;
         let mut total = 0usize;
         for (_, alg_mult, vecs) in &eigvs {
             if vecs.len() != *alg_mult {
-                return false;
+                return Ok(false);
             }
             total += vecs.len();
         }
-        total == self.nrows
+        Ok(total == self.nrows)
     }
 
     /// Diagonalize: find invertible `P` and diagonal `D` such that
@@ -837,12 +836,11 @@ impl Matrix {
     /// `P` is the matrix whose columns are eigenvectors and `D` is
     /// the diagonal matrix of eigenvalues.
     ///
-    /// Returns `None` if the matrix is not diagonalizable or the
-    /// eigenvalue solver cannot find all roots.
+    /// # Errors
     ///
-    /// # Panics
-    ///
-    /// Panics if the matrix is not square.
+    /// Returns [`SymplexError::ComputationFailed`] if the matrix is not
+    /// square or is not diagonalizable (geometric multiplicity ≠ algebraic
+    /// multiplicity for some eigenvalue).
     ///
     /// # Examples
     ///
@@ -850,29 +848,32 @@ impl Matrix {
     /// use symplex::prelude::*;
     /// let var = symplex::var("λ");
     /// let m = symplex::matrix![[2, 1], [0, 3]];
-    /// if let Some((p, d)) = m.diagonalize(&var) {
-    ///     // D is diagonal, P columns are eigenvectors
-    ///     assert_eq!(d.nrows(), 2);
-    /// }
+    /// let (p, d) = m.diagonalize(&var).unwrap();
+    /// assert_eq!(d.nrows(), 2);
     /// ```
-    pub fn diagonalize(&self, var: &Ex) -> Option<(Matrix, Matrix)> {
-        assert!(
-            self.is_square(),
-            "diagonalize requires a square matrix"
-        );
-        let eigvs = self.eigenvects(var);
+    pub fn diagonalize(&self, var: &Ex) -> Result<(Matrix, Matrix), SymplexError> {
+        let eigvs = self.eigenvects(var)?;
 
         // Verify diagonalizability: need n linearly independent eigenvectors.
         let n = self.nrows;
         let mut total_vecs = 0usize;
         for (_, alg_mult, vecs) in &eigvs {
             if vecs.len() != *alg_mult {
-                return None;
+                return Err(SymplexError::ComputationFailed {
+                    operation: "diagonalize",
+                    reason: "matrix is not diagonalizable: geometric multiplicity \
+                             does not equal algebraic multiplicity for all eigenvalues"
+                        .into(),
+                });
             }
             total_vecs += vecs.len();
         }
         if total_vecs != n {
-            return None;
+            return Err(SymplexError::ComputationFailed {
+                operation: "diagonalize",
+                reason: "matrix is not diagonalizable: insufficient eigenvectors found"
+                    .into(),
+            });
         }
 
         // Build P (eigenvector columns) and D (diagonal eigenvalues).
@@ -888,7 +889,7 @@ impl Matrix {
         let p = Matrix::hstack(&p_cols);
         let d = Matrix::diag(&diag_entries);
 
-        Some((p, d))
+        Ok((p, d))
     }
 
     /// Compute the integer power of a square matrix via repeated squaring.
@@ -2022,7 +2023,7 @@ mod tests {
             vec![crate::int(2), crate::int(1)],
             vec![crate::int(0), crate::int(3)],
         ]);
-        let evs = m.eigenvects(&var);
+        let evs = m.eigenvects(&var).expect("eigenvects should succeed for square matrix");
         assert_eq!(evs.len(), 2, "should have 2 distinct eigenvalues");
         for (eigenval, mult, vecs) in &evs {
             assert_eq!(*mult, 1, "each mult should be 1");
@@ -2041,10 +2042,26 @@ mod tests {
     }
 
     #[test]
+    fn eigenvects_non_square_returns_error() {
+        let var = crate::var("lam_nonsq");
+        let m = Matrix::new(vec![
+            vec![crate::int(1), crate::int(2), crate::int(3)],
+            vec![crate::int(4), crate::int(5), crate::int(6)],
+        ]);
+        let result = m.eigenvects(&var);
+        assert!(result.is_err(), "non-square matrix should return Err");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("square"),
+            "error should mention 'square': {err_msg}"
+        );
+    }
+
+    #[test]
     fn eigenvects_diagonal_matrix() {
         let var = crate::var("lam_ev2");
         let m = Matrix::diag(&[crate::int(5), crate::int(-3)]);
-        let evs = m.eigenvects(&var);
+        let evs = m.eigenvects(&var).expect("eigenvects should succeed");
         assert_eq!(evs.len(), 2, "diagonal matrix has 2 eigenvalues");
         // Eigenvalues should be 5 and -3.
         let vals: Vec<_> = evs.iter().map(|(v, _, _)| v.clone()).collect();
@@ -2062,9 +2079,9 @@ mod tests {
             vec![crate::int(2), crate::int(1)],
             vec![crate::int(0), crate::int(3)],
         ]);
-        let result = m.diagonalize(&var);
-        assert!(result.is_some(), "upper triangular should be diagonalizable");
-        let (p, d) = result.unwrap();
+        let (p, d) = m
+            .diagonalize(&var)
+            .expect("upper triangular should be diagonalizable");
         assert_eq!(p.nrows(), 2);
         assert_eq!(d.nrows(), 2);
         // Verify: P * D * P^{-1} ≈ M
@@ -2093,8 +2110,13 @@ mod tests {
         ]);
         let result = m.diagonalize(&var);
         assert!(
-            result.is_none(),
-            "defective matrix should not be diagonalizable"
+            result.is_err(),
+            "defective matrix should return Err from diagonalize"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("not diagonalizable"),
+            "error should mention 'not diagonalizable': {err_msg}"
         );
     }
 
@@ -2102,7 +2124,24 @@ mod tests {
     fn is_diagonalizable_yes() {
         let var = crate::var("lam_diag_y");
         let m = Matrix::diag(&[crate::int(1), crate::int(2), crate::int(3)]);
-        assert!(m.is_diagonalizable(&var));
+        assert_eq!(m.is_diagonalizable(&var).unwrap(), true);
+    }
+
+    #[test]
+    fn diagonalize_non_square_returns_error() {
+        let var = crate::var("lam_diag_nonsq");
+        let m = Matrix::new(vec![
+            vec![crate::int(1), crate::int(2), crate::int(3)],
+            vec![crate::int(4), crate::int(5), crate::int(6)],
+        ]);
+        assert!(
+            m.diagonalize(&var).is_err(),
+            "non-square should return Err"
+        );
+        assert!(
+            m.is_diagonalizable(&var).is_err(),
+            "non-square should return Err"
+        );
     }
 
     // ── Display tests ──────────────────────────────────────────────
