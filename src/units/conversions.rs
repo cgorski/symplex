@@ -3,6 +3,7 @@
 //! All quantities store values internally in SI base units.
 //! Constructors convert from the specified unit to SI; getters convert back.
 
+use super::conv_factors::{base, derived};
 use super::si::*;
 use crate::prelude::Ex;
 
@@ -27,16 +28,25 @@ impl Length {
     pub fn micrometers(val: &Ex) -> Self { Length(val * &crate::rational(1, 1_000_000)) }
 
     /// Create a Length from a value in inches (1 in = 0.0254 m exactly).
-    pub fn inches(val: &Ex) -> Self { Length(val * &crate::rational(127, 5000)) }
+    pub fn inches(val: &Ex) -> Self { Length(val * &crate::rational(base::INCH.0, base::INCH.1)) }
 
     /// Create a Length from a value in feet (1 ft = 0.3048 m exactly).
-    pub fn feet(val: &Ex) -> Self { Length(val * &crate::rational(381, 1250)) }
+    pub fn feet(val: &Ex) -> Self { Length(val * &crate::rational(derived::FOOT.0, derived::FOOT.1)) }
 
     /// Create a Length from a value in yards (1 yd = 0.9144 m exactly).
-    pub fn yards(val: &Ex) -> Self { Length(val * &crate::rational(1143, 1250)) }
+    pub fn yards(val: &Ex) -> Self { Length(val * &crate::rational(derived::YARD.0, derived::YARD.1)) }
 
     /// Create a Length from a value in miles (1 mi = 1609.344 m exactly).
-    pub fn miles(val: &Ex) -> Self { Length(val * &crate::rational(201168, 125)) }
+    pub fn miles(val: &Ex) -> Self { Length(val * &crate::rational(derived::MILE.0, derived::MILE.1)) }
+
+    /// 1 nautical mile = 1852 m (exact).
+    pub fn nautical_miles(val: &Ex) -> Self { Length(val * &crate::rational(base::NAUTICAL_MILE.0, base::NAUTICAL_MILE.1)) }
+
+    /// 1 fathom = 2 yards (exact).
+    pub fn fathoms(val: &Ex) -> Self { Length(val * &crate::rational(derived::FATHOM.0, derived::FATHOM.1)) }
+
+    /// 1 mil = 0.001 inches (exact). Used in PCB design.
+    pub fn mils(val: &Ex) -> Self { Length(val * &crate::rational(127, 5_000_000)) }
 }
 
 // ===========================================================================
@@ -57,7 +67,22 @@ impl Mass {
     pub fn tonnes(val: &Ex) -> Self { Mass(val * 1000) }
 
     /// Create a Mass from a value in pounds (1 lb = 0.45359237 kg exactly).
-    pub fn pounds(val: &Ex) -> Self { Mass(val * &crate::rational(45359237, 100_000_000)) }
+    pub fn pounds(val: &Ex) -> Self { Mass(val * &crate::rational(base::POUND.0, base::POUND.1)) }
+
+    /// 1 ounce = 1/16 pound (exact).
+    pub fn ounces(val: &Ex) -> Self { Mass(val * &crate::rational(derived::OUNCE.0, derived::OUNCE.1)) }
+
+    /// 1 short ton = 2000 pounds (exact).
+    pub fn short_tons(val: &Ex) -> Self { Mass(val * &crate::rational(derived::SHORT_TON.0, derived::SHORT_TON.1)) }
+
+    /// 1 long ton = 2240 pounds (exact).
+    pub fn long_tons(val: &Ex) -> Self { Mass(val * &crate::rational(derived::LONG_TON.0, derived::LONG_TON.1)) }
+
+    /// 1 grain = 1/7000 pound (exact).
+    pub fn grains(val: &Ex) -> Self { Mass(val * &crate::rational(derived::GRAIN.0, derived::GRAIN.1)) }
+
+    /// 1 slug = 1 lbf·s²/ft (exact).
+    pub fn slugs(val: &Ex) -> Self { Mass(val * &crate::rational(derived::SLUG.0, derived::SLUG.1)) }
 }
 
 // ===========================================================================
@@ -118,6 +143,15 @@ impl Velocity {
     pub fn kilometers_per_hour(val: &Ex) -> Self {
         Velocity(val * &crate::rational(5, 18))
     }
+
+    /// 1 mph = 1 mile / hour (exact).
+    pub fn miles_per_hour(val: &Ex) -> Self { Velocity(val * &crate::rational(derived::MPH.0, derived::MPH.1)) }
+
+    /// 1 knot = 1 nautical mile / hour (exact).
+    pub fn knots(val: &Ex) -> Self { Velocity(val * &crate::rational(derived::KNOT.0, derived::KNOT.1)) }
+
+    /// 1 ft/s (exact).
+    pub fn feet_per_second(val: &Ex) -> Self { Velocity(val * &crate::rational(derived::FOOT.0, derived::FOOT.1)) }
 }
 
 // ===========================================================================
@@ -130,6 +164,15 @@ impl Force {
 
     /// Create a Force from a value in kilonewtons (1 kN = 1000 N).
     pub fn kilonewtons(val: &Ex) -> Self { Force(val * 1000) }
+
+    /// 1 pound-force = lb × g_n (exact).
+    pub fn pound_force(val: &Ex) -> Self { Force(val * &crate::rational(derived::POUND_FORCE.0, derived::POUND_FORCE.1)) }
+
+    /// 1 kilogram-force = 1 kg × g_n (exact).
+    pub fn kilogram_force(val: &Ex) -> Self { Force(val * &crate::rational(derived::KILOGRAM_FORCE.0, derived::KILOGRAM_FORCE.1)) }
+
+    /// 1 dyne = 10⁻⁵ N (exact).
+    pub fn dynes(val: &Ex) -> Self { Force(val * &crate::rational(derived::DYNE.0, derived::DYNE.1)) }
 }
 
 // ===========================================================================
@@ -145,6 +188,21 @@ impl Energy {
 
     /// Create an Energy from a value in kilowatt-hours (1 kWh = 3,600,000 J).
     pub fn kilowatt_hours(val: &Ex) -> Self { Energy(val * 3_600_000) }
+
+    /// 1 thermochemical calorie = 4.184 J (exact).
+    pub fn calories(val: &Ex) -> Self { Energy(val * &crate::rational(base::CALORIE_TH.0, base::CALORIE_TH.1)) }
+
+    /// 1 kilocalorie = 4184 J (exact).
+    pub fn kilocalories(val: &Ex) -> Self { Energy(val * 4184) }
+
+    /// 1 BTU (International Table) = 1055.05585262 J (exact).
+    pub fn btu(val: &Ex) -> Self { Energy(val * &crate::rational(base::BTU_IT.0, base::BTU_IT.1)) }
+
+    /// 1 erg = 10⁻⁷ J (exact).
+    pub fn ergs(val: &Ex) -> Self { Energy(val * &crate::rational(derived::ERG.0, derived::ERG.1)) }
+
+    /// 1 foot-pound = 1 ft × 1 lbf (exact).
+    pub fn foot_pounds(val: &Ex) -> Self { Energy(val * &crate::rational(derived::FOOT_POUND.0, derived::FOOT_POUND.1)) }
 }
 
 // ===========================================================================
@@ -161,8 +219,19 @@ impl Power {
     /// Create a Power from a value in megawatts (1 MW = 1,000,000 W).
     pub fn megawatts(val: &Ex) -> Self { Power(val * 1_000_000) }
 
-    /// Create a Power from a value in mechanical horsepower (1 hp ≈ 745.70 W).
-    pub fn horsepower(val: &Ex) -> Self { Power(val * &crate::rational(74570, 100)) }
+    /// Create a Power from a value in mechanical horsepower.
+    ///
+    /// Exact definition: 1 hp = 33,000 ft·lbf/min = 37284993579113511/50000000000000 W.
+    /// Derived from exact SI definitions: 1 ft = 381/1250 m, 1 lb = 45359237/100000000 kg,
+    /// g_n = 980665/100000 m/s².
+    pub fn horsepower(val: &Ex) -> Self {
+        // Use the exact rational: 33000 × (381/1250) × (45359237/100000000) × (980665/100000) / 60
+        // = 37284993579113511 / 50000000000000 W per hp (fits in i64)
+        Power(val * &crate::rational(derived::HORSEPOWER.0, derived::HORSEPOWER.1))
+    }
+
+    /// 1 metric horsepower (PS) = 75 kgf·m/s (exact).
+    pub fn metric_horsepower(val: &Ex) -> Self { Power(val * &crate::rational(derived::METRIC_HORSEPOWER.0, derived::METRIC_HORSEPOWER.1)) }
 }
 
 // ===========================================================================
@@ -232,6 +301,12 @@ impl Pressure {
 
     /// Create a Pressure from a value in standard atmospheres (1 atm = 101,325 Pa exactly).
     pub fn atmospheres(val: &Ex) -> Self { Pressure(val * 101_325) }
+
+    /// 1 psi = 1 lbf/in² (exact).
+    pub fn psi(val: &Ex) -> Self { Pressure(val * &crate::rational(derived::PSI.0, derived::PSI.1)) }
+
+    /// 1 torr = 1 atm / 760 (exact).
+    pub fn torr(val: &Ex) -> Self { Pressure(val * &crate::rational(derived::TORR.0, derived::TORR.1)) }
 }
 
 // ===========================================================================
@@ -253,6 +328,9 @@ impl Frequency {
 
     /// Create a Frequency from a value in revolutions per minute (1 rpm = 1/60 Hz).
     pub fn rpm(val: &Ex) -> Self { Frequency(val * &crate::rational(1, 60)) }
+
+    /// 1 BPM = 1/60 Hz (beats per minute, used in medicine).
+    pub fn bpm(val: &Ex) -> Self { Frequency(val * &crate::rational(1, 60)) }
 }
 
 // ===========================================================================
@@ -276,6 +354,9 @@ impl Temperature {
     pub fn from_fahrenheit(val: &Ex) -> Self {
         Temperature(&(val + &crate::rational(45967, 100)) * &crate::rational(5, 9))
     }
+
+    /// Convert from Rankine (absolute Fahrenheit scale). K = R × 5/9.
+    pub fn from_rankine(val: &Ex) -> Self { Temperature(val * &crate::rational(5, 9)) }
 }
 
 // ===========================================================================
@@ -297,8 +378,11 @@ impl Acceleration {
 
     /// Create an Acceleration equal to standard gravity (9.80665 m/s² exactly).
     pub fn standard_gravity(val: &Ex) -> Self {
-        Acceleration(val * &crate::rational(980665, 100000))
+        Acceleration(val * &crate::rational(base::G_N.0, base::G_N.1))
     }
+
+    /// 1 ft/s² (exact).
+    pub fn feet_per_second_squared(val: &Ex) -> Self { Acceleration(val * &crate::rational(derived::FOOT.0, derived::FOOT.1)) }
 }
 
 // ===========================================================================
@@ -332,6 +416,24 @@ impl Volume {
 
     /// Create a Volume from a value in milliliters (1 mL = 1e-6 m³).
     pub fn milliliters(val: &Ex) -> Self { Volume(val * &crate::rational(1, 1_000_000)) }
+
+    /// 1 US gallon = 231 in³ (exact).
+    pub fn us_gallons(val: &Ex) -> Self { Volume(val * &crate::rational(derived::US_GALLON.0, derived::US_GALLON.1)) }
+
+    /// 1 US quart = gallon/4 (exact).
+    pub fn us_quarts(val: &Ex) -> Self { Volume(val * &crate::rational(derived::US_QUART.0, derived::US_QUART.1)) }
+
+    /// 1 US pint = gallon/8 (exact).
+    pub fn us_pints(val: &Ex) -> Self { Volume(val * &crate::rational(derived::US_PINT.0, derived::US_PINT.1)) }
+
+    /// 1 US fluid ounce = gallon/128 (exact).
+    pub fn us_fluid_ounces(val: &Ex) -> Self { Volume(val * &crate::rational(derived::US_FLUID_OUNCE.0, derived::US_FLUID_OUNCE.1)) }
+
+    /// 1 imperial gallon = 4.54609 L (exact).
+    pub fn imperial_gallons(val: &Ex) -> Self { Volume(val * &crate::rational(base::IMPERIAL_GALLON.0, base::IMPERIAL_GALLON.1)) }
+
+    /// 1 US tablespoon = fl oz / 2 (exact).
+    pub fn us_tablespoons(val: &Ex) -> Self { Volume(val * &crate::rational(derived::US_TABLESPOON.0, derived::US_TABLESPOON.1)) }
 }
 
 // ===========================================================================

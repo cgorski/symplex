@@ -128,4 +128,48 @@ proptest! {
             "addition of Forces should preserve Force dimension, got {}", dim
         );
     }
+
+    #[test]
+    fn simplify_preserves_velocity_dimension(a in 1..50i64, b in 1..50i64) {
+        symplex::vars!(v, t);
+        let dims = physics_dims();
+        let vel = Velocity::from_ex(&(symplex::int(a) * &v) + &(symplex::int(b) * &v));
+        let simplified = vel.simplify();
+        let dim = infer_dimension(simplified.inner(), &dims).unwrap();
+        prop_assert!(dim.eq(ConstDim::VELOCITY),
+            "simplify should preserve Velocity dimension, got {}", dim);
+    }
+
+    #[test]
+    fn simplify_preserves_voltage_dimension(a in 1..50i64, b in 1..50i64) {
+        symplex::vars!(I, R);
+        let dims = physics_dims();
+        let v = Voltage::from_ex(&(symplex::int(a) * &I * &R) + &(symplex::int(b) * &I * &R));
+        let simplified = v.simplify();
+        let dim = infer_dimension(simplified.inner(), &dims).unwrap();
+        prop_assert!(dim.eq(ConstDim::VOLTAGE),
+            "simplify should preserve Voltage dimension, got {}", dim);
+    }
+
+    #[test]
+    fn simplify_preserves_power_dimension(coeff in 1..50i64) {
+        symplex::vars!(m, a, v);
+        let dims = physics_dims();
+        let p = Power::from_ex(symplex::int(coeff) * &m * &a * &v);
+        let simplified = p.simplify();
+        let dim = infer_dimension(simplified.inner(), &dims).unwrap();
+        prop_assert!(dim.eq(ConstDim::POWER),
+            "simplify should preserve Power dimension, got {}", dim);
+    }
+
+    #[test]
+    fn simplify_preserves_momentum_dimension(a in 1..50i64) {
+        symplex::vars!(m, v);
+        let dims = physics_dims();
+        let p = Momentum::from_ex(symplex::int(a) * &m * &v);
+        let simplified = p.simplify();
+        let dim = infer_dimension(simplified.inner(), &dims).unwrap();
+        prop_assert!(dim.eq(ConstDim::MOMENTUM),
+            "simplify should preserve Momentum dimension, got {}", dim);
+    }
 }

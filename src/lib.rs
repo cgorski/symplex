@@ -231,6 +231,18 @@ pub fn rational(p: i64, q: i64) -> api::expr::Ex {
     default_context().rational(p, q)
 }
 
+/// Create an exact rational `numerator / 10^exponent` in the global default context.
+///
+/// Useful for physical constants with large power-of-10 denominators:
+/// `rational_e(1602176634, 28)` = 1.602176634 × 10⁻²⁸ (exactly).
+///
+/// Uses arbitrary-precision integer arithmetic — no floating-point approximation.
+pub fn rational_e(numerator: i64, exponent: u32) -> api::expr::Ex {
+    let num = int(numerator);
+    let denom = int(10).powi(exponent as i64);
+    &num / &denom
+}
+
 /// The constant π in the global default context.
 ///
 /// # Examples

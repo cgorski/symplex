@@ -30,6 +30,8 @@ pub mod assert_macros;
 pub mod calculus;
 /// Runtime dimension inference for expression trees.
 pub mod inference;
+/// Exact conversion factor constants with derivation verification tests.
+pub mod conv_factors;
 
 // Re-export all public items for `use symplex::units::*`
 pub use dim::*;

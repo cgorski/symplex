@@ -16,6 +16,7 @@ src/
 ├── output/       Display, LaTeX, Rust codegen, CSE, JSON serialization, parser
 ├── plotting/     Adaptive sampling, textplot, SVG, TikZ, data export, RK4
 ├── domains/      Matrices, control systems, dynamics, robotics, number theory
+├── units/        Compile-time dimensional analysis, physical quantity types
 ├── api/          Public types (Ex, Context), all public methods, operator overloads
 └── lib.rs        Module tree, re-exports, prelude, convenience functions
 ```
@@ -25,10 +26,11 @@ src/
 ```
 base → poly → transforms → simplify → calculus
                                          ↓
-                              output / plotting / domains → api
+                              output / plotting / domains → api / units
 ```
 
 `api/` sits at the top and depends on everything — it is the public facade.
+`units/` imports from `api` (for `Ex`) and provides typed physical quantities.
 `base/arena.rs` is a known exception: it provides convenience methods that
 delegate upward into transforms, simplify, and calculus. This is contained
 architectural debt, not a pattern to extend.
@@ -47,6 +49,7 @@ Pick the directory whose **dependency level** matches what your module needs:
 | Rendering expressions to text, LaTeX, code, JSON | `output/` |
 | Visualization, sampling, data export | `plotting/` |
 | Application-specific math (control, robotics, matrices) | `domains/` |
+| Physical quantity types, unit conversions | `units/` |
 | A new public method on `Ex` | `api/expr_funcs.rs` |
 
 ### Cross-layer references
