@@ -604,3 +604,22 @@ impl Parse for EqMacroInput {
         Ok(EqMacroInput { lhs, rhs })
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// dim! macro input
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Input for the `dim!` macro: `OutputType: math_expression`.
+pub struct DimMacroInput {
+    pub output_type: syn::Type,
+    pub expr: MathExpr,
+}
+
+impl Parse for DimMacroInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let output_type: syn::Type = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let expr = parse_math_expr(input)?;
+        Ok(DimMacroInput { output_type, expr })
+    }
+}

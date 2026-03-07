@@ -10,7 +10,7 @@
 
 mod parse;
 
-use parse::{BinOp, EqMacroInput, ExprMacroInput, MathExpr, MatrixMacroInput, RuleMacroInput};
+use parse::{BinOp, DimMacroInput, EqMacroInput, ExprMacroInput, MathExpr, MatrixMacroInput, RuleMacroInput};
 use parse::{KNOWN_FUNCTIONS, is_known_constant, is_known_function};
 
 use proc_macro::TokenStream;
@@ -383,6 +383,261 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
             Ok(quote! { (#arg_code).#method() })
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// dim! macro
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Build a dimension-checked physical quantity using natural math syntax.
+///
+/// # Syntax
+///
+/// ```ignore
+/// dim!(OutputType: math_expression)
+/// ```
+///
+/// The macro parses the math expression (same syntax as [`expr!`]), generates
+/// code that operates on `Qty<D>` values (preserving compile-time dimension
+/// tracking), and converts the result to `OutputType` via [`FromDimExpr`].
+///
+/// If the computed dimension doesn't match `OutputType`, the compiler emits
+/// a clear error message.
+///
+/// # How it works
+///
+/// - Identifiers refer to named quantity variables (e.g. `Mass`, `Length`).
+///   They are cloned and converted to `Qty<D>` via `.as_qty()`.
+/// - Integer literals become `Dimensionless::constant(n).as_qty()`.
+/// - `+`, `-`, `*`, `/` use the `Qty` operator impls which track dimensions
+///   at the type level.
+/// - `x^n` for small integer `n` (0–8) expands to repeated multiplication,
+///   preserving type-level dimension tracking. For larger or non-literal
+///   exponents, the macro falls back to extracting the inner `Ex` and using
+///   `.powi()` / `.pow()`, which loses dimension tracking (treats result as
+///   dimensionless).
+/// - Functions like `sin`, `cos`, `exp`, `ln` extract the inner `Ex`, call
+///   the method, and wrap the result as `Dimensionless`.
+///
+/// # Examples
+///
+/// ```ignore
+/// use symplex::prelude::*;
+/// use symplex::units::*;
+///
+/// let m = Mass::symbol("m");
+/// let g = Acceleration::symbol("g");
+/// let h = Length::symbol("h");
+/// let pe = symplex::dim!(Energy: m * g * h);
+/// ```
+///
+/// [`FromDimExpr`]: ::symplex::units::qty::FromDimExpr
+#[proc_macro]
+pub fn dim(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as DimMacroInput);
+    let output_type = &input.output_type;
+    match generate_dim_expr(&input.expr) {
+        Ok(expr_tokens) => quote! {
+            <#output_type as ::symplex::units::qty::FromDimExpr<_>>::from_dim_expr(#expr_tokens)
+        }
+        .into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// Generate Rust code for a `dim!` invocation.
+///
+/// Each `MathExpr` node is translated to code producing a `Qty<D>`,
+/// where the dimension `D` is computed at the type level by Rust's
+/// type system via the `Qty` arithmetic operator impls.
+fn generate_dim_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
+    match expr {
+        MathExpr::Int(n, _span) => Ok(quote! {
+            ::symplex::units::Dimensionless::constant(#n).as_qty()
+        }),
+
+        MathExpr::Ident(id) => {
+            let name = id.to_string();
+            match name.as_str() {
+                "pi" | "Pi" | "PI" => Ok(quote! {
+                    ::symplex::units::Dimensionless::from_ex(::symplex::pi()).as_qty()
+                }),
+                "E" => Ok(quote! {
+                    ::symplex::units::Dimensionless::from_ex(::symplex::e()).as_qty()
+                }),
+                _ => Ok(quote! { (#id).clone().as_qty() }),
+            }
+        }
+
+        MathExpr::Neg(inner) => {
+            let inner_code = generate_dim_expr(inner)?;
+            Ok(quote! { (-(#inner_code)) })
+        }
+
+        MathExpr::LogicalNot(_) => Err(syn::Error::new(
+            Span::call_site(),
+            "logical NOT (!) is not supported in dim!()",
+        )),
+
+        MathExpr::BinOp { op, lhs, rhs } => match op {
+            BinOp::Add => {
+                let l = generate_dim_expr(lhs)?;
+                let r = generate_dim_expr(rhs)?;
+                Ok(quote! { ((#l) + (#r)) })
+            }
+            BinOp::Sub => {
+                let l = generate_dim_expr(lhs)?;
+                let r = generate_dim_expr(rhs)?;
+                Ok(quote! { ((#l) - (#r)) })
+            }
+            BinOp::Mul => {
+                let l = generate_dim_expr(lhs)?;
+                let r = generate_dim_expr(rhs)?;
+                Ok(quote! { ((#l) * (#r)) })
+            }
+            BinOp::Div => {
+                // int / int → exact rational (dimensionless)
+                if let (Some(p), Some(q)) = (lhs.as_int(), rhs.as_int()) {
+                    if q == 0 {
+                        return Err(syn::Error::new(
+                            Span::call_site(),
+                            "division by zero in dim!()",
+                        ));
+                    }
+                    return Ok(quote! {
+                        ::symplex::units::Dimensionless::rational(#p, #q).as_qty()
+                    });
+                }
+                // -int / int → rational(-n, q)
+                if let MathExpr::Neg(inner_lhs) = lhs.as_ref() {
+                    if let (Some(p), Some(q)) = (inner_lhs.as_int(), rhs.as_int()) {
+                        if q == 0 {
+                            return Err(syn::Error::new(
+                                Span::call_site(),
+                                "division by zero in dim!()",
+                            ));
+                        }
+                        let neg_p = -p;
+                        return Ok(quote! {
+                            ::symplex::units::Dimensionless::rational(#neg_p, #q).as_qty()
+                        });
+                    }
+                }
+                let l = generate_dim_expr(lhs)?;
+                let r = generate_dim_expr(rhs)?;
+                Ok(quote! { ((#l) / (#r)) })
+            }
+            BinOp::Pow => {
+                // Integer exponents: expand to repeated multiplication for
+                // type-level dimension tracking.
+                if let Some(n) = rhs.as_int() {
+                    return generate_dim_pow(lhs, n);
+                }
+                // Negative integer exponent: x^(-n) = 1 / x^n
+                if let MathExpr::Neg(inner_rhs) = rhs.as_ref() {
+                    if let Some(n) = inner_rhs.as_int() {
+                        let pow_code = generate_dim_pow(lhs, n)?;
+                        return Ok(quote! {
+                            (::symplex::units::Dimensionless::constant(1).as_qty() / (#pow_code))
+                        });
+                    }
+                }
+                // Non-integer exponent: fall back to inner Ex operations.
+                // This loses dimension tracking — result is Dimensionless.
+                let b = generate_dim_expr(lhs)?;
+                let e = generate_dim_expr(rhs)?;
+                Ok(quote! {
+                    ::symplex::units::Dimensionless::from_ex(
+                        (#b).into_inner().pow(&#e.into_inner())
+                    ).as_qty()
+                })
+            }
+            _ => Err(syn::Error::new(
+                Span::call_site(),
+                format!("operator {:?} is not supported in dim!()", op),
+            )),
+        },
+
+        MathExpr::Func { name, span, args } => {
+            // Transcendental functions produce dimensionless results.
+            // Extract inner Ex, call the method, wrap as Dimensionless.
+            let func_str = name.as_str();
+            if args.len() == 1 {
+                let arg = generate_dim_expr(&args[0])?;
+                let method = match func_str {
+                    "sin" => quote! { sin },
+                    "cos" => quote! { cos },
+                    "tan" => quote! { tan },
+                    "asin" => quote! { asin },
+                    "acos" => quote! { acos },
+                    "atan" => quote! { atan },
+                    "sinh" => quote! { sinh },
+                    "cosh" => quote! { cosh },
+                    "tanh" => quote! { tanh },
+                    "exp" => quote! { exp },
+                    "ln" => quote! { ln },
+                    "sqrt" => quote! { sqrt },
+                    "abs" => quote! { abs },
+                    _ => {
+                        return Err(syn::Error::new(
+                            *span,
+                            format!("dim!: unsupported function '{}'", func_str),
+                        ));
+                    }
+                };
+                Ok(quote! {
+                    ::symplex::units::Dimensionless::from_ex(
+                        (#arg).into_inner().#method()
+                    ).as_qty()
+                })
+            } else {
+                Err(syn::Error::new(
+                    *span,
+                    format!(
+                        "dim!: function '{}' with {} args is not supported",
+                        func_str,
+                        args.len()
+                    ),
+                ))
+            }
+        }
+    }
+}
+
+/// Generate code for `base^n` where `n` is a known integer literal.
+///
+/// For small `n` (0–8), this expands to repeated multiplication so the
+/// type system tracks the resulting dimension.  For larger `n`, it falls
+/// back to `.powi()` on the inner `Ex` (losing dimension tracking).
+fn generate_dim_pow(base: &MathExpr, n: i64) -> syn::Result<TokenStream2> {
+    if n == 0 {
+        return Ok(quote! { ::symplex::units::Dimensionless::constant(1).as_qty() });
+    }
+    if n == 1 {
+        return generate_dim_expr(base);
+    }
+    if n >= 2 && n <= 8 {
+        // Expand x^n = x * x * ... * x  (n factors).
+        // Each factor is an independent evaluation of `base` so the
+        // type-level dimension products compose correctly.
+        let mut factors = Vec::new();
+        for _ in 0..n {
+            factors.push(generate_dim_expr(base)?);
+        }
+        let mut result = factors.remove(0);
+        for factor in factors {
+            result = quote! { ((#result) * (#factor)) };
+        }
+        return Ok(result);
+    }
+    // n > 8: fall back to extracting inner Ex and using powi.
+    // Dimension tracking is lost — the result is treated as Dimensionless.
+    let base_code = generate_dim_expr(base)?;
+    Ok(quote! {
+        ::symplex::units::Dimensionless::from_ex(
+            (#base_code).into_inner().powi(#n)
+        ).as_qty()
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

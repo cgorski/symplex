@@ -38,6 +38,12 @@ macro_rules! define_quantity {
         impl From<Qty<$dim>> for $name {
             fn from(q: Qty<$dim>) -> $name { $name(q.inner) }
         }
+
+        impl $crate::units::qty::FromDimExpr<$dim> for $name {
+            fn from_dim_expr(qty: $crate::units::qty::Qty<$dim>) -> Self {
+                $name(qty.inner)
+            }
+        }
     };
 
     // ------------------------------------------------------------------

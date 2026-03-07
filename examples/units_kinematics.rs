@@ -141,7 +141,7 @@ fn main() {
     let accel = Acceleration::symbol("a");
 
     // F = ma — Mass × Acceleration → Force (compile-time verified!)
-    let force: Force = &mass * &accel;
+    let force = symplex::dim!(Force: mass * accel);
     println!("  F = m·a = {}", force);
 
     // Work: W = ∫F dx → Energy (typed integration!)

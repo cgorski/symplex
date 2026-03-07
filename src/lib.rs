@@ -122,7 +122,7 @@ pub use api::context;
 pub use api::macros;
 
 // ── Proc macro re-exports ──────────────────────────────────────────────
-pub use symplex_macros::{eq, expr, matrix, rule};
+pub use symplex_macros::{dim, eq, expr, matrix, rule};
 
 // ── Macro support (hidden internals used by generated code) ────────────
 #[doc(hidden)]
@@ -157,7 +157,7 @@ pub mod prelude {
     pub use crate::domains::matrix::Matrix;
     pub use crate::transforms::pattern::Step;
     pub use crate::domains::quaternion::Quaternion;
-    pub use symplex_macros::{eq, expr, matrix, rule};
+    pub use symplex_macros::{dim, eq, expr, matrix, rule};
 
     // NOTE: `vars!`, `syms!`, and `sym!` are `#[macro_export]` macros and
     // live at the crate root.  Use `use symplex::{vars, syms, sym};` or

@@ -10,7 +10,7 @@
 //! - **Named newtypes** (30 types): `Force`, `Voltage`, `Energy`, etc. — best error messages
 //! - **Generic `Qty<D>`**: Fallback for intermediate/exotic dimensions — uses typenum Dim
 //! - **Blanket `Mul`/`Div`**: Any `Qty<D1> * Qty<D2>` computes output dimension via typenum
-//! - **Named `Mul`/`Div` table**: Specific pairs like `Mass × Acceleration → Force`
+//! - **`dim!` macro**: Ergonomic dimension-checked arithmetic: `dim!(Force: m * a)`
 //! - **`assert_dim!`**: Compile-time checkpoint assertions
 //! - **`const_assert_dim!`**: Compile-time formula verification with custom error messages
 
@@ -20,8 +20,6 @@ pub mod dim;
 pub mod qty;
 /// Named SI newtypes (e.g. `Force`, `Voltage`, `Energy`) with constructor helpers.
 pub mod si;
-/// Named multiplication and division rules between physical quantity types.
-pub mod mul_table;
 /// Unit-conversion helpers between SI prefixes and common non-SI units.
 pub mod conversions;
 /// Compile-time dimension-assertion macros (`assert_dim!`, `const_assert_dim!`).
@@ -40,7 +38,7 @@ pub use dim::*;
 pub use qty::*;
 pub use si::*;
 
-// mul_table and conversions add impls, no new public types to re-export
+// conversions adds impls, no new public types to re-export
 // calculus re-exports its own items
 pub use calculus::*;
 pub use inference::*;

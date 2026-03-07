@@ -34,9 +34,9 @@ fn main() {
     println!("     Build complex formulas with natural math syntax.");
     println!("     Example: Energy::from_ex(expr!(1/2 * m * v^2))");
     println!();
-    println!("  b) Named type arithmetic    — COMPILE-TIME CHECKED");
-    println!("     Simple products where the mul/div table has a result.");
-    println!("     Example: let f: Force = &m * &a;");
+    println!("  b) dim! macro arithmetic    — COMPILE-TIME CHECKED");
+    println!("     Simple products with dimension-checked output type.");
+    println!("     Example: let f = symplex::dim!(Force: m * a);");
     println!();
     println!("  c) diff_wrt / integrate_wrt — UNIQUE FEATURE");
     println!("     Typed calculus: the compiler verifies physical laws.");
@@ -96,7 +96,7 @@ fn pattern_2_named_arithmetic() {
     let accel = Acceleration::symbol("a");
 
     // Mass × Acceleration → Force (compile-time checked!)
-    let force: Force = &mass * &accel;
+    let force = symplex::dim!(Force: mass * accel);
     println!("  F = m·a = {}", force);
 
     // Force + Force → Force (same-type addition)
@@ -109,7 +109,7 @@ fn pattern_2_named_arithmetic() {
     println!("  2F = {}", doubled);
 
     // Division: Force / Mass → Acceleration
-    let a_back: Acceleration = &force / &mass;
+    let a_back = symplex::dim!(Acceleration: force / mass);
     println!("  F/m = {}", a_back);
 
     // Negation preserves dimension
@@ -200,12 +200,12 @@ fn pattern_5_electrical_power() {
     let i_cur = Current::symbol("I");
     let r = Resistance::symbol("R");
 
-    // V = IR (named Mul: Current × Resistance → Voltage)
-    let v: Voltage = &i_cur * &r;
+    // V = IR (dim! macro: Current × Resistance → Voltage)
+    let v = symplex::dim!(Voltage: i_cur * r);
     println!("  V = IR = {}", v);
 
-    // P = IV (named Mul: Current × Voltage → Power)
-    let p: Power = &i_cur * &v;
+    // P = IV (dim! macro: Current × Voltage → Power)
+    let p = symplex::dim!(Power: i_cur * v);
     println!("  P = IV = {}", p);
 
     // Expand to see I²R form
@@ -290,9 +290,9 @@ fn pattern_7_spring_mass_damper() {
     let c = Damping::symbol("c");
     let v = Velocity::symbol("v");
 
-    // Named Mul: Stiffness × Length → Force, Damping × Velocity → Force
-    let f_spring: Force = -(&k * &x);
-    let f_damper: Force = -(&c * &v);
+    // dim! macro: Stiffness × Length → Force, Damping × Velocity → Force
+    let f_spring = symplex::dim!(Force: -(k * x));
+    let f_damper = symplex::dim!(Force: -(c * v));
     let f_ext = Force::symbol("F_ext");
 
     // Force + Force + Force → Force (same-type addition)
@@ -301,7 +301,7 @@ fn pattern_7_spring_mass_damper() {
 
     // Newton's law: a = F/m
     let mass = Mass::symbol("m");
-    let accel: Acceleration = &f_total / &mass;
+    let accel = symplex::dim!(Acceleration: f_total / mass);
     println!("  a = F/m = {}", accel);
 
     // Expand to see full form
@@ -395,11 +395,11 @@ fn pattern_9_compile_time_assertions() {
     println!("  ✓ V = IR     (verified at compile time)");
     println!("  ✓ v = dx/dt  (verified at compile time)");
 
-    // Runtime assert_dim! checkpoint
+    // Runtime dim! checkpoint
     let m = Mass::symbol("m");
     let a = Acceleration::symbol("a");
-    let f = symplex::assert_dim!(&m * &a, Force);
-    println!("  ✓ assert_dim!(m*a, Force) = {}", f);
+    let f = symplex::dim!(Force: m * a);
+    println!("  ✓ dim!(Force: m*a) = {}", f);
 
     println!();
 }
@@ -411,7 +411,7 @@ fn pattern_10_physical_constants() {
 
     let c = constants::speed_of_light();
     let m = Mass::symbol("m");
-    let energy: Energy = &m * &c * &c;
+    let energy = symplex::dim!(Energy: m * c * c);
 
     // Symbolic display
     println!("  E = mc² = {}", energy);

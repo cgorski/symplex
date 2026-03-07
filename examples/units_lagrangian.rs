@@ -88,11 +88,11 @@ fn main() {
     let mass = Mass::symbol("m");
 
     // Spring force: Stiffness × Length → Force (compile-time verified)
-    let f_spring: Force = -(&k * &x);
+    let f_spring = symplex::dim!(Force: -(k * x));
     println!("  F_spring = −kx = {}", f_spring);
 
     // Damping force: Damping × Velocity → Force (compile-time verified)
-    let f_damper: Force = -(&c * &v);
+    let f_damper = symplex::dim!(Force: -(c * v));
     println!("  F_damper = −cv = {}", f_damper);
 
     // Total force: Force + Force → Force (same-type addition)
@@ -100,7 +100,7 @@ fn main() {
     println!("  F_total = {}", f_total);
 
     // Newton's second law: Force / Mass → Acceleration
-    let accel: Acceleration = &f_total / &mass;
+    let accel = symplex::dim!(Acceleration: f_total / mass);
     println!("  a = F/m = {}", accel);
 
     // ── Potential energy approach: PE = ½kx² ──

@@ -54,7 +54,7 @@ fn section_2_e_mc_squared() {
     let m = Mass::symbol("m");
 
     // E = mc² — the expression stays symbolic
-    let energy: Energy = &m * &c * &c;
+    let energy = symplex::dim!(Energy: m * c * c);
     println!("  E = mc² = {}", energy);
     println!("  (Notice: 'c' not '299792458')\n");
 
@@ -155,11 +155,11 @@ fn section_7_dimensional_checking() {
 
     // mc² type-checks as Energy
     let m = Mass::symbol("m");
-    let _energy: Energy = &m * &c * &c;
+    let _energy = symplex::dim!(Energy: m * c * c);
     println!("\n  m·c² type-checks as Energy ✓");
 
     // mg type-checks as Force
-    let _weight: Force = &m * &g;
+    let _weight = symplex::dim!(Force: m * g);
     println!("  m·g₀ type-checks as Force ✓");
 
     println!();

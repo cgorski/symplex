@@ -1,6 +1,6 @@
 //! Comprehensive integration tests for the `symplex::units` module.
 //!
-//! Covers: DiffWrt, IntWrt, FTC round-trips, named Mul/Div numerical checks,
+//! Covers: DiffWrt, IntWrt, FTC round-trips, dim! macro numerical checks,
 //! `from_ex` with IntoEx, and dimension-preserving operations.
 
 use symplex::prelude::*;
@@ -346,7 +346,7 @@ fn ftc_force_through_energy_spatial() {
 fn mul_mass_acceleration_equals_force() {
     let m = Mass::constant(10);
     let a = Acceleration::rational(981, 100);
-    let f: Force = &m * &a;
+    let f = symplex::dim!(Force: m * a);
     let val = f.eval_f64().unwrap();
     assert!((val - 98.1).abs() < 1e-10, "Expected 98.1, got {val}");
 }
@@ -355,7 +355,7 @@ fn mul_mass_acceleration_equals_force() {
 fn mul_current_resistance_equals_voltage() {
     let i = Current::constant(2);
     let r = Resistance::constant(100);
-    let v: Voltage = &i * &r;
+    let v = symplex::dim!(Voltage: i * r);
     let val = v.eval_f64().unwrap();
     assert!((val - 200.0).abs() < 1e-10, "Expected 200, got {val}");
 }
@@ -364,7 +364,7 @@ fn mul_current_resistance_equals_voltage() {
 fn mul_voltage_current_equals_power() {
     let v = Voltage::constant(200);
     let i = Current::constant(2);
-    let p: Power = &v * &i;
+    let p = symplex::dim!(Power: v * i);
     let val = p.eval_f64().unwrap();
     assert!((val - 400.0).abs() < 1e-10, "Expected 400, got {val}");
 }
@@ -373,7 +373,7 @@ fn mul_voltage_current_equals_power() {
 fn mul_force_length_equals_energy() {
     let f = Force::constant(50);
     let x = Length::constant(3);
-    let e: Energy = &f * &x;
+    let e = symplex::dim!(Energy: f * x);
     let val = e.eval_f64().unwrap();
     assert!((val - 150.0).abs() < 1e-10, "Expected 150, got {val}");
 }
@@ -382,7 +382,7 @@ fn mul_force_length_equals_energy() {
 fn mul_mass_velocity_equals_momentum() {
     let m = Mass::constant(5);
     let v = Velocity::constant(10);
-    let p: Momentum = &m * &v;
+    let p = symplex::dim!(Momentum: m * v);
     let val = p.eval_f64().unwrap();
     assert!((val - 50.0).abs() < 1e-10, "Expected 50, got {val}");
 }
@@ -391,7 +391,7 @@ fn mul_mass_velocity_equals_momentum() {
 fn div_length_time_equals_velocity() {
     let x = Length::constant(100);
     let t = Time::constant(10);
-    let v: Velocity = &x / &t;
+    let v = symplex::dim!(Velocity: x / t);
     let val = v.eval_f64().unwrap();
     assert!((val - 10.0).abs() < 1e-10, "Expected 10, got {val}");
 }
@@ -400,7 +400,7 @@ fn div_length_time_equals_velocity() {
 fn div_energy_time_equals_power() {
     let e = Energy::constant(1000);
     let t = Time::constant(10);
-    let p: Power = &e / &t;
+    let p = symplex::dim!(Power: e / t);
     let val = p.eval_f64().unwrap();
     assert!((val - 100.0).abs() < 1e-10, "Expected 100, got {val}");
 }
@@ -409,7 +409,7 @@ fn div_energy_time_equals_power() {
 fn div_force_mass_equals_acceleration() {
     let f = Force::rational(981, 10);
     let m = Mass::constant(10);
-    let a: Acceleration = &f / &m;
+    let a = symplex::dim!(Acceleration: f / m);
     let val = a.eval_f64().unwrap();
     assert!((val - 9.81).abs() < 1e-10, "Expected 9.81, got {val}");
 }
@@ -418,7 +418,7 @@ fn div_force_mass_equals_acceleration() {
 fn div_voltage_current_equals_resistance() {
     let v = Voltage::constant(200);
     let i = Current::constant(2);
-    let r: Resistance = &v / &i;
+    let r = symplex::dim!(Resistance: v / i);
     let val = r.eval_f64().unwrap();
     assert!((val - 100.0).abs() < 1e-10, "Expected 100, got {val}");
 }
@@ -427,7 +427,7 @@ fn div_voltage_current_equals_resistance() {
 fn div_power_voltage_equals_current() {
     let p = Power::constant(400);
     let v = Voltage::constant(200);
-    let i: Current = &p / &v;
+    let i = symplex::dim!(Current: p / v);
     let val = i.eval_f64().unwrap();
     assert!((val - 2.0).abs() < 1e-10, "Expected 2, got {val}");
 }
@@ -436,7 +436,7 @@ fn div_power_voltage_equals_current() {
 fn mul_stiffness_length_equals_force() {
     let k = Stiffness::constant(100);
     let x = Length::rational(1, 2);
-    let f: Force = &k * &x;
+    let f = symplex::dim!(Force: k * x);
     let val = f.eval_f64().unwrap();
     assert!((val - 50.0).abs() < 1e-10, "Expected 50, got {val}");
 }
@@ -445,7 +445,7 @@ fn mul_stiffness_length_equals_force() {
 fn mul_damping_velocity_equals_force() {
     let c = Damping::constant(10);
     let v = Velocity::constant(3);
-    let f: Force = &c * &v;
+    let f = symplex::dim!(Force: c * v);
     let val = f.eval_f64().unwrap();
     assert!((val - 30.0).abs() < 1e-10, "Expected 30, got {val}");
 }
@@ -454,7 +454,7 @@ fn mul_damping_velocity_equals_force() {
 fn mul_acceleration_time_equals_velocity() {
     let a = Acceleration::rational(981, 100);
     let t = Time::constant(2);
-    let v: Velocity = &a * &t;
+    let v = symplex::dim!(Velocity: a * t);
     let val = v.eval_f64().unwrap();
     assert!((val - 19.62).abs() < 1e-10, "Expected 19.62, got {val}");
 }
@@ -463,7 +463,7 @@ fn mul_acceleration_time_equals_velocity() {
 fn mul_power_time_equals_energy() {
     let p = Power::constant(100);
     let t = Time::constant(10);
-    let e: Energy = &p * &t;
+    let e = symplex::dim!(Energy: p * t);
     let val = e.eval_f64().unwrap();
     assert!((val - 1000.0).abs() < 1e-10, "Expected 1000, got {val}");
 }
@@ -472,7 +472,7 @@ fn mul_power_time_equals_energy() {
 fn mul_current_time_equals_charge() {
     let i = Current::constant(5);
     let t = Time::constant(10);
-    let q: Charge = &i * &t;
+    let q = symplex::dim!(Charge: i * t);
     let val = q.eval_f64().unwrap();
     assert!((val - 50.0).abs() < 1e-10, "Expected 50, got {val}");
 }
@@ -586,7 +586,7 @@ fn asref_qty_returns_ex() {
 fn subs_accepts_named_type_var() {
     let m = Mass::symbol("m");
     let a = Acceleration::symbol("a");
-    let f: Force = &m * &a;
+    let f = symplex::dim!(Force: m * a);
     // subs with named type — no .inner() needed!
     let f2 = f.subs(&m, &symplex::int(10));
     assert_eq!(format!("{}", f2.inner()), "10*a");
@@ -692,7 +692,7 @@ fn named_display_keeps_suffix() {
 fn momentum_times_velocity_is_energy() {
     let p = Momentum::constant(10);
     let v = Velocity::constant(3);
-    let e: Energy = &p * &v;
+    let e = symplex::dim!(Energy: p * v);
     assert_eq!(e.eval_f64().unwrap(), 30.0);
 }
 
@@ -700,7 +700,7 @@ fn momentum_times_velocity_is_energy() {
 fn velocity_times_momentum_is_energy() {
     let v = Velocity::constant(3);
     let p = Momentum::constant(10);
-    let e: Energy = &v * &p;
+    let e = symplex::dim!(Energy: v * p);
     assert_eq!(e.eval_f64().unwrap(), 30.0);
 }
 
@@ -709,8 +709,8 @@ fn e_mc_squared_typed_chain() {
     let m = Mass::constant(1);
     use symplex::units::constants;
     let c = constants::speed_of_light();
-    // Mass × Velocity = Momentum, Momentum × Velocity = Energy
-    let e: Energy = &m * &c * &c;
+    // Mass × Velocity × Velocity = Energy (via dim! macro)
+    let e = symplex::dim!(Energy: m * c * c);
     let val = e.eval_f64().unwrap();
     let expected = 299792458.0_f64 * 299792458.0;
     assert!((val - expected).abs() / expected < 1e-10);
@@ -720,16 +720,16 @@ fn e_mc_squared_typed_chain() {
 fn angular_momentum_times_angvel_is_energy() {
     let l = AngularMomentum::constant(5);
     let w = AngularVelocity::constant(4);
-    let e: Energy = &l * &w;
+    let e = symplex::dim!(Energy: l * w);
     assert_eq!(e.eval_f64().unwrap(), 20.0);
 }
 
 #[test]
 fn half_i_omega_squared_chain() {
-    // T = ½Iω²: MoI×AngVel=AngMom, AngMom×AngVel=Energy
+    // T = ½Iω²: MoI×AngVel×AngVel=Energy (via dim! macro)
     let i_moi = MomentOfInertia::constant(2);
     let w = AngularVelocity::constant(3);
-    let ke: Energy = &i_moi * &w * &w;
+    let ke = symplex::dim!(Energy: i_moi * w * w);
     // Result should be 2*3*3 = 18 (without the ½)
     assert_eq!(ke.eval_f64().unwrap(), 18.0);
 }
@@ -738,7 +738,7 @@ fn half_i_omega_squared_chain() {
 fn force_times_time_is_momentum() {
     let f = Force::constant(50);
     let t = Time::constant(2);
-    let j: Momentum = &f * &t;
+    let j = symplex::dim!(Momentum: f * t);
     assert_eq!(j.eval_f64().unwrap(), 100.0);
 }
 
@@ -746,7 +746,7 @@ fn force_times_time_is_momentum() {
 fn capacitance_times_voltage_is_charge() {
     let cap = Capacitance::rational(1, 1000); // 1 mF
     let v = Voltage::constant(5);
-    let q: Charge = &cap * &v;
+    let q = symplex::dim!(Charge: cap * v);
     let val = q.eval_f64().unwrap();
     assert!((val - 0.005).abs() < 1e-10);
 }
@@ -755,7 +755,7 @@ fn capacitance_times_voltage_is_charge() {
 fn pressure_times_area_is_force() {
     let p = Pressure::constant(100000); // 100 kPa
     let a = Area::constant(2);
-    let f: Force = &p * &a;
+    let f = symplex::dim!(Force: p * a);
     assert_eq!(f.eval_f64().unwrap(), 200000.0);
 }
 
@@ -763,6 +763,6 @@ fn pressure_times_area_is_force() {
 fn pressure_times_volume_is_energy() {
     let p = Pressure::constant(101325); // 1 atm
     let v = Volume::constant(1);
-    let e: Energy = &p * &v;
+    let e = symplex::dim!(Energy: p * v);
     assert_eq!(e.eval_f64().unwrap(), 101325.0);
 }

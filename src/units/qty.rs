@@ -255,6 +255,25 @@ impl<L, M, T, I, Th, N, J> SameDim<Dim<L, M, T, I, Th, N, J>>
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FromDimExpr trait — used by the dim!() proc macro
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Trait for converting a `Qty<D>` to a named type with compile-time dimension verification.
+///
+/// Used by the [`dim!`] macro. When the computed dimension doesn't match the target type,
+/// the compiler produces a clear error message via `#[diagnostic::on_unimplemented]`.
+#[diagnostic::on_unimplemented(
+    message = "dimension mismatch: expression does not produce `{Self}`",
+    label = "wrong physical dimension",
+    note = "the arithmetic in your dim!() expression produces a different dimension than `{Self}`",
+    note = "check that your factors multiply/divide to the correct physical dimension"
+)]
+pub trait FromDimExpr<D> {
+    /// Convert from a generic Qty with the matching dimension.
+    fn from_dim_expr(qty: Qty<D>) -> Self;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Add — all four ownership combos
 // ═══════════════════════════════════════════════════════════════════════════
 

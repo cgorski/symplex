@@ -56,7 +56,7 @@ fn main() {
         let a = Acceleration::symbol("a");
 
         // Mass × Acceleration → Force (compile-time verified!)
-        let f: Force = &m * &a;
+        let f = symplex::dim!(Force: m * a);
         println!("\n--- Physics with Units ---");
         println!("F = m·a = {}", f);
 
@@ -111,7 +111,7 @@ fn main() {
 
         let c = constants::speed_of_light();  // returns Velocity
         let m = Mass::symbol("m");
-        let energy: Energy = &m * &c * &c;  // E = mc²
+        let energy = symplex::dim!(Energy: m * c * c);  // E = mc²
 
         // Displays symbolically, not as a huge number:
         println!("\n--- Physical Constants ---");
