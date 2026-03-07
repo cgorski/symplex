@@ -315,6 +315,46 @@ impl ConstDim {
         // (A const fn cannot format strings, so we return a fixed fallback.)
         "Unknown"
     }
+
+    /// Look up a named dimension constant by its human-readable name.
+    ///
+    /// Returns `None` for unrecognized names. This is the inverse of
+    /// [`name()`](Self::name) for all known dimensions.
+    pub fn from_name(name: &str) -> Option<ConstDim> {
+        match name {
+            "Dimensionless" => Some(Self::DIMENSIONLESS),
+            "Angle" => Some(Self::ANGLE),
+            "Length" => Some(Self::LENGTH),
+            "Mass" => Some(Self::MASS),
+            "Time" => Some(Self::TIME),
+            "Current" => Some(Self::CURRENT),
+            "Temperature" => Some(Self::TEMPERATURE),
+            "Area" => Some(Self::AREA),
+            "Volume" => Some(Self::VOLUME),
+            "Velocity" => Some(Self::VELOCITY),
+            "Acceleration" => Some(Self::ACCELERATION),
+            "AngularVelocity" => Some(Self::ANGULAR_VELOCITY),
+            "AngularAcceleration" => Some(Self::ANGULAR_ACCELERATION),
+            "Frequency" => Some(Self::FREQUENCY),
+            "Force" => Some(Self::FORCE),
+            "Energy" => Some(Self::ENERGY),
+            "Torque" => Some(Self::TORQUE),
+            "Power" => Some(Self::POWER),
+            "Momentum" => Some(Self::MOMENTUM),
+            "AngularMomentum" => Some(Self::ANGULAR_MOMENTUM),
+            "MomentOfInertia" => Some(Self::MOMENT_OF_INERTIA),
+            "Pressure" => Some(Self::PRESSURE),
+            "Stiffness" => Some(Self::STIFFNESS),
+            "Damping" => Some(Self::DAMPING),
+            "Voltage" => Some(Self::VOLTAGE),
+            "Resistance" => Some(Self::RESISTANCE),
+            "Inductance" => Some(Self::INDUCTANCE),
+            "Capacitance" => Some(Self::CAPACITANCE),
+            "Charge" => Some(Self::CHARGE),
+            "MagneticFlux" => Some(Self::MAGNETIC_FLUX),
+            _ => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

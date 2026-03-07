@@ -4,6 +4,8 @@ Symplex can classify and solve ordinary differential equations symbolically — 
 
 This chapter covers the full range of ODE types that symplex handles, from trivial separable equations to second-order systems solved by variation of parameters.
 
+> **💡 Dimensional Analysis:** symplex supports compile-time dimensional analysis for physical quantities. When working with ODEs that model physical systems (like the mass-spring-damper below), you can use typed quantities from `symplex::units` to verify dimensional consistency. See [Chapter 21: Units](21-units.md) for details.
+
 ## The ODE API
 
 The workflow for every ODE is the same:
@@ -117,7 +119,7 @@ vars!(x, y);
 
 // y' + (1/x)·y = x
 // Integrating factor: μ = exp(∫1/x dx) = x
-// Solution: y = x/2·x + C1/x  (after integrating)
+// Solution: y = x²/3 + C1/x  (after integrating)
 let ode = &y.formal_diff(&x) + &(&y / &x) - &x;
 println!("Type: {:?}", ode.classify_ode(&y, &x));
 // Type: FirstOrderLinearVC
@@ -399,7 +401,7 @@ use symplex::vars;
 vars!(t);
 
 // ẋ = Ax where A = [[0, 1], [-2, -3]]
-// This is the mass-spring-damper from Chapter 13
+// A mass-spring-damper with k=2, c=3
 let a = matrix![[0, 1], [-2, -3]];
 
 let sol = symplex::ode::solve_ode_system(&a, &t)

@@ -67,6 +67,31 @@ macro_rules! define_quantity {
             /// Create from a symbolic expression (or anything that implements `IntoEx`).
             pub fn from_ex(ex: impl $crate::units::qty::IntoEx) -> Self { $name(ex.into_ex()) }
 
+            /// Create from a symbolic expression with runtime dimension validation.
+            ///
+            /// Checks that the expression's inferred dimension matches this type's
+            /// dimension using the provided [`DimMap`]. Returns an error if the
+            /// dimensions don't match.
+            ///
+            /// Use this instead of `from_ex` when you want runtime validation
+            /// of dimensional correctness (e.g., in tests or debug builds).
+            pub fn checked_from_ex(
+                ex: impl $crate::units::qty::IntoEx,
+                dims: &$crate::units::inference::DimMap,
+            ) -> Result<Self, String> {
+                let ex = ex.into_ex();
+                let inferred = $crate::units::inference::infer_dimension(&ex, dims)?;
+                if let Some(expected) = $crate::units::dim::ConstDim::from_name($dim_name_str) {
+                    if !inferred.eq(expected) {
+                        return Err(format!(
+                            "Dimension mismatch: expected {} [{}], inferred {}",
+                            $dim_name_str, $dim_sym, inferred
+                        ));
+                    }
+                }
+                Ok($name(ex))
+            }
+
             /// Create a named symbolic variable with this dimension.
             pub fn symbol(name: &str) -> Self {
                 $name(crate::var(name))
