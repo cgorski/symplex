@@ -50,6 +50,8 @@ pub(crate) mod output;
 pub(crate) mod plotting;
 pub(crate) mod domains;
 pub(crate) mod api;
+/// Compile-time dimensional analysis for physical quantities.
+pub mod units;
 
 // ── Public re-exports (backwards-compatible crate-root paths) ──────────
 
