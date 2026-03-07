@@ -3028,7 +3028,10 @@ pub fn solve_ode_system_nonhomogeneous(
     let neg_one = crate::int(-1);
     let neg_a = a_matrix.scale(&neg_one);
     let neg_at = neg_a.scale(t_var);
-    let exp_neg_at = neg_at.exp_series(12).expect("exp_series: matrix must be square");
+    let lambda_sym = crate::var("__ode_lambda");
+    let exp_neg_at = neg_at.matrix_exp(&lambda_sym).unwrap_or_else(|_| {
+        neg_at.exp_series(12).expect("exp_series: matrix must be square")
+    });
 
     let b_col = Matrix::col_vector(b_vec.to_vec());
     let integrand_matrix = exp_neg_at.matmul(&b_col).expect("matmul: dimension mismatch").eval();
@@ -3042,7 +3045,9 @@ pub fn solve_ode_system_nonhomogeneous(
 
     // Multiply by exp(At)
     let at = a_matrix.scale(t_var);
-    let exp_at = at.exp_series(12).expect("exp_series: matrix must be square");
+    let exp_at = at.matrix_exp(&lambda_sym).unwrap_or_else(|_| {
+        at.exp_series(12).expect("exp_series: matrix must be square")
+    });
     let particular = exp_at.matmul(&integrated_col).expect("matmul: dimension mismatch").eval();
 
     // Combine: x = x_h + x_p
@@ -3106,7 +3111,10 @@ fn solve_ode_system_diagonal(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex>
 /// Fallback: approximate solution via truncated matrix exponential series.
 fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
     let m = a_matrix.scale(t_var);
-    let exp_m = m.exp_series(12).expect("exp_series: matrix must be square");
+    let lambda_sym = crate::var("__ode_series_lambda");
+    let exp_m = m.matrix_exp(&lambda_sym).unwrap_or_else(|_| {
+        m.exp_series(12).expect("exp_series: matrix must be square")
+    });
     let constants: Vec<Ex> = (1..=n)
         .map(|i| crate::var(&format!("C{i}")))
         .collect();
