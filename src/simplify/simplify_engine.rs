@@ -39,6 +39,14 @@ struct ExprFlags {
     has_apply: bool,
     is_atom: bool,
     node_count: usize,
+    /// Expression contains `Abs` nodes — gates refine strategy.
+    has_abs: bool,
+    /// Expression contains `Sign` nodes — gates refine strategy.
+    has_sign: bool,
+    /// Expression contains `Floor` or `Ceiling` nodes — gates refine strategy.
+    has_floor_ceil: bool,
+    /// Expression contains `Pow` nodes (general, not just negative exponent).
+    has_pow: bool,
 }
 
 /// Compute expression flags in a single tree walk.
@@ -53,6 +61,10 @@ fn compute_flags(arena: &Arena, expr: ExprId) -> ExprFlags {
         has_apply: false,
         is_atom: post_order.len() == 1 && arena.node(expr).is_atom(),
         node_count: post_order.len(),
+        has_abs: false,
+        has_sign: false,
+        has_floor_ceil: false,
+        has_pow: false,
     };
 
     for &id in &post_order {
@@ -77,6 +89,7 @@ fn compute_flags(arena: &Arena, expr: ExprId) -> ExprFlags {
                 flags.has_exp_ln = true;
             }
             ExprNode::Pow(_, exp) => {
+                flags.has_pow = true;
                 if let Some(r) = arena.as_num(*exp)
                     && r.is_negative() {
                         flags.has_neg_pow = true;
@@ -84,6 +97,9 @@ fn compute_flags(arena: &Arena, expr: ExprId) -> ExprFlags {
             }
             ExprNode::Add(_) => flags.has_add = true,
             ExprNode::Apply(_, _) => flags.has_apply = true,
+            ExprNode::Abs(_) => flags.has_abs = true,
+            ExprNode::Sign(_) => flags.has_sign = true,
+            ExprNode::Floor(_) | ExprNode::Ceiling(_) => flags.has_floor_ceil = true,
             _ => {}
         }
     }
