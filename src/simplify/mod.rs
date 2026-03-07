@@ -1,4 +1,5 @@
 pub(crate) mod simplify_engine;
+pub(crate) mod refine;
 pub(crate) mod fu;
 pub(crate) mod trigsimp;
 pub(crate) mod trig_combine;
