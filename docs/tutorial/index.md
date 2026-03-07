@@ -66,6 +66,9 @@ Symbolic optimization: critical points, Lagrange multipliers, KKT conditions, an
 ### [Chapter 20: Data Export and Visualization](20-data-export.md)
 Exporting expressions and numerical data to CSV, JSON, LaTeX tables, HTML, and Markdown for reports and plotting.
 
+### [Chapter 21: Compile-Time Dimensional Analysis](21-units.md)
+Type-safe physical units: named quantity types, the multiplication/division table, generic `Qty<D>` fallback, trig on angles, unit conversions, compile-time assertions, dimensioned calculus, and escape hatches.
+
 ---
 
 ## Prerequisites
