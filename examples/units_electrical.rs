@@ -230,5 +230,20 @@ fn main() {
     let coil = Inductance::millihenrys(&symplex::int(10));
     println!("  10 mH   = {}", coil.eval());
 
+    println!("\n── Physical Constants in Circuits ──");
+    {
+        use symplex::units::constants;
+        let e_charge = constants::elementary_charge();
+        println!("  Elementary charge: e = {}", e_charge);
+        println!("  e = {:.10e} C", e_charge.eval_f64().unwrap());
+
+        // Energy of an electron accelerated through 1V:
+        // E = eV = 1 eV = 1.602e-19 J
+        let one_volt = Voltage::constant(1);
+        // charge × voltage = energy (use raw expressions for cross-dimension multiply)
+        let energy: Energy = Energy::from_ex(e_charge.inner() * one_volt.inner());
+        println!("  Energy of 1 eV = {} = {:.6e} J", energy, energy.eval_f64().unwrap());
+    }
+
     println!("\n✓ All done!");
 }

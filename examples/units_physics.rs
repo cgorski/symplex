@@ -360,5 +360,16 @@ fn main() {
     println!("  ✓ τ = Iα   (MomentOfInertia × AngularAcceleration = Torque)");
     println!("  (All verified at compile time — see top of file)");
 
+    println!("\n── Physical Constants ──");
+    {
+        use symplex::units::constants;
+        let c = constants::speed_of_light();
+        let m = Mass::symbol("m");
+        let energy: Energy = Energy::from_ex(m.inner() * c.inner() * c.inner());
+        println!("  E = mc² = {}", energy);
+        println!("  (Displays symbolically — 'c' not '299792458')");
+        println!("  E(m=1kg) = {:.3e} J", energy.subs(m.inner(), &symplex::int(1)).eval_f64().unwrap());
+    }
+
     println!("\n✓ All dimensional checks passed!");
 }

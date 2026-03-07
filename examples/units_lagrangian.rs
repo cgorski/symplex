@@ -7,6 +7,7 @@
 
 use symplex::prelude::*;
 use symplex::units::*;
+use symplex::units::constants;
 
 fn main() {
     println!("═══════════════════════════════════════════════════════════════");
@@ -64,6 +65,10 @@ fn main() {
     // which yields:  ml²θ̈ = −mgl·sin(θ)
     println!("  Euler–Lagrange: d/dt(∂L/∂θ̇) − ∂L/∂θ = 0");
     println!("  → ml²θ̈ = ∂L/∂θ");
+
+    // Using the physical constant for g:
+    let g_const = constants::standard_gravity();
+    println!("  g₀ = {} (physical constant, exact)", g_const);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Section 2: Spring-Mass-Damper

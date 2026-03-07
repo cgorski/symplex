@@ -24,6 +24,7 @@ fn main() {
     pattern_7_spring_mass_damper();
     pattern_8_unit_conversions();
     pattern_9_compile_time_assertions();
+    pattern_10_physical_constants();
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("   Recommended Workflow Summary");
@@ -42,7 +43,7 @@ fn main() {
     println!("     Example: let v: Velocity = position.diff_wrt(&t_var);");
     println!();
     println!("═══════════════════════════════════════════════════════════════");
-    println!("   ✓ All 9 patterns demonstrated successfully!");
+    println!("   ✓ All 10 patterns demonstrated successfully!");
     println!("═══════════════════════════════════════════════════════════════");
 }
 
@@ -399,6 +400,33 @@ fn pattern_9_compile_time_assertions() {
     let a = Acceleration::symbol("a");
     let f = symplex::assert_dim!(&m * &a, Force);
     println!("  ✓ assert_dim!(m*a, Force) = {}", f);
+
+    println!();
+}
+
+fn pattern_10_physical_constants() {
+    println!("── Pattern 10: Physical Constants ──");
+
+    use symplex::units::constants;
+
+    let c = constants::speed_of_light();
+    let m = Mass::symbol("m");
+    let energy = Energy::from_ex(m.inner() * c.inner() * c.inner());
+
+    // Symbolic display
+    println!("  E = mc² = {}", energy);
+    assert!(format!("{}", energy.inner()).contains("c"),
+        "Should display with 'c', not numeric value");
+
+    // Exact evaluation
+    let val = energy.subs(m.inner(), &symplex::int(1)).eval_f64().unwrap();
+    assert!((val - 8.987551787e16).abs() / val < 1e-8);
+    println!("  E(m=1) = {:.3e} J ✓", val);
+
+    // Derivative of constant is zero
+    symplex::vars!(x);
+    assert_eq!(format!("{}", c.inner().diff(&x)), "0");
+    println!("  d/dx(c) = 0 ✓");
 
     println!();
 }

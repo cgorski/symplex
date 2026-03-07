@@ -7,6 +7,7 @@
 
 use symplex::prelude::*;
 use symplex::units::*;
+use symplex::units::constants;
 
 fn main() {
     println!("═══════════════════════════════════════════════════════════════");
@@ -56,6 +57,10 @@ fn main() {
         .eval_f64_with(&[(&g, 10), (&t, 3)])
         .unwrap();
     println!("  x(t=3, g=10)   = {:.2} m (f64)", x_f64);
+
+    // Using the physical constant for g:
+    let g_const = constants::standard_gravity();
+    println!("  g₀ = {} (physical constant, exact)", g_const);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Section 2: Projectile Motion
