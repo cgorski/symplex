@@ -111,14 +111,14 @@ fn main() {
 
         let c = constants::speed_of_light();  // returns Velocity
         let m = Mass::symbol("m");
-        let energy = Energy::from_ex(m.inner() * c.inner() * c.inner());  // E = mc²
+        let energy: Energy = &m * &c * &c;  // E = mc²
 
         // Displays symbolically, not as a huge number:
         println!("\n--- Physical Constants ---");
         println!("E = mc² = {}", energy);  // "c^2*m [J]", not "89875517873681764*m"
 
         // Evaluates to exact value:
-        let val = energy.subs(m.inner(), &symplex::int(1)).eval_f64().unwrap();
+        let val = energy.subs(&m, &symplex::int(1)).eval_f64().unwrap();
         println!("E(m=1kg) = {:.3e} J", val);
         println!();
     }

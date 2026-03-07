@@ -43,25 +43,22 @@ fn main() {
     println!("  dP/dI = {} (should be 2·I·R)", dp_di);
 
     // Numerical evaluation: I = 3 A, R = 47 Ω
-    let i_ex = i.inner();
-    let r_ex = r.inner();
-
     let v_num = v.clone()
-        .subs(i_ex, &symplex::int(3))
-        .subs(r_ex, &symplex::int(47))
+        .subs(&i, &symplex::int(3))
+        .subs(&r, &symplex::int(47))
         .eval();
     println!("\n  Numerical (I=3 A, R=47 Ω):");
     println!("    V = {}", v_num);
 
     let p_num = p.clone()
-        .subs(i_ex, &symplex::int(3))
-        .subs(r_ex, &symplex::int(47))
+        .subs(&i, &symplex::int(3))
+        .subs(&r, &symplex::int(47))
         .eval();
     println!("    P = {}", p_num);
 
     let dp_di_num = dp_di
-        .subs(i_ex, &symplex::int(3))
-        .subs(r_ex, &symplex::int(47))
+        .subs(&i, &symplex::int(3))
+        .subs(&r, &symplex::int(47))
         .eval();
     println!("    dP/dI = {}", dp_di_num);
 
@@ -172,8 +169,8 @@ fn main() {
     let i_m_ex = i_motor.inner();
 
     let v_emf_num = v_emf
-        .subs(ke_ex, &symplex::rational(5, 100))
-        .subs(omega_ex, &symplex::int(100))
+        .subs(&ke, &symplex::rational(5, 100))
+        .subs(&omega, &symplex::int(100))
         .eval();
     println!("\n  Numerical (R=2Ω, Ke=0.05Wb, ω=100rad/s):");
     println!("    V_emf = {}", v_emf_num);
@@ -240,8 +237,8 @@ fn main() {
         // Energy of an electron accelerated through 1V:
         // E = eV = 1 eV = 1.602e-19 J
         let one_volt = Voltage::constant(1);
-        // charge × voltage = energy (use raw expressions for cross-dimension multiply)
-        let energy: Energy = Energy::from_ex(e_charge.inner() * one_volt.inner());
+        // charge × voltage = energy (Charge × Voltage = Energy in the mul table)
+        let energy: Energy = &e_charge * &one_volt;
         println!("  Energy of 1 eV = {} = {:.6e} J", energy, energy.eval_f64().unwrap());
     }
 

@@ -173,9 +173,9 @@ fn main() {
 
     // Work = F·d = ma·d. With m=2, a=3, d=10 → W = 60 J
     let work_num = work
-        .subs(mass.inner(), &symplex::int(2))
-        .subs(accel.inner(), &symplex::int(3))
-        .subs(x_var.inner(), &symplex::int(10))
+        .subs(&mass, &symplex::int(2))
+        .subs(&accel, &symplex::int(3))
+        .subs(&x_var, &symplex::int(10))
         .eval();
     println!("  W(m=2, a=3, x=10) = {} (should be 60 J)", work_num);
 

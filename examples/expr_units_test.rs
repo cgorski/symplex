@@ -411,7 +411,7 @@ fn pattern_10_physical_constants() {
 
     let c = constants::speed_of_light();
     let m = Mass::symbol("m");
-    let energy = Energy::from_ex(m.inner() * c.inner() * c.inner());
+    let energy: Energy = &m * &c * &c;
 
     // Symbolic display
     println!("  E = mc² = {}", energy);
@@ -419,13 +419,13 @@ fn pattern_10_physical_constants() {
         "Should display with 'c', not numeric value");
 
     // Exact evaluation
-    let val = energy.subs(m.inner(), &symplex::int(1)).eval_f64().unwrap();
+    let val = energy.subs(&m, &symplex::int(1)).eval_f64().unwrap();
     assert!((val - 8.987551787e16).abs() / val < 1e-8);
     println!("  E(m=1) = {:.3e} J ✓", val);
 
     // Derivative of constant is zero
     symplex::vars!(x);
-    assert_eq!(format!("{}", c.inner().diff(&x)), "0");
+    assert_eq!(format!("{}", c.diff(&x)), "0");
     println!("  d/dx(c) = 0 ✓");
 
     println!();

@@ -135,7 +135,7 @@ macro_rules! define_quantity {
             pub fn eval(&self) -> Self { $name(self.0.eval()) }
 
             /// Substitute a variable.
-            pub fn subs(&self, var: &Ex, val: &Ex) -> Self { $name(self.0.subs(var, val)) }
+            pub fn subs(&self, var: &impl AsRef<$crate::prelude::Ex>, val: &impl AsRef<$crate::prelude::Ex>) -> Self { $name(self.0.subs(var.as_ref(), val.as_ref())) }
 
             // ── Dimension-preserving manipulation ──────────────────────
 
@@ -164,10 +164,10 @@ macro_rules! define_quantity {
             pub fn trig_combine(&self) -> Self { $name(self.0.trig_combine()) }
 
             /// Factor with respect to a variable, preserving dimension.
-            pub fn factor(&self, var: &Ex) -> Self { $name(self.0.factor(var)) }
+            pub fn factor(&self, var: &impl AsRef<$crate::prelude::Ex>) -> Self { $name(self.0.factor(var.as_ref())) }
 
             /// Collect terms with respect to a variable, preserving dimension.
-            pub fn collect(&self, var: &Ex) -> Self { $name(self.0.collect(var)) }
+            pub fn collect(&self, var: &impl AsRef<$crate::prelude::Ex>) -> Self { $name(self.0.collect(var.as_ref())) }
 
             /// Cancel common factors, preserving dimension.
             pub fn cancel(&self, var: &Ex) -> Self { $name(self.0.cancel(var)) }
@@ -176,7 +176,7 @@ macro_rules! define_quantity {
             pub fn together(&self) -> Self { $name(self.0.together()) }
 
             /// Partial-fraction decomposition with respect to a variable, preserving dimension.
-            pub fn partial_fractions(&self, var: &Ex) -> Self { $name(self.0.partial_fractions(var)) }
+            pub fn partial_fractions(&self, var: &impl AsRef<$crate::prelude::Ex>) -> Self { $name(self.0.partial_fractions(var.as_ref())) }
 
             /// Rationalize the denominator, preserving dimension.
             pub fn rationalize_denom(&self) -> Self { $name(self.0.rationalize_denom()) }
@@ -185,10 +185,10 @@ macro_rules! define_quantity {
 
             /// Differentiate with respect to a variable. Returns raw Ex.
             /// Wrap result in the correct output type: `Acceleration::from_ex(v.diff(&t))`
-            pub fn diff(&self, var: &Ex) -> Ex { self.0.diff(var) }
+            pub fn diff(&self, var: &impl AsRef<$crate::prelude::Ex>) -> Ex { self.0.diff(var.as_ref()) }
 
             /// Integrate with respect to a variable. Returns raw Ex.
-            pub fn integrate(&self, var: &Ex) -> Ex { self.0.integrate(var) }
+            pub fn integrate(&self, var: &impl AsRef<$crate::prelude::Ex>) -> Ex { self.0.integrate(var.as_ref()) }
 
             // ── Queries ───────────────────────────────────────────────
 
@@ -199,7 +199,7 @@ macro_rules! define_quantity {
             pub fn free_symbols(&self) -> Vec<Ex> { self.0.free_symbols() }
 
             /// Whether the expression contains a given sub-expression.
-            pub fn contains(&self, other: &Ex) -> bool { self.0.contains(other) }
+            pub fn contains(&self, other: &impl AsRef<$crate::prelude::Ex>) -> bool { self.0.contains(other.as_ref()) }
 
             /// Number of top-level additive terms.
             pub fn term_count(&self) -> usize { self.0.term_count() }
@@ -320,6 +320,10 @@ macro_rules! define_quantity {
 
         impl From<$name> for Qty<$dim> {
             fn from(q: $name) -> Qty<$dim> { Qty::from_ex(q.0) }
+        }
+
+        impl AsRef<$crate::prelude::Ex> for $name {
+            fn as_ref(&self) -> &$crate::prelude::Ex { &self.0 }
         }
     };
 }

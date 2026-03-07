@@ -563,3 +563,206 @@ fn to_latex_preserves_dimension() {
     assert!(!latex.is_empty(), "LaTeX output should not be empty");
     assert!(latex.contains("f"), "LaTeX should contain the variable name f: {latex}");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AsRef<Ex> tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn asref_force_returns_ex() {
+    let f = Force::constant(98);
+    let ex: &Ex = f.as_ref();
+    assert_eq!(format!("{}", ex), "98");
+}
+
+#[test]
+fn asref_qty_returns_ex() {
+    let q: Qty<LengthDim> = Qty::from_ex(symplex::int(42));
+    let ex: &Ex = q.as_ref();
+    assert_eq!(format!("{}", ex), "42");
+}
+
+#[test]
+fn subs_accepts_named_type_var() {
+    let m = Mass::symbol("m");
+    let a = Acceleration::symbol("a");
+    let f: Force = &m * &a;
+    // subs with named type — no .inner() needed!
+    let f2 = f.subs(&m, &symplex::int(10));
+    assert_eq!(format!("{}", f2.inner()), "10*a");
+}
+
+#[test]
+fn subs_still_accepts_raw_ex() {
+    symplex::vars!(m, a);
+    let m_ex = symplex::var("m");
+    let f = Force::from_ex(expr!(m * a));
+    // subs with raw &Ex — backward compatible
+    let f2 = f.subs(&m_ex, &symplex::int(10));
+    assert!(format!("{}", f2.inner()).contains("10"));
+}
+
+#[test]
+fn subs_chain_no_inner() {
+    symplex::vars!(m, a);
+    let f = Force::from_ex(expr!(m * a));
+    let m_var = Mass::symbol("m");
+    let a_var = Acceleration::symbol("a");
+    let result = f.subs(&m_var, &symplex::int(5)).subs(&a_var, &symplex::int(10)).eval();
+    assert_eq!(format!("{}", result.inner()), "50");
+}
+
+#[test]
+fn diff_accepts_named_type_var() {
+    symplex::vars!(x, t);
+    let pos = Length::from_ex(expr!(x * t));
+    let t_var = Time::symbol("t");
+    // diff with named type
+    let result = pos.diff(&t_var);
+    assert!(format!("{}", result).contains("x"));
+}
+
+#[test]
+fn integrate_accepts_named_type_var() {
+    symplex::vars!(v, t);
+    let vel = Velocity::from_ex(expr!(v));
+    let t_var = Time::symbol("t");
+    let result = vel.integrate(&t_var);
+    assert!(format!("{}", result).contains("t"));
+}
+
+#[test]
+fn contains_accepts_named_type() {
+    symplex::vars!(m, a);
+    let f = Force::from_ex(expr!(m * a));
+    let m_var = Mass::symbol("m");
+    assert!(f.contains(&m_var));
+}
+
+#[test]
+fn qty_subs_accepts_named_type() {
+    symplex::vars!(m, a);
+    let q: Qty<ForceDim> = Qty::from_ex(expr!(m * a));
+    let m_var = Mass::symbol("m");
+    let q2 = q.subs(&m_var, &symplex::int(7));
+    assert!(format!("{}", q2).contains("7"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Qty Display without DimName
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn qty_display_known_dim() {
+    let q: Qty<LengthDim> = Qty::from_ex(symplex::int(42));
+    let s = format!("{}", q);
+    assert_eq!(s, "42");
+}
+
+#[test]
+fn qty_display_exotic_dim() {
+    // Boltzmann dimension: Dim<P2, P1, N2, Z0, N1, Z0, Z0>
+    // This used to fail because no DimName impl exists for this dimension
+    use symplex::units::constants;
+    let kb = constants::boltzmann_constant();
+    let s = format!("{}", kb);
+    assert!(s.contains("k_B"), "should display the constant name: {s}");
+}
+
+#[test]
+fn qty_debug_exotic_dim() {
+    use symplex::units::constants;
+    let kb = constants::boltzmann_constant();
+    let s = format!("{:?}", kb);
+    assert!(s.contains("k_B"), "debug should contain constant name: {s}");
+}
+
+#[test]
+fn named_display_keeps_suffix() {
+    let f = Force::constant(98);
+    let s = format!("{}", f);
+    assert!(s.contains("[N]"), "Force display should keep unit suffix: {s}");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// New Mul chain entries
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn momentum_times_velocity_is_energy() {
+    let p = Momentum::constant(10);
+    let v = Velocity::constant(3);
+    let e: Energy = &p * &v;
+    assert_eq!(e.eval_f64().unwrap(), 30.0);
+}
+
+#[test]
+fn velocity_times_momentum_is_energy() {
+    let v = Velocity::constant(3);
+    let p = Momentum::constant(10);
+    let e: Energy = &v * &p;
+    assert_eq!(e.eval_f64().unwrap(), 30.0);
+}
+
+#[test]
+fn e_mc_squared_typed_chain() {
+    let m = Mass::constant(1);
+    use symplex::units::constants;
+    let c = constants::speed_of_light();
+    // Mass × Velocity = Momentum, Momentum × Velocity = Energy
+    let e: Energy = &m * &c * &c;
+    let val = e.eval_f64().unwrap();
+    let expected = 299792458.0_f64 * 299792458.0;
+    assert!((val - expected).abs() / expected < 1e-10);
+}
+
+#[test]
+fn angular_momentum_times_angvel_is_energy() {
+    let l = AngularMomentum::constant(5);
+    let w = AngularVelocity::constant(4);
+    let e: Energy = &l * &w;
+    assert_eq!(e.eval_f64().unwrap(), 20.0);
+}
+
+#[test]
+fn half_i_omega_squared_chain() {
+    // T = ½Iω²: MoI×AngVel=AngMom, AngMom×AngVel=Energy
+    let i_moi = MomentOfInertia::constant(2);
+    let w = AngularVelocity::constant(3);
+    let ke: Energy = &i_moi * &w * &w;
+    // Result should be 2*3*3 = 18 (without the ½)
+    assert_eq!(ke.eval_f64().unwrap(), 18.0);
+}
+
+#[test]
+fn force_times_time_is_momentum() {
+    let f = Force::constant(50);
+    let t = Time::constant(2);
+    let j: Momentum = &f * &t;
+    assert_eq!(j.eval_f64().unwrap(), 100.0);
+}
+
+#[test]
+fn capacitance_times_voltage_is_charge() {
+    let cap = Capacitance::rational(1, 1000); // 1 mF
+    let v = Voltage::constant(5);
+    let q: Charge = &cap * &v;
+    let val = q.eval_f64().unwrap();
+    assert!((val - 0.005).abs() < 1e-10);
+}
+
+#[test]
+fn pressure_times_area_is_force() {
+    let p = Pressure::constant(100000); // 100 kPa
+    let a = Area::constant(2);
+    let f: Force = &p * &a;
+    assert_eq!(f.eval_f64().unwrap(), 200000.0);
+}
+
+#[test]
+fn pressure_times_volume_is_energy() {
+    let p = Pressure::constant(101325); // 1 atm
+    let v = Volume::constant(1);
+    let e: Energy = &p * &v;
+    assert_eq!(e.eval_f64().unwrap(), 101325.0);
+}

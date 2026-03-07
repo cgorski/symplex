@@ -54,12 +54,12 @@ fn section_2_e_mc_squared() {
     let m = Mass::symbol("m");
 
     // E = mc² — the expression stays symbolic
-    let energy: Energy = Energy::from_ex(m.inner() * c.inner() * c.inner());
+    let energy: Energy = &m * &c * &c;
     println!("  E = mc² = {}", energy);
     println!("  (Notice: 'c' not '299792458')\n");
 
     // Evaluate for 1 kg
-    let e_1kg = energy.subs(m.inner(), &symplex::int(1)).eval_f64().unwrap();
+    let e_1kg = energy.subs(&m, &symplex::int(1)).eval_f64().unwrap();
     println!("  E(m = 1 kg) = {:.6e} J", e_1kg);
     println!("              = {:.6e} GJ", e_1kg / 1e9);
     println!("  That's ~25 million kilowatt-hours from 1 kg of matter!");
@@ -137,7 +137,7 @@ fn section_6_constants_with_calculus() {
     println!("  (The constant c is preserved, not expanded to 299792458)\n");
 
     // d/dx(c) = 0
-    let dc_dx = c.inner().diff(&x);
+    let dc_dx = c.diff(&x);
     println!("  d/dx(c) = {}", dc_dx);
     println!("  (Derivative of a constant is zero)");
     println!();
@@ -155,7 +155,7 @@ fn section_7_dimensional_checking() {
 
     // mc² type-checks as Energy
     let m = Mass::symbol("m");
-    let _energy: Energy = Energy::from_ex(m.inner() * c.inner() * c.inner());
+    let _energy: Energy = &m * &c * &c;
     println!("\n  m·c² type-checks as Energy ✓");
 
     // mg type-checks as Force

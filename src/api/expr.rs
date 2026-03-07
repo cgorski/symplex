@@ -150,6 +150,11 @@ pub struct Expr<S: Sort> {
 /// A numeric expression — the primary type for symbolic math.
 pub type Ex = Expr<Numeric>;
 
+impl AsRef<Ex> for Ex {
+    #[inline]
+    fn as_ref(&self) -> &Ex { self }
+}
+
 /// A boolean expression — comparisons and logical operations.
 pub type BoolEx = Expr<Boolean>;
 

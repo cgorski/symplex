@@ -144,6 +144,20 @@ impl_named_mul!(Time, Power => Energy);
 impl_named_mul!(Energy, Frequency => Power);
 impl_named_mul!(Frequency, Energy => Power);
 
+// ── Chain products (for multi-step formulas like E=mc², T=½Iω²) ──
+impl_named_mul!(Momentum, Velocity => Energy);
+impl_named_mul!(Velocity, Momentum => Energy);
+impl_named_mul!(AngularMomentum, AngularVelocity => Energy);
+impl_named_mul!(AngularVelocity, AngularMomentum => Energy);
+impl_named_mul!(Force, Time => Momentum);
+impl_named_mul!(Time, Force => Momentum);
+impl_named_mul!(Capacitance, Voltage => Charge);
+impl_named_mul!(Voltage, Capacitance => Charge);
+impl_named_mul!(Pressure, Area => Force);
+impl_named_mul!(Area, Pressure => Force);
+impl_named_mul!(Pressure, Volume => Energy);
+impl_named_mul!(Volume, Pressure => Energy);
+
 // ── Dimensionless × Dimensionless ──────────────────────────────────────────
 impl ops::Mul for Dimensionless {
     type Output = Dimensionless;

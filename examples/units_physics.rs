@@ -78,8 +78,8 @@ fn main() {
 
     // Substitute numerical values: m = 10 kg, a = 9.81 m/s²
     let f_num = f.clone()
-        .subs(m.inner(), &symplex::rational(10, 1))
-        .subs(a.inner(), &symplex::rational(981, 100))
+        .subs(&m, &symplex::rational(10, 1))
+        .subs(&a, &symplex::rational(981, 100))
         .eval();
     println!("  F(m=10, a=9.81) = {}", f_num);
 
@@ -115,14 +115,14 @@ fn main() {
 
     // Numerical: I = 3 A, R = 47 Ω → V = 141 V, P = 423 W
     let v_num = volt.clone()
-        .subs(i.inner(), &symplex::rational(3, 1))
-        .subs(r.inner(), &symplex::rational(47, 1))
+        .subs(&i, &symplex::rational(3, 1))
+        .subs(&r, &symplex::rational(47, 1))
         .eval();
     println!("  V(I=3, R=47) = {}", v_num);
 
     let p_num = p_elec
-        .subs(i.inner(), &symplex::rational(3, 1))
-        .subs(r.inner(), &symplex::rational(47, 1))
+        .subs(&i, &symplex::rational(3, 1))
+        .subs(&r, &symplex::rational(47, 1))
         .eval();
     println!("  P(I=3, R=47) = {}", p_num);
 
@@ -365,10 +365,10 @@ fn main() {
         use symplex::units::constants;
         let c = constants::speed_of_light();
         let m = Mass::symbol("m");
-        let energy: Energy = Energy::from_ex(m.inner() * c.inner() * c.inner());
+        let energy: Energy = &m * &c * &c;
         println!("  E = mc² = {}", energy);
         println!("  (Displays symbolically — 'c' not '299792458')");
-        println!("  E(m=1kg) = {:.3e} J", energy.subs(m.inner(), &symplex::int(1)).eval_f64().unwrap());
+        println!("  E(m=1kg) = {:.3e} J", energy.subs(&m, &symplex::int(1)).eval_f64().unwrap());
     }
 
     println!("\n✓ All dimensional checks passed!");

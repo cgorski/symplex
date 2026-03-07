@@ -112,7 +112,7 @@ impl<D> Qty<D> {
     pub fn eval(&self) -> Self { Self::from_ex(self.inner.eval()) }
 
     /// Substitute a variable with a value, preserving dimension.
-    pub fn subs(&self, var: &Ex, val: &Ex) -> Self { Self::from_ex(self.inner.subs(var, val)) }
+    pub fn subs(&self, var: &impl AsRef<Ex>, val: &impl AsRef<Ex>) -> Self { Self::from_ex(self.inner.subs(var.as_ref(), val.as_ref())) }
 
     /// Trigonometric simplification.
     pub fn simplify_trig(&self) -> Self { Self::from_ex(self.inner.simplify_trig()) }
@@ -136,10 +136,10 @@ impl<D> Qty<D> {
     pub fn trig_combine(&self) -> Self { Self::from_ex(self.inner.trig_combine()) }
 
     /// Factor a polynomial.
-    pub fn factor(&self, var: &Ex) -> Self { Self::from_ex(self.inner.factor(var)) }
+    pub fn factor(&self, var: &impl AsRef<Ex>) -> Self { Self::from_ex(self.inner.factor(var.as_ref())) }
 
     /// Collect by variable.
-    pub fn collect(&self, var: &Ex) -> Self { Self::from_ex(self.inner.collect(var)) }
+    pub fn collect(&self, var: &impl AsRef<Ex>) -> Self { Self::from_ex(self.inner.collect(var.as_ref())) }
 
     /// Cancel common polynomial factors.
     pub fn cancel(&self, var: &Ex) -> Self { Self::from_ex(self.inner.cancel(var)) }
@@ -148,7 +148,7 @@ impl<D> Qty<D> {
     pub fn together(&self) -> Self { Self::from_ex(self.inner.together()) }
 
     /// Partial fraction decomposition.
-    pub fn partial_fractions(&self, var: &Ex) -> Self { Self::from_ex(self.inner.partial_fractions(var)) }
+    pub fn partial_fractions(&self, var: &impl AsRef<Ex>) -> Self { Self::from_ex(self.inner.partial_fractions(var.as_ref())) }
 
     /// Rationalize the denominator.
     pub fn rationalize_denom(&self) -> Self { Self::from_ex(self.inner.rationalize_denom()) }
@@ -157,10 +157,10 @@ impl<D> Qty<D> {
 
     /// Differentiate with respect to a variable. Returns raw `Ex`.
     /// Wrap the result in the appropriate output dimension type.
-    pub fn diff(&self, var: &Ex) -> Ex { self.inner.diff(var) }
+    pub fn diff(&self, var: &impl AsRef<Ex>) -> Ex { self.inner.diff(var.as_ref()) }
 
     /// Integrate with respect to a variable. Returns raw `Ex`.
-    pub fn integrate(&self, var: &Ex) -> Ex { self.inner.integrate(var) }
+    pub fn integrate(&self, var: &impl AsRef<Ex>) -> Ex { self.inner.integrate(var.as_ref()) }
 
     // ── Queries (dimension-independent) ──
 
@@ -171,7 +171,7 @@ impl<D> Qty<D> {
     pub fn free_symbols(&self) -> Vec<Ex> { self.inner.free_symbols() }
 
     /// Check if expression contains a subexpression.
-    pub fn contains(&self, other: &Ex) -> bool { self.inner.contains(other) }
+    pub fn contains(&self, other: &impl AsRef<Ex>) -> bool { self.inner.contains(other.as_ref()) }
 
     /// Number of additive terms.
     pub fn term_count(&self) -> usize { self.inner.term_count() }
@@ -200,6 +200,10 @@ impl<D> Qty<D> {
     }
 }
 
+impl<D> AsRef<Ex> for Qty<D> {
+    fn as_ref(&self) -> &Ex { &self.inner }
+}
+
 // ── DimName-gated methods ──────────────────────────────────────────────
 
 impl<D: DimName> Qty<D> {
@@ -216,15 +220,15 @@ impl<D: DimName> Qty<D> {
     }
 }
 
-impl<D: DimName> fmt::Display for Qty<D> {
+impl<D> fmt::Display for Qty<D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} [{}]", self.inner, D::dim_symbol())
+        write!(f, "{}", self.inner)
     }
 }
 
-impl<D: DimName> fmt::Debug for Qty<D> {
+impl<D> fmt::Debug for Qty<D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Qty<{}>({})", D::dim_name(), self.inner)
+        write!(f, "Qty({})", self.inner)
     }
 }
 
