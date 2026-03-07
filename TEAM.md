@@ -533,3 +533,4 @@ appear ONLY in this file (TEAM.md). Use `git blame` for code attribution.
 | 17 | **Delete old API names** (not deprecate) | Keep as #[deprecated] | Pre-1.0, clean break. One name per operation. |
 | 18 | **Display: `^` not `**`** | Python-style `**` | Math notation, not programming notation |
 | 19 | **build.rs for codegen** (not proc macro) | Heavy proc macro | sqlx acknowledged proc-macro codegen as architecturally flawed |
+| 20 | **`dim!` macro over named Mul/Div table** | Named Mul table (order-sensitive, 81 rules), type aliases (uom-style, loses error messages) | Single proc macro handles all products via Qty<D> blanket Mul. Order-independent. Type-safe via FromDimExpr. Named types preserved for errors on Add/Sub. |

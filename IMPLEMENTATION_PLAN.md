@@ -168,6 +168,12 @@ Cross-sort bridges:
     beyond f64). Stirling uses 0.323p terms (fewest), Bernoulli coefficients are
     cacheable, extends to log Γ, ψ, and polygamma.
 
+11. **`dim!` proc macro for dimensional arithmetic** — `dim!(Force: &m * &a)` type-checks
+    multiplication and division of physical quantities at compile time. Replaces the
+    deleted named-type Mul/Div impl table (`mul_table.rs`). Order-independent, handles
+    `*`, `/`, `^`, trig, constants, rationals. Verified via `FromDimExpr` trait with
+    `#[diagnostic::on_unimplemented]` for clear dimension-mismatch errors.
+
 ---
 
 ## 3. How to Add Things
@@ -403,14 +409,14 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 |--------|-------|
 | Tests | 1,386 lib tests + ~100 units tests, ~5,900+ total, 0 failing |
 | ExprNode variants | 66 |
-| Source modules | 105 (in 10 directories: base, poly, transforms, simplify, calculus, output, plotting, domains, api, units) |
+| Source modules | 106 (in 10 directories: base, poly, transforms, simplify, calculus, output, plotting, domains, api, units) |
 | Integration test files | 152 (each compiles as separate binary — see §1 timing notes) |
-| Source | ~82,200 lines across 105 modules in 10 directories |
+| Source | ~83,000 lines across 106 modules in 10 directories |
 | Tests | ~60,000 lines across 152+ test files |
 | Examples | ~3,950 lines across 19 examples (+ 3 probes) |
 | Tutorials | 21 pages, 8,473 lines |
 | Companion crates | ~1,085 lines across 2 crates (symplex-build, symplex-wasm) |
-| Total | ~148,700 lines |
+| Total | ~149,000 lines |
 | Public methods on `Ex` | 175+ (numeric + boolean + set-valued) |
 | Public methods on `Context` | 17 |
 | Matrix methods | 50+ (added operators, exp, kronecker, cholesky, pinv, diag, from_i64) |
@@ -499,7 +505,7 @@ Active limitations (not yet resolved):
 
 | Task | Description | Audiences Unlocked |
 |------|-------------|-------------------|
-| ~~Compile-time units~~ | ~~Dimensional analysis via compile-time types~~ | ~~All engineers~~ — **DONE** (0.2.0: `symplex::units` module, 30 types, typed calculus, uom codegen) |
+| ~~Compile-time units~~ | ~~Dimensional analysis via compile-time types~~ | ~~All engineers~~ — **DONE** (0.2.0: `symplex::units` module, 30 types, `dim!` macro arithmetic, typed calculus, uom codegen) |
 | Assumptions → simplification | `refine()`: sqrt(x²)→x when positive, Abs(x)→x | Physics, engineering |
 | Set operations | contains, measure, is_subset, ImageSet | Math students |
 | Bode / phase portrait plots | Domain-specific visualization | Controls, dynamics |
@@ -656,18 +662,23 @@ See `CONTRIBUTING.md` for the dependency flow diagram and rules for adding modul
 | `linalg.rs` | Linear system solving (Gaussian elimination over exact rationals) |
 | `separatevars.rs` | Variable separation in products |
 
-### `src/units/` — Compile-time dimensional analysis (8 modules)
+### `src/units/` — Compile-time dimensional analysis (9 modules)
 
 | Module | Responsibility |
 |--------|----------------|
 | `dim.rs` | `Dim<L,M,T,I,Th,N,J>` phantom type, 30 dimension aliases, `DimName`, `ConstDim` |
-| `qty.rs` | `Qty<D>` generic wrapper, `IntoEx`, `SameDim`, blanket Mul/Div/Add/Sub |
+| `qty.rs` | `Qty<D>` generic wrapper, `IntoEx`, `SameDim`, `FromDimExpr`, blanket Mul/Div/Add/Sub |
 | `si.rs` | 30 named newtypes via `define_quantity!` macro, ~45 methods each |
-| `mul_table.rs` | 69 named Mul/Div rules, Dimensionless/Angle scaling |
 | `calculus.rs` | `DiffWrt`/`IntWrt` traits, 42 typed calculus pairs |
 | `conversions.rs` | ~100 unit conversion constructors |
-| `inference.rs` | `DimMap`, `infer_dimension` tree walker |
+| `constants.rs` | 8 physical constants (c, h, ℏ, k_B, N_A, G, g₀, e₀) with exact SI values |
+| `conv_factors.rs` | 9 base + 25 derived exact conversion factors, BigInt-verified |
+| `inference.rs` | `DimMap`, `infer_dimension` tree walker, `physical_constants_dimmap()` |
 | `assert_macros.rs` | `assert_dim!`, `const_assert_dim!` |
+
+> **Note:** `mul_table.rs` was deleted. All dimensioned multiplication/division now goes
+> through the `dim!()` proc macro, which uses `Qty<D>` blanket Mul/Div and verifies the
+> result type via `FromDimExpr`. Named-type Add/Sub, scalar multiply, and negation are unchanged.
 
 ### `src/api/` — Public API surface (7 modules)
 
@@ -734,12 +745,13 @@ See `CONTRIBUTING.md` for the dependency flow diagram and rules for adding modul
 | `walk.rs` | Shared iterative tree traversal: post_order_ids, walk_and_rebuild |
 | `z_transform.rs` | Table-based z-transform and inverse z-transform |
 
-### Proc macro crate: `symplex-macros/` (~1,466 lines)
+### Proc macro crate: `symplex-macros/` (~1,800 lines)
 
 | Module | Responsibility |
 |--------|----------------|
-| `lib.rs` | `expr!`, `rule!`, `matrix!`, `eq!` entry points + code generation |
+| `lib.rs` | `expr!`, `rule!`, `matrix!`, `eq!`, `dim!` entry points + code generation |
 | `parse.rs` | Shared Pratt parser for math expressions (precedence climbing, right-assoc `^`, `int/int` → rational) |
+| `dim.rs` | `dim!` proc macro: parse `OutputType: expr`, expand `^N` to repeated mul, emit `FromDimExpr` conversion |
 
 ### Development methodology
 
@@ -767,5 +779,6 @@ Development uses AI pair programming with parallel agent dispatch. Key protocols
 | 17 | **Delete old API names** (not deprecate) | Keep as #[deprecated] | Pre-1.0, clean break. One name per operation. |
 | 18 | **Display: `^` not `**`** | Python-style `**` | Math notation, not programming notation |
 | 19 | **build.rs for codegen** (not proc macro) | Heavy proc macro | sqlx acknowledged proc-macro codegen as architecturally flawed |
+| 20 | **`dim!` macro over named Mul/Div table** | Named Mul table (order-sensitive, 81 rules), type aliases (uom-style, loses error messages) | Single proc macro handles all products via Qty\<D\> blanket Mul. Order-independent. Type-safe via FromDimExpr. Named types preserved for errors on Add/Sub. |
 
 > Decisions 1–12 are in TEAM.md § Key Decisions Log. Decisions 13+ are added here as the project grows.

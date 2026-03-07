@@ -16,7 +16,7 @@ src/
 ├── output/       Display, LaTeX, Rust codegen, CSE, JSON serialization, parser
 ├── plotting/     Adaptive sampling, textplot, SVG, TikZ, data export, RK4
 ├── domains/      Matrices, control systems, dynamics, robotics, number theory
-├── units/        Compile-time dimensional analysis, physical quantity types
+├── units/        Compile-time dimensional analysis, `dim!` macro arithmetic, physical quantity types
 ├── api/          Public types (Ex, Context), all public methods, operator overloads
 └── lib.rs        Module tree, re-exports, prelude, convenience functions
 ```
@@ -31,6 +31,9 @@ base → poly → transforms → simplify → calculus
 
 `api/` sits at the top and depends on everything — it is the public facade.
 `units/` imports from `api` (for `Ex`) and provides typed physical quantities.
+All dimensioned multiplication/division goes through the `dim!()` proc macro
+(e.g. `dim!(Force: &m * &a)`); the `FromDimExpr` trait verifies the result type.
+Named-type addition/subtraction, scalar multiply, and negation use normal operators.
 `base/arena.rs` is a known exception: it provides convenience methods that
 delegate upward into transforms, simplify, and calculus. This is contained
 architectural debt, not a pattern to extend.

@@ -79,15 +79,18 @@ use symplex::prelude::*;
 use symplex::units::*;
 
 // Types enforce physical dimensions — Mass + Length won't compile
-let m = Mass::new(expr!(m));
-let g = Acceleration::new(expr!(g));
-let h = Length::new(expr!(h));
+let m = Mass::symbol("m");
+let g = Acceleration::symbol("g");
+let h = Length::symbol("h");
 
-// Multiplication rules are typed: Mass * Acceleration → Force
-let weight: Force = &m * &g;
+// dim! macro: type-safe, order-independent dimensional arithmetic
+let weight = dim!(Force: &m * &g);
+
+// Multi-term expressions work too
+let energy = dim!(Energy: &m * &g * &h);
 
 // Typed calculus: d(Length)/d(Time) → Velocity
-let v: Velocity = h.diff_wrt(&Time::new(expr!(t)));
+let v: Velocity = h.diff_wrt(&Time::symbol("t"));
 
 // ~100 unit conversions
 let distance = Length::meters(3.0) + Length::feet(6.5);
@@ -103,6 +106,11 @@ cargo add symplex
 ```
 
 ## Why Symplex
+
+**`dim!` macro for dimensional arithmetic.** All multiplication and division of
+physical quantities goes through `dim!(OutputType: expr)` — a single proc macro that
+is type-safe, order-independent, and gives clear error messages on dimension mismatches
+via `FromDimExpr`.
 
 **Exact by default.** Every number is a `Ratio<BigInt>` — `0.1 + 0.2` equals `3/10`,
 not `0.30000000000000004`. Floating-point only appears when you explicitly ask for it
@@ -125,7 +133,7 @@ scripts, no glue.
 
 ## Proc Macros
 
-Symplex provides four proc macros for natural math syntax:
+Symplex provides five proc macros for natural math syntax:
 
 ```rust
 vars!(x, y, z);                              // declare symbolic variables
@@ -136,6 +144,10 @@ let b: BoolEx = expr!(x > 0 && y < 1);      // boolean expressions
 
 let m = matrix![[x, 1], [0, x^2]];          // symbolic matrices
 let eq = eq!(x^2 + x = 6);                  // equations (lhs = rhs)
+
+// Dimensional arithmetic (units module)
+let force = dim!(Force: &mass * &accel);     // type-safe multiply
+let energy = dim!(Energy: &m * &g * &h);     // multi-term products
 ```
 
 Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `expr!`.
@@ -180,15 +192,17 @@ Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `exp
 
 **Compile-Time Dimensional Analysis:**
 
+- ✅ `dim!` proc macro for all dimensional multiplication/division: `dim!(Force: &m * &a)`
 - ✅ 30 named physical quantity types (Force, Voltage, Energy, etc.)
 - ✅ Compile-time dimension checking: `Mass + Length` won't compile
+- ✅ `FromDimExpr` trait with `#[diagnostic::on_unimplemented]` for clear dimension mismatch errors
 - ✅ Typed calculus: `d(Length)/d(Time) → Velocity` verified at compile time (DiffWrt/IntWrt)
 - ✅ ~100 unit conversion constructors (meters, feet, horsepower, celsius, RPM)
 - ✅ Runtime dimension inference for debug validation
 - ✅ Typed robotics API: `fk_position_typed` with Angle/Length parameters
 - ✅ Code generation with `uom` type annotations at function boundaries
 - ✅ `const_assert_dim!` compile-time formula verification
-- ✅ Clear error messages: "expected Force, found Mass"
+- ✅ Physical constants (c, h, ℏ, k_B, N_A, G, g₀, e₀) with symbolic display and exact SI values
 
 **Code Generation & Output:**
 
@@ -250,7 +264,7 @@ A concise, honest comparison. For the full breakdown see
 | Robotics (DH, FK, Jacobian, dynamics) | ✅ | ❌ (separate: mechanics) |
 | Control systems | ✅ | ✅ (control module) |
 | Rust code generation | ✅ | ❌ |
-| Dimensional analysis | ✅ (compile-time, 30 types) | ❌ (separate: Pint) |
+| Dimensional analysis | ✅ (compile-time, 30 types, `dim!` macro) | ❌ (separate: Pint) |
 | LaTeX output | ✅ | ✅ |
 | Thread safety | ✅ (`Send + Sync`) | ❌ (GIL) |
 | Type-safe expressions | ✅ (`Ex` vs `BoolEx`) | ❌ |
@@ -291,7 +305,7 @@ All dependencies are MIT or Apache-2.0 licensed. No C bindings. No LGPL.
 | `parking_lot` | Fast reader-writer locks for the arena |
 | `astro-float` | Arbitrary-precision floating-point evaluation |
 | `serde` / `serde_json` | Serialization and JSON interchange |
-| `symplex-macros` | Proc macros (`expr!`, `rule!`, `matrix!`, `eq!`) |
+| `symplex-macros` | Proc macros (`expr!`, `rule!`, `matrix!`, `eq!`, `dim!`) |
 
 ## Requirements
 

@@ -12,11 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Compile-Time Dimensional Analysis (units module)**
 - New `symplex::units` module with compile-time dimensional analysis
 - 30 named quantity newtypes: Dimensionless, Angle, Length, Mass, Time, Current, Temperature, Area, Volume, Velocity, Acceleration, AngularVelocity, AngularAcceleration, Frequency, Force, Energy, Torque, Power, Momentum, AngularMomentum, MomentOfInertia, Pressure, Stiffness, Damping, Voltage, Resistance, Inductance, Capacitance, Charge, MagneticFlux
-- 69 named Mul/Div rules between quantity types
+- All dimensioned multiplication/division goes through the `dim!` proc macro (no named Mul/Div table)
 - `DiffWrt`/`IntWrt` traits: 42 typed calculus pairs (e.g., d(Length)/d(Time) → Velocity)
 - ~100 unit conversion constructors (meters, kilometers, feet, horsepower, celsius, RPM, etc.)
 - `IntoEx` trait: `from_ex()` accepts both `Ex` and `&Ex` — no `.clone()` needed with `expr!`
 - `SameDim` trait with `#[diagnostic::on_unimplemented]` for clear addition errors
+- `FromDimExpr` trait with `#[diagnostic::on_unimplemented]` for clear dimension mismatch errors on `dim!` output
 - `assert_dim!` compile-time checkpoint macro
 - `const_assert_dim!` compile-time formula verification with custom error messages
 - `DimMap` + `infer_dimension()` runtime dimension inference for debug validation
@@ -25,6 +26,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Angle is a distinct type from Dimensionless (catches radian/degree bugs)
 - Energy/Torque, Frequency/AngularVelocity dimension collisions handled via distinct newtypes with `From` conversions
 - `typenum` added as unconditional dependency (zero runtime cost)
+
+**`dim!` Proc Macro for Type-Safe Dimensional Arithmetic**
+- BREAKING: Removed all named-type `Mul`/`Div` operator impls (deleted `mul_table.rs`)
+- New `dim!` proc macro: `dim!(Energy: &m * &g * &l)` — type-safe, order-independent
+- Handles `*`, `/`, `+`, `-`, `^`, negation, trig functions, constants, rationals
+- Integer powers (x^2 through x^8) expanded to repeated multiplication for full type-safety
+- `FromDimExpr` trait with `#[diagnostic::on_unimplemented]` for clear dimension mismatch errors
+- All multiplication/division of dimensioned quantities now goes through `dim!`
+- Named-type addition/subtraction, scalar multiply, negation unchanged
+
+**PhysicalConstant ExprNode**
+- New `ExprNode::PhysicalConstant(SymbolId, ExprId)` variant
+- Constants display symbolically (c, h, k_B) but evaluate to exact values
+- 8 physical constants: c, e₀, h, ℏ, k_B, N_A, G, g₀
+- All values exact per 2019 SI redefinition
+- `physical_constants_dimmap()` for runtime dimension inference
+
+**AsRef<Ex> Ergonomics**
+- All named types and Qty<D> implement `AsRef<Ex>`
+- `subs`, `diff`, `integrate`, `factor`, `collect`, `contains` accept `&impl AsRef<Ex>`
+- Eliminates `.inner()` calls: `force.subs(&mass, &val)` works directly
+
+**Exact Conversion Factors**
+- `conv_factors` module with 9 base constants + 25 derived constants
+- Every derived constant verified by BigInt tests against base definitions
+- 31 new conversion constructors (psi, BTU, gallon, knot, slug, etc.)
+- `rational_e(n, exp)` for physical constants with large denominators
 
 **Typed Robotics API**
 - `DhParams` type alias enforcing `(&Angle, &Length, &Length, &Angle)` at compile time

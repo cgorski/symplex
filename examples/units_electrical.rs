@@ -129,7 +129,7 @@ fn main() {
     let omega = AngularVelocity::symbol("ω");
 
     // Back-EMF constant Ke has units of Wb (V·s/rad ≡ magnetic flux)
-    // MagneticFlux × AngularVelocity → Voltage (from mul_table)
+    // MagneticFlux × AngularVelocity → Voltage (via dim! macro)
     let ke = MagneticFlux::symbol("Ke");
 
     // Resistive voltage drop: Resistance × Current → Voltage
