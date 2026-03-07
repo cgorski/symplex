@@ -1893,11 +1893,106 @@ fn integrate_node(
             arena.intern(ExprNode::Integral(expr, var))
         }
 
-        // Inverse hyperbolics, sign: leave as unevaluated integrals
-        ExprNode::Asinh(_)
-        | ExprNode::Acosh(_)
-        | ExprNode::Atanh(_)
-        | ExprNode::Sign(_) => arena.intern(ExprNode::Integral(expr, var)),
+        // ── Asinh: ∫ asinh(x) dx = x·asinh(x) - √(x²+1) ─────────
+        ExprNode::Asinh(inner) => {
+            if inner == var {
+                tracing::debug!("integrate: matched asinh(x) direct");
+                let asinh_var = arena.asinh(var);
+                let x_asinh = arena.mul(&[var, asinh_var]);
+                let two = arena.int(2);
+                let x2 = arena.pow(var, two);
+                let one = arena.one;
+                let x2_plus_1 = arena.add(&[x2, one]);
+                let half = arena.rational(1, 2);
+                let sqrt_term = arena.pow(x2_plus_1, half);
+                return arena.sub(x_asinh, sqrt_term);
+            }
+            // Linear chain rule: ∫ asinh(ax+b) dx = (ax+b)·asinh(ax+b)/a - √((ax+b)²+1)/a
+            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym)
+            {
+                tracing::debug!("integrate: matched asinh(ax+b) linear");
+                let asinh_g = arena.asinh(inner);
+                let g_asinh = arena.mul(&[inner, asinh_g]);
+                let two = arena.int(2);
+                let g2 = arena.pow(inner, two);
+                let one = arena.one;
+                let g2_plus_1 = arena.add(&[g2, one]);
+                let half = arena.rational(1, 2);
+                let sqrt_term = arena.pow(g2_plus_1, half);
+                let numer = arena.sub(g_asinh, sqrt_term);
+                return arena.div(numer, a_expr);
+            }
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
+        // ── Acosh: ∫ acosh(x) dx = x·acosh(x) - √(x²-1) ─────────
+        ExprNode::Acosh(inner) => {
+            if inner == var {
+                tracing::debug!("integrate: matched acosh(x) direct");
+                let acosh_var = arena.acosh(var);
+                let x_acosh = arena.mul(&[var, acosh_var]);
+                let two = arena.int(2);
+                let x2 = arena.pow(var, two);
+                let one = arena.one;
+                let x2_minus_1 = arena.sub(x2, one);
+                let half = arena.rational(1, 2);
+                let sqrt_term = arena.pow(x2_minus_1, half);
+                return arena.sub(x_acosh, sqrt_term);
+            }
+            // Linear chain rule: ∫ acosh(ax+b) dx
+            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym)
+            {
+                tracing::debug!("integrate: matched acosh(ax+b) linear");
+                let acosh_g = arena.acosh(inner);
+                let g_acosh = arena.mul(&[inner, acosh_g]);
+                let two = arena.int(2);
+                let g2 = arena.pow(inner, two);
+                let one = arena.one;
+                let g2_minus_1 = arena.sub(g2, one);
+                let half = arena.rational(1, 2);
+                let sqrt_term = arena.pow(g2_minus_1, half);
+                let numer = arena.sub(g_acosh, sqrt_term);
+                return arena.div(numer, a_expr);
+            }
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
+        // ── Atanh: ∫ atanh(x) dx = x·atanh(x) + ½·ln(1-x²) ──────
+        ExprNode::Atanh(inner) => {
+            if inner == var {
+                tracing::debug!("integrate: matched atanh(x) direct");
+                let atanh_var = arena.atanh(var);
+                let x_atanh = arena.mul(&[var, atanh_var]);
+                let two = arena.int(2);
+                let x2 = arena.pow(var, two);
+                let one = arena.one;
+                let one_minus_x2 = arena.sub(one, x2);
+                let half = arena.rational(1, 2);
+                let ln_term = arena.ln(one_minus_x2);
+                let half_ln = arena.mul(&[half, ln_term]);
+                return arena.add(&[x_atanh, half_ln]);
+            }
+            // Linear chain rule: ∫ atanh(ax+b) dx
+            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym)
+            {
+                tracing::debug!("integrate: matched atanh(ax+b) linear");
+                let atanh_g = arena.atanh(inner);
+                let g_atanh = arena.mul(&[inner, atanh_g]);
+                let two = arena.int(2);
+                let g2 = arena.pow(inner, two);
+                let one = arena.one;
+                let one_minus_g2 = arena.sub(one, g2);
+                let half = arena.rational(1, 2);
+                let ln_term = arena.ln(one_minus_g2);
+                let half_ln = arena.mul(&[half, ln_term]);
+                let numer = arena.add(&[g_atanh, half_ln]);
+                return arena.div(numer, a_expr);
+            }
+            arena.intern(ExprNode::Integral(expr, var))
+        }
+
+        // Sign: leave as unevaluated integral
+        ExprNode::Sign(_) => arena.intern(ExprNode::Integral(expr, var)),
 
         // Everything else: unevaluated integral.
         _ => {

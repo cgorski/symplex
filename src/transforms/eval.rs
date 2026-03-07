@@ -1168,19 +1168,51 @@ fn eval_log_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
 /// erf(0) → 0
 fn eval_erf(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if r.is_zero() {
-        return Some(arena.zero);
+    // erf(0) = 0
+    if let Some(r) = arena.as_num(inner) {
+        if r.is_zero() {
+            return Some(arena.zero);
+        }
     }
+
+    // erf(∞) = 1
+    if matches!(arena.node(inner), ExprNode::Infinity) {
+        return Some(arena.one);
+    }
+
+    // erf(-∞) = -1
+    if matches!(arena.node(inner), ExprNode::NegInfinity) {
+        return Some(arena.neg_one);
+    }
+
+    // Odd function: erf(-x) = -erf(x)
+    if let ExprNode::Neg(pos_inner) = arena.node(inner).clone() {
+        let erf_pos = arena.erf(pos_inner);
+        return Some(arena.neg(erf_pos));
+    }
+
     None
 }
 
 /// erfc(0) → 1
 fn eval_erfc(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
-    let r = arena.as_num(inner)?;
-    if r.is_zero() {
-        return Some(arena.one);
+    // erfc(0) = 1
+    if let Some(r) = arena.as_num(inner) {
+        if r.is_zero() {
+            return Some(arena.one);
+        }
     }
+
+    // erfc(∞) = 0
+    if matches!(arena.node(inner), ExprNode::Infinity) {
+        return Some(arena.zero);
+    }
+
+    // erfc(-∞) = 2
+    if matches!(arena.node(inner), ExprNode::NegInfinity) {
+        return Some(arena.int(2));
+    }
+
     None
 }
 
