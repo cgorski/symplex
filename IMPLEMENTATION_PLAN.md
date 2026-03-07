@@ -13,20 +13,20 @@ equation solving, matrix algebra, Laplace transforms, and code generation.
 
 ### Build and test
 
-    cargo test --lib              # Fast loop: 1,319 lib tests in ~2s (3-4s wall after src/ change)
-    cargo test --all-targets      # Full suite: 5,500+ tests — all must pass (45s after src/ change)
+    cargo test --lib              # Fast loop: 1,386 lib tests in ~2s (3-4s wall after src/ change)
+    cargo test --all-targets      # Full suite: 5,800+ tests — all must pass (45s after src/ change)
     cargo clippy --all-targets -- -D warnings   # 0 warnings required
     cargo bench                   # Criterion benchmarks (27)
 
 ### Test timing and the fast development loop
 
-We have **146 integration test files** under `tests/`, each compiled as a separate
-binary by Cargo. Touching any `src/` file triggers relinking all 146 binaries,
+We have **152 integration test files** under `tests/`, each compiled as a separate
+binary by Cargo. Touching any `src/` file triggers relinking all 152 binaries,
 which takes ~40 seconds even though test execution itself is ~10 seconds.
 
 **Use the fast loop during development:**
 
-    cargo test --lib                           # 3-4s — covers 1,319 unit tests
+    cargo test --lib                           # 3-4s — covers 1,386 unit tests
     cargo test --lib --test test_foo           # 4-5s — add one targeted integration test
     cargo test --all-targets                   # 45s  — full suite, only before commits
 
@@ -39,8 +39,8 @@ which takes ~40 seconds even though test execution itself is ~10 seconds.
 | `cargo test --all-targets` | 45s | 10s |
 | `cargo test --all-targets` (cold) | 55s | N/A |
 
-The slow `--all-targets` is caused by linking 146 separate test binaries, not
-by test execution. The **structural fix** (consolidating 146 files into ~10-15
+The slow `--all-targets` is caused by linking 152 separate test binaries, not
+by test execution. The **structural fix** (consolidating 152 files into ~10-15
 thematic test crates) is tracked for post-0.2.0. Until then, use `--lib` for
 the inner loop and `--all-targets` as a commit gate only.
 
@@ -53,22 +53,26 @@ the inner loop and `--all-targets` as a commit gate only.
     cargo test --all-targets                            # Full (slow)
     cargo clippy --all-targets -- -D warnings           # Full (slow)
 
-### Architecture: six layers (each layer only calls downward)
+### Architecture: nine directories (each directory only imports from lower layers)
 
-    Layer 1: Public API      — expr.rs, expr_funcs.rs, expr_ops.rs, context.rs, eq.rs, matrix.rs
-    Layer 2: Macros           — symplex-macros/ (expr!, rule!, matrix!, eq!)
-    Layer 3: Transforms       — diff, integrate, expand, eval, simplify, solve, laplace, …
-    Layer 4: Canonicalization — canon.rs (add/mul/pow/neg/interval/union/intersection)
-    Layer 5: Arena            — arena.rs, node.rs, walk.rs, sort_key.rs, symbol.rs
-    Layer 6: Types            — assumptions.rs, config.rs, errors.rs
+    src/base/         Expression DAG, arena, canonicalization (Layer 0)
+    src/poly/         Polynomial algebra, Gröbner bases (Layer 1)
+    src/transforms/   Differentiation, integration, solving (Layer 2)
+    src/simplify/     Trig, power, log simplification, Fu (Layer 2)
+    src/calculus/     Series, limits, ODE, Laplace, Gosper (Layer 3)
+    src/output/       Display, LaTeX, codegen, CSE, parser (Layer 3)
+    src/plotting/     Sampling, textplot, SVG, TikZ, data export (Layer 4)
+    src/domains/      Matrices, control, robotics, dynamics (Layer 4)
+    src/api/          Public API: Ex, Context, operators (Layer 5)
 
 ### Key files to read first
 
-    1. src/node.rs        — ExprNode enum (66 variants), the core data model
-    2. src/expr.rs         — Expr<S> struct, Sort system, type aliases
-    3. src/expr_funcs.rs   — all 175+ public methods on Ex
-    4. src/arena.rs        — hash-consing, intern(), constructors
-    5. src/canon.rs        — canonicalization rules (what constructors do)
+    1. src/base/node.rs       — ExprNode enum (66 variants), the core data model
+    2. src/api/expr.rs        — Expr<S> struct, Sort system, type aliases
+    3. src/api/expr_funcs.rs  — all 175+ public methods on Ex
+    4. src/base/arena.rs      — hash-consing, intern(), constructors
+    5. src/base/canon.rs      — canonicalization rules (what constructors do)
+    6. CONTRIBUTING.md        — directory structure, dependency flow, where to add code
 
 ### Conventions (see §4 for full list)
 
@@ -85,12 +89,14 @@ the inner loop and `--all-targets` as a commit gate only.
 
 | Metric | Value |
 |--------|-------|
-| Tests | 1,319+ lib tests, 5,500+ total, 0 failing |
-| Source | ~72,800 lines across 82 modules |
-| Tests | ~57,300 lines across 146 test files |
-| Examples | ~3,950 lines across 18 examples |
+| Tests | 1,386 lib tests, ~5,800+ total, 0 failing |
+| Source | ~77,200 lines across 97 modules in 9 directories |
+| Tests | ~58,000 lines across 152 test files |
+| Examples | ~3,950 lines across 19 examples (+ 3 probes) |
+| Tutorials | 8,473 lines across 21 pages |
 | Companion crates | ~1,085 lines across 2 crates (symplex-build, symplex-wasm) |
-| Total | ~136,600 lines |
+| Total | ~148,700 lines |
+| SymPy cross-validation | 371 fixtures (263 original + 108 new capabilities), 0 failures |
 | ExprNode variants | 66 (including 7 set-valued, 11 boolean) |
 | Public methods on `Ex` | 175+ (numeric + boolean + set-valued) |
 | Public methods on `Context` | 17 |
@@ -99,6 +105,11 @@ the inner loop and `--all-targets` as a commit gate only.
 | `expr!` macro functions | 65 (54 single-arg + 11 multi-arg) |
 | Simplification rules | 24 (with condition guards) |
 | Integration forms | 60+ |
+| Fu trig transforms | 17 named transforms + greedy orchestration |
+| ODE solver types | 11 + constant-coefficient systems |
+| Codegen optimizations | CSE, FMA, Horner, sin_cos, expm1/log1p/log2/exp2 |
+| Plotting backends | textplot (ASCII), SVG, TikZ/PGFplots |
+| Data export formats | CSV, TSV, JSON, Markdown, HTML, LaTeX |
 | Eval special values | 86+ |
 | Criterion benchmarks | 27 |
 | Proptest properties | 22+ |
@@ -390,15 +401,16 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 | Metric | Value |
 |--------|-------|
-| Tests | 1,319+ lib tests, 5,500+ total, 0 failing |
+| Tests | 1,386 lib tests, ~5,800+ total, 0 failing |
 | ExprNode variants | 66 |
-| Source modules | 82 |
-| Integration test files | 146 (each compiles as separate binary — see §1 timing notes) |
-| Source | ~72,800 lines across 82 modules |
-| Tests | ~57,300 lines across 146 test files |
-| Examples | ~3,950 lines across 18 examples |
+| Source modules | 97 (in 9 directories: base, poly, transforms, simplify, calculus, output, plotting, domains, api) |
+| Integration test files | 152 (each compiles as separate binary — see §1 timing notes) |
+| Source | ~77,200 lines across 97 modules in 9 directories |
+| Tests | ~58,000 lines across 152 test files |
+| Examples | ~3,950 lines across 19 examples (+ 3 probes) |
+| Tutorials | 21 pages, 8,473 lines |
 | Companion crates | ~1,085 lines across 2 crates (symplex-build, symplex-wasm) |
-| Total | ~136,600 lines |
+| Total | ~148,700 lines |
 | Public methods on `Ex` | 175+ (numeric + boolean + set-valued) |
 | Public methods on `Context` | 17 |
 | Matrix methods | 50+ (added operators, exp, kronecker, cholesky, pinv, diag, from_i64) |
@@ -410,8 +422,10 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 | Criterion benchmarks | 27 |
 | Proptest properties | 22+ |
 | Solver degree support | 1–4 (Cardano cubic + Ferrari quartic) |
-| Examples | 18 |
+| Examples | 19 (+ 3 diagnostic probes) |
 | Clippy warnings | 0 (enforced: `cargo clippy --all-targets -- -D warnings`) |
+| SymPy cross-validation | 371 fixtures, 0 failures |
+| Correctness probe | 71 checks, 0 wrong answers |
 
 ---
 
@@ -484,7 +498,12 @@ Active limitations (not yet resolved):
 
 | Task | Description | Audiences Unlocked |
 |------|-------------|-------------------|
-| Basic 2D plotting (SVG) | Function graphs, Bode plots, pole-zero maps | EE, professors, students |
+| Compile-time units (uom) | Dimensional analysis via uom crate integration | All engineers |
+| Assumptions → simplification | `refine()`: sqrt(x²)→x when positive, Abs(x)→x | Physics, engineering |
+| Set operations | contains, measure, is_subset, ImageSet | Math students |
+| Bode / phase portrait plots | Domain-specific visualization | Controls, dynamics |
+| Block diagram algebra | Series/Parallel/Feedback TF composition | Controls engineers |
+| Pretty printer (Unicode) | Terminal math rendering | Interactive users |
 | Python bindings (PyO3) | `import symplex` for Python users | ML, professors, quants |
 | General n-DOF IK (≥7-DOF) | Pieper decomposition, arm-angle parameterization | Robotics startups |
 | Sparse matrices (CSR/CSC) | Sparse eigenvalue, sparse LU | Controls engineers |
@@ -494,9 +513,9 @@ Active limitations (not yet resolved):
 
 | Version | Theme | Key features |
 |---------|-------|-------------|
-| 0.2.0 | Polish & Ship | Display fixes, API rename, examples, docs, Gröbner bases, number theory |
-| 0.3.0 | Reach | Python bindings, basic plotting, WASM demo |
-| 0.4.0 | Depth | Sparse matrices, n-DOF IK, PDE solving, tensor calculus |
+| 0.2.0 | Polish & Ship | ✅ Done — codegen, tutorials, calculus parity, Fu, Gosper, FPS, plotting, 9-dir reorg |
+| 0.3.0 | Reach | Units (uom), assumptions→simplify, Python bindings, WASM demo, pretty printer |
+| 0.4.0 | Depth | Sparse matrices, n-DOF IK, PDE solving, tensor calculus, Meijer-G |
 | 1.0.0 | Stability | API freeze, comprehensive testing, documentation |
 
 ### Strategic context
@@ -511,39 +530,142 @@ algorithm developers (derive formula → compile to fast code). The common threa
 
 ## 10. Module Reference
 
-### Main crate: `symplex/src/` (82 modules)
+### Source organization: `src/` — 9 directories, 97 modules
+
+See `CONTRIBUTING.md` for the dependency flow diagram and rules for adding modules.
+
+### `src/base/` — Expression DAG, arena, canonicalization (12 modules)
 
 | Module | Responsibility |
 |--------|----------------|
-| `apart.rs` | Partial fraction decomposition |
+| `node.rs` | `ExprId(u32)`, `ExprNode` enum (66 variants), `children()`, `is_atom()` |
 | `arena.rs` | Expression arena with hash-consing, intern(), constructors, constant pool |
-| `assumptions.rs` | Three-valued property inference engine (23 properties, ~40 implication rules) |
-| `bernoulli.rs` | Exact Bernoulli number computation (lazy cache, recurrence) |
+| `walk.rs` | Shared iterative tree traversal: post_order_ids, walk_and_rebuild |
+| `sort_key.rs` | `SortKey` — compact byte sequences for canonical ordering |
+| `symbol.rs` | Symbol table — string interning + per-symbol assumptions |
 | `canon.rs` | Canonical-form constructors: add/mul/pow/neg/and/or/not/set operations |
-| `codegen.rs` | Rust source code generation (`to_rust_fn` with CSE) |
-| `combsimp.rs` | Factorial/binomial simplification |
+| `assumptions.rs` | Three-valued property inference engine (23 properties, ~40 implication rules) |
 | `compact.rs` | Arena compaction (generational GC, live-node tracing) |
+| `bernoulli.rs` | Exact Bernoulli number computation (lazy cache, recurrence) |
 | `complex.rs` | Complex number decomposition (re/im/arg/conjugate) |
-| `config.rs` | `EvalConfig` — max_pow_exponent, max_result_digits, max_evalf_precision |
-| `context.rs` | `Context` — user-facing entry point, Arc\<RwLock\<ContextInner\>\> |
-| `control.rs` | StateSpace, TransferFunction, Routh-Hurwitz, Ackermann, ZOH discretization |
-| `convergence.rs` | Series convergence testing |
-| `cse.rs` | Common subexpression elimination |
-| `diff.rs` | Symbolic differentiation (all 66 node types, chain rule, n-ary product rule) |
-| `display.rs` | Iterative (non-recursive) expression pretty-printer |
-| `dynamics.rs` | Euler-Lagrange, mass matrix, Christoffel symbols, Coriolis, gravity vector |
-| `eq.rs` | `Equation` type with solve/subs/simplify |
 | `errors.rs` | `SymplexError` — non-exhaustive error enum |
+| `config.rs` | `EvalConfig` — max_pow_exponent, max_result_digits, max_evalf_precision |
+
+### `src/poly/` — Polynomial algebra (6 modules)
+
+| Module | Responsibility |
+|--------|----------------|
+| `dense.rs` | Dense univariate polynomials over ℚ (arithmetic, GCD, Horner, resultant) |
+| `multipoly.rs` | Sparse multivariate polynomials with generic monomial ordering |
+| `groebner.rs` | Buchberger's algorithm with Gebauer-Möller, FGLM order conversion |
+| `polybridge.rs` | Expression ↔ Poly bridge, cancel(), collect(), together() |
+| `polysys.rs` | Polynomial system solving via Gröbner bases + back-substitution |
+| `sturm.rs` | Sturm sequences for exact polynomial real root counting |
+
+### `src/transforms/` — Core symbolic operations (13 modules)
+
+| Module | Responsibility |
+|--------|----------------|
+| `diff.rs` | Symbolic differentiation (all 66 node types, chain rule, n-ary product rule) |
+| `integrate.rs` | Integration (power, trig, exp, by-parts, u-sub, partial fractions, heurisch fallback) |
 | `eval.rs` | Special-value evaluation (86+ values, unit circle, Gamma(n), erf(0)) |
 | `evalf.rs` | Arbitrary-precision numerical evaluation via `astro-float` |
 | `expand.rs` | Algebraic expansion (distribute, power expand, multinomial) |
+| `subs.rs` | Structural substitution (subs, subs_map) via walk_and_rebuild |
+| `solve.rs` | Equation solving: linear through quartic, transcendental, trig inversion |
+| `pattern.rs` | Pattern matching, rewrite rules, `basic_rules()` (24 rules), sub-expr matching |
+| `heurisch.rs` | Heuristic Risch fallback integrator (numeric evaluation + rational reconstruction) |
+| `trig_integ.rs` | Trig power integration (sin^n, cos^n, sec², reduction formulas) |
+| `sum_eval.rs` | Closed-form evaluation of symbolic sums (Faulhaber) |
+| `apart.rs` | Partial fraction decomposition + log_to_real numeric conversion |
+| `inequalities.rs` | Polynomial/rational inequality solving → SetEx |
+
+### `src/simplify/` — Simplification strategies (14 modules)
+
+| Module | Responsibility |
+|--------|----------------|
+| `simplify_engine.rs` | Multi-strategy `smart_simplify` (7 strategies, picks lowest count_ops) |
+| `fu.rs` | Fu's trig simplification (17 transforms + greedy tree search orchestration) |
+| `trigsimp.rs` | 6-strategy trig simplification choice set |
+| `trig_combine.rs` | Trig product-to-sum: sin(a)·cos(b) → ½[sin(a+b)+sin(a-b)] |
+| `trig_expand.rs` | Trig expansion: sin(a+b), cos(a+b), sin(nx), cos(nx) |
+| `powsimp.rs` | Power simplification (symbolic exponent merging) |
+| `combsimp.rs` | Factorial/binomial simplification |
+| `radsimp.rs` | Denominator rationalization |
+| `log_combine.rs` | Log combining: ln(a)+ln(b) → ln(ab) |
+| `log_expand.rs` | Log expansion: ln(ab) → ln(a)+ln(b) |
+| `factor.rs` | Polynomial factoring (rational root theorem, Kronecker's method) |
+| `factor_terms.rs` | GCD extraction from sums |
+| `nsimplify.rs` | Closed-form detection from floats (PSLQ-lite, extended √n patterns) |
+| `rewrite.rs` | Rewrite protocol: trig↔exp (Euler's formula), trig↔hyp |
+
+### `src/calculus/` — Higher calculus (14 modules)
+
+| Module | Responsibility |
+|--------|----------------|
+| `series.rs` | Taylor/Maclaurin series expansion with pole detection |
+| `limit.rs` | Symbolic limits (direct substitution, L'Hôpital, series, Gruntz dispatch) |
+| `gruntz.rs` | Gruntz algorithm for limits at infinity (~1,700 lines) |
+| `laplace.rs` | Forward/inverse Laplace transforms (table + structural rules) |
+| `fourier.rs` | Fourier series computation via integration |
+| `fourier_transform.rs` | Table-based symbolic Fourier transform and inverse |
+| `z_transform.rs` | Table-based z-transform and inverse z-transform |
+| `ode.rs` | ODE classification and solving (11 types + constant-coefficient systems) |
+| `gosper.rs` | Gosper hypergeometric summation (normal form + certificate) |
+| `formal_series.rs` | Formal power series with closed-form coefficient patterns |
+| `finite_diff.rs` | Finite difference weights (Fornberg algorithm) |
+| `convergence.rs` | Series convergence testing |
+| `residue.rs` | Residue computation via limit |
+| `calculus_util.rs` | continuous_domain, singularities, estimate_frequency |
+
+### `src/output/` — Code generation & rendering (7 modules)
+
+| Module | Responsibility |
+|--------|----------------|
+| `display.rs` | Iterative (non-recursive) expression pretty-printer |
+| `latex.rs` | LaTeX rendering (sin²→\sin^{2}, fractions, matrices, quaternions) |
+| `codegen.rs` | Rust code generation (CSE, FMA, Horner, sin_cos, expm1/log1p/log2/exp2) |
+| `cse.rs` | Common subexpression elimination (single + cross-entry multi) |
+| `lambdify.rs` | Compile expressions to `Box<dyn Fn(&[f64]) -> f64>` closures |
+| `tree.rs` | `ExprTree` serde type for JSON interchange (to_tree/from_tree round-trip) |
+| `parse.rs` | Runtime expression parser (BigInt/Ratio tokens, recursion depth limit) |
+
+### `src/plotting/` — Visualization (6 modules)
+
+| Module | Responsibility |
+|--------|----------------|
+| `sampling.rs` | Adaptive sampling with frequency scan, domain-aware discontinuity detection |
+| `textplot.rs` | ASCII art terminal plotting |
+| `svg_plot.rs` | Self-contained SVG generation (Heckbert ticks, affine transforms, multi-series) |
+| `tikz_plot.rs` | TikZ/PGFplots LaTeX output |
+| `data_export.rs` | DataTable → CSV, TSV, JSON, Markdown, HTML, LaTeX tabular |
+| `rk4.rs` | Fourth-order Runge-Kutta ODE integrator for trajectory visualization |
+
+### `src/domains/` — Domain-specific math (9 modules)
+
+| Module | Responsibility |
+|--------|----------------|
+| `matrix.rs` | Symbolic matrix: det, inv, eigen, LU, QR, RREF, rank, nullspace, Jacobian, codegen |
+| `control.rs` | StateSpace, TransferFunction, Routh-Hurwitz, Ackermann, ZOH discretization |
+| `dynamics.rs` | Euler-Lagrange, mass matrix, Christoffel symbols, Coriolis, gravity vector |
+| `robotics.rs` | DH parameters, FK chain, rotations, Euler angles, skew3, 2-DOF IK |
+| `quaternion.rs` | Hamilton product, rotation matrix, axis-angle, angular velocity kinematics |
+| `vector.rs` | Vector calculus: gradient, divergence, curl, laplacian, conservative/solenoidal |
+| `ntheory.rs` | Number theory: primality, factorization, divisors, totient, CRT, modular arithmetic |
+| `linalg.rs` | Linear system solving (Gaussian elimination over exact rationals) |
+| `separatevars.rs` | Variable separation in products |
+
+### `src/api/` — Public API surface (7 modules)
+
+| Module | Responsibility |
+|--------|----------------|
 | `expr.rs` | `Expr<S>` struct, `Sort` trait, phantom type aliases (Ex, BoolEx, SetEx) |
 | `expr_funcs.rs` | All 175+ public methods on Ex/BoolEx/SetEx |
 | `expr_ops.rs` | Operator overloads (Add/Sub/Mul/Div/Neg for all Ex/&Ex/i64 combos) |
 | `expr_view.rs` | `ExprView` — non-locking view type for `replace()` closures |
-| `factor.rs` | Polynomial factoring (rational root theorem, content extraction) |
-| `factor_terms.rs` | GCD extraction from sums |
-| `finite_diff.rs` | Finite difference coefficients (Fornberg algorithm) |
+| `context.rs` | `Context` — user-facing entry point, Arc\<RwLock\<ContextInner\>\> |
+| `eq.rs` | `Equation` type with solve/subs/simplify and `eq!` macro |
+| `macros.rs` | `syms!`, `sym!`, `vars!` declarative macros |
 | `formal_series.rs` | Formal power series with closed-form coefficient extraction |
 | `fourier.rs` | Fourier series computation via integration |
 | `fourier_transform.rs` | Table-based symbolic Fourier transform and inverse |
@@ -603,7 +725,20 @@ algorithm developers (derive formula → compile to fast code). The common threa
 | Module | Responsibility |
 |--------|----------------|
 | `lib.rs` | `expr!`, `rule!`, `matrix!`, `eq!` entry points + code generation |
-| `parse.rs` | Shared Pratt parser for math expressions (precedence climbing, right-assoc `^`) |
+| `parse.rs` | Shared Pratt parser for math expressions (precedence climbing, right-assoc `^`, `int/int` → rational) |
+
+### Development methodology
+
+Development uses AI pair programming with parallel agent dispatch. Key protocols:
+
+- **Mutually exclusive file ownership**: Each parallel agent is assigned specific files.
+  No two agents may edit the same file in the same batch. Conflicts cause corrupted work.
+- **Phase barriers**: When Agent A's output is needed by Agent B, they run in sequential
+  batches. Commit Agent A's work before dispatching Agent B.
+- **Verify after each batch**: Run `cargo test --lib` + `cargo clippy` after every batch.
+- **Don't weaken tests**: If a test fails, fix the root cause, not the assertion.
+- **Probes for regression**: `cargo run --example probe_integration` and
+  `cargo run --example probe_correctness` provide instant coverage feedback.
 
 ---
 
