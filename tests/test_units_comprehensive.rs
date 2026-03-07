@@ -1,0 +1,565 @@
+//! Comprehensive integration tests for the `symplex::units` module.
+//!
+//! Covers: DiffWrt, IntWrt, FTC round-trips, named Mul/Div numerical checks,
+//! `from_ex` with IntoEx, and dimension-preserving operations.
+
+use symplex::prelude::*;
+use symplex::units::*;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 1: DiffWrt tests (~17 tests)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn diff_length_wrt_time_is_velocity() {
+    symplex::vars!(a, t);
+    let x = Length::from_ex(expr!(a * t));
+    let t_var = Time::symbol("t");
+    let v: Velocity = x.diff_wrt(&t_var);
+    assert_eq!(format!("{}", v.inner()), "a");
+}
+
+#[test]
+fn diff_velocity_wrt_time_is_acceleration() {
+    symplex::vars!(a, t);
+    let v = Velocity::from_ex(expr!(a * t));
+    let t_var = Time::symbol("t");
+    let acc: Acceleration = v.diff_wrt(&t_var);
+    assert_eq!(format!("{}", acc.inner()), "a");
+}
+
+#[test]
+fn diff_angle_wrt_time_is_angular_velocity() {
+    symplex::vars!(w, t);
+    let theta = Angle::from_ex(expr!(w * t));
+    let t_var = Time::symbol("t");
+    let omega: AngularVelocity = theta.diff_wrt(&t_var);
+    assert_eq!(format!("{}", omega.inner()), "w");
+}
+
+#[test]
+fn diff_angular_velocity_wrt_time_is_angular_acceleration() {
+    symplex::vars!(a, t);
+    let omega = AngularVelocity::from_ex(expr!(a * t));
+    let t_var = Time::symbol("t");
+    let alpha: AngularAcceleration = omega.diff_wrt(&t_var);
+    assert_eq!(format!("{}", alpha.inner()), "a");
+}
+
+#[test]
+fn diff_energy_wrt_time_is_power() {
+    symplex::vars!(p, t);
+    let e = Energy::from_ex(expr!(p * t));
+    let t_var = Time::symbol("t");
+    let pwr: Power = e.diff_wrt(&t_var);
+    assert_eq!(format!("{}", pwr.inner()), "p");
+}
+
+#[test]
+fn diff_momentum_wrt_time_is_force() {
+    symplex::vars!(f, t);
+    let p = Momentum::from_ex(expr!(f * t));
+    let t_var = Time::symbol("t");
+    let force: Force = p.diff_wrt(&t_var);
+    assert_eq!(format!("{}", force.inner()), "f");
+}
+
+#[test]
+fn diff_angular_momentum_wrt_time_is_torque() {
+    symplex::vars!(tau, t);
+    let l = AngularMomentum::from_ex(expr!(tau * t));
+    let t_var = Time::symbol("t");
+    let torque: Torque = l.diff_wrt(&t_var);
+    assert_eq!(format!("{}", torque.inner()), "tau");
+}
+
+#[test]
+fn diff_charge_wrt_time_is_current() {
+    symplex::vars!(i, t);
+    let q = Charge::from_ex(expr!(i * t));
+    let t_var = Time::symbol("t");
+    let current: Current = q.diff_wrt(&t_var);
+    assert_eq!(format!("{}", current.inner()), "i");
+}
+
+#[test]
+fn diff_magnetic_flux_wrt_time_is_voltage() {
+    symplex::vars!(v, t);
+    let phi = MagneticFlux::from_ex(expr!(v * t));
+    let t_var = Time::symbol("t");
+    let voltage: Voltage = phi.diff_wrt(&t_var);
+    assert_eq!(format!("{}", voltage.inner()), "v");
+}
+
+#[test]
+fn diff_energy_wrt_length_is_force() {
+    symplex::vars!(f, x);
+    let e = Energy::from_ex(expr!(f * x));
+    let x_var = Length::symbol("x");
+    let force: Force = e.diff_wrt(&x_var);
+    assert_eq!(format!("{}", force.inner()), "f");
+}
+
+#[test]
+fn diff_energy_wrt_angle_is_torque() {
+    symplex::vars!(tau, theta);
+    let e = Energy::from_ex(expr!(tau * theta));
+    let th_var = Angle::symbol("theta");
+    let torque: Torque = e.diff_wrt(&th_var);
+    assert_eq!(format!("{}", torque.inner()), "tau");
+}
+
+#[test]
+fn diff_energy_wrt_velocity_is_momentum() {
+    symplex::vars!(p, v);
+    let e = Energy::from_ex(expr!(p * v));
+    let v_var = Velocity::symbol("v");
+    let mom: Momentum = e.diff_wrt(&v_var);
+    assert_eq!(format!("{}", mom.inner()), "p");
+}
+
+#[test]
+fn diff_energy_wrt_angular_velocity_is_angular_momentum() {
+    symplex::vars!(l, w);
+    let e = Energy::from_ex(expr!(l * w));
+    let w_var = AngularVelocity::symbol("w");
+    let am: AngularMomentum = e.diff_wrt(&w_var);
+    assert_eq!(format!("{}", am.inner()), "l");
+}
+
+#[test]
+fn diff_power_wrt_current_is_voltage() {
+    symplex::vars!(v, i);
+    let p = Power::from_ex(expr!(v * i));
+    let i_var = Current::symbol("i");
+    let voltage: Voltage = p.diff_wrt(&i_var);
+    assert_eq!(format!("{}", voltage.inner()), "v");
+}
+
+#[test]
+fn diff_power_wrt_voltage_is_current() {
+    symplex::vars!(i, v);
+    let p = Power::from_ex(expr!(i * v));
+    let v_var = Voltage::symbol("v");
+    let current: Current = p.diff_wrt(&v_var);
+    assert_eq!(format!("{}", current.inner()), "i");
+}
+
+#[test]
+fn diff_momentum_wrt_length_is_stiffness() {
+    symplex::vars!(k, x);
+    let p = Momentum::from_ex(expr!(k * x));
+    let x_var = Length::symbol("x");
+    let stiffness: Stiffness = p.diff_wrt(&x_var);
+    assert_eq!(format!("{}", stiffness.inner()), "k");
+}
+
+#[test]
+fn diff_force_wrt_length_is_stiffness() {
+    symplex::vars!(k, x);
+    let f = Force::from_ex(expr!(k * x));
+    let x_var = Length::symbol("x");
+    let stiffness: Stiffness = f.diff_wrt(&x_var);
+    assert_eq!(format!("{}", stiffness.inner()), "k");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 2: IntWrt tests (~13 tests)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn int_velocity_wrt_time_is_length() {
+    symplex::vars!(v, t);
+    let vel = Velocity::from_ex(expr!(v));
+    let t_var = Time::symbol("t");
+    let x: Length = vel.integrate_wrt(&t_var);
+    assert_eq!(format!("{}", x.inner()), "t*v");
+}
+
+#[test]
+fn int_acceleration_wrt_time_is_velocity() {
+    symplex::vars!(a, t);
+    let acc = Acceleration::from_ex(expr!(a));
+    let t_var = Time::symbol("t");
+    let v: Velocity = acc.integrate_wrt(&t_var);
+    assert_eq!(format!("{}", v.inner()), "a*t");
+}
+
+#[test]
+fn int_angular_velocity_wrt_time_is_angle() {
+    symplex::vars!(w, t);
+    let omega = AngularVelocity::from_ex(expr!(w));
+    let t_var = Time::symbol("t");
+    let theta: Angle = omega.integrate_wrt(&t_var);
+    assert_eq!(format!("{}", theta.inner()), "t*w");
+}
+
+#[test]
+fn int_angular_acceleration_wrt_time_is_angular_velocity() {
+    symplex::vars!(a, t);
+    let alpha = AngularAcceleration::from_ex(expr!(a));
+    let t_var = Time::symbol("t");
+    let omega: AngularVelocity = alpha.integrate_wrt(&t_var);
+    assert_eq!(format!("{}", omega.inner()), "a*t");
+}
+
+#[test]
+fn int_power_wrt_time_is_energy() {
+    symplex::vars!(p, t);
+    let pwr = Power::from_ex(expr!(p));
+    let t_var = Time::symbol("t");
+    let e: Energy = pwr.integrate_wrt(&t_var);
+    assert_eq!(format!("{}", e.inner()), "p*t");
+}
+
+#[test]
+fn int_force_wrt_time_is_momentum() {
+    symplex::vars!(f, t);
+    let force = Force::from_ex(expr!(f));
+    let t_var = Time::symbol("t");
+    let p: Momentum = force.integrate_wrt(&t_var);
+    assert_eq!(format!("{}", p.inner()), "f*t");
+}
+
+#[test]
+fn int_torque_wrt_time_is_angular_momentum() {
+    symplex::vars!(tau, t);
+    let torque = Torque::from_ex(expr!(tau));
+    let t_var = Time::symbol("t");
+    let l: AngularMomentum = torque.integrate_wrt(&t_var);
+    assert_eq!(format!("{}", l.inner()), "t*tau");
+}
+
+#[test]
+fn int_current_wrt_time_is_charge() {
+    symplex::vars!(i, t);
+    let cur = Current::from_ex(expr!(i));
+    let t_var = Time::symbol("t");
+    let q: Charge = cur.integrate_wrt(&t_var);
+    assert_eq!(format!("{}", q.inner()), "i*t");
+}
+
+#[test]
+fn int_voltage_wrt_time_is_magnetic_flux() {
+    symplex::vars!(v, t);
+    let volt = Voltage::from_ex(expr!(v));
+    let t_var = Time::symbol("t");
+    let phi: MagneticFlux = volt.integrate_wrt(&t_var);
+    assert_eq!(format!("{}", phi.inner()), "t*v");
+}
+
+#[test]
+fn int_force_wrt_length_is_energy() {
+    symplex::vars!(f, x);
+    let force = Force::from_ex(expr!(f));
+    let x_var = Length::symbol("x");
+    let e: Energy = force.integrate_wrt(&x_var);
+    assert_eq!(format!("{}", e.inner()), "f*x");
+}
+
+#[test]
+fn int_stiffness_wrt_length_is_force() {
+    symplex::vars!(k, x);
+    let stiff = Stiffness::from_ex(expr!(k));
+    let x_var = Length::symbol("x");
+    let f: Force = stiff.integrate_wrt(&x_var);
+    assert_eq!(format!("{}", f.inner()), "k*x");
+}
+
+#[test]
+fn int_momentum_wrt_velocity_is_energy() {
+    symplex::vars!(p, v);
+    let mom = Momentum::from_ex(expr!(p));
+    let v_var = Velocity::symbol("v");
+    let e: Energy = mom.integrate_wrt(&v_var);
+    assert_eq!(format!("{}", e.inner()), "p*v");
+}
+
+#[test]
+fn int_angular_momentum_wrt_angular_velocity_is_energy() {
+    symplex::vars!(l, w);
+    let am = AngularMomentum::from_ex(expr!(l));
+    let w_var = AngularVelocity::symbol("w");
+    let e: Energy = am.integrate_wrt(&w_var);
+    assert_eq!(format!("{}", e.inner()), "l*w");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 3: FTC Round-trips (~5 tests)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn ftc_acceleration_through_velocity() {
+    symplex::vars!(a, t);
+    let accel = Acceleration::from_ex(expr!(a));
+    let t_var = Time::symbol("t");
+    let vel: Velocity = accel.integrate_wrt(&t_var);
+    let accel_back: Acceleration = vel.diff_wrt(&t_var);
+    assert_eq!(format!("{}", accel_back.inner()), "a");
+}
+
+#[test]
+fn ftc_force_through_momentum() {
+    symplex::vars!(f, t);
+    let force = Force::from_ex(expr!(f));
+    let t_var = Time::symbol("t");
+    let mom: Momentum = force.integrate_wrt(&t_var);
+    let force_back: Force = mom.diff_wrt(&t_var);
+    assert_eq!(format!("{}", force_back.inner()), "f");
+}
+
+#[test]
+fn ftc_power_through_energy() {
+    symplex::vars!(p, t);
+    let pwr = Power::from_ex(expr!(p));
+    let t_var = Time::symbol("t");
+    let energy: Energy = pwr.integrate_wrt(&t_var);
+    let pwr_back: Power = energy.diff_wrt(&t_var);
+    assert_eq!(format!("{}", pwr_back.inner()), "p");
+}
+
+#[test]
+fn ftc_current_through_charge() {
+    symplex::vars!(i, t);
+    let cur = Current::from_ex(expr!(i));
+    let t_var = Time::symbol("t");
+    let charge: Charge = cur.integrate_wrt(&t_var);
+    let cur_back: Current = charge.diff_wrt(&t_var);
+    assert_eq!(format!("{}", cur_back.inner()), "i");
+}
+
+#[test]
+fn ftc_force_through_energy_spatial() {
+    symplex::vars!(f, x);
+    let force = Force::from_ex(expr!(f));
+    let x_var = Length::symbol("x");
+    let energy: Energy = force.integrate_wrt(&x_var);
+    let force_back: Force = energy.diff_wrt(&x_var);
+    assert_eq!(format!("{}", force_back.inner()), "f");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 4: Mul/Div numerical spot-checks (~15 tests)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn mul_mass_acceleration_equals_force() {
+    let m = Mass::constant(10);
+    let a = Acceleration::rational(981, 100);
+    let f: Force = &m * &a;
+    let val = f.eval_f64().unwrap();
+    assert!((val - 98.1).abs() < 1e-10, "Expected 98.1, got {val}");
+}
+
+#[test]
+fn mul_current_resistance_equals_voltage() {
+    let i = Current::constant(2);
+    let r = Resistance::constant(100);
+    let v: Voltage = &i * &r;
+    let val = v.eval_f64().unwrap();
+    assert!((val - 200.0).abs() < 1e-10, "Expected 200, got {val}");
+}
+
+#[test]
+fn mul_voltage_current_equals_power() {
+    let v = Voltage::constant(200);
+    let i = Current::constant(2);
+    let p: Power = &v * &i;
+    let val = p.eval_f64().unwrap();
+    assert!((val - 400.0).abs() < 1e-10, "Expected 400, got {val}");
+}
+
+#[test]
+fn mul_force_length_equals_energy() {
+    let f = Force::constant(50);
+    let x = Length::constant(3);
+    let e: Energy = &f * &x;
+    let val = e.eval_f64().unwrap();
+    assert!((val - 150.0).abs() < 1e-10, "Expected 150, got {val}");
+}
+
+#[test]
+fn mul_mass_velocity_equals_momentum() {
+    let m = Mass::constant(5);
+    let v = Velocity::constant(10);
+    let p: Momentum = &m * &v;
+    let val = p.eval_f64().unwrap();
+    assert!((val - 50.0).abs() < 1e-10, "Expected 50, got {val}");
+}
+
+#[test]
+fn div_length_time_equals_velocity() {
+    let x = Length::constant(100);
+    let t = Time::constant(10);
+    let v: Velocity = &x / &t;
+    let val = v.eval_f64().unwrap();
+    assert!((val - 10.0).abs() < 1e-10, "Expected 10, got {val}");
+}
+
+#[test]
+fn div_energy_time_equals_power() {
+    let e = Energy::constant(1000);
+    let t = Time::constant(10);
+    let p: Power = &e / &t;
+    let val = p.eval_f64().unwrap();
+    assert!((val - 100.0).abs() < 1e-10, "Expected 100, got {val}");
+}
+
+#[test]
+fn div_force_mass_equals_acceleration() {
+    let f = Force::rational(981, 10);
+    let m = Mass::constant(10);
+    let a: Acceleration = &f / &m;
+    let val = a.eval_f64().unwrap();
+    assert!((val - 9.81).abs() < 1e-10, "Expected 9.81, got {val}");
+}
+
+#[test]
+fn div_voltage_current_equals_resistance() {
+    let v = Voltage::constant(200);
+    let i = Current::constant(2);
+    let r: Resistance = &v / &i;
+    let val = r.eval_f64().unwrap();
+    assert!((val - 100.0).abs() < 1e-10, "Expected 100, got {val}");
+}
+
+#[test]
+fn div_power_voltage_equals_current() {
+    let p = Power::constant(400);
+    let v = Voltage::constant(200);
+    let i: Current = &p / &v;
+    let val = i.eval_f64().unwrap();
+    assert!((val - 2.0).abs() < 1e-10, "Expected 2, got {val}");
+}
+
+#[test]
+fn mul_stiffness_length_equals_force() {
+    let k = Stiffness::constant(100);
+    let x = Length::rational(1, 2);
+    let f: Force = &k * &x;
+    let val = f.eval_f64().unwrap();
+    assert!((val - 50.0).abs() < 1e-10, "Expected 50, got {val}");
+}
+
+#[test]
+fn mul_damping_velocity_equals_force() {
+    let c = Damping::constant(10);
+    let v = Velocity::constant(3);
+    let f: Force = &c * &v;
+    let val = f.eval_f64().unwrap();
+    assert!((val - 30.0).abs() < 1e-10, "Expected 30, got {val}");
+}
+
+#[test]
+fn mul_acceleration_time_equals_velocity() {
+    let a = Acceleration::rational(981, 100);
+    let t = Time::constant(2);
+    let v: Velocity = &a * &t;
+    let val = v.eval_f64().unwrap();
+    assert!((val - 19.62).abs() < 1e-10, "Expected 19.62, got {val}");
+}
+
+#[test]
+fn mul_power_time_equals_energy() {
+    let p = Power::constant(100);
+    let t = Time::constant(10);
+    let e: Energy = &p * &t;
+    let val = e.eval_f64().unwrap();
+    assert!((val - 1000.0).abs() < 1e-10, "Expected 1000, got {val}");
+}
+
+#[test]
+fn mul_current_time_equals_charge() {
+    let i = Current::constant(5);
+    let t = Time::constant(10);
+    let q: Charge = &i * &t;
+    let val = q.eval_f64().unwrap();
+    assert!((val - 50.0).abs() < 1e-10, "Expected 50, got {val}");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 5: from_ex with &Ex (IntoEx) tests (~3 tests)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn from_ex_accepts_ref_ex() {
+    symplex::vars!(x);
+    // expr!(x) returns &Ex — from_ex should accept it without .clone()
+    let l = Length::from_ex(expr!(x));
+    assert_eq!(format!("{}", l.inner()), "x");
+}
+
+#[test]
+fn from_ex_accepts_owned_ex() {
+    let ex = symplex::var("x");
+    let l = Length::from_ex(ex);
+    assert_eq!(format!("{}", l.inner()), "x");
+}
+
+#[test]
+fn from_ex_accepts_expr_compound() {
+    symplex::vars!(a, t);
+    // expr!(a * t) produces an Ex from &a * &t
+    let v = Velocity::from_ex(expr!(a * t));
+    assert_eq!(format!("{}", v.inner()), "a*t");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Section 6: Dimension-preserving operations (~5 tests)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn simplify_preserves_dimension() {
+    symplex::vars!(x);
+    let f = Force::from_ex(expr!(x + x));
+    let f2 = f.simplify();
+    // simplify should still produce a Force
+    assert_eq!(format!("{}", f2.inner()), "2*x");
+}
+
+#[test]
+fn expand_preserves_dimension() {
+    symplex::vars!(a, b);
+    // (a + b)^2 expanded = a^2 + 2*a*b + b^2
+    let e = Energy::from_ex(expr!((a + b) * (a + b)));
+    let e2 = e.expand();
+    // The result should still be Energy; check it contains expected terms
+    let inner_str = format!("{}", e2.inner());
+    assert!(
+        inner_str.contains("a") && inner_str.contains("b"),
+        "Expanded expression should contain a and b: {inner_str}"
+    );
+}
+
+#[test]
+fn eval_preserves_dimension() {
+    let v = Velocity::rational(22, 7);
+    let v2 = v.eval();
+    // eval on a rational should keep it as-is (already evaluated)
+    let val = v2.eval_f64().unwrap();
+    assert!((val - 22.0 / 7.0).abs() < 1e-10);
+}
+
+#[test]
+fn subs_preserves_dimension() {
+    symplex::vars!(x, y);
+    let f = Force::from_ex(expr!(x + y));
+    let two = symplex::int(2);
+    let f2 = f.subs(&x, &two);
+    // After substituting x=2, should get 2 + y
+    let inner_str = format!("{}", f2.inner());
+    assert!(
+        inner_str.contains("2") && inner_str.contains("y"),
+        "After subs x=2, should contain 2 and y: {inner_str}"
+    );
+}
+
+#[test]
+fn to_latex_preserves_dimension() {
+    symplex::vars!(f);
+    let force = Force::from_ex(expr!(f));
+    let latex = force.to_latex();
+    // to_latex should return a non-empty LaTeX string
+    assert!(!latex.is_empty(), "LaTeX output should not be empty");
+    assert!(latex.contains("f"), "LaTeX should contain the variable name f: {latex}");
+}

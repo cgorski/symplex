@@ -17,8 +17,6 @@ use std::ops;
 
 use typenum::operator_aliases::{Diff, Sum};
 
-use crate::prelude::Ex;
-
 use super::dim::Dim;
 use super::qty::Qty;
 

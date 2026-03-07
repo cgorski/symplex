@@ -53,6 +53,53 @@ use symplex::prelude::*;
 use symplex::units::*;
 ```
 
+### Three Ways to Build Typed Quantities
+
+Symplex offers three complementary patterns. Use whichever fits your situation:
+
+**a) `expr!` + `from_ex()` — Most Ergonomic (recommended for complex formulas)**
+
+```rust
+use symplex::prelude::*;
+use symplex::units::*;
+
+symplex::vars!(m, v, g, h);
+
+let ke = Energy::from_ex(expr!(1/2 * m * v^2));
+let pe = Energy::from_ex(expr!(m * g * h));
+let total: Energy = &ke + &pe;
+```
+
+The `expr!` macro gives you natural math syntax (`^` for powers, implicit multiplication with `*`, fractions with `/`). Wrap the result with `from_ex()` to attach a dimension. The `IntoEx` trait means `.clone()` is never needed when passing values to `from_ex()`.
+
+**b) Named Type Arithmetic — Compile-Time Checked (best for simple products/quotients)**
+
+```rust
+use symplex::prelude::*;
+use symplex::units::*;
+
+let m = Mass::symbol("m");
+let a = Acceleration::symbol("a");
+let f: Force = &m * &a;  // Mass × Acceleration = Force (compiler-verified)
+```
+
+The multiplication/division table (~46 rules) catches dimension errors at compile time. If the result type is wrong, the compiler tells you immediately.
+
+**c) `diff_wrt` / `integrate_wrt` — Typed Calculus (unique feature)**
+
+```rust
+use symplex::prelude::*;
+use symplex::units::*;
+
+symplex::vars!(a, t);
+let position = Length::from_ex(expr!(1/2 * a * t^2));
+let t_var = Time::symbol("t");
+let velocity: Velocity = position.diff_wrt(&t_var);
+let acceleration: Acceleration = velocity.diff_wrt(&t_var);
+```
+
+The `DiffWrt` and `IntWrt` traits encode physical laws like d(Length)/d(Time) = Velocity directly in the type system. See [Section 9](#9-differentiation-and-integration) for the full table.
+
 ### Creating Symbolic Variables
 
 Every named quantity type has a `symbol()` constructor that creates a symbolic variable with that dimension:
@@ -98,15 +145,24 @@ let no_velocity = Velocity::zero();
 
 ### Wrapping Raw Expressions
 
-If you already have an `Ex`, wrap it with `from_ex()`:
+Use `expr!` + `from_ex()` to build complex formulas ergonomically:
 
 ```rust
 use symplex::prelude::*;
 use symplex::units::*;
 
+symplex::vars!(m, a, t);
+
+// expr! gives natural math syntax; from_ex() attaches the dimension
+let f = Force::from_ex(expr!(m * a));
+let position = Length::from_ex(expr!(1/2 * a * t^2));
+
+// Also works with a plain Ex variable
 let raw_expr = symplex::var("F_applied");
-let f = Force::from_ex(raw_expr);
+let f2 = Force::from_ex(raw_expr);
 ```
+
+The `IntoEx` trait means `from_ex()` accepts both `Ex` and `&Ex` — no `.clone()` needed.
 
 ## 3. Named Types and Arithmetic
 
@@ -615,30 +671,106 @@ If a formula is wrong, the compiler emits your custom message as a compile-time 
 
 ## 9. Differentiation and Integration
 
-The `diff_qty` and `integrate_qty` functions perform symbolic calculus while tracking dimensions through the type system.
+Symplex provides two levels of typed calculus:
 
-### Differentiation
+1. **`DiffWrt` / `IntWrt` traits** — the recommended approach. Call `.diff_wrt()` / `.integrate_wrt()` directly on named types. The compiler verifies the physical law (e.g., d(Length)/d(Time) = Velocity) and returns the correct named type. No manual wrapping needed.
 
-`diff_qty` divides dimensions: d(Qty&lt;D1&gt;)/d(Qty&lt;D2&gt;) produces `Qty<D1/D2>`:
+2. **`diff_qty` / `integrate_qty` functions** — the generic fallback. Work on `Qty<D>` and compute output dimensions via typenum arithmetic. Useful when no `DiffWrt`/`IntWrt` impl exists for your pair.
+
+### The DiffWrt and IntWrt Traits (Recommended)
+
+The `DiffWrt<Var>` trait encodes "differentiating `Self` with respect to `Var` produces `Output`." The `IntWrt<Var>` trait is the integration counterpart. Both operate directly on named types:
 
 ```rust
 use symplex::prelude::*;
 use symplex::units::*;
 
-let x = Length::symbol("x");
-let t = Time::symbol("t");
+symplex::vars!(a, t);
 
-// d(Length)/d(Time) → Qty<VelocityDim>
-let v_qty = diff_qty(&x.as_qty(), &t.as_qty());
-let v: Velocity = v_qty.into();
+// Typed differentiation: the compiler verifies d(Length)/d(Time) = Velocity
+let position = Length::from_ex(expr!(1/2 * a * t^2));
+let t_var = Time::symbol("t");
+let velocity: Velocity = position.diff_wrt(&t_var);
+let acceleration: Acceleration = velocity.diff_wrt(&t_var);
 
-println!("{v}"); // 1 [m/s]
-// (The derivative of "x" with respect to "t" is formally 0 if
-// x doesn't depend on t. Use expressions that depend on the variable
-// for meaningful results.)
+// Typed integration: ∫ Acceleration dt → Velocity
+let v_back: Velocity = acceleration.integrate_wrt(&t_var);
 ```
 
-A more useful example — differentiating a position expression:
+No `.as_qty()`, no `.into()`, no manual dimension arithmetic. The compiler does all the work.
+
+### Available DiffWrt Pairs
+
+Every row below is a compile-time-checked differentiation rule:
+
+| Expression type | d/d(Variable) | → | Result type | Physical law |
+|----------------|---------------|---|-------------|--------------|
+| `Length` | `Time` | → | `Velocity` | v = dx/dt |
+| `Velocity` | `Time` | → | `Acceleration` | a = dv/dt |
+| `Angle` | `Time` | → | `AngularVelocity` | ω = dθ/dt |
+| `AngularVelocity` | `Time` | → | `AngularAcceleration` | α = dω/dt |
+| `Energy` | `Time` | → | `Power` | P = dE/dt |
+| `Momentum` | `Time` | → | `Force` | F = dp/dt (Newton's 2nd law) |
+| `AngularMomentum` | `Time` | → | `Torque` | τ = dL/dt |
+| `Charge` | `Time` | → | `Current` | I = dQ/dt |
+| `MagneticFlux` | `Time` | → | `Voltage` | V = -dΦ/dt (Faraday's law) |
+| `Energy` | `Length` | → | `Force` | F = -dU/dx |
+| `Energy` | `Angle` | → | `Torque` | τ = -dU/dθ |
+| `Momentum` | `Length` | → | `Stiffness` | dp/dx (wave context) |
+| `Force` | `Length` | → | `Stiffness` | k = dF/dx |
+| `Energy` | `Velocity` | → | `Momentum` | p = ∂T/∂v (Lagrangian) |
+| `Energy` | `AngularVelocity` | → | `AngularMomentum` | L = ∂T/∂ω̇ (Lagrangian) |
+| `Power` | `Current` | → | `Voltage` | V = dP/dI |
+| `Power` | `Voltage` | → | `Current` | I = dP/dV |
+
+### Available IntWrt Pairs
+
+Every row is a compile-time-checked integration rule (reverse of the above):
+
+| Integrand type | ∫ d(Variable) | → | Result type | Physical law |
+|---------------|---------------|---|-------------|--------------|
+| `Velocity` | `Time` | → | `Length` | x = ∫v dt |
+| `Acceleration` | `Time` | → | `Velocity` | v = ∫a dt |
+| `AngularVelocity` | `Time` | → | `Angle` | θ = ∫ω dt |
+| `AngularAcceleration` | `Time` | → | `AngularVelocity` | ω = ∫α dt |
+| `Power` | `Time` | → | `Energy` | E = ∫P dt |
+| `Force` | `Time` | → | `Momentum` | p = ∫F dt (impulse) |
+| `Torque` | `Time` | → | `AngularMomentum` | L = ∫τ dt |
+| `Current` | `Time` | → | `Charge` | Q = ∫I dt |
+| `Voltage` | `Time` | → | `MagneticFlux` | Φ = ∫V dt |
+| `Force` | `Length` | → | `Energy` | W = ∫F dx (work) |
+| `Stiffness` | `Length` | → | `Force` | F = ∫k dx |
+| `Momentum` | `Velocity` | → | `Energy` | KE = ∫p dv |
+| `AngularMomentum` | `AngularVelocity` | → | `Energy` | KE = ∫L dω |
+
+### Lagrangian Mechanics Example
+
+The `DiffWrt` pairs for `Energy` w.r.t. generalized coordinates and velocities map directly to the Euler-Lagrange equations:
+
+```rust
+use symplex::prelude::*;
+use symplex::units::*;
+
+symplex::vars!(m, l, g, theta, theta_dot);
+
+let theta_var = Angle::symbol("theta");
+let theta_dot_var = AngularVelocity::symbol("theta_dot");
+
+// Build Lagrangian with expr!
+let ke = Energy::from_ex(expr!(1/2 * m * l^2 * theta_dot^2));
+let pe = Energy::from_ex(expr!(m * g * l * (1 - cos(theta))));
+let lagrangian: Energy = &ke - &pe;
+
+// ∂L/∂θ̇ → AngularMomentum (generalized momentum)
+let p_theta: AngularMomentum = lagrangian.diff_wrt(&theta_dot_var);
+
+// ∂L/∂θ → Torque (generalized force)
+let tau: Torque = lagrangian.diff_wrt(&theta_var);
+```
+
+### Generic diff_qty / integrate_qty (Fallback)
+
+When no `DiffWrt`/`IntWrt` impl exists for a particular pair, use the generic functions. These work on `Qty<D>` and compute dimensions via typenum:
 
 ```rust
 use symplex::prelude::*;
@@ -646,35 +778,25 @@ use symplex::units::*;
 
 let t_sym = symplex::var("t");
 
-// Position: x(t) = ½ a t²  (as a Length expression)
-let a_val = symplex::var("a");
-let half = symplex::rational(1, 2);
-let x_expr = &half * &a_val * &t_sym * &t_sym;
-let x: Qty<LengthDim> = Qty::from_ex(x_expr);
+// Position: x(t) = ½ a t²
+let x: Qty<LengthDim> = Qty::from_ex(expr!(1/2 * a * t^2));
 let t: Qty<TimeDim> = Qty::from_ex(t_sym);
 
 // Differentiate: v = dx/dt
 let v: Velocity = diff_qty(&x, &t).into();
-println!("{v}"); // a*t [m/s]
 ```
 
-### Integration
-
-`integrate_qty` multiplies dimensions: ∫ Qty&lt;D1&gt; d(Qty&lt;D2&gt;) produces `Qty<D1×D2>`:
+Integration works the same way:
 
 ```rust
 use symplex::prelude::*;
 use symplex::units::*;
 
-let f_var = symplex::var("F");
-let x_var = symplex::var("x");
-
-let f: Qty<ForceDim> = Qty::from_ex(f_var);
-let x: Qty<LengthDim> = Qty::from_ex(x_var);
+let f: Qty<ForceDim> = Qty::from_ex(symplex::var("F"));
+let x: Qty<LengthDim> = Qty::from_ex(symplex::var("x"));
 
 // ∫ F dx → Force × Length = Energy
 let w: Energy = integrate_qty(&f, &x).into();
-println!("{w}"); // F*x [J]  (assuming constant F)
 ```
 
 ### Fundamental Theorem of Calculus Roundtrip
@@ -685,34 +807,18 @@ Differentiation and integration are inverses — and the type system proves it:
 use symplex::prelude::*;
 use symplex::units::*;
 
-let v: Qty<VelocityDim> = Qty::from_ex(symplex::var("v"));
-let t: Qty<TimeDim> = Qty::from_ex(symplex::var("t"));
+symplex::vars!(a, t);
+let t_var = Time::symbol("t");
 
-// Integrate velocity over time → Length
-let x = integrate_qty(&v, &t);
+let accel = Acceleration::from_ex(expr!(a));
 
-// Differentiate length over time → Velocity
-let t2: Qty<TimeDim> = Qty::from_ex(symplex::var("t"));
-let v_roundtrip: Velocity = diff_qty(&x, &t2).into();
+// ∫ Acceleration dt → Velocity
+let velocity: Velocity = accel.integrate_wrt(&t_var);
 
-// The type system proves: Velocity → (×Time) → Length → (÷Time) → Velocity
-```
+// d(Velocity)/dt → Acceleration
+let accel_back: Acceleration = velocity.diff_wrt(&t_var);
 
-### The Named-Type Workflow
-
-The full workflow: named type → Qty → calculus → named type:
-
-```rust
-use symplex::prelude::*;
-use symplex::units::*;
-
-let x = Length::symbol("x");
-let t = Time::symbol("t");
-
-// Named → Qty via .as_qty()
-// Calculus via diff_qty
-// Qty → Named via .into()
-let v: Velocity = diff_qty(&x.as_qty(), &t.as_qty()).into();
+// The type system proves: Acceleration →(×Time)→ Velocity →(÷Time)→ Acceleration
 ```
 
 ## 10. Escape Hatches
@@ -796,21 +902,20 @@ use symplex::prelude::*;
 use symplex::units::*;
 
 fn main() {
-    let v_supply = Voltage::symbol("V_s");
-    let r = Resistance::symbol("R");
     let i = Current::symbol("I");
+    let r = Resistance::symbol("R");
 
-    // Ohm's law: V = IR
+    // Ohm's law: V = IR (named Mul: Current × Resistance → Voltage)
     let v: Voltage = &i * &r;
     println!("V = IR: {v}"); // I*R [V]
 
-    // Power: P = IV
-    let p: Power = &i * &v_supply;
-    println!("P = IV: {p}"); // I*V_s [W]
+    // Power: P = IV (named Mul: Current × Voltage → Power)
+    let p: Power = &i * &v;
+    println!("P = IV: {p}"); // I*V [W]
 
-    // Verify: V/I = R
-    let r_check: Resistance = v_supply / i;
-    println!("R = V/I: {r_check}"); // V_s/I [Ω]
+    // Typed calculus: dP/dI → Voltage
+    let dp_di: Voltage = p.diff_wrt(&i);
+    println!("dP/dI: {dp_di}"); // 2*I*R [V]
 
     // Compile-time formula check
     symplex::const_assert_dim!(
@@ -834,40 +939,29 @@ use symplex::prelude::*;
 use symplex::units::*;
 
 fn main() {
-    let m = Mass::symbol("m");
-    let l_len = Length::symbol("L");
-    let g = Acceleration::symbol("g");
-    let theta = Angle::symbol("theta");
-    let theta_dot = AngularVelocity::symbol("theta_dot");
+    symplex::vars!(m, l, g, theta, theta_dot);
 
-    // Moment of inertia for point mass: I = mL²
-    let i_inertia: MomentOfInertia = &m * &(&l_len * &l_len);
-    println!("I = mL²: {i_inertia}"); // m*L*L [kg·m²]
+    let theta_var = Angle::symbol("theta");
+    let theta_dot_var = AngularVelocity::symbol("theta_dot");
 
-    // Kinetic energy: T = ½ I θ̇²
-    // MomentOfInertia × AngularVelocity = AngularMomentum
-    // AngularMomentum doesn't directly multiply AngularVelocity in the named
-    // table, so we use the Qty path for θ̇²:
-    let half = symplex::rational(1, 2);
-    let i_qty = i_inertia.as_qty();
-    let td_qty = theta_dot.as_qty();
-    let ke_qty = &i_qty * &(&td_qty * &td_qty);
-    let ke: Energy = ke_qty.into();
-    let ke: Energy = ke * &half;
-    println!("T = ½mL²θ̇²: {ke}"); // 1/2*m*L*L*theta_dot*theta_dot [J]
+    // Build energies with expr! — natural math syntax
+    let ke = Energy::from_ex(expr!(1/2 * m * l^2 * theta_dot^2));
+    let pe = Energy::from_ex(expr!(m * g * l * (1 - cos(theta))));
+    println!("T = {ke}");
+    println!("V = {pe}");
 
-    // Gravitational torque: τ = -mgL sin(θ)
-    let weight: Force = &m * &g;
-    let tau_magnitude: Energy = &weight * &l_len;  // Force × Length = Energy
-    let tau: Torque = Torque::from_energy(tau_magnitude);
-    let sin_theta: Dimensionless = theta.sin();
-    let tau_grav: Torque = -(&tau * sin_theta);
-    println!("τ = -mgLsin(θ): {tau_grav}"); // -m*g*L*sin(theta) [N·m]
+    // Lagrangian: Energy - Energy = Energy (dimension checked!)
+    let lagrangian: Energy = &ke - &pe;
+    println!("L = T - V = {lagrangian}");
 
-    // Potential energy: V = -mgL cos(θ)
-    let cos_theta: Dimensionless = Angle::symbol("theta").cos();
-    let pe_raw: Energy = &Force::symbol("mg") * &Length::symbol("L");
-    // (Simplified for clarity — in practice you'd compose from m, g, L)
+    // Typed calculus via DiffWrt:
+    // ∂L/∂θ̇ → AngularMomentum (generalized momentum)
+    let p_theta: AngularMomentum = lagrangian.diff_wrt(&theta_dot_var);
+    println!("∂L/∂θ̇ = {p_theta}");
+
+    // ∂L/∂θ → Torque (generalized force)
+    let tau: Torque = lagrangian.diff_wrt(&theta_var);
+    println!("∂L/∂θ = {tau}");
 }
 ```
 
@@ -898,8 +992,6 @@ fn main() {
     let i_qty = i.as_qty();
     let t_qty = Time::symbol("t").as_qty();
     let di_dt = diff_qty(&i_qty, &t_qty);
-    // Inductance × (Current/Time) = Inductance × (Current/Time)
-    // Need to go through Qty for this multiplication
     let l_qty = l_ind.as_qty();
     let v_l_qty = &l_qty * &di_dt;
     let v_l: Voltage = v_l_qty.into();
@@ -908,6 +1000,12 @@ fn main() {
     // Kirchhoff's voltage law: V_supply = V_R + V_emf + V_L
     let v_total: Voltage = &v_r + &(&v_emf + &v_l);
     println!("V = IR + Ke·ω + L·dI/dt: {v_total}");
+
+    // Faraday's law via DiffWrt: d(MagneticFlux)/d(Time) → Voltage
+    let flux = MagneticFlux::symbol("Phi");
+    let t_var = Time::symbol("t");
+    let induced_emf: Voltage = flux.diff_wrt(&t_var);
+    println!("V_induced = dΦ/dt: {induced_emf}");
 }
 ```
 
@@ -1094,7 +1192,35 @@ error[E0308]: mismatched types
 
 **Fix:** The expression has a different dimension than you expected. The assertion caught a bug in your reasoning — check the formula.
 
-## 14. Limitations and Future Work
+## 14. Available Methods on Named Types
+
+Every named quantity type (`Force`, `Velocity`, `Energy`, etc.) and `Qty<D>` provides these methods. All preserve the dimension type:
+
+| Method | Description |
+|--------|-------------|
+| `diff(&self, var: &Ex) → Ex` | Symbolic differentiation (returns raw `Ex`) |
+| `integrate(&self, var: &Ex) → Ex` | Symbolic integration (returns raw `Ex`) |
+| `diff_wrt(&self, var: &T) → Output` | Typed differentiation (returns named type, requires `DiffWrt` impl) |
+| `integrate_wrt(&self, var: &T) → Output` | Typed integration (returns named type, requires `IntWrt` impl) |
+| `simplify(self)` | Basic simplification |
+| `simplify_full(self)` | Multi-pass aggressive simplification |
+| `simplify_trig(self)` | Trigonometric identity simplification |
+| `simplify_powers(self)` | Power/exponent simplification |
+| `expand(self)` | Algebraic expansion |
+| `expand_trig(self)` | Trig expansion (e.g., sin(a+b) → sin(a)cos(b)+cos(a)sin(b)) |
+| `factor(&self, var: &Ex)` | Factor a polynomial w.r.t. a variable |
+| `collect(&self, var: &Ex)` | Collect terms by variable |
+| `cancel(&self, var: &Ex)` | Cancel common polynomial factors |
+| `together(self)` | Combine fractions over a common denominator |
+| `eval(self)` | Evaluate constants symbolically |
+| `eval_f64(&self)` | Evaluate to `f64` (all symbols must be eliminated) |
+| `eval_f64_with(&self, subs: &[(&Ex, i64)])` | Substitute integer values and evaluate to `f64` |
+| `subs(&self, var: &Ex, val: &Ex)` | Substitute a variable with a value |
+| `to_latex(&self) → String` | Render as LaTeX |
+| `inner(&self) → &Ex` | Borrow the inner expression |
+| `into_inner(self) → Ex` | Consume and return the inner expression |
+
+## 15. Limitations and Future Work
 
 ### Current Limitations
 
@@ -1115,6 +1241,8 @@ error[E0308]: mismatched types
 **Symbolic powi.** A `qty.pow::<N>()` method using typenum to compute the output dimension at compile time: `Length::symbol("x").pow::<P2>()` → `Area`.
 
 **More named types.** Density, specific heat, viscosity, electric field, and other commonly-needed quantities.
+
+**More DiffWrt/IntWrt pairs.** Additional typed calculus rules as use cases arise (e.g., `Torque` w.r.t. `Angle` → `Energy`).
 
 ---
 

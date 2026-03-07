@@ -4,8 +4,14 @@
 //! at compile time by Rust's type system.  Try changing a `Force` annotation
 //! to `Velocity` and watch the compiler refuse.
 //!
+//! Patterns demonstrated:
+//!   1. `expr!` + `from_ex()` — ergonomic formula building
+//!   2. Named type arithmetic — compile-time dimension checking
+//!   3. `diff_wrt` / `integrate_wrt` — typed calculus via DiffWrt/IntWrt traits
+//!
 //! Run with: cargo run --example units_physics
 
+use symplex::prelude::*;
 use symplex::units::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -243,39 +249,72 @@ fn main() {
     println!("  1 atm = {}", atm);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 7. Differentiation & Integration with Dimensions
+    // 7. Typed Calculus with DiffWrt / IntWrt
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    println!("\n── Dimensional Calculus ──");
+    println!("\n── Typed Calculus (DiffWrt / IntWrt) ──");
 
-    // Build expressions where the differentiation variable actually appears,
-    // so we get nonzero symbolic derivatives.
+    // DiffWrt and IntWrt traits let you differentiate and integrate
+    // named types directly — the compiler verifies the physical law.
 
-    let t_var = symplex::var("t");
-    let v_var = symplex::var("v");
-    let a_var = symplex::var("a");
+    symplex::vars!(a, t);
 
-    // Position x(t) = v·t  →  dx/dt = v  (Length / Time = Velocity)
-    let x_of_t: Qty<LengthDim> = Qty::from_ex(&v_var * &t_var);
-    let t_qty: Qty<TimeDim> = Qty::from_ex(t_var.clone());
-    let v_calc: Velocity = diff_qty(&x_of_t, &t_qty).into();
-    println!("  x(t) = v·t         → dx/dt = {} (Velocity)", v_calc);
+    let t_var = Time::symbol("t");
 
-    // Velocity v(t) = a·t  →  dv/dt = a  (Velocity / Time = Acceleration)
-    let v_of_t: Qty<VelocityDim> = Qty::from_ex(&a_var * &t_var);
-    let a_calc: Acceleration = diff_qty(&v_of_t, &t_qty).into();
-    println!("  v(t) = a·t         → dv/dt = {} (Acceleration)", a_calc);
+    // Position x(t) = ½at²  (built with expr!, typed with from_ex)
+    let position = Length::from_ex(expr!(1/2 * a * t^2));
+    println!("  x(t) = {}", position);
 
-    // ∫ Force dx = Energy  (work done by a constant force)
-    let f_q: Qty<ForceDim> = Qty::from_ex(symplex::var("F"));
-    let x_q: Qty<LengthDim> = Qty::from_ex(symplex::var("x"));
-    let work: Energy = integrate_qty(&f_q, &x_q).into();
-    println!("  ∫ F dx             → {} (Energy)", work);
+    // d(Length)/d(Time) → Velocity  (compiler-verified!)
+    let velocity: Velocity = position.diff_wrt(&t_var);
+    println!("  v(t) = dx/dt = {}", velocity);
 
-    // ∫ Velocity dt = Length  (displacement from constant velocity)
-    let v_int: Qty<VelocityDim> = Qty::from_ex(v_var);
-    let t_int: Qty<TimeDim> = Qty::from_ex(t_var);
-    let disp: Length = integrate_qty(&v_int, &t_int).into();
-    println!("  ∫ v dt             → {} (Length)", disp);
+    // d(Velocity)/d(Time) → Acceleration  (compiler-verified!)
+    let acceleration: Acceleration = velocity.diff_wrt(&t_var);
+    println!("  a(t) = dv/dt = {}", acceleration);
+
+    // ∫ Acceleration dt → Velocity  (IntWrt: reverse of differentiation)
+    let v_back: Velocity = acceleration.integrate_wrt(&t_var);
+    println!("  ∫ a dt = {} (Velocity)", v_back);
+
+    // ∫ Velocity dt → Length
+    let x_back: Length = velocity.integrate_wrt(&t_var);
+    println!("  ∫ v dt = {} (Length)", x_back);
+
+    // ── More DiffWrt examples ──
+
+    // Energy / Time → Power
+    let energy = Energy::from_ex(expr!(1/2 * a * t^2));
+    let power: Power = energy.diff_wrt(&t_var);
+    println!("  dE/dt = {} (Power)", power);
+
+    // Momentum / Time → Force (Newton's second law: F = dp/dt)
+    let momentum = Momentum::from_ex(expr!(a * t));
+    let force_from_p: Force = momentum.diff_wrt(&t_var);
+    println!("  dp/dt = {} (Force)", force_from_p);
+
+    // Charge / Time → Current (I = dQ/dt)
+    let charge = Charge::from_ex(expr!(a * t));
+    let current_from_q: Current = charge.diff_wrt(&t_var);
+    println!("  dQ/dt = {} (Current)", current_from_q);
+
+    // MagneticFlux / Time → Voltage (Faraday's law: V = dΦ/dt)
+    let flux = MagneticFlux::from_ex(expr!(a * t));
+    let emf: Voltage = flux.diff_wrt(&t_var);
+    println!("  dΦ/dt = {} (Voltage — Faraday's law)", emf);
+
+    // Energy / Length → Force (F = -dU/dx)
+    symplex::vars!(k, x);
+    let x_var = Length::symbol("x");
+    let spring_pe = Energy::from_ex(expr!(1/2 * k * x^2));
+    let spring_force: Force = spring_pe.diff_wrt(&x_var);
+    println!("  dU/dx = {} (Force from spring PE)", spring_force);
+
+    // Power / Current → Voltage (dP/dI)
+    symplex::vars!(i_p, r_p);
+    let i_var = Current::symbol("i_p");
+    let power_expr = Power::from_ex(expr!(i_p^2 * r_p));
+    let dp_di: Voltage = power_expr.diff_wrt(&i_var);
+    println!("  dP/dI = {} (Voltage)", dp_di);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 8. Dimension-Checked Assertions (runtime demo of compile-time safety)

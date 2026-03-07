@@ -6,7 +6,7 @@
 
 use core::marker::PhantomData;
 
-use typenum::{N1, N2, N3, N4, P1, P2, P3, P4, Z0};
+use typenum::{N1, N2, N3, P1, P2, P3, P4, Z0};
 
 // ---------------------------------------------------------------------------
 // Dim — phantom-typed dimension vector
@@ -36,45 +36,75 @@ pub struct Dim<L, M, T, I, Th, N, J> {
 // ---------------------------------------------------------------------------
 
 // --- Base / dimensionless ---
+/// SI dimension for Dimensionless quantities: all exponents zero [1].
 pub type DimensionlessDim = Dim<Z0, Z0, Z0, Z0, Z0, Z0, Z0>;
+/// SI dimension for Angle: dimensionless [radian, rad]. Same as `DimensionlessDim`.
 pub type AngleDim = Dim<Z0, Z0, Z0, Z0, Z0, Z0, Z0>; // same as Dimensionless
 
 // --- Base SI ---
+/// SI dimension for Length: L¹ [meter, m].
 pub type LengthDim = Dim<P1, Z0, Z0, Z0, Z0, Z0, Z0>;
+/// SI dimension for Mass: M¹ [kilogram, kg].
 pub type MassDim = Dim<Z0, P1, Z0, Z0, Z0, Z0, Z0>;
+/// SI dimension for Time: T¹ [second, s].
 pub type TimeDim = Dim<Z0, Z0, P1, Z0, Z0, Z0, Z0>;
+/// SI dimension for Electric Current: I¹ [ampere, A].
 pub type CurrentDim = Dim<Z0, Z0, Z0, P1, Z0, Z0, Z0>;
+/// SI dimension for Thermodynamic Temperature: Θ¹ [kelvin, K].
 pub type TemperatureDim = Dim<Z0, Z0, Z0, Z0, P1, Z0, Z0>;
 
 // --- Geometry ---
+/// SI dimension for Area: L² [square meter, m²].
 pub type AreaDim = Dim<P2, Z0, Z0, Z0, Z0, Z0, Z0>;
+/// SI dimension for Volume: L³ [cubic meter, m³].
 pub type VolumeDim = Dim<P3, Z0, Z0, Z0, Z0, Z0, Z0>;
 
 // --- Kinematics ---
+/// SI dimension for Velocity: L¹·T⁻¹ [meter per second, m/s].
 pub type VelocityDim = Dim<P1, Z0, N1, Z0, Z0, Z0, Z0>;
+/// SI dimension for Acceleration: L¹·T⁻² [meter per second squared, m/s²].
 pub type AccelerationDim = Dim<P1, Z0, N2, Z0, Z0, Z0, Z0>;
+/// SI dimension for Angular Velocity: T⁻¹ [radian per second, rad/s]. Same as `FrequencyDim`.
 pub type AngularVelocityDim = Dim<Z0, Z0, N1, Z0, Z0, Z0, Z0>; // same as FrequencyDim
+/// SI dimension for Angular Acceleration: T⁻² [radian per second squared, rad/s²].
 pub type AngularAccelerationDim = Dim<Z0, Z0, N2, Z0, Z0, Z0, Z0>;
+/// SI dimension for Frequency: T⁻¹ [hertz, Hz]. Same as `AngularVelocityDim`.
 pub type FrequencyDim = Dim<Z0, Z0, N1, Z0, Z0, Z0, Z0>; // same as AngularVelocityDim
 
 // --- Mechanics ---
+/// SI dimension for Force: L¹·M¹·T⁻² [newton, N].
 pub type ForceDim = Dim<P1, P1, N2, Z0, Z0, Z0, Z0>;
+/// SI dimension for Energy: L²·M¹·T⁻² [joule, J].
 pub type EnergyDim = Dim<P2, P1, N2, Z0, Z0, Z0, Z0>;
+/// SI dimension for Torque: L²·M¹·T⁻² [newton-meter, N·m]. Same as `EnergyDim`.
 pub type TorqueDim = Dim<P2, P1, N2, Z0, Z0, Z0, Z0>; // same as EnergyDim
+/// SI dimension for Power: L²·M¹·T⁻³ [watt, W].
 pub type PowerDim = Dim<P2, P1, N3, Z0, Z0, Z0, Z0>;
+/// SI dimension for Momentum: L¹·M¹·T⁻¹ [kilogram meter per second, kg·m/s].
 pub type MomentumDim = Dim<P1, P1, N1, Z0, Z0, Z0, Z0>;
+/// SI dimension for Angular Momentum: L²·M¹·T⁻¹ [kilogram meter squared per second, kg·m²/s].
 pub type AngularMomentumDim = Dim<P2, P1, N1, Z0, Z0, Z0, Z0>;
+/// SI dimension for Moment of Inertia: L²·M¹ [kilogram meter squared, kg·m²].
 pub type MomentOfInertiaDim = Dim<P2, P1, Z0, Z0, Z0, Z0, Z0>;
+/// SI dimension for Pressure: L⁻¹·M¹·T⁻² [pascal, Pa].
 pub type PressureDim = Dim<N1, P1, N2, Z0, Z0, Z0, Z0>;
+/// SI dimension for Stiffness: M¹·T⁻² [newton per meter, N/m].
 pub type StiffnessDim = Dim<Z0, P1, N2, Z0, Z0, Z0, Z0>;
+/// SI dimension for Damping: M¹·T⁻¹ [newton-second per meter, N·s/m].
 pub type DampingDim = Dim<Z0, P1, N1, Z0, Z0, Z0, Z0>;
 
 // --- Electromagnetism ---
+/// SI dimension for Voltage: L²·M¹·T⁻³·I⁻¹ [volt, V].
 pub type VoltageDim = Dim<P2, P1, N3, N1, Z0, Z0, Z0>;
+/// SI dimension for Resistance: L²·M¹·T⁻³·I⁻² [ohm, Ω].
 pub type ResistanceDim = Dim<P2, P1, N3, N2, Z0, Z0, Z0>;
+/// SI dimension for Inductance: L²·M¹·T⁻²·I⁻² [henry, H].
 pub type InductanceDim = Dim<P2, P1, N2, N2, Z0, Z0, Z0>;
+/// SI dimension for Capacitance: L⁻²·M⁻¹·T⁴·I² [farad, F].
 pub type CapacitanceDim = Dim<N2, N1, P4, P2, Z0, Z0, Z0>;
+/// SI dimension for Electric Charge: T¹·I¹ [coulomb, C].
 pub type ChargeDim = Dim<Z0, Z0, P1, P1, Z0, Z0, Z0>;
+/// SI dimension for Magnetic Flux: L²·M¹·T⁻²·I⁻¹ [weber, Wb].
 pub type MagneticFluxDim = Dim<P2, P1, N2, N1, Z0, Z0, Z0>;
 
 // ---------------------------------------------------------------------------
@@ -242,45 +272,75 @@ impl ConstDim {
 
 impl ConstDim {
     // Base / dimensionless
+    /// Dimensionless dimension: all exponents zero.
     pub const DIMENSIONLESS: Self = Self::new(0, 0, 0, 0, 0, 0, 0);
+    /// Angle dimension: dimensionless (all exponents zero).
     pub const ANGLE: Self = Self::new(0, 0, 0, 0, 0, 0, 0);
 
     // Base SI
+    /// Length dimension: L¹.
     pub const LENGTH: Self = Self::new(1, 0, 0, 0, 0, 0, 0);
+    /// Mass dimension: M¹.
     pub const MASS: Self = Self::new(0, 1, 0, 0, 0, 0, 0);
+    /// Time dimension: T¹.
     pub const TIME: Self = Self::new(0, 0, 1, 0, 0, 0, 0);
+    /// Electric current dimension: I¹.
     pub const CURRENT: Self = Self::new(0, 0, 0, 1, 0, 0, 0);
+    /// Temperature dimension: Θ¹.
     pub const TEMPERATURE: Self = Self::new(0, 0, 0, 0, 1, 0, 0);
 
     // Geometry
+    /// Area dimension: L².
     pub const AREA: Self = Self::new(2, 0, 0, 0, 0, 0, 0);
+    /// Volume dimension: L³.
     pub const VOLUME: Self = Self::new(3, 0, 0, 0, 0, 0, 0);
 
     // Kinematics
+    /// Velocity dimension: L¹·T⁻¹.
     pub const VELOCITY: Self = Self::new(1, 0, -1, 0, 0, 0, 0);
+    /// Acceleration dimension: L¹·T⁻².
     pub const ACCELERATION: Self = Self::new(1, 0, -2, 0, 0, 0, 0);
+    /// Angular velocity dimension: T⁻¹.
     pub const ANGULAR_VELOCITY: Self = Self::new(0, 0, -1, 0, 0, 0, 0);
+    /// Angular acceleration dimension: T⁻².
     pub const ANGULAR_ACCELERATION: Self = Self::new(0, 0, -2, 0, 0, 0, 0);
+    /// Frequency dimension: T⁻¹.
     pub const FREQUENCY: Self = Self::new(0, 0, -1, 0, 0, 0, 0);
 
     // Mechanics
+    /// Force dimension: L¹·M¹·T⁻².
     pub const FORCE: Self = Self::new(1, 1, -2, 0, 0, 0, 0);
+    /// Energy dimension: L²·M¹·T⁻².
     pub const ENERGY: Self = Self::new(2, 1, -2, 0, 0, 0, 0);
+    /// Torque dimension: L²·M¹·T⁻².
     pub const TORQUE: Self = Self::new(2, 1, -2, 0, 0, 0, 0);
+    /// Power dimension: L²·M¹·T⁻³.
     pub const POWER: Self = Self::new(2, 1, -3, 0, 0, 0, 0);
+    /// Momentum dimension: L¹·M¹·T⁻¹.
     pub const MOMENTUM: Self = Self::new(1, 1, -1, 0, 0, 0, 0);
+    /// Angular momentum dimension: L²·M¹·T⁻¹.
     pub const ANGULAR_MOMENTUM: Self = Self::new(2, 1, -1, 0, 0, 0, 0);
+    /// Moment of inertia dimension: L²·M¹.
     pub const MOMENT_OF_INERTIA: Self = Self::new(2, 1, 0, 0, 0, 0, 0);
+    /// Pressure dimension: L⁻¹·M¹·T⁻².
     pub const PRESSURE: Self = Self::new(-1, 1, -2, 0, 0, 0, 0);
+    /// Stiffness dimension: M¹·T⁻².
     pub const STIFFNESS: Self = Self::new(0, 1, -2, 0, 0, 0, 0);
+    /// Damping dimension: M¹·T⁻¹.
     pub const DAMPING: Self = Self::new(0, 1, -1, 0, 0, 0, 0);
 
     // Electromagnetism
+    /// Voltage dimension: L²·M¹·T⁻³·I⁻¹.
     pub const VOLTAGE: Self = Self::new(2, 1, -3, -1, 0, 0, 0);
+    /// Resistance dimension: L²·M¹·T⁻³·I⁻².
     pub const RESISTANCE: Self = Self::new(2, 1, -3, -2, 0, 0, 0);
+    /// Inductance dimension: L²·M¹·T⁻²·I⁻².
     pub const INDUCTANCE: Self = Self::new(2, 1, -2, -2, 0, 0, 0);
+    /// Capacitance dimension: L⁻²·M⁻¹·T⁴·I².
     pub const CAPACITANCE: Self = Self::new(-2, -1, 4, 2, 0, 0, 0);
+    /// Charge dimension: T¹·I¹.
     pub const CHARGE: Self = Self::new(0, 0, 1, 1, 0, 0, 0);
+    /// Magnetic flux dimension: L²·M¹·T⁻²·I⁻¹.
     pub const MAGNETIC_FLUX: Self = Self::new(2, 1, -2, -1, 0, 0, 0);
 }
 

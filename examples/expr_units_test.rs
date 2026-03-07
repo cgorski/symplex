@@ -1,5 +1,10 @@
 //! Comprehensive demonstration of symplex units + expr! + calculus workflows.
 //!
+//! Three main patterns:
+//!   1. `expr!` + `from_ex()` — most ergonomic for complex formulas
+//!   2. Named type arithmetic — compile-time dimension checking for simple products
+//!   3. `diff_wrt` / `integrate_wrt` — typed calculus via DiffWrt/IntWrt traits
+//!
 //! Run with: cargo run --example expr_units_test
 
 use symplex::prelude::*;
@@ -21,7 +26,23 @@ fn main() {
     pattern_9_compile_time_assertions();
 
     println!("═══════════════════════════════════════════════════════════════");
-    println!("   ✓ All patterns demonstrated successfully!");
+    println!("   Recommended Workflow Summary");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!();
+    println!("  a) expr! + from_ex()        — MOST ERGONOMIC");
+    println!("     Build complex formulas with natural math syntax.");
+    println!("     Example: Energy::from_ex(expr!(1/2 * m * v^2))");
+    println!();
+    println!("  b) Named type arithmetic    — COMPILE-TIME CHECKED");
+    println!("     Simple products where the mul/div table has a result.");
+    println!("     Example: let f: Force = &m * &a;");
+    println!();
+    println!("  c) diff_wrt / integrate_wrt — UNIQUE FEATURE");
+    println!("     Typed calculus: the compiler verifies physical laws.");
+    println!("     Example: let v: Velocity = position.diff_wrt(&t_var);");
+    println!();
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("   ✓ All 9 patterns demonstrated successfully!");
     println!("═══════════════════════════════════════════════════════════════");
 }
 
