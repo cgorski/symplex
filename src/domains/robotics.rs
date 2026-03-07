@@ -115,7 +115,7 @@ pub fn fk_chain(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
     let mut result = Matrix::identity(4);
     for &(theta, d, a, alpha) in dh_params {
         let ti = dh_matrix(theta, d, a, alpha);
-        result = result.matmul(&ti);
+        result = result.matmul(&ti).expect("matmul: dimension mismatch in FK chain");
     }
     result
 }
@@ -330,13 +330,13 @@ pub fn rot_euler(phi: &Ex, theta: &Ex, psi: &Ex, convention: EulerConvention) ->
     match convention {
         EulerConvention::ZYX => {
             // R = Rz(phi) * Ry(theta) * Rx(psi)
-            rot_z(phi).matmul(&rot_y(theta)).matmul(&rot_x(psi))
+            rot_z(phi).matmul(&rot_y(theta)).expect("matmul: dimension mismatch").matmul(&rot_x(psi)).expect("matmul: dimension mismatch")
         }
         EulerConvention::ZXZ => {
-            rot_z(phi).matmul(&rot_x(theta)).matmul(&rot_z(psi))
+            rot_z(phi).matmul(&rot_x(theta)).expect("matmul: dimension mismatch").matmul(&rot_z(psi)).expect("matmul: dimension mismatch")
         }
         EulerConvention::XYZ => {
-            rot_x(phi).matmul(&rot_y(theta)).matmul(&rot_z(psi))
+            rot_x(phi).matmul(&rot_y(theta)).expect("matmul: dimension mismatch").matmul(&rot_z(psi)).expect("matmul: dimension mismatch")
         }
     }
 }

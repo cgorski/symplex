@@ -3028,10 +3028,10 @@ pub fn solve_ode_system_nonhomogeneous(
     let neg_one = crate::int(-1);
     let neg_a = a_matrix.scale(&neg_one);
     let neg_at = neg_a.scale(t_var);
-    let exp_neg_at = neg_at.exp_series(12);
+    let exp_neg_at = neg_at.exp_series(12).expect("exp_series: matrix must be square");
 
     let b_col = Matrix::col_vector(b_vec.to_vec());
-    let integrand_matrix = exp_neg_at.matmul(&b_col).eval();
+    let integrand_matrix = exp_neg_at.matmul(&b_col).expect("matmul: dimension mismatch").eval();
 
     // Integrate each component w.r.t. t
     let mut integrated = Vec::with_capacity(n);
@@ -3042,8 +3042,8 @@ pub fn solve_ode_system_nonhomogeneous(
 
     // Multiply by exp(At)
     let at = a_matrix.scale(t_var);
-    let exp_at = at.exp_series(12);
-    let particular = exp_at.matmul(&integrated_col).eval();
+    let exp_at = at.exp_series(12).expect("exp_series: matrix must be square");
+    let particular = exp_at.matmul(&integrated_col).expect("matmul: dimension mismatch").eval();
 
     // Combine: x = x_h + x_p
     let mut solution = Vec::with_capacity(n);
@@ -3106,12 +3106,12 @@ fn solve_ode_system_diagonal(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex>
 /// Fallback: approximate solution via truncated matrix exponential series.
 fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
     let m = a_matrix.scale(t_var);
-    let exp_m = m.exp_series(12);
+    let exp_m = m.exp_series(12).expect("exp_series: matrix must be square");
     let constants: Vec<Ex> = (1..=n)
         .map(|i| crate::var(&format!("C{i}")))
         .collect();
     let c_vec = Matrix::col_vector(constants);
-    let result = exp_m.matmul(&c_vec);
+    let result = exp_m.matmul(&c_vec).expect("matmul: dimension mismatch");
     (0..n).map(|i| result.get(i, 0).eval()).collect()
 }
 
@@ -3129,7 +3129,10 @@ fn solve_ode_system_eigen(
     n: usize,
 ) -> Option<Vec<Ex>> {
     let lambda_sym = crate::var("__ode_lambda");
-    let eigenvalues = a_matrix.eigenvals(&lambda_sym);
+    let eigenvalues = match a_matrix.eigenvals(&lambda_sym) {
+        Ok(ev) => ev,
+        Err(_) => return None,
+    };
 
     // Need at least n eigenvalues (counting algebraic multiplicity from solver)
     if eigenvalues.len() < n {
@@ -3180,7 +3183,7 @@ fn solve_ode_system_eigen(
 
             // Eigenvector via null(A − λI)
             let ev_identity = identity.scale(ev);
-            let a_shifted = a_matrix.sub(&ev_identity).eval().simplify();
+            let a_shifted = a_matrix.sub(&ev_identity).expect("sub: shape mismatch").eval().simplify();
             let null_basis = a_shifted.nullspace();
             if null_basis.is_empty() {
                 return None;
@@ -3232,7 +3235,7 @@ fn solve_ode_system_eigen(
         } else {
             // ── Real eigenvalue ───────────────────────────────────────
             let ev_identity = identity.scale(ev);
-            let a_shifted = a_matrix.sub(&ev_identity).eval().simplify();
+            let a_shifted = a_matrix.sub(&ev_identity).expect("sub: shape mismatch").eval().simplify();
             let null_basis = a_shifted.nullspace();
             if null_basis.is_empty() {
                 return None;

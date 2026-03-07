@@ -86,7 +86,7 @@ impl StateSpace {
     /// the characteristic polynomial. The returned expressions are
     /// the roots of `det(var·I - A) = 0`.
     pub fn poles(&self, var: &Ex) -> Vec<Ex> {
-        self.a.eigenvals(var)
+        self.a.eigenvals(var).unwrap_or_default()
     }
 
     /// Characteristic polynomial: det(sI - A).
@@ -95,8 +95,8 @@ impl StateSpace {
     pub fn char_poly(&self, s: &Ex) -> Ex {
         let n = self.num_states();
         let si = Matrix::identity(n).scale(s);
-        let si_minus_a = si.sub(&self.a);
-        si_minus_a.det()
+        let si_minus_a = si.sub(&self.a).expect("sub: shapes must match");
+        si_minus_a.det().expect("det: matrix must be square")
     }
 
     /// Controllability matrix: \[B, AB, A²B, ..., Aⁿ⁻¹B\].
@@ -106,13 +106,13 @@ impl StateSpace {
     pub fn controllability_matrix(&self) -> Matrix {
         let n = self.num_states();
         let mut cols: Vec<Matrix> = vec![self.b.clone()];
-        let mut ab = self.a.matmul(&self.b);
+        let mut ab = self.a.matmul(&self.b).expect("matmul: dimension mismatch");
         for _ in 1..n {
             cols.push(ab.clone());
-            ab = self.a.matmul(&ab);
+            ab = self.a.matmul(&ab).expect("matmul: dimension mismatch");
         }
         let refs: Vec<&Matrix> = cols.iter().collect();
-        Matrix::hstack(&refs)
+        Matrix::hstack(&refs).expect("hstack: row count mismatch")
     }
 
     /// Observability matrix: \[C; CA; CA²; ...; CAⁿ⁻¹\].
@@ -122,13 +122,13 @@ impl StateSpace {
     pub fn observability_matrix(&self) -> Matrix {
         let n = self.num_states();
         let mut rows: Vec<Matrix> = vec![self.c.clone()];
-        let mut ca = self.c.matmul(&self.a);
+        let mut ca = self.c.matmul(&self.a).expect("matmul: dimension mismatch");
         for _ in 1..n {
             rows.push(ca.clone());
-            ca = ca.matmul(&self.a);
+            ca = ca.matmul(&self.a).expect("matmul: dimension mismatch");
         }
         let refs: Vec<&Matrix> = rows.iter().collect();
-        Matrix::vstack(&refs)
+        Matrix::vstack(&refs).expect("vstack: column count mismatch")
     }
 
     /// Check controllability: rank(controllability_matrix) == n.
@@ -185,21 +185,21 @@ impl StateSpace {
     pub fn discretize_zoh(&self, dt: &Ex, order: usize) -> StateSpace {
         let n = self.num_states();
         let a_dt = self.a.scale(dt);
-        let exp_a_dt = a_dt.exp_series(order);
+        let exp_a_dt = a_dt.exp_series(order).expect("exp_series: matrix must be square");
 
         // Bᵈ = (I·dt + A·dt²/2! + A²·dt³/3! + ...)B
         let ident = Matrix::identity(n);
         let mut b_sum = ident.scale(dt);
         let mut a_power = Matrix::identity(n);
         for k in 2..=order {
-            a_power = a_power.matmul(&self.a);
+            a_power = a_power.matmul(&self.a).expect("matmul: dimension mismatch");
             let factorial: i64 = (1..=k as i64).product();
             let coeff = crate::rational(1, factorial);
             let dt_power = dt.powi(k as i64);
             let term = a_power.scale(&(&coeff * &dt_power));
-            b_sum = b_sum.add(&term);
+            b_sum = b_sum.add(&term).expect("add: shape mismatch");
         }
-        let b_d = b_sum.matmul(&self.b);
+        let b_d = b_sum.matmul(&self.b).expect("matmul: dimension mismatch");
 
         StateSpace::new(exp_a_dt, b_d, self.c.clone(), self.d.clone())
     }
@@ -214,17 +214,17 @@ impl StateSpace {
     /// Returns `None` if R is singular.
     pub fn riccati_residual(&self, p: &Matrix, q: &Matrix, r: &Matrix) -> Option<Matrix> {
         let at = self.a.transpose();
-        let r_inv = r.inv()?;
+        let r_inv = r.inv().ok()?;
         let bt = self.b.transpose();
 
-        let term1 = at.matmul(p);           // AᵀP
-        let term2 = p.matmul(&self.a);       // PA
-        let term3 = p.matmul(&self.b)        // PBR⁻¹BᵀP
-            .matmul(&r_inv)
-            .matmul(&bt)
-            .matmul(p);
+        let term1 = at.matmul(p).expect("matmul: dimension mismatch");           // AᵀP
+        let term2 = p.matmul(&self.a).expect("matmul: dimension mismatch");       // PA
+        let term3 = p.matmul(&self.b).expect("matmul: dimension mismatch")        // PBR⁻¹BᵀP
+            .matmul(&r_inv).expect("matmul: dimension mismatch")
+            .matmul(&bt).expect("matmul: dimension mismatch")
+            .matmul(p).expect("matmul: dimension mismatch");
 
-        let residual = term1.add(&term2).sub(&term3).add(q);
+        let residual = term1.add(&term2).expect("add: shape mismatch").sub(&term3).expect("sub: shape mismatch").add(q).expect("add: shape mismatch");
         Some(residual)
     }
 
@@ -256,7 +256,7 @@ impl StateSpace {
         );
 
         let ctrb = self.controllability_matrix();
-        let ctrb_inv = ctrb.inv()?;
+        let ctrb_inv = ctrb.inv().ok()?;
 
         // Build the desired characteristic polynomial:
         // p(s) = (s − p₁)(s − p₂)···(s − pₙ)
@@ -278,8 +278,8 @@ impl StateSpace {
         let mut p_a = Matrix::zeros(n, n);
         for (i, coeff) in poly_coeffs.iter().enumerate() {
             let power = (poly_coeffs.len() - 1 - i) as u32;
-            let a_power = self.a.powi(power);
-            p_a = p_a.add(&a_power.scale(coeff));
+            let a_power = self.a.powi(power).expect("powi: matrix must be square");
+            p_a = p_a.add(&a_power.scale(coeff)).expect("add: shape mismatch");
         }
 
         // K = eₙᵀ · C⁻¹ · p(A)
@@ -290,7 +290,7 @@ impl StateSpace {
             .collect();
         let last_row_mat = Matrix::new(vec![last_row]); // 1×n
 
-        let k = last_row_mat.matmul(&p_a); // 1×n
+        let k = last_row_mat.matmul(&p_a).expect("matmul: dimension mismatch"); // 1×n
         Some(k)
     }
 }
