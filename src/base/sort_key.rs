@@ -124,6 +124,7 @@ const FN_ERFC: u8 = 26;
 const FN_BETA: u8 = 27;
 const FN_HEAVISIDE: u8 = 28;
 const FN_DIRAC_DELTA: u8 = 29;
+const FN_LAMBERT_W: u8 = 30;
 
 // ---------------------------------------------------------------------------
 // Constant sub-rank bytes (used within the RANK_CONSTANT class)
@@ -453,6 +454,12 @@ pub fn compute_sort_key(
         ExprNode::Erfc(x) => {
             key.push(RANK_FUNCTION);
             key.push(FN_ERFC);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::LambertW(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_LAMBERT_W);
             key.extend(get_key(*x).as_bytes());
         }
 

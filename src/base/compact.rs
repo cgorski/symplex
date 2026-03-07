@@ -264,6 +264,7 @@ fn remap_node(
         ExprNode::Digamma(x) => ExprNode::Digamma(m(x)),
         ExprNode::Erf(x) => ExprNode::Erf(m(x)),
         ExprNode::Erfc(x) => ExprNode::Erfc(m(x)),
+        ExprNode::LambertW(x) => ExprNode::LambertW(m(x)),
         ExprNode::Heaviside(x) => ExprNode::Heaviside(m(x)),
         ExprNode::DiracDelta(x) => ExprNode::DiracDelta(m(x)),
 

@@ -537,6 +537,20 @@ fn diff_node(
             arena.mul(&[neg_coeff, exp_neg_f_sq, df])
         }
 
+        // ── LambertW: d/dx(W(f)) = W(f) / (f · (1 + W(f))) · f' ──
+        ExprNode::LambertW(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let w_f = arena.lambertw(inner);
+            let one = arena.one;
+            let one_plus_w = arena.add(&[one, w_f]);
+            let denom = arena.mul(&[inner, one_plus_w]);
+            let frac = arena.div(w_f, denom);
+            arena.mul(&[frac, df])
+        }
+
         // ── Beta: leave as unevaluated derivative ──────────────────
         ExprNode::Beta(_, _) => {
             let v = var_expr(arena, var);

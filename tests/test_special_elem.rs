@@ -144,7 +144,7 @@ fn lambertw_symbolic() {
     vars!(x);
     let w = expr!(lambertw(x));
     let s = format!("{w}");
-    assert!(s.contains("lambertw"), "should display as lambertw(x): {s}");
+    assert!(s.contains("W("), "should display as W(x): {s}");
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn lambertw_symbolic_stays() {
     let w = y.lambertw();
     let s = format!("{w}");
     assert!(
-        s.contains("lambertw"),
+        s.contains("W("),
         "symbolic lambertw should stay unevaluated: {s}"
     );
 }
@@ -163,7 +163,7 @@ fn lambertw_integer_nonzero_stays() {
     // W(2) has no closed form — should remain unevaluated
     let result = symplex::int(2).lambertw().eval();
     let s = format!("{result}");
-    assert!(s.contains("lambertw"), "W(2) should stay unevaluated: {s}");
+    assert!(s.contains("W("), "W(2) should stay unevaluated: {s}");
 }
 
 #[test]

@@ -266,6 +266,7 @@ pub(crate) fn rebuild_with_cache(
         ExprNode::Digamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, Digamma),
         ExprNode::Erf(inner) => rebuild_intern_unary!(arena, id, inner, cache, Erf),
         ExprNode::Erfc(inner) => rebuild_intern_unary!(arena, id, inner, cache, Erfc),
+        ExprNode::LambertW(inner) => rebuild_intern_unary!(arena, id, inner, cache, LambertW),
         ExprNode::Beta(a, b) => {
             let na = cache.get(&a).copied().unwrap_or(a);
             let nb = cache.get(&b).copied().unwrap_or(b);

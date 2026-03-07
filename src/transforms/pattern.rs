@@ -256,6 +256,9 @@ fn match_recursive(
         (ExprNode::DiracDelta(pi), ExprNode::DiracDelta(ei)) => {
             match_recursive(arena, pattern, pi, ei, bindings)
         }
+        (ExprNode::LambertW(pi), ExprNode::LambertW(ei)) => {
+            match_recursive(arena, pattern, pi, ei, bindings)
+        }
         (ExprNode::Not(pi), ExprNode::Not(ei)) => match_recursive(arena, pattern, pi, ei, bindings),
 
         // Binary relational.

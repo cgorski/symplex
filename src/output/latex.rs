@@ -761,6 +761,7 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::Digamma(x) => push_latex_func(r"\psi", x, stack),
         ExprNode::Erf(x) => push_latex_func(r"\operatorname{erf}", x, stack),
         ExprNode::Erfc(x) => push_latex_func(r"\operatorname{erfc}", x, stack),
+        ExprNode::LambertW(x) => push_latex_func(r"\operatorname{W}", x, stack),
 
         // ── Abs: \left|x\right| ───────────────────────────────────
         ExprNode::Abs(x) => {

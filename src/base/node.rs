@@ -208,6 +208,9 @@ pub enum ExprNode {
     /// Complementary error function: erfc(x) = 1 - erf(x).
     Erfc(ExprId),
 
+    /// Lambert W function (principal branch): W(x)·exp(W(x)) = x.
+    LambertW(ExprId),
+
     /// Beta function: B(a,b) = Γ(a)Γ(b)/Γ(a+b).
     Beta(ExprId, ExprId),
 
@@ -399,6 +402,7 @@ impl ExprNode {
             | ExprNode::Digamma(x)
             | ExprNode::Erf(x)
             | ExprNode::Erfc(x)
+            | ExprNode::LambertW(x)
             | ExprNode::Factorial(x)
             | ExprNode::Not(x) => smallvec![*x],
 
@@ -519,6 +523,7 @@ impl ExprNode {
             | ExprNode::Digamma(x)
             | ExprNode::Erf(x)
             | ExprNode::Erfc(x)
+            | ExprNode::LambertW(x)
             | ExprNode::Factorial(x)
             | ExprNode::Not(x) => f(*x),
 
@@ -596,6 +601,7 @@ impl ExprNode {
             | ExprNode::Digamma(_)
             | ExprNode::Erf(_)
             | ExprNode::Erfc(_)
+            | ExprNode::LambertW(_)
             | ExprNode::Factorial(_)
             | ExprNode::Not(_) => 1,
             ExprNode::Apply(_, args) => args.len(),
@@ -694,6 +700,7 @@ impl fmt::Debug for ExprNode {
             ExprNode::Digamma(x) => f.debug_tuple("Digamma").field(x).finish(),
             ExprNode::Erf(x) => f.debug_tuple("Erf").field(x).finish(),
             ExprNode::Erfc(x) => f.debug_tuple("Erfc").field(x).finish(),
+            ExprNode::LambertW(x) => f.debug_tuple("LambertW").field(x).finish(),
             ExprNode::Beta(a, b) => f.debug_tuple("Beta").field(a).field(b).finish(),
             ExprNode::Factorial(id) => write!(f, "Factorial({id:?})"),
             ExprNode::Binomial(n, k) => write!(f, "Binomial({n:?}, {k:?})"),

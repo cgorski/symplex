@@ -259,6 +259,7 @@ fn compile_recursive(
         | ExprNode::Digamma(_)
         | ExprNode::Erf(_)
         | ExprNode::Erfc(_)
+        | ExprNode::LambertW(_)
         | ExprNode::Beta(_, _) => return None,
         ExprNode::Apply(_, _)
         | ExprNode::Derivative(_, _)

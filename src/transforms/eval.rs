@@ -56,7 +56,7 @@ use crate::base::arena::{
     Arena, FN_BELL, FN_BERNOULLI, FN_BESSELJ, FN_BESSELY, FN_BESSELI, FN_BESSELK,
     FN_CATALAN, FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_EULER_NUMBER, FN_FACTORIAL2,
     FN_FALLING_FACTORIAL, FN_FIBONACCI, FN_HARMONIC, FN_HERMITE, FN_LAGUERRE,
-    FN_LAMBERTW, FN_LEGENDRE, FN_LUCAS, FN_RISING_FACTORIAL, FN_SUBFACTORIAL,
+    FN_LEGENDRE, FN_LUCAS, FN_RISING_FACTORIAL, FN_SUBFACTORIAL,
 };
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
@@ -236,6 +236,16 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     id
                 } else {
                     arena.erfc(ni)
+                }
+            }
+            ExprNode::LambertW(inner) => {
+                let ni = cache.get(&inner).copied().unwrap_or(inner);
+                if let Some(result) = eval_lambertw(arena, ni) {
+                    result
+                } else if ni == inner {
+                    id
+                } else {
+                    arena.lambertw(ni)
                 }
             }
             ExprNode::Beta(a, b) => {
@@ -584,24 +594,6 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                         }
                     }
 
-                    FN_LAMBERTW if new_args.len() == 1 => {
-                        if let Some(r) = arena.as_num(new_args[0]).cloned() {
-                            if r.is_zero() {
-                                arena.zero
-                            } else if new_args[..] == args[..] {
-                                id
-                            } else {
-                                arena.lambertw(new_args[0])
-                            }
-                        } else if new_args[0] == arena.e_const {
-                            // W(e) = 1
-                            arena.one
-                        } else if new_args[..] == args[..] {
-                            id
-                        } else {
-                            arena.lambertw(new_args[0])
-                        }
-                    }
                     // ── Bessel functions ────────────────────────────
                     FN_BESSELJ if new_args.len() == 2 => {
                         if let (Some(order_num), Some(arg_num)) = (
@@ -1195,6 +1187,95 @@ fn eval_erf(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 }
 
 /// erfc(0) → 1
+fn eval_lambertw(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    // W(0) = 0
+    if let Some(r) = arena.as_num(inner) {
+        if r.is_zero() {
+            tracing::debug!("eval: LambertW(0) = 0");
+            return Some(arena.zero);
+        }
+    }
+
+    // W(e) = 1
+    if inner == arena.e_const {
+        tracing::debug!("eval: LambertW(e) = 1");
+        return Some(arena.one);
+    }
+
+    // W(∞) = ∞
+    if inner == arena.infinity {
+        tracing::debug!("eval: LambertW(∞) = ∞");
+        return Some(arena.infinity);
+    }
+
+    // W(-1/e) = -1
+    {
+        let e = arena.e_const;
+        let neg1 = arena.neg_one;
+        let neg_inv_e = arena.div(neg1, e);
+        if inner == neg_inv_e {
+            tracing::debug!("eval: LambertW(-1/e) = -1");
+            return Some(arena.neg_one);
+        }
+    }
+
+    // W(-ln(2)/2) = -ln(2)
+    {
+        let two = arena.int(2);
+        let ln2 = arena.ln(two);
+        let neg_ln2 = arena.neg(ln2);
+        let target = arena.div(neg_ln2, two);
+        if inner == target {
+            tracing::debug!("eval: LambertW(-ln(2)/2) = -ln(2)");
+            return Some(neg_ln2);
+        }
+    }
+
+    // W(2*ln(2)) = ln(2)
+    {
+        let two = arena.int(2);
+        let ln2 = arena.ln(two);
+        let target = arena.mul(&[two, ln2]);
+        if inner == target {
+            tracing::debug!("eval: LambertW(2*ln(2)) = ln(2)");
+            return Some(ln2);
+        }
+    }
+
+    // W(-π/2) = iπ/2
+    {
+        let pi = arena.pi;
+        let two = arena.int(2);
+        let neg_pi = arena.neg(pi);
+        let target = arena.div(neg_pi, two);
+        if inner == target {
+            tracing::debug!("eval: LambertW(-π/2) = iπ/2");
+            let i = arena.i_unit;
+            let pi_over_2 = arena.div(pi, two);
+            return Some(arena.mul(&[i, pi_over_2]));
+        }
+    }
+
+    // W(e^(1+e)) = e
+    {
+        let e = arena.e_const;
+        let one = arena.one;
+        let one_plus_e = arena.add(&[one, e]);
+        let target_exp = arena.exp(one_plus_e);
+        if inner == target_exp {
+            tracing::debug!("eval: LambertW(e^(1+e)) = e");
+            return Some(e);
+        }
+        let target_pow = arena.pow(e, one_plus_e);
+        if inner == target_pow {
+            tracing::debug!("eval: LambertW(e^(1+e)) = e");
+            return Some(e);
+        }
+    }
+
+    None
+}
+
 fn eval_erfc(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // erfc(0) = 1
     if let Some(r) = arena.as_num(inner) {

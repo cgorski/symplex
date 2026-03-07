@@ -388,6 +388,7 @@ impl<S: Sort> Expr<S> {
             | crate::base::node::ExprNode::Digamma(_)
             | crate::base::node::ExprNode::Erf(_)
             | crate::base::node::ExprNode::Erfc(_)
+            | crate::base::node::ExprNode::LambertW(_)
             | crate::base::node::ExprNode::Beta(_, _) => ExprType::Function,
             crate::base::node::ExprNode::BoolTrue | crate::base::node::ExprNode::BoolFalse => {
                 ExprType::Constant

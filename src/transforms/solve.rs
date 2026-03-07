@@ -2174,8 +2174,8 @@ mod tests {
         assert_eq!(solutions.len(), 1, "x·exp(x)=1 should have 1 solution");
         let val = display(&a, solutions[0].value);
         assert!(
-            val.contains("lambertw"),
-            "solution should be lambertw(1): {val}"
+            val.contains("W("),
+            "solution should be W(1): {val}"
         );
     }
 
@@ -2192,8 +2192,8 @@ mod tests {
         assert_eq!(solutions.len(), 1, "x·exp(x)=5 should have 1 solution");
         let val = display(&a, solutions[0].value);
         assert!(
-            val.contains("lambertw"),
-            "solution should be lambertw(5): {val}"
+            val.contains("W("),
+            "solution should be W(5): {val}"
         );
     }
 
@@ -2228,8 +2228,8 @@ mod tests {
         assert_eq!(solutions.len(), 1, "2·x·exp(x)=4 should have 1 solution");
         let val = display(&a, solutions[0].value);
         assert!(
-            val.contains("lambertw"),
-            "solution should involve lambertw: {val}"
+            val.contains("W("),
+            "solution should involve W: {val}"
         );
     }
 
@@ -2249,8 +2249,8 @@ mod tests {
         assert_eq!(solutions.len(), 1, "x·exp(2x)=3 should have 1 solution");
         let val = display(&a, solutions[0].value);
         assert!(
-            val.contains("lambertw"),
-            "solution should involve lambertw: {val}"
+            val.contains("W("),
+            "solution should involve W: {val}"
         );
     }
 
@@ -2268,8 +2268,8 @@ mod tests {
         assert_eq!(solutions.len(), 1, "exp(x)+x-2=0 should have 1 solution");
         let val = display(&a, solutions[0].value);
         assert!(
-            val.contains("lambertw"),
-            "solution should involve lambertw: {val}"
+            val.contains("W("),
+            "solution should involve W: {val}"
         );
     }
 
@@ -2288,8 +2288,8 @@ mod tests {
         assert_eq!(solutions.len(), 1, "-exp(x)-x+2=0 should have 1 solution");
         let val = display(&a, solutions[0].value);
         assert!(
-            val.contains("lambertw"),
-            "solution should involve lambertw: {val}"
+            val.contains("W("),
+            "solution should involve W: {val}"
         );
     }
 

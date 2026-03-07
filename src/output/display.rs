@@ -87,6 +87,7 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Digamma(_)
         | ExprNode::Erf(_)
         | ExprNode::Erfc(_)
+        | ExprNode::LambertW(_)
         | ExprNode::Beta(_, _)
         | ExprNode::Floor(_)
         | ExprNode::Ceiling(_)
@@ -603,6 +604,7 @@ fn expand_expr(
         ExprNode::Digamma(x) => push_func("Digamma", x, stack),
         ExprNode::Erf(x) => push_func("erf", x, stack),
         ExprNode::Erfc(x) => push_func("erfc", x, stack),
+        ExprNode::LambertW(x) => push_func("W", x, stack),
         ExprNode::Beta(a, b) => {
             stack.push(WorkItem::Lit(")"));
             stack.push(WorkItem::Expr(b, 0));

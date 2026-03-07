@@ -154,7 +154,7 @@ fn lambertw_stays_symbolic() {
     let w5 = symplex::int(5).lambertw().eval();
     let s = format!("{w5}");
     assert!(
-        s.contains("lambertw"),
+        s.contains("W("),
         "W(5) should stay symbolic, got: {s}"
     );
 }
@@ -168,7 +168,7 @@ fn lambertw_solve_exp_equation() {
     let w = symplex::rational(-1, 2).lambertw();
     let s = format!("{w}");
     assert!(
-        s.contains("lambertw"),
+        s.contains("W("),
         "W(-1/2) should be symbolic, got: {s}"
     );
 }
@@ -183,8 +183,8 @@ fn lambertw_neg_one_over_e() {
     let s = format!("{w}");
     // Accept either the simplified "-1" or the symbolic form.
     assert!(
-        s == "-1" || s.contains("lambertw"),
-        "W(-1/e) should be -1 or a symbolic lambertw expression, got: {s}"
+        s == "-1" || s.contains("W("),
+        "W(-1/e) should be -1 or a symbolic W expression, got: {s}"
     );
 }
 

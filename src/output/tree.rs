@@ -226,6 +226,11 @@ pub enum ExprTree {
         /// The function argument.
         arg: Box<ExprTree>,
     },
+    /// Lambert W function (principal branch): W(x)·exp(W(x)) = x.
+    LambertW {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
     /// Beta function: B(a, b) = Γ(a)Γ(b)/Γ(a+b).
     Beta {
         /// First parameter.
@@ -503,6 +508,9 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::Erfc(x) => ExprTree::Erfc {
             arg: Box::new(expr_to_tree(arena, x)),
         },
+        ExprNode::LambertW(x) => ExprTree::LambertW {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
         ExprNode::Beta(a, b) => ExprTree::Beta {
             a: Box::new(expr_to_tree(arena, a)),
             b: Box::new(expr_to_tree(arena, b)),
@@ -754,6 +762,10 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::Erfc { arg } => {
             let x = tree_to_expr(arena, arg);
             arena.erfc(x)
+        }
+        ExprTree::LambertW { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.lambertw(x)
         }
         ExprTree::Beta { a, b } => {
             let aid = tree_to_expr(arena, a);

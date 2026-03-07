@@ -211,6 +211,7 @@ fn convert_node(
         | ExprNode::Digamma(_)
         | ExprNode::Erf(_)
         | ExprNode::Erfc(_)
+        | ExprNode::LambertW(_)
         | ExprNode::Beta(_, _) => None,
 
         // Boolean, relational, logical, and piecewise nodes are not polynomial.

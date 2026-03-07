@@ -36,7 +36,7 @@ fn lambertw_symbolic_stays_symbolic() {
     let result = symplex::int(5).lambertw().eval();
     let s = format!("{result}");
     assert!(
-        s.contains("lambertw"),
+        s.contains("W("),
         "W(5) should stay symbolic, got: {s}"
     );
 }
@@ -47,7 +47,7 @@ fn lambertw_of_negative_stays_symbolic() {
     let result = symplex::int(-1).lambertw().eval();
     let s = format!("{result}");
     assert!(
-        s.contains("lambertw"),
+        s.contains("W("),
         "W(-1) should stay symbolic, got: {s}"
     );
 }
@@ -61,8 +61,8 @@ fn lambertw_display_format() {
     let expr = symplex::int(3).lambertw();
     let s = format!("{expr}");
     assert!(
-        s.contains("lambertw") && s.contains("3"),
-        "display should show lambertw(3), got: {s}"
+        s.contains("W(") && s.contains("3"),
+        "display should show W(3), got: {s}"
     );
 }
 
@@ -73,8 +73,8 @@ fn lambertw_of_expression() {
     let expr = (&x + 1).lambertw();
     let s = format!("{expr}");
     assert!(
-        s.contains("lambertw"),
-        "W(x+1) should display with lambertw, got: {s}"
+        s.contains("W("),
+        "W(x+1) should display with W, got: {s}"
     );
 }
 
@@ -88,7 +88,7 @@ fn lambertw_nested_eval() {
     let s = format!("{outer}");
     // W(1) should either stay as lambertw(1) or evaluate — either is fine
     assert!(
-        s.contains("lambertw") || s.parse::<f64>().is_ok(),
+        s.contains("W(") || s.parse::<f64>().is_ok(),
         "W(W(e)) = W(1) should be representable, got: {s}"
     );
 }

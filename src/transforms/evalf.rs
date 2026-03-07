@@ -271,6 +271,18 @@ fn eval_node(
             Ok((result, BigFloat::new(prec)))
         }
 
+        ExprNode::LambertW(inner) => {
+            let val = get_cached(cache, *inner)?;
+            if !val.1.is_zero() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "LambertW of complex argument not yet supported in evalf".into(),
+                });
+            }
+            debug!(prec, "evalf: LambertW via Halley iteration");
+            let result = arb_lambert_w(&val.0, prec, rm, cc)?;
+            Ok((result, BigFloat::new(prec)))
+        }
+
         ExprNode::Beta(a_id, b_id) => {
             let a_val = get_cached(cache, *a_id)?;
             let b_val = get_cached(cache, *b_id)?;
@@ -1676,6 +1688,113 @@ fn arb_erf(
             Ok(erf_val)
         }
     }
+}
+
+/// Arbitrary-precision Lambert W function (principal branch) via Halley iteration.
+///
+/// Solves w·exp(w) = x for w, using cubic-convergent Halley steps.
+fn arb_lambert_w(
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    // Work with extra guard bits for intermediate rounding.
+    let wp = prec + 32;
+
+    // Handle x = 0 exactly.
+    if x.is_zero() {
+        return Ok(BigFloat::new(prec));
+    }
+
+    // Handle negative x near -1/e boundary.
+    // The principal branch is defined for x >= -1/e.
+    let neg_inv_e = {
+        let e_val = cc.e(wp, rm).clone();
+        let one = BigFloat::from_i32(1, wp);
+        one.div(&e_val, wp, rm).neg()
+    };
+
+    let diff = x.sub(&neg_inv_e, wp, rm);
+    if diff.is_negative() {
+        return Err(SymplexError::Unevaluable {
+            reason: "LambertW: argument < -1/e, outside principal branch domain".into(),
+        });
+    }
+
+    // Initial guess.
+    let mut w = if x.is_negative() {
+        // Near -1/e: use series w ≈ -1 + sqrt(2(1 + ex))
+        let e_val = cc.e(wp, rm).clone();
+        let ex = e_val.mul(x, wp, rm);
+        let one = BigFloat::from_i32(1, wp);
+        let two = BigFloat::from_i32(2, wp);
+        let inner = one.add(&ex, wp, rm).mul(&two, wp, rm);
+        if inner.is_negative() || inner.is_zero() {
+            BigFloat::from_i32(-1, wp)
+        } else {
+            let sq = inner.sqrt(wp, rm);
+            BigFloat::from_i32(-1, wp).add(&sq, wp, rm)
+        }
+    } else {
+        // For small positive x, w ≈ x is a good start.
+        // For large x, w ≈ ln(x) - ln(ln(x)).
+        let threshold = BigFloat::from_f64(2.5, wp);
+        if x.sub(&threshold, wp, rm).is_negative() {
+            x.clone()
+        } else {
+            let ln_x = x.ln(wp, rm, cc);
+            let ln_ln_x = ln_x.ln(wp, rm, cc);
+            ln_x.sub(&ln_ln_x, wp, rm)
+        }
+    };
+
+    // Halley iteration: cubically convergent.
+    //
+    // Given f(w) = w·e^w − x, f'(w) = (w+1)·e^w, f''(w) = (w+2)·e^w,
+    // the Halley step is:
+    //   δ = f / (f' − f·f'' / (2·f'))
+    //     = (w·e^w − x) / ((w+1)·e^w − (w+2)·(w·e^w − x) / (2·(w+1)))
+    let max_iter = 100;
+    for _ in 0..max_iter {
+        let ew = w.exp(wp, rm, cc);
+        let wew = w.mul(&ew, wp, rm);
+        let residual = wew.sub(x, wp, rm); // w·e^w − x
+
+        let w_plus_1 = w.add(&BigFloat::from_i32(1, wp), wp, rm);
+        let denom_base = w_plus_1.mul(&ew, wp, rm); // (w+1)·e^w
+
+        // Halley denominator: (w+1)·e^w − (w+2)·residual / (2·(w+1))
+        let w_plus_2 = w.add(&BigFloat::from_i32(2, wp), wp, rm);
+        let two_w_plus_1 = w_plus_1.mul(&BigFloat::from_i32(2, wp), wp, rm);
+
+        let correction_numer = w_plus_2.mul(&residual, wp, rm);
+        let correction = if two_w_plus_1.is_zero() {
+            BigFloat::new(wp)
+        } else {
+            correction_numer.div(&two_w_plus_1, wp, rm)
+        };
+        let denom = denom_base.sub(&correction, wp, rm);
+
+        if denom.is_zero() {
+            break;
+        }
+
+        let delta = residual.div(&denom, wp, rm);
+        w = w.sub(&delta, wp, rm);
+
+        // Check convergence: |delta| exponent is far below working precision.
+        if delta.is_zero() {
+            break;
+        }
+        if let (Some(d_exp), Some(w_e)) = (delta.exponent(), w.exponent()) {
+            if (d_exp as i64) < (w_e as i64) - (wp as i64) {
+                break;
+            }
+        }
+    }
+
+    Ok(w)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

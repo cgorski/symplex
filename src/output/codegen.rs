@@ -987,8 +987,9 @@ fn expr_to_rust_cse(
         | ExprNode::Digamma(_)
         | ExprNode::Erf(_)
         | ExprNode::Erfc(_)
+        | ExprNode::LambertW(_)
         | ExprNode::Beta(_, _) => Err(SymplexError::NotImplemented(
-            "cannot generate Rust code for special functions (gamma, erf, beta)".to_string(),
+            "cannot generate Rust code for special functions (gamma, erf, beta, lambertw)".to_string(),
         )),
         ExprNode::Apply(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for user-defined Apply nodes".to_string(),

@@ -42,6 +42,7 @@ pub(crate) const FN_CATALAN: &str = "catalan";
 pub(crate) const FN_BELL: &str = "bell";
 pub(crate) const FN_EULER_NUMBER: &str = "euler_number";
 
+#[allow(dead_code)]
 pub(crate) const FN_LAMBERTW: &str = "lambertw";
 
 // ── Bessel function name constants ─────────────────────────────────────
@@ -1308,9 +1309,7 @@ impl Arena {
 
     /// Creates a `lambertw` (Lambert W function, principal branch) node: W(x)·exp(W(x)) = x.
     pub fn lambertw(&mut self, arg: ExprId) -> ExprId {
-        let sym_id = self.symbols.intern(FN_LAMBERTW);
-        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![arg];
-        self.intern(ExprNode::Apply(sym_id, args))
+        self.intern(ExprNode::LambertW(arg))
     }
 
     // ── Bessel functions (Apply-based) ─────────────────────────────
