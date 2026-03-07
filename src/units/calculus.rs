@@ -212,3 +212,91 @@ mod tests {
         let _ = v;
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Typed calculus: DiffWrt and IntWrt traits
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Typed differentiation. Differentiating `Self` with respect to `Var`
+/// produces `Self::Output` with the correct physical dimension.
+pub trait DiffWrt<Var> {
+    /// The output quantity type after differentiation.
+    type Output;
+    /// Differentiate this quantity with respect to the given variable.
+    fn diff_wrt(&self, var: &Var) -> Self::Output;
+}
+
+/// Typed integration. Integrating `Self` with respect to `Var`
+/// produces `Self::Output` with the correct physical dimension.
+pub trait IntWrt<Var> {
+    /// The output quantity type after integration.
+    type Output;
+    /// Integrate this quantity with respect to the given variable.
+    fn integrate_wrt(&self, var: &Var) -> Self::Output;
+}
+
+macro_rules! impl_diff_wrt {
+    ($Expr:ty, $Var:ty => $Out:ty) => {
+        impl DiffWrt<$Var> for $Expr {
+            type Output = $Out;
+            fn diff_wrt(&self, var: &$Var) -> $Out {
+                <$Out>::from_ex(self.inner().diff(var.inner()))
+            }
+        }
+    };
+}
+
+macro_rules! impl_int_wrt {
+    ($Expr:ty, $Var:ty => $Out:ty) => {
+        impl IntWrt<$Var> for $Expr {
+            type Output = $Out;
+            fn integrate_wrt(&self, var: &$Var) -> $Out {
+                <$Out>::from_ex(self.inner().integrate(var.inner()))
+            }
+        }
+    };
+}
+
+use super::si::*;
+
+// ── Kinematics: d/dt ──
+impl_diff_wrt!(Length, Time => Velocity);
+impl_diff_wrt!(Velocity, Time => Acceleration);
+impl_diff_wrt!(Angle, Time => AngularVelocity);
+impl_diff_wrt!(AngularVelocity, Time => AngularAcceleration);
+
+// ── Energy/Power: d/dt ──
+impl_diff_wrt!(Energy, Time => Power);
+impl_diff_wrt!(Momentum, Time => Force);
+impl_diff_wrt!(AngularMomentum, Time => Torque);
+impl_diff_wrt!(Charge, Time => Current);
+impl_diff_wrt!(MagneticFlux, Time => Voltage);
+
+// ── Spatial derivatives ──
+impl_diff_wrt!(Energy, Length => Force);
+impl_diff_wrt!(Energy, Angle => Torque);
+impl_diff_wrt!(Momentum, Length => Stiffness);  // dp/dx in wave context
+impl_diff_wrt!(Force, Length => Stiffness);
+
+// ── Energy w.r.t. generalized velocities ──
+impl_diff_wrt!(Energy, Velocity => Momentum);
+impl_diff_wrt!(Energy, AngularVelocity => AngularMomentum);
+
+// ── Electrical ──
+impl_diff_wrt!(Power, Current => Voltage);
+impl_diff_wrt!(Power, Voltage => Current);
+
+// ── Integration (reverse of differentiation) ──
+impl_int_wrt!(Velocity, Time => Length);
+impl_int_wrt!(Acceleration, Time => Velocity);
+impl_int_wrt!(AngularVelocity, Time => Angle);
+impl_int_wrt!(AngularAcceleration, Time => AngularVelocity);
+impl_int_wrt!(Power, Time => Energy);
+impl_int_wrt!(Force, Time => Momentum);
+impl_int_wrt!(Torque, Time => AngularMomentum);
+impl_int_wrt!(Current, Time => Charge);
+impl_int_wrt!(Voltage, Time => MagneticFlux);
+impl_int_wrt!(Force, Length => Energy);
+impl_int_wrt!(Stiffness, Length => Force);
+impl_int_wrt!(Momentum, Velocity => Energy);  // ∫p dv = KE
+impl_int_wrt!(AngularMomentum, AngularVelocity => Energy);

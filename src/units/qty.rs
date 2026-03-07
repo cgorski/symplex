@@ -26,6 +26,25 @@ use crate::prelude::Ex;
 use super::dim::{Dim, DimName};
 
 // ═══════════════════════════════════════════════════════════════════════════
+// IntoEx — accept both Ex and &Ex without explicit .clone()
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Trait for types that can be converted to an owned `Ex`.
+/// Allows `from_ex` to accept both `Ex` and `&Ex` without explicit `.clone()`.
+pub trait IntoEx {
+    /// Convert to an owned `Ex`.
+    fn into_ex(self) -> Ex;
+}
+
+impl IntoEx for Ex {
+    fn into_ex(self) -> Ex { self }
+}
+
+impl IntoEx for &Ex {
+    fn into_ex(self) -> Ex { self.clone() }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Qty<D> — the core dimensioned wrapper
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -49,9 +68,9 @@ impl<D> Qty<D> {
     ///
     /// The caller asserts that the expression genuinely has dimension `D`.
     #[inline]
-    pub fn from_ex(ex: Ex) -> Self {
+    pub fn from_ex(ex: impl IntoEx) -> Self {
         Qty {
-            inner: ex,
+            inner: ex.into_ex(),
             _dim: PhantomData,
         }
     }
@@ -77,6 +96,107 @@ impl<D> Qty<D> {
     #[inline]
     pub fn map(self, f: impl FnOnce(Ex) -> Ex) -> Self {
         Qty::from_ex(f(self.inner))
+    }
+}
+
+// ── Dimension-preserving symbolic manipulation ─────────────────────────
+
+impl<D> Qty<D> {
+    /// Simplify the inner expression (single-pass rewrite rules).
+    pub fn simplify(&self) -> Self { Self::from_ex(self.inner.simplify()) }
+
+    /// Algebraic expansion.
+    pub fn expand(&self) -> Self { Self::from_ex(self.inner.expand()) }
+
+    /// Evaluate special values (sin(π)→0, etc).
+    pub fn eval(&self) -> Self { Self::from_ex(self.inner.eval()) }
+
+    /// Substitute a variable with a value, preserving dimension.
+    pub fn subs(&self, var: &Ex, val: &Ex) -> Self { Self::from_ex(self.inner.subs(var, val)) }
+
+    /// Trigonometric simplification.
+    pub fn simplify_trig(&self) -> Self { Self::from_ex(self.inner.simplify_trig()) }
+
+    /// Power simplification.
+    pub fn simplify_powers(&self) -> Self { Self::from_ex(self.inner.simplify_powers()) }
+
+    /// Rational simplification (cancel + together).
+    pub fn simplify_rational(&self) -> Self { Self::from_ex(self.inner.simplify_rational()) }
+
+    /// Trig expansion (sin(a+b) → sin(a)cos(b)+cos(a)sin(b)).
+    pub fn expand_trig(&self) -> Self { Self::from_ex(self.inner.expand_trig()) }
+
+    /// Log expansion (ln(ab) → ln(a)+ln(b)).
+    pub fn expand_log(&self) -> Self { Self::from_ex(self.inner.expand_log()) }
+
+    /// Combine logarithms (ln(a)+ln(b) → ln(ab)).
+    pub fn log_combine(&self) -> Self { Self::from_ex(self.inner.log_combine()) }
+
+    /// Trig product-to-sum.
+    pub fn trig_combine(&self) -> Self { Self::from_ex(self.inner.trig_combine()) }
+
+    /// Factor a polynomial.
+    pub fn factor(&self, var: &Ex) -> Self { Self::from_ex(self.inner.factor(var)) }
+
+    /// Collect by variable.
+    pub fn collect(&self, var: &Ex) -> Self { Self::from_ex(self.inner.collect(var)) }
+
+    /// Cancel common polynomial factors.
+    pub fn cancel(&self, var: &Ex) -> Self { Self::from_ex(self.inner.cancel(var)) }
+
+    /// Combine fractions over common denominator.
+    pub fn together(&self) -> Self { Self::from_ex(self.inner.together()) }
+
+    /// Partial fraction decomposition.
+    pub fn partial_fractions(&self, var: &Ex) -> Self { Self::from_ex(self.inner.partial_fractions(var)) }
+
+    /// Rationalize the denominator.
+    pub fn rationalize_denom(&self) -> Self { Self::from_ex(self.inner.rationalize_denom()) }
+
+    // ── Calculus (returns raw Ex — user wraps in correct output type) ──
+
+    /// Differentiate with respect to a variable. Returns raw `Ex`.
+    /// Wrap the result in the appropriate output dimension type.
+    pub fn diff(&self, var: &Ex) -> Ex { self.inner.diff(var) }
+
+    /// Integrate with respect to a variable. Returns raw `Ex`.
+    pub fn integrate(&self, var: &Ex) -> Ex { self.inner.integrate(var) }
+
+    // ── Queries (dimension-independent) ──
+
+    /// LaTeX rendering of the inner expression.
+    pub fn to_latex(&self) -> String { self.inner.to_latex() }
+
+    /// Free symbols in the expression.
+    pub fn free_symbols(&self) -> Vec<Ex> { self.inner.free_symbols() }
+
+    /// Check if expression contains a subexpression.
+    pub fn contains(&self, other: &Ex) -> bool { self.inner.contains(other) }
+
+    /// Number of additive terms.
+    pub fn term_count(&self) -> usize { self.inner.term_count() }
+
+    /// Operation count (for complexity measure).
+    pub fn count_ops(&self) -> usize { self.inner.count_ops() }
+
+    /// Check if structurally zero.
+    pub fn is_zero(&self) -> Option<bool> { self.inner.is_zero() }
+
+    // ── Numerical evaluation ──
+
+    /// Evaluate to f64 (all symbols must be eliminated first).
+    pub fn eval_f64(&self) -> Result<f64, crate::base::errors::SymplexError> {
+        self.inner.eval_f64()
+    }
+
+    /// Evaluate with integer substitutions.
+    pub fn eval_f64_with(&self, subs: &[(&Ex, i64)]) -> Result<f64, crate::base::errors::SymplexError> {
+        self.inner.eval_f64_with(subs)
+    }
+
+    /// Arbitrary-precision decimal evaluation.
+    pub fn eval_decimal(&self, digits: u32) -> Result<String, crate::base::errors::SymplexError> {
+        self.inner.eval_decimal(digits)
     }
 }
 

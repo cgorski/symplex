@@ -64,8 +64,8 @@ macro_rules! define_quantity {
         pub struct $name(pub(crate) Ex);
 
         impl $name {
-            /// Create from a symbolic expression.
-            pub fn from_ex(ex: Ex) -> Self { $name(ex) }
+            /// Create from a symbolic expression (or anything that implements `IntoEx`).
+            pub fn from_ex(ex: impl $crate::units::qty::IntoEx) -> Self { $name(ex.into_ex()) }
 
             /// Create a named symbolic variable with this dimension.
             pub fn symbol(name: &str) -> Self {
@@ -111,6 +111,93 @@ macro_rules! define_quantity {
 
             /// Substitute a variable.
             pub fn subs(self, var: &Ex, val: &Ex) -> Self { $name(self.0.subs(var, val)) }
+
+            // ── Dimension-preserving manipulation ──────────────────────
+
+            /// Full multi-pass simplification, preserving dimension.
+            pub fn simplify_full(self) -> Self { $name(self.0.full_simplify()) }
+
+            /// Trigonometric simplification, preserving dimension.
+            pub fn simplify_trig(self) -> Self { $name(self.0.simplify_trig()) }
+
+            /// Power/exponent simplification, preserving dimension.
+            pub fn simplify_powers(self) -> Self { $name(self.0.simplify_powers()) }
+
+            /// Rational simplification, preserving dimension.
+            pub fn simplify_rational(self) -> Self { $name(self.0.simplify_rational()) }
+
+            /// Expand trigonometric identities, preserving dimension.
+            pub fn expand_trig(self) -> Self { $name(self.0.expand_trig()) }
+
+            /// Expand logarithmic identities, preserving dimension.
+            pub fn expand_log(self) -> Self { $name(self.0.expand_log()) }
+
+            /// Combine logarithmic terms, preserving dimension.
+            pub fn log_combine(self) -> Self { $name(self.0.log_combine()) }
+
+            /// Combine trigonometric terms, preserving dimension.
+            pub fn trig_combine(self) -> Self { $name(self.0.trig_combine()) }
+
+            /// Factor with respect to a variable, preserving dimension.
+            pub fn factor(&self, var: &Ex) -> Self { $name(self.0.factor(var)) }
+
+            /// Collect terms with respect to a variable, preserving dimension.
+            pub fn collect(&self, var: &Ex) -> Self { $name(self.0.collect(var)) }
+
+            /// Cancel common factors, preserving dimension.
+            pub fn cancel(&self, var: &Ex) -> Self { $name(self.0.cancel(var)) }
+
+            /// Combine fractions over a common denominator, preserving dimension.
+            pub fn together(self) -> Self { $name(self.0.together()) }
+
+            /// Partial-fraction decomposition with respect to a variable, preserving dimension.
+            pub fn partial_fractions(&self, var: &Ex) -> Self { $name(self.0.partial_fractions(var)) }
+
+            /// Rationalize the denominator, preserving dimension.
+            pub fn rationalize_denom(self) -> Self { $name(self.0.rationalize_denom()) }
+
+            // ── Calculus — returns raw Ex ──────────────────────────────
+
+            /// Differentiate with respect to a variable. Returns raw Ex.
+            /// Wrap result in the correct output type: `Acceleration::from_ex(v.diff(&t))`
+            pub fn diff(&self, var: &Ex) -> Ex { self.0.diff(var) }
+
+            /// Integrate with respect to a variable. Returns raw Ex.
+            pub fn integrate(&self, var: &Ex) -> Ex { self.0.integrate(var) }
+
+            // ── Queries ───────────────────────────────────────────────
+
+            /// Render as LaTeX string.
+            pub fn to_latex(&self) -> String { self.0.to_latex() }
+
+            /// Free symbols in the expression.
+            pub fn free_symbols(&self) -> Vec<Ex> { self.0.free_symbols() }
+
+            /// Whether the expression contains a given sub-expression.
+            pub fn contains(&self, other: &Ex) -> bool { self.0.contains(other) }
+
+            /// Number of top-level additive terms.
+            pub fn term_count(&self) -> usize { self.0.term_count() }
+
+            /// Count of internal operations.
+            pub fn count_ops(&self) -> usize { self.0.count_ops() }
+
+            /// Check whether this quantity is provably zero.
+            pub fn is_zero(&self) -> bool { self.0.is_zero().unwrap_or(false) }
+
+            /// Check symbolic equality with another quantity of the same type.
+            pub fn equals(&self, other: &Self) -> bool { self.0.equals(&other.0).unwrap_or(false) }
+
+            // ── Numerical evaluation ──────────────────────────────────
+
+            /// Evaluate to f64.
+            pub fn eval_f64(&self) -> Result<f64, crate::base::errors::SymplexError> { self.0.eval_f64() }
+
+            /// Substitute integer values and evaluate to f64.
+            pub fn eval_f64_with(&self, subs: &[(&Ex, i64)]) -> Result<f64, crate::base::errors::SymplexError> { self.0.eval_f64_with(subs) }
+
+            /// Evaluate to a decimal string with the given number of digits.
+            pub fn eval_decimal(&self, digits: u32) -> Result<String, crate::base::errors::SymplexError> { self.0.eval_decimal(digits) }
         }
 
         impl fmt::Display for $name {
