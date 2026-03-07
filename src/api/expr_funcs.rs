@@ -1667,6 +1667,78 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// Simplify an expression using temporary assumptions.
+    ///
+    /// Like [`refine`](Self::refine), but takes a list of
+    /// `(variable, assumption)` pairs that are applied temporarily
+    /// for this call only — the symbols' stored assumptions are not
+    /// modified.
+    ///
+    /// This is useful when you want to explore "what if x is positive?"
+    /// without permanently changing the symbol's properties.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = x.abs();
+    /// // x has no permanent assumptions, but refine_with treats it as positive:
+    /// let refined = expr.refine_with(&[(&x, Assumption::Positive)]);
+    /// assert_eq!(format!("{refined}"), format!("{x}"));
+    /// // Original x is unchanged — no permanent assumption was set:
+    /// assert!(x.is_positive().is_none());
+    /// ```
+    #[must_use = "returns the refined form; does not modify in place"]
+    pub fn refine_with(&self, temp_assumptions: &[(&Ex, crate::base::assumptions::Assumption)]) -> Ex {
+        use crate::base::assumptions::{AssumptionCache, Assumptions};
+        use crate::base::node::ExprNode;
+
+        let mut inner = self.inner.write();
+        let crate::api::context::ContextInner {
+            ref mut arena,
+            ref assumptions,
+            ..
+        } = *inner;
+
+        // Save original assumptions for symbols we're temporarily overriding.
+        let mut saved: Vec<(crate::base::node::SymbolId, Assumptions)> = Vec::new();
+        for (var, assumption) in temp_assumptions {
+            if let ExprNode::Symbol(sid) = arena.node(var.id) {
+                let sid = *sid;
+                saved.push((sid, arena.symbol_assumptions(sid)));
+                let mut a = arena.symbol_assumptions(sid);
+                let (prop, value) = assumption.to_prop_value();
+                if value {
+                    a.assert_true(prop);
+                } else {
+                    a.assert_false(prop);
+                }
+                a.forward_chain();
+                arena.set_symbol_assumptions(sid, a);
+            }
+        }
+
+        // Run refine with a fresh assumption cache (picks up the temp assumptions).
+        let mut temp_cache = AssumptionCache::new();
+        let id = crate::simplify::refine::refine_full(arena, &mut temp_cache, self.id);
+
+        // Restore original assumptions.
+        for (sid, original) in saved {
+            arena.set_symbol_assumptions(sid, original);
+        }
+
+        // Invalidate the main assumption cache since we temporarily mutated symbols.
+        {
+            let mut main_cache = assumptions.lock();
+            *main_cache = AssumptionCache::new();
+        }
+
+        drop(inner);
+        self.wrap(id)
+    }
+
     ///
     /// # Examples
     ///
