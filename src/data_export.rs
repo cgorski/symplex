@@ -388,8 +388,8 @@ mod tests {
 
     #[test]
     fn format_f64_decimal() {
-        let s = format_f64(3.14159);
-        assert!(s.starts_with("3.14159"));
+        let s = format_f64(3.14158);
+        assert!(s.starts_with("3.14158"));
     }
 
     #[test]

@@ -799,8 +799,7 @@ fn tr13(arena: &mut Arena, expr: ExprId) -> ExprId {
 ///
 /// - `cos(x) - 1 → -2·sin²(x/2)`
 /// - `cos(x) + 1 →  2·cos²(x/2)`
-#[allow(dead_code)]
-fn tr14(arena: &mut Arena, expr: ExprId) -> ExprId {
+pub(crate) fn tr14(arena: &mut Arena, expr: ExprId) -> ExprId {
     walk_transform(arena, expr, |arena, id| {
         let node = arena.node(id).clone();
         if let ExprNode::Add(ref children) = node {
@@ -942,8 +941,7 @@ fn tr_morrie(arena: &mut Arena, expr: ExprId) -> ExprId {
 ///
 /// Uses the Chebyshev-type expansion to express `sin(x)^n` and `cos(x)^n`
 /// as linear combinations of `sin(kx)` and `cos(kx)`.
-#[allow(dead_code)]
-fn tr_power(arena: &mut Arena, expr: ExprId) -> ExprId {
+pub(crate) fn tr_power(arena: &mut Arena, expr: ExprId) -> ExprId {
     walk_transform(arena, expr, |arena, id| {
         let node = arena.node(id).clone();
         if let ExprNode::Pow(base, exp) = node {
@@ -971,8 +969,7 @@ fn tr_power(arena: &mut Arena, expr: ExprId) -> ExprId {
 ///
 /// - Even n: `sin^n(x) = (1/2^n) * [C(n,n/2) + 2·Σ (-1)^(n/2-k)·C(n,k)·cos((n-2k)x)]`
 /// - Odd n:  `sin^n(x) = (1/2^n) * [2·Σ (-1)^((n-1)/2-k)·C(n,k)·sin((n-2k)x)]`
-#[allow(dead_code)]
-fn linearize_sin_power(arena: &mut Arena, arg: ExprId, n: u32) -> ExprId {
+pub(crate) fn linearize_sin_power(arena: &mut Arena, arg: ExprId, n: u32) -> ExprId {
     let denom = arena.int(1i64 << n);
     let mut terms: Vec<ExprId> = Vec::new();
 
@@ -1011,8 +1008,7 @@ fn linearize_sin_power(arena: &mut Arena, arg: ExprId, n: u32) -> ExprId {
 ///
 /// - Even n: `cos^n(x) = (1/2^n) * [C(n,n/2) + 2·Σ C(n,k)·cos((n-2k)x)]`
 /// - Odd n:  `cos^n(x) = (1/2^n) * [2·Σ C(n,k)·cos((n-2k)x)]`
-#[allow(dead_code)]
-fn linearize_cos_power(arena: &mut Arena, arg: ExprId, n: u32) -> ExprId {
+pub(crate) fn linearize_cos_power(arena: &mut Arena, arg: ExprId, n: u32) -> ExprId {
     let denom = arena.int(1i64 << n);
     let mut terms: Vec<ExprId> = Vec::new();
 
@@ -1046,8 +1042,7 @@ fn linearize_cos_power(arena: &mut Arena, arg: ExprId, n: u32) -> ExprId {
 }
 
 /// Compute binomial coefficient C(n, k) for small n.
-#[allow(dead_code)]
-fn binomial_coeff(n: u32, k: u32) -> i64 {
+pub(crate) fn binomial_coeff(n: u32, k: u32) -> i64 {
     if k > n {
         return 0;
     }

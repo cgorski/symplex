@@ -568,8 +568,10 @@ fn try_ratio_by_substitution(
     let (numer, denom) = polybridge::as_numer_denom(arena, ratio);
 
     // Verify both parts are polynomial in k.
-    let _np = polybridge::expr_to_poly(arena, numer, k)?;
-    let _dp = polybridge::expr_to_poly(arena, denom, k)?;
+    // Validate that both numerator and denominator are polynomial in k.
+    // The `?` returns None if either fails to convert, rejecting non-rational ratios.
+    let _ = polybridge::expr_to_poly(arena, numer, k)?;
+    let _ = polybridge::expr_to_poly(arena, denom, k)?;
 
     Some((numer, denom))
 }

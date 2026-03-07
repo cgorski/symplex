@@ -69,6 +69,7 @@ fn compute_y_range(samples: &[(f64, f64)]) -> f64 {
     (y_max - y_min).abs().max(1e-10)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn refine_segment(
     f: &dyn Fn(f64) -> f64,
     p1: (f64, f64),
@@ -208,7 +209,7 @@ fn detect_discontinuities(
         let mut sorted = gradients.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let mid = sorted.len() / 2;
-        if sorted.len() % 2 == 0 && sorted.len() >= 2 {
+        if sorted.len().is_multiple_of(2) && sorted.len() >= 2 {
             (sorted[mid - 1] + sorted[mid]) / 2.0
         } else {
             sorted[mid]
@@ -259,10 +260,11 @@ fn sample_sin_x() {
     );
 
     // Every finite y must be in [-1, 1]
+    // Check all y-values are in [-1, 1] (with small tolerance)
     for &(_, y) in &data.points {
         if y.is_finite() {
             assert!(
-                y >= -1.0 - 1e-12 && y <= 1.0 + 1e-12,
+                (-1.0 - 1e-12..=1.0 + 1e-12).contains(&y),
                 "sin(x) produced y = {} which is outside [-1,1]",
                 y
             );
@@ -357,12 +359,12 @@ fn sample_adaptive_sharp_peak() {
     let peak_count = data
         .points
         .iter()
-        .filter(|&&(x, y)| x >= 0.4 && x <= 0.6 && y.is_finite())
+        .filter(|&&(x, y)| (0.4..=0.6).contains(&x) && y.is_finite())
         .count();
     let flat_count = data
         .points
         .iter()
-        .filter(|&&(x, y)| x >= 0.0 && x <= 0.2 && y.is_finite())
+        .filter(|&&(x, y)| (0.0..=0.2).contains(&x) && y.is_finite())
         .count();
 
     assert!(
@@ -373,10 +375,11 @@ fn sample_adaptive_sharp_peak() {
     );
 
     // All y values should be in [0, 1] (it's a Gaussian)
+    // All finite y-values should be in [-1, 1]
     for &(_, y) in &data.points {
         if y.is_finite() {
             assert!(
-                y >= -1e-12 && y <= 1.0 + 1e-12,
+                (-1.0 - 1e-12..=1.0 + 1e-12).contains(&y),
                 "sharp peak: y = {} outside [0, 1]",
                 y
             );
@@ -556,7 +559,7 @@ fn sample_respects_range_bounds() {
     for &(x, y) in &data.points {
         if y.is_finite() {
             assert!(
-                x >= 1.0 - 1e-6 && x <= 3.0 + 1e-6,
+                (1.0 - 1e-6..=3.0 + 1e-6).contains(&x),
                 "sampled x = {} outside range [1, 3]",
                 x
             );

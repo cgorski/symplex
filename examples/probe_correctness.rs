@@ -538,7 +538,8 @@ fn main() {
     println!("\n=== FTC Verification (d/dx F(x) ≈ f(x)) ===\n");
 
     // Pick a subset of integrals for FTC verification at specific points
-    let ftc_tests: Vec<(&str, Ex, Vec<(i64, i64)>)> = vec![
+    type FtcTest<'a> = (&'a str, Ex, Vec<(i64, i64)>);
+    let ftc_tests: Vec<FtcTest<'_>> = vec![
         ("x^2", x.powi(2), vec![(1, 2), (1, 1), (3, 2)]),
         ("sin(x)", x.sin(), vec![(1, 2), (1, 1), (3, 2)]),
         ("exp(x)", x.exp(), vec![(1, 2), (1, 1), (3, 2)]),
@@ -588,19 +589,18 @@ fn main() {
         let mut point_count = 0;
 
         for &(pn, pd) in points {
-            match ftc_check_at_point(integrand, &antideriv, &x, pn, pd) {
-                Some((f_val, fp_val, error)) => {
-                    point_count += 1;
-                    worst_error = worst_error.max(error);
-                    if error > ftc_tolerance {
-                        all_ok = false;
-                        println!(
-                            "  ❌ WRONG FTC {} at x={}/{}: f={:.6} F'≈{:.6} err={:.2e}",
-                            label, pn, pd, f_val, fp_val, error
-                        );
-                    }
+            if let Some((f_val, fp_val, error)) =
+                ftc_check_at_point(integrand, &antideriv, &x, pn, pd)
+            {
+                point_count += 1;
+                worst_error = worst_error.max(error);
+                if error > ftc_tolerance {
+                    all_ok = false;
+                    println!(
+                        "  ❌ WRONG FTC {} at x={}/{}: f={:.6} F'≈{:.6} err={:.2e}",
+                        label, pn, pd, f_val, fp_val, error
+                    );
                 }
-                None => {} // Skip this point if eval fails
             }
         }
 
@@ -647,19 +647,16 @@ fn main() {
             let orig_val = eval_at(&test.original, &x, pn, pd);
             let simp_val = eval_at(&simplified, &x, pn, pd);
 
-            match (orig_val, simp_val) {
-                (Some(ov), Some(sv)) => {
-                    point_count += 1;
-                    let error = (ov - sv).abs();
-                    if error > tolerance {
-                        all_ok = false;
-                        println!(
-                            "  ❌ WRONG SIMP {} at x={}/{}: orig={:.6} simp={:.6} err={:.2e}",
-                            test.label, pn, pd, ov, sv, error
-                        );
-                    }
+            if let (Some(ov), Some(sv)) = (orig_val, simp_val) {
+                point_count += 1;
+                let error = (ov - sv).abs();
+                if error > tolerance {
+                    all_ok = false;
+                    println!(
+                        "  ❌ WRONG SIMP {} at x={}/{}: orig={:.6} simp={:.6} err={:.2e}",
+                        test.label, pn, pd, ov, sv, error
+                    );
                 }
-                _ => {}
             }
         }
 
@@ -742,7 +739,8 @@ fn main() {
     // ═══════════════════════════════════════════════════════════════════
     println!("\n=== Series Expansion Accuracy ===\n");
 
-    let series_cases: Vec<(&str, Ex, Vec<(i64, i64)>)> = vec![
+    type SeriesTest<'a> = (&'a str, Ex, Vec<(i64, i64)>);
+    let series_cases: Vec<SeriesTest<'_>> = vec![
         ("sin(x)", x.sin(), vec![(1, 10), (1, 5), (3, 10)]),
         ("cos(x)", x.cos(), vec![(1, 10), (1, 5), (3, 10)]),
         ("exp(x)", x.exp(), vec![(1, 10), (1, 5), (3, 10)]),
@@ -769,16 +767,13 @@ fn main() {
                     let exact = eval_at(expr, &x, pn, pd);
                     let approx = eval_at(&expanded, &x, pn, pd);
 
-                    match (exact, approx) {
-                        (Some(ev), Some(av)) => {
-                            point_count += 1;
-                            let error = (ev - av).abs();
-                            worst_error = worst_error.max(error);
-                            if error > series_tol {
-                                all_ok = false;
-                            }
+                    if let (Some(ev), Some(av)) = (exact, approx) {
+                        point_count += 1;
+                        let error = (ev - av).abs();
+                        worst_error = worst_error.max(error);
+                        if error > series_tol {
+                            all_ok = false;
                         }
-                        _ => {}
                     }
                 }
 

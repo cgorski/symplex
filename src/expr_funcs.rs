@@ -1657,6 +1657,37 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// Linearize trigonometric powers using Chebyshev-type expansion.
+    ///
+    /// Converts `sin(x)^n` and `cos(x)^n` into linear combinations of
+    /// `sin(kx)` and `cos(kx)`. For example, `sin(x)^3` becomes
+    /// `3/4·sin(x) - 1/4·sin(3x)`.
+    ///
+    /// This is Fu's TRpower transform.
+    #[must_use = "returns the linearized form; does not modify in place"]
+    pub fn trig_power_linearize(&self) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            crate::fu::tr_power(&mut guard.arena, self.id)
+        };
+        self.wrap(id)
+    }
+
+    /// Apply half-angle factoring to trigonometric expressions.
+    ///
+    /// Converts patterns like `cos(x) - 1` to `-2·sin²(x/2)` and
+    /// `cos(x) + 1` to `2·cos²(x/2)`.
+    ///
+    /// This is Fu's TR14 transform.
+    #[must_use = "returns the transformed form; does not modify in place"]
+    pub fn trig_half_angle(&self) -> Ex {
+        let id = {
+            let mut guard = self.inner.write();
+            crate::fu::tr14(&mut guard.arena, self.id)
+        };
+        self.wrap(id)
+    }
+
     /// Attempt closed-form evaluation of a hypergeometric sum using Gosper's algorithm.
     ///
     /// Given a symbolic sum `Σ_{k=lower}^{upper} f(k)`, tries to find a

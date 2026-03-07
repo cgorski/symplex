@@ -1553,10 +1553,6 @@ fn try_homogeneous_coefficient(
     //
     // This avoids the need to simplify (v*x)^n / x^n etc.
     let v = arena.symbol("__v");
-    let _v_sym = match arena.node(v) {
-        ExprNode::Symbol(sid) => *sid,
-        _ => return None,
-    };
 
     // Compute f(v) = RHS(x=1, y=v)
     let rhs_sub = crate::subs::subs(arena, rhs, func, v);
@@ -1671,10 +1667,6 @@ fn try_nth_order_reducible(
 
     // Now perform the reduction: let p = dy/dx, then d²y/dx² = p·dp/dy
     let p = arena.symbol("__p");
-    let _p_sym = match arena.node(p) {
-        ExprNode::Symbol(sid) => *sid,
-        _ => return None,
-    };
     let dp_dy = arena.intern(ExprNode::Derivative(p, func));
     let p_dp_dy = arena.mul(&[p, dp_dy]);
 

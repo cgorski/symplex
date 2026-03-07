@@ -108,16 +108,6 @@ fn heurisch_attempt(
         comp_sym_ids.push(sid);
     }
 
-    // Build substitution map: component_expr → V_i
-    let subs_pairs: Vec<(ExprId, ExprId)> = components
-        .iter()
-        .zip(comp_syms.iter())
-        .map(|(&c, &v)| (c, v))
-        .collect();
-
-    // Substituted integrand: replace each component with its V_i.
-    let _subst_expr = crate::subs::subs_map(arena, expr, &subs_pairs);
-
     // ── Step 3: Compute derivatives of components ──────────────────
     // For each component g_i, compute dg_i/dx.
     let comp_derivs: Vec<ExprId> = components

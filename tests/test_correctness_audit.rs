@@ -48,6 +48,7 @@ struct DefiniteIntegralFixture {
     id: usize,
     #[allow(dead_code)]
     category: String,
+    #[allow(dead_code)]
     subcategory: Option<String>,
     label: String,
     input: String,
@@ -64,6 +65,7 @@ struct DefiniteIntegralFixture {
 #[derive(serde::Deserialize, Debug)]
 struct FtcPoint {
     x: f64,
+    #[allow(dead_code)]
     integrand_value: NumValue,
     antideriv_value: NumValue,
 }
@@ -73,6 +75,7 @@ struct FtcFixture {
     id: usize,
     #[allow(dead_code)]
     category: String,
+    #[allow(dead_code)]
     subcategory: Option<String>,
     label: String,
     input: String,
@@ -452,26 +455,23 @@ fn process_simplify(
         let _sympy_simp = pt.simplified_value.re;
 
         // Check: does our original match SymPy's original?
-        if let Some(ov) = orig_val {
-            if !approx_eq(ov, sympy_orig, TOLERANCE) {
-                // Our evaluation of the original differs from SymPy.
-                // This is an eval issue, not a simplification issue.
-                continue;
-            }
+        if let Some(ov) = orig_val
+            && !approx_eq(ov, sympy_orig, TOLERANCE)
+        {
+            // Our evaluation of the original differs from SymPy.
+            // This is an eval issue, not a simplification issue.
+            continue;
         }
 
         // Check: does our simplified match our original numerically?
-        match (orig_val, simp_val) {
-            (Some(ov), Some(sv)) => {
-                checked += 1;
-                if !approx_eq(ov, sv, TOLERANCE) {
-                    mismatches.push(format!(
-                        "x={}: orig={:.6} simp={:.6}",
-                        pt.x, ov, sv
-                    ));
-                }
+        if let (Some(ov), Some(sv)) = (orig_val, simp_val) {
+            checked += 1;
+            if !approx_eq(ov, sv, TOLERANCE) {
+                mismatches.push(format!(
+                    "x={}: orig={:.6} simp={:.6}",
+                    pt.x, ov, sv
+                ));
             }
-            _ => {}
         }
     }
 
@@ -745,7 +745,7 @@ fn correctness_audit_against_sympy() {
     // We do NOT assert zero failures because some may be known divergences.
     // Instead, we assert that at least 50% of tested fixtures pass.
     assert!(
-        outcomes.len() > 0,
+        !outcomes.is_empty(),
         "No fixtures were processed — is the JSON file empty?"
     );
 

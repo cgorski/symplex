@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn format_num_decimal() {
-        let s = format_num(3.14159);
+        let s = format_num(3.14158);
         assert!(s.starts_with("3.14"));
     }
 

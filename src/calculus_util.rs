@@ -471,10 +471,7 @@ mod tests {
         }
     }
 
-    /// Helper: evaluate an ExprId to f64 for assertions.
-    fn to_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
-        expr_to_f64(arena, expr)
-    }
+
 
     /// Helper: check if a set (as displayed) contains an interval description.
     fn set_display(arena: &Arena, set: ExprId) -> String {

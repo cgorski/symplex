@@ -45,17 +45,17 @@ fn verify_system_numerically(
     }
 
     // Compute A·x(t0)
-    for i in 0..n {
+    for (i, &xp_i) in xp_vals.iter().enumerate().take(n) {
         let mut ax_i = 0.0;
-        for j in 0..n {
+        for (j, &x_j) in x_vals.iter().enumerate().take(n) {
             let a_ij = a_matrix
                 .get(i, j)
                 .eval_f64()
                 .unwrap_or(0.0);
-            ax_i += a_ij * x_vals[j];
+            ax_i += a_ij * x_j;
         }
-        let residual = (xp_vals[i] - ax_i).abs();
-        let scale = xp_vals[i].abs().max(ax_i.abs()).max(1.0);
+        let residual = (xp_i - ax_i).abs();
+        let scale = xp_i.abs().max(ax_i.abs()).max(1.0);
         if residual / scale > 1e-4 {
             return false;
         }
@@ -529,7 +529,7 @@ fn ode_system_solution_dimension_matches_matrix() {
     for n in 1..=4 {
         let a = Matrix::identity(n);
         let sol = symplex::ode::solve_ode_system(&a, &t)
-            .expect(&format!("should solve {n}x{n} identity system"));
+            .unwrap_or_else(|| panic!("should solve {n}x{n} identity system"));
         assert_eq!(
             sol.len(),
             n,
