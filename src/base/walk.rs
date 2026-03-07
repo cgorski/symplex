@@ -158,6 +158,7 @@ pub(crate) fn rebuild_with_cache(
         | ExprNode::Pi
         | ExprNode::E
         | ExprNode::ImaginaryUnit
+        | ExprNode::PhysicalConstant(_, _)
         | ExprNode::Infinity
         | ExprNode::NegInfinity
         | ExprNode::ComplexInfinity

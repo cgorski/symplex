@@ -763,6 +763,10 @@ fn expr_to_rust_cse(
         }
         ExprNode::Pi => Ok(format!("{}::PI", prec.consts_mod())),
         ExprNode::E => Ok(format!("{}::E", prec.consts_mod())),
+        ExprNode::PhysicalConstant(_, value_id) => {
+            // Emit the exact numeric value as Rust code
+            expr_to_rust_cse(arena, value_id, var_names, options, cse_constants)
+        }
         ExprNode::Infinity => Ok(prec.infinity().to_string()),
         ExprNode::NegInfinity => Ok(prec.neg_infinity().to_string()),
         ExprNode::NaN | ExprNode::ComplexInfinity => Ok(prec.nan().to_string()),
@@ -1335,7 +1339,7 @@ fn is_pure_constant(arena: &Arena, id: ExprId, resolved: &FxHashMap<usize, f64>)
     let mut stack = vec![id];
     while let Some(cur) = stack.pop() {
         match arena.node(cur) {
-            ExprNode::Num(_) | ExprNode::Pi | ExprNode::E => {}
+            ExprNode::Num(_) | ExprNode::Pi | ExprNode::E | ExprNode::PhysicalConstant(_, _) => {}
             ExprNode::Symbol(sid) => {
                 let name = arena.symbols.name(*sid);
                 if let Some(idx_str) = name.strip_prefix("__cse_")
@@ -1371,6 +1375,9 @@ fn eval_constant_f64(
         }
         ExprNode::Pi => Some(std::f64::consts::PI),
         ExprNode::E => Some(std::f64::consts::E),
+        ExprNode::PhysicalConstant(_, value_id) => {
+            eval_constant_f64(arena, value_id, cse_constants)
+        }
         ExprNode::Symbol(sid) => {
             let name = arena.symbols.name(sid);
             let idx_str = name.strip_prefix("__cse_")?;

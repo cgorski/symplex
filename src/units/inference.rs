@@ -152,6 +152,12 @@ pub fn infer_dimension(expr: &Ex, dims: &DimMap) -> Result<ConstDim, String> {
         }
 
         ExprType::Constant => {
+            // Physical constants (c, h, k_B, …) display as their symbol name.
+            // Check the DimMap first so callers can assign dimensions to them.
+            let name = format!("{}", expr);
+            if let Some(&dim) = dims.get(&name) {
+                return Ok(dim);
+            }
             // π, e, i, ∞ — all dimensionless
             Ok(ConstDim::DIMENSIONLESS)
         }

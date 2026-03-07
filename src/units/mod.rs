@@ -32,6 +32,8 @@ pub mod calculus;
 pub mod inference;
 /// Exact conversion factor constants with derivation verification tests.
 pub mod conv_factors;
+/// Physical constants as dimension-typed symbolic expressions.
+pub mod constants;
 
 // Re-export all public items for `use symplex::units::*`
 pub use dim::*;

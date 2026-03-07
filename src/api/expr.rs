@@ -341,6 +341,7 @@ impl<S: Sort> Expr<S> {
             crate::base::node::ExprNode::Pi
             | crate::base::node::ExprNode::E
             | crate::base::node::ExprNode::ImaginaryUnit
+            | crate::base::node::ExprNode::PhysicalConstant(_, _)
             | crate::base::node::ExprNode::Infinity
             | crate::base::node::ExprNode::NegInfinity
             | crate::base::node::ExprNode::ComplexInfinity

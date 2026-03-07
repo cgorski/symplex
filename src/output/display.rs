@@ -210,6 +210,7 @@ fn display_category(arena: &Arena, id: ExprId) -> DisplayCategory {
         | ExprNode::Pi
         | ExprNode::E
         | ExprNode::ImaginaryUnit
+        | ExprNode::PhysicalConstant(_, _)
         | ExprNode::BoolTrue
         | ExprNode::BoolFalse => DisplayCategory::Constant,
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN => {
@@ -258,6 +259,7 @@ fn estimate_display_degree(arena: &Arena, id: ExprId) -> u32 {
         | ExprNode::Pi
         | ExprNode::E
         | ExprNode::ImaginaryUnit
+        | ExprNode::PhysicalConstant(_, _)
         | ExprNode::BoolTrue
         | ExprNode::BoolFalse
         | ExprNode::Infinity
@@ -365,6 +367,9 @@ fn expand_expr(
         ExprNode::Pi => stack.push(WorkItem::Lit("pi")),
         ExprNode::E => stack.push(WorkItem::Lit("E")),
         ExprNode::ImaginaryUnit => stack.push(WorkItem::Lit("I")),
+        ExprNode::PhysicalConstant(name_id, _) => {
+            stack.push(WorkItem::Owned(arena.symbol_name(name_id).to_owned()));
+        }
         ExprNode::Infinity => stack.push(WorkItem::Lit("oo")),
         ExprNode::NegInfinity => stack.push(WorkItem::Lit("-oo")),
         ExprNode::ComplexInfinity => stack.push(WorkItem::Lit("zoo")),

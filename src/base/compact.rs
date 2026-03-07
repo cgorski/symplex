@@ -179,6 +179,22 @@ fn remap_node(
         ExprNode::Pi => ExprNode::Pi,
         ExprNode::E => ExprNode::E,
         ExprNode::ImaginaryUnit => ExprNode::ImaginaryUnit,
+
+        ExprNode::PhysicalConstant(old_sid, old_value_id) => {
+            let name = src.symbol_name(*old_sid).to_owned();
+            let new_sid = dst.symbols.intern(&name);
+            // The value_id is not a declared child of this atom, so it may
+            // not have been visited during the reachability walk.  If it IS
+            // in the map (referenced elsewhere), use the mapped id.
+            // Otherwise, transfer its subtree directly (typically a Num).
+            let new_value_id = if let Some(&mapped) = map.get(old_value_id) {
+                mapped
+            } else {
+                transfer_node(src, dst, *old_value_id, map)
+            };
+            ExprNode::PhysicalConstant(new_sid, new_value_id)
+        }
+
         ExprNode::Infinity => ExprNode::Infinity,
         ExprNode::NegInfinity => ExprNode::NegInfinity,
         ExprNode::ComplexInfinity => ExprNode::ComplexInfinity,

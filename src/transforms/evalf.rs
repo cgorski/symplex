@@ -134,6 +134,11 @@ fn eval_node(
 
         ExprNode::ImaginaryUnit => Ok((BigFloat::new(prec), BigFloat::from_i32(1, prec))),
 
+        ExprNode::PhysicalConstant(_, value_id) => {
+            // Recursively evaluate the stored exact value to a float.
+            eval_node_or_subtree(arena, *value_id, cache, prec, rm, cc)
+        }
+
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
             Err(SymplexError::Unevaluable {
                 reason: "cannot evaluate infinity to finite precision".into(),

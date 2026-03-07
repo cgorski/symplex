@@ -108,7 +108,7 @@ fn convert_node(
         }
 
         // Constants.
-        ExprNode::Pi | ExprNode::E | ExprNode::ImaginaryUnit => None,
+        ExprNode::Pi | ExprNode::E | ExprNode::ImaginaryUnit | ExprNode::PhysicalConstant(_, _) => None,
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN => {
             None
         }

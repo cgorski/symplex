@@ -1380,6 +1380,13 @@ impl Arena {
         self.intern(ExprNode::Apply(sym_id, args))
     }
 
+    /// Create a named physical constant with a known exact value.
+    /// The constant displays as `name` but evaluates to `value`.
+    pub fn physical_constant(&mut self, name: &str, value: ExprId) -> ExprId {
+        let name_id = self.symbols.intern(name);
+        self.intern(ExprNode::PhysicalConstant(name_id, value))
+    }
+
     // ── Series extensions (residue, Fourier) ───────────────────────
 
     /// Compute the residue of `expr` at `var = point`.

@@ -130,6 +130,7 @@ fn diff_node(
         ExprNode::Pi
         | ExprNode::E
         | ExprNode::ImaginaryUnit
+        | ExprNode::PhysicalConstant(_, _)
         | ExprNode::Infinity
         | ExprNode::NegInfinity
         | ExprNode::ComplexInfinity

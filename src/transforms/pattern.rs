@@ -157,6 +157,9 @@ fn match_recursive(
         (ExprNode::Pi, ExprNode::Pi) => true,
         (ExprNode::E, ExprNode::E) => true,
         (ExprNode::ImaginaryUnit, ExprNode::ImaginaryUnit) => true,
+        (ExprNode::PhysicalConstant(n1, v1), ExprNode::PhysicalConstant(n2, v2)) => {
+            n1 == n2 && v1 == v2
+        }
         (ExprNode::Infinity, ExprNode::Infinity) => true,
         (ExprNode::NegInfinity, ExprNode::NegInfinity) => true,
         (ExprNode::ComplexInfinity, ExprNode::ComplexInfinity) => true,

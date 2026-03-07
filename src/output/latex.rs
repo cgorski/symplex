@@ -553,6 +553,9 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::Pi => stack.push(LatexItem::Lit(r"\pi")),
         ExprNode::E => stack.push(LatexItem::Lit("e")),
         ExprNode::ImaginaryUnit => stack.push(LatexItem::Lit("i")),
+        ExprNode::PhysicalConstant(name_id, _) => {
+            stack.push(LatexItem::Owned(symbol_to_latex(arena.symbol_name(name_id))));
+        }
         ExprNode::Infinity => stack.push(LatexItem::Lit(r"\infty")),
         ExprNode::NegInfinity => stack.push(LatexItem::Lit(r"-\infty")),
         ExprNode::ComplexInfinity => stack.push(LatexItem::Lit(r"\tilde{\infty}")),

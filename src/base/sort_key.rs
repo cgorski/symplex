@@ -132,6 +132,7 @@ const FN_DIRAC_DELTA: u8 = 29;
 const CONST_PI: u8 = 0;
 const CONST_E: u8 = 1;
 const CONST_IMAGINARY_UNIT: u8 = 2;
+const CONST_PHYSICAL: u8 = 3;
 const CONST_BOOL_TRUE: u8 = 10;
 const CONST_BOOL_FALSE: u8 = 11;
 
@@ -531,6 +532,13 @@ pub fn compute_sort_key(
         ExprNode::ImaginaryUnit => {
             key.push(RANK_CONSTANT);
             key.push(CONST_IMAGINARY_UNIT);
+        }
+
+        ExprNode::PhysicalConstant(name_id, _) => {
+            key.push(RANK_CONSTANT);
+            key.push(CONST_PHYSICAL);
+            // Include the name for deterministic ordering among physical constants
+            key.extend(get_sym_name(*name_id).as_bytes());
         }
 
         // -- special values --------------------------------------------------

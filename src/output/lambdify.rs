@@ -103,6 +103,10 @@ fn compile_recursive(
         ExprNode::Pi => out.push(Instruction::PushConst(std::f64::consts::PI)),
         ExprNode::E => out.push(Instruction::PushConst(std::f64::consts::E)),
         ExprNode::ImaginaryUnit => return None, // Can't lambdify complex
+        ExprNode::PhysicalConstant(_, value_id) => {
+            // Recursively compile the stored exact value
+            compile_recursive(arena, value_id, var_map, out)?;
+        }
         ExprNode::Infinity => out.push(Instruction::PushConst(f64::INFINITY)),
         ExprNode::NegInfinity => out.push(Instruction::PushConst(f64::NEG_INFINITY)),
         ExprNode::NaN | ExprNode::ComplexInfinity => {

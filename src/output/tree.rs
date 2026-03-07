@@ -62,6 +62,13 @@ pub enum ExprTree {
     E,
     /// The imaginary unit i.
     ImaginaryUnit,
+    /// A named physical constant with a known exact value.
+    PhysicalConstant {
+        /// The display name (e.g., "c", "h", "k_B").
+        name: String,
+        /// The exact value of the constant.
+        value: Box<ExprTree>,
+    },
     /// Positive infinity.
     Infinity,
     /// Negative infinity.
@@ -402,6 +409,10 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::Pi => ExprTree::Pi,
         ExprNode::E => ExprTree::E,
         ExprNode::ImaginaryUnit => ExprTree::ImaginaryUnit,
+        ExprNode::PhysicalConstant(name_id, value_id) => ExprTree::PhysicalConstant {
+            name: arena.symbol_name(name_id).to_owned(),
+            value: Box::new(expr_to_tree(arena, value_id)),
+        },
         ExprNode::Infinity => ExprTree::Infinity,
         ExprNode::NegInfinity => ExprTree::NegInfinity,
         ExprNode::ComplexInfinity => ExprTree::ComplexInfinity,
@@ -617,6 +628,10 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::Pi => arena.pi,
         ExprTree::E => arena.e_const,
         ExprTree::ImaginaryUnit => arena.i_unit,
+        ExprTree::PhysicalConstant { name, value } => {
+            let val_id = tree_to_expr(arena, value);
+            arena.physical_constant(name, val_id)
+        }
         ExprTree::Infinity => arena.infinity,
         ExprTree::NegInfinity => arena.neg_infinity,
         ExprTree::ComplexInfinity => arena.complex_infinity,

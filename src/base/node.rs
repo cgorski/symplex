@@ -90,6 +90,10 @@ pub enum ExprNode {
     /// The imaginary unit *i*, satisfying *i*² = −1.
     ImaginaryUnit,
 
+    /// A named physical constant with a known exact value.
+    /// Displays as name, evaluates to value. E.g., speed of light, Planck's constant.
+    PhysicalConstant(SymbolId, ExprId),
+
     /// Positive infinity (+∞).
     Infinity,
 
@@ -310,6 +314,7 @@ impl ExprNode {
             | ExprNode::Pi
             | ExprNode::E
             | ExprNode::ImaginaryUnit
+            | ExprNode::PhysicalConstant(_, _)
             | ExprNode::Infinity
             | ExprNode::NegInfinity
             | ExprNode::ComplexInfinity
@@ -419,6 +424,7 @@ impl ExprNode {
             | ExprNode::Pi
             | ExprNode::E
             | ExprNode::ImaginaryUnit
+            | ExprNode::PhysicalConstant(_, _)
             | ExprNode::Infinity
             | ExprNode::NegInfinity
             | ExprNode::ComplexInfinity
@@ -534,6 +540,7 @@ impl ExprNode {
             | ExprNode::Pi
             | ExprNode::E
             | ExprNode::ImaginaryUnit
+            | ExprNode::PhysicalConstant(_, _)
             | ExprNode::Infinity
             | ExprNode::NegInfinity
             | ExprNode::ComplexInfinity
@@ -613,6 +620,7 @@ impl ExprNode {
                 | ExprNode::Pi
                 | ExprNode::E
                 | ExprNode::ImaginaryUnit
+                | ExprNode::PhysicalConstant(_, _)
                 | ExprNode::Infinity
                 | ExprNode::NegInfinity
                 | ExprNode::ComplexInfinity
@@ -647,6 +655,9 @@ impl fmt::Debug for ExprNode {
             ExprNode::Pi => write!(f, "Pi"),
             ExprNode::E => write!(f, "E"),
             ExprNode::ImaginaryUnit => write!(f, "ImaginaryUnit"),
+            ExprNode::PhysicalConstant(name, val) => {
+                write!(f, "PhysicalConstant({name:?}, {val:?})")
+            }
             ExprNode::Infinity => write!(f, "Infinity"),
             ExprNode::NegInfinity => write!(f, "NegInfinity"),
             ExprNode::ComplexInfinity => write!(f, "ComplexInfinity"),

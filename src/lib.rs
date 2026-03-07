@@ -279,6 +279,20 @@ pub fn i_unit() -> api::expr::Ex {
     default_context().i_unit()
 }
 
+/// Create a named physical constant in the global default context.
+///
+/// The constant displays as `name` but evaluates numerically to `value`.
+///
+/// # Examples
+///
+/// ```
+/// let c = symplex::physical_constant("c", symplex::int(299_792_458));
+/// assert_eq!(format!("{c}"), "c");
+/// ```
+pub fn physical_constant(name: &str, value: api::expr::Ex) -> api::expr::Ex {
+    default_context().physical_constant(name, value)
+}
+
 /// Positive infinity in the global default context.
 ///
 /// # Examples

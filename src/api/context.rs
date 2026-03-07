@@ -220,6 +220,25 @@ impl Context {
         self.make_ex(id)
     }
 
+    /// Create a named physical constant with a known exact value.
+    ///
+    /// The constant displays as `name` but evaluates numerically to `value`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let c = ctx.physical_constant("c", ctx.int(299_792_458));
+    /// assert_eq!(format!("{c}"), "c");
+    /// ```
+    pub fn physical_constant(&self, name: &str, value: crate::api::expr::Ex) -> crate::api::expr::Ex {
+        let val_id = value.id;
+        let id = self.inner.write().arena.physical_constant(name, val_id);
+        self.make_ex(id)
+    }
+
     /// Positive infinity.
     pub fn infinity(&self) -> crate::api::expr::Ex {
         let id = self.inner.read().arena.infinity;
