@@ -401,12 +401,12 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 | Metric | Value |
 |--------|-------|
-| Tests | 1,386 lib tests, ~5,800+ total, 0 failing |
+| Tests | 1,386 lib tests + ~100 units tests, ~5,900+ total, 0 failing |
 | ExprNode variants | 66 |
-| Source modules | 97 (in 9 directories: base, poly, transforms, simplify, calculus, output, plotting, domains, api) |
+| Source modules | 105 (in 10 directories: base, poly, transforms, simplify, calculus, output, plotting, domains, api, units) |
 | Integration test files | 152 (each compiles as separate binary — see §1 timing notes) |
-| Source | ~77,200 lines across 97 modules in 9 directories |
-| Tests | ~58,000 lines across 152 test files |
+| Source | ~82,200 lines across 105 modules in 10 directories |
+| Tests | ~60,000 lines across 152+ test files |
 | Examples | ~3,950 lines across 19 examples (+ 3 probes) |
 | Tutorials | 21 pages, 8,473 lines |
 | Companion crates | ~1,085 lines across 2 crates (symplex-build, symplex-wasm) |
@@ -433,6 +433,7 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 Active limitations (not yet resolved):
 
+0. **Compile-time units available (0.2.0).** The `symplex::units` module provides 30 named quantity types with compile-time dimension checking, typed calculus (`DiffWrt`/`IntWrt`), ~100 unit conversions, and `uom`-annotated code generation. Angle is distinct from Dimensionless. Energy/Torque and Frequency/AngularVelocity collisions are handled via distinct newtypes with `From` conversions.
 1. **`bigint_to_bigfloat` loses precision for integers > i128.** Falls back to f64 intermediate.
 2. ~~**`expr!(1/2)` is a compile error.**~~ — **RESOLVED** (0.2.0: `expr!` macro now detects `int/int` and emits `rational(n,d)`)
 3. **`expr!(x^2^3)` nested integer powers.** Inner `2^3` evaluates as integer arithmetic, not symbolic.
@@ -498,7 +499,7 @@ Active limitations (not yet resolved):
 
 | Task | Description | Audiences Unlocked |
 |------|-------------|-------------------|
-| Compile-time units (uom) | Dimensional analysis via uom crate integration | All engineers |
+| ~~Compile-time units~~ | ~~Dimensional analysis via compile-time types~~ | ~~All engineers~~ — **DONE** (0.2.0: `symplex::units` module, 30 types, typed calculus, uom codegen) |
 | Assumptions → simplification | `refine()`: sqrt(x²)→x when positive, Abs(x)→x | Physics, engineering |
 | Set operations | contains, measure, is_subset, ImageSet | Math students |
 | Bode / phase portrait plots | Domain-specific visualization | Controls, dynamics |
@@ -513,8 +514,8 @@ Active limitations (not yet resolved):
 
 | Version | Theme | Key features |
 |---------|-------|-------------|
-| 0.2.0 | Polish & Ship | ✅ Done — codegen, tutorials, calculus parity, Fu, Gosper, FPS, plotting, 9-dir reorg |
-| 0.3.0 | Reach | Units (uom), assumptions→simplify, Python bindings, WASM demo, pretty printer |
+| 0.2.0 | Polish & Ship | ✅ Done — codegen, tutorials, calculus parity, Fu, Gosper, FPS, plotting, 10-dir reorg, compile-time units |
+| 0.3.0 | Reach | Assumptions→simplify, Python bindings, WASM demo, pretty printer |
 | 0.4.0 | Depth | Sparse matrices, n-DOF IK, PDE solving, tensor calculus, Meijer-G |
 | 1.0.0 | Stability | API freeze, comprehensive testing, documentation |
 
@@ -530,7 +531,7 @@ algorithm developers (derive formula → compile to fast code). The common threa
 
 ## 10. Module Reference
 
-### Source organization: `src/` — 9 directories, 97 modules
+### Source organization: `src/` — 10 directories, 105 modules
 
 See `CONTRIBUTING.md` for the dependency flow diagram and rules for adding modules.
 
@@ -654,6 +655,19 @@ See `CONTRIBUTING.md` for the dependency flow diagram and rules for adding modul
 | `ntheory.rs` | Number theory: primality, factorization, divisors, totient, CRT, modular arithmetic |
 | `linalg.rs` | Linear system solving (Gaussian elimination over exact rationals) |
 | `separatevars.rs` | Variable separation in products |
+
+### `src/units/` — Compile-time dimensional analysis (8 modules)
+
+| Module | Responsibility |
+|--------|----------------|
+| `dim.rs` | `Dim<L,M,T,I,Th,N,J>` phantom type, 30 dimension aliases, `DimName`, `ConstDim` |
+| `qty.rs` | `Qty<D>` generic wrapper, `IntoEx`, `SameDim`, blanket Mul/Div/Add/Sub |
+| `si.rs` | 30 named newtypes via `define_quantity!` macro, ~45 methods each |
+| `mul_table.rs` | 69 named Mul/Div rules, Dimensionless/Angle scaling |
+| `calculus.rs` | `DiffWrt`/`IntWrt` traits, 42 typed calculus pairs |
+| `conversions.rs` | ~100 unit conversion constructors |
+| `inference.rs` | `DimMap`, `infer_dimension` tree walker |
+| `assert_macros.rs` | `assert_dim!`, `const_assert_dim!` |
 
 ### `src/api/` — Public API surface (7 modules)
 

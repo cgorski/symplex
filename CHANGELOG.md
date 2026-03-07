@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Compile-Time Dimensional Analysis (units module)**
+- New `symplex::units` module with compile-time dimensional analysis
+- 30 named quantity newtypes: Dimensionless, Angle, Length, Mass, Time, Current, Temperature, Area, Volume, Velocity, Acceleration, AngularVelocity, AngularAcceleration, Frequency, Force, Energy, Torque, Power, Momentum, AngularMomentum, MomentOfInertia, Pressure, Stiffness, Damping, Voltage, Resistance, Inductance, Capacitance, Charge, MagneticFlux
+- 69 named Mul/Div rules between quantity types
+- `DiffWrt`/`IntWrt` traits: 42 typed calculus pairs (e.g., d(Length)/d(Time) → Velocity)
+- ~100 unit conversion constructors (meters, kilometers, feet, horsepower, celsius, RPM, etc.)
+- `IntoEx` trait: `from_ex()` accepts both `Ex` and `&Ex` — no `.clone()` needed with `expr!`
+- `SameDim` trait with `#[diagnostic::on_unimplemented]` for clear addition errors
+- `assert_dim!` compile-time checkpoint macro
+- `const_assert_dim!` compile-time formula verification with custom error messages
+- `DimMap` + `infer_dimension()` runtime dimension inference for debug validation
+- All named types get ~45 methods: simplify, expand, factor, collect, cancel, together, to_latex, eval_f64, diff, integrate, etc.
+- All transformation methods take `&self` (not consuming) for ergonomic chaining
+- Angle is a distinct type from Dimensionless (catches radian/degree bugs)
+- Energy/Torque, Frequency/AngularVelocity dimension collisions handled via distinct newtypes with `From` conversions
+- `typenum` added as unconditional dependency (zero runtime cost)
+
+**Typed Robotics API**
+- `DhParams` type alias enforcing `(&Angle, &Length, &Length, &Angle)` at compile time
+- `fk_position_typed`: returns `(Length, Length, Length)` — dimensions guaranteed
+- `fk_chain_typed`, `fk_rotation_typed`: typed DH parameter wrappers
+
+**Code Generation with uom Annotations**
+- `CodegenOptions::with_uom()`: generate functions with `uom` SI types at boundaries
+- `param_unit()`, `return_unit_type()` builder methods
+- 20-entry dimension → uom type mapping table
+- Generated code extracts raw values at input, wraps at output — zero runtime overhead
+- Matrix codegen: `[Length; 4]` return types with per-element wrapping
+
+**CAS Core Improvements**
+- Fixed: Display double-negation (`a - m*x` no longer shows as `a - -m*x`)
+- New: Symbolic `factor_terms` — extracts common symbolic factors from sums (`m*g*l + m*g*x → m*g*(l+x)`)
+- New: Add-content extraction in factor_terms (`(2x+4)² → 4*(x+2)²`)
+- New: Symbolic linear equation solver (`k*x = F → x = F/k` with symbolic coefficients)
+- Strategy 4 in smart_simplify now uses symbolic factor_terms
+
+**Testing**
+- 5 trybuild compile-fail tests verifying error messages in CI
+- 58 integration tests for units
+- 19 dimension inference tests
+- 11 uom codegen tests
+- 6 symbolic factor_terms tests
+- 3 symbolic solver tests
+
 **0.2.0: Type-Safe Boolean Expressions + Logic + Piecewise**
 - BREAKING: `Ex` is now a type alias for `Expr<Numeric>`, not a standalone struct
 - BREAKING: `gt()`, `ge()`, `lt()`, `le()`, `eq_expr()`, `ne_expr()` now return `BoolEx` (was `Ex`)

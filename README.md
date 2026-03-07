@@ -72,6 +72,30 @@ fn main() {
 }
 ```
 
+### Compile-Time Dimensional Analysis
+
+```rust
+use symplex::prelude::*;
+use symplex::units::*;
+
+// Types enforce physical dimensions — Mass + Length won't compile
+let m = Mass::new(expr!(m));
+let g = Acceleration::new(expr!(g));
+let h = Length::new(expr!(h));
+
+// Multiplication rules are typed: Mass * Acceleration → Force
+let weight: Force = &m * &g;
+
+// Typed calculus: d(Length)/d(Time) → Velocity
+let v: Velocity = h.diff_wrt(&Time::new(expr!(t)));
+
+// ~100 unit conversions
+let distance = Length::meters(3.0) + Length::feet(6.5);
+
+// Compile-time formula verification
+const_assert_dim!(Force = Mass * Acceleration, "F = ma dimension check");
+```
+
 ## Installation
 
 ```
@@ -154,6 +178,18 @@ Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `exp
 - ✅ Bessel, Legendre, Chebyshev, Hermite, Laguerre polynomials
 - ✅ Arbitrary-precision Gamma (Stirling), erf, Beta
 
+**Compile-Time Dimensional Analysis:**
+
+- ✅ 30 named physical quantity types (Force, Voltage, Energy, etc.)
+- ✅ Compile-time dimension checking: `Mass + Length` won't compile
+- ✅ Typed calculus: `d(Length)/d(Time) → Velocity` verified at compile time (DiffWrt/IntWrt)
+- ✅ ~100 unit conversion constructors (meters, feet, horsepower, celsius, RPM)
+- ✅ Runtime dimension inference for debug validation
+- ✅ Typed robotics API: `fk_position_typed` with Angle/Length parameters
+- ✅ Code generation with `uom` type annotations at function boundaries
+- ✅ `const_assert_dim!` compile-time formula verification
+- ✅ Clear error messages: "expected Force, found Mass"
+
 **Code Generation & Output:**
 
 - ✅ `to_rust_fn()` with CodegenOptions (f32/f64, std/libm/no_std), FMA detection, Horner powi, sin_cos pairing, expm1/log1p/log2/exp2 optimization
@@ -214,6 +250,7 @@ A concise, honest comparison. For the full breakdown see
 | Robotics (DH, FK, Jacobian, dynamics) | ✅ | ❌ (separate: mechanics) |
 | Control systems | ✅ | ✅ (control module) |
 | Rust code generation | ✅ | ❌ |
+| Dimensional analysis | ✅ (compile-time, 30 types) | ❌ (separate: Pint) |
 | LaTeX output | ✅ | ✅ |
 | Thread safety | ✅ (`Send + Sync`) | ❌ (GIL) |
 | Type-safe expressions | ✅ (`Ex` vs `BoolEx`) | ❌ |
@@ -237,6 +274,7 @@ Full method-level documentation is on **[docs.rs/symplex](https://docs.rs/symple
 Key entry points:
 
 - [`symplex::prelude`](https://docs.rs/symplex/latest/symplex/prelude/) — `Ex`, `BoolEx`, `vars!`, `expr!`, `matrix!`, `eq!`
+- [`symplex::units`](https://docs.rs/symplex/latest/symplex/units/) — compile-time dimensional analysis, 30 quantity types, typed calculus
 - [`symplex::robotics`](https://docs.rs/symplex/latest/symplex/robotics/) — DH parameters, forward kinematics, inverse kinematics
 - [`symplex::dynamics`](https://docs.rs/symplex/latest/symplex/dynamics/) — Euler-Lagrange, mass/Coriolis/gravity matrices
 - [`symplex::control`](https://docs.rs/symplex/latest/symplex/control/) — state-space, transfer functions, stability
