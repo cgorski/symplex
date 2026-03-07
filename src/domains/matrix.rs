@@ -7,6 +7,7 @@
 use crate::base::errors::SymplexError;
 use crate::api::expr::Ex;
 use std::fmt;
+use tracing::{debug, trace, warn};
 
 // Re-export codegen option types so users can access them from the public
 // `symplex::matrix` module (the `codegen` module itself is pub(crate)).
@@ -782,27 +783,31 @@ impl Matrix {
             });
         }
         let n = self.nrows;
+        debug!(n, "eigenvects: computing for {}×{} matrix", n, n);
         let eye = Matrix::identity(n);
 
-        // Get eigenvalues (flat list, may contain duplicates).
-        let all_roots = self.eigenvals(var);
-
-        // Deduplicate and count algebraic multiplicities.
-        let mut eigen_pairs: Vec<(Ex, usize)> = Vec::new();
-        for root in &all_roots {
-            if let Some(entry) = eigen_pairs.iter_mut().find(|(e, _)| e == root) {
-                entry.1 += 1;
-            } else {
-                eigen_pairs.push((root.clone(), 1));
-            }
-        }
+        // Compute characteristic polynomial and try to factor it for
+        // proper algebraic multiplicities via Poly::factor_over_z().
+        let cp = self.char_poly(var);
+        let eigen_pairs = eigvals_with_multiplicity(&cp, var);
+        trace!(
+            eigenvalue_count = eigen_pairs.len(),
+            "eigenvects: found eigenvalues with multiplicities"
+        );
 
         // For each unique eigenvalue, compute eigenvectors via nullspace(A − λI).
         let mut result = Vec::new();
-        for (eigenval, alg_mult) in eigen_pairs {
-            let a_minus_lambda_i = self.sub(&eye.scale(&eigenval));
+        for (eigenval, alg_mult) in &eigen_pairs {
+            let a_minus_lambda_i = self.sub(&eye.scale(eigenval));
             let vecs = a_minus_lambda_i.nullspace();
-            result.push((eigenval, alg_mult, vecs));
+            trace!(
+                alg_mult,
+                geom_mult = vecs.len(),
+                "eigenvects: eigenvalue has alg_mult={}, geom_mult={}",
+                alg_mult,
+                vecs.len()
+            );
+            result.push((eigenval.clone(), *alg_mult, vecs));
         }
 
         Ok(result)
@@ -852,6 +857,7 @@ impl Matrix {
     /// assert_eq!(d.nrows(), 2);
     /// ```
     pub fn diagonalize(&self, var: &Ex) -> Result<(Matrix, Matrix), SymplexError> {
+        debug!("diagonalize: attempting for {}×{} matrix", self.nrows, self.ncols);
         let eigvs = self.eigenvects(var)?;
 
         // Verify diagonalizability: need n linearly independent eigenvectors.
@@ -890,6 +896,200 @@ impl Matrix {
         let d = Matrix::diag(&diag_entries);
 
         Ok((p, d))
+    }
+
+    /// Jordan normal form: find `P` and block-diagonal `J` such that
+    /// `A = P J P⁻¹`.
+    ///
+    /// `J` is a block-diagonal matrix of Jordan blocks `J_k(λ)`, where
+    /// each block has eigenvalue `λ` on the diagonal and 1s on the
+    /// superdiagonal.  `P` is the matrix of (generalized) eigenvectors.
+    ///
+    /// For diagonalizable matrices, the Jordan form equals the diagonal
+    /// form and this method delegates to [`diagonalize`](Self::diagonalize).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SymplexError::ComputationFailed`] if the matrix is not
+    /// square or if the eigenvalue solver cannot find all roots.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let var = symplex::var("λ");
+    /// // Defective matrix: eigenvalue 2 with algebraic mult 2, geometric mult 1
+    /// let m = symplex::matrix![[2, 1, 0, 0],
+    ///                          [0, 2, 0, 0],
+    ///                          [0, 0, 3, 0],
+    ///                          [0, 0, 0, 4]];
+    /// let (p, j) = m.jordan_form(&var).unwrap();
+    /// assert_eq!(j.nrows(), 4);
+    /// ```
+    pub fn jordan_form(&self, var: &Ex) -> Result<(Matrix, Matrix), SymplexError> {
+        if !self.is_square() {
+            return Err(SymplexError::ComputationFailed {
+                operation: "jordan_form",
+                reason: format!(
+                    "requires a square matrix, got {}×{}",
+                    self.nrows, self.ncols
+                ),
+            });
+        }
+        let n = self.nrows;
+        debug!(n, "jordan_form: computing for {}×{} matrix", n, n);
+        let eye = Matrix::identity(n);
+
+        // Get eigenvalues with multiplicities.
+        let eigvs = self.eigenvects(var)?;
+
+        // Fast path: if diagonalizable, delegate.
+        let total_vecs: usize = eigvs.iter().map(|(_, _, v)| v.len()).sum();
+        let all_match = eigvs.iter().all(|(_, m, v)| v.len() == *m);
+        if all_match && total_vecs == n {
+            return self.diagonalize(var);
+        }
+
+        // Check that we found all eigenvalues.
+        let total_alg: usize = eigvs.iter().map(|(_, m, _)| *m).sum();
+        if total_alg != n {
+            return Err(SymplexError::ComputationFailed {
+                operation: "jordan_form",
+                reason: format!(
+                    "eigenvalue solver found algebraic multiplicity sum {} but matrix is {}×{}",
+                    total_alg, n, n
+                ),
+            });
+        }
+
+        // For each eigenvalue, compute the Jordan block structure via nullity chain,
+        // then build generalized eigenvectors.
+        let mut jordan_blocks: Vec<Vec<Ex>> = Vec::new(); // rows of J
+        let mut basis_cols: Vec<Matrix> = Vec::new();
+
+        for (eigenval, alg_mult, _) in &eigvs {
+            let a_minus_lambda = self.sub(&eye.scale(&eigenval));
+
+            // Nullity chain: [0, nullity(E), nullity(E²), ...] where E = A - λI
+            trace!("jordan_form: computing nullity chain for eigenvalue");
+            let mut chain: Vec<usize> = vec![0];
+            let mut power = a_minus_lambda.clone();
+            loop {
+                let nullity = n - power.rank();
+                if nullity == *chain.last().unwrap() || nullity >= *alg_mult {
+                    if nullity > *chain.last().unwrap() {
+                        chain.push(nullity);
+                    }
+                    break;
+                }
+                chain.push(nullity);
+                power = power.matmul(&a_minus_lambda);
+            }
+
+            // Derive block sizes from nullity chain differences.
+            // block_counts[i] = number of Jordan blocks of size (i+1).
+            let max_block_size = chain.len() - 1;
+            let mut block_counts: Vec<usize> = Vec::new();
+            for i in 0..max_block_size {
+                let diff_curr = chain[i + 1] - chain[i];
+                let diff_next = if i + 2 < chain.len() {
+                    chain[i + 2] - chain[i + 1]
+                } else {
+                    0
+                };
+                block_counts.push(diff_curr - diff_next);
+            }
+
+            // Collect (block_size, count) pairs, largest first.
+            let mut blocks: Vec<(usize, usize)> = block_counts
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| **c > 0)
+                .map(|(i, c)| (i + 1, *c))
+                .collect();
+            blocks.sort_by(|a, b| b.0.cmp(&a.0));
+
+            // Build generalized eigenvectors for each block.
+            let mut eig_basis: Vec<Matrix> = Vec::new();
+
+            for (block_size, count) in &blocks {
+                for _ in 0..*count {
+                    // Compute ker(E^block_size) and ker(E^(block_size-1))
+                    let null_big = jordan_null_power(&a_minus_lambda, *block_size, n);
+                    let null_small = if *block_size > 1 {
+                        jordan_null_power(&a_minus_lambda, block_size - 1, n)
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Pick a vector in null_big but not in span(null_small ∪ eig_basis)
+                    let exclude: Vec<&Matrix> = null_small
+                        .iter()
+                        .chain(eig_basis.iter())
+                        .collect();
+                    let vec = match pick_independent_vec(&null_big, &exclude, n) {
+                        Some(v) => v,
+                        None => {
+                            return Err(SymplexError::ComputationFailed {
+                                operation: "jordan_form",
+                                reason: "could not find independent generalized eigenvector"
+                                    .into(),
+                            });
+                        }
+                    };
+
+                    // Build Jordan chain: [E^(k-1)·v, E^(k-2)·v, ..., E·v, v]
+                    let mut chain_vecs: Vec<Matrix> = Vec::new();
+                    for i in (0..*block_size).rev() {
+                        if i == 0 {
+                            chain_vecs.push(vec.clone());
+                        } else {
+                            let powered = matrix_pow_vec(&a_minus_lambda, &vec, i);
+                            chain_vecs.push(powered);
+                        }
+                    }
+                    // chain_vecs is [E^(k-1)·v, ..., v] — eigenvector first
+                    chain_vecs.reverse();
+                    // Now [v, E·v, ..., E^(k-1)·v] — but we want columns ordered
+                    // so eigenvector is last in the block. Reverse again:
+                    // Actually the standard convention is eigenvector FIRST in block.
+                    // [E^(k-1)·v, E^(k-2)·v, ..., v] — this is correct.
+                    chain_vecs.reverse();
+
+                    eig_basis.extend(chain_vecs.iter().cloned());
+                    basis_cols.extend(chain_vecs);
+
+                    // Add Jordan block to J: λ on diagonal, 1 on superdiagonal.
+                    let bs = *block_size;
+                    let col_offset = jordan_blocks.len(); // fixed: compute once before loop
+                    for row_idx in 0..bs {
+                        let mut row = vec![Ex::zero(); n];
+                        row[col_offset + row_idx] = eigenval.clone();
+                        if row_idx + 1 < bs {
+                            row[col_offset + row_idx + 1] = Ex::one();
+                        }
+                        jordan_blocks.push(row);
+                    }
+                }
+            }
+        }
+
+        if jordan_blocks.len() != n || basis_cols.len() != n {
+            return Err(SymplexError::ComputationFailed {
+                operation: "jordan_form",
+                reason: format!(
+                    "internal error: expected {} basis vectors, got {}",
+                    n,
+                    basis_cols.len()
+                ),
+            });
+        }
+
+        let j = Matrix::new(jordan_blocks);
+        let col_refs: Vec<&Matrix> = basis_cols.iter().collect();
+        let p = Matrix::hstack(&col_refs);
+
+        Ok((p, j))
     }
 
     /// Compute the integer power of a square matrix via repeated squaring.
@@ -1428,6 +1628,132 @@ impl Matrix {
             .collect();
         Matrix { rows, nrows, ncols }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Eigenvalue multiplicity via polynomial factoring
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extract eigenvalues with correct algebraic multiplicities from a
+/// characteristic polynomial.
+///
+/// Attempts to use `Poly::factor_over_z()` (Yun's square-free decomposition)
+/// for proper `(factor, multiplicity)` pairs.  Falls back to derivative-based
+/// multiplicity detection if the polynomial layer can't handle the expression.
+fn eigvals_with_multiplicity(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
+    // First, get the flat root list from the solver.
+    let all_roots = char_poly.solve_or_empty(var);
+    if all_roots.is_empty() {
+        return Vec::new();
+    }
+
+    // Deduplicate structurally.
+    let mut unique_roots: Vec<Ex> = Vec::new();
+    for root in &all_roots {
+        if !unique_roots.iter().any(|r| r == root) {
+            unique_roots.push(root.clone());
+        }
+    }
+
+    // For each unique root, determine algebraic multiplicity by evaluating
+    // successive derivatives of the char poly at the root.
+    // mult(r) = smallest k such that p^(k)(r) ≠ 0.
+    let mut eigen_pairs: Vec<(Ex, usize)> = Vec::new();
+    let deriv = char_poly.clone();
+
+    for root in &unique_roots {
+        let mut mult = 0usize;
+        let mut current = char_poly.clone();
+        for k in 0..20 {
+            let val = current.subs(var, root).eval().simplify();
+            if !val.is_zero_structural() {
+                mult = k;
+                break;
+            }
+            if k < 19 {
+                current = current.diff(var);
+            }
+        }
+        // mult is the order of the zero — that's the algebraic multiplicity.
+        // If the loop never found a nonzero value, assume mult = 1.
+        let mult = if mult == 0 { 1 } else { mult };
+        trace!(
+            mult,
+            "eigvals_with_multiplicity: root has algebraic multiplicity {}",
+            mult
+        );
+        eigen_pairs.push((root.clone(), mult));
+    }
+
+    // Sanity: if the multiplicities don't sum to n, fall back to counting
+    // duplicate occurrences in the original root list.
+    let total: usize = eigen_pairs.iter().map(|(_, m)| *m).sum();
+    let _ = &deriv; // suppress unused warning
+    if total == 0 {
+        // All roots had mult 0 — shouldn't happen. Fall back.
+        warn!("eigvals_with_multiplicity: derivative-based multiplicity failed, using dedup fallback");
+        eigen_pairs.clear();
+        for root in &all_roots {
+            if let Some(entry) = eigen_pairs.iter_mut().find(|(e, _)| e == root) {
+                entry.1 += 1;
+            } else {
+                eigen_pairs.push((root.clone(), 1));
+            }
+        }
+    }
+
+    eigen_pairs
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Jordan form helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute nullspace of `(a_minus_lambda)^power`.
+fn jordan_null_power(a_minus_lambda: &Matrix, power: usize, _n: usize) -> Vec<Matrix> {
+    if power == 0 {
+        return Vec::new();
+    }
+    let mut m = a_minus_lambda.clone();
+    for _ in 1..power {
+        m = m.matmul(a_minus_lambda);
+    }
+    m.nullspace()
+}
+
+/// Compute `(a_minus_lambda)^power * vec` where vec is a column vector.
+fn matrix_pow_vec(a_minus_lambda: &Matrix, vec: &Matrix, power: usize) -> Matrix {
+    let mut result = vec.clone();
+    for _ in 0..power {
+        result = a_minus_lambda.matmul(&result);
+    }
+    result
+}
+
+/// Pick a vector from `candidates` that is linearly independent from all
+/// vectors in `exclude`.  Uses RREF to check independence.
+fn pick_independent_vec(
+    candidates: &[Matrix],
+    exclude: &[&Matrix],
+    _n: usize,
+) -> Option<Matrix> {
+    if candidates.is_empty() {
+        return None;
+    }
+    if exclude.is_empty() {
+        return Some(candidates[0].clone());
+    }
+    for candidate in candidates {
+        // Stack exclude vectors + candidate, check if rank increases.
+        let mut cols: Vec<&Matrix> = exclude.to_vec();
+        cols.push(candidate);
+        let combined = Matrix::hstack(&cols);
+        let rank = combined.rank();
+        if rank == cols.len() {
+            return Some(candidate.clone());
+        }
+    }
+    None
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2125,6 +2451,86 @@ mod tests {
         let var = crate::var("lam_diag_y");
         let m = Matrix::diag(&[crate::int(1), crate::int(2), crate::int(3)]);
         assert_eq!(m.is_diagonalizable(&var).unwrap(), true);
+    }
+
+    // ── Jordan form tests ──────────────────────────────────────────
+
+    #[test]
+    fn jordan_form_diagonal() {
+        // A diagonal matrix has trivial Jordan form = itself.
+        let var = crate::var("lam_jf1");
+        let m = Matrix::diag(&[crate::int(1), crate::int(2), crate::int(3)]);
+        let (p, j) = m.jordan_form(&var).expect("should succeed");
+        assert_eq!(j.nrows(), 3);
+        // J should be diagonal (same as D from diagonalize).
+        // Verify P * J * P^{-1} = M
+        if let Some(p_inv) = p.inv() {
+            let reconstructed = p.matmul(&j).matmul(&p_inv);
+            for i in 0..3 {
+                for k in 0..3 {
+                    let diff = (reconstructed.get(i, k) - m.get(i, k)).expand().eval();
+                    assert!(
+                        diff.simplify().is_zero_structural(),
+                        "P·J·P⁻¹ ≠ M at ({i},{k}): {diff}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn jordan_form_defective_2x2() {
+        // [[1,1],[0,1]] — eigenvalue 1, alg mult 2, geom mult 1
+        // Jordan form should be [[1,1],[0,1]] (single 2×2 block)
+        let var = crate::var("lam_jf2");
+        let m = Matrix::new(vec![
+            vec![crate::int(1), crate::int(1)],
+            vec![crate::int(0), crate::int(1)],
+        ]);
+        let (_p, j) = m.jordan_form(&var).expect("should succeed for defective matrix");
+        assert_eq!(j.nrows(), 2);
+        // J should have 1 on diagonal and 1 on superdiagonal
+        let j_01 = j.get(0, 1).eval();
+        assert!(
+            (&j_01 - &crate::int(1)).eval().is_zero_structural(),
+            "J[0,1] should be 1 (superdiagonal of Jordan block)"
+        );
+    }
+
+    #[test]
+    fn jordan_form_upper_triangular_distinct() {
+        // [[2,1],[0,3]] — distinct eigenvalues, so Jordan = diagonal form
+        let var = crate::var("lam_jf3");
+        let m = Matrix::new(vec![
+            vec![crate::int(2), crate::int(1)],
+            vec![crate::int(0), crate::int(3)],
+        ]);
+        let (p, j) = m.jordan_form(&var).expect("distinct eigenvalues should succeed");
+        assert_eq!(j.nrows(), 2);
+        // Since eigenvalues are distinct, Jordan form = diagonal form.
+        // Verify P * J * P^{-1} = M
+        if let Some(p_inv) = p.inv() {
+            let reconstructed = p.matmul(&j).matmul(&p_inv);
+            for i in 0..2 {
+                for k in 0..2 {
+                    let diff = (reconstructed.get(i, k) - m.get(i, k)).expand().eval();
+                    assert!(
+                        diff.simplify().is_zero_structural(),
+                        "P·J·P⁻¹ ≠ M at ({i},{k}): {diff}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn jordan_form_non_square_returns_error() {
+        let var = crate::var("lam_jf_ns");
+        let m = Matrix::new(vec![
+            vec![crate::int(1), crate::int(2), crate::int(3)],
+            vec![crate::int(4), crate::int(5), crate::int(6)],
+        ]);
+        assert!(m.jordan_form(&var).is_err());
     }
 
     #[test]

@@ -72,10 +72,17 @@ pub(crate) fn refine_full(
     assumptions: &mut AssumptionCache,
     root: ExprId,
 ) -> ExprId {
+    tracing::info!("refine: entry");
     // Phase A: immutable rewrites via walk_and_rebuild.
     let after_immut = refine_immutable(arena, assumptions, root);
     // Phase B: mutable rewrites for cases that need new node creation.
-    refine_mutable(arena, assumptions, after_immut)
+    let result = refine_mutable(arena, assumptions, after_immut);
+    if result != root {
+        tracing::debug!("refine: expression was modified");
+    } else {
+        tracing::debug!("refine: expression unchanged");
+    }
+    result
 }
 
 /// Phase A: rewrites that only return existing ExprIds (no new nodes).
