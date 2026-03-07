@@ -548,8 +548,8 @@ proptest! {
         let m = symplex::matrix::Matrix::new(data);
         let mt = m.transpose();
 
-        let det_m = m.det().eval().simplify();
-        let det_mt = mt.det().eval().simplify();
+        let det_m = m.det().unwrap().eval().simplify();
+        let det_mt = mt.det().unwrap().eval().simplify();
 
         if let (Ok(a), Ok(b)) = (det_m.eval_f64(), det_mt.eval_f64()) {
             prop_assert!(

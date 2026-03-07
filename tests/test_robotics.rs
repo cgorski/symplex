@@ -607,7 +607,7 @@ fn fk_rotation_extraction() {
 
     let r_sub = r.subs(&theta, &theta_val).subs(&l, &l_val).eval();
     let r_t = r_sub.transpose();
-    let product = r_t.matmul(&r_sub);
+    let product = r_t.matmul(&r_sub).unwrap();
 
     for i in 0..3 {
         for j in 0..3 {
@@ -789,7 +789,7 @@ fn fk_rotation_orthogonal_multi_joint() {
 
     let r_sub = r.subs(&theta1, &t1_val).subs(&theta2, &t2_val).eval();
     let r_t = r_sub.transpose();
-    let product = r_t.matmul(&r_sub);
+    let product = r_t.matmul(&r_sub).unwrap();
 
     for i in 0..3 {
         for j in 0..3 {
@@ -933,7 +933,7 @@ fn skew3_antisymmetric() {
     let c = symplex::var("c");
     let s = symplex::robotics::skew3(&a, &b, &c);
     let st = s.transpose();
-    let sum = s.add(&st);
+    let sum = s.add(&st).unwrap();
 
     // Evaluate at concrete values to verify antisymmetry (S + S^T = 0)
     let a_val = symplex::rational(3, 1);
@@ -964,7 +964,7 @@ fn skew3_cross_product() {
     let zero = symplex::int(0);
     let s = symplex::robotics::skew3(&one, &zero, &zero);
     let v = symplex::matrix::Matrix::col_vector(vec![zero.clone(), one.clone(), symplex::int(0)]);
-    let result = s.matmul(&v);
+    let result = s.matmul(&v).unwrap();
     assert_eq!(result.shape(), (3, 1));
     let r0 = result.get(0, 0).eval().eval_f64().unwrap();
     let r1 = result.get(1, 0).eval().eval_f64().unwrap();
@@ -1121,7 +1121,7 @@ fn matrix_powi_identity() {
         vec![a.clone(), b.clone()],
         vec![c.clone(), d.clone()],
     ]);
-    let result = m.powi(0);
+    let result = m.powi(0).unwrap();
     assert_eq!(result.shape(), (2, 2));
     for i in 0..2 {
         for j in 0..2 {
@@ -1142,7 +1142,7 @@ fn matrix_powi_one() {
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
     ]);
-    let result = m.powi(1);
+    let result = m.powi(1).unwrap();
     let expected = [[1.0, 2.0], [3.0, 4.0]];
     for (i, expected_row) in expected.iter().enumerate() {
         for (j, &exp_val) in expected_row.iter().enumerate() {
@@ -1162,8 +1162,8 @@ fn matrix_powi_square() {
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
     ]);
-    let m2 = m.powi(2);
-    let m_times_m = m.matmul(&m);
+    let m2 = m.powi(2).unwrap();
+    let m_times_m = m.matmul(&m).unwrap();
     for i in 0..2 {
         for j in 0..2 {
             let val = m2.get(i, j).eval().eval_f64().unwrap();
@@ -1185,7 +1185,7 @@ fn matrix_powi_cube() {
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
     ]);
-    let m3 = m.powi(3);
+    let m3 = m.powi(3).unwrap();
     let expected = [[37.0, 54.0], [81.0, 118.0]];
     for (i, expected_row) in expected.iter().enumerate() {
         for (j, &exp_val) in expected_row.iter().enumerate() {

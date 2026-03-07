@@ -14,7 +14,7 @@ use symplex::matrix::Matrix;
 fn matrix_exp_zero() {
     // exp(0) = I
     let zero = Matrix::zeros(3, 3);
-    let result = zero.exp_series(10);
+    let result = zero.exp_series(10).unwrap();
     let ident = Matrix::identity(3);
     for i in 0..3 {
         for j in 0..3 {
@@ -35,7 +35,7 @@ fn matrix_exp_identity_scaled() {
     let t = symplex::rational(1, 10); // exact 1/10
     let n = 3;
     let ti = Matrix::identity(n).scale(&t);
-    let result = ti.exp_series(15);
+    let result = ti.exp_series(15).unwrap();
 
     let expected_diag = t_val.exp(); // e^0.1 ≈ 1.10517...
     for i in 0..n {
@@ -63,7 +63,7 @@ fn matrix_exp_nilpotent() {
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(0), symplex::int(0)],
     ]);
-    let result = n.exp_series(2);
+    let result = n.exp_series(2).unwrap();
 
     // Expected: [[1, 1], [0, 1]]
     let expected = [
@@ -91,7 +91,7 @@ fn matrix_exp_diagonal() {
         vec![symplex::rational(1, 2), symplex::int(0)],
         vec![symplex::int(0), symplex::rational(-1, 3)],
     ]);
-    let result = m.exp_series(15);
+    let result = m.exp_series(15).unwrap();
 
     let expected_00 = a_val.exp();
     let expected_11 = b_val.exp();
@@ -125,7 +125,7 @@ fn matrix_exp_2x2_numerical() {
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(0), symplex::int(0)],
     ]);
-    let result = m.exp_series(10);
+    let result = m.exp_series(10).unwrap();
 
     let val_00 = result.get(0, 0).eval().eval_f64().unwrap();
     let val_01 = result.get(0, 1).eval().eval_f64().unwrap();
@@ -148,8 +148,8 @@ fn matrix_exp_series_converges() {
         vec![symplex::rational(3, 10), symplex::rational(1, 10)],
     ]);
 
-    let low = m.exp_series(5);
-    let high = m.exp_series(15);
+    let low = m.exp_series(5).unwrap();
+    let high = m.exp_series(15).unwrap();
 
     // The true exp(M) can be computed; for a small matrix these should agree
     // closely but not identically at order 5. At order 15 it should be very precise.
@@ -384,7 +384,7 @@ fn discretize_zoh_integrator() {
 fn matrix_exp_1x1() {
     // exp([[a]]) = [[eᵃ]] — check with a = 1/2
     let m = Matrix::new(vec![vec![symplex::rational(1, 2)]]);
-    let result = m.exp_series(15);
+    let result = m.exp_series(15).unwrap();
     let val = result.get(0, 0).eval().eval_f64().unwrap();
     let expected = 0.5_f64.exp();
     assert!(
@@ -415,7 +415,7 @@ fn matrix_exp_negative_entries() {
         vec![symplex::int(-1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(-2)],
     ]);
-    let result = m.exp_series(20);
+    let result = m.exp_series(20).unwrap();
     let val_00 = result.get(0, 0).eval().eval_f64().unwrap();
     let val_11 = result.get(1, 1).eval().eval_f64().unwrap();
     let val_01 = result.get(0, 1).eval().eval_f64().unwrap();

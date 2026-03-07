@@ -80,10 +80,10 @@ proptest! {
             vec![symplex::int(b11), symplex::int(b12)],
             vec![symplex::int(b21), symplex::int(b22)],
         ]);
-        let ab = a.matmul(&b);
-        let det_a = a.det();
-        let det_b = b.det();
-        let det_ab = ab.det();
+        let ab = a.matmul(&b).unwrap();
+        let det_a = a.det().unwrap();
+        let det_b = b.det().unwrap();
+        let det_ab = ab.det().unwrap();
         let det_product = &det_a * &det_b;
 
         // Both should evaluate to same integer
@@ -110,9 +110,9 @@ proptest! {
             vec![symplex::int(b11), symplex::int(b12)],
             vec![symplex::int(b21), symplex::int(b22)],
         ]);
-        let sum = a.add(&b);
-        let trace_sum = sum.trace();
-        let trace_a_plus_b = &a.trace() + &b.trace();
+        let sum = a.add(&b).unwrap();
+        let trace_sum = sum.trace().unwrap();
+        let trace_a_plus_b = &a.trace().unwrap() + &b.trace().unwrap();
         prop_assert_eq!(
             format!("{trace_sum}"),
             format!("{trace_a_plus_b}"),

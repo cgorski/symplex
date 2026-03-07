@@ -11,7 +11,7 @@ fn matrix_identity_times_vector() {
     let y = symplex::var("y");
     let id = Matrix::identity(2);
     let v = Matrix::col_vector(vec![x.clone(), y.clone()]);
-    let result = id.matmul(&v);
+    let result = id.matmul(&v).unwrap();
     assert_eq!(format!("{}", result.get(0, 0)), "x");
     assert_eq!(format!("{}", result.get(1, 0)), "y");
 }
@@ -23,7 +23,7 @@ fn matrix_det_2x2_numeric() {
         vec![symplex::int(3), symplex::int(7)],
         vec![symplex::int(1), symplex::int(5)],
     ]);
-    let det = m.det();
+    let det = m.det().unwrap();
     // 3*5 - 7*1 = 8
     assert_eq!(format!("{det}"), "8");
 }
@@ -69,7 +69,7 @@ fn matrix_trace() {
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
     ]);
-    let tr = m.trace();
+    let tr = m.trace().unwrap();
     assert_eq!(format!("{tr}"), "5");
 }
 
@@ -84,7 +84,7 @@ fn matrix_add_numeric() {
         vec![symplex::int(10), symplex::int(20)],
         vec![symplex::int(30), symplex::int(40)],
     ]);
-    let sum = m1.add(&m2);
+    let sum = m1.add(&m2).unwrap();
     assert_eq!(format!("{}", sum.get(0, 0)), "11");
     assert_eq!(format!("{}", sum.get(1, 1)), "44");
 }

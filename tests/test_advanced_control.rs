@@ -64,7 +64,7 @@ fn cholesky_2x2() {
         vec![symplex::int(2), symplex::int(3)],
     ]);
 
-    let l = a.cholesky().expect("Cholesky should succeed for SPD matrix");
+    let l = a.cholesky().unwrap().expect("Cholesky should succeed for SPD matrix");
 
     // Verify L is lower triangular: L[0][1] should be 0
     let l01 = l.get(0, 1).simplify().eval_f64().unwrap();
@@ -72,7 +72,7 @@ fn cholesky_2x2() {
 
     // Verify L * Lᵀ = A
     let lt = l.transpose();
-    let product = l.matmul(&lt);
+    let product = l.matmul(&lt).unwrap();
     assert_matrix_approx(&product, &[4.0, 2.0, 2.0, 3.0], 1e-9);
 }
 
@@ -87,11 +87,11 @@ fn cholesky_3x3() {
         vec![symplex::int(-16), symplex::int(-43), symplex::int(98)],
     ]);
 
-    let l = a.cholesky().expect("Cholesky should succeed for SPD matrix");
+    let l = a.cholesky().unwrap().expect("Cholesky should succeed for SPD matrix");
 
     // Verify L * Lᵀ = A numerically
     let lt = l.transpose();
-    let product = l.matmul(&lt);
+    let product = l.matmul(&lt).unwrap();
     assert_matrix_approx(
         &product,
         &[4.0, 12.0, -16.0, 12.0, 37.0, -43.0, -16.0, -43.0, 98.0],
@@ -115,7 +115,7 @@ fn cholesky_not_positive_definite() {
     ]);
 
     assert!(
-        a.cholesky().is_none(),
+        a.cholesky().unwrap().is_none(),
         "Cholesky should return None for non-positive-definite matrix"
     );
 }
@@ -124,7 +124,7 @@ fn cholesky_not_positive_definite() {
 fn cholesky_identity() {
     // I₃ → L = I₃
     let eye = Matrix::identity(3);
-    let l = eye.cholesky().expect("Cholesky of identity should succeed");
+    let l = eye.cholesky().unwrap().expect("Cholesky of identity should succeed");
 
     // L should be the identity
     assert_matrix_approx(&l, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 1e-12);
@@ -178,7 +178,7 @@ fn pinv_overdetermined() {
     assert_eq!(pinv.shape(), (2, 3));
 
     // A⁺ · A should be I₂
-    let pinv_a = pinv.matmul(&a);
+    let pinv_a = pinv.matmul(&a).unwrap();
     assert_matrix_approx(&pinv_a, &[1.0, 0.0, 0.0, 1.0], 1e-9);
 }
 
@@ -280,10 +280,10 @@ fn ackermann_simple() {
     assert_matrix_approx(&k, &[2.0, 3.0], 1e-9);
 
     // Verify closed-loop eigenvalues of (A - BK)
-    let bk = b.matmul(&k);
-    let a_cl = a.sub(&bk);
+    let bk = b.matmul(&k).unwrap();
+    let a_cl = a.sub(&bk).unwrap();
     let s = symplex::var("s");
-    let mut eigs = a_cl.eigenvals(&s);
+    let mut eigs = a_cl.eigenvals(&s).unwrap();
     eigs.sort_by(|a, b| {
         let va = a.eval_f64().unwrap_or(f64::NAN);
         let vb = b.eval_f64().unwrap_or(f64::NAN);

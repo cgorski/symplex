@@ -998,7 +998,7 @@ fn process_matrix_det(ctx: &Context, fixture: &Fixture) -> Status {
         None => return Status::NotImplemented("can't parse matrix".into()),
     };
 
-    let det = mat.det().eval();
+    let det = mat.det().unwrap().eval();
 
     if let Some(expected) = &fixture.value {
         match det.eval_f64() {
@@ -1031,7 +1031,7 @@ fn process_matrix_trace(ctx: &Context, fixture: &Fixture) -> Status {
         None => return Status::NotImplemented("can't parse matrix".into()),
     };
 
-    let tr = mat.trace().eval();
+    let tr = mat.trace().unwrap().eval();
 
     if let Some(expected) = &fixture.value {
         match tr.eval_f64() {
@@ -1072,7 +1072,7 @@ fn process_matrix_multiply(ctx: &Context, fixture: &Fixture) -> Status {
         None => return Status::NotImplemented("can't parse matrix_b".into()),
     };
 
-    let product = mat_a.matmul(&mat_b);
+    let product = mat_a.matmul(&mat_b).unwrap();
 
     if let Some(expected_rows) = &fixture.result_matrix {
         let expected_mat = match parse_matrix_from_json(ctx, expected_rows) {
@@ -1129,8 +1129,8 @@ fn process_matrix_inverse(ctx: &Context, fixture: &Fixture) -> Status {
     };
 
     let inv = match mat.inv() {
-        Some(m) => m,
-        None => return Status::NotImplemented("matrix is singular (inv returned None)".into()),
+        Ok(m) => m,
+        Err(_) => return Status::NotImplemented("matrix is singular (inv returned Err)".into()),
     };
 
     if let Some(expected_rows) = &fixture.result_matrix {
@@ -1190,7 +1190,7 @@ fn process_matrix_eigenvalue(ctx: &Context, fixture: &Fixture) -> Status {
     };
 
     let lambda = ctx.symbol("lambda");
-    let computed = mat.eigenvals(&lambda);
+    let computed = mat.eigenvals(&lambda).unwrap();
 
     if computed.is_empty() {
         return Status::NotImplemented("eigenvalue solver returned empty".into());

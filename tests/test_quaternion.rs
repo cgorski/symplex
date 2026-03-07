@@ -564,7 +564,7 @@ fn quaternion_rotation_matrix_orthogonal() {
     let q = Quaternion::from_axis_angle(&ax, &ay, &az, &angle);
     let r = q.to_rotation_matrix();
     let rt = r.transpose();
-    let product = r.matmul(&rt);
+    let product = r.matmul(&rt).unwrap();
 
     for i in 0..3 {
         for j in 0..3 {

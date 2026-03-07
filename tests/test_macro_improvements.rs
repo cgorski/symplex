@@ -221,7 +221,7 @@ fn matrix_with_rationals() {
 #[test]
 fn matrix_det() {
     let m = matrix![[3, 7], [1, 5]];
-    let det = m.det();
+    let det = m.det().unwrap();
     assert_eq!(format!("{det}"), "8");
 }
 
@@ -236,7 +236,7 @@ fn matrix_1x1() {
 #[test]
 fn matrix_3x3_identity() {
     let m = matrix![[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-    let det = m.det();
+    let det = m.det().unwrap();
     assert_eq!(format!("{det}"), "1");
 }
 

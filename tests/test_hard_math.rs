@@ -929,7 +929,7 @@ fn multi_var_jacobian_2x2() {
     assert!((j11 - 3.0).abs() < 1e-12, "J[1,1] at (3,2) should be x=3, got {j11}");
 
     // Verify determinant: 2x²-y at (3,2) = 18-2 = 16
-    let det = j.det();
+    let det = j.det().unwrap();
     let det_val = det
         .subs(&x, &ctx.int(3))
         .subs(&y, &ctx.int(2))

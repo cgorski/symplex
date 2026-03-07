@@ -48,11 +48,12 @@ fn main() {
         [fyx, fyy]
     ];
     println!("Hessian: {hessian}");
-    println!("det(H) = {}", hessian.det());
+    println!("det(H) = {}", hessian.det().unwrap());
 
     // Classification: det(H) > 0 and ∂²f/∂x² > 0 → local minimum
     let det_h = hessian
         .det()
+        .unwrap()
         .eval_f64_with(&[(&x, 1), (&y, 2)])
         .unwrap();
     let fxx = hessian

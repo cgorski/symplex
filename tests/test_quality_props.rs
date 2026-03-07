@@ -76,8 +76,8 @@ proptest! {
             .collect();
         let m = symplex::matrix::Matrix::new(data);
 
-        if let Some(inv) = m.inv() {
-            let product = m.matmul(&inv);
+        if let Ok(inv) = m.inv() {
+            let product = m.matmul(&inv).unwrap();
             let mut bail = common::BailCounter::new("matrix_inverse_is_identity");
             // Check diagonal ≈ 1, off-diagonal ≈ 0
             for i in 0..3 {
@@ -153,12 +153,12 @@ proptest! {
                 .collect(),
         );
 
-        let det_a = mat_a.det().eval().simplify();
-        let det_b = mat_b.det().eval().simplify();
+        let det_a = mat_a.det().unwrap().eval().simplify();
+        let det_b = mat_b.det().unwrap().eval().simplify();
         let product_of_dets = (&det_a * &det_b).eval().simplify();
 
-        let ab = mat_a.matmul(&mat_b);
-        let det_ab = ab.det().eval().simplify();
+        let ab = mat_a.matmul(&mat_b).unwrap();
+        let det_ab = ab.det().unwrap().eval().simplify();
 
         let mut bail = common::BailCounter::new("det_of_product");
         if let (Ok(lhs), Ok(rhs)) = (det_ab.eval_f64(), product_of_dets.eval_f64()) {

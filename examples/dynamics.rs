@@ -252,7 +252,7 @@ fn main() {
     //       = 1·1 + 1·0 + 0 = 1
 
     // ── Determinant of mass matrix ─────────────────────────────────
-    let det = mm_double.det();
+    let det = mm_double.det().unwrap();
     println!("\ndet(M) = {det}");
     let det_val = det.eval_f64_with(subs_no_g);
     println!("det(M) at q=(0,0): {:.4}", det_val.unwrap_or(f64::NAN));

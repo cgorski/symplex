@@ -106,7 +106,7 @@ fn nullspace_vector_is_in_kernel() {
     let ns = a.nullspace();
     assert_eq!(ns.len(), 1);
     // Multiply A * v; result should be the zero vector (structurally after simplify)
-    let product = a.matmul(&ns[0]).simplify();
+    let product = a.matmul(&ns[0]).unwrap().simplify();
     for i in 0..product.nrows() {
         assert!(
             product.get(i, 0).is_zero_structural(),
@@ -177,7 +177,7 @@ fn lu_2x2_verify_pa_eq_lu() {
     );
 
     // Reconstruct LU
-    let lu = l.matmul(&u).simplify();
+    let lu = l.matmul(&u).unwrap().simplify();
 
     // PA should equal LU
     for i in 0..2 {
@@ -301,7 +301,7 @@ fn is_symmetric_false() {
 fn hstack_two_matrices() {
     let a = Matrix::col_vector(vec![symplex::int(1), symplex::int(2)]);
     let b = Matrix::col_vector(vec![symplex::int(3), symplex::int(4)]);
-    let h = Matrix::hstack(&[&a, &b]);
+    let h = Matrix::hstack(&[&a, &b]).unwrap();
     assert_eq!(h.nrows(), 2);
     assert_eq!(h.ncols(), 2);
     assert_eq!(format!("{}", h.get(0, 0)), "1");
@@ -314,7 +314,7 @@ fn hstack_two_matrices() {
 fn vstack_two_matrices() {
     let a = Matrix::row_vector(vec![symplex::int(1), symplex::int(2)]);
     let b = Matrix::row_vector(vec![symplex::int(3), symplex::int(4)]);
-    let v = Matrix::vstack(&[&a, &b]);
+    let v = Matrix::vstack(&[&a, &b]).unwrap();
     assert_eq!(v.nrows(), 2);
     assert_eq!(v.ncols(), 2);
     assert_eq!(format!("{}", v.get(0, 0)), "1");

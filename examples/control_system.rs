@@ -215,9 +215,9 @@ fn main() {
             println!("Feedback gain K = {k}");
 
             // Verify: eigenvalues of (A - BK) should be the desired poles
-            let bk = b.matmul(&k);
-            let a_cl = a.sub(&bk);
-            let cl_poles = a_cl.eigenvals(&s);
+            let bk = &b * &k;
+            let a_cl = &a - &bk;
+            let cl_poles = a_cl.eigenvals(&s).unwrap();
             println!(
                 "Closed-loop poles: {:?}",
                 cl_poles

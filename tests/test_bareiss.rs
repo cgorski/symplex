@@ -18,7 +18,7 @@ fn bareiss_4x4_integer() {
     //   2  6  4  8
     //   3  1  1  2
     let m = matrix![[1, 2, 3, 4], [5, 6, 7, 8], [2, 6, 4, 8], [3, 1, 1, 2]];
-    let d = m.det();
+    let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     // Cross-check: build same matrix and compute via cofactor on 3×3 minors.
     // det = 1*(6*(4*2 - 8*1) - 7*(6*2 - 8*1) + 8*(6*1 - 4*1))
@@ -74,7 +74,7 @@ fn bareiss_4x4_integer() {
 #[test]
 fn bareiss_5x5_identity() {
     let m = Matrix::identity(5);
-    let d = m.det();
+    let d = m.det().unwrap();
     assert_eq!(format!("{d}"), "1");
 }
 
@@ -83,7 +83,7 @@ fn bareiss_5x5_identity() {
 #[test]
 fn bareiss_6x6_identity() {
     let m = Matrix::identity(6);
-    let d = m.det();
+    let d = m.det().unwrap();
     assert_eq!(format!("{d}"), "1");
 }
 
@@ -92,7 +92,7 @@ fn bareiss_6x6_identity() {
 #[test]
 fn bareiss_singular() {
     let m = matrix![[1, 2, 3, 4], [2, 4, 6, 8], [1, 1, 1, 1], [0, 0, 0, 1]];
-    let d = m.det();
+    let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     assert!(
         d_val.abs() < 1e-10,
@@ -106,7 +106,7 @@ fn bareiss_singular() {
 fn bareiss_symbolic_2x2_matches_direct() {
     vars!(a, b, c, d);
     let m = matrix![[a, b], [c, d]];
-    let det = m.det();
+    let det = m.det().unwrap();
     // Should be a*d - b*c
     let expected = &(&a * &d) - &(&b * &c);
     // Compare structurally via Display
@@ -123,7 +123,7 @@ fn bareiss_symbolic_2x2_matches_direct() {
 fn bareiss_4x4_known_det() {
     // Upper triangular → det = product of diagonal = 1*2*3*4 = 24
     let m = matrix![[1, 5, 9, 13], [0, 2, 7, 11], [0, 0, 3, 8], [0, 0, 0, 4]];
-    let d = m.det();
+    let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     assert!(
         (d_val - 24.0).abs() < 1e-10,
@@ -137,7 +137,7 @@ fn bareiss_4x4_known_det() {
 fn bareiss_4x4_needs_pivot_swap() {
     // First column starts with 0 → requires row swap
     let m = matrix![[0, 1, 2, 3], [1, 0, 0, 0], [0, 2, 1, 0], [0, 0, 3, 1]];
-    let d = m.det();
+    let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
 
     // Compute expected: swap row0 and row1 gives sign = -1, then
@@ -158,7 +158,7 @@ fn bareiss_4x4_needs_pivot_swap() {
     // Expand along column 0 (only row 1 has non-zero entry = 1):
     // det = -1 * 1 * det([[1,2,3],[2,1,0],[0,3,1]])  (minor of (1,0), sign (-1)^(1+0) = -1)
     let sub = matrix![[1, 2, 3], [2, 1, 0], [0, 3, 1]];
-    let sub_det = sub.det().eval_f64().unwrap();
+    let sub_det = sub.det().unwrap().eval_f64().unwrap();
     let expected = -sub_det;
     assert!(
         (d_val - expected).abs() < 1e-10,
@@ -179,7 +179,7 @@ fn bareiss_matches_for_seeded_4x4() {
             })
             .collect();
         let m = Matrix::new(data);
-        let det = m.det();
+        let det = m.det().unwrap();
         // Just verify it evaluates to a finite number without panic
         let val = det.eval_f64().unwrap();
         assert!(
@@ -201,7 +201,7 @@ fn bareiss_5x5_diagonal() {
             symplex::int(0)
         }
     });
-    let d = m.det();
+    let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     assert!(
         (d_val - 720.0).abs() < 1e-6,
@@ -216,7 +216,7 @@ fn bareiss_4x4_negative_det() {
     // Permutation matrix for (0→1, 1→0, 2→3, 3→2) has det = +1
     // Single swap: (0→1, 1→0, 2→2, 3→3) has det = -1
     let m = matrix![[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
-    let d = m.det();
+    let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     assert!(
         (d_val - (-1.0)).abs() < 1e-10,
@@ -236,8 +236,8 @@ fn bareiss_4x4_all_negative() {
     ];
     // Negating all entries: det(-A) = (-1)^4 * det(A) = det(A)
     let m_pos = matrix![[1, 2, 3, 4], [5, 6, 7, 8], [2, 6, 4, 8], [3, 1, 1, 2]];
-    let d_neg = m.det().eval_f64().unwrap();
-    let d_pos = m_pos.det().eval_f64().unwrap();
+    let d_neg = m.det().unwrap().eval_f64().unwrap();
+    let d_pos = m_pos.det().unwrap().eval_f64().unwrap();
     assert!(
         (d_neg - d_pos).abs() < 1e-6,
         "det(-A) should equal det(A) for 4×4: neg={d_neg}, pos={d_pos}"
@@ -249,8 +249,8 @@ fn bareiss_4x4_all_negative() {
 #[test]
 fn bareiss_det_equals_det_transpose() {
     let m = matrix![[2, 1, 0, 3], [1, 0, 2, 1], [0, 3, 1, 2], [1, 2, 3, 0]];
-    let d = m.det().eval_f64().unwrap();
-    let dt = m.transpose().det().eval_f64().unwrap();
+    let d = m.det().unwrap().eval_f64().unwrap();
+    let dt = m.transpose().det().unwrap().eval_f64().unwrap();
     assert!(
         (d - dt).abs() < 1e-6,
         "det(A) should equal det(A^T): {d} vs {dt}"

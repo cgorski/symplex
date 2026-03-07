@@ -67,7 +67,7 @@ fn matrix_add() {
         vec![symplex::int(10), symplex::int(20)],
         vec![symplex::int(30), symplex::int(40)],
     ]);
-    let c = a.add(&b);
+    let c = a.add(&b).unwrap();
     assert_eq!(format!("{}", c.get(0, 0)), "11");
     assert_eq!(format!("{}", c.get(1, 1)), "44");
 }
@@ -84,7 +84,7 @@ fn matrix_scale() {
 fn matrix_matmul_identity() {
     let id = Matrix::identity(3);
     let m = Matrix::from_fn(3, 3, |i, j| symplex::int((i * 3 + j + 1) as i64));
-    let result = id.matmul(&m);
+    let result = id.matmul(&m).unwrap();
     assert_eq!(format!("{}", result.get(0, 0)), format!("{}", m.get(0, 0)));
     assert_eq!(format!("{}", result.get(2, 2)), format!("{}", m.get(2, 2)));
 }
@@ -99,7 +99,7 @@ fn matrix_matmul_2x2() {
         vec![symplex::int(5), symplex::int(6)],
         vec![symplex::int(7), symplex::int(8)],
     ]);
-    let c = a.matmul(&b);
+    let c = a.matmul(&b).unwrap();
     // [1*5+2*7, 1*6+2*8] = [19, 22]
     // [3*5+4*7, 3*6+4*8] = [43, 50]
     assert_eq!(format!("{}", c.get(0, 0)), "19");
@@ -114,7 +114,7 @@ fn matrix_det_2x2() {
         vec![symplex::int(3), symplex::int(7)],
         vec![symplex::int(1), symplex::int(5)],
     ]);
-    assert_eq!(format!("{}", m.det()), "8");
+    assert_eq!(format!("{}", m.det().unwrap()), "8");
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn matrix_det_3x3_singular() {
         vec![symplex::int(4), symplex::int(5), symplex::int(6)],
         vec![symplex::int(7), symplex::int(8), symplex::int(9)],
     ]);
-    assert_eq!(format!("{}", m.det()), "0");
+    assert_eq!(format!("{}", m.det().unwrap()), "0");
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn matrix_det_3x3_nonsingular() {
         vec![symplex::int(0), symplex::int(1), symplex::int(4)],
         vec![symplex::int(5), symplex::int(6), symplex::int(0)],
     ]);
-    let det = m.det();
+    let det = m.det().unwrap();
     // det = 1(0-24) - 2(0-20) + 3(0-5) = -24 + 40 - 15 = 1
     assert_eq!(format!("{det}"), "1");
 }
@@ -145,7 +145,7 @@ fn matrix_trace() {
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(4)],
     ]);
-    assert_eq!(format!("{}", m.trace()), "5");
+    assert_eq!(format!("{}", m.trace().unwrap()), "5");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -224,7 +224,7 @@ fn matrix_map() {
 fn matrix_macro_symbolic() {
     let x = symplex::var("x");
     let m = matrix![[x, 0], [0, x ^ 2]];
-    let det = m.det();
+    let det = m.det().unwrap();
     let s = format!("{det}");
     assert!(s.contains("x"), "det should involve x: {s}");
 }

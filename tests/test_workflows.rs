@@ -270,16 +270,16 @@ fn workflow_matrix_eigenvalue_properties() {
     ]);
 
     // Step 1: trace and determinant
-    let tr = m.trace();
+    let tr = m.trace().unwrap();
     let tr_val = tr.eval_f64().expect("trace eval");
     assert!((tr_val - 4.0).abs() < 1e-9, "trace should be 4, got {tr_val}");
 
-    let det = m.det();
+    let det = m.det().unwrap();
     let det_val = det.eval_f64().expect("det eval");
     assert!((det_val - 3.0).abs() < 1e-9, "det should be 3, got {det_val}");
 
     // Step 2: eigenvalues
-    let eigs = m.eigenvals(&lam);
+    let eigs = m.eigenvals(&lam).unwrap();
     assert_eq!(eigs.len(), 2, "2x2 matrix should have 2 eigenvalues");
 
     let mut eig_vals: Vec<f64> = eigs
@@ -813,7 +813,7 @@ fn workflow_matrix_inverse_verify() {
         vec![symplex::int(5), symplex::int(6), symplex::int(0)],
     ]);
 
-    let det = m.det();
+    let det = m.det().unwrap();
     let det_val = det.eval_f64().expect("det eval");
     // det = 1(0-24) - 2(0-20) + 3(0-5) = -24 + 40 - 15 = 1
     assert!(
@@ -823,7 +823,7 @@ fn workflow_matrix_inverse_verify() {
 
     // Invert and verify M * M⁻¹ = I
     let inv = m.inv().expect("should be invertible (det=1)");
-    let product = m.matmul(&inv);
+    let product = m.matmul(&inv).unwrap();
 
     // Check diagonal entries are 1, off-diagonal are 0
     for i in 0..3 {

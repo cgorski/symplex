@@ -51,8 +51,8 @@ fn main() {
     // ── 2. Basic operations ────────────────────────────────────────
     println!("\n--- Basic Operations ---");
 
-    println!("det(A) = {}", a.det());
-    println!("trace(A) = {}", a.trace());
+    println!("det(A) = {}", a.det().unwrap());
+    println!("trace(A) = {}", a.trace().unwrap());
     println!("Aᵀ = {}", a.transpose());
 
     let b = matrix![[5, 6], [7, 8]];
@@ -64,16 +64,16 @@ fn main() {
     println!("-A = {}", -&a);
 
     // Matrix power
-    let a_squared = a.powi(2);
+    let a_squared = a.powi(2).unwrap();
     println!("A² = {a_squared}");
 
-    let a_cubed = a.powi(3);
+    let a_cubed = a.powi(3).unwrap();
     println!("A³ = {a_cubed}");
 
     // ── 3. Inverse ─────────────────────────────────────────────────
     println!("\n--- Inverse ---");
 
-    if let Some(inv) = a.inv() {
+    if let Ok(inv) = a.inv() {
         println!("A⁻¹ = {inv}");
 
         // Verify: A · A⁻¹ should be identity
@@ -84,16 +84,16 @@ fn main() {
     // Singular matrix — no inverse
     let singular = matrix![[1, 2], [2, 4]];
     println!("\nSingular matrix: {singular}");
-    println!("det = {}", singular.det());
+    println!("det = {}", singular.det().unwrap());
     match singular.inv() {
-        Some(inv) => println!("Inverse: {inv}"),
-        None => println!("No inverse (singular)"),
+        Ok(inv) => println!("Inverse: {inv}"),
+        Err(_) => println!("No inverse (singular)"),
     }
 
     // ── 4. Eigenvalues ─────────────────────────────────────────────
     println!("\n--- Eigenvalues ---");
 
-    let eigenvals = a.eigenvals(&x);
+    let eigenvals = a.eigenvals(&x).unwrap();
     println!(
         "Eigenvalues of A: {:?}",
         eigenvals
@@ -103,7 +103,7 @@ fn main() {
     );
 
     // Characteristic polynomial
-    let char_p = a.char_poly(&x);
+    let char_p = a.char_poly(&x).unwrap();
     println!("Characteristic polynomial: {char_p}");
 
     // Verify: eigenvalues should be roots of the char poly
@@ -115,7 +115,7 @@ fn main() {
     // 3×3 eigenvalues
     let c = matrix![[1, 2, 0], [0, 3, 1], [0, 0, 2]];
     println!("\nC = {c}");
-    let eigenvals_c = c.eigenvals(&x);
+    let eigenvals_c = c.eigenvals(&x).unwrap();
     println!(
         "Eigenvalues of C: {:?}",
         eigenvals_c
@@ -129,7 +129,7 @@ fn main() {
 
     let sym_m = matrix![[x, 1], [0, x]];
     println!("B(x) = {sym_m}");
-    println!("det(B) = {}", sym_m.det());
+    println!("det(B) = {}", sym_m.det().unwrap());
     println!("B² = {}", &sym_m * &sym_m);
 
     // Differentiate a symbolic matrix
@@ -179,7 +179,7 @@ fn main() {
 
     let spd = matrix![[4, 2], [2, 3]]; // symmetric positive definite
     println!("SPD matrix: {spd}");
-    if let Some(chol) = spd.cholesky() {
+    if let Ok(Some(chol)) = spd.cholesky() {
         println!("L (Cholesky) = {chol}");
         let product = &chol * &chol.transpose();
         println!("L·Lᵀ = {product}");
@@ -224,12 +224,12 @@ fn main() {
 
     let top = matrix![[1, 2, 3]];
     let bottom = matrix![[4, 5, 6], [7, 8, 9]];
-    let vstacked = Matrix::vstack(&[&top, &bottom]);
+    let vstacked = Matrix::vstack(&[&top, &bottom]).unwrap();
     println!("vstack = {vstacked}");
 
     let left = matrix![[1, 2], [3, 4]];
     let right = matrix![[5], [6]];
-    let hstacked = Matrix::hstack(&[&left, &right]);
+    let hstacked = Matrix::hstack(&[&left, &right]).unwrap();
     println!("hstack = {hstacked}");
 
     // ── 11. Properties ─────────────────────────────────────────────
@@ -254,12 +254,12 @@ fn main() {
     let jac = jacobian(&[&f1, &f2], &[&x, &y]);
     println!("f = [x²+y, x·y²]");
     println!("J = {jac}");
-    println!("det(J) = {}", jac.det());
+    println!("det(J) = {}", jac.det().unwrap());
 
     // Evaluate Jacobian at a point
     let jac_at_1_2 = jac.subs(&x, &symplex::int(1)).subs(&y, &symplex::int(2));
     println!("J(1,2) = {jac_at_1_2}");
-    println!("det(J(1,2)) = {}", jac_at_1_2.det());
+    println!("det(J(1,2)) = {}", jac_at_1_2.det().unwrap());
 
     // ── 13. Dot and Cross Products ─────────────────────────────────
     println!("\n--- Dot & Cross Products ---");
@@ -277,7 +277,7 @@ fn main() {
     println!("\n--- Matrix Exponential ---");
 
     let rot = matrix![[0, 1], [-1, 0]]; // 90° rotation generator
-    let exp_rot = rot.exp_series(6);
+    let exp_rot = rot.exp_series(6).unwrap();
     println!("exp([[0,1],[-1,0]]) ≈ {exp_rot}");
 
     // ── 15. Code Generation ────────────────────────────────────────
@@ -306,7 +306,7 @@ fn main() {
     println!("{code_f32}");
 
     // Scalar code generation for a matrix entry
-    let det_symbolic = rot_mat.det();
+    let det_symbolic = rot_mat.det().unwrap();
     println!("det(R) = {det_symbolic}");
     println!("det(R) simplified = {}", det_symbolic.simplify_trig());
 
@@ -327,7 +327,7 @@ fn main() {
 
     let tall = matrix![[1, 0], [0, 1], [1, 1]]; // 3×2
     println!("Tall matrix (3×2): {tall}");
-    if let Some(pinv) = tall.pinv() {
+    if let Ok(pinv) = tall.pinv() {
         println!("Pseudoinverse: {pinv}");
     } else {
         println!("Pseudoinverse: not computable");

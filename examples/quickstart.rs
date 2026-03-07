@@ -182,14 +182,14 @@ fn main() {
     println!("\n--- Matrix Algebra ---");
     let m = matrix![[2, 1], [1, 3]];
     println!("M = {m}");
-    println!("det(M) = {}", m.det());
-    println!("trace(M) = {}", m.trace());
+    println!("det(M) = {}", m.det().unwrap());
+    println!("trace(M) = {}", m.trace().unwrap());
 
-    if let Some(inv) = m.inv() {
+    if let Ok(inv) = m.inv() {
         println!("M⁻¹ = {inv}");
     }
 
-    let eigenvals = m.eigenvals(&x);
+    let eigenvals = m.eigenvals(&x).unwrap();
     println!(
         "Eigenvalues: {:?}",
         eigenvals
@@ -201,7 +201,7 @@ fn main() {
     // Symbolic matrix
     let sym_m = matrix![[x, 1], [0, x]];
     println!("\nB = {sym_m}");
-    println!("det(B) = {}", sym_m.det());
+    println!("det(B) = {}", sym_m.det().unwrap());
 
     // ── 12. Unit Conversions ──────────────────────────────────────────
     // Exact rational conversions — no floating-point approximation.
