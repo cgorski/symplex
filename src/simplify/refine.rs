@@ -30,7 +30,7 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Zero};
+
 use rustc_hash::FxHashMap;
 
 use crate::base::arena::Arena;
@@ -46,9 +46,7 @@ use crate::base::walk;
 #[derive(Clone, Debug, Default)]
 struct CachedProps {
     is_positive: Option<bool>,
-    is_negative: Option<bool>,
     is_nonneg: Option<bool>,
-    is_real: Option<bool>,
     is_integer: Option<bool>,
     is_zero: Option<bool>,
     is_even: Option<bool>,
@@ -100,9 +98,7 @@ fn refine_immutable(
     for &id in &post_order {
         let props = CachedProps {
             is_positive: assumptions.query(arena, id, Props::POSITIVE),
-            is_negative: assumptions.query(arena, id, Props::NEGATIVE),
             is_nonneg: assumptions.query(arena, id, Props::NONNEGATIVE),
-            is_real: assumptions.query(arena, id, Props::REAL),
             is_integer: assumptions.query(arena, id, Props::INTEGER),
             is_zero: assumptions.query(arena, id, Props::ZERO),
             is_even: assumptions.query(arena, id, Props::EVEN),

@@ -1649,6 +1649,50 @@ impl Expr<Numeric> {
     /// assert_eq!(format!("{refined}"), format!("{x}"));
     /// ```
     #[must_use = "returns the refined form; does not modify in place"]
+    /// Render this expression as a 2D Unicode string for terminal display.
+    ///
+    /// Produces multi-line output with stacked fractions, superscripts,
+    /// height-matched parentheses, and graduated fraction bar weights
+    /// for nested fractions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = symplex::rational(1, 2);
+    /// let s = expr.pretty();
+    /// assert!(s.lines().count() == 3, "fraction should be 3 lines");
+    /// ```
+    #[must_use = "returns the rendered string; does not modify in place"]
+    pub fn pretty(&self) -> String {
+        let inner = self.inner.read();
+        crate::output::pretty::pretty_print(&inner.arena, self.id, crate::output::pretty::RenderMode::Unicode).render()
+    }
+
+    /// Render this expression as a 2D ASCII string for terminal display.
+    ///
+    /// Like [`pretty`](Self::pretty) but uses only ASCII characters,
+    /// avoiding Unicode box-drawing and bracket pieces that may not
+    /// render correctly in all terminals.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x");
+    /// let expr = symplex::rational(1, 2);
+    /// let s = expr.pretty_ascii();
+    /// assert!(s.contains('-'), "ASCII fraction uses dashes");
+    /// ```
+    #[must_use = "returns the rendered string; does not modify in place"]
+    pub fn pretty_ascii(&self) -> String {
+        let inner = self.inner.read();
+        crate::output::pretty::pretty_print(&inner.arena, self.id, crate::output::pretty::RenderMode::Ascii).render()
+    }
+
     pub fn refine(&self) -> Ex {
         let mut inner = self.inner.write();
         let crate::api::context::ContextInner {
