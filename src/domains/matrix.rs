@@ -746,6 +746,151 @@ impl Matrix {
         cp.solve_or_empty(var)
     }
 
+    /// Eigenvectors: for each eigenvalue, compute a basis for its eigenspace.
+    ///
+    /// Returns a list of `(eigenvalue, algebraic_multiplicity, eigenvectors)`
+    /// tuples.  Each eigenvector is returned as a column-vector [`Matrix`].
+    ///
+    /// Algebraic multiplicity is estimated by counting duplicate roots
+    /// returned by the solver.  For matrices with symbolic entries or
+    /// characteristic polynomials of degree ≥ 5, the solver may not
+    /// return all roots and the list can be incomplete.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is not square.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let var = symplex::var("λ");
+    /// let m = symplex::matrix![[2, 1], [0, 3]];
+    /// let evs = m.eigenvects(&var);
+    /// for (val, mult, vecs) in &evs {
+    ///     assert!(!vecs.is_empty());
+    /// }
+    /// ```
+    pub fn eigenvects(&self, var: &Ex) -> Vec<(Ex, usize, Vec<Matrix>)> {
+        assert!(
+            self.is_square(),
+            "eigenvects requires a square matrix, got {}×{}",
+            self.nrows,
+            self.ncols
+        );
+        let n = self.nrows;
+        let eye = Matrix::identity(n);
+
+        // Get eigenvalues (flat list, may contain duplicates).
+        let all_roots = self.eigenvals(var);
+
+        // Deduplicate and count algebraic multiplicities.
+        let mut eigen_pairs: Vec<(Ex, usize)> = Vec::new();
+        for root in &all_roots {
+            if let Some(entry) = eigen_pairs.iter_mut().find(|(e, _)| e == root) {
+                entry.1 += 1;
+            } else {
+                eigen_pairs.push((root.clone(), 1));
+            }
+        }
+
+        // For each unique eigenvalue, compute eigenvectors via nullspace(A − λI).
+        let mut result = Vec::new();
+        for (eigenval, alg_mult) in eigen_pairs {
+            let a_minus_lambda_i = self.sub(&eye.scale(&eigenval));
+            let vecs = a_minus_lambda_i.nullspace();
+            result.push((eigenval, alg_mult, vecs));
+        }
+
+        result
+    }
+
+    /// Check whether the matrix is diagonalizable.
+    ///
+    /// A matrix is diagonalizable iff for every eigenvalue the geometric
+    /// multiplicity (dimension of eigenspace) equals the algebraic
+    /// multiplicity.  Returns `false` if the eigenvalue solver cannot
+    /// find all roots.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is not square.
+    pub fn is_diagonalizable(&self, var: &Ex) -> bool {
+        assert!(
+            self.is_square(),
+            "is_diagonalizable requires a square matrix"
+        );
+        let eigvs = self.eigenvects(var);
+        let mut total = 0usize;
+        for (_, alg_mult, vecs) in &eigvs {
+            if vecs.len() != *alg_mult {
+                return false;
+            }
+            total += vecs.len();
+        }
+        total == self.nrows
+    }
+
+    /// Diagonalize: find invertible `P` and diagonal `D` such that
+    /// `D = P⁻¹ A P`.
+    ///
+    /// `P` is the matrix whose columns are eigenvectors and `D` is
+    /// the diagonal matrix of eigenvalues.
+    ///
+    /// Returns `None` if the matrix is not diagonalizable or the
+    /// eigenvalue solver cannot find all roots.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is not square.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// let var = symplex::var("λ");
+    /// let m = symplex::matrix![[2, 1], [0, 3]];
+    /// if let Some((p, d)) = m.diagonalize(&var) {
+    ///     // D is diagonal, P columns are eigenvectors
+    ///     assert_eq!(d.nrows(), 2);
+    /// }
+    /// ```
+    pub fn diagonalize(&self, var: &Ex) -> Option<(Matrix, Matrix)> {
+        assert!(
+            self.is_square(),
+            "diagonalize requires a square matrix"
+        );
+        let eigvs = self.eigenvects(var);
+
+        // Verify diagonalizability: need n linearly independent eigenvectors.
+        let n = self.nrows;
+        let mut total_vecs = 0usize;
+        for (_, alg_mult, vecs) in &eigvs {
+            if vecs.len() != *alg_mult {
+                return None;
+            }
+            total_vecs += vecs.len();
+        }
+        if total_vecs != n {
+            return None;
+        }
+
+        // Build P (eigenvector columns) and D (diagonal eigenvalues).
+        let mut p_cols: Vec<&Matrix> = Vec::new();
+        let mut diag_entries: Vec<Ex> = Vec::new();
+        for (eigenval, _, vecs) in &eigvs {
+            for v in vecs {
+                p_cols.push(v);
+                diag_entries.push(eigenval.clone());
+            }
+        }
+
+        let p = Matrix::hstack(&p_cols);
+        let d = Matrix::diag(&diag_entries);
+
+        Some((p, d))
+    }
+
     /// Compute the integer power of a square matrix via repeated squaring.
     ///
     /// - `powi(0)` returns the identity matrix
@@ -1866,6 +2011,101 @@ mod tests {
     }
 
     // ── Display ────────────────────────────────────────────────────────
+
+    // ── Eigenvector / Diagonalization tests ─────────────────────────
+
+    #[test]
+    fn eigenvects_2x2_distinct() {
+        let var = crate::var("lam_ev1");
+        // Upper-triangular: eigenvalues are 2 and 3 on the diagonal.
+        let m = Matrix::new(vec![
+            vec![crate::int(2), crate::int(1)],
+            vec![crate::int(0), crate::int(3)],
+        ]);
+        let evs = m.eigenvects(&var);
+        assert_eq!(evs.len(), 2, "should have 2 distinct eigenvalues");
+        for (eigenval, mult, vecs) in &evs {
+            assert_eq!(*mult, 1, "each mult should be 1");
+            assert_eq!(vecs.len(), 1, "each eigenspace should be 1-dimensional");
+            // Verify A·v = λ·v
+            let av = m.matmul(&vecs[0]);
+            let lambda_v = vecs[0].scale(eigenval);
+            for i in 0..2 {
+                let diff = (av.get(i, 0) - lambda_v.get(i, 0)).expand().eval();
+                assert!(
+                    diff.is_zero_structural(),
+                    "A·v ≠ λ·v at row {i}, got {diff}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eigenvects_diagonal_matrix() {
+        let var = crate::var("lam_ev2");
+        let m = Matrix::diag(&[crate::int(5), crate::int(-3)]);
+        let evs = m.eigenvects(&var);
+        assert_eq!(evs.len(), 2, "diagonal matrix has 2 eigenvalues");
+        // Eigenvalues should be 5 and -3.
+        let vals: Vec<_> = evs.iter().map(|(v, _, _)| v.clone()).collect();
+        assert!(
+            vals.contains(&crate::int(5)) && vals.contains(&crate::int(-3)),
+            "eigenvalues should be 5 and -3, got {:?}",
+            vals
+        );
+    }
+
+    #[test]
+    fn diagonalize_upper_triangular() {
+        let var = crate::var("lam_diag1");
+        let m = Matrix::new(vec![
+            vec![crate::int(2), crate::int(1)],
+            vec![crate::int(0), crate::int(3)],
+        ]);
+        let result = m.diagonalize(&var);
+        assert!(result.is_some(), "upper triangular should be diagonalizable");
+        let (p, d) = result.unwrap();
+        assert_eq!(p.nrows(), 2);
+        assert_eq!(d.nrows(), 2);
+        // Verify: P * D * P^{-1} ≈ M
+        if let Some(p_inv) = p.inv() {
+            let reconstructed = p.matmul(&d).matmul(&p_inv);
+            for i in 0..2 {
+                for j in 0..2 {
+                    let diff =
+                        (reconstructed.get(i, j) - m.get(i, j)).expand().eval();
+                    assert!(
+                        diff.simplify().is_zero_structural(),
+                        "P·D·P⁻¹ ≠ M at ({i},{j})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn diagonalize_non_diagonalizable() {
+        let var = crate::var("lam_nd");
+        // [[1,1],[0,1]] — defective: eigenvalue 1 alg-mult 2, geom-mult 1
+        let m = Matrix::new(vec![
+            vec![crate::int(1), crate::int(1)],
+            vec![crate::int(0), crate::int(1)],
+        ]);
+        let result = m.diagonalize(&var);
+        assert!(
+            result.is_none(),
+            "defective matrix should not be diagonalizable"
+        );
+    }
+
+    #[test]
+    fn is_diagonalizable_yes() {
+        let var = crate::var("lam_diag_y");
+        let m = Matrix::diag(&[crate::int(1), crate::int(2), crate::int(3)]);
+        assert!(m.is_diagonalizable(&var));
+    }
+
+    // ── Display tests ──────────────────────────────────────────────
 
     #[test]
     fn matrix_display() {
