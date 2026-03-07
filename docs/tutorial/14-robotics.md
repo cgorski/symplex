@@ -1,5 +1,13 @@
 # Chapter 14: Robotics
 
+> **Dimensional analysis available.** Symplex supports compile-time dimensional
+> analysis for robotics workflows — lengths, angles, forces, and torques can all
+> be type-checked so that, e.g., swapping a link length with a joint angle is a
+> compile error. This chapter shows the untyped API first (simpler, great for
+> prototyping) and adds **"With Units"** callouts showing the dimension-checked
+> equivalents. See [Chapter 21: Units & Dimensional Analysis](21-units.md) for
+> the full reference.
+
 Symplex provides a symbolic robotics toolkit that covers the full pipeline from mechanism description to deployable code: Denavit-Hartenberg parameters, forward kinematics, Jacobians, inverse kinematics, Lagrangian dynamics, and Rust code generation. This chapter walks through the **flagship workflow** — define an arm, derive everything symbolically, and generate optimized numerical code.
 
 If you've used the Robotics Toolbox for MATLAB or SymPy's mechanics module, the concepts are familiar. The difference: symplex derives everything exactly and emits compiled Rust code that runs at MHz rates in your control loop.
@@ -48,6 +56,44 @@ for (i, (th, d, a, al)) in dh.iter().enumerate() {
 ```
 
 This is the standard DH convention. Each row defines a homogeneous transformation matrix $T_i$, and the overall forward kinematics is the chain product $T_0^3 = T_1 \cdot T_2 \cdot T_3$.
+
+### With Units
+
+The untyped API above is convenient, but nothing prevents you from accidentally
+writing `(&theta1, &zero, &theta2, &zero)` — swapping an angle for a length.
+The typed API catches this at compile time:
+
+```rust
+use symplex::units::*;
+use symplex::robotics::fk_position_typed;
+
+// Lengths are Length, angles are Angle — distinct types
+let l1 = Length::rational(3, 10);   // 0.3 m — dimension-checked!
+let l2 = Length::rational(1, 4);    // 0.25 m
+let l3 = Length::rational(1, 5);    // 0.2 m
+
+let theta1 = Angle::symbol("theta1");
+let theta2 = Angle::symbol("theta2");
+let theta3 = Angle::symbol("theta3");
+
+let zero_l = Length::zero();
+let zero_a = Angle::zero();
+
+// DH parameters: (theta: Angle, d: Length, a: Length, alpha: Angle)
+let (px, py, pz) = fk_position_typed(&[
+    (&theta1, &zero_l, &l1, &zero_a),  // Joint 1
+    (&theta2, &zero_l, &l2, &zero_a),  // Joint 2
+    (&theta3, &zero_l, &l3, &zero_a),  // Joint 3
+]);
+// px, py, pz are Length — guaranteed at compile time
+// Swapping l1 and theta1 would be a compile error!
+
+println!("px = {px}");  // still prints the symbolic expression
+```
+
+The typed and untyped APIs produce identical symbolic expressions — the types
+are erased during code generation. Use whichever feels right for your project;
+you can mix them freely (extract the inner `Ex` with `.into_inner()` if needed).
 
 ## Step 2: Forward Kinematics
 
@@ -287,6 +333,8 @@ let m1 = symplex::var("m1");
 let m2 = symplex::var("m2");
 let l1 = symplex::var("L1");
 let l2 = symplex::var("L2");
+let g = symplex::var("g");
+let half = symplex::half();
 
 // Kinetic energy (standard double-pendulum form)
 let ke_1 = &half * &m1 * &l1.powi(2) * &qd1.powi(2);
@@ -298,6 +346,15 @@ let ke = &(&(&ke_1 + &ke_2_a) + &ke_2_b) + &ke_2_c;
 // Potential energy
 let pe = &(&(-&(&m1 + &m2)) * &g * &l1 * &q1.cos())
        + &(&(-&m2) * &g * &l2 * &q2.cos());
+
+// Euler-Lagrange equations for the double pendulum
+let eqs = euler_lagrange(
+    &ke, &pe,
+    &[(&q1, &qd1), (&q2, &qd2)],
+    &[&qdd1, &qdd2],
+);
+println!("τ₁ = {}", eqs[0]);
+println!("τ₂ = {}", eqs[1]);
 ```
 
 Now extract the dynamic components:
@@ -339,6 +396,37 @@ println!("C shape: {:?}", cor.shape());   // (2, 2)
 println!("g length: {}", grav.len());     // 2
 ```
 
+### With Units — Dimension-Checked Dynamics
+
+The Lagrangian dynamics API also supports typed quantities. This ensures that
+your kinetic energy is actually an `Energy`, your potential energy is `Energy`,
+and differentiation with respect to angular velocity yields angular momentum:
+
+```rust
+use symplex::units::*;
+
+// Typed symbols
+let m = Mass::symbol("m");
+let l = Length::symbol("L");
+let g_accel = Acceleration::symbol("g");
+let q = Angle::symbol("q");
+let qd = AngularVelocity::symbol("qd");
+
+// Kinetic energy — dimension checked
+let ke = Energy::from_ex(expr!(1/2 * m * l^2 * qd^2));
+
+// Potential energy — dimension checked
+let pe = Energy::from_ex(expr!(m * g * l * (1 - cos(q))));
+
+// ∂L/∂θ̇ → angular momentum (typed DiffWrt)
+let theta_dot_var = AngularVelocity::symbol("qd");
+let p: AngularMomentum = lagrangian.diff_wrt(&theta_dot_var);
+// If any dimension is wrong, this is a compile error — not a runtime surprise.
+```
+
+The typed wrappers call the same underlying `euler_lagrange()` machinery.
+They add zero runtime cost — the dimension tags exist only at compile time.
+
 ### Total Time Derivative
 
 The `total_time_derivative` function computes $d/dt$ of an expression by applying the chain rule through generalized coordinates:
@@ -362,6 +450,7 @@ Verify the dynamics at a known configuration:
 ```rust
 // At rest, hanging straight down: q=(0,0), qd=(0,0), qdd=(1,0)
 // m1=m2=1, L1=L2=1, g=10
+// (eqs[] comes from the euler_lagrange() call in the double-pendulum section above)
 let tau1 = eqs[0].eval_f64_with(&[
     (&m1, 1), (&m2, 1), (&l1, 1), (&l2, 1), (&g, 10),
     (&q1, 0), (&q2, 0), (&qd1, 0), (&qd2, 0), (&qdd1, 1), (&qdd2, 0),

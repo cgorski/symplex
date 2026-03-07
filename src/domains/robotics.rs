@@ -16,6 +16,7 @@ use crate::domains::matrix::Matrix;
 use crate::poly::multipoly::{GrevLex, MultiPoly};
 use crate::poly::polysys;
 use crate::prelude::*;
+use crate::units::si::{Angle, Length};
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::ToPrimitive;
@@ -449,4 +450,66 @@ pub fn inverse_kinematics_2dof(
     angles.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6);
 
     angles
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Dimension-typed robotics API
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Typed DH parameter tuple: (joint_angle, link_offset, link_length, link_twist).
+///
+/// Provides compile-time dimensional checking: angles are `Angle`,
+/// lengths are `Length`. Swapping an angle and a length is a compile error.
+pub type DhParams<'a> = (&'a Angle, &'a Length, &'a Length, &'a Angle);
+
+/// Compute end-effector position from typed DH parameters.
+///
+/// Returns `(x, y, z)` as `Length` values — compile-time guaranteed to be
+/// lengths, not angles or velocities.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::units::si::*;
+/// use symplex::robotics::fk_position_typed;
+///
+/// let theta1 = Angle::symbol("theta1");
+/// let l1 = Length::rational(3, 10);
+/// let zero_l = Length::zero();
+/// let zero_a = Angle::zero();
+///
+/// let (px, py, pz) = fk_position_typed(&[
+///     (&theta1, &zero_l, &l1, &zero_a),
+/// ]);
+/// // px, py, pz are Length — guaranteed at compile time
+/// ```
+pub fn fk_position_typed(dh_params: &[DhParams<'_>]) -> (Length, Length, Length) {
+    let untyped: Vec<(&Ex, &Ex, &Ex, &Ex)> = dh_params
+        .iter()
+        .map(|(theta, d, a, alpha)| (theta.inner(), d.inner(), a.inner(), alpha.inner()))
+        .collect();
+
+    let (px, py, pz) = fk_position(&untyped);
+    (Length::from_ex(px), Length::from_ex(py), Length::from_ex(pz))
+}
+
+/// Compute the full 4×4 FK transformation matrix from typed DH parameters.
+pub fn fk_chain_typed(dh_params: &[DhParams<'_>]) -> Matrix {
+    let untyped: Vec<(&Ex, &Ex, &Ex, &Ex)> = dh_params
+        .iter()
+        .map(|(theta, d, a, alpha)| (theta.inner(), d.inner(), a.inner(), alpha.inner()))
+        .collect();
+
+    fk_chain(&untyped)
+}
+
+/// Compute the 3×3 rotation matrix from typed DH parameters.
+pub fn fk_rotation_typed(dh_params: &[DhParams<'_>]) -> Matrix {
+    let untyped: Vec<(&Ex, &Ex, &Ex, &Ex)> = dh_params
+        .iter()
+        .map(|(theta, d, a, alpha)| (theta.inner(), d.inner(), a.inner(), alpha.inner()))
+        .collect();
+
+    fk_rotation(&untyped)
 }

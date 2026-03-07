@@ -55,6 +55,52 @@ println!(
 
 The `StateSpace::new` constructor validates dimensional consistency — `A` must be square, `B` must have as many rows as `A`, and so on. If you get the sizes wrong, it panics with a clear message.
 
+> ### 🔬 With Units — Verifying Matrix Entry Dimensions
+>
+> The state matrix entries have specific physical dimensions that encode the
+> physics of the plant. With symplex's dimensional analysis you can verify these
+> at compile time:
+>
+> ```rust
+> // The state matrix entries have specific physical dimensions:
+> // A[0,1] = 1/s (converts velocity to position rate)
+> // A[1,0] = -k/m = -4/s² (spring stiffness / mass)
+> // A[1,1] = -c/m = -3/s (damping / mass)
+> //
+> // Verify with const_assert_dim!:
+> symplex::const_assert_dim!(
+>     ConstDim::STIFFNESS.div(ConstDim::MASS),
+>     ConstDim::new(0, 0, -2, 0, 0, 0, 0),
+>     "k/m must have dimension T⁻² (angular frequency squared)"
+> );
+> symplex::const_assert_dim!(
+>     ConstDim::DAMPING.div(ConstDim::MASS),
+>     ConstDim::new(0, 0, -1, 0, 0, 0, 0),
+>     "c/m must have dimension T⁻¹ (inverse time)"
+> );
+> ```
+>
+> You can also build the force equation from typed symbols, so that dimensional
+> mismatches (e.g., adding a force to a velocity) are caught at compile time:
+>
+> ```rust
+> use symplex::units::*;
+>
+> // With units:
+> let mass = Mass::symbol("m");
+> let stiffness = Stiffness::symbol("k");
+> let damping = Damping::symbol("c");
+> let x = Length::symbol("x");
+> let v = Velocity::symbol("v");
+>
+> let f_spring: Force = -(&stiffness * &x);
+> let f_damp: Force = -(&damping * &v);
+> // f_spring + f_damp is a Force — adding a Length here would be a compile error
+> ```
+>
+> See [Chapter 21: Units & Dimensional Analysis](21-units.md) for the full
+> reference on typed quantities.
+
 ## Poles and Stability
 
 The poles of the system are the eigenvalues of **A**. They tell you everything about the natural response.
@@ -187,6 +233,9 @@ match is_routh_stable(&coeffs3) {
     Some(false) => println!("Routh stable: no"),
     None        => println!("Undetermined"),
 }
+// Routh stable: yes
+// (First column of the Routh array is [1, 2, 1, 4] — all positive, so
+//  all three roots have negative real parts and the polynomial is stable.)
 
 // Inspect the full Routh array
 let routh = routh_array(&coeffs3);
@@ -205,6 +254,9 @@ match is_routh_stable(&unstable) {
     Some(false) => println!("Unstable: sign changes in first column"),
     _ => {}
 }
+// Unstable: sign changes in first column
+// (The first column is [1, 1, -3, 1] — two sign changes, meaning two
+//  roots in the right half-plane.)
 ```
 
 ## Ackermann Pole Placement

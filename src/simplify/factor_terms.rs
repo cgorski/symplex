@@ -241,6 +241,7 @@ fn numeric_factor_terms_pair(arena: &mut Arena, expr: ExprId) -> (Ratio<BigInt>,
 /// The inner expression has each coefficient divided by gcd.
 ///
 /// This is the public entry point that preserves backward compatibility.
+#[allow(dead_code)]
 pub(crate) fn factor_terms_pair(arena: &mut Arena, expr: ExprId) -> (Ratio<BigInt>, ExprId) {
     numeric_factor_terms_pair(arena, expr)
 }

@@ -33,6 +33,22 @@ pub enum Precision {
     F32,
 }
 
+/// Unit annotation style for generated code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnitAnnotation {
+    /// No unit annotations — all parameters and return values are raw f64/f32.
+    None,
+    /// Annotate with `uom` crate types at function boundaries.
+    /// The function body uses raw f64/f32 internally.
+    Uom,
+}
+
+impl Default for UnitAnnotation {
+    fn default() -> Self {
+        UnitAnnotation::None
+    }
+}
+
 /// Configuration for Rust code generation.
 #[derive(Debug, Clone)]
 pub struct CodegenOptions {
@@ -46,6 +62,14 @@ pub struct CodegenOptions {
     pub must_use: bool,
     /// Run CSE before code generation.
     pub cse: bool,
+    /// Unit annotations for generated function signatures.
+    pub unit_annotation: UnitAnnotation,
+    /// Map from parameter names to uom type names (e.g., "theta1" → "Angle").
+    /// Only used when `unit_annotation` is `UnitAnnotation::Uom`.
+    pub param_units: Vec<(String, String)>,
+    /// The uom type name for the return value (e.g., "Length").
+    /// Only used when `unit_annotation` is `UnitAnnotation::Uom`.
+    pub return_unit: Option<String>,
 }
 
 impl Default for CodegenOptions {
@@ -56,6 +80,9 @@ impl Default for CodegenOptions {
             inline: false,
             must_use: true,
             cse: true,
+            unit_annotation: UnitAnnotation::None,
+            param_units: Vec::new(),
+            return_unit: None,
         }
     }
 }
@@ -80,6 +107,25 @@ impl CodegenOptions {
             inline: true,
             ..Default::default()
         }
+    }
+
+    /// Enable uom type annotations on the generated function.
+    pub fn with_uom(mut self) -> Self {
+        self.unit_annotation = UnitAnnotation::Uom;
+        self
+    }
+
+    /// Set the uom type for a parameter.
+    pub fn param_unit(mut self, name: &str, uom_type: &str) -> Self {
+        self.param_units
+            .push((name.to_string(), uom_type.to_string()));
+        self
+    }
+
+    /// Set the uom type for the return value.
+    pub fn return_unit_type(mut self, uom_type: &str) -> Self {
+        self.return_unit = Some(uom_type.to_string());
+        self
     }
 }
 
@@ -131,6 +177,126 @@ impl Precision {
             Precision::F32 => "f32::NAN",
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Unit-annotation helpers (uom)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Map a symplex dimension name to the corresponding uom SI type name.
+#[allow(dead_code)]
+fn dim_to_uom_type(name: &str) -> Option<&'static str> {
+    match name {
+        "Length" | "length" | "m" => Some("Length"),
+        "Mass" | "mass" | "kg" => Some("Mass"),
+        "Time" | "time" | "s" => Some("Time"),
+        "Velocity" | "velocity" => Some("Velocity"),
+        "Acceleration" | "acceleration" => Some("Acceleration"),
+        "Force" | "force" => Some("Force"),
+        "Energy" | "energy" => Some("Energy"),
+        "Power" | "power" => Some("Power"),
+        "Voltage" | "voltage" => Some("ElectricPotential"),
+        "Current" | "current" => Some("ElectricCurrent"),
+        "Resistance" | "resistance" => Some("ElectricalResistance"),
+        "Angle" | "angle" => Some("Angle"),
+        "Frequency" | "frequency" => Some("Frequency"),
+        "Pressure" | "pressure" => Some("Pressure"),
+        "Torque" | "torque" => Some("Torque"),
+        "Momentum" | "momentum" => Some("Momentum"),
+        "Inductance" | "inductance" => Some("Inductance"),
+        "Capacitance" | "capacitance" => Some("Capacitance"),
+        "Charge" | "charge" => Some("ElectricCharge"),
+        "AngularVelocity" | "angular_velocity" => Some("AngularVelocity"),
+        _ => None,
+    }
+}
+
+/// Map a uom type name to its default unit for `get::<unit>()` and `new::<unit>()`.
+fn uom_default_unit(uom_type: &str) -> &'static str {
+    match uom_type {
+        "Length" => "meter",
+        "Mass" => "kilogram",
+        "Time" => "second",
+        "Velocity" => "meter_per_second",
+        "Acceleration" => "meter_per_second_squared",
+        "Force" => "newton",
+        "Energy" => "joule",
+        "Power" => "watt",
+        "ElectricPotential" => "volt",
+        "ElectricCurrent" => "ampere",
+        "ElectricalResistance" => "ohm",
+        "Angle" => "radian",
+        "Frequency" => "hertz",
+        "Pressure" => "pascal",
+        "Torque" => "newton_meter",
+        "Momentum" => "kilogram_meter_per_second",
+        "Inductance" => "henry",
+        "Capacitance" => "farad",
+        "ElectricCharge" => "coulomb",
+        "AngularVelocity" => "radian_per_second",
+        _ => "todo",
+    }
+}
+
+/// Map a uom type name to the corresponding `uom::si` sub-module name.
+fn uom_type_to_module(uom_type: &str) -> &'static str {
+    match uom_type {
+        "Length" => "length",
+        "Mass" => "mass",
+        "Time" => "time",
+        "Velocity" => "velocity",
+        "Acceleration" => "acceleration",
+        "Force" => "force",
+        "Energy" => "energy",
+        "Power" => "power",
+        "ElectricPotential" => "electric_potential",
+        "ElectricCurrent" => "electric_current",
+        "ElectricalResistance" => "electrical_resistance",
+        "Angle" => "angle",
+        "Frequency" => "frequency",
+        "Pressure" => "pressure",
+        "Torque" => "torque",
+        "Momentum" => "momentum",
+        "Inductance" => "inductance",
+        "Capacitance" => "capacitance",
+        "ElectricCharge" => "electric_charge",
+        "AngularVelocity" => "angular_velocity",
+        _ => "unknown",
+    }
+}
+
+/// Collect deduplicated `(module, unit)` pairs from parameter and return unit options.
+fn collect_uom_imports(options: &CodegenOptions) -> Vec<(&str, &str)> {
+    let mut imports: Vec<(&str, &str)> = Vec::new();
+    for (_, uom_type) in &options.param_units {
+        let module = uom_type_to_module(uom_type);
+        let unit = uom_default_unit(uom_type);
+        if !imports.contains(&(module, unit)) {
+            imports.push((module, unit));
+        }
+    }
+    if let Some(ref ret_type) = options.return_unit {
+        let module = uom_type_to_module(ret_type);
+        let unit = uom_default_unit(ret_type);
+        if !imports.contains(&(module, unit)) {
+            imports.push((module, unit));
+        }
+    }
+    imports
+}
+
+/// Emit `use uom::si::...` preamble lines into `lines`.
+fn emit_uom_use_statements(lines: &mut Vec<String>, options: &CodegenOptions) {
+    let precision_mod = match options.precision {
+        Precision::F64 => "f64",
+        Precision::F32 => "f32",
+    };
+    lines.push(format!("use uom::si::{precision_mod}::*;"));
+    let imports = collect_uom_imports(options);
+    for (module, unit) in &imports {
+        lines.push(format!("use uom::si::{module}::{unit};"));
+    }
+    lines.push(String::new());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -196,6 +362,11 @@ pub(crate) fn to_rust_fn_with_options(
         lines.push(String::new());
     }
 
+    // Uom use statements (before annotations so they appear at the top)
+    if options.unit_annotation == UnitAnnotation::Uom {
+        emit_uom_use_statements(&mut lines, options);
+    }
+
     // Annotations
     if options.inline {
         lines.push("#[inline]".to_string());
@@ -205,11 +376,38 @@ pub(crate) fn to_rust_fn_with_options(
     }
 
     // Function signature
-    let params: Vec<String> = args.iter().map(|a| format!("{a}: {float_type}")).collect();
-    lines.push(format!(
-        "pub fn {name}({}) -> {float_type} {{",
-        params.join(", ")
-    ));
+    if options.unit_annotation == UnitAnnotation::Uom {
+        let params: Vec<String> = args
+            .iter()
+            .map(|a| {
+                let uom_type = options
+                    .param_units
+                    .iter()
+                    .find(|(name, _)| name == *a)
+                    .map(|(_, t)| t.as_str())
+                    .unwrap_or(float_type);
+                format!("{a}: {uom_type}")
+            })
+            .collect();
+        let ret_type = options.return_unit.as_deref().unwrap_or(float_type);
+        lines.push(format!(
+            "pub fn {name}({}) -> {ret_type} {{",
+            params.join(", ")
+        ));
+        // Extract raw float values from uom types
+        for (param_name, uom_type) in &options.param_units {
+            let unit = uom_default_unit(uom_type);
+            lines.push(format!(
+                "    let {param_name} = {param_name}.get::<{unit}>();"
+            ));
+        }
+    } else {
+        let params: Vec<String> = args.iter().map(|a| format!("{a}: {float_type}")).collect();
+        lines.push(format!(
+            "pub fn {name}({}) -> {float_type} {{",
+            params.join(", ")
+        ));
+    }
 
     // Detect sin/cos pairs for combined emission (not for Libm — no sincos intrinsic)
     let (sin_cos_emit, sin_cos_skip) = if options.math_backend != MathBackend::Libm {
@@ -236,7 +434,16 @@ pub(crate) fn to_rust_fn_with_options(
     // Final expression (strip unnecessary outer parens)
     let result_code = expr_to_rust_cse(arena, final_expr, args, options, &cse_constants)?;
     let result_code = strip_outer_parens(&result_code);
-    lines.push(format!("    {result_code}"));
+    if options.unit_annotation == UnitAnnotation::Uom {
+        if let Some(ref ret_type) = options.return_unit {
+            let unit = uom_default_unit(ret_type);
+            lines.push(format!("    {ret_type}::new::<{unit}>({result_code})"));
+        } else {
+            lines.push(format!("    {result_code}"));
+        }
+    } else {
+        lines.push(format!("    {result_code}"));
+    }
     lines.push("}".to_string());
 
     Ok(lines.join("\n"))
@@ -286,6 +493,11 @@ pub(crate) fn matrix_to_rust_fn(
         lines.push(String::new());
     }
 
+    // Uom use statements
+    if options.unit_annotation == UnitAnnotation::Uom {
+        emit_uom_use_statements(&mut lines, options);
+    }
+
     // Annotations
     if options.inline {
         lines.push("#[inline]".to_string());
@@ -295,11 +507,38 @@ pub(crate) fn matrix_to_rust_fn(
     }
 
     // Function signature: returns a flat array
-    let params: Vec<String> = args.iter().map(|a| format!("{a}: {float_type}")).collect();
-    lines.push(format!(
-        "pub fn {name}({}) -> [{float_type}; {total}] {{",
-        params.join(", ")
-    ));
+    if options.unit_annotation == UnitAnnotation::Uom {
+        let params: Vec<String> = args
+            .iter()
+            .map(|a| {
+                let uom_type = options
+                    .param_units
+                    .iter()
+                    .find(|(name, _)| name == *a)
+                    .map(|(_, t)| t.as_str())
+                    .unwrap_or(float_type);
+                format!("{a}: {uom_type}")
+            })
+            .collect();
+        let elem_type = options.return_unit.as_deref().unwrap_or(float_type);
+        lines.push(format!(
+            "pub fn {name}({}) -> [{elem_type}; {total}] {{",
+            params.join(", ")
+        ));
+        // Extract raw float values from uom types
+        for (param_name, uom_type) in &options.param_units {
+            let unit = uom_default_unit(uom_type);
+            lines.push(format!(
+                "    let {param_name} = {param_name}.get::<{unit}>();"
+            ));
+        }
+    } else {
+        let params: Vec<String> = args.iter().map(|a| format!("{a}: {float_type}")).collect();
+        lines.push(format!(
+            "pub fn {name}({}) -> [{float_type}; {total}] {{",
+            params.join(", ")
+        ));
+    }
 
     // Detect sin/cos pairs for combined emission (not for Libm)
     let (sin_cos_emit, sin_cos_skip) = if options.math_backend != MathBackend::Libm {
@@ -324,8 +563,20 @@ pub(crate) fn matrix_to_rust_fn(
     }
 
     // Matrix entries
+    let wrap_uom = options.unit_annotation == UnitAnnotation::Uom && options.return_unit.is_some();
+    let ret_type_name = options.return_unit.as_deref().unwrap_or("");
+    let ret_unit = if wrap_uom {
+        uom_default_unit(ret_type_name)
+    } else {
+        ""
+    };
     for (i, &entry_id) in final_entries.iter().enumerate() {
-        let code = expr_to_rust_cse(arena, entry_id, args, options, &cse_constants)?;
+        let raw_code = expr_to_rust_cse(arena, entry_id, args, options, &cse_constants)?;
+        let code = if wrap_uom {
+            format!("{ret_type_name}::new::<{ret_unit}>({raw_code})")
+        } else {
+            raw_code
+        };
         if i == 0 {
             lines.push(format!("    [{code},"));
         } else if i + 1 == total {
@@ -2142,5 +2393,259 @@ mod tests {
         let code = expr_to_rust(&a, product, &["x"], &default_opts()).unwrap();
         assert!(!code.contains("-1"), "should not contain -1 literal: {code}");
         assert!(code.contains("(-x)"), "should emit (-x): {code}");
+    }
+
+    // ── Unit annotation (uom) tests ────────────────────────────────
+
+    #[test]
+    fn codegen_uom_scalar_fn_has_use_statements() {
+        let mut a = Arena::new();
+        let theta = sym(&mut a, "theta");
+        let body = a.sin(theta);
+        let opts = CodegenOptions::default()
+            .with_uom()
+            .param_unit("theta", "Angle")
+            .return_unit_type("Length");
+        let code =
+            to_rust_fn_with_options(&mut a, body, "my_fn", &["theta"], &opts).unwrap();
+        assert!(
+            code.contains("use uom::si::f64::*;"),
+            "missing f64 wildcard import:\n{code}"
+        );
+        assert!(
+            code.contains("use uom::si::angle::radian;"),
+            "missing angle import:\n{code}"
+        );
+        assert!(
+            code.contains("use uom::si::length::meter;"),
+            "missing length import:\n{code}"
+        );
+    }
+
+    #[test]
+    fn codegen_uom_scalar_fn_signature() {
+        let mut a = Arena::new();
+        let theta = sym(&mut a, "theta");
+        let body = a.sin(theta);
+        let opts = CodegenOptions::default()
+            .with_uom()
+            .param_unit("theta", "Angle")
+            .return_unit_type("Length");
+        let code =
+            to_rust_fn_with_options(&mut a, body, "compute", &["theta"], &opts).unwrap();
+        assert!(
+            code.contains("theta: Angle"),
+            "param should be typed as Angle:\n{code}"
+        );
+        assert!(
+            code.contains("-> Length {"),
+            "return type should be Length:\n{code}"
+        );
+    }
+
+    #[test]
+    fn codegen_uom_scalar_fn_extracts_raw_value() {
+        let mut a = Arena::new();
+        let theta = sym(&mut a, "theta");
+        let body = a.sin(theta);
+        let opts = CodegenOptions::default()
+            .with_uom()
+            .param_unit("theta", "Angle")
+            .return_unit_type("Length");
+        let code =
+            to_rust_fn_with_options(&mut a, body, "f", &["theta"], &opts).unwrap();
+        assert!(
+            code.contains("let theta = theta.get::<radian>();"),
+            "should extract raw value from Angle:\n{code}"
+        );
+    }
+
+    #[test]
+    fn codegen_uom_scalar_fn_wraps_return() {
+        let mut a = Arena::new();
+        let theta = sym(&mut a, "theta");
+        let body = a.sin(theta);
+        let opts = CodegenOptions::default()
+            .with_uom()
+            .param_unit("theta", "Angle")
+            .return_unit_type("Length");
+        let code =
+            to_rust_fn_with_options(&mut a, body, "f", &["theta"], &opts).unwrap();
+        assert!(
+            code.contains("Length::new::<meter>("),
+            "return value should be wrapped in Length::new:\n{code}"
+        );
+    }
+
+    #[test]
+    fn codegen_uom_none_is_unchanged() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let body = a.sin(x);
+        let opts = CodegenOptions::default();
+        let code =
+            to_rust_fn_with_options(&mut a, body, "f", &["x"], &opts).unwrap();
+        assert!(
+            !code.contains("uom"),
+            "UnitAnnotation::None should not emit uom code:\n{code}"
+        );
+        assert!(
+            code.contains("x: f64"),
+            "should use plain f64 param:\n{code}"
+        );
+        assert!(
+            code.contains("-> f64 {"),
+            "should use plain f64 return:\n{code}"
+        );
+    }
+
+    #[test]
+    fn codegen_uom_two_params() {
+        let mut a = Arena::new();
+        let t1 = sym(&mut a, "theta1");
+        let t2 = sym(&mut a, "theta2");
+        let sin_t1 = a.sin(t1);
+        let cos_t2 = a.cos(t2);
+        let body = a.add(&[sin_t1, cos_t2]);
+        let opts = CodegenOptions::default()
+            .with_uom()
+            .param_unit("theta1", "Angle")
+            .param_unit("theta2", "Angle")
+            .return_unit_type("Length");
+        let code = to_rust_fn_with_options(
+            &mut a,
+            body,
+            "jacobian",
+            &["theta1", "theta2"],
+            &opts,
+        )
+        .unwrap();
+        assert!(
+            code.contains("theta1: Angle"),
+            "first param typed:\n{code}"
+        );
+        assert!(
+            code.contains("theta2: Angle"),
+            "second param typed:\n{code}"
+        );
+        assert!(
+            code.contains("let theta1 = theta1.get::<radian>();"),
+            "first param extracted:\n{code}"
+        );
+        assert!(
+            code.contains("let theta2 = theta2.get::<radian>();"),
+            "second param extracted:\n{code}"
+        );
+        // Only one angle import, not duplicated
+        let count = code.matches("use uom::si::angle::radian;").count();
+        assert_eq!(count, 1, "angle import should appear exactly once:\n{code}");
+    }
+
+    #[test]
+    fn codegen_uom_matrix_fn() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let sin_x = a.sin(x);
+        let cos_x = a.cos(x);
+        let one = a.int(1);
+        let zero = a.int(0);
+        let entries = vec![sin_x, cos_x, zero, one];
+        let opts = CodegenOptions::default()
+            .with_uom()
+            .param_unit("x", "Angle")
+            .return_unit_type("Length");
+        let code =
+            matrix_to_rust_fn(&mut a, &entries, 2, 2, "rot", &["x"], &opts).unwrap();
+        assert!(
+            code.contains("[Length; 4]"),
+            "expected [Length; 4] return type:\n{code}"
+        );
+        assert!(
+            code.contains("Length::new::<meter>("),
+            "entries should be wrapped:\n{code}"
+        );
+        assert!(
+            code.contains("let x = x.get::<radian>();"),
+            "should extract raw param:\n{code}"
+        );
+    }
+
+    #[test]
+    fn codegen_uom_no_return_unit_uses_float() {
+        let mut a = Arena::new();
+        let theta = sym(&mut a, "theta");
+        let body = a.sin(theta);
+        let opts = CodegenOptions::default()
+            .with_uom()
+            .param_unit("theta", "Angle");
+        // No return_unit set — return type should be f64
+        let code =
+            to_rust_fn_with_options(&mut a, body, "f", &["theta"], &opts).unwrap();
+        assert!(
+            code.contains("-> f64 {"),
+            "return type should fall back to f64:\n{code}"
+        );
+        assert!(
+            !code.contains("::new::<"),
+            "should not wrap return value:\n{code}"
+        );
+    }
+
+    #[test]
+    fn codegen_uom_mixed_param_types() {
+        let mut a = Arena::new();
+        let t = sym(&mut a, "t");
+        let v = sym(&mut a, "v");
+        let body = a.mul(&[v, t]);
+        let opts = CodegenOptions::default()
+            .with_uom()
+            .param_unit("t", "Time")
+            .param_unit("v", "Velocity")
+            .return_unit_type("Length");
+        let code =
+            to_rust_fn_with_options(&mut a, body, "distance", &["t", "v"], &opts).unwrap();
+        assert!(code.contains("t: Time"), "t param typed:\n{code}");
+        assert!(code.contains("v: Velocity"), "v param typed:\n{code}");
+        assert!(
+            code.contains("let t = t.get::<second>();"),
+            "time extraction:\n{code}"
+        );
+        assert!(
+            code.contains("let v = v.get::<meter_per_second>();"),
+            "velocity extraction:\n{code}"
+        );
+        assert!(
+            code.contains("use uom::si::time::second;"),
+            "time import:\n{code}"
+        );
+        assert!(
+            code.contains("use uom::si::velocity::meter_per_second;"),
+            "velocity import:\n{code}"
+        );
+    }
+
+    #[test]
+    fn codegen_dim_to_uom_type_mapping() {
+        assert_eq!(dim_to_uom_type("Length"), Some("Length"));
+        assert_eq!(dim_to_uom_type("length"), Some("Length"));
+        assert_eq!(dim_to_uom_type("m"), Some("Length"));
+        assert_eq!(dim_to_uom_type("Voltage"), Some("ElectricPotential"));
+        assert_eq!(dim_to_uom_type("angular_velocity"), Some("AngularVelocity"));
+        assert_eq!(dim_to_uom_type("unknown_thing"), None);
+    }
+
+    #[test]
+    fn codegen_uom_default_unit_mapping() {
+        assert_eq!(uom_default_unit("Length"), "meter");
+        assert_eq!(uom_default_unit("Angle"), "radian");
+        assert_eq!(uom_default_unit("ElectricPotential"), "volt");
+        assert_eq!(uom_default_unit("AngularVelocity"), "radian_per_second");
+    }
+
+    #[test]
+    fn codegen_uom_type_to_module_mapping() {
+        assert_eq!(uom_type_to_module("Length"), "length");
+        assert_eq!(uom_type_to_module("ElectricPotential"), "electric_potential");
+        assert_eq!(uom_type_to_module("AngularVelocity"), "angular_velocity");
     }
 }

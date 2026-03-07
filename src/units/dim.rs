@@ -264,6 +264,57 @@ impl ConstDim {
             && self.n == rhs.n
             && self.j == rhs.j
     }
+
+    /// Raise dimension to an integer power (multiply all exponents by `n`).
+    #[inline]
+    pub const fn pow(self, n: i8) -> Self {
+        Self {
+            l: self.l * n,
+            m: self.m * n,
+            t: self.t * n,
+            i: self.i * n,
+            th: self.th * n,
+            n: self.n * n,
+            j: self.j * n,
+        }
+    }
+
+    /// Return a human-readable name for well-known dimensions, or a raw
+    /// exponent string for exotic ones.
+    pub fn name(&self) -> &'static str {
+        // Check against all named constants. Order: dimensionless first,
+        // then base SI, geometry, kinematics, mechanics, electromagnetism.
+        if *self == Self::DIMENSIONLESS { return "Dimensionless"; }
+        if *self == Self::LENGTH        { return "Length"; }
+        if *self == Self::MASS          { return "Mass"; }
+        if *self == Self::TIME          { return "Time"; }
+        if *self == Self::CURRENT       { return "Current"; }
+        if *self == Self::TEMPERATURE   { return "Temperature"; }
+        if *self == Self::AREA          { return "Area"; }
+        if *self == Self::VOLUME        { return "Volume"; }
+        if *self == Self::VELOCITY      { return "Velocity"; }
+        if *self == Self::ACCELERATION  { return "Acceleration"; }
+        if *self == Self::FREQUENCY     { return "Frequency"; }
+        if *self == Self::ANGULAR_ACCELERATION { return "AngularAcceleration"; }
+        if *self == Self::FORCE         { return "Force"; }
+        if *self == Self::ENERGY        { return "Energy"; }
+        if *self == Self::POWER         { return "Power"; }
+        if *self == Self::MOMENTUM      { return "Momentum"; }
+        if *self == Self::ANGULAR_MOMENTUM { return "AngularMomentum"; }
+        if *self == Self::MOMENT_OF_INERTIA { return "MomentOfInertia"; }
+        if *self == Self::PRESSURE      { return "Pressure"; }
+        if *self == Self::STIFFNESS     { return "Stiffness"; }
+        if *self == Self::DAMPING       { return "Damping"; }
+        if *self == Self::VOLTAGE       { return "Voltage"; }
+        if *self == Self::RESISTANCE    { return "Resistance"; }
+        if *self == Self::INDUCTANCE    { return "Inductance"; }
+        if *self == Self::CAPACITANCE   { return "Capacitance"; }
+        if *self == Self::CHARGE        { return "Charge"; }
+        if *self == Self::MAGNETIC_FLUX { return "MagneticFlux"; }
+        // Exotic / unknown dimension — return a generic label.
+        // (A const fn cannot format strings, so we return a fixed fallback.)
+        "Unknown"
+    }
 }
 
 // ---------------------------------------------------------------------------

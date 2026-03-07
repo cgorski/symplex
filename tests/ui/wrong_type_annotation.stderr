@@ -1,0 +1,15 @@
+warning: unused import: `symplex::prelude::*`
+ --> tests/ui/wrong_type_annotation.rs:1:5
+  |
+1 | use symplex::prelude::*;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0308]: mismatched types
+ --> tests/ui/wrong_type_annotation.rs:7:26
+  |
+7 |     let _bad: Velocity = &m * &a;
+  |               --------   ^^^^^^^ expected `Velocity`, found `Force`
+  |               |
+  |               expected due to this

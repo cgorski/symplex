@@ -28,6 +28,8 @@ pub mod conversions;
 pub mod assert_macros;
 /// Dimensional calculus: differentiation and integration that track dimensions.
 pub mod calculus;
+/// Runtime dimension inference for expression trees.
+pub mod inference;
 
 // Re-export all public items for `use symplex::units::*`
 pub use dim::*;
@@ -37,3 +39,4 @@ pub use si::*;
 // mul_table and conversions add impls, no new public types to re-export
 // calculus re-exports its own items
 pub use calculus::*;
+pub use inference::*;

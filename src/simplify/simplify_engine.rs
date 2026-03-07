@@ -9,7 +9,6 @@
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
-use num_traits::One;
 use num_traits::Signed;
 
 /// Count the number of operations (nodes) in an expression.
@@ -167,17 +166,15 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         update_best(arena, &mut best, &mut best_ops, s3);
     }
 
-    // Strategy 4: eval → factor_terms → simplify (only if has Add)
+    // Strategy 4: eval → factor_terms (symbolic) → simplify (only if has Add)
     if flags.has_add {
         let rules = crate::transforms::pattern::basic_rules(arena);
         let s4_eval = crate::transforms::eval::eval(arena, expr);
-        let (gcd, s4_inner) = crate::simplify::factor_terms::factor_terms_pair(arena, s4_eval);
+        let (gcd_id, s4_inner) = crate::simplify::factor_terms::symbolic_factor_terms_pair(arena, s4_eval);
         let (s4_simplified, _) = crate::transforms::pattern::apply_rules(arena, s4_inner, &rules);
-        let s4 = if gcd.is_one() {
+        let s4 = if gcd_id == arena.one {
             s4_simplified
         } else {
-            let nid = arena.intern_num(gcd);
-            let gcd_id = arena.intern(crate::base::node::ExprNode::Num(nid));
             arena.mul(&[gcd_id, s4_simplified])
         };
         tracing::trace!(
