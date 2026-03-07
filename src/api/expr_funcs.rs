@@ -1617,6 +1617,56 @@ impl Expr<Numeric> {
     /// Goes beyond the pattern-based rules in [`simplify`](Self::simplify)
     /// by trying exhaustive Pythagorean replacements (sin²→1−cos² and
     /// cos²→1−sin²) and picking the result with the fewest operations.
+    /// Simplify an expression using mathematical assumptions.
+    ///
+    /// Unlike [`simplify`](Expr::simplify) which performs structural
+    /// rewriting, `refine` applies rewrites that are only valid under
+    /// certain assumptions (e.g., "x is positive").  Assumptions are
+    /// set on symbols via [`assume`](Expr::assume).
+    ///
+    /// # Rewrites applied
+    ///
+    /// | Expression | Condition | Result |
+    /// |------------|-----------|--------|
+    /// | `abs(x)` | x ≥ 0 | x |
+    /// | `abs(x)` | x < 0 | −x |
+    /// | `sign(x)` | x > 0 | 1 |
+    /// | `sign(x)` | x < 0 | −1 |
+    /// | `sign(x)` | x = 0 | 0 |
+    /// | `floor(x)` | x ∈ ℤ | x |
+    /// | `ceiling(x)` | x ∈ ℤ | x |
+    /// | `sqrt(x²)` | x > 0 | x |
+    /// | `sqrt(x²)` | x ∈ ℝ | abs(x) |
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let x = symplex::var("x").assume(Assumption::Positive);
+    /// let expr = x.abs();
+    /// let refined = expr.refine();
+    /// assert_eq!(format!("{refined}"), format!("{x}"));
+    /// ```
+    #[must_use = "returns the refined form; does not modify in place"]
+    pub fn refine(&self) -> Ex {
+        let mut inner = self.inner.write();
+        let crate::api::context::ContextInner {
+            ref mut arena,
+            ref assumptions,
+            ..
+        } = *inner;
+        let mut assumptions_guard = assumptions.lock();
+        let id = crate::simplify::refine::refine_full(
+            arena,
+            &mut assumptions_guard,
+            self.id,
+        );
+        drop(assumptions_guard);
+        drop(inner);
+        self.wrap(id)
+    }
+
     ///
     /// # Examples
     ///
