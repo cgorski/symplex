@@ -3209,4 +3209,92 @@ mod tests {
         let s = display(&a, result);
         assert!(!s.contains("Integral"), "∫cosh(a*x)dx should not be unevaluated: {s}");
     }
+
+    // ── Inverse hyperbolic integration tests ───────────────────────
+
+    #[test]
+    fn integrate_asinh_direct() {
+        // ∫ asinh(x) dx = x·asinh(x) - √(x²+1)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let asinh_x = a.asinh(x);
+        let result = integrate(&mut a, asinh_x, x);
+        let s = display(&a, result);
+        assert!(!s.contains("Integral"), "∫asinh(x)dx should not be unevaluated: {s}");
+        assert!(s.contains("asinh"), "result should contain asinh: {s}");
+        assert!(s.contains("sqrt"), "result should contain sqrt: {s}");
+
+        // FTC verification: d/dx(result) should simplify back toward asinh(x).
+        let deriv = crate::transforms::diff::diff(&mut a, result, x);
+        let simplified = crate::simplify::simplify_engine::smart_simplify(&mut a, deriv);
+        let s_deriv = display(&a, simplified);
+        // The derivative may not simplify fully, but it should not be
+        // an unevaluated Derivative node.
+        assert!(
+            !s_deriv.contains("Derivative"),
+            "d/dx(∫asinh(x)dx) should evaluate, got: {s_deriv}"
+        );
+    }
+
+    #[test]
+    fn integrate_acosh_direct() {
+        // ∫ acosh(x) dx = x·acosh(x) - √(x²-1)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let acosh_x = a.acosh(x);
+        let result = integrate(&mut a, acosh_x, x);
+        let s = display(&a, result);
+        assert!(!s.contains("Integral"), "∫acosh(x)dx should not be unevaluated: {s}");
+        assert!(s.contains("acosh"), "result should contain acosh: {s}");
+    }
+
+    #[test]
+    fn integrate_atanh_direct() {
+        // ∫ atanh(x) dx = x·atanh(x) + ½·ln(1-x²)
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let atanh_x = a.atanh(x);
+        let result = integrate(&mut a, atanh_x, x);
+        let s = display(&a, result);
+        assert!(!s.contains("Integral"), "∫atanh(x)dx should not be unevaluated: {s}");
+        assert!(s.contains("atanh"), "result should contain atanh: {s}");
+        assert!(s.contains("ln"), "result should contain ln (from ½·ln(1-x²)): {s}");
+    }
+
+    #[test]
+    fn integrate_asinh_not_unevaluated() {
+        // Ensure asinh(x) no longer returns an unevaluated Integral.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let asinh_x = a.asinh(x);
+        let result = integrate(&mut a, asinh_x, x);
+        assert!(
+            !matches!(a.node(result), ExprNode::Integral(_, _)),
+            "asinh integration should return a closed form, not Integral"
+        );
+    }
+
+    #[test]
+    fn integrate_acosh_not_unevaluated() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let acosh_x = a.acosh(x);
+        let result = integrate(&mut a, acosh_x, x);
+        assert!(
+            !matches!(a.node(result), ExprNode::Integral(_, _)),
+            "acosh integration should return a closed form, not Integral"
+        );
+    }
+
+    #[test]
+    fn integrate_atanh_not_unevaluated() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let atanh_x = a.atanh(x);
+        let result = integrate(&mut a, atanh_x, x);
+        assert!(
+            !matches!(a.node(result), ExprNode::Integral(_, _)),
+            "atanh integration should return a closed form, not Integral"
+        );
+    }
 }
