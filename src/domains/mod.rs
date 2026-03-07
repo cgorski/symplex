@@ -1,0 +1,9 @@
+pub mod matrix;
+pub mod control;
+pub mod dynamics;
+pub mod robotics;
+pub mod quaternion;
+pub mod vector;
+pub mod ntheory;
+pub(crate) mod linalg;
+pub(crate) mod separatevars;

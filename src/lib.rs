@@ -39,125 +39,85 @@
 //    (`::symplex::__macro_support::…`) resolve inside the crate itself. ──
 extern crate self as symplex;
 
-// ── Internal modules (not part of the public API) ──────────────────────
-pub(crate) mod apart;
-pub(crate) mod arena;
-pub(crate) mod bernoulli;
-pub(crate) mod calculus_util;
-pub(crate) mod canon;
-pub(crate) mod codegen;
-pub(crate) mod combsimp;
-pub(crate) mod compact;
-pub(crate) mod complex;
-/// Control systems: state-space models, transfer functions, stability analysis.
-pub mod control;
-pub(crate) mod convergence;
-pub(crate) mod cse;
-/// Data export utilities: CSV, TSV, JSON, Markdown, HTML, LaTeX table output.
-pub mod data_export;
-pub(crate) mod diff;
-pub(crate) mod display;
-/// Lagrangian dynamics: equations of motion, mass matrix, Coriolis, gravity.
-pub mod dynamics;
-/// Symbolic equation type (`lhs = rhs`).
-pub mod eq;
-pub(crate) mod eval;
-pub(crate) mod evalf;
-pub(crate) mod expand;
-/// A non-locking, read-only view of an expression node for use in `replace()`.
-pub mod expr_view;
-pub(crate) mod factor;
-pub(crate) mod factor_terms;
-pub(crate) mod fourier;
-/// Symbolic Fourier transform.
-pub mod fourier_transform;
-/// Fu's trig simplification algorithm (TR0–TR14, TRmorrie, TRpower).
-pub(crate) mod fu;
-/// Gosper's algorithm for closed-form hypergeometric summation.
-pub(crate) mod gosper;
-/// Gröbner basis computation via Buchberger's algorithm with FGLM order conversion.
-pub mod groebner;
-pub(crate) mod gruntz;
-pub(crate) mod heurisch;
-pub(crate) mod inequalities;
-pub(crate) mod integrate;
-/// Formal power series representations and algorithms.
-pub mod formal_series;
-/// Finite difference methods: weights, application, and differentiation.
-pub mod finite_diff;
-pub(crate) mod lambdify;
-pub(crate) mod latex;
-pub(crate) mod laplace;
-pub(crate) mod limit;
-pub(crate) mod linalg;
-pub(crate) mod log_combine;
-pub(crate) mod log_expand;
-/// Symbolic matrix type and operations.
-pub mod matrix;
-/// Sparse multivariate polynomials over ℚ.
-pub mod multipoly;
-pub(crate) mod node;
-/// Number theory: primality, factorization, divisors, modular arithmetic.
-pub mod ntheory;
-pub(crate) mod nsimplify;
-/// Ordinary differential equation solver.
-pub mod ode;
-pub(crate) mod pattern;
+// ── Directory modules (internal organisation) ──────────────────────────
+/// Foundation layer: expression nodes, arena, tree traversal, canonicalization, and core types.
+pub mod base;
 pub(crate) mod poly;
+pub(crate) mod transforms;
+pub(crate) mod simplify;
+pub(crate) mod calculus;
+pub(crate) mod output;
+pub(crate) mod plotting;
+pub(crate) mod domains;
+pub(crate) mod api;
+
+// ── Public re-exports (backwards-compatible crate-root paths) ──────────
+
+// base
+/// Assumption system for symbolic variables.
+pub use base::assumptions;
+/// Library-wide configuration knobs.
+pub use base::config;
+/// Error types used throughout the library.
+pub use base::errors;
+
+// poly
+/// Sparse multivariate polynomials over ℚ.
+pub use poly::multipoly;
+/// Gröbner basis computation via Buchberger's algorithm with FGLM order conversion.
+pub use poly::groebner;
 /// Polynomial system solving via Gröbner bases.
-pub mod polysys;
-pub(crate) mod polybridge;
-pub(crate) mod powsimp;
-/// Symbolic quaternion algebra for attitude representation.
-pub mod quaternion;
-pub(crate) mod radsimp;
-pub(crate) mod residue;
-pub(crate) mod rewrite;
-/// Robotics kinematics: DH parameters, forward kinematics, rotations.
-pub mod robotics;
-/// Fourth-order Runge–Kutta integrator for systems of ODEs.
-pub(crate) mod rk4;
-pub(crate) mod sampling;
-pub(crate) mod separatevars;
-pub(crate) mod series;
-pub(crate) mod simplify_engine;
-pub(crate) mod solve;
-pub(crate) mod sort_key;
-pub(crate) mod subs;
-pub(crate) mod sturm;
-pub(crate) mod sum_eval;
-/// SVG plot rendering backend.
-pub(crate) mod svg_plot;
-pub(crate) mod symbol;
-/// ASCII art terminal plotting.
-pub(crate) mod textplot;
-/// TikZ/PGFplots rendering backend.
-pub(crate) mod tikz_plot;
-pub(crate) mod trig_combine;
-pub(crate) mod trig_expand;
-pub(crate) mod trig_integ;
-pub(crate) mod trigsimp;
-/// Vector calculus: gradient, divergence, curl, laplacian.
-pub mod vector;
-pub(crate) mod walk;
+pub use poly::polysys;
+
+// calculus
+/// Symbolic Fourier transform.
+pub use calculus::fourier_transform;
+/// Formal power series representations and algorithms.
+pub use calculus::formal_series;
+/// Finite difference methods: weights, application, and differentiation.
+pub use calculus::finite_diff;
+/// Ordinary differential equation solver.
+pub use calculus::ode;
 /// Z-transform for discrete-time signal analysis.
-pub mod z_transform;
+pub use calculus::z_transform;
 
-// ── Public modules ─────────────────────────────────────────────────────
+// output
 /// Runtime expression parser — convert strings to symbolic expressions.
-pub mod parse;
+pub use output::parse;
 /// Serializable expression tree for interchange (JSON, etc.).
-pub mod tree;
+pub use output::tree;
 
-// ── Public modules (stable API surface) ────────────────────────────────
-pub mod assumptions;
-pub mod config;
-pub mod context;
-pub mod errors;
-pub mod expr;
-mod expr_funcs;
-mod expr_ops;
-pub mod macros;
+// plotting
+/// Data export utilities: CSV, TSV, JSON, Markdown, HTML, LaTeX table output.
+pub use plotting::data_export;
+
+// domains
+/// Control systems: state-space models, transfer functions, stability analysis.
+pub use domains::control;
+/// Lagrangian dynamics: equations of motion, mass matrix, Coriolis, gravity.
+pub use domains::dynamics;
+/// Symbolic matrix type and operations.
+pub use domains::matrix;
+/// Number theory: primality, factorization, divisors, modular arithmetic.
+pub use domains::ntheory;
+/// Symbolic quaternion algebra for attitude representation.
+pub use domains::quaternion;
+/// Robotics kinematics: DH parameters, forward kinematics, rotations.
+pub use domains::robotics;
+/// Vector calculus: gradient, divergence, curl, laplacian.
+pub use domains::vector;
+
+// api
+/// The core expression handle and types.
+pub use api::expr;
+/// Symbolic equation type (`lhs = rhs`).
+pub use api::eq;
+/// A non-locking, read-only view of an expression node for use in `replace()`.
+pub use api::expr_view;
+/// Expression context — arena, symbol table, configuration.
+pub use api::context;
+/// Convenience macros for building expressions.
+pub use api::macros;
 
 // ── Proc macro re-exports ──────────────────────────────────────────────
 pub use symplex_macros::{eq, expr, matrix, rule};
@@ -165,14 +125,14 @@ pub use symplex_macros::{eq, expr, matrix, rule};
 // ── Macro support (hidden internals used by generated code) ────────────
 #[doc(hidden)]
 pub mod __macro_support {
-    pub use crate::node::ExprNode;
-    pub use crate::pattern::{Pattern, Rule, WildId};
+    pub use crate::base::node::ExprNode;
+    pub use crate::transforms::pattern::{Pattern, Rule, WildId};
     pub use rustc_hash::FxHashMap;
 }
 
 // bitflags types don't auto-derive Default; provide it here so
 // Assumptions::default() works.
-impl Default for assumptions::Props {
+impl Default for base::assumptions::Props {
     fn default() -> Self {
         Self::empty()
     }
@@ -184,17 +144,17 @@ impl Default for assumptions::Props {
 /// use symplex::prelude::*;
 /// ```
 pub mod prelude {
-    pub use crate::assumptions::{Assumption, Assumptions, Props};
-    pub use crate::config::EvalConfig;
-    pub use crate::context::Context;
-    pub use crate::control::{StateSpace, TransferFunction};
-    pub use crate::eq::Equation;
-    pub use crate::errors::SymplexError;
-    pub use crate::expr::{BoolEx, Boolean, Ex, Expr, ExprType, Numeric, SetEx, SetValued, Sort};
-    pub use crate::expr_view::ExprView;
-    pub use crate::matrix::Matrix;
-    pub use crate::pattern::Step;
-    pub use crate::quaternion::Quaternion;
+    pub use crate::base::assumptions::{Assumption, Assumptions, Props};
+    pub use crate::base::config::EvalConfig;
+    pub use crate::api::context::Context;
+    pub use crate::domains::control::{StateSpace, TransferFunction};
+    pub use crate::api::eq::Equation;
+    pub use crate::base::errors::SymplexError;
+    pub use crate::api::expr::{BoolEx, Boolean, Ex, Expr, ExprType, Numeric, SetEx, SetValued, Sort};
+    pub use crate::api::expr_view::ExprView;
+    pub use crate::domains::matrix::Matrix;
+    pub use crate::transforms::pattern::Step;
+    pub use crate::domains::quaternion::Quaternion;
     pub use symplex_macros::{eq, expr, matrix, rule};
 
     // NOTE: `vars!`, `syms!`, and `sym!` are `#[macro_export]` macros and
@@ -209,15 +169,15 @@ pub mod prelude {
 use std::sync::OnceLock;
 
 /// The global default context, lazily initialized.
-static DEFAULT_CONTEXT: OnceLock<context::Context> = OnceLock::new();
+static DEFAULT_CONTEXT: OnceLock<api::context::Context> = OnceLock::new();
 
 /// Returns a reference to the global default context.
 ///
 /// The context is created on first access with default configuration.
 /// All expressions created via the free-standing [`symbol`], [`var`],
 /// [`int`], and [`rational`] functions share this context.
-pub fn default_context() -> &'static context::Context {
-    DEFAULT_CONTEXT.get_or_init(context::Context::new)
+pub fn default_context() -> &'static api::context::Context {
+    DEFAULT_CONTEXT.get_or_init(api::context::Context::new)
 }
 
 /// Create a symbolic variable in the global default context.
@@ -234,14 +194,14 @@ pub fn default_context() -> &'static context::Context {
 /// let expr = x.powi(2);
 /// assert_eq!(format!("{expr}"), "x^2");
 /// ```
-pub fn var(name: &str) -> expr::Ex {
+pub fn var(name: &str) -> api::expr::Ex {
     default_context().symbol(name)
 }
 
 /// Create a symbolic variable in the global default context.
 ///
 /// Alias for [`var`].
-pub fn symbol(name: &str) -> expr::Ex {
+pub fn symbol(name: &str) -> api::expr::Ex {
     var(name)
 }
 
@@ -253,7 +213,7 @@ pub fn symbol(name: &str) -> expr::Ex {
 /// let five = symplex::int(5);
 /// assert_eq!(format!("{five}"), "5");
 /// ```
-pub fn int(n: i64) -> expr::Ex {
+pub fn int(n: i64) -> api::expr::Ex {
     default_context().int(n)
 }
 
@@ -265,7 +225,7 @@ pub fn int(n: i64) -> expr::Ex {
 /// let half = symplex::rational(1, 2);
 /// assert_eq!(format!("{half}"), "1/2");
 /// ```
-pub fn rational(p: i64, q: i64) -> expr::Ex {
+pub fn rational(p: i64, q: i64) -> api::expr::Ex {
     default_context().rational(p, q)
 }
 
@@ -277,7 +237,7 @@ pub fn rational(p: i64, q: i64) -> expr::Ex {
 /// let pi = symplex::pi();
 /// assert_eq!(format!("{pi}"), "pi");
 /// ```
-pub fn pi() -> expr::Ex {
+pub fn pi() -> api::expr::Ex {
     default_context().pi()
 }
 
@@ -289,7 +249,7 @@ pub fn pi() -> expr::Ex {
 /// let e = symplex::e();
 /// assert_eq!(format!("{e}"), "E");
 /// ```
-pub fn e() -> expr::Ex {
+pub fn e() -> api::expr::Ex {
     default_context().e()
 }
 
@@ -301,7 +261,7 @@ pub fn e() -> expr::Ex {
 /// let i = symplex::i_unit();
 /// assert_eq!(format!("{i}"), "I");
 /// ```
-pub fn i_unit() -> expr::Ex {
+pub fn i_unit() -> api::expr::Ex {
     default_context().i_unit()
 }
 
@@ -313,7 +273,7 @@ pub fn i_unit() -> expr::Ex {
 /// let inf = symplex::infinity();
 /// assert_eq!(format!("{inf}"), "oo");
 /// ```
-pub fn infinity() -> expr::Ex {
+pub fn infinity() -> api::expr::Ex {
     default_context().infinity()
 }
 
@@ -325,27 +285,27 @@ pub fn infinity() -> expr::Ex {
 /// let neg_inf = symplex::neg_infinity();
 /// assert_eq!(format!("{neg_inf}"), "-oo");
 /// ```
-pub fn neg_infinity() -> expr::Ex {
+pub fn neg_infinity() -> api::expr::Ex {
     default_context().neg_infinity()
 }
 
 /// One-half (1/2) as a symbolic expression.
-pub fn half() -> expr::Ex {
+pub fn half() -> api::expr::Ex {
     default_context().rational(1, 2)
 }
 
 /// One-third (1/3) as a symbolic expression.
-pub fn third() -> expr::Ex {
+pub fn third() -> api::expr::Ex {
     default_context().rational(1, 3)
 }
 
 /// One-quarter (1/4) as a symbolic expression.
-pub fn quarter() -> expr::Ex {
+pub fn quarter() -> api::expr::Ex {
     default_context().rational(1, 4)
 }
 
 /// Two-thirds (2/3) as a symbolic expression.
-pub fn two_thirds() -> expr::Ex {
+pub fn two_thirds() -> api::expr::Ex {
     default_context().rational(2, 3)
 }
 
@@ -353,8 +313,8 @@ pub fn two_thirds() -> expr::Ex {
 ///
 /// Convenience wrapper around [`polysys::solve_system_ex`].
 pub fn solve_system(
-    eqs: &[expr::Ex],
-    vars: &[expr::Ex],
-) -> Result<Vec<Vec<expr::Ex>>, errors::SymplexError> {
-    polysys::solve_system_ex(eqs, vars)
+    eqs: &[api::expr::Ex],
+    vars: &[api::expr::Ex],
+) -> Result<Vec<Vec<api::expr::Ex>>, base::errors::SymplexError> {
+    poly::polysys::solve_system_ex(eqs, vars)
 }

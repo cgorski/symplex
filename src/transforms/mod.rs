@@ -1,0 +1,13 @@
+pub(crate) mod diff;
+pub(crate) mod integrate;
+pub(crate) mod eval;
+pub(crate) mod evalf;
+pub(crate) mod expand;
+pub(crate) mod subs;
+pub(crate) mod solve;
+pub(crate) mod pattern;
+pub(crate) mod heurisch;
+pub(crate) mod trig_integ;
+pub(crate) mod sum_eval;
+pub(crate) mod apart;
+pub(crate) mod inequalities;
