@@ -29,7 +29,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn zero() -> Ex {
-        crate::int(0)
+        crate::default_context().int(0)
     }
 
     /// The multiplicative identity (1) in the global default context.
@@ -45,7 +45,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn one() -> Ex {
-        crate::int(1)
+        crate::default_context().int(1)
     }
 
     // ── Math functions ─────────────────────────────────────────────
@@ -588,7 +588,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let result = symplex::int(5).gamma().eval();
+    /// let result = symplex::default_context().int(5).gamma().eval();
     /// assert_eq!(format!("{result}"), "24");
     /// ```
     #[must_use]
@@ -620,7 +620,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let result = symplex::int(0).erf().eval();
+    /// let result = symplex::default_context().int(0).erf().eval();
     /// assert_eq!(format!("{result}"), "0");
     /// ```
     #[must_use]
@@ -636,7 +636,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let result = symplex::int(0).erfc().eval();
+    /// let result = symplex::default_context().int(0).erfc().eval();
     /// assert_eq!(format!("{result}"), "1");
     /// ```
     #[must_use]
@@ -652,7 +652,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let result = symplex::int(2).beta(&symplex::int(3)).eval();
+    /// let result = symplex::default_context().int(2).beta(&symplex::default_context().int(3)).eval();
     /// assert_eq!(format!("{result}"), "1/12");
     /// ```
     #[must_use]
@@ -671,7 +671,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let result = symplex::int(5).factorial().eval();
+    /// let result = symplex::default_context().int(5).factorial().eval();
     /// assert_eq!(format!("{result}"), "120");
     /// ```
     #[must_use]
@@ -690,7 +690,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let result = symplex::int(10).binomial(&symplex::int(3)).eval();
+    /// let result = symplex::default_context().int(10).binomial(&symplex::default_context().int(3)).eval();
     /// assert_eq!(format!("{result}"), "120");
     /// ```
     #[must_use]
@@ -1078,7 +1078,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let t = symplex::var("t")
+    /// let t = symplex::default_context().symbol("t")
     ///     .assume(Assumption::Positive)
     ///     .assume(Assumption::Real);
     /// assert_eq!(t.is_positive(), Some(true));
@@ -1177,8 +1177,8 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
-    /// let y = symplex::var("y");
+    /// let x = symplex::default_context().symbol("x");
+    /// let y = symplex::default_context().symbol("y");
     /// let dy_dx = y.formal_diff(&x);
     /// let s = format!("{dy_dx}");
     /// assert!(s.contains("Derivative") || s.contains("d/d"), "got: {s}");
@@ -1204,8 +1204,8 @@ impl Expr<Numeric> {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// let x = symplex::var("x");
-    /// let y = symplex::var("y");
+    /// let x = symplex::default_context().symbol("x");
+    /// let y = symplex::default_context().symbol("y");
     /// let expr = &x.powi(2) + &y.powi(2);
     /// let result = expr.diff_with_dependent(&x, &[&y]);
     /// // d/dx(x² + y²) with y depending on x = 2x + 2y·dy/dx
@@ -1365,7 +1365,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let s = x.sin().maclaurin(&x, 4).unwrap();
     /// let result = s.expand().eval();
     /// let text = format!("{result}");
@@ -1681,7 +1681,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x").assume(Assumption::Positive);
+    /// let x = symplex::default_context().symbol("x").assume(Assumption::Positive);
     /// let expr = x.abs();
     /// let refined = expr.refine();
     /// assert_eq!(format!("{refined}"), format!("{x}"));
@@ -1697,8 +1697,8 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
-    /// let expr = symplex::rational(1, 2);
+    /// let x = symplex::default_context().symbol("x");
+    /// let expr = symplex::default_context().rational(1, 2);
     /// let s = expr.pretty();
     /// assert!(s.lines().count() == 3, "fraction should be 3 lines");
     /// ```
@@ -1719,8 +1719,8 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
-    /// let expr = symplex::rational(1, 2);
+    /// let x = symplex::default_context().symbol("x");
+    /// let expr = symplex::default_context().rational(1, 2);
     /// let s = expr.pretty_ascii();
     /// assert!(s.contains('-'), "ASCII fraction uses dashes");
     /// ```
@@ -1772,7 +1772,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let expr = x.abs();
     /// // x has no permanent assumptions, but refine_with treats it as positive:
     /// let refined = expr.refine_with(&[(&x, Assumption::Positive)]);
@@ -1841,7 +1841,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
     /// assert_eq!(format!("{}", expr.simplify_trig()), "1");
     /// ```
@@ -1862,7 +1862,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
     /// assert_eq!(format!("{}", expr.fu()), "1");
     /// ```
@@ -1950,8 +1950,8 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let result = symplex::int(5).factorial().eval();
-    /// let four_fact = symplex::int(4).factorial().eval();
+    /// let result = symplex::default_context().int(5).factorial().eval();
+    /// let four_fact = symplex::default_context().int(4).factorial().eval();
     /// let ratio = (&result / &four_fact).simplify_combinatorial();
     /// assert_eq!(format!("{ratio}"), "5");
     /// ```
@@ -1972,7 +1972,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let expr = symplex::rational(333333, 1000000);
+    /// let expr = symplex::default_context().rational(333333, 1000000);
     /// let result = expr.simplify_numeric(1e-5);
     /// assert_eq!(format!("{result}"), "1/3");
     /// ```
@@ -2015,7 +2015,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let result = x.sin().rewrite_as_exp();
     /// let s = format!("{result}");
     /// assert!(s.contains("exp") || s.contains("E"), "should contain exponentials: {s}");
@@ -2035,8 +2035,8 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
-    /// let i = symplex::i_unit();
+    /// let x = symplex::default_context().symbol("x");
+    /// let i = symplex::default_context().i_unit();
     /// let expr = (&i * &x).exp();
     /// let result = expr.rewrite_as_trig();
     /// let s = format!("{result}");
@@ -2322,7 +2322,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// assert_eq!((&x.powi(3) + &x + 1).degree(&x), Some(3));
     /// assert_eq!(x.sin().degree(&x), None);
     /// ```
@@ -2443,7 +2443,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// assert!((&x.powi(2) + 1).is_polynomial(&x));
     /// assert!(!x.sin().is_polynomial(&x));
     /// ```
@@ -2728,8 +2728,8 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
-    /// let y = symplex::var("y");
+    /// let x = symplex::default_context().symbol("x");
+    /// let y = symplex::default_context().symbol("y");
     /// let dy = y.formal_diff(&x);  // y'
     /// let ode = &dy + &(&y * 2);   // y' + 2y = 0
     /// if let Some((sol, constants)) = ode.solve_ode(&y, &x) {
@@ -2798,7 +2798,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let val = x.powi(2).subs_i64(&x, 3).eval_f64().unwrap();
     /// assert!((val - 9.0).abs() < 1e-10);
     /// ```
@@ -2848,7 +2848,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let f = &x.powi(2) + 1;
     /// let func = f.compile(&["x"]).expect("should compile");
     /// assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
@@ -2873,7 +2873,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let sin_x = x.sin();
     /// let expr = &sin_x.powi(2) + &sin_x;
     /// let (bindings, result) = expr.cse();
@@ -2903,7 +2903,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let f = x.powi(2) + 1;
     /// let code = f.to_rust_fn("my_func", &["x"]).unwrap();
     /// assert!(code.contains("pub fn my_func"));
@@ -2924,7 +2924,7 @@ impl Expr<Numeric> {
     /// use symplex::prelude::*;
     /// use symplex::codegen::{CodegenOptions, Precision};
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let f = x.powi(2) + 1;
     /// let opts = CodegenOptions { precision: Precision::F32, ..Default::default() };
     /// let code = f.to_rust_fn_with_options("my_func", &["x"], &opts).unwrap();
@@ -3054,12 +3054,12 @@ impl Expr<Numeric> {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// use symplex::vars;
-    /// vars!(x);
+    /// let __ctx = symplex::default_context();
+    /// symplex::syms!(__ctx; x);
     /// let poly = expr!(x^2 - 4);
-    /// assert!(poly.check_solution(&x, &symplex::int(2)));
-    /// assert!(poly.check_solution(&x, &symplex::int(-2)));
-    /// assert!(!poly.check_solution(&x, &symplex::int(3)));
+    /// assert!(poly.check_solution(&x, &symplex::default_context().int(2)));
+    /// assert!(poly.check_solution(&x, &symplex::default_context().int(-2)));
+    /// assert!(!poly.check_solution(&x, &symplex::default_context().int(3)));
     /// ```
     #[must_use]
     pub fn check_solution(&self, var: &Ex, val: &Ex) -> bool {
@@ -3092,8 +3092,8 @@ impl Expr<Numeric> {
     /// use symplex::prelude::*;
     /// use symplex::ode::OdeType;
     ///
-    /// let x = symplex::var("x");
-    /// let y = symplex::var("y");
+    /// let x = symplex::default_context().symbol("x");
+    /// let y = symplex::default_context().symbol("y");
     /// let dy = y.formal_diff(&x);
     /// let ode = &dy - &x; // y' = x
     /// assert_eq!(ode.classify_ode(&y, &x), OdeType::SimpleSeparable);
@@ -3117,8 +3117,8 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
-    /// let y = symplex::var("y");
+    /// let x = symplex::default_context().symbol("x");
+    /// let y = symplex::default_context().symbol("y");
     /// let dy = y.formal_diff(&x);
     /// let ode = &dy - &x; // y' - x = 0
     /// // Solution: y = x²/2
@@ -3352,7 +3352,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let series = x.sin().fps_maclaurin(&x);
     /// assert!(series.has_closed_form());
     /// ```
@@ -3381,7 +3381,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let expr = x.powi(2).formal_diff(&x);
     /// let finite = expr.differentiate_finite(&x);
     /// let s = format!("{finite}");
@@ -3410,7 +3410,7 @@ impl Expr<Numeric> {
     /// use symplex::prelude::*;
     /// use num_bigint::BigInt;
     ///
-    /// let n = symplex::int(60);
+    /// let n = symplex::default_context().int(60);
     /// let factors = n.factorize().unwrap();
     /// assert_eq!(
     ///     factors,
@@ -3466,13 +3466,13 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let n = symplex::int(104729);
+    /// let n = symplex::default_context().int(104729);
     /// assert_eq!(n.is_prime_value(), Some(true));
     ///
-    /// let n = symplex::int(60);
+    /// let n = symplex::default_context().int(60);
     /// assert_eq!(n.is_prime_value(), Some(false));
     ///
-    /// let half = symplex::rational(1, 2);
+    /// let half = symplex::default_context().rational(1, 2);
     /// assert_eq!(half.is_prime_value(), None);
     /// ```
     pub fn is_prime_value(&self) -> Option<bool> {
@@ -3584,7 +3584,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let plot = x.sin().textplot(&x, 0.0, 6.28);
     /// assert!(!plot.is_empty());
     /// ```
@@ -3604,7 +3604,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let svg = x.sin().to_svg(&x, 0.0, 6.28);
     /// assert!(svg.contains("<svg"));
     /// ```
@@ -3626,7 +3626,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let tikz = x.sin().to_tikz(&x, 0.0, 6.28);
     /// assert!(tikz.contains("\\begin{axis}"));
     /// ```
@@ -3654,7 +3654,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let data = x.powi(2).plot_data(&x, 0.0, 1.0, 10);
     /// assert_eq!(data.len(), 10);
     /// ```
@@ -3704,7 +3704,7 @@ impl Expr<Numeric> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]);
     /// assert_eq!(table.nrows(), 3);
     /// ```
@@ -3860,9 +3860,9 @@ fn parse_complex_evalf_string(s: &str) -> Result<(f64, f64), SymplexError> {
 mod evalf_complex_tests {
     #[test]
     fn eval_complex64_pure_real() {
-        let x = crate::var("x");
+        let x = crate::default_context().symbol("x");
         let expr = &x.powi(2) + 1;
-        let at_2 = expr.subs(&x, &crate::int(2));
+        let at_2 = expr.subs(&x, &crate::default_context().int(2));
         let (re, im) = at_2.eval_complex64().unwrap();
         assert!((re - 5.0).abs() < 1e-10);
         assert!(im.abs() < 1e-10);
@@ -3870,7 +3870,7 @@ mod evalf_complex_tests {
 
     #[test]
     fn eval_complex64_pure_imaginary() {
-        let i = crate::i_unit();
+        let i = crate::default_context().i_unit();
         let (re, im) = i.eval_complex64().unwrap();
         assert!(re.abs() < 1e-10);
         assert!((im - 1.0).abs() < 1e-10);
@@ -3879,7 +3879,7 @@ mod evalf_complex_tests {
     #[test]
     fn eval_complex64_mixed() {
         let _ctx = crate::default_context();
-        let expr = &crate::int(3) + &(&crate::int(4) * &crate::i_unit());
+        let expr = &crate::default_context().int(3) + &(&crate::default_context().int(4) * &crate::default_context().i_unit());
         let (re, im) = expr.eval_complex64().unwrap();
         assert!((re - 3.0).abs() < 1e-10);
         assert!((im - 4.0).abs() < 1e-10);
@@ -3887,7 +3887,7 @@ mod evalf_complex_tests {
 
     #[test]
     fn eval_f64_rejects_complex() {
-        let i = crate::i_unit();
+        let i = crate::default_context().i_unit();
         assert!(
             i.eval_f64().is_err(),
             "eval_f64 should reject pure imaginary"

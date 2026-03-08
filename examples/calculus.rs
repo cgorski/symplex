@@ -7,13 +7,14 @@
 //! Run with: `cargo run --example calculus`
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Symplex Calculus Example ===\n");
 
     // ── 1. Create symbols ──────────────────────────────────────────────
-    vars!(x);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x);
 
     // ── 2. Build a function and differentiate ──────────────────────────
     let f = expr!(x ^ 3 - 3 * x ^ 2 + 2 * x);
@@ -167,7 +168,8 @@ fn main() {
     // ── 17. ODE Solving ────────────────────────────────────────────────
     println!("\n--- ODE Solving ---");
 
-    vars!(y);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; y);
 
     // Simple separable: y' = x → y = x²/2 + C1
     let dy = y.formal_diff(&x);
@@ -247,7 +249,8 @@ fn main() {
     // ── 21. Laplace transforms ─────────────────────────────────────────
     println!("\n--- Laplace Transforms ---");
 
-    vars!(t, s);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; t, s);
 
     // L{1} = 1/s
     if let Ok(result) = symplex::default_context().int(1).laplace(&t, &s) {

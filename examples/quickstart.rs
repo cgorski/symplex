@@ -9,12 +9,13 @@
 //! Run with: cargo run --example quickstart
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Symplex Quick Start ===\n");
 
-    vars!(x, y);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x, y);
 
     // ── 1. Building expressions ────────────────────────────────────
     println!("--- Expression Building ---");
@@ -64,7 +65,8 @@ fn main() {
         // let bad = &m + &a;  // ERROR: expected Mass, found Acceleration
 
         // Build complex formulas with expr!, wrap with from_ex
-        symplex::vars!(k, x_var);
+        let __ctx = symplex::default_context();
+        symplex::syms!(__ctx; k, x_var);
         let pe = Energy::from_ex(expr!(1/2 * k * x_var^2));
         println!("PE = ½kx² = {}", pe);
 
@@ -150,7 +152,8 @@ fn main() {
     // DiffWrt: the compiler verifies that d(Length)/d(Time) = Velocity.
     {
         use symplex::units::*;
-        symplex::vars!(a, t);
+        let __ctx = symplex::default_context();
+        symplex::syms!(__ctx; a, t);
         let t_var = Time::symbol("t");
 
         let position = Length::from_ex(expr!(1/2 * a * t^2));

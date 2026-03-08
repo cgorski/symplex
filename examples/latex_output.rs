@@ -3,12 +3,13 @@
 //! Run with: cargo run --example latex_output
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== LaTeX Output ===\n");
 
-    vars!(x, y);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x, y);
 
     let exprs: Vec<(&str, Ex)> = vec![
         ("Quadratic", expr!(x ^ 2 + 2 * x + 1)),

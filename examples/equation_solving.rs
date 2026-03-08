@@ -13,12 +13,13 @@
 //! Run with: cargo run --example equation_solving
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Equation Solving ===\n");
 
-    vars!(x, y);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x, y);
 
     // ── Single-variable polynomial equations ───────────────────────
 
@@ -119,7 +120,7 @@ fn main() {
     println!("\n--- System: Circle ∩ Line ---");
     let eq1 = expr!(x ^ 2 + y ^ 2 - 1);
     let eq2 = expr!(x + y - 1);
-    let solutions = symplex::solve_system(
+    let solutions = symplex::polysys::solve_system_ex(
         &[eq1.clone(), eq2.clone()],
         &[x.clone(), y.clone()],
     )
@@ -137,7 +138,7 @@ fn main() {
     }
 
     println!("\n--- System: Two Conics ---");
-    let solutions = symplex::solve_system(
+    let solutions = symplex::polysys::solve_system_ex(
         &[expr!(x ^ 2 + y ^ 2 - 5), expr!(x * y - 2)],
         &[x.clone(), y.clone()],
     )
@@ -153,7 +154,7 @@ fn main() {
     println!("\n--- System with Irrational Roots ---");
     // x² + y² = 3, x + y = 1
     // Solutions involve √-expressions
-    match symplex::solve_system(
+    match symplex::polysys::solve_system_ex(
         &[expr!(x ^ 2 + y ^ 2 - 3), expr!(x + y - 1)],
         &[x.clone(), y.clone()],
     ) {

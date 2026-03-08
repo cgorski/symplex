@@ -100,21 +100,21 @@ macro_rules! define_quantity {
 
             /// Create a named symbolic variable with this dimension.
             pub fn symbol(name: &str) -> Self {
-                $name(crate::var(name))
+                $name(crate::default_context().symbol(name))
             }
 
             /// Create from an integer constant.
             pub fn constant(val: i64) -> Self {
-                $name(crate::int(val))
+                $name(crate::default_context().int(val))
             }
 
             /// Create from a rational constant.
             pub fn rational(p: i64, q: i64) -> Self {
-                $name(crate::rational(p, q))
+                $name(crate::default_context().rational(p, q))
             }
 
             /// Zero value.
-            pub fn zero() -> Self { $name(crate::int(0)) }
+            pub fn zero() -> Self { $name(crate::default_context().int(0)) }
 
             /// Escape hatch: drop dimension, return raw Ex.
             pub fn into_inner(self) -> Ex { self.0 }
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn scalar_mul_ex() {
         let f = Force::symbol("F");
-        let k = crate::var("k");
+        let k = crate::default_context().symbol("k");
         let scaled = &f * &k;
         assert!(format!("{}", scaled).contains("[N]"));
     }
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn into_inner_roundtrip() {
-        let raw = crate::var("x");
+        let raw = crate::default_context().symbol("x");
         let q = Pressure::from_ex(raw.clone());
         let back = q.into_inner();
         assert_eq!(format!("{}", back), format!("{}", raw));
@@ -735,8 +735,8 @@ mod tests {
 
     #[test]
     fn subs() {
-        let x_var = crate::var("x");
-        let val = crate::int(5);
+        let x_var = crate::default_context().symbol("x");
+        let val = crate::default_context().int(5);
         let len = Length::symbol("x");
         let result = len.subs(&x_var, &val);
         assert!(format!("{}", result).contains("[m]"));

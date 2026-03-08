@@ -453,8 +453,8 @@ fn convert_node_multi(
 /// use symplex::prelude::*;
 /// use symplex::polysys::solve_system_ex;
 ///
-/// let x = symplex::var("x");
-/// let y = symplex::var("y");
+/// let x = symplex::default_context().symbol("x");
+/// let y = symplex::default_context().symbol("y");
 /// // Solve: x + y - 1 = 0  and  x - y = 0
 /// let solutions = solve_system_ex(
 ///     &[&x + &y - 1, &x - &y],

@@ -346,7 +346,7 @@ mod tests {
 
     /// Helper: create a variable with assumptions, returning (context, var_ex).
     fn var_with(name: &str, assumption: Assumption) -> crate::api::expr::Ex {
-        let v = crate::var(name);
+        let v = crate::default_context().symbol(name);
         v.assume(assumption)
     }
 
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn refine_abs_unknown() {
-        let x = crate::var("x_ref_aunk");
+        let x = crate::default_context().symbol("x_ref_aunk");
         let expr = x.abs();
         let result = do_refine(&expr);
         assert_eq!(result.id(), expr.id(), "abs(x) should be unchanged with no assumptions");
@@ -415,7 +415,7 @@ mod tests {
         let x = var_with("x_ref_spos", Assumption::Positive);
         let expr = x.sign();
         let result = do_refine(&expr);
-        let one = crate::int(1);
+        let one = crate::default_context().int(1);
         assert_eq!(result.id(), one.id(), "sign(x) -> 1 when positive");
     }
 
@@ -424,7 +424,7 @@ mod tests {
         let x = var_with("x_ref_sneg", Assumption::Negative);
         let expr = x.sign();
         let result = do_refine(&expr);
-        let neg_one = crate::int(-1);
+        let neg_one = crate::default_context().int(-1);
         assert_eq!(result.id(), neg_one.id(), "sign(x) -> -1 when negative");
     }
 
@@ -433,13 +433,13 @@ mod tests {
         let x = var_with("x_ref_szero", Assumption::Zero);
         let expr = x.sign();
         let result = do_refine(&expr);
-        let zero = crate::int(0);
+        let zero = crate::default_context().int(0);
         assert_eq!(result.id(), zero.id(), "sign(x) -> 0 when zero");
     }
 
     #[test]
     fn refine_sign_unknown() {
-        let x = crate::var("x_ref_sunk");
+        let x = crate::default_context().symbol("x_ref_sunk");
         let expr = x.sign();
         let result = do_refine(&expr);
         assert_eq!(result.id(), expr.id(), "sign(x) should be unchanged with no assumptions");
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn refine_floor_unknown() {
-        let x = crate::var("x_ref_flunk");
+        let x = crate::default_context().symbol("x_ref_flunk");
         let expr = x.floor();
         let result = do_refine(&expr);
         assert_eq!(result.id(), expr.id(), "floor(x) unchanged with no assumptions");
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn refine_sqrt_x_squared_unknown() {
-        let x = crate::var("x_ref_squnk");
+        let x = crate::default_context().symbol("x_ref_squnk");
         let x2 = x.powi(2);
         let expr = x2.sqrt();
         let result = do_refine(&expr);
@@ -506,10 +506,10 @@ mod tests {
     #[test]
     fn refine_neg_one_to_even_power() {
         let n = var_with("n_ref_even", Assumption::Even);
-        let neg_one = crate::int(-1);
+        let neg_one = crate::default_context().int(-1);
         let expr = neg_one.pow(&n);
         let result = do_refine(&expr);
-        let one = crate::int(1);
+        let one = crate::default_context().int(1);
         assert_eq!(result.id(), one.id(), "(-1)^(even n) -> 1");
     }
 
@@ -535,8 +535,8 @@ mod tests {
 
     #[test]
     fn refine_no_change() {
-        let x = crate::var("x_ref_noop");
-        let expr = &x + &crate::int(1);
+        let x = crate::default_context().symbol("x_ref_noop");
+        let expr = &x + &crate::default_context().int(1);
         let result = do_refine(&expr);
         assert_eq!(result.id(), expr.id(), "x + 1 should be unchanged by refine");
     }
@@ -546,17 +546,17 @@ mod tests {
     #[test]
     fn refine_sign_of_literal() {
         // sign(5) — 5 is known positive in the assumption system.
-        let five = crate::int(5);
+        let five = crate::default_context().int(5);
         let expr = five.sign();
         let result = do_refine(&expr);
-        let one = crate::int(1);
+        let one = crate::default_context().int(1);
         assert_eq!(result.id(), one.id(), "sign(5) -> 1");
     }
 
     #[test]
     fn refine_floor_of_integer_literal() {
         // floor(3) — 3 is known integer.
-        let three = crate::int(3);
+        let three = crate::default_context().int(3);
         let expr = three.floor();
         let result = do_refine(&expr);
         assert_eq!(result.id(), three.id(), "floor(3) -> 3");

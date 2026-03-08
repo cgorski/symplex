@@ -11,12 +11,13 @@
 //! Run with: cargo run --example complex_numbers
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Complex Numbers ===\n");
 
-    vars!(x);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x);
 
     // ── 1. The imaginary unit ──────────────────────────────────────
     println!("--- The Imaginary Unit ---");

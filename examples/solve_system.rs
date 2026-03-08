@@ -3,16 +3,17 @@
 //! Run with: cargo run --example solve_system
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Polynomial System Solving ===\n");
 
-    vars!(x, y);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x, y);
 
     // Circle and line intersection
     println!("--- Circle ∩ Line ---");
-    let solutions = symplex::solve_system(
+    let solutions = symplex::polysys::solve_system_ex(
         &[expr!(x ^ 2 + y ^ 2 - 1), expr!(x + y - 1)],
         &[x.clone(), y.clone()],
     )
@@ -24,7 +25,7 @@ fn main() {
 
     // Two conics
     println!("\n--- Two Conics ---");
-    let solutions = symplex::solve_system(
+    let solutions = symplex::polysys::solve_system_ex(
         &[expr!(x ^ 2 + y ^ 2 - 5), expr!(x * y - 2)],
         &[x.clone(), y.clone()],
     )
@@ -37,7 +38,7 @@ fn main() {
 
     // Cubic system (univariate)
     println!("\n--- Cubic ---");
-    let solutions = symplex::solve_system(
+    let solutions = symplex::polysys::solve_system_ex(
         &[expr!(x ^ 3 - 6 * x ^ 2 + 11 * x - 6)],
         std::slice::from_ref(&x),
     )

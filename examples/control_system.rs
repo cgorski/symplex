@@ -14,7 +14,7 @@
 
 use symplex::control::*;
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Control System Analysis ===\n");
@@ -25,7 +25,8 @@ fn main() {
 
     println!("--- Mass-Spring-Damper State-Space Model ---\n");
 
-    vars!(s);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; s);
 
     // Physical system: mẍ + cẋ + kx = F
     // With m=1, c=3, k=4:
@@ -298,7 +299,8 @@ fn main() {
 
     println!("\n\n--- Laplace Transform ---\n");
 
-    vars!(t);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; t);
 
     // Derive transfer function from impulse response
     // For the mass-spring-damper, the impulse response is the

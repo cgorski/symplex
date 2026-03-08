@@ -95,11 +95,11 @@ impl Sort for SetValued {}
 /// use symplex::prelude::*;
 /// use symplex::expr::ExprType;
 ///
-/// let x = symplex::var("x");
+/// let x = symplex::default_context().symbol("x");
 /// assert_eq!(x.expr_type(), ExprType::Symbol);
 /// assert_eq!((&x + 1).expr_type(), ExprType::Add);
 /// assert_eq!(x.sin().expr_type(), ExprType::Function);
-/// assert_eq!(symplex::int(42).expr_type(), ExprType::Number);
+/// assert_eq!(symplex::default_context().int(42).expr_type(), ExprType::Number);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExprType {
@@ -313,7 +313,7 @@ impl<S: Sort> Expr<S> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// assert_eq!(x.count_ops(), 0);           // atom
     /// assert_eq!((&x + 1).count_ops(), 1);    // one Add
     /// assert_eq!(x.sin().powi(2).count_ops(), 2); // Sin + Pow
@@ -334,7 +334,7 @@ impl<S: Sort> Expr<S> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// assert_eq!((&x + 1).term_count(), 2);
     /// assert_eq!(x.powi(2).term_count(), 1);
     /// ```
@@ -385,7 +385,7 @@ impl<S: Sort> Expr<S> {
     /// use symplex::prelude::*;
     /// use symplex::expr::ExprType;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// assert_eq!(x.expr_type(), ExprType::Symbol);
     /// assert_eq!(x.sin().expr_type(), ExprType::Function);
     /// assert_eq!((&x + 1).expr_type(), ExprType::Add);
@@ -500,7 +500,7 @@ impl<S: Sort> Expr<S> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let expr = x.powi(2);
     /// let result = expr.subs_i64(&x, 3);
     /// assert_eq!(format!("{result}"), "9");
@@ -650,7 +650,7 @@ impl<S: Sort> Expr<S> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// // (x+1)^2 - x^2 - 2*x simplifies to 1 after expand + canonicalization
     /// let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
     /// assert_eq!(format!("{}", expr.full_simplify()), "1");
@@ -708,7 +708,7 @@ impl<S: Sort> Expr<S> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let tree = x.powi(2).to_tree();
     /// let json = serde_json::to_string(&tree).unwrap();
     /// assert!(json.contains("Pow"));
@@ -729,7 +729,7 @@ impl<S: Sort> Expr<S> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let json = x.powi(2).to_json();
     /// assert!(json.contains("\"type\":\"Pow\""));
     /// ```
@@ -756,7 +756,7 @@ impl<S: Sort> Expr<S> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let expr = (&x + 1).powi(2);
     /// let (result, iters) = expr.apply_until_stable(10, |e| e.expand());
     /// assert_eq!(format!("{result}"), "x^2 + 2*x + 1");

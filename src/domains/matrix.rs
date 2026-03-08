@@ -181,7 +181,7 @@ impl Matrix {
     pub fn diag(entries: &[Ex]) -> Matrix {
         let n = entries.len();
         assert!(n > 0, "diag: entries must be non-empty");
-        let zero = crate::int(0);
+        let zero = crate::default_context().int(0);
         let rows: Vec<Vec<Ex>> = (0..n)
             .map(|i| {
                 (0..n)
@@ -202,7 +202,7 @@ impl Matrix {
     pub fn from_i64(rows: &[&[i64]]) -> Matrix {
         let data: Vec<Vec<Ex>> = rows
             .iter()
-            .map(|row| row.iter().map(|&v| crate::int(v)).collect())
+            .map(|row| row.iter().map(|&v| crate::default_context().int(v)).collect())
             .collect();
         Matrix::new(data).unwrap()
     }
@@ -905,7 +905,7 @@ impl Matrix {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// let var = symplex::var("λ");
+    /// let var = symplex::default_context().symbol("λ");
     /// let m = symplex::matrix![[2, 1], [0, 3]];
     /// let evs = m.eigenvects(&var).unwrap();
     /// for (val, mult, vecs) in &evs {
@@ -991,7 +991,7 @@ impl Matrix {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// let var = symplex::var("λ");
+    /// let var = symplex::default_context().symbol("λ");
     /// let m = symplex::matrix![[2, 1], [0, 3]];
     /// let (p, d) = m.diagonalize(&var).unwrap();
     /// assert_eq!(d.nrows(), 2);
@@ -1057,7 +1057,7 @@ impl Matrix {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// let var = symplex::var("λ");
+    /// let var = symplex::default_context().symbol("λ");
     /// // Defective matrix: eigenvalue 2 with algebraic mult 2, geometric mult 1
     /// let m = symplex::matrix![[2, 1, 0, 0],
     ///                          [0, 2, 0, 0],
@@ -1316,7 +1316,7 @@ impl Matrix {
         let mut a_power_over_factorial = Matrix::identity(n);
         for k in 1..=order {
             a_power_over_factorial = a_power_over_factorial.matmul(self)?;
-            let inv_k = crate::rational(1, k as i64);
+            let inv_k = crate::default_context().rational(1, k as i64);
             a_power_over_factorial = a_power_over_factorial.scale(&inv_k);
             result = result.add_elementwise(&a_power_over_factorial)?;
         }
@@ -1346,7 +1346,7 @@ impl Matrix {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// let var = symplex::var("λ");
+    /// let var = symplex::default_context().symbol("λ");
     /// let m = symplex::matrix![[0, 1], [-1, 0]];
     /// // e^[[0,1],[-1,0]] involves sin and cos
     /// let result = m.matrix_exp(&var);
@@ -1415,7 +1415,7 @@ impl Matrix {
             for i in 0..block_size {
                 for jj in i..block_size {
                     let diff = jj - i;
-                    let factorial_val = crate::int(factorial_usize(diff) as i64);
+                    let factorial_val = crate::default_context().int(factorial_usize(diff) as i64);
                     let entry = &exp_lambda / &factorial_val;
                     exp_j_rows[col + i][col + jj] = entry;
                 }
@@ -1580,7 +1580,7 @@ impl Matrix {
     /// use symplex::prelude::*;
     /// use symplex::matrix::Matrix;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// let m = Matrix::new(vec![
     ///     vec![x.sin(), x.cos()],
     ///     vec![-x.cos(), x.sin()],
@@ -2025,7 +2025,7 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
             let root_check: Result<i64, _> = root_val.numer().clone().try_into();
             let denom_check: Result<i64, _> = root_val.denom().clone().try_into();
             let root_ex = if root_check.is_ok() && denom_check.is_ok() {
-                crate::rational(root_check.unwrap(), denom_check.unwrap())
+                crate::default_context().rational(root_check.unwrap(), denom_check.unwrap())
             } else {
                 // Root doesn't fit i64 — fall back to constructing from BigInt.
                 // Use the flat solver as a workaround.
@@ -2389,7 +2389,7 @@ impl std::ops::Mul<Matrix> for &Matrix {
 impl std::ops::Neg for &Matrix {
     type Output = Matrix;
     fn neg(self) -> Matrix {
-        let neg_one = crate::int(-1);
+        let neg_one = crate::default_context().int(-1);
         self.scale(&neg_one)
     }
 }
@@ -2418,7 +2418,7 @@ impl std::ops::Mul<&Ex> for Matrix {
 impl std::ops::Mul<i64> for &Matrix {
     type Output = Matrix;
     fn mul(self, rhs: i64) -> Matrix {
-        let s = crate::int(rhs);
+        let s = crate::default_context().int(rhs);
         self.scale(&s)
     }
 }
@@ -2467,7 +2467,7 @@ mod tests {
         let z = Matrix::zeros(3, 3);
         assert_eq!(format!("{}", z.get(1, 1)), "0");
 
-        let m = Matrix::from_fn(2, 2, |i, j| crate::int((i * 2 + j + 1) as i64));
+        let m = Matrix::from_fn(2, 2, |i, j| crate::default_context().int((i * 2 + j + 1) as i64));
         assert_eq!(format!("{}", m.get(0, 0)), "1");
         assert_eq!(format!("{}", m.get(0, 1)), "2");
         assert_eq!(format!("{}", m.get(1, 0)), "3");
@@ -2476,11 +2476,11 @@ mod tests {
 
     #[test]
     fn row_and_col_vectors() {
-        let rv = Matrix::row_vector(vec![crate::int(1), crate::int(2), crate::int(3)]);
+        let rv = Matrix::row_vector(vec![crate::default_context().int(1), crate::default_context().int(2), crate::default_context().int(3)]);
         assert_eq!(rv.shape(), (1, 3));
         assert_eq!(format!("{}", rv.get(0, 1)), "2");
 
-        let cv = Matrix::col_vector(vec![crate::int(10), crate::int(20)]);
+        let cv = Matrix::col_vector(vec![crate::default_context().int(10), crate::default_context().int(20)]);
         assert_eq!(cv.shape(), (2, 1));
         assert_eq!(format!("{}", cv.get(1, 0)), "20");
     }
@@ -2490,15 +2490,15 @@ mod tests {
     #[test]
     fn get_mut_works() {
         let mut m = Matrix::zeros(2, 2);
-        *m.get_mut(0, 1) = crate::int(42);
+        *m.get_mut(0, 1) = crate::default_context().int(42);
         assert_eq!(format!("{}", m.get(0, 1)), "42");
     }
 
     #[test]
     fn row_accessor() {
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2)],
-            vec![crate::int(3), crate::int(4)],
+            vec![crate::default_context().int(1), crate::default_context().int(2)],
+            vec![crate::default_context().int(3), crate::default_context().int(4)],
         ]).unwrap();
         let r = m.row(0);
         assert_eq!(r.len(), 2);
@@ -2519,10 +2519,10 @@ mod tests {
 
     #[test]
     fn transpose() {
-        let a = crate::var("a");
-        let b = crate::var("b");
-        let c = crate::var("c");
-        let d = crate::var("d");
+        let a = crate::default_context().symbol("a");
+        let b = crate::default_context().symbol("b");
+        let c = crate::default_context().symbol("c");
+        let d = crate::default_context().symbol("d");
         let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let t = m.transpose();
         assert_eq!(format!("{}", t.get(0, 0)), "a");
@@ -2534,8 +2534,8 @@ mod tests {
     #[test]
     fn transpose_non_square() {
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2), crate::int(3)],
-            vec![crate::int(4), crate::int(5), crate::int(6)],
+            vec![crate::default_context().int(1), crate::default_context().int(2), crate::default_context().int(3)],
+            vec![crate::default_context().int(4), crate::default_context().int(5), crate::default_context().int(6)],
         ]).unwrap();
         let t = m.transpose();
         assert_eq!(t.shape(), (3, 2));
@@ -2548,12 +2548,12 @@ mod tests {
     #[test]
     fn matrix_add() {
         let m1 = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2)],
-            vec![crate::int(3), crate::int(4)],
+            vec![crate::default_context().int(1), crate::default_context().int(2)],
+            vec![crate::default_context().int(3), crate::default_context().int(4)],
         ]).unwrap();
         let m2 = Matrix::new(vec![
-            vec![crate::int(5), crate::int(6)],
-            vec![crate::int(7), crate::int(8)],
+            vec![crate::default_context().int(5), crate::default_context().int(6)],
+            vec![crate::default_context().int(7), crate::default_context().int(8)],
         ]).unwrap();
         let sum = m1.add(&m2).unwrap();
         assert_eq!(format!("{}", sum.get(0, 0)), "6");
@@ -2562,8 +2562,8 @@ mod tests {
 
     #[test]
     fn matrix_sub() {
-        let m1 = Matrix::new(vec![vec![crate::int(10), crate::int(20)]]).unwrap();
-        let m2 = Matrix::new(vec![vec![crate::int(3), crate::int(7)]]).unwrap();
+        let m1 = Matrix::new(vec![vec![crate::default_context().int(10), crate::default_context().int(20)]]).unwrap();
+        let m2 = Matrix::new(vec![vec![crate::default_context().int(3), crate::default_context().int(7)]]).unwrap();
         let diff = m1.sub(&m2).unwrap();
         assert_eq!(format!("{}", diff.get(0, 0)), "7");
         assert_eq!(format!("{}", diff.get(0, 1)), "13");
@@ -2574,7 +2574,7 @@ mod tests {
     #[test]
     fn scale() {
         let m = Matrix::identity(2);
-        let two = crate::int(2);
+        let two = crate::default_context().int(2);
         let scaled = m.scale(&two);
         assert_eq!(format!("{}", scaled.get(0, 0)), "2");
         assert_eq!(format!("{}", scaled.get(0, 1)), "0");
@@ -2582,8 +2582,8 @@ mod tests {
 
     #[test]
     fn scale_symbolic() {
-        let x = crate::var("x");
-        let m = Matrix::new(vec![vec![crate::int(1), crate::int(2)]]).unwrap();
+        let x = crate::default_context().symbol("x");
+        let m = Matrix::new(vec![vec![crate::default_context().int(1), crate::default_context().int(2)]]).unwrap();
         let scaled = m.scale(&x);
         let s0 = format!("{}", scaled.get(0, 0));
         let s1 = format!("{}", scaled.get(0, 1));
@@ -2596,10 +2596,10 @@ mod tests {
     #[test]
     fn matmul_2x2() {
         let m = Matrix::identity(2);
-        let a = crate::var("a");
-        let b = crate::var("b");
-        let c = crate::var("c");
-        let d = crate::var("d");
+        let a = crate::default_context().symbol("a");
+        let b = crate::default_context().symbol("b");
+        let c = crate::default_context().symbol("c");
+        let d = crate::default_context().symbol("d");
         let n = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let result = m.matmul(&n).unwrap();
         // I * N = N
@@ -2610,8 +2610,8 @@ mod tests {
     #[test]
     fn matmul_non_square() {
         // (1×2) * (2×1) → (1×1)
-        let rv = Matrix::row_vector(vec![crate::int(2), crate::int(3)]);
-        let cv = Matrix::col_vector(vec![crate::int(4), crate::int(5)]);
+        let rv = Matrix::row_vector(vec![crate::default_context().int(2), crate::default_context().int(3)]);
+        let cv = Matrix::col_vector(vec![crate::default_context().int(4), crate::default_context().int(5)]);
         let result = rv.matmul(&cv).unwrap();
         assert_eq!(result.shape(), (1, 1));
         // 2*4 + 3*5 = 8 + 15 = 23
@@ -2621,12 +2621,12 @@ mod tests {
     #[test]
     fn matmul_numeric() {
         let a = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2)],
-            vec![crate::int(3), crate::int(4)],
+            vec![crate::default_context().int(1), crate::default_context().int(2)],
+            vec![crate::default_context().int(3), crate::default_context().int(4)],
         ]).unwrap();
         let b = Matrix::new(vec![
-            vec![crate::int(5), crate::int(6)],
-            vec![crate::int(7), crate::int(8)],
+            vec![crate::default_context().int(5), crate::default_context().int(6)],
+            vec![crate::default_context().int(7), crate::default_context().int(8)],
         ]).unwrap();
         let c = a.matmul(&b).unwrap();
         // [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]] = [[19, 22], [43, 50]]
@@ -2640,10 +2640,10 @@ mod tests {
 
     #[test]
     fn trace_2x2() {
-        let a = crate::var("a");
-        let b = crate::var("b");
-        let c = crate::var("c");
-        let d = crate::var("d");
+        let a = crate::default_context().symbol("a");
+        let b = crate::default_context().symbol("b");
+        let c = crate::default_context().symbol("c");
+        let d = crate::default_context().symbol("d");
         let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let tr = m.trace().unwrap();
         let s = format!("{tr}");
@@ -2656,8 +2656,8 @@ mod tests {
     #[test]
     fn trace_numeric() {
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2)],
-            vec![crate::int(3), crate::int(4)],
+            vec![crate::default_context().int(1), crate::default_context().int(2)],
+            vec![crate::default_context().int(3), crate::default_context().int(4)],
         ]).unwrap();
         let tr = m.trace().unwrap();
         assert_eq!(format!("{tr}"), "5");
@@ -2667,7 +2667,7 @@ mod tests {
 
     #[test]
     fn det_1x1() {
-        let a = crate::var("a");
+        let a = crate::default_context().symbol("a");
         let m = Matrix::new(vec![vec![a.clone()]]).unwrap();
         let det = m.det().unwrap();
         assert_eq!(format!("{det}"), "a");
@@ -2675,10 +2675,10 @@ mod tests {
 
     #[test]
     fn det_2x2() {
-        let a = crate::var("a");
-        let b = crate::var("b");
-        let c = crate::var("c");
-        let d = crate::var("d");
+        let a = crate::default_context().symbol("a");
+        let b = crate::default_context().symbol("b");
+        let c = crate::default_context().symbol("c");
+        let d = crate::default_context().symbol("d");
         let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let det = m.det().unwrap();
         // det = ad - bc
@@ -2692,8 +2692,8 @@ mod tests {
     #[test]
     fn det_2x2_numeric() {
         let m = Matrix::new(vec![
-            vec![crate::int(3), crate::int(8)],
-            vec![crate::int(4), crate::int(6)],
+            vec![crate::default_context().int(3), crate::default_context().int(8)],
+            vec![crate::default_context().int(4), crate::default_context().int(6)],
         ]).unwrap();
         let det = m.det().unwrap();
         // 3*6 - 8*4 = 18 - 32 = -14
@@ -2703,9 +2703,9 @@ mod tests {
     #[test]
     fn det_3x3_numeric() {
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2), crate::int(3)],
-            vec![crate::int(4), crate::int(5), crate::int(6)],
-            vec![crate::int(7), crate::int(8), crate::int(9)],
+            vec![crate::default_context().int(1), crate::default_context().int(2), crate::default_context().int(3)],
+            vec![crate::default_context().int(4), crate::default_context().int(5), crate::default_context().int(6)],
+            vec![crate::default_context().int(7), crate::default_context().int(8), crate::default_context().int(9)],
         ]).unwrap();
         let det = m.det().unwrap();
         // This matrix is singular: det = 0
@@ -2715,9 +2715,9 @@ mod tests {
     #[test]
     fn det_3x3_nonsingular() {
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(0), crate::int(2)],
-            vec![crate::int(0), crate::int(1), crate::int(0)],
-            vec![crate::int(3), crate::int(0), crate::int(1)],
+            vec![crate::default_context().int(1), crate::default_context().int(0), crate::default_context().int(2)],
+            vec![crate::default_context().int(0), crate::default_context().int(1), crate::default_context().int(0)],
+            vec![crate::default_context().int(3), crate::default_context().int(0), crate::default_context().int(1)],
         ]).unwrap();
         let det = m.det().unwrap();
         // det = 1*(1*1 - 0*0) - 0 + 2*(0*0 - 1*3) = 1 + 2*(-3) = -5
@@ -2729,11 +2729,11 @@ mod tests {
     #[test]
     fn map_doubles() {
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2)],
-            vec![crate::int(3), crate::int(4)],
+            vec![crate::default_context().int(1), crate::default_context().int(2)],
+            vec![crate::default_context().int(3), crate::default_context().int(4)],
         ]).unwrap();
         let doubled = m.map(|e| {
-            let two = crate::int(2);
+            let two = crate::default_context().int(2);
             &two * e
         });
         assert_eq!(format!("{}", doubled.get(0, 0)), "2");
@@ -2744,8 +2744,8 @@ mod tests {
 
     #[test]
     fn jacobian_test() {
-        let x = crate::var("x");
-        let y = crate::var("y");
+        let x = crate::default_context().symbol("x");
+        let y = crate::default_context().symbol("y");
         let f1 = &x.powi(2) + &y; // f1 = x² + y
         let f2 = &x * &y; // f2 = x*y
         let j = jacobian(&[&f1, &f2], &[&x, &y]);
@@ -2758,7 +2758,7 @@ mod tests {
 
     #[test]
     fn matrix_diff() {
-        let x = crate::var("x");
+        let x = crate::default_context().symbol("x");
         let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]).unwrap();
         let dm = m.diff(&x);
         let s00 = format!("{}", dm.get(0, 0));
@@ -2767,16 +2767,16 @@ mod tests {
 
     #[test]
     fn matrix_subs() {
-        let x = crate::var("x");
+        let x = crate::default_context().symbol("x");
         let m = Matrix::new(vec![vec![x.powi(2), x.clone()]]).unwrap();
-        let result = m.subs(&x, &crate::int(3));
+        let result = m.subs(&x, &crate::default_context().int(3));
         assert_eq!(format!("{}", result.get(0, 0)), "9");
         assert_eq!(format!("{}", result.get(0, 1)), "3");
     }
 
     #[test]
     fn matrix_eval() {
-        let m = Matrix::new(vec![vec![crate::pi().cos(), crate::int(2) + crate::int(3)]]).unwrap();
+        let m = Matrix::new(vec![vec![crate::default_context().pi().cos(), crate::default_context().int(2) + crate::default_context().int(3)]]).unwrap();
         let evaled = m.eval();
         assert_eq!(format!("{}", evaled.get(0, 0)), "-1");
         assert_eq!(format!("{}", evaled.get(0, 1)), "5");
@@ -2784,8 +2784,8 @@ mod tests {
 
     #[test]
     fn matrix_expand() {
-        let x = crate::var("x");
-        let expr = (&x + crate::int(1)).powi(2);
+        let x = crate::default_context().symbol("x");
+        let expr = (&x + crate::default_context().int(1)).powi(2);
         let m = Matrix::new(vec![vec![expr]]).unwrap();
         let expanded = m.expand();
         let s = format!("{}", expanded.get(0, 0));
@@ -2799,11 +2799,11 @@ mod tests {
 
     #[test]
     fn eigenvects_2x2_distinct() {
-        let var = crate::var("lam_ev1");
+        let var = crate::default_context().symbol("lam_ev1");
         // Upper-triangular: eigenvalues are 2 and 3 on the diagonal.
         let m = Matrix::new(vec![
-            vec![crate::int(2), crate::int(1)],
-            vec![crate::int(0), crate::int(3)],
+            vec![crate::default_context().int(2), crate::default_context().int(1)],
+            vec![crate::default_context().int(0), crate::default_context().int(3)],
         ]).unwrap();
         let evs = m.eigenvects(&var).expect("eigenvects should succeed for square matrix");
         assert_eq!(evs.len(), 2, "should have 2 distinct eigenvalues");
@@ -2825,10 +2825,10 @@ mod tests {
 
     #[test]
     fn eigenvects_non_square_returns_error() {
-        let var = crate::var("lam_nonsq");
+        let var = crate::default_context().symbol("lam_nonsq");
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2), crate::int(3)],
-            vec![crate::int(4), crate::int(5), crate::int(6)],
+            vec![crate::default_context().int(1), crate::default_context().int(2), crate::default_context().int(3)],
+            vec![crate::default_context().int(4), crate::default_context().int(5), crate::default_context().int(6)],
         ]).unwrap();
         let result = m.eigenvects(&var);
         assert!(result.is_err(), "non-square matrix should return Err");
@@ -2841,14 +2841,14 @@ mod tests {
 
     #[test]
     fn eigenvects_diagonal_matrix() {
-        let var = crate::var("lam_ev2");
-        let m = Matrix::diag(&[crate::int(5), crate::int(-3)]);
+        let var = crate::default_context().symbol("lam_ev2");
+        let m = Matrix::diag(&[crate::default_context().int(5), crate::default_context().int(-3)]);
         let evs = m.eigenvects(&var).expect("eigenvects should succeed");
         assert_eq!(evs.len(), 2, "diagonal matrix has 2 eigenvalues");
         // Eigenvalues should be 5 and -3.
         let vals: Vec<_> = evs.iter().map(|(v, _, _)| v.clone()).collect();
         assert!(
-            vals.contains(&crate::int(5)) && vals.contains(&crate::int(-3)),
+            vals.contains(&crate::default_context().int(5)) && vals.contains(&crate::default_context().int(-3)),
             "eigenvalues should be 5 and -3, got {:?}",
             vals
         );
@@ -2856,10 +2856,10 @@ mod tests {
 
     #[test]
     fn diagonalize_upper_triangular() {
-        let var = crate::var("lam_diag1");
+        let var = crate::default_context().symbol("lam_diag1");
         let m = Matrix::new(vec![
-            vec![crate::int(2), crate::int(1)],
-            vec![crate::int(0), crate::int(3)],
+            vec![crate::default_context().int(2), crate::default_context().int(1)],
+            vec![crate::default_context().int(0), crate::default_context().int(3)],
         ]).unwrap();
         let (p, d) = m
             .diagonalize(&var)
@@ -2884,11 +2884,11 @@ mod tests {
 
     #[test]
     fn diagonalize_non_diagonalizable() {
-        let var = crate::var("lam_nd");
+        let var = crate::default_context().symbol("lam_nd");
         // [[1,1],[0,1]] — defective: eigenvalue 1 alg-mult 2, geom-mult 1
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(1)],
-            vec![crate::int(0), crate::int(1)],
+            vec![crate::default_context().int(1), crate::default_context().int(1)],
+            vec![crate::default_context().int(0), crate::default_context().int(1)],
         ]).unwrap();
         let result = m.diagonalize(&var);
         assert!(
@@ -2904,8 +2904,8 @@ mod tests {
 
     #[test]
     fn is_diagonalizable_yes() {
-        let var = crate::var("lam_diag_y");
-        let m = Matrix::diag(&[crate::int(1), crate::int(2), crate::int(3)]);
+        let var = crate::default_context().symbol("lam_diag_y");
+        let m = Matrix::diag(&[crate::default_context().int(1), crate::default_context().int(2), crate::default_context().int(3)]);
         assert_eq!(m.is_diagonalizable(&var).unwrap(), true);
     }
 
@@ -2914,8 +2914,8 @@ mod tests {
     #[test]
     fn jordan_form_diagonal() {
         // A diagonal matrix has trivial Jordan form = itself.
-        let var = crate::var("lam_jf1");
-        let m = Matrix::diag(&[crate::int(1), crate::int(2), crate::int(3)]);
+        let var = crate::default_context().symbol("lam_jf1");
+        let m = Matrix::diag(&[crate::default_context().int(1), crate::default_context().int(2), crate::default_context().int(3)]);
         let (p, j) = m.jordan_form(&var).expect("should succeed");
         assert_eq!(j.nrows(), 3);
         // J should be diagonal (same as D from diagonalize).
@@ -2938,17 +2938,17 @@ mod tests {
     fn jordan_form_defective_2x2() {
         // [[1,1],[0,1]] — eigenvalue 1, alg mult 2, geom mult 1
         // Jordan form should be [[1,1],[0,1]] (single 2×2 block)
-        let var = crate::var("lam_jf2");
+        let var = crate::default_context().symbol("lam_jf2");
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(1)],
-            vec![crate::int(0), crate::int(1)],
+            vec![crate::default_context().int(1), crate::default_context().int(1)],
+            vec![crate::default_context().int(0), crate::default_context().int(1)],
         ]).unwrap();
         let (_p, j) = m.jordan_form(&var).expect("should succeed for defective matrix");
         assert_eq!(j.nrows(), 2);
         // J should have 1 on diagonal and 1 on superdiagonal
         let j_01 = j.get(0, 1).eval();
         assert!(
-            (&j_01 - &crate::int(1)).eval().is_zero_structural(),
+            (&j_01 - &crate::default_context().int(1)).eval().is_zero_structural(),
             "J[0,1] should be 1 (superdiagonal of Jordan block)"
         );
     }
@@ -2956,10 +2956,10 @@ mod tests {
     #[test]
     fn jordan_form_upper_triangular_distinct() {
         // [[2,1],[0,3]] — distinct eigenvalues, so Jordan = diagonal form
-        let var = crate::var("lam_jf3");
+        let var = crate::default_context().symbol("lam_jf3");
         let m = Matrix::new(vec![
-            vec![crate::int(2), crate::int(1)],
-            vec![crate::int(0), crate::int(3)],
+            vec![crate::default_context().int(2), crate::default_context().int(1)],
+            vec![crate::default_context().int(0), crate::default_context().int(3)],
         ]).unwrap();
         let (p, j) = m.jordan_form(&var).expect("distinct eigenvalues should succeed");
         assert_eq!(j.nrows(), 2);
@@ -2983,7 +2983,7 @@ mod tests {
 
     #[test]
     fn matrix_exp_identity() {
-        let var = crate::var("lam_mexp1");
+        let var = crate::default_context().symbol("lam_mexp1");
         let m = Matrix::identity(2);
         let result = m.matrix_exp(&var).expect("identity should succeed");
         // e^0 = I, so e^I should have e on diagonal (but I = [[1,0],[0,1]])
@@ -2994,7 +2994,7 @@ mod tests {
 
     #[test]
     fn matrix_exp_zero() {
-        let var = crate::var("lam_mexp0");
+        let var = crate::default_context().symbol("lam_mexp0");
         let m = Matrix::zeros(2, 2);
         let result = m.matrix_exp(&var).expect("zero matrix should succeed");
         // e^0 = I
@@ -3002,11 +3002,11 @@ mod tests {
         let diag_11 = result.get(1, 1).simplify().eval();
         let off_01 = result.get(0, 1).simplify().eval();
         assert!(
-            (&diag_00 - &crate::int(1)).eval().is_zero_structural(),
+            (&diag_00 - &crate::default_context().int(1)).eval().is_zero_structural(),
             "e^0 [0,0] should be 1, got {diag_00}"
         );
         assert!(
-            (&diag_11 - &crate::int(1)).eval().is_zero_structural(),
+            (&diag_11 - &crate::default_context().int(1)).eval().is_zero_structural(),
             "e^0 [1,1] should be 1, got {diag_11}"
         );
         assert!(
@@ -3017,30 +3017,30 @@ mod tests {
 
     #[test]
     fn matrix_exp_non_square_returns_error() {
-        let var = crate::var("lam_mexp_ns");
+        let var = crate::default_context().symbol("lam_mexp_ns");
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2), crate::int(3)],
-            vec![crate::int(4), crate::int(5), crate::int(6)],
+            vec![crate::default_context().int(1), crate::default_context().int(2), crate::default_context().int(3)],
+            vec![crate::default_context().int(4), crate::default_context().int(5), crate::default_context().int(6)],
         ]).unwrap();
         assert!(m.matrix_exp(&var).is_err());
     }
 
     #[test]
     fn jordan_form_non_square_returns_error() {
-        let var = crate::var("lam_jf_ns");
+        let var = crate::default_context().symbol("lam_jf_ns");
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2), crate::int(3)],
-            vec![crate::int(4), crate::int(5), crate::int(6)],
+            vec![crate::default_context().int(1), crate::default_context().int(2), crate::default_context().int(3)],
+            vec![crate::default_context().int(4), crate::default_context().int(5), crate::default_context().int(6)],
         ]).unwrap();
         assert!(m.jordan_form(&var).is_err());
     }
 
     #[test]
     fn diagonalize_non_square_returns_error() {
-        let var = crate::var("lam_diag_nonsq");
+        let var = crate::default_context().symbol("lam_diag_nonsq");
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2), crate::int(3)],
-            vec![crate::int(4), crate::int(5), crate::int(6)],
+            vec![crate::default_context().int(1), crate::default_context().int(2), crate::default_context().int(3)],
+            vec![crate::default_context().int(4), crate::default_context().int(5), crate::default_context().int(6)],
         ]).unwrap();
         assert!(
             m.diagonalize(&var).is_err(),
@@ -3057,8 +3057,8 @@ mod tests {
     #[test]
     fn matrix_display() {
         let m = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2)],
-            vec![crate::int(3), crate::int(4)],
+            vec![crate::default_context().int(1), crate::default_context().int(2)],
+            vec![crate::default_context().int(3), crate::default_context().int(4)],
         ]).unwrap();
         let s = format!("{m}");
         assert!(s.contains("1") && s.contains("4"), "display: {s}");
@@ -3066,7 +3066,7 @@ mod tests {
 
     #[test]
     fn row_vector_display() {
-        let m = Matrix::row_vector(vec![crate::int(1), crate::int(2), crate::int(3)]);
+        let m = Matrix::row_vector(vec![crate::default_context().int(1), crate::default_context().int(2), crate::default_context().int(3)]);
         let s = format!("{m}");
         // Single-row matrices use inline format
         assert!(s.starts_with("[["), "should start with [[: {s}");
@@ -3148,8 +3148,8 @@ mod tests {
     #[test]
     fn new_jagged_returns_error() {
         let result = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2)],
-            vec![crate::int(3)],
+            vec![crate::default_context().int(1), crate::default_context().int(2)],
+            vec![crate::default_context().int(3)],
         ]);
         assert!(result.is_err(), "jagged rows should return Err");
         let err_msg = format!("{}", result.unwrap_err());
@@ -3162,8 +3162,8 @@ mod tests {
     #[test]
     fn new_valid_succeeds() {
         let result = Matrix::new(vec![
-            vec![crate::int(1), crate::int(2)],
-            vec![crate::int(3), crate::int(4)],
+            vec![crate::default_context().int(1), crate::default_context().int(2)],
+            vec![crate::default_context().int(3), crate::default_context().int(4)],
         ]);
         assert!(result.is_ok(), "valid input should return Ok");
         let m = result.unwrap();

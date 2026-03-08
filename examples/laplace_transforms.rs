@@ -10,12 +10,13 @@
 //! Run with: cargo run --example laplace_transforms
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Laplace Transforms ===\n");
 
-    vars!(t, s, n, z);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; t, s, n, z);
 
     // ════════════════════════════════════════════════════════════════
     // Part 1: Forward Laplace Transform

@@ -168,7 +168,8 @@ fn section_5_codegen_with_uom() {
     println!("── 5. Code Generation with uom Types ──\n");
 
     // Build a simple motor torque equation symbolically
-    symplex::vars!(V, R_m, Kt);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; V, R_m, Kt);
 
     // Stall torque: τ = Kt·V/R
     // At stall (ω=0): I_stall = V/R, τ_stall = Kt × V/R

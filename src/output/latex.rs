@@ -875,7 +875,7 @@ impl<S: Sort> Expr<S> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// assert_eq!(x.powi(2).to_latex(), r"x^{2}");
     /// assert_eq!(x.sin().to_latex(), r"\sin\left(x\right)");
     /// ```
@@ -895,7 +895,7 @@ impl<S: Sort> Expr<S> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// assert_eq!(x.to_latex_inline(), "$x$");
     /// ```
     pub fn to_latex_inline(&self) -> String {
@@ -909,7 +909,7 @@ impl<S: Sort> Expr<S> {
     /// ```
     /// use symplex::prelude::*;
     ///
-    /// let x = symplex::var("x");
+    /// let x = symplex::default_context().symbol("x");
     /// assert_eq!(x.to_latex_display(), "$$x$$");
     /// ```
     pub fn to_latex_display(&self) -> String {

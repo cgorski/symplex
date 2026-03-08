@@ -17,8 +17,8 @@ use std::fmt;
 /// use symplex::prelude::*;
 /// use symplex::eq::Equation;
 ///
-/// let x = symplex::var("x");
-/// let eq = Equation::new(&x + 1, symplex::int(5));
+/// let x = symplex::default_context().symbol("x");
+/// let eq = Equation::new(&x + 1, symplex::default_context().int(5));
 /// assert_eq!(format!("{eq}"), "x + 1 = 5");
 /// ```
 #[derive(Clone)]
@@ -45,8 +45,8 @@ impl Equation {
     /// use symplex::prelude::*;
     /// use symplex::eq::Equation;
     ///
-    /// let x = symplex::var("x");
-    /// let eq = Equation::new(&x + 1, symplex::int(5));
+    /// let x = symplex::default_context().symbol("x");
+    /// let eq = Equation::new(&x + 1, symplex::default_context().int(5));
     /// let roots = eq.solve(&x).unwrap();
     /// assert_eq!(format!("{}", roots[0]), "4");
     /// ```
@@ -133,16 +133,16 @@ mod tests {
 
     #[test]
     fn equation_display() {
-        let x = crate::var("x");
-        let eq = Equation::new(&x + 1, crate::int(5));
+        let x = crate::default_context().symbol("x");
+        let eq = Equation::new(&x + 1, crate::default_context().int(5));
         let s = format!("{eq}");
         assert!(s.contains("=") && s.contains("5"), "got: {s}");
     }
 
     #[test]
     fn equation_solve_linear() {
-        let x = crate::var("x");
-        let eq = Equation::new(&x + 1, crate::int(5));
+        let x = crate::default_context().symbol("x");
+        let eq = Equation::new(&x + 1, crate::default_context().int(5));
         let roots = eq.solve_or_empty(&x);
         assert_eq!(roots.len(), 1);
         assert_eq!(format!("{}", roots[0]), "4");
@@ -150,16 +150,16 @@ mod tests {
 
     #[test]
     fn equation_solve_quadratic() {
-        let x = crate::var("x");
-        let eq = Equation::new(x.powi(2), crate::int(4));
+        let x = crate::default_context().symbol("x");
+        let eq = Equation::new(x.powi(2), crate::default_context().int(4));
         let roots = eq.solve_or_empty(&x);
         assert_eq!(roots.len(), 2, "x²=4 should have 2 roots");
     }
 
     #[test]
     fn equation_subs() {
-        let x = crate::var("x");
-        let eq = Equation::new(&x + 1, crate::int(5));
+        let x = crate::default_context().symbol("x");
+        let eq = Equation::new(&x + 1, crate::default_context().int(5));
         let substituted = eq.subs_i64(&x, 4);
         assert!(
             substituted.is_satisfied() == Some(true),
@@ -169,8 +169,8 @@ mod tests {
 
     #[test]
     fn equation_to_expr() {
-        let x = crate::var("x");
-        let eq = Equation::new(x.clone(), crate::int(3));
+        let x = crate::default_context().symbol("x");
+        let eq = Equation::new(x.clone(), crate::default_context().int(3));
         let expr = eq.to_expr();
         // x - 3
         let s = format!("{expr}");
@@ -179,16 +179,16 @@ mod tests {
 
     #[test]
     fn equation_simplify() {
-        let x = crate::var("x");
-        let eq = Equation::new(&x.sin().powi(2) + &x.cos().powi(2), crate::int(1));
+        let x = crate::default_context().symbol("x");
+        let eq = Equation::new(&x.sin().powi(2) + &x.cos().powi(2), crate::default_context().int(1));
         let simplified = eq.simplify();
         assert_eq!(format!("{}", simplified.lhs), "1");
     }
 
     #[test]
     fn equation_debug() {
-        let x = crate::var("x");
-        let eq = Equation::new(x.clone(), crate::int(0));
+        let x = crate::default_context().symbol("x");
+        let eq = Equation::new(x.clone(), crate::default_context().int(0));
         let s = format!("{eq:?}");
         assert!(s.contains("Equation"), "debug: {s}");
     }

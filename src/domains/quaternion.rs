@@ -37,27 +37,27 @@ impl Quaternion {
     /// Identity quaternion (1, 0, 0, 0).
     pub fn identity() -> Self {
         Quaternion {
-            w: crate::int(1),
-            x: crate::int(0),
-            y: crate::int(0),
-            z: crate::int(0),
+            w: crate::default_context().int(1),
+            x: crate::default_context().int(0),
+            y: crate::default_context().int(0),
+            z: crate::default_context().int(0),
         }
     }
 
     /// Zero quaternion.
     pub fn zero() -> Self {
         Quaternion {
-            w: crate::int(0),
-            x: crate::int(0),
-            y: crate::int(0),
-            z: crate::int(0),
+            w: crate::default_context().int(0),
+            x: crate::default_context().int(0),
+            y: crate::default_context().int(0),
+            z: crate::default_context().int(0),
         }
     }
 
     /// Pure quaternion (0, x, y, z) from a 3-vector.
     pub fn from_vector(x: &Ex, y: &Ex, z: &Ex) -> Self {
         Quaternion {
-            w: crate::int(0),
+            w: crate::default_context().int(0),
             x: x.clone(),
             y: y.clone(),
             z: z.clone(),
@@ -148,8 +148,8 @@ impl Quaternion {
     ///     | 2(xz-wy)      2(yz+wx)     1-2(x²+y²) |
     /// ```
     pub fn to_rotation_matrix(&self) -> Matrix {
-        let one = crate::int(1);
-        let two = crate::int(2);
+        let one = crate::default_context().int(1);
+        let two = crate::default_context().int(2);
 
         let xx = self.x.powi(2);
         let yy = self.y.powi(2);
@@ -199,7 +199,7 @@ impl Quaternion {
         axis_z: &Ex,
         angle: &Ex,
     ) -> Quaternion {
-        let two = crate::int(2);
+        let two = crate::default_context().int(2);
         let half_angle = angle / &two;
         let c = half_angle.cos();
         let s = half_angle.sin();
@@ -224,7 +224,7 @@ impl Quaternion {
     ) -> Quaternion {
         let omega_quat = Quaternion::from_vector(omega_x, omega_y, omega_z);
         let product = self.mul(&omega_quat);
-        let half = crate::rational(1, 2);
+        let half = crate::default_context().rational(1, 2);
         Quaternion {
             w: &half * &product.w,
             x: &half * &product.x,

@@ -17,7 +17,7 @@ use std::time::Instant;
 use symplex::matrix::jacobian;
 use symplex::prelude::*;
 use symplex::robotics::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Symplex Robotics Code Generation ===\n");
@@ -31,7 +31,8 @@ fn main() {
     // instead of f64 keeps the entire derivation exact: no IEEE 754
     // rounding until the very end when we evaluate numerically.
 
-    vars!(theta1, theta2, theta3);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; theta1, theta2, theta3);
 
     let l1 = symplex::default_context().rational(3, 10); // 0.3 m
     let l2 = symplex::default_context().rational(1, 4); // 0.25 m

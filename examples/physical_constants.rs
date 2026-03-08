@@ -106,7 +106,8 @@ fn section_4_thermal_energy() {
 fn section_5_gravity() {
     println!("── 5. F = Gm₁m₂/r² — Gravitational Force ──\n");
 
-    symplex::vars!(m1, m2, r);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; m1, m2, r);
     let g_const = constants::gravitational_constant();
 
     // Newton's law of gravitation
@@ -128,7 +129,8 @@ fn section_6_constants_with_calculus() {
     println!("── 6. Constants and Calculus ──\n");
 
     let c = constants::speed_of_light();
-    symplex::vars!(x);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x);
 
     // d/dx(c·x) = c (constant preserved through differentiation)
     let cx = c.inner() * &x;

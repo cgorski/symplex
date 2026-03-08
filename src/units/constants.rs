@@ -24,24 +24,24 @@ use typenum::{N1, N2, P1, P2, P3, Z0};
 
 /// Speed of light in vacuum: c = 299,792,458 m/s (exact since 2019 SI redefinition).
 pub fn speed_of_light() -> Velocity {
-    Velocity::from_ex(crate::physical_constant("c", crate::int(299_792_458)))
+    Velocity::from_ex(crate::default_context().physical_constant("c", crate::default_context().int(299_792_458)))
 }
 
 /// Standard acceleration of gravity: g₀ = 9.80665 m/s² (exact by definition, 1901).
 pub fn standard_gravity() -> Acceleration {
-    Acceleration::from_ex(crate::physical_constant("g_0", crate::rational(980665, 100_000)))
+    Acceleration::from_ex(crate::default_context().physical_constant("g_0", crate::default_context().rational(980665, 100_000)))
 }
 
 /// Elementary charge: e = 1.602176634 × 10⁻¹⁹ C (exact since 2019 SI redefinition).
 pub fn elementary_charge() -> Charge {
-    Charge::from_ex(crate::physical_constant("e_0", crate::rational_e(1_602_176_634, 28)))
+    Charge::from_ex(crate::default_context().physical_constant("e_0", { let __c = crate::default_context(); &__c.int(1_602_176_634) / &__c.int(10).powi(28) }))
 }
 
 /// Planck constant: h = 6.62607015 × 10⁻³⁴ J·s (exact since 2019 SI redefinition).
 ///
 /// Returns as `AngularMomentum` (dimension M·L²·T⁻¹, same as Action = Energy × Time).
 pub fn planck_constant() -> AngularMomentum {
-    AngularMomentum::from_ex(crate::physical_constant("h", crate::rational_e(662_607_015, 42)))
+    AngularMomentum::from_ex(crate::default_context().physical_constant("h", { let __c = crate::default_context(); &__c.int(662_607_015) / &__c.int(10).powi(42) }))
 }
 
 /// Reduced Planck constant: ℏ = h/(2π) (exact).
@@ -49,9 +49,9 @@ pub fn planck_constant() -> AngularMomentum {
 /// Note: This involves π, so the value is symbolic: h/(2π).
 /// For numerical evaluation, both h and π resolve to exact values.
 pub fn reduced_planck_constant() -> AngularMomentum {
-    let h = crate::physical_constant("h", crate::rational_e(662_607_015, 42));
-    let two_pi = &(crate::int(2) * &crate::pi());
-    AngularMomentum::from_ex(crate::physical_constant("hbar", &h / two_pi))
+    let h = crate::default_context().physical_constant("h", { let __c = crate::default_context(); &__c.int(662_607_015) / &__c.int(10).powi(42) });
+    let two_pi = &(crate::default_context().int(2) * &crate::default_context().pi());
+    AngularMomentum::from_ex(crate::default_context().physical_constant("hbar", &h / two_pi))
 }
 
 /// Boltzmann constant: k_B = 1.380649 × 10⁻²³ J/K (exact since 2019 SI redefinition).
@@ -59,7 +59,7 @@ pub fn reduced_planck_constant() -> AngularMomentum {
 /// Dimension: M·L²·T⁻²·Θ⁻¹ (Energy per Temperature).
 /// Returns as `Qty` since there's no named type for this dimension.
 pub fn boltzmann_constant() -> Qty<Dim<P2, P1, N2, Z0, N1, Z0, Z0>> {
-    Qty::from_ex(crate::physical_constant("k_B", crate::rational_e(1_380_649, 29)))
+    Qty::from_ex(crate::default_context().physical_constant("k_B", { let __c = crate::default_context(); &__c.int(1_380_649) / &__c.int(10).powi(29) }))
 }
 
 /// Avogadro constant: N_A = 6.02214076 × 10²³ mol⁻¹ (exact since 2019 SI redefinition).
@@ -68,8 +68,8 @@ pub fn boltzmann_constant() -> Qty<Dim<P2, P1, N2, Z0, N1, Z0, Z0>> {
 /// Returns as `Qty` since there's no named type for this dimension.
 pub fn avogadro_constant() -> Qty<Dim<Z0, Z0, Z0, Z0, Z0, N1, Z0>> {
     // N_A = 602214076 × 10^15
-    let val = &crate::int(602_214_076) * &crate::int(10).powi(15);
-    Qty::from_ex(crate::physical_constant("N_A", val))
+    let val = &crate::default_context().int(602_214_076) * &crate::default_context().int(10).powi(15);
+    Qty::from_ex(crate::default_context().physical_constant("N_A", val))
 }
 
 /// Newtonian gravitational constant: G ≈ 6.67430 × 10⁻¹¹ m³/(kg·s²).
@@ -78,7 +78,7 @@ pub fn avogadro_constant() -> Qty<Dim<Z0, Z0, Z0, Z0, Z0, N1, Z0>> {
 /// The value 6.67430e-11 is the 2018 CODATA recommended value.
 /// Dimension: L³·M⁻¹·T⁻²
 pub fn gravitational_constant() -> Qty<Dim<P3, N1, N2, Z0, Z0, Z0, Z0>> {
-    Qty::from_ex(crate::physical_constant("G", crate::rational_e(667_430, 16)))
+    Qty::from_ex(crate::default_context().physical_constant("G", { let __c = crate::default_context(); &__c.int(667_430) / &__c.int(10).powi(16) }))
 }
 
 /// Pre-built dimension map containing all physical constants.
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn e_equals_mc_squared() {
-        symplex::vars!(m);
+        let __ctx = symplex::default_context().clone(); symplex::syms!(__ctx; m);
         let c = speed_of_light();
         let mass = Mass::symbol("m");
         // Use raw expression arithmetic to avoid missing named-mul impls
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn constant_diff_is_zero() {
         let c = speed_of_light();
-        symplex::vars!(x);
+        let __ctx = symplex::default_context().clone(); symplex::syms!(__ctx; x);
         let dc_dx = c.inner().diff(&x);
         assert!(dc_dx.is_zero().unwrap_or(false) || format!("{}", dc_dx) == "0",
             "d/dx(c) should be 0, got {dc_dx}");
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn constant_in_product_diff() {
         let c = speed_of_light();
-        symplex::vars!(x);
+        let __ctx = symplex::default_context().clone(); symplex::syms!(__ctx; x);
         let cx = c.inner() * &x;
         let d = cx.diff(&x);
         // d/dx(c*x) = c
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn constant_survives_simplify() {
         let c = speed_of_light();
-        symplex::vars!(x, y);
+        let __ctx = symplex::default_context().clone(); symplex::syms!(__ctx; x, y);
         let expr = c.inner() * &x + c.inner() * &y;
         let simplified = expr.simplify();
         let display = format!("{}", simplified);
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn physical_constants_dimmap_works() {
-        symplex::vars!(m);
+        let __ctx = symplex::default_context().clone(); symplex::syms!(__ctx; m);
         let dims = physical_constants_dimmap()
             .with("m", ConstDim::MASS);
         let c = speed_of_light();

@@ -7,12 +7,13 @@
 //! Run with: cargo run --example optimization
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Symbolic Optimization ===\n");
 
-    vars!(x, y);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x, y);
 
     // Function: f(x,y) = x² + y² - 2x - 4y + 5
     let f = expr!(x ^ 2 + y ^ 2 - 2 * x - 4 * y + 5);

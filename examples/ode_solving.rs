@@ -11,12 +11,13 @@
 //! Run with: cargo run --example ode_solving
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== ODE Solving ===\n");
 
-    vars!(x, y);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x, y);
 
     // ── 1. Simple separable: y' = x ───────────────────────────────
     //

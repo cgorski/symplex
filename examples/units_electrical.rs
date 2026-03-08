@@ -71,7 +71,8 @@ fn main() {
     println!("\n── RC Circuit Time Constant ──");
 
     // Raw variables for expr! — most ergonomic for the exponential formula
-    symplex::vars!(R, C, V0, t);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; R, C, V0, t);
 
     // Time constant τ = R·C (has dimension of Time)
     let tau = Time::from_ex(expr!(R * C));

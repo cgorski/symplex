@@ -9,7 +9,7 @@
 //! Run with: cargo run --example dynamics
 
 use symplex::dynamics::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Lagrangian Dynamics ===\n");
@@ -20,7 +20,8 @@ fn main() {
 
     println!("--- Simple Pendulum (1-DOF) ---\n");
 
-    vars!(q, qd, qdd);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; q, qd, qdd);
     let m = symplex::default_context().symbol("m");
     let l = symplex::default_context().symbol("L");
     let g = symplex::default_context().symbol("g");
@@ -75,7 +76,8 @@ fn main() {
 
     println!("\n\n--- Double Pendulum (2-DOF) ---\n");
 
-    vars!(q1, q2, qd1, qd2, qdd1, qdd2);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; q1, q2, qd1, qd2, qdd1, qdd2);
     let m1 = symplex::default_context().symbol("m1");
     let m2 = symplex::default_context().symbol("m2");
     let l1 = symplex::default_context().symbol("L1");

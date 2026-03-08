@@ -55,7 +55,8 @@ fn pattern_1_expr_and_from_ex() {
     println!("── Pattern 1: expr! + from_ex() ──");
 
     // Declare raw Ex variables for use inside expr!
-    symplex::vars!(m, v, a, t, g, k, x);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; m, v, a, t, g, k, x);
 
     // Build complex expressions ergonomically with expr!, wrap with from_ex()
     // from_ex() accepts both Ex and &Ex — no .clone() needed!
@@ -130,7 +131,8 @@ fn pattern_2_named_arithmetic() {
 fn pattern_3_typed_calculus_diff_wrt() {
     println!("── Pattern 3: Typed Calculus (DiffWrt / IntWrt) ──");
 
-    symplex::vars!(a, t);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; a, t);
 
     // Create typed variables
     let t_var = Time::symbol("t");
@@ -164,7 +166,8 @@ fn pattern_3_typed_calculus_diff_wrt() {
 fn pattern_4_kinematics_chain() {
     println!("── Pattern 4: Kinematics Chain ──");
 
-    symplex::vars!(g, t, v0, x0);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; g, t, v0, x0);
 
     // Free-fall: x(t) = x₀ + v₀t + ½gt²
     let position = Length::from_ex(expr!(x0 + v0 * t + 1/2 * g * t^2));
@@ -234,7 +237,8 @@ fn pattern_6_pendulum_lagrangian() {
     println!("── Pattern 6: Pendulum Lagrangian ──");
 
     // Raw vars for expr! — most ergonomic for complex formulas
-    symplex::vars!(m, l, g, theta, theta_dot);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; m, l, g, theta, theta_dot);
 
     // Typed variables for DiffWrt
     let theta_var = Angle::symbol("theta");
@@ -317,7 +321,8 @@ fn pattern_7_spring_mass_damper() {
 fn pattern_8_unit_conversions() {
     println!("── Pattern 8: Unit Conversions ──");
 
-    symplex::vars!(val);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; val);
 
     // Length: 5 kilometers → meters
     let five = symplex::default_context().int(5);
@@ -424,7 +429,8 @@ fn pattern_10_physical_constants() {
     println!("  E(m=1) = {:.3e} J ✓", val);
 
     // Derivative of constant is zero
-    symplex::vars!(x);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x);
     assert_eq!(format!("{}", c.diff(&x)), "0");
     println!("  d/dx(c) = 0 ✓");
 

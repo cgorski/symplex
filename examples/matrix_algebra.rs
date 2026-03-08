@@ -15,12 +15,13 @@
 
 use symplex::matrix::jacobian;
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
     println!("=== Matrix Algebra ===\n");
 
-    vars!(x, y);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x, y);
 
     // ── 1. Construction ────────────────────────────────────────────
     println!("--- Construction ---");

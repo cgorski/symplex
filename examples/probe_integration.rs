@@ -3,7 +3,7 @@
 //! Run with: cargo run --example probe_integration
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn try_integrate(label: &str, expr: &Ex, var: &Ex) -> bool {
     let result = expr.integrate(var);
@@ -15,7 +15,8 @@ fn try_integrate(label: &str, expr: &Ex, var: &Ex) -> bool {
 }
 
 fn main() {
-    vars!(x, a);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x, a);
     let mut pass = 0u32;
     let mut fail = 0u32;
 

@@ -38,7 +38,7 @@ fn solve_system_irrational_circle_diagonal() {
     let eq1 = &x.powi(2) + &y.powi(2) - 3;
     let eq2 = &x - &y;
 
-    let solutions = symplex::solve_system(&[eq1, eq2], &[x.clone(), y.clone()]);
+    let solutions = symplex::polysys::solve_system_ex(&[eq1, eq2], &[x.clone(), y.clone()]);
 
     match solutions {
         Ok(sols) => {
@@ -95,7 +95,7 @@ fn solve_system_rational_two_conics() {
     let eq1 = &x.powi(2) + &y.powi(2) - 5;
     let eq2 = &x * &y - 2;
 
-    let solutions = symplex::solve_system(&[eq1, eq2], &[x.clone(), y.clone()]);
+    let solutions = symplex::polysys::solve_system_ex(&[eq1, eq2], &[x.clone(), y.clone()]);
 
     match solutions {
         Ok(sols) => {
@@ -141,7 +141,7 @@ fn solve_system_univariate_irrational() {
 
     let eq = &x.powi(2) - 2;
 
-    let solutions = symplex::solve_system(&[eq], std::slice::from_ref(&x));
+    let solutions = symplex::polysys::solve_system_ex(&[eq], std::slice::from_ref(&x));
 
     match solutions {
         Ok(sols) => {
@@ -263,7 +263,7 @@ fn solve_system_ex_irrational_symmetric() {
     let eq1 = &x.powi(2) + &y.powi(2) - 2;
     let eq2 = &x - &y;
 
-    let solutions = symplex::solve_system(&[eq1, eq2], &[x.clone(), y.clone()]);
+    let solutions = symplex::polysys::solve_system_ex(&[eq1, eq2], &[x.clone(), y.clone()]);
 
     match solutions {
         Ok(sols) => {
@@ -301,7 +301,7 @@ fn solve_system_no_real_solutions() {
     let x = symplex::default_context().symbol("x");
     let eq = &x.powi(2) + 1;
 
-    let solutions = symplex::solve_system(&[eq], std::slice::from_ref(&x));
+    let solutions = symplex::polysys::solve_system_ex(&[eq], std::slice::from_ref(&x));
 
     match solutions {
         Ok(sols) => {
@@ -341,7 +341,7 @@ fn solve_system_linear_no_regression() {
     let eq1 = &x + &y - 1;
     let eq2 = &x - &y;
 
-    let solutions = symplex::solve_system(&[eq1, eq2], &[x.clone(), y.clone()]).unwrap();
+    let solutions = symplex::polysys::solve_system_ex(&[eq1, eq2], &[x.clone(), y.clone()]).unwrap();
 
     assert_eq!(solutions.len(), 1, "linear system should have 1 solution");
 

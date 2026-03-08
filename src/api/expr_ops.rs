@@ -286,7 +286,7 @@ macro_rules! impl_from_integer {
         $(
             impl From<$t> for Ex {
                 fn from(n: $t) -> Self {
-                    crate::int(n as i64)
+                    crate::default_context().int(n as i64)
                 }
             }
         )+
@@ -298,7 +298,7 @@ impl_from_integer!(i8, i16, i32, i64, u8, u16, u32, isize);
 impl From<u64> for Ex {
     fn from(n: u64) -> Self {
         if n <= i64::MAX as u64 {
-            crate::int(n as i64)
+            crate::default_context().int(n as i64)
         } else {
             let ctx = crate::default_context();
             let id = {
@@ -313,7 +313,7 @@ impl From<u64> for Ex {
 impl From<usize> for Ex {
     fn from(n: usize) -> Self {
         if n <= i64::MAX as usize {
-            crate::int(n as i64)
+            crate::default_context().int(n as i64)
         } else {
             let ctx = crate::default_context();
             let id = {

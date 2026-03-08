@@ -38,13 +38,13 @@ use crate::prelude::*;
 /// use symplex::prelude::*;
 /// use symplex::dynamics::total_time_derivative;
 ///
-/// let q = symplex::var("q");
-/// let qd = symplex::var("qd");
-/// let qdd = symplex::var("qdd");
+/// let q = symplex::default_context().symbol("q");
+/// let qd = symplex::default_context().symbol("qd");
+/// let qdd = symplex::default_context().symbol("qdd");
 ///
 /// // d/dt(q) = qd
 /// let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]);
-/// let val = result.subs(&qd, &symplex::int(7)).eval().eval_f64().unwrap();
+/// let val = result.subs(&qd, &symplex::default_context().int(7)).eval().eval_f64().unwrap();
 /// assert!((val - 7.0).abs() < 1e-12);
 /// ```
 pub fn total_time_derivative(
@@ -103,15 +103,15 @@ pub fn total_time_derivative(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::euler_lagrange;
 ///
-/// let m = symplex::var("m");
-/// let q = symplex::var("q");
-/// let qd = symplex::var("qd");
-/// let qdd = symplex::var("qdd");
+/// let m = symplex::default_context().symbol("m");
+/// let q = symplex::default_context().symbol("q");
+/// let qd = symplex::default_context().symbol("qd");
+/// let qdd = symplex::default_context().symbol("qdd");
 ///
 /// // Free particle: T = ½m·q̇², V = 0
-/// let half = symplex::rational(1, 2);
+/// let half = symplex::default_context().rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
-/// let pe = symplex::int(0);
+/// let pe = symplex::default_context().int(0);
 /// let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]);
 /// // Should give m·q̈
 /// assert_eq!(eqs.len(), 1);
@@ -169,11 +169,11 @@ pub fn euler_lagrange(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::mass_matrix;
 ///
-/// let m = symplex::var("m");
-/// let qd = symplex::var("qd");
+/// let m = symplex::default_context().symbol("m");
+/// let qd = symplex::default_context().symbol("qd");
 ///
 /// // T = ½m·q̇²  →  M = [[m]]
-/// let half = symplex::rational(1, 2);
+/// let half = symplex::default_context().rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
 /// let mm = mass_matrix(&ke, &[&qd]);
 /// assert_eq!(mm.shape(), (1, 1));
@@ -218,11 +218,11 @@ pub fn mass_matrix(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::{mass_matrix, christoffel_symbols};
 ///
-/// let m = symplex::var("m");
-/// let qd = symplex::var("qd");
-/// let q = symplex::var("q");
+/// let m = symplex::default_context().symbol("m");
+/// let qd = symplex::default_context().symbol("qd");
+/// let q = symplex::default_context().symbol("q");
 ///
-/// let half = symplex::rational(1, 2);
+/// let half = symplex::default_context().rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
 /// let mm = mass_matrix(&ke, &[&qd]);
 /// let cs = christoffel_symbols(&mm, &[&q]);
@@ -290,11 +290,11 @@ pub fn christoffel_symbols(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::{mass_matrix, coriolis_matrix};
 ///
-/// let m = symplex::var("m");
-/// let q = symplex::var("q");
-/// let qd = symplex::var("qd");
+/// let m = symplex::default_context().symbol("m");
+/// let q = symplex::default_context().symbol("q");
+/// let qd = symplex::default_context().symbol("qd");
 ///
-/// let half = symplex::rational(1, 2);
+/// let half = symplex::default_context().rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
 /// let mm = mass_matrix(&ke, &[&qd]);
 /// let c = coriolis_matrix(&mm, &[&q], &[&qd]);
@@ -346,10 +346,10 @@ pub fn coriolis_matrix(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::gravity_vector;
 ///
-/// let m = symplex::var("m");
-/// let g = symplex::var("g");
-/// let l = symplex::var("L");
-/// let q = symplex::var("q");
+/// let m = symplex::default_context().symbol("m");
+/// let g = symplex::default_context().symbol("g");
+/// let l = symplex::default_context().symbol("L");
+/// let q = symplex::default_context().symbol("q");
 ///
 /// // V = m·g·L·cos(q)  →  g(q) = ∂V/∂q = -m·g·L·sin(q)
 /// let pe = &m * &g * &l * &q.cos();
@@ -392,13 +392,13 @@ pub fn gravity_vector(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::manipulator_equation;
 ///
-/// let m_val = symplex::var("m");
-/// let q = symplex::var("q");
-/// let qd = symplex::var("qd");
+/// let m_val = symplex::default_context().symbol("m");
+/// let q = symplex::default_context().symbol("q");
+/// let qd = symplex::default_context().symbol("qd");
 ///
-/// let half = symplex::rational(1, 2);
+/// let half = symplex::default_context().rational(1, 2);
 /// let ke = &half * &m_val * &qd.powi(2);
-/// let pe = symplex::int(0);
+/// let pe = symplex::default_context().int(0);
 /// let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]);
 /// assert_eq!(mass.shape(), (1, 1));
 /// assert_eq!(coriolis.shape(), (1, 1));

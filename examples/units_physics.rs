@@ -254,7 +254,8 @@ fn main() {
     // DiffWrt and IntWrt traits let you differentiate and integrate
     // named types directly — the compiler verifies the physical law.
 
-    symplex::vars!(a, t);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; a, t);
 
     let t_var = Time::symbol("t");
 
@@ -301,14 +302,16 @@ fn main() {
     println!("  dΦ/dt = {} (Voltage — Faraday's law)", emf);
 
     // Energy / Length → Force (F = -dU/dx)
-    symplex::vars!(k, x);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; k, x);
     let x_var = Length::symbol("x");
     let spring_pe = Energy::from_ex(expr!(1/2 * k * x^2));
     let spring_force: Force = spring_pe.diff_wrt(&x_var);
     println!("  dU/dx = {} (Force from spring PE)", spring_force);
 
     // Power / Current → Voltage (dP/dI)
-    symplex::vars!(i_p, r_p);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; i_p, r_p);
     let i_var = Current::symbol("i_p");
     let power_expr = Power::from_ex(expr!(i_p^2 * r_p));
     let dp_di: Voltage = power_expr.diff_wrt(&i_var);

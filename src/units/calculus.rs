@@ -39,8 +39,8 @@ use super::qty::Qty;
 /// ```ignore
 /// use symplex::units::*;
 ///
-/// let x: Qty<LengthDim> = Qty::from_ex(symplex::var("x"));
-/// let t: Qty<TimeDim>   = Qty::from_ex(symplex::var("t"));
+/// let x: Qty<LengthDim> = Qty::from_ex(symplex::default_context().symbol("x"));
+/// let t: Qty<TimeDim>   = Qty::from_ex(symplex::default_context().symbol("t"));
 /// let v: Qty<VelocityDim> = diff_qty(&x, &t);   // Length / Time = Velocity
 /// ```
 pub fn diff_qty<L1, M1, T1, I1, Th1, N1x, J1,
@@ -80,8 +80,8 @@ where
 /// ```ignore
 /// use symplex::units::*;
 ///
-/// let f: Qty<ForceDim>  = Qty::from_ex(symplex::var("F"));
-/// let x: Qty<LengthDim> = Qty::from_ex(symplex::var("x"));
+/// let f: Qty<ForceDim>  = Qty::from_ex(symplex::default_context().symbol("F"));
+/// let x: Qty<LengthDim> = Qty::from_ex(symplex::default_context().symbol("x"));
 /// let w: Qty<EnergyDim> = integrate_qty(&f, &x);  // Force × Length = Energy
 /// ```
 pub fn integrate_qty<L1, M1, T1, I1, Th1, N1x, J1,
@@ -117,8 +117,8 @@ mod tests {
     /// d(Length)/d(Time) = Velocity
     #[test]
     fn diff_length_by_time_is_velocity() {
-        let x: Qty<LengthDim> = Qty::from_ex(crate::var("x"));
-        let t: Qty<TimeDim>   = Qty::from_ex(crate::var("t"));
+        let x: Qty<LengthDim> = Qty::from_ex(crate::default_context().symbol("x"));
+        let t: Qty<TimeDim>   = Qty::from_ex(crate::default_context().symbol("t"));
 
         let result = diff_qty(&x, &t);
 
@@ -129,8 +129,8 @@ mod tests {
     /// d(Velocity)/d(Time) = Acceleration
     #[test]
     fn diff_velocity_by_time_is_acceleration() {
-        let v: Qty<VelocityDim> = Qty::from_ex(crate::var("v"));
-        let t: Qty<TimeDim>     = Qty::from_ex(crate::var("t"));
+        let v: Qty<VelocityDim> = Qty::from_ex(crate::default_context().symbol("v"));
+        let t: Qty<TimeDim>     = Qty::from_ex(crate::default_context().symbol("t"));
 
         let result = diff_qty(&v, &t);
 
@@ -140,8 +140,8 @@ mod tests {
     /// d(Energy)/d(Length) = Force
     #[test]
     fn diff_energy_by_length_is_force() {
-        let e: Qty<EnergyDim>  = Qty::from_ex(crate::var("E"));
-        let x: Qty<LengthDim>  = Qty::from_ex(crate::var("x"));
+        let e: Qty<EnergyDim>  = Qty::from_ex(crate::default_context().symbol("E"));
+        let x: Qty<LengthDim>  = Qty::from_ex(crate::default_context().symbol("x"));
 
         let result = diff_qty(&e, &x);
 
@@ -153,8 +153,8 @@ mod tests {
     /// ∫ Force d(Length) = Energy
     #[test]
     fn integrate_force_over_length_is_energy() {
-        let f: Qty<ForceDim>   = Qty::from_ex(crate::var("F"));
-        let x: Qty<LengthDim>  = Qty::from_ex(crate::var("x"));
+        let f: Qty<ForceDim>   = Qty::from_ex(crate::default_context().symbol("F"));
+        let x: Qty<LengthDim>  = Qty::from_ex(crate::default_context().symbol("x"));
 
         let result = integrate_qty(&f, &x);
 
@@ -164,8 +164,8 @@ mod tests {
     /// ∫ Velocity d(Time) = Length
     #[test]
     fn integrate_velocity_over_time_is_length() {
-        let v: Qty<VelocityDim> = Qty::from_ex(crate::var("v"));
-        let t: Qty<TimeDim>     = Qty::from_ex(crate::var("t"));
+        let v: Qty<VelocityDim> = Qty::from_ex(crate::default_context().symbol("v"));
+        let t: Qty<TimeDim>     = Qty::from_ex(crate::default_context().symbol("t"));
 
         let result = integrate_qty(&v, &t);
 
@@ -180,14 +180,14 @@ mod tests {
     /// Velocity×Time = Length, then Length/Time = Velocity.
     #[test]
     fn ftc_roundtrip_velocity() {
-        let v: Qty<VelocityDim> = Qty::from_ex(crate::var("v"));
-        let t: Qty<TimeDim>     = Qty::from_ex(crate::var("t"));
+        let v: Qty<VelocityDim> = Qty::from_ex(crate::default_context().symbol("v"));
+        let t: Qty<TimeDim>     = Qty::from_ex(crate::default_context().symbol("t"));
 
         // integrate: Velocity × Time = Length
         let integrated = integrate_qty(&v, &t);
 
         // differentiate: Length / Time = Velocity
-        let t2: Qty<TimeDim> = Qty::from_ex(crate::var("t"));
+        let t2: Qty<TimeDim> = Qty::from_ex(crate::default_context().symbol("t"));
         let roundtrip = diff_qty(&integrated, &t2);
 
         // Must compile as Velocity — proves FTC dimensional consistency.

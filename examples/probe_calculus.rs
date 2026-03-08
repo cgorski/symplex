@@ -5,10 +5,11 @@
 //! It tests feature coverage and finds regressions in calculus operations.
 
 use symplex::prelude::*;
-use symplex::vars;
+
 
 fn main() {
-    vars!(x, y);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; x, y);
     let dy = y.formal_diff(&x);
     let ddy = dy.formal_diff(&x);
     let zero = symplex::default_context().int(0);

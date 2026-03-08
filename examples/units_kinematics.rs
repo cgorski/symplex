@@ -22,7 +22,8 @@ fn main() {
     println!("── Free Fall ──");
 
     // Declare raw Ex variables for use inside expr!
-    symplex::vars!(g, t);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; g, t);
 
     // Typed variables for DiffWrt — the compiler tracks dimensions
     let t_var = Time::symbol("t");
@@ -70,7 +71,8 @@ fn main() {
     println!("\n── Projectile Motion ──");
 
     // Raw variables for expr!
-    symplex::vars!(v0, theta);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; v0, theta);
     // (g and t already declared above)
 
     // Horizontal position: x(t) = v₀·cos(θ)·t
@@ -150,7 +152,8 @@ fn main() {
     println!("  W = ∫F dx = {}", work);
 
     // Kinetic energy: KE = ½mv² using expr!
-    symplex::vars!(m, v);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; m, v);
     let ke = Energy::from_ex(expr!(1/2 * m * v^2));
     println!("  KE = ½mv² = {}", ke);
 

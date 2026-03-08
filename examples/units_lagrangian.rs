@@ -26,7 +26,8 @@ fn main() {
 
     // Raw Ex variables for use inside expr! — the most ergonomic way
     // to build complex symbolic formulas.
-    symplex::vars!(m, l, g, theta, theta_dot);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; m, l, g, theta, theta_dot);
 
     // Typed variables for DiffWrt — the compiler tracks dimensions
     // and verifies that differentiation produces the correct output type.
@@ -105,7 +106,8 @@ fn main() {
 
     // ── Potential energy approach: PE = ½kx² ──
     // Use expr! for the formula, then derive force via differentiation
-    symplex::vars!(k_var, x_var);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; k_var, x_var);
     let spring_pe = Energy::from_ex(expr!(1/2 * k_var * x_var^2));
     println!("\n  PE = ½kx² = {}", spring_pe);
 
@@ -119,7 +121,8 @@ fn main() {
 
     // ── Energy conservation check ──
     // KE = ½mv² using expr!
-    symplex::vars!(m_raw, v_raw);
+    let __ctx = symplex::default_context();
+    symplex::syms!(__ctx; m_raw, v_raw);
     let spring_ke = Energy::from_ex(expr!(1/2 * m_raw * v_raw^2));
     println!("\n  KE = ½mv² = {}", spring_ke);
 
