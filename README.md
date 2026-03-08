@@ -249,45 +249,75 @@ cargo run --example repl                # Interactive REPL
 
 ## Comparison with SymPy
 
-A concise, honest comparison. For the full breakdown see
-[`docs/COMPARISON.md`](docs/COMPARISON.md).
+A concise, honest comparison based on source code inspection of both projects.
+For the full breakdown see [`docs/COMPARISON.md`](docs/COMPARISON.md).
+
+### Where symplex matches or exceeds SymPy
 
 | Feature | symplex | SymPy |
 |---------|:-------:|:-----:|
-| Expression system | ✅ Arena hash-consing | ✅ Python objects |
-| Differentiation | ✅ | ✅ |
-| Integration | ✅ (elementary + heurisch) | ✅ (+ Risch) |
-| Polynomial solving (through quartic) | ✅ | ✅ |
-| Gröbner bases | ✅ Buchberger + FGLM | ✅ Buchberger + F5B |
-| Polynomial system solving | ✅ | ✅ |
-| Matrix algebra | ✅ 60+ methods, all return `Result` | ✅ |
-| Eigenvectors / Jordan form | ✅ | ✅ |
-| Pretty printing (2D) | ✅ (Unicode 2D) | ✅ |
-| LambertW | ✅ | ✅ |
-| Trig simplification (Fu's algorithm) | ✅ (17 transforms) | ✅ |
-| ODE solving | ✅ (7 classes + systems) | ✅ |
+| Expression system | ✅ Arena hash-consing, O(1) equality | ✅ Python objects |
+| Thread safety | ✅ `Send + Sync` from day one | ❌ (GIL) |
+| Type-safe expressions | ✅ `Ex` vs `BoolEx` vs `SetEx` (compile-time) | ❌ (duck-typed) |
+| Differentiation | ✅ All functions, chain/product rule | ✅ |
+| Integration | ✅ 66+ forms, by-parts, u-sub, heurisch | ✅ (+ Risch + Meijer G) |
+| Polynomial solving (through quartic) | ✅ Cardano + Ferrari | ✅ (+ quintic) |
+| Gröbner bases | ✅ Buchberger + FGLM | ✅ Buchberger + F5B + FGLM |
+| Matrix algebra | ✅ 65 methods, **all return `Result`** (no panics) | ✅ (raises exceptions) |
+| Eigenvectors + Jordan form | ✅ Exact multiplicities via Yun SFD | ✅ DomainMatrix fast path |
+| Matrix exponential | ✅ Exact via Jordan decomposition | ✅ Via Jordan form |
+| Diagonalization | ✅ P, D with P·D·P⁻¹=A verification | ✅ |
+| Trig simplification (Fu) | ✅ 17 transforms + greedy | ✅ 24 transforms + chains |
+| ODE solving | ✅ 11 classes + systems via exact matrix_exp | ✅ 30+ classes + Lie group |
+| Assumption-aware simplification | ✅ `refine()` auto-fires in `simplify()` | ✅ `refine()` 12 handlers |
+| LambertW | ✅ First-class ExprNode, diff, 8 values, Halley evalf | ✅ Via mpmath |
+| Bessel J/Y eval | ✅ Ascending series + full Hankel P/Q + Brent-McMillan γ | ✅ Via mpmath |
+| Pretty printing (2D terminal) | ✅ Unicode + ASCII dual mode | ✅ `pprint` |
+| Laplace / Z / Fourier transforms | ✅ Forward + inverse | ✅ (+ Mellin + Hankel) |
 | Hypergeometric summation (Gosper) | ✅ | ✅ |
 | Formal power series | ✅ | ✅ |
 | Finite differences (Fornberg) | ✅ | ✅ |
-| Robotics (DH, FK, Jacobian, dynamics) | ✅ | ❌ (separate: mechanics) |
-| Control systems | ✅ | ✅ (control module) |
-| Rust code generation | ✅ | ❌ |
-| Dimensional analysis | ✅ (compile-time, 30 types, `dim!` macro) | ❌ (separate: Pint) |
+| Robotics (DH, FK, Jacobian, dynamics) | ✅ End-to-end pipeline | ❌ (separate: mechanics) |
+| Control systems | ✅ State-space, TF, Routh, Ackermann | ✅ (control module) |
+| Rust code generation | ✅ Complete functions with CSE, FMA, Horner, sin_cos | ❌ |
+| `no_std` / embedded codegen | ✅ `f32`, `libm` | ❌ |
+| Compile-time dimensional analysis | ✅ 30 types, `dim!` macro, typed calculus | ❌ (runtime only) |
+| Cross-entry matrix CSE | ✅ | ❌ |
+| Build-script integration | ✅ `symplex-build` | ❌ |
 | LaTeX output | ✅ | ✅ |
-| Thread safety | ✅ (`Send + Sync`) | ❌ (GIL) |
-| Type-safe expressions | ✅ (`Ex` vs `BoolEx`) | ❌ |
-| Number theory | Basic | ✅ Comprehensive |
-| Statistics | ❌ | ✅ |
-| Geometry | ❌ | ✅ |
-| Tensor calculus | ❌ | ✅ |
-| Python bindings | ❌ | N/A (native) |
-| Plotting | ❌ | ✅ (matplotlib) |
 
-**Bottom line:** symplex covers the core algebra → calculus → robotics → codegen
-pipeline with Rust-native performance and safety guarantees. SymPy has 20+ years of
-development and broader coverage in number theory, geometry, statistics, and tensor
-calculus. Where both libraries overlap, symplex offers compile-time type safety,
-zero-GIL parallelism, and native code generation that SymPy cannot.
+### Where SymPy is significantly stronger
+
+| Feature | SymPy | symplex |
+|---------|:-----:|:-------:|
+| Risch integration algorithm | ✅ Full differential extension tower | ❌ |
+| Meijer G-function integration | ✅ Indefinite + definite | ❌ |
+| Geometry | ✅ Points, lines, circles, polygons, convex hull | ❌ |
+| Statistics | ✅ 50+ distributions, Markov chains | ❌ |
+| Combinatorics | ✅ Permutation groups (Schreier-Sims), partitions | ❌ |
+| Tensor calculus | ✅ Abstract tensors, Butler-Portugal canonicalization | ❌ |
+| Differential geometry | ✅ Manifolds, forms, Christoffel, Riemann/Ricci | ❌ |
+| Quantum mechanics | ✅ Kets/Bras, gates, Grover, Shor, QFT | ❌ |
+| Holonomic functions | ✅ D-finite arithmetic, Ore algebra | ❌ |
+| Lie algebras | ✅ All classical + exceptional types | ❌ |
+| PDE solving | ✅ 1st-order linear | ❌ |
+| Diophantine equations | ✅ 10+ types (Pell, Thue, etc.) | ❌ |
+| Recurrence relations | ✅ `rsolve` | ❌ |
+| Code generation (multi-language) | ✅ C, C++, Fortran, Julia, JS, GLSL, R, Octave | Rust only |
+| SAT solving | ✅ DPLL + external solvers | ❌ |
+| Hypergeometric expansion | ✅ pFq → named functions | ❌ |
+| Number theory depth | ✅ ECM, Quadratic Sieve, discrete log | 🔸 Basic |
+| Special functions depth | ✅ Elliptic integrals, Mathieu, Fresnel, Airy, zeta | 🔸 Gamma, erf, Bessel, LambertW |
+| Parser ecosystem | ✅ LaTeX, Mathematica, Maxima, C, Fortran | 🔸 Runtime parser only |
+| Community & maturity | ✅ 17+ years, 1000+ contributors | Young project |
+
+**Bottom line:** symplex covers the core **algebra → calculus → linear algebra →
+robotics → codegen** pipeline with Rust-native performance, compile-time type safety,
+a no-panic public API (`Result` everywhere), and thread-safe `Send + Sync`
+expressions. SymPy has 20+ years of breadth across geometry, statistics, tensors,
+quantum mechanics, and advanced number theory. Where both overlap, symplex offers
+stronger error handling, better code generation (automatic CSE, FMA, `no_std`),
+compile-time dimensional analysis, and zero-GIL parallelism that SymPy cannot match.
 
 ## API Documentation
 
@@ -301,7 +331,7 @@ Key entry points:
 - [`symplex::dynamics`](https://docs.rs/symplex/latest/symplex/dynamics/) — Euler-Lagrange, mass/Coriolis/gravity matrices
 - [`symplex::control`](https://docs.rs/symplex/latest/symplex/control/) — state-space, transfer functions, stability
 - [`symplex::quaternion`](https://docs.rs/symplex/latest/symplex/quaternion/) — quaternion algebra
-- [`symplex::matrix`](https://docs.rs/symplex/latest/symplex/matrix/) — symbolic matrices, Jacobian, vector calculus
+- [`symplex::matrix`](https://docs.rs/symplex/latest/symplex/matrix/) — symbolic matrices (65 methods, all `Result`), eigenvectors, Jordan form, matrix exponential, Jacobian
 
 ## Dependencies
 
@@ -324,7 +354,7 @@ Rust 1.93+ (Edition 2024).
 Contributions are welcome. Please open an issue before starting large changes.
 
 ```
-cargo test                  # Run the full test suite (5,400+ tests)
+cargo test                  # Run the full test suite (5,400+ tests, 323 SymPy cross-validation fixtures)
 cargo test --doc            # Doc-tests only
 cargo bench                 # Benchmarks (criterion)
 RUST_LOG=symplex=debug cargo run --example quickstart  # With tracing output

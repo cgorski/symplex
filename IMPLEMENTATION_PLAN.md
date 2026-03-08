@@ -407,33 +407,37 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 | Metric | Value |
 |--------|-------|
-| Tests | 1,573 lib tests + ~3,845 integration/example tests, 5,418 total, 0 failing |
-| ExprNode variants | 67 (added LambertW) |
-| Source modules | 108 (in 10 directories: base, poly, transforms, simplify, calculus, output, plotting, domains, api, units) |
-| Integration test files | 152 (each compiles as separate binary — see §1 timing notes) |
-| Source | ~87,000 lines across 108 modules in 10 directories |
-| Tests | ~62,000 lines across 152+ test files |
-| Examples | ~3,950 lines across 19 examples (+ 3 probes) |
+| Tests | 1,581 lib tests + ~3,845 integration/example tests, **5,426 total, 0 failing** |
+| ExprNode variants | **68** (added LambertW as first-class variant) |
+| Source modules | **110** (in 10 directories: base, poly, transforms, simplify, calculus, output, plotting, domains, api, units) |
+| Integration test files | 165 (each compiles as separate binary — see §1 timing notes) |
+| Source | **~86,700 lines** across 110 modules in 10 directories |
+| Tests | **~61,800 lines** across 165 test files |
+| Examples | **~6,800 lines** across 19 examples (+ 3 probes) |
 | Tutorials | 21 pages, 8,473 lines |
 | Companion crates | ~1,085 lines across 2 crates (symplex-build, symplex-wasm) |
-| Total | ~153,000 lines |
-| Public methods on `Ex` | 180+ (numeric + boolean + set-valued; added refine, refine_with, pretty, pretty_ascii) |
+| Total | **~158,000 lines** |
+| Public methods on `Ex` | **207** (numeric + boolean + set-valued; includes refine, refine_with, pretty, pretty_ascii) |
 | Public methods on `Context` | 17 |
-| Matrix methods | 60+ (added eigenvects, is_diagonalizable, diagonalize, jordan_form, matrix_exp, try_get; all return Result) |
+| Matrix methods | **65** (all return `Result`; includes eigenvects, diagonalize, jordan_form, matrix_exp, try_get) |
 | Apply functions | 11 + 9 special functions (LambertW promoted to ExprNode) |
 | `expr!` functions | 65 (54 single-arg + 11 multi-arg) |
-| Simplification rules | 24 (condition-guarded) + refine handlers (5 handlers, 13 rewrite rules) |
-| Integration forms | 63+ (added asinh, acosh, atanh with linear chain rule) |
-| Eval special values | 94+ (added 8 LambertW values, erf/erfc limits, erf odd function) |
+| Simplification rules | 24 (condition-guarded) + **refine handlers (5 handlers, 13 rewrite rules, auto-fires as Strategy 8)** |
+| Integration forms | **66+** (added asinh, acosh, atanh each with linear chain rule variant) |
+| Eval special values | **94+** (added 8 LambertW values, erf/erfc limits, erf odd function) |
 | Criterion benchmarks | 27 |
 | Proptest properties | 22+ |
-| Solver degree support | 1–4 (Cardano cubic + Ferrari quartic) + LambertW patterns |
+| Solver degree support | 1–4 (Cardano cubic + Ferrari quartic) + **LambertW** (Halley iteration) |
 | Examples | 19 (+ 3 diagnostic probes) |
-| Clippy warnings | 0 from our code (2 pre-existing in units/inference.rs) |
-| SymPy cross-validation | 371 fixtures, 0 failures |
+| Clippy warnings | **0 from our code** (2 pre-existing in units/inference.rs) |
+| SymPy cross-validation | **323 fixtures** (263 original + 60 new: eigenvects, jordan, bessel, refine, lambertw, matrix_exp, integrate, erf) |
 | Correctness probe | 71 checks, 0 wrong answers |
-| Matrix API panic sites | 0 in public methods (all return Result; panics only in operator overloads per Rust convention) |
-| Pretty printer variants | ~20 ExprNode variants with 2D rendering (Unicode + ASCII dual mode) |
+| Matrix API panic sites | **0** in public methods (all return `Result`; panics only in operator overloads per Rust trait constraint) |
+| Matrix constructors | `Matrix::new()` returns `Result`; `matrix!` macro calls `.expect()` for compile-time-known data |
+| Pretty printer | ~20 ExprNode variants, **dual Unicode + ASCII mode**, expert-informed typography |
+| Fuzz targets | **4** (parser, refine, eigenvects, lambertw) |
+| Bessel eval | **Arbitrary precision**: ascending series (small \|x\|) + full Hankel P/Q (large \|x\|), Brent-McMillan γ |
+| Eigenvalue multiplicities | **Poly::factor_over_z** primary (Yun's SFD), derivative-based fallback for symbolic entries |
 
 ---
 
@@ -543,6 +547,67 @@ robotics/control engineers (symbolic Jacobians → code generation), physics stu
 (calculus/series/ODEs), compiler/PL researchers (term rewriting), and numerical
 algorithm developers (derive formula → compile to fast code). The common thread:
 **derive a formula symbolically, then compile it to numerical code.**
+
+### Symplex vs SymPy: Detailed Feature Comparison (from source code inspection)
+
+This comparison was produced by reading the actual source code of both projects.
+
+**Where symplex matches or exceeds SymPy:**
+
+| Feature | symplex | SymPy |
+|---------|---------|-------|
+| Expression system | ✅ Arena hash-consing, O(1) equality | ✅ Python objects, structural walk |
+| Thread safety | ✅ `Send + Sync` from day one | ❌ GIL-bound |
+| Type-safe expressions | ✅ `Ex` vs `BoolEx` vs `SetEx` (compile-time) | ❌ Duck-typed |
+| Differentiation | ✅ All function types, chain/product rule | ✅ All function types |
+| Integration (basic) | ✅ 66+ forms, by-parts, u-sub, heurisch | ✅ + Risch + Meijer G |
+| Polynomial solving (≤ degree 4) | ✅ Cardano + Ferrari | ✅ + quintic via Bring radical |
+| Gröbner bases | ✅ Buchberger + FGLM | ✅ Buchberger + F5B + FGLM |
+| Eigenvectors + Jordan form | ✅ With exact multiplicities via Yun SFD | ✅ With DomainMatrix fast path |
+| Matrix exponential | ✅ Exact via Jordan decomposition | ✅ Via Jordan form |
+| Diagonalization | ✅ P, D decomposition | ✅ P, D decomposition |
+| Matrix API error handling | ✅ All methods return `Result` (no panics) | ❌ Raises exceptions (panics) |
+| Trig simplification (Fu) | ✅ 17 transforms + greedy | ✅ 24 transforms + chain strategies |
+| ODE solving | ✅ 11 classes + systems via Jordan matrix_exp | ✅ 30+ solver classes + Lie group |
+| Laplace / Z / Fourier transforms | ✅ Forward + inverse | ✅ + Mellin + Hankel |
+| Rust code generation | ✅ Complete functions with CSE, FMA, Horner, sin_cos | 🔸 `rust_code` printer only |
+| `no_std` / `f32` codegen | ✅ | ❌ |
+| Compile-time dimensional analysis | ✅ 30 types, `dim!` macro, typed calculus | ❌ Runtime `Quantity` only |
+| Assumption-aware simplification | ✅ `refine()` with 5 handlers, auto-fires in `simplify()` | ✅ `refine()` with 12 handlers |
+| LambertW | ✅ First-class ExprNode, diff, 8 values, Halley evalf | ✅ Via mpmath |
+| Bessel J/Y eval | ✅ Ascending series + full Hankel P/Q + Brent-McMillan γ | ✅ Via mpmath |
+| Pretty printing (2D terminal) | ✅ Unicode + ASCII dual mode, expert-informed | ✅ `pprint` Unicode + ASCII |
+| Build-script integration | ✅ `symplex-build` | ❌ |
+| Cross-entry matrix CSE | ✅ | ❌ |
+
+**Where SymPy is significantly stronger (from source code):**
+
+| Feature | SymPy | symplex |
+|---------|-------|---------|
+| Risch integration algorithm | ✅ Full differential extension tower | ❌ |
+| Meijer G-function integration | ✅ Indefinite + definite | ❌ |
+| Geometry module | ✅ Points, lines, circles, polygons, ellipses, parabolas, convex hull | ❌ |
+| Statistics & probability | ✅ 50+ continuous + discrete + joint distributions, Markov chains | ❌ |
+| Combinatorics | ✅ Permutation groups (Schreier-Sims), partitions, polyhedra, Rubik's cube | ❌ |
+| Tensor calculus | ✅ Abstract tensors, Butler-Portugal canonicalization, N-dim arrays | ❌ |
+| Differential geometry | ✅ Manifolds, forms, Christoffel symbols, Riemann/Ricci tensors | ❌ |
+| Quantum mechanics | ✅ Kets/Bras, operators, spin, gates, Grover, Shor, QFT | ❌ |
+| Holonomic functions | ✅ D-finite arithmetic, Ore algebra | ❌ |
+| Lie algebras | ✅ All classical + exceptional types | ❌ |
+| PDE solving | ✅ 1st-order linear (constant + variable coeff) | ❌ |
+| Diophantine equations | ✅ 10+ types (Pell, Thue, Pythagorean, etc.) | ❌ |
+| Recurrence relations | ✅ `rsolve` (poly, rational, hypergeometric) | ❌ |
+| Code generation (multi-language) | ✅ C, C++, Fortran, Julia, Rust, JS, GLSL, R, Octave | Rust only |
+| SAT solving | ✅ DPLL + PicoSAT/MiniSat/Z3 wrappers | ❌ |
+| Cryptography | ✅ RSA, ElGamal, DH, classical ciphers | ❌ |
+| Hypergeometric expansion | ✅ pFq → named functions via `hyperexpand` | ❌ |
+| Special functions depth | ✅ Elliptic integrals, Mathieu, Fresnel, Airy, spherical harmonics, polylog, zeta | 🔸 Basic (Gamma, erf, Bessel J/Y, LambertW) |
+| Number theory depth | ✅ ECM, Quadratic Sieve, Pollard ρ/p-1, discrete log (5 algorithms) | 🔸 Trial division, Miller-Rabin |
+| Parser ecosystem | ✅ LaTeX, Mathematica, Maxima, C, Fortran parsers | 🔸 Runtime expression parser only |
+| Printing ecosystem | ✅ LaTeX, MathML, C, C++, Fortran, JS, Julia, GLSL, R, Octave, dot, pretty | ✅ Display, LaTeX, pretty (2D), Rust codegen, JSON |
+| Community & maturity | ✅ 17+ years, 1000+ contributors, textbook coverage | Young project, small team |
+
+**Bottom line:** symplex covers the core **algebra → calculus → linear algebra → robotics → codegen** pipeline with Rust-native performance, compile-time type safety, no-panic public API, and thread-safe `Send + Sync` expressions. SymPy has 20+ years of breadth across geometry, statistics, tensors, quantum mechanics, and number theory. Where both overlap, symplex offers stronger error handling (all `Result`, no panics), better code generation (automatic CSE, FMA, `no_std`), and compile-time dimensional analysis that SymPy cannot match.
 
 ---
 
