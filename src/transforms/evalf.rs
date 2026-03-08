@@ -1278,11 +1278,7 @@ fn bigfloat_to_f64(bf: &BigFloat, rm: RoundingMode, cc: &mut Consts) -> Result<f
     })
 }
 
-/// Convert an `f64` to a `BigFloat` with the given precision.
-#[allow(dead_code)] // kept as f64 fast-path reference
-fn f64_to_bigfloat(f: f64, prec: usize) -> BigFloat {
-    BigFloat::from_f64(f, prec)
-}
+
 
 /// Lanczos approximation for the Gamma function (g=7, 9 coefficients).
 #[allow(dead_code)]
@@ -1369,65 +1365,7 @@ fn erf_f64(x: f64) -> f64 {
     }
 }
 
-/// Digamma function via recurrence + asymptotic series.
-///
-/// Uses psi(x+1) = psi(x) + 1/x to shift x to a large value,
-/// then the asymptotic expansion:
-///   psi(x) ~ ln(x) - 1/(2x) - 1/(12x^2) + 1/(120x^4) - 1/(252x^6) + ...
-#[allow(dead_code)] // kept as f64 fast-path reference; arb_digamma is used for evalf
-fn digamma_f64(x: f64) -> Result<f64, SymplexError> {
-    if x.is_nan() || x.is_infinite() {
-        return Err(SymplexError::Unevaluable {
-            reason: "Digamma of special float value".into(),
-        });
-    }
 
-    // Handle negative x via reflection: psi(1-x) - psi(x) = pi*cot(pi*x)
-    if x < 0.0 {
-        let sin_val = (std::f64::consts::PI * x).sin();
-        if sin_val.abs() < 1e-300 {
-            return Err(SymplexError::Unevaluable {
-                reason: "Digamma at non-positive integer pole".into(),
-            });
-        }
-        let cos_val = (std::f64::consts::PI * x).cos();
-        let psi_1mx = digamma_f64(1.0 - x)?;
-        return Ok(psi_1mx - std::f64::consts::PI * cos_val / sin_val);
-    }
-
-    // Use recurrence to shift x >= 8 for good convergence of asymptotic series
-    let mut result = 0.0;
-    let mut x = x;
-    while x < 8.0 {
-        if x.abs() < 1e-300 {
-            return Err(SymplexError::Unevaluable {
-                reason: "Digamma at non-positive integer pole".into(),
-            });
-        }
-        result -= 1.0 / x;
-        x += 1.0;
-    }
-
-    // Asymptotic expansion: psi(x) ~ ln(x) - 1/(2x) - sum B_{2k}/(2k * x^{2k})
-    // Bernoulli numbers: B2=1/6, B4=-1/30, B6=1/42, B8=-1/30, B10=5/66, B12=-691/2730
-    result += x.ln() - 0.5 / x;
-    let x2 = x * x;
-    let mut x_pow = x2; // x^2
-    // B2/(2*x^2) = 1/(12*x^2)
-    result -= 1.0 / (12.0 * x_pow);
-    x_pow *= x2; // x^4
-    result += 1.0 / (120.0 * x_pow);
-    x_pow *= x2; // x^6
-    result -= 1.0 / (252.0 * x_pow);
-    x_pow *= x2; // x^8
-    result += 1.0 / (240.0 * x_pow);
-    x_pow *= x2; // x^10
-    result -= 5.0 / (660.0 * x_pow);
-    x_pow *= x2; // x^12
-    result += 691.0 / (32760.0 * x_pow);
-
-    Ok(result)
-}
 
 /// Arbitrary-precision digamma (psi) function via recurrence + asymptotic series.
 ///
