@@ -1894,8 +1894,135 @@ impl Matrix {
 /// Attempts to use `Poly::factor_over_z()` (Yun's square-free decomposition)
 /// for proper `(factor, multiplicity)` pairs.  Falls back to derivative-based
 /// multiplicity detection if the polynomial layer can't handle the expression.
+/// Extract eigenvalues with correct algebraic multiplicities from a
+/// characteristic polynomial.
+///
+/// **Primary path:** Convert to `Poly`, call `factor_over_z()` (Yun's
+/// square-free decomposition) for exact `(factor, multiplicity)` pairs.
+/// Each factor is solved for roots, which inherit the factor's multiplicity.
+///
+/// **Fallback:** If the polynomial has symbolic (non-rational) coefficients,
+/// `expr_to_poly` returns `None`. In that case, use derivative-based
+/// multiplicity detection: for each root `r`, find the smallest `k` such
+/// that `p^(k)(r) ≠ 0`.
 fn eigvals_with_multiplicity(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
-    // First, get the flat root list from the solver.
+    // ── Primary path: Poly::factor_over_z() ────────────────────────
+    // This gives exact multiplicities via Yun's square-free decomposition.
+    if let Some(pairs) = eigvals_via_poly_factor(char_poly, var) {
+        if !pairs.is_empty() {
+            debug!(
+                count = pairs.len(),
+                "eigvals_with_multiplicity: used Poly::factor_over_z path"
+            );
+            return pairs;
+        }
+    }
+
+    // ── Fallback: derivative-based multiplicity detection ──────────
+    // Used when char poly has symbolic coefficients or factor_over_z
+    // can't find roots.
+    debug!("eigvals_with_multiplicity: falling back to derivative-based detection");
+    eigvals_via_derivative(char_poly, var)
+}
+
+/// Primary multiplicity path: convert to Poly, factor, solve each factor.
+fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>> {
+    let inner = char_poly.inner.read();
+    let arena = &inner.arena;
+
+    // Try to convert the characteristic polynomial expression to a dense Poly.
+    let poly = crate::poly::polybridge::expr_to_poly(arena, char_poly.id, var.id)?;
+
+    // Factor: returns (content, [(factor_poly, multiplicity), ...]).
+    let (_content, factors) = poly.factor_over_z();
+    if factors.is_empty() {
+        return None;
+    }
+
+    drop(inner); // Release read lock before solving (needs write lock).
+
+    let mut eigen_pairs: Vec<(Ex, usize)> = Vec::new();
+
+    for (factor, mult) in &factors {
+        let degree = factor.degree().unwrap_or(0);
+        if degree == 0 {
+            // Constant factor — not an eigenvalue.
+            continue;
+        }
+        if degree == 1 {
+            // Linear factor: ax + b → root = -b/a.
+            let coeffs = factor.coeffs();
+            let a = &coeffs[1]; // coefficient of x
+            let b = &coeffs[0]; // constant term
+            let root_val = -(b / a);
+            // Build the root as an Ex.
+            let root_ex = crate::rational(
+                root_val.numer().clone().try_into().unwrap_or(0i64),
+                root_val.denom().clone().try_into().unwrap_or(1i64),
+            );
+            // For large BigInt roots that don't fit i64, use the general path.
+            let root_check: Result<i64, _> = root_val.numer().clone().try_into();
+            let denom_check: Result<i64, _> = root_val.denom().clone().try_into();
+            let root_ex = if root_check.is_ok() && denom_check.is_ok() {
+                crate::rational(root_check.unwrap(), denom_check.unwrap())
+            } else {
+                // Root doesn't fit i64 — fall back to constructing from BigInt.
+                // Use the flat solver as a workaround.
+                let mut write_inner = char_poly.inner.write();
+                let factor_expr = crate::poly::polybridge::poly_to_expr(
+                    &mut write_inner.arena,
+                    factor,
+                    var.id,
+                );
+                drop(write_inner);
+                let factor_ex = char_poly.wrap(factor_expr);
+                let roots = factor_ex.solve_or_empty(var);
+                for r in roots {
+                    eigen_pairs.push((r, *mult as usize));
+                }
+                continue;
+            };
+            trace!(
+                mult,
+                "eigvals_via_poly_factor: linear factor, root = {}, mult = {}",
+                root_ex,
+                mult
+            );
+            eigen_pairs.push((root_ex, *mult as usize));
+        } else {
+            // Higher-degree factor: solve it for roots.
+            let mut write_inner = char_poly.inner.write();
+            let factor_expr = crate::poly::polybridge::poly_to_expr(
+                &mut write_inner.arena,
+                factor,
+                var.id,
+            );
+            drop(write_inner);
+            let factor_ex = char_poly.wrap(factor_expr);
+            let roots = factor_ex.solve_or_empty(var);
+            trace!(
+                degree,
+                root_count = roots.len(),
+                mult,
+                "eigvals_via_poly_factor: degree-{} factor, {} roots, mult {}",
+                degree,
+                roots.len(),
+                mult
+            );
+            for r in roots {
+                eigen_pairs.push((r, *mult as usize));
+            }
+        }
+    }
+
+    Some(eigen_pairs)
+}
+
+/// Fallback: derivative-based multiplicity detection.
+///
+/// For each root `r`, finds the smallest `k` such that `p^(k)(r) ≠ 0`.
+/// That `k` is the algebraic multiplicity.
+fn eigvals_via_derivative(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
     let all_roots = char_poly.solve_or_empty(var);
     if all_roots.is_empty() {
         return Vec::new();
@@ -1909,11 +2036,7 @@ fn eigvals_with_multiplicity(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
         }
     }
 
-    // For each unique root, determine algebraic multiplicity by evaluating
-    // successive derivatives of the char poly at the root.
-    // mult(r) = smallest k such that p^(k)(r) ≠ 0.
     let mut eigen_pairs: Vec<(Ex, usize)> = Vec::new();
-    let deriv = char_poly.clone();
 
     for root in &unique_roots {
         let mut mult = 0usize;
@@ -1933,19 +2056,16 @@ fn eigvals_with_multiplicity(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
         let mult = if mult == 0 { 1 } else { mult };
         trace!(
             mult,
-            "eigvals_with_multiplicity: root has algebraic multiplicity {}",
+            "eigvals_via_derivative: root has algebraic multiplicity {}",
             mult
         );
         eigen_pairs.push((root.clone(), mult));
     }
 
-    // Sanity: if the multiplicities don't sum to n, fall back to counting
-    // duplicate occurrences in the original root list.
+    // Sanity: if total is 0, fall back to dedup counting.
     let total: usize = eigen_pairs.iter().map(|(_, m)| *m).sum();
-    let _ = &deriv; // suppress unused warning
     if total == 0 {
-        // All roots had mult 0 — shouldn't happen. Fall back.
-        warn!("eigvals_with_multiplicity: derivative-based multiplicity failed, using dedup fallback");
+        warn!("eigvals_via_derivative: multiplicity detection failed, using dedup fallback");
         eigen_pairs.clear();
         for root in &all_roots {
             if let Some(entry) = eigen_pairs.iter_mut().find(|(e, _)| e == root) {
