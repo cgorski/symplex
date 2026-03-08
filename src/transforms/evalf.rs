@@ -1939,7 +1939,6 @@ fn hankel_pq(
     let four_nu_sq = four.mul(&order.mul(order, prec, rm), prec, rm);
 
     let z_inv = one.div(z, prec, rm);
-    let z_inv_sq = z_inv.mul(&z_inv, prec, rm);
 
     // P and Q accumulators.
     let mut p_sum = one.clone(); // a_0 = 1 contributes to P (even index)
