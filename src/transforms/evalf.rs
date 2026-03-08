@@ -1827,6 +1827,194 @@ fn arb_lambert_w(
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Euler-Mascheroni constant at arbitrary precision (Brent-McMillan B1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute the Euler-Mascheroni constant γ at `prec` bits of precision
+/// using the Brent-McMillan B1 algorithm.
+///
+/// This is the fastest known algorithm for computing γ.  It uses the identity
+/// involving modified Bessel functions, simplified to a fixed-point summation
+/// with convergence rate O(e^{-4n}) where n = 2^p.
+///
+/// Reference: Brent & McMillan (1980), mpmath `euler_fixed`.
+fn arb_euler_gamma(
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    // We need ln(2) at working precision.
+    let extra = 30;
+    let wp = prec + extra;
+
+    // Choose p such that e^{-4·2^p} < 2^{-wp}, i.e. 4·2^p > wp·ln(2),
+    // i.e. p > log2(wp·ln(2)/4).
+    let p = ((wp as f64 / 4.0) * std::f64::consts::LN_2).log2().ceil() as u64 + 1;
+    let n: i128 = 1i128 << p;
+    let n_sq = n * n;
+
+    // ln(2) at working precision.
+    let two_bf = BigFloat::from_i32(2, wp);
+    let ln2 = two_bf.ln(wp, rm, cc);
+
+    // A = U = -p · ln(2)   (= -ln(n) since n = 2^p)
+    let p_bf = BigFloat::from_i128(p as i128, wp);
+    let neg_p_ln2 = p_bf.mul(&ln2, wp, rm).neg();
+
+    let mut a = neg_p_ln2.clone();
+    let mut u = neg_p_ln2;
+    // B = V = 1
+    let one = BigFloat::from_i32(1, wp);
+    let mut b = one.clone();
+    let mut v = one.clone();
+
+    let n_sq_bf = BigFloat::from_i128(n_sq, wp);
+
+    let mut k: i128 = 1;
+    loop {
+        let k_bf = BigFloat::from_i128(k, wp);
+        let k_sq_bf = k_bf.mul(&k_bf, wp, rm);
+
+        // B = B · n² / k²
+        b = b.mul(&n_sq_bf, wp, rm).div(&k_sq_bf, wp, rm);
+
+        // A = (A · n² / k + B) / k
+        a = a.mul(&n_sq_bf, wp, rm).div(&k_bf, wp, rm);
+        a = a.add(&b, wp, rm).div(&k_bf, wp, rm);
+
+        u = u.add(&a, wp, rm);
+        v = v.add(&b, wp, rm);
+
+        // Convergence: both A and B are negligibly small.
+        let a_small = a.exponent().map_or(true, |e| e < -(wp as i32) + 10);
+        let b_small = b.exponent().map_or(true, |e| e < -(wp as i32) + 10);
+        if a_small && b_small {
+            tracing::trace!(k, "arb_euler_gamma: converged");
+            break;
+        }
+
+        k += 1;
+        if k > 10 * (wp as i128) {
+            return Err(SymplexError::ComputationFailed {
+                operation: "euler_gamma",
+                reason: "Brent-McMillan did not converge".into(),
+            });
+        }
+    }
+
+    // γ = U / V
+    Ok(u.div(&v, prec, rm))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Hankel P/Q series for Bessel asymptotic expansion
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compute the Hankel auxiliary functions P_ν(z) and Q_ν(z) for the
+/// Bessel asymptotic expansion.
+///
+/// P_ν(z) = Σ_{k=0}^{N} (-1)^k · a_{2k}(ν) / z^{2k}
+/// Q_ν(z) = Σ_{k=0}^{N} (-1)^k · a_{2k+1}(ν) / z^{2k+1}
+///
+/// where a_k(ν) = [(1/2-ν)_k · (1/2+ν)_k] / [(-2)^k · k!]
+///
+/// Uses optimal truncation: stops when terms start increasing (divergent
+/// series).  The error is bounded by the first omitted term for real
+/// positive z (Stieltjes bound, DLMF §10.17).
+fn hankel_pq(
+    order: &BigFloat,
+    z: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    _cc: &mut Consts,
+) -> (BigFloat, BigFloat) {
+    // Compute coefficients a_k incrementally:
+    // a_0 = 1
+    // a_{k+1} = a_k · -(4ν² - (2k+1)²) / (8(k+1))
+    let one = BigFloat::from_i32(1, prec);
+    let four = BigFloat::from_i32(4, prec);
+    let eight = BigFloat::from_i32(8, prec);
+
+    let four_nu_sq = four.mul(&order.mul(order, prec, rm), prec, rm);
+
+    let z_inv = one.div(z, prec, rm);
+    let z_inv_sq = z_inv.mul(&z_inv, prec, rm);
+
+    // P and Q accumulators.
+    let mut p_sum = one.clone(); // a_0 = 1 contributes to P (even index)
+    let mut q_sum = BigFloat::new(prec); // Q starts at 0
+
+    let mut a_k = one.clone(); // a_0 = 1
+    let mut z_power = one.clone(); // z^0 = 1
+
+    // Maximum terms: approximately |z| terms before divergence.
+    let z_f64 = z.exponent().unwrap_or(0) as f64 * 0.693; // rough |z|
+    let max_terms = (2.0 * z_f64.exp() + 20.0).min(10000.0) as usize;
+
+    let mut prev_a_abs: Option<BigFloat> = None;
+
+    for k in 0..max_terms {
+        if k > 0 {
+            // a_k = a_{k-1} · -(4ν² - (2k-1)²) / (8k)
+            let two_km1 = BigFloat::from_i32((2 * k as i32) - 1, prec);
+            let two_km1_sq = two_km1.mul(&two_km1, prec, rm);
+            let numer = four_nu_sq.sub(&two_km1_sq, prec, rm).neg();
+            let k_bf = BigFloat::from_i32(k as i32, prec);
+            let denom = eight.mul(&k_bf, prec, rm);
+            a_k = a_k.mul(&numer, prec, rm).div(&denom, prec, rm);
+
+            // Update z_power: multiply by 1/z each step.
+            z_power = z_power.mul(&z_inv, prec, rm);
+        }
+
+        // term = a_k / z^k
+        let term = a_k.mul(&z_power, prec, rm);
+
+        // Check for divergence: if |term| > |prev_term|, stop.
+        let term_abs = term.abs();
+        if let Some(ref prev) = prev_a_abs {
+            if term_abs.partial_cmp(prev) == Some(std::cmp::Ordering::Greater) && k > 2 {
+                tracing::trace!(k, "hankel_pq: optimal truncation (terms diverging)");
+                break;
+            }
+        }
+
+        // Convergence: term negligible relative to accumulated sums.
+        if let Some(t_exp) = term.exponent() {
+            let p_exp = p_sum.exponent().unwrap_or(0);
+            let q_exp = q_sum.exponent().unwrap_or(0);
+            let ref_exp = p_exp.max(q_exp);
+            if (ref_exp as i64 - t_exp as i64) > prec as i64 {
+                tracing::trace!(k, "hankel_pq: converged (term negligible)");
+                break;
+            }
+        }
+
+        prev_a_abs = Some(term_abs);
+
+        // Even k → contributes to P with sign (-1)^(k/2)
+        // Odd k → contributes to Q with sign (-1)^((k-1)/2)
+        if k % 2 == 0 {
+            // P term: (-1)^(k/2) · a_k / z^k
+            if (k / 2) % 2 == 0 {
+                p_sum = p_sum.add(&term, prec, rm);
+            } else {
+                p_sum = p_sum.sub(&term, prec, rm);
+            }
+        } else {
+            // Q term: (-1)^((k-1)/2) · a_k / z^k
+            if ((k - 1) / 2) % 2 == 0 {
+                q_sum = q_sum.add(&term, prec, rm);
+            } else {
+                q_sum = q_sum.sub(&term, prec, rm);
+            }
+        }
+    }
+
+    (p_sum, q_sum)
+}
+
 /// Look up a cached value, returning an error if not found.
 // ═══════════════════════════════════════════════════════════════════════════
 // Bessel function evaluation (arbitrary precision)
@@ -1932,24 +2120,29 @@ fn arb_bessel_j(
 
         Ok(prefix.mul(&sum, wp, rm))
     } else {
-        // ── Hankel asymptotic (leading term) ──────────────────────
-        // J_ν(x) ≈ √(2/(πx)) · cos(x - νπ/2 - π/4)
-        tracing::trace!("arb_bessel_j: using asymptotic expansion");
+        // ── Hankel asymptotic with full P/Q series ────────────────
+        // J_ν(x) = √(2/(πx)) · [cos(ω)·P_ν(x) - sin(ω)·Q_ν(x)]
+        // where ω = x - νπ/2 - π/4
+        tracing::trace!("arb_bessel_j: using full Hankel P/Q expansion");
+        let (p_val, q_val) = hankel_pq(order, x, wp, rm, cc);
         let pi = cc.pi(wp, rm).clone();
         let two = BigFloat::from_i32(2, wp);
         let four = BigFloat::from_i32(4, wp);
 
-        // √(2/(πx))
         let two_over_pi_x = two.div(&pi.mul(x, wp, rm), wp, rm);
         let amplitude = two_over_pi_x.sqrt(wp, rm);
 
-        // phase = x - ν·π/2 - π/4
         let nu_pi_half = order.mul(&pi, wp, rm).div(&two, wp, rm);
         let pi_quarter = pi.div(&four, wp, rm);
         let phase = x.sub(&nu_pi_half, wp, rm).sub(&pi_quarter, wp, rm);
 
         let cos_phase = phase.cos(wp, rm, cc);
-        Ok(amplitude.mul(&cos_phase, wp, rm))
+        let sin_phase = phase.sin(wp, rm, cc);
+
+        // J = amplitude * (cos(ω)·P - sin(ω)·Q)
+        let term1 = cos_phase.mul(&p_val, wp, rm);
+        let term2 = sin_phase.mul(&q_val, wp, rm);
+        Ok(amplitude.mul(&term1.sub(&term2, wp, rm), wp, rm))
     }
 }
 
@@ -1985,9 +2178,10 @@ fn arb_bessel_y(
     let threshold = ((wp as f64) * 0.5).sqrt() + 5.0;
 
     if x_f64 >= threshold {
-        // ── Hankel asymptotic (leading term) ──────────────────────
-        // Y_ν(x) ≈ √(2/(πx)) · sin(x - νπ/2 - π/4)
-        tracing::trace!("arb_bessel_y: using asymptotic expansion");
+        // ── Hankel asymptotic with full P/Q series ────────────────
+        // Y_ν(x) = √(2/(πx)) · [sin(ω)·P_ν(x) + cos(ω)·Q_ν(x)]
+        tracing::trace!("arb_bessel_y: using full Hankel P/Q expansion");
+        let (p_val, q_val) = hankel_pq(order, x, wp, rm, cc);
         let pi = cc.pi(wp, rm).clone();
         let two = BigFloat::from_i32(2, wp);
         let four = BigFloat::from_i32(4, wp);
@@ -2000,7 +2194,12 @@ fn arb_bessel_y(
         let phase = x.sub(&nu_pi_half, wp, rm).sub(&pi_quarter, wp, rm);
 
         let sin_phase = phase.sin(wp, rm, cc);
-        return Ok(amplitude.mul(&sin_phase, wp, rm));
+        let cos_phase = phase.cos(wp, rm, cc);
+
+        // Y = amplitude * (sin(ω)·P + cos(ω)·Q)
+        let term1 = sin_phase.mul(&p_val, wp, rm);
+        let term2 = cos_phase.mul(&q_val, wp, rm);
+        return Ok(amplitude.mul(&term1.add(&term2, wp, rm), wp, rm));
     }
 
     // ── Small |x|: Y_0 via logarithmic series ────────────────────
@@ -2027,12 +2226,8 @@ fn arb_bessel_y(
     let x_half = x.div(&two, wp, rm);
     let ln_x_half = x_half.ln(wp, rm, cc);
 
-    // Euler-Mascheroni constant γ ≈ 0.5772156649...
-    // Compute from the series: γ = lim(H_n - ln(n)) — use a hardcoded value at wp precision.
-    // For arbitrary precision, compute γ from the Stirling series relation:
-    //   γ = -Γ'(1)/Γ(1) = -ψ(1)
-    // For v1, use f64 approximation promoted to BigFloat.
-    let euler_gamma = BigFloat::from_f64(0.5772156649015329_f64, wp);
+    // Euler-Mascheroni constant γ at working precision via Brent-McMillan B1.
+    let euler_gamma = arb_euler_gamma(wp, rm, cc)?;
 
     // Compute J_0(x) for the Y_0 formula.
     let order_zero = BigFloat::new(wp); // 0
