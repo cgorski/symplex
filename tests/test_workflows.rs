@@ -267,7 +267,7 @@ fn workflow_matrix_eigenvalue_properties() {
     let m = Matrix::new(vec![
         vec![symplex::int(2), symplex::int(1)],
         vec![symplex::int(1), symplex::int(2)],
-    ]);
+    ]).unwrap();
 
     // Step 1: trace and determinant
     let tr = m.trace().unwrap();
@@ -811,7 +811,7 @@ fn workflow_matrix_inverse_verify() {
         vec![symplex::int(1), symplex::int(2), symplex::int(3)],
         vec![symplex::int(0), symplex::int(1), symplex::int(4)],
         vec![symplex::int(5), symplex::int(6), symplex::int(0)],
-    ]);
+    ]).unwrap();
 
     let det = m.det().unwrap();
     let det_val = det.eval_f64().expect("det eval");

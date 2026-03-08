@@ -1120,7 +1120,7 @@ fn matrix_powi_identity() {
     let m = symplex::matrix::Matrix::new(vec![
         vec![a.clone(), b.clone()],
         vec![c.clone(), d.clone()],
-    ]);
+    ]).unwrap();
     let result = m.powi(0).unwrap();
     assert_eq!(result.shape(), (2, 2));
     for i in 0..2 {
@@ -1141,7 +1141,7 @@ fn matrix_powi_one() {
     let m = symplex::matrix::Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let result = m.powi(1).unwrap();
     let expected = [[1.0, 2.0], [3.0, 4.0]];
     for (i, expected_row) in expected.iter().enumerate() {
@@ -1161,7 +1161,7 @@ fn matrix_powi_square() {
     let m = symplex::matrix::Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let m2 = m.powi(2).unwrap();
     let m_times_m = m.matmul(&m).unwrap();
     for i in 0..2 {
@@ -1184,7 +1184,7 @@ fn matrix_powi_cube() {
     let m = symplex::matrix::Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let m3 = m.powi(3).unwrap();
     let expected = [[37.0, 54.0], [81.0, 118.0]];
     for (i, expected_row) in expected.iter().enumerate() {

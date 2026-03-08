@@ -178,7 +178,7 @@ fn bareiss_matches_for_seeded_4x4() {
                     .collect()
             })
             .collect();
-        let m = Matrix::new(data);
+        let m = Matrix::new(data).unwrap();
         let det = m.det().unwrap();
         // Just verify it evaluates to a finite number without panic
         let val = det.eval_f64().unwrap();

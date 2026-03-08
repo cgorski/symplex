@@ -626,7 +626,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     // ── Step 10: Code generation for the FK position ─────────────────────
     println!("\nStep 10: Generating Rust code for FK position (3 expressions)...");
     let t0_codegen2 = Instant::now();
-    let pos_matrix = Matrix::new(vec![vec![px.clone(), py.clone(), pz.clone()]]);
+    let pos_matrix = Matrix::new(vec![vec![px.clone(), py.clone(), pz.clone()]]).unwrap();
     let pos_code_result = pos_matrix.to_rust_fn(
         "puma_fk_position",
         &["q1", "q2", "q3", "q4", "q5", "q6", "a2", "d4"],

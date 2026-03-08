@@ -545,7 +545,7 @@ proptest! {
             .chunks(3)
             .map(|row| row.iter().map(|&v| symplex::int(v)).collect())
             .collect();
-        let m = symplex::matrix::Matrix::new(data);
+        let m = symplex::matrix::Matrix::new(data).unwrap();
         let mt = m.transpose();
 
         let det_m = m.det().unwrap().eval().simplify();

@@ -22,7 +22,7 @@ fn matrix_det_2x2_numeric() {
     let m = Matrix::new(vec![
         vec![symplex::int(3), symplex::int(7)],
         vec![symplex::int(1), symplex::int(5)],
-    ]);
+    ]).unwrap();
     let det = m.det().unwrap();
     // 3*5 - 7*1 = 8
     assert_eq!(format!("{det}"), "8");
@@ -68,7 +68,7 @@ fn matrix_trace() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let tr = m.trace().unwrap();
     assert_eq!(format!("{tr}"), "5");
 }
@@ -79,11 +79,11 @@ fn matrix_add_numeric() {
     let m1 = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let m2 = Matrix::new(vec![
         vec![symplex::int(10), symplex::int(20)],
         vec![symplex::int(30), symplex::int(40)],
-    ]);
+    ]).unwrap();
     let sum = m1.add(&m2).unwrap();
     assert_eq!(format!("{}", sum.get(0, 0)), "11");
     assert_eq!(format!("{}", sum.get(1, 1)), "44");
@@ -93,7 +93,7 @@ fn matrix_add_numeric() {
 fn matrix_diff() {
     use symplex::matrix::Matrix;
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]);
+    let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]).unwrap();
     let dm = m.diff(&x);
     // d/dx(x²) = 2*x
     let s0 = format!("{}", dm.get(0, 0));

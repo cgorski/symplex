@@ -84,7 +84,7 @@ pub fn dh_matrix(theta: &Ex, d: &Ex, a: &Ex, alpha: &Ex) -> Matrix {
         vec![r10, r11, r12, r13],
         vec![r20, r21, r22, r23],
         vec![r30, r31, r32, r33],
-    ])
+    ]).unwrap()
 }
 
 /// Chain-multiply a sequence of DH transformation matrices to compute
@@ -183,7 +183,7 @@ pub fn fk_rotation(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
             t.get(2, 1).clone(),
             t.get(2, 2).clone(),
         ],
-    ])
+    ]).unwrap()
 }
 
 /// Rotation matrix about the x-axis by angle θ.
@@ -202,7 +202,7 @@ pub fn rot_x(theta: &Ex) -> Matrix {
         vec![one, zero.clone(), zero.clone()],
         vec![zero.clone(), c.clone(), -&s],
         vec![zero, s, c],
-    ])
+    ]).unwrap()
 }
 
 /// Rotation matrix about the y-axis by angle θ.
@@ -221,7 +221,7 @@ pub fn rot_y(theta: &Ex) -> Matrix {
         vec![c.clone(), zero.clone(), s.clone()],
         vec![zero.clone(), one, zero.clone()],
         vec![-&s, zero, c],
-    ])
+    ]).unwrap()
 }
 
 /// Rotation matrix about the z-axis by angle θ.
@@ -240,7 +240,7 @@ pub fn rot_z(theta: &Ex) -> Matrix {
         vec![c.clone(), -&s, zero.clone()],
         vec![s, c, zero.clone()],
         vec![zero.clone(), zero, one],
-    ])
+    ]).unwrap()
 }
 
 /// Skew-symmetric matrix from a 3-vector [a, b, c].
@@ -257,7 +257,7 @@ pub fn skew3(a: &Ex, b: &Ex, c: &Ex) -> Matrix {
         vec![zero.clone(), -c, b.clone()],
         vec![c.clone(), zero.clone(), -a],
         vec![-b, a.clone(), zero],
-    ])
+    ]).unwrap()
 }
 
 /// Build a 4×4 homogeneous transformation matrix from a 3×3 rotation
@@ -291,7 +291,7 @@ pub fn homogeneous(rotation: &Matrix, position: &[Ex; 3]) -> Matrix {
             position[2].clone(),
         ],
         vec![zero.clone(), zero.clone(), zero, one],
-    ])
+    ]).unwrap()
 }
 
 /// Pure translation as a 4×4 homogeneous transformation matrix.
@@ -308,7 +308,7 @@ pub fn translation(x: &Ex, y: &Ex, z: &Ex) -> Matrix {
         vec![zero.clone(), one.clone(), zero.clone(), y.clone()],
         vec![zero.clone(), zero.clone(), one, z.clone()],
         vec![zero.clone(), zero.clone(), zero, crate::int(1)],
-    ])
+    ]).unwrap()
 }
 
 /// Euler angle convention for rotation composition.

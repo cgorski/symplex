@@ -30,24 +30,37 @@ pub struct Matrix {
 impl Matrix {
     /// Create a matrix from nested `Vec`s (row-major).
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `rows` is empty, any row is empty, or rows have
-    /// inconsistent lengths.
-    pub fn new(rows: Vec<Vec<Ex>>) -> Self {
-        assert!(!rows.is_empty(), "Matrix must have at least one row");
+    /// Returns [`SymplexError::ComputationFailed`] if `rows` is empty,
+    /// any row is empty, or rows have inconsistent lengths.
+    pub fn new(rows: Vec<Vec<Ex>>) -> Result<Self, SymplexError> {
+        if rows.is_empty() {
+            return Err(SymplexError::ComputationFailed {
+                operation: "Matrix::new",
+                reason: "must have at least one row".into(),
+            });
+        }
         let ncols = rows[0].len();
-        assert!(ncols > 0, "Matrix must have at least one column");
+        if ncols == 0 {
+            return Err(SymplexError::ComputationFailed {
+                operation: "Matrix::new",
+                reason: "must have at least one column".into(),
+            });
+        }
         for (i, row) in rows.iter().enumerate() {
-            assert_eq!(
-                row.len(),
-                ncols,
-                "Row {i} has length {} but expected {ncols}",
-                row.len()
-            );
+            if row.len() != ncols {
+                return Err(SymplexError::ComputationFailed {
+                    operation: "Matrix::new",
+                    reason: format!(
+                        "row {i} has length {} but expected {ncols}",
+                        row.len()
+                    ),
+                });
+            }
         }
         let nrows = rows.len();
-        Matrix { rows, nrows, ncols }
+        Ok(Matrix { rows, nrows, ncols })
     }
 
     /// Create an `n × m` matrix of zeros.
@@ -89,40 +102,6 @@ impl Matrix {
             nrows: n,
             ncols: m,
         }
-    }
-
-    /// Non-panicking alternative to [`Matrix::new`].
-    ///
-    /// Validates that `rows` is non-empty, every row has at least one
-    /// element, and all rows have the same length. Returns
-    /// `Err(SymplexError::ComputationFailed { .. })` on invalid input.
-    pub fn try_new(rows: Vec<Vec<Ex>>) -> Result<Matrix, SymplexError> {
-        if rows.is_empty() {
-            return Err(SymplexError::ComputationFailed {
-                operation: "Matrix::try_new",
-                reason: "matrix must have at least one row".into(),
-            });
-        }
-        let ncols = rows[0].len();
-        if ncols == 0 {
-            return Err(SymplexError::ComputationFailed {
-                operation: "Matrix::try_new",
-                reason: "matrix must have at least one column".into(),
-            });
-        }
-        for (i, row) in rows.iter().enumerate() {
-            if row.len() != ncols {
-                return Err(SymplexError::ComputationFailed {
-                    operation: "Matrix::try_new",
-                    reason: format!(
-                        "row {i} has length {} but expected {ncols}",
-                        row.len()
-                    ),
-                });
-            }
-        }
-        let nrows = rows.len();
-        Ok(Matrix { rows, nrows, ncols })
     }
 
     /// Non-panicking alternative to [`Matrix::zeros`].
@@ -216,7 +195,7 @@ impl Matrix {
                     .collect()
             })
             .collect();
-        Matrix::new(rows)
+        Matrix::new(rows).unwrap()
     }
 
     /// Create a matrix from a 2D slice of i64 values.
@@ -225,7 +204,7 @@ impl Matrix {
             .iter()
             .map(|row| row.iter().map(|&v| crate::int(v)).collect())
             .collect();
-        Matrix::new(data)
+        Matrix::new(data).unwrap()
     }
 }
 
@@ -762,7 +741,7 @@ impl Matrix {
             }
             rows.push(new_row);
         }
-        Ok(Matrix::new(rows))
+        Ok(Matrix::new(rows)?)
     }
 
     /// Cofactor C(i, j) = (-1)^(i+j) * det(minor(i, j)).
@@ -808,7 +787,7 @@ impl Matrix {
             }
             rows.push(row);
         }
-        Ok(Matrix::new(rows))
+        Ok(Matrix::new(rows)?)
     }
 
     /// Matrix inverse: A⁻¹ = adj(A) / det(A).
@@ -839,7 +818,7 @@ impl Matrix {
         // 1×1 special case: inverse is just [[1/a]]
         if self.nrows() == 1 {
             let one_over_det = &self.ctx_one() / &d;
-            return Ok(Matrix::new(vec![vec![one_over_det]]));
+            return Ok(Matrix::new(vec![vec![one_over_det]])?);
         }
         let adj = self.adjugate()?;
         let one_over_det = &self.ctx_one() / &d;
@@ -882,7 +861,7 @@ impl Matrix {
             }
             rows.push(row);
         }
-        let m = Matrix::new(rows);
+        let m = Matrix::new(rows)?;
         Ok(m.det()?.expand())
     }
 
@@ -1237,7 +1216,7 @@ impl Matrix {
             });
         }
 
-        let j = Matrix::new(jordan_blocks);
+        let j = Matrix::new(jordan_blocks).unwrap();
         let col_refs: Vec<&Matrix> = basis_cols.iter().collect();
         let p = Matrix::hstack(&col_refs)?;
 
@@ -1300,7 +1279,7 @@ impl Matrix {
                 rows.push(row);
             }
         }
-        Matrix::new(rows)
+        Matrix::new(rows).unwrap()
     }
 
     /// Matrix exponential via truncated Taylor series: eᴬ ≈ Σₖ₌₀ⁿ Aᵏ/k!.
@@ -1436,7 +1415,7 @@ impl Matrix {
             col += block_size;
         }
 
-        let exp_j = Matrix::new(exp_j_rows);
+        let exp_j = Matrix::new(exp_j_rows).unwrap();
 
         // e^A = P · e^J · P⁻¹
         let p_inv = match p.inv() {
@@ -1508,7 +1487,7 @@ impl Matrix {
             }
         }
 
-        Ok(Some(Matrix::new(l_rows)))
+        Ok(Some(Matrix::new(l_rows)?))
     }
 
     /// Moore–Penrose pseudo-inverse via `A⁺ = (AᵀA)⁻¹Aᵀ`.
@@ -1596,7 +1575,7 @@ impl Matrix {
     /// let m = Matrix::new(vec![
     ///     vec![x.sin(), x.cos()],
     ///     vec![-x.cos(), x.sin()],
-    /// ]);
+    /// ]).unwrap();
     /// let code = m.to_rust_fn("rotation", &["x"]).unwrap();
     /// assert!(code.contains("pub fn rotation"));
     /// assert!(code.contains("[f64; 4]"));
@@ -2504,7 +2483,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(2)],
             vec![crate::int(3), crate::int(4)],
-        ]);
+        ]).unwrap();
         let r = m.row(0);
         assert_eq!(r.len(), 2);
         assert_eq!(format!("{}", r[0]), "1");
@@ -2528,7 +2507,7 @@ mod tests {
         let b = crate::var("b");
         let c = crate::var("c");
         let d = crate::var("d");
-        let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]);
+        let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let t = m.transpose();
         assert_eq!(format!("{}", t.get(0, 0)), "a");
         assert_eq!(format!("{}", t.get(0, 1)), "c");
@@ -2541,7 +2520,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(2), crate::int(3)],
             vec![crate::int(4), crate::int(5), crate::int(6)],
-        ]);
+        ]).unwrap();
         let t = m.transpose();
         assert_eq!(t.shape(), (3, 2));
         assert_eq!(format!("{}", t.get(2, 0)), "3");
@@ -2555,11 +2534,11 @@ mod tests {
         let m1 = Matrix::new(vec![
             vec![crate::int(1), crate::int(2)],
             vec![crate::int(3), crate::int(4)],
-        ]);
+        ]).unwrap();
         let m2 = Matrix::new(vec![
             vec![crate::int(5), crate::int(6)],
             vec![crate::int(7), crate::int(8)],
-        ]);
+        ]).unwrap();
         let sum = m1.add(&m2).unwrap();
         assert_eq!(format!("{}", sum.get(0, 0)), "6");
         assert_eq!(format!("{}", sum.get(1, 1)), "12");
@@ -2567,8 +2546,8 @@ mod tests {
 
     #[test]
     fn matrix_sub() {
-        let m1 = Matrix::new(vec![vec![crate::int(10), crate::int(20)]]);
-        let m2 = Matrix::new(vec![vec![crate::int(3), crate::int(7)]]);
+        let m1 = Matrix::new(vec![vec![crate::int(10), crate::int(20)]]).unwrap();
+        let m2 = Matrix::new(vec![vec![crate::int(3), crate::int(7)]]).unwrap();
         let diff = m1.sub(&m2).unwrap();
         assert_eq!(format!("{}", diff.get(0, 0)), "7");
         assert_eq!(format!("{}", diff.get(0, 1)), "13");
@@ -2588,7 +2567,7 @@ mod tests {
     #[test]
     fn scale_symbolic() {
         let x = crate::var("x");
-        let m = Matrix::new(vec![vec![crate::int(1), crate::int(2)]]);
+        let m = Matrix::new(vec![vec![crate::int(1), crate::int(2)]]).unwrap();
         let scaled = m.scale(&x);
         let s0 = format!("{}", scaled.get(0, 0));
         let s1 = format!("{}", scaled.get(0, 1));
@@ -2605,7 +2584,7 @@ mod tests {
         let b = crate::var("b");
         let c = crate::var("c");
         let d = crate::var("d");
-        let n = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]);
+        let n = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let result = m.matmul(&n).unwrap();
         // I * N = N
         assert_eq!(format!("{}", result.get(0, 0)), "a");
@@ -2628,11 +2607,11 @@ mod tests {
         let a = Matrix::new(vec![
             vec![crate::int(1), crate::int(2)],
             vec![crate::int(3), crate::int(4)],
-        ]);
+        ]).unwrap();
         let b = Matrix::new(vec![
             vec![crate::int(5), crate::int(6)],
             vec![crate::int(7), crate::int(8)],
-        ]);
+        ]).unwrap();
         let c = a.matmul(&b).unwrap();
         // [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]] = [[19, 22], [43, 50]]
         assert_eq!(format!("{}", c.get(0, 0)), "19");
@@ -2649,7 +2628,7 @@ mod tests {
         let b = crate::var("b");
         let c = crate::var("c");
         let d = crate::var("d");
-        let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]);
+        let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let tr = m.trace().unwrap();
         let s = format!("{tr}");
         assert!(
@@ -2663,7 +2642,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(2)],
             vec![crate::int(3), crate::int(4)],
-        ]);
+        ]).unwrap();
         let tr = m.trace().unwrap();
         assert_eq!(format!("{tr}"), "5");
     }
@@ -2673,7 +2652,7 @@ mod tests {
     #[test]
     fn det_1x1() {
         let a = crate::var("a");
-        let m = Matrix::new(vec![vec![a.clone()]]);
+        let m = Matrix::new(vec![vec![a.clone()]]).unwrap();
         let det = m.det().unwrap();
         assert_eq!(format!("{det}"), "a");
     }
@@ -2684,7 +2663,7 @@ mod tests {
         let b = crate::var("b");
         let c = crate::var("c");
         let d = crate::var("d");
-        let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]);
+        let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let det = m.det().unwrap();
         // det = ad - bc
         let s = format!("{det}");
@@ -2699,7 +2678,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(3), crate::int(8)],
             vec![crate::int(4), crate::int(6)],
-        ]);
+        ]).unwrap();
         let det = m.det().unwrap();
         // 3*6 - 8*4 = 18 - 32 = -14
         assert_eq!(format!("{det}"), "-14");
@@ -2711,7 +2690,7 @@ mod tests {
             vec![crate::int(1), crate::int(2), crate::int(3)],
             vec![crate::int(4), crate::int(5), crate::int(6)],
             vec![crate::int(7), crate::int(8), crate::int(9)],
-        ]);
+        ]).unwrap();
         let det = m.det().unwrap();
         // This matrix is singular: det = 0
         assert_eq!(format!("{det}"), "0");
@@ -2723,7 +2702,7 @@ mod tests {
             vec![crate::int(1), crate::int(0), crate::int(2)],
             vec![crate::int(0), crate::int(1), crate::int(0)],
             vec![crate::int(3), crate::int(0), crate::int(1)],
-        ]);
+        ]).unwrap();
         let det = m.det().unwrap();
         // det = 1*(1*1 - 0*0) - 0 + 2*(0*0 - 1*3) = 1 + 2*(-3) = -5
         assert_eq!(format!("{det}"), "-5");
@@ -2736,7 +2715,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(2)],
             vec![crate::int(3), crate::int(4)],
-        ]);
+        ]).unwrap();
         let doubled = m.map(|e| {
             let two = crate::int(2);
             &two * e
@@ -2764,7 +2743,7 @@ mod tests {
     #[test]
     fn matrix_diff() {
         let x = crate::var("x");
-        let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]);
+        let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]).unwrap();
         let dm = m.diff(&x);
         let s00 = format!("{}", dm.get(0, 0));
         assert!(s00.contains("x"), "d/dx(x²): {s00}");
@@ -2773,7 +2752,7 @@ mod tests {
     #[test]
     fn matrix_subs() {
         let x = crate::var("x");
-        let m = Matrix::new(vec![vec![x.powi(2), x.clone()]]);
+        let m = Matrix::new(vec![vec![x.powi(2), x.clone()]]).unwrap();
         let result = m.subs(&x, &crate::int(3));
         assert_eq!(format!("{}", result.get(0, 0)), "9");
         assert_eq!(format!("{}", result.get(0, 1)), "3");
@@ -2781,7 +2760,7 @@ mod tests {
 
     #[test]
     fn matrix_eval() {
-        let m = Matrix::new(vec![vec![crate::pi().cos(), crate::int(2) + crate::int(3)]]);
+        let m = Matrix::new(vec![vec![crate::pi().cos(), crate::int(2) + crate::int(3)]]).unwrap();
         let evaled = m.eval();
         assert_eq!(format!("{}", evaled.get(0, 0)), "-1");
         assert_eq!(format!("{}", evaled.get(0, 1)), "5");
@@ -2791,7 +2770,7 @@ mod tests {
     fn matrix_expand() {
         let x = crate::var("x");
         let expr = (&x + crate::int(1)).powi(2);
-        let m = Matrix::new(vec![vec![expr]]);
+        let m = Matrix::new(vec![vec![expr]]).unwrap();
         let expanded = m.expand();
         let s = format!("{}", expanded.get(0, 0));
         // Should be expanded: 1 + x^2 + 2*x (or similar)
@@ -2809,7 +2788,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(2), crate::int(1)],
             vec![crate::int(0), crate::int(3)],
-        ]);
+        ]).unwrap();
         let evs = m.eigenvects(&var).expect("eigenvects should succeed for square matrix");
         assert_eq!(evs.len(), 2, "should have 2 distinct eigenvalues");
         for (eigenval, mult, vecs) in &evs {
@@ -2834,7 +2813,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(2), crate::int(3)],
             vec![crate::int(4), crate::int(5), crate::int(6)],
-        ]);
+        ]).unwrap();
         let result = m.eigenvects(&var);
         assert!(result.is_err(), "non-square matrix should return Err");
         let err_msg = format!("{}", result.unwrap_err());
@@ -2865,7 +2844,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(2), crate::int(1)],
             vec![crate::int(0), crate::int(3)],
-        ]);
+        ]).unwrap();
         let (p, d) = m
             .diagonalize(&var)
             .expect("upper triangular should be diagonalizable");
@@ -2894,7 +2873,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(1)],
             vec![crate::int(0), crate::int(1)],
-        ]);
+        ]).unwrap();
         let result = m.diagonalize(&var);
         assert!(
             result.is_err(),
@@ -2947,7 +2926,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(1)],
             vec![crate::int(0), crate::int(1)],
-        ]);
+        ]).unwrap();
         let (_p, j) = m.jordan_form(&var).expect("should succeed for defective matrix");
         assert_eq!(j.nrows(), 2);
         // J should have 1 on diagonal and 1 on superdiagonal
@@ -2965,7 +2944,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(2), crate::int(1)],
             vec![crate::int(0), crate::int(3)],
-        ]);
+        ]).unwrap();
         let (p, j) = m.jordan_form(&var).expect("distinct eigenvalues should succeed");
         assert_eq!(j.nrows(), 2);
         // Since eigenvalues are distinct, Jordan form = diagonal form.
@@ -3026,7 +3005,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(2), crate::int(3)],
             vec![crate::int(4), crate::int(5), crate::int(6)],
-        ]);
+        ]).unwrap();
         assert!(m.matrix_exp(&var).is_err());
     }
 
@@ -3036,7 +3015,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(2), crate::int(3)],
             vec![crate::int(4), crate::int(5), crate::int(6)],
-        ]);
+        ]).unwrap();
         assert!(m.jordan_form(&var).is_err());
     }
 
@@ -3046,7 +3025,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(2), crate::int(3)],
             vec![crate::int(4), crate::int(5), crate::int(6)],
-        ]);
+        ]).unwrap();
         assert!(
             m.diagonalize(&var).is_err(),
             "non-square should return Err"
@@ -3064,7 +3043,7 @@ mod tests {
         let m = Matrix::new(vec![
             vec![crate::int(1), crate::int(2)],
             vec![crate::int(3), crate::int(4)],
-        ]);
+        ]).unwrap();
         let s = format!("{m}");
         assert!(s.contains("1") && s.contains("4"), "display: {s}");
     }
@@ -3137,11 +3116,11 @@ mod tests {
         let _ = m.get(2, 0);
     }
 
-    // ── try_* constructor tests ────────────────────────────────────────
+    // ── constructor validation tests ───────────────────────────────────
 
     #[test]
-    fn try_new_empty_returns_error() {
-        let result = Matrix::try_new(vec![]);
+    fn new_empty_returns_error() {
+        let result = Matrix::new(vec![]);
         assert!(result.is_err(), "empty rows should return Err");
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
@@ -3151,8 +3130,8 @@ mod tests {
     }
 
     #[test]
-    fn try_new_jagged_returns_error() {
-        let result = Matrix::try_new(vec![
+    fn new_jagged_returns_error() {
+        let result = Matrix::new(vec![
             vec![crate::int(1), crate::int(2)],
             vec![crate::int(3)],
         ]);
@@ -3165,8 +3144,8 @@ mod tests {
     }
 
     #[test]
-    fn try_new_valid_succeeds() {
-        let result = Matrix::try_new(vec![
+    fn new_valid_succeeds() {
+        let result = Matrix::new(vec![
             vec![crate::int(1), crate::int(2)],
             vec![crate::int(3), crate::int(4)],
         ]);

@@ -288,7 +288,7 @@ impl StateSpace {
         let last_row: Vec<Ex> = (0..n)
             .map(|j| ctrb_inv.get(n - 1, j).clone())
             .collect();
-        let last_row_mat = Matrix::new(vec![last_row]); // 1×n
+        let last_row_mat = Matrix::new(vec![last_row]).unwrap(); // 1×n
 
         let k = last_row_mat.matmul(&p_a).expect("matmul: dimension mismatch"); // 1×n
         Some(k)
@@ -615,17 +615,17 @@ mod tests {
         let a = Matrix::new(vec![
             vec![crate::int(0), crate::int(1)],
             vec![crate::int(-2), crate::int(-3)],
-        ]);
+        ]).unwrap();
         let b = Matrix::new(vec![
             vec![crate::int(0)],
             vec![crate::int(1)],
-        ]);
+        ]).unwrap();
         let c = Matrix::new(vec![
             vec![crate::int(1), crate::int(0)],
-        ]);
+        ]).unwrap();
         let d = Matrix::new(vec![
             vec![crate::int(0)],
-        ]);
+        ]).unwrap();
         let ss = StateSpace::new(a, b, c, d);
         assert_eq!(ss.num_states(), 2);
         assert_eq!(ss.num_inputs(), 1);

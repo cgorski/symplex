@@ -62,11 +62,11 @@ fn matrix_add() {
     let a = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let b = Matrix::new(vec![
         vec![symplex::int(10), symplex::int(20)],
         vec![symplex::int(30), symplex::int(40)],
-    ]);
+    ]).unwrap();
     let c = a.add(&b).unwrap();
     assert_eq!(format!("{}", c.get(0, 0)), "11");
     assert_eq!(format!("{}", c.get(1, 1)), "44");
@@ -94,11 +94,11 @@ fn matrix_matmul_2x2() {
     let a = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let b = Matrix::new(vec![
         vec![symplex::int(5), symplex::int(6)],
         vec![symplex::int(7), symplex::int(8)],
-    ]);
+    ]).unwrap();
     let c = a.matmul(&b).unwrap();
     // [1*5+2*7, 1*6+2*8] = [19, 22]
     // [3*5+4*7, 3*6+4*8] = [43, 50]
@@ -113,7 +113,7 @@ fn matrix_det_2x2() {
     let m = Matrix::new(vec![
         vec![symplex::int(3), symplex::int(7)],
         vec![symplex::int(1), symplex::int(5)],
-    ]);
+    ]).unwrap();
     assert_eq!(format!("{}", m.det().unwrap()), "8");
 }
 
@@ -123,7 +123,7 @@ fn matrix_det_3x3_singular() {
         vec![symplex::int(1), symplex::int(2), symplex::int(3)],
         vec![symplex::int(4), symplex::int(5), symplex::int(6)],
         vec![symplex::int(7), symplex::int(8), symplex::int(9)],
-    ]);
+    ]).unwrap();
     assert_eq!(format!("{}", m.det().unwrap()), "0");
 }
 
@@ -133,7 +133,7 @@ fn matrix_det_3x3_nonsingular() {
         vec![symplex::int(1), symplex::int(2), symplex::int(3)],
         vec![symplex::int(0), symplex::int(1), symplex::int(4)],
         vec![symplex::int(5), symplex::int(6), symplex::int(0)],
-    ]);
+    ]).unwrap();
     let det = m.det().unwrap();
     // det = 1(0-24) - 2(0-20) + 3(0-5) = -24 + 40 - 15 = 1
     assert_eq!(format!("{det}"), "1");
@@ -144,7 +144,7 @@ fn matrix_trace() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(4)],
-    ]);
+    ]).unwrap();
     assert_eq!(format!("{}", m.trace().unwrap()), "5");
 }
 
@@ -155,7 +155,7 @@ fn matrix_trace() {
 #[test]
 fn matrix_diff() {
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.powi(2), x.sin()], vec![x.cos(), x.exp()]]);
+    let m = Matrix::new(vec![vec![x.powi(2), x.sin()], vec![x.cos(), x.exp()]]).unwrap();
     let dm = m.diff(&x);
     let s00 = format!("{}", dm.get(0, 0));
     assert_eq!(s00, "2*x", "d/dx(x²) should be exactly 2*x, got: {s00}");
@@ -166,7 +166,7 @@ fn matrix_diff() {
 #[test]
 fn matrix_subs() {
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.powi(2), &x + 1]]);
+    let m = Matrix::new(vec![vec![x.powi(2), &x + 1]]).unwrap();
     let at2 = m.subs(&x, &symplex::int(2));
     assert_eq!(format!("{}", at2.get(0, 0)), "4");
     assert_eq!(format!("{}", at2.get(0, 1)), "3");
@@ -194,7 +194,7 @@ fn matrix_display() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let s = format!("{m}");
     // Verify all four entries appear and the matrix renders with structure
     assert!(s.contains("1") && s.contains("2") && s.contains("3") && s.contains("4"),
@@ -208,7 +208,7 @@ fn matrix_map() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(4)],
         vec![symplex::int(9), symplex::int(16)],
-    ]);
+    ]).unwrap();
     let sqrt_m = m.map(|e| e.sqrt().eval());
     assert_eq!(format!("{}", sqrt_m.get(0, 0)), "1");
     assert_eq!(format!("{}", sqrt_m.get(0, 1)), "2");

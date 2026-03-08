@@ -14,10 +14,10 @@ fn state_space_dimensions() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(-2), symplex::int(-3)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert_eq!(ss.num_states(), 2);
@@ -37,10 +37,10 @@ fn state_space_poles_2x2() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(-2), symplex::int(-3)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let s = symplex::var("s");
@@ -67,10 +67,10 @@ fn state_space_char_poly() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(-2), symplex::int(-3)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let s = symplex::var("s");
@@ -103,10 +103,10 @@ fn state_space_controllability() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(0), symplex::int(0)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert!(ss.is_controllable(), "System should be controllable");
@@ -123,10 +123,10 @@ fn state_space_not_controllable() {
     let a = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(2)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(1)], vec![symplex::int(0)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(1)], vec![symplex::int(0)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert!(
@@ -146,10 +146,10 @@ fn state_space_observability() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(0), symplex::int(0)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert!(ss.is_observable(), "System should be observable");
@@ -165,10 +165,10 @@ fn state_space_stable() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(-2), symplex::int(-3)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let stability = ss.is_stable();
@@ -185,10 +185,10 @@ fn state_space_unstable() {
     let a = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(-1)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(1)], vec![symplex::int(0)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(1)], vec![symplex::int(0)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let stability = ss.is_stable();
@@ -419,18 +419,18 @@ fn controllability_matrix_size() {
         vec![symplex::int(1), symplex::int(0), symplex::int(0)],
         vec![symplex::int(0), symplex::int(2), symplex::int(0)],
         vec![symplex::int(0), symplex::int(0), symplex::int(3)],
-    ]);
+    ]).unwrap();
     let b = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(0), symplex::int(0)],
-    ]);
+    ]).unwrap();
     let c = Matrix::new(vec![vec![
         symplex::int(1),
         symplex::int(0),
         symplex::int(0),
-    ]]);
-    let d = Matrix::new(vec![vec![symplex::int(0), symplex::int(0)]]);
+    ]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0), symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let cm = ss.controllability_matrix();
@@ -452,13 +452,13 @@ fn observability_matrix_size() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(-2), symplex::int(-3)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
     let c = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(1)],
-    ]);
-    let d = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(0)]]);
+    ]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let om = ss.observability_matrix();
@@ -585,10 +585,10 @@ fn state_space_char_poly_nonzero_at_non_root() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(-2), symplex::int(-3)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let s = symplex::var("s");
@@ -608,10 +608,10 @@ fn state_space_char_poly_nonzero_at_non_root() {
 #[test]
 fn state_space_1x1_system() {
     // Simple first-order system: dx/dt = -2x + u, y = x
-    let a = Matrix::new(vec![vec![symplex::int(-2)]]);
-    let b = Matrix::new(vec![vec![symplex::int(1)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    let a = Matrix::new(vec![vec![symplex::int(-2)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert_eq!(ss.num_states(), 1);
@@ -652,10 +652,10 @@ fn state_space_display() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(-2), symplex::int(-3)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let display = format!("{ss}");
@@ -694,10 +694,10 @@ fn state_space_not_observable() {
     let a = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(2)],
-    ]);
-    let b = Matrix::new(vec![vec![symplex::int(1)], vec![symplex::int(0)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(1)], vec![symplex::int(0)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert!(

@@ -75,11 +75,11 @@ proptest! {
         let a = Matrix::new(vec![
             vec![symplex::int(a11), symplex::int(a12)],
             vec![symplex::int(a21), symplex::int(a22)],
-        ]);
+        ]).unwrap();
         let b = Matrix::new(vec![
             vec![symplex::int(b11), symplex::int(b12)],
             vec![symplex::int(b21), symplex::int(b22)],
-        ]);
+        ]).unwrap();
         let ab = a.matmul(&b).unwrap();
         let det_a = a.det().unwrap();
         let det_b = b.det().unwrap();
@@ -105,11 +105,11 @@ proptest! {
         let a = Matrix::new(vec![
             vec![symplex::int(a11), symplex::int(a12)],
             vec![symplex::int(a21), symplex::int(a22)],
-        ]);
+        ]).unwrap();
         let b = Matrix::new(vec![
             vec![symplex::int(b11), symplex::int(b12)],
             vec![symplex::int(b21), symplex::int(b22)],
-        ]);
+        ]).unwrap();
         let sum = a.add(&b).unwrap();
         let trace_sum = sum.trace().unwrap();
         let trace_a_plus_b = &a.trace().unwrap() + &b.trace().unwrap();

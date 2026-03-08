@@ -25,7 +25,7 @@ fn rref_2x3() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2), symplex::int(3)],
         vec![symplex::int(4), symplex::int(5), symplex::int(6)],
-    ]);
+    ]).unwrap();
     let (rref_mat, pivots) = m.rref();
     assert_eq!(pivots.len(), 2); // rank 2
     // First pivot column 0, second pivot column 1
@@ -43,7 +43,7 @@ fn rref_rank_deficient() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(1), symplex::int(2)],
-    ]);
+    ]).unwrap();
     let (_, pivots) = m.rref();
     assert_eq!(pivots.len(), 1);
 }
@@ -69,7 +69,7 @@ fn rank_rectangular() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(0), symplex::int(2)],
         vec![symplex::int(0), symplex::int(1), symplex::int(3)],
-    ]);
+    ]).unwrap();
     assert_eq!(m.rank(), 2);
 }
 
@@ -88,7 +88,7 @@ fn nullspace_rank_deficient() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(2), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let ns = m.nullspace();
     assert_eq!(ns.len(), 1, "rank-1 2x2 should have 1-dim nullspace");
     // The nullspace vector should be a 2x1 column vector
@@ -102,7 +102,7 @@ fn nullspace_vector_is_in_kernel() {
     let a = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(2), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let ns = a.nullspace();
     assert_eq!(ns.len(), 1);
     // Multiply A * v; result should be the zero vector (structurally after simplify)
@@ -137,7 +137,7 @@ fn columnspace_rank_deficient() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(2), symplex::int(4)],
-    ]);
+    ]).unwrap();
     let cs = m.columnspace();
     assert_eq!(cs.len(), 1, "rank-1 matrix has 1-dim column space");
 }
@@ -166,7 +166,7 @@ fn lu_2x2_verify_pa_eq_lu() {
     let a = Matrix::new(vec![
         vec![symplex::int(2), symplex::int(3)],
         vec![symplex::int(4), symplex::int(7)],
-    ]);
+    ]).unwrap();
     let (l, u, perm) = a.lu().expect("non-singular 2x2 should have LU");
 
     // Reconstruct PA
@@ -174,7 +174,7 @@ fn lu_2x2_verify_pa_eq_lu() {
         perm.iter()
             .map(|&r| (0..a.ncols()).map(|c| a.get(r, c).clone()).collect())
             .collect(),
-    );
+    ).unwrap();
 
     // Reconstruct LU
     let lu = l.matmul(&u).unwrap().simplify();
@@ -198,7 +198,7 @@ fn lu_singular_returns_none() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(2), symplex::int(4)],
-    ]);
+    ]).unwrap();
     assert!(m.lu().is_none(), "singular matrix should return None");
 }
 
@@ -275,7 +275,7 @@ fn is_square_and_not() {
     let rect = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2), symplex::int(3)],
         vec![symplex::int(4), symplex::int(5), symplex::int(6)],
-    ]);
+    ]).unwrap();
     assert!(!rect.is_square());
 }
 
@@ -284,7 +284,7 @@ fn is_symmetric_true() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(2), symplex::int(1)],
-    ]);
+    ]).unwrap();
     assert!(m.is_symmetric());
 }
 
@@ -293,7 +293,7 @@ fn is_symmetric_false() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(1)],
-    ]);
+    ]).unwrap();
     assert!(!m.is_symmetric());
 }
 
@@ -330,7 +330,7 @@ fn rank_nullity_theorem() {
         vec![symplex::int(1), symplex::int(2), symplex::int(3)],
         vec![symplex::int(4), symplex::int(5), symplex::int(6)],
         vec![symplex::int(7), symplex::int(8), symplex::int(9)],
-    ]);
+    ]).unwrap();
     let r = m.rank();
     let ns = m.nullspace();
     assert_eq!(

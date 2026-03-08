@@ -1053,6 +1053,7 @@ fn generate_matrix(input: &MatrixMacroInput) -> syn::Result<TokenStream2> {
     }
     Ok(quote! {
         ::symplex::matrix::Matrix::new(vec![#(#row_codes),*])
+            .expect("matrix! macro: invalid literal data")
     })
 }
 

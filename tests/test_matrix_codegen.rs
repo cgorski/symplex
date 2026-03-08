@@ -174,7 +174,7 @@ fn matrix_codegen_has_cse_across_entries() {
     let m = Matrix::new(vec![
         vec![&shared * 2, &shared + &x],
         vec![&shared * &y, &shared * 3],
-    ]);
+    ]).unwrap();
 
     let code = m.to_rust_fn("shared_trig", &["x", "y"]).unwrap();
 
@@ -321,7 +321,7 @@ fn codegen_options_f32() {
     let m = Matrix::new(vec![
         vec![x.sin(), x.cos()],
         vec![-x.cos(), x.sin()],
-    ]);
+    ]).unwrap();
 
     let opts = CodegenOptions {
         precision: Precision::F32,
@@ -354,7 +354,7 @@ fn codegen_options_f32() {
 #[test]
 fn codegen_options_libm() {
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.sin(), x.cos()]]);
+    let m = Matrix::new(vec![vec![x.sin(), x.cos()]]).unwrap();
 
     let opts = CodegenOptions {
         math_backend: MathBackend::Libm,
@@ -383,7 +383,7 @@ fn codegen_options_libm() {
 #[test]
 fn codegen_options_cfg_gated() {
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.sin(), x.cos()]]);
+    let m = Matrix::new(vec![vec![x.sin(), x.cos()]]).unwrap();
 
     let opts = CodegenOptions {
         math_backend: MathBackend::CfgGated,
@@ -417,7 +417,7 @@ fn codegen_options_cfg_gated() {
 #[test]
 fn codegen_options_inline() {
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.sin(), x.cos()]]);
+    let m = Matrix::new(vec![vec![x.sin(), x.cos()]]).unwrap();
 
     let opts = CodegenOptions {
         inline: true,
@@ -446,7 +446,7 @@ fn codegen_options_no_cse() {
     let m = Matrix::new(vec![
         vec![&shared * 2, &shared + 1],
         vec![&shared * &x, &shared * 3],
-    ]);
+    ]).unwrap();
 
     // With CSE enabled (default) — should have let bindings
     let opts_cse = CodegenOptions::default();
@@ -604,7 +604,7 @@ fn pipeline_fk_codegen() {
     let (x, y, z) = fk_position(&dh);
 
     // Generate code for the FK position vector (3 entries as a 3×1 matrix)
-    let fk_mat = Matrix::new(vec![vec![x], vec![y], vec![z]]);
+    let fk_mat = Matrix::new(vec![vec![x], vec![y], vec![z]]).unwrap();
     assert_eq!(fk_mat.shape(), (3, 1));
 
     let code = fk_mat
@@ -639,7 +639,7 @@ fn cse_multi_shares_trig_across_entries() {
     let e2 = &shared_sin + &y;
 
     // Build as a 1×2 matrix so codegen goes through the matrix path with cse_multi
-    let m = Matrix::new(vec![vec![e1, e2]]);
+    let m = Matrix::new(vec![vec![e1, e2]]).unwrap();
     let code = m.to_rust_fn("shared_sin_fn", &["x", "y"]).unwrap();
 
     assert_valid_generated_code(&code, "shared_sin_fn", 2);
@@ -677,7 +677,7 @@ fn cse_multi_partial_overlap_detection() {
     let e1 = &ab + &ac + &d;
     let e2 = &ab + &ac + d.powi(2);
 
-    let m = Matrix::new(vec![vec![e1, e2]]);
+    let m = Matrix::new(vec![vec![e1, e2]]).unwrap();
 
     // With CSE
     let opts = CodegenOptions::default();
@@ -778,7 +778,7 @@ fn matrix_codegen_empty_matrix() {
     // total==1 produces an unbalanced opening bracket, so we skip the
     // balanced-brackets assertion here and only verify the structural content.
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.sin()]]);
+    let m = Matrix::new(vec![vec![x.sin()]]).unwrap();
     let code = m.to_rust_fn("single_entry", &["x"]).unwrap();
 
     // Should return [f64; 1]
@@ -813,7 +813,7 @@ fn matrix_codegen_preserves_entry_order() {
     let m = Matrix::new(vec![
         vec![a.clone(), b.clone()],
         vec![c.clone(), d.clone()],
-    ]);
+    ]).unwrap();
 
     // Use no CSE to make the output easier to parse
     let opts = CodegenOptions {
@@ -875,7 +875,7 @@ fn matrix_codegen_preserves_entry_order() {
 fn codegen_options_f32_with_libm() {
     // Combine F32 precision with Libm backend
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.sin(), x.cos()]]);
+    let m = Matrix::new(vec![vec![x.sin(), x.cos()]]).unwrap();
 
     let opts = CodegenOptions {
         precision: Precision::F32,
@@ -907,7 +907,7 @@ fn codegen_options_f32_with_libm() {
 #[test]
 fn codegen_options_inline_with_must_use() {
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]);
+    let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]).unwrap();
 
     let opts = CodegenOptions {
         inline: true,
@@ -942,7 +942,7 @@ fn matrix_codegen_constant_matrix() {
     let m = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(1)],
-    ]);
+    ]).unwrap();
 
     let code = m.to_rust_fn("const_id", &[]).unwrap();
 
@@ -973,7 +973,7 @@ fn matrix_codegen_large_matrix_balanced() {
             symplex::int(0),
             symplex::int(1),
         ],
-    ]);
+    ]).unwrap();
 
     let code = m.to_rust_fn("big_matrix", &["x", "y"]).unwrap();
 
@@ -1045,7 +1045,7 @@ fn pipeline_dh_jacobian_numerical_at_zero() {
 #[test]
 fn codegen_no_must_use_annotation() {
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]);
+    let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]).unwrap();
 
     let opts = CodegenOptions {
         must_use: false,
@@ -1067,7 +1067,7 @@ fn matrix_codegen_with_pi_constant() {
     // Matrix that uses pi constant
     let x = symplex::var("x");
     let pi = symplex::pi();
-    let m = Matrix::new(vec![vec![&x * &pi, x.sin()]]);
+    let m = Matrix::new(vec![vec![&x * &pi, x.sin()]]).unwrap();
 
     let code = m.to_rust_fn("pi_matrix", &["x"]).unwrap();
 
@@ -1084,7 +1084,7 @@ fn matrix_codegen_with_e_constant() {
     // Matrix that uses Euler's number
     let x = symplex::var("x");
     let e_const = symplex::e();
-    let m = Matrix::new(vec![vec![&x * &e_const, x.exp()]]);
+    let m = Matrix::new(vec![vec![&x * &e_const, x.exp()]]).unwrap();
 
     let code = m.to_rust_fn("euler_matrix", &["x"]).unwrap();
 
@@ -1095,7 +1095,7 @@ fn matrix_codegen_with_e_constant() {
 #[test]
 fn codegen_cfg_gated_has_both_std_and_no_std() {
     let x = symplex::var("x");
-    let m = Matrix::new(vec![vec![x.sin(), x.cos()]]);
+    let m = Matrix::new(vec![vec![x.sin(), x.cos()]]).unwrap();
 
     let opts = CodegenOptions {
         math_backend: MathBackend::CfgGated,
@@ -1124,7 +1124,7 @@ fn matrix_codegen_multi_param_signature() {
     let y = symplex::var("y");
     let z = symplex::var("z");
 
-    let m = Matrix::new(vec![vec![&x + &y + &z]]);
+    let m = Matrix::new(vec![vec![&x + &y + &z]]).unwrap();
     let code = m.to_rust_fn("three_params", &["x", "y", "z"]).unwrap();
 
     assert!(

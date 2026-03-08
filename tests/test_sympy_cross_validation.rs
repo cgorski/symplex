@@ -973,7 +973,7 @@ fn parse_matrix_from_json(
         mat_rows.push(mat_row);
     }
 
-    Some(symplex::matrix::Matrix::new(mat_rows))
+    Some(symplex::matrix::Matrix::new(mat_rows).unwrap())
 }
 
 fn process_matrix(ctx: &Context, fixture: &Fixture, subcat: &str) -> Status {

@@ -186,7 +186,7 @@ impl Quaternion {
             vec![r00, r01, r02],
             vec![r10, r11, r12],
             vec![r20, r21, r22],
-        ])
+        ]).unwrap()
     }
 
     /// Create a quaternion from an axis-angle representation.

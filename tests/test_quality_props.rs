@@ -74,7 +74,7 @@ proptest! {
             .chunks(3)
             .map(|row| row.iter().map(|&v| symplex::int(v)).collect())
             .collect();
-        let m = symplex::matrix::Matrix::new(data);
+        let m = symplex::matrix::Matrix::new(data).unwrap();
 
         if let Ok(inv) = m.inv() {
             let product = m.matmul(&inv).unwrap();
@@ -146,12 +146,12 @@ proptest! {
             a_entries.chunks(3)
                 .map(|row| row.iter().map(|&v| symplex::int(v)).collect())
                 .collect(),
-        );
+        ).unwrap();
         let mat_b = symplex::matrix::Matrix::new(
             b_entries.chunks(3)
                 .map(|row| row.iter().map(|&v| symplex::int(v)).collect())
                 .collect(),
-        );
+        ).unwrap();
 
         let det_a = mat_a.det().unwrap().eval().simplify();
         let det_b = mat_b.det().unwrap().eval().simplify();

@@ -193,7 +193,7 @@ pub fn mass_matrix(
         }
         rows.push(row);
     }
-    Matrix::new(rows).eval()
+    Matrix::new(rows).unwrap().eval()
 }
 
 /// Compute Christoffel symbols of the first kind from the mass matrix.
@@ -328,7 +328,7 @@ pub fn coriolis_matrix(
         rows.push(row);
     }
 
-    Matrix::new(rows).eval()
+    Matrix::new(rows).unwrap().eval()
 }
 
 /// Compute the gravity vector g(q) = ∂V/∂q.

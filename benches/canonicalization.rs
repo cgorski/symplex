@@ -400,7 +400,7 @@ fn bench_matrix(c: &mut Criterion) {
         let data: Vec<Vec<Ex>> = (0..n)
             .map(|i| (0..n).map(|j| ctx.int((i * n + j + 1) as i64)).collect())
             .collect();
-        let m = symplex::matrix::Matrix::new(data);
+        let m = symplex::matrix::Matrix::new(data).unwrap();
 
         c.bench_function(&format!("det_integer_{n}x{n}"), |b| {
             b.iter(|| black_box(&m).det())
@@ -425,7 +425,7 @@ fn bench_matrix(c: &mut Criterion) {
                 .collect()
         })
         .collect();
-    let sym_m = symplex::matrix::Matrix::new(data);
+    let sym_m = symplex::matrix::Matrix::new(data).unwrap();
     c.bench_function("det_symbolic_3x3", |b| b.iter(|| black_box(&sym_m).det()));
 }
 

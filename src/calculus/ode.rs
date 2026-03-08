@@ -2956,7 +2956,7 @@ pub fn checkodesol(
 /// let a = Matrix::new(vec![
 ///     vec![symplex::int(0), symplex::int(1)],
 ///     vec![symplex::int(-2), symplex::int(-3)],
-/// ]);
+/// ]).unwrap();
 /// let sol = symplex::ode::solve_ode_system(&a, &t).unwrap();
 /// assert_eq!(sol.len(), 2);
 /// ```

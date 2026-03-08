@@ -62,7 +62,7 @@ fn cholesky_2x2() {
     let a = Matrix::new(vec![
         vec![symplex::int(4), symplex::int(2)],
         vec![symplex::int(2), symplex::int(3)],
-    ]);
+    ]).unwrap();
 
     let l = a.cholesky().unwrap().expect("Cholesky should succeed for SPD matrix");
 
@@ -85,7 +85,7 @@ fn cholesky_3x3() {
         vec![symplex::int(4), symplex::int(12), symplex::int(-16)],
         vec![symplex::int(12), symplex::int(37), symplex::int(-43)],
         vec![symplex::int(-16), symplex::int(-43), symplex::int(98)],
-    ]);
+    ]).unwrap();
 
     let l = a.cholesky().unwrap().expect("Cholesky should succeed for SPD matrix");
 
@@ -112,7 +112,7 @@ fn cholesky_not_positive_definite() {
     let a = Matrix::new(vec![
         vec![symplex::int(-1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(1)],
-    ]);
+    ]).unwrap();
 
     assert!(
         a.cholesky().unwrap().is_none(),
@@ -141,7 +141,7 @@ fn pinv_full_rank() {
     let a = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(2)],
         vec![symplex::int(3), symplex::int(4)],
-    ]);
+    ]).unwrap();
 
     let pinv = a.pinv().expect("pinv should succeed for full-rank matrix");
     let inv = a.inv().expect("inv should succeed for invertible matrix");
@@ -170,7 +170,7 @@ fn pinv_overdetermined() {
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(1), symplex::int(1)],
-    ]);
+    ]).unwrap();
 
     let pinv = a.pinv().expect("pinv should succeed for full-column-rank matrix");
 
@@ -200,18 +200,18 @@ fn riccati_residual_setup() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(-2), symplex::int(-3)],
-    ]);
+    ]).unwrap();
     let b = Matrix::new(vec![
         vec![symplex::int(0)],
         vec![symplex::int(1)],
-    ]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let p = Matrix::identity(2);
     let q = Matrix::identity(2);
-    let r = Matrix::new(vec![vec![symplex::int(1)]]);
+    let r = Matrix::new(vec![vec![symplex::int(1)]]).unwrap();
 
     let residual = ss
         .riccati_residual(&p, &q, &r)
@@ -227,15 +227,15 @@ fn riccati_residual_at_solution() {
     // CARE: AᵀP + PA - PBR⁻¹BᵀP + Q = 0
     //       0 + 0 - P² + 1 = 0  →  P = 1
     // With P = [[1]], residual should be zero.
-    let a = Matrix::new(vec![vec![symplex::int(0)]]);
-    let b = Matrix::new(vec![vec![symplex::int(1)]]);
-    let c = Matrix::new(vec![vec![symplex::int(1)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    let a = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    let p = Matrix::new(vec![vec![symplex::int(1)]]);
-    let q = Matrix::new(vec![vec![symplex::int(1)]]);
-    let r = Matrix::new(vec![vec![symplex::int(1)]]);
+    let p = Matrix::new(vec![vec![symplex::int(1)]]).unwrap();
+    let q = Matrix::new(vec![vec![symplex::int(1)]]).unwrap();
+    let r = Matrix::new(vec![vec![symplex::int(1)]]).unwrap();
 
     let residual = ss
         .riccati_residual(&p, &q, &r)
@@ -259,13 +259,13 @@ fn ackermann_simple() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(0), symplex::int(0)],
-    ]);
+    ]).unwrap();
     let b = Matrix::new(vec![
         vec![symplex::int(0)],
         vec![symplex::int(1)],
-    ]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a.clone(), b.clone(), c, d);
 
     let desired_poles = vec![symplex::int(-1), symplex::int(-2)];
@@ -309,13 +309,13 @@ fn ackermann_not_controllable_returns_none() {
     let a = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(2)],
-    ]);
+    ]).unwrap();
     let b = Matrix::new(vec![
         vec![symplex::int(1)],
         vec![symplex::int(0)],
-    ]);
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]);
-    let d = Matrix::new(vec![vec![symplex::int(0)]]);
+    ]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let desired_poles = vec![symplex::int(-1), symplex::int(-2)];
@@ -331,11 +331,11 @@ fn ackermann_multi_input_returns_none() {
     let a = Matrix::new(vec![
         vec![symplex::int(0), symplex::int(1)],
         vec![symplex::int(0), symplex::int(0)],
-    ]);
+    ]).unwrap();
     let b = Matrix::new(vec![
         vec![symplex::int(1), symplex::int(0)],
         vec![symplex::int(0), symplex::int(1)],
-    ]);
+    ]).unwrap();
     let c = Matrix::identity(2);
     let d = Matrix::zeros(2, 2);
     let ss = StateSpace::new(a, b, c, d);

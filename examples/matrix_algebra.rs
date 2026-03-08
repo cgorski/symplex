@@ -144,7 +144,7 @@ fn main() {
     let trig_m = Matrix::new(vec![
         vec![&x.sin().powi(2) + &x.cos().powi(2), symplex::int(0)],
         vec![symplex::int(0), symplex::int(1)],
-    ]);
+    ]).unwrap();
     println!("\nTrig matrix: {trig_m}");
     println!("Simplified:  {}", trig_m.simplify());
 
@@ -152,7 +152,7 @@ fn main() {
     let expand_m = Matrix::new(vec![
         vec![(&x + 1).powi(2), symplex::int(0)],
         vec![symplex::int(0), symplex::int(1)],
-    ]);
+    ]).unwrap();
     println!("Before expand: {expand_m}");
     println!("After expand:  {}", expand_m.expand());
 
@@ -287,7 +287,7 @@ fn main() {
     let rot_mat = Matrix::new(vec![
         vec![x.cos(), neg_sin_x],
         vec![x.sin(), x.cos()],
-    ]);
+    ]).unwrap();
     println!("R(x) = {rot_mat}");
 
     let code = rot_mat
