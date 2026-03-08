@@ -883,7 +883,7 @@ impl<S: Sort> Expr<S> {
         let inner = self.inner.read();
         let w = LatexWriter {
             arena: &inner.arena,
-            id: self.id,
+            id: self.raw_id(),
         };
         format!("{}", w)
     }

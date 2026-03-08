@@ -93,3 +93,41 @@ fn evalf_piecewise_true_branch() {
         "Piecewise with True cond should be 42, got {result}"
     );
 }
+
+#[test]
+fn piecewise_with_else_branch() {
+    // Piecewise with explicit True condition on last branch should work
+    let val = symplex::int(42);
+    let cond = symplex::int(1).gt(&symplex::int(0)); // 1 > 0 → True
+    let pw = Ex::piecewise(&[(&val, &cond)]);
+    let result = pw.eval_f64();
+    assert!(result.is_ok(), "piecewise with True condition should evaluate");
+    assert!((result.unwrap() - 42.0).abs() < 1e-10);
+}
+
+#[test]
+fn piecewise_all_false_returns_error() {
+    // Piecewise where all conditions are False should return Err
+    let cond_f1 = symplex::int(0).gt(&symplex::int(1)); // 0 > 1 → False
+    let cond_f2 = symplex::int(0).gt(&symplex::int(1)); // 0 > 1 → False
+    let pw = Ex::piecewise(&[
+        (&symplex::int(1), &cond_f1),
+        (&symplex::int(2), &cond_f2),
+    ]);
+    let result = pw.eval_f64();
+    assert!(result.is_err(), "piecewise with all-False conditions should return Err, got: {:?}", result);
+}
+
+#[test]
+fn piecewise_first_true_wins() {
+    // First True condition should be selected
+    let cond_t1 = symplex::int(1).gt(&symplex::int(0)); // 1 > 0 → True
+    let cond_t2 = symplex::int(1).gt(&symplex::int(0)); // 1 > 0 → True
+    let pw = Ex::piecewise(&[
+        (&symplex::int(1), &cond_t1),
+        (&symplex::int(2), &cond_t2),
+    ]);
+    let result = pw.eval_f64();
+    assert!(result.is_ok());
+    assert!((result.unwrap() - 1.0).abs() < 1e-10, "first True branch should win");
+}

@@ -53,12 +53,12 @@ impl<'a> ExprView<'a> {
 // PartialEq with Expr — compare by ExprId only (no locking needed)
 impl<S: crate::api::expr::Sort> PartialEq<crate::api::expr::Expr<S>> for ExprView<'_> {
     fn eq(&self, other: &crate::api::expr::Expr<S>) -> bool {
-        self.id == other.id
+        self.id == other.id()
     }
 }
 
 impl<S: crate::api::expr::Sort> PartialEq<&crate::api::expr::Expr<S>> for ExprView<'_> {
     fn eq(&self, other: &&crate::api::expr::Expr<S>) -> bool {
-        self.id == other.id
+        self.id == other.id()
     }
 }

@@ -339,7 +339,6 @@ pub fn assert_dimension(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prelude::*;
 
     /// Build a standard dimension map for tests.
     fn dims() -> DimMap {
@@ -497,6 +496,7 @@ mod tests {
     // --- Negation ---
 
     #[test]
+    #[allow(non_snake_case)]
     fn infer_negation_preserves_dimension() {
         crate::vars!(F);
         let expr = -&F;

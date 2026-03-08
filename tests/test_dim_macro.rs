@@ -4,7 +4,6 @@
 //! math syntax, ensuring that the generated `Qty<D>` arithmetic produces
 //! the correct output type via `FromDimExpr`.
 
-use symplex::prelude::*;
 use symplex::units::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -143,8 +142,8 @@ fn dim_length_cubed_is_volume() {
 
 #[test]
 fn dim_power_zero_is_dimensionless() {
-    let m = Mass::symbol("m");
-    let one: Dimensionless = symplex::dim!(Dimensionless: m^0);
+    let _m = Mass::symbol("m");
+    let one: Dimensionless = symplex::dim!(Dimensionless: _m^0);
     assert_eq!(format!("{}", one.inner()), "1");
 }
 

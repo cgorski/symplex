@@ -198,8 +198,7 @@ fn from_str_multiplication() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "cannot mix expressions from different contexts")]
+#[should_panic(expected = "cannot combine expressions from different contexts")]
 fn cross_context_add_panics_in_debug() {
     let ctx1 = Context::new();
     let ctx2 = Context::new();
@@ -209,8 +208,7 @@ fn cross_context_add_panics_in_debug() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "cannot mix expressions from different contexts")]
+#[should_panic(expected = "cannot combine expressions from different contexts")]
 fn cross_context_sub_panics_in_debug() {
     let ctx1 = Context::new();
     let ctx2 = Context::new();
@@ -220,8 +218,7 @@ fn cross_context_sub_panics_in_debug() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "cannot mix expressions from different contexts")]
+#[should_panic(expected = "cannot combine expressions from different contexts")]
 fn cross_context_mul_panics_in_debug() {
     let ctx1 = Context::new();
     let ctx2 = Context::new();
@@ -231,8 +228,7 @@ fn cross_context_mul_panics_in_debug() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "cannot mix expressions from different contexts")]
+#[should_panic(expected = "cannot combine expressions from different contexts")]
 fn cross_context_div_panics_in_debug() {
     let ctx1 = Context::new();
     let ctx2 = Context::new();

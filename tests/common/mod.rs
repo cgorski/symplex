@@ -118,7 +118,7 @@ pub fn assert_math_eq_rational(
     tol: f64,
     label: &str,
 ) {
-    let ctx = symplex::default_context();
+    let ctx = a.context();
     let mut checked = 0usize;
     for &(p, q) in points {
         let pt = ctx.rational(p, q);
@@ -178,7 +178,7 @@ pub fn assert_ftc_tol(integrand: &Ex, var: &Ex, tol: f64, label: &str) {
     );
     let deriv = antideriv.diff(var);
 
-    let ctx = symplex::default_context();
+    let ctx = integrand.context();
     let mut checked = 0usize;
     for &pt_f in FTC_POINTS {
         // Convert to rational to avoid float contamination
@@ -323,7 +323,7 @@ pub fn verify_ode_first_order(
     tol: f64,
     label: &str,
 ) {
-    let ctx = symplex::default_context();
+    let ctx = ode_expr.context();
     let dsol = solution.diff(indep_var);
 
     // Build the derivative symbol (formal derivative node)
@@ -453,7 +453,7 @@ pub fn eval_at_i64(expr: &Ex, var: &Ex, pt: i64) -> f64 {
 /// Evaluate an expression at a rational point after substitution + eval.
 /// Returns the f64 value or panics with a descriptive message.
 pub fn eval_at_rational(expr: &Ex, var: &Ex, p: i64, q: i64) -> f64 {
-    let ctx = symplex::default_context();
+    let ctx = expr.context();
     let pt = ctx.rational(p, q);
     expr.subs(var, &pt)
         .eval()
@@ -693,7 +693,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
         }
         ExprDomain::Rational => {
             // cancel() produces canonical coprime p/q form
-            let x = symplex::var("x");
+            let x = a.context().symbol("x");
             let cancelled = diff_eval.cancel(&x);
             let sc = format!("{cancelled}");
             if sc == "0" {
@@ -716,7 +716,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
             }
             // Try rewrite to exponential form and cancel
             let as_exp = diff_eval.rewrite_as_exp();
-            let x = symplex::var("x");
+            let x = a.context().symbol("x");
             let cancelled = as_exp.cancel(&x);
             let sc = format!("{cancelled}");
             if sc == "0" {
@@ -737,7 +737,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
             if se == "0" {
                 return true;
             }
-            let x = symplex::var("x");
+            let x = a.context().symbol("x");
             let cancelled = expanded.cancel(&x);
             let sc = format!("{cancelled}");
             if sc == "0" {
@@ -753,7 +753,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
                 Box::new(|e: &Ex| e.full_simplify()),
                 Box::new(|e: &Ex| e.smart_simplify()),
                 Box::new(|e: &Ex| {
-                    let x = symplex::var("x");
+                    let x = a.context().symbol("x");
                     e.rewrite_as_exp().cancel(&x)
                 }),
             ];
@@ -774,7 +774,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
 /// are near zero. Uses a larger point set than `assert_math_eq` for
 /// higher confidence.
 fn numerical_zero_test(expr: &Ex) -> bool {
-    let x = symplex::var("x");
+    let x = expr.context().symbol("x");
     let test_points: &[i64] = &[-7, -3, -2, 2, 3, 5, 7, 11];
     let mut checked = 0usize;
     for &pt in test_points {
@@ -808,7 +808,7 @@ pub fn assert_canonical_eq(a: &Ex, b: &Ex, label: &str) {
 
 /// Assert that an expression is canonically equal to zero.
 pub fn assert_canonical_zero(expr: &Ex, label: &str) {
-    let zero = symplex::int(0);
+    let zero = expr.context().int(0);
     assert!(
         canonical_eq(expr, &zero),
         "{label}: expression is not canonically zero: {expr}"

@@ -94,23 +94,13 @@ impl Context {
     /// Helper — wrap an [`ExprId`] into a user-facing [`Ex`] handle.
     #[inline]
     fn make_ex(&self, id: ExprId) -> crate::api::expr::Ex {
-        crate::api::expr::Ex {
-            ctx_id: self.id,
-            inner: Arc::clone(&self.inner),
-            id,
-            _sort: std::marker::PhantomData,
-        }
+        crate::api::expr::Ex::from_raw_parts(self.id, Arc::clone(&self.inner), id)
     }
 
     /// Helper — wrap an [`ExprId`] into a user-facing [`SetEx`] handle.
     #[inline]
     fn make_set_ex(&self, id: ExprId) -> crate::api::expr::SetEx {
-        crate::api::expr::SetEx {
-            ctx_id: self.id,
-            inner: Arc::clone(&self.inner),
-            id,
-            _sort: std::marker::PhantomData,
-        }
+        crate::api::expr::SetEx::from_raw_parts(self.id, Arc::clone(&self.inner), id)
     }
 
     // ── Atom construction ──────────────────────────────────────────────
@@ -185,7 +175,7 @@ impl Context {
     /// ```
     pub fn query(&self, ex: &crate::api::expr::Ex, prop: Props) -> Option<bool> {
         let inner = self.inner.read();
-        inner.assumptions.lock().query(&inner.arena, ex.id, prop)
+        inner.assumptions.lock().query(&inner.arena, ex.raw_id(), prop)
     }
 
     /// Creates an integer expression.
@@ -234,7 +224,7 @@ impl Context {
     /// assert_eq!(format!("{c}"), "c");
     /// ```
     pub fn physical_constant(&self, name: &str, value: crate::api::expr::Ex) -> crate::api::expr::Ex {
-        let val_id = value.id;
+        let val_id = value.raw_id();
         let id = self.inner.write().arena.physical_constant(name, val_id);
         self.make_ex(id)
     }
@@ -248,12 +238,9 @@ impl Context {
     /// Negative infinity (-∞).
     pub fn neg_infinity(&self) -> crate::api::expr::Ex {
         let inner = self.inner.read();
-        crate::api::expr::Ex {
-            ctx_id: self.id,
-            inner: Arc::clone(&self.inner),
-            id: inner.arena.neg_infinity,
-            _sort: std::marker::PhantomData,
-        }
+        let id = inner.arena.neg_infinity;
+        drop(inner);
+        self.make_ex(id)
     }
 
     /// Not-a-number.
@@ -354,7 +341,7 @@ impl Context {
         if right_open {
             flags |= crate::base::node::INTERVAL_RIGHT_OPEN;
         }
-        let id = self.inner.write().arena.interval(start.id, end.id, flags);
+        let id = self.inner.write().arena.interval(start.raw_id(), end.raw_id(), flags);
         self.make_set_ex(id)
     }
 
@@ -373,7 +360,7 @@ impl Context {
     /// assert!(display.contains("{") && display.contains("}"), "finite set: {display}");
     /// ```
     pub fn finite_set(&self, elements: &[crate::api::expr::Ex]) -> crate::api::expr::SetEx {
-        let ids: Vec<ExprId> = elements.iter().map(|e| e.id).collect();
+        let ids: Vec<ExprId> = elements.iter().map(|e| e.raw_id()).collect();
         let id = self.inner.write().arena.finite_set(&ids);
         self.make_set_ex(id)
     }
@@ -501,8 +488,8 @@ impl Context {
         equations: &[crate::api::expr::Ex],
         variables: &[crate::api::expr::Ex],
     ) -> Option<Vec<(crate::api::expr::Ex, crate::api::expr::Ex)>> {
-        let eq_ids: Vec<crate::base::node::ExprId> = equations.iter().map(|e| e.id).collect();
-        let var_ids: Vec<crate::base::node::ExprId> = variables.iter().map(|v| v.id).collect();
+        let eq_ids: Vec<crate::base::node::ExprId> = equations.iter().map(|e| e.raw_id()).collect();
+        let var_ids: Vec<crate::base::node::ExprId> = variables.iter().map(|v| v.raw_id()).collect();
 
         let mut inner = self.inner.write();
         let result = crate::domains::linalg::solve_linear_system(&mut inner.arena, &eq_ids, &var_ids)?;
@@ -560,15 +547,14 @@ impl Context {
             let new_id = crate::base::compact::transfer_subtree(
                 &src_inner.arena,
                 &mut dst_inner.arena,
-                root.id,
+                root.raw_id(),
                 &mut map,
             );
-            new_roots.push(crate::api::expr::Ex {
-                ctx_id: new_ctx.id,
-                inner: Arc::clone(&new_ctx.inner),
-                id: new_id,
-                _sort: std::marker::PhantomData,
-            });
+            new_roots.push(crate::api::expr::Ex::from_raw_parts(
+                new_ctx.id,
+                Arc::clone(&new_ctx.inner),
+                new_id,
+            ));
         }
 
         tracing::debug!(
@@ -597,7 +583,7 @@ impl Context {
     /// Returns a value between 0.0 and 1.0. A value of 0.3 means 70% of
     /// arena nodes are unreachable (dead) and would be freed by `compact()`.
     pub fn liveness_ratio(&self, roots: &[crate::api::expr::Ex]) -> f64 {
-        let root_ids: Vec<crate::base::node::ExprId> = roots.iter().map(|r| r.id).collect();
+        let root_ids: Vec<crate::base::node::ExprId> = roots.iter().map(|r| r.raw_id()).collect();
         let inner = self.inner.read();
         crate::base::compact::liveness_ratio(&inner.arena, &root_ids)
     }
@@ -608,7 +594,7 @@ impl Context {
     /// has doubled since the last compact, and less than 50% of nodes
     /// are reachable from the given roots.
     pub fn should_compact(&self, roots: &[crate::api::expr::Ex]) -> bool {
-        let root_ids: Vec<crate::base::node::ExprId> = roots.iter().map(|r| r.id).collect();
+        let root_ids: Vec<crate::base::node::ExprId> = roots.iter().map(|r| r.raw_id()).collect();
         let inner = self.inner.read();
         crate::base::compact::should_compact(&inner.arena, &root_ids)
     }

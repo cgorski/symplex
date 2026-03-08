@@ -247,15 +247,23 @@ fn rational_roots_of_poly(poly: &crate::poly::Poly) -> Vec<Ratio<BigInt>> {
     }
 
     // Cap divisor enumeration to avoid combinatorial explosion
-    let const_for_divs = if const_abs > 10_000 {
-        // For very large constant terms, only try small divisors
-        // This is a heuristic; we might miss some roots.
-        const_abs.min(10_000)
+    let const_for_divs = if const_abs > super::MAX_DIVISOR_COEFFICIENT as i64 {
+        tracing::debug!(
+            "polysys: coefficient {} exceeds divisor cap {}; truncating for rational root search",
+            const_abs,
+            super::MAX_DIVISOR_COEFFICIENT
+        );
+        super::MAX_DIVISOR_COEFFICIENT as i64
     } else {
         const_abs
     };
-    let lc_for_divs = if lc_abs > 10_000 {
-        lc_abs.min(10_000)
+    let lc_for_divs = if lc_abs > super::MAX_DIVISOR_COEFFICIENT as i64 {
+        tracing::debug!(
+            "polysys: leading coefficient {} exceeds divisor cap {}; truncating for rational root search",
+            lc_abs,
+            super::MAX_DIVISOR_COEFFICIENT
+        );
+        super::MAX_DIVISOR_COEFFICIENT as i64
     } else {
         lc_abs
     };
@@ -465,7 +473,7 @@ pub fn solve_system_ex(
     let num_vars = vars.len();
 
     // Build variable ExprId → column-index map.
-    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.raw_id()).collect();
     let var_map: FxHashMap<ExprId, usize> = var_ids
         .iter()
         .enumerate()
@@ -478,7 +486,7 @@ pub fn solve_system_ex(
 
     let mut polys = Vec::with_capacity(eqs.len());
     for eq_expr in eqs {
-        match expr_to_multipoly(arena, eq_expr.id, num_vars, &var_map) {
+        match expr_to_multipoly(arena, eq_expr.raw_id(), num_vars, &var_map) {
             Some(p) => polys.push(p),
             None => {
                 return Err(crate::base::errors::SymplexError::ComputationFailed {

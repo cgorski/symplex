@@ -5,7 +5,6 @@
 
 use std::fmt;
 use std::hash;
-use std::marker::PhantomData;
 use std::ops;
 use std::sync::Arc;
 
@@ -32,7 +31,7 @@ use crate::base::node::ExprId;
 /// or [`Expr::expand()`] to normalize before comparing.
 impl<S: Sort> PartialEq for Expr<S> {
     fn eq(&self, other: &Self) -> bool {
-        self.ctx_id == other.ctx_id && self.id == other.id
+        self.ctx_id == other.ctx_id && self.raw_id() == other.raw_id()
     }
 }
 
@@ -41,7 +40,7 @@ impl<S: Sort> Eq for Expr<S> {}
 impl<S: Sort> hash::Hash for Expr<S> {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.ctx_id.hash(state);
-        self.id.hash(state);
+        self.raw_id().hash(state);
     }
 }
 
@@ -52,13 +51,13 @@ impl<S: Sort> hash::Hash for Expr<S> {
 impl<S: Sort> fmt::Display for Expr<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let inner = self.inner.read();
-        fmt_expr(&inner.arena, f, self.id, 0)
+        fmt_expr(&inner.arena, f, self.raw_id(), 0)
     }
 }
 
 impl<S: Sort> fmt::Debug for Expr<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Ex({:?}, {:?})", self.ctx_id, self.id)
+        write!(f, "Ex({:?}, {:?})", self.ctx_id, self.raw_id())
     }
 }
 
@@ -75,44 +74,32 @@ macro_rules! impl_nary_binop {
         impl ops::$trait<Ex> for Ex {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
-                debug_assert_eq!(
-                    self.ctx_id, rhs.ctx_id,
-                    "cannot mix expressions from different contexts"
-                );
-                let id = self.inner.write().arena.$arena_method(&[self.id, rhs.id]);
+                let rhs_id = self.checked_id(&rhs);
+                let id = self.inner.write().arena.$arena_method(&[self.raw_id(), rhs_id]);
                 self.wrap(id)
             }
         }
         impl ops::$trait<&Ex> for Ex {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
-                debug_assert_eq!(
-                    self.ctx_id, rhs.ctx_id,
-                    "cannot mix expressions from different contexts"
-                );
-                let id = self.inner.write().arena.$arena_method(&[self.id, rhs.id]);
+                let rhs_id = self.checked_id(rhs);
+                let id = self.inner.write().arena.$arena_method(&[self.raw_id(), rhs_id]);
                 self.wrap(id)
             }
         }
         impl ops::$trait<Ex> for &Ex {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
-                debug_assert_eq!(
-                    self.ctx_id, rhs.ctx_id,
-                    "cannot mix expressions from different contexts"
-                );
-                let id = self.inner.write().arena.$arena_method(&[self.id, rhs.id]);
+                let rhs_id = self.checked_id(&rhs);
+                let id = self.inner.write().arena.$arena_method(&[self.raw_id(), rhs_id]);
                 self.wrap(id)
             }
         }
         impl ops::$trait<&Ex> for &Ex {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
-                debug_assert_eq!(
-                    self.ctx_id, rhs.ctx_id,
-                    "cannot mix expressions from different contexts"
-                );
-                let id = self.inner.write().arena.$arena_method(&[self.id, rhs.id]);
+                let rhs_id = self.checked_id(rhs);
+                let id = self.inner.write().arena.$arena_method(&[self.raw_id(), rhs_id]);
                 self.wrap(id)
             }
         }
@@ -131,44 +118,32 @@ macro_rules! impl_binary_binop {
         impl ops::$trait<Ex> for Ex {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
-                debug_assert_eq!(
-                    self.ctx_id, rhs.ctx_id,
-                    "cannot mix expressions from different contexts"
-                );
-                let id = self.inner.write().arena.$arena_method(self.id, rhs.id);
+                let rhs_id = self.checked_id(&rhs);
+                let id = self.inner.write().arena.$arena_method(self.raw_id(), rhs_id);
                 self.wrap(id)
             }
         }
         impl ops::$trait<&Ex> for Ex {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
-                debug_assert_eq!(
-                    self.ctx_id, rhs.ctx_id,
-                    "cannot mix expressions from different contexts"
-                );
-                let id = self.inner.write().arena.$arena_method(self.id, rhs.id);
+                let rhs_id = self.checked_id(rhs);
+                let id = self.inner.write().arena.$arena_method(self.raw_id(), rhs_id);
                 self.wrap(id)
             }
         }
         impl ops::$trait<Ex> for &Ex {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
-                debug_assert_eq!(
-                    self.ctx_id, rhs.ctx_id,
-                    "cannot mix expressions from different contexts"
-                );
-                let id = self.inner.write().arena.$arena_method(self.id, rhs.id);
+                let rhs_id = self.checked_id(&rhs);
+                let id = self.inner.write().arena.$arena_method(self.raw_id(), rhs_id);
                 self.wrap(id)
             }
         }
         impl ops::$trait<&Ex> for &Ex {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
-                debug_assert_eq!(
-                    self.ctx_id, rhs.ctx_id,
-                    "cannot mix expressions from different contexts"
-                );
-                let id = self.inner.write().arena.$arena_method(self.id, rhs.id);
+                let rhs_id = self.checked_id(rhs);
+                let id = self.inner.write().arena.$arena_method(self.raw_id(), rhs_id);
                 self.wrap(id)
             }
         }
@@ -183,7 +158,7 @@ impl_binary_binop!(Div, div, div);
 impl ops::Neg for Ex {
     type Output = Ex;
     fn neg(self) -> Ex {
-        let id = self.inner.write().arena.neg(self.id);
+        let id = self.inner.write().arena.neg(self.raw_id());
         self.wrap(id)
     }
 }
@@ -191,7 +166,7 @@ impl ops::Neg for Ex {
 impl ops::Neg for &Ex {
     type Output = Ex;
     fn neg(self) -> Ex {
-        let id = self.inner.write().arena.neg(self.id);
+        let id = self.inner.write().arena.neg(self.raw_id());
         self.wrap(id)
     }
 }
@@ -209,7 +184,7 @@ macro_rules! impl_nary_binop_i64 {
             fn $method(self, rhs: i64) -> Ex {
                 let mut inner = self.inner.write();
                 let rhs_id = inner.arena.int(rhs);
-                let id = inner.arena.$arena_method(&[self.id, rhs_id]);
+                let id = inner.arena.$arena_method(&[self.raw_id(), rhs_id]);
                 drop(inner);
                 self.wrap(id)
             }
@@ -219,7 +194,7 @@ macro_rules! impl_nary_binop_i64 {
             fn $method(self, rhs: i64) -> Ex {
                 let mut inner = self.inner.write();
                 let rhs_id = inner.arena.int(rhs);
-                let id = inner.arena.$arena_method(&[self.id, rhs_id]);
+                let id = inner.arena.$arena_method(&[self.raw_id(), rhs_id]);
                 drop(inner);
                 self.wrap(id)
             }
@@ -229,7 +204,7 @@ macro_rules! impl_nary_binop_i64 {
             fn $method(self, rhs: Ex) -> Ex {
                 let mut inner = rhs.inner.write();
                 let lhs_id = inner.arena.int(self);
-                let id = inner.arena.$arena_method(&[lhs_id, rhs.id]);
+                let id = inner.arena.$arena_method(&[lhs_id, rhs.raw_id()]);
                 drop(inner);
                 rhs.wrap(id)
             }
@@ -239,7 +214,7 @@ macro_rules! impl_nary_binop_i64 {
             fn $method(self, rhs: &Ex) -> Ex {
                 let mut inner = rhs.inner.write();
                 let lhs_id = inner.arena.int(self);
-                let id = inner.arena.$arena_method(&[lhs_id, rhs.id]);
+                let id = inner.arena.$arena_method(&[lhs_id, rhs.raw_id()]);
                 drop(inner);
                 rhs.wrap(id)
             }
@@ -261,7 +236,7 @@ macro_rules! impl_binary_binop_i64 {
             fn $method(self, rhs: i64) -> Ex {
                 let mut inner = self.inner.write();
                 let rhs_id = inner.arena.int(rhs);
-                let id = inner.arena.$arena_method(self.id, rhs_id);
+                let id = inner.arena.$arena_method(self.raw_id(), rhs_id);
                 drop(inner);
                 self.wrap(id)
             }
@@ -271,7 +246,7 @@ macro_rules! impl_binary_binop_i64 {
             fn $method(self, rhs: i64) -> Ex {
                 let mut inner = self.inner.write();
                 let rhs_id = inner.arena.int(rhs);
-                let id = inner.arena.$arena_method(self.id, rhs_id);
+                let id = inner.arena.$arena_method(self.raw_id(), rhs_id);
                 drop(inner);
                 self.wrap(id)
             }
@@ -281,7 +256,7 @@ macro_rules! impl_binary_binop_i64 {
             fn $method(self, rhs: Ex) -> Ex {
                 let mut inner = rhs.inner.write();
                 let lhs_id = inner.arena.int(self);
-                let id = inner.arena.$arena_method(lhs_id, rhs.id);
+                let id = inner.arena.$arena_method(lhs_id, rhs.raw_id());
                 drop(inner);
                 rhs.wrap(id)
             }
@@ -291,7 +266,7 @@ macro_rules! impl_binary_binop_i64 {
             fn $method(self, rhs: &Ex) -> Ex {
                 let mut inner = rhs.inner.write();
                 let lhs_id = inner.arena.int(self);
-                let id = inner.arena.$arena_method(lhs_id, rhs.id);
+                let id = inner.arena.$arena_method(lhs_id, rhs.raw_id());
                 drop(inner);
                 rhs.wrap(id)
             }
@@ -330,12 +305,7 @@ impl From<u64> for Ex {
                 let mut inner = ctx.inner.write();
                 inner.arena.big_int(num_bigint::BigInt::from(n))
             };
-            Expr {
-                ctx_id: ctx.id,
-                inner: Arc::clone(&ctx.inner),
-                id,
-                _sort: PhantomData,
-            }
+            Ex::from_raw_parts(ctx.id, Arc::clone(&ctx.inner), id)
         }
     }
 }
@@ -350,12 +320,7 @@ impl From<usize> for Ex {
                 let mut inner = ctx.inner.write();
                 inner.arena.big_int(num_bigint::BigInt::from(n))
             };
-            Expr {
-                ctx_id: ctx.id,
-                inner: Arc::clone(&ctx.inner),
-                id,
-                _sort: PhantomData,
-            }
+            Ex::from_raw_parts(ctx.id, Arc::clone(&ctx.inner), id)
         }
     }
 }
@@ -372,17 +337,22 @@ impl std::iter::Sum for Ex {
         }
         let ctx_id = items[0].ctx_id;
         let inner = Arc::clone(&items[0].inner);
+        // Check all items are from the same context
+        for item in &items[1..] {
+            if item.ctx_id != ctx_id {
+                panic!(
+                    "symplex: cannot combine expressions from different contexts \
+                     (context {} and context {})",
+                    ctx_id.0, item.ctx_id.0
+                );
+            }
+        }
         let id = {
             let mut guard = inner.write();
-            let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
+            let ids: Vec<ExprId> = items.iter().map(|e| e.raw_id()).collect();
             guard.arena.add(&ids)
         };
-        Ex {
-            ctx_id,
-            inner,
-            id,
-            _sort: PhantomData,
-        }
+        Ex::from_raw_parts(ctx_id, inner, id)
     }
 }
 
@@ -394,17 +364,22 @@ impl<'a> std::iter::Sum<&'a Ex> for Ex {
         }
         let ctx_id = items[0].ctx_id;
         let inner = Arc::clone(&items[0].inner);
+        // Check all items are from the same context
+        for item in &items[1..] {
+            if item.ctx_id != ctx_id {
+                panic!(
+                    "symplex: cannot combine expressions from different contexts \
+                     (context {} and context {})",
+                    ctx_id.0, item.ctx_id.0
+                );
+            }
+        }
         let id = {
             let mut guard = inner.write();
-            let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
+            let ids: Vec<ExprId> = items.iter().map(|e| e.raw_id()).collect();
             guard.arena.add(&ids)
         };
-        Ex {
-            ctx_id,
-            inner,
-            id,
-            _sort: PhantomData,
-        }
+        Ex::from_raw_parts(ctx_id, inner, id)
     }
 }
 
@@ -416,17 +391,22 @@ impl std::iter::Product for Ex {
         }
         let ctx_id = items[0].ctx_id;
         let inner = Arc::clone(&items[0].inner);
+        // Check all items are from the same context
+        for item in &items[1..] {
+            if item.ctx_id != ctx_id {
+                panic!(
+                    "symplex: cannot combine expressions from different contexts \
+                     (context {} and context {})",
+                    ctx_id.0, item.ctx_id.0
+                );
+            }
+        }
         let id = {
             let mut guard = inner.write();
-            let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
+            let ids: Vec<ExprId> = items.iter().map(|e| e.raw_id()).collect();
             guard.arena.mul(&ids)
         };
-        Ex {
-            ctx_id,
-            inner,
-            id,
-            _sort: PhantomData,
-        }
+        Ex::from_raw_parts(ctx_id, inner, id)
     }
 }
 
@@ -438,17 +418,22 @@ impl<'a> std::iter::Product<&'a Ex> for Ex {
         }
         let ctx_id = items[0].ctx_id;
         let inner = Arc::clone(&items[0].inner);
+        // Check all items are from the same context
+        for item in &items[1..] {
+            if item.ctx_id != ctx_id {
+                panic!(
+                    "symplex: cannot combine expressions from different contexts \
+                     (context {} and context {})",
+                    ctx_id.0, item.ctx_id.0
+                );
+            }
+        }
         let id = {
             let mut guard = inner.write();
-            let ids: Vec<ExprId> = items.iter().map(|e| e.id).collect();
+            let ids: Vec<ExprId> = items.iter().map(|e| e.raw_id()).collect();
             guard.arena.mul(&ids)
         };
-        Ex {
-            ctx_id,
-            inner,
-            id,
-            _sort: PhantomData,
-        }
+        Ex::from_raw_parts(ctx_id, inner, id)
     }
 }
 

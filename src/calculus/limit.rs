@@ -15,6 +15,7 @@
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use num_traits::Signed;
 
 /// Maximum L'Hôpital iterations to prevent infinite loops.
 const MAX_LHOPITAL: usize = 5;
@@ -255,11 +256,25 @@ pub(crate) fn limit_at_infinity(
             }
             if nd > dd {
                 // Numerator grows faster → ±∞
-                if positive {
-                    return Ok(arena.infinity());
-                } else {
-                    return Ok(arena.neg_infinity());
+                // Determine sign from leading coefficient ratio and degree parity
+                let n_coeffs = crate::poly::polybridge::poly_coefficients(arena, orig_numer, var);
+                let d_coeffs = crate::poly::polybridge::poly_coefficients(arena, orig_denom, var);
+                if let (Some(nc), Some(dc)) = (n_coeffs, d_coeffs)
+                    && let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last())
+                {
+                    if let (Some(nr), Some(dr)) = (arena.as_num(*n_lead), arena.as_num(*d_lead)) {
+                        let ratio_positive = nr.is_positive() == dr.is_positive();
+                        // For x → -∞, an odd degree difference flips the sign
+                        let flip = !positive && ((nd - dd) % 2 == 1);
+                        let result_positive = ratio_positive ^ flip;
+                        if result_positive {
+                            return Ok(arena.infinity());
+                        } else {
+                            return Ok(arena.neg_infinity());
+                        }
+                    }
                 }
+                // Fall through to Strategy 1 if we can't determine sign
             }
         }
     } else {
@@ -342,7 +357,21 @@ pub(crate) fn limit_at_infinity(
             }
             // nd > dd: limit is ±∞ (in the original variable)
             if nd > dd {
-                return Ok(arena.infinity);
+                let n_coeffs = crate::poly::polybridge::poly_coefficients(arena, numer, t);
+                let d_coeffs = crate::poly::polybridge::poly_coefficients(arena, denom, t);
+                if let (Some(nc), Some(dc)) = (n_coeffs, d_coeffs)
+                    && let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last())
+                {
+                    if let (Some(nr), Some(dr)) = (arena.as_num(*n_lead), arena.as_num(*d_lead)) {
+                        let ratio_positive = nr.is_positive() == dr.is_positive();
+                        if ratio_positive {
+                            return Ok(arena.infinity);
+                        } else {
+                            return Ok(arena.neg_infinity);
+                        }
+                    }
+                }
+                // Fall through to Strategy 3 if we can't determine sign
             }
         }
     }

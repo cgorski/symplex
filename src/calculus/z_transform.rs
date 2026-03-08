@@ -841,7 +841,7 @@ impl Ex {
     pub fn z_transform(&self, n: &Ex, z: &Ex) -> Result<Ex, SymplexError> {
         let id = {
             let mut guard = self.inner.write();
-            z_transform(&mut guard.arena, self.id, n.id, z.id)?
+            z_transform(&mut guard.arena, self.raw_id(), n.raw_id(), z.raw_id())?
         };
         Ok(self.wrap(id))
     }
@@ -872,7 +872,7 @@ impl Ex {
     pub fn inverse_z_transform(&self, z: &Ex, n: &Ex) -> Result<Ex, SymplexError> {
         let id = {
             let mut guard = self.inner.write();
-            inverse_z_transform(&mut guard.arena, self.id, z.id, n.id)?
+            inverse_z_transform(&mut guard.arena, self.raw_id(), z.raw_id(), n.raw_id())?
         };
         Ok(self.wrap(id))
     }

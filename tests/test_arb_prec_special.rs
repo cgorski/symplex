@@ -237,17 +237,78 @@ fn integrate_sqrt_one_minus_x2() {
 }
 
 #[test]
-#[ignore = "FTC numerical check hits arena index issue on complex nested antiderivative"]
 fn integrate_sqrt_one_minus_x2_ftc() {
-    // Verify the result numerically via the Fundamental Theorem of Calculus.
+    // Verify the antiderivative numerically via F(b) - F(a) vs numerical integral.
+    // We avoid differentiating F (which produces complex nested expressions that
+    // fail eval) and instead compare antiderivative *differences* against a
+    // midpoint-rule numerical approximation of the integral.
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let one = ctx.int(1);
     let x2 = x.powi(2);
     let base = &one - &x2;
     let integrand = base.pow(&ctx.rational(1, 2));
+    let antideriv = integrand.integrate(&x);
 
-    common::assert_ftc_tol(&integrand, &x, 1e-6, "sqrt(1-x^2)");
+    let s = format!("{antideriv}");
+    assert!(
+        !s.contains("Integral"),
+        "integration should not be unevaluated: {s}"
+    );
+
+    // Points safely inside (-1, 1)
+    let pts: &[(i64, i64)] = &[(1, 10), (3, 10), (5, 10), (7, 10)];
+
+    let mut vals: Vec<f64> = Vec::new();
+    for &(p, q) in pts {
+        let pt = ctx.rational(p, q);
+        let f_at_pt = antideriv.subs(&x, &pt).eval();
+        match f_at_pt.eval_f64() {
+            Ok(v) if v.is_finite() => vals.push(v),
+            _ => {} // skip points where eval fails
+        }
+    }
+
+    // We need at least 2 successful evaluations to do difference checking
+    assert!(
+        vals.len() >= 2,
+        "FTC sqrt(1-x^2): need at least 2 evaluation points, got {}",
+        vals.len()
+    );
+
+    // Check differences: F(pts[i]) - F(pts[0]) should match numerical ∫ from pts[0] to pts[i]
+    let tol = 1e-4;
+    let base_pt = pts[0];
+    let base_val = vals[0];
+
+    for (i, &(p, q)) in pts.iter().enumerate().skip(1) {
+        if i >= vals.len() {
+            break;
+        }
+        let antideriv_diff = vals[i] - base_val;
+
+        // Numerical integration via midpoint rule: ∫ sqrt(1-t^2) dt from a to b
+        let a = base_pt.0 as f64 / base_pt.1 as f64;
+        let b = p as f64 / q as f64;
+        let n_steps = 1000usize;
+        let h = (b - a) / n_steps as f64;
+        let mut numerical = 0.0;
+        for j in 0..n_steps {
+            let t = a + (j as f64 + 0.5) * h;
+            numerical += (1.0 - t * t).sqrt() * h;
+        }
+
+        let diff = (antideriv_diff - numerical).abs();
+        assert!(
+            diff < tol,
+            "FTC sqrt(1-x^2): F({}) - F({}) = {}, numerical integral = {}, diff = {}",
+            p as f64 / q as f64,
+            a,
+            antideriv_diff,
+            numerical,
+            diff
+        );
+    }
 }
 
 #[test]
@@ -274,16 +335,65 @@ fn integrate_sqrt_x2_plus_one() {
 }
 
 #[test]
-#[ignore = "FTC numerical check hits arena index issue on complex nested antiderivative"]
 fn integrate_sqrt_x2_plus_one_ftc() {
+    // Use the difference method F(b)-F(a) vs numerical midpoint integral
+    // to avoid cross-context arena issues with assert_ftc_tol's default_context().
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let one = ctx.int(1);
     let x2 = x.powi(2);
     let base = &x2 + &one;
     let integrand = base.pow(&ctx.rational(1, 2));
+    let antideriv = integrand.integrate(&x);
 
-    common::assert_ftc_tol(&integrand, &x, 1e-6, "sqrt(x^2+1)");
+    let s = format!("{antideriv}");
+    assert!(
+        !s.contains("Integral"),
+        "sqrt(x^2+1): integration returned unevaluated: {s}"
+    );
+
+    // Evaluate antiderivative at several points (all in same context)
+    let pts: &[(i64, i64)] = &[(3, 10), (7, 10), (14, 10), (20, 10)];
+
+    let mut eval_pts: Vec<(f64, f64)> = Vec::new();
+    for &(p, q) in pts {
+        let pt = ctx.rational(p, q);
+        let f_at_pt = antideriv.subs(&x, &pt).eval();
+        if let Ok(v) = f_at_pt.eval_f64() {
+            if v.is_finite() {
+                eval_pts.push((p as f64 / q as f64, v));
+            }
+        }
+    }
+
+    assert!(
+        eval_pts.len() >= 2,
+        "FTC sqrt(x^2+1): need at least 2 evaluation points, got {}",
+        eval_pts.len()
+    );
+
+    // Compare differences F(b)-F(a) against midpoint-rule numerical integration
+    let tol = 1e-4;
+    let (a, base_val) = eval_pts[0];
+
+    for &(b, f_b) in &eval_pts[1..] {
+        let antideriv_diff = f_b - base_val;
+
+        let n_steps = 1000usize;
+        let h = (b - a) / n_steps as f64;
+        let mut numerical = 0.0;
+        for j in 0..n_steps {
+            let t = a + (j as f64 + 0.5) * h;
+            numerical += (t * t + 1.0).sqrt() * h;
+        }
+
+        let diff = (antideriv_diff - numerical).abs();
+        assert!(
+            diff < tol,
+            "FTC sqrt(x^2+1): F({}) - F({}) = {}, numerical = {}, diff = {}",
+            b, a, antideriv_diff, numerical, diff
+        );
+    }
 }
 
 #[test]

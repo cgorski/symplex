@@ -55,3 +55,28 @@ fn limit_cos_at_zero() {
     let result = x.cos().limit(&x, &ctx.int(0)).unwrap();
     assert_eq!(format!("{result}"), "1");
 }
+
+#[test]
+fn limit_lhopital_0_over_0() {
+    // lim(x→0) (e^x - 1) / x = 1
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let numer = x.exp() - 1;
+    let expr = numer / &x;
+    let result = expr.limit(&x, &ctx.int(0)).unwrap();
+    let val = result.eval_f64().expect("limit should evaluate to f64");
+    assert!((val - 1.0).abs() < 1e-8, "lim should be 1, got {}", val);
+}
+
+#[test]
+fn limit_lhopital_repeated() {
+    // lim(x→0) (e^x - 1 - x) / x² = 1/2
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let numer = x.exp() - 1 - &x;
+    let denom = x.powi(2);
+    let expr = numer / denom;
+    let result = expr.limit(&x, &ctx.int(0)).unwrap();
+    let val = result.eval_f64().expect("limit should evaluate to f64");
+    assert!((val - 0.5).abs() < 1e-8, "lim should be 0.5, got {}", val);
+}

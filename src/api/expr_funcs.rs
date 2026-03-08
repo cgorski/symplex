@@ -53,7 +53,8 @@ impl Expr<Numeric> {
     /// Raise to a symbolic power: `self ^ exp`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn pow(&self, exp: &Ex) -> Ex {
-        let id = self.inner.write().arena.pow(self.id, exp.id);
+        let exp_id = self.checked_id(exp);
+        let id = self.inner.write().arena.pow(self.raw_id(), exp_id);
         self.wrap(id)
     }
 
@@ -62,7 +63,7 @@ impl Expr<Numeric> {
     pub fn powi(&self, n: i64) -> Ex {
         let mut inner = self.inner.write();
         let exp = inner.arena.int(n);
-        let id = inner.arena.pow(self.id, exp);
+        let id = inner.arena.pow(self.raw_id(), exp);
         drop(inner);
         self.wrap(id)
     }
@@ -70,35 +71,35 @@ impl Expr<Numeric> {
     /// Sine: `sin(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn sin(&self) -> Ex {
-        let id = self.inner.write().arena.sin(self.id);
+        let id = self.inner.write().arena.sin(self.raw_id());
         self.wrap(id)
     }
 
     /// Cosine: `cos(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn cos(&self) -> Ex {
-        let id = self.inner.write().arena.cos(self.id);
+        let id = self.inner.write().arena.cos(self.raw_id());
         self.wrap(id)
     }
 
     /// Tangent: `tan(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn tan(&self) -> Ex {
-        let id = self.inner.write().arena.tan(self.id);
+        let id = self.inner.write().arena.tan(self.raw_id());
         self.wrap(id)
     }
 
     /// Natural exponential: `e^self`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn exp(&self) -> Ex {
-        let id = self.inner.write().arena.exp(self.id);
+        let id = self.inner.write().arena.exp(self.raw_id());
         self.wrap(id)
     }
 
     /// Natural logarithm: `ln(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn ln(&self) -> Ex {
-        let id = self.inner.write().arena.ln(self.id);
+        let id = self.inner.write().arena.ln(self.raw_id());
         self.wrap(id)
     }
 
@@ -127,14 +128,14 @@ impl Expr<Numeric> {
     /// Principal square root: `√self`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn sqrt(&self) -> Ex {
-        let id = self.inner.write().arena.sqrt(self.id);
+        let id = self.inner.write().arena.sqrt(self.raw_id());
         self.wrap(id)
     }
 
     /// Cube root: `∛self`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn cbrt(&self) -> Ex {
-        let id = self.inner.write().arena.cbrt(self.id);
+        let id = self.inner.write().arena.cbrt(self.raw_id());
         self.wrap(id)
     }
 
@@ -143,7 +144,7 @@ impl Expr<Numeric> {
     pub fn nthroot(&self, n: i64) -> Ex {
         let mut inner = self.inner.write();
         let frac = inner.arena.rational(1, n);
-        let id = inner.arena.pow(self.id, frac);
+        let id = inner.arena.pow(self.raw_id(), frac);
         drop(inner);
         self.wrap(id)
     }
@@ -151,28 +152,28 @@ impl Expr<Numeric> {
     /// Absolute value (or complex modulus): `|self|`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn abs(&self) -> Ex {
-        let id = self.inner.write().arena.abs(self.id);
+        let id = self.inner.write().arena.abs(self.raw_id());
         self.wrap(id)
     }
 
     /// Inverse sine (arcsin): `asin(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn asin(&self) -> Ex {
-        let id = self.inner.write().arena.asin(self.id);
+        let id = self.inner.write().arena.asin(self.raw_id());
         self.wrap(id)
     }
 
     /// Inverse cosine (arccos): `acos(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn acos(&self) -> Ex {
-        let id = self.inner.write().arena.acos(self.id);
+        let id = self.inner.write().arena.acos(self.raw_id());
         self.wrap(id)
     }
 
     /// Inverse tangent (arctan): `atan(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn atan(&self) -> Ex {
-        let id = self.inner.write().arena.atan(self.id);
+        let id = self.inner.write().arena.atan(self.raw_id());
         self.wrap(id)
     }
 
@@ -182,49 +183,50 @@ impl Expr<Numeric> {
     /// point (x, y). Correctly handles all four quadrants.
     #[must_use]
     pub fn atan2(&self, x: &Ex) -> Ex {
-        let id = self.inner.write().arena.atan2(self.id, x.id);
+        let x_id = self.checked_id(x);
+        let id = self.inner.write().arena.atan2(self.raw_id(), x_id);
         self.wrap(id)
     }
 
     /// Hyperbolic sine: `sinh(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn sinh(&self) -> Ex {
-        let id = self.inner.write().arena.sinh(self.id);
+        let id = self.inner.write().arena.sinh(self.raw_id());
         self.wrap(id)
     }
 
     /// Hyperbolic cosine: `cosh(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn cosh(&self) -> Ex {
-        let id = self.inner.write().arena.cosh(self.id);
+        let id = self.inner.write().arena.cosh(self.raw_id());
         self.wrap(id)
     }
 
     /// Hyperbolic tangent: `tanh(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn tanh(&self) -> Ex {
-        let id = self.inner.write().arena.tanh(self.id);
+        let id = self.inner.write().arena.tanh(self.raw_id());
         self.wrap(id)
     }
 
     /// Inverse hyperbolic sine: `asinh(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn asinh(&self) -> Ex {
-        let id = self.inner.write().arena.asinh(self.id);
+        let id = self.inner.write().arena.asinh(self.raw_id());
         self.wrap(id)
     }
 
     /// Inverse hyperbolic cosine: `acosh(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn acosh(&self) -> Ex {
-        let id = self.inner.write().arena.acosh(self.id);
+        let id = self.inner.write().arena.acosh(self.raw_id());
         self.wrap(id)
     }
 
     /// Inverse hyperbolic tangent: `atanh(self)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn atanh(&self) -> Ex {
-        let id = self.inner.write().arena.atanh(self.id);
+        let id = self.inner.write().arena.atanh(self.raw_id());
         self.wrap(id)
     }
 
@@ -331,21 +333,21 @@ impl Expr<Numeric> {
     /// Sign function: 1 if positive, -1 if negative, 0 if zero.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn sign(&self) -> Ex {
-        let id = self.inner.write().arena.sign(self.id);
+        let id = self.inner.write().arena.sign(self.raw_id());
         self.wrap(id)
     }
 
     /// Floor function: `⌊self⌋` (greatest integer ≤ self).
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn floor(&self) -> Ex {
-        let id = self.inner.write().arena.floor(self.id);
+        let id = self.inner.write().arena.floor(self.raw_id());
         self.wrap(id)
     }
 
     /// Ceiling function: `⌈self⌉` (least integer ≥ self).
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn ceiling(&self) -> Ex {
-        let id = self.inner.write().arena.ceiling(self.id);
+        let id = self.inner.write().arena.ceiling(self.raw_id());
         self.wrap(id)
     }
 
@@ -367,9 +369,10 @@ impl Expr<Numeric> {
     /// Binary minimum: `min(self, other)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn min_with(&self, other: &Ex) -> Ex {
+        let other_id = self.checked_id(other);
         let mut inner = self.inner.write();
         let ids: smallvec::SmallVec<[crate::base::node::ExprId; 4]> =
-            smallvec::smallvec![self.id, other.id];
+            smallvec::smallvec![self.raw_id(), other_id];
         let id = inner.arena.intern(crate::base::node::ExprNode::Min(ids));
         drop(inner);
         self.wrap(id)
@@ -378,9 +381,10 @@ impl Expr<Numeric> {
     /// Binary maximum: `max(self, other)`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn max_with(&self, other: &Ex) -> Ex {
+        let other_id = self.checked_id(other);
         let mut inner = self.inner.write();
         let ids: smallvec::SmallVec<[crate::base::node::ExprId; 4]> =
-            smallvec::smallvec![self.id, other.id];
+            smallvec::smallvec![self.raw_id(), other_id];
         let id = inner.arena.intern(crate::base::node::ExprNode::Max(ids));
         drop(inner);
         self.wrap(id)
@@ -394,7 +398,7 @@ impl Expr<Numeric> {
         }
         let mut inner = items[0].inner.write();
         let ids: smallvec::SmallVec<[crate::base::node::ExprId; 4]> =
-            items.iter().map(|e| e.id).collect();
+            items.iter().map(|e| e.raw_id()).collect();
         let id = inner.arena.intern(crate::base::node::ExprNode::Min(ids));
         drop(inner);
         items[0].wrap(id)
@@ -408,7 +412,7 @@ impl Expr<Numeric> {
         }
         let mut inner = items[0].inner.write();
         let ids: smallvec::SmallVec<[crate::base::node::ExprId; 4]> =
-            items.iter().map(|e| e.id).collect();
+            items.iter().map(|e| e.raw_id()).collect();
         let id = inner.arena.intern(crate::base::node::ExprNode::Max(ids));
         drop(inner);
         items[0].wrap(id)
@@ -419,9 +423,12 @@ impl Expr<Numeric> {
     /// When evaluated (`.eval()`), if `lower` and `upper` are concrete integers,
     /// the sum is computed by substituting each integer value for `var` in `body`.
     pub fn symbolic_sum(body: &Ex, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
+        let var_id = body.checked_id(var);
+        let lower_id = body.checked_id(lower);
+        let upper_id = body.checked_id(upper);
         let mut inner = body.inner.write();
         let id = inner.arena.intern(crate::base::node::ExprNode::Sum(
-            body.id, var.id, lower.id, upper.id,
+            body.raw_id(), var_id, lower_id, upper_id,
         ));
         drop(inner);
         body.wrap(id)
@@ -432,9 +439,12 @@ impl Expr<Numeric> {
     /// When evaluated (`.eval()`), if `lower` and `upper` are concrete integers,
     /// the product is computed by substituting each integer value for `var` in `body`.
     pub fn symbolic_product(body: &Ex, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
+        let var_id = body.checked_id(var);
+        let lower_id = body.checked_id(lower);
+        let upper_id = body.checked_id(upper);
         let mut inner = body.inner.write();
         let id = inner.arena.intern(crate::base::node::ExprNode::Product_(
-            body.id, var.id, lower.id, upper.id,
+            body.raw_id(), var_id, lower_id, upper_id,
         ));
         drop(inner);
         body.wrap(id)
@@ -461,9 +471,10 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn is_convergent(&self, var: &Ex) -> Option<bool> {
+        let var_id = self.checked_id(var);
         let _span = debug_span!("is_convergent").entered();
         let mut inner = self.inner.write();
-        inner.arena.is_convergent_expr(self.id, var.id)
+        inner.arena.is_convergent_expr(self.raw_id(), var_id)
     }
 
     /// Attempt closed-form evaluation of a symbolic sum.
@@ -489,7 +500,7 @@ impl Expr<Numeric> {
     pub fn closed_form_sum(&self) -> Ex {
         let _span = debug_span!("closed_form_sum").entered();
         let mut inner = self.inner.write();
-        let node = inner.arena.node(self.id).clone();
+        let node = inner.arena.node(self.raw_id()).clone();
         if let crate::base::node::ExprNode::Sum(body, var, lower, upper) = node
             && let Some(closed) = inner.arena.eval_sum_symbolic_expr(body, var, lower, upper)
         {
@@ -518,7 +529,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn re(&self) -> Ex {
-        let (re, _im) = self.inner.write().arena.as_real_imag_expr(self.id);
+        let (re, _im) = self.inner.write().arena.as_real_imag_expr(self.raw_id());
         self.wrap(re)
     }
 
@@ -540,7 +551,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn im(&self) -> Ex {
-        let (_re, im) = self.inner.write().arena.as_real_imag_expr(self.id);
+        let (_re, im) = self.inner.write().arena.as_real_imag_expr(self.raw_id());
         self.wrap(im)
     }
 
@@ -582,7 +593,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn gamma(&self) -> Ex {
-        let id = self.inner.write().arena.gamma(self.id);
+        let id = self.inner.write().arena.gamma(self.raw_id());
         self.wrap(id)
     }
 
@@ -591,14 +602,14 @@ impl Expr<Numeric> {
     /// For positive integer arguments, `.eval()` computes `ln((n-1)!)`.
     #[must_use]
     pub fn log_gamma(&self) -> Ex {
-        let id = self.inner.write().arena.log_gamma(self.id);
+        let id = self.inner.write().arena.log_gamma(self.raw_id());
         self.wrap(id)
     }
 
     /// Digamma function: ψ(self) = Γ'(self)/Γ(self).
     #[must_use]
     pub fn digamma(&self) -> Ex {
-        let id = self.inner.write().arena.digamma(self.id);
+        let id = self.inner.write().arena.digamma(self.raw_id());
         self.wrap(id)
     }
 
@@ -614,7 +625,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn erf(&self) -> Ex {
-        let id = self.inner.write().arena.erf(self.id);
+        let id = self.inner.write().arena.erf(self.raw_id());
         self.wrap(id)
     }
 
@@ -630,7 +641,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn erfc(&self) -> Ex {
-        let id = self.inner.write().arena.erfc(self.id);
+        let id = self.inner.write().arena.erfc(self.raw_id());
         self.wrap(id)
     }
 
@@ -646,7 +657,8 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn beta(&self, other: &Ex) -> Ex {
-        let id = self.inner.write().arena.beta(self.id, other.id);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.beta(self.raw_id(), other_id);
         self.wrap(id)
     }
 
@@ -664,7 +676,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn factorial(&self) -> Ex {
-        let id = self.inner.write().arena.factorial(self.id);
+        let id = self.inner.write().arena.factorial(self.raw_id());
         self.wrap(id)
     }
 
@@ -683,7 +695,8 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn binomial(&self, k: &Ex) -> Ex {
-        let id = self.inner.write().arena.binomial(self.id, k.id);
+        let k_id = self.checked_id(k);
+        let id = self.inner.write().arena.binomial(self.raw_id(), k_id);
         self.wrap(id)
     }
 
@@ -695,7 +708,7 @@ impl Expr<Numeric> {
     /// `0!! = 1`, `1!! = 1`, `(-1)!! = 1`.
     #[must_use]
     pub fn factorial2(&self) -> Ex {
-        let id = self.inner.write().arena.factorial2(self.id);
+        let id = self.inner.write().arena.factorial2(self.raw_id());
         self.wrap(id)
     }
 
@@ -704,7 +717,7 @@ impl Expr<Numeric> {
     /// For non-negative integer arguments, `.eval()` computes the exact value.
     #[must_use]
     pub fn subfactorial(&self) -> Ex {
-        let id = self.inner.write().arena.subfactorial(self.id);
+        let id = self.inner.write().arena.subfactorial(self.raw_id());
         self.wrap(id)
     }
 
@@ -713,14 +726,16 @@ impl Expr<Numeric> {
     /// `rising_factorial(x, n) = x * (x+1) * ... * (x+n-1)`.
     #[must_use]
     pub fn rising_factorial(&self, n: &Ex) -> Ex {
-        let id = self.inner.write().arena.rising_factorial(self.id, n.id);
+        let n_id = self.checked_id(n);
+        let id = self.inner.write().arena.rising_factorial(self.raw_id(), n_id);
         self.wrap(id)
     }
 
     /// Falling factorial: `self^(n) = self * (self-1) * ... * (self-n+1)`.
     #[must_use]
     pub fn falling_factorial(&self, n: &Ex) -> Ex {
-        let id = self.inner.write().arena.falling_factorial(self.id, n.id);
+        let n_id = self.checked_id(n);
+        let id = self.inner.write().arena.falling_factorial(self.raw_id(), n_id);
         self.wrap(id)
     }
 
@@ -730,7 +745,7 @@ impl Expr<Numeric> {
     /// `F(0) = 0`, `F(1) = 1`, `F(n) = F(n-1) + F(n-2)`.
     #[must_use]
     pub fn fibonacci(&self) -> Ex {
-        let id = self.inner.write().arena.fibonacci(self.id);
+        let id = self.inner.write().arena.fibonacci(self.raw_id());
         self.wrap(id)
     }
 
@@ -740,7 +755,7 @@ impl Expr<Numeric> {
     /// `L(0) = 2`, `L(1) = 1`, `L(n) = L(n-1) + L(n-2)`.
     #[must_use]
     pub fn lucas(&self) -> Ex {
-        let id = self.inner.write().arena.lucas(self.id);
+        let id = self.inner.write().arena.lucas(self.raw_id());
         self.wrap(id)
     }
 
@@ -750,7 +765,7 @@ impl Expr<Numeric> {
     /// `B(0) = 1`, `B(1) = -1/2`, `B(2) = 1/6`.
     #[must_use]
     pub fn bernoulli_number(&self) -> Ex {
-        let id = self.inner.write().arena.bernoulli_number(self.id);
+        let id = self.inner.write().arena.bernoulli_number(self.raw_id());
         self.wrap(id)
     }
 
@@ -760,7 +775,7 @@ impl Expr<Numeric> {
     /// `H(0) = 0`.
     #[must_use]
     pub fn harmonic(&self) -> Ex {
-        let id = self.inner.write().arena.harmonic(self.id);
+        let id = self.inner.write().arena.harmonic(self.raw_id());
         self.wrap(id)
     }
 
@@ -769,7 +784,7 @@ impl Expr<Numeric> {
     /// For non-negative integer arguments, `.eval()` computes the exact value.
     #[must_use]
     pub fn catalan_number(&self) -> Ex {
-        let id = self.inner.write().arena.catalan_number(self.id);
+        let id = self.inner.write().arena.catalan_number(self.raw_id());
         self.wrap(id)
     }
 
@@ -779,7 +794,7 @@ impl Expr<Numeric> {
     /// `B(0) = 1`, `B(1) = 1`, `B(2) = 2`, `B(3) = 5`.
     #[must_use]
     pub fn bell(&self) -> Ex {
-        let id = self.inner.write().arena.bell(self.id);
+        let id = self.inner.write().arena.bell(self.raw_id());
         self.wrap(id)
     }
 
@@ -789,7 +804,7 @@ impl Expr<Numeric> {
     /// Odd indices are 0. `E(0) = 1`, `E(2) = -1`, `E(4) = 5`.
     #[must_use]
     pub fn euler_number(&self) -> Ex {
-        let id = self.inner.write().arena.euler_number(self.id);
+        let id = self.inner.write().arena.euler_number(self.raw_id());
         self.wrap(id)
     }
 
@@ -798,21 +813,21 @@ impl Expr<Numeric> {
     /// Heaviside step function: 0 for x<0, 1/2 for x=0, 1 for x>0.
     #[must_use]
     pub fn heaviside(&self) -> Ex {
-        let id = self.inner.write().arena.heaviside(self.id);
+        let id = self.inner.write().arena.heaviside(self.raw_id());
         self.wrap(id)
     }
 
     /// Dirac delta distribution: 0 for x≠0, symbolic at x=0.
     #[must_use]
     pub fn dirac_delta(&self) -> Ex {
-        let id = self.inner.write().arena.dirac_delta(self.id);
+        let id = self.inner.write().arena.dirac_delta(self.raw_id());
         self.wrap(id)
     }
 
     /// Lambert W function (principal branch): W(x)·exp(W(x)) = x.
     #[must_use]
     pub fn lambertw(&self) -> Ex {
-        let id = self.inner.write().arena.lambertw(self.id);
+        let id = self.inner.write().arena.lambertw(self.raw_id());
         self.wrap(id)
     }
 
@@ -821,42 +836,48 @@ impl Expr<Numeric> {
     /// Greater than: `self > other`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn gt(&self, other: &Ex) -> BoolEx {
-        let id = self.inner.write().arena.gt(self.id, other.id);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.gt(self.raw_id(), other_id);
         self.wrap_as(id)
     }
 
     /// Greater than or equal: `self >= other`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn ge(&self, other: &Ex) -> BoolEx {
-        let id = self.inner.write().arena.ge(self.id, other.id);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.ge(self.raw_id(), other_id);
         self.wrap_as(id)
     }
 
     /// Less than: `self < other` (implemented as `other > self`).
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn lt(&self, other: &Ex) -> BoolEx {
-        let id = self.inner.write().arena.gt(other.id, self.id);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.gt(other_id, self.raw_id());
         self.wrap_as(id)
     }
 
     /// Less than or equal: `self <= other` (implemented as `other >= self`).
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn le(&self, other: &Ex) -> BoolEx {
-        let id = self.inner.write().arena.ge(other.id, self.id);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.ge(other_id, self.raw_id());
         self.wrap_as(id)
     }
 
     /// Mathematical equality test (boolean-valued): `self == other`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn eq_expr(&self, other: &Ex) -> BoolEx {
-        let id = self.inner.write().arena.eq_(self.id, other.id);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.eq_(self.raw_id(), other_id);
         self.wrap_as(id)
     }
 
     /// Not-equal test (boolean-valued): `self != other`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn ne_expr(&self, other: &Ex) -> BoolEx {
-        let id = self.inner.write().arena.ne_(self.id, other.id);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.ne_(self.raw_id(), other_id);
         self.wrap_as(id)
     }
 
@@ -870,7 +891,7 @@ impl Expr<Numeric> {
         }
         let first = pairs[0].0;
         let arena_pairs: Vec<(crate::base::node::ExprId, crate::base::node::ExprId)> =
-            pairs.iter().map(|(v, c)| (v.id, c.id)).collect();
+            pairs.iter().map(|(v, c)| (first.checked_id(v), first.checked_id(c))).collect();
         let id = first.inner.write().arena.piecewise(&arena_pairs);
         first.wrap(id)
     }
@@ -887,7 +908,7 @@ impl Expr<Numeric> {
         inner
             .assumptions
             .lock()
-            .query(&inner.arena, self.id, Props::POSITIVE)
+            .query(&inner.arena, self.raw_id(), Props::POSITIVE)
     }
 
     /// Query whether this expression is zero.
@@ -902,14 +923,14 @@ impl Expr<Numeric> {
     pub fn is_zero(&self) -> Option<bool> {
         let inner = self.inner.read();
         // Layer 1: structural.
-        if inner.arena.is_zero_structural(self.id) {
+        if inner.arena.is_zero_structural(self.raw_id()) {
             return Some(true);
         }
         // Layer 2: assumption system.
         inner
             .assumptions
             .lock()
-            .query(&inner.arena, self.id, Props::ZERO)
+            .query(&inner.arena, self.raw_id(), Props::ZERO)
     }
 
     /// Query any mathematical property via [`Props`].
@@ -919,7 +940,7 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn query(&self, prop: Props) -> Option<bool> {
         let inner = self.inner.read();
-        inner.assumptions.lock().query(&inner.arena, self.id, prop)
+        inner.assumptions.lock().query(&inner.arena, self.raw_id(), prop)
     }
 
     /// Query whether this expression is negative.
@@ -1066,7 +1087,7 @@ impl Expr<Numeric> {
     pub fn assume(self, assumption: Assumption) -> Ex {
         use crate::base::node::ExprNode;
         let mut inner = self.inner.write();
-        if let ExprNode::Symbol(sid) = inner.arena.node(self.id) {
+        if let ExprNode::Symbol(sid) = inner.arena.node(self.raw_id()) {
             let sid = *sid;
             let (prop, value) = assumption.to_prop_value();
             let mut a = inner.arena.symbol_assumptions(sid);
@@ -1076,7 +1097,7 @@ impl Expr<Numeric> {
                 a.assert_false(prop);
             }
             inner.arena.set_symbol_assumptions(sid, a);
-            inner.assumptions.lock().set_symbol_assumptions(self.id, a);
+            inner.assumptions.lock().set_symbol_assumptions(self.raw_id(), a);
         }
         drop(inner);
         self
@@ -1094,7 +1115,8 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn equals(&self, other: &Ex) -> Option<bool> {
         // Layer 1: structural identity (same arena node).
-        if self.id == other.id && self.ctx_id == other.ctx_id {
+        let other_id = self.checked_id(other);
+        if self.raw_id() == other_id {
             return Some(true);
         }
 
@@ -1137,8 +1159,9 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the derivative as a new expression"]
     pub fn diff(&self, var: &Ex) -> Ex {
-        let _span = debug_span!("diff", expr = ?self.id, var = ?var.id).entered();
-        let id = self.inner.write().arena.diff_wrt(self.id, var.id);
+        let var_id = self.checked_id(var);
+        let _span = debug_span!("diff", expr = ?self.raw_id(), var = ?var_id).entered();
+        let id = self.inner.write().arena.diff_wrt(self.raw_id(), var_id);
         self.wrap(id)
     }
 
@@ -1162,11 +1185,12 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn formal_diff(&self, var: &Ex) -> Ex {
+        let var_id = self.checked_id(var);
         let id = self
             .inner
             .write()
             .arena
-            .intern(crate::base::node::ExprNode::Derivative(self.id, var.id));
+            .intern(crate::base::node::ExprNode::Derivative(self.raw_id(), var_id));
         self.wrap(id)
     }
 
@@ -1187,13 +1211,14 @@ impl Expr<Numeric> {
     /// // d/dx(x² + y²) with y depending on x = 2x + 2y·dy/dx
     /// ```
     pub fn diff_with_dependent(&self, var: &Ex, dependent_vars: &[&Ex]) -> Ex {
+        let var_id = self.checked_id(var);
         let mut deps = rustc_hash::FxHashSet::default();
         for dep in dependent_vars {
-            deps.insert(dep.id);
+            deps.insert(self.checked_id(dep));
         }
         let id = {
             let mut guard = self.inner.write();
-            crate::transforms::diff::diff_with_deps(&mut guard.arena, self.id, var.id, &deps)
+            crate::transforms::diff::diff_with_deps(&mut guard.arena, self.raw_id(), var_id, &deps)
         };
         self.wrap(id)
     }
@@ -1206,7 +1231,7 @@ impl Expr<Numeric> {
     pub fn eval_derivatives(&self) -> Ex {
         let id = {
             let mut guard = self.inner.write();
-            crate::transforms::subs::eval_derivatives(&mut guard.arena, self.id)
+            crate::transforms::subs::eval_derivatives(&mut guard.arena, self.raw_id())
         };
         self.wrap(id)
     }
@@ -1252,8 +1277,9 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the antiderivative; does not modify in place"]
     pub fn integrate(&self, var: &Ex) -> Ex {
-        let _span = debug_span!("integrate", expr = ?self.id, var = ?var.id).entered();
-        let id = self.inner.write().arena.integrate_expr(self.id, var.id);
+        let var_id = self.checked_id(var);
+        let _span = debug_span!("integrate", expr = ?self.raw_id(), var = ?var_id).entered();
+        let id = self.inner.write().arena.integrate_expr(self.raw_id(), var_id);
         self.wrap(id)
     }
 
@@ -1308,12 +1334,14 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the series expansion; does not modify in place"]
     pub fn series(&self, var: &Ex, point: &Ex, order: u32) -> Result<Ex, SymplexError> {
-        let _span = debug_span!("series", expr = ?self.id, order = order).entered();
+        let var_id = self.checked_id(var);
+        let point_id = self.checked_id(point);
+        let _span = debug_span!("series", expr = ?self.raw_id(), order = order).entered();
         let id = self
             .inner
             .write()
             .arena
-            .series_expr(self.id, var.id, point.id, order)?;
+            .series_expr(self.raw_id(), var_id, point_id, order)?;
         Ok(self.wrap(id))
     }
 
@@ -1345,9 +1373,10 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the series expansion; does not modify in place"]
     pub fn maclaurin(&self, var: &Ex, order: u32) -> Result<Ex, SymplexError> {
+        let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
         let zero = inner.arena.zero;
-        let id = inner.arena.series_expr(self.id, var.id, zero, order)?;
+        let id = inner.arena.series_expr(self.raw_id(), var_id, zero, order)?;
         drop(inner);
         Ok(self.wrap(id))
     }
@@ -1380,12 +1409,14 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the residue value; does not modify in place"]
     pub fn residue(&self, var: &Ex, point: &Ex) -> Result<Ex, SymplexError> {
-        let _span = debug_span!("residue", expr = ?self.id, var = ?var.id).entered();
+        let var_id = self.checked_id(var);
+        let point_id = self.checked_id(point);
+        let _span = debug_span!("residue", expr = ?self.raw_id(), var = ?var_id).entered();
         let id = self
             .inner
             .write()
             .arena
-            .residue_expr(self.id, var.id, point.id)?;
+            .residue_expr(self.raw_id(), var_id, point_id)?;
         Ok(self.wrap(id))
     }
 
@@ -1408,12 +1439,13 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the Fourier series; does not modify in place"]
     pub fn fourier_series(&self, var: &Ex, n_terms: u32) -> Ex {
-        let _span = debug_span!("fourier_series", expr = ?self.id, var = ?var.id).entered();
+        let var_id = self.checked_id(var);
+        let _span = debug_span!("fourier_series", expr = ?self.raw_id(), var = ?var_id).entered();
         let id = self
             .inner
             .write()
             .arena
-            .fourier_series_expr(self.id, var.id, n_terms);
+            .fourier_series_expr(self.raw_id(), var_id, n_terms);
         self.wrap(id)
     }
 
@@ -1436,12 +1468,14 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the Laplace transform; does not modify in place"]
     pub fn laplace(&self, t: &Ex, s: &Ex) -> Result<Ex, SymplexError> {
-        let _span = debug_span!("laplace", expr = ?self.id, t = ?t.id, s = ?s.id).entered();
+        let t_id = self.checked_id(t);
+        let s_id = self.checked_id(s);
+        let _span = debug_span!("laplace", expr = ?self.raw_id(), t = ?t_id, s = ?s_id).entered();
         let id = self
             .inner
             .write()
             .arena
-            .laplace_transform_expr(self.id, t.id, s.id)?;
+            .laplace_transform_expr(self.raw_id(), t_id, s_id)?;
         Ok(self.wrap(id))
     }
 
@@ -1464,12 +1498,14 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the inverse Laplace transform; does not modify in place"]
     pub fn inverse_laplace(&self, s: &Ex, t: &Ex) -> Result<Ex, SymplexError> {
-        let _span = debug_span!("inverse_laplace", expr = ?self.id, s = ?s.id, t = ?t.id).entered();
+        let s_id = self.checked_id(s);
+        let t_id = self.checked_id(t);
+        let _span = debug_span!("inverse_laplace", expr = ?self.raw_id(), s = ?s_id, t = ?t_id).entered();
         let id = self
             .inner
             .write()
             .arena
-            .inverse_laplace_transform_expr(self.id, s.id, t.id)?;
+            .inverse_laplace_transform_expr(self.raw_id(), s_id, t_id)?;
         Ok(self.wrap(id))
     }
 
@@ -1493,12 +1529,14 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the limit value; does not modify in place"]
     pub fn limit(&self, var: &Ex, point: &Ex) -> Result<Ex, SymplexError> {
-        let _span = debug_span!("limit", expr = ?self.id, var = ?var.id).entered();
+        let var_id = self.checked_id(var);
+        let point_id = self.checked_id(point);
+        let _span = debug_span!("limit", expr = ?self.raw_id(), var = ?var_id).entered();
         let id = self
             .inner
             .write()
             .arena
-            .limit_expr(self.id, var.id, point.id)?;
+            .limit_expr(self.raw_id(), var_id, point_id)?;
         Ok(self.wrap(id))
     }
 
@@ -1532,7 +1570,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the expanded form; does not modify in place"]
     pub fn expand_trig(&self) -> Ex {
-        let id = self.inner.write().arena.expand_trig_expr(self.id);
+        let id = self.inner.write().arena.expand_trig_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -1559,7 +1597,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the expanded form; does not modify in place"]
     pub fn expand_log(&self) -> Ex {
-        let id = self.inner.write().arena.expand_log_expr(self.id);
+        let id = self.inner.write().arena.expand_log_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -1581,7 +1619,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the combined form; does not modify in place"]
     pub fn log_combine(&self) -> Ex {
-        let id = self.inner.write().arena.log_combine_expr(self.id);
+        let id = self.inner.write().arena.log_combine_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -1608,7 +1646,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the combined form; does not modify in place"]
     pub fn trig_combine(&self) -> Ex {
-        let id = self.inner.write().arena.trig_combine_expr(self.id);
+        let id = self.inner.write().arena.trig_combine_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -1667,7 +1705,7 @@ impl Expr<Numeric> {
     #[must_use = "returns the rendered string; does not modify in place"]
     pub fn pretty(&self) -> String {
         let inner = self.inner.read();
-        crate::output::pretty::pretty_print(&inner.arena, self.id, crate::output::pretty::RenderMode::Unicode).render()
+        crate::output::pretty::pretty_print(&inner.arena, self.raw_id(), crate::output::pretty::RenderMode::Unicode).render()
     }
 
     /// Render this expression as a 2D ASCII string for terminal display.
@@ -1689,7 +1727,7 @@ impl Expr<Numeric> {
     #[must_use = "returns the rendered string; does not modify in place"]
     pub fn pretty_ascii(&self) -> String {
         let inner = self.inner.read();
-        crate::output::pretty::pretty_print(&inner.arena, self.id, crate::output::pretty::RenderMode::Ascii).render()
+        crate::output::pretty::pretty_print(&inner.arena, self.raw_id(), crate::output::pretty::RenderMode::Ascii).render()
     }
 
     /// Simplify an expression using assumptions.
@@ -1712,7 +1750,7 @@ impl Expr<Numeric> {
         let id = crate::simplify::refine::refine_full(
             arena,
             &mut assumptions_guard,
-            self.id,
+            self.raw_id(),
         );
         drop(assumptions_guard);
         drop(inner);
@@ -1747,6 +1785,12 @@ impl Expr<Numeric> {
         use crate::base::assumptions::{AssumptionCache, Assumptions};
         use crate::base::node::ExprNode;
 
+        // Extract checked IDs before acquiring the lock.
+        let var_ids: Vec<crate::base::node::ExprId> = temp_assumptions
+            .iter()
+            .map(|(var, _)| self.checked_id(var))
+            .collect();
+
         let mut inner = self.inner.write();
         let crate::api::context::ContextInner {
             ref mut arena,
@@ -1756,8 +1800,8 @@ impl Expr<Numeric> {
 
         // Save original assumptions for symbols we're temporarily overriding.
         let mut saved: Vec<(crate::base::node::SymbolId, Assumptions)> = Vec::new();
-        for (var, assumption) in temp_assumptions {
-            if let ExprNode::Symbol(sid) = arena.node(var.id) {
+        for (i, (_var, assumption)) in temp_assumptions.iter().enumerate() {
+            if let ExprNode::Symbol(sid) = arena.node(var_ids[i]) {
                 let sid = *sid;
                 saved.push((sid, arena.symbol_assumptions(sid)));
                 let mut a = arena.symbol_assumptions(sid);
@@ -1774,7 +1818,7 @@ impl Expr<Numeric> {
 
         // Run refine with a fresh assumption cache (picks up the temp assumptions).
         let mut temp_cache = AssumptionCache::new();
-        let id = crate::simplify::refine::refine_full(arena, &mut temp_cache, self.id);
+        let id = crate::simplify::refine::refine_full(arena, &mut temp_cache, self.raw_id());
 
         // Restore original assumptions.
         for (sid, original) in saved {
@@ -1803,7 +1847,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn simplify_trig(&self) -> Ex {
-        let id = self.inner.write().arena.trigsimp_expr(self.id);
+        let id = self.inner.write().arena.trigsimp_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -1826,7 +1870,7 @@ impl Expr<Numeric> {
     pub fn fu(&self) -> Ex {
         let id = {
             let mut guard = self.inner.write();
-            crate::simplify::fu::fu(&mut guard.arena, self.id)
+            crate::simplify::fu::fu(&mut guard.arena, self.raw_id())
         };
         self.wrap(id)
     }
@@ -1842,7 +1886,7 @@ impl Expr<Numeric> {
     pub fn trig_power_linearize(&self) -> Ex {
         let id = {
             let mut guard = self.inner.write();
-            crate::simplify::fu::tr_power(&mut guard.arena, self.id)
+            crate::simplify::fu::tr_power(&mut guard.arena, self.raw_id())
         };
         self.wrap(id)
     }
@@ -1857,7 +1901,7 @@ impl Expr<Numeric> {
     pub fn trig_half_angle(&self) -> Ex {
         let id = {
             let mut guard = self.inner.write();
-            crate::simplify::fu::tr14(&mut guard.arena, self.id)
+            crate::simplify::fu::tr14(&mut guard.arena, self.raw_id())
         };
         self.wrap(id)
     }
@@ -1884,10 +1928,11 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn gosper_sum(&self, var: &Ex) -> Option<Ex> {
+        let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
-        let node = inner.arena.node(self.id).clone();
+        let node = inner.arena.node(self.raw_id()).clone();
         if let crate::base::node::ExprNode::Sum(body, _sum_var, lower, upper) = node {
-            let result = crate::calculus::gosper::gosper_sum(&mut inner.arena, body, var.id, lower, upper);
+            let result = crate::calculus::gosper::gosper_sum(&mut inner.arena, body, var_id, lower, upper);
             drop(inner);
             return result.map(|id| self.wrap(id));
         }
@@ -1912,7 +1957,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn simplify_combinatorial(&self) -> Ex {
-        let id = self.inner.write().arena.combsimp_expr(self.id);
+        let id = self.inner.write().arena.combsimp_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -1933,7 +1978,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn simplify_numeric(&self, tolerance: f64) -> Ex {
-        let id = self.inner.write().arena.nsimplify_expr(self.id, tolerance);
+        let id = self.inner.write().arena.nsimplify_expr(self.raw_id(), tolerance);
         self.wrap(id)
     }
 
@@ -1956,7 +2001,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn simplify_powers(&self) -> Ex {
-        let id = self.inner.write().arena.powsimp_expr(self.id);
+        let id = self.inner.write().arena.powsimp_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -1977,7 +2022,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the rewritten form; does not modify in place"]
     pub fn rewrite_as_exp(&self) -> Ex {
-        let id = self.inner.write().arena.rewrite_as_exp_expr(self.id);
+        let id = self.inner.write().arena.rewrite_as_exp_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -1999,7 +2044,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the rewritten form; does not modify in place"]
     pub fn rewrite_as_trig(&self) -> Ex {
-        let id = self.inner.write().arena.rewrite_as_trig_expr(self.id);
+        let id = self.inner.write().arena.rewrite_as_trig_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -2024,7 +2069,8 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the collected form; does not modify in place"]
     pub fn collect(&self, var: &Ex) -> Ex {
-        let id = self.inner.write().arena.collect_expr(self.id, var.id);
+        let var_id = self.checked_id(var);
+        let id = self.inner.write().arena.collect_expr(self.raw_id(), var_id);
         self.wrap(id)
     }
 
@@ -2052,7 +2098,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the combined form; does not modify in place"]
     pub fn together(&self) -> Ex {
-        let id = self.inner.write().arena.together_expr(self.id);
+        let id = self.inner.write().arena.together_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -2079,8 +2125,9 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the cancelled form; does not modify in place"]
     pub fn cancel(&self, var: &Ex) -> Ex {
-        let _span = debug_span!("cancel", expr = ?self.id, var = ?var.id).entered();
-        let id = self.inner.write().arena.cancel_expr(self.id, var.id);
+        let var_id = self.checked_id(var);
+        let _span = debug_span!("cancel", expr = ?self.raw_id(), var = ?var_id).entered();
+        let id = self.inner.write().arena.cancel_expr(self.raw_id(), var_id);
         self.wrap(id)
     }
 
@@ -2136,7 +2183,8 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the decomposed form; does not modify in place"]
     pub fn partial_fractions(&self, var: &Ex) -> Ex {
-        let id = self.inner.write().arena.apart_expr(self.id, var.id);
+        let var_id = self.checked_id(var);
+        let id = self.inner.write().arena.apart_expr(self.raw_id(), var_id);
         self.wrap(id)
     }
 
@@ -2163,8 +2211,9 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the factored form; does not modify in place"]
     pub fn factor(&self, var: &Ex) -> Ex {
-        let _span = debug_span!("factor", expr = ?self.id, var = ?var.id).entered();
-        let id = self.inner.write().arena.factor_expr(self.id, var.id);
+        let var_id = self.checked_id(var);
+        let _span = debug_span!("factor", expr = ?self.raw_id(), var = ?var_id).entered();
+        let id = self.inner.write().arena.factor_expr(self.raw_id(), var_id);
         self.wrap(id)
     }
 
@@ -2192,7 +2241,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn factor_terms(&self) -> (Ex, Ex) {
-        let (gcd_id, inner_id) = self.inner.write().arena.factor_terms_pair_expr(self.id);
+        let (gcd_id, inner_id) = self.inner.write().arena.factor_terms_pair_expr(self.raw_id());
         (self.wrap(gcd_id), self.wrap(inner_id))
     }
 
@@ -2217,7 +2266,7 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the rationalized form; does not modify in place"]
     pub fn rationalize_denom(&self) -> Ex {
-        let id = self.inner.write().arena.rationalize_denom_expr(self.id);
+        let id = self.inner.write().arena.rationalize_denom_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -2246,12 +2295,12 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn separate_vars(&self, vars: &[&Ex]) -> Vec<(Vec<Ex>, Ex)> {
-        let var_ids: Vec<crate::base::node::ExprId> = vars.iter().map(|v| v.id).collect();
+        let var_ids: Vec<crate::base::node::ExprId> = vars.iter().map(|v| self.checked_id(v)).collect();
         let raw = self
             .inner
             .write()
             .arena
-            .separatevars_expr(self.id, &var_ids);
+            .separatevars_expr(self.raw_id(), &var_ids);
         raw.into_iter()
             .map(|(dep_ids, prod_id)| {
                 let dep_exprs: Vec<Ex> = dep_ids.into_iter().map(|id| self.wrap(id)).collect();
@@ -2279,8 +2328,9 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn degree(&self, var: &Ex) -> Option<usize> {
+        let var_id = self.checked_id(var);
         let inner = self.inner.read();
-        inner.arena.degree_of(self.id, var.id)
+        inner.arena.degree_of(self.raw_id(), var_id)
     }
 
     /// Return the coefficients of this expression as a polynomial in `var`,
@@ -2303,8 +2353,9 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn coeffs(&self, var: &Ex) -> Option<Vec<Ex>> {
+        let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
-        let ids = inner.arena.coefficients_of(self.id, var.id)?;
+        let ids = inner.arena.coefficients_of(self.raw_id(), var_id)?;
         drop(inner);
         Some(ids.into_iter().map(|id| self.wrap(id)).collect())
     }
@@ -2360,7 +2411,7 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn as_numer_denom(&self) -> (Ex, Ex) {
         let mut inner = self.inner.write();
-        let (n, d) = inner.arena.as_numer_denom_expr(self.id);
+        let (n, d) = inner.arena.as_numer_denom_expr(self.raw_id());
         drop(inner);
         (self.wrap(n), self.wrap(d))
     }
@@ -2406,8 +2457,10 @@ impl Expr<Numeric> {
     /// Returns `None` if either expression is not polynomial in `var`.
     #[must_use]
     pub fn poly_gcd(&self, other: &Ex, var: &Ex) -> Option<Ex> {
+        let other_id = self.checked_id(other);
+        let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
-        let id = inner.arena.poly_gcd_expr(self.id, other.id, var.id)?;
+        let id = inner.arena.poly_gcd_expr(self.raw_id(), other_id, var_id)?;
         drop(inner);
         Some(self.wrap(id))
     }
@@ -2417,8 +2470,10 @@ impl Expr<Numeric> {
     /// Returns `None` if either expression is not polynomial in `var`.
     #[must_use]
     pub fn poly_lcm(&self, other: &Ex, var: &Ex) -> Option<Ex> {
+        let other_id = self.checked_id(other);
+        let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
-        let id = inner.arena.poly_lcm_expr(self.id, other.id, var.id)?;
+        let id = inner.arena.poly_lcm_expr(self.raw_id(), other_id, var_id)?;
         drop(inner);
         Some(self.wrap(id))
     }
@@ -2448,15 +2503,16 @@ impl Expr<Numeric> {
     /// assert_eq!(solutions.len(), 2);
     /// ```
     pub fn solve(&self, var: &Ex) -> Result<Vec<Ex>, SymplexError> {
-        let _span = debug_span!("solve", expr = ?self.id, var = ?var.id).entered();
+        let var_id = self.checked_id(var);
+        let _span = debug_span!("solve", expr = ?self.raw_id(), var = ?var_id).entered();
         let mut inner = self.inner.write();
         // Check if the expression is polynomial in var.
-        let poly = crate::poly::polybridge::expr_to_poly(&inner.arena, self.id, var.id);
+        let poly = crate::poly::polybridge::expr_to_poly(&inner.arena, self.raw_id(), var_id);
         if poly.is_none() {
             // Not a numeric polynomial — try symbolic linear solve as fallback.
             // This handles cases like k*x - F = 0 where coefficients are symbolic.
             if let Some(solutions) = crate::transforms::solve::try_solve_linear_symbolic(
-                &mut inner.arena, self.id, var.id,
+                &mut inner.arena, self.raw_id(), var_id,
             ) {
                 let wrapped: Vec<Ex> = solutions.into_iter().map(|sol| self.wrap(sol.value)).collect();
                 drop(inner);
@@ -2467,7 +2523,7 @@ impl Expr<Numeric> {
                 reason: "expression is not polynomial in the given variable".into(),
             });
         }
-        let solutions = inner.arena.solve_for(self.id, var.id);
+        let solutions = inner.arena.solve_for(self.raw_id(), var_id);
         drop(inner);
         Ok(solutions
             .into_iter()
@@ -2502,9 +2558,10 @@ impl Expr<Numeric> {
     /// assert!(!s.contains("EmptySet"), "x > 0 should not be empty: {s}");
     /// ```
     pub fn solve_gt(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let var_id = self.checked_id(var);
         let id = self.inner.write().arena.solve_inequality_expr(
-            self.id,
-            var.id,
+            self.raw_id(),
+            var_id,
             crate::transforms::inequalities::Relation::Gt,
         )?;
         Ok(self.wrap_as::<SetValued>(id))
@@ -2515,9 +2572,10 @@ impl Expr<Numeric> {
     /// Like [`solve_gt`](Ex::solve_gt), but includes the roots themselves
     /// (where `self = 0`).
     pub fn solve_ge(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let var_id = self.checked_id(var);
         let id = self.inner.write().arena.solve_inequality_expr(
-            self.id,
-            var.id,
+            self.raw_id(),
+            var_id,
             crate::transforms::inequalities::Relation::Ge,
         )?;
         Ok(self.wrap_as::<SetValued>(id))
@@ -2527,9 +2585,10 @@ impl Expr<Numeric> {
     ///
     /// Uses the sign-chart method with a strict less-than relation.
     pub fn solve_lt(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let var_id = self.checked_id(var);
         let id = self.inner.write().arena.solve_inequality_expr(
-            self.id,
-            var.id,
+            self.raw_id(),
+            var_id,
             crate::transforms::inequalities::Relation::Lt,
         )?;
         Ok(self.wrap_as::<SetValued>(id))
@@ -2539,9 +2598,10 @@ impl Expr<Numeric> {
     ///
     /// Like [`solve_lt`](Ex::solve_lt), but includes the roots themselves.
     pub fn solve_le(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let var_id = self.checked_id(var);
         let id = self.inner.write().arena.solve_inequality_expr(
-            self.id,
-            var.id,
+            self.raw_id(),
+            var_id,
             crate::transforms::inequalities::Relation::Le,
         )?;
         Ok(self.wrap_as::<SetValued>(id))
@@ -2566,7 +2626,8 @@ impl Expr<Numeric> {
     /// assert!(!s.contains("EmptySet"), "solve_as_set: {s}");
     /// ```
     pub fn solve_as_set(&self, var: &Ex) -> SetEx {
-        let id = self.inner.write().arena.solveset_expr(self.id, var.id);
+        let var_id = self.checked_id(var);
+        let id = self.inner.write().arena.solveset_expr(self.raw_id(), var_id);
         self.wrap_as::<SetValued>(id)
     }
 
@@ -2677,9 +2738,11 @@ impl Expr<Numeric> {
     /// }
     /// ```
     pub fn solve_ode(&self, func: &Ex, var: &Ex) -> Option<(Ex, Vec<Ex>)> {
+        let func_id = self.checked_id(func);
+        let var_id = self.checked_id(var);
         let result = {
             let mut guard = self.inner.write();
-            crate::calculus::ode::dsolve(&mut guard.arena, self.id, func.id, var.id)
+            crate::calculus::ode::dsolve(&mut guard.arena, self.raw_id(), func_id, var_id)
         };
         result.map(|r| {
             let solution = self.wrap(r.solution);
@@ -2709,13 +2772,13 @@ impl Expr<Numeric> {
     /// intermediate computation produces NaN.
     #[must_use = "returns the numerical value as a string"]
     pub fn eval_decimal(&self, digits: u32) -> Result<String, SymplexError> {
-        let _span = debug_span!("eval_decimal", expr = ?self.id, digits = digits).entered();
+        let _span = debug_span!("eval_decimal", expr = ?self.raw_id(), digits = digits).entered();
         // Reduce exact values before numerical evaluation.
         // This ensures e.g. Gamma(5) → 24 (exact) rather than
         // computing 23.9999... via Stirling series.
         let evaled = self.eval();
         let guard = evaled.inner.read();
-        crate::transforms::evalf::evalf(&guard.arena, evaled.id, digits)
+        crate::transforms::evalf::evalf(&guard.arena, evaled.raw_id(), digits)
     }
 
     /// Convenience: evaluate to an `f64`.
@@ -2793,7 +2856,7 @@ impl Expr<Numeric> {
     #[allow(clippy::type_complexity)]
     pub fn compile(&self, var_names: &[&str]) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
         let inner = self.inner.read();
-        crate::output::lambdify::lambdify(&inner.arena, self.id, var_names)
+        crate::output::lambdify::lambdify(&inner.arena, self.raw_id(), var_names)
     }
 
     /// Perform common subexpression elimination (CSE).
@@ -2820,7 +2883,7 @@ impl Expr<Numeric> {
     pub fn cse(&self) -> (Vec<(Ex, Ex)>, Ex) {
         let result = {
             let mut guard = self.inner.write();
-            crate::output::cse::cse(&mut guard.arena, self.id)
+            crate::output::cse::cse(&mut guard.arena, self.raw_id())
         };
         let bindings = result
             .bindings
@@ -2847,7 +2910,7 @@ impl Expr<Numeric> {
     /// ```
     pub fn to_rust_fn(&self, name: &str, args: &[&str]) -> Result<String, SymplexError> {
         let mut guard = self.inner.write();
-        guard.arena.to_rust_fn(self.id, name, args)
+        guard.arena.to_rust_fn(self.raw_id(), name, args)
     }
 
     /// Generate a Rust function body as a string with custom code generation options.
@@ -2874,7 +2937,7 @@ impl Expr<Numeric> {
         options: &crate::output::codegen::CodegenOptions,
     ) -> Result<String, SymplexError> {
         let mut guard = self.inner.write();
-        crate::output::codegen::to_rust_fn_with_options(&mut guard.arena, self.id, name, args, options)
+        crate::output::codegen::to_rust_fn_with_options(&mut guard.arena, self.raw_id(), name, args, options)
     }
 
     // ── Collection reduction ───────────────────────────────────────
@@ -2901,7 +2964,7 @@ impl Expr<Numeric> {
         }
         let mut inner = items[0].inner.write();
         let ids: smallvec::SmallVec<[crate::base::node::ExprId; 8]> =
-            items.iter().map(|e| e.id).collect();
+            items.iter().map(|e| e.raw_id()).collect();
         let id = inner.arena.add(&ids);
         drop(inner);
         items[0].wrap(id)
@@ -2929,7 +2992,7 @@ impl Expr<Numeric> {
         }
         let mut inner = items[0].inner.write();
         let ids: smallvec::SmallVec<[crate::base::node::ExprId; 8]> =
-            items.iter().map(|e| e.id).collect();
+            items.iter().map(|e| e.raw_id()).collect();
         let id = inner.arena.mul(&ids);
         drop(inner);
         items[0].wrap(id)
@@ -2962,11 +3025,18 @@ impl Expr<Numeric> {
     where
         F: Fn(crate::api::expr_view::ExprView<'_>) -> Option<Ex>,
     {
+        let self_ctx_id = self.ctx_id;
         let result_id = {
             let mut guard = self.inner.write();
-            crate::base::walk::walk_and_rebuild(&mut guard.arena, self.id, &|arena, id| {
+            crate::base::walk::walk_and_rebuild(&mut guard.arena, self.raw_id(), &|arena, id| {
                 let view = crate::api::expr_view::ExprView { id, arena };
-                f(view).map(|ex| ex.id)
+                f(view).map(|ex| {
+                    assert!(
+                        self_ctx_id == ex.ctx_id,
+                        "replace: returned expression belongs to a different context"
+                    );
+                    ex.raw_id()
+                })
             })
         };
         self.wrap(result_id)
@@ -3030,8 +3100,10 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn classify_ode(&self, func: &Ex, var: &Ex) -> crate::calculus::ode::OdeType {
+        let func_id = self.checked_id(func);
+        let var_id = self.checked_id(var);
         let mut guard = self.inner.write();
-        crate::calculus::ode::classify_ode(&mut guard.arena, self.id, func.id, var.id)
+        crate::calculus::ode::classify_ode(&mut guard.arena, self.raw_id(), func_id, var_id)
     }
 
     /// Check whether `solution` satisfies the ODE `self = 0`.
@@ -3055,9 +3127,12 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn check_ode_solution(&self, solution: &Ex, func: &Ex, var: &Ex) -> bool {
+        let solution_id = self.checked_id(solution);
+        let func_id = self.checked_id(func);
+        let var_id = self.checked_id(var);
         {
             let mut guard = self.inner.write();
-            crate::calculus::ode::checkodesol(&mut guard.arena, self.id, solution.id, func.id, var.id)
+            crate::calculus::ode::checkodesol(&mut guard.arena, self.raw_id(), solution_id, func_id, var_id)
         }
     }
 
@@ -3077,11 +3152,12 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn closed_interval(&self, end: &Ex) -> SetEx {
+        let end_id = self.checked_id(end);
         let id =
             self.inner
                 .write()
                 .arena
-                .interval(self.id, end.id, crate::base::node::INTERVAL_BOTH_CLOSED);
+                .interval(self.raw_id(), end_id, crate::base::node::INTERVAL_BOTH_CLOSED);
         self.wrap_as(id)
     }
 
@@ -3099,11 +3175,12 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn open_interval(&self, end: &Ex) -> SetEx {
+        let end_id = self.checked_id(end);
         let id =
             self.inner
                 .write()
                 .arena
-                .interval(self.id, end.id, crate::base::node::INTERVAL_BOTH_OPEN);
+                .interval(self.raw_id(), end_id, crate::base::node::INTERVAL_BOTH_OPEN);
         self.wrap_as(id)
     }
 
@@ -3144,81 +3221,90 @@ impl Expr<Numeric> {
 
     /// Bessel function of the first kind: J_order(self).
     pub fn bessel_j(&self, order: &Ex) -> Ex {
+        let order_id = self.checked_id(order);
         let id = {
             let mut guard = self.inner.write();
-            guard.arena.besselj(order.id, self.id)
+            guard.arena.besselj(order_id, self.raw_id())
         };
         self.wrap(id)
     }
 
     /// Bessel function of the second kind: Y_order(self).
     pub fn bessel_y(&self, order: &Ex) -> Ex {
+        let order_id = self.checked_id(order);
         let id = {
             let mut guard = self.inner.write();
-            guard.arena.bessely(order.id, self.id)
+            guard.arena.bessely(order_id, self.raw_id())
         };
         self.wrap(id)
     }
 
     /// Modified Bessel function of the first kind: I_order(self).
     pub fn bessel_i(&self, order: &Ex) -> Ex {
+        let order_id = self.checked_id(order);
         let id = {
             let mut guard = self.inner.write();
-            guard.arena.besseli(order.id, self.id)
+            guard.arena.besseli(order_id, self.raw_id())
         };
         self.wrap(id)
     }
 
     /// Modified Bessel function of the second kind: K_order(self).
     pub fn bessel_k(&self, order: &Ex) -> Ex {
+        let order_id = self.checked_id(order);
         let id = {
             let mut guard = self.inner.write();
-            guard.arena.besselk(order.id, self.id)
+            guard.arena.besselk(order_id, self.raw_id())
         };
         self.wrap(id)
     }
 
     /// Legendre polynomial P_n(self).
     pub fn legendre(&self, n: &Ex) -> Ex {
+        let n_id = self.checked_id(n);
         let id = {
             let mut guard = self.inner.write();
-            guard.arena.legendre(n.id, self.id)
+            guard.arena.legendre(n_id, self.raw_id())
         };
         self.wrap(id)
     }
 
     /// Chebyshev polynomial of the first kind T_n(self).
     pub fn chebyshev_t(&self, n: &Ex) -> Ex {
+        let n_id = self.checked_id(n);
         let id = {
             let mut guard = self.inner.write();
-            guard.arena.chebyshev_t(n.id, self.id)
+            guard.arena.chebyshev_t(n_id, self.raw_id())
         };
         self.wrap(id)
     }
 
     /// Chebyshev polynomial of the second kind U_n(self).
     pub fn chebyshev_u(&self, n: &Ex) -> Ex {
+        let n_id = self.checked_id(n);
         let id = {
             let mut guard = self.inner.write();
-            guard.arena.chebyshev_u(n.id, self.id)
+            guard.arena.chebyshev_u(n_id, self.raw_id())
         };
         self.wrap(id)
     }
 
     /// Hermite polynomial H_n(self) (physicist's convention).
     pub fn hermite(&self, n: &Ex) -> Ex {
+        let n_id = self.checked_id(n);
         let id = {
             let mut guard = self.inner.write();
-            guard.arena.hermite(n.id, self.id)
+            guard.arena.hermite(n_id, self.raw_id())
         };
         self.wrap(id)
     }
 
     /// Laguerre polynomial L_n(self).
     pub fn laguerre(&self, n: &Ex) -> Ex {
+        let n_id = self.checked_id(n);
         let id = {
             let mut guard = self.inner.write();
-            guard.arena.laguerre(n.id, self.id)
+            guard.arena.laguerre(n_id, self.raw_id())
         };
         self.wrap(id)
     }
@@ -3251,8 +3337,10 @@ impl Expr<Numeric> {
         var: &Ex,
         point: &Ex,
     ) -> crate::calculus::formal_series::FormalPowerSeries {
+        let var_id = self.checked_id(var);
+        let point_id = self.checked_id(point);
         let mut inner = self.inner.write();
-        crate::calculus::formal_series::fps(&mut inner.arena, self.id, var.id, point.id)
+        crate::calculus::formal_series::fps(&mut inner.arena, self.raw_id(), var_id, point_id)
     }
 
     /// Compute the formal power series about 0 (Maclaurin series).
@@ -3273,9 +3361,10 @@ impl Expr<Numeric> {
         &self,
         var: &Ex,
     ) -> crate::calculus::formal_series::FormalPowerSeries {
+        let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
         let zero = inner.arena.zero;
-        crate::calculus::formal_series::fps(&mut inner.arena, self.id, var.id, zero)
+        crate::calculus::formal_series::fps(&mut inner.arena, self.raw_id(), var_id, zero)
     }
 
     // ── Finite differences ─────────────────────────────────────────
@@ -3300,9 +3389,10 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn differentiate_finite(&self, var: &Ex) -> Ex {
+        let var_id = self.checked_id(var);
         let id = {
             let mut guard = self.inner.write();
-            crate::calculus::finite_diff::differentiate_finite(&mut guard.arena, self.id, var.id)
+            crate::calculus::finite_diff::differentiate_finite(&mut guard.arena, self.raw_id(), var_id)
         };
         self.wrap(id)
     }
@@ -3331,7 +3421,7 @@ impl Expr<Numeric> {
         let evaled = self.eval();
         let inner = evaled.inner.read();
         let arena = &inner.arena;
-        match arena.node(evaled.id) {
+        match arena.node(evaled.raw_id()) {
             crate::base::node::ExprNode::Num(nid) => {
                 let r = arena.num(*nid);
                 if !r.is_integer() {
@@ -3389,7 +3479,7 @@ impl Expr<Numeric> {
         let evaled = self.eval();
         let inner = evaled.inner.read();
         let arena = &inner.arena;
-        match arena.node(evaled.id) {
+        match arena.node(evaled.raw_id()) {
             crate::base::node::ExprNode::Num(nid) => {
                 let r = arena.num(*nid);
                 if !r.is_integer() {
@@ -3412,23 +3502,25 @@ impl Expr<Numeric> {
     fn sample_expression(&self, var: &Ex, a: f64, b: f64) -> crate::plotting::sampling::PlotData {
         use crate::base::node::ExprNode;
 
+        let var_id = self.checked_id(var);
+
         // Step 1: Domain analysis (needs write lock for singularities)
         let (excluded_points, min_points) = {
             let mut inner = self.inner.write();
-            match inner.arena.node(var.id) {
+            match inner.arena.node(var_id) {
                 ExprNode::Symbol(sid) => {
                     let sid = *sid;
                     let excluded = crate::calculus::calculus_util::singularities(
                         &mut inner.arena,
-                        self.id,
-                        var.id,
+                        self.raw_id(),
+                        var_id,
                         sid,
                         (a, b),
                     );
                     let freq = crate::calculus::calculus_util::estimate_frequency(
                         &inner.arena,
-                        self.id,
-                        var.id,
+                        self.raw_id(),
+                        var_id,
                         sid,
                     );
                     let min_pts = match freq {

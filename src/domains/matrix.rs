@@ -875,7 +875,16 @@ impl Matrix {
     /// Returns [`SymplexError::ComputationFailed`] if the matrix is not square.
     pub fn eigenvals(&self, var: &Ex) -> Result<Vec<Ex>, SymplexError> {
         let cp = self.char_poly(var)?;
-        Ok(cp.solve_or_empty(var))
+        let roots = cp.solve_or_empty(var);
+        let n = self.nrows();
+        if roots.len() < n {
+            tracing::warn!(
+                "eigenvals: found {} eigenvalue(s) for a {}×{} matrix — \
+                 characteristic polynomial may have factors beyond solver capability",
+                roots.len(), n, n
+            );
+        }
+        Ok(roots)
     }
 
     /// Eigenvectors: for each eigenvalue, compute a basis for its eigenspace.
@@ -1606,7 +1615,7 @@ impl Matrix {
         let entry_ids: Vec<crate::base::node::ExprId> = self
             .rows
             .iter()
-            .flat_map(|row| row.iter().map(|e| e.id))
+            .flat_map(|row| row.iter().map(|e| e.raw_id()))
             .collect();
         crate::output::codegen::matrix_to_rust_fn(
             arena, &entry_ids, self.nrows, self.ncols, name, params, options,
@@ -1988,7 +1997,7 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
     let arena = &inner.arena;
 
     // Try to convert the characteristic polynomial expression to a dense Poly.
-    let poly = crate::poly::polybridge::expr_to_poly(arena, char_poly.id, var.id)?;
+    let poly = crate::poly::polybridge::expr_to_poly(arena, char_poly.raw_id(), var.raw_id())?;
 
     // Factor: returns (content, [(factor_poly, multiplicity), ...]).
     let (_content, factors) = poly.factor_over_z();
@@ -2024,7 +2033,7 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
                 let factor_expr = crate::poly::polybridge::poly_to_expr(
                     &mut write_inner.arena,
                     factor,
-                    var.id,
+                    var.raw_id(),
                 );
                 drop(write_inner);
                 let factor_ex = char_poly.wrap(factor_expr);
@@ -2047,11 +2056,18 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
             let factor_expr = crate::poly::polybridge::poly_to_expr(
                 &mut write_inner.arena,
                 factor,
-                var.id,
+                var.raw_id(),
             );
             drop(write_inner);
             let factor_ex = char_poly.wrap(factor_expr);
             let roots = factor_ex.solve_or_empty(var);
+            if roots.is_empty() && degree > 0 {
+                tracing::warn!(
+                    "eigenvals: irreducible factor of degree {} yielded no roots — \
+                     eigenvalues from this factor are missing",
+                    degree
+                );
+            }
             trace!(
                 degree,
                 root_count = roots.len(),

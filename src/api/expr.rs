@@ -143,7 +143,7 @@ pub enum ExprType {
 pub struct Expr<S: Sort> {
     pub(crate) ctx_id: CtxId,
     pub(crate) inner: Arc<RwLock<ContextInner>>,
-    pub(crate) id: ExprId,
+    id: ExprId,
     pub(crate) _sort: PhantomData<S>,
 }
 
@@ -166,25 +166,72 @@ pub type SetEx = Expr<SetValued>;
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl<S: Sort> Expr<S> {
+    /// Construct an `Expr` from raw parts.
+    ///
+    /// The caller must guarantee that `id` is a valid [`ExprId`] in the
+    /// arena behind `inner`.  This is the **only** constructor — all other
+    /// modules must go through it because the `id` field is private.
+    #[inline]
+    pub(crate) fn from_raw_parts(
+        ctx_id: CtxId,
+        inner: Arc<RwLock<ContextInner>>,
+        id: ExprId,
+    ) -> Self {
+        Expr { ctx_id, inner, id, _sort: PhantomData }
+    }
+
     /// Helper — build a new Expr of the SAME sort from the same context.
     #[inline]
     pub(crate) fn wrap(&self, id: ExprId) -> Expr<S> {
-        Expr {
-            ctx_id: self.ctx_id,
-            inner: Arc::clone(&self.inner),
-            id,
-            _sort: PhantomData,
-        }
+        Expr::from_raw_parts(self.ctx_id, Arc::clone(&self.inner), id)
     }
 
     /// Helper — build a new Expr of a DIFFERENT sort from the same context.
     #[inline]
     pub(crate) fn wrap_as<T: Sort>(&self, id: ExprId) -> Expr<T> {
-        Expr {
-            ctx_id: self.ctx_id,
+        Expr::from_raw_parts(self.ctx_id, Arc::clone(&self.inner), id)
+    }
+
+    /// Return this expression's arena index.
+    ///
+    /// This is always safe — you are accessing your own data within
+    /// your own context's arena.
+    #[inline]
+    pub(crate) fn raw_id(&self) -> ExprId {
+        self.id
+    }
+
+    /// Return another expression's arena index after verifying it belongs
+    /// to the same [`Context`](crate::api::context::Context) as `self`.
+    ///
+    /// # Panics
+    ///
+    /// Panics with a descriptive message if `self` and `other` belong to
+    /// different contexts.  This prevents silent data corruption from
+    /// cross-context [`ExprId`] misuse.
+    #[inline]
+    pub(crate) fn checked_id<T: Sort>(&self, other: &Expr<T>) -> ExprId {
+        if self.ctx_id != other.ctx_id {
+            panic!(
+                "symplex: cannot combine expressions from different contexts \
+                 (context {} and context {}). All expressions in an operation \
+                 must originate from the same Context.",
+                self.ctx_id.0, other.ctx_id.0
+            );
+        }
+        other.id
+    }
+
+    /// Returns a [`Context`](crate::api::context::Context) handle that
+    /// shares this expression's arena and assumption cache.
+    ///
+    /// Useful when you need to create new expressions (constants, rationals)
+    /// guaranteed to live in the same context as an existing expression.
+    #[must_use]
+    pub fn context(&self) -> crate::api::context::Context {
+        crate::api::context::Context {
+            id: self.ctx_id,
             inner: Arc::clone(&self.inner),
-            id,
-            _sort: PhantomData,
         }
     }
 }
@@ -195,6 +242,11 @@ impl<S: Sort> Expr<S> {
 
 impl<S: Sort> Expr<S> {
     /// Returns the raw [`ExprId`] inside this handle.
+    ///
+    /// **Note:** This is an opaque arena-local index.  It is only
+    /// meaningful within the [`Context`](crate::api::context::Context)
+    /// that created this expression.  Comparing `ExprId` values across
+    /// contexts is undefined.
     #[inline]
     pub fn id(&self) -> ExprId {
         self.id
@@ -246,8 +298,9 @@ impl<S: Sort> Expr<S> {
     /// returns `true` if any node has the same [`ExprId`] as `needle`.
     #[must_use]
     pub fn contains(&self, needle: &Ex) -> bool {
+        let needle_id = self.checked_id(needle);
         let inner = self.inner.read();
-        crate::base::walk::contains(&inner.arena, self.id, needle.id)
+        crate::base::walk::contains(&inner.arena, self.id, needle_id)
     }
 
     /// Count the number of operations (non-atom nodes) in this expression.
@@ -427,11 +480,13 @@ impl<S: Sort> Expr<S> {
     /// Returns `self` unchanged (same `Expr`) if `old` does not appear.
     #[must_use = "returns a new expression with substitutions applied"]
     pub fn subs(&self, old: &Ex, new: &Ex) -> Expr<S> {
+        let old_id = self.checked_id(old);
+        let new_id = self.checked_id(new);
         let id = self
             .inner
             .write()
             .arena
-            .subs_structural(self.id, old.id, new.id);
+            .subs_structural(self.id, old_id, new_id);
         self.wrap(id)
     }
 
@@ -452,9 +507,10 @@ impl<S: Sort> Expr<S> {
     /// ```
     #[must_use = "returns a new expression with substitutions applied"]
     pub fn subs_i64(&self, old: &Ex, new: i64) -> Expr<S> {
+        let old_id = self.checked_id(old);
         let mut inner = self.inner.write();
         let new_id = inner.arena.int(new);
-        let id = inner.arena.subs_structural(self.id, old.id, new_id);
+        let id = inner.arena.subs_structural(self.id, old_id, new_id);
         drop(inner);
         self.wrap(id)
     }
@@ -466,7 +522,7 @@ impl<S: Sort> Expr<S> {
     #[must_use = "returns a new expression with substitutions applied"]
     pub fn subs_map(&self, replacements: &[(&Ex, &Ex)]) -> Expr<S> {
         let pairs: smallvec::SmallVec<[(crate::base::node::ExprId, crate::base::node::ExprId); 4]> =
-            replacements.iter().map(|(o, n)| (o.id, n.id)).collect();
+            replacements.iter().map(|(o, n)| (self.checked_id(o), self.checked_id(n))).collect();
         let id = self
             .inner
             .write()
@@ -714,7 +770,7 @@ impl<S: Sort> Expr<S> {
         let mut current = self.clone();
         for i in 0..max_iterations {
             let next = f(&current);
-            if next.id == current.id && next.ctx_id == current.ctx_id {
+            if next.raw_id() == current.raw_id() && next.ctx_id == current.ctx_id {
                 return (current, i);
             }
             current = next;
@@ -731,14 +787,16 @@ impl Expr<Boolean> {
     /// Logical conjunction: `self & other`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn and(&self, other: &BoolEx) -> BoolEx {
-        let id = self.inner.write().arena.and(&[self.id, other.id]);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.and(&[self.id, other_id]);
         self.wrap(id)
     }
 
     /// Logical disjunction: `self | other`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn or(&self, other: &BoolEx) -> BoolEx {
-        let id = self.inner.write().arena.or(&[self.id, other.id]);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.or(&[self.id, other_id]);
         self.wrap(id)
     }
 
@@ -782,6 +840,8 @@ impl Expr<Boolean> {
     /// If-then-else: `if self then a else b` = `(self ∧ a) ∨ (¬self ∧ b)`.
     #[must_use]
     pub fn ite(&self, then_: &BoolEx, else_: &BoolEx) -> BoolEx {
+        let _ = self.checked_id(then_);
+        let _ = self.checked_id(else_);
         self.and(then_).or(&self.not().and(else_))
     }
 
@@ -827,7 +887,8 @@ impl Expr<SetValued> {
     /// ```
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn union(&self, other: &SetEx) -> SetEx {
-        let id = self.inner.write().arena.set_union(&[self.id, other.id]);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.set_union(&[self.id, other_id]);
         self.wrap(id)
     }
 
@@ -850,14 +911,15 @@ impl Expr<SetValued> {
             .inner
             .write()
             .arena
-            .set_intersection(&[self.id, other.id]);
+            .set_intersection(&[self.id, self.checked_id(other)]);
         self.wrap(id)
     }
 
     /// Relative complement: `self \ other`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn complement(&self, other: &SetEx) -> SetEx {
-        let id = self.inner.write().arena.set_complement(self.id, other.id);
+        let other_id = self.checked_id(other);
+        let id = self.inner.write().arena.set_complement(self.id, other_id);
         self.wrap(id)
     }
 

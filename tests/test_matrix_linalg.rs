@@ -521,3 +521,83 @@ fn det_inverse_equals_reciprocal_det() {
         "det(B⁻¹) should be 1/1 = 1, got: {det_inv_b}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Eigenvalue boundary tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn eigenvals_2x2_irrational() {
+    // [[0, 2], [1, 0]] has eigenvalues ±√2
+    let lambda = symplex::var("lambda");
+    let m = Matrix::new(vec![
+        vec![symplex::int(0), symplex::int(2)],
+        vec![symplex::int(1), symplex::int(0)],
+    ]).unwrap();
+    let evals = m.eigenvals(&lambda).unwrap();
+    assert_eq!(
+        evals.len(),
+        2,
+        "2x2 should have 2 eigenvalues, got {}",
+        evals.len()
+    );
+    // Eigenvalues should be ±√2 — verify numerically
+    let mut found_pos = false;
+    let mut found_neg = false;
+    for ev in &evals {
+        if let Ok(v) = ev.eval_f64() {
+            if (v - std::f64::consts::SQRT_2).abs() < 1e-8 { found_pos = true; }
+            if (v + std::f64::consts::SQRT_2).abs() < 1e-8 { found_neg = true; }
+        }
+    }
+    assert!(
+        found_pos && found_neg,
+        "expected ±√2, got: {:?}",
+        evals.iter().map(|e| format!("{e}")).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn det_equals_det_transpose() {
+    // det(A) = det(A^T) for a 3x3 matrix
+    let m = Matrix::new(vec![
+        vec![symplex::int(1), symplex::int(2), symplex::int(3)],
+        vec![symplex::int(0), symplex::int(4), symplex::int(5)],
+        vec![symplex::int(1), symplex::int(0), symplex::int(6)],
+    ]).unwrap();
+    let det_a = m.det().unwrap();
+    let det_at = m.transpose().det().unwrap();
+    let d1 = det_a.eval_f64().expect("det(A) should evaluate to f64");
+    let d2 = det_at.eval_f64().expect("det(A^T) should evaluate to f64");
+    assert!(
+        (d1 - d2).abs() < 1e-10,
+        "det(A)={} ≠ det(A^T)={}",
+        d1,
+        d2
+    );
+}
+
+#[test]
+fn eigenvals_3x3_upper_triangular() {
+    // Upper-triangular [[1,5,3],[0,2,7],[0,0,3]] has eigenvalues 1, 2, 3
+    let lambda = symplex::var("lambda");
+    let m = Matrix::new(vec![
+        vec![symplex::int(1), symplex::int(5), symplex::int(3)],
+        vec![symplex::int(0), symplex::int(2), symplex::int(7)],
+        vec![symplex::int(0), symplex::int(0), symplex::int(3)],
+    ]).unwrap();
+    let evals = m.eigenvals(&lambda).unwrap();
+    assert_eq!(
+        evals.len(),
+        3,
+        "3x3 upper-triangular should have 3 eigenvalues, got {}",
+        evals.len()
+    );
+    let mut vals: Vec<String> = evals.iter().map(|e| format!("{e}")).collect();
+    vals.sort();
+    assert_eq!(
+        vals,
+        vec!["1", "2", "3"],
+        "eigenvalues should be 1, 2, 3, got: {vals:?}"
+    );
+}

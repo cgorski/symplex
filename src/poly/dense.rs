@@ -826,7 +826,13 @@ fn factor_squarefree(f: &Poly) -> Vec<Poly> {
     }
 
     // Step 2: Kronecker's method for degree-2 … degree-⌊n/2⌋.
-    let max_trial = (remaining.degree().unwrap_or(0) / 2).min(6);
+    let max_trial = (remaining.degree().unwrap_or(0) / 2).min(super::MAX_KRONECKER_DEGREE);
+    if remaining.degree().unwrap_or(0) / 2 > super::MAX_KRONECKER_DEGREE {
+        tracing::debug!(
+            "factoring: Kronecker method capped at degree {}; irreducible factors of higher degree will be missed",
+            super::MAX_KRONECKER_DEGREE
+        );
+    }
     for trial_deg in 2..=max_trial {
         loop {
             let rem_deg = remaining.degree().unwrap_or(0);
@@ -895,7 +901,12 @@ fn extract_rational_roots(f: &Poly) -> (Poly, Vec<Poly>) {
         if p_divs.is_empty() || q_divs.is_empty() {
             break;
         }
-        if p_divs.len() * q_divs.len() > 500 {
+        if p_divs.len() * q_divs.len() > super::MAX_DIVISOR_COMBINATIONS {
+            tracing::warn!(
+                "factoring: rational root search truncated — {} candidate combinations exceeds cap {}",
+                p_divs.len() * q_divs.len(),
+                super::MAX_DIVISOR_COMBINATIONS
+            );
             break;
         }
 
@@ -991,7 +1002,12 @@ fn kronecker_find_factor(f: &Poly, trial_deg: usize) -> Option<(Poly, Poly)> {
         .map(|d| d.len())
         .try_fold(1usize, |acc, n| acc.checked_mul(n))
         .unwrap_or(usize::MAX);
-    if total > 100_000 {
+    if total > super::MAX_KRONECKER_COMBINATIONS {
+        tracing::debug!(
+            "factoring: Kronecker search abandoned — {} evaluation combinations exceeds cap {}",
+            total,
+            super::MAX_KRONECKER_COMBINATIONS
+        );
         return None;
     }
 
@@ -1111,7 +1127,12 @@ fn positive_divisors(n: &BigInt) -> Vec<BigInt> {
     }
     let n_abs = n.abs();
     // Bail out for very large values.
-    if n_abs > BigInt::from(1_000_000_000i64) {
+    if n_abs > BigInt::from(super::MAX_DIVISOR_COEFFICIENT) {
+        tracing::debug!(
+            "factoring: coefficient {} exceeds divisor magnitude cap {}; skipping divisor enumeration",
+            n_abs,
+            super::MAX_DIVISOR_COEFFICIENT
+        );
         return vec![];
     }
 

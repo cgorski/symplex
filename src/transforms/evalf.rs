@@ -240,9 +240,8 @@ fn eval_node(
                     reason: "Digamma of complex argument not yet supported in evalf".into(),
                 });
             }
-            let x = bigfloat_to_f64(&val.0, rm, cc)?;
-            let result = digamma_f64(x)?;
-            Ok((f64_to_bigfloat(result, prec), BigFloat::new(prec)))
+            let result = arb_digamma(&val.0, prec, rm, cc)?;
+            Ok((result, BigFloat::new(prec)))
         }
 
         ExprNode::Erf(inner) => {
@@ -873,13 +872,16 @@ fn eval_node(
                     _ => {}
                 }
             }
-            // No condition was definitively true — try the last branch (often the "else")
-            if let Some(&(value_id, _)) = pairs.last() {
-                debug!("evalf: Piecewise — falling back to last branch");
-                return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
+            // No condition was definitively true — only fall back if last branch is an explicit else (BoolTrue)
+            if let Some(&(value_id, cond_id)) = pairs.last() {
+                if matches!(arena.node(cond_id), ExprNode::BoolTrue) {
+                    debug!("evalf: Piecewise — using explicit else branch");
+                    return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
+                }
+                tracing::warn!("evalf: Piecewise — no condition resolved and last branch is not an else; returning error");
             }
             Err(SymplexError::Unevaluable {
-                reason: "cannot evaluate piecewise: no condition is definitively true".into(),
+                reason: "cannot evaluate piecewise: no condition is definitively true and no else branch exists".into(),
             })
         }
 
@@ -1277,6 +1279,7 @@ fn bigfloat_to_f64(bf: &BigFloat, rm: RoundingMode, cc: &mut Consts) -> Result<f
 }
 
 /// Convert an `f64` to a `BigFloat` with the given precision.
+#[allow(dead_code)] // kept as f64 fast-path reference
 fn f64_to_bigfloat(f: f64, prec: usize) -> BigFloat {
     BigFloat::from_f64(f, prec)
 }
@@ -1371,6 +1374,7 @@ fn erf_f64(x: f64) -> f64 {
 /// Uses psi(x+1) = psi(x) + 1/x to shift x to a large value,
 /// then the asymptotic expansion:
 ///   psi(x) ~ ln(x) - 1/(2x) - 1/(12x^2) + 1/(120x^4) - 1/(252x^6) + ...
+#[allow(dead_code)] // kept as f64 fast-path reference; arb_digamma is used for evalf
 fn digamma_f64(x: f64) -> Result<f64, SymplexError> {
     if x.is_nan() || x.is_infinite() {
         return Err(SymplexError::Unevaluable {
@@ -1421,6 +1425,130 @@ fn digamma_f64(x: f64) -> Result<f64, SymplexError> {
     result -= 5.0 / (660.0 * x_pow);
     x_pow *= x2; // x^12
     result += 691.0 / (32760.0 * x_pow);
+
+    Ok(result)
+}
+
+/// Arbitrary-precision digamma (psi) function via recurrence + asymptotic series.
+///
+/// Algorithm:
+/// 1. For x < 0, use reflection: ψ(x) = ψ(1−x) − π·cot(πx)
+/// 2. Use recurrence ψ(x+1) = ψ(x) + 1/x to shift x to a large value
+/// 3. Asymptotic expansion: ψ(x) ~ ln(x) − 1/(2x) − Σ B_{2k}/(2k · x^{2k})
+fn arb_digamma(
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let guard = 20;
+    let wp = prec + guard;
+
+    if x.is_nan() || x.is_inf_pos() || x.is_inf_neg() {
+        return Err(SymplexError::Unevaluable {
+            reason: "Digamma of special float value".into(),
+        });
+    }
+
+    let one = BigFloat::from_i32(1, wp);
+
+    // Handle negative x via reflection: ψ(x) = ψ(1−x) − π·cot(πx)
+    if x.is_negative() {
+        let pi_val = cc.pi(wp, rm).clone();
+        let pi_x = pi_val.mul(x, wp, rm);
+        let sin_val = pi_x.sin(wp, rm, cc);
+
+        // Check for pole at non-positive integers
+        if sin_val.is_zero() {
+            return Err(SymplexError::Unevaluable {
+                reason: "Digamma at non-positive integer pole".into(),
+            });
+        }
+        if let Some(s_exp) = sin_val.exponent() {
+            if (s_exp as i64) < -(wp as i64 / 2) {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Digamma at non-positive integer pole".into(),
+                });
+            }
+        }
+
+        let cos_val = pi_x.cos(wp, rm, cc);
+        let cot_val = cos_val.div(&sin_val, wp, rm);
+        let one_minus_x = one.sub(x, wp, rm);
+        let psi_1mx = arb_digamma(&one_minus_x, prec, rm, cc)?;
+        let pi_cot = cc.pi(wp, rm).clone().mul(&cot_val, wp, rm);
+        return Ok(psi_1mx.sub(&pi_cot, wp, rm));
+    }
+
+    // Use recurrence ψ(x+1) = ψ(x) + 1/x to shift x >= threshold
+    let threshold_val = (wp as i32 / 3).max(10);
+    let threshold = BigFloat::from_i32(threshold_val, wp);
+    let mut result = BigFloat::new(wp); // 0
+    let mut x = x.clone();
+
+    while x.sub(&threshold, wp, rm).is_negative() {
+        // Check for pole at zero
+        if x.is_zero() {
+            return Err(SymplexError::Unevaluable {
+                reason: "Digamma at non-positive integer pole".into(),
+            });
+        }
+        if let Some(x_exp) = x.exponent() {
+            if (x_exp as i64) < -(wp as i64 / 2) {
+                return Err(SymplexError::Unevaluable {
+                    reason: "Digamma at non-positive integer pole".into(),
+                });
+            }
+        }
+        let inv_x = one.div(&x, wp, rm);
+        result = result.sub(&inv_x, wp, rm);
+        x = x.add(&one, wp, rm);
+    }
+
+    // Asymptotic expansion: ψ(x) ~ ln(x) − 1/(2x) − Σ_{k=1}^{N} B_{2k}/(2k · x^{2k})
+    let ln_x = x.ln(wp, rm, cc);
+    result = result.add(&ln_x, wp, rm);
+
+    let two = BigFloat::from_i32(2, wp);
+    let half_inv_x = one.div(&x.mul(&two, wp, rm), wp, rm);
+    result = result.sub(&half_inv_x, wp, rm);
+
+    let x2 = x.mul(&x, wp, rm);
+    let mut x_pow = x2.clone(); // x^2
+
+    // Bernoulli numbers B_{2k} for k=1..12 as (numerator, denominator):
+    // B2=1/6, B4=−1/30, B6=1/42, B8=−1/30, B10=5/66, B12=−691/2730
+    // B14=7/6, B16=−3617/510, B18=43867/798, B20=−174611/330
+    // B22=854513/138, B24=−236364091/2730
+    let bernoulli_nums: &[(i128, i128)] = &[
+        (1, 6), (-1, 30), (1, 42), (-1, 30), (5, 66), (-691, 2730),
+        (7, 6), (-3617, 510), (43867, 798), (-174611, 330),
+        (854513, 138), (-236364091, 2730),
+    ];
+
+    let n_terms = (prec / 6 + 2).min(bernoulli_nums.len());
+
+    for k_idx in 0..n_terms {
+        let k = (k_idx + 1) as i128;
+        let two_k = 2 * k;
+        let (bn, bd) = bernoulli_nums[k_idx];
+        // Term = B_{2k} / (2k · x^{2k})
+        let coeff_n = BigFloat::from_i128(bn, wp);
+        let coeff_d = BigFloat::from_i128(bd * two_k, wp);
+        let coeff = coeff_n.div(&coeff_d, wp, rm);
+        let inv_xpow = one.div(&x_pow, wp, rm);
+        let term = coeff.mul(&inv_xpow, wp, rm);
+        result = result.sub(&term, wp, rm);
+
+        // Convergence check via binary exponents
+        if let (Some(t_exp), Some(r_exp)) = (term.exponent(), result.exponent()) {
+            if (r_exp as i64 - t_exp as i64) > wp as i64 {
+                break;
+            }
+        }
+
+        x_pow = x_pow.mul(&x2, wp, rm);
+    }
 
     Ok(result)
 }

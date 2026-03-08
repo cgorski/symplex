@@ -140,6 +140,7 @@ proptest! {
             "simplify should preserve Velocity dimension, got {}", dim);
     }
 
+    #[allow(non_snake_case)]
     #[test]
     fn simplify_preserves_voltage_dimension(a in 1..50i64, b in 1..50i64) {
         symplex::vars!(I, R);

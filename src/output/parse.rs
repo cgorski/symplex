@@ -74,12 +74,7 @@ pub fn parse(ctx: &Context, input: &str) -> Result<Ex, ParseError> {
     })?;
     // Construct an Ex from the ExprId. Ex fields are pub(crate), so this
     // works from within the crate without needing to expose make_ex.
-    Ok(Ex {
-        ctx_id: ctx.id,
-        inner: Arc::clone(&ctx.inner),
-        id,
-        _sort: std::marker::PhantomData,
-    })
+    Ok(Ex::from_raw_parts(ctx.id, Arc::clone(&ctx.inner), id))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
