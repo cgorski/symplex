@@ -17,3 +17,18 @@ path = ".."
 name = "fuzz_parser"
 path = "fuzz_targets/fuzz_parser.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_refine"
+path = "fuzz_targets/fuzz_refine.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_eigenvects"
+path = "fuzz_targets/fuzz_eigenvects.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_lambertw"
+path = "fuzz_targets/fuzz_lambertw.rs"
+doc = false

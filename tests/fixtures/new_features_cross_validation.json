@@ -1,0 +1,854 @@
+{
+  "generated_by": "SymPy 1.14.0",
+  "description": "Cross-validation fixtures for new symplex features",
+  "fixture_count": 60,
+  "categories": {
+    "eigenvects": 11,
+    "jordan_form": 5,
+    "lambertw": 8,
+    "bessel": 13,
+    "refine": 10,
+    "integrate": 3,
+    "eval": 5,
+    "matrix_exp": 5
+  },
+  "fixtures": [
+    {
+      "category": "eigenvects",
+      "subcategory": "2x2_distinct",
+      "input_matrix": [
+        [
+          "2",
+          "1"
+        ],
+        [
+          "0",
+          "3"
+        ]
+      ],
+      "eigenvalue": "2",
+      "multiplicity": 1,
+      "eigenvector": [
+        "1",
+        "0"
+      ]
+    },
+    {
+      "category": "eigenvects",
+      "subcategory": "2x2_distinct",
+      "input_matrix": [
+        [
+          "2",
+          "1"
+        ],
+        [
+          "0",
+          "3"
+        ]
+      ],
+      "eigenvalue": "3",
+      "multiplicity": 1,
+      "eigenvector": [
+        "1",
+        "1"
+      ]
+    },
+    {
+      "category": "eigenvects",
+      "subcategory": "2x2_defective",
+      "input_matrix": [
+        [
+          "1",
+          "1"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ],
+      "eigenvalue": "1",
+      "multiplicity": 2,
+      "eigenvector_count": 1
+    },
+    {
+      "category": "eigenvects",
+      "subcategory": "3x3_diagonal",
+      "input_matrix": [
+        [
+          "5",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "-3",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "7"
+        ]
+      ],
+      "eigenvalue": "-3",
+      "multiplicity": 1
+    },
+    {
+      "category": "eigenvects",
+      "subcategory": "3x3_diagonal",
+      "input_matrix": [
+        [
+          "5",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "-3",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "7"
+        ]
+      ],
+      "eigenvalue": "5",
+      "multiplicity": 1
+    },
+    {
+      "category": "eigenvects",
+      "subcategory": "3x3_diagonal",
+      "input_matrix": [
+        [
+          "5",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "-3",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "7"
+        ]
+      ],
+      "eigenvalue": "7",
+      "multiplicity": 1
+    },
+    {
+      "category": "eigenvects",
+      "subcategory": "2x2_symmetric",
+      "input_matrix": [
+        [
+          "4",
+          "2"
+        ],
+        [
+          "2",
+          "1"
+        ]
+      ],
+      "eigenvalue": "0",
+      "multiplicity": 1,
+      "eigenvector": [
+        "-1/2",
+        "1"
+      ]
+    },
+    {
+      "category": "eigenvects",
+      "subcategory": "2x2_symmetric",
+      "input_matrix": [
+        [
+          "4",
+          "2"
+        ],
+        [
+          "2",
+          "1"
+        ]
+      ],
+      "eigenvalue": "5",
+      "multiplicity": 1,
+      "eigenvector": [
+        "2",
+        "1"
+      ]
+    },
+    {
+      "category": "eigenvects",
+      "subcategory": "3x3_upper_triangular",
+      "input_matrix": [
+        [
+          "1",
+          "2",
+          "3"
+        ],
+        [
+          "0",
+          "4",
+          "5"
+        ],
+        [
+          "0",
+          "0",
+          "6"
+        ]
+      ],
+      "eigenvalue": "1",
+      "multiplicity": 1
+    },
+    {
+      "category": "eigenvects",
+      "subcategory": "3x3_upper_triangular",
+      "input_matrix": [
+        [
+          "1",
+          "2",
+          "3"
+        ],
+        [
+          "0",
+          "4",
+          "5"
+        ],
+        [
+          "0",
+          "0",
+          "6"
+        ]
+      ],
+      "eigenvalue": "4",
+      "multiplicity": 1
+    },
+    {
+      "category": "eigenvects",
+      "subcategory": "3x3_upper_triangular",
+      "input_matrix": [
+        [
+          "1",
+          "2",
+          "3"
+        ],
+        [
+          "0",
+          "4",
+          "5"
+        ],
+        [
+          "0",
+          "0",
+          "6"
+        ]
+      ],
+      "eigenvalue": "6",
+      "multiplicity": 1
+    },
+    {
+      "category": "jordan_form",
+      "subcategory": "2x2_defective",
+      "input_matrix": [
+        [
+          "1",
+          "1"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ],
+      "jordan_matrix": [
+        [
+          "1",
+          "1"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ]
+    },
+    {
+      "category": "jordan_form",
+      "subcategory": "3x3_diagonal",
+      "input_matrix": [
+        [
+          "5",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "-3",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "7"
+        ]
+      ],
+      "jordan_matrix": [
+        [
+          "-3",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "5",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "7"
+        ]
+      ]
+    },
+    {
+      "category": "jordan_form",
+      "subcategory": "4x4_mixed",
+      "input_matrix": [
+        [
+          "2",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "2",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "3",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "0",
+          "4"
+        ]
+      ],
+      "jordan_matrix": [
+        [
+          "2",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "2",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "3",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "0",
+          "4"
+        ]
+      ]
+    },
+    {
+      "category": "jordan_form",
+      "subcategory": "2x2_identity",
+      "input_matrix": [
+        [
+          "1",
+          "0"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ],
+      "jordan_matrix": [
+        [
+          "1",
+          "0"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ]
+    },
+    {
+      "category": "jordan_form",
+      "subcategory": "2x2_nilpotent",
+      "input_matrix": [
+        [
+          "0",
+          "1"
+        ],
+        [
+          "0",
+          "0"
+        ]
+      ],
+      "jordan_matrix": [
+        [
+          "0",
+          "1"
+        ],
+        [
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "category": "lambertw",
+      "subcategory": "eval_symbolic",
+      "input": "0",
+      "expected": "0"
+    },
+    {
+      "category": "lambertw",
+      "subcategory": "eval_symbolic",
+      "input": "E",
+      "expected": "1"
+    },
+    {
+      "category": "lambertw",
+      "subcategory": "eval_symbolic",
+      "input": "-1/E",
+      "expected": "-1"
+    },
+    {
+      "category": "lambertw",
+      "subcategory": "eval_symbolic",
+      "input": "-log(2)/2",
+      "expected": "-log(2)"
+    },
+    {
+      "category": "lambertw",
+      "subcategory": "eval_numerical",
+      "input": "1/2",
+      "expected_float": 0.35173371124919584
+    },
+    {
+      "category": "lambertw",
+      "subcategory": "eval_numerical",
+      "input": "5",
+      "expected_float": 1.3267246652422002
+    },
+    {
+      "category": "lambertw",
+      "subcategory": "eval_numerical",
+      "input": "1/10",
+      "expected_float": 0.09127652716086226
+    },
+    {
+      "category": "lambertw",
+      "subcategory": "eval_numerical",
+      "input": "10",
+      "expected_float": 1.7455280027406994
+    },
+    {
+      "category": "bessel",
+      "subcategory": "J0",
+      "x": 0.0,
+      "expected": 1.0
+    },
+    {
+      "category": "bessel",
+      "subcategory": "J0",
+      "x": 1.0,
+      "expected": 0.7651976865579666
+    },
+    {
+      "category": "bessel",
+      "subcategory": "J0",
+      "x": 5.0,
+      "expected": -0.1775967713143383
+    },
+    {
+      "category": "bessel",
+      "subcategory": "J0",
+      "x": 10.0,
+      "expected": -0.24593576445134835
+    },
+    {
+      "category": "bessel",
+      "subcategory": "J1",
+      "x": 0.0,
+      "expected": 0.0
+    },
+    {
+      "category": "bessel",
+      "subcategory": "J1",
+      "x": 1.0,
+      "expected": 0.4400505857449335
+    },
+    {
+      "category": "bessel",
+      "subcategory": "J1",
+      "x": 5.0,
+      "expected": -0.32757913759146523
+    },
+    {
+      "category": "bessel",
+      "subcategory": "J2",
+      "x": 3.0,
+      "expected": 0.4860912605858911
+    },
+    {
+      "category": "bessel",
+      "subcategory": "Y0",
+      "x": 1.0,
+      "expected": 0.08825696421567696
+    },
+    {
+      "category": "bessel",
+      "subcategory": "Y0",
+      "x": 5.0,
+      "expected": -0.30851762524903376
+    },
+    {
+      "category": "bessel",
+      "subcategory": "Y1",
+      "x": 1.0,
+      "expected": -0.7812128213002887
+    },
+    {
+      "category": "bessel",
+      "subcategory": "Y1",
+      "x": 2.0,
+      "expected": -0.10703243154093754
+    },
+    {
+      "category": "bessel",
+      "subcategory": "Y2",
+      "x": 3.0,
+      "expected": -0.16040039348492374
+    },
+    {
+      "category": "refine",
+      "subcategory": "abs_positive",
+      "input": "Abs(x)",
+      "assumptions": "positive",
+      "expected": "x",
+      "sympy_result": "x"
+    },
+    {
+      "category": "refine",
+      "subcategory": "abs_negative",
+      "input": "Abs(x)",
+      "assumptions": "negative",
+      "expected": "-x",
+      "sympy_result": "-x"
+    },
+    {
+      "category": "refine",
+      "subcategory": "abs_nonnegative",
+      "input": "Abs(x)",
+      "assumptions": "nonnegative",
+      "expected": "x",
+      "sympy_result": "x"
+    },
+    {
+      "category": "refine",
+      "subcategory": "sign_positive",
+      "input": "sign(x)",
+      "assumptions": "positive",
+      "expected": "1",
+      "sympy_result": "1"
+    },
+    {
+      "category": "refine",
+      "subcategory": "sign_negative",
+      "input": "sign(x)",
+      "assumptions": "negative",
+      "expected": "-1",
+      "sympy_result": "-1"
+    },
+    {
+      "category": "refine",
+      "subcategory": "sign_zero",
+      "input": "sign(x)",
+      "assumptions": "zero",
+      "expected": "0",
+      "sympy_result": "0"
+    },
+    {
+      "category": "refine",
+      "subcategory": "sqrt_x2_positive",
+      "input": "sqrt(x**2)",
+      "assumptions": "positive",
+      "expected": "x",
+      "sympy_result": "x"
+    },
+    {
+      "category": "refine",
+      "subcategory": "sqrt_x2_real",
+      "input": "sqrt(x**2)",
+      "assumptions": "real",
+      "expected": "Abs(x)",
+      "sympy_result": "Abs(x)"
+    },
+    {
+      "category": "refine",
+      "subcategory": "floor_integer",
+      "input": "floor(x)",
+      "assumptions": "integer",
+      "expected": "x",
+      "sympy_result": "x"
+    },
+    {
+      "category": "refine",
+      "subcategory": "ceiling_integer",
+      "input": "ceiling(x)",
+      "assumptions": "integer",
+      "expected": "x",
+      "sympy_result": "x"
+    },
+    {
+      "category": "integrate",
+      "subcategory": "asinh",
+      "input": "asinh(x)",
+      "variable": "x",
+      "sympy_result": "x*asinh(x) - sqrt(x**2 + 1)",
+      "eval_points": [
+        {
+          "subs": {
+            "x": 0.5
+          },
+          "value": {
+            "re": -0.8774280762200931,
+            "im": 0.0
+          }
+        },
+        {
+          "subs": {
+            "x": 1.5
+          },
+          "value": {
+            "re": -0.01063081180133069,
+            "im": 0.0
+          }
+        },
+        {
+          "subs": {
+            "x": 3.0
+          },
+          "value": {
+            "re": 2.293061717527821,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "integrate",
+      "subcategory": "acosh",
+      "input": "acosh(x)",
+      "variable": "x",
+      "sympy_result": "Integral(acosh(x), x)",
+      "eval_points": []
+    },
+    {
+      "category": "integrate",
+      "subcategory": "atanh",
+      "input": "atanh(x)",
+      "variable": "x",
+      "sympy_result": "x*atanh(x) + log(x + 1) - atanh(x)",
+      "eval_points": [
+        {
+          "subs": {
+            "x": 0.25
+          },
+          "value": {
+            "re": 0.03158394240196325,
+            "im": 0.0
+          }
+        },
+        {
+          "subs": {
+            "x": 0.5
+          },
+          "value": {
+            "re": 0.13081203594113697,
+            "im": 0.0
+          }
+        },
+        {
+          "subs": {
+            "x": 0.75
+          },
+          "value": {
+            "re": 0.31637701930350853,
+            "im": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "category": "eval",
+      "subcategory": "erf_zero",
+      "input": "erf(0)",
+      "expected": "0"
+    },
+    {
+      "category": "eval",
+      "subcategory": "erf_inf",
+      "input": "erf(oo)",
+      "expected": "1"
+    },
+    {
+      "category": "eval",
+      "subcategory": "erf_neg_inf",
+      "input": "erf(-oo)",
+      "expected": "-1"
+    },
+    {
+      "category": "eval",
+      "subcategory": "erfc_zero",
+      "input": "erfc(0)",
+      "expected": "1"
+    },
+    {
+      "category": "eval",
+      "subcategory": "erfc_inf",
+      "input": "erfc(oo)",
+      "expected": "0"
+    },
+    {
+      "category": "matrix_exp",
+      "subcategory": "zero_matrix",
+      "input_matrix": [
+        [
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "0"
+        ]
+      ],
+      "result": [
+        [
+          "1",
+          "0"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ]
+    },
+    {
+      "category": "matrix_exp",
+      "subcategory": "rotation_generator",
+      "input_matrix": [
+        [
+          "0",
+          "1"
+        ],
+        [
+          "-1",
+          "0"
+        ]
+      ],
+      "result": [
+        [
+          "cos(1)",
+          "sin(1)"
+        ],
+        [
+          "-sin(1)",
+          "cos(1)"
+        ]
+      ]
+    },
+    {
+      "category": "matrix_exp",
+      "subcategory": "nilpotent",
+      "input_matrix": [
+        [
+          "0",
+          "1"
+        ],
+        [
+          "0",
+          "0"
+        ]
+      ],
+      "result": [
+        [
+          "1",
+          "1"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ]
+    },
+    {
+      "category": "matrix_exp",
+      "subcategory": "diagonal",
+      "input_matrix": [
+        [
+          "2",
+          "0"
+        ],
+        [
+          "0",
+          "3"
+        ]
+      ],
+      "result": [
+        [
+          "exp(2)",
+          "0"
+        ],
+        [
+          "0",
+          "exp(3)"
+        ]
+      ]
+    },
+    {
+      "category": "matrix_exp",
+      "subcategory": "identity",
+      "input_matrix": [
+        [
+          "1",
+          "0"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ],
+      "result": [
+        [
+          "E",
+          "0"
+        ],
+        [
+          "0",
+          "E"
+        ]
+      ]
+    }
+  ]
+}
