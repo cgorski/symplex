@@ -1,3 +1,4 @@
+pub(crate) mod common;
 pub(crate) mod display;
 pub(crate) mod latex;
 pub(crate) mod pretty;

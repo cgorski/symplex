@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Linear Algebra: Eigenvectors, Jordan Form, Matrix Exponential**
+- `Matrix::eigenvects()` — eigenspace computation with algebraic multiplicities via `Poly::factor_over_z` (Yun's square-free decomposition), derivative-based fallback for symbolic entries
+- `Matrix::is_diagonalizable()` — checks geometric multiplicity equals algebraic multiplicity for all eigenvalues
+- `Matrix::diagonalize()` — returns `(P, D)` where `D = P⁻¹AP`, with `P·D·P⁻¹ = A` verification in tests
+- `Matrix::jordan_form()` — generalized eigenvectors via nullity chain algorithm, handles defective matrices
+- `Matrix::matrix_exp()` — exact symbolic matrix exponential via Jordan decomposition, falls back to Taylor series if Jordan form computation fails
+- `Matrix::try_get()` — safe element access returning `Option<&Ex>` (non-panicking alternative to `get()`)
+- Eigenvalue multiplicity detection: primary path uses `Poly::factor_over_z()` for exact multiplicities, fallback uses derivative-based detection for symbolic coefficient matrices
+
+**Assumption-Aware Simplification (refine module)**
+- New `Ex::refine()` — simplifies expressions using mathematical assumptions set via `Ex::assume()`
+- New `Ex::refine_with(&[(&Ex, Assumption)])` — refine with temporary assumptions without permanently mutating symbols
+- Refine handlers: `abs(x) → x` (nonneg), `abs(x) → -x` (negative), `sign(x) → 1/-1/0`, `floor(x)/ceiling(x) → x` (integer), `sqrt(x²) → x` (positive), `sqrt(x²) → abs(x)` (real), `(-1)^(even) → 1`
+- Refine automatically runs as Strategy 8 inside `smart_simplify()` when `Abs`, `Sign`, `Floor`, `Ceiling`, or `Pow` nodes are detected (gated by `ExprFlags`)
+- Two-phase architecture: pre-compute `CachedProps` via `AssumptionCache::query`, then `walk_and_rebuild` with immutable closure + mutable post-pass
+
+**Integration Enhancements**
+- `∫ asinh(x) dx = x·asinh(x) - √(x²+1)` with linear chain rule variant `∫ asinh(ax+b) dx`
+- `∫ acosh(x) dx = x·acosh(x) - √(x²-1)` with linear chain rule variant
+- `∫ atanh(x) dx = x·atanh(x) + ½·ln(1-x²)` with linear chain rule variant
+- `erf(∞) = 1`, `erf(-∞) = -1`, `erf(-x) = -erf(x)` (odd function symmetry)
+- `erfc(∞) = 0`, `erfc(-∞) = 2`
+
+**LambertW Promoted to First-Class ExprNode**
+- `ExprNode::LambertW(ExprId)` — promoted from `Apply` node to native variant
+- Differentiation: `d/dx W(f) = W(f) / (f·(1+W(f))) · f'(x)` (chain rule)
+- Symbolic evaluation: 8 known values — `W(0)=0`, `W(e)=1`, `W(-1/e)=-1`, `W(-ln2/2)=-ln2`, `W(2·ln2)=ln2`, `W(-π/2)=iπ/2`, `W(e^(1+e))=e`, `W(∞)=∞`
+- Arbitrary-precision numerical evaluation via Halley's cubic-convergent iteration
+- Display: `W(x)` in text, `\operatorname{W}\left(x\right)` in LaTeX
+- JSON serialization, pattern matching, codegen error handling
+
+**2D Unicode Pretty Printer**
+- New `Ex::pretty()` — 2D Unicode terminal rendering with stacked fractions, superscripts, height-matched parentheses
+- New `Ex::pretty_ascii()` — ASCII fallback mode for terminals without Unicode support
+- `MathBox` layout engine with baseline alignment, horizontal composition, vertical stacking
+- Graduated fraction bar weights: heavy `━` (outer) → normal `─` (inner) → dashed `╌` (depth 2+)
+- Superscripts placed above entire base box (TeX convention, informed by expert typography consultation)
+- Safe Unicode superscripts only (`⁰⁵⁶⁷⁸⁹`) — avoids EAW Ambiguous codepoints `¹²³⁴` that break in CJK terminals
+- Height-matched parentheses: Unicode `⎛⎜⎝⎞⎟⎠` with ASCII `(|)` fallback
+- Handles ~20 ExprNode variants: Num (stacked fractions), Add, Mul, Neg, Pow, Abs (`│…│`), Floor (`⌊…⌋`), Ceiling (`⌈…⌉`), Sin/Cos/Tan/Exp/Ln, Gamma (`Γ`), LambertW (`W`), Factorial, Digamma (`ψ`), and more
+- Fallback to flat `Display` string for unhandled variants
+
+**ODE System Solver Upgrade**
+- ODE system solver now uses exact `Matrix::matrix_exp()` (Jordan decomposition) instead of truncated Taylor `exp_series(12)`
+- Falls back to Taylor series gracefully if Jordan form cannot be computed
+
 **Compile-Time Dimensional Analysis (units module)**
 - New `symplex::units` module with compile-time dimensional analysis
 - 30 named quantity newtypes: Dimensionless, Angle, Length, Mass, Time, Current, Temperature, Area, Volume, Velocity, Acceleration, AngularVelocity, AngularAcceleration, Frequency, Force, Energy, Torque, Power, Momentum, AngularMomentum, MomentOfInertia, Pressure, Stiffness, Damping, Voltage, Resistance, Inductance, Capacitance, Charge, MagneticFlux
@@ -80,6 +126,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 11 uom codegen tests
 - 6 symbolic factor_terms tests
 - 3 symbolic solver tests
+
+### Changed
+
+**BREAKING: Matrix Public API Returns `Result` Instead of Panicking**
+- All matrix public methods now return `Result<T, SymplexError>` instead of panicking on precondition violations (non-square, dimension mismatch, singular)
+- Affected methods: `det`, `trace`, `matmul`, `inv`, `char_poly`, `eigenvals`, `eigenvects`, `powi`, `exp_series`, `cholesky`, `pinv`, `add_elementwise`, `sub_elementwise`, `add`, `sub`, `minor`, `cofactor`, `adjugate`, `hstack`, `vstack`, `diagonalize`, `jordan_form`, `matrix_exp`
+- `inv()` changed from `Option<Matrix>` to `Result<Matrix, SymplexError>` — singular matrix is now an `Err` with descriptive message
+- `cholesky()` changed from `Option<Matrix>` to `Result<Option<Matrix>, SymplexError>` — non-square is `Err`, non-positive-definite is `Ok(None)`
+- Operator overloads (`+`, `-`, `*`) still return values directly per Rust trait constraints
+- Zero `_unchecked` internal methods — all internal callers use `?` propagation
+- All `# Panics` doc sections replaced with `# Errors` sections
 
 **0.2.0: Type-Safe Boolean Expressions + Logic + Piecewise**
 - BREAKING: `Ex` is now a type alias for `Expr<Numeric>`, not a standalone struct

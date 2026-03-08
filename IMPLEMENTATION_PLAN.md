@@ -407,31 +407,33 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 | Metric | Value |
 |--------|-------|
-| Tests | 1,386 lib tests + ~100 units tests, ~5,900+ total, 0 failing |
-| ExprNode variants | 66 |
-| Source modules | 106 (in 10 directories: base, poly, transforms, simplify, calculus, output, plotting, domains, api, units) |
+| Tests | 1,573 lib tests + ~3,845 integration/example tests, 5,418 total, 0 failing |
+| ExprNode variants | 67 (added LambertW) |
+| Source modules | 108 (in 10 directories: base, poly, transforms, simplify, calculus, output, plotting, domains, api, units) |
 | Integration test files | 152 (each compiles as separate binary — see §1 timing notes) |
-| Source | ~83,000 lines across 106 modules in 10 directories |
-| Tests | ~60,000 lines across 152+ test files |
+| Source | ~87,000 lines across 108 modules in 10 directories |
+| Tests | ~62,000 lines across 152+ test files |
 | Examples | ~3,950 lines across 19 examples (+ 3 probes) |
 | Tutorials | 21 pages, 8,473 lines |
 | Companion crates | ~1,085 lines across 2 crates (symplex-build, symplex-wasm) |
-| Total | ~149,000 lines |
-| Public methods on `Ex` | 175+ (numeric + boolean + set-valued) |
+| Total | ~153,000 lines |
+| Public methods on `Ex` | 180+ (numeric + boolean + set-valued; added refine, refine_with, pretty, pretty_ascii) |
 | Public methods on `Context` | 17 |
-| Matrix methods | 50+ (added operators, exp, kronecker, cholesky, pinv, diag, from_i64) |
-| Apply functions | 12 + 9 special functions (Bessel, Legendre, etc.) |
+| Matrix methods | 60+ (added eigenvects, is_diagonalizable, diagonalize, jordan_form, matrix_exp, try_get; all return Result) |
+| Apply functions | 11 + 9 special functions (LambertW promoted to ExprNode) |
 | `expr!` functions | 65 (54 single-arg + 11 multi-arg) |
-| Simplification rules | 24 (condition-guarded) |
-| Integration forms | 60+ |
-| Eval special values | 86+ |
+| Simplification rules | 24 (condition-guarded) + refine handlers (5 handlers, 13 rewrite rules) |
+| Integration forms | 63+ (added asinh, acosh, atanh with linear chain rule) |
+| Eval special values | 94+ (added 8 LambertW values, erf/erfc limits, erf odd function) |
 | Criterion benchmarks | 27 |
 | Proptest properties | 22+ |
-| Solver degree support | 1–4 (Cardano cubic + Ferrari quartic) |
+| Solver degree support | 1–4 (Cardano cubic + Ferrari quartic) + LambertW patterns |
 | Examples | 19 (+ 3 diagnostic probes) |
-| Clippy warnings | 0 (enforced: `cargo clippy --all-targets -- -D warnings`) |
+| Clippy warnings | 0 from our code (2 pre-existing in units/inference.rs) |
 | SymPy cross-validation | 371 fixtures, 0 failures |
 | Correctness probe | 71 checks, 0 wrong answers |
+| Matrix API panic sites | 0 in public methods (all return Result; panics only in operator overloads per Rust convention) |
+| Pretty printer variants | ~20 ExprNode variants with 2D rendering (Unicode + ASCII dual mode) |
 
 ---
 
@@ -439,7 +441,7 @@ Scoped distribution (making `factor_terms` preserve through Add.flatten) is a v0
 
 Active limitations (not yet resolved):
 
-0. **Compile-time units available (0.2.0).** The `symplex::units` module provides 30 named quantity types with compile-time dimension checking, typed calculus (`DiffWrt`/`IntWrt`), ~100 unit conversions, and `uom`-annotated code generation. Angle is distinct from Dimensionless. Energy/Torque and Frequency/AngularVelocity collisions are handled via distinct newtypes with `From` conversions.
+0. ~~**Compile-time units available (0.2.0).**~~ — **RESOLVED** (0.2.0)
 1. **`bigint_to_bigfloat` loses precision for integers > i128.** Falls back to f64 intermediate.
 2. ~~**`expr!(1/2)` is a compile error.**~~ — **RESOLVED** (0.2.0: `expr!` macro now detects `int/int` and emits `rational(n,d)`)
 3. **`expr!(x^2^3)` nested integer powers.** Inner `2^3` evaluates as integer arithmetic, not symbolic.
@@ -447,7 +449,7 @@ Active limitations (not yet resolved):
 5. **`lambdify` does not support complex expressions.** Returns `None` for expressions containing `I`.
 6. **Phantom type safety is API-level only.** Internal arena code is untyped. Sort violations caught by `verify_canonical` in debug builds, not at compile time.
 7. **No boolean symbols.** All symbols are `Expr<Numeric>`. Boolean-typed symbolic variables not supported.
-8. **No arbitrary-precision special function evaluation.** Gamma, erf, beta use f64 fast paths only. — Fix: Wave AP (Stirling series)
+8. ~~**No arbitrary-precision special function evaluation.**~~ — **RESOLVED** (0.2.0: Stirling series for Gamma, Taylor/asymptotic for erf, Halley iteration for LambertW, all at arbitrary precision)
 9. **Pattern matching limited to linear patterns.** Nonlinear patterns (same wild twice) not supported. — Fix: Wave PM
 10. ~~**No Risch integration.**~~ — **PARTIALLY RESOLVED** (0.2.0: heurisch fallback integrator covers many elementary forms; full Risch decision procedure still not implemented)
 11. ~~**No multivariate polynomials.** Gröbner bases not yet implemented.~~ — **RESOLVED** (Wave GB: `groebner.rs`, `multipoly.rs`, `polysys.rs`)
@@ -460,12 +462,12 @@ Active limitations (not yet resolved):
 18. ~~**Matrix::to_latex() missing.**~~ — **RESOLVED** (exists at `matrix.rs:985`, verified working)
 19. ~~**Codegen doesn't constant-fold.**~~ — **RESOLVED** (0.2.0: post-CSE constant propagation eliminates trivial temps, dead-code elimination removes zero-product terms)
 20. ~~**Gröbner solver only finds rational roots.**~~ — **RESOLVED** (0.2.0: symbolic fallback via `solve()` for irrational univariate roots during Gröbner back-substitution)
-21. **No plotting/visualization.** No SVG, no matplotlib integration.
+21. ~~**No plotting/visualization.**~~ — **RESOLVED** (0.2.0: textplot ASCII, SVG, TikZ/PGFplots, data export)
 22. **No Python bindings.** Rust-only API; no PyO3 wrapper.
 23. ~~**`expr!` doesn't support fraction literals.**~~ — **RESOLVED** (same as #2)
 24. **2-DOF IK only.** Inverse kinematics limited to planar 2-DOF. General n-DOF IK requires Pieper decomposition (not yet implemented).
 25. **Number theory factorization uses trial division.** No Pollard rho or ECM for very large composites (>10^18). Adequate for most CAS use cases.
-26. **146 integration test binaries slow relink.** Touching any `src/` file triggers relinking all 146 test binaries (~40s). Use `cargo test --lib` for the fast loop. Structural fix (consolidate into ~10-15 thematic test crates) planned for post-0.2.0.
+26. **152 integration test binaries slow relink.** Touching any `src/` file triggers relinking all 152 test binaries (~40s). Use `cargo test --lib` for the fast loop. Structural fix (consolidate into ~10-15 thematic test crates) planned for post-0.2.0.
 27. ~~**No trig simplification beyond basic rules.**~~ — **RESOLVED** (0.2.0: Fu's trig simplification with 17 transforms + greedy orchestration in `fu.rs`)
 28. ~~**No hypergeometric summation.**~~ — **RESOLVED** (0.2.0: Gosper's algorithm for indefinite hypergeometric sums in `gosper.rs`)
 29. ~~**No formal power series.**~~ — **RESOLVED** (0.2.0: formal power series with closed-form coefficients in `formal_series.rs`)
@@ -474,6 +476,15 @@ Active limitations (not yet resolved):
 32. ~~**Codegen lacks FMA/Horner/numerical optimization.**~~ — **RESOLVED** (0.2.0: FMA detection with `mul_add`, Horner-style powi expansion, sin_cos pairing, expm1/log1p/log2/exp2 optimization)
 33. ~~**No parametric integration.**~~ — **RESOLVED** (0.2.0: sin(a*x), exp(a*x), 1/(x²+a²) with piecewise wrapping for degenerate cases)
 34. ~~**No trig equation solving.**~~ — **RESOLVED** (0.2.0: sin(x)=c, cos(x)=c, tan(x)=c with domain validation)
+35. ~~**No eigenvectors or Jordan form.**~~ — **RESOLVED** (0.2.0: eigenvects, is_diagonalizable, diagonalize, jordan_form, matrix_exp via Jordan decomposition)
+36. ~~**No assumption-aware simplification (refine).**~~ — **RESOLVED** (0.2.0: Ex::refine() with 5 handlers, 13 rewrite rules; auto-runs as Strategy 8 in smart_simplify)
+37. ~~**LambertW stuck as Apply node.**~~ — **RESOLVED** (0.2.0: promoted to ExprNode::LambertW with diff, eval, evalf, display, LaTeX)
+38. ~~**No pretty printing.**~~ — **RESOLVED** (0.2.0: Ex::pretty() and Ex::pretty_ascii() with 2D Unicode/ASCII rendering)
+39. ~~**Matrix API panics on invalid input.**~~ — **RESOLVED** (0.2.0: all public methods return Result<T, SymplexError>; zero _unchecked methods)
+40. ~~**Inverse hyperbolic integration missing.**~~ — **RESOLVED** (0.2.0: ∫asinh, ∫acosh, ∫atanh with linear chain rule variants)
+41. **Bessel function numerical evaluation not implemented.** BesselJ/Y are Apply nodes with no evalf support. — Tracked for 0.2.0 or 0.3.0.
+42. **Eigenvalue multiplicities for symbolic-entry matrices use derivative fallback.** `Poly::factor_over_z` is primary path for numeric matrices; symbolic coefficient matrices fall back to derivative-based detection which may not reduce to zero via `subs().eval().simplify()`.
+43. **Matrix constructors still panic on invalid input.** `Matrix::new()`, `zeros()`, `identity()` use `assert!`. Add `try_new()` etc. for safe construction.
 
 ---
 

@@ -91,6 +91,84 @@ impl Matrix {
         }
     }
 
+    /// Non-panicking alternative to [`Matrix::new`].
+    ///
+    /// Validates that `rows` is non-empty, every row has at least one
+    /// element, and all rows have the same length. Returns
+    /// `Err(SymplexError::ComputationFailed { .. })` on invalid input.
+    pub fn try_new(rows: Vec<Vec<Ex>>) -> Result<Matrix, SymplexError> {
+        if rows.is_empty() {
+            return Err(SymplexError::ComputationFailed {
+                operation: "Matrix::try_new",
+                reason: "matrix must have at least one row".into(),
+            });
+        }
+        let ncols = rows[0].len();
+        if ncols == 0 {
+            return Err(SymplexError::ComputationFailed {
+                operation: "Matrix::try_new",
+                reason: "matrix must have at least one column".into(),
+            });
+        }
+        for (i, row) in rows.iter().enumerate() {
+            if row.len() != ncols {
+                return Err(SymplexError::ComputationFailed {
+                    operation: "Matrix::try_new",
+                    reason: format!(
+                        "row {i} has length {} but expected {ncols}",
+                        row.len()
+                    ),
+                });
+            }
+        }
+        let nrows = rows.len();
+        Ok(Matrix { rows, nrows, ncols })
+    }
+
+    /// Non-panicking alternative to [`Matrix::zeros`].
+    ///
+    /// Returns `Err` when either dimension is zero.
+    pub fn try_zeros(n: usize, m: usize) -> Result<Matrix, SymplexError> {
+        if n == 0 || m == 0 {
+            return Err(SymplexError::ComputationFailed {
+                operation: "Matrix::try_zeros",
+                reason: "matrix dimensions must be positive".into(),
+            });
+        }
+        let rows = (0..n)
+            .map(|_| (0..m).map(|_| Ex::zero()).collect())
+            .collect();
+        Ok(Matrix {
+            rows,
+            nrows: n,
+            ncols: m,
+        })
+    }
+
+    /// Non-panicking alternative to [`Matrix::identity`].
+    ///
+    /// Returns `Err` when the dimension is zero.
+    pub fn try_identity(n: usize) -> Result<Matrix, SymplexError> {
+        if n == 0 {
+            return Err(SymplexError::ComputationFailed {
+                operation: "Matrix::try_identity",
+                reason: "identity matrix dimension must be positive".into(),
+            });
+        }
+        let rows = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| if i == j { Ex::one() } else { Ex::zero() })
+                    .collect()
+            })
+            .collect();
+        Ok(Matrix {
+            rows,
+            nrows: n,
+            ncols: n,
+        })
+    }
+
     /// Create a 1×n row vector from a list of elements.
     pub fn row_vector(elems: Vec<Ex>) -> Self {
         assert!(
@@ -3062,5 +3140,45 @@ mod tests {
     fn get_out_of_bounds_panics() {
         let m = Matrix::zeros(2, 2);
         let _ = m.get(2, 0);
+    }
+
+    // ── try_* constructor tests ────────────────────────────────────────
+
+    #[test]
+    fn try_new_empty_returns_error() {
+        let result = Matrix::try_new(vec![]);
+        assert!(result.is_err(), "empty rows should return Err");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("at least one row"),
+            "error should mention rows: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn try_new_jagged_returns_error() {
+        let result = Matrix::try_new(vec![
+            vec![crate::int(1), crate::int(2)],
+            vec![crate::int(3)],
+        ]);
+        assert!(result.is_err(), "jagged rows should return Err");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("row 1 has length 1 but expected 2"),
+            "error should describe the mismatch: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn try_new_valid_succeeds() {
+        let result = Matrix::try_new(vec![
+            vec![crate::int(1), crate::int(2)],
+            vec![crate::int(3), crate::int(4)],
+        ]);
+        assert!(result.is_ok(), "valid input should return Ok");
+        let m = result.unwrap();
+        assert_eq!(m.shape(), (2, 2));
+        assert_eq!(format!("{}", m.get(0, 0)), "1");
+        assert_eq!(format!("{}", m.get(1, 1)), "4");
     }
 }
