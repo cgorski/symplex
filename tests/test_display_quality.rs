@@ -4,7 +4,6 @@
 //! `+ -` and that negative terms are rendered with proper subtraction syntax.
 
 use symplex::prelude::*;
-use symplex::vars;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. x + (-3) displays as "x - 3"
@@ -12,8 +11,8 @@ use symplex::vars;
 
 #[test]
 fn display_sub_neg_int() {
-    vars!(x);
-    let expr = &x + symplex::int(-3);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let expr = &x + symplex::default_context().int(-3);
     let s = format!("{expr}");
     assert!(
         s.contains("- 3"),
@@ -31,8 +30,8 @@ fn display_sub_neg_int() {
 
 #[test]
 fn display_sub_neg_frac() {
-    vars!(x);
-    let expr = &x + symplex::rational(-1, 2);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let expr = &x + symplex::default_context().rational(-1, 2);
     let s = format!("{expr}");
     assert!(
         s.contains("- 1/2"),
@@ -50,7 +49,7 @@ fn display_sub_neg_frac() {
 
 #[test]
 fn display_sub_neg_symbol() {
-    vars!(x, y);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y);
     let expr = &x - &y;
     let s = format!("{expr}");
     assert!(
@@ -69,8 +68,8 @@ fn display_sub_neg_symbol() {
 
 #[test]
 fn display_leading_neg_int() {
-    vars!(x);
-    let expr = symplex::int(-3) + &x;
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let expr = symplex::default_context().int(-3) + &x;
     let s = format!("{expr}");
     assert!(
         !s.contains("+ -"),
@@ -89,7 +88,7 @@ fn display_leading_neg_int() {
 
 #[test]
 fn display_double_neg() {
-    vars!(x, y);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y);
     let expr = -&x + (-&y);
     let s = format!("{expr}");
     assert!(
@@ -109,8 +108,8 @@ fn display_double_neg() {
 
 #[test]
 fn display_neg_mul_coeff() {
-    vars!(x, y);
-    let expr = &x + symplex::int(-2) * &y;
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y);
+    let expr = &x + symplex::default_context().int(-2) * &y;
     let s = format!("{expr}");
     assert!(
         !s.contains("+ -"),
@@ -128,29 +127,29 @@ fn display_neg_mul_coeff() {
 
 #[test]
 fn display_no_plus_minus_anywhere() {
-    vars!(x, y, z);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y, z);
 
     let exprs: Vec<Ex> = vec![
         // 1: x + (-3)
-        &x + symplex::int(-3),
+        &x + symplex::default_context().int(-3),
         // 2: x - y
         &x - &y,
         // 3: x + (-1/2)
-        &x + symplex::rational(-1, 2),
+        &x + symplex::default_context().rational(-1, 2),
         // 4: (-x) + (-y)
         -&x + (-&y),
         // 5: x + (-2*y)
-        &x + symplex::int(-2) * &y,
+        &x + symplex::default_context().int(-2) * &y,
         // 6: (-3) + x + (-y)
-        symplex::int(-3) + &x + (-&y),
+        symplex::default_context().int(-3) + &x + (-&y),
         // 7: x + y + (-z)
         &x + &y - &z,
         // 8: (-x) + y
         -&x + &y,
         // 9: x + (-5/3)
-        &x + symplex::rational(-5, 3),
+        &x + symplex::default_context().rational(-5, 3),
         // 10: x + (-1)*y + (-2)*z
-        &x + symplex::int(-1) * &y + symplex::int(-2) * &z,
+        &x + symplex::default_context().int(-1) * &y + symplex::default_context().int(-2) * &z,
     ];
 
     for (i, e) in exprs.iter().enumerate() {
@@ -169,8 +168,8 @@ fn display_no_plus_minus_anywhere() {
 
 #[test]
 fn display_mul_neg_one_invisible() {
-    vars!(x);
-    let expr = symplex::int(-1) * &x;
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let expr = symplex::default_context().int(-1) * &x;
     let s = format!("{expr}");
     assert_eq!(s, "-x", "expected '-x', got: {s}");
 }
@@ -181,8 +180,8 @@ fn display_mul_neg_one_invisible() {
 
 #[test]
 fn display_neg_fraction_coeff() {
-    vars!(x, y);
-    let expr = symplex::rational(-3, 4) * &x + &y;
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y);
+    let expr = symplex::default_context().rational(-3, 4) * &x + &y;
     let s = format!("{expr}");
     assert!(
         !s.contains("+ -"),

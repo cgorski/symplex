@@ -134,7 +134,7 @@ fn main() {
 
     // ── Expression-level factorization ─────────────────────────────────
     println!("\nExpression-level factorization:");
-    let n = symplex::int(360);
+    let n = symplex::default_context().int(360);
     if let Some(factors) = n.factorize() {
         let s: Vec<String> = factors
             .iter()
@@ -151,13 +151,13 @@ fn main() {
 
     // Expression-level primality
     println!("\nExpression-level primality:");
-    let n = symplex::int(104729);
+    let n = symplex::default_context().int(104729);
     println!("  Is 104729 prime?          {:?}", n.is_prime_value());
-    let n = symplex::int(2_147_483_647);
+    let n = symplex::default_context().int(2_147_483_647);
     println!("  Is 2147483647 (M31) prime? {:?}", n.is_prime_value());
-    let n = symplex::int(60);
+    let n = symplex::default_context().int(60);
     println!("  Is 60 prime?              {:?}", n.is_prime_value());
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     println!("  Is 1/2 prime?             {:?}", half.is_prime_value());
 
     println!("\n✓ Done!");

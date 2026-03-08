@@ -17,9 +17,9 @@ use symplex::prelude::*;
 
 #[test]
 fn walk_finds_all_symbols_in_sum() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let z = symplex::var("z");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let z = symplex::default_context().symbol("z");
     let expr = &x + &y + &z;
     let syms = expr.free_symbols();
     assert_eq!(
@@ -32,9 +32,9 @@ fn walk_finds_all_symbols_in_sum() {
 
 #[test]
 fn walk_finds_symbols_in_product() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let z = symplex::var("z");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let z = symplex::default_context().symbol("z");
     let expr = &x * &y * &z;
     let syms = expr.free_symbols();
     assert_eq!(
@@ -47,7 +47,7 @@ fn walk_finds_symbols_in_product() {
 
 #[test]
 fn walk_finds_symbols_in_nested_functions() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin().exp().ln();
     let syms = expr.free_symbols();
     assert_eq!(
@@ -60,7 +60,7 @@ fn walk_finds_symbols_in_nested_functions() {
 
 #[test]
 fn walk_finds_symbols_in_trig_chain() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin().cos();
     let syms = expr.free_symbols();
     assert_eq!(syms.len(), 1, "cos(sin(x)) should have 1 free symbol");
@@ -69,9 +69,9 @@ fn walk_finds_symbols_in_trig_chain() {
 
 #[test]
 fn walk_finds_symbols_in_piecewise() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let cond = x.gt(&symplex::int(0));
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let cond = x.gt(&symplex::default_context().int(0));
     let pw = Ex::piecewise(&[(&y, &cond)]);
     let syms = pw.free_symbols();
     assert!(
@@ -90,7 +90,7 @@ fn walk_finds_symbols_in_piecewise() {
 
 #[test]
 fn walk_contains_finds_deeply_nested() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let deep = x.sin().cos().exp().ln().abs();
     assert!(
         deep.contains(&x),
@@ -100,16 +100,16 @@ fn walk_contains_finds_deeply_nested() {
 
 #[test]
 fn walk_contains_returns_false_for_absent() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = x.sin();
     assert!(!expr.contains(&y), "y should not be in sin(x)");
 }
 
 #[test]
 fn walk_contains_finds_in_add() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x + &y;
     assert!(expr.contains(&x), "x + y should contain x");
     assert!(expr.contains(&y), "x + y should contain y");
@@ -117,8 +117,8 @@ fn walk_contains_finds_in_add() {
 
 #[test]
 fn walk_contains_finds_in_mul() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x * &y;
     assert!(expr.contains(&x), "x * y should contain x");
     assert!(expr.contains(&y), "x * y should contain y");
@@ -126,8 +126,8 @@ fn walk_contains_finds_in_mul() {
 
 #[test]
 fn walk_contains_finds_in_pow() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = x.pow(&y);
     assert!(expr.contains(&x), "x^y should contain x");
     assert!(expr.contains(&y), "x^y should contain y");
@@ -135,7 +135,7 @@ fn walk_contains_finds_in_pow() {
 
 #[test]
 fn walk_contains_self_always_true() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert!(x.contains(&x), "x should contain itself");
 
     let expr = x.sin();
@@ -144,16 +144,16 @@ fn walk_contains_self_always_true() {
 
 #[test]
 fn walk_contains_constant_not_in_symbol() {
-    let x = symplex::var("x");
-    let five = symplex::int(5);
+    let x = symplex::default_context().symbol("x");
+    let five = symplex::default_context().int(5);
     assert!(!x.contains(&five), "x should not contain 5");
 }
 
 #[test]
 fn walk_finds_symbols_across_mixed_ops() {
-    let a = symplex::var("a");
-    let b = symplex::var("b");
-    let c = symplex::var("c");
+    let a = symplex::default_context().symbol("a");
+    let b = symplex::default_context().symbol("b");
+    let c = symplex::default_context().symbol("c");
     // (a + b) * sin(c)
     let expr = &(&a + &b) * &c.sin();
     let syms = expr.free_symbols();
@@ -167,7 +167,7 @@ fn walk_finds_symbols_across_mixed_ops() {
 
 #[test]
 fn walk_handles_neg_correctly() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = -&x;
     let syms = expr.free_symbols();
     assert_eq!(syms.len(), 1, "-x should have 1 free symbol");
@@ -176,7 +176,7 @@ fn walk_handles_neg_correctly() {
 
 #[test]
 fn walk_handles_abs_correctly() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.abs();
     let syms = expr.free_symbols();
     assert_eq!(syms.len(), 1, "|x| should have 1 free symbol");
@@ -190,7 +190,7 @@ fn walk_handles_abs_correctly() {
 #[test]
 fn free_symbols_empty_for_integer() {
     assert!(
-        symplex::int(5).free_symbols().is_empty(),
+        symplex::default_context().int(5).free_symbols().is_empty(),
         "integer 5 should have no free symbols"
     );
 }
@@ -198,7 +198,7 @@ fn free_symbols_empty_for_integer() {
 #[test]
 fn free_symbols_empty_for_pi() {
     assert!(
-        symplex::pi().free_symbols().is_empty(),
+        symplex::default_context().pi().free_symbols().is_empty(),
         "pi should have no free symbols"
     );
 }
@@ -206,7 +206,7 @@ fn free_symbols_empty_for_pi() {
 #[test]
 fn free_symbols_empty_for_e() {
     assert!(
-        symplex::e().free_symbols().is_empty(),
+        symplex::default_context().e().free_symbols().is_empty(),
         "E should have no free symbols"
     );
 }
@@ -214,7 +214,7 @@ fn free_symbols_empty_for_e() {
 #[test]
 fn free_symbols_empty_for_zero() {
     assert!(
-        symplex::int(0).free_symbols().is_empty(),
+        symplex::default_context().int(0).free_symbols().is_empty(),
         "0 should have no free symbols"
     );
 }
@@ -222,7 +222,7 @@ fn free_symbols_empty_for_zero() {
 #[test]
 fn free_symbols_empty_for_negative_integer() {
     assert!(
-        symplex::int(-42).free_symbols().is_empty(),
+        symplex::default_context().int(-42).free_symbols().is_empty(),
         "-42 should have no free symbols"
     );
 }
@@ -230,7 +230,7 @@ fn free_symbols_empty_for_negative_integer() {
 #[test]
 fn free_symbols_empty_for_rational() {
     assert!(
-        symplex::rational(1, 2).free_symbols().is_empty(),
+        symplex::default_context().rational(1, 2).free_symbols().is_empty(),
         "1/2 should have no free symbols"
     );
 }
@@ -238,7 +238,7 @@ fn free_symbols_empty_for_rational() {
 #[test]
 fn free_symbols_empty_for_infinity() {
     assert!(
-        symplex::infinity().free_symbols().is_empty(),
+        symplex::default_context().infinity().free_symbols().is_empty(),
         "oo should have no free symbols"
     );
 }
@@ -246,14 +246,14 @@ fn free_symbols_empty_for_infinity() {
 #[test]
 fn free_symbols_empty_for_neg_infinity() {
     assert!(
-        symplex::neg_infinity().free_symbols().is_empty(),
+        symplex::default_context().neg_infinity().free_symbols().is_empty(),
         "-oo should have no free symbols"
     );
 }
 
 #[test]
 fn free_symbols_single_symbol() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let syms = x.free_symbols();
     assert_eq!(syms.len(), 1);
     assert_eq!(format!("{}", syms[0]), "x");
@@ -261,8 +261,8 @@ fn free_symbols_single_symbol() {
 
 #[test]
 fn free_symbols_in_pow() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = x.pow(&y);
     let syms = expr.free_symbols();
     assert_eq!(
@@ -275,7 +275,7 @@ fn free_symbols_in_pow() {
 
 #[test]
 fn free_symbols_in_powi() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(3);
     let syms = expr.free_symbols();
     assert_eq!(syms.len(), 1, "x^3 should have 1 free symbol");
@@ -283,7 +283,7 @@ fn free_symbols_in_powi() {
 
 #[test]
 fn free_symbols_in_derivative() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(3).diff(&x);
     let syms = expr.free_symbols();
     assert_eq!(
@@ -296,7 +296,7 @@ fn free_symbols_in_derivative() {
 
 #[test]
 fn free_symbols_deduplicates() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x * &x + &x; // x^2 + x — only one distinct symbol
     let syms = expr.free_symbols();
     assert_eq!(
@@ -309,7 +309,7 @@ fn free_symbols_deduplicates() {
 
 #[test]
 fn free_symbols_deduplicates_across_branches() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // sin(x) + cos(x) + x^2 — x appears in three branches
     let expr = &x.sin() + &x.cos() + &x.powi(2);
     let syms = expr.free_symbols();
@@ -323,9 +323,9 @@ fn free_symbols_deduplicates_across_branches() {
 
 #[test]
 fn free_symbols_in_complex_expression() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let z = symplex::var("z");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let z = symplex::default_context().symbol("z");
     // (x + y)^2 * sin(z) / ln(x)
     let expr = &(&x + &y).powi(2) * &z.sin() / &x.ln();
     let syms = expr.free_symbols();
@@ -339,9 +339,9 @@ fn free_symbols_in_complex_expression() {
 
 #[test]
 fn free_symbols_with_constant_mult() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // 5 * x — only x is a free symbol, not 5
-    let expr = &symplex::int(5) * &x;
+    let expr = &symplex::default_context().int(5) * &x;
     let syms = expr.free_symbols();
     assert_eq!(
         syms.len(),
@@ -353,9 +353,9 @@ fn free_symbols_with_constant_mult() {
 
 #[test]
 fn free_symbols_with_pi_and_e() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // pi * x + e — only x is free; pi and e are constants
-    let expr = &symplex::pi() * &x + &symplex::e();
+    let expr = &symplex::default_context().pi() * &x + &symplex::default_context().e();
     let syms = expr.free_symbols();
     assert_eq!(
         syms.len(),
@@ -371,11 +371,11 @@ fn free_symbols_with_pi_and_e() {
 
 #[test]
 fn gruntz_limits_are_reproducible() {
-    let x = symplex::var("x");
-    let oo = symplex::infinity();
+    let x = symplex::default_context().symbol("x");
+    let oo = symplex::default_context().infinity();
 
     // lim(x→∞) 1/x = 0 — compute the same limit twice
-    let expr = &symplex::int(1) / &x;
+    let expr = &symplex::default_context().int(1) / &x;
     let r1 = expr.limit(&x, &oo);
     let r2 = expr.limit(&x, &oo);
 
@@ -393,8 +393,8 @@ fn gruntz_limits_are_reproducible() {
 
 #[test]
 fn gruntz_limit_reproducible_rational_function() {
-    let x = symplex::var("x");
-    let oo = symplex::infinity();
+    let x = symplex::default_context().symbol("x");
+    let oo = symplex::default_context().infinity();
 
     // lim(x→∞) (3x^2 + 1) / (x^2 - x) = 3
     let numer = &x.powi(2) * 3 + 1;
@@ -417,15 +417,15 @@ fn gruntz_limit_reproducible_rational_function() {
 
 #[test]
 fn sequential_limits_dont_interfere() {
-    let x = symplex::var("x");
-    let oo = symplex::infinity();
+    let x = symplex::default_context().symbol("x");
+    let oo = symplex::default_context().infinity();
 
     // First limit: lim(x→∞) exp(-x) = 0
     let expr1 = (-&x).exp();
     let r1 = expr1.limit(&x, &oo);
 
     // Second limit: lim(x→∞) 1/x = 0
-    let expr2 = &symplex::int(1) / &x;
+    let expr2 = &symplex::default_context().int(1) / &x;
     let r2 = expr2.limit(&x, &oo);
 
     // Each should give the correct result independently
@@ -437,15 +437,15 @@ fn sequential_limits_dont_interfere() {
 
 #[test]
 fn sequential_different_limits_no_cross_contamination() {
-    let x = symplex::var("x");
-    let oo = symplex::infinity();
+    let x = symplex::default_context().symbol("x");
+    let oo = symplex::default_context().infinity();
 
     // First: lim(x→∞) 5/x = 0
-    let expr1 = &symplex::int(5) / &x;
+    let expr1 = &symplex::default_context().int(5) / &x;
     let r1 = expr1.limit(&x, &oo);
 
     // Second: lim(x→∞) constant = 5
-    let r2 = symplex::int(5).limit(&x, &oo);
+    let r2 = symplex::default_context().int(5).limit(&x, &oo);
 
     // Third: lim(x→∞) x/(x+1) = 1
     let expr3 = &x / &(&x + 1);
@@ -489,8 +489,8 @@ fn gruntz_limit_finite_then_infinite_no_interference() {
 
 #[test]
 fn subs_in_complex_expression() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &(&x.sin() + &x.cos()) * &x.exp();
     let result = expr.subs(&x, &y);
     let syms = result.free_symbols();
@@ -507,17 +507,17 @@ fn subs_in_complex_expression() {
 
 #[test]
 fn subs_symbol_for_symbol() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let result = x.subs(&x, &y);
     assert_eq!(format!("{result}"), "y", "x[x→y] should be y");
 }
 
 #[test]
 fn subs_no_match_unchanged() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let z = symplex::var("z");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let z = symplex::default_context().symbol("z");
     let expr = x.sin();
     let result = expr.subs(&y, &z);
     let s = format!("{result}");
@@ -530,9 +530,9 @@ fn subs_no_match_unchanged() {
 
 #[test]
 fn subs_in_sum() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let expr = &x + &symplex::int(1);
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let expr = &x + &symplex::default_context().int(1);
     let result = expr.subs(&x, &y);
     let syms = result.free_symbols();
     let sym_names: Vec<String> = syms.iter().map(|s| format!("{s}")).collect();
@@ -548,9 +548,9 @@ fn subs_in_sum() {
 
 #[test]
 fn subs_in_product() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let expr = &x * &symplex::int(3);
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let expr = &x * &symplex::default_context().int(3);
     let result = expr.subs(&x, &y);
     let syms = result.free_symbols();
     let sym_names: Vec<String> = syms.iter().map(|s| format!("{s}")).collect();
@@ -562,8 +562,8 @@ fn subs_in_product() {
 
 #[test]
 fn subs_in_power() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = x.powi(2);
     let result = expr.subs(&x, &y);
     let s = format!("{result}");
@@ -573,8 +573,8 @@ fn subs_in_power() {
 
 #[test]
 fn subs_in_nested_functions() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = x.sin().exp().ln();
     let result = expr.subs(&x, &y);
     let syms = result.free_symbols();
@@ -592,9 +592,9 @@ fn subs_in_nested_functions() {
 
 #[test]
 fn subs_with_constant() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x * &x + &x; // x^2 + x
-    let result = expr.subs(&x, &symplex::int(3));
+    let result = expr.subs(&x, &symplex::default_context().int(3));
     let s = format!("{result}");
     // After evaluating: 3^2 + 3 = 12
     // It may or may not be evaluated; at minimum x should be gone
@@ -603,9 +603,9 @@ fn subs_with_constant() {
 
 #[test]
 fn subs_preserves_free_symbols_count() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let z = symplex::var("z");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let z = symplex::default_context().symbol("z");
     // (x + y) → substitute x with z, result should have y and z
     let expr = &x + &y;
     let result = expr.subs(&x, &z);
@@ -620,8 +620,8 @@ fn subs_preserves_free_symbols_count() {
 
 #[test]
 fn subs_multiple_occurrences() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     // x*sin(x) + x^2 — x appears multiple times
     let expr = &(&x * &x.sin()) + &x.powi(2);
     let result = expr.subs(&x, &y);
@@ -643,28 +643,28 @@ fn subs_multiple_occurrences() {
 
 #[test]
 fn count_ops_atom_is_zero() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_eq!(x.count_ops(), 0, "a single symbol should have 0 ops");
 
-    let five = symplex::int(5);
+    let five = symplex::default_context().int(5);
     assert_eq!(five.count_ops(), 0, "an integer should have 0 ops");
 }
 
 #[test]
 fn count_ops_unary() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_eq!(x.sin().count_ops(), 1, "sin(x) should have 1 op");
 }
 
 #[test]
 fn count_ops_binary() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_eq!((&x + 1).count_ops(), 1, "x + 1 should have 1 op");
 }
 
 #[test]
 fn count_ops_nested() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin().powi(2);
     assert_eq!(
         expr.count_ops(),
@@ -679,8 +679,8 @@ fn count_ops_nested() {
 
 #[test]
 fn contains_integer_in_expression() {
-    let x = symplex::var("x");
-    let two = symplex::int(2);
+    let x = symplex::default_context().symbol("x");
+    let two = symplex::default_context().int(2);
     let expr = &x + &two;
     // The exact integer node must be found inside the sum
     assert!(expr.contains(&two), "x + 2 should contain the integer 2");
@@ -689,7 +689,7 @@ fn contains_integer_in_expression() {
 #[test]
 fn walk_handles_large_sum() {
     // Stress test: sum of many distinct variables
-    let vars: Vec<Ex> = (0..50).map(|i| symplex::var(&format!("v{i}"))).collect();
+    let vars: Vec<Ex> = (0..50).map(|i| symplex::default_context().symbol(&format!("v{i}"))).collect();
     let mut expr = vars[0].clone();
     for v in &vars[1..] {
         expr = &expr + v;
@@ -706,7 +706,7 @@ fn walk_handles_large_sum() {
 #[test]
 fn walk_handles_deep_nesting() {
     // Deep nesting: sin(sin(sin(...sin(x)...)))
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let mut expr = x.clone();
     for _ in 0..100 {
         expr = expr.sin();

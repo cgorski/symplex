@@ -16,7 +16,7 @@ use symplex::prelude::*;
 fn gamma_integer_high_precision() {
     // Γ(5) = 4! = 24, verify at 30 digits.
     // The eval layer reduces Gamma(5) → 24 before evalf runs.
-    let result = symplex::int(5).gamma().eval_decimal(30).unwrap();
+    let result = symplex::default_context().int(5).gamma().eval_decimal(30).unwrap();
     assert!(
         result.starts_with("24"),
         "Gamma(5) at 30 digits should be 24, got: {result}"
@@ -27,7 +27,7 @@ fn gamma_integer_high_precision() {
 fn gamma_half_high_precision() {
     // Γ(1/2) = √π ≈ 1.7724538509055159929…
     // Verify first 15 significant digits match.
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let result = half.gamma().eval_decimal(30).unwrap();
     assert!(
         result.starts_with("1.77245385090551"),
@@ -38,7 +38,7 @@ fn gamma_half_high_precision() {
 #[test]
 fn gamma_three_halves() {
     // Γ(3/2) = (1/2)·Γ(1/2) = √π/2 ≈ 0.886226925452758…
-    let three_halves = symplex::rational(3, 2);
+    let three_halves = symplex::default_context().rational(3, 2);
     let result = three_halves.gamma().eval_decimal(20).unwrap();
     assert!(
         result.starts_with("0.886226925"),
@@ -63,7 +63,7 @@ fn gamma_small_integer_table() {
     ];
 
     for &(n, expected) in factorials {
-        let result_str = symplex::int(n).gamma().eval_decimal(15).unwrap();
+        let result_str = symplex::default_context().int(n).gamma().eval_decimal(15).unwrap();
         let result_val: f64 = result_str.parse().unwrap_or_else(|_| {
             panic!("Gamma({n}) result '{result_str}' is not parseable as f64");
         });
@@ -79,7 +79,7 @@ fn gamma_half_50_digits() {
     // Γ(1/2) at 50 digits: verify agreement with √π to 15 significant digits.
     // The Stirling series may diverge slightly beyond ~16 digits at this
     // working precision, so we check a conservative prefix.
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let result = half.gamma().eval_decimal(50).unwrap();
     assert!(
         result.starts_with("1.7724538509055"),
@@ -90,7 +90,7 @@ fn gamma_half_50_digits() {
 #[test]
 fn gamma_seven_halves_high_precision() {
     // Γ(7/2) = (5/2)(3/2)(1/2)√π = 15√π/8 ≈ 3.323350970…
-    let val = symplex::rational(7, 2);
+    let val = symplex::default_context().rational(7, 2);
     let result = val.gamma().eval_decimal(20).unwrap();
     assert!(
         result.starts_with("3.3233509"),
@@ -118,7 +118,7 @@ fn loggamma_at_positive_integer() {
 #[test]
 fn loggamma_at_half() {
     // LogGamma(1/2) = ln(√π) = ½ ln(π) ≈ 0.5723649429…
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let result = half.log_gamma().eval_decimal(20).unwrap();
     let val: f64 = result.parse().unwrap();
     let expected = 0.5 * std::f64::consts::PI.ln();
@@ -137,21 +137,21 @@ fn lambertw_basic_solve() {
     // x·exp(x) = 1 → x = W(1)
     // The internal solver handles this; public API may not (polynomial gate).
     // So we test LambertW evaluation instead: W(0) = 0.
-    let w0 = symplex::int(0).lambertw().eval();
+    let w0 = symplex::default_context().int(0).lambertw().eval();
     assert_eq!(format!("{w0}"), "0", "W(0) should be 0");
 }
 
 #[test]
 fn lambertw_at_e() {
     // W(e) = 1 because 1·exp(1) = e
-    let w_e = symplex::e().lambertw().eval();
+    let w_e = symplex::default_context().e().lambertw().eval();
     assert_eq!(format!("{w_e}"), "1", "W(e) should be 1");
 }
 
 #[test]
 fn lambertw_stays_symbolic() {
     // W(5) has no closed form — should remain as lambertw(5)
-    let w5 = symplex::int(5).lambertw().eval();
+    let w5 = symplex::default_context().int(5).lambertw().eval();
     let s = format!("{w5}");
     assert!(
         s.contains("W("),
@@ -165,7 +165,7 @@ fn lambertw_solve_exp_equation() {
     // This requires the LambertW path in the internal solver.
     // The public API won't solve it (not polynomial), so we test
     // that at least the expression parses and W(-1/2) is well-formed.
-    let w = symplex::rational(-1, 2).lambertw();
+    let w = symplex::default_context().rational(-1, 2).lambertw();
     let s = format!("{w}");
     assert!(
         s.contains("W("),
@@ -178,7 +178,7 @@ fn lambertw_neg_one_over_e() {
     // W(-1/e) = -1 because (-1)·exp(-1) = -1/e.
     // The eval layer does not currently recognize -exp(-1) as -1/e,
     // so the expression stays symbolic. We verify it is well-formed.
-    let neg_one_over_e = -symplex::e().powi(-1);
+    let neg_one_over_e = -symplex::default_context().e().powi(-1);
     let w = neg_one_over_e.lambertw().eval();
     let s = format!("{w}");
     // Accept either the simplified "-1" or the symbolic form.
@@ -426,7 +426,7 @@ fn integrate_sqrt_x2_minus_four() {
 #[test]
 fn erf_at_zero_high_precision() {
     // erf(0) = 0 at any precision.
-    let result = symplex::int(0).erf().eval_decimal(30).unwrap();
+    let result = symplex::default_context().int(0).erf().eval_decimal(30).unwrap();
     let val: f64 = result.parse().unwrap();
     assert!(
         val.abs() < 1e-20,
@@ -437,8 +437,8 @@ fn erf_at_zero_high_precision() {
 #[test]
 fn erf_symmetry() {
     // erf(-x) = -erf(x), verified numerically at x = 1.
-    let pos = symplex::int(1).erf().eval_decimal(20).unwrap();
-    let neg = symplex::int(-1).erf().eval_decimal(20).unwrap();
+    let pos = symplex::default_context().int(1).erf().eval_decimal(20).unwrap();
+    let neg = symplex::default_context().int(-1).erf().eval_decimal(20).unwrap();
     let pos_val: f64 = pos.parse().unwrap();
     let neg_val: f64 = neg.parse().unwrap();
     assert!(
@@ -451,7 +451,7 @@ fn erf_symmetry() {
 #[test]
 fn erf_at_one_matches_known_value() {
     // erf(1) ≈ 0.84270079294971486934…
-    let result = symplex::int(1).erf().eval_decimal(15).unwrap();
+    let result = symplex::default_context().int(1).erf().eval_decimal(15).unwrap();
     assert!(
         result.starts_with("0.84270079"),
         "erf(1) should start with 0.84270079, got: {result}"
@@ -461,7 +461,7 @@ fn erf_at_one_matches_known_value() {
 #[test]
 fn erf_at_two() {
     // erf(2) ≈ 0.99532226501895…
-    let result = symplex::int(2).erf().eval_decimal(15).unwrap();
+    let result = symplex::default_context().int(2).erf().eval_decimal(15).unwrap();
     assert!(
         result.starts_with("0.99532226"),
         "erf(2) should start with 0.99532226, got: {result}"
@@ -471,7 +471,7 @@ fn erf_at_two() {
 #[test]
 fn erf_large_argument() {
     // erf(5) ≈ 0.99999999999846…  (very close to 1)
-    let result = symplex::int(5).erf().eval_decimal(15).unwrap();
+    let result = symplex::default_context().int(5).erf().eval_decimal(15).unwrap();
     let val: f64 = result.parse().unwrap();
     assert!(
         (val - 1.0).abs() < 1e-10,
@@ -482,7 +482,7 @@ fn erf_large_argument() {
 #[test]
 fn erfc_at_zero() {
     // erfc(0) = 1
-    let result = symplex::int(0).erfc().eval_decimal(15).unwrap();
+    let result = symplex::default_context().int(0).erfc().eval_decimal(15).unwrap();
     let val: f64 = result.parse().unwrap();
     assert!(
         (val - 1.0).abs() < 1e-12,
@@ -497,8 +497,8 @@ fn erfc_at_zero() {
 #[test]
 fn beta_symmetry() {
     // Beta(a, b) = Beta(b, a), verified numerically.
-    let a = symplex::rational(3, 2);
-    let b = symplex::rational(5, 2);
+    let a = symplex::default_context().rational(3, 2);
+    let b = symplex::default_context().rational(5, 2);
 
     let beta_ab = a.beta(&b).eval_decimal(15).unwrap();
     let beta_ba = b.beta(&a).eval_decimal(15).unwrap();
@@ -515,7 +515,7 @@ fn beta_symmetry() {
 #[test]
 fn beta_known_values() {
     // Beta(1, 1) = Γ(1)Γ(1)/Γ(2) = 1·1/1 = 1
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let result = one.beta(&one).eval_decimal(15).unwrap();
     let val: f64 = result.parse().unwrap();
     assert!(
@@ -527,7 +527,7 @@ fn beta_known_values() {
 #[test]
 fn beta_half_half() {
     // Beta(1/2, 1/2) = Γ(1/2)²/Γ(1) = π/1 = π
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let result = half.beta(&half).eval_decimal(15).unwrap();
     let val: f64 = result.parse().unwrap();
     assert!(
@@ -539,8 +539,8 @@ fn beta_half_half() {
 #[test]
 fn beta_integer_arguments() {
     // Beta(3, 4) = Γ(3)Γ(4)/Γ(7) = 2·6/720 = 1/60 ≈ 0.016666…
-    let three = symplex::int(3);
-    let four = symplex::int(4);
+    let three = symplex::default_context().int(3);
+    let four = symplex::default_context().int(4);
     let result = three.beta(&four).eval_decimal(15).unwrap();
     let val: f64 = result.parse().unwrap();
     let expected = 1.0 / 60.0;
@@ -627,7 +627,7 @@ fn integrate_one_over_sqrt_x2_plus_one() {
 #[test]
 fn gamma_neg_half() {
     // Γ(-1/2) = -2√π ≈ -3.5449077018110320…
-    let val = symplex::rational(-1, 2);
+    let val = symplex::default_context().rational(-1, 2);
     let result = val.gamma().eval_decimal(20).unwrap();
     assert!(
         result.starts_with("-3.54490770"),
@@ -638,13 +638,13 @@ fn gamma_neg_half() {
 #[test]
 fn gamma_at_pole_returns_error() {
     // Γ(0) should return an error (pole).
-    let result = symplex::int(0).gamma().eval_decimal(15);
+    let result = symplex::default_context().int(0).gamma().eval_decimal(15);
     assert!(result.is_err(), "Gamma(0) should be an error (pole)");
 }
 
 #[test]
 fn gamma_neg_integer_pole() {
     // Γ(-1) should return an error (pole at non-positive integers).
-    let result = symplex::int(-1).gamma().eval_decimal(15);
+    let result = symplex::default_context().int(-1).gamma().eval_decimal(15);
     assert!(result.is_err(), "Gamma(-1) should be an error (pole)");
 }

@@ -12,21 +12,21 @@ use symplex::prelude::*;
 #[test]
 fn floor_large_rational() {
     // floor(100/7) = floor(14.2857...) = 14
-    let result = symplex::rational(100, 7).floor().eval();
+    let result = symplex::default_context().rational(100, 7).floor().eval();
     assert_eq!(format!("{result}"), "14");
 }
 
 #[test]
 fn floor_just_below_integer() {
     // floor(99/10) = floor(9.9) = 9
-    let result = symplex::rational(99, 10).floor().eval();
+    let result = symplex::default_context().rational(99, 10).floor().eval();
     assert_eq!(format!("{result}"), "9");
 }
 
 #[test]
 fn floor_negative_just_above_integer() {
     // floor(-99/10) = floor(-9.9) = -10
-    let result = symplex::rational(-99, 10).floor().eval();
+    let result = symplex::default_context().rational(-99, 10).floor().eval();
     assert_eq!(format!("{result}"), "-10");
 }
 
@@ -37,21 +37,21 @@ fn floor_negative_just_above_integer() {
 #[test]
 fn ceiling_large_rational() {
     // ceil(100/7) = ceil(14.2857...) = 15
-    let result = symplex::rational(100, 7).ceiling().eval();
+    let result = symplex::default_context().rational(100, 7).ceiling().eval();
     assert_eq!(format!("{result}"), "15");
 }
 
 #[test]
 fn ceiling_negative_just_below_integer() {
     // ceil(-99/10) = ceil(-9.9) = -9
-    let result = symplex::rational(-99, 10).ceiling().eval();
+    let result = symplex::default_context().rational(-99, 10).ceiling().eval();
     assert_eq!(format!("{result}"), "-9");
 }
 
 #[test]
 fn ceiling_exact_integer_unchanged() {
     // ceil(10/2) = ceil(5) = 5
-    let result = symplex::rational(10, 2).ceiling().eval();
+    let result = symplex::default_context().rational(10, 2).ceiling().eval();
     assert_eq!(format!("{result}"), "5");
 }
 
@@ -62,14 +62,14 @@ fn ceiling_exact_integer_unchanged() {
 #[test]
 fn rem_positive_integers() {
     // 7 rem 3 = 7 - 3*floor(7/3) = 7 - 3*2 = 1
-    let result = symplex::int(7).rem(&symplex::int(3)).eval();
+    let result = symplex::default_context().int(7).rem(&symplex::default_context().int(3)).eval();
     assert_eq!(format!("{result}"), "1");
 }
 
 #[test]
 fn rem_negative_dividend() {
     // (-7) rem 3 = -7 - 3*floor(-7/3) = -7 - 3*(-3) = -7 + 9 = 2
-    let result = symplex::int(-7).rem(&symplex::int(3)).eval();
+    let result = symplex::default_context().int(-7).rem(&symplex::default_context().int(3)).eval();
     assert_eq!(format!("{result}"), "2");
 }
 
@@ -162,7 +162,7 @@ fn product_empty_range_is_one() {
 
 #[test]
 fn tree_roundtrip_floor() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let fl = x.floor();
     let tree = fl.to_tree();
     let json = serde_json::to_string(&tree).unwrap();

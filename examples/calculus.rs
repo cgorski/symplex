@@ -64,8 +64,8 @@ fn main() {
     println!("  ∫ ({poly}) dx = {}", poly.integrate(&x));
 
     // ── 6. Definite integral ───────────────────────────────────────────
-    let zero = symplex::int(0);
-    let one = symplex::int(1);
+    let zero = symplex::default_context().int(0);
+    let one = symplex::default_context().int(1);
     let area = f.definite_integral(&x, &zero, &one);
     println!("\n∫₀¹ f(x) dx = {area}");
 
@@ -74,7 +74,7 @@ fn main() {
     let sin_area = x.sin().definite_integral(&x, &zero, &pi);
     println!("∫₀^π sin(x) dx = {}", sin_area.eval());
 
-    let x_squared_area = expr!(x ^ 2).definite_integral(&x, &symplex::int(-1), &one);
+    let x_squared_area = expr!(x ^ 2).definite_integral(&x, &symplex::default_context().int(-1), &one);
     println!("∫₋₁¹ x² dx = {x_squared_area}");
 
     // ── 7. Taylor series of sin(x) around 0 ───────────────────────────
@@ -104,17 +104,17 @@ fn main() {
 
     // ── 10. Limits ─────────────────────────────────────────────────────
     let limit_expr = &x.sin() / &x;
-    let lim = limit_expr.limit(&x, &symplex::int(0)).unwrap();
+    let lim = limit_expr.limit(&x, &symplex::default_context().int(0)).unwrap();
     println!("\nlim(x→0) sin(x)/x = {lim}");
 
     // lim(x→0) (exp(x)-1)/x = 1
     let exp_limit = &(&x.exp() - 1) / &x;
-    if let Ok(lim2) = exp_limit.limit(&x, &symplex::int(0)) {
+    if let Ok(lim2) = exp_limit.limit(&x, &symplex::default_context().int(0)) {
         println!("lim(x→0) (exp(x)-1)/x = {lim2}");
     }
 
     // Limit at infinity
-    let inf = symplex::infinity();
+    let inf = symplex::default_context().infinity();
     if let Ok(lim3) = (1 / &x).limit(&x, &inf) {
         println!("lim(x→∞) 1/x = {lim3}");
     }
@@ -250,7 +250,7 @@ fn main() {
     vars!(t, s);
 
     // L{1} = 1/s
-    if let Ok(result) = symplex::int(1).laplace(&t, &s) {
+    if let Ok(result) = symplex::default_context().int(1).laplace(&t, &s) {
         println!("L{{1}} = {result}");
     }
 

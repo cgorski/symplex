@@ -543,7 +543,7 @@ proptest! {
     ) {
         let data: Vec<Vec<Ex>> = entries
             .chunks(3)
-            .map(|row| row.iter().map(|&v| symplex::int(v)).collect())
+            .map(|row| row.iter().map(|&v| symplex::default_context().int(v)).collect())
             .collect();
         let m = symplex::matrix::Matrix::new(data).unwrap();
         let mt = m.transpose();

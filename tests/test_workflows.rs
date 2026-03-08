@@ -17,7 +17,7 @@ use symplex::prelude::*;
 #[test]
 fn workflow_calculus_optimization() {
     // f(x) = x³ - 6x² + 9x + 1
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let f = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 9) + 1;
 
     // Step 1: first derivative
@@ -73,7 +73,7 @@ fn workflow_calculus_optimization() {
 
 #[test]
 fn workflow_diff_integrate_roundtrip() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // f(x) = x³ + 2x² - x + 3
     let f = &x.powi(3) + &(&x.powi(2) * 2) - &x + 3;
 
@@ -106,7 +106,7 @@ fn workflow_diff_integrate_roundtrip() {
 
 #[test]
 fn workflow_diff_integrate_roundtrip_trig() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let f = x.sin();
     let fp = f.diff(&x);       // cos(x)
     let g = fp.integrate(&x);  // should give sin(x) (+ C)
@@ -137,9 +137,9 @@ fn workflow_diff_integrate_roundtrip_trig() {
 
 #[test]
 fn workflow_partial_fractions_pipeline() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // 1 / (x² + 3x + 2) = 1/((x+1)(x+2))
-    let original = &symplex::int(1) / &(&x.powi(2) + &(&x * 3) + 2);
+    let original = &symplex::default_context().int(1) / &(&x.powi(2) + &(&x * 3) + 2);
 
     // Step 1: partial fraction decomposition
     let decomposed = original.partial_fractions(&x);
@@ -172,7 +172,7 @@ fn workflow_partial_fractions_pipeline() {
 
 #[test]
 fn workflow_taylor_convergence() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let sin_x = x.sin();
 
     // Maclaurin expansion to order 7:  x - x³/6 + x⁵/120 - x⁷/5040
@@ -198,7 +198,7 @@ fn workflow_taylor_convergence() {
 
 #[test]
 fn workflow_taylor_exp_convergence() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let exp_x = x.exp();
 
     let series = exp_x.maclaurin(&x, 8).expect("maclaurin of exp");
@@ -224,7 +224,7 @@ fn workflow_taylor_exp_convergence() {
 
 #[test]
 fn workflow_solve_verify_substitute() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // x³ - 6x² + 11x - 6 = 0  roots are 1, 2, 3
     let poly = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6;
 
@@ -247,7 +247,7 @@ fn workflow_solve_verify_substitute() {
 
 #[test]
 fn workflow_solve_verify_substitute_quadratic() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // x² - 5x + 6 = 0  roots are 2, 3
     let poly = &x.powi(2) - &(&x * 5) + 6;
     let roots = poly.solve(&x).expect("should solve quadratic");
@@ -261,12 +261,12 @@ fn workflow_solve_verify_substitute_quadratic() {
 
 #[test]
 fn workflow_matrix_eigenvalue_properties() {
-    let lam = symplex::var("lambda");
+    let lam = symplex::default_context().symbol("lambda");
 
     // [[2, 1], [1, 2]]
     let m = Matrix::new(vec![
-        vec![symplex::int(2), symplex::int(1)],
-        vec![symplex::int(1), symplex::int(2)],
+        vec![symplex::default_context().int(2), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(2)],
     ]).unwrap();
 
     // Step 1: trace and determinant
@@ -313,8 +313,8 @@ fn workflow_matrix_eigenvalue_properties() {
 
 #[test]
 fn workflow_jacobian_to_lambdify() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
 
     // Functions: [x²y, xy²]
     let f1 = &x.powi(2) * &y;
@@ -362,7 +362,7 @@ fn workflow_jacobian_to_lambdify() {
 
 #[test]
 fn workflow_trig_simplify_chain() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
 
     // (sin(x) + cos(x))²
     let expr = (&x.sin() + &x.cos()).powi(2);
@@ -401,8 +401,8 @@ fn workflow_trig_simplify_chain() {
 
 #[test]
 fn workflow_complex_euler() {
-    let i = symplex::i_unit();
-    let pi = symplex::pi();
+    let i = symplex::default_context().i_unit();
+    let pi = symplex::default_context().pi();
 
     // exp(i*π) should evaluate to -1
     let expr = (&i * &pi).exp().eval();
@@ -430,7 +430,7 @@ fn workflow_complex_euler() {
 #[test]
 fn workflow_complex_euler_i_squared() {
     // i² = -1
-    let i = symplex::i_unit();
+    let i = symplex::default_context().i_unit();
     let i_sq = i.powi(2);
     assert_eq!(format!("{i_sq}"), "-1");
 
@@ -446,7 +446,7 @@ fn workflow_complex_euler_i_squared() {
 
 #[test]
 fn workflow_polynomial_algebra_chain() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
 
     // (x² - 1) / (x - 1)  should cancel to  x + 1
     let expr = &(&x.powi(2) - 1) / &(&x - 1);
@@ -474,7 +474,7 @@ fn workflow_polynomial_algebra_chain() {
 
 #[test]
 fn workflow_polynomial_algebra_factor_expand() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
 
     // Start with x² - 4, factor, then expand back
     let poly = &x.powi(2) - 4;
@@ -532,7 +532,7 @@ fn workflow_definite_integral_polynomial() {
 
 #[test]
 fn workflow_substitution_chain() {
-    symplex::vars!(x, y);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y);
 
     // expr = x² + 2*y + 1
     let expr = &x.powi(2) + &(&y * 2) + 1;
@@ -553,14 +553,14 @@ fn workflow_substitution_chain() {
 
 #[test]
 fn workflow_substitution_chain_trig() {
-    symplex::vars!(x, y);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y);
 
     // expr = sin(x) + y
     let expr = &x.sin() + &y;
 
     // subs x → π/2
     let ctx = symplex::default_context();
-    let pi_half = &ctx.pi() / &symplex::int(2);
+    let pi_half = &ctx.pi() / &symplex::default_context().int(2);
     let step1 = expr.subs(&x, &pi_half);
     // sin(π/2) + y = 1 + y
 
@@ -579,7 +579,7 @@ fn workflow_substitution_chain_trig() {
 
 #[test]
 fn workflow_lambdify_vs_evalf() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // f(x) = x³ + sin(x)
     let f = &x.powi(3) + &x.sin();
 
@@ -607,7 +607,7 @@ fn workflow_lambdify_vs_evalf() {
 
 #[test]
 fn workflow_lambdify_vs_evalf_multivar() {
-    symplex::vars!(x, y);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y);
     let f = &x.powi(2) + &y.powi(2);
     let func = f.compile(&["x", "y"]).expect("lambdify x²+y²");
 
@@ -627,7 +627,7 @@ fn workflow_lambdify_vs_evalf_multivar() {
 
 #[test]
 fn workflow_equation_solve_check() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // x² - 5x + 6 = 0
     let equation = eq!(x ^ 2 - 5 * x + 6 = 0);
     let roots = equation.solve(&x).expect("should solve x²-5x+6=0");
@@ -654,9 +654,9 @@ fn workflow_equation_solve_check() {
 
 #[test]
 fn workflow_equation_solve_check_cubic() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // x³ - x = 0  →  x(x²-1) = 0  →  roots 0, 1, -1
-    let equation = Equation::new(&x.powi(3) - &x, symplex::int(0));
+    let equation = Equation::new(&x.powi(3) - &x, symplex::default_context().int(0));
     let roots = equation.solve(&x).expect("should solve x³-x=0");
     assert_eq!(roots.len(), 3, "should have 3 roots");
 
@@ -675,7 +675,7 @@ fn workflow_equation_solve_check_cubic() {
 
 #[test]
 fn workflow_series_then_integrate() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
 
     // Taylor expand exp(x) to order 4:  1 + x + x²/2 + x³/6
     let series = x.exp().maclaurin(&x, 4).expect("maclaurin of exp");
@@ -701,7 +701,7 @@ fn workflow_series_then_integrate() {
     // Also verify the definite integral over [0,1] against numerical
     // expectation.  The polynomial is 1 + x + x²/2 + x³/6, so
     // ∫₀¹ (1 + x + x²/2 + x³/6) dx = 1 + 1/2 + 1/6 + 1/24 = 41/24 ≈ 1.70833
-    let def_int = poly.definite_integral(&x, &symplex::int(0), &symplex::int(1));
+    let def_int = poly.definite_integral(&x, &symplex::default_context().int(0), &symplex::default_context().int(1));
     let def_val = def_int.eval().eval_f64().expect("definite integral");
     let expected = 1.0 + 0.5 + 1.0 / 6.0 + 1.0 / 24.0;
     assert!(
@@ -717,7 +717,7 @@ fn workflow_series_then_integrate() {
 /// Build a polynomial, factor, then solve — all three should agree on roots.
 #[test]
 fn workflow_factor_then_solve() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &x.powi(2) - &(&x * 5) + 6; // (x-2)(x-3)
 
     // Factor
@@ -736,7 +736,7 @@ fn workflow_factor_then_solve() {
 /// Differentiation of a product using the product rule, verified numerically.
 #[test]
 fn workflow_product_rule_verification() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let f = x.sin();
     let g = x.exp();
 
@@ -765,7 +765,7 @@ fn workflow_product_rule_verification() {
 /// Chain rule: d/dx sin(x²) = 2x cos(x²), verified numerically.
 #[test]
 fn workflow_chain_rule_verification() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(2).sin(); // sin(x²)
     let deriv = expr.diff(&x);
 
@@ -787,7 +787,7 @@ fn workflow_chain_rule_verification() {
 /// Power-of-a-sum expansion and simplification round-trip.
 #[test]
 fn workflow_expand_simplify_roundtrip() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
 
     // (x + 1)³
     let expr = (&x + 1).powi(3);
@@ -808,9 +808,9 @@ fn workflow_expand_simplify_roundtrip() {
 fn workflow_matrix_inverse_verify() {
     // [[1, 2, 3], [0, 1, 4], [5, 6, 0]]
     let m = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(2), symplex::int(3)],
-        vec![symplex::int(0), symplex::int(1), symplex::int(4)],
-        vec![symplex::int(5), symplex::int(6), symplex::int(0)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(2), symplex::default_context().int(3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1), symplex::default_context().int(4)],
+        vec![symplex::default_context().int(5), symplex::default_context().int(6), symplex::default_context().int(0)],
     ]).unwrap();
 
     let det = m.det().unwrap();

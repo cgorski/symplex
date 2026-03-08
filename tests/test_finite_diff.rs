@@ -11,7 +11,7 @@ use symplex::prelude::*;
 
 #[test]
 fn differentiate_finite_replaces_derivative_node() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(2).formal_diff(&x);
     let finite = expr.differentiate_finite(&x);
     let s = format!("{finite}");
@@ -26,7 +26,7 @@ fn differentiate_finite_replaces_derivative_node() {
 
 #[test]
 fn differentiate_finite_x_cubed() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(3).formal_diff(&x);
     let finite = expr.differentiate_finite(&x);
     let s = format!("{finite}");
@@ -39,7 +39,7 @@ fn differentiate_finite_x_cubed() {
 
 #[test]
 fn differentiate_finite_sin_x() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin().formal_diff(&x);
     let finite = expr.differentiate_finite(&x);
     let s = format!("{finite}");
@@ -55,7 +55,7 @@ fn differentiate_finite_sin_x() {
 #[test]
 fn differentiate_finite_preserves_non_derivative_expr() {
     // An expression with no Derivative nodes should pass through unchanged
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(2);
     let finite = expr.differentiate_finite(&x);
     let original = format!("{expr}");

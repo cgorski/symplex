@@ -61,7 +61,7 @@ pub fn total_time_derivative(
     );
 
     // d/dt f = Σᵢ (∂f/∂qᵢ)·q̇ᵢ + Σᵢ (∂f/∂q̇ᵢ)·q̈ᵢ
-    let mut result = symplex::int(0);
+    let mut result = symplex::default_context().int(0);
 
     for (i, (qi, qi_dot)) in coords.iter().enumerate() {
         // ∂f/∂qᵢ · q̇ᵢ
@@ -243,7 +243,7 @@ pub fn christoffel_symbols(
         n
     );
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
 
     let mut result = Vec::with_capacity(n);
     for i in 0..n {
@@ -319,7 +319,7 @@ pub fn coriolis_matrix(
         let mut row = Vec::with_capacity(n);
         for christoffel_ij in christoffel_i.iter().take(n) {
             // C_ij = Σₖ Γᵢⱼₖ · q̇ₖ
-            let mut c_ij = symplex::int(0);
+            let mut c_ij = symplex::default_context().int(0);
             for k in 0..n {
                 c_ij = &c_ij + &(&christoffel_ij[k] * qdot_vars[k]);
             }

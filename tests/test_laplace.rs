@@ -17,7 +17,7 @@ fn verify_laplace_numerically(
     expected: f64,
     label: &str,
 ) {
-    let s_val = symplex::rational(s_num, s_den);
+    let s_val = symplex::default_context().rational(s_num, s_den);
     let at_s = result.subs(s, &s_val);
     let val = at_s.eval_f64().unwrap_or_else(|_| panic!(
         "{label}: should evaluate numerically at s={s_num}/{s_den}"
@@ -34,9 +34,9 @@ fn verify_laplace_numerically(
 
 #[test]
 fn laplace_constant() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
-    let f = symplex::int(5);
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
+    let f = symplex::default_context().int(5);
     let result = f.laplace(&t, &s).unwrap();
     let d = format!("{result}");
     // L{5} = 5/s — displayed as 5*s^(-1) or similar
@@ -50,9 +50,9 @@ fn laplace_constant() {
 
 #[test]
 fn laplace_one() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
-    let f = symplex::int(1);
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
+    let f = symplex::default_context().int(1);
     let result = f.laplace(&t, &s).unwrap();
     let d = format!("{result}");
     // L{1} = 1/s
@@ -63,8 +63,8 @@ fn laplace_one() {
 
 #[test]
 fn laplace_exp() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L{exp(2t)} = 1/(s-2)
     let f = (&t * 2).exp();
     let result = f.laplace(&t, &s).unwrap();
@@ -80,8 +80,8 @@ fn laplace_exp() {
 
 #[test]
 fn laplace_exp_negative() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L{exp(-3t)} = 1/(s+3)
     let f = (&t * -3).exp();
     let result = f.laplace(&t, &s).unwrap();
@@ -96,8 +96,8 @@ fn laplace_exp_negative() {
 
 #[test]
 fn laplace_sin() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L{sin(3t)} = 3/(s²+9)
     let f = (&t * 3).sin();
     let result = f.laplace(&t, &s).unwrap();
@@ -112,8 +112,8 @@ fn laplace_sin() {
 
 #[test]
 fn laplace_cos() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L{cos(t)} = s/(s²+1)
     let f = t.cos();
     let result = f.laplace(&t, &s).unwrap();
@@ -125,8 +125,8 @@ fn laplace_cos() {
 
 #[test]
 fn laplace_t_squared() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L{t²} = 2/s³ = 2*s^(-3)
     let f = t.powi(2);
     let result = f.laplace(&t, &s).unwrap();
@@ -141,8 +141,8 @@ fn laplace_t_squared() {
 
 #[test]
 fn laplace_linearity() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L{3*exp(t) + 2*sin(t)} should succeed (linearity)
     let term1 = &t.exp() * 3;
     let term2 = &t.sin() * 2;
@@ -165,8 +165,8 @@ fn laplace_linearity() {
 
 #[test]
 fn laplace_freq_shift() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L{exp(2t)*sin(3t)} = 3/((s-2)²+9) via frequency shift
     let f = &((&t * 2).exp()) * &((&t * 3).sin());
     let result = f.laplace(&t, &s);
@@ -187,8 +187,8 @@ fn laplace_freq_shift() {
 
 #[test]
 fn laplace_sinh() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L{sinh(2t)} = 2/(s²-4)
     let f = (&t * 2).sinh();
     let result = f.laplace(&t, &s).unwrap();
@@ -203,8 +203,8 @@ fn laplace_sinh() {
 
 #[test]
 fn laplace_cosh() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L{cosh(t)} = s/(s²-1)
     let f = t.cosh();
     let result = f.laplace(&t, &s).unwrap();
@@ -220,10 +220,10 @@ fn laplace_cosh() {
 
 #[test]
 fn inverse_laplace_1_over_s() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L⁻¹{1/s} = 1
-    let f = &symplex::int(1) / &s;
+    let f = &symplex::default_context().int(1) / &s;
     let result = f
         .inverse_laplace(&s, &t)
         .expect("L⁻¹{1/s} should succeed");
@@ -237,10 +237,10 @@ fn inverse_laplace_1_over_s() {
 
 #[test]
 fn inverse_laplace_1_over_s_minus_a() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L⁻¹{1/(s-2)} = exp(2t)
-    let f = &symplex::int(1) / &(&s - 2);
+    let f = &symplex::default_context().int(1) / &(&s - 2);
     let r = f
         .inverse_laplace(&s, &t)
         .expect("L⁻¹{1/(s-2)} should succeed");
@@ -253,10 +253,10 @@ fn inverse_laplace_1_over_s_minus_a() {
 
 #[test]
 fn inverse_laplace_constant_over_s() {
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     // L⁻¹{5/s} = 5
-    let f = &symplex::int(5) / &s;
+    let f = &symplex::default_context().int(5) / &s;
     let result = f
         .inverse_laplace(&s, &t)
         .expect("L⁻¹{5/s} should succeed");
@@ -266,18 +266,18 @@ fn inverse_laplace_constant_over_s() {
 
 #[test]
 fn laplace_rejects_non_symbol_t() {
-    let s = symplex::var("s");
-    let f = symplex::int(1);
-    let bad_t = symplex::int(42); // not a symbol
+    let s = symplex::default_context().symbol("s");
+    let f = symplex::default_context().int(1);
+    let bad_t = symplex::default_context().int(42); // not a symbol
     let result = f.laplace(&bad_t, &s);
     assert!(result.is_err(), "should reject non-symbol t");
 }
 
 #[test]
 fn laplace_rejects_non_symbol_s() {
-    let t = symplex::var("t");
-    let f = symplex::int(1);
-    let bad_s = symplex::int(42); // not a symbol
+    let t = symplex::default_context().symbol("t");
+    let f = symplex::default_context().int(1);
+    let bad_s = symplex::default_context().int(42); // not a symbol
     let result = f.laplace(&t, &bad_s);
     assert!(result.is_err(), "should reject non-symbol s");
 }

@@ -205,8 +205,8 @@ fn negative_infinity_plus_zoo_is_nan() {
 
 #[test]
 fn positive_infinity_plus_positive_infinity_is_infinity() {
-    let inf1 = symplex::infinity();
-    let inf2 = symplex::infinity();
+    let inf1 = symplex::default_context().infinity();
+    let inf2 = symplex::default_context().infinity();
     let result = &inf1 + &inf2;
     assert_eq!(
         format!("{result}"),
@@ -217,8 +217,8 @@ fn positive_infinity_plus_positive_infinity_is_infinity() {
 
 #[test]
 fn negative_infinity_plus_negative_infinity_is_negative_infinity() {
-    let neg1 = symplex::neg_infinity();
-    let neg2 = symplex::neg_infinity();
+    let neg1 = symplex::default_context().neg_infinity();
+    let neg2 = symplex::default_context().neg_infinity();
     let result = &neg1 + &neg2;
     assert_eq!(
         format!("{result}"),
@@ -229,8 +229,8 @@ fn negative_infinity_plus_negative_infinity_is_negative_infinity() {
 
 #[test]
 fn positive_infinity_plus_negative_infinity_is_nan() {
-    let inf = symplex::infinity();
-    let neg_inf = symplex::neg_infinity();
+    let inf = symplex::default_context().infinity();
+    let neg_inf = symplex::default_context().neg_infinity();
     let result = &inf + &neg_inf;
     assert_eq!(
         format!("{result}"),
@@ -241,8 +241,8 @@ fn positive_infinity_plus_negative_infinity_is_nan() {
 
 #[test]
 fn negative_infinity_plus_positive_infinity_is_nan() {
-    let neg_inf = symplex::neg_infinity();
-    let inf = symplex::infinity();
+    let neg_inf = symplex::default_context().neg_infinity();
+    let inf = symplex::default_context().infinity();
     let result = &neg_inf + &inf;
     assert_eq!(
         format!("{result}"),
@@ -253,8 +253,8 @@ fn negative_infinity_plus_positive_infinity_is_nan() {
 
 #[test]
 fn positive_infinity_plus_finite_is_infinity() {
-    let inf = symplex::infinity();
-    let ten = symplex::int(10);
+    let inf = symplex::default_context().infinity();
+    let ten = symplex::default_context().int(10);
     let result = &inf + &ten;
     assert_eq!(
         format!("{result}"),
@@ -265,8 +265,8 @@ fn positive_infinity_plus_finite_is_infinity() {
 
 #[test]
 fn finite_plus_positive_infinity_is_infinity() {
-    let inf = symplex::infinity();
-    let ten = symplex::int(10);
+    let inf = symplex::default_context().infinity();
+    let ten = symplex::default_context().int(10);
     let result = &ten + &inf;
     assert_eq!(
         format!("{result}"),
@@ -277,8 +277,8 @@ fn finite_plus_positive_infinity_is_infinity() {
 
 #[test]
 fn negative_infinity_plus_finite_is_negative_infinity() {
-    let neg_inf = symplex::neg_infinity();
-    let ten = symplex::int(10);
+    let neg_inf = symplex::default_context().neg_infinity();
+    let ten = symplex::default_context().int(10);
     let result = &neg_inf + &ten;
     assert_eq!(
         format!("{result}"),
@@ -289,8 +289,8 @@ fn negative_infinity_plus_finite_is_negative_infinity() {
 
 #[test]
 fn finite_plus_negative_infinity_is_negative_infinity() {
-    let neg_inf = symplex::neg_infinity();
-    let ten = symplex::int(10);
+    let neg_inf = symplex::default_context().neg_infinity();
+    let ten = symplex::default_context().int(10);
     let result = &ten + &neg_inf;
     assert_eq!(
         format!("{result}"),
@@ -301,8 +301,8 @@ fn finite_plus_negative_infinity_is_negative_infinity() {
 
 #[test]
 fn positive_infinity_plus_symbol_is_infinity() {
-    let inf = symplex::infinity();
-    let x = symplex::var("x");
+    let inf = symplex::default_context().infinity();
+    let x = symplex::default_context().symbol("x");
     let result = &inf + &x;
     assert_eq!(
         format!("{result}"),
@@ -313,8 +313,8 @@ fn positive_infinity_plus_symbol_is_infinity() {
 
 #[test]
 fn negative_infinity_plus_symbol_is_negative_infinity() {
-    let neg_inf = symplex::neg_infinity();
-    let x = symplex::var("x");
+    let neg_inf = symplex::default_context().neg_infinity();
+    let x = symplex::default_context().symbol("x");
     let result = &neg_inf + &x;
     assert_eq!(
         format!("{result}"),
@@ -325,8 +325,8 @@ fn negative_infinity_plus_symbol_is_negative_infinity() {
 
 #[test]
 fn positive_infinity_plus_zero_is_infinity() {
-    let inf = symplex::infinity();
-    let zero = symplex::int(0);
+    let inf = symplex::default_context().infinity();
+    let zero = symplex::default_context().int(0);
     let result = &inf + &zero;
     assert_eq!(
         format!("{result}"),
@@ -337,8 +337,8 @@ fn positive_infinity_plus_zero_is_infinity() {
 
 #[test]
 fn negative_infinity_plus_zero_is_negative_infinity() {
-    let neg_inf = symplex::neg_infinity();
-    let zero = symplex::int(0);
+    let neg_inf = symplex::default_context().neg_infinity();
+    let zero = symplex::default_context().int(0);
     let result = &neg_inf + &zero;
     assert_eq!(
         format!("{result}"),
@@ -355,7 +355,7 @@ fn negative_infinity_plus_zero_is_negative_infinity() {
 
 #[test]
 fn positive_infinity_to_the_zero_is_nan() {
-    let inf = symplex::infinity();
+    let inf = symplex::default_context().infinity();
     let result = inf.powi(0);
     assert_eq!(
         format!("{result}"),
@@ -366,7 +366,7 @@ fn positive_infinity_to_the_zero_is_nan() {
 
 #[test]
 fn negative_infinity_to_the_zero_is_nan() {
-    let neg_inf = symplex::neg_infinity();
+    let neg_inf = symplex::default_context().neg_infinity();
     let result = neg_inf.powi(0);
     assert_eq!(
         format!("{result}"),
@@ -391,7 +391,7 @@ fn zoo_to_the_zero_is_nan() {
 
 #[test]
 fn zero_to_the_zero_is_one() {
-    let zero = symplex::int(0);
+    let zero = symplex::default_context().int(0);
     let result = zero.powi(0);
     assert_eq!(
         format!("{result}"),
@@ -404,7 +404,7 @@ fn zero_to_the_zero_is_one() {
 
 #[test]
 fn symbol_to_the_zero_is_one() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let result = x.powi(0);
     assert_eq!(
         format!("{result}"),
@@ -415,14 +415,14 @@ fn symbol_to_the_zero_is_one() {
 
 #[test]
 fn integer_to_the_zero_is_one() {
-    let five = symplex::int(5);
+    let five = symplex::default_context().int(5);
     let result = five.powi(0);
     assert_eq!(format!("{result}"), "1", "5^0 should be 1, got: {result}");
 }
 
 #[test]
 fn negative_integer_to_the_zero_is_one() {
-    let neg7 = symplex::int(-7);
+    let neg7 = symplex::default_context().int(-7);
     let result = neg7.powi(0);
     assert_eq!(
         format!("{result}"),
@@ -445,8 +445,8 @@ fn rational_to_the_zero_is_one() {
 
 #[test]
 fn expression_to_the_zero_is_one() {
-    let x = symplex::var("x");
-    let expr = &x.powi(2) + &symplex::int(1); // x^2 + 1
+    let x = symplex::default_context().symbol("x");
+    let expr = &x.powi(2) + &symplex::default_context().int(1); // x^2 + 1
     let result = expr.powi(0);
     assert_eq!(
         format!("{result}"),
@@ -457,7 +457,7 @@ fn expression_to_the_zero_is_one() {
 
 #[test]
 fn pi_to_the_zero_is_one() {
-    let p = symplex::pi();
+    let p = symplex::default_context().pi();
     let result = p.powi(0);
     assert_eq!(format!("{result}"), "1", "pi^0 should be 1, got: {result}");
 }
@@ -480,21 +480,21 @@ fn nan_to_the_zero_is_nan() {
 
 #[test]
 fn zero_to_the_positive_integer_is_zero() {
-    let zero = symplex::int(0);
+    let zero = symplex::default_context().int(0);
     let result = zero.powi(3);
     assert_eq!(format!("{result}"), "0", "0^3 should be 0, got: {result}");
 }
 
 #[test]
 fn zero_to_the_one_is_zero() {
-    let zero = symplex::int(0);
+    let zero = symplex::default_context().int(0);
     let result = zero.powi(1);
     assert_eq!(format!("{result}"), "0", "0^1 should be 0, got: {result}");
 }
 
 #[test]
 fn zero_to_large_positive_is_zero() {
-    let zero = symplex::int(0);
+    let zero = symplex::default_context().int(0);
     let result = zero.powi(100);
     assert_eq!(format!("{result}"), "0", "0^100 should be 0, got: {result}");
 }
@@ -516,7 +516,7 @@ fn zero_to_positive_rational_is_zero() {
 
 #[test]
 fn positive_infinity_to_the_one_is_infinity() {
-    let inf = symplex::infinity();
+    let inf = symplex::default_context().infinity();
     let result = inf.powi(1);
     assert_eq!(
         format!("{result}"),
@@ -527,7 +527,7 @@ fn positive_infinity_to_the_one_is_infinity() {
 
 #[test]
 fn negative_infinity_to_the_one_is_negative_infinity() {
-    let neg_inf = symplex::neg_infinity();
+    let neg_inf = symplex::default_context().neg_infinity();
     let result = neg_inf.powi(1);
     assert_eq!(
         format!("{result}"),
@@ -540,7 +540,7 @@ fn negative_infinity_to_the_one_is_negative_infinity() {
 
 #[test]
 fn positive_infinity_to_the_two() {
-    let inf = symplex::infinity();
+    let inf = symplex::default_context().infinity();
     let result = inf.powi(2);
     let s = format!("{result}");
     // oo^2 is valid — it might stay as oo^2 or simplify to oo.
@@ -767,7 +767,7 @@ fn negation_of_zoo_is_zoo() {
 
 #[test]
 fn negation_of_infinity_is_negative_infinity() {
-    let inf = symplex::infinity();
+    let inf = symplex::default_context().infinity();
     let result = -&inf;
     assert_eq!(
         format!("{result}"),
@@ -778,7 +778,7 @@ fn negation_of_infinity_is_negative_infinity() {
 
 #[test]
 fn negation_of_negative_infinity_is_infinity() {
-    let neg_inf = symplex::neg_infinity();
+    let neg_inf = symplex::default_context().neg_infinity();
     let result = -&neg_inf;
     assert_eq!(
         format!("{result}"),
@@ -793,8 +793,8 @@ fn negation_of_negative_infinity_is_infinity() {
 
 #[test]
 fn infinity_minus_infinity_is_nan() {
-    let inf1 = symplex::infinity();
-    let inf2 = symplex::infinity();
+    let inf1 = symplex::default_context().infinity();
+    let inf2 = symplex::default_context().infinity();
     let result = &inf1 - &inf2;
     assert_eq!(
         format!("{result}"),
@@ -849,13 +849,13 @@ fn finite_minus_zoo_is_zoo() {
 
 #[test]
 fn display_positive_infinity() {
-    let inf = symplex::infinity();
+    let inf = symplex::default_context().infinity();
     assert_eq!(format!("{inf}"), "oo", "infinity should display as oo");
 }
 
 #[test]
 fn display_negative_infinity() {
-    let neg_inf = symplex::neg_infinity();
+    let neg_inf = symplex::default_context().neg_infinity();
     assert_eq!(
         format!("{neg_inf}"),
         "-oo",
@@ -948,16 +948,16 @@ fn nan_identity_through_power_of_one() {
 #[test]
 fn one_to_the_infinity_is_one() {
     // In symplex, 1^x → 1 unconditionally (the canon rule).
-    let one = symplex::int(1);
-    let inf = symplex::infinity();
+    let one = symplex::default_context().int(1);
+    let inf = symplex::default_context().infinity();
     let result = one.pow(&inf);
     assert_eq!(format!("{result}"), "1", "1^oo should be 1, got: {result}");
 }
 
 #[test]
 fn one_to_the_symbol_is_one() {
-    let one = symplex::int(1);
-    let x = symplex::var("x");
+    let one = symplex::default_context().int(1);
+    let x = symplex::default_context().symbol("x");
     let result = one.pow(&x);
     assert_eq!(format!("{result}"), "1", "1^x should be 1, got: {result}");
 }
@@ -970,9 +970,9 @@ fn one_to_the_symbol_is_one() {
 fn global_context_infinity_operations() {
     // Verify the free-standing convenience functions work correctly
     // with special value arithmetic.
-    let inf = symplex::infinity();
-    let neg_inf = symplex::neg_infinity();
-    let five = symplex::int(5);
+    let inf = symplex::default_context().infinity();
+    let neg_inf = symplex::default_context().neg_infinity();
+    let five = symplex::default_context().int(5);
 
     assert_eq!(format!("{}", &inf + &five), "oo", "oo + 5 = oo");
     assert_eq!(format!("{}", &neg_inf + &five), "-oo", "(-oo) + 5 = -oo");

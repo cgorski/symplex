@@ -32,8 +32,8 @@ fn approx_zero(val: f64, tol: f64) -> bool {
 
 #[test]
 fn solve_system_irrational_circle_diagonal() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
 
     let eq1 = &x.powi(2) + &y.powi(2) - 3;
     let eq2 = &x - &y;
@@ -89,8 +89,8 @@ fn solve_system_irrational_circle_diagonal() {
 
 #[test]
 fn solve_system_rational_two_conics() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
 
     let eq1 = &x.powi(2) + &y.powi(2) - 5;
     let eq2 = &x * &y - 2;
@@ -137,7 +137,7 @@ fn solve_system_rational_two_conics() {
 
 #[test]
 fn solve_system_univariate_irrational() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
 
     let eq = &x.powi(2) - 2;
 
@@ -257,8 +257,8 @@ fn polysys_circle_line_no_regression() {
 fn solve_system_ex_irrational_symmetric() {
     // x² + y² = 2, x = y → x = y = ±1 (these are actually rational!)
     // But this verifies the fallback path doesn't break rational-solution systems.
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
 
     let eq1 = &x.powi(2) + &y.powi(2) - 2;
     let eq2 = &x - &y;
@@ -298,7 +298,7 @@ fn solve_system_ex_irrational_symmetric() {
 #[test]
 fn solve_system_no_real_solutions() {
     // x² + 1 = 0 has no real solutions.
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let eq = &x.powi(2) + 1;
 
     let solutions = symplex::solve_system(&[eq], std::slice::from_ref(&x));
@@ -334,8 +334,8 @@ fn solve_system_no_real_solutions() {
 
 #[test]
 fn solve_system_linear_no_regression() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
 
     // x + y = 1, x - y = 0 → x = y = 1/2
     let eq1 = &x + &y - 1;

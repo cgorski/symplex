@@ -34,18 +34,18 @@ fn main() {
     let z = Matrix::zeros(2, 3);
     println!("Zeros(2×3) = {z}");
 
-    let d = Matrix::diag(&[symplex::int(1), symplex::int(2), symplex::int(3)]);
+    let d = Matrix::diag(&[symplex::default_context().int(1), symplex::default_context().int(2), symplex::default_context().int(3)]);
     println!("diag(1,2,3) = {d}");
 
     let built = Matrix::from_fn(3, 3, |i, j| {
-        symplex::int((i * 3 + j + 1) as i64)
+        symplex::default_context().int((i * 3 + j + 1) as i64)
     });
     println!("from_fn(3×3) = {built}");
 
-    let row = Matrix::row_vector(vec![symplex::int(1), symplex::int(2), symplex::int(3)]);
+    let row = Matrix::row_vector(vec![symplex::default_context().int(1), symplex::default_context().int(2), symplex::default_context().int(3)]);
     println!("Row vector = {row}");
 
-    let col = Matrix::col_vector(vec![symplex::int(4), symplex::int(5), symplex::int(6)]);
+    let col = Matrix::col_vector(vec![symplex::default_context().int(4), symplex::default_context().int(5), symplex::default_context().int(6)]);
     println!("Col vector = {col}");
 
     // ── 2. Basic operations ────────────────────────────────────────
@@ -137,21 +137,21 @@ fn main() {
     println!("dB/dx = {dm}");
 
     // Substitute a value
-    let m_at_3 = sym_m.subs(&x, &symplex::int(3));
+    let m_at_3 = sym_m.subs(&x, &symplex::default_context().int(3));
     println!("B(3) = {m_at_3}");
 
     // Simplification
     let trig_m = Matrix::new(vec![
-        vec![&x.sin().powi(2) + &x.cos().powi(2), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(1)],
+        vec![&x.sin().powi(2) + &x.cos().powi(2), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
     ]).unwrap();
     println!("\nTrig matrix: {trig_m}");
     println!("Simplified:  {}", trig_m.simplify());
 
     // Expansion
     let expand_m = Matrix::new(vec![
-        vec![(&x + 1).powi(2), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(1)],
+        vec![(&x + 1).powi(2), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
     ]).unwrap();
     println!("Before expand: {expand_m}");
     println!("After expand:  {}", expand_m.expand());
@@ -257,15 +257,15 @@ fn main() {
     println!("det(J) = {}", jac.det().unwrap());
 
     // Evaluate Jacobian at a point
-    let jac_at_1_2 = jac.subs(&x, &symplex::int(1)).subs(&y, &symplex::int(2));
+    let jac_at_1_2 = jac.subs(&x, &symplex::default_context().int(1)).subs(&y, &symplex::default_context().int(2));
     println!("J(1,2) = {jac_at_1_2}");
     println!("det(J(1,2)) = {}", jac_at_1_2.det().unwrap());
 
     // ── 13. Dot and Cross Products ─────────────────────────────────
     println!("\n--- Dot & Cross Products ---");
 
-    let v1 = Matrix::col_vector(vec![symplex::int(1), symplex::int(2), symplex::int(3)]);
-    let v2 = Matrix::col_vector(vec![symplex::int(4), symplex::int(5), symplex::int(6)]);
+    let v1 = Matrix::col_vector(vec![symplex::default_context().int(1), symplex::default_context().int(2), symplex::default_context().int(3)]);
+    let v2 = Matrix::col_vector(vec![symplex::default_context().int(4), symplex::default_context().int(5), symplex::default_context().int(6)]);
 
     let dot_product = symplex::matrix::dot(&v1, &v2);
     println!("v1 · v2 = {dot_product}"); // 1·4 + 2·5 + 3·6 = 32

@@ -44,21 +44,21 @@ fn main() {
 
     // Numerical evaluation: I = 3 A, R = 47 Ω
     let v_num = v.clone()
-        .subs(&i, &symplex::int(3))
-        .subs(&r, &symplex::int(47))
+        .subs(&i, &symplex::default_context().int(3))
+        .subs(&r, &symplex::default_context().int(47))
         .eval();
     println!("\n  Numerical (I=3 A, R=47 Ω):");
     println!("    V = {}", v_num);
 
     let p_num = p.clone()
-        .subs(&i, &symplex::int(3))
-        .subs(&r, &symplex::int(47))
+        .subs(&i, &symplex::default_context().int(3))
+        .subs(&r, &symplex::default_context().int(47))
         .eval();
     println!("    P = {}", p_num);
 
     let dp_di_num = dp_di
-        .subs(&i, &symplex::int(3))
-        .subs(&r, &symplex::int(47))
+        .subs(&i, &symplex::default_context().int(3))
+        .subs(&r, &symplex::default_context().int(47))
         .eval();
     println!("    dP/dI = {}", dp_di_num);
 
@@ -91,26 +91,26 @@ fn main() {
     //            V₀ = 5 V, t = 0.1 s
     // τ = 1000 × 0.0001 = 0.1 s, so at t = τ we expect ≈ 63.2% of V₀
     let tau_num = tau
-        .subs(&R, &symplex::int(1000))
-        .subs(&C, &symplex::rational(1, 10000))
+        .subs(&R, &symplex::default_context().int(1000))
+        .subs(&C, &symplex::default_context().rational(1, 10000))
         .eval();
     println!("\n  Numerical (R=1kΩ, C=100µF, V₀=5V):");
     println!("    τ = {}", tau_num);
 
     let v_cap_at_tau = v_cap.clone()
-        .subs(&R, &symplex::int(1000))
-        .subs(&C, &symplex::rational(1, 10000))
-        .subs(&V0, &symplex::int(5))
-        .subs(&t, &symplex::rational(1, 10))
+        .subs(&R, &symplex::default_context().int(1000))
+        .subs(&C, &symplex::default_context().rational(1, 10000))
+        .subs(&V0, &symplex::default_context().int(5))
+        .subs(&t, &symplex::default_context().rational(1, 10))
         .eval();
     println!("    V_C(t=0.1s = τ) = {}", v_cap_at_tau);
 
     // f64 check: should be ≈ 5·(1 - e⁻¹) ≈ 3.1606
     let v_cap_f64 = v_cap
-        .subs(&R, &symplex::int(1000))
-        .subs(&C, &symplex::rational(1, 10000))
-        .subs(&V0, &symplex::int(5))
-        .subs(&t, &symplex::rational(1, 10))
+        .subs(&R, &symplex::default_context().int(1000))
+        .subs(&C, &symplex::default_context().rational(1, 10000))
+        .subs(&V0, &symplex::default_context().int(5))
+        .subs(&t, &symplex::default_context().rational(1, 10))
         .eval_f64()
         .unwrap();
     println!("    V_C(t=τ) ≈ {:.4} V (f64, expect ≈3.1606)", v_cap_f64);
@@ -169,8 +169,8 @@ fn main() {
     let i_m_ex = i_motor.inner();
 
     let v_emf_num = v_emf
-        .subs(&ke, &symplex::rational(5, 100))
-        .subs(&omega, &symplex::int(100))
+        .subs(&ke, &symplex::default_context().rational(5, 100))
+        .subs(&omega, &symplex::default_context().int(100))
         .eval();
     println!("\n  Numerical (R=2Ω, Ke=0.05Wb, ω=100rad/s):");
     println!("    V_emf = {}", v_emf_num);
@@ -196,35 +196,35 @@ fn main() {
     println!("\n── Unit Conversions ──");
 
     // Current: 500 milliamps → amperes
-    let small_current = Current::milliamperes(&symplex::int(500));
+    let small_current = Current::milliamperes(&symplex::default_context().int(500));
     println!("  500 mA  = {}", small_current.eval());
 
     // Resistance: 4.7 kilohms → ohms
-    let big_resistor = Resistance::kilohms(&symplex::rational(47, 10));
+    let big_resistor = Resistance::kilohms(&symplex::default_context().rational(47, 10));
     println!("  4.7 kΩ  = {}", big_resistor.eval());
 
     // Power: 1 horsepower → watts
-    let one_hp = Power::horsepower(&symplex::int(1));
+    let one_hp = Power::horsepower(&symplex::default_context().int(1));
     println!("  1 hp    = {}", one_hp.eval());
 
     // Frequency: 3600 RPM → hertz
-    let motor_speed = Frequency::rpm(&symplex::int(3600));
+    let motor_speed = Frequency::rpm(&symplex::default_context().int(3600));
     println!("  3600 RPM = {}", motor_speed.eval());
 
     // Capacitance: 100 µF → farads
-    let cap = Capacitance::microfarads(&symplex::int(100));
+    let cap = Capacitance::microfarads(&symplex::default_context().int(100));
     println!("  100 µF  = {}", cap.eval());
 
     // Voltage: 3300 mV → volts
-    let logic_level = Voltage::millivolts(&symplex::int(3300));
+    let logic_level = Voltage::millivolts(&symplex::default_context().int(3300));
     println!("  3300 mV = {}", logic_level.eval());
 
     // Charge: 2000 mAh → coulombs
-    let battery = Charge::milliampere_hours(&symplex::int(2000));
+    let battery = Charge::milliampere_hours(&symplex::default_context().int(2000));
     println!("  2000 mAh = {}", battery.eval());
 
     // Inductance: 10 mH → henrys
-    let coil = Inductance::millihenrys(&symplex::int(10));
+    let coil = Inductance::millihenrys(&symplex::default_context().int(10));
     println!("  10 mH   = {}", coil.eval());
 
     println!("\n── Physical Constants in Circuits ──");

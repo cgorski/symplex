@@ -6,7 +6,7 @@
 //!
 //! IMPORTANT: `replace()` holds a write lock on the arena, so we must
 //! pre-create all replacement expressions *outside* the closure and
-//! `.clone()` them inside. Calling `symplex::int()`, `symplex::var()`,
+//! `.clone()` them inside. Calling `symplex::default_context().int()`, `symplex::default_context().symbol()`,
 //! etc. inside the closure would deadlock on the global context lock.
 
 use std::cell::Cell;
@@ -14,11 +14,11 @@ use std::cell::Cell;
 #[test]
 fn expr_view_is_atom_identifies_leaves() {
     // replace() visits every node; replace atoms with 1
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin(); // sin(x) — two nodes: sin (not atom) and x (atom)
 
     // Pre-create the replacement outside the closure
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
 
     let result = expr.replace(|view| {
         if view.is_atom() {
@@ -33,10 +33,10 @@ fn expr_view_is_atom_identifies_leaves() {
 
 #[test]
 fn expr_view_is_symbol_only_matches_symbols() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x + 1; // x + 1 — x is symbol, 1 is Num (atom but not symbol)
 
-    let forty_two = symplex::int(42);
+    let forty_two = symplex::default_context().int(42);
 
     let result = expr.replace(|view| {
         if view.is_symbol() {
@@ -51,10 +51,10 @@ fn expr_view_is_symbol_only_matches_symbols() {
 
 #[test]
 fn expr_view_is_symbol_false_for_pi() {
-    let pi = symplex::pi();
+    let pi = symplex::default_context().pi();
     let expr = &pi + 1;
 
-    let ninety_nine = symplex::int(99);
+    let ninety_nine = symplex::default_context().int(99);
 
     let result = expr.replace(|view| {
         if view.is_symbol() {
@@ -70,11 +70,11 @@ fn expr_view_is_symbol_false_for_pi() {
 #[test]
 fn expr_view_partial_eq_with_expr() {
     // Use PartialEq<Expr> to match a specific subexpression
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x + &y;
 
-    let ten = symplex::int(10);
+    let ten = symplex::default_context().int(10);
 
     let result = expr.replace(|view| if view == x { Some(ten.clone()) } else { None });
     assert_eq!(format!("{result}"), "y + 10");
@@ -82,10 +82,10 @@ fn expr_view_partial_eq_with_expr() {
 
 #[test]
 fn expr_view_partial_eq_ref_variant() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin();
 
-    let pi = symplex::pi();
+    let pi = symplex::default_context().pi();
 
     let result = expr.replace(|view| if view == x { Some(pi.clone()) } else { None });
     // sin(x) → sin(pi); the sin constructor does not auto-evaluate
@@ -97,8 +97,8 @@ fn expr_view_partial_eq_ref_variant() {
 fn expr_view_children_count() {
     // Use replace to verify children are accessible.
     // replace() requires Fn (not FnMut), so use Cell for interior mutability.
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x + &y; // Add node with 2 children
 
     let add_child_count = Cell::new(0usize);
@@ -115,7 +115,7 @@ fn expr_view_children_count() {
 // Test that replace works for identity (returns None for everything)
 #[test]
 fn expr_view_replace_identity() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(2).sin() + &x;
     let original = format!("{expr}");
     let result = expr.replace(|_| None);
@@ -125,7 +125,7 @@ fn expr_view_replace_identity() {
 // Test replace with is_atom on a complex nested expression
 #[test]
 fn expr_view_is_atom_nested() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // Build sin(x^2 + 1) — has atoms: x, 2, 1; non-atoms: Pow, Add, Sin
     let expr = (&x.powi(2) + 1).sin();
 
@@ -148,7 +148,7 @@ fn expr_view_is_atom_nested() {
 #[test]
 fn expr_view_node_variant() {
     use symplex::__macro_support::ExprNode;
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin();
 
     let found_sin = Cell::new(false);
@@ -166,12 +166,12 @@ fn expr_view_node_variant() {
 // We just need a test that the replace pattern works correctly with multiple symbols.
 #[test]
 fn expr_view_multiple_replacements() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x.sin() + &y.cos();
 
     // Pre-create replacement outside the closure
-    let zero = symplex::int(0);
+    let zero = symplex::default_context().int(0);
 
     // Replace all symbols with 0
     let result = expr.replace(|view| {
@@ -192,7 +192,7 @@ fn expr_view_multiple_replacements() {
 // Test that id() returns a meaningful ExprId that can be compared
 #[test]
 fn expr_view_id_matches_expr_id() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin();
 
     let found_matching_id = Cell::new(false);
@@ -212,7 +212,7 @@ fn expr_view_id_matches_expr_id() {
 // Test that children() returns empty for atoms
 #[test]
 fn expr_view_children_empty_for_atom() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
 
     let atom_has_no_children = Cell::new(false);
     // sin(x) has two nodes: sin (1 child) and x (0 children)
@@ -235,7 +235,7 @@ fn expr_view_children_empty_for_atom() {
 #[test]
 fn expr_view_node_symbol_variant() {
     use symplex::__macro_support::ExprNode;
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin();
 
     let found_symbol = Cell::new(false);
@@ -251,7 +251,7 @@ fn expr_view_node_symbol_variant() {
 // Test that is_atom is true for numeric constants but is_symbol is false
 #[test]
 fn expr_view_is_atom_for_number() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x + 1;
 
     let num_is_atom = Cell::new(false);
@@ -272,7 +272,7 @@ fn expr_view_is_atom_for_number() {
 #[test]
 fn expr_view_is_atom_for_pi() {
     use symplex::__macro_support::ExprNode;
-    let pi = symplex::pi();
+    let pi = symplex::default_context().pi();
     let expr = pi.sin(); // sin(pi): pi is atom, sin is not
 
     let pi_is_atom = Cell::new(false);
@@ -288,7 +288,7 @@ fn expr_view_is_atom_for_pi() {
 // Test replace identity on a complex expression preserves exact display
 #[test]
 fn expr_view_replace_identity_complex() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.powi(2) + &x.sin() + 1;
     let original = format!("{expr}");
     let result = expr.replace(|_| None);

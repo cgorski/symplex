@@ -1,5 +1,5 @@
 //! Integration tests for expand_power_exp, expand_power_base, ratsimp,
-//! separatevars, and inverse Laplace completing-the-square enhancements.
+//! separateand inverse Laplace completing-the-square enhancements.
 
 use symplex::prelude::*;
 

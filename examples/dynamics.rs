@@ -21,15 +21,15 @@ fn main() {
     println!("--- Simple Pendulum (1-DOF) ---\n");
 
     vars!(q, qd, qdd);
-    let m = symplex::var("m");
-    let l = symplex::var("L");
-    let g = symplex::var("g");
+    let m = symplex::default_context().symbol("m");
+    let l = symplex::default_context().symbol("L");
+    let g = symplex::default_context().symbol("g");
 
     // Simple pendulum: T = ½·m·L²·q̇², V = -m·g·L·cos(q)
     //
-    // symplex::half() returns the exact rational 1/2, avoiding any
+    // symplex::default_context().rational(1, 2) returns the exact rational 1/2, avoiding any
     // floating-point approximation in the kinetic energy expression.
-    let half = symplex::half();
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m * &l.powi(2) * &qd.powi(2);
     let neg_m = -&m;
     let pe = &neg_m * &g * &l * &q.cos();
@@ -76,10 +76,10 @@ fn main() {
     println!("\n\n--- Double Pendulum (2-DOF) ---\n");
 
     vars!(q1, q2, qd1, qd2, qdd1, qdd2);
-    let m1 = symplex::var("m1");
-    let m2 = symplex::var("m2");
-    let l1 = symplex::var("L1");
-    let l2 = symplex::var("L2");
+    let m1 = symplex::default_context().symbol("m1");
+    let m2 = symplex::default_context().symbol("m2");
+    let l1 = symplex::default_context().symbol("L1");
+    let l2 = symplex::default_context().symbol("L2");
 
     // Double pendulum kinetic energy:
     //   T = ½·m1·L1²·q̇1²
@@ -263,8 +263,8 @@ fn main() {
     // d/dt(q1) = qd1
     let dt_q1 = total_time_derivative(&q1, &[(&q1, &qd1), (&q2, &qd2)], &[&qdd1, &qdd2]);
     let dt_q1_val = dt_q1
-        .subs(&qd1, &symplex::int(7))
-        .subs(&qd2, &symplex::int(0))
+        .subs(&qd1, &symplex::default_context().int(7))
+        .subs(&qd2, &symplex::default_context().int(0))
         .eval();
     println!("d/dt(q1) = {dt_q1}");
     println!("  at qd1=7: {dt_q1_val}");

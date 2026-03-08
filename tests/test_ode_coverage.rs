@@ -38,7 +38,7 @@ fn verify_first_order_numerically(
     sample_x_num: i64,
     sample_x_den: i64,
 ) {
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -52,7 +52,7 @@ fn verify_first_order_numerically(
     let residual = ode_expr.subs(&dy_formal, &sol_prime).subs(y, &concrete_sol);
 
     // Evaluate at the sample point
-    let sample_val = symplex::rational(sample_x_num, sample_x_den);
+    let sample_val = symplex::default_context().rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at.eval_f64().expect(
@@ -77,7 +77,7 @@ fn verify_second_order_numerically(
     sample_x_num: i64,
     sample_x_den: i64,
 ) {
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -94,7 +94,7 @@ fn verify_second_order_numerically(
         .subs(&dy_formal, &sol_prime)
         .subs(y, &concrete_sol);
 
-    let sample_val = symplex::rational(sample_x_num, sample_x_den);
+    let sample_val = symplex::default_context().rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at.eval_f64().expect(
@@ -114,8 +114,8 @@ fn verify_second_order_numerically(
 #[test]
 fn separable_dy_dx_eq_x() {
     // y' - x = 0 → y = x²/2 + C1
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &x;
 
@@ -130,8 +130,8 @@ fn separable_dy_dx_eq_x() {
 #[test]
 fn separable_dy_dx_eq_zero() {
     // y' = 0 → y = C1
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = y.formal_diff(&x);
 
     let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y' = 0");
@@ -143,8 +143,8 @@ fn separable_dy_dx_eq_zero() {
 #[test]
 fn separable_dy_dx_eq_sin_x() {
     // y' - sin(x) = 0 → y = -cos(x) + C1
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &x.sin();
 
@@ -158,10 +158,10 @@ fn separable_dy_dx_eq_sin_x() {
 #[test]
 fn separable_dy_dx_eq_constant() {
     // y' - 3 = 0 → y = 3x + C1
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
-    let three = symplex::int(3);
+    let three = symplex::default_context().int(3);
     let ode = &dy - &three;
 
     let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y' = 3");
@@ -178,8 +178,8 @@ fn separable_dy_dx_eq_constant() {
 #[test]
 fn first_order_linear_exponential_decay() {
     // y' + 2y = 0 → y = C1·exp(-2x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy + &(&y * 2); // y' + 2y = 0
 
@@ -194,8 +194,8 @@ fn first_order_linear_exponential_decay() {
 #[test]
 fn first_order_linear_exponential_growth() {
     // y' - y = 0 → y = C1·exp(x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &y; // y' - y = 0
 
@@ -215,8 +215,8 @@ fn first_order_linear_exponential_growth() {
 fn second_order_distinct_real_roots() {
     // y'' - 3y' + 2y = 0 → characteristic r² - 3r + 2 = 0 → r=1,2
     // → y = C1·exp(x) + C2·exp(2x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 3) + &(&y * 2); // y'' - 3y' + 2y = 0
@@ -235,8 +235,8 @@ fn second_order_distinct_real_roots() {
 fn second_order_repeated_root() {
     // y'' - 2y' + y = 0 → characteristic r² - 2r + 1 = 0 → r=1 (double)
     // → y = (C1 + C2·x)·exp(x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 2) + &y; // y'' - 2y' + y = 0
@@ -259,8 +259,8 @@ fn second_order_repeated_root() {
 fn second_order_complex_roots() {
     // y'' + y = 0 → characteristic r² + 1 = 0 → r = ±i
     // → y = C1·exp(ix) + C2·exp(-ix)  (or equivalently C1·cos(x) + C2·sin(x))
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y; // y'' + y = 0
@@ -286,8 +286,8 @@ fn second_order_complex_roots() {
 fn second_order_distinct_real_negative_roots() {
     // y'' + 5y' + 6y = 0 → r² + 5r + 6 = 0 → r = -2, -3
     // → y = C1·exp(-2x) + C2·exp(-3x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &(&dy * 5) + &(&y * 6); // y'' + 5y' + 6y = 0
@@ -308,8 +308,8 @@ fn second_order_distinct_real_negative_roots() {
 #[test]
 fn no_derivative_returns_none() {
     // x + y = 0 has no derivative — not an ODE
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x + &y;
 
     let result = expr.solve_ode(&y, &x);
@@ -322,9 +322,9 @@ fn no_derivative_returns_none() {
 #[test]
 fn pure_number_returns_none() {
     // 42 = 0 is not an ODE
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let expr = symplex::int(42);
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let expr = symplex::default_context().int(42);
 
     let result = expr.solve_ode(&y, &x);
     assert!(result.is_none(), "pure number should return None");
@@ -336,8 +336,8 @@ fn pure_number_returns_none() {
 
 #[test]
 fn expr_macro_separable_ode() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) - x); // y' - x = 0
 
     let (sol, constants) = ode
@@ -350,8 +350,8 @@ fn expr_macro_separable_ode() {
 
 #[test]
 fn expr_macro_first_order_linear_ode() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * y); // y' + 2y = 0
 
     let (sol, _) = ode

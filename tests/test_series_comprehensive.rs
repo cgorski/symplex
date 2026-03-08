@@ -10,7 +10,7 @@ use symplex::prelude::*;
 
 /// Evaluate a series expression at a rational point x = p/q and return the f64 value.
 fn eval_series_at(series: &Ex, var: &Ex, p: i64, q: i64) -> f64 {
-    let pt = symplex::rational(p, q);
+    let pt = symplex::default_context().rational(p, q);
     series
         .subs(var, &pt)
         .eval()
@@ -24,7 +24,7 @@ fn eval_series_at(series: &Ex, var: &Ex, p: i64, q: i64) -> f64 {
 
 #[test]
 fn taylor_exp_at_0() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let series = x.exp().maclaurin(&x, 6);
     assert!(series.is_ok(), "exp(x) maclaurin failed: {:?}", series.err());
     let expanded = series.unwrap().expand().eval();
@@ -54,7 +54,7 @@ fn taylor_exp_at_0() {
 
 #[test]
 fn taylor_sin_at_0() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let series = x.sin().maclaurin(&x, 8);
     assert!(series.is_ok(), "sin(x) maclaurin failed: {:?}", series.err());
     let expanded = series.unwrap().expand().eval();
@@ -84,7 +84,7 @@ fn taylor_sin_at_0() {
 
 #[test]
 fn taylor_cos_at_0() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let series = x.cos().maclaurin(&x, 8);
     assert!(series.is_ok(), "cos(x) maclaurin failed: {:?}", series.err());
     let expanded = series.unwrap().expand().eval();
@@ -114,9 +114,9 @@ fn taylor_cos_at_0() {
 
 #[test]
 fn taylor_ln_at_1() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // ln(x) expanded around x = 1
-    let series = x.ln().series(&x, &symplex::int(1), 8);
+    let series = x.ln().series(&x, &symplex::default_context().int(1), 8);
     assert!(series.is_ok(), "ln(x) series at 1 failed: {:?}", series.err());
     let expanded = series.unwrap().expand().eval();
 
@@ -143,9 +143,9 @@ fn taylor_ln_at_1() {
 
 #[test]
 fn taylor_exp_at_1() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // exp(x) expanded around x = 1
-    let series = x.exp().series(&x, &symplex::int(1), 6);
+    let series = x.exp().series(&x, &symplex::default_context().int(1), 6);
     assert!(series.is_ok(), "exp(x) series at 1 failed: {:?}", series.err());
     let expanded = series.unwrap().expand().eval();
 
@@ -173,7 +173,7 @@ fn taylor_exp_at_1() {
 
 #[test]
 fn taylor_sinh_at_0() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let series = x.sinh().maclaurin(&x, 8);
     assert!(series.is_ok(), "sinh(x) maclaurin failed: {:?}", series.err());
     let expanded = series.unwrap().expand().eval();
@@ -204,7 +204,7 @@ fn taylor_sinh_at_0() {
 
 #[test]
 fn taylor_cosh_at_0() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let series = x.cosh().maclaurin(&x, 8);
     assert!(series.is_ok(), "cosh(x) maclaurin failed: {:?}", series.err());
     let expanded = series.unwrap().expand().eval();
@@ -235,7 +235,7 @@ fn taylor_cosh_at_0() {
 
 #[test]
 fn taylor_composition_exp_sin() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // exp(sin(x)) — a composition that doesn't match a single known pattern,
     // requiring the general Taylor expansion machinery.
     let expr = x.sin().exp();
@@ -281,7 +281,7 @@ fn taylor_composition_exp_sin() {
 fn series_numerical_accuracy_sin() {
     // At x = 1/2, increasing the order of the Maclaurin series for sin(x)
     // should produce strictly decreasing approximation error.
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let exact = 0.5_f64.sin();
     let orders = [3u32, 5, 7, 9, 11];
     let mut prev_err = f64::MAX;
@@ -291,7 +291,7 @@ fn series_numerical_accuracy_sin() {
         if let Ok(s) = series {
             let expanded = s.expand().eval();
             if let Ok(val) = expanded
-                .subs(&x, &symplex::rational(1, 2))
+                .subs(&x, &symplex::default_context().rational(1, 2))
                 .eval()
                 .eval_f64()
             {
@@ -319,7 +319,7 @@ fn series_numerical_accuracy_sin() {
 fn series_numerical_accuracy_exp() {
     // At x = 1/2, increasing the order of the Maclaurin series for exp(x)
     // should produce strictly decreasing approximation error.
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let exact = 0.5_f64.exp();
     let orders = [2u32, 4, 6, 8, 10];
     let mut prev_err = f64::MAX;
@@ -329,7 +329,7 @@ fn series_numerical_accuracy_exp() {
         if let Ok(s) = series {
             let expanded = s.expand().eval();
             if let Ok(val) = expanded
-                .subs(&x, &symplex::rational(1, 2))
+                .subs(&x, &symplex::default_context().rational(1, 2))
                 .eval()
                 .eval_f64()
             {

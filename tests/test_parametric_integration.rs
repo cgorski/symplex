@@ -31,13 +31,13 @@ fn assert_ftc_parametric(
 
     // Substitute parameters first, then the variable
     let test_x = 1.0_f64;
-    let x_val = symplex::rational(1, 1);
+    let x_val = symplex::default_context().rational(1, 1);
 
     let mut integrand_sub = integrand.clone();
     let mut deriv_sub = deriv.clone();
     for &(param, val) in param_subs {
         // Use a rational approximation: val as integer (we pick integer params)
-        let val_expr = symplex::int(val as i64);
+        let val_expr = symplex::default_context().int(val as i64);
         integrand_sub = integrand_sub.subs(param, &val_expr);
         deriv_sub = deriv_sub.subs(param, &val_expr);
     }
@@ -64,8 +64,8 @@ fn assert_ftc_parametric(
 
 #[test]
 fn integrate_sin_ax() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     let ax = &a * &x;
     let integrand = ax.sin();
     let anti = integrand.integrate(&x);
@@ -80,15 +80,15 @@ fn integrate_sin_ax() {
 #[test]
 fn integrate_sin_ax_numeric_check() {
     // Verify the antiderivative equals -cos(a*x)/a numerically at a=2, x=1
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     let ax = &a * &x;
     let anti = ax.sin().integrate(&x);
 
     // Substitute a=2, x=1
     let val = anti
-        .subs(&a, &symplex::int(2))
-        .subs(&x, &symplex::int(1))
+        .subs(&a, &symplex::default_context().int(2))
+        .subs(&x, &symplex::default_context().int(1))
         .eval_f64()
         .expect("should evaluate");
 
@@ -106,8 +106,8 @@ fn integrate_sin_ax_numeric_check() {
 
 #[test]
 fn integrate_cos_ax() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     let ax = &a * &x;
     let integrand = ax.cos();
     let anti = integrand.integrate(&x);
@@ -124,8 +124,8 @@ fn integrate_cos_ax() {
 
 #[test]
 fn integrate_exp_ax() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     let ax = &a * &x;
     let integrand = ax.exp();
     let anti = integrand.integrate(&x);
@@ -138,14 +138,14 @@ fn integrate_exp_ax() {
 
 #[test]
 fn integrate_exp_ax_numeric_check() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     let ax = &a * &x;
     let anti = ax.exp().integrate(&x);
 
     let val = anti
-        .subs(&a, &symplex::int(3))
-        .subs(&x, &symplex::int(1))
+        .subs(&a, &symplex::default_context().int(3))
+        .subs(&x, &symplex::default_context().int(1))
         .eval_f64()
         .expect("should evaluate");
 
@@ -163,8 +163,8 @@ fn integrate_exp_ax_numeric_check() {
 
 #[test]
 fn integrate_inv_x2_plus_a2() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
 
     // Build 1/(x² + a²) = (x² + a²)^(-1)
     let x2 = x.powi(2);
@@ -183,8 +183,8 @@ fn integrate_inv_x2_plus_a2() {
     // Numerical check: at a=2, x=1
     // Expected: (1/2)*atan(1/2)
     let val = anti
-        .subs(&a, &symplex::int(2))
-        .subs(&x, &symplex::int(1))
+        .subs(&a, &symplex::default_context().int(2))
+        .subs(&x, &symplex::default_context().int(1))
         .eval_f64()
         .expect("should evaluate");
 
@@ -201,9 +201,9 @@ fn integrate_inv_x2_plus_a2() {
 
 #[test]
 fn integrate_sin_2x_plus_3() {
-    let x = symplex::var("x");
-    let two = symplex::int(2);
-    let three = symplex::int(3);
+    let x = symplex::default_context().symbol("x");
+    let two = symplex::default_context().int(2);
+    let three = symplex::default_context().int(3);
     let inner = &(&two * &x) + &three;
     let integrand = inner.sin();
     let anti = integrand.integrate(&x);
@@ -212,7 +212,7 @@ fn integrate_sin_2x_plus_3() {
 
     // FTC check
     let deriv = anti.diff(&x);
-    let test_pt = symplex::rational(7, 10);
+    let test_pt = symplex::default_context().rational(7, 10);
     if let (Ok(o), Ok(d)) = (
         integrand.subs(&x, &test_pt).eval_f64(),
         deriv.subs(&x, &test_pt).eval_f64(),
@@ -232,8 +232,8 @@ fn integrate_sin_2x_plus_3() {
 
 #[test]
 fn integrate_a_times_sin_x() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     let integrand = &a * &x.sin();
     let anti = integrand.integrate(&x);
     let s = format!("{anti}");
@@ -241,8 +241,8 @@ fn integrate_a_times_sin_x() {
 
     // Numerical: at a=3, x=1
     let val = anti
-        .subs(&a, &symplex::int(3))
-        .subs(&x, &symplex::int(1))
+        .subs(&a, &symplex::default_context().int(3))
+        .subs(&x, &symplex::default_context().int(1))
         .eval_f64()
         .expect("should evaluate");
     let expected = 3.0 * (-(1.0_f64).cos());
@@ -258,9 +258,9 @@ fn integrate_a_times_sin_x() {
 
 #[test]
 fn integrate_exp_ax_plus_b() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
-    let b = symplex::var("b");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
+    let b = symplex::default_context().symbol("b");
     let inner = &(&a * &x) + &b;
     let integrand = inner.exp();
     let anti = integrand.integrate(&x);
@@ -271,9 +271,9 @@ fn integrate_exp_ax_plus_b() {
     // Numerical: a=2, b=1, x=1
     // Expected: exp(2+1)/2 = exp(3)/2
     let val = anti
-        .subs(&a, &symplex::int(2))
-        .subs(&b, &symplex::int(1))
-        .subs(&x, &symplex::int(1))
+        .subs(&a, &symplex::default_context().int(2))
+        .subs(&b, &symplex::default_context().int(1))
+        .subs(&x, &symplex::default_context().int(1))
         .eval_f64()
         .expect("should evaluate");
     let expected = (3.0_f64).exp() / 2.0;
@@ -289,8 +289,8 @@ fn integrate_exp_ax_plus_b() {
 
 #[test]
 fn integrate_tan_ax() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     let ax = &a * &x;
     let integrand = ax.tan();
     let anti = integrand.integrate(&x);
@@ -306,8 +306,8 @@ fn integrate_tan_ax() {
 
 #[test]
 fn integrate_sinh_ax() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     let ax = &a * &x;
     let integrand = ax.sinh();
     let anti = integrand.integrate(&x);
@@ -323,8 +323,8 @@ fn integrate_sinh_ax() {
 
 #[test]
 fn integrate_cosh_ax() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     let ax = &a * &x;
     let integrand = ax.cosh();
     let anti = integrand.integrate(&x);
@@ -340,9 +340,9 @@ fn integrate_cosh_ax() {
 
 #[test]
 fn integrate_ax_plus_b_cubed() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
-    let b = symplex::var("b");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
+    let b = symplex::default_context().symbol("b");
     let inner = &(&a * &x) + &b;
     let integrand = inner.powi(3);
     let anti = integrand.integrate(&x);
@@ -351,9 +351,9 @@ fn integrate_ax_plus_b_cubed() {
 
     // Numerical check: a=2, b=1, x=1: (2+1)^4 / (4*2) = 81/8
     let val = anti
-        .subs(&a, &symplex::int(2))
-        .subs(&b, &symplex::int(1))
-        .subs(&x, &symplex::int(1))
+        .subs(&a, &symplex::default_context().int(2))
+        .subs(&b, &symplex::default_context().int(1))
+        .subs(&x, &symplex::default_context().int(1))
         .eval_f64()
         .expect("should evaluate");
     let expected = 81.0 / 8.0;

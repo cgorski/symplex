@@ -151,7 +151,7 @@ fn main() {
 
     // Characteristic polynomial: s² + 3s + 4
     // All coefficients positive → necessary condition met
-    let coeffs = [symplex::int(1), symplex::int(3), symplex::int(4)];
+    let coeffs = [symplex::default_context().int(1), symplex::default_context().int(3), symplex::default_context().int(4)];
     match is_routh_stable(&coeffs) {
         Some(true) => println!("s² + 3s + 4: Routh stable (yes)"),
         Some(false) => println!("s² + 3s + 4: Routh stable (no)"),
@@ -160,10 +160,10 @@ fn main() {
 
     // Routh array for a more interesting polynomial: s³ + 2s² + 3s + 4
     let coeffs3 = [
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(3),
-        symplex::int(4),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(3),
+        symplex::default_context().int(4),
     ];
     match is_routh_stable(&coeffs3) {
         Some(true) => println!("s³ + 2s² + 3s + 4: Routh stable (yes)"),
@@ -181,10 +181,10 @@ fn main() {
 
     // Unstable example: s³ + s² - 2s + 1
     let unstable_coeffs = [
-        symplex::int(1),
-        symplex::int(1),
-        symplex::int(-2),
-        symplex::int(1),
+        symplex::default_context().int(1),
+        symplex::default_context().int(1),
+        symplex::default_context().int(-2),
+        symplex::default_context().int(1),
     ];
     match is_routh_stable(&unstable_coeffs) {
         Some(true) => println!("\ns³ + s² - 2s + 1: Routh stable (yes)"),
@@ -200,7 +200,7 @@ fn main() {
 
     // Place poles at s = -5 and s = -6
     // (faster response than the original poles at ≈ -1.5 ± j1.32)
-    let desired_poles = [symplex::int(-5), symplex::int(-6)];
+    let desired_poles = [symplex::default_context().int(-5), symplex::default_context().int(-6)];
 
     println!(
         "Desired poles: {:?}",
@@ -233,9 +233,9 @@ fn main() {
 
     // Place poles at s = -2 ± 3j (complex conjugate pair)
     // Note: we express these symbolically
-    let i_unit = symplex::i_unit();
-    let p1 = &symplex::int(-2) + &(&i_unit * 3);
-    let p2 = &symplex::int(-2) - &(&i_unit * 3);
+    let i_unit = symplex::default_context().i_unit();
+    let p1 = &symplex::default_context().int(-2) + &(&i_unit * 3);
+    let p2 = &symplex::default_context().int(-2) - &(&i_unit * 3);
     println!("\nDesired poles: {p1}, {p2}");
 
     match sys.ackermann(&[p1, p2]) {
@@ -255,7 +255,7 @@ fn main() {
 
     // Discretize with sample time dt = 0.01s
     // Uses Taylor series approximation of the matrix exponential
-    let dt = symplex::rational(1, 100); // 0.01 s
+    let dt = symplex::default_context().rational(1, 100); // 0.01 s
     println!("Sample time: dt = {dt} s");
 
     let discrete = sys.discretize_zoh(&dt, 4);
@@ -316,7 +316,7 @@ fn main() {
     println!("\nCommon Laplace pairs:");
 
     // L{1} = 1/s
-    if let Ok(result) = symplex::int(1).laplace(&t, &s) {
+    if let Ok(result) = symplex::default_context().int(1).laplace(&t, &s) {
         println!("  L{{1}} = {result}");
     }
 

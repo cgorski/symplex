@@ -7,8 +7,8 @@ use symplex::prelude::*;
 
 #[test]
 fn equation_display_basic() {
-    let x = symplex::var("x");
-    let equation = Equation::new(&x + 1, symplex::int(5));
+    let x = symplex::default_context().symbol("x");
+    let equation = Equation::new(&x + 1, symplex::default_context().int(5));
     let s = format!("{equation}");
     assert!(s.contains("x"), "display should contain variable: {s}");
     assert!(s.contains("="), "display should contain equals sign: {s}");
@@ -17,8 +17,8 @@ fn equation_display_basic() {
 
 #[test]
 fn equation_debug_format() {
-    let x = symplex::var("x");
-    let equation = Equation::new(x.clone(), symplex::int(0));
+    let x = symplex::default_context().symbol("x");
+    let equation = Equation::new(x.clone(), symplex::default_context().int(0));
     let s = format!("{equation:?}");
     assert!(
         s.contains("Equation"),
@@ -31,8 +31,8 @@ fn equation_debug_format() {
 
 #[test]
 fn equation_solve_linear() {
-    let x = symplex::var("x");
-    let equation = Equation::new(&x + 1, symplex::int(5));
+    let x = symplex::default_context().symbol("x");
+    let equation = Equation::new(&x + 1, symplex::default_context().int(5));
     let roots = equation.solve(&x).unwrap();
     assert_eq!(roots.len(), 1, "linear equation should have 1 root");
     assert_eq!(format!("{}", roots[0]), "4");
@@ -40,8 +40,8 @@ fn equation_solve_linear() {
 
 #[test]
 fn equation_solve_quadratic() {
-    let x = symplex::var("x");
-    let equation = Equation::new(x.powi(2), symplex::int(9));
+    let x = symplex::default_context().symbol("x");
+    let equation = Equation::new(x.powi(2), symplex::default_context().int(9));
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x^2 = 9 should have 2 roots");
     let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -56,8 +56,8 @@ fn equation_solve_quadratic() {
 fn equation_solve_or_empty_when_no_solution() {
     // sin(x) = 2 has no real solution; solve_or_empty should return empty or
     // at least not panic.
-    let x = symplex::var("x");
-    let equation = Equation::new(x.sin(), symplex::int(2));
+    let x = symplex::default_context().symbol("x");
+    let equation = Equation::new(x.sin(), symplex::default_context().int(2));
     let roots = equation.solve_or_empty(&x);
     // The solver may or may not find solutions for transcendental equations,
     // but it must not panic. If it returns roots, that's fine too.
@@ -68,9 +68,9 @@ fn equation_solve_or_empty_when_no_solution() {
 
 #[test]
 fn equation_subs_symbolic() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let equation = Equation::new(&x + 1, symplex::int(5));
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let equation = Equation::new(&x + 1, symplex::default_context().int(5));
     // Substitute x → y+1
     let substituted = equation.subs(&x, &(&y + 1));
     let s = format!("{substituted}");
@@ -82,9 +82,9 @@ fn equation_subs_symbolic() {
 
 #[test]
 fn equation_subs_i64_verify() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // x + 3 = 7  →  solution is x = 4
-    let equation = Equation::new(&x + 3, symplex::int(7));
+    let equation = Equation::new(&x + 3, symplex::default_context().int(7));
     let substituted = equation.subs_i64(&x, 4);
     assert_eq!(
         substituted.is_satisfied(),
@@ -97,9 +97,9 @@ fn equation_subs_i64_verify() {
 
 #[test]
 fn equation_expand() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // (x + 1)^2 = 4  →  expand  →  x^2 + 2*x + 1 = 4
-    let equation = Equation::new((&x + 1).powi(2), symplex::int(4));
+    let equation = Equation::new((&x + 1).powi(2), symplex::default_context().int(4));
     let expanded = equation.expand();
     let lhs_str = format!("{}", expanded.lhs);
     assert!(
@@ -115,8 +115,8 @@ fn equation_expand() {
 #[test]
 fn equation_eval() {
     // sin(0) = 0  →  eval  →  0 = 0
-    let zero = symplex::int(0);
-    let equation = Equation::new(zero.sin(), symplex::int(0));
+    let zero = symplex::default_context().int(0);
+    let equation = Equation::new(zero.sin(), symplex::default_context().int(0));
     let evaled = equation.eval();
     assert_eq!(format!("{}", evaled.lhs), "0", "eval of sin(0) should be 0");
     assert_eq!(
@@ -128,9 +128,9 @@ fn equation_eval() {
 
 #[test]
 fn equation_simplify() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // sin^2(x) + cos^2(x) = 1  →  simplify  →  1 = 1
-    let equation = Equation::new(&x.sin().powi(2) + &x.cos().powi(2), symplex::int(1));
+    let equation = Equation::new(&x.sin().powi(2) + &x.cos().powi(2), symplex::default_context().int(1));
     let simplified = equation.simplify();
     assert_eq!(
         format!("{}", simplified.lhs),
@@ -143,9 +143,9 @@ fn equation_simplify() {
 
 #[test]
 fn equation_is_satisfied_true() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // Solve x + 1 = 5, substitute root back
-    let equation = Equation::new(&x + 1, symplex::int(5));
+    let equation = Equation::new(&x + 1, symplex::default_context().int(5));
     let roots = equation.solve_or_empty(&x);
     assert!(!roots.is_empty(), "should find at least one root");
     for root in &roots {
@@ -162,7 +162,7 @@ fn equation_is_satisfied_true() {
 fn equation_is_satisfied_false() {
     // 5 = 3  →  obviously false, but `equals` only proves equality;
     // it returns None when it cannot confirm the two sides are equal.
-    let equation = Equation::new(symplex::int(5), symplex::int(3));
+    let equation = Equation::new(symplex::default_context().int(5), symplex::default_context().int(3));
     assert_ne!(
         equation.is_satisfied(),
         Some(true),
@@ -173,8 +173,8 @@ fn equation_is_satisfied_false() {
 #[test]
 fn equation_is_satisfied_unknown() {
     // x = y  →  can't determine without knowing values
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let equation = Equation::new(x.clone(), y.clone());
     assert_eq!(
         equation.is_satisfied(),
@@ -187,8 +187,8 @@ fn equation_is_satisfied_unknown() {
 
 #[test]
 fn equation_to_expr_gives_difference() {
-    let x = symplex::var("x");
-    let equation = Equation::new(x.clone(), symplex::int(3));
+    let x = symplex::default_context().symbol("x");
+    let equation = Equation::new(x.clone(), symplex::default_context().int(3));
     let expr = equation.to_expr();
     let s = format!("{expr}");
     // to_expr returns lhs - rhs = x - 3
@@ -202,7 +202,7 @@ fn equation_to_expr_gives_difference() {
 
 #[test]
 fn eq_macro_basic() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(x ^ 2 - 1 = 0);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x^2-1=0 should have 2 roots");
@@ -216,7 +216,7 @@ fn eq_macro_basic() {
 
 #[test]
 fn eq_macro_with_rationals() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(x = 1 / 2);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -227,9 +227,9 @@ fn eq_macro_with_rationals() {
 
 #[test]
 fn equation_solve_then_verify() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // x^2 - 6x + 8 = 0  →  roots are 2 and 4
-    let equation = Equation::new(&x.powi(2) - &(&x * 6) + symplex::int(8), symplex::int(0));
+    let equation = Equation::new(&x.powi(2) - &(&x * 6) + symplex::default_context().int(8), symplex::default_context().int(0));
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x^2-6x+8=0 should have 2 roots");
     for root in &roots {

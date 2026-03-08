@@ -96,20 +96,20 @@ macro_rules! assert_value_preserved {
 
 #[test]
 fn rule_pythagorean_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(&x.sin().powi(2) + &x.cos().powi(2), "1");
 }
 
 #[test]
 fn rule_pythagorean_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(&x.sin().powi(2) + &x.cos().powi(2), "pythagorean");
 }
 
 #[test]
 fn rule_pythagorean_different_args_no_fire() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     // sin²(x) + cos²(y) must NOT simplify to 1
     let expr = &x.sin().powi(2) + &y.cos().powi(2);
     let s = format!("{}", expr.simplify());
@@ -118,8 +118,8 @@ fn rule_pythagorean_different_args_no_fire() {
 
 #[test]
 fn rule_pythagorean_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(7, 10);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(7, 10);
     assert_value_preserved!(&x.sin().powi(2) + &x.cos().powi(2), x, pt, 1e-10);
 }
 
@@ -129,20 +129,20 @@ fn rule_pythagorean_value_preserved() {
 
 #[test]
 fn rule_exp_ln_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.ln().exp(), "x");
 }
 
 #[test]
 fn rule_exp_ln_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.ln().exp(), "exp_ln");
 }
 
 #[test]
 fn rule_exp_ln_plus_one_no_fire() {
     // exp(ln(x) + 1) should NOT simplify to x
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (&x.ln() + 1).exp();
     let s = format!("{}", expr.simplify());
     assert_ne!(s, "x", "exp(ln(x)+1) must not become x");
@@ -150,8 +150,8 @@ fn rule_exp_ln_plus_one_no_fire() {
 
 #[test]
 fn rule_exp_ln_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::int(3);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().int(3);
     assert_value_preserved!(x.ln().exp(), x, pt, 1e-10);
 }
 
@@ -171,7 +171,7 @@ fn rule_ln_exp_fires_for_real_symbol() {
 fn rule_ln_exp_fires_for_unassumed_symbol() {
     // ln(exp(x)) now simplifies to x for unassumed symbols (fires unless
     // the variable is KNOWN to be non-real). This matches SymPy behavior.
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.exp().ln();
     let s = format!("{}", expr.simplify());
     assert_eq!(s, "x", "ln(exp(x)) should simplify to x for unassumed symbols");
@@ -190,20 +190,20 @@ fn rule_ln_exp_trace_for_real() {
 
 #[test]
 fn rule_abs_abs_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.abs().abs(), "abs(x)");
 }
 
 #[test]
 fn rule_abs_abs_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.abs().abs(), "abs_abs");
 }
 
 #[test]
 fn rule_abs_abs_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::int(-3);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().int(-3);
     assert_value_preserved!(x.abs().abs(), x, pt, 1e-10);
 }
 
@@ -213,20 +213,20 @@ fn rule_abs_abs_value_preserved() {
 
 #[test]
 fn rule_sqrt_sq_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.powi(2).sqrt(), "abs(x)");
 }
 
 #[test]
 fn rule_sqrt_sq_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.powi(2).sqrt(), "sqrt_sq");
 }
 
 #[test]
 fn rule_sqrt_cube_no_fire() {
     // sqrt(x^3) should NOT become abs(x) — wrong exponent
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(3).sqrt();
     let s = format!("{}", expr.simplify());
     assert_ne!(s, "abs(x)", "sqrt(x^3) must not become abs(x)");
@@ -234,8 +234,8 @@ fn rule_sqrt_cube_no_fire() {
 
 #[test]
 fn rule_sqrt_sq_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::int(-4);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().int(-4);
     assert_value_preserved!(x.powi(2).sqrt(), x, pt, 1e-10);
 }
 
@@ -245,13 +245,13 @@ fn rule_sqrt_sq_value_preserved() {
 
 #[test]
 fn rule_cosh_sinh_identity_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(&x.cosh().powi(2) - &x.sinh().powi(2), "1");
 }
 
 #[test]
 fn rule_cosh_sinh_identity_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(
         &x.cosh().powi(2) - &x.sinh().powi(2),
         "cosh_sinh_identity"
@@ -261,7 +261,7 @@ fn rule_cosh_sinh_identity_trace() {
 #[test]
 fn rule_cosh_sinh_wrong_sign_no_fire() {
     // cosh²(x) + sinh²(x) has the WRONG sign — must NOT become 1
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.cosh().powi(2) + &x.sinh().powi(2);
     let s = format!("{}", expr.simplify());
     assert_ne!(s, "1", "cosh²+sinh² must not become 1");
@@ -269,8 +269,8 @@ fn rule_cosh_sinh_wrong_sign_no_fire() {
 
 #[test]
 fn rule_cosh_sinh_different_args_no_fire() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x.cosh().powi(2) - &y.sinh().powi(2);
     let s = format!("{}", expr.simplify());
     assert_ne!(s, "1", "cosh²(x)-sinh²(y) must not become 1");
@@ -278,8 +278,8 @@ fn rule_cosh_sinh_different_args_no_fire() {
 
 #[test]
 fn rule_cosh_sinh_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(8, 10);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(8, 10);
     assert_value_preserved!(&x.cosh().powi(2) - &x.sinh().powi(2), x, pt, 1e-10);
 }
 
@@ -289,7 +289,7 @@ fn rule_cosh_sinh_value_preserved() {
 
 #[test]
 fn rule_pow_pow_fires_integer_exponents() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // (x²)³ → x⁶
     assert_simplifies_to!(x.powi(2).powi(3), "x^6");
 }
@@ -299,15 +299,15 @@ fn rule_pow_pow_trace() {
     // powi(2).powi(3) gets flattened by canonicalization at construction time,
     // so the pow_pow rule never fires. Use (x^a)^3 with symbolic `a` —
     // canonicalization can't simplify this, but pow_pow fires because 3 is integer.
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     assert_trace_contains_rule!(x.pow(&a).powi(3), "pow_pow");
 }
 
 #[test]
 fn rule_pow_pow_blocked_both_fractional() {
     // (x^(1/2))^(1/3) should NOT fire — no integer exponent
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let ctx = symplex::default_context();
     let half = ctx.rational(1, 2);
     let third = ctx.rational(1, 3);
@@ -321,20 +321,20 @@ fn rule_pow_pow_blocked_both_fractional() {
 
 #[test]
 fn rule_asinh_sinh_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.sinh().asinh(), "x");
 }
 
 #[test]
 fn rule_asinh_sinh_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.sinh().asinh(), "asinh_sinh");
 }
 
 #[test]
 fn rule_asinh_sinh_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(3, 2);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(3, 2);
     assert_value_preserved!(x.sinh().asinh(), x, pt, 1e-10);
 }
 
@@ -344,20 +344,20 @@ fn rule_asinh_sinh_value_preserved() {
 
 #[test]
 fn rule_acosh_cosh_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.cosh().acosh(), "abs(x)");
 }
 
 #[test]
 fn rule_acosh_cosh_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.cosh().acosh(), "acosh_cosh");
 }
 
 #[test]
 fn rule_acosh_cosh_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(3, 2);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(3, 2);
     assert_value_preserved!(x.cosh().acosh(), x, pt, 1e-10);
 }
 
@@ -367,13 +367,13 @@ fn rule_acosh_cosh_value_preserved() {
 
 #[test]
 fn rule_atanh_tanh_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.tanh().atanh(), "x");
 }
 
 #[test]
 fn rule_atanh_tanh_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.tanh().atanh(), "atanh_tanh");
 }
 
@@ -383,14 +383,14 @@ fn rule_atanh_tanh_trace() {
 
 #[test]
 fn rule_sin_div_cos_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.sin() / &x.cos();
     assert_simplifies_to!(expr, "tan(x)");
 }
 
 #[test]
 fn rule_sin_div_cos_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.sin() / &x.cos();
     assert_trace_contains_rule!(expr, "sin_div_cos");
 }
@@ -398,8 +398,8 @@ fn rule_sin_div_cos_trace() {
 #[test]
 fn rule_sin_div_cos_different_args_no_fire() {
     // sin(x)/cos(y) should NOT become tan
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x.sin() / &y.cos();
     let s = format!("{}", expr.simplify());
     assert!(!s.contains("tan("), "sin(x)/cos(y) must not become tan, got: {s}");
@@ -407,8 +407,8 @@ fn rule_sin_div_cos_different_args_no_fire() {
 
 #[test]
 fn rule_sin_div_cos_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(1, 2);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(1, 2);
     assert_value_preserved!(&x.sin() / &x.cos(), x, pt, 1e-10);
 }
 
@@ -418,7 +418,7 @@ fn rule_sin_div_cos_value_preserved() {
 
 #[test]
 fn rule_cos_div_sin_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.cos() / &x.sin();
     let s = format!("{}", expr.simplify());
     // Should contain "tan" (as tan(x)^(-1) or 1/tan(x))
@@ -430,15 +430,15 @@ fn rule_cos_div_sin_fires() {
 
 #[test]
 fn rule_cos_div_sin_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.cos() / &x.sin();
     assert_trace_contains_rule!(expr, "cos_div_sin");
 }
 
 #[test]
 fn rule_cos_div_sin_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(1, 2);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(1, 2);
     assert_value_preserved!(&x.cos() / &x.sin(), x, pt, 1e-10);
 }
 
@@ -448,22 +448,22 @@ fn rule_cos_div_sin_value_preserved() {
 
 #[test]
 fn rule_sinh_div_cosh_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.sinh() / &x.cosh();
     assert_simplifies_to!(expr, "tanh(x)");
 }
 
 #[test]
 fn rule_sinh_div_cosh_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.sinh() / &x.cosh();
     assert_trace_contains_rule!(expr, "sinh_div_cosh");
 }
 
 #[test]
 fn rule_sinh_div_cosh_different_args_no_fire() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x.sinh() / &y.cosh();
     let s = format!("{}", expr.simplify());
     assert!(
@@ -474,8 +474,8 @@ fn rule_sinh_div_cosh_different_args_no_fire() {
 
 #[test]
 fn rule_sinh_div_cosh_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(1, 2);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(1, 2);
     assert_value_preserved!(&x.sinh() / &x.cosh(), x, pt, 1e-10);
 }
 
@@ -485,16 +485,16 @@ fn rule_sinh_div_cosh_value_preserved() {
 
 #[test]
 fn rule_exp_mul_fires() {
-    let a = symplex::var("a");
-    let b = symplex::var("b");
+    let a = symplex::default_context().symbol("a");
+    let b = symplex::default_context().symbol("b");
     let expr = &a.exp() * &b.exp();
     assert_simplifies_to!(expr, "exp(a + b)");
 }
 
 #[test]
 fn rule_exp_mul_trace() {
-    let a = symplex::var("a");
-    let b = symplex::var("b");
+    let a = symplex::default_context().symbol("a");
+    let b = symplex::default_context().symbol("b");
     let expr = &a.exp() * &b.exp();
     assert_trace_contains_rule!(expr, "exp_mul");
 }
@@ -502,7 +502,7 @@ fn rule_exp_mul_trace() {
 #[test]
 fn rule_exp_mul_not_both_exp_no_fire() {
     // exp(x) * sin(x) should NOT trigger exp combining
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.exp() * &x.sin();
     assert_simplify_unchanged!(expr);
 }
@@ -535,28 +535,28 @@ fn rule_exp_mul_value_preserved() {
 
 #[test]
 fn rule_exp_log_denest_fires_numeric() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // exp(3*ln(x)) → x³
     assert_simplifies_to!((&x.ln() * 3).exp(), "x^3");
 }
 
 #[test]
 fn rule_exp_log_denest_fires_symbolic() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     assert_simplifies_to!((&x.ln() * &a).exp(), "x^a");
 }
 
 #[test]
 fn rule_exp_log_denest_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!((&x.ln() * 3).exp(), "exp_log_denest");
 }
 
 #[test]
 fn rule_exp_log_denest_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::int(2);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().int(2);
     // exp(3*ln(2)) should equal 2^3 = 8
     assert_value_preserved!((&x.ln() * 3).exp(), x, pt, 1e-10);
 }
@@ -582,7 +582,7 @@ fn rule_abs_positive_trace_for_literal() {
 #[test]
 fn rule_abs_positive_no_fire_for_symbol() {
     // abs(x) should NOT simplify when x is not a known positive literal
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplify_unchanged!(x.abs());
 }
 
@@ -602,20 +602,20 @@ fn rule_abs_positive_no_fire_for_negative_literal() {
 
 #[test]
 fn rule_sin_asin_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.asin().sin(), "x");
 }
 
 #[test]
 fn rule_sin_asin_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.asin().sin(), "sin_asin");
 }
 
 #[test]
 fn rule_sin_asin_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(1, 2);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(1, 2);
     assert_value_preserved!(x.asin().sin(), x, pt, 1e-10);
 }
 
@@ -625,20 +625,20 @@ fn rule_sin_asin_value_preserved() {
 
 #[test]
 fn rule_cos_acos_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.acos().cos(), "x");
 }
 
 #[test]
 fn rule_cos_acos_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.acos().cos(), "cos_acos");
 }
 
 #[test]
 fn rule_cos_acos_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(1, 2);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(1, 2);
     assert_value_preserved!(x.acos().cos(), x, pt, 1e-10);
 }
 
@@ -648,20 +648,20 @@ fn rule_cos_acos_value_preserved() {
 
 #[test]
 fn rule_tan_atan_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.atan().tan(), "x");
 }
 
 #[test]
 fn rule_tan_atan_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.atan().tan(), "tan_atan");
 }
 
 #[test]
 fn rule_tan_atan_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(3, 2);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(3, 2);
     assert_value_preserved!(x.atan().tan(), x, pt, 1e-10);
 }
 
@@ -671,20 +671,20 @@ fn rule_tan_atan_value_preserved() {
 
 #[test]
 fn rule_sinh_asinh_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.asinh().sinh(), "x");
 }
 
 #[test]
 fn rule_sinh_asinh_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.asinh().sinh(), "sinh_asinh");
 }
 
 #[test]
 fn rule_sinh_asinh_value_preserved() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(5, 3);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(5, 3);
     assert_value_preserved!(x.asinh().sinh(), x, pt, 1e-10);
 }
 
@@ -694,22 +694,22 @@ fn rule_sinh_asinh_value_preserved() {
 
 #[test]
 fn rule_cosh_acosh_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // Note: cosh(acosh(x)) → x (domain: x ≥ 1)
     assert_simplifies_to!(x.acosh().cosh(), "x");
 }
 
 #[test]
 fn rule_cosh_acosh_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.acosh().cosh(), "cosh_acosh");
 }
 
 #[test]
 fn rule_cosh_acosh_value_preserved() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // x must be ≥ 1 for acosh to be real
-    let pt = symplex::int(2);
+    let pt = symplex::default_context().int(2);
     assert_value_preserved!(x.acosh().cosh(), x, pt, 1e-10);
 }
 
@@ -719,21 +719,21 @@ fn rule_cosh_acosh_value_preserved() {
 
 #[test]
 fn rule_tanh_atanh_fires() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.atanh().tanh(), "x");
 }
 
 #[test]
 fn rule_tanh_atanh_trace() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_contains_rule!(x.atanh().tanh(), "tanh_atanh");
 }
 
 #[test]
 fn rule_tanh_atanh_value_preserved() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // x must be in (-1, 1) for atanh
-    let pt = symplex::rational(1, 3);
+    let pt = symplex::default_context().rational(1, 3);
     assert_value_preserved!(x.atanh().tanh(), x, pt, 1e-10);
 }
 
@@ -744,20 +744,20 @@ fn rule_tanh_atanh_value_preserved() {
 
 #[test]
 fn rule_asin_sin_does_not_fire() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // asin(sin(x)) is NOT in the ruleset — must stay unchanged
     assert_simplifies_to!(x.sin().asin(), "asin(sin(x))");
 }
 
 #[test]
 fn rule_acos_cos_does_not_fire() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.cos().acos(), "acos(cos(x))");
 }
 
 #[test]
 fn rule_atan_tan_does_not_fire() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.tan().atan(), "atan(tan(x))");
 }
 
@@ -768,7 +768,7 @@ fn rule_atan_tan_does_not_fire() {
 #[test]
 fn rule_pythagorean_mixed_sinh_cos_no_fire() {
     // sinh²(x) + cos²(x) — mixed hyperbolic/trig, must not simplify to 1
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.sinh().powi(2) + &x.cos().powi(2);
     let s = format!("{}", expr.simplify());
     assert_ne!(s, "1", "sinh²(x)+cos²(x) must not become 1, got: {s}");
@@ -779,7 +779,7 @@ fn rule_exp_ln_nested_no_fire() {
     // exp(ln(ln(x))) should NOT simplify to ln(x) in one step...
     // actually exp_ln rule matches exp(ln(w)) where w=ln(x), so it DOES
     // simplify to ln(x). This is correct! Let's verify.
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.ln().ln().exp(), "ln(x)");
 }
 
@@ -791,7 +791,7 @@ fn rule_exp_ln_nested_no_fire() {
 fn composition_exp_ln_then_pythagorean() {
     // sin²(exp(ln(x))) + cos²(exp(ln(x))) should simplify:
     //   exp(ln(x)) → x  then  sin²(x) + cos²(x) → 1
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let inner = x.ln().exp(); // → x
     let expr = &inner.sin().powi(2) + &inner.cos().powi(2);
     assert_simplifies_to!(expr, "1");
@@ -800,7 +800,7 @@ fn composition_exp_ln_then_pythagorean() {
 #[test]
 fn composition_abs_abs_abs_collapses() {
     // abs(abs(abs(x))) should collapse to abs(x)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.abs().abs().abs();
     // May need multiple simplify passes; try one first
     let s1 = expr.simplify();
@@ -811,7 +811,7 @@ fn composition_abs_abs_abs_collapses() {
 #[test]
 fn composition_pow_pow_chain() {
     // ((x^2)^3)^2 → x^12
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(2).powi(3).powi(2);
     // May need multiple passes
     let s1 = expr.simplify();
@@ -829,7 +829,7 @@ fn composition_pow_pow_chain() {
 
 #[test]
 fn trace_pythagorean_has_steps() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let (_result, steps) = (&x.sin().powi(2) + &x.cos().powi(2)).simplify_trace();
     assert!(
         !steps.is_empty(),
@@ -847,7 +847,7 @@ fn trace_no_steps_for_atom() {
 
 #[test]
 fn trace_no_steps_for_irreducible_symbol() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_trace_empty!(x);
 }
 
@@ -857,28 +857,28 @@ fn trace_no_steps_for_irreducible_symbol() {
 
 #[test]
 fn value_preserved_cos_div_sin() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(11, 10);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(11, 10);
     assert_value_preserved!(&x.cos() / &x.sin(), x, pt, 1e-10);
 }
 
 #[test]
 fn value_preserved_atanh_tanh() {
-    let x = symplex::var("x");
-    let pt = symplex::rational(1, 4);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().rational(1, 4);
     assert_value_preserved!(x.tanh().atanh(), x, pt, 1e-10);
 }
 
 #[test]
 fn value_preserved_abs_abs() {
-    let x = symplex::var("x");
-    let pt = symplex::int(-7);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().int(-7);
     assert_value_preserved!(x.abs().abs(), x, pt, 1e-10);
 }
 
 #[test]
 fn value_preserved_pow_pow() {
-    let x = symplex::var("x");
-    let pt = symplex::int(2);
+    let x = symplex::default_context().symbol("x");
+    let pt = symplex::default_context().int(2);
     assert_value_preserved!(x.powi(2).powi(3), x, pt, 1e-10);
 }

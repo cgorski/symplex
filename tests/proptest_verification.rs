@@ -19,7 +19,7 @@ proptest! {
         c in -5i64..5,
         pt in 1i64..5,
     ) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let poly = &(&x.powi(2) * a) + &(&x * b) + c;
 
         let mut bail = common::BailCounter::new("lambdify_matches_evalf");
@@ -48,7 +48,7 @@ proptest! {
     /// lambdify of trig functions should match evalf
     #[test]
     fn lambdify_trig_matches_evalf(pt in 1i64..4) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = &x.sin().powi(2) + &x.cos().powi(2);
 
         if let Some(f) = expr.compile(&["x"]) {
@@ -73,12 +73,12 @@ proptest! {
     ) {
         use symplex::matrix::Matrix;
         let a = Matrix::new(vec![
-            vec![symplex::int(a11), symplex::int(a12)],
-            vec![symplex::int(a21), symplex::int(a22)],
+            vec![symplex::default_context().int(a11), symplex::default_context().int(a12)],
+            vec![symplex::default_context().int(a21), symplex::default_context().int(a22)],
         ]).unwrap();
         let b = Matrix::new(vec![
-            vec![symplex::int(b11), symplex::int(b12)],
-            vec![symplex::int(b21), symplex::int(b22)],
+            vec![symplex::default_context().int(b11), symplex::default_context().int(b12)],
+            vec![symplex::default_context().int(b21), symplex::default_context().int(b22)],
         ]).unwrap();
         let ab = a.matmul(&b).unwrap();
         let det_a = a.det().unwrap();
@@ -103,12 +103,12 @@ proptest! {
     ) {
         use symplex::matrix::Matrix;
         let a = Matrix::new(vec![
-            vec![symplex::int(a11), symplex::int(a12)],
-            vec![symplex::int(a21), symplex::int(a22)],
+            vec![symplex::default_context().int(a11), symplex::default_context().int(a12)],
+            vec![symplex::default_context().int(a21), symplex::default_context().int(a22)],
         ]).unwrap();
         let b = Matrix::new(vec![
-            vec![symplex::int(b11), symplex::int(b12)],
-            vec![symplex::int(b21), symplex::int(b22)],
+            vec![symplex::default_context().int(b11), symplex::default_context().int(b12)],
+            vec![symplex::default_context().int(b21), symplex::default_context().int(b22)],
         ]).unwrap();
         let sum = a.add(&b).unwrap();
         let trace_sum = sum.trace().unwrap();
@@ -127,7 +127,7 @@ proptest! {
     /// sin series: verify numerically at a point
     #[test]
     fn sin_series_numerical(order in 3u32..8) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let series = x.sin().maclaurin(&x, order);
         let mut bail = common::BailCounter::new("sin_series_numerical");
         if let Ok(s) = series {
@@ -153,7 +153,7 @@ proptest! {
     /// exp series: verify numerically
     #[test]
     fn exp_series_numerical(order in 3u32..10) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let series = x.exp().maclaurin(&x, order);
         let mut bail = common::BailCounter::new("exp_series_numerical");
         if let Ok(s) = series {

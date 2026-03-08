@@ -25,11 +25,11 @@ fn assert_near(val: f64, expected: f64, tol: f64, msg: &str) {
 #[test]
 fn total_time_derivative_constant() {
     // d/dt of a constant = 0
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
-    let qdd = symplex::var("qdd");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
+    let qdd = symplex::default_context().symbol("qdd");
 
-    let c = symplex::int(5);
+    let c = symplex::default_context().int(5);
     let result = total_time_derivative(&c, &[(&q, &qd)], &[&qdd]);
     let val = result.eval().eval_f64().unwrap();
     assert_near(val, 0.0, 1e-12, "d/dt(5) should be 0");
@@ -38,29 +38,29 @@ fn total_time_derivative_constant() {
 #[test]
 fn total_time_derivative_linear_q() {
     // d/dt(q) = q_dot
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
-    let qdd = symplex::var("qdd");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
+    let qdd = symplex::default_context().symbol("qdd");
 
     let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]);
     // Substitute qd = 7 and check
-    let val = result.subs(&qd, &symplex::int(7)).eval().eval_f64().unwrap();
+    let val = result.subs(&qd, &symplex::default_context().int(7)).eval().eval_f64().unwrap();
     assert_near(val, 7.0, 1e-12, "d/dt(q) should be qd");
 }
 
 #[test]
 fn total_time_derivative_q_squared() {
     // d/dt(q²) = 2q·q_dot
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
-    let qdd = symplex::var("qdd");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
+    let qdd = symplex::default_context().symbol("qdd");
 
     let q_sq = q.powi(2);
     let result = total_time_derivative(&q_sq, &[(&q, &qd)], &[&qdd]);
     // Substitute q=3, qd=2: expect 2*3*2 = 12
     let val = result
-        .subs(&q, &symplex::int(3))
-        .subs(&qd, &symplex::int(2))
+        .subs(&q, &symplex::default_context().int(3))
+        .subs(&qd, &symplex::default_context().int(2))
         .eval()
         .eval_f64()
         .unwrap();
@@ -70,20 +70,20 @@ fn total_time_derivative_q_squared() {
 #[test]
 fn total_time_derivative_kinetic_energy() {
     // d/dt(½m·q̇²) = m·q̇·q̈
-    let m = symplex::var("m");
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
-    let qdd = symplex::var("qdd");
+    let m = symplex::default_context().symbol("m");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
+    let qdd = symplex::default_context().symbol("qdd");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
     let result = total_time_derivative(&ke, &[(&q, &qd)], &[&qdd]);
 
     // Substitute m=2, qd=3, qdd=5: expect 2*3*5 = 30
     let val = result
-        .subs(&m, &symplex::int(2))
-        .subs(&qd, &symplex::int(3))
-        .subs(&qdd, &symplex::int(5))
+        .subs(&m, &symplex::default_context().int(2))
+        .subs(&qd, &symplex::default_context().int(3))
+        .subs(&qdd, &symplex::default_context().int(5))
         .eval()
         .eval_f64()
         .unwrap();
@@ -98,24 +98,24 @@ fn total_time_derivative_kinetic_energy() {
 fn euler_lagrange_free_particle() {
     // Free particle: T = ½m·q̇², V = 0
     // Equation of motion: m·q̈ = τ
-    let m = symplex::var("m");
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
-    let qdd = symplex::var("qdd");
+    let m = symplex::default_context().symbol("m");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
+    let qdd = symplex::default_context().symbol("qdd");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
-    let pe = symplex::int(0);
+    let pe = symplex::default_context().int(0);
 
     let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]);
     assert_eq!(eqs.len(), 1);
 
     // Substitute m=3, qdd=4: expect τ = 3*4 = 12
     let val = eqs[0]
-        .subs(&m, &symplex::int(3))
-        .subs(&qd, &symplex::int(0))
-        .subs(&qdd, &symplex::int(4))
-        .subs(&q, &symplex::int(0))
+        .subs(&m, &symplex::default_context().int(3))
+        .subs(&qd, &symplex::default_context().int(0))
+        .subs(&qdd, &symplex::default_context().int(4))
+        .subs(&q, &symplex::default_context().int(0))
         .eval()
         .eval_f64()
         .unwrap();
@@ -126,13 +126,13 @@ fn euler_lagrange_free_particle() {
 fn euler_lagrange_spring() {
     // Harmonic oscillator: T = ½m·q̇², V = ½k·q²
     // Equation of motion: m·q̈ + k·q = τ
-    let m = symplex::var("m");
-    let k = symplex::var("k");
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
-    let qdd = symplex::var("qdd");
+    let m = symplex::default_context().symbol("m");
+    let k = symplex::default_context().symbol("k");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
+    let qdd = symplex::default_context().symbol("qdd");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
     let pe = &half * &k * &q.powi(2);
 
@@ -141,11 +141,11 @@ fn euler_lagrange_spring() {
 
     // At m=2, k=5, q=3, qdd=4, qd=0: expect 2*4 + 5*3 = 8+15 = 23
     let val = eqs[0]
-        .subs(&m, &symplex::int(2))
-        .subs(&k, &symplex::int(5))
-        .subs(&q, &symplex::int(3))
-        .subs(&qd, &symplex::int(0))
-        .subs(&qdd, &symplex::int(4))
+        .subs(&m, &symplex::default_context().int(2))
+        .subs(&k, &symplex::default_context().int(5))
+        .subs(&q, &symplex::default_context().int(3))
+        .subs(&qd, &symplex::default_context().int(0))
+        .subs(&qdd, &symplex::default_context().int(4))
         .eval()
         .eval_f64()
         .unwrap();
@@ -156,14 +156,14 @@ fn euler_lagrange_spring() {
 fn euler_lagrange_pendulum() {
     // Simple pendulum: T = ½mL²q̇², V = -mgLcos(q)
     // EOM: mL²q̈ + mgLsin(q) = τ
-    let m_sym = symplex::var("m");
-    let g_sym = symplex::var("g");
-    let l_sym = symplex::var("L");
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
-    let qdd = symplex::var("qdd");
+    let m_sym = symplex::default_context().symbol("m");
+    let g_sym = symplex::default_context().symbol("g");
+    let l_sym = symplex::default_context().symbol("L");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
+    let qdd = symplex::default_context().symbol("qdd");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m_sym * &l_sym.powi(2) * &qd.powi(2);
     let pe = -(&m_sym * &g_sym * &l_sym * &q.cos());
 
@@ -172,14 +172,14 @@ fn euler_lagrange_pendulum() {
 
     // Numeric check: q=0.5, qd=0.1, qdd=0, m=1, L=1, g=9.8
     // Expected: mL²·qdd + mgL·sin(q) = 0 + 1*9.8*1*sin(0.5) = 9.8*0.4794... ≈ 4.6983...
-    let q_val = symplex::rational(1, 2);
+    let q_val = symplex::default_context().rational(1, 2);
     let result = eqs[0]
-        .subs(&m_sym, &symplex::int(1))
-        .subs(&l_sym, &symplex::int(1))
-        .subs(&g_sym, &symplex::rational(49, 5)) // 9.8
+        .subs(&m_sym, &symplex::default_context().int(1))
+        .subs(&l_sym, &symplex::default_context().int(1))
+        .subs(&g_sym, &symplex::default_context().rational(49, 5)) // 9.8
         .subs(&q, &q_val)
-        .subs(&qd, &symplex::rational(1, 10))
-        .subs(&qdd, &symplex::int(0))
+        .subs(&qd, &symplex::default_context().rational(1, 10))
+        .subs(&qdd, &symplex::default_context().int(0))
         .eval()
         .eval_f64()
         .unwrap();
@@ -196,10 +196,10 @@ fn euler_lagrange_pendulum() {
 #[test]
 fn mass_matrix_single_dof() {
     // T = ½m·q̇²  →  M = [[m]]
-    let m = symplex::var("m");
-    let qd = symplex::var("qd");
+    let m = symplex::default_context().symbol("m");
+    let qd = symplex::default_context().symbol("qd");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
     let mm = mass_matrix(&ke, &[&qd]);
 
@@ -208,7 +208,7 @@ fn mass_matrix_single_dof() {
     // M[0,0] should be m; substitute m=7, expect 7
     let val = mm
         .get(0, 0)
-        .subs(&m, &symplex::int(7))
+        .subs(&m, &symplex::default_context().int(7))
         .eval()
         .eval_f64()
         .unwrap();
@@ -221,14 +221,14 @@ fn mass_matrix_two_dof() {
     // This is a simplified 2-link arm kinetic energy.
     // M = [[m₁ + m₂,  m₂·cos(q₂)],
     //      [m₂·cos(q₂),     m₂    ]]
-    let m1 = symplex::var("m1");
-    let m2 = symplex::var("m2");
-    let _q1 = symplex::var("q1");
-    let q2 = symplex::var("q2");
-    let q1d = symplex::var("q1d");
-    let q2d = symplex::var("q2d");
+    let m1 = symplex::default_context().symbol("m1");
+    let m2 = symplex::default_context().symbol("m2");
+    let _q1 = symplex::default_context().symbol("q1");
+    let q2 = symplex::default_context().symbol("q2");
+    let q1d = symplex::default_context().symbol("q1d");
+    let q2d = symplex::default_context().symbol("q2d");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m1 * &q1d.powi(2)
         + &half * &m2 * &(&q1d.powi(2) + &q2d.powi(2) + &(2 * &q1d * &q2d * &q2.cos()));
 
@@ -238,9 +238,9 @@ fn mass_matrix_two_dof() {
     // M[0,0] = m1 + m2
     let m00 = mm
         .get(0, 0)
-        .subs(&m1, &symplex::int(3))
-        .subs(&m2, &symplex::int(2))
-        .subs(&q2, &symplex::int(0))
+        .subs(&m1, &symplex::default_context().int(3))
+        .subs(&m2, &symplex::default_context().int(2))
+        .subs(&q2, &symplex::default_context().int(0))
         .eval()
         .eval_f64()
         .unwrap();
@@ -249,7 +249,7 @@ fn mass_matrix_two_dof() {
     // M[1,1] = m2
     let m11 = mm
         .get(1, 1)
-        .subs(&m2, &symplex::int(2))
+        .subs(&m2, &symplex::default_context().int(2))
         .eval()
         .eval_f64()
         .unwrap();
@@ -258,8 +258,8 @@ fn mass_matrix_two_dof() {
     // M[0,1] = m2·cos(q2); at q2=0 → m2=2
     let m01 = mm
         .get(0, 1)
-        .subs(&m2, &symplex::int(2))
-        .subs(&q2, &symplex::int(0))
+        .subs(&m2, &symplex::default_context().int(2))
+        .subs(&q2, &symplex::default_context().int(0))
         .eval()
         .eval_f64()
         .unwrap();
@@ -268,8 +268,8 @@ fn mass_matrix_two_dof() {
     // Verify symmetry: M[1,0] = M[0,1]
     let m10 = mm
         .get(1, 0)
-        .subs(&m2, &symplex::int(2))
-        .subs(&q2, &symplex::int(0))
+        .subs(&m2, &symplex::default_context().int(2))
+        .subs(&q2, &symplex::default_context().int(0))
         .eval()
         .eval_f64()
         .unwrap();
@@ -283,21 +283,21 @@ fn mass_matrix_two_dof() {
 #[test]
 fn gravity_vector_pendulum() {
     // V = m·g·L·cos(q)  →  g(q) = ∂V/∂q = -m·g·L·sin(q)
-    let m = symplex::var("m");
-    let g = symplex::var("g");
-    let l = symplex::var("L");
-    let q = symplex::var("q");
+    let m = symplex::default_context().symbol("m");
+    let g = symplex::default_context().symbol("g");
+    let l = symplex::default_context().symbol("L");
+    let q = symplex::default_context().symbol("q");
 
     let pe = &m * &g * &l * &q.cos();
     let gv = gravity_vector(&pe, &[&q]);
     assert_eq!(gv.len(), 1);
 
     // At q=π/6, m=1, g=10, L=2: dV/dq = -1*10*2*sin(π/6) = -20*0.5 = -10
-    let pi_over_6 = &symplex::pi() / 6;
+    let pi_over_6 = &symplex::default_context().pi() / 6;
     let val = gv[0]
-        .subs(&m, &symplex::int(1))
-        .subs(&g, &symplex::int(10))
-        .subs(&l, &symplex::int(2))
+        .subs(&m, &symplex::default_context().int(1))
+        .subs(&g, &symplex::default_context().int(10))
+        .subs(&l, &symplex::default_context().int(2))
         .subs(&q, &pi_over_6)
         .eval()
         .eval_f64()
@@ -308,10 +308,10 @@ fn gravity_vector_pendulum() {
 #[test]
 fn gravity_vector_zero_potential() {
     // V = 0 → g(q) = [0, 0]
-    let q1 = symplex::var("q1");
-    let q2 = symplex::var("q2");
+    let q1 = symplex::default_context().symbol("q1");
+    let q2 = symplex::default_context().symbol("q2");
 
-    let pe = symplex::int(0);
+    let pe = symplex::default_context().int(0);
     let gv = gravity_vector(&pe, &[&q1, &q2]);
     assert_eq!(gv.len(), 2);
 
@@ -329,11 +329,11 @@ fn gravity_vector_zero_potential() {
 fn coriolis_matrix_constant_mass() {
     // If M is constant (doesn't depend on q), then C = 0.
     // T = ½m·q̇² → M = [[m]], all ∂M/∂q = 0, so C = [[0]]
-    let m = symplex::var("m");
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
+    let m = symplex::default_context().symbol("m");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
     let mm = mass_matrix(&ke, &[&qd]);
     let c = coriolis_matrix(&mm, &[&q], &[&qd]);
@@ -343,9 +343,9 @@ fn coriolis_matrix_constant_mass() {
     // C[0,0] should be 0 regardless of values
     let val = c
         .get(0, 0)
-        .subs(&m, &symplex::int(5))
-        .subs(&q, &symplex::int(1))
-        .subs(&qd, &symplex::int(2))
+        .subs(&m, &symplex::default_context().int(5))
+        .subs(&q, &symplex::default_context().int(1))
+        .subs(&qd, &symplex::default_context().int(2))
         .eval()
         .eval_f64()
         .unwrap();
@@ -364,14 +364,14 @@ fn coriolis_matrix_two_dof() {
     //      = -m₂sin(q₂)·q̇₂ + 0   (since Γ₁₂₁ involves derivatives wrt q₁, all zero)
     //
     // So C₁₂ = -m₂·sin(q₂)·q̇₂
-    let m1 = symplex::var("m1");
-    let m2 = symplex::var("m2");
-    let q1 = symplex::var("q1");
-    let q2 = symplex::var("q2");
-    let q1d = symplex::var("q1d");
-    let q2d = symplex::var("q2d");
+    let m1 = symplex::default_context().symbol("m1");
+    let m2 = symplex::default_context().symbol("m2");
+    let q1 = symplex::default_context().symbol("q1");
+    let q2 = symplex::default_context().symbol("q2");
+    let q1d = symplex::default_context().symbol("q1d");
+    let q2d = symplex::default_context().symbol("q2d");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m1 * &q1d.powi(2)
         + &half * &m2 * &(&q1d.powi(2) + &q2d.powi(2) + &(2 * &q1d * &q2d * &q2.cos()));
 
@@ -382,15 +382,15 @@ fn coriolis_matrix_two_dof() {
 
     // Test C[0,1] = -m₂·sin(q₂)·q̇₂
     // At m2=3, q2=π/6, q2d=2: C₀₁ = -3·sin(π/6)·2 = -3·0.5·2 = -3
-    let pi_over_6 = &symplex::pi() / 6;
+    let pi_over_6 = &symplex::default_context().pi() / 6;
     let c01 = c
         .get(0, 1)
-        .subs(&m1, &symplex::int(1))
-        .subs(&m2, &symplex::int(3))
-        .subs(&q1, &symplex::int(0))
+        .subs(&m1, &symplex::default_context().int(1))
+        .subs(&m2, &symplex::default_context().int(3))
+        .subs(&q1, &symplex::default_context().int(0))
         .subs(&q2, &pi_over_6)
-        .subs(&q1d, &symplex::int(0))
-        .subs(&q2d, &symplex::int(2))
+        .subs(&q1d, &symplex::default_context().int(0))
+        .subs(&q2d, &symplex::default_context().int(2))
         .eval()
         .eval_f64()
         .unwrap();
@@ -404,11 +404,11 @@ fn coriolis_matrix_two_dof() {
 #[test]
 fn christoffel_symbols_constant_mass() {
     // Constant mass matrix → all Christoffel symbols are zero
-    let m = symplex::var("m");
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
+    let m = symplex::default_context().symbol("m");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
     let mm = mass_matrix(&ke, &[&qd]);
     let cs = christoffel_symbols(&mm, &[&q]);
@@ -429,13 +429,13 @@ fn christoffel_symbols_constant_mass() {
 fn manipulator_equation_free_particle() {
     // Free particle: T = ½m·q̇², V = 0
     // M = [[m]], C = [[0]], g = [0]
-    let m = symplex::var("m");
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
+    let m = symplex::default_context().symbol("m");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
-    let pe = symplex::int(0);
+    let pe = symplex::default_context().int(0);
 
     let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]);
 
@@ -446,7 +446,7 @@ fn manipulator_equation_free_particle() {
     // M[0,0] = m → 5
     let m_val = mass
         .get(0, 0)
-        .subs(&m, &symplex::int(5))
+        .subs(&m, &symplex::default_context().int(5))
         .eval()
         .eval_f64()
         .unwrap();
@@ -455,9 +455,9 @@ fn manipulator_equation_free_particle() {
     // C[0,0] = 0
     let c_val = coriolis
         .get(0, 0)
-        .subs(&m, &symplex::int(5))
-        .subs(&q, &symplex::int(1))
-        .subs(&qd, &symplex::int(1))
+        .subs(&m, &symplex::default_context().int(5))
+        .subs(&q, &symplex::default_context().int(1))
+        .subs(&qd, &symplex::default_context().int(1))
         .eval()
         .eval_f64()
         .unwrap();
@@ -472,12 +472,12 @@ fn manipulator_equation_free_particle() {
 fn manipulator_equation_spring_pendulum() {
     // Spring: T = ½m·q̇², V = ½k·q²
     // M = [[m]], C = [[0]], g = [k·q]
-    let m = symplex::var("m");
-    let k = symplex::var("k");
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
+    let m = symplex::default_context().symbol("m");
+    let k = symplex::default_context().symbol("k");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m * &qd.powi(2);
     let pe = &half * &k * &q.powi(2);
 
@@ -486,7 +486,7 @@ fn manipulator_equation_spring_pendulum() {
     // M[0,0] = m
     let m_val = mass
         .get(0, 0)
-        .subs(&m, &symplex::int(4))
+        .subs(&m, &symplex::default_context().int(4))
         .eval()
         .eval_f64()
         .unwrap();
@@ -495,8 +495,8 @@ fn manipulator_equation_spring_pendulum() {
     // g[0] = ∂V/∂q = k·q
     // At k=3, q=2: g = 6
     let g_val = grav[0]
-        .subs(&k, &symplex::int(3))
-        .subs(&q, &symplex::int(2))
+        .subs(&k, &symplex::default_context().int(3))
+        .subs(&q, &symplex::default_context().int(2))
         .eval()
         .eval_f64()
         .unwrap();
@@ -513,14 +513,14 @@ fn euler_lagrange_matches_manipulator_equation() {
     //   T = ½mL²q̇², V = -mgLcos(q)
     //   EL gives: mL²q̈ + mgLsin(q)
     //   M·q̈ + C·q̇ + g should give the same result
-    let m_sym = symplex::var("m");
-    let g_sym = symplex::var("g");
-    let l_sym = symplex::var("L");
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
-    let qdd = symplex::var("qdd");
+    let m_sym = symplex::default_context().symbol("m");
+    let g_sym = symplex::default_context().symbol("g");
+    let l_sym = symplex::default_context().symbol("L");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
+    let qdd = symplex::default_context().symbol("qdd");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m_sym * &l_sym.powi(2) * &qd.powi(2);
     let pe = -(&m_sym * &g_sym * &l_sym * &q.cos());
 
@@ -535,12 +535,12 @@ fn euler_lagrange_matches_manipulator_equation() {
         + &(&(coriolis.get(0, 0) * &qd) + &grav[0]);
 
     // Evaluate both at specific values
-    let m_val = symplex::int(2);
-    let g_val = symplex::int(10);
-    let l_val = symplex::int(1);
-    let q_val = symplex::rational(1, 3);
-    let qd_val = symplex::rational(1, 5);
-    let qdd_val = symplex::int(3);
+    let m_val = symplex::default_context().int(2);
+    let g_val = symplex::default_context().int(10);
+    let l_val = symplex::default_context().int(1);
+    let q_val = symplex::default_context().rational(1, 3);
+    let qd_val = symplex::default_context().rational(1, 5);
+    let qdd_val = symplex::default_context().int(3);
 
     let el_num = eqs[0]
         .subs(&m_sym, &m_val)
@@ -579,16 +579,16 @@ fn euler_lagrange_matches_manipulator_equation() {
 #[test]
 fn total_time_derivative_of_velocity() {
     // d/dt(q̇) = q̈
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
-    let qdd = symplex::var("qdd");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
+    let qdd = symplex::default_context().symbol("qdd");
 
     let result = total_time_derivative(&qd, &[(&q, &qd)], &[&qdd]);
     // Should be qdd; substitute qdd=42, expect 42
     let val = result
-        .subs(&qdd, &symplex::int(42))
-        .subs(&qd, &symplex::int(0))
-        .subs(&q, &symplex::int(0))
+        .subs(&qdd, &symplex::default_context().int(42))
+        .subs(&qd, &symplex::default_context().int(0))
+        .subs(&q, &symplex::default_context().int(0))
         .eval()
         .eval_f64()
         .unwrap();
@@ -598,18 +598,18 @@ fn total_time_derivative_of_velocity() {
 #[test]
 fn total_time_derivative_mixed() {
     // d/dt(q · q̇) = q̇ · q̇ + q · q̈ = q̇² + q·q̈
-    let q = symplex::var("q");
-    let qd = symplex::var("qd");
-    let qdd = symplex::var("qdd");
+    let q = symplex::default_context().symbol("q");
+    let qd = symplex::default_context().symbol("qd");
+    let qdd = symplex::default_context().symbol("qdd");
 
     let expr = &q * &qd;
     let result = total_time_derivative(&expr, &[(&q, &qd)], &[&qdd]);
 
     // At q=2, qd=3, qdd=5: expect 3² + 2·5 = 9 + 10 = 19
     let val = result
-        .subs(&q, &symplex::int(2))
-        .subs(&qd, &symplex::int(3))
-        .subs(&qdd, &symplex::int(5))
+        .subs(&q, &symplex::default_context().int(2))
+        .subs(&qd, &symplex::default_context().int(3))
+        .subs(&qdd, &symplex::default_context().int(5))
         .eval()
         .eval_f64()
         .unwrap();
@@ -619,32 +619,32 @@ fn total_time_derivative_mixed() {
 #[test]
 fn mass_matrix_is_symmetric() {
     // For any well-formed kinetic energy, M should be symmetric.
-    let m1 = symplex::var("m1");
-    let m2 = symplex::var("m2");
-    let q2 = symplex::var("q2");
-    let q1d = symplex::var("q1d");
-    let q2d = symplex::var("q2d");
+    let m1 = symplex::default_context().symbol("m1");
+    let m2 = symplex::default_context().symbol("m2");
+    let q2 = symplex::default_context().symbol("q2");
+    let q1d = symplex::default_context().symbol("q1d");
+    let q2d = symplex::default_context().symbol("q2d");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let ke = &half * &m1 * &q1d.powi(2)
         + &half * &m2 * &(&q1d.powi(2) + &q2d.powi(2) + &(2 * &q1d * &q2d * &q2.cos()));
 
     let mm = mass_matrix(&ke, &[&q1d, &q2d]);
 
     // Evaluate M[0,1] and M[1,0] at specific point
-    let pi_over_4 = &symplex::pi() / 4;
+    let pi_over_4 = &symplex::default_context().pi() / 4;
     let m01 = mm
         .get(0, 1)
-        .subs(&m1, &symplex::int(1))
-        .subs(&m2, &symplex::int(3))
+        .subs(&m1, &symplex::default_context().int(1))
+        .subs(&m2, &symplex::default_context().int(3))
         .subs(&q2, &pi_over_4)
         .eval()
         .eval_f64()
         .unwrap();
     let m10 = mm
         .get(1, 0)
-        .subs(&m1, &symplex::int(1))
-        .subs(&m2, &symplex::int(3))
+        .subs(&m1, &symplex::default_context().int(1))
+        .subs(&m2, &symplex::default_context().int(3))
         .subs(&q2, &pi_over_4)
         .eval()
         .eval_f64()
@@ -657,13 +657,13 @@ fn gravity_vector_two_dof() {
     // V = m1·g·L1·cos(q1) + m2·g·(L1·cos(q1) + L2·cos(q1+q2))
     // g[0] = ∂V/∂q1 = -(m1+m2)·g·L1·sin(q1) - m2·g·L2·sin(q1+q2)
     // g[1] = ∂V/∂q2 = -m2·g·L2·sin(q1+q2)
-    let m1 = symplex::var("m1");
-    let m2 = symplex::var("m2");
-    let g_sym = symplex::var("g");
-    let l1 = symplex::var("L1");
-    let l2 = symplex::var("L2");
-    let q1 = symplex::var("q1");
-    let q2 = symplex::var("q2");
+    let m1 = symplex::default_context().symbol("m1");
+    let m2 = symplex::default_context().symbol("m2");
+    let g_sym = symplex::default_context().symbol("g");
+    let l1 = symplex::default_context().symbol("L1");
+    let l2 = symplex::default_context().symbol("L2");
+    let q1 = symplex::default_context().symbol("q1");
+    let q2 = symplex::default_context().symbol("q2");
 
     let pe = &m1 * &g_sym * &l1 * &q1.cos()
         + &m2 * &g_sym * &(&l1 * &q1.cos() + &l2 * &(&q1 + &q2).cos());
@@ -674,13 +674,13 @@ fn gravity_vector_two_dof() {
     // At q1=0, q2=0, all sines are 0 so gravity is also 0 at this config
     // Actually sin(0)=0, so ∂V/∂q evaluated at 0 gives 0
     let g0 = gv[0]
-        .subs(&m1, &symplex::int(1))
-        .subs(&m2, &symplex::int(1))
-        .subs(&g_sym, &symplex::int(10))
-        .subs(&l1, &symplex::int(1))
-        .subs(&l2, &symplex::int(1))
-        .subs(&q1, &symplex::int(0))
-        .subs(&q2, &symplex::int(0))
+        .subs(&m1, &symplex::default_context().int(1))
+        .subs(&m2, &symplex::default_context().int(1))
+        .subs(&g_sym, &symplex::default_context().int(10))
+        .subs(&l1, &symplex::default_context().int(1))
+        .subs(&l2, &symplex::default_context().int(1))
+        .subs(&q1, &symplex::default_context().int(0))
+        .subs(&q2, &symplex::default_context().int(0))
         .eval()
         .eval_f64()
         .unwrap();
@@ -688,15 +688,15 @@ fn gravity_vector_two_dof() {
 
     // At q1=π/2, q2=0: sin(q1)=1, sin(q1+q2)=1
     // g[0] = -(1+1)·10·1·1 - 1·10·1·1 = -20-10 = -30
-    let pi_over_2 = &symplex::pi() / 2;
+    let pi_over_2 = &symplex::default_context().pi() / 2;
     let g0_pi2 = gv[0]
-        .subs(&m1, &symplex::int(1))
-        .subs(&m2, &symplex::int(1))
-        .subs(&g_sym, &symplex::int(10))
-        .subs(&l1, &symplex::int(1))
-        .subs(&l2, &symplex::int(1))
+        .subs(&m1, &symplex::default_context().int(1))
+        .subs(&m2, &symplex::default_context().int(1))
+        .subs(&g_sym, &symplex::default_context().int(10))
+        .subs(&l1, &symplex::default_context().int(1))
+        .subs(&l2, &symplex::default_context().int(1))
         .subs(&q1, &pi_over_2)
-        .subs(&q2, &symplex::int(0))
+        .subs(&q2, &symplex::default_context().int(0))
         .eval()
         .eval_f64()
         .unwrap();
@@ -704,13 +704,13 @@ fn gravity_vector_two_dof() {
 
     // g[1] at same config: -m2·g·L2·sin(π/2+0) = -10
     let g1_pi2 = gv[1]
-        .subs(&m1, &symplex::int(1))
-        .subs(&m2, &symplex::int(1))
-        .subs(&g_sym, &symplex::int(10))
-        .subs(&l1, &symplex::int(1))
-        .subs(&l2, &symplex::int(1))
+        .subs(&m1, &symplex::default_context().int(1))
+        .subs(&m2, &symplex::default_context().int(1))
+        .subs(&g_sym, &symplex::default_context().int(10))
+        .subs(&l1, &symplex::default_context().int(1))
+        .subs(&l2, &symplex::default_context().int(1))
         .subs(&q1, &pi_over_2)
-        .subs(&q2, &symplex::int(0))
+        .subs(&q2, &symplex::default_context().int(0))
         .eval()
         .eval_f64()
         .unwrap();

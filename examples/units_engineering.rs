@@ -77,7 +77,7 @@ fn section_2_power_analysis() {
              (p_mech_f64 / p_in_f64 * 100.0) as i32);
 
     // Convert to horsepower (exact!)
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let hp_factor = Power::horsepower(&one).eval_f64().unwrap();
     println!("  P_mech = {:.3} hp", p_mech_f64 / hp_factor);
     println!();
@@ -86,7 +86,7 @@ fn section_2_power_analysis() {
 fn section_3_imperial_conversions() {
     println!("── 3. Imperial Conversions (all exact!) ──\n");
 
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
 
     // Every conversion is an exact rational — no floating point
     println!("  Force:");
@@ -110,7 +110,7 @@ fn section_3_imperial_conversions() {
 
     println!("  Speed:");
     println!("    60 mph = {} m/s",
-             Velocity::miles_per_hour(&symplex::int(60)).eval());
+             Velocity::miles_per_hour(&symplex::default_context().int(60)).eval());
     println!("    1 knot = {} m/s", Velocity::knots(&one).eval());
 
     println!("  Mass:");
@@ -125,31 +125,31 @@ fn section_4_unit_conversion_showcase() {
     println!("── 4. Real-World Conversions ──\n");
 
     // Tire pressure: 32 psi → kPa
-    let tire_psi = symplex::int(32);
+    let tire_psi = symplex::default_context().int(32);
     let tire_pa = Pressure::psi(&tire_psi);
     println!("  Tire pressure: 32 psi = {:.1} kPa",
              tire_pa.eval_f64().unwrap() / 1000.0);
 
     // Speed limit: 65 mph → km/h
-    let speed_mph = symplex::int(65);
+    let speed_mph = symplex::default_context().int(65);
     let speed_ms = Velocity::miles_per_hour(&speed_mph);
     println!("  Speed limit: 65 mph = {:.1} km/h",
              speed_ms.eval_f64().unwrap() * 3.6);
 
     // Engine power: 200 hp → kW
-    let engine_hp = symplex::int(200);
+    let engine_hp = symplex::default_context().int(200);
     let engine_w = Power::horsepower(&engine_hp);
     println!("  Engine power: 200 hp = {:.1} kW",
              engine_w.eval_f64().unwrap() / 1000.0);
 
     // Fuel tank: 15 US gallons → liters
-    let tank_gal = symplex::int(15);
+    let tank_gal = symplex::default_context().int(15);
     let tank_m3 = Volume::us_gallons(&tank_gal);
     println!("  Fuel tank: 15 gal = {:.1} L",
              tank_m3.eval_f64().unwrap() * 1000.0);
 
     // Room temperature: 72°F → K
-    let temp_f = symplex::int(72);
+    let temp_f = symplex::default_context().int(72);
     let temp_k = Temperature::from_fahrenheit(&temp_f);
     println!("  Room temp: 72°F = {:.2} K = {:.2}°C",
              temp_k.eval_f64().unwrap(),

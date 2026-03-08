@@ -20,8 +20,8 @@ fn approx_zero(val: f64, tol: f64) -> bool {
 
 #[test]
 fn solve_sin_x_eq_half_via_set() {
-    let x = symplex::var("x");
-    let half = symplex::rational(1, 2);
+    let x = symplex::default_context().symbol("x");
+    let half = symplex::default_context().rational(1, 2);
     let expr = &x.sin() - &half;
 
     let set = expr.solve_as_set(&x);
@@ -41,8 +41,8 @@ fn solve_sin_x_eq_half_via_set() {
 
 #[test]
 fn solve_sin_x_eq_half_verify_numerically() {
-    let x = symplex::var("x");
-    let half = symplex::rational(1, 2);
+    let x = symplex::default_context().symbol("x");
+    let half = symplex::default_context().rational(1, 2);
     let sin_x_minus_half = &x.sin() - &half;
 
     let set = sin_x_minus_half.solve_as_set(&x);
@@ -50,7 +50,7 @@ fn solve_sin_x_eq_half_verify_numerically() {
 
     // Extract approximate values by evaluating asin(1/2) ≈ 0.5236 and
     // π − asin(1/2) ≈ 2.6180.  We verify by substitution.
-    let asin_half = x.sin().subs(&x, &symplex::rational(1, 2).asin());
+    let asin_half = x.sin().subs(&x, &symplex::default_context().rational(1, 2).asin());
     let val = eval(&asin_half);
     if let Some(v) = val {
         assert!(
@@ -74,7 +74,7 @@ fn solve_sin_x_eq_half_verify_numerically() {
 
 #[test]
 fn solve_cos_x_eq_zero() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.cos();
 
     let set = expr.solve_as_set(&x);
@@ -92,10 +92,10 @@ fn solve_cos_x_eq_zero() {
 
 #[test]
 fn solve_cos_x_eq_zero_verify() {
-    let _x = symplex::var("x");
+    let _x = symplex::default_context().symbol("x");
     // cos(π/2) should be 0
-    let pi = symplex::pi();
-    let half = symplex::rational(1, 2);
+    let pi = symplex::default_context().pi();
+    let half = symplex::default_context().rational(1, 2);
     let pi_half = &pi * &half;
     let val = eval(&pi_half.cos());
     if let Some(v) = val {
@@ -112,8 +112,8 @@ fn solve_cos_x_eq_zero_verify() {
 
 #[test]
 fn solve_tan_x_eq_one() {
-    let x = symplex::var("x");
-    let one = symplex::int(1);
+    let x = symplex::default_context().symbol("x");
+    let one = symplex::default_context().int(1);
     let expr = &x.tan() - &one;
 
     let set = expr.solve_as_set(&x);
@@ -131,8 +131,8 @@ fn solve_tan_x_eq_one() {
 
 #[test]
 fn solve_tan_x_eq_one_verify() {
-    let x = symplex::var("x");
-    let one = symplex::int(1);
+    let x = symplex::default_context().symbol("x");
+    let one = symplex::default_context().int(1);
     let tan_minus_one = &x.tan() - &one;
 
     // atan(1) ≈ π/4 ≈ 0.7854
@@ -152,7 +152,7 @@ fn solve_tan_x_eq_one_verify() {
 
 #[test]
 fn solve_sin_x_eq_zero() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin();
 
     let set = expr.solve_as_set(&x);
@@ -179,9 +179,9 @@ fn solve_sin_x_eq_zero_verify() {
 
 #[test]
 fn solve_sin_2x_eq_one() {
-    let x = symplex::var("x");
-    let two = symplex::int(2);
-    let one = symplex::int(1);
+    let x = symplex::default_context().symbol("x");
+    let two = symplex::default_context().int(2);
+    let one = symplex::default_context().int(1);
     let sin_2x = (&x * &two).sin();
     let expr = &sin_2x - &one;
 
@@ -210,8 +210,8 @@ fn solve_sin_2x_eq_one_verify() {
 
 #[test]
 fn solve_sin_x_eq_two_empty() {
-    let x = symplex::var("x");
-    let two = symplex::int(2);
+    let x = symplex::default_context().symbol("x");
+    let two = symplex::default_context().int(2);
     let expr = &x.sin() - &two;
 
     let set = expr.solve_as_set(&x);
@@ -225,8 +225,8 @@ fn solve_sin_x_eq_two_empty() {
 
 #[test]
 fn solve_cos_x_eq_minus_two_empty() {
-    let x = symplex::var("x");
-    let neg_two = symplex::int(-2);
+    let x = symplex::default_context().symbol("x");
+    let neg_two = symplex::default_context().int(-2);
     let expr = &x.cos() - &neg_two;
 
     let set = expr.solve_as_set(&x);
@@ -244,8 +244,8 @@ fn solve_cos_x_eq_minus_two_empty() {
 
 #[test]
 fn solve_exp_x_eq_one() {
-    let x = symplex::var("x");
-    let one = symplex::int(1);
+    let x = symplex::default_context().symbol("x");
+    let one = symplex::default_context().int(1);
     let expr = &x.exp() - &one;
 
     let set = expr.solve_as_set(&x);
@@ -264,12 +264,12 @@ fn solve_exp_x_eq_one() {
 
 #[test]
 fn solve_exp_x_eq_one_verify() {
-    let x = symplex::var("x");
-    let one = symplex::int(1);
+    let x = symplex::default_context().symbol("x");
+    let one = symplex::default_context().int(1);
     let expr = &x.exp() - &one;
 
     // Substitute x = 0: exp(0) - 1 = 0
-    let zero = symplex::int(0);
+    let zero = symplex::default_context().int(0);
     let substituted = expr.subs(&x, &zero);
     if let Some(v) = eval(&substituted) {
         assert!(
@@ -285,8 +285,8 @@ fn solve_exp_x_eq_one_verify() {
 
 #[test]
 fn solve_exp_x_eq_five() {
-    let x = symplex::var("x");
-    let five = symplex::int(5);
+    let x = symplex::default_context().symbol("x");
+    let five = symplex::default_context().int(5);
     let expr = &x.exp() - &five;
 
     let set = expr.solve_as_set(&x);
@@ -318,8 +318,8 @@ fn solve_exp_x_eq_five_verify() {
 
 #[test]
 fn solve_sin_x_eq_one_boundary() {
-    let x = symplex::var("x");
-    let one = symplex::int(1);
+    let x = symplex::default_context().symbol("x");
+    let one = symplex::default_context().int(1);
     let expr = &x.sin() - &one;
 
     let set = expr.solve_as_set(&x);
@@ -338,8 +338,8 @@ fn solve_sin_x_eq_one_boundary() {
 
 #[test]
 fn solve_cos_x_eq_one() {
-    let x = symplex::var("x");
-    let one = symplex::int(1);
+    let x = symplex::default_context().symbol("x");
+    let one = symplex::default_context().int(1);
     let expr = &x.cos() - &one;
 
     let set = expr.solve_as_set(&x);

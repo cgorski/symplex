@@ -8,7 +8,7 @@ use symplex::prelude::*;
 
 #[test]
 fn is_even_for_known_even() {
-    let x = symplex::var("x").assume(Assumption::Even);
+    let x = symplex::default_context().symbol("x").assume(Assumption::Even);
     assert_eq!(x.is_even(), Some(true));
     // even implies not odd
     assert_eq!(x.is_odd(), Some(false));
@@ -25,61 +25,61 @@ fn is_odd_for_known_odd() {
 
 #[test]
 fn is_even_odd_for_integer_literals() {
-    assert_eq!(symplex::int(4).is_even(), Some(true));
-    assert_eq!(symplex::int(4).is_odd(), Some(false));
-    assert_eq!(symplex::int(7).is_even(), Some(false));
-    assert_eq!(symplex::int(7).is_odd(), Some(true));
+    assert_eq!(symplex::default_context().int(4).is_even(), Some(true));
+    assert_eq!(symplex::default_context().int(4).is_odd(), Some(false));
+    assert_eq!(symplex::default_context().int(7).is_even(), Some(false));
+    assert_eq!(symplex::default_context().int(7).is_odd(), Some(true));
     // zero is even
-    assert_eq!(symplex::int(0).is_even(), Some(true));
-    assert_eq!(symplex::int(0).is_odd(), Some(false));
+    assert_eq!(symplex::default_context().int(0).is_even(), Some(true));
+    assert_eq!(symplex::default_context().int(0).is_odd(), Some(false));
 }
 
 #[test]
 fn is_prime_for_literal() {
-    assert_eq!(symplex::int(7).is_prime(), Some(true));
-    assert_eq!(symplex::int(4).is_prime(), Some(false));
-    assert_eq!(symplex::int(2).is_prime(), Some(true));
+    assert_eq!(symplex::default_context().int(7).is_prime(), Some(true));
+    assert_eq!(symplex::default_context().int(4).is_prime(), Some(false));
+    assert_eq!(symplex::default_context().int(2).is_prime(), Some(true));
     // 1 is neither prime nor composite; the system returns None
-    assert_eq!(symplex::int(1).is_prime(), None);
+    assert_eq!(symplex::default_context().int(1).is_prime(), None);
 }
 
 #[test]
 fn is_composite_for_literal() {
-    assert_eq!(symplex::int(4).is_composite(), Some(true));
-    assert_eq!(symplex::int(9).is_composite(), Some(true));
-    assert_eq!(symplex::int(7).is_composite(), Some(false));
+    assert_eq!(symplex::default_context().int(4).is_composite(), Some(true));
+    assert_eq!(symplex::default_context().int(9).is_composite(), Some(true));
+    assert_eq!(symplex::default_context().int(7).is_composite(), Some(false));
 }
 
 #[test]
 fn is_transcendental_for_pi() {
-    assert_eq!(symplex::pi().is_transcendental(), Some(true));
+    assert_eq!(symplex::default_context().pi().is_transcendental(), Some(true));
     // transcendental implies not algebraic
-    assert_eq!(symplex::pi().is_algebraic(), Some(false));
+    assert_eq!(symplex::default_context().pi().is_algebraic(), Some(false));
 }
 
 #[test]
 fn is_irrational_for_pi() {
-    assert_eq!(symplex::pi().is_irrational(), Some(true));
+    assert_eq!(symplex::default_context().pi().is_irrational(), Some(true));
     // irrational implies not rational
-    assert_eq!(symplex::pi().is_rational(), Some(false));
+    assert_eq!(symplex::default_context().pi().is_rational(), Some(false));
 }
 
 #[test]
 fn is_algebraic_for_rational() {
-    assert_eq!(symplex::rational(1, 3).is_algebraic(), Some(true));
+    assert_eq!(symplex::default_context().rational(1, 3).is_algebraic(), Some(true));
     // rational numbers are not transcendental
-    assert_eq!(symplex::rational(1, 3).is_transcendental(), Some(false));
+    assert_eq!(symplex::default_context().rational(1, 3).is_transcendental(), Some(false));
 }
 
 #[test]
 fn is_algebraic_for_integer() {
-    assert_eq!(symplex::int(5).is_algebraic(), Some(true));
-    assert_eq!(symplex::int(5).is_irrational(), Some(false));
+    assert_eq!(symplex::default_context().int(5).is_algebraic(), Some(true));
+    assert_eq!(symplex::default_context().int(5).is_irrational(), Some(false));
 }
 
 #[test]
 fn is_hermitian_for_real_symbol() {
-    let x = symplex::var("x").assume(Assumption::Real);
+    let x = symplex::default_context().symbol("x").assume(Assumption::Real);
     // real values are hermitian
     assert_eq!(x.is_hermitian(), Some(true));
 }
@@ -97,7 +97,7 @@ fn is_even_unknown_for_bare_symbol() {
 
 #[test]
 fn is_hermitian_for_assumed_hermitian() {
-    let x = symplex::var("x").assume(Assumption::Hermitian);
+    let x = symplex::default_context().symbol("x").assume(Assumption::Hermitian);
     assert_eq!(x.is_hermitian(), Some(true));
 }
 
@@ -151,7 +151,7 @@ fn conjugate_of_complex_literal() {
 #[test]
 fn arg_of_positive_real() {
     // arg(1) = atan2(0, 1) = 0
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let a = one.arg().eval();
     let s = format!("{a}");
     assert!(
@@ -179,7 +179,7 @@ fn arg_of_one_plus_i() {
 #[test]
 fn arg_first_quadrant() {
     // arg(1 + i) = π/4
-    let z = &symplex::int(1) + &symplex::i_unit();
+    let z = &symplex::default_context().int(1) + &symplex::default_context().i_unit();
     let a = z.arg().eval();
     // Should be atan2(1, 1) = π/4
     let v = a.eval_f64().expect("evalf should succeed for arg(1+i)");
@@ -189,7 +189,7 @@ fn arg_first_quadrant() {
 #[test]
 fn arg_second_quadrant() {
     // arg(-1 + i) = 3π/4
-    let z = &symplex::int(-1) + &symplex::i_unit();
+    let z = &symplex::default_context().int(-1) + &symplex::default_context().i_unit();
     let a = z.arg().eval();
     let v = a.eval_f64().expect("evalf should succeed for arg(-1+i)");
     assert!(
@@ -201,7 +201,7 @@ fn arg_second_quadrant() {
 #[test]
 fn arg_negative_real() {
     // arg(-1) = π
-    let z = symplex::int(-1);
+    let z = symplex::default_context().int(-1);
     let a = z.arg().eval();
     let v = a.eval_f64().expect("evalf should succeed for arg(-1)");
     assert!(
@@ -213,7 +213,7 @@ fn arg_negative_real() {
 #[test]
 fn atan2_basic() {
     // atan2(1, 1) = π/4
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let result = one.atan2(&one).eval();
     let v = result.eval_f64().expect("evalf should succeed for atan2(1,1)");
     assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
@@ -221,9 +221,9 @@ fn atan2_basic() {
 
 #[test]
 fn atan2_on_axes() {
-    let zero = symplex::int(0);
-    let one = symplex::int(1);
-    let neg_one = symplex::int(-1);
+    let zero = symplex::default_context().int(0);
+    let one = symplex::default_context().int(1);
+    let neg_one = symplex::default_context().int(-1);
 
     // atan2(0, 1) = 0
     assert_eq!(format!("{}", zero.atan2(&one).eval()), "0");

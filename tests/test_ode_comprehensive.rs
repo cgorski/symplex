@@ -39,7 +39,7 @@ fn verify_first_order_numerically(
     x: &Ex,
     points: &[(i64, i64)],
 ) {
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -51,7 +51,7 @@ fn verify_first_order_numerically(
 
     let mut checked = 0usize;
     for &(num, den) in points {
-        let sample_val = symplex::rational(num, den);
+        let sample_val = symplex::default_context().rational(num, den);
         let residual_at = residual.subs(x, &sample_val);
 
         if let Ok(val) = residual_at.eval_f64() {
@@ -83,7 +83,7 @@ fn verify_second_order_numerically(
     x: &Ex,
     points: &[(i64, i64)],
 ) {
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -102,7 +102,7 @@ fn verify_second_order_numerically(
 
     let mut checked = 0usize;
     for &(num, den) in points {
-        let sample_val = symplex::rational(num, den);
+        let sample_val = symplex::default_context().rational(num, den);
         let residual_at = residual.subs(x, &sample_val);
 
         if let Ok(val) = residual_at.eval_f64() {
@@ -139,8 +139,8 @@ const POSITIVE_POINTS: &[(i64, i64)] = &[(1, 2), (3, 2), (2, 1), (5, 2)];
 #[test]
 fn comprehensive_simple_separable_x_squared() {
     // y' = x² → y = x³/3 + C1
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let x_sq = x.powi(2);
     let ode = &dy - &x_sq; // y' - x² = 0
@@ -168,8 +168,8 @@ fn comprehensive_simple_separable_x_squared() {
 #[test]
 fn comprehensive_simple_separable_expr_macro() {
     // y' - x² = 0 via expr! macro
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) - x ^ 2);
 
     let (sol, constants) = ode
@@ -189,8 +189,8 @@ fn comprehensive_simple_separable_expr_macro() {
 fn comprehensive_full_separable_xy() {
     // y' - xy = 0 → y' = xy → separable: dy/y = x dx → ln|y| = x²/2 + C
     // → y = C1·exp(x²/2)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) - x * y); // y' - xy = 0
 
     // Classification
@@ -217,8 +217,8 @@ fn comprehensive_full_separable_xy() {
 #[test]
 fn comprehensive_full_separable_y_over_x() {
     // y' = y/x → dy/y = dx/x → ln|y| = ln|x| + C → y = C1·x
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &(&y / &x); // y' - y/x = 0
 
@@ -242,8 +242,8 @@ fn comprehensive_full_separable_y_over_x() {
 #[test]
 fn comprehensive_first_order_linear_cc_homogeneous() {
     // y' + 2y = 0 → y = C1·exp(-2x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * y); // y' + 2y = 0
 
     // Classification
@@ -270,8 +270,8 @@ fn comprehensive_first_order_linear_cc_homogeneous() {
 fn comprehensive_first_order_linear_cc_nonhomogeneous() {
     // y' + 2y - exp(-x) = 0 → y' + 2y = exp(-x)
     // Integrating factor μ = exp(2x), solution involves exp terms
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let two_y = &y * 2;
     let neg_x = (&x * -1).exp();
@@ -294,8 +294,8 @@ fn comprehensive_first_order_linear_cc_nonhomogeneous() {
 #[test]
 fn comprehensive_first_order_linear_vc_homogeneous() {
     // y' + 2xy = 0 → y = C1·exp(-x²)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * x * y);
 
     let (sol, constants) = ode
@@ -313,8 +313,8 @@ fn comprehensive_first_order_linear_vc_nonhomogeneous() {
     // y' + y/x - x = 0 → y' + (1/x)·y = x
     // Integrating factor μ = exp(∫1/x dx) = x
     // Solution: y = x²/3 + C1/x
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy + &(&y / &x) - &x; // y' + y/x - x = 0
 
@@ -338,10 +338,10 @@ fn comprehensive_first_order_linear_vc_nonhomogeneous() {
 #[test]
 fn comprehensive_first_order_linear_vc_3x_squared() {
     // y' + 3x²y = 0 → P(x) = 3x², ∫P dx = x³ → y = C1·exp(-x³)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
-    let three = symplex::int(3);
+    let three = symplex::default_context().int(3);
     let x_sq = x.powi(2);
     let ode = &dy + &(&three * &x_sq * &y);
 
@@ -366,13 +366,13 @@ fn comprehensive_exact_first_order() {
     // ∂M/∂y = 2x, ∂N/∂x = 2x — exact!
     // F = ∫M dx = x²y + 3x + g(y), g'(y) = 4y → g = 2y²
     // Solution: x²y + 3x + 2y² = C1
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
 
-    let two = symplex::int(2);
-    let three = symplex::int(3);
-    let four = symplex::int(4);
+    let two = symplex::default_context().int(2);
+    let three = symplex::default_context().int(3);
+    let four = symplex::default_context().int(4);
     let m = &(&two * &x * &y) + &three; // 2xy + 3
     let n = &x.powi(2) + &(&four * &y); // x² + 4y
     let ode = &m + &(&n * &dy);
@@ -404,8 +404,8 @@ fn comprehensive_exact_first_order() {
 fn comprehensive_exact_simple_ydx_xdy() {
     // y + x·y' = 0 → M = y, N = x → ∂M/∂y = 1, ∂N/∂x = 1 — exact
     // F = xy, solution: xy = C1
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &y + &(&x * &dy); // y + x·y' = 0
 
@@ -428,8 +428,8 @@ fn comprehensive_exact_simple_ydx_xdy() {
 fn comprehensive_bernoulli_n2_constant_coeff() {
     // y' + y - y² = 0  (P=1, Q=1, n=2)
     // Substitution v = 1/y → v' - v = -1
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let y_sq = y.powi(2);
     let ode = &(&dy + &y) - &y_sq;
@@ -464,8 +464,8 @@ fn comprehensive_bernoulli_n2_constant_coeff() {
 fn comprehensive_bernoulli_y_over_x() {
     // y' + y/x = y²  →  y' + (1/x)·y − y² = 0
     // Bernoulli with P(x) = 1/x, Q(x) = 1, n = 2
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let y_over_x = &y / &x;
     let y_sq = y.powi(2);
@@ -495,10 +495,10 @@ fn comprehensive_bernoulli_y_over_x() {
 #[test]
 fn comprehensive_bernoulli_n2_p_equals_2() {
     // y' + 2y − y² = 0 (P=2, Q=1, n=2)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
-    let two = symplex::int(2);
+    let two = symplex::default_context().int(2);
     let y_sq = y.powi(2);
     let ode = &(&dy + &(&two * &y)) - &y_sq;
 
@@ -524,8 +524,8 @@ fn comprehensive_bernoulli_n2_p_equals_2() {
 fn comprehensive_second_order_cc_distinct_real() {
     // y'' - 3y' + 2y = 0 → r² - 3r + 2 = 0 → (r-1)(r-2) = 0
     // → y = C1·exp(x) + C2·exp(2x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 3) + &(&y * 2); // y'' - 3y' + 2y = 0
@@ -560,8 +560,8 @@ fn comprehensive_second_order_cc_distinct_real() {
 fn comprehensive_second_order_cc_repeated() {
     // y'' - 2y' + y = 0 → r² - 2r + 1 = 0 → (r-1)² = 0 → r = 1 (double)
     // → y = (C1 + C2·x)·exp(x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 2) + &y; // y'' - 2y' + y = 0
@@ -601,8 +601,8 @@ fn comprehensive_second_order_cc_repeated() {
 fn comprehensive_second_order_cc_complex() {
     // y'' + y = 0 → r² + 1 = 0 → r = ±i
     // → y = C1·cos(x) + C2·sin(x) or equivalently C1·exp(ix) + C2·exp(-ix)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y; // y'' + y = 0
@@ -635,8 +635,8 @@ fn comprehensive_second_order_cc_complex() {
 fn comprehensive_second_order_cc_negative_roots() {
     // y'' + 5y' + 6y = 0 → r² + 5r + 6 = 0 → (r+2)(r+3) = 0 → r = -2, -3
     // → y = C1·exp(-2x) + C2·exp(-3x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &(&dy * 5) + &(&y * 6); // y'' + 5y' + 6y = 0
@@ -660,8 +660,8 @@ fn comprehensive_second_order_cc_negative_roots() {
 fn comprehensive_second_order_cc_nonhomogeneous_linear_rhs() {
     // y'' + y = x → y'' + y - x = 0
     // y_h involves exp(±ix), y_p = x (since c=1, try y_p = Ax+B: A=1, B=0)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y - &x; // y'' + y - x = 0
@@ -694,11 +694,11 @@ fn comprehensive_second_order_cc_nonhomogeneous_linear_rhs() {
 fn comprehensive_second_order_cc_nonhomogeneous_constant_rhs() {
     // y'' + y = 1 → y'' + y - 1 = 0
     // y_p = 1 (constant forcing with c=1)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let ode = &d2y + &y - &one; // y'' + y - 1 = 0
 
     let (sol, constants) = ode
@@ -717,8 +717,8 @@ fn comprehensive_second_order_cc_nonhomogeneous_constant_rhs() {
 fn comprehensive_second_order_cc_nonhomogeneous_quadratic_rhs() {
     // y'' + y = x²  →  y'' + y - x² = 0
     // y_p = x² - 2 (via undetermined coefficients)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
@@ -740,11 +740,11 @@ fn comprehensive_second_order_cc_nonhomogeneous_quadratic_rhs() {
 fn comprehensive_second_order_cc_nonhomogeneous_distinct_roots() {
     // y'' - 3y' + 2y = 6 → distinct real roots r=1,2
     // y_p = 6/2 = 3, y_h = C1*exp(x) + C2*exp(2x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
-    let six = symplex::int(6);
+    let six = symplex::default_context().int(6);
     let ode = &d2y - &(&dy * 3) + &(&y * 2) - &six; // y'' - 3y' + 2y - 6 = 0
 
     let (sol, constants) = ode
@@ -754,9 +754,9 @@ fn comprehensive_second_order_cc_nonhomogeneous_distinct_roots() {
     verify_second_order_numerically(&ode, &sol, &constants, &y, &x, SECOND_ORDER_POINTS);
 
     // Also verify that with C1=0, C2=0 the particular solution ≈ 3
-    let c1 = symplex::var("C1");
-    let c2 = symplex::var("C2");
-    let zero = symplex::int(0);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    let zero = symplex::default_context().int(0);
     let particular = sol.subs(&c1, &zero).subs(&c2, &zero);
     if let Ok(v) = particular.eval_f64() {
         assert!(
@@ -776,8 +776,8 @@ fn comprehensive_euler_cauchy_distinct_real() {
     // Characteristic: a=1, b=1, c=-1
     //   r(r-1) + r - 1 = 0 → r² - 1 = 0 → r = 1, -1
     // → y = C1·x + C2·x⁻¹
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
@@ -809,12 +809,12 @@ fn comprehensive_euler_cauchy_x_sq_y_pp_minus_2y() {
     // x²y'' − 2y = 0
     // Characteristic: r(r-1) - 2 = 0 → r² - r - 2 = 0 → (r-2)(r+1) = 0
     // → r = 2, -1 → y = C1·x² + C2·x⁻¹
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
-    let two = symplex::int(2);
+    let two = symplex::default_context().int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
     let ode_type = ode.classify_ode(&y, &x);
@@ -838,8 +838,8 @@ fn comprehensive_euler_cauchy_complex() {
     // x²y'' + xy' + y = 0
     // Characteristic: r(r-1) + r + 1 = 0 → r² + 1 = 0 → r = ±i
     // → y = C1·cos(ln x) + C2·sin(ln x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
@@ -865,8 +865,8 @@ fn comprehensive_euler_cauchy_repeated() {
     // x²y'' + xy' = 0
     // Characteristic: r(r-1) + r = 0 → r² = 0 → r = 0 (double)
     // → y = C1 + C2·ln(x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
@@ -891,13 +891,13 @@ fn comprehensive_euler_cauchy_with_coefficients() {
     // 2x²y'' + 3xy' − y = 0
     // 2r(r-1) + 3r - 1 = 0 → 2r² + r - 1 = 0 → (2r-1)(r+1) = 0
     // → r = 1/2, -1 → y = C1·√x + C2/x
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
-    let two = symplex::int(2);
-    let three = symplex::int(3);
+    let two = symplex::default_context().int(2);
+    let three = symplex::default_context().int(3);
     let ode = &(&(&two * &x_sq * &d2y) + &(&three * &x * &dy)) - &y;
 
     let (sol, constants) = ode
@@ -929,8 +929,8 @@ fn comprehensive_variation_of_parameters_tan() {
     // y'' + y = tan(x)
     // Homogeneous: y₁ = cos(x), y₂ = sin(x)
     // This requires VoP since tan(x) is not polynomial.
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &(&d2y + &y) - &x.tan(); // y'' + y - tan(x) = 0
@@ -962,8 +962,8 @@ fn comprehensive_variation_of_parameters_tan() {
 fn comprehensive_variation_of_parameters_exp() {
     // y'' − y = exp(x) — resonance case, but also solvable by VoP
     // (undetermined coefficients may catch it first)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &(&d2y - &y) - &x.exp(); // y'' - y - exp(x) = 0
@@ -990,8 +990,8 @@ fn comprehensive_variation_of_parameters_exp() {
 fn comprehensive_homogeneous_coefficient_classify() {
     // y' = (x² + y²)/x²  = 1 + (y/x)²
     // After v = y/x substitution: RHS becomes 1 + v² (free of x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let x_sq = x.powi(2);
     let y_sq = y.powi(2);
@@ -1021,8 +1021,8 @@ fn comprehensive_homogeneous_coefficient_classify() {
 fn comprehensive_homogeneous_coefficient_simple() {
     // y' = (x² + y²)/(xy) → RHS can be written as x/y + y/x = 1/v + v
     // where v = y/x
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let x_sq = x.powi(2);
     let y_sq = y.powi(2);
@@ -1049,8 +1049,8 @@ fn comprehensive_homogeneous_coefficient_simple() {
 fn comprehensive_nth_order_reducible_basic() {
     // y'' = y' (missing x explicitly)
     // p = y', dp/dy = 1, p = y + C1, then dy/dx = y + C1 → separable
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &dy; // y'' - y' = 0
@@ -1074,8 +1074,8 @@ fn comprehensive_nth_order_reducible_basic() {
 fn comprehensive_nth_order_reducible_nonlinear() {
     // y·y'' = (y')² → y·p·dp/dy = p² → y·dp/dy = p → dp/p = dy/y
     // → p = C1·y → dy/dx = C1·y → y = exp(C1·x + C2)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let dy_sq = dy.powi(2);
@@ -1108,8 +1108,8 @@ fn comprehensive_nth_order_reducible_nonlinear() {
 #[test]
 fn comprehensive_not_euler_cauchy() {
     // y'' + y = 0 — second-order CC, NOT Euler-Cauchy (no x² on y'')
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y;
@@ -1130,8 +1130,8 @@ fn comprehensive_not_euler_cauchy() {
 #[test]
 fn comprehensive_not_bernoulli() {
     // y' + y = 0 — linear, NOT Bernoulli (n=1 is excluded from Bernoulli)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + y);
 
     let ode_type = ode.classify_ode(&y, &x);
@@ -1149,8 +1149,8 @@ fn comprehensive_not_bernoulli() {
 #[test]
 fn comprehensive_no_derivative_returns_none() {
     // x + y = 0 has no derivative → not an ODE
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x + &y;
 
     let result = expr.solve_ode(&y, &x);
@@ -1163,9 +1163,9 @@ fn comprehensive_no_derivative_returns_none() {
 #[test]
 fn comprehensive_pure_number_returns_none() {
     // 42 = 0 is not an ODE
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let expr = symplex::int(42);
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let expr = symplex::default_context().int(42);
 
     let result = expr.solve_ode(&y, &x);
     assert!(result.is_none(), "pure number should return None");
@@ -1174,8 +1174,8 @@ fn comprehensive_pure_number_returns_none() {
 #[test]
 fn comprehensive_no_derivative_classifies_unknown() {
     // x² + y² = 0 has no derivative
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x.powi(2) + &y.powi(2);
 
     let ode_type = expr.classify_ode(&y, &x);
@@ -1193,12 +1193,12 @@ fn comprehensive_no_derivative_classifies_unknown() {
 #[test]
 fn comprehensive_check_ode_solution_euler_cauchy() {
     // x²y'' − 2y = 0 → y = C1·x² + C2/x
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
-    let two = symplex::int(2);
+    let two = symplex::default_context().int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
     let result = ode.solve_ode(&y, &x);
@@ -1215,8 +1215,8 @@ fn comprehensive_check_ode_solution_euler_cauchy() {
 #[test]
 fn comprehensive_check_ode_solution_first_order_linear() {
     // y' + 2y = 0 → y = C1·exp(-2x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * y);
 
     let (sol, constants) = ode
@@ -1235,8 +1235,8 @@ fn comprehensive_check_ode_solution_first_order_linear() {
 
 #[test]
 fn comprehensive_regression_all_basic_types() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
 
@@ -1290,8 +1290,8 @@ fn comprehensive_regression_all_basic_types() {
 #[test]
 fn comprehensive_multipoint_first_order_linear_cc() {
     // y' + 2y = 0 → y = C1·exp(-2x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * y);
     let (sol, constants) = ode
         .solve_ode(&y, &x)
@@ -1305,8 +1305,8 @@ fn comprehensive_multipoint_first_order_linear_cc() {
 #[test]
 fn comprehensive_multipoint_second_order_distinct() {
     // y'' - 3y' + 2y = 0
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 3) + &(&y * 2);
@@ -1321,12 +1321,12 @@ fn comprehensive_multipoint_second_order_distinct() {
 #[test]
 fn comprehensive_multipoint_euler_cauchy() {
     // x²y'' − 2y = 0 → y = C1·x² + C2/x
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
-    let two = symplex::int(2);
+    let two = symplex::default_context().int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
     let (sol, constants) = ode

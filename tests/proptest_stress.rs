@@ -12,9 +12,9 @@ mod common;
 /// Generate a random expression using the global context.
 fn arb_expr(depth: u32) -> impl Strategy<Value = Ex> {
     let leaf = prop_oneof![
-        (-10i64..10).prop_map(symplex::int),
-        Just(symplex::var("x")),
-        Just(symplex::var("y")),
+        (-10i64..10).prop_map(|n| symplex::default_context().int(n)),
+        Just(symplex::default_context().symbol("x")),
+        Just(symplex::default_context().symbol("y")),
     ];
 
     leaf.prop_recursive(depth, 64, 3, |inner| {
@@ -34,8 +34,8 @@ fn arb_expr(depth: u32) -> impl Strategy<Value = Ex> {
 #[allow(dead_code)]
 fn arb_poly() -> impl Strategy<Value = Ex> {
     prop::collection::vec(-5i64..5, 1..5).prop_map(|coeffs| {
-        let x = symplex::var("x");
-        let mut result = symplex::int(0);
+        let x = symplex::default_context().symbol("x");
+        let mut result = symplex::default_context().int(0);
         for (i, &c) in coeffs.iter().enumerate() {
             if c != 0 {
                 result = &result + &(&x.powi(i as i64) * c);
@@ -111,7 +111,7 @@ proptest! {
     /// diff never panics and produces non-empty display
     #[test]
     fn stress_diff(e in arb_expr(3)) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let result = e.diff(&x);
         let _s = format!("{result}");
         prop_assert!(!_s.is_empty(), "diff result should display as non-empty");
@@ -120,7 +120,7 @@ proptest! {
     /// integrate never panics (may return unevaluated Integral)
     #[test]
     fn stress_integrate(e in arb_expr(2)) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let result = e.integrate(&x);
         let _s = format!("{result}");
         prop_assert!(!_s.is_empty(), "integrate result should display as non-empty");
@@ -129,7 +129,7 @@ proptest! {
     /// solve never panics (may return empty)
     #[test]
     fn stress_solve(e in arb_expr(2)) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let roots = e.solve_or_empty(&x);
         for r in &roots {
             let _s = format!("{r}");
@@ -140,7 +140,7 @@ proptest! {
     /// subs never panics and produces non-empty display
     #[test]
     fn stress_subs(e in arb_expr(2)) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let result = e.subs_i64(&x, 3);
         let _s = format!("{result}");
         prop_assert!(!_s.is_empty(), "subs result should display as non-empty");
@@ -181,7 +181,7 @@ proptest! {
     /// contains never panics
     #[test]
     fn stress_contains(e in arb_expr(3)) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let _b = e.contains(&x);
         let _s = format!("{_b}");
         prop_assert!(!_s.is_empty());
@@ -257,8 +257,8 @@ proptest! {
     /// differentiating should give back the original.
     #[test]
     fn integration_roundtrip_poly(coeffs in prop::collection::vec(-5i64..5, 1..4)) {
-        let x = symplex::var("x");
-        let mut poly = symplex::int(0);
+        let x = symplex::default_context().symbol("x");
+        let mut poly = symplex::default_context().int(0);
         for (i, &c) in coeffs.iter().enumerate() {
             if c != 0 {
                 poly = &poly + &(&x.powi(i as i64) * c);
@@ -284,7 +284,7 @@ proptest! {
         b in -5i64..5,
         pt in 1i64..5,
     ) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = &(&x.powi(2) * a) + &(&x * b);
         let simplified = expr.simplify();
         let v1 = format!("{}", expr.subs_i64(&x, pt));
@@ -301,7 +301,7 @@ proptest! {
         _b in -3i64..3,
         pt in 1i64..5,
     ) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = (&x + a).powi(2);
         let expanded = expr.expand();
         let v1 = format!("{}", expr.subs_i64(&x, pt));
@@ -317,7 +317,7 @@ proptest! {
     /// factor(p) * together should preserve numerical value
     #[test]
     fn factor_preserves_value(a in -3i64..3, b in -3i64..3, pt in 1i64..5) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         // Build (x-a)(x-b) expanded
         let p = (&x - a) * (&x - b);
         let expanded = p.expand();
@@ -338,7 +338,7 @@ proptest! {
         b in -5i64..5,
         c in -5i64..5,
     ) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let eq = &(&x.powi(2) * a) + &(&x * b) + c;
         let roots = eq.solve_or_empty(&x);
         let mut bail = common::BailCounter::new("solve_roots_satisfy");

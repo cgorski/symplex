@@ -74,15 +74,15 @@ fn concurrent_read_while_write() {
     writer.join().unwrap();
 }
 
-/// Global default context: multiple threads calling symplex::var()
+/// Global default context: multiple threads calling symplex::default_context().symbol()
 /// should all get consistent results.
 #[test]
 fn global_context_thread_safety() {
     let handles: Vec<_> = (0..8)
         .map(|_| {
             thread::spawn(|| {
-                let x = symplex::var("x");
-                let y = symplex::var("y");
+                let x = symplex::default_context().symbol("x");
+                let y = symplex::default_context().symbol("y");
                 let expr = &x + &y;
                 format!("{expr}")
             })
@@ -99,7 +99,7 @@ fn global_context_thread_safety() {
 /// Simplify and expand called concurrently on the same expression.
 #[test]
 fn concurrent_simplify_and_expand() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (&x + 1).powi(2);
 
     let handles: Vec<_> = (0..4)
@@ -126,7 +126,7 @@ fn concurrent_simplify_and_expand() {
 /// Diff, integrate, and solve from multiple threads.
 #[test]
 fn concurrent_calculus_operations() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.powi(3) - &x;
 
     let h1 = {

@@ -5,7 +5,6 @@
 
 use symplex::matrix::Matrix;
 use symplex::prelude::*;
-use symplex::vars;
 
 // ── 4×4 integer matrix ────────────────────────────────────────────────
 
@@ -104,7 +103,7 @@ fn bareiss_singular() {
 
 #[test]
 fn bareiss_symbolic_2x2_matches_direct() {
-    vars!(a, b, c, d);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b, c, d);
     let m = matrix![[a, b], [c, d]];
     let det = m.det().unwrap();
     // Should be a*d - b*c
@@ -174,7 +173,7 @@ fn bareiss_matches_for_seeded_4x4() {
         let data: Vec<Vec<Ex>> = (0..4)
             .map(|i| {
                 (0..4)
-                    .map(|j| symplex::int(((i * 4 + j + seed * 7 + 1) % 11) as i64 - 5))
+                    .map(|j| symplex::default_context().int(((i * 4 + j + seed * 7 + 1) % 11) as i64 - 5))
                     .collect()
             })
             .collect();
@@ -196,9 +195,9 @@ fn bareiss_5x5_diagonal() {
     // det of diag(2, 3, 4, 5, 6) = 720
     let m = Matrix::from_fn(5, 5, |i, j| {
         if i == j {
-            symplex::int(i as i64 + 2)
+            symplex::default_context().int(i as i64 + 2)
         } else {
-            symplex::int(0)
+            symplex::default_context().int(0)
         }
     });
     let d = m.det().unwrap();

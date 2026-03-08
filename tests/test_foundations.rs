@@ -610,8 +610,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_basic() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
-//     let eq = Equation::new(&x + 1, symplex::int(5));
+//     let x = symplex::default_context().symbol("x");
+//     let eq = Equation::new(&x + 1, symplex::default_context().int(5));
 //     let s = format!("{eq}");
 //     assert!(s.contains("="), "equation should display with =: {s}");
 // }
@@ -619,8 +619,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_solve_linear() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
-//     let eq = Equation::new(&x * 2, symplex::int(10));
+//     let x = symplex::default_context().symbol("x");
+//     let eq = Equation::new(&x * 2, symplex::default_context().int(10));
 //     let roots = eq.solve_or_empty(&x);
 //     assert_eq!(roots.len(), 1);
 //     assert_eq!(format!("{}", roots[0]), "5");
@@ -629,8 +629,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_solve_quadratic() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
-//     let eq = Equation::new(x.powi(2), symplex::int(9));
+//     let x = symplex::default_context().symbol("x");
+//     let eq = Equation::new(x.powi(2), symplex::default_context().int(9));
 //     let roots = eq.solve_or_empty(&x);
 //     assert_eq!(roots.len(), 2, "x²=9 should have 2 roots");
 //     let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -641,8 +641,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_subs_check() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
-//     let eq = Equation::new(&x + 1, symplex::int(5));
+//     let x = symplex::default_context().symbol("x");
+//     let eq = Equation::new(&x + 1, symplex::default_context().int(5));
 //     let at_4 = eq.subs_i64(&x, 4);
 //     assert!(at_4.is_satisfied() == Some(true));
 // }
@@ -650,8 +650,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_subs_wrong() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
-//     let eq = Equation::new(&x + 1, symplex::int(5));
+//     let x = symplex::default_context().symbol("x");
+//     let eq = Equation::new(&x + 1, symplex::default_context().int(5));
 //     let at_3 = eq.subs_i64(&x, 3);
 //     // 4 ≠ 5
 //     assert!(at_3.is_satisfied() != Some(true));
@@ -660,8 +660,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_to_expr() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
-//     let eq = Equation::new(x.clone(), symplex::int(3));
+//     let x = symplex::default_context().symbol("x");
+//     let eq = Equation::new(x.clone(), symplex::default_context().int(3));
 //     let expr = eq.to_expr();
 //     // Should be x - 3
 //     let s = format!("{expr}");
@@ -671,10 +671,10 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_simplify() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
+//     let x = symplex::default_context().symbol("x");
 //     let eq = Equation::new(
 //         &x.sin().powi(2) + &x.cos().powi(2),
-//         symplex::int(1),
+//         symplex::default_context().int(1),
 //     );
 //     let simplified = eq.simplify();
 //     assert_eq!(format!("{}", simplified.lhs), "1");
@@ -683,8 +683,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_expand() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
-//     let eq = Equation::new((&x + 1).powi(2), symplex::int(4));
+//     let x = symplex::default_context().symbol("x");
+//     let eq = Equation::new((&x + 1).powi(2), symplex::default_context().int(4));
 //     let expanded = eq.expand();
 //     let s = format!("{}", expanded.lhs);
 //     assert!(s.contains("x^2") || s.contains("x"), "should expand: {s}");
@@ -693,8 +693,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_with_complex() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
-//     let eq = Equation::new(x.powi(2), symplex::int(-1));
+//     let x = symplex::default_context().symbol("x");
+//     let eq = Equation::new(x.powi(2), symplex::default_context().int(-1));
 //     let roots = eq.solve_or_empty(&x);
 //     assert_eq!(roots.len(), 2, "x²=-1 should have complex roots");
 //     let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -705,8 +705,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_debug_format() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
-//     let eq = Equation::new(x.powi(2), symplex::int(4));
+//     let x = symplex::default_context().symbol("x");
+//     let eq = Equation::new(x.powi(2), symplex::default_context().int(4));
 //     let s = format!("{eq:?}");
 //     assert!(s.contains("Equation"), "debug: {s}");
 // }
@@ -714,8 +714,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_eval() {
 //     use symplex::eq::Equation;
-//     let x = symplex::var("x");
-//     let eq = Equation::new(x.sin().powi(2) + x.cos().powi(2), symplex::int(2));
+//     let x = symplex::default_context().symbol("x");
+//     let eq = Equation::new(x.sin().powi(2) + x.cos().powi(2), symplex::default_context().int(2));
 //     let evald = eq.eval();
 //     let s = format!("{evald}");
 //     assert!(s.contains("="), "should still be equation: {s}");
@@ -727,8 +727,8 @@ fn binomial_node_is_not_atom() {
 //     let ctx = Context::new();
 //     let x = ctx.symbol("x");
 //     let y = ctx.symbol("y");
-//     let eq = Equation::new(&x + &y, symplex::int(10));
-//     let substituted = eq.subs(&y, &symplex::int(3));
+//     let eq = Equation::new(&x + &y, symplex::default_context().int(10));
+//     let substituted = eq.subs(&y, &symplex::default_context().int(3));
 //     let roots = substituted.solve_or_empty(&x);
 //     assert!(!roots.is_empty(), "x + 3 = 10 should solve");
 //     assert_eq!(format!("{}", roots[0]), "7");
@@ -745,7 +745,7 @@ fn binomial_node_is_not_atom() {
 #[test]
 fn solve_linear_equation_via_expr() {
     // x + 1 = 5  ⟹  (x + 1) - 5 = 0  ⟹  x - 4 = 0
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x + 1 - 5;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -755,7 +755,7 @@ fn solve_linear_equation_via_expr() {
 #[test]
 fn solve_linear_2x_eq_10() {
     // 2x = 10  ⟹  2x - 10 = 0
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x * 2 - 10;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -765,7 +765,7 @@ fn solve_linear_2x_eq_10() {
 #[test]
 fn solve_quadratic_x2_eq_9() {
     // x² = 9  ⟹  x² - 9 = 0
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(2) - 9;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²-9=0 should have 2 roots");
@@ -777,7 +777,7 @@ fn solve_quadratic_x2_eq_9() {
 #[test]
 fn solve_quadratic_x2_eq_neg1_complex() {
     // x² = -1  ⟹  x² + 1 = 0
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(2) + 1;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²+1=0 should have 2 complex roots");
@@ -790,7 +790,7 @@ fn solve_quadratic_x2_eq_neg1_complex() {
 fn substitution_verifies_solution() {
     // x + 1 = 5  →  expr = x + 1 - 5  →  solve gives x = 4
     // Verify: subs(x, 4) into expr should give 0
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x + 1 - 5;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -806,7 +806,7 @@ fn substitution_verifies_solution() {
 #[test]
 fn pythagorean_identity_simplifies() {
     // sin²(x) + cos²(x) should simplify to 1
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin().powi(2) + x.cos().powi(2);
     let simplified = expr.simplify();
     assert_eq!(format!("{simplified}"), "1");
@@ -815,7 +815,7 @@ fn pythagorean_identity_simplifies() {
 #[test]
 fn expand_square_binomial() {
     // (x + 1)² should expand to x^2 + 2*x + 1
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (&x + 1).powi(2);
     let expanded = expr.expand();
     let s = format!("{expanded}");
@@ -825,8 +825,8 @@ fn expand_square_binomial() {
 #[test]
 fn to_expr_pattern_lhs_minus_rhs() {
     // Equation "x = 3" → to_expr is "x - 3"
-    let x = symplex::var("x");
-    let three = symplex::int(3);
+    let x = symplex::default_context().symbol("x");
+    let three = symplex::default_context().int(3);
     let to_expr = &x - &three;
     let s = format!("{to_expr}");
     assert_eq!(s, "x - 3", "x - 3 canonical form");

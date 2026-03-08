@@ -83,8 +83,8 @@ fn main() {
     println!("∫ f(x) dx = {poly_anti}");
 
     // Definite integral
-    let zero = symplex::int(0);
-    let one = symplex::int(1);
+    let zero = symplex::default_context().int(0);
+    let one = symplex::default_context().int(1);
     let area = expr!(x ^ 2).definite_integral(&x, &zero, &one);
     println!("∫₀¹ x² dx = {area}");
 
@@ -118,7 +118,7 @@ fn main() {
         println!("E = mc² = {}", energy);  // "c^2*m [J]", not "89875517873681764*m"
 
         // Evaluates to exact value:
-        let val = energy.subs(&m, &symplex::int(1)).eval_f64().unwrap();
+        let val = energy.subs(&m, &symplex::default_context().int(1)).eval_f64().unwrap();
         println!("E(m=1kg) = {:.3e} J", val);
         println!();
     }
@@ -207,7 +207,7 @@ fn main() {
     // Exact rational conversions — no floating-point approximation.
     {
         use symplex::units::*;
-        let val = symplex::int(1);
+        let val = symplex::default_context().int(1);
         println!("\n--- Unit Conversions ---");
         println!("1 hp = {} W (exact!)", Power::horsepower(&val).eval());
         println!("1 psi = {} Pa", Pressure::psi(&val).eval());
@@ -226,7 +226,7 @@ fn main() {
     // ── 14. Limits ─────────────────────────────────────────────────
     println!("\n--- Limits ---");
     let limit_expr = &x.sin() / &x;
-    let lim = limit_expr.limit(&x, &symplex::int(0)).unwrap();
+    let lim = limit_expr.limit(&x, &symplex::default_context().int(0)).unwrap();
     println!("lim(x→0) sin(x)/x = {lim}");
 
     // ── 15. Series Expansion ───────────────────────────────────────

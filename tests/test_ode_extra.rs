@@ -25,7 +25,7 @@ fn verify_first_order(
     sample_x_num: i64,
     sample_x_den: i64,
 ) {
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -35,7 +35,7 @@ fn verify_first_order(
     let dy_formal = y.formal_diff(x);
     let residual = ode_expr.subs(&dy_formal, &sol_prime).subs(y, &concrete_sol);
 
-    let sample_val = symplex::rational(sample_x_num, sample_x_den);
+    let sample_val = symplex::default_context().rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at
@@ -57,12 +57,12 @@ fn ode_homogeneous_coeff_basic() {
     // y' = (x + y) / x = 1 + y/x  →  f(v) = 1 + v
     // Substitution: v + x·v' = 1 + v  →  x·v' = 1  →  v = ln|x| + C1
     // Back-sub: y/x = ln|x| + C1  →  y = x·(ln|x| + C1)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
 
     // dy/dx - (x + y)/x = 0  →  dy/dx - 1 - y/x = 0
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let y_over_x = &y / &x;
     let ode = &dy - &one - &y_over_x;
 
@@ -86,8 +86,8 @@ fn ode_homogeneous_coeff_quadratic() {
     // y' = (x² + y²) / (x·y)  →  f(v) = (1 + v²)/v = 1/v + v
     // After substitution: v + x·v' = 1/v + v  →  x·v' = 1/v  →  v dv = dx/x
     // ∫ v dv = ln|x| + C  →  v²/2 = ln|x| + C
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
 
     let x_sq = x.powi(2);
@@ -111,8 +111,8 @@ fn ode_homogeneous_coeff_quadratic() {
 fn ode_classify_homogeneous() {
     // y' = (x² + y²)/x² = 1 + (y/x)²  →  non-linear, so not caught by linear VC
     // After substituting y = v·x: RHS = 1 + v² (free of x) → HomogeneousCoefficient
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
 
     let x_sq = x.powi(2);
@@ -137,8 +137,8 @@ fn ode_nth_reducible_basic() {
     // y'' = y'  (missing x explicitly)
     // Substitution: p·dp/dy = p  →  dp/dy = 1  →  p = y + C1
     // Then dy/dx = y + C1  →  separable
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
 
@@ -161,8 +161,8 @@ fn ode_nth_reducible_nonlinear() {
     // y·y'' = (y')²  →  y·p·dp/dy = p²  →  y·dp/dy = p  →  dp/p = dy/y
     // → ln|p| = ln|y| + C  →  p = C1·y  →  dy/dx = C1·y
     // → y = exp(C1·x + C2)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
 
@@ -199,7 +199,7 @@ fn ode_nth_reducible_nonlinear() {
 fn integrate_ln_ln_x() {
     // ∫ ln(ln(x)) dx should NOT be unevaluated
     // Expected: x·ln(ln(x)) − li(x)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let ln_x = x.ln();
     let ln_ln_x = ln_x.ln();
 
@@ -225,8 +225,8 @@ fn integrate_ln_ln_x() {
 fn no_regression_existing_odes() {
     // Simple separable: y' = x → y = x²/2 + C1
     {
-        let x = symplex::var("x");
-        let y = symplex::var("y");
+        let x = symplex::default_context().symbol("x");
+        let y = symplex::default_context().symbol("y");
         let ode = expr!(diff(y, x) - x);
         let result = ode.solve_ode(&y, &x);
         assert!(result.is_some(), "y' = x should still work (simple separable)");
@@ -234,8 +234,8 @@ fn no_regression_existing_odes() {
 
     // First-order linear CC: y' + 2y = 0 → y = C1·exp(-2x)
     {
-        let x = symplex::var("x");
-        let y = symplex::var("y");
+        let x = symplex::default_context().symbol("x");
+        let y = symplex::default_context().symbol("y");
         let ode = expr!(diff(y, x) + 2 * y);
         let result = ode.solve_ode(&y, &x);
         assert!(result.is_some(), "y' + 2y = 0 should still work (linear CC)");
@@ -247,8 +247,8 @@ fn no_regression_existing_odes() {
 
     // Second-order CC homogeneous: y'' + y = 0 → C1·cos(x) + C2·sin(x)
     {
-        let x = symplex::var("x");
-        let y = symplex::var("y");
+        let x = symplex::default_context().symbol("x");
+        let y = symplex::default_context().symbol("y");
         let dy = y.formal_diff(&x);
         let d2y = dy.formal_diff(&x);
         let ode = &d2y + &y;
@@ -268,8 +268,8 @@ fn no_regression_existing_odes() {
 
     // Full separable: y' = x·y → y = C1·exp(x²/2)
     {
-        let x = symplex::var("x");
-        let y = symplex::var("y");
+        let x = symplex::default_context().symbol("x");
+        let y = symplex::default_context().symbol("y");
         let ode = expr!(diff(y, x) - x * y);
         let result = ode.solve_ode(&y, &x);
         assert!(result.is_some(), "y' = xy should still work (full separable)");
@@ -281,8 +281,8 @@ fn no_regression_existing_odes() {
 
     // Variable-coefficient linear: y' + 2xy = 0 → y = C1·exp(-x²)
     {
-        let x = symplex::var("x");
-        let y = symplex::var("y");
+        let x = symplex::default_context().symbol("x");
+        let y = symplex::default_context().symbol("y");
         let ode = expr!(diff(y, x) + 2 * x * y);
         let result = ode.solve_ode(&y, &x);
         assert!(result.is_some(), "y' + 2xy = 0 should still work");
@@ -291,8 +291,8 @@ fn no_regression_existing_odes() {
 
 #[test]
 fn no_regression_classification_simple_separable() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) - x);
 
     let ode_type = ode.classify_ode(&y, &x);
@@ -306,8 +306,8 @@ fn no_regression_classification_simple_separable() {
 #[test]
 fn no_regression_classification_bernoulli() {
     // y' + y = y²  → Bernoulli with n = 2
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let y_sq = y.powi(2);
     let ode = &(&dy + &y) - &y_sq;

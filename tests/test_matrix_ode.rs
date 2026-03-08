@@ -25,7 +25,7 @@ fn matrix_identity_3x3() {
 
 #[test]
 fn matrix_from_fn() {
-    let m = Matrix::from_fn(2, 3, |i, j| symplex::int((i * 3 + j + 1) as i64));
+    let m = Matrix::from_fn(2, 3, |i, j| symplex::default_context().int((i * 3 + j + 1) as i64));
     assert_eq!(format!("{}", m.get(0, 0)), "1");
     assert_eq!(format!("{}", m.get(0, 2)), "3");
     assert_eq!(format!("{}", m.get(1, 0)), "4");
@@ -34,11 +34,11 @@ fn matrix_from_fn() {
 
 #[test]
 fn matrix_row_col_vector() {
-    let r = Matrix::row_vector(vec![symplex::int(1), symplex::int(2), symplex::int(3)]);
+    let r = Matrix::row_vector(vec![symplex::default_context().int(1), symplex::default_context().int(2), symplex::default_context().int(3)]);
     assert_eq!(r.nrows(), 1);
     assert_eq!(r.ncols(), 3);
 
-    let c = Matrix::col_vector(vec![symplex::int(1), symplex::int(2)]);
+    let c = Matrix::col_vector(vec![symplex::default_context().int(1), symplex::default_context().int(2)]);
     assert_eq!(c.nrows(), 2);
     assert_eq!(c.ncols(), 1);
 }
@@ -49,7 +49,7 @@ fn matrix_row_col_vector() {
 
 #[test]
 fn matrix_transpose() {
-    let m = Matrix::from_fn(2, 3, |i, j| symplex::int((i * 3 + j) as i64));
+    let m = Matrix::from_fn(2, 3, |i, j| symplex::default_context().int((i * 3 + j) as i64));
     let t = m.transpose();
     assert_eq!(t.nrows(), 3);
     assert_eq!(t.ncols(), 2);
@@ -60,12 +60,12 @@ fn matrix_transpose() {
 #[test]
 fn matrix_add() {
     let a = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(2)],
-        vec![symplex::int(3), symplex::int(4)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(2)],
+        vec![symplex::default_context().int(3), symplex::default_context().int(4)],
     ]).unwrap();
     let b = Matrix::new(vec![
-        vec![symplex::int(10), symplex::int(20)],
-        vec![symplex::int(30), symplex::int(40)],
+        vec![symplex::default_context().int(10), symplex::default_context().int(20)],
+        vec![symplex::default_context().int(30), symplex::default_context().int(40)],
     ]).unwrap();
     let c = a.add(&b).unwrap();
     assert_eq!(format!("{}", c.get(0, 0)), "11");
@@ -75,7 +75,7 @@ fn matrix_add() {
 #[test]
 fn matrix_scale() {
     let m = Matrix::identity(2);
-    let scaled = m.scale(&symplex::int(5));
+    let scaled = m.scale(&symplex::default_context().int(5));
     assert_eq!(format!("{}", scaled.get(0, 0)), "5");
     assert_eq!(format!("{}", scaled.get(0, 1)), "0");
 }
@@ -83,7 +83,7 @@ fn matrix_scale() {
 #[test]
 fn matrix_matmul_identity() {
     let id = Matrix::identity(3);
-    let m = Matrix::from_fn(3, 3, |i, j| symplex::int((i * 3 + j + 1) as i64));
+    let m = Matrix::from_fn(3, 3, |i, j| symplex::default_context().int((i * 3 + j + 1) as i64));
     let result = id.matmul(&m).unwrap();
     assert_eq!(format!("{}", result.get(0, 0)), format!("{}", m.get(0, 0)));
     assert_eq!(format!("{}", result.get(2, 2)), format!("{}", m.get(2, 2)));
@@ -92,12 +92,12 @@ fn matrix_matmul_identity() {
 #[test]
 fn matrix_matmul_2x2() {
     let a = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(2)],
-        vec![symplex::int(3), symplex::int(4)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(2)],
+        vec![symplex::default_context().int(3), symplex::default_context().int(4)],
     ]).unwrap();
     let b = Matrix::new(vec![
-        vec![symplex::int(5), symplex::int(6)],
-        vec![symplex::int(7), symplex::int(8)],
+        vec![symplex::default_context().int(5), symplex::default_context().int(6)],
+        vec![symplex::default_context().int(7), symplex::default_context().int(8)],
     ]).unwrap();
     let c = a.matmul(&b).unwrap();
     // [1*5+2*7, 1*6+2*8] = [19, 22]
@@ -111,8 +111,8 @@ fn matrix_matmul_2x2() {
 #[test]
 fn matrix_det_2x2() {
     let m = Matrix::new(vec![
-        vec![symplex::int(3), symplex::int(7)],
-        vec![symplex::int(1), symplex::int(5)],
+        vec![symplex::default_context().int(3), symplex::default_context().int(7)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(5)],
     ]).unwrap();
     assert_eq!(format!("{}", m.det().unwrap()), "8");
 }
@@ -120,9 +120,9 @@ fn matrix_det_2x2() {
 #[test]
 fn matrix_det_3x3_singular() {
     let m = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(2), symplex::int(3)],
-        vec![symplex::int(4), symplex::int(5), symplex::int(6)],
-        vec![symplex::int(7), symplex::int(8), symplex::int(9)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(2), symplex::default_context().int(3)],
+        vec![symplex::default_context().int(4), symplex::default_context().int(5), symplex::default_context().int(6)],
+        vec![symplex::default_context().int(7), symplex::default_context().int(8), symplex::default_context().int(9)],
     ]).unwrap();
     assert_eq!(format!("{}", m.det().unwrap()), "0");
 }
@@ -130,9 +130,9 @@ fn matrix_det_3x3_singular() {
 #[test]
 fn matrix_det_3x3_nonsingular() {
     let m = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(2), symplex::int(3)],
-        vec![symplex::int(0), symplex::int(1), symplex::int(4)],
-        vec![symplex::int(5), symplex::int(6), symplex::int(0)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(2), symplex::default_context().int(3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1), symplex::default_context().int(4)],
+        vec![symplex::default_context().int(5), symplex::default_context().int(6), symplex::default_context().int(0)],
     ]).unwrap();
     let det = m.det().unwrap();
     // det = 1(0-24) - 2(0-20) + 3(0-5) = -24 + 40 - 15 = 1
@@ -142,8 +142,8 @@ fn matrix_det_3x3_nonsingular() {
 #[test]
 fn matrix_trace() {
     let m = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(4)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(4)],
     ]).unwrap();
     assert_eq!(format!("{}", m.trace().unwrap()), "5");
 }
@@ -154,7 +154,7 @@ fn matrix_trace() {
 
 #[test]
 fn matrix_diff() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![vec![x.powi(2), x.sin()], vec![x.cos(), x.exp()]]).unwrap();
     let dm = m.diff(&x);
     let s00 = format!("{}", dm.get(0, 0));
@@ -165,17 +165,17 @@ fn matrix_diff() {
 
 #[test]
 fn matrix_subs() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![vec![x.powi(2), &x + 1]]).unwrap();
-    let at2 = m.subs(&x, &symplex::int(2));
+    let at2 = m.subs(&x, &symplex::default_context().int(2));
     assert_eq!(format!("{}", at2.get(0, 0)), "4");
     assert_eq!(format!("{}", at2.get(0, 1)), "3");
 }
 
 #[test]
 fn jacobian_2x2() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let f1 = &x.powi(2) * &y;
     let f2 = &x + &y.powi(3);
     let j = jacobian(&[&f1, &f2], &[&x, &y]);
@@ -192,8 +192,8 @@ fn jacobian_2x2() {
 #[test]
 fn matrix_display() {
     let m = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(2)],
-        vec![symplex::int(3), symplex::int(4)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(2)],
+        vec![symplex::default_context().int(3), symplex::default_context().int(4)],
     ]).unwrap();
     let s = format!("{m}");
     // Verify all four entries appear and the matrix renders with structure
@@ -206,8 +206,8 @@ fn matrix_display() {
 #[test]
 fn matrix_map() {
     let m = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(4)],
-        vec![symplex::int(9), symplex::int(16)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(4)],
+        vec![symplex::default_context().int(9), symplex::default_context().int(16)],
     ]).unwrap();
     let sqrt_m = m.map(|e| e.sqrt().eval());
     assert_eq!(format!("{}", sqrt_m.get(0, 0)), "1");
@@ -222,7 +222,7 @@ fn matrix_map() {
 
 #[test]
 fn matrix_macro_symbolic() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = matrix![[x, 0], [0, x ^ 2]];
     let det = m.det().unwrap();
     let s = format!("{det}");
@@ -242,40 +242,40 @@ fn matrix_macro_constants() {
 
 #[test]
 fn equation_display() {
-    let x = symplex::var("x");
-    let eq = Equation::new(&x + 1, symplex::int(5));
+    let x = symplex::default_context().symbol("x");
+    let eq = Equation::new(&x + 1, symplex::default_context().int(5));
     let s = format!("{eq}");
     assert!(s.contains("="), "should display equation: {s}");
 }
 
 #[test]
 fn equation_solve() {
-    let x = symplex::var("x");
-    let eq = Equation::new(x.powi(2), symplex::int(4));
+    let x = symplex::default_context().symbol("x");
+    let eq = Equation::new(x.powi(2), symplex::default_context().int(4));
     let roots = eq.solve_or_empty(&x);
     assert_eq!(roots.len(), 2);
 }
 
 #[test]
 fn equation_subs_check() {
-    let x = symplex::var("x");
-    let eq = Equation::new(&x * 3, symplex::int(12));
+    let x = symplex::default_context().symbol("x");
+    let eq = Equation::new(&x * 3, symplex::default_context().int(12));
     let at4 = eq.subs_i64(&x, 4);
     assert_eq!(at4.is_satisfied(), Some(true));
 }
 
 #[test]
 fn equation_simplify() {
-    let x = symplex::var("x");
-    let eq = Equation::new(&x.sin().powi(2) + &x.cos().powi(2), symplex::int(1));
+    let x = symplex::default_context().symbol("x");
+    let eq = Equation::new(&x.sin().powi(2) + &x.cos().powi(2), symplex::default_context().int(1));
     let simplified = eq.simplify();
     assert_eq!(format!("{}", simplified.lhs), "1");
 }
 
 #[test]
 fn equation_to_expr() {
-    let x = symplex::var("x");
-    let eq = Equation::new(&x + 5, symplex::int(10));
+    let x = symplex::default_context().symbol("x");
+    let eq = Equation::new(&x + 5, symplex::default_context().int(10));
     let expr = eq.to_expr();
     let roots = expr.solve_or_empty(&x);
     assert_eq!(format!("{}", roots[0]), "5");
@@ -287,7 +287,7 @@ fn equation_to_expr() {
 
 #[test]
 fn eq_macro_linear() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(x + 1 = 5);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -296,7 +296,7 @@ fn eq_macro_linear() {
 
 #[test]
 fn eq_macro_quadratic() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(x ^ 2 = 9);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2);
@@ -304,7 +304,7 @@ fn eq_macro_quadratic() {
 
 #[test]
 fn eq_macro_with_rational() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(2 * x = 1);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);

@@ -390,8 +390,8 @@ fn dim_parenthesised_addition_then_multiply() {
 
 #[test]
 fn dim_numerical_eval() {
-    let m = Mass::from_ex(symplex::int(10));
-    let a = Acceleration::from_ex(symplex::rational(98, 10));
+    let m = Mass::from_ex(symplex::default_context().int(10));
+    let a = Acceleration::from_ex(symplex::default_context().rational(98, 10));
     let f: Force = symplex::dim!(Force: m * a);
     let val = f.eval_f64().unwrap();
     assert!((val - 98.0).abs() < 1e-10);
@@ -399,7 +399,7 @@ fn dim_numerical_eval() {
 
 #[test]
 fn dim_circle_area_numerical() {
-    let r = Length::from_ex(symplex::int(5));
+    let r = Length::from_ex(symplex::default_context().int(5));
     let a: Area = symplex::dim!(Area: pi * r^2);
     let val = a.eval().eval_f64().unwrap();
     let expected = std::f64::consts::PI * 25.0;

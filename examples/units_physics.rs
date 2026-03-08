@@ -78,8 +78,8 @@ fn main() {
 
     // Substitute numerical values: m = 10 kg, a = 9.81 m/s²
     let f_num = f.clone()
-        .subs(&m, &symplex::rational(10, 1))
-        .subs(&a, &symplex::rational(981, 100))
+        .subs(&m, &symplex::default_context().rational(10, 1))
+        .subs(&a, &symplex::default_context().rational(981, 100))
         .eval();
     println!("  F(m=10, a=9.81) = {}", f_num);
 
@@ -115,14 +115,14 @@ fn main() {
 
     // Numerical: I = 3 A, R = 47 Ω → V = 141 V, P = 423 W
     let v_num = volt.clone()
-        .subs(&i, &symplex::rational(3, 1))
-        .subs(&r, &symplex::rational(47, 1))
+        .subs(&i, &symplex::default_context().rational(3, 1))
+        .subs(&r, &symplex::default_context().rational(47, 1))
         .eval();
     println!("  V(I=3, R=47) = {}", v_num);
 
     let p_num = p_elec
-        .subs(&i, &symplex::rational(3, 1))
-        .subs(&r, &symplex::rational(47, 1))
+        .subs(&i, &symplex::default_context().rational(3, 1))
+        .subs(&r, &symplex::default_context().rational(47, 1))
         .eval();
     println!("  P(I=3, R=47) = {}", p_num);
 
@@ -225,25 +225,25 @@ fn main() {
     println!("\n── Unit Conversions ──");
 
     // All quantities store SI internally; constructors convert automatically.
-    let distance = Length::kilometers(&symplex::rational(5, 1));
+    let distance = Length::kilometers(&symplex::default_context().rational(5, 1));
     println!("  5 km = {}", distance);
 
-    let engine = Power::horsepower(&symplex::rational(300, 1));
+    let engine = Power::horsepower(&symplex::default_context().rational(300, 1));
     println!("  300 hp = {}", engine);
 
-    let boiling = Temperature::from_celsius(&symplex::rational(100, 1));
+    let boiling = Temperature::from_celsius(&symplex::default_context().rational(100, 1));
     println!("  100 °C = {}", boiling);
 
-    let body_temp = Temperature::from_fahrenheit(&symplex::rational(986, 10));
+    let body_temp = Temperature::from_fahrenheit(&symplex::default_context().rational(986, 10));
     println!("  98.6 °F = {}", body_temp);
 
-    let highway = Velocity::kilometers_per_hour(&symplex::rational(120, 1));
+    let highway = Velocity::kilometers_per_hour(&symplex::default_context().rational(120, 1));
     println!("  120 km/h = {}", highway);
 
-    let one_g = Acceleration::standard_gravity(&symplex::int(1));
+    let one_g = Acceleration::standard_gravity(&symplex::default_context().int(1));
     println!("  1 g = {}", one_g);
 
-    let atm = Pressure::atmospheres(&symplex::rational(1, 1));
+    let atm = Pressure::atmospheres(&symplex::default_context().rational(1, 1));
     println!("  1 atm = {}", atm);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -366,7 +366,7 @@ fn main() {
         let energy = symplex::dim!(Energy: m * c * c);
         println!("  E = mc² = {}", energy);
         println!("  (Displays symbolically — 'c' not '299792458')");
-        println!("  E(m=1kg) = {:.3e} J", energy.subs(&m, &symplex::int(1)).eval_f64().unwrap());
+        println!("  E(m=1kg) = {:.3e} J", energy.subs(&m, &symplex::default_context().int(1)).eval_f64().unwrap());
     }
 
     println!("\n✓ All dimensional checks passed!");

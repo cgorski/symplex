@@ -41,10 +41,10 @@ fn quaternion_identity() {
 #[test]
 fn quaternion_mul_identity() {
     let q = Quaternion::new(
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(3),
-        symplex::int(4),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(3),
+        symplex::default_context().int(4),
     );
     let id = Quaternion::identity();
 
@@ -72,10 +72,10 @@ fn quaternion_mul_identity() {
 #[test]
 fn quaternion_mul_conjugate() {
     let q = Quaternion::new(
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(3),
-        symplex::int(4),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(3),
+        symplex::default_context().int(4),
     );
     let qc = q.conjugate();
     let product = q.mul(&qc).eval();
@@ -95,10 +95,10 @@ fn quaternion_mul_conjugate() {
 #[test]
 fn quaternion_i_squared() {
     let qi = Quaternion::new(
-        symplex::int(0),
-        symplex::int(1),
-        symplex::int(0),
-        symplex::int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
     );
     let result = qi.mul(&qi).eval();
     let (w, x, y, z) = quat_to_f64(&result);
@@ -115,10 +115,10 @@ fn quaternion_i_squared() {
 #[test]
 fn quaternion_j_squared() {
     let qj = Quaternion::new(
-        symplex::int(0),
-        symplex::int(0),
-        symplex::int(1),
-        symplex::int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
+        symplex::default_context().int(0),
     );
     let result = qj.mul(&qj).eval();
     let (w, x, y, z) = quat_to_f64(&result);
@@ -135,10 +135,10 @@ fn quaternion_j_squared() {
 #[test]
 fn quaternion_k_squared() {
     let qk = Quaternion::new(
-        symplex::int(0),
-        symplex::int(0),
-        symplex::int(0),
-        symplex::int(1),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
     );
     let result = qk.mul(&qk).eval();
     let (w, x, y, z) = quat_to_f64(&result);
@@ -155,16 +155,16 @@ fn quaternion_k_squared() {
 #[test]
 fn quaternion_ij_equals_k() {
     let qi = Quaternion::new(
-        symplex::int(0),
-        symplex::int(1),
-        symplex::int(0),
-        symplex::int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
     );
     let qj = Quaternion::new(
-        symplex::int(0),
-        symplex::int(0),
-        symplex::int(1),
-        symplex::int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
+        symplex::default_context().int(0),
     );
     let result = qi.mul(&qj).eval();
     let (w, x, y, z) = quat_to_f64(&result);
@@ -181,16 +181,16 @@ fn quaternion_ij_equals_k() {
 #[test]
 fn quaternion_ji_equals_neg_k() {
     let qi = Quaternion::new(
-        symplex::int(0),
-        symplex::int(1),
-        symplex::int(0),
-        symplex::int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
     );
     let qj = Quaternion::new(
-        symplex::int(0),
-        symplex::int(0),
-        symplex::int(1),
-        symplex::int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
+        symplex::default_context().int(0),
     );
     let result = qj.mul(&qi).eval();
     let (w, x, y, z) = quat_to_f64(&result);
@@ -207,10 +207,10 @@ fn quaternion_ji_equals_neg_k() {
 #[test]
 fn quaternion_conjugate() {
     let q = Quaternion::new(
-        symplex::int(5),
-        symplex::int(3),
-        symplex::int(-7),
-        symplex::int(2),
+        symplex::default_context().int(5),
+        symplex::default_context().int(3),
+        symplex::default_context().int(-7),
+        symplex::default_context().int(2),
     );
     let qc = q.conjugate().eval();
     let (w, x, y, z) = quat_to_f64(&qc);
@@ -227,10 +227,10 @@ fn quaternion_conjugate() {
 #[test]
 fn quaternion_norm_squared() {
     let q = Quaternion::new(
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(3),
-        symplex::int(4),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(3),
+        symplex::default_context().int(4),
     );
     let n2 = q.norm_squared().eval().eval_f64().unwrap();
     assert_close(n2, 30.0, 1e-12, "|q|²");
@@ -243,10 +243,10 @@ fn quaternion_norm_squared() {
 #[test]
 fn quaternion_inverse() {
     let q = Quaternion::new(
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(3),
-        symplex::int(4),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(3),
+        symplex::default_context().int(4),
     );
     let qi = q.inverse();
     let product = q.mul(&qi).eval();
@@ -295,10 +295,10 @@ fn quaternion_to_rotation_180_z() {
     // |  0 -1  0 |
     // |  0  0  1 |
     let q = Quaternion::new(
-        symplex::int(0),
-        symplex::int(0),
-        symplex::int(0),
-        symplex::int(1),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
     );
     let r = q.to_rotation_matrix();
 
@@ -327,9 +327,9 @@ fn quaternion_to_rotation_180_z() {
 
 #[test]
 fn quaternion_from_axis_angle_z_90() {
-    let zero = symplex::int(0);
-    let one = symplex::int(1);
-    let angle = &symplex::pi() / &symplex::int(2); // π/2
+    let zero = symplex::default_context().int(0);
+    let one = symplex::default_context().int(1);
+    let angle = &symplex::default_context().pi() / &symplex::default_context().int(2); // π/2
 
     let q = Quaternion::from_axis_angle(&zero, &zero, &one, &angle);
 
@@ -380,8 +380,8 @@ fn quaternion_angular_velocity_derivative() {
     //   z = 1*ωz + 0*0 - 0*0 + 0*0 = ωz
     // q̇ = ½ * (0, 0, 0, ωz)
     let q = Quaternion::identity();
-    let zero = symplex::int(0);
-    let wz = symplex::int(1); // ωz = 1
+    let zero = symplex::default_context().int(0);
+    let wz = symplex::default_context().int(1); // ωz = 1
 
     let qdot = q.angular_velocity_derivative(&zero, &zero, &wz);
     let (w, x, y, z) = quat_to_f64(&qdot.eval());
@@ -399,10 +399,10 @@ fn quaternion_angular_velocity_derivative() {
 #[test]
 fn quaternion_display() {
     let q = Quaternion::new(
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(3),
-        symplex::int(4),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(3),
+        symplex::default_context().int(4),
     );
     let s = format!("{q}");
     assert_eq!(s, "(1 + 2i + 3j + 4k)");
@@ -428,9 +428,9 @@ fn quaternion_zero() {
 
 #[test]
 fn quaternion_from_vector() {
-    let vx = symplex::int(3);
-    let vy = symplex::int(4);
-    let vz = symplex::int(5);
+    let vx = symplex::default_context().int(3);
+    let vy = symplex::default_context().int(4);
+    let vz = symplex::default_context().int(5);
     let q = Quaternion::from_vector(&vx, &vy, &vz);
     let (w, x, y, z) = quat_to_f64(&q);
     assert_close(w, 0.0, 1e-12, "from_vector w");
@@ -446,22 +446,22 @@ fn quaternion_from_vector() {
 #[test]
 fn quaternion_ijk_equals_neg_one() {
     let qi = Quaternion::new(
-        symplex::int(0),
-        symplex::int(1),
-        symplex::int(0),
-        symplex::int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
     );
     let qj = Quaternion::new(
-        symplex::int(0),
-        symplex::int(0),
-        symplex::int(1),
-        symplex::int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
+        symplex::default_context().int(0),
     );
     let qk = Quaternion::new(
-        symplex::int(0),
-        symplex::int(0),
-        symplex::int(0),
-        symplex::int(1),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(1),
     );
     let ij = qi.mul(&qj);
     let ijk = ij.mul(&qk).eval();
@@ -479,10 +479,10 @@ fn quaternion_ijk_equals_neg_one() {
 #[test]
 fn quaternion_normalize() {
     let q = Quaternion::new(
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(3),
-        symplex::int(4),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(3),
+        symplex::default_context().int(4),
     );
     let qn = q.normalize();
     let norm_val = qn.norm_squared().eval().eval_f64().unwrap();
@@ -495,14 +495,14 @@ fn quaternion_normalize() {
 
 #[test]
 fn quaternion_subs() {
-    let theta = symplex::var("theta");
+    let theta = symplex::default_context().symbol("theta");
     let q = Quaternion::new(
         theta.cos(),
         theta.sin(),
-        symplex::int(0),
-        symplex::int(0),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
     );
-    let pi_half = &symplex::pi() / &symplex::int(2);
+    let pi_half = &symplex::default_context().pi() / &symplex::default_context().int(2);
     let q2 = q.subs(&theta, &pi_half).eval();
     let (w, x, y, z) = quat_to_f64(&q2);
     assert_close(w, 0.0, 1e-12, "subs w = cos(π/2)");
@@ -517,9 +517,9 @@ fn quaternion_subs() {
 
 #[test]
 fn quaternion_from_axis_angle_x_90() {
-    let one = symplex::int(1);
-    let zero = symplex::int(0);
-    let angle = &symplex::pi() / &symplex::int(2);
+    let one = symplex::default_context().int(1);
+    let zero = symplex::default_context().int(0);
+    let angle = &symplex::default_context().pi() / &symplex::default_context().int(2);
 
     let q = Quaternion::from_axis_angle(&one, &zero, &zero, &angle);
     let r = q.to_rotation_matrix();
@@ -554,12 +554,12 @@ fn quaternion_from_axis_angle_x_90() {
 #[test]
 fn quaternion_rotation_matrix_orthogonal() {
     // Use a unit quaternion built from axis-angle
-    let angle = &symplex::pi() / &symplex::int(3); // 60°
+    let angle = &symplex::default_context().pi() / &symplex::default_context().int(3); // 60°
     // Axis: (1, 1, 1)/√3
-    let inv_sqrt3 = symplex::int(3).sqrt();
-    let ax = &symplex::int(1) / &inv_sqrt3;
-    let ay = &symplex::int(1) / &inv_sqrt3;
-    let az = &symplex::int(1) / &inv_sqrt3;
+    let inv_sqrt3 = symplex::default_context().int(3).sqrt();
+    let ax = &symplex::default_context().int(1) / &inv_sqrt3;
+    let ay = &symplex::default_context().int(1) / &inv_sqrt3;
+    let az = &symplex::default_context().int(1) / &inv_sqrt3;
 
     let q = Quaternion::from_axis_angle(&ax, &ay, &az, &angle);
     let r = q.to_rotation_matrix();
@@ -587,22 +587,22 @@ fn quaternion_rotation_matrix_orthogonal() {
 #[test]
 fn quaternion_mul_associative() {
     let p = Quaternion::new(
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(3),
-        symplex::int(4),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(3),
+        symplex::default_context().int(4),
     );
     let q = Quaternion::new(
-        symplex::int(5),
-        symplex::int(-1),
-        symplex::int(2),
-        symplex::int(-3),
+        symplex::default_context().int(5),
+        symplex::default_context().int(-1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(-3),
     );
     let r = Quaternion::new(
-        symplex::int(-2),
-        symplex::int(1),
-        symplex::int(0),
-        symplex::int(7),
+        symplex::default_context().int(-2),
+        symplex::default_context().int(1),
+        symplex::default_context().int(0),
+        symplex::default_context().int(7),
     );
 
     let lhs = p.mul(&q).mul(&r).eval();
@@ -624,16 +624,16 @@ fn quaternion_mul_associative() {
 #[test]
 fn quaternion_norm_product() {
     let p = Quaternion::new(
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(3),
-        symplex::int(4),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(3),
+        symplex::default_context().int(4),
     );
     let q = Quaternion::new(
-        symplex::int(5),
-        symplex::int(-1),
-        symplex::int(2),
-        symplex::int(-3),
+        symplex::default_context().int(5),
+        symplex::default_context().int(-1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(-3),
     );
 
     let norm_p = p.norm().eval().eval_f64().unwrap();

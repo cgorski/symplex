@@ -41,7 +41,7 @@ fn assert_full_roundtrip(expr: &Ex) {
 
 #[test]
 fn roundtrip_integer() {
-    let expr = symplex::int(42);
+    let expr = symplex::default_context().int(42);
     let tree = expr.to_tree();
     match &tree {
         ExprTree::Num { numer, denom } => {
@@ -55,13 +55,13 @@ fn roundtrip_integer() {
 
 #[test]
 fn roundtrip_negative_integer() {
-    let expr = symplex::int(-17);
+    let expr = symplex::default_context().int(-17);
     assert_full_roundtrip(&expr);
 }
 
 #[test]
 fn roundtrip_rational() {
-    let expr = symplex::rational(3, 7);
+    let expr = symplex::default_context().rational(3, 7);
     let tree = expr.to_tree();
     match &tree {
         ExprTree::Num { numer, denom } => {
@@ -75,7 +75,7 @@ fn roundtrip_rational() {
 
 #[test]
 fn roundtrip_symbol() {
-    let expr = symplex::var("alpha");
+    let expr = symplex::default_context().symbol("alpha");
     let tree = expr.to_tree();
     match &tree {
         ExprTree::Symbol { name } => assert_eq!(name, "alpha"),
@@ -86,7 +86,7 @@ fn roundtrip_symbol() {
 
 #[test]
 fn roundtrip_pi() {
-    let expr = symplex::pi();
+    let expr = symplex::default_context().pi();
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::Pi);
     assert_full_roundtrip(&expr);
@@ -94,7 +94,7 @@ fn roundtrip_pi() {
 
 #[test]
 fn roundtrip_e() {
-    let expr = symplex::e();
+    let expr = symplex::default_context().e();
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::E);
     assert_full_roundtrip(&expr);
@@ -102,7 +102,7 @@ fn roundtrip_e() {
 
 #[test]
 fn roundtrip_i_unit() {
-    let expr = symplex::i_unit();
+    let expr = symplex::default_context().i_unit();
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::ImaginaryUnit);
     assert_full_roundtrip(&expr);
@@ -114,7 +114,7 @@ fn roundtrip_i_unit() {
 
 #[test]
 fn roundtrip_infinity() {
-    let expr = symplex::infinity();
+    let expr = symplex::default_context().infinity();
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::Infinity);
     assert_full_roundtrip(&expr);
@@ -122,7 +122,7 @@ fn roundtrip_infinity() {
 
 #[test]
 fn roundtrip_neg_infinity() {
-    let expr = symplex::neg_infinity();
+    let expr = symplex::default_context().neg_infinity();
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::NegInfinity);
     assert_full_roundtrip(&expr);
@@ -157,7 +157,7 @@ fn roundtrip_nan() {
 
 #[test]
 fn roundtrip_all_trig_and_hyp() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
 
     // Standard trig
     assert_full_roundtrip(&x.sin());
@@ -182,7 +182,7 @@ fn roundtrip_all_trig_and_hyp() {
 
 #[test]
 fn roundtrip_exp_ln_sqrt_abs_sign() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
 
     assert_full_roundtrip(&x.exp());
     assert_full_roundtrip(&x.ln());
@@ -197,27 +197,27 @@ fn roundtrip_exp_ln_sqrt_abs_sign() {
 
 #[test]
 fn roundtrip_polynomial() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // x^3 + 2*x^2 - 5*x + 7
-    let expr = x.powi(3) + symplex::int(2) * x.powi(2) - symplex::int(5) * &x + symplex::int(7);
+    let expr = x.powi(3) + symplex::default_context().int(2) * x.powi(2) - symplex::default_context().int(5) * &x + symplex::default_context().int(7);
     assert_full_roundtrip(&expr);
 }
 
 #[test]
 fn roundtrip_nested_functions() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // sin(cos(exp(x)))
     let expr = x.exp().cos().sin();
     assert_full_roundtrip(&expr);
 
     // ln(x^2 + 1)
-    let expr2 = (x.powi(2) + symplex::int(1)).ln();
+    let expr2 = (x.powi(2) + symplex::default_context().int(1)).ln();
     assert_full_roundtrip(&expr2);
 }
 
 #[test]
 fn roundtrip_negation() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = -&x;
     assert_full_roundtrip(&expr);
 
@@ -232,7 +232,7 @@ fn roundtrip_negation() {
 
 #[test]
 fn roundtrip_factorial() {
-    let n = symplex::int(5);
+    let n = symplex::default_context().int(5);
     let expr = n.factorial();
     let tree = expr.to_tree();
     // factorial is serialized as Apply { name: "factorial", args }
@@ -276,8 +276,8 @@ fn roundtrip_bool_true_false() {
 
 #[test]
 fn roundtrip_comparison_and_logic() {
-    let x = symplex::var("x");
-    let zero = symplex::int(0);
+    let x = symplex::default_context().symbol("x");
+    let zero = symplex::default_context().int(0);
 
     // x > 0
     let gt: BoolEx = x.gt(&zero);
@@ -305,8 +305,8 @@ fn roundtrip_comparison_and_logic() {
 
 #[test]
 fn roundtrip_piecewise() {
-    let x = symplex::var("x");
-    let zero = symplex::int(0);
+    let x = symplex::default_context().symbol("x");
+    let zero = symplex::default_context().int(0);
     let cond = x.gt(&zero);
     let neg_cond = cond.not();
 
@@ -320,7 +320,7 @@ fn roundtrip_piecewise() {
 
 #[test]
 fn json_roundtrip_complex_expression() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin().powi(2) + x.cos();
     let json = expr.to_json();
     assert!(!json.is_empty());
@@ -331,7 +331,7 @@ fn json_roundtrip_complex_expression() {
 
 #[test]
 fn json_pretty_roundtrip() {
-    let expr = symplex::var("x").exp();
+    let expr = symplex::default_context().symbol("x").exp();
     let json = expr.to_json_pretty();
     assert!(json.contains('\n'), "pretty JSON should contain newlines");
     let ctx = symplex::default_context();

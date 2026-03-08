@@ -59,7 +59,7 @@ fn section_2_e_mc_squared() {
     println!("  (Notice: 'c' not '299792458')\n");
 
     // Evaluate for 1 kg
-    let e_1kg = energy.subs(&m, &symplex::int(1)).eval_f64().unwrap();
+    let e_1kg = energy.subs(&m, &symplex::default_context().int(1)).eval_f64().unwrap();
     println!("  E(m = 1 kg) = {:.6e} J", e_1kg);
     println!("              = {:.6e} GJ", e_1kg / 1e9);
     println!("  That's ~25 million kilowatt-hours from 1 kg of matter!");

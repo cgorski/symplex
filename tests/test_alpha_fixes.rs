@@ -6,9 +6,9 @@ use symplex::prelude::*;
 
 #[test]
 fn gamma_half_is_sqrt_pi() {
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
     let result = half.gamma().eval();
-    let expected = symplex::pi().sqrt();
+    let expected = symplex::default_context().pi().sqrt();
     assert_eq!(
         format!("{result}"),
         format!("{expected}"),
@@ -19,9 +19,9 @@ fn gamma_half_is_sqrt_pi() {
 #[test]
 fn gamma_three_halves() {
     // Gamma(3/2) = (1/2) · √π
-    let arg = symplex::rational(3, 2);
+    let arg = symplex::default_context().rational(3, 2);
     let result = arg.gamma().eval();
-    let expected = &symplex::rational(1, 2) * &symplex::pi().sqrt();
+    let expected = &symplex::default_context().rational(1, 2) * &symplex::default_context().pi().sqrt();
     assert_eq!(
         format!("{result}"),
         format!("{expected}"),
@@ -32,9 +32,9 @@ fn gamma_three_halves() {
 #[test]
 fn gamma_five_halves() {
     // Gamma(5/2) = (3/4) · √π
-    let arg = symplex::rational(5, 2);
+    let arg = symplex::default_context().rational(5, 2);
     let result = arg.gamma().eval();
-    let expected = &symplex::rational(3, 4) * &symplex::pi().sqrt();
+    let expected = &symplex::default_context().rational(3, 4) * &symplex::default_context().pi().sqrt();
     assert_eq!(
         format!("{result}"),
         format!("{expected}"),
@@ -45,9 +45,9 @@ fn gamma_five_halves() {
 #[test]
 fn gamma_seven_halves() {
     // Gamma(7/2) = (15/8) · √π
-    let arg = symplex::rational(7, 2);
+    let arg = symplex::default_context().rational(7, 2);
     let result = arg.gamma().eval();
-    let expected = &symplex::rational(15, 8) * &symplex::pi().sqrt();
+    let expected = &symplex::default_context().rational(15, 8) * &symplex::default_context().pi().sqrt();
     assert_eq!(
         format!("{result}"),
         format!("{expected}"),
@@ -59,7 +59,7 @@ fn gamma_seven_halves() {
 
 #[test]
 fn macro_floor() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let e = expr!(floor(x));
     let s = format!("{e}");
     assert!(
@@ -70,7 +70,7 @@ fn macro_floor() {
 
 #[test]
 fn macro_ceiling() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let e = expr!(ceiling(x));
     let s = format!("{e}");
     assert!(
@@ -83,8 +83,8 @@ fn macro_ceiling() {
 
 #[test]
 fn macro_min() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let e = expr!(min(x, y));
     let s = format!("{e}");
     assert!(
@@ -95,8 +95,8 @@ fn macro_min() {
 
 #[test]
 fn macro_max() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let e = expr!(max(x, y));
     let s = format!("{e}");
     assert!(
@@ -121,7 +121,7 @@ fn macro_heaviside_eval_negative() {
 
 #[test]
 fn macro_dirac_delta_symbolic() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let e = expr!(dirac_delta(x));
     let s = format!("{e}");
     assert!(
@@ -132,7 +132,7 @@ fn macro_dirac_delta_symbolic() {
 
 #[test]
 fn macro_lambertw_symbolic() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let e = expr!(lambertw(x));
     let s = format!("{e}");
     assert!(

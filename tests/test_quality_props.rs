@@ -34,7 +34,7 @@ proptest! {
     #[test]
     fn cubic_roots_satisfy_polynomial(coeffs in arb_cubic_coeffs()) {
         let [a, b, c, d] = coeffs;
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
 
         // Build  a·x³ + b·x² + c·x + d
         let poly = &(&x.powi(3) * a) + &(&x.powi(2) * b) + &(&x * c) + d;
@@ -72,7 +72,7 @@ proptest! {
     ) {
         let data: Vec<Vec<Ex>> = entries
             .chunks(3)
-            .map(|row| row.iter().map(|&v| symplex::int(v)).collect())
+            .map(|row| row.iter().map(|&v| symplex::default_context().int(v)).collect())
             .collect();
         let m = symplex::matrix::Matrix::new(data).unwrap();
 
@@ -115,7 +115,7 @@ proptest! {
     /// signature components (pub fn, parameter, return type).
     #[test]
     fn codegen_produces_valid_syntax(a in -5i64..5, b in -5i64..5, c in 1i64..5) {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let poly = &(&x.powi(2) * a) + &(&x * b) + c;
         if let Ok(code) = poly.to_rust_fn("test_fn", &["x"]) {
             prop_assert!(
@@ -144,12 +144,12 @@ proptest! {
     ) {
         let mat_a = symplex::matrix::Matrix::new(
             a_entries.chunks(3)
-                .map(|row| row.iter().map(|&v| symplex::int(v)).collect())
+                .map(|row| row.iter().map(|&v| symplex::default_context().int(v)).collect())
                 .collect(),
         ).unwrap();
         let mat_b = symplex::matrix::Matrix::new(
             b_entries.chunks(3)
-                .map(|row| row.iter().map(|&v| symplex::int(v)).collect())
+                .map(|row| row.iter().map(|&v| symplex::default_context().int(v)).collect())
                 .collect(),
         ).unwrap();
 

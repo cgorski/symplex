@@ -12,7 +12,7 @@ fn main() {
 
     let exprs: Vec<(&str, Ex)> = vec![
         ("Quadratic", expr!(x ^ 2 + 2 * x + 1)),
-        ("Fraction", symplex::rational(3, 7)),
+        ("Fraction", symplex::default_context().rational(3, 7)),
         ("Trig", expr!(sin(x) ^ 2 + cos(x) ^ 2)),
         ("Derivative", expr!(x ^ 3 + x).diff(&x)),
         ("Square root", expr!(x).sqrt()),

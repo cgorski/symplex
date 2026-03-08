@@ -56,7 +56,7 @@ fn expr_i_squared() {
 
 #[test]
 fn expr_pi_in_expression() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let result = expr!(x + pi);
     let s = format!("{result}");
     assert!(s.contains("pi") && s.contains("x"), "got: {s}");
@@ -86,7 +86,7 @@ fn expr_rational_reduces() {
 
 #[test]
 fn expr_rational_in_expression() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let result = expr!(1 / 2 * x);
     let s = format!("{result}");
     assert!(s.contains("1/2") && s.contains("x"), "got: {s}");
@@ -100,7 +100,7 @@ fn expr_rational_addition() {
 
 #[test]
 fn expr_x_to_half_power() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let result = expr!(x ^ (1 / 2));
     let s = format!("{result}");
     // x^(1/2) should display as sqrt(x) or x^(1/2)
@@ -121,7 +121,7 @@ fn expr_negative_rational() {
 
 #[test]
 fn expr_log_base_2() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let result = expr!(log(x, 2));
     let s = format!("{result}");
     assert!(s.contains("ln"), "log(x,2) should use ln: {s}");
@@ -129,7 +129,7 @@ fn expr_log_base_2() {
 
 #[test]
 fn expr_log_base_10() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let result = expr!(log(x, 10));
     let s = format!("{result}");
     assert!(s.contains("ln"), "log(x,10) should use ln: {s}");
@@ -141,7 +141,7 @@ fn expr_log_base_10() {
 
 #[test]
 fn eq_basic() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(x + 1 = 5);
     let s = format!("{equation}");
     assert!(s.contains("="), "should display as equation: {s}");
@@ -149,7 +149,7 @@ fn eq_basic() {
 
 #[test]
 fn eq_solve() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(x + 1 = 5);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -158,7 +158,7 @@ fn eq_solve() {
 
 #[test]
 fn eq_quadratic() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(x ^ 2 = 9);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2);
@@ -166,7 +166,7 @@ fn eq_quadratic() {
 
 #[test]
 fn eq_with_rationals() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(x = 1 / 2);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -175,7 +175,7 @@ fn eq_with_rationals() {
 
 #[test]
 fn eq_with_pi() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(sin(x) = 0);
     let s = format!("{equation}");
     assert!(s.contains("sin") && s.contains("="), "got: {s}");
@@ -196,7 +196,7 @@ fn matrix_2x2_numeric() {
 
 #[test]
 fn matrix_with_expressions() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = matrix![[x, sin(x)], [cos(x), x ^ 2]];
     assert_eq!(m.nrows(), 2);
     assert_eq!(m.ncols(), 2);
@@ -227,7 +227,7 @@ fn matrix_det() {
 
 #[test]
 fn matrix_1x1() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = matrix![[x ^ 2 + 1]];
     assert_eq!(m.nrows(), 1);
     assert_eq!(m.ncols(), 1);
@@ -246,7 +246,7 @@ fn matrix_3x3_identity() {
 
 #[test]
 fn workflow_eq_with_constants() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(x ^ 2 + 1 = 0);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²+1=0 should have complex roots");
@@ -255,8 +255,8 @@ fn workflow_eq_with_constants() {
 #[test]
 fn workflow_matrix_jacobian() {
     use symplex::matrix::jacobian;
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let f1 = expr!(x ^ 2 + y);
     let f2 = expr!(x * y);
     let j = jacobian(&[&f1, &f2], &[&x, &y]);
@@ -266,7 +266,7 @@ fn workflow_matrix_jacobian() {
 
 #[test]
 fn workflow_rational_solve() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let equation = eq!(2 * x = 1);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);

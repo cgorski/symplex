@@ -26,7 +26,7 @@ fn verify_system_numerically(
     t0: f64,
 ) -> bool {
     let n = solution.len();
-    let t_val = symplex::rational((t0 * 1000.0) as i64, 1000);
+    let t_val = symplex::default_context().rational((t0 * 1000.0) as i64, 1000);
 
     // Evaluate x(t0) and x'(t0)
     let mut x_vals = Vec::with_capacity(n);
@@ -71,10 +71,10 @@ fn verify_system_numerically(
 
 #[test]
 fn ode_system_2x2_real_eigenvalues() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(-2), symplex::int(-3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
     ]).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
@@ -114,10 +114,10 @@ fn ode_system_2x2_real_eigenvalues() {
 
 #[test]
 fn ode_system_2x2_complex_eigenvalues() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(-1), symplex::int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(-1), symplex::default_context().int(0)],
     ]).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
@@ -159,12 +159,12 @@ fn ode_system_2x2_complex_eigenvalues() {
 
 #[test]
 fn ode_system_diagonal() {
-    let t = symplex::var("t");
-    let a_sym = symplex::var("a");
-    let b_sym = symplex::var("b");
+    let t = symplex::default_context().symbol("t");
+    let a_sym = symplex::default_context().symbol("a");
+    let b_sym = symplex::default_context().symbol("b");
     let a = Matrix::new(vec![
-        vec![a_sym.clone(), symplex::int(0)],
-        vec![symplex::int(0), b_sym.clone()],
+        vec![a_sym.clone(), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), b_sym.clone()],
     ]).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
@@ -205,11 +205,11 @@ fn ode_system_diagonal() {
 
 #[test]
 fn ode_system_3x3() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(0), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(2), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(0), symplex::int(3)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(0), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(2), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(0), symplex::default_context().int(3)],
     ]).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
@@ -243,11 +243,11 @@ fn ode_system_3x3() {
 
 #[test]
 fn ode_system_3x3_coupled() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![symplex::int(-1), symplex::int(1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(-2), symplex::int(1)],
-        vec![symplex::int(0), symplex::int(0), symplex::int(-3)],
+        vec![symplex::default_context().int(-1), symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(-2), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(0), symplex::default_context().int(-3)],
     ]).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
@@ -273,7 +273,7 @@ fn ode_system_3x3_coupled() {
 
 #[test]
 fn ode_system_identity_matrix() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::identity(2);
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
@@ -307,24 +307,24 @@ fn ode_system_identity_matrix() {
 
 #[test]
 fn ode_system_numerical_verification_diagonal() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![symplex::int(-1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(-2)],
+        vec![symplex::default_context().int(-1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(-2)],
     ]).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
         .expect("should solve");
 
-    let c1 = symplex::var("C1");
-    let c2 = symplex::var("C2");
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
 
     // Substitute specific constant values
     let sol_concrete: Vec<Ex> = sol
         .iter()
         .map(|xi| {
-            xi.subs(&c1, &symplex::int(1))
-                .subs(&c2, &symplex::int(1))
+            xi.subs(&c1, &symplex::default_context().int(1))
+                .subs(&c2, &symplex::default_context().int(1))
                 .eval()
         })
         .collect();
@@ -338,23 +338,23 @@ fn ode_system_numerical_verification_diagonal() {
 
 #[test]
 fn ode_system_numerical_verification_coupled() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(-2), symplex::int(-3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
     ]).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
         .expect("should solve");
 
-    let c1 = symplex::var("C1");
-    let c2 = symplex::var("C2");
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
 
     let sol_concrete: Vec<Ex> = sol
         .iter()
         .map(|xi| {
-            xi.subs(&c1, &symplex::int(1))
-                .subs(&c2, &symplex::int(1))
+            xi.subs(&c1, &symplex::default_context().int(1))
+                .subs(&c2, &symplex::default_context().int(1))
                 .eval()
         })
         .collect();
@@ -371,10 +371,10 @@ fn ode_system_numerical_verification_coupled() {
 
 #[test]
 fn ode_system_rejects_non_square() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(2), symplex::int(3)],
-        vec![symplex::int(4), symplex::int(5), symplex::int(6)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(2), symplex::default_context().int(3)],
+        vec![symplex::default_context().int(4), symplex::default_context().int(5), symplex::default_context().int(6)],
     ]).unwrap();
     assert!(
         symplex::ode::solve_ode_system(&a, &t).is_none(),
@@ -384,10 +384,10 @@ fn ode_system_rejects_non_square() {
 
 #[test]
 fn ode_system_rejects_time_dependent() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![t.clone(), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(1)],
+        vec![t.clone(), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
     ]).unwrap();
     assert!(
         symplex::ode::solve_ode_system(&a, &t).is_none(),
@@ -397,7 +397,7 @@ fn ode_system_rejects_time_dependent() {
 
 #[test]
 fn ode_system_zero_matrix() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::zeros(2, 2);
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
@@ -415,8 +415,8 @@ fn ode_system_zero_matrix() {
 
 #[test]
 fn ode_system_1x1() {
-    let t = symplex::var("t");
-    let a = Matrix::new(vec![vec![symplex::int(-3)]]).unwrap();
+    let t = symplex::default_context().symbol("t");
+    let a = Matrix::new(vec![vec![symplex::default_context().int(-3)]]).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
         .expect("1x1 system should be solvable");
@@ -433,21 +433,21 @@ fn ode_system_1x1() {
 
 #[test]
 fn classify_constant_coefficient_system() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
 
     let a_const = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(2)],
-        vec![symplex::int(3), symplex::int(4)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(2)],
+        vec![symplex::default_context().int(3), symplex::default_context().int(4)],
     ]).unwrap();
     assert!(
         symplex::ode::classify_ode_system_is_constant(&a_const, &t),
         "pure numeric matrix should be constant-coefficient"
     );
 
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let a_sym = Matrix::new(vec![
-        vec![x.clone(), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(1)],
+        vec![x.clone(), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
     ]).unwrap();
     assert!(
         symplex::ode::classify_ode_system_is_constant(&a_sym, &t),
@@ -455,8 +455,8 @@ fn classify_constant_coefficient_system() {
     );
 
     let a_time = Matrix::new(vec![
-        vec![t.clone(), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(1)],
+        vec![t.clone(), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
     ]).unwrap();
     assert!(
         !symplex::ode::classify_ode_system_is_constant(&a_time, &t),
@@ -470,15 +470,15 @@ fn classify_constant_coefficient_system() {
 
 #[test]
 fn ode_system_nonhomogeneous_basic() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
 
     // ẋ = [[-1, 0],[0, -1]]x + [1, 0]
     // Decoupled: x1' = -x1 + 1, x2' = -x2
     let a = Matrix::new(vec![
-        vec![symplex::int(-1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(-1)],
+        vec![symplex::default_context().int(-1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(-1)],
     ]).unwrap();
-    let b = vec![symplex::int(1), symplex::int(0)];
+    let b = vec![symplex::default_context().int(1), symplex::default_context().int(0)];
 
     let sol = symplex::ode::solve_ode_system_nonhomogeneous(&a, &b, &t);
 
@@ -505,12 +505,12 @@ fn ode_system_nonhomogeneous_basic() {
 
 #[test]
 fn ode_system_nonhomogeneous_rejects_mismatched_dims() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(1)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
     ]).unwrap();
-    let b = vec![symplex::int(1)]; // wrong size
+    let b = vec![symplex::default_context().int(1)]; // wrong size
 
     assert!(
         symplex::ode::solve_ode_system_nonhomogeneous(&a, &b, &t).is_none(),
@@ -524,7 +524,7 @@ fn ode_system_nonhomogeneous_rejects_mismatched_dims() {
 
 #[test]
 fn ode_system_solution_dimension_matches_matrix() {
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
 
     for n in 1..=4 {
         let a = Matrix::identity(n);
@@ -544,10 +544,10 @@ fn ode_system_nilpotent_2x2() {
     // Eigenvalues: 0, 0 (repeated)
     // exp(At) = I + At = [[1, t], [0, 1]]
     // x(t) = [[1, t], [0, 1]] · [C1, C2]ᵀ = [C1 + C2·t, C2]
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(0), symplex::int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(0)],
     ]).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t)
@@ -573,10 +573,10 @@ fn ode_system_nilpotent_2x2() {
 #[test]
 fn ode_system_negative_diagonal() {
     // ẋ = [[-1, 0], [0, -2]]x → decaying exponentials
-    let t = symplex::var("t");
+    let t = symplex::default_context().symbol("t");
     let a = Matrix::new(vec![
-        vec![symplex::int(-1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(-2)],
+        vec![symplex::default_context().int(-1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(-2)],
     ]).unwrap();
 
     let sol = symplex::ode::solve_ode_system(&a, &t)

@@ -160,14 +160,14 @@ fn convergence_geometric_2_diverges() {
 #[test]
 fn gamma_positive_integer_still_works() {
     // Gamma(5) = 4! = 24
-    let result = symplex::int(5).gamma().eval();
+    let result = symplex::default_context().int(5).gamma().eval();
     assert_eq!(format!("{result}"), "24");
 }
 
 #[test]
 fn gamma_half_integer_still_works() {
     // Gamma(1/2) = √π
-    let result = symplex::rational(1, 2).gamma().eval();
+    let result = symplex::default_context().rational(1, 2).gamma().eval();
     assert_eq!(format!("{result}"), "sqrt(pi)");
 }
 
@@ -175,7 +175,7 @@ fn gamma_half_integer_still_works() {
 fn gamma_recurrence_7_over_3() {
     // Gamma(7/3) = (4/3)·(1/3)·Gamma(1/3)
     // = 4/9 · Gamma(1/3)
-    let result = symplex::rational(7, 3).gamma().eval();
+    let result = symplex::default_context().rational(7, 3).gamma().eval();
     let display = format!("{result}");
     // Should contain Gamma(1/3) since that's the irreducible part
     assert!(
@@ -187,7 +187,7 @@ fn gamma_recurrence_7_over_3() {
 #[test]
 fn gamma_recurrence_5_over_3() {
     // Gamma(5/3) = (2/3)·Gamma(2/3)
-    let result = symplex::rational(5, 3).gamma().eval();
+    let result = symplex::default_context().rational(5, 3).gamma().eval();
     let display = format!("{result}");
     // Should contain Gamma(2/3) since that's the irreducible part
     assert!(

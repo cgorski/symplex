@@ -29,7 +29,7 @@ fn main() {
         ("sin(x)", x.sin()),
         ("cos(x)", x.cos()),
         ("exp(x)", x.exp()),
-        ("1/x", symplex::int(1) / &x),
+        ("1/x", symplex::default_context().int(1) / &x),
         ("tan(x)", x.tan()),
         ("ln(x)", x.ln()),
     ];
@@ -56,7 +56,7 @@ fn main() {
     // ── U-substitution ────────────────────────────────────────────────
     println!("\n--- U-substitution ---");
     let cases_usub: Vec<(&str, Ex)> = vec![
-        ("2x*exp(x^2)", &(&symplex::int(2) * &x) * &x.powi(2).exp()),
+        ("2x*exp(x^2)", &(&symplex::default_context().int(2) * &x) * &x.powi(2).exp()),
         ("cos(x)*exp(sin(x))", &x.cos() * &x.sin().exp()),
         ("x/(x^2+1)", &x / &(&x.powi(2) + 1)),
     ];
@@ -83,12 +83,12 @@ fn main() {
     // ── Rational functions ───────────────────────────────────────────
     println!("\n--- Rational functions ---");
     let cases_rat: Vec<(&str, Ex)> = vec![
-        ("1/(x^2+1)", symplex::int(1) / &(&x.powi(2) + 1)),
-        ("1/(x^2-1)", symplex::int(1) / &(&x.powi(2) - 1)),
+        ("1/(x^2+1)", symplex::default_context().int(1) / &(&x.powi(2) + 1)),
+        ("1/(x^2-1)", symplex::default_context().int(1) / &(&x.powi(2) - 1)),
         ("x/(x^2+1)^2", &x / &(&x.powi(2) + 1).powi(2)),
-        ("1/(x^2+a^2)", symplex::int(1) / &(&x.powi(2) + &a.powi(2))),
-        ("(2x+3)/(x^2+x+1)", &(&symplex::int(2) * &x + 3) / &(&x.powi(2) + &x + 1)),
-        ("1/(1+x^5)", symplex::int(1) / &(&x.powi(5) + 1)),
+        ("1/(x^2+a^2)", symplex::default_context().int(1) / &(&x.powi(2) + &a.powi(2))),
+        ("(2x+3)/(x^2+x+1)", &(&symplex::default_context().int(2) * &x + 3) / &(&x.powi(2) + &x + 1)),
+        ("1/(1+x^5)", symplex::default_context().int(1) / &(&x.powi(5) + 1)),
     ];
     for (label, expr) in &cases_rat {
         if try_integrate(label, expr, &x) { pass += 1; } else { fail += 1; }
@@ -97,10 +97,10 @@ fn main() {
     // ── Sqrt forms ───────────────────────────────────────────────────
     println!("\n--- Sqrt forms ---");
     let cases_sqrt: Vec<(&str, Ex)> = vec![
-        ("1/sqrt(1-x^2)", symplex::int(1) / &(&symplex::int(1) - &x.powi(2)).sqrt()),
-        ("1/sqrt(x^2+1)", symplex::int(1) / &(&x.powi(2) + 1).sqrt()),
-        ("1/sqrt(x^2-1)", symplex::int(1) / &(&x.powi(2) - 1).sqrt()),
-        ("sqrt(1-x^2)", (&symplex::int(1) - &x.powi(2)).sqrt()),
+        ("1/sqrt(1-x^2)", symplex::default_context().int(1) / &(&symplex::default_context().int(1) - &x.powi(2)).sqrt()),
+        ("1/sqrt(x^2+1)", symplex::default_context().int(1) / &(&x.powi(2) + 1).sqrt()),
+        ("1/sqrt(x^2-1)", symplex::default_context().int(1) / &(&x.powi(2) - 1).sqrt()),
+        ("sqrt(1-x^2)", (&symplex::default_context().int(1) - &x.powi(2)).sqrt()),
         ("sqrt(x^2+1)", (&x.powi(2) + 1).sqrt()),
         ("x/sqrt(x^2+1)", &x / &(&x.powi(2) + 1).sqrt()),
     ];
@@ -136,7 +136,7 @@ fn main() {
         ("exp(a*x)", (&a * &x).exp()),
         ("sin(a*x)", (&a * &x).sin()),
         ("x*exp(a*x)", &x * &(&a * &x).exp()),
-        ("1/(x^2+a^2)", symplex::int(1) / &(&x.powi(2) + &a.powi(2))),
+        ("1/(x^2+a^2)", symplex::default_context().int(1) / &(&x.powi(2) + &a.powi(2))),
     ];
     for (label, expr) in &cases_param {
         if try_integrate(label, expr, &x) { pass += 1; } else { fail += 1; }
@@ -158,8 +158,8 @@ fn main() {
     // ── Completing the square ────────────────────────────────────────
     println!("\n--- Completing the square ---");
     let cases_cs: Vec<(&str, Ex)> = vec![
-        ("1/(x^2+2x+5)", symplex::int(1) / &(&x.powi(2) + &symplex::int(2) * &x + 5)),
-        ("1/sqrt(x^2+2x+5)", symplex::int(1) / &(&x.powi(2) + &symplex::int(2) * &x + 5).sqrt()),
+        ("1/(x^2+2x+5)", symplex::default_context().int(1) / &(&x.powi(2) + &symplex::default_context().int(2) * &x + 5)),
+        ("1/sqrt(x^2+2x+5)", symplex::default_context().int(1) / &(&x.powi(2) + &symplex::default_context().int(2) * &x + 5).sqrt()),
     ];
     for (label, expr) in &cases_cs {
         if try_integrate(label, expr, &x) { pass += 1; } else { fail += 1; }
@@ -168,9 +168,9 @@ fn main() {
     // ── Linear substitution ──────────────────────────────────────────
     println!("\n--- Linear substitution ---");
     let cases_lin: Vec<(&str, Ex)> = vec![
-        ("(2x+1)^5", (&symplex::int(2) * &x + 1).powi(5)),
-        ("1/(3x+2)", symplex::int(1) / &(&symplex::int(3) * &x + 2)),
-        ("sqrt(2x+1)", (&symplex::int(2) * &x + 1).sqrt()),
+        ("(2x+1)^5", (&symplex::default_context().int(2) * &x + 1).powi(5)),
+        ("1/(3x+2)", symplex::default_context().int(1) / &(&symplex::default_context().int(3) * &x + 2)),
+        ("sqrt(2x+1)", (&symplex::default_context().int(2) * &x + 1).sqrt()),
     ];
     for (label, expr) in &cases_lin {
         if try_integrate(label, expr, &x) { pass += 1; } else { fail += 1; }
@@ -182,7 +182,7 @@ fn main() {
         ("exp(-x^2)", (-&x.powi(2)).exp()),
         ("sin(x)/x", &x.sin() / &x),
         ("x^x", x.pow(&x)),
-        ("1/(1+x^5)", symplex::int(1) / &(&x.powi(5) + 1)),
+        ("1/(1+x^5)", symplex::default_context().int(1) / &(&x.powi(5) + 1)),
         ("ln(ln(x))", x.ln().ln()),
     ];
     for (label, expr) in &cases_spec {

@@ -12,7 +12,7 @@ use symplex::units::*;
 
 #[test]
 fn diff_length_wrt_time_is_velocity() {
-    symplex::vars!(a, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, t);
     let x = Length::from_ex(expr!(a * t));
     let t_var = Time::symbol("t");
     let v: Velocity = x.diff_wrt(&t_var);
@@ -21,7 +21,7 @@ fn diff_length_wrt_time_is_velocity() {
 
 #[test]
 fn diff_velocity_wrt_time_is_acceleration() {
-    symplex::vars!(a, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, t);
     let v = Velocity::from_ex(expr!(a * t));
     let t_var = Time::symbol("t");
     let acc: Acceleration = v.diff_wrt(&t_var);
@@ -30,7 +30,7 @@ fn diff_velocity_wrt_time_is_acceleration() {
 
 #[test]
 fn diff_angle_wrt_time_is_angular_velocity() {
-    symplex::vars!(w, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; w, t);
     let theta = Angle::from_ex(expr!(w * t));
     let t_var = Time::symbol("t");
     let omega: AngularVelocity = theta.diff_wrt(&t_var);
@@ -39,7 +39,7 @@ fn diff_angle_wrt_time_is_angular_velocity() {
 
 #[test]
 fn diff_angular_velocity_wrt_time_is_angular_acceleration() {
-    symplex::vars!(a, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, t);
     let omega = AngularVelocity::from_ex(expr!(a * t));
     let t_var = Time::symbol("t");
     let alpha: AngularAcceleration = omega.diff_wrt(&t_var);
@@ -48,7 +48,7 @@ fn diff_angular_velocity_wrt_time_is_angular_acceleration() {
 
 #[test]
 fn diff_energy_wrt_time_is_power() {
-    symplex::vars!(p, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; p, t);
     let e = Energy::from_ex(expr!(p * t));
     let t_var = Time::symbol("t");
     let pwr: Power = e.diff_wrt(&t_var);
@@ -57,7 +57,7 @@ fn diff_energy_wrt_time_is_power() {
 
 #[test]
 fn diff_momentum_wrt_time_is_force() {
-    symplex::vars!(f, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; f, t);
     let p = Momentum::from_ex(expr!(f * t));
     let t_var = Time::symbol("t");
     let force: Force = p.diff_wrt(&t_var);
@@ -66,7 +66,7 @@ fn diff_momentum_wrt_time_is_force() {
 
 #[test]
 fn diff_angular_momentum_wrt_time_is_torque() {
-    symplex::vars!(tau, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; tau, t);
     let l = AngularMomentum::from_ex(expr!(tau * t));
     let t_var = Time::symbol("t");
     let torque: Torque = l.diff_wrt(&t_var);
@@ -75,7 +75,7 @@ fn diff_angular_momentum_wrt_time_is_torque() {
 
 #[test]
 fn diff_charge_wrt_time_is_current() {
-    symplex::vars!(i, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; i, t);
     let q = Charge::from_ex(expr!(i * t));
     let t_var = Time::symbol("t");
     let current: Current = q.diff_wrt(&t_var);
@@ -84,7 +84,7 @@ fn diff_charge_wrt_time_is_current() {
 
 #[test]
 fn diff_magnetic_flux_wrt_time_is_voltage() {
-    symplex::vars!(v, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; v, t);
     let phi = MagneticFlux::from_ex(expr!(v * t));
     let t_var = Time::symbol("t");
     let voltage: Voltage = phi.diff_wrt(&t_var);
@@ -93,7 +93,7 @@ fn diff_magnetic_flux_wrt_time_is_voltage() {
 
 #[test]
 fn diff_energy_wrt_length_is_force() {
-    symplex::vars!(f, x);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; f, x);
     let e = Energy::from_ex(expr!(f * x));
     let x_var = Length::symbol("x");
     let force: Force = e.diff_wrt(&x_var);
@@ -102,7 +102,7 @@ fn diff_energy_wrt_length_is_force() {
 
 #[test]
 fn diff_energy_wrt_angle_is_torque() {
-    symplex::vars!(tau, theta);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; tau, theta);
     let e = Energy::from_ex(expr!(tau * theta));
     let th_var = Angle::symbol("theta");
     let torque: Torque = e.diff_wrt(&th_var);
@@ -111,7 +111,7 @@ fn diff_energy_wrt_angle_is_torque() {
 
 #[test]
 fn diff_energy_wrt_velocity_is_momentum() {
-    symplex::vars!(p, v);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; p, v);
     let e = Energy::from_ex(expr!(p * v));
     let v_var = Velocity::symbol("v");
     let mom: Momentum = e.diff_wrt(&v_var);
@@ -120,7 +120,7 @@ fn diff_energy_wrt_velocity_is_momentum() {
 
 #[test]
 fn diff_energy_wrt_angular_velocity_is_angular_momentum() {
-    symplex::vars!(l, w);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; l, w);
     let e = Energy::from_ex(expr!(l * w));
     let w_var = AngularVelocity::symbol("w");
     let am: AngularMomentum = e.diff_wrt(&w_var);
@@ -129,7 +129,7 @@ fn diff_energy_wrt_angular_velocity_is_angular_momentum() {
 
 #[test]
 fn diff_power_wrt_current_is_voltage() {
-    symplex::vars!(v, i);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; v, i);
     let p = Power::from_ex(expr!(v * i));
     let i_var = Current::symbol("i");
     let voltage: Voltage = p.diff_wrt(&i_var);
@@ -138,7 +138,7 @@ fn diff_power_wrt_current_is_voltage() {
 
 #[test]
 fn diff_power_wrt_voltage_is_current() {
-    symplex::vars!(i, v);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; i, v);
     let p = Power::from_ex(expr!(i * v));
     let v_var = Voltage::symbol("v");
     let current: Current = p.diff_wrt(&v_var);
@@ -147,7 +147,7 @@ fn diff_power_wrt_voltage_is_current() {
 
 #[test]
 fn diff_momentum_wrt_length_is_stiffness() {
-    symplex::vars!(k, x);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; k, x);
     let p = Momentum::from_ex(expr!(k * x));
     let x_var = Length::symbol("x");
     let stiffness: Stiffness = p.diff_wrt(&x_var);
@@ -156,7 +156,7 @@ fn diff_momentum_wrt_length_is_stiffness() {
 
 #[test]
 fn diff_force_wrt_length_is_stiffness() {
-    symplex::vars!(k, x);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; k, x);
     let f = Force::from_ex(expr!(k * x));
     let x_var = Length::symbol("x");
     let stiffness: Stiffness = f.diff_wrt(&x_var);
@@ -169,7 +169,7 @@ fn diff_force_wrt_length_is_stiffness() {
 
 #[test]
 fn int_velocity_wrt_time_is_length() {
-    symplex::vars!(v, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; v, t);
     let vel = Velocity::from_ex(expr!(v));
     let t_var = Time::symbol("t");
     let x: Length = vel.integrate_wrt(&t_var);
@@ -178,7 +178,7 @@ fn int_velocity_wrt_time_is_length() {
 
 #[test]
 fn int_acceleration_wrt_time_is_velocity() {
-    symplex::vars!(a, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, t);
     let acc = Acceleration::from_ex(expr!(a));
     let t_var = Time::symbol("t");
     let v: Velocity = acc.integrate_wrt(&t_var);
@@ -187,7 +187,7 @@ fn int_acceleration_wrt_time_is_velocity() {
 
 #[test]
 fn int_angular_velocity_wrt_time_is_angle() {
-    symplex::vars!(w, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; w, t);
     let omega = AngularVelocity::from_ex(expr!(w));
     let t_var = Time::symbol("t");
     let theta: Angle = omega.integrate_wrt(&t_var);
@@ -196,7 +196,7 @@ fn int_angular_velocity_wrt_time_is_angle() {
 
 #[test]
 fn int_angular_acceleration_wrt_time_is_angular_velocity() {
-    symplex::vars!(a, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, t);
     let alpha = AngularAcceleration::from_ex(expr!(a));
     let t_var = Time::symbol("t");
     let omega: AngularVelocity = alpha.integrate_wrt(&t_var);
@@ -205,7 +205,7 @@ fn int_angular_acceleration_wrt_time_is_angular_velocity() {
 
 #[test]
 fn int_power_wrt_time_is_energy() {
-    symplex::vars!(p, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; p, t);
     let pwr = Power::from_ex(expr!(p));
     let t_var = Time::symbol("t");
     let e: Energy = pwr.integrate_wrt(&t_var);
@@ -214,7 +214,7 @@ fn int_power_wrt_time_is_energy() {
 
 #[test]
 fn int_force_wrt_time_is_momentum() {
-    symplex::vars!(f, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; f, t);
     let force = Force::from_ex(expr!(f));
     let t_var = Time::symbol("t");
     let p: Momentum = force.integrate_wrt(&t_var);
@@ -223,7 +223,7 @@ fn int_force_wrt_time_is_momentum() {
 
 #[test]
 fn int_torque_wrt_time_is_angular_momentum() {
-    symplex::vars!(tau, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; tau, t);
     let torque = Torque::from_ex(expr!(tau));
     let t_var = Time::symbol("t");
     let l: AngularMomentum = torque.integrate_wrt(&t_var);
@@ -232,7 +232,7 @@ fn int_torque_wrt_time_is_angular_momentum() {
 
 #[test]
 fn int_current_wrt_time_is_charge() {
-    symplex::vars!(i, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; i, t);
     let cur = Current::from_ex(expr!(i));
     let t_var = Time::symbol("t");
     let q: Charge = cur.integrate_wrt(&t_var);
@@ -241,7 +241,7 @@ fn int_current_wrt_time_is_charge() {
 
 #[test]
 fn int_voltage_wrt_time_is_magnetic_flux() {
-    symplex::vars!(v, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; v, t);
     let volt = Voltage::from_ex(expr!(v));
     let t_var = Time::symbol("t");
     let phi: MagneticFlux = volt.integrate_wrt(&t_var);
@@ -250,7 +250,7 @@ fn int_voltage_wrt_time_is_magnetic_flux() {
 
 #[test]
 fn int_force_wrt_length_is_energy() {
-    symplex::vars!(f, x);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; f, x);
     let force = Force::from_ex(expr!(f));
     let x_var = Length::symbol("x");
     let e: Energy = force.integrate_wrt(&x_var);
@@ -259,7 +259,7 @@ fn int_force_wrt_length_is_energy() {
 
 #[test]
 fn int_stiffness_wrt_length_is_force() {
-    symplex::vars!(k, x);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; k, x);
     let stiff = Stiffness::from_ex(expr!(k));
     let x_var = Length::symbol("x");
     let f: Force = stiff.integrate_wrt(&x_var);
@@ -268,7 +268,7 @@ fn int_stiffness_wrt_length_is_force() {
 
 #[test]
 fn int_momentum_wrt_velocity_is_energy() {
-    symplex::vars!(p, v);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; p, v);
     let mom = Momentum::from_ex(expr!(p));
     let v_var = Velocity::symbol("v");
     let e: Energy = mom.integrate_wrt(&v_var);
@@ -277,7 +277,7 @@ fn int_momentum_wrt_velocity_is_energy() {
 
 #[test]
 fn int_angular_momentum_wrt_angular_velocity_is_energy() {
-    symplex::vars!(l, w);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; l, w);
     let am = AngularMomentum::from_ex(expr!(l));
     let w_var = AngularVelocity::symbol("w");
     let e: Energy = am.integrate_wrt(&w_var);
@@ -290,7 +290,7 @@ fn int_angular_momentum_wrt_angular_velocity_is_energy() {
 
 #[test]
 fn ftc_acceleration_through_velocity() {
-    symplex::vars!(a, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, t);
     let accel = Acceleration::from_ex(expr!(a));
     let t_var = Time::symbol("t");
     let vel: Velocity = accel.integrate_wrt(&t_var);
@@ -300,7 +300,7 @@ fn ftc_acceleration_through_velocity() {
 
 #[test]
 fn ftc_force_through_momentum() {
-    symplex::vars!(f, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; f, t);
     let force = Force::from_ex(expr!(f));
     let t_var = Time::symbol("t");
     let mom: Momentum = force.integrate_wrt(&t_var);
@@ -310,7 +310,7 @@ fn ftc_force_through_momentum() {
 
 #[test]
 fn ftc_power_through_energy() {
-    symplex::vars!(p, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; p, t);
     let pwr = Power::from_ex(expr!(p));
     let t_var = Time::symbol("t");
     let energy: Energy = pwr.integrate_wrt(&t_var);
@@ -320,7 +320,7 @@ fn ftc_power_through_energy() {
 
 #[test]
 fn ftc_current_through_charge() {
-    symplex::vars!(i, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; i, t);
     let cur = Current::from_ex(expr!(i));
     let t_var = Time::symbol("t");
     let charge: Charge = cur.integrate_wrt(&t_var);
@@ -330,7 +330,7 @@ fn ftc_current_through_charge() {
 
 #[test]
 fn ftc_force_through_energy_spatial() {
-    symplex::vars!(f, x);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; f, x);
     let force = Force::from_ex(expr!(f));
     let x_var = Length::symbol("x");
     let energy: Energy = force.integrate_wrt(&x_var);
@@ -483,7 +483,7 @@ fn mul_current_time_equals_charge() {
 
 #[test]
 fn from_ex_accepts_ref_ex() {
-    symplex::vars!(x);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // expr!(x) returns &Ex — from_ex should accept it without .clone()
     let l = Length::from_ex(expr!(x));
     assert_eq!(format!("{}", l.inner()), "x");
@@ -491,14 +491,14 @@ fn from_ex_accepts_ref_ex() {
 
 #[test]
 fn from_ex_accepts_owned_ex() {
-    let ex = symplex::var("x");
+    let ex = symplex::default_context().symbol("x");
     let l = Length::from_ex(ex);
     assert_eq!(format!("{}", l.inner()), "x");
 }
 
 #[test]
 fn from_ex_accepts_expr_compound() {
-    symplex::vars!(a, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, t);
     // expr!(a * t) produces an Ex from &a * &t
     let v = Velocity::from_ex(expr!(a * t));
     assert_eq!(format!("{}", v.inner()), "a*t");
@@ -510,7 +510,7 @@ fn from_ex_accepts_expr_compound() {
 
 #[test]
 fn simplify_preserves_dimension() {
-    symplex::vars!(x);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let f = Force::from_ex(expr!(x + x));
     let f2 = f.simplify();
     // simplify should still produce a Force
@@ -519,7 +519,7 @@ fn simplify_preserves_dimension() {
 
 #[test]
 fn expand_preserves_dimension() {
-    symplex::vars!(a, b);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b);
     // (a + b)^2 expanded = a^2 + 2*a*b + b^2
     let e = Energy::from_ex(expr!((a + b) * (a + b)));
     let e2 = e.expand();
@@ -542,9 +542,9 @@ fn eval_preserves_dimension() {
 
 #[test]
 fn subs_preserves_dimension() {
-    symplex::vars!(x, y);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y);
     let f = Force::from_ex(expr!(x + y));
-    let two = symplex::int(2);
+    let two = symplex::default_context().int(2);
     let f2 = f.subs(&x, &two);
     // After substituting x=2, should get 2 + y
     let inner_str = format!("{}", f2.inner());
@@ -556,7 +556,7 @@ fn subs_preserves_dimension() {
 
 #[test]
 fn to_latex_preserves_dimension() {
-    symplex::vars!(f);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; f);
     let force = Force::from_ex(expr!(f));
     let latex = force.to_latex();
     // to_latex should return a non-empty LaTeX string
@@ -577,7 +577,7 @@ fn asref_force_returns_ex() {
 
 #[test]
 fn asref_qty_returns_ex() {
-    let q: Qty<LengthDim> = Qty::from_ex(symplex::int(42));
+    let q: Qty<LengthDim> = Qty::from_ex(symplex::default_context().int(42));
     let ex: &Ex = q.as_ref();
     assert_eq!(format!("{}", ex), "42");
 }
@@ -588,33 +588,33 @@ fn subs_accepts_named_type_var() {
     let a = Acceleration::symbol("a");
     let f = symplex::dim!(Force: m * a);
     // subs with named type — no .inner() needed!
-    let f2 = f.subs(&m, &symplex::int(10));
+    let f2 = f.subs(&m, &symplex::default_context().int(10));
     assert_eq!(format!("{}", f2.inner()), "10*a");
 }
 
 #[test]
 fn subs_still_accepts_raw_ex() {
-    symplex::vars!(m, a);
-    let m_ex = symplex::var("m");
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a);
+    let m_ex = symplex::default_context().symbol("m");
     let f = Force::from_ex(expr!(m * a));
     // subs with raw &Ex — backward compatible
-    let f2 = f.subs(&m_ex, &symplex::int(10));
+    let f2 = f.subs(&m_ex, &symplex::default_context().int(10));
     assert!(format!("{}", f2.inner()).contains("10"));
 }
 
 #[test]
 fn subs_chain_no_inner() {
-    symplex::vars!(m, a);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a);
     let f = Force::from_ex(expr!(m * a));
     let m_var = Mass::symbol("m");
     let a_var = Acceleration::symbol("a");
-    let result = f.subs(&m_var, &symplex::int(5)).subs(&a_var, &symplex::int(10)).eval();
+    let result = f.subs(&m_var, &symplex::default_context().int(5)).subs(&a_var, &symplex::default_context().int(10)).eval();
     assert_eq!(format!("{}", result.inner()), "50");
 }
 
 #[test]
 fn diff_accepts_named_type_var() {
-    symplex::vars!(x, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, t);
     let pos = Length::from_ex(expr!(x * t));
     let t_var = Time::symbol("t");
     // diff with named type
@@ -624,7 +624,7 @@ fn diff_accepts_named_type_var() {
 
 #[test]
 fn integrate_accepts_named_type_var() {
-    symplex::vars!(v, t);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; v, t);
     let vel = Velocity::from_ex(expr!(v));
     let t_var = Time::symbol("t");
     let result = vel.integrate(&t_var);
@@ -633,7 +633,7 @@ fn integrate_accepts_named_type_var() {
 
 #[test]
 fn contains_accepts_named_type() {
-    symplex::vars!(m, a);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a);
     let f = Force::from_ex(expr!(m * a));
     let m_var = Mass::symbol("m");
     assert!(f.contains(&m_var));
@@ -641,10 +641,10 @@ fn contains_accepts_named_type() {
 
 #[test]
 fn qty_subs_accepts_named_type() {
-    symplex::vars!(m, a);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a);
     let q: Qty<ForceDim> = Qty::from_ex(expr!(m * a));
     let m_var = Mass::symbol("m");
-    let q2 = q.subs(&m_var, &symplex::int(7));
+    let q2 = q.subs(&m_var, &symplex::default_context().int(7));
     assert!(format!("{}", q2).contains("7"));
 }
 
@@ -654,7 +654,7 @@ fn qty_subs_accepts_named_type() {
 
 #[test]
 fn qty_display_known_dim() {
-    let q: Qty<LengthDim> = Qty::from_ex(symplex::int(42));
+    let q: Qty<LengthDim> = Qty::from_ex(symplex::default_context().int(42));
     let s = format!("{}", q);
     assert_eq!(s, "42");
 }

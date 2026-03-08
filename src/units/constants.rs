@@ -157,7 +157,7 @@ mod tests {
         let display = format!("{}", energy.inner());
         assert!(display.contains("c"), "E=mc² should display symbolically: {display}");
         // Evaluate with m=1 kg
-        let val = energy.subs(&m, &symplex::int(1)).eval_f64().unwrap();
+        let val = energy.subs(&m, &symplex::default_context().int(1)).eval_f64().unwrap();
         let expected = 299_792_458.0_f64 * 299_792_458.0;
         assert!((val - expected).abs() / expected < 1e-10,
             "E(m=1) = {val}, expected {expected}");

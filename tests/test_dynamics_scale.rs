@@ -57,25 +57,25 @@ fn experiment_3dof_planar_arm_dynamics() {
     println!("{}\n", "=".repeat(60));
 
     // ── Symbols ──────────────────────────────────────────────────────────
-    let m1 = symplex::var("m1");
-    let m2 = symplex::var("m2");
-    let m3 = symplex::var("m3");
-    let l1 = symplex::var("L1");
-    let l2 = symplex::var("L2");
-    let l3 = symplex::var("L3");
-    let g_sym = symplex::var("g");
+    let m1 = symplex::default_context().symbol("m1");
+    let m2 = symplex::default_context().symbol("m2");
+    let m3 = symplex::default_context().symbol("m3");
+    let l1 = symplex::default_context().symbol("L1");
+    let l2 = symplex::default_context().symbol("L2");
+    let l3 = symplex::default_context().symbol("L3");
+    let g_sym = symplex::default_context().symbol("g");
 
-    let q1 = symplex::var("q1");
-    let q2 = symplex::var("q2");
-    let q3 = symplex::var("q3");
-    let qd1 = symplex::var("qd1");
-    let qd2 = symplex::var("qd2");
-    let qd3 = symplex::var("qd3");
-    let qdd1 = symplex::var("qdd1");
-    let qdd2 = symplex::var("qdd2");
-    let qdd3 = symplex::var("qdd3");
+    let q1 = symplex::default_context().symbol("q1");
+    let q2 = symplex::default_context().symbol("q2");
+    let q3 = symplex::default_context().symbol("q3");
+    let qd1 = symplex::default_context().symbol("qd1");
+    let qd2 = symplex::default_context().symbol("qd2");
+    let qd3 = symplex::default_context().symbol("qd3");
+    let qdd1 = symplex::default_context().symbol("qdd1");
+    let qdd2 = symplex::default_context().symbol("qdd2");
+    let qdd3 = symplex::default_context().symbol("qdd3");
 
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
 
     // ── Step 1: Forward kinematics — COM positions ───────────────────────
     println!("Step 1: Building COM positions for 3 links...");
@@ -276,10 +276,10 @@ fn experiment_3dof_planar_arm_dynamics() {
         let mut result = e.clone();
         for &(var, val) in vals {
             let num = if val == val.floor() && val.abs() < 1e9 {
-                symplex::int(val as i64)
+                symplex::default_context().int(val as i64)
             } else {
                 // Use rational approximation for decimals
-                symplex::rational((val * 10000.0) as i64, 10000)
+                symplex::default_context().rational((val * 10000.0) as i64, 10000)
             };
             result = result.subs(var, &num);
         }
@@ -391,20 +391,20 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     println!("{}\n", "=".repeat(60));
 
     // ── Symbols ──────────────────────────────────────────────────────────
-    let q1 = symplex::var("q1");
-    let q2 = symplex::var("q2");
-    let q3 = symplex::var("q3");
-    let q4 = symplex::var("q4");
-    let q5 = symplex::var("q5");
-    let q6 = symplex::var("q6");
+    let q1 = symplex::default_context().symbol("q1");
+    let q2 = symplex::default_context().symbol("q2");
+    let q3 = symplex::default_context().symbol("q3");
+    let q4 = symplex::default_context().symbol("q4");
+    let q5 = symplex::default_context().symbol("q5");
+    let q6 = symplex::default_context().symbol("q6");
 
-    let a2 = symplex::var("a2");
-    let d4 = symplex::var("d4");
+    let a2 = symplex::default_context().symbol("a2");
+    let d4 = symplex::default_context().symbol("d4");
 
-    let zero = symplex::int(0);
-    let pi = symplex::pi();
-    let half_pi = &symplex::rational(1, 2) * &pi;
-    let neg_half_pi = &symplex::rational(-1, 2) * &symplex::pi();
+    let zero = symplex::default_context().int(0);
+    let pi = symplex::default_context().pi();
+    let half_pi = &symplex::default_context().rational(1, 2) * &pi;
+    let neg_half_pi = &symplex::default_context().rational(-1, 2) * &symplex::default_context().pi();
 
     // ── Step 1: Build individual DH matrices ─────────────────────────────
     // PUMA-like DH parameters:
@@ -527,14 +527,14 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     println!("\nStep 5: Evaluating FK at numeric values...");
     let t0_eval = Instant::now();
     let fk_eval = |e: &Ex| -> f64 {
-        e.subs(&q1, &symplex::rational(3, 10))
-            .subs(&q2, &symplex::rational(5, 10))
-            .subs(&q3, &symplex::rational(-2, 10))
-            .subs(&q4, &symplex::rational(8, 10))
-            .subs(&q5, &symplex::rational(-4, 10))
-            .subs(&q6, &symplex::rational(1, 10))
-            .subs(&a2, &symplex::rational(4318, 10000))
-            .subs(&d4, &symplex::rational(4331, 10000))
+        e.subs(&q1, &symplex::default_context().rational(3, 10))
+            .subs(&q2, &symplex::default_context().rational(5, 10))
+            .subs(&q3, &symplex::default_context().rational(-2, 10))
+            .subs(&q4, &symplex::default_context().rational(8, 10))
+            .subs(&q5, &symplex::default_context().rational(-4, 10))
+            .subs(&q6, &symplex::default_context().rational(1, 10))
+            .subs(&a2, &symplex::default_context().rational(4318, 10000))
+            .subs(&d4, &symplex::default_context().rational(4331, 10000))
             .eval()
             .eval_f64()
             .unwrap()
@@ -647,13 +647,13 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     // ── Step 11: Try 6-DOF dynamics (kinetic energy for first 3 joints) ──
     println!("\nStep 11: Attempting simplified 6-DOF dynamics (first 3 joints only)...");
 
-    let qd1 = symplex::var("qd1");
-    let qd2 = symplex::var("qd2");
-    let qd3 = symplex::var("qd3");
+    let qd1 = symplex::default_context().symbol("qd1");
+    let qd2 = symplex::default_context().symbol("qd2");
+    let qd3 = symplex::default_context().symbol("qd3");
 
-    let m1 = symplex::var("m1");
-    let m2 = symplex::var("m2");
-    let m3 = symplex::var("m3");
+    let m1 = symplex::default_context().symbol("m1");
+    let m2 = symplex::default_context().symbol("m2");
+    let m3 = symplex::default_context().symbol("m3");
 
     // Use the first 3 joints' FK positions for a simplified dynamics test
     let dh_1 = [(&q1, &zero, &zero, &half_pi)];
@@ -675,7 +675,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // For a simplified spatial arm, potential energy uses z component
     // (assuming gravity is along -z)
-    let g_sym = symplex::var("g");
+    let g_sym = symplex::default_context().symbol("g");
     let pe_6 = &(&(&m1 * &g_sym) * &p1z)
         + &(&(&(&m2 * &g_sym) * &p2z) + &(&(&m3 * &g_sym) * &p3z));
 
@@ -700,12 +700,12 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     // Velocity of each COM = J_i * qdot
     // v_ix = Σ_j (∂p_ix/∂q_j) * qd_j, etc.
     let qdot_vars = [&qd1, &qd2, &qd3];
-    let half = symplex::rational(1, 2);
+    let half = symplex::default_context().rational(1, 2);
 
     let compute_link_ke = |px: &Ex, py: &Ex, pz: &Ex, mass: &Ex| -> Ex {
-        let mut vx = symplex::int(0);
-        let mut vy = symplex::int(0);
-        let mut vz = symplex::int(0);
+        let mut vx = symplex::default_context().int(0);
+        let mut vy = symplex::default_context().int(0);
+        let mut vz = symplex::default_context().int(0);
         for (k, qk) in q_vars_3.iter().enumerate() {
             vx = &vx + &(&px.diff(qk) * qdot_vars[k]);
             vy = &vy + &(&py.diff(qk) * qdot_vars[k]);

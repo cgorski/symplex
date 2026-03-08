@@ -89,7 +89,7 @@ fn main() {
 
     println!("\n--- Transcendental: sin(x) = 1/2 ---");
     // Rewrite as sin(x) - 1/2 = 0
-    let eq = &x.sin() - &symplex::rational(1, 2);
+    let eq = &x.sin() - &symplex::default_context().rational(1, 2);
     let roots = eq.solve_or_empty(&x);
     if roots.is_empty() {
         println!("  No symbolic roots found (expected for transcendental)");

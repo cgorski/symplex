@@ -96,7 +96,7 @@ fn expand_trig_cos_sum() {
 
 #[test]
 fn expand_trig_bare_sin_unchanged() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin();
     let expanded = expr.expand_trig();
     assert_eq!(format!("{expanded}"), "sin(x)");
@@ -147,7 +147,7 @@ fn poly_lcm_basic() {
 
 #[test]
 fn eval_sin_neg_x() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (-&x).sin();
     let evaled = expr.eval();
     // sin(-x) should evaluate to -sin(x)
@@ -156,7 +156,7 @@ fn eval_sin_neg_x() {
 
 #[test]
 fn eval_cos_neg_x() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (-&x).cos();
     let evaled = expr.eval();
     // cos(-x) should evaluate to cos(x)
@@ -165,7 +165,7 @@ fn eval_cos_neg_x() {
 
 #[test]
 fn eval_tan_neg_x() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (-&x).tan();
     let evaled = expr.eval();
     // tan(-x) should evaluate to -tan(x)
@@ -178,7 +178,7 @@ fn eval_tan_neg_x() {
 
 #[test]
 fn display_inverse_hyperbolic() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_eq!(format!("{}", x.asinh()), "asinh(x)");
     assert_eq!(format!("{}", x.acosh()), "acosh(x)");
     assert_eq!(format!("{}", x.atanh()), "atanh(x)");
@@ -207,7 +207,7 @@ fn eval_atanh_zero() {
 
 #[test]
 fn diff_asinh() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let d = x.asinh().diff(&x);
     let s = format!("{d}");
     // d/dx(asinh(x)) = 1/sqrt(x^2+1)

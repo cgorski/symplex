@@ -9,7 +9,7 @@ use symplex::prelude::*;
 #[test]
 fn sifting_x_times_delta_x() {
     // ∫ x·δ(x) dx = f(0)·H(x) = 0·H(x) = 0
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x * &x.dirac_delta();
     let result = integrand.integrate(&x);
     let s = format!("{}", result.eval());
@@ -19,8 +19,8 @@ fn sifting_x_times_delta_x() {
 #[test]
 fn sifting_const_times_delta_x() {
     // ∫ 5·δ(x) dx = 5·H(x)
-    let x = symplex::var("x");
-    let five = symplex::int(5);
+    let x = symplex::default_context().symbol("x");
+    let five = symplex::default_context().int(5);
     let integrand = &five * &x.dirac_delta();
     let result = integrand.integrate(&x);
     let s = format!("{result}");
@@ -33,8 +33,8 @@ fn sifting_const_times_delta_x() {
 #[test]
 fn sifting_x_squared_times_delta_x() {
     // ∫ x²·δ(x) dx = f(0)·H(x) = 0·H(x) = 0
-    let x = symplex::var("x");
-    let x_sq = x.pow(&symplex::int(2));
+    let x = symplex::default_context().symbol("x");
+    let x_sq = x.pow(&symplex::default_context().int(2));
     let integrand = &x_sq * &x.dirac_delta();
     let result = integrand.integrate(&x);
     let s = format!("{}", result.eval());
@@ -44,8 +44,8 @@ fn sifting_x_squared_times_delta_x() {
 #[test]
 fn sifting_delta_x_minus_a() {
     // ∫ x·δ(x-3) dx = f(3)·H(x-3) = 3·H(x-3)
-    let x = symplex::var("x");
-    let three = symplex::int(3);
+    let x = symplex::default_context().symbol("x");
+    let three = symplex::default_context().int(3);
     let delta_arg = &x - &three;
     let integrand = &x * &delta_arg.dirac_delta();
     let result = integrand.integrate(&x);
@@ -60,7 +60,7 @@ fn sifting_delta_x_minus_a() {
 #[test]
 fn sifting_exp_times_delta_x() {
     // ∫ exp(x)·δ(x) dx = exp(0)·H(x) = 1·H(x) = H(x)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x.exp() * &x.dirac_delta();
     let result = integrand.integrate(&x);
     let s = format!("{}", result.eval());
@@ -84,7 +84,7 @@ fn verify_laplace_numerically(
     expected: f64,
     label: &str,
 ) {
-    let s_val = symplex::rational(s_num, s_den);
+    let s_val = symplex::default_context().rational(s_num, s_den);
     let at_s = result.subs(s_var, &s_val);
     let val = at_s.eval_f64().unwrap_or_else(|_| panic!(
         "{label}: should evaluate numerically at s={s_num}/{s_den}"
@@ -98,9 +98,9 @@ fn verify_laplace_numerically(
 #[test]
 fn laplace_time_shift_heaviside_exp() {
     // L{H(t-2)·exp(t)} should apply time-shift and produce a result
-    let t = symplex::var("t");
-    let s = symplex::var("s");
-    let two = symplex::int(2);
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
+    let two = symplex::default_context().int(2);
     let h = (&t - &two).heaviside();
     let f = t.exp();
     let integrand = &h * &f;
@@ -124,9 +124,9 @@ fn laplace_time_shift_heaviside_exp() {
 fn laplace_time_shift_heaviside_t() {
     // L{H(t-1)·t} — time-shift with f(t) = t
     // = exp(-s)·L{(t+1)} = exp(-s)·(1/s² + 1/s)
-    let t = symplex::var("t");
-    let s = symplex::var("s");
-    let one = symplex::int(1);
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
+    let one = symplex::default_context().int(1);
     let h = (&t - &one).heaviside();
     let integrand = &h * &t;
     let result = integrand.laplace(&t, &s);
@@ -144,8 +144,8 @@ fn laplace_time_shift_heaviside_t() {
 #[test]
 fn laplace_t_times_exp_t() {
     // L{t·exp(t)} = -d/ds[1/(s-1)] = 1/(s-1)²
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     let integrand = &t * &t.exp();
     let result = integrand.laplace(&t, &s);
     assert!(
@@ -165,8 +165,8 @@ fn laplace_t_times_exp_t() {
 #[test]
 fn laplace_t_times_sin_t() {
     // L{t·sin(t)} = -d/ds[1/(s²+1)] = 2s/(s²+1)²
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     let integrand = &t * &t.sin();
     let result = integrand.laplace(&t, &s);
     assert!(
@@ -185,8 +185,8 @@ fn laplace_t_times_sin_t() {
 #[test]
 fn laplace_t_times_cos_t() {
     // L{t·cos(t)} = -d/ds[s/(s²+1)] = (s²-1)/(s²+1)²
-    let t = symplex::var("t");
-    let s = symplex::var("s");
+    let t = symplex::default_context().symbol("t");
+    let s = symplex::default_context().symbol("s");
     let integrand = &t * &t.cos();
     let result = integrand.laplace(&t, &s);
     assert!(

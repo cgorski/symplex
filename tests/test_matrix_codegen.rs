@@ -122,11 +122,11 @@ fn matrix_codegen_2x2_identity() {
 
 #[test]
 fn matrix_codegen_simple_jacobian() {
-    let theta1 = symplex::var("theta1");
-    let theta2 = symplex::var("theta2");
-    let l1 = symplex::var("L1");
-    let l2 = symplex::var("L2");
-    let zero = symplex::int(0);
+    let theta1 = symplex::default_context().symbol("theta1");
+    let theta2 = symplex::default_context().symbol("theta2");
+    let l1 = symplex::default_context().symbol("L1");
+    let l2 = symplex::default_context().symbol("L2");
+    let zero = symplex::default_context().int(0);
 
     let params = [
         (&theta1, &zero, &l1, &zero),
@@ -167,8 +167,8 @@ fn matrix_codegen_simple_jacobian() {
 #[test]
 fn matrix_codegen_has_cse_across_entries() {
     // Build a matrix where sin(x + y) appears in multiple entries.
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let shared = (&x + &y).sin(); // sin(x + y) shared across entries
 
     let m = Matrix::new(vec![
@@ -197,11 +197,11 @@ fn matrix_codegen_has_cse_across_entries() {
 
 #[test]
 fn matrix_codegen_numerical_correctness() {
-    let theta1 = symplex::var("theta1");
-    let theta2 = symplex::var("theta2");
-    let l1 = symplex::var("L1");
-    let l2 = symplex::var("L2");
-    let zero = symplex::int(0);
+    let theta1 = symplex::default_context().symbol("theta1");
+    let theta2 = symplex::default_context().symbol("theta2");
+    let l1 = symplex::default_context().symbol("L1");
+    let l2 = symplex::default_context().symbol("L2");
+    let zero = symplex::default_context().int(0);
 
     let params = [
         (&theta1, &zero, &l1, &zero),
@@ -232,10 +232,10 @@ fn matrix_codegen_numerical_correctness() {
         l2_val * (t1_val + t2_val).cos(),
     ];
 
-    let theta1_sub = symplex::rational(3, 10); // 0.3
-    let theta2_sub = symplex::rational(1, 2); // 0.5
-    let l1_sub = symplex::int(1);
-    let l2_sub = symplex::rational(4, 5); // 0.8
+    let theta1_sub = symplex::default_context().rational(3, 10); // 0.3
+    let theta2_sub = symplex::default_context().rational(1, 2); // 0.5
+    let l1_sub = symplex::default_context().int(1);
+    let l2_sub = symplex::default_context().rational(4, 5); // 0.8
 
     // Evaluate each Jacobian entry symbolically at the test point
     for i in 0..2 {
@@ -271,13 +271,13 @@ fn matrix_codegen_numerical_correctness() {
 
 #[test]
 fn matrix_codegen_3dof_robot() {
-    let theta1 = symplex::var("theta1");
-    let theta2 = symplex::var("theta2");
-    let theta3 = symplex::var("theta3");
-    let l1 = symplex::var("L1");
-    let l2 = symplex::var("L2");
-    let l3 = symplex::var("L3");
-    let zero = symplex::int(0);
+    let theta1 = symplex::default_context().symbol("theta1");
+    let theta2 = symplex::default_context().symbol("theta2");
+    let theta3 = symplex::default_context().symbol("theta3");
+    let l1 = symplex::default_context().symbol("L1");
+    let l2 = symplex::default_context().symbol("L2");
+    let l3 = symplex::default_context().symbol("L3");
+    let zero = symplex::default_context().int(0);
 
     let params = [
         (&theta1, &zero, &l1, &zero),
@@ -317,7 +317,7 @@ fn matrix_codegen_3dof_robot() {
 
 #[test]
 fn codegen_options_f32() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![
         vec![x.sin(), x.cos()],
         vec![-x.cos(), x.sin()],
@@ -353,7 +353,7 @@ fn codegen_options_f32() {
 
 #[test]
 fn codegen_options_libm() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![vec![x.sin(), x.cos()]]).unwrap();
 
     let opts = CodegenOptions {
@@ -382,7 +382,7 @@ fn codegen_options_libm() {
 
 #[test]
 fn codegen_options_cfg_gated() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![vec![x.sin(), x.cos()]]).unwrap();
 
     let opts = CodegenOptions {
@@ -416,7 +416,7 @@ fn codegen_options_cfg_gated() {
 
 #[test]
 fn codegen_options_inline() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![vec![x.sin(), x.cos()]]).unwrap();
 
     let opts = CodegenOptions {
@@ -441,7 +441,7 @@ fn codegen_options_inline() {
 #[test]
 fn codegen_options_no_cse() {
     // Build a matrix where entries share a subexpression
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let shared = x.sin();
     let m = Matrix::new(vec![
         vec![&shared * 2, &shared + 1],
@@ -481,11 +481,11 @@ fn codegen_options_no_cse() {
 #[test]
 fn pipeline_dh_to_codegen_2dof() {
     // Step 1: Define 2-DOF DH parameters
-    let theta1 = symplex::var("theta1");
-    let theta2 = symplex::var("theta2");
-    let l1 = symplex::var("L1");
-    let l2 = symplex::var("L2");
-    let zero = symplex::int(0);
+    let theta1 = symplex::default_context().symbol("theta1");
+    let theta2 = symplex::default_context().symbol("theta2");
+    let l1 = symplex::default_context().symbol("L1");
+    let l2 = symplex::default_context().symbol("L2");
+    let zero = symplex::default_context().int(0);
 
     let dh = [
         (&theta1, &zero, &l1, &zero),
@@ -520,10 +520,10 @@ fn pipeline_dh_to_codegen_2dof() {
     let _l1_f: f64 = 1.0;
     let l2_f: f64 = 0.8;
 
-    let theta1_sub = symplex::rational(3, 10);
-    let theta2_sub = symplex::rational(1, 2);
-    let l1_sub = symplex::int(1);
-    let l2_sub = symplex::rational(4, 5);
+    let theta1_sub = symplex::default_context().rational(3, 10);
+    let theta2_sub = symplex::default_context().rational(1, 2);
+    let l1_sub = symplex::default_context().int(1);
+    let l2_sub = symplex::default_context().rational(4, 5);
 
     // dx/dθ2 = -L2*sin(θ1+θ2)
     let j01_val = j
@@ -549,13 +549,13 @@ fn pipeline_dh_to_codegen_2dof() {
 
 #[test]
 fn pipeline_dh_to_codegen_3dof() {
-    let theta1 = symplex::var("theta1");
-    let theta2 = symplex::var("theta2");
-    let theta3 = symplex::var("theta3");
-    let l1 = symplex::var("L1");
-    let l2 = symplex::var("L2");
-    let l3 = symplex::var("L3");
-    let zero = symplex::int(0);
+    let theta1 = symplex::default_context().symbol("theta1");
+    let theta2 = symplex::default_context().symbol("theta2");
+    let theta3 = symplex::default_context().symbol("theta3");
+    let l1 = symplex::default_context().symbol("L1");
+    let l2 = symplex::default_context().symbol("L2");
+    let l3 = symplex::default_context().symbol("L3");
+    let zero = symplex::default_context().int(0);
 
     let dh = [
         (&theta1, &zero, &l1, &zero),
@@ -590,11 +590,11 @@ fn pipeline_dh_to_codegen_3dof() {
 
 #[test]
 fn pipeline_fk_codegen() {
-    let theta1 = symplex::var("theta1");
-    let theta2 = symplex::var("theta2");
-    let l1 = symplex::var("L1");
-    let l2 = symplex::var("L2");
-    let zero = symplex::int(0);
+    let theta1 = symplex::default_context().symbol("theta1");
+    let theta2 = symplex::default_context().symbol("theta2");
+    let l1 = symplex::default_context().symbol("L1");
+    let l2 = symplex::default_context().symbol("L2");
+    let zero = symplex::default_context().int(0);
 
     let dh = [
         (&theta1, &zero, &l1, &zero),
@@ -628,8 +628,8 @@ fn pipeline_fk_codegen() {
 
 #[test]
 fn cse_multi_shares_trig_across_entries() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
 
     // Two expressions that share sin(x + y):
     //   e1 = sin(x + y) * x
@@ -664,10 +664,10 @@ fn cse_multi_shares_trig_across_entries() {
 
 #[test]
 fn cse_multi_partial_overlap_detection() {
-    let a = symplex::var("a");
-    let b = symplex::var("b");
-    let c = symplex::var("c");
-    let d = symplex::var("d");
+    let a = symplex::default_context().symbol("a");
+    let b = symplex::default_context().symbol("b");
+    let c = symplex::default_context().symbol("c");
+    let d = symplex::default_context().symbol("d");
 
     // Two expressions sharing a partial sum: a*b + a*c appears in both.
     // e1 = a*b + a*c + d     (has a*b and a*c)
@@ -712,7 +712,7 @@ fn cse_multi_partial_overlap_detection() {
 
 #[test]
 fn scalar_codegen_with_options() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let f = x.sin().powi(2) + x.cos().powi(2) + x.exp();
 
     // Default options
@@ -777,7 +777,7 @@ fn matrix_codegen_empty_matrix() {
     // 1×1 matrix — note: the matrix codegen has a known edge-case where
     // total==1 produces an unbalanced opening bracket, so we skip the
     // balanced-brackets assertion here and only verify the structural content.
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![vec![x.sin()]]).unwrap();
     let code = m.to_rust_fn("single_entry", &["x"]).unwrap();
 
@@ -874,7 +874,7 @@ fn matrix_codegen_preserves_entry_order() {
 #[test]
 fn codegen_options_f32_with_libm() {
     // Combine F32 precision with Libm backend
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![vec![x.sin(), x.cos()]]).unwrap();
 
     let opts = CodegenOptions {
@@ -906,7 +906,7 @@ fn codegen_options_f32_with_libm() {
 
 #[test]
 fn codegen_options_inline_with_must_use() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]).unwrap();
 
     let opts = CodegenOptions {
@@ -940,8 +940,8 @@ fn codegen_options_inline_with_must_use() {
 fn matrix_codegen_constant_matrix() {
     // A matrix with only numeric constants — no variables
     let m = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(1)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
     ]).unwrap();
 
     let code = m.to_rust_fn("const_id", &[]).unwrap();
@@ -960,18 +960,18 @@ fn matrix_codegen_constant_matrix() {
 #[test]
 fn matrix_codegen_large_matrix_balanced() {
     // A 4×4 matrix to stress-test bracket balancing
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
 
     let m = Matrix::new(vec![
         vec![x.sin(), x.cos(), y.sin(), y.cos()],
         vec![x.cos(), -x.sin(), y.cos(), -y.sin()],
         vec![(&x + &y).sin(), (&x + &y).cos(), (&x - &y).sin(), (&x - &y).cos()],
         vec![
-            symplex::int(1),
-            symplex::int(0),
-            symplex::int(0),
-            symplex::int(1),
+            symplex::default_context().int(1),
+            symplex::default_context().int(0),
+            symplex::default_context().int(0),
+            symplex::default_context().int(1),
         ],
     ]).unwrap();
 
@@ -984,11 +984,11 @@ fn matrix_codegen_large_matrix_balanced() {
 #[test]
 fn pipeline_dh_jacobian_numerical_at_zero() {
     // Verify Jacobian at θ₁=0, θ₂=0 where the math simplifies nicely
-    let theta1 = symplex::var("theta1");
-    let theta2 = symplex::var("theta2");
-    let l1 = symplex::var("L1");
-    let l2 = symplex::var("L2");
-    let zero = symplex::int(0);
+    let theta1 = symplex::default_context().symbol("theta1");
+    let theta2 = symplex::default_context().symbol("theta2");
+    let l1 = symplex::default_context().symbol("L1");
+    let l2 = symplex::default_context().symbol("L2");
+    let zero = symplex::default_context().int(0);
 
     let dh = [
         (&theta1, &zero, &l1, &zero),
@@ -1005,8 +1005,8 @@ fn pipeline_dh_jacobian_numerical_at_zero() {
     //   dx/dθ₂ = -sin(0) = 0
     //   dy/dθ₁ = cos(0) + cos(0) = 2
     //   dy/dθ₂ = cos(0) = 1
-    let theta_zero = symplex::int(0);
-    let len_one = symplex::int(1);
+    let theta_zero = symplex::default_context().int(0);
+    let len_one = symplex::default_context().int(1);
 
     let eval_entry = |i: usize, k: usize| -> f64 {
         j.get(i, k)
@@ -1044,7 +1044,7 @@ fn pipeline_dh_jacobian_numerical_at_zero() {
 
 #[test]
 fn codegen_no_must_use_annotation() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]).unwrap();
 
     let opts = CodegenOptions {
@@ -1065,8 +1065,8 @@ fn codegen_no_must_use_annotation() {
 #[test]
 fn matrix_codegen_with_pi_constant() {
     // Matrix that uses pi constant
-    let x = symplex::var("x");
-    let pi = symplex::pi();
+    let x = symplex::default_context().symbol("x");
+    let pi = symplex::default_context().pi();
     let m = Matrix::new(vec![vec![&x * &pi, x.sin()]]).unwrap();
 
     let code = m.to_rust_fn("pi_matrix", &["x"]).unwrap();
@@ -1082,8 +1082,8 @@ fn matrix_codegen_with_pi_constant() {
 #[test]
 fn matrix_codegen_with_e_constant() {
     // Matrix that uses Euler's number
-    let x = symplex::var("x");
-    let e_const = symplex::e();
+    let x = symplex::default_context().symbol("x");
+    let e_const = symplex::default_context().e();
     let m = Matrix::new(vec![vec![&x * &e_const, x.exp()]]).unwrap();
 
     let code = m.to_rust_fn("euler_matrix", &["x"]).unwrap();
@@ -1094,7 +1094,7 @@ fn matrix_codegen_with_e_constant() {
 
 #[test]
 fn codegen_cfg_gated_has_both_std_and_no_std() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let m = Matrix::new(vec![vec![x.sin(), x.cos()]]).unwrap();
 
     let opts = CodegenOptions {
@@ -1120,9 +1120,9 @@ fn codegen_cfg_gated_has_both_std_and_no_std() {
 #[test]
 fn matrix_codegen_multi_param_signature() {
     // Verify function signature has all parameters
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let z = symplex::var("z");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let z = symplex::default_context().symbol("z");
 
     let m = Matrix::new(vec![vec![&x + &y + &z]]).unwrap();
     let code = m.to_rust_fn("three_params", &["x", "y", "z"]).unwrap();

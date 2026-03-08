@@ -5,8 +5,8 @@
 #[test]
 fn heaviside_positive_coeff_ftc() {
     // ∫ H(2x - 1) dx — verify FTC at points where H is 0 and 1
-    symplex::vars!(x);
-    let inner = &symplex::int(2) * &x - &symplex::int(1);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let inner = &symplex::default_context().int(2) * &x - &symplex::default_context().int(1);
     let heaviside = inner.heaviside();
     let antideriv = heaviside.integrate(&x);
 
@@ -29,8 +29,8 @@ fn heaviside_positive_coeff_ftc() {
 #[test]
 fn heaviside_negative_coeff_ftc() {
     // ∫ H(-2x + 3) dx — negative coefficient
-    symplex::vars!(x);
-    let inner = &symplex::int(-2) * &x + &symplex::int(3);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let inner = &symplex::default_context().int(-2) * &x + &symplex::default_context().int(3);
     let heaviside = inner.heaviside();
     let antideriv = heaviside.integrate(&x);
 
@@ -53,7 +53,7 @@ fn heaviside_negative_coeff_ftc() {
 #[test]
 fn heaviside_simple_integration() {
     // ∫ H(x) dx = x·H(x)
-    symplex::vars!(x);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let h = x.heaviside();
     let result = h.integrate(&x);
     let display = format!("{}", result);
@@ -67,8 +67,8 @@ fn heaviside_simple_integration() {
 #[test]
 fn heaviside_linear_integration_not_unevaluated() {
     // ∫ H(3x + 2) dx should not remain as an unevaluated Integral
-    symplex::vars!(x);
-    let inner = &symplex::int(3) * &x + &symplex::int(2);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let inner = &symplex::default_context().int(3) * &x + &symplex::default_context().int(2);
     let h = inner.heaviside();
     let result = h.integrate(&x);
     let display = format!("{}", result);
@@ -82,7 +82,7 @@ fn heaviside_linear_integration_not_unevaluated() {
 #[test]
 fn dirac_simple_integration() {
     // ∫ δ(x) dx = H(x)
-    symplex::vars!(x);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let delta = x.dirac_delta();
     let result = delta.integrate(&x);
     let display = format!("{}", result);
@@ -101,8 +101,8 @@ fn dirac_simple_integration() {
 #[test]
 fn dirac_negative_coeff() {
     // ∫ δ(-3x + 6) dx = H(-3x+6) / 3
-    symplex::vars!(x);
-    let inner = &symplex::int(-3) * &x + &symplex::int(6);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let inner = &symplex::default_context().int(-3) * &x + &symplex::default_context().int(6);
     let delta = inner.dirac_delta();
     let result = delta.integrate(&x);
     let display = format!("{}", result);
@@ -117,8 +117,8 @@ fn dirac_negative_coeff() {
 #[test]
 fn dirac_positive_coeff() {
     // ∫ δ(4x - 8) dx = H(4x-8) / 4
-    symplex::vars!(x);
-    let inner = &symplex::int(4) * &x - &symplex::int(8);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let inner = &symplex::default_context().int(4) * &x - &symplex::default_context().int(8);
     let delta = inner.dirac_delta();
     let result = delta.integrate(&x);
     let display = format!("{}", result);
@@ -132,7 +132,7 @@ fn dirac_positive_coeff() {
 #[test]
 fn heaviside_evaluates_to_one_for_positive_arg() {
     // H(5) should evaluate to 1
-    let h = symplex::int(5).heaviside();
+    let h = symplex::default_context().int(5).heaviside();
     let result = h.eval().eval_f64();
     if let Ok(v) = result {
         assert!(
@@ -146,7 +146,7 @@ fn heaviside_evaluates_to_one_for_positive_arg() {
 #[test]
 fn heaviside_evaluates_to_zero_for_negative_arg() {
     // H(-3) should evaluate to 0
-    let h = symplex::int(-3).heaviside();
+    let h = symplex::default_context().int(-3).heaviside();
     let result = h.eval().eval_f64();
     if let Ok(v) = result {
         assert!(

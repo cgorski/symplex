@@ -9,7 +9,7 @@ use symplex::prelude::*;
 
 #[test]
 fn simplify_pow_pow_integers() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // (x^2)^3 → x^6
     let expr = x.powi(2).powi(3);
     let simplified = expr.simplify();
@@ -18,7 +18,7 @@ fn simplify_pow_pow_integers() {
 
 #[test]
 fn simplify_pow_pow_in_expression() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     // (x^2)^3 + 1 → x^6 + 1
     let expr = &x.powi(2).powi(3) + 1;
     let simplified = expr.simplify();
@@ -32,21 +32,21 @@ fn simplify_pow_pow_in_expression() {
 
 #[test]
 fn simplify_asinh_sinh() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sinh().asinh();
     assert_eq!(format!("{}", expr.simplify()), "x");
 }
 
 #[test]
 fn simplify_acosh_cosh() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.cosh().acosh();
     assert_eq!(format!("{}", expr.simplify()), "abs(x)");
 }
 
 #[test]
 fn simplify_atanh_tanh() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.tanh().atanh();
     assert_eq!(format!("{}", expr.simplify()), "x");
 }
@@ -133,7 +133,7 @@ fn eval_cos_pi_over_6() {
 
 #[test]
 fn eval_sinh_neg_x() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (-&x).sinh();
     let evaled = expr.eval();
     assert_eq!(format!("{evaled}"), "-sinh(x)");
@@ -141,7 +141,7 @@ fn eval_sinh_neg_x() {
 
 #[test]
 fn eval_cosh_neg_x() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (-&x).cosh();
     let evaled = expr.eval();
     assert_eq!(format!("{evaled}"), "cosh(x)");
@@ -149,7 +149,7 @@ fn eval_cosh_neg_x() {
 
 #[test]
 fn eval_tanh_neg_x() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (-&x).tanh();
     let evaled = expr.eval();
     assert_eq!(format!("{evaled}"), "-tanh(x)");
@@ -191,7 +191,7 @@ fn expand_log_quotient() {
 
 #[test]
 fn expand_log_bare_unchanged() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.ln();
     let expanded = expr.expand_log();
     assert_eq!(format!("{expanded}"), "ln(x)");
@@ -250,7 +250,7 @@ macro_rules! assert_simplify_preserves_value {
 #[test]
 fn neg_exp_ln_different_structure() {
     // exp(ln(x) + 1) should NOT simplify to x (the +1 prevents matching)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (&x.ln() + 1).exp();
     assert_simplify_unchanged!(expr);
 }
@@ -259,7 +259,7 @@ fn neg_exp_ln_different_structure() {
 fn neg_sqrt_sq_wrong_exponent() {
     // sqrt(x^3) should NOT simplify to |x| (exponent is 3, not 2)
     // It correctly becomes x^(3/2) instead.
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.powi(3).sqrt();
     let result = format!("{}", expr.simplify());
     assert_ne!(result, "abs(x)", "sqrt(x^3) must not simplify to abs(x)");
@@ -270,8 +270,8 @@ fn neg_sqrt_sq_wrong_exponent() {
 #[test]
 fn neg_sin_div_cos_different_args() {
     // sin(x)/cos(y) should NOT become tan (different arguments)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x.sin() / &y.cos();
     assert_simplify_unchanged!(expr);
 }
@@ -279,7 +279,7 @@ fn neg_sin_div_cos_different_args() {
 #[test]
 fn neg_exp_mul_not_both_exp() {
     // exp(x) * sin(x) should NOT trigger exp combining
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.exp() * &x.sin();
     assert_simplify_unchanged!(expr);
 }
@@ -287,7 +287,7 @@ fn neg_exp_mul_not_both_exp() {
 #[test]
 fn neg_pow_pow_both_fractional() {
     // (x^(1/2))^(1/3) should NOT become x^(1/6) (no integer exponent)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let ctx = symplex::default_context();
     let half = ctx.rational(1, 2);
     let third = ctx.rational(1, 3);
@@ -298,7 +298,7 @@ fn neg_pow_pow_both_fractional() {
 #[test]
 fn neg_abs_not_positive() {
     // abs(x) should NOT simplify when x has no positivity assumption
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.abs();
     assert_simplify_unchanged!(expr);
 }
@@ -306,7 +306,7 @@ fn neg_abs_not_positive() {
 #[test]
 fn neg_pythagorean_wrong_functions() {
     // sinh(x)^2 + cos(x)^2 should NOT simplify (mixed sinh/cos)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.sinh().powi(2) + &x.cos().powi(2);
     assert_simplify_unchanged!(expr);
 }
@@ -314,7 +314,7 @@ fn neg_pythagorean_wrong_functions() {
 #[test]
 fn neg_cosh_sinh_wrong_sign() {
     // cosh(x)^2 + sinh(x)^2 should NOT simplify to 1 (wrong sign, identity is cosh²-sinh²)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.cosh().powi(2) + &x.sinh().powi(2);
     assert_simplify_unchanged!(expr);
 }
@@ -322,19 +322,19 @@ fn neg_cosh_sinh_wrong_sign() {
 #[test]
 fn neg_asin_sin_removed() {
     // asin(sin(x)) should NOT simplify to x (rule removed for correctness)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.sin().asin(), "asin(sin(x))");
 }
 
 #[test]
 fn neg_acos_cos_removed() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.cos().acos(), "acos(cos(x))");
 }
 
 #[test]
 fn neg_atan_tan_removed() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.tan().atan(), "atan(tan(x))");
 }
 
@@ -344,37 +344,37 @@ fn neg_atan_tan_removed() {
 
 #[test]
 fn pos_pythagorean_with_macro() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(&x.sin().powi(2) + &x.cos().powi(2), "1");
 }
 
 #[test]
 fn pos_exp_ln_with_macro() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.ln().exp(), "x");
 }
 
 #[test]
 fn pos_acosh_cosh_gives_abs() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.cosh().acosh(), "abs(x)");
 }
 
 #[test]
 fn pos_sin_asin_still_works() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.asin().sin(), "x");
 }
 
 #[test]
 fn pos_cos_acos_still_works() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.acos().cos(), "x");
 }
 
 #[test]
 fn pos_asinh_sinh_still_works() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!(x.sinh().asinh(), "x");
 }
 
@@ -384,15 +384,15 @@ fn pos_asinh_sinh_still_works() {
 
 #[test]
 fn value_pythagorean() {
-    let x = symplex::var("x");
-    let point = symplex::rational(7, 10);
+    let x = symplex::default_context().symbol("x");
+    let point = symplex::default_context().rational(7, 10);
     assert_simplify_preserves_value!(&x.sin().powi(2) + &x.cos().powi(2), x, point);
 }
 
 #[test]
 fn value_exp_ln() {
-    let x = symplex::var("x");
-    let point = symplex::int(3);
+    let x = symplex::default_context().symbol("x");
+    let point = symplex::default_context().int(3);
     assert_simplify_preserves_value!(x.ln().exp(), x, point);
 }
 
@@ -402,20 +402,20 @@ fn value_exp_ln() {
 
 #[test]
 fn rule_exp_log_denest() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     assert_simplifies_to!((&x.ln() * 3).exp(), "x^3");
 }
 
 #[test]
 fn rule_exp_log_denest_symbolic() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
     assert_simplifies_to!((&x.ln() * &a).exp(), "x^a");
 }
 
 #[test]
 fn expand_trig_sin_2x() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (&x * 2).sin();
     let expanded = expr.expand_trig();
     let s = format!("{expanded}");
@@ -427,7 +427,7 @@ fn expand_trig_sin_2x() {
 
 #[test]
 fn expand_trig_cos_2x() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (&x * 2).cos();
     let expanded = expr.expand_trig();
     let s = format!("{expanded}");
@@ -439,7 +439,7 @@ fn expand_trig_cos_2x() {
 
 #[test]
 fn expand_trig_sin_3x() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (&x * 3).sin();
     let expanded = expr.expand_trig();
     let s = format!("{expanded}");
@@ -452,7 +452,7 @@ fn expand_trig_sin_3x() {
 
 #[test]
 fn trig_combine_double_angle() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &(&x.sin() * &x.cos()) * 2;
     let combined = expr.trig_combine();
     let s = format!("{combined}");
@@ -461,9 +461,9 @@ fn trig_combine_double_angle() {
 
 #[test]
 fn together_with_lcm() {
-    let x = symplex::var("x");
-    let a = symplex::var("a");
-    let b = symplex::var("b");
+    let x = symplex::default_context().symbol("x");
+    let a = symplex::default_context().symbol("a");
+    let b = symplex::default_context().symbol("b");
     // a/(x-1) + b/(x-1)^2 should have denom (x-1)^2, not (x-1)^3
     let x_minus_1 = &x - 1;
     let frac1 = &a / &x_minus_1;
@@ -477,7 +477,7 @@ fn together_with_lcm() {
 
 #[test]
 fn cos_div_sin_rule() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.cos() / &x.sin();
     let simplified = expr.simplify();
     let s = format!("{simplified}");

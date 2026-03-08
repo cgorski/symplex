@@ -37,7 +37,7 @@ fn try_ftc_or_unevaluated(integrand: &Ex, var: &Ex, label: &str) -> bool {
 fn hard_int_x_squared_exp_x() {
     // ∫ x²·exp(x) dx — requires triple integration by parts
     // Expected: x²·exp(x) - 2x·exp(x) + 2·exp(x)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x.powi(2) * &x.exp();
     common::assert_ftc(&integrand, &x, "∫ x²·exp(x) dx");
 }
@@ -46,7 +46,7 @@ fn hard_int_x_squared_exp_x() {
 fn hard_int_x_sin_x() {
     // ∫ x·sin(x) dx — integration by parts
     // Expected: sin(x) - x·cos(x)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x * &x.sin();
     common::assert_ftc(&integrand, &x, "∫ x·sin(x) dx");
 }
@@ -55,7 +55,7 @@ fn hard_int_x_sin_x() {
 fn hard_int_x_cos_x() {
     // ∫ x·cos(x) dx — integration by parts
     // Expected: cos(x) + x·sin(x)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x * &x.cos();
     common::assert_ftc(&integrand, &x, "∫ x·cos(x) dx");
 }
@@ -64,7 +64,7 @@ fn hard_int_x_cos_x() {
 fn hard_int_x_exp_neg_x() {
     // ∫ x·exp(-x) dx — integration by parts
     // Expected: -x·exp(-x) - exp(-x) = -(x+1)·exp(-x)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x * &(-&x).exp();
     common::assert_ftc(&integrand, &x, "∫ x·exp(-x) dx");
 }
@@ -74,7 +74,7 @@ fn hard_int_ln_x_squared() {
     // ∫ ln(x)² dx — requires IBP twice
     // Expected: x·ln(x)² - 2x·ln(x) + 2x
     // If the CAS can't handle it, verify it returns unevaluated (not wrong)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = x.ln().powi(2);
     let antideriv = integrand.integrate(&x);
     let s = format!("{antideriv}");
@@ -103,8 +103,8 @@ fn hard_int_ln_x_squared() {
 #[test]
 fn hard_int_one_over_x2_plus_1() {
     // ∫ 1/(x²+1) dx = atan(x)
-    let x = symplex::var("x");
-    let integrand = &symplex::int(1) / &(&x.powi(2) + 1);
+    let x = symplex::default_context().symbol("x");
+    let integrand = &symplex::default_context().int(1) / &(&x.powi(2) + 1);
     let result = integrand.integrate(&x);
     let s = format!("{result}");
     assert!(
@@ -118,8 +118,8 @@ fn hard_int_one_over_x2_plus_1() {
 fn hard_int_one_over_sqrt_1_minus_x2() {
     // ∫ 1/√(1-x²) dx = asin(x)
     // Domain: |x| < 1
-    let x = symplex::var("x");
-    let integrand = &symplex::int(1) / &(&symplex::int(1) - &x.powi(2)).sqrt();
+    let x = symplex::default_context().symbol("x");
+    let integrand = &symplex::default_context().int(1) / &(&symplex::default_context().int(1) - &x.powi(2)).sqrt();
     let antideriv = integrand.integrate(&x);
     let s = format!("{antideriv}");
     if !s.contains("Integral") {
@@ -146,7 +146,7 @@ fn hard_int_one_over_sqrt_1_minus_x2() {
 fn hard_int_exp_sin_cyclic() {
     // ∫ exp(x)·sin(x) dx — cyclic integration by parts
     // Expected: exp(x)(sin(x) - cos(x))/2
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x.exp() * &x.sin();
     common::assert_ftc(&integrand, &x, "∫ exp(x)·sin(x) dx");
 }
@@ -155,7 +155,7 @@ fn hard_int_exp_sin_cyclic() {
 fn hard_int_exp_cos_cyclic() {
     // ∫ exp(x)·cos(x) dx — cyclic integration by parts
     // Expected: exp(x)(sin(x) + cos(x))/2
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x.exp() * &x.cos();
     common::assert_ftc(&integrand, &x, "∫ exp(x)·cos(x) dx");
 }
@@ -163,7 +163,7 @@ fn hard_int_exp_cos_cyclic() {
 #[test]
 fn hard_int_sec_squared() {
     // ∫ sec²(x) dx = ∫ cos(x)^(-2) dx = tan(x)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = x.cos().powi(-2);
     common::assert_ftc(&integrand, &x, "∫ sec²(x) dx");
 }
@@ -175,7 +175,7 @@ fn hard_int_sec_squared() {
 #[test]
 fn hard_solve_biquadratic() {
     // x⁴ - 5x² + 4 = 0  →  (x²-1)(x²-4) = 0  →  roots ±1, ±2
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &(&x.powi(4) - &(&x.powi(2) * 5)) + 4;
     let roots = poly.solve_or_empty(&x);
 
@@ -200,7 +200,7 @@ fn hard_solve_biquadratic() {
 #[test]
 fn hard_solve_cubic_factored() {
     // x³ - 6x² + 11x - 6 = 0  →  (x-1)(x-2)(x-3) = 0  →  roots 1, 2, 3
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6;
     let roots = poly.solve_or_empty(&x);
 
@@ -222,7 +222,7 @@ fn hard_solve_cubic_factored() {
 #[test]
 fn hard_solve_x4_minus_1() {
     // x⁴ - 1 = 0  →  roots ±1, ±i
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &x.powi(4) - 1;
     let roots = poly.solve_or_empty(&x);
 
@@ -242,7 +242,7 @@ fn hard_solve_2x3_minus_3x2_minus_8x_plus_12() {
     // Rational root theorem candidates: ±1, ±2, ±3, ±4, ±6, ±12, ±1/2, ±3/2
     // Testing: x=2 → 16-12-16+12=0 ✓, x=-2 → -16-12+16+12=0 ✓, x=3/2 → 27/4-27/4-12+12=0 ✓
     // Roots: 2, -2, 3/2
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &(&(&x.powi(3) * 2) - &(&x.powi(2) * 3)) - &(&x * 8) + 12;
     let roots = poly.solve_or_empty(&x);
 
@@ -271,7 +271,7 @@ fn hard_solve_verify_no_wrong_roots() {
     // x² + x + 1 = 0  →  complex roots (-1 ± i√3)/2
     // The solver should either find the correct complex roots or return empty.
     // It must NEVER return wrong real roots.
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &x.powi(2) + &x + 1;
     let roots = poly.solve_or_empty(&x);
 
@@ -286,7 +286,7 @@ fn hard_solve_verify_no_wrong_roots() {
 fn hard_solve_quartic_with_only_complex_roots() {
     // x⁴ + 4 = 0 — all four roots are complex
     // Roots: (1±i)√2/√2 and (-1±i)√2/√2 (various forms)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &x.powi(4) + 4;
     let roots = poly.solve_or_empty(&x);
 
@@ -300,7 +300,7 @@ fn hard_solve_quartic_with_only_complex_roots() {
 #[test]
 fn hard_solve_cubic_verify_by_substitution() {
     // x³ + 3x² - 4 = 0  →  (x-1)(x+2)² = 0  →  roots 1, -2 (double)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &x.powi(3) + &(&x.powi(2) * 3) - 4;
     let roots = poly.solve_or_empty(&x);
 
@@ -328,13 +328,13 @@ fn hard_solve_cubic_verify_by_substitution() {
 fn hard_simp_sin_plus_cos_squared() {
     // (sin(x) + cos(x))² expanded → should simplify to 1 + 2·sin(x)·cos(x)
     // or equivalently 1 + sin(2x) — verify numerically at multiple points
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = (&x.sin() + &x.cos()).powi(2);
     let expanded = expr.expand();
     let simplified = expanded.full_simplify();
 
     // Verify numerically: (sin(x)+cos(x))² = 1 + 2·sin(x)·cos(x)
-    let expected = &symplex::int(1) + &(&x.sin() * &x.cos()) * 2;
+    let expected = &symplex::default_context().int(1) + &(&x.sin() * &x.cos()) * 2;
     common::assert_math_eq(&simplified, &expected, &x, "(sin+cos)² = 1 + 2sin·cos");
 }
 
@@ -342,8 +342,8 @@ fn hard_simp_sin_plus_cos_squared() {
 fn hard_simp_exp_ln_sum() {
     // exp(ln(x) + ln(y)) → x·y
     // Verify numerically with two-variable substitution
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = (&x.ln() + &y.ln()).exp();
     let simplified = expr.full_simplify();
 
@@ -379,7 +379,7 @@ fn hard_simp_sin_2x_over_2cos_x() {
     // sin(2x)/(2·cos(x)) → sin(x)
     // Because sin(2x) = 2·sin(x)·cos(x), so sin(2x)/(2·cos(x)) = sin(x)
     // Verify numerically even if symbolic simplification doesn't fully reduce
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let sin_2x = (&x * 2).sin();
     let expr = &sin_2x / &(&x.cos() * 2);
     let target = x.sin();
@@ -392,8 +392,8 @@ fn hard_simp_sin_2x_over_2cos_x() {
 fn hard_simp_difference_of_squares_cancel() {
     // (x²-y²)/(x-y) → x+y after cancellation
     // Verify with two-variable substitution
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
 
     let numer = &x.powi(2) - &y.powi(2);
     let denom = &x - &y;
@@ -431,7 +431,7 @@ fn hard_simp_difference_of_squares_cancel() {
 fn hard_simp_cos2_minus_sin2() {
     // cos²(x) - sin²(x) → cos(2x)  (double angle identity)
     // Verify numerically even if symbolic form differs
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.cos().powi(2) - &x.sin().powi(2);
     let target = (&x * 2).cos();
 
@@ -442,7 +442,7 @@ fn hard_simp_cos2_minus_sin2() {
 fn hard_simp_pythagorean_in_sum() {
     // sin²(x) + cos²(x) + x → x + 1
     // The Pythagorean identity should fire inside a larger sum
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2) + &x;
     let simplified = expr.full_simplify();
     let expected = &x + 1;
@@ -457,7 +457,7 @@ fn hard_simp_pythagorean_in_sum() {
 #[test]
 fn hard_simp_exp_ln_roundtrip() {
     // exp(ln(x)) → x
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.ln().exp();
     let simplified = expr.full_simplify();
     assert_eq!(
@@ -474,9 +474,9 @@ fn hard_simp_exp_ln_roundtrip() {
 #[test]
 fn hard_limit_sin_x_over_x() {
     // lim x→0 sin(x)/x = 1
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.sin() / &x;
-    let result = expr.limit(&x, &symplex::int(0)).expect("limit should succeed");
+    let result = expr.limit(&x, &symplex::default_context().int(0)).expect("limit should succeed");
     assert_eq!(
         format!("{result}"),
         "1",
@@ -487,9 +487,9 @@ fn hard_limit_sin_x_over_x() {
 #[test]
 fn hard_limit_exp_minus_1_over_x() {
     // lim x→0 (exp(x)-1)/x = 1
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &(&x.exp() - 1) / &x;
-    let result = expr.limit(&x, &symplex::int(0));
+    let result = expr.limit(&x, &symplex::default_context().int(0));
     match result {
         Ok(r) => {
             let s = format!("{r}");
@@ -505,10 +505,10 @@ fn hard_limit_exp_minus_1_over_x() {
 fn hard_limit_1_plus_1_over_x_to_x() {
     // lim x→∞ (1 + 1/x)^x = e
     // This is one of the hardest standard limits — many CAS engines struggle
-    let x = symplex::var("x");
-    let base = &symplex::int(1) + &(&symplex::int(1) / &x);
+    let x = symplex::default_context().symbol("x");
+    let base = &symplex::default_context().int(1) + &(&symplex::default_context().int(1) / &x);
     let expr = base.pow(&x);
-    let result = expr.limit(&x, &symplex::infinity());
+    let result = expr.limit(&x, &symplex::default_context().infinity());
     // Just verify it doesn't crash — exact result is a bonus
     match result {
         Ok(r) => {
@@ -534,9 +534,9 @@ fn hard_limit_1_plus_1_over_x_to_x() {
 #[test]
 fn hard_limit_1_minus_cos_over_x2() {
     // lim x→0 (1-cos(x))/x² = 1/2
-    let x = symplex::var("x");
-    let expr = &(&symplex::int(1) - &x.cos()) / &x.powi(2);
-    let result = expr.limit(&x, &symplex::int(0));
+    let x = symplex::default_context().symbol("x");
+    let expr = &(&symplex::default_context().int(1) - &x.cos()) / &x.powi(2);
+    let result = expr.limit(&x, &symplex::default_context().int(0));
     match result {
         Ok(r) => {
             let s = format!("{r}");
@@ -554,9 +554,9 @@ fn hard_limit_1_minus_cos_over_x2() {
 #[test]
 fn hard_limit_x_exp_neg_x_at_infinity() {
     // lim x→∞ x·exp(-x) = 0
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x * &(-&x).exp();
-    let result = expr.limit(&x, &symplex::infinity());
+    let result = expr.limit(&x, &symplex::default_context().infinity());
     match result {
         Ok(r) => {
             assert_eq!(
@@ -579,8 +579,8 @@ fn hard_limit_x_exp_neg_x_at_infinity() {
 fn hard_series_geometric() {
     // Taylor of 1/(1-x) at x=0 order 5:
     // 1 + x + x² + x³ + x⁴ (coefficients all 1 — geometric series)
-    let x = symplex::var("x");
-    let f = &symplex::int(1) / &(&symplex::int(1) - &x);
+    let x = symplex::default_context().symbol("x");
+    let f = &symplex::default_context().int(1) / &(&symplex::default_context().int(1) - &x);
     let series = f.maclaurin(&x, 5);
     match series {
         Ok(s) => {
@@ -609,7 +609,7 @@ fn hard_series_geometric() {
 #[test]
 fn hard_series_arctan() {
     // Maclaurin of atan(x) order 6: x - x³/3 + x⁵/5
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let series = x.atan().maclaurin(&x, 6);
     match series {
         Ok(s) => {
@@ -642,7 +642,7 @@ fn hard_series_arctan() {
 #[test]
 fn hard_series_exp_coefficients() {
     // Taylor of exp(x) order 7: verify coefficient of x^k is 1/k! for each k
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let series = x.exp().maclaurin(&x, 7);
     match series {
         Ok(s) => {
@@ -670,7 +670,7 @@ fn hard_series_exp_coefficients() {
 fn hard_series_sin_odd_terms_only() {
     // Maclaurin of sin(x) order 6: x - x³/6 + x⁵/120
     // Should have only odd powers
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let series = x.sin().maclaurin(&x, 6);
     match series {
         Ok(s) => {
@@ -701,7 +701,7 @@ fn hard_series_sin_odd_terms_only() {
 fn negative_no_rational_roots_polynomial() {
     // x⁵ - x - 1 = 0 has no rational roots (by rational root theorem: ±1 don't work)
     // The solver should return empty or the polynomial unchanged — not a wrong answer
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &x.powi(5) - &x - 1;
 
     let roots = poly.solve_or_empty(&x);
@@ -716,7 +716,7 @@ fn negative_no_rational_roots_polynomial() {
 fn negative_gaussian_integral_unevaluated() {
     // ∫ exp(-x²) dx should return erf-related result or stay unevaluated
     // It absolutely must NOT return a wrong closed-form answer
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = (-&x.powi(2)).exp();
     let result = integrand.integrate(&x);
     let s = format!("{result}");
@@ -745,8 +745,8 @@ fn negative_gaussian_integral_unevaluated() {
 #[test]
 fn negative_simple_sum_unchanged() {
     // simplify(x + y) should return x + y unchanged — no spurious simplification
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x + &y;
     let simplified = expr.simplify();
 
@@ -779,9 +779,9 @@ fn negative_simple_sum_unchanged() {
 #[test]
 fn negative_simplify_product_not_destroyed() {
     // simplify(x * y * z) should remain a three-variable product
-    let x = symplex::var("x");
-    let y = symplex::var("y");
-    let z = symplex::var("z");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
+    let z = symplex::default_context().symbol("z");
     let expr = &(&x * &y) * &z;
     let simplified = expr.simplify();
 
@@ -818,8 +818,8 @@ fn negative_simplify_product_not_destroyed() {
 #[test]
 fn multi_var_mixed_partial_derivative() {
     // f = x²·y³  →  ∂²f/∂x∂y = ∂/∂x(∂/∂y(x²·y³)) = ∂/∂x(3x²y²) = 6xy²
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let f = &x.powi(2) * &y.powi(3);
 
     let df_dy = f.diff(&y);      // 3x²y²
@@ -856,7 +856,7 @@ fn multi_var_mixed_partial_derivative() {
 #[test]
 fn multi_var_gradient_of_sum_of_squares() {
     // f = x² + y² + z²  →  ∇f = [2x, 2y, 2z]
-    symplex::vars!(x, y, z);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y, z);
     let f = expr!(x ^ 2 + y ^ 2 + z ^ 2);
     let grad = gradient(&f, &[&x, &y, &z]);
 
@@ -907,8 +907,8 @@ fn multi_var_jacobian_2x2() {
     //   | ∂f2/∂x  ∂f2/∂y | = |  y  x |
     //
     // Determinant: 2x·x - 1·y = 2x² - y
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let f1 = &x.powi(2) + &y;
     let f2 = &x * &y;
     let j = jacobian(&[&f1, &f2], &[&x, &y]);
@@ -950,7 +950,7 @@ fn multi_var_jacobian_2x2() {
 fn hard_int_x_cubed_exp_x() {
     // ∫ x³·exp(x) dx — requires four integration by parts steps
     // Expected: exp(x)(x³ - 3x² + 6x - 6)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x.powi(3) * &x.exp();
     let evaluated = try_ftc_or_unevaluated(&integrand, &x, "∫ x³·exp(x) dx");
     if evaluated {
@@ -963,7 +963,7 @@ fn hard_int_x_cubed_exp_x() {
 fn hard_int_x_squared_sin_x() {
     // ∫ x²·sin(x) dx — requires double integration by parts
     // Expected: 2x·sin(x) - (x²-2)·cos(x)
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x.powi(2) * &x.sin();
     try_ftc_or_unevaluated(&integrand, &x, "∫ x²·sin(x) dx");
 }
@@ -972,7 +972,7 @@ fn hard_int_x_squared_sin_x() {
 fn hard_solve_quadratic_with_parameters() {
     // Solve x² - 5x + 6 = 0  →  roots 2, 3
     // This is a standard quadratic but we verify the roots are exact integers
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &x.powi(2) - &(&x * 5) + 6;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²-5x+6 should have 2 roots, got {}", roots.len());
@@ -988,7 +988,7 @@ fn hard_solve_quadratic_with_parameters() {
 fn hard_simp_trig_double_angle_expansion() {
     // sin(2x) expanded via trig should equal 2·sin(x)·cos(x)
     // Verify numerically
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let sin_2x = (&x * 2).sin();
     let double_angle = &(&x.sin() * &x.cos()) * 2;
 
@@ -1004,9 +1004,9 @@ fn hard_simp_trig_double_angle_expansion() {
 fn hard_limit_polynomial_direct_sub() {
     // lim x→3 (x³ - 27)/(x - 3) = 27
     // Factor: x³ - 27 = (x-3)(x² + 3x + 9), so limit = 9 + 9 + 9 = 27
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &(&x.powi(3) - 27) / &(&x - 3);
-    let result = expr.limit(&x, &symplex::int(3));
+    let result = expr.limit(&x, &symplex::default_context().int(3));
     match result {
         Ok(r) => {
             let s = format!("{r}");
@@ -1022,7 +1022,7 @@ fn hard_limit_polynomial_direct_sub() {
 fn hard_int_polynomial_long() {
     // ∫ (x⁵ + 3x³ - 2x + 7) dx = x⁶/6 + 3x⁴/4 - x² + 7x
     // Verify via FTC
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x.powi(5) + &(&x.powi(3) * 3) - &(&x * 2) + 7;
     common::assert_ftc(&integrand, &x, "∫ (x⁵+3x³-2x+7) dx");
 }
@@ -1031,7 +1031,7 @@ fn hard_int_polynomial_long() {
 fn hard_series_cos_even_terms_only() {
     // Maclaurin of cos(x) order 6: 1 - x²/2 + x⁴/24
     // Should have only even powers
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let series = x.cos().maclaurin(&x, 6);
     match series {
         Ok(s) => {
@@ -1056,7 +1056,7 @@ fn hard_series_cos_even_terms_only() {
 #[test]
 fn hard_solve_depressed_cubic() {
     // x³ - 7x + 6 = 0 → (x-1)(x-2)(x+3) = 0 → roots 1, 2, -3
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let poly = &x.powi(3) - &(&x * 7) + 6;
     let roots = poly.solve_or_empty(&x);
     assert!(
@@ -1071,7 +1071,7 @@ fn hard_solve_depressed_cubic() {
 fn hard_int_then_diff_roundtrip_complex() {
     // d/dx(∫ x²·cos(x) dx) should give back x²·cos(x)
     // This tests the full IBP → differentiation pipeline
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let integrand = &x.powi(2) * &x.cos();
     let antideriv = integrand.integrate(&x);
     let s = format!("{antideriv}");
@@ -1091,7 +1091,7 @@ fn hard_int_then_diff_roundtrip_complex() {
 fn hard_simp_cancel_cubic_over_linear() {
     // (x³ - 8)/(x - 2) = x² + 2x + 4 for x ≠ 2
     // Verify numerically
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let numer = &x.powi(3) - 8;
     let denom = &x - 2;
     let expr = &numer / &denom;
@@ -1112,11 +1112,11 @@ fn hard_simp_cancel_cubic_over_linear() {
 fn hard_limit_rational_same_degree() {
     // lim x→∞ (2x² + 3x + 1)/(x² - x + 5) = 2
     // Leading coefficient ratio
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let numer = &(&x.powi(2) * 2) + &(&x * 3) + 1;
     let denom = &x.powi(2) - &x + 5;
     let expr = &numer / &denom;
-    let result = expr.limit(&x, &symplex::infinity());
+    let result = expr.limit(&x, &symplex::default_context().infinity());
     if let Ok(r) = result {
         assert_eq!(
             format!("{r}"),
@@ -1130,7 +1130,7 @@ fn hard_limit_rational_same_degree() {
 fn hard_multi_var_laplacian_via_second_derivs() {
     // f = x³ + y³ + z³
     // ∇²f = ∂²f/∂x² + ∂²f/∂y² + ∂²f/∂z² = 6x + 6y + 6z
-    symplex::vars!(x, y, z);
+    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y, z);
     let f = &x.powi(3) + &y.powi(3) + &z.powi(3);
 
     let d2x = f.diff(&x).diff(&x); // 6x

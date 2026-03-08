@@ -248,20 +248,20 @@ fn euler_exp_i_pi_plus_1_is_zero() {
 
 #[test]
 fn global_i_unit() {
-    let i = symplex::i_unit();
+    let i = symplex::default_context().i_unit();
     assert_eq!(format!("{i}"), "I");
     assert_eq!(i.is_imaginary(), Some(true));
 }
 
 #[test]
 fn global_pi() {
-    let pi = symplex::pi();
+    let pi = symplex::default_context().pi();
     assert_eq!(format!("{pi}"), "pi");
 }
 
 #[test]
 fn global_e() {
-    let e = symplex::e();
+    let e = symplex::default_context().e();
     assert_eq!(format!("{e}"), "E");
 }
 

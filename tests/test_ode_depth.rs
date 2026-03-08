@@ -26,7 +26,7 @@ fn verify_first_order(
     sample_x_num: i64,
     sample_x_den: i64,
 ) {
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -37,7 +37,7 @@ fn verify_first_order(
     let dy_formal = y.formal_diff(x);
     let residual = ode_expr.subs(&dy_formal, &sol_prime).subs(y, &concrete_sol);
 
-    let sample_val = symplex::rational(sample_x_num, sample_x_den);
+    let sample_val = symplex::default_context().rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at.eval_f64().expect(
@@ -57,8 +57,8 @@ fn verify_first_order(
 #[test]
 fn ode_full_separable_dy_dx_eq_xy() {
     // y' - xy = 0 → y' = xy → separable → y = C1·exp(x²/2)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) - x * y);
     let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y' = xy should be solvable");
@@ -75,8 +75,8 @@ fn ode_full_separable_dy_dx_eq_xy() {
 fn ode_full_separable_neg_xy() {
     // y' + xy = 0 → y' = -xy → separable with f(x) = -x, g(y) = y
     // Solution: y = C1·exp(-x²/2)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + x * y);
     let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y' = -xy should be solvable");
@@ -92,10 +92,10 @@ fn ode_full_separable_neg_xy() {
 #[test]
 fn ode_full_separable_3xy() {
     // y' - 3*x*y = 0 → y' = 3xy → y = C1·exp(3x²/2)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
-    let three = symplex::int(3);
+    let three = symplex::default_context().int(3);
     let ode = &dy - &(&three * &x * &y);
     let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y' = 3xy should be solvable");
@@ -115,8 +115,8 @@ fn ode_full_separable_3xy() {
 #[test]
 fn ode_variable_coeff_linear_homogeneous() {
     // y' + 2xy = 0 → y = C1·exp(-x²)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * x * y);
     let result = ode.solve_ode(&y, &x);
     assert!(result.is_some(), "y' + 2xy = 0 should be solvable");
@@ -132,10 +132,10 @@ fn ode_variable_coeff_linear_homogeneous() {
 #[test]
 fn ode_variable_coeff_linear_3x_squared_y() {
     // y' + 3x²y = 0 → P(x) = 3x², ∫P dx = x³ → y = C1·exp(-x³)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
-    let three = symplex::int(3);
+    let three = symplex::default_context().int(3);
     let x_sq = x.powi(2);
     let ode = &dy + &(&three * &x_sq * &y);
     let result = ode.solve_ode(&y, &x);
@@ -155,8 +155,8 @@ fn ode_variable_coeff_linear_3x_squared_y() {
 
 #[test]
 fn ode_existing_types_still_work() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
 
     // Regression: y' + 2y = 0 (constant coeff) still works
     let ode = expr!(diff(y, x) + 2 * y);
@@ -184,8 +184,8 @@ fn ode_constant_coeff_not_broken_by_new_dispatch() {
     // y' + 5y = 0 → y = C1·exp(-5x)
     // This should still be caught by the constant-coefficient path, even though
     // the variable-coefficient solver now runs first in dispatch order.
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 5 * y);
     let (sol, constants) = ode.solve_ode(&y, &x).expect("y' + 5y = 0 should solve");
     let s = format!("{sol}");
@@ -199,10 +199,10 @@ fn ode_constant_coeff_not_broken_by_new_dispatch() {
 #[test]
 fn ode_no_y_dependence_still_simple_separable() {
     // y' = x² + 1 should still be handled by simple separable, not full separable
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
-    let ode = &dy - &(x.powi(2) + symplex::int(1));
+    let ode = &dy - &(x.powi(2) + symplex::default_context().int(1));
     let (sol, constants) = ode.solve_ode(&y, &x).expect("y' = x² + 1 should be solvable");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");

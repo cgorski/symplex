@@ -929,30 +929,30 @@ mod tests {
 
     #[test]
     fn latex_integer() {
-        assert_eq!(symplex::int(42).to_latex(), "42");
+        assert_eq!(symplex::default_context().int(42).to_latex(), "42");
     }
 
     #[test]
     fn latex_zero() {
-        assert_eq!(symplex::int(0).to_latex(), "0");
+        assert_eq!(symplex::default_context().int(0).to_latex(), "0");
     }
 
     #[test]
     fn latex_negative_integer() {
-        let neg = symplex::int(-3);
+        let neg = symplex::default_context().int(-3);
         let latex = neg.to_latex();
         assert!(latex == "-3", "got: {latex}");
     }
 
     #[test]
     fn latex_fraction() {
-        let half = symplex::rational(1, 2);
+        let half = symplex::default_context().rational(1, 2);
         assert_eq!(half.to_latex(), r"\frac{1}{2}");
     }
 
     #[test]
     fn latex_negative_fraction() {
-        let neg_frac = symplex::rational(-5, 7);
+        let neg_frac = symplex::default_context().rational(-5, 7);
         let latex = neg_frac.to_latex();
         assert!(
             latex == r"-\frac{5}{7}" || latex == r"\frac{-5}{7}",
@@ -964,37 +964,37 @@ mod tests {
 
     #[test]
     fn latex_symbol() {
-        assert_eq!(symplex::var("x").to_latex(), "x");
+        assert_eq!(symplex::default_context().symbol("x").to_latex(), "x");
     }
 
     #[test]
     fn latex_symbol_multichar() {
-        assert_eq!(symplex::var("foo").to_latex(), "foo");
+        assert_eq!(symplex::default_context().symbol("foo").to_latex(), "foo");
     }
 
     #[test]
     fn latex_greek_theta() {
-        assert_eq!(symplex::var("theta").to_latex(), r"\theta");
+        assert_eq!(symplex::default_context().symbol("theta").to_latex(), r"\theta");
     }
 
     #[test]
     fn latex_greek_alpha() {
-        assert_eq!(symplex::var("alpha").to_latex(), r"\alpha");
+        assert_eq!(symplex::default_context().symbol("alpha").to_latex(), r"\alpha");
     }
 
     #[test]
     fn latex_greek_omega() {
-        assert_eq!(symplex::var("omega").to_latex(), r"\omega");
+        assert_eq!(symplex::default_context().symbol("omega").to_latex(), r"\omega");
     }
 
     #[test]
     fn latex_greek_lambda() {
-        assert_eq!(symplex::var("lambda").to_latex(), r"\lambda");
+        assert_eq!(symplex::default_context().symbol("lambda").to_latex(), r"\lambda");
     }
 
     #[test]
     fn latex_symbol_subscript() {
-        let x1 = symplex::var("x_1");
+        let x1 = symplex::default_context().symbol("x_1");
         assert_eq!(x1.to_latex(), "x_{1}");
     }
 
@@ -1002,62 +1002,62 @@ mod tests {
 
     #[test]
     fn latex_pi() {
-        assert_eq!(symplex::pi().to_latex(), r"\pi");
+        assert_eq!(symplex::default_context().pi().to_latex(), r"\pi");
     }
 
     #[test]
     fn latex_e() {
-        assert_eq!(symplex::e().to_latex(), "e");
+        assert_eq!(symplex::default_context().e().to_latex(), "e");
     }
 
     #[test]
     fn latex_imaginary() {
-        assert_eq!(symplex::i_unit().to_latex(), "i");
+        assert_eq!(symplex::default_context().i_unit().to_latex(), "i");
     }
 
     #[test]
     fn latex_infinity() {
-        assert_eq!(symplex::infinity().to_latex(), r"\infty");
+        assert_eq!(symplex::default_context().infinity().to_latex(), r"\infty");
     }
 
     #[test]
     fn latex_neg_infinity() {
-        assert_eq!(symplex::neg_infinity().to_latex(), r"-\infty");
+        assert_eq!(symplex::default_context().neg_infinity().to_latex(), r"-\infty");
     }
 
     // ── Pow tests ──────────────────────────────────────────────────
 
     #[test]
     fn latex_power() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.powi(2);
         assert_eq!(expr.to_latex(), r"x^{2}");
     }
 
     #[test]
     fn latex_power_cube() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.powi(3);
         assert_eq!(expr.to_latex(), r"x^{3}");
     }
 
     #[test]
     fn latex_sqrt() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.sqrt();
         assert_eq!(expr.to_latex(), r"\sqrt{x}");
     }
 
     #[test]
     fn latex_cbrt() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.cbrt();
         assert_eq!(expr.to_latex(), r"\sqrt[3]{x}");
     }
 
     #[test]
     fn latex_inverse() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.powi(-1);
         let latex = expr.to_latex();
         assert_eq!(latex, r"\frac{1}{x}");
@@ -1067,7 +1067,7 @@ mod tests {
 
     #[test]
     fn latex_neg_symbol() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = -&x;
         assert_eq!(expr.to_latex(), "-x");
     }
@@ -1076,7 +1076,7 @@ mod tests {
 
     #[test]
     fn latex_add_simple() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = &x + 1;
         let latex = expr.to_latex();
         assert!(
@@ -1087,7 +1087,7 @@ mod tests {
 
     #[test]
     fn latex_add_power_and_const() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.powi(2) + 1;
         let latex = expr.to_latex();
         assert!(
@@ -1100,7 +1100,7 @@ mod tests {
 
     #[test]
     fn latex_mul_coefficient() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = &x * 2;
         let latex = expr.to_latex();
         assert!(
@@ -1113,35 +1113,35 @@ mod tests {
 
     #[test]
     fn latex_sin() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.sin();
         assert_eq!(expr.to_latex(), r"\sin\left(x\right)");
     }
 
     #[test]
     fn latex_cos() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.cos();
         assert_eq!(expr.to_latex(), r"\cos\left(x\right)");
     }
 
     #[test]
     fn latex_tan() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.tan();
         assert_eq!(expr.to_latex(), r"\tan\left(x\right)");
     }
 
     #[test]
     fn latex_sinh() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.sinh();
         assert_eq!(expr.to_latex(), r"\sinh\left(x\right)");
     }
 
     #[test]
     fn latex_cosh() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.cosh();
         assert_eq!(expr.to_latex(), r"\cosh\left(x\right)");
     }
@@ -1150,14 +1150,14 @@ mod tests {
 
     #[test]
     fn latex_exp() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.exp();
         assert_eq!(expr.to_latex(), r"\exp\left(x\right)");
     }
 
     #[test]
     fn latex_ln() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.ln();
         assert_eq!(expr.to_latex(), r"\ln\left(x\right)");
     }
@@ -1166,7 +1166,7 @@ mod tests {
 
     #[test]
     fn latex_abs() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.abs();
         assert_eq!(expr.to_latex(), r"\left|x\right|");
     }
@@ -1175,21 +1175,21 @@ mod tests {
 
     #[test]
     fn latex_asin() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.asin();
         assert_eq!(expr.to_latex(), r"\arcsin\left(x\right)");
     }
 
     #[test]
     fn latex_acos() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.acos();
         assert_eq!(expr.to_latex(), r"\arccos\left(x\right)");
     }
 
     #[test]
     fn latex_atan() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.atan();
         assert_eq!(expr.to_latex(), r"\arctan\left(x\right)");
     }
@@ -1198,7 +1198,7 @@ mod tests {
 
     #[test]
     fn latex_derivative() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.powi(2).formal_diff(&x);
         let latex = expr.to_latex();
         assert_eq!(latex, r"\frac{d}{dx} x^{2}");
@@ -1208,7 +1208,7 @@ mod tests {
 
     #[test]
     fn latex_integral() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.sin().sin();
         let integral = expr.integrate(&x);
         let latex = integral.to_latex();
@@ -1223,7 +1223,7 @@ mod tests {
 
     #[test]
     fn latex_sin_squared() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.sin().powi(2);
         let latex = expr.to_latex();
         assert_eq!(latex, r"\sin^{2}\left(x\right)");
@@ -1231,7 +1231,7 @@ mod tests {
 
     #[test]
     fn latex_nested_function() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = x.sin().exp();
         let latex = expr.to_latex();
         assert_eq!(latex, r"\exp\left(\sin\left(x\right)\right)");
@@ -1241,13 +1241,13 @@ mod tests {
 
     #[test]
     fn latex_inline_delimiters() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         assert_eq!(x.to_latex_inline(), "$x$");
     }
 
     #[test]
     fn latex_display_delimiters() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         assert_eq!(x.to_latex_display(), "$$x$$");
     }
 
@@ -1255,16 +1255,16 @@ mod tests {
 
     #[test]
     fn latex_relational_gt() {
-        let x = symplex::var("x");
-        let y = symplex::var("y");
+        let x = symplex::default_context().symbol("x");
+        let y = symplex::default_context().symbol("y");
         let expr = x.gt(&y);
         assert_eq!(expr.to_latex(), "x > y");
     }
 
     #[test]
     fn latex_relational_eq() {
-        let x = symplex::var("x");
-        let expr = x.eq_expr(&symplex::int(0));
+        let x = symplex::default_context().symbol("x");
+        let expr = x.eq_expr(&symplex::default_context().int(0));
         assert_eq!(expr.to_latex(), "x = 0");
     }
 
@@ -1272,7 +1272,7 @@ mod tests {
 
     #[test]
     fn latex_deep_expression_no_stack_overflow() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let mut expr = x.clone();
         for _ in 0..1000 {
             expr = expr.sin();
@@ -1286,8 +1286,8 @@ mod tests {
 
     #[test]
     fn latex_add_with_neg_term() {
-        let x = symplex::var("x");
-        let y = symplex::var("y");
+        let x = symplex::default_context().symbol("x");
+        let y = symplex::default_context().symbol("y");
         let expr = &x - &y;
         let latex = expr.to_latex();
         assert!(
@@ -1323,7 +1323,7 @@ mod tests {
 
     #[test]
     fn latex_coefficient_no_space() {
-        let x = symplex::var("x");
+        let x = symplex::default_context().symbol("x");
         let expr = &x * 3; // 3*x
         let latex = expr.to_latex();
         // Should be "3x" — no "\cdot" for integer coefficient times variable

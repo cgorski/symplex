@@ -47,8 +47,8 @@ fn main() {
 
     // Numerical evaluation: x at t=3s with g=9.81 m/s²
     let x_num = x_t.clone()
-        .subs(&g, &symplex::rational(981, 100))
-        .subs(&t, &symplex::int(3))
+        .subs(&g, &symplex::default_context().rational(981, 100))
+        .subs(&t, &symplex::default_context().int(3))
         .eval();
     println!("  x(t=3, g=9.81) = {} (≈44.145 m)", x_num);
 
@@ -96,22 +96,22 @@ fn main() {
 
     // Substitute v0=20 m/s, θ=π/4, g=9.81 m/s² and evaluate at several times
     println!("\n  Trajectory (v₀=20 m/s, θ=π/4, g=9.81 m/s²):");
-    let pi_over_4 = &symplex::pi() / 4;
-    let g_val = symplex::rational(981, 100);
+    let pi_over_4 = &symplex::default_context().pi() / 4;
+    let g_val = symplex::default_context().rational(981, 100);
 
     for t_val in [0, 1, 2, 3] {
         let x_val = x_proj.clone()
-            .subs(&v0, &symplex::int(20))
+            .subs(&v0, &symplex::default_context().int(20))
             .subs(&theta, &pi_over_4)
             .subs(&g, &g_val)
-            .subs(&t, &symplex::int(t_val))
+            .subs(&t, &symplex::default_context().int(t_val))
             .eval();
 
         let y_val = y_proj.clone()
-            .subs(&v0, &symplex::int(20))
+            .subs(&v0, &symplex::default_context().int(20))
             .subs(&theta, &pi_over_4)
             .subs(&g, &g_val)
-            .subs(&t, &symplex::int(t_val))
+            .subs(&t, &symplex::default_context().int(t_val))
             .eval();
 
         println!("    t={t_val}s: x = {}, y = {}", x_val, y_val);
@@ -119,10 +119,10 @@ fn main() {
 
     // Quick f64 check at t=1
     let y_f64 = y_proj
-        .subs(&v0, &symplex::int(20))
+        .subs(&v0, &symplex::default_context().int(20))
         .subs(&theta, &pi_over_4)
         .subs(&g, &g_val)
-        .subs(&t, &symplex::int(1))
+        .subs(&t, &symplex::default_context().int(1))
         .eval_f64()
         .unwrap();
     println!("    y(t=1) ≈ {:.4} m (f64)", y_f64);
@@ -166,16 +166,16 @@ fn main() {
 
     // Numerical: m=2kg moving at v=5m/s → KE = 25 J
     let ke_num = ke
-        .subs(&m, &symplex::int(2))
-        .subs(&v, &symplex::int(5))
+        .subs(&m, &symplex::default_context().int(2))
+        .subs(&v, &symplex::default_context().int(5))
         .eval();
     println!("\n  KE(m=2, v=5) = {} (should be 25 J)", ke_num);
 
     // Work = F·d = ma·d. With m=2, a=3, d=10 → W = 60 J
     let work_num = work
-        .subs(&mass, &symplex::int(2))
-        .subs(&accel, &symplex::int(3))
-        .subs(&x_var, &symplex::int(10))
+        .subs(&mass, &symplex::default_context().int(2))
+        .subs(&accel, &symplex::default_context().int(3))
+        .subs(&x_var, &symplex::default_context().int(10))
         .eval();
     println!("  W(m=2, a=3, x=10) = {} (should be 60 J)", work_num);
 

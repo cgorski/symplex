@@ -8,37 +8,37 @@ use symplex::prelude::*;
 
 #[test]
 fn floor_of_integer() {
-    let result = symplex::int(3).floor().eval();
+    let result = symplex::default_context().int(3).floor().eval();
     assert_eq!(format!("{result}"), "3");
 }
 
 #[test]
 fn floor_of_positive_rational() {
-    let result = symplex::rational(7, 2).floor().eval();
+    let result = symplex::default_context().rational(7, 2).floor().eval();
     assert_eq!(format!("{result}"), "3");
 }
 
 #[test]
 fn floor_of_negative_rational() {
-    let result = symplex::rational(-7, 2).floor().eval();
+    let result = symplex::default_context().rational(-7, 2).floor().eval();
     assert_eq!(format!("{result}"), "-4");
 }
 
 #[test]
 fn floor_of_zero() {
-    let result = symplex::int(0).floor().eval();
+    let result = symplex::default_context().int(0).floor().eval();
     assert_eq!(format!("{result}"), "0");
 }
 
 #[test]
 fn floor_of_negative_integer() {
-    let result = symplex::int(-5).floor().eval();
+    let result = symplex::default_context().int(-5).floor().eval();
     assert_eq!(format!("{result}"), "-5");
 }
 
 #[test]
 fn floor_symbolic_stays_unevaluated() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let fl = x.floor();
     let s = format!("{fl}");
     assert!(s.contains("floor"), "expected 'floor' in display, got: {s}");
@@ -50,31 +50,31 @@ fn floor_symbolic_stays_unevaluated() {
 
 #[test]
 fn ceiling_of_integer() {
-    let result = symplex::int(3).ceiling().eval();
+    let result = symplex::default_context().int(3).ceiling().eval();
     assert_eq!(format!("{result}"), "3");
 }
 
 #[test]
 fn ceiling_of_positive_rational() {
-    let result = symplex::rational(7, 2).ceiling().eval();
+    let result = symplex::default_context().rational(7, 2).ceiling().eval();
     assert_eq!(format!("{result}"), "4");
 }
 
 #[test]
 fn ceiling_of_negative_rational() {
-    let result = symplex::rational(-7, 2).ceiling().eval();
+    let result = symplex::default_context().rational(-7, 2).ceiling().eval();
     assert_eq!(format!("{result}"), "-3");
 }
 
 #[test]
 fn ceiling_of_zero() {
-    let result = symplex::int(0).ceiling().eval();
+    let result = symplex::default_context().int(0).ceiling().eval();
     assert_eq!(format!("{result}"), "0");
 }
 
 #[test]
 fn ceiling_symbolic_stays_unevaluated() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let cl = x.ceiling();
     let s = format!("{cl}");
     assert!(
@@ -89,20 +89,20 @@ fn ceiling_symbolic_stays_unevaluated() {
 
 #[test]
 fn frac_of_positive_rational() {
-    let result = symplex::rational(7, 2).frac().eval();
+    let result = symplex::default_context().rational(7, 2).frac().eval();
     assert_eq!(format!("{result}"), "1/2");
 }
 
 #[test]
 fn frac_of_integer_is_zero() {
-    let result = symplex::int(5).frac().eval();
+    let result = symplex::default_context().int(5).frac().eval();
     assert_eq!(format!("{result}"), "0");
 }
 
 #[test]
 fn frac_of_negative_rational() {
     // frac(-7/2) = -7/2 - floor(-7/2) = -7/2 - (-4) = 1/2
-    let result = symplex::rational(-7, 2).frac().eval();
+    let result = symplex::default_context().rational(-7, 2).frac().eval();
     assert_eq!(format!("{result}"), "1/2");
 }
 
@@ -112,32 +112,32 @@ fn frac_of_negative_rational() {
 
 #[test]
 fn min_of_two_integers() {
-    let result = symplex::int(3).min_with(&symplex::int(5)).eval();
+    let result = symplex::default_context().int(3).min_with(&symplex::default_context().int(5)).eval();
     assert_eq!(format!("{result}"), "3");
 }
 
 #[test]
 fn max_of_two_integers() {
-    let result = symplex::int(3).max_with(&symplex::int(5)).eval();
+    let result = symplex::default_context().int(3).max_with(&symplex::default_context().int(5)).eval();
     assert_eq!(format!("{result}"), "5");
 }
 
 #[test]
 fn min_of_negative_integers() {
-    let result = symplex::int(-10).min_with(&symplex::int(-3)).eval();
+    let result = symplex::default_context().int(-10).min_with(&symplex::default_context().int(-3)).eval();
     assert_eq!(format!("{result}"), "-10");
 }
 
 #[test]
 fn max_of_negative_integers() {
-    let result = symplex::int(-10).max_with(&symplex::int(-3)).eval();
+    let result = symplex::default_context().int(-10).max_with(&symplex::default_context().int(-3)).eval();
     assert_eq!(format!("{result}"), "-3");
 }
 
 #[test]
 fn min_symbolic_stays_unevaluated() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let m = x.min_with(&y);
     let s = format!("{m}");
     assert!(s.contains("min"), "expected 'min' in display, got: {s}");
@@ -145,8 +145,8 @@ fn min_symbolic_stays_unevaluated() {
 
 #[test]
 fn max_symbolic_stays_unevaluated() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let m = x.max_with(&y);
     let s = format!("{m}");
     assert!(s.contains("max"), "expected 'max' in display, got: {s}");
@@ -154,16 +154,16 @@ fn max_symbolic_stays_unevaluated() {
 
 #[test]
 fn min_of_rationals() {
-    let a = symplex::rational(1, 3);
-    let b = symplex::rational(1, 2);
+    let a = symplex::default_context().rational(1, 3);
+    let b = symplex::default_context().rational(1, 2);
     let result = a.min_with(&b).eval();
     assert_eq!(format!("{result}"), "1/3");
 }
 
 #[test]
 fn max_of_rationals() {
-    let a = symplex::rational(1, 3);
-    let b = symplex::rational(1, 2);
+    let a = symplex::default_context().rational(1, 3);
+    let b = symplex::default_context().rational(1, 2);
     let result = a.max_with(&b).eval();
     assert_eq!(format!("{result}"), "1/2");
 }
@@ -246,7 +246,7 @@ fn product_display_format() {
 
 #[test]
 fn diff_floor_is_zero() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let fl = x.floor();
     let d = fl.diff(&x);
     assert_eq!(format!("{d}"), "0");
@@ -254,7 +254,7 @@ fn diff_floor_is_zero() {
 
 #[test]
 fn diff_ceiling_is_zero() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let cl = x.ceiling();
     let d = cl.diff(&x);
     assert_eq!(format!("{d}"), "0");

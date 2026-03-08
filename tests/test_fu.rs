@@ -55,7 +55,7 @@ fn verify_2var(original: &Ex, simplified: &Ex, v1: &Ex, v2: &Ex, label: &str) {
 /// sin²(x) + cos²(x) → 1
 #[test]
 fn fu_pythagorean() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
     let result = expr.fu();
     verify_1var(&expr, &result, &x, "fu_pythagorean");
@@ -65,7 +65,7 @@ fn fu_pythagorean() {
 /// sin(x)/cos(x) → tan(x)   (TR2i)
 #[test]
 fn fu_sin_cos_to_tan() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = &x.sin() / &x.cos();
     let result = expr.fu();
     verify_1var(&expr, &result, &x, "fu_sin_cos_to_tan");
@@ -76,8 +76,8 @@ fn fu_sin_cos_to_tan() {
 /// 2·sin(x)·cos(x) → sin(2x)   (TR10i / TR8)
 #[test]
 fn fu_double_angle() {
-    let x = symplex::var("x");
-    let two = symplex::int(2);
+    let x = symplex::default_context().symbol("x");
+    let two = symplex::default_context().int(2);
     let expr = &two * &x.sin() * &x.cos();
     let result = expr.fu();
     verify_1var(&expr, &result, &x, "fu_double_angle");
@@ -91,8 +91,8 @@ fn fu_double_angle() {
 /// sin(a) + sin(b) → 2·sin((a+b)/2)·cos((a-b)/2)   (TR9)
 #[test]
 fn fu_sum_to_product() {
-    let a = symplex::var("a");
-    let b = symplex::var("b");
+    let a = symplex::default_context().symbol("a");
+    let b = symplex::default_context().symbol("b");
     let expr = &a.sin() + &b.sin();
     let result = expr.fu();
     verify_2var(&expr, &result, &a, &b, "fu_sum_to_product");
@@ -107,7 +107,7 @@ fn fu_sum_to_product() {
 /// sin²(x) → (1 - cos(2x))/2   (TR5)
 #[test]
 fn fu_power_reduce() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin().powi(2);
     let result = expr.fu();
     verify_1var(&expr, &result, &x, "fu_power_reduce");
@@ -117,10 +117,10 @@ fn fu_power_reduce() {
 /// 1/2 - cos(2x)/2 → sin²(x)   (inverse of TR5)
 #[test]
 fn fu_half_minus_cos2x() {
-    let x = symplex::var("x");
-    let half = symplex::rational(1, 2);
-    let neg_half = symplex::rational(-1, 2);
-    let cos_2x = (&symplex::int(2) * &x).cos();
+    let x = symplex::default_context().symbol("x");
+    let half = symplex::default_context().rational(1, 2);
+    let neg_half = symplex::default_context().rational(-1, 2);
+    let cos_2x = (&symplex::default_context().int(2) * &x).cos();
     let expr = &half + &neg_half * &cos_2x;
     let result = expr.fu();
     verify_1var(&expr, &result, &x, "fu_half_minus_cos2x");
@@ -134,10 +134,10 @@ fn fu_half_minus_cos2x() {
 /// cos(x)·cos(2x)·cos(4x) → sin(8x)/(8·sin(x))   (TRmorrie)
 #[test]
 fn fu_morrie() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let cos_x = x.cos();
-    let cos_2x = (&symplex::int(2) * &x).cos();
-    let cos_4x = (&symplex::int(4) * &x).cos();
+    let cos_2x = (&symplex::default_context().int(2) * &x).cos();
+    let cos_4x = (&symplex::default_context().int(4) * &x).cos();
     let expr = &cos_x * &cos_2x * &cos_4x;
     let result = expr.fu();
     verify_1var(&expr, &result, &x, "fu_morrie");
@@ -153,9 +153,9 @@ fn fu_morrie() {
 /// and accept any result that is no worse.
 #[test]
 fn fu_sqrt6_cos_sqrt2_sin() {
-    let x = symplex::var("x");
-    let sqrt6 = symplex::int(6).sqrt();
-    let sqrt2 = symplex::int(2).sqrt();
+    let x = symplex::default_context().symbol("x");
+    let sqrt6 = symplex::default_context().int(6).sqrt();
+    let sqrt2 = symplex::default_context().int(2).sqrt();
     let expr = &sqrt6 * &x.cos() + &sqrt2 * &x.sin();
     let result = expr.fu();
     verify_1var(&expr, &result, &x, "fu_sqrt6_cos_sqrt2_sin");
@@ -165,10 +165,10 @@ fn fu_sqrt6_cos_sqrt2_sin() {
 /// sin(x)⁴ - cos(y)² + sin(y)² + 2·cos(x)² → cos(x)⁴ - 2cos(y)² + 2
 #[test]
 fn fu_complex_example() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let expr = &x.sin().powi(4) - &y.cos().powi(2) + &y.sin().powi(2)
-        + &symplex::int(2) * &x.cos().powi(2);
+        + &symplex::default_context().int(2) * &x.cos().powi(2);
     let result = expr.fu();
     verify_2var(&expr, &result, &x, &y, "fu_complex_example");
     // The result should have fewer or equal trig nodes.
@@ -177,7 +177,7 @@ fn fu_complex_example() {
 /// sin(x) stays as sin(x) — no unnecessary transforms.
 #[test]
 fn fu_preserves_simple() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let expr = x.sin();
     let result = expr.fu();
     assert_eq!(format!("{result}"), "sin(x)");
@@ -188,7 +188,7 @@ fn fu_preserves_simple() {
 /// sec(x) = 1/cos(x) and csc(x) = 1/sin(x) in this system.
 #[test]
 fn fu_sec_csc_removed() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let sec2 = x.sec().powi(2);
     let csc2 = x.csc().powi(2);
     let expr = &sec2 + &csc2;
@@ -204,7 +204,7 @@ fn fu_sec_csc_removed() {
 /// tan(x)·cot(x) → 1   (TR13)
 #[test]
 fn fu_tan_cot_reduce() {
-    let x = symplex::var("x");
+    let x = symplex::default_context().symbol("x");
     let tan_x = &x.sin() / &x.cos();
     let cot_x = &x.cos() / &x.sin();
     let expr = &tan_x * &cot_x;

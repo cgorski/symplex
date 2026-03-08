@@ -30,7 +30,7 @@ fn verify_second_order_numerically(
     sample_x_num: i64,
     sample_x_den: i64,
 ) {
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -47,7 +47,7 @@ fn verify_second_order_numerically(
         .subs(&dy_formal, &sol_prime)
         .subs(y, &concrete_sol);
 
-    let sample_val = symplex::rational(sample_x_num, sample_x_den);
+    let sample_val = symplex::default_context().rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at
@@ -70,7 +70,7 @@ fn verify_first_order_numerically(
     sample_x_num: i64,
     sample_x_den: i64,
 ) {
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -83,7 +83,7 @@ fn verify_first_order_numerically(
         .subs(&dy_formal, &sol_prime)
         .subs(y, &concrete_sol);
 
-    let sample_val = symplex::rational(sample_x_num, sample_x_den);
+    let sample_val = symplex::default_context().rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at
@@ -106,11 +106,11 @@ fn ode_second_order_constant_rhs() {
     // Particular solution: y_p = 1 (since c=1 ≠ 0, y_p = k/c = 1/1)
     // Homogeneous: y_h = C1·exp(ix) + C2·exp(-ix)
     // General: y = C1·exp(ix) + C2·exp(-ix) + 1
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let ode = &d2y + &y - &one; // y'' + y - 1 = 0
 
     let result = ode.solve_ode(&y, &x);
@@ -140,8 +140,8 @@ fn ode_second_order_linear_rhs() {
     // Try y_p = Ax + B:  y_p''=0, y_p'=A
     //   A + Ax + B = x  ⟹  cA = 1 → A=1, bA + cB = 0 → 1 + B = 0 → B=-1
     //   y_p = x - 1
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &dy + &y - &x; // y'' + y' + y - x = 0
@@ -173,8 +173,8 @@ fn ode_second_order_quadratic_rhs() {
     //   2A + Ax² + Bx + D = x²
     //   A = 1, B = 0, 2A + D = 0 → D = -2
     //   y_p = x² - 2
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
@@ -204,11 +204,11 @@ fn ode_second_order_nonhomogeneous_verify() {
     // Particular: y_p = 6/2 = 3
     // Homogeneous: y_h = C1*exp(x) + C2*exp(2x)
     // General: y = C1*exp(x) + C2*exp(2x) + 3
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
-    let six = symplex::int(6);
+    let six = symplex::default_context().int(6);
     let ode = &d2y - &(&dy * 3) + &(&y * 2) - &six; // y'' - 3y' + 2y - 6 = 0
 
     let (sol, constants) = ode
@@ -221,9 +221,9 @@ fn ode_second_order_nonhomogeneous_verify() {
     verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 3, 4);
 
     // Also verify with C1=0, C2=0 to isolate the particular solution
-    let c1 = symplex::var("C1");
-    let c2 = symplex::var("C2");
-    let zero = symplex::int(0);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    let zero = symplex::default_context().int(0);
     let particular = sol.subs(&c1, &zero).subs(&c2, &zero);
     let particular_s = format!("{particular}");
     // The particular solution should simplify to 3
@@ -243,8 +243,8 @@ fn ode_second_order_nonhomogeneous_verify() {
 #[test]
 fn ode_homogeneous_still_works() {
     // y'' + y = 0 should still be solved by the homogeneous path
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y; // y'' + y = 0
@@ -280,13 +280,13 @@ fn ode_homogeneous_still_works() {
 
 #[test]
 fn ode_classify_nonhomogeneous() {
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
 
     // y'' + y - 1 = 0 should be classified as nonhomogeneous
-    let one = symplex::int(1);
+    let one = symplex::default_context().int(1);
     let ode = &d2y + &y - &one;
     assert_eq!(
         ode.classify_ode(&y, &x),
@@ -320,8 +320,8 @@ fn ode_exponential_rhs() {
     // y'' + y = exp(x) — exponential forcing is NOT a polynomial,
     // so undetermined coefficients for polynomial rhs should not apply.
     // The solver should return None (or possibly handle it in the future).
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y - &x.exp(); // y'' + y - exp(x) = 0
@@ -342,8 +342,8 @@ fn ode_exponential_rhs() {
 #[test]
 fn ode_first_order_still_works() {
     // Regression: y' + y = 0 still solves correctly
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy + &y; // y' + y = 0
 
@@ -379,8 +379,8 @@ fn ode_distinct_roots_linear_forcing() {
     // Particular: y_p = Ax + B
     //   0 - 3A + 2(Ax + B) = x  ⟹  2A = 1 → A=1/2, -3A + 2B = 0 → B=3/4
     //   y_p = x/2 + 3/4
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 3) + &(&y * 2) - &x; // y'' - 3y' + 2y - x = 0
@@ -408,11 +408,11 @@ fn ode_repeated_root_constant_forcing() {
     // y'' - 2y' + y = 4  (repeated root r=1)
     // Particular: y_p = 4/1 = 4  (since c=1)
     // Homogeneous: y_h = (C1 + C2*x)*exp(x)
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
-    let four = symplex::int(4);
+    let four = symplex::default_context().int(4);
     let ode = &d2y - &(&dy * 2) + &y - &four; // y'' - 2y' + y - 4 = 0
 
     let (sol, constants) = ode
@@ -439,11 +439,11 @@ fn ode_c_zero_constant_forcing() {
     // c=0, b=1, rhs = constant 2
     // Case 2: y_p = B_0*x → y_p' = B_0, y_p'' = 0 → b*B_0 = 2 → B_0 = 2
     // y_p = 2x
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
-    let two = symplex::int(2);
+    let two = symplex::default_context().int(2);
     let ode = &d2y + &dy - &two; // y'' + y' - 2 = 0
 
     let result = ode.solve_ode(&y, &x);
@@ -462,11 +462,11 @@ fn ode_b_c_zero_constant_forcing() {
     // y'' - 6 = 0  ⟹  y'' = 6
     // c=0, b=0, rhs = 6
     // Case 3: y_p = 6/(1*2) * x² = 3x²
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
-    let six = symplex::int(6);
+    let six = symplex::default_context().int(6);
     let ode = &d2y - &six; // y'' - 6 = 0
 
     let result = ode.solve_ode(&y, &x);
@@ -485,20 +485,20 @@ fn ode_b_c_zero_constant_forcing() {
 fn ode_nonhomogeneous_checkodesol() {
     // y'' - 3y' + 2y = 6 → particular y_p = 3
     // Check that a known particular solution passes checkodesol
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
-    let six = symplex::int(6);
+    let six = symplex::default_context().int(6);
     let ode = &d2y - &(&dy * 3) + &(&y * 2) - &six;
 
     // y = 3 should be a particular solution
-    let particular = symplex::int(3);
+    let particular = symplex::default_context().int(3);
     let ok = ode.check_ode_solution(&particular, &y, &x);
     assert!(ok, "y=3 should satisfy y'' - 3y' + 2y = 6");
 
     // y = 0 should NOT be a solution
-    let wrong = symplex::int(0);
+    let wrong = symplex::default_context().int(0);
     let not_ok = ode.check_ode_solution(&wrong, &y, &x);
     assert!(!not_ok, "y=0 should NOT satisfy y'' - 3y' + 2y = 6");
 }
@@ -510,12 +510,12 @@ fn ode_nonhomogeneous_checkodesol() {
 #[test]
 fn ode_scaled_leading_coefficient() {
     // 2y'' + 2y = 4  ⟹  y'' + y = 2  ⟹  y_p = 2
-    let x = symplex::var("x");
-    let y = symplex::var("y");
+    let x = symplex::default_context().symbol("x");
+    let y = symplex::default_context().symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
-    let two = symplex::int(2);
-    let four = symplex::int(4);
+    let two = symplex::default_context().int(2);
+    let four = symplex::default_context().int(4);
     let ode = &(&d2y * 2) + &(&y * 2) - &four; // 2y'' + 2y - 4 = 0
 
     let result = ode.solve_ode(&y, &x);

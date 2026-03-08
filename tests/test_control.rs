@@ -12,12 +12,12 @@ use symplex::matrix::Matrix;
 fn state_space_dimensions() {
     // 2 states, 1 input, 1 output
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(-2), symplex::int(-3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(0)], vec![symplex::default_context().int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert_eq!(ss.num_states(), 2);
@@ -35,15 +35,15 @@ fn state_space_poles_2x2() {
     // Characteristic polynomial: s^2 + 3s + 2 = (s+1)(s+2)
     // Poles at s = -1 and s = -2
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(-2), symplex::int(-3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(0)], vec![symplex::default_context().int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    let s = symplex::var("s");
+    let s = symplex::default_context().symbol("s");
     let poles = ss.poles(&s);
     assert_eq!(poles.len(), 2, "Expected 2 poles, got {}", poles.len());
 
@@ -65,26 +65,26 @@ fn state_space_char_poly() {
     // A = [[0, 1], [-2, -3]]
     // det(sI - A) = det([[s, -1], [2, s+3]]) = s(s+3) + 2 = s^2 + 3s + 2
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(-2), symplex::int(-3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(0)], vec![symplex::default_context().int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    let s = symplex::var("s");
+    let s = symplex::default_context().symbol("s");
     let cp = ss.char_poly(&s);
 
     // Verify that the roots of the char poly are the poles
-    let at_neg1 = cp.subs(&s, &symplex::int(-1)).simplify();
+    let at_neg1 = cp.subs(&s, &symplex::default_context().int(-1)).simplify();
     assert_eq!(
         format!("{at_neg1}"),
         "0",
         "char_poly(-1) should be 0, got: {at_neg1}"
     );
 
-    let at_neg2 = cp.subs(&s, &symplex::int(-2)).simplify();
+    let at_neg2 = cp.subs(&s, &symplex::default_context().int(-2)).simplify();
     assert_eq!(
         format!("{at_neg2}"),
         "0",
@@ -101,12 +101,12 @@ fn state_space_controllability() {
     // A = [[0, 1], [0, 0]], B = [[0], [1]]
     // Controllability matrix: [B, AB] = [[0, 1], [1, 0]] → rank 2 → controllable
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(0), symplex::int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(0)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(0)], vec![symplex::default_context().int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert!(ss.is_controllable(), "System should be controllable");
@@ -121,12 +121,12 @@ fn state_space_not_controllable() {
     // A = [[1, 0], [0, 2]], B = [[1], [0]]
     // Controllability matrix: [B, AB] = [[1, 1], [0, 0]] → rank 1 ≠ 2 → not controllable
     let a = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(2)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(2)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(1)], vec![symplex::int(0)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(1)], vec![symplex::default_context().int(0)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert!(
@@ -144,12 +144,12 @@ fn state_space_observability() {
     // A = [[0, 1], [0, 0]], C = [[1, 0]]
     // Observability matrix: [C; CA] = [[1, 0], [0, 1]] → rank 2 → observable
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(0), symplex::int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(0)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(0)], vec![symplex::default_context().int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert!(ss.is_observable(), "System should be observable");
@@ -163,12 +163,12 @@ fn state_space_observability() {
 fn state_space_stable() {
     // A = [[0, 1], [-2, -3]] → eigenvalues -1, -2 → stable
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(-2), symplex::int(-3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(0)], vec![symplex::default_context().int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let stability = ss.is_stable();
@@ -183,12 +183,12 @@ fn state_space_stable() {
 fn state_space_unstable() {
     // A = [[1, 0], [0, -1]] → eigenvalues 1, -1 → unstable (has positive eigenvalue)
     let a = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(-1)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(-1)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(1)], vec![symplex::int(0)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(1)], vec![symplex::default_context().int(0)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let stability = ss.is_stable();
@@ -203,9 +203,9 @@ fn state_space_unstable() {
 fn transfer_function_poles() {
     // G(s) = 1 / (s^2 + 3s + 2) = 1 / ((s+1)(s+2))
     // Poles at s = -1 and s = -2
-    let s = symplex::var("s");
+    let s = symplex::default_context().symbol("s");
     let tf = TransferFunction::new(
-        symplex::int(1),
+        symplex::default_context().int(1),
         &s * &s + &s * 3 + 2,
         s.clone(),
     );
@@ -230,7 +230,7 @@ fn transfer_function_poles() {
 fn transfer_function_zeros() {
     // G(s) = (s + 1) / (s^2 + 3s + 2)
     // Zero at s = -1
-    let s = symplex::var("s");
+    let s = symplex::default_context().symbol("s");
     let tf = TransferFunction::new(
         &s + 1,
         &s * &s + &s * 3 + 2,
@@ -255,8 +255,8 @@ fn transfer_function_zeros() {
 fn transfer_function_dc_gain() {
     // G(s) = 5 / (s + 2)
     // DC gain = G(0) = 5/2
-    let s = symplex::var("s");
-    let tf = TransferFunction::new(symplex::int(5), &s + 2, s.clone());
+    let s = symplex::default_context().symbol("s");
+    let tf = TransferFunction::new(symplex::default_context().int(5), &s + 2, s.clone());
 
     let gain = tf.dc_gain();
     let val = gain.eval_f64().unwrap();
@@ -275,21 +275,21 @@ fn transfer_function_series() {
     // G1(s) = 1/(s+1), G2(s) = 1/(s+2)
     // G_series = 1/((s+1)(s+2))
     // DC gain of series: G1(0)*G2(0) = 1*1/2 = 1/2
-    let s = symplex::var("s");
-    let g1 = TransferFunction::new(symplex::int(1), &s + 1, s.clone());
-    let g2 = TransferFunction::new(symplex::int(1), &s + 2, s.clone());
+    let s = symplex::default_context().symbol("s");
+    let g1 = TransferFunction::new(symplex::default_context().int(1), &s + 1, s.clone());
+    let g2 = TransferFunction::new(symplex::default_context().int(1), &s + 2, s.clone());
 
     let gs = g1.series(&g2);
 
     // Evaluate at s=0: should be 1/((0+1)(0+2)) = 1/2
-    let val = gs.eval_at(&symplex::int(0)).eval_f64().unwrap();
+    let val = gs.eval_at(&symplex::default_context().int(0)).eval_f64().unwrap();
     assert!(
         (val - 0.5).abs() < 1e-10,
         "Series DC gain should be 0.5, got: {val}"
     );
 
     // Evaluate at s=1: should be 1/((1+1)(1+2)) = 1/6
-    let val_1 = gs.eval_at(&symplex::int(1)).eval_f64().unwrap();
+    let val_1 = gs.eval_at(&symplex::default_context().int(1)).eval_f64().unwrap();
     assert!(
         (val_1 - 1.0 / 6.0).abs() < 1e-10,
         "Series at s=1 should be 1/6, got: {val_1}"
@@ -305,13 +305,13 @@ fn transfer_function_parallel() {
     // G1(s) = 1/(s+1), G2(s) = 1/(s+2)
     // G_par = 1/(s+1) + 1/(s+2) = (2s+3)/((s+1)(s+2))
     // At s=0: 1/1 + 1/2 = 3/2
-    let s = symplex::var("s");
-    let g1 = TransferFunction::new(symplex::int(1), &s + 1, s.clone());
-    let g2 = TransferFunction::new(symplex::int(1), &s + 2, s.clone());
+    let s = symplex::default_context().symbol("s");
+    let g1 = TransferFunction::new(symplex::default_context().int(1), &s + 1, s.clone());
+    let g2 = TransferFunction::new(symplex::default_context().int(1), &s + 2, s.clone());
 
     let gp = g1.parallel(&g2);
 
-    let val = gp.eval_at(&symplex::int(0)).eval_f64().unwrap();
+    let val = gp.eval_at(&symplex::default_context().int(0)).eval_f64().unwrap();
     assert!(
         (val - 1.5).abs() < 1e-10,
         "Parallel DC gain should be 1.5, got: {val}"
@@ -329,12 +329,12 @@ fn transfer_function_feedback() {
     //      = 10/(s+1) / ((s+1+10)/(s+1))
     //      = 10/(s+11)
     // DC gain of closed loop: 10/11
-    let s = symplex::var("s");
-    let g = TransferFunction::new(symplex::int(10), &s + 1, s.clone());
+    let s = symplex::default_context().symbol("s");
+    let g = TransferFunction::new(symplex::default_context().int(10), &s + 1, s.clone());
 
     let gcl = g.feedback();
 
-    let val = gcl.eval_at(&symplex::int(0)).eval_f64().unwrap();
+    let val = gcl.eval_at(&symplex::default_context().int(0)).eval_f64().unwrap();
     let expected = 10.0 / 11.0;
     assert!(
         (val - expected).abs() < 1e-10,
@@ -359,10 +359,10 @@ fn routh_array_stable() {
     //
     // First column: [1, 2, 1, 4] — all positive → stable
     let coeffs = vec![
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(3),
-        symplex::int(4),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(3),
+        symplex::default_context().int(4),
     ];
 
     let table = routh_array(&coeffs);
@@ -394,10 +394,10 @@ fn routh_array_unstable() {
     //
     // First column: [1, 2, -3, 8] — sign change → unstable
     let coeffs = vec![
-        symplex::int(1),
-        symplex::int(2),
-        symplex::int(1),
-        symplex::int(8),
+        symplex::default_context().int(1),
+        symplex::default_context().int(2),
+        symplex::default_context().int(1),
+        symplex::default_context().int(8),
     ];
 
     let stability = is_routh_stable(&coeffs);
@@ -416,21 +416,21 @@ fn routh_array_unstable() {
 fn controllability_matrix_size() {
     // 3 states, 2 inputs → controllability matrix should be 3×6
     let a = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(0), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(2), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(0), symplex::int(3)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(0), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(2), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(0), symplex::default_context().int(3)],
     ]).unwrap();
     let b = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(0), symplex::int(0)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(0)],
     ]).unwrap();
     let c = Matrix::new(vec![vec![
-        symplex::int(1),
-        symplex::int(0),
-        symplex::int(0),
+        symplex::default_context().int(1),
+        symplex::default_context().int(0),
+        symplex::default_context().int(0),
     ]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0), symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0), symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let cm = ss.controllability_matrix();
@@ -450,15 +450,15 @@ fn controllability_matrix_size() {
 fn observability_matrix_size() {
     // 2 states, 2 outputs → observability matrix should be 4×2
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(-2), symplex::int(-3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(0)], vec![symplex::default_context().int(1)]]).unwrap();
     let c = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(1)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
     ]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)], vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let om = ss.observability_matrix();
@@ -480,22 +480,22 @@ fn transfer_function_eval_at() {
     // G(0) = 3/1 = 3
     // G(1) = 4/2 = 2
     // G(2) = 5/3
-    let s = symplex::var("s");
+    let s = symplex::default_context().symbol("s");
     let tf = TransferFunction::new(&s + 3, &s + 1, s.clone());
 
-    let val0 = tf.eval_at(&symplex::int(0)).eval_f64().unwrap();
+    let val0 = tf.eval_at(&symplex::default_context().int(0)).eval_f64().unwrap();
     assert!(
         (val0 - 3.0).abs() < 1e-10,
         "G(0) should be 3, got: {val0}"
     );
 
-    let val1 = tf.eval_at(&symplex::int(1)).eval_f64().unwrap();
+    let val1 = tf.eval_at(&symplex::default_context().int(1)).eval_f64().unwrap();
     assert!(
         (val1 - 2.0).abs() < 1e-10,
         "G(1) should be 2, got: {val1}"
     );
 
-    let val2 = tf.eval_at(&symplex::int(2)).eval_f64().unwrap();
+    let val2 = tf.eval_at(&symplex::default_context().int(2)).eval_f64().unwrap();
     assert!(
         (val2 - 5.0 / 3.0).abs() < 1e-10,
         "G(2) should be 5/3, got: {val2}"
@@ -513,13 +513,13 @@ fn transfer_function_feedback_with() {
     //      = 10(s+5) / (s^2+6s+5+20)
     //      = 10(s+5) / (s^2+6s+25)
     // At s=0: 10*5 / (0+0+25) = 50/25 = 2
-    let s = symplex::var("s");
-    let g = TransferFunction::new(symplex::int(10), &s + 1, s.clone());
-    let h = TransferFunction::new(symplex::int(2), &s + 5, s.clone());
+    let s = symplex::default_context().symbol("s");
+    let g = TransferFunction::new(symplex::default_context().int(10), &s + 1, s.clone());
+    let h = TransferFunction::new(symplex::default_context().int(2), &s + 5, s.clone());
 
     let gcl = g.feedback_with(&h);
 
-    let val = gcl.eval_at(&symplex::int(0)).eval_f64().unwrap();
+    let val = gcl.eval_at(&symplex::default_context().int(0)).eval_f64().unwrap();
     assert!(
         (val - 2.0).abs() < 1e-10,
         "Feedback_with DC gain should be 2.0, got: {val}"
@@ -532,8 +532,8 @@ fn transfer_function_feedback_with() {
 
 #[test]
 fn transfer_function_display() {
-    let s = symplex::var("s");
-    let tf = TransferFunction::new(symplex::int(1), &s + 1, s.clone());
+    let s = symplex::default_context().symbol("s");
+    let tf = TransferFunction::new(symplex::default_context().int(1), &s + 1, s.clone());
     let display = format!("{tf}");
     // Should contain a "/" separator
     assert!(
@@ -555,7 +555,7 @@ fn routh_array_second_order_stable() {
     // Row 1: 3  0
     // Row 2: (3*2 - 1*0)/3 = 2
     // First column: [1, 3, 2] → all positive → stable
-    let coeffs = vec![symplex::int(1), symplex::int(3), symplex::int(2)];
+    let coeffs = vec![symplex::default_context().int(1), symplex::default_context().int(3), symplex::default_context().int(2)];
     let stability = is_routh_stable(&coeffs);
     assert_eq!(stability, Some(true), "s^2 + 3s + 2 should be Routh-stable");
 }
@@ -567,7 +567,7 @@ fn routh_array_second_order_stable() {
 #[test]
 fn routh_array_single_coeff() {
     // Constant polynomial: just [5]
-    let coeffs = vec![symplex::int(5)];
+    let coeffs = vec![symplex::default_context().int(5)];
     let table = routh_array(&coeffs);
     assert_eq!(table.len(), 1);
     let stability = is_routh_stable(&coeffs);
@@ -583,17 +583,17 @@ fn state_space_char_poly_nonzero_at_non_root() {
     // A = [[0, 1], [-2, -3]], char poly roots are -1 and -2
     // Evaluate at s=0: should be 0^2 + 3*0 + 2 = 2 (nonzero)
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(-2), symplex::int(-3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(0)], vec![symplex::default_context().int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    let s = symplex::var("s");
+    let s = symplex::default_context().symbol("s");
     let cp = ss.char_poly(&s);
-    let at_zero = cp.subs(&s, &symplex::int(0)).simplify();
+    let at_zero = cp.subs(&s, &symplex::default_context().int(0)).simplify();
     let val = at_zero.eval_f64().unwrap();
     assert!(
         (val - 2.0).abs() < 1e-10,
@@ -608,10 +608,10 @@ fn state_space_char_poly_nonzero_at_non_root() {
 #[test]
 fn state_space_1x1_system() {
     // Simple first-order system: dx/dt = -2x + u, y = x
-    let a = Matrix::new(vec![vec![symplex::int(-2)]]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(1)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let a = Matrix::new(vec![vec![symplex::default_context().int(-2)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert_eq!(ss.num_states(), 1);
@@ -620,7 +620,7 @@ fn state_space_1x1_system() {
     assert!(ss.is_controllable());
     assert!(ss.is_observable());
 
-    let s = symplex::var("s");
+    let s = symplex::default_context().symbol("s");
     let poles = ss.poles(&s);
     assert_eq!(poles.len(), 1);
     assert_eq!(format!("{}", poles[0]), "-2");
@@ -633,8 +633,8 @@ fn state_space_1x1_system() {
 #[test]
 fn transfer_function_constant_dc_gain() {
     // G(s) = 5/1 — constant gain
-    let s = symplex::var("s");
-    let tf = TransferFunction::new(symplex::int(5), symplex::int(1), s.clone());
+    let s = symplex::default_context().symbol("s");
+    let tf = TransferFunction::new(symplex::default_context().int(5), symplex::default_context().int(1), s.clone());
 
     let gain = tf.dc_gain().eval_f64().unwrap();
     assert!(
@@ -650,12 +650,12 @@ fn transfer_function_constant_dc_gain() {
 #[test]
 fn state_space_display() {
     let a = Matrix::new(vec![
-        vec![symplex::int(0), symplex::int(1)],
-        vec![symplex::int(-2), symplex::int(-3)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
+        vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(0)], vec![symplex::int(1)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(0)], vec![symplex::default_context().int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let display = format!("{ss}");
@@ -678,7 +678,7 @@ fn routh_first_order() {
     // s + 3 → coeffs [1, 3]
     // Table: row0=[1], row1=[3]
     // First col: [1, 3] → stable
-    let coeffs = vec![symplex::int(1), symplex::int(3)];
+    let coeffs = vec![symplex::default_context().int(1), symplex::default_context().int(3)];
     let stability = is_routh_stable(&coeffs);
     assert_eq!(stability, Some(true), "s + 3 should be stable");
 }
@@ -692,12 +692,12 @@ fn state_space_not_observable() {
     // A = [[1, 0], [0, 2]], C = [[1, 0]]
     // Observability matrix: [C; CA] = [[1, 0], [1, 0]] → rank 1 ≠ 2 → not observable
     let a = Matrix::new(vec![
-        vec![symplex::int(1), symplex::int(0)],
-        vec![symplex::int(0), symplex::int(2)],
+        vec![symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![symplex::default_context().int(0), symplex::default_context().int(2)],
     ]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::int(1)], vec![symplex::int(0)]]).unwrap();
-    let c = Matrix::new(vec![vec![symplex::int(1), symplex::int(0)]]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::int(0)]]).unwrap();
+    let b = Matrix::new(vec![vec![symplex::default_context().int(1)], vec![symplex::default_context().int(0)]]).unwrap();
+    let c = Matrix::new(vec![vec![symplex::default_context().int(1), symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     assert!(

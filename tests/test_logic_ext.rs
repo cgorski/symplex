@@ -8,12 +8,12 @@ use symplex::prelude::*;
 
 /// A boolean expression that evaluates to True.
 fn bool_true() -> BoolEx {
-    symplex::int(1).gt(&symplex::int(0))
+    symplex::default_context().int(1).gt(&symplex::default_context().int(0))
 }
 
 /// A boolean expression that evaluates to False.
 fn bool_false() -> BoolEx {
-    symplex::int(0).gt(&symplex::int(1))
+    symplex::default_context().int(0).gt(&symplex::default_context().int(1))
 }
 
 fn eval_str(b: &BoolEx) -> String {
@@ -41,8 +41,8 @@ fn xor_truth_table() {
 
 #[test]
 fn xor_is_commutative() {
-    let a = symplex::int(5).gt(&symplex::int(0)); // true
-    let b = symplex::int(5).lt(&symplex::int(0)); // false
+    let a = symplex::default_context().int(5).gt(&symplex::default_context().int(0)); // true
+    let b = symplex::default_context().int(5).lt(&symplex::default_context().int(0)); // false
 
     assert_eq!(eval_str(&a.xor(&b)), eval_str(&b.xor(&a)));
 }
