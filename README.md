@@ -162,11 +162,14 @@ Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `exp
 - ✅ Simplification (24 rules + Fu's trig simplification + power/combinatorial/numeric strategies)
 - ✅ Taylor/Maclaurin/Laurent series, limits (Gruntz algorithm), formal power series
 - ✅ Finite differences (Fornberg algorithm), Gosper hypergeometric summation
+- ✅ Integration of inverse hyperbolic functions (asinh, acosh, atanh) with chain rule
+- ✅ Assumption-aware simplification via refine() — abs, sign, sqrt(x²), floor, ceiling
 - ✅ Exact rational arithmetic (`Ratio<BigInt>`) — no floating-point contamination
 
 **Linear Algebra:**
 
-- ✅ Symbolic matrices: det, inverse, eigenvalues, LU/QR/Cholesky, matrix exponential
+- ✅ Symbolic matrices: det, inverse, eigenvalues, LU/QR/Cholesky, matrix exponential — all methods return `Result` (no panics)
+- ✅ Eigenvectors, diagonalization, Jordan normal form, exact matrix exponential
 - ✅ Kronecker product, pseudo-inverse, rank, nullspace
 
 **Robotics & Dynamics:**
@@ -189,6 +192,7 @@ Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `exp
 - ✅ Laplace/inverse Laplace, z-transform, Fourier transform
 - ✅ Bessel, Legendre, Chebyshev, Hermite, Laguerre polynomials
 - ✅ Arbitrary-precision Gamma (Stirling), erf, Beta
+- ✅ LambertW function with differentiation, 8 known values, arbitrary-precision Halley eval
 
 **Compile-Time Dimensional Analysis:**
 
@@ -210,6 +214,7 @@ Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `exp
 - ✅ LaTeX rendering (`to_latex()` on expressions, matrices, quaternions)
 - ✅ JSON serialization for interchange
 - ✅ Runtime expression parser
+- ✅ 2D Unicode pretty printing with stacked fractions, superscripts, graduated bar weights
 
 **Architecture:**
 
@@ -255,7 +260,10 @@ A concise, honest comparison. For the full breakdown see
 | Polynomial solving (through quartic) | ✅ | ✅ |
 | Gröbner bases | ✅ Buchberger + FGLM | ✅ Buchberger + F5B |
 | Polynomial system solving | ✅ | ✅ |
-| Matrix algebra | ✅ 50+ methods | ✅ |
+| Matrix algebra | ✅ 60+ methods, all return `Result` | ✅ |
+| Eigenvectors / Jordan form | ✅ | ✅ |
+| Pretty printing (2D) | ✅ (Unicode 2D) | ✅ |
+| LambertW | ✅ | ✅ |
 | Trig simplification (Fu's algorithm) | ✅ (17 transforms) | ✅ |
 | ODE solving | ✅ (7 classes + systems) | ✅ |
 | Hypergeometric summation (Gosper) | ✅ | ✅ |
@@ -316,7 +324,7 @@ Rust 1.93+ (Edition 2024).
 Contributions are welcome. Please open an issue before starting large changes.
 
 ```
-cargo test                  # Run the full test suite (5,500+ tests)
+cargo test                  # Run the full test suite (5,400+ tests)
 cargo test --doc            # Doc-tests only
 cargo bench                 # Benchmarks (criterion)
 RUST_LOG=symplex=debug cargo run --example quickstart  # With tracing output

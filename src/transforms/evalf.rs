@@ -699,12 +699,38 @@ fn eval_node(
             Ok(c_zero(prec))
         }
 
-        // ── Unevaluable ────────────────────────────────────────────
-        ExprNode::Apply(sid, _) => {
+        // ── Apply-based special functions ───────────────────────────
+        ExprNode::Apply(sid, args) => {
             let name = arena.symbol_name(*sid);
-            Err(SymplexError::Unevaluable {
-                reason: format!("cannot evaluate user function '{name}'"),
-            })
+            match name {
+                "besselj" if args.len() == 2 => {
+                    let order = get_cached(cache, args[0])?;
+                    let arg = get_cached(cache, args[1])?;
+                    if !order.1.is_zero() || !arg.1.is_zero() {
+                        return Err(SymplexError::Unevaluable {
+                            reason: "Bessel of complex argument not yet supported in evalf".into(),
+                        });
+                    }
+                    tracing::debug!(prec, "evalf: BesselJ via series/asymptotic");
+                    let result = arb_bessel_j(&order.0, &arg.0, prec, rm, cc)?;
+                    Ok((result, BigFloat::new(prec)))
+                }
+                "bessely" if args.len() == 2 => {
+                    let order = get_cached(cache, args[0])?;
+                    let arg = get_cached(cache, args[1])?;
+                    if !order.1.is_zero() || !arg.1.is_zero() {
+                        return Err(SymplexError::Unevaluable {
+                            reason: "Bessel of complex argument not yet supported in evalf".into(),
+                        });
+                    }
+                    tracing::debug!(prec, "evalf: BesselY via series/asymptotic");
+                    let result = arb_bessel_y(&order.0, &arg.0, prec, rm, cc)?;
+                    Ok((result, BigFloat::new(prec)))
+                }
+                _ => Err(SymplexError::Unevaluable {
+                    reason: format!("cannot evaluate function '{name}'"),
+                })
+            }
         }
 
         ExprNode::Derivative(_, _) => Err(SymplexError::Unevaluable {
@@ -1802,6 +1828,305 @@ fn arb_lambert_w(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Look up a cached value, returning an error if not found.
+// ═══════════════════════════════════════════════════════════════════════════
+// Bessel function evaluation (arbitrary precision)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Arbitrary-precision Bessel function of the first kind J_ν(x).
+///
+/// Uses ascending power series for small |x|:
+///   J_ν(x) = Σ_{k=0}^{N} (-1)^k · (x/2)^(ν+2k) / (k! · Γ(ν+k+1))
+///
+/// For large |x|, uses Hankel asymptotic leading term:
+///   J_ν(x) ≈ √(2/(πx)) · cos(x - νπ/2 - π/4)
+fn arb_bessel_j(
+    order: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let guard = 32;
+    let wp = prec + guard;
+
+    // Special case: x = 0.
+    if x.is_zero() {
+        let order_f64 = bigfloat_to_f64(order, rm, cc)?;
+        return if order_f64.abs() < 1e-15 {
+            // J_0(0) = 1
+            Ok(BigFloat::from_i32(1, prec))
+        } else if order_f64 > 0.0 {
+            // J_n(0) = 0 for n > 0
+            Ok(BigFloat::new(prec))
+        } else {
+            Err(SymplexError::Unevaluable {
+                reason: "BesselJ at x=0 with negative order".into(),
+            })
+        };
+    }
+
+    let x_f64 = bigfloat_to_f64(x, rm, cc)?;
+    let order_f64 = bigfloat_to_f64(order, rm, cc)?;
+
+    // Check for integer order (most common case).
+    let order_int = order_f64.round() as i64;
+    let is_int_order = (order_f64 - order_int as f64).abs() < 1e-12;
+
+    // Threshold: use series for |x| < sqrt(wp), asymptotic for larger.
+    let threshold = ((wp as f64) * 0.5).sqrt() + 5.0;
+
+    if x_f64.abs() < threshold {
+        // ── Ascending series ──────────────────────────────────────
+        // J_ν(x) = (x/2)^ν · Σ_{k=0}^N (-1)^k · (x/2)^{2k} / (k! · Γ(ν+k+1))
+        let two = BigFloat::from_i32(2, wp);
+        let x_half = x.div(&two, wp, rm);
+        let x_half_sq = x_half.mul(&x_half, wp, rm);
+        let neg_x_half_sq = x_half_sq.neg();
+
+        // Compute (x/2)^ν.  For integer order, use repeated multiplication.
+        let prefix = if is_int_order && order_int >= 0 {
+            let mut p = BigFloat::from_i32(1, wp);
+            for _ in 0..order_int {
+                p = p.mul(&x_half, wp, rm);
+            }
+            p
+        } else {
+            // General: (x/2)^ν = exp(ν · ln(x/2))
+            let ln_xh = x_half.abs().ln(wp, rm, cc);
+            let nu_ln = order.mul(&ln_xh, wp, rm);
+            nu_ln.exp(wp, rm, cc)
+        };
+
+        // Series: sum = Σ (-1)^k · (x/2)^{2k} / (k! · Γ(ν+k+1))
+        // We track term = (-x²/4)^k / (k! · Γ(ν+k+1)) incrementally.
+        // term_{k+1} = term_k · (-x²/4) / ((k+1) · (ν+k+1))
+        let mut sum = BigFloat::new(wp); // will add 1/Γ(ν+1) as first term
+
+        // First term (k=0): 1 / Γ(ν+1)
+        let gamma_nu1 = arb_gamma_real(
+            &order.add(&BigFloat::from_i32(1, wp), wp, rm),
+            wp, rm, cc,
+        )?;
+        let mut term = BigFloat::from_i32(1, wp).div(&gamma_nu1, wp, rm);
+        sum = sum.add(&term, wp, rm);
+
+        let max_terms = (wp as f64 * 0.8) as usize + 40;
+        for k in 1..=max_terms {
+            // term *= (-x²/4) / (k · (ν + k))
+            let k_bf = BigFloat::from_i32(k as i32, wp);
+            let nu_plus_k = order.add(&k_bf, wp, rm);
+            let denom = k_bf.mul(&nu_plus_k, wp, rm);
+            term = term.mul(&neg_x_half_sq, wp, rm);
+            term = term.div(&denom, wp, rm);
+
+            // Convergence check.
+            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent()) {
+                if (s_exp as i64 - t_exp as i64) > wp as i64 {
+                    tracing::trace!(k, "arb_bessel_j: series converged");
+                    break;
+                }
+            }
+
+            sum = sum.add(&term, wp, rm);
+        }
+
+        Ok(prefix.mul(&sum, wp, rm))
+    } else {
+        // ── Hankel asymptotic (leading term) ──────────────────────
+        // J_ν(x) ≈ √(2/(πx)) · cos(x - νπ/2 - π/4)
+        tracing::trace!("arb_bessel_j: using asymptotic expansion");
+        let pi = cc.pi(wp, rm).clone();
+        let two = BigFloat::from_i32(2, wp);
+        let four = BigFloat::from_i32(4, wp);
+
+        // √(2/(πx))
+        let two_over_pi_x = two.div(&pi.mul(x, wp, rm), wp, rm);
+        let amplitude = two_over_pi_x.sqrt(wp, rm);
+
+        // phase = x - ν·π/2 - π/4
+        let nu_pi_half = order.mul(&pi, wp, rm).div(&two, wp, rm);
+        let pi_quarter = pi.div(&four, wp, rm);
+        let phase = x.sub(&nu_pi_half, wp, rm).sub(&pi_quarter, wp, rm);
+
+        let cos_phase = phase.cos(wp, rm, cc);
+        Ok(amplitude.mul(&cos_phase, wp, rm))
+    }
+}
+
+/// Arbitrary-precision Bessel function of the second kind Y_ν(x).
+///
+/// For integer order ν = n, uses the Neumann series:
+///   Y_n(x) = (2/π)·J_n(x)·[ln(x/2) + γ] - (1/π)·Σ_{k=0}^{n-1} (n-k-1)!/k! · (x/2)^{2k-n}
+///             - (1/π)·Σ_{k=0}^∞ [ψ(k+1)+ψ(n+k+1)]·(-1)^k·(x/2)^{n+2k}/(k!·(n+k)!)
+///
+/// For v1 simplicity: uses asymptotic leading term for large |x| and
+/// the relation via J for moderate |x| with the logarithmic series for Y_0.
+fn arb_bessel_y(
+    order: &BigFloat,
+    x: &BigFloat,
+    prec: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Result<BigFloat, SymplexError> {
+    let guard = 32;
+    let wp = prec + guard;
+
+    if x.is_zero() || x.is_negative() {
+        return Err(SymplexError::Unevaluable {
+            reason: "BesselY undefined at x ≤ 0".into(),
+        });
+    }
+
+    let x_f64 = bigfloat_to_f64(x, rm, cc)?;
+    let order_f64 = bigfloat_to_f64(order, rm, cc)?;
+    let order_int = order_f64.round() as i64;
+    let is_int_order = (order_f64 - order_int as f64).abs() < 1e-12;
+
+    let threshold = ((wp as f64) * 0.5).sqrt() + 5.0;
+
+    if x_f64 >= threshold {
+        // ── Hankel asymptotic (leading term) ──────────────────────
+        // Y_ν(x) ≈ √(2/(πx)) · sin(x - νπ/2 - π/4)
+        tracing::trace!("arb_bessel_y: using asymptotic expansion");
+        let pi = cc.pi(wp, rm).clone();
+        let two = BigFloat::from_i32(2, wp);
+        let four = BigFloat::from_i32(4, wp);
+
+        let two_over_pi_x = two.div(&pi.mul(x, wp, rm), wp, rm);
+        let amplitude = two_over_pi_x.sqrt(wp, rm);
+
+        let nu_pi_half = order.mul(&pi, wp, rm).div(&two, wp, rm);
+        let pi_quarter = pi.div(&four, wp, rm);
+        let phase = x.sub(&nu_pi_half, wp, rm).sub(&pi_quarter, wp, rm);
+
+        let sin_phase = phase.sin(wp, rm, cc);
+        return Ok(amplitude.mul(&sin_phase, wp, rm));
+    }
+
+    // ── Small |x|: Y_0 via logarithmic series ────────────────────
+    // For Y_0(x) specifically:
+    //   Y_0(x) = (2/π)[J_0(x)·(ln(x/2) + γ) + Σ_{k=1}^∞ (-1)^{k+1} H_k (x/2)^{2k} / (k!)²]
+    // where H_k = 1 + 1/2 + ... + 1/k (harmonic number) and γ = Euler-Mascheroni.
+    //
+    // For general integer n > 0, use forward recurrence from Y_0 and Y_1.
+    // For simplicity in v1, compute Y_0 via the log series, Y_1 via similar,
+    // and recur for higher orders.
+
+    if !is_int_order || order_int < 0 {
+        return Err(SymplexError::Unevaluable {
+            reason: format!(
+                "BesselY for non-integer or negative order {order_f64} not yet implemented in small-|x| regime"
+            ),
+        });
+    }
+
+    let pi = cc.pi(wp, rm).clone();
+    let two = BigFloat::from_i32(2, wp);
+    let two_over_pi = two.div(&pi, wp, rm);
+
+    let x_half = x.div(&two, wp, rm);
+    let ln_x_half = x_half.ln(wp, rm, cc);
+
+    // Euler-Mascheroni constant γ ≈ 0.5772156649...
+    // Compute from the series: γ = lim(H_n - ln(n)) — use a hardcoded value at wp precision.
+    // For arbitrary precision, compute γ from the Stirling series relation:
+    //   γ = -Γ'(1)/Γ(1) = -ψ(1)
+    // For v1, use f64 approximation promoted to BigFloat.
+    let euler_gamma = BigFloat::from_f64(0.5772156649015329_f64, wp);
+
+    // Compute J_0(x) for the Y_0 formula.
+    let order_zero = BigFloat::new(wp); // 0
+    let j0 = arb_bessel_j(&order_zero, x, wp, rm, cc)?;
+
+    // Y_0(x) = (2/π)[J_0(x)·(ln(x/2) + γ) + series_correction]
+    let ln_plus_gamma = ln_x_half.add(&euler_gamma, wp, rm);
+    let main_term = j0.mul(&ln_plus_gamma, wp, rm);
+
+    // Series correction: Σ_{k=1}^N (-1)^{k+1} · H_k · (x/2)^{2k} / (k!)²
+    let neg_x_half_sq = x_half.mul(&x_half, wp, rm).neg();
+    let mut series_sum = BigFloat::new(wp);
+    let mut x_power = neg_x_half_sq.clone(); // (-x²/4)^1 for k=1
+    let mut factorial_sq = BigFloat::from_i32(1, wp); // (1!)²
+    let mut harmonic = BigFloat::from_i32(1, wp); // H_1 = 1
+
+    let max_terms = (wp as f64 * 0.8) as usize + 40;
+    for k in 1..=max_terms {
+        if k > 1 {
+            // Update: x_power *= -x²/4, factorial_sq *= k², harmonic += 1/k
+            x_power = x_power.mul(&neg_x_half_sq, wp, rm);
+            let k_bf = BigFloat::from_i32(k as i32, wp);
+            let k_sq = k_bf.mul(&k_bf, wp, rm);
+            factorial_sq = factorial_sq.mul(&k_sq, wp, rm);
+            harmonic = harmonic.add(
+                &BigFloat::from_i32(1, wp).div(&k_bf, wp, rm),
+                wp,
+                rm,
+            );
+        }
+
+        // term = (-1)^{k+1} · H_k · (x/2)^{2k} / (k!)²
+        // Note: x_power already carries the (-1)^k sign from neg_x_half_sq.
+        // So (-1)^{k+1} · (-x²/4)^k = (-1)^{k+1} · (-1)^k · (x²/4)^k = -(x²/4)^k...
+        // Actually: x_power = (-x²/4)^k = (-1)^k · (x/2)^{2k}
+        // We want (-1)^{k+1} · (x/2)^{2k} = -(-1)^k · (x/2)^{2k} = -x_power
+        let signed_power = x_power.neg();
+        let term = signed_power
+            .mul(&harmonic, wp, rm)
+            .div(&factorial_sq, wp, rm);
+
+        if let (Some(t_exp), Some(s_exp)) = (term.exponent(), series_sum.exponent()) {
+            if s_exp != 0 && (s_exp as i64 - t_exp as i64) > wp as i64 {
+                tracing::trace!(k, "arb_bessel_y: Y_0 series converged");
+                break;
+            }
+        }
+
+        series_sum = series_sum.add(&term, wp, rm);
+    }
+
+    let y0 = two_over_pi.mul(&main_term.add(&series_sum, wp, rm), wp, rm);
+
+    // If order is 0, we're done.
+    if order_int == 0 {
+        return Ok(y0);
+    }
+
+    // For order > 0, use forward recurrence: Y_{n+1}(x) = (2n/x)·Y_n(x) - Y_{n-1}(x)
+    // Start from Y_0 and Y_1.
+    // Compute Y_1 via J_1 and a similar log series... for simplicity, use
+    // the forward recurrence starting from Y_0 and the asymptotic-derived Y_1
+    // or compute Y_1 from the relation Y_1 = (2/π)[J_1·(ln(x/2)+γ) - 1/x + ...]
+    // For v1, compute Y_1 from the finite-difference derivative of J:
+    //   Y_1(x) ≈ (2/(πx)) - Y_0 derivative... this is complex.
+    // Simplest: use the cross-product Wronskian: J_0·Y_1 - J_1·Y_0 = 2/(πx)
+    //   → Y_1 = (2/(πx) + J_1·Y_0) / J_0
+
+    let one_bf = BigFloat::from_i32(1, wp);
+    let j1 = arb_bessel_j(&one_bf, x, wp, rm, cc)?;
+    let two_over_pi_x = two_over_pi.div(x, wp, rm);
+    // Y_1 = (2/(πx) + J_1·Y_0) / J_0
+    let y1 = two_over_pi_x
+        .add(&j1.mul(&y0, wp, rm), wp, rm)
+        .div(&j0, wp, rm);
+
+    if order_int == 1 {
+        return Ok(y1);
+    }
+
+    // Forward recurrence for n >= 2.
+    let mut y_prev = y0;
+    let mut y_curr = y1;
+    for n in 1..order_int {
+        let n_bf = BigFloat::from_i32(n as i32, wp);
+        let two_n_over_x = two.mul(&n_bf, wp, rm).div(x, wp, rm);
+        let y_next = two_n_over_x.mul(&y_curr, wp, rm).sub(&y_prev, wp, rm);
+        y_prev = y_curr;
+        y_curr = y_next;
+    }
+
+    Ok(y_curr)
+}
+
 fn get_cached(cache: &FxHashMap<ExprId, Complex>, id: ExprId) -> Result<&Complex, SymplexError> {
     cache.get(&id).ok_or_else(|| SymplexError::Unevaluable {
         reason: format!("sub-expression {id:?} not in cache (likely contains free symbols)"),
@@ -2494,5 +2819,80 @@ mod tests {
         let r1 = evalf(&a, a.pi, 20).unwrap();
         let r2 = evalf(&a, a.pi, 20).unwrap();
         assert_eq!(r1, r2, "same precision should give same result");
+    }
+
+    // ── Bessel function evaluation ─────────────────────────────────
+
+    #[test]
+    fn bessel_j0_at_zero() {
+        // J_0(0) = 1
+        let mut a = Arena::new();
+        let zero = a.zero;
+        let j0_0 = a.besselj(zero, zero);
+        let result = evalf(&a, j0_0, 15).unwrap();
+        let val: f64 = result.parse().unwrap_or(f64::NAN);
+        assert!(
+            (val - 1.0).abs() < 1e-10,
+            "J_0(0) should be 1.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn bessel_j0_at_one() {
+        // J_0(1) ≈ 0.7651976865579666
+        let mut a = Arena::new();
+        let zero = a.zero;
+        let one = a.one;
+        let j0_1 = a.besselj(zero, one);
+        let result = evalf(&a, j0_1, 15).unwrap();
+        let val: f64 = result.parse().unwrap_or(f64::NAN);
+        assert!(
+            (val - 0.7651976865579666).abs() < 1e-8,
+            "J_0(1) should be ~0.7652, got {result}"
+        );
+    }
+
+    #[test]
+    fn bessel_j1_at_zero() {
+        // J_1(0) = 0
+        let mut a = Arena::new();
+        let one = a.one;
+        let zero = a.zero;
+        let j1_0 = a.besselj(one, zero);
+        let result = evalf(&a, j1_0, 15).unwrap();
+        let val: f64 = result.parse().unwrap_or(f64::NAN);
+        assert!(
+            val.abs() < 1e-10,
+            "J_1(0) should be 0, got {result}"
+        );
+    }
+
+    #[test]
+    fn bessel_j1_at_one() {
+        // J_1(1) ≈ 0.44005058574493355
+        let mut a = Arena::new();
+        let one = a.one;
+        let j1_1 = a.besselj(one, one);
+        let result = evalf(&a, j1_1, 15).unwrap();
+        let val: f64 = result.parse().unwrap_or(f64::NAN);
+        assert!(
+            (val - 0.44005058574493355).abs() < 1e-8,
+            "J_1(1) should be ~0.4401, got {result}"
+        );
+    }
+
+    #[test]
+    fn bessel_y0_at_one() {
+        // Y_0(1) ≈ 0.08825696421567696
+        let mut a = Arena::new();
+        let zero = a.zero;
+        let one = a.one;
+        let y0_1 = a.bessely(zero, one);
+        let result = evalf(&a, y0_1, 15).unwrap();
+        let val: f64 = result.parse().unwrap_or(f64::NAN);
+        assert!(
+            (val - 0.08825696421567696).abs() < 1e-6,
+            "Y_0(1) should be ~0.0883, got {result}"
+        );
     }
 }

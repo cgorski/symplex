@@ -2033,11 +2033,6 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
             let a = &coeffs[1]; // coefficient of x
             let b = &coeffs[0]; // constant term
             let root_val = -(b / a);
-            // Build the root as an Ex.
-            let root_ex = crate::rational(
-                root_val.numer().clone().try_into().unwrap_or(0i64),
-                root_val.denom().clone().try_into().unwrap_or(1i64),
-            );
             // For large BigInt roots that don't fit i64, use the general path.
             let root_check: Result<i64, _> = root_val.numer().clone().try_into();
             let denom_check: Result<i64, _> = root_val.denom().clone().try_into();
