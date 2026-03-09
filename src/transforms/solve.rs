@@ -201,7 +201,15 @@ fn try_solve_by_inversion(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
             // Now solve f_of_x = rhs by peeling layers
             solve_by_peeling(arena, f_of_x, rhs, var)
         }
-        _ => None,
+        // For non-Add expressions that contain var (e.g., Sinh(x), Abs(x)),
+        // try peeling directly with rhs = 0.
+        _ => {
+            if expr_contains_var(arena, expr, var) {
+                solve_by_peeling(arena, expr, arena.zero, var)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -313,6 +321,8 @@ fn solve_by_peeling(
         }
         // f(x)^n = rhs → f(x) = rhs^(1/n)
         // When n is a positive even integer, also consider f(x) = -(rhs^(1/n))
+        //
+        // a^f(x) = rhs → f(x) = ln(rhs) / ln(a)  (constant base, variable exponent)
         ExprNode::Pow(inner_base, inner_exp) => {
             if let Some(n) = arena.as_num(inner_exp) {
                 let n = n.clone();
@@ -348,12 +358,107 @@ fn solve_by_peeling(
                     }
                 }
             }
+
+            // a^f(x) = rhs where a is a constant (no var) and f(x) contains var.
+            // Strategy: f(x) = ln(rhs) / ln(a).
+            //
+            // Integer shortcut: if a and rhs are positive integers and a^k == rhs
+            // for some k, solve f(x) = k directly (gives exact answer like x = 3
+            // instead of x = ln(8)/ln(2)).
+            if !expr_contains_var(arena, inner_base, var)
+                && expr_contains_var(arena, inner_exp, var)
+            {
+                tracing::debug!("solve_by_peeling: constant-base exponential a^f(x) = rhs");
+
+                // Integer shortcut: try to find k such that base^k == rhs
+                if let (Some(b), Some(r)) = (arena.as_num(inner_base).cloned(), arena.as_num(rhs).cloned()) {
+                    if b.is_integer() && r.is_integer() && b > Ratio::one() && r.is_positive() {
+                        let b_int = b.to_integer();
+                        let r_int = r.to_integer();
+                        // Try small powers: b^1, b^2, ... up to b^64
+                        let mut power = BigInt::one();
+                        for k in 0u32..65 {
+                            if power == r_int {
+                                let k_expr = arena.int(k as i64);
+                                tracing::debug!("solve_by_peeling: integer log shortcut, base^{k} = rhs");
+                                return solve_by_peeling(arena, inner_exp, k_expr, var);
+                            }
+                            if power > r_int {
+                                break;
+                            }
+                            power *= &b_int;
+                        }
+                    }
+                }
+
+                // General case: f(x) = ln(rhs) / ln(base)
+                let ln_base = arena.ln(inner_base);
+                let ln_rhs = arena.ln(rhs);
+                let new_rhs = arena.div(ln_rhs, ln_base);
+                return solve_by_peeling(arena, inner_exp, new_rhs, var);
+            }
+
             None
         }
         // Neg(-f(x)) = rhs → f(x) = -rhs
         ExprNode::Neg(inner) => {
             let new_rhs = arena.neg(rhs);
             solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // ── Inverse trig peeling ──────────────────────────────────
+        // asin(f(x)) = rhs → f(x) = sin(rhs)
+        ExprNode::Asin(inner) => {
+            let new_rhs = arena.sin(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // acos(f(x)) = rhs → f(x) = cos(rhs)
+        ExprNode::Acos(inner) => {
+            let new_rhs = arena.cos(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // atan(f(x)) = rhs → f(x) = tan(rhs)
+        ExprNode::Atan(inner) => {
+            let new_rhs = arena.tan(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // ── Inverse hyperbolic peeling ────────────────────────────
+        // sinh(f(x)) = rhs → f(x) = asinh(rhs)
+        ExprNode::Sinh(inner) => {
+            let new_rhs = arena.asinh(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // cosh(f(x)) = rhs → f(x) = acosh(rhs) (principal branch only)
+        ExprNode::Cosh(inner) => {
+            let new_rhs = arena.acosh(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // tanh(f(x)) = rhs → f(x) = atanh(rhs)
+        ExprNode::Tanh(inner) => {
+            let new_rhs = arena.atanh(rhs);
+            solve_by_peeling(arena, inner, new_rhs, var)
+        }
+        // ── Abs peeling ───────────────────────────────────────────
+        // |f(x)| = rhs → f(x) = rhs OR f(x) = -rhs (when rhs ≥ 0)
+        ExprNode::Abs(inner) => {
+            // |f(x)| = negative has no solutions
+            if let Some(r) = arena.as_num(rhs) {
+                if r.is_negative() {
+                    return Some(vec![]);
+                }
+            }
+            let neg_rhs = arena.neg(rhs);
+            let mut solutions = Vec::new();
+            if let Some(pos_sols) = solve_by_peeling(arena, inner, rhs, var) {
+                solutions.extend(pos_sols);
+            }
+            if let Some(neg_sols) = solve_by_peeling(arena, inner, neg_rhs, var) {
+                for sol in neg_sols {
+                    if !solutions.iter().any(|s| s.value == sol.value) {
+                        solutions.push(sol);
+                    }
+                }
+            }
+            if solutions.is_empty() { None } else { Some(solutions) }
         }
         _ => None,
     }

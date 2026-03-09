@@ -264,3 +264,189 @@ fn equation_solve_then_verify() {
         "roots should be 2 and 4, got: {root_strs:?}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Exponential equations: a^x = c
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn solve_2_pow_x_eq_8() {
+    // 2^x = 8 → x = 3
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = &ctx.int(2).pow(&x) - 8;
+    let roots = expr.solve_or_empty(&x);
+    assert!(
+        !roots.is_empty(),
+        "2^x - 8 = 0 should have solutions, got empty"
+    );
+    let root_strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+    assert!(
+        root_strs.contains(&"3".to_string()),
+        "2^x = 8 should give x = 3, got: {root_strs:?}"
+    );
+}
+
+#[test]
+fn solve_3_pow_x_eq_81() {
+    // 3^x = 81 → x = 4
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = &ctx.int(3).pow(&x) - 81;
+    let roots = expr.solve_or_empty(&x);
+    let root_strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+    assert!(
+        root_strs.contains(&"4".to_string()),
+        "3^x = 81 should give x = 4, got: {root_strs:?}"
+    );
+}
+
+#[test]
+fn solve_10_pow_x_eq_1000() {
+    // 10^x = 1000 → x = 3
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = &ctx.int(10).pow(&x) - 1000;
+    let roots = expr.solve_or_empty(&x);
+    let root_strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+    assert!(
+        root_strs.contains(&"3".to_string()),
+        "10^x = 1000 should give x = 3, got: {root_strs:?}"
+    );
+}
+
+#[test]
+fn solve_2_pow_x_eq_5_general() {
+    // 2^x = 5 → x = ln(5)/ln(2) (no integer shortcut)
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = &ctx.int(2).pow(&x) - 5;
+    let roots = expr.solve_or_empty(&x);
+    assert!(
+        !roots.is_empty(),
+        "2^x = 5 should have a solution"
+    );
+    // Verify numerically: x ≈ 2.32193
+    if let Ok(v) = roots[0].eval_f64() {
+        let expected = 5.0_f64.ln() / 2.0_f64.ln();
+        assert!(
+            (v - expected).abs() < 1e-8,
+            "2^x = 5: root should be ≈ {expected:.6}, got {v:.6}"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Inverse trig peeling
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn solve_asin_x_eq_value() {
+    // asin(x) = π/6 → x = sin(π/6) = 1/2
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let pi_over_6 = &ctx.pi() / 6;
+    let expr = &x.asin() - &pi_over_6;
+    let roots = expr.solve_or_empty(&x);
+    assert!(
+        !roots.is_empty(),
+        "asin(x) = π/6 should have a solution"
+    );
+    // sin(π/6) = 1/2
+    if let Ok(v) = roots[0].eval_f64() {
+        assert!(
+            (v - 0.5).abs() < 1e-8,
+            "asin(x) = π/6: root should be 0.5, got {v}"
+        );
+    }
+}
+
+#[test]
+fn solve_atan_x_eq_value() {
+    // atan(x) = π/4 → x = tan(π/4) = 1
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let pi_over_4 = &ctx.pi() / 4;
+    let expr = &x.atan() - &pi_over_4;
+    let roots = expr.solve_or_empty(&x);
+    assert!(
+        !roots.is_empty(),
+        "atan(x) = π/4 should have a solution"
+    );
+    if let Ok(v) = roots[0].eval_f64() {
+        assert!(
+            (v - 1.0).abs() < 1e-8,
+            "atan(x) = π/4: root should be 1.0, got {v}"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Inverse hyperbolic peeling
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn solve_sinh_x_eq_zero() {
+    // sinh(x) = 0 → x = asinh(0) = 0
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = x.sinh();
+    let roots = expr.solve_or_empty(&x);
+    assert!(
+        !roots.is_empty(),
+        "sinh(x) = 0 should have a solution"
+    );
+    // The solver returns asinh(0) which evaluates numerically to 0
+    if let Ok(v) = roots[0].eval_f64() {
+        assert!(
+            v.abs() < 1e-10,
+            "sinh(x) = 0: root should be ≈ 0, got {v}"
+        );
+    } else {
+        // If eval_f64 fails, check if simplify/eval produces 0
+        let simplified = roots[0].eval();
+        let s = format!("{simplified}");
+        assert!(
+            s == "0" || s == "asinh(0)",
+            "sinh(x) = 0 should give x = 0 or asinh(0), got: {s}"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Abs peeling
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn solve_abs_x_eq_5() {
+    // |x| = 5 → x = 5 or x = -5
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = &x.abs() - 5;
+    let roots = expr.solve_or_empty(&x);
+    assert!(
+        roots.len() >= 2,
+        "|x| = 5 should have two solutions, got {}: {:?}",
+        roots.len(),
+        roots.iter().map(|r| format!("{r}")).collect::<Vec<_>>()
+    );
+    let root_strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
+    assert!(
+        root_strs.contains(&"5".to_string()) && root_strs.contains(&"-5".to_string()),
+        "|x| = 5 should give x = 5 and x = -5, got: {root_strs:?}"
+    );
+}
+
+#[test]
+fn solve_abs_x_eq_negative_empty() {
+    // |x| = -3 → no solutions
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let expr = &x.abs() + 3; // |x| + 3 = 0 → |x| = -3
+    let roots = expr.solve_or_empty(&x);
+    assert!(
+        roots.is_empty(),
+        "|x| = -3 should have no solutions, got: {:?}",
+        roots.iter().map(|r| format!("{r}")).collect::<Vec<_>>()
+    );
+}
