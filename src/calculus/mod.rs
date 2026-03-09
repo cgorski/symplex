@@ -12,3 +12,4 @@ pub mod finite_diff;
 pub(crate) mod convergence;
 pub(crate) mod residue;
 pub(crate) mod calculus_util;
+pub mod risch;

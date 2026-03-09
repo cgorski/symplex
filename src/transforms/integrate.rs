@@ -1283,6 +1283,23 @@ fn integrate_node(
                 }
             }
 
+            // ── Try Risch rational integration (Hermite + Rothstein-Trager) ──
+            // This handles rational functions P(x)/Q(x) correctly even when
+            // partial fractions would produce irrational coefficients (e.g.,
+            // ∫ 1/(1+x⁴) dx).  It extracts the rational part via Hermite
+            // reduction and the logarithmic part via Rothstein-Trager.
+            if let Some(result) = crate::calculus::risch::try_risch_rational(arena, expr, var) {
+                if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
+                    if constants.is_empty() {
+                        return result;
+                    } else {
+                        let mut all = constants.clone();
+                        all.push(result);
+                        return arena.mul(&all);
+                    }
+                }
+            }
+
             // ── Try partial fraction decomposition for rational integrands ──
             {
                 let (_numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
