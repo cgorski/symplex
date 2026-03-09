@@ -193,7 +193,7 @@ fn inverse_laplace_completing_square_underdamped() {
     // L⁻¹ = (1/2) · exp(-t) · sin(2t)
     let denom = &s.powi(2) + &s * 2 + 5;
     let f_s = 1 / &denom;
-    let result = f_s.inverse_laplace(&s, &t).unwrap();
+    let result = f_s.inverse_laplace(&s, &t);
     let s_repr = format!("{result}");
     // Should contain exp and sin
     assert!(
@@ -213,7 +213,7 @@ fn inverse_laplace_completing_square_overdamped() {
     // L⁻¹ = (1/2) · exp(-t) · sinh(2t)
     let denom = &s.powi(2) + &s * 2 - 3;
     let f_s = 1 / &denom;
-    let result = f_s.inverse_laplace(&s, &t).unwrap();
+    let result = f_s.inverse_laplace(&s, &t);
     let s_repr = format!("{result}");
     // Should produce a result containing exp (may use sinh or partial fractions)
     assert!(

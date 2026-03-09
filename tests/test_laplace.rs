@@ -37,7 +37,7 @@ fn laplace_constant() {
     let t = symplex::default_context().symbol("t");
     let s = symplex::default_context().symbol("s");
     let f = symplex::default_context().int(5);
-    let result = f.laplace(&t, &s).unwrap();
+    let result = f.laplace(&t, &s);
     let d = format!("{result}");
     // L{5} = 5/s — displayed as 5*s^(-1) or similar
     assert!(
@@ -53,7 +53,7 @@ fn laplace_one() {
     let t = symplex::default_context().symbol("t");
     let s = symplex::default_context().symbol("s");
     let f = symplex::default_context().int(1);
-    let result = f.laplace(&t, &s).unwrap();
+    let result = f.laplace(&t, &s);
     let d = format!("{result}");
     // L{1} = 1/s
     assert!(d.contains("s"), "L{{1}} should be 1/s, got: {d}");
@@ -67,7 +67,7 @@ fn laplace_exp() {
     let s = symplex::default_context().symbol("s");
     // L{exp(2t)} = 1/(s-2)
     let f = (&t * 2).exp();
-    let result = f.laplace(&t, &s).unwrap();
+    let result = f.laplace(&t, &s);
     let d = format!("{result}");
     // Should contain (s - 2) in denominator
     assert!(
@@ -84,7 +84,7 @@ fn laplace_exp_negative() {
     let s = symplex::default_context().symbol("s");
     // L{exp(-3t)} = 1/(s+3)
     let f = (&t * -3).exp();
-    let result = f.laplace(&t, &s).unwrap();
+    let result = f.laplace(&t, &s);
     let d = format!("{result}");
     assert!(
         d.contains("s") && d.contains("3"),
@@ -100,7 +100,7 @@ fn laplace_sin() {
     let s = symplex::default_context().symbol("s");
     // L{sin(3t)} = 3/(s²+9)
     let f = (&t * 3).sin();
-    let result = f.laplace(&t, &s).unwrap();
+    let result = f.laplace(&t, &s);
     let d = format!("{result}");
     assert!(
         d.contains("3") && d.contains("s"),
@@ -116,7 +116,7 @@ fn laplace_cos() {
     let s = symplex::default_context().symbol("s");
     // L{cos(t)} = s/(s²+1)
     let f = t.cos();
-    let result = f.laplace(&t, &s).unwrap();
+    let result = f.laplace(&t, &s);
     let d = format!("{result}");
     assert!(d.contains("s"), "L{{cos(t)}} should involve s, got: {d}");
     // Numerical: at s=2, 2/(4+1) = 2/5 = 0.4
@@ -129,7 +129,7 @@ fn laplace_t_squared() {
     let s = symplex::default_context().symbol("s");
     // L{t²} = 2/s³ = 2*s^(-3)
     let f = t.powi(2);
-    let result = f.laplace(&t, &s).unwrap();
+    let result = f.laplace(&t, &s);
     let d = format!("{result}");
     assert!(
         d.contains("2") && d.contains("s"),
@@ -147,9 +147,7 @@ fn laplace_linearity() {
     let term1 = &t.exp() * 3;
     let term2 = &t.sin() * 2;
     let f = &term1 + &term2;
-    let result = f.laplace(&t, &s);
-    assert!(result.is_ok(), "linearity should work: {:?}", result.err());
-    let r = result.unwrap();
+    let r = f.laplace(&t, &s);
     let d = format!("{r}");
     assert!(d.contains("s"), "result should contain s, got: {d}");
     // Numerical: at s=4, 3/(4-1) + 2/(16+1) = 1 + 2/17 ≈ 1.1176
@@ -169,13 +167,7 @@ fn laplace_freq_shift() {
     let s = symplex::default_context().symbol("s");
     // L{exp(2t)*sin(3t)} = 3/((s-2)²+9) via frequency shift
     let f = &((&t * 2).exp()) * &((&t * 3).sin());
-    let result = f.laplace(&t, &s);
-    assert!(
-        result.is_ok(),
-        "frequency shift should work: {:?}",
-        result.err()
-    );
-    let r = result.unwrap();
+    let r = f.laplace(&t, &s);
     let d = format!("{r}");
     assert!(
         d.contains("s") && d.contains("3"),
@@ -191,7 +183,7 @@ fn laplace_sinh() {
     let s = symplex::default_context().symbol("s");
     // L{sinh(2t)} = 2/(s²-4)
     let f = (&t * 2).sinh();
-    let result = f.laplace(&t, &s).unwrap();
+    let result = f.laplace(&t, &s);
     let d = format!("{result}");
     assert!(
         d.contains("s") && d.contains("2"),
@@ -207,7 +199,7 @@ fn laplace_cosh() {
     let s = symplex::default_context().symbol("s");
     // L{cosh(t)} = s/(s²-1)
     let f = t.cosh();
-    let result = f.laplace(&t, &s).unwrap();
+    let result = f.laplace(&t, &s);
     let d = format!("{result}");
     assert!(d.contains("s"), "L{{cosh(t)}} should involve s, got: {d}");
     // Numerical: at s=3, 3/(9-1) = 3/8 = 0.375
@@ -224,9 +216,7 @@ fn inverse_laplace_1_over_s() {
     let s = symplex::default_context().symbol("s");
     // L⁻¹{1/s} = 1
     let f = &symplex::default_context().int(1) / &s;
-    let result = f
-        .inverse_laplace(&s, &t)
-        .expect("L⁻¹{1/s} should succeed");
+    let result = f.inverse_laplace(&s, &t);
     let d = format!("{result}");
     // The result should be 1 (no t dependence)
     assert!(
@@ -241,9 +231,7 @@ fn inverse_laplace_1_over_s_minus_a() {
     let s = symplex::default_context().symbol("s");
     // L⁻¹{1/(s-2)} = exp(2t)
     let f = &symplex::default_context().int(1) / &(&s - 2);
-    let r = f
-        .inverse_laplace(&s, &t)
-        .expect("L⁻¹{1/(s-2)} should succeed");
+    let r = f.inverse_laplace(&s, &t);
     let d = format!("{r}");
     assert!(
         d.contains("exp"),
@@ -257,9 +245,7 @@ fn inverse_laplace_constant_over_s() {
     let s = symplex::default_context().symbol("s");
     // L⁻¹{5/s} = 5
     let f = &symplex::default_context().int(5) / &s;
-    let result = f
-        .inverse_laplace(&s, &t)
-        .expect("L⁻¹{5/s} should succeed");
+    let result = f.inverse_laplace(&s, &t);
     let d = format!("{result}");
     assert!(d.contains("5"), "L⁻¹{{5/s}} should be 5, got: {d}");
 }
@@ -270,7 +256,7 @@ fn laplace_rejects_non_symbol_t() {
     let f = symplex::default_context().int(1);
     let bad_t = symplex::default_context().int(42); // not a symbol
     let result = f.laplace(&bad_t, &s);
-    assert!(result.is_err(), "should reject non-symbol t");
+    assert!(result.has_unevaluated(), "should produce unevaluated node for non-symbol t");
 }
 
 #[test]
@@ -279,5 +265,5 @@ fn laplace_rejects_non_symbol_s() {
     let f = symplex::default_context().int(1);
     let bad_s = symplex::default_context().int(42); // not a symbol
     let result = f.laplace(&t, &bad_s);
-    assert!(result.is_err(), "should reject non-symbol s");
+    assert!(result.has_unevaluated(), "should produce unevaluated node for non-symbol s");
 }

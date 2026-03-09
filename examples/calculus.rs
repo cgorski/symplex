@@ -251,24 +251,20 @@ fn main() {
     symplex::syms!(__ctx; t, s);
 
     // L{1} = 1/s
-    if let Ok(result) = symplex::default_context().int(1).laplace(&t, &s) {
-        println!("L{{1}} = {result}");
-    }
+    let result = symplex::default_context().int(1).laplace(&t, &s);
+    println!("L{{1}} = {result}");
 
     // L{exp(2t)} = 1/(s-2)
-    if let Ok(result) = (&t * 2).exp().laplace(&t, &s) {
-        println!("L{{exp(2t)}} = {result}");
-    }
+    let result = (&t * 2).exp().laplace(&t, &s);
+    println!("L{{exp(2t)}} = {result}");
 
     // L{sin(t)} = 1/(s²+1)
-    if let Ok(result) = t.sin().laplace(&t, &s) {
-        println!("L{{sin(t)}} = {result}");
-    }
+    let result = t.sin().laplace(&t, &s);
+    println!("L{{sin(t)}} = {result}");
 
     // Inverse Laplace: L⁻¹{1/s} = 1
-    if let Ok(result) = (1 / &s).inverse_laplace(&s, &t) {
-        println!("L⁻¹{{1/s}} = {result}");
-    }
+    let result = (1 / &s).inverse_laplace(&s, &t);
+    println!("L⁻¹{{1/s}} = {result}");
 
     // ── 22. Code generation for derivatives ────────────────────────────
     println!("\n--- Code Generation ---");

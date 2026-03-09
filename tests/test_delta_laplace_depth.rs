@@ -106,18 +106,15 @@ fn laplace_time_shift_heaviside_exp() {
     let integrand = &h * &f;
     let result = integrand.laplace(&t, &s);
     assert!(
-        result.is_ok(),
-        "time-shift for H(t-2)*exp(t) should succeed: {:?}",
-        result.err()
+        !result.has_unevaluated(),
+        "time-shift for H(t-2)*exp(t) should succeed, got: {result}"
     );
-    if let Ok(ref r) = result {
-        let d = format!("{r}");
-        // Should contain exp (for the exp(-2s) factor)
-        assert!(
-            d.contains("exp") || d.contains("e"),
-            "time-shift result should contain exponential: {d}"
-        );
-    }
+    let d = format!("{result}");
+    // Should contain exp (for the exp(-2s) factor)
+    assert!(
+        d.contains("exp") || d.contains("e"),
+        "time-shift result should contain exponential: {d}"
+    );
 }
 
 #[test]
@@ -131,9 +128,8 @@ fn laplace_time_shift_heaviside_t() {
     let integrand = &h * &t;
     let result = integrand.laplace(&t, &s);
     assert!(
-        result.is_ok(),
-        "time-shift for H(t-1)*t should succeed: {:?}",
-        result.err()
+        !result.has_unevaluated(),
+        "time-shift for H(t-1)*t should succeed, got: {result}"
     );
 }
 
@@ -149,17 +145,14 @@ fn laplace_t_times_exp_t() {
     let integrand = &t * &t.exp();
     let result = integrand.laplace(&t, &s);
     assert!(
-        result.is_ok(),
-        "L{{t*exp(t)}} should succeed: {:?}",
-        result.err()
+        !result.has_unevaluated(),
+        "L{{t*exp(t)}} should succeed, got: {result}"
     );
-    if let Ok(ref r) = result {
-        let d = format!("{r}");
-        // Should involve (s-1) in some form
-        assert!(d.contains("s"), "result should be a function of s: {d}");
-        // Numerical verification: at s=3, 1/(3-1)² = 1/4 = 0.25
-        verify_laplace_numerically(r, &s, 3, 1, 0.25, "L{t*exp(t)}");
-    }
+    let d = format!("{result}");
+    // Should involve (s-1) in some form
+    assert!(d.contains("s"), "result should be a function of s: {d}");
+    // Numerical verification: at s=3, 1/(3-1)² = 1/4 = 0.25
+    verify_laplace_numerically(&result, &s, 3, 1, 0.25, "L{t*exp(t)}");
 }
 
 #[test]
@@ -170,16 +163,13 @@ fn laplace_t_times_sin_t() {
     let integrand = &t * &t.sin();
     let result = integrand.laplace(&t, &s);
     assert!(
-        result.is_ok(),
-        "L{{t*sin(t)}} should succeed: {:?}",
-        result.err()
+        !result.has_unevaluated(),
+        "L{{t*sin(t)}} should succeed, got: {result}"
     );
-    if let Ok(ref r) = result {
-        let d = format!("{r}");
-        assert!(d.contains("s"), "result should be a function of s: {d}");
-        // Numerical verification: at s=2, 2*2/(4+1)² = 4/25 = 0.16
-        verify_laplace_numerically(r, &s, 2, 1, 0.16, "L{t*sin(t)}");
-    }
+    let d = format!("{result}");
+    assert!(d.contains("s"), "result should be a function of s: {d}");
+    // Numerical verification: at s=2, 2*2/(4+1)² = 4/25 = 0.16
+    verify_laplace_numerically(&result, &s, 2, 1, 0.16, "L{t*sin(t)}");
 }
 
 #[test]
@@ -190,14 +180,11 @@ fn laplace_t_times_cos_t() {
     let integrand = &t * &t.cos();
     let result = integrand.laplace(&t, &s);
     assert!(
-        result.is_ok(),
-        "L{{t*cos(t)}} should succeed: {:?}",
-        result.err()
+        !result.has_unevaluated(),
+        "L{{t*cos(t)}} should succeed, got: {result}"
     );
-    if let Ok(ref r) = result {
-        let d = format!("{r}");
-        assert!(d.contains("s"), "result should be a function of s: {d}");
-        // Numerical verification: at s=2, (4-1)/(4+1)² = 3/25 = 0.12
-        verify_laplace_numerically(r, &s, 2, 1, 0.12, "L{t*cos(t)}");
-    }
+    let d = format!("{result}");
+    assert!(d.contains("s"), "result should be a function of s: {d}");
+    // Numerical verification: at s=2, (4-1)/(4+1)² = 3/25 = 0.12
+    verify_laplace_numerically(&result, &s, 2, 1, 0.12, "L{t*cos(t)}");
 }

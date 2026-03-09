@@ -1536,6 +1536,9 @@ impl Expr<Numeric> {
     /// exponentials, trigonometric and hyperbolic functions, plus linearity
     /// and the frequency-shift property.
     ///
+    /// If the transform cannot be computed, returns a formal
+    /// `LaplaceTransform(…)` node (check with [`has_unevaluated`](Self::has_unevaluated)).
+    ///
     /// # Examples
     ///
     /// ```
@@ -1545,19 +1548,41 @@ impl Expr<Numeric> {
     /// let t = ctx.symbol("t");
     /// let s = ctx.symbol("s");
     /// // L{exp(2t)} = 1/(s-2)
-    /// let result = (&t * 2).exp().laplace(&t, &s).unwrap();
+    /// let result = (&t * 2).exp().laplace(&t, &s);
     /// ```
     #[must_use = "returns the Laplace transform; does not modify in place"]
-    pub fn laplace(&self, t: &Ex, s: &Ex) -> Result<Ex, SymplexError> {
+    pub fn laplace(&self, t: &Ex, s: &Ex) -> Ex {
         let t_id = self.checked_id(t);
         let s_id = self.checked_id(s);
         let _span = debug_span!("laplace", expr = ?self.raw_id(), t = ?t_id, s = ?s_id).entered();
-        let id = self
-            .inner
-            .write()
-            .arena
-            .laplace_transform_expr(self.raw_id(), t_id, s_id)?;
-        Ok(self.wrap(id))
+        let mut inner = self.inner.write();
+        match inner.arena.laplace_transform_expr(self.raw_id(), t_id, s_id) {
+            Ok(id) => {
+                drop(inner);
+                self.wrap(id)
+            }
+            Err(_) => {
+                let id = inner.arena.intern(
+                    crate::base::node::ExprNode::LaplaceTransform(self.raw_id(), t_id, s_id),
+                );
+                drop(inner);
+                self.wrap(id)
+            }
+        }
+    }
+
+    /// Like [`laplace`](Self::laplace), but returns `Err` if the result
+    /// contains unevaluated forms (e.g. a formal `LaplaceTransform` node).
+    pub fn try_laplace(&self, t: &Ex, s: &Ex) -> Result<Ex, SymplexError> {
+        let result = self.laplace(t, s);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "laplace",
+                reason: "could not compute Laplace transform".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Compute the inverse Laplace transform L⁻¹{self}(t) with respect to
@@ -1565,6 +1590,9 @@ impl Expr<Numeric> {
     ///
     /// Uses partial fraction decomposition followed by table lookup for
     /// each term.
+    ///
+    /// If the transform cannot be computed, returns a formal
+    /// `InverseLaplaceTransform(…)` node (check with [`has_unevaluated`](Self::has_unevaluated)).
     ///
     /// # Examples
     ///
@@ -1575,19 +1603,42 @@ impl Expr<Numeric> {
     /// let t = ctx.symbol("t");
     /// let s = ctx.symbol("s");
     /// // L⁻¹{1/s} = 1
-    /// let result = (&ctx.int(1) / &s).inverse_laplace(&s, &t).unwrap();
+    /// let result = (&ctx.int(1) / &s).inverse_laplace(&s, &t);
     /// ```
     #[must_use = "returns the inverse Laplace transform; does not modify in place"]
-    pub fn inverse_laplace(&self, s: &Ex, t: &Ex) -> Result<Ex, SymplexError> {
+    pub fn inverse_laplace(&self, s: &Ex, t: &Ex) -> Ex {
         let s_id = self.checked_id(s);
         let t_id = self.checked_id(t);
         let _span = debug_span!("inverse_laplace", expr = ?self.raw_id(), s = ?s_id, t = ?t_id).entered();
-        let id = self
-            .inner
-            .write()
-            .arena
-            .inverse_laplace_transform_expr(self.raw_id(), s_id, t_id)?;
-        Ok(self.wrap(id))
+        let mut inner = self.inner.write();
+        match inner.arena.inverse_laplace_transform_expr(self.raw_id(), s_id, t_id) {
+            Ok(id) => {
+                drop(inner);
+                self.wrap(id)
+            }
+            Err(_) => {
+                let id = inner.arena.intern(
+                    crate::base::node::ExprNode::InverseLaplaceTransform(self.raw_id(), s_id, t_id),
+                );
+                drop(inner);
+                self.wrap(id)
+            }
+        }
+    }
+
+    /// Like [`inverse_laplace`](Self::inverse_laplace), but returns `Err` if
+    /// the result contains unevaluated forms (e.g. a formal
+    /// `InverseLaplaceTransform` node).
+    pub fn try_inverse_laplace(&self, s: &Ex, t: &Ex) -> Result<Ex, SymplexError> {
+        let result = self.inverse_laplace(s, t);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "inverse_laplace",
+                reason: "could not compute inverse Laplace transform".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Compute the limit of this expression as `var` approaches `point`.

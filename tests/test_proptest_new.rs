@@ -21,8 +21,14 @@ proptest! {
 
         let mut bail = common::BailCounter::new("laplace_roundtrip");
 
-        if let Ok(transformed) = expr.laplace(&t, &s) {
-            if let Ok(recovered) = transformed.inverse_laplace(&s, &t) {
+        let transformed = expr.laplace(&t, &s);
+        if transformed.has_unevaluated() {
+            bail.skip();
+        } else {
+            let recovered = transformed.inverse_laplace(&s, &t);
+            if recovered.has_unevaluated() {
+                bail.skip();
+            } else {
                 // Evaluate both at t=0.5
                 let test_point = symplex::default_context().rational(1, 2);
                 let orig_val = expr.subs(&t, &test_point).eval_f64();
@@ -39,11 +45,7 @@ proptest! {
                 } else {
                     bail.skip();
                 }
-            } else {
-                bail.skip();
             }
-        } else {
-            bail.skip();
         }
         bail.assert_not_vacuous();
     }

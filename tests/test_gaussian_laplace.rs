@@ -197,10 +197,10 @@ fn laplace_derivative_of_sin() {
     let s = ctx.symbol("s");
 
     let df = t.sin().formal_diff(&t);
-    let result = df.laplace(&t, &s).unwrap();
+    let result = df.laplace(&t, &s);
 
     // Compare numerically with L{cos(t)} = s/(s²+1)
-    let cos_transform = t.cos().laplace(&t, &s).unwrap();
+    let cos_transform = t.cos().laplace(&t, &s);
     let test_s = ctx.int(3);
     let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
     let v2 = cos_transform.subs(&s, &test_s).eval_f64().unwrap();
@@ -221,10 +221,10 @@ fn laplace_derivative_of_exp() {
 
     let f = (&t * 2).exp();
     let df = f.formal_diff(&t);
-    let result = df.laplace(&t, &s).unwrap();
+    let result = df.laplace(&t, &s);
 
     // Direct: L{2·exp(2t)} = 2/(s−2)
-    let direct = (&f * 2).laplace(&t, &s).unwrap();
+    let direct = (&f * 2).laplace(&t, &s);
 
     let test_s = ctx.int(5);
     let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
@@ -245,9 +245,9 @@ fn laplace_derivative_of_t() {
     let s = ctx.symbol("s");
 
     let df = t.formal_diff(&t);
-    let result = df.laplace(&t, &s).unwrap();
+    let result = df.laplace(&t, &s);
 
-    let one_transform = ctx.int(1).laplace(&t, &s).unwrap();
+    let one_transform = ctx.int(1).laplace(&t, &s);
 
     let test_s = ctx.int(4);
     let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
@@ -267,9 +267,9 @@ fn laplace_constant_times_derivative() {
 
     let df = t.sin().formal_diff(&t);
     let three_df = &df * 3;
-    let result = three_df.laplace(&t, &s).unwrap();
+    let result = three_df.laplace(&t, &s);
 
-    let expected = &t.cos().laplace(&t, &s).unwrap() * 3;
+    let expected = &t.cos().laplace(&t, &s) * 3;
 
     let test_s = ctx.int(2);
     let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
@@ -290,10 +290,10 @@ fn laplace_derivative_of_t_squared() {
     let s = ctx.symbol("s");
 
     let df = t.powi(2).formal_diff(&t);
-    let result = df.laplace(&t, &s).unwrap();
+    let result = df.laplace(&t, &s);
 
     // Direct: L{2t} = 2·L{t} = 2/s²
-    let direct = (&t * 2).laplace(&t, &s).unwrap();
+    let direct = (&t * 2).laplace(&t, &s);
 
     let test_s = ctx.int(3);
     let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
@@ -315,10 +315,10 @@ fn laplace_derivative_of_cos() {
     let s = ctx.symbol("s");
 
     let df = t.cos().formal_diff(&t);
-    let result = df.laplace(&t, &s).unwrap();
+    let result = df.laplace(&t, &s);
 
     // Direct: L{-sin(t)} = -1/(s²+1)
-    let neg_sin_transform = (&t.sin() * -1).laplace(&t, &s).unwrap();
+    let neg_sin_transform = (&t.sin() * -1).laplace(&t, &s);
 
     let test_s = ctx.int(2);
     let v1 = result.subs(&s, &test_s).eval_f64().unwrap();
@@ -338,9 +338,9 @@ fn laplace_neg_derivative() {
 
     let df = t.sin().formal_diff(&t);
     let neg_df = &df * -1;
-    let result = neg_df.laplace(&t, &s).unwrap();
+    let result = neg_df.laplace(&t, &s);
 
-    let expected = &t.cos().laplace(&t, &s).unwrap() * -1;
+    let expected = &t.cos().laplace(&t, &s) * -1;
 
     let test_s = ctx.int(5);
     let v1 = result.subs(&s, &test_s).eval_f64().unwrap();

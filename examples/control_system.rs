@@ -309,38 +309,31 @@ fn main() {
     println!("G(s) = {gs}");
 
     // Inverse Laplace to get impulse response h(t)
-    match gs.inverse_laplace(&s, &t) {
-        Ok(ht) => println!("h(t) = L⁻¹{{G(s)}} = {ht}"),
-        Err(e) => println!("Inverse Laplace failed: {e}"),
-    }
+    let ht = gs.inverse_laplace(&s, &t);
+    println!("h(t) = L⁻¹{{G(s)}} = {ht}");
 
     // Forward Laplace of some common signals
     println!("\nCommon Laplace pairs:");
 
     // L{1} = 1/s
-    if let Ok(result) = symplex::default_context().int(1).laplace(&t, &s) {
-        println!("  L{{1}} = {result}");
-    }
+    let result = symplex::default_context().int(1).laplace(&t, &s);
+    println!("  L{{1}} = {result}");
 
     // L{t} = 1/s²
-    if let Ok(result) = t.laplace(&t, &s) {
-        println!("  L{{t}} = {result}");
-    }
+    let result = t.laplace(&t, &s);
+    println!("  L{{t}} = {result}");
 
     // L{exp(-3t)} = 1/(s+3)
-    if let Ok(result) = (-&t * 3).exp().laplace(&t, &s) {
-        println!("  L{{exp(-3t)}} = {result}");
-    }
+    let result = (-&t * 3).exp().laplace(&t, &s);
+    println!("  L{{exp(-3t)}} = {result}");
 
     // L{sin(2t)} = 2/(s²+4)
-    if let Ok(result) = (&t * 2).sin().laplace(&t, &s) {
-        println!("  L{{sin(2t)}} = {result}");
-    }
+    let result = (&t * 2).sin().laplace(&t, &s);
+    println!("  L{{sin(2t)}} = {result}");
 
     // L{cos(2t)} = s/(s²+4)
-    if let Ok(result) = (&t * 2).cos().laplace(&t, &s) {
-        println!("  L{{cos(2t)}} = {result}");
-    }
+    let result = (&t * 2).cos().laplace(&t, &s);
+    println!("  L{{cos(2t)}} = {result}");
 
     // ── Evaluate transfer function at specific frequency ───────────
     println!("\n--- Frequency Response ---");

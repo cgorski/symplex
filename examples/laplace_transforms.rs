@@ -32,59 +32,41 @@ fn main() {
     println!("--- Forward Laplace Transforms ---\n");
 
     // L{1} = 1/s
-    match symplex::default_context().int(1).laplace(&t, &s) {
-        Ok(result) => println!("L{{1}}       = {result}"),
-        Err(e) => println!("L{{1}}       failed: {e}"),
-    }
+    let result = symplex::default_context().int(1).laplace(&t, &s);
+    println!("L{{1}}       = {result}");
 
     // L{t} = 1/s²
-    match t.laplace(&t, &s) {
-        Ok(result) => println!("L{{t}}       = {result}"),
-        Err(e) => println!("L{{t}}       failed: {e}"),
-    }
+    let result = t.laplace(&t, &s);
+    println!("L{{t}}       = {result}");
 
     // L{t²} = 2/s³
-    match t.powi(2).laplace(&t, &s) {
-        Ok(result) => println!("L{{t²}}      = {result}"),
-        Err(e) => println!("L{{t²}}      failed: {e}"),
-    }
+    let result = t.powi(2).laplace(&t, &s);
+    println!("L{{t²}}      = {result}");
 
     // L{exp(at)} = 1/(s-a)
     // L{exp(2t)} = 1/(s-2)
-    match (&t * 2).exp().laplace(&t, &s) {
-        Ok(result) => println!("L{{e^(2t)}}  = {result}"),
-        Err(e) => println!("L{{e^(2t)}}  failed: {e}"),
-    }
+    let result = (&t * 2).exp().laplace(&t, &s);
+    println!("L{{e^(2t)}}  = {result}");
 
     // L{exp(-3t)} = 1/(s+3)
-    match (-&t * 3).exp().laplace(&t, &s) {
-        Ok(result) => println!("L{{e^(-3t)}} = {result}"),
-        Err(e) => println!("L{{e^(-3t)}} failed: {e}"),
-    }
+    let result = (-&t * 3).exp().laplace(&t, &s);
+    println!("L{{e^(-3t)}} = {result}");
 
     // L{sin(t)} = 1/(s²+1)
-    match t.sin().laplace(&t, &s) {
-        Ok(result) => println!("L{{sin(t)}}  = {result}"),
-        Err(e) => println!("L{{sin(t)}}  failed: {e}"),
-    }
+    let result = t.sin().laplace(&t, &s);
+    println!("L{{sin(t)}}  = {result}");
 
     // L{cos(t)} = s/(s²+1)
-    match t.cos().laplace(&t, &s) {
-        Ok(result) => println!("L{{cos(t)}}  = {result}"),
-        Err(e) => println!("L{{cos(t)}}  failed: {e}"),
-    }
+    let result = t.cos().laplace(&t, &s);
+    println!("L{{cos(t)}}  = {result}");
 
     // L{sin(3t)} = 3/(s²+9)
-    match (&t * 3).sin().laplace(&t, &s) {
-        Ok(result) => println!("L{{sin(3t)}} = {result}"),
-        Err(e) => println!("L{{sin(3t)}} failed: {e}"),
-    }
+    let result = (&t * 3).sin().laplace(&t, &s);
+    println!("L{{sin(3t)}} = {result}");
 
     // L{cos(3t)} = s/(s²+9)
-    match (&t * 3).cos().laplace(&t, &s) {
-        Ok(result) => println!("L{{cos(3t)}} = {result}"),
-        Err(e) => println!("L{{cos(3t)}} failed: {e}"),
-    }
+    let result = (&t * 3).cos().laplace(&t, &s);
+    println!("L{{cos(3t)}} = {result}");
 
     // ── Linearity: L{a·f + b·g} = a·L{f} + b·L{g} ────────────────
 
@@ -92,10 +74,8 @@ fn main() {
 
     // L{3·sin(t) + 2·cos(t)} should equal 3/(s²+1) + 2s/(s²+1)
     let combined = &(&t.sin() * 3) + &(&t.cos() * 2);
-    match combined.laplace(&t, &s) {
-        Ok(result) => println!("L{{3·sin(t) + 2·cos(t)}} = {result}"),
-        Err(e) => println!("L{{3·sin(t) + 2·cos(t)}} failed: {e}"),
-    }
+    let result = combined.laplace(&t, &s);
+    println!("L{{3·sin(t) + 2·cos(t)}} = {result}");
 
     // ════════════════════════════════════════════════════════════════
     // Part 2: Inverse Laplace Transform
@@ -109,45 +89,33 @@ fn main() {
 
     // L⁻¹{1/s} = 1
     let f1 = 1 / &s;
-    match f1.inverse_laplace(&s, &t) {
-        Ok(result) => println!("L⁻¹{{1/s}}       = {result}"),
-        Err(e) => println!("L⁻¹{{1/s}}       failed: {e}"),
-    }
+    let result = f1.inverse_laplace(&s, &t);
+    println!("L⁻¹{{1/s}}       = {result}");
 
     // L⁻¹{1/s²} = t
     let f2 = 1 / &s.powi(2);
-    match f2.inverse_laplace(&s, &t) {
-        Ok(result) => println!("L⁻¹{{1/s²}}      = {result}"),
-        Err(e) => println!("L⁻¹{{1/s²}}      failed: {e}"),
-    }
+    let result = f2.inverse_laplace(&s, &t);
+    println!("L⁻¹{{1/s²}}      = {result}");
 
     // L⁻¹{1/(s-2)} = exp(2t)
     let f3 = 1 / &(&s - 2);
-    match f3.inverse_laplace(&s, &t) {
-        Ok(result) => println!("L⁻¹{{1/(s-2)}}   = {result}"),
-        Err(e) => println!("L⁻¹{{1/(s-2)}}   failed: {e}"),
-    }
+    let result = f3.inverse_laplace(&s, &t);
+    println!("L⁻¹{{1/(s-2)}}   = {result}");
 
     // L⁻¹{1/(s+3)} = exp(-3t)
     let f4 = 1 / &(&s + 3);
-    match f4.inverse_laplace(&s, &t) {
-        Ok(result) => println!("L⁻¹{{1/(s+3)}}   = {result}"),
-        Err(e) => println!("L⁻¹{{1/(s+3)}}   failed: {e}"),
-    }
+    let result = f4.inverse_laplace(&s, &t);
+    println!("L⁻¹{{1/(s+3)}}   = {result}");
 
     // L⁻¹{s/(s²+1)} = cos(t)
     let f5 = &s / &(expr!(s ^ 2 + 1));
-    match f5.inverse_laplace(&s, &t) {
-        Ok(result) => println!("L⁻¹{{s/(s²+1)}}  = {result}"),
-        Err(e) => println!("L⁻¹{{s/(s²+1)}}  failed: {e}"),
-    }
+    let result = f5.inverse_laplace(&s, &t);
+    println!("L⁻¹{{s/(s²+1)}}  = {result}");
 
     // L⁻¹{1/(s²+1)} = sin(t)
     let f6 = 1 / &(expr!(s ^ 2 + 1));
-    match f6.inverse_laplace(&s, &t) {
-        Ok(result) => println!("L⁻¹{{1/(s²+1)}}  = {result}"),
-        Err(e) => println!("L⁻¹{{1/(s²+1)}}  failed: {e}"),
-    }
+    let result = f6.inverse_laplace(&s, &t);
+    println!("L⁻¹{{1/(s²+1)}}  = {result}");
 
     // ── Roundtrip verification: L⁻¹{L{f}} = f ─────────────────────
 
@@ -162,15 +130,17 @@ fn main() {
     ];
 
     for (name, f) in &test_functions {
-        match f.laplace(&t, &s) {
-            Ok(fs) => match fs.inverse_laplace(&s, &t) {
-                Ok(roundtrip) => {
-                    let simplified = roundtrip.simplify();
-                    println!("  L⁻¹{{L{{{name}}}}} = {simplified}");
-                }
-                Err(_) => println!("  L⁻¹{{L{{{name}}}}} — inverse failed"),
-            },
-            Err(_) => println!("  L{{{name}}} — forward failed"),
+        let fs = f.laplace(&t, &s);
+        if fs.has_unevaluated() {
+            println!("  L{{{name}}} — forward failed");
+        } else {
+            let roundtrip = fs.inverse_laplace(&s, &t);
+            if roundtrip.has_unevaluated() {
+                println!("  L⁻¹{{L{{{name}}}}} — inverse failed");
+            } else {
+                let simplified = roundtrip.simplify();
+                println!("  L⁻¹{{L{{{name}}}}} = {simplified}");
+            }
         }
     }
 
@@ -208,17 +178,13 @@ fn main() {
     // Impulse response: h(t) = L⁻¹{G(s)}
     let gs_expr = 1 / &(expr!(s ^ 2 + 3 * s + 4));
     println!("\n  G(s) as expression: {gs_expr}");
-    match gs_expr.inverse_laplace(&s, &t) {
-        Ok(ht) => println!("  Impulse response h(t) = {ht}"),
-        Err(e) => println!("  Impulse response failed: {e}"),
-    }
+    let ht = gs_expr.inverse_laplace(&s, &t);
+    println!("  Impulse response h(t) = {ht}");
 
     // Step response: L⁻¹{G(s)/s}
     let step_s = &gs_expr / &s;
-    match step_s.inverse_laplace(&s, &t) {
-        Ok(step_t) => println!("  Step response y(t) = {step_t}"),
-        Err(e) => println!("  Step response failed: {e}"),
-    }
+    let step_t = step_s.inverse_laplace(&s, &t);
+    println!("  Step response y(t) = {step_t}");
 
     // ── Series and feedback connections ─────────────────────────────
 
