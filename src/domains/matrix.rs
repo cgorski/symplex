@@ -844,6 +844,93 @@ impl Matrix {
         Ok(adj.scale(&one_over_det))
     }
 
+    // ── Linear system solving ──────────────────────────────────────────
+
+    /// Solve the linear system `Ax = b` where `self` is `A`.
+    ///
+    /// Uses Gauss-Jordan elimination on the augmented matrix `[A | b]`.
+    /// Returns the solution as a `Matrix` (column vector or multi-column
+    /// for multiple right-hand sides).
+    ///
+    /// Each solution entry is passed through `eval()` to clean up
+    /// trivial expressions (e.g., `0/1 → 0`).
+    ///
+    /// # Errors
+    ///
+    /// - If `A` is not square
+    /// - If `A` and `b` have different row counts
+    /// - If the system is singular (no unique solution)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = matrix![ctx, [2, 1], [1, 3]];
+    /// let b = matrix![ctx, [5], [10]];
+    /// let x = a.solve(&b).unwrap();
+    /// // x is the solution vector such that A*x = b
+    /// ```
+    pub fn solve(&self, b: &Matrix) -> Result<Matrix, SymplexError> {
+        let n = self.nrows();
+        if n != self.ncols() {
+            return Err(SymplexError::ComputationFailed {
+                operation: "solve",
+                reason: format!(
+                    "coefficient matrix must be square, got {}×{}",
+                    n,
+                    self.ncols()
+                ),
+            });
+        }
+        if b.nrows() != n {
+            return Err(SymplexError::ComputationFailed {
+                operation: "solve",
+                reason: format!(
+                    "row count mismatch: A is {}×{}, b has {} rows",
+                    n,
+                    self.ncols(),
+                    b.nrows()
+                ),
+            });
+        }
+
+        // Build augmented matrix [A | b]
+        let b_cols = b.ncols();
+        let mut aug_rows = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut row = self.rows[i].clone();
+            for j in 0..b_cols {
+                row.push(b.get(i, j).clone());
+            }
+            aug_rows.push(row);
+        }
+        let augmented = Matrix::new(aug_rows)?;
+
+        // RREF the augmented matrix
+        let (rref_mat, pivots) = augmented.rref();
+
+        // Check that we got n pivots, all in the left n columns
+        if pivots.len() != n || pivots.iter().any(|&p| p >= n) {
+            return Err(SymplexError::ComputationFailed {
+                operation: "solve",
+                reason: "matrix is singular; no unique solution exists".into(),
+            });
+        }
+
+        // Extract solution from the right b_cols columns and eval() each entry
+        let mut sol_rows = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut row = Vec::with_capacity(b_cols);
+            for j in n..(n + b_cols) {
+                row.push(rref_mat.get(i, j).eval());
+            }
+            sol_rows.push(row);
+        }
+        Matrix::new(sol_rows)
+    }
+
     // ── Characteristic polynomial & eigenvalues ────────────────────────
 
     /// Characteristic polynomial: det(A − λI).

@@ -629,3 +629,124 @@ fn eigenvals_3x3_upper_triangular() {
         "eigenvalues should be 1, 2, 3, got: {vals:?}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Matrix::solve() — linear system Ax = b
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn solve_2x2_numeric() {
+    // [ 2  1 ] [ x ]   [ 5  ]
+    // [ 1  3 ] [ y ] = [ 10 ]
+    // Solution: x = 1, y = 3
+    let ctx = Context::new();
+    let a = matrix![ctx, [2, 1], [1, 3]];
+    let b = matrix![ctx, [5], [10]];
+    let x = a.solve(&b).expect("solve should succeed");
+    assert_eq!(x.nrows(), 2);
+    assert_eq!(x.ncols(), 1);
+    assert_eq!(format!("{}", x.get(0, 0)), "1");
+    assert_eq!(format!("{}", x.get(1, 0)), "3");
+}
+
+#[test]
+fn solve_3x3_numeric() {
+    // [ 1  2  3 ] [ x ]   [ 14 ]
+    // [ 2  5  3 ] [ y ] = [ 21 ]
+    // [ 1  0  8 ] [ z ]   [ 25 ]
+    // Solution: x = 1, y = 2, z = 3
+    let ctx = Context::new();
+    let a = matrix![ctx, [1, 2, 3], [2, 5, 3], [1, 0, 8]];
+    let b = matrix![ctx, [14], [21], [25]];
+    let x = a.solve(&b).expect("solve should succeed");
+    assert_eq!(x.nrows(), 3);
+    assert_eq!(x.ncols(), 1);
+    assert_eq!(format!("{}", x.get(0, 0)), "1");
+    assert_eq!(format!("{}", x.get(1, 0)), "2");
+    assert_eq!(format!("{}", x.get(2, 0)), "3");
+}
+
+#[test]
+fn solve_singular_returns_error() {
+    // [ 1  2 ] is singular (det = 0)
+    // [ 2  4 ]
+    let ctx = Context::new();
+    let a = matrix![ctx, [1, 2], [2, 4]];
+    let b = matrix![ctx, [1], [2]];
+    assert!(a.solve(&b).is_err(), "singular matrix should return Err");
+}
+
+#[test]
+fn solve_non_square_returns_error() {
+    let ctx = Context::new();
+    let a = matrix![ctx, [1, 2, 3], [4, 5, 6]]; // 2×3
+    let b = matrix![ctx, [1], [2]];
+    assert!(a.solve(&b).is_err(), "non-square A should return Err");
+}
+
+#[test]
+fn solve_row_mismatch_returns_error() {
+    let ctx = Context::new();
+    let a = matrix![ctx, [1, 0], [0, 1]];
+    let b = matrix![ctx, [1], [2], [3]]; // 3 rows vs 2
+    assert!(a.solve(&b).is_err(), "row count mismatch should return Err");
+}
+
+#[test]
+fn solve_identity_returns_b() {
+    // I * x = b → x = b
+    let ctx = Context::new();
+    let eye = Matrix::identity(&ctx, 3);
+    let b = matrix![ctx, [7], [11], [13]];
+    let x = eye.solve(&b).expect("solve should succeed");
+    assert_eq!(format!("{}", x.get(0, 0)), "7");
+    assert_eq!(format!("{}", x.get(1, 0)), "11");
+    assert_eq!(format!("{}", x.get(2, 0)), "13");
+}
+
+#[test]
+fn solve_verify_ax_equals_b() {
+    // Solve, then verify A * x == b
+    let ctx = Context::new();
+    let a = matrix![ctx, [3, 1], [1, 2]];
+    let b = matrix![ctx, [9], [8]];
+    let x = a.solve(&b).expect("solve should succeed");
+    // Compute A * x
+    let ax = &a * &x;
+    // Each entry of A*x should equal corresponding entry of b
+    for i in 0..2 {
+        let ax_val = ax.get(i, 0).eval();
+        let b_val = b.get(i, 0).eval();
+        assert_eq!(
+            format!("{ax_val}"),
+            format!("{b_val}"),
+            "A*x row {i} should equal b row {i}"
+        );
+    }
+}
+
+#[test]
+fn solve_symbolic_rhs() {
+    // [ 1  0 ] [ x ]   [ a ]
+    // [ 0  1 ] [ y ] = [ b ]
+    // Solution: x = a, y = b
+    let ctx = Context::new();
+    symplex::syms!(ctx; a, b);
+    let eye = Matrix::identity(&ctx, 2);
+    let rhs = Matrix::new(vec![vec![a.clone()], vec![b.clone()]]).unwrap();
+    let x = eye.solve(&rhs).expect("solve should succeed");
+    assert_eq!(format!("{}", x.get(0, 0)), "a");
+    assert_eq!(format!("{}", x.get(1, 0)), "b");
+}
+
+#[test]
+fn solve_with_rational_entries() {
+    // [ 1  1 ] [ x ]   [ 1 ]   → x = 1/2, y = 1/2
+    // [ 1 -1 ] [ y ] = [ 0 ]
+    let ctx = Context::new();
+    let a = matrix![ctx, [1, 1], [1, -1]];
+    let b = matrix![ctx, [1], [0]];
+    let x = a.solve(&b).expect("solve should succeed");
+    assert_eq!(format!("{}", x.get(0, 0)), "1/2");
+    assert_eq!(format!("{}", x.get(1, 0)), "1/2");
+}
