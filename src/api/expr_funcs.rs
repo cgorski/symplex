@@ -2716,58 +2716,162 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// // x > 0 → (0, ∞)
-    /// let result = x.solve_gt(&x).unwrap();
+    /// let result = x.solve_gt(&x);
     /// let s = format!("{result}");
     /// assert!(!s.contains("EmptySet"), "x > 0 should not be empty: {s}");
     /// ```
-    pub fn solve_gt(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+    pub fn solve_gt(&self, var: &Ex) -> SetEx {
         let var_id = self.checked_id(var);
-        let id = self.inner.write().arena.solve_inequality_expr(
+        let mut inner = self.inner.write();
+        match inner.arena.solve_inequality_expr(
             self.raw_id(),
             var_id,
             crate::transforms::inequalities::Relation::Gt,
-        )?;
-        Ok(self.wrap_as::<SetValued>(id))
+        ) {
+            Ok(id) => {
+                drop(inner);
+                self.wrap_as::<SetValued>(id)
+            }
+            Err(_) => {
+                let zero = inner.arena.zero;
+                let cond = inner.arena.gt(self.raw_id(), zero);
+                let id = inner.arena.intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
+                drop(inner);
+                self.wrap_as::<SetValued>(id)
+            }
+        }
+    }
+
+    /// Like [`solve_gt`](Ex::solve_gt), but returns `Err` if the result
+    /// contains unevaluated forms.
+    pub fn try_solve_gt(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let result = self.solve_gt(var);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "solve_gt",
+                reason: "could not solve inequality".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Solve `self >= 0` for `var`, returning the solution as a set.
     ///
     /// Like [`solve_gt`](Ex::solve_gt), but includes the roots themselves
     /// (where `self = 0`).
-    pub fn solve_ge(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+    pub fn solve_ge(&self, var: &Ex) -> SetEx {
         let var_id = self.checked_id(var);
-        let id = self.inner.write().arena.solve_inequality_expr(
+        let mut inner = self.inner.write();
+        match inner.arena.solve_inequality_expr(
             self.raw_id(),
             var_id,
             crate::transforms::inequalities::Relation::Ge,
-        )?;
-        Ok(self.wrap_as::<SetValued>(id))
+        ) {
+            Ok(id) => {
+                drop(inner);
+                self.wrap_as::<SetValued>(id)
+            }
+            Err(_) => {
+                let zero = inner.arena.zero;
+                let cond = inner.arena.ge(self.raw_id(), zero);
+                let id = inner.arena.intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
+                drop(inner);
+                self.wrap_as::<SetValued>(id)
+            }
+        }
+    }
+
+    /// Like [`solve_ge`](Ex::solve_ge), but returns `Err` if the result
+    /// contains unevaluated forms.
+    pub fn try_solve_ge(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let result = self.solve_ge(var);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "solve_ge",
+                reason: "could not solve inequality".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Solve `self < 0` for `var`, returning the solution as a set.
     ///
     /// Uses the sign-chart method with a strict less-than relation.
-    pub fn solve_lt(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+    pub fn solve_lt(&self, var: &Ex) -> SetEx {
         let var_id = self.checked_id(var);
-        let id = self.inner.write().arena.solve_inequality_expr(
+        let mut inner = self.inner.write();
+        match inner.arena.solve_inequality_expr(
             self.raw_id(),
             var_id,
             crate::transforms::inequalities::Relation::Lt,
-        )?;
-        Ok(self.wrap_as::<SetValued>(id))
+        ) {
+            Ok(id) => {
+                drop(inner);
+                self.wrap_as::<SetValued>(id)
+            }
+            Err(_) => {
+                let zero = inner.arena.zero;
+                let cond = inner.arena.gt(zero, self.raw_id());
+                let id = inner.arena.intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
+                drop(inner);
+                self.wrap_as::<SetValued>(id)
+            }
+        }
+    }
+
+    /// Like [`solve_lt`](Ex::solve_lt), but returns `Err` if the result
+    /// contains unevaluated forms.
+    pub fn try_solve_lt(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let result = self.solve_lt(var);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "solve_lt",
+                reason: "could not solve inequality".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Solve `self <= 0` for `var`, returning the solution as a set.
     ///
     /// Like [`solve_lt`](Ex::solve_lt), but includes the roots themselves.
-    pub fn solve_le(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+    pub fn solve_le(&self, var: &Ex) -> SetEx {
         let var_id = self.checked_id(var);
-        let id = self.inner.write().arena.solve_inequality_expr(
+        let mut inner = self.inner.write();
+        match inner.arena.solve_inequality_expr(
             self.raw_id(),
             var_id,
             crate::transforms::inequalities::Relation::Le,
-        )?;
-        Ok(self.wrap_as::<SetValued>(id))
+        ) {
+            Ok(id) => {
+                drop(inner);
+                self.wrap_as::<SetValued>(id)
+            }
+            Err(_) => {
+                let zero = inner.arena.zero;
+                let cond = inner.arena.ge(zero, self.raw_id());
+                let id = inner.arena.intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
+                drop(inner);
+                self.wrap_as::<SetValued>(id)
+            }
+        }
+    }
+
+    /// Like [`solve_le`](Ex::solve_le), but returns `Err` if the result
+    /// contains unevaluated forms.
+    pub fn try_solve_le(&self, var: &Ex) -> Result<SetEx, SymplexError> {
+        let result = self.solve_le(var);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "solve_le",
+                reason: "could not solve inequality".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Solve `self = 0`, returning solutions as a `FiniteSet`.
@@ -2882,9 +2986,8 @@ impl Expr<Numeric> {
     /// [`formal_diff`](Self::formal_diff)). `func` is the dependent
     /// variable (e.g., `y`) and `var` is the independent variable (e.g., `x`).
     ///
-    /// Returns `Some((solution, constants))` where `solution` is the general
-    /// solution and `constants` are the arbitrary constants (C1, C2, etc.).
-    /// Returns `None` if the ODE type is not recognized.
+    /// Returns the general solution expression. If the ODE cannot be solved,
+    /// returns an unevaluated `DSolve(expr, func, var)` node.
     ///
     /// # Examples
     ///
@@ -2895,23 +2998,40 @@ impl Expr<Numeric> {
     /// let y = symplex::default_context().symbol("y");
     /// let dy = y.formal_diff(&x);  // y'
     /// let ode = &dy + &(&y * 2);   // y' + 2y = 0
-    /// if let Some((sol, constants)) = ode.solve_ode(&y, &x) {
-    ///     let s = format!("{sol}");
-    ///     assert!(s.contains("exp"), "solution should contain exp: {s}");
-    /// }
+    /// let sol = ode.solve_ode(&y, &x);
+    /// let s = format!("{sol}");
+    /// assert!(s.contains("exp"), "solution should contain exp: {s}");
     /// ```
-    pub fn solve_ode(&self, func: &Ex, var: &Ex) -> Option<(Ex, Vec<Ex>)> {
+    pub fn solve_ode(&self, func: &Ex, var: &Ex) -> Ex {
         let func_id = self.checked_id(func);
         let var_id = self.checked_id(var);
-        let result = {
-            let mut guard = self.inner.write();
-            crate::calculus::ode::dsolve(&mut guard.arena, self.raw_id(), func_id, var_id)
-        };
-        result.map(|r| {
-            let solution = self.wrap(r.solution);
-            let constants = r.constants.into_iter().map(|c| self.wrap(c)).collect();
-            (solution, constants)
-        })
+        let mut inner = self.inner.write();
+        match crate::calculus::ode::dsolve(&mut inner.arena, self.raw_id(), func_id, var_id) {
+            Some(ode_result) => {
+                let sol_id = ode_result.solution;
+                drop(inner);
+                self.wrap(sol_id)
+            }
+            None => {
+                let id = inner.arena.intern(crate::base::node::ExprNode::DSolve(self.raw_id(), func_id, var_id));
+                drop(inner);
+                self.wrap(id)
+            }
+        }
+    }
+
+    /// Like [`solve_ode`](Ex::solve_ode), but returns `Err` if the result
+    /// contains unevaluated forms (i.e., the ODE could not be solved).
+    pub fn try_solve_ode(&self, func: &Ex, var: &Ex) -> Result<Ex, SymplexError> {
+        let result = self.solve_ode(func, var);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "solve_ode",
+                reason: "could not solve ODE".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     // ── Numeric evaluation ─────────────────────────────────────────

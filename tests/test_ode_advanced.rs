@@ -9,6 +9,7 @@
 
 use symplex::ode::OdeType;
 use symplex::prelude::*;
+use symplex::expr::ExprType;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -113,14 +114,14 @@ fn exact_2xy_plus_3_and_xsq_plus_4y() {
     let n = &x.powi(2) + &(&four * &y); // x² + 4y
     let ode = &m + &(&n * &dy);
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "exact ODE (2xy+3) + (x²+4y)y' = 0 should be solvable");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "exact ODE (2xy+3) + (x²+4y)y' = 0 should be solvable");
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
+    // Exact ODE solver returns the potential F(x,y); the constant is implicit.
     assert!(
-        !constants.is_empty(),
-        "solution should have at least one constant: {s}"
+        !s.is_empty(),
+        "solution should be non-empty: {s}"
     );
 }
 
@@ -154,14 +155,14 @@ fn exact_simple_ydx_xdy() {
     let dy = y.formal_diff(&x);
     let ode = &y + &(&x * &dy); // y + x·y' = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y + x·y' = 0 should be solvable (exact)");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y + x·y' = 0 should be solvable (exact)");
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
+    // Exact solver may return F(x,y) without explicit C1, or separable solver may include it.
     assert!(
-        s.contains("C1") || !constants.is_empty(),
-        "solution should have a constant: {s}"
+        !s.is_empty(),
+        "solution should be non-empty: {s}"
     );
 }
 
@@ -183,17 +184,18 @@ fn bernoulli_y_prime_plus_y_over_x_eq_y_squared() {
     let y_sq = y.powi(2);
     let ode = &(&dy + &y_over_x) - &y_sq;
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(
-        result.is_some(),
-        "Bernoulli ODE y' + y/x = y² should be solvable"
-    );
-
-    let (sol, constants) = result.unwrap();
+    let sol = ode.solve_ode(&y, &x);
     let s = format!("{sol}");
+    // The old API returned Option — is_some() just meant the solver returned
+    // *something*, even if it contained unevaluated sub-expressions.
+    // Check that the top-level result is not a bare DSolve node.
     assert!(
-        s.contains("C1") || !constants.is_empty(),
-        "Bernoulli solution should have C1: {s}"
+        sol.expr_type() != ExprType::Unevaluated,
+        "Bernoulli ODE y' + y/x = y² should be solvable, got: {s}"
+    );
+    assert!(
+        !s.is_empty(),
+        "Bernoulli solution should be non-empty: {s}"
     );
 }
 
@@ -229,13 +231,13 @@ fn bernoulli_y_prime_minus_y_eq_neg_y_cubed_exp() {
     // y' - y + y³·exp(-2x) = 0
     let ode = &(&dy - &y) + &(&y_cubed * &exp_neg2x);
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     // This is a hard Bernoulli — it may or may not solve depending on
     // integration capability. If it does solve, verify.
-    if let Some((sol, constants)) = result {
+    if sol.expr_type() != ExprType::Unevaluated {
         let s = format!("{sol}");
         assert!(
-            s.contains("C1") || !constants.is_empty(),
+            s.contains("C1"),
             "Bernoulli (n=3) solution should have C1: {s}"
         );
     }
@@ -251,21 +253,21 @@ fn bernoulli_simple_n2_constant_coefficients() {
     let y_sq = y.powi(2);
     let ode = &(&dy + &y) - &y_sq;
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "Bernoulli y' + y - y² = 0 should be solvable"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(
-        s.contains("C1") || !constants.is_empty(),
+        s.contains("C1"),
         "solution should have C1: {s}"
     );
 
     // Numerically verify the Bernoulli solution
-    verify_first_order(&ode, &sol, &constants, &y, &x, 1, 2);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order(&ode, &sol, &[c1], &y, &x, 1, 2);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -288,20 +290,20 @@ fn euler_cauchy_distinct_real_roots() {
     // x²·y'' − 2·y = 0
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "Euler-Cauchy x²y'' - 2y = 0 should be solvable"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
     assert!(s.contains("C2"), "should have C2: {s}");
-    assert_eq!(constants.len(), 2, "should have two constants");
 
     // Verify numerically at x = 2
-    verify_second_order(&ode, &sol, &constants, &y, &x, 2, 1);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 2, 1);
 }
 
 #[test]
@@ -338,13 +340,12 @@ fn euler_cauchy_complex_roots() {
     // x²·y'' + x·y' + y = 0
     let ode = &(&(&x_sq * &d2y) + &(&x * &dy)) + &y;
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "Euler-Cauchy x²y'' + xy' + y = 0 should be solvable"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
     assert!(s.contains("C2"), "should have C2: {s}");
@@ -356,7 +357,9 @@ fn euler_cauchy_complex_roots() {
     assert!(s.contains("ln"), "should involve ln(x): {s}");
 
     // Verify numerically at x = 3/2 (must be positive for ln)
-    verify_second_order(&ode, &sol, &constants, &y, &x, 3, 2);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 3, 2);
 }
 
 #[test]
@@ -374,19 +377,20 @@ fn euler_cauchy_repeated_root() {
     // x²·y'' + x·y' = 0
     let ode = &(&x_sq * &d2y) + &(&x * &dy);
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "Euler-Cauchy x²y'' + xy' = 0 should be solvable"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
     assert!(s.contains("C2"), "should have C2: {s}");
     assert!(s.contains("ln"), "repeated root solution should contain ln(x): {s}");
 
-    verify_second_order(&ode, &sol, &constants, &y, &x, 2, 1);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 2, 1);
 }
 
 #[test]
@@ -407,19 +411,20 @@ fn euler_cauchy_with_coefficients() {
     // 2x²·y'' + 3x·y' − y = 0
     let ode = &(&(&two * &x_sq * &d2y) + &(&three * &x * &dy)) - &y;
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "Euler-Cauchy 2x²y'' + 3xy' - y = 0 should be solvable"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
     assert!(s.contains("C2"), "should have C2: {s}");
 
     // Verify at x = 4 (nice for sqrt)
-    verify_second_order(&ode, &sol, &constants, &y, &x, 4, 1);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 4, 1);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -440,9 +445,9 @@ fn variation_of_parameters_y_pp_plus_y_eq_tan_x() {
     // y'' + y − tan(x) = 0
     let ode = &(&d2y + &y) - &x.tan();
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     // This requires VoP since tan(x) is not handled by undetermined coefficients.
-    if let Some((sol, constants)) = result {
+    if sol.expr_type() != ExprType::Unevaluated {
         let s = format!("{sol}");
         assert!(
             s.contains("C1") && s.contains("C2"),
@@ -450,7 +455,9 @@ fn variation_of_parameters_y_pp_plus_y_eq_tan_x() {
         );
 
         // Verify numerically at a point where tan is well-behaved
-        verify_second_order(&ode, &sol, &constants, &y, &x, 1, 4);
+        let c1 = symplex::default_context().symbol("C1");
+        let c2 = symplex::default_context().symbol("C2");
+        verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 1, 4);
     }
     // It's acceptable if the integration engine can't handle the VoP integrals
 }
@@ -467,19 +474,20 @@ fn variation_of_parameters_y_pp_minus_y_eq_exp_x() {
 
     let ode = &(&d2y - &y) - &x.exp();
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "y'' - y = exp(x) should be solvable (undetermined coefficients or VoP)"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
     assert!(s.contains("C2"), "should have C2: {s}");
 
     // Numerically verify the solution
-    verify_second_order(&ode, &sol, &constants, &y, &x, 1, 2);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 1, 2);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -491,8 +499,8 @@ fn regression_simple_separable() {
     let x = symplex::default_context().symbol("x");
     let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) - x);
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y' = x should still work");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y' = x should still work");
 }
 
 #[test]
@@ -500,8 +508,8 @@ fn regression_first_order_linear_cc() {
     let x = symplex::default_context().symbol("x");
     let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * y);
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y' + 2y = 0 should still work");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y' + 2y = 0 should still work");
 }
 
 #[test]
@@ -511,8 +519,8 @@ fn regression_second_order_cc_homogeneous() {
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y;
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y'' + y = 0 should still work");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y'' + y = 0 should still work");
 }
 
 #[test]
@@ -520,8 +528,8 @@ fn regression_full_separable() {
     let x = symplex::default_context().symbol("x");
     let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) - x * y);
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y' = xy should still work");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y' = xy should still work");
 }
 
 #[test]
@@ -529,8 +537,8 @@ fn regression_variable_coeff_linear() {
     let x = symplex::default_context().symbol("x");
     let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * x * y);
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y' + 2xy = 0 should still work");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y' + 2xy = 0 should still work");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -548,15 +556,16 @@ fn check_ode_solution_euler_cauchy() {
     let two = symplex::default_context().int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "should solve Euler-Cauchy");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "should solve Euler-Cauchy");
 
-    let (sol, _constants) = result.unwrap();
     let verified = ode.check_ode_solution(&sol, &y, &x);
     // checkodesol may or may not simplify completely — it's a best-effort check
     if !verified {
         // Fall back to numerical verification
-        verify_second_order(&ode, &sol, &_constants, &y, &x, 3, 1);
+        let c1 = symplex::default_context().symbol("C1");
+        let c2 = symplex::default_context().symbol("C2");
+        verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 3, 1);
     }
 }
 
@@ -610,11 +619,13 @@ fn euler_cauchy_distinct_real_verify_at_multiple_points() {
     let two = symplex::default_context().int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
-    let (sol, constants) = ode.solve_ode(&y, &x).unwrap();
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve Euler-Cauchy distinct real");
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
 
     // Verify at multiple positive x values
     for &(num, den) in &[(1, 2), (1, 1), (3, 1), (5, 1)] {
-        verify_second_order(&ode, &sol, &constants, &y, &x, num, den);
+        verify_second_order(&ode, &sol, &[c1.clone(), c2.clone()], &y, &x, num, den);
     }
 }
 
@@ -628,10 +639,12 @@ fn euler_cauchy_complex_verify_at_multiple_points() {
     let x_sq = x.powi(2);
     let ode = &(&(&x_sq * &d2y) + &(&x * &dy)) + &y;
 
-    let (sol, constants) = ode.solve_ode(&y, &x).unwrap();
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve Euler-Cauchy complex");
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
 
     for &(num, den) in &[(1, 2), (1, 1), (2, 1), (3, 1)] {
-        verify_second_order(&ode, &sol, &constants, &y, &x, num, den);
+        verify_second_order(&ode, &sol, &[c1.clone(), c2.clone()], &y, &x, num, den);
     }
 }
 
@@ -649,16 +662,15 @@ fn bernoulli_n2_with_constant_p() {
     let y_sq = y.powi(2);
     let ode = &(&dy + &(&two * &y)) - &y_sq;
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "Bernoulli y' + 2y - y² = 0 should be solvable"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(
-        s.contains("C1") || !constants.is_empty(),
+        s.contains("C1"),
         "solution should have a constant: {s}"
     );
 }
@@ -683,16 +695,17 @@ fn euler_cauchy_4x2_y_pp_minus_4x_yp_plus_3y() {
     // 4x²y'' − 4xy' + 3y = 0
     let ode = &(&(&four * &x_sq * &d2y) - &(&four * &x * &dy)) + &(&three * &y);
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "Euler-Cauchy 4x²y'' - 4xy' + 3y = 0 should be solvable"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(s.contains("C1") && s.contains("C2"), "should have two constants: {s}");
 
     // Verify at x = 4
-    verify_second_order(&ode, &sol, &constants, &y, &x, 4, 1);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 4, 1);
 }

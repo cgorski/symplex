@@ -10,7 +10,7 @@ mod common;
 fn sturm_x2_minus_4_gt_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = &x.powi(2) - 4;
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -32,7 +32,7 @@ fn sturm_x2_minus_4_gt_0() {
 fn sturm_x2_plus_1_gt_0_universal() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = &x.powi(2) + 1;
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -56,7 +56,7 @@ fn sturm_x2_plus_1_gt_0_universal() {
 fn sturm_neg_x2_plus_1_gt_0_empty() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = -&(&x.powi(2) + 1);
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert_eq!(
         s, "EmptySet",
@@ -77,7 +77,7 @@ fn sturm_x3_minus_x_gt_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // x^3 - x = x(x-1)(x+1)
     let poly = &x.powi(3) - &x;
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -99,7 +99,7 @@ fn sturm_x3_minus_x_gt_0() {
 fn sturm_x2_ge_0_universal() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = x.powi(2);
-    let result = poly.solve_ge(&x).unwrap();
+    let result = poly.solve_ge(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -123,7 +123,7 @@ fn sturm_cubic_factored_gt_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // (x-1)(x-2)(x-3) = x³ - 6x² + 11x - 6
     let poly = &(&(&x - 1) * &(&x - 2)) * &(&x - 3);
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -147,7 +147,7 @@ fn sturm_cubic_factored_gt_0() {
 fn sturm_constant_positive_gt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = symplex::default_context().int(7);
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -159,7 +159,7 @@ fn sturm_constant_positive_gt() {
 fn sturm_constant_negative_gt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = symplex::default_context().int(-3);
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert_eq!(s, "EmptySet", "-3 > 0 should be EmptySet, got: {s}");
 }
@@ -169,7 +169,7 @@ fn sturm_linear_gt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // 2x - 6 > 0 ↔ x > 3
     let poly = &(&x * 2) - 6;
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -184,7 +184,7 @@ fn sturm_x2_plus_1_lt_0_empty() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // x² + 1 < 0 should have no solutions
     let poly = &x.powi(2) + 1;
-    let result = poly.solve_lt(&x).unwrap();
+    let result = poly.solve_lt(&x);
     let s = format!("{result}");
     assert_eq!(
         s, "EmptySet",
@@ -197,7 +197,7 @@ fn sturm_neg_x2_minus_1_le_0_universal() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // -(x² + 1) ≤ 0 should be true for all x (always negative)
     let poly = -&(&x.powi(2) + 1);
-    let result = poly.solve_le(&x).unwrap();
+    let result = poly.solve_le(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),

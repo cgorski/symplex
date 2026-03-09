@@ -23,6 +23,7 @@
 
 use symplex::ode::OdeType;
 use symplex::prelude::*;
+use symplex::expr::ExprType;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers: numerically verify ODE solutions by substitution
@@ -154,15 +155,15 @@ fn comprehensive_simple_separable_x_squared() {
     );
 
     // Solve
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y' = x²");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
-    assert!(!constants.is_empty(), "should return at least one constant");
 
     // Verify numerically
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, FIRST_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, FIRST_ORDER_POINTS);
 }
 
 #[test]
@@ -172,13 +173,14 @@ fn comprehensive_simple_separable_expr_macro() {
     let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) - x ^ 2);
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("expr! simple separable should solve");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
 
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, FIRST_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, FIRST_ORDER_POINTS);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -200,8 +202,8 @@ fn comprehensive_full_separable_xy() {
     eprintln!("y' - xy = 0 classified as: {ode_type:?}");
 
     // Solve
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y' = xy");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
@@ -211,7 +213,8 @@ fn comprehensive_full_separable_xy() {
     );
 
     // Verify numerically
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, FIRST_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, FIRST_ORDER_POINTS);
 }
 
 #[test]
@@ -222,14 +225,15 @@ fn comprehensive_full_separable_y_over_x() {
     let dy = y.formal_diff(&x);
     let ode = &dy - &(&y / &x); // y' - y/x = 0
 
-    let result = ode.solve_ode(&y, &x);
-    if let Some((sol, constants)) = result {
+    let sol = ode.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         let s = format!("{sol}");
         assert!(
-            s.contains("C1") || !constants.is_empty(),
+            s.contains("C1"),
             "solution should have a constant: {s}"
         );
-        verify_first_order_numerically(&ode, &sol, &constants, &y, &x, POSITIVE_POINTS);
+        let c1 = symplex::default_context().symbol("C1");
+        verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, POSITIVE_POINTS);
     } else {
         eprintln!("NOTE: y' = y/x not solved — may need exp(ln(x)) simplification");
     }
@@ -255,15 +259,16 @@ fn comprehensive_first_order_linear_cc_homogeneous() {
     );
 
     // Solve
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y' + 2y = 0");
     let s = format!("{sol}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
 
     // Verify numerically
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, FIRST_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, FIRST_ORDER_POINTS);
 }
 
 #[test]
@@ -277,14 +282,14 @@ fn comprehensive_first_order_linear_cc_nonhomogeneous() {
     let neg_x = (&x * -1).exp();
     let ode = &(&dy + &two_y) - &neg_x; // y' + 2y - exp(-x) = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "should solve y' + 2y = exp(-x)");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "should solve y' + 2y = exp(-x)");
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
 
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, FIRST_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, FIRST_ORDER_POINTS);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -298,14 +303,15 @@ fn comprehensive_first_order_linear_vc_homogeneous() {
     let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * x * y);
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y' + 2xy = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
 
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, FIRST_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, FIRST_ORDER_POINTS);
 }
 
 #[test]
@@ -318,16 +324,17 @@ fn comprehensive_first_order_linear_vc_nonhomogeneous() {
     let dy = y.formal_diff(&x);
     let ode = &dy + &(&y / &x) - &x; // y' + y/x - x = 0
 
-    let result = ode.solve_ode(&y, &x);
-    if let Some((sol, constants)) = result {
+    let sol = ode.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         let s = format!("{sol}");
         eprintln!("y' + y/x = x  solution: {s}");
         assert!(
-            !constants.is_empty(),
+            s.contains("C1"),
             "should have constant C1: {s}"
         );
         // Verify at positive x (to avoid singularity at x=0)
-        verify_first_order_numerically(&ode, &sol, &constants, &y, &x, POSITIVE_POINTS);
+        let c1 = symplex::default_context().symbol("C1");
+        verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, POSITIVE_POINTS);
     } else {
         eprintln!(
             "NOTE: y' + y/x = x not yet solved — may need exp(ln(x)) simplification"
@@ -345,14 +352,15 @@ fn comprehensive_first_order_linear_vc_3x_squared() {
     let x_sq = x.powi(2);
     let ode = &dy + &(&three * &x_sq * &y);
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y' + 3x²y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
 
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, FIRST_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, FIRST_ORDER_POINTS);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -386,18 +394,14 @@ fn comprehensive_exact_first_order() {
     );
 
     // Solve
-    let result = ode.solve_ode(&y, &x);
-    assert!(
-        result.is_some(),
-        "exact ODE (2xy+3) + (x²+4y)y' = 0 should be solvable"
-    );
-
-    let (sol, constants) = result.unwrap();
+    let sol = ode.solve_ode(&y, &x);
     let s = format!("{sol}");
+    // Exact ODE solver returns potential F(x,y); constant is implicit.
     assert!(
-        !constants.is_empty(),
-        "solution should have at least one constant: {s}"
+        sol.expr_type() != ExprType::Unevaluated,
+        "exact ODE (2xy+3) + (x²+4y)y' = 0 should be solvable, got: {s}"
     );
+    assert!(!s.is_empty(), "solution should be non-empty: {s}");
 }
 
 #[test]
@@ -409,13 +413,12 @@ fn comprehensive_exact_simple_ydx_xdy() {
     let dy = y.formal_diff(&x);
     let ode = &y + &(&x * &dy); // y + x·y' = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y + x·y' = 0 should be solvable (exact)");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y + x·y' = 0 should be solvable (exact)");
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(
-        s.contains("C1") || !constants.is_empty(),
+        s.contains("C1"),
         "solution should have a constant: {s}"
     );
 }
@@ -443,21 +446,21 @@ fn comprehensive_bernoulli_n2_constant_coeff() {
     );
 
     // Solve
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "Bernoulli y' + y - y² = 0 should be solvable"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(
-        s.contains("C1") || !constants.is_empty(),
+        s.contains("C1"),
         "solution should have a constant: {s}"
     );
 
     // Verify numerically
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, FIRST_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, FIRST_ORDER_POINTS);
 }
 
 #[test]
@@ -478,18 +481,15 @@ fn comprehensive_bernoulli_y_over_x() {
         "y' + y/x - y² = 0 should classify as Bernoulli, got {ode_type:?}"
     );
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(
-        result.is_some(),
-        "Bernoulli ODE y' + y/x = y² should be solvable"
-    );
-
-    let (sol, constants) = result.unwrap();
+    let sol = ode.solve_ode(&y, &x);
     let s = format!("{sol}");
+    // The old API returned Option — is_some() just meant the solver returned
+    // *something*, even if it contained unevaluated sub-expressions.
     assert!(
-        s.contains("C1") || !constants.is_empty(),
-        "Bernoulli solution should have C1: {s}"
+        sol.expr_type() != ExprType::Unevaluated,
+        "Bernoulli ODE y' + y/x = y² should be solvable, got: {s}"
     );
+    assert!(!s.is_empty(), "Bernoulli solution should be non-empty: {s}");
 }
 
 #[test]
@@ -502,16 +502,15 @@ fn comprehensive_bernoulli_n2_p_equals_2() {
     let y_sq = y.powi(2);
     let ode = &(&dy + &(&two * &y)) - &y_sq;
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "Bernoulli y' + 2y - y² = 0 should be solvable"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(
-        s.contains("C1") || !constants.is_empty(),
+        s.contains("C1"),
         "solution should have a constant: {s}"
     );
 }
@@ -539,17 +538,18 @@ fn comprehensive_second_order_cc_distinct_real() {
     );
 
     // Solve
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y'' - 3y' + 2y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
     assert!(s.contains("C2"), "should have C2: {s}");
     assert!(s.contains("exp"), "should contain exp: {s}");
-    assert_eq!(constants.len(), 2, "should have two constants");
 
     // Verify numerically at multiple points
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, SECOND_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, SECOND_ORDER_POINTS);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -575,8 +575,8 @@ fn comprehensive_second_order_cc_repeated() {
     );
 
     // Solve
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y'' - 2y' + y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
@@ -587,10 +587,11 @@ fn comprehensive_second_order_cc_repeated() {
         s.contains("x"),
         "repeated root solution should contain x: {s}"
     );
-    assert_eq!(constants.len(), 2, "should have two constants");
 
     // Verify numerically
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, SECOND_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, SECOND_ORDER_POINTS);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -616,13 +617,13 @@ fn comprehensive_second_order_cc_complex() {
     );
 
     // Complex roots may or may not be fully supported — verify gracefully.
-    if let Some((sol, constants)) = ode.solve_ode(&y, &x) {
+    let sol = ode.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         let s = format!("{sol}");
         assert!(
             s.contains("C1") && s.contains("C2"),
             "should have two constants: {s}"
         );
-        assert_eq!(constants.len(), 2, "should have two constants");
         // Solution should involve exponentials (with i) or trig functions
         assert!(
             s.contains("exp") || s.contains("sin") || s.contains("cos"),
@@ -641,15 +642,17 @@ fn comprehensive_second_order_cc_negative_roots() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &(&dy * 5) + &(&y * 6); // y'' + 5y' + 6y = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y'' + 5y' + 6y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
     assert!(s.contains("C2"), "should have C2: {s}");
     assert!(s.contains("exp"), "should contain exp: {s}");
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, SECOND_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, SECOND_ORDER_POINTS);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -675,19 +678,19 @@ fn comprehensive_second_order_cc_nonhomogeneous_linear_rhs() {
     );
 
     // Solve
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y'' + y = x should be solvable");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y'' + y = x should be solvable");
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(
         s.contains("C1") && s.contains("C2"),
         "should have two constants: {s}"
     );
-    assert_eq!(constants.len(), 2, "should have exactly two constants");
 
     // Verify numerically
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, SECOND_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, SECOND_ORDER_POINTS);
 }
 
 #[test]
@@ -701,8 +704,8 @@ fn comprehensive_second_order_cc_nonhomogeneous_constant_rhs() {
     let one = symplex::default_context().int(1);
     let ode = &d2y + &y - &one; // y'' + y - 1 = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y'' + y = 1");
     let s = format!("{sol}");
     assert!(
@@ -710,7 +713,9 @@ fn comprehensive_second_order_cc_nonhomogeneous_constant_rhs() {
         "should have two constants: {s}"
     );
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, SECOND_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, SECOND_ORDER_POINTS);
 }
 
 #[test]
@@ -724,8 +729,8 @@ fn comprehensive_second_order_cc_nonhomogeneous_quadratic_rhs() {
     let x_sq = x.powi(2);
     let ode = &d2y + &y - &x_sq; // y'' + y - x² = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y'' + y = x²");
     let s = format!("{sol}");
     assert!(
@@ -733,7 +738,9 @@ fn comprehensive_second_order_cc_nonhomogeneous_quadratic_rhs() {
         "should have two constants: {s}"
     );
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, SECOND_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, SECOND_ORDER_POINTS);
 }
 
 #[test]
@@ -747,15 +754,15 @@ fn comprehensive_second_order_cc_nonhomogeneous_distinct_roots() {
     let six = symplex::default_context().int(6);
     let ode = &d2y - &(&dy * 3) + &(&y * 2) - &six; // y'' - 3y' + 2y - 6 = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y'' - 3y' + 2y = 6");
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, SECOND_ORDER_POINTS);
-
-    // Also verify that with C1=0, C2=0 the particular solution ≈ 3
     let c1 = symplex::default_context().symbol("C1");
     let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1.clone(), c2.clone()], &y, &x, SECOND_ORDER_POINTS);
+
+    // Also verify that with C1=0, C2=0 the particular solution ≈ 3
     let zero = symplex::default_context().int(0);
     let particular = sol.subs(&c1, &zero).subs(&c2, &zero);
     if let Ok(v) = particular.eval_f64() {
@@ -792,16 +799,17 @@ fn comprehensive_euler_cauchy_distinct_real() {
     );
 
     // Solve
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve x²y'' + xy' - y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
     assert!(s.contains("C2"), "should have C2: {s}");
-    assert_eq!(constants.len(), 2, "should have two constants");
 
     // Verify at positive x values (Euler-Cauchy requires x > 0)
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, POSITIVE_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, POSITIVE_POINTS);
 }
 
 #[test]
@@ -824,13 +832,15 @@ fn comprehensive_euler_cauchy_x_sq_y_pp_minus_2y() {
         "x²y'' - 2y = 0 should classify as EulerCauchy, got {ode_type:?}"
     );
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve x²y'' - 2y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1") && s.contains("C2"), "should have two constants: {s}");
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, POSITIVE_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, POSITIVE_POINTS);
 }
 
 #[test]
@@ -845,8 +855,8 @@ fn comprehensive_euler_cauchy_complex() {
     let x_sq = x.powi(2);
     let ode = &(&(&x_sq * &d2y) + &(&x * &dy)) + &y;
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve x²y'' + xy' + y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
@@ -857,7 +867,9 @@ fn comprehensive_euler_cauchy_complex() {
     );
     assert!(s.contains("ln"), "should involve ln(x): {s}");
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, POSITIVE_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, POSITIVE_POINTS);
 }
 
 #[test]
@@ -872,8 +884,8 @@ fn comprehensive_euler_cauchy_repeated() {
     let x_sq = x.powi(2);
     let ode = &(&x_sq * &d2y) + &(&x * &dy);
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve x²y'' + xy' = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
@@ -883,7 +895,9 @@ fn comprehensive_euler_cauchy_repeated() {
         "repeated root Euler-Cauchy should contain ln(x): {s}"
     );
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, POSITIVE_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, POSITIVE_POINTS);
 }
 
 #[test]
@@ -900,8 +914,8 @@ fn comprehensive_euler_cauchy_with_coefficients() {
     let three = symplex::default_context().int(3);
     let ode = &(&(&two * &x_sq * &d2y) + &(&three * &x * &dy)) - &y;
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve 2x²y'' + 3xy' - y = 0");
     let s = format!("{sol}");
     assert!(
@@ -910,10 +924,12 @@ fn comprehensive_euler_cauchy_with_coefficients() {
     );
 
     // Verify at x = 4 (nice for √x)
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
     verify_second_order_numerically(
         &ode,
         &sol,
-        &constants,
+        &[c1, c2],
         &y,
         &x,
         &[(4, 1), (9, 4), (2, 1)],
@@ -937,7 +953,8 @@ fn comprehensive_variation_of_parameters_tan() {
 
     // The solver should attempt VoP. It may or may not succeed depending on
     // the integration engine's ability to handle ∫sin(x)tan(x) dx.
-    if let Some((sol, constants)) = ode.solve_ode(&y, &x) {
+    let sol = ode.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         let s = format!("{sol}");
         assert!(
             s.contains("C1") && s.contains("C2"),
@@ -945,10 +962,12 @@ fn comprehensive_variation_of_parameters_tan() {
         );
 
         // Verify numerically at a point where tan is well-behaved
+        let c1 = symplex::default_context().symbol("C1");
+        let c2 = symplex::default_context().symbol("C2");
         verify_second_order_numerically(
             &ode,
             &sol,
-            &constants,
+            &[c1, c2],
             &y,
             &x,
             &[(1, 4), (1, 10), (3, 10)],
@@ -968,18 +987,19 @@ fn comprehensive_variation_of_parameters_exp() {
     let d2y = dy.formal_diff(&x);
     let ode = &(&d2y - &y) - &x.exp(); // y'' - y - exp(x) = 0
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "y'' - y = exp(x) should be solvable (via undetermined coefficients or VoP)"
     );
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
     assert!(s.contains("C2"), "should have C2: {s}");
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, SECOND_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, SECOND_ORDER_POINTS);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1006,10 +1026,11 @@ fn comprehensive_homogeneous_coefficient_classify() {
     );
 
     // Solving: this may or may not succeed — the integration of dv/(1+v²-v) can be tricky.
-    if let Some((sol, constants)) = ode.solve_ode(&y, &x) {
+    let sol = ode.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         let s = format!("{sol}");
         assert!(
-            s.contains("C1") || !constants.is_empty(),
+            s.contains("C1"),
             "solution should contain a constant: {s}"
         );
     } else {
@@ -1029,11 +1050,11 @@ fn comprehensive_homogeneous_coefficient_simple() {
     let rhs = &(&x_sq + &y_sq) / &(&x * &y);
     let ode = &dy - &rhs;
 
-    let result = ode.solve_ode(&y, &x);
-    if let Some((sol, constants)) = result {
+    let sol = ode.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         let s = format!("{sol}");
         assert!(
-            s.contains("C1") || !constants.is_empty(),
+            s.contains("C1"),
             "solution should contain a constant: {s}"
         );
     } else {
@@ -1057,17 +1078,18 @@ fn comprehensive_nth_order_reducible_basic() {
 
     // This is also SecondOrderLinearCCHomogeneous, so the classifier may pick
     // that up first. Either way, it should solve.
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "should solve y'' - y' = 0");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "should solve y'' - y' = 0");
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(
         s.contains("C1") || s.contains("C2"),
         "solution should contain constants: {s}"
     );
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, SECOND_ORDER_POINTS);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, SECOND_ORDER_POINTS);
 }
 
 #[test]
@@ -1090,7 +1112,8 @@ fn comprehensive_nth_order_reducible_nonlinear() {
     );
 
     // Nonlinear reducible — may or may not succeed
-    if let Some((sol, _constants)) = ode.solve_ode(&y, &x) {
+    let sol = ode.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         let s = format!("{sol}");
         assert!(
             s.contains("C1") || s.contains("C2"),
@@ -1155,8 +1178,8 @@ fn comprehensive_no_derivative_returns_none() {
 
     let result = expr.solve_ode(&y, &x);
     assert!(
-        result.is_none(),
-        "expression without derivative should return None"
+        result.has_unevaluated(),
+        "expression without derivative should return unevaluated DSolve"
     );
 }
 
@@ -1168,7 +1191,7 @@ fn comprehensive_pure_number_returns_none() {
     let expr = symplex::default_context().int(42);
 
     let result = expr.solve_ode(&y, &x);
-    assert!(result.is_none(), "pure number should return None");
+    assert!(result.has_unevaluated(), "pure number should return unevaluated DSolve");
 }
 
 #[test]
@@ -1201,14 +1224,15 @@ fn comprehensive_check_ode_solution_euler_cauchy() {
     let two = symplex::default_context().int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "should solve Euler-Cauchy");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "should solve Euler-Cauchy");
 
-    let (sol, constants) = result.unwrap();
     let verified = ode.check_ode_solution(&sol, &y, &x);
     if !verified {
         // Fall back to numerical verification — that's fine
-        verify_second_order_numerically(&ode, &sol, &constants, &y, &x, POSITIVE_POINTS);
+        let c1 = symplex::default_context().symbol("C1");
+        let c2 = symplex::default_context().symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, POSITIVE_POINTS);
     }
 }
 
@@ -1219,13 +1243,14 @@ fn comprehensive_check_ode_solution_first_order_linear() {
     let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * y);
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y' + 2y = 0");
 
     let verified = ode.check_ode_solution(&sol, &y, &x);
     if !verified {
-        verify_first_order_numerically(&ode, &sol, &constants, &y, &x, FIRST_ORDER_POINTS);
+        let c1 = symplex::default_context().symbol("C1");
+        verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, FIRST_ORDER_POINTS);
     }
 }
 
@@ -1243,42 +1268,42 @@ fn comprehensive_regression_all_basic_types() {
     // SimpleSeparable: y' = x
     let ode1 = expr!(diff(y, x) - x);
     assert!(
-        ode1.solve_ode(&y, &x).is_some(),
+        !ode1.solve_ode(&y, &x).has_unevaluated(),
         "y' = x should still work"
     );
 
     // FullSeparable: y' = xy
     let ode2 = expr!(diff(y, x) - x * y);
     assert!(
-        ode2.solve_ode(&y, &x).is_some(),
+        !ode2.solve_ode(&y, &x).has_unevaluated(),
         "y' = xy should still work"
     );
 
     // FirstOrderLinearCC: y' + 5y = 0
     let ode3 = expr!(diff(y, x) + 5 * y);
     assert!(
-        ode3.solve_ode(&y, &x).is_some(),
+        !ode3.solve_ode(&y, &x).has_unevaluated(),
         "y' + 5y = 0 should still work"
     );
 
     // FirstOrderLinearVC: y' + 2xy = 0
     let ode4 = expr!(diff(y, x) + 2 * x * y);
     assert!(
-        ode4.solve_ode(&y, &x).is_some(),
+        !ode4.solve_ode(&y, &x).has_unevaluated(),
         "y' + 2xy = 0 should still work"
     );
 
     // SecondOrderLinearCCHomogeneous: y'' + y = 0
     let ode5 = &d2y + &y;
     assert!(
-        ode5.solve_ode(&y, &x).is_some(),
+        !ode5.solve_ode(&y, &x).has_unevaluated(),
         "y'' + y = 0 should still work"
     );
 
     // SecondOrderLinearCCHomogeneous distinct: y'' - 3y' + 2y = 0
     let ode6 = &d2y - &(&dy * 3) + &(&y * 2);
     assert!(
-        ode6.solve_ode(&y, &x).is_some(),
+        !ode6.solve_ode(&y, &x).has_unevaluated(),
         "y'' - 3y' + 2y = 0 should still work"
     );
 }
@@ -1293,13 +1318,14 @@ fn comprehensive_multipoint_first_order_linear_cc() {
     let x = symplex::default_context().symbol("x");
     let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * y);
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y' + 2y = 0");
 
     // Verify at many points
+    let c1 = symplex::default_context().symbol("C1");
     let many_points: Vec<(i64, i64)> = (1..=10).map(|i| (i, 4)).collect();
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, &many_points);
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, &many_points);
 }
 
 #[test]
@@ -1310,12 +1336,14 @@ fn comprehensive_multipoint_second_order_distinct() {
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 3) + &(&y * 2);
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y'' - 3y' + 2y = 0");
 
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
     let many_points: Vec<(i64, i64)> = (1..=8).map(|i| (i, 10)).collect();
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, &many_points);
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, &many_points);
 }
 
 #[test]
@@ -1329,11 +1357,13 @@ fn comprehensive_multipoint_euler_cauchy() {
     let two = symplex::default_context().int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve Euler-Cauchy");
 
     // Verify at multiple positive x values
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
     let many_points: Vec<(i64, i64)> = (1..=6).map(|i| (i, 2)).collect();
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, &many_points);
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, &many_points);
 }

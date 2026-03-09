@@ -173,8 +173,10 @@ fn main() {
     let dy = y.formal_diff(&x);
     let ode1 = &dy - &x;
     println!("\nODE: y' - x = 0");
-    if let Some((sol, constants)) = ode1.solve_ode(&y, &x) {
+    let sol = ode1.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("  Solution: y = {sol}");
+        let constants = sol.free_symbols();
         println!(
             "  Constants: {:?}",
             constants.iter().map(|c| format!("{c}")).collect::<Vec<_>>()
@@ -184,7 +186,8 @@ fn main() {
     // Exponential decay: y' + 2y = 0 → y = C1·exp(-2x)
     let ode2 = expr!(diff(y, x) + 2 * y);
     println!("\nODE: y' + 2y = 0");
-    if let Some((sol, _)) = ode2.solve_ode(&y, &x) {
+    let sol = ode2.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("  Solution: y = {sol}");
     }
 
@@ -193,8 +196,10 @@ fn main() {
     let d2y2 = dy2.formal_diff(&x);
     let ode3 = &d2y2 + &y;
     println!("\nODE: y'' + y = 0");
-    if let Some((sol, constants)) = ode3.solve_ode(&y, &x) {
+    let sol = ode3.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("  Solution: y = {sol}");
+        let constants = sol.free_symbols();
         println!(
             "  Constants: {:?}",
             constants.iter().map(|c| format!("{c}")).collect::<Vec<_>>()
@@ -204,7 +209,8 @@ fn main() {
     // y' = 0 → y = C1 (constant)
     let ode_const = y.formal_diff(&x);
     println!("\nODE: y' = 0");
-    if let Some((sol, _)) = ode_const.solve_ode(&y, &x) {
+    let sol = ode_const.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("  Solution: y = {sol}");
     }
 

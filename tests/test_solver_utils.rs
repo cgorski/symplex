@@ -132,7 +132,7 @@ fn dsolve_then_checkodesol() {
     let dy = y.formal_diff(&x);
     // y' - x = 0
     let ode = &dy - &x;
-    let (sol, _constants) = ode.solve_ode(&y, &x).expect("dsolve should solve y' - x = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("dsolve should solve y' - x = 0");
     // Substitute C1 = 0 to get a particular solution
     let c1 = symplex::default_context().symbol("C1");
     let particular = sol.subs(&c1, &symplex::default_context().int(0));

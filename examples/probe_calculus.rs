@@ -47,18 +47,16 @@ fn main() {
 
     for (label, ode) in &ode_cases {
         let cls = ode.classify_ode(&y, &x);
-        match ode.solve_ode(&y, &x) {
-            Some((sol, consts)) => {
-                let cnames: Vec<String> = consts.iter().map(|c| format!("{c}")).collect();
-                println!("  ✅ {label}");
-                println!("     class={cls:?}  y = {sol}  constants={cnames:?}");
-                ode_pass += 1;
-            }
-            None => {
-                println!("  ❌ {label}");
-                println!("     class={cls:?}  UNSOLVABLE");
-                ode_fail += 1;
-            }
+        let sol = ode.solve_ode(&y, &x);
+        if !sol.has_unevaluated() {
+            let cnames: Vec<String> = sol.free_symbols().iter().map(|c| format!("{c}")).collect();
+            println!("  ✅ {label}");
+            println!("     class={cls:?}  y = {sol}  constants={cnames:?}");
+            ode_pass += 1;
+        } else {
+            println!("  ❌ {label}");
+            println!("     class={cls:?}  UNSOLVABLE");
+            ode_fail += 1;
         }
     }
 

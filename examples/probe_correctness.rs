@@ -700,37 +700,35 @@ fn main() {
     ];
 
     for (label, ode) in &ode_cases {
-        match ode.solve_ode(&y, &x) {
-            Some((sol, _consts)) => {
-                // Verify: check_ode_solution
-                let ok = ode.check_ode_solution(&sol, &y, &x);
-                if ok {
-                    println!("  ✅ PASS  {} — solution verified: y = {}", label, sol);
-                    results.push(TestResult {
-                        label: format!("ODE:{}", label),
-                        verdict: Verdict::Pass,
-                        detail: format!("y = {}", sol),
-                    });
-                } else {
-                    println!(
-                        "  ❌ WRONG {} — solution FAILS verification: y = {}",
-                        label, sol
-                    );
-                    results.push(TestResult {
-                        label: format!("ODE:{}", label),
-                        verdict: Verdict::Wrong,
-                        detail: format!("fails verification: y = {}", sol),
-                    });
-                }
-            }
-            None => {
-                println!("  ⏭  SKIP  {} — no solution found", label);
+        let sol = ode.solve_ode(&y, &x);
+        if !sol.has_unevaluated() {
+            // Verify: check_ode_solution
+            let ok = ode.check_ode_solution(&sol, &y, &x);
+            if ok {
+                println!("  ✅ PASS  {} — solution verified: y = {}", label, sol);
                 results.push(TestResult {
                     label: format!("ODE:{}", label),
-                    verdict: Verdict::Skip,
-                    detail: "unsolvable".to_string(),
+                    verdict: Verdict::Pass,
+                    detail: format!("y = {}", sol),
+                });
+            } else {
+                println!(
+                    "  ❌ WRONG {} — solution FAILS verification: y = {}",
+                    label, sol
+                );
+                results.push(TestResult {
+                    label: format!("ODE:{}", label),
+                    verdict: Verdict::Wrong,
+                    detail: format!("fails verification: y = {}", sol),
                 });
             }
+        } else {
+            println!("  ⏭  SKIP  {} — no solution found", label);
+            results.push(TestResult {
+                label: format!("ODE:{}", label),
+                verdict: Verdict::Skip,
+                detail: "unsolvable".to_string(),
+            });
         }
     }
 

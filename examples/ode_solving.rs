@@ -28,8 +28,10 @@ fn main() {
     println!("ODE: {ode1} = 0");
     println!("Type: {:?}", ode1.classify_ode(&y, &x));
 
-    if let Some((sol, constants)) = ode1.solve_ode(&y, &x) {
+    let sol = ode1.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("Solution: y = {sol}");
+        let constants = sol.free_symbols();
         println!(
             "Constants: {:?}",
             constants.iter().map(|c| format!("{c}")).collect::<Vec<_>>()
@@ -50,7 +52,8 @@ fn main() {
     println!("ODE: {ode2} = 0");
     println!("Type: {:?}", ode2.classify_ode(&y, &x));
 
-    if let Some((sol, _)) = ode2.solve_ode(&y, &x) {
+    let sol = ode2.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("Solution: y = {sol}");
 
         // Verify: y = exp(-2x) satisfies y' + 2y = 0
@@ -65,7 +68,8 @@ fn main() {
     let ode3 = y.formal_diff(&x);
     println!("ODE: {} = 0", ode3);
 
-    if let Some((sol, _)) = ode3.solve_ode(&y, &x) {
+    let sol = ode3.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("Solution: y = {sol}");
     }
 
@@ -81,8 +85,10 @@ fn main() {
     println!("ODE: {ode4} = 0");
     println!("Type: {:?}", ode4.classify_ode(&y, &x));
 
-    if let Some((sol, constants)) = ode4.solve_ode(&y, &x) {
+    let sol = ode4.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("Solution: y = {sol}");
+        let constants = sol.free_symbols();
         println!(
             "Constants: {:?}",
             constants.iter().map(|c| format!("{c}")).collect::<Vec<_>>()
@@ -111,7 +117,8 @@ fn main() {
     println!("ODE: {ode5} = 0");
     println!("Type: {:?}", ode5.classify_ode(&y, &x));
 
-    if let Some((sol, _)) = ode5.solve_ode(&y, &x) {
+    let sol = ode5.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("Solution: y = {sol}");
 
         // Verify: y = exp(-x) should satisfy the ODE
@@ -135,7 +142,8 @@ fn main() {
     println!("ODE: y' - x·y = 0");
     println!("Type: {:?}", ode6.classify_ode(&y, &x));
 
-    if let Some((sol, _)) = ode6.solve_ode(&y, &x) {
+    let sol = ode6.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("Solution: y = {sol}");
     } else {
         println!("Solver did not find a closed-form solution");
@@ -148,7 +156,8 @@ fn main() {
     println!("expr!(diff(y, x) + y) = {ode_macro}");
     println!("Type: {:?}", ode_macro.classify_ode(&y, &x));
 
-    if let Some((sol, _)) = ode_macro.solve_ode(&y, &x) {
+    let sol = ode_macro.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         println!("Solution: y = {sol}");
     }
 
@@ -167,7 +176,7 @@ fn main() {
 
     for (desc, ode) in &odes {
         let classification = ode.classify_ode(&y, &x);
-        let solvable = ode.solve_ode(&y, &x).is_some();
+        let solvable = !ode.solve_ode(&y, &x).has_unevaluated();
         println!("  {desc:30} → {:?} (solvable: {solvable})", classification);
     }
 

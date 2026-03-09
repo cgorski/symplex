@@ -17,7 +17,7 @@ fn domain_sqrt_x_proxy() {
     let x = ctx.symbol("x");
 
     // x ≥ 0 should give [0, ∞)
-    let result = x.solve_ge(&x).unwrap();
+    let result = x.solve_ge(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -51,7 +51,7 @@ fn domain_ln_x_proxy() {
     let x = ctx.symbol("x");
 
     // x > 0 → (0, ∞)
-    let result = x.solve_gt(&x).unwrap();
+    let result = x.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -74,7 +74,7 @@ fn domain_sqrt_x_minus_2_proxy() {
     let inner = &x - &two; // x - 2
 
     // x - 2 ≥ 0
-    let result = inner.solve_ge(&x).unwrap();
+    let result = inner.solve_ge(&x);
     let s = format!("{result}");
     assert!(
         s.contains("2"),
@@ -212,7 +212,7 @@ fn domain_ln_x2_minus_1_proxy() {
 
     let inner = &x.powi(2) - 1; // x^2 - 1
     // x^2 - 1 > 0 → x < -1 or x > 1
-    let result = inner.solve_gt(&x).unwrap();
+    let result = inner.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),

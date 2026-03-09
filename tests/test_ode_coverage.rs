@@ -119,12 +119,12 @@ fn separable_dy_dx_eq_x() {
     let dy = y.formal_diff(&x);
     let ode = &dy - &x;
 
-    let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y' = x");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' = x");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
-    assert!(!constants.is_empty(), "should return at least one constant");
 
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, 3, 2);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, 3, 2);
 }
 
 #[test]
@@ -134,10 +134,9 @@ fn separable_dy_dx_eq_zero() {
     let y = symplex::default_context().symbol("y");
     let ode = y.formal_diff(&x);
 
-    let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y' = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should be C1: {s}");
-    assert_eq!(constants.len(), 1, "should have exactly one constant");
 }
 
 #[test]
@@ -148,11 +147,12 @@ fn separable_dy_dx_eq_sin_x() {
     let dy = y.formal_diff(&x);
     let ode = &dy - &x.sin();
 
-    let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y' = sin(x)");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' = sin(x)");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
 
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, 7, 10);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, 7, 10);
 }
 
 #[test]
@@ -164,11 +164,12 @@ fn separable_dy_dx_eq_constant() {
     let three = symplex::default_context().int(3);
     let ode = &dy - &three;
 
-    let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y' = 3");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' = 3");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
 
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, 2, 1);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, 2, 1);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -183,12 +184,13 @@ fn first_order_linear_exponential_decay() {
     let dy = y.formal_diff(&x);
     let ode = &dy + &(&y * 2); // y' + 2y = 0
 
-    let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y' + 2y = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' + 2y = 0");
     let s = format!("{sol}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
 
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, 1, 2);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, 1, 2);
 }
 
 #[test]
@@ -199,12 +201,13 @@ fn first_order_linear_exponential_growth() {
     let dy = y.formal_diff(&x);
     let ode = &dy - &y; // y' - y = 0
 
-    let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y' - y = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' - y = 0");
     let s = format!("{sol}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
 
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, 1, 1);
+    let c1 = symplex::default_context().symbol("C1");
+    verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, 1, 1);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -221,14 +224,15 @@ fn second_order_distinct_real_roots() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 3) + &(&y * 2); // y'' - 3y' + 2y = 0
 
-    let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y'' - 3y' + 2y = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y'' - 3y' + 2y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("C2"), "solution should have C2: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
-    assert_eq!(constants.len(), 2, "should have two constants");
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 3, 10);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 3, 10);
 }
 
 #[test]
@@ -241,7 +245,7 @@ fn second_order_repeated_root() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 2) + &y; // y'' - 2y' + y = 0
 
-    let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y'' - 2y' + y = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y'' - 2y' + y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("C2"), "solution should have C2: {s}");
@@ -252,7 +256,9 @@ fn second_order_repeated_root() {
         "repeated root solution should contain x: {s}"
     );
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 2, 5);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 2, 5);
 }
 
 #[test]
@@ -266,13 +272,12 @@ fn second_order_complex_roots() {
     let ode = &d2y + &y; // y'' + y = 0
 
     // Complex roots may or may not be supported — verify gracefully.
-    if let Some((sol, constants)) = ode.solve_ode(&y, &x) {
+    let sol = ode.solve_ode(&y, &x); if !sol.has_unevaluated() {
         let s = format!("{sol}");
         assert!(
             s.contains("C1") && s.contains("C2"),
             "should have two constants: {s}"
         );
-        assert_eq!(constants.len(), 2, "should have two constants");
         // The solution should involve exponentials (possibly with i), or trig
         assert!(
             s.contains("exp") || s.contains("sin") || s.contains("cos"),
@@ -292,13 +297,15 @@ fn second_order_distinct_real_negative_roots() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &(&dy * 5) + &(&y * 6); // y'' + 5y' + 6y = 0
 
-    let (sol, constants) = ode.solve_ode(&y, &x).expect("should solve y'' + 5y' + 6y = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y'' + 5y' + 6y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("C2"), "solution should have C2: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 4);
+    let c1 = symplex::default_context().symbol("C1");
+    let c2 = symplex::default_context().symbol("C2");
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 4);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -314,7 +321,7 @@ fn no_derivative_returns_none() {
 
     let result = expr.solve_ode(&y, &x);
     assert!(
-        result.is_none(),
+        result.has_unevaluated(),
         "expression without derivative should return None"
     );
 }
@@ -327,7 +334,7 @@ fn pure_number_returns_none() {
     let expr = symplex::default_context().int(42);
 
     let result = expr.solve_ode(&y, &x);
-    assert!(result.is_none(), "pure number should return None");
+    assert!(result.has_unevaluated(), "pure number should return None");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -340,12 +347,11 @@ fn expr_macro_separable_ode() {
     let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) - x); // y' - x = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("expr! separable ODE should solve");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
-    assert!(!constants.is_empty());
 }
 
 #[test]
@@ -354,8 +360,8 @@ fn expr_macro_first_order_linear_ode() {
     let y = symplex::default_context().symbol("y");
     let ode = expr!(diff(y, x) + 2 * y); // y' + 2y = 0
 
-    let (sol, _) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("expr! first-order linear ODE should solve");
     let s = format!("{sol}");
     assert!(

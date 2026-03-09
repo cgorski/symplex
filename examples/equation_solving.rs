@@ -191,34 +191,24 @@ fn main() {
     println!("\n--- Inequality Solving ---");
 
     // x² - 4 > 0 → x < -2 or x > 2
-    match expr!(x ^ 2 - 4).solve_gt(&x) {
-        Ok(result) => println!("x² - 4 > 0:  {result}"),
-        Err(e) => println!("x² - 4 > 0:  error: {e}"),
-    }
+    let result = expr!(x ^ 2 - 4).solve_gt(&x);
+    println!("x² - 4 > 0:  {result}");
 
     // x² - 4 >= 0
-    match expr!(x ^ 2 - 4).solve_ge(&x) {
-        Ok(result) => println!("x² - 4 ≥ 0:  {result}"),
-        Err(e) => println!("x² - 4 ≥ 0:  error: {e}"),
-    }
+    let result = expr!(x ^ 2 - 4).solve_ge(&x);
+    println!("x² - 4 ≥ 0:  {result}");
 
     // x² - 4 < 0 → -2 < x < 2
-    match expr!(x ^ 2 - 4).solve_lt(&x) {
-        Ok(result) => println!("x² - 4 < 0:  {result}"),
-        Err(e) => println!("x² - 4 < 0:  error: {e}"),
-    }
+    let result = expr!(x ^ 2 - 4).solve_lt(&x);
+    println!("x² - 4 < 0:  {result}");
 
     // x² - 4 <= 0 → -2 <= x <= 2
-    match expr!(x ^ 2 - 4).solve_le(&x) {
-        Ok(result) => println!("x² - 4 ≤ 0:  {result}"),
-        Err(e) => println!("x² - 4 ≤ 0:  error: {e}"),
-    }
+    let result = expr!(x ^ 2 - 4).solve_le(&x);
+    println!("x² - 4 ≤ 0:  {result}");
 
     // x > 0
-    match x.solve_gt(&x) {
-        Ok(result) => println!("x > 0:        {result}"),
-        Err(e) => println!("x > 0:        error: {e}"),
-    }
+    let result = x.solve_gt(&x);
+    println!("x > 0:        {result}");
 
     // ── Numerical root finding ─────────────────────────────────────
 

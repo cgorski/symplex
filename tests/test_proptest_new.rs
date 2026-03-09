@@ -65,12 +65,11 @@ proptest! {
         let a_coeff = a.max(1);
         let poly = &x.powi(2) * a_coeff + &x * b + c;
 
-        if let Ok(solution) = poly.solve_gt(&x) {
-            // The solution is a SetEx — verify it doesn't panic and produces valid output
-            let s = format!("{solution}");
-            prop_assert!(!s.is_empty(),
-                "solve_gt should produce non-empty display for {}*x^2 + {}*x + {}", a_coeff, b, c);
-        }
+        let solution = poly.solve_gt(&x);
+        // The solution is a SetEx — verify it doesn't panic and produces valid output
+        let s = format!("{solution}");
+        prop_assert!(!s.is_empty(),
+            "solve_gt should produce non-empty display for {}*x^2 + {}*x + {}", a_coeff, b, c);
     }
 }
 

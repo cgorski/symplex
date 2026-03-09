@@ -216,13 +216,12 @@ fn ode_y_double_prime_plus_y_eq_0_uses_trig() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y; // y'' + y = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y'' + y = 0");
     let s = format!("{sol}");
 
     // Must have two constants
-    assert_eq!(constants.len(), 2, "should have 2 constants: {s}");
     assert!(s.contains("C1"), "should contain C1: {s}");
     assert!(s.contains("C2"), "should contain C2: {s}");
 
@@ -242,7 +241,7 @@ fn ode_y_double_prime_plus_y_eq_0_trig_solution_correct() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y;
 
-    let (sol, _) = ode.solve_ode(&y, &x).expect("should solve");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve");
 
     // Substitute C1=1, C2=0: y = cos(x) → y'' + y = -cos(x) + cos(x) = 0
     let c1 = symplex::default_context().symbol("C1");
@@ -274,10 +273,9 @@ fn ode_y_double_prime_plus_y_eq_sin_x() {
     let sin_x = x.sin();
     let ode = &(&d2y + &y) - &sin_x; // y'' + y - sin(x) = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "should solve y'' + y = sin(x)");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "should solve y'' + y = sin(x)");
 
-    let (sol, _) = result.unwrap();
     let s = format!("{sol}");
     assert!(
         s.contains("C1") && s.contains("C2"),
@@ -300,7 +298,8 @@ fn ode_y_double_prime_plus_y_eq_sin_x_verifies() {
     let sin_x = x.sin();
     let ode = &(&d2y + &y) - &sin_x;
 
-    if let Some((sol, _)) = ode.solve_ode(&y, &x) {
+    let sol = ode.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         let c1 = symplex::default_context().symbol("C1");
         let c2 = symplex::default_context().symbol("C2");
         let sol_specific = sol
@@ -331,10 +330,9 @@ fn ode_first_order_linear_exp_rhs() {
     let neg_x = (&x * -1).exp();
     let ode = &(&dy + &two_y) - &neg_x; // y' + 2y - exp(-x) = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "should solve y' + 2y = exp(-x)");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "should solve y' + 2y = exp(-x)");
 
-    let (sol, _) = result.unwrap();
     let s = format!("{sol}");
     // The solution should not contain unevaluated Integral
     assert!(
@@ -353,11 +351,11 @@ fn ode_y_double_prime_minus_y_eq_0_real_exp() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &y; // y'' - y = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("should solve y'' - y = 0");
     let s = format!("{sol}");
-    assert_eq!(constants.len(), 2, "should have 2 constants: {s}");
+    assert!(s.contains("C1") && s.contains("C2"), "should have 2 constants: {s}");
     assert!(s.contains("exp"), "should use exp: {s}");
 }
 
@@ -371,10 +369,9 @@ fn ode_damped_oscillator() {
     let d2y = dy.formal_diff(&x);
     let ode = &(&d2y + &(&dy * 2)) + &(&y * 5); // y'' + 2y' + 5y = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "should solve y'' + 2y' + 5y = 0");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "should solve y'' + 2y' + 5y = 0");
 
-    let (sol, _) = result.unwrap();
     let s = format!("{sol}");
     assert!(
         s.contains("cos") && s.contains("sin"),

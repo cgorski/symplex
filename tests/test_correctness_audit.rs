@@ -927,7 +927,8 @@ fn audit_ode_solutions_verify() {
     ];
 
     for (label, ode) in &ode_cases {
-        if let Some((sol, _consts)) = ode.solve_ode(&y, &x) {
+        let sol = ode.solve_ode(&y, &x);
+        if !sol.has_unevaluated() {
             let ok = ode.check_ode_solution(&sol, &y, &x);
             assert!(
                 ok,

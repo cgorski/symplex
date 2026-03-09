@@ -14,7 +14,7 @@ use symplex::prelude::*;
 #[test]
 fn solve_x_gt_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
-    let result = x.solve_gt(&x).unwrap();
+    let result = x.solve_gt(&x);
     let s = format!("{result}");
     // x > 0 → (0, ∞)
     assert!(!s.contains("EmptySet"), "x > 0 should not be empty: {s}");
@@ -32,7 +32,7 @@ fn solve_x_gt_0() {
 fn solve_x2_minus_4_gt_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = &x.powi(2) - 4;
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     // x² - 4 > 0 → (-∞, -2) ∪ (2, ∞)
     assert!(
@@ -53,7 +53,7 @@ fn solve_x2_minus_4_gt_0() {
 fn solve_positive_constant_gt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let five = symplex::default_context().int(5);
-    let result = five.solve_gt(&x).unwrap();
+    let result = five.solve_gt(&x);
     let s = format!("{result}");
     // 5 > 0 is always true → (-∞, ∞)
     assert!(
@@ -68,7 +68,7 @@ fn solve_positive_constant_gt() {
 fn solve_negative_constant_gt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let neg = symplex::default_context().int(-3);
-    let result = neg.solve_gt(&x).unwrap();
+    let result = neg.solve_gt(&x);
     // -3 > 0 is always false → EmptySet
     assert_eq!(format!("{result}"), "EmptySet");
     // Spot check: -3 is negative everywhere
@@ -79,7 +79,7 @@ fn solve_negative_constant_gt() {
 fn solve_zero_gt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let zero = symplex::default_context().int(0);
-    let result = zero.solve_gt(&x).unwrap();
+    let result = zero.solve_gt(&x);
     // 0 > 0 is false → EmptySet
     assert_eq!(format!("{result}"), "EmptySet");
 }
@@ -92,7 +92,7 @@ fn solve_zero_gt() {
 fn solve_zero_ge() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let zero = symplex::default_context().int(0);
-    let result = zero.solve_ge(&x).unwrap();
+    let result = zero.solve_ge(&x);
     let s = format!("{result}");
     // 0 >= 0 is always true → (-∞, ∞)
     assert!(
@@ -105,7 +105,7 @@ fn solve_zero_ge() {
 fn solve_x2_minus_4_ge_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = &x.powi(2) - 4;
-    let result = poly.solve_ge(&x).unwrap();
+    let result = poly.solve_ge(&x);
     let s = format!("{result}");
     // x² - 4 >= 0 → (-∞, -2] ∪ [2, ∞)
     // The solution must not be empty and should include the roots.
@@ -123,7 +123,7 @@ fn solve_x2_minus_4_ge_0() {
 fn solve_positive_constant_ge() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let seven = symplex::default_context().int(7);
-    let result = seven.solve_ge(&x).unwrap();
+    let result = seven.solve_ge(&x);
     let s = format!("{result}");
     // 7 >= 0 always true
     assert!(
@@ -140,7 +140,7 @@ fn solve_positive_constant_ge() {
 #[test]
 fn solve_x_lt_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
-    let result = x.solve_lt(&x).unwrap();
+    let result = x.solve_lt(&x);
     let s = format!("{result}");
     // x < 0 → (-∞, 0)
     assert!(!s.contains("EmptySet"), "x < 0 should not be empty: {s}");
@@ -154,7 +154,7 @@ fn solve_x_lt_0() {
 fn solve_x2_minus_4_lt_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = &x.powi(2) - 4;
-    let result = poly.solve_lt(&x).unwrap();
+    let result = poly.solve_lt(&x);
     let s = format!("{result}");
     // x² - 4 < 0 → (-2, 2)
     assert!(
@@ -174,7 +174,7 @@ fn solve_x2_minus_4_lt_0() {
 fn solve_negative_constant_lt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let neg = symplex::default_context().int(-5);
-    let result = neg.solve_lt(&x).unwrap();
+    let result = neg.solve_lt(&x);
     let s = format!("{result}");
     // -5 < 0 is always true → (-∞, ∞)
     assert!(
@@ -188,7 +188,7 @@ fn solve_negative_constant_lt() {
 fn solve_positive_constant_lt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let pos = symplex::default_context().int(3);
-    let result = pos.solve_lt(&x).unwrap();
+    let result = pos.solve_lt(&x);
     // 3 < 0 is always false → EmptySet
     assert_eq!(format!("{result}"), "EmptySet");
     common::assert_positive_at(&pos, &x, 0, "3 < 0 constant is positive");
@@ -202,7 +202,7 @@ fn solve_positive_constant_lt() {
 fn solve_x2_minus_4_le_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = &x.powi(2) - 4;
-    let result = poly.solve_le(&x).unwrap();
+    let result = poly.solve_le(&x);
     let s = format!("{result}");
     // x² - 4 ≤ 0 → [-2, 2]
     assert!(
@@ -219,7 +219,7 @@ fn solve_x2_minus_4_le_0() {
 fn solve_zero_le() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let zero = symplex::default_context().int(0);
-    let result = zero.solve_le(&x).unwrap();
+    let result = zero.solve_le(&x);
     let s = format!("{result}");
     // 0 <= 0 always true
     assert!(
@@ -232,7 +232,7 @@ fn solve_zero_le() {
 fn solve_negative_constant_le() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let neg = symplex::default_context().int(-2);
-    let result = neg.solve_le(&x).unwrap();
+    let result = neg.solve_le(&x);
     let s = format!("{result}");
     // -2 <= 0 always true
     assert!(
@@ -318,7 +318,7 @@ fn quadratic_positive_leading_coeff_gt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // x² - 1 > 0 → (-∞, -1) ∪ (1, ∞)
     let poly = &x.powi(2) - 1;
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -337,7 +337,7 @@ fn quadratic_positive_leading_coeff_lt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // x² - 1 < 0 → (-1, 1)
     let poly = &x.powi(2) - 1;
-    let result = poly.solve_lt(&x).unwrap();
+    let result = poly.solve_lt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -360,7 +360,7 @@ fn linear_2x_minus_6_gt_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // 2x - 6 > 0 → x > 3 → (3, ∞)
     let expr = &x * 2 - 6;
-    let result = expr.solve_gt(&x).unwrap();
+    let result = expr.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -378,7 +378,7 @@ fn linear_neg_x_plus_5_le_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // -x + 5 ≤ 0 → x ≥ 5 → [5, ∞)
     let expr = -&x + 5;
-    let result = expr.solve_le(&x).unwrap();
+    let result = expr.solve_le(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -400,7 +400,7 @@ fn cubic_x3_minus_x_gt_0() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // x³ - x = x(x-1)(x+1) > 0  → (-1, 0) ∪ (1, ∞)
     let poly = &x.powi(3) - &x;
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -420,7 +420,7 @@ fn cubic_x3_minus_x_gt_0() {
 fn large_positive_constant_gt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let big = symplex::default_context().int(999999);
-    let result = big.solve_gt(&x).unwrap();
+    let result = big.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -433,7 +433,7 @@ fn large_positive_constant_gt() {
 fn large_negative_constant_lt() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let big_neg = symplex::default_context().int(-999999);
-    let result = big_neg.solve_lt(&x).unwrap();
+    let result = big_neg.solve_lt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -462,7 +462,7 @@ fn solve_gt_with_context() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let five = ctx.int(5);
-    let result = five.solve_gt(&x).unwrap();
+    let result = five.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -496,7 +496,7 @@ fn solve_always_positive() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // x² + 1 > 0 should be true for all real x → UniversalSet or (-∞, ∞)
     let poly = &x.powi(2) + 1;
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),
@@ -518,7 +518,7 @@ fn solve_always_negative() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // -(x² + 1) > 0 should be false for all real x → EmptySet
     let poly = -&(&x.powi(2) + 1);
-    let result = poly.solve_gt(&x).unwrap();
+    let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert_eq!(
         s, "EmptySet",
@@ -535,7 +535,7 @@ fn solve_ge_includes_boundary() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // x² - 4 >= 0 should include x=2 and x=-2 as boundary
     let poly = &x.powi(2) - 4;
-    let result = poly.solve_ge(&x).unwrap();
+    let result = poly.solve_ge(&x);
     let s = format!("{result}");
     assert!(
         !s.contains("EmptySet"),

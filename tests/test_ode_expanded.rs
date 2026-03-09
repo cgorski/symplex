@@ -113,20 +113,18 @@ fn ode_second_order_constant_rhs() {
     let one = symplex::default_context().int(1);
     let ode = &d2y + &y - &one; // y'' + y - 1 = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y'' + y = 1 should be solvable");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y'' + y = 1 should be solvable");
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(
         s.contains("C1") && s.contains("C2"),
         "should have two constants: {s}"
     );
-    assert_eq!(constants.len(), 2, "should have exactly two constants");
 
     // The solution should contain exp terms (homogeneous) and the constant 1 (particular).
     // Verify numerically at a test point.
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 7, 10);
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 7, 10); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -146,10 +144,9 @@ fn ode_second_order_linear_rhs() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &dy + &y - &x; // y'' + y' + y - x = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y'' + y' + y = x should be solvable");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y'' + y' + y = x should be solvable");
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(
         s.contains("C1") && s.contains("C2"),
@@ -157,7 +154,7 @@ fn ode_second_order_linear_rhs() {
     );
 
     // Verify numerically
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 2);
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -180,10 +177,9 @@ fn ode_second_order_quadratic_rhs() {
     let x_sq = x.powi(2);
     let ode = &d2y + &y - &x_sq; // y'' + y - x² = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y'' + y = x² should be solvable");
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y'' + y = x² should be solvable");
 
-    let (sol, constants) = result.unwrap();
     let s = format!("{sol}");
     assert!(
         s.contains("C1") && s.contains("C2"),
@@ -191,7 +187,7 @@ fn ode_second_order_quadratic_rhs() {
     );
 
     // Verify numerically
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 3, 10);
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 3, 10); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -211,14 +207,14 @@ fn ode_second_order_nonhomogeneous_verify() {
     let six = symplex::default_context().int(6);
     let ode = &d2y - &(&dy * 3) + &(&y * 2) - &six; // y'' - 3y' + 2y - 6 = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("y'' - 3y' + 2y = 6 should be solvable");
 
     // Verify at multiple points for robustness
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 4);
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 2);
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 3, 4);
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 4); }
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2); }
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 3, 4); }
 
     // Also verify with C1=0, C2=0 to isolate the particular solution
     let c1 = symplex::default_context().symbol("C1");
@@ -249,29 +245,27 @@ fn ode_homogeneous_still_works() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y; // y'' + y = 0
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     // This should still solve (complex roots ±i)
-    if let Some((sol, constants)) = result {
+    if !sol.has_unevaluated() {
         let s = format!("{sol}");
         assert!(
             s.contains("C1") && s.contains("C2"),
             "homogeneous should have two constants: {s}"
         );
-        assert_eq!(constants.len(), 2);
     }
 
     // Another homogeneous: y'' - 3y' + 2y = 0
     let ode2 = &d2y - &(&dy * 3) + &(&y * 2);
-    let (sol2, constants2) = ode2
-        .solve_ode(&y, &x)
+    let sol2 = ode2
+        .try_solve_ode(&y, &x)
         .expect("y'' - 3y' + 2y = 0 should still be solvable");
     let s2 = format!("{sol2}");
     assert!(
         s2.contains("C1") && s2.contains("C2"),
         "homogeneous should have two constants: {s2}"
     );
-    assert_eq!(constants2.len(), 2);
-    verify_second_order_numerically(&ode2, &sol2, &constants2, &y, &x, 3, 10);
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode2, &sol2, &[c1, c2], &y, &x, 3, 10); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -326,11 +320,11 @@ fn ode_exponential_rhs() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y - &x.exp(); // y'' + y - exp(x) = 0
 
-    let result = ode.solve_ode(&y, &x);
-    // It's OK if this returns None — we just must not return a wrong answer.
+    let sol = ode.solve_ode(&y, &x);
+    // It's OK if this returns unevaluated — we just must not return a wrong answer.
     // If it does return something, verify it numerically to ensure correctness.
-    if let Some((sol, constants)) = result {
-        verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 2);
+    if !sol.has_unevaluated() {
+        { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2); }
     }
     // No assertion failure = pass (graceful None or correct answer)
 }
@@ -347,26 +341,24 @@ fn ode_first_order_still_works() {
     let dy = y.formal_diff(&x);
     let ode = &dy + &y; // y' + y = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("y' + y = 0 should still be solvable");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have constant: {s}");
     assert!(s.contains("exp"), "should contain exp: {s}");
-    assert_eq!(constants.len(), 1, "first-order should have one constant");
 
-    verify_first_order_numerically(&ode, &sol, &constants, &y, &x, 1, 2);
+    { let c1 = symplex::default_context().symbol("C1"); verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, 1, 2); }
 
     // Also: y' = x should still work (simple separable)
     let ode2 = &dy - &x; // y' - x = 0
-    let (sol2, constants2) = ode2
-        .solve_ode(&y, &x)
+    let sol2 = ode2
+        .try_solve_ode(&y, &x)
         .expect("y' = x should still be solvable");
     let s2 = format!("{sol2}");
     assert!(s2.contains("C1"), "should have constant: {s2}");
-    assert_eq!(constants2.len(), 1);
 
-    verify_first_order_numerically(&ode2, &sol2, &constants2, &y, &x, 3, 2);
+    { let c1 = symplex::default_context().symbol("C1"); verify_first_order_numerically(&ode2, &sol2, &[c1], &y, &x, 3, 2); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -385,18 +377,17 @@ fn ode_distinct_roots_linear_forcing() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 3) + &(&y * 2) - &x; // y'' - 3y' + 2y - x = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
-        .expect("y'' - 3y' + 2y = x should be solvable");
-
-    let s = format!("{sol}");
+    let sol_expr = ode
+        .try_solve_ode(&y, &x)
+        .expect("y'' - 3y' + 2y = 6 should be solvable");
+    let s = format!("{sol_expr}");
     assert!(
         s.contains("C1") && s.contains("C2"),
         "should have two constants: {s}"
     );
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 4);
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 1);
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 1, 4); }
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 1, 1); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -415,18 +406,17 @@ fn ode_repeated_root_constant_forcing() {
     let four = symplex::default_context().int(4);
     let ode = &d2y - &(&dy * 2) + &y - &four; // y'' - 2y' + y - 4 = 0
 
-    let (sol, constants) = ode
-        .solve_ode(&y, &x)
-        .expect("y'' - 2y' + y = 4 should be solvable");
-
-    let s = format!("{sol}");
+    let sol_expr = ode
+        .try_solve_ode(&y, &x)
+        .expect("y'' - 2y' + y = exp(x) should be solvable");
+    let s = format!("{sol_expr}");
     assert!(
         s.contains("C1") && s.contains("C2"),
         "should have two constants: {s}"
     );
 
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 5);
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 3, 10);
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 1, 5); }
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 3, 10); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -446,11 +436,9 @@ fn ode_c_zero_constant_forcing() {
     let two = symplex::default_context().int(2);
     let ode = &d2y + &dy - &two; // y'' + y' - 2 = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y'' + y' = 2 should be solvable");
-
-    let (sol, constants) = result.unwrap();
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 2);
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y'' + y' = 2 should be solvable");
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -469,12 +457,10 @@ fn ode_b_c_zero_constant_forcing() {
     let six = symplex::default_context().int(6);
     let ode = &d2y - &six; // y'' - 6 = 0
 
-    let result = ode.solve_ode(&y, &x);
-    assert!(result.is_some(), "y'' = 6 should be solvable");
-
-    let (sol, constants) = result.unwrap();
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 2);
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 2, 1);
+    let sol = ode.solve_ode(&y, &x);
+    assert!(!sol.has_unevaluated(), "y'' = 6 should be solvable");
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2); }
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 2, 1); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -518,13 +504,12 @@ fn ode_scaled_leading_coefficient() {
     let four = symplex::default_context().int(4);
     let ode = &(&d2y * 2) + &(&y * 2) - &four; // 2y'' + 2y - 4 = 0
 
-    let result = ode.solve_ode(&y, &x);
+    let sol = ode.solve_ode(&y, &x);
     assert!(
-        result.is_some(),
+        !sol.has_unevaluated(),
         "2y'' + 2y = 4 should be solvable (normalises to y'' + y = 2)"
     );
 
-    let (sol, constants) = result.unwrap();
     let _ = two; // suppress unused warning
-    verify_second_order_numerically(&ode, &sol, &constants, &y, &x, 1, 3);
+    { let c1 = symplex::default_context().symbol("C1"); let c2 = symplex::default_context().symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 3); }
 }
