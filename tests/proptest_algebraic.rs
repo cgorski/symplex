@@ -130,8 +130,8 @@ proptest! {
     /// Multiplication has identity: a * 1 == a
     #[test]
     fn mul_identity(a in arb_expr(2)) {
-        let __ctx = shared_ctx().clone();
-        let one = __ctx.int(1);
+        let ctx = shared_ctx().clone();
+        let one = ctx.int(1);
         let result = &a * &one;
         prop_assert_eq!(format!("{result}"), format!("{a}"));
     }
@@ -139,8 +139,8 @@ proptest! {
     /// Multiplication by zero: a * 0 == 0
     #[test]
     fn mul_zero(a in arb_expr(2)) {
-        let __ctx = shared_ctx().clone();
-        let zero = __ctx.int(0);
+        let ctx = shared_ctx().clone();
+        let zero = ctx.int(0);
         let result = &a * &zero;
         prop_assert_eq!(format!("{result}"), "0");
     }
@@ -194,8 +194,8 @@ proptest! {
     /// Linearity of differentiation: d/dx(a + b) == d/dx(a) + d/dx(b)
     #[test]
     fn diff_linear(a in arb_expr(2), b in arb_expr(2)) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let sum = &a + &b;
         let diff_sum = sum.diff(&x);
         let diff_a = a.diff(&x);
@@ -211,9 +211,9 @@ proptest! {
     /// Constant rule: d/dx(c) == 0 for integer c
     #[test]
     fn diff_constant(c in -100i64..100) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
-        let expr = __ctx.int(c);
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
+        let expr = ctx.int(c);
         let result = expr.diff(&x);
         prop_assert_eq!(format!("{result}"), "0");
     }
@@ -221,8 +221,8 @@ proptest! {
     /// Power rule: d/dx(x^n) == n * x^(n-1), verified numerically at x=2
     #[test]
     fn diff_power_rule(n in 1i64..8) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let f = x.powi(n);
         let df = f.diff(&x);
         // Evaluate at x=2 to verify
@@ -240,10 +240,10 @@ proptest! {
     /// For polynomials: d/dx(∫ p dx) == p (verified numerically)
     #[test]
     fn integrate_diff_roundtrip(coeffs in prop::collection::vec(-5i64..5, 1..4)) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         // Build polynomial from coefficients
-        let mut poly = __ctx.int(0);
+        let mut poly = ctx.int(0);
         for (i, &c) in coeffs.iter().enumerate() {
             if c != 0 {
                 poly = &poly + &(&x.powi(i as i64) * c);
@@ -261,8 +261,8 @@ proptest! {
     /// diff(∫ c*x^n dx, x) should recover c*x^n for small c, n
     #[test]
     fn integrate_diff_monomial(c in 1i64..10, n in 0i64..6) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let expr = &x.powi(n) * c;
         let anti = expr.integrate(&x);
         let back = anti.diff(&x);
@@ -284,8 +284,8 @@ proptest! {
         c in -5i64..5,
         pt in -3i64..3,
     ) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let poly = &(&x.powi(2) * a) + &(&x * b) + c;
         let expanded = poly.expand();
         let v1 = format!("{}", poly.subs_i64(&x, pt));
@@ -300,8 +300,8 @@ proptest! {
         b in -5i64..5,
         pt in -3i64..3,
     ) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let expr = &(&x * a) + &(&x * b); // (a+b)*x
         let simplified = expr.simplify();
         let v1 = format!("{}", expr.subs_i64(&x, pt));
@@ -312,9 +312,9 @@ proptest! {
     /// expand preserves value for (ax+b)^n
     #[test]
     fn expand_power_preserves_value(a in 1i64..5, b in 1i64..5, n in 2i64..5) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
-        let one = __ctx.int(1);
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
+        let one = ctx.int(1);
         let expr = (&x * a + b).powi(n);
         let expanded = expr.expand();
         let orig_at_1 = expr.subs(&x, &one);
@@ -357,8 +357,8 @@ proptest! {
     /// i^(4k) == 1 for any k
     #[test]
     fn i_power_period_4(k in 0u32..25) {
-        let __ctx = shared_ctx().clone();
-        let i = __ctx.i_unit();
+        let ctx = shared_ctx().clone();
+        let i = ctx.i_unit();
         let result = i.powi((4 * k) as i64);
         prop_assert_eq!(format!("{result}"), "1",
             "i^({}) should be 1", 4 * k);
@@ -367,8 +367,8 @@ proptest! {
     /// i^(4k+1) == i
     #[test]
     fn i_power_mod_1(k in 0u32..25) {
-        let __ctx = shared_ctx().clone();
-        let i = __ctx.i_unit();
+        let ctx = shared_ctx().clone();
+        let i = ctx.i_unit();
         let result = i.powi((4 * k + 1) as i64);
         prop_assert_eq!(format!("{result}"), "I",
             "i^({}) should be I", 4 * k + 1);
@@ -377,8 +377,8 @@ proptest! {
     /// i^(4k+2) == -1
     #[test]
     fn i_power_mod_2(k in 0u32..25) {
-        let __ctx = shared_ctx().clone();
-        let i = __ctx.i_unit();
+        let ctx = shared_ctx().clone();
+        let i = ctx.i_unit();
         let result = i.powi((4 * k + 2) as i64);
         prop_assert_eq!(format!("{result}"), "-1",
             "i^({}) should be -1", 4 * k + 2);
@@ -387,8 +387,8 @@ proptest! {
     /// i^(4k+3) == -i
     #[test]
     fn i_power_mod_3(k in 0u32..25) {
-        let __ctx = shared_ctx().clone();
-        let i = __ctx.i_unit();
+        let ctx = shared_ctx().clone();
+        let i = ctx.i_unit();
         let result = i.powi((4 * k + 3) as i64);
         prop_assert_eq!(format!("{result}"), "-I",
             "i^({}) should be -I", 4 * k + 3);
@@ -403,17 +403,17 @@ proptest! {
 /// (1+i)^2 == 2i
 #[test]
 fn one_plus_i_squared_always_2i() {
-    let __ctx = Context::new();
-    let i = __ctx.i_unit();
-    let expr = (&__ctx.int(1) + &i).powi(2).expand();
+    let ctx = Context::new();
+    let i = ctx.i_unit();
+    let expr = (&ctx.int(1) + &i).powi(2).expand();
     assert_eq!(format!("{expr}"), "2*I");
 }
 
 /// sin²(x) + cos²(x) simplifies to 1
 #[test]
 fn pythagorean_identity() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
     let simplified = expr.simplify();
     assert_eq!(format!("{simplified}"), "1");
@@ -429,8 +429,8 @@ proptest! {
     /// sin²(kx) + cos²(kx) simplifies to 1 for integer k
     #[test]
     fn pythagorean_scaled(k in 1i64..5) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let kx = &x * k;
         let expr = &kx.sin().powi(2) + &kx.cos().powi(2);
         let simplified = expr.simplify();
@@ -490,8 +490,8 @@ proptest! {
     /// Polynomials can be differentiated without panic
     #[test]
     fn polynomial_differentiable(p in arb_polynomial()) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let dp = p.diff(&x);
         let s = format!("{dp}");
         prop_assert!(!s.is_empty());
@@ -500,8 +500,8 @@ proptest! {
     /// Polynomials can be integrated without panic
     #[test]
     fn polynomial_integrable(p in arb_polynomial()) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let ip = p.integrate(&x);
         let s = format!("{ip}");
         prop_assert!(!s.is_empty());
@@ -510,8 +510,8 @@ proptest! {
     /// factor then expand roundtrip for (x-a)(x-b)
     #[test]
     fn factor_expand_roundtrip(a in -5i64..6, b in -5i64..6) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let f1 = &x - a;
         let f2 = &x - b;
         let product = &f1 * &f2;
@@ -533,9 +533,9 @@ proptest! {
     /// Integer addition: symplex int(a) + int(b) == int(a+b)
     #[test]
     fn numeric_add_correct(a in -50i64..50, b in -50i64..50) {
-        let __ctx = shared_ctx().clone();
-        let ea = __ctx.int(a);
-        let eb = __ctx.int(b);
+        let ctx = shared_ctx().clone();
+        let ea = ctx.int(a);
+        let eb = ctx.int(b);
         let result = &ea + &eb;
         let expected = a + b;
         prop_assert_eq!(format!("{result}"), format!("{expected}"));
@@ -544,9 +544,9 @@ proptest! {
     /// Integer multiplication: symplex int(a) * int(b) == int(a*b)
     #[test]
     fn numeric_mul_correct(a in -50i64..50, b in -50i64..50) {
-        let __ctx = shared_ctx().clone();
-        let ea = __ctx.int(a);
-        let eb = __ctx.int(b);
+        let ctx = shared_ctx().clone();
+        let ea = ctx.int(a);
+        let eb = ctx.int(b);
         let result = &ea * &eb;
         let expected = a * b;
         prop_assert_eq!(format!("{result}"), format!("{expected}"));
@@ -555,8 +555,8 @@ proptest! {
     /// Integer powers: symplex int(a)^n == a^n for small values
     #[test]
     fn numeric_pow_correct(a in -5i64..5, n in 0i64..5) {
-        let __ctx = shared_ctx().clone();
-        let ea = __ctx.int(a);
+        let ctx = shared_ctx().clone();
+        let ea = ctx.int(a);
         let result = ea.powi(n);
         let expected = a.pow(n as u32);
         prop_assert_eq!(format!("{result}"), format!("{expected}"));
@@ -573,15 +573,15 @@ proptest! {
     /// Product rule (numerical): d/dx(f*g) ≈ f'*g + f*g' at x=2
     #[test]
     fn product_rule_numerical(f in arb_polynomial(), g in arb_polynomial()) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let fg = &f * &g;
         let d_fg = fg.diff(&x);
         let df = f.diff(&x);
         let dg = g.diff(&x);
         let product_rule = &(&df * &g) + &(&f * &dg);
 
-        let pt = __ctx.int(2);
+        let pt = ctx.int(2);
         let mut bail = common::BailCounter::new("product_rule_numerical");
         let lhs = d_fg.subs(&x, &pt).eval_f64();
         let rhs = product_rule.subs(&x, &pt).eval_f64();
@@ -613,8 +613,8 @@ proptest! {
     /// Substitution identity: e.subs(&x, &x) displays same as e
     #[test]
     fn substitution_identity(e in arb_expr(3)) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let substituted = e.subs(&x, &x);
         prop_assert_eq!(format!("{e}"), format!("{substituted}"),
             "subs(x, x) should be identity");

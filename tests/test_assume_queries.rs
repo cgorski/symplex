@@ -8,8 +8,8 @@ use symplex::prelude::*;
 
 #[test]
 fn is_even_for_known_even() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x").assume(Assumption::Even);
+    let ctx = Context::new();
+    let x = ctx.symbol("x").assume(Assumption::Even);
     assert_eq!(x.is_even(), Some(true));
     // even implies not odd
     assert_eq!(x.is_odd(), Some(false));
@@ -26,69 +26,69 @@ fn is_odd_for_known_odd() {
 
 #[test]
 fn is_even_odd_for_integer_literals() {
-    let __ctx = Context::new();
-    assert_eq!(__ctx.int(4).is_even(), Some(true));
-    assert_eq!(__ctx.int(4).is_odd(), Some(false));
-    assert_eq!(__ctx.int(7).is_even(), Some(false));
-    assert_eq!(__ctx.int(7).is_odd(), Some(true));
+    let ctx = Context::new();
+    assert_eq!(ctx.int(4).is_even(), Some(true));
+    assert_eq!(ctx.int(4).is_odd(), Some(false));
+    assert_eq!(ctx.int(7).is_even(), Some(false));
+    assert_eq!(ctx.int(7).is_odd(), Some(true));
     // zero is even
-    assert_eq!(__ctx.int(0).is_even(), Some(true));
-    assert_eq!(__ctx.int(0).is_odd(), Some(false));
+    assert_eq!(ctx.int(0).is_even(), Some(true));
+    assert_eq!(ctx.int(0).is_odd(), Some(false));
 }
 
 #[test]
 fn is_prime_for_literal() {
-    let __ctx = Context::new();
-    assert_eq!(__ctx.int(7).is_prime(), Some(true));
-    assert_eq!(__ctx.int(4).is_prime(), Some(false));
-    assert_eq!(__ctx.int(2).is_prime(), Some(true));
+    let ctx = Context::new();
+    assert_eq!(ctx.int(7).is_prime(), Some(true));
+    assert_eq!(ctx.int(4).is_prime(), Some(false));
+    assert_eq!(ctx.int(2).is_prime(), Some(true));
     // 1 is neither prime nor composite; the system returns None
-    assert_eq!(__ctx.int(1).is_prime(), None);
+    assert_eq!(ctx.int(1).is_prime(), None);
 }
 
 #[test]
 fn is_composite_for_literal() {
-    let __ctx = Context::new();
-    assert_eq!(__ctx.int(4).is_composite(), Some(true));
-    assert_eq!(__ctx.int(9).is_composite(), Some(true));
-    assert_eq!(__ctx.int(7).is_composite(), Some(false));
+    let ctx = Context::new();
+    assert_eq!(ctx.int(4).is_composite(), Some(true));
+    assert_eq!(ctx.int(9).is_composite(), Some(true));
+    assert_eq!(ctx.int(7).is_composite(), Some(false));
 }
 
 #[test]
 fn is_transcendental_for_pi() {
-    let __ctx = Context::new();
-    assert_eq!(__ctx.pi().is_transcendental(), Some(true));
+    let ctx = Context::new();
+    assert_eq!(ctx.pi().is_transcendental(), Some(true));
     // transcendental implies not algebraic
-    assert_eq!(__ctx.pi().is_algebraic(), Some(false));
+    assert_eq!(ctx.pi().is_algebraic(), Some(false));
 }
 
 #[test]
 fn is_irrational_for_pi() {
-    let __ctx = Context::new();
-    assert_eq!(__ctx.pi().is_irrational(), Some(true));
+    let ctx = Context::new();
+    assert_eq!(ctx.pi().is_irrational(), Some(true));
     // irrational implies not rational
-    assert_eq!(__ctx.pi().is_rational(), Some(false));
+    assert_eq!(ctx.pi().is_rational(), Some(false));
 }
 
 #[test]
 fn is_algebraic_for_rational() {
-    let __ctx = Context::new();
-    assert_eq!(__ctx.rational(1, 3).is_algebraic(), Some(true));
+    let ctx = Context::new();
+    assert_eq!(ctx.rational(1, 3).is_algebraic(), Some(true));
     // rational numbers are not transcendental
-    assert_eq!(__ctx.rational(1, 3).is_transcendental(), Some(false));
+    assert_eq!(ctx.rational(1, 3).is_transcendental(), Some(false));
 }
 
 #[test]
 fn is_algebraic_for_integer() {
-    let __ctx = Context::new();
-    assert_eq!(__ctx.int(5).is_algebraic(), Some(true));
-    assert_eq!(__ctx.int(5).is_irrational(), Some(false));
+    let ctx = Context::new();
+    assert_eq!(ctx.int(5).is_algebraic(), Some(true));
+    assert_eq!(ctx.int(5).is_irrational(), Some(false));
 }
 
 #[test]
 fn is_hermitian_for_real_symbol() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x").assume(Assumption::Real);
+    let ctx = Context::new();
+    let x = ctx.symbol("x").assume(Assumption::Real);
     // real values are hermitian
     assert_eq!(x.is_hermitian(), Some(true));
 }
@@ -106,8 +106,8 @@ fn is_even_unknown_for_bare_symbol() {
 
 #[test]
 fn is_hermitian_for_assumed_hermitian() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x").assume(Assumption::Hermitian);
+    let ctx = Context::new();
+    let x = ctx.symbol("x").assume(Assumption::Hermitian);
     assert_eq!(x.is_hermitian(), Some(true));
 }
 
@@ -160,9 +160,9 @@ fn conjugate_of_complex_literal() {
 
 #[test]
 fn arg_of_positive_real() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // arg(1) = atan2(0, 1) = 0
-    let one = __ctx.int(1);
+    let one = ctx.int(1);
     let a = one.arg().eval();
     let s = format!("{a}");
     assert!(
@@ -189,9 +189,9 @@ fn arg_of_one_plus_i() {
 
 #[test]
 fn arg_first_quadrant() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // arg(1 + i) = π/4
-    let z = &__ctx.int(1) + &__ctx.i_unit();
+    let z = &ctx.int(1) + &ctx.i_unit();
     let a = z.arg().eval();
     // Should be atan2(1, 1) = π/4
     let v = a.eval_f64().expect("evalf should succeed for arg(1+i)");
@@ -200,9 +200,9 @@ fn arg_first_quadrant() {
 
 #[test]
 fn arg_second_quadrant() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // arg(-1 + i) = 3π/4
-    let z = &__ctx.int(-1) + &__ctx.i_unit();
+    let z = &ctx.int(-1) + &ctx.i_unit();
     let a = z.arg().eval();
     let v = a.eval_f64().expect("evalf should succeed for arg(-1+i)");
     assert!(
@@ -213,9 +213,9 @@ fn arg_second_quadrant() {
 
 #[test]
 fn arg_negative_real() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // arg(-1) = π
-    let z = __ctx.int(-1);
+    let z = ctx.int(-1);
     let a = z.arg().eval();
     let v = a.eval_f64().expect("evalf should succeed for arg(-1)");
     assert!(
@@ -226,9 +226,9 @@ fn arg_negative_real() {
 
 #[test]
 fn atan2_basic() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // atan2(1, 1) = π/4
-    let one = __ctx.int(1);
+    let one = ctx.int(1);
     let result = one.atan2(&one).eval();
     let v = result.eval_f64().expect("evalf should succeed for atan2(1,1)");
     assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
@@ -236,10 +236,10 @@ fn atan2_basic() {
 
 #[test]
 fn atan2_on_axes() {
-    let __ctx = Context::new();
-    let zero = __ctx.int(0);
-    let one = __ctx.int(1);
-    let neg_one = __ctx.int(-1);
+    let ctx = Context::new();
+    let zero = ctx.int(0);
+    let one = ctx.int(1);
+    let neg_one = ctx.int(-1);
 
     // atan2(0, 1) = 0
     assert_eq!(format!("{}", zero.atan2(&one).eval()), "0");

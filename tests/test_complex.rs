@@ -248,23 +248,23 @@ fn euler_exp_i_pi_plus_1_is_zero() {
 
 #[test]
 fn global_i_unit() {
-    let __ctx = Context::new();
-    let i = __ctx.i_unit();
+    let ctx = Context::new();
+    let i = ctx.i_unit();
     assert_eq!(format!("{i}"), "I");
     assert_eq!(i.is_imaginary(), Some(true));
 }
 
 #[test]
 fn global_pi() {
-    let __ctx = Context::new();
-    let pi = __ctx.pi();
+    let ctx = Context::new();
+    let pi = ctx.pi();
     assert_eq!(format!("{pi}"), "pi");
 }
 
 #[test]
 fn global_e() {
-    let __ctx = Context::new();
-    let e = __ctx.e();
+    let ctx = Context::new();
+    let e = ctx.e();
     assert_eq!(format!("{e}"), "E");
 }
 

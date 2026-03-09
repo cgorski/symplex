@@ -9,10 +9,10 @@ use symplex::matrix::Matrix;
 use symplex::prelude::*;
 #[test]
 fn minor_2x2_removes_row_and_col() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(3), __ctx.int(4)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(3), ctx.int(4)],
     ]).unwrap();
     // Removing row 0, col 0 → [[4]]
     let m00 = m.minor(0, 0).unwrap();
@@ -35,11 +35,11 @@ fn minor_2x2_removes_row_and_col() {
 
 #[test]
 fn minor_3x3_produces_2x2() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)],
-        vec![__ctx.int(4), __ctx.int(5), __ctx.int(6)],
-        vec![__ctx.int(7), __ctx.int(8), __ctx.int(9)],
+        vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+        vec![ctx.int(4), ctx.int(5), ctx.int(6)],
+        vec![ctx.int(7), ctx.int(8), ctx.int(9)],
     ]).unwrap();
     // Remove row 1, col 1 → [[1,3],[7,9]]
     let sub = m.minor(1, 1).unwrap();
@@ -57,10 +57,10 @@ fn minor_3x3_produces_2x2() {
 
 #[test]
 fn cofactor_2x2_numeric() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(3), __ctx.int(7)],
-        vec![__ctx.int(1), __ctx.int(5)],
+        vec![ctx.int(3), ctx.int(7)],
+        vec![ctx.int(1), ctx.int(5)],
     ]).unwrap();
     // C(0,0) = (+1)*det([[5]]) = 5
     let c00 = m.cofactor(0, 0).unwrap();
@@ -82,11 +82,11 @@ fn cofactor_2x2_numeric() {
 
 #[test]
 fn adjugate_2x2_numeric() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // For [[a,b],[c,d]], adj = [[d,-b],[-c,a]]
     let m = Matrix::new(vec![
-        vec![__ctx.int(3), __ctx.int(7)],
-        vec![__ctx.int(1), __ctx.int(5)],
+        vec![ctx.int(3), ctx.int(7)],
+        vec![ctx.int(1), ctx.int(5)],
     ]).unwrap();
     let adj = m.adjugate().unwrap();
     assert_eq!(format!("{}", adj.get(0, 0)), "5");
@@ -120,12 +120,12 @@ fn inverse_identity_is_identity() {
 
 #[test]
 fn inverse_2x2_numeric() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // [[3,7],[1,5]], det=8
     // inv = (1/8)*[[5,-7],[-1,3]]
     let m = Matrix::new(vec![
-        vec![__ctx.int(3), __ctx.int(7)],
-        vec![__ctx.int(1), __ctx.int(5)],
+        vec![ctx.int(3), ctx.int(7)],
+        vec![ctx.int(1), ctx.int(5)],
     ]).unwrap();
     let inv = m.inv().expect("non-singular 2x2 should be invertible");
     let inv = inv.simplify();
@@ -137,21 +137,21 @@ fn inverse_2x2_numeric() {
 
 #[test]
 fn inverse_singular_returns_none() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // [[1,2],[2,4]] has det=0
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(2), __ctx.int(4)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(2), ctx.int(4)],
     ]).unwrap();
     assert!(m.inv().is_err(), "singular matrix should return Err");
 }
 
 #[test]
 fn inverse_times_original_is_identity_2x2() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(3), __ctx.int(4)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(3), ctx.int(4)],
     ]).unwrap();
     let inv = m.inv().expect("non-singular");
     let product = m.matmul(&inv).unwrap().simplify();
@@ -169,12 +169,12 @@ fn inverse_times_original_is_identity_2x2() {
 
 #[test]
 fn inverse_3x3_numeric() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Upper-triangular [[1,2,3],[0,1,4],[0,0,1]], det = 1
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)],
-        vec![__ctx.int(0), __ctx.int(1), __ctx.int(4)],
-        vec![__ctx.int(0), __ctx.int(0), __ctx.int(1)],
+        vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+        vec![ctx.int(0), ctx.int(1), ctx.int(4)],
+        vec![ctx.int(0), ctx.int(0), ctx.int(1)],
     ]).unwrap();
     let det = m.det().unwrap();
     assert_eq!(format!("{det}"), "1", "det should be 1");
@@ -196,8 +196,8 @@ fn inverse_3x3_numeric() {
 
 #[test]
 fn inverse_1x1() {
-    let __ctx = Context::new();
-    let m = Matrix::new(vec![vec![__ctx.int(5)]]).unwrap();
+    let ctx = Context::new();
+    let m = Matrix::new(vec![vec![ctx.int(5)]]).unwrap();
     let inv = m
         .inv()
         .expect("1x1 with nonzero entry should be invertible");
@@ -210,10 +210,10 @@ fn inverse_1x1() {
 
 #[test]
 fn char_poly_identity_2x2() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // det(I - λI) = det([1-λ, 0; 0, 1-λ]) = (1-λ)² = λ² - 2λ + 1
-    let lambda = __ctx.symbol("lambda");
-    let id = Matrix::identity(&__ctx, 2);
+    let lambda = ctx.symbol("lambda");
+    let id = Matrix::identity(&ctx, 2);
     let cp = id.char_poly(&lambda).unwrap();
     let s = format!("{cp}");
     // Should contain lambda^2
@@ -222,7 +222,7 @@ fn char_poly_identity_2x2() {
         "char poly of I2 should contain lambda: {s}"
     );
     // Verify that substituting λ=1 gives 0
-    let at_one = cp.subs(&lambda, &__ctx.int(1)).simplify();
+    let at_one = cp.subs(&lambda, &ctx.int(1)).simplify();
     assert_eq!(
         format!("{at_one}"),
         "0",
@@ -232,41 +232,41 @@ fn char_poly_identity_2x2() {
 
 #[test]
 fn char_poly_2x2_numeric() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // [[2,1],[1,2]]
     // det([[2-λ, 1],[1, 2-λ]]) = (2-λ)² - 1 = λ²-4λ+3
-    let lambda = __ctx.symbol("lambda");
+    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
-        vec![__ctx.int(2), __ctx.int(1)],
-        vec![__ctx.int(1), __ctx.int(2)],
+        vec![ctx.int(2), ctx.int(1)],
+        vec![ctx.int(1), ctx.int(2)],
     ]).unwrap();
     let cp = m.char_poly(&lambda).unwrap();
     let s = format!("{cp}");
     assert!(s.contains("lambda"), "char poly should mention lambda: {s}");
 
     // Eigenvalues are 1 and 3: verify cp(1)=0 and cp(3)=0
-    let at_1 = cp.subs(&lambda, &__ctx.int(1)).simplify();
+    let at_1 = cp.subs(&lambda, &ctx.int(1)).simplify();
     assert_eq!(format!("{at_1}"), "0", "cp(1) should be 0, got: {at_1}");
 
-    let at_3 = cp.subs(&lambda, &__ctx.int(3)).simplify();
+    let at_3 = cp.subs(&lambda, &ctx.int(3)).simplify();
     assert_eq!(format!("{at_3}"), "0", "cp(3) should be 0, got: {at_3}");
 }
 
 #[test]
 fn char_poly_diagonal_3x3() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // diag(2, 5, 7) → cp = (2-λ)(5-λ)(7-λ)
-    let lambda = __ctx.symbol("lambda");
+    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
-        vec![__ctx.int(2), __ctx.int(0), __ctx.int(0)],
-        vec![__ctx.int(0), __ctx.int(5), __ctx.int(0)],
-        vec![__ctx.int(0), __ctx.int(0), __ctx.int(7)],
+        vec![ctx.int(2), ctx.int(0), ctx.int(0)],
+        vec![ctx.int(0), ctx.int(5), ctx.int(0)],
+        vec![ctx.int(0), ctx.int(0), ctx.int(7)],
     ]).unwrap();
     let cp = m.char_poly(&lambda).unwrap();
 
     // Verify roots at 2, 5, 7
     for val in [2, 5, 7] {
-        let at_val = cp.subs(&lambda, &__ctx.int(val)).simplify();
+        let at_val = cp.subs(&lambda, &ctx.int(val)).simplify();
         assert_eq!(
             format!("{at_val}"),
             "0",
@@ -277,13 +277,13 @@ fn char_poly_diagonal_3x3() {
 
 #[test]
 fn char_poly_1x1() {
-    let __ctx = Context::new();
-    let lambda = __ctx.symbol("lambda");
-    let m = Matrix::new(vec![vec![__ctx.int(42)]]).unwrap();
+    let ctx = Context::new();
+    let lambda = ctx.symbol("lambda");
+    let m = Matrix::new(vec![vec![ctx.int(42)]]).unwrap();
     let cp = m.char_poly(&lambda).unwrap();
     // det([[42 - λ]]) = 42 - λ
     // Substituting λ=42 → 0
-    let at_42 = cp.subs(&lambda, &__ctx.int(42)).simplify();
+    let at_42 = cp.subs(&lambda, &ctx.int(42)).simplify();
     assert_eq!(format!("{at_42}"), "0");
 }
 
@@ -293,12 +293,12 @@ fn char_poly_1x1() {
 
 #[test]
 fn eigenvals_2x2() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // [[2,1],[1,2]] → eigenvalues 1, 3
-    let lambda = __ctx.symbol("lambda");
+    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
-        vec![__ctx.int(2), __ctx.int(1)],
-        vec![__ctx.int(1), __ctx.int(2)],
+        vec![ctx.int(2), ctx.int(1)],
+        vec![ctx.int(1), ctx.int(2)],
     ]).unwrap();
     let evals = m.eigenvals(&lambda).unwrap();
     assert_eq!(
@@ -319,13 +319,13 @@ fn eigenvals_2x2() {
 
 #[test]
 fn eigenvals_3x3_diagonal() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // diag(1, 2, 3) → eigenvalues 1, 2, 3
-    let lambda = __ctx.symbol("lambda");
+    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(0), __ctx.int(0)],
-        vec![__ctx.int(0), __ctx.int(2), __ctx.int(0)],
-        vec![__ctx.int(0), __ctx.int(0), __ctx.int(3)],
+        vec![ctx.int(1), ctx.int(0), ctx.int(0)],
+        vec![ctx.int(0), ctx.int(2), ctx.int(0)],
+        vec![ctx.int(0), ctx.int(0), ctx.int(3)],
     ]).unwrap();
     let evals = m.eigenvals(&lambda).unwrap();
     assert_eq!(
@@ -346,10 +346,10 @@ fn eigenvals_3x3_diagonal() {
 
 #[test]
 fn eigenvals_identity() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // I_2 → eigenvalue 1 (double)
-    let lambda = __ctx.symbol("lambda");
-    let id = Matrix::identity(&__ctx, 2);
+    let lambda = ctx.symbol("lambda");
+    let id = Matrix::identity(&ctx, 2);
     let evals = id.eigenvals(&lambda).unwrap();
     // The solver may return [1, 1] or just [1] depending on multiplicity handling.
     assert!(
@@ -367,9 +367,9 @@ fn eigenvals_identity() {
 
 #[test]
 fn eigenvals_1x1() {
-    let __ctx = Context::new();
-    let lambda = __ctx.symbol("lambda");
-    let m = Matrix::new(vec![vec![__ctx.int(7)]]).unwrap();
+    let ctx = Context::new();
+    let lambda = ctx.symbol("lambda");
+    let m = Matrix::new(vec![vec![ctx.int(7)]]).unwrap();
     let evals = m.eigenvals(&lambda).unwrap();
     assert_eq!(evals.len(), 1, "1x1 should have 1 eigenvalue");
     assert_eq!(format!("{}", evals[0]), "7");
@@ -382,10 +382,10 @@ fn eigenvals_1x1() {
 #[test]
 #[should_panic(expected = "requires a square matrix")]
 fn minor_non_square_panics() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)],
-        vec![__ctx.int(4), __ctx.int(5), __ctx.int(6)],
+        vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+        vec![ctx.int(4), ctx.int(5), ctx.int(6)],
     ]).unwrap();
     let _ = m.minor(0, 0).unwrap();
 }
@@ -393,10 +393,10 @@ fn minor_non_square_panics() {
 #[test]
 #[should_panic(expected = "requires a square matrix")]
 fn inverse_non_square_panics() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)],
-        vec![__ctx.int(4), __ctx.int(5), __ctx.int(6)],
+        vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+        vec![ctx.int(4), ctx.int(5), ctx.int(6)],
     ]).unwrap();
     let _ = m.inv().unwrap();
 }
@@ -404,12 +404,12 @@ fn inverse_non_square_panics() {
 #[test]
 #[should_panic(expected = "requires a square matrix")]
 fn char_poly_non_square_panics() {
-    let __ctx = Context::new();
-    let lambda = __ctx.symbol("lambda");
+    let ctx = Context::new();
+    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(3), __ctx.int(4)],
-        vec![__ctx.int(5), __ctx.int(6)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(3), ctx.int(4)],
+        vec![ctx.int(5), ctx.int(6)],
     ]).unwrap();
     let _ = m.char_poly(&lambda).unwrap();
 }
@@ -420,24 +420,24 @@ fn char_poly_non_square_panics() {
 
 #[test]
 fn eigenvector_satisfies_eigenvalue_equation() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Matrix [[2,1],[1,2]] has eigenvalues 1 and 3.
     // Eigenvector for λ=1: [1, -1]  (A*v = 1*v)
     // Eigenvector for λ=3: [1,  1]  (A*v = 3*v)
     let a = Matrix::new(vec![
-        vec![__ctx.int(2), __ctx.int(1)],
-        vec![__ctx.int(1), __ctx.int(2)],
+        vec![ctx.int(2), ctx.int(1)],
+        vec![ctx.int(1), ctx.int(2)],
     ]).unwrap();
 
     // Verify eigenvalues first
-    let lambda = __ctx.symbol("lambda");
+    let lambda = ctx.symbol("lambda");
     let evals = a.eigenvals(&lambda).unwrap();
     assert_eq!(evals.len(), 2, "should have 2 eigenvalues");
 
     // Eigenvector for λ=1: v = [1, -1]
-    let v1 = Matrix::col_vector(vec![__ctx.int(1), __ctx.int(-1)]);
+    let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(-1)]);
     let av1 = a.matmul(&v1).unwrap().simplify();
-    let lv1 = v1.scale(&__ctx.int(1)).simplify(); // 1 * v1
+    let lv1 = v1.scale(&ctx.int(1)).simplify(); // 1 * v1
     for i in 0..2 {
         let diff = (av1.get(i, 0) - lv1.get(i, 0)).simplify();
         assert!(
@@ -449,9 +449,9 @@ fn eigenvector_satisfies_eigenvalue_equation() {
     }
 
     // Eigenvector for λ=3: v = [1, 1]
-    let v3 = Matrix::col_vector(vec![__ctx.int(1), __ctx.int(1)]);
+    let v3 = Matrix::col_vector(vec![ctx.int(1), ctx.int(1)]);
     let av3 = a.matmul(&v3).unwrap().simplify();
-    let lv3 = v3.scale(&__ctx.int(3)).simplify(); // 3 * v3
+    let lv3 = v3.scale(&ctx.int(3)).simplify(); // 3 * v3
     for i in 0..2 {
         let diff = (av3.get(i, 0) - lv3.get(i, 0)).simplify();
         assert!(
@@ -465,19 +465,19 @@ fn eigenvector_satisfies_eigenvalue_equation() {
 
 #[test]
 fn complex_eigenvalues_rotation_matrix() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Rotation matrix [[0, -1], [1, 0]] has eigenvalues ±i.
     // Characteristic polynomial: λ² + 1 = 0 → no real roots.
-    let lambda = __ctx.symbol("lambda");
+    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
-        vec![__ctx.int(0), __ctx.int(-1)],
-        vec![__ctx.int(1), __ctx.int(0)],
+        vec![ctx.int(0), ctx.int(-1)],
+        vec![ctx.int(1), ctx.int(0)],
     ]).unwrap();
 
     // Verify characteristic polynomial: λ² + 1
     let cp = m.char_poly(&lambda).unwrap();
     // cp(0) should be 1 (det of original matrix)
-    let cp_at_0 = cp.subs(&lambda, &__ctx.int(0)).simplify();
+    let cp_at_0 = cp.subs(&lambda, &ctx.int(0)).simplify();
     assert_eq!(
         format!("{cp_at_0}"),
         "1",
@@ -501,7 +501,7 @@ fn complex_eigenvalues_rotation_matrix() {
     );
 
     // Verify that λ² + 1 has no real roots by checking it's always positive for real λ
-    let cp_at_5 = cp.subs(&lambda, &__ctx.int(5)).simplify();
+    let cp_at_5 = cp.subs(&lambda, &ctx.int(5)).simplify();
     let val = cp_at_5.eval_f64().expect("cp(5) should evaluate");
     assert!(val > 0.0, "cp(5) = 5² + 1 = 26, got {val}");
 }
@@ -512,11 +512,11 @@ fn complex_eigenvalues_rotation_matrix() {
 
 #[test]
 fn det_inverse_equals_reciprocal_det() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // For A = [[3,7],[1,5]], det(A) = 8, so det(A⁻¹) should be 1/8
     let a = Matrix::new(vec![
-        vec![__ctx.int(3), __ctx.int(7)],
-        vec![__ctx.int(1), __ctx.int(5)],
+        vec![ctx.int(3), ctx.int(7)],
+        vec![ctx.int(1), ctx.int(5)],
     ]).unwrap();
     let det_a = a.det().unwrap();
     assert_eq!(format!("{det_a}"), "8", "det(A) should be 8");
@@ -531,9 +531,9 @@ fn det_inverse_equals_reciprocal_det() {
 
     // Also verify with a 3x3: upper-triangular [[1,2,3],[0,1,4],[0,0,1]], det=1
     let b = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)],
-        vec![__ctx.int(0), __ctx.int(1), __ctx.int(4)],
-        vec![__ctx.int(0), __ctx.int(0), __ctx.int(1)],
+        vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+        vec![ctx.int(0), ctx.int(1), ctx.int(4)],
+        vec![ctx.int(0), ctx.int(0), ctx.int(1)],
     ]).unwrap();
     let det_b = b.det().unwrap();
     assert_eq!(format!("{det_b}"), "1", "det(B) should be 1");
@@ -553,12 +553,12 @@ fn det_inverse_equals_reciprocal_det() {
 
 #[test]
 fn eigenvals_2x2_irrational() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // [[0, 2], [1, 0]] has eigenvalues ±√2
-    let lambda = __ctx.symbol("lambda");
+    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
-        vec![__ctx.int(0), __ctx.int(2)],
-        vec![__ctx.int(1), __ctx.int(0)],
+        vec![ctx.int(0), ctx.int(2)],
+        vec![ctx.int(1), ctx.int(0)],
     ]).unwrap();
     let evals = m.eigenvals(&lambda).unwrap();
     assert_eq!(
@@ -585,12 +585,12 @@ fn eigenvals_2x2_irrational() {
 
 #[test]
 fn det_equals_det_transpose() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // det(A) = det(A^T) for a 3x3 matrix
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)],
-        vec![__ctx.int(0), __ctx.int(4), __ctx.int(5)],
-        vec![__ctx.int(1), __ctx.int(0), __ctx.int(6)],
+        vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+        vec![ctx.int(0), ctx.int(4), ctx.int(5)],
+        vec![ctx.int(1), ctx.int(0), ctx.int(6)],
     ]).unwrap();
     let det_a = m.det().unwrap();
     let det_at = m.transpose().det().unwrap();
@@ -606,13 +606,13 @@ fn det_equals_det_transpose() {
 
 #[test]
 fn eigenvals_3x3_upper_triangular() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Upper-triangular [[1,5,3],[0,2,7],[0,0,3]] has eigenvalues 1, 2, 3
-    let lambda = __ctx.symbol("lambda");
+    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(5), __ctx.int(3)],
-        vec![__ctx.int(0), __ctx.int(2), __ctx.int(7)],
-        vec![__ctx.int(0), __ctx.int(0), __ctx.int(3)],
+        vec![ctx.int(1), ctx.int(5), ctx.int(3)],
+        vec![ctx.int(0), ctx.int(2), ctx.int(7)],
+        vec![ctx.int(0), ctx.int(0), ctx.int(3)],
     ]).unwrap();
     let evals = m.eigenvals(&lambda).unwrap();
     assert_eq!(

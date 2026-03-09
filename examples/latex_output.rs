@@ -8,12 +8,12 @@ use symplex::prelude::*;
 fn main() {
     println!("=== LaTeX Output ===\n");
 
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; x, y);
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y);
 
     let exprs: Vec<(&str, Ex)> = vec![
         ("Quadratic", expr!(x ^ 2 + 2 * x + 1)),
-        ("Fraction", __ctx.rational(3, 7)),
+        ("Fraction", ctx.rational(3, 7)),
         ("Trig", expr!(sin(x) ^ 2 + cos(x) ^ 2)),
         ("Derivative", expr!(x ^ 3 + x).diff(&x)),
         ("Square root", expr!(x).sqrt()),

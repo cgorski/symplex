@@ -39,8 +39,8 @@ const POINTS: &[i64] = &[-3, -2, -1, 1, 2, 3, 4, 5];
 
 #[test]
 fn diff_integrate_roundtrip_x2() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let f = x.powi(2);
     let roundtrip = f.integrate(&x).diff(&x);
     assert_numerically_equal(&f, &roundtrip, &x, POINTS, 1e-10, "d/dx(∫ x² dx) == x²");
@@ -48,8 +48,8 @@ fn diff_integrate_roundtrip_x2() {
 
 #[test]
 fn diff_integrate_roundtrip_x3() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let f = x.powi(3);
     let roundtrip = f.integrate(&x).diff(&x);
     assert_numerically_equal(&f, &roundtrip, &x, POINTS, 1e-10, "d/dx(∫ x³ dx) == x³");
@@ -57,8 +57,8 @@ fn diff_integrate_roundtrip_x3() {
 
 #[test]
 fn diff_integrate_roundtrip_polynomial() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let f = &(&x.powi(3) * 2) - &(&x.powi(2) * 3) + &(&x * 5) - 7;
     let roundtrip = f.integrate(&x).diff(&x);
     assert_numerically_equal(&f, &roundtrip, &x, POINTS, 1e-10, "polynomial roundtrip");
@@ -70,8 +70,8 @@ fn diff_integrate_roundtrip_polynomial() {
 
 #[test]
 fn expand_preserves_x_plus_1_squared() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let original = (&x + 1).powi(2);
     let expanded = original.expand();
     assert_numerically_equal(&original, &expanded, &x, POINTS, 1e-10, "(x+1)² expand");
@@ -79,8 +79,8 @@ fn expand_preserves_x_plus_1_squared() {
 
 #[test]
 fn expand_preserves_x_plus_1_cubed() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let original = (&x + 1).powi(3);
     let expanded = original.expand();
     assert_numerically_equal(&original, &expanded, &x, POINTS, 1e-10, "(x+1)³ expand");
@@ -88,8 +88,8 @@ fn expand_preserves_x_plus_1_cubed() {
 
 #[test]
 fn expand_preserves_product_of_sums() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let original = &(&x + 1) * &(&x - 1);
     let expanded = original.expand();
     assert_numerically_equal(&original, &expanded, &x, POINTS, 1e-10, "(x+1)(x-1) expand");
@@ -101,8 +101,8 @@ fn expand_preserves_product_of_sums() {
 
 #[test]
 fn simplify_sin2_cos2_value() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let original = &x.sin().powi(2) + &x.cos().powi(2);
     let simplified = original.simplify();
     assert_numerically_equal(
@@ -117,8 +117,8 @@ fn simplify_sin2_cos2_value() {
 
 #[test]
 fn simplify_exp_ln_value() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let original = x.ln().exp();
     let simplified = original.simplify();
     // Only check at positive points (ln needs positive input)
@@ -139,8 +139,8 @@ fn simplify_exp_ln_value() {
 
 #[test]
 fn factor_x2_minus_1_value() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let original = &x.powi(2) - 1;
     let factored = original.factor(&x);
     assert_numerically_equal(&original, &factored, &x, POINTS, 1e-10, "factor x²-1");
@@ -148,8 +148,8 @@ fn factor_x2_minus_1_value() {
 
 #[test]
 fn factor_x3_minus_x_value() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let original = &x.powi(3) - &x;
     let factored = original.factor(&x);
     assert_numerically_equal(&original, &factored, &x, POINTS, 1e-10, "factor x³-x");
@@ -161,8 +161,8 @@ fn factor_x3_minus_x_value() {
 
 #[test]
 fn solve_verify_quadratic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let eq = &x.powi(2) - &(&x * 5) + 6;
     let roots = eq.solve_or_empty(&x);
     assert!(!roots.is_empty(), "quadratic should have roots");
@@ -179,8 +179,8 @@ fn solve_verify_quadratic() {
 
 #[test]
 fn solve_verify_cubic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let eq = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6;
     let roots = eq.solve_or_empty(&x);
     assert!(!roots.is_empty(), "cubic should have roots");
@@ -201,9 +201,8 @@ fn solve_verify_cubic() {
 
 #[test]
 fn trig_expand_preserves_sin_2x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let ctx = __ctx.clone();
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let two = ctx.int(2);
     let angle = &x * &two;
     let original = angle.sin();
@@ -220,9 +219,8 @@ fn trig_expand_preserves_sin_2x() {
 
 #[test]
 fn trig_expand_preserves_cos_2x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let ctx = __ctx.clone();
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let two = ctx.int(2);
     let angle = &x * &two;
     let original = angle.cos();
@@ -243,9 +241,9 @@ fn trig_expand_preserves_cos_2x() {
 
 #[test]
 fn log_expand_preserves_value() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let original = (&x * &y).ln();
     let expanded = original.expand_log();
     // Only check positive values (ln domain)
@@ -265,8 +263,8 @@ fn log_expand_preserves_value() {
 
 #[test]
 fn maclaurin_sin_approximates_at_small_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.sin().maclaurin(&x, 5).expand();
     // At x=0.1, sin(0.1) ≈ 0.0998334...
     // The series x - x³/6 + x⁵/120 should be close
@@ -283,8 +281,8 @@ fn maclaurin_sin_approximates_at_small_x() {
 
 #[test]
 fn maclaurin_exp_approximates_at_small_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.exp().maclaurin(&x, 6).expand();
     let approx = series.subs_i64(&x, 1).eval_f64()
         .expect("Maclaurin exp evaluation should succeed");
@@ -301,8 +299,8 @@ fn maclaurin_exp_approximates_at_small_x() {
 
 #[test]
 fn complex_i_squared_numerically() {
-    let __ctx = Context::new();
-    let i = __ctx.i_unit();
+    let ctx = Context::new();
+    let i = ctx.i_unit();
     let result = i.powi(2);
     let f = result.eval_f64().expect("i² evaluation should succeed");
     assert!((f - (-1.0)).abs() < 1e-10, "i² should be -1: {f}");
@@ -310,9 +308,9 @@ fn complex_i_squared_numerically() {
 
 #[test]
 fn complex_one_plus_i_fourth() {
-    let __ctx = Context::new();
-    let i = __ctx.i_unit();
-    let expr = (&__ctx.int(1) + &i).powi(4).expand();
+    let ctx = Context::new();
+    let i = ctx.i_unit();
+    let expr = (&ctx.int(1) + &i).powi(4).expand();
     let f = expr.eval_f64().expect("(1+i)⁴ evaluation should succeed");
     assert!((f - (-4.0)).abs() < 1e-10, "(1+i)⁴ should be -4: {f}");
 }
@@ -323,8 +321,8 @@ fn complex_one_plus_i_fourth() {
 
 #[test]
 fn evalf_pi_digits() {
-    let __ctx = Context::new();
-    let pi = __ctx.pi();
+    let ctx = Context::new();
+    let pi = ctx.pi();
     let result = pi.eval_decimal(20).unwrap();
     assert!(
         result.starts_with("3.14159265"),
@@ -334,8 +332,8 @@ fn evalf_pi_digits() {
 
 #[test]
 fn evalf_e_digits() {
-    let __ctx = Context::new();
-    let e = __ctx.e();
+    let ctx = Context::new();
+    let e = ctx.e();
     let result = e.eval_decimal(20).unwrap();
     assert!(
         result.starts_with("2.71828182"),
@@ -345,15 +343,15 @@ fn evalf_e_digits() {
 
 #[test]
 fn evalf_sqrt_2() {
-    let __ctx = Context::new();
-    let result = __ctx.int(2).sqrt().eval_decimal(15).unwrap();
+    let ctx = Context::new();
+    let result = ctx.int(2).sqrt().eval_decimal(15).unwrap();
     assert!(result.starts_with("1.41421356"), "√2: {result}");
 }
 
 #[test]
 fn evalf_ln_2() {
-    let __ctx = Context::new();
-    let result = __ctx.int(2).ln().eval_decimal(15).unwrap();
+    let ctx = Context::new();
+    let result = ctx.int(2).ln().eval_decimal(15).unwrap();
     assert!(result.starts_with("0.69314718"), "ln(2): {result}");
 }
 
@@ -381,69 +379,68 @@ fn check_simplify_value(
 
 #[test]
 fn value_rule_pythagorean() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     check_simplify_value(&(&x.sin().powi(2) + &x.cos().powi(2)), &x, 7, 10);
 }
 
 #[test]
 fn value_rule_exp_ln() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     check_simplify_value(&x.ln().exp(), &x, 3, 1);
 }
 
 #[test]
 fn value_rule_ln_exp() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     check_simplify_value(&x.exp().ln(), &x, 1, 2);
 }
 
 #[test]
 fn value_rule_abs_abs() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     check_simplify_value(&x.abs().abs(), &x, -3, 1);
 }
 
 #[test]
 fn value_rule_sqrt_sq() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let ctx = __ctx.clone();
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let half = ctx.rational(1, 2);
     check_simplify_value(&x.powi(2).pow(&half), &x, -5, 2);
 }
 
 #[test]
 fn value_rule_cosh_sinh_identity() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     check_simplify_value(&(&x.cosh().powi(2) - &x.sinh().powi(2)), &x, 3, 2);
 }
 
 #[test]
 fn value_rule_sin_div_cos() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     check_simplify_value(&(&x.sin() / &x.cos()), &x, 1, 3);
 }
 
 #[test]
 fn value_rule_sinh_div_cosh() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     check_simplify_value(&(&x.sinh() / &x.cosh()), &x, 1, 2);
 }
 
 #[test]
 fn value_rule_exp_mul() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
-    let point_x = __ctx.int(1);
-    let point_y = __ctx.int(2);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
+    let point_x = ctx.int(1);
+    let point_y = ctx.int(2);
     let expr = &x.exp() * &y.exp();
     let simplified = expr.simplify();
     let v1 = expr
@@ -464,8 +461,8 @@ fn value_rule_exp_mul() {
 
 #[test]
 fn value_rule_sin_asin() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let _ctx = Context::new();
     let _point = _ctx.rational(1, 2);
     check_simplify_value(&x.asin().sin(), &x, 1, 2);
@@ -473,29 +470,29 @@ fn value_rule_sin_asin() {
 
 #[test]
 fn value_rule_cos_acos() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     check_simplify_value(&x.acos().cos(), &x, 1, 2);
 }
 
 #[test]
 fn value_rule_tan_atan() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     check_simplify_value(&x.atan().tan(), &x, 3, 2);
 }
 
 #[test]
 fn value_rule_acosh_cosh() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     check_simplify_value(&x.cosh().acosh(), &x, -2, 1);
 }
 
 #[test]
 fn value_rule_pow_pow_integers() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.powi(2).powi(3); // (x^2)^3 = x^6
     check_simplify_value(&expr, &x, 3, 2);
 }

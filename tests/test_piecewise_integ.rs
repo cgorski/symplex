@@ -40,9 +40,9 @@ fn check_not_contains(expr: &Ex, needle: &str, label: &str) {
 /// Expected: Piecewise((-cos(a*x)/a, a != 0), (0, True))
 #[test]
 fn piecewise_sin_ax() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let a = __ctx.symbol("a");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol("a");
     let ax = &a * &x;
     let integrand = ax.sin();
     let result = integrand.integrate(&x);
@@ -59,8 +59,8 @@ fn piecewise_sin_ax() {
 
     // Verify numeric evaluation at a=2, x=1 matches the generic branch
     let val = result
-        .subs(&a, &__ctx.int(2))
-        .subs(&x, &__ctx.int(1));
+        .subs(&a, &ctx.int(2))
+        .subs(&x, &ctx.int(1));
     if let Ok(v) = val.eval_f64() {
         let expected = -(2.0_f64).cos() / 2.0;
         assert!(
@@ -77,9 +77,9 @@ fn piecewise_sin_ax() {
 /// Expected: Piecewise((exp(a*x)/a, a != 0), (x, True))
 #[test]
 fn piecewise_exp_ax() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let a = __ctx.symbol("a");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol("a");
     let ax = &a * &x;
     let integrand = ax.exp();
     let result = integrand.integrate(&x);
@@ -92,8 +92,8 @@ fn piecewise_exp_ax() {
 
     // Verify numeric evaluation at a=3, x=1 matches the generic branch
     let val = result
-        .subs(&a, &__ctx.int(3))
-        .subs(&x, &__ctx.int(1));
+        .subs(&a, &ctx.int(3))
+        .subs(&x, &ctx.int(1));
     if let Ok(v) = val.eval_f64() {
         let expected = (3.0_f64).exp() / 3.0;
         assert!(
@@ -110,9 +110,9 @@ fn piecewise_exp_ax() {
 /// Expected: Piecewise((x^(n+1)/(n+1), n != -1), (ln|x|, True))
 #[test]
 fn piecewise_x_to_n() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let n = __ctx.symbol("n");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let n = ctx.symbol("n");
     let integrand = x.pow(&n);
     let result = integrand.integrate(&x);
     let _s = format!("{result}");
@@ -124,8 +124,8 @@ fn piecewise_x_to_n() {
 
     // Verify numeric evaluation at n=2, x=3: x^3/3 = 9
     let val = result
-        .subs(&n, &__ctx.int(2))
-        .subs(&x, &__ctx.int(3));
+        .subs(&n, &ctx.int(2))
+        .subs(&x, &ctx.int(3));
     if let Ok(v) = val.eval_f64() {
         let expected = 27.0 / 3.0; // 3^3 / 3 = 9
         assert!(
@@ -141,9 +141,9 @@ fn piecewise_x_to_n() {
 /// expression -cos(2x)/2 with no Piecewise wrapper.
 #[test]
 fn no_piecewise_for_numeric() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let two = __ctx.int(2);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let two = ctx.int(2);
     let integrand = (&two * &x).sin();
     let result = integrand.integrate(&x);
 
@@ -152,7 +152,7 @@ fn no_piecewise_for_numeric() {
     check_contains(&result, "cos", "∫sin(2x)dx");
 
     // Verify numerically: -cos(2)/2
-    let val = result.subs(&x, &__ctx.int(1));
+    let val = result.subs(&x, &ctx.int(1));
     if let Ok(v) = val.eval_f64() {
         let expected = -(2.0_f64).cos() / 2.0;
         assert!(
@@ -169,10 +169,10 @@ fn no_piecewise_for_numeric() {
 /// Expected: Piecewise((ln|a*x+b|/a, a != 0), (x/b, True))
 #[test]
 fn piecewise_1_over_ax_plus_b() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let a = __ctx.symbol("a");
-    let b = __ctx.symbol("b");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol("a");
+    let b = ctx.symbol("b");
     let inner = &(&a * &x) + &b;
     let integrand = inner.powi(-1);
     let result = integrand.integrate(&x);
@@ -188,9 +188,9 @@ fn piecewise_1_over_ax_plus_b() {
 
     // Verify numeric evaluation at a=2, b=1, x=1: ln|2+1|/2 = ln(3)/2
     let val = result
-        .subs(&a, &__ctx.int(2))
-        .subs(&b, &__ctx.int(1))
-        .subs(&x, &__ctx.int(1));
+        .subs(&a, &ctx.int(2))
+        .subs(&b, &ctx.int(1))
+        .subs(&x, &ctx.int(1));
     if let Ok(v) = val.eval_f64() {
         let expected = (3.0_f64).ln() / 2.0;
         assert!(
@@ -207,8 +207,8 @@ fn piecewise_1_over_ax_plus_b() {
 /// ∫ sin(x)/x dx should produce Si(x), not an unevaluated Integral.
 #[test]
 fn special_func_si() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = &x.sin() / &x;
     let result = integrand.integrate(&x);
     let _s = format!("{result}");
@@ -220,8 +220,8 @@ fn special_func_si() {
 /// ∫ exp(x)/x dx should produce Ei(x), not an unevaluated Integral.
 #[test]
 fn special_func_ei() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = &x.exp() / &x;
     let result = integrand.integrate(&x);
     let _s = format!("{result}");
@@ -233,9 +233,9 @@ fn special_func_ei() {
 /// ∫ 1/ln(x) dx should produce li(x), not an unevaluated Integral.
 #[test]
 fn special_func_li() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let one = __ctx.int(1);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let one = ctx.int(1);
     let integrand = &one / &x.ln();
     let result = integrand.integrate(&x);
     let _s = format!("{result}");
@@ -251,8 +251,8 @@ fn special_func_li() {
 /// ∫ cos(x)/x dx should produce Ci(x).
 #[test]
 fn special_func_ci() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = &x.cos() / &x;
     let result = integrand.integrate(&x);
     let _s = format!("{result}");
@@ -265,9 +265,9 @@ fn special_func_ci() {
 /// ∫ exp(3x) dx = exp(3x)/3 with no Piecewise.
 #[test]
 fn no_piecewise_exp_numeric_coeff() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let three = __ctx.int(3);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let three = ctx.int(3);
     let integrand = (&three * &x).exp();
     let result = integrand.integrate(&x);
 
@@ -280,8 +280,8 @@ fn no_piecewise_exp_numeric_coeff() {
 /// No parameters, no Piecewise.
 #[test]
 fn no_piecewise_cos_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = x.cos();
     let result = integrand.integrate(&x);
 
@@ -293,9 +293,9 @@ fn no_piecewise_cos_x() {
 /// ∫ cos(a·x) dx should be Piecewise with Ne(a, 0).
 #[test]
 fn piecewise_cos_ax() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let a = __ctx.symbol("a");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol("a");
     let ax = &a * &x;
     let integrand = ax.cos();
     let result = integrand.integrate(&x);
@@ -310,17 +310,17 @@ fn piecewise_cos_ax() {
 /// This verifies the generic branch of the Piecewise is mathematically correct.
 #[test]
 fn piecewise_sin_ax_ftc() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let a = __ctx.symbol("a");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol("a");
     let ax = &a * &x;
     let integrand = ax.sin();
     let anti = integrand.integrate(&x);
     let deriv = anti.diff(&x);
 
     // Substitute a=2, x=1 and compare
-    let a_val = __ctx.int(2);
-    let x_val = __ctx.int(1);
+    let a_val = ctx.int(2);
+    let x_val = ctx.int(1);
 
     let orig = integrand
         .subs(&a, &a_val)
@@ -341,16 +341,16 @@ fn piecewise_sin_ax_ftc() {
 /// FTC sanity check for exp(a·x): d/dx(∫ exp(a·x) dx) ≈ exp(a·x) at a=3, x=1.
 #[test]
 fn piecewise_exp_ax_ftc() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let a = __ctx.symbol("a");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol("a");
     let ax = &a * &x;
     let integrand = ax.exp();
     let anti = integrand.integrate(&x);
     let deriv = anti.diff(&x);
 
-    let a_val = __ctx.int(3);
-    let x_val = __ctx.int(1);
+    let a_val = ctx.int(3);
+    let x_val = ctx.int(1);
 
     let orig = integrand
         .subs(&a, &a_val)

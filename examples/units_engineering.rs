@@ -26,7 +26,7 @@ fn main() {
 }
 
 fn section_1_motor_specs() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     println!("── 1. DC Motor Specification ──\n");
 
     // Define motor parameters with units
@@ -51,7 +51,7 @@ fn section_1_motor_specs() {
 }
 
 fn section_2_power_analysis() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     println!("── 2. Power Analysis ──\n");
 
     let v = Voltage::constant(24);
@@ -79,17 +79,17 @@ fn section_2_power_analysis() {
              (p_mech_f64 / p_in_f64 * 100.0) as i32);
 
     // Convert to horsepower (exact!)
-    let one = __ctx.int(1);
+    let one = ctx.int(1);
     let hp_factor = Power::horsepower(&one).eval_f64().unwrap();
     println!("  P_mech = {:.3} hp", p_mech_f64 / hp_factor);
     println!();
 }
 
 fn section_3_imperial_conversions() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     println!("── 3. Imperial Conversions (all exact!) ──\n");
 
-    let one = __ctx.int(1);
+    let one = ctx.int(1);
 
     // Every conversion is an exact rational — no floating point
     println!("  Force:");
@@ -113,7 +113,7 @@ fn section_3_imperial_conversions() {
 
     println!("  Speed:");
     println!("    60 mph = {} m/s",
-             Velocity::miles_per_hour(&__ctx.int(60)).eval());
+             Velocity::miles_per_hour(&ctx.int(60)).eval());
     println!("    1 knot = {} m/s", Velocity::knots(&one).eval());
 
     println!("  Mass:");
@@ -125,35 +125,35 @@ fn section_3_imperial_conversions() {
 }
 
 fn section_4_unit_conversion_showcase() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     println!("── 4. Real-World Conversions ──\n");
 
     // Tire pressure: 32 psi → kPa
-    let tire_psi = __ctx.int(32);
+    let tire_psi = ctx.int(32);
     let tire_pa = Pressure::psi(&tire_psi);
     println!("  Tire pressure: 32 psi = {:.1} kPa",
              tire_pa.eval_f64().unwrap() / 1000.0);
 
     // Speed limit: 65 mph → km/h
-    let speed_mph = __ctx.int(65);
+    let speed_mph = ctx.int(65);
     let speed_ms = Velocity::miles_per_hour(&speed_mph);
     println!("  Speed limit: 65 mph = {:.1} km/h",
              speed_ms.eval_f64().unwrap() * 3.6);
 
     // Engine power: 200 hp → kW
-    let engine_hp = __ctx.int(200);
+    let engine_hp = ctx.int(200);
     let engine_w = Power::horsepower(&engine_hp);
     println!("  Engine power: 200 hp = {:.1} kW",
              engine_w.eval_f64().unwrap() / 1000.0);
 
     // Fuel tank: 15 US gallons → liters
-    let tank_gal = __ctx.int(15);
+    let tank_gal = ctx.int(15);
     let tank_m3 = Volume::us_gallons(&tank_gal);
     println!("  Fuel tank: 15 gal = {:.1} L",
              tank_m3.eval_f64().unwrap() * 1000.0);
 
     // Room temperature: 72°F → K
-    let temp_f = __ctx.int(72);
+    let temp_f = ctx.int(72);
     let temp_k = Temperature::from_fahrenheit(&temp_f);
     println!("  Room temp: 72°F = {:.2} K = {:.2}°C",
              temp_k.eval_f64().unwrap(),
@@ -172,8 +172,8 @@ fn section_5_codegen_with_uom() {
     println!("── 5. Code Generation with uom Types ──\n");
 
     // Build a simple motor torque equation symbolically
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; V, R_m, Kt);
+    let ctx = Context::new();
+    symplex::syms!(ctx; V, R_m, Kt);
 
     // Stall torque: τ = Kt·V/R
     // At stall (ω=0): I_stall = V/R, τ_stall = Kt × V/R

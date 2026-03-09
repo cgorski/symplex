@@ -8,20 +8,20 @@ use symplex::prelude::*;
 
 #[test]
 fn gamma_at_integers() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Gamma(1) = 0! = 1, Gamma(2) = 1! = 1, Gamma(3) = 2! = 2, Gamma(5) = 4! = 24
-    assert_eq!(format!("{}", __ctx.int(1).gamma().eval()), "1");
-    assert_eq!(format!("{}", __ctx.int(2).gamma().eval()), "1");
-    assert_eq!(format!("{}", __ctx.int(3).gamma().eval()), "2");
-    assert_eq!(format!("{}", __ctx.int(5).gamma().eval()), "24");
-    assert_eq!(format!("{}", __ctx.int(7).gamma().eval()), "720");
+    assert_eq!(format!("{}", ctx.int(1).gamma().eval()), "1");
+    assert_eq!(format!("{}", ctx.int(2).gamma().eval()), "1");
+    assert_eq!(format!("{}", ctx.int(3).gamma().eval()), "2");
+    assert_eq!(format!("{}", ctx.int(5).gamma().eval()), "24");
+    assert_eq!(format!("{}", ctx.int(7).gamma().eval()), "720");
 }
 
 #[test]
 fn gamma_at_half() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Gamma(1/2) = sqrt(pi)
-    let half = __ctx.rational(1, 2);
+    let half = ctx.rational(1, 2);
     let result = half.gamma().eval();
     let s = format!("{result}");
     assert!(
@@ -32,8 +32,8 @@ fn gamma_at_half() {
 
 #[test]
 fn gamma_symbolic_stays() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let g = expr!(gamma(x));
     let s = format!("{g}");
     assert!(
@@ -44,19 +44,19 @@ fn gamma_symbolic_stays() {
 
 #[test]
 fn gamma_via_macro() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let g = expr!(gamma(x));
-    let result = g.subs(&x, &__ctx.int(5)).eval();
+    let result = g.subs(&x, &ctx.int(5)).eval();
     assert_eq!(format!("{result}"), "24");
 }
 
 #[test]
 fn gamma_subs_then_eval() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let g = x.gamma();
-    let result = g.subs(&x, &__ctx.int(5)).eval();
+    let result = g.subs(&x, &ctx.int(5)).eval();
     assert_eq!(format!("{result}"), "24");
 }
 
@@ -66,23 +66,23 @@ fn gamma_subs_then_eval() {
 
 #[test]
 fn log_gamma_at_integers() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // LogGamma(1) = ln(0!) = ln(1) = 0
-    let result = __ctx.int(1).log_gamma().eval();
+    let result = ctx.int(1).log_gamma().eval();
     let s = format!("{result}");
     assert_eq!(s, "0", "LogGamma(1) should be 0, got: {s}");
 
     // LogGamma(2) = ln(1!) = ln(1) = 0
-    let result2 = __ctx.int(2).log_gamma().eval();
+    let result2 = ctx.int(2).log_gamma().eval();
     let s2 = format!("{result2}");
     assert_eq!(s2, "0", "LogGamma(2) should be 0, got: {s2}");
 }
 
 #[test]
 fn log_gamma_at_larger_integer() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // LogGamma(5) = ln(4!) = ln(24)
-    let result = __ctx.int(5).log_gamma().eval();
+    let result = ctx.int(5).log_gamma().eval();
     let s = format!("{result}");
     assert!(
         s.contains("ln") || s.contains("24"),
@@ -96,8 +96,8 @@ fn log_gamma_at_larger_integer() {
 
 #[test]
 fn digamma_symbolic_stays() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let d = x.digamma();
     let s = format!("{d}");
     assert!(
@@ -112,14 +112,14 @@ fn digamma_symbolic_stays() {
 
 #[test]
 fn erf_at_zero() {
-    let __ctx = Context::new();
-    assert_eq!(format!("{}", __ctx.int(0).erf().eval()), "0");
+    let ctx = Context::new();
+    assert_eq!(format!("{}", ctx.int(0).erf().eval()), "0");
 }
 
 #[test]
 fn erf_symbolic_stays() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = expr!(erf(x));
     let s = format!("{e}");
     assert!(s.contains("erf"), "symbolic erf: {s}");
@@ -127,17 +127,17 @@ fn erf_symbolic_stays() {
 
 #[test]
 fn erf_via_macro() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
-    let result = expr!(erf(x)).subs(&x, &__ctx.int(0)).eval();
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let result = expr!(erf(x)).subs(&x, &ctx.int(0)).eval();
     assert_eq!(format!("{result}"), "0");
 }
 
 #[test]
 fn erf_nonzero_stays_symbolic() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // erf(1) should stay unevaluated (no closed-form for non-zero)
-    let result = __ctx.int(1).erf().eval();
+    let result = ctx.int(1).erf().eval();
     let s = format!("{result}");
     assert!(s.contains("erf"), "erf(1) should remain symbolic, got: {s}");
 }
@@ -148,14 +148,14 @@ fn erf_nonzero_stays_symbolic() {
 
 #[test]
 fn erfc_at_zero() {
-    let __ctx = Context::new();
-    assert_eq!(format!("{}", __ctx.int(0).erfc().eval()), "1");
+    let ctx = Context::new();
+    assert_eq!(format!("{}", ctx.int(0).erfc().eval()), "1");
 }
 
 #[test]
 fn erfc_symbolic_stays() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = expr!(erfc(x));
     let s = format!("{e}");
     assert!(s.contains("erfc"), "symbolic erfc: {s}");
@@ -163,16 +163,16 @@ fn erfc_symbolic_stays() {
 
 #[test]
 fn erfc_via_macro() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
-    let result = expr!(erfc(x)).subs(&x, &__ctx.int(0)).eval();
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let result = expr!(erfc(x)).subs(&x, &ctx.int(0)).eval();
     assert_eq!(format!("{result}"), "1");
 }
 
 #[test]
 fn erfc_nonzero_stays_symbolic() {
-    let __ctx = Context::new();
-    let result = __ctx.int(1).erfc().eval();
+    let ctx = Context::new();
+    let result = ctx.int(1).erfc().eval();
     let s = format!("{result}");
     assert!(
         s.contains("erfc"),
@@ -186,41 +186,41 @@ fn erfc_nonzero_stays_symbolic() {
 
 #[test]
 fn beta_integers() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // B(2,3) = Gamma(2)*Gamma(3)/Gamma(5) = 1*2/24 = 1/12
-    let result = __ctx.int(2).beta(&__ctx.int(3)).eval();
+    let result = ctx.int(2).beta(&ctx.int(3)).eval();
     assert_eq!(format!("{result}"), "1/12");
 }
 
 #[test]
 fn beta_symmetry() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // B(a,b) = B(b,a) for positive integers
-    let b23 = __ctx.int(2).beta(&__ctx.int(3)).eval();
-    let b32 = __ctx.int(3).beta(&__ctx.int(2)).eval();
+    let b23 = ctx.int(2).beta(&ctx.int(3)).eval();
+    let b32 = ctx.int(3).beta(&ctx.int(2)).eval();
     assert_eq!(format!("{b23}"), format!("{b32}"));
 }
 
 #[test]
 fn beta_ones() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // B(1,1) = Gamma(1)*Gamma(1)/Gamma(2) = 1*1/1 = 1
-    let result = __ctx.int(1).beta(&__ctx.int(1)).eval();
+    let result = ctx.int(1).beta(&ctx.int(1)).eval();
     assert_eq!(format!("{result}"), "1");
 }
 
 #[test]
 fn beta_larger_values() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // B(3,4) = 2!*3!/6! = 2*6/720 = 12/720 = 1/60
-    let result = __ctx.int(3).beta(&__ctx.int(4)).eval();
+    let result = ctx.int(3).beta(&ctx.int(4)).eval();
     assert_eq!(format!("{result}"), "1/60");
 }
 
 #[test]
 fn beta_symbolic_display() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
     let b = x.beta(&y);
     let s = format!("{b}");
     assert!(s.contains("B("), "symbolic beta display: {s}");
@@ -228,7 +228,7 @@ fn beta_symbolic_display() {
 
 #[test]
 fn beta_via_macro() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let result = expr!(beta(2, 3)).eval();
     assert_eq!(format!("{result}"), "1/12");
 }
@@ -239,8 +239,8 @@ fn beta_via_macro() {
 
 #[test]
 fn diff_erf() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let de = expr!(erf(x)).diff(&x);
     // d/dx erf(x) = 2/sqrt(pi) * exp(-x^2)
     let s = format!("{de}");
@@ -249,8 +249,8 @@ fn diff_erf() {
 
 #[test]
 fn diff_erfc() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let de = expr!(erfc(x)).diff(&x);
     // d/dx erfc(x) = -2/sqrt(pi) * exp(-x^2)
     let s = format!("{de}");
@@ -259,8 +259,8 @@ fn diff_erfc() {
 
 #[test]
 fn diff_gamma() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let dg = x.gamma().diff(&x);
     let s = format!("{dg}");
     // Should contain Digamma (or Gamma — it's Gamma(x)*Digamma(x))
@@ -272,8 +272,8 @@ fn diff_gamma() {
 
 #[test]
 fn diff_log_gamma() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let dg = x.log_gamma().diff(&x);
     let s = format!("{dg}");
     // d/dx ln(Gamma(x)) = Digamma(x)

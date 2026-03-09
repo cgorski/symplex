@@ -7,7 +7,7 @@ use symplex::prelude::*;
 
 /// Helper: verify FTC — d/dx(antideriv) should equal integrand at a test point.
 fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
-    let __ctx = integrand.context();
+    let ctx = integrand.context();
     let anti = integrand.integrate(var);
     let anti_str = format!("{anti}");
     assert!(
@@ -18,7 +18,7 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
     let deriv = anti.diff(var);
 
     // Evaluate both at x = 0.7 (avoids zeros and poles)
-    let test_point = __ctx.rational(7, 10);
+    let test_point = ctx.rational(7, 10);
     let orig_val = integrand.subs(var, &test_point).eval_f64();
     let deriv_val = deriv.subs(var, &test_point).eval_f64();
 
@@ -40,16 +40,16 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
 
 #[test]
 fn integrate_sin_first_power() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = x.sin();
     assert_ftc(&integrand, &x, "∫sin(x)dx");
 }
 
 #[test]
 fn integrate_cos_first_power() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = x.cos();
     assert_ftc(&integrand, &x, "∫cos(x)dx");
 }
@@ -60,32 +60,32 @@ fn integrate_cos_first_power() {
 
 #[test]
 fn integrate_sin_squared() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = x.sin().powi(2);
     assert_ftc(&integrand, &x, "∫sin²(x)dx");
 }
 
 #[test]
 fn integrate_cos_squared() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = x.cos().powi(2);
     assert_ftc(&integrand, &x, "∫cos²(x)dx");
 }
 
 #[test]
 fn integrate_sin_fourth() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = x.sin().powi(4);
     assert_ftc(&integrand, &x, "∫sin⁴(x)dx");
 }
 
 #[test]
 fn integrate_cos_fourth() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = x.cos().powi(4);
     assert_ftc(&integrand, &x, "∫cos⁴(x)dx");
 }
@@ -96,24 +96,24 @@ fn integrate_cos_fourth() {
 
 #[test]
 fn integrate_sin_cubed() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = x.sin().powi(3);
     assert_ftc(&integrand, &x, "∫sin³(x)dx");
 }
 
 #[test]
 fn integrate_cos_cubed() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = x.cos().powi(3);
     assert_ftc(&integrand, &x, "∫cos³(x)dx");
 }
 
 #[test]
 fn integrate_sin_fifth() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let integrand = x.sin().powi(5);
     assert_ftc(&integrand, &x, "∫sin⁵(x)dx");
 }
@@ -124,8 +124,8 @@ fn integrate_sin_fifth() {
 
 #[test]
 fn integrate_sin2_cos() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // sin²(x) · cos(x) — odd power of cos triggers u=sin substitution
     let integrand = &x.sin().powi(2) * &x.cos();
     assert_ftc(&integrand, &x, "∫sin²(x)·cos(x)dx");
@@ -133,8 +133,8 @@ fn integrate_sin2_cos() {
 
 #[test]
 fn integrate_sin_cos2() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // sin(x) · cos²(x) — odd power of sin triggers u=cos substitution
     let integrand = &x.sin() * &x.cos().powi(2);
     assert_ftc(&integrand, &x, "∫sin(x)·cos²(x)dx");
@@ -142,8 +142,8 @@ fn integrate_sin_cos2() {
 
 #[test]
 fn integrate_sin2_cos2() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // sin²(x) · cos²(x) — both even, uses double-angle identities
     let integrand = &x.sin().powi(2) * &x.cos().powi(2);
     assert_ftc(&integrand, &x, "∫sin²(x)·cos²(x)dx");

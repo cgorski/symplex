@@ -41,8 +41,8 @@ fn assert_full_roundtrip(expr: &Ex) {
 
 #[test]
 fn roundtrip_integer() {
-    let __ctx = Context::new();
-    let expr = __ctx.int(42);
+    let ctx = Context::new();
+    let expr = ctx.int(42);
     let tree = expr.to_tree();
     match &tree {
         ExprTree::Num { numer, denom } => {
@@ -56,15 +56,15 @@ fn roundtrip_integer() {
 
 #[test]
 fn roundtrip_negative_integer() {
-    let __ctx = Context::new();
-    let expr = __ctx.int(-17);
+    let ctx = Context::new();
+    let expr = ctx.int(-17);
     assert_full_roundtrip(&expr);
 }
 
 #[test]
 fn roundtrip_rational() {
-    let __ctx = Context::new();
-    let expr = __ctx.rational(3, 7);
+    let ctx = Context::new();
+    let expr = ctx.rational(3, 7);
     let tree = expr.to_tree();
     match &tree {
         ExprTree::Num { numer, denom } => {
@@ -78,8 +78,8 @@ fn roundtrip_rational() {
 
 #[test]
 fn roundtrip_symbol() {
-    let __ctx = Context::new();
-    let expr = __ctx.symbol("alpha");
+    let ctx = Context::new();
+    let expr = ctx.symbol("alpha");
     let tree = expr.to_tree();
     match &tree {
         ExprTree::Symbol { name } => assert_eq!(name, "alpha"),
@@ -90,8 +90,8 @@ fn roundtrip_symbol() {
 
 #[test]
 fn roundtrip_pi() {
-    let __ctx = Context::new();
-    let expr = __ctx.pi();
+    let ctx = Context::new();
+    let expr = ctx.pi();
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::Pi);
     assert_full_roundtrip(&expr);
@@ -99,8 +99,8 @@ fn roundtrip_pi() {
 
 #[test]
 fn roundtrip_e() {
-    let __ctx = Context::new();
-    let expr = __ctx.e();
+    let ctx = Context::new();
+    let expr = ctx.e();
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::E);
     assert_full_roundtrip(&expr);
@@ -108,8 +108,8 @@ fn roundtrip_e() {
 
 #[test]
 fn roundtrip_i_unit() {
-    let __ctx = Context::new();
-    let expr = __ctx.i_unit();
+    let ctx = Context::new();
+    let expr = ctx.i_unit();
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::ImaginaryUnit);
     assert_full_roundtrip(&expr);
@@ -121,8 +121,8 @@ fn roundtrip_i_unit() {
 
 #[test]
 fn roundtrip_infinity() {
-    let __ctx = Context::new();
-    let expr = __ctx.infinity();
+    let ctx = Context::new();
+    let expr = ctx.infinity();
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::Infinity);
     assert_full_roundtrip(&expr);
@@ -130,8 +130,8 @@ fn roundtrip_infinity() {
 
 #[test]
 fn roundtrip_neg_infinity() {
-    let __ctx = Context::new();
-    let expr = __ctx.neg_infinity();
+    let ctx = Context::new();
+    let expr = ctx.neg_infinity();
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::NegInfinity);
     assert_full_roundtrip(&expr);
@@ -166,8 +166,8 @@ fn roundtrip_nan() {
 
 #[test]
 fn roundtrip_all_trig_and_hyp() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
 
     // Standard trig
     assert_full_roundtrip(&x.sin());
@@ -192,8 +192,8 @@ fn roundtrip_all_trig_and_hyp() {
 
 #[test]
 fn roundtrip_exp_ln_sqrt_abs_sign() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
 
     assert_full_roundtrip(&x.exp());
     assert_full_roundtrip(&x.ln());
@@ -208,30 +208,30 @@ fn roundtrip_exp_ln_sqrt_abs_sign() {
 
 #[test]
 fn roundtrip_polynomial() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // x^3 + 2*x^2 - 5*x + 7
-    let expr = x.powi(3) + __ctx.int(2) * x.powi(2) - __ctx.int(5) * &x + __ctx.int(7);
+    let expr = x.powi(3) + ctx.int(2) * x.powi(2) - ctx.int(5) * &x + ctx.int(7);
     assert_full_roundtrip(&expr);
 }
 
 #[test]
 fn roundtrip_nested_functions() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // sin(cos(exp(x)))
     let expr = x.exp().cos().sin();
     assert_full_roundtrip(&expr);
 
     // ln(x^2 + 1)
-    let expr2 = (x.powi(2) + __ctx.int(1)).ln();
+    let expr2 = (x.powi(2) + ctx.int(1)).ln();
     assert_full_roundtrip(&expr2);
 }
 
 #[test]
 fn roundtrip_negation() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = -&x;
     assert_full_roundtrip(&expr);
 
@@ -246,8 +246,8 @@ fn roundtrip_negation() {
 
 #[test]
 fn roundtrip_factorial() {
-    let __ctx = Context::new();
-    let n = __ctx.int(5);
+    let ctx = Context::new();
+    let n = ctx.int(5);
     let expr = n.factorial();
     let tree = expr.to_tree();
     // factorial is serialized as Apply { name: "factorial", args }
@@ -291,9 +291,9 @@ fn roundtrip_bool_true_false() {
 
 #[test]
 fn roundtrip_comparison_and_logic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let zero = ctx.int(0);
 
     // x > 0
     let gt: BoolEx = x.gt(&zero);
@@ -321,9 +321,9 @@ fn roundtrip_comparison_and_logic() {
 
 #[test]
 fn roundtrip_piecewise() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let zero = ctx.int(0);
     let cond = x.gt(&zero);
     let neg_cond = cond.not();
 
@@ -337,8 +337,8 @@ fn roundtrip_piecewise() {
 
 #[test]
 fn json_roundtrip_complex_expression() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.sin().powi(2) + x.cos();
     let json = expr.to_json().unwrap();
     assert!(!json.is_empty());
@@ -349,8 +349,8 @@ fn json_roundtrip_complex_expression() {
 
 #[test]
 fn json_pretty_roundtrip() {
-    let __ctx = Context::new();
-    let expr = __ctx.symbol("x").exp();
+    let ctx = Context::new();
+    let expr = ctx.symbol("x").exp();
     let json = expr.to_json_pretty().unwrap();
     assert!(json.contains('\n'), "pretty JSON should contain newlines");
     let ctx = Context::new();

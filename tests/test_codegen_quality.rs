@@ -8,12 +8,12 @@ use symplex::robotics::fk_position;
 /// Build a 2-DOF planar robot Jacobian and verify no trivial constant temps.
 #[test]
 fn codegen_2dof_no_trivial_temps() {
-    let __ctx = Context::new();
-    let theta1 = __ctx.symbol("theta1");
-    let theta2 = __ctx.symbol("theta2");
-    let l1 = __ctx.symbol("L1");
-    let l2 = __ctx.symbol("L2");
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let theta1 = ctx.symbol("theta1");
+    let theta2 = ctx.symbol("theta2");
+    let l1 = ctx.symbol("L1");
+    let l2 = ctx.symbol("L2");
+    let zero = ctx.int(0);
 
     let dh: [(&Ex, &Ex, &Ex, &Ex); 2] = [
         (&theta1, &zero, &l1, &zero),
@@ -44,14 +44,14 @@ fn codegen_2dof_no_trivial_temps() {
 /// Build a 3-DOF planar robot Jacobian and verify no trivial constant temps.
 #[test]
 fn codegen_3dof_no_trivial_temps() {
-    let __ctx = Context::new();
-    let theta1 = __ctx.symbol("theta1");
-    let theta2 = __ctx.symbol("theta2");
-    let theta3 = __ctx.symbol("theta3");
-    let l1 = __ctx.rational(3, 10);
-    let l2 = __ctx.rational(1, 4);
-    let l3 = __ctx.rational(1, 5);
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let theta1 = ctx.symbol("theta1");
+    let theta2 = ctx.symbol("theta2");
+    let theta3 = ctx.symbol("theta3");
+    let l1 = ctx.rational(3, 10);
+    let l2 = ctx.rational(1, 4);
+    let l3 = ctx.rational(1, 5);
+    let zero = ctx.int(0);
 
     let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
         (&theta1, &zero, &l1, &zero),
@@ -154,14 +154,14 @@ fn codegen_zero_elimination() {
 /// 3-DOF Jacobian code should have balanced braces and valid structure.
 #[test]
 fn codegen_3dof_compiles() {
-    let __ctx = Context::new();
-    let theta1 = __ctx.symbol("theta1");
-    let theta2 = __ctx.symbol("theta2");
-    let theta3 = __ctx.symbol("theta3");
-    let l1 = __ctx.rational(3, 10);
-    let l2 = __ctx.rational(1, 4);
-    let l3 = __ctx.rational(1, 5);
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let theta1 = ctx.symbol("theta1");
+    let theta2 = ctx.symbol("theta2");
+    let theta3 = ctx.symbol("theta3");
+    let l1 = ctx.rational(3, 10);
+    let l2 = ctx.rational(1, 4);
+    let l3 = ctx.rational(1, 5);
+    let zero = ctx.int(0);
 
     let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
         (&theta1, &zero, &l1, &zero),

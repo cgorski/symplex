@@ -13,36 +13,36 @@ use symplex::prelude::*;
 
 #[test]
 fn var_creates_symbol() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_eq!(format!("{x}"), "x");
 }
 
 #[test]
 fn symbol_is_alias_for_var() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_eq!(format!("{x}"), "x");
 }
 
 #[test]
 fn int_creates_integer() {
-    let __ctx = Context::new();
-    let five = __ctx.int(5);
+    let ctx = Context::new();
+    let five = ctx.int(5);
     assert_eq!(format!("{five}"), "5");
 }
 
 #[test]
 fn rational_creates_fraction() {
-    let __ctx = Context::new();
-    let half = __ctx.rational(1, 2);
+    let ctx = Context::new();
+    let half = ctx.rational(1, 2);
     assert_eq!(format!("{half}"), "1/2");
 }
 
 #[test]
 fn global_context_expressions_interoperate() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x.powi(2) + &x + 1;
     let s = format!("{expr}");
     assert!(s.contains("x^2"), "should contain x^2: {s}");
@@ -51,16 +51,16 @@ fn global_context_expressions_interoperate() {
 
 #[test]
 fn global_context_diff_works() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let deriv = x.powi(3).diff(&x);
     assert_eq!(format!("{deriv}"), "3*x^2");
 }
 
 #[test]
 fn global_context_integrate_works() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let anti = x.powi(2).integrate(&x);
     assert_eq!(format!("{anti}"), "1/3*x^3");
 }
@@ -71,8 +71,8 @@ fn global_context_integrate_works() {
 
 #[test]
 fn vars_macro_creates_symbols() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b, c);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; a, b, c);
     let expr = &a + &b + &c;
     let s = format!("{expr}");
     assert!(
@@ -83,8 +83,8 @@ fn vars_macro_creates_symbols() {
 
 #[test]
 fn vars_macro_trailing_comma() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x, y,);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y,);
     let expr = &x * &y;
     assert_eq!(format!("{expr}"), "x*y");
 }
@@ -95,8 +95,8 @@ fn vars_macro_trailing_comma() {
 
 #[test]
 fn maclaurin_sin() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let s = x.sin().maclaurin(&x, 4);
     let result = s.expand().eval();
     let text = format!("{result}");
@@ -106,8 +106,8 @@ fn maclaurin_sin() {
 
 #[test]
 fn maclaurin_exp() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let s = x.exp().maclaurin(&x, 3);
     let result = s.expand().eval();
     let text = format!("{result}");
@@ -118,8 +118,8 @@ fn maclaurin_exp() {
 
 #[test]
 fn maclaurin_polynomial_is_exact() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let poly = &x.powi(2) + &x * 3 + 7;
     let s = poly.maclaurin(&x, 5);
     assert_eq!(format!("{s}"), format!("{poly}"));
@@ -131,8 +131,8 @@ fn maclaurin_polynomial_is_exact() {
 
 #[test]
 fn subs_i64_basic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.powi(2);
     let result = expr.subs_i64(&x, 3);
     assert_eq!(format!("{result}"), "9");
@@ -140,8 +140,8 @@ fn subs_i64_basic() {
 
 #[test]
 fn subs_i64_in_polynomial() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x.powi(2) + &x * 2 + 1;
     // (3)^2 + 2*3 + 1 = 9 + 6 + 1 = 16
     let result = expr.subs_i64(&x, 3);
@@ -150,8 +150,8 @@ fn subs_i64_in_polynomial() {
 
 #[test]
 fn subs_i64_zero() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x.powi(2) + 1;
     let result = expr.subs_i64(&x, 0);
     assert_eq!(format!("{result}"), "1");
@@ -159,8 +159,8 @@ fn subs_i64_zero() {
 
 #[test]
 fn subs_i64_negative() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x + 5;
     let result = expr.subs_i64(&x, -3);
     assert_eq!(format!("{result}"), "2");
@@ -172,17 +172,17 @@ fn subs_i64_negative() {
 
 #[test]
 fn display_inverse_as_fraction() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let result = x.powi(-1);
     assert_eq!(format!("{result}"), "1/x");
 }
 
 #[test]
 fn display_division_uses_fraction() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let result = &x / &y;
     // x * y^(-1) displays as x*1/y
     let s = format!("{result}");

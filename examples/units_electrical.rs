@@ -9,7 +9,7 @@ use symplex::units::*;
 
 #[allow(non_snake_case)]
 fn main() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("   Symplex: Electrical Circuits — Dimensional Analysis");
@@ -46,21 +46,21 @@ fn main() {
 
     // Numerical evaluation: I = 3 A, R = 47 Ω
     let v_num = v.clone()
-        .subs(&i, &__ctx.int(3))
-        .subs(&r, &__ctx.int(47))
+        .subs(&i, &ctx.int(3))
+        .subs(&r, &ctx.int(47))
         .eval();
     println!("\n  Numerical (I=3 A, R=47 Ω):");
     println!("    V = {}", v_num);
 
     let p_num = p.clone()
-        .subs(&i, &__ctx.int(3))
-        .subs(&r, &__ctx.int(47))
+        .subs(&i, &ctx.int(3))
+        .subs(&r, &ctx.int(47))
         .eval();
     println!("    P = {}", p_num);
 
     let dp_di_num = dp_di
-        .subs(&i, &__ctx.int(3))
-        .subs(&r, &__ctx.int(47))
+        .subs(&i, &ctx.int(3))
+        .subs(&r, &ctx.int(47))
         .eval();
     println!("    dP/dI = {}", dp_di_num);
 
@@ -73,8 +73,8 @@ fn main() {
     println!("\n── RC Circuit Time Constant ──");
 
     // Raw variables for expr! — most ergonomic for the exponential formula
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; R, C, V0, t);
+    let ctx = Context::new();
+    symplex::syms!(ctx; R, C, V0, t);
 
     // Time constant τ = R·C (has dimension of Time)
     let tau = Time::from_ex(expr!(R * C));
@@ -94,26 +94,26 @@ fn main() {
     //            V₀ = 5 V, t = 0.1 s
     // τ = 1000 × 0.0001 = 0.1 s, so at t = τ we expect ≈ 63.2% of V₀
     let tau_num = tau
-        .subs(&R, &__ctx.int(1000))
-        .subs(&C, &__ctx.rational(1, 10000))
+        .subs(&R, &ctx.int(1000))
+        .subs(&C, &ctx.rational(1, 10000))
         .eval();
     println!("\n  Numerical (R=1kΩ, C=100µF, V₀=5V):");
     println!("    τ = {}", tau_num);
 
     let v_cap_at_tau = v_cap.clone()
-        .subs(&R, &__ctx.int(1000))
-        .subs(&C, &__ctx.rational(1, 10000))
-        .subs(&V0, &__ctx.int(5))
-        .subs(&t, &__ctx.rational(1, 10))
+        .subs(&R, &ctx.int(1000))
+        .subs(&C, &ctx.rational(1, 10000))
+        .subs(&V0, &ctx.int(5))
+        .subs(&t, &ctx.rational(1, 10))
         .eval();
     println!("    V_C(t=0.1s = τ) = {}", v_cap_at_tau);
 
     // f64 check: should be ≈ 5·(1 - e⁻¹) ≈ 3.1606
     let v_cap_f64 = v_cap
-        .subs(&R, &__ctx.int(1000))
-        .subs(&C, &__ctx.rational(1, 10000))
-        .subs(&V0, &__ctx.int(5))
-        .subs(&t, &__ctx.rational(1, 10))
+        .subs(&R, &ctx.int(1000))
+        .subs(&C, &ctx.rational(1, 10000))
+        .subs(&V0, &ctx.int(5))
+        .subs(&t, &ctx.rational(1, 10))
         .eval_f64()
         .unwrap();
     println!("    V_C(t=τ) ≈ {:.4} V (f64, expect ≈3.1606)", v_cap_f64);
@@ -172,8 +172,8 @@ fn main() {
     let i_m_ex = i_motor.inner();
 
     let v_emf_num = v_emf
-        .subs(&ke, &__ctx.rational(5, 100))
-        .subs(&omega, &__ctx.int(100))
+        .subs(&ke, &ctx.rational(5, 100))
+        .subs(&omega, &ctx.int(100))
         .eval();
     println!("\n  Numerical (R=2Ω, Ke=0.05Wb, ω=100rad/s):");
     println!("    V_emf = {}", v_emf_num);
@@ -199,35 +199,35 @@ fn main() {
     println!("\n── Unit Conversions ──");
 
     // Current: 500 milliamps → amperes
-    let small_current = Current::milliamperes(&__ctx.int(500));
+    let small_current = Current::milliamperes(&ctx.int(500));
     println!("  500 mA  = {}", small_current.eval());
 
     // Resistance: 4.7 kilohms → ohms
-    let big_resistor = Resistance::kilohms(&__ctx.rational(47, 10));
+    let big_resistor = Resistance::kilohms(&ctx.rational(47, 10));
     println!("  4.7 kΩ  = {}", big_resistor.eval());
 
     // Power: 1 horsepower → watts
-    let one_hp = Power::horsepower(&__ctx.int(1));
+    let one_hp = Power::horsepower(&ctx.int(1));
     println!("  1 hp    = {}", one_hp.eval());
 
     // Frequency: 3600 RPM → hertz
-    let motor_speed = Frequency::rpm(&__ctx.int(3600));
+    let motor_speed = Frequency::rpm(&ctx.int(3600));
     println!("  3600 RPM = {}", motor_speed.eval());
 
     // Capacitance: 100 µF → farads
-    let cap = Capacitance::microfarads(&__ctx.int(100));
+    let cap = Capacitance::microfarads(&ctx.int(100));
     println!("  100 µF  = {}", cap.eval());
 
     // Voltage: 3300 mV → volts
-    let logic_level = Voltage::millivolts(&__ctx.int(3300));
+    let logic_level = Voltage::millivolts(&ctx.int(3300));
     println!("  3300 mV = {}", logic_level.eval());
 
     // Charge: 2000 mAh → coulombs
-    let battery = Charge::milliampere_hours(&__ctx.int(2000));
+    let battery = Charge::milliampere_hours(&ctx.int(2000));
     println!("  2000 mAh = {}", battery.eval());
 
     // Inductance: 10 mH → henrys
-    let coil = Inductance::millihenrys(&__ctx.int(10));
+    let coil = Inductance::millihenrys(&ctx.int(10));
     println!("  10 mH   = {}", coil.eval());
 
     println!("\n── Physical Constants in Circuits ──");

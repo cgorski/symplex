@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn e_equals_mc_squared() {
-        let __ctx = crate::units::si::units_ctx().clone(); symplex::syms!(__ctx; m);
+        let ctx = crate::units::si::units_ctx().clone(); symplex::syms!(ctx; m);
         let c = speed_of_light();
         let mass = Mass::symbol("m");
         // Use raw expression arithmetic to avoid missing named-mul impls
@@ -157,7 +157,7 @@ mod tests {
         let display = format!("{}", energy.inner());
         assert!(display.contains("c"), "E=mc² should display symbolically: {display}");
         // Evaluate with m=1 kg
-        let val = energy.subs(&m, &__ctx.int(1)).eval_f64().unwrap();
+        let val = energy.subs(&m, &ctx.int(1)).eval_f64().unwrap();
         let expected = 299_792_458.0_f64 * 299_792_458.0;
         assert!((val - expected).abs() / expected < 1e-10,
             "E(m=1) = {val}, expected {expected}");
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn constant_diff_is_zero() {
         let c = speed_of_light();
-        let __ctx = crate::units::si::units_ctx().clone(); symplex::syms!(__ctx; x);
+        let ctx = crate::units::si::units_ctx().clone(); symplex::syms!(ctx; x);
         let dc_dx = c.inner().diff(&x);
         assert!(dc_dx.is_zero().unwrap_or(false) || format!("{}", dc_dx) == "0",
             "d/dx(c) should be 0, got {dc_dx}");
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn constant_in_product_diff() {
         let c = speed_of_light();
-        let __ctx = crate::units::si::units_ctx().clone(); symplex::syms!(__ctx; x);
+        let ctx = crate::units::si::units_ctx().clone(); symplex::syms!(ctx; x);
         let cx = c.inner() * &x;
         let d = cx.diff(&x);
         // d/dx(c*x) = c
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn constant_survives_simplify() {
         let c = speed_of_light();
-        let __ctx = crate::units::si::units_ctx().clone(); symplex::syms!(__ctx; x, y);
+        let ctx = crate::units::si::units_ctx().clone(); symplex::syms!(ctx; x, y);
         let expr = c.inner() * &x + c.inner() * &y;
         let simplified = expr.simplify();
         let display = format!("{}", simplified);
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn physical_constants_dimmap_works() {
-        let __ctx = crate::units::si::units_ctx().clone(); symplex::syms!(__ctx; m);
+        let ctx = crate::units::si::units_ctx().clone(); symplex::syms!(ctx; m);
         let dims = physical_constants_dimmap()
             .with("m", ConstDim::MASS);
         let c = speed_of_light();

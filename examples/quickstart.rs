@@ -14,8 +14,8 @@ use symplex::prelude::*;
 fn main() {
     println!("=== Symplex Quick Start ===\n");
 
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; x, y);
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y);
 
     // ── 1. Building expressions ────────────────────────────────────
     println!("--- Expression Building ---");
@@ -65,8 +65,8 @@ fn main() {
         // let bad = &m + &a;  // ERROR: expected Mass, found Acceleration
 
         // Build complex formulas with expr!, wrap with from_ex
-        let __ctx = Context::new();
-        symplex::syms!(__ctx; k, x_var);
+        let ctx = Context::new();
+        symplex::syms!(ctx; k, x_var);
         let pe = Energy::from_ex(expr!(1/2 * k * x_var^2));
         println!("PE = ½kx² = {}", pe);
 
@@ -85,8 +85,8 @@ fn main() {
     println!("∫ f(x) dx = {poly_anti}");
 
     // Definite integral
-    let zero = __ctx.int(0);
-    let one = __ctx.int(1);
+    let zero = ctx.int(0);
+    let one = ctx.int(1);
     let area = expr!(x ^ 2).definite_integral(&x, &zero, &one);
     println!("∫₀¹ x² dx = {area}");
 
@@ -120,7 +120,7 @@ fn main() {
         println!("E = mc² = {}", energy);  // "c^2*m [J]", not "89875517873681764*m"
 
         // Evaluates to exact value:
-        let val = energy.subs(&m, &__ctx.int(1)).eval_f64().unwrap();
+        let val = energy.subs(&m, &ctx.int(1)).eval_f64().unwrap();
         println!("E(m=1kg) = {:.3e} J", val);
         println!();
     }
@@ -152,8 +152,8 @@ fn main() {
     // DiffWrt: the compiler verifies that d(Length)/d(Time) = Velocity.
     {
         use symplex::units::*;
-        let __ctx = Context::new();
-        symplex::syms!(__ctx; a, t);
+        let ctx = Context::new();
+        symplex::syms!(ctx; a, t);
         let t_var = Time::symbol("t");
 
         let position = Length::from_ex(expr!(1/2 * a * t^2));
@@ -176,7 +176,7 @@ fn main() {
     println!("f(3) = {val2}");
 
     // Arbitrary precision
-    let pi = __ctx.pi();
+    let pi = ctx.pi();
     if let Ok(s) = pi.eval_decimal(30) {
         println!("π to 30 digits: {s}");
     }
@@ -210,7 +210,7 @@ fn main() {
     // Exact rational conversions — no floating-point approximation.
     {
         use symplex::units::*;
-        let val = __ctx.int(1);
+        let val = ctx.int(1);
         println!("\n--- Unit Conversions ---");
         println!("1 hp = {} W (exact!)", Power::horsepower(&val).eval());
         println!("1 psi = {} Pa", Pressure::psi(&val).eval());
@@ -229,7 +229,7 @@ fn main() {
     // ── 14. Limits ─────────────────────────────────────────────────
     println!("\n--- Limits ---");
     let limit_expr = &x.sin() / &x;
-    let lim = limit_expr.limit(&x, &__ctx.int(0));
+    let lim = limit_expr.limit(&x, &ctx.int(0));
     println!("lim(x→0) sin(x)/x = {lim}");
 
     // ── 15. Series Expansion ───────────────────────────────────────

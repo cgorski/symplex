@@ -20,8 +20,8 @@ use symplex::prelude::*;
 fn main() {
     println!("=== Matrix Algebra ===\n");
 
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; x, y);
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y);
 
     // ── 1. Construction ────────────────────────────────────────────
     println!("--- Construction ---");
@@ -29,24 +29,24 @@ fn main() {
     let a = matrix![[2, 1], [1, 3]];
     println!("A = {a}");
 
-    let eye = Matrix::identity(&__ctx, 3);
+    let eye = Matrix::identity(&ctx, 3);
     println!("I₃ = {eye}");
 
-    let z = Matrix::zeros(&__ctx, 2, 3);
+    let z = Matrix::zeros(&ctx, 2, 3);
     println!("Zeros(2×3) = {z}");
 
-    let d = Matrix::diag(&[__ctx.int(1), __ctx.int(2), __ctx.int(3)]);
+    let d = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]);
     println!("diag(1,2,3) = {d}");
 
     let built = Matrix::from_fn(3, 3, |i, j| {
-        __ctx.int((i * 3 + j + 1) as i64)
+        ctx.int((i * 3 + j + 1) as i64)
     });
     println!("from_fn(3×3) = {built}");
 
-    let row = Matrix::row_vector(vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)]);
+    let row = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
     println!("Row vector = {row}");
 
-    let col = Matrix::col_vector(vec![__ctx.int(4), __ctx.int(5), __ctx.int(6)]);
+    let col = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
     println!("Col vector = {col}");
 
     // ── 2. Basic operations ────────────────────────────────────────
@@ -138,21 +138,21 @@ fn main() {
     println!("dB/dx = {dm}");
 
     // Substitute a value
-    let m_at_3 = sym_m.subs(&x, &__ctx.int(3));
+    let m_at_3 = sym_m.subs(&x, &ctx.int(3));
     println!("B(3) = {m_at_3}");
 
     // Simplification
     let trig_m = Matrix::new(vec![
-        vec![&x.sin().powi(2) + &x.cos().powi(2), __ctx.int(0)],
-        vec![__ctx.int(0), __ctx.int(1)],
+        vec![&x.sin().powi(2) + &x.cos().powi(2), ctx.int(0)],
+        vec![ctx.int(0), ctx.int(1)],
     ]).unwrap();
     println!("\nTrig matrix: {trig_m}");
     println!("Simplified:  {}", trig_m.simplify());
 
     // Expansion
     let expand_m = Matrix::new(vec![
-        vec![(&x + 1).powi(2), __ctx.int(0)],
-        vec![__ctx.int(0), __ctx.int(1)],
+        vec![(&x + 1).powi(2), ctx.int(0)],
+        vec![ctx.int(0), ctx.int(1)],
     ]).unwrap();
     println!("Before expand: {expand_m}");
     println!("After expand:  {}", expand_m.expand());
@@ -258,15 +258,15 @@ fn main() {
     println!("det(J) = {}", jac.det().unwrap());
 
     // Evaluate Jacobian at a point
-    let jac_at_1_2 = jac.subs(&x, &__ctx.int(1)).subs(&y, &__ctx.int(2));
+    let jac_at_1_2 = jac.subs(&x, &ctx.int(1)).subs(&y, &ctx.int(2));
     println!("J(1,2) = {jac_at_1_2}");
     println!("det(J(1,2)) = {}", jac_at_1_2.det().unwrap());
 
     // ── 13. Dot and Cross Products ─────────────────────────────────
     println!("\n--- Dot & Cross Products ---");
 
-    let v1 = Matrix::col_vector(vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)]);
-    let v2 = Matrix::col_vector(vec![__ctx.int(4), __ctx.int(5), __ctx.int(6)]);
+    let v1 = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+    let v2 = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
 
     let dot_product = symplex::matrix::dot(&v1, &v2);
     println!("v1 · v2 = {dot_product}"); // 1·4 + 2·5 + 3·6 = 32

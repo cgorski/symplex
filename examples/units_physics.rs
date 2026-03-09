@@ -61,7 +61,7 @@ symplex::const_assert_dim!(
 );
 
 fn main() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
 
     println!("=== Symplex: Compile-Time Dimensional Analysis ===\n");
 
@@ -80,8 +80,8 @@ fn main() {
 
     // Substitute numerical values: m = 10 kg, a = 9.81 m/s²
     let f_num = f.clone()
-        .subs(&m, &__ctx.rational(10, 1))
-        .subs(&a, &__ctx.rational(981, 100))
+        .subs(&m, &ctx.rational(10, 1))
+        .subs(&a, &ctx.rational(981, 100))
         .eval();
     println!("  F(m=10, a=9.81) = {}", f_num);
 
@@ -117,14 +117,14 @@ fn main() {
 
     // Numerical: I = 3 A, R = 47 Ω → V = 141 V, P = 423 W
     let v_num = volt.clone()
-        .subs(&i, &__ctx.rational(3, 1))
-        .subs(&r, &__ctx.rational(47, 1))
+        .subs(&i, &ctx.rational(3, 1))
+        .subs(&r, &ctx.rational(47, 1))
         .eval();
     println!("  V(I=3, R=47) = {}", v_num);
 
     let p_num = p_elec
-        .subs(&i, &__ctx.rational(3, 1))
-        .subs(&r, &__ctx.rational(47, 1))
+        .subs(&i, &ctx.rational(3, 1))
+        .subs(&r, &ctx.rational(47, 1))
         .eval();
     println!("  P(I=3, R=47) = {}", p_num);
 
@@ -227,25 +227,25 @@ fn main() {
     println!("\n── Unit Conversions ──");
 
     // All quantities store SI internally; constructors convert automatically.
-    let distance = Length::kilometers(&__ctx.rational(5, 1));
+    let distance = Length::kilometers(&ctx.rational(5, 1));
     println!("  5 km = {}", distance);
 
-    let engine = Power::horsepower(&__ctx.rational(300, 1));
+    let engine = Power::horsepower(&ctx.rational(300, 1));
     println!("  300 hp = {}", engine);
 
-    let boiling = Temperature::from_celsius(&__ctx.rational(100, 1));
+    let boiling = Temperature::from_celsius(&ctx.rational(100, 1));
     println!("  100 °C = {}", boiling);
 
-    let body_temp = Temperature::from_fahrenheit(&__ctx.rational(986, 10));
+    let body_temp = Temperature::from_fahrenheit(&ctx.rational(986, 10));
     println!("  98.6 °F = {}", body_temp);
 
-    let highway = Velocity::kilometers_per_hour(&__ctx.rational(120, 1));
+    let highway = Velocity::kilometers_per_hour(&ctx.rational(120, 1));
     println!("  120 km/h = {}", highway);
 
-    let one_g = Acceleration::standard_gravity(&__ctx.int(1));
+    let one_g = Acceleration::standard_gravity(&ctx.int(1));
     println!("  1 g = {}", one_g);
 
-    let atm = Pressure::atmospheres(&__ctx.rational(1, 1));
+    let atm = Pressure::atmospheres(&ctx.rational(1, 1));
     println!("  1 atm = {}", atm);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -256,7 +256,7 @@ fn main() {
     // DiffWrt and IntWrt traits let you differentiate and integrate
     // named types directly — the compiler verifies the physical law.
 
-    symplex::syms!(__ctx; a, t);
+    symplex::syms!(ctx; a, t);
 
     let t_var = Time::symbol("t");
 
@@ -303,14 +303,14 @@ fn main() {
     println!("  dΦ/dt = {} (Voltage — Faraday's law)", emf);
 
     // Energy / Length → Force (F = -dU/dx)
-    symplex::syms!(__ctx; k, x);
+    symplex::syms!(ctx; k, x);
     let x_var = Length::symbol("x");
     let spring_pe = Energy::from_ex(expr!(1/2 * k * x^2));
     let spring_force: Force = spring_pe.diff_wrt(&x_var);
     println!("  dU/dx = {} (Force from spring PE)", spring_force);
 
     // Power / Current → Voltage (dP/dI)
-    symplex::syms!(__ctx; i_p, r_p);
+    symplex::syms!(ctx; i_p, r_p);
     let i_var = Current::symbol("i_p");
     let power_expr = Power::from_ex(expr!(i_p^2 * r_p));
     let dp_di: Voltage = power_expr.diff_wrt(&i_var);
@@ -368,7 +368,7 @@ fn main() {
         let energy = symplex::dim!(Energy: m * c * c);
         println!("  E = mc² = {}", energy);
         println!("  (Displays symbolically — 'c' not '299792458')");
-        println!("  E(m=1kg) = {:.3e} J", energy.subs(&m, &__ctx.int(1)).eval_f64().unwrap());
+        println!("  E(m=1kg) = {:.3e} J", energy.subs(&m, &ctx.int(1)).eval_f64().unwrap());
     }
 
     println!("\n✓ All dimensional checks passed!");

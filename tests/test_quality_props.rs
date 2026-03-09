@@ -33,9 +33,9 @@ proptest! {
     /// original cubic polynomial (residual < 1e-6).
     #[test]
     fn cubic_roots_satisfy_polynomial(coeffs in arb_cubic_coeffs()) {
-        let __ctx = Context::new();
+        let ctx = Context::new();
         let [a, b, c, d] = coeffs;
-        let x = __ctx.symbol("x");
+        let x = ctx.symbol("x");
 
         // Build  a·x³ + b·x² + c·x + d
         let poly = &(&x.powi(3) * a) + &(&x.powi(2) * b) + &(&x * c) + d;
@@ -71,10 +71,10 @@ proptest! {
     fn matrix_inverse_is_identity(
         entries in proptest::array::uniform9(-3i64..4i64)
     ) {
-        let __ctx = Context::new();
+        let ctx = Context::new();
         let data: Vec<Vec<Ex>> = entries
             .chunks(3)
-            .map(|row| row.iter().map(|&v| __ctx.int(v)).collect())
+            .map(|row| row.iter().map(|&v| ctx.int(v)).collect())
             .collect();
         let m = symplex::matrix::Matrix::new(data).unwrap();
 
@@ -117,8 +117,8 @@ proptest! {
     /// signature components (pub fn, parameter, return type).
     #[test]
     fn codegen_produces_valid_syntax(a in -5i64..5, b in -5i64..5, c in 1i64..5) {
-        let __ctx = Context::new();
-        let x = __ctx.symbol("x");
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
         let poly = &(&x.powi(2) * a) + &(&x * b) + c;
         if let Ok(code) = poly.to_rust_fn("test_fn", &["x"]) {
             prop_assert!(
@@ -145,15 +145,15 @@ proptest! {
         a_entries in proptest::array::uniform9(-3i64..4i64),
         b_entries in proptest::array::uniform9(-3i64..4i64),
     ) {
-        let __ctx = Context::new();
+        let ctx = Context::new();
         let mat_a = symplex::matrix::Matrix::new(
             a_entries.chunks(3)
-                .map(|row| row.iter().map(|&v| __ctx.int(v)).collect())
+                .map(|row| row.iter().map(|&v| ctx.int(v)).collect())
                 .collect(),
         ).unwrap();
         let mat_b = symplex::matrix::Matrix::new(
             b_entries.chunks(3)
-                .map(|row| row.iter().map(|&v| __ctx.int(v)).collect())
+                .map(|row| row.iter().map(|&v| ctx.int(v)).collect())
                 .collect(),
         ).unwrap();
 

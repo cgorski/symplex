@@ -15,8 +15,8 @@ use symplex::prelude::*;
 fn main() {
     println!("=== Laplace Transforms ===\n");
 
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; t, s, n, z);
+    let ctx = Context::new();
+    symplex::syms!(ctx; t, s, n, z);
 
     // ════════════════════════════════════════════════════════════════
     // Part 1: Forward Laplace Transform
@@ -32,7 +32,7 @@ fn main() {
     println!("--- Forward Laplace Transforms ---\n");
 
     // L{1} = 1/s
-    let result = __ctx.int(1).laplace(&t, &s);
+    let result = ctx.int(1).laplace(&t, &s);
     println!("L{{1}}       = {result}");
 
     // L{t} = 1/s²
@@ -122,7 +122,7 @@ fn main() {
     println!("\n--- Roundtrip Verification ---");
 
     let test_functions: Vec<(&str, Ex)> = vec![
-        ("1", __ctx.int(1)),
+        ("1", ctx.int(1)),
         ("t", t.clone()),
         ("exp(2t)", (&t * 2).exp()),
         ("sin(t)", t.sin()),
@@ -217,20 +217,20 @@ fn main() {
     println!("\n\n--- Z-Transform ---\n");
 
     // Z{1} (unit step) — should be z/(z-1)
-    match __ctx.int(1).z_transform(&n, &z) {
+    match ctx.int(1).z_transform(&n, &z) {
         Ok(result) => println!("Z{{1}}       = {result}"),
         Err(e) => println!("Z{{1}}       failed: {e}"),
     }
 
     // Z{(1/2)^n} = z/(z - 1/2)
-    let half = __ctx.rational(1, 2);
+    let half = ctx.rational(1, 2);
     match half.pow(&n).z_transform(&n, &z) {
         Ok(result) => println!("Z{{(1/2)^n}} = {result}"),
         Err(e) => println!("Z{{(1/2)^n}} failed: {e}"),
     }
 
     // Z{2^n} = z/(z - 2)
-    match __ctx.int(2).pow(&n).z_transform(&n, &z) {
+    match ctx.int(2).pow(&n).z_transform(&n, &z) {
         Ok(result) => println!("Z{{2^n}}     = {result}"),
         Err(e) => println!("Z{{2^n}}     failed: {e}"),
     }

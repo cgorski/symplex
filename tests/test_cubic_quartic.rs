@@ -36,9 +36,9 @@ fn verify_roots(poly_expr: &Ex, var: &Ex, roots: &[Ex], label: &str) {
 
 #[test]
 fn cubic_three_rational_roots() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (x-1)(x-2)(x-3) = x³ - 6x² + 11x - 6 = 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -66,9 +66,9 @@ fn cubic_three_rational_roots() {
 
 #[test]
 fn cubic_three_rational_roots_verify() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Same polynomial, but verify by substitution
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6;
     let roots = poly.solve_or_empty(&x);
     verify_roots(&poly, &x, &roots, "x³-6x²+11x-6");
@@ -76,9 +76,9 @@ fn cubic_three_rational_roots_verify() {
 
 #[test]
 fn cubic_one_real_two_complex() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x³ + 1 = 0  →  roots: -1, (1 ± i√3)/2
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(3) + 1;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -92,9 +92,9 @@ fn cubic_one_real_two_complex() {
 
 #[test]
 fn cubic_depressed_with_zero_root() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x³ - x = x(x-1)(x+1) = 0  →  roots 0, 1, -1
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(3) - &x;
     let roots = poly.solve_or_empty(&x);
     assert!(
@@ -107,9 +107,9 @@ fn cubic_depressed_with_zero_root() {
 
 #[test]
 fn cubic_negative_rational_roots() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (x+1)(x+2)(x+3) = x³ + 6x² + 11x + 6 = 0  →  roots -1, -2, -3
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(3) + &(&x.powi(2) * 6) + &(&x * 11) + 6;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -137,9 +137,9 @@ fn cubic_negative_rational_roots() {
 
 #[test]
 fn cubic_repeated_root() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (x-1)³ = x³ - 3x² + 3x - 1 = 0  →  triple root x=1
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(3) - &(&x.powi(2) * 3) + &(&x * 3) - 1;
     let roots = poly.solve_or_empty(&x);
     assert!(!roots.is_empty(), "(x-1)³ should find at least one root");
@@ -148,10 +148,10 @@ fn cubic_repeated_root() {
 
 #[test]
 fn cubic_double_root_and_simple() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (x-1)²(x+2) = x³ - 3x + 2 → roots 1 (double), -2
     // Actually: (x-1)²(x+2) = x³ + 0x² - 3x + 2
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(3) - &(&x * 3) + 2;
     let roots = poly.solve_or_empty(&x);
     assert!(!roots.is_empty(), "x³-3x+2 should have roots");
@@ -160,9 +160,9 @@ fn cubic_double_root_and_simple() {
 
 #[test]
 fn cubic_with_leading_coefficient() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // 2x³ - 6x² + 4x = 2x(x-1)(x-2) = 0  →  roots 0, 1, 2
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &(&x.powi(3) * 2) - &(&x.powi(2) * 6) + &(&x * 4);
     let roots = poly.solve_or_empty(&x);
     assert!(
@@ -175,9 +175,9 @@ fn cubic_with_leading_coefficient() {
 
 #[test]
 fn cubic_pure_cube() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x³ - 8 = 0  →  x = 2, and two complex cube roots of 8
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(3) - 8;
     let roots = poly.solve_or_empty(&x);
     assert!(!roots.is_empty(), "x³-8 should have roots");
@@ -192,9 +192,9 @@ fn cubic_pure_cube() {
 
 #[test]
 fn cubic_no_rational_roots() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x³ - 2 = 0  →  x = ∛2 (irrational) and two complex roots
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(3) - 2;
     let roots = poly.solve_or_empty(&x);
     // Cardano's formula should find 3 roots
@@ -209,9 +209,9 @@ fn cubic_no_rational_roots() {
 
 #[test]
 fn cubic_eq_macro() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Using the eq! macro
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let equation = eq!(x ^ 3 - 6 * x ^ 2 + 11 * x - 6 = 0);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(
@@ -228,9 +228,9 @@ fn cubic_eq_macro() {
 
 #[test]
 fn quartic_four_rational_roots() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (x-1)(x-2)(x-3)(x-4) = x⁴ - 10x³ + 35x² - 50x + 24 = 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &(&(&x.powi(4) - &(&x.powi(3) * 10)) + &(&x.powi(2) * 35)) - &(&(&x * 50) - 24);
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -262,9 +262,9 @@ fn quartic_four_rational_roots() {
 
 #[test]
 fn quartic_biquadratic() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x⁴ - 5x² + 4 = (x²-1)(x²-4) = (x-1)(x+1)(x-2)(x+2) = 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &(&x.powi(4) - &(&x.powi(2) * 5)) + 4;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -278,9 +278,9 @@ fn quartic_biquadratic() {
 
 #[test]
 fn quartic_with_zero_root() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x⁴ - x³ = x³(x-1) = 0  →  roots 0 (triple), 1
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(4) - &x.powi(3);
     let roots = poly.solve_or_empty(&x);
     assert!(!roots.is_empty(), "x⁴-x³ should have roots");
@@ -289,9 +289,9 @@ fn quartic_with_zero_root() {
 
 #[test]
 fn quartic_x4_minus_1() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x⁴ - 1 = (x²-1)(x²+1) = (x-1)(x+1)(x-i)(x+i) = 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(4) - 1;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -305,9 +305,9 @@ fn quartic_x4_minus_1() {
 
 #[test]
 fn quartic_symmetric() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (x-1)(x+1)(x-2)(x+2) = x⁴ - 5x² + 4
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &(&x.powi(4) - &(&x.powi(2) * 5)) + 4;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -339,9 +339,9 @@ fn quartic_symmetric() {
 
 #[test]
 fn quartic_verify_by_substitution() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (x-1)(x-2)(x-3)(x-4) — verify each root satisfies the equation
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &(&(&x.powi(4) - &(&x.powi(3) * 10)) + &(&x.powi(2) * 35)) - &(&(&x * 50) - 24);
     let roots = poly.solve_or_empty(&x);
     for root in &roots {
@@ -353,9 +353,9 @@ fn quartic_verify_by_substitution() {
 
 #[test]
 fn quartic_all_complex() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x⁴ + 1 = 0  →  four complex roots (8th roots of unity subset)
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(4) + 1;
     let roots = poly.solve_or_empty(&x);
     // Ferrari should produce 4 roots (all complex)
@@ -371,9 +371,9 @@ fn quartic_all_complex() {
 
 #[test]
 fn cubic_solver_does_not_panic_on_degenerate() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // 0·x³ + x² - 1 = 0 should degrade to quadratic gracefully
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(2) - 1;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -385,9 +385,9 @@ fn cubic_solver_does_not_panic_on_degenerate() {
 
 #[test]
 fn quartic_solver_does_not_panic_on_degenerate() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // 0·x⁴ + x³ - 6x² + 11x - 6 = 0 should degrade to cubic
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -399,9 +399,9 @@ fn quartic_solver_does_not_panic_on_degenerate() {
 
 #[test]
 fn cubic_x_cubed() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x³ = 0 → triple root at 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = x.powi(3);
     let roots = poly.solve_or_empty(&x);
     assert!(!roots.is_empty(), "x³=0 should have at least one root (0)");
@@ -414,9 +414,9 @@ fn cubic_x_cubed() {
 
 #[test]
 fn quartic_x_fourth() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x⁴ = 0 → quadruple root at 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = x.powi(4);
     let roots = poly.solve_or_empty(&x);
     assert!(!roots.is_empty(), "x⁴=0 should have at least one root (0)");
@@ -429,9 +429,9 @@ fn quartic_x_fourth() {
 
 #[test]
 fn quartic_product_of_quadratics() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (x²+1)(x²-4) = x⁴ - 3x² - 4 = 0  →  roots ±2, ±i
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &(&x.powi(4) - &(&x.powi(2) * 3)) - 4;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -445,9 +445,9 @@ fn quartic_product_of_quadratics() {
 
 #[test]
 fn cubic_fractional_roots() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (2x-1)(x-2)(x-3) = 2x³ - 11x² + 17x - 6 = 0  →  roots 1/2, 2, 3
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &(&(&x.powi(3) * 2) - &(&x.powi(2) * 11)) + &(&x * 17) - 6;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -474,11 +474,11 @@ fn cubic_fractional_roots() {
 
 #[test]
 fn quartic_fractional_roots() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (2x-1)(x-1)(x+1)(x-2) = 2x⁴ - 5x³ + x² + 5x - 2
     // roots: 1/2, 1, -1, 2
     // Expand: 2x⁴ - 5x³ + x² + 5x - 2
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let poly = &(&(&(&x.powi(4) * 2) - &(&x.powi(3) * 5)) + &x.powi(2)) + &(&x * 5) - 2;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(

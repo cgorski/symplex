@@ -11,25 +11,25 @@ use symplex::prelude::*;
 
 #[test]
 fn floor_large_rational() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // floor(100/7) = floor(14.2857...) = 14
-    let result = __ctx.rational(100, 7).floor().eval();
+    let result = ctx.rational(100, 7).floor().eval();
     assert_eq!(format!("{result}"), "14");
 }
 
 #[test]
 fn floor_just_below_integer() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // floor(99/10) = floor(9.9) = 9
-    let result = __ctx.rational(99, 10).floor().eval();
+    let result = ctx.rational(99, 10).floor().eval();
     assert_eq!(format!("{result}"), "9");
 }
 
 #[test]
 fn floor_negative_just_above_integer() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // floor(-99/10) = floor(-9.9) = -10
-    let result = __ctx.rational(-99, 10).floor().eval();
+    let result = ctx.rational(-99, 10).floor().eval();
     assert_eq!(format!("{result}"), "-10");
 }
 
@@ -39,25 +39,25 @@ fn floor_negative_just_above_integer() {
 
 #[test]
 fn ceiling_large_rational() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ceil(100/7) = ceil(14.2857...) = 15
-    let result = __ctx.rational(100, 7).ceiling().eval();
+    let result = ctx.rational(100, 7).ceiling().eval();
     assert_eq!(format!("{result}"), "15");
 }
 
 #[test]
 fn ceiling_negative_just_below_integer() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ceil(-99/10) = ceil(-9.9) = -9
-    let result = __ctx.rational(-99, 10).ceiling().eval();
+    let result = ctx.rational(-99, 10).ceiling().eval();
     assert_eq!(format!("{result}"), "-9");
 }
 
 #[test]
 fn ceiling_exact_integer_unchanged() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ceil(10/2) = ceil(5) = 5
-    let result = __ctx.rational(10, 2).ceiling().eval();
+    let result = ctx.rational(10, 2).ceiling().eval();
     assert_eq!(format!("{result}"), "5");
 }
 
@@ -67,17 +67,17 @@ fn ceiling_exact_integer_unchanged() {
 
 #[test]
 fn rem_positive_integers() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // 7 rem 3 = 7 - 3*floor(7/3) = 7 - 3*2 = 1
-    let result = __ctx.int(7).rem(&__ctx.int(3)).eval();
+    let result = ctx.int(7).rem(&ctx.int(3)).eval();
     assert_eq!(format!("{result}"), "1");
 }
 
 #[test]
 fn rem_negative_dividend() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (-7) rem 3 = -7 - 3*floor(-7/3) = -7 - 3*(-3) = -7 + 9 = 2
-    let result = __ctx.int(-7).rem(&__ctx.int(3)).eval();
+    let result = ctx.int(-7).rem(&ctx.int(3)).eval();
     assert_eq!(format!("{result}"), "2");
 }
 
@@ -170,8 +170,8 @@ fn product_empty_range_is_one() {
 
 #[test]
 fn tree_roundtrip_floor() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let fl = x.floor();
     let tree = fl.to_tree();
     let json = serde_json::to_string(&tree).unwrap();

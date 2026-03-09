@@ -9,8 +9,8 @@ use symplex::prelude::*;
 
 #[test]
 fn simplify_pow_pow_integers() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // (x^2)^3 → x^6
     let expr = x.powi(2).powi(3);
     let simplified = expr.simplify();
@@ -19,8 +19,8 @@ fn simplify_pow_pow_integers() {
 
 #[test]
 fn simplify_pow_pow_in_expression() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // (x^2)^3 + 1 → x^6 + 1
     let expr = &x.powi(2).powi(3) + 1;
     let simplified = expr.simplify();
@@ -34,24 +34,24 @@ fn simplify_pow_pow_in_expression() {
 
 #[test]
 fn simplify_asinh_sinh() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.sinh().asinh();
     assert_eq!(format!("{}", expr.simplify()), "x");
 }
 
 #[test]
 fn simplify_acosh_cosh() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.cosh().acosh();
     assert_eq!(format!("{}", expr.simplify()), "abs(x)");
 }
 
 #[test]
 fn simplify_atanh_tanh() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.tanh().atanh();
     assert_eq!(format!("{}", expr.simplify()), "x");
 }
@@ -138,8 +138,8 @@ fn eval_cos_pi_over_6() {
 
 #[test]
 fn eval_sinh_neg_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = (-&x).sinh();
     let evaled = expr.eval();
     assert_eq!(format!("{evaled}"), "-sinh(x)");
@@ -147,8 +147,8 @@ fn eval_sinh_neg_x() {
 
 #[test]
 fn eval_cosh_neg_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = (-&x).cosh();
     let evaled = expr.eval();
     assert_eq!(format!("{evaled}"), "cosh(x)");
@@ -156,8 +156,8 @@ fn eval_cosh_neg_x() {
 
 #[test]
 fn eval_tanh_neg_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = (-&x).tanh();
     let evaled = expr.eval();
     assert_eq!(format!("{evaled}"), "-tanh(x)");
@@ -199,8 +199,8 @@ fn expand_log_quotient() {
 
 #[test]
 fn expand_log_bare_unchanged() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.ln();
     let expanded = expr.expand_log();
     assert_eq!(format!("{expanded}"), "ln(x)");
@@ -258,19 +258,19 @@ macro_rules! assert_simplify_preserves_value {
 
 #[test]
 fn neg_exp_ln_different_structure() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // exp(ln(x) + 1) should NOT simplify to x (the +1 prevents matching)
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = (&x.ln() + 1).exp();
     assert_simplify_unchanged!(expr);
 }
 
 #[test]
 fn neg_sqrt_sq_wrong_exponent() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // sqrt(x^3) should NOT simplify to |x| (exponent is 3, not 2)
     // It correctly becomes x^(3/2) instead.
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = x.powi(3).sqrt();
     let result = format!("{}", expr.simplify());
     assert_ne!(result, "abs(x)", "sqrt(x^3) must not simplify to abs(x)");
@@ -280,80 +280,80 @@ fn neg_sqrt_sq_wrong_exponent() {
 
 #[test]
 fn neg_sin_div_cos_different_args() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // sin(x)/cos(y) should NOT become tan (different arguments)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let expr = &x.sin() / &y.cos();
     assert_simplify_unchanged!(expr);
 }
 
 #[test]
 fn neg_exp_mul_not_both_exp() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // exp(x) * sin(x) should NOT trigger exp combining
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = &x.exp() * &x.sin();
     assert_simplify_unchanged!(expr);
 }
 
 #[test]
 fn neg_pow_pow_both_fractional() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (x^(1/2))^(1/3) should NOT become x^(1/6) (no integer exponent)
-    let x = __ctx.symbol("x");
-    let half = __ctx.rational(1, 2);
-    let third = __ctx.rational(1, 3);
+    let x = ctx.symbol("x");
+    let half = ctx.rational(1, 2);
+    let third = ctx.rational(1, 3);
     let expr = x.pow(&half).pow(&third);
     assert_simplify_unchanged!(expr);
 }
 
 #[test]
 fn neg_abs_not_positive() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // abs(x) should NOT simplify when x has no positivity assumption
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = x.abs();
     assert_simplify_unchanged!(expr);
 }
 
 #[test]
 fn neg_pythagorean_wrong_functions() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // sinh(x)^2 + cos(x)^2 should NOT simplify (mixed sinh/cos)
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = &x.sinh().powi(2) + &x.cos().powi(2);
     assert_simplify_unchanged!(expr);
 }
 
 #[test]
 fn neg_cosh_sinh_wrong_sign() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // cosh(x)^2 + sinh(x)^2 should NOT simplify to 1 (wrong sign, identity is cosh²-sinh²)
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = &x.cosh().powi(2) + &x.sinh().powi(2);
     assert_simplify_unchanged!(expr);
 }
 
 #[test]
 fn neg_asin_sin_removed() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // asin(sin(x)) should NOT simplify to x (rule removed for correctness)
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     assert_simplifies_to!(x.sin().asin(), "asin(sin(x))");
 }
 
 #[test]
 fn neg_acos_cos_removed() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_simplifies_to!(x.cos().acos(), "acos(cos(x))");
 }
 
 #[test]
 fn neg_atan_tan_removed() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_simplifies_to!(x.tan().atan(), "atan(tan(x))");
 }
 
@@ -363,43 +363,43 @@ fn neg_atan_tan_removed() {
 
 #[test]
 fn pos_pythagorean_with_macro() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_simplifies_to!(&x.sin().powi(2) + &x.cos().powi(2), "1");
 }
 
 #[test]
 fn pos_exp_ln_with_macro() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_simplifies_to!(x.ln().exp(), "x");
 }
 
 #[test]
 fn pos_acosh_cosh_gives_abs() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_simplifies_to!(x.cosh().acosh(), "abs(x)");
 }
 
 #[test]
 fn pos_sin_asin_still_works() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_simplifies_to!(x.asin().sin(), "x");
 }
 
 #[test]
 fn pos_cos_acos_still_works() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_simplifies_to!(x.acos().cos(), "x");
 }
 
 #[test]
 fn pos_asinh_sinh_still_works() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_simplifies_to!(x.sinh().asinh(), "x");
 }
 
@@ -409,17 +409,17 @@ fn pos_asinh_sinh_still_works() {
 
 #[test]
 fn value_pythagorean() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let point = __ctx.rational(7, 10);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let point = ctx.rational(7, 10);
     assert_simplify_preserves_value!(&x.sin().powi(2) + &x.cos().powi(2), x, point);
 }
 
 #[test]
 fn value_exp_ln() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let point = __ctx.int(3);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let point = ctx.int(3);
     assert_simplify_preserves_value!(x.ln().exp(), x, point);
 }
 
@@ -429,23 +429,23 @@ fn value_exp_ln() {
 
 #[test]
 fn rule_exp_log_denest() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_simplifies_to!((&x.ln() * 3).exp(), "x^3");
 }
 
 #[test]
 fn rule_exp_log_denest_symbolic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let a = __ctx.symbol("a");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol("a");
     assert_simplifies_to!((&x.ln() * &a).exp(), "x^a");
 }
 
 #[test]
 fn expand_trig_sin_2x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = (&x * 2).sin();
     let expanded = expr.expand_trig();
     let s = format!("{expanded}");
@@ -457,8 +457,8 @@ fn expand_trig_sin_2x() {
 
 #[test]
 fn expand_trig_cos_2x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = (&x * 2).cos();
     let expanded = expr.expand_trig();
     let s = format!("{expanded}");
@@ -470,8 +470,8 @@ fn expand_trig_cos_2x() {
 
 #[test]
 fn expand_trig_sin_3x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = (&x * 3).sin();
     let expanded = expr.expand_trig();
     let s = format!("{expanded}");
@@ -484,8 +484,8 @@ fn expand_trig_sin_3x() {
 
 #[test]
 fn trig_combine_double_angle() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &(&x.sin() * &x.cos()) * 2;
     let combined = expr.trig_combine();
     let s = format!("{combined}");
@@ -494,10 +494,10 @@ fn trig_combine_double_angle() {
 
 #[test]
 fn together_with_lcm() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let a = __ctx.symbol("a");
-    let b = __ctx.symbol("b");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol("a");
+    let b = ctx.symbol("b");
     // a/(x-1) + b/(x-1)^2 should have denom (x-1)^2, not (x-1)^3
     let x_minus_1 = &x - 1;
     let frac1 = &a / &x_minus_1;
@@ -511,8 +511,8 @@ fn together_with_lcm() {
 
 #[test]
 fn cos_div_sin_rule() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x.cos() / &x.sin();
     let simplified = expr.simplify();
     let s = format!("{simplified}");

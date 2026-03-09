@@ -131,12 +131,12 @@ fn regression_as_coeff_term_roundtrip() {
 /// and returned it — losing the factor of 6.
 #[test]
 fn regression_smart_simplify_gcd_dropped() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &(&x * 6) + 12;
     let result = expr.smart_simplify();
     // Must be mathematically equal to 6x + 12
-    let point = __ctx.rational(7, 10);
+    let point = ctx.rational(7, 10);
     let val_orig = expr.subs(&x, &point).eval_f64().unwrap();
     let val_result = result.subs(&x, &point).eval_f64().unwrap();
     assert!(
@@ -149,8 +149,8 @@ fn regression_smart_simplify_gcd_dropped() {
 /// Input: 2*sin(x)^2 + 2*cos(x)^2 should become 2 (not stay as-is).
 #[test]
 fn regression_smart_simplify_gcd_with_pythagorean() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &(&x.sin().powi(2) * 2) + &(&x.cos().powi(2) * 2);
     let result = expr.smart_simplify();
     let result_str = format!("{result}");
@@ -165,8 +165,8 @@ fn regression_smart_simplify_gcd_with_pythagorean() {
 /// ∫ v·du = ∫ (x·ln(x) - x) dx which contains the original integral.
 #[test]
 fn regression_by_parts_x_ln_x_no_crash() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x * &x.ln();
     let result = expr.integrate(&x);
     // Should produce a result (not crash, not unevaluated)
@@ -177,7 +177,7 @@ fn regression_by_parts_x_ln_x_no_crash() {
     );
     // Verify by differentiation
     let deriv = result.diff(&x);
-    let point = __ctx.int(2);
+    let point = ctx.int(2);
     let val_orig = expr.subs(&x, &point).eval_f64().unwrap();
     let val_deriv = deriv.subs(&x, &point).eval_f64().unwrap();
     assert!(
@@ -190,10 +190,10 @@ fn regression_by_parts_x_ln_x_no_crash() {
 /// ((-1)^2)^(1/2) should be 1, not -1.
 #[test]
 fn regression_pow_pow_negative_base() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // (x^2)^(1/2) should give |x| via sqrt_sq, not x via pow_pow
-    let half = __ctx.rational(1, 2);
+    let half = ctx.rational(1, 2);
     let expr = x.powi(2).pow(&half);
     let result = expr.simplify();
     let result_str = format!("{result}");
@@ -207,8 +207,8 @@ fn regression_pow_pow_negative_base() {
 /// which is wrong when x ∉ [-π/2, π/2].
 #[test]
 fn regression_asin_sin_symbolic_not_simplified() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.sin().asin();
     let result = expr.simplify();
     let result_str = format!("{result}");
@@ -222,8 +222,8 @@ fn regression_asin_sin_symbolic_not_simplified() {
 /// cosh is even, so acosh(cosh(-5)) = 5, not -5.
 #[test]
 fn regression_acosh_cosh_gives_abs() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.cosh().acosh();
     let result = expr.simplify();
     let result_str = format!("{result}");

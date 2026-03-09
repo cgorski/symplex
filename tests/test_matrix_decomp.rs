@@ -24,10 +24,10 @@ fn rref_identity() {
 
 #[test]
 fn rref_2x3() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)],
-        vec![__ctx.int(4), __ctx.int(5), __ctx.int(6)],
+        vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+        vec![ctx.int(4), ctx.int(5), ctx.int(6)],
     ]).unwrap();
     let (rref_mat, pivots) = m.rref();
     assert_eq!(pivots.len(), 2); // rank 2
@@ -42,11 +42,11 @@ fn rref_2x3() {
 
 #[test]
 fn rref_rank_deficient() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Two proportional rows: rank should be 1
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(1), __ctx.int(2)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(1), ctx.int(2)],
     ]).unwrap();
     let (_, pivots) = m.rref();
     assert_eq!(pivots.len(), 1);
@@ -72,10 +72,10 @@ fn rank_of_zero_matrix() {
 
 #[test]
 fn rank_rectangular() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(0), __ctx.int(2)],
-        vec![__ctx.int(0), __ctx.int(1), __ctx.int(3)],
+        vec![ctx.int(1), ctx.int(0), ctx.int(2)],
+        vec![ctx.int(0), ctx.int(1), ctx.int(3)],
     ]).unwrap();
     assert_eq!(m.rank(), 2);
 }
@@ -93,10 +93,10 @@ fn nullspace_identity_empty() {
 
 #[test]
 fn nullspace_rank_deficient() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(2), __ctx.int(4)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(2), ctx.int(4)],
     ]).unwrap();
     let ns = m.nullspace();
     assert_eq!(ns.len(), 1, "rank-1 2x2 should have 1-dim nullspace");
@@ -107,11 +107,11 @@ fn nullspace_rank_deficient() {
 
 #[test]
 fn nullspace_vector_is_in_kernel() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // A = [[1, 2], [2, 4]]  =>  nullspace basis includes [-2, 1]
     let a = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(2), __ctx.int(4)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(2), ctx.int(4)],
     ]).unwrap();
     let ns = a.nullspace();
     assert_eq!(ns.len(), 1);
@@ -145,10 +145,10 @@ fn columnspace_identity() {
 
 #[test]
 fn columnspace_rank_deficient() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(2), __ctx.int(4)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(2), ctx.int(4)],
     ]).unwrap();
     let cs = m.columnspace();
     assert_eq!(cs.len(), 1, "rank-1 matrix has 1-dim column space");
@@ -176,10 +176,10 @@ fn lu_identity() {
 
 #[test]
 fn lu_2x2_verify_pa_eq_lu() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let a = Matrix::new(vec![
-        vec![__ctx.int(2), __ctx.int(3)],
-        vec![__ctx.int(4), __ctx.int(7)],
+        vec![ctx.int(2), ctx.int(3)],
+        vec![ctx.int(4), ctx.int(7)],
     ]).unwrap();
     let (l, u, perm) = a.lu().expect("non-singular 2x2 should have LU");
 
@@ -209,10 +209,10 @@ fn lu_2x2_verify_pa_eq_lu() {
 
 #[test]
 fn lu_singular_returns_none() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(2), __ctx.int(4)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(2), ctx.int(4)],
     ]).unwrap();
     assert!(m.lu().is_none(), "singular matrix should return None");
 }
@@ -223,10 +223,10 @@ fn lu_singular_returns_none() {
 
 #[test]
 fn cross_product_basic() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // i x j = k
-    let i_vec = Matrix::col_vector(vec![__ctx.int(1), __ctx.int(0), __ctx.int(0)]);
-    let j_vec = Matrix::col_vector(vec![__ctx.int(0), __ctx.int(1), __ctx.int(0)]);
+    let i_vec = Matrix::col_vector(vec![ctx.int(1), ctx.int(0), ctx.int(0)]);
+    let j_vec = Matrix::col_vector(vec![ctx.int(0), ctx.int(1), ctx.int(0)]);
     let k_vec = cross(&i_vec, &j_vec);
     assert_eq!(k_vec.nrows(), 3);
     assert_eq!(k_vec.ncols(), 1);
@@ -237,9 +237,9 @@ fn cross_product_basic() {
 
 #[test]
 fn cross_product_anticommutative() {
-    let __ctx = Context::new();
-    let a = Matrix::col_vector(vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)]);
-    let b = Matrix::col_vector(vec![__ctx.int(4), __ctx.int(5), __ctx.int(6)]);
+    let ctx = Context::new();
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
     let ab = cross(&a, &b).simplify();
     let ba = cross(&b, &a).simplify();
     // a x b = -(b x a)
@@ -260,9 +260,9 @@ fn cross_product_anticommutative() {
 
 #[test]
 fn dot_product_basic() {
-    let __ctx = Context::new();
-    let a = Matrix::col_vector(vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)]);
-    let b = Matrix::col_vector(vec![__ctx.int(4), __ctx.int(5), __ctx.int(6)]);
+    let ctx = Context::new();
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+    let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
     let result = dot(&a, &b);
     assert_eq!(format!("{result}"), "32"); // 4+10+18
 }
@@ -290,40 +290,40 @@ fn norm_identity() {
 
 #[test]
 fn is_square_and_not() {
-    let __ctx = Context::new();
-    assert!(Matrix::identity(&__ctx, 3).is_square());
+    let ctx = Context::new();
+    assert!(Matrix::identity(&ctx, 3).is_square());
     let rect = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)],
-        vec![__ctx.int(4), __ctx.int(5), __ctx.int(6)],
+        vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+        vec![ctx.int(4), ctx.int(5), ctx.int(6)],
     ]).unwrap();
     assert!(!rect.is_square());
 }
 
 #[test]
 fn is_symmetric_true() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(2), __ctx.int(1)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(2), ctx.int(1)],
     ]).unwrap();
     assert!(m.is_symmetric());
 }
 
 #[test]
 fn is_symmetric_false() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(3), __ctx.int(1)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(3), ctx.int(1)],
     ]).unwrap();
     assert!(!m.is_symmetric());
 }
 
 #[test]
 fn hstack_two_matrices() {
-    let __ctx = Context::new();
-    let a = Matrix::col_vector(vec![__ctx.int(1), __ctx.int(2)]);
-    let b = Matrix::col_vector(vec![__ctx.int(3), __ctx.int(4)]);
+    let ctx = Context::new();
+    let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2)]);
+    let b = Matrix::col_vector(vec![ctx.int(3), ctx.int(4)]);
     let h = Matrix::hstack(&[&a, &b]).unwrap();
     assert_eq!(h.nrows(), 2);
     assert_eq!(h.ncols(), 2);
@@ -335,9 +335,9 @@ fn hstack_two_matrices() {
 
 #[test]
 fn vstack_two_matrices() {
-    let __ctx = Context::new();
-    let a = Matrix::row_vector(vec![__ctx.int(1), __ctx.int(2)]);
-    let b = Matrix::row_vector(vec![__ctx.int(3), __ctx.int(4)]);
+    let ctx = Context::new();
+    let a = Matrix::row_vector(vec![ctx.int(1), ctx.int(2)]);
+    let b = Matrix::row_vector(vec![ctx.int(3), ctx.int(4)]);
     let v = Matrix::vstack(&[&a, &b]).unwrap();
     assert_eq!(v.nrows(), 2);
     assert_eq!(v.ncols(), 2);
@@ -349,12 +349,12 @@ fn vstack_two_matrices() {
 
 #[test]
 fn rank_nullity_theorem() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // For an m x n matrix, rank + nullity = n
     let m = Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2), __ctx.int(3)],
-        vec![__ctx.int(4), __ctx.int(5), __ctx.int(6)],
-        vec![__ctx.int(7), __ctx.int(8), __ctx.int(9)],
+        vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+        vec![ctx.int(4), ctx.int(5), ctx.int(6)],
+        vec![ctx.int(7), ctx.int(8), ctx.int(9)],
     ]).unwrap();
     let r = m.rank();
     let ns = m.nullspace();

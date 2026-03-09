@@ -6,10 +6,10 @@ use symplex::prelude::*;
 
 #[test]
 fn gamma_half_is_sqrt_pi() {
-    let __ctx = Context::new();
-    let half = __ctx.rational(1, 2);
+    let ctx = Context::new();
+    let half = ctx.rational(1, 2);
     let result = half.gamma().eval();
-    let expected = __ctx.pi().sqrt();
+    let expected = ctx.pi().sqrt();
     assert_eq!(
         format!("{result}"),
         format!("{expected}"),
@@ -19,11 +19,11 @@ fn gamma_half_is_sqrt_pi() {
 
 #[test]
 fn gamma_three_halves() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Gamma(3/2) = (1/2) · √π
-    let arg = __ctx.rational(3, 2);
+    let arg = ctx.rational(3, 2);
     let result = arg.gamma().eval();
-    let expected = &__ctx.rational(1, 2) * &__ctx.pi().sqrt();
+    let expected = &ctx.rational(1, 2) * &ctx.pi().sqrt();
     assert_eq!(
         format!("{result}"),
         format!("{expected}"),
@@ -33,11 +33,11 @@ fn gamma_three_halves() {
 
 #[test]
 fn gamma_five_halves() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Gamma(5/2) = (3/4) · √π
-    let arg = __ctx.rational(5, 2);
+    let arg = ctx.rational(5, 2);
     let result = arg.gamma().eval();
-    let expected = &__ctx.rational(3, 4) * &__ctx.pi().sqrt();
+    let expected = &ctx.rational(3, 4) * &ctx.pi().sqrt();
     assert_eq!(
         format!("{result}"),
         format!("{expected}"),
@@ -47,11 +47,11 @@ fn gamma_five_halves() {
 
 #[test]
 fn gamma_seven_halves() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Gamma(7/2) = (15/8) · √π
-    let arg = __ctx.rational(7, 2);
+    let arg = ctx.rational(7, 2);
     let result = arg.gamma().eval();
-    let expected = &__ctx.rational(15, 8) * &__ctx.pi().sqrt();
+    let expected = &ctx.rational(15, 8) * &ctx.pi().sqrt();
     assert_eq!(
         format!("{result}"),
         format!("{expected}"),
@@ -63,8 +63,8 @@ fn gamma_seven_halves() {
 
 #[test]
 fn macro_floor() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let e = expr!(floor(x));
     let s = format!("{e}");
     assert!(
@@ -75,8 +75,8 @@ fn macro_floor() {
 
 #[test]
 fn macro_ceiling() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let e = expr!(ceiling(x));
     let s = format!("{e}");
     assert!(
@@ -89,9 +89,9 @@ fn macro_ceiling() {
 
 #[test]
 fn macro_min() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let e = expr!(min(x, y));
     let s = format!("{e}");
     assert!(
@@ -102,9 +102,9 @@ fn macro_min() {
 
 #[test]
 fn macro_max() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let e = expr!(max(x, y));
     let s = format!("{e}");
     assert!(
@@ -117,22 +117,22 @@ fn macro_max() {
 
 #[test]
 fn macro_heaviside_eval_positive() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let result = expr!(heaviside(5)).eval();
     assert_eq!(format!("{result}"), "1", "heaviside(5) should eval to 1");
 }
 
 #[test]
 fn macro_heaviside_eval_negative() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let result = expr!(heaviside(-3)).eval();
     assert_eq!(format!("{result}"), "0", "heaviside(-3) should eval to 0");
 }
 
 #[test]
 fn macro_dirac_delta_symbolic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let e = expr!(dirac_delta(x));
     let s = format!("{e}");
     assert!(
@@ -143,8 +143,8 @@ fn macro_dirac_delta_symbolic() {
 
 #[test]
 fn macro_lambertw_symbolic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let e = expr!(lambertw(x));
     let s = format!("{e}");
     assert!(

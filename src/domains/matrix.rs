@@ -924,8 +924,8 @@ impl Matrix {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// let __ctx = Context::new();
-    /// let ctx = __ctx.clone();
+    /// let ctx = Context::new();
+    /// let ctx = ctx.clone();
     /// let var = ctx.symbol("λ");
     /// let m = symplex::matrix![[2, 1], [0, 3]];
     /// let evs = m.eigenvects(&var).unwrap();
@@ -1012,8 +1012,8 @@ impl Matrix {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// let __ctx = Context::new();
-    /// let ctx = __ctx.clone();
+    /// let ctx = Context::new();
+    /// let ctx = ctx.clone();
     /// let var = ctx.symbol("λ");
     /// let m = symplex::matrix![[2, 1], [0, 3]];
     /// let (p, d) = m.diagonalize(&var).unwrap();
@@ -1080,8 +1080,8 @@ impl Matrix {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// let __ctx = Context::new();
-    /// let ctx = __ctx.clone();
+    /// let ctx = Context::new();
+    /// let ctx = ctx.clone();
     /// let var = ctx.symbol("λ");
     /// // Defective matrix: eigenvalue 2 with algebraic mult 2, geometric mult 1
     /// let m = symplex::matrix![[2, 1, 0, 0],
@@ -1372,8 +1372,8 @@ impl Matrix {
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// let __ctx = Context::new();
-    /// let ctx = __ctx.clone();
+    /// let ctx = Context::new();
+    /// let ctx = ctx.clone();
     /// let var = ctx.symbol("λ");
     /// let m = symplex::matrix![[0, 1], [-1, 0]];
     /// // e^[[0,1],[-1,0]] involves sin and cos
@@ -1608,8 +1608,8 @@ impl Matrix {
     /// use symplex::prelude::*;
     /// use symplex::matrix::Matrix;
     ///
-    /// let __ctx = Context::new();
-    /// let ctx = __ctx.clone();
+    /// let ctx = Context::new();
+    /// let ctx = ctx.clone();
     /// let x = ctx.symbol("x");
     /// let m = Matrix::new(vec![
     ///     vec![x.sin(), x.cos()],
@@ -1663,7 +1663,7 @@ impl Matrix {
     /// # Example
     /// ```
     /// use symplex::prelude::*;
-    /// let __ctx = Context::new();
+    /// let ctx = Context::new();
     /// let m = matrix![[1, 2], [3, 4]];
     /// assert!(m.to_latex().contains(r"\begin{bmatrix}"));
     /// ```

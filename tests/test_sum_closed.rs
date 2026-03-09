@@ -159,26 +159,26 @@ fn convergence_geometric_2_diverges() {
 
 #[test]
 fn gamma_positive_integer_still_works() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Gamma(5) = 4! = 24
-    let result = __ctx.int(5).gamma().eval();
+    let result = ctx.int(5).gamma().eval();
     assert_eq!(format!("{result}"), "24");
 }
 
 #[test]
 fn gamma_half_integer_still_works() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Gamma(1/2) = √π
-    let result = __ctx.rational(1, 2).gamma().eval();
+    let result = ctx.rational(1, 2).gamma().eval();
     assert_eq!(format!("{result}"), "sqrt(pi)");
 }
 
 #[test]
 fn gamma_recurrence_7_over_3() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Gamma(7/3) = (4/3)·(1/3)·Gamma(1/3)
     // = 4/9 · Gamma(1/3)
-    let result = __ctx.rational(7, 3).gamma().eval();
+    let result = ctx.rational(7, 3).gamma().eval();
     let display = format!("{result}");
     // Should contain Gamma(1/3) since that's the irreducible part
     assert!(
@@ -189,9 +189,9 @@ fn gamma_recurrence_7_over_3() {
 
 #[test]
 fn gamma_recurrence_5_over_3() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Gamma(5/3) = (2/3)·Gamma(2/3)
-    let result = __ctx.rational(5, 3).gamma().eval();
+    let result = ctx.rational(5, 3).gamma().eval();
     let display = format!("{result}");
     // Should contain Gamma(2/3) since that's the irreducible part
     assert!(

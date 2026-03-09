@@ -2,7 +2,7 @@ use symplex::prelude::*;
 use symplex::units::*;
 
 fn main() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = Mass::symbol("m");
     let g = Acceleration::symbol("g");
     let l = Length::symbol("l");

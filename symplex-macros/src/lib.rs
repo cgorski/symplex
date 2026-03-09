@@ -93,10 +93,10 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
         MathExpr::Ident(id) => {
             let name = id.to_string();
             match name.as_str() {
-                "pi" | "Pi" | "PI" => Ok(quote! { __ctx.pi() }),
-                "E" => Ok(quote! { __ctx.e() }),
-                "I" => Ok(quote! { __ctx.i_unit() }),
-                "oo" | "inf" => Ok(quote! { __ctx.infinity() }),
+                "pi" | "Pi" | "PI" => Ok(quote! { ctx.pi() }),
+                "E" => Ok(quote! { ctx.e() }),
+                "I" => Ok(quote! { ctx.i_unit() }),
+                "oo" | "inf" => Ok(quote! { ctx.infinity() }),
                 _ => Ok(quote! { (&#id) }),
             }
         }
@@ -140,7 +140,7 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                                 "division by zero in expr!()",
                             ));
                         }
-                        return Ok(quote! { __ctx.rational(#p, #q) });
+                        return Ok(quote! { ctx.rational(#p, #q) });
                     }
                     // Handle -Int / Int → rational(-n, q).
                     // Due to precedence, `-1/2` parses as `Neg(1) / 2`.
@@ -155,7 +155,7 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                                 ));
                             }
                             let neg_p = -p;
-                            return Ok(quote! { __ctx.rational(#neg_p, #q) });
+                            return Ok(quote! { ctx.rational(#neg_p, #q) });
                         }
                     }
                     let lhs_code = generate_expr(lhs)?;
@@ -460,10 +460,10 @@ fn generate_dim_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
             let name = id.to_string();
             match name.as_str() {
                 "pi" | "Pi" | "PI" => Ok(quote! {
-                    ::symplex::units::Dimensionless::from_ex(__ctx.pi()).as_qty()
+                    ::symplex::units::Dimensionless::from_ex(ctx.pi()).as_qty()
                 }),
                 "E" => Ok(quote! {
-                    ::symplex::units::Dimensionless::from_ex(__ctx.e()).as_qty()
+                    ::symplex::units::Dimensionless::from_ex(ctx.e()).as_qty()
                 }),
                 _ => Ok(quote! { (#id).clone().as_qty() }),
             }
@@ -1097,11 +1097,11 @@ fn generate_eq(input: &EqMacroInput) -> syn::Result<TokenStream2> {
 /// directly to [`generate_expr`] for those.
 fn generate_expr_as_ex(expr: &MathExpr) -> syn::Result<TokenStream2> {
     match expr {
-        MathExpr::Int(n, _) => Ok(quote! { __ctx.int(#n) }),
+        MathExpr::Int(n, _) => Ok(quote! { ctx.int(#n) }),
         MathExpr::Neg(inner) => {
             if let Some(n) = inner.as_int() {
                 let neg_n = -n;
-                Ok(quote! { __ctx.int(#neg_n) })
+                Ok(quote! { ctx.int(#neg_n) })
             } else {
                 let code = generate_expr(expr)?;
                 Ok(quote! { { let __v: ::symplex::expr::Ex = (#code).clone(); __v } })

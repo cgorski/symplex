@@ -17,8 +17,8 @@ fn verify_z_numerically(
     expected: f64,
     label: &str,
 ) {
-    let __ctx = result.context();
-    let z_val = __ctx.rational(z_num, z_den);
+    let ctx = result.context();
+    let z_val = ctx.rational(z_num, z_den);
     let at_z = result.subs(z, &z_val).eval();
     let val = at_z.eval_f64().unwrap_or_else(|_| {
         panic!("{label}: should evaluate numerically at z={z_num}/{z_den}")
@@ -44,9 +44,9 @@ fn verify_z_transform_partial_sum(
     tol: f64,
     label: &str,
 ) {
-    let __ctx = x_of_z.context();
+    let ctx = x_of_z.context();
     // Evaluate X(z) at z = r
-    let r_val = __ctx.rational(r_num, r_den);
+    let r_val = ctx.rational(r_num, r_den);
     let xz_at_r = x_of_z.subs(z, &r_val).eval();
     let xz_f64 = xz_at_r.eval_f64().unwrap_or_else(|_| {
         panic!("{label}: X(z) should evaluate at z={r_num}/{r_den}")
@@ -55,7 +55,7 @@ fn verify_z_transform_partial_sum(
     // Compute partial sum Σₖ₌₀^N x(k) · r⁻ᵏ
     let mut partial_sum: f64 = 0.0;
     for k in 0..num_terms {
-        let k_val = __ctx.int(k as i64);
+        let k_val = ctx.int(k as i64);
         let x_at_k = x_of_n.subs(n, &k_val).eval();
         if let Ok(xk) = x_at_k.eval_f64() {
             let r_f64 = r_num as f64 / r_den as f64;
@@ -77,10 +77,10 @@ fn verify_z_transform_partial_sum(
 
 #[test]
 fn z_transform_constant() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let f = __ctx.int(5);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let f = ctx.int(5);
     // Z{5} = 5z/(z-1)
     let result = f.z_transform(&n, &z).unwrap();
     let d = format!("{result}");
@@ -94,10 +94,10 @@ fn z_transform_constant() {
 
 #[test]
 fn z_transform_unit_step() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let f = __ctx.int(1);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let f = ctx.int(1);
     // Z{1} = z/(z-1)
     let result = f.z_transform(&n, &z).unwrap();
     let d = format!("{result}");
@@ -108,10 +108,10 @@ fn z_transform_unit_step() {
 
 #[test]
 fn z_transform_exponential() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let half = __ctx.rational(1, 2);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let half = ctx.rational(1, 2);
     let f = half.pow(&n); // (1/2)^n
     // Z{(1/2)^n} = z/(z - 1/2) = 2z/(2z - 1)
     let result = f.z_transform(&n, &z).unwrap();
@@ -126,10 +126,10 @@ fn z_transform_exponential() {
 
 #[test]
 fn z_transform_exponential_integer_base() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let two = __ctx.int(2);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let two = ctx.int(2);
     let f = two.pow(&n); // 2^n
     // Z{2^n} = z/(z - 2)
     let result = f.z_transform(&n, &z).unwrap();
@@ -144,9 +144,9 @@ fn z_transform_exponential_integer_base() {
 
 #[test]
 fn z_transform_sin() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
     // Z{sin(3n)} = z·sin(3) / (z² - 2z·cos(3) + 1)
     let f = (&n * 3).sin();
     let result = f.z_transform(&n, &z).unwrap();
@@ -159,9 +159,9 @@ fn z_transform_sin() {
 
 #[test]
 fn z_transform_cos() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
     // Z{cos(n)} = z·(z - cos(1)) / (z² - 2z·cos(1) + 1)
     let f = n.cos();
     let result = f.z_transform(&n, &z).unwrap();
@@ -174,12 +174,12 @@ fn z_transform_cos() {
 
 #[test]
 fn z_transform_linearity() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
     // Z{3·(1/2)^n + 2·(1/3)^n} should succeed via linearity
-    let half = __ctx.rational(1, 2);
-    let third = __ctx.rational(1, 3);
+    let half = ctx.rational(1, 2);
+    let third = ctx.rational(1, 3);
     let term1 = &half.pow(&n) * 3;
     let term2 = &third.pow(&n) * 2;
     let f = &term1 + &term2;
@@ -200,9 +200,9 @@ fn z_transform_linearity() {
 
 #[test]
 fn z_transform_n_var() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
     // Z{n} = z/(z-1)²
     let result = n.z_transform(&n, &z).unwrap();
     let d = format!("{result}");
@@ -216,10 +216,10 @@ fn z_transform_n_var() {
 
 #[test]
 fn z_transform_scaled_constant() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let f = __ctx.int(7);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let f = ctx.int(7);
     // Z{7} = 7z/(z-1)
     let result = f.z_transform(&n, &z).unwrap();
     // at z=2, 7*2/(2-1) = 14
@@ -228,10 +228,10 @@ fn z_transform_scaled_constant() {
 
 #[test]
 fn z_transform_n_times_a_n() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let two = __ctx.int(2);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let two = ctx.int(2);
     let f = &n * &two.pow(&n); // n · 2^n
     // Z{n·2^n} = 2z/(z-2)²
     let result = f.z_transform(&n, &z).unwrap();
@@ -250,9 +250,9 @@ fn z_transform_n_times_a_n() {
 
 #[test]
 fn inverse_z_transform_simple() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
     // Z⁻¹{z/(z-2)} = 2^n
     let f = &z / &(&z - 2);
     let result = f.inverse_z_transform(&z, &n);
@@ -269,7 +269,7 @@ fn inverse_z_transform_simple() {
         "Z⁻¹{{z/(z-2)}} should be 2^n, got: {d}"
     );
     // Verify: at n=3, result should be 8
-    let at_3 = r.subs(&n, &__ctx.int(3)).eval();
+    let at_3 = r.subs(&n, &ctx.int(3)).eval();
     let val = at_3.eval_f64().expect("should evaluate at n=3");
     assert!(
         (val - 8.0).abs() < 1e-6,
@@ -279,9 +279,9 @@ fn inverse_z_transform_simple() {
 
 #[test]
 fn inverse_z_transform_unit_step() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
     // Z⁻¹{z/(z-1)} = 1^n = 1 (unit step)
     let f = &z / &(&z - 1);
     let result = f.inverse_z_transform(&z, &n);
@@ -292,7 +292,7 @@ fn inverse_z_transform_unit_step() {
     );
     let r = result.unwrap();
     // Verify: at n=5, result should be 1
-    let at_5 = r.subs(&n, &__ctx.int(5)).eval();
+    let at_5 = r.subs(&n, &ctx.int(5)).eval();
     let val = at_5.eval_f64().expect("should evaluate at n=5");
     assert!(
         (val - 1.0).abs() < 1e-6,
@@ -302,11 +302,11 @@ fn inverse_z_transform_unit_step() {
 
 #[test]
 fn inverse_z_transform_scaled() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
     // Z⁻¹{3z/(z-2)} = 3·2^n
-    let three = __ctx.int(3);
+    let three = ctx.int(3);
     let f = &(&three * &z) / &(&z - 2);
     let result = f.inverse_z_transform(&z, &n);
     assert!(
@@ -316,7 +316,7 @@ fn inverse_z_transform_scaled() {
     );
     let r = result.unwrap();
     // Verify: at n=2, 3·2² = 12
-    let at_2 = r.subs(&n, &__ctx.int(2)).eval();
+    let at_2 = r.subs(&n, &ctx.int(2)).eval();
     let val = at_2.eval_f64().expect("should evaluate at n=2");
     assert!(
         (val - 12.0).abs() < 1e-6,
@@ -330,39 +330,39 @@ fn inverse_z_transform_scaled() {
 
 #[test]
 fn z_transform_rejects_non_symbol_n() {
-    let __ctx = Context::new();
-    let z = __ctx.symbol("z");
-    let f = __ctx.int(1);
-    let bad_n = __ctx.int(42);
+    let ctx = Context::new();
+    let z = ctx.symbol("z");
+    let f = ctx.int(1);
+    let bad_n = ctx.int(42);
     let result = f.z_transform(&bad_n, &z);
     assert!(result.is_err(), "should reject non-symbol n");
 }
 
 #[test]
 fn z_transform_rejects_non_symbol_z() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let f = __ctx.int(1);
-    let bad_z = __ctx.int(42);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let f = ctx.int(1);
+    let bad_z = ctx.int(42);
     let result = f.z_transform(&n, &bad_z);
     assert!(result.is_err(), "should reject non-symbol z");
 }
 
 #[test]
 fn inverse_z_transform_rejects_non_symbol_z() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let bad_z = __ctx.int(7);
-    let f = __ctx.int(1);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let bad_z = ctx.int(7);
+    let f = ctx.int(1);
     let result = f.inverse_z_transform(&bad_z, &n);
     assert!(result.is_err(), "should reject non-symbol z");
 }
 
 #[test]
 fn inverse_z_transform_rejects_non_symbol_n() {
-    let __ctx = Context::new();
-    let z = __ctx.symbol("z");
-    let bad_n = __ctx.int(7);
+    let ctx = Context::new();
+    let z = ctx.symbol("z");
+    let bad_n = ctx.int(7);
     let f = &z / &(&z - 1);
     let result = f.inverse_z_transform(&z, &bad_n);
     assert!(result.is_err(), "should reject non-symbol n");
@@ -374,10 +374,10 @@ fn inverse_z_transform_rejects_non_symbol_n() {
 
 #[test]
 fn z_transform_numerical_verify_exponential() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let half = __ctx.rational(1, 2);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let half = ctx.rational(1, 2);
     let x_of_n = half.pow(&n); // (1/2)^n
     let x_of_z = x_of_n.z_transform(&n, &z).unwrap();
 
@@ -397,10 +397,10 @@ fn z_transform_numerical_verify_exponential() {
 
 #[test]
 fn z_transform_numerical_verify_constant() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let x_of_n = __ctx.int(5);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let x_of_n = ctx.int(5);
     let x_of_z = x_of_n.z_transform(&n, &z).unwrap();
 
     // Verify: X(z) at z=4 ≈ Σₖ₌₀^100 5 · 4^(-k)
@@ -419,10 +419,10 @@ fn z_transform_numerical_verify_constant() {
 
 #[test]
 fn z_transform_numerical_verify_2_to_n() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let two = __ctx.int(2);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let two = ctx.int(2);
     let x_of_n = two.pow(&n); // 2^n
     let x_of_z = x_of_n.z_transform(&n, &z).unwrap();
 
@@ -446,10 +446,10 @@ fn z_transform_numerical_verify_2_to_n() {
 
 #[test]
 fn roundtrip_z_transform_exponential() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let half = __ctx.rational(1, 2);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let half = ctx.rational(1, 2);
     let original = half.pow(&n); // (1/2)^n
 
     // Forward: Z{(1/2)^n} = z/(z - 1/2)
@@ -466,7 +466,7 @@ fn roundtrip_z_transform_exponential() {
 
     // Verify numerically: evaluate both at n = 0, 1, 2, 3, 4
     for k in 0..=4 {
-        let k_val = __ctx.int(k);
+        let k_val = ctx.int(k);
         let orig_val = original.subs(&n, &k_val).eval();
         let rec_val = recovered.subs(&n, &k_val).eval();
         let o = orig_val.eval_f64().expect("original should evaluate");
@@ -480,10 +480,10 @@ fn roundtrip_z_transform_exponential() {
 
 #[test]
 fn roundtrip_z_transform_integer_base() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let z = __ctx.symbol("z");
-    let three = __ctx.int(3);
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let z = ctx.symbol("z");
+    let three = ctx.int(3);
     let original = three.pow(&n); // 3^n
 
     let z_domain = original.z_transform(&n, &z).unwrap();
@@ -496,7 +496,7 @@ fn roundtrip_z_transform_integer_base() {
     let recovered = recovered.unwrap();
 
     for k in 0..=3 {
-        let k_val = __ctx.int(k);
+        let k_val = ctx.int(k);
         let orig_val = original.subs(&n, &k_val).eval();
         let rec_val = recovered.subs(&n, &k_val).eval();
         let o = orig_val.eval_f64().expect("original should evaluate");

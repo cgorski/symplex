@@ -15,8 +15,8 @@ use symplex::prelude::*;
 /// verify that expand of the product equals the manual expansion.
 #[test]
 fn exhaustive_linear_product() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let range = -3i64..=3;
     let mut checked = 0;
     for a in range.clone() {
@@ -51,8 +51,8 @@ fn exhaustive_linear_product() {
 /// verify that solve finds roots that actually satisfy the equation.
 #[test]
 fn exhaustive_quadratic_solve_verify() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let mut bail = common::BailCounter::new("exhaustive_quadratic_solve_verify");
     let mut total = 0;
     let mut solved = 0;
@@ -97,8 +97,8 @@ fn exhaustive_quadratic_solve_verify() {
 /// For ALL integer pairs, verify that i^n has period 4.
 #[test]
 fn exhaustive_i_power_period() {
-    let __ctx = Context::new();
-    let i = __ctx.i_unit();
+    let ctx = Context::new();
+    let i = ctx.i_unit();
     let expected = ["1", "I", "-1", "-I"];
     for n in -100i64..=100 {
         let result = i.powi(n);
@@ -111,8 +111,8 @@ fn exhaustive_i_power_period() {
 /// For ALL small integers n, verify d/dx(x^n) = n·x^(n-1) numerically.
 #[test]
 fn exhaustive_power_rule() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     for n in 0i64..=10 {
         let f = x.powi(n);
         let df = f.diff(&x);
@@ -134,9 +134,9 @@ fn exhaustive_power_rule() {
 /// For ALL unit circle angles (k*π/12 for k=0..23), verify sin²+cos²=1.
 #[test]
 fn exhaustive_pythagorean_unit_circle() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     for k in 0i64..24 {
-        let angle = &__ctx.rational(k, 12) * &__ctx.pi();
+        let angle = &ctx.rational(k, 12) * &ctx.pi();
         let sin_a = angle.sin().eval();
         let cos_a = angle.cos().eval();
         let sum = &sin_a.powi(2) + &cos_a.powi(2);
@@ -159,8 +159,8 @@ fn exhaustive_pythagorean_unit_circle() {
 /// (for n != -1).
 #[test]
 fn exhaustive_integrate_diff_power() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     for n in -10i64..=10 {
         if n == -1 {
             continue;
@@ -180,8 +180,8 @@ fn exhaustive_integrate_diff_power() {
 /// For small polynomials, verify expand(factor(p)) == p numerically.
 #[test]
 fn exhaustive_factor_expand_roundtrip() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     for a in -2i64..=2 {
         for b in -2i64..=2 {
             if a == 0 && b == 0 {
@@ -250,10 +250,10 @@ fn exhaustive_product_factorial() {
 /// Verify sqrt simplification for perfect squares up to 100.
 #[test]
 fn exhaustive_sqrt_perfect_squares() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     for n in 1i64..=10 {
         let perfect = n * n;
-        let result = __ctx.int(perfect).sqrt().eval();
+        let result = ctx.int(perfect).sqrt().eval();
         assert_eq!(
             format!("{result}"),
             n.to_string(),
@@ -265,9 +265,9 @@ fn exhaustive_sqrt_perfect_squares() {
 /// Verify (-n)^(1/2) = i*√n for n=1..20.
 #[test]
 fn exhaustive_sqrt_negative() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     for n in 1i64..=20 {
-        let result = __ctx.int(-n).sqrt();
+        let result = ctx.int(-n).sqrt();
         let s = format!("{result}");
         assert!(s.contains("I"), "√(-{n}) should contain I: {s}");
     }
@@ -276,7 +276,7 @@ fn exhaustive_sqrt_negative() {
 /// Verify eval of sin at all standard unit circle angles.
 #[test]
 fn exhaustive_sin_unit_circle() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Test at k*π/6 for k=0..11
     let expected_patterns = [
         "0",    // 0
@@ -293,7 +293,7 @@ fn exhaustive_sin_unit_circle() {
         "-1/2", // 11π/6
     ];
     for k in 0i64..12 {
-        let angle = &__ctx.rational(k, 6) * &__ctx.pi();
+        let angle = &ctx.rational(k, 6) * &ctx.pi();
         let result = angle.sin().eval();
         let s = format!("{result}");
         if !expected_patterns[k as usize].is_empty() {

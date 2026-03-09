@@ -33,9 +33,9 @@ fn approx_zero(val: f64, tol: f64) -> bool {
 
 #[test]
 fn solve_system_irrational_circle_diagonal() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
 
     let eq1 = &x.powi(2) + &y.powi(2) - 3;
     let eq2 = &x - &y;
@@ -91,9 +91,9 @@ fn solve_system_irrational_circle_diagonal() {
 
 #[test]
 fn solve_system_rational_two_conics() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
 
     let eq1 = &x.powi(2) + &y.powi(2) - 5;
     let eq2 = &x * &y - 2;
@@ -140,8 +140,8 @@ fn solve_system_rational_two_conics() {
 
 #[test]
 fn solve_system_univariate_irrational() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
 
     let eq = &x.powi(2) - 2;
 
@@ -259,11 +259,11 @@ fn polysys_circle_line_no_regression() {
 
 #[test]
 fn solve_system_ex_irrational_symmetric() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x² + y² = 2, x = y → x = y = ±1 (these are actually rational!)
     // But this verifies the fallback path doesn't break rational-solution systems.
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
 
     let eq1 = &x.powi(2) + &y.powi(2) - 2;
     let eq2 = &x - &y;
@@ -302,9 +302,9 @@ fn solve_system_ex_irrational_symmetric() {
 
 #[test]
 fn solve_system_no_real_solutions() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x² + 1 = 0 has no real solutions.
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let eq = &x.powi(2) + 1;
 
     let solutions = symplex::polysys::solve_system_ex(&[eq], std::slice::from_ref(&x));
@@ -340,9 +340,9 @@ fn solve_system_no_real_solutions() {
 
 #[test]
 fn solve_system_linear_no_regression() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
 
     // x + y = 1, x - y = 0 → x = y = 1/2
     let eq1 = &x + &y - 1;

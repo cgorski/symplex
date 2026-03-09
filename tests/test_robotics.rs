@@ -12,9 +12,9 @@ use symplex::robotics::*;
 
 #[test]
 fn dh_matrix_identity_params() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // θ=0, d=0, a=0, α=0 → should be the 4×4 identity matrix
-    let zero = __ctx.int(0);
+    let zero = ctx.int(0);
     let t = dh_matrix(&zero, &zero, &zero, &zero);
 
     assert_eq!(t.nrows(), 4);
@@ -39,10 +39,10 @@ fn dh_matrix_identity_params() {
 
 #[test]
 fn dh_matrix_pure_rotation() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // θ=π/2, d=0, a=0, α=0
-    let theta = __ctx.pi() / __ctx.int(2);
-    let zero = __ctx.int(0);
+    let theta = ctx.pi() / ctx.int(2);
+    let zero = ctx.int(0);
     let t = dh_matrix(&theta, &zero, &zero, &zero);
 
     // (0,0) = cos(π/2) = 0
@@ -87,12 +87,12 @@ fn dh_matrix_pure_rotation() {
 
 #[test]
 fn dh_matrix_with_translation() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // θ=0, d=0, a=1, α=0
     // (0,3) = a·cos(0) = 1
     // (1,3) = a·sin(0) = 0
-    let zero = __ctx.int(0);
-    let one = __ctx.int(1);
+    let zero = ctx.int(0);
+    let one = ctx.int(1);
     let t = dh_matrix(&zero, &zero, &one, &zero);
 
     let r03 = t.get(0, 3).eval().eval_f64().unwrap();
@@ -121,17 +121,17 @@ fn dh_matrix_with_translation() {
 
 #[test]
 fn fk_chain_single_joint() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; theta1);
-    let zero = __ctx.int(0);
-    let l1 = __ctx.symbol("L1");
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; theta1);
+    let zero = ctx.int(0);
+    let l1 = ctx.symbol("L1");
 
     let single_dh = dh_matrix(&theta1, &zero, &l1, &zero);
     let chain = fk_chain(&[(&theta1, &zero, &l1, &zero)]);
 
     // Substitute concrete values and compare numerically
-    let theta_val = __ctx.rational(3, 10); // 0.3
-    let l_val = __ctx.rational(5, 4); // 1.25
+    let theta_val = ctx.rational(3, 10); // 0.3
+    let l_val = ctx.rational(5, 4); // 1.25
 
     for i in 0..4 {
         for j in 0..4 {
@@ -163,17 +163,17 @@ fn fk_chain_single_joint() {
 
 #[test]
 fn fk_chain_two_joint_planar() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Two revolute joints in a plane (α=0 for both).
     // Expected end-effector position:
     //   x = L1·cos(θ1) + L2·cos(θ1+θ2)
     //   y = L1·sin(θ1) + L2·sin(θ1+θ2)
     //   z = 0
-    let theta1 = __ctx.symbol("theta1");
-    let theta2 = __ctx.symbol("theta2");
-    let l1_sym = __ctx.symbol("L1");
-    let l2_sym = __ctx.symbol("L2");
-    let zero = __ctx.int(0);
+    let theta1 = ctx.symbol("theta1");
+    let theta2 = ctx.symbol("theta2");
+    let l1_sym = ctx.symbol("L1");
+    let l2_sym = ctx.symbol("L2");
+    let zero = ctx.int(0);
 
     let params = [
         (&theta1, &zero, &l1_sym, &zero),
@@ -191,10 +191,10 @@ fn fk_chain_two_joint_planar() {
     let expected_y = l1 * t1.sin() + l2 * (t1 + t2).sin();
     let expected_z = 0.0;
 
-    let theta1_val = __ctx.rational(3, 10);
-    let theta2_val = __ctx.rational(1, 2);
-    let l1_val = __ctx.int(1);
-    let l2_val = __ctx.rational(4, 5);
+    let theta1_val = ctx.rational(3, 10);
+    let theta2_val = ctx.rational(1, 2);
+    let l1_val = ctx.int(1);
+    let l2_val = ctx.rational(4, 5);
 
     let x_val = t
         .get(0, 3)
@@ -244,12 +244,12 @@ fn fk_chain_two_joint_planar() {
 
 #[test]
 fn fk_position_two_joint() {
-    let __ctx = Context::new();
-    let theta1 = __ctx.symbol("theta1");
-    let theta2 = __ctx.symbol("theta2");
-    let l1_sym = __ctx.symbol("L1");
-    let l2_sym = __ctx.symbol("L2");
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let theta1 = ctx.symbol("theta1");
+    let theta2 = ctx.symbol("theta2");
+    let l1_sym = ctx.symbol("L1");
+    let l2_sym = ctx.symbol("L2");
+    let zero = ctx.int(0);
 
     let params = [
         (&theta1, &zero, &l1_sym, &zero),
@@ -266,10 +266,10 @@ fn fk_position_two_joint() {
     let expected_x = l1 * t1.cos() + l2 * (t1 + t2).cos();
     let expected_y = l1 * t1.sin() + l2 * (t1 + t2).sin();
 
-    let theta1_val = __ctx.rational(3, 10);
-    let theta2_val = __ctx.rational(1, 2);
-    let l1_val = __ctx.int(1);
-    let l2_val = __ctx.rational(4, 5);
+    let theta1_val = ctx.rational(3, 10);
+    let theta2_val = ctx.rational(1, 2);
+    let l1_val = ctx.int(1);
+    let l2_val = ctx.rational(4, 5);
 
     let x_val = x
         .subs(&theta1, &theta1_val)
@@ -316,12 +316,12 @@ fn fk_position_two_joint() {
 
 #[test]
 fn fk_jacobian_two_joint() {
-    let __ctx = Context::new();
-    let theta1 = __ctx.symbol("theta1");
-    let theta2 = __ctx.symbol("theta2");
-    let l1_sym = __ctx.symbol("L1");
-    let l2_sym = __ctx.symbol("L2");
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let theta1 = ctx.symbol("theta1");
+    let theta2 = ctx.symbol("theta2");
+    let l1_sym = ctx.symbol("L1");
+    let l2_sym = ctx.symbol("L2");
+    let zero = ctx.int(0);
 
     let params = [
         (&theta1, &zero, &l1_sym, &zero),
@@ -357,10 +357,10 @@ fn fk_jacobian_two_joint() {
     let expected_j10 = l1 * t1.cos() + l2 * (t1 + t2).cos();
     let expected_j11 = l2 * (t1 + t2).cos();
 
-    let theta1_val = __ctx.rational(3, 10);
-    let theta2_val = __ctx.rational(1, 2);
-    let l1_val = __ctx.int(1);
-    let l2_val = __ctx.rational(4, 5);
+    let theta1_val = ctx.rational(3, 10);
+    let theta2_val = ctx.rational(1, 2);
+    let l1_val = ctx.int(1);
+    let l2_val = ctx.rational(4, 5);
 
     let eval_entry = |i: usize, k: usize| -> f64 {
         j.get(i, k)
@@ -412,14 +412,14 @@ fn fk_jacobian_two_joint() {
 
 #[test]
 fn fk_chain_three_joint() {
-    let __ctx = Context::new();
-    let theta1 = __ctx.symbol("t1");
-    let theta2 = __ctx.symbol("t2");
-    let theta3 = __ctx.symbol("t3");
-    let l1_sym = __ctx.symbol("L1");
-    let l2_sym = __ctx.symbol("L2");
-    let l3_sym = __ctx.symbol("L3");
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let theta1 = ctx.symbol("t1");
+    let theta2 = ctx.symbol("t2");
+    let theta3 = ctx.symbol("t3");
+    let l1_sym = ctx.symbol("L1");
+    let l2_sym = ctx.symbol("L2");
+    let l3_sym = ctx.symbol("L3");
+    let zero = ctx.int(0);
 
     let params = [
         (&theta1, &zero, &l1_sym, &zero),
@@ -444,12 +444,12 @@ fn fk_chain_three_joint() {
     let expected_y =
         l1 * t1v.sin() + l2 * (t1v + t2v).sin() + l3 * (t1v + t2v + t3v).sin();
 
-    let t1_val = __ctx.rational(1, 5);
-    let t2_val = __ctx.rational(2, 5);
-    let t3_val = __ctx.rational(3, 5);
-    let l1_val = __ctx.int(1);
-    let l2_val = __ctx.rational(4, 5);
-    let l3_val = __ctx.rational(1, 2);
+    let t1_val = ctx.rational(1, 5);
+    let t2_val = ctx.rational(2, 5);
+    let t3_val = ctx.rational(3, 5);
+    let l1_val = ctx.int(1);
+    let l2_val = ctx.rational(4, 5);
+    let l3_val = ctx.rational(1, 2);
 
     let x_val = t
         .get(0, 3)
@@ -516,11 +516,11 @@ fn fk_chain_three_joint() {
 
 #[test]
 fn dh_matrix_symbolic_entries() {
-    let __ctx = Context::new();
-    let theta = __ctx.symbol("theta");
-    let d = __ctx.symbol("d");
-    let a = __ctx.symbol("a");
-    let alpha = __ctx.symbol("alpha");
+    let ctx = Context::new();
+    let theta = ctx.symbol("theta");
+    let d = ctx.symbol("d");
+    let a = ctx.symbol("a");
+    let alpha = ctx.symbol("alpha");
 
     let t = dh_matrix(&theta, &d, &a, &alpha);
 
@@ -554,10 +554,10 @@ fn dh_matrix_symbolic_entries() {
     assert_eq!(s30, "0", "(3,0) should be 0, got: {s30}");
 
     // Verify numerically at a random point
-    let tv = __ctx.rational(7, 10); // 0.7
-    let dv = __ctx.rational(3, 10); // 0.3
-    let av = __ctx.rational(1, 2);  // 0.5
-    let alv = __ctx.rational(4, 10); // 0.4
+    let tv = ctx.rational(7, 10); // 0.7
+    let dv = ctx.rational(3, 10); // 0.3
+    let av = ctx.rational(1, 2);  // 0.5
+    let alv = ctx.rational(4, 10); // 0.4
 
     let t_val: f64 = 0.7;
     let d_val: f64 = 0.3;
@@ -602,10 +602,10 @@ fn dh_matrix_symbolic_entries() {
 
 #[test]
 fn fk_rotation_extraction() {
-    let __ctx = Context::new();
-    let theta = __ctx.symbol("theta");
-    let zero = __ctx.int(0);
-    let l = __ctx.symbol("L");
+    let ctx = Context::new();
+    let theta = ctx.symbol("theta");
+    let zero = ctx.int(0);
+    let l = ctx.symbol("L");
 
     let r = fk_rotation(&[(&theta, &zero, &l, &zero)]);
 
@@ -613,8 +613,8 @@ fn fk_rotation_extraction() {
     assert_eq!(r.shape(), (3, 3));
 
     // Substitute θ=0.6 and verify R^T · R ≈ I numerically
-    let theta_val = __ctx.rational(3, 5);
-    let l_val = __ctx.int(1);
+    let theta_val = ctx.rational(3, 5);
+    let l_val = ctx.int(1);
 
     let r_sub = r.subs(&theta, &theta_val).subs(&l, &l_val).eval();
     let r_t = r_sub.transpose();
@@ -638,15 +638,15 @@ fn fk_rotation_extraction() {
 
 #[test]
 fn dh_matrix_with_alpha() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // θ=0, d=0, a=0, α=π/2
     // The matrix should be:
     // | 1   0  0  0 |
     // | 0   0 -1  0 |
     // | 0   1  0  0 |
     // | 0   0  0  1 |
-    let zero = __ctx.int(0);
-    let alpha = __ctx.pi() / __ctx.int(2);
+    let zero = ctx.int(0);
+    let alpha = ctx.pi() / ctx.int(2);
     let t = dh_matrix(&zero, &zero, &zero, &alpha);
 
     let expected = [
@@ -673,11 +673,11 @@ fn dh_matrix_with_alpha() {
 
 #[test]
 fn dh_matrix_with_d_offset() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // θ=0, d=5, a=0, α=0
     // Should produce identity rotation with d in position (2,3)
-    let zero = __ctx.int(0);
-    let d = __ctx.int(5);
+    let zero = ctx.int(0);
+    let d = ctx.int(5);
     let t = dh_matrix(&zero, &d, &zero, &zero);
 
     let r23 = t.get(2, 3).eval().eval_f64().unwrap();
@@ -700,17 +700,17 @@ fn dh_matrix_with_d_offset() {
 
 #[test]
 fn fk_chain_two_joint_3d() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Joint 1: θ1, d=0, a=1, α=π/2
     // Joint 2: θ2, d=0, a=1, α=0
     // This is a simple 2-DOF robot with one out-of-plane twist.
-    let theta1 = __ctx.symbol("t1");
-    let theta2 = __ctx.symbol("t2");
-    let a1 = __ctx.int(1);
-    let a2 = __ctx.int(1);
-    let zero = __ctx.int(0);
-    let alpha1 = __ctx.pi() / __ctx.int(2);
-    let alpha2 = __ctx.int(0);
+    let theta1 = ctx.symbol("t1");
+    let theta2 = ctx.symbol("t2");
+    let a1 = ctx.int(1);
+    let a2 = ctx.int(1);
+    let zero = ctx.int(0);
+    let alpha1 = ctx.pi() / ctx.int(2);
+    let alpha2 = ctx.int(0);
 
     let params = [
         (&theta1, &zero, &a1, &alpha1),
@@ -736,8 +736,8 @@ fn fk_chain_two_joint_3d() {
     //   (0,3) = T1*(1,0,0,1)^T col3 = 1*1 + 0*0 + 0*0 + 1*1 = 2
     //   (1,3) = 0*1 + 0*0 + (-1)*0 + 0*1 = 0
     //   (2,3) = 0*1 + 1*0 + 0*0 + 0*1 = 0
-    let t1_val = __ctx.int(0);
-    let t2_val = __ctx.int(0);
+    let t1_val = ctx.int(0);
+    let t2_val = ctx.int(0);
 
     let x = t
         .get(0, 3)
@@ -781,15 +781,15 @@ fn fk_chain_two_joint_3d() {
 
 #[test]
 fn fk_rotation_orthogonal_multi_joint() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Two joints with non-zero alpha: rotation should still be orthogonal
-    let theta1 = __ctx.symbol("t1");
-    let theta2 = __ctx.symbol("t2");
-    let zero = __ctx.int(0);
-    let a1 = __ctx.int(1);
-    let a2 = __ctx.int(1);
-    let alpha1 = __ctx.pi() / __ctx.int(4); // 45 degrees
-    let alpha2 = __ctx.pi() / __ctx.int(3); // 60 degrees
+    let theta1 = ctx.symbol("t1");
+    let theta2 = ctx.symbol("t2");
+    let zero = ctx.int(0);
+    let a1 = ctx.int(1);
+    let a2 = ctx.int(1);
+    let alpha1 = ctx.pi() / ctx.int(4); // 45 degrees
+    let alpha2 = ctx.pi() / ctx.int(3); // 60 degrees
 
     let params = [
         (&theta1, &zero, &a1, &alpha1),
@@ -799,8 +799,8 @@ fn fk_rotation_orthogonal_multi_joint() {
     assert_eq!(r.shape(), (3, 3));
 
     // Substitute concrete angles and verify R^T · R ≈ I
-    let t1_val = __ctx.rational(7, 10); // 0.7
-    let t2_val = __ctx.rational(11, 10); // 1.1
+    let t1_val = ctx.rational(7, 10); // 0.7
+    let t2_val = ctx.rational(11, 10); // 1.1
 
     let r_sub = r.subs(&theta1, &t1_val).subs(&theta2, &t2_val).eval();
     let r_t = r_sub.transpose();
@@ -824,8 +824,8 @@ fn fk_rotation_orthogonal_multi_joint() {
 
 #[test]
 fn rot_x_identity() {
-    let __ctx = Context::new();
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let zero = ctx.int(0);
     let r = symplex::robotics::rot_x(&zero);
     assert_eq!(r.shape(), (3, 3));
     for i in 0..3 {
@@ -842,12 +842,12 @@ fn rot_x_identity() {
 
 #[test]
 fn rot_x_90deg() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Rx(π/2) = | 1  0   0 |
     //           | 0  0  -1 |
     //           | 0  1   0 |
-    let pi = __ctx.pi();
-    let two = __ctx.int(2);
+    let pi = ctx.pi();
+    let two = ctx.int(2);
     let angle = &pi / &two;
     let r = symplex::robotics::rot_x(&angle);
     // (1,1) = cos(π/2) = 0
@@ -872,8 +872,8 @@ fn rot_x_90deg() {
 
 #[test]
 fn rot_y_identity() {
-    let __ctx = Context::new();
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let zero = ctx.int(0);
     let r = symplex::robotics::rot_y(&zero);
     assert_eq!(r.shape(), (3, 3));
     for i in 0..3 {
@@ -890,8 +890,8 @@ fn rot_y_identity() {
 
 #[test]
 fn rot_z_identity() {
-    let __ctx = Context::new();
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let zero = ctx.int(0);
     let r = symplex::robotics::rot_z(&zero);
     assert_eq!(r.shape(), (3, 3));
     for i in 0..3 {
@@ -908,12 +908,12 @@ fn rot_z_identity() {
 
 #[test]
 fn rot_z_90deg() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Rz(π/2) = | 0  -1  0 |
     //           | 1   0  0 |
     //           | 0   0  1 |
-    let pi = __ctx.pi();
-    let two = __ctx.int(2);
+    let pi = ctx.pi();
+    let two = ctx.int(2);
     let angle = &pi / &two;
     let r = symplex::robotics::rot_z(&angle);
     // (0,0) = cos(π/2) = 0
@@ -948,18 +948,18 @@ fn rot_z_90deg() {
 
 #[test]
 fn skew3_antisymmetric() {
-    let __ctx = Context::new();
-    let a = __ctx.symbol("a");
-    let b = __ctx.symbol("b");
-    let c = __ctx.symbol("c");
+    let ctx = Context::new();
+    let a = ctx.symbol("a");
+    let b = ctx.symbol("b");
+    let c = ctx.symbol("c");
     let s = symplex::robotics::skew3(&a, &b, &c);
     let st = s.transpose();
     let sum = s.add(&st).unwrap();
 
     // Evaluate at concrete values to verify antisymmetry (S + S^T = 0)
-    let a_val = __ctx.rational(3, 1);
-    let b_val = __ctx.rational(5, 1);
-    let c_val = __ctx.rational(7, 1);
+    let a_val = ctx.rational(3, 1);
+    let b_val = ctx.rational(5, 1);
+    let c_val = ctx.rational(7, 1);
     for i in 0..3 {
         for j in 0..3 {
             let val = sum
@@ -980,12 +980,12 @@ fn skew3_antisymmetric() {
 
 #[test]
 fn skew3_cross_product() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // skew3(1, 0, 0) * [0, 1, 0]^T should equal [0, 0, 1]^T (i × j = k)
-    let one = __ctx.int(1);
-    let zero = __ctx.int(0);
+    let one = ctx.int(1);
+    let zero = ctx.int(0);
     let s = symplex::robotics::skew3(&one, &zero, &zero);
-    let v = symplex::matrix::Matrix::col_vector(vec![zero.clone(), one.clone(), __ctx.int(0)]);
+    let v = symplex::matrix::Matrix::col_vector(vec![zero.clone(), one.clone(), ctx.int(0)]);
     let result = s.matmul(&v).unwrap();
     assert_eq!(result.shape(), (3, 1));
     let r0 = result.get(0, 0).eval().eval_f64().unwrap();
@@ -1011,9 +1011,9 @@ fn skew3_cross_product() {
 
 #[test]
 fn homogeneous_identity() {
-    let __ctx = Context::new();
-    let zero = __ctx.int(0);
-    let i3 = symplex::matrix::Matrix::identity(&__ctx, 3);
+    let ctx = Context::new();
+    let zero = ctx.int(0);
+    let i3 = symplex::matrix::Matrix::identity(&ctx, 3);
     let pos = [zero.clone(), zero.clone(), zero.clone()];
     let h = symplex::robotics::homogeneous(&i3, &pos);
     assert_eq!(h.shape(), (4, 4));
@@ -1031,11 +1031,11 @@ fn homogeneous_identity() {
 
 #[test]
 fn homogeneous_translation() {
-    let __ctx = Context::new();
-    let i3 = symplex::matrix::Matrix::identity(&__ctx, 3);
-    let px = __ctx.rational(4, 1);
-    let py = __ctx.rational(5, 1);
-    let pz = __ctx.rational(6, 1);
+    let ctx = Context::new();
+    let i3 = symplex::matrix::Matrix::identity(&ctx, 3);
+    let px = ctx.rational(4, 1);
+    let py = ctx.rational(5, 1);
+    let pz = ctx.rational(6, 1);
     let pos = [px.clone(), py.clone(), pz.clone()];
     let h = symplex::robotics::homogeneous(&i3, &pos);
     // Last column should be [4, 5, 6, 1]
@@ -1051,11 +1051,11 @@ fn homogeneous_translation() {
 
 #[test]
 fn translation_pure() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let t = symplex::robotics::translation(
-        &__ctx.int(1),
-        &__ctx.int(2),
-        &__ctx.int(3),
+        &ctx.int(1),
+        &ctx.int(2),
+        &ctx.int(3),
     );
     assert_eq!(t.shape(), (4, 4));
     // Check last column = [1, 2, 3, 1]
@@ -1086,9 +1086,9 @@ fn translation_pure() {
 
 #[test]
 fn rot_euler_zyx_identity() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     use symplex::robotics::EulerConvention;
-    let zero = __ctx.int(0);
+    let zero = ctx.int(0);
     let r = symplex::robotics::rot_euler(&zero, &zero, &zero, EulerConvention::ZYX);
     assert_eq!(r.shape(), (3, 3));
     for i in 0..3 {
@@ -1105,13 +1105,13 @@ fn rot_euler_zyx_identity() {
 
 #[test]
 fn rot_euler_zyx_numerical() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     use symplex::robotics::EulerConvention;
     // phi=π/2, theta=0, psi=0 → Rz(π/2)·Ry(0)·Rx(0) = Rz(π/2)
-    let pi = __ctx.pi();
-    let two = __ctx.int(2);
+    let pi = ctx.pi();
+    let two = ctx.int(2);
     let half_pi = &pi / &two;
-    let zero = __ctx.int(0);
+    let zero = ctx.int(0);
 
     let r = symplex::robotics::rot_euler(&half_pi, &zero, &zero, EulerConvention::ZYX);
     // Rz(π/2) = | 0  -1  0 |
@@ -1139,12 +1139,12 @@ fn rot_euler_zyx_numerical() {
 
 #[test]
 fn matrix_powi_identity() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // M.powi(0) = I for any square matrix
-    let a = __ctx.symbol("a");
-    let b = __ctx.symbol("b");
-    let c = __ctx.symbol("c");
-    let d = __ctx.symbol("d");
+    let a = ctx.symbol("a");
+    let b = ctx.symbol("b");
+    let c = ctx.symbol("c");
+    let d = ctx.symbol("d");
     let m = symplex::matrix::Matrix::new(vec![
         vec![a.clone(), b.clone()],
         vec![c.clone(), d.clone()],
@@ -1165,11 +1165,11 @@ fn matrix_powi_identity() {
 
 #[test]
 fn matrix_powi_one() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // M.powi(1) = M (numerically)
     let m = symplex::matrix::Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(3), __ctx.int(4)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(3), ctx.int(4)],
     ]).unwrap();
     let result = m.powi(1).unwrap();
     let expected = [[1.0, 2.0], [3.0, 4.0]];
@@ -1186,11 +1186,11 @@ fn matrix_powi_one() {
 
 #[test]
 fn matrix_powi_square() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // M.powi(2) = M * M
     let m = symplex::matrix::Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(3), __ctx.int(4)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(3), ctx.int(4)],
     ]).unwrap();
     let m2 = m.powi(2).unwrap();
     let m_times_m = m.matmul(&m).unwrap();
@@ -1208,13 +1208,13 @@ fn matrix_powi_square() {
 
 #[test]
 fn matrix_powi_cube() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // M.powi(3) = M * M * M (verify numerically)
     // M = | 1 2 |  =>  M^3 = | 37  54 |
     //     | 3 4 |             | 81 118 |
     let m = symplex::matrix::Matrix::new(vec![
-        vec![__ctx.int(1), __ctx.int(2)],
-        vec![__ctx.int(3), __ctx.int(4)],
+        vec![ctx.int(1), ctx.int(2)],
+        vec![ctx.int(3), ctx.int(4)],
     ]).unwrap();
     let m3 = m.powi(3).unwrap();
     let expected = [[37.0, 54.0], [81.0, 118.0]];
@@ -1235,10 +1235,10 @@ fn matrix_powi_cube() {
 
 #[test]
 fn diff_with_dependent_basic() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // d/dx(y) with deps={y} should produce Derivative(y, x)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let result = y.diff_with_dependent(&x, &[&y]);
     let s = format!("{result}");
     assert!(
@@ -1249,10 +1249,10 @@ fn diff_with_dependent_basic() {
 
 #[test]
 fn diff_with_dependent_implicit() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // d/dx(x² + y²) with deps={y} should contain Derivative
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let expr = &x.powi(2) + &y.powi(2);
     let result = expr.diff_with_dependent(&x, &[&y]);
     let s = format!("{result}");
@@ -1265,9 +1265,9 @@ fn diff_with_dependent_implicit() {
 
 #[test]
 fn eval_derivatives_simple() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // eval_derivatives on sin(x).formal_diff(&x) should give cos(x)
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = x.sin();
     let formal = expr.formal_diff(&x);
     let evald = formal.eval_derivatives();
@@ -1275,7 +1275,7 @@ fn eval_derivatives_simple() {
     // Numerically verify at several points that evald == cos(x)
     let test_vals: &[(i64, i64, f64)] = &[(1, 2, 0.5), (1, 1, 1.0), (2, 1, 2.0), (-1, 1, -1.0)];
     for &(p, q, fval) in test_vals {
-        let xv = __ctx.rational(p, q);
+        let xv = ctx.rational(p, q);
         let got = evald.subs(&x, &xv).eval().eval_f64().unwrap();
         let expected = fval.cos();
         assert!(

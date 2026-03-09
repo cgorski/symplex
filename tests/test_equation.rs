@@ -7,9 +7,9 @@ use symplex::prelude::*;
 
 #[test]
 fn equation_display_basic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let equation = Equation::new(&x + 1, __ctx.int(5));
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let equation = Equation::new(&x + 1, ctx.int(5));
     let s = format!("{equation}");
     assert!(s.contains("x"), "display should contain variable: {s}");
     assert!(s.contains("="), "display should contain equals sign: {s}");
@@ -18,9 +18,9 @@ fn equation_display_basic() {
 
 #[test]
 fn equation_debug_format() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let equation = Equation::new(x.clone(), __ctx.int(0));
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let equation = Equation::new(x.clone(), ctx.int(0));
     let s = format!("{equation:?}");
     assert!(
         s.contains("Equation"),
@@ -33,9 +33,9 @@ fn equation_debug_format() {
 
 #[test]
 fn equation_solve_linear() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let equation = Equation::new(&x + 1, __ctx.int(5));
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let equation = Equation::new(&x + 1, ctx.int(5));
     let roots = equation.solve(&x).unwrap();
     assert_eq!(roots.len(), 1, "linear equation should have 1 root");
     assert_eq!(format!("{}", roots[0]), "4");
@@ -43,9 +43,9 @@ fn equation_solve_linear() {
 
 #[test]
 fn equation_solve_quadratic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let equation = Equation::new(x.powi(2), __ctx.int(9));
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let equation = Equation::new(x.powi(2), ctx.int(9));
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x^2 = 9 should have 2 roots");
     let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -58,11 +58,11 @@ fn equation_solve_quadratic() {
 
 #[test]
 fn equation_solve_or_empty_when_no_solution() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // sin(x) = 2 has no real solution; solve_or_empty should return empty or
     // at least not panic.
-    let x = __ctx.symbol("x");
-    let equation = Equation::new(x.sin(), __ctx.int(2));
+    let x = ctx.symbol("x");
+    let equation = Equation::new(x.sin(), ctx.int(2));
     let roots = equation.solve_or_empty(&x);
     // The solver may or may not find solutions for transcendental equations,
     // but it must not panic. If it returns roots, that's fine too.
@@ -73,10 +73,10 @@ fn equation_solve_or_empty_when_no_solution() {
 
 #[test]
 fn equation_subs_symbolic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
-    let equation = Equation::new(&x + 1, __ctx.int(5));
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
+    let equation = Equation::new(&x + 1, ctx.int(5));
     // Substitute x → y+1
     let substituted = equation.subs(&x, &(&y + 1));
     let s = format!("{substituted}");
@@ -88,10 +88,10 @@ fn equation_subs_symbolic() {
 
 #[test]
 fn equation_subs_i64_verify() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // x + 3 = 7  →  solution is x = 4
-    let equation = Equation::new(&x + 3, __ctx.int(7));
+    let equation = Equation::new(&x + 3, ctx.int(7));
     let substituted = equation.subs_i64(&x, 4);
     assert_eq!(
         substituted.is_satisfied(),
@@ -104,10 +104,10 @@ fn equation_subs_i64_verify() {
 
 #[test]
 fn equation_expand() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // (x + 1)^2 = 4  →  expand  →  x^2 + 2*x + 1 = 4
-    let equation = Equation::new((&x + 1).powi(2), __ctx.int(4));
+    let equation = Equation::new((&x + 1).powi(2), ctx.int(4));
     let expanded = equation.expand();
     let lhs_str = format!("{}", expanded.lhs);
     assert!(
@@ -122,10 +122,10 @@ fn equation_expand() {
 
 #[test]
 fn equation_eval() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // sin(0) = 0  →  eval  →  0 = 0
-    let zero = __ctx.int(0);
-    let equation = Equation::new(zero.sin(), __ctx.int(0));
+    let zero = ctx.int(0);
+    let equation = Equation::new(zero.sin(), ctx.int(0));
     let evaled = equation.eval();
     assert_eq!(format!("{}", evaled.lhs), "0", "eval of sin(0) should be 0");
     assert_eq!(
@@ -137,10 +137,10 @@ fn equation_eval() {
 
 #[test]
 fn equation_simplify() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // sin^2(x) + cos^2(x) = 1  →  simplify  →  1 = 1
-    let equation = Equation::new(&x.sin().powi(2) + &x.cos().powi(2), __ctx.int(1));
+    let equation = Equation::new(&x.sin().powi(2) + &x.cos().powi(2), ctx.int(1));
     let simplified = equation.simplify();
     assert_eq!(
         format!("{}", simplified.lhs),
@@ -153,10 +153,10 @@ fn equation_simplify() {
 
 #[test]
 fn equation_is_satisfied_true() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // Solve x + 1 = 5, substitute root back
-    let equation = Equation::new(&x + 1, __ctx.int(5));
+    let equation = Equation::new(&x + 1, ctx.int(5));
     let roots = equation.solve_or_empty(&x);
     assert!(!roots.is_empty(), "should find at least one root");
     for root in &roots {
@@ -171,10 +171,10 @@ fn equation_is_satisfied_true() {
 
 #[test]
 fn equation_is_satisfied_false() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // 5 = 3  →  obviously false, but `equals` only proves equality;
     // it returns None when it cannot confirm the two sides are equal.
-    let equation = Equation::new(__ctx.int(5), __ctx.int(3));
+    let equation = Equation::new(ctx.int(5), ctx.int(3));
     assert_ne!(
         equation.is_satisfied(),
         Some(true),
@@ -184,10 +184,10 @@ fn equation_is_satisfied_false() {
 
 #[test]
 fn equation_is_satisfied_unknown() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x = y  →  can't determine without knowing values
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let equation = Equation::new(x.clone(), y.clone());
     assert_eq!(
         equation.is_satisfied(),
@@ -200,9 +200,9 @@ fn equation_is_satisfied_unknown() {
 
 #[test]
 fn equation_to_expr_gives_difference() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let equation = Equation::new(x.clone(), __ctx.int(3));
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let equation = Equation::new(x.clone(), ctx.int(3));
     let expr = equation.to_expr();
     let s = format!("{expr}");
     // to_expr returns lhs - rhs = x - 3
@@ -216,8 +216,8 @@ fn equation_to_expr_gives_difference() {
 
 #[test]
 fn eq_macro_basic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let equation = eq!(x ^ 2 - 1 = 0);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x^2-1=0 should have 2 roots");
@@ -231,8 +231,8 @@ fn eq_macro_basic() {
 
 #[test]
 fn eq_macro_with_rationals() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let equation = eq!(x = 1 / 2);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -243,10 +243,10 @@ fn eq_macro_with_rationals() {
 
 #[test]
 fn equation_solve_then_verify() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // x^2 - 6x + 8 = 0  →  roots are 2 and 4
-    let equation = Equation::new(&x.powi(2) - &(&x * 6) + __ctx.int(8), __ctx.int(0));
+    let equation = Equation::new(&x.powi(2) - &(&x * 6) + ctx.int(8), ctx.int(0));
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x^2-6x+8=0 should have 2 roots");
     for root in &roots {

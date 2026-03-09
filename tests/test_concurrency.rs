@@ -78,10 +78,10 @@ fn concurrent_read_while_write() {
 /// should all get consistent results.
 #[test]
 fn global_context_thread_safety() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let handles: Vec<_> = (0..8)
         .map(|_| {
-            let ctx = __ctx.clone();
+            let ctx = ctx.clone();
             thread::spawn(move || {
                 let x = ctx.symbol("x");
                 let y = ctx.symbol("y");
@@ -101,8 +101,8 @@ fn global_context_thread_safety() {
 /// Simplify and expand called concurrently on the same expression.
 #[test]
 fn concurrent_simplify_and_expand() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = (&x + 1).powi(2);
 
     let handles: Vec<_> = (0..4)
@@ -129,8 +129,8 @@ fn concurrent_simplify_and_expand() {
 /// Diff, integrate, and solve from multiple threads.
 #[test]
 fn concurrent_calculus_operations() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x.powi(3) - &x;
 
     let h1 = {

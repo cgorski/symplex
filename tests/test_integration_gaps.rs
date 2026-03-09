@@ -11,13 +11,13 @@ use symplex::prelude::*;
 /// Verify FTC: the derivative of the antiderivative must match the integrand
 /// at a test point.  Also asserts the antiderivative is *not* unevaluated.
 fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
-    let __ctx = integrand.context();
+    let ctx = integrand.context();
     let anti = integrand.integrate(var);
     let s = format!("{anti}");
     assert!(!s.contains("Integral"), "{label}: unevaluated: {s}");
 
     let deriv = anti.diff(var);
-    let test_point = __ctx.rational(7, 10);
+    let test_point = ctx.rational(7, 10);
     if let (Ok(o), Ok(d)) = (
         integrand.subs(var, &test_point).eval_f64(),
         deriv.subs(var, &test_point).eval_f64(),
@@ -39,49 +39,49 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
 
 #[test]
 fn integrate_sec_squared() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ∫ sec²(x) dx = ∫ cos(x)^(-2) dx = tan(x)
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     assert_ftc(&x.cos().powi(-2), &x, "∫sec²(x)dx");
 }
 
 #[test]
 fn integrate_csc_squared() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ∫ csc²(x) dx = ∫ sin(x)^(-2) dx = −cot(x)
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     assert_ftc(&x.sin().powi(-2), &x, "∫csc²(x)dx");
 }
 
 #[test]
 fn integrate_sec_x() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ∫ sec(x) dx = ∫ cos(x)^(-1) dx = ln|sec(x)+tan(x)|
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     assert_ftc(&x.cos().powi(-1), &x, "∫sec(x)dx");
 }
 
 #[test]
 fn integrate_csc_x() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ∫ csc(x) dx = ∫ sin(x)^(-1) dx = −ln|csc(x)+cot(x)|
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     assert_ftc(&x.sin().powi(-1), &x, "∫csc(x)dx");
 }
 
 #[test]
 fn integrate_sec_fourth() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ∫ sec⁴(x) dx = ∫ cos(x)^(-4) dx — two reduction steps
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     assert_ftc(&x.cos().powi(-4), &x, "∫sec⁴(x)dx");
 }
 
 #[test]
 fn integrate_csc_fourth() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ∫ csc⁴(x) dx = ∫ sin(x)^(-4) dx — two reduction steps
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     assert_ftc(&x.sin().powi(-4), &x, "∫csc⁴(x)dx");
 }
 
@@ -91,18 +91,18 @@ fn integrate_csc_fourth() {
 
 #[test]
 fn integrate_exp_sin() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ∫ exp(x)·sin(x) dx = exp(x)(sin(x)−cos(x))/2
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let integrand = &x.exp() * &x.sin();
     assert_ftc(&integrand, &x, "∫exp(x)sin(x)dx");
 }
 
 #[test]
 fn integrate_exp_cos() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // ∫ exp(x)·cos(x) dx = exp(x)(sin(x)+cos(x))/2
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let integrand = &x.exp() * &x.cos();
     assert_ftc(&integrand, &x, "∫exp(x)cos(x)dx");
 }

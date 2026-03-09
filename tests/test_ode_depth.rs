@@ -26,8 +26,8 @@ fn verify_first_order(
     sample_x_num: i64,
     sample_x_den: i64,
 ) {
-    let __ctx = ode_expr.context();
-    let one = __ctx.int(1);
+    let ctx = ode_expr.context();
+    let one = ctx.int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -38,7 +38,7 @@ fn verify_first_order(
     let dy_formal = y.formal_diff(x);
     let residual = ode_expr.subs(&dy_formal, &sol_prime).subs(y, &concrete_sol);
 
-    let sample_val = __ctx.rational(sample_x_num, sample_x_den);
+    let sample_val = ctx.rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at.eval_f64().expect(
@@ -57,10 +57,10 @@ fn verify_first_order(
 
 #[test]
 fn ode_full_separable_dy_dx_eq_xy() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' - xy = 0 → y' = xy → separable → y = C1·exp(x²/2)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = expr!(diff(y, x) - x * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' = xy should be solvable");
@@ -69,17 +69,17 @@ fn ode_full_separable_dy_dx_eq_xy() {
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
 
-    let c1 = __ctx.symbol("C1");
+    let c1 = ctx.symbol("C1");
     verify_first_order(&ode, &sol, &[c1], &y, &x, 1, 2);
 }
 
 #[test]
 fn ode_full_separable_neg_xy() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' + xy = 0 → y' = -xy → separable with f(x) = -x, g(y) = y
     // Solution: y = C1·exp(-x²/2)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = expr!(diff(y, x) + x * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' = -xy should be solvable");
@@ -88,18 +88,18 @@ fn ode_full_separable_neg_xy() {
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
 
-    let c1 = __ctx.symbol("C1");
+    let c1 = ctx.symbol("C1");
     verify_first_order(&ode, &sol, &[c1], &y, &x, 1, 1);
 }
 
 #[test]
 fn ode_full_separable_3xy() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' - 3*x*y = 0 → y' = 3xy → y = C1·exp(3x²/2)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
-    let three = __ctx.int(3);
+    let three = ctx.int(3);
     let ode = &dy - &(&three * &x * &y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' = 3xy should be solvable");
@@ -108,7 +108,7 @@ fn ode_full_separable_3xy() {
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
 
-    let c1 = __ctx.symbol("C1");
+    let c1 = ctx.symbol("C1");
     verify_first_order(&ode, &sol, &[c1], &y, &x, 1, 4);
 }
 
@@ -118,10 +118,10 @@ fn ode_full_separable_3xy() {
 
 #[test]
 fn ode_variable_coeff_linear_homogeneous() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' + 2xy = 0 → y = C1·exp(-x²)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = expr!(diff(y, x) + 2 * x * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' + 2xy = 0 should be solvable");
@@ -130,18 +130,18 @@ fn ode_variable_coeff_linear_homogeneous() {
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
 
-    let c1 = __ctx.symbol("C1");
+    let c1 = ctx.symbol("C1");
     verify_first_order(&ode, &sol, &[c1], &y, &x, 1, 2);
 }
 
 #[test]
 fn ode_variable_coeff_linear_3x_squared_y() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' + 3x²y = 0 → P(x) = 3x², ∫P dx = x³ → y = C1·exp(-x³)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
-    let three = __ctx.int(3);
+    let three = ctx.int(3);
     let x_sq = x.powi(2);
     let ode = &dy + &(&three * &x_sq * &y);
     let sol = ode.solve_ode(&y, &x);
@@ -151,7 +151,7 @@ fn ode_variable_coeff_linear_3x_squared_y() {
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
 
-    let c1 = __ctx.symbol("C1");
+    let c1 = ctx.symbol("C1");
     verify_first_order(&ode, &sol, &[c1], &y, &x, 1, 3);
 }
 
@@ -161,9 +161,9 @@ fn ode_variable_coeff_linear_3x_squared_y() {
 
 #[test]
 fn ode_existing_types_still_work() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
 
     // Regression: y' + 2y = 0 (constant coeff) still works
     let ode = expr!(diff(y, x) + 2 * y);
@@ -188,34 +188,34 @@ fn ode_existing_types_still_work() {
 
 #[test]
 fn ode_constant_coeff_not_broken_by_new_dispatch() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' + 5y = 0 → y = C1·exp(-5x)
     // This should still be caught by the constant-coefficient path, even though
     // the variable-coefficient solver now runs first in dispatch order.
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = expr!(diff(y, x) + 5 * y);
     let sol = ode.try_solve_ode(&y, &x).expect("y' + 5y = 0 should solve");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
 
-    let c1 = __ctx.symbol("C1");
+    let c1 = ctx.symbol("C1");
     verify_first_order(&ode, &sol, &[c1], &y, &x, 1, 2);
 }
 
 #[test]
 fn ode_no_y_dependence_still_simple_separable() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' = x² + 1 should still be handled by simple separable, not full separable
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
-    let ode = &dy - &(x.powi(2) + __ctx.int(1));
+    let ode = &dy - &(x.powi(2) + ctx.int(1));
     let sol = ode.try_solve_ode(&y, &x).expect("y' = x² + 1 should be solvable");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
 
-    let c1 = __ctx.symbol("C1");
+    let c1 = ctx.symbol("C1");
     verify_first_order(&ode, &sol, &[c1], &y, &x, 1, 1);
 }

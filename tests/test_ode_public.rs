@@ -8,9 +8,9 @@ use symplex::prelude::*;
 
 #[test]
 fn formal_diff_creates_node() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let s = format!("{dy}");
     // Should display as some derivative notation, not evaluate to 0
@@ -19,9 +19,9 @@ fn formal_diff_creates_node() {
 
 #[test]
 fn formal_diff_in_expression() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let expr = &dy + &y; // y' + y
     let s = format!("{expr}");
@@ -30,9 +30,9 @@ fn formal_diff_in_expression() {
 
 #[test]
 fn formal_diff_via_expr_macro() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = expr!(diff(y, x));
     let s = format!("{dy}");
     assert!(s != "0", "expr!(diff(y,x)) should not evaluate: {s}");
@@ -44,10 +44,10 @@ fn formal_diff_via_expr_macro() {
 
 #[test]
 fn dsolve_simple_separable() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' - x = 0 → y = x²/2 + C1
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &x; // y' - x = 0
     let sol = ode.try_solve_ode(&y, &x)
@@ -59,10 +59,10 @@ fn dsolve_simple_separable() {
 
 #[test]
 fn dsolve_exponential_decay() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' + 2y = 0 → y = C1*exp(-2x)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy + &(&y * 2); // y' + 2y = 0
     let sol = ode.try_solve_ode(&y, &x)
@@ -74,9 +74,9 @@ fn dsolve_exponential_decay() {
 
 #[test]
 fn dsolve_via_expr_macro() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = expr!(diff(y, x) + 2 * y); // y' + 2y = 0
     let sol = ode.try_solve_ode(&y, &x)
         .expect("dsolve should handle y' + 2y = 0 via expr macro");
@@ -86,10 +86,10 @@ fn dsolve_via_expr_macro() {
 
 #[test]
 fn dsolve_dy_equals_zero() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' = 0 → y = C1
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = y.formal_diff(&x); // y' = 0
     let sol = ode.try_solve_ode(&y, &x)
         .expect("dsolve should handle y' = 0");
@@ -103,15 +103,15 @@ fn dsolve_dy_equals_zero() {
 
 #[test]
 fn factorial_via_method() {
-    let __ctx = Context::new();
-    let result = __ctx.int(5).factorial().eval();
+    let ctx = Context::new();
+    let result = ctx.int(5).factorial().eval();
     assert_eq!(format!("{result}"), "120");
 }
 
 #[test]
 fn factorial_100_via_method() {
-    let __ctx = Context::new();
-    let result = __ctx.int(100).factorial().eval();
+    let ctx = Context::new();
+    let result = ctx.int(100).factorial().eval();
     let s = format!("{result}");
     assert!(
         s.starts_with("933262154"),
@@ -123,28 +123,28 @@ fn factorial_100_via_method() {
 
 #[test]
 fn binomial_via_method() {
-    let __ctx = Context::new();
-    let result = __ctx.int(10).binomial(&__ctx.int(3)).eval();
+    let ctx = Context::new();
+    let result = ctx.int(10).binomial(&ctx.int(3)).eval();
     assert_eq!(format!("{result}"), "120");
 }
 
 #[test]
 fn factorial_via_expr_macro() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let result = expr!(factorial(5)).eval();
     assert_eq!(format!("{result}"), "120");
 }
 
 #[test]
 fn binomial_via_expr_macro() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let result = expr!(C(10, 3)).eval();
     assert_eq!(format!("{result}"), "120");
 }
 
 #[test]
 fn binomial_via_binomial_name() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let result = expr!(binomial(10, 5)).eval();
     assert_eq!(format!("{result}"), "252");
 }
@@ -162,9 +162,9 @@ fn neg_infinity_exists() {
 
 #[test]
 fn limit_at_neg_infinity() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let result = (1 / &x).limit(&x, &__ctx.neg_infinity());
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let result = (1 / &x).limit(&x, &ctx.neg_infinity());
     assert_eq!(format!("{result}"), "0");
 }
 
@@ -174,9 +174,9 @@ fn limit_at_neg_infinity() {
 
 #[test]
 fn ode_via_eq_macro() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     // Build y' + y = 0 via eq! macro...
     // eq! doesn't support diff() yet, so build manually
     let ode = expr!(diff(y, x) + y);
@@ -188,8 +188,8 @@ fn ode_via_eq_macro() {
 
 #[test]
 fn factorial_in_expression() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
     let expr = n.factorial();
     let s = format!("{expr}");
     assert!(s.contains("!"), "should display as n!: {s}");
@@ -197,9 +197,9 @@ fn factorial_in_expression() {
 
 #[test]
 fn binomial_display() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n");
-    let k = __ctx.symbol("k");
+    let ctx = Context::new();
+    let n = ctx.symbol("n");
+    let k = ctx.symbol("k");
     let expr = n.binomial(&k);
     let s = format!("{expr}");
     assert!(

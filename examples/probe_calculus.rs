@@ -8,12 +8,12 @@ use symplex::prelude::*;
 
 
 fn main() {
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; x, y);
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y);
     let dy = y.formal_diff(&x);
     let ddy = dy.formal_diff(&x);
-    let zero = __ctx.int(0);
-    let inf = __ctx.infinity();
+    let zero = ctx.int(0);
+    let inf = ctx.infinity();
 
     let mut ode_pass = 0u32;
     let mut ode_fail = 0u32;
@@ -33,13 +33,13 @@ fn main() {
         // First-order
         ("y' - x = 0", &dy - &x),
         ("y' - x*y = 0 (separable)", &dy - &(&x * &y)),
-        ("y' + 2y = 0 (decay)", &dy + &(&__ctx.int(2) * &y)),
-        ("y' + 2y = exp(-x)", &dy + &(&__ctx.int(2) * &y) - &(-&x).exp()),
+        ("y' + 2y = 0 (decay)", &dy + &(&ctx.int(2) * &y)),
+        ("y' + 2y = exp(-x)", &dy + &(&ctx.int(2) * &y) - &(-&x).exp()),
         ("y' = 0 (trivial)", dy.clone()),
         // Second-order homogeneous
         ("y'' + y = 0", &ddy + &y),
-        ("y'' - 4y = 0", &ddy - &(&__ctx.int(4) * &y)),
-        ("y'' + 4y' + 4y = 0", &(&ddy + &(&__ctx.int(4) * &dy)) + &(&__ctx.int(4) * &y)),
+        ("y'' - 4y = 0", &ddy - &(&ctx.int(4) * &y)),
+        ("y'' + 4y' + 4y = 0", &(&ddy + &(&ctx.int(4) * &dy)) + &(&ctx.int(4) * &y)),
         // Second-order nonhomogeneous
         ("y'' + y = sin(x)", &(&ddy + &y) - &x.sin()),
         ("y'' + y = exp(x)", &(&ddy + &y) - &x.exp()),
@@ -66,7 +66,7 @@ fn main() {
     let classify_cases: Vec<(&str, Ex)> = vec![
         ("y' + y = 0 (first-order linear CC)", &dy + &y),
         ("y' = x*y (separable)", &dy - &(&x * &y)),
-        ("y'' + 3y' + 2y = 0 (overdamped)", &(&ddy + &(&__ctx.int(3) * &dy)) + &(&__ctx.int(2) * &y)),
+        ("y'' + 3y' + 2y = 0 (overdamped)", &(&ddy + &(&ctx.int(3) * &dy)) + &(&ctx.int(2) * &y)),
     ];
     for (label, ode) in &classify_cases {
         let cls = ode.classify_ode(&y, &x);
@@ -100,21 +100,21 @@ fn main() {
         // L'Hôpital 0/0 forms
         ("sin(x)/x → 0", &x.sin() / &x, zero.clone()),
         ("(e^x - 1)/x → 0", &(&x.exp() - 1) / &x, zero.clone()),
-        ("(1 - cos(x))/x² → 0", &(&__ctx.int(1) - &x.cos()) / &x.powi(2), zero.clone()),
+        ("(1 - cos(x))/x² → 0", &(&ctx.int(1) - &x.cos()) / &x.powi(2), zero.clone()),
         // ∞·0 forms
         ("x·e^(-x) → ∞", &x * &(-&x).exp(), inf.clone()),
         ("x²·e^(-x) → ∞", &x.powi(2) * &(-&x).exp(), inf.clone()),
         // ∞/∞ forms
         ("ln(x)/x → ∞", &x.ln() / &x, inf.clone()),
         // Squeeze-theorem style
-        ("x·sin(1/x) → 0", &x * &(__ctx.int(1) / &x).sin(), zero.clone()),
+        ("x·sin(1/x) → 0", &x * &(ctx.int(1) / &x).sin(), zero.clone()),
         // Simple substitution
         ("sin(x) → 0", x.sin(), zero.clone()),
         ("cos(x) → 0", x.cos(), zero.clone()),
         ("exp(x) → 0", x.exp(), zero.clone()),
         // Limit at infinity
-        ("1/x → ∞", __ctx.int(1) / &x, inf.clone()),
-        ("1/x² → ∞", __ctx.int(1) / &x.powi(2), inf.clone()),
+        ("1/x → ∞", ctx.int(1) / &x, inf.clone()),
+        ("1/x² → ∞", ctx.int(1) / &x.powi(2), inf.clone()),
     ];
 
     for (label, expr, point) in &limit_cases {
@@ -139,7 +139,7 @@ fn main() {
         ("sin(x)", x.sin()),
         ("cos(x)", x.cos()),
         ("exp(x)", x.exp()),
-        ("1/(1-x)", __ctx.int(1) / &(__ctx.int(1) - &x)),
+        ("1/(1-x)", ctx.int(1) / &(ctx.int(1) - &x)),
         ("ln(1+x)", (&x + 1).ln()),
         ("tan(x)", x.tan()),
         ("(1+x)^(1/2)", (&x + 1).sqrt()),
@@ -202,14 +202,14 @@ fn main() {
     // Definite integrals
     // ═══════════════════════════════════════════════════════════════
     println!("\n--- Definite Integrals ---");
-    let one = __ctx.int(1);
-    let pi = __ctx.pi();
+    let one = ctx.int(1);
+    let pi = ctx.pi();
 
     let def_cases: Vec<(&str, Ex, Ex, Ex)> = vec![
         ("∫₀¹ x² dx", x.powi(2), zero.clone(), one.clone()),
         ("∫₀¹ x³ dx", x.powi(3), zero.clone(), one.clone()),
         ("∫₀^π sin(x) dx", x.sin(), zero.clone(), pi.clone()),
-        ("∫₋₁¹ x² dx", x.powi(2), __ctx.int(-1), one.clone()),
+        ("∫₋₁¹ x² dx", x.powi(2), ctx.int(-1), one.clone()),
     ];
 
     for (label, expr, lo, hi) in &def_cases {

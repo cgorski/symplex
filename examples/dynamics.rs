@@ -21,17 +21,17 @@ fn main() {
 
     println!("--- Simple Pendulum (1-DOF) ---\n");
 
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; q, qd, qdd);
-    let m = __ctx.symbol("m");
-    let l = __ctx.symbol("L");
-    let g = __ctx.symbol("g");
+    let ctx = Context::new();
+    symplex::syms!(ctx; q, qd, qdd);
+    let m = ctx.symbol("m");
+    let l = ctx.symbol("L");
+    let g = ctx.symbol("g");
 
     // Simple pendulum: T = ½·m·L²·q̇², V = -m·g·L·cos(q)
     //
-    // __ctx.rational(1, 2) returns the exact rational 1/2, avoiding any
+    // ctx.rational(1, 2) returns the exact rational 1/2, avoiding any
     // floating-point approximation in the kinetic energy expression.
-    let half = __ctx.rational(1, 2);
+    let half = ctx.rational(1, 2);
     let ke = &half * &m * &l.powi(2) * &qd.powi(2);
     let neg_m = -&m;
     let pe = &neg_m * &g * &l * &q.cos();
@@ -77,12 +77,12 @@ fn main() {
 
     println!("\n\n--- Double Pendulum (2-DOF) ---\n");
 
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; q1, q2, qd1, qd2, qdd1, qdd2);
-    let m1 = __ctx.symbol("m1");
-    let m2 = __ctx.symbol("m2");
-    let l1 = __ctx.symbol("L1");
-    let l2 = __ctx.symbol("L2");
+    let ctx = Context::new();
+    symplex::syms!(ctx; q1, q2, qd1, qd2, qdd1, qdd2);
+    let m1 = ctx.symbol("m1");
+    let m2 = ctx.symbol("m2");
+    let l1 = ctx.symbol("L1");
+    let l2 = ctx.symbol("L2");
 
     // Double pendulum kinetic energy:
     //   T = ½·m1·L1²·q̇1²
@@ -266,8 +266,8 @@ fn main() {
     // d/dt(q1) = qd1
     let dt_q1 = total_time_derivative(&q1, &[(&q1, &qd1), (&q2, &qd2)], &[&qdd1, &qdd2]);
     let dt_q1_val = dt_q1
-        .subs(&qd1, &__ctx.int(7))
-        .subs(&qd2, &__ctx.int(0))
+        .subs(&qd1, &ctx.int(7))
+        .subs(&qd2, &ctx.int(0))
         .eval();
     println!("d/dt(q1) = {dt_q1}");
     println!("  at qd1=7: {dt_q1_val}");

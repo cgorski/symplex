@@ -12,8 +12,8 @@ use symplex::prelude::*;
 fn main() {
     println!("=== Symbolic Optimization ===\n");
 
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; x, y);
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y);
 
     // Function: f(x,y) = x² + y² - 2x - 4y + 5
     let f = expr!(x ^ 2 + y ^ 2 - 2 * x - 4 * y + 5);

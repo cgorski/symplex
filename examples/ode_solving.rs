@@ -16,8 +16,8 @@ use symplex::prelude::*;
 fn main() {
     println!("=== ODE Solving ===\n");
 
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; x, y);
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, y);
 
     // ── 1. Simple separable: y' = x ───────────────────────────────
     //

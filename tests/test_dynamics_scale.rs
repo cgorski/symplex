@@ -52,31 +52,31 @@ fn matrix_total_terms(m: &Matrix) -> usize {
 
 #[test]
 fn experiment_3dof_planar_arm_dynamics() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     println!("\n{}", "=".repeat(60));
     println!("  EXPERIMENT 1: 3-DOF Planar Arm Dynamics");
     println!("{}\n", "=".repeat(60));
 
     // ── Symbols ──────────────────────────────────────────────────────────
-    let m1 = __ctx.symbol("m1");
-    let m2 = __ctx.symbol("m2");
-    let m3 = __ctx.symbol("m3");
-    let l1 = __ctx.symbol("L1");
-    let l2 = __ctx.symbol("L2");
-    let l3 = __ctx.symbol("L3");
-    let g_sym = __ctx.symbol("g");
+    let m1 = ctx.symbol("m1");
+    let m2 = ctx.symbol("m2");
+    let m3 = ctx.symbol("m3");
+    let l1 = ctx.symbol("L1");
+    let l2 = ctx.symbol("L2");
+    let l3 = ctx.symbol("L3");
+    let g_sym = ctx.symbol("g");
 
-    let q1 = __ctx.symbol("q1");
-    let q2 = __ctx.symbol("q2");
-    let q3 = __ctx.symbol("q3");
-    let qd1 = __ctx.symbol("qd1");
-    let qd2 = __ctx.symbol("qd2");
-    let qd3 = __ctx.symbol("qd3");
-    let qdd1 = __ctx.symbol("qdd1");
-    let qdd2 = __ctx.symbol("qdd2");
-    let qdd3 = __ctx.symbol("qdd3");
+    let q1 = ctx.symbol("q1");
+    let q2 = ctx.symbol("q2");
+    let q3 = ctx.symbol("q3");
+    let qd1 = ctx.symbol("qd1");
+    let qd2 = ctx.symbol("qd2");
+    let qd3 = ctx.symbol("qd3");
+    let qdd1 = ctx.symbol("qdd1");
+    let qdd2 = ctx.symbol("qdd2");
+    let qdd3 = ctx.symbol("qdd3");
 
-    let half = __ctx.rational(1, 2);
+    let half = ctx.rational(1, 2);
 
     // ── Step 1: Forward kinematics — COM positions ───────────────────────
     println!("Step 1: Building COM positions for 3 links...");
@@ -277,10 +277,10 @@ fn experiment_3dof_planar_arm_dynamics() {
         let mut result = e.clone();
         for &(var, val) in vals {
             let num = if val == val.floor() && val.abs() < 1e9 {
-                __ctx.int(val as i64)
+                ctx.int(val as i64)
             } else {
                 // Use rational approximation for decimals
-                __ctx.rational((val * 10000.0) as i64, 10000)
+                ctx.rational((val * 10000.0) as i64, 10000)
             };
             result = result.subs(var, &num);
         }
@@ -387,26 +387,26 @@ fn experiment_3dof_planar_arm_dynamics() {
 
 #[test]
 fn experiment_6dof_puma_fk_jacobian_codegen() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     println!("\n{}", "=".repeat(60));
     println!("  EXPERIMENT 2: 6-DOF PUMA-like FK / Jacobian / Codegen");
     println!("{}\n", "=".repeat(60));
 
     // ── Symbols ──────────────────────────────────────────────────────────
-    let q1 = __ctx.symbol("q1");
-    let q2 = __ctx.symbol("q2");
-    let q3 = __ctx.symbol("q3");
-    let q4 = __ctx.symbol("q4");
-    let q5 = __ctx.symbol("q5");
-    let q6 = __ctx.symbol("q6");
+    let q1 = ctx.symbol("q1");
+    let q2 = ctx.symbol("q2");
+    let q3 = ctx.symbol("q3");
+    let q4 = ctx.symbol("q4");
+    let q5 = ctx.symbol("q5");
+    let q6 = ctx.symbol("q6");
 
-    let a2 = __ctx.symbol("a2");
-    let d4 = __ctx.symbol("d4");
+    let a2 = ctx.symbol("a2");
+    let d4 = ctx.symbol("d4");
 
-    let zero = __ctx.int(0);
-    let pi = __ctx.pi();
-    let half_pi = &__ctx.rational(1, 2) * &pi;
-    let neg_half_pi = &__ctx.rational(-1, 2) * &__ctx.pi();
+    let zero = ctx.int(0);
+    let pi = ctx.pi();
+    let half_pi = &ctx.rational(1, 2) * &pi;
+    let neg_half_pi = &ctx.rational(-1, 2) * &ctx.pi();
 
     // ── Step 1: Build individual DH matrices ─────────────────────────────
     // PUMA-like DH parameters:
@@ -529,14 +529,14 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     println!("\nStep 5: Evaluating FK at numeric values...");
     let t0_eval = Instant::now();
     let fk_eval = |e: &Ex| -> f64 {
-        e.subs(&q1, &__ctx.rational(3, 10))
-            .subs(&q2, &__ctx.rational(5, 10))
-            .subs(&q3, &__ctx.rational(-2, 10))
-            .subs(&q4, &__ctx.rational(8, 10))
-            .subs(&q5, &__ctx.rational(-4, 10))
-            .subs(&q6, &__ctx.rational(1, 10))
-            .subs(&a2, &__ctx.rational(4318, 10000))
-            .subs(&d4, &__ctx.rational(4331, 10000))
+        e.subs(&q1, &ctx.rational(3, 10))
+            .subs(&q2, &ctx.rational(5, 10))
+            .subs(&q3, &ctx.rational(-2, 10))
+            .subs(&q4, &ctx.rational(8, 10))
+            .subs(&q5, &ctx.rational(-4, 10))
+            .subs(&q6, &ctx.rational(1, 10))
+            .subs(&a2, &ctx.rational(4318, 10000))
+            .subs(&d4, &ctx.rational(4331, 10000))
             .eval()
             .eval_f64()
             .unwrap()
@@ -649,13 +649,13 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     // ── Step 11: Try 6-DOF dynamics (kinetic energy for first 3 joints) ──
     println!("\nStep 11: Attempting simplified 6-DOF dynamics (first 3 joints only)...");
 
-    let qd1 = __ctx.symbol("qd1");
-    let qd2 = __ctx.symbol("qd2");
-    let qd3 = __ctx.symbol("qd3");
+    let qd1 = ctx.symbol("qd1");
+    let qd2 = ctx.symbol("qd2");
+    let qd3 = ctx.symbol("qd3");
 
-    let m1 = __ctx.symbol("m1");
-    let m2 = __ctx.symbol("m2");
-    let m3 = __ctx.symbol("m3");
+    let m1 = ctx.symbol("m1");
+    let m2 = ctx.symbol("m2");
+    let m3 = ctx.symbol("m3");
 
     // Use the first 3 joints' FK positions for a simplified dynamics test
     let dh_1 = [(&q1, &zero, &zero, &half_pi)];
@@ -677,7 +677,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // For a simplified spatial arm, potential energy uses z component
     // (assuming gravity is along -z)
-    let g_sym = __ctx.symbol("g");
+    let g_sym = ctx.symbol("g");
     let pe_6 = &(&(&m1 * &g_sym) * &p1z)
         + &(&(&(&m2 * &g_sym) * &p2z) + &(&(&m3 * &g_sym) * &p3z));
 
@@ -702,12 +702,12 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     // Velocity of each COM = J_i * qdot
     // v_ix = Σ_j (∂p_ix/∂q_j) * qd_j, etc.
     let qdot_vars = [&qd1, &qd2, &qd3];
-    let half = __ctx.rational(1, 2);
+    let half = ctx.rational(1, 2);
 
     let compute_link_ke = |px: &Ex, py: &Ex, pz: &Ex, mass: &Ex| -> Ex {
-        let mut vx = __ctx.int(0);
-        let mut vy = __ctx.int(0);
-        let mut vz = __ctx.int(0);
+        let mut vx = ctx.int(0);
+        let mut vy = ctx.int(0);
+        let mut vz = ctx.int(0);
         for (k, qk) in q_vars_3.iter().enumerate() {
             vx = &vx + &(&px.diff(qk) * qdot_vars[k]);
             vy = &vy + &(&py.diff(qk) * qdot_vars[k]);

@@ -32,12 +32,12 @@ fn e_mc_squared_numerical() {
 
 #[test]
 fn photon_energy_e_equals_hf() {
-    let __ctx = symplex::units::si::units_ctx().clone();
+    let ctx = symplex::units::si::units_ctx().clone();
     let h = constants::planck_constant();
     // E = hf — h is AngularMomentum (M·L²·T⁻¹), f is Frequency (T⁻¹)
     // AngularMomentum × Frequency → Energy (M·L²·T⁻²)
     let h_qty: Qty<AngularMomentumDim> = h.into();
-    let f_qty: Qty<FrequencyDim> = Qty::from_ex(__ctx.symbol("f"));
+    let f_qty: Qty<FrequencyDim> = Qty::from_ex(ctx.symbol("f"));
     let e_qty = h_qty * f_qty;
     let e: Energy = e_qty.into();
     let display = format!("{}", e.inner());
@@ -49,9 +49,9 @@ fn photon_energy_e_equals_hf() {
 
 #[test]
 fn thermal_energy_kb_t() {
-    let __ctx = symplex::units::si::units_ctx().clone();
+    let ctx = symplex::units::si::units_ctx().clone();
     let kb = constants::boltzmann_constant();
-    let t_qty = Qty::<TemperatureDim>::from_ex(__ctx.symbol("T"));
+    let t_qty = Qty::<TemperatureDim>::from_ex(ctx.symbol("T"));
     let e_thermal = kb * t_qty;
     // kb × T should have dimension Energy (M·L²·T⁻²·Θ⁻¹ × Θ = M·L²·T⁻²)
     let e: Energy = e_thermal.into();
@@ -64,10 +64,10 @@ fn thermal_energy_kb_t() {
 
 #[test]
 fn constant_derivative_is_zero() {
-    let __ctx = symplex::units::si::units_ctx().clone();
+    let ctx = symplex::units::si::units_ctx().clone();
     let c = constants::speed_of_light();
     let h = constants::planck_constant();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let dc = c.inner().diff(&x);
     let dh = h.inner().diff(&x);
     assert!(
@@ -82,9 +82,9 @@ fn constant_derivative_is_zero() {
 
 #[test]
 fn gravitational_force() {
-    let __ctx = symplex::units::si::units_ctx().clone();
+    let ctx = symplex::units::si::units_ctx().clone();
     let g_const = constants::gravitational_constant();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m1, m2, r);
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; m1, m2, r);
     // F = G·m1·m2/r² — raw expression arithmetic (no type-level dimension check)
     let f_expr = g_const.inner() * &m1 * &m2 / &r.powi(2);
     let display = format!("{}", f_expr);
@@ -160,9 +160,9 @@ fn avogadro_constant_value() {
 
 #[test]
 fn constant_in_product_preserves_symbol() {
-    let __ctx = symplex::units::si::units_ctx().clone();
+    let ctx = symplex::units::si::units_ctx().clone();
     let c = constants::speed_of_light();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let cx = c.inner() * &x;
     let display = format!("{}", cx);
     assert!(
@@ -173,9 +173,9 @@ fn constant_in_product_preserves_symbol() {
 
 #[test]
 fn constant_survives_simplify() {
-    let __ctx = symplex::units::si::units_ctx().clone();
+    let ctx = symplex::units::si::units_ctx().clone();
     let c = constants::speed_of_light();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
     let expr = c.inner() * &x + c.inner() * &y;
     let simplified = expr.simplify();
     let display = format!("{}", simplified);
@@ -187,9 +187,9 @@ fn constant_survives_simplify() {
 
 #[test]
 fn constant_diff_in_product() {
-    let __ctx = symplex::units::si::units_ctx().clone();
+    let ctx = symplex::units::si::units_ctx().clone();
     let c = constants::speed_of_light();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
     let cx = c.inner() * &x;
     let d = cx.diff(&x);
     // d/dx(c*x) = c

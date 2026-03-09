@@ -40,16 +40,16 @@ use num_traits::Zero;
 
 #[test]
 fn fps_exp_x_has_closed_form() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.exp().fps_maclaurin(&x);
     assert!(series.has_closed_form());
 }
 
 #[test]
 fn fps_exp_x_coefficients() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.exp().fps_maclaurin(&x);
     // a_0 = 1
     assert_coeff_eq(&series, 0, 1, 1);
@@ -67,8 +67,8 @@ fn fps_exp_x_coefficients() {
 
 #[test]
 fn fps_exp_x_coefficient_5_is_1_over_120() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.exp().fps_maclaurin(&x);
     assert_coeff_eq(&series, 5, 1, 120);
 }
@@ -79,16 +79,16 @@ fn fps_exp_x_coefficient_5_is_1_over_120() {
 
 #[test]
 fn fps_sin_x_has_closed_form() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.sin().fps_maclaurin(&x);
     assert!(series.has_closed_form());
 }
 
 #[test]
 fn fps_sin_x_odd_coefficients() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.sin().fps_maclaurin(&x);
     // sin(x) = x - x^3/6 + x^5/120 - ...
     // a_1 = 1
@@ -103,8 +103,8 @@ fn fps_sin_x_odd_coefficients() {
 
 #[test]
 fn fps_sin_x_even_coefficients_are_zero() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.sin().fps_maclaurin(&x);
     assert_coeff_zero(&series, 0);
     assert_coeff_zero(&series, 2);
@@ -118,8 +118,8 @@ fn fps_sin_x_even_coefficients_are_zero() {
 
 #[test]
 fn fps_cos_x_even_coefficients() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.cos().fps_maclaurin(&x);
     // cos(x) = 1 - x^2/2 + x^4/24 - ...
     assert_coeff_eq(&series, 0, 1, 1);
@@ -130,8 +130,8 @@ fn fps_cos_x_even_coefficients() {
 
 #[test]
 fn fps_cos_x_odd_coefficients_are_zero() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.cos().fps_maclaurin(&x);
     assert_coeff_zero(&series, 1);
     assert_coeff_zero(&series, 3);
@@ -212,8 +212,8 @@ fn fps_binomial_sqrt_coefficients() {
 
 #[test]
 fn fps_atan_x_odd_coefficients() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.atan().fps_maclaurin(&x);
     // atan(x) = x - x^3/3 + x^5/5 - x^7/7 + ...
     assert_coeff_zero(&series, 0);
@@ -262,8 +262,8 @@ fn fps_exp_truncate_5_terms() {
 
 #[test]
 fn fps_coefficient_access_exp_5() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.exp().fps_maclaurin(&x);
     // coefficient(5) = 1/120
     use num_bigint::BigInt;
@@ -278,8 +278,8 @@ fn fps_coefficient_access_exp_5() {
 
 #[test]
 fn fps_sinh_x_coefficients() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.sinh().fps_maclaurin(&x);
     assert!(series.has_closed_form());
     // sinh(x) = x + x^3/6 + x^5/120 + ...
@@ -293,8 +293,8 @@ fn fps_sinh_x_coefficients() {
 
 #[test]
 fn fps_cosh_x_coefficients() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let series = x.cosh().fps_maclaurin(&x);
     assert!(series.has_closed_form());
     // cosh(x) = 1 + x^2/2 + x^4/24 + ...
@@ -311,8 +311,8 @@ fn fps_cosh_x_coefficients() {
 
 #[test]
 fn fps_non_elementary_falls_back_to_truncated() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // exp(x) + sin(x) doesn't match a single known pattern
     let expr = &x.exp() + &x.sin();
     let series = expr.fps_maclaurin(&x);

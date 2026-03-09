@@ -123,8 +123,8 @@ proptest! {
     /// diff never panics and produces non-empty display
     #[test]
     fn stress_diff(e in arb_expr(3)) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let result = e.diff(&x);
         let _s = format!("{result}");
         prop_assert!(!_s.is_empty(), "diff result should display as non-empty");
@@ -133,8 +133,8 @@ proptest! {
     /// integrate never panics (may return unevaluated Integral)
     #[test]
     fn stress_integrate(e in arb_expr(2)) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let result = e.integrate(&x);
         let _s = format!("{result}");
         prop_assert!(!_s.is_empty(), "integrate result should display as non-empty");
@@ -143,8 +143,8 @@ proptest! {
     /// solve never panics (may return empty)
     #[test]
     fn stress_solve(e in arb_expr(2)) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let roots = e.solve_or_empty(&x);
         for r in &roots {
             let _s = format!("{r}");
@@ -155,8 +155,8 @@ proptest! {
     /// subs never panics and produces non-empty display
     #[test]
     fn stress_subs(e in arb_expr(2)) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let result = e.subs_i64(&x, 3);
         let _s = format!("{result}");
         prop_assert!(!_s.is_empty(), "subs result should display as non-empty");
@@ -197,8 +197,8 @@ proptest! {
     /// contains never panics
     #[test]
     fn stress_contains(e in arb_expr(3)) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let _b = e.contains(&x);
         let _s = format!("{_b}");
         prop_assert!(!_s.is_empty());
@@ -274,9 +274,9 @@ proptest! {
     /// differentiating should give back the original.
     #[test]
     fn integration_roundtrip_poly(coeffs in prop::collection::vec(-5i64..5, 1..4)) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
-        let mut poly = __ctx.int(0);
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
+        let mut poly = ctx.int(0);
         for (i, &c) in coeffs.iter().enumerate() {
             if c != 0 {
                 poly = &poly + &(&x.powi(i as i64) * c);
@@ -302,8 +302,8 @@ proptest! {
         b in -5i64..5,
         pt in 1i64..5,
     ) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let expr = &(&x.powi(2) * a) + &(&x * b);
         let simplified = expr.simplify();
         let v1 = format!("{}", expr.subs_i64(&x, pt));
@@ -320,8 +320,8 @@ proptest! {
         _b in -3i64..3,
         pt in 1i64..5,
     ) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let expr = (&x + a).powi(2);
         let expanded = expr.expand();
         let v1 = format!("{}", expr.subs_i64(&x, pt));
@@ -337,8 +337,8 @@ proptest! {
     /// factor(p) * together should preserve numerical value
     #[test]
     fn factor_preserves_value(a in -3i64..3, b in -3i64..3, pt in 1i64..5) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         // Build (x-a)(x-b) expanded
         let p = (&x - a) * (&x - b);
         let expanded = p.expand();
@@ -359,8 +359,8 @@ proptest! {
         b in -5i64..5,
         c in -5i64..5,
     ) {
-        let __ctx = shared_ctx().clone();
-        let x = __ctx.symbol("x");
+        let ctx = shared_ctx().clone();
+        let x = ctx.symbol("x");
         let eq = &(&x.powi(2) * a) + &(&x * b) + c;
         let roots = eq.solve_or_empty(&x);
         let mut bail = common::BailCounter::new("solve_roots_satisfy");

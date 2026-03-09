@@ -394,40 +394,40 @@ fn integrate_x_plus_1_squared_verify_by_diff() {
 
 #[test]
 fn integrate_sin_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let result = x.sin().integrate(&x);
     assert_eq!(format!("{result}"), "-cos(x)");
 }
 
 #[test]
 fn integrate_cos_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let result = x.cos().integrate(&x);
     assert_eq!(format!("{result}"), "sin(x)");
 }
 
 #[test]
 fn integrate_exp_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let result = x.exp().integrate(&x);
     assert_eq!(format!("{result}"), "exp(x)");
 }
 
 #[test]
 fn integrate_sinh_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let result = x.sinh().integrate(&x);
     assert_eq!(format!("{result}"), "cosh(x)");
 }
 
 #[test]
 fn integrate_cosh_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let result = x.cosh().integrate(&x);
     assert_eq!(format!("{result}"), "sinh(x)");
 }
@@ -438,8 +438,8 @@ fn integrate_cosh_x() {
 
 #[test]
 fn integrate_x_sin_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x * &x.sin();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -455,8 +455,8 @@ fn integrate_x_sin_x() {
 
 #[test]
 fn integrate_x_exp_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x * &x.exp();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -468,8 +468,8 @@ fn integrate_x_exp_x() {
 
 #[test]
 fn integrate_x_cos_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x * &x.cos();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -662,39 +662,39 @@ fn solve_constant_nonzero_no_solutions() {
 
 #[test]
 fn global_pi() {
-    let __ctx = Context::new();
-    let pi = __ctx.pi();
+    let ctx = Context::new();
+    let pi = ctx.pi();
     assert_eq!(format!("{pi}"), "pi");
 }
 
 #[test]
 fn global_e() {
-    let __ctx = Context::new();
-    let e = __ctx.e();
+    let ctx = Context::new();
+    let e = ctx.e();
     assert_eq!(format!("{e}"), "E");
 }
 
 #[test]
 fn global_i_unit() {
-    let __ctx = Context::new();
-    let i = __ctx.i_unit();
+    let ctx = Context::new();
+    let i = ctx.i_unit();
     assert_eq!(format!("{i}"), "I");
 }
 
 #[test]
 fn global_infinity() {
-    let __ctx = Context::new();
-    let inf = __ctx.infinity();
+    let ctx = Context::new();
+    let inf = ctx.infinity();
     assert_eq!(format!("{inf}"), "oo");
 }
 
 #[test]
 fn global_convenience_all_four() {
-    let __ctx = Context::new();
-    let pi = __ctx.pi();
-    let e = __ctx.e();
-    let i = __ctx.i_unit();
-    let inf = __ctx.infinity();
+    let ctx = Context::new();
+    let pi = ctx.pi();
+    let e = ctx.e();
+    let i = ctx.i_unit();
+    let inf = ctx.infinity();
     assert_eq!(format!("{pi}"), "pi");
     assert_eq!(format!("{e}"), "E");
     assert_eq!(format!("{i}"), "I");
@@ -703,22 +703,22 @@ fn global_convenience_all_four() {
 
 #[test]
 fn global_var() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_eq!(format!("{x}"), "x");
 }
 
 #[test]
 fn global_int() {
-    let __ctx = Context::new();
-    let five = __ctx.int(5);
+    let ctx = Context::new();
+    let five = ctx.int(5);
     assert_eq!(format!("{five}"), "5");
 }
 
 #[test]
 fn global_rational() {
-    let __ctx = Context::new();
-    let half = __ctx.rational(1, 2);
+    let ctx = Context::new();
+    let half = ctx.rational(1, 2);
     assert_eq!(format!("{half}"), "1/2");
 }
 
@@ -728,8 +728,8 @@ fn global_rational() {
 
 #[test]
 fn diff_n_third_derivative_x5() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let f = x.powi(5);
     let d3 = f.diff_n(&x, 3);
     assert_eq!(format!("{d3}"), "60*x^2");
@@ -778,16 +778,16 @@ fn diff_n_high_order_vanishes() {
 
 #[test]
 fn args_of_sum() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x + 1;
     assert_eq!(expr.args().len(), 2, "x + 1 should have 2 children");
 }
 
 #[test]
 fn args_of_function() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_eq!(x.sin().args().len(), 1, "sin(x) should have 1 child");
     assert_eq!(x.cos().args().len(), 1, "cos(x) should have 1 child");
     assert_eq!(x.exp().args().len(), 1, "exp(x) should have 1 child");
@@ -795,23 +795,23 @@ fn args_of_function() {
 
 #[test]
 fn args_of_atom() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_eq!(x.args().len(), 0, "a symbol has 0 children");
 }
 
 #[test]
 fn args_of_integer() {
-    let __ctx = Context::new();
-    let n = __ctx.int(42);
+    let ctx = Context::new();
+    let n = ctx.int(42);
     assert_eq!(n.args().len(), 0, "an integer has 0 children");
 }
 
 #[test]
 fn args_of_product() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let expr = &x * &y;
     assert!(
         expr.args().len() >= 2,
@@ -826,29 +826,29 @@ fn args_of_product() {
 
 #[test]
 fn i_is_imaginary() {
-    let __ctx = Context::new();
-    let i = __ctx.i_unit();
+    let ctx = Context::new();
+    let i = ctx.i_unit();
     assert_eq!(i.is_imaginary(), Some(true));
 }
 
 #[test]
 fn i_is_complex() {
-    let __ctx = Context::new();
-    let i = __ctx.i_unit();
+    let ctx = Context::new();
+    let i = ctx.i_unit();
     assert_eq!(i.is_complex(), Some(true));
 }
 
 #[test]
 fn i_is_not_real() {
-    let __ctx = Context::new();
-    let i = __ctx.i_unit();
+    let ctx = Context::new();
+    let i = ctx.i_unit();
     assert_eq!(i.is_real(), Some(false));
 }
 
 #[test]
 fn i_is_not_zero() {
-    let __ctx = Context::new();
-    let i = __ctx.i_unit();
+    let ctx = Context::new();
+    let i = ctx.i_unit();
     assert_eq!(i.is_nonzero(), Some(true));
 }
 
@@ -893,15 +893,15 @@ fn i_squared_becomes_neg_one_which_is_real() {
 
 #[test]
 fn assume_positive() {
-    let __ctx = Context::new();
-    let t = __ctx.symbol("t").assume(Assumption::Positive);
+    let ctx = Context::new();
+    let t = ctx.symbol("t").assume(Assumption::Positive);
     assert_eq!(t.is_positive(), Some(true));
 }
 
 #[test]
 fn assume_integer_implies_real() {
-    let __ctx = Context::new();
-    let n = __ctx.symbol("n").assume(Assumption::Integer);
+    let ctx = Context::new();
+    let n = ctx.symbol("n").assume(Assumption::Integer);
     assert_eq!(n.is_integer(), Some(true));
     assert_eq!(n.is_real(), Some(true));
 }
@@ -946,8 +946,8 @@ fn product_of_empty_is_one() {
 
 #[test]
 fn evalf_f64_integer() {
-    let __ctx = Context::new();
-    let five = __ctx.int(5);
+    let ctx = Context::new();
+    let five = ctx.int(5);
     let val = five.eval_f64().unwrap();
     assert!((val - 5.0).abs() < 1e-10);
 }
@@ -961,8 +961,8 @@ fn evalf_f64_pi() {
 
 #[test]
 fn evalf_f64_free_symbol_errors() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert!(x.eval_f64().is_err());
 }
 

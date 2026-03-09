@@ -21,8 +21,8 @@ use symplex::prelude::*;
 /// Evaluate a symbolic expression at a rational point x = p/q, returning f64.
 /// Uses subs with a rational expression for best accuracy.
 fn eval_at(expr: &Ex, var: &Ex, p: i64, q: i64) -> Option<f64> {
-    let __ctx = Context::new();
-    let pt = __ctx.rational(p, q);
+    let ctx = Context::new();
+    let pt = ctx.rational(p, q);
     let substituted = expr.subs(var, &pt);
     substituted.eval_f64().ok()
 }
@@ -133,7 +133,7 @@ struct IntegralTest {
 }
 
 fn build_integration_tests(x: &Ex) -> Vec<IntegralTest> {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     vec![
         // ── Basic ──
         IntegralTest {
@@ -163,7 +163,7 @@ fn build_integration_tests(x: &Ex) -> Vec<IntegralTest> {
         },
         IntegralTest {
             label: "1/x",
-            integrand: &__ctx.int(1) / x,
+            integrand: &ctx.int(1) / x,
             bounds: (1, 2, 2, 1),
         },
         IntegralTest {
@@ -220,7 +220,7 @@ fn build_integration_tests(x: &Ex) -> Vec<IntegralTest> {
         // ── U-substitution ──
         IntegralTest {
             label: "2x*exp(x^2)",
-            integrand: &(&__ctx.int(2) * x) * &x.powi(2).exp(),
+            integrand: &(&ctx.int(2) * x) * &x.powi(2).exp(),
             bounds: (1, 2, 1, 1),
         },
         IntegralTest {
@@ -272,12 +272,12 @@ fn build_integration_tests(x: &Ex) -> Vec<IntegralTest> {
         // ── Rational functions ──
         IntegralTest {
             label: "1/(x^2+1)",
-            integrand: __ctx.int(1) / &(x.powi(2) + 1),
+            integrand: ctx.int(1) / &(x.powi(2) + 1),
             bounds: (1, 2, 1, 1),
         },
         IntegralTest {
             label: "1/(x^2-1)",
-            integrand: __ctx.int(1) / &(x.powi(2) - 1),
+            integrand: ctx.int(1) / &(x.powi(2) - 1),
             bounds: (2, 1, 3, 1), // away from singularity at x=1
         },
         IntegralTest {
@@ -288,12 +288,12 @@ fn build_integration_tests(x: &Ex) -> Vec<IntegralTest> {
         // ── Sqrt forms ──
         IntegralTest {
             label: "1/sqrt(1-x^2)",
-            integrand: __ctx.int(1) / &(&__ctx.int(1) - &x.powi(2)).sqrt(),
+            integrand: ctx.int(1) / &(&ctx.int(1) - &x.powi(2)).sqrt(),
             bounds: (1, 4, 1, 2), // (0.25, 0.5) — inside (-1,1)
         },
         IntegralTest {
             label: "1/sqrt(x^2+1)",
-            integrand: __ctx.int(1) / &(x.powi(2) + 1).sqrt(),
+            integrand: ctx.int(1) / &(x.powi(2) + 1).sqrt(),
             bounds: (1, 2, 1, 1),
         },
         IntegralTest {
@@ -331,17 +331,17 @@ fn build_integration_tests(x: &Ex) -> Vec<IntegralTest> {
         // ── Parametric (specific a values) ──
         IntegralTest {
             label: "sin(2x)",
-            integrand: (&__ctx.int(2) * x).sin(),
+            integrand: (&ctx.int(2) * x).sin(),
             bounds: (1, 2, 1, 1),
         },
         IntegralTest {
             label: "exp(2x)",
-            integrand: (&__ctx.int(2) * x).exp(),
+            integrand: (&ctx.int(2) * x).exp(),
             bounds: (1, 2, 1, 1),
         },
         IntegralTest {
             label: "sin(3x)",
-            integrand: (&__ctx.int(3) * x).sin(),
+            integrand: (&ctx.int(3) * x).sin(),
             bounds: (1, 2, 1, 1),
         },
         // ── Hyperbolic ──
@@ -368,23 +368,23 @@ fn build_integration_tests(x: &Ex) -> Vec<IntegralTest> {
         // ── Linear substitution ──
         IntegralTest {
             label: "(2x+1)^5",
-            integrand: (&__ctx.int(2) * x + 1).powi(5),
+            integrand: (&ctx.int(2) * x + 1).powi(5),
             bounds: (1, 2, 1, 1),
         },
         IntegralTest {
             label: "1/(3x+2)",
-            integrand: __ctx.int(1) / &(&__ctx.int(3) * x + 2),
+            integrand: ctx.int(1) / &(&ctx.int(3) * x + 2),
             bounds: (1, 2, 1, 1),
         },
         IntegralTest {
             label: "sqrt(2x+1)",
-            integrand: (&__ctx.int(2) * x + 1).sqrt(),
+            integrand: (&ctx.int(2) * x + 1).sqrt(),
             bounds: (1, 2, 1, 1),
         },
         // ── Completing the square ──
         IntegralTest {
             label: "1/(x^2+2x+5)",
-            integrand: __ctx.int(1) / &(x.powi(2) + &__ctx.int(2) * x + 5),
+            integrand: ctx.int(1) / &(x.powi(2) + &ctx.int(2) * x + 5),
             bounds: (1, 2, 1, 1),
         },
     ]
@@ -400,7 +400,7 @@ struct SimplifyTest {
 }
 
 fn build_simplify_tests(x: &Ex) -> Vec<SimplifyTest> {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     vec![
         SimplifyTest {
             label: "sin^2+cos^2 = 1",
@@ -419,15 +419,15 @@ fn build_simplify_tests(x: &Ex) -> Vec<SimplifyTest> {
         },
         SimplifyTest {
             label: "2*sin*cos = sin(2x)",
-            original: &__ctx.int(2) * &(&x.sin() * &x.cos()),
+            original: &ctx.int(2) * &(&x.sin() * &x.cos()),
             test_points: vec![(1, 4), (1, 2), (1, 1), (3, 2)],
         },
     ]
 }
 
 fn main() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
 
     let mut results: Vec<TestResult> = Vec::new();
     let tolerance = 1e-3;
@@ -692,15 +692,15 @@ fn main() {
     // ═══════════════════════════════════════════════════════════════════
     println!("\n=== ODE Solution Verification ===\n");
 
-    let y = __ctx.symbol("y");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ddy = dy.formal_diff(&x);
 
     let ode_cases: Vec<(&str, Ex)> = vec![
         ("y' - x = 0", &dy - &x),
-        ("y' + 2y = 0", &dy + &(&__ctx.int(2) * &y)),
+        ("y' + 2y = 0", &dy + &(&ctx.int(2) * &y)),
         ("y'' + y = 0", &ddy + &y),
-        ("y'' - 4y = 0", &ddy - &(&__ctx.int(4) * &y)),
+        ("y'' - 4y = 0", &ddy - &(&ctx.int(4) * &y)),
     ];
 
     for (label, ode) in &ode_cases {

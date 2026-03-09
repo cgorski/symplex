@@ -566,30 +566,30 @@ fn legendre_symbol_quadratic_residues_mod_11() {
 
 #[test]
 fn factorize_via_expr() {
-    let __ctx = Context::new();
-    let n = __ctx.int(360);
+    let ctx = Context::new();
+    let n = ctx.int(360);
     let factors = n.factorize().unwrap();
     assert_eq!(factors, vec![(bi(2), 3), (bi(3), 2), (bi(5), 1)]);
 }
 
 #[test]
 fn factorize_non_integer_returns_none() {
-    let __ctx = Context::new();
-    let half = __ctx.rational(1, 2);
+    let ctx = Context::new();
+    let half = ctx.rational(1, 2);
     assert!(half.factorize().is_none());
 }
 
 #[test]
 fn factorize_zero_returns_none() {
-    let __ctx = Context::new();
-    let zero = __ctx.int(0);
+    let ctx = Context::new();
+    let zero = ctx.int(0);
     assert!(zero.factorize().is_none());
 }
 
 #[test]
 fn factorize_prime_via_expr() {
-    let __ctx = Context::new();
-    let n = __ctx.int(104729);
+    let ctx = Context::new();
+    let n = ctx.int(104729);
     let factors = n.factorize().unwrap();
     assert_eq!(factors, vec![(bi(104729), 1)]);
 }
@@ -600,50 +600,50 @@ fn factorize_prime_via_expr() {
 
 #[test]
 fn is_prime_value_true() {
-    let __ctx = Context::new();
-    let n = __ctx.int(104729);
+    let ctx = Context::new();
+    let n = ctx.int(104729);
     assert_eq!(n.is_prime_value(), Some(true));
 }
 
 #[test]
 fn is_prime_value_false() {
-    let __ctx = Context::new();
-    let n = __ctx.int(60);
+    let ctx = Context::new();
+    let n = ctx.int(60);
     assert_eq!(n.is_prime_value(), Some(false));
 }
 
 #[test]
 fn is_prime_value_non_integer_returns_none() {
-    let __ctx = Context::new();
-    let half = __ctx.rational(1, 2);
+    let ctx = Context::new();
+    let half = ctx.rational(1, 2);
     assert_eq!(half.is_prime_value(), None);
 }
 
 #[test]
 fn is_prime_value_zero() {
-    let __ctx = Context::new();
-    let n = __ctx.int(0);
+    let ctx = Context::new();
+    let n = ctx.int(0);
     assert_eq!(n.is_prime_value(), Some(false));
 }
 
 #[test]
 fn is_prime_value_one() {
-    let __ctx = Context::new();
-    let n = __ctx.int(1);
+    let ctx = Context::new();
+    let n = ctx.int(1);
     assert_eq!(n.is_prime_value(), Some(false));
 }
 
 #[test]
 fn is_prime_value_negative() {
-    let __ctx = Context::new();
-    let n = __ctx.int(-7);
+    let ctx = Context::new();
+    let n = ctx.int(-7);
     assert_eq!(n.is_prime_value(), Some(false));
 }
 
 #[test]
 fn is_prime_value_mersenne_m31() {
-    let __ctx = Context::new();
-    let n = __ctx.int(2_147_483_647);
+    let ctx = Context::new();
+    let n = ctx.int(2_147_483_647);
     assert_eq!(n.is_prime_value(), Some(true));
 }
 
@@ -653,18 +653,18 @@ fn is_prime_value_mersenne_m31() {
 
 #[test]
 fn factorize_does_not_go_through_f64() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // 2^31 - 1 = 2147483647 is a Mersenne prime
-    let n = __ctx.int(2_147_483_647);
+    let n = ctx.int(2_147_483_647);
     let factors = n.factorize().unwrap();
     assert_eq!(factors, vec![(bi(2_147_483_647), 1)]);
 }
 
 #[test]
 fn is_prime_value_consistency_with_isprime() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     for v in -5..=200 {
-        let expr = __ctx.int(v);
+        let expr = ctx.int(v);
         let via_expr = expr.is_prime_value();
         let direct = isprime(v);
         match via_expr {

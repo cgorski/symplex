@@ -565,8 +565,8 @@ fn factorial_table_0_through_10() {
 #[test]
 fn factorial_node_is_not_atom() {
     // Factorial(x) should not be an atom — it has one child
-    let __ctx = Context::new();
-    __ctx.with_arena_mut(|arena| {
+    let ctx = Context::new();
+    ctx.with_arena_mut(|arena| {
         let x = arena.symbol("x");
         let expr = arena.factorial(x);
         let node = arena.node(expr);
@@ -581,8 +581,8 @@ fn factorial_node_is_not_atom() {
 
 #[test]
 fn binomial_node_is_not_atom() {
-    let __ctx = Context::new();
-    __ctx.with_arena_mut(|arena| {
+    let ctx = Context::new();
+    ctx.with_arena_mut(|arena| {
         let n = arena.symbol("n");
         let k = arena.symbol("k");
         let expr = arena.binomial(n, k);
@@ -610,8 +610,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_basic() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
-//     let eq = Equation::new(&x + 1, __ctx.int(5));
+//     let x = ctx.symbol("x");
+//     let eq = Equation::new(&x + 1, ctx.int(5));
 //     let s = format!("{eq}");
 //     assert!(s.contains("="), "equation should display with =: {s}");
 // }
@@ -619,8 +619,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_solve_linear() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
-//     let eq = Equation::new(&x * 2, __ctx.int(10));
+//     let x = ctx.symbol("x");
+//     let eq = Equation::new(&x * 2, ctx.int(10));
 //     let roots = eq.solve_or_empty(&x);
 //     assert_eq!(roots.len(), 1);
 //     assert_eq!(format!("{}", roots[0]), "5");
@@ -629,8 +629,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_solve_quadratic() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
-//     let eq = Equation::new(x.powi(2), __ctx.int(9));
+//     let x = ctx.symbol("x");
+//     let eq = Equation::new(x.powi(2), ctx.int(9));
 //     let roots = eq.solve_or_empty(&x);
 //     assert_eq!(roots.len(), 2, "x²=9 should have 2 roots");
 //     let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -641,8 +641,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_subs_check() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
-//     let eq = Equation::new(&x + 1, __ctx.int(5));
+//     let x = ctx.symbol("x");
+//     let eq = Equation::new(&x + 1, ctx.int(5));
 //     let at_4 = eq.subs_i64(&x, 4);
 //     assert!(at_4.is_satisfied() == Some(true));
 // }
@@ -650,8 +650,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_subs_wrong() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
-//     let eq = Equation::new(&x + 1, __ctx.int(5));
+//     let x = ctx.symbol("x");
+//     let eq = Equation::new(&x + 1, ctx.int(5));
 //     let at_3 = eq.subs_i64(&x, 3);
 //     // 4 ≠ 5
 //     assert!(at_3.is_satisfied() != Some(true));
@@ -660,8 +660,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_to_expr() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
-//     let eq = Equation::new(x.clone(), __ctx.int(3));
+//     let x = ctx.symbol("x");
+//     let eq = Equation::new(x.clone(), ctx.int(3));
 //     let expr = eq.to_expr();
 //     // Should be x - 3
 //     let s = format!("{expr}");
@@ -671,10 +671,10 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_simplify() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
+//     let x = ctx.symbol("x");
 //     let eq = Equation::new(
 //         &x.sin().powi(2) + &x.cos().powi(2),
-//         __ctx.int(1),
+//         ctx.int(1),
 //     );
 //     let simplified = eq.simplify();
 //     assert_eq!(format!("{}", simplified.lhs), "1");
@@ -683,8 +683,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_expand() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
-//     let eq = Equation::new((&x + 1).powi(2), __ctx.int(4));
+//     let x = ctx.symbol("x");
+//     let eq = Equation::new((&x + 1).powi(2), ctx.int(4));
 //     let expanded = eq.expand();
 //     let s = format!("{}", expanded.lhs);
 //     assert!(s.contains("x^2") || s.contains("x"), "should expand: {s}");
@@ -693,8 +693,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_with_complex() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
-//     let eq = Equation::new(x.powi(2), __ctx.int(-1));
+//     let x = ctx.symbol("x");
+//     let eq = Equation::new(x.powi(2), ctx.int(-1));
 //     let roots = eq.solve_or_empty(&x);
 //     assert_eq!(roots.len(), 2, "x²=-1 should have complex roots");
 //     let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -705,8 +705,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_debug_format() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
-//     let eq = Equation::new(x.powi(2), __ctx.int(4));
+//     let x = ctx.symbol("x");
+//     let eq = Equation::new(x.powi(2), ctx.int(4));
 //     let s = format!("{eq:?}");
 //     assert!(s.contains("Equation"), "debug: {s}");
 // }
@@ -714,8 +714,8 @@ fn binomial_node_is_not_atom() {
 // #[test]
 // fn equation_eval() {
 //     use symplex::eq::Equation;
-//     let x = __ctx.symbol("x");
-//     let eq = Equation::new(x.sin().powi(2) + x.cos().powi(2), __ctx.int(2));
+//     let x = ctx.symbol("x");
+//     let eq = Equation::new(x.sin().powi(2) + x.cos().powi(2), ctx.int(2));
 //     let evald = eq.eval();
 //     let s = format!("{evald}");
 //     assert!(s.contains("="), "should still be equation: {s}");
@@ -727,8 +727,8 @@ fn binomial_node_is_not_atom() {
 //     let ctx = Context::new();
 //     let x = ctx.symbol("x");
 //     let y = ctx.symbol("y");
-//     let eq = Equation::new(&x + &y, __ctx.int(10));
-//     let substituted = eq.subs(&y, &__ctx.int(3));
+//     let eq = Equation::new(&x + &y, ctx.int(10));
+//     let substituted = eq.subs(&y, &ctx.int(3));
 //     let roots = substituted.solve_or_empty(&x);
 //     assert!(!roots.is_empty(), "x + 3 = 10 should solve");
 //     assert_eq!(format!("{}", roots[0]), "7");
@@ -744,9 +744,9 @@ fn binomial_node_is_not_atom() {
 
 #[test]
 fn solve_linear_equation_via_expr() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x + 1 = 5  ⟹  (x + 1) - 5 = 0  ⟹  x - 4 = 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = &x + 1 - 5;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -755,9 +755,9 @@ fn solve_linear_equation_via_expr() {
 
 #[test]
 fn solve_linear_2x_eq_10() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // 2x = 10  ⟹  2x - 10 = 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = &x * 2 - 10;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -766,9 +766,9 @@ fn solve_linear_2x_eq_10() {
 
 #[test]
 fn solve_quadratic_x2_eq_9() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x² = 9  ⟹  x² - 9 = 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = x.powi(2) - 9;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²-9=0 should have 2 roots");
@@ -779,9 +779,9 @@ fn solve_quadratic_x2_eq_9() {
 
 #[test]
 fn solve_quadratic_x2_eq_neg1_complex() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x² = -1  ⟹  x² + 1 = 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = x.powi(2) + 1;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²+1=0 should have 2 complex roots");
@@ -792,10 +792,10 @@ fn solve_quadratic_x2_eq_neg1_complex() {
 
 #[test]
 fn substitution_verifies_solution() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x + 1 = 5  →  expr = x + 1 - 5  →  solve gives x = 4
     // Verify: subs(x, 4) into expr should give 0
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = &x + 1 - 5;
     let roots = expr.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
@@ -810,9 +810,9 @@ fn substitution_verifies_solution() {
 
 #[test]
 fn pythagorean_identity_simplifies() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // sin²(x) + cos²(x) should simplify to 1
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = x.sin().powi(2) + x.cos().powi(2);
     let simplified = expr.simplify();
     assert_eq!(format!("{simplified}"), "1");
@@ -820,9 +820,9 @@ fn pythagorean_identity_simplifies() {
 
 #[test]
 fn expand_square_binomial() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (x + 1)² should expand to x^2 + 2*x + 1
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let expr = (&x + 1).powi(2);
     let expanded = expr.expand();
     let s = format!("{expanded}");
@@ -831,10 +831,10 @@ fn expand_square_binomial() {
 
 #[test]
 fn to_expr_pattern_lhs_minus_rhs() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Equation "x = 3" → to_expr is "x - 3"
-    let x = __ctx.symbol("x");
-    let three = __ctx.int(3);
+    let x = ctx.symbol("x");
+    let three = ctx.int(3);
     let to_expr = &x - &three;
     let s = format!("{to_expr}");
     assert_eq!(s, "x - 3", "x - 3 canonical form");

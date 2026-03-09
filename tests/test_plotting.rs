@@ -11,8 +11,8 @@ use std::f64::consts::PI;
 
 #[test]
 fn textplot_sin_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let plot = x.sin().textplot(&x, 0.0, 2.0 * PI);
     assert!(!plot.is_empty(), "textplot should produce non-empty output");
 
@@ -40,8 +40,8 @@ fn textplot_sin_x() {
 
 #[test]
 fn svg_sin_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let svg = x.sin().to_svg(&x, 0.0, 2.0 * PI);
     assert!(svg.contains("<svg"), "SVG output should contain <svg tag:\n{svg}");
     assert!(
@@ -65,8 +65,8 @@ fn svg_sin_x() {
 
 #[test]
 fn svg_has_axes() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let svg = x.powi(2).to_svg(&x, -2.0, 2.0);
 
     // Should have axis border rect
@@ -102,8 +102,8 @@ fn svg_has_axes() {
 
 #[test]
 fn svg_multi_series() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
 
     // Since svg_plot is pub(crate), we verify via the public API by
     // checking that each expression produces different data, and test
@@ -135,8 +135,8 @@ fn svg_multi_series() {
 
 #[test]
 fn tikz_sin_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let tikz = x.sin().to_tikz(&x, 0.0, 2.0 * PI);
     assert!(
         tikz.contains("\\begin{axis}"),
@@ -166,8 +166,8 @@ fn tikz_sin_x() {
 
 #[test]
 fn tikz_has_coordinates() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let tikz = x.powi(2).to_tikz(&x, 0.0, 3.0);
 
     // Should contain "coordinates" keyword
@@ -200,7 +200,7 @@ fn tikz_has_coordinates() {
 
 #[test]
 fn rk4_exponential_decay() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // We test the RK4 integrator indirectly through its numerical accuracy.
     // dy/dt = -y, y(0) = 1  ⟹  y(t) = e^{-t}
     //
@@ -209,8 +209,8 @@ fn rk4_exponential_decay() {
     // evaluation engine, then separately verify the RK4 algorithm's
     // expected accuracy for this standard test case.
 
-    let x = __ctx.symbol("x");
-    let neg_x = __ctx.int(-1) * &x;
+    let x = ctx.symbol("x");
+    let neg_x = ctx.int(-1) * &x;
     let exp_neg_x = neg_x.exp();
 
     // Evaluate exp(-1) via the symbolic engine
@@ -238,10 +238,10 @@ fn rk4_exponential_decay() {
 
 #[test]
 fn rk4_harmonic_oscillator() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Verify cos(x) has a period of 2π by checking that plot_data
     // for cos(x) gives cos(0)≈1, cos(π)≈-1, cos(2π)≈1.
-    let x = __ctx.symbol("x");
+    let x = ctx.symbol("x");
     let cos_x = x.cos();
     let data = cos_x.plot_data(&x, 0.0, 2.0 * PI, 201);
 
@@ -273,8 +273,8 @@ fn rk4_harmonic_oscillator() {
 
 #[test]
 fn plot_data_sin_x() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let data = x.sin().plot_data(&x, 0.0, 2.0 * PI, 100);
 
     assert_eq!(
@@ -318,8 +318,8 @@ fn plot_data_sin_x() {
 
 #[test]
 fn eval_table_quadratic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]);
 
     assert_eq!(table.nrows(), 3, "eval_table should have 3 rows");
@@ -349,8 +349,8 @@ fn eval_table_quadratic() {
 
 #[test]
 fn data_table_to_csv() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0, 3.0]);
     let csv = table.to_csv();
 
@@ -384,9 +384,9 @@ fn data_table_to_csv() {
 
 #[test]
 fn textplot_handles_asymptote() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let one_over_x = __ctx.int(1) / &x;
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let one_over_x = ctx.int(1) / &x;
 
     // This should not panic, even though 1/x has a singularity at x=0
     let plot = one_over_x.textplot(&x, -2.0, 2.0);
@@ -410,9 +410,9 @@ fn textplot_handles_asymptote() {
 
 #[test]
 fn plot_data_constant_function() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let data = __ctx.int(5).plot_data(&x, 0.0, 10.0, 50);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let data = ctx.int(5).plot_data(&x, 0.0, 10.0, 50);
     assert_eq!(data.len(), 50);
     // All y values should be 5.0
     for (_xv, yv) in &data {
@@ -427,8 +427,8 @@ fn plot_data_constant_function() {
 
 #[test]
 fn plot_data_polynomial() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // f(x) = x^3 - x
     let f = x.powi(3) - &x;
     let data = f.plot_data(&x, -2.0, 2.0, 5);
@@ -458,8 +458,8 @@ fn plot_data_polynomial() {
 
 #[test]
 fn svg_output_is_well_formed() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let svg = x.powi(2).to_svg(&x, -1.0, 1.0);
 
     // Count opening and closing SVG tags
@@ -477,8 +477,8 @@ fn svg_output_is_well_formed() {
 
 #[test]
 fn tikz_grid_option() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let tikz = x.sin().to_tikz(&x, 0.0, PI);
     assert!(
         tikz.contains("grid=major"),
@@ -488,8 +488,8 @@ fn tikz_grid_option() {
 
 #[test]
 fn eval_table_with_trig() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let table = x.sin().eval_table(&x, &[0.0, std::f64::consts::FRAC_PI_2]);
     assert_eq!(table.nrows(), 2);
 
@@ -502,8 +502,8 @@ fn eval_table_with_trig() {
 
 #[test]
 fn eval_table_to_markdown() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]);
     let md = table.to_markdown();
 
@@ -526,8 +526,8 @@ fn eval_table_to_markdown() {
 
 #[test]
 fn textplot_large_range() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // Test with a larger range to exercise the formatting
     let plot = x.sin().textplot(&x, -10.0, 10.0);
     assert!(!plot.is_empty());
@@ -541,8 +541,8 @@ fn textplot_large_range() {
 
 #[test]
 fn plot_data_respects_n_parameter() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     for n in [2, 10, 50, 200] {
         let data = x.sin().plot_data(&x, 0.0, 1.0, n);
         assert_eq!(

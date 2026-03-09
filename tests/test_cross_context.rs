@@ -219,11 +219,11 @@ fn same_context_operations_work() {
 
 #[test]
 fn shared_context_operations_work() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // All expressions from the same context should interoperate
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
-    let one = __ctx.int(1);
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
+    let one = ctx.int(1);
 
     let expr = x.powi(2) + &y + &one;
     let _ = expr.diff(&x);

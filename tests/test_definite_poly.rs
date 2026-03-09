@@ -67,16 +67,16 @@ fn definite_integral_same_bounds_is_zero() {
 
 #[test]
 fn degree_quadratic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x.powi(2) + &x + 1;
     assert_eq!(expr.degree(&x), Some(2));
 }
 
 #[test]
 fn degree_cubic() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = &x.powi(3) + 1;
     assert_eq!(expr.degree(&x), Some(3));
 }
@@ -90,15 +90,15 @@ fn degree_constant() {
 
 #[test]
 fn degree_linear() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_eq!((&x + 1).degree(&x), Some(1));
 }
 
 #[test]
 fn degree_non_polynomial() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert_eq!(x.sin().degree(&x), None);
 }
 
@@ -145,7 +145,7 @@ fn coeffs_constant() {
 
 #[test]
 fn coeffs_non_polynomial() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     assert!(x.sin().coeffs(&x).is_none());
 }

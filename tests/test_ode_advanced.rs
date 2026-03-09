@@ -26,8 +26,8 @@ fn verify_first_order(
     sample_x_num: i64,
     sample_x_den: i64,
 ) {
-    let __ctx = ode_expr.context();
-    let one = __ctx.int(1);
+    let ctx = ode_expr.context();
+    let one = ctx.int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -37,7 +37,7 @@ fn verify_first_order(
     let dy_formal = y.formal_diff(x);
     let residual = ode_expr.subs(&dy_formal, &sol_prime).subs(y, &concrete_sol);
 
-    let sample_val = __ctx.rational(sample_x_num, sample_x_den);
+    let sample_val = ctx.rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at
@@ -61,8 +61,8 @@ fn verify_second_order(
     sample_x_num: i64,
     sample_x_den: i64,
 ) {
-    let __ctx = ode_expr.context();
-    let one = __ctx.int(1);
+    let ctx = ode_expr.context();
+    let one = ctx.int(1);
     let mut concrete_sol = solution.clone();
     for c in constants {
         concrete_sol = concrete_sol.subs(c, &one);
@@ -79,7 +79,7 @@ fn verify_second_order(
         .subs(&dy_formal, &sol_prime)
         .subs(y, &concrete_sol);
 
-    let sample_val = __ctx.rational(sample_x_num, sample_x_den);
+    let sample_val = ctx.rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
     let val = residual_at
@@ -98,21 +98,21 @@ fn verify_second_order(
 
 #[test]
 fn exact_2xy_plus_3_and_xsq_plus_4y() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // (2xy + 3) + (x² + 4y)·y' = 0
     // M = 2xy + 3, N = x² + 4y
     // ∂M/∂y = 2x, ∂N/∂x = 2x — exact!
     // F = ∫M dx = x²y + 3x + g(y)
     // g'(y) = N − ∂(x²y+3x)/∂y = (x²+4y) − x² = 4y → g(y) = 2y²
     // Solution: x²y + 3x + 2y² = C1
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
 
     // Build: 2*x*y + 3 + (x^2 + 4*y)*y' = 0
-    let two = __ctx.int(2);
-    let three = __ctx.int(3);
-    let four = __ctx.int(4);
+    let two = ctx.int(2);
+    let three = ctx.int(3);
+    let four = ctx.int(4);
     let m = &(&two * &x * &y) + &three; // 2xy + 3
     let n = &x.powi(2) + &(&four * &y); // x² + 4y
     let ode = &m + &(&n * &dy);
@@ -130,14 +130,14 @@ fn exact_2xy_plus_3_and_xsq_plus_4y() {
 
 #[test]
 fn exact_classify() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Same ODE — check classification
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
-    let two = __ctx.int(2);
-    let three = __ctx.int(3);
-    let four = __ctx.int(4);
+    let two = ctx.int(2);
+    let three = ctx.int(3);
+    let four = ctx.int(4);
     let m = &(&two * &x * &y) + &three;
     let n = &x.powi(2) + &(&four * &y);
     let ode = &m + &(&n * &dy);
@@ -152,11 +152,11 @@ fn exact_classify() {
 
 #[test]
 fn exact_simple_ydx_xdy() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y + x·y' = 0  →  M = y, N = x  →  ∂M/∂y = 1, ∂N/∂x = 1 — exact
     // F = xy, solution: xy = C1
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &y + &(&x * &dy); // y + x·y' = 0
 
@@ -177,12 +177,12 @@ fn exact_simple_ydx_xdy() {
 
 #[test]
 fn bernoulli_y_prime_plus_y_over_x_eq_y_squared() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' + y/x = y²  →  y' + (1/x)·y − y² = 0
     // This is Bernoulli with P(x) = 1/x, Q(x) = 1, n = 2
     // Using v = y^(1−2) = y^(−1) = 1/y → v' − (1/x)·v = −1
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
 
     // y' + y * x^(-1) - y^2 = 0
@@ -207,10 +207,10 @@ fn bernoulli_y_prime_plus_y_over_x_eq_y_squared() {
 
 #[test]
 fn bernoulli_classify() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' + y/x − y² = 0 should classify as Bernoulli
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let y_over_x = &y / &x;
     let y_sq = y.powi(2);
@@ -226,14 +226,14 @@ fn bernoulli_classify() {
 
 #[test]
 fn bernoulli_y_prime_minus_y_eq_neg_y_cubed_exp() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' − y = −y³·exp(−2x)  →  y' − y + y³·exp(−2x) = 0
     // Bernoulli with P(x) = −1, Q(x) = −exp(−2x), n = 3
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
 
-    let neg_two_x = &__ctx.int(-2) * &x;
+    let neg_two_x = &ctx.int(-2) * &x;
     let exp_neg2x = neg_two_x.exp();
     let y_cubed = y.powi(3);
     // y' - y + y³·exp(-2x) = 0
@@ -253,11 +253,11 @@ fn bernoulli_y_prime_minus_y_eq_neg_y_cubed_exp() {
 
 #[test]
 fn bernoulli_simple_n2_constant_coefficients() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' + y - y² = 0 (P=1, Q=1, n=2)
     // v = 1/y, v' - v = -1
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let y_sq = y.powi(2);
     let ode = &(&dy + &y) - &y_sq;
@@ -275,7 +275,7 @@ fn bernoulli_simple_n2_constant_coefficients() {
     );
 
     // Numerically verify the Bernoulli solution
-    let c1 = __ctx.symbol("C1");
+    let c1 = ctx.symbol("C1");
     verify_first_order(&ode, &sol, &[c1], &y, &x, 1, 2);
 }
 
@@ -285,18 +285,18 @@ fn bernoulli_simple_n2_constant_coefficients() {
 
 #[test]
 fn euler_cauchy_distinct_real_roots() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x²y'' − 2y = 0
     // Characteristic: a=1, b=0, c=−2
     //   r(r−1) − 2 = 0  →  r² − r − 2 = 0  →  (r−2)(r+1) = 0  →  r = 2, −1
     // Solution: y = C1·x² + C2·x^(−1)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
 
     let x_sq = x.powi(2);
-    let two = __ctx.int(2);
+    let two = ctx.int(2);
     // x²·y'' − 2·y = 0
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
@@ -311,21 +311,21 @@ fn euler_cauchy_distinct_real_roots() {
     assert!(s.contains("C2"), "should have C2: {s}");
 
     // Verify numerically at x = 2
-    let c1 = __ctx.symbol("C1");
-    let c2 = __ctx.symbol("C2");
+    let c1 = ctx.symbol("C1");
+    let c2 = ctx.symbol("C2");
     verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 2, 1);
 }
 
 #[test]
 fn euler_cauchy_classify() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x²y'' − 2y = 0 should classify as EulerCauchy
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
-    let two = __ctx.int(2);
+    let two = ctx.int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
     let ode_type = ode.classify_ode(&y, &x);
@@ -338,13 +338,13 @@ fn euler_cauchy_classify() {
 
 #[test]
 fn euler_cauchy_complex_roots() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x²y'' + xy' + y = 0
     // Characteristic: a=1, b=1, c=1
     //   r(r−1) + r + 1 = 0  →  r² + 1 = 0  →  r = ±i
     // Solution: y = C1·cos(ln(x)) + C2·sin(ln(x))
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
 
@@ -369,20 +369,20 @@ fn euler_cauchy_complex_roots() {
     assert!(s.contains("ln"), "should involve ln(x): {s}");
 
     // Verify numerically at x = 3/2 (must be positive for ln)
-    let c1 = __ctx.symbol("C1");
-    let c2 = __ctx.symbol("C2");
+    let c1 = ctx.symbol("C1");
+    let c2 = ctx.symbol("C2");
     verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 3, 2);
 }
 
 #[test]
 fn euler_cauchy_repeated_root() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x²y'' + xy' = 0
     // Characteristic: a=1, b=1, c=0
     //   r(r−1) + r = 0  →  r² = 0  →  r = 0 (double)
     // Solution: y = C1 + C2·ln(x)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
 
@@ -401,27 +401,27 @@ fn euler_cauchy_repeated_root() {
     assert!(s.contains("C2"), "should have C2: {s}");
     assert!(s.contains("ln"), "repeated root solution should contain ln(x): {s}");
 
-    let c1 = __ctx.symbol("C1");
-    let c2 = __ctx.symbol("C2");
+    let c1 = ctx.symbol("C1");
+    let c2 = ctx.symbol("C2");
     verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 2, 1);
 }
 
 #[test]
 fn euler_cauchy_with_coefficients() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // 2x²y'' + 3xy' − y = 0
     // Characteristic: a=2, b=3, c=−1
     //   2r(r−1) + 3r − 1 = 0  →  2r² + r − 1 = 0  →  (2r−1)(r+1) = 0
     //   r = 1/2, r = −1
     // Solution: y = C1·x^(1/2) + C2·x^(−1)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
 
     let x_sq = x.powi(2);
-    let two = __ctx.int(2);
-    let three = __ctx.int(3);
+    let two = ctx.int(2);
+    let three = ctx.int(3);
     // 2x²·y'' + 3x·y' − y = 0
     let ode = &(&(&two * &x_sq * &d2y) + &(&three * &x * &dy)) - &y;
 
@@ -436,8 +436,8 @@ fn euler_cauchy_with_coefficients() {
     assert!(s.contains("C2"), "should have C2: {s}");
 
     // Verify at x = 4 (nice for sqrt)
-    let c1 = __ctx.symbol("C1");
-    let c2 = __ctx.symbol("C2");
+    let c1 = ctx.symbol("C1");
+    let c2 = ctx.symbol("C2");
     verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 4, 1);
 }
 
@@ -447,13 +447,13 @@ fn euler_cauchy_with_coefficients() {
 
 #[test]
 fn variation_of_parameters_y_pp_plus_y_eq_tan_x() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y'' + y = tan(x)
     // Homogeneous: y₁ = cos(x), y₂ = sin(x)
     // W = cos·cos − sin·(−sin) = cos² + sin² = 1
     // Particular via VoP: y_p = −cos(x)·∫sin(x)tan(x)dx + sin(x)·∫cos(x)tan(x)dx
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
 
@@ -470,8 +470,8 @@ fn variation_of_parameters_y_pp_plus_y_eq_tan_x() {
         );
 
         // Verify numerically at a point where tan is well-behaved
-        let c1 = __ctx.symbol("C1");
-        let c2 = __ctx.symbol("C2");
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
         verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 1, 4);
     }
     // It's acceptable if the integration engine can't handle the VoP integrals
@@ -479,12 +479,12 @@ fn variation_of_parameters_y_pp_plus_y_eq_tan_x() {
 
 #[test]
 fn variation_of_parameters_y_pp_minus_y_eq_exp_x() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y'' − y = exp(x) — this is also solvable by undetermined coefficients
     // (resonance case), but let's check VoP handles it too.
     // If undetermined coefficients catches it first, that's fine.
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
 
@@ -501,8 +501,8 @@ fn variation_of_parameters_y_pp_minus_y_eq_exp_x() {
     assert!(s.contains("C2"), "should have C2: {s}");
 
     // Numerically verify the solution
-    let c1 = __ctx.symbol("C1");
-    let c2 = __ctx.symbol("C2");
+    let c1 = ctx.symbol("C1");
+    let c2 = ctx.symbol("C2");
     verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 1, 2);
 }
 
@@ -512,9 +512,9 @@ fn variation_of_parameters_y_pp_minus_y_eq_exp_x() {
 
 #[test]
 fn regression_simple_separable() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = expr!(diff(y, x) - x);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' = x should still work");
@@ -522,9 +522,9 @@ fn regression_simple_separable() {
 
 #[test]
 fn regression_first_order_linear_cc() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = expr!(diff(y, x) + 2 * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' + 2y = 0 should still work");
@@ -532,9 +532,9 @@ fn regression_first_order_linear_cc() {
 
 #[test]
 fn regression_second_order_cc_homogeneous() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y;
@@ -544,9 +544,9 @@ fn regression_second_order_cc_homogeneous() {
 
 #[test]
 fn regression_full_separable() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = expr!(diff(y, x) - x * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' = xy should still work");
@@ -554,9 +554,9 @@ fn regression_full_separable() {
 
 #[test]
 fn regression_variable_coeff_linear() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = expr!(diff(y, x) + 2 * x * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' + 2xy = 0 should still work");
@@ -568,14 +568,14 @@ fn regression_variable_coeff_linear() {
 
 #[test]
 fn check_ode_solution_euler_cauchy() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x²y'' − 2y = 0, solution y = C1·x² + C2·x^(−1)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
-    let two = __ctx.int(2);
+    let two = ctx.int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
     let sol = ode.solve_ode(&y, &x);
@@ -585,8 +585,8 @@ fn check_ode_solution_euler_cauchy() {
     // checkodesol may or may not simplify completely — it's a best-effort check
     if !verified {
         // Fall back to numerical verification
-        let c1 = __ctx.symbol("C1");
-        let c2 = __ctx.symbol("C2");
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
         verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 3, 1);
     }
 }
@@ -597,10 +597,10 @@ fn check_ode_solution_euler_cauchy() {
 
 #[test]
 fn non_euler_cauchy_not_misclassified() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y'' + y = 0 is NOT Euler-Cauchy (no x² on y'')
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y;
@@ -619,10 +619,10 @@ fn non_euler_cauchy_not_misclassified() {
 
 #[test]
 fn non_bernoulli_linear_not_misclassified() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' + y = 0 (linear, not Bernoulli since n=1 is excluded)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let ode = expr!(diff(y, x) + y);
     let ode_type = ode.classify_ode(&y, &x);
     assert_ne!(
@@ -634,19 +634,19 @@ fn non_bernoulli_linear_not_misclassified() {
 
 #[test]
 fn euler_cauchy_distinct_real_verify_at_multiple_points() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x²y'' − 2y = 0 → y = C1·x² + C2/x
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
-    let two = __ctx.int(2);
+    let two = ctx.int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
     let sol = ode.try_solve_ode(&y, &x).expect("should solve Euler-Cauchy distinct real");
-    let c1 = __ctx.symbol("C1");
-    let c2 = __ctx.symbol("C2");
+    let c1 = ctx.symbol("C1");
+    let c2 = ctx.symbol("C2");
 
     // Verify at multiple positive x values
     for &(num, den) in &[(1, 2), (1, 1), (3, 1), (5, 1)] {
@@ -656,18 +656,18 @@ fn euler_cauchy_distinct_real_verify_at_multiple_points() {
 
 #[test]
 fn euler_cauchy_complex_verify_at_multiple_points() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // x²y'' + xy' + y = 0 → y = C1·cos(ln x) + C2·sin(ln x)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
     let ode = &(&(&x_sq * &d2y) + &(&x * &dy)) + &y;
 
     let sol = ode.try_solve_ode(&y, &x).expect("should solve Euler-Cauchy complex");
-    let c1 = __ctx.symbol("C1");
-    let c2 = __ctx.symbol("C2");
+    let c1 = ctx.symbol("C1");
+    let c2 = ctx.symbol("C2");
 
     for &(num, den) in &[(1, 2), (1, 1), (2, 1), (3, 1)] {
         verify_second_order(&ode, &sol, &[c1.clone(), c2.clone()], &y, &x, num, den);
@@ -680,12 +680,12 @@ fn euler_cauchy_complex_verify_at_multiple_points() {
 
 #[test]
 fn bernoulli_n2_with_constant_p() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // y' + 2y − y² = 0 (P=2, Q=1, n=2)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
-    let two = __ctx.int(2);
+    let two = ctx.int(2);
     let y_sq = y.powi(2);
     let ode = &(&dy + &(&two * &y)) - &y_sq;
 
@@ -708,18 +708,18 @@ fn bernoulli_n2_with_constant_p() {
 
 #[test]
 fn euler_cauchy_4x2_y_pp_minus_4x_yp_plus_3y() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // 4x²y'' − 4xy' + 3y = 0
     // Characteristic: 4r(r−1) − 4r + 3 = 0 → 4r² − 8r + 3 = 0
     // r = (8 ± √(64−48))/8 = (8 ± 4)/8 → r = 3/2, 1/2
     // Solution: y = C1·x^(3/2) + C2·x^(1/2)
-    let x = __ctx.symbol("x");
-    let y = __ctx.symbol("y");
+    let x = ctx.symbol("x");
+    let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let x_sq = x.powi(2);
-    let four = __ctx.int(4);
-    let three = __ctx.int(3);
+    let four = ctx.int(4);
+    let three = ctx.int(3);
     // 4x²y'' − 4xy' + 3y = 0
     let ode = &(&(&four * &x_sq * &d2y) - &(&four * &x * &dy)) + &(&three * &y);
 
@@ -733,7 +733,7 @@ fn euler_cauchy_4x2_y_pp_minus_4x_yp_plus_3y() {
     assert!(s.contains("C1") && s.contains("C2"), "should have two constants: {s}");
 
     // Verify at x = 4
-    let c1 = __ctx.symbol("C1");
-    let c2 = __ctx.symbol("C2");
+    let c1 = ctx.symbol("C1");
+    let c2 = ctx.symbol("C2");
     verify_second_order(&ode, &sol, &[c1, c2], &y, &x, 4, 1);
 }

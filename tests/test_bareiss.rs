@@ -10,7 +10,7 @@ use symplex::prelude::*;
 
 #[test]
 fn bareiss_4x4_integer() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Non-singular 4×4 with known determinant.
     // Matrix:
     //   1  2  3  4
@@ -73,8 +73,8 @@ fn bareiss_4x4_integer() {
 
 #[test]
 fn bareiss_5x5_identity() {
-    let __ctx = Context::new();
-    let m = Matrix::identity(&__ctx, 5);
+    let ctx = Context::new();
+    let m = Matrix::identity(&ctx, 5);
     let d = m.det().unwrap();
     assert_eq!(format!("{d}"), "1");
 }
@@ -83,8 +83,8 @@ fn bareiss_5x5_identity() {
 
 #[test]
 fn bareiss_6x6_identity() {
-    let __ctx = Context::new();
-    let m = Matrix::identity(&__ctx, 6);
+    let ctx = Context::new();
+    let m = Matrix::identity(&ctx, 6);
     let d = m.det().unwrap();
     assert_eq!(format!("{d}"), "1");
 }
@@ -93,7 +93,7 @@ fn bareiss_6x6_identity() {
 
 #[test]
 fn bareiss_singular() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = matrix![[1, 2, 3, 4], [2, 4, 6, 8], [1, 1, 1, 1], [0, 0, 0, 1]];
     let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
@@ -107,8 +107,8 @@ fn bareiss_singular() {
 
 #[test]
 fn bareiss_symbolic_2x2_matches_direct() {
-    let __ctx = Context::new();
-    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b, c, d);
+    let ctx = Context::new();
+    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; a, b, c, d);
     let m = matrix![[a, b], [c, d]];
     let det = m.det().unwrap();
     // Should be a*d - b*c
@@ -125,7 +125,7 @@ fn bareiss_symbolic_2x2_matches_direct() {
 
 #[test]
 fn bareiss_4x4_known_det() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Upper triangular → det = product of diagonal = 1*2*3*4 = 24
     let m = matrix![[1, 5, 9, 13], [0, 2, 7, 11], [0, 0, 3, 8], [0, 0, 0, 4]];
     let d = m.det().unwrap();
@@ -140,7 +140,7 @@ fn bareiss_4x4_known_det() {
 
 #[test]
 fn bareiss_4x4_needs_pivot_swap() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // First column starts with 0 → requires row swap
     let m = matrix![[0, 1, 2, 3], [1, 0, 0, 0], [0, 2, 1, 0], [0, 0, 3, 1]];
     let d = m.det().unwrap();
@@ -176,12 +176,12 @@ fn bareiss_4x4_needs_pivot_swap() {
 
 #[test]
 fn bareiss_matches_for_seeded_4x4() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     for seed in 0u32..8 {
         let data: Vec<Vec<Ex>> = (0..4)
             .map(|i| {
                 (0..4)
-                    .map(|j| __ctx.int(((i * 4 + j + seed * 7 + 1) % 11) as i64 - 5))
+                    .map(|j| ctx.int(((i * 4 + j + seed * 7 + 1) % 11) as i64 - 5))
                     .collect()
             })
             .collect();
@@ -200,13 +200,13 @@ fn bareiss_matches_for_seeded_4x4() {
 
 #[test]
 fn bareiss_5x5_diagonal() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // det of diag(2, 3, 4, 5, 6) = 720
     let m = Matrix::from_fn(5, 5, |i, j| {
         if i == j {
-            __ctx.int(i as i64 + 2)
+            ctx.int(i as i64 + 2)
         } else {
-            __ctx.int(0)
+            ctx.int(0)
         }
     });
     let d = m.det().unwrap();
@@ -221,7 +221,7 @@ fn bareiss_5x5_diagonal() {
 
 #[test]
 fn bareiss_4x4_negative_det() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     // Permutation matrix for (0→1, 1→0, 2→3, 3→2) has det = +1
     // Single swap: (0→1, 1→0, 2→2, 3→3) has det = -1
     let m = matrix![[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
@@ -237,7 +237,7 @@ fn bareiss_4x4_negative_det() {
 
 #[test]
 fn bareiss_4x4_all_negative() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = matrix![
         [-1, -2, -3, -4],
         [-5, -6, -7, -8],
@@ -258,7 +258,7 @@ fn bareiss_4x4_all_negative() {
 
 #[test]
 fn bareiss_det_equals_det_transpose() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let m = matrix![[2, 1, 0, 3], [1, 0, 2, 1], [0, 3, 1, 2], [1, 2, 3, 0]];
     let d = m.det().unwrap().eval_f64().unwrap();
     let dt = m.transpose().det().unwrap().eval_f64().unwrap();

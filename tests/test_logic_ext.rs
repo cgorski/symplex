@@ -15,14 +15,14 @@ fn logic_ctx() -> Context {
 
 /// A boolean expression that evaluates to True.
 fn bool_true() -> BoolEx {
-    let __ctx = logic_ctx();
-    __ctx.int(1).gt(&__ctx.int(0))
+    let ctx = logic_ctx();
+    ctx.int(1).gt(&ctx.int(0))
 }
 
 /// A boolean expression that evaluates to False.
 fn bool_false() -> BoolEx {
-    let __ctx = logic_ctx();
-    __ctx.int(0).gt(&__ctx.int(1))
+    let ctx = logic_ctx();
+    ctx.int(0).gt(&ctx.int(1))
 }
 
 fn eval_str(b: &BoolEx) -> String {
@@ -50,9 +50,9 @@ fn xor_truth_table() {
 
 #[test]
 fn xor_is_commutative() {
-    let __ctx = Context::new();
-    let a = __ctx.int(5).gt(&__ctx.int(0)); // true
-    let b = __ctx.int(5).lt(&__ctx.int(0)); // false
+    let ctx = Context::new();
+    let a = ctx.int(5).gt(&ctx.int(0)); // true
+    let b = ctx.int(5).lt(&ctx.int(0)); // false
 
     assert_eq!(eval_str(&a.xor(&b)), eval_str(&b.xor(&a)));
 }

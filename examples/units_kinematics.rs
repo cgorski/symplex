@@ -22,8 +22,8 @@ fn main() {
     println!("── Free Fall ──");
 
     // Declare raw Ex variables for use inside expr!
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; g, t);
+    let ctx = Context::new();
+    symplex::syms!(ctx; g, t);
 
     // Typed variables for DiffWrt — the compiler tracks dimensions
     let t_var = Time::symbol("t");
@@ -48,8 +48,8 @@ fn main() {
 
     // Numerical evaluation: x at t=3s with g=9.81 m/s²
     let x_num = x_t.clone()
-        .subs(&g, &__ctx.rational(981, 100))
-        .subs(&t, &__ctx.int(3))
+        .subs(&g, &ctx.rational(981, 100))
+        .subs(&t, &ctx.int(3))
         .eval();
     println!("  x(t=3, g=9.81) = {} (≈44.145 m)", x_num);
 
@@ -71,8 +71,8 @@ fn main() {
     println!("\n── Projectile Motion ──");
 
     // Raw variables for expr!
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; v0, theta);
+    let ctx = Context::new();
+    symplex::syms!(ctx; v0, theta);
     // (g and t already declared above)
 
     // Horizontal position: x(t) = v₀·cos(θ)·t
@@ -98,22 +98,22 @@ fn main() {
 
     // Substitute v0=20 m/s, θ=π/4, g=9.81 m/s² and evaluate at several times
     println!("\n  Trajectory (v₀=20 m/s, θ=π/4, g=9.81 m/s²):");
-    let pi_over_4 = &__ctx.pi() / 4;
-    let g_val = __ctx.rational(981, 100);
+    let pi_over_4 = &ctx.pi() / 4;
+    let g_val = ctx.rational(981, 100);
 
     for t_val in [0, 1, 2, 3] {
         let x_val = x_proj.clone()
-            .subs(&v0, &__ctx.int(20))
+            .subs(&v0, &ctx.int(20))
             .subs(&theta, &pi_over_4)
             .subs(&g, &g_val)
-            .subs(&t, &__ctx.int(t_val))
+            .subs(&t, &ctx.int(t_val))
             .eval();
 
         let y_val = y_proj.clone()
-            .subs(&v0, &__ctx.int(20))
+            .subs(&v0, &ctx.int(20))
             .subs(&theta, &pi_over_4)
             .subs(&g, &g_val)
-            .subs(&t, &__ctx.int(t_val))
+            .subs(&t, &ctx.int(t_val))
             .eval();
 
         println!("    t={t_val}s: x = {}, y = {}", x_val, y_val);
@@ -121,10 +121,10 @@ fn main() {
 
     // Quick f64 check at t=1
     let y_f64 = y_proj
-        .subs(&v0, &__ctx.int(20))
+        .subs(&v0, &ctx.int(20))
         .subs(&theta, &pi_over_4)
         .subs(&g, &g_val)
-        .subs(&t, &__ctx.int(1))
+        .subs(&t, &ctx.int(1))
         .eval_f64()
         .unwrap();
     println!("    y(t=1) ≈ {:.4} m (f64)", y_f64);
@@ -152,8 +152,8 @@ fn main() {
     println!("  W = ∫F dx = {}", work);
 
     // Kinetic energy: KE = ½mv² using expr!
-    let __ctx = Context::new();
-    symplex::syms!(__ctx; m, v);
+    let ctx = Context::new();
+    symplex::syms!(ctx; m, v);
     let ke = Energy::from_ex(expr!(1/2 * m * v^2));
     println!("  KE = ½mv² = {}", ke);
 
@@ -169,16 +169,16 @@ fn main() {
 
     // Numerical: m=2kg moving at v=5m/s → KE = 25 J
     let ke_num = ke
-        .subs(&m, &__ctx.int(2))
-        .subs(&v, &__ctx.int(5))
+        .subs(&m, &ctx.int(2))
+        .subs(&v, &ctx.int(5))
         .eval();
     println!("\n  KE(m=2, v=5) = {} (should be 25 J)", ke_num);
 
     // Work = F·d = ma·d. With m=2, a=3, d=10 → W = 60 J
     let work_num = work
-        .subs(&mass, &__ctx.int(2))
-        .subs(&accel, &__ctx.int(3))
-        .subs(&x_var, &__ctx.int(10))
+        .subs(&mass, &ctx.int(2))
+        .subs(&accel, &ctx.int(3))
+        .subs(&x_var, &ctx.int(10))
         .eval();
     println!("  W(m=2, a=3, x=10) = {} (should be 60 J)", work_num);
 

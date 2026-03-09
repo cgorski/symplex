@@ -5,15 +5,15 @@
 //! expressions involving fractions compose properly.
 
 // ═══════════════════════════════════════════════════════════════════════════
-// expr!(1/2) should equal __ctx.rational(1, 2)
+// expr!(1/2) should equal ctx.rational(1, 2)
 // ═══════════════════════════════════════════════════════════════════════════
 
 use symplex::prelude::*;
 #[test]
 fn expr_half_equals_rational() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let half_macro = symplex::expr!(1 / 2);
-    let half_fn = __ctx.rational(1, 2);
+    let half_fn = ctx.rational(1, 2);
     assert_eq!(
         format!("{half_macro}"),
         format!("{half_fn}"),
@@ -27,14 +27,14 @@ fn expr_half_equals_rational() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// expr!(1/3) should equal __ctx.rational(1, 3)
+// expr!(1/3) should equal ctx.rational(1, 3)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn expr_third_equals_rational() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let third_macro = symplex::expr!(1 / 3);
-    let third_fn = __ctx.rational(1, 3);
+    let third_fn = ctx.rational(1, 3);
     assert_eq!(
         format!("{third_macro}"),
         format!("{third_fn}"),
@@ -48,8 +48,8 @@ fn expr_third_equals_rational() {
 
 #[test]
 fn expr_fraction_times_variable() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = symplex::expr!(3 / 4 * x);
     let s = format!("{expr}");
     // The result should represent (3/4)*x in some canonical form.
@@ -67,8 +67,8 @@ fn expr_fraction_times_variable() {
 
 #[test]
 fn expr_var_divided_by_int_is_division() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = symplex::expr!(x / 2);
     let s = format!("{expr}");
     // This should be x/2 or (1/2)*x — NOT rational(x, 2).
@@ -84,8 +84,8 @@ fn expr_var_divided_by_int_is_division() {
 
 #[test]
 fn expr_int_divided_by_var_is_division() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = symplex::expr!(1 / x);
     let s = format!("{expr}");
     // Should be 1/x or x^(-1) — NOT rational(1, x).
@@ -96,14 +96,14 @@ fn expr_int_divided_by_var_is_division() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// expr!(-1/2) should equal __ctx.rational(-1, 2) (not 0)
+// expr!(-1/2) should equal ctx.rational(-1, 2) (not 0)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn expr_neg_half_equals_rational() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let neg_half_macro = symplex::expr!(-1 / 2);
-    let neg_half_fn = __ctx.rational(-1, 2);
+    let neg_half_fn = ctx.rational(-1, 2);
     let s_macro = format!("{neg_half_macro}");
     let s_fn = format!("{neg_half_fn}");
     assert_eq!(
@@ -119,7 +119,7 @@ fn expr_neg_half_equals_rational() {
 
 #[test]
 fn expr_neg_half_is_negative() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let neg_half = symplex::expr!(-1 / 2);
     let s = format!("{neg_half}");
     // The display should be -1/2 or similar negative fraction.
@@ -135,7 +135,7 @@ fn expr_neg_half_is_negative() {
 
 #[test]
 fn expr_half_plus_third_equals_five_sixths() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let sum = symplex::expr!(1 / 2 + 1 / 3);
     let s = format!("{sum}");
     assert_eq!(
@@ -150,9 +150,9 @@ fn expr_half_plus_third_equals_five_sixths() {
 
 #[test]
 fn expr_neg_three_quarters() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let val = symplex::expr!(-3 / 4);
-    let expected = __ctx.rational(-3, 4);
+    let expected = ctx.rational(-3, 4);
     assert_eq!(
         format!("{val}"),
         format!("{expected}"),
@@ -166,8 +166,8 @@ fn expr_neg_three_quarters() {
 
 #[test]
 fn expr_fraction_in_addition() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = symplex::expr!(x + 1 / 2);
     let s = format!("{expr}");
     assert!(
@@ -175,7 +175,7 @@ fn expr_fraction_in_addition() {
         "expr!(x + 1/2) should contain x and 1/2: {s}"
     );
     // Substituting x = 1/2 should give 1.
-    let half = __ctx.rational(1, 2);
+    let half = ctx.rational(1, 2);
     let result = expr.subs(&x, &half);
     assert_eq!(
         format!("{result}"),
@@ -186,11 +186,11 @@ fn expr_fraction_in_addition() {
 
 #[test]
 fn expr_fraction_in_subtraction() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = symplex::expr!(x - 1 / 2);
     // Substituting x = 1/2 should give 0.
-    let half = __ctx.rational(1, 2);
+    let half = ctx.rational(1, 2);
     let result = expr.subs(&x, &half);
     assert_eq!(
         format!("{result}"),
@@ -205,7 +205,7 @@ fn expr_fraction_in_subtraction() {
 
 #[test]
 fn expr_auto_reduces_fraction() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let val = symplex::expr!(2 / 4);
     let s = format!("{val}");
     assert_eq!(s, "1/2", "expr!(2/4) should auto-reduce to 1/2, got {s}");
@@ -217,7 +217,7 @@ fn expr_auto_reduces_fraction() {
 
 #[test]
 fn expr_exact_integer_division() {
-    let __ctx = Context::new();
+    let ctx = Context::new();
     let val = symplex::expr!(6 / 3);
     let s = format!("{val}");
     assert_eq!(s, "2", "expr!(6/3) should be exactly 2, got {s}");

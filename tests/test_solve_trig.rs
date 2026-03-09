@@ -21,9 +21,9 @@ fn approx_zero(val: f64, tol: f64) -> bool {
 
 #[test]
 fn solve_sin_x_eq_half_via_set() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let half = __ctx.rational(1, 2);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let half = ctx.rational(1, 2);
     let expr = &x.sin() - &half;
 
     let set = expr.solve_as_set(&x);
@@ -43,9 +43,9 @@ fn solve_sin_x_eq_half_via_set() {
 
 #[test]
 fn solve_sin_x_eq_half_verify_numerically() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let half = __ctx.rational(1, 2);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let half = ctx.rational(1, 2);
     let sin_x_minus_half = &x.sin() - &half;
 
     let set = sin_x_minus_half.solve_as_set(&x);
@@ -53,7 +53,7 @@ fn solve_sin_x_eq_half_verify_numerically() {
 
     // Extract approximate values by evaluating asin(1/2) ≈ 0.5236 and
     // π − asin(1/2) ≈ 2.6180.  We verify by substitution.
-    let asin_half = x.sin().subs(&x, &__ctx.rational(1, 2).asin());
+    let asin_half = x.sin().subs(&x, &ctx.rational(1, 2).asin());
     let val = eval(&asin_half);
     if let Some(v) = val {
         assert!(
@@ -77,8 +77,8 @@ fn solve_sin_x_eq_half_verify_numerically() {
 
 #[test]
 fn solve_cos_x_eq_zero() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.cos();
 
     let set = expr.solve_as_set(&x);
@@ -96,11 +96,11 @@ fn solve_cos_x_eq_zero() {
 
 #[test]
 fn solve_cos_x_eq_zero_verify() {
-    let __ctx = Context::new();
-    let _x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let _x = ctx.symbol("x");
     // cos(π/2) should be 0
-    let pi = __ctx.pi();
-    let half = __ctx.rational(1, 2);
+    let pi = ctx.pi();
+    let half = ctx.rational(1, 2);
     let pi_half = &pi * &half;
     let val = eval(&pi_half.cos());
     if let Some(v) = val {
@@ -117,9 +117,9 @@ fn solve_cos_x_eq_zero_verify() {
 
 #[test]
 fn solve_tan_x_eq_one() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let one = __ctx.int(1);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let one = ctx.int(1);
     let expr = &x.tan() - &one;
 
     let set = expr.solve_as_set(&x);
@@ -137,9 +137,9 @@ fn solve_tan_x_eq_one() {
 
 #[test]
 fn solve_tan_x_eq_one_verify() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let one = __ctx.int(1);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let one = ctx.int(1);
     let tan_minus_one = &x.tan() - &one;
 
     // atan(1) ≈ π/4 ≈ 0.7854
@@ -159,8 +159,8 @@ fn solve_tan_x_eq_one_verify() {
 
 #[test]
 fn solve_sin_x_eq_zero() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let expr = x.sin();
 
     let set = expr.solve_as_set(&x);
@@ -187,10 +187,10 @@ fn solve_sin_x_eq_zero_verify() {
 
 #[test]
 fn solve_sin_2x_eq_one() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let two = __ctx.int(2);
-    let one = __ctx.int(1);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let two = ctx.int(2);
+    let one = ctx.int(1);
     let sin_2x = (&x * &two).sin();
     let expr = &sin_2x - &one;
 
@@ -219,9 +219,9 @@ fn solve_sin_2x_eq_one_verify() {
 
 #[test]
 fn solve_sin_x_eq_two_empty() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let two = __ctx.int(2);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let two = ctx.int(2);
     let expr = &x.sin() - &two;
 
     let set = expr.solve_as_set(&x);
@@ -235,9 +235,9 @@ fn solve_sin_x_eq_two_empty() {
 
 #[test]
 fn solve_cos_x_eq_minus_two_empty() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let neg_two = __ctx.int(-2);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let neg_two = ctx.int(-2);
     let expr = &x.cos() - &neg_two;
 
     let set = expr.solve_as_set(&x);
@@ -255,9 +255,9 @@ fn solve_cos_x_eq_minus_two_empty() {
 
 #[test]
 fn solve_exp_x_eq_one() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let one = __ctx.int(1);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let one = ctx.int(1);
     let expr = &x.exp() - &one;
 
     let set = expr.solve_as_set(&x);
@@ -276,13 +276,13 @@ fn solve_exp_x_eq_one() {
 
 #[test]
 fn solve_exp_x_eq_one_verify() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let one = __ctx.int(1);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let one = ctx.int(1);
     let expr = &x.exp() - &one;
 
     // Substitute x = 0: exp(0) - 1 = 0
-    let zero = __ctx.int(0);
+    let zero = ctx.int(0);
     let substituted = expr.subs(&x, &zero);
     if let Some(v) = eval(&substituted) {
         assert!(
@@ -298,9 +298,9 @@ fn solve_exp_x_eq_one_verify() {
 
 #[test]
 fn solve_exp_x_eq_five() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let five = __ctx.int(5);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let five = ctx.int(5);
     let expr = &x.exp() - &five;
 
     let set = expr.solve_as_set(&x);
@@ -332,9 +332,9 @@ fn solve_exp_x_eq_five_verify() {
 
 #[test]
 fn solve_sin_x_eq_one_boundary() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let one = __ctx.int(1);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let one = ctx.int(1);
     let expr = &x.sin() - &one;
 
     let set = expr.solve_as_set(&x);
@@ -353,9 +353,9 @@ fn solve_sin_x_eq_one_boundary() {
 
 #[test]
 fn solve_cos_x_eq_one() {
-    let __ctx = Context::new();
-    let x = __ctx.symbol("x");
-    let one = __ctx.int(1);
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let one = ctx.int(1);
     let expr = &x.cos() - &one;
 
     let set = expr.solve_as_set(&x);
