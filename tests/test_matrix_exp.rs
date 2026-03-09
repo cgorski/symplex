@@ -1,6 +1,7 @@
 //! Integration tests for matrix exponential, Kronecker product,
 //! and zero-order hold discretization.
 
+use symplex::prelude::*;
 mod common;
 
 use symplex::control::StateSpace;
@@ -13,9 +14,10 @@ use symplex::matrix::Matrix;
 #[test]
 fn matrix_exp_zero() {
     // exp(0) = I
-    let zero = Matrix::zeros(3, 3);
+    let ctx = Context::new();
+    let zero = Matrix::zeros(&ctx, 3, 3);
     let result = zero.exp_series(10).unwrap();
-    let ident = Matrix::identity(3);
+    let ident = Matrix::identity(&ctx, 3);
     for i in 0..3 {
         for j in 0..3 {
             let val = result.get(i, j).eval_f64().unwrap();
@@ -30,11 +32,12 @@ fn matrix_exp_zero() {
 
 #[test]
 fn matrix_exp_identity_scaled() {
+    let __ctx = Context::new();
     // exp(t·I) ≈ eᵗ·I for t = 0.1
     let t_val = 0.1_f64;
-    let t = symplex::default_context().rational(1, 10); // exact 1/10
+    let t = __ctx.rational(1, 10); // exact 1/10
     let n = 3;
-    let ti = Matrix::identity(n).scale(&t);
+    let ti = Matrix::identity(&__ctx, n).scale(&t);
     let result = ti.exp_series(15).unwrap();
 
     let expected_diag = t_val.exp(); // e^0.1 ≈ 1.10517...
@@ -58,10 +61,11 @@ fn matrix_exp_identity_scaled() {
 
 #[test]
 fn matrix_exp_nilpotent() {
+    let __ctx = Context::new();
     // N = [[0,1],[0,0]], N² = 0, so exp(N) = I + N (exact for order ≥ 2)
     let n = Matrix::new(vec![
-        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
-        vec![symplex::default_context().int(0), symplex::default_context().int(0)],
+        vec![__ctx.int(0), __ctx.int(1)],
+        vec![__ctx.int(0), __ctx.int(0)],
     ]).unwrap();
     let result = n.exp_series(2).unwrap();
 
@@ -83,13 +87,14 @@ fn matrix_exp_nilpotent() {
 
 #[test]
 fn matrix_exp_diagonal() {
+    let __ctx = Context::new();
     // exp(diag(a, b)) = diag(eᵃ, eᵇ)
     // Use a = 1/2, b = -1/3
     let a_val = 0.5_f64;
     let b_val: f64 = -1.0 / 3.0;
     let m = Matrix::new(vec![
-        vec![symplex::default_context().rational(1, 2), symplex::default_context().int(0)],
-        vec![symplex::default_context().int(0), symplex::default_context().rational(-1, 3)],
+        vec![__ctx.rational(1, 2), __ctx.int(0)],
+        vec![__ctx.int(0), __ctx.rational(-1, 3)],
     ]).unwrap();
     let result = m.exp_series(15).unwrap();
 
@@ -120,10 +125,11 @@ fn matrix_exp_diagonal() {
 
 #[test]
 fn matrix_exp_2x2_numerical() {
+    let __ctx = Context::new();
     // exp([[0,1],[0,0]]) = [[1,1],[0,1]] (nilpotent, exact)
     let m = Matrix::new(vec![
-        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
-        vec![symplex::default_context().int(0), symplex::default_context().int(0)],
+        vec![__ctx.int(0), __ctx.int(1)],
+        vec![__ctx.int(0), __ctx.int(0)],
     ]).unwrap();
     let result = m.exp_series(10).unwrap();
 
@@ -140,12 +146,13 @@ fn matrix_exp_2x2_numerical() {
 
 #[test]
 fn matrix_exp_series_converges() {
+    let __ctx = Context::new();
     // Compare order 5 vs order 15 on a specific matrix.
     // Higher order should be closer to the true value.
     // Use M = [[0.1, 0.2],[0.3, 0.1]]
     let m = Matrix::new(vec![
-        vec![symplex::default_context().rational(1, 10), symplex::default_context().rational(1, 5)],
-        vec![symplex::default_context().rational(3, 10), symplex::default_context().rational(1, 10)],
+        vec![__ctx.rational(1, 10), __ctx.rational(1, 5)],
+        vec![__ctx.rational(3, 10), __ctx.rational(1, 10)],
     ]).unwrap();
 
     let low = m.exp_series(5).unwrap();
@@ -176,9 +183,10 @@ fn matrix_exp_series_converges() {
 
 #[test]
 fn kronecker_dimensions() {
+    let __ctx = Context::new();
     // (2×3) ⊗ (4×5) → (8×15)
-    let a = Matrix::from_fn(2, 3, |_i, _j| symplex::default_context().int(1));
-    let b = Matrix::from_fn(4, 5, |_i, _j| symplex::default_context().int(1));
+    let a = Matrix::from_fn(2, 3, |_i, _j| __ctx.int(1));
+    let b = Matrix::from_fn(4, 5, |_i, _j| __ctx.int(1));
     let c = a.kronecker(&b);
     assert_eq!(c.nrows(), 8);
     assert_eq!(c.ncols(), 15);
@@ -186,13 +194,14 @@ fn kronecker_dimensions() {
 
 #[test]
 fn kronecker_identity() {
+    let __ctx = Context::new();
     // A ⊗ I₂ should produce a block-diagonal-like structure
     // For A = [[a, b],[c, d]], A ⊗ I₂ = [[a·I, b·I],[c·I, d·I]]
     let a = Matrix::new(vec![
-        vec![symplex::default_context().int(1), symplex::default_context().int(2)],
-        vec![symplex::default_context().int(3), symplex::default_context().int(4)],
+        vec![__ctx.int(1), __ctx.int(2)],
+        vec![__ctx.int(3), __ctx.int(4)],
     ]).unwrap();
-    let i2 = Matrix::identity(2);
+    let i2 = Matrix::identity(&__ctx, 2);
     let result = a.kronecker(&i2);
 
     assert_eq!(result.nrows(), 4);
@@ -218,11 +227,12 @@ fn kronecker_identity() {
 
 #[test]
 fn kronecker_scalar() {
+    let __ctx = Context::new();
     // (1×1 scalar s) ⊗ B = B scaled by s
-    let s = Matrix::new(vec![vec![symplex::default_context().int(3)]]).unwrap();
+    let s = Matrix::new(vec![vec![__ctx.int(3)]]).unwrap();
     let b = Matrix::new(vec![
-        vec![symplex::default_context().int(1), symplex::default_context().int(2)],
-        vec![symplex::default_context().int(4), symplex::default_context().int(5)],
+        vec![__ctx.int(1), __ctx.int(2)],
+        vec![__ctx.int(4), __ctx.int(5)],
     ]).unwrap();
     let result = s.kronecker(&b);
 
@@ -243,6 +253,7 @@ fn kronecker_scalar() {
 
 #[test]
 fn kronecker_known_values() {
+    let __ctx = Context::new();
     // [[1,2],[3,4]] ⊗ [[0,5],[6,7]]
     // = [[1*[[0,5],[6,7]], 2*[[0,5],[6,7]]],
     //    [3*[[0,5],[6,7]], 4*[[0,5],[6,7]]]]
@@ -251,12 +262,12 @@ fn kronecker_known_values() {
     //    [ 0, 15,  0, 20],
     //    [18, 21, 24, 28]]
     let a = Matrix::new(vec![
-        vec![symplex::default_context().int(1), symplex::default_context().int(2)],
-        vec![symplex::default_context().int(3), symplex::default_context().int(4)],
+        vec![__ctx.int(1), __ctx.int(2)],
+        vec![__ctx.int(3), __ctx.int(4)],
     ]).unwrap();
     let b = Matrix::new(vec![
-        vec![symplex::default_context().int(0), symplex::default_context().int(5)],
-        vec![symplex::default_context().int(6), symplex::default_context().int(7)],
+        vec![__ctx.int(0), __ctx.int(5)],
+        vec![__ctx.int(6), __ctx.int(7)],
     ]).unwrap();
     let result = a.kronecker(&b);
 
@@ -286,22 +297,23 @@ fn kronecker_known_values() {
 
 #[test]
 fn discretize_zoh_simple() {
+    let __ctx = Context::new();
     // Discretize a simple 2-state, 1-input system and check dimensions.
     let a = Matrix::new(vec![
-        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
-        vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
+        vec![__ctx.int(0), __ctx.int(1)],
+        vec![__ctx.int(-2), __ctx.int(-3)],
     ]).unwrap();
     let b = Matrix::new(vec![
-        vec![symplex::default_context().int(0)],
-        vec![symplex::default_context().int(1)],
+        vec![__ctx.int(0)],
+        vec![__ctx.int(1)],
     ]).unwrap();
     let c = Matrix::new(vec![
-        vec![symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![__ctx.int(1), __ctx.int(0)],
     ]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![__ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    let dt = symplex::default_context().rational(1, 10); // dt = 0.1
+    let dt = __ctx.rational(1, 10); // dt = 0.1
     let ss_d = ss.discretize_zoh(&dt, 10);
 
     assert_eq!(ss_d.num_states(), 2);
@@ -315,25 +327,26 @@ fn discretize_zoh_simple() {
 
 #[test]
 fn discretize_zoh_integrator() {
+    let __ctx = Context::new();
     // Double integrator: A = [[0,1],[0,0]], B = [[0],[1]]
     // This is nilpotent (A² = 0), so:
     //   eᴬᵈᵗ = I + A·dt = [[1, dt], [0, 1]]
     //   Bᵈ = (I·dt + A·dt²/2)·B = [[dt²/2], [dt]]
     let a = Matrix::new(vec![
-        vec![symplex::default_context().int(0), symplex::default_context().int(1)],
-        vec![symplex::default_context().int(0), symplex::default_context().int(0)],
+        vec![__ctx.int(0), __ctx.int(1)],
+        vec![__ctx.int(0), __ctx.int(0)],
     ]).unwrap();
     let b = Matrix::new(vec![
-        vec![symplex::default_context().int(0)],
-        vec![symplex::default_context().int(1)],
+        vec![__ctx.int(0)],
+        vec![__ctx.int(1)],
     ]).unwrap();
     let c = Matrix::new(vec![
-        vec![symplex::default_context().int(1), symplex::default_context().int(0)],
+        vec![__ctx.int(1), __ctx.int(0)],
     ]).unwrap();
-    let d = Matrix::new(vec![vec![symplex::default_context().int(0)]]).unwrap();
+    let d = Matrix::new(vec![vec![__ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    let dt = symplex::default_context().rational(1, 10); // dt = 0.1
+    let dt = __ctx.rational(1, 10); // dt = 0.1
     let ss_d = ss.discretize_zoh(&dt, 10);
 
     let dt_val = 0.1_f64;
@@ -382,8 +395,9 @@ fn discretize_zoh_integrator() {
 
 #[test]
 fn matrix_exp_1x1() {
+    let __ctx = Context::new();
     // exp([[a]]) = [[eᵃ]] — check with a = 1/2
-    let m = Matrix::new(vec![vec![symplex::default_context().rational(1, 2)]]).unwrap();
+    let m = Matrix::new(vec![vec![__ctx.rational(1, 2)]]).unwrap();
     let result = m.exp_series(15).unwrap();
     let val = result.get(0, 0).eval().eval_f64().unwrap();
     let expected = 0.5_f64.exp();
@@ -395,9 +409,10 @@ fn matrix_exp_1x1() {
 
 #[test]
 fn kronecker_1x1_times_1x1() {
+    let __ctx = Context::new();
     // (1×1) ⊗ (1×1) = (1×1) with product of entries
-    let a = Matrix::new(vec![vec![symplex::default_context().int(3)]]).unwrap();
-    let b = Matrix::new(vec![vec![symplex::default_context().int(7)]]).unwrap();
+    let a = Matrix::new(vec![vec![__ctx.int(3)]]).unwrap();
+    let b = Matrix::new(vec![vec![__ctx.int(7)]]).unwrap();
     let result = a.kronecker(&b);
     assert_eq!(result.nrows(), 1);
     assert_eq!(result.ncols(), 1);
@@ -410,10 +425,11 @@ fn kronecker_1x1_times_1x1() {
 
 #[test]
 fn matrix_exp_negative_entries() {
+    let __ctx = Context::new();
     // exp(diag(-1, -2)) = diag(e⁻¹, e⁻²)
     let m = Matrix::new(vec![
-        vec![symplex::default_context().int(-1), symplex::default_context().int(0)],
-        vec![symplex::default_context().int(0), symplex::default_context().int(-2)],
+        vec![__ctx.int(-1), __ctx.int(0)],
+        vec![__ctx.int(0), __ctx.int(-2)],
     ]).unwrap();
     let result = m.exp_series(20).unwrap();
     let val_00 = result.get(0, 0).eval().eval_f64().unwrap();

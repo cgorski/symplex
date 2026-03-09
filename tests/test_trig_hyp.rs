@@ -8,7 +8,8 @@ use symplex::prelude::*;
 
 #[test]
 fn display_inverse_trig() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert_eq!(format!("{}", x.asin()), "asin(x)");
     assert_eq!(format!("{}", x.acos()), "acos(x)");
     assert_eq!(format!("{}", x.atan()), "atan(x)");
@@ -16,7 +17,8 @@ fn display_inverse_trig() {
 
 #[test]
 fn display_hyperbolic() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert_eq!(format!("{}", x.sinh()), "sinh(x)");
     assert_eq!(format!("{}", x.cosh()), "cosh(x)");
     assert_eq!(format!("{}", x.tanh()), "tanh(x)");
@@ -28,7 +30,8 @@ fn display_hyperbolic() {
 
 #[test]
 fn diff_asin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let d = x.asin().diff(&x);
     let s = format!("{d}");
     assert!(s.contains("sqrt"), "d/dx(asin(x)) should contain sqrt: {s}");
@@ -36,7 +39,8 @@ fn diff_asin() {
 
 #[test]
 fn diff_acos() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let d = x.acos().diff(&x);
     let s = format!("{d}");
     assert!(s.contains("sqrt"), "d/dx(acos(x)) should contain sqrt: {s}");
@@ -44,7 +48,8 @@ fn diff_acos() {
 
 #[test]
 fn diff_atan() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let d = x.atan().diff(&x);
     let s = format!("{d}");
     // d/dx(atan(x)) = 1/(1+x^2)
@@ -53,21 +58,24 @@ fn diff_atan() {
 
 #[test]
 fn diff_sinh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let d = x.sinh().diff(&x);
     assert_eq!(format!("{d}"), "cosh(x)");
 }
 
 #[test]
 fn diff_cosh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let d = x.cosh().diff(&x);
     assert_eq!(format!("{d}"), "sinh(x)");
 }
 
 #[test]
 fn diff_tanh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let d = x.tanh().diff(&x);
     let s = format!("{d}");
     assert!(s.contains("tanh"), "d/dx(tanh(x)) should contain tanh: {s}");
@@ -134,14 +142,16 @@ fn eval_tanh_zero() {
 
 #[test]
 fn integrate_sinh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let result = x.sinh().integrate(&x);
     assert_eq!(format!("{result}"), "cosh(x)");
 }
 
 #[test]
 fn integrate_cosh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let result = x.cosh().integrate(&x);
     assert_eq!(format!("{result}"), "sinh(x)");
 }

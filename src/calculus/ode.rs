@@ -2951,11 +2951,13 @@ pub fn checkodesol(
 /// # Examples
 ///
 /// ```
+/// use symplex::prelude::*;
 /// use symplex::matrix::Matrix;
-/// let t = symplex::default_context().symbol("t");
+/// let ctx = Context::new();
+/// let t = ctx.symbol("t");
 /// let a = Matrix::new(vec![
-///     vec![symplex::default_context().int(0), symplex::default_context().int(1)],
-///     vec![symplex::default_context().int(-2), symplex::default_context().int(-3)],
+///     vec![ctx.int(0), ctx.int(1)],
+///     vec![ctx.int(-2), ctx.int(-3)],
 /// ]).unwrap();
 /// let sol = symplex::ode::solve_ode_system(&a, &t).unwrap();
 /// assert_eq!(sol.len(), 2);
@@ -3025,10 +3027,11 @@ pub fn solve_ode_system_nonhomogeneous(
 
     // Particular solution via variation of parameters:
     //   x_p = exp(At) · ∫ exp(-At) · b(t) dt
-    let neg_one = crate::default_context().int(-1);
+    let ctx = t_var.context();
+    let neg_one = ctx.int(-1);
     let neg_a = a_matrix.scale(&neg_one);
     let neg_at = neg_a.scale(t_var);
-    let lambda_sym = crate::default_context().symbol("__ode_lambda");
+    let lambda_sym = ctx.symbol("__ode_lambda");
     let exp_neg_at = neg_at.matrix_exp(&lambda_sym).unwrap_or_else(|_| {
         neg_at.exp_series(12).expect("exp_series: matrix must be square")
     });
@@ -3094,9 +3097,10 @@ fn ode_system_is_diagonal(m: &Matrix, n: usize) -> bool {
 
 /// Solve a diagonal system: each row decouples to `x_i' = a_{ii} x_i`.
 fn solve_ode_system_diagonal(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
+    let ctx = t_var.context();
     (0..n)
         .map(|i| {
-            let ci = crate::default_context().symbol(&format!("C{}", i + 1));
+            let ci = ctx.symbol(&format!("C{}", i + 1));
             let aii = a_matrix.get(i, i);
             if aii.is_zero_structural() {
                 ci // x_i' = 0 → x_i = constant
@@ -3110,13 +3114,14 @@ fn solve_ode_system_diagonal(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex>
 
 /// Fallback: approximate solution via truncated matrix exponential series.
 fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
+    let ctx = t_var.context();
     let m = a_matrix.scale(t_var);
-    let lambda_sym = crate::default_context().symbol("__ode_series_lambda");
+    let lambda_sym = ctx.symbol("__ode_series_lambda");
     let exp_m = m.matrix_exp(&lambda_sym).unwrap_or_else(|_| {
         m.exp_series(12).expect("exp_series: matrix must be square")
     });
     let constants: Vec<Ex> = (1..=n)
-        .map(|i| crate::default_context().symbol(&format!("C{i}")))
+        .map(|i| ctx.symbol(&format!("C{i}")))
         .collect();
     let c_vec = Matrix::col_vector(constants);
     let result = exp_m.matmul(&c_vec).expect("matmul: dimension mismatch");
@@ -3136,7 +3141,8 @@ fn solve_ode_system_eigen(
     t_var: &Ex,
     n: usize,
 ) -> Option<Vec<Ex>> {
-    let lambda_sym = crate::default_context().symbol("__ode_lambda");
+    let ctx = t_var.context();
+    let lambda_sym = ctx.symbol("__ode_lambda");
     let eigenvalues = match a_matrix.eigenvals(&lambda_sym) {
         Ok(ev) => ev,
         Err(_) => return None,
@@ -3147,12 +3153,12 @@ fn solve_ode_system_eigen(
         return None;
     }
 
-    let i_unit = crate::default_context().i_unit();
-    let zero_ex = crate::default_context().int(0);
+    let i_unit = ctx.i_unit();
+    let zero_ex = ctx.int(0);
     let neg_i = -&i_unit;
-    let identity = Matrix::identity(n);
+    let identity = Matrix::identity(&ctx, n);
 
-    let mut solution: Vec<Ex> = (0..n).map(|_| crate::default_context().int(0)).collect();
+    let mut solution: Vec<Ex> = (0..n).map(|_| ctx.int(0)).collect();
     let mut const_idx = 1_usize;
     let mut used = vec![false; eigenvalues.len()];
 
@@ -3212,12 +3218,12 @@ fn solve_ode_system_eigen(
             }
 
             // Two real-valued solution modes from the conjugate pair
-            let c_a = crate::default_context().symbol(&format!("C{const_idx}"));
-            let c_b = crate::default_context().symbol(&format!("C{}", const_idx + 1));
+            let c_a = ctx.symbol(&format!("C{const_idx}"));
+            let c_b = ctx.symbol(&format!("C{}", const_idx + 1));
             const_idx += 2;
 
             let exp_alpha_t = if alpha.is_zero_structural() {
-                crate::default_context().int(1)
+                ctx.int(1)
             } else {
                 (&alpha * t_var).exp()
             };
@@ -3249,11 +3255,11 @@ fn solve_ode_system_eigen(
                 return None;
             }
 
-            let ci = crate::default_context().symbol(&format!("C{const_idx}"));
+            let ci = ctx.symbol(&format!("C{const_idx}"));
             const_idx += 1;
 
             let exp_ev_t = if ev.is_zero_structural() {
-                crate::default_context().int(1)
+                ctx.int(1)
             } else {
                 (ev * t_var).exp()
             };

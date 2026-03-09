@@ -6,16 +6,19 @@
 // trigsimp
 // ═══════════════════════════════════════════════════════════════════════════
 
+use symplex::prelude::*;
 #[test]
 fn trigsimp_pythagorean() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = &x.sin().powi(2) + &x.cos().powi(2);
     assert_eq!(format!("{}", e.simplify_trig()), "1");
 }
 
 #[test]
 fn trigsimp_in_larger_expr() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = &x.sin().powi(2) + &x.cos().powi(2) + &x;
     let result = e.simplify_trig();
     let s = format!("{result}");
@@ -24,14 +27,16 @@ fn trigsimp_in_larger_expr() {
 
 #[test]
 fn trigsimp_pythagorean_plus_number() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = &x.sin().powi(2) + &x.cos().powi(2) + 5;
     assert_eq!(format!("{}", e.simplify_trig()), "6");
 }
 
 #[test]
 fn trigsimp_leaves_bare_trig_alone() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = x.sin();
     let result = e.simplify_trig();
     let s = format!("{result}");
@@ -40,13 +45,14 @@ fn trigsimp_leaves_bare_trig_alone() {
 
 #[test]
 fn trigsimp_preserves_numeric_value() {
+    let __ctx = Context::new();
     // After trigsimp the expression should evaluate to the same number.
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = &x.sin().powi(2) + &x.cos().powi(2) + &x;
-    let val_before = e.subs(&x, &symplex::default_context().rational(7, 10)).eval_f64().unwrap();
+    let val_before = e.subs(&x, &__ctx.rational(7, 10)).eval_f64().unwrap();
     let result = e.simplify_trig();
     let val_after = result
-        .subs(&x, &symplex::default_context().rational(7, 10))
+        .subs(&x, &__ctx.rational(7, 10))
         .eval_f64()
         .unwrap();
     assert!(
@@ -61,7 +67,8 @@ fn trigsimp_preserves_numeric_value() {
 
 #[test]
 fn powsimp_symbolic_exponents() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, a, b);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x, a, b);
     // x^a * x^b should become x^(a+b)
     let e = &x.pow(&a) * &x.pow(&b);
     let result = e.simplify_powers();
@@ -75,7 +82,8 @@ fn powsimp_symbolic_exponents() {
 
 #[test]
 fn powsimp_three_factors() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, a, b, c);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x, a, b, c);
     let e = &(&x.pow(&a) * &x.pow(&b)) * &x.pow(&c);
     let result = e.simplify_powers();
     let s = format!("{result}");
@@ -92,7 +100,8 @@ fn powsimp_three_factors() {
 
 #[test]
 fn powsimp_different_bases_untouched() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y, a, b);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x, y, a, b);
     let e = &x.pow(&a) * &y.pow(&b);
     let result = e.simplify_powers();
     let s = format!("{result}");
@@ -105,7 +114,8 @@ fn powsimp_different_bases_untouched() {
 
 #[test]
 fn powsimp_atom_unchanged() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let result = x.simplify_powers();
     assert_eq!(format!("{result}"), "x");
 }
@@ -116,7 +126,8 @@ fn powsimp_atom_unchanged() {
 
 #[test]
 fn rewrite_sin_as_exp() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = x.sin();
     let result = e.rewrite_as_exp();
     let s = format!("{result}");
@@ -129,7 +140,8 @@ fn rewrite_sin_as_exp() {
 
 #[test]
 fn rewrite_cos_as_exp() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = x.cos();
     let result = e.rewrite_as_exp();
     let s = format!("{result}");
@@ -141,9 +153,10 @@ fn rewrite_cos_as_exp() {
 
 #[test]
 fn rewrite_as_exp_preserves_value() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = x.sin();
-    let val = symplex::default_context().rational(7, 10);
+    let val = __ctx.rational(7, 10);
     let orig_f = e.subs(&x, &val).eval_f64().unwrap();
     let rewritten = e.rewrite_as_exp();
     let rw_f = rewritten.subs(&x, &val).eval_f64();
@@ -174,8 +187,9 @@ fn rewrite_as_exp_preserves_value() {
 
 #[test]
 fn rewrite_exp_ix_as_trig() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
-    let i = symplex::default_context().i_unit();
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let i = __ctx.i_unit();
     let expr = (&i * &x).exp();
     let result = expr.rewrite_as_trig();
     let s = format!("{result}");
@@ -188,14 +202,16 @@ fn rewrite_exp_ix_as_trig() {
 
 #[test]
 fn rewrite_as_trig_atom_unchanged() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let result = x.rewrite_as_trig();
     assert_eq!(format!("{result}"), "x");
 }
 
 #[test]
 fn rewrite_as_exp_atom_unchanged() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let result = x.rewrite_as_exp();
     assert_eq!(format!("{result}"), "x");
 }
@@ -206,13 +222,14 @@ fn rewrite_as_exp_atom_unchanged() {
 
 #[test]
 fn rewrite_roundtrip_numerical() {
+    let __ctx = Context::new();
     // sin(x) → exp form → trig form → should be numerically equivalent
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = x.sin();
     let as_exp = e.rewrite_as_exp();
     let back = as_exp.rewrite_as_trig().eval().simplify();
     // Compare numerically at x = 0.7
-    let val = symplex::default_context().rational(7, 10);
+    let val = __ctx.rational(7, 10);
     let orig_f = e.subs(&x, &val).eval_f64().unwrap();
 
     // The roundtrip may produce complex intermediates, so try complex eval

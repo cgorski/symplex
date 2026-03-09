@@ -29,50 +29,58 @@ fn check_contains(expr: &Ex, substrings: &[&str], msg: &str) {
 
 #[test]
 fn diff_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.diff(&x), "1");
 }
 
 #[test]
 fn diff_x2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).diff(&x), "2*x");
 }
 
 #[test]
 fn diff_x3() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(3).diff(&x), "3*x^2");
 }
 
 #[test]
 fn diff_x4() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(4).diff(&x), "4*x^3");
 }
 
 #[test]
 fn diff_x5() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(5).diff(&x), "5*x^4");
 }
 
 #[test]
 fn diff_const_7() {
-    let x = symplex::default_context().symbol("x");
-    check(&symplex::default_context().int(7).diff(&x), "0");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    check(&__ctx.int(7).diff(&x), "0");
 }
 
 #[test]
 fn diff_const_0() {
-    let x = symplex::default_context().symbol("x");
-    check(&symplex::default_context().int(0).diff(&x), "0");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    check(&__ctx.int(0).diff(&x), "0");
 }
 
 #[test]
 fn diff_const_neg3() {
-    let x = symplex::default_context().symbol("x");
-    check(&symplex::default_context().int(-3).diff(&x), "0");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    check(&__ctx.int(-3).diff(&x), "0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -81,13 +89,15 @@ fn diff_const_neg3() {
 
 #[test]
 fn diff_sin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sin().diff(&x), "cos(x)");
 }
 
 #[test]
 fn diff_cos() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.cos().diff(&x), "-sin(x)");
 }
 
@@ -97,13 +107,15 @@ fn diff_cos() {
 
 #[test]
 fn diff_exp() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.exp().diff(&x), "exp(x)");
 }
 
 #[test]
 fn diff_ln() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.ln().diff(&x), "1/x");
 }
 
@@ -113,19 +125,22 @@ fn diff_ln() {
 
 #[test]
 fn diff_sin_x2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).sin().diff(&x), "2*x*cos(x^2)");
 }
 
 #[test]
 fn diff_exp_x2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).exp().diff(&x), "2*x*exp(x^2)");
 }
 
 #[test]
 fn diff_ln_x2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).ln().diff(&x), "2*1/x");
 }
 
@@ -135,13 +150,15 @@ fn diff_ln_x2() {
 
 #[test]
 fn diff_x_sin_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x * &x.sin()).diff(&x), "x*cos(x) + sin(x)");
 }
 
 #[test]
 fn diff_x_exp_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x * &x.exp()).diff(&x), "x*exp(x) + exp(x)");
 }
 
@@ -151,19 +168,22 @@ fn diff_x_exp_x() {
 
 #[test]
 fn diff_asin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.asin().diff(&x), "1/sqrt(-x^2 + 1)");
 }
 
 #[test]
 fn diff_acos() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.acos().diff(&x), "-1/sqrt(-x^2 + 1)");
 }
 
 #[test]
 fn diff_atan() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.atan().diff(&x), "1/(x^2 + 1)");
 }
 
@@ -173,19 +193,22 @@ fn diff_atan() {
 
 #[test]
 fn diff_sinh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sinh().diff(&x), "cosh(x)");
 }
 
 #[test]
 fn diff_cosh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.cosh().diff(&x), "sinh(x)");
 }
 
 #[test]
 fn diff_tanh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.tanh().diff(&x), "-tanh(x)^2 + 1");
 }
 
@@ -195,19 +218,22 @@ fn diff_tanh() {
 
 #[test]
 fn diff_asinh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.asinh().diff(&x), "1/sqrt(x^2 + 1)");
 }
 
 #[test]
 fn diff_acosh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.acosh().diff(&x), "1/sqrt(x^2 - 1)");
 }
 
 #[test]
 fn diff_atanh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.atanh().diff(&x), "1/(-x^2 + 1)");
 }
 
@@ -217,61 +243,71 @@ fn diff_atanh() {
 
 #[test]
 fn diff2_x3() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(3).diff_n(&x, 2), "6*x");
 }
 
 #[test]
 fn diff3_x4() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(4).diff_n(&x, 3), "24*x");
 }
 
 #[test]
 fn diff4_x4() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(4).diff_n(&x, 4), "24");
 }
 
 #[test]
 fn diff5_x4() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(4).diff_n(&x, 5), "0");
 }
 
 #[test]
 fn diff0_x2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).diff_n(&x, 0), "x^2");
 }
 
 #[test]
 fn diff2_x5() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(5).diff_n(&x, 2), "20*x^3");
 }
 
 #[test]
 fn diff3_x5() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(5).diff_n(&x, 3), "60*x^2");
 }
 
 #[test]
 fn diff4_x5() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(5).diff_n(&x, 4), "120*x");
 }
 
 #[test]
 fn diff5_x5() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(5).diff_n(&x, 5), "120");
 }
 
 #[test]
 fn diff6_x5() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(5).diff_n(&x, 6), "0");
 }
 
@@ -318,13 +354,15 @@ fn diff_x2y_wrt_x() {
 
 #[test]
 fn diff_3x2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.powi(2) * 3).diff(&x), "6*x");
 }
 
 #[test]
 fn diff_sum_x_plus_x2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x + &x.powi(2)).diff(&x);
     let s = format!("{r}");
     assert!(
@@ -339,44 +377,51 @@ fn diff_sum_x_plus_x2() {
 
 #[test]
 fn int_1() {
-    let x = symplex::default_context().symbol("x");
-    check(&symplex::default_context().int(1).integrate(&x), "x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    check(&__ctx.int(1).integrate(&x), "x");
 }
 
 #[test]
 fn int_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.integrate(&x), "1/2*x^2");
 }
 
 #[test]
 fn int_x2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).integrate(&x), "1/3*x^3");
 }
 
 #[test]
 fn int_x3() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(3).integrate(&x), "1/4*x^4");
 }
 
 #[test]
 fn int_x_inv() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(-1).integrate(&x), "ln(abs(x))");
 }
 
 #[test]
 fn int_const_5() {
-    let x = symplex::default_context().symbol("x");
-    check(&symplex::default_context().int(5).integrate(&x), "5*x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    check(&__ctx.int(5).integrate(&x), "5*x");
 }
 
 #[test]
 fn int_zero() {
-    let x = symplex::default_context().symbol("x");
-    check(&symplex::default_context().int(0).integrate(&x), "0");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    check(&__ctx.int(0).integrate(&x), "0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -385,19 +430,22 @@ fn int_zero() {
 
 #[test]
 fn int_sin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sin().integrate(&x), "-cos(x)");
 }
 
 #[test]
 fn int_cos() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.cos().integrate(&x), "sin(x)");
 }
 
 #[test]
 fn int_tan() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.tan().integrate(&x), "-ln(abs(cos(x)))");
 }
 
@@ -407,13 +455,15 @@ fn int_tan() {
 
 #[test]
 fn int_exp() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.exp().integrate(&x), "exp(x)");
 }
 
 #[test]
 fn int_ln() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.ln().integrate(&x), "-x + x*ln(x)");
 }
 
@@ -423,19 +473,22 @@ fn int_ln() {
 
 #[test]
 fn int_sinh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sinh().integrate(&x), "cosh(x)");
 }
 
 #[test]
 fn int_cosh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.cosh().integrate(&x), "sinh(x)");
 }
 
 #[test]
 fn int_tanh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.tanh().integrate(&x), "ln(cosh(x))");
 }
 
@@ -445,19 +498,22 @@ fn int_tanh() {
 
 #[test]
 fn int_asin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.asin().integrate(&x), "x*asin(x) + sqrt(-x^2 + 1)");
 }
 
 #[test]
 fn int_acos() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.acos().integrate(&x), "x*acos(x) - sqrt(-x^2 + 1)");
 }
 
 #[test]
 fn int_atan() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.atan().integrate(&x), "x*atan(x) - 1/2*ln(x^2 + 1)");
 }
 
@@ -467,7 +523,8 @@ fn int_atan() {
 
 #[test]
 fn int_one_over_x2_plus_1() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.powi(2) + 1).powi(-1).integrate(&x), "atan(x)");
 }
 
@@ -477,19 +534,22 @@ fn int_one_over_x2_plus_1() {
 
 #[test]
 fn int_sin_2x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x * 2).sin().integrate(&x), "-1/2*cos(2*x)");
 }
 
 #[test]
 fn int_exp_3x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x * 3).exp().integrate(&x), "1/3*exp(3*x)");
 }
 
 #[test]
 fn int_cos_5x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x * 5).cos().integrate(&x), "1/5*sin(5*x)");
 }
 
@@ -499,7 +559,8 @@ fn int_cos_5x() {
 
 #[test]
 fn int_x_sin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x * &x.sin()).integrate(&x);
     let s = format!("{r}");
     // -(-x*cos(x)) + sin(x)
@@ -511,7 +572,8 @@ fn int_x_sin() {
 
 #[test]
 fn int_x_exp() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x * &x.exp()).integrate(&x), "x*exp(x) - exp(x)");
 }
 
@@ -521,19 +583,22 @@ fn int_x_exp() {
 
 #[test]
 fn int_sin2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sin().powi(2).integrate(&x), "1/2*x - 1/2*sin(x)*cos(x)");
 }
 
 #[test]
 fn int_cos2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.cos().powi(2).integrate(&x), "1/2*x + 1/2*sin(x)*cos(x)");
 }
 
 #[test]
 fn int_sin3() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(
         &x.sin().powi(3).integrate(&x),
         "-1/3*sin(x)^2*cos(x) - 2/3*cos(x)",
@@ -542,7 +607,8 @@ fn int_sin3() {
 
 #[test]
 fn int_cos3() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(
         &x.cos().powi(3).integrate(&x),
         "1/3*cos(x)^2*sin(x) + 2/3*sin(x)",
@@ -555,7 +621,8 @@ fn int_cos3() {
 
 #[test]
 fn int_linear_pow() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x * 2 + 1).powi(3).integrate(&x), "1/8*(2*x + 1)^4");
 }
 
@@ -565,19 +632,22 @@ fn int_linear_pow() {
 
 #[test]
 fn int_sum() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x + &x.powi(2)).integrate(&x), "1/3*x^3 + 1/2*x^2");
 }
 
 #[test]
 fn int_const_factor() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.powi(2) * 5).integrate(&x), "5/3*x^3");
 }
 
 #[test]
 fn int_const_times_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x * 3).integrate(&x), "3/2*x^2");
 }
 
@@ -594,7 +664,8 @@ fn int_other_symbol_treated_as_const() {
 
 #[test]
 fn int_diff_roundtrip_x3() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let f = x.powi(3);
     let roundtrip = f.integrate(&x).diff(&x);
     let v1 = format!("{}", f.subs_i64(&x, 2));
@@ -604,19 +675,22 @@ fn int_diff_roundtrip_x3() {
 
 #[test]
 fn int_diff_roundtrip_sin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sin().integrate(&x).diff(&x), "sin(x)");
 }
 
 #[test]
 fn int_diff_roundtrip_exp() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.exp().integrate(&x).diff(&x), "exp(x)");
 }
 
 #[test]
 fn int_diff_roundtrip_x2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).integrate(&x).diff(&x), "x^2");
 }
 
@@ -626,14 +700,16 @@ fn int_diff_roundtrip_x2() {
 
 #[test]
 fn int_sinh_2x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x * 2).sinh().integrate(&x);
     check_contains(&r, &["cosh"], "∫ sinh(2x) dx");
 }
 
 #[test]
 fn int_cosh_3x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x * 3).cosh().integrate(&x);
     check_contains(&r, &["sinh"], "∫ cosh(3x) dx");
 }
@@ -644,7 +720,8 @@ fn int_cosh_3x() {
 
 #[test]
 fn solve_x_eq_0() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = x.solve_or_empty(&x);
     assert_eq!(r.len(), 1);
     check(&r[0], "0");
@@ -652,7 +729,8 @@ fn solve_x_eq_0() {
 
 #[test]
 fn solve_x_minus_1() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x - 1).solve_or_empty(&x);
     assert_eq!(r.len(), 1);
     check(&r[0], "1");
@@ -660,7 +738,8 @@ fn solve_x_minus_1() {
 
 #[test]
 fn solve_2x_minus_6() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x * 2 - 6).solve_or_empty(&x);
     assert_eq!(r.len(), 1);
     check(&r[0], "3");
@@ -668,7 +747,8 @@ fn solve_2x_minus_6() {
 
 #[test]
 fn solve_x_plus_3() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x + 3).solve_or_empty(&x);
     assert_eq!(r.len(), 1);
     check(&r[0], "-3");
@@ -676,7 +756,8 @@ fn solve_x_plus_3() {
 
 #[test]
 fn solve_3x_minus_1() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x * 3 - 1).solve_or_empty(&x);
     assert_eq!(r.len(), 1);
     check(&r[0], "1/3");
@@ -688,7 +769,8 @@ fn solve_3x_minus_1() {
 
 #[test]
 fn solve_x2_minus_1() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x.powi(2) - 1).solve_or_empty(&x);
     assert_eq!(r.len(), 2);
     let strs: Vec<String> = r.iter().map(|r| format!("{r}")).collect();
@@ -701,7 +783,8 @@ fn solve_x2_minus_1() {
 
 #[test]
 fn solve_x2_minus_5x_plus_6() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x.powi(2) - &(&x * 5) + 6).solve_or_empty(&x);
     assert_eq!(r.len(), 2);
     let strs: Vec<String> = r.iter().map(|r| format!("{r}")).collect();
@@ -714,7 +797,8 @@ fn solve_x2_minus_5x_plus_6() {
 
 #[test]
 fn solve_x2_minus_4x_plus_4_double_root() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x.powi(2) - &(&x * 4) + 4).solve_or_empty(&x);
     assert!(!r.is_empty(), "should find at least 1 root");
     for root in &r {
@@ -728,7 +812,8 @@ fn solve_x2_minus_4x_plus_4_double_root() {
 
 #[test]
 fn solve_x2_plus_1_complex() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x.powi(2) + 1).solve_or_empty(&x);
     assert_eq!(r.len(), 2, "x²+1=0 should have 2 complex roots");
     let s: Vec<String> = r.iter().map(|r| format!("{r}")).collect();
@@ -737,7 +822,8 @@ fn solve_x2_plus_1_complex() {
 
 #[test]
 fn solve_x2_plus_4_complex() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x.powi(2) + 4).solve_or_empty(&x);
     if r.len() == 2 {
         let s: Vec<String> = r.iter().map(|r| format!("{r}")).collect();
@@ -751,7 +837,8 @@ fn solve_x2_plus_4_complex() {
 
 #[test]
 fn solve_cubic_factored() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     // x³ - 6x² + 11x - 6 = (x-1)(x-2)(x-3)
     let r = (&x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6).solve_or_empty(&x);
     assert_eq!(r.len(), 3, "should have 3 roots");
@@ -768,7 +855,8 @@ fn solve_cubic_factored() {
 
 #[test]
 fn solve_factored() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x * &(&x - 1) * &(&x + 2)).solve_or_empty(&x);
     assert_eq!(
         r.len(),
@@ -789,7 +877,8 @@ fn solve_factored() {
 
 #[test]
 fn solve_exp_minus_1_non_polynomial() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x.exp() - 1).solve_or_empty(&x);
     // exp(x)-1=0 → x=ln(1)=0, the internal solver handles this via inversion peeling.
     assert!(!r.is_empty(), "exp(x)-1 should be solvable now via inversion peeling");
@@ -799,7 +888,8 @@ fn solve_exp_minus_1_non_polynomial() {
 
 #[test]
 fn solve_sqrt_x_minus_2_non_polynomial() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x.sqrt() - 2).solve_or_empty(&x);
     // sqrt(x)-2=0 → x=4, the internal solver handles this via inversion peeling.
     assert!(!r.is_empty(), "sqrt(x)-2 should be solvable now via inversion peeling");
@@ -809,7 +899,8 @@ fn solve_sqrt_x_minus_2_non_polynomial() {
 
 #[test]
 fn solve_sin_non_polynomial() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     // sin(x)=0 is now handled by the internal solver via inversion peeling.
     let result = x.sin().solve(&x);
     assert!(result.is_ok(), "sin(x) should be solvable via inversion peeling, got: {:?}", result.err());
@@ -821,15 +912,17 @@ fn solve_sin_non_polynomial() {
 
 #[test]
 fn solve_constant_nonzero_no_solutions() {
-    let x = symplex::default_context().symbol("x");
-    let r = symplex::default_context().int(5).solve_or_empty(&x);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let r = __ctx.int(5).solve_or_empty(&x);
     assert!(r.is_empty(), "5=0 has no solutions");
 }
 
 #[test]
 fn solve_constant_zero_no_solutions() {
-    let x = symplex::default_context().symbol("x");
-    let r = symplex::default_context().int(0).solve_or_empty(&x);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let r = __ctx.int(0).solve_or_empty(&x);
     assert!(r.is_empty(), "0=0 has infinite solutions, returns empty");
 }
 
@@ -839,7 +932,8 @@ fn solve_constant_zero_no_solutions() {
 
 #[test]
 fn solve_verify_roots_sub_back() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let eq = &x.powi(2) - &(&x * 5) + 6;
     let roots = eq.solve_or_empty(&x);
     assert_eq!(roots.len(), 2);
@@ -858,17 +952,20 @@ fn solve_verify_roots_sub_back() {
 
 #[test]
 fn eval_sin_0() {
-    check(&symplex::default_context().int(0).sin().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).sin().eval(), "0");
 }
 
 #[test]
 fn eval_cos_0() {
-    check(&symplex::default_context().int(0).cos().eval(), "1");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).cos().eval(), "1");
 }
 
 #[test]
 fn eval_tan_0() {
-    check(&symplex::default_context().int(0).tan().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).tan().eval(), "0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -877,12 +974,14 @@ fn eval_tan_0() {
 
 #[test]
 fn eval_sin_pi() {
-    check(&symplex::default_context().pi().sin().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.pi().sin().eval(), "0");
 }
 
 #[test]
 fn eval_cos_pi() {
-    check(&symplex::default_context().pi().cos().eval(), "-1");
+    let __ctx = Context::new();
+    check(&__ctx.pi().cos().eval(), "-1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -913,17 +1012,20 @@ fn eval_tan_pi_over_4() {
 
 #[test]
 fn eval_exp_0() {
-    check(&symplex::default_context().int(0).exp().eval(), "1");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).exp().eval(), "1");
 }
 
 #[test]
 fn eval_ln_1() {
-    check(&symplex::default_context().int(1).ln().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(1).ln().eval(), "0");
 }
 
 #[test]
 fn eval_ln_e() {
-    check(&symplex::default_context().e().ln().eval(), "1");
+    let __ctx = Context::new();
+    check(&__ctx.e().ln().eval(), "1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -932,37 +1034,44 @@ fn eval_ln_e() {
 
 #[test]
 fn eval_i_squared() {
-    check(&symplex::default_context().i_unit().powi(2), "-1");
+    let __ctx = Context::new();
+    check(&__ctx.i_unit().powi(2), "-1");
 }
 
 #[test]
 fn eval_i_cubed() {
-    check(&symplex::default_context().i_unit().powi(3), "-I");
+    let __ctx = Context::new();
+    check(&__ctx.i_unit().powi(3), "-I");
 }
 
 #[test]
 fn eval_i_fourth() {
-    check(&symplex::default_context().i_unit().powi(4), "1");
+    let __ctx = Context::new();
+    check(&__ctx.i_unit().powi(4), "1");
 }
 
 #[test]
 fn eval_i_to_100() {
-    check(&symplex::default_context().i_unit().powi(100), "1");
+    let __ctx = Context::new();
+    check(&__ctx.i_unit().powi(100), "1");
 }
 
 #[test]
 fn eval_i_to_neg_1() {
-    check(&symplex::default_context().i_unit().powi(-1), "-I");
+    let __ctx = Context::new();
+    check(&__ctx.i_unit().powi(-1), "-I");
 }
 
 #[test]
 fn eval_i_to_neg_2() {
-    check(&symplex::default_context().i_unit().powi(-2), "-1");
+    let __ctx = Context::new();
+    check(&__ctx.i_unit().powi(-2), "-1");
 }
 
 #[test]
 fn eval_sqrt_neg_1() {
-    check(&symplex::default_context().int(-1).sqrt(), "I");
+    let __ctx = Context::new();
+    check(&__ctx.int(-1).sqrt(), "I");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -971,21 +1080,24 @@ fn eval_sqrt_neg_1() {
 
 #[test]
 fn eval_exp_i_pi() {
-    let i = symplex::default_context().i_unit();
-    check(&(&i * &symplex::default_context().pi()).exp().eval(), "-1");
+    let __ctx = Context::new();
+    let i = __ctx.i_unit();
+    check(&(&i * &__ctx.pi()).exp().eval(), "-1");
 }
 
 #[test]
 fn eval_exp_i_pi_over_2() {
-    let i = symplex::default_context().i_unit();
-    let angle = &symplex::default_context().rational(1, 2) * &symplex::default_context().pi();
+    let __ctx = Context::new();
+    let i = __ctx.i_unit();
+    let angle = &__ctx.rational(1, 2) * &__ctx.pi();
     check(&(&i * &angle).exp().eval(), "I");
 }
 
 #[test]
 fn eval_euler_identity_zero() {
-    let i = symplex::default_context().i_unit();
-    let euler = &(&i * &symplex::default_context().pi()).exp().eval() + 1;
+    let __ctx = Context::new();
+    let i = __ctx.i_unit();
+    let euler = &(&i * &__ctx.pi()).exp().eval() + 1;
     check(&euler, "0");
 }
 
@@ -995,27 +1107,32 @@ fn eval_euler_identity_zero() {
 
 #[test]
 fn eval_sqrt_4() {
-    check(&symplex::default_context().int(4).sqrt().eval(), "2");
+    let __ctx = Context::new();
+    check(&__ctx.int(4).sqrt().eval(), "2");
 }
 
 #[test]
 fn eval_sqrt_9() {
-    check(&symplex::default_context().int(9).sqrt().eval(), "3");
+    let __ctx = Context::new();
+    check(&__ctx.int(9).sqrt().eval(), "3");
 }
 
 #[test]
 fn eval_sqrt_16() {
-    check(&symplex::default_context().int(16).sqrt().eval(), "4");
+    let __ctx = Context::new();
+    check(&__ctx.int(16).sqrt().eval(), "4");
 }
 
 #[test]
 fn eval_sqrt_25() {
-    check(&symplex::default_context().int(25).sqrt().eval(), "5");
+    let __ctx = Context::new();
+    check(&__ctx.int(25).sqrt().eval(), "5");
 }
 
 #[test]
 fn eval_sqrt_8() {
-    check(&symplex::default_context().int(8).sqrt().eval(), "2*sqrt(2)");
+    let __ctx = Context::new();
+    check(&__ctx.int(8).sqrt().eval(), "2*sqrt(2)");
 }
 
 #[test]
@@ -1030,50 +1147,58 @@ fn eval_sqrt_nine_fourths() {
 
 #[test]
 fn eval_asin_0() {
-    check(&symplex::default_context().int(0).asin().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).asin().eval(), "0");
 }
 
 #[test]
 fn eval_asin_1() {
-    let r = symplex::default_context().int(1).asin().eval();
+    let __ctx = Context::new();
+    let r = __ctx.int(1).asin().eval();
     check_contains(&r, &["pi"], "asin(1) should be π/2");
 }
 
 #[test]
 fn eval_acos_1() {
-    check(&symplex::default_context().int(1).acos().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(1).acos().eval(), "0");
 }
 
 #[test]
 fn eval_atan_0() {
-    check(&symplex::default_context().int(0).atan().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).atan().eval(), "0");
 }
 
 #[test]
 fn eval_asin_half() {
+    let __ctx = Context::new();
     check(
-        &symplex::default_context().rational(1, 2).asin().eval(),
+        &__ctx.rational(1, 2).asin().eval(),
         "1/6*pi",
     );
 }
 
 #[test]
 fn eval_acos_half() {
+    let __ctx = Context::new();
     check(
-        &symplex::default_context().rational(1, 2).acos().eval(),
+        &__ctx.rational(1, 2).acos().eval(),
         "1/3*pi",
     );
 }
 
 #[test]
 fn eval_asin_neg_half() {
-    let r = symplex::default_context().rational(-1, 2).asin().eval();
+    let __ctx = Context::new();
+    let r = __ctx.rational(-1, 2).asin().eval();
     check_contains(&r, &["pi"], "asin(-1/2) should involve pi");
 }
 
 #[test]
 fn eval_acos_neg_half() {
-    let r = symplex::default_context().rational(-1, 2).acos().eval();
+    let __ctx = Context::new();
+    let r = __ctx.rational(-1, 2).acos().eval();
     check_contains(&r, &["pi"], "acos(-1/2) should involve pi");
 }
 
@@ -1083,17 +1208,20 @@ fn eval_acos_neg_half() {
 
 #[test]
 fn eval_sinh_0() {
-    check(&symplex::default_context().int(0).sinh().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).sinh().eval(), "0");
 }
 
 #[test]
 fn eval_cosh_0() {
-    check(&symplex::default_context().int(0).cosh().eval(), "1");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).cosh().eval(), "1");
 }
 
 #[test]
 fn eval_tanh_0() {
-    check(&symplex::default_context().int(0).tanh().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).tanh().eval(), "0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1102,17 +1230,20 @@ fn eval_tanh_0() {
 
 #[test]
 fn eval_asinh_0() {
-    check(&symplex::default_context().int(0).asinh().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).asinh().eval(), "0");
 }
 
 #[test]
 fn eval_acosh_1() {
-    check(&symplex::default_context().int(1).acosh().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(1).acosh().eval(), "0");
 }
 
 #[test]
 fn eval_atanh_0() {
-    check(&symplex::default_context().int(0).atanh().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).atanh().eval(), "0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1121,12 +1252,14 @@ fn eval_atanh_0() {
 
 #[test]
 fn eval_ln_neg_1() {
-    check(&symplex::default_context().int(-1).ln().eval(), "pi*I");
+    let __ctx = Context::new();
+    check(&__ctx.int(-1).ln().eval(), "pi*I");
 }
 
 #[test]
 fn eval_ln_neg_2() {
-    let r = symplex::default_context().int(-2).ln().eval();
+    let __ctx = Context::new();
+    let r = __ctx.int(-2).ln().eval();
     let s = format!("{r}");
     assert!(
         s.contains("ln") && s.contains("I"),
@@ -1140,22 +1273,26 @@ fn eval_ln_neg_2() {
 
 #[test]
 fn eval_abs_3() {
-    check(&symplex::default_context().int(3).abs().eval(), "3");
+    let __ctx = Context::new();
+    check(&__ctx.int(3).abs().eval(), "3");
 }
 
 #[test]
 fn eval_abs_neg_3() {
-    check(&symplex::default_context().int(-3).abs().eval(), "3");
+    let __ctx = Context::new();
+    check(&__ctx.int(-3).abs().eval(), "3");
 }
 
 #[test]
 fn eval_abs_0() {
-    check(&symplex::default_context().int(0).abs().eval(), "0");
+    let __ctx = Context::new();
+    check(&__ctx.int(0).abs().eval(), "0");
 }
 
 #[test]
 fn eval_abs_i() {
-    check(&symplex::default_context().i_unit().abs().eval(), "1");
+    let __ctx = Context::new();
+    check(&__ctx.i_unit().abs().eval(), "1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1164,19 +1301,22 @@ fn eval_abs_i() {
 
 #[test]
 fn eval_sin_neg_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(-&x).sin().eval(), "-sin(x)");
 }
 
 #[test]
 fn eval_cos_neg_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(-&x).cos().eval(), "cos(x)");
 }
 
 #[test]
 fn eval_tan_neg_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(-&x).tan().eval(), "-tan(x)");
 }
 
@@ -1213,13 +1353,15 @@ fn eval_i_times_i() {
 
 #[test]
 fn simp_sin2_cos2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.sin().powi(2) + &x.cos().powi(2)).simplify(), "1");
 }
 
 #[test]
 fn simp_sin2_cos2_plus_3() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.sin().powi(2) + &x.cos().powi(2) + 3).simplify(), "4");
 }
 
@@ -1239,13 +1381,15 @@ fn simp_sin2_cos2_plus_y() {
 
 #[test]
 fn simp_cosh2_minus_sinh2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.cosh().powi(2) - &x.sinh().powi(2)).simplify(), "1");
 }
 
 #[test]
 fn simp_cosh2_minus_sinh2_plus_5() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.cosh().powi(2) - &x.sinh().powi(2) + 5).simplify(), "6");
 }
 
@@ -1255,14 +1399,16 @@ fn simp_cosh2_minus_sinh2_plus_5() {
 
 #[test]
 fn simp_exp_ln() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.ln().exp().simplify(), "x");
 }
 
 #[test]
 fn simp_ln_exp() {
+    let __ctx = Context::new();
     use symplex::prelude::Assumption;
-    let x = symplex::default_context().symbol("x").assume(Assumption::Real);
+    let x = __ctx.symbol("x").assume(Assumption::Real);
     check(&x.exp().ln().simplify(), "x");
 }
 
@@ -1272,19 +1418,22 @@ fn simp_ln_exp() {
 
 #[test]
 fn simp_sin_asin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.asin().sin().simplify(), "x");
 }
 
 #[test]
 fn simp_cos_acos() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.acos().cos().simplify(), "x");
 }
 
 #[test]
 fn simp_tan_atan() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.atan().tan().simplify(), "x");
 }
 
@@ -1294,19 +1443,22 @@ fn simp_tan_atan() {
 
 #[test]
 fn simp_asin_sin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sin().asin().simplify(), "asin(sin(x))");
 }
 
 #[test]
 fn simp_acos_cos() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.cos().acos().simplify(), "acos(cos(x))");
 }
 
 #[test]
 fn simp_atan_tan() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.tan().atan().simplify(), "atan(tan(x))");
 }
 
@@ -1316,19 +1468,22 @@ fn simp_atan_tan() {
 
 #[test]
 fn simp_sinh_asinh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.asinh().sinh().simplify(), "x");
 }
 
 #[test]
 fn simp_cosh_acosh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.acosh().cosh().simplify(), "x");
 }
 
 #[test]
 fn simp_tanh_atanh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.atanh().tanh().simplify(), "x");
 }
 
@@ -1338,13 +1493,15 @@ fn simp_tanh_atanh() {
 
 #[test]
 fn simp_sin_div_cos() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.sin() / &x.cos()).simplify(), "tan(x)");
 }
 
 #[test]
 fn simp_sinh_div_cosh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.sinh() / &x.cosh()).simplify(), "tanh(x)");
 }
 
@@ -1354,8 +1511,9 @@ fn simp_sinh_div_cosh() {
 
 #[test]
 fn simp_exp_a_times_exp_b() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     check(&(&x.exp() * &y.exp()).simplify(), "exp(x + y)");
 }
 
@@ -1365,13 +1523,15 @@ fn simp_exp_a_times_exp_b() {
 
 #[test]
 fn simp_abs_abs() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.abs().abs().simplify(), "abs(x)");
 }
 
 #[test]
 fn simp_abs_positive() {
-    check(&symplex::default_context().int(5).abs().simplify(), "5");
+    let __ctx = Context::new();
+    check(&__ctx.int(5).abs().simplify(), "5");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1380,7 +1540,8 @@ fn simp_abs_positive() {
 
 #[test]
 fn simp_pow_pow() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).powi(3).simplify(), "x^6");
 }
 
@@ -1390,7 +1551,8 @@ fn simp_pow_pow() {
 
 #[test]
 fn simp_sqrt_of_square() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).sqrt().simplify(), "abs(x)");
 }
 
@@ -1400,7 +1562,8 @@ fn simp_sqrt_of_square() {
 
 #[test]
 fn full_simp_expand_cancel() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     // (x+1)^2 - x^2 - 2*x = 1
     let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
     check(&expr.full_simplify(), "1");
@@ -1408,13 +1571,15 @@ fn full_simp_expand_cancel() {
 
 #[test]
 fn full_simp_trig_identity() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.sin().powi(2) + &x.cos().powi(2)).full_simplify(), "1");
 }
 
 #[test]
 fn full_simp_exp_ln() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.ln().exp().full_simplify(), "x");
 }
 
@@ -1427,7 +1592,8 @@ fn full_simp_sin_0_plus_cos_0() {
 
 #[test]
 fn full_simp_already_simple() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x + 1).full_simplify(), "x + 1");
 }
 
@@ -1437,32 +1603,38 @@ fn full_simp_already_simple() {
 
 #[test]
 fn display_pi() {
-    check(&symplex::default_context().pi(), "pi");
+    let __ctx = Context::new();
+    check(&__ctx.pi(), "pi");
 }
 
 #[test]
 fn display_e() {
-    check(&symplex::default_context().e(), "E");
+    let __ctx = Context::new();
+    check(&__ctx.e(), "E");
 }
 
 #[test]
 fn display_i() {
-    check(&symplex::default_context().i_unit(), "I");
+    let __ctx = Context::new();
+    check(&__ctx.i_unit(), "I");
 }
 
 #[test]
 fn display_int_42() {
-    check(&symplex::default_context().int(42), "42");
+    let __ctx = Context::new();
+    check(&__ctx.int(42), "42");
 }
 
 #[test]
 fn display_rational_half() {
-    check(&symplex::default_context().rational(1, 2), "1/2");
+    let __ctx = Context::new();
+    check(&__ctx.rational(1, 2), "1/2");
 }
 
 #[test]
 fn display_rational_third() {
-    check(&symplex::default_context().rational(1, 3), "1/3");
+    let __ctx = Context::new();
+    check(&__ctx.rational(1, 3), "1/3");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1471,97 +1643,113 @@ fn display_rational_third() {
 
 #[test]
 fn display_sin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sin(), "sin(x)");
 }
 
 #[test]
 fn display_cos() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.cos(), "cos(x)");
 }
 
 #[test]
 fn display_tan() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.tan(), "tan(x)");
 }
 
 #[test]
 fn display_exp() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.exp(), "exp(x)");
 }
 
 #[test]
 fn display_ln() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.ln(), "ln(x)");
 }
 
 #[test]
 fn display_asin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.asin(), "asin(x)");
 }
 
 #[test]
 fn display_acos() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.acos(), "acos(x)");
 }
 
 #[test]
 fn display_atan() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.atan(), "atan(x)");
 }
 
 #[test]
 fn display_sinh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sinh(), "sinh(x)");
 }
 
 #[test]
 fn display_cosh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.cosh(), "cosh(x)");
 }
 
 #[test]
 fn display_tanh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.tanh(), "tanh(x)");
 }
 
 #[test]
 fn display_asinh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.asinh(), "asinh(x)");
 }
 
 #[test]
 fn display_acosh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.acosh(), "acosh(x)");
 }
 
 #[test]
 fn display_atanh() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.atanh(), "atanh(x)");
 }
 
 #[test]
 fn display_abs() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.abs(), "abs(x)");
 }
 
 #[test]
 fn display_sqrt() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sqrt(), "sqrt(x)");
 }
 
@@ -1571,19 +1759,22 @@ fn display_sqrt() {
 
 #[test]
 fn display_x_squared() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2), "x^2");
 }
 
 #[test]
 fn display_x_cubed() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(3), "x^3");
 }
 
 #[test]
 fn display_x_inv() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(-1), "1/x");
 }
 
@@ -1593,19 +1784,22 @@ fn display_x_inv() {
 
 #[test]
 fn display_x_plus_1_canonical() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x + 1), "x + 1");
 }
 
 #[test]
 fn display_1_plus_x_canonical() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(1 + &x), "x + 1");
 }
 
 #[test]
 fn display_x2_plus_x_plus_1() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x.powi(2) + &x + 1), "x^2 + x + 1");
 }
 
@@ -1615,79 +1809,94 @@ fn display_x2_plus_x_plus_1() {
 
 #[test]
 fn assume_positive_int() {
-    assert_eq!(symplex::default_context().int(5).is_positive(), Some(true));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.int(5).is_positive(), Some(true));
 }
 
 #[test]
 fn assume_negative_int() {
-    assert_eq!(symplex::default_context().int(-3).is_negative(), Some(true));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.int(-3).is_negative(), Some(true));
 }
 
 #[test]
 fn assume_zero_is_not_positive() {
-    assert_eq!(symplex::default_context().int(0).is_positive(), Some(false));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.int(0).is_positive(), Some(false));
 }
 
 #[test]
 fn assume_integer_on_integer() {
-    assert_eq!(symplex::default_context().int(7).is_integer(), Some(true));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.int(7).is_integer(), Some(true));
 }
 
 #[test]
 fn assume_real_on_integer() {
-    assert_eq!(symplex::default_context().int(5).is_real(), Some(true));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.int(5).is_real(), Some(true));
 }
 
 #[test]
 fn assume_real_on_pi() {
-    assert_eq!(symplex::default_context().pi().is_real(), Some(true));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.pi().is_real(), Some(true));
 }
 
 #[test]
 fn assume_not_real_on_i() {
-    assert_eq!(symplex::default_context().i_unit().is_real(), Some(false));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.i_unit().is_real(), Some(false));
 }
 
 #[test]
 fn assume_imaginary_on_i() {
-    assert_eq!(symplex::default_context().i_unit().is_imaginary(), Some(true));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.i_unit().is_imaginary(), Some(true));
 }
 
 #[test]
 fn assume_finite_on_int() {
-    assert_eq!(symplex::default_context().int(5).is_finite(), Some(true));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.int(5).is_finite(), Some(true));
 }
 
 #[test]
 fn assume_not_finite_on_inf() {
-    assert_eq!(symplex::default_context().infinity().is_finite(), Some(false));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.infinity().is_finite(), Some(false));
 }
 
 #[test]
 fn assume_nonzero_on_5() {
-    assert_eq!(symplex::default_context().int(5).is_nonzero(), Some(true));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.int(5).is_nonzero(), Some(true));
 }
 
 #[test]
 fn assume_not_nonzero_on_0() {
-    assert_eq!(symplex::default_context().int(0).is_nonzero(), Some(false));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.int(0).is_nonzero(), Some(false));
 }
 
 #[test]
 fn assume_symbol_unknown() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert_eq!(x.is_positive(), None);
     assert_eq!(x.is_negative(), None);
 }
 
 #[test]
 fn assume_rational_is_not_integer() {
-    assert_eq!(symplex::default_context().rational(1, 2).is_integer(), Some(false));
+    let __ctx = Context::new();
+    assert_eq!(__ctx.rational(1, 2).is_integer(), Some(false));
 }
 
 #[test]
 fn assume_symbol_with_assumption() {
-    let t = symplex::default_context().symbol("t").assume(Assumption::Positive);
+    let __ctx = Context::new();
+    let t = __ctx.symbol("t").assume(Assumption::Positive);
     assert_eq!(t.is_positive(), Some(true));
 }
 
@@ -1697,49 +1906,57 @@ fn assume_symbol_with_assumption() {
 
 #[test]
 fn evalf_pi() {
-    let val = symplex::default_context().pi().eval_f64().unwrap();
+    let __ctx = Context::new();
+    let val = __ctx.pi().eval_f64().unwrap();
     assert!((val - std::f64::consts::PI).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_e() {
-    let val = symplex::default_context().e().eval_f64().unwrap();
+    let __ctx = Context::new();
+    let val = __ctx.e().eval_f64().unwrap();
     assert!((val - std::f64::consts::E).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_integer() {
-    let val = symplex::default_context().int(7).eval_f64().unwrap();
+    let __ctx = Context::new();
+    let val = __ctx.int(7).eval_f64().unwrap();
     assert!((val - 7.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_rational() {
-    let val = symplex::default_context().rational(1, 3).eval_f64().unwrap();
+    let __ctx = Context::new();
+    let val = __ctx.rational(1, 3).eval_f64().unwrap();
     assert!((val - 1.0 / 3.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_sinh_zero() {
-    let val = symplex::default_context().int(0).sinh().eval_f64().unwrap();
+    let __ctx = Context::new();
+    let val = __ctx.int(0).sinh().eval_f64().unwrap();
     assert!((val - 0.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_cosh_zero() {
-    let val = symplex::default_context().int(0).cosh().eval_f64().unwrap();
+    let __ctx = Context::new();
+    let val = __ctx.int(0).cosh().eval_f64().unwrap();
     assert!((val - 1.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_atan_one() {
-    let val = symplex::default_context().int(1).atan().eval_f64().unwrap();
+    let __ctx = Context::new();
+    let val = __ctx.int(1).atan().eval_f64().unwrap();
     assert!((val - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_free_symbol_errors() {
-    assert!(symplex::default_context().symbol("x").eval_f64().is_err());
+    let __ctx = Context::new();
+    assert!(__ctx.symbol("x").eval_f64().is_err());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1748,25 +1965,29 @@ fn evalf_free_symbol_errors() {
 
 #[test]
 fn subs_x2_at_3() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).subs_i64(&x, 3), "9");
 }
 
 #[test]
 fn subs_x2_at_neg2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(2).subs_i64(&x, -2), "4");
 }
 
 #[test]
 fn subs_x3_at_2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.powi(3).subs_i64(&x, 2), "8");
 }
 
 #[test]
 fn subs_x_plus_1_at_5() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&(&x + 1).subs_i64(&x, 5), "6");
 }
 
@@ -1776,7 +1997,8 @@ fn subs_x_plus_1_at_5() {
 
 #[test]
 fn expand_x_plus_1_squared() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x + 1).powi(2).expand();
     let s = format!("{r}");
     assert!(
@@ -1787,7 +2009,8 @@ fn expand_x_plus_1_squared() {
 
 #[test]
 fn expand_x_times_x_plus_1() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let r = (&x * &(&x + 1)).expand();
     let s = format!("{r}");
     assert!(s.contains("x^2") && s.contains("x"), "x(x+1) expanded: {s}");
@@ -1823,7 +2046,8 @@ fn expand_trig_cos_sum() {
 
 #[test]
 fn expand_trig_bare_sin_unchanged() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     check(&x.sin().expand_trig(), "sin(x)");
 }
 
@@ -1854,7 +2078,8 @@ fn cancel_no_common_factor() {
 
 #[test]
 fn free_symbols_single() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let syms = x.free_symbols();
     assert_eq!(syms.len(), 1);
     check(&syms[0], "x");
@@ -1870,12 +2095,14 @@ fn free_symbols_two() {
 
 #[test]
 fn free_symbols_constant_empty() {
-    assert!(symplex::default_context().pi().free_symbols().is_empty());
+    let __ctx = Context::new();
+    assert!(__ctx.pi().free_symbols().is_empty());
 }
 
 #[test]
 fn free_symbols_no_duplicates() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let syms = (&x + &x).free_symbols();
     assert_eq!(syms.len(), 1);
 }
@@ -1886,7 +2113,8 @@ fn free_symbols_no_duplicates() {
 
 #[test]
 fn contains_self() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert!(x.contains(&x));
 }
 
@@ -1900,7 +2128,8 @@ fn contains_child() {
 
 #[test]
 fn contains_deep() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert!(x.powi(2).sin().contains(&x));
 }
 
@@ -1917,19 +2146,22 @@ fn contains_not() {
 
 #[test]
 fn equals_identical() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert_eq!(x.equals(&x), Some(true));
 }
 
 #[test]
 fn equals_canonical_same() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert_eq!((&x + 1).equals(&(1 + &x)), Some(true));
 }
 
 #[test]
 fn equals_expand_needed() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let a = (&x + 1).powi(2);
     let b = &x.powi(2) + &x * 2 + 1;
     assert_eq!(a.equals(&b), Some(true));
@@ -1941,14 +2173,16 @@ fn equals_expand_needed() {
 
 #[test]
 fn nsolve_x_minus_cos_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let root = (&x - &x.cos()).solve_numeric(&x, 1.0, 50, 1e-12).unwrap();
     assert!((root - 0.7390851332).abs() < 1e-6, "got: {root}");
 }
 
 #[test]
 fn nsolve_x2_minus_2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let root = (&x.powi(2) - 2).solve_numeric(&x, 1.5, 50, 1e-12).unwrap();
     assert!(
         (root - std::f64::consts::SQRT_2).abs() < 1e-8,
@@ -1958,7 +2192,8 @@ fn nsolve_x2_minus_2() {
 
 #[test]
 fn nsolve_exp_minus_2() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let root = (&x.exp() - 2).solve_numeric(&x, 1.0, 50, 1e-12).unwrap();
     assert!((root - 2.0_f64.ln()).abs() < 1e-8, "got: {root}");
 }

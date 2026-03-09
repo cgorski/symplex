@@ -374,27 +374,31 @@ fn eval_tan_pi_over_4_exact() {
 
 #[test]
 fn ex_zero() {
-    let z = Ex::zero();
+    let ctx = Context::new();
+    let z = ctx.zero();
     assert_eq!(format!("{z}"), "0");
     assert!(z.is_zero_structural());
 }
 
 #[test]
 fn ex_one() {
-    let o = Ex::one();
+    let ctx = Context::new();
+    let o = ctx.one();
     assert_eq!(format!("{o}"), "1");
     assert!(o.is_one_structural());
 }
 
 #[test]
 fn ex_zero_is_not_one() {
-    let z = Ex::zero();
+    let ctx = Context::new();
+    let z = ctx.zero();
     assert!(!z.is_one_structural());
 }
 
 #[test]
 fn ex_one_is_not_zero() {
-    let o = Ex::one();
+    let ctx = Context::new();
+    let o = ctx.one();
     assert!(!o.is_zero_structural());
 }
 

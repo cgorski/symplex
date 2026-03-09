@@ -18,7 +18,7 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
     );
 
     let deriv = anti.diff(var);
-    let test_point = symplex::default_context().rational(7, 10);
+    let test_point = integrand.context().rational(7, 10);
     if let (Ok(o), Ok(d)) = (
         integrand.subs(var, &test_point).eval_f64(),
         deriv.subs(var, &test_point).eval_f64(),
@@ -39,23 +39,25 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
 
 #[test]
 fn integrate_tan_squared() {
+    let __ctx = Context::new();
     // ∫ tan²(x) dx = tan(x) − x  (via sec²(x) − 1)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = x.tan().powi(2);
     assert_ftc(&integrand, &x, "∫tan²(x)dx");
 }
 
 #[test]
 fn integrate_tan_squared_numeric() {
+    let __ctx = Context::new();
     // Verify numerically at x = 0.7
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let anti = x.tan().powi(2).integrate(&x);
     let s = format!("{anti}");
     assert!(!s.contains("Integral"), "tan² should be integrated: {s}");
 
     // d/dx[tan(x) - x] = sec²(x) - 1 = tan²(x)
     let deriv = anti.diff(&x);
-    let pt = symplex::default_context().rational(7, 10);
+    let pt = __ctx.rational(7, 10);
     let integrand_val = x.tan().powi(2).subs(&x, &pt).eval_f64().unwrap();
     let deriv_val = deriv.subs(&x, &pt).eval_f64().unwrap();
     let err = (integrand_val - deriv_val).abs();
@@ -64,15 +66,16 @@ fn integrate_tan_squared_numeric() {
 
 #[test]
 fn integrate_sech_squared() {
+    let __ctx = Context::new();
     // ∫ sech²(x) dx = ∫ cosh(x)^(-2) dx = tanh(x)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = x.cosh().powi(-2);
     let anti = integrand.integrate(&x);
     let s = format!("{anti}");
     assert!(!s.contains("Integral"), "sech² should be integrated: {s}");
 
     // Numerical check
-    let pt = symplex::default_context().rational(7, 10);
+    let pt = __ctx.rational(7, 10);
     let anti_val = anti.subs(&x, &pt).eval_f64().unwrap();
     let tanh_val = (0.7_f64).tanh();
     assert!(
@@ -83,15 +86,17 @@ fn integrate_sech_squared() {
 
 #[test]
 fn integrate_sech_squared_ftc() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let integrand = x.cosh().powi(-2);
     assert_ftc(&integrand, &x, "∫sech²(x)dx");
 }
 
 #[test]
 fn integrate_sinh_squared() {
+    let __ctx = Context::new();
     // ∫ sinh²(x) dx = sinh(2x)/4 − x/2
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = x.sinh().powi(2);
     let anti = integrand.integrate(&x);
     let s = format!("{anti}");
@@ -102,11 +107,12 @@ fn integrate_sinh_squared() {
 
 #[test]
 fn integrate_sinh_squared_numeric() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let anti = x.sinh().powi(2).integrate(&x);
 
     // At x = 0.7: expected = sinh(1.4)/4 - 0.7/2
-    let val = anti.subs(&x, &symplex::default_context().rational(7, 10)).eval_f64().unwrap();
+    let val = anti.subs(&x, &__ctx.rational(7, 10)).eval_f64().unwrap();
     let expected = (1.4_f64).sinh() / 4.0 - 0.7 / 2.0;
     assert!(
         (val - expected).abs() < 1e-10,
@@ -116,8 +122,9 @@ fn integrate_sinh_squared_numeric() {
 
 #[test]
 fn integrate_cosh_squared() {
+    let __ctx = Context::new();
     // ∫ cosh²(x) dx = sinh(2x)/4 + x/2
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = x.cosh().powi(2);
     let anti = integrand.integrate(&x);
     let s = format!("{anti}");
@@ -128,8 +135,9 @@ fn integrate_cosh_squared() {
 
 #[test]
 fn integrate_tanh_squared() {
+    let __ctx = Context::new();
     // ∫ tanh²(x) dx = x − tanh(x) (via 1 − sech²)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = x.tanh().powi(2);
     assert_ftc(&integrand, &x, "∫tanh²(x)dx");
 }
@@ -140,8 +148,9 @@ fn integrate_tanh_squared() {
 
 #[test]
 fn integrate_ln_x_squared() {
+    let __ctx = Context::new();
     // ∫ ln(x)² dx = x·ln(x)² − 2x·ln(x) + 2x
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = x.ln().powi(2);
     let anti = integrand.integrate(&x);
     let s = format!("{anti}");
@@ -150,7 +159,7 @@ fn integrate_ln_x_squared() {
     // FTC: d/dx(result) should equal ln(x)²
     let deriv = anti.diff(&x);
     // Test at x = 2
-    let pt = symplex::default_context().int(2);
+    let pt = __ctx.int(2);
     let orig_val = integrand.subs(&x, &pt).eval_f64().unwrap();
     let deriv_val = deriv.subs(&x, &pt).eval_f64().unwrap();
     let err = (orig_val - deriv_val).abs();
@@ -162,16 +171,17 @@ fn integrate_ln_x_squared() {
 
 #[test]
 fn integrate_ln_x_squared_numeric() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let anti = x.ln().powi(2).integrate(&x);
 
     // At x=e: ln(e)² = 1, antideriv = e·1 − 2e·1 + 2e = e
     // Actually: x·ln(x)² − 2(x·ln(x) − x) = x·ln²(x) − 2x·ln(x) + 2x
     // At x=e: e·1 − 2e + 2e = e
     let e_val = std::f64::consts::E;
-    let e_expr = symplex::default_context().symbol("__e_placeholder");
+    let e_expr = __ctx.symbol("__e_placeholder");
     // We use a numerical approach: substitute x=2 and check
-    let val = anti.subs(&x, &symplex::default_context().int(2)).eval_f64().unwrap();
+    let val = anti.subs(&x, &__ctx.int(2)).eval_f64().unwrap();
     let ln2 = 2.0_f64.ln();
     let expected = 2.0 * ln2 * ln2 - 2.0 * 2.0 * ln2 + 2.0 * 2.0;
     let _ = e_val;
@@ -184,8 +194,9 @@ fn integrate_ln_x_squared_numeric() {
 
 #[test]
 fn integrate_ln_x_cubed() {
+    let __ctx = Context::new();
     // ∫ ln(x)³ dx should also work by recursive by-parts
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = x.ln().powi(3);
     let anti = integrand.integrate(&x);
     let s = format!("{anti}");
@@ -193,7 +204,7 @@ fn integrate_ln_x_cubed() {
 
     // FTC check at x=2
     let deriv = anti.diff(&x);
-    let pt = symplex::default_context().int(2);
+    let pt = __ctx.int(2);
     let orig_val = integrand.subs(&x, &pt).eval_f64().unwrap();
     let deriv_val = deriv.subs(&x, &pt).eval_f64().unwrap();
     let err = (orig_val - deriv_val).abs();
@@ -209,9 +220,10 @@ fn integrate_ln_x_cubed() {
 
 #[test]
 fn ode_y_double_prime_plus_y_eq_0_uses_trig() {
+    let __ctx = Context::new();
     // y'' + y = 0 → y = C1·cos(x) + C2·sin(x) (not complex exponentials)
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y; // y'' + y = 0
@@ -234,9 +246,10 @@ fn ode_y_double_prime_plus_y_eq_0_uses_trig() {
 
 #[test]
 fn ode_y_double_prime_plus_y_eq_0_trig_solution_correct() {
+    let __ctx = Context::new();
     // Verify the solution y = C1*cos(x) + C2*sin(x) satisfies the ODE
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y;
@@ -244,17 +257,17 @@ fn ode_y_double_prime_plus_y_eq_0_trig_solution_correct() {
     let sol = ode.try_solve_ode(&y, &x).expect("should solve");
 
     // Substitute C1=1, C2=0: y = cos(x) → y'' + y = -cos(x) + cos(x) = 0
-    let c1 = symplex::default_context().symbol("C1");
-    let c2 = symplex::default_context().symbol("C2");
+    let c1 = __ctx.symbol("C1");
+    let c2 = __ctx.symbol("C2");
     let sol_c = sol
-        .subs(&c1, &symplex::default_context().int(1))
-        .subs(&c2, &symplex::default_context().int(0));
+        .subs(&c1, &__ctx.int(1))
+        .subs(&c2, &__ctx.int(0));
 
     // Compute y'' + y numerically
     let sol_dd = sol_c.diff(&x).diff(&x);
     let check = &sol_dd + &sol_c;
 
-    let pt = symplex::default_context().rational(7, 10);
+    let pt = __ctx.rational(7, 10);
     if let Ok(val) = check.subs(&x, &pt).eval_f64() {
         assert!(
             val.abs() < 1e-8,
@@ -265,9 +278,10 @@ fn ode_y_double_prime_plus_y_eq_0_trig_solution_correct() {
 
 #[test]
 fn ode_y_double_prime_plus_y_eq_sin_x() {
+    let __ctx = Context::new();
     // y'' + y = sin(x) — resonance case
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let sin_x = x.sin();
@@ -290,9 +304,10 @@ fn ode_y_double_prime_plus_y_eq_sin_x() {
 
 #[test]
 fn ode_y_double_prime_plus_y_eq_sin_x_verifies() {
+    let __ctx = Context::new();
     // Verify the solution numerically
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let sin_x = x.sin();
@@ -300,17 +315,17 @@ fn ode_y_double_prime_plus_y_eq_sin_x_verifies() {
 
     let sol = ode.solve_ode(&y, &x);
     if !sol.has_unevaluated() {
-        let c1 = symplex::default_context().symbol("C1");
-        let c2 = symplex::default_context().symbol("C2");
+        let c1 = __ctx.symbol("C1");
+        let c2 = __ctx.symbol("C2");
         let sol_specific = sol
-            .subs(&c1, &symplex::default_context().int(0))
-            .subs(&c2, &symplex::default_context().int(0));
+            .subs(&c1, &__ctx.int(0))
+            .subs(&c2, &__ctx.int(0));
 
         // Check y'' + y − sin(x) ≈ 0
         let sol_dd = sol_specific.diff(&x).diff(&x);
         let check = &(&sol_dd + &sol_specific) - &sin_x;
 
-        let pt = symplex::default_context().rational(7, 10);
+        let pt = __ctx.rational(7, 10);
         if let Ok(val) = check.subs(&x, &pt).eval_f64() {
             assert!(
                 val.abs() < 1e-6,
@@ -322,9 +337,10 @@ fn ode_y_double_prime_plus_y_eq_sin_x_verifies() {
 
 #[test]
 fn ode_first_order_linear_exp_rhs() {
+    let __ctx = Context::new();
     // y' + 2y = exp(-x) → integrating factor solution
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let two_y = &y * 2;
     let neg_x = (&x * -1).exp();
@@ -344,9 +360,10 @@ fn ode_first_order_linear_exp_rhs() {
 
 #[test]
 fn ode_y_double_prime_minus_y_eq_0_real_exp() {
+    let __ctx = Context::new();
     // y'' - y = 0 → y = C1*exp(x) + C2*exp(-x) (real roots, no trig)
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &y; // y'' - y = 0
@@ -361,10 +378,11 @@ fn ode_y_double_prime_minus_y_eq_0_real_exp() {
 
 #[test]
 fn ode_damped_oscillator() {
+    let __ctx = Context::new();
     // y'' + 2y' + 5y = 0 → complex roots -1 ± 2i
     // Solution: exp(-x)·(C1·cos(2x) + C2·sin(2x))
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     let ode = &(&d2y + &(&dy * 2)) + &(&y * 5); // y'' + 2y' + 5y = 0
@@ -386,8 +404,9 @@ fn ode_damped_oscillator() {
 
 #[test]
 fn no_exp_zero_artifact() {
+    let __ctx = Context::new();
     // Integration results should not contain exp(0)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = x.sin();
     let anti = integrand.integrate(&x);
     let s = format!("{anti}");
@@ -396,8 +415,9 @@ fn no_exp_zero_artifact() {
 
 #[test]
 fn no_exp_zero_in_linear_sub() {
+    let __ctx = Context::new();
     // ∫ sin(2x) dx — should not produce exp(0) artifacts
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let two_x = &x * 2;
     let integrand = two_x.sin();
     let anti = integrand.integrate(&x);

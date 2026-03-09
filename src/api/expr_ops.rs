@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::output::display::fmt_expr;
 use crate::base::errors::SymplexError;
+use crate::api::context::Context;
 use crate::api::expr::{Ex, Expr, Sort};
 use crate::base::node::ExprId;
 
@@ -278,15 +279,24 @@ impl_binary_binop_i64!(Sub, sub, sub);
 impl_binary_binop_i64!(Div, div, div);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// From<T> conversions — use the global default context
+// From<T> conversions — use a shared default context so that all
+// values produced via `From` are in the same context and can be combined.
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Returns a lazily-initialised shared [`Context`] used by every
+/// `From<integer>` conversion so the resulting expressions are
+/// cross-compatible.
+fn from_integer_ctx() -> &'static Context {
+    static CTX: std::sync::OnceLock<Context> = std::sync::OnceLock::new();
+    CTX.get_or_init(Context::new)
+}
 
 macro_rules! impl_from_integer {
     ($($t:ty),+) => {
         $(
             impl From<$t> for Ex {
                 fn from(n: $t) -> Self {
-                    crate::default_context().int(n as i64)
+                    from_integer_ctx().int(n as i64)
                 }
             }
         )+
@@ -297,10 +307,10 @@ impl_from_integer!(i8, i16, i32, i64, u8, u16, u32, isize);
 
 impl From<u64> for Ex {
     fn from(n: u64) -> Self {
+        let ctx = from_integer_ctx();
         if n <= i64::MAX as u64 {
-            crate::default_context().int(n as i64)
+            ctx.int(n as i64)
         } else {
-            let ctx = crate::default_context();
             let id = {
                 let mut inner = ctx.inner.write();
                 inner.arena.big_int(num_bigint::BigInt::from(n))
@@ -312,10 +322,10 @@ impl From<u64> for Ex {
 
 impl From<usize> for Ex {
     fn from(n: usize) -> Self {
+        let ctx = from_integer_ctx();
         if n <= i64::MAX as usize {
-            crate::default_context().int(n as i64)
+            ctx.int(n as i64)
         } else {
-            let ctx = crate::default_context();
             let id = {
                 let mut inner = ctx.inner.write();
                 inner.arena.big_int(num_bigint::BigInt::from(n))
@@ -333,7 +343,7 @@ impl std::iter::Sum for Ex {
     fn sum<I: Iterator<Item = Ex>>(iter: I) -> Self {
         let items: Vec<Ex> = iter.collect();
         if items.is_empty() {
-            return Ex::zero();
+            return Context::new().zero();
         }
         let ctx_id = items[0].ctx_id;
         let inner = Arc::clone(&items[0].inner);
@@ -360,7 +370,7 @@ impl<'a> std::iter::Sum<&'a Ex> for Ex {
     fn sum<I: Iterator<Item = &'a Ex>>(iter: I) -> Self {
         let items: Vec<&Ex> = iter.collect();
         if items.is_empty() {
-            return Ex::zero();
+            return Context::new().zero();
         }
         let ctx_id = items[0].ctx_id;
         let inner = Arc::clone(&items[0].inner);
@@ -387,7 +397,7 @@ impl std::iter::Product for Ex {
     fn product<I: Iterator<Item = Ex>>(iter: I) -> Self {
         let items: Vec<Ex> = iter.collect();
         if items.is_empty() {
-            return Ex::one();
+            return Context::new().one();
         }
         let ctx_id = items[0].ctx_id;
         let inner = Arc::clone(&items[0].inner);
@@ -414,7 +424,7 @@ impl<'a> std::iter::Product<&'a Ex> for Ex {
     fn product<I: Iterator<Item = &'a Ex>>(iter: I) -> Self {
         let items: Vec<&Ex> = iter.collect();
         if items.is_empty() {
-            return Ex::one();
+            return Context::new().one();
         }
         let ctx_id = items[0].ctx_id;
         let inner = Arc::clone(&items[0].inner);
@@ -455,8 +465,8 @@ impl std::str::FromStr for Ex {
     /// assert_eq!(format!("{expr}"), "x^2 + 1");
     /// ```
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let ctx = crate::default_context();
-        crate::output::parse::parse(ctx, s).map_err(|e| SymplexError::ComputationFailed {
+        let ctx = crate::api::context::Context::new();
+        crate::output::parse::parse(&ctx, s).map_err(|e| SymplexError::ComputationFailed {
             operation: "parse",
             reason: e.to_string(),
         })

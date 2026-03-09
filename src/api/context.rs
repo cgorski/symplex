@@ -189,6 +189,40 @@ impl Context {
         self.make_ex(id)
     }
 
+    /// The additive identity (0) in this context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let z = ctx.zero();
+    /// assert_eq!(format!("{z}"), "0");
+    /// assert!(z.is_zero_structural());
+    /// ```
+    #[must_use]
+    pub fn zero(&self) -> crate::api::expr::Ex {
+        self.int(0)
+    }
+
+    /// The multiplicative identity (1) in this context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let o = ctx.one();
+    /// assert_eq!(format!("{o}"), "1");
+    /// assert!(o.is_one_structural());
+    /// ```
+    #[must_use]
+    pub fn one(&self) -> crate::api::expr::Ex {
+        self.int(1)
+    }
+
     /// Creates a rational expression `p/q`.
     pub fn rational(&self, p: i64, q: i64) -> crate::api::expr::Ex {
         let id = self.inner.write().arena.rational(p, q);

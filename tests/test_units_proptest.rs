@@ -3,6 +3,7 @@
 use proptest::prelude::*;
 use symplex::units::*;
 
+use symplex::prelude::*;
 /// Generate a DimMap for common physics variables.
 fn physics_dims() -> DimMap {
     DimMap::new()
@@ -21,11 +22,12 @@ fn physics_dims() -> DimMap {
 proptest! {
     #[test]
     fn simplify_preserves_force_dimension(coeff_a in 1..50i64, coeff_b in 1..50i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m, a);
         let dims = physics_dims();
         // Build a Force expression: (coeff_a*m*a + coeff_b*m*a) = (coeff_a+coeff_b)*m*a
         let f = Force::from_ex(
-            &(symplex::default_context().int(coeff_a) * &m * &a) + &(symplex::default_context().int(coeff_b) * &m * &a),
+            &(__ctx.int(coeff_a) * &m * &a) + &(__ctx.int(coeff_b) * &m * &a),
         );
         let simplified = f.simplify();
         let dim = infer_dimension(simplified.inner(), &dims).unwrap();
@@ -37,10 +39,11 @@ proptest! {
 
     #[test]
     fn expand_preserves_energy_dimension(n in 2..6i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, v);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m, v);
         let dims = physics_dims();
         // Build Energy: n * m * v * v  (has dimension M·L²·T⁻² = Energy)
-        let e = Energy::from_ex(symplex::default_context().int(n) * &m * &v * &v);
+        let e = Energy::from_ex(__ctx.int(n) * &m * &v * &v);
         let expanded = e.expand();
         let dim = infer_dimension(expanded.inner(), &dims).unwrap();
         prop_assert!(
@@ -51,9 +54,10 @@ proptest! {
 
     #[test]
     fn eval_preserves_force_dimension(c in 1..100i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m, a);
         let dims = physics_dims();
-        let f = Force::from_ex(symplex::default_context().int(c) * &m * &a);
+        let f = Force::from_ex(__ctx.int(c) * &m * &a);
         let evaluated = f.eval();
         let dim = infer_dimension(evaluated.inner(), &dims).unwrap();
         prop_assert!(
@@ -64,11 +68,12 @@ proptest! {
 
     #[test]
     fn subs_preserves_dimension_when_value_matches(val in 1..50i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a, g);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m, a, g);
         let dims = physics_dims();
         // F = m * a, substitute a → val * g (both Acceleration)
         let f = Force::from_ex(&m * &a);
-        let f2 = f.subs(&a, &(symplex::default_context().int(val) * &g));
+        let f2 = f.subs(&a, &(__ctx.int(val) * &g));
         let dim = infer_dimension(f2.inner(), &dims).unwrap();
         prop_assert!(
             dim.eq(ConstDim::FORCE),
@@ -78,10 +83,11 @@ proptest! {
 
     #[test]
     fn checked_from_ex_catches_mismatch(coeff in 1..50i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, v);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m, v);
         let dims = physics_dims();
         // m*v has dimension Momentum (L·M·T⁻¹), not Force (L·M·T⁻²)
-        let momentum_expr = &m * &v * symplex::default_context().int(coeff);
+        let momentum_expr = &m * &v * __ctx.int(coeff);
         let result = Force::checked_from_ex(momentum_expr, &dims);
         prop_assert!(
             result.is_err(),
@@ -91,10 +97,11 @@ proptest! {
 
     #[test]
     fn checked_from_ex_accepts_correct_dimension(coeff in 1..50i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m, a);
         let dims = physics_dims();
         // m*a has dimension Force — should be accepted
-        let force_expr = symplex::default_context().int(coeff) * &m * &a;
+        let force_expr = __ctx.int(coeff) * &m * &a;
         let result = Force::checked_from_ex(force_expr, &dims);
         prop_assert!(
             result.is_ok(),
@@ -104,7 +111,8 @@ proptest! {
 
     #[test]
     fn scalar_mul_preserves_dimension(coeff in 1..100i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m, a);
         let dims = physics_dims();
         let f = Force::from_ex(&m * &a);
         let scaled = f * coeff;
@@ -117,10 +125,11 @@ proptest! {
 
     #[test]
     fn add_preserves_dimension(coeff_a in 1..50i64, coeff_b in 1..50i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m, a);
         let dims = physics_dims();
-        let f1 = Force::from_ex(symplex::default_context().int(coeff_a) * &m * &a);
-        let f2 = Force::from_ex(symplex::default_context().int(coeff_b) * &m * &a);
+        let f1 = Force::from_ex(__ctx.int(coeff_a) * &m * &a);
+        let f2 = Force::from_ex(__ctx.int(coeff_b) * &m * &a);
         let sum = &f1 + &f2;
         let dim = infer_dimension(sum.inner(), &dims).unwrap();
         prop_assert!(
@@ -131,9 +140,10 @@ proptest! {
 
     #[test]
     fn simplify_preserves_velocity_dimension(a in 1..50i64, b in 1..50i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; v, t);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; v, t);
         let dims = physics_dims();
-        let vel = Velocity::from_ex(&(symplex::default_context().int(a) * &v) + &(symplex::default_context().int(b) * &v));
+        let vel = Velocity::from_ex(&(__ctx.int(a) * &v) + &(__ctx.int(b) * &v));
         let simplified = vel.simplify();
         let dim = infer_dimension(simplified.inner(), &dims).unwrap();
         prop_assert!(dim.eq(ConstDim::VELOCITY),
@@ -143,9 +153,10 @@ proptest! {
     #[allow(non_snake_case)]
     #[test]
     fn simplify_preserves_voltage_dimension(a in 1..50i64, b in 1..50i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; I, R);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; I, R);
         let dims = physics_dims();
-        let v = Voltage::from_ex(&(symplex::default_context().int(a) * &I * &R) + &(symplex::default_context().int(b) * &I * &R));
+        let v = Voltage::from_ex(&(__ctx.int(a) * &I * &R) + &(__ctx.int(b) * &I * &R));
         let simplified = v.simplify();
         let dim = infer_dimension(simplified.inner(), &dims).unwrap();
         prop_assert!(dim.eq(ConstDim::VOLTAGE),
@@ -154,9 +165,10 @@ proptest! {
 
     #[test]
     fn simplify_preserves_power_dimension(coeff in 1..50i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, a, v);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m, a, v);
         let dims = physics_dims();
-        let p = Power::from_ex(symplex::default_context().int(coeff) * &m * &a * &v);
+        let p = Power::from_ex(__ctx.int(coeff) * &m * &a * &v);
         let simplified = p.simplify();
         let dim = infer_dimension(simplified.inner(), &dims).unwrap();
         prop_assert!(dim.eq(ConstDim::POWER),
@@ -165,9 +177,10 @@ proptest! {
 
     #[test]
     fn simplify_preserves_momentum_dimension(a in 1..50i64) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; m, v);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; m, v);
         let dims = physics_dims();
-        let p = Momentum::from_ex(symplex::default_context().int(a) * &m * &v);
+        let p = Momentum::from_ex(__ctx.int(a) * &m * &v);
         let simplified = p.simplify();
         let dim = infer_dimension(simplified.inner(), &dims).unwrap();
         prop_assert!(dim.eq(ConstDim::MOMENTUM),

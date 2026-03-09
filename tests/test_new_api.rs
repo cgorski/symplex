@@ -8,26 +8,30 @@ use symplex::prelude::*;
 
 #[test]
 fn smart_simplify_trig_identity() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
     assert_eq!(format!("{}", expr.smart_simplify()), "1");
 }
 
 #[test]
 fn smart_simplify_exp_ln() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert_eq!(format!("{}", x.ln().exp().smart_simplify()), "x");
 }
 
 #[test]
 fn smart_simplify_sin_zero() {
-    let result = symplex::default_context().int(0).sin().smart_simplify();
+    let __ctx = Context::new();
+    let result = __ctx.int(0).sin().smart_simplify();
     assert_eq!(format!("{result}"), "0");
 }
 
 #[test]
 fn smart_simplify_doesnt_bloat() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let ops_before = x.count_ops();
     let ops_after = x.smart_simplify().count_ops();
     assert!(ops_after <= ops_before + 1);
@@ -35,7 +39,8 @@ fn smart_simplify_doesnt_bloat() {
 
 #[test]
 fn smart_simplify_complex_expr() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     // (x+1)^2 - x^2 - 2x should simplify to 1
     let expr = &(&x + 1).powi(2) - &x.powi(2) - &(&x * 2);
     let s = format!("{}", expr.expand().smart_simplify());
@@ -48,14 +53,16 @@ fn smart_simplify_complex_expr() {
 
 #[test]
 fn count_ops_atom() {
-    assert_eq!(symplex::default_context().symbol("x").count_ops(), 0);
-    assert_eq!(symplex::default_context().int(5).count_ops(), 0);
-    assert_eq!(symplex::default_context().pi().count_ops(), 0);
+    let __ctx = Context::new();
+    assert_eq!(__ctx.symbol("x").count_ops(), 0);
+    assert_eq!(__ctx.int(5).count_ops(), 0);
+    assert_eq!(__ctx.pi().count_ops(), 0);
 }
 
 #[test]
 fn count_ops_simple() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert_eq!((&x + 1).count_ops(), 1); // Add
     assert_eq!(x.sin().count_ops(), 1); // Sin
     assert_eq!(x.sin().powi(2).count_ops(), 2); // Sin + Pow
@@ -63,7 +70,8 @@ fn count_ops_simple() {
 
 #[test]
 fn count_ops_complex() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
     assert!(expr.count_ops() >= 4); // Sin + Pow + Cos + Pow + Add
 }
@@ -74,10 +82,11 @@ fn count_ops_complex() {
 
 #[test]
 fn factor_terms_basic() {
+    let __ctx = Context::new();
     // factor_terms now returns (gcd, inner) where expr == gcd * inner.
     // The inner expression has each coefficient divided by gcd.
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let expr = &x * 4 + &y * 6;
     let (gcd, inner) = expr.factor_terms();
     let gcd_s = format!("{gcd}");
@@ -92,8 +101,9 @@ fn factor_terms_basic() {
 
 #[test]
 fn factor_terms_no_common() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let expr = &x + &y;
     let (gcd, inner) = expr.factor_terms();
     assert_eq!(format!("{gcd}"), "1");
@@ -102,7 +112,8 @@ fn factor_terms_no_common() {
 
 #[test]
 fn factor_terms_all_same() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x * 6 + 12;
     let (gcd, inner) = expr.factor_terms();
     let gcd_s = format!("{gcd}");
@@ -120,7 +131,8 @@ fn factor_terms_all_same() {
 
 #[test]
 fn rationalize_one_over_sqrt2() {
-    let expr = 1 / &symplex::default_context().int(2).sqrt();
+    let __ctx = Context::new();
+    let expr = __ctx.int(1) / &__ctx.int(2).sqrt();
     let result = expr.rationalize_denom();
     let s = format!("{result}");
     // 1/√2 → √2/2
@@ -129,7 +141,8 @@ fn rationalize_one_over_sqrt2() {
 
 #[test]
 fn rationalize_no_sqrt_unchanged() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = 1 / &x;
     let result = expr.rationalize_denom();
     assert_eq!(format!("{result}"), format!("{expr}"));
@@ -137,7 +150,8 @@ fn rationalize_no_sqrt_unchanged() {
 
 #[test]
 fn rationalize_integer_denom() {
-    let expr = &symplex::default_context().symbol("x") / &symplex::default_context().int(3);
+    let __ctx = Context::new();
+    let expr = &__ctx.symbol("x") / &__ctx.int(3);
     let result = expr.rationalize_denom();
     assert_eq!(format!("{result}"), format!("{expr}"));
 }
@@ -148,31 +162,35 @@ fn rationalize_integer_denom() {
 
 #[test]
 fn re_of_real() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert_eq!(format!("{}", x.re()), "x");
 }
 
 #[test]
 fn im_of_real() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert_eq!(format!("{}", x.im()), "0");
 }
 
 #[test]
 fn re_of_imaginary() {
-    let i = symplex::default_context().i_unit();
+    let __ctx = Context::new();
+    let i = __ctx.i_unit();
     assert_eq!(format!("{}", i.re()), "0");
 }
 
 #[test]
 fn im_of_imaginary() {
-    let i = symplex::default_context().i_unit();
+    let __ctx = Context::new();
+    let i = __ctx.i_unit();
     assert_eq!(format!("{}", i.im()), "1");
 }
 
 #[test]
 fn re_im_of_complex() {
-    let ctx = symplex::default_context();
+    let ctx = Context::new();
     let i = ctx.i_unit();
     let z = &ctx.int(3) + &(&ctx.int(4) * &i);
     assert_eq!(format!("{}", z.re()), "3");
@@ -181,14 +199,16 @@ fn re_im_of_complex() {
 
 #[test]
 fn re_of_number() {
-    assert_eq!(format!("{}", symplex::default_context().int(5).re()), "5");
-    assert_eq!(format!("{}", symplex::default_context().int(5).im()), "0");
+    let __ctx = Context::new();
+    assert_eq!(format!("{}", __ctx.int(5).re()), "5");
+    assert_eq!(format!("{}", __ctx.int(5).im()), "0");
 }
 
 #[test]
 fn re_im_of_pi() {
-    assert_eq!(format!("{}", symplex::default_context().pi().re()), "pi");
-    assert_eq!(format!("{}", symplex::default_context().pi().im()), "0");
+    let __ctx = Context::new();
+    assert_eq!(format!("{}", __ctx.pi().re()), "pi");
+    assert_eq!(format!("{}", __ctx.pi().im()), "0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -197,7 +217,8 @@ fn re_im_of_pi() {
 
 #[test]
 fn lambdify_x_squared_plus_1() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let f = &x.powi(2) + 1;
     let func = f.compile(&["x"]).unwrap();
     assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
@@ -206,7 +227,8 @@ fn lambdify_x_squared_plus_1() {
 
 #[test]
 fn lambdify_sin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let func = x.sin().compile(&["x"]).unwrap();
     assert!((func(&[0.0])).abs() < 1e-10);
     assert!((func(&[std::f64::consts::FRAC_PI_2]) - 1.0).abs() < 1e-10);
@@ -214,8 +236,9 @@ fn lambdify_sin() {
 
 #[test]
 fn lambdify_two_vars() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let f = &x * &y + 1;
     let func = f.compile(&["x", "y"]).unwrap();
     assert!((func(&[3.0, 4.0]) - 13.0).abs() < 1e-10);
@@ -223,20 +246,23 @@ fn lambdify_two_vars() {
 
 #[test]
 fn lambdify_complex_rejects() {
-    let i = symplex::default_context().i_unit();
+    let __ctx = Context::new();
+    let i = __ctx.i_unit();
     assert!(i.compile(&[]).is_none());
 }
 
 #[test]
 fn lambdify_pi_constant() {
-    let f = symplex::default_context().pi();
+    let __ctx = Context::new();
+    let f = __ctx.pi();
     let func = f.compile(&[]).unwrap();
     assert!((func(&[]) - std::f64::consts::PI).abs() < 1e-10);
 }
 
 #[test]
 fn lambdify_consistency_with_evalf() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let f = &x.sin().powi(2) + &x.cos().powi(2);
     let func = f.compile(&["x"]).unwrap();
     for pt in [0.0, 0.5, 1.0, 2.0, 3.15] {
@@ -250,8 +276,9 @@ fn lambdify_consistency_with_evalf() {
 
 #[test]
 fn cse_no_common() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let (bindings, result) = (&x + &y).cse();
     let _ = format!("{result}");
     // x + y has no shared subexpressions — bindings should be empty
@@ -264,7 +291,8 @@ fn cse_no_common() {
 
 #[test]
 fn cse_with_shared_subexpr() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let sin_x = x.sin();
     let expr = &sin_x.powi(2) + &sin_x;
     let (bindings, result) = expr.cse();
@@ -275,8 +303,9 @@ fn cse_with_shared_subexpr() {
 
 #[test]
 fn cse_doesnt_crash_on_complex() {
-    let x = symplex::default_context().symbol("x");
-    let i = symplex::default_context().i_unit();
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let i = __ctx.i_unit();
     let expr = &(&i * &x) + &(&i * &x.powi(2));
     let (_, result) = expr.cse();
     let _ = format!("{result}");

@@ -11,6 +11,7 @@ use symplex::prelude::*;
 use symplex::units::*;
 
 fn main() {
+    let __ctx = Context::new();
     println!("═══════════════════════════════════════════════════════════════");
     println!("   Symplex: expr! + Units + Calculus — Full Workflow Demo");
     println!("═══════════════════════════════════════════════════════════════\n");
@@ -55,7 +56,7 @@ fn pattern_1_expr_and_from_ex() {
     println!("── Pattern 1: expr! + from_ex() ──");
 
     // Declare raw Ex variables for use inside expr!
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; m, v, a, t, g, k, x);
 
     // Build complex expressions ergonomically with expr!, wrap with from_ex()
@@ -77,8 +78,8 @@ fn pattern_1_expr_and_from_ex() {
 
     // Substitute numerical values — dimension preserved!
     let ke_val = ke.clone()
-        .subs(&m, &symplex::default_context().int(2))
-        .subs(&v, &symplex::default_context().int(3))
+        .subs(&m, &__ctx.int(2))
+        .subs(&v, &__ctx.int(3))
         .eval();
     println!("  KE(m=2, v=3) = {}", ke_val);
 
@@ -91,6 +92,7 @@ fn pattern_1_expr_and_from_ex() {
 //   has a named result type.
 // ─────────────────────────────────────────────────────────────────────────
 fn pattern_2_named_arithmetic() {
+    let __ctx = Context::new();
     println!("── Pattern 2: Named Type Arithmetic ──");
 
     let mass = Mass::symbol("m");
@@ -131,7 +133,7 @@ fn pattern_2_named_arithmetic() {
 fn pattern_3_typed_calculus_diff_wrt() {
     println!("── Pattern 3: Typed Calculus (DiffWrt / IntWrt) ──");
 
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; a, t);
 
     // Create typed variables
@@ -166,7 +168,7 @@ fn pattern_3_typed_calculus_diff_wrt() {
 fn pattern_4_kinematics_chain() {
     println!("── Pattern 4: Kinematics Chain ──");
 
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; g, t, v0, x0);
 
     // Free-fall: x(t) = x₀ + v₀t + ½gt²
@@ -183,10 +185,10 @@ fn pattern_4_kinematics_chain() {
 
     // Substitute: g=9.81, t=2, v0=5, x0=0
     let x_num = position.clone()
-        .subs(&g, &symplex::default_context().rational(981, 100))
-        .subs(&t, &symplex::default_context().int(2))
-        .subs(&v0, &symplex::default_context().int(5))
-        .subs(&x0, &symplex::default_context().int(0))
+        .subs(&g, &__ctx.rational(981, 100))
+        .subs(&t, &__ctx.int(2))
+        .subs(&v0, &__ctx.int(5))
+        .subs(&x0, &__ctx.int(0))
         .eval();
     println!("  x(g=9.81, t=2, v0=5, x0=0) = {}", x_num);
 
@@ -197,6 +199,7 @@ fn pattern_4_kinematics_chain() {
 // Pattern 5: Ohm's Law, Power, and dP/dI
 // ─────────────────────────────────────────────────────────────────────────
 fn pattern_5_electrical_power() {
+    let __ctx = Context::new();
     println!("── Pattern 5: Electrical — V=IR, P=IV, dP/dI ──");
 
     // Named typed variables
@@ -237,7 +240,7 @@ fn pattern_6_pendulum_lagrangian() {
     println!("── Pattern 6: Pendulum Lagrangian ──");
 
     // Raw vars for expr! — most ergonomic for complex formulas
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; m, l, g, theta, theta_dot);
 
     // Typed variables for DiffWrt
@@ -268,10 +271,10 @@ fn pattern_6_pendulum_lagrangian() {
 
     // ── Substitute and evaluate ──
     let torque_at = dl_dtheta_simplified
-        .subs(&m, &symplex::default_context().int(1))
-        .subs(&g, &symplex::default_context().rational(981, 100))
-        .subs(&l, &symplex::default_context().rational(1, 2))
-        .subs(&theta, &symplex::default_context().rational(1, 10))  // θ = 0.1 rad
+        .subs(&m, &__ctx.int(1))
+        .subs(&g, &__ctx.rational(981, 100))
+        .subs(&l, &__ctx.rational(1, 2))
+        .subs(&theta, &__ctx.rational(1, 10))  // θ = 0.1 rad
         .eval();
     println!("  τ(m=1, g=9.81, l=0.5, θ=0.1) = {}", torque_at);
 
@@ -286,6 +289,7 @@ fn pattern_6_pendulum_lagrangian() {
 // Pattern 7: Spring-Mass-Damper — F = -kx - cv + F_ext
 // ─────────────────────────────────────────────────────────────────────────
 fn pattern_7_spring_mass_damper() {
+    let __ctx = Context::new();
     println!("── Pattern 7: Spring-Mass-Damper ──");
 
     // Use named types for the force equation
@@ -321,36 +325,36 @@ fn pattern_7_spring_mass_damper() {
 fn pattern_8_unit_conversions() {
     println!("── Pattern 8: Unit Conversions ──");
 
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; val);
 
     // Length: 5 kilometers → meters
-    let five = symplex::default_context().int(5);
+    let five = __ctx.int(5);
     let distance = Length::kilometers(&five);
     println!("  5 km = {}", distance.eval());
 
     // Power: 120 horsepower → watts
-    let hp_val = symplex::default_context().int(120);
+    let hp_val = __ctx.int(120);
     let power = Power::horsepower(&hp_val);
     println!("  120 hp = {}", power.eval());
 
     // Temperature: 100°C → kelvin
-    let boiling = symplex::default_context().int(100);
+    let boiling = __ctx.int(100);
     let temp = Temperature::from_celsius(&boiling);
     println!("  100°C = {}", temp.eval());
 
     // Angle: 90 degrees → radians
-    let right_angle = symplex::default_context().int(90);
+    let right_angle = __ctx.int(90);
     let angle = Angle::degrees(&right_angle);
     println!("  90° = {} rad", angle);
 
     // Pressure: 1 atmosphere → pascals
-    let one = symplex::default_context().int(1);
+    let one = __ctx.int(1);
     let atm = Pressure::atmospheres(&one);
     println!("  1 atm = {}", atm.eval());
 
     // Frequency: 3600 RPM → hertz
-    let rpm_val = symplex::default_context().int(3600);
+    let rpm_val = __ctx.int(3600);
     let freq = Frequency::rpm(&rpm_val);
     println!("  3600 RPM = {}", freq.eval());
 
@@ -393,6 +397,7 @@ symplex::const_assert_dim!(
 );
 
 fn pattern_9_compile_time_assertions() {
+    let __ctx = Context::new();
     println!("── Pattern 9: Compile-Time Assertions ──");
     println!("  ✓ F = ma     (verified at compile time)");
     println!("  ✓ W = Fd     (verified at compile time)");
@@ -414,6 +419,8 @@ fn pattern_10_physical_constants() {
 
     use symplex::units::constants;
 
+    let __ctx = Context::new();
+
     let c = constants::speed_of_light();
     let m = Mass::symbol("m");
     let energy = symplex::dim!(Energy: m * c * c);
@@ -424,12 +431,11 @@ fn pattern_10_physical_constants() {
         "Should display with 'c', not numeric value");
 
     // Exact evaluation
-    let val = energy.subs(&m, &symplex::default_context().int(1)).eval_f64().unwrap();
+    let val = energy.subs(&m, &__ctx.int(1)).eval_f64().unwrap();
     assert!((val - 8.987551787e16).abs() / val < 1e-8);
     println!("  E(m=1) = {:.3e} J ✓", val);
 
     // Derivative of constant is zero
-    let __ctx = symplex::default_context();
     symplex::syms!(__ctx; x);
     assert_eq!(format!("{}", c.diff(&x)), "0");
     println!("  d/dx(c) = 0 ✓");

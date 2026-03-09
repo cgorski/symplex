@@ -35,46 +35,51 @@ fn try_ftc_or_unevaluated(integrand: &Ex, var: &Ex, label: &str) -> bool {
 
 #[test]
 fn hard_int_x_squared_exp_x() {
+    let __ctx = Context::new();
     // ∫ x²·exp(x) dx — requires triple integration by parts
     // Expected: x²·exp(x) - 2x·exp(x) + 2·exp(x)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x.powi(2) * &x.exp();
     common::assert_ftc(&integrand, &x, "∫ x²·exp(x) dx");
 }
 
 #[test]
 fn hard_int_x_sin_x() {
+    let __ctx = Context::new();
     // ∫ x·sin(x) dx — integration by parts
     // Expected: sin(x) - x·cos(x)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x * &x.sin();
     common::assert_ftc(&integrand, &x, "∫ x·sin(x) dx");
 }
 
 #[test]
 fn hard_int_x_cos_x() {
+    let __ctx = Context::new();
     // ∫ x·cos(x) dx — integration by parts
     // Expected: cos(x) + x·sin(x)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x * &x.cos();
     common::assert_ftc(&integrand, &x, "∫ x·cos(x) dx");
 }
 
 #[test]
 fn hard_int_x_exp_neg_x() {
+    let __ctx = Context::new();
     // ∫ x·exp(-x) dx — integration by parts
     // Expected: -x·exp(-x) - exp(-x) = -(x+1)·exp(-x)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x * &(-&x).exp();
     common::assert_ftc(&integrand, &x, "∫ x·exp(-x) dx");
 }
 
 #[test]
 fn hard_int_ln_x_squared() {
+    let __ctx = Context::new();
     // ∫ ln(x)² dx — requires IBP twice
     // Expected: x·ln(x)² - 2x·ln(x) + 2x
     // If the CAS can't handle it, verify it returns unevaluated (not wrong)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = x.ln().powi(2);
     let antideriv = integrand.integrate(&x);
     let s = format!("{antideriv}");
@@ -82,7 +87,7 @@ fn hard_int_ln_x_squared() {
         // It claims to have an answer — verify correctness via FTC
         // Use points > 0 to avoid ln(negative)
         let deriv = antideriv.diff(&x);
-        let ctx = symplex::default_context();
+        let ctx = __ctx.clone();
         for &pt_f in &[0.5, 1.5, 2.7] {
             let numer = (pt_f * 1000.0) as i64;
             let pt = ctx.rational(numer, 1000);
@@ -102,9 +107,10 @@ fn hard_int_ln_x_squared() {
 
 #[test]
 fn hard_int_one_over_x2_plus_1() {
+    let __ctx = Context::new();
     // ∫ 1/(x²+1) dx = atan(x)
-    let x = symplex::default_context().symbol("x");
-    let integrand = &symplex::default_context().int(1) / &(&x.powi(2) + 1);
+    let x = __ctx.symbol("x");
+    let integrand = &__ctx.int(1) / &(&x.powi(2) + 1);
     let result = integrand.integrate(&x);
     let s = format!("{result}");
     assert!(
@@ -116,16 +122,17 @@ fn hard_int_one_over_x2_plus_1() {
 
 #[test]
 fn hard_int_one_over_sqrt_1_minus_x2() {
+    let __ctx = Context::new();
     // ∫ 1/√(1-x²) dx = asin(x)
     // Domain: |x| < 1
-    let x = symplex::default_context().symbol("x");
-    let integrand = &symplex::default_context().int(1) / &(&symplex::default_context().int(1) - &x.powi(2)).sqrt();
+    let x = __ctx.symbol("x");
+    let integrand = &__ctx.int(1) / &(&__ctx.int(1) - &x.powi(2)).sqrt();
     let antideriv = integrand.integrate(&x);
     let s = format!("{antideriv}");
     if !s.contains("Integral") {
         // Verify via FTC at points strictly inside (-1, 1)
         let deriv = antideriv.diff(&x);
-        let ctx = symplex::default_context();
+        let ctx = __ctx.clone();
         for &pt_f in &[0.3, 0.5, 0.7] {
             let numer = (pt_f * 1000.0) as i64;
             let pt = ctx.rational(numer, 1000);
@@ -144,26 +151,29 @@ fn hard_int_one_over_sqrt_1_minus_x2() {
 
 #[test]
 fn hard_int_exp_sin_cyclic() {
+    let __ctx = Context::new();
     // ∫ exp(x)·sin(x) dx — cyclic integration by parts
     // Expected: exp(x)(sin(x) - cos(x))/2
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x.exp() * &x.sin();
     common::assert_ftc(&integrand, &x, "∫ exp(x)·sin(x) dx");
 }
 
 #[test]
 fn hard_int_exp_cos_cyclic() {
+    let __ctx = Context::new();
     // ∫ exp(x)·cos(x) dx — cyclic integration by parts
     // Expected: exp(x)(sin(x) + cos(x))/2
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x.exp() * &x.cos();
     common::assert_ftc(&integrand, &x, "∫ exp(x)·cos(x) dx");
 }
 
 #[test]
 fn hard_int_sec_squared() {
+    let __ctx = Context::new();
     // ∫ sec²(x) dx = ∫ cos(x)^(-2) dx = tan(x)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = x.cos().powi(-2);
     common::assert_ftc(&integrand, &x, "∫ sec²(x) dx");
 }
@@ -174,8 +184,9 @@ fn hard_int_sec_squared() {
 
 #[test]
 fn hard_solve_biquadratic() {
+    let __ctx = Context::new();
     // x⁴ - 5x² + 4 = 0  →  (x²-1)(x²-4) = 0  →  roots ±1, ±2
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let poly = &(&x.powi(4) - &(&x.powi(2) * 5)) + 4;
     let roots = poly.solve_or_empty(&x);
 
@@ -199,8 +210,9 @@ fn hard_solve_biquadratic() {
 
 #[test]
 fn hard_solve_cubic_factored() {
+    let __ctx = Context::new();
     // x³ - 6x² + 11x - 6 = 0  →  (x-1)(x-2)(x-3) = 0  →  roots 1, 2, 3
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let poly = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6;
     let roots = poly.solve_or_empty(&x);
 
@@ -221,8 +233,9 @@ fn hard_solve_cubic_factored() {
 
 #[test]
 fn hard_solve_x4_minus_1() {
+    let __ctx = Context::new();
     // x⁴ - 1 = 0  →  roots ±1, ±i
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let poly = &x.powi(4) - 1;
     let roots = poly.solve_or_empty(&x);
 
@@ -238,11 +251,12 @@ fn hard_solve_x4_minus_1() {
 
 #[test]
 fn hard_solve_2x3_minus_3x2_minus_8x_plus_12() {
+    let __ctx = Context::new();
     // 2x³ - 3x² - 8x + 12 = 0
     // Rational root theorem candidates: ±1, ±2, ±3, ±4, ±6, ±12, ±1/2, ±3/2
     // Testing: x=2 → 16-12-16+12=0 ✓, x=-2 → -16-12+16+12=0 ✓, x=3/2 → 27/4-27/4-12+12=0 ✓
     // Roots: 2, -2, 3/2
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let poly = &(&(&x.powi(3) * 2) - &(&x.powi(2) * 3)) - &(&x * 8) + 12;
     let roots = poly.solve_or_empty(&x);
 
@@ -268,10 +282,11 @@ fn hard_solve_2x3_minus_3x2_minus_8x_plus_12() {
 
 #[test]
 fn hard_solve_verify_no_wrong_roots() {
+    let __ctx = Context::new();
     // x² + x + 1 = 0  →  complex roots (-1 ± i√3)/2
     // The solver should either find the correct complex roots or return empty.
     // It must NEVER return wrong real roots.
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let poly = &x.powi(2) + &x + 1;
     let roots = poly.solve_or_empty(&x);
 
@@ -284,9 +299,10 @@ fn hard_solve_verify_no_wrong_roots() {
 
 #[test]
 fn hard_solve_quartic_with_only_complex_roots() {
+    let __ctx = Context::new();
     // x⁴ + 4 = 0 — all four roots are complex
     // Roots: (1±i)√2/√2 and (-1±i)√2/√2 (various forms)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let poly = &x.powi(4) + 4;
     let roots = poly.solve_or_empty(&x);
 
@@ -299,8 +315,9 @@ fn hard_solve_quartic_with_only_complex_roots() {
 
 #[test]
 fn hard_solve_cubic_verify_by_substitution() {
+    let __ctx = Context::new();
     // x³ + 3x² - 4 = 0  →  (x-1)(x+2)² = 0  →  roots 1, -2 (double)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let poly = &x.powi(3) + &(&x.powi(2) * 3) - 4;
     let roots = poly.solve_or_empty(&x);
 
@@ -326,29 +343,31 @@ fn hard_solve_cubic_verify_by_substitution() {
 
 #[test]
 fn hard_simp_sin_plus_cos_squared() {
+    let __ctx = Context::new();
     // (sin(x) + cos(x))² expanded → should simplify to 1 + 2·sin(x)·cos(x)
     // or equivalently 1 + sin(2x) — verify numerically at multiple points
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = (&x.sin() + &x.cos()).powi(2);
     let expanded = expr.expand();
     let simplified = expanded.full_simplify();
 
     // Verify numerically: (sin(x)+cos(x))² = 1 + 2·sin(x)·cos(x)
-    let expected = &symplex::default_context().int(1) + &(&x.sin() * &x.cos()) * 2;
+    let expected = &__ctx.int(1) + &(&x.sin() * &x.cos()) * 2;
     common::assert_math_eq(&simplified, &expected, &x, "(sin+cos)² = 1 + 2sin·cos");
 }
 
 #[test]
 fn hard_simp_exp_ln_sum() {
+    let __ctx = Context::new();
     // exp(ln(x) + ln(y)) → x·y
     // Verify numerically with two-variable substitution
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let expr = (&x.ln() + &y.ln()).exp();
     let simplified = expr.full_simplify();
 
     // Verify numerically at a specific point
-    let ctx = symplex::default_context();
+    let ctx = __ctx.clone();
     let pt_x = ctx.int(3);
     let pt_y = ctx.int(5);
     let original_val = expr
@@ -376,10 +395,11 @@ fn hard_simp_exp_ln_sum() {
 
 #[test]
 fn hard_simp_sin_2x_over_2cos_x() {
+    let __ctx = Context::new();
     // sin(2x)/(2·cos(x)) → sin(x)
     // Because sin(2x) = 2·sin(x)·cos(x), so sin(2x)/(2·cos(x)) = sin(x)
     // Verify numerically even if symbolic simplification doesn't fully reduce
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let sin_2x = (&x * 2).sin();
     let expr = &sin_2x / &(&x.cos() * 2);
     let target = x.sin();
@@ -390,10 +410,11 @@ fn hard_simp_sin_2x_over_2cos_x() {
 
 #[test]
 fn hard_simp_difference_of_squares_cancel() {
+    let __ctx = Context::new();
     // (x²-y²)/(x-y) → x+y after cancellation
     // Verify with two-variable substitution
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
 
     let numer = &x.powi(2) - &y.powi(2);
     let denom = &x - &y;
@@ -402,7 +423,7 @@ fn hard_simp_difference_of_squares_cancel() {
     let target = &x + &y;
 
     // Verify numerically at a specific point where x ≠ y
-    let ctx = symplex::default_context();
+    let ctx = __ctx.clone();
     let pt_x = ctx.int(5);
     let pt_y = ctx.int(3);
     let expr_val = expr
@@ -429,9 +450,10 @@ fn hard_simp_difference_of_squares_cancel() {
 
 #[test]
 fn hard_simp_cos2_minus_sin2() {
+    let __ctx = Context::new();
     // cos²(x) - sin²(x) → cos(2x)  (double angle identity)
     // Verify numerically even if symbolic form differs
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = &x.cos().powi(2) - &x.sin().powi(2);
     let target = (&x * 2).cos();
 
@@ -440,9 +462,10 @@ fn hard_simp_cos2_minus_sin2() {
 
 #[test]
 fn hard_simp_pythagorean_in_sum() {
+    let __ctx = Context::new();
     // sin²(x) + cos²(x) + x → x + 1
     // The Pythagorean identity should fire inside a larger sum
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2) + &x;
     let simplified = expr.full_simplify();
     let expected = &x + 1;
@@ -456,8 +479,9 @@ fn hard_simp_pythagorean_in_sum() {
 
 #[test]
 fn hard_simp_exp_ln_roundtrip() {
+    let __ctx = Context::new();
     // exp(ln(x)) → x
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = x.ln().exp();
     let simplified = expr.full_simplify();
     assert_eq!(
@@ -473,10 +497,11 @@ fn hard_simp_exp_ln_roundtrip() {
 
 #[test]
 fn hard_limit_sin_x_over_x() {
+    let __ctx = Context::new();
     // lim x→0 sin(x)/x = 1
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = &x.sin() / &x;
-    let result = expr.limit(&x, &symplex::default_context().int(0));
+    let result = expr.limit(&x, &__ctx.int(0));
     assert_eq!(
         format!("{result}"),
         "1",
@@ -486,10 +511,11 @@ fn hard_limit_sin_x_over_x() {
 
 #[test]
 fn hard_limit_exp_minus_1_over_x() {
+    let __ctx = Context::new();
     // lim x→0 (exp(x)-1)/x = 1
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = &(&x.exp() - 1) / &x;
-    let result = expr.try_limit(&x, &symplex::default_context().int(0));
+    let result = expr.try_limit(&x, &__ctx.int(0));
     match result {
         Ok(r) => {
             let s = format!("{r}");
@@ -503,12 +529,13 @@ fn hard_limit_exp_minus_1_over_x() {
 
 #[test]
 fn hard_limit_1_plus_1_over_x_to_x() {
+    let __ctx = Context::new();
     // lim x→∞ (1 + 1/x)^x = e
     // This is one of the hardest standard limits — many CAS engines struggle
-    let x = symplex::default_context().symbol("x");
-    let base = &symplex::default_context().int(1) + &(&symplex::default_context().int(1) / &x);
+    let x = __ctx.symbol("x");
+    let base = &__ctx.int(1) + &(&__ctx.int(1) / &x);
     let expr = base.pow(&x);
-    let result = expr.try_limit(&x, &symplex::default_context().infinity());
+    let result = expr.try_limit(&x, &__ctx.infinity());
     // Just verify it doesn't crash — exact result is a bonus
     match result {
         Ok(r) => {
@@ -533,10 +560,11 @@ fn hard_limit_1_plus_1_over_x_to_x() {
 
 #[test]
 fn hard_limit_1_minus_cos_over_x2() {
+    let __ctx = Context::new();
     // lim x→0 (1-cos(x))/x² = 1/2
-    let x = symplex::default_context().symbol("x");
-    let expr = &(&symplex::default_context().int(1) - &x.cos()) / &x.powi(2);
-    let result = expr.try_limit(&x, &symplex::default_context().int(0));
+    let x = __ctx.symbol("x");
+    let expr = &(&__ctx.int(1) - &x.cos()) / &x.powi(2);
+    let result = expr.try_limit(&x, &__ctx.int(0));
     match result {
         Ok(r) => {
             let s = format!("{r}");
@@ -553,10 +581,11 @@ fn hard_limit_1_minus_cos_over_x2() {
 
 #[test]
 fn hard_limit_x_exp_neg_x_at_infinity() {
+    let __ctx = Context::new();
     // lim x→∞ x·exp(-x) = 0
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = &x * &(-&x).exp();
-    let result = expr.try_limit(&x, &symplex::default_context().infinity());
+    let result = expr.try_limit(&x, &__ctx.infinity());
     match result {
         Ok(r) => {
             assert_eq!(
@@ -577,10 +606,11 @@ fn hard_limit_x_exp_neg_x_at_infinity() {
 
 #[test]
 fn hard_series_geometric() {
+    let __ctx = Context::new();
     // Taylor of 1/(1-x) at x=0 order 5:
     // 1 + x + x² + x³ + x⁴ (coefficients all 1 — geometric series)
-    let x = symplex::default_context().symbol("x");
-    let f = &symplex::default_context().int(1) / &(&symplex::default_context().int(1) - &x);
+    let x = __ctx.symbol("x");
+    let f = &__ctx.int(1) / &(&__ctx.int(1) - &x);
     let series = f.try_maclaurin(&x, 5);
     match series {
         Ok(s) => {
@@ -588,7 +618,7 @@ fn hard_series_geometric() {
             // Verify numerically: at x=0.3, 1/(1-0.3) ≈ 1.4286
             // and 1+0.3+0.09+0.027+0.0081 = 1.3951 (close but truncated)
             // The key check: verify coefficients by evaluating at several points
-            let ctx = symplex::default_context();
+            let ctx = __ctx.clone();
             let pt = ctx.rational(1, 10); // x = 0.1
             let series_val = expanded.subs(&x, &pt).eval().eval_f64();
             let exact_val = f.subs(&x, &pt).eval().eval_f64();
@@ -608,8 +638,9 @@ fn hard_series_geometric() {
 
 #[test]
 fn hard_series_arctan() {
+    let __ctx = Context::new();
     // Maclaurin of atan(x) order 6: x - x³/3 + x⁵/5
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let series = x.atan().try_maclaurin(&x, 6);
     match series {
         Ok(s) => {
@@ -622,7 +653,7 @@ fn hard_series_arctan() {
             );
 
             // Verify numerically at a small point
-            let ctx = symplex::default_context();
+            let ctx = __ctx.clone();
             let pt = ctx.rational(1, 4); // x = 0.25
             let series_val = expanded.subs(&x, &pt).eval().eval_f64();
             let exact_val = x.atan().subs(&x, &pt).eval().eval_f64();
@@ -641,15 +672,16 @@ fn hard_series_arctan() {
 
 #[test]
 fn hard_series_exp_coefficients() {
+    let __ctx = Context::new();
     // Taylor of exp(x) order 7: verify coefficient of x^k is 1/k! for each k
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let series = x.exp().try_maclaurin(&x, 7);
     match series {
         Ok(s) => {
             let expanded = s.expand();
             // Verify numerically: at x=1, exp(1)≈2.71828
             // Series: 1 + 1 + 1/2 + 1/6 + 1/24 + 1/120 + 1/720 = 2.71806
-            let ctx = symplex::default_context();
+            let ctx = __ctx.clone();
             let pt = ctx.rational(1, 2); // x = 0.5
             let series_val = expanded.subs(&x, &pt).eval().eval_f64();
             let exact_val = x.exp().subs(&x, &pt).eval().eval_f64();
@@ -668,15 +700,16 @@ fn hard_series_exp_coefficients() {
 
 #[test]
 fn hard_series_sin_odd_terms_only() {
+    let __ctx = Context::new();
     // Maclaurin of sin(x) order 6: x - x³/6 + x⁵/120
     // Should have only odd powers
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let series = x.sin().try_maclaurin(&x, 6);
     match series {
         Ok(s) => {
             let expanded = s.expand();
             // Numerical verification at a small point
-            let ctx = symplex::default_context();
+            let ctx = __ctx.clone();
             let pt = ctx.rational(1, 5); // x = 0.2
             let series_val = expanded.subs(&x, &pt).eval().eval_f64();
             let exact_val = x.sin().subs(&x, &pt).eval().eval_f64();
@@ -699,9 +732,10 @@ fn hard_series_sin_odd_terms_only() {
 
 #[test]
 fn negative_no_rational_roots_polynomial() {
+    let __ctx = Context::new();
     // x⁵ - x - 1 = 0 has no rational roots (by rational root theorem: ±1 don't work)
     // The solver should return empty or the polynomial unchanged — not a wrong answer
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let poly = &x.powi(5) - &x - 1;
 
     let roots = poly.solve_or_empty(&x);
@@ -714,9 +748,10 @@ fn negative_no_rational_roots_polynomial() {
 
 #[test]
 fn negative_gaussian_integral_unevaluated() {
+    let __ctx = Context::new();
     // ∫ exp(-x²) dx should return erf-related result or stay unevaluated
     // It absolutely must NOT return a wrong closed-form answer
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = (-&x.powi(2)).exp();
     let result = integrand.integrate(&x);
     let s = format!("{result}");
@@ -725,7 +760,7 @@ fn negative_gaussian_integral_unevaluated() {
         // It claims a closed-form answer that's not erf — verify via FTC
         // This should fail because there is no elementary antiderivative
         let deriv = result.diff(&x);
-        let ctx = symplex::default_context();
+        let ctx = __ctx.clone();
         let pt = ctx.rational(7, 10);
         let orig_val = integrand.subs(&x, &pt).eval().eval_f64();
         let deriv_val = deriv.subs(&x, &pt).eval().eval_f64();
@@ -744,14 +779,15 @@ fn negative_gaussian_integral_unevaluated() {
 
 #[test]
 fn negative_simple_sum_unchanged() {
+    let __ctx = Context::new();
     // simplify(x + y) should return x + y unchanged — no spurious simplification
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let expr = &x + &y;
     let simplified = expr.simplify();
 
     // Verify numerically that simplification preserved value
-    let ctx = symplex::default_context();
+    let ctx = __ctx.clone();
     let pt_x = ctx.int(7);
     let pt_y = ctx.int(11);
     let orig_val = expr
@@ -778,15 +814,16 @@ fn negative_simple_sum_unchanged() {
 
 #[test]
 fn negative_simplify_product_not_destroyed() {
+    let __ctx = Context::new();
     // simplify(x * y * z) should remain a three-variable product
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
-    let z = symplex::default_context().symbol("z");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
+    let z = __ctx.symbol("z");
     let expr = &(&x * &y) * &z;
     let simplified = expr.simplify();
 
     // Verify value at a concrete point
-    let ctx = symplex::default_context();
+    let ctx = __ctx.clone();
     let orig_val = expr
         .subs(&x, &ctx.int(2))
         .subs(&y, &ctx.int(3))
@@ -817,16 +854,17 @@ fn negative_simplify_product_not_destroyed() {
 
 #[test]
 fn multi_var_mixed_partial_derivative() {
+    let __ctx = Context::new();
     // f = x²·y³  →  ∂²f/∂x∂y = ∂/∂x(∂/∂y(x²·y³)) = ∂/∂x(3x²y²) = 6xy²
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let f = &x.powi(2) * &y.powi(3);
 
     let df_dy = f.diff(&y);      // 3x²y²
     let d2f_dxdy = df_dy.diff(&x); // 6xy²
 
     // Verify numerically: at x=2, y=3: 6·2·9 = 108
-    let ctx = symplex::default_context();
+    let ctx = __ctx.clone();
     let val = d2f_dxdy
         .subs(&x, &ctx.int(2))
         .subs(&y, &ctx.int(3))
@@ -855,8 +893,9 @@ fn multi_var_mixed_partial_derivative() {
 
 #[test]
 fn multi_var_gradient_of_sum_of_squares() {
+    let __ctx = Context::new();
     // f = x² + y² + z²  →  ∇f = [2x, 2y, 2z]
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y, z);
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x, y, z);
     let f = expr!(x ^ 2 + y ^ 2 + z ^ 2);
     let grad = gradient(&f, &[&x, &y, &z]);
 
@@ -869,7 +908,7 @@ fn multi_var_gradient_of_sum_of_squares() {
     assert_eq!(format!("{}", grad.get(2, 0)), "2*z");
 
     // Verify numerically: ∇f at (1,2,3) = [2, 4, 6]
-    let ctx = symplex::default_context();
+    let ctx = __ctx.clone();
     let g0_val = grad
         .get(0, 0)
         .subs(&x, &ctx.int(1))
@@ -901,14 +940,15 @@ fn multi_var_gradient_of_sum_of_squares() {
 
 #[test]
 fn multi_var_jacobian_2x2() {
+    let __ctx = Context::new();
     // f1 = x² + y,  f2 = x·y
     // Jacobian:
     //   | ∂f1/∂x  ∂f1/∂y |   | 2x  1 |
     //   | ∂f2/∂x  ∂f2/∂y | = |  y  x |
     //
     // Determinant: 2x·x - 1·y = 2x² - y
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let f1 = &x.powi(2) + &y;
     let f2 = &x * &y;
     let j = jacobian(&[&f1, &f2], &[&x, &y]);
@@ -917,7 +957,7 @@ fn multi_var_jacobian_2x2() {
     assert_eq!(j.ncols(), 2);
 
     // Verify Jacobian entries numerically at (x,y) = (3,2)
-    let ctx = symplex::default_context();
+    let ctx = __ctx.clone();
     let j00 = j.get(0, 0).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[0,0]");
     let j01 = j.get(0, 1).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[0,1]");
     let j10 = j.get(1, 0).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[1,0]");
@@ -948,9 +988,10 @@ fn multi_var_jacobian_2x2() {
 
 #[test]
 fn hard_int_x_cubed_exp_x() {
+    let __ctx = Context::new();
     // ∫ x³·exp(x) dx — requires four integration by parts steps
     // Expected: exp(x)(x³ - 3x² + 6x - 6)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x.powi(3) * &x.exp();
     let evaluated = try_ftc_or_unevaluated(&integrand, &x, "∫ x³·exp(x) dx");
     if evaluated {
@@ -961,18 +1002,20 @@ fn hard_int_x_cubed_exp_x() {
 
 #[test]
 fn hard_int_x_squared_sin_x() {
+    let __ctx = Context::new();
     // ∫ x²·sin(x) dx — requires double integration by parts
     // Expected: 2x·sin(x) - (x²-2)·cos(x)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x.powi(2) * &x.sin();
     try_ftc_or_unevaluated(&integrand, &x, "∫ x²·sin(x) dx");
 }
 
 #[test]
 fn hard_solve_quadratic_with_parameters() {
+    let __ctx = Context::new();
     // Solve x² - 5x + 6 = 0  →  roots 2, 3
     // This is a standard quadratic but we verify the roots are exact integers
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let poly = &x.powi(2) - &(&x * 5) + 6;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²-5x+6 should have 2 roots, got {}", roots.len());
@@ -986,9 +1029,10 @@ fn hard_solve_quadratic_with_parameters() {
 
 #[test]
 fn hard_simp_trig_double_angle_expansion() {
+    let __ctx = Context::new();
     // sin(2x) expanded via trig should equal 2·sin(x)·cos(x)
     // Verify numerically
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let sin_2x = (&x * 2).sin();
     let double_angle = &(&x.sin() * &x.cos()) * 2;
 
@@ -1002,11 +1046,12 @@ fn hard_simp_trig_double_angle_expansion() {
 
 #[test]
 fn hard_limit_polynomial_direct_sub() {
+    let __ctx = Context::new();
     // lim x→3 (x³ - 27)/(x - 3) = 27
     // Factor: x³ - 27 = (x-3)(x² + 3x + 9), so limit = 9 + 9 + 9 = 27
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = &(&x.powi(3) - 27) / &(&x - 3);
-    let result = expr.try_limit(&x, &symplex::default_context().int(3));
+    let result = expr.try_limit(&x, &__ctx.int(3));
     match result {
         Ok(r) => {
             let s = format!("{r}");
@@ -1020,23 +1065,25 @@ fn hard_limit_polynomial_direct_sub() {
 
 #[test]
 fn hard_int_polynomial_long() {
+    let __ctx = Context::new();
     // ∫ (x⁵ + 3x³ - 2x + 7) dx = x⁶/6 + 3x⁴/4 - x² + 7x
     // Verify via FTC
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x.powi(5) + &(&x.powi(3) * 3) - &(&x * 2) + 7;
     common::assert_ftc(&integrand, &x, "∫ (x⁵+3x³-2x+7) dx");
 }
 
 #[test]
 fn hard_series_cos_even_terms_only() {
+    let __ctx = Context::new();
     // Maclaurin of cos(x) order 6: 1 - x²/2 + x⁴/24
     // Should have only even powers
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let series = x.cos().try_maclaurin(&x, 6);
     match series {
         Ok(s) => {
             let expanded = s.expand();
-            let ctx = symplex::default_context();
+            let ctx = __ctx.clone();
             let pt = ctx.rational(1, 5); // x = 0.2
             let series_val = expanded.subs(&x, &pt).eval().eval_f64();
             let exact_val = x.cos().subs(&x, &pt).eval().eval_f64();
@@ -1055,8 +1102,9 @@ fn hard_series_cos_even_terms_only() {
 
 #[test]
 fn hard_solve_depressed_cubic() {
+    let __ctx = Context::new();
     // x³ - 7x + 6 = 0 → (x-1)(x-2)(x+3) = 0 → roots 1, 2, -3
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let poly = &x.powi(3) - &(&x * 7) + 6;
     let roots = poly.solve_or_empty(&x);
     assert!(
@@ -1069,9 +1117,10 @@ fn hard_solve_depressed_cubic() {
 
 #[test]
 fn hard_int_then_diff_roundtrip_complex() {
+    let __ctx = Context::new();
     // d/dx(∫ x²·cos(x) dx) should give back x²·cos(x)
     // This tests the full IBP → differentiation pipeline
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x.powi(2) * &x.cos();
     let antideriv = integrand.integrate(&x);
     let s = format!("{antideriv}");
@@ -1089,9 +1138,10 @@ fn hard_int_then_diff_roundtrip_complex() {
 
 #[test]
 fn hard_simp_cancel_cubic_over_linear() {
+    let __ctx = Context::new();
     // (x³ - 8)/(x - 2) = x² + 2x + 4 for x ≠ 2
     // Verify numerically
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let numer = &x.powi(3) - 8;
     let denom = &x - 2;
     let expr = &numer / &denom;
@@ -1110,13 +1160,14 @@ fn hard_simp_cancel_cubic_over_linear() {
 
 #[test]
 fn hard_limit_rational_same_degree() {
+    let __ctx = Context::new();
     // lim x→∞ (2x² + 3x + 1)/(x² - x + 5) = 2
     // Leading coefficient ratio
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let numer = &(&x.powi(2) * 2) + &(&x * 3) + 1;
     let denom = &x.powi(2) - &x + 5;
     let expr = &numer / &denom;
-    let result = expr.try_limit(&x, &symplex::default_context().infinity());
+    let result = expr.try_limit(&x, &__ctx.infinity());
     if let Ok(r) = result {
         assert_eq!(
             format!("{r}"),
@@ -1128,9 +1179,10 @@ fn hard_limit_rational_same_degree() {
 
 #[test]
 fn hard_multi_var_laplacian_via_second_derivs() {
+    let __ctx = Context::new();
     // f = x³ + y³ + z³
     // ∇²f = ∂²f/∂x² + ∂²f/∂y² + ∂²f/∂z² = 6x + 6y + 6z
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y, z);
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x, y, z);
     let f = &x.powi(3) + &y.powi(3) + &z.powi(3);
 
     let d2x = f.diff(&x).diff(&x); // 6x
@@ -1139,7 +1191,7 @@ fn hard_multi_var_laplacian_via_second_derivs() {
     let laplacian = &d2x + &d2y + &d2z;
 
     // At (1, 2, 3): 6 + 12 + 18 = 36
-    let ctx = symplex::default_context();
+    let ctx = __ctx.clone();
     let val = laplacian
         .subs(&x, &ctx.int(1))
         .subs(&y, &ctx.int(2))

@@ -27,16 +27,16 @@ fn main() {
     // Joint angles are symbolic variables — they will become function
     // parameters in the generated code.
     //
-    // Link lengths are exact rationals.  Using symplex::default_context().rational()
+    // Link lengths are exact rationals.  Using __ctx.rational()
     // instead of f64 keeps the entire derivation exact: no IEEE 754
     // rounding until the very end when we evaluate numerically.
 
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; theta1, theta2, theta3);
 
-    let l1 = symplex::default_context().rational(3, 10); // 0.3 m
-    let l2 = symplex::default_context().rational(1, 4); // 0.25 m
-    let l3 = symplex::default_context().rational(1, 5); // 0.2 m
+    let l1 = __ctx.rational(3, 10); // 0.3 m
+    let l2 = __ctx.rational(1, 4); // 0.25 m
+    let l3 = __ctx.rational(1, 5); // 0.2 m
 
     println!("Link lengths: L1 = {l1}, L2 = {l2}, L3 = {l3}");
     println!("Total reach:  {} m", &(&l1 + &l2) + &l3);
@@ -49,7 +49,7 @@ fn main() {
     // For a planar arm, d = 0 and alpha = 0 for every joint.
     // Only theta (joint angle) and a (link length) vary.
 
-    let zero = symplex::default_context().int(0);
+    let zero = __ctx.int(0);
     let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
         (&theta1, &zero, &l1, &zero), // Joint 1
         (&theta2, &zero, &l2, &zero), // Joint 2

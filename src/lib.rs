@@ -163,21 +163,3 @@ pub mod prelude {
     // live at the crate root.  Use `use symplex::{vars, syms, sym};` or
     // `use symplex::prelude::*; use symplex::vars;` to bring them in.
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Global default context — convenience functions for quick usage
-// ═══════════════════════════════════════════════════════════════════════════
-
-use std::sync::OnceLock;
-
-/// The global default context, lazily initialized.
-static DEFAULT_CONTEXT: OnceLock<api::context::Context> = OnceLock::new();
-
-/// Returns a reference to the global default context.
-///
-/// The context is created on first access with default configuration.
-/// All expressions created via the free-standing [`symbol`], [`var`],
-/// [`int`], and [`rational`] functions share this context.
-pub fn default_context() -> &'static api::context::Context {
-    DEFAULT_CONTEXT.get_or_init(api::context::Context::new)
-}

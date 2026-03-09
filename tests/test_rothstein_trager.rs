@@ -22,7 +22,7 @@ fn eval_at(expr: &Ex, var: &Ex, val: i64) -> Option<f64> {
 
 /// Evaluate `expr` at rational `p/q` for symbol `var` and return f64.
 fn _eval_at_rational(expr: &Ex, var: &Ex, p: i64, q: i64) -> Option<f64> {
-    let ctx = symplex::default_context();
+    let ctx = Context::new();
     let rat = ctx.rational(p, q);
     expr.subs(var, &rat).eval().eval_f64().ok()
 }

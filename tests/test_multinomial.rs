@@ -11,7 +11,8 @@ use symplex::prelude::*;
 
 #[test]
 fn binomial_expand_squared() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b);
     let expr = (&a + &b).powi(2).expand();
     // (a+b)² = a² + 2ab + b²  →  3 terms
     assert_eq!(expr.term_count(), 3, "got: {expr}");
@@ -19,7 +20,8 @@ fn binomial_expand_squared() {
 
 #[test]
 fn binomial_expand_cubed() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b);
     let expr = (&a + &b).powi(3).expand();
     // (a+b)³ = a³ + 3a²b + 3ab² + b³  →  4 terms
     assert_eq!(expr.term_count(), 4, "got: {expr}");
@@ -27,7 +29,8 @@ fn binomial_expand_cubed() {
 
 #[test]
 fn binomial_expand_20() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b);
     let expr = (&a + &b).powi(20).expand();
     // (a+b)^20 has 21 terms
     assert_eq!(
@@ -39,14 +42,16 @@ fn binomial_expand_20() {
 
 #[test]
 fn binomial_x_plus_1_squared_display() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let expr = (&x + 1).powi(2).expand();
     assert_eq!(format!("{expr}"), "x^2 + 2*x + 1");
 }
 
 #[test]
 fn binomial_x_plus_1_cubed_display() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let expr = (&x + 1).powi(3).expand();
     assert_eq!(format!("{expr}"), "x^3 + 3*x^2 + 3*x + 1");
 }
@@ -57,7 +62,8 @@ fn binomial_x_plus_1_cubed_display() {
 
 #[test]
 fn trinomial_expand_squared() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b, c);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b, c);
     let expr = (&a + &b + &c).powi(2).expand();
     // (a+b+c)² = a² + b² + c² + 2ab + 2ac + 2bc  →  6 terms
     assert_eq!(
@@ -69,7 +75,8 @@ fn trinomial_expand_squared() {
 
 #[test]
 fn trinomial_expand_cubed() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b, c);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b, c);
     let expr = (&a + &b + &c).powi(3).expand();
     // (a+b+c)³ has C(3+2, 2) = 10 terms
     assert_eq!(
@@ -81,7 +88,8 @@ fn trinomial_expand_cubed() {
 
 #[test]
 fn trinomial_expand_4() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b, c);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b, c);
     let expr = (&a + &b + &c).powi(4).expand();
     // (a+b+c)^4 has C(4+2, 2) = 15 terms
     assert_eq!(
@@ -97,7 +105,8 @@ fn trinomial_expand_4() {
 
 #[test]
 fn quadrinomial_expand_cubed() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b, c, d);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b, c, d);
     let expr = (&a + &b + &c + &d).powi(3).expand();
     // (a+b+c+d)^3 has C(3+3, 3) = 20 terms
     assert_eq!(
@@ -200,7 +209,8 @@ fn quadrinomial_correctness_via_substitution() {
 
 #[test]
 fn multinomial_expand_is_idempotent() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b, c);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b, c);
     let first = (&a + &b + &c).powi(4).expand();
     let second = first.expand();
     assert_eq!(
@@ -216,7 +226,8 @@ fn multinomial_expand_is_idempotent() {
 
 #[test]
 fn expand_binomial_50_is_fast() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b);
     let start = std::time::Instant::now();
     let expr = (&a + &b).powi(50).expand();
     let elapsed = start.elapsed();
@@ -230,7 +241,8 @@ fn expand_binomial_50_is_fast() {
 
 #[test]
 fn expand_binomial_100_term_count() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b);
     let expr = (&a + &b).powi(100).expand();
     assert_eq!(expr.term_count(), 101, "(a+b)^100 should have 101 terms");
 }
@@ -262,7 +274,8 @@ fn binomial_with_numeric_coefficients() {
 
 #[test]
 fn expand_pow_one_is_identity() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b, c);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b, c);
     let sum = &a + &b + &c;
     let expr = sum.powi(1);
     let expanded = expr.expand();
@@ -272,7 +285,8 @@ fn expand_pow_one_is_identity() {
 
 #[test]
 fn expand_single_term_power() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     // (x)^5 — base is not an Add, should stay x^5
     let expr = x.powi(5).expand();
     assert_eq!(format!("{expr}"), "x^5");
@@ -280,7 +294,8 @@ fn expand_single_term_power() {
 
 #[test]
 fn expand_negative_power_not_expanded() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b);
     let expr = (&a + &b).powi(-3).expand();
     let s = format!("{expr}");
     // Should stay as (a + b)^(-3) — negative powers are not expanded
@@ -306,7 +321,8 @@ fn expand_binomial_correctness_high_power() {
 
 #[test]
 fn trinomial_x_y_1_squared() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x, y);
     let expr = (&x + &y + 1).powi(2).expand();
     // (x + y + 1)^2 = x^2 + y^2 + 1 + 2xy + 2x + 2y  →  6 terms
     assert_eq!(

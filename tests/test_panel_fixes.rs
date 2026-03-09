@@ -16,7 +16,8 @@ use symplex::prelude::*;
 /// POSITIVE: ln(exp(x)) should simplify to x when x is declared Real.
 #[test]
 fn ln_exp_simplifies_when_real() {
-    let x = symplex::default_context().symbol("x").assume(Assumption::Real);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x").assume(Assumption::Real);
     let result = x.exp().ln().simplify();
     assert_eq!(format!("{result}"), "x");
 }
@@ -33,7 +34,8 @@ fn ln_exp_simplifies_when_real_via_context() {
 /// POSITIVE: ln(exp(3)) should simplify to 3 — integer literals are always real.
 #[test]
 fn ln_exp_simplifies_for_integer() {
-    let three = symplex::default_context().int(3);
+    let __ctx = Context::new();
+    let three = __ctx.int(3);
     let result = three.exp().ln().simplify();
     assert_eq!(format!("{result}"), "3");
 }
@@ -41,7 +43,8 @@ fn ln_exp_simplifies_for_integer() {
 /// POSITIVE: ln(exp(pi)) should simplify to pi — pi is a known real constant.
 #[test]
 fn ln_exp_simplifies_for_pi() {
-    let pi = symplex::default_context().pi();
+    let __ctx = Context::new();
+    let pi = __ctx.pi();
     let result = pi.exp().ln().simplify();
     assert_eq!(format!("{result}"), "pi");
 }
@@ -49,7 +52,8 @@ fn ln_exp_simplifies_for_pi() {
 /// POSITIVE: ln(exp(0)) should simplify to 0.
 #[test]
 fn ln_exp_simplifies_for_zero() {
-    let zero = symplex::default_context().int(0);
+    let __ctx = Context::new();
+    let zero = __ctx.int(0);
     let result = zero.exp().ln().simplify();
     assert_eq!(format!("{result}"), "0");
 }
@@ -57,7 +61,8 @@ fn ln_exp_simplifies_for_zero() {
 /// POSITIVE: ln(exp(x)) where x is Positive (positive ⇒ real) should simplify.
 #[test]
 fn ln_exp_simplifies_when_positive() {
-    let x = symplex::default_context().symbol("t").assume(Assumption::Positive);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("t").assume(Assumption::Positive);
     let result = x.exp().ln().simplify();
     assert_eq!(format!("{result}"), "t");
 }
@@ -65,7 +70,8 @@ fn ln_exp_simplifies_when_positive() {
 /// POSITIVE: ln(exp(x)) where x is Negative (negative ⇒ real) should simplify.
 #[test]
 fn ln_exp_simplifies_when_negative() {
-    let x = symplex::default_context().symbol("u").assume(Assumption::Negative);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("u").assume(Assumption::Negative);
     let result = x.exp().ln().simplify();
     assert_eq!(format!("{result}"), "u");
 }
@@ -73,7 +79,8 @@ fn ln_exp_simplifies_when_negative() {
 /// POSITIVE: ln(exp(x)) where x is Integer (integer ⇒ real) should simplify.
 #[test]
 fn ln_exp_simplifies_when_integer() {
-    let n = symplex::default_context().symbol("n").assume(Assumption::Integer);
+    let __ctx = Context::new();
+    let n = __ctx.symbol("n").assume(Assumption::Integer);
     let result = n.exp().ln().simplify();
     assert_eq!(format!("{result}"), "n");
 }
@@ -90,7 +97,8 @@ fn ln_exp_simplifies_when_integer() {
 /// separate `simplify_complex_safe()` method, not a guard on the default path.
 #[test]
 fn ln_exp_simplifies_unconditionally() {
-    let x = symplex::default_context().symbol("z_unknown");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("z_unknown");
     let expr = x.exp().ln();
     let result = expr.simplify();
     let s = format!("{result}");
@@ -106,7 +114,8 @@ fn ln_exp_simplifies_unconditionally() {
 /// because exp(ln(x)) = x for all x in the domain of ln.
 #[test]
 fn exp_ln_always_simplifies() {
-    let x = symplex::default_context().symbol("w"); // no assumptions at all
+    let __ctx = Context::new();
+    let x = __ctx.symbol("w"); // no assumptions at all
     let result = x.ln().exp().simplify();
     assert_eq!(format!("{result}"), "w");
 }
@@ -114,7 +123,8 @@ fn exp_ln_always_simplifies() {
 /// exp(ln(x)) simplifies even with assumptions present.
 #[test]
 fn exp_ln_simplifies_with_real_assumption() {
-    let x = symplex::default_context().symbol("v").assume(Assumption::Real);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("v").assume(Assumption::Real);
     let result = x.ln().exp().simplify();
     assert_eq!(format!("{result}"), "v");
 }
@@ -122,7 +132,8 @@ fn exp_ln_simplifies_with_real_assumption() {
 /// exp(ln(5)) → 5.
 #[test]
 fn exp_ln_simplifies_for_integer() {
-    let five = symplex::default_context().int(5);
+    let __ctx = Context::new();
+    let five = __ctx.int(5);
     let result = five.ln().exp().simplify();
     assert_eq!(format!("{result}"), "5");
 }
@@ -151,7 +162,8 @@ fn from_str_error_on_garbage() {
 
 #[test]
 fn from_str_roundtrip() {
-    let original = symplex::default_context().symbol("x").powi(2) + symplex::default_context().int(1);
+    let __ctx = Context::new();
+    let original = __ctx.symbol("x").powi(2) + __ctx.int(1);
     let text = format!("{original}");
     let parsed: Ex = text.parse().unwrap();
     assert_eq!(
@@ -253,8 +265,9 @@ fn same_context_operations_succeed() {
 /// Global default context symbols should work together without panics.
 #[test]
 fn global_context_operations_succeed() {
-    let a = symplex::default_context().symbol("a");
-    let b = symplex::default_context().symbol("b");
+    let __ctx = Context::new();
+    let a = __ctx.symbol("a");
+    let b = __ctx.symbol("b");
     let _ = &a + &b;
     let _ = &a - &b;
     let _ = &a * &b;
@@ -268,7 +281,8 @@ fn global_context_operations_succeed() {
 /// Verify all query methods compile and return `Option<bool>`.
 #[test]
 fn query_methods_return_values_for_unconstrained_symbol() {
-    let x = symplex::default_context().symbol("q");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("q");
     // Unconstrained symbol — most queries should be None.
     let _ = x.is_positive();
     let _ = x.is_negative();
@@ -287,7 +301,8 @@ fn query_methods_return_values_for_unconstrained_symbol() {
 /// Query methods should reflect known assumptions.
 #[test]
 fn query_reflects_positive_assumption() {
-    let x = symplex::default_context().symbol("xp").assume(Assumption::Positive);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("xp").assume(Assumption::Positive);
     assert_eq!(x.is_positive(), Some(true), "should be positive");
     assert_eq!(x.is_real(), Some(true), "positive ⇒ real");
     assert_eq!(x.is_negative(), Some(false), "positive ⇒ ¬negative");
@@ -297,7 +312,8 @@ fn query_reflects_positive_assumption() {
 /// Query methods should reflect Real assumption.
 #[test]
 fn query_reflects_real_assumption() {
-    let x = symplex::default_context().symbol("xr").assume(Assumption::Real);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("xr").assume(Assumption::Real);
     assert_eq!(x.is_real(), Some(true));
     assert_eq!(x.is_complex(), Some(true), "real ⇒ complex");
 }
@@ -305,7 +321,8 @@ fn query_reflects_real_assumption() {
 /// Query methods should reflect Integer assumption.
 #[test]
 fn query_reflects_integer_assumption() {
-    let n = symplex::default_context().symbol("n_int").assume(Assumption::Integer);
+    let __ctx = Context::new();
+    let n = __ctx.symbol("n_int").assume(Assumption::Integer);
     assert_eq!(n.is_integer(), Some(true));
     assert_eq!(n.is_rational(), Some(true), "integer ⇒ rational");
     assert_eq!(n.is_real(), Some(true), "integer ⇒ real");
@@ -316,7 +333,8 @@ fn query_reflects_integer_assumption() {
 /// Integer literal should be recognized as integer/real.
 #[test]
 fn query_for_integer_literal() {
-    let five = symplex::default_context().int(5);
+    let __ctx = Context::new();
+    let five = __ctx.int(5);
     assert_eq!(five.is_positive(), Some(true));
     assert_eq!(five.is_integer(), Some(true));
     assert_eq!(five.is_real(), Some(true));
@@ -327,14 +345,16 @@ fn query_for_integer_literal() {
 /// Zero should be recognized.
 #[test]
 fn query_for_zero() {
-    let z = symplex::default_context().int(0);
+    let __ctx = Context::new();
+    let z = __ctx.int(0);
     assert_eq!(z.is_zero(), Some(true));
 }
 
 /// The generic `query` method should agree with named helpers.
 #[test]
 fn query_generic_agrees_with_named() {
-    let x = symplex::default_context().symbol("xg").assume(Assumption::Positive);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("xg").assume(Assumption::Positive);
     assert_eq!(x.query(Props::POSITIVE), x.is_positive());
     assert_eq!(x.query(Props::REAL), x.is_real());
     assert_eq!(x.query(Props::NEGATIVE), x.is_negative());
@@ -387,7 +407,8 @@ fn equals_detects_mathematical_equality() {
 /// Self-equality should always hold for PartialEq.
 #[test]
 fn partial_eq_reflexive() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = x.powi(2) + 1;
     assert_eq!(expr, expr, "expression should equal itself");
 }
@@ -415,7 +436,8 @@ fn partial_eq_different_contexts_are_unequal() {
 /// `equals()` on the same expression should be trivially `Some(true)`.
 #[test]
 fn equals_self_is_some_true() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = x.powi(3) + 1;
     assert_eq!(expr.equals(&expr), Some(true));
 }

@@ -8,7 +8,8 @@ use symplex::prelude::*;
 
 #[test]
 fn evalf_imaginary_unit() {
-    let i = symplex::default_context().i_unit();
+    let __ctx = Context::new();
+    let i = __ctx.i_unit();
     let result = i.eval_decimal(10);
     assert!(
         result.is_ok(),
@@ -635,7 +636,8 @@ fn complex_euler_exp_i_pi_over_4() {
 
 #[test]
 fn global_var_and_ops() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x * 2 + 1;
     let s = format!("{expr}");
     assert!(s.contains("x"), "should contain x: {s}");
@@ -643,8 +645,9 @@ fn global_var_and_ops() {
 
 #[test]
 fn global_int_and_rational() {
-    let a = symplex::default_context().int(3);
-    let b = symplex::default_context().rational(1, 2);
+    let __ctx = Context::new();
+    let a = __ctx.int(3);
+    let b = __ctx.rational(1, 2);
     let sum = &a + &b;
     let s = format!("{sum}");
     assert!(s.contains("7") || s.contains("2"), "3 + 1/2 = 7/2: {s}");
@@ -652,9 +655,10 @@ fn global_int_and_rational() {
 
 #[test]
 fn global_constants() {
-    let pi = symplex::default_context().pi();
-    let e = symplex::default_context().e();
-    let i = symplex::default_context().i_unit();
+    let __ctx = Context::new();
+    let pi = __ctx.pi();
+    let e = __ctx.e();
+    let i = __ctx.i_unit();
     assert_eq!(format!("{pi}"), "pi");
     assert_eq!(format!("{e}"), "E");
     assert_eq!(format!("{i}"), "I");
@@ -748,7 +752,8 @@ fn workflow_parse_solve_evalf() {
 
 #[test]
 fn workflow_build_diff_integrate() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let f = x.sin().powi(2);
     let df = f.diff(&x);
     let anti = df.integrate(&x);
@@ -849,7 +854,8 @@ fn workflow_solve_verify_evalf() {
 
 #[test]
 fn workflow_diff_n_then_series() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     // Taylor series of exp(x) around 0, order 5
     let series = x.exp().maclaurin(&x, 5);
     assert!(!series.has_unevaluated());

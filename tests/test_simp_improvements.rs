@@ -12,7 +12,8 @@ use symplex::prelude::*;
 
 #[test]
 fn trigsimp_uses_trig_combine() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     // 2*sin(x)*cos(x) should simplify to sin(2x) via trig_combine strategy
     let e = &x.sin() * &x.cos() * 2;
     let result = e.simplify_trig();
@@ -28,7 +29,8 @@ fn trigsimp_uses_trig_combine() {
 
 #[test]
 fn trigsimp_pythagorean_still_works() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = &x.sin().powi(2) + &x.cos().powi(2);
     let result = e.simplify_trig();
     assert_eq!(format!("{result}"), "1");
@@ -36,7 +38,8 @@ fn trigsimp_pythagorean_still_works() {
 
 #[test]
 fn trigsimp_pythagorean_plus_constant() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = &x.sin().powi(2) + &x.cos().powi(2) + 5;
     let result = e.simplify_trig();
     assert_eq!(format!("{result}"), "6");
@@ -44,7 +47,8 @@ fn trigsimp_pythagorean_plus_constant() {
 
 #[test]
 fn trigsimp_cos2_minus_sin2_double_angle() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     // cos²(x) - sin²(x) should simplify via trig_combine to cos(2x)
     let e = &x.cos().powi(2) - &x.sin().powi(2);
     let result = e.simplify_trig();
@@ -59,7 +63,8 @@ fn trigsimp_cos2_minus_sin2_double_angle() {
 
 #[test]
 fn trigsimp_leaves_simple_trig_alone() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let e = x.sin();
     let result = e.simplify_trig();
     assert_eq!(format!("{result}"), "sin(x)");
@@ -67,7 +72,8 @@ fn trigsimp_leaves_simple_trig_alone() {
 
 #[test]
 fn trigsimp_expand_then_recombine() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     // Start with sin(x)^2 which has 2 ops (Sin + Pow).
     // trigsimp should not bloat it.
     let e = x.sin().powi(2);
@@ -87,9 +93,10 @@ fn trigsimp_expand_then_recombine() {
 
 #[test]
 fn combsimp_factorial_ratio_concrete() {
+    let __ctx = Context::new();
     // 5! / 4! should simplify to 5 after eval + combsimp
-    let five_fact = symplex::default_context().int(5).factorial().eval();
-    let four_fact = symplex::default_context().int(4).factorial().eval();
+    let five_fact = __ctx.int(5).factorial().eval();
+    let four_fact = __ctx.int(4).factorial().eval();
     let ratio = &five_fact / &four_fact;
     let result = ratio.simplify_combinatorial();
     assert_eq!(format!("{result}"), "5");
@@ -97,7 +104,8 @@ fn combsimp_factorial_ratio_concrete() {
 
 #[test]
 fn combsimp_factorial_ratio_symbolic() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; n);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; n);
     // n! / (n-1)! should simplify to n
     let n_fact = n.factorial();
     let nm1 = &n - 1;
@@ -109,7 +117,8 @@ fn combsimp_factorial_ratio_symbolic() {
 
 #[test]
 fn combsimp_same_factorial_cancels() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; n);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; n);
     let n_fact = n.factorial();
     let ratio = &n_fact / &n_fact;
     let result = ratio.simplify_combinatorial();
@@ -118,7 +127,8 @@ fn combsimp_same_factorial_cancels() {
 
 #[test]
 fn combsimp_factorial_diff_2() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; n);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; n);
     // n! / (n-2)! = n*(n-1)
     let n_fact = n.factorial();
     let nm2 = &n - 2;
@@ -135,7 +145,8 @@ fn combsimp_factorial_diff_2() {
 
 #[test]
 fn combsimp_no_factorial_unchanged() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x, y);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x, y);
     let e = &x + &y;
     let result = e.simplify_combinatorial();
     assert_eq!(format!("{result}"), format!("{e}"));
@@ -147,16 +158,18 @@ fn combsimp_no_factorial_unchanged() {
 
 #[test]
 fn nsimplify_finds_rational() {
+    let __ctx = Context::new();
     // 0.333333 should become 1/3
-    let expr = symplex::default_context().rational(333333, 1000000);
+    let expr = __ctx.rational(333333, 1000000);
     let result = expr.simplify_numeric(1e-5);
     assert_eq!(format!("{result}"), "1/3");
 }
 
 #[test]
 fn nsimplify_finds_pi() {
+    let __ctx = Context::new();
     // A rational approximation of π
-    let expr = symplex::default_context().rational(314159265, 100000000);
+    let expr = __ctx.rational(314159265, 100000000);
     let result = expr.simplify_numeric(1e-7);
     let s = format!("{result}");
     assert!(s.contains("pi"), "should find π, got: {s}");
@@ -164,8 +177,9 @@ fn nsimplify_finds_pi() {
 
 #[test]
 fn nsimplify_finds_sqrt2() {
+    let __ctx = Context::new();
     // √2 ≈ 1.4142
-    let expr = symplex::default_context().rational(14142, 10000);
+    let expr = __ctx.rational(14142, 10000);
     let result = expr.simplify_numeric(1e-3);
     let s = format!("{result}");
     // Should produce 2^(1/2) or equivalent representation with ^ or 1/2
@@ -174,15 +188,17 @@ fn nsimplify_finds_sqrt2() {
 
 #[test]
 fn nsimplify_exact_integer() {
-    let expr = symplex::default_context().int(7);
+    let __ctx = Context::new();
+    let expr = __ctx.int(7);
     let result = expr.simplify_numeric(1e-10);
     assert_eq!(format!("{result}"), "7");
 }
 
 #[test]
 fn nsimplify_negative_rational() {
+    let __ctx = Context::new();
     // -1/7 ≈ -0.142857
-    let expr = symplex::default_context().rational(-142857, 1000000);
+    let expr = __ctx.rational(-142857, 1000000);
     let result = expr.simplify_numeric(1e-5);
     let s = format!("{result}");
     assert!(s == "-1/7", "should find -1/7, got: {s}");
@@ -190,8 +206,9 @@ fn nsimplify_negative_rational() {
 
 #[test]
 fn nsimplify_half_pi() {
+    let __ctx = Context::new();
     // π/2 ≈ 1.5707963
-    let expr = symplex::default_context().rational(15707963, 10000000);
+    let expr = __ctx.rational(15707963, 10000000);
     let result = expr.simplify_numeric(1e-6);
     let s = format!("{result}");
     assert!(s.contains("pi"), "should find π/2, got: {s}");
@@ -199,16 +216,18 @@ fn nsimplify_half_pi() {
 
 #[test]
 fn nsimplify_free_symbol_unchanged() {
+    let __ctx = Context::new();
     // An expression with free symbols can't be evaluated, so nsimplify
     // should return it unchanged.
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let result = x.simplify_numeric(1e-10);
     assert_eq!(format!("{result}"), "x");
 }
 
 #[test]
 fn nsimplify_zero() {
-    let expr = symplex::default_context().int(0);
+    let __ctx = Context::new();
+    let expr = __ctx.int(0);
     let result = expr.simplify_numeric(1e-10);
     assert_eq!(format!("{result}"), "0");
 }

@@ -6,14 +6,23 @@ use symplex::prelude::*;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+/// Shared context for all logic-ext helpers so `bool_true()` and
+/// `bool_false()` produce expressions in the same context.
+fn logic_ctx() -> Context {
+    static CTX: std::sync::OnceLock<Context> = std::sync::OnceLock::new();
+    CTX.get_or_init(Context::new).clone()
+}
+
 /// A boolean expression that evaluates to True.
 fn bool_true() -> BoolEx {
-    symplex::default_context().int(1).gt(&symplex::default_context().int(0))
+    let __ctx = logic_ctx();
+    __ctx.int(1).gt(&__ctx.int(0))
 }
 
 /// A boolean expression that evaluates to False.
 fn bool_false() -> BoolEx {
-    symplex::default_context().int(0).gt(&symplex::default_context().int(1))
+    let __ctx = logic_ctx();
+    __ctx.int(0).gt(&__ctx.int(1))
 }
 
 fn eval_str(b: &BoolEx) -> String {
@@ -41,8 +50,9 @@ fn xor_truth_table() {
 
 #[test]
 fn xor_is_commutative() {
-    let a = symplex::default_context().int(5).gt(&symplex::default_context().int(0)); // true
-    let b = symplex::default_context().int(5).lt(&symplex::default_context().int(0)); // false
+    let __ctx = Context::new();
+    let a = __ctx.int(5).gt(&__ctx.int(0)); // true
+    let b = __ctx.int(5).lt(&__ctx.int(0)); // false
 
     assert_eq!(eval_str(&a.xor(&b)), eval_str(&b.xor(&a)));
 }

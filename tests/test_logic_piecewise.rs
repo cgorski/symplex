@@ -8,15 +8,17 @@ use symplex::prelude::*;
 
 #[test]
 fn gt_display() {
-    let x = symplex::default_context().symbol("x");
-    let cond = x.gt(&symplex::default_context().int(0));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let cond = x.gt(&__ctx.int(0));
     assert_eq!(format!("{cond}"), "x > 0");
 }
 
 #[test]
 fn lt_display() {
-    let x = symplex::default_context().symbol("x");
-    let cond = x.lt(&symplex::default_context().int(5));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let cond = x.lt(&__ctx.int(5));
     let s = format!("{cond}");
     // lt(x, 5) is stored as gt(5, x), displayed as "5 > x" or "x < 5"
     assert!(s.contains("x") && s.contains("5"), "lt: {s}");
@@ -24,24 +26,27 @@ fn lt_display() {
 
 #[test]
 fn ge_display() {
-    let x = symplex::default_context().symbol("x");
-    let cond = x.ge(&symplex::default_context().int(0));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let cond = x.ge(&__ctx.int(0));
     let s = format!("{cond}");
     assert!(s.contains("x") && s.contains(">="), "ge: {s}");
 }
 
 #[test]
 fn eq_display() {
-    let x = symplex::default_context().symbol("x");
-    let cond = x.eq_expr(&symplex::default_context().int(3));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let cond = x.eq_expr(&__ctx.int(3));
     let s = format!("{cond}");
     assert!(s.contains("==") && s.contains("x"), "eq: {s}");
 }
 
 #[test]
 fn ne_display() {
-    let x = symplex::default_context().symbol("x");
-    let cond = x.ne_expr(&symplex::default_context().int(0));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let cond = x.ne_expr(&__ctx.int(0));
     let s = format!("{cond}");
     assert!(s.contains("!=") && s.contains("x"), "ne: {s}");
 }
@@ -52,64 +57,72 @@ fn ne_display() {
 
 #[test]
 fn gt_true() {
+    let __ctx = Context::new();
     assert_eq!(
-        format!("{}", symplex::default_context().int(5).gt(&symplex::default_context().int(3)).eval()),
+        format!("{}", __ctx.int(5).gt(&__ctx.int(3)).eval()),
         "True"
     );
 }
 
 #[test]
 fn gt_false() {
+    let __ctx = Context::new();
     assert_eq!(
-        format!("{}", symplex::default_context().int(2).gt(&symplex::default_context().int(7)).eval()),
+        format!("{}", __ctx.int(2).gt(&__ctx.int(7)).eval()),
         "False"
     );
 }
 
 #[test]
 fn ge_equal() {
+    let __ctx = Context::new();
     assert_eq!(
-        format!("{}", symplex::default_context().int(3).ge(&symplex::default_context().int(3)).eval()),
+        format!("{}", __ctx.int(3).ge(&__ctx.int(3)).eval()),
         "True"
     );
 }
 
 #[test]
 fn lt_true() {
+    let __ctx = Context::new();
     assert_eq!(
-        format!("{}", symplex::default_context().int(1).lt(&symplex::default_context().int(5)).eval()),
+        format!("{}", __ctx.int(1).lt(&__ctx.int(5)).eval()),
         "True"
     );
 }
 
 #[test]
 fn le_true() {
+    let __ctx = Context::new();
     assert_eq!(
-        format!("{}", symplex::default_context().int(3).le(&symplex::default_context().int(3)).eval()),
+        format!("{}", __ctx.int(3).le(&__ctx.int(3)).eval()),
         "True"
     );
 }
 
 #[test]
 fn eq_true() {
+    let __ctx = Context::new();
     assert_eq!(
-        format!("{}", symplex::default_context().int(7).eq_expr(&symplex::default_context().int(7)).eval()),
+        format!("{}", __ctx.int(7).eq_expr(&__ctx.int(7)).eval()),
         "True"
     );
 }
 
 #[test]
 fn eq_false() {
+    let __ctx = Context::new();
     assert_eq!(
-        format!("{}", symplex::default_context().int(7).eq_expr(&symplex::default_context().int(8)).eval()),
+        format!("{}", __ctx.int(7).eq_expr(&__ctx.int(8)).eval()),
         "False"
     );
 }
 
 #[test]
 fn ne_true() {
+    let __ctx = Context::new();
     assert_eq!(
-        format!("{}", symplex::default_context().int(1).ne_expr(&symplex::default_context().int(2)).eval()),
+        format!("{}", __ctx.int(1).ne_expr(&__ctx.int(2)).eval()),
         "True"
     );
 }
@@ -120,48 +133,55 @@ fn ne_true() {
 
 #[test]
 fn and_true_true() {
-    let t1 = symplex::default_context().int(5).gt(&symplex::default_context().int(3)); // True
-    let t2 = symplex::default_context().int(7).gt(&symplex::default_context().int(1)); // True
+    let __ctx = Context::new();
+    let t1 = __ctx.int(5).gt(&__ctx.int(3)); // True
+    let t2 = __ctx.int(7).gt(&__ctx.int(1)); // True
     assert_eq!(format!("{}", t1.and(&t2).eval()), "True");
 }
 
 #[test]
 fn and_true_false() {
-    let t = symplex::default_context().int(5).gt(&symplex::default_context().int(3)); // True
-    let f = symplex::default_context().int(1).gt(&symplex::default_context().int(9)); // False
+    let __ctx = Context::new();
+    let t = __ctx.int(5).gt(&__ctx.int(3)); // True
+    let f = __ctx.int(1).gt(&__ctx.int(9)); // False
     assert_eq!(format!("{}", t.and(&f).eval()), "False");
 }
 
 #[test]
 fn or_false_true() {
-    let f = symplex::default_context().int(1).gt(&symplex::default_context().int(9)); // False
-    let t = symplex::default_context().int(5).gt(&symplex::default_context().int(3)); // True
+    let __ctx = Context::new();
+    let f = __ctx.int(1).gt(&__ctx.int(9)); // False
+    let t = __ctx.int(5).gt(&__ctx.int(3)); // True
     assert_eq!(format!("{}", f.or(&t).eval()), "True");
 }
 
 #[test]
 fn or_false_false() {
-    let f1 = symplex::default_context().int(1).gt(&symplex::default_context().int(9));
-    let f2 = symplex::default_context().int(2).gt(&symplex::default_context().int(8));
+    let __ctx = Context::new();
+    let f1 = __ctx.int(1).gt(&__ctx.int(9));
+    let f2 = __ctx.int(2).gt(&__ctx.int(8));
     assert_eq!(format!("{}", f1.or(&f2).eval()), "False");
 }
 
 #[test]
 fn not_true() {
-    let t = symplex::default_context().int(5).gt(&symplex::default_context().int(3));
+    let __ctx = Context::new();
+    let t = __ctx.int(5).gt(&__ctx.int(3));
     assert_eq!(format!("{}", t.not().eval()), "False");
 }
 
 #[test]
 fn not_false() {
-    let f = symplex::default_context().int(1).gt(&symplex::default_context().int(9));
+    let __ctx = Context::new();
+    let f = __ctx.int(1).gt(&__ctx.int(9));
     assert_eq!(format!("{}", f.not().eval()), "True");
 }
 
 #[test]
 fn double_not() {
-    let x = symplex::default_context().symbol("x");
-    let cond = x.gt(&symplex::default_context().int(0));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let cond = x.gt(&__ctx.int(0));
     let double = cond.not().not();
     // Not(Not(x>0)) should simplify to x>0 via canon
     let s = format!("{double}");
@@ -174,8 +194,9 @@ fn double_not() {
 
 #[test]
 fn symbolic_gt_stays() {
-    let x = symplex::default_context().symbol("x");
-    let cond = x.gt(&symplex::default_context().int(0));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let cond = x.gt(&__ctx.int(0));
     let s = format!("{}", cond.eval());
     // x > 0 can't be evaluated without knowing x
     assert!(s.contains("x") && s.contains(">"), "symbolic: {s}");
@@ -183,9 +204,10 @@ fn symbolic_gt_stays() {
 
 #[test]
 fn symbolic_and() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
-    let cond = x.gt(&symplex::default_context().int(0)).and(&y.gt(&symplex::default_context().int(0)));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
+    let cond = x.gt(&__ctx.int(0)).and(&y.gt(&__ctx.int(0)));
     let s = format!("{cond}");
     assert!(s.contains("x") && s.contains("y"), "and: {s}");
 }
@@ -196,8 +218,9 @@ fn symbolic_and() {
 
 #[test]
 fn piecewise_basic() {
-    let x = symplex::default_context().symbol("x");
-    let cond = x.gt(&symplex::default_context().int(0));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let cond = x.gt(&__ctx.int(0));
     let neg_x = -&x;
     let pw = Ex::piecewise(&[(&x, &cond), (&neg_x, &cond.not())]);
     let s = format!("{pw}");
@@ -206,8 +229,9 @@ fn piecewise_basic() {
 
 #[test]
 fn piecewise_diff() {
-    let x = symplex::default_context().symbol("x");
-    let cond = x.gt(&symplex::default_context().int(0));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let cond = x.gt(&__ctx.int(0));
     let pw = Ex::piecewise(&[(&x.powi(2), &cond), (&(-&x), &cond.not())]);
     let dpw = pw.diff(&x);
     let s = format!("{dpw}");
@@ -216,9 +240,10 @@ fn piecewise_diff() {
 
 #[test]
 fn piecewise_eval_known_condition() {
+    let __ctx = Context::new();
     // Piecewise with a True condition should collapse
-    let x = symplex::default_context().symbol("x");
-    let t = symplex::default_context().int(5).gt(&symplex::default_context().int(3)); // True
+    let x = __ctx.symbol("x");
+    let t = __ctx.int(5).gt(&__ctx.int(3)); // True
     let pw = Ex::piecewise(&[(&x, &t)]);
     let evald = pw.eval();
     assert_eq!(format!("{evald}"), "x");
@@ -230,7 +255,8 @@ fn piecewise_eval_known_condition() {
 
 #[test]
 fn expr_macro_gt() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let cond: BoolEx = expr!(x > 0);
     let s = format!("{cond}");
     assert!(s.contains(">"), "expr!(x > 0): {s}");
@@ -238,7 +264,8 @@ fn expr_macro_gt() {
 
 #[test]
 fn expr_macro_lt() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let cond: BoolEx = expr!(x < 5);
     let s = format!("{cond}");
     assert!(s.contains("x") && s.contains("5"), "expr!(x < 5): {s}");
@@ -246,7 +273,8 @@ fn expr_macro_lt() {
 
 #[test]
 fn expr_macro_le() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let cond: BoolEx = expr!(x <= 3);
     let s = format!("{cond}");
     assert!(s.contains("x"), "expr!(x <= 3): {s}");
@@ -254,8 +282,9 @@ fn expr_macro_le() {
 
 #[test]
 fn expr_macro_and() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let cond: BoolEx = expr!(x > 0 && y > 0);
     let s = format!("{cond}");
     assert!(s.contains("x") && s.contains("y"), "and: {s}");
@@ -263,8 +292,9 @@ fn expr_macro_and() {
 
 #[test]
 fn expr_macro_or() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let cond: BoolEx = expr!(x > 0 || y > 0);
     let s = format!("{cond}");
     assert!(s.contains("x") && s.contains("y"), "or: {s}");
@@ -272,7 +302,8 @@ fn expr_macro_or() {
 
 #[test]
 fn expr_macro_not() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let cond: BoolEx = expr!(!(x > 0));
     let s = format!("{cond}");
     assert!(s.contains("x"), "not: {s}");
@@ -280,30 +311,34 @@ fn expr_macro_not() {
 
 #[test]
 fn expr_macro_gt_eval() {
-    let x = symplex::default_context().int(5);
+    let __ctx = Context::new();
+    let x = __ctx.int(5);
     let result = expr!(x > 3).eval();
     assert_eq!(format!("{result}"), "True");
 }
 
 #[test]
 fn expr_macro_and_eval() {
-    let x = symplex::default_context().int(5);
-    let y = symplex::default_context().int(3);
+    let __ctx = Context::new();
+    let x = __ctx.int(5);
+    let y = __ctx.int(3);
     let result = expr!(x > 0 && y > 0).eval();
     assert_eq!(format!("{result}"), "True");
 }
 
 #[test]
 fn expr_macro_or_eval() {
-    let x = symplex::default_context().int(5);
-    let y = symplex::default_context().int(-3);
+    let __ctx = Context::new();
+    let x = __ctx.int(5);
+    let y = __ctx.int(-3);
     let result = expr!(x > 0 || y > 0).eval();
     assert_eq!(format!("{result}"), "True");
 }
 
 #[test]
 fn expr_macro_not_eval() {
-    let x = symplex::default_context().int(5);
+    let __ctx = Context::new();
+    let x = __ctx.int(5);
     let result = expr!(!(x > 10)).eval();
     assert_eq!(format!("{result}"), "True");
 }
@@ -323,30 +358,34 @@ fn expr_macro_not_eval() {
 
 #[test]
 fn boolx_into_ex() {
-    let cond = symplex::default_context().int(5).gt(&symplex::default_context().int(3));
+    let __ctx = Context::new();
+    let cond = __ctx.int(5).gt(&__ctx.int(3));
     let ex: Ex = cond.into_ex();
     let _ = format!("{ex}"); // should display fine
 }
 
 #[test]
 fn boolx_as_ex() {
-    let cond = symplex::default_context().int(5).gt(&symplex::default_context().int(3));
+    let __ctx = Context::new();
+    let cond = __ctx.int(5).gt(&__ctx.int(3));
     let ex: Ex = cond.as_ex();
     let _ = format!("{ex}");
 }
 
 #[test]
 fn boolx_subs() {
-    let x = symplex::default_context().symbol("x");
-    let cond = x.gt(&symplex::default_context().int(0));
-    let substituted = cond.subs(&x, &symplex::default_context().int(5));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let cond = x.gt(&__ctx.int(0));
+    let substituted = cond.subs(&x, &__ctx.int(5));
     assert_eq!(format!("{}", substituted.eval()), "True");
 }
 
 #[test]
 fn boolx_free_symbols() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let cond = x.gt(&y);
     let syms = cond.free_symbols();
     assert_eq!(syms.len(), 2);

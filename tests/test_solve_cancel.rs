@@ -8,6 +8,7 @@ use symplex::prelude::*;
 
 #[test]
 fn solve_linear() {
+    let __ctx = Context::new();
     // 2*x - 6 = 0 → x = 3
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -19,6 +20,7 @@ fn solve_linear() {
 
 #[test]
 fn solve_linear_negative() {
+    let __ctx = Context::new();
     // x + 3 = 0 → x = -3
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -30,6 +32,7 @@ fn solve_linear_negative() {
 
 #[test]
 fn solve_linear_rational() {
+    let __ctx = Context::new();
     // 3*x - 1 = 0 → x = 1/3
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -41,6 +44,7 @@ fn solve_linear_rational() {
 
 #[test]
 fn solve_quadratic_two_roots() {
+    let __ctx = Context::new();
     // x^2 - 5*x + 6 = 0 → x = 2, x = 3
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -60,6 +64,7 @@ fn solve_quadratic_two_roots() {
 
 #[test]
 fn solve_quadratic_double_root() {
+    let __ctx = Context::new();
     // x^2 - 4*x + 4 = 0 → x = 2 (double root, may appear once or twice)
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -76,6 +81,7 @@ fn solve_quadratic_double_root() {
 
 #[test]
 fn solve_quadratic_complex_roots() {
+    let __ctx = Context::new();
     // x^2 + 1 = 0 → complex roots ±i
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -97,6 +103,7 @@ fn solve_quadratic_complex_roots() {
 
 #[test]
 fn solve_cubic_rational_roots() {
+    let __ctx = Context::new();
     // x^3 - 6*x^2 + 11*x - 6 = 0 → x = 1, 2, 3
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -158,6 +165,7 @@ fn solve_constant_zero_no_solutions() {
 
 #[test]
 fn solve_verify_quadratic_roots() {
+    let __ctx = Context::new();
     // Solve x^2 - 5*x + 6 = 0, substitute each root back, verify it is zero
     let ctx = Context::new();
     let x = ctx.symbol("x");

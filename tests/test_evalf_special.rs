@@ -2,10 +2,12 @@
 //!
 //! Covers: Gamma, LogGamma, Digamma, erf, erfc, Beta.
 
+use symplex::prelude::*;
 #[test]
 fn evalf_gamma_at_5() {
+    let __ctx = Context::new();
     // Gamma(5) = 4! = 24
-    let result = symplex::default_context().int(5).gamma().eval_f64().unwrap();
+    let result = __ctx.int(5).gamma().eval_f64().unwrap();
     assert!(
         (result - 24.0).abs() < 1e-10,
         "Gamma(5) should be 24, got {result}"
@@ -14,8 +16,9 @@ fn evalf_gamma_at_5() {
 
 #[test]
 fn evalf_gamma_at_half() {
+    let __ctx = Context::new();
     // Gamma(0.5) = sqrt(pi) ≈ 1.7724538509
-    let half = symplex::default_context().rational(1, 2);
+    let half = __ctx.rational(1, 2);
     let result = half.gamma().eval_f64().unwrap();
     assert!(
         (result - std::f64::consts::PI.sqrt()).abs() < 1e-10,
@@ -25,8 +28,9 @@ fn evalf_gamma_at_half() {
 
 #[test]
 fn evalf_gamma_at_1() {
+    let __ctx = Context::new();
     // Gamma(1) = 0! = 1
-    let result = symplex::default_context().int(1).gamma().eval_f64().unwrap();
+    let result = __ctx.int(1).gamma().eval_f64().unwrap();
     assert!(
         (result - 1.0).abs() < 1e-10,
         "Gamma(1) should be 1, got {result}"
@@ -35,8 +39,9 @@ fn evalf_gamma_at_1() {
 
 #[test]
 fn evalf_gamma_at_3_5() {
+    let __ctx = Context::new();
     // Gamma(3.5) = 2.5 * 1.5 * 0.5 * sqrt(pi) ≈ 3.32335097
-    let val = symplex::default_context().rational(7, 2);
+    let val = __ctx.rational(7, 2);
     let result = val.gamma().eval_f64().unwrap();
     let expected = 2.5 * 1.5 * 0.5 * std::f64::consts::PI.sqrt();
     assert!(
@@ -47,8 +52,9 @@ fn evalf_gamma_at_3_5() {
 
 #[test]
 fn evalf_gamma_at_negative_half() {
+    let __ctx = Context::new();
     // Gamma(-0.5) = -2*sqrt(pi) ≈ -3.5449077018
-    let val = symplex::default_context().rational(-1, 2);
+    let val = __ctx.rational(-1, 2);
     let result = val.gamma().eval_f64().unwrap();
     let expected = -2.0 * std::f64::consts::PI.sqrt();
     assert!(
@@ -59,15 +65,17 @@ fn evalf_gamma_at_negative_half() {
 
 #[test]
 fn evalf_erf_at_zero() {
+    let __ctx = Context::new();
     // erf(0) = 0
-    let result = symplex::default_context().int(0).erf().eval_f64().unwrap();
+    let result = __ctx.int(0).erf().eval_f64().unwrap();
     assert!(result.abs() < 1e-15, "erf(0) should be 0, got {result}");
 }
 
 #[test]
 fn evalf_erf_at_one() {
+    let __ctx = Context::new();
     // erf(1) ≈ 0.8427007929
-    let result = symplex::default_context().int(1).erf().eval_f64().unwrap();
+    let result = __ctx.int(1).erf().eval_f64().unwrap();
     assert!(
         (result - 0.8427007929497148).abs() < 1e-10,
         "erf(1) should be ~0.8427, got {result}"
@@ -76,8 +84,9 @@ fn evalf_erf_at_one() {
 
 #[test]
 fn evalf_erf_at_large() {
+    let __ctx = Context::new();
     // erf(5) ≈ 1.0 (very close)
-    let result = symplex::default_context().int(5).erf().eval_f64().unwrap();
+    let result = __ctx.int(5).erf().eval_f64().unwrap();
     assert!(
         (result - 1.0).abs() < 1e-10,
         "erf(5) should be ~1.0, got {result}"
@@ -86,9 +95,10 @@ fn evalf_erf_at_large() {
 
 #[test]
 fn evalf_erf_negative_symmetry() {
+    let __ctx = Context::new();
     // erf is odd: erf(-x) = -erf(x)
-    let pos = symplex::default_context().rational(3, 4).erf().eval_f64().unwrap();
-    let neg = symplex::default_context().rational(-3, 4).erf().eval_f64().unwrap();
+    let pos = __ctx.rational(3, 4).erf().eval_f64().unwrap();
+    let neg = __ctx.rational(-3, 4).erf().eval_f64().unwrap();
     assert!(
         (pos + neg).abs() < 1e-12,
         "erf(-x) should be -erf(x): erf(0.75)={pos}, erf(-0.75)={neg}"
@@ -97,8 +107,9 @@ fn evalf_erf_negative_symmetry() {
 
 #[test]
 fn evalf_erfc_at_zero() {
+    let __ctx = Context::new();
     // erfc(0) = 1 - erf(0) = 1
-    let result = symplex::default_context().int(0).erfc().eval_f64().unwrap();
+    let result = __ctx.int(0).erfc().eval_f64().unwrap();
     assert!(
         (result - 1.0).abs() < 1e-12,
         "erfc(0) should be 1, got {result}"
@@ -107,8 +118,9 @@ fn evalf_erfc_at_zero() {
 
 #[test]
 fn evalf_erfc_plus_erf_is_one() {
+    let __ctx = Context::new();
     // erf(x) + erfc(x) = 1
-    let x = symplex::default_context().rational(7, 5);
+    let x = __ctx.rational(7, 5);
     let erf_val = x.erf().eval_f64().unwrap();
     let erfc_val = x.erfc().eval_f64().unwrap();
     assert!(
@@ -119,8 +131,9 @@ fn evalf_erfc_plus_erf_is_one() {
 
 #[test]
 fn evalf_beta_2_3() {
+    let __ctx = Context::new();
     // Beta(2, 3) = Gamma(2)*Gamma(3)/Gamma(5) = 1*2/24 = 1/12
-    let result = symplex::default_context().int(2).beta(&symplex::default_context().int(3)).eval_f64().unwrap();
+    let result = __ctx.int(2).beta(&__ctx.int(3)).eval_f64().unwrap();
     assert!(
         (result - 1.0 / 12.0).abs() < 1e-10,
         "Beta(2,3) should be 1/12, got {result}"
@@ -129,13 +142,14 @@ fn evalf_beta_2_3() {
 
 #[test]
 fn evalf_beta_symmetry() {
+    let __ctx = Context::new();
     // Beta(a,b) = Beta(b,a)
-    let ab = symplex::default_context().rational(3, 2)
-        .beta(&symplex::default_context().rational(5, 2))
+    let ab = __ctx.rational(3, 2)
+        .beta(&__ctx.rational(5, 2))
         .eval_f64()
         .unwrap();
-    let ba = symplex::default_context().rational(5, 2)
-        .beta(&symplex::default_context().rational(3, 2))
+    let ba = __ctx.rational(5, 2)
+        .beta(&__ctx.rational(3, 2))
         .eval_f64()
         .unwrap();
     assert!(
@@ -146,9 +160,10 @@ fn evalf_beta_symmetry() {
 
 #[test]
 fn evalf_beta_half_half() {
+    let __ctx = Context::new();
     // Beta(1/2, 1/2) = Gamma(1/2)^2 / Gamma(1) = pi / 1 = pi
-    let result = symplex::default_context().rational(1, 2)
-        .beta(&symplex::default_context().rational(1, 2))
+    let result = __ctx.rational(1, 2)
+        .beta(&__ctx.rational(1, 2))
         .eval_f64()
         .unwrap();
     assert!(
@@ -159,8 +174,9 @@ fn evalf_beta_half_half() {
 
 #[test]
 fn evalf_log_gamma_at_5() {
+    let __ctx = Context::new();
     // LogGamma(5) = ln(Gamma(5)) = ln(24) ≈ 3.17805383
-    let result = symplex::default_context().int(5).log_gamma().eval_f64().unwrap();
+    let result = __ctx.int(5).log_gamma().eval_f64().unwrap();
     let expected = 24.0_f64.ln();
     assert!(
         (result - expected).abs() < 1e-10,
@@ -170,8 +186,9 @@ fn evalf_log_gamma_at_5() {
 
 #[test]
 fn evalf_digamma_at_1() {
+    let __ctx = Context::new();
     // psi(1) = -gamma (Euler-Mascheroni) ≈ -0.5772156649
-    let result = symplex::default_context().int(1).digamma().eval_f64().unwrap();
+    let result = __ctx.int(1).digamma().eval_f64().unwrap();
     let euler_mascheroni = 0.5772156649015329;
     assert!(
         (result + euler_mascheroni).abs() < 1e-10,
@@ -181,8 +198,9 @@ fn evalf_digamma_at_1() {
 
 #[test]
 fn evalf_digamma_at_2() {
+    let __ctx = Context::new();
     // psi(2) = psi(1) + 1/1 = 1 - gamma ≈ 0.42278433
-    let result = symplex::default_context().int(2).digamma().eval_f64().unwrap();
+    let result = __ctx.int(2).digamma().eval_f64().unwrap();
     let expected = 1.0 - 0.5772156649015329;
     assert!(
         (result - expected).abs() < 1e-10,

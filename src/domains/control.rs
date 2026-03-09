@@ -44,6 +44,11 @@ pub struct StateSpace {
 }
 
 impl StateSpace {
+    /// Extract a [`Context`] from this model's state matrix.
+    fn ctx(&self) -> crate::api::context::Context {
+        self.a.get(0, 0).context()
+    }
+
     /// Create a new state-space model from the four system matrices.
     ///
     /// # Panics
@@ -94,7 +99,7 @@ impl StateSpace {
     /// Returns a polynomial expression in the given variable `s`.
     pub fn char_poly(&self, s: &Ex) -> Ex {
         let n = self.num_states();
-        let si = Matrix::identity(n).scale(s);
+        let si = Matrix::identity(&self.ctx(), n).scale(s);
         let si_minus_a = si.sub(&self.a).expect("sub: shapes must match");
         si_minus_a.det().expect("det: matrix must be square")
     }
@@ -151,7 +156,7 @@ impl StateSpace {
     /// Returns `Some(false)` if any pole can be shown to have non-negative real part.
     /// Returns `None` if stability cannot be determined symbolically.
     pub fn is_stable(&self) -> Option<bool> {
-        let s = crate::default_context().symbol("__s_stability");
+        let s = self.ctx().symbol("__s_stability");
         let poles = self.poles(&s);
         for pole in &poles {
             // Try real evaluation first
@@ -188,13 +193,14 @@ impl StateSpace {
         let exp_a_dt = a_dt.exp_series(order).expect("exp_series: matrix must be square");
 
         // Bᵈ = (I·dt + A·dt²/2! + A²·dt³/3! + ...)B
-        let ident = Matrix::identity(n);
+        let ctx = self.ctx();
+        let ident = Matrix::identity(&ctx, n);
         let mut b_sum = ident.scale(dt);
-        let mut a_power = Matrix::identity(n);
+        let mut a_power = Matrix::identity(&ctx, n);
         for k in 2..=order {
             a_power = a_power.matmul(&self.a).expect("matmul: dimension mismatch");
             let factorial: i64 = (1..=k as i64).product();
-            let coeff = crate::default_context().rational(1, factorial);
+            let coeff = self.ctx().rational(1, factorial);
             let dt_power = dt.powi(k as i64);
             let term = a_power.scale(&(&coeff * &dt_power));
             b_sum = b_sum.add(&term).expect("add: shape mismatch");
@@ -262,11 +268,11 @@ impl StateSpace {
         // p(s) = (s − p₁)(s − p₂)···(s − pₙ)
         // poly_coeffs[0] is the leading coefficient (1),
         // poly_coeffs[k] is the coefficient of s^(n-k).
-        let mut poly_coeffs: Vec<Ex> = vec![crate::default_context().int(1)];
+        let mut poly_coeffs: Vec<Ex> = vec![self.ctx().int(1)];
         for pole in desired_poles {
             let neg_pole = -(pole.clone());
             let prev = poly_coeffs;
-            poly_coeffs = vec![crate::default_context().int(0); prev.len() + 1];
+            poly_coeffs = vec![self.ctx().int(0); prev.len() + 1];
             for (i, c) in prev.into_iter().enumerate() {
                 let c_neg_pole = &c * &neg_pole;
                 poly_coeffs[i] = poly_coeffs[i].clone() + c;
@@ -275,7 +281,7 @@ impl StateSpace {
         }
 
         // Evaluate p(A) = poly_coeffs[0]·Aⁿ + poly_coeffs[1]·Aⁿ⁻¹ + ··· + poly_coeffs[n]·I
-        let mut p_a = Matrix::zeros(n, n);
+        let mut p_a = Matrix::zeros(&self.ctx(), n, n);
         for (i, coeff) in poly_coeffs.iter().enumerate() {
             let power = (poly_coeffs.len() - 1 - i) as u32;
             let a_power = self.a.powi(power).expect("powi: matrix must be square");
@@ -332,13 +338,18 @@ pub struct TransferFunction {
 }
 
 impl TransferFunction {
+    /// Extract a [`Context`] from this transfer function's numerator.
+    fn ctx(&self) -> crate::api::context::Context {
+        self.num.context()
+    }
+
     /// Create a new transfer function G(s) = num / den.
     ///
     /// # Arguments
     ///
     /// * `num` - Numerator polynomial expression
     /// * `den` - Denominator polynomial expression
-    /// * `var` - The Laplace variable (e.g., `symplex::default_context().symbol("s")`)
+    /// * `var` - The Laplace variable (e.g., `Context::new().symbol("s")`)
     pub fn new(num: Ex, den: Ex, var: Ex) -> Self {
         TransferFunction { num, den, var }
     }
@@ -351,20 +362,23 @@ impl TransferFunction {
     /// # Example
     ///
     /// ```
+    /// use symplex::prelude::*;
     /// use symplex::control::TransferFunction;
-    /// let s = symplex::default_context().symbol("s");
+    /// let ctx = Context::new();
+    /// let s = ctx.symbol("s");
     /// // G(s) = 1 / (s² + 3s + 2)
     /// let g = TransferFunction::from_coeffs(&[1], &[2, 3, 1], &s);
     /// ```
     pub fn from_coeffs(num_coeffs: &[i64], den_coeffs: &[i64], var: &Ex) -> Self {
+        let ctx = var.context();
         let build_poly = |coeffs: &[i64]| -> Ex {
-            let mut result = crate::default_context().int(0);
+            let mut result = ctx.int(0);
             for (i, &c) in coeffs.iter().enumerate() {
                 if c != 0 {
                     let term = if i == 0 {
-                        crate::default_context().int(c)
+                        ctx.int(c)
                     } else {
-                        &crate::default_context().int(c) * &var.powi(i as i64)
+                        &ctx.int(c) * &var.powi(i as i64)
                     };
                     result = &result + &term;
                 }
@@ -393,7 +407,7 @@ impl TransferFunction {
     /// Evaluates the transfer function at s = 0, giving the
     /// steady-state gain for a step input.
     pub fn dc_gain(&self) -> Ex {
-        let zero = crate::default_context().int(0);
+        let zero = self.ctx().int(0);
         let num_0 = self.num.subs(&self.var, &zero).eval();
         let den_0 = self.den.subs(&self.var, &zero).eval();
         &num_0 / &den_0
@@ -506,7 +520,7 @@ pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
     }
     // Pad with zeros if needed
     while row0.len() < num_cols {
-        row0.push(crate::default_context().int(0));
+        row0.push(coeffs[0].context().int(0));
     }
 
     // Build second row: odd-indexed coefficients (a_{n-1}, a_{n-3}, ...)
@@ -516,7 +530,7 @@ pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
     }
     // Pad with zeros if needed
     while row1.len() < num_cols {
-        row1.push(crate::default_context().int(0));
+        row1.push(coeffs[0].context().int(0));
     }
 
     let mut table: Vec<Vec<Ex>> = vec![row0, row1];
@@ -533,12 +547,12 @@ pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
             let prev2_j1 = if j + 1 < prev2.len() {
                 prev2[j + 1].clone()
             } else {
-                crate::default_context().int(0)
+                coeffs[0].context().int(0)
             };
             let prev_j1 = if j + 1 < prev.len() {
                 prev[j + 1].clone()
             } else {
-                crate::default_context().int(0)
+                coeffs[0].context().int(0)
             };
             // routh[i][j] = (pivot * prev2[j+1] - prev2[0] * prev[j+1]) / pivot
             let numerator = &(pivot * &prev2_j1) - &(&prev2[0] * &prev_j1);
@@ -547,7 +561,7 @@ pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
         }
         // Last column is always zero (or not needed), pad if row is too short
         if new_row.is_empty() {
-            new_row.push(crate::default_context().int(0));
+            new_row.push(coeffs[0].context().int(0));
         }
         table.push(new_row);
     }
@@ -612,19 +626,20 @@ mod tests {
 
     #[test]
     fn state_space_basic_construction() {
+        let ctx = crate::api::context::Context::new();
         let a = Matrix::new(vec![
-            vec![crate::default_context().int(0), crate::default_context().int(1)],
-            vec![crate::default_context().int(-2), crate::default_context().int(-3)],
+            vec![ctx.int(0), ctx.int(1)],
+            vec![ctx.int(-2), ctx.int(-3)],
         ]).unwrap();
         let b = Matrix::new(vec![
-            vec![crate::default_context().int(0)],
-            vec![crate::default_context().int(1)],
+            vec![ctx.int(0)],
+            vec![ctx.int(1)],
         ]).unwrap();
         let c = Matrix::new(vec![
-            vec![crate::default_context().int(1), crate::default_context().int(0)],
+            vec![ctx.int(1), ctx.int(0)],
         ]).unwrap();
         let d = Matrix::new(vec![
-            vec![crate::default_context().int(0)],
+            vec![ctx.int(0)],
         ]).unwrap();
         let ss = StateSpace::new(a, b, c, d);
         assert_eq!(ss.num_states(), 2);
@@ -634,9 +649,10 @@ mod tests {
 
     #[test]
     fn transfer_function_basic_display() {
-        let s = crate::default_context().symbol("s");
+        let ctx = crate::api::context::Context::new();
+        let s = ctx.symbol("s");
         let tf = TransferFunction::new(
-            crate::default_context().int(1),
+            ctx.int(1),
             &s * &s + &s * 3 + 2,
             s,
         );
@@ -646,8 +662,9 @@ mod tests {
 
     #[test]
     fn routh_array_row_count() {
+        let ctx = crate::api::context::Context::new();
         // s^2 + 3s + 2 → 3 coefficients → 3 rows
-        let coeffs = vec![crate::default_context().int(1), crate::default_context().int(3), crate::default_context().int(2)];
+        let coeffs = vec![ctx.int(1), ctx.int(3), ctx.int(2)];
         let table = routh_array(&coeffs);
         assert_eq!(table.len(), 3);
     }

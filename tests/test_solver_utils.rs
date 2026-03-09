@@ -9,41 +9,46 @@ use symplex::prelude::*;
 
 #[test]
 fn checksol_quadratic_root() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let poly = expr!(x ^ 2 - 4);
-    assert_eq!(poly.check_solution(&x, &symplex::default_context().int(2)), Some(true));
-    assert_eq!(poly.check_solution(&x, &symplex::default_context().int(-2)), Some(true));
-    assert_eq!(poly.check_solution(&x, &symplex::default_context().int(3)), Some(false));
+    assert_eq!(poly.check_solution(&x, &__ctx.int(2)), Some(true));
+    assert_eq!(poly.check_solution(&x, &__ctx.int(-2)), Some(true));
+    assert_eq!(poly.check_solution(&x, &__ctx.int(3)), Some(false));
 }
 
 #[test]
 fn checksol_linear() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     // 3x - 9 = 0  →  x = 3
     let eq = &(&x * 3) - 9;
-    assert_eq!(eq.check_solution(&x, &symplex::default_context().int(3)), Some(true));
-    assert_eq!(eq.check_solution(&x, &symplex::default_context().int(0)), Some(false));
+    assert_eq!(eq.check_solution(&x, &__ctx.int(3)), Some(true));
+    assert_eq!(eq.check_solution(&x, &__ctx.int(0)), Some(false));
 }
 
 #[test]
 fn checksol_cubic_root() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let poly = expr!(x ^ 3 - 8);
-    assert_eq!(poly.check_solution(&x, &symplex::default_context().int(2)), Some(true));
-    assert_eq!(poly.check_solution(&x, &symplex::default_context().int(-2)), Some(false));
+    assert_eq!(poly.check_solution(&x, &__ctx.int(2)), Some(true));
+    assert_eq!(poly.check_solution(&x, &__ctx.int(-2)), Some(false));
 }
 
 #[test]
 fn checksol_with_trig() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let eq = x.sin();
-    assert_eq!(eq.check_solution(&x, &symplex::default_context().int(0)), Some(true));
-    assert_eq!(eq.check_solution(&x, &symplex::default_context().pi()), Some(true));
+    assert_eq!(eq.check_solution(&x, &__ctx.int(0)), Some(true));
+    assert_eq!(eq.check_solution(&x, &__ctx.pi()), Some(true));
 }
 
 #[test]
 fn solve_then_check() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let poly = expr!(x ^ 2 - 5 * x + 6);
     let roots = poly.solve_or_empty(&x);
     assert!(!roots.is_empty(), "solver should find roots of x²-5x+6");
@@ -58,9 +63,10 @@ fn solve_then_check() {
 
 #[test]
 fn checksol_zero_is_root_of_x() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
-    assert_eq!(x.check_solution(&x, &symplex::default_context().int(0)), Some(true));
-    assert_eq!(x.check_solution(&x, &symplex::default_context().int(1)), Some(false));
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    assert_eq!(x.check_solution(&x, &__ctx.int(0)), Some(true));
+    assert_eq!(x.check_solution(&x, &__ctx.int(1)), Some(false));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -69,8 +75,9 @@ fn checksol_zero_is_root_of_x() {
 
 #[test]
 fn classify_simple_separable() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     // y' - x = 0  →  y' = x  (no y dependence → SimpleSeparable)
     let ode = &dy - &x;
@@ -79,8 +86,9 @@ fn classify_simple_separable() {
 
 #[test]
 fn classify_first_order_linear_cc() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     // y' + 2*y = 0  →  first-order linear CC
     let ode = &dy + &(&y * 2);
@@ -89,8 +97,9 @@ fn classify_first_order_linear_cc() {
 
 #[test]
 fn classify_second_order_homogeneous() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let d2y = dy.formal_diff(&x);
     // y'' + y = 0
@@ -107,8 +116,9 @@ fn classify_second_order_homogeneous() {
 
 #[test]
 fn checkodesol_simple_separable() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     // ODE: y' - x = 0  →  solution y = x²/2
     let ode = &dy - &x;
@@ -118,8 +128,9 @@ fn checkodesol_simple_separable() {
 
 #[test]
 fn checkodesol_wrong_solution_rejected() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     // ODE: y' - x = 0  →  y = x is NOT a solution (y' = 1 ≠ x in general)
     let ode = &dy - &x;
@@ -128,15 +139,16 @@ fn checkodesol_wrong_solution_rejected() {
 
 #[test]
 fn dsolve_then_checkodesol() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     // y' - x = 0
     let ode = &dy - &x;
     let sol = ode.try_solve_ode(&y, &x).expect("dsolve should solve y' - x = 0");
     // Substitute C1 = 0 to get a particular solution
-    let c1 = symplex::default_context().symbol("C1");
-    let particular = sol.subs(&c1, &symplex::default_context().int(0));
+    let c1 = __ctx.symbol("C1");
+    let particular = sol.subs(&c1, &__ctx.int(0));
     assert!(
         ode.check_ode_solution(&particular, &y, &x),
         "dsolve solution (with C1=0) should satisfy the ODE"

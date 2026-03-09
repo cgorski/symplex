@@ -56,7 +56,8 @@ fn is_unevaluated(s: &str) -> bool {
 
 #[test]
 fn heurisch_exp_over_one_plus_exp_squared() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let exp_x = x.exp();
     let denom = (&exp_x + 1).powi(2);
     let expr = &exp_x / &denom;
@@ -81,8 +82,9 @@ fn heurisch_exp_over_one_plus_exp_squared() {
 
 #[test]
 fn heurisch_one_over_one_plus_exp() {
-    let x = symplex::default_context().symbol("x");
-    let expr = symplex::default_context().int(1) / &(&x.exp() + 1);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let expr = __ctx.int(1) / &(&x.exp() + 1);
     let result = expr.integrate(&x);
     let s = format!("{result}");
 
@@ -103,7 +105,8 @@ fn heurisch_one_over_one_plus_exp() {
 
 #[test]
 fn heurisch_x_over_x4_plus_1() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let numer = x.clone();
     let denom = &x.powi(4) + 1;
     let expr = &numer / &denom;
@@ -128,7 +131,8 @@ fn heurisch_x_over_x4_plus_1() {
 
 #[test]
 fn heurisch_ln_squared() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = x.ln().powi(2);
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -151,7 +155,8 @@ fn heurisch_ln_squared() {
 
 #[test]
 fn heurisch_x_exp_x_verify() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x * &x.exp();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -173,7 +178,8 @@ fn heurisch_x_exp_x_verify() {
 
 #[test]
 fn heurisch_exp_sin() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x.exp() * &x.sin();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -195,7 +201,8 @@ fn heurisch_exp_sin() {
 
 #[test]
 fn heurisch_x_squared_exp() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x.powi(2) * &x.exp();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -218,8 +225,9 @@ fn heurisch_x_squared_exp() {
 
 #[test]
 fn heurisch_atan_form_sanity() {
-    let x = symplex::default_context().symbol("x");
-    let expr = symplex::default_context().int(1) / &(&x.powi(2) + 1);
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let expr = __ctx.int(1) / &(&x.powi(2) + 1);
     let result = expr.integrate(&x);
     let s = format!("{result}");
 
@@ -240,7 +248,8 @@ fn heurisch_atan_form_sanity() {
 
 #[test]
 fn heurisch_x_sin_x_squared() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x * &x.powi(2).sin();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -263,7 +272,8 @@ fn heurisch_x_sin_x_squared() {
 
 #[test]
 fn heurisch_exp_over_one_plus_exp() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let exp_x = x.exp();
     let expr = &exp_x / &(&exp_x + 1);
     let result = expr.integrate(&x);
@@ -286,7 +296,8 @@ fn heurisch_exp_over_one_plus_exp() {
 
 #[test]
 fn heurisch_sin_cos_product() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x.sin() * &x.cos();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -309,8 +320,9 @@ fn heurisch_sin_cos_product() {
 
 #[test]
 fn heurisch_one_over_x_ln_x() {
-    let x = symplex::default_context().symbol("x");
-    let expr = symplex::default_context().int(1) / &(&x * &x.ln());
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let expr = __ctx.int(1) / &(&x * &x.ln());
     let result = expr.integrate(&x);
     let s = format!("{result}");
 
@@ -332,7 +344,8 @@ fn heurisch_one_over_x_ln_x() {
 
 #[test]
 fn heurisch_x_ln_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x * &x.ln();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -354,8 +367,9 @@ fn heurisch_x_ln_x() {
 
 #[test]
 fn heurisch_2x_exp_x_squared() {
-    let x = symplex::default_context().symbol("x");
-    let two_x = &symplex::default_context().int(2) * &x;
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let two_x = &__ctx.int(2) * &x;
     let expr = &two_x * &x.powi(2).exp();
     let result = expr.integrate(&x);
     let s = format!("{result}");

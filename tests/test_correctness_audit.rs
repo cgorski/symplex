@@ -181,9 +181,10 @@ fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
 
 /// Evaluate expression at a given f64 point by substituting a rational approximation.
 fn eval_at_f64(expr: &Ex, var: &Ex, val: f64) -> Option<f64> {
+    let ctx = expr.context();
     // Convert f64 to a rational approximation p/q
     let (p, q) = float_to_rational(val);
-    let pt = symplex::default_context().rational(p, q);
+    let pt = ctx.rational(p, q);
     let substituted = expr.subs(var, &pt);
     substituted.eval_f64().ok()
 }
@@ -643,7 +644,7 @@ fn correctness_audit_against_sympy() {
         "fixture_count mismatch"
     );
 
-    let ctx = symplex::default_context();
+    let ctx = Context::new();
     let mut outcomes: Vec<TestOutcome> = Vec::new();
 
     for raw in &file.fixtures {
@@ -655,17 +656,17 @@ fn correctness_audit_against_sympy() {
         match category {
             "definite_integral" => {
                 if let Ok(f) = serde_json::from_value::<DefiniteIntegralFixture>(raw.clone()) {
-                    outcomes.push(process_definite_integral(ctx, &f));
+                    outcomes.push(process_definite_integral(&ctx, &f));
                 }
             }
             "ftc_check" => {
                 if let Ok(f) = serde_json::from_value::<FtcFixture>(raw.clone()) {
-                    outcomes.push(process_ftc(ctx, &f));
+                    outcomes.push(process_ftc(&ctx, &f));
                 }
             }
             "simplify_verify" => {
                 if let Ok(f) = serde_json::from_value::<SimplifyFixture>(raw.clone()) {
-                    outcomes.push(process_simplify(ctx, &f));
+                    outcomes.push(process_simplify(&ctx, &f));
                 }
             }
             "gosper_sum" => {
@@ -675,7 +676,7 @@ fn correctness_audit_against_sympy() {
             }
             "series_verify" => {
                 if let Ok(f) = serde_json::from_value::<SeriesFixture>(raw.clone()) {
-                    outcomes.push(process_series(ctx, &f));
+                    outcomes.push(process_series(&ctx, &f));
                 }
             }
             other => {
@@ -763,7 +764,8 @@ fn correctness_audit_against_sympy() {
 /// Focused test: verify that basic polynomial integrals are numerically exact.
 #[test]
 fn audit_polynomial_integrals_exact() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
 
     // ∫ x^n dx = x^(n+1)/(n+1) — check at x=1, x=2
     for n in 1i64..=5 {
@@ -777,8 +779,8 @@ fn audit_polynomial_integrals_exact() {
         );
 
         // F(2) - F(1) should equal ∫₁² x^n dx = (2^(n+1) - 1) / (n+1)
-        let f_at_2 = antideriv.subs(&x, &symplex::default_context().int(2)).eval_f64();
-        let f_at_1 = antideriv.subs(&x, &symplex::default_context().int(1)).eval_f64();
+        let f_at_2 = antideriv.subs(&x, &__ctx.int(2)).eval_f64();
+        let f_at_1 = antideriv.subs(&x, &__ctx.int(1)).eval_f64();
 
         if let (Ok(f2), Ok(f1)) = (f_at_2, f_at_1) {
             let got = f2 - f1;
@@ -799,18 +801,19 @@ fn audit_polynomial_integrals_exact() {
 /// Focused test: verify trig integral correctness via definite integrals.
 #[test]
 fn audit_trig_integrals_definite() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
 
     // ∫_{0.5}^{1.0} sin(x) dx = -cos(1) + cos(0.5)
     let integrand = x.sin();
     let antideriv = integrand.integrate(&x);
 
     let f_hi = antideriv
-        .subs(&x, &symplex::default_context().int(1))
+        .subs(&x, &__ctx.int(1))
         .eval_f64()
         .unwrap_or(f64::NAN);
     let f_lo = antideriv
-        .subs(&x, &symplex::default_context().rational(1, 2))
+        .subs(&x, &__ctx.rational(1, 2))
         .eval_f64()
         .unwrap_or(f64::NAN);
 
@@ -829,11 +832,11 @@ fn audit_trig_integrals_definite() {
     let antideriv2 = integrand2.integrate(&x);
 
     let f_hi2 = antideriv2
-        .subs(&x, &symplex::default_context().int(1))
+        .subs(&x, &__ctx.int(1))
         .eval_f64()
         .unwrap_or(f64::NAN);
     let f_lo2 = antideriv2
-        .subs(&x, &symplex::default_context().rational(1, 2))
+        .subs(&x, &__ctx.rational(1, 2))
         .eval_f64()
         .unwrap_or(f64::NAN);
 
@@ -851,18 +854,19 @@ fn audit_trig_integrals_definite() {
 /// Focused test: verify exp integral correctness.
 #[test]
 fn audit_exp_integral_definite() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
 
     // ∫_{0}^{1} exp(x) dx = e - 1
     let integrand = x.exp();
     let antideriv = integrand.integrate(&x);
 
     let f_hi = antideriv
-        .subs(&x, &symplex::default_context().int(1))
+        .subs(&x, &__ctx.int(1))
         .eval_f64()
         .unwrap_or(f64::NAN);
     let f_lo = antideriv
-        .subs(&x, &symplex::default_context().int(0))
+        .subs(&x, &__ctx.int(0))
         .eval_f64()
         .unwrap_or(f64::NAN);
 
@@ -880,7 +884,8 @@ fn audit_exp_integral_definite() {
 /// Focused test: verify simplification identities are numerically preserved.
 #[test]
 fn audit_simplify_preserves_value() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
 
     let cases: Vec<(&str, Ex)> = vec![
         ("sin^2+cos^2", &x.sin().powi(2) + &x.cos().powi(2)),
@@ -891,7 +896,7 @@ fn audit_simplify_preserves_value() {
         let simplified = expr.full_simplify();
 
         for &(p, q) in &[(1i64, 2i64), (1, 1), (3, 2), (2, 1)] {
-            let pt = symplex::default_context().rational(p, q);
+            let pt = __ctx.rational(p, q);
             let orig_val = expr.subs(&x, &pt).eval_f64();
             let simp_val = simplified.subs(&x, &pt).eval_f64();
 
@@ -915,14 +920,15 @@ fn audit_simplify_preserves_value() {
 /// Focused test: verify that ODE solutions pass back-substitution check.
 #[test]
 fn audit_ode_solutions_verify() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ddy = dy.formal_diff(&x);
 
     let ode_cases: Vec<(&str, Ex)> = vec![
         ("y' - x = 0", &dy - &x),
-        ("y' + 2y = 0", &dy + &(&symplex::default_context().int(2) * &y)),
+        ("y' + 2y = 0", &dy + &(&__ctx.int(2) * &y)),
         ("y'' + y = 0", &ddy + &y),
     ];
 
@@ -943,7 +949,8 @@ fn audit_ode_solutions_verify() {
 /// Focused test: verify series expansion accuracy near expansion point.
 #[test]
 fn audit_series_accuracy() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
 
     let cases: Vec<(&str, Ex)> = vec![
         ("sin(x)", x.sin()),
@@ -957,7 +964,7 @@ fn audit_series_accuracy() {
             let expanded = series.expand().eval();
 
             // Check at x = 0.1
-            let pt = symplex::default_context().rational(1, 10);
+            let pt = __ctx.rational(1, 10);
             let exact = expr.subs(&x, &pt).eval_f64();
             let approx = expanded.subs(&x, &pt).eval_f64();
 

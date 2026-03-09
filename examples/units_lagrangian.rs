@@ -26,7 +26,7 @@ fn main() {
 
     // Raw Ex variables for use inside expr! — the most ergonomic way
     // to build complex symbolic formulas.
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; m, l, g, theta, theta_dot);
 
     // Typed variables for DiffWrt — the compiler tracks dimensions
@@ -106,7 +106,7 @@ fn main() {
 
     // ── Potential energy approach: PE = ½kx² ──
     // Use expr! for the formula, then derive force via differentiation
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; k_var, x_var);
     let spring_pe = Energy::from_ex(expr!(1/2 * k_var * x_var^2));
     println!("\n  PE = ½kx² = {}", spring_pe);
@@ -121,7 +121,7 @@ fn main() {
 
     // ── Energy conservation check ──
     // KE = ½mv² using expr!
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; m_raw, v_raw);
     let spring_ke = Energy::from_ex(expr!(1/2 * m_raw * v_raw^2));
     println!("\n  KE = ½mv² = {}", spring_ke);
@@ -142,18 +142,18 @@ fn main() {
 
     // Evaluate the angular momentum ∂L/∂θ̇ at θ̇ = 2 rad/s
     let ang_mom_num = dl_dthetadot.clone()
-        .subs(&m, &symplex::default_context().int(1))
-        .subs(&l, &symplex::default_context().rational(1, 2))
-        .subs(&theta_dot, &symplex::default_context().int(2))
+        .subs(&m, &__ctx.int(1))
+        .subs(&l, &__ctx.rational(1, 2))
+        .subs(&theta_dot, &__ctx.int(2))
         .eval();
     println!("  ∂L/∂θ̇(m=1, l=0.5, θ̇=2) = {}", ang_mom_num);
 
     // Evaluate the torque ∂L/∂θ at θ = 0.1 rad
     let torque_num = dl_dtheta.clone()
-        .subs(&m, &symplex::default_context().int(1))
-        .subs(&g, &symplex::default_context().rational(981, 100))
-        .subs(&l, &symplex::default_context().rational(1, 2))
-        .subs(&theta, &symplex::default_context().rational(1, 10))
+        .subs(&m, &__ctx.int(1))
+        .subs(&g, &__ctx.rational(981, 100))
+        .subs(&l, &__ctx.rational(1, 2))
+        .subs(&theta, &__ctx.rational(1, 10))
         .eval();
     println!("  ∂L/∂θ(m=1, g=9.81, l=0.5, θ=0.1) = {}", torque_num);
 
@@ -167,10 +167,10 @@ fn main() {
     println!("\n  PE at various angles (m=1, g=10, l=1):");
     for angle_deg in [0, 15, 30, 45, 60, 90] {
         let pe_val = pe.clone()
-            .subs(&m, &symplex::default_context().int(1))
-            .subs(&g, &symplex::default_context().int(10))
-            .subs(&l, &symplex::default_context().int(1))
-            .subs(&theta, &Angle::degrees(&symplex::default_context().int(angle_deg)).into_inner())
+            .subs(&m, &__ctx.int(1))
+            .subs(&g, &__ctx.int(10))
+            .subs(&l, &__ctx.int(1))
+            .subs(&theta, &Angle::degrees(&__ctx.int(angle_deg)).into_inner())
             .eval();
         // Use eval_f64 for a readable number
         if let Ok(f) = pe_val.eval_f64() {
@@ -183,8 +183,8 @@ fn main() {
     // Spring-mass numerical check: PE = ½kx²
     // k = 100 N/m, x = 0.2 m → PE = ½·100·0.04 = 2 J
     let spring_pe_num = spring_pe.clone()
-        .subs(&k_var, &symplex::default_context().int(100))
-        .subs(&x_var, &symplex::default_context().rational(1, 5))
+        .subs(&k_var, &__ctx.int(100))
+        .subs(&x_var, &__ctx.rational(1, 5))
         .eval();
     println!("\n  Spring PE(k=100, x=0.2) = {} (expect 2 J)", spring_pe_num);
 

@@ -9,7 +9,8 @@ use symplex::prelude::*;
 
 #[test]
 fn evalf_f64_integer() {
-    let five = symplex::default_context().int(5);
+    let __ctx = Context::new();
+    let five = __ctx.int(5);
     let val = five.eval_f64().unwrap();
     assert!((val - 5.0).abs() < 1e-10);
 }
@@ -23,20 +24,23 @@ fn evalf_f64_pi() {
 
 #[test]
 fn evalf_f64_expression() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let val = x.powi(2).subs_i64(&x, 3).eval_f64().unwrap();
     assert!((val - 9.0).abs() < 1e-10);
 }
 
 #[test]
 fn evalf_f64_free_symbol_errors() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     assert!(x.eval_f64().is_err());
 }
 
 #[test]
 fn evalf_f64_rational() {
-    let half = symplex::default_context().rational(1, 3);
+    let __ctx = Context::new();
+    let half = __ctx.rational(1, 3);
     let val = half.eval_f64().unwrap();
     assert!((val - 1.0 / 3.0).abs() < 1e-10);
 }
@@ -47,13 +51,15 @@ fn evalf_f64_rational() {
 
 #[test]
 fn assume_positive() {
-    let t = symplex::default_context().symbol("t").assume(Assumption::Positive);
+    let __ctx = Context::new();
+    let t = __ctx.symbol("t").assume(Assumption::Positive);
     assert_eq!(t.is_positive(), Some(true));
 }
 
 #[test]
 fn assume_chained() {
-    let t = symplex::default_context().symbol("t")
+    let __ctx = Context::new();
+    let t = __ctx.symbol("t")
         .assume(Assumption::Positive)
         .assume(Assumption::Real);
     assert_eq!(t.is_positive(), Some(true));
@@ -62,7 +68,8 @@ fn assume_chained() {
 
 #[test]
 fn assume_integer() {
-    let n = symplex::default_context().symbol("n").assume(Assumption::Integer);
+    let __ctx = Context::new();
+    let n = __ctx.symbol("n").assume(Assumption::Integer);
     assert_eq!(n.is_integer(), Some(true));
     // Integer implies rational, real, complex by forward chaining
     assert_eq!(n.is_real(), Some(true));
@@ -142,7 +149,8 @@ fn sum_of_expressions() {
 
 #[test]
 fn integrate_x_sin_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x * &x.sin();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -169,7 +177,8 @@ fn integrate_x_sin_x() {
 
 #[test]
 fn integrate_x_exp_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x * &x.exp();
     let result = expr.integrate(&x);
     let s = format!("{result}");
@@ -179,7 +188,8 @@ fn integrate_x_exp_x() {
 
 #[test]
 fn integrate_x_cos_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x * &x.cos();
     let result = expr.integrate(&x);
     let s = format!("{result}");

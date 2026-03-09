@@ -218,11 +218,12 @@ fn same_context_operations_work() {
 }
 
 #[test]
-fn default_context_operations_work() {
-    // All expressions from the global default context should interoperate
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
-    let one = symplex::default_context().int(1);
+fn shared_context_operations_work() {
+    let __ctx = Context::new();
+    // All expressions from the same context should interoperate
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
+    let one = __ctx.int(1);
 
     let expr = x.powi(2) + &y + &one;
     let _ = expr.diff(&x);

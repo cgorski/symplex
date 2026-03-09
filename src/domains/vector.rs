@@ -27,7 +27,7 @@ pub fn divergence(field: &Matrix, vars: &[&Ex]) -> Ex {
     );
     assert_eq!(field.ncols(), 1, "field must be a column vector");
 
-    let mut sum = Ex::zero();
+    let mut sum = vars[0].context().zero();
     for (i, var) in vars.iter().enumerate() {
         let component = field.get(i, 0);
         sum = &sum + &component.diff(var);

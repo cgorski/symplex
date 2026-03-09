@@ -5,6 +5,7 @@ use symplex::prelude::*;
 /// Fundamental Theorem of Calculus check: differentiate the antiderivative
 /// and compare numerically against the original integrand at a test point.
 fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
+    let __ctx = integrand.context();
     let anti = integrand.integrate(var);
     let s = format!("{anti}");
     assert!(
@@ -12,7 +13,7 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
         "{label}: got unevaluated integral: {s}"
     );
     let deriv = anti.diff(var);
-    let test_point = symplex::default_context().rational(7, 10);
+    let test_point = __ctx.rational(7, 10);
     if let (Ok(o), Ok(d)) = (
         integrand.subs(var, &test_point).eval_f64(),
         deriv.subs(var, &test_point).eval_f64(),
@@ -33,16 +34,18 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
 
 #[test]
 fn integrate_sec_tan() {
+    let __ctx = Context::new();
     // ∫ sin(x)/cos²(x) dx = sec(x)·tan(x) → 1/cos(x)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x.sin() / &x.cos().powi(2);
     assert_ftc(&integrand, &x, "∫ sec(x)tan(x) dx");
 }
 
 #[test]
 fn integrate_csc_cot() {
+    let __ctx = Context::new();
     // ∫ cos(x)/sin²(x) dx = csc(x)·cot(x) → -1/sin(x)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x.cos() / &x.sin().powi(2);
     assert_ftc(&integrand, &x, "∫ csc(x)cot(x) dx");
 }
@@ -53,37 +56,41 @@ fn integrate_csc_cot() {
 
 #[test]
 fn integrate_1_over_sqrt_1_plus_x2() {
+    let __ctx = Context::new();
     // ∫ 1/√(1+x²) dx = asinh(x)
-    let x = symplex::default_context().symbol("x");
-    let integrand = &symplex::default_context().int(1) / &(&x.powi(2) + 1).sqrt();
+    let x = __ctx.symbol("x");
+    let integrand = &__ctx.int(1) / &(&x.powi(2) + 1).sqrt();
     assert_ftc(&integrand, &x, "∫ 1/√(1+x²) dx");
 }
 
 #[test]
 fn integrate_1_over_sqrt_4x2_plus_1() {
+    let __ctx = Context::new();
     // ∫ 1/√(4x²+1) dx — coefficient a=4, b=0, c=1
     // Should use completing-the-square path with a>0, d>0
-    let x = symplex::default_context().symbol("x");
-    let integrand = &symplex::default_context().int(1) / &(&(&x.powi(2) * &symplex::default_context().int(4)) + 1).sqrt();
+    let x = __ctx.symbol("x");
+    let integrand = &__ctx.int(1) / &(&(&x.powi(2) * &__ctx.int(4)) + 1).sqrt();
     assert_ftc(&integrand, &x, "∫ 1/√(4x²+1) dx");
 }
 
 #[test]
 fn integrate_1_over_sqrt_quadratic_with_linear_term() {
+    let __ctx = Context::new();
     // ∫ 1/√(x²+2x+5) dx — completing the square yields (x+1)² + 4
-    let x = symplex::default_context().symbol("x");
-    let quad = &(&x.powi(2) + &(&symplex::default_context().int(2) * &x)) + 5;
-    let integrand = &symplex::default_context().int(1) / &quad.sqrt();
+    let x = __ctx.symbol("x");
+    let quad = &(&x.powi(2) + &(&__ctx.int(2) * &x)) + 5;
+    let integrand = &__ctx.int(1) / &quad.sqrt();
     assert_ftc(&integrand, &x, "∫ 1/√(x²+2x+5) dx");
 }
 
 #[test]
 fn integrate_1_over_sqrt_quadratic_neg_a() {
+    let __ctx = Context::new();
     // ∫ 1/√(3-2x²) dx — a=-2, b=0, c=3 → asin form
     // Using test point x=0.7 gives 3-2*(0.49) = 2.02 > 0, good.
-    let x = symplex::default_context().symbol("x");
-    let quad = &symplex::default_context().int(3) - &(&x.powi(2) * &symplex::default_context().int(2));
-    let integrand = &symplex::default_context().int(1) / &quad.sqrt();
+    let x = __ctx.symbol("x");
+    let quad = &__ctx.int(3) - &(&x.powi(2) * &__ctx.int(2));
+    let integrand = &__ctx.int(1) / &quad.sqrt();
     assert_ftc(&integrand, &x, "∫ 1/√(3-2x²) dx");
 }
 
@@ -93,17 +100,19 @@ fn integrate_1_over_sqrt_quadratic_neg_a() {
 
 #[test]
 fn integrate_x_over_sqrt_1_plus_x2() {
+    let __ctx = Context::new();
     // ∫ x/√(1+x²) dx = √(1+x²)   (b=0, so just √R/a)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let integrand = &x / &(&x.powi(2) + 1).sqrt();
     assert_ftc(&integrand, &x, "∫ x/√(1+x²) dx");
 }
 
 #[test]
 fn integrate_x_over_sqrt_quadratic_with_linear_term() {
+    let __ctx = Context::new();
     // ∫ x/√(x²+2x+5) dx = √(x²+2x+5) - I₀ term
-    let x = symplex::default_context().symbol("x");
-    let quad = &(&x.powi(2) + &(&symplex::default_context().int(2) * &x)) + 5;
+    let x = __ctx.symbol("x");
+    let quad = &(&x.powi(2) + &(&__ctx.int(2) * &x)) + 5;
     let integrand = &x / &quad.sqrt();
     assert_ftc(&integrand, &x, "∫ x/√(x²+2x+5) dx");
 }

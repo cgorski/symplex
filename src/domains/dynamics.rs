@@ -38,13 +38,14 @@ use crate::prelude::*;
 /// use symplex::prelude::*;
 /// use symplex::dynamics::total_time_derivative;
 ///
-/// let q = symplex::default_context().symbol("q");
-/// let qd = symplex::default_context().symbol("qd");
-/// let qdd = symplex::default_context().symbol("qdd");
+/// let ctx = Context::new();
+/// let q = ctx.symbol("q");
+/// let qd = ctx.symbol("qd");
+/// let qdd = ctx.symbol("qdd");
 ///
 /// // d/dt(q) = qd
 /// let result = total_time_derivative(&q, &[(&q, &qd)], &[&qdd]);
-/// let val = result.subs(&qd, &symplex::default_context().int(7)).eval().eval_f64().unwrap();
+/// let val = result.subs(&qd, &ctx.int(7)).eval().eval_f64().unwrap();
 /// assert!((val - 7.0).abs() < 1e-12);
 /// ```
 pub fn total_time_derivative(
@@ -61,7 +62,7 @@ pub fn total_time_derivative(
     );
 
     // d/dt f = Σᵢ (∂f/∂qᵢ)·q̇ᵢ + Σᵢ (∂f/∂q̇ᵢ)·q̈ᵢ
-    let mut result = symplex::default_context().int(0);
+    let mut result = expr.context().int(0);
 
     for (i, (qi, qi_dot)) in coords.iter().enumerate() {
         // ∂f/∂qᵢ · q̇ᵢ
@@ -103,15 +104,16 @@ pub fn total_time_derivative(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::euler_lagrange;
 ///
-/// let m = symplex::default_context().symbol("m");
-/// let q = symplex::default_context().symbol("q");
-/// let qd = symplex::default_context().symbol("qd");
-/// let qdd = symplex::default_context().symbol("qdd");
+/// let ctx = Context::new();
+/// let m = ctx.symbol("m");
+/// let q = ctx.symbol("q");
+/// let qd = ctx.symbol("qd");
+/// let qdd = ctx.symbol("qdd");
 ///
 /// // Free particle: T = ½m·q̇², V = 0
-/// let half = symplex::default_context().rational(1, 2);
+/// let half = ctx.rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
-/// let pe = symplex::default_context().int(0);
+/// let pe = ctx.int(0);
 /// let eqs = euler_lagrange(&ke, &pe, &[(&q, &qd)], &[&qdd]);
 /// // Should give m·q̈
 /// assert_eq!(eqs.len(), 1);
@@ -169,11 +171,12 @@ pub fn euler_lagrange(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::mass_matrix;
 ///
-/// let m = symplex::default_context().symbol("m");
-/// let qd = symplex::default_context().symbol("qd");
+/// let ctx = Context::new();
+/// let m = ctx.symbol("m");
+/// let qd = ctx.symbol("qd");
 ///
 /// // T = ½m·q̇²  →  M = [[m]]
-/// let half = symplex::default_context().rational(1, 2);
+/// let half = ctx.rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
 /// let mm = mass_matrix(&ke, &[&qd]);
 /// assert_eq!(mm.shape(), (1, 1));
@@ -218,11 +221,12 @@ pub fn mass_matrix(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::{mass_matrix, christoffel_symbols};
 ///
-/// let m = symplex::default_context().symbol("m");
-/// let qd = symplex::default_context().symbol("qd");
-/// let q = symplex::default_context().symbol("q");
+/// let ctx = Context::new();
+/// let m = ctx.symbol("m");
+/// let qd = ctx.symbol("qd");
+/// let q = ctx.symbol("q");
 ///
-/// let half = symplex::default_context().rational(1, 2);
+/// let half = ctx.rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
 /// let mm = mass_matrix(&ke, &[&qd]);
 /// let cs = christoffel_symbols(&mm, &[&q]);
@@ -243,7 +247,7 @@ pub fn christoffel_symbols(
         n
     );
 
-    let half = symplex::default_context().rational(1, 2);
+    let half = q_vars[0].context().rational(1, 2);
 
     let mut result = Vec::with_capacity(n);
     for i in 0..n {
@@ -290,11 +294,12 @@ pub fn christoffel_symbols(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::{mass_matrix, coriolis_matrix};
 ///
-/// let m = symplex::default_context().symbol("m");
-/// let q = symplex::default_context().symbol("q");
-/// let qd = symplex::default_context().symbol("qd");
+/// let ctx = Context::new();
+/// let m = ctx.symbol("m");
+/// let q = ctx.symbol("q");
+/// let qd = ctx.symbol("qd");
 ///
-/// let half = symplex::default_context().rational(1, 2);
+/// let half = ctx.rational(1, 2);
 /// let ke = &half * &m * &qd.powi(2);
 /// let mm = mass_matrix(&ke, &[&qd]);
 /// let c = coriolis_matrix(&mm, &[&q], &[&qd]);
@@ -319,7 +324,7 @@ pub fn coriolis_matrix(
         let mut row = Vec::with_capacity(n);
         for christoffel_ij in christoffel_i.iter().take(n) {
             // C_ij = Σₖ Γᵢⱼₖ · q̇ₖ
-            let mut c_ij = symplex::default_context().int(0);
+            let mut c_ij = qdot_vars[0].context().int(0);
             for k in 0..n {
                 c_ij = &c_ij + &(&christoffel_ij[k] * qdot_vars[k]);
             }
@@ -346,10 +351,11 @@ pub fn coriolis_matrix(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::gravity_vector;
 ///
-/// let m = symplex::default_context().symbol("m");
-/// let g = symplex::default_context().symbol("g");
-/// let l = symplex::default_context().symbol("L");
-/// let q = symplex::default_context().symbol("q");
+/// let ctx = Context::new();
+/// let m = ctx.symbol("m");
+/// let g = ctx.symbol("g");
+/// let l = ctx.symbol("L");
+/// let q = ctx.symbol("q");
 ///
 /// // V = m·g·L·cos(q)  →  g(q) = ∂V/∂q = -m·g·L·sin(q)
 /// let pe = &m * &g * &l * &q.cos();
@@ -392,13 +398,14 @@ pub fn gravity_vector(
 /// use symplex::prelude::*;
 /// use symplex::dynamics::manipulator_equation;
 ///
-/// let m_val = symplex::default_context().symbol("m");
-/// let q = symplex::default_context().symbol("q");
-/// let qd = symplex::default_context().symbol("qd");
+/// let ctx = Context::new();
+/// let m_val = ctx.symbol("m");
+/// let q = ctx.symbol("q");
+/// let qd = ctx.symbol("qd");
 ///
-/// let half = symplex::default_context().rational(1, 2);
+/// let half = ctx.rational(1, 2);
 /// let ke = &half * &m_val * &qd.powi(2);
-/// let pe = symplex::default_context().int(0);
+/// let pe = ctx.int(0);
 /// let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]);
 /// assert_eq!(mass.shape(), (1, 1));
 /// assert_eq!(coriolis.shape(), (1, 1));

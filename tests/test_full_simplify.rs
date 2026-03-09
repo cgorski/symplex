@@ -8,22 +8,25 @@ use symplex::prelude::*;
 
 #[test]
 fn full_simplify_expand_plus_cancel() {
+    let __ctx = Context::new();
     // (x+1)^2 - x^2 - 2*x should become 1 after expand + canonicalization
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
     assert_eq!(format!("{}", expr.full_simplify()), "1");
 }
 
 #[test]
 fn full_simplify_trig_identity() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
     assert_eq!(format!("{}", expr.full_simplify()), "1");
 }
 
 #[test]
 fn full_simplify_exp_ln() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = x.ln().exp();
     assert_eq!(format!("{}", expr.full_simplify()), "x");
 }
@@ -39,14 +42,16 @@ fn full_simplify_nested_eval_then_simplify() {
 
 #[test]
 fn full_simplify_already_simple() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x + 1;
     assert_eq!(format!("{}", expr.full_simplify()), "x + 1");
 }
 
 #[test]
 fn full_simplify_pythagorean_in_larger_sum() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2) + 5;
     assert_eq!(format!("{}", expr.full_simplify()), "6");
 }
@@ -57,14 +62,16 @@ fn full_simplify_pythagorean_in_larger_sum() {
 
 #[test]
 fn simplify_sqrt_of_square() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = x.powi(2).sqrt();
     assert_eq!(format!("{}", expr.simplify()), "abs(x)");
 }
 
 #[test]
 fn simplify_sqrt_of_square_in_sum() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x.powi(2).sqrt() + 1;
     let simplified = expr.simplify();
     let s = format!("{simplified}");
@@ -77,7 +84,8 @@ fn simplify_sqrt_of_square_in_sum() {
 
 #[test]
 fn full_simplify_trace_records_steps() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
     let (result, steps) = expr.full_simplify_trace();
     assert_eq!(format!("{result}"), "1");
@@ -91,7 +99,8 @@ fn full_simplify_trace_records_steps() {
 
 #[test]
 fn full_simplify_trace_empty_when_no_change() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x + 1;
     let (_result, steps) = expr.full_simplify_trace();
     assert!(steps.is_empty(), "no rules should fire on x + 1");

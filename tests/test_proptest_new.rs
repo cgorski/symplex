@@ -15,8 +15,9 @@ proptest! {
 
     #[test]
     fn laplace_roundtrip(c in 1..5i64, a in 1..4i64) {
-        let t = symplex::default_context().symbol("t");
-        let s = symplex::default_context().symbol("s");
+        let __ctx = Context::new();
+        let t = __ctx.symbol("t");
+        let s = __ctx.symbol("s");
         let expr = (&t * a).exp() * c;
 
         let mut bail = common::BailCounter::new("laplace_roundtrip");
@@ -30,7 +31,7 @@ proptest! {
                 bail.skip();
             } else {
                 // Evaluate both at t=0.5
-                let test_point = symplex::default_context().rational(1, 2);
+                let test_point = __ctx.rational(1, 2);
                 let orig_val = expr.subs(&t, &test_point).eval_f64();
                 let recov_val = recovered.subs(&t, &test_point).eval().simplify().eval_f64();
 
@@ -60,8 +61,9 @@ proptest! {
 
     #[test]
     fn inequality_solution_satisfies(a in -5..5i64, b in -5..5i64, c in 1..5i64) {
+        let __ctx = Context::new();
         // Test a_coeff*x² + b*x + c > 0 where a_coeff >= 1
-        let x = symplex::default_context().symbol("x");
+        let x = __ctx.symbol("x");
         let a_coeff = a.max(1);
         let poly = &x.powi(2) * a_coeff + &x * b + c;
 
@@ -128,7 +130,8 @@ proptest! {
 
     #[test]
     fn multinomial_term_count(n in 2..8usize) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b);
         let expanded = (&a + &b).powi(n as i64).expand();
         // (a+b)^n has n+1 terms by the binomial theorem
         prop_assert_eq!(expanded.term_count(), n + 1,
@@ -137,7 +140,8 @@ proptest! {
 
     #[test]
     fn trinomial_term_count(n in 2..6usize) {
-        let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; a, b, c);
+        let __ctx = Context::new();
+        let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; a, b, c);
         let expanded = (&a + &b + &c).powi(n as i64).expand();
         // (a+b+c)^n has C(n+2, 2) = (n+1)(n+2)/2 terms
         let expected = (n + 1) * (n + 2) / 2;

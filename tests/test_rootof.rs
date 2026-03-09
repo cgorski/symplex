@@ -6,20 +6,13 @@
 use symplex::prelude::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Helper
-// ═══════════════════════════════════════════════════════════════════════════
-
-fn ctx() -> &'static Context {
-    symplex::default_context()
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Task 1 — solver emits RootOf for degree ≥ 5
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn solve_quintic_returns_rootof() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // x⁵ − x − 1 = 0  (irreducible over ℚ, no rational roots)
     let poly = &x.powi(5) - &x - 1;
     let roots = poly.solve_or_empty(&x);
@@ -40,7 +33,8 @@ fn solve_quintic_returns_rootof() {
 
 #[test]
 fn solve_quintic_returns_five_roots() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let poly = &x.powi(5) - &x - 1;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(
@@ -53,7 +47,8 @@ fn solve_quintic_returns_five_roots() {
 
 #[test]
 fn solve_sextic_returns_rootof() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // x⁶ + x + 1 = 0  (no rational roots)
     let poly = &x.powi(6) + &x + 1;
     let roots = poly.solve_or_empty(&x);
@@ -71,7 +66,8 @@ fn solve_sextic_returns_rootof() {
 
 #[test]
 fn solve_quintic_with_rational_root_mixed() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // (x − 1)(x⁵ − x − 1) = x⁶ − x⁵ − x² + x − x + 1
     // Actually let's just build the product directly.
     let factor1 = &x - 1;
@@ -94,7 +90,8 @@ fn solve_quintic_with_rational_root_mixed() {
 
 #[test]
 fn solve_degree_7_returns_rootof() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // x⁷ − 2x − 5 = 0 (classic irreducible)
     let poly = &x.powi(7) - &(&x * 2) - 5;
     let roots = poly.solve_or_empty(&x);
@@ -112,7 +109,8 @@ fn solve_degree_7_returns_rootof() {
 
 #[test]
 fn rootof_eval_f64_quintic() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // x⁵ − x − 1 has exactly one real root ≈ 1.1673
     let poly = &x.powi(5) - &x - 1;
     let roots = poly.solve_or_empty(&x);
@@ -145,7 +143,8 @@ fn rootof_eval_f64_quintic() {
 
 #[test]
 fn rootof_eval_decimal_quintic() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let poly = &x.powi(5) - &x - 1;
     let roots = poly.solve_or_empty(&x);
     // At least one root should be evaluable to decimal
@@ -165,7 +164,8 @@ fn rootof_eval_decimal_quintic() {
 
 #[test]
 fn rootof_eval_f64_degree7() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // x⁷ − 2x − 5 has one real root ≈ 1.3267
     let poly = &x.powi(7) - &(&x * 2) - 5;
     let roots = poly.solve_or_empty(&x);
@@ -192,7 +192,8 @@ fn rootof_eval_f64_degree7() {
 
 #[test]
 fn rootof_complex_roots_are_unevaluable() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // x⁵ − x − 1 has 1 real root and 4 complex roots.
     // RootOf indices for the complex roots should fail eval_f64.
     let poly = &x.powi(5) - &x - 1;
@@ -215,7 +216,8 @@ fn rootof_complex_roots_are_unevaluable() {
 
 #[test]
 fn solve_api_returns_ok_for_quintic() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let poly = &x.powi(5) - &x - 1;
     let result = poly.solve(&x);
     assert!(
@@ -232,7 +234,8 @@ fn solve_api_returns_ok_for_quintic() {
 
 #[test]
 fn solve_quadratic_still_works() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     let poly = &x.powi(2) - 1;
     let roots = poly.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²−1 should have 2 roots");
@@ -243,7 +246,8 @@ fn solve_quadratic_still_works() {
 
 #[test]
 fn solve_quartic_still_works() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // (x−1)(x−2)(x−3)(x−4) = x⁴ − 10x³ + 35x² − 50x + 24
     let poly = &(&(&(&x - 1) * &(&x - 2)) * &(&x - 3)) * &(&x - 4);
     let roots = poly.solve_or_empty(&x);
@@ -260,7 +264,8 @@ fn solve_quartic_still_works() {
 
 #[test]
 fn rootof_eval_multiple_real_roots() {
-    let x = ctx().symbol("x");
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
     // x⁵ − 5x³ + 4x = x(x²−1)(x²−4) = x(x−1)(x+1)(x−2)(x+2)
     // This factors completely over ℚ, so the solver should find
     // rational roots (not RootOf). Verifies no regression.

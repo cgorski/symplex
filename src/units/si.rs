@@ -1,5 +1,8 @@
 //! Named newtype wrappers for 30 SI physical quantities.
 //!
+//! All quantities created via [`symbol()`], [`constant()`], and [`rational()`]
+//! share a single lazily-initialised context so they can be freely combined.
+//!
 //! Each newtype wraps an [`Ex`] and provides compile-time dimensional safety
 //! with clear error messages (e.g. "expected `Force`, found `Mass`").
 //!
@@ -13,6 +16,18 @@
 //!
 //! Only the primary type in each group gets `From<Qty<D>>`. The alias type
 //! provides a named conversion method instead to avoid conflicting impls.
+
+use std::sync::OnceLock;
+
+/// Shared lazy context used by all named-quantity `symbol()`, `constant()`,
+/// and `rational()` helpers so that expressions from different quantity types
+/// can be combined without cross-context panics.
+static UNITS_CONTEXT: OnceLock<crate::api::context::Context> = OnceLock::new();
+
+/// Returns the shared units context (initialised on first call).
+pub fn units_ctx() -> &'static crate::api::context::Context {
+    UNITS_CONTEXT.get_or_init(crate::api::context::Context::new)
+}
 
 use std::fmt;
 use std::ops;
@@ -100,21 +115,21 @@ macro_rules! define_quantity {
 
             /// Create a named symbolic variable with this dimension.
             pub fn symbol(name: &str) -> Self {
-                $name(crate::default_context().symbol(name))
+                $name($crate::units::si::units_ctx().symbol(name))
             }
 
             /// Create from an integer constant.
             pub fn constant(val: i64) -> Self {
-                $name(crate::default_context().int(val))
+                $name($crate::units::si::units_ctx().int(val))
             }
 
             /// Create from a rational constant.
             pub fn rational(p: i64, q: i64) -> Self {
-                $name(crate::default_context().rational(p, q))
+                $name($crate::units::si::units_ctx().rational(p, q))
             }
 
             /// Zero value.
-            pub fn zero() -> Self { $name(crate::default_context().int(0)) }
+            pub fn zero() -> Self { $name($crate::units::si::units_ctx().int(0)) }
 
             /// Escape hatch: drop dimension, return raw Ex.
             pub fn into_inner(self) -> Ex { self.0 }
@@ -640,7 +655,7 @@ mod tests {
     #[test]
     fn scalar_mul_ex() {
         let f = Force::symbol("F");
-        let k = crate::default_context().symbol("k");
+        let k = units_ctx().symbol("k");
         let scaled = &f * &k;
         assert!(format!("{}", scaled).contains("[N]"));
     }
@@ -703,7 +718,7 @@ mod tests {
 
     #[test]
     fn into_inner_roundtrip() {
-        let raw = crate::default_context().symbol("x");
+        let raw = units_ctx().symbol("x");
         let q = Pressure::from_ex(raw.clone());
         let back = q.into_inner();
         assert_eq!(format!("{}", back), format!("{}", raw));
@@ -735,8 +750,8 @@ mod tests {
 
     #[test]
     fn subs() {
-        let x_var = crate::default_context().symbol("x");
-        let val = crate::default_context().int(5);
+        let x_var = units_ctx().symbol("x");
+        let val = units_ctx().int(5);
         let len = Length::symbol("x");
         let result = len.subs(&x_var, &val);
         assert!(format!("{}", result).contains("[m]"));

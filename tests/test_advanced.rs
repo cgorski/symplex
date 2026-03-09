@@ -4,12 +4,14 @@
 // Matrix
 // ═══════════════════════════════════════════════════════════════════════════
 
+use symplex::prelude::*;
 #[test]
 fn matrix_identity_times_vector() {
+    let __ctx = Context::new();
     use symplex::matrix::Matrix;
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
-    let id = Matrix::identity(2);
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
+    let id = Matrix::identity(&__ctx, 2);
     let v = Matrix::col_vector(vec![x.clone(), y.clone()]);
     let result = id.matmul(&v).unwrap();
     assert_eq!(format!("{}", result.get(0, 0)), "x");
@@ -18,10 +20,11 @@ fn matrix_identity_times_vector() {
 
 #[test]
 fn matrix_det_2x2_numeric() {
+    let __ctx = Context::new();
     use symplex::matrix::Matrix;
     let m = Matrix::new(vec![
-        vec![symplex::default_context().int(3), symplex::default_context().int(7)],
-        vec![symplex::default_context().int(1), symplex::default_context().int(5)],
+        vec![__ctx.int(3), __ctx.int(7)],
+        vec![__ctx.int(1), __ctx.int(5)],
     ]).unwrap();
     let det = m.det().unwrap();
     // 3*5 - 7*1 = 8
@@ -30,9 +33,10 @@ fn matrix_det_2x2_numeric() {
 
 #[test]
 fn matrix_jacobian() {
+    let __ctx = Context::new();
     use symplex::matrix::jacobian;
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let f1 = &x.powi(2) * &y;
     let f2 = &x + &y.powi(3);
     let j = jacobian(&[&f1, &f2], &[&x, &y]);
@@ -64,10 +68,11 @@ fn matrix_jacobian() {
 
 #[test]
 fn matrix_trace() {
+    let __ctx = Context::new();
     use symplex::matrix::Matrix;
     let m = Matrix::new(vec![
-        vec![symplex::default_context().int(1), symplex::default_context().int(2)],
-        vec![symplex::default_context().int(3), symplex::default_context().int(4)],
+        vec![__ctx.int(1), __ctx.int(2)],
+        vec![__ctx.int(3), __ctx.int(4)],
     ]).unwrap();
     let tr = m.trace().unwrap();
     assert_eq!(format!("{tr}"), "5");
@@ -75,14 +80,15 @@ fn matrix_trace() {
 
 #[test]
 fn matrix_add_numeric() {
+    let __ctx = Context::new();
     use symplex::matrix::Matrix;
     let m1 = Matrix::new(vec![
-        vec![symplex::default_context().int(1), symplex::default_context().int(2)],
-        vec![symplex::default_context().int(3), symplex::default_context().int(4)],
+        vec![__ctx.int(1), __ctx.int(2)],
+        vec![__ctx.int(3), __ctx.int(4)],
     ]).unwrap();
     let m2 = Matrix::new(vec![
-        vec![symplex::default_context().int(10), symplex::default_context().int(20)],
-        vec![symplex::default_context().int(30), symplex::default_context().int(40)],
+        vec![__ctx.int(10), __ctx.int(20)],
+        vec![__ctx.int(30), __ctx.int(40)],
     ]).unwrap();
     let sum = m1.add(&m2).unwrap();
     assert_eq!(format!("{}", sum.get(0, 0)), "11");
@@ -91,8 +97,9 @@ fn matrix_add_numeric() {
 
 #[test]
 fn matrix_diff() {
+    let __ctx = Context::new();
     use symplex::matrix::Matrix;
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]).unwrap();
     let dm = m.diff(&x);
     // d/dx(x²) = 2*x
@@ -109,7 +116,8 @@ fn matrix_diff() {
 
 #[test]
 fn lambdify_polynomial() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let f = &x.powi(2) + &x * 3 + 1;
     let func = f.compile(&["x"]).expect("should compile");
     assert!((func(&[2.0]) - 11.0).abs() < 1e-10);
@@ -117,7 +125,8 @@ fn lambdify_polynomial() {
 
 #[test]
 fn lambdify_trig() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let f = x.sin();
     let func = f.compile(&["x"]).expect("should compile");
     assert!((func(&[0.0])).abs() < 1e-10);
@@ -126,8 +135,9 @@ fn lambdify_trig() {
 
 #[test]
 fn lambdify_two_vars() {
-    let x = symplex::default_context().symbol("x");
-    let y = symplex::default_context().symbol("y");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let y = __ctx.symbol("y");
     let f = &x * &y + 1;
     let func = f.compile(&["x", "y"]).expect("should compile");
     assert!((func(&[3.0, 4.0]) - 13.0).abs() < 1e-10);
@@ -135,7 +145,8 @@ fn lambdify_two_vars() {
 
 #[test]
 fn lambdify_consistency_with_evalf() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let f = &x.sin().powi(2) + &x.cos().powi(2);
     let func = f.compile(&["x"]).expect("should compile");
     // sin²+cos² should be 1 at any point
@@ -149,7 +160,8 @@ fn lambdify_consistency_with_evalf() {
 
 #[test]
 fn cse_extracts_common() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let sin_x = x.sin();
     let expr = &sin_x.powi(2) + &sin_x;
     let (bindings, result) = expr.cse();

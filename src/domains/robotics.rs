@@ -41,7 +41,8 @@ use num_traits::ToPrimitive;
 /// use symplex::robotics::dh_matrix;
 ///
 /// // Identity-like DH matrix (all parameters zero)
-/// let zero = symplex::default_context().int(0);
+/// let ctx = Context::new();
+/// let zero = ctx.int(0);
 /// let t = dh_matrix(&zero, &zero, &zero, &zero);
 /// assert_eq!(t.nrows(), 4);
 /// assert_eq!(t.ncols(), 4);
@@ -52,8 +53,8 @@ pub fn dh_matrix(theta: &Ex, d: &Ex, a: &Ex, alpha: &Ex) -> Matrix {
     let cos_alpha = alpha.cos();
     let sin_alpha = alpha.sin();
 
-    let zero = crate::default_context().int(0);
-    let one = crate::default_context().int(1);
+    let zero = theta.context().int(0);
+    let one = theta.context().int(1);
 
     // Row 0: [ cos(θ), -sin(θ)cos(α), sin(θ)sin(α), a·cos(θ) ]
     let r00 = cos_theta.clone();
@@ -103,16 +104,22 @@ pub fn dh_matrix(theta: &Ex, d: &Ex, a: &Ex, alpha: &Ex) -> Matrix {
 /// use symplex::prelude::*;
 /// use symplex::robotics::{dh_matrix, fk_chain};
 ///
-/// let theta1 = symplex::default_context().symbol("theta1");
-/// let zero = symplex::default_context().int(0);
-/// let l1 = symplex::default_context().symbol("L1");
+/// let ctx = Context::new();
+/// let theta1 = ctx.symbol("theta1");
+/// let zero = ctx.int(0);
+/// let l1 = ctx.symbol("L1");
 ///
 /// let params = [(&theta1, &zero, &l1, &zero)];
 /// let t = fk_chain(&params);
 /// assert_eq!(t.shape(), (4, 4));
 /// ```
 pub fn fk_chain(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
-    let mut result = Matrix::identity(4);
+    let ctx = if let Some(&(first, _, _, _)) = dh_params.first() {
+        first.context()
+    } else {
+        crate::api::context::Context::new()
+    };
+    let mut result = Matrix::identity(&ctx, 4);
     for &(theta, d, a, alpha) in dh_params {
         let ti = dh_matrix(theta, d, a, alpha);
         result = result.matmul(&ti).expect("matmul: dimension mismatch in FK chain");
@@ -132,9 +139,10 @@ pub fn fk_chain(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
 /// use symplex::prelude::*;
 /// use symplex::robotics::fk_position;
 ///
-/// let theta = symplex::default_context().symbol("theta");
-/// let zero = symplex::default_context().int(0);
-/// let l = symplex::default_context().symbol("L");
+/// let ctx = Context::new();
+/// let theta = ctx.symbol("theta");
+/// let zero = ctx.int(0);
+/// let l = ctx.symbol("L");
 ///
 /// let (x, y, z) = fk_position(&[(&theta, &zero, &l, &zero)]);
 /// // x, y, z are symbolic expressions
@@ -158,9 +166,10 @@ pub fn fk_position(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> (Ex, Ex, Ex) {
 /// use symplex::prelude::*;
 /// use symplex::robotics::fk_rotation;
 ///
-/// let theta = symplex::default_context().symbol("theta");
-/// let zero = symplex::default_context().int(0);
-/// let l = symplex::default_context().symbol("L");
+/// let ctx = Context::new();
+/// let theta = ctx.symbol("theta");
+/// let zero = ctx.int(0);
+/// let l = ctx.symbol("L");
 ///
 /// let r = fk_rotation(&[(&theta, &zero, &l, &zero)]);
 /// assert_eq!(r.shape(), (3, 3));
@@ -194,8 +203,8 @@ pub fn fk_rotation(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
 ///          | 0  sin(θ)   cos(θ)|
 /// ```
 pub fn rot_x(theta: &Ex) -> Matrix {
-    let zero = crate::default_context().int(0);
-    let one = crate::default_context().int(1);
+    let zero = theta.context().int(0);
+    let one = theta.context().int(1);
     let c = theta.cos();
     let s = theta.sin();
     Matrix::new(vec![
@@ -213,8 +222,8 @@ pub fn rot_x(theta: &Ex) -> Matrix {
 ///          | -sin(θ)  0  cos(θ)  |
 /// ```
 pub fn rot_y(theta: &Ex) -> Matrix {
-    let zero = crate::default_context().int(0);
-    let one = crate::default_context().int(1);
+    let zero = theta.context().int(0);
+    let one = theta.context().int(1);
     let c = theta.cos();
     let s = theta.sin();
     Matrix::new(vec![
@@ -232,8 +241,8 @@ pub fn rot_y(theta: &Ex) -> Matrix {
 ///          |   0        0     1 |
 /// ```
 pub fn rot_z(theta: &Ex) -> Matrix {
-    let zero = crate::default_context().int(0);
-    let one = crate::default_context().int(1);
+    let zero = theta.context().int(0);
+    let one = theta.context().int(1);
     let c = theta.cos();
     let s = theta.sin();
     Matrix::new(vec![
@@ -252,7 +261,7 @@ pub fn rot_z(theta: &Ex) -> Matrix {
 ///         | -b   a   0 |
 /// ```
 pub fn skew3(a: &Ex, b: &Ex, c: &Ex) -> Matrix {
-    let zero = crate::default_context().int(0);
+    let zero = a.context().int(0);
     Matrix::new(vec![
         vec![zero.clone(), -c, b.clone()],
         vec![c.clone(), zero.clone(), -a],
@@ -269,8 +278,8 @@ pub fn skew3(a: &Ex, b: &Ex, c: &Ex) -> Matrix {
 /// ```
 pub fn homogeneous(rotation: &Matrix, position: &[Ex; 3]) -> Matrix {
     assert_eq!(rotation.shape(), (3, 3), "rotation must be 3×3");
-    let zero = crate::default_context().int(0);
-    let one = crate::default_context().int(1);
+    let zero = position[0].context().int(0);
+    let one = position[0].context().int(1);
     Matrix::new(vec![
         vec![
             rotation.get(0, 0).clone(),
@@ -301,13 +310,13 @@ pub fn homogeneous(rotation: &Matrix, position: &[Ex; 3]) -> Matrix {
 ///     | 0  1 |
 /// ```
 pub fn translation(x: &Ex, y: &Ex, z: &Ex) -> Matrix {
-    let zero = crate::default_context().int(0);
-    let one = crate::default_context().int(1);
+    let zero = x.context().int(0);
+    let one = x.context().int(1);
     Matrix::new(vec![
         vec![one.clone(), zero.clone(), zero.clone(), x.clone()],
         vec![zero.clone(), one.clone(), zero.clone(), y.clone()],
         vec![zero.clone(), zero.clone(), one, z.clone()],
-        vec![zero.clone(), zero.clone(), zero, crate::default_context().int(1)],
+        vec![zero.clone(), zero.clone(), zero, x.context().int(1)],
     ]).unwrap()
 }
 

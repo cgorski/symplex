@@ -1,5 +1,6 @@
 //! Integration tests for Sturm-based inequality solving and root analysis.
 
+use symplex::prelude::*;
 mod common;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -8,7 +9,8 @@ mod common;
 
 #[test]
 fn sturm_x2_minus_4_gt_0() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let poly = &x.powi(2) - 4;
     let result = poly.solve_gt(&x);
     let s = format!("{result}");
@@ -30,7 +32,8 @@ fn sturm_x2_minus_4_gt_0() {
 
 #[test]
 fn sturm_x2_plus_1_gt_0_universal() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let poly = &x.powi(2) + 1;
     let result = poly.solve_gt(&x);
     let s = format!("{result}");
@@ -54,7 +57,8 @@ fn sturm_x2_plus_1_gt_0_universal() {
 
 #[test]
 fn sturm_neg_x2_plus_1_gt_0_empty() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let poly = -&(&x.powi(2) + 1);
     let result = poly.solve_gt(&x);
     let s = format!("{result}");
@@ -74,7 +78,8 @@ fn sturm_neg_x2_plus_1_gt_0_empty() {
 
 #[test]
 fn sturm_x3_minus_x_gt_0() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     // x^3 - x = x(x-1)(x+1)
     let poly = &x.powi(3) - &x;
     let result = poly.solve_gt(&x);
@@ -97,7 +102,8 @@ fn sturm_x3_minus_x_gt_0() {
 
 #[test]
 fn sturm_x2_ge_0_universal() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     let poly = x.powi(2);
     let result = poly.solve_ge(&x);
     let s = format!("{result}");
@@ -107,7 +113,7 @@ fn sturm_x2_ge_0_universal() {
     );
     // x² is non-negative everywhere, so the solution should cover the whole line
     // Verify at specific points
-    let val0 = poly.subs(&x, &symplex::default_context().int(0)).eval_f64()
+    let val0 = poly.subs(&x, &__ctx.int(0)).eval_f64()
         .expect("eval at x=0 should succeed");
     assert!(val0.abs() < 1e-10, "x² at x=0 should be 0, got {val0}");
     common::assert_positive_at(&poly, &x, 1, "x² at x=1");
@@ -120,7 +126,8 @@ fn sturm_x2_ge_0_universal() {
 
 #[test]
 fn sturm_cubic_factored_gt_0() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     // (x-1)(x-2)(x-3) = x³ - 6x² + 11x - 6
     let poly = &(&(&x - 1) * &(&x - 2)) * &(&x - 3);
     let result = poly.solve_gt(&x);
@@ -145,8 +152,9 @@ fn sturm_cubic_factored_gt_0() {
 
 #[test]
 fn sturm_constant_positive_gt() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
-    let poly = symplex::default_context().int(7);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let poly = __ctx.int(7);
     let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert!(
@@ -157,8 +165,9 @@ fn sturm_constant_positive_gt() {
 
 #[test]
 fn sturm_constant_negative_gt() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
-    let poly = symplex::default_context().int(-3);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
+    let poly = __ctx.int(-3);
     let result = poly.solve_gt(&x);
     let s = format!("{result}");
     assert_eq!(s, "EmptySet", "-3 > 0 should be EmptySet, got: {s}");
@@ -166,7 +175,8 @@ fn sturm_constant_negative_gt() {
 
 #[test]
 fn sturm_linear_gt() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     // 2x - 6 > 0 ↔ x > 3
     let poly = &(&x * 2) - 6;
     let result = poly.solve_gt(&x);
@@ -181,7 +191,8 @@ fn sturm_linear_gt() {
 
 #[test]
 fn sturm_x2_plus_1_lt_0_empty() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     // x² + 1 < 0 should have no solutions
     let poly = &x.powi(2) + 1;
     let result = poly.solve_lt(&x);
@@ -194,7 +205,8 @@ fn sturm_x2_plus_1_lt_0_empty() {
 
 #[test]
 fn sturm_neg_x2_minus_1_le_0_universal() {
-    let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
+    let __ctx = Context::new();
+    let __vars_ctx = __ctx.clone(); symplex::syms!(__vars_ctx; x);
     // -(x² + 1) ≤ 0 should be true for all x (always negative)
     let poly = -&(&x.powi(2) + 1);
     let result = poly.solve_le(&x);

@@ -8,11 +8,12 @@ use symplex::prelude::*;
 
 /// Helper: verify rationalization preserves value numerically.
 fn assert_rationalize_preserves_value(expr: &Ex, label: &str) {
+    let __ctx = expr.context();
     let rationalized = expr.rationalize_denom();
 
     // Evaluate both at x = 3/2
-    let test_point = symplex::default_context().rational(3, 2);
-    let x = symplex::default_context().symbol("x");
+    let test_point = __ctx.rational(3, 2);
+    let x = __ctx.symbol("x");
     let orig = expr.subs(&x, &test_point).eval_f64();
     let rat = rationalized.subs(&x, &test_point).eval_f64();
 
@@ -30,8 +31,9 @@ fn assert_rationalize_preserves_value(expr: &Ex, label: &str) {
 
 #[test]
 fn rationalize_one_over_sqrt2() {
+    let __ctx = Context::new();
     // 1 / √2  →  √2 / 2
-    let expr = 1 / &symplex::default_context().int(2).sqrt();
+    let expr = __ctx.int(1) / &__ctx.int(2).sqrt();
     let result = expr.rationalize_denom();
     let s = format!("{result}");
     // Denominator should no longer contain a square root
@@ -41,17 +43,19 @@ fn rationalize_one_over_sqrt2() {
 
 #[test]
 fn rationalize_one_over_one_plus_sqrt2() {
+    let __ctx = Context::new();
     // 1 / (1 + √2)  →  √2 − 1
-    let sqrt2 = symplex::default_context().int(2).sqrt();
-    let expr = 1 / &(&symplex::default_context().int(1) + &sqrt2);
+    let sqrt2 = __ctx.int(2).sqrt();
+    let expr = __ctx.int(1) / &(&__ctx.int(1) + &sqrt2);
     assert_rationalize_preserves_value(&expr, "1/(1+√2)");
 }
 
 #[test]
 fn rationalize_preserves_no_sqrt_denom() {
+    let __ctx = Context::new();
     // x/3 has no radical in the denominator — should be unchanged.
-    let x = symplex::default_context().symbol("x");
-    let expr = &x / &symplex::default_context().int(3);
+    let x = __ctx.symbol("x");
+    let expr = &x / &__ctx.int(3);
     let result = expr.rationalize_denom();
     assert_eq!(
         format!("{result}"),
@@ -62,15 +66,17 @@ fn rationalize_preserves_no_sqrt_denom() {
 
 #[test]
 fn rationalize_integer_unchanged() {
-    let expr = symplex::default_context().int(5);
+    let __ctx = Context::new();
+    let expr = __ctx.int(5);
     let result = expr.rationalize_denom();
     assert_eq!(format!("{result}"), "5");
 }
 
 #[test]
 fn rationalize_three_over_sqrt2() {
+    let __ctx = Context::new();
     // 3 / √2  — numerator should survive rationalization
-    let expr = &symplex::default_context().int(3) / &symplex::default_context().int(2).sqrt();
+    let expr = &__ctx.int(3) / &__ctx.int(2).sqrt();
     let result = expr.rationalize_denom();
     let s = format!("{result}");
     assert!(s.contains('3'), "numerator 3 should survive: {s}");
@@ -83,67 +89,74 @@ fn rationalize_three_over_sqrt2() {
 
 #[test]
 fn limit_constant_expression() {
-    let x = symplex::default_context().symbol("x");
-    let expr = symplex::default_context().int(5);
-    let result = expr.limit(&x, &symplex::default_context().int(0));
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
+    let expr = __ctx.int(5);
+    let result = expr.limit(&x, &__ctx.int(0));
     assert!(!result.has_unevaluated());
     assert_eq!(format!("{result}"), "5");
 }
 
 #[test]
 fn limit_polynomial_direct_sub() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     // x² + x + 1  at x = 2  →  4 + 2 + 1 = 7
-    let expr = &(x.powi(2) + &x) + &symplex::default_context().int(1);
-    let result = expr.limit(&x, &symplex::default_context().int(2));
+    let expr = &(x.powi(2) + &x) + &__ctx.int(1);
+    let result = expr.limit(&x, &__ctx.int(2));
     assert_eq!(format!("{result}"), "7");
 }
 
 #[test]
 fn limit_sin_x_over_x() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = &x.sin() / &x;
-    let result = expr.limit(&x, &symplex::default_context().int(0));
+    let result = expr.limit(&x, &__ctx.int(0));
     assert!(!result.has_unevaluated());
     assert_eq!(format!("{result}"), "1");
 }
 
 #[test]
 fn limit_lhopital_x2_minus1_over_x_minus1() {
+    let __ctx = Context::new();
     // (x² − 1) / (x − 1)  →  2  as x → 1   (0/0 indeterminate form)
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = (x.powi(2) - 1) / (&x - 1);
-    let result = expr.limit(&x, &symplex::default_context().int(1));
+    let result = expr.limit(&x, &__ctx.int(1));
     assert!(!result.has_unevaluated());
     assert_eq!(format!("{result}"), "2");
 }
 
 #[test]
 fn limit_at_infinity_polynomial_ratio() {
+    let __ctx = Context::new();
     // (3x² + x) / (x² + 1)  →  3  as x → ∞
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let numer = &x.powi(2) * 3 + &x;
     let denom = x.powi(2) + 1;
     let expr = &numer / &denom;
-    let result = expr.limit(&x, &symplex::default_context().infinity());
+    let result = expr.limit(&x, &__ctx.infinity());
     assert_eq!(format!("{result}"), "3");
 }
 
 #[test]
 fn limit_exp_neg_x_at_infinity() {
+    let __ctx = Context::new();
     // exp(−x) → 0  as x → ∞
-    let x = symplex::default_context().symbol("x");
+    let x = __ctx.symbol("x");
     let expr = (-&x).exp();
-    let result = expr.limit(&x, &symplex::default_context().infinity());
+    let result = expr.limit(&x, &__ctx.infinity());
     assert_eq!(format!("{result}"), "0", "lim exp(-x) at ∞ should be 0");
 }
 
 #[test]
 fn limit_fallback() {
-    let x = symplex::default_context().symbol("x");
+    let __ctx = Context::new();
+    let x = __ctx.symbol("x");
     let expr = x.sin();
     // sin(0) = 0 via limit
-    let result = expr.limit(&x, &symplex::default_context().int(0));
+    let result = expr.limit(&x, &__ctx.int(0));
     let s = format!("{result}");
     assert_eq!(s, "0", "sin(0) should be 0, got: {s}");
 }

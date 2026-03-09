@@ -16,13 +16,13 @@ use symplex::prelude::*;
 fn main() {
     println!("=== Complex Numbers ===\n");
 
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; x);
 
     // ── 1. The imaginary unit ──────────────────────────────────────
     println!("--- The Imaginary Unit ---");
 
-    let i = symplex::default_context().i_unit();
+    let i = __ctx.i_unit();
     println!("I = {i}");
 
     // I² = -1
@@ -41,11 +41,11 @@ fn main() {
     println!("\n--- Complex Arithmetic ---");
 
     // (2 + 3I)
-    let z1 = &symplex::default_context().int(2) + &(&i * 3);
+    let z1 = &__ctx.int(2) + &(&i * 3);
     println!("z₁ = {z1}");
 
     // (1 - 2I)
-    let z2 = &symplex::default_context().int(1) - &(&i * 2);
+    let z2 = &__ctx.int(1) - &(&i * 2);
     println!("z₂ = {z2}");
 
     // z1 + z2
@@ -74,7 +74,7 @@ fn main() {
     println!("Rewritten as trig: {as_trig}");
 
     // Euler's identity: exp(I·π) + 1 = 0
-    let pi = symplex::default_context().pi();
+    let pi = __ctx.pi();
     let euler_identity = &(&i * &pi).exp() + 1;
     let euler_simplified = euler_identity.eval().simplify();
     println!("\nexp(I·π) + 1 = {euler_simplified}");
@@ -142,7 +142,7 @@ fn main() {
     }
 
     // sqrt(-1) = I
-    let sqrt_neg1 = symplex::default_context().int(-1).sqrt();
+    let sqrt_neg1 = __ctx.int(-1).sqrt();
     println!("\nsqrt(-1) = {sqrt_neg1}");
     if let Ok((re, im)) = sqrt_neg1.eval_complex64() {
         println!("  Numerical: ({re:.4}, {im:.4})");
@@ -191,14 +191,14 @@ fn main() {
     println!("\n--- Complex Exponential ---");
 
     // exp(1 + I·π) = e · exp(I·π) = e · (-1) = -e
-    let z = &symplex::default_context().int(1) + &(&i * &pi);
+    let z = &__ctx.int(1) + &(&i * &pi);
     let exp_z = z.exp();
     println!("exp(1 + I·π) = {exp_z}");
     let simplified = exp_z.eval().simplify();
     println!("  Simplified: {simplified}");
 
     // exp(0) = 1
-    let exp_0 = symplex::default_context().int(0).exp().eval();
+    let exp_0 = __ctx.int(0).exp().eval();
     println!("exp(0) = {exp_0}");
 
     println!("\n✓ Done!");

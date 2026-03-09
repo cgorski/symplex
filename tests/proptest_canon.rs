@@ -503,12 +503,12 @@ proptest! {
     /// Simplification must preserve numerical value.
     #[test]
     fn simplify_preserves_value(desc in arb_tree(2)) {
-        let ctx = Context::new();
-        let x = ctx.symbol("x");
-        let expr = build(&ctx, &desc);
+        let __ctx = Context::new();
+        let x = __ctx.symbol("x");
+        let expr = build(&__ctx, &desc);
 
         // Try to evaluate at a test point
-        let test_val = ctx.rational(7, 10); // 0.7 — avoids poles at 0 and 1
+        let test_val = __ctx.rational(7, 10); // 0.7 — avoids poles at 0 and 1
         let original_at_point = expr.subs(&x, &test_val);
         let simplified = expr.simplify();
         let simplified_at_point = simplified.subs(&x, &test_val);
@@ -541,9 +541,10 @@ proptest! {
     fn det_transpose_invariant(
         entries in proptest::array::uniform9(-5i64..6i64)
     ) {
+        let __ctx = Context::new();
         let data: Vec<Vec<Ex>> = entries
             .chunks(3)
-            .map(|row| row.iter().map(|&v| symplex::default_context().int(v)).collect())
+            .map(|row| row.iter().map(|&v| __ctx.int(v)).collect())
             .collect();
         let m = symplex::matrix::Matrix::new(data).unwrap();
         let mt = m.transpose();

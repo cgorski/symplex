@@ -8,7 +8,7 @@ use symplex::prelude::*;
 fn main() {
     println!("=== Polynomial System Solving ===\n");
 
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; x, y);
 
     // Circle and line intersection

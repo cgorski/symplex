@@ -8,11 +8,12 @@ use symplex::robotics::fk_position;
 /// Build a 2-DOF planar robot Jacobian and verify no trivial constant temps.
 #[test]
 fn codegen_2dof_no_trivial_temps() {
-    let theta1 = symplex::default_context().symbol("theta1");
-    let theta2 = symplex::default_context().symbol("theta2");
-    let l1 = symplex::default_context().symbol("L1");
-    let l2 = symplex::default_context().symbol("L2");
-    let zero = symplex::default_context().int(0);
+    let __ctx = Context::new();
+    let theta1 = __ctx.symbol("theta1");
+    let theta2 = __ctx.symbol("theta2");
+    let l1 = __ctx.symbol("L1");
+    let l2 = __ctx.symbol("L2");
+    let zero = __ctx.int(0);
 
     let dh: [(&Ex, &Ex, &Ex, &Ex); 2] = [
         (&theta1, &zero, &l1, &zero),
@@ -43,13 +44,14 @@ fn codegen_2dof_no_trivial_temps() {
 /// Build a 3-DOF planar robot Jacobian and verify no trivial constant temps.
 #[test]
 fn codegen_3dof_no_trivial_temps() {
-    let theta1 = symplex::default_context().symbol("theta1");
-    let theta2 = symplex::default_context().symbol("theta2");
-    let theta3 = symplex::default_context().symbol("theta3");
-    let l1 = symplex::default_context().rational(3, 10);
-    let l2 = symplex::default_context().rational(1, 4);
-    let l3 = symplex::default_context().rational(1, 5);
-    let zero = symplex::default_context().int(0);
+    let __ctx = Context::new();
+    let theta1 = __ctx.symbol("theta1");
+    let theta2 = __ctx.symbol("theta2");
+    let theta3 = __ctx.symbol("theta3");
+    let l1 = __ctx.rational(3, 10);
+    let l2 = __ctx.rational(1, 4);
+    let l3 = __ctx.rational(1, 5);
+    let zero = __ctx.int(0);
 
     let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
         (&theta1, &zero, &l1, &zero),
@@ -152,13 +154,14 @@ fn codegen_zero_elimination() {
 /// 3-DOF Jacobian code should have balanced braces and valid structure.
 #[test]
 fn codegen_3dof_compiles() {
-    let theta1 = symplex::default_context().symbol("theta1");
-    let theta2 = symplex::default_context().symbol("theta2");
-    let theta3 = symplex::default_context().symbol("theta3");
-    let l1 = symplex::default_context().rational(3, 10);
-    let l2 = symplex::default_context().rational(1, 4);
-    let l3 = symplex::default_context().rational(1, 5);
-    let zero = symplex::default_context().int(0);
+    let __ctx = Context::new();
+    let theta1 = __ctx.symbol("theta1");
+    let theta2 = __ctx.symbol("theta2");
+    let theta3 = __ctx.symbol("theta3");
+    let l1 = __ctx.rational(3, 10);
+    let l2 = __ctx.rational(1, 4);
+    let l3 = __ctx.rational(1, 5);
+    let zero = __ctx.int(0);
 
     let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
         (&theta1, &zero, &l1, &zero),

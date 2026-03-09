@@ -5,6 +5,7 @@
 //!
 //! Run with: cargo run --example physical_constants
 
+use symplex::prelude::*;
 use symplex::units::*;
 use symplex::units::constants;
 
@@ -48,6 +49,7 @@ fn section_1_symbolic_display() {
 }
 
 fn section_2_e_mc_squared() {
+    let __ctx = Context::new();
     println!("── 2. E = mc² — Rest Energy ──\n");
 
     let c = constants::speed_of_light();
@@ -59,7 +61,7 @@ fn section_2_e_mc_squared() {
     println!("  (Notice: 'c' not '299792458')\n");
 
     // Evaluate for 1 kg
-    let e_1kg = energy.subs(&m, &symplex::default_context().int(1)).eval_f64().unwrap();
+    let e_1kg = energy.subs(&m, &__ctx.int(1)).eval_f64().unwrap();
     println!("  E(m = 1 kg) = {:.6e} J", e_1kg);
     println!("              = {:.6e} GJ", e_1kg / 1e9);
     println!("  That's ~25 million kilowatt-hours from 1 kg of matter!");
@@ -106,7 +108,7 @@ fn section_4_thermal_energy() {
 fn section_5_gravity() {
     println!("── 5. F = Gm₁m₂/r² — Gravitational Force ──\n");
 
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; m1, m2, r);
     let g_const = constants::gravitational_constant();
 
@@ -129,7 +131,7 @@ fn section_6_constants_with_calculus() {
     println!("── 6. Constants and Calculus ──\n");
 
     let c = constants::speed_of_light();
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; x);
 
     // d/dx(c·x) = c (constant preserved through differentiation)
@@ -146,6 +148,7 @@ fn section_6_constants_with_calculus() {
 }
 
 fn section_7_dimensional_checking() {
+    let __ctx = Context::new();
     println!("── 7. Constants Carry Dimensions ──\n");
 
     let c = constants::speed_of_light();

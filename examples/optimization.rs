@@ -12,7 +12,7 @@ use symplex::prelude::*;
 fn main() {
     println!("=== Symbolic Optimization ===\n");
 
-    let __ctx = symplex::default_context();
+    let __ctx = Context::new();
     symplex::syms!(__ctx; x, y);
 
     // Function: f(x,y) = x² + y² - 2x - 4y + 5
