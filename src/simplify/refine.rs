@@ -346,15 +346,13 @@ mod tests {
 
     /// Shared context for all refine tests so that expressions from
     /// different helpers can be combined without cross-context panics.
-    fn tctx() -> &'static crate::api::context::Context {
-        static CTX: std::sync::OnceLock<crate::api::context::Context> =
-            std::sync::OnceLock::new();
-        CTX.get_or_init(crate::api::context::Context::new)
+    fn tctx() -> crate::api::context::Context {
+        crate::api::context::Context::new()
     }
 
     /// Helper: create a variable with assumptions, returning (context, var_ex).
-    fn var_with(name: &str, assumption: Assumption) -> crate::api::expr::Ex {
-        let v = tctx().symbol(name);
+    fn var_with(ctx: &crate::api::context::Context, name: &str, assumption: Assumption) -> crate::api::expr::Ex {
+        let v = ctx.symbol(name);
         v.assume(assumption)
     }
 
@@ -380,7 +378,8 @@ mod tests {
 
     #[test]
     fn refine_abs_positive() {
-        let x = var_with("x_ref_apos", Assumption::Positive);
+        let ctx = crate::api::context::Context::new();
+        let x = var_with(&ctx, "x_ref_apos", Assumption::Positive);
         let expr = x.abs();
         let result = do_refine(&expr);
         assert_eq!(result.id(), x.id(), "abs(x) should refine to x when positive");
@@ -388,7 +387,8 @@ mod tests {
 
     #[test]
     fn refine_abs_nonneg() {
-        let x = var_with("x_ref_ann", Assumption::NonNegative);
+        let ctx = tctx();
+        let x = var_with(&ctx, "x_ref_ann", Assumption::NonNegative);
         let expr = x.abs();
         let result = do_refine(&expr);
         assert_eq!(result.id(), x.id(), "abs(x) should refine to x when nonneg");
@@ -396,7 +396,8 @@ mod tests {
 
     #[test]
     fn refine_abs_negative() {
-        let x = var_with("x_ref_aneg", Assumption::Negative);
+        let ctx = tctx();
+        let x = var_with(&ctx, "x_ref_aneg", Assumption::Negative);
         let expr = x.abs();
         let result = do_refine(&expr);
         // abs(x) when x < 0 → -x
@@ -410,7 +411,8 @@ mod tests {
 
     #[test]
     fn refine_abs_unknown() {
-        let x = tctx().symbol("x_ref_aunk");
+        let ctx = tctx();
+        let x = ctx.symbol("x_ref_aunk");
         let expr = x.abs();
         let result = do_refine(&expr);
         assert_eq!(result.id(), expr.id(), "abs(x) should be unchanged with no assumptions");
@@ -420,34 +422,38 @@ mod tests {
 
     #[test]
     fn refine_sign_positive() {
-        let x = var_with("x_ref_spos", Assumption::Positive);
+        let ctx = tctx();
+        let x = var_with(&ctx, "x_ref_spos", Assumption::Positive);
         let expr = x.sign();
         let result = do_refine(&expr);
-        let one = tctx().int(1);
+        let one = ctx.int(1);
         assert_eq!(result.id(), one.id(), "sign(x) -> 1 when positive");
     }
 
     #[test]
     fn refine_sign_negative() {
-        let x = var_with("x_ref_sneg", Assumption::Negative);
+        let ctx = tctx();
+        let x = var_with(&ctx, "x_ref_sneg", Assumption::Negative);
         let expr = x.sign();
         let result = do_refine(&expr);
-        let neg_one = tctx().int(-1);
+        let neg_one = ctx.int(-1);
         assert_eq!(result.id(), neg_one.id(), "sign(x) -> -1 when negative");
     }
 
     #[test]
     fn refine_sign_zero() {
-        let x = var_with("x_ref_szero", Assumption::Zero);
+        let ctx = tctx();
+        let x = var_with(&ctx, "x_ref_szero", Assumption::Zero);
         let expr = x.sign();
         let result = do_refine(&expr);
-        let zero = tctx().int(0);
+        let zero = ctx.int(0);
         assert_eq!(result.id(), zero.id(), "sign(x) -> 0 when zero");
     }
 
     #[test]
     fn refine_sign_unknown() {
-        let x = tctx().symbol("x_ref_sunk");
+        let ctx = tctx();
+        let x = ctx.symbol("x_ref_sunk");
         let expr = x.sign();
         let result = do_refine(&expr);
         assert_eq!(result.id(), expr.id(), "sign(x) should be unchanged with no assumptions");
@@ -457,7 +463,8 @@ mod tests {
 
     #[test]
     fn refine_floor_integer() {
-        let x = var_with("x_ref_flint", Assumption::Integer);
+        let ctx = tctx();
+        let x = var_with(&ctx, "x_ref_flint", Assumption::Integer);
         let expr = x.floor();
         let result = do_refine(&expr);
         assert_eq!(result.id(), x.id(), "floor(x) -> x when integer");
@@ -465,7 +472,8 @@ mod tests {
 
     #[test]
     fn refine_floor_unknown() {
-        let x = tctx().symbol("x_ref_flunk");
+        let ctx = tctx();
+        let x = ctx.symbol("x_ref_flunk");
         let expr = x.floor();
         let result = do_refine(&expr);
         assert_eq!(result.id(), expr.id(), "floor(x) unchanged with no assumptions");
@@ -473,7 +481,8 @@ mod tests {
 
     #[test]
     fn refine_ceiling_integer() {
-        let x = var_with("x_ref_ceint", Assumption::Integer);
+        let ctx = crate::api::context::Context::new();
+        let x = var_with(&ctx, "x_ref_ceint", Assumption::Integer);
         let expr = x.ceiling();
         let result = do_refine(&expr);
         assert_eq!(result.id(), x.id(), "ceiling(x) -> x when integer");
@@ -483,7 +492,8 @@ mod tests {
 
     #[test]
     fn refine_sqrt_x_squared_positive() {
-        let x = var_with("x_ref_sqpos", Assumption::Positive);
+        let ctx = tctx();
+        let x = var_with(&ctx, "x_ref_sqpos", Assumption::Positive);
         let x2 = x.powi(2);
         let expr = x2.sqrt();
         let result = do_refine(&expr);
@@ -492,7 +502,8 @@ mod tests {
 
     #[test]
     fn refine_sqrt_x_squared_real() {
-        let x = var_with("x_ref_sqreal", Assumption::Real);
+        let ctx = tctx();
+        let x = var_with(&ctx, "x_ref_sqreal", Assumption::Real);
         let x2 = x.powi(2);
         let expr = x2.sqrt();
         let result = do_refine(&expr);
@@ -502,7 +513,8 @@ mod tests {
 
     #[test]
     fn refine_sqrt_x_squared_unknown() {
-        let x = tctx().symbol("x_ref_squnk");
+        let ctx = tctx();
+        let x = ctx.symbol("x_ref_squnk");
         let x2 = x.powi(2);
         let expr = x2.sqrt();
         let result = do_refine(&expr);
@@ -513,11 +525,12 @@ mod tests {
 
     #[test]
     fn refine_neg_one_to_even_power() {
-        let n = var_with("n_ref_even", Assumption::Even);
-        let neg_one = tctx().int(-1);
+        let ctx = tctx();
+        let n = var_with(&ctx, "n_ref_even", Assumption::Even);
+        let neg_one = ctx.int(-1);
         let expr = neg_one.pow(&n);
         let result = do_refine(&expr);
-        let one = tctx().int(1);
+        let one = ctx.int(1);
         assert_eq!(result.id(), one.id(), "(-1)^(even n) -> 1");
     }
 
@@ -525,10 +538,11 @@ mod tests {
 
     #[test]
     fn refine_abs_sum_of_positives() {
+        let ctx = tctx();
         // abs(x + y) where both x, y are positive should refine to x + y
         // because the assumption cache infers x + y is positive.
-        let x = var_with("x_ref_cmpd1", Assumption::Positive);
-        let y = var_with("y_ref_cmpd1", Assumption::Positive);
+        let x = var_with(&ctx, "x_ref_cmpd1", Assumption::Positive);
+        let y = var_with(&ctx, "y_ref_cmpd1", Assumption::Positive);
         let sum = &x + &y;
         let expr = sum.abs();
         let result = do_refine(&expr);
@@ -543,8 +557,9 @@ mod tests {
 
     #[test]
     fn refine_no_change() {
-        let x = tctx().symbol("x_ref_noop");
-        let expr = &x + &tctx().int(1);
+        let ctx = tctx();
+        let x = ctx.symbol("x_ref_noop");
+        let expr = &x + &ctx.int(1);
         let result = do_refine(&expr);
         assert_eq!(result.id(), expr.id(), "x + 1 should be unchanged by refine");
     }
@@ -553,18 +568,20 @@ mod tests {
 
     #[test]
     fn refine_sign_of_literal() {
+        let ctx = tctx();
         // sign(5) — 5 is known positive in the assumption system.
-        let five = tctx().int(5);
+        let five = ctx.int(5);
         let expr = five.sign();
         let result = do_refine(&expr);
-        let one = tctx().int(1);
+        let one = ctx.int(1);
         assert_eq!(result.id(), one.id(), "sign(5) -> 1");
     }
 
     #[test]
     fn refine_floor_of_integer_literal() {
+        let ctx = tctx();
         // floor(3) — 3 is known integer.
-        let three = tctx().int(3);
+        let three = ctx.int(3);
         let expr = three.floor();
         let result = do_refine(&expr);
         assert_eq!(result.id(), three.id(), "floor(3) -> 3");

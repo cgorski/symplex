@@ -2472,20 +2472,19 @@ mod tests {
 
     /// Shared context for all matrix unit tests.
     ///
-    /// Uses `OnceLock` so every call returns a handle to the **same**
-    /// context, avoiding cross-context panics when test helpers like
-    /// `Matrix::zeros` / `Matrix::identity` are mixed with `tctx().int(…)`.
+    /// Creates a fresh context. Each test function calls this once and
+    /// reuses the result for all expressions in that test.
     fn tctx() -> crate::api::context::Context {
-        static CTX: std::sync::OnceLock<crate::api::context::Context> =
-            std::sync::OnceLock::new();
-        CTX.get_or_init(crate::api::context::Context::new).clone()
+        crate::api::context::Context::new()
     }
 
     // ── Constructor tests ──────────────────────────────────────────────
 
     #[test]
     fn identity_2x2() {
-        let m = Matrix::identity(&tctx(), 2);
+        let ctx = tctx();
+        let ctx = ctx;
+        let m = Matrix::identity(&ctx, 2);
         assert_eq!(m.nrows(), 2);
         assert_eq!(m.ncols(), 2);
         assert_eq!(format!("{}", m.get(0, 0)), "1");
@@ -2496,7 +2495,9 @@ mod tests {
 
     #[test]
     fn identity_3x3() {
-        let m = Matrix::identity(&tctx(), 3);
+        let ctx = tctx();
+        let ctx = ctx;
+        let m = Matrix::identity(&ctx, 3);
         assert_eq!(m.shape(), (3, 3));
         for i in 0..3 {
             for j in 0..3 {
@@ -2508,10 +2509,12 @@ mod tests {
 
     #[test]
     fn zeros_and_from_fn() {
-        let z = Matrix::zeros(&tctx(), 3, 3);
+        let ctx = tctx();
+        let ctx = ctx;
+        let z = Matrix::zeros(&ctx, 3, 3);
         assert_eq!(format!("{}", z.get(1, 1)), "0");
 
-        let m = Matrix::from_fn(2, 2, |i, j| tctx().int((i * 2 + j + 1) as i64));
+        let m = Matrix::from_fn(2, 2, |i, j| ctx.int((i * 2 + j + 1) as i64));
         assert_eq!(format!("{}", m.get(0, 0)), "1");
         assert_eq!(format!("{}", m.get(0, 1)), "2");
         assert_eq!(format!("{}", m.get(1, 0)), "3");
@@ -2520,11 +2523,13 @@ mod tests {
 
     #[test]
     fn row_and_col_vectors() {
-        let rv = Matrix::row_vector(vec![tctx().int(1), tctx().int(2), tctx().int(3)]);
+        let ctx = tctx();
+        let ctx = ctx;
+        let rv = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
         assert_eq!(rv.shape(), (1, 3));
         assert_eq!(format!("{}", rv.get(0, 1)), "2");
 
-        let cv = Matrix::col_vector(vec![tctx().int(10), tctx().int(20)]);
+        let cv = Matrix::col_vector(vec![ctx.int(10), ctx.int(20)]);
         assert_eq!(cv.shape(), (2, 1));
         assert_eq!(format!("{}", cv.get(1, 0)), "20");
     }
@@ -2533,16 +2538,20 @@ mod tests {
 
     #[test]
     fn get_mut_works() {
-        let mut m = Matrix::zeros(&tctx(), 2, 2);
-        *m.get_mut(0, 1) = tctx().int(42);
+        let ctx = tctx();
+        let ctx = ctx;
+        let mut m = Matrix::zeros(&ctx, 2, 2);
+        *m.get_mut(0, 1) = ctx.int(42);
         assert_eq!(format!("{}", m.get(0, 1)), "42");
     }
 
     #[test]
     fn row_accessor() {
+        let ctx = tctx();
+        let ctx = ctx;
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2)],
-            vec![tctx().int(3), tctx().int(4)],
+            vec![ctx.int(1), ctx.int(2)],
+            vec![ctx.int(3), ctx.int(4)],
         ]).unwrap();
         let r = m.row(0);
         assert_eq!(r.len(), 2);
@@ -2552,7 +2561,9 @@ mod tests {
 
     #[test]
     fn try_get_works() {
-        let m = Matrix::zeros(&tctx(), 2, 2);
+        let ctx = tctx();
+        let ctx = ctx;
+        let m = Matrix::zeros(&ctx, 2, 2);
         assert!(m.try_get(0, 0).is_some());
         assert!(m.try_get(1, 1).is_some());
         assert!(m.try_get(2, 0).is_none());
@@ -2563,10 +2574,12 @@ mod tests {
 
     #[test]
     fn transpose() {
-        let a = tctx().symbol("a");
-        let b = tctx().symbol("b");
-        let c = tctx().symbol("c");
-        let d = tctx().symbol("d");
+        let ctx = tctx();
+        let ctx = ctx;
+        let a = ctx.symbol("a");
+        let b = ctx.symbol("b");
+        let c = ctx.symbol("c");
+        let d = ctx.symbol("d");
         let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let t = m.transpose();
         assert_eq!(format!("{}", t.get(0, 0)), "a");
@@ -2577,9 +2590,11 @@ mod tests {
 
     #[test]
     fn transpose_non_square() {
+        let ctx = tctx();
+        let ctx = ctx;
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2), tctx().int(3)],
-            vec![tctx().int(4), tctx().int(5), tctx().int(6)],
+            vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+            vec![ctx.int(4), ctx.int(5), ctx.int(6)],
         ]).unwrap();
         let t = m.transpose();
         assert_eq!(t.shape(), (3, 2));
@@ -2591,13 +2606,15 @@ mod tests {
 
     #[test]
     fn matrix_add() {
+        let ctx = tctx();
+        let ctx = ctx;
         let m1 = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2)],
-            vec![tctx().int(3), tctx().int(4)],
+            vec![ctx.int(1), ctx.int(2)],
+            vec![ctx.int(3), ctx.int(4)],
         ]).unwrap();
         let m2 = Matrix::new(vec![
-            vec![tctx().int(5), tctx().int(6)],
-            vec![tctx().int(7), tctx().int(8)],
+            vec![ctx.int(5), ctx.int(6)],
+            vec![ctx.int(7), ctx.int(8)],
         ]).unwrap();
         let sum = m1.add(&m2).unwrap();
         assert_eq!(format!("{}", sum.get(0, 0)), "6");
@@ -2606,8 +2623,10 @@ mod tests {
 
     #[test]
     fn matrix_sub() {
-        let m1 = Matrix::new(vec![vec![tctx().int(10), tctx().int(20)]]).unwrap();
-        let m2 = Matrix::new(vec![vec![tctx().int(3), tctx().int(7)]]).unwrap();
+        let ctx = tctx();
+        let ctx = ctx;
+        let m1 = Matrix::new(vec![vec![ctx.int(10), ctx.int(20)]]).unwrap();
+        let m2 = Matrix::new(vec![vec![ctx.int(3), ctx.int(7)]]).unwrap();
         let diff = m1.sub(&m2).unwrap();
         assert_eq!(format!("{}", diff.get(0, 0)), "7");
         assert_eq!(format!("{}", diff.get(0, 1)), "13");
@@ -2617,8 +2636,10 @@ mod tests {
 
     #[test]
     fn scale() {
-        let m = Matrix::identity(&tctx(), 2);
-        let two = tctx().int(2);
+        let ctx = tctx();
+        let ctx = ctx;
+        let m = Matrix::identity(&ctx, 2);
+        let two = ctx.int(2);
         let scaled = m.scale(&two);
         assert_eq!(format!("{}", scaled.get(0, 0)), "2");
         assert_eq!(format!("{}", scaled.get(0, 1)), "0");
@@ -2626,8 +2647,10 @@ mod tests {
 
     #[test]
     fn scale_symbolic() {
-        let x = tctx().symbol("x");
-        let m = Matrix::new(vec![vec![tctx().int(1), tctx().int(2)]]).unwrap();
+        let ctx = tctx();
+        let ctx = ctx;
+        let x = ctx.symbol("x");
+        let m = Matrix::new(vec![vec![ctx.int(1), ctx.int(2)]]).unwrap();
         let scaled = m.scale(&x);
         let s0 = format!("{}", scaled.get(0, 0));
         let s1 = format!("{}", scaled.get(0, 1));
@@ -2639,11 +2662,13 @@ mod tests {
 
     #[test]
     fn matmul_2x2() {
-        let m = Matrix::identity(&tctx(), 2);
-        let a = tctx().symbol("a");
-        let b = tctx().symbol("b");
-        let c = tctx().symbol("c");
-        let d = tctx().symbol("d");
+        let ctx = tctx();
+        let ctx = ctx;
+        let m = Matrix::identity(&ctx, 2);
+        let a = ctx.symbol("a");
+        let b = ctx.symbol("b");
+        let c = ctx.symbol("c");
+        let d = ctx.symbol("d");
         let n = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let result = m.matmul(&n).unwrap();
         // I * N = N
@@ -2653,9 +2678,11 @@ mod tests {
 
     #[test]
     fn matmul_non_square() {
+        let ctx = tctx();
+        let ctx = ctx;
         // (1×2) * (2×1) → (1×1)
-        let rv = Matrix::row_vector(vec![tctx().int(2), tctx().int(3)]);
-        let cv = Matrix::col_vector(vec![tctx().int(4), tctx().int(5)]);
+        let rv = Matrix::row_vector(vec![ctx.int(2), ctx.int(3)]);
+        let cv = Matrix::col_vector(vec![ctx.int(4), ctx.int(5)]);
         let result = rv.matmul(&cv).unwrap();
         assert_eq!(result.shape(), (1, 1));
         // 2*4 + 3*5 = 8 + 15 = 23
@@ -2664,13 +2691,15 @@ mod tests {
 
     #[test]
     fn matmul_numeric() {
+        let ctx = tctx();
+        let ctx = ctx;
         let a = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2)],
-            vec![tctx().int(3), tctx().int(4)],
+            vec![ctx.int(1), ctx.int(2)],
+            vec![ctx.int(3), ctx.int(4)],
         ]).unwrap();
         let b = Matrix::new(vec![
-            vec![tctx().int(5), tctx().int(6)],
-            vec![tctx().int(7), tctx().int(8)],
+            vec![ctx.int(5), ctx.int(6)],
+            vec![ctx.int(7), ctx.int(8)],
         ]).unwrap();
         let c = a.matmul(&b).unwrap();
         // [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]] = [[19, 22], [43, 50]]
@@ -2684,10 +2713,12 @@ mod tests {
 
     #[test]
     fn trace_2x2() {
-        let a = tctx().symbol("a");
-        let b = tctx().symbol("b");
-        let c = tctx().symbol("c");
-        let d = tctx().symbol("d");
+        let ctx = tctx();
+        let ctx = ctx;
+        let a = ctx.symbol("a");
+        let b = ctx.symbol("b");
+        let c = ctx.symbol("c");
+        let d = ctx.symbol("d");
         let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let tr = m.trace().unwrap();
         let s = format!("{tr}");
@@ -2699,9 +2730,11 @@ mod tests {
 
     #[test]
     fn trace_numeric() {
+        let ctx = tctx();
+        let ctx = ctx;
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2)],
-            vec![tctx().int(3), tctx().int(4)],
+            vec![ctx.int(1), ctx.int(2)],
+            vec![ctx.int(3), ctx.int(4)],
         ]).unwrap();
         let tr = m.trace().unwrap();
         assert_eq!(format!("{tr}"), "5");
@@ -2711,7 +2744,9 @@ mod tests {
 
     #[test]
     fn det_1x1() {
-        let a = tctx().symbol("a");
+        let ctx = tctx();
+        let ctx = ctx;
+        let a = ctx.symbol("a");
         let m = Matrix::new(vec![vec![a.clone()]]).unwrap();
         let det = m.det().unwrap();
         assert_eq!(format!("{det}"), "a");
@@ -2719,10 +2754,12 @@ mod tests {
 
     #[test]
     fn det_2x2() {
-        let a = tctx().symbol("a");
-        let b = tctx().symbol("b");
-        let c = tctx().symbol("c");
-        let d = tctx().symbol("d");
+        let ctx = tctx();
+        let ctx = ctx;
+        let a = ctx.symbol("a");
+        let b = ctx.symbol("b");
+        let c = ctx.symbol("c");
+        let d = ctx.symbol("d");
         let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
         let det = m.det().unwrap();
         // det = ad - bc
@@ -2735,9 +2772,11 @@ mod tests {
 
     #[test]
     fn det_2x2_numeric() {
+        let ctx = tctx();
+        let ctx = ctx;
         let m = Matrix::new(vec![
-            vec![tctx().int(3), tctx().int(8)],
-            vec![tctx().int(4), tctx().int(6)],
+            vec![ctx.int(3), ctx.int(8)],
+            vec![ctx.int(4), ctx.int(6)],
         ]).unwrap();
         let det = m.det().unwrap();
         // 3*6 - 8*4 = 18 - 32 = -14
@@ -2746,10 +2785,12 @@ mod tests {
 
     #[test]
     fn det_3x3_numeric() {
+        let ctx = tctx();
+        let ctx = ctx;
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2), tctx().int(3)],
-            vec![tctx().int(4), tctx().int(5), tctx().int(6)],
-            vec![tctx().int(7), tctx().int(8), tctx().int(9)],
+            vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+            vec![ctx.int(4), ctx.int(5), ctx.int(6)],
+            vec![ctx.int(7), ctx.int(8), ctx.int(9)],
         ]).unwrap();
         let det = m.det().unwrap();
         // This matrix is singular: det = 0
@@ -2758,10 +2799,12 @@ mod tests {
 
     #[test]
     fn det_3x3_nonsingular() {
+        let ctx = tctx();
+        let ctx = ctx;
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(0), tctx().int(2)],
-            vec![tctx().int(0), tctx().int(1), tctx().int(0)],
-            vec![tctx().int(3), tctx().int(0), tctx().int(1)],
+            vec![ctx.int(1), ctx.int(0), ctx.int(2)],
+            vec![ctx.int(0), ctx.int(1), ctx.int(0)],
+            vec![ctx.int(3), ctx.int(0), ctx.int(1)],
         ]).unwrap();
         let det = m.det().unwrap();
         // det = 1*(1*1 - 0*0) - 0 + 2*(0*0 - 1*3) = 1 + 2*(-3) = -5
@@ -2772,12 +2815,14 @@ mod tests {
 
     #[test]
     fn map_doubles() {
+        let ctx = tctx();
+        let ctx = ctx;
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2)],
-            vec![tctx().int(3), tctx().int(4)],
+            vec![ctx.int(1), ctx.int(2)],
+            vec![ctx.int(3), ctx.int(4)],
         ]).unwrap();
         let doubled = m.map(|e| {
-            let two = tctx().int(2);
+            let two = ctx.int(2);
             &two * e
         });
         assert_eq!(format!("{}", doubled.get(0, 0)), "2");
@@ -2788,8 +2833,10 @@ mod tests {
 
     #[test]
     fn jacobian_test() {
-        let x = tctx().symbol("x");
-        let y = tctx().symbol("y");
+        let ctx = tctx();
+        let ctx = ctx;
+        let x = ctx.symbol("x");
+        let y = ctx.symbol("y");
         let f1 = &x.powi(2) + &y; // f1 = x² + y
         let f2 = &x * &y; // f2 = x*y
         let j = jacobian(&[&f1, &f2], &[&x, &y]);
@@ -2802,7 +2849,9 @@ mod tests {
 
     #[test]
     fn matrix_diff() {
-        let x = tctx().symbol("x");
+        let ctx = tctx();
+        let ctx = ctx;
+        let x = ctx.symbol("x");
         let m = Matrix::new(vec![vec![x.powi(2), x.sin()]]).unwrap();
         let dm = m.diff(&x);
         let s00 = format!("{}", dm.get(0, 0));
@@ -2811,16 +2860,20 @@ mod tests {
 
     #[test]
     fn matrix_subs() {
-        let x = tctx().symbol("x");
+        let ctx = tctx();
+        let ctx = ctx;
+        let x = ctx.symbol("x");
         let m = Matrix::new(vec![vec![x.powi(2), x.clone()]]).unwrap();
-        let result = m.subs(&x, &tctx().int(3));
+        let result = m.subs(&x, &ctx.int(3));
         assert_eq!(format!("{}", result.get(0, 0)), "9");
         assert_eq!(format!("{}", result.get(0, 1)), "3");
     }
 
     #[test]
     fn matrix_eval() {
-        let m = Matrix::new(vec![vec![tctx().pi().cos(), tctx().int(2) + tctx().int(3)]]).unwrap();
+        let ctx = tctx();
+        let ctx = ctx;
+        let m = Matrix::new(vec![vec![ctx.pi().cos(), ctx.int(2) + ctx.int(3)]]).unwrap();
         let evaled = m.eval();
         assert_eq!(format!("{}", evaled.get(0, 0)), "-1");
         assert_eq!(format!("{}", evaled.get(0, 1)), "5");
@@ -2828,8 +2881,10 @@ mod tests {
 
     #[test]
     fn matrix_expand() {
-        let x = tctx().symbol("x");
-        let expr = (&x + tctx().int(1)).powi(2);
+        let ctx = tctx();
+        let ctx = ctx;
+        let x = ctx.symbol("x");
+        let expr = (&x + ctx.int(1)).powi(2);
         let m = Matrix::new(vec![vec![expr]]).unwrap();
         let expanded = m.expand();
         let s = format!("{}", expanded.get(0, 0));
@@ -2843,11 +2898,13 @@ mod tests {
 
     #[test]
     fn eigenvects_2x2_distinct() {
-        let var = tctx().symbol("lam_ev1");
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_ev1");
         // Upper-triangular: eigenvalues are 2 and 3 on the diagonal.
         let m = Matrix::new(vec![
-            vec![tctx().int(2), tctx().int(1)],
-            vec![tctx().int(0), tctx().int(3)],
+            vec![ctx.int(2), ctx.int(1)],
+            vec![ctx.int(0), ctx.int(3)],
         ]).unwrap();
         let evs = m.eigenvects(&var).expect("eigenvects should succeed for square matrix");
         assert_eq!(evs.len(), 2, "should have 2 distinct eigenvalues");
@@ -2869,10 +2926,12 @@ mod tests {
 
     #[test]
     fn eigenvects_non_square_returns_error() {
-        let var = tctx().symbol("lam_nonsq");
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_nonsq");
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2), tctx().int(3)],
-            vec![tctx().int(4), tctx().int(5), tctx().int(6)],
+            vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+            vec![ctx.int(4), ctx.int(5), ctx.int(6)],
         ]).unwrap();
         let result = m.eigenvects(&var);
         assert!(result.is_err(), "non-square matrix should return Err");
@@ -2885,14 +2944,16 @@ mod tests {
 
     #[test]
     fn eigenvects_diagonal_matrix() {
-        let var = tctx().symbol("lam_ev2");
-        let m = Matrix::diag(&[tctx().int(5), tctx().int(-3)]);
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_ev2");
+        let m = Matrix::diag(&[ctx.int(5), ctx.int(-3)]);
         let evs = m.eigenvects(&var).expect("eigenvects should succeed");
         assert_eq!(evs.len(), 2, "diagonal matrix has 2 eigenvalues");
         // Eigenvalues should be 5 and -3.
         let vals: Vec<_> = evs.iter().map(|(v, _, _)| v.clone()).collect();
         assert!(
-            vals.contains(&tctx().int(5)) && vals.contains(&tctx().int(-3)),
+            vals.contains(&ctx.int(5)) && vals.contains(&ctx.int(-3)),
             "eigenvalues should be 5 and -3, got {:?}",
             vals
         );
@@ -2900,10 +2961,12 @@ mod tests {
 
     #[test]
     fn diagonalize_upper_triangular() {
-        let var = tctx().symbol("lam_diag1");
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_diag1");
         let m = Matrix::new(vec![
-            vec![tctx().int(2), tctx().int(1)],
-            vec![tctx().int(0), tctx().int(3)],
+            vec![ctx.int(2), ctx.int(1)],
+            vec![ctx.int(0), ctx.int(3)],
         ]).unwrap();
         let (p, d) = m
             .diagonalize(&var)
@@ -2928,11 +2991,13 @@ mod tests {
 
     #[test]
     fn diagonalize_non_diagonalizable() {
-        let var = tctx().symbol("lam_nd");
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_nd");
         // [[1,1],[0,1]] — defective: eigenvalue 1 alg-mult 2, geom-mult 1
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(1)],
-            vec![tctx().int(0), tctx().int(1)],
+            vec![ctx.int(1), ctx.int(1)],
+            vec![ctx.int(0), ctx.int(1)],
         ]).unwrap();
         let result = m.diagonalize(&var);
         assert!(
@@ -2948,8 +3013,10 @@ mod tests {
 
     #[test]
     fn is_diagonalizable_yes() {
-        let var = tctx().symbol("lam_diag_y");
-        let m = Matrix::diag(&[tctx().int(1), tctx().int(2), tctx().int(3)]);
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_diag_y");
+        let m = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]);
         assert_eq!(m.is_diagonalizable(&var).unwrap(), true);
     }
 
@@ -2957,9 +3024,11 @@ mod tests {
 
     #[test]
     fn jordan_form_diagonal() {
+        let ctx = tctx();
+        let ctx = ctx;
         // A diagonal matrix has trivial Jordan form = itself.
-        let var = tctx().symbol("lam_jf1");
-        let m = Matrix::diag(&[tctx().int(1), tctx().int(2), tctx().int(3)]);
+        let var = ctx.symbol("lam_jf1");
+        let m = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]);
         let (p, j) = m.jordan_form(&var).expect("should succeed");
         assert_eq!(j.nrows(), 3);
         // J should be diagonal (same as D from diagonalize).
@@ -2980,30 +3049,34 @@ mod tests {
 
     #[test]
     fn jordan_form_defective_2x2() {
+        let ctx = tctx();
+        let ctx = ctx;
         // [[1,1],[0,1]] — eigenvalue 1, alg mult 2, geom mult 1
         // Jordan form should be [[1,1],[0,1]] (single 2×2 block)
-        let var = tctx().symbol("lam_jf2");
+        let var = ctx.symbol("lam_jf2");
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(1)],
-            vec![tctx().int(0), tctx().int(1)],
+            vec![ctx.int(1), ctx.int(1)],
+            vec![ctx.int(0), ctx.int(1)],
         ]).unwrap();
         let (_p, j) = m.jordan_form(&var).expect("should succeed for defective matrix");
         assert_eq!(j.nrows(), 2);
         // J should have 1 on diagonal and 1 on superdiagonal
         let j_01 = j.get(0, 1).eval();
         assert!(
-            (&j_01 - &tctx().int(1)).eval().is_zero_structural(),
+            (&j_01 - &ctx.int(1)).eval().is_zero_structural(),
             "J[0,1] should be 1 (superdiagonal of Jordan block)"
         );
     }
 
     #[test]
     fn jordan_form_upper_triangular_distinct() {
+        let ctx = tctx();
+        let ctx = ctx;
         // [[2,1],[0,3]] — distinct eigenvalues, so Jordan = diagonal form
-        let var = tctx().symbol("lam_jf3");
+        let var = ctx.symbol("lam_jf3");
         let m = Matrix::new(vec![
-            vec![tctx().int(2), tctx().int(1)],
-            vec![tctx().int(0), tctx().int(3)],
+            vec![ctx.int(2), ctx.int(1)],
+            vec![ctx.int(0), ctx.int(3)],
         ]).unwrap();
         let (p, j) = m.jordan_form(&var).expect("distinct eigenvalues should succeed");
         assert_eq!(j.nrows(), 2);
@@ -3027,8 +3100,10 @@ mod tests {
 
     #[test]
     fn matrix_exp_identity() {
-        let var = tctx().symbol("lam_mexp1");
-        let m = Matrix::identity(&tctx(), 2);
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_mexp1");
+        let m = Matrix::identity(&ctx, 2);
         let result = m.matrix_exp(&var).expect("identity should succeed");
         // e^0 = I, so e^I should have e on diagonal (but I = [[1,0],[0,1]])
         // Actually e^I = e * I for I = identity (since I is diagonal with 1s)
@@ -3038,19 +3113,21 @@ mod tests {
 
     #[test]
     fn matrix_exp_zero() {
-        let var = tctx().symbol("lam_mexp0");
-        let m = Matrix::zeros(&tctx(), 2, 2);
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_mexp0");
+        let m = Matrix::zeros(&ctx, 2, 2);
         let result = m.matrix_exp(&var).expect("zero matrix should succeed");
         // e^0 = I
         let diag_00 = result.get(0, 0).simplify().eval();
         let diag_11 = result.get(1, 1).simplify().eval();
         let off_01 = result.get(0, 1).simplify().eval();
         assert!(
-            (&diag_00 - &tctx().int(1)).eval().is_zero_structural(),
+            (&diag_00 - &ctx.int(1)).eval().is_zero_structural(),
             "e^0 [0,0] should be 1, got {diag_00}"
         );
         assert!(
-            (&diag_11 - &tctx().int(1)).eval().is_zero_structural(),
+            (&diag_11 - &ctx.int(1)).eval().is_zero_structural(),
             "e^0 [1,1] should be 1, got {diag_11}"
         );
         assert!(
@@ -3061,30 +3138,36 @@ mod tests {
 
     #[test]
     fn matrix_exp_non_square_returns_error() {
-        let var = tctx().symbol("lam_mexp_ns");
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_mexp_ns");
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2), tctx().int(3)],
-            vec![tctx().int(4), tctx().int(5), tctx().int(6)],
+            vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+            vec![ctx.int(4), ctx.int(5), ctx.int(6)],
         ]).unwrap();
         assert!(m.matrix_exp(&var).is_err());
     }
 
     #[test]
     fn jordan_form_non_square_returns_error() {
-        let var = tctx().symbol("lam_jf_ns");
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_jf_ns");
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2), tctx().int(3)],
-            vec![tctx().int(4), tctx().int(5), tctx().int(6)],
+            vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+            vec![ctx.int(4), ctx.int(5), ctx.int(6)],
         ]).unwrap();
         assert!(m.jordan_form(&var).is_err());
     }
 
     #[test]
     fn diagonalize_non_square_returns_error() {
-        let var = tctx().symbol("lam_diag_nonsq");
+        let ctx = tctx();
+        let ctx = ctx;
+        let var = ctx.symbol("lam_diag_nonsq");
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2), tctx().int(3)],
-            vec![tctx().int(4), tctx().int(5), tctx().int(6)],
+            vec![ctx.int(1), ctx.int(2), ctx.int(3)],
+            vec![ctx.int(4), ctx.int(5), ctx.int(6)],
         ]).unwrap();
         assert!(
             m.diagonalize(&var).is_err(),
@@ -3100,9 +3183,11 @@ mod tests {
 
     #[test]
     fn matrix_display() {
+        let ctx = tctx();
+        let ctx = ctx;
         let m = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2)],
-            vec![tctx().int(3), tctx().int(4)],
+            vec![ctx.int(1), ctx.int(2)],
+            vec![ctx.int(3), ctx.int(4)],
         ]).unwrap();
         let s = format!("{m}");
         assert!(s.contains("1") && s.contains("4"), "display: {s}");
@@ -3110,7 +3195,9 @@ mod tests {
 
     #[test]
     fn row_vector_display() {
-        let m = Matrix::row_vector(vec![tctx().int(1), tctx().int(2), tctx().int(3)]);
+        let ctx = tctx();
+        let ctx = ctx;
+        let m = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
         let s = format!("{m}");
         // Single-row matrices use inline format
         assert!(s.starts_with("[["), "should start with [[: {s}");
@@ -3121,8 +3208,10 @@ mod tests {
 
     #[test]
     fn add_mismatched_shapes_returns_err() {
-        let a = Matrix::zeros(&tctx(), 2, 3);
-        let b = Matrix::zeros(&tctx(), 3, 2);
+        let ctx = tctx();
+        let ctx = ctx;
+        let a = Matrix::zeros(&ctx, 2, 3);
+        let b = Matrix::zeros(&ctx, 3, 2);
         let result = a.add(&b);
         assert!(result.is_err(), "mismatched shapes should return Err");
         let err_msg = format!("{}", result.unwrap_err());
@@ -3134,8 +3223,10 @@ mod tests {
 
     #[test]
     fn matmul_incompatible_returns_err() {
-        let a = Matrix::zeros(&tctx(), 2, 3);
-        let b = Matrix::zeros(&tctx(), 2, 3);
+        let ctx = tctx();
+        let ctx = ctx;
+        let a = Matrix::zeros(&ctx, 2, 3);
+        let b = Matrix::zeros(&ctx, 2, 3);
         let result = a.matmul(&b);
         assert!(result.is_err(), "incompatible dimensions should return Err");
         let err_msg = format!("{}", result.unwrap_err());
@@ -3147,7 +3238,9 @@ mod tests {
 
     #[test]
     fn trace_non_square_returns_err() {
-        let m = Matrix::zeros(&tctx(), 2, 3);
+        let ctx = tctx();
+        let ctx = ctx;
+        let m = Matrix::zeros(&ctx, 2, 3);
         let result = m.trace();
         assert!(result.is_err(), "non-square should return Err");
         let err_msg = format!("{}", result.unwrap_err());
@@ -3159,7 +3252,9 @@ mod tests {
 
     #[test]
     fn det_non_square_returns_err() {
-        let m = Matrix::zeros(&tctx(), 2, 3);
+        let ctx = tctx();
+        let ctx = ctx;
+        let m = Matrix::zeros(&ctx, 2, 3);
         let result = m.det();
         assert!(result.is_err(), "non-square should return Err");
         let err_msg = format!("{}", result.unwrap_err());
@@ -3172,7 +3267,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn get_out_of_bounds_panics() {
-        let m = Matrix::zeros(&tctx(), 2, 2);
+        let ctx = tctx();
+        let ctx = Context::new();
+        let m = Matrix::zeros(&ctx, 2, 2);
         let _ = m.get(2, 0);
     }
 
@@ -3191,9 +3288,11 @@ mod tests {
 
     #[test]
     fn new_jagged_returns_error() {
+        let ctx = tctx();
+        let ctx = ctx;
         let result = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2)],
-            vec![tctx().int(3)],
+            vec![ctx.int(1), ctx.int(2)],
+            vec![ctx.int(3)],
         ]);
         assert!(result.is_err(), "jagged rows should return Err");
         let err_msg = format!("{}", result.unwrap_err());
@@ -3205,9 +3304,11 @@ mod tests {
 
     #[test]
     fn new_valid_succeeds() {
+        let ctx = tctx();
+        let ctx = ctx;
         let result = Matrix::new(vec![
-            vec![tctx().int(1), tctx().int(2)],
-            vec![tctx().int(3), tctx().int(4)],
+            vec![ctx.int(1), ctx.int(2)],
+            vec![ctx.int(3), ctx.int(4)],
         ]);
         assert!(result.is_ok(), "valid input should return Ok");
         let m = result.unwrap();
