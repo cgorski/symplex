@@ -81,6 +81,30 @@ const RANK_SUM: u8 = 150;
 /// Rank byte for symbolic product.
 const RANK_PRODUCT: u8 = 152;
 
+/// Rank byte for formal limit nodes.
+const RANK_LIMIT: u8 = 154;
+
+/// Rank byte for formal series expansion nodes.
+const RANK_SERIES: u8 = 155;
+
+/// Rank byte for formal Laplace transform nodes.
+const RANK_LAPLACE_TRANSFORM: u8 = 156;
+
+/// Rank byte for formal inverse Laplace transform nodes.
+const RANK_INV_LAPLACE_TRANSFORM: u8 = 157;
+
+/// Rank byte for formal residue nodes.
+const RANK_RESIDUE: u8 = 158;
+
+/// Rank byte for RootOf nodes.
+const RANK_ROOTOF: u8 = 160;
+
+/// Rank byte for formal DSolve nodes.
+const RANK_DSOLVE: u8 = 162;
+
+/// Rank byte for ConditionSet nodes.
+const RANK_CONDITION_SET: u8 = 164;
+
 /// Rank byte for mathematical constants (Pi, E, ImaginaryUnit).
 const RANK_CONSTANT: u8 = 170;
 
@@ -707,6 +731,62 @@ pub fn compute_sort_key(
             key.push(SET_COMPLEMENT);
             key.extend(get_key(*a).as_bytes());
             key.extend(get_key(*b).as_bytes());
+        }
+
+        // -- formal analysis nodes -------------------------------------------
+        ExprNode::Limit(body, var, point) => {
+            key.push(RANK_LIMIT);
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*var).as_bytes());
+            key.extend(get_key(*point).as_bytes());
+        }
+
+        ExprNode::Series(body, var, point, order) => {
+            key.push(RANK_SERIES);
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*var).as_bytes());
+            key.extend(get_key(*point).as_bytes());
+            key.extend(get_key(*order).as_bytes());
+        }
+
+        ExprNode::LaplaceTransform(body, t, s) => {
+            key.push(RANK_LAPLACE_TRANSFORM);
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*t).as_bytes());
+            key.extend(get_key(*s).as_bytes());
+        }
+
+        ExprNode::InverseLaplaceTransform(body, s, t) => {
+            key.push(RANK_INV_LAPLACE_TRANSFORM);
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*s).as_bytes());
+            key.extend(get_key(*t).as_bytes());
+        }
+
+        ExprNode::Residue(body, var, point) => {
+            key.push(RANK_RESIDUE);
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*var).as_bytes());
+            key.extend(get_key(*point).as_bytes());
+        }
+
+        ExprNode::RootOf(poly, index) => {
+            key.push(RANK_ROOTOF);
+            key.extend(get_key(*poly).as_bytes());
+            key.extend(get_key(*index).as_bytes());
+        }
+
+        ExprNode::DSolve(expr, func, var) => {
+            key.push(RANK_DSOLVE);
+            key.extend(get_key(*expr).as_bytes());
+            key.extend(get_key(*func).as_bytes());
+            key.extend(get_key(*var).as_bytes());
+        }
+
+        ExprNode::ConditionSet(var, cond) => {
+            key.push(RANK_CONDITION_SET);
+            key.extend(get_key(*var).as_bytes());
+            key.extend(get_key(*cond).as_bytes());
         }
     }
 

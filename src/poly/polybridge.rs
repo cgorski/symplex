@@ -234,6 +234,16 @@ fn convert_node(
         | ExprNode::SetUnion(_)
         | ExprNode::SetIntersection(_)
         | ExprNode::SetComplement(_, _) => None,
+
+        // Formal/unevaluated nodes are not polynomial.
+        ExprNode::Limit(_, _, _)
+        | ExprNode::Series(_, _, _, _)
+        | ExprNode::LaplaceTransform(_, _, _)
+        | ExprNode::InverseLaplaceTransform(_, _, _)
+        | ExprNode::Residue(_, _, _)
+        | ExprNode::RootOf(_, _)
+        | ExprNode::DSolve(_, _, _)
+        | ExprNode::ConditionSet(_, _) => None,
     }
 }
 

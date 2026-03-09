@@ -237,6 +237,18 @@ fn remap_node(
         ExprNode::Sum(body, var, lo, hi) => ExprNode::Sum(m(body), m(var), m(lo), m(hi)),
         ExprNode::Product_(body, var, lo, hi) => ExprNode::Product_(m(body), m(var), m(lo), m(hi)),
 
+        // ── New formal/unevaluated nodes ─────────────────────────────────
+        ExprNode::Limit(a, b, c) => ExprNode::Limit(m(a), m(b), m(c)),
+        ExprNode::LaplaceTransform(a, b, c) => ExprNode::LaplaceTransform(m(a), m(b), m(c)),
+        ExprNode::InverseLaplaceTransform(a, b, c) => {
+            ExprNode::InverseLaplaceTransform(m(a), m(b), m(c))
+        }
+        ExprNode::Residue(a, b, c) => ExprNode::Residue(m(a), m(b), m(c)),
+        ExprNode::DSolve(a, b, c) => ExprNode::DSolve(m(a), m(b), m(c)),
+        ExprNode::Series(a, b, c, d) => ExprNode::Series(m(a), m(b), m(c), m(d)),
+        ExprNode::RootOf(a, b) => ExprNode::RootOf(m(a), m(b)),
+        ExprNode::ConditionSet(a, b) => ExprNode::ConditionSet(m(a), m(b)),
+
         // ── Unary nodes ──────────────────────────────────────────────────
         ExprNode::Neg(x) => ExprNode::Neg(m(x)),
         ExprNode::Sin(x) => ExprNode::Sin(m(x)),

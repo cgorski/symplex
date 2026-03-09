@@ -9,8 +9,7 @@ fn residue_simple_pole_1_over_x() {
     // Res(1/x, x=0) = 1
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let f = &symplex::default_context().int(1) / &x;
-    let r = f.residue(&x, &symplex::default_context().int(0))
-        .expect("residue of 1/x at 0 should succeed");
+    let r = f.residue(&x, &symplex::default_context().int(0));
     assert_eq!(format!("{r}"), "1", "Res(1/x, 0) = 1");
 }
 
@@ -19,8 +18,7 @@ fn residue_1_over_x_minus_1() {
     // Res(1/(x-1), x=1) = 1
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let f = &symplex::default_context().int(1) / &(&x - 1);
-    let r = f.residue(&x, &symplex::default_context().int(1))
-        .expect("residue of 1/(x-1) at 1 should succeed");
+    let r = f.residue(&x, &symplex::default_context().int(1));
     assert_eq!(format!("{r}"), "1", "Res(1/(x-1), 1) = 1");
 }
 
@@ -29,8 +27,7 @@ fn residue_x_over_x_minus_1() {
     // Res(x/(x-1), x=1) = lim_{x→1} (x-1) * x/(x-1) = lim_{x→1} x = 1
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let f = &x / &(&x - 1);
-    let r = f.residue(&x, &symplex::default_context().int(1))
-        .expect("residue of x/(x-1) at 1 should succeed");
+    let r = f.residue(&x, &symplex::default_context().int(1));
     assert_eq!(format!("{r}"), "1", "Res(x/(x-1), 1) = 1");
 }
 
@@ -39,8 +36,7 @@ fn residue_exp_over_x() {
     // Res(exp(x)/x, x=0) = lim_{x→0} x * exp(x)/x = lim_{x→0} exp(x) = 1
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let f = &x.exp() / &x;
-    let r = f.residue(&x, &symplex::default_context().int(0))
-        .expect("residue of exp(x)/x at 0 should succeed");
+    let r = f.residue(&x, &symplex::default_context().int(0));
     assert_eq!(format!("{r}"), "1", "Res(exp(x)/x, 0) = 1");
 }
 
@@ -50,8 +46,7 @@ fn residue_of_polynomial_is_zero() {
     // Res(x^2, x=0) = lim_{x→0} x * x^2 = lim_{x→0} x^3 = 0
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let f = x.powi(2);
-    let r = f.residue(&x, &symplex::default_context().int(0))
-        .expect("residue of x^2 at 0 should succeed");
+    let r = f.residue(&x, &symplex::default_context().int(0));
     assert_eq!(format!("{r}"), "0", "Res(x^2, 0) = 0");
 }
 

@@ -906,6 +906,38 @@ fn eval_node(
         | ExprNode::SetComplement(_, _) => Err(SymplexError::Unevaluable {
             reason: "set-valued expressions cannot be numerically evaluated".into(),
         }),
+
+        ExprNode::Limit(_, _, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate unevaluated Limit".into(),
+        }),
+
+        ExprNode::Series(_, _, _, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate unevaluated Series".into(),
+        }),
+
+        ExprNode::LaplaceTransform(_, _, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate unevaluated LaplaceTransform".into(),
+        }),
+
+        ExprNode::InverseLaplaceTransform(_, _, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate unevaluated InverseLaplaceTransform".into(),
+        }),
+
+        ExprNode::Residue(_, _, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate unevaluated Residue".into(),
+        }),
+
+        ExprNode::RootOf(_, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate unevaluated RootOf".into(),
+        }),
+
+        ExprNode::DSolve(_, _, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate unevaluated DSolve".into(),
+        }),
+
+        ExprNode::ConditionSet(_, _) => Err(SymplexError::Unevaluable {
+            reason: "cannot numerically evaluate ConditionSet".into(),
+        }),
     }
 }
 

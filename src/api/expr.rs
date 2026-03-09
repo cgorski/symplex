@@ -127,6 +127,8 @@ pub enum ExprType {
     Integral,
     /// A set expression (interval, finite set, union, intersection, complement).
     Set,
+    /// A formal/unevaluated computation (Limit, Series, LaplaceTransform, etc.)
+    Unevaluated,
 }
 
 /// A symbolic expression handle, parameterized by sort.
@@ -303,6 +305,17 @@ impl<S: Sort> Expr<S> {
         crate::base::walk::contains(&inner.arena, self.id, needle_id)
     }
 
+    /// Returns `true` if this expression contains any unevaluated formal
+    /// nodes such as `Integral(...)`, `Derivative(...)`, `Limit(...)`, etc.
+    ///
+    /// Useful for checking whether a symbolic computation fully evaluated
+    /// or left formal/unevaluated placeholders.
+    #[must_use]
+    pub fn has_unevaluated(&self) -> bool {
+        let inner = self.inner.read();
+        crate::base::walk::has_unevaluated(&inner.arena, self.raw_id())
+    }
+
     /// Count the number of operations (non-atom nodes) in this expression.
     ///
     /// Atoms (numbers, symbols, constants) count as 0.
@@ -463,6 +476,14 @@ impl<S: Sort> Expr<S> {
             | crate::base::node::ExprNode::SetUnion(_)
             | crate::base::node::ExprNode::SetIntersection(_)
             | crate::base::node::ExprNode::SetComplement(_, _) => ExprType::Set,
+            crate::base::node::ExprNode::Limit(..)
+            | crate::base::node::ExprNode::Series(..)
+            | crate::base::node::ExprNode::LaplaceTransform(..)
+            | crate::base::node::ExprNode::InverseLaplaceTransform(..)
+            | crate::base::node::ExprNode::Residue(..)
+            | crate::base::node::ExprNode::RootOf(..)
+            | crate::base::node::ExprNode::DSolve(..)
+            | crate::base::node::ExprNode::ConditionSet(..) => ExprType::Unevaluated,
         }
     }
 

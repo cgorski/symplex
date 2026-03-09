@@ -265,7 +265,15 @@ fn compile_recursive(
         | ExprNode::Derivative(_, _)
         | ExprNode::Integral(_, _)
         | ExprNode::Sum(_, _, _, _)
-        | ExprNode::Product_(_, _, _, _) => {
+        | ExprNode::Product_(_, _, _, _)
+        | ExprNode::Limit(_, _, _)
+        | ExprNode::Series(_, _, _, _)
+        | ExprNode::LaplaceTransform(_, _, _)
+        | ExprNode::InverseLaplaceTransform(_, _, _)
+        | ExprNode::Residue(_, _, _)
+        | ExprNode::RootOf(_, _)
+        | ExprNode::DSolve(_, _, _)
+        | ExprNode::ConditionSet(_, _) => {
             return None;
         }
         ExprNode::BoolTrue

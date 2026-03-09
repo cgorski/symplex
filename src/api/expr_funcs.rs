@@ -1165,6 +1165,20 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    /// Like [`diff`](Self::diff), but returns `Err` if the result contains
+    /// unevaluated forms (e.g. formal `Derivative` nodes).
+    pub fn try_diff(&self, var: &Ex) -> Result<Ex, SymplexError> {
+        let result = self.diff(var);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "diff",
+                reason: "derivative contains unevaluated forms".into(),
+            })
+        } else {
+            Ok(result)
+        }
+    }
+
     /// Create a formal (unevaluated) derivative node.
     ///
     /// Unlike [`diff`](Self::diff) which computes the derivative,
@@ -1281,6 +1295,20 @@ impl Expr<Numeric> {
         let _span = debug_span!("integrate", expr = ?self.raw_id(), var = ?var_id).entered();
         let id = self.inner.write().arena.integrate_expr(self.raw_id(), var_id);
         self.wrap(id)
+    }
+
+    /// Like [`integrate`](Self::integrate), but returns `Err` if the result
+    /// contains unevaluated forms (e.g. formal `Integral` nodes).
+    pub fn try_integrate(&self, var: &Ex) -> Result<Ex, SymplexError> {
+        let result = self.integrate(var);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "integrate",
+                reason: "integral contains unevaluated forms".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Compute a definite integral: `∫_lower^upper self dx`.
@@ -1404,20 +1432,42 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// // Res(1/x, x=0) = 1
     /// let f = &ctx.int(1) / &x;
-    /// let result = f.residue(&x, &ctx.int(0)).unwrap();
+    /// let result = f.residue(&x, &ctx.int(0));
     /// assert_eq!(format!("{result}"), "1");
     /// ```
     #[must_use = "returns the residue value; does not modify in place"]
-    pub fn residue(&self, var: &Ex, point: &Ex) -> Result<Ex, SymplexError> {
+    pub fn residue(&self, var: &Ex, point: &Ex) -> Ex {
         let var_id = self.checked_id(var);
         let point_id = self.checked_id(point);
         let _span = debug_span!("residue", expr = ?self.raw_id(), var = ?var_id).entered();
-        let id = self
-            .inner
-            .write()
-            .arena
-            .residue_expr(self.raw_id(), var_id, point_id)?;
-        Ok(self.wrap(id))
+        let mut inner = self.inner.write();
+        match inner.arena.residue_expr(self.raw_id(), var_id, point_id) {
+            Ok(id) => {
+                drop(inner);
+                self.wrap(id)
+            }
+            Err(_) => {
+                let id = inner.arena.intern(
+                    crate::base::node::ExprNode::Residue(self.raw_id(), var_id, point_id),
+                );
+                drop(inner);
+                self.wrap(id)
+            }
+        }
+    }
+
+    /// Like [`residue`](Self::residue), but returns `Err` if the result
+    /// contains unevaluated forms (e.g. a formal `Residue` node).
+    pub fn try_residue(&self, var: &Ex, point: &Ex) -> Result<Ex, SymplexError> {
+        let result = self.residue(var, point);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "residue",
+                reason: "could not compute residue".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Compute the Fourier series of this expression over \[-π, π\]
@@ -1927,17 +1977,34 @@ impl Expr<Numeric> {
     /// let _result = s.gosper_sum(&k);
     /// ```
     #[must_use]
-    pub fn gosper_sum(&self, var: &Ex) -> Option<Ex> {
+    pub fn gosper_sum(&self, var: &Ex) -> Ex {
         let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
         let node = inner.arena.node(self.raw_id()).clone();
         if let crate::base::node::ExprNode::Sum(body, _sum_var, lower, upper) = node {
             let result = crate::calculus::gosper::gosper_sum(&mut inner.arena, body, var_id, lower, upper);
             drop(inner);
-            return result.map(|id| self.wrap(id));
+            if let Some(id) = result {
+                return self.wrap(id);
+            }
+        } else {
+            drop(inner);
         }
-        drop(inner);
-        None
+        self.clone()
+    }
+
+    /// Like [`gosper_sum`](Self::gosper_sum), but returns `Err` if the result
+    /// contains unevaluated forms (i.e. the sum is not Gosper-summable).
+    pub fn try_gosper_sum(&self, var: &Ex) -> Result<Ex, SymplexError> {
+        let result = self.gosper_sum(var);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "gosper_sum",
+                reason: "not Gosper-summable".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Simplify combinatorial expressions (factorials, binomials).

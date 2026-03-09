@@ -389,6 +389,53 @@ pub enum ExprTree {
         /// The universe set to complement within.
         universe: Box<ExprTree>,
     },
+    /// Limit: lim_{var -> point} body.
+    Limit {
+        body: Box<ExprTree>,
+        var: Box<ExprTree>,
+        point: Box<ExprTree>,
+    },
+    /// Series expansion of body around point in var up to order.
+    Series {
+        body: Box<ExprTree>,
+        var: Box<ExprTree>,
+        point: Box<ExprTree>,
+        order: Box<ExprTree>,
+    },
+    /// Laplace transform: L{body}(t -> s).
+    LaplaceTransform {
+        body: Box<ExprTree>,
+        t: Box<ExprTree>,
+        s: Box<ExprTree>,
+    },
+    /// Inverse Laplace transform: L^{-1}{body}(s -> t).
+    InverseLaplaceTransform {
+        body: Box<ExprTree>,
+        s: Box<ExprTree>,
+        t: Box<ExprTree>,
+    },
+    /// Residue of body at var = point.
+    Residue {
+        body: Box<ExprTree>,
+        var: Box<ExprTree>,
+        point: Box<ExprTree>,
+    },
+    /// Root of a polynomial: RootOf(poly, index).
+    RootOf {
+        poly: Box<ExprTree>,
+        index: Box<ExprTree>,
+    },
+    /// Differential equation solver: DSolve(expr, func, var).
+    DSolve {
+        expr: Box<ExprTree>,
+        func: Box<ExprTree>,
+        var: Box<ExprTree>,
+    },
+    /// Condition set: {var | condition}.
+    ConditionSet {
+        var: Box<ExprTree>,
+        condition: Box<ExprTree>,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -611,6 +658,45 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::SetComplement(a, b) => ExprTree::SetComplement {
             set: Box::new(expr_to_tree(arena, a)),
             universe: Box::new(expr_to_tree(arena, b)),
+        },
+        ExprNode::Limit(body, var, point) => ExprTree::Limit {
+            body: Box::new(expr_to_tree(arena, body)),
+            var: Box::new(expr_to_tree(arena, var)),
+            point: Box::new(expr_to_tree(arena, point)),
+        },
+        ExprNode::Series(body, var, point, order) => ExprTree::Series {
+            body: Box::new(expr_to_tree(arena, body)),
+            var: Box::new(expr_to_tree(arena, var)),
+            point: Box::new(expr_to_tree(arena, point)),
+            order: Box::new(expr_to_tree(arena, order)),
+        },
+        ExprNode::LaplaceTransform(body, t, s) => ExprTree::LaplaceTransform {
+            body: Box::new(expr_to_tree(arena, body)),
+            t: Box::new(expr_to_tree(arena, t)),
+            s: Box::new(expr_to_tree(arena, s)),
+        },
+        ExprNode::InverseLaplaceTransform(body, s, t) => ExprTree::InverseLaplaceTransform {
+            body: Box::new(expr_to_tree(arena, body)),
+            s: Box::new(expr_to_tree(arena, s)),
+            t: Box::new(expr_to_tree(arena, t)),
+        },
+        ExprNode::Residue(body, var, point) => ExprTree::Residue {
+            body: Box::new(expr_to_tree(arena, body)),
+            var: Box::new(expr_to_tree(arena, var)),
+            point: Box::new(expr_to_tree(arena, point)),
+        },
+        ExprNode::RootOf(poly, index) => ExprTree::RootOf {
+            poly: Box::new(expr_to_tree(arena, poly)),
+            index: Box::new(expr_to_tree(arena, index)),
+        },
+        ExprNode::DSolve(expr, func, var) => ExprTree::DSolve {
+            expr: Box::new(expr_to_tree(arena, expr)),
+            func: Box::new(expr_to_tree(arena, func)),
+            var: Box::new(expr_to_tree(arena, var)),
+        },
+        ExprNode::ConditionSet(var, condition) => ExprTree::ConditionSet {
+            var: Box::new(expr_to_tree(arena, var)),
+            condition: Box::new(expr_to_tree(arena, condition)),
         },
     }
 }
@@ -897,6 +983,53 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let s = tree_to_expr(arena, set);
             let u = tree_to_expr(arena, universe);
             arena.intern(ExprNode::SetComplement(s, u))
+        }
+        ExprTree::Limit { body, var, point } => {
+            let b = tree_to_expr(arena, body);
+            let v = tree_to_expr(arena, var);
+            let p = tree_to_expr(arena, point);
+            arena.intern(ExprNode::Limit(b, v, p))
+        }
+        ExprTree::Series { body, var, point, order } => {
+            let b = tree_to_expr(arena, body);
+            let v = tree_to_expr(arena, var);
+            let p = tree_to_expr(arena, point);
+            let o = tree_to_expr(arena, order);
+            arena.intern(ExprNode::Series(b, v, p, o))
+        }
+        ExprTree::LaplaceTransform { body, t, s } => {
+            let b = tree_to_expr(arena, body);
+            let ti = tree_to_expr(arena, t);
+            let si = tree_to_expr(arena, s);
+            arena.intern(ExprNode::LaplaceTransform(b, ti, si))
+        }
+        ExprTree::InverseLaplaceTransform { body, s, t } => {
+            let b = tree_to_expr(arena, body);
+            let si = tree_to_expr(arena, s);
+            let ti = tree_to_expr(arena, t);
+            arena.intern(ExprNode::InverseLaplaceTransform(b, si, ti))
+        }
+        ExprTree::Residue { body, var, point } => {
+            let b = tree_to_expr(arena, body);
+            let v = tree_to_expr(arena, var);
+            let p = tree_to_expr(arena, point);
+            arena.intern(ExprNode::Residue(b, v, p))
+        }
+        ExprTree::RootOf { poly, index } => {
+            let p = tree_to_expr(arena, poly);
+            let i = tree_to_expr(arena, index);
+            arena.intern(ExprNode::RootOf(p, i))
+        }
+        ExprTree::DSolve { expr, func, var } => {
+            let e = tree_to_expr(arena, expr);
+            let f = tree_to_expr(arena, func);
+            let v = tree_to_expr(arena, var);
+            arena.intern(ExprNode::DSolve(e, f, v))
+        }
+        ExprTree::ConditionSet { var, condition } => {
+            let v = tree_to_expr(arena, var);
+            let c = tree_to_expr(arena, condition);
+            arena.intern(ExprNode::ConditionSet(v, c))
         }
     }
 }

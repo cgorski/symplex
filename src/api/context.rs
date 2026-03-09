@@ -116,6 +116,11 @@ impl Context {
         self.make_ex(id)
     }
 
+    /// Create a symbolic variable (alias for [`symbol`](Context::symbol)).
+    pub fn var(&self, name: &str) -> crate::api::expr::Ex {
+        self.symbol(name)
+    }
+
     /// Create a symbol with mathematical assumptions.
     ///
     /// # Examples

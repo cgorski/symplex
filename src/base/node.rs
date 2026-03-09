@@ -270,6 +270,30 @@ pub enum ExprNode {
     /// Symbolic product: Product(body, var, lower, upper).
     Product_(ExprId, ExprId, ExprId, ExprId),
 
+    /// Formal limit: lim_{var → point} body.
+    Limit(ExprId, ExprId, ExprId),
+
+    /// Formal series expansion: Series(body, var, point, order).
+    Series(ExprId, ExprId, ExprId, ExprId),
+
+    /// Formal Laplace transform: ℒ{body}(t → s).
+    LaplaceTransform(ExprId, ExprId, ExprId),
+
+    /// Formal inverse Laplace transform: ℒ⁻¹{body}(s → t).
+    InverseLaplaceTransform(ExprId, ExprId, ExprId),
+
+    /// Formal residue: Res_{var=point} body.
+    Residue(ExprId, ExprId, ExprId),
+
+    /// Root of a polynomial: the index-th root of poly.
+    RootOf(ExprId, ExprId),
+
+    /// Formal ODE solution: DSolve(expr=0, func, var).
+    DSolve(ExprId, ExprId, ExprId),
+
+    /// Condition set: {var | condition}.
+    ConditionSet(ExprId, ExprId),
+
     // -- set atoms --------------------------------------------------------
     /// The empty set ∅.
     EmptySet,
@@ -361,7 +385,9 @@ impl ExprNode {
             | ExprNode::Ne(a, b)
             | ExprNode::Derivative(a, b)
             | ExprNode::Integral(a, b)
-            | ExprNode::SetComplement(a, b) => {
+            | ExprNode::SetComplement(a, b)
+            | ExprNode::RootOf(a, b)
+            | ExprNode::ConditionSet(a, b) => {
                 smallvec![*a, *b]
             }
 
@@ -370,8 +396,17 @@ impl ExprNode {
                 smallvec![*a, *b]
             }
 
-            // 4-ary: Sum, Product_
-            ExprNode::Sum(a, b, c, d) | ExprNode::Product_(a, b, c, d) => {
+            // ternary
+            ExprNode::Limit(a, b, c)
+            | ExprNode::LaplaceTransform(a, b, c)
+            | ExprNode::InverseLaplaceTransform(a, b, c)
+            | ExprNode::Residue(a, b, c)
+            | ExprNode::DSolve(a, b, c) => smallvec![*a, *b, *c],
+
+            // 4-ary: Sum, Product_, Series
+            ExprNode::Sum(a, b, c, d)
+            | ExprNode::Product_(a, b, c, d)
+            | ExprNode::Series(a, b, c, d) => {
                 smallvec![*a, *b, *c, *d]
             }
 
@@ -478,7 +513,9 @@ impl ExprNode {
             | ExprNode::Ne(a, b)
             | ExprNode::Derivative(a, b)
             | ExprNode::Integral(a, b)
-            | ExprNode::SetComplement(a, b) => {
+            | ExprNode::SetComplement(a, b)
+            | ExprNode::RootOf(a, b)
+            | ExprNode::ConditionSet(a, b) => {
                 f(*a);
                 f(*b);
             }
@@ -488,8 +525,21 @@ impl ExprNode {
                 f(*b);
             }
 
+            // ternary
+            ExprNode::Limit(a, b, c)
+            | ExprNode::LaplaceTransform(a, b, c)
+            | ExprNode::InverseLaplaceTransform(a, b, c)
+            | ExprNode::Residue(a, b, c)
+            | ExprNode::DSolve(a, b, c) => {
+                f(*a);
+                f(*b);
+                f(*c);
+            }
+
             // 4-ary
-            ExprNode::Sum(a, b, c, d) | ExprNode::Product_(a, b, c, d) => {
+            ExprNode::Sum(a, b, c, d)
+            | ExprNode::Product_(a, b, c, d)
+            | ExprNode::Series(a, b, c, d) => {
                 f(*a);
                 f(*b);
                 f(*c);
@@ -573,8 +623,15 @@ impl ExprNode {
             | ExprNode::Derivative(..)
             | ExprNode::Integral(..)
             | ExprNode::SetComplement(..)
-            | ExprNode::Interval(..) => 2,
-            ExprNode::Sum(..) | ExprNode::Product_(..) => 4,
+            | ExprNode::Interval(..)
+            | ExprNode::RootOf(..)
+            | ExprNode::ConditionSet(..) => 2,
+            ExprNode::Limit(..)
+            | ExprNode::LaplaceTransform(..)
+            | ExprNode::InverseLaplaceTransform(..)
+            | ExprNode::Residue(..)
+            | ExprNode::DSolve(..) => 3,
+            ExprNode::Sum(..) | ExprNode::Product_(..) | ExprNode::Series(..) => 4,
             ExprNode::Neg(_)
             | ExprNode::Floor(_)
             | ExprNode::Ceiling(_)
@@ -754,6 +811,49 @@ impl fmt::Debug for ExprNode {
             ExprNode::SetIntersection(ids) => f.debug_tuple("SetIntersection").field(ids).finish(),
             ExprNode::SetComplement(a, b) => {
                 f.debug_tuple("SetComplement").field(a).field(b).finish()
+            }
+            ExprNode::Limit(body, var, point) => f
+                .debug_tuple("Limit")
+                .field(body)
+                .field(var)
+                .field(point)
+                .finish(),
+            ExprNode::Series(body, var, point, order) => f
+                .debug_tuple("Series")
+                .field(body)
+                .field(var)
+                .field(point)
+                .field(order)
+                .finish(),
+            ExprNode::LaplaceTransform(body, t, s) => f
+                .debug_tuple("LaplaceTransform")
+                .field(body)
+                .field(t)
+                .field(s)
+                .finish(),
+            ExprNode::InverseLaplaceTransform(body, s, t) => f
+                .debug_tuple("InverseLaplaceTransform")
+                .field(body)
+                .field(s)
+                .field(t)
+                .finish(),
+            ExprNode::Residue(body, var, point) => f
+                .debug_tuple("Residue")
+                .field(body)
+                .field(var)
+                .field(point)
+                .finish(),
+            ExprNode::RootOf(poly, idx) => {
+                f.debug_tuple("RootOf").field(poly).field(idx).finish()
+            }
+            ExprNode::DSolve(expr, func, var) => f
+                .debug_tuple("DSolve")
+                .field(expr)
+                .field(func)
+                .field(var)
+                .finish(),
+            ExprNode::ConditionSet(var, cond) => {
+                f.debug_tuple("ConditionSet").field(var).field(cond).finish()
             }
         }
     }

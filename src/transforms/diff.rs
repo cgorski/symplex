@@ -645,6 +645,19 @@ fn diff_node(
             let v = var_expr(arena, var);
             arena.intern(ExprNode::Derivative(id, v))
         }
+
+        // ── Formal / unevaluated nodes: leave as unevaluated derivative ──
+        ExprNode::Limit(_, _, _)
+        | ExprNode::Series(_, _, _, _)
+        | ExprNode::LaplaceTransform(_, _, _)
+        | ExprNode::InverseLaplaceTransform(_, _, _)
+        | ExprNode::Residue(_, _, _)
+        | ExprNode::RootOf(_, _)
+        | ExprNode::DSolve(_, _, _)
+        | ExprNode::ConditionSet(_, _) => {
+            let v = var_expr(arena, var);
+            arena.intern(ExprNode::Derivative(id, v))
+        }
     }
 }
 

@@ -491,6 +491,96 @@ pub(crate) fn rebuild_with_cache(
                 arena.intern(ExprNode::SetComplement(na, nb))
             }
         }
+
+        // 3-field formal nodes
+        ExprNode::Limit(a, b, c) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            let nc = cache.get(&c).copied().unwrap_or(c);
+            if na == a && nb == b && nc == c {
+                id
+            } else {
+                arena.intern(ExprNode::Limit(na, nb, nc))
+            }
+        }
+
+        ExprNode::LaplaceTransform(a, b, c) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            let nc = cache.get(&c).copied().unwrap_or(c);
+            if na == a && nb == b && nc == c {
+                id
+            } else {
+                arena.intern(ExprNode::LaplaceTransform(na, nb, nc))
+            }
+        }
+
+        ExprNode::InverseLaplaceTransform(a, b, c) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            let nc = cache.get(&c).copied().unwrap_or(c);
+            if na == a && nb == b && nc == c {
+                id
+            } else {
+                arena.intern(ExprNode::InverseLaplaceTransform(na, nb, nc))
+            }
+        }
+
+        ExprNode::Residue(a, b, c) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            let nc = cache.get(&c).copied().unwrap_or(c);
+            if na == a && nb == b && nc == c {
+                id
+            } else {
+                arena.intern(ExprNode::Residue(na, nb, nc))
+            }
+        }
+
+        ExprNode::DSolve(a, b, c) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            let nc = cache.get(&c).copied().unwrap_or(c);
+            if na == a && nb == b && nc == c {
+                id
+            } else {
+                arena.intern(ExprNode::DSolve(na, nb, nc))
+            }
+        }
+
+        // 4-field formal node
+        ExprNode::Series(a, b, c, d) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            let nc = cache.get(&c).copied().unwrap_or(c);
+            let nd = cache.get(&d).copied().unwrap_or(d);
+            if na == a && nb == b && nc == c && nd == d {
+                id
+            } else {
+                arena.intern(ExprNode::Series(na, nb, nc, nd))
+            }
+        }
+
+        // 2-field formal nodes
+        ExprNode::RootOf(a, b) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            if na == a && nb == b {
+                id
+            } else {
+                arena.intern(ExprNode::RootOf(na, nb))
+            }
+        }
+
+        ExprNode::ConditionSet(a, b) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            if na == a && nb == b {
+                id
+            } else {
+                arena.intern(ExprNode::ConditionSet(na, nb))
+            }
+        }
     }
 }
 
@@ -572,6 +662,40 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
     }
 
     result
+}
+
+/// Returns `true` if the expression tree rooted at `root` contains any
+/// unevaluated formal node: `Integral`, `Derivative`, `Limit`, `Series`,
+/// `LaplaceTransform`, `InverseLaplaceTransform`, `Residue`, `RootOf`,
+/// `DSolve`, `ConditionSet`, formal `Sum`, or formal `Product_`.
+pub(crate) fn has_unevaluated(arena: &Arena, root: ExprId) -> bool {
+    let mut stack = vec![root];
+    let mut visited = FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Integral(..)
+            | ExprNode::Derivative(..)
+            | ExprNode::Limit(..)
+            | ExprNode::Series(..)
+            | ExprNode::LaplaceTransform(..)
+            | ExprNode::InverseLaplaceTransform(..)
+            | ExprNode::Residue(..)
+            | ExprNode::RootOf(..)
+            | ExprNode::DSolve(..)
+            | ExprNode::ConditionSet(..)
+            | ExprNode::Sum(..)
+            | ExprNode::Product_(..) => return true,
+            node => {
+                for child in node.children() {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    false
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

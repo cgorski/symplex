@@ -99,7 +99,15 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Product_(_, _, _, _)
         | ExprNode::Apply(_, _)
         | ExprNode::Derivative(_, _)
-        | ExprNode::Integral(_, _) => PREC_ATOM,
+        | ExprNode::Integral(_, _)
+        | ExprNode::Limit(_, _, _)
+        | ExprNode::Series(_, _, _, _)
+        | ExprNode::LaplaceTransform(_, _, _)
+        | ExprNode::InverseLaplaceTransform(_, _, _)
+        | ExprNode::Residue(_, _, _)
+        | ExprNode::RootOf(_, _)
+        | ExprNode::DSolve(_, _, _)
+        | ExprNode::ConditionSet(_, _) => PREC_ATOM,
         ExprNode::Or(_) => 10,
         ExprNode::And(_) => 15,
         ExprNode::Gt(_, _) | ExprNode::Ge(_, _) | ExprNode::Eq_(_, _) | ExprNode::Ne(_, _) => 20,
@@ -570,6 +578,92 @@ fn expand_expr(
             stack.push(WorkItem::Lit(", "));
             stack.push(WorkItem::Expr(body, 0));
             stack.push(WorkItem::Lit("Integral("));
+        }
+
+        // ── Limit ──────────────────────────────────────────────────
+        ExprNode::Limit(body, var, point) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(point, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("Limit("));
+        }
+
+        // ── Series ─────────────────────────────────────────────────
+        ExprNode::Series(body, var, point, order) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(order, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(point, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("Series("));
+        }
+
+        // ── Laplace Transform ──────────────────────────────────────
+        ExprNode::LaplaceTransform(body, t, s) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(s, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(t, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("LaplaceTransform("));
+        }
+
+        // ── Inverse Laplace Transform ──────────────────────────────
+        ExprNode::InverseLaplaceTransform(body, s, t) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(t, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(s, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("InverseLaplaceTransform("));
+        }
+
+        // ── Residue ────────────────────────────────────────────────
+        ExprNode::Residue(body, var, point) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(point, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("Residue("));
+        }
+
+        // ── RootOf ─────────────────────────────────────────────────
+        ExprNode::RootOf(poly, index) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(index, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(poly, 0));
+            stack.push(WorkItem::Lit("RootOf("));
+        }
+
+        // ── DSolve ─────────────────────────────────────────────────
+        ExprNode::DSolve(expr, func, var) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(func, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(expr, 0));
+            stack.push(WorkItem::Lit("DSolve("));
+        }
+
+        // ── ConditionSet ───────────────────────────────────────────
+        ExprNode::ConditionSet(var, condition) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(condition, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit("ConditionSet("));
         }
 
         // ── Boolean atoms ──────────────────────────────────────────

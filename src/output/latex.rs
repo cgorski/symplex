@@ -715,6 +715,82 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
             stack.push(LatexItem::Lit(r"\int "));
         }
 
+        // ── Limit: \lim_{var \to point} body ──────────────────────
+        ExprNode::Limit(body, var, point) => {
+            stack.push(LatexItem::Expr(body));
+            stack.push(LatexItem::Lit("} "));
+            stack.push(LatexItem::Expr(point));
+            stack.push(LatexItem::Lit(r" \to "));
+            stack.push(LatexItem::Expr(var));
+            stack.push(LatexItem::Lit(r"\lim_{"));
+        }
+
+        // ── Series ─────────────────────────────────────────────────
+        ExprNode::Series(body, var, point, order) => {
+            stack.push(LatexItem::Lit(r"\right)"));
+            stack.push(LatexItem::Expr(order));
+            stack.push(LatexItem::Lit(", "));
+            stack.push(LatexItem::Expr(point));
+            stack.push(LatexItem::Lit(", "));
+            stack.push(LatexItem::Expr(var));
+            stack.push(LatexItem::Lit(", "));
+            stack.push(LatexItem::Expr(body));
+            stack.push(LatexItem::Lit(r"\operatorname{Series}\left("));
+        }
+
+        // ── Laplace Transform: \mathcal{L}\left\{body\right\} ────
+        ExprNode::LaplaceTransform(body, _t, _s) => {
+            stack.push(LatexItem::Lit(r"\right\}"));
+            stack.push(LatexItem::Expr(body));
+            stack.push(LatexItem::Lit(r"\mathcal{L}\left\{"));
+        }
+
+        // ── Inverse Laplace Transform ──────────────────────────────
+        ExprNode::InverseLaplaceTransform(body, _s, _t) => {
+            stack.push(LatexItem::Lit(r"\right\}"));
+            stack.push(LatexItem::Expr(body));
+            stack.push(LatexItem::Lit(r"\mathcal{L}^{-1}\left\{"));
+        }
+
+        // ── Residue: \operatorname{Res}_{var=point} body ──────────
+        ExprNode::Residue(body, var, point) => {
+            stack.push(LatexItem::Expr(body));
+            stack.push(LatexItem::Lit("} "));
+            stack.push(LatexItem::Expr(point));
+            stack.push(LatexItem::Lit("="));
+            stack.push(LatexItem::Expr(var));
+            stack.push(LatexItem::Lit(r"\operatorname{Res}_{"));
+        }
+
+        // ── RootOf ─────────────────────────────────────────────────
+        ExprNode::RootOf(poly, index) => {
+            stack.push(LatexItem::Lit(r"\right)"));
+            stack.push(LatexItem::Expr(index));
+            stack.push(LatexItem::Lit(", "));
+            stack.push(LatexItem::Expr(poly));
+            stack.push(LatexItem::Lit(r"\operatorname{RootOf}\left("));
+        }
+
+        // ── DSolve ─────────────────────────────────────────────────
+        ExprNode::DSolve(expr, func, var) => {
+            stack.push(LatexItem::Lit(r"\right)"));
+            stack.push(LatexItem::Expr(var));
+            stack.push(LatexItem::Lit(", "));
+            stack.push(LatexItem::Expr(func));
+            stack.push(LatexItem::Lit(", "));
+            stack.push(LatexItem::Expr(expr));
+            stack.push(LatexItem::Lit(r"\operatorname{DSolve}\left("));
+        }
+
+        // ── ConditionSet: \left\{var \mid condition\right\} ───────
+        ExprNode::ConditionSet(var, condition) => {
+            stack.push(LatexItem::Lit(r"\right\}"));
+            stack.push(LatexItem::Expr(condition));
+            stack.push(LatexItem::Lit(r" \mid "));
+            stack.push(LatexItem::Expr(var));
+            stack.push(LatexItem::Lit(r"\left\{"));
+        }
+
         // ── Apply (user-defined function) ──────────────────────────
         ExprNode::Apply(sym_id, ref args) => {
             let name = arena.symbol_name(sym_id).to_owned();

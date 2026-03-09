@@ -1006,6 +1006,30 @@ fn expr_to_rust_cse(
         ExprNode::Product_(_, _, _, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for symbolic Product".to_string(),
         )),
+        ExprNode::Limit(_, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for unevaluated Limit".to_string(),
+        )),
+        ExprNode::Series(_, _, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for unevaluated Series".to_string(),
+        )),
+        ExprNode::LaplaceTransform(_, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for unevaluated LaplaceTransform".to_string(),
+        )),
+        ExprNode::InverseLaplaceTransform(_, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for unevaluated InverseLaplaceTransform".to_string(),
+        )),
+        ExprNode::Residue(_, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for unevaluated Residue".to_string(),
+        )),
+        ExprNode::RootOf(_, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for RootOf".to_string(),
+        )),
+        ExprNode::DSolve(_, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for unevaluated DSolve".to_string(),
+        )),
+        ExprNode::ConditionSet(_, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for ConditionSet".to_string(),
+        )),
         ExprNode::Piecewise(ref branches) => {
             codegen_piecewise(arena, branches, var_names, options, cse_constants)
         }
