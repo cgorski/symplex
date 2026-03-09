@@ -20,8 +20,9 @@
 /// use symplex::prelude::*;
 /// use symplex::units::*;
 ///
-/// let m = Mass::symbol("m");
-/// let a = Acceleration::symbol("a");
+/// let ctx = Context::new();
+/// let m = Mass::symbol(&ctx, "m");
+/// let a = Acceleration::symbol(&ctx, "a");
 /// let f = symplex::assert_dim!(m * a, Force);
 /// ```
 ///
@@ -31,8 +32,9 @@
 /// use symplex::prelude::*;
 /// use symplex::units::*;
 ///
-/// let m = Mass::symbol("m");
-/// let a = Acceleration::symbol("a");
+/// let ctx = Context::new();
+/// let m = Mass::symbol(&ctx, "m");
+/// let a = Acceleration::symbol(&ctx, "a");
 /// // Wrong! Mass × Acceleration is Force, not Velocity.
 /// let v = symplex::assert_dim!(m * a, Velocity);
 /// ```

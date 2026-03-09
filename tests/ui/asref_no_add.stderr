@@ -1,15 +1,7 @@
-warning: unused import: `symplex::prelude::*`
- --> tests/ui/asref_no_add.rs:1:5
-  |
-1 | use symplex::prelude::*;
-  |     ^^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
 error[E0277]: cannot add `&symplex::units::Mass` to `&symplex::units::Force`
- --> tests/ui/asref_no_add.rs:8:19
+ --> tests/ui/asref_no_add.rs:9:19
   |
-8 |     let _bad = &f + &m;
+9 |     let _bad = &f + &m;
   |                   ^ no implementation for `&symplex::units::Force + &symplex::units::Mass`
   |
   = help: the trait `std::ops::Add<&symplex::units::Mass>` is not implemented for `&symplex::units::Force`

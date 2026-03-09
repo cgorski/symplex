@@ -77,7 +77,6 @@ fn main() {
 
     println!("\n\n--- Double Pendulum (2-DOF) ---\n");
 
-    let ctx = Context::new();
     symplex::syms!(ctx; q1, q2, qd1, qd2, qdd1, qdd2);
     let m1 = ctx.symbol("m1");
     let m2 = ctx.symbol("m2");

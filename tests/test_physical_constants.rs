@@ -6,8 +6,9 @@ use symplex::units::constants;
 
 #[test]
 fn e_mc_squared_symbolic_display() {
-    let m = Mass::symbol("m");
-    let c = constants::speed_of_light();
+    let ctx = symplex::prelude::Context::new();
+    let m = Mass::symbol(&ctx, "m");
+    let c = constants::speed_of_light(&ctx);
     // Build E = m·c² using raw expressions, then wrap as Energy
     let e = Energy::from_ex(m.inner() * c.inner() * c.inner());
     let display = format!("{}", e.inner());
@@ -19,8 +20,9 @@ fn e_mc_squared_symbolic_display() {
 
 #[test]
 fn e_mc_squared_numerical() {
-    let c = constants::speed_of_light();
-    let m = Mass::constant(1);
+    let ctx = symplex::prelude::Context::new();
+    let c = constants::speed_of_light(&ctx);
+    let m = Mass::constant(&ctx, 1);
     let e = Energy::from_ex(m.inner() * c.inner() * c.inner());
     let val = e.eval_f64().unwrap();
     let expected = 299792458.0_f64.powi(2);
@@ -32,8 +34,8 @@ fn e_mc_squared_numerical() {
 
 #[test]
 fn photon_energy_e_equals_hf() {
-    let ctx = symplex::units::si::units_ctx().clone();
-    let h = constants::planck_constant();
+    let ctx = symplex::prelude::Context::new();
+    let h = constants::planck_constant(&ctx);
     // E = hf — h is AngularMomentum (M·L²·T⁻¹), f is Frequency (T⁻¹)
     // AngularMomentum × Frequency → Energy (M·L²·T⁻²)
     let h_qty: Qty<AngularMomentumDim> = h.into();
@@ -49,8 +51,8 @@ fn photon_energy_e_equals_hf() {
 
 #[test]
 fn thermal_energy_kb_t() {
-    let ctx = symplex::units::si::units_ctx().clone();
-    let kb = constants::boltzmann_constant();
+    let ctx = symplex::prelude::Context::new();
+    let kb = constants::boltzmann_constant(&ctx);
     let t_qty = Qty::<TemperatureDim>::from_ex(ctx.symbol("T"));
     let e_thermal = kb * t_qty;
     // kb × T should have dimension Energy (M·L²·T⁻²·Θ⁻¹ × Θ = M·L²·T⁻²)
@@ -64,9 +66,9 @@ fn thermal_energy_kb_t() {
 
 #[test]
 fn constant_derivative_is_zero() {
-    let ctx = symplex::units::si::units_ctx().clone();
-    let c = constants::speed_of_light();
-    let h = constants::planck_constant();
+    let ctx = symplex::prelude::Context::new();
+    let c = constants::speed_of_light(&ctx);
+    let h = constants::planck_constant(&ctx);
     symplex::syms!(ctx; x);
     let dc = c.inner().diff(&x);
     let dh = h.inner().diff(&x);
@@ -82,8 +84,8 @@ fn constant_derivative_is_zero() {
 
 #[test]
 fn gravitational_force() {
-    let ctx = symplex::units::si::units_ctx().clone();
-    let g_const = constants::gravitational_constant();
+    let ctx = symplex::prelude::Context::new();
+    let g_const = constants::gravitational_constant(&ctx);
     symplex::syms!(ctx; m1, m2, r);
     // F = G·m1·m2/r² — raw expression arithmetic (no type-level dimension check)
     let f_expr = g_const.inner() * &m1 * &m2 / &r.powi(2);
@@ -96,7 +98,8 @@ fn gravitational_force() {
 
 #[test]
 fn speed_of_light_value() {
-    let c = constants::speed_of_light();
+    let ctx = symplex::prelude::Context::new();
+    let c = constants::speed_of_light(&ctx);
     let val = c.eval_f64().unwrap();
     assert!(
         (val - 299_792_458.0).abs() < 1.0,
@@ -106,7 +109,8 @@ fn speed_of_light_value() {
 
 #[test]
 fn planck_constant_value() {
-    let h = constants::planck_constant();
+    let ctx = symplex::prelude::Context::new();
+    let h = constants::planck_constant(&ctx);
     let val = h.eval_f64().unwrap();
     let expected = 6.62607015e-34;
     assert!(
@@ -117,7 +121,8 @@ fn planck_constant_value() {
 
 #[test]
 fn boltzmann_constant_value() {
-    let kb = constants::boltzmann_constant();
+    let ctx = symplex::prelude::Context::new();
+    let kb = constants::boltzmann_constant(&ctx);
     let val = kb.eval_f64().unwrap();
     let expected = 1.380649e-23;
     assert!(
@@ -128,7 +133,8 @@ fn boltzmann_constant_value() {
 
 #[test]
 fn elementary_charge_value() {
-    let e = constants::elementary_charge();
+    let ctx = symplex::prelude::Context::new();
+    let e = constants::elementary_charge(&ctx);
     let val = e.eval_f64().unwrap();
     let expected = 1.602176634e-19;
     assert!(
@@ -139,7 +145,8 @@ fn elementary_charge_value() {
 
 #[test]
 fn standard_gravity_value() {
-    let g = constants::standard_gravity();
+    let ctx = symplex::prelude::Context::new();
+    let g = constants::standard_gravity(&ctx);
     let val = g.eval_f64().unwrap();
     assert!(
         (val - 9.80665).abs() < 1e-10,
@@ -149,7 +156,8 @@ fn standard_gravity_value() {
 
 #[test]
 fn avogadro_constant_value() {
-    let na = constants::avogadro_constant();
+    let ctx = symplex::prelude::Context::new();
+    let na = constants::avogadro_constant(&ctx);
     let val = na.eval_f64().unwrap();
     let expected = 6.02214076e23;
     assert!(
@@ -160,8 +168,8 @@ fn avogadro_constant_value() {
 
 #[test]
 fn constant_in_product_preserves_symbol() {
-    let ctx = symplex::units::si::units_ctx().clone();
-    let c = constants::speed_of_light();
+    let ctx = symplex::prelude::Context::new();
+    let c = constants::speed_of_light(&ctx);
     symplex::syms!(ctx; x);
     let cx = c.inner() * &x;
     let display = format!("{}", cx);
@@ -173,8 +181,8 @@ fn constant_in_product_preserves_symbol() {
 
 #[test]
 fn constant_survives_simplify() {
-    let ctx = symplex::units::si::units_ctx().clone();
-    let c = constants::speed_of_light();
+    let ctx = symplex::prelude::Context::new();
+    let c = constants::speed_of_light(&ctx);
     symplex::syms!(ctx; x, y);
     let expr = c.inner() * &x + c.inner() * &y;
     let simplified = expr.simplify();
@@ -187,8 +195,8 @@ fn constant_survives_simplify() {
 
 #[test]
 fn constant_diff_in_product() {
-    let ctx = symplex::units::si::units_ctx().clone();
-    let c = constants::speed_of_light();
+    let ctx = symplex::prelude::Context::new();
+    let c = constants::speed_of_light(&ctx);
     symplex::syms!(ctx; x);
     let cx = c.inner() * &x;
     let d = cx.diff(&x);
@@ -203,8 +211,9 @@ fn constant_diff_in_product() {
 #[test]
 fn multiple_constants_in_expression() {
     // Build h * c — both should display as their symbols
-    let h = constants::planck_constant();
-    let c = constants::speed_of_light();
+    let ctx = symplex::prelude::Context::new();
+    let h = constants::planck_constant(&ctx);
+    let c = constants::speed_of_light(&ctx);
     let product = h.inner() * c.inner();
     let display = format!("{}", product);
     assert!(
@@ -215,7 +224,8 @@ fn multiple_constants_in_expression() {
 
 #[test]
 fn gravitational_constant_value() {
-    let g = constants::gravitational_constant();
+    let ctx = symplex::prelude::Context::new();
+    let g = constants::gravitational_constant(&ctx);
     let val = g.eval_f64().unwrap();
     let expected = 6.67430e-11;
     assert!(

@@ -30,10 +30,10 @@ fn section_1_motor_specs() {
     println!("── 1. DC Motor Specification ──\n");
 
     // Define motor parameters with units
-    let v_rated = Voltage::constant(24);          // 24 V
-    let i_rated = Current::constant(10);          // 10 A
-    let r_wind = Resistance::rational(12, 10);    // 1.2 Ω
-    let l_wind = Inductance::rational(5, 1000);   // 5 mH
+    let v_rated = Voltage::constant(&ctx, 24);          // 24 V
+    let i_rated = Current::constant(&ctx, 10);          // 10 A
+    let r_wind = Resistance::rational(&ctx, 12, 10);    // 1.2 Ω
+    let l_wind = Inductance::rational(&ctx, 5, 1000);   // 5 mH
 
     println!("  Rated voltage:  {}", v_rated);
     println!("  Rated current:  {}", i_rated);
@@ -54,9 +54,9 @@ fn section_2_power_analysis() {
     let ctx = Context::new();
     println!("── 2. Power Analysis ──\n");
 
-    let v = Voltage::constant(24);
-    let i = Current::constant(10);
-    let r = Resistance::rational(12, 10);
+    let v = Voltage::constant(&ctx, 24);
+    let i = Current::constant(&ctx, 10);
+    let r = Resistance::rational(&ctx, 12, 10);
 
     // Input power: P_in = I × V  (Current × Voltage → Power, dimension-checked via dim!)
     let p_in = symplex::dim!(ctx, Power: i * v);
@@ -160,7 +160,7 @@ fn section_4_unit_conversion_showcase() {
              temp_k.eval_f64().unwrap() - 273.15);
 
     // Standard gravity from physical constants
-    let g = constants::standard_gravity();
+    let g = constants::standard_gravity(&ctx);
     println!("\n  Standard gravity: g₀ = {} (physical constant, exact)", g);
     println!("  g₀ = {:.5} m/s²", g.eval_f64().unwrap());
 

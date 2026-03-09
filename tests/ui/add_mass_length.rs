@@ -2,7 +2,8 @@ use symplex::prelude::*;
 use symplex::units::*;
 
 fn main() {
-    let m = Mass::symbol("m");
-    let l = Length::symbol("l");
+    let ctx = Context::new();
+    let m = Mass::symbol(&ctx, "m");
+    let l = Length::symbol(&ctx, "l");
     let _bad = &m + &l;
 }

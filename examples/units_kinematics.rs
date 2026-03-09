@@ -26,7 +26,7 @@ fn main() {
     symplex::syms!(ctx; g, t);
 
     // Typed variables for DiffWrt — the compiler tracks dimensions
-    let t_var = Time::symbol("t");
+    let t_var = Time::symbol(&ctx, "t");
 
     // Position: x(t) = ½gt² — built ergonomically with expr!
     // from_ex wraps the raw expression in the Length type
@@ -60,7 +60,7 @@ fn main() {
     println!("  x(t=3, g=10)   = {:.2} m (f64)", x_f64);
 
     // Using the physical constant for g:
-    let g_const = constants::standard_gravity();
+    let g_const = constants::standard_gravity(&ctx);
     println!("  g₀ = {} (physical constant, exact)", g_const);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -71,9 +71,8 @@ fn main() {
     println!("\n── Projectile Motion ──");
 
     // Raw variables for expr!
-    let ctx = Context::new();
     symplex::syms!(ctx; v0, theta);
-    // (g and t already declared above)
+    // g and t already declared above in the same context
 
     // Horizontal position: x(t) = v₀·cos(θ)·t
     let x_proj = Length::from_ex(expr!(ctx, v0 * cos(theta) * t));
@@ -139,31 +138,30 @@ fn main() {
     println!("\n── Work-Energy Theorem ──");
 
     // Named typed variables — compile-time dimension checking
-    let mass = Mass::symbol("m");
-    let accel = Acceleration::symbol("a");
+    let mass = Mass::symbol(&ctx, "m");
+    let accel = Acceleration::symbol(&ctx, "a");
 
     // F = ma — Mass × Acceleration → Force (compile-time verified!)
     let force = symplex::dim!(ctx, Force: mass * accel);
     println!("  F = m·a = {}", force);
 
     // Work: W = ∫F dx → Energy (typed integration!)
-    let x_var = Length::symbol("x");
+    let x_var = Length::symbol(&ctx, "x");
     let work: Energy = force.integrate_wrt(&x_var);
     println!("  W = ∫F dx = {}", work);
 
     // Kinetic energy: KE = ½mv² using expr!
-    let ctx = Context::new();
     symplex::syms!(ctx; m, v);
     let ke = Energy::from_ex(expr!(ctx, 1/2 * m * v^2));
     println!("  KE = ½mv² = {}", ke);
 
     // Differentiate KE w.r.t. velocity → Momentum (p = mv)
-    let v_var = Velocity::symbol("v");
+    let v_var = Velocity::symbol(&ctx, "v");
     let momentum: Momentum = ke.diff_wrt(&v_var);
     println!("  dKE/dv = p = {}", momentum);
 
     // Differentiate momentum w.r.t. time → Force (Newton's 2nd law)
-    let t_typed = Time::symbol("t");
+    let t_typed = Time::symbol(&ctx, "t");
     let force_from_p: Force = momentum.diff_wrt(&t_typed);
     println!("  dp/dt = F = {}", force_from_p);
 

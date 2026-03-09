@@ -7,11 +7,12 @@
 //! Named newtypes use `.as_qty()` before calling these functions,
 //! then convert back via `.into()`:
 //!
-//! ```ignore
-//! let x = Length::symbol("x");
-//! let t = Time::symbol("t");
-//! let v: Velocity = diff_qty(&x.as_qty(), &t.as_qty()).into();
-//! ```
+/// ```ignore
+/// let ctx = Context::new();
+/// let x = Length::symbol(&ctx, "x");
+/// let t = Time::symbol(&ctx, "t");
+/// let v: Velocity = diff_qty(&x.as_qty(), &t.as_qty()).into();
+/// ```
 
 use std::ops;
 
@@ -207,8 +208,9 @@ mod tests {
     /// Demonstrate the full named → Qty → calculus → named workflow.
     #[test]
     fn named_type_workflow() {
-        let x = Length::symbol("x");
-        let t = Time::symbol("t");
+        let ctx = crate::api::context::Context::new();
+        let x = Length::symbol(&ctx, "x");
+        let t = Time::symbol(&ctx, "t");
 
         let v: Velocity = diff_qty(&x.as_qty(), &t.as_qty()).into();
 

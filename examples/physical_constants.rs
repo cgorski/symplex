@@ -30,10 +30,11 @@ fn main() {
 fn section_1_symbolic_display() {
     println!("── 1. Constants Display as Symbols ──\n");
 
-    let c = constants::speed_of_light();
-    let h = constants::planck_constant();
-    let kb = constants::boltzmann_constant();
-    let g = constants::standard_gravity();
+    let ctx = Context::new();
+    let c = constants::speed_of_light(&ctx);
+    let h = constants::planck_constant(&ctx);
+    let kb = constants::boltzmann_constant(&ctx);
+    let g = constants::standard_gravity(&ctx);
 
     println!("  Speed of light:    {} (displays as symbol)", c);
     println!("  Planck constant:   {} (displays as symbol)", h);
@@ -52,8 +53,8 @@ fn section_2_e_mc_squared() {
     let ctx = Context::new();
     println!("── 2. E = mc² — Rest Energy ──\n");
 
-    let c = constants::speed_of_light();
-    let m = Mass::symbol("m");
+    let c = constants::speed_of_light(&ctx);
+    let m = Mass::symbol(&ctx, "m");
 
     // E = mc² — the expression stays symbolic
     let energy = symplex::dim!(ctx, Energy: m * c * c);
@@ -71,8 +72,9 @@ fn section_2_e_mc_squared() {
 fn section_3_photon_energy() {
     println!("── 3. E = hf — Photon Energy ──\n");
 
-    let h = constants::planck_constant();
-    let c = constants::speed_of_light();
+    let ctx = Context::new();
+    let h = constants::planck_constant(&ctx);
+    let c = constants::speed_of_light(&ctx);
 
     // Energy of a photon: E = hf
     println!("  E = h·f (symbolic): h*f");
@@ -94,7 +96,8 @@ fn section_3_photon_energy() {
 fn section_4_thermal_energy() {
     println!("── 4. E = k_B·T — Thermal Energy ──\n");
 
-    let kb = constants::boltzmann_constant();
+    let ctx = Context::new();
+    let kb = constants::boltzmann_constant(&ctx);
 
     // At room temperature: T = 300 K
     let t_room = 300.0_f64;
@@ -110,7 +113,7 @@ fn section_5_gravity() {
 
     let ctx = Context::new();
     symplex::syms!(ctx; m1, m2, r);
-    let g_const = constants::gravitational_constant();
+    let g_const = constants::gravitational_constant(&ctx);
 
     // Newton's law of gravitation
     let force_expr = g_const.inner() * &m1 * &m2 / &r.powi(2);
@@ -130,8 +133,8 @@ fn section_5_gravity() {
 fn section_6_constants_with_calculus() {
     println!("── 6. Constants and Calculus ──\n");
 
-    let c = constants::speed_of_light();
     let ctx = Context::new();
+    let c = constants::speed_of_light(&ctx);
     symplex::syms!(ctx; x);
 
     // d/dx(c·x) = c (constant preserved through differentiation)
@@ -151,15 +154,15 @@ fn section_7_dimensional_checking() {
     let ctx = Context::new();
     println!("── 7. Constants Carry Dimensions ──\n");
 
-    let c = constants::speed_of_light();
-    let g = constants::standard_gravity();
+    let c = constants::speed_of_light(&ctx);
+    let g = constants::standard_gravity(&ctx);
 
     println!("  speed_of_light()   → {} (Velocity)", Velocity::dim_name_str());
     println!("  planck_constant()  → {} (AngularMomentum)", AngularMomentum::dim_name_str());
     println!("  standard_gravity() → {} (Acceleration)", Acceleration::dim_name_str());
 
     // mc² type-checks as Energy
-    let m = Mass::symbol("m");
+    let m = Mass::symbol(&ctx, "m");
     let _energy = symplex::dim!(ctx, Energy: m * c * c);
     println!("\n  m·c² type-checks as Energy ✓");
 

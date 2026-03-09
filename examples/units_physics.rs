@@ -70,8 +70,8 @@ fn main() {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     println!("── Newton's Second Law: F = ma ──");
 
-    let m = Mass::symbol("m");
-    let a = Acceleration::symbol("a");
+    let m = Mass::symbol(&ctx, "m");
+    let a = Acceleration::symbol(&ctx, "a");
 
     // The type annotation `: Force` is a compile-time assertion.
     // If Mass × Acceleration didn't produce Force, this wouldn't compile.
@@ -86,12 +86,12 @@ fn main() {
     println!("  F(m=10, a=9.81) = {}", f_num);
 
     // Work done: W = F·d
-    let d = Length::symbol("d");
+    let d = Length::symbol(&ctx, "d");
     let w = symplex::dim!(ctx, Energy: f * d);
     println!("  W = F·d = {}", w);
 
     // Power: P = F·v
-    let v = Velocity::symbol("v");
+    let v = Velocity::symbol(&ctx, "v");
     let p = symplex::dim!(ctx, Power: f * v);
     println!("  P = F·v = {}", p);
 
@@ -100,8 +100,8 @@ fn main() {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     println!("\n── Ohm's Law: V = IR, P = IV ──");
 
-    let i = Current::symbol("I");
-    let r = Resistance::symbol("R");
+    let i = Current::symbol(&ctx, "I");
+    let r = Resistance::symbol(&ctx, "R");
 
     // Ohm's law — the compiler verifies Current × Resistance = Voltage
     let volt = symplex::dim!(ctx, Voltage: i * r);
@@ -133,10 +133,10 @@ fn main() {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     println!("\n── Pendulum: V = mgl(1 - cos θ) ──");
 
-    let m_pend = Mass::symbol("m");
-    let g = Acceleration::symbol("g");
-    let l = Length::symbol("l");
-    let theta = Angle::symbol("θ");
+    let m_pend = Mass::symbol(&ctx, "m");
+    let g = Acceleration::symbol(&ctx, "g");
+    let l = Length::symbol(&ctx, "l");
+    let theta = Angle::symbol(&ctx, "θ");
 
     // Build up step by step — each intermediate has a verified type:
     //   Mass × Acceleration = Force
@@ -148,7 +148,7 @@ fn main() {
     // Angle::cos() returns Dimensionless — enforced by the type system.
     // sin/cos/tan are *only* callable on Angle, not on arbitrary quantities.
     let cos_theta: Dimensionless = theta.cos();
-    let one_minus_cos: Dimensionless = Dimensionless::constant(1) - cos_theta;
+    let one_minus_cos: Dimensionless = Dimensionless::constant(&ctx, 1) - cos_theta;
 
     // Energy × Dimensionless = Energy (dimensionless scaling preserves units)
     let pe = symplex::dim!(ctx, Energy: mgl * one_minus_cos);
@@ -157,7 +157,7 @@ fn main() {
     // Restoring torque: τ = -mgl·sin(θ)
     // Energy and Torque share the same dimension vector (L²·M·T⁻²),
     // so we convert explicitly with Torque::from_energy().
-    let sin_theta: Dimensionless = Angle::symbol("θ").sin();
+    let sin_theta: Dimensionless = Angle::symbol(&ctx, "θ").sin();
     // Reuse the mgl Energy we already built, scale by sin(θ).
     // Energy × Dimensionless = Energy (dimensionless scaling).
     let torque_magnitude = symplex::dim!(ctx, Energy: mgl * sin_theta);
@@ -169,11 +169,11 @@ fn main() {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     println!("\n── Spring-Mass-Damper: F = -kx - cv + F_ext ──");
 
-    let k = Stiffness::symbol("k");
-    let x = Length::symbol("x");
-    let c = Damping::symbol("c");
-    let v_smd = Velocity::symbol("v");
-    let f_ext = Force::symbol("F_ext");
+    let k = Stiffness::symbol(&ctx, "k");
+    let x = Length::symbol(&ctx, "x");
+    let c = Damping::symbol(&ctx, "c");
+    let v_smd = Velocity::symbol(&ctx, "v");
+    let f_ext = Force::symbol(&ctx, "F_ext");
 
     // Spring force: Stiffness × Length = Force
     let f_spring = symplex::dim!(ctx, Force: -(k * x));
@@ -188,7 +188,7 @@ fn main() {
     println!("  F_total = {}", f_total);
 
     // Acceleration from Newton's second law: Force / Mass = Acceleration
-    let m_smd = Mass::symbol("m");
+    let m_smd = Mass::symbol(&ctx, "m");
     let a_smd = symplex::dim!(ctx, Acceleration: f_total / m_smd);
     println!("  a = F/m = {}", a_smd);
 
@@ -197,13 +197,13 @@ fn main() {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     println!("\n── DC Motor Steady-State: V = R·I + Ke·ω ──");
 
-    let r_motor = Resistance::symbol("R");
-    let i_motor = Current::symbol("I");
-    let omega = AngularVelocity::symbol("ω");
+    let r_motor = Resistance::symbol(&ctx, "R");
+    let i_motor = Current::symbol(&ctx, "I");
+    let omega = AngularVelocity::symbol(&ctx, "ω");
 
     // Back-EMF constant Ke has units of Wb (V·s/rad ≡ magnetic flux)
     // MagneticFlux × AngularVelocity = Voltage
-    let ke = MagneticFlux::symbol("Ke");
+    let ke = MagneticFlux::symbol(&ctx, "Ke");
 
     // Resistive voltage drop: Resistance × Current = Voltage
     let v_resistive = symplex::dim!(ctx, Voltage: r_motor * i_motor);
@@ -258,7 +258,7 @@ fn main() {
 
     symplex::syms!(ctx; a, t);
 
-    let t_var = Time::symbol("t");
+    let t_var = Time::symbol(&ctx, "t");
 
     // Position x(t) = ½at²  (built with expr!, typed with from_ex)
     let position = Length::from_ex(expr!(ctx, 1/2 * a * t^2));
@@ -304,14 +304,14 @@ fn main() {
 
     // Energy / Length → Force (F = -dU/dx)
     symplex::syms!(ctx; k, x);
-    let x_var = Length::symbol("x");
+    let x_var = Length::symbol(&ctx, "x");
     let spring_pe = Energy::from_ex(expr!(ctx, 1/2 * k * x^2));
     let spring_force: Force = spring_pe.diff_wrt(&x_var);
     println!("  dU/dx = {} (Force from spring PE)", spring_force);
 
     // Power / Current → Voltage (dP/dI)
     symplex::syms!(ctx; i_p, r_p);
-    let i_var = Current::symbol("i_p");
+    let i_var = Current::symbol(&ctx, "i_p");
     let power_expr = Power::from_ex(expr!(ctx, i_p^2 * r_p));
     let dp_di: Voltage = power_expr.diff_wrt(&i_var);
     println!("  dP/dI = {} (Voltage)", dp_di);
@@ -323,13 +323,13 @@ fn main() {
 
     // assert_dim! is a compile-time check disguised as an expression.
     // If the dimension is wrong, the code won't compile at all.
-    let m_check = Mass::symbol("m");
-    let a_check = Acceleration::symbol("a");
+    let m_check = Mass::symbol(&ctx, "m");
+    let a_check = Acceleration::symbol(&ctx, "a");
     let f_check = symplex::dim!(ctx, Force: m_check * a_check);
     println!("  dim!(ctx, Force: m*a) ✓ = {}", f_check);
 
-    let v_check = Velocity::symbol("v");
-    let t_check = Time::symbol("t");
+    let v_check = Velocity::symbol(&ctx, "v");
+    let t_check = Time::symbol(&ctx, "t");
     let x_check = symplex::dim!(ctx, Length: v_check * t_check);
     println!("  dim!(ctx, Length: v*t) ✓ = {}", x_check);
 
@@ -342,7 +342,7 @@ fn main() {
     println!("  dim!(ctx, Momentum: m*v) ✓ = {}", impulse);
 
     // Energy: Force × Length
-    let l_check = Length::symbol("d");
+    let l_check = Length::symbol(&ctx, "d");
     let w_check = symplex::dim!(ctx, Energy: f_check * l_check);
     println!("  dim!(ctx, Energy: F*d) ✓ = {}", w_check);
 
@@ -363,8 +363,8 @@ fn main() {
     println!("\n── Physical Constants ──");
     {
         use symplex::units::constants;
-        let c = constants::speed_of_light();
-        let m = Mass::symbol("m");
+        let c = constants::speed_of_light(&ctx);
+        let m = Mass::symbol(&ctx, "m");
         let energy = symplex::dim!(ctx, Energy: m * c * c);
         println!("  E = mc² = {}", energy);
         println!("  (Displays symbolically — 'c' not '299792458')");

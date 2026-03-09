@@ -2,7 +2,8 @@ use symplex::prelude::*;
 use symplex::units::*;
 
 fn main() {
-    let f = Force::symbol("f");
-    let v = Voltage::symbol("v");
+    let ctx = Context::new();
+    let f = Force::symbol(&ctx, "f");
+    let v = Voltage::symbol(&ctx, "v");
     let _bad = &f + &v;
 }

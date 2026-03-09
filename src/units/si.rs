@@ -1,10 +1,11 @@
 //! Named newtype wrappers for 30 SI physical quantities.
 //!
-//! All quantities created via [`symbol()`], [`constant()`], and [`rational()`]
-//! share a single lazily-initialised context so they can be freely combined.
-//!
 //! Each newtype wraps an [`Ex`] and provides compile-time dimensional safety
 //! with clear error messages (e.g. "expected `Force`, found `Mass`").
+//!
+//! Constructors like [`symbol()`], [`constant()`], and [`rational()`] take
+//! a `&Context` parameter so that unit expressions live in the same context
+//! as your other expressions — no hidden global state, no cross-context panics.
 //!
 //! Dimension-colliding pairs share the same underlying `Dim<…>` type alias:
 //!
@@ -16,41 +17,6 @@
 //!
 //! Only the primary type in each group gets `From<Qty<D>>`. The alias type
 //! provides a named conversion method instead to avoid conflicting impls.
-
-use std::sync::OnceLock;
-
-/// Shared context for the dimensional analysis module.
-///
-/// # Why this exists
-///
-/// All 30+ named quantity types (`Mass`, `Length`, `Force`, etc.) need to
-/// create expressions that can be combined freely — `Mass::symbol("m") *
-/// Acceleration::symbol("a")` must work without cross-context panics.
-///
-/// This `OnceLock` provides a single shared [`Context`] for all unit
-/// expressions.  It is the **only** hidden static context in the library
-/// and is intentionally scoped to the units module.
-///
-/// # Safety
-///
-/// Unit expressions from `UNITS_CONTEXT` live in a separate context from
-/// user-created `Context::new()` expressions.  If a user tries to combine
-/// a unit expression with a non-unit expression (e.g., `Mass::symbol("m")
-/// + ctx.int(1)`), the `checked_id` guard will panic with a clear message.
-///
-/// This is by design: dimensional analysis expressions form a self-contained
-/// ecosystem with compile-time dimension checking.  Mixing them with
-/// untyped `Ex` values would bypass the dimension safety guarantees.
-static UNITS_CONTEXT: OnceLock<crate::api::context::Context> = OnceLock::new();
-
-/// Returns the shared units context (initialised on first call).
-///
-/// All unit type constructors (`Mass::symbol`, `Length::constant`, etc.)
-/// use this context internally.  Users should not need to call this
-/// directly — use the typed constructors instead.
-pub fn units_ctx() -> &'static crate::api::context::Context {
-    UNITS_CONTEXT.get_or_init(crate::api::context::Context::new)
-}
 
 use std::fmt;
 use std::ops;
@@ -137,22 +103,22 @@ macro_rules! define_quantity {
             }
 
             /// Create a named symbolic variable with this dimension.
-            pub fn symbol(name: &str) -> Self {
-                $name($crate::units::si::units_ctx().symbol(name))
+            pub fn symbol(ctx: &$crate::api::context::Context, name: &str) -> Self {
+                $name(ctx.symbol(name))
             }
 
             /// Create from an integer constant.
-            pub fn constant(val: i64) -> Self {
-                $name($crate::units::si::units_ctx().int(val))
+            pub fn constant(ctx: &$crate::api::context::Context, val: i64) -> Self {
+                $name(ctx.int(val))
             }
 
             /// Create from a rational constant.
-            pub fn rational(p: i64, q: i64) -> Self {
-                $name($crate::units::si::units_ctx().rational(p, q))
+            pub fn rational(ctx: &$crate::api::context::Context, p: i64, q: i64) -> Self {
+                $name(ctx.rational(p, q))
             }
 
             /// Zero value.
-            pub fn zero() -> Self { $name($crate::units::si::units_ctx().int(0)) }
+            pub fn zero(ctx: &$crate::api::context::Context) -> Self { $name(ctx.int(0)) }
 
             /// Escape hatch: drop dimension, return raw Ex.
             pub fn into_inner(self) -> Ex { self.0 }
@@ -632,11 +598,13 @@ impl Frequency {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::context::Context;
 
     #[test]
     fn add_same_type() {
-        let a = Force::symbol("F1");
-        let b = Force::symbol("F2");
+        let ctx = Context::new();
+        let a = Force::symbol(&ctx, "F1");
+        let b = Force::symbol(&ctx, "F2");
         let c = &a + &b;
         assert_eq!(Force::dim_name_str(), "Force");
         assert_eq!(Force::dim_symbol_str(), "N");
@@ -645,22 +613,25 @@ mod tests {
 
     #[test]
     fn sub_same_type() {
-        let a = Length::constant(10);
-        let b = Length::constant(3);
+        let ctx = Context::new();
+        let a = Length::constant(&ctx, 10);
+        let b = Length::constant(&ctx, 3);
         let c = a - b;
         assert!(format!("{}", c).contains("[m]"));
     }
 
     #[test]
     fn neg() {
-        let v = Velocity::symbol("v");
+        let ctx = Context::new();
+        let v = Velocity::symbol(&ctx, "v");
         let neg_v = -&v;
         assert!(format!("{:?}", neg_v).starts_with("Velocity("));
     }
 
     #[test]
     fn scalar_mul_i64() {
-        let m = Mass::symbol("m");
+        let ctx = Context::new();
+        let m = Mass::symbol(&ctx, "m");
         let double = &m * 2;
         assert!(format!("{}", double).contains("[kg]"));
 
@@ -670,29 +641,33 @@ mod tests {
 
     #[test]
     fn scalar_div_i64() {
-        let e = Energy::constant(100);
+        let ctx = Context::new();
+        let e = Energy::constant(&ctx, 100);
         let half = e / 2;
         assert!(format!("{}", half).contains("[J]"));
     }
 
     #[test]
     fn scalar_mul_ex() {
-        let f = Force::symbol("F");
-        let k = units_ctx().symbol("k");
+        let ctx = Context::new();
+        let f = Force::symbol(&ctx, "F");
+        let k = ctx.symbol("k");
         let scaled = &f * &k;
         assert!(format!("{}", scaled).contains("[N]"));
     }
 
     #[test]
     fn display_and_debug() {
-        let t = Temperature::symbol("T");
+        let ctx = Context::new();
+        let t = Temperature::symbol(&ctx, "T");
         assert!(format!("{}", t).contains("[K]"));
         assert!(format!("{:?}", t).starts_with("Temperature("));
     }
 
     #[test]
     fn angle_trig() {
-        let theta = Angle::symbol("theta");
+        let ctx = Context::new();
+        let theta = Angle::symbol(&ctx, "theta");
         let s = theta.sin();
         assert_eq!(Dimensionless::dim_symbol_str(), "1");
         assert!(format!("{}", s).contains("[1]"));
@@ -700,32 +675,36 @@ mod tests {
 
     #[test]
     fn cross_type_from_energy_torque() {
-        let e = Energy::symbol("E");
+        let ctx = Context::new();
+        let e = Energy::symbol(&ctx, "E");
         let t: Torque = Torque::from(e);
         assert!(format!("{}", t).contains("[N·m]"));
 
-        let t2 = Torque::symbol("tau");
+        let t2 = Torque::symbol(&ctx, "tau");
         let e2: Energy = Energy::from(t2);
         assert!(format!("{}", e2).contains("[J]"));
     }
 
     #[test]
     fn cross_type_from_freq_angular_vel() {
-        let w = AngularVelocity::symbol("omega");
+        let ctx = Context::new();
+        let w = AngularVelocity::symbol(&ctx, "omega");
         let f: Frequency = Frequency::from(w);
         assert!(format!("{}", f).contains("[Hz]"));
     }
 
     #[test]
     fn named_conversion_angle_from_dimensionless() {
-        let d = Dimensionless::constant(1);
+        let ctx = Context::new();
+        let d = Dimensionless::constant(&ctx, 1);
         let a = Angle::from_dimensionless(d);
         assert!(format!("{}", a).contains("[rad]"));
     }
 
     #[test]
     fn named_conversion_torque_from_energy() {
-        let e = Energy::symbol("W");
+        let ctx = Context::new();
+        let e = Energy::symbol(&ctx, "W");
         let t = Torque::from_energy(e);
         assert_eq!(Torque::dim_name_str(), "Torque");
         assert!(format!("{}", t).contains("[N·m]"));
@@ -733,7 +712,8 @@ mod tests {
 
     #[test]
     fn named_conversion_frequency_from_angular_velocity() {
-        let w = AngularVelocity::symbol("omega");
+        let ctx = Context::new();
+        let w = AngularVelocity::symbol(&ctx, "omega");
         let f = Frequency::from_angular_velocity(w);
         assert_eq!(Frequency::dim_name_str(), "Frequency");
         assert!(format!("{}", f).contains("[Hz]"));
@@ -741,7 +721,8 @@ mod tests {
 
     #[test]
     fn into_inner_roundtrip() {
-        let raw = units_ctx().symbol("x");
+        let ctx = Context::new();
+        let raw = ctx.symbol("x");
         let q = Pressure::from_ex(raw.clone());
         let back = q.into_inner();
         assert_eq!(format!("{}", back), format!("{}", raw));
@@ -749,15 +730,17 @@ mod tests {
 
     #[test]
     fn zero_and_constant() {
-        let z = Charge::zero();
+        let ctx = Context::new();
+        let z = Charge::zero(&ctx);
         assert!(format!("{}", z).contains("[C]"));
-        let c = Charge::constant(42);
+        let c = Charge::constant(&ctx, 42);
         assert!(format!("{}", c).contains("[C]"));
     }
 
     #[test]
     fn qty_roundtrip() {
-        let v = Voltage::symbol("V");
+        let ctx = Context::new();
+        let v = Voltage::symbol(&ctx, "V");
         let q: Qty<VoltageDim> = v.into();
         let v2: Voltage = q.into();
         assert!(format!("{}", v2).contains("[V]"));
@@ -765,7 +748,8 @@ mod tests {
 
     #[test]
     fn simplify_expand_eval() {
-        let x = Length::symbol("x");
+        let ctx = Context::new();
+        let x = Length::symbol(&ctx, "x");
         let _ = x.clone().simplify();
         let _ = x.clone().expand();
         let _ = x.eval();
@@ -773,9 +757,10 @@ mod tests {
 
     #[test]
     fn subs() {
-        let x_var = units_ctx().symbol("x");
-        let val = units_ctx().int(5);
-        let len = Length::symbol("x");
+        let ctx = Context::new();
+        let x_var = ctx.symbol("x");
+        let val = ctx.int(5);
+        let len = Length::symbol(&ctx, "x");
         let result = len.subs(&x_var, &val);
         assert!(format!("{}", result).contains("[m]"));
     }

@@ -23,8 +23,8 @@ fn main() {
     println!("── Ohm's Law & Power ──");
 
     // Named typed variables — the compiler tracks their dimensions
-    let i = Current::symbol("I");
-    let r = Resistance::symbol("R");
+    let i = Current::symbol(&ctx, "I");
+    let r = Resistance::symbol(&ctx, "R");
 
     // V = IR — Current × Resistance → Voltage (compile-time checked!)
     let v = symplex::dim!(ctx, Voltage: i * r);
@@ -127,13 +127,13 @@ fn main() {
     println!("\n── DC Motor Steady-State ──");
 
     // Named typed variables for the motor equation
-    let r_motor = Resistance::symbol("R_m");
-    let i_motor = Current::symbol("I_m");
-    let omega = AngularVelocity::symbol("ω");
+    let r_motor = Resistance::symbol(&ctx, "R_m");
+    let i_motor = Current::symbol(&ctx, "I_m");
+    let omega = AngularVelocity::symbol(&ctx, "ω");
 
     // Back-EMF constant Ke has units of Wb (V·s/rad ≡ magnetic flux)
     // MagneticFlux × AngularVelocity → Voltage (via dim! macro)
-    let ke = MagneticFlux::symbol("Ke");
+    let ke = MagneticFlux::symbol(&ctx, "Ke");
 
     // Resistive voltage drop: Resistance × Current → Voltage
     let v_resistive = symplex::dim!(ctx, Voltage: r_motor * i_motor);
@@ -233,13 +233,13 @@ fn main() {
     println!("\n── Physical Constants in Circuits ──");
     {
         use symplex::units::constants;
-        let e_charge = constants::elementary_charge();
+        let e_charge = constants::elementary_charge(&ctx);
         println!("  Elementary charge: e = {}", e_charge);
         println!("  e = {:.10e} C", e_charge.eval_f64().unwrap());
 
         // Energy of an electron accelerated through 1V:
         // E = eV = 1 eV = 1.602e-19 J
-        let one_volt = Voltage::constant(1);
+        let one_volt = Voltage::constant(&ctx, 1);
         // charge × voltage = energy (Charge × Voltage = Energy via dim!)
         let energy = symplex::dim!(ctx, Energy: e_charge * one_volt);
         println!("  Energy of 1 eV = {} = {:.6e} J", energy, energy.eval_f64().unwrap());

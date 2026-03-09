@@ -14,8 +14,8 @@ use symplex::prelude::*;
 #[test]
 fn dim_mass_times_acceleration_is_force() {
     let ctx = Context::new();
-    let m = Mass::symbol("m");
-    let a = Acceleration::symbol("a");
+    let m = Mass::symbol(&ctx, "m");
+    let a = Acceleration::symbol(&ctx, "a");
     let f: Force = symplex::dim!(ctx, Force: m * a);
     assert_eq!(format!("{}", f.inner()), "a*m");
 }
@@ -23,8 +23,8 @@ fn dim_mass_times_acceleration_is_force() {
 #[test]
 fn dim_force_times_length_is_energy() {
     let ctx = Context::new();
-    let f = Force::symbol("F");
-    let d = Length::symbol("d");
+    let f = Force::symbol(&ctx, "F");
+    let d = Length::symbol(&ctx, "d");
     let e: Energy = symplex::dim!(ctx, Energy: f * d);
     assert_eq!(format!("{}", e.inner()), "F*d");
 }
@@ -32,9 +32,9 @@ fn dim_force_times_length_is_energy() {
 #[test]
 fn dim_mass_times_gravity_times_height() {
     let ctx = Context::new();
-    let m = Mass::symbol("m");
-    let g = Acceleration::symbol("g");
-    let h = Length::symbol("h");
+    let m = Mass::symbol(&ctx, "m");
+    let g = Acceleration::symbol(&ctx, "g");
+    let h = Length::symbol(&ctx, "h");
     let pe: Energy = symplex::dim!(ctx, Energy: m * g * h);
     // Canonical ordering is alphabetical
     let inner = format!("{}", pe.inner());
@@ -50,8 +50,8 @@ fn dim_mass_times_gravity_times_height() {
 #[test]
 fn dim_length_div_time_is_velocity() {
     let ctx = Context::new();
-    let l = Length::symbol("L");
-    let t = Time::symbol("t");
+    let l = Length::symbol(&ctx, "L");
+    let t = Time::symbol(&ctx, "t");
     let v: Velocity = symplex::dim!(ctx, Velocity: l / t);
     assert_eq!(format!("{}", v.inner()), "L*1/t");
 }
@@ -59,8 +59,8 @@ fn dim_length_div_time_is_velocity() {
 #[test]
 fn dim_energy_div_time_is_power() {
     let ctx = Context::new();
-    let e = Energy::symbol("E_val");
-    let t = Time::symbol("t");
+    let e = Energy::symbol(&ctx, "E_val");
+    let t = Time::symbol(&ctx, "t");
     let p: Power = symplex::dim!(ctx, Power: e / t);
     assert_eq!(format!("{}", p.inner()), "E_val*1/t");
 }
@@ -68,8 +68,8 @@ fn dim_energy_div_time_is_power() {
 #[test]
 fn dim_force_div_area_is_pressure() {
     let ctx = Context::new();
-    let f = Force::symbol("F");
-    let a = Area::symbol("A");
+    let f = Force::symbol(&ctx, "F");
+    let a = Area::symbol(&ctx, "A");
     let p: Pressure = symplex::dim!(ctx, Pressure: f / a);
     assert_eq!(format!("{}", p.inner()), "F*1/A");
 }
@@ -81,8 +81,8 @@ fn dim_force_div_area_is_pressure() {
 #[test]
 fn dim_add_same_type() {
     let ctx = Context::new();
-    let f1 = Force::symbol("F1");
-    let f2 = Force::symbol("F2");
+    let f1 = Force::symbol(&ctx, "F1");
+    let f2 = Force::symbol(&ctx, "F2");
     let total: Force = symplex::dim!(ctx, Force: f1 + f2);
     assert_eq!(format!("{}", total.inner()), "F1 + F2");
 }
@@ -90,8 +90,8 @@ fn dim_add_same_type() {
 #[test]
 fn dim_sub_same_type() {
     let ctx = Context::new();
-    let e1 = Energy::symbol("KE");
-    let e2 = Energy::symbol("PE");
+    let e1 = Energy::symbol(&ctx, "KE");
+    let e2 = Energy::symbol(&ctx, "PE");
     let diff: Energy = symplex::dim!(ctx, Energy: e1 - e2);
     assert_eq!(format!("{}", diff.inner()), "KE - PE");
 }
@@ -103,7 +103,7 @@ fn dim_sub_same_type() {
 #[test]
 fn dim_negation() {
     let ctx = Context::new();
-    let f = Force::symbol("F");
+    let f = Force::symbol(&ctx, "F");
     let neg_f: Force = symplex::dim!(ctx, Force: -f);
     assert_eq!(format!("{}", neg_f.inner()), "-F");
 }
@@ -115,7 +115,7 @@ fn dim_negation() {
 #[test]
 fn dim_scalar_multiply_by_integer() {
     let ctx = Context::new();
-    let f = Force::symbol("F");
+    let f = Force::symbol(&ctx, "F");
     let doubled: Force = symplex::dim!(ctx, Force: 2 * f);
     assert_eq!(format!("{}", doubled.inner()), "2*F");
 }
@@ -123,7 +123,7 @@ fn dim_scalar_multiply_by_integer() {
 #[test]
 fn dim_rational_constant() {
     let ctx = Context::new();
-    let v = Velocity::symbol("v");
+    let v = Velocity::symbol(&ctx, "v");
     let half_v: Velocity = symplex::dim!(ctx, Velocity: 1/2 * v);
     assert_eq!(format!("{}", half_v.inner()), "1/2*v");
 }
@@ -142,7 +142,7 @@ fn dim_integer_is_dimensionless() {
 #[test]
 fn dim_length_squared_is_area() {
     let ctx = Context::new();
-    let l = Length::symbol("r");
+    let l = Length::symbol(&ctx, "r");
     let a: Area = symplex::dim!(ctx, Area: l^2);
     assert_eq!(format!("{}", a.inner()), "r^2");
 }
@@ -150,7 +150,7 @@ fn dim_length_squared_is_area() {
 #[test]
 fn dim_length_cubed_is_volume() {
     let ctx = Context::new();
-    let l = Length::symbol("r");
+    let l = Length::symbol(&ctx, "r");
     let vol: Volume = symplex::dim!(ctx, Volume: l^3);
     assert_eq!(format!("{}", vol.inner()), "r^3");
 }
@@ -158,7 +158,7 @@ fn dim_length_cubed_is_volume() {
 #[test]
 fn dim_power_zero_is_dimensionless() {
     let ctx = Context::new();
-    let _m = Mass::symbol("m");
+    let _m = Mass::symbol(&ctx, "m");
     let one: Dimensionless = symplex::dim!(ctx, Dimensionless: _m^0);
     assert_eq!(format!("{}", one.inner()), "1");
 }
@@ -166,7 +166,7 @@ fn dim_power_zero_is_dimensionless() {
 #[test]
 fn dim_power_one_identity() {
     let ctx = Context::new();
-    let l = Length::symbol("x");
+    let l = Length::symbol(&ctx, "x");
     let same: Length = symplex::dim!(ctx, Length: l^1);
     assert_eq!(format!("{}", same.inner()), "x");
 }
@@ -179,8 +179,8 @@ fn dim_power_one_identity() {
 fn dim_kinetic_energy() {
     let ctx = Context::new();
     // KE = (1/2) * m * v^2
-    let m = Mass::symbol("m");
-    let v = Velocity::symbol("v");
+    let m = Mass::symbol(&ctx, "m");
+    let v = Velocity::symbol(&ctx, "v");
     let ke: Energy = symplex::dim!(ctx, Energy: 1/2 * m * v^2);
     let inner = format!("{}", ke.inner());
     assert!(inner.contains("m"));
@@ -191,8 +191,8 @@ fn dim_kinetic_energy() {
 fn dim_spring_potential_energy() {
     let ctx = Context::new();
     // PE = (1/2) * k * x^2
-    let k = Stiffness::symbol("k");
-    let x = Length::symbol("x");
+    let k = Stiffness::symbol(&ctx, "k");
+    let x = Length::symbol(&ctx, "x");
     let pe: Energy = symplex::dim!(ctx, Energy: 1/2 * k * x^2);
     let inner = format!("{}", pe.inner());
     assert!(inner.contains("k"));
@@ -202,8 +202,8 @@ fn dim_spring_potential_energy() {
 #[test]
 fn dim_momentum_equals_mass_times_velocity() {
     let ctx = Context::new();
-    let m = Mass::symbol("m");
-    let v = Velocity::symbol("v");
+    let m = Mass::symbol(&ctx, "m");
+    let v = Velocity::symbol(&ctx, "v");
     let p: Momentum = symplex::dim!(ctx, Momentum: m * v);
     let inner = format!("{}", p.inner());
     assert!(inner.contains("m"));
@@ -214,8 +214,8 @@ fn dim_momentum_equals_mass_times_velocity() {
 fn dim_ohms_law() {
     let ctx = Context::new();
     // V = I * R
-    let i = Current::symbol("I_val");
-    let r = Resistance::symbol("R");
+    let i = Current::symbol(&ctx, "I_val");
+    let r = Resistance::symbol(&ctx, "R");
     let v: Voltage = symplex::dim!(ctx, Voltage: i * r);
     let inner = format!("{}", v.inner());
     assert!(inner.contains("I_val"));
@@ -226,8 +226,8 @@ fn dim_ohms_law() {
 fn dim_power_electrical() {
     let ctx = Context::new();
     // P = V * I
-    let v = Voltage::symbol("V_val");
-    let i = Current::symbol("I_val");
+    let v = Voltage::symbol(&ctx, "V_val");
+    let i = Current::symbol(&ctx, "I_val");
     let p: Power = symplex::dim!(ctx, Power: v * i);
     let inner = format!("{}", p.inner());
     assert!(inner.contains("V_val"));
@@ -247,8 +247,8 @@ fn dim_pi_is_dimensionless() {
 
 #[test]
 fn dim_pi_times_length_squared_is_area() {
-    let ctx = symplex::units::si::units_ctx().clone();
-    let r = Length::symbol("r");
+    let ctx = Context::new();
+    let r = Length::symbol(&ctx, "r");
     let circle_area: Area = symplex::dim!(ctx, Area: pi * r^2);
     let inner = format!("{}", circle_area.inner());
     assert!(inner.contains("pi"));
@@ -269,7 +269,7 @@ fn dim_euler_number_is_dimensionless() {
 #[test]
 fn dim_sin_returns_dimensionless() {
     let ctx = Context::new();
-    let theta = Dimensionless::symbol("theta");
+    let theta = Dimensionless::symbol(&ctx, "theta");
     let s: Dimensionless = symplex::dim!(ctx, Dimensionless: sin(theta));
     assert_eq!(format!("{}", s.inner()), "sin(theta)");
 }
@@ -277,7 +277,7 @@ fn dim_sin_returns_dimensionless() {
 #[test]
 fn dim_cos_returns_dimensionless() {
     let ctx = Context::new();
-    let theta = Dimensionless::symbol("theta");
+    let theta = Dimensionless::symbol(&ctx, "theta");
     let c: Dimensionless = symplex::dim!(ctx, Dimensionless: cos(theta));
     assert_eq!(format!("{}", c.inner()), "cos(theta)");
 }
@@ -285,7 +285,7 @@ fn dim_cos_returns_dimensionless() {
 #[test]
 fn dim_exp_returns_dimensionless() {
     let ctx = Context::new();
-    let x = Dimensionless::symbol("x");
+    let x = Dimensionless::symbol(&ctx, "x");
     let e: Dimensionless = symplex::dim!(ctx, Dimensionless: exp(x));
     assert_eq!(format!("{}", e.inner()), "exp(x)");
 }
@@ -293,7 +293,7 @@ fn dim_exp_returns_dimensionless() {
 #[test]
 fn dim_ln_returns_dimensionless() {
     let ctx = Context::new();
-    let x = Dimensionless::symbol("x");
+    let x = Dimensionless::symbol(&ctx, "x");
     let l: Dimensionless = symplex::dim!(ctx, Dimensionless: ln(x));
     assert_eq!(format!("{}", l.inner()), "ln(x)");
 }
@@ -303,9 +303,9 @@ fn dim_function_result_scaled_by_quantity() {
     let ctx = Context::new();
     // F = m * g * sin(theta)
     // sin(theta) is dimensionless, so m * g * sin(theta) = Force
-    let m = Mass::symbol("m");
-    let g = Acceleration::symbol("g");
-    let theta = Dimensionless::symbol("theta");
+    let m = Mass::symbol(&ctx, "m");
+    let g = Acceleration::symbol(&ctx, "g");
+    let theta = Dimensionless::symbol(&ctx, "theta");
     let f: Force = symplex::dim!(ctx, Force: m * g * sin(theta));
     let inner = format!("{}", f.inner());
     assert!(inner.contains("m"));
@@ -320,16 +320,16 @@ fn dim_function_result_scaled_by_quantity() {
 #[test]
 fn dim_uses_variables_by_cloning() {
     let ctx = Context::new();
-    let m = Mass::symbol("m");
-    let g = Acceleration::symbol("g");
-    let h = Length::symbol("h");
+    let m = Mass::symbol(&ctx, "m");
+    let g = Acceleration::symbol(&ctx, "g");
+    let h = Length::symbol(&ctx, "h");
     // After dim!, the original variables should still be usable
     let _e: Energy = symplex::dim!(ctx, Energy: m * g * h);
     // Variables were consumed by clone inside the macro, but we can
     // verify the original bindings are still valid by reconstructing:
-    let m2 = Mass::symbol("m");
-    let g2 = Acceleration::symbol("g");
-    let h2 = Length::symbol("h");
+    let m2 = Mass::symbol(&ctx, "m");
+    let g2 = Acceleration::symbol(&ctx, "g");
+    let h2 = Length::symbol(&ctx, "h");
     let _e2: Energy = symplex::dim!(ctx, Energy: m2 * g2 * h2);
 }
 
@@ -341,9 +341,9 @@ fn dim_uses_variables_by_cloning() {
 fn dim_gravitational_potential_energy() {
     let ctx = Context::new();
     // U = m * g * h
-    let m = Mass::symbol("m");
-    let g = Acceleration::symbol("g");
-    let h = Length::symbol("h");
+    let m = Mass::symbol(&ctx, "m");
+    let g = Acceleration::symbol(&ctx, "g");
+    let h = Length::symbol(&ctx, "h");
     let u: Energy = symplex::dim!(ctx, Energy: m * g * h);
     let inner = format!("{}", u.inner());
     assert!(inner.contains("m"));
@@ -355,10 +355,10 @@ fn dim_gravitational_potential_energy() {
 fn dim_damped_force() {
     let ctx = Context::new();
     // F = -b * v - k * x
-    let b = Damping::symbol("b");
-    let v = Velocity::symbol("v");
-    let k = Stiffness::symbol("k");
-    let x = Length::symbol("x");
+    let b = Damping::symbol(&ctx, "b");
+    let v = Velocity::symbol(&ctx, "v");
+    let k = Stiffness::symbol(&ctx, "k");
+    let x = Length::symbol(&ctx, "x");
     let f: Force = symplex::dim!(ctx, Force: -b * v - k * x);
     let inner = format!("{}", f.inner());
     assert!(inner.contains("b"));
@@ -371,8 +371,8 @@ fn dim_damped_force() {
 fn dim_moment_of_inertia_rod() {
     let ctx = Context::new();
     // I = (1/12) * m * L^2
-    let m = Mass::symbol("m");
-    let big_l = Length::symbol("L");
+    let m = Mass::symbol(&ctx, "m");
+    let big_l = Length::symbol(&ctx, "L");
     let moi: MomentOfInertia = symplex::dim!(ctx, MomentOfInertia: 1/12 * m * big_l^2);
     let inner = format!("{}", moi.inner());
     assert!(inner.contains("m"));
@@ -382,8 +382,8 @@ fn dim_moment_of_inertia_rod() {
 #[test]
 fn dim_charge_is_current_times_time() {
     let ctx = Context::new();
-    let i = Current::symbol("I_val");
-    let t = Time::symbol("t");
+    let i = Current::symbol(&ctx, "I_val");
+    let t = Time::symbol(&ctx, "t");
     let q: Charge = symplex::dim!(ctx, Charge: i * t);
     let inner = format!("{}", q.inner());
     assert!(inner.contains("I_val"));
@@ -394,9 +394,9 @@ fn dim_charge_is_current_times_time() {
 fn dim_voltage_from_inductance_and_current_rate() {
     let ctx = Context::new();
     // V = L * dI/dt  (dimensionally: Inductance * Current / Time)
-    let l = Inductance::symbol("L_ind");
-    let di = Current::symbol("dI");
-    let dt = Time::symbol("dt");
+    let l = Inductance::symbol(&ctx, "L_ind");
+    let di = Current::symbol(&ctx, "dI");
+    let dt = Time::symbol(&ctx, "dt");
     let v: Voltage = symplex::dim!(ctx, Voltage: l * di / dt);
     let inner = format!("{}", v.inner());
     assert!(inner.contains("L_ind"));
@@ -411,9 +411,9 @@ fn dim_voltage_from_inductance_and_current_rate() {
 #[test]
 fn dim_parenthesised_addition_then_multiply() {
     let ctx = Context::new();
-    let m = Mass::symbol("m");
-    let a1 = Acceleration::symbol("a1");
-    let a2 = Acceleration::symbol("a2");
+    let m = Mass::symbol(&ctx, "m");
+    let a1 = Acceleration::symbol(&ctx, "a1");
+    let a2 = Acceleration::symbol(&ctx, "a2");
     let f: Force = symplex::dim!(ctx, Force: m * (a1 + a2));
     let inner = format!("{}", f.inner());
     assert!(inner.contains("m"));

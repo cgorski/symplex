@@ -11,7 +11,7 @@ use symplex::prelude::*;
 use symplex::units::*;
 
 fn main() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     println!("═══════════════════════════════════════════════════════════════");
     println!("   Symplex: expr! + Units + Calculus — Full Workflow Demo");
     println!("═══════════════════════════════════════════════════════════════\n");
@@ -95,15 +95,15 @@ fn pattern_2_named_arithmetic() {
     let ctx = Context::new();
     println!("── Pattern 2: Named Type Arithmetic ──");
 
-    let mass = Mass::symbol("m");
-    let accel = Acceleration::symbol("a");
+    let mass = Mass::symbol(&ctx, "m");
+    let accel = Acceleration::symbol(&ctx, "a");
 
     // Mass × Acceleration → Force (compile-time checked!)
     let force = symplex::dim!(ctx, Force: mass * accel);
     println!("  F = m·a = {}", force);
 
     // Force + Force → Force (same-type addition)
-    let gravity = Force::symbol("F_g");
+    let gravity = Force::symbol(&ctx, "F_g");
     let total: Force = &force + &gravity;
     println!("  F_total = F + F_g = {}", total);
 
@@ -137,7 +137,7 @@ fn pattern_3_typed_calculus_diff_wrt() {
     symplex::syms!(ctx; a, t);
 
     // Create typed variables
-    let t_var = Time::symbol("t");
+    let t_var = Time::symbol(&ctx, "t");
 
     // Build a position expression: x(t) = ½at²
     let position = Length::from_ex(expr!(ctx, 1/2 * a * t^2));
@@ -203,8 +203,8 @@ fn pattern_5_electrical_power() {
     println!("── Pattern 5: Electrical — V=IR, P=IV, dP/dI ──");
 
     // Named typed variables
-    let i_cur = Current::symbol("I");
-    let r = Resistance::symbol("R");
+    let i_cur = Current::symbol(&ctx, "I");
+    let r = Resistance::symbol(&ctx, "R");
 
     // V = IR (dim! macro: Current × Resistance → Voltage)
     let v = symplex::dim!(ctx, Voltage: i_cur * r);
@@ -244,8 +244,8 @@ fn pattern_6_pendulum_lagrangian() {
     symplex::syms!(ctx; m, l, g, theta, theta_dot);
 
     // Typed variables for DiffWrt
-    let theta_var = Angle::symbol("theta");
-    let theta_dot_var = AngularVelocity::symbol("theta_dot");
+    let theta_var = Angle::symbol(&ctx, "theta");
+    let theta_dot_var = AngularVelocity::symbol(&ctx, "theta_dot");
 
     // ── Build energies with expr! ──
     let ke = Energy::from_ex(expr!(ctx, 1/2 * m * l^2 * theta_dot^2));
@@ -293,22 +293,22 @@ fn pattern_7_spring_mass_damper() {
     println!("── Pattern 7: Spring-Mass-Damper ──");
 
     // Use named types for the force equation
-    let k = Stiffness::symbol("k");
-    let x = Length::symbol("x");
-    let c = Damping::symbol("c");
-    let v = Velocity::symbol("v");
+    let k = Stiffness::symbol(&ctx, "k");
+    let x = Length::symbol(&ctx, "x");
+    let c = Damping::symbol(&ctx, "c");
+    let v = Velocity::symbol(&ctx, "v");
 
     // dim! macro: Stiffness × Length → Force, Damping × Velocity → Force
     let f_spring = symplex::dim!(ctx, Force: -(k * x));
     let f_damper = symplex::dim!(ctx, Force: -(c * v));
-    let f_ext = Force::symbol("F_ext");
+    let f_ext = Force::symbol(&ctx, "F_ext");
 
     // Force + Force + Force → Force (same-type addition)
     let f_total: Force = &(&f_spring + &f_damper) + &f_ext;
     println!("  F = -kx - cv + F_ext = {}", f_total);
 
     // Newton's law: a = F/m
-    let mass = Mass::symbol("m");
+    let mass = Mass::symbol(&ctx, "m");
     let accel = symplex::dim!(ctx, Acceleration: f_total / mass);
     println!("  a = F/m = {}", accel);
 
@@ -406,8 +406,8 @@ fn pattern_9_compile_time_assertions() {
     println!("  ✓ v = dx/dt  (verified at compile time)");
 
     // Runtime dim! checkpoint
-    let m = Mass::symbol("m");
-    let a = Acceleration::symbol("a");
+    let m = Mass::symbol(&ctx, "m");
+    let a = Acceleration::symbol(&ctx, "a");
     let f = symplex::dim!(ctx, Force: m * a);
     println!("  ✓ dim!(ctx, Force: m*a) = {}", f);
 
@@ -421,8 +421,8 @@ fn pattern_10_physical_constants() {
 
     let ctx = Context::new();
 
-    let c = constants::speed_of_light();
-    let m = Mass::symbol("m");
+    let c = constants::speed_of_light(&ctx);
+    let m = Mass::symbol(&ctx, "m");
     let energy = symplex::dim!(ctx, Energy: m * c * c);
 
     // Symbolic display

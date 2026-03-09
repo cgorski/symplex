@@ -299,7 +299,6 @@ fn main() {
 
     println!("\n\n--- Laplace Transform ---\n");
 
-    let ctx = Context::new();
     symplex::syms!(ctx; t);
 
     // Derive transfer function from impulse response

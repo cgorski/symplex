@@ -53,8 +53,8 @@ fn main() {
     {
         use symplex::units::*;
 
-        let m = Mass::symbol("m");
-        let a = Acceleration::symbol("a");
+        let m = Mass::symbol(&ctx, "m");
+        let a = Acceleration::symbol(&ctx, "a");
 
         // Mass × Acceleration → Force (compile-time verified!)
         let f = symplex::dim!(ctx, Force: m * a);
@@ -65,7 +65,6 @@ fn main() {
         // let bad = &m + &a;  // ERROR: expected Mass, found Acceleration
 
         // Build complex formulas with expr!, wrap with from_ex
-        let ctx = Context::new();
         symplex::syms!(ctx; k, x_var);
         let pe = Energy::from_ex(expr!(ctx, 1/2 * k * x_var^2));
         println!("PE = ½kx² = {}", pe);
@@ -111,8 +110,8 @@ fn main() {
         use symplex::units::*;
         use symplex::units::constants;
 
-        let c = constants::speed_of_light();  // returns Velocity
-        let m = Mass::symbol("m");
+        let c = constants::speed_of_light(&ctx);  // returns Velocity
+        let m = Mass::symbol(&ctx, "m");
         let energy = symplex::dim!(ctx, Energy: m * c * c);  // E = mc²
 
         // Displays symbolically, not as a huge number:
@@ -152,9 +151,8 @@ fn main() {
     // DiffWrt: the compiler verifies that d(Length)/d(Time) = Velocity.
     {
         use symplex::units::*;
-        let ctx = Context::new();
         symplex::syms!(ctx; a, t);
-        let t_var = Time::symbol("t");
+        let t_var = Time::symbol(&ctx, "t");
 
         let position = Length::from_ex(expr!(ctx, 1/2 * a * t^2));
         let velocity: Velocity = position.diff_wrt(&t_var);

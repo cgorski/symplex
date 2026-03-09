@@ -166,7 +166,6 @@ fn main() {
     // ── 17. ODE Solving ────────────────────────────────────────────────
     println!("\n--- ODE Solving ---");
 
-    let ctx = Context::new();
     symplex::syms!(ctx; y);
 
     // Simple separable: y' = x → y = x²/2 + C1
@@ -253,7 +252,6 @@ fn main() {
     // ── 21. Laplace transforms ─────────────────────────────────────────
     println!("\n--- Laplace Transforms ---");
 
-    let ctx = Context::new();
     symplex::syms!(ctx; t, s);
 
     // L{1} = 1/s

@@ -1,15 +1,7 @@
-warning: unused import: `symplex::prelude::*`
- --> tests/ui/add_energy_torque.rs:1:5
-  |
-1 | use symplex::prelude::*;
-  |     ^^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
 error[E0277]: cannot add `&symplex::units::Torque` to `&symplex::units::Energy`
- --> tests/ui/add_energy_torque.rs:7:19
+ --> tests/ui/add_energy_torque.rs:8:19
   |
-7 |     let _bad = &e + &t;
+8 |     let _bad = &e + &t;
   |                   ^ no implementation for `&symplex::units::Energy + &symplex::units::Torque`
   |
   = help: the trait `std::ops::Add<&symplex::units::Torque>` is not implemented for `&symplex::units::Energy`

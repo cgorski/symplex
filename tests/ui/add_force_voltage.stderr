@@ -1,15 +1,7 @@
-warning: unused import: `symplex::prelude::*`
- --> tests/ui/add_force_voltage.rs:1:5
-  |
-1 | use symplex::prelude::*;
-  |     ^^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
 error[E0277]: cannot add `&symplex::units::Voltage` to `&symplex::units::Force`
- --> tests/ui/add_force_voltage.rs:7:19
+ --> tests/ui/add_force_voltage.rs:8:19
   |
-7 |     let _bad = &f + &v;
+8 |     let _bad = &f + &v;
   |                   ^ no implementation for `&symplex::units::Force + &symplex::units::Voltage`
   |
   = help: the trait `std::ops::Add<&symplex::units::Voltage>` is not implemented for `&symplex::units::Force`

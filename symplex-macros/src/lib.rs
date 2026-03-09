@@ -453,7 +453,7 @@ pub fn dim(input: TokenStream) -> TokenStream {
 fn generate_dim_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
     match expr {
         MathExpr::Int(n, _span) => Ok(quote! {
-            ::symplex::units::Dimensionless::constant(#n).as_qty()
+            ::symplex::units::Dimensionless::from_ex(#ctx.int(#n)).as_qty()
         }),
 
         MathExpr::Ident(id) => {
@@ -505,7 +505,7 @@ fn generate_dim_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> 
                         ));
                     }
                     return Ok(quote! {
-                        ::symplex::units::Dimensionless::rational(#p, #q).as_qty()
+                        ::symplex::units::Dimensionless::from_ex(#ctx.rational(#p, #q)).as_qty()
                     });
                 }
                 // -int / int → rational(-n, q)
@@ -519,7 +519,7 @@ fn generate_dim_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> 
                         }
                         let neg_p = -p;
                         return Ok(quote! {
-                            ::symplex::units::Dimensionless::rational(#neg_p, #q).as_qty()
+                            ::symplex::units::Dimensionless::from_ex(#ctx.rational(#neg_p, #q)).as_qty()
                         });
                     }
                 }
@@ -538,7 +538,7 @@ fn generate_dim_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> 
                     if let Some(n) = inner_rhs.as_int() {
                         let pow_code = generate_dim_pow(ctx, lhs, n)?;
                         return Ok(quote! {
-                            (::symplex::units::Dimensionless::constant(1).as_qty() / (#pow_code))
+                            (::symplex::units::Dimensionless::from_ex(#ctx.int(1)).as_qty() / (#pow_code))
                         });
                     }
                 }
@@ -611,7 +611,7 @@ fn generate_dim_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> 
 /// back to `.powi()` on the inner `Ex` (losing dimension tracking).
 fn generate_dim_pow(ctx: &Ident, base: &MathExpr, n: i64) -> syn::Result<TokenStream2> {
     if n == 0 {
-        return Ok(quote! { ::symplex::units::Dimensionless::constant(1).as_qty() });
+        return Ok(quote! { ::symplex::units::Dimensionless::from_ex(#ctx.int(1)).as_qty() });
     }
     if n == 1 {
         return generate_dim_expr(ctx, base);

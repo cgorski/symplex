@@ -31,8 +31,8 @@ fn main() {
 
     // Typed variables for DiffWrt — the compiler tracks dimensions
     // and verifies that differentiation produces the correct output type.
-    let theta_var = Angle::symbol("theta");
-    let theta_dot_var = AngularVelocity::symbol("theta_dot");
+    let theta_var = Angle::symbol(&ctx, "theta");
+    let theta_dot_var = AngularVelocity::symbol(&ctx, "theta_dot");
 
     // ── Build energies with expr! ──
     // Kinetic energy: T = ½ml²θ̇²
@@ -68,7 +68,7 @@ fn main() {
     println!("  → ml²θ̈ = ∂L/∂θ");
 
     // Using the physical constant for g:
-    let g_const = constants::standard_gravity();
+    let g_const = constants::standard_gravity(&ctx);
     println!("  g₀ = {} (physical constant, exact)", g_const);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -82,11 +82,11 @@ fn main() {
 
     // Named typed variables — compile-time dimension checking for
     // every multiplication, division, and addition.
-    let k = Stiffness::symbol("k");
-    let x = Length::symbol("x");
-    let c = Damping::symbol("c");
-    let v = Velocity::symbol("v");
-    let mass = Mass::symbol("m");
+    let k = Stiffness::symbol(&ctx, "k");
+    let x = Length::symbol(&ctx, "x");
+    let c = Damping::symbol(&ctx, "c");
+    let v = Velocity::symbol(&ctx, "v");
+    let mass = Mass::symbol(&ctx, "m");
 
     // Spring force: Stiffness × Length → Force (compile-time verified)
     let f_spring = symplex::dim!(ctx, Force: -(k * x));
@@ -106,14 +106,13 @@ fn main() {
 
     // ── Potential energy approach: PE = ½kx² ──
     // Use expr! for the formula, then derive force via differentiation
-    let ctx = Context::new();
     symplex::syms!(ctx; k_var, x_var);
     let spring_pe = Energy::from_ex(expr!(ctx, 1/2 * k_var * x_var^2));
     println!("\n  PE = ½kx² = {}", spring_pe);
 
     // Force from potential: F = −dPE/dx
     // Energy.diff_wrt(Length) → Force, then negate
-    let x_typed = Length::symbol("x_var");
+    let x_typed = Length::symbol(&ctx, "x_var");
     let f_from_pe: Force = spring_pe.diff_wrt(&x_typed);
     let f_from_pe_neg: Force = -f_from_pe;
     println!("  F = −dPE/dx = {}", f_from_pe_neg);
@@ -121,7 +120,6 @@ fn main() {
 
     // ── Energy conservation check ──
     // KE = ½mv² using expr!
-    let ctx = Context::new();
     symplex::syms!(ctx; m_raw, v_raw);
     let spring_ke = Energy::from_ex(expr!(ctx, 1/2 * m_raw * v_raw^2));
     println!("\n  KE = ½mv² = {}", spring_ke);
