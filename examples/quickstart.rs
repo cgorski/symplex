@@ -229,12 +229,12 @@ fn main() {
     // ── 14. Limits ─────────────────────────────────────────────────
     println!("\n--- Limits ---");
     let limit_expr = &x.sin() / &x;
-    let lim = limit_expr.limit(&x, &symplex::default_context().int(0)).unwrap();
+    let lim = limit_expr.limit(&x, &symplex::default_context().int(0));
     println!("lim(x→0) sin(x)/x = {lim}");
 
     // ── 15. Series Expansion ───────────────────────────────────────
     println!("\n--- Series Expansion ---");
-    let sin_series = x.sin().maclaurin(&x, 5).unwrap();
+    let sin_series = x.sin().maclaurin(&x, 5);
     println!("sin(x) ≈ {}", sin_series.expand().eval());
 
     // ── 16. Code Generation ────────────────────────────────────────

@@ -89,7 +89,7 @@ proptest! {
         // Build a*x^2 + b*x + c
         let poly = &x.powi(2) * a + &x * b + c;
         // Series to order 5 (well above degree 2) should be exact.
-        let s = poly.series(&x, &zero, 5).unwrap();
+        let s = poly.series(&x, &zero, 5);
         prop_assert_eq!(
             format!("{s}"), format!("{poly}"),
             "series of {}*x^2+{}*x+{} should be exact", a, b, c

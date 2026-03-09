@@ -120,7 +120,7 @@ fn main() {
     ];
 
     for (label, expr, point) in &limit_cases {
-        match expr.limit(&x, point) {
+        match expr.try_limit(&x, point) {
             Ok(lim) => {
                 println!("  ✅ lim {label} = {lim}");
                 lim_pass += 1;
@@ -153,7 +153,7 @@ fn main() {
     ];
 
     for (label, expr) in &series_cases {
-        match expr.maclaurin(&x, 6) {
+        match expr.try_maclaurin(&x, 6) {
             Ok(s) => {
                 let expanded = s.expand().eval();
                 println!("  ✅ {label} = {expanded}");

@@ -18,7 +18,7 @@ use symplex::vars;
 vars!(x);
 
 // Maclaurin: gives you a polynomial
-let poly = x.exp().maclaurin(&x, 5).unwrap();
+let poly = x.exp().maclaurin(&x, 5);
 println!("Maclaurin: {}", poly.expand().eval());
 // 1 + x + x^2/2 + x^3/6 + x^4/24
 

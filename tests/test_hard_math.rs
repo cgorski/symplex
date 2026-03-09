@@ -476,7 +476,7 @@ fn hard_limit_sin_x_over_x() {
     // lim x→0 sin(x)/x = 1
     let x = symplex::default_context().symbol("x");
     let expr = &x.sin() / &x;
-    let result = expr.limit(&x, &symplex::default_context().int(0)).expect("limit should succeed");
+    let result = expr.limit(&x, &symplex::default_context().int(0));
     assert_eq!(
         format!("{result}"),
         "1",
@@ -489,7 +489,7 @@ fn hard_limit_exp_minus_1_over_x() {
     // lim x→0 (exp(x)-1)/x = 1
     let x = symplex::default_context().symbol("x");
     let expr = &(&x.exp() - 1) / &x;
-    let result = expr.limit(&x, &symplex::default_context().int(0));
+    let result = expr.try_limit(&x, &symplex::default_context().int(0));
     match result {
         Ok(r) => {
             let s = format!("{r}");
@@ -508,7 +508,7 @@ fn hard_limit_1_plus_1_over_x_to_x() {
     let x = symplex::default_context().symbol("x");
     let base = &symplex::default_context().int(1) + &(&symplex::default_context().int(1) / &x);
     let expr = base.pow(&x);
-    let result = expr.limit(&x, &symplex::default_context().infinity());
+    let result = expr.try_limit(&x, &symplex::default_context().infinity());
     // Just verify it doesn't crash — exact result is a bonus
     match result {
         Ok(r) => {
@@ -536,7 +536,7 @@ fn hard_limit_1_minus_cos_over_x2() {
     // lim x→0 (1-cos(x))/x² = 1/2
     let x = symplex::default_context().symbol("x");
     let expr = &(&symplex::default_context().int(1) - &x.cos()) / &x.powi(2);
-    let result = expr.limit(&x, &symplex::default_context().int(0));
+    let result = expr.try_limit(&x, &symplex::default_context().int(0));
     match result {
         Ok(r) => {
             let s = format!("{r}");
@@ -556,7 +556,7 @@ fn hard_limit_x_exp_neg_x_at_infinity() {
     // lim x→∞ x·exp(-x) = 0
     let x = symplex::default_context().symbol("x");
     let expr = &x * &(-&x).exp();
-    let result = expr.limit(&x, &symplex::default_context().infinity());
+    let result = expr.try_limit(&x, &symplex::default_context().infinity());
     match result {
         Ok(r) => {
             assert_eq!(
@@ -581,7 +581,7 @@ fn hard_series_geometric() {
     // 1 + x + x² + x³ + x⁴ (coefficients all 1 — geometric series)
     let x = symplex::default_context().symbol("x");
     let f = &symplex::default_context().int(1) / &(&symplex::default_context().int(1) - &x);
-    let series = f.maclaurin(&x, 5);
+    let series = f.try_maclaurin(&x, 5);
     match series {
         Ok(s) => {
             let expanded = s.expand();
@@ -610,7 +610,7 @@ fn hard_series_geometric() {
 fn hard_series_arctan() {
     // Maclaurin of atan(x) order 6: x - x³/3 + x⁵/5
     let x = symplex::default_context().symbol("x");
-    let series = x.atan().maclaurin(&x, 6);
+    let series = x.atan().try_maclaurin(&x, 6);
     match series {
         Ok(s) => {
             let expanded = s.expand();
@@ -643,7 +643,7 @@ fn hard_series_arctan() {
 fn hard_series_exp_coefficients() {
     // Taylor of exp(x) order 7: verify coefficient of x^k is 1/k! for each k
     let x = symplex::default_context().symbol("x");
-    let series = x.exp().maclaurin(&x, 7);
+    let series = x.exp().try_maclaurin(&x, 7);
     match series {
         Ok(s) => {
             let expanded = s.expand();
@@ -671,7 +671,7 @@ fn hard_series_sin_odd_terms_only() {
     // Maclaurin of sin(x) order 6: x - x³/6 + x⁵/120
     // Should have only odd powers
     let x = symplex::default_context().symbol("x");
-    let series = x.sin().maclaurin(&x, 6);
+    let series = x.sin().try_maclaurin(&x, 6);
     match series {
         Ok(s) => {
             let expanded = s.expand();
@@ -1006,7 +1006,7 @@ fn hard_limit_polynomial_direct_sub() {
     // Factor: x³ - 27 = (x-3)(x² + 3x + 9), so limit = 9 + 9 + 9 = 27
     let x = symplex::default_context().symbol("x");
     let expr = &(&x.powi(3) - 27) / &(&x - 3);
-    let result = expr.limit(&x, &symplex::default_context().int(3));
+    let result = expr.try_limit(&x, &symplex::default_context().int(3));
     match result {
         Ok(r) => {
             let s = format!("{r}");
@@ -1032,7 +1032,7 @@ fn hard_series_cos_even_terms_only() {
     // Maclaurin of cos(x) order 6: 1 - x²/2 + x⁴/24
     // Should have only even powers
     let x = symplex::default_context().symbol("x");
-    let series = x.cos().maclaurin(&x, 6);
+    let series = x.cos().try_maclaurin(&x, 6);
     match series {
         Ok(s) => {
             let expanded = s.expand();
@@ -1116,7 +1116,7 @@ fn hard_limit_rational_same_degree() {
     let numer = &(&x.powi(2) * 2) + &(&x * 3) + 1;
     let denom = &x.powi(2) - &x + 5;
     let expr = &numer / &denom;
-    let result = expr.limit(&x, &symplex::default_context().infinity());
+    let result = expr.try_limit(&x, &symplex::default_context().infinity());
     if let Ok(r) = result {
         assert_eq!(
             format!("{r}"),

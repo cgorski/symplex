@@ -87,7 +87,7 @@ fn vars_macro_trailing_comma() {
 #[test]
 fn maclaurin_sin() {
     let x = symplex::default_context().symbol("x");
-    let s = x.sin().maclaurin(&x, 4).unwrap();
+    let s = x.sin().maclaurin(&x, 4);
     let result = s.expand().eval();
     let text = format!("{result}");
     assert!(text.contains("x"), "should have x term: {text}");
@@ -97,7 +97,7 @@ fn maclaurin_sin() {
 #[test]
 fn maclaurin_exp() {
     let x = symplex::default_context().symbol("x");
-    let s = x.exp().maclaurin(&x, 3).unwrap();
+    let s = x.exp().maclaurin(&x, 3);
     let result = s.expand().eval();
     let text = format!("{result}");
     assert!(text.contains("1"), "should have constant term: {text}");
@@ -109,7 +109,7 @@ fn maclaurin_exp() {
 fn maclaurin_polynomial_is_exact() {
     let x = symplex::default_context().symbol("x");
     let poly = &x.powi(2) + &x * 3 + 7;
-    let s = poly.maclaurin(&x, 5).unwrap();
+    let s = poly.maclaurin(&x, 5);
     assert_eq!(format!("{s}"), format!("{poly}"));
 }
 

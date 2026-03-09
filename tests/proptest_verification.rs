@@ -130,20 +130,16 @@ proptest! {
         let x = symplex::default_context().symbol("x");
         let series = x.sin().maclaurin(&x, order);
         let mut bail = common::BailCounter::new("sin_series_numerical");
-        if let Ok(s) = series {
-            let expanded = s.expand();
-            // Evaluate at x=0.5
-            let at_half = expanded.subs_i64(&x, 1); // use x=1 for integer sub
-            if let Ok(val) = at_half.eval_f64() {
-                bail.check();
-                let exact = 1.0f64.sin();
-                // Higher order should be more accurate
-                let tol = 1.0 / (order as f64);
-                prop_assert!((val - exact).abs() < tol,
-                    "sin series order {order} at x=1: got {val}, expected {exact}");
-            } else {
-                bail.skip();
-            }
+        let expanded = series.expand();
+        // Evaluate at x=0.5
+        let at_half = expanded.subs_i64(&x, 1); // use x=1 for integer sub
+        if let Ok(val) = at_half.eval_f64() {
+            bail.check();
+            let exact = 1.0f64.sin();
+            // Higher order should be more accurate
+            let tol = 1.0 / (order as f64);
+            prop_assert!((val - exact).abs() < tol,
+                "sin series order {order} at x=1: got {val}, expected {exact}");
         } else {
             bail.skip();
         }
@@ -156,18 +152,14 @@ proptest! {
         let x = symplex::default_context().symbol("x");
         let series = x.exp().maclaurin(&x, order);
         let mut bail = common::BailCounter::new("exp_series_numerical");
-        if let Ok(s) = series {
-            let expanded = s.expand();
-            let at_one = expanded.subs_i64(&x, 1);
-            if let Ok(val) = at_one.eval_f64() {
-                bail.check();
-                let exact = 1.0f64.exp();
-                let tol = 3.0 / (order as f64).powi(2);
-                prop_assert!((val - exact).abs() < tol,
-                    "exp series order {order} at x=1: got {val}, expected {exact}");
-            } else {
-                bail.skip();
-            }
+        let expanded = series.expand();
+        let at_one = expanded.subs_i64(&x, 1);
+        if let Ok(val) = at_one.eval_f64() {
+            bail.check();
+            let exact = 1.0f64.exp();
+            let tol = 3.0 / (order as f64).powi(2);
+            prop_assert!((val - exact).abs() < tol,
+                "exp series order {order} at x=1: got {val}, expected {exact}");
         } else {
             bail.skip();
         }

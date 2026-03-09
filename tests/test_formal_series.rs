@@ -238,7 +238,7 @@ fn fps_exp_truncate_5_terms() {
     });
 
     // Also compute via maclaurin for comparison
-    let mac = exp_x.maclaurin(&x, 5).unwrap().expand().eval();
+    let mac = exp_x.maclaurin(&x, 5).expand().eval();
 
     let mac_s = format!("{mac}");
     assert!(mac_s.contains("x"), "maclaurin should have x: {mac_s}");

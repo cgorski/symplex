@@ -846,10 +846,11 @@ fn process_series(ctx: &Context, fixture: &Fixture) -> Status {
     let point_str = fixture.point.as_deref().unwrap_or("0");
 
     let result = if point_str == "0" {
-        match expr.maclaurin(&var, order) {
-            Ok(s) => s,
-            Err(e) => return Status::NotImplemented(format!("maclaurin failed: {}", e)),
+        let s = expr.maclaurin(&var, order);
+        if s.has_unevaluated() {
+            return Status::NotImplemented("maclaurin returned unevaluated form".into());
         }
+        s
     } else {
         let point = match parse_point(ctx, point_str) {
             Some(p) => p,
@@ -857,10 +858,11 @@ fn process_series(ctx: &Context, fixture: &Fixture) -> Status {
                 return Status::NotImplemented(format!("can't parse series point: {}", point_str));
             }
         };
-        match expr.series(&var, &point, order) {
-            Ok(s) => s,
-            Err(e) => return Status::NotImplemented(format!("series failed: {}", e)),
+        let s = expr.series(&var, &point, order);
+        if s.has_unevaluated() {
+            return Status::NotImplemented("series returned unevaluated form".into());
         }
+        s
     };
 
     check_eval_points_fixture_strict(&result, ctx, fixture)
@@ -900,33 +902,32 @@ fn process_limit(ctx: &Context, fixture: &Fixture) -> Status {
         None => return Status::NotImplemented("no expected value for limit".into()),
     };
 
-    match expr.limit(&var, &point) {
-        Ok(limit_result) => {
-            let limit_result = limit_result.eval();
-            match limit_result.eval_f64() {
-                Ok(val) => {
-                    if val.is_nan() {
-                        Status::NotImplemented(format!(
-                            "limit result evaluated to NaN (input: {}, point: {})",
-                            input_str, point_str
-                        ))
-                    } else if approx_eq(val, expected.re) {
-                        Status::Pass
-                    } else {
-                        Status::Fail(format!(
-                            "lim({}, {}->{}): symplex={}, sympy={}",
-                            input_str, var_name, point_str, val, expected.re
-                        ))
-                    }
-                }
-                Err(e) => Status::NotImplemented(format!(
-                    "limit result couldn't be evaluated: {} (input: {}, point: {})",
-                    e, input_str, point_str
-                )),
+    let limit_result = expr.limit(&var, &point);
+    if limit_result.has_unevaluated() {
+        return Status::NotImplemented(format!(
+            "limit returned unevaluated form (input: {}, point: {})",
+            input_str, point_str
+        ));
+    }
+    let limit_result = limit_result.eval();
+    match limit_result.eval_f64() {
+        Ok(val) => {
+            if val.is_nan() {
+                Status::NotImplemented(format!(
+                    "limit result evaluated to NaN (input: {}, point: {})",
+                    input_str, point_str
+                ))
+            } else if approx_eq(val, expected.re) {
+                Status::Pass
+            } else {
+                Status::Fail(format!(
+                    "lim({}, {}->{}): symplex={}, sympy={}",
+                    input_str, var_name, point_str, val, expected.re
+                ))
             }
         }
         Err(e) => Status::NotImplemented(format!(
-            "limit engine returned error: {} (input: {}, point: {})",
+            "limit result couldn't be evaluated: {} (input: {}, point: {})",
             e, input_str, point_str
         )),
     }

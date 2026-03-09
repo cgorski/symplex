@@ -251,7 +251,7 @@ fn log_expand_preserves_value() {
 #[test]
 fn maclaurin_sin_approximates_at_small_x() {
     let x = symplex::default_context().symbol("x");
-    let series = x.sin().maclaurin(&x, 5).unwrap().expand();
+    let series = x.sin().maclaurin(&x, 5).expand();
     // At x=0.1, sin(0.1) ≈ 0.0998334...
     // The series x - x³/6 + x⁵/120 should be close
     // We can't easily substitute 0.1 so use x=1 where sin(1) ≈ 0.841
@@ -268,7 +268,7 @@ fn maclaurin_sin_approximates_at_small_x() {
 #[test]
 fn maclaurin_exp_approximates_at_small_x() {
     let x = symplex::default_context().symbol("x");
-    let series = x.exp().maclaurin(&x, 6).unwrap().expand();
+    let series = x.exp().maclaurin(&x, 6).expand();
     let approx = series.subs_i64(&x, 1).eval_f64()
         .expect("Maclaurin exp evaluation should succeed");
     let exact = 1.0f64.exp();

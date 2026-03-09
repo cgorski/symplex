@@ -380,15 +380,11 @@ fn gruntz_limits_are_reproducible() {
     let r2 = expr.limit(&x, &oo);
 
     // Both should give the same result
-    match (&r1, &r2) {
-        (Ok(a), Ok(b)) => assert_eq!(
-            format!("{a}"),
-            format!("{b}"),
-            "same limit computed twice should be reproducible"
-        ),
-        (Err(_), Err(_)) => {} // both failing is also consistent
-        _ => panic!("limits should be consistently Ok or Err, got: r1={r1:?}, r2={r2:?}"),
-    }
+    assert_eq!(
+        format!("{r1}"),
+        format!("{r2}"),
+        "same limit computed twice should be reproducible"
+    );
 }
 
 #[test]
@@ -404,15 +400,11 @@ fn gruntz_limit_reproducible_rational_function() {
     let r1 = expr.limit(&x, &oo);
     let r2 = expr.limit(&x, &oo);
 
-    match (&r1, &r2) {
-        (Ok(a), Ok(b)) => assert_eq!(
-            format!("{a}"),
-            format!("{b}"),
-            "rational function limit should be reproducible"
-        ),
-        (Err(_), Err(_)) => {}
-        _ => panic!("limits should be consistently Ok or Err, got: r1={r1:?}, r2={r2:?}"),
-    }
+    assert_eq!(
+        format!("{r1}"),
+        format!("{r2}"),
+        "rational function limit should be reproducible"
+    );
 }
 
 #[test]
@@ -429,10 +421,8 @@ fn sequential_limits_dont_interfere() {
     let r2 = expr2.limit(&x, &oo);
 
     // Each should give the correct result independently
-    let v1 = r1.expect("limit should succeed");
-    assert_eq!(format!("{v1}"), "0", "exp(-x) as x→∞ should be 0");
-    let v2 = r2.expect("limit should succeed");
-    assert_eq!(format!("{v2}"), "0", "1/x as x→∞ should be 0");
+    assert_eq!(format!("{r1}"), "0", "exp(-x) as x→∞ should be 0");
+    assert_eq!(format!("{r2}"), "0", "1/x as x→∞ should be 0");
 }
 
 #[test]
@@ -451,12 +441,9 @@ fn sequential_different_limits_no_cross_contamination() {
     let expr3 = &x / &(&x + 1);
     let r3 = expr3.limit(&x, &oo);
 
-    let v1 = r1.expect("limit should succeed");
-    assert_eq!(format!("{v1}"), "0", "5/x as x→∞ should be 0");
-    let v2 = r2.expect("limit should succeed");
-    assert_eq!(format!("{v2}"), "5", "constant 5 as x→∞ should be 5");
-    let v3 = r3.expect("limit should succeed");
-    assert_eq!(format!("{v3}"), "1", "x/(x+1) as x→∞ should be 1");
+    assert_eq!(format!("{r1}"), "0", "5/x as x→∞ should be 0");
+    assert_eq!(format!("{r2}"), "5", "constant 5 as x→∞ should be 5");
+    assert_eq!(format!("{r3}"), "1", "x/(x+1) as x→∞ should be 1");
 }
 
 #[test]
@@ -465,21 +452,18 @@ fn gruntz_limit_finite_then_infinite_no_interference() {
     let x = ctx.symbol("x");
 
     // First: finite limit — lim(x→2) x^2 = 4
-    let v1 = x.powi(2).limit(&x, &ctx.int(2))
-        .expect("limit should succeed");
+    let v1 = x.powi(2).limit(&x, &ctx.int(2));
     assert_eq!(format!("{v1}"), "4", "x^2 as x→2 should be 4");
 
     // Second: infinite limit — lim(x→∞) 1/x = 0
     let oo = ctx.infinity();
     let expr = &ctx.int(1) / &x;
-    let v2 = expr.limit(&x, &oo)
-        .expect("limit should succeed");
+    let v2 = expr.limit(&x, &oo);
     assert_eq!(format!("{v2}"), "0", "1/x as x→∞ should be 0");
 
     // Third: finite again — lim(x→0) sin(x)/x = 1
     let sinc = &x.sin() / &x;
-    let v3 = sinc.limit(&x, &ctx.int(0))
-        .expect("limit should succeed");
+    let v3 = sinc.limit(&x, &ctx.int(0));
     assert_eq!(format!("{v3}"), "1", "sin(x)/x as x→0 should be 1");
 }
 

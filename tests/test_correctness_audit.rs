@@ -562,18 +562,17 @@ fn process_series(
     };
 
     // Compute Maclaurin series
-    let series = match expr.maclaurin(&var, fixture.order) {
-        Ok(s) => s.expand().eval(),
-        Err(e) => {
-            return TestOutcome {
-                id: fixture.id,
-                category: "series_verify".into(),
-                label: label.clone(),
-                status: Status::Skip,
-                detail: format!("maclaurin failed: {}", e),
-            };
-        }
-    };
+    let series_raw = expr.maclaurin(&var, fixture.order);
+    if series_raw.has_unevaluated() {
+        return TestOutcome {
+            id: fixture.id,
+            category: "series_verify".into(),
+            label: label.clone(),
+            status: Status::Skip,
+            detail: "maclaurin returned unevaluated form".into(),
+        };
+    }
+    let series = series_raw.expand().eval();
 
     let mut mismatches = Vec::new();
     let mut checked = 0;
@@ -952,7 +951,8 @@ fn audit_series_accuracy() {
     ];
 
     for (label, expr) in &cases {
-        if let Ok(series) = expr.maclaurin(&x, 8) {
+        let series = expr.maclaurin(&x, 8);
+        if !series.has_unevaluated() {
             let expanded = series.expand().eval();
 
             // Check at x = 0.1

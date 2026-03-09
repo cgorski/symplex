@@ -176,7 +176,7 @@ fn workflow_taylor_convergence() {
     let sin_x = x.sin();
 
     // Maclaurin expansion to order 7:  x - x³/6 + x⁵/120 - x⁷/5040
-    let series = sin_x.maclaurin(&x, 7).expect("maclaurin of sin");
+    let series = sin_x.maclaurin(&x, 7);
     let series_expanded = series.expand().eval();
 
     let ctx = symplex::default_context();
@@ -201,7 +201,7 @@ fn workflow_taylor_exp_convergence() {
     let x = symplex::default_context().symbol("x");
     let exp_x = x.exp();
 
-    let series = exp_x.maclaurin(&x, 8).expect("maclaurin of exp");
+    let series = exp_x.maclaurin(&x, 8);
     let series_expanded = series.expand().eval();
 
     let ctx = symplex::default_context();
@@ -678,7 +678,7 @@ fn workflow_series_then_integrate() {
     let x = symplex::default_context().symbol("x");
 
     // Taylor expand exp(x) to order 4:  1 + x + x²/2 + x³/6
-    let series = x.exp().maclaurin(&x, 4).expect("maclaurin of exp");
+    let series = x.exp().maclaurin(&x, 4);
     let poly = series.expand().eval();
 
     // Integrate the polynomial

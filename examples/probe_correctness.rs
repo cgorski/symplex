@@ -756,7 +756,7 @@ fn main() {
     let series_tol = 1e-5; // Series at small x with order 8 should be very accurate
 
     for (label, expr, points) in &series_cases {
-        match expr.maclaurin(&x, 8) {
+        match expr.try_maclaurin(&x, 8) {
             Ok(series) => {
                 let expanded = series.expand().eval();
                 let mut all_ok = true;

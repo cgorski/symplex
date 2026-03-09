@@ -701,8 +701,8 @@ fn maclaurin_exp_order_5() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = x.exp().maclaurin(&x, 5);
-    assert!(series.is_ok(), "maclaurin of exp(x) should succeed");
-    let expanded = series.unwrap().expand();
+    assert!(!series.has_unevaluated(), "maclaurin of exp(x) should succeed");
+    let expanded = series.expand();
     let s = format!("{expanded}");
     assert!(s.contains("x"), "Taylor series should contain x: {s}");
     // Should have x^2, x^3, x^4 terms
@@ -717,8 +717,8 @@ fn maclaurin_sin_order_5() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = x.sin().maclaurin(&x, 5);
-    assert!(series.is_ok(), "maclaurin of sin(x) should succeed");
-    let s = format!("{}", series.unwrap().expand());
+    assert!(!series.has_unevaluated(), "maclaurin of sin(x) should succeed");
+    let s = format!("{}", series.expand());
     assert!(s.contains("x"), "sin series should contain x: {s}");
 }
 
@@ -852,13 +852,13 @@ fn workflow_diff_n_then_series() {
     let x = symplex::default_context().symbol("x");
     // Taylor series of exp(x) around 0, order 5
     let series = x.exp().maclaurin(&x, 5);
-    assert!(series.is_ok());
-    let s = format!("{}", series.unwrap().expand());
+    assert!(!series.has_unevaluated());
+    let s = format!("{}", series.expand());
     assert!(s.contains("x"), "Taylor series should contain x: {s}");
     // Verify the series is a good approximation at x=0.1
     let ctx = Context::new();
     let xc = ctx.symbol("x");
-    let series2 = xc.exp().maclaurin(&xc, 5).unwrap().expand();
+    let series2 = xc.exp().maclaurin(&xc, 5).expand();
     let approx = series2.subs_i64(&xc, 0); // at x=0, exp(0)=1, series=1
     let s2 = format!("{approx}");
     assert!(

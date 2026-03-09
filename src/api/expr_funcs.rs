@@ -1343,8 +1343,7 @@ impl Expr<Numeric> {
     /// `f(a) + f'(a)(x-a) + f''(a)(x-a)²/2! + ...`
     ///
     /// If `point` is zero, this is a Maclaurin series.
-    /// Returns the original expression unchanged if expansion around
-    /// the point is not possible (e.g., pole at the expansion point).
+    /// If the series cannot be computed, returns a formal `Series` node.
     ///
     /// # Examples
     ///
@@ -1355,31 +1354,45 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// let zero = ctx.int(0);
     /// let expr = x.exp();
-    /// let s = expr.series(&x, &zero, 4).unwrap();
+    /// let s = expr.series(&x, &zero, 4);
     /// let expanded = s.expand().eval();
     /// let result = format!("{expanded}");
     /// assert!(result.contains("x"), "should have x term: {result}");
     /// ```
     #[must_use = "returns the series expansion; does not modify in place"]
-    pub fn series(&self, var: &Ex, point: &Ex, order: u32) -> Result<Ex, SymplexError> {
+    pub fn series(&self, var: &Ex, point: &Ex, order: u32) -> Ex {
         let var_id = self.checked_id(var);
         let point_id = self.checked_id(point);
         let _span = debug_span!("series", expr = ?self.raw_id(), order = order).entered();
-        let id = self
-            .inner
-            .write()
-            .arena
-            .series_expr(self.raw_id(), var_id, point_id, order)?;
-        Ok(self.wrap(id))
+        let mut inner = self.inner.write();
+        match inner.arena.series_expr(self.raw_id(), var_id, point_id, order) {
+            Ok(id) => {
+                drop(inner);
+                self.wrap(id)
+            }
+            Err(_) => {
+                let order_id = inner.arena.int(order as i64);
+                let id = inner.arena.intern(
+                    crate::base::node::ExprNode::Series(self.raw_id(), var_id, point_id, order_id),
+                );
+                drop(inner);
+                self.wrap(id)
+            }
+        }
     }
 
-    /// Compute a Taylor series, returning the expression unchanged on failure.
-    ///
-    /// Convenience wrapper around [`series`](Ex::series).
-    #[must_use = "returns the series expansion; does not modify in place"]
-    pub fn series_or_self(&self, var: &Ex, point: &Ex, order: u32) -> Ex {
-        self.series(var, point, order)
-            .unwrap_or_else(|_| self.clone())
+    /// Like [`series`](Self::series), but returns `Err` if the result
+    /// contains unevaluated forms (e.g. a formal `Series` node).
+    pub fn try_series(&self, var: &Ex, point: &Ex, order: u32) -> Result<Ex, SymplexError> {
+        let result = self.series(var, point, order);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "series",
+                reason: "could not compute series expansion".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Compute the Maclaurin series (Taylor series around 0) to the
@@ -1387,6 +1400,7 @@ impl Expr<Numeric> {
     ///
     /// This is a convenience shorthand for `self.series(var, &zero, order)`
     /// that avoids needing to construct a zero expression manually.
+    /// If the series cannot be computed, returns a formal `Series` node.
     ///
     /// # Examples
     ///
@@ -1394,27 +1408,44 @@ impl Expr<Numeric> {
     /// use symplex::prelude::*;
     ///
     /// let x = symplex::default_context().symbol("x");
-    /// let s = x.sin().maclaurin(&x, 4).unwrap();
+    /// let s = x.sin().maclaurin(&x, 4);
     /// let result = s.expand().eval();
     /// let text = format!("{result}");
     /// assert!(text.contains("x"), "should have x term: {text}");
     /// ```
     #[must_use = "returns the series expansion; does not modify in place"]
-    pub fn maclaurin(&self, var: &Ex, order: u32) -> Result<Ex, SymplexError> {
+    pub fn maclaurin(&self, var: &Ex, order: u32) -> Ex {
         let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
         let zero = inner.arena.zero;
-        let id = inner.arena.series_expr(self.raw_id(), var_id, zero, order)?;
-        drop(inner);
-        Ok(self.wrap(id))
+        match inner.arena.series_expr(self.raw_id(), var_id, zero, order) {
+            Ok(id) => {
+                drop(inner);
+                self.wrap(id)
+            }
+            Err(_) => {
+                let order_id = inner.arena.int(order as i64);
+                let id = inner.arena.intern(
+                    crate::base::node::ExprNode::Series(self.raw_id(), var_id, zero, order_id),
+                );
+                drop(inner);
+                self.wrap(id)
+            }
+        }
     }
 
-    /// Compute a Maclaurin series, returning the expression unchanged on failure.
-    ///
-    /// Convenience wrapper around [`maclaurin`](Ex::maclaurin).
-    #[must_use = "returns the series expansion; does not modify in place"]
-    pub fn maclaurin_or_self(&self, var: &Ex, order: u32) -> Ex {
-        self.maclaurin(var, order).unwrap_or_else(|_| self.clone())
+    /// Like [`maclaurin`](Self::maclaurin), but returns `Err` if the result
+    /// contains unevaluated forms (e.g. a formal `Series` node).
+    pub fn try_maclaurin(&self, var: &Ex, order: u32) -> Result<Ex, SymplexError> {
+        let result = self.maclaurin(var, order);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "maclaurin",
+                reason: "could not compute Maclaurin series".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     /// Compute the residue of this expression at `var = point`.
@@ -1562,8 +1593,8 @@ impl Expr<Numeric> {
     /// Compute the limit of this expression as `var` approaches `point`.
     ///
     /// Uses direct substitution, L'Hôpital's rule (for 0/0 and ∞/∞),
-    /// and series expansion as fallbacks. Returns the expression
-    /// unchanged if the limit cannot be determined.
+    /// and series expansion as fallbacks. If the limit cannot be
+    /// determined, returns a formal `Limit` node.
     ///
     /// # Examples
     ///
@@ -1574,28 +1605,42 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// // lim_{x→0} sin(x)/x = 1
     /// let expr = &x.sin() / &x;
-    /// let result = expr.limit(&x, &ctx.int(0)).unwrap();
+    /// let result = expr.limit(&x, &ctx.int(0));
     /// assert_eq!(format!("{result}"), "1");
     /// ```
     #[must_use = "returns the limit value; does not modify in place"]
-    pub fn limit(&self, var: &Ex, point: &Ex) -> Result<Ex, SymplexError> {
+    pub fn limit(&self, var: &Ex, point: &Ex) -> Ex {
         let var_id = self.checked_id(var);
         let point_id = self.checked_id(point);
         let _span = debug_span!("limit", expr = ?self.raw_id(), var = ?var_id).entered();
-        let id = self
-            .inner
-            .write()
-            .arena
-            .limit_expr(self.raw_id(), var_id, point_id)?;
-        Ok(self.wrap(id))
+        let mut inner = self.inner.write();
+        match inner.arena.limit_expr(self.raw_id(), var_id, point_id) {
+            Ok(id) => {
+                drop(inner);
+                self.wrap(id)
+            }
+            Err(_) => {
+                let id = inner.arena.intern(
+                    crate::base::node::ExprNode::Limit(self.raw_id(), var_id, point_id),
+                );
+                drop(inner);
+                self.wrap(id)
+            }
+        }
     }
 
-    /// Compute a limit, returning the expression unchanged on failure.
-    ///
-    /// Convenience wrapper around [`limit`](Ex::limit).
-    #[must_use = "returns the limit value; does not modify in place"]
-    pub fn limit_or_self(&self, var: &Ex, point: &Ex) -> Ex {
-        self.limit(var, point).unwrap_or_else(|_| self.clone())
+    /// Like [`limit`](Self::limit), but returns `Err` if the result
+    /// contains unevaluated forms (e.g. a formal `Limit` node).
+    pub fn try_limit(&self, var: &Ex, point: &Ex) -> Result<Ex, SymplexError> {
+        let result = self.limit(var, point);
+        if result.has_unevaluated() {
+            Err(SymplexError::ComputationFailed {
+                operation: "limit",
+                reason: "could not compute limit".into(),
+            })
+        } else {
+            Ok(result)
+        }
     }
 
     // ── Algebra ────────────────────────────────────────────────────

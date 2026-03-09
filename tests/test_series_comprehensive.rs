@@ -26,8 +26,8 @@ fn eval_series_at(series: &Ex, var: &Ex, p: i64, q: i64) -> f64 {
 fn taylor_exp_at_0() {
     let x = symplex::default_context().symbol("x");
     let series = x.exp().maclaurin(&x, 6);
-    assert!(series.is_ok(), "exp(x) maclaurin failed: {:?}", series.err());
-    let expanded = series.unwrap().expand().eval();
+    assert!(!series.has_unevaluated(), "exp(x) maclaurin failed");
+    let expanded = series.expand().eval();
 
     // Evaluate at x = 1/2
     let val = eval_series_at(&expanded, &x, 1, 2);
@@ -56,8 +56,8 @@ fn taylor_exp_at_0() {
 fn taylor_sin_at_0() {
     let x = symplex::default_context().symbol("x");
     let series = x.sin().maclaurin(&x, 8);
-    assert!(series.is_ok(), "sin(x) maclaurin failed: {:?}", series.err());
-    let expanded = series.unwrap().expand().eval();
+    assert!(!series.has_unevaluated(), "sin(x) maclaurin failed");
+    let expanded = series.expand().eval();
 
     // Evaluate at x = 1/2
     let val = eval_series_at(&expanded, &x, 1, 2);
@@ -86,8 +86,8 @@ fn taylor_sin_at_0() {
 fn taylor_cos_at_0() {
     let x = symplex::default_context().symbol("x");
     let series = x.cos().maclaurin(&x, 8);
-    assert!(series.is_ok(), "cos(x) maclaurin failed: {:?}", series.err());
-    let expanded = series.unwrap().expand().eval();
+    assert!(!series.has_unevaluated(), "cos(x) maclaurin failed");
+    let expanded = series.expand().eval();
 
     // Evaluate at x = 1/2
     let val = eval_series_at(&expanded, &x, 1, 2);
@@ -117,8 +117,8 @@ fn taylor_ln_at_1() {
     let x = symplex::default_context().symbol("x");
     // ln(x) expanded around x = 1
     let series = x.ln().series(&x, &symplex::default_context().int(1), 8);
-    assert!(series.is_ok(), "ln(x) series at 1 failed: {:?}", series.err());
-    let expanded = series.unwrap().expand().eval();
+    assert!(!series.has_unevaluated(), "ln(x) series at 1 failed");
+    let expanded = series.expand().eval();
 
     // Evaluate at x = 11/10 (i.e. x = 1.1, close to the expansion point)
     let val = eval_series_at(&expanded, &x, 11, 10);
@@ -146,8 +146,8 @@ fn taylor_exp_at_1() {
     let x = symplex::default_context().symbol("x");
     // exp(x) expanded around x = 1
     let series = x.exp().series(&x, &symplex::default_context().int(1), 6);
-    assert!(series.is_ok(), "exp(x) series at 1 failed: {:?}", series.err());
-    let expanded = series.unwrap().expand().eval();
+    assert!(!series.has_unevaluated(), "exp(x) series at 1 failed");
+    let expanded = series.expand().eval();
 
     // Evaluate at x = 11/10 (x = 1.1)
     let val = eval_series_at(&expanded, &x, 11, 10);
@@ -175,8 +175,8 @@ fn taylor_exp_at_1() {
 fn taylor_sinh_at_0() {
     let x = symplex::default_context().symbol("x");
     let series = x.sinh().maclaurin(&x, 8);
-    assert!(series.is_ok(), "sinh(x) maclaurin failed: {:?}", series.err());
-    let expanded = series.unwrap().expand().eval();
+    assert!(!series.has_unevaluated(), "sinh(x) maclaurin failed");
+    let expanded = series.expand().eval();
 
     // sinh(x) = x + x^3/6 + x^5/120 + x^7/5040 + ...
     // Evaluate at x = 1/2
@@ -206,8 +206,8 @@ fn taylor_sinh_at_0() {
 fn taylor_cosh_at_0() {
     let x = symplex::default_context().symbol("x");
     let series = x.cosh().maclaurin(&x, 8);
-    assert!(series.is_ok(), "cosh(x) maclaurin failed: {:?}", series.err());
-    let expanded = series.unwrap().expand().eval();
+    assert!(!series.has_unevaluated(), "cosh(x) maclaurin failed");
+    let expanded = series.expand().eval();
 
     // cosh(x) = 1 + x^2/2 + x^4/24 + x^6/720 + ...
     // Evaluate at x = 1/2
@@ -241,11 +241,10 @@ fn taylor_composition_exp_sin() {
     let expr = x.sin().exp();
     let series = expr.maclaurin(&x, 6);
     assert!(
-        series.is_ok(),
-        "exp(sin(x)) maclaurin failed: {:?}",
-        series.err()
+        !series.has_unevaluated(),
+        "exp(sin(x)) maclaurin failed"
     );
-    let expanded = series.unwrap().expand().eval();
+    let expanded = series.expand().eval();
 
     // exp(sin(x)) at x=0: exp(sin(0)) = exp(0) = 1
     let val_0 = eval_series_at(&expanded, &x, 0, 1);
@@ -288,20 +287,18 @@ fn series_numerical_accuracy_sin() {
 
     for &order in &orders {
         let series = x.sin().maclaurin(&x, order);
-        if let Ok(s) = series {
-            let expanded = s.expand().eval();
-            if let Ok(val) = expanded
-                .subs(&x, &symplex::default_context().rational(1, 2))
-                .eval()
-                .eval_f64()
-            {
-                let err = (val - exact).abs();
-                assert!(
-                    err < prev_err,
-                    "sin series error should decrease: order {order} err={err} >= prev_err={prev_err}"
-                );
-                prev_err = err;
-            }
+        let expanded = series.expand().eval();
+        if let Ok(val) = expanded
+            .subs(&x, &symplex::default_context().rational(1, 2))
+            .eval()
+            .eval_f64()
+        {
+            let err = (val - exact).abs();
+            assert!(
+                err < prev_err,
+                "sin series error should decrease: order {order} err={err} >= prev_err={prev_err}"
+            );
+            prev_err = err;
         }
     }
     // After all orders, the error should be very small
@@ -326,20 +323,18 @@ fn series_numerical_accuracy_exp() {
 
     for &order in &orders {
         let series = x.exp().maclaurin(&x, order);
-        if let Ok(s) = series {
-            let expanded = s.expand().eval();
-            if let Ok(val) = expanded
-                .subs(&x, &symplex::default_context().rational(1, 2))
-                .eval()
-                .eval_f64()
-            {
-                let err = (val - exact).abs();
-                assert!(
-                    err < prev_err,
-                    "exp series error should decrease: order {order} err={err} >= prev_err={prev_err}"
-                );
-                prev_err = err;
-            }
+        let expanded = series.expand().eval();
+        if let Ok(val) = expanded
+            .subs(&x, &symplex::default_context().rational(1, 2))
+            .eval()
+            .eval_f64()
+        {
+            let err = (val - exact).abs();
+            assert!(
+                err < prev_err,
+                "exp series error should decrease: order {order} err={err} >= prev_err={prev_err}"
+            );
+            prev_err = err;
         }
     }
     // After all orders, the error should be very small

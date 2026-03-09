@@ -186,8 +186,8 @@ limit(1/x, x, oo)        # 0
 
 **symplex:**
 ```rust
-(&x.sin() / &x).limit(&x, &symplex::int(0)).unwrap();  // 1
-(1 / &x).limit(&x, &symplex::infinity());                // Ok(0)
+(&x.sin() / &x).limit(&x, &symplex::int(0));  // 1
+(1 / &x).limit(&x, &symplex::infinity());      // 0
 ```
 
 Both use L'Hôpital's rule and series expansion. SymPy additionally implements the Gruntz algorithm for computing limits at infinity, which handles a broader class of expressions.
@@ -202,7 +202,7 @@ series(sin(x), x, 0, 5)  # x - x**3/6 + x**5/120 + O(x**6)
 
 **symplex:**
 ```rust
-x.sin().maclaurin(&x, 5).unwrap().expand().eval();
+x.sin().maclaurin(&x, 5).expand().eval();
 // x - 1/6*x^3 + 1/120*x^5
 ```
 

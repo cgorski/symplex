@@ -86,8 +86,8 @@ fn limit_constant_expression() {
     let x = symplex::default_context().symbol("x");
     let expr = symplex::default_context().int(5);
     let result = expr.limit(&x, &symplex::default_context().int(0));
-    assert!(result.is_ok());
-    assert_eq!(format!("{}", result.unwrap()), "5");
+    assert!(!result.has_unevaluated());
+    assert_eq!(format!("{result}"), "5");
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn limit_polynomial_direct_sub() {
     let x = symplex::default_context().symbol("x");
     // x² + x + 1  at x = 2  →  4 + 2 + 1 = 7
     let expr = &(x.powi(2) + &x) + &symplex::default_context().int(1);
-    let result = expr.limit(&x, &symplex::default_context().int(2)).unwrap();
+    let result = expr.limit(&x, &symplex::default_context().int(2));
     assert_eq!(format!("{result}"), "7");
 }
 
@@ -104,8 +104,8 @@ fn limit_sin_x_over_x() {
     let x = symplex::default_context().symbol("x");
     let expr = &x.sin() / &x;
     let result = expr.limit(&x, &symplex::default_context().int(0));
-    assert!(result.is_ok());
-    assert_eq!(format!("{}", result.unwrap()), "1");
+    assert!(!result.has_unevaluated());
+    assert_eq!(format!("{result}"), "1");
 }
 
 #[test]
@@ -114,8 +114,8 @@ fn limit_lhopital_x2_minus1_over_x_minus1() {
     let x = symplex::default_context().symbol("x");
     let expr = (x.powi(2) - 1) / (&x - 1);
     let result = expr.limit(&x, &symplex::default_context().int(1));
-    assert!(result.is_ok());
-    assert_eq!(format!("{}", result.unwrap()), "2");
+    assert!(!result.has_unevaluated());
+    assert_eq!(format!("{result}"), "2");
 }
 
 #[test]
@@ -125,8 +125,7 @@ fn limit_at_infinity_polynomial_ratio() {
     let numer = &x.powi(2) * 3 + &x;
     let denom = x.powi(2) + 1;
     let expr = &numer / &denom;
-    let result = expr.limit(&x, &symplex::default_context().infinity())
-        .expect("limit should succeed");
+    let result = expr.limit(&x, &symplex::default_context().infinity());
     assert_eq!(format!("{result}"), "3");
 }
 
@@ -135,17 +134,16 @@ fn limit_exp_neg_x_at_infinity() {
     // exp(−x) → 0  as x → ∞
     let x = symplex::default_context().symbol("x");
     let expr = (-&x).exp();
-    let result = expr.limit(&x, &symplex::default_context().infinity())
-        .expect("limit should succeed");
+    let result = expr.limit(&x, &symplex::default_context().infinity());
     assert_eq!(format!("{result}"), "0", "lim exp(-x) at ∞ should be 0");
 }
 
 #[test]
-fn limit_or_self_fallback() {
+fn limit_fallback() {
     let x = symplex::default_context().symbol("x");
     let expr = x.sin();
-    // sin(0) = 0 via limit_or_self
-    let result = expr.limit_or_self(&x, &symplex::default_context().int(0));
+    // sin(0) = 0 via limit
+    let result = expr.limit(&x, &symplex::default_context().int(0));
     let s = format!("{result}");
     assert_eq!(s, "0", "sin(0) should be 0, got: {s}");
 }

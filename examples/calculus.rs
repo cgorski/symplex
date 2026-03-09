@@ -79,13 +79,13 @@ fn main() {
     println!("∫₋₁¹ x² dx = {x_squared_area}");
 
     // ── 7. Taylor series of sin(x) around 0 ───────────────────────────
-    let sin_series = x.sin().maclaurin(&x, 5).unwrap();
+    let sin_series = x.sin().maclaurin(&x, 5);
     println!("\nsin(x) ≈ {}", sin_series.expand().eval());
 
-    let cos_series = x.cos().maclaurin(&x, 5).unwrap();
+    let cos_series = x.cos().maclaurin(&x, 5);
     println!("cos(x) ≈ {}", cos_series.expand().eval());
 
-    let exp_series = x.exp().maclaurin(&x, 5).unwrap();
+    let exp_series = x.exp().maclaurin(&x, 5);
     println!("exp(x) ≈ {}", exp_series.expand().eval());
 
     // ── 8. Simplification: trig identity ───────────────────────────────
@@ -105,20 +105,18 @@ fn main() {
 
     // ── 10. Limits ─────────────────────────────────────────────────────
     let limit_expr = &x.sin() / &x;
-    let lim = limit_expr.limit(&x, &symplex::default_context().int(0)).unwrap();
+    let lim = limit_expr.limit(&x, &symplex::default_context().int(0));
     println!("\nlim(x→0) sin(x)/x = {lim}");
 
     // lim(x→0) (exp(x)-1)/x = 1
     let exp_limit = &(&x.exp() - 1) / &x;
-    if let Ok(lim2) = exp_limit.limit(&x, &symplex::default_context().int(0)) {
-        println!("lim(x→0) (exp(x)-1)/x = {lim2}");
-    }
+    let lim2 = exp_limit.limit(&x, &symplex::default_context().int(0));
+    println!("lim(x→0) (exp(x)-1)/x = {lim2}");
 
     // Limit at infinity
     let inf = symplex::default_context().infinity();
-    if let Ok(lim3) = (1 / &x).limit(&x, &inf) {
-        println!("lim(x→∞) 1/x = {lim3}");
-    }
+    let lim3 = (1 / &x).limit(&x, &inf);
+    println!("lim(x→∞) 1/x = {lim3}");
 
     // ── 11. Numerical evaluation ───────────────────────────────────────
     let val = expr!(x ^ 2 + 1).subs_i64(&x, 3);

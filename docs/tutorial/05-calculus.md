@@ -229,12 +229,12 @@ let zero = symplex::int(0);
 
 // The classic: lim(x→0) sin(x)/x = 1
 let expr = &x.sin() / &x;
-let lim = expr.limit(&x, &zero).unwrap();
+let lim = expr.limit(&x, &zero);
 println!("lim(x→0) sin(x)/x = {lim}"); // 1
 
 // lim(x→0) (eˣ - 1)/x = 1
 let expr = &(&x.exp() - 1) / &x;
-let lim = expr.limit(&x, &zero).unwrap();
+let lim = expr.limit(&x, &zero);
 println!("lim(x→0) (eˣ-1)/x = {lim}"); // 1
 ```
 
@@ -253,27 +253,25 @@ vars!(x);
 
 // lim(x→∞) 1/x = 0
 let inf = symplex::infinity();
-let result = (1 / &x).limit(&x, &inf);
-if let Ok(lim) = result {
-    println!("lim(x→∞) 1/x = {lim}"); // 0
-}
+let lim = (1 / &x).limit(&x, &inf);
+println!("lim(x→∞) 1/x = {lim}"); // 0
 
 // lim(x→-∞) 1/x = 0
 let neg_inf = symplex::neg_infinity();
-let result = (1 / &x).limit(&x, &neg_inf);
-if let Ok(lim) = result {
-    println!("lim(x→-∞) 1/x = {lim}"); // 0
-}
+let lim = (1 / &x).limit(&x, &neg_inf);
+println!("lim(x→-∞) 1/x = {lim}"); // 0
 ```
 
-### Convenience: `limit_or_self()`
+### Fallible variant: `try_limit()`
 
-If you want the expression returned unchanged when the limit can't be computed:
+If you need to detect when a limit can't be computed, use `try_limit()` which returns `Result<Ex>`:
 
 ```rust
 vars!(x);
-let result = x.sin().limit_or_self(&x, &symplex::int(0));
-println!("{result}"); // 0
+match expr.try_limit(&x, &symplex::int(0)) {
+    Ok(lim) => println!("limit = {lim}"),
+    Err(e) => println!("could not compute limit: {e}"),
+}
 ```
 
 ## Series Expansions
@@ -289,15 +287,15 @@ use symplex::vars;
 vars!(x);
 
 // sin(x) ≈ x - x³/6 + x⁵/120
-let sin_series = x.sin().maclaurin(&x, 5).unwrap();
+let sin_series = x.sin().maclaurin(&x, 5);
 println!("sin(x) ≈ {}", sin_series.expand().eval());
 
 // cos(x) ≈ 1 - x²/2 + x⁴/24
-let cos_series = x.cos().maclaurin(&x, 5).unwrap();
+let cos_series = x.cos().maclaurin(&x, 5);
 println!("cos(x) ≈ {}", cos_series.expand().eval());
 
 // eˣ ≈ 1 + x + x²/2 + x³/6 + x⁴/24
-let exp_series = x.exp().maclaurin(&x, 5).unwrap();
+let exp_series = x.exp().maclaurin(&x, 5);
 println!("eˣ ≈ {}", exp_series.expand().eval());
 ```
 
@@ -315,18 +313,20 @@ vars!(x);
 
 // Taylor series of sin(x) around x = π/2
 let pi_half = &symplex::default_context().pi() / 2;
-let series = x.sin().series(&x, &pi_half, 4).unwrap();
+let series = x.sin().series(&x, &pi_half, 4);
 println!("sin(x) around π/2: {}", series.expand().eval());
 ```
 
-### Convenience: `maclaurin_or_self()` and `series_or_self()`
+### Fallible variants: `try_maclaurin()` and `try_series()`
 
-These return the expression unchanged if the series computation fails, instead of returning an error:
+These return `Result<Ex>`, giving `Err` if the series computation fails:
 
 ```rust
 vars!(x);
-let result = x.sin().maclaurin_or_self(&x, 5);
-println!("{}", result.expand().eval());
+match x.sin().try_maclaurin(&x, 5) {
+    Ok(s) => println!("{}", s.expand().eval()),
+    Err(e) => println!("series failed: {e}"),
+}
 ```
 
 ### Fourier Series
@@ -558,7 +558,7 @@ fn main() {
     println!("\n∫₀¹ f(x) dx = {area}");
 
     // Taylor series around x = 0
-    let series = f.maclaurin(&x, 5).unwrap();
+    let series = f.maclaurin(&x, 5);
     println!("\nTaylor (should match f): {}", series.expand().eval());
 
     // Factor
@@ -567,7 +567,7 @@ fn main() {
 
     // Limit at x → 0
     let ratio = &f / &x;
-    let lim = ratio.limit(&x, &symplex::int(0)).unwrap();
+    let lim = ratio.limit(&x, &symplex::int(0));
     println!("\nlim(x→0) f(x)/x = {lim}"); // 2
 
     // LaTeX output
@@ -588,8 +588,11 @@ fn main() {
 | Indefinite integral | `.integrate(&x)` | `f.integrate(&x)` |
 | Definite integral | `.definite_integral(&x, &a, &b)` | `f.definite_integral(&x, &zero, &one)` |
 | Limit | `.limit(&x, &pt)` | `f.limit(&x, &zero)` |
+| Limit (fallible) | `.try_limit(&x, &pt)` | `f.try_limit(&x, &zero)?` |
 | Maclaurin series | `.maclaurin(&x, order)` | `f.maclaurin(&x, 5)` |
+| Maclaurin (fallible) | `.try_maclaurin(&x, order)` | `f.try_maclaurin(&x, 5)?` |
 | Taylor series | `.series(&x, &pt, order)` | `f.series(&x, &a, 5)` |
+| Taylor (fallible) | `.try_series(&x, &pt, order)` | `f.try_series(&x, &a, 5)?` |
 | Laplace transform | `.laplace(&t, &s)` | `f.laplace(&t, &s)` |
 | Inverse Laplace | `.inverse_laplace(&s, &t)` | `F.inverse_laplace(&s, &t)` |
 | Z-transform | `.z_transform(&n, &z)` | `f.z_transform(&n, &z)` |

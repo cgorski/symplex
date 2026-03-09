@@ -153,9 +153,7 @@ fn limit_at_neg_infinity() {
     let x = symplex::default_context().symbol("x");
     let ctx = symplex::default_context();
     let result = (1 / &x).limit(&x, &ctx.neg_infinity());
-    if let Ok(r) = result {
-        assert_eq!(format!("{r}"), "0");
-    }
+    assert_eq!(format!("{result}"), "0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
