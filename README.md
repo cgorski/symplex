@@ -1,38 +1,16 @@
 # Symplex
 
-Symbolic mathematics library for Rust — calculus, algebra, Gröbner bases, robotics, control systems, and optimized code generation.
+A symbolic mathematics library for Rust — exact algebra, calculus, solving, simplification, and code generation with compile-time type safety and zero hidden global state.
 
 [![Crates.io](https://img.shields.io/crates/v/symplex.svg)](https://crates.io/crates/symplex)
 [![docs.rs](https://docs.rs/symplex/badge.svg)](https://docs.rs/symplex)
 [![License](https://img.shields.io/crates/l/symplex.svg)](LICENSE-MIT)
 
+> **Pre-release.** The API is unstable. Feedback welcome.
+>
+> Want to contribute? See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, conventions, and how to get started.
+
 ---
-
-## Flagship Example
-
-Define a 2-DOF planar robot arm with DH parameters, derive its symbolic Jacobian,
-and generate an optimized Rust function — all in 15 lines:
-
-```rust
-use symplex::prelude::*;
-use symplex::robotics::*;
-use symplex::matrix::jacobian;
-
-let ctx = Context::new();
-syms!(ctx; theta1, theta2);
-let l1 = ctx.rational(3, 10);
-let l2 = ctx.rational(1, 4);
-
-let zero = ctx.int(0);
-let (px, py, _) = fk_position(&[
-    (&theta1, &zero, &l1, &zero),
-    (&theta2, &zero, &l2, &zero),
-]);
-
-let jac = jacobian(&[&px, &py], &[&theta1, &theta2]);
-let code = jac.to_rust_fn("jacobian", &["theta1", "theta2"]).unwrap();
-// → Optimized Rust function with common subexpression elimination
-```
 
 ## Quick Start
 
@@ -40,339 +18,310 @@ let code = jac.to_rust_fn("jacobian", &["theta1", "theta2"]).unwrap();
 use symplex::prelude::*;
 
 fn main() {
-    let __ctx = Context::new();
-    syms!(__ctx; x, y);
+    let ctx = Context::new();
+    syms!(ctx; x, y);
 
-    // Differentiation, factoring
-    let f = expr!(x^2 + 2*x + 1);
-    println!("{}", f.diff(&x));           // 2*x + 2
-    println!("{}", f.factor(&x));         // (x + 1)^2
+    // Differentiate
+    let f = expr!(ctx, x^3 - 2*x + 1);
+    println!("f'(x) = {}", f.diff(&x));          // 3*x^2 - 2
 
-    // Equation solving
-    let roots = expr!(x^2 - 5*x + 6).solve_or_empty(&x);
-    // roots: [3, 2]
+    // Integrate
+    println!("∫f dx = {}", f.integrate(&x));      // 1/4*x^4 - x^2 + x
 
-    // Trig simplification
-    println!("{}", expr!(sin(x)^2 + cos(x)^2).simplify());  // 1
+    // Solve
+    let roots = expr!(ctx, x^2 - 5*x + 6).solve_or_empty(&x);
+    println!("roots: {:?}", roots);                // [3, 2]
 
-    // Integration
-    let anti = expr!(x^2).integrate(&x);
-    println!("{anti}");                   // 1/3*x^3
+    // Simplify
+    let trig = expr!(ctx, sin(x)^2 + cos(x)^2);
+    println!("{}", trig.simplify());               // 1
+
+    // Evaluate numerically
+    let val = expr!(ctx, sin(x) + cos(x)).eval_f64_with(&[(&x, 1)]).unwrap();
+    println!("{val:.6}");                          // 1.381773
 
     // Partial derivatives
-    let g = expr!(x^2 * y + y^3);
-    println!("∂g/∂x = {}", g.diff(&x));  // 2*x*y
-    println!("∂g/∂y = {}", g.diff(&y));  // x^2 + 3*y^2
+    let g = expr!(ctx, x^2 * y + y^3);
+    println!("∂g/∂x = {}", g.diff(&x));           // 2*x*y
+    println!("∂g/∂y = {}", g.diff(&y));            // x^2 + 3*y^2
 
     // Matrices
-    let m = matrix![[1, 2], [3, 4]];
-    println!("det = {}", m.det());        // -2
+    let m = matrix![ctx, [1, 2], [3, 4]];
+    println!("det = {}", m.det().unwrap());        // -2
 
-    // LaTeX and numerical evaluation
-    println!("{}", f.to_latex());         // x^{2} + 2 x + 1
-    let val = expr!(sin(x) + cos(x)).eval_f64_with(&[(&x, 1)]).unwrap();
-    println!("{val:.6}");                 // 1.381773
+    // LaTeX
+    println!("{}", f.to_latex());                  // x^{3} - 2 x + 1
 }
 ```
-
-### Compile-Time Dimensional Analysis
-
-```rust
-use symplex::prelude::*;
-use symplex::units::*;
-
-// Types enforce physical dimensions — Mass + Length won't compile
-let m = Mass::symbol("m");
-let g = Acceleration::symbol("g");
-let h = Length::symbol("h");
-
-// dim! macro: type-safe, order-independent dimensional arithmetic
-let weight = dim!(Force: &m * &g);
-
-// Multi-term expressions work too
-let energy = dim!(Energy: &m * &g * &h);
-
-// Typed calculus: d(Length)/d(Time) → Velocity
-let v: Velocity = h.diff_wrt(&Time::symbol("t"));
-
-// ~100 unit conversions
-let distance = Length::meters(3.0) + Length::feet(6.5);
-
-// Compile-time formula verification
-const_assert_dim!(Force = Mass * Acceleration, "F = ma dimension check");
-```
-
-## Installation
 
 ```
 cargo add symplex
 ```
 
-## Why Symplex
+---
 
-**`dim!` macro for dimensional arithmetic.** All multiplication and division of
-physical quantities goes through `dim!(OutputType: expr)` — a single proc macro that
-is type-safe, order-independent, and gives clear error messages on dimension mismatches
-via `FromDimExpr`.
+## What You Can Do
 
-**Exact by default.** Every number is a `Ratio<BigInt>` — `0.1 + 0.2` equals `3/10`,
-not `0.30000000000000004`. Floating-point only appears when you explicitly ask for it
-with `evalf()` or `lambdify()`.
-
-**Type-safe expressions.** Numeric (`Ex`), boolean (`BoolEx`), and set (`SetEx`)
-expressions are distinct types. Adding a boolean to a number is a compile error, not
-a silent bug.
-
-**Built for concurrency.** The arena uses `parking_lot::RwLock`; every `Ex` is
-`Send + Sync`. Run symbolic pipelines across threads without a GIL or mutex
-gymnastics.
-
-**No recursion.** All tree traversals use explicit stacks. Deep expressions (thousands
-of nested operations) won't blow the call stack.
-
-**End-to-end robotics pipeline.** Go from DH parameters to simplified symbolic
-Jacobians to optimized Rust source code in a single crate — no Python, no codegen
-scripts, no glue.
-
-## Proc Macros
-
-Symplex provides five proc macros for natural math syntax:
+### Calculus
 
 ```rust
-let __ctx = Context::new();                  // context required by all macros
-syms!(__ctx; x, y, z);                       // declare symbolic variables
-let f = expr!(x^2 + 2*x + 1);               // build expressions
-let g = expr!(sin(x)^2 + cos(x)^2);         // trig, exp, ln, sqrt, ...
-let h = expr!(1/2 * x^2);                   // exact rationals
-let b: BoolEx = expr!(x > 0 && y < 1);      // boolean expressions
+let ctx = Context::new();
+syms!(ctx; x);
 
-let m = matrix![[x, 1], [0, x^2]];          // symbolic matrices
-let eq = eq!(x^2 + x = 6);                  // equations (lhs = rhs)
+// Differentiation — chain rule, product rule, all elementary functions
+expr!(ctx, sin(x^2)).diff(&x);                    // 2*x*cos(x^2)
 
-// Dimensional arithmetic (units module)
-let force = dim!(Force: &mass * &accel);     // type-safe multiply
-let energy = dim!(Energy: &m * &g * &h);     // multi-term products
+// Integration — by-parts, u-sub, partial fractions, trig, heurisch fallback
+expr!(ctx, x * exp(x)).integrate(&x);             // x*exp(x) - exp(x)
+
+// Limits — Gruntz algorithm for limits at infinity
+expr!(ctx, sin(x) / x).limit(&x, &ctx.int(0));    // 1
+
+// Taylor/Maclaurin series
+expr!(ctx, exp(x)).series(&x, &ctx.int(0), 5);    // 1 + x + 1/2*x^2 + ...
+
+// Formal power series with closed-form coefficient extraction
+let fps = expr!(ctx, exp(x)).fps_maclaurin(&x);
+
+// Laplace transforms (forward and inverse)
+let s = ctx.symbol("s");
+let t = ctx.symbol("t");
+t.sin().laplace(&t, &s);                          // 1/(s^2 + 1)
+
+// Fourier and Z-transforms
+// Gosper hypergeometric summation
+// Finite differences (Fornberg algorithm)
 ```
 
-Constants `pi`, `E`, and `I` (imaginary unit) are available directly inside `expr!`.
+### Algebra
 
-## Features
+```rust
+let ctx = Context::new();
+syms!(ctx; x);
 
-**Core Algebra & Calculus:**
+// Factoring
+expr!(ctx, x^4 - 1).factor(&x);                   // (x - 1)*(x + 1)*(x^2 + 1)
 
-- ✅ Symbolic differentiation (chain rule, product rule, all elementary functions)
-- ✅ Integration (by-parts, u-substitution, partial fractions, trig powers, cyclic IBP, heurisch fallback, parametric, Heaviside)
-- ✅ Polynomial solving through quartic (Cardano/Ferrari) + Gröbner bases for systems
-- ✅ Simplification (24 rules + Fu's trig simplification + power/combinatorial/numeric strategies)
-- ✅ Taylor/Maclaurin/Laurent series, limits (Gruntz algorithm), formal power series
-- ✅ Finite differences (Fornberg algorithm), Gosper hypergeometric summation
-- ✅ Integration of inverse hyperbolic functions (asinh, acosh, atanh) with chain rule
-- ✅ Assumption-aware simplification via refine() — abs, sign, sqrt(x²), floor, ceiling
-- ✅ Exact rational arithmetic (`Ratio<BigInt>`) — no floating-point contamination
+// Expansion
+expr!(ctx, (x + 1)^3).expand();                   // x^3 + 3*x^2 + 3*x + 1
 
-**Linear Algebra:**
+// Simplification — 24 rules + Fu's trig + power/combinatorial strategies
+expr!(ctx, (x^2 - 1) / (x - 1)).cancel(&x);       // x + 1
 
-- ✅ Symbolic matrices: det, inverse, eigenvalues, LU/QR/Cholesky, matrix exponential — all methods return `Result` (no panics)
-- ✅ Eigenvectors, diagonalization, Jordan normal form, exact matrix exponential
-- ✅ Kronecker product, pseudo-inverse, rank, nullspace
+// Partial fractions
+expr!(ctx, 1 / (x^2 - 1)).partial_fractions(&x);
 
-**Robotics & Dynamics:**
-
-- ✅ DH parameters, forward kinematics, Jacobian computation
-- ✅ Lagrangian dynamics (Euler-Lagrange, mass/Coriolis/gravity matrices)
-- ✅ Quaternion algebra for attitude representation
-- ✅ 2-DOF algebraic inverse kinematics via Gröbner bases
-- ✅ Optimized Rust code generation with cross-entry CSE
-
-**Control Systems:**
-
-- ✅ State-space and transfer function representations
-- ✅ Routh-Hurwitz stability, Ackermann pole placement
-- ✅ Zero-order hold discretization
-- ✅ ODE solving: separable, linear, Bernoulli, Euler-Cauchy, variation of parameters, undetermined coefficients, systems via matrix exp
-
-**Transforms & Special Functions:**
-
-- ✅ Laplace/inverse Laplace, z-transform, Fourier transform
-- ✅ Bessel, Legendre, Chebyshev, Hermite, Laguerre polynomials
-- ✅ Arbitrary-precision Gamma (Stirling), erf, Beta
-- ✅ LambertW function with differentiation, 8 known values, arbitrary-precision Halley eval
-
-**Compile-Time Dimensional Analysis:**
-
-- ✅ `dim!` proc macro for all dimensional multiplication/division: `dim!(Force: &m * &a)`
-- ✅ 30 named physical quantity types (Force, Voltage, Energy, etc.)
-- ✅ Compile-time dimension checking: `Mass + Length` won't compile
-- ✅ `FromDimExpr` trait with `#[diagnostic::on_unimplemented]` for clear dimension mismatch errors
-- ✅ Typed calculus: `d(Length)/d(Time) → Velocity` verified at compile time (DiffWrt/IntWrt)
-- ✅ ~100 unit conversion constructors (meters, feet, horsepower, celsius, RPM)
-- ✅ Runtime dimension inference for debug validation
-- ✅ Typed robotics API: `fk_position_typed` with Angle/Length parameters
-- ✅ Code generation with `uom` type annotations at function boundaries
-- ✅ `const_assert_dim!` compile-time formula verification
-- ✅ Physical constants (c, h, ℏ, k_B, N_A, G, g₀, e₀) with symbolic display and exact SI values
-
-**Code Generation & Output:**
-
-- ✅ `to_rust_fn()` with CodegenOptions (f32/f64, std/libm/no_std), FMA detection, Horner powi, sin_cos pairing, expm1/log1p/log2/exp2 optimization
-- ✅ LaTeX rendering (`to_latex()` on expressions, matrices, quaternions)
-- ✅ JSON serialization for interchange
-- ✅ Runtime expression parser
-- ✅ 2D Unicode pretty printing with stacked fractions, superscripts, graduated bar weights
-
-**Architecture:**
-
-- ✅ Arena hash-consing with O(1) structural equality
-- ✅ Thread-safe (`Send + Sync`)
-- ✅ No recursion (explicit stacks throughout)
-- ✅ Type-safe: `Ex` (numeric) vs `BoolEx` (boolean) vs `SetEx` (sets)
-
-## Examples
-
-All 18 examples are self-contained and print annotated output.
-Start with `quickstart` for a tour, or jump straight to `robotics_codegen`:
-
+// Polynomial GCD, LCM
+// Gröbner bases (Buchberger + FGLM) for polynomial system solving
+// Multivariate sparse polynomials
 ```
-cargo run --example quickstart          # Basic CAS operations
-cargo run --example equation_solving    # Polynomial + system solving
-cargo run --example matrix_algebra      # Eigenvalues, inverse, char poly
-cargo run --example calculus            # Differentiation, integration, series
-cargo run --example optimization        # Gradient, Hessian, critical points
-cargo run --example control_system      # State-space, transfer functions
-cargo run --example dynamics            # Euler-Lagrange pendulum
-cargo run --example robotics_codegen    # DH → Jacobian → Rust code
-cargo run --example inverse_kinematics  # 2-DOF IK via Gröbner bases
-cargo run --example latex_output        # LaTeX rendering
-cargo run --example solve_system        # Gröbner-based polynomial systems
-cargo run --example ode_solving         # ODE classification and solving
-cargo run --example complex_numbers     # Complex arithmetic and Euler's formula
-cargo run --example laplace_transforms  # Forward/inverse Laplace transforms
-cargo run --example number_theory       # Primality, factorization, CRT
-cargo run --example repl                # Interactive REPL
+
+### Equation Solving
+
+```rust
+let ctx = Context::new();
+syms!(ctx; x);
+
+// Polynomial (linear through quartic via radicals, RootOf for degree ≥ 5)
+expr!(ctx, x^2 - 5*x + 6).solve(&x);             // Ok([3, 2])
+
+// Transcendental (Lambert W, inversion peeling, change of variable)
+expr!(ctx, exp(x) - 5).solve(&x);                 // Ok([ln(5)])
+
+// Systems via Gröbner bases
+symplex::polysys::solve_system_ex(&[eq1, eq2], &[x, y]);
+
+// Inequalities — sign-chart method
+expr!(ctx, x^2 - 4).solve_gt(&x);                 // (-∞, -2) ∪ (2, ∞)
+
+// ODE solving — 13 classes: separable, linear, Bernoulli, Euler-Cauchy,
+// exact, integrating factor, variation of parameters, systems via matrix exp
 ```
+
+### Linear Algebra
+
+```rust
+let ctx = Context::new();
+let m = matrix![ctx, [1, 2], [3, 4]];
+
+m.det().unwrap();                                  // -2
+m.inv().unwrap();                                  // [[-2, 1], [3/2, -1/2]]
+m.eigenvals(&ctx.symbol("λ")).unwrap();            // [-0.372..., 5.372...]
+m.char_poly(&ctx.symbol("λ")).unwrap();            // λ^2 - 5*λ - 2
+
+// Jordan normal form, diagonalization, matrix exponential
+// Cholesky, LU decomposition, pseudo-inverse
+// Kronecker product, rank, nullspace
+```
+
+### Transforms & Special Functions
+
+```rust
+let ctx = Context::new();
+syms!(ctx; x, t, s);
+
+// Laplace / inverse Laplace
+t.exp().laplace(&t, &s);                          // 1/(s - 1)
+
+// Bessel, Legendre, Chebyshev, Hermite, Laguerre
+x.bessel_j(&ctx.int(0));                           // J_0(x)
+
+// Gamma (arbitrary-precision Stirling), erf, Beta, LambertW
+x.gamma();
+x.erf();
+x.lambertw();
+
+// Digamma with arbitrary-precision evaluation
+ctx.int(1).digamma().evalf(50);                    // -γ to 50 digits
+```
+
+### Code Generation
+
+```rust
+let ctx = Context::new();
+syms!(ctx; x);
+let f = expr!(ctx, x^3 - 2*x + 1);
+
+// Generate optimized Rust function
+let code = f.diff(&x).to_rust_fn("f_prime").unwrap();
+// → pub fn f_prime(x: f64) -> f64 { 3_f64.mul_add(x.powi(2), -2_f64) }
+
+// Common subexpression elimination
+let (subs, result) = f.cse();
+
+// LaTeX rendering
+f.to_latex();                                      // x^{3} - 2 x + 1
+
+// JSON serialization
+f.to_json().unwrap();
+
+// 2D Unicode pretty printing
+f.pretty();
+```
+
+### Compile-Time Dimensional Analysis
+
+```rust
+use symplex::units::*;
+
+let ctx = Context::new();
+let m = Mass::symbol(&ctx, "m");
+let a = Acceleration::symbol(&ctx, "a");
+let h = Length::symbol(&ctx, "h");
+
+// dim! macro: type-safe dimensional arithmetic
+let force = dim!(ctx, Force: &m * &a);
+let energy = dim!(ctx, Energy: &m * &a * &h);
+
+// Mass + Length won't compile — dimension mismatch caught at compile time
+// 30 named quantity types, ~100 unit conversions
+// Typed calculus: d(Length)/d(Time) → Velocity
+```
+
+---
+
+## Design Principles
+
+1. **Exact by default.** Every number is `Ratio<BigInt>`. No floating-point contamination. `0.1 + 0.2 == 3/10`, not `0.30000000000000004`. Floats only appear on explicit `eval_f64()`.
+
+2. **Explicit contexts.** Every expression belongs to a `Context`. No hidden global state. Mixing expressions from different contexts is caught immediately (compiler-enforced private field + runtime `checked_id` guard).
+
+3. **Type-safe expressions.** `Ex` (numeric), `BoolEx` (boolean), `SetEx` (set-valued) are distinct types. `sin(bool_expr)` is a compile error.
+
+4. **Thread-safe.** `Context` is `Clone` (Arc), `Ex` is `Send + Sync`. Multiple threads can share a context safely.
+
+5. **No recursion.** All tree traversals use explicit stacks. Deep expressions don't blow the call stack.
+
+6. **Never silently wrong.** Cross-context mixing panics with a clear message. Numerical evaluation returns `Result`. Unevaluated forms are honest — `∫x^x dx` returns `Integral(x^x, x)`, not garbage.
+
+---
+
+## The API Model
+
+Every symbolic operation that might not produce a closed-form result has two entry points:
+
+| Intent | Method | Returns | When to use |
+|--------|--------|---------|-------------|
+| Give me math | `integrate(&x)` | `Ex` (always — may contain `Integral` nodes) | Interactive exploration, chaining |
+| Fail if you can't | `try_integrate(&x)` | `Result<Ex>` | Pipelines, codegen, safety-critical |
+
+Check any expression for unevaluated forms:
+```rust
+let anti = hard_expr.integrate(&x);
+if anti.has_unevaluated() {
+    println!("integration produced formal result: {anti}");
+}
+```
+
+Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`) return `Ex` with no `try_` variant — "unchanged" is a valid answer.
+
+Numeric boundary operations (`eval_f64`, `compile`, `to_rust_fn`) always return `Result` — crossing from symbols to numbers can fail if free symbols remain.
+
+Queries (`is_positive`, `degree`, `equals`) return `Option<bool>` or `Option<T>` — three-valued: yes, no, or unknown.
+
+---
 
 ## Comparison with SymPy
 
-A concise, honest comparison based on source code inspection of both projects.
-For the full breakdown see [`docs/COMPARISON.md`](docs/COMPARISON.md).
-
-### Where symplex matches or exceeds SymPy
-
 | Feature | symplex | SymPy |
-|---------|:-------:|:-----:|
-| Expression system | ✅ Arena hash-consing, O(1) equality | ✅ Python objects |
-| Thread safety | ✅ `Send + Sync` from day one | ❌ (GIL) |
-| Type-safe expressions | ✅ `Ex` vs `BoolEx` vs `SetEx` (compile-time) | ❌ (duck-typed) |
-| Differentiation | ✅ All functions, chain/product rule | ✅ |
-| Integration | ✅ 66+ forms, by-parts, u-sub, heurisch | ✅ (+ Risch + Meijer G) |
-| Polynomial solving (through quartic) | ✅ Cardano + Ferrari | ✅ (+ quintic) |
-| Gröbner bases | ✅ Buchberger + FGLM | ✅ Buchberger + F5B + FGLM |
-| Matrix algebra | ✅ 65 methods, **all return `Result`** (no panics) | ✅ (raises exceptions) |
-| Eigenvectors + Jordan form | ✅ Exact multiplicities via Yun SFD | ✅ DomainMatrix fast path |
-| Matrix exponential | ✅ Exact via Jordan decomposition | ✅ Via Jordan form |
-| Diagonalization | ✅ P, D with P·D·P⁻¹=A verification | ✅ |
-| Trig simplification (Fu) | ✅ 17 transforms + greedy | ✅ 24 transforms + chains |
-| ODE solving | ✅ 11 classes + systems via exact matrix_exp | ✅ 30+ classes + Lie group |
-| Assumption-aware simplification | ✅ `refine()` auto-fires in `simplify()` | ✅ `refine()` 12 handlers |
-| LambertW | ✅ First-class ExprNode, diff, 8 values, Halley evalf | ✅ Via mpmath |
-| Bessel J/Y eval | ✅ Ascending series + full Hankel P/Q + Brent-McMillan γ | ✅ Via mpmath |
-| Pretty printing (2D terminal) | ✅ Unicode + ASCII dual mode | ✅ `pprint` |
-| Laplace / Z / Fourier transforms | ✅ Forward + inverse | ✅ (+ Mellin + Hankel) |
-| Hypergeometric summation (Gosper) | ✅ | ✅ |
-| Formal power series | ✅ | ✅ |
-| Finite differences (Fornberg) | ✅ | ✅ |
-| Robotics (DH, FK, Jacobian, dynamics) | ✅ End-to-end pipeline | ❌ (separate: mechanics) |
-| Control systems | ✅ State-space, TF, Routh, Ackermann | ✅ (control module) |
-| Rust code generation | ✅ Complete functions with CSE, FMA, Horner, sin_cos | ❌ |
-| `no_std` / embedded codegen | ✅ `f32`, `libm` | ❌ |
-| Compile-time dimensional analysis | ✅ 30 types, `dim!` macro, typed calculus | ❌ (runtime only) |
-| Cross-entry matrix CSE | ✅ | ❌ |
-| Build-script integration | ✅ `symplex-build` | ❌ |
-| LaTeX output | ✅ | ✅ |
+|---------|---------|-------|
+| Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
+| Differentiation | ✅ Complete | ✅ Complete |
+| Integration | ✅ 15+ strategies | ✅ Risch + heurisch (broader) |
+| Polynomial solving | ✅ Through quartic + RootOf | ✅ Through quartic + CRootOf |
+| Series expansion | ✅ Taylor/Laurent/FPS | ✅ + O() notation |
+| Limits | ✅ Gruntz algorithm | ✅ Gruntz (more mature) |
+| Simplification | ✅ 24 rules + Fu | ✅ More strategies |
+| Matrices | ✅ Eigenvalues, Jordan form | ✅ More decompositions |
+| ODE solving | ✅ 13 classes | ✅ More classes |
+| Laplace/Fourier | ✅ Table-based | ✅ Broader tables |
+| Code generation | ✅ Optimized Rust with CSE | ✅ Python/C/Fortran |
+| Dimensional analysis | ✅ Compile-time types | ❌ Not built-in |
+| Thread safety | ✅ Send + Sync, no GIL | ❌ GIL-bound |
+| Type safety | ✅ Ex/BoolEx/SetEx | ❌ Runtime only |
+| Language | Rust (compiled) | Python (interpreted) |
 
-### Where SymPy is significantly stronger
+**Where SymPy is stronger:** geometry, statistics, tensor algebra, quantum mechanics, combinatorics, Diophantine equations, PDE solving, and 30 years of community contributions.
 
-| Feature | SymPy | symplex |
-|---------|:-----:|:-------:|
-| Risch integration algorithm | ✅ Full differential extension tower | ❌ |
-| Meijer G-function integration | ✅ Indefinite + definite | ❌ |
-| Geometry | ✅ Points, lines, circles, polygons, convex hull | ❌ |
-| Statistics | ✅ 50+ distributions, Markov chains | ❌ |
-| Combinatorics | ✅ Permutation groups (Schreier-Sims), partitions | ❌ |
-| Tensor calculus | ✅ Abstract tensors, Butler-Portugal canonicalization | ❌ |
-| Differential geometry | ✅ Manifolds, forms, Christoffel, Riemann/Ricci | ❌ |
-| Quantum mechanics | ✅ Kets/Bras, gates, Grover, Shor, QFT | ❌ |
-| Holonomic functions | ✅ D-finite arithmetic, Ore algebra | ❌ |
-| Lie algebras | ✅ All classical + exceptional types | ❌ |
-| PDE solving | ✅ 1st-order linear | ❌ |
-| Diophantine equations | ✅ 10+ types (Pell, Thue, etc.) | ❌ |
-| Recurrence relations | ✅ `rsolve` | ❌ |
-| Code generation (multi-language) | ✅ C, C++, Fortran, Julia, JS, GLSL, R, Octave | Rust only |
-| SAT solving | ✅ DPLL + external solvers | ❌ |
-| Hypergeometric expansion | ✅ pFq → named functions | ❌ |
-| Number theory depth | ✅ ECM, Quadratic Sieve, discrete log | 🔸 Basic |
-| Special functions depth | ✅ Elliptic integrals, Mathieu, Fresnel, Airy, zeta | 🔸 Gamma, erf, Bessel, LambertW |
-| Parser ecosystem | ✅ LaTeX, Mathematica, Maxima, C, Fortran | 🔸 Runtime parser only |
-| Community & maturity | ✅ 17+ years, 1000+ contributors | Young project |
+**Where symplex is stronger:** compile-time type safety, thread safety, dimensional analysis with compile-time checking, optimized Rust code generation, and exact arithmetic without Python overhead.
 
-**Bottom line:** symplex covers the core **algebra → calculus → linear algebra →
-robotics → codegen** pipeline with Rust-native performance, compile-time type safety,
-a no-panic public API (`Result` everywhere), and thread-safe `Send + Sync`
-expressions. SymPy has 20+ years of breadth across geometry, statistics, tensors,
-quantum mechanics, and advanced number theory. Where both overlap, symplex offers
-stronger error handling, better code generation (automatic CSE, FMA, `no_std`),
-compile-time dimensional analysis, and zero-GIL parallelism that SymPy cannot match.
+---
 
-## API Documentation
+## Examples
 
-Full method-level documentation is on **[docs.rs/symplex](https://docs.rs/symplex)**.
+```
+cargo run --example quickstart          # Core CAS operations
+cargo run --example calculus            # Differentiation, integration, series, limits
+cargo run --example equation_solving    # Polynomial, transcendental, system solving
+cargo run --example matrix_algebra      # Eigenvalues, inverse, characteristic polynomial
+cargo run --example ode_solving         # ODE classification and solving
+cargo run --example laplace_transforms  # Forward/inverse Laplace transforms
+cargo run --example complex_numbers     # Complex arithmetic and Euler's formula
+cargo run --example number_theory       # Primality, factorization, CRT
+cargo run --example optimization        # Gradient, Hessian, critical points
+cargo run --example latex_output        # LaTeX rendering
+cargo run --example solve_system        # Gröbner-based polynomial systems
+cargo run --example control_system      # State-space, transfer functions
+cargo run --example dynamics            # Lagrangian mechanics
+cargo run --example robotics_codegen    # DH → Jacobian → Rust code
+cargo run --example units_physics       # Dimensional analysis
+cargo run --example repl                # Interactive REPL
+```
 
-Key entry points:
-
-- [`symplex::prelude`](https://docs.rs/symplex/latest/symplex/prelude/) — `Ex`, `BoolEx`, `syms!`, `expr!`, `matrix!`, `eq!`
-- [`symplex::units`](https://docs.rs/symplex/latest/symplex/units/) — compile-time dimensional analysis, 30 quantity types, typed calculus
-- [`symplex::robotics`](https://docs.rs/symplex/latest/symplex/robotics/) — DH parameters, forward kinematics, inverse kinematics
-- [`symplex::dynamics`](https://docs.rs/symplex/latest/symplex/dynamics/) — Euler-Lagrange, mass/Coriolis/gravity matrices
-- [`symplex::control`](https://docs.rs/symplex/latest/symplex/control/) — state-space, transfer functions, stability
-- [`symplex::quaternion`](https://docs.rs/symplex/latest/symplex/quaternion/) — quaternion algebra
-- [`symplex::matrix`](https://docs.rs/symplex/latest/symplex/matrix/) — symbolic matrices (65 methods, all `Result`), eigenvectors, Jordan form, matrix exponential, Jacobian
+---
 
 ## Dependencies
 
-All dependencies are MIT or Apache-2.0 licensed. No C bindings. No LGPL.
+All MIT or Apache-2.0. No C bindings. No LGPL.
 
-| Crate | Purpose |
-|-------|---------|
-| `num-bigint` / `num-rational` | Exact arbitrary-precision arithmetic |
-| `parking_lot` | Fast reader-writer locks for the arena |
-| `astro-float` | Arbitrary-precision floating-point evaluation |
-| `serde` / `serde_json` | Serialization and JSON interchange |
-| `symplex-macros` | Proc macros (`expr!`, `rule!`, `matrix!`, `eq!`, `dim!`) |
+Core: `num-bigint`, `num-rational`, `num-traits`, `num-integer`, `smallvec`, `rustc-hash`, `bitflags`, `parking_lot`, `thiserror`, `astro-float`, `serde`, `serde_json`, `tracing`, `typenum`.
+
+Proc macros: `syn`, `quote`, `proc-macro2`.
 
 ## Requirements
 
 Rust 1.93+ (Edition 2024).
 
-## Contributing
-
-Contributions are welcome. Please open an issue before starting large changes.
-
-```
-cargo test                  # Run the full test suite (5,400+ tests, 323 SymPy cross-validation fixtures)
-cargo test --doc            # Doc-tests only
-cargo bench                 # Benchmarks (criterion)
-RUST_LOG=symplex=debug cargo run --example quickstart  # With tracing output
-```
-
-The crate uses zero-cost `tracing` instrumentation throughout. Enable structured
-logging with the `RUST_LOG` environment variable to see simplification steps,
-integration attempts, and Gröbner basis computation in real time.
-
 ## License
 
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
-
-at your option.
+Dual-licensed under [MIT](LICENSE-MIT) and [Apache 2.0](LICENSE-APACHE).
