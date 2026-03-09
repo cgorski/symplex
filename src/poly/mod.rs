@@ -3,6 +3,7 @@ pub mod multipoly;
 pub mod groebner;
 pub(crate) mod polybridge;
 pub mod polysys;
+pub(crate) mod roots;
 pub(crate) mod sturm;
 
 // Re-export commonly used items so crate::poly::Poly still works

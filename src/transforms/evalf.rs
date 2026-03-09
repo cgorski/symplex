@@ -976,78 +976,23 @@ fn eval_node(
                 }
             };
 
-            // ── Cauchy's root bound: |x| < 1 + max(|a_i / a_n|) ──
-            let lc = match poly.leading_coeff() {
-                Some(c) if !c.is_zero() => c.clone(),
-                _ => {
-                    return Err(SymplexError::Unevaluable {
-                        reason: "RootOf polynomial has zero leading coefficient".into(),
-                    })
-                }
-            };
-            let mut max_ratio = Ratio::<BigInt>::zero();
-            for c in poly.coeffs() {
-                let r = c / &lc;
-                let abs_r = if r < Ratio::zero() { -r } else { r };
-                if abs_r > max_ratio {
-                    max_ratio = abs_r;
-                }
-            }
-            let bound = max_ratio + Ratio::from_integer(BigInt::from(1));
+            // ── Find all roots via Aberth's method ────────────────
+            // Aberth handles both real and complex roots simultaneously
+            // with cubic convergence.
+            let roots = crate::poly::roots::aberth_roots(&poly, prec + 64, 200);
 
-            // ── Sturm isolation of real roots ─────────────────────
-            let sturm = crate::poly::sturm::SturmChain::new(&poly);
-            let neg_bound = -bound.clone();
-            let mut intervals = sturm.isolate_roots_in(&neg_bound, &bound, 60);
-
-            // Sort intervals left-to-right (by midpoint) so the
-            // index mapping is deterministic.
-            intervals.sort_by(|a, b| (&a.0 + &a.1).cmp(&(&b.0 + &b.1)));
-
-            if idx >= intervals.len() {
+            if idx >= roots.len() {
                 return Err(SymplexError::Unevaluable {
                     reason: format!(
-                        "RootOf index {} exceeds the {} real root(s); \
-                         complex roots are not yet evaluable",
+                        "RootOf index {} exceeds the {} root(s) found",
                         idx,
-                        intervals.len()
+                        roots.len()
                     ),
                 });
             }
 
-            let (mut lo, mut hi) = intervals[idx].clone();
-
-            // ── Quick check: exact root at an endpoint ────────────
-            if poly.eval(&lo).is_zero() {
-                return Ok((ratio_to_bigfloat(&lo, prec, rm), BigFloat::new(prec)));
-            }
-            if poly.eval(&hi).is_zero() {
-                return Ok((ratio_to_bigfloat(&hi, prec, rm), BigFloat::new(prec)));
-            }
-
-            // ── Bisection refinement ──────────────────────────────
-            // Each iteration adds ~1 bit of precision.
-            let iterations = prec + 32; // guard bits
-            let two = Ratio::from_integer(BigInt::from(2));
-            let sign_lo_neg = poly.eval(&lo) < Ratio::zero();
-
-            for _ in 0..iterations {
-                let mid = (&lo + &hi) / &two;
-                let v = poly.eval(&mid);
-                if v.is_zero() {
-                    lo = mid.clone();
-                    hi = mid;
-                    break;
-                }
-                if (v < Ratio::zero()) == sign_lo_neg {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-
-            let root = (&lo + &hi) / two;
-            Ok((ratio_to_bigfloat(&root, prec, rm), BigFloat::new(prec)))
+            let (re, im) = &roots[idx];
+            Ok((re.clone(), im.clone()))
         }
 
         ExprNode::DSolve(_, _, _) => Err(SymplexError::Unevaluable {
@@ -1115,11 +1060,11 @@ fn eval_node_or_subtree(
 // Complex arithmetic helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn c_zero(prec: usize) -> Complex {
+pub(crate) fn c_zero(prec: usize) -> Complex {
     (BigFloat::new(prec), BigFloat::new(prec))
 }
 
-fn c_one(prec: usize) -> Complex {
+pub(crate) fn c_one(prec: usize) -> Complex {
     (BigFloat::from_i32(1, prec), BigFloat::new(prec))
 }
 
@@ -1127,19 +1072,19 @@ fn c_i(prec: usize) -> Complex {
     (BigFloat::new(prec), BigFloat::from_i32(1, prec))
 }
 
-fn c_from_real(r: BigFloat, prec: usize) -> Complex {
+pub(crate) fn c_from_real(r: BigFloat, prec: usize) -> Complex {
     (r, BigFloat::new(prec))
 }
 
-fn c_add(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+pub(crate) fn c_add(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
     (a.0.add(&b.0, prec, rm), a.1.add(&b.1, prec, rm))
 }
 
-fn c_sub(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+pub(crate) fn c_sub(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
     (a.0.sub(&b.0, prec, rm), a.1.sub(&b.1, prec, rm))
 }
 
-fn c_mul(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+pub(crate) fn c_mul(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
     // (a+bi)(c+di) = (ac-bd) + (ad+bc)i
     let ac = a.0.mul(&b.0, prec, rm);
     let bd = a.1.mul(&b.1, prec, rm);
@@ -1148,7 +1093,7 @@ fn c_mul(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
     (ac.sub(&bd, prec, rm), ad.add(&bc, prec, rm))
 }
 
-fn c_div(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+pub(crate) fn c_div(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
     // (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c²+d²)
     let ac = a.0.mul(&b.0, prec, rm);
     let bd = a.1.mul(&b.1, prec, rm);
@@ -1163,11 +1108,11 @@ fn c_div(a: &Complex, b: &Complex, prec: usize, rm: RoundingMode) -> Complex {
 }
 
 #[allow(unused_variables)]
-fn c_neg(a: &Complex, prec: usize, rm: RoundingMode) -> Complex {
+pub(crate) fn c_neg(a: &Complex, prec: usize, rm: RoundingMode) -> Complex {
     (a.0.neg(), a.1.neg())
 }
 
-fn c_abs(a: &Complex, prec: usize, rm: RoundingMode) -> BigFloat {
+pub(crate) fn c_abs(a: &Complex, prec: usize, rm: RoundingMode) -> BigFloat {
     // |z| = sqrt(re² + im²)
     let re2 = a.0.mul(&a.0, prec, rm);
     let im2 = a.1.mul(&a.1, prec, rm);
