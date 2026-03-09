@@ -410,31 +410,36 @@ fn parse_nested_functions() {
 
 #[test]
 fn from_i32_into_ex() {
-    let x: Ex = 42i32.into();
+    let ctx = Context::new();
+    let x = ctx.int(42);
     assert_eq!(format!("{x}"), "42");
 }
 
 #[test]
 fn from_i64_into_ex() {
-    let x: Ex = 100i64.into();
+    let ctx = Context::new();
+    let x = ctx.int(100);
     assert_eq!(format!("{x}"), "100");
 }
 
 #[test]
 fn from_u8_into_ex() {
-    let x: Ex = 7u8.into();
+    let ctx = Context::new();
+    let x = ctx.int(7);
     assert_eq!(format!("{x}"), "7");
 }
 
 #[test]
 fn from_u64_into_ex() {
-    let x: Ex = 255u64.into();
+    let ctx = Context::new();
+    let x = ctx.int(255);
     assert_eq!(format!("{x}"), "255");
 }
 
 #[test]
 fn from_usize_into_ex() {
-    let x: Ex = 99usize.into();
+    let ctx = Context::new();
+    let x = ctx.int(99);
     assert_eq!(format!("{x}"), "99");
 }
 
@@ -898,9 +903,10 @@ fn workflow_parse_then_integrate() {
 
 #[test]
 fn workflow_from_into_then_compute() {
+    let ctx = Context::new();
     // Use From<i32> to build an expression, then compute
-    let two: Ex = 2i32.into();
-    let three: Ex = 3i32.into();
+    let two = ctx.int(2);
+    let three = ctx.int(3);
     let result = &two + &three;
     assert_eq!(format!("{result}"), "5", "2+3=5 via From");
 }

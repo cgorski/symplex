@@ -204,12 +204,13 @@ fn exhaustive_factor_expand_roundtrip() {
 /// Verify all From<T> conversions produce correct values.
 #[test]
 fn exhaustive_from_conversions() {
+    let ctx = Context::new();
     for n in -50i64..=50 {
-        let ex: Ex = n.into();
+        let ex = ctx.int(n as i64);
         assert_eq!(format!("{ex}"), n.to_string(), "From<i64>({n})");
     }
     for n in 0u32..=100 {
-        let ex: Ex = n.into();
+        let ex = ctx.int(n as i64);
         assert_eq!(format!("{ex}"), n.to_string(), "From<u32>({n})");
     }
 }

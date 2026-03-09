@@ -176,19 +176,22 @@ fn parse_log_two_args() {
 
 #[test]
 fn from_i32() {
-    let x: Ex = 42i32.into();
+    let ctx = Context::new();
+    let x = ctx.int(42);
     assert_eq!(format!("{x}"), "42");
 }
 
 #[test]
 fn from_i64() {
-    let x: Ex = 100i64.into();
+    let ctx = Context::new();
+    let x = ctx.int(100);
     assert_eq!(format!("{x}"), "100");
 }
 
 #[test]
 fn from_u8() {
-    let x: Ex = 255u8.into();
+    let ctx = Context::new();
+    let x = ctx.int(255);
     assert_eq!(format!("{x}"), "255");
 }
 

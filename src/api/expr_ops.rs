@@ -278,62 +278,7 @@ macro_rules! impl_binary_binop_i64 {
 impl_binary_binop_i64!(Sub, sub, sub);
 impl_binary_binop_i64!(Div, div, div);
 
-// ═══════════════════════════════════════════════════════════════════════════
-// From<T> conversions — use a shared default context so that all
-// values produced via `From` are in the same context and can be combined.
-// ═══════════════════════════════════════════════════════════════════════════
 
-/// Returns a lazily-initialised shared [`Context`] used by every
-/// `From<integer>` conversion so the resulting expressions are
-/// cross-compatible.
-fn from_integer_ctx() -> &'static Context {
-    static CTX: std::sync::OnceLock<Context> = std::sync::OnceLock::new();
-    CTX.get_or_init(Context::new)
-}
-
-macro_rules! impl_from_integer {
-    ($($t:ty),+) => {
-        $(
-            impl From<$t> for Ex {
-                fn from(n: $t) -> Self {
-                    from_integer_ctx().int(n as i64)
-                }
-            }
-        )+
-    };
-}
-
-impl_from_integer!(i8, i16, i32, i64, u8, u16, u32, isize);
-
-impl From<u64> for Ex {
-    fn from(n: u64) -> Self {
-        let ctx = from_integer_ctx();
-        if n <= i64::MAX as u64 {
-            ctx.int(n as i64)
-        } else {
-            let id = {
-                let mut inner = ctx.inner.write();
-                inner.arena.big_int(num_bigint::BigInt::from(n))
-            };
-            Ex::from_raw_parts(ctx.id, Arc::clone(&ctx.inner), id)
-        }
-    }
-}
-
-impl From<usize> for Ex {
-    fn from(n: usize) -> Self {
-        let ctx = from_integer_ctx();
-        if n <= i64::MAX as usize {
-            ctx.int(n as i64)
-        } else {
-            let id = {
-                let mut inner = ctx.inner.write();
-                inner.arena.big_int(num_bigint::BigInt::from(n))
-            };
-            Ex::from_raw_parts(ctx.id, Arc::clone(&ctx.inner), id)
-        }
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sum and Product trait implementations
