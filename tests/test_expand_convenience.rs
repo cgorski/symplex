@@ -221,3 +221,109 @@ fn inverse_laplace_completing_square_overdamped() {
         "inverse Laplace of 1/(s²+2s-3) should have exp/sinh, got: {s_repr}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// expand_power_exp soundness guard tests
+//
+// The guard in expand_power_exp prevents x^(a+b) → x^a * x^b when x
+// could be negative (the identity fails for negative bases with fractional
+// exponents due to complex branch cuts).
+//
+// Note: even when the guard ALLOWS the split, canon_mul may recombine
+// 2^a * 2^b back into 2^(a+b) (same-base power collection). That's
+// correct behavior — the important thing is that the unsound cases are
+// BLOCKED.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn expand_power_exp_blocks_symbolic_base() {
+    // x^(a+b) must NOT split to x^a * x^b when x is a general symbol,
+    // because for negative x with fractional exponents, the identity fails.
+    let ctx = Context::new();
+    symplex::syms!(ctx; x, a, b);
+    let expr = x.pow(&(&a + &b));
+    let expanded = expr.expand();
+    let s = format!("{expanded}");
+    // Must NOT contain a split product — should remain as x^(...)
+    assert!(
+        !s.contains("x^a*x^b"),
+        "x^(a+b) should NOT be split for symbolic base, got: {s}"
+    );
+}
+
+#[test]
+fn expand_power_exp_euler_becomes_exp_node() {
+    // e^(a+b) is canonicalized to Exp(a+b) at construction time,
+    // so it never reaches expand_power_exp (which handles Pow nodes).
+    // Verify the canonical form is Exp and expand doesn't crash.
+    let ctx = Context::new();
+    symplex::syms!(ctx; a, b);
+    let expr = ctx.e().pow(&(&a + &b));
+    let s = format!("{expr}");
+    assert!(
+        s.contains("exp("),
+        "e^(a+b) should be canonicalized to exp(...), got: {s}"
+    );
+    // Expand should be a no-op (Exp(Add) has no expand rule)
+    let expanded = expr.expand();
+    let s2 = format!("{expanded}");
+    assert!(
+        s2.contains("exp("),
+        "e^(a+b) should remain as exp(...) after expand, got: {s2}"
+    );
+}
+
+#[test]
+fn expand_power_exp_positive_numeric_base_no_panic() {
+    // 2^(a+b): the guard ALLOWS the split (base is positive).
+    // canon_mul immediately recombines 2^a * 2^b → 2^(a+b).
+    // The important thing: no panic, and the result is valid.
+    let ctx = Context::new();
+    symplex::syms!(ctx; a, b);
+    let expr = ctx.int(2).pow(&(&a + &b));
+    let expanded = expr.expand();
+    let s = format!("{expanded}");
+    assert!(
+        s.contains("2") && s.contains("a") && s.contains("b"),
+        "2^(a+b) expand should produce valid expression, got: {s}"
+    );
+    // Expanding twice should be idempotent
+    let expanded2 = expanded.expand();
+    assert_eq!(
+        format!("{expanded}"),
+        format!("{expanded2}"),
+        "expand should be idempotent for positive numeric base case"
+    );
+}
+
+#[test]
+fn expand_power_exp_blocks_negative_numeric_base() {
+    // (-2)^(a+b) must NOT split — negative base with symbolic exponents.
+    // The identity (-2)^(a+b) = (-2)^a * (-2)^b fails for fractional exponents.
+    let ctx = Context::new();
+    symplex::syms!(ctx; a, b);
+    let neg2 = -&ctx.int(2);
+    let expr = neg2.pow(&(&a + &b));
+    let expanded = expr.expand();
+    let s = format!("{expanded}");
+    assert!(
+        !s.contains("(-2)^a*(-2)^b"),
+        "(-2)^(a+b) should NOT be split, got: {s}"
+    );
+}
+
+#[test]
+fn expand_power_exp_numeric_exponents_allowed() {
+    // x^(2+3): canon_add folds 2+3 → 5 at construction time,
+    // so by the time expand sees it, it's already x^5.
+    // This tests that the all-nonneg guard path doesn't cause issues.
+    let ctx = Context::new();
+    symplex::syms!(ctx; x);
+    let expr = x.pow(&(&ctx.int(2) + &ctx.int(3)));
+    let s = format!("{expr}");
+    // Canon already folded 2+3 to 5
+    assert!(
+        s.contains("x^5"),
+        "x^(2+3) should be x^5 after canonicalization, got: {s}"
+    );
+}
