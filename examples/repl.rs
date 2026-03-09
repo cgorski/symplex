@@ -172,7 +172,7 @@ fn main() {
                         println!("  = {}", expr.integrate(&x));
                     }
                     ":json" => {
-                        println!("  {}", expr.to_json_pretty());
+                        println!("  {}", expr.to_json_pretty().unwrap());
                     }
                     _ => {
                         println!("  unknown command: {command}. Type :help for help.");

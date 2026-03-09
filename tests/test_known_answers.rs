@@ -791,21 +791,28 @@ fn solve_factored() {
 fn solve_exp_minus_1_non_polynomial() {
     let x = symplex::default_context().symbol("x");
     let r = (&x.exp() - 1).solve_or_empty(&x);
-    // exp(x)-1 is not polynomial, solver returns empty
-    assert!(r.is_empty(), "exp(x)-1 is non-polynomial: len={}", r.len());
+    // exp(x)-1=0 → x=ln(1)=0, the internal solver handles this via inversion peeling.
+    assert!(!r.is_empty(), "exp(x)-1 should be solvable now via inversion peeling");
+    let val = r[0].eval_f64().expect("root should evaluate");
+    assert!(val.abs() < 1e-9, "root should be 0, got {val}");
 }
 
 #[test]
 fn solve_sqrt_x_minus_2_non_polynomial() {
     let x = symplex::default_context().symbol("x");
     let r = (&x.sqrt() - 2).solve_or_empty(&x);
-    assert!(r.is_empty(), "sqrt(x)-2 is non-polynomial: len={}", r.len());
+    // sqrt(x)-2=0 → x=4, the internal solver handles this via inversion peeling.
+    assert!(!r.is_empty(), "sqrt(x)-2 should be solvable now via inversion peeling");
+    let val = r[0].eval_f64().expect("root should evaluate");
+    assert!((val - 4.0).abs() < 1e-9, "root should be 4, got {val}");
 }
 
 #[test]
 fn solve_sin_non_polynomial() {
     let x = symplex::default_context().symbol("x");
-    assert!(x.sin().solve(&x).is_err(), "sin(x) is non-polynomial");
+    // sin(x)=0 is now handled by the internal solver via inversion peeling.
+    let result = x.sin().solve(&x);
+    assert!(result.is_ok(), "sin(x) should be solvable via inversion peeling, got: {:?}", result.err());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

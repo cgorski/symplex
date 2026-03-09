@@ -199,7 +199,7 @@ proptest! {
     #[test]
     fn stress_serde(e in arb_expr(2)) {
         let tree = e.to_tree();
-        let json = e.to_json();
+        let json = e.to_json().unwrap();
         prop_assert!(!json.is_empty());
         // Round-trip
         let ctx = symplex::default_context();

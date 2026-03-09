@@ -51,6 +51,7 @@ use parking_lot::RwLock;
 use tracing::debug_span;
 
 use crate::api::context::ContextInner;
+use crate::base::errors::SymplexError;
 use crate::base::node::{CtxId, ExprId};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -743,7 +744,7 @@ impl<S: Sort> Expr<S> {
     /// Serialize this expression to a JSON string.
     ///
     /// This is a convenience shorthand for
-    /// `serde_json::to_string(&expr.to_tree()).unwrap()`.
+    /// `serde_json::to_string(&expr.to_tree())`.
     ///
     /// # Examples
     ///
@@ -751,19 +752,24 @@ impl<S: Sort> Expr<S> {
     /// use symplex::prelude::*;
     ///
     /// let x = symplex::default_context().symbol("x");
-    /// let json = x.powi(2).to_json();
+    /// let json = x.powi(2).to_json().unwrap();
     /// assert!(json.contains("\"type\":\"Pow\""));
     /// ```
-    #[must_use = "returns a JSON string; does not modify in place"]
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(&self.to_tree()).expect("ExprTree serialization should not fail")
+    pub fn to_json(&self) -> Result<String, SymplexError> {
+        serde_json::to_string(&self.to_tree())
+            .map_err(|e| SymplexError::ComputationFailed {
+                operation: "to_json",
+                reason: e.to_string(),
+            })
     }
 
     /// Serialize this expression to a pretty-printed JSON string.
-    #[must_use = "returns a JSON string; does not modify in place"]
-    pub fn to_json_pretty(&self) -> String {
+    pub fn to_json_pretty(&self) -> Result<String, SymplexError> {
         serde_json::to_string_pretty(&self.to_tree())
-            .expect("ExprTree serialization should not fail")
+            .map_err(|e| SymplexError::ComputationFailed {
+                operation: "to_json_pretty",
+                reason: e.to_string(),
+            })
     }
 
     /// Apply a transformation repeatedly until the expression stops changing,

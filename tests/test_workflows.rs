@@ -637,7 +637,7 @@ fn workflow_equation_solve_check() {
     let poly = equation.to_expr();
     for root in &roots {
         assert!(
-            poly.check_solution(&x, root),
+            poly.check_solution(&x, root).unwrap_or(false),
             "root {root} should satisfy x²-5x+6=0"
         );
     }
@@ -663,7 +663,7 @@ fn workflow_equation_solve_check_cubic() {
     let poly = equation.to_expr();
     for root in &roots {
         assert!(
-            poly.check_solution(&x, root),
+            poly.check_solution(&x, root).unwrap_or(false),
             "root {root} should satisfy x³-x=0"
         );
     }

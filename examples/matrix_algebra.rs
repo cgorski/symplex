@@ -109,7 +109,7 @@ fn main() {
 
     // Verify: eigenvalues should be roots of the char poly
     for ev in &eigenvals {
-        let verified = char_p.check_solution(&x, ev);
+        let verified = char_p.check_solution(&x, ev) == Some(true);
         println!("  λ = {ev}: root of char poly? {verified}");
     }
 

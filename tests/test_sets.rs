@@ -540,7 +540,7 @@ fn json_roundtrip_interval() {
     let ctx = Context::new();
     let i = ctx.interval(&ctx.int(0), &ctx.int(1), false, false);
     let original = format!("{i}");
-    let json = i.as_ex().to_json();
+    let json = i.as_ex().to_json().unwrap();
     let back = ctx.from_json(&json).unwrap();
     assert_eq!(format!("{back}"), original);
 }
@@ -549,7 +549,7 @@ fn json_roundtrip_interval() {
 fn json_roundtrip_empty_set() {
     let ctx = Context::new();
     let e = ctx.empty_set();
-    let json = e.as_ex().to_json();
+    let json = e.as_ex().to_json().unwrap();
     let back = ctx.from_json(&json).unwrap();
     assert_eq!(format!("{back}"), "EmptySet");
 }

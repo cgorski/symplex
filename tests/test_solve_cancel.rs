@@ -120,11 +120,12 @@ fn solve_cubic_rational_roots() {
 
 #[test]
 fn solve_non_polynomial_returns_empty() {
-    // sin(x) = 0 → not polynomial, should error
+    // sin(x) = 0 → now handled by inversion peeling: x = asin(0) = 0
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.sin();
-    assert!(expr.solve(&x).is_err(), "non-polynomial should error");
+    let result = expr.solve(&x);
+    assert!(result.is_ok(), "sin(x) should be solvable via inversion peeling, got: {:?}", result.err());
 }
 
 #[test]

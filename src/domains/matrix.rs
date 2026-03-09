@@ -875,7 +875,7 @@ impl Matrix {
     /// Returns [`SymplexError::ComputationFailed`] if the matrix is not square.
     pub fn eigenvals(&self, var: &Ex) -> Result<Vec<Ex>, SymplexError> {
         let cp = self.char_poly(var)?;
-        let roots = cp.solve_or_empty(var);
+        let roots = cp.solve(var)?;
         let n = self.nrows();
         if roots.len() < n {
             tracing::warn!(

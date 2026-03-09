@@ -33,7 +33,7 @@ fn main() {
 
     // Verify each root
     for r in &roots {
-        let verified = quadratic.check_solution(&x, r);
+        let verified = quadratic.check_solution(&x, r) == Some(true);
         println!("  x = {r}: verified = {verified}");
     }
 
@@ -46,7 +46,7 @@ fn main() {
     );
     // Should be 1, 2, 3
     for r in &roots {
-        let verified = cubic.check_solution(&x, r);
+        let verified = cubic.check_solution(&x, r) == Some(true);
         println!("  x = {r}: verified = {verified}");
     }
 

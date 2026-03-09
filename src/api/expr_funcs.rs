@@ -2669,29 +2669,29 @@ impl Expr<Numeric> {
         let var_id = self.checked_id(var);
         let _span = debug_span!("solve", expr = ?self.raw_id(), var = ?var_id).entered();
         let mut inner = self.inner.write();
-        // Check if the expression is polynomial in var.
+        // Try the internal solver first — it handles polynomials, transcendental
+        // equations (exp, ln, sin, sqrt via inversion peeling), change-of-variable,
+        // Lambert W, and symbolic linear equations.
+        let solutions = inner.arena.solve_for(self.raw_id(), var_id);
+        if !solutions.is_empty() {
+            drop(inner);
+            return Ok(solutions
+                .into_iter()
+                .map(|sol| self.wrap(sol.value))
+                .collect());
+        }
+        // No solutions found — check if the expression is polynomial.
+        // For polynomial expressions, an empty result is valid (no roots).
+        // For non-polynomial expressions, report an error.
         let poly = crate::poly::polybridge::expr_to_poly(&inner.arena, self.raw_id(), var_id);
+        drop(inner);
         if poly.is_none() {
-            // Not a numeric polynomial — try symbolic linear solve as fallback.
-            // This handles cases like k*x - F = 0 where coefficients are symbolic.
-            if let Some(solutions) = crate::transforms::solve::try_solve_linear_symbolic(
-                &mut inner.arena, self.raw_id(), var_id,
-            ) {
-                let wrapped: Vec<Ex> = solutions.into_iter().map(|sol| self.wrap(sol.value)).collect();
-                drop(inner);
-                return Ok(wrapped);
-            }
             return Err(SymplexError::ComputationFailed {
-                operation: "solve_numeric",
-                reason: "expression is not polynomial in the given variable".into(),
+                operation: "solve",
+                reason: "expression is not polynomial in the given variable and transcendental solver could not find solutions".into(),
             });
         }
-        let solutions = inner.arena.solve_for(self.raw_id(), var_id);
-        drop(inner);
-        Ok(solutions
-            .into_iter()
-            .map(|sol| self.wrap(sol.value))
-            .collect())
+        Ok(vec![])
     }
 
     /// Solve `self = 0` for `var`, returning an empty vector on failure.
@@ -3330,8 +3330,8 @@ impl Expr<Numeric> {
     /// Check whether `val` is a solution of `self = 0` for variable `var`.
     ///
     /// Substitutes `val` for `var`, evaluates, and checks if the result is zero.
-    /// Returns `true` if the residual is zero (structurally or numerically),
-    /// `false` if definitely non-zero, or falls back to structural check.
+    /// Returns `Some(true)` if the residual is zero (structurally or numerically),
+    /// `Some(false)` if definitely non-zero, or `None` if the result is ambiguous.
     ///
     /// # Examples
     ///
@@ -3340,23 +3340,31 @@ impl Expr<Numeric> {
     /// let __ctx = symplex::default_context();
     /// symplex::syms!(__ctx; x);
     /// let poly = expr!(x^2 - 4);
-    /// assert!(poly.check_solution(&x, &symplex::default_context().int(2)));
-    /// assert!(poly.check_solution(&x, &symplex::default_context().int(-2)));
-    /// assert!(!poly.check_solution(&x, &symplex::default_context().int(3)));
+    /// assert_eq!(poly.check_solution(&x, &symplex::default_context().int(2)), Some(true));
+    /// assert_eq!(poly.check_solution(&x, &symplex::default_context().int(-2)), Some(true));
+    /// assert_eq!(poly.check_solution(&x, &symplex::default_context().int(3)), Some(false));
     /// ```
     #[must_use]
-    pub fn check_solution(&self, var: &Ex, val: &Ex) -> bool {
+    pub fn check_solution(&self, var: &Ex, val: &Ex) -> Option<bool> {
         let substituted = self.subs(var, val).eval().simplify();
         if substituted.is_zero_structural() {
-            return true;
+            return Some(true);
         }
         // Try numerical evaluation
         if let Ok(v) = substituted.eval_f64() {
-            return v.abs() < 1e-10;
+            if v.abs() < 1e-10 {
+                return Some(true);
+            }
+            if v.abs() > 1e-6 {
+                return Some(false);
+            }
         }
         // Try expand + eval
         let expanded = substituted.expand().eval();
-        expanded.is_zero_structural()
+        if expanded.is_zero_structural() {
+            return Some(true);
+        }
+        None
     }
 
     /// Classify an ODE represented as `self = 0`.

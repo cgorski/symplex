@@ -19,7 +19,7 @@ fn assert_tree_roundtrip(expr: &Ex) {
 
 /// Assert that serializing to JSON and back preserves the display form.
 fn assert_json_roundtrip(expr: &Ex) {
-    let json = expr.to_json();
+    let json = expr.to_json().unwrap();
     let ctx = symplex::default_context();
     let back = ctx.from_json(&json).unwrap();
     assert_eq!(
@@ -136,7 +136,7 @@ fn roundtrip_complex_infinity() {
     let tree = expr.to_tree();
     assert_eq!(tree, ExprTree::ComplexInfinity);
     // Also verify JSON path
-    let json = expr.to_json();
+    let json = expr.to_json().unwrap();
     let back = ctx.from_json(&json).unwrap();
     assert_eq!(format!("{expr}"), format!("{back}"));
 }
@@ -322,7 +322,7 @@ fn roundtrip_piecewise() {
 fn json_roundtrip_complex_expression() {
     let x = symplex::default_context().symbol("x");
     let expr = x.sin().powi(2) + x.cos();
-    let json = expr.to_json();
+    let json = expr.to_json().unwrap();
     assert!(!json.is_empty());
     let ctx = symplex::default_context();
     let back = ctx.from_json(&json).unwrap();
@@ -332,7 +332,7 @@ fn json_roundtrip_complex_expression() {
 #[test]
 fn json_pretty_roundtrip() {
     let expr = symplex::default_context().symbol("x").exp();
-    let json = expr.to_json_pretty();
+    let json = expr.to_json_pretty().unwrap();
     assert!(json.contains('\n'), "pretty JSON should contain newlines");
     let ctx = symplex::default_context();
     let back = ctx.from_json(&json).unwrap();

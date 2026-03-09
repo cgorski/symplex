@@ -574,18 +574,18 @@ fn solve_exp_x_minus_5_is_transcendental() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let eq = &x.exp() - 5;
-    // Currently the public API rejects non-polynomial expressions.
-    let result = eq.solve(&x);
+    // The public API now forwards to the internal solver which handles
+    // transcendental equations via inversion peeling: exp(x)=5 → x=ln(5).
+    let roots = eq.solve(&x).expect("exp(x)-5 should be solvable now");
     assert!(
-        result.is_err(),
-        "exp(x)-5 should fail the polynomial check in the public API"
+        !roots.is_empty(),
+        "exp(x)-5 should have at least one root (ln(5))"
     );
-    // solve_or_empty should return an empty vec
-    let roots = eq.solve_or_empty(&x);
+    // Verify numerically: ln(5) ≈ 1.6094
+    let val = roots[0].eval_f64().expect("root should evaluate");
     assert!(
-        roots.is_empty(),
-        "exp(x)-5 via solve_or_empty should be empty, got {} root(s)",
-        roots.len()
+        (val - 5.0_f64.ln()).abs() < 1e-9,
+        "root should be ln(5), got {val}"
     );
 }
 
@@ -594,11 +594,16 @@ fn solve_ln_x_minus_2_is_transcendental() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let eq = &x.ln() - 2;
+    // The internal solver handles ln(x)=2 → x=e² via inversion peeling.
     let roots = eq.solve_or_empty(&x);
     assert!(
-        roots.is_empty(),
-        "ln(x)-2 via solve_or_empty should be empty for now, got {} root(s)",
-        roots.len()
+        !roots.is_empty(),
+        "ln(x)-2 should have at least one root (e²)"
+    );
+    let val = roots[0].eval_f64().expect("root should evaluate");
+    assert!(
+        (val - std::f64::consts::E.powi(2)).abs() < 1e-9,
+        "root should be e², got {val}"
     );
 }
 
@@ -607,22 +612,31 @@ fn solve_sqrt_x_minus_3_is_transcendental() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let eq = &x.sqrt() - 3;
+    // The internal solver handles sqrt(x)=3 → x=9 via inversion peeling.
     let roots = eq.solve_or_empty(&x);
     assert!(
-        roots.is_empty(),
-        "sqrt(x)-3 via solve_or_empty should be empty for now, got {} root(s)",
-        roots.len()
+        !roots.is_empty(),
+        "sqrt(x)-3 should have at least one root (9)"
+    );
+    let val = roots[0].eval_f64().expect("root should evaluate");
+    assert!(
+        (val - 9.0).abs() < 1e-9,
+        "root should be 9, got {val}"
     );
 }
 
 #[test]
-fn solve_non_polynomial_returns_err() {
+fn solve_non_polynomial_returns_ok_via_inversion() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.sin();
+    // sin(x)=0 is now handled by the internal solver via inversion
+    // peeling: x = asin(0) = 0. The solver finds at least the principal root.
+    let result = expr.solve(&x);
     assert!(
-        expr.solve(&x).is_err(),
-        "sin(x) is not polynomial → solve should return Err"
+        result.is_ok(),
+        "sin(x) should be solvable via inversion peeling, got: {:?}",
+        result.err()
     );
 }
 

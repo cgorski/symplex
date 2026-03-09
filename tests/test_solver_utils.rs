@@ -11,9 +11,9 @@ use symplex::prelude::*;
 fn checksol_quadratic_root() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = expr!(x ^ 2 - 4);
-    assert!(poly.check_solution(&x, &symplex::default_context().int(2)));
-    assert!(poly.check_solution(&x, &symplex::default_context().int(-2)));
-    assert!(!poly.check_solution(&x, &symplex::default_context().int(3)));
+    assert_eq!(poly.check_solution(&x, &symplex::default_context().int(2)), Some(true));
+    assert_eq!(poly.check_solution(&x, &symplex::default_context().int(-2)), Some(true));
+    assert_eq!(poly.check_solution(&x, &symplex::default_context().int(3)), Some(false));
 }
 
 #[test]
@@ -21,24 +21,24 @@ fn checksol_linear() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     // 3x - 9 = 0  →  x = 3
     let eq = &(&x * 3) - 9;
-    assert!(eq.check_solution(&x, &symplex::default_context().int(3)));
-    assert!(!eq.check_solution(&x, &symplex::default_context().int(0)));
+    assert_eq!(eq.check_solution(&x, &symplex::default_context().int(3)), Some(true));
+    assert_eq!(eq.check_solution(&x, &symplex::default_context().int(0)), Some(false));
 }
 
 #[test]
 fn checksol_cubic_root() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let poly = expr!(x ^ 3 - 8);
-    assert!(poly.check_solution(&x, &symplex::default_context().int(2)));
-    assert!(!poly.check_solution(&x, &symplex::default_context().int(-2)));
+    assert_eq!(poly.check_solution(&x, &symplex::default_context().int(2)), Some(true));
+    assert_eq!(poly.check_solution(&x, &symplex::default_context().int(-2)), Some(false));
 }
 
 #[test]
 fn checksol_with_trig() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
     let eq = x.sin();
-    assert!(eq.check_solution(&x, &symplex::default_context().int(0)));
-    assert!(eq.check_solution(&x, &symplex::default_context().pi()));
+    assert_eq!(eq.check_solution(&x, &symplex::default_context().int(0)), Some(true));
+    assert_eq!(eq.check_solution(&x, &symplex::default_context().pi()), Some(true));
 }
 
 #[test]
@@ -48,8 +48,9 @@ fn solve_then_check() {
     let roots = poly.solve_or_empty(&x);
     assert!(!roots.is_empty(), "solver should find roots of x²-5x+6");
     for root in &roots {
-        assert!(
+        assert_eq!(
             poly.check_solution(&x, root),
+            Some(true),
             "root {root} should satisfy x²-5x+6=0"
         );
     }
@@ -58,8 +59,8 @@ fn solve_then_check() {
 #[test]
 fn checksol_zero_is_root_of_x() {
     let __vars_ctx = symplex::default_context().clone(); symplex::syms!(__vars_ctx; x);
-    assert!(x.check_solution(&x, &symplex::default_context().int(0)));
-    assert!(!x.check_solution(&x, &symplex::default_context().int(1)));
+    assert_eq!(x.check_solution(&x, &symplex::default_context().int(0)), Some(true));
+    assert_eq!(x.check_solution(&x, &symplex::default_context().int(1)), Some(false));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
