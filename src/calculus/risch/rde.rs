@@ -697,4 +697,112 @@ mod tests {
         let sol = solve_linear_system(&mut matrix, 1).unwrap();
         assert_eq!(sol[0], rat(3, 1));
     }
+
+    // ── Group 5: RDE edge cases ─────────────────────────────────────
+
+    #[test]
+    fn rde_large_degree_polynomial_rhs() {
+        // y' + y = x^5 + x^3 + x
+        // Solution is a polynomial: y = x^5 - 5x^4 + 20x^3 - 59x^2 + ... (complex)
+        // Just verify a solution exists and satisfies the equation.
+        let f_n = Poly::from_int(1);
+        let f_d = Poly::from_int(1);
+        let g_n = Poly::from_coeffs(vec![
+            rat(0, 1), rat(1, 1), rat(0, 1), rat(1, 1), rat(0, 1), rat(1, 1),
+        ]); // x^5 + x^3 + x
+        let g_d = Poly::from_int(1);
+
+        match solve_risch_de_rational(&f_n, &f_d, &g_n, &g_d) {
+            RdeResult::Solution { numer, denom } => {
+                verify_rde_solution(&f_n, &f_d, &g_n, &g_d, &numer, &denom);
+            }
+            other => panic!("expected Solution for y'+y=x^5+x^3+x, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rde_zero_f_zero_g() {
+        // y' = 0 → y = 0 (trivial)
+        let f_n = Poly::zero();
+        let f_d = Poly::from_int(1);
+        let g_n = Poly::zero();
+        let g_d = Poly::from_int(1);
+
+        match solve_risch_de_rational(&f_n, &f_d, &g_n, &g_d) {
+            RdeResult::Solution { numer, denom } => {
+                assert!(numer.is_zero(), "y should be 0");
+                verify_rde_solution(&f_n, &f_d, &g_n, &g_d, &numer, &denom);
+            }
+            other => panic!("expected Solution(0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rde_negative_constant_f() {
+        // y' - 3y = 0 → y = 0 is the only rational solution
+        // (the general solution is C·exp(3x), not in ℚ(x) for C≠0)
+        let f_n = Poly::from_int(-3);
+        let f_d = Poly::from_int(1);
+        let g_n = Poly::zero();
+        let g_d = Poly::from_int(1);
+
+        match solve_risch_de_rational(&f_n, &f_d, &g_n, &g_d) {
+            RdeResult::Solution { numer, .. } => {
+                assert!(numer.is_zero(), "y' - 3y = 0: only rational solution is y=0");
+            }
+            other => panic!("expected Solution(0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rde_negative_f_with_rhs() {
+        // y' - y = x → solution y = -(x+1) in ℚ(x)?
+        // Check: y' = -1, -y = x+1, so y' - y = -1 + x + 1 = x. ✓
+        let f_n = Poly::from_int(-1);
+        let f_d = Poly::from_int(1);
+        let g_n = Poly::x(); // x
+        let g_d = Poly::from_int(1);
+
+        match solve_risch_de_rational(&f_n, &f_d, &g_n, &g_d) {
+            RdeResult::Solution { numer, denom } => {
+                verify_rde_solution(&f_n, &f_d, &g_n, &g_d, &numer, &denom);
+            }
+            other => panic!("expected Solution for y'-y=x, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rde_quadratic_f_no_solution() {
+        // y' + x²·y = 1
+        // For polynomial y of degree n: deg(y' + x²·y) = n + 2, which must
+        // equal deg(1) = 0. So n + 2 = 0 is impossible → no polynomial solution.
+        // For rational y with denominator: the denominator analysis should also fail.
+        let f_n = Poly::from_coeffs(vec![rat(0, 1), rat(0, 1), rat(1, 1)]); // x²
+        let f_d = Poly::from_int(1);
+        let g_n = Poly::from_int(1);
+        let g_d = Poly::from_int(1);
+
+        let result = solve_risch_de_rational(&f_n, &f_d, &g_n, &g_d);
+        assert!(
+            matches!(result, RdeResult::NoSolution),
+            "y' + x²·y = 1 should have no rational solution, got {:?}", result
+        );
+    }
+
+    #[test]
+    fn rde_f_zero_cubic_g() {
+        // y' = 6x² + 2x + 1 → y = 2x³ + x² + x
+        let f_n = Poly::zero();
+        let f_d = Poly::from_int(1);
+        let g_n = Poly::from_coeffs(vec![rat(1, 1), rat(2, 1), rat(6, 1)]); // 6x²+2x+1
+        let g_d = Poly::from_int(1);
+
+        match solve_risch_de_rational(&f_n, &f_d, &g_n, &g_d) {
+            RdeResult::Solution { numer, denom } => {
+                verify_rde_solution(&f_n, &f_d, &g_n, &g_d, &numer, &denom);
+                assert_eq!(numer.degree(), Some(3), "y should be degree 3");
+            }
+            other => panic!("expected Solution, got {:?}", other),
+        }
+    }
 }

@@ -1007,6 +1007,214 @@ mod tests {
         assert_eq!(result[0].1, expr); // coefficient is the whole expression
     }
 
+    // ── Group 3: Polynomial extraction reconstruction tests ─────────
+    //
+    // Verify that extracted coefficients reconstruct the original:
+    // Σ coeff_k · θ^k should equal the original expression.
+
+    #[test]
+    fn extract_poly_reconstruct_linear() {
+        // 3·θ + 5: extract, then rebuild 3·θ + 5 from coefficients.
+        let mut arena = Arena::new();
+        let theta = sym(&mut arena, "t0");
+        let three = arena.int(3);
+        let five = arena.int(5);
+        let three_theta = arena.mul(&[three, theta]);
+        let expr = arena.add(&[three_theta, five]);
+
+        let terms = extract_poly_in_ext(&arena, expr, theta).unwrap();
+
+        // Reconstruct: Σ coeff_k · θ^k
+        let mut reconstructed_parts: Vec<ExprId> = Vec::new();
+        for &(power, coeff) in &terms {
+            if power == 0 {
+                reconstructed_parts.push(coeff);
+            } else if power == 1 {
+                let term = arena.mul(&[coeff, theta]);
+                reconstructed_parts.push(term);
+            } else {
+                let exp = arena.int(power as i64);
+                let theta_k = arena.pow(theta, exp);
+                let term = arena.mul(&[coeff, theta_k]);
+                reconstructed_parts.push(term);
+            }
+        }
+        let reconstructed = if reconstructed_parts.len() == 1 {
+            reconstructed_parts[0]
+        } else {
+            arena.add(&reconstructed_parts)
+        };
+
+        // Verify: substitute θ = 7 into both and compare.
+        let seven = arena.int(7);
+        let orig_val = crate::transforms::subs::subs(&mut arena, expr, theta, seven);
+        let orig_eval = crate::transforms::eval::eval(&mut arena, orig_val);
+        let recon_val = crate::transforms::subs::subs(&mut arena, reconstructed, theta, seven);
+        let recon_eval = crate::transforms::eval::eval(&mut arena, recon_val);
+        assert_eq!(
+            orig_eval, recon_eval,
+            "reconstruction at θ=7: orig={}, recon={}",
+            display(&arena, orig_eval), display(&arena, recon_eval)
+        );
+    }
+
+    #[test]
+    fn extract_poly_reconstruct_x_theta() {
+        // x·θ: coefficient of θ¹ is x.
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let theta = sym(&mut arena, "t0");
+        let expr = arena.mul(&[x, theta]);
+
+        let terms = extract_poly_in_ext(&arena, expr, theta).unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].0, 1);
+        assert_eq!(terms[0].1, x);
+
+        // Reconstruct and verify at x=3, θ=5: should be 3*5 = 15.
+        let coeff = terms[0].1;
+        let reconstructed = arena.mul(&[coeff, theta]);
+        let three = arena.int(3);
+        let five = arena.int(5);
+        let r1 = crate::transforms::subs::subs(&mut arena, reconstructed, x, three);
+        let r2 = crate::transforms::subs::subs(&mut arena, r1, theta, five);
+        let result = crate::transforms::eval::eval(&mut arena, r2);
+        assert_eq!(display(&arena, result), "15");
+    }
+
+    #[test]
+    fn extract_poly_reconstruct_constant_only() {
+        // 42: coefficient of θ⁰ is 42, no θ present.
+        let mut arena = Arena::new();
+        let theta = sym(&mut arena, "t0");
+        let forty_two = arena.int(42);
+
+        let terms = extract_poly_in_ext(&arena, forty_two, theta).unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].0, 0);
+        assert_eq!(terms[0].1, forty_two);
+        // Reconstruction is just the constant itself.
+    }
+
+    #[test]
+    fn extract_poly_reconstruct_quadratic() {
+        // θ² + 1: coeff of θ² is 1, coeff of θ⁰ is 1.
+        let mut arena = Arena::new();
+        let theta = sym(&mut arena, "t0");
+        let two = arena.int(2);
+        let one = arena.one();
+        let theta_sq = arena.pow(theta, two);
+        let expr = arena.add(&[theta_sq, one]);
+
+        let terms = extract_poly_in_ext(&arena, expr, theta).unwrap();
+        let powers: Vec<usize> = terms.iter().map(|t| t.0).collect();
+        assert!(powers.contains(&0), "should have θ⁰ term");
+        assert!(powers.contains(&2), "should have θ² term");
+
+        // Verify at θ=3: 3²+1 = 10.
+        let three = arena.int(3);
+        let orig_val = crate::transforms::subs::subs(&mut arena, expr, theta, three);
+        let orig_eval = crate::transforms::eval::eval(&mut arena, orig_val);
+        assert_eq!(display(&arena, orig_eval), "10");
+    }
+
+    // ── Group 2: Tower construction equivalence tests ───────────────
+    //
+    // Verify that the tower-rewritten integrand evaluates to the same
+    // value as the original when θ is substituted back.
+
+    #[test]
+    fn build_tower_exp_x_equivalence() {
+        // exp(x) at x=1: original = exp(1) ≈ 2.718
+        // Tower: θ = exp(x), integrand = θ.
+        // Substitute θ = exp(1): should get exp(1).
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let expr = arena.exp(x);
+
+        let de = build_tower(&mut arena, expr, x).unwrap();
+        let ext_var = de.levels[0].ext_var;
+        let arg = de.levels[0].argument;
+
+        // Substitute x=1 in original.
+        let one = arena.int(1);
+        let orig_at_1 = crate::transforms::subs::subs(&mut arena, expr, x, one);
+
+        // Substitute x=1 in integrand, then θ = exp(1).
+        let integrand_at_1 = crate::transforms::subs::subs(&mut arena, de.integrand, x, one);
+        let exp_1 = arena.exp(one);
+        let integrand_back = crate::transforms::subs::subs(&mut arena, integrand_at_1, ext_var, exp_1);
+        let integrand_eval = crate::transforms::eval::eval(&mut arena, integrand_back);
+
+        let orig_eval = crate::transforms::eval::eval(&mut arena, orig_at_1);
+        assert_eq!(
+            orig_eval, integrand_eval,
+            "tower equivalence at x=1: orig={}, rewritten={}",
+            display(&arena, orig_eval), display(&arena, integrand_eval)
+        );
+    }
+
+    #[test]
+    fn build_tower_ln_x_equivalence() {
+        // ln(x) at x=2: original = ln(2).
+        // Tower: θ = ln(x), integrand = θ.
+        // Substitute θ = ln(2): should get ln(2).
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let expr = arena.ln(x);
+
+        let de = build_tower(&mut arena, expr, x).unwrap();
+        let ext_var = de.levels[0].ext_var;
+
+        let two = arena.int(2);
+        let orig_at_2 = crate::transforms::subs::subs(&mut arena, expr, x, two);
+
+        let integrand_at_2 = crate::transforms::subs::subs(&mut arena, de.integrand, x, two);
+        let ln_2 = arena.ln(two);
+        let integrand_back = crate::transforms::subs::subs(&mut arena, integrand_at_2, ext_var, ln_2);
+        let integrand_eval = crate::transforms::eval::eval(&mut arena, integrand_back);
+
+        let orig_eval = crate::transforms::eval::eval(&mut arena, orig_at_2);
+        assert_eq!(
+            orig_eval, integrand_eval,
+            "tower equivalence at x=2: orig={}, rewritten={}",
+            display(&arena, orig_eval), display(&arena, integrand_eval)
+        );
+    }
+
+    #[test]
+    fn build_tower_exp_2x_plus_exp_x_equivalence() {
+        // exp(2x) + exp(x) at x=0: exp(0) + exp(0) = 2.
+        // Tower: θ = exp(x), integrand = θ² + θ.
+        // At x=0: θ = exp(0) = 1, so θ² + θ = 1 + 1 = 2. ✓
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let two = arena.int(2);
+        let two_x = arena.mul(&[two, x]);
+        let exp_x = arena.exp(x);
+        let exp_2x = arena.exp(two_x);
+        let expr = arena.add(&[exp_2x, exp_x]);
+
+        let de = build_tower(&mut arena, expr, x).unwrap();
+        let ext_var = de.levels[0].ext_var;
+
+        let zero = arena.int(0);
+        let orig_at_0 = crate::transforms::subs::subs(&mut arena, expr, x, zero);
+        let orig_eval = crate::transforms::eval::eval(&mut arena, orig_at_0);
+
+        let int_at_0 = crate::transforms::subs::subs(&mut arena, de.integrand, x, zero);
+        let exp_0 = arena.exp(zero);
+        let exp_0_eval = crate::transforms::eval::eval(&mut arena, exp_0);
+        let int_back = crate::transforms::subs::subs(&mut arena, int_at_0, ext_var, exp_0_eval);
+        let int_eval = crate::transforms::eval::eval(&mut arena, int_back);
+
+        assert_eq!(
+            display(&arena, orig_eval), display(&arena, int_eval),
+            "tower equivalence at x=0: orig={}, rewritten={}",
+            display(&arena, orig_eval), display(&arena, int_eval)
+        );
+    }
+
     // ── Tower construction tests ────────────────────────────────────
 
     #[test]
