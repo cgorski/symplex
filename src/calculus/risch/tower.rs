@@ -242,17 +242,19 @@ pub fn build_tower(
 
     if has_exp {
         if exp_args.len() > 1 {
-            // Check if they're integer multiples of a common argument.
-            // For now, only handle the case where all are the same argument.
-            // TODO: integer_powers grouping
-            let base_arg = exp_args[0];
-            for &arg in &exp_args[1..] {
-                if arg != base_arg {
+            // Try integer_powers grouping: check if all exp arguments are
+            // rational multiples of a common base (e.g., exp(x) and exp(2x)
+            // share base x with multipliers 1 and 2).
+            match find_integer_multiples(arena, &exp_args, var) {
+                Some((base_arg, multiples)) => {
+                    return build_exp_tower_multi(arena, expr, var, base_arg, &multiples);
+                }
+                None => {
                     return Err("Multiple independent exp arguments not yet supported".into());
                 }
             }
         }
-        build_exp_tower(arena, expr, var, exp_args[0])
+        build_exp_tower_multi(arena, expr, var, exp_args[0], &[(exp_args[0], 1)])
     } else {
         if ln_args.len() > 1 {
             let base_arg = ln_args[0];
@@ -303,26 +305,146 @@ fn collect_transcendentals(
     }
 }
 
-/// Build a single-level exponential tower: `θ = exp(u)`.
-fn build_exp_tower(
+/// Find integer multiples among a set of exp arguments.
+///
+/// Given `[a₁, a₂, …, aₙ]`, checks if all are rational multiples of a
+/// common base: `aᵢ = mᵢ · base` for positive integers `mᵢ`.
+///
+/// Returns `Some((base_arg, [(arg₁, m₁), (arg₂, m₂), ...]))` if grouping
+/// succeeds, `None` if the arguments are independent.
+///
+/// The base is chosen so that all multipliers are positive integers and
+/// at least one multiplier is 1 (the base itself appears among the args).
+fn find_integer_multiples(
+    arena: &Arena,
+    args: &[ExprId],
+    var: ExprId,
+) -> Option<(ExprId, Vec<(ExprId, i64)>)> {
+    if args.is_empty() {
+        return None;
+    }
+    if args.len() == 1 {
+        return Some((args[0], vec![(args[0], 1)]));
+    }
+
+    // Convert each argument to a Poly in var.
+    let polys: Vec<crate::poly::dense::Poly> = args
+        .iter()
+        .filter_map(|&arg| crate::poly::polybridge::expr_to_poly(arena, arg, var))
+        .collect();
+
+    if polys.len() != args.len() {
+        return None; // Some args aren't polynomial in var.
+    }
+
+    // Use the first arg as reference.  Compute ratio = each / first.
+    let ref_poly = &polys[0];
+    if ref_poly.is_zero() {
+        return None;
+    }
+
+    let mut ratios: Vec<num_rational::Ratio<num_bigint::BigInt>> = Vec::new();
+    ratios.push(num_rational::Ratio::from_integer(num_bigint::BigInt::from(1)));
+
+    for poly in &polys[1..] {
+        let (quot, rem) = poly.div_rem(ref_poly);
+        if !rem.is_zero() {
+            return None; // Not a multiple.
+        }
+        if !quot.is_constant() {
+            return None; // Ratio depends on var.
+        }
+        let k = quot.coeff(0);
+        if !k.is_positive() {
+            return None; // Negative or zero multiplier.
+        }
+        ratios.push(k);
+    }
+
+    // Find the GCD of all ratios to get the smallest base.
+    // For rationals: gcd(a/b, c/d) = gcd(a,c) / lcm(b,d).
+    // We need all multipliers to be positive integers after dividing by the GCD.
+    //
+    // Simpler approach: find the minimum ratio and divide all by it.
+    // This gives multipliers ≥ 1.  Then check they're all integers.
+    let min_ratio = ratios.iter().min().cloned().unwrap();
+    let int_multiples: Vec<num_rational::Ratio<num_bigint::BigInt>> = ratios
+        .iter()
+        .map(|r| r / &min_ratio)
+        .collect();
+
+    // Check all are positive integers.
+    for m in &int_multiples {
+        if !m.is_integer() || !m.is_positive() {
+            return None;
+        }
+    }
+
+    // Build the base argument: ref_poly * min_ratio.
+    // If min_ratio == 1, the base is the first arg.
+    // Otherwise, we need to scale — but we don't have &mut Arena.
+    // We can only return a base if min_ratio is 1 (i.e., the first arg
+    // is the smallest).  Otherwise, check if any arg IS the base.
+    let base_idx = ratios
+        .iter()
+        .position(|r| *r == min_ratio);
+
+    let base_idx = match base_idx {
+        Some(i) => i,
+        None => return None,
+    };
+
+    let base_arg = args[base_idx];
+    let multiples: Vec<(ExprId, i64)> = args
+        .iter()
+        .zip(int_multiples.iter())
+        .map(|(&arg, m)| {
+            let k = i64::try_from(m.to_integer()).unwrap_or(0);
+            (arg, k)
+        })
+        .collect();
+
+    if multiples.iter().any(|&(_, k)| k <= 0) {
+        return None;
+    }
+
+    Some((base_arg, multiples))
+}
+
+/// Build a single-level exponential tower with integer power grouping.
+///
+/// `base_u` is the base argument: `θ = exp(base_u)`.
+/// `multiples` is `[(original_arg, multiplier)]` — each `exp(original_arg)`
+/// is replaced by `θ^multiplier` in the integrand.
+fn build_exp_tower_multi(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    u: ExprId,
+    base_u: ExprId,
+    multiples: &[(ExprId, i64)],
 ) -> Result<DifferentialExtension, String> {
     // Create the extension symbol θ.
     let theta = arena.symbol("__t0");
 
-    // Compute Dθ = Du · θ  (where Du = d/dx(u))
-    let du = crate::transforms::diff::diff(arena, u, var);
+    // Compute Dθ = Du · θ  (where Du = d/dx(base_u))
+    let du = crate::transforms::diff::diff(arena, base_u, var);
     let d_theta = arena.mul(&[du, theta]);
 
-    // Rewrite the integrand: replace exp(u) with θ.
-    let exp_u = arena.exp(u);
-    let rewritten = crate::transforms::subs::subs(arena, expr, exp_u, theta);
+    // Rewrite the integrand: for each (arg, k), replace exp(arg) with θ^k.
+    let mut rewritten = expr;
+    for &(arg, k) in multiples {
+        let exp_arg = arena.exp(arg);
+        let replacement = if k == 1 {
+            theta
+        } else {
+            let k_id = arena.int(k);
+            arena.pow(theta, k_id)
+        };
+        rewritten = crate::transforms::subs::subs(arena, rewritten, exp_arg, replacement);
+    }
 
     let mut de = DifferentialExtension::new(var);
-    de.push_exponential(theta, u, d_theta);
+    de.push_exponential(theta, base_u, d_theta);
     de.integrand = rewritten;
     Ok(de)
 }
@@ -956,6 +1078,114 @@ mod tests {
             s.contains("__t0"),
             "integrand should use __t0, got: {s}"
         );
+    }
+
+    #[test]
+    fn build_tower_exp_2x_plus_exp_x() {
+        // exp(2x) + exp(x) — should create θ = exp(x),
+        // integrand = θ² + θ.
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let two = arena.int(2);
+        let two_x = arena.mul(&[two, x]);
+        let exp_x = arena.exp(x);
+        let exp_2x = arena.exp(two_x);
+        let expr = arena.add(&[exp_2x, exp_x]);
+
+        let de = build_tower(&mut arena, expr, x).unwrap();
+        assert_eq!(de.depth(), 1);
+        assert_eq!(de.current_kind(), Some(&ExtensionKind::Exponential));
+        let s = display(&arena, de.integrand);
+        assert!(
+            s.contains("__t0"),
+            "integrand should use __t0, got: {s}"
+        );
+        // Should contain θ² (as __t0^2) and θ.
+        assert!(
+            s.contains("__t0^2") || s.contains("__t0"),
+            "integrand should have powers of __t0, got: {s}"
+        );
+    }
+
+    #[test]
+    fn build_tower_exp_3x_plus_exp_x() {
+        // exp(3x) + exp(x) — θ = exp(x), integrand = θ³ + θ.
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let three = arena.int(3);
+        let three_x = arena.mul(&[three, x]);
+        let exp_x = arena.exp(x);
+        let exp_3x = arena.exp(three_x);
+        let expr = arena.add(&[exp_3x, exp_x]);
+
+        let de = build_tower(&mut arena, expr, x).unwrap();
+        assert_eq!(de.depth(), 1);
+        let s = display(&arena, de.integrand);
+        assert!(
+            s.contains("__t0"),
+            "integrand should use __t0, got: {s}"
+        );
+    }
+
+    #[test]
+    fn build_tower_independent_exps_fails() {
+        // exp(x) + exp(x²) — independent, should fail.
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let two = arena.int(2);
+        let x_sq = arena.pow(x, two);
+        let exp_x = arena.exp(x);
+        let exp_x_sq = arena.exp(x_sq);
+        let expr = arena.add(&[exp_x, exp_x_sq]);
+
+        let result = build_tower(&mut arena, expr, x);
+        assert!(result.is_err(), "independent exps should fail: {:?}", result);
+    }
+
+    #[test]
+    fn integer_multiples_basic() {
+        // args: [x, 2x] → base = x, multiples = [(x, 1), (2x, 2)]
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let two = arena.int(2);
+        let two_x = arena.mul(&[two, x]);
+
+        let result = find_integer_multiples(&arena, &[x, two_x], x);
+        assert!(result.is_some(), "x and 2x should be integer multiples");
+        let (base, mults) = result.unwrap();
+        assert_eq!(base, x);
+        assert_eq!(mults.len(), 2);
+        assert_eq!(mults[0].1, 1);
+        assert_eq!(mults[1].1, 2);
+    }
+
+    #[test]
+    fn integer_multiples_independent() {
+        // args: [x, x²] → not multiples
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let two = arena.int(2);
+        let x_sq = arena.pow(x, two);
+
+        let result = find_integer_multiples(&arena, &[x, x_sq], x);
+        assert!(result.is_none(), "x and x² should not be integer multiples");
+    }
+
+    #[test]
+    fn integer_multiples_three_args() {
+        // args: [x, 2x, 3x] → base = x, multiples = [1, 2, 3]
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let two = arena.int(2);
+        let two_x = arena.mul(&[two, x]);
+        let three = arena.int(3);
+        let three_x = arena.mul(&[three, x]);
+
+        let result = find_integer_multiples(&arena, &[x, two_x, three_x], x);
+        assert!(result.is_some());
+        let (_, mults) = result.unwrap();
+        let ks: Vec<i64> = mults.iter().map(|m| m.1).collect();
+        assert_eq!(ks, vec![1, 2, 3]);
     }
 
     #[test]
