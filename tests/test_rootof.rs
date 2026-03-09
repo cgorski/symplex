@@ -147,19 +147,18 @@ fn rootof_eval_decimal_quintic() {
     let x = ctx.symbol("x");
     let poly = &x.powi(5) - &x - 1;
     let roots = poly.solve_or_empty(&x);
-    // At least one root should be evaluable to decimal
-    let mut found = false;
+    // Among all roots (real + complex), at least one should be the
+    // real root ≈ 1.1673.  With Aberth, complex roots also evaluate
+    // to decimal strings like "-0.764... - 0.352...*i".
+    let mut found_real = false;
     for root in &roots {
         if let Ok(dec) = root.eval_decimal(15) {
-            found = true;
-            // Should start with "1.167" (the real root)
-            assert!(
-                dec.starts_with("1.167"),
-                "expected ≈ 1.167…, got: {dec}"
-            );
+            if dec.starts_with("1.167") {
+                found_real = true;
+            }
         }
     }
-    assert!(found, "at least one RootOf should be eval_decimal-able");
+    assert!(found_real, "should find the real root ≈ 1.167 among the RootOf objects");
 }
 
 #[test]

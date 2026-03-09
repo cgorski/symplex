@@ -380,17 +380,86 @@ impl<'a> Parser<'a> {
         if self.current == Token::Comma {
             self.advance()?;
             let arg2 = self.parse_expr(arena, 0)?;
+
+            // Check for 3rd argument
+            if self.current == Token::Comma {
+                self.advance()?;
+                let arg3 = self.parse_expr(arena, 0)?;
+
+                // Check for 4th argument
+                if self.current == Token::Comma {
+                    self.advance()?;
+                    let arg4 = self.parse_expr(arena, 0)?;
+                    self.expect(&Token::RParen)?;
+
+                    // 4-argument functions
+                    let name_lower = name.to_ascii_lowercase();
+                    return match name_lower.as_str() {
+                        "series" => Ok(arena.intern(
+                            crate::base::node::ExprNode::Series(arg, arg2, arg3, arg4),
+                        )),
+                        _ => Err(ParseError {
+                            message: format!(
+                                "unknown 4-argument function '{}'. Supported: Series",
+                                name
+                            ),
+                            position: self.lexer.pos,
+                        }),
+                    };
+                }
+
+                self.expect(&Token::RParen)?;
+
+                // 3-argument functions
+                let name_lower = name.to_ascii_lowercase();
+                return match name_lower.as_str() {
+                    "limit" => Ok(arena.intern(
+                        crate::base::node::ExprNode::Limit(arg, arg2, arg3),
+                    )),
+                    "laplacetransform" => Ok(arena.intern(
+                        crate::base::node::ExprNode::LaplaceTransform(arg, arg2, arg3),
+                    )),
+                    "inverselaplacetransform" => Ok(arena.intern(
+                        crate::base::node::ExprNode::InverseLaplaceTransform(arg, arg2, arg3),
+                    )),
+                    "residue" => Ok(arena.intern(
+                        crate::base::node::ExprNode::Residue(arg, arg2, arg3),
+                    )),
+                    "dsolve" => Ok(arena.intern(
+                        crate::base::node::ExprNode::DSolve(arg, arg2, arg3),
+                    )),
+                    _ => Err(ParseError {
+                        message: format!(
+                            "unknown 3-argument function '{}'. Supported: Limit, LaplaceTransform, InverseLaplaceTransform, Residue, DSolve",
+                            name
+                        ),
+                        position: self.lexer.pos,
+                    }),
+                };
+            }
+
             self.expect(&Token::RParen)?;
 
-            return match name {
+            // 2-argument functions
+            let name_lower = name.to_ascii_lowercase();
+            return match name_lower.as_str() {
                 "log" => {
                     // log(x, base) = ln(x) / ln(base)
                     let ln_x = arena.ln(arg);
                     let ln_base = arena.ln(arg2);
                     Ok(arena.div(ln_x, ln_base))
                 }
+                "rootof" => Ok(arena.intern(
+                    crate::base::node::ExprNode::RootOf(arg, arg2),
+                )),
+                "conditionset" => Ok(arena.intern(
+                    crate::base::node::ExprNode::ConditionSet(arg, arg2),
+                )),
                 _ => Err(ParseError {
-                    message: format!("function '{}' does not accept multiple arguments", name),
+                    message: format!(
+                        "unknown 2-argument function '{}'. Supported: log, RootOf, ConditionSet",
+                        name
+                    ),
                     position: self.lexer.pos,
                 }),
             };
@@ -418,9 +487,27 @@ impl<'a> Parser<'a> {
             "asinh" | "arcsinh" => Ok(arena.asinh(arg)),
             "acosh" | "arccosh" => Ok(arena.acosh(arg)),
             "atanh" | "arctanh" => Ok(arena.atanh(arg)),
+            "sign" | "sgn" => Ok(arena.sign(arg)),
+            "floor" => Ok(arena.floor(arg)),
+            "ceil" | "ceiling" => Ok(arena.ceiling(arg)),
+            "gamma" => Ok(arena.intern(crate::base::node::ExprNode::Gamma(arg))),
+            "erf" => Ok(arena.intern(crate::base::node::ExprNode::Erf(arg))),
+            "erfc" => Ok(arena.intern(crate::base::node::ExprNode::Erfc(arg))),
+            "heaviside" => Ok(arena.intern(crate::base::node::ExprNode::Heaviside(arg))),
+            "diracdelta" | "dirac_delta" => {
+                Ok(arena.intern(crate::base::node::ExprNode::DiracDelta(arg)))
+            }
+            "lambertw" => Ok(arena.intern(crate::base::node::ExprNode::LambertW(arg))),
+            "factorial" => Ok(arena.intern(crate::base::node::ExprNode::Factorial(arg))),
+            "digamma" => Ok(arena.intern(crate::base::node::ExprNode::Digamma(arg))),
+            "loggamma" => Ok(arena.intern(crate::base::node::ExprNode::LogGamma(arg))),
             _ => Err(ParseError {
                 message: format!(
-                    "unknown function '{}'. Supported: sin, cos, tan, exp, ln, log, sqrt, cbrt, abs, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh",
+                    "unknown function '{}'. Supported: sin, cos, tan, exp, ln, log, sqrt, cbrt, abs, \
+                     asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, sign, floor, ceil, \
+                     gamma, erf, erfc, heaviside, diracdelta, lambertw, factorial, digamma, loggamma, \
+                     Limit, RootOf, ConditionSet, LaplaceTransform, InverseLaplaceTransform, \
+                     Residue, DSolve, Series",
                     name
                 ),
                 position: self.lexer.pos,
