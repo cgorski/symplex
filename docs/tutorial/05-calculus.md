@@ -10,9 +10,9 @@ The `.diff(&var)` method computes the symbolic derivative with respect to a vari
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Power rule
 let f = expr!(x^3);
@@ -40,9 +40,9 @@ For multivariate expressions, `.diff()` differentiates with respect to the speci
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let f = expr!(x^2 * y + y^3);
 println!("∂f/∂x = {}", f.diff(&x)); // 2*x*y
@@ -59,9 +59,9 @@ Chain `.diff()` calls or use `.diff_n()`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^5);
 
@@ -81,9 +81,9 @@ When `y` depends on `x` but isn't given explicitly, use `.diff_with_dependent()`
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // Circle equation: x² + y² = r²
 // Differentiate x² + y² with y depending on x
@@ -102,9 +102,9 @@ This is how you derive relationships like dy/dx = -x/y from implicit equations. 
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // Create y' as a formal symbol
 let dy_dx = y.formal_diff(&x);
@@ -118,7 +118,8 @@ println!("{ode}"); // Derivative(y, x) + 2*y
 You can also use the `expr!` macro with `diff()`:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 let dy = expr!(diff(y, x));  // same as y.formal_diff(&x)
 ```
 
@@ -132,9 +133,9 @@ The `.integrate(&var)` method computes the antiderivative:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Power rule
 let f = expr!(x^2);
@@ -158,8 +159,9 @@ println!("∫(3x²+2x+1) dx = {}", f.integrate(&x)); // x^3 + x^2 + x
 Note: symplex does not add an explicit `+ C` constant to indefinite integrals. If you need the general antiderivative, add a constant yourself:
 
 ```rust
-vars!(x);
-let c = symplex::var("C");
+let ctx = Context::new();
+syms!(ctx; x);
+let c = ctx.var("C");
 let general = &expr!(x^2).integrate(&x) + &c;
 println!("{general}"); // 1/3*x^3 + C
 ```
@@ -170,9 +172,9 @@ A useful check: differentiating the antiderivative should give back the original
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^3 - 3*x^2 + 2*x);
 let anti = f.integrate(&x);
@@ -189,19 +191,19 @@ println!("d/dx(∫f dx) = {roundtrip}");
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
-let zero = symplex::int(0);
-let one = symplex::int(1);
+let zero = ctx.int(0);
+let one = ctx.int(1);
 
 // ∫₀¹ x² dx = 1/3
 let result = expr!(x^2).definite_integral(&x, &zero, &one);
 println!("∫₀¹ x² dx = {result}"); // 1/3
 
 // ∫₀^π sin(x) dx = 2
-let pi = symplex::default_context().pi();
+let pi = ctx.pi();
 let result = x.sin().definite_integral(&x, &zero, &pi);
 println!("∫₀^π sin(x) dx = {}", result.eval()); // 2
 
@@ -221,11 +223,11 @@ Internally, this computes `F(upper) - F(lower)` where `F` is the antiderivative.
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
-let zero = symplex::int(0);
+let zero = ctx.int(0);
 
 // The classic: lim(x→0) sin(x)/x = 1
 let expr = &x.sin() / &x;
@@ -247,17 +249,17 @@ The limit engine uses:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // lim(x→∞) 1/x = 0
-let inf = symplex::infinity();
+let inf = ctx.infinity();
 let lim = (1 / &x).limit(&x, &inf);
 println!("lim(x→∞) 1/x = {lim}"); // 0
 
 // lim(x→-∞) 1/x = 0
-let neg_inf = symplex::neg_infinity();
+let neg_inf = ctx.neg_infinity();
 let lim = (1 / &x).limit(&x, &neg_inf);
 println!("lim(x→-∞) 1/x = {lim}"); // 0
 ```
@@ -267,8 +269,9 @@ println!("lim(x→-∞) 1/x = {lim}"); // 0
 If you need to detect when a limit can't be computed, use `try_limit()` which returns `Result<Ex>`:
 
 ```rust
-vars!(x);
-match expr.try_limit(&x, &symplex::int(0)) {
+let ctx = Context::new();
+syms!(ctx; x);
+match expr.try_limit(&x, &ctx.int(0)) {
     Ok(lim) => println!("limit = {lim}"),
     Err(e) => println!("could not compute limit: {e}"),
 }
@@ -282,9 +285,9 @@ match expr.try_limit(&x, &symplex::int(0)) {
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // sin(x) ≈ x - x³/6 + x⁵/120
 let sin_series = x.sin().maclaurin(&x, 5);
@@ -307,12 +310,12 @@ The `order` parameter controls how many terms to include.
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Taylor series of sin(x) around x = π/2
-let pi_half = &symplex::default_context().pi() / 2;
+let pi_half = &ctx.pi() / 2;
 let series = x.sin().series(&x, &pi_half, 4);
 println!("sin(x) around π/2: {}", series.expand().eval());
 ```
@@ -322,7 +325,8 @@ println!("sin(x) around π/2: {}", series.expand().eval());
 These return `Result<Ex>`, giving `Err` if the series computation fails:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 match x.sin().try_maclaurin(&x, 5) {
     Ok(s) => println!("{}", s.expand().eval()),
     Err(e) => println!("series failed: {e}"),
@@ -335,12 +339,12 @@ For periodic functions, `.fourier_series()` computes the Fourier expansion:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = x.clone(); // f(x) = x on [-π, π]
-let pi = symplex::default_context().pi();
+let pi = ctx.pi();
 let neg_pi = -&pi;
 let result = f.fourier_series(&x, &neg_pi, &pi, 3);
 if let Ok(series) = result {
@@ -358,12 +362,12 @@ The Laplace transform converts time-domain functions to the frequency domain —
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(t, s);
+let ctx = Context::new();
+syms!(ctx; t, s);
 
 // L{1} = 1/s
-let result = symplex::int(1).laplace(&t, &s).unwrap();
+let result = ctx.int(1).laplace(&t, &s).unwrap();
 println!("L{{1}} = {result}"); // 1/s
 
 // L{t} = 1/s²
@@ -389,9 +393,9 @@ println!("L{{cos(t)}} = {result}");
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(t, s);
+let ctx = Context::new();
+syms!(ctx; t, s);
 
 // L⁻¹{1/s} = 1
 let expr = 1 / &s;
@@ -412,9 +416,9 @@ The Laplace transform turns ODEs into algebraic equations. Here's the pattern:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(t, s);
+let ctx = Context::new();
+syms!(ctx; t, s);
 
 // Consider: y'' + y = 0, y(0) = 0, y'(0) = 1
 // Laplace: s²Y(s) - s·y(0) - y'(0) + Y(s) = 0
@@ -435,12 +439,12 @@ For discrete-time systems, symplex provides z-transforms:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(n, z);
+let ctx = Context::new();
+syms!(ctx; n, z);
 
 // Z{(1/2)^n} = z/(z - 1/2)
-let half = symplex::rational(1, 2);
+let half = ctx.rational(1, 2);
 let result = half.pow(&n).z_transform(&n, &z).unwrap();
 println!("Z{{(1/2)^n}} = {result}");
 
@@ -456,13 +460,13 @@ For complex analysis, compute residues at poles:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Residue of 1/x at x = 0
 let expr = 1 / &x;
-let res = expr.residue(&x, &symplex::int(0));
+let res = expr.residue(&x, &ctx.int(0));
 if let Ok(r) = res {
     println!("Res(1/x, x=0) = {r}"); // 1
 }
@@ -474,9 +478,9 @@ When symbolic methods can't solve an equation, use `.solve_numeric()`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Find the fixed point: x = cos(x)
 let f = &x - &x.cos();
@@ -495,7 +499,8 @@ For high-precision numerical results:
 ```rust
 use symplex::prelude::*;
 
-let pi = symplex::default_context().pi();
+let ctx = Context::new();
+let pi = ctx.pi();
 
 // π to 30 decimal digits
 match pi.eval_decimal(30) {
@@ -504,7 +509,7 @@ match pi.eval_decimal(30) {
 }
 
 // e to 30 digits
-match symplex::e().eval_decimal(30) {
+match ctx.e().eval_decimal(30) {
     Ok(s) => println!("e = {s}"),
     Err(e) => println!("Error: {e}"),
 }
@@ -516,10 +521,10 @@ Here's a complete calculus workflow — the kind of thing you'd do in a homework
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
+let ctx = Context::new();
 fn main() {
-    vars!(x);
+    syms!(ctx; x);
 
     // Define the function
     let f = expr!(x^3 - 3*x^2 + 2*x);
@@ -554,7 +559,7 @@ fn main() {
     println!("d/dx(∫f dx) = {roundtrip}");
 
     // Definite integral
-    let area = f.definite_integral(&x, &symplex::int(0), &symplex::int(1));
+    let area = f.definite_integral(&x, &ctx.int(0), &ctx.int(1));
     println!("\n∫₀¹ f(x) dx = {area}");
 
     // Taylor series around x = 0
@@ -567,7 +572,7 @@ fn main() {
 
     // Limit at x → 0
     let ratio = &f / &x;
-    let lim = ratio.limit(&x, &symplex::int(0));
+    let lim = ratio.limit(&x, &ctx.int(0));
     println!("\nlim(x→0) f(x)/x = {lim}"); // 2
 
     // LaTeX output

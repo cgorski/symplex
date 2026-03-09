@@ -10,9 +10,9 @@ The `.solve(&var)` method finds all roots of `self = 0`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Linear: 3x + 6 = 0 → x = -2
 let roots = expr!(3*x + 6).solve_or_empty(&x);
@@ -28,7 +28,8 @@ for r in &roots {
 `.solve()` returns `Result<Vec<Ex>, SymplexError>`. Use `.solve_or_empty()` when you don't need the error:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // solve() gives you the error if it fails
 match expr!(x^2 + 1).solve(&x) {
@@ -47,9 +48,9 @@ Symplex solves cubics using the cubic formula (Cardano's method) and rational-ro
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // x³ - 6x² + 11x - 6 = 0 → x = 1, 2, 3
 let roots = expr!(x^3 - 6*x^2 + 11*x - 6).solve_or_empty(&x);
@@ -65,9 +66,9 @@ Degree-4 polynomials are also handled:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // x⁴ - 1 = 0
 let roots = expr!(x^4 - 1).solve_or_empty(&x);
@@ -85,9 +86,9 @@ The solver may return complex-valued roots for equations like `x² + 1 = 0`. The
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let roots = expr!(x^2 + 1).solve_or_empty(&x);
 for r in &roots {
@@ -111,14 +112,14 @@ Use `.check_solution()` to verify that a value is actually a root:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let poly = expr!(x^2 - 4);
-assert!(poly.check_solution(&x, &symplex::int(2)));
-assert!(poly.check_solution(&x, &symplex::int(-2)));
-assert!(!poly.check_solution(&x, &symplex::int(3)));
+assert!(poly.check_solution(&x, &ctx.int(2)));
+assert!(poly.check_solution(&x, &ctx.int(-2)));
+assert!(!poly.check_solution(&x, &ctx.int(3)));
 ```
 
 This substitutes the value, evaluates, and checks if the result is zero (structurally or numerically within tolerance).
@@ -129,9 +130,9 @@ Related to solving: `.factor(&x)` expresses a polynomial as a product of its roo
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 println!("{}", expr!(x^2 - 5*x + 6).factor(&x));  // (x - 2)*(x - 3)
 println!("{}", expr!(x^2 - 1).factor(&x));          // (x - 1)*(x + 1)
@@ -145,12 +146,12 @@ Some equations involving `sin`, `cos`, `exp`, etc. can be solved symbolically. T
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // sin(x) = 1/2 → x = π/6 (principal value)
-let eq = &x.sin() - &symplex::rational(1, 2);
+let eq = &x.sin() - &ctx.rational(1, 2);
 let roots = eq.solve_or_empty(&x);
 for r in &roots {
     println!("sin(x) = 1/2 → x = {r}");
@@ -169,9 +170,9 @@ Note: transcendental equations may have infinitely many solutions (e.g., `sin(x)
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // Circle and line intersection:
 // x² + y² = 1
@@ -194,9 +195,9 @@ The Gröbner basis approach handles genuinely nonlinear systems:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // Two conics: x² + y² = 5, xy = 2
 let solutions = symplex::solve_system(
@@ -216,9 +217,9 @@ You can also use `solve_system` for single-variable equations — useful when yo
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let solutions = symplex::solve_system(
     &[expr!(x^3 - 6*x^2 + 11*x - 6)],
@@ -248,9 +249,9 @@ When symbolic methods can't handle an equation, use numerical root-finding:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // x = cos(x) — the Dottie number
 // Rewrite as x - cos(x) = 0
@@ -276,9 +277,9 @@ The arguments are:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // x³ - 6x² + 11x - 6 = 0 has roots at 1, 2, 3
 let f = expr!(x^3 - 6*x^2 + 11*x - 6);
@@ -293,7 +294,8 @@ for guess in [0.5, 1.5, 3.5] {
 **Verify numerically:** After finding a numerical root, check it:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 let f = &x - &x.cos();
 if let Ok(root) = f.solve_numeric(&x, 1.0, 50, 1e-12) {
     let residual = f.eval_f64_with(&[(&x, root as i64)]);
@@ -311,9 +313,9 @@ Symplex solves polynomial inequalities using the sign-chart method — it finds 
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // x² - 4 > 0 → x < -2 or x > 2
 let result = expr!(x^2 - 4).solve_gt(&x).unwrap();
@@ -338,9 +340,9 @@ println!("x² - 4 ≤ 0: {result}");
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let result = expr!(x^2 - 5*x + 6).solve_as_set(&x);
 println!("{result}"); // {2, 3}
@@ -358,9 +360,9 @@ ODEs are built using `.formal_diff()` to create unevaluated derivative nodes:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // y' is a formal (unevaluated) derivative
 let dy = y.formal_diff(&x);
@@ -372,7 +374,8 @@ let ode = &dy + &(&y * 2);
 You can also use `expr!` with `diff`:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 let ode = expr!(diff(y, x) + 2*y); // y' + 2y = 0
 ```
 
@@ -382,9 +385,9 @@ let ode = expr!(diff(y, x) + 2*y); // y' + 2y = 0
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // y' - x = 0 → y = x²/2 + C1
 let dy = y.formal_diff(&x);
@@ -401,7 +404,8 @@ The solver recognizes these classes:
 
 **Simple separable:** `y' = f(x)` (no y dependence)
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 let ode = expr!(diff(y, x) - x); // y' = x → y = x²/2 + C1
 let (sol, _) = ode.solve_ode(&y, &x).unwrap();
 println!("y = {sol}");
@@ -409,7 +413,8 @@ println!("y = {sol}");
 
 **Full separable:** `y' = f(x)·g(y)`
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 // y' = x*y → y = C1·exp(x²/2)
 let ode = &y.formal_diff(&x) - &(&x * &y);
 if let Some((sol, _)) = ode.solve_ode(&y, &x) {
@@ -419,7 +424,8 @@ if let Some((sol, _)) = ode.solve_ode(&y, &x) {
 
 **First-order linear (constant coefficient):** `y' + a·y = f(x)`
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 // y' + 2y = 0 → y = C1·exp(-2x)
 let ode = expr!(diff(y, x) + 2*y);
 let (sol, _) = ode.solve_ode(&y, &x).unwrap();
@@ -428,7 +434,8 @@ println!("y = {sol}");
 
 **First-order linear (variable coefficient):** `y' + P(x)·y = Q(x)`
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 // y' + 2x·y = 0 → integrating factor μ = exp(x²)
 let ode = &y.formal_diff(&x) + &(&x * &y * 2);
 if let Some((sol, _)) = ode.solve_ode(&y, &x) {
@@ -440,7 +447,8 @@ if let Some((sol, _)) = ode.solve_ode(&y, &x) {
 
 **Second-order linear constant-coefficient (homogeneous):** `a·y'' + b·y' + c·y = 0`
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 // y'' + y = 0 → y = C1·cos(x) + C2·sin(x)
 let dy = y.formal_diff(&x);
 let d2y = dy.formal_diff(&x);
@@ -459,9 +467,9 @@ Use `.classify_ode()` to determine the type without solving:
 ```rust
 use symplex::prelude::*;
 use symplex::ode::OdeType;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let ode = expr!(diff(y, x) - x);
 let classification = ode.classify_ode(&y, &x);
@@ -484,9 +492,9 @@ Use `.check_ode_solution()` to verify that a proposed solution satisfies the ODE
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // ODE: y' - x = 0
 let ode = expr!(diff(y, x) - x);
@@ -510,9 +518,9 @@ Always verify solutions, especially for complex equations:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let poly = expr!(x^3 - 6*x^2 + 11*x - 6);
 let roots = poly.solve_or_empty(&x);
@@ -530,9 +538,9 @@ Try symbolic first, fall back to numerical:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = &x - &x.cos(); // x = cos(x)
 
@@ -557,9 +565,9 @@ For systems, verify each solution by substituting back:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let eq1 = expr!(x^2 + y^2 - 1);
 let eq2 = expr!(x + y - 1);

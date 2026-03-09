@@ -83,7 +83,6 @@ Throughout this tutorial, all examples assume:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 ```
 
 Code blocks show the expected output in comments where helpful. Every example in this tutorial uses the real symplex API and can be pasted into a Rust file to run.

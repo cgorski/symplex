@@ -28,9 +28,9 @@ With output $y = x_1$ (position measurement):
 ```rust
 use symplex::prelude::*;
 use symplex::control::{StateSpace, TransferFunction, is_routh_stable};
-use symplex::vars;
 
-vars!(s);
+let ctx = Context::new();
+syms!(ctx; s);
 
 // State-space matrices: ẋ = Ax + Bu, y = Cx + Du
 let a = matrix![[0, 1], [-4, -3]];
@@ -217,8 +217,9 @@ When you have a characteristic polynomial but don't need the actual pole locatio
 ```rust
 use symplex::control::{is_routh_stable, routh_array};
 
+let ctx = Context::new();
 // s² + 3s + 4 — our mass-spring-damper
-let coeffs = [symplex::int(1), symplex::int(3), symplex::int(4)];
+let coeffs = [ctx.int(1), ctx.int(3), ctx.int(4)];
 match is_routh_stable(&coeffs) {
     Some(true)  => println!("Routh stable: yes"),
     Some(false) => println!("Routh stable: no"),
@@ -227,7 +228,7 @@ match is_routh_stable(&coeffs) {
 // Routh stable: yes
 
 // A more interesting case: s³ + 2s² + 3s + 4
-let coeffs3 = [symplex::int(1), symplex::int(2), symplex::int(3), symplex::int(4)];
+let coeffs3 = [ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4)];
 match is_routh_stable(&coeffs3) {
     Some(true)  => println!("Routh stable: yes"),
     Some(false) => println!("Routh stable: no"),
@@ -249,7 +250,7 @@ The Routh array is computed with exact rational arithmetic — no round-off that
 
 ```rust
 // Clearly unstable: s³ + s² - 2s + 1 (negative coefficient)
-let unstable = [symplex::int(1), symplex::int(1), symplex::int(-2), symplex::int(1)];
+let unstable = [ctx.int(1), ctx.int(1), ctx.int(-2), ctx.int(1)];
 match is_routh_stable(&unstable) {
     Some(false) => println!("Unstable: sign changes in first column"),
     _ => {}
@@ -265,7 +266,7 @@ Now for controller design. The original system has poles at $-3/2 \pm j\sqrt{7}/
 
 ```rust
 // Place poles at s = -5 and s = -6 (faster, no oscillation)
-let desired_poles = [symplex::int(-5), symplex::int(-6)];
+let desired_poles = [ctx.int(-5), ctx.int(-6)];
 
 match sys.ackermann(&desired_poles) {
     Some(k) => {
@@ -292,9 +293,9 @@ You can also place complex conjugate poles for a specific damping ratio and natu
 
 ```rust
 // Place poles at s = -2 ± 3j (damped oscillation)
-let i_unit = symplex::i_unit();
-let p1 = &symplex::int(-2) + &(&i_unit * 3);
-let p2 = &symplex::int(-2) - &(&i_unit * 3);
+let i_unit = ctx.i_unit();
+let p1 = &ctx.int(-2) + &(&i_unit * 3);
+let p2 = &ctx.int(-2) - &(&i_unit * 3);
 
 match sys.ackermann(&[p1, p2]) {
     Some(k) => println!("Gain for complex poles: K = {k}"),
@@ -308,7 +309,7 @@ Real controllers run on digital hardware. Zero-order hold (ZOH) discretization c
 
 ```rust
 // Discretize with sample time dt = 0.01 s (100 Hz control loop)
-let dt = symplex::rational(1, 100);
+let dt = ctx.rational(1, 100);
 
 // The second argument is the Taylor series order for the matrix exponential
 let discrete = sys.discretize_zoh(&dt, 4);
@@ -344,10 +345,11 @@ Symplex's Laplace transform engine connects time-domain analysis to transfer-fun
 ### Forward Transform
 
 ```rust
-vars!(t, s);
+let ctx = Context::new();
+syms!(ctx; t, s);
 
 // Common transform pairs
-println!("L{{1}} = {}", symplex::int(1).laplace(&t, &s).unwrap());
+println!("L{{1}} = {}", ctx.int(1).laplace(&t, &s).unwrap());
 // 1/s
 
 println!("L{{t}} = {}", t.laplace(&t, &s).unwrap());
@@ -383,7 +385,8 @@ match gs.inverse_laplace(&s, &t) {
 Evaluate the transfer function at $s = j\omega$ to get the frequency response:
 
 ```rust
-let i_unit = symplex::i_unit();
+let ctx = Context::new();
+let i_unit = ctx.i_unit();
 let gs = 1 / &(expr!(s ^ 2 + 3 * s + 4));
 
 for omega in [1i64, 2, 5, 10] {
@@ -402,10 +405,10 @@ Here's the full pipeline a controls engineer would follow, from physics to deplo
 ```rust
 use symplex::prelude::*;
 use symplex::control::{StateSpace, TransferFunction, is_routh_stable};
-use symplex::vars;
 
+let ctx = Context::new();
 fn main() {
-    vars!(s);
+    syms!(ctx; s);
 
     // 1. Model the plant
     let a = matrix![[0, 1], [-4, -3]];
@@ -419,7 +422,7 @@ fn main() {
     assert!(matches!(sys.is_stable(), Some(true)), "open-loop should be stable");
 
     // 3. Design: place poles for faster response
-    let desired = [symplex::int(-5), symplex::int(-6)];
+    let desired = [ctx.int(-5), ctx.int(-6)];
     let k = sys.ackermann(&desired).expect("pole placement succeeded");
     println!("Feedback gain K = {k}");
 
@@ -429,7 +432,7 @@ fn main() {
     println!("Closed-loop characteristic poly: {cl_char}");
 
     // 5. Discretize for 100 Hz implementation
-    let dt = symplex::rational(1, 100);
+    let dt = ctx.rational(1, 100);
     let discrete = sys.discretize_zoh(&dt, 4);
     assert!(matches!(discrete.is_stable(), Some(true)));
 

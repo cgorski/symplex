@@ -18,9 +18,9 @@ The workflow for every ODE is the same:
 ```rust
 use symplex::prelude::*;
 use symplex::ode::OdeType;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // Build: y' - x = 0  (i.e., y' = x)
 let dy = y.formal_diff(&x);
@@ -52,7 +52,8 @@ println!("Verified: {verified}");
 The key is `formal_diff`. Unlike `.diff()`, which computes the derivative, `.formal_diff()` creates an unevaluated derivative node — a symbolic placeholder for $y'$:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let dy = y.formal_diff(&x);       // Derivative(y, x) — represents y'
 let d2y = dy.formal_diff(&x);     // Derivative(Derivative(y, x), x) — represents y''
@@ -70,7 +71,8 @@ For second-order ODEs, chain two `formal_diff` calls. The ODE solver recognizes 
 The simplest case — the right-hand side depends only on $x$, so the solution is a direct integral:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // y' = x  →  y = x²/2 + C1
 let ode = expr!(diff(y, x) - x);
@@ -92,7 +94,8 @@ if let Some((sol, _)) = ode2.solve_ode(&y, &x) {
 First-order linear with constant coefficients — the exponential decay/growth equation:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // y' + 2y = 0  →  y = C1·exp(-2x)
 let ode = expr!(diff(y, x) + 2 * y);
@@ -115,7 +118,8 @@ println!("Verified: {verified}");
 When the coefficients are variable (functions of $x$), symplex uses the integrating factor method:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // y' + (1/x)·y = x
 // Integrating factor: μ = exp(∫1/x dx) = x
@@ -134,7 +138,8 @@ if let Some((sol, _)) = ode.solve_ode(&y, &x) {
 When the ODE separates into a product of a function of $x$ and a function of $y$:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // y' = x·y  →  dy/y = x dx  →  ln|y| = x²/2  →  y = C1·exp(x²/2)
 let ode = &y.formal_diff(&x) - &(&x * &y);
@@ -151,7 +156,8 @@ if let Some((sol, _)) = ode.solve_ode(&y, &x) {
 An exact ODE satisfies $\partial M/\partial y = \partial N/\partial x$. The solution is an implicit function $F(x,y) = C$ found by integrating $M$ with respect to $x$ and $N$ with respect to $y$:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // (2xy + 3) + x²·y' = 0
 // M = 2xy + 3, N = x²
@@ -171,7 +177,8 @@ if let Some((sol, _)) = ode.solve_ode(&y, &x) {
 When the right-hand side is a function of $y/x$ alone, the substitution $v = y/x$ reduces the ODE to a separable equation:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // y' = (x + y)/x = 1 + y/x
 let dy = y.formal_diff(&x);
@@ -189,7 +196,8 @@ if let Some((sol, _)) = ode.solve_ode(&y, &x) {
 The Bernoulli equation is nonlinear but reducible to a linear ODE via the substitution $v = y^{1-n}$:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // y' + y = y²  (Bernoulli with n=2)
 // Substitution v = y^(-1): v' - v = -1
@@ -214,7 +222,8 @@ The workhorse of mechanical and electrical engineering. The solution depends on 
 - **Repeated root** ($b^2 = 4ac$): $y = (C_1 + C_2 x) e^{rx}$
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 let dy = y.formal_diff(&x);
 let d2y = dy.formal_diff(&x);
 
@@ -246,7 +255,7 @@ println!("exp(x) works: {}", ode.check_ode_solution(&x.exp(), &y, &x));
 // Case 2: Overdamped — y'' + 3y' + 2y = 0
 // Characteristic: r² + 3r + 2 = 0 → r = -1, -2
 // Solution: y = C1·exp(-x) + C2·exp(-2x)
-vars!(x, y);
+syms!(ctx; x, y);
 let dy = y.formal_diff(&x);
 let d2y = dy.formal_diff(&x);
 
@@ -268,7 +277,8 @@ println!("exp(-2x) works: {}", ode.check_ode_solution(&(-&x * 2).exp(), &y, &x))
 When there's a forcing function on the right-hand side, the solution is the sum of the homogeneous solution and a particular solution found via undetermined coefficients:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 let dy = y.formal_diff(&x);
 let d2y = dy.formal_diff(&x);
 
@@ -291,7 +301,8 @@ This is the resonance case — the forcing frequency matches the natural frequen
 The Euler-Cauchy (or equidimensional) equation has variable coefficients, but the substitution $x = e^t$ converts it to a constant-coefficient ODE:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 let dy = y.formal_diff(&x);
 let d2y = dy.formal_diff(&x);
 
@@ -312,7 +323,8 @@ if let Some((sol, _)) = ode.solve_ode(&y, &x) {
 When the forcing function doesn't fit the undetermined-coefficients template (exponentials, sines, polynomials), variation of parameters handles the general case:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 let dy = y.formal_diff(&x);
 let d2y = dy.formal_diff(&x);
 
@@ -333,7 +345,8 @@ if let Some((sol, _)) = ode.solve_ode(&y, &x) {
 When the independent variable $x$ doesn't appear explicitly in the ODE, the substitution $p = y'$ (treating $p$ as a function of $y$) reduces the order:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 let dy = y.formal_diff(&x);
 let d2y = dy.formal_diff(&x);
 
@@ -353,7 +366,8 @@ if let Some((sol, _)) = ode.solve_ode(&y, &x) {
 You can build ODEs more concisely with the `expr!` macro, which understands `diff(y, x)`:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let ode = expr!(diff(y, x) + y);
 println!("Type: {:?}", ode.classify_ode(&y, &x));
@@ -371,7 +385,8 @@ For second-order ODEs, nest two `diff` calls or build the derivative nodes manua
 Here's a quick way to classify a batch of ODEs without solving them:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 let dy = y.formal_diff(&x);
 let d2y = dy.formal_diff(&x);
 
@@ -396,9 +411,9 @@ For linear constant-coefficient systems $\dot{\mathbf{x}} = A\mathbf{x}$, symple
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(t);
+let ctx = Context::new();
+syms!(ctx; t);
 
 // ẋ = Ax where A = [[0, 1], [-2, -3]]
 // A mass-spring-damper with k=2, c=3
@@ -420,8 +435,8 @@ The solver tries three strategies in order:
 
 ```rust
 // A diagonal system is trivial
-let a_diag = matrix![[symplex::int(-1), symplex::int(0)],
-                      [symplex::int(0), symplex::int(-3)]];
+let a_diag = matrix![[ctx.int(-1), ctx.int(0)],
+                      [ctx.int(0), ctx.int(-3)]];
 let sol = symplex::ode::solve_ode_system(&a_diag, &t).unwrap();
 println!("x₁(t) = {}", sol[0]);  // C1*exp(-t)
 println!("x₂(t) = {}", sol[1]);  // C2*exp(-3*t)

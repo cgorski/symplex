@@ -8,9 +8,9 @@ The fastest way to see what a function looks like is `.textplot()`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let plot = x.sin().textplot(&x, 0.0, 6.28);
 println!("{plot}");
@@ -52,9 +52,9 @@ For publication-quality or web-embeddable plots, use `.to_svg()`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let svg = x.sin().to_svg(&x, 0.0, 6.28);
 println!("{}", &svg[..40]); // <svg xmlns="http://www.w3.org/2000/...
@@ -71,9 +71,9 @@ The returned string is a complete, self-contained SVG document. It includes:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 * sin(x));
 let svg = f.to_svg(&x, -6.28, 6.28);
@@ -87,9 +87,9 @@ Since the output is a self-contained SVG string, you can drop it directly into a
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let svg = x.sin().to_svg(&x, 0.0, 6.28);
 
@@ -113,9 +113,9 @@ If you're writing a paper or report in LaTeX, `.to_tikz()` generates a complete 
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let tikz = x.sin().to_tikz(&x, 0.0, 6.28);
 println!("{}", &tikz[..30]); // \begin{tikzpicture}...
@@ -147,9 +147,9 @@ Save the TikZ code to a file and `\input` it, or paste it directly:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^3 - 3*x^2 + 2*x);
 let tikz = f.to_tikz(&x, -1.0, 4.0);
@@ -178,9 +178,9 @@ If you need the raw `(x, y)` sample points — for feeding into a custom plottin
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let data = x.sin().plot_data(&x, 0.0, 6.28, 100);
 assert_eq!(data.len(), 100);
@@ -196,9 +196,9 @@ The four arguments are: variable, left endpoint, right endpoint, and number of s
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let data = expr!(exp(-x/5) * sin(x)).plot_data(&x, 0.0, 20.0, 500);
 
@@ -216,9 +216,9 @@ For structured tabular data with headers and multiple export formats, use `.eval
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = x.powi(2);
 let table = f.eval_table(&x, &[0.0, 0.5, 1.0, 1.5, 2.0]);
@@ -231,9 +231,9 @@ The `DataTable` returned by `eval_table` supports several export formats:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let table = x.sin().eval_table(&x, &[0.0, 1.0, 2.0, 3.0]);
 let csv = table.to_csv();
@@ -249,9 +249,9 @@ println!("{csv}");
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let table = x.powi(2).eval_table(&x, &[1.0, 2.0, 3.0]);
 let json = table.to_json();
@@ -267,9 +267,9 @@ println!("{json}");
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let table = x.powi(3).eval_table(&x, &[0.0, 1.0, 2.0, 3.0]);
 let md = table.to_markdown();
@@ -296,13 +296,13 @@ This means you can plot functions with poles and discontinuities without manual 
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // 1/x has a singularity at x = 0
 // The plotter detects it and samples around it
-let plot = (symplex::int(1) / &x).textplot(&x, -5.0, 5.0);
+let plot = (ctx.int(1) / &x).textplot(&x, -5.0, 5.0);
 println!("{plot}");
 
 // tan(x) has singularities at ±π/2, ±3π/2, ...
@@ -318,9 +318,9 @@ To plot two functions on the same axes, you can generate SVG manually using the 
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let sin_data = x.sin().plot_data(&x, 0.0, 6.28, 200);
 let cos_data = x.cos().plot_data(&x, 0.0, 6.28, 200);
@@ -340,9 +340,9 @@ For terminal comparison, generate textplots side by side:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 println!("sin(x):");
 println!("{}", x.sin().textplot(&x, 0.0, 6.28));
@@ -357,10 +357,10 @@ Here's a complete example that derives a function, finds its critical points, an
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
+let ctx = Context::new();
 fn main() {
-    vars!(x);
+    syms!(ctx; x);
 
     // Define and differentiate
     let f = expr!(x^3 - 3*x^2 + 2*x);

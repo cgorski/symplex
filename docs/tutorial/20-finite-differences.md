@@ -30,9 +30,10 @@ The simplest finite difference uses two points: `x₀` and `x₀ + h`.
 ```rust
 use symplex::prelude::*;
 
+let ctx = Context::new();
 fn main() {
-    let x = symplex::var("x");
-    let h = symplex::var("h");
+    let x = ctx.var("x");
+    let h = ctx.var("h");
 
     // Two-point forward difference for f'(x)
     // Grid: [x, x+h], evaluate at x
@@ -142,7 +143,8 @@ where `h` is introduced as the symbol `_h`.
 ```rust
 use symplex::prelude::*;
 
-let x = symplex::var("x");
+let ctx = Context::new();
+let x = ctx.var("x");
 
 // Create a formal derivative: d/dx(x²)
 let formal = x.powi(2).formal_diff(&x);
@@ -155,8 +157,8 @@ println!("Finite: {finite}");
 
 // The result contains the step-size symbol _h.
 // You can substitute a concrete value:
-let h = symplex::var("_h");
-let concrete = finite.subs(&h, &symplex::rational(1, 100));
+let h = ctx.var("_h");
+let concrete = finite.subs(&h, &ctx.rational(1, 100));
 println!("With h = 0.01: {concrete}");
 ```
 
@@ -164,9 +166,9 @@ This is useful for converting analytical ODE formulations into numerical schemes
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // Build an ODE: y' + 2y = 0
 let dy = y.formal_diff(&x);

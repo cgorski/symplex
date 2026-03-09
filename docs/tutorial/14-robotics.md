@@ -20,27 +20,28 @@ We'll work with a three-joint planar manipulator — simple enough to follow eve
 use symplex::prelude::*;
 use symplex::robotics::*;
 use symplex::matrix::jacobian;
-use symplex::vars;
 
-vars!(theta1, theta2, theta3);
+let ctx = Context::new();
+syms!(ctx; theta1, theta2, theta3);
 
 // Link lengths as exact rationals — no floating-point until the very end
-let l1 = symplex::rational(3, 10);  // 0.3 m
-let l2 = symplex::rational(1, 4);   // 0.25 m
-let l3 = symplex::rational(1, 5);   // 0.2 m
+let l1 = ctx.rational(3, 10);  // 0.3 m
+let l2 = ctx.rational(1, 4);   // 0.25 m
+let l3 = ctx.rational(1, 5);   // 0.2 m
 
 println!("Total reach: {} m", &(&l1 + &l2) + &l3);
 // Total reach: 3/4 m  (exactly 0.75 m)
 ```
 
-Using `symplex::rational()` instead of `f64` keeps the entire derivation in exact arithmetic. The generated code at the end will use `f64`, but the symbolic pipeline never accumulates rounding error.
+Using `ctx.rational()` instead of `f64` keeps the entire derivation in exact arithmetic. The generated code at the end will use `f64`, but the symbolic pipeline never accumulates rounding error.
 
 ## Step 1: DH Parameters
 
 The Denavit-Hartenberg convention describes each joint with four parameters: $(\theta, d, a, \alpha)$. For a planar arm, $d = 0$ and $\alpha = 0$ for every joint — only the joint angle $\theta$ and link length $a$ vary:
 
 ```rust
-let zero = symplex::int(0);
+let ctx = Context::new();
+let zero = ctx.int(0);
 
 // DH parameters: (theta, d, a, alpha)
 let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
@@ -296,14 +297,14 @@ For model-based control, you need the equations of motion. Symplex derives them 
 
 ```rust
 use symplex::dynamics::*;
-use symplex::vars;
 
-vars!(q, qd, qdd);
-let m = symplex::var("m");
-let l = symplex::var("L");
-let g = symplex::var("g");
+let ctx = Context::new();
+syms!(ctx; q, qd, qdd);
+let m = ctx.var("m");
+let l = ctx.var("L");
+let g = ctx.var("g");
 
-let half = symplex::half();
+let half = ctx.rational(1, 2);
 
 // T = ½·m·L²·q̇²
 let ke = &half * &m * &l.powi(2) * &qd.powi(2);
@@ -328,13 +329,14 @@ The double pendulum is the canonical 2-DOF system. The full manipulator equation
 $$M(q)\ddot{q} + C(q, \dot{q})\dot{q} + g(q) = \tau$$
 
 ```rust
-vars!(q1, q2, qd1, qd2, qdd1, qdd2);
-let m1 = symplex::var("m1");
-let m2 = symplex::var("m2");
-let l1 = symplex::var("L1");
-let l2 = symplex::var("L2");
-let g = symplex::var("g");
-let half = symplex::half();
+let ctx = Context::new();
+syms!(ctx; q1, q2, qd1, qd2, qdd1, qdd2);
+let m1 = ctx.var("m1");
+let m2 = ctx.var("m2");
+let l1 = ctx.var("L1");
+let l2 = ctx.var("L2");
+let g = ctx.var("g");
+let half = ctx.rational(1, 2);
 
 // Kinetic energy (standard double-pendulum form)
 let ke_1 = &half * &m1 * &l1.powi(2) * &qd1.powi(2);

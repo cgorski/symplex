@@ -281,7 +281,8 @@ Symplex also exposes number theory operations on `Ex` expressions, bridging the 
 use symplex::prelude::*;
 use num_bigint::BigInt;
 
-let n = symplex::int(360);
+let ctx = Context::new();
+let n = ctx.int(360);
 let factors = n.factorize().unwrap();
 assert_eq!(factors, vec![
     (BigInt::from(2), 3),
@@ -297,7 +298,7 @@ let s: Vec<String> = factors.iter().map(|(p, e)| {
 println!("360 = {}", s.join(" × ")); // 360 = 2^3 × 3^2 × 5
 
 // Works with computed expressions
-let n = &symplex::int(12) * &symplex::int(5); // 60
+let n = &ctx.int(12) * &ctx.int(5); // 60
 let factors = n.factorize().unwrap();
 assert_eq!(factors.len(), 3); // 2², 3, 5
 ```
@@ -309,18 +310,19 @@ assert_eq!(factors.len(), 3); // 2², 3, 5
 ```rust
 use symplex::prelude::*;
 
-let n = symplex::int(104729);
+let ctx = Context::new();
+let n = ctx.int(104729);
 assert_eq!(n.is_prime_value(), Some(true));
 
-let n = symplex::int(60);
+let n = ctx.int(60);
 assert_eq!(n.is_prime_value(), Some(false));
 
 // Non-integer → None
-let half = symplex::rational(1, 2);
+let half = ctx.rational(1, 2);
 assert_eq!(half.is_prime_value(), None);
 
 // Mersenne prime M31
-let n = symplex::int(2_147_483_647);
+let n = ctx.int(2_147_483_647);
 assert_eq!(n.is_prime_value(), Some(true));
 ```
 
@@ -435,7 +437,7 @@ Several number theory features are planned for future releases:
 // let p_100 = symplex::ntheory::npartitions(100);
 
 // Continued fraction expansion
-// let cf = symplex::ntheory::continued_fraction(symplex::rational(355, 113));
+// let cf = symplex::ntheory::continued_fraction(ctx.rational(355, 113));
 
 // Jacobi symbol (generalization of Legendre to composite moduli)
 // let j = symplex::ntheory::jacobi_symbol(a, n);

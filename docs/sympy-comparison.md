@@ -30,9 +30,9 @@ x, y = symbols('x y')
 **symplex:**
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 ```
 
 ### Building Expressions
@@ -86,8 +86,9 @@ integrate(exp(-x), (x, 0, oo)) # 1
 
 **symplex:**
 ```rust
+let ctx = Context::new();
 let anti = expr!(x^2).integrate(&x);                              // 1/3*x^3
-let definite = expr!(x^2).definite_integral(&x, &symplex::int(0), &symplex::int(1)); // 1/3
+let definite = expr!(x^2).definite_integral(&x, &ctx.int(0), &ctx.int(1)); // 1/3
 ```
 
 **SymPy advantage:** SymPy implements the full Risch algorithm for symbolic integration. It can handle a vastly larger class of integrands — rational functions of exponentials and logarithms, algebraic functions, and more. Symplex handles polynomials, basic trig, exponentials, and common patterns, but does not implement Risch.
@@ -186,8 +187,9 @@ limit(1/x, x, oo)        # 0
 
 **symplex:**
 ```rust
-(&x.sin() / &x).limit(&x, &symplex::int(0));  // 1
-(1 / &x).limit(&x, &symplex::infinity());      // 0
+let ctx = Context::new();
+(&x.sin() / &x).limit(&x, &ctx.int(0));  // 1
+(1 / &x).limit(&x, &ctx.infinity());      // 0
 ```
 
 Both use L'Hôpital's rule and series expansion. SymPy additionally implements the Gruntz algorithm for computing limits at infinity, which handles a broader class of expressions.

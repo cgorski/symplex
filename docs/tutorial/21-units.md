@@ -10,9 +10,9 @@ This class of bug is shockingly common. Consider a motor controller:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(v, i, r);
+let ctx = Context::new();
+syms!(ctx; v, i, r);
 
 // Intent: compute power dissipation P = I²R
 // Bug: accidentally wrote V * I * R instead of I * I * R
@@ -63,7 +63,8 @@ Symplex offers three complementary patterns. Use whichever fits your situation:
 use symplex::prelude::*;
 use symplex::units::*;
 
-symplex::vars!(m, v, g, h);
+let ctx = Context::new();
+symplex::syms!(ctx; m, v, g, h);
 
 let ke = Energy::from_ex(expr!(1/2 * m * v^2));
 let pe = Energy::from_ex(expr!(m * g * h));
@@ -91,7 +92,8 @@ The multiplication/division table (~46 rules) catches dimension errors at compil
 use symplex::prelude::*;
 use symplex::units::*;
 
-symplex::vars!(a, t);
+let ctx = Context::new();
+symplex::syms!(ctx; a, t);
 let position = Length::from_ex(expr!(1/2 * a * t^2));
 let t_var = Time::symbol("t");
 let velocity: Velocity = position.diff_wrt(&t_var);
@@ -151,14 +153,15 @@ Use `expr!` + `from_ex()` to build complex formulas ergonomically:
 use symplex::prelude::*;
 use symplex::units::*;
 
-symplex::vars!(m, a, t);
+let ctx = Context::new();
+symplex::syms!(ctx; m, a, t);
 
 // expr! gives natural math syntax; from_ex() attaches the dimension
 let f = Force::from_ex(expr!(m * a));
 let position = Length::from_ex(expr!(1/2 * a * t^2));
 
 // Also works with a plain Ex variable
-let raw_expr = symplex::var("F_applied");
+let raw_expr = ctx.var("F_applied");
 let f2 = Force::from_ex(raw_expr);
 ```
 
@@ -232,6 +235,7 @@ Multiply by `i64` or `&Ex` to scale a quantity without changing its dimension:
 use symplex::prelude::*;
 use symplex::units::*;
 
+let ctx = Context::new();
 let f = Force::symbol("F");
 
 // Integer scaling
@@ -239,7 +243,7 @@ let double_f: Force = &f * 2;
 let also_double: Force = 2 * &f;
 
 // Symbolic scaling
-let half = symplex::rational(1, 2);
+let half = ctx.rational(1, 2);
 let half_f: Force = &f * &half;
 let also_half: Force = &half * f;
 
@@ -344,6 +348,7 @@ The named table knows `Mass × Acceleration → Force`, but it doesn't have a na
 use symplex::prelude::*;
 use symplex::units::*;
 
+let ctx = Context::new();
 let m = Mass::symbol("m");
 let v = Velocity::symbol("v");
 
@@ -360,7 +365,7 @@ let ke: Energy = ke_qty.into();
 println!("{ke}"); // m*v*v [J]
 
 // Scale by 1/2 for actual kinetic energy
-let half = symplex::rational(1, 2);
+let half = ctx.rational(1, 2);
 let ke_half: Energy = ke * &half;
 println!("{ke_half}"); // 1/2*m*v*v [J]
 ```
@@ -408,7 +413,8 @@ And `Qty<D>` converts **back** to the primary named type for that dimension via 
 use symplex::prelude::*;
 use symplex::units::*;
 
-let f_qty: Qty<ForceDim> = Qty::from_ex(symplex::var("F"));
+let ctx = Context::new();
+let f_qty: Qty<ForceDim> = Qty::from_ex(ctx.var("F"));
 let f: Force = f_qty.into();  // Qty<ForceDim> → Force
 ```
 
@@ -420,7 +426,8 @@ Transform the inner expression while preserving the dimension:
 use symplex::prelude::*;
 use symplex::units::*;
 
-let f_qty: Qty<ForceDim> = Qty::from_ex(symplex::var("x") * symplex::var("x"));
+let ctx = Context::new();
+let f_qty: Qty<ForceDim> = Qty::from_ex(ctx.var("x") * ctx.var("x"));
 let simplified = f_qty.map(|ex| ex.simplify());
 ```
 
@@ -496,17 +503,18 @@ All quantities are stored internally in SI base units. Conversion constructors a
 use symplex::prelude::*;
 use symplex::units::*;
 
-let five = symplex::int(5);
+let ctx = Context::new();
+let five = ctx.int(5);
 
 // 5 kilometers → 5000 meters internally
 let d = Length::kilometers(&five);
 println!("{d}"); // 5000 [m]
 
 // 1 horsepower → 745.7 watts internally
-let p = Power::horsepower(&symplex::int(1));
+let p = Power::horsepower(&ctx.int(1));
 
 // 100°C → 373.15 K internally
-let temp = Temperature::from_celsius(&symplex::int(100));
+let temp = Temperature::from_celsius(&ctx.int(100));
 ```
 
 Conversion constructors work with symbolic expressions too:
@@ -515,7 +523,8 @@ Conversion constructors work with symbolic expressions too:
 use symplex::prelude::*;
 use symplex::units::*;
 
-let x = symplex::var("x");
+let ctx = Context::new();
+let x = ctx.var("x");
 let d = Length::kilometers(&x);
 println!("{d}"); // 1000*x [m]
 ```
@@ -584,11 +593,12 @@ Temperature conversions are affine (they involve an offset, not just a scale fac
 use symplex::prelude::*;
 use symplex::units::*;
 
+let ctx = Context::new();
 // 0°C = 273.15 K
-let freezing = Temperature::from_celsius(&symplex::int(0));
+let freezing = Temperature::from_celsius(&ctx.int(0));
 
 // 212°F = 373.15 K (boiling point of water)
-let boiling = Temperature::from_fahrenheit(&symplex::int(212));
+let boiling = Temperature::from_fahrenheit(&ctx.int(212));
 ```
 
 ## 8. Compile-Time Assertions
@@ -685,7 +695,8 @@ The `DiffWrt<Var>` trait encodes "differentiating `Self` with respect to `Var` p
 use symplex::prelude::*;
 use symplex::units::*;
 
-symplex::vars!(a, t);
+let ctx = Context::new();
+symplex::syms!(ctx; a, t);
 
 // Typed differentiation: the compiler verifies d(Length)/d(Time) = Velocity
 let position = Length::from_ex(expr!(1/2 * a * t^2));
@@ -751,7 +762,8 @@ The `DiffWrt` pairs for `Energy` w.r.t. generalized coordinates and velocities m
 use symplex::prelude::*;
 use symplex::units::*;
 
-symplex::vars!(m, l, g, theta, theta_dot);
+let ctx = Context::new();
+symplex::syms!(ctx; m, l, g, theta, theta_dot);
 
 let theta_var = Angle::symbol("theta");
 let theta_dot_var = AngularVelocity::symbol("theta_dot");
@@ -776,7 +788,8 @@ When no `DiffWrt`/`IntWrt` impl exists for a particular pair, use the generic fu
 use symplex::prelude::*;
 use symplex::units::*;
 
-let t_sym = symplex::var("t");
+let ctx = Context::new();
+let t_sym = ctx.var("t");
 
 // Position: x(t) = ½ a t²
 let x: Qty<LengthDim> = Qty::from_ex(expr!(1/2 * a * t^2));
@@ -792,8 +805,9 @@ Integration works the same way:
 use symplex::prelude::*;
 use symplex::units::*;
 
-let f: Qty<ForceDim> = Qty::from_ex(symplex::var("F"));
-let x: Qty<LengthDim> = Qty::from_ex(symplex::var("x"));
+let ctx = Context::new();
+let f: Qty<ForceDim> = Qty::from_ex(ctx.var("F"));
+let x: Qty<LengthDim> = Qty::from_ex(ctx.var("x"));
 
 // ∫ F dx → Force × Length = Energy
 let w: Energy = integrate_qty(&f, &x).into();
@@ -807,7 +821,8 @@ Differentiation and integration are inverses — and the type system proves it:
 use symplex::prelude::*;
 use symplex::units::*;
 
-symplex::vars!(a, t);
+let ctx = Context::new();
+symplex::syms!(ctx; a, t);
 let t_var = Time::symbol("t");
 
 let accel = Acceleration::from_ex(expr!(a));
@@ -833,11 +848,12 @@ Every named type and `Qty<D>` has `into_inner()`, which returns the raw `Ex`:
 use symplex::prelude::*;
 use symplex::units::*;
 
+let ctx = Context::new();
 let f = Force::symbol("F");
 let raw: Ex = f.into_inner();  // now just a plain Ex, no dimension tracking
 
 // Also works on Qty
-let q: Qty<ForceDim> = Qty::from_ex(symplex::var("F"));
+let q: Qty<ForceDim> = Qty::from_ex(ctx.var("F"));
 let raw2: Ex = q.into_inner();
 ```
 
@@ -860,7 +876,8 @@ When you have a raw `Ex` and know its dimension, use `assume_dimension`:
 use symplex::prelude::*;
 use symplex::units::*;
 
-let raw_expr: Ex = symplex::var("F_external");
+let ctx = Context::new();
+let raw_expr: Ex = ctx.var("F_external");
 
 // "I promise this expression has dimension Force"
 let f: Qty<ForceDim> = assume_dimension::<ForceDim>(raw_expr);
@@ -879,8 +896,9 @@ Similar to `assume_dimension`, but the dimension is inferred from context:
 use symplex::prelude::*;
 use symplex::units::*;
 
+let ctx = Context::new();
 // The type annotation tells Rust which dimension to use
-let f: Qty<ForceDim> = Qty::from_ex(symplex::var("F"));
+let f: Qty<ForceDim> = Qty::from_ex(ctx.var("F"));
 ```
 
 ### When to Use Each
@@ -938,8 +956,9 @@ fn main() {
 use symplex::prelude::*;
 use symplex::units::*;
 
+let ctx = Context::new();
 fn main() {
-    symplex::vars!(m, l, g, theta, theta_dot);
+    symplex::syms!(ctx; m, l, g, theta, theta_dot);
 
     let theta_var = Angle::symbol("theta");
     let theta_dot_var = AngularVelocity::symbol("theta_dot");
@@ -1051,7 +1070,8 @@ When converting from `Qty<EnergyDim>`, the primary type `Energy` is returned (no
 use symplex::prelude::*;
 use symplex::units::*;
 
-let q: Qty<EnergyDim> = Qty::from_ex(symplex::var("x"));
+let ctx = Context::new();
+let q: Qty<EnergyDim> = Qty::from_ex(ctx.var("x"));
 let e: Energy = q.clone().into();              // Qty → Energy (primary)
 let tau = Torque::from_energy(q.into());       // Qty → Energy → Torque
 ```
@@ -1081,11 +1101,12 @@ Both have all-zero dimension vectors:
 use symplex::prelude::*;
 use symplex::units::*;
 
+let ctx = Context::new();
 let d = Dimensionless::symbol("ratio");
 let theta = Angle::from_dimensionless(d);  // explicit conversion
 
 // Dimensionless is the primary type
-let q: Qty<DimensionlessDim> = Qty::from_ex(symplex::var("x"));
+let q: Qty<DimensionlessDim> = Qty::from_ex(ctx.var("x"));
 let d2: Dimensionless = q.into();  // Qty → Dimensionless (primary)
 ```
 
@@ -1157,8 +1178,8 @@ error[E0599]: no method named `sin` found for struct `Length` in the current sco
 ### Error 4: Adding Qty with Different Dimensions
 
 ```rust
-// let a: Qty<LengthDim> = Qty::from_ex(symplex::var("a"));
-// let b: Qty<MassDim> = Qty::from_ex(symplex::var("b"));
+// let a: Qty<LengthDim> = Qty::from_ex(ctx.var("a"));
+// let b: Qty<MassDim> = Qty::from_ex(ctx.var("b"));
 // let c = a + b;
 ```
 

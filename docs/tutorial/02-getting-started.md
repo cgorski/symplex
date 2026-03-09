@@ -23,26 +23,26 @@ Every symplex session starts with two imports:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 ```
 
 The prelude brings in the core types — `Ex` (the expression type), `Matrix`, `Context`, `StateSpace`, `TransferFunction`, and the proc macros `expr!`, `matrix!`, and `eq!`.
 
-The `vars!` macro is a separate `#[macro_export]` macro that creates symbolic variables in the global default context:
+The `syms!` macro is a separate `#[macro_export]` macro that creates symbolic variables from a `Context`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y, z);
+let ctx = Context::new();
+syms!(ctx; x, y, z);
 // x, y, z are now `Ex` values bound to symbols named "x", "y", "z"
 ```
 
-Under the hood, `vars!(x)` expands to `let x = symplex::var("x");`. You can also create variables directly:
+Under the hood, `syms!(ctx; x)` expands to `let x = ctx.var("x");`. You can also create variables directly:
 
 ```rust
-let theta = symplex::var("theta");
-let omega = symplex::var("omega");
+let ctx = Context::new();
+let theta = ctx.var("theta");
+let omega = ctx.var("omega");
 ```
 
 ### Using a Context
@@ -57,7 +57,7 @@ let ctx = Context::new();
 syms!(ctx; x, y, z);
 ```
 
-The `syms!` macro works like `vars!` but takes a context. You can also attach assumptions to symbols:
+You can also attach assumptions to symbols using the `sym!` macro:
 
 ```rust
 use symplex::prelude::*;
@@ -68,7 +68,7 @@ sym!(ctx; t, Positive, Real);
 // t is now known to be positive and real
 ```
 
-For most use cases, the global default context via `vars!` is sufficient.
+For most use cases, `syms!` with a local context is all you need.
 
 ## Building Expressions
 
@@ -78,9 +78,9 @@ The `expr!` macro is the most convenient way to build expressions. It parses a m
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let f = expr!(x^2 + 2*x + 1);
 let g = expr!(sin(x)^2 + cos(x)^2);
@@ -100,9 +100,9 @@ You can also build expressions using method calls:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = x.powi(2) + &x * 2 + 1;        // x² + 2x + 1
 let g = x.sin().powi(2) + x.cos().powi(2); // sin²(x) + cos²(x)
@@ -112,22 +112,23 @@ let h = x.exp() + x.ln();                // eˣ + ln(x)
 ### Constants and Rationals
 
 ```rust
-let zero = symplex::int(0);
-let five = symplex::int(5);
-let half = symplex::rational(1, 2);  // exact 1/2
-let third = symplex::rational(1, 3); // exact 1/3
+let ctx = Context::new();
+let zero = ctx.int(0);
+let five = ctx.int(5);
+let half = ctx.rational(1, 2);  // exact 1/2
+let third = ctx.rational(1, 3); // exact 1/3
 
 // Convenience functions
-let half = symplex::half();           // 1/2
-let third = symplex::third();         // 1/3
-let quarter = symplex::quarter();     // 1/4
+let half = ctx.rational(1, 2);           // 1/2
+let third = ctx.rational(1, 3);         // 1/3
+let quarter = ctx.rational(1, 4);     // 1/4
 
 // Mathematical constants
-let pi = symplex::pi();               // π
-let e = symplex::e();                 // Euler's number e
-let i = symplex::i_unit();            // imaginary unit i
-let inf = symplex::infinity();        // +∞
-let neg_inf = symplex::neg_infinity(); // -∞
+let pi = ctx.pi();               // π
+let e = ctx.e();                 // Euler's number e
+let i = ctx.i_unit();            // imaginary unit i
+let inf = ctx.infinity();        // +∞
+let neg_inf = ctx.neg_infinity(); // -∞
 ```
 
 ## Display and LaTeX
@@ -136,9 +137,9 @@ Every expression implements `Display`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 + 2*x + 1);
 println!("f(x) = {f}");        // f(x) = x^2 + 2*x + 1
@@ -151,9 +152,9 @@ For publication-quality output, use `.to_latex()`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 + 2*x + 1);
 println!("{}", f.to_latex());   // x^{2} + 2 x + 1
@@ -187,12 +188,12 @@ Replace a variable with another expression using `.subs()`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 + 1);
-let at_3 = f.subs(&x, &symplex::int(3));
+let at_3 = f.subs(&x, &ctx.int(3));
 println!("{at_3}"); // 10
 
 // Substitute with another expression
@@ -215,14 +216,14 @@ Replace several variables at once with `.subs_map()`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let f = expr!(x^2 + y^2);
 let result = f.subs_map(&[
-    (&x, &symplex::int(3)),
-    (&y, &symplex::int(4)),
+    (&x, &ctx.int(3)),
+    (&y, &ctx.int(4)),
 ]);
 println!("{result}"); // 25
 ```
@@ -237,9 +238,9 @@ For expressions with free variables, use `.eval_f64_with()`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(sin(x) + cos(x));
 let val = f.eval_f64_with(&[(&x, 1)]).unwrap();
@@ -253,7 +254,8 @@ For expressions that are already fully numeric (no free variables), use `.eval_f
 ```rust
 use symplex::prelude::*;
 
-let pi = symplex::default_context().pi();
+let ctx = Context::new();
+let pi = ctx.pi();
 let val = pi.sin().eval_f64().unwrap();
 println!("{val}"); // approximately 0.0 (within floating-point precision)
 ```
@@ -265,7 +267,8 @@ Need more than 16 digits? Use `.eval_decimal()`:
 ```rust
 use symplex::prelude::*;
 
-let pi = symplex::default_context().pi();
+let ctx = Context::new();
+let pi = ctx.pi();
 let s = pi.eval_decimal(50).unwrap();
 println!("π = {s}");
 // π = 3.14159265358979323846264338327950288419716939937510
@@ -280,7 +283,8 @@ For expressions involving the imaginary unit:
 ```rust
 use symplex::prelude::*;
 
-let i = symplex::i_unit();
+let ctx = Context::new();
+let i = ctx.i_unit();
 let expr = &i.powi(2);          // i² = -1
 let (re, im) = expr.eval_complex64().unwrap();
 println!("({re}, {im})");       // (-1.0, 0.0)
@@ -292,9 +296,9 @@ For repeated numerical evaluation in tight loops, `.compile()` converts an expre
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 + 2*x + 1);
 let compiled = f.compile(&["x"]).expect("compilation failed");
@@ -314,9 +318,9 @@ The variable names passed to `.compile()` determine the positional mapping: `&["
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let f = expr!(x^2 + y^2);
 let compiled = f.compile(&["x", "y"]).unwrap();
@@ -329,9 +333,9 @@ The most powerful evaluation method: generate a standalone Rust function as sour
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 + 2*x + 1);
 let code = f.to_rust_fn("quadratic", &["x"]).unwrap();
@@ -355,10 +359,10 @@ Here's a complete mini-workflow: define a function, find its derivative, solve f
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
+let ctx = Context::new();
 fn main() {
-    vars!(x);
+    syms!(ctx; x);
 
     // Define a polynomial
     let f = expr!(x^3 - 3*x^2 + 2*x);
@@ -380,7 +384,7 @@ fn main() {
     println!("∫f dx = {anti}");
 
     // Definite integral
-    let area = f.definite_integral(&x, &symplex::int(0), &symplex::int(1));
+    let area = f.definite_integral(&x, &ctx.int(0), &ctx.int(1));
     println!("∫₀¹ f dx = {area}");
 
     // LaTeX

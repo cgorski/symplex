@@ -135,7 +135,8 @@ Symplex expressions have two convenience methods that tie directly into data exp
 ```rust
 use symplex::prelude::*;
 
-let x = symplex::var("x");
+let ctx = Context::new();
+let x = ctx.var("x");
 let f = x.powi(2);
 
 let data = f.plot_data(&x, 0.0, 3.0, 4);
@@ -150,7 +151,8 @@ assert_eq!(data.len(), 4);
 ```rust
 use symplex::prelude::*;
 
-let x = symplex::var("x");
+let ctx = Context::new();
+let x = ctx.var("x");
 let f = x.powi(2);
 
 let table = f.eval_table(&x, &[0.0, 1.0, 2.0, 3.0]);
@@ -166,8 +168,9 @@ Here's the typical pipeline: define an expression, evaluate it, and export to mu
 use symplex::prelude::*;
 use symplex::data_export::DataTable;
 
+let ctx = Context::new();
 fn main() {
-    let x = symplex::var("x");
+    let x = ctx.var("x");
 
     // Define a function
     let f = expr!(x^3 - 3*x^2 + 2*x);

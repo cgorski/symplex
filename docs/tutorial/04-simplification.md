@@ -23,18 +23,18 @@ Here's the hierarchy, from broadest to most specific:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
-let pi = symplex::default_context().pi();
+let pi = ctx.pi();
 
 // Known special values
 println!("{}", pi.sin().eval());          // 0
 println!("{}", pi.cos().eval());          // -1
-println!("{}", symplex::int(0).exp().eval()); // 1
-println!("{}", symplex::int(1).ln().eval());  // 0
-println!("{}", symplex::int(4).sqrt().eval()); // 2
+println!("{}", ctx.int(0).exp().eval()); // 1
+println!("{}", ctx.int(1).ln().eval());  // 0
+println!("{}", ctx.int(4).sqrt().eval()); // 2
 
 // Not a known special value — returned unchanged
 println!("{}", x.sin().eval());           // sin(x)
@@ -48,9 +48,9 @@ println!("{}", x.sin().eval());           // sin(x)
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Pythagorean identity
 let expr = expr!(sin(x)^2 + cos(x)^2);
@@ -67,7 +67,8 @@ println!("{}", expr.simplify()); // x
 Because it's a single pass, it can miss simplifications that require multiple rounds of expansion and rule application. For example:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
 println!("{}", expr.simplify());      // might not reduce to 1
@@ -79,7 +80,8 @@ println!("{}", expr.full_simplify()); // 1
 Want to see which rules fired? Use `.simplify_trace()`:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let expr = expr!(sin(x)^2 + cos(x)^2);
 let (result, steps) = expr.simplify_trace();
@@ -95,9 +97,9 @@ for step in &steps {
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Needs multiple passes to fully reduce
 let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
@@ -114,9 +116,9 @@ There's also `.full_simplify_trace()` for debugging.
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // Distribute
 let expr = &x * &(&y + 1);
@@ -138,9 +140,9 @@ println!("{}", expr.expand()); // x^3 + 3*x^2 + 3*x + 1
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Difference of squares
 let expr = expr!(x^2 - 1);
@@ -164,7 +166,8 @@ The factoring algorithm finds rational roots via the polynomial solver and extra
 If no rational roots exist, the expression is returned unchanged:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 let expr = expr!(x^2 + 1); // roots are ±i, not rational
 println!("{}", expr.factor(&x)); // x^2 + 1 (unchanged)
 ```
@@ -175,9 +178,9 @@ For factoring out common numeric factors from a sum:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let expr = expr!(6*x^2 + 4*x + 2);
 let factored = expr.factor_terms();
@@ -192,9 +195,9 @@ Applies trigonometric identities (Pythagorean, double-angle, etc.):
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Pythagorean identity
 let expr = expr!(sin(x)^2 + cos(x)^2);
@@ -211,9 +214,9 @@ Expands compound trig expressions using double-angle, sum-to-product, and simila
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Double angle → expanded form
 let expr = (&x * 2).sin();
@@ -231,9 +234,9 @@ The inverse of `expand_trig()` — combines products of trig functions into sing
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let expr = &x.sin() * &x.cos();
 let combined = expr.trig_combine();
@@ -246,9 +249,9 @@ Convert between trigonometric and exponential forms:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Trig → exponential (Euler's formula)
 let expr = x.sin();
@@ -256,7 +259,7 @@ let as_exp = expr.rewrite_as_exp();
 println!("{as_exp}"); // expression in terms of exp(I*x)
 
 // Exponential → trig
-let expr = (&symplex::i_unit() * &x).exp();
+let expr = (&ctx.i_unit() * &x).exp();
 let as_trig = expr.rewrite_as_trig();
 println!("{as_trig}"); // cos(x) + I*sin(x)
 ```
@@ -269,9 +272,9 @@ Expands logarithms of products and powers:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // ln(x*y) → ln(x) + ln(y)
 let expr = (&x * &y).ln();
@@ -290,9 +293,9 @@ The inverse of `expand_log()` — combines sums of logarithms:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // ln(x) + ln(y) → ln(x*y)
 let expr = &x.ln() + &y.ln();
@@ -308,9 +311,9 @@ Simplifies expressions involving powers — combines like bases, simplifies nest
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // (x^2)^3 → x^6
 let expr = x.powi(2).powi(3);
@@ -324,9 +327,9 @@ Eliminates radicals from the denominator:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // 1/sqrt(x) → sqrt(x)/x
 let expr = 1 / &x.sqrt();
@@ -342,9 +345,9 @@ Cancels common polynomial factors between numerator and denominator:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // (x^2 - 1) / (x - 1) → x + 1
 let expr = &expr!(x^2 - 1) / &expr!(x - 1);
@@ -358,9 +361,9 @@ Decomposes a rational expression into a sum of simpler fractions:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // 1/(x^2 - 1) → 1/(2*(x-1)) - 1/(2*(x+1))
 let expr = 1 / &(expr!(x^2 - 1));
@@ -379,9 +382,9 @@ Partial fractions are essential for:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Combine separate fractions
 let expr = &(1 / &x) + &(1 / &(&x + 1));
@@ -402,9 +405,9 @@ Split a rational expression into its parts:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let expr = &expr!(x + 1) / &expr!(x - 1);
 let (numer, denom) = expr.as_numer_denom();
@@ -420,9 +423,9 @@ Groups terms by powers of a variable:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let expr = expr!(x*y + x + y + 1);
 let collected = expr.collect(&x);
@@ -435,9 +438,9 @@ Inspect polynomial structure:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let poly = expr!(3*x^3 + 2*x + 1);
 println!("Degree: {}", poly.degree(&x)); // 3
@@ -452,9 +455,9 @@ for (i, c) in coefficients.iter().enumerate() {
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let poly = expr!(3*x^2 + 5*x + 7);
 println!("{}", poly.coeff(&x, 2)); // 3  (coefficient of x^2)
@@ -468,9 +471,9 @@ Greatest common divisor and least common multiple of polynomials:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let a = expr!(x^2 - 1);            // (x-1)(x+1)
 let b = expr!(x^2 - 2*x + 1);     // (x-1)^2
@@ -484,15 +487,15 @@ Check properties of an expression without transforming it:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let poly = expr!(x^2 + 1);
 println!("Is constant? {}", poly.is_constant());      // false
 println!("Is polynomial? {}", poly.is_polynomial(&x)); // true
 
-let c = symplex::int(5);
+let c = ctx.int(5);
 println!("Is constant? {}", c.is_constant()); // true
 ```
 
@@ -502,9 +505,9 @@ println!("Is constant? {}", c.is_constant()); // true
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let expr = &x.sin() * &y.exp();
 if let Some(factors) = expr.separate_vars(&[&x, &y]) {

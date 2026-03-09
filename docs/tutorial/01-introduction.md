@@ -15,10 +15,10 @@ That's a 16-digit approximation. In symplex:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
-let result = symplex::int(8).sqrt().simplify();
+let ctx = Context::new();
+syms!(ctx; x);
+let result = ctx.int(8).sqrt().simplify();
 println!("{result}"); // 2*sqrt(2)
 ```
 
@@ -41,8 +41,9 @@ In symplex, rationals are exact:
 ```rust
 use symplex::prelude::*;
 
-let a = symplex::rational(1, 10); // exactly 1/10
-let b = symplex::rational(2, 10); // exactly 2/10 = 1/5
+let ctx = Context::new();
+let a = ctx.rational(1, 10); // exactly 1/10
+let b = ctx.rational(2, 10); // exactly 2/10 = 1/5
 let sum = &a + &b;
 println!("{sum}"); // 3/10
 ```
@@ -64,10 +65,10 @@ Here's what ten lines of symplex look like in practice:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
+let ctx = Context::new();
 fn main() {
-    vars!(x);
+    syms!(ctx; x);
 
     // Build a polynomial
     let f = expr!(x^3 - 3*x^2 + 2*x);
@@ -122,9 +123,9 @@ This is the killer feature. Symplex can take a symbolic expression — say, a 6-
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 let f = expr!(x^2 + 2*x + 1);
 let code = f.to_rust_fn("quadratic", &["x"]).unwrap();
 println!("{code}");

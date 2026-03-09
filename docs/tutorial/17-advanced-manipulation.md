@@ -10,9 +10,9 @@ Every expression in symplex is a directed acyclic graph (DAG) of nodes — symbo
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y, z);
+let ctx = Context::new();
+syms!(ctx; x, y, z);
 
 let f = expr!(x^2 + 2*x*y + z);
 let syms = f.free_symbols();
@@ -28,11 +28,11 @@ Constants like `π` and `e` are *not* free symbols — they're built-in atoms:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
-let f = &x * symplex::pi();
+let f = &x * ctx.pi();
 let syms = f.free_symbols();
 assert_eq!(syms.len(), 1); // only x, not π
 ```
@@ -43,9 +43,9 @@ assert_eq!(syms.len(), 1); // only x, not π
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let f = expr!(sin(x^2) + y);
 
@@ -65,13 +65,13 @@ This is a structural check — it walks the DAG and compares node identities.
 ```rust
 use symplex::prelude::*;
 use symplex::expr::ExprType;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
-assert_eq!(symplex::int(42).expr_type(), ExprType::Number);
+assert_eq!(ctx.int(42).expr_type(), ExprType::Number);
 assert_eq!(x.expr_type(), ExprType::Symbol);
-assert_eq!(symplex::pi().expr_type(), ExprType::Constant);
+assert_eq!(ctx.pi().expr_type(), ExprType::Constant);
 assert_eq!((&x + 1).expr_type(), ExprType::Add);
 assert_eq!((&x * 2).expr_type(), ExprType::Mul);
 assert_eq!(x.powi(2).expr_type(), ExprType::Pow);
@@ -99,9 +99,9 @@ The full enum:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // term_count: number of top-level summands
 assert_eq!((&x + 1).term_count(), 2);       // x + 1 has 2 terms
@@ -125,13 +125,13 @@ assert_eq!(expr!(x^2 + 2*x + 1).count_ops(), 5); // several ops
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 assert_eq!(expr!(x^3 + x + 1).degree(&x), Some(3));
 assert_eq!(expr!(5*x^2 + 3*x).degree(&x), Some(2));
-assert_eq!(symplex::int(42).degree(&x), Some(0)); // constant = degree 0
+assert_eq!(ctx.int(42).degree(&x), Some(0)); // constant = degree 0
 assert_eq!(x.sin().degree(&x), None);             // not a polynomial
 ```
 
@@ -141,9 +141,9 @@ assert_eq!(x.sin().degree(&x), None);             // not a polynomial
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // x^2 + 3*x + 5 → coefficients [5, 3, 1]
 let f = expr!(x^2 + 3*x + 5);
@@ -156,9 +156,9 @@ assert_eq!(strs, vec!["5", "3", "1"]);
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = &x.powi(2) * 3 + &x * 5 + 7;
 assert_eq!(format!("{}", f.coeff(&x, 2).unwrap()), "3"); // x^2 coefficient
@@ -173,9 +173,9 @@ assert_eq!(format!("{}", f.coeff(&x, 5).unwrap()), "0"); // beyond degree
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let f = &x / &y;
 let (n, d) = f.as_numer_denom();
@@ -197,14 +197,14 @@ println!("denominator: {d}"); // 1
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let f = expr!(x^2 + 2*x + 1);
 
 // Replace x with a number
-let at_3 = f.subs(&x, &symplex::int(3));
+let at_3 = f.subs(&x, &ctx.int(3));
 println!("{at_3}"); // 16
 
 // Replace x with another expression
@@ -220,9 +220,9 @@ This is a **structural** operation — only exact node matches are replaced. If 
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let f = expr!(x^2 + y^2);
 let result = f.subs_map_i64(&[(&x, 3), (&y, 4)]);
@@ -239,9 +239,9 @@ This is convenient for evaluating multi-variable expressions at specific integer
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let f = x.powi(2);
 
@@ -262,9 +262,9 @@ The closure receives an `ExprView` — a lightweight, non-locking read-only hand
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y, theta, phi);
+let ctx = Context::new();
+syms!(ctx; x, y, theta, phi);
 
 // Rename variables: x → θ, y → φ
 let f = expr!(x^2 + 2*x*y + y^2);
@@ -284,13 +284,13 @@ println!("{renamed}"); // theta^2 + 2*theta*phi + phi^2
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Replace sin(x)^2 with 1 - cos(x)^2 wherever it appears
 let sin2 = x.sin().powi(2);
-let replacement = &symplex::int(1) - &x.cos().powi(2);
+let replacement = &ctx.int(1) - &x.cos().powi(2);
 
 let f = &x.sin().powi(2) + &x * 2;
 let g = f.replace(|node| {
@@ -311,9 +311,8 @@ println!("{g}"); // 1 - cos(x)^2 + 2*x
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+syms!(ctx; x);
 
 let f = expr!(x^2 + sin(x));
 
@@ -331,9 +330,9 @@ For human-readable output, use `.to_json_pretty()`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let json = x.powi(2).to_json_pretty();
 println!("{json}");
@@ -358,9 +357,9 @@ JSON serialization is useful for:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 + 2*x + 1);
 println!("{}", f.to_latex()); // x^{2} + 2 x + 1
@@ -376,9 +375,9 @@ Wrappers for inline and display math modes:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 + 1);
 println!("{}", f.to_latex_inline());   // $x^{2} + 1$
@@ -392,10 +391,10 @@ Here's a workflow that inspects a polynomial, extracts its structure, rewrites i
 ```rust
 use symplex::prelude::*;
 use symplex::expr::ExprType;
-use symplex::vars;
 
+let ctx = Context::new();
 fn main() {
-    vars!(x);
+    syms!(ctx; x);
 
     let f = expr!(x^4 - 5*x^2 + 4);
     println!("Expression: {f}");

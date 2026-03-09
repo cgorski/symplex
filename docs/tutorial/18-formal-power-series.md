@@ -13,9 +13,9 @@ Here's the difference in practice:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Maclaurin: gives you a polynomial
 let poly = x.exp().maclaurin(&x, 5);
@@ -44,9 +44,9 @@ Use `.fps_maclaurin(&var)` for expansion about $x = 0$:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let fps_sin = x.sin().fps_maclaurin(&x);
 let fps_cos = x.cos().fps_maclaurin(&x);
@@ -84,7 +84,8 @@ Symplex recognizes the following elementary functions and assigns closed-form co
 $$e^x = \sum_{k=0}^{\infty} \frac{1}{k!} x^k$$
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 let fps = x.exp().fps_maclaurin(&x);
 assert!(fps.has_closed_form());
 // a_k = 1/k!
@@ -104,7 +105,8 @@ $$\cos(x) = \sum_{n=0}^{\infty} \frac{(-1)^n}{(2n)!} x^{2n}$$
 Only odd (resp. even) coefficients are nonzero — the FPS object encodes this symmetry:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let fps_sin = x.sin().fps_maclaurin(&x);
 // Even coefficients are zero
@@ -136,7 +138,8 @@ $$\sinh(x) = \sum_{n=0}^{\infty} \frac{1}{(2n+1)!} x^{2n+1}$$
 $$\cosh(x) = \sum_{n=0}^{\infty} \frac{1}{(2n)!} x^{2n}$$
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let fps_sinh = x.sinh().fps_maclaurin(&x);
 assert!(fps_sinh.has_closed_form());
@@ -197,7 +200,8 @@ for k in 0..10 {
 $$\arctan(x) = \sum_{n=0}^{\infty} \frac{(-1)^n}{2n+1} x^{2n+1}$$
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 let fps = x.atan().fps_maclaurin(&x);
 assert!(fps.has_closed_form());
 println!("a_1 = {}", fps.coefficient_rational(1));  // 1
@@ -258,7 +262,8 @@ The `truncate` method requires arena access via `ctx.with_arena_mut()` because i
 For expressions that don't match a single known pattern, symplex falls back to computing Taylor coefficients numerically (via repeated differentiation) and stores them in a truncated representation:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // exp(x) + sin(x) doesn't match a single known function
 let fps = (&x.exp() + &x.sin()).fps_maclaurin(&x);

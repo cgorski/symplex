@@ -23,9 +23,9 @@ The macro accepts integer literals, which are converted to exact symbolic intege
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let m = matrix![[x, 1], [0, y]];
 println!("{m}");
@@ -40,10 +40,11 @@ For matrices built from computed values:
 ```rust
 use symplex::prelude::*;
 
+let ctx = Context::new();
 // From nested Vec
 let rows = vec![
-    vec![symplex::int(1), symplex::int(2)],
-    vec![symplex::int(3), symplex::int(4)],
+    vec![ctx.int(1), ctx.int(2)],
+    vec![ctx.int(3), ctx.int(4)],
 ];
 let a = Matrix::new(rows);
 
@@ -54,16 +55,16 @@ let z = Matrix::zeros(3, 3);
 let eye = Matrix::identity(4);
 
 // Diagonal
-let d = Matrix::diag(&[symplex::int(1), symplex::int(2), symplex::int(3)]);
+let d = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]);
 
 // From a function
 let m = Matrix::from_fn(3, 3, |i, j| {
-    if i == j { symplex::int(1) } else { symplex::int(0) }
+    if i == j { ctx.int(1) } else { ctx.int(0) }
 });
 
 // Row and column vectors
-let row = Matrix::row_vector(vec![symplex::int(1), symplex::int(2), symplex::int(3)]);
-let col = Matrix::col_vector(vec![symplex::int(4), symplex::int(5), symplex::int(6)]);
+let row = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+let col = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
 ```
 
 ### Shape and Access
@@ -88,6 +89,7 @@ Matrices support the standard arithmetic operators via references:
 ```rust
 use symplex::prelude::*;
 
+let ctx = Context::new();
 let a = matrix![[1, 2], [3, 4]];
 let b = matrix![[5, 6], [7, 8]];
 
@@ -99,7 +101,7 @@ let diff = &a - &b;
 let product = &a * &b;
 
 // Scalar multiplication
-let scaled = &a * &symplex::int(3);
+let scaled = &a * &ctx.int(3);
 let scaled_i64 = &a * 3;
 
 // Negation
@@ -143,9 +145,9 @@ println!("A ⊗ B = {kron}"); // 4×4 matrix
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let a = matrix![[2, 1], [1, 3]];
 println!("det(A) = {}", a.det()); // 5
@@ -200,9 +202,9 @@ println!("A⁺ = {pinv}");
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let a = matrix![[2, 1], [1, 3]];
 let poly = a.char_poly(&x);
@@ -215,9 +217,9 @@ The variable `x` here plays the role of λ in the characteristic equation `det(A
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let a = matrix![[2, 1], [1, 3]];
 let eigenvals = a.eigenvals(&x);
@@ -318,9 +320,9 @@ Matrices can contain symbolic expressions and support symbolic transformations:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let m = matrix![[x, x.powi(2)], [x.sin(), x.exp()]];
 let dm = m.diff(&x);
@@ -333,12 +335,12 @@ println!("dM/dx = {dm}");
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let m = matrix![[x, 1], [0, x]];
-let m_at_3 = m.subs(&x, &symplex::int(3));
+let m_at_3 = m.subs(&x, &ctx.int(3));
 println!("M(3) = {m_at_3}");
 // [3, 1]
 // [0, 3]
@@ -348,9 +350,9 @@ println!("M(3) = {m_at_3}");
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let m = matrix![[x.sin().powi(2) + x.cos().powi(2), 0], [0, 1]];
 let simplified = m.simplify();
@@ -372,9 +374,9 @@ The Jacobian matrix of a vector-valued function is critical in robotics and opti
 ```rust
 use symplex::prelude::*;
 use symplex::matrix::jacobian;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // f(x,y) = [x²+y, x*y²]
 let f1 = expr!(x^2 + y);
@@ -396,13 +398,13 @@ A common pattern: compute the FK position, then take the Jacobian with respect t
 use symplex::prelude::*;
 use symplex::matrix::jacobian;
 use symplex::robotics::*;
-use symplex::vars;
 
-vars!(theta1, theta2);
+let ctx = Context::new();
+syms!(ctx; theta1, theta2);
 
-let l1 = symplex::rational(1, 1);
-let l2 = symplex::rational(1, 1);
-let zero = symplex::int(0);
+let l1 = ctx.rational(1, 1);
+let l2 = ctx.rational(1, 1);
+let zero = ctx.int(0);
 
 let dh: [(&Ex, &Ex, &Ex, &Ex); 2] = [
     (&theta1, &zero, &l1, &zero),
@@ -483,9 +485,9 @@ Symbolic matrices render cleanly too:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let m = matrix![[x.sin(), x.cos()], [-x.cos(), x.sin()]];
 println!("{}", m.to_latex());
@@ -497,9 +499,9 @@ Generate optimized Rust functions from symbolic matrices:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let m = matrix![[x.sin(), x.cos()], [-x.cos(), x.sin()]];
 let code = m.to_rust_fn("rotation_2d", &["x"]).expect("codegen");
@@ -513,9 +515,9 @@ The generated function returns a flat array `[f64; R*C]` in row-major order. Cro
 ```rust
 use symplex::prelude::*;
 use symplex::matrix::{CodegenOptions, Precision};
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let m = Matrix::new(vec![
     vec![x.sin(), x.cos()],
@@ -535,12 +537,12 @@ Symplex provides dot product and cross product for column vectors:
 ```rust
 use symplex::prelude::*;
 use symplex::matrix::{dot, cross};
-use symplex::vars;
 
-vars!(x, y, z);
+let ctx = Context::new();
+syms!(ctx; x, y, z);
 
-let a = Matrix::col_vector(vec![symplex::int(1), symplex::int(2), symplex::int(3)]);
-let b = Matrix::col_vector(vec![symplex::int(4), symplex::int(5), symplex::int(6)]);
+let a = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
+let b = Matrix::col_vector(vec![ctx.int(4), ctx.int(5), ctx.int(6)]);
 
 let d = dot(&a, &b);
 println!("a · b = {d}"); // 32

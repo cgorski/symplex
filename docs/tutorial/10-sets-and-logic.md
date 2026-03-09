@@ -132,9 +132,9 @@ This is where sets become practical. The inequality solvers return `SetEx` — t
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // x² - 4 > 0 → (-∞, -2) ∪ (2, ∞)
 let result = expr!(x^2 - 4).solve_gt(&x).unwrap();
@@ -161,9 +161,9 @@ The solver uses the sign-chart method: find roots, test each region, and return 
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let solutions = expr!(x^2 - 5*x + 6).solve_as_set(&x);
 println!("{solutions}"); // {2, 3}
@@ -179,16 +179,16 @@ Every numeric expression can be compared, producing a `BoolEx`:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
-let positive = x.gt(&symplex::int(0));   // x > 0
-let at_least = x.ge(&symplex::int(0));   // x >= 0
-let small = x.lt(&symplex::int(10));     // x < 10
-let bounded = x.le(&symplex::int(10));   // x <= 10
-let is_one = x.eq_expr(&symplex::int(1)); // x == 1
-let not_zero = x.ne_expr(&symplex::int(0)); // x != 0
+let positive = x.gt(&ctx.int(0));   // x > 0
+let at_least = x.ge(&ctx.int(0));   // x >= 0
+let small = x.lt(&ctx.int(10));     // x < 10
+let bounded = x.le(&ctx.int(10));   // x <= 10
+let is_one = x.eq_expr(&ctx.int(1)); // x == 1
+let not_zero = x.ne_expr(&ctx.int(0)); // x != 0
 ```
 
 ### Boolean Operations
@@ -197,18 +197,18 @@ let not_zero = x.ne_expr(&symplex::int(0)); // x != 0
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
-let pos = x.gt(&symplex::int(0));
-let small = x.lt(&symplex::int(10));
+let pos = x.gt(&ctx.int(0));
+let small = x.lt(&ctx.int(10));
 
 // Conjunction: 0 < x AND x < 10
 let in_range = pos.and(&small);
 
 // Disjunction: x > 0 OR x < -5
-let neg = x.lt(&symplex::int(-5));
+let neg = x.lt(&ctx.int(-5));
 let either = pos.or(&neg);
 
 // Negation: NOT (x > 0)
@@ -219,12 +219,12 @@ There are also derived operations:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
-let a = x.gt(&symplex::int(0));
-let b = x.lt(&symplex::int(10));
+let a = x.gt(&ctx.int(0));
+let b = x.lt(&ctx.int(10));
 
 let xor = a.xor(&b);          // exclusive or
 let imp = a.implies(&b);      // a → b  (¬a ∨ b)
@@ -240,11 +240,11 @@ If you need to pass a `BoolEx` or `SetEx` into a context that expects `Ex`, use 
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
-let cond = x.gt(&symplex::int(0));
+let cond = x.gt(&ctx.int(0));
 let as_numeric: Ex = cond.as_ex(); // borrow-like, clones the Arc
 ```
 
@@ -254,15 +254,15 @@ Piecewise expressions connect boolean conditions to numeric values:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let neg_branch = &x * -1;  // -x when x < 0
 let pos_branch = x.clone(); // x when x >= 0
 
-let cond_neg = x.lt(&symplex::int(0));
-let cond_pos = x.ge(&symplex::int(0));
+let cond_neg = x.lt(&ctx.int(0));
+let cond_pos = x.ge(&ctx.int(0));
 
 let abs_x = Ex::piecewise(&[
     (&neg_branch, &cond_neg),

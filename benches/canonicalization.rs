@@ -314,7 +314,8 @@ fn bench_large_polynomial(c: &mut Criterion) {
 }
 
 fn bench_nested_functions(c: &mut Criterion) {
-    let x = symplex::var("x");
+    let ctx = Context::new();
+    let x = ctx.var("x");
 
     for &depth in &[10, 50, 100] {
         let mut expr = x.clone();
@@ -472,26 +473,28 @@ fn bench_laplace(c: &mut Criterion) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn bench_special_functions(c: &mut Criterion) {
+    let ctx = Context::new();
+
     c.bench_function("evalf_gamma_3.5", |b| {
-        let val = symplex::rational(7, 2);
+        let val = ctx.rational(7, 2);
         b.iter(|| black_box(&val).gamma().eval_f64())
     });
 
     c.bench_function("evalf_erf_1", |b| {
-        let one = symplex::int(1);
+        let one = ctx.int(1);
         b.iter(|| black_box(&one).erf().eval_f64())
     });
 
     c.bench_function("eval_gamma_half_integers", |b| {
         b.iter(|| {
             for n in [1, 3, 5, 7, 9, 11] {
-                let _ = symplex::rational(n, 2).gamma().eval();
+                let _ = ctx.rational(n, 2).gamma().eval();
             }
         })
     });
 
     c.bench_function("diff_erf_x", |b| {
-        let x = symplex::var("x");
+        let x = ctx.var("x");
         let expr = x.erf();
         b.iter(|| black_box(&expr).diff(&x))
     });
@@ -517,7 +520,8 @@ fn bench_solve_quartic(c: &mut Criterion) {
 }
 
 fn bench_inequality(c: &mut Criterion) {
-    let x = symplex::var("x");
+    let ctx = Context::new();
+    let x = ctx.var("x");
 
     c.bench_function("inequality_x2-4>0", |b| {
         let expr = &x.powi(2) - 4;
@@ -566,7 +570,8 @@ fn bench_codegen(c: &mut Criterion) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn bench_trigsimp(c: &mut Criterion) {
-    let x = symplex::var("x");
+    let ctx = Context::new();
+    let x = ctx.var("x");
 
     c.bench_function("trigsimp_sin2+cos2", |b| {
         let expr = &x.sin().powi(2) + &x.cos().powi(2);
@@ -579,9 +584,9 @@ fn bench_trigsimp(c: &mut Criterion) {
     });
 
     c.bench_function("powsimp_x^a*x^b", |b| {
-        let x = symplex::var("x");
-        let a = symplex::var("a");
-        let bv = symplex::var("b");
+        let x = ctx.var("x");
+        let a = ctx.var("a");
+        let bv = ctx.var("b");
         let expr = &x.pow(&a) * &x.pow(&bv);
         b.iter(|| black_box(&expr).simplify_powers())
     });

@@ -51,7 +51,8 @@ Use `.assume()` on a symbol. It returns the same `Ex` (fluent API), so you can c
 ```rust
 use symplex::prelude::*;
 
-let t = symplex::var("t")
+let ctx = Context::new();
+let t = ctx.var("t")
     .assume(Assumption::Positive)
     .assume(Assumption::Real);
 
@@ -76,9 +77,9 @@ Or use the `syms!` macro for multiple symbols (without assumptions) and then add
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 let x = x.assume(Assumption::Positive);
 let y = y.assume(Assumption::Integer);
@@ -95,7 +96,8 @@ Every property has a dedicated query method that returns `Option<bool>`:
 ```rust
 use symplex::prelude::*;
 
-let x = symplex::var("x").assume(Assumption::Positive);
+let ctx = Context::new();
+let x = ctx.var("x").assume(Assumption::Positive);
 
 assert_eq!(x.is_positive(), Some(true));
 assert_eq!(x.is_negative(), Some(false)); // positive → not negative
@@ -134,7 +136,8 @@ For any property not covered by a dedicated method, use `.query(Props::FLAG)`:
 use symplex::prelude::*;
 use symplex::base::assumptions::Props;
 
-let x = symplex::var("x").assume(Assumption::AntiHermitian);
+let ctx = Context::new();
+let x = ctx.var("x").assume(Assumption::AntiHermitian);
 assert_eq!(x.query(Props::ANTIHERMITIAN), Some(true));
 ```
 
@@ -147,7 +150,8 @@ The real power of the assumption system is **automatic inference**. When you ass
 ```rust
 use symplex::prelude::*;
 
-let x = symplex::var("x").assume(Assumption::Positive);
+let ctx = Context::new();
+let x = ctx.var("x").assume(Assumption::Positive);
 
 // Direct assertion:
 assert_eq!(x.is_positive(), Some(true));
@@ -174,7 +178,8 @@ A single `Positive` assertion yields at least 12 derived facts. This is because 
 ```rust
 use symplex::prelude::*;
 
-let n = symplex::var("n").assume(Assumption::Integer);
+let ctx = Context::new();
+let n = ctx.var("n").assume(Assumption::Integer);
 
 assert_eq!(n.is_integer(), Some(true));
 assert_eq!(n.is_rational(), Some(true));      // integer → rational
@@ -191,7 +196,8 @@ assert_eq!(n.is_imaginary(), Some(false));    // real → not imaginary
 ```rust
 use symplex::prelude::*;
 
-let p = symplex::var("p").assume(Assumption::Prime);
+let ctx = Context::new();
+let p = ctx.var("p").assume(Assumption::Prime);
 
 assert_eq!(p.is_prime(), Some(true));
 assert_eq!(p.is_integer(), Some(true));       // prime → integer
@@ -207,7 +213,8 @@ Some inferences require two facts together:
 ```rust
 use symplex::prelude::*;
 
-let x = symplex::var("x")
+let ctx = Context::new();
+let x = ctx.var("x")
     .assume(Assumption::NonNegative)
     .assume(Assumption::NonZero);
 
@@ -218,7 +225,8 @@ assert_eq!(x.is_positive(), Some(true)); // nonneg ∧ nonzero → positive
 ```rust
 use symplex::prelude::*;
 
-let x = symplex::var("x")
+let ctx = Context::new();
+let x = ctx.var("x")
     .assume(Assumption::NonNegative)
     .assume(Assumption::NonPositive);
 
@@ -233,15 +241,16 @@ The assumption system doesn't just work on symbols — it propagates through ope
 ```rust
 use symplex::prelude::*;
 
-let x = symplex::var("x").assume(Assumption::Positive);
-let y = symplex::var("y").assume(Assumption::Positive);
+let ctx = Context::new();
+let x = ctx.var("x").assume(Assumption::Positive);
+let y = ctx.var("y").assume(Assumption::Positive);
 
 // Sum of positives is positive
 let sum = &x + &y;
 assert_eq!(sum.is_positive(), Some(true));
 
 // Product of positive and negative is negative
-let z = symplex::var("z").assume(Assumption::Negative);
+let z = ctx.var("z").assume(Assumption::Negative);
 let prod = &x * &z;
 assert_eq!(prod.is_negative(), Some(true));
 ```
@@ -251,17 +260,18 @@ The cache system also handles built-in constants:
 ```rust
 use symplex::prelude::*;
 
-let pi = symplex::pi();
+let ctx = Context::new();
+let pi = ctx.pi();
 assert_eq!(pi.is_positive(), Some(true));
 assert_eq!(pi.is_real(), Some(true));
 assert_eq!(pi.is_transcendental(), Some(true));
 assert_eq!(pi.is_irrational(), Some(true));
 
-let e = symplex::e();
+let e = ctx.e();
 assert_eq!(e.is_positive(), Some(true));
 assert_eq!(e.is_transcendental(), Some(true));
 
-let i = symplex::i_unit();
+let i = ctx.i_unit();
 assert_eq!(i.is_imaginary(), Some(true));
 assert_eq!(i.is_real(), Some(false));
 ```
@@ -275,7 +285,8 @@ Here's what that means concretely:
 ```rust
 use symplex::prelude::*;
 
-let x = symplex::var("x").assume(Assumption::Positive);
+let ctx = Context::new();
+let x = ctx.var("x").assume(Assumption::Positive);
 
 // We KNOW x is positive...
 assert_eq!(x.is_positive(), Some(true));
@@ -304,7 +315,7 @@ The assumption infrastructure is in place and waiting for the simplification eng
 
 ```rust
 // PLANNED: temporary assumption scope
-let x = symplex::var("x");
+let x = ctx.var("x");
 let result = with_assuming(&[(&x, Assumption::Positive)], || {
     x.powi(2).sqrt().simplify() // would give x
 });

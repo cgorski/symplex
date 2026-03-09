@@ -18,13 +18,15 @@ use symplex::prelude::*;
 use symplex::robotics::*;
 use symplex::matrix::jacobian;
 
-vars!(theta1, theta2);
-let l1 = symplex::rational(3, 10);
-let l2 = symplex::rational(1, 4);
+let ctx = Context::new();
+syms!(ctx; theta1, theta2);
+let l1 = ctx.rational(3, 10);
+let l2 = ctx.rational(1, 4);
 
+let zero = ctx.int(0);
 let (px, py, _) = fk_position(&[
-    (&theta1, &symplex::int(0), &l1, &symplex::int(0)),
-    (&theta2, &symplex::int(0), &l2, &symplex::int(0)),
+    (&theta1, &zero, &l1, &zero),
+    (&theta2, &zero, &l2, &zero),
 ]);
 
 let jac = jacobian(&[&px, &py], &[&theta1, &theta2]);
@@ -38,7 +40,8 @@ let code = jac.to_rust_fn("jacobian", &["theta1", "theta2"]).unwrap();
 use symplex::prelude::*;
 
 fn main() {
-    vars!(x, y);
+    let __ctx = Context::new();
+    syms!(__ctx; x, y);
 
     // Differentiation, factoring
     let f = expr!(x^2 + 2*x + 1);
@@ -136,7 +139,8 @@ scripts, no glue.
 Symplex provides five proc macros for natural math syntax:
 
 ```rust
-vars!(x, y, z);                              // declare symbolic variables
+let __ctx = Context::new();                  // context required by all macros
+syms!(__ctx; x, y, z);                       // declare symbolic variables
 let f = expr!(x^2 + 2*x + 1);               // build expressions
 let g = expr!(sin(x)^2 + cos(x)^2);         // trig, exp, ln, sqrt, ...
 let h = expr!(1/2 * x^2);                   // exact rationals
@@ -325,7 +329,7 @@ Full method-level documentation is on **[docs.rs/symplex](https://docs.rs/symple
 
 Key entry points:
 
-- [`symplex::prelude`](https://docs.rs/symplex/latest/symplex/prelude/) — `Ex`, `BoolEx`, `vars!`, `expr!`, `matrix!`, `eq!`
+- [`symplex::prelude`](https://docs.rs/symplex/latest/symplex/prelude/) — `Ex`, `BoolEx`, `syms!`, `expr!`, `matrix!`, `eq!`
 - [`symplex::units`](https://docs.rs/symplex/latest/symplex/units/) — compile-time dimensional analysis, 30 quantity types, typed calculus
 - [`symplex::robotics`](https://docs.rs/symplex/latest/symplex/robotics/) — DH parameters, forward kinematics, inverse kinematics
 - [`symplex::dynamics`](https://docs.rs/symplex/latest/symplex/dynamics/) — Euler-Lagrange, mass/Coriolis/gravity matrices

@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Safety & API Consistency Refactor
+
+### Breaking Changes
+- **`Expr.id` field is now private.** Internal code must use `raw_id()` and `checked_id()`.
+- **Global convenience functions removed:** `symplex::var()`, `symplex::int()`, `symplex::pi()`, etc. Use `Context::new()` and call methods on it.
+- **`vars!` macro removed.** Use `syms!(ctx; x, y, z)` instead.
+- **`Ex::zero()` and `Ex::one()` removed.** Use `ctx.zero()` and `ctx.one()`.
+- **`Matrix::zeros/identity` now take `&Context`.**
+- **`solve_ode` returns `Ex` instead of `Option<(Ex, Vec<Ex>)>`.**
+- **`limit/series/maclaurin/laplace/inverse_laplace/residue` return `Ex` instead of `Result<Ex>`.**
+- **`solve_gt/ge/lt/le` return `SetEx` instead of `Result<SetEx>`.**
+- **`gosper_sum` returns `Ex` instead of `Option<Ex>`.**
+- **`to_json/to_json_pretty` return `Result<String>` instead of `String`.**
+- **`check_solution` returns `Option<bool>` instead of `bool`.**
+
+### Added
+- **Cross-context safety:** Mixing expressions from different `Context`s now panics with a clear message instead of silent corruption. Enforced by the compiler — `Expr.id` is private to its module.
+- **`has_unevaluated() -> bool`** — check if an expression contains formal nodes.
+- **`try_` variants** for all fallible symbolic operations: `try_diff`, `try_integrate`, `try_limit`, `try_series`, `try_maclaurin`, `try_laplace`, `try_inverse_laplace`, `try_residue`, `try_gosper_sum`, `try_solve_ode`, `try_solve_gt/ge/lt/le`.
+- **8 new unevaluated node types:** `Limit`, `Series`, `LaplaceTransform`, `InverseLaplaceTransform`, `Residue`, `RootOf`, `DSolve`, `ConditionSet`.
+- **`RootOf` support in solver:** Irreducible polynomials of degree ≥ 5 return `RootOf` objects with numerical evaluation via Sturm isolation + bisection.
+- **`ctx.var()` alias** for `ctx.symbol()`.
+- **`ctx.zero()`, `ctx.one()`** convenience methods.
+- **Arbitrary-precision digamma** function.
+
+### Fixed
+- `limit_at_infinity` sign bug for negative leading coefficients.
+- Piecewise `evalf` last-branch fallback now only uses explicit else branches.
+- Both previously-ignored FTC integration tests now pass.
+- `solve()` no longer rejects non-polynomial expressions before trying transcendental solver.
+- Safety logging at polynomial factoring bailout points.
+- Eigenvalue warning when solver returns fewer roots than expected.
+
 ## [0.2.0] — Unreleased
 
 ### Added

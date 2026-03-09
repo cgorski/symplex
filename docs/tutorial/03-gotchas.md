@@ -13,17 +13,19 @@ let half = expr!(1/2);
 println!("{half}"); // 1/2 — exact rational, not 0.5
 ```
 
-This is usually what you want. But be aware: `expr!(1/2)` is *not* integer division — it's `symplex::rational(1, 2)`. If you genuinely want the integer quotient (which would be `0`), compute it outside the macro:
+This is usually what you want. But be aware: `expr!(1/2)` is *not* integer division — it's `ctx.rational(1, 2)`. If you genuinely want the integer quotient (which would be `0`), compute it outside the macro:
 
 ```rust
-let quotient = symplex::int(1i64 / 2); // 0
+let ctx = Context::new();
+let quotient = ctx.int(1i64 / 2); // 0
 ```
 
-If you need a rational outside the macro, use `symplex::rational()` directly:
+If you need a rational outside the macro, use `ctx.rational()` directly:
 
 ```rust
-let one_third = symplex::rational(1, 3);
-let two_fifths = symplex::rational(2, 5);
+let ctx = Context::new();
+let one_third = ctx.rational(1, 3);
+let two_fifths = ctx.rational(2, 5);
 ```
 
 ## Gotcha 2: `Ex` Is Clone, Not Copy
@@ -32,9 +34,9 @@ The expression type `Ex` is `Clone + Send + Sync`, but it is **not** `Copy`. Thi
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // ❌ This won't compile — x is moved on first use:
 // let f = x + x;
@@ -49,7 +51,8 @@ let f = expr!(x + x);
 The `expr!` macro is the easiest workaround — it manages references internally. When building expressions manually, use `&` liberally:
 
 ```rust
-vars!(x, y);
+let ctx = Context::new();
+syms!(ctx; x, y);
 
 // Manual construction — note the &'s
 let f = &x.powi(2) + &(&x * &y) + &y.powi(2);
@@ -63,7 +66,8 @@ let f = expr!(x^2 + x*y + y^2);
 Rust's operator overloading lets you mix `&Ex` with `i64` in some positions:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = &x * 2 + 1;        // OK: &Ex * i64 + i64
 let g = &x.powi(2) - &x * 5 + 6; // OK
@@ -72,7 +76,8 @@ let g = &x.powi(2) - &x * 5 + 6; // OK
 But the order matters — `2 * &x` may not work depending on the trait implementations. When in doubt, use `expr!` or construct constants explicitly:
 
 ```rust
-let two = symplex::int(2);
+let ctx = Context::new();
+let two = ctx.int(2);
 let f = &two * &x; // always works
 ```
 
@@ -82,9 +87,9 @@ Rust's `==` operator on `Ex` checks **structural** equality — are these the sa
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let a = expr!(x^2 + 2*x + 1);
 let b = expr!((x + 1)^2);
@@ -119,9 +124,9 @@ In standard Rust, the `^` operator is bitwise XOR, not exponentiation. This mean
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // ❌ WRONG: this is bitwise XOR, not x²
 // let f = x ^ 2; // Won't compile — Ex doesn't implement BitXor
@@ -130,7 +135,7 @@ vars!(x);
 let f = x.powi(2);
 
 // ✅ Use .pow() for symbolic powers:
-let g = x.pow(&symplex::rational(1, 2)); // x^(1/2) = √x
+let g = x.pow(&ctx.rational(1, 2)); // x^(1/2) = √x
 
 // ✅ Use expr! where ^ means power:
 let f = expr!(x^2);
@@ -145,9 +150,9 @@ The `.simplify()` method applies a single pass of rewrite rules. It's fast, but 
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // simplify() handles this:
 let a = expr!(sin(x)^2 + cos(x)^2);
@@ -184,9 +189,9 @@ All transformation methods return **new** expressions. Nothing is modified in pl
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 + 2*x + 1);
 let expanded = f.expand(); // new expression
@@ -209,7 +214,8 @@ These three are often confused:
 They compose well:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!((x + 1)^2 - x^2 - 2*x);
 println!("{}", f.eval());           // (x + 1)^2 - x^2 - 2*x (no change — nothing to evaluate)
@@ -223,9 +229,9 @@ Equations can have multiple solutions. `.solve()` always returns `Result<Vec<Ex>
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let roots = expr!(x^2 - 1).solve_or_empty(&x);
 // roots = [1, -1] — both solutions

@@ -9,7 +9,8 @@ The imaginary unit `I` (where I² = −1) is available as a function or through 
 ```rust
 use symplex::prelude::*;
 
-let i = symplex::i_unit();
+let ctx = Context::new();
+let i = ctx.i_unit();
 println!("I = {i}");
 
 // Powers of I cycle with period 4
@@ -32,10 +33,11 @@ Build complex expressions with standard operators:
 ```rust
 use symplex::prelude::*;
 
-let i = symplex::i_unit();
+let ctx = Context::new();
+let i = ctx.i_unit();
 
-let z1 = &symplex::int(2) + &(&i * 3);  // 2 + 3I
-let z2 = &symplex::int(1) - &(&i * 2);  // 1 - 2I
+let z1 = &ctx.int(2) + &(&i * 3);  // 2 + 3I
+let z2 = &ctx.int(1) - &(&i * 2);  // 1 - 2I
 
 let sum = (&z1 + &z2).eval();
 println!("z₁ + z₂ = {sum}"); // 3 + I
@@ -51,10 +53,10 @@ Euler's formula — `exp(I·x) = cos(x) + I·sin(x)` — is one of the deepest c
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
-let i = symplex::i_unit();
+let ctx = Context::new();
+syms!(ctx; x);
+let i = ctx.i_unit();
 
 // Rewrite exp(I·x) as trig functions
 let eix = (&i * &x).exp();
@@ -62,7 +64,7 @@ let as_trig = eix.rewrite_as_trig();
 println!("exp(I·x) = {as_trig}"); // cos(x) + I·sin(x)
 
 // Euler's identity: exp(I·π) + 1 = 0
-let pi = symplex::default_context().pi();
+let pi = ctx.pi();
 let euler = &(&i * &pi).exp() + 1;
 let result = euler.eval().simplify();
 println!("exp(I·π) + 1 = {result}"); // 0
@@ -72,9 +74,9 @@ You can also go the other direction — rewrite trig as exponentials:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let sin_as_exp = x.sin().rewrite_as_exp();
 println!("sin(x) = {sin_as_exp}"); // (exp(I*x) - exp(-I*x))/(2*I)
@@ -89,9 +91,9 @@ Symplex's solver returns complex roots when the discriminant is negative:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // x² + 1 = 0 → x = I, -I
 let roots = expr!(x^2 + 1).solve_or_empty(&x);
@@ -122,8 +124,9 @@ for r in &roots {
 ```rust
 use symplex::prelude::*;
 
-let i = symplex::i_unit();
-let z = &symplex::int(3) + &(&symplex::int(4) * &i);
+let ctx = Context::new();
+let i = ctx.i_unit();
+let z = &ctx.int(3) + &(&ctx.int(4) * &i);
 
 println!("re(3 + 4I) = {}", z.re()); // 3
 println!("im(3 + 4I) = {}", z.im()); // 4
@@ -133,10 +136,10 @@ The decomposition works on symbolic expressions too:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
-let i = symplex::i_unit();
+let ctx = Context::new();
+syms!(ctx; x);
+let i = ctx.i_unit();
 
 let eix = (&i * &x).exp();
 let re = eix.re();
@@ -152,8 +155,9 @@ println!("im(exp(I·x)) = {im}"); // sin(x)
 ```rust
 use symplex::prelude::*;
 
-let i = symplex::i_unit();
-let z = &symplex::int(3) + &(&symplex::int(4) * &i);
+let ctx = Context::new();
+let i = ctx.i_unit();
+let z = &ctx.int(3) + &(&ctx.int(4) * &i);
 let z_bar = z.conjugate();
 println!("conjugate(3 + 4I) = {z_bar}"); // 3 - 4*I
 
@@ -169,7 +173,8 @@ println!("(3+4I)(3-4I) = {product}"); // 25
 ```rust
 use symplex::prelude::*;
 
-let i = symplex::i_unit();
+let ctx = Context::new();
+let i = ctx.i_unit();
 
 // Pure imaginary
 let (re, im) = i.eval_complex64().unwrap();
@@ -180,13 +185,13 @@ let (re, im) = i.powi(2).eval().eval_complex64().unwrap();
 println!("I² → ({re}, {im})"); // (-1, 0)
 
 // 3 + 4I
-let z = &symplex::int(3) + &(&symplex::int(4) * &i);
+let z = &ctx.int(3) + &(&ctx.int(4) * &i);
 if let Ok((re, im)) = z.eval_complex64() {
     println!("3 + 4I → ({re}, {im})"); // (3, 4)
 }
 
 // Numerical values of complex roots
-let x = symplex::var("x");
+let x = ctx.var("x");
 let roots = expr!(x^2 + 2*x + 5).solve_or_empty(&x);
 for r in &roots {
     if let Ok((re, im)) = r.eval_complex64() {
@@ -213,7 +218,8 @@ You can verify this numerically in symplex:
 ```rust
 use symplex::prelude::*;
 
-let i = symplex::i_unit();
+let ctx = Context::new();
+let i = ctx.i_unit();
 
 // cos(2I) should equal cosh(2) ≈ 3.7622
 let cos_2i = (&i * 2).cos().eval();
@@ -231,8 +237,9 @@ The code generation pipeline (`to_rust_fn()` and related methods) does **not** s
 ```rust
 use symplex::prelude::*;
 
-let i = symplex::i_unit();
-let z = &symplex::int(3) + &(&symplex::int(4) * &i);
+let ctx = Context::new();
+let i = ctx.i_unit();
+let z = &ctx.int(3) + &(&ctx.int(4) * &i);
 
 // This will NOT produce correct code — complex codegen is unsupported
 // let code = z.to_rust_fn("complex_val", &[]);

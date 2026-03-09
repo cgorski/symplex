@@ -21,10 +21,10 @@ Let's start with the simplest possible case:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
+let ctx = Context::new();
 fn main() {
-    vars!(x);
+    syms!(ctx; x);
 
     let f = expr!(x^3 - 3*x^2 + 2*x + 7);
     let code = f.to_rust_fn("cubic", &["x"]).unwrap();
@@ -61,9 +61,9 @@ The basic code generation function:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = x.sin().powi(2) + x.cos().powi(2);
 let code = f.to_rust_fn("trig_identity", &["x"]).unwrap();
@@ -75,7 +75,7 @@ Arguments:
 - `name` — the function name
 - `args` — slice of parameter names, determining positional mapping
 
-The variable names you pass to `args` must match the symbol names in the expression. If your expression uses `symplex::var("theta1")`, then `args` should contain `"theta1"`.
+The variable names you pass to `args` must match the symbol names in the expression. If your expression uses `ctx.var("theta1")`, then `args` should contain `"theta1"`.
 
 ### `to_rust_fn_with_options()`
 
@@ -84,9 +84,9 @@ For fine-grained control:
 ```rust
 use symplex::prelude::*;
 use symplex::matrix::CodegenOptions;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 + sin(x));
 let opts = CodegenOptions::default();
@@ -156,9 +156,9 @@ let custom = CodegenOptions {
 ```rust
 use symplex::prelude::*;
 use symplex::matrix::CodegenOptions;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = x.sin() + x.cos();
 let code = f.to_rust_fn_with_options("trig_sum", &["x"], &CodegenOptions::no_std()).unwrap();
@@ -175,9 +175,9 @@ println!("{code}");
 ```rust
 use symplex::prelude::*;
 use symplex::matrix::CodegenOptions;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = x.sin() + x.cos();
 let code = f.to_rust_fn_with_options("trig_sum_f32", &["x"], &CodegenOptions::embedded_f32()).unwrap();
@@ -191,9 +191,9 @@ CSE is the optimization that makes generated code efficient. When the same subex
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // sin(x) appears in both terms
 let f = &x.sin().powi(2) + &x.sin();
@@ -220,9 +220,9 @@ If you want the raw (un-optimized) output for debugging:
 ```rust
 use symplex::prelude::*;
 use symplex::matrix::CodegenOptions;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = &x.sin().powi(2) + &x.sin();
 let opts = CodegenOptions { cse: false, ..Default::default() };
@@ -236,9 +236,9 @@ You can also run CSE manually to inspect the extracted subexpressions:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = &x.sin().powi(2) + &x.sin();
 let (bindings, result) = f.cse();
@@ -256,9 +256,9 @@ Matrix code generation is where things get really powerful. For a symbolic matri
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let m = matrix![[x.sin(), x.cos()], [-x.cos(), x.sin()]];
 let code = m.to_rust_fn("rotation_2d", &["x"]).expect("codegen");
@@ -290,9 +290,9 @@ Matrix code generation accepts the same `CodegenOptions`:
 ```rust
 use symplex::prelude::*;
 use symplex::matrix::CodegenOptions;
-use symplex::vars;
 
-vars!(theta);
+let ctx = Context::new();
+syms!(ctx; theta);
 
 let neg_sin = -&theta.sin();
 let m = Matrix::new(vec![
@@ -322,20 +322,20 @@ A 3-DOF planar robot arm with link lengths L₁, L₂, L₃ and joint angles θ�
 use symplex::prelude::*;
 use symplex::matrix::jacobian;
 use symplex::robotics::*;
-use symplex::vars;
 
+let ctx = Context::new();
 fn main() {
     // Joint angles
-    vars!(theta1, theta2, theta3);
+    syms!(ctx; theta1, theta2, theta3);
 
     // Link lengths (exact rationals — no floating-point)
-    let l1 = symplex::rational(3, 10); // 0.3 m
-    let l2 = symplex::rational(1, 4);  // 0.25 m
-    let l3 = symplex::rational(1, 5);  // 0.2 m
+    let l1 = ctx.rational(3, 10); // 0.3 m
+    let l2 = ctx.rational(1, 4);  // 0.25 m
+    let l3 = ctx.rational(1, 5);  // 0.2 m
 
     // DH parameters: (theta, d, a, alpha)
     // All alpha = 0 for a planar arm
-    let zero = symplex::int(0);
+    let zero = ctx.int(0);
     let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
         (&theta1, &zero, &l1, &zero),
         (&theta2, &zero, &l2, &zero),
@@ -443,9 +443,9 @@ Not just matrices — individual expressions also benefit from codegen:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^4 - 3*x^2 + 2*x - 1);
 let df = f.diff(&x);
@@ -457,9 +457,9 @@ println!("{code}");
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(s);
+let ctx = Context::new();
+syms!(ctx; s);
 
 // Transfer function: G(s) = (s + 2) / (s² + 3s + 4)
 let num = expr!(s + 2);
@@ -475,9 +475,9 @@ println!("{code}");
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x, y, z);
+let ctx = Context::new();
+syms!(ctx; x, y, z);
 
 let f = expr!(x^2*y + y^2*z + z^2*x);
 let code = f.to_rust_fn("trivariate", &["x", "y", "z"]).unwrap();
@@ -491,12 +491,12 @@ The code generator performs constant folding — expressions with known constant
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // sin(0) = 0, cos(0) = 1, exp(0) = 1 — folded at codegen time
-let f = &x + &symplex::int(0).sin(); // sin(0) = 0, so this is just x
+let f = &x + &ctx.int(0).sin(); // sin(0) = 0, so this is just x
 let code = f.to_rust_fn("with_folding", &["x"]).unwrap();
 println!("{code}");
 // The sin(0) term is eliminated entirely
@@ -506,11 +506,11 @@ Constants like `π` and `e` are emitted using Rust's standard constant modules:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
-let f = &x * &symplex::pi();
+let f = &x * &ctx.pi();
 let code = f.to_rust_fn("with_pi", &["x"]).unwrap();
 println!("{code}");
 // Uses std::f64::consts::PI, not a decimal approximation
@@ -523,17 +523,16 @@ The ultimate goal is a build-script workflow where symbolic derivations happen a
 ```rust
 // In build.rs (conceptual — symplex-build is planned)
 use symplex::prelude::*;
-use symplex::vars;
 use std::fs;
 
 fn main() {
-    vars!(theta1, theta2, theta3);
+    syms!(ctx; theta1, theta2, theta3);
 
     // Derive FK and Jacobian
-    let zero = symplex::int(0);
-    let l1 = symplex::rational(3, 10);
-    let l2 = symplex::rational(1, 4);
-    let l3 = symplex::rational(1, 5);
+    let zero = ctx.int(0);
+    let l1 = ctx.rational(3, 10);
+    let l2 = ctx.rational(1, 4);
+    let l3 = ctx.rational(1, 5);
 
     let dh: [(&Ex, &Ex, &Ex, &Ex); 3] = [
         (&theta1, &zero, &l1, &zero),
@@ -581,9 +580,9 @@ Let's trace through a realistic example in detail. Consider a 2-DOF rotation mat
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(a, b);
+let ctx = Context::new();
+syms!(ctx; a, b);
 
 let m = matrix![
     [a.cos() * b.cos(), -(a.sin())],
@@ -653,9 +652,9 @@ If you don't need generated source code — just a fast callable function at run
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^2 + sin(x));
 let compiled = f.compile(&["x"]).unwrap();
@@ -686,9 +685,9 @@ Code generation can fail if the expression contains nodes that don't map to `f64
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Free symbols that aren't in the args list → error
 let f = expr!(x + y);
@@ -696,7 +695,7 @@ let result = f.to_rust_fn("broken", &["x"]);
 assert!(result.is_err()); // "y" is not in args
 
 // Imaginary unit → error (no complex codegen)
-let f = symplex::i_unit();
+let f = ctx.i_unit();
 let result = f.to_rust_fn("complex", &[]);
 assert!(result.is_err());
 ```
@@ -704,7 +703,8 @@ assert!(result.is_err());
 Always handle the `Result`:
 
 ```rust
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 let f = expr!(x^2);
 match f.to_rust_fn("safe", &["x"]) {
     Ok(code) => println!("{code}"),
@@ -722,9 +722,9 @@ Workaround: decompose complex expressions into real and imaginary parts before c
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 // Instead of codegen on a complex expression,
 // generate separate functions for real and imaginary parts
@@ -772,9 +772,9 @@ Simpler expressions produce cleaner, faster code:
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(sin(x)^2 + cos(x)^2 + x);
 
@@ -794,12 +794,12 @@ Floating-point literals in source expressions propagate through to the output. U
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(theta);
+let ctx = Context::new();
+syms!(ctx; theta);
 
 // Good: exact rational
-let l = symplex::rational(3, 10); // exactly 0.3
+let l = ctx.rational(3, 10); // exactly 0.3
 let f = &l * &theta.sin();
 
 // The generated code will use clean 0.3, not 0.30000000000000004
@@ -814,9 +814,10 @@ The variable names in your symbolic expressions become the parameter names in th
 ```rust
 use symplex::prelude::*;
 
+let ctx = Context::new();
 // These names will appear verbatim in the generated code
-let joint1 = symplex::var("joint_angle_1");
-let joint2 = symplex::var("joint_angle_2");
+let joint1 = ctx.var("joint_angle_1");
+let joint2 = ctx.var("joint_angle_2");
 
 let f = &joint1.sin() + &joint2.cos();
 let code = f.to_rust_fn("fk_x", &["joint_angle_1", "joint_angle_2"]).unwrap();
@@ -829,9 +830,9 @@ Always verify the generated code against the symbolic expression at a few test p
 
 ```rust
 use symplex::prelude::*;
-use symplex::vars;
 
-vars!(x);
+let ctx = Context::new();
+syms!(ctx; x);
 
 let f = expr!(x^3 - 2*x + 1);
 let code = f.to_rust_fn("poly", &["x"]).unwrap();
