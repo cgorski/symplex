@@ -30,6 +30,43 @@ pub(crate) fn limit(
     // Check for limit at infinity — use Gruntz algorithm (the gold standard)
     // with fallback to the polynomial degree + substitution approach.
     if point == arena.infinity() || point == arena.neg_infinity() {
+        // ── 1^∞ heuristic for Pow expressions ──────────────────────
+        //
+        // When expr = base^exp and the exponent depends on var, try the
+        // rewrite  b^e → exp(e · (b − 1)).  This is mathematically exact
+        // in the limit when b → 1:
+        //
+        //   b^e = exp(e·ln(b)) = exp(e·ln(1 + (b−1))) ≈ exp(e·(b−1))
+        //
+        // If the inner product e·(b−1) converges to a finite value L,
+        // the answer is exp(L).  If it diverges or fails, we fall through
+        // to the normal Gruntz path.
+        //
+        // This handles the classic  lim(x→∞) (1 + 1/x)^x = e  and
+        // similar 1^∞ indeterminate forms that Gruntz struggles with.
+        if let ExprNode::Pow(base, exponent) = arena.node(expr).clone() {
+            if crate::base::walk::contains(arena, exponent, var) {
+                tracing::debug!("limit: trying 1^∞ heuristic for Pow with var-dependent exponent");
+                let one = arena.one();
+                let base_minus_1 = arena.sub(base, one);
+                let product = arena.mul(&[exponent, base_minus_1]);
+                // Try to compute lim(exp * (base - 1)).
+                // Use Gruntz for this inner limit — the product is typically
+                // a simple rational function that Gruntz handles well.
+                if let Ok(inner_lim) = crate::calculus::gruntz::gruntz(arena, product, var, point) {
+                    let is_inf = inner_lim == arena.infinity()
+                        || inner_lim == arena.neg_infinity();
+                    if !is_inf {
+                        tracing::debug!("limit: 1^∞ heuristic succeeded, inner limit is finite");
+                        let result = arena.exp(inner_lim);
+                        let result = crate::transforms::eval::eval(arena, result);
+                        return Ok(result);
+                    }
+                }
+                tracing::debug!("limit: 1^∞ heuristic did not apply, falling through to Gruntz");
+            }
+        }
+
         tracing::debug!("limit: at infinity, trying Gruntz algorithm first");
         match crate::calculus::gruntz::gruntz(arena, expr, var, point) {
             Ok(result) => return Ok(result),

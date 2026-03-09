@@ -181,3 +181,60 @@ fn limit_rational_coeffs_at_pos_inf() {
     assert!(!result.has_unevaluated(), "limit should succeed");
     assert_eq!(format!("{result}"), "-oo");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 1^∞ indeterminate form (pow_heuristics)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn limit_one_plus_one_over_x_to_the_x_is_e() {
+    // The most famous limit: lim(x→∞) (1 + 1/x)^x = e
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let base = &ctx.int(1) + &(1 / &x);  // 1 + 1/x
+    let expr = base.pow(&x);               // (1 + 1/x)^x
+    let result = expr.limit(&x, &ctx.infinity());
+    // Should be E (Euler's number), not ∞
+    let s = format!("{result}");
+    assert!(
+        s == "E" || s == "exp(1)",
+        "lim(x→∞) (1+1/x)^x should be e, got: {s}"
+    );
+}
+
+#[test]
+fn limit_one_plus_a_over_x_to_the_x_is_exp_a() {
+    // Generalization: lim(x→∞) (1 + a/x)^x = exp(a)
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol("a");
+    let base = &ctx.int(1) + &(&a / &x);  // 1 + a/x
+    let expr = base.pow(&x);               // (1 + a/x)^x
+    let result = expr.limit(&x, &ctx.infinity());
+    let s = format!("{result}");
+    assert!(
+        s.contains("exp(a)") || s == "exp(a)",
+        "lim(x→∞) (1+a/x)^x should be exp(a), got: {s}"
+    );
+}
+
+#[test]
+fn limit_one_plus_two_over_x_to_the_x_is_exp_2() {
+    // lim(x→∞) (1 + 2/x)^x = e²
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let base = &ctx.int(1) + &(2 / &x);
+    let expr = base.pow(&x);
+    let result = expr.limit(&x, &ctx.infinity());
+    let s = format!("{result}");
+    // Could be exp(2) or E^2
+    if let Ok(v) = result.eval_f64() {
+        let expected = std::f64::consts::E * std::f64::consts::E;
+        assert!(
+            (v - expected).abs() < 0.01,
+            "lim(x→∞) (1+2/x)^x should be e² ≈ {expected:.4}, got {v:.4} (display: {s})"
+        );
+    } else {
+        panic!("lim(x→∞) (1+2/x)^x should evaluate numerically, got: {s}");
+    }
+}
