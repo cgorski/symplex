@@ -544,7 +544,7 @@ fn workflow_definite_integral_polynomial() {
 #[test]
 fn workflow_substitution_chain() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    symplex::syms!(ctx; x, y);
 
     // expr = x² + 2*y + 1
     let expr = &x.powi(2) + &(&y * 2) + 1;
@@ -566,7 +566,7 @@ fn workflow_substitution_chain() {
 #[test]
 fn workflow_substitution_chain_trig() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    symplex::syms!(ctx; x, y);
 
     // expr = sin(x) + y
     let expr = &x.sin() + &y;
@@ -620,7 +620,7 @@ fn workflow_lambdify_vs_evalf() {
 #[test]
 fn workflow_lambdify_vs_evalf_multivar() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    symplex::syms!(ctx; x, y);
     let f = &x.powi(2) + &y.powi(2);
     let func = f.compile(&["x", "y"]).expect("lambdify x²+y²");
 

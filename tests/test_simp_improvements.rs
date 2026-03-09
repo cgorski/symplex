@@ -13,7 +13,7 @@ use symplex::prelude::*;
 #[test]
 fn trigsimp_uses_trig_combine() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // 2*sin(x)*cos(x) should simplify to sin(2x) via trig_combine strategy
     let e = &x.sin() * &x.cos() * 2;
     let result = e.simplify_trig();
@@ -30,7 +30,7 @@ fn trigsimp_uses_trig_combine() {
 #[test]
 fn trigsimp_pythagorean_still_works() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let e = &x.sin().powi(2) + &x.cos().powi(2);
     let result = e.simplify_trig();
     assert_eq!(format!("{result}"), "1");
@@ -39,7 +39,7 @@ fn trigsimp_pythagorean_still_works() {
 #[test]
 fn trigsimp_pythagorean_plus_constant() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let e = &x.sin().powi(2) + &x.cos().powi(2) + 5;
     let result = e.simplify_trig();
     assert_eq!(format!("{result}"), "6");
@@ -48,7 +48,7 @@ fn trigsimp_pythagorean_plus_constant() {
 #[test]
 fn trigsimp_cos2_minus_sin2_double_angle() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // cos²(x) - sin²(x) should simplify via trig_combine to cos(2x)
     let e = &x.cos().powi(2) - &x.sin().powi(2);
     let result = e.simplify_trig();
@@ -64,7 +64,7 @@ fn trigsimp_cos2_minus_sin2_double_angle() {
 #[test]
 fn trigsimp_leaves_simple_trig_alone() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let e = x.sin();
     let result = e.simplify_trig();
     assert_eq!(format!("{result}"), "sin(x)");
@@ -73,7 +73,7 @@ fn trigsimp_leaves_simple_trig_alone() {
 #[test]
 fn trigsimp_expand_then_recombine() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // Start with sin(x)^2 which has 2 ops (Sin + Pow).
     // trigsimp should not bloat it.
     let e = x.sin().powi(2);
@@ -105,7 +105,7 @@ fn combsimp_factorial_ratio_concrete() {
 #[test]
 fn combsimp_factorial_ratio_symbolic() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; n);
+    symplex::syms!(ctx; n);
     // n! / (n-1)! should simplify to n
     let n_fact = n.factorial();
     let nm1 = &n - 1;
@@ -118,7 +118,7 @@ fn combsimp_factorial_ratio_symbolic() {
 #[test]
 fn combsimp_same_factorial_cancels() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; n);
+    symplex::syms!(ctx; n);
     let n_fact = n.factorial();
     let ratio = &n_fact / &n_fact;
     let result = ratio.simplify_combinatorial();
@@ -128,7 +128,7 @@ fn combsimp_same_factorial_cancels() {
 #[test]
 fn combsimp_factorial_diff_2() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; n);
+    symplex::syms!(ctx; n);
     // n! / (n-2)! = n*(n-1)
     let n_fact = n.factorial();
     let nm2 = &n - 2;
@@ -146,7 +146,7 @@ fn combsimp_factorial_diff_2() {
 #[test]
 fn combsimp_no_factorial_unchanged() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    symplex::syms!(ctx; x, y);
     let e = &x + &y;
     let result = e.simplify_combinatorial();
     assert_eq!(format!("{result}"), format!("{e}"));
@@ -219,7 +219,7 @@ fn nsimplify_free_symbol_unchanged() {
     let ctx = Context::new();
     // An expression with free symbols can't be evaluated, so nsimplify
     // should return it unchanged.
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = x.simplify_numeric(1e-10);
     assert_eq!(format!("{result}"), "x");
 }

@@ -122,7 +122,7 @@ fn dh_matrix_with_translation() {
 #[test]
 fn fk_chain_single_joint() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; theta1);
+    symplex::syms!(ctx; theta1);
     let zero = ctx.int(0);
     let l1 = ctx.symbol("L1");
 

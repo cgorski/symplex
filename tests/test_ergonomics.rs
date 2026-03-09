@@ -72,7 +72,7 @@ fn global_context_integrate_works() {
 #[test]
 fn vars_macro_creates_symbols() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; a, b, c);
+    symplex::syms!(ctx; a, b, c);
     let expr = &a + &b + &c;
     let s = format!("{expr}");
     assert!(
@@ -84,7 +84,7 @@ fn vars_macro_creates_symbols() {
 #[test]
 fn vars_macro_trailing_comma() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y,);
+    symplex::syms!(ctx; x, y,);
     let expr = &x * &y;
     assert_eq!(format!("{expr}"), "x*y");
 }

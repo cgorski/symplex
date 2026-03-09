@@ -14,7 +14,7 @@ use symplex::prelude::*;
 #[test]
 fn solve_x_gt_0() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = x.solve_gt(&x);
     let s = format!("{result}");
     // x > 0 → (0, ∞)
@@ -32,7 +32,7 @@ fn solve_x_gt_0() {
 #[test]
 fn solve_x2_minus_4_gt_0() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let poly = &x.powi(2) - 4;
     let result = poly.solve_gt(&x);
     let s = format!("{result}");
@@ -54,7 +54,7 @@ fn solve_x2_minus_4_gt_0() {
 #[test]
 fn solve_positive_constant_gt() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let five = ctx.int(5);
     let result = five.solve_gt(&x);
     let s = format!("{result}");
@@ -70,7 +70,7 @@ fn solve_positive_constant_gt() {
 #[test]
 fn solve_negative_constant_gt() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let neg = ctx.int(-3);
     let result = neg.solve_gt(&x);
     // -3 > 0 is always false → EmptySet
@@ -82,7 +82,7 @@ fn solve_negative_constant_gt() {
 #[test]
 fn solve_zero_gt() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let zero = ctx.int(0);
     let result = zero.solve_gt(&x);
     // 0 > 0 is false → EmptySet
@@ -96,7 +96,7 @@ fn solve_zero_gt() {
 #[test]
 fn solve_zero_ge() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let zero = ctx.int(0);
     let result = zero.solve_ge(&x);
     let s = format!("{result}");
@@ -110,7 +110,7 @@ fn solve_zero_ge() {
 #[test]
 fn solve_x2_minus_4_ge_0() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let poly = &x.powi(2) - 4;
     let result = poly.solve_ge(&x);
     let s = format!("{result}");
@@ -129,7 +129,7 @@ fn solve_x2_minus_4_ge_0() {
 #[test]
 fn solve_positive_constant_ge() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let seven = ctx.int(7);
     let result = seven.solve_ge(&x);
     let s = format!("{result}");
@@ -148,7 +148,7 @@ fn solve_positive_constant_ge() {
 #[test]
 fn solve_x_lt_0() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = x.solve_lt(&x);
     let s = format!("{result}");
     // x < 0 → (-∞, 0)
@@ -162,7 +162,7 @@ fn solve_x_lt_0() {
 #[test]
 fn solve_x2_minus_4_lt_0() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let poly = &x.powi(2) - 4;
     let result = poly.solve_lt(&x);
     let s = format!("{result}");
@@ -183,7 +183,7 @@ fn solve_x2_minus_4_lt_0() {
 #[test]
 fn solve_negative_constant_lt() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let neg = ctx.int(-5);
     let result = neg.solve_lt(&x);
     let s = format!("{result}");
@@ -198,7 +198,7 @@ fn solve_negative_constant_lt() {
 #[test]
 fn solve_positive_constant_lt() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let pos = ctx.int(3);
     let result = pos.solve_lt(&x);
     // 3 < 0 is always false → EmptySet
@@ -213,7 +213,7 @@ fn solve_positive_constant_lt() {
 #[test]
 fn solve_x2_minus_4_le_0() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let poly = &x.powi(2) - 4;
     let result = poly.solve_le(&x);
     let s = format!("{result}");
@@ -231,7 +231,7 @@ fn solve_x2_minus_4_le_0() {
 #[test]
 fn solve_zero_le() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let zero = ctx.int(0);
     let result = zero.solve_le(&x);
     let s = format!("{result}");
@@ -245,7 +245,7 @@ fn solve_zero_le() {
 #[test]
 fn solve_negative_constant_le() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let neg = ctx.int(-2);
     let result = neg.solve_le(&x);
     let s = format!("{result}");
@@ -264,7 +264,7 @@ fn solve_negative_constant_le() {
 #[test]
 fn solveset_quadratic() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let poly = &x.powi(2) - &x * 5 + 6;
     let result = poly.solve_as_set(&x);
     let s = format!("{result}");
@@ -288,7 +288,7 @@ fn solveset_quadratic() {
 #[test]
 fn solveset_linear() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let expr = &x - 7;
     let result = expr.solve_as_set(&x);
     let s = format!("{result}");
@@ -303,7 +303,7 @@ fn solveset_linear() {
 #[test]
 fn solveset_no_real_roots() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // x² + 1 = 0 has no real roots (only complex)
     let expr = &x.powi(2) + 1;
     let result = expr.solve_as_set(&x);
@@ -321,7 +321,7 @@ fn solveset_no_real_roots() {
 #[test]
 fn solveset_constant_nonzero() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let five = ctx.int(5);
     let result = five.solve_as_set(&x);
     // 5 = 0 has no solutions → EmptySet
@@ -335,7 +335,7 @@ fn solveset_constant_nonzero() {
 #[test]
 fn quadratic_positive_leading_coeff_gt() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // x² - 1 > 0 → (-∞, -1) ∪ (1, ∞)
     let poly = &x.powi(2) - 1;
     let result = poly.solve_gt(&x);
@@ -355,7 +355,7 @@ fn quadratic_positive_leading_coeff_gt() {
 #[test]
 fn quadratic_positive_leading_coeff_lt() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // x² - 1 < 0 → (-1, 1)
     let poly = &x.powi(2) - 1;
     let result = poly.solve_lt(&x);
@@ -379,7 +379,7 @@ fn quadratic_positive_leading_coeff_lt() {
 #[test]
 fn linear_2x_minus_6_gt_0() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // 2x - 6 > 0 → x > 3 → (3, ∞)
     let expr = &x * 2 - 6;
     let result = expr.solve_gt(&x);
@@ -398,7 +398,7 @@ fn linear_2x_minus_6_gt_0() {
 #[test]
 fn linear_neg_x_plus_5_le_0() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // -x + 5 ≤ 0 → x ≥ 5 → [5, ∞)
     let expr = -&x + 5;
     let result = expr.solve_le(&x);
@@ -421,7 +421,7 @@ fn linear_neg_x_plus_5_le_0() {
 #[test]
 fn cubic_x3_minus_x_gt_0() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // x³ - x = x(x-1)(x+1) > 0  → (-1, 0) ∪ (1, ∞)
     let poly = &x.powi(3) - &x;
     let result = poly.solve_gt(&x);
@@ -443,7 +443,7 @@ fn cubic_x3_minus_x_gt_0() {
 #[test]
 fn large_positive_constant_gt() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let big = ctx.int(999999);
     let result = big.solve_gt(&x);
     let s = format!("{result}");
@@ -457,7 +457,7 @@ fn large_positive_constant_gt() {
 #[test]
 fn large_negative_constant_lt() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let big_neg = ctx.int(-999999);
     let result = big_neg.solve_lt(&x);
     let s = format!("{result}");
@@ -503,7 +503,7 @@ fn solve_gt_with_context() {
 #[test]
 fn solveset_with_rational_roots() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // 2x - 1 = 0 → x = 1/2
     let expr = &x * 2 - 1;
     let result = expr.solve_as_set(&x);
@@ -521,7 +521,7 @@ fn solveset_with_rational_roots() {
 #[test]
 fn solve_always_positive() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // x² + 1 > 0 should be true for all real x → UniversalSet or (-∞, ∞)
     let poly = &x.powi(2) + 1;
     let result = poly.solve_gt(&x);
@@ -544,7 +544,7 @@ fn solve_always_positive() {
 #[test]
 fn solve_always_negative() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // -(x² + 1) > 0 should be false for all real x → EmptySet
     let poly = -&(&x.powi(2) + 1);
     let result = poly.solve_gt(&x);
@@ -562,7 +562,7 @@ fn solve_always_negative() {
 #[test]
 fn solve_ge_includes_boundary() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // x² - 4 >= 0 should include x=2 and x=-2 as boundary
     let poly = &x.powi(2) - 4;
     let result = poly.solve_ge(&x);

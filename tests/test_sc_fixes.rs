@@ -136,7 +136,7 @@ fn fast_path_mul_to_zero() {
 #[test]
 fn sin_equation_two_branches_via_solveset() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // sin(x) = 1/2 → x ∈ {asin(1/2), π - asin(1/2)}
     // Use solveset() which accesses the full transcendental solver
     let half = ctx.rational(1, 2);
@@ -158,7 +158,7 @@ fn sin_equation_two_branches_via_solveset() {
 #[test]
 fn cos_equation_two_branches_via_solveset() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // cos(x) = 1/2 → x ∈ {acos(1/2), -acos(1/2)}
     let half = ctx.rational(1, 2);
     let eq = &x.cos() - &half;
@@ -177,7 +177,7 @@ fn cos_equation_two_branches_via_solveset() {
 #[test]
 fn sin_equation_branches_are_distinct() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let half = ctx.rational(1, 2);
     let eq = &x.sin() - &half;
     let result = eq.solve_as_set(&x);
@@ -199,7 +199,7 @@ fn sin_equation_branches_are_distinct() {
 #[test]
 fn sin_equation_zero_via_solveset() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // sin(x) = 0 → solveset should find at least x = 0
     let eq = x.sin();
     let result = eq.solve_as_set(&x);

@@ -108,7 +108,7 @@ fn bareiss_singular() {
 #[test]
 fn bareiss_symbolic_2x2_matches_direct() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; a, b, c, d);
+    symplex::syms!(ctx; a, b, c, d);
     let m = matrix![[a, b], [c, d]];
     let det = m.det().unwrap();
     // Should be a*d - b*c

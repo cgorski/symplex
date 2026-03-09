@@ -10,7 +10,7 @@ use symplex::prelude::*;
 #[test]
 fn checksol_quadratic_root() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let poly = expr!(x ^ 2 - 4);
     assert_eq!(poly.check_solution(&x, &ctx.int(2)), Some(true));
     assert_eq!(poly.check_solution(&x, &ctx.int(-2)), Some(true));
@@ -20,7 +20,7 @@ fn checksol_quadratic_root() {
 #[test]
 fn checksol_linear() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // 3x - 9 = 0  →  x = 3
     let eq = &(&x * 3) - 9;
     assert_eq!(eq.check_solution(&x, &ctx.int(3)), Some(true));
@@ -30,7 +30,7 @@ fn checksol_linear() {
 #[test]
 fn checksol_cubic_root() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let poly = expr!(x ^ 3 - 8);
     assert_eq!(poly.check_solution(&x, &ctx.int(2)), Some(true));
     assert_eq!(poly.check_solution(&x, &ctx.int(-2)), Some(false));
@@ -39,7 +39,7 @@ fn checksol_cubic_root() {
 #[test]
 fn checksol_with_trig() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let eq = x.sin();
     assert_eq!(eq.check_solution(&x, &ctx.int(0)), Some(true));
     assert_eq!(eq.check_solution(&x, &ctx.pi()), Some(true));
@@ -48,7 +48,7 @@ fn checksol_with_trig() {
 #[test]
 fn solve_then_check() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let poly = expr!(x ^ 2 - 5 * x + 6);
     let roots = poly.solve_or_empty(&x);
     assert!(!roots.is_empty(), "solver should find roots of x²-5x+6");
@@ -64,7 +64,7 @@ fn solve_then_check() {
 #[test]
 fn checksol_zero_is_root_of_x() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     assert_eq!(x.check_solution(&x, &ctx.int(0)), Some(true));
     assert_eq!(x.check_solution(&x, &ctx.int(1)), Some(false));
 }

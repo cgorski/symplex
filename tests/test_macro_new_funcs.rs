@@ -9,7 +9,7 @@ use symplex::prelude::*;
 #[test]
 fn expr_macro_sec() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = expr!(sec(x));
     assert_eq!(result, x.sec());
 }
@@ -17,7 +17,7 @@ fn expr_macro_sec() {
 #[test]
 fn expr_macro_csc() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = expr!(csc(x));
     assert_eq!(result, x.csc());
 }
@@ -25,7 +25,7 @@ fn expr_macro_csc() {
 #[test]
 fn expr_macro_cot() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = expr!(cot(x));
     assert_eq!(result, x.cot());
 }
@@ -33,7 +33,7 @@ fn expr_macro_cot() {
 #[test]
 fn expr_macro_sinc() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = expr!(sinc(x));
     assert_eq!(result, x.sinc());
 }
@@ -41,7 +41,7 @@ fn expr_macro_sinc() {
 #[test]
 fn expr_macro_cosh_coth_sech_csch() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     assert_eq!(expr!(coth(x)), x.coth());
     assert_eq!(expr!(sech(x)), x.sech());
     assert_eq!(expr!(csch(x)), x.csch());
@@ -50,7 +50,7 @@ fn expr_macro_cosh_coth_sech_csch() {
 #[test]
 fn expr_macro_inverse_reciprocal_trig() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     assert_eq!(expr!(acot(x)), x.acot());
     assert_eq!(expr!(asec(x)), x.asec());
     assert_eq!(expr!(acsc(x)), x.acsc());
@@ -59,7 +59,7 @@ fn expr_macro_inverse_reciprocal_trig() {
 #[test]
 fn expr_macro_inverse_reciprocal_hyp() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     assert_eq!(expr!(acoth(x)), x.acoth());
     assert_eq!(expr!(asech(x)), x.asech());
     assert_eq!(expr!(acsch(x)), x.acsch());
@@ -72,7 +72,7 @@ fn expr_macro_inverse_reciprocal_hyp() {
 #[test]
 fn expr_macro_conjugate() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = expr!(conjugate(x));
     assert_eq!(result, x.conjugate());
 }
@@ -80,7 +80,7 @@ fn expr_macro_conjugate() {
 #[test]
 fn expr_macro_arg() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = expr!(arg(x));
     assert_eq!(result, x.arg());
 }
@@ -92,7 +92,7 @@ fn expr_macro_arg() {
 #[test]
 fn expr_macro_atan2() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; y, x);
+    symplex::syms!(ctx; y, x);
     let result = expr!(atan2(y, x));
     assert_eq!(result, y.atan2(&x));
 }
@@ -129,7 +129,7 @@ fn expr_macro_bernoulli() {
 #[test]
 fn expr_macro_rising_factorial() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let n = ctx.int(3);
     let result = expr!(rising_factorial(x, n));
     assert_eq!(result, x.rising_factorial(&n));
@@ -138,7 +138,7 @@ fn expr_macro_rising_factorial() {
 #[test]
 fn expr_macro_falling_factorial() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let n = ctx.int(3);
     let result = expr!(falling_factorial(x, n));
     assert_eq!(result, x.falling_factorial(&n));
@@ -151,7 +151,7 @@ fn expr_macro_falling_factorial() {
 #[test]
 fn expr_macro_complex_expression() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // sec(x)^2 + csc(x)^2 — uses both new trig functions
     let result = expr!(sec(x) ^ 2 + csc(x) ^ 2);
     let expected = &x.sec().powi(2) + &x.csc().powi(2);

@@ -14,7 +14,7 @@ use symplex::expr;
 #[test]
 fn stripper_collector_pythagorean_plus_constant() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let expr = expr!(sin(x) ^ 2 + cos(x) ^ 2 + 5);
     let result = expr.simplify();
     assert_eq!(format!("{result}"), "6");
@@ -23,7 +23,7 @@ fn stripper_collector_pythagorean_plus_constant() {
 #[test]
 fn stripper_collector_pythagorean_in_large_sum() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, a, b, c);
+    symplex::syms!(ctx; x, a, b, c);
     // a + b + sin²(x) + cos²(x) + c → a + b + c + 1
     let expr = &a + &b + &x.sin().powi(2) + &x.cos().powi(2) + &c;
     let result = expr.simplify();
@@ -35,7 +35,7 @@ fn stripper_collector_pythagorean_in_large_sum() {
 #[test]
 fn stripper_collector_5_term_add() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // 1 + 2 + sin²(x) + 3 + cos²(x) → 7
     let expr = expr!(1 + 2 + sin(x) ^ 2 + 3 + cos(x) ^ 2);
     let result = expr.simplify();
@@ -45,7 +45,7 @@ fn stripper_collector_5_term_add() {
 #[test]
 fn stripper_collector_6_term_two_symbols() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y, z);
+    symplex::syms!(ctx; x, y, z);
     // y + z + sin²(x) + 10 + cos²(x) + y  →  2*y + z + 11
     let expr = &y + &z + &x.sin().powi(2) + 10 + &x.cos().powi(2) + &y;
     let result = expr.simplify();
@@ -62,7 +62,7 @@ fn stripper_collector_6_term_two_symbols() {
 #[test]
 fn stripper_collector_cosh_sinh_in_sum() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // cosh²(x) - sinh²(x) + 3 → 4
     let expr = expr!(cosh(x) ^ 2 - sinh(x) ^ 2 + 3);
     let result = expr.simplify();
@@ -76,7 +76,7 @@ fn stripper_collector_cosh_sinh_in_sum() {
 #[test]
 fn stripper_collector_exp_mul_in_product() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; a, b, z);
+    symplex::syms!(ctx; a, b, z);
     // z * exp(a) * exp(b) → z * exp(a + b)
     let expr = &z * &a.exp() * &b.exp();
     let result = expr.simplify();
@@ -95,7 +95,7 @@ fn stripper_collector_exp_mul_in_product() {
 #[test]
 fn regression_exact_2_term_pythagorean() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // sin²(x) + cos²(x) → 1  (exact match, no sub-expression needed)
     let expr = expr!(sin(x) ^ 2 + cos(x) ^ 2);
     let result = expr.simplify();
@@ -107,7 +107,7 @@ fn regression_3_term_add_pythagorean() {
     let ctx = Context::new();
     // The original sub-expression matching handled 3-term sums.
     // Verify it still works.
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let expr = expr!(sin(x) ^ 2 + cos(x) ^ 2 + 3);
     let result = expr.simplify();
     assert_eq!(format!("{result}"), "4");
@@ -120,7 +120,7 @@ fn regression_3_term_add_pythagorean() {
 #[test]
 fn no_false_match_different_args() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    symplex::syms!(ctx; x, y);
     // sin²(x) + cos²(y) should NOT simplify via Pythagorean (different args)
     let expr = expr!(sin(x) ^ 2 + cos(y) ^ 2 + 3);
     let result = expr.simplify();
@@ -132,7 +132,7 @@ fn no_false_match_different_args() {
 #[test]
 fn no_false_match_sin_sin() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     // sin²(x) + sin²(x) → 2*sin²(x), not 1
     let expr = expr!(sin(x) ^ 2 + sin(x) ^ 2);
     let result = expr.simplify();

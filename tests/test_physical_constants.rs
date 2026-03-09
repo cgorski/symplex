@@ -67,7 +67,7 @@ fn constant_derivative_is_zero() {
     let ctx = symplex::units::si::units_ctx().clone();
     let c = constants::speed_of_light();
     let h = constants::planck_constant();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let dc = c.inner().diff(&x);
     let dh = h.inner().diff(&x);
     assert!(
@@ -84,7 +84,7 @@ fn constant_derivative_is_zero() {
 fn gravitational_force() {
     let ctx = symplex::units::si::units_ctx().clone();
     let g_const = constants::gravitational_constant();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; m1, m2, r);
+    symplex::syms!(ctx; m1, m2, r);
     // F = G·m1·m2/r² — raw expression arithmetic (no type-level dimension check)
     let f_expr = g_const.inner() * &m1 * &m2 / &r.powi(2);
     let display = format!("{}", f_expr);
@@ -162,7 +162,7 @@ fn avogadro_constant_value() {
 fn constant_in_product_preserves_symbol() {
     let ctx = symplex::units::si::units_ctx().clone();
     let c = constants::speed_of_light();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let cx = c.inner() * &x;
     let display = format!("{}", cx);
     assert!(
@@ -175,7 +175,7 @@ fn constant_in_product_preserves_symbol() {
 fn constant_survives_simplify() {
     let ctx = symplex::units::si::units_ctx().clone();
     let c = constants::speed_of_light();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    symplex::syms!(ctx; x, y);
     let expr = c.inner() * &x + c.inner() * &y;
     let simplified = expr.simplify();
     let display = format!("{}", simplified);
@@ -189,7 +189,7 @@ fn constant_survives_simplify() {
 fn constant_diff_in_product() {
     let ctx = symplex::units::si::units_ctx().clone();
     let c = constants::speed_of_light();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let cx = c.inner() * &x;
     let d = cx.diff(&x);
     // d/dx(c*x) = c

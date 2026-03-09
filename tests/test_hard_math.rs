@@ -883,7 +883,7 @@ fn multi_var_mixed_partial_derivative() {
 fn multi_var_gradient_of_sum_of_squares() {
     let ctx = Context::new();
     // f = x² + y² + z²  →  ∇f = [2x, 2y, 2z]
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y, z);
+    symplex::syms!(ctx; x, y, z);
     let f = expr!(x ^ 2 + y ^ 2 + z ^ 2);
     let grad = gradient(&f, &[&x, &y, &z]);
 
@@ -1167,7 +1167,7 @@ fn hard_multi_var_laplacian_via_second_derivs() {
     let ctx = Context::new();
     // f = x³ + y³ + z³
     // ∇²f = ∂²f/∂x² + ∂²f/∂y² + ∂²f/∂z² = 6x + 6y + 6z
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y, z);
+    symplex::syms!(ctx; x, y, z);
     let f = &x.powi(3) + &y.powi(3) + &z.powi(3);
 
     let d2x = f.diff(&x).diff(&x); // 6x

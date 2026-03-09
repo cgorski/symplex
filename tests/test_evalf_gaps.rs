@@ -9,7 +9,7 @@ use symplex::prelude::*;
 #[test]
 fn evalf_finite_sum() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; k);
+    symplex::syms!(ctx; k);
     let s = Ex::symbolic_sum(&k, &k, &ctx.int(1), &ctx.int(10));
     let result = s.eval_f64().unwrap();
     assert!(
@@ -21,7 +21,7 @@ fn evalf_finite_sum() {
 #[test]
 fn evalf_sum_of_squares() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; k);
+    symplex::syms!(ctx; k);
     let body = k.powi(2);
     let s = Ex::symbolic_sum(&body, &k, &ctx.int(1), &ctx.int(5));
     let result = s.eval_f64().unwrap();
@@ -39,7 +39,7 @@ fn evalf_sum_of_squares() {
 #[test]
 fn evalf_finite_product() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; k);
+    symplex::syms!(ctx; k);
     let p = Ex::symbolic_product(&k, &k, &ctx.int(1), &ctx.int(5));
     let result = p.eval_f64().unwrap();
     // 1 * 2 * 3 * 4 * 5 = 120

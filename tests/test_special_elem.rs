@@ -48,7 +48,7 @@ fn heaviside_negative_rational() {
 #[test]
 fn heaviside_symbolic_stays() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let h = x.heaviside();
     let s = format!("{h}");
     assert!(
@@ -68,7 +68,7 @@ fn heaviside_via_macro() {
 #[test]
 fn heaviside_via_macro_symbolic() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = expr!(heaviside(x));
     assert_eq!(result, x.heaviside());
 }
@@ -113,7 +113,7 @@ fn dirac_delta_at_zero_stays() {
 #[test]
 fn dirac_delta_symbolic_stays() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let d = x.dirac_delta();
     let s = format!("{d}");
     assert!(
@@ -133,7 +133,7 @@ fn dirac_delta_via_macro() {
 #[test]
 fn dirac_delta_via_macro_symbolic() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = expr!(dirac_delta(x));
     assert_eq!(result, x.dirac_delta());
 }
@@ -158,7 +158,7 @@ fn lambertw_at_e() {
 #[test]
 fn lambertw_symbolic() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let w = expr!(lambertw(x));
     let s = format!("{w}");
     assert!(s.contains("W("), "should display as W(x): {s}");
@@ -167,7 +167,7 @@ fn lambertw_symbolic() {
 #[test]
 fn lambertw_symbolic_stays() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; y);
+    symplex::syms!(ctx; y);
     let w = y.lambertw();
     let s = format!("{w}");
     assert!(
@@ -196,7 +196,7 @@ fn lambertw_via_macro() {
 #[test]
 fn lambertw_via_macro_symbolic() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let result = expr!(lambertw(x));
     assert_eq!(result, x.lambertw());
 }

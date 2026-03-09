@@ -131,7 +131,7 @@ proptest! {
     #[test]
     fn multinomial_term_count(n in 2..8usize) {
         let ctx = Context::new();
-        let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; a, b);
+        symplex::syms!(ctx; a, b);
         let expanded = (&a + &b).powi(n as i64).expand();
         // (a+b)^n has n+1 terms by the binomial theorem
         prop_assert_eq!(expanded.term_count(), n + 1,
@@ -141,7 +141,7 @@ proptest! {
     #[test]
     fn trinomial_term_count(n in 2..6usize) {
         let ctx = Context::new();
-        let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; a, b, c);
+        symplex::syms!(ctx; a, b, c);
         let expanded = (&a + &b + &c).powi(n as i64).expand();
         // (a+b+c)^n has C(n+2, 2) = (n+1)(n+2)/2 terms
         let expected = (n + 1) * (n + 2) / 2;

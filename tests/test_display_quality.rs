@@ -12,7 +12,7 @@ use symplex::prelude::*;
 #[test]
 fn display_sub_neg_int() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let expr = &x + ctx.int(-3);
     let s = format!("{expr}");
     assert!(
@@ -32,7 +32,7 @@ fn display_sub_neg_int() {
 #[test]
 fn display_sub_neg_frac() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let expr = &x + ctx.rational(-1, 2);
     let s = format!("{expr}");
     assert!(
@@ -52,7 +52,7 @@ fn display_sub_neg_frac() {
 #[test]
 fn display_sub_neg_symbol() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    symplex::syms!(ctx; x, y);
     let expr = &x - &y;
     let s = format!("{expr}");
     assert!(
@@ -72,7 +72,7 @@ fn display_sub_neg_symbol() {
 #[test]
 fn display_leading_neg_int() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let expr = ctx.int(-3) + &x;
     let s = format!("{expr}");
     assert!(
@@ -93,7 +93,7 @@ fn display_leading_neg_int() {
 #[test]
 fn display_double_neg() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    symplex::syms!(ctx; x, y);
     let expr = -&x + (-&y);
     let s = format!("{expr}");
     assert!(
@@ -114,7 +114,7 @@ fn display_double_neg() {
 #[test]
 fn display_neg_mul_coeff() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    symplex::syms!(ctx; x, y);
     let expr = &x + ctx.int(-2) * &y;
     let s = format!("{expr}");
     assert!(
@@ -134,7 +134,7 @@ fn display_neg_mul_coeff() {
 #[test]
 fn display_no_plus_minus_anywhere() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y, z);
+    symplex::syms!(ctx; x, y, z);
 
     let exprs: Vec<Ex> = vec![
         // 1: x + (-3)
@@ -176,7 +176,7 @@ fn display_no_plus_minus_anywhere() {
 #[test]
 fn display_mul_neg_one_invisible() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x);
+    symplex::syms!(ctx; x);
     let expr = ctx.int(-1) * &x;
     let s = format!("{expr}");
     assert_eq!(s, "-x", "expected '-x', got: {s}");
@@ -189,7 +189,7 @@ fn display_mul_neg_one_invisible() {
 #[test]
 fn display_neg_fraction_coeff() {
     let ctx = Context::new();
-    let __vars_ctx = ctx.clone(); symplex::syms!(__vars_ctx; x, y);
+    symplex::syms!(ctx; x, y);
     let expr = ctx.rational(-3, 4) * &x + &y;
     let s = format!("{expr}");
     assert!(
