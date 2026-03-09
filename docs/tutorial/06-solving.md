@@ -381,7 +381,7 @@ let ode = expr!(diff(y, x) + 2*y); // y' + 2y = 0
 
 ### Solving First-Order ODEs
 
-`.solve_ode(&func, &var)` returns `Option<(solution, constants)>`:
+`.solve_ode(&func, &var)` returns `Ex` — the solution expression (or an unevaluated `DSolve` node if the ODE cannot be solved):
 
 ```rust
 use symplex::prelude::*;

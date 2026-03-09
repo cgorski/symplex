@@ -19,12 +19,35 @@
 
 use std::sync::OnceLock;
 
-/// Shared lazy context used by all named-quantity `symbol()`, `constant()`,
-/// and `rational()` helpers so that expressions from different quantity types
-/// can be combined without cross-context panics.
+/// Shared context for the dimensional analysis module.
+///
+/// # Why this exists
+///
+/// All 30+ named quantity types (`Mass`, `Length`, `Force`, etc.) need to
+/// create expressions that can be combined freely — `Mass::symbol("m") *
+/// Acceleration::symbol("a")` must work without cross-context panics.
+///
+/// This `OnceLock` provides a single shared [`Context`] for all unit
+/// expressions.  It is the **only** hidden static context in the library
+/// and is intentionally scoped to the units module.
+///
+/// # Safety
+///
+/// Unit expressions from `UNITS_CONTEXT` live in a separate context from
+/// user-created `Context::new()` expressions.  If a user tries to combine
+/// a unit expression with a non-unit expression (e.g., `Mass::symbol("m")
+/// + ctx.int(1)`), the `checked_id` guard will panic with a clear message.
+///
+/// This is by design: dimensional analysis expressions form a self-contained
+/// ecosystem with compile-time dimension checking.  Mixing them with
+/// untyped `Ex` values would bypass the dimension safety guarantees.
 static UNITS_CONTEXT: OnceLock<crate::api::context::Context> = OnceLock::new();
 
 /// Returns the shared units context (initialised on first call).
+///
+/// All unit type constructors (`Mass::symbol`, `Length::constant`, etc.)
+/// use this context internally.  Users should not need to call this
+/// directly — use the typed constructors instead.
 pub fn units_ctx() -> &'static crate::api::context::Context {
     UNITS_CONTEXT.get_or_init(crate::api::context::Context::new)
 }
