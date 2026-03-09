@@ -927,9 +927,128 @@ fn eval_node(
             reason: "cannot numerically evaluate unevaluated Residue".into(),
         }),
 
-        ExprNode::RootOf(_, _) => Err(SymplexError::Unevaluable {
-            reason: "cannot numerically evaluate unevaluated RootOf".into(),
-        }),
+        ExprNode::RootOf(poly_id, idx_id) => {
+            // ── Extract the index as a non-negative integer ────────
+            let idx: usize = match arena.node(*idx_id) {
+                ExprNode::Num(nid) => {
+                    let r = arena.num(*nid);
+                    if r.is_integer() {
+                        let n = r.to_integer();
+                        // Convert BigInt → i64 → usize safely.
+                        let n_i64: i64 = n.try_into().map_err(|_| SymplexError::Unevaluable {
+                            reason: "RootOf index out of range".into(),
+                        })?;
+                        if n_i64 < 0 {
+                            return Err(SymplexError::Unevaluable {
+                                reason: "RootOf index must be non-negative".into(),
+                            });
+                        }
+                        n_i64 as usize
+                    } else {
+                        return Err(SymplexError::Unevaluable {
+                            reason: "RootOf index must be an integer".into(),
+                        });
+                    }
+                }
+                _ => {
+                    return Err(SymplexError::Unevaluable {
+                        reason: "RootOf index must be numeric".into(),
+                    })
+                }
+            };
+
+            // ── Identify the variable in the polynomial ───────────
+            let syms = walk::free_symbols(arena, *poly_id);
+            if syms.is_empty() {
+                return Err(SymplexError::Unevaluable {
+                    reason: "RootOf polynomial has no variables".into(),
+                });
+            }
+            let var_id = syms[0];
+
+            // ── Convert expression → dense Poly over ℚ ───────────
+            let poly = match crate::poly::polybridge::expr_to_poly(arena, *poly_id, var_id) {
+                Some(p) => p,
+                None => {
+                    return Err(SymplexError::Unevaluable {
+                        reason: "could not convert RootOf expression to polynomial".into(),
+                    })
+                }
+            };
+
+            // ── Cauchy's root bound: |x| < 1 + max(|a_i / a_n|) ──
+            let lc = match poly.leading_coeff() {
+                Some(c) if !c.is_zero() => c.clone(),
+                _ => {
+                    return Err(SymplexError::Unevaluable {
+                        reason: "RootOf polynomial has zero leading coefficient".into(),
+                    })
+                }
+            };
+            let mut max_ratio = Ratio::<BigInt>::zero();
+            for c in poly.coeffs() {
+                let r = c / &lc;
+                let abs_r = if r < Ratio::zero() { -r } else { r };
+                if abs_r > max_ratio {
+                    max_ratio = abs_r;
+                }
+            }
+            let bound = max_ratio + Ratio::from_integer(BigInt::from(1));
+
+            // ── Sturm isolation of real roots ─────────────────────
+            let sturm = crate::poly::sturm::SturmChain::new(&poly);
+            let neg_bound = -bound.clone();
+            let mut intervals = sturm.isolate_roots_in(&neg_bound, &bound, 60);
+
+            // Sort intervals left-to-right (by midpoint) so the
+            // index mapping is deterministic.
+            intervals.sort_by(|a, b| (&a.0 + &a.1).cmp(&(&b.0 + &b.1)));
+
+            if idx >= intervals.len() {
+                return Err(SymplexError::Unevaluable {
+                    reason: format!(
+                        "RootOf index {} exceeds the {} real root(s); \
+                         complex roots are not yet evaluable",
+                        idx,
+                        intervals.len()
+                    ),
+                });
+            }
+
+            let (mut lo, mut hi) = intervals[idx].clone();
+
+            // ── Quick check: exact root at an endpoint ────────────
+            if poly.eval(&lo).is_zero() {
+                return Ok((ratio_to_bigfloat(&lo, prec, rm), BigFloat::new(prec)));
+            }
+            if poly.eval(&hi).is_zero() {
+                return Ok((ratio_to_bigfloat(&hi, prec, rm), BigFloat::new(prec)));
+            }
+
+            // ── Bisection refinement ──────────────────────────────
+            // Each iteration adds ~1 bit of precision.
+            let iterations = prec + 32; // guard bits
+            let two = Ratio::from_integer(BigInt::from(2));
+            let sign_lo_neg = poly.eval(&lo) < Ratio::zero();
+
+            for _ in 0..iterations {
+                let mid = (&lo + &hi) / &two;
+                let v = poly.eval(&mid);
+                if v.is_zero() {
+                    lo = mid.clone();
+                    hi = mid;
+                    break;
+                }
+                if (v < Ratio::zero()) == sign_lo_neg {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+
+            let root = (&lo + &hi) / two;
+            Ok((ratio_to_bigfloat(&root, prec, rm), BigFloat::new(prec)))
+        }
 
         ExprNode::DSolve(_, _, _) => Err(SymplexError::Unevaluable {
             reason: "cannot numerically evaluate unevaluated DSolve".into(),

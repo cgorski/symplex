@@ -132,9 +132,9 @@ pub(crate) fn solve(arena: &mut Arena, expr: ExprId, var: ExprId) -> Vec<Solutio
     match degree {
         1 => solve_linear(arena, &poly),
         2 => solve_quadratic(arena, &poly),
-        3 => solve_cubic(arena, &poly),
-        4 => solve_quartic(arena, &poly),
-        _ => solve_rational_roots(arena, &poly),
+        3 => solve_cubic(arena, var, &poly),
+        4 => solve_quartic(arena, var, &poly),
+        _ => solve_rational_roots(arena, var, &poly),
     }
 }
 
@@ -490,7 +490,7 @@ fn solve_quadratic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 
 /// Solve a cubic polynomial. Tries rational roots first, then falls back
 /// to Cardano's formula for irrational / complex roots.
-fn solve_cubic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
+fn solve_cubic(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solution> {
     let a = poly.coeff(3);
     if a.is_zero() {
         let quadratic = Poly::from_coeffs(vec![poly.coeff(0), poly.coeff(1), poly.coeff(2)]);
@@ -498,7 +498,7 @@ fn solve_cubic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
     }
 
     // Try rational roots first — exact answers are preferable.
-    let rational_attempt = solve_rational_roots(arena, poly);
+    let rational_attempt = solve_rational_roots(arena, var, poly);
     if !rational_attempt.is_empty() {
         return rational_attempt;
     }
@@ -618,7 +618,7 @@ fn solve_cubic_cardano(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 
 /// Solve a quartic polynomial. Tries rational roots first, then falls back
 /// to Ferrari's method.
-fn solve_quartic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
+fn solve_quartic(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solution> {
     let a = poly.coeff(4);
     if a.is_zero() {
         let cubic = Poly::from_coeffs(vec![
@@ -627,11 +627,11 @@ fn solve_quartic(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
             poly.coeff(2),
             poly.coeff(3),
         ]);
-        return solve_cubic(arena, &cubic);
+        return solve_cubic(arena, var, &cubic);
     }
 
     // Try rational roots first.
-    let rational_attempt = solve_rational_roots(arena, poly);
+    let rational_attempt = solve_rational_roots(arena, var, poly);
     if !rational_attempt.is_empty() {
         return rational_attempt;
     }
@@ -815,7 +815,7 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 ///
 /// We convert to integer coefficients by clearing denominators, then
 /// enumerate candidate roots and test them.
-fn solve_rational_roots(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
+fn solve_rational_roots(arena: &mut Arena, var: ExprId, poly: &Poly) -> Vec<Solution> {
     // Convert to integer polynomial by clearing denominators.
     let (int_poly, _scale) = clear_denominators(poly);
 
@@ -824,9 +824,18 @@ fn solve_rational_roots(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         None => return Vec::new(),
     };
 
-    // For very high degree, bail to avoid combinatorial explosion.
+    // For very high degree, skip rational root search (combinatorial explosion)
+    // but still emit RootOf objects so the solver returns something useful.
     if degree > 20 {
-        return Vec::new();
+        let poly_expr = polybridge::poly_to_expr(arena, poly, var);
+        let mut roots = Vec::new();
+        for i in 0..degree {
+            let idx = arena.int(i as i64);
+            roots.push(Solution {
+                value: arena.intern(ExprNode::RootOf(poly_expr, idx)),
+            });
+        }
+        return roots;
     }
 
     let a0 = int_poly.coeff(0).to_integer(); // constant term
@@ -839,7 +848,7 @@ fn solve_rational_roots(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         let reduced_coeffs: Vec<Ratio<BigInt>> = poly.coeffs().iter().skip(1).cloned().collect();
         let reduced = Poly::from_coeffs(reduced_coeffs);
         if !reduced.is_zero() && !reduced.is_constant() {
-            let more = solve_rational_roots(arena, &reduced);
+            let more = solve_rational_roots(arena, var, &reduced);
             roots.extend(more);
         }
         return roots;
@@ -889,7 +898,16 @@ fn solve_rational_roots(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
                 // Use Ferrari directly
                 roots.extend(solve_quartic_ferrari(arena, &remaining));
             }
-            _ => {}
+            _ => {
+                // Degree ≥ 5 irreducible remainder — emit RootOf objects
+                let poly_expr = polybridge::poly_to_expr(arena, &remaining, var);
+                for i in 0..d {
+                    let idx = arena.int(i as i64);
+                    roots.push(Solution {
+                        value: arena.intern(ExprNode::RootOf(poly_expr, idx)),
+                    });
+                }
+            }
         }
     }
 

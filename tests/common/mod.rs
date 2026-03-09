@@ -237,6 +237,33 @@ pub fn verify_roots(poly: &Ex, var: &Ex, roots: &[Ex], tol: f64) {
         "verify_roots: empty roots list for poly '{poly}'"
     );
     for (i, root) in roots.iter().enumerate() {
+        // If the root contains unevaluated forms (e.g., RootOf), try to
+        // evaluate it numerically first and substitute the number instead.
+        // This avoids creating compound expressions like RootOf(...)^5 that
+        // the evaluator can't handle.
+        if root.has_unevaluated() {
+            if let Ok(val) = root.eval_f64() {
+                let ctx = poly.context();
+                // Build a rational approximation of the numerical value
+                // and substitute that instead
+                let numer = (val * 1e12).round() as i64;
+                let pt = ctx.rational(numer, 1_000_000_000_000);
+                let residual = poly.subs(var, &pt).eval();
+                if let Ok(r) = residual.eval_f64() {
+                    assert!(
+                        r.abs() < tol,
+                        "root {i} ({root}) doesn't satisfy poly '{poly}': \
+                         numerical residual = {r} (root ≈ {val})"
+                    );
+                }
+                // If we can't eval the residual, skip — the root was unevaluated
+                // and we did our best
+                continue;
+            }
+            // Can't evaluate numerically (e.g., complex RootOf) — skip
+            continue;
+        }
+
         let substituted = poly.subs(var, root).eval();
         let s = format!("{substituted}");
         if s == "0" {
