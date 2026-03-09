@@ -643,7 +643,7 @@ fn workflow_equation_solve_check() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // x² - 5x + 6 = 0
-    let equation = eq!(x ^ 2 - 5 * x + 6 = 0);
+    let equation = eq!(ctx, x ^ 2 - 5 * x + 6 = 0);
     let roots = equation.solve(&x).expect("should solve x²-5x+6=0");
     assert_eq!(roots.len(), 2, "quadratic should have 2 roots");
 

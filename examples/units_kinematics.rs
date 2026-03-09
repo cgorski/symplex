@@ -30,7 +30,7 @@ fn main() {
 
     // Position: x(t) = ½gt² — built ergonomically with expr!
     // from_ex wraps the raw expression in the Length type
-    let x_t = Length::from_ex(expr!(1/2 * g * t^2));
+    let x_t = Length::from_ex(expr!(ctx, 1/2 * g * t^2));
     println!("  x(t) = {}", x_t);
 
     // Velocity: v(t) = dx/dt — typed differentiation!
@@ -76,11 +76,11 @@ fn main() {
     // (g and t already declared above)
 
     // Horizontal position: x(t) = v₀·cos(θ)·t
-    let x_proj = Length::from_ex(expr!(v0 * cos(theta) * t));
+    let x_proj = Length::from_ex(expr!(ctx, v0 * cos(theta) * t));
     println!("  x(t) = {}", x_proj);
 
     // Vertical position: y(t) = v₀·sin(θ)·t - ½gt²
-    let y_proj = Length::from_ex(expr!(v0 * sin(theta) * t - 1/2 * g * t^2));
+    let y_proj = Length::from_ex(expr!(ctx, v0 * sin(theta) * t - 1/2 * g * t^2));
     println!("  y(t) = {}", y_proj);
 
     // Horizontal velocity: vx = dx/dt (use raw diff + from_ex)
@@ -143,7 +143,7 @@ fn main() {
     let accel = Acceleration::symbol("a");
 
     // F = ma — Mass × Acceleration → Force (compile-time verified!)
-    let force = symplex::dim!(Force: mass * accel);
+    let force = symplex::dim!(ctx, Force: mass * accel);
     println!("  F = m·a = {}", force);
 
     // Work: W = ∫F dx → Energy (typed integration!)
@@ -154,7 +154,7 @@ fn main() {
     // Kinetic energy: KE = ½mv² using expr!
     let ctx = Context::new();
     symplex::syms!(ctx; m, v);
-    let ke = Energy::from_ex(expr!(1/2 * m * v^2));
+    let ke = Energy::from_ex(expr!(ctx, 1/2 * m * v^2));
     println!("  KE = ½mv² = {}", ke);
 
     // Differentiate KE w.r.t. velocity → Momentum (p = mv)

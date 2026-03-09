@@ -17,7 +17,7 @@ fn bareiss_4x4_integer() {
     //   5  6  7  8
     //   2  6  4  8
     //   3  1  1  2
-    let m = matrix![[1, 2, 3, 4], [5, 6, 7, 8], [2, 6, 4, 8], [3, 1, 1, 2]];
+    let m = matrix![ctx, [1, 2, 3, 4], [5, 6, 7, 8], [2, 6, 4, 8], [3, 1, 1, 2]];
     let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     // Cross-check: build same matrix and compute via cofactor on 3×3 minors.
@@ -94,7 +94,7 @@ fn bareiss_6x6_identity() {
 #[test]
 fn bareiss_singular() {
     let ctx = Context::new();
-    let m = matrix![[1, 2, 3, 4], [2, 4, 6, 8], [1, 1, 1, 1], [0, 0, 0, 1]];
+    let m = matrix![ctx, [1, 2, 3, 4], [2, 4, 6, 8], [1, 1, 1, 1], [0, 0, 0, 1]];
     let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     assert!(
@@ -109,7 +109,7 @@ fn bareiss_singular() {
 fn bareiss_symbolic_2x2_matches_direct() {
     let ctx = Context::new();
     symplex::syms!(ctx; a, b, c, d);
-    let m = matrix![[a, b], [c, d]];
+    let m = matrix![ctx, [a, b], [c, d]];
     let det = m.det().unwrap();
     // Should be a*d - b*c
     let expected = &(&a * &d) - &(&b * &c);
@@ -127,7 +127,7 @@ fn bareiss_symbolic_2x2_matches_direct() {
 fn bareiss_4x4_known_det() {
     let ctx = Context::new();
     // Upper triangular → det = product of diagonal = 1*2*3*4 = 24
-    let m = matrix![[1, 5, 9, 13], [0, 2, 7, 11], [0, 0, 3, 8], [0, 0, 0, 4]];
+    let m = matrix![ctx, [1, 5, 9, 13], [0, 2, 7, 11], [0, 0, 3, 8], [0, 0, 0, 4]];
     let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     assert!(
@@ -142,7 +142,7 @@ fn bareiss_4x4_known_det() {
 fn bareiss_4x4_needs_pivot_swap() {
     let ctx = Context::new();
     // First column starts with 0 → requires row swap
-    let m = matrix![[0, 1, 2, 3], [1, 0, 0, 0], [0, 2, 1, 0], [0, 0, 3, 1]];
+    let m = matrix![ctx, [0, 1, 2, 3], [1, 0, 0, 0], [0, 2, 1, 0], [0, 0, 3, 1]];
     let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
 
@@ -163,7 +163,7 @@ fn bareiss_4x4_needs_pivot_swap() {
     // Independent cross-check: compute det of original matrix via 3×3 cofactor
     // Expand along column 0 (only row 1 has non-zero entry = 1):
     // det = -1 * 1 * det([[1,2,3],[2,1,0],[0,3,1]])  (minor of (1,0), sign (-1)^(1+0) = -1)
-    let sub = matrix![[1, 2, 3], [2, 1, 0], [0, 3, 1]];
+    let sub = matrix![ctx, [1, 2, 3], [2, 1, 0], [0, 3, 1]];
     let sub_det = sub.det().unwrap().eval_f64().unwrap();
     let expected = -sub_det;
     assert!(
@@ -224,7 +224,7 @@ fn bareiss_4x4_negative_det() {
     let ctx = Context::new();
     // Permutation matrix for (0→1, 1→0, 2→3, 3→2) has det = +1
     // Single swap: (0→1, 1→0, 2→2, 3→3) has det = -1
-    let m = matrix![[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
+    let m = matrix![ctx, [0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
     let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     assert!(
@@ -238,14 +238,14 @@ fn bareiss_4x4_negative_det() {
 #[test]
 fn bareiss_4x4_all_negative() {
     let ctx = Context::new();
-    let m = matrix![
+    let m = matrix![ctx, 
         [-1, -2, -3, -4],
         [-5, -6, -7, -8],
         [-2, -6, -4, -8],
         [-3, -1, -1, -2]
     ];
     // Negating all entries: det(-A) = (-1)^4 * det(A) = det(A)
-    let m_pos = matrix![[1, 2, 3, 4], [5, 6, 7, 8], [2, 6, 4, 8], [3, 1, 1, 2]];
+    let m_pos = matrix![ctx, [1, 2, 3, 4], [5, 6, 7, 8], [2, 6, 4, 8], [3, 1, 1, 2]];
     let d_neg = m.det().unwrap().eval_f64().unwrap();
     let d_pos = m_pos.det().unwrap().eval_f64().unwrap();
     assert!(
@@ -259,7 +259,7 @@ fn bareiss_4x4_all_negative() {
 #[test]
 fn bareiss_det_equals_det_transpose() {
     let ctx = Context::new();
-    let m = matrix![[2, 1, 0, 3], [1, 0, 2, 1], [0, 3, 1, 2], [1, 2, 3, 0]];
+    let m = matrix![ctx, [2, 1, 0, 3], [1, 0, 2, 1], [0, 3, 1, 2], [1, 2, 3, 0]];
     let d = m.det().unwrap().eval_f64().unwrap();
     let dt = m.transpose().det().unwrap().eval_f64().unwrap();
     assert!(

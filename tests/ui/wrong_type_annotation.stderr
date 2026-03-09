@@ -1,8 +1,8 @@
 error[E0308]: mismatched types
  --> tests/ui/wrong_type_annotation.rs:8:26
   |
-8 |     let _bad: Velocity = symplex::dim!(Force: m * a);
-  |               --------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Velocity`, found `Force`
+8 |     let _bad: Velocity = symplex::dim!(ctx, Force: m * a);
+  |               --------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Velocity`, found `Force`
   |               |
   |               expected due to this
   |

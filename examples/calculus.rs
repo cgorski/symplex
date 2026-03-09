@@ -17,7 +17,7 @@ fn main() {
     symplex::syms!(ctx; x);
 
     // ── 2. Build a function and differentiate ──────────────────────────
-    let f = expr!(x ^ 3 - 3 * x ^ 2 + 2 * x);
+    let f = expr!(ctx, x ^ 3 - 3 * x ^ 2 + 2 * x);
     println!("f(x)   = {f}");
 
     let df = f.diff(&x);
@@ -27,7 +27,7 @@ fn main() {
     println!("f''(x) = {d2f}");
 
     // Higher-order derivative
-    let g = expr!(x ^ 6);
+    let g = expr!(ctx, x ^ 6);
     let g4 = g.diff_n(&x, 4);
     println!("\nd⁴/dx⁴ (x⁶) = {g4}");
 
@@ -61,7 +61,7 @@ fn main() {
     println!("  ∫ 1/x dx    = {}", (1 / &x).integrate(&x));
 
     // Polynomial integration
-    let poly = expr!(5 * x ^ 4 + 3 * x ^ 2 + 1);
+    let poly = expr!(ctx, 5 * x ^ 4 + 3 * x ^ 2 + 1);
     println!("  ∫ ({poly}) dx = {}", poly.integrate(&x));
 
     // ── 6. Definite integral ───────────────────────────────────────────
@@ -75,7 +75,7 @@ fn main() {
     let sin_area = x.sin().definite_integral(&x, &zero, &pi);
     println!("∫₀^π sin(x) dx = {}", sin_area.eval());
 
-    let x_squared_area = expr!(x ^ 2).definite_integral(&x, &ctx.int(-1), &one);
+    let x_squared_area = expr!(ctx, x ^ 2).definite_integral(&x, &ctx.int(-1), &one);
     println!("∫₋₁¹ x² dx = {x_squared_area}");
 
     // ── 7. Taylor series of sin(x) around 0 ───────────────────────────
@@ -89,7 +89,7 @@ fn main() {
     println!("exp(x) ≈ {}", exp_series.expand().eval());
 
     // ── 8. Simplification: trig identity ───────────────────────────────
-    let trig = expr!(sin(x) ^ 2 + cos(x) ^ 2);
+    let trig = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2);
     println!("\n{trig} → {}", trig.simplify());
 
     // ── 9. More simplification: exp/ln inverse ─────────────────────────
@@ -119,14 +119,14 @@ fn main() {
     println!("lim(x→∞) 1/x = {lim3}");
 
     // ── 11. Numerical evaluation ───────────────────────────────────────
-    let val = expr!(x ^ 2 + 1).subs_i64(&x, 3);
+    let val = expr!(ctx, x ^ 2 + 1).subs_i64(&x, 3);
     println!("\nf(3) where f = x² + 1: {val}");
 
     let val2 = f.subs_i64(&x, 5);
     println!("f(5) where f = x³ - 3x² + 2x: {val2}");
 
     // Float evaluation
-    let float_val = expr!(sin(x) + cos(x)).eval_f64_with(&[(&x, 1)]).unwrap();
+    let float_val = expr!(ctx, sin(x) + cos(x)).eval_f64_with(&[(&x, 1)]).unwrap();
     println!("sin(1) + cos(1) = {float_val:.8}");
 
     // ── 12. Factor a polynomial ────────────────────────────────────────
@@ -134,7 +134,7 @@ fn main() {
     let factored = poly.factor(&x);
     println!("\nx² - 1 = {factored}");
 
-    let quadratic = expr!(x ^ 2 - 5 * x + 6);
+    let quadratic = expr!(ctx, x ^ 2 - 5 * x + 6);
     let factored2 = quadratic.factor(&x);
     println!("x² - 5x + 6 = {factored2}");
 
@@ -184,7 +184,7 @@ fn main() {
     }
 
     // Exponential decay: y' + 2y = 0 → y = C1·exp(-2x)
-    let ode2 = expr!(diff(y, x) + 2 * y);
+    let ode2 = expr!(ctx, diff(y, x) + 2 * y);
     println!("\nODE: y' + 2y = 0");
     let sol = ode2.solve_ode(&y, &x);
     if !sol.has_unevaluated() {
@@ -217,23 +217,23 @@ fn main() {
     // ── 18. ODE Classification ─────────────────────────────────────────
     println!("\n--- ODE Classification ---");
 
-    let ode_sep = expr!(diff(y, x) - x);
+    let ode_sep = expr!(ctx, diff(y, x) - x);
     println!("y' - x = 0:    {:?}", ode_sep.classify_ode(&y, &x));
 
-    let ode_lin = expr!(diff(y, x) + 2 * y);
+    let ode_lin = expr!(ctx, diff(y, x) + 2 * y);
     println!("y' + 2y = 0:   {:?}", ode_lin.classify_ode(&y, &x));
 
     // ── 19. Verify ODE solutions ───────────────────────────────────────
     println!("\n--- ODE Solution Verification ---");
 
     // y' - x = 0, solution: y = x²/2
-    let ode_check = expr!(diff(y, x) - x);
+    let ode_check = expr!(ctx, diff(y, x) - x);
     let proposed = &x.powi(2) / 2;
     let verified = ode_check.check_ode_solution(&proposed, &y, &x);
     println!("y' = x, proposed y = x²/2: verified = {verified}");
 
     // y' + 2y = 0, wrong solution: y = x
-    let ode_check2 = expr!(diff(y, x) + 2 * y);
+    let ode_check2 = expr!(ctx, diff(y, x) + 2 * y);
     let wrong = x.clone();
     let verified2 = ode_check2.check_ode_solution(&wrong, &y, &x);
     println!("y' + 2y = 0, proposed y = x: verified = {verified2}");
@@ -244,7 +244,7 @@ fn main() {
     // x² + y² = r² (circle)
     // Differentiate with y depending on x:
     // d/dx(x² + y²) = 2x + 2y·dy/dx
-    let circle = expr!(x ^ 2 + y ^ 2);
+    let circle = expr!(ctx, x ^ 2 + y ^ 2);
     let implicit = circle.diff_with_dependent(&x, &[&y]);
     println!("d/dx(x² + y²) with y = y(x):");
     println!("  {implicit}");

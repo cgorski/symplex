@@ -14,7 +14,7 @@ fn expr_add() {
     let ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
-    let result = expr!(x + y);
+    let result = expr!(ctx, x + y);
     assert_eq!(format!("{result}"), "x + y");
 }
 
@@ -23,7 +23,7 @@ fn expr_sub() {
     let ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
-    let result = expr!(x - y);
+    let result = expr!(ctx, x - y);
     assert_eq!(format!("{result}"), "x - y");
 }
 
@@ -32,7 +32,7 @@ fn expr_mul() {
     let ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
-    let result = expr!(x * y);
+    let result = expr!(ctx, x * y);
     assert_eq!(format!("{result}"), "x*y");
 }
 
@@ -41,7 +41,7 @@ fn expr_div() {
     let ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
-    let result = expr!(x / y);
+    let result = expr!(ctx, x / y);
     assert_eq!(format!("{result}"), "x*1/y");
 }
 
@@ -50,7 +50,7 @@ fn expr_neg() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(-x);
+    let result = expr!(ctx, -x);
     assert_eq!(format!("{result}"), "-x");
 }
 
@@ -61,7 +61,7 @@ fn expr_power_integer() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(x ^ 2);
+    let result = expr!(ctx, x ^ 2);
     assert_eq!(format!("{result}"), "x^2");
 }
 
@@ -70,7 +70,7 @@ fn expr_power_cubed() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(x ^ 3);
+    let result = expr!(ctx, x ^ 3);
     assert_eq!(format!("{result}"), "x^3");
 }
 
@@ -79,7 +79,7 @@ fn expr_power_negative() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(x ^ (-1));
+    let result = expr!(ctx, x ^ (-1));
     assert_eq!(format!("{result}"), "1/x");
 }
 
@@ -88,7 +88,7 @@ fn expr_power_symbolic() {
     let ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, n);
-    let result = expr!(x ^ n);
+    let result = expr!(ctx, x ^ n);
     let s = format!("{result}");
     assert!(s.contains("x") && s.contains("n"), "got: {s}");
 }
@@ -101,7 +101,7 @@ fn expr_precedence_add_mul() {
     let ctx = Context::new();
     syms!(ctx; x, y, z);
     // x + y * z should be x + (y*z), not (x+y)*z
-    let result = expr!(x + y * z);
+    let result = expr!(ctx, x + y * z);
     let manual = &x + &(&y * &z);
     assert_eq!(result, manual);
 }
@@ -112,7 +112,7 @@ fn expr_precedence_pow_mul() {
     let ctx = Context::new();
     syms!(ctx; x, y);
     // x^2 * y should be (x^2) * y
-    let result = expr!(x ^ 2 * y);
+    let result = expr!(ctx, x ^ 2 * y);
     let manual = &x.powi(2) * &y;
     assert_eq!(result, manual);
 }
@@ -123,7 +123,7 @@ fn expr_precedence_parens() {
     let ctx = Context::new();
     syms!(ctx; x, y);
     // (x + y)^2 should group correctly
-    let result = expr!((x + y) ^ 2);
+    let result = expr!(ctx, (x + y) ^ 2);
     let manual = (&x + &y).powi(2);
     assert_eq!(result, manual);
 }
@@ -135,7 +135,7 @@ fn expr_with_integer_literal() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(x + 1);
+    let result = expr!(ctx, x + 1);
     assert_eq!(format!("{result}"), "x + 1");
 }
 
@@ -144,7 +144,7 @@ fn expr_integer_mul() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(2 * x);
+    let result = expr!(ctx, 2 * x);
     assert_eq!(format!("{result}"), "2*x");
 }
 
@@ -153,7 +153,7 @@ fn expr_polynomial() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(x ^ 2 + 2 * x + 1);
+    let result = expr!(ctx, x ^ 2 + 2 * x + 1);
     assert_eq!(format!("{result}"), "x^2 + 2*x + 1");
 }
 
@@ -164,7 +164,7 @@ fn expr_sin() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(sin(x));
+    let result = expr!(ctx, sin(x));
     assert_eq!(format!("{result}"), "sin(x)");
 }
 
@@ -173,7 +173,7 @@ fn expr_cos() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(cos(x));
+    let result = expr!(ctx, cos(x));
     assert_eq!(format!("{result}"), "cos(x)");
 }
 
@@ -182,7 +182,7 @@ fn expr_tan() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(tan(x));
+    let result = expr!(ctx, tan(x));
     assert_eq!(format!("{result}"), "tan(x)");
 }
 
@@ -191,7 +191,7 @@ fn expr_exp() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(exp(x));
+    let result = expr!(ctx, exp(x));
     assert_eq!(format!("{result}"), "exp(x)");
 }
 
@@ -200,7 +200,7 @@ fn expr_ln() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(ln(x));
+    let result = expr!(ctx, ln(x));
     assert_eq!(format!("{result}"), "ln(x)");
 }
 
@@ -209,7 +209,7 @@ fn expr_sqrt() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(sqrt(x));
+    let result = expr!(ctx, sqrt(x));
     assert_eq!(format!("{result}"), "sqrt(x)");
 }
 
@@ -218,7 +218,7 @@ fn expr_abs() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(abs(x));
+    let result = expr!(ctx, abs(x));
     assert_eq!(format!("{result}"), "abs(x)");
 }
 
@@ -229,7 +229,7 @@ fn expr_sin_of_power() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(sin(x ^ 2));
+    let result = expr!(ctx, sin(x ^ 2));
     assert_eq!(format!("{result}"), "sin(x^2)");
 }
 
@@ -238,7 +238,7 @@ fn expr_function_in_sum() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(sin(x) ^ 2 + cos(x) ^ 2);
+    let result = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2);
     let manual = &x.sin().powi(2) + &x.cos().powi(2);
     assert_eq!(result, manual);
 }
@@ -248,7 +248,7 @@ fn expr_nested_function() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(sin(cos(x)));
+    let result = expr!(ctx, sin(cos(x)));
     assert_eq!(format!("{result}"), "sin(cos(x))");
 }
 
@@ -259,7 +259,7 @@ fn expr_quadratic() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(x ^ 2 - 5 * x + 6);
+    let result = expr!(ctx, x ^ 2 - 5 * x + 6);
     // Canonical form has terms sorted
     let s = format!("{result}");
     assert!(s.contains("x^2"), "should contain x^2: {s}");
@@ -272,7 +272,7 @@ fn expr_product_of_sum() {
     let ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
-    let result = expr!((x + 1) * (y - 1));
+    let result = expr!(ctx, (x + 1) * (y - 1));
     let manual = &(&x + 1) * &(&y - 1);
     assert_eq!(result, manual);
 }
@@ -285,7 +285,7 @@ fn expr_right_associative_power() {
     // x^(2^3) = x^8.  We write it as x^8 directly because the macro
     // cannot handle Int^Int (the literal 2 is not an Ex, so .powi()
     // is unavailable on it).
-    let result = expr!(x ^ 8);
+    let result = expr!(ctx, x ^ 8);
     let s = format!("{result}");
     assert_eq!(s, "x^8", "x^8 should display as x^8: {s}");
 }
@@ -297,10 +297,10 @@ fn expr_reuse_variable() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let a = expr!(x ^ 2 + 1);
-    let b = expr!(x ^ 3 - 1);
+    let a = expr!(ctx, x ^ 2 + 1);
+    let b = expr!(ctx, x ^ 3 - 1);
     // x is still usable — expr! only borrows
-    let c = expr!(x + 1);
+    let c = expr!(ctx, x + 1);
     assert!(format!("{a}").contains("x"));
     assert!(format!("{b}").contains("x"));
     assert!(format!("{c}").contains("x"));
@@ -312,7 +312,7 @@ fn expr_with_pre_built_expression() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let inner = &x + 1; // pre-built Ex
-    let result = expr!(inner ^ 2);
+    let result = expr!(ctx, inner ^ 2);
     assert_eq!(format!("{result}"), "(x + 1)^2");
 }
 
@@ -417,7 +417,7 @@ fn expr_then_diff() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = expr!(x ^ 3 + 2 * x + 1);
+    let f = expr!(ctx, x ^ 3 + 2 * x + 1);
     let df = f.diff(&x);
     let s = format!("{df}");
     assert!(s.contains("3*x^2"), "d/dx(x³+2x+1) should contain 3x²: {s}");
@@ -429,7 +429,7 @@ fn expr_then_subs() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = expr!(x ^ 2 + 1);
+    let f = expr!(ctx, x ^ 2 + 1);
     let result = f.subs(&x, &ctx.int(3));
     assert_eq!(format!("{result}"), "10");
 }
@@ -439,7 +439,7 @@ fn expr_then_expand() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = expr!((x + 1) ^ 2);
+    let f = expr!(ctx, (x + 1) ^ 2);
     let expanded = f.expand();
     assert_eq!(format!("{expanded}"), "x^2 + 2*x + 1");
 }
@@ -449,7 +449,7 @@ fn expr_then_solve() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = expr!(x ^ 2 - 5 * x + 6);
+    let f = expr!(ctx, x ^ 2 - 5 * x + 6);
     let roots = f.solve(&x).unwrap();
     assert_eq!(roots.len(), 2);
     let vals: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -468,7 +468,7 @@ fn expr_then_evalf() {
     let ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = expr!(x ^ 2 + 1);
+    let f = expr!(ctx, x ^ 2 + 1);
     let at_pi = f.subs(&x, &ctx.pi());
     let result = at_pi.eval_decimal(15).unwrap();
     assert!(

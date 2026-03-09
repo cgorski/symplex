@@ -242,7 +242,7 @@ fn matrix_map() {
 fn matrix_macro_symbolic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let m = matrix![[x, 0], [0, x ^ 2]];
+    let m = matrix![ctx, [x, 0], [0, x ^ 2]];
     let det = m.det().unwrap();
     let s = format!("{det}");
     assert!(s.contains("x"), "det should involve x: {s}");
@@ -251,7 +251,7 @@ fn matrix_macro_symbolic() {
 #[test]
 fn matrix_macro_constants() {
     let ctx = Context::new();
-    let m = matrix![[pi, 0], [0, E]];
+    let m = matrix![ctx, [pi, 0], [0, E]];
     assert_eq!(format!("{}", m.get(0, 0)), "pi");
     assert_eq!(format!("{}", m.get(1, 1)), "E");
 }
@@ -314,7 +314,7 @@ fn equation_to_expr() {
 fn eq_macro_linear() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(x + 1 = 5);
+    let equation = eq!(ctx, x + 1 = 5);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
     assert_eq!(format!("{}", roots[0]), "4");
@@ -324,7 +324,7 @@ fn eq_macro_linear() {
 fn eq_macro_quadratic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(x ^ 2 = 9);
+    let equation = eq!(ctx, x ^ 2 = 9);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2);
 }
@@ -333,7 +333,7 @@ fn eq_macro_quadratic() {
 fn eq_macro_with_rational() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(2 * x = 1);
+    let equation = eq!(ctx, 2 * x = 1);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
     assert_eq!(format!("{}", roots[0]), "1/2");

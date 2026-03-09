@@ -26,7 +26,7 @@ fn main() {
     // ── 1. Construction ────────────────────────────────────────────
     println!("--- Construction ---");
 
-    let a = matrix![[2, 1], [1, 3]];
+    let a = matrix![ctx, [2, 1], [1, 3]];
     println!("A = {a}");
 
     let eye = Matrix::identity(&ctx, 3);
@@ -56,7 +56,7 @@ fn main() {
     println!("trace(A) = {}", a.trace().unwrap());
     println!("Aᵀ = {}", a.transpose());
 
-    let b = matrix![[5, 6], [7, 8]];
+    let b = matrix![ctx, [5, 6], [7, 8]];
     println!("\nB = {b}");
     println!("A + B = {}", &a + &b);
     println!("A - B = {}", &a - &b);
@@ -83,7 +83,7 @@ fn main() {
     }
 
     // Singular matrix — no inverse
-    let singular = matrix![[1, 2], [2, 4]];
+    let singular = matrix![ctx, [1, 2], [2, 4]];
     println!("\nSingular matrix: {singular}");
     println!("det = {}", singular.det().unwrap());
     match singular.inv() {
@@ -114,7 +114,7 @@ fn main() {
     }
 
     // 3×3 eigenvalues
-    let c = matrix![[1, 2, 0], [0, 3, 1], [0, 0, 2]];
+    let c = matrix![ctx, [1, 2, 0], [0, 3, 1], [0, 0, 2]];
     println!("\nC = {c}");
     let eigenvals_c = c.eigenvals(&x).unwrap();
     println!(
@@ -128,7 +128,7 @@ fn main() {
     // ── 5. Symbolic matrices ───────────────────────────────────────
     println!("\n--- Symbolic Matrices ---");
 
-    let sym_m = matrix![[x, 1], [0, x]];
+    let sym_m = matrix![ctx, [x, 1], [0, x]];
     println!("B(x) = {sym_m}");
     println!("det(B) = {}", sym_m.det().unwrap());
     println!("B² = {}", &sym_m * &sym_m);
@@ -160,7 +160,7 @@ fn main() {
     // ── 6. LU Decomposition ────────────────────────────────────────
     println!("\n--- LU Decomposition ---");
 
-    let lu_mat = matrix![[2, 1, 1], [4, 3, 3], [8, 7, 9]];
+    let lu_mat = matrix![ctx, [2, 1, 1], [4, 3, 3], [8, 7, 9]];
     println!("M = {lu_mat}");
 
     if let Some((l, u, perm)) = lu_mat.lu() {
@@ -178,7 +178,7 @@ fn main() {
     // ── 7. Cholesky Decomposition ──────────────────────────────────
     println!("\n--- Cholesky Decomposition ---");
 
-    let spd = matrix![[4, 2], [2, 3]]; // symmetric positive definite
+    let spd = matrix![ctx, [4, 2], [2, 3]]; // symmetric positive definite
     println!("SPD matrix: {spd}");
     if let Ok(Some(chol)) = spd.cholesky() {
         println!("L (Cholesky) = {chol}");
@@ -189,7 +189,7 @@ fn main() {
     // ── 8. RREF, Rank, Nullspace ───────────────────────────────────
     println!("\n--- RREF, Rank, Nullspace ---");
 
-    let rank_mat = matrix![[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+    let rank_mat = matrix![ctx, [1, 2, 3], [4, 5, 6], [7, 8, 9]];
     println!("M = {rank_mat}");
 
     let (rref, pivot_cols) = rank_mat.rref();
@@ -204,7 +204,7 @@ fn main() {
     }
 
     // Full rank example
-    let full_rank = matrix![[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    let full_rank = matrix![ctx, [1, 0, 0], [0, 1, 0], [0, 0, 1]];
     println!("\nIdentity rank = {}", full_rank.rank());
     println!("Identity nullspace: {} vectors (trivial)", full_rank.nullspace().len());
 
@@ -215,21 +215,21 @@ fn main() {
     // ── 9. Kronecker Product ───────────────────────────────────────
     println!("\n--- Kronecker Product ---");
 
-    let k1 = matrix![[1, 0], [0, 1]];
-    let k2 = matrix![[1, 2], [3, 4]];
+    let k1 = matrix![ctx, [1, 0], [0, 1]];
+    let k2 = matrix![ctx, [1, 2], [3, 4]];
     let kron = k1.kronecker(&k2);
     println!("I₂ ⊗ [[1,2],[3,4]] = {kron}");
 
     // ── 10. Stacking ───────────────────────────────────────────────
     println!("\n--- Matrix Stacking ---");
 
-    let top = matrix![[1, 2, 3]];
-    let bottom = matrix![[4, 5, 6], [7, 8, 9]];
+    let top = matrix![ctx, [1, 2, 3]];
+    let bottom = matrix![ctx, [4, 5, 6], [7, 8, 9]];
     let vstacked = Matrix::vstack(&[&top, &bottom]).unwrap();
     println!("vstack = {vstacked}");
 
-    let left = matrix![[1, 2], [3, 4]];
-    let right = matrix![[5], [6]];
+    let left = matrix![ctx, [1, 2], [3, 4]];
+    let right = matrix![ctx, [5], [6]];
     let hstacked = Matrix::hstack(&[&left, &right]).unwrap();
     println!("hstack = {hstacked}");
 
@@ -239,18 +239,18 @@ fn main() {
     println!("A is square: {}", a.is_square());
     println!("A is symmetric: {}", a.is_symmetric());
 
-    let non_sym = matrix![[1, 2], [3, 4]];
+    let non_sym = matrix![ctx, [1, 2], [3, 4]];
     println!("[[1,2],[3,4]] is symmetric: {}", non_sym.is_symmetric());
 
-    let sym = matrix![[1, 2], [2, 1]];
+    let sym = matrix![ctx, [1, 2], [2, 1]];
     println!("[[1,2],[2,1]] is symmetric: {}", sym.is_symmetric());
 
     // ── 12. Jacobian Computation ───────────────────────────────────
     println!("\n--- Jacobian ---");
 
     // f(x,y) = [x²+y, x·y²]
-    let f1 = expr!(x ^ 2 + y);
-    let f2 = expr!(x * y ^ 2);
+    let f1 = expr!(ctx, x ^ 2 + y);
+    let f2 = expr!(ctx, x * y ^ 2);
 
     let jac = jacobian(&[&f1, &f2], &[&x, &y]);
     println!("f = [x²+y, x·y²]");
@@ -277,7 +277,7 @@ fn main() {
     // ── 14. Matrix Exponential (Series) ────────────────────────────
     println!("\n--- Matrix Exponential ---");
 
-    let rot = matrix![[0, 1], [-1, 0]]; // 90° rotation generator
+    let rot = matrix![ctx, [0, 1], [-1, 0]]; // 90° rotation generator
     let exp_rot = rot.exp_series(6).unwrap();
     println!("exp([[0,1],[-1,0]]) ≈ {exp_rot}");
 
@@ -326,7 +326,7 @@ fn main() {
     // ── 17. Pseudoinverse ──────────────────────────────────────────
     println!("\n--- Pseudoinverse ---");
 
-    let tall = matrix![[1, 0], [0, 1], [1, 1]]; // 3×2
+    let tall = matrix![ctx, [1, 0], [0, 1], [1, 1]]; // 3×2
     println!("Tall matrix (3×2): {tall}");
     if let Ok(pinv) = tall.pinv() {
         println!("Pseudoinverse: {pinv}");

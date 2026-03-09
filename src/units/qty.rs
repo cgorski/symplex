@@ -255,7 +255,7 @@ impl<L, M, T, I, Th, N, J> SameDim<Dim<L, M, T, I, Th, N, J>>
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// FromDimExpr trait — used by the dim!() proc macro
+// FromDimExpr trait — used by the dim!(ctx, ) proc macro
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Trait for converting a `Qty<D>` to a named type with compile-time dimension verification.
@@ -265,7 +265,7 @@ impl<L, M, T, I, Th, N, J> SameDim<Dim<L, M, T, I, Th, N, J>>
 #[diagnostic::on_unimplemented(
     message = "dimension mismatch: expression does not produce `{Self}`",
     label = "wrong physical dimension",
-    note = "the arithmetic in your dim!() expression produces a different dimension than `{Self}`",
+    note = "the arithmetic in your dim!(ctx, ) expression produces a different dimension than `{Self}`",
     note = "check that your factors multiply/divide to the correct physical dimension"
 )]
 pub trait FromDimExpr<D> {

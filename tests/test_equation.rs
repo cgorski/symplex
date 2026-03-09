@@ -218,7 +218,7 @@ fn equation_to_expr_gives_difference() {
 fn eq_macro_basic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(x ^ 2 - 1 = 0);
+    let equation = eq!(ctx, x ^ 2 - 1 = 0);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x^2-1=0 should have 2 roots");
     let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -233,7 +233,7 @@ fn eq_macro_basic() {
 fn eq_macro_with_rationals() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(x = 1 / 2);
+    let equation = eq!(ctx, x = 1 / 2);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
     assert_eq!(format!("{}", roots[0]), "1/2");

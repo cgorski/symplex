@@ -61,7 +61,7 @@ fn heaviside_symbolic_stays() {
 fn heaviside_via_macro() {
     let ctx = Context::new();
     let n = ctx.int(5);
-    let result = expr!(heaviside(n));
+    let result = expr!(ctx, heaviside(n));
     assert_eq!(format!("{}", result.eval()), "1");
 }
 
@@ -69,7 +69,7 @@ fn heaviside_via_macro() {
 fn heaviside_via_macro_symbolic() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(heaviside(x));
+    let result = expr!(ctx, heaviside(x));
     assert_eq!(result, x.heaviside());
 }
 
@@ -126,7 +126,7 @@ fn dirac_delta_symbolic_stays() {
 fn dirac_delta_via_macro() {
     let ctx = Context::new();
     let n = ctx.int(3);
-    let result = expr!(dirac_delta(n));
+    let result = expr!(ctx, dirac_delta(n));
     assert_eq!(format!("{}", result.eval()), "0");
 }
 
@@ -134,7 +134,7 @@ fn dirac_delta_via_macro() {
 fn dirac_delta_via_macro_symbolic() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(dirac_delta(x));
+    let result = expr!(ctx, dirac_delta(x));
     assert_eq!(result, x.dirac_delta());
 }
 
@@ -159,7 +159,7 @@ fn lambertw_at_e() {
 fn lambertw_symbolic() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let w = expr!(lambertw(x));
+    let w = expr!(ctx, lambertw(x));
     let s = format!("{w}");
     assert!(s.contains("W("), "should display as W(x): {s}");
 }
@@ -189,7 +189,7 @@ fn lambertw_integer_nonzero_stays() {
 fn lambertw_via_macro() {
     let ctx = Context::new();
     let n = ctx.int(0);
-    let result = expr!(lambertw(n));
+    let result = expr!(ctx, lambertw(n));
     assert_eq!(format!("{}", result.eval()), "0");
 }
 
@@ -197,6 +197,6 @@ fn lambertw_via_macro() {
 fn lambertw_via_macro_symbolic() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(lambertw(x));
+    let result = expr!(ctx, lambertw(x));
     assert_eq!(result, x.lambertw());
 }

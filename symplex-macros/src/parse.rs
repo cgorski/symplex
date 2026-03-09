@@ -473,15 +473,18 @@ fn consume_binop(input: ParseStream, op: BinOp) -> syn::Result<()> {
 // Top-level parse wrappers (for use from proc macro entry points)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Input for the `expr!` macro: just a math expression.
+/// Input for the `expr!` macro: `ctx, math_expression`.
 pub struct ExprMacroInput {
+    pub ctx: Ident,
     pub expr: MathExpr,
 }
 
 impl Parse for ExprMacroInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let ctx: Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
         let expr = parse_math_expr(input)?;
-        Ok(ExprMacroInput { expr })
+        Ok(ExprMacroInput { ctx, expr })
     }
 }
 
@@ -531,17 +534,16 @@ impl Parse for RuleMacroInput {
 // Matrix and Equation macro inputs
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Input for the `matrix!` macro: `[[expr, expr], [expr, expr]]`.
+/// Input for the `matrix!` macro: `ctx, [[expr, expr], [expr, expr]]`.
 pub struct MatrixMacroInput {
+    pub ctx: Ident,
     pub rows: Vec<Vec<MathExpr>>,
 }
 
 impl Parse for MatrixMacroInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        // When invoked as `matrix![[r0], [r1]]`, the outer `[]` is the
-        // macro-invocation delimiter so the input stream is `[r0], [r1]`.
-        // We therefore iterate directly over bracket-delimited rows
-        // without consuming an additional outer bracket group.
+        let ctx: Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
 
         let mut rows = Vec::new();
         while !input.is_empty() {
@@ -586,22 +588,25 @@ impl Parse for MatrixMacroInput {
             }
         }
 
-        Ok(MatrixMacroInput { rows })
+        Ok(MatrixMacroInput { ctx, rows })
     }
 }
 
-/// Input for the `eq!` macro: `LHS = RHS`.
+/// Input for the `eq!` macro: `ctx, LHS = RHS`.
 pub struct EqMacroInput {
+    pub ctx: Ident,
     pub lhs: MathExpr,
     pub rhs: MathExpr,
 }
 
 impl Parse for EqMacroInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let ctx: Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
         let lhs = parse_math_expr(input)?;
         input.parse::<Token![=]>()?;
         let rhs = parse_math_expr(input)?;
-        Ok(EqMacroInput { lhs, rhs })
+        Ok(EqMacroInput { ctx, lhs, rhs })
     }
 }
 
@@ -609,17 +614,20 @@ impl Parse for EqMacroInput {
 // dim! macro input
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Input for the `dim!` macro: `OutputType: math_expression`.
+/// Input for the `dim!` macro: `ctx, OutputType: math_expression`.
 pub struct DimMacroInput {
+    pub ctx: Ident,
     pub output_type: syn::Type,
     pub expr: MathExpr,
 }
 
 impl Parse for DimMacroInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let ctx: Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
         let output_type: syn::Type = input.parse()?;
         input.parse::<Token![:]>()?;
         let expr = parse_math_expr(input)?;
-        Ok(DimMacroInput { output_type, expr })
+        Ok(DimMacroInput { ctx, output_type, expr })
     }
 }

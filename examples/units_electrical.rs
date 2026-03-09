@@ -27,11 +27,11 @@ fn main() {
     let r = Resistance::symbol("R");
 
     // V = IR — Current × Resistance → Voltage (compile-time checked!)
-    let v = symplex::dim!(Voltage: i * r);
+    let v = symplex::dim!(ctx, Voltage: i * r);
     println!("  V = I·R = {}", v);
 
     // P = IV — Current × Voltage → Power (compile-time checked!)
-    let p = symplex::dim!(Power: i * v);
+    let p = symplex::dim!(ctx, Power: i * v);
     println!("  P = I·V = {}", p);
 
     // Expand P = I·(I·R) to see the I²R form
@@ -77,12 +77,12 @@ fn main() {
     symplex::syms!(ctx; R, C, V0, t);
 
     // Time constant τ = R·C (has dimension of Time)
-    let tau = Time::from_ex(expr!(R * C));
+    let tau = Time::from_ex(expr!(ctx, R * C));
     println!("  τ = R·C = {}", tau);
 
     // Capacitor voltage during charging:
     //   V_C(t) = V₀·(1 − e^(−t/(R·C)))
-    let v_cap = Voltage::from_ex(expr!(V0 * (1 - exp(-t / (R * C)))));
+    let v_cap = Voltage::from_ex(expr!(ctx, V0 * (1 - exp(-t / (R * C)))));
     println!("  V_C(t) = {}", v_cap);
 
     // Charging current: I(t) = dV_C/dt · C = (V₀/R)·e^(−t/(R·C))
@@ -136,11 +136,11 @@ fn main() {
     let ke = MagneticFlux::symbol("Ke");
 
     // Resistive voltage drop: Resistance × Current → Voltage
-    let v_resistive = symplex::dim!(Voltage: r_motor * i_motor);
+    let v_resistive = symplex::dim!(ctx, Voltage: r_motor * i_motor);
     println!("  V_R   = R·I = {}", v_resistive);
 
     // Back-EMF: MagneticFlux × AngularVelocity → Voltage
-    let v_emf = symplex::dim!(Voltage: ke * omega);
+    let v_emf = symplex::dim!(ctx, Voltage: ke * omega);
     println!("  V_emf = Ke·ω = {}", v_emf);
 
     // Total supply voltage: Voltage + Voltage → Voltage (same-type addition)
@@ -148,16 +148,16 @@ fn main() {
     println!("  V_supply = R·I + Ke·ω = {}", v_supply);
 
     // Input electrical power: Current × Voltage → Power
-    let p_in = symplex::dim!(Power: i_motor * v_supply);
+    let p_in = symplex::dim!(ctx, Power: i_motor * v_supply);
     println!("  P_in = I·V = {}", p_in);
 
     // Mechanical output power: Ke·ω·I
     // (MagneticFlux × AngularVelocity → Voltage, then Voltage × Current → Power)
-    let p_mech = symplex::dim!(Power: i_motor * v_emf);
+    let p_mech = symplex::dim!(ctx, Power: i_motor * v_emf);
     println!("  P_mech = Ke·ω·I = {}", p_mech);
 
     // Resistive loss: I²R (Current × Voltage_R → Power)
-    let p_loss = symplex::dim!(Power: i_motor * v_resistive);
+    let p_loss = symplex::dim!(ctx, Power: i_motor * v_resistive);
     println!("  P_loss = I²R = {}", p_loss);
 
     // Power balance: P_in = P_mech + P_loss (conceptual)
@@ -241,7 +241,7 @@ fn main() {
         // E = eV = 1 eV = 1.602e-19 J
         let one_volt = Voltage::constant(1);
         // charge × voltage = energy (Charge × Voltage = Energy via dim!)
-        let energy = symplex::dim!(Energy: e_charge * one_volt);
+        let energy = symplex::dim!(ctx, Energy: e_charge * one_volt);
         println!("  Energy of 1 eV = {} = {:.6e} J", energy, energy.eval_f64().unwrap());
     }
 

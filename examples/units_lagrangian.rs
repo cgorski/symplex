@@ -36,11 +36,11 @@ fn main() {
 
     // ── Build energies with expr! ──
     // Kinetic energy: T = ½ml²θ̇²
-    let ke = Energy::from_ex(expr!(1/2 * m * l^2 * theta_dot^2));
+    let ke = Energy::from_ex(expr!(ctx, 1/2 * m * l^2 * theta_dot^2));
     println!("  T = {}", ke);
 
     // Potential energy: V = mgl(1 − cos θ)
-    let pe = Energy::from_ex(expr!(m * g * l * (1 - cos(theta))));
+    let pe = Energy::from_ex(expr!(ctx, m * g * l * (1 - cos(theta))));
     println!("  V = {}", pe);
 
     // ── Lagrangian: Energy − Energy = Energy (dimension checked!) ──
@@ -89,11 +89,11 @@ fn main() {
     let mass = Mass::symbol("m");
 
     // Spring force: Stiffness × Length → Force (compile-time verified)
-    let f_spring = symplex::dim!(Force: -(k * x));
+    let f_spring = symplex::dim!(ctx, Force: -(k * x));
     println!("  F_spring = −kx = {}", f_spring);
 
     // Damping force: Damping × Velocity → Force (compile-time verified)
-    let f_damper = symplex::dim!(Force: -(c * v));
+    let f_damper = symplex::dim!(ctx, Force: -(c * v));
     println!("  F_damper = −cv = {}", f_damper);
 
     // Total force: Force + Force → Force (same-type addition)
@@ -101,14 +101,14 @@ fn main() {
     println!("  F_total = {}", f_total);
 
     // Newton's second law: Force / Mass → Acceleration
-    let accel = symplex::dim!(Acceleration: f_total / mass);
+    let accel = symplex::dim!(ctx, Acceleration: f_total / mass);
     println!("  a = F/m = {}", accel);
 
     // ── Potential energy approach: PE = ½kx² ──
     // Use expr! for the formula, then derive force via differentiation
     let ctx = Context::new();
     symplex::syms!(ctx; k_var, x_var);
-    let spring_pe = Energy::from_ex(expr!(1/2 * k_var * x_var^2));
+    let spring_pe = Energy::from_ex(expr!(ctx, 1/2 * k_var * x_var^2));
     println!("\n  PE = ½kx² = {}", spring_pe);
 
     // Force from potential: F = −dPE/dx
@@ -123,7 +123,7 @@ fn main() {
     // KE = ½mv² using expr!
     let ctx = Context::new();
     symplex::syms!(ctx; m_raw, v_raw);
-    let spring_ke = Energy::from_ex(expr!(1/2 * m_raw * v_raw^2));
+    let spring_ke = Energy::from_ex(expr!(ctx, 1/2 * m_raw * v_raw^2));
     println!("\n  KE = ½mv² = {}", spring_ke);
 
     // Total energy: Energy + Energy = Energy

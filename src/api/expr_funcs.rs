@@ -3336,7 +3336,7 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let ctx = &ctx;
     /// symplex::syms!(ctx; x);
-    /// let poly = expr!(x^2 - 4);
+    /// let poly = expr!(ctx, x^2 - 4);
     /// assert_eq!(poly.check_solution(&x, &ctx.int(2)), Some(true));
     /// assert_eq!(poly.check_solution(&x, &ctx.int(-2)), Some(true));
     /// assert_eq!(poly.check_solution(&x, &ctx.int(3)), Some(false));

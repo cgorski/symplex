@@ -75,7 +75,7 @@ fn main() {
 
     // ODE solution verification
     println!("\n--- ODE Solution Verification ---");
-    let ode_verify = expr!(diff(y, x) - x);
+    let ode_verify = expr!(ctx, diff(y, x) - x);
     let proposed_good = &x.powi(2) / 2;
     let proposed_bad = x.clone();
     let v1 = ode_verify.check_ode_solution(&proposed_good, &y, &x);

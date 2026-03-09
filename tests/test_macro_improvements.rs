@@ -9,56 +9,56 @@ use symplex::prelude::*;
 #[test]
 fn expr_pi() {
     let ctx = Context::new();
-    let result = expr!(pi);
+    let result = expr!(ctx, pi);
     assert_eq!(format!("{result}"), "pi");
 }
 
 #[test]
 fn expr_e_constant() {
     let ctx = Context::new();
-    let result = expr!(E);
+    let result = expr!(ctx, E);
     assert_eq!(format!("{result}"), "E");
 }
 
 #[test]
 fn expr_imaginary_unit() {
     let ctx = Context::new();
-    let result = expr!(I);
+    let result = expr!(ctx, I);
     assert_eq!(format!("{result}"), "I");
 }
 
 #[test]
 fn expr_sin_pi() {
     let ctx = Context::new();
-    let result = expr!(sin(pi)).eval();
+    let result = expr!(ctx, sin(pi)).eval();
     assert_eq!(format!("{result}"), "0");
 }
 
 #[test]
 fn expr_cos_pi() {
     let ctx = Context::new();
-    let result = expr!(cos(pi)).eval();
+    let result = expr!(ctx, cos(pi)).eval();
     assert_eq!(format!("{result}"), "-1");
 }
 
 #[test]
 fn expr_exp_i_pi() {
     let ctx = Context::new();
-    let result = expr!(exp(I * pi)).eval();
+    let result = expr!(ctx, exp(I * pi)).eval();
     assert_eq!(format!("{result}"), "-1");
 }
 
 #[test]
 fn expr_euler_identity() {
     let ctx = Context::new();
-    let result = expr!(exp(I * pi) + 1).eval();
+    let result = expr!(ctx, exp(I * pi) + 1).eval();
     assert_eq!(format!("{result}"), "0");
 }
 
 #[test]
 fn expr_i_squared() {
     let ctx = Context::new();
-    let result = expr!(I ^ 2);
+    let result = expr!(ctx, I ^ 2);
     assert_eq!(format!("{result}"), "-1");
 }
 
@@ -66,7 +66,7 @@ fn expr_i_squared() {
 fn expr_pi_in_expression() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(x + pi);
+    let result = expr!(ctx, x + pi);
     let s = format!("{result}");
     assert!(s.contains("pi") && s.contains("x"), "got: {s}");
 }
@@ -78,21 +78,21 @@ fn expr_pi_in_expression() {
 #[test]
 fn expr_one_half() {
     let ctx = Context::new();
-    let result = expr!(1 / 2);
+    let result = expr!(ctx, 1 / 2);
     assert_eq!(format!("{result}"), "1/2");
 }
 
 #[test]
 fn expr_three_quarters() {
     let ctx = Context::new();
-    let result = expr!(3 / 4);
+    let result = expr!(ctx, 3 / 4);
     assert_eq!(format!("{result}"), "3/4");
 }
 
 #[test]
 fn expr_rational_reduces() {
     let ctx = Context::new();
-    let result = expr!(6 / 4);
+    let result = expr!(ctx, 6 / 4);
     assert_eq!(format!("{result}"), "3/2");
 }
 
@@ -100,7 +100,7 @@ fn expr_rational_reduces() {
 fn expr_rational_in_expression() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(1 / 2 * x);
+    let result = expr!(ctx, 1 / 2 * x);
     let s = format!("{result}");
     assert!(s.contains("1/2") && s.contains("x"), "got: {s}");
 }
@@ -108,7 +108,7 @@ fn expr_rational_in_expression() {
 #[test]
 fn expr_rational_addition() {
     let ctx = Context::new();
-    let result = expr!(1 / 2 + 1 / 3);
+    let result = expr!(ctx, 1 / 2 + 1 / 3);
     assert_eq!(format!("{result}"), "5/6");
 }
 
@@ -116,7 +116,7 @@ fn expr_rational_addition() {
 fn expr_x_to_half_power() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(x ^ (1 / 2));
+    let result = expr!(ctx, x ^ (1 / 2));
     let s = format!("{result}");
     // x^(1/2) should display as sqrt(x) or x^(1/2)
     assert!(s.contains("x"), "got: {s}");
@@ -127,7 +127,7 @@ fn expr_negative_rational() {
     let ctx = Context::new();
     // Note: -1/2 parses as (-1)/2 due to precedence (unary minus binds tighter than /).
     // Use explicit parentheses -(1/2) to get the rational -1/2.
-    let result = expr!(-(1 / 2));
+    let result = expr!(ctx, -(1 / 2));
     assert_eq!(format!("{result}"), "-1/2");
 }
 
@@ -139,7 +139,7 @@ fn expr_negative_rational() {
 fn expr_log_base_2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(log(x, 2));
+    let result = expr!(ctx, log(x, 2));
     let s = format!("{result}");
     assert!(s.contains("ln"), "log(x,2) should use ln: {s}");
 }
@@ -148,7 +148,7 @@ fn expr_log_base_2() {
 fn expr_log_base_10() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(log(x, 10));
+    let result = expr!(ctx, log(x, 10));
     let s = format!("{result}");
     assert!(s.contains("ln"), "log(x,10) should use ln: {s}");
 }
@@ -161,7 +161,7 @@ fn expr_log_base_10() {
 fn eq_basic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(x + 1 = 5);
+    let equation = eq!(ctx, x + 1 = 5);
     let s = format!("{equation}");
     assert!(s.contains("="), "should display as equation: {s}");
 }
@@ -170,7 +170,7 @@ fn eq_basic() {
 fn eq_solve() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(x + 1 = 5);
+    let equation = eq!(ctx, x + 1 = 5);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
     assert_eq!(format!("{}", roots[0]), "4");
@@ -180,7 +180,7 @@ fn eq_solve() {
 fn eq_quadratic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(x ^ 2 = 9);
+    let equation = eq!(ctx, x ^ 2 = 9);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2);
 }
@@ -189,7 +189,7 @@ fn eq_quadratic() {
 fn eq_with_rationals() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(x = 1 / 2);
+    let equation = eq!(ctx, x = 1 / 2);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
     assert_eq!(format!("{}", roots[0]), "1/2");
@@ -199,7 +199,7 @@ fn eq_with_rationals() {
 fn eq_with_pi() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(sin(x) = 0);
+    let equation = eq!(ctx, sin(x) = 0);
     let s = format!("{equation}");
     assert!(s.contains("sin") && s.contains("="), "got: {s}");
 }
@@ -211,7 +211,7 @@ fn eq_with_pi() {
 #[test]
 fn matrix_2x2_numeric() {
     let ctx = Context::new();
-    let m = matrix![[1, 2], [3, 4]];
+    let m = matrix![ctx, [1, 2], [3, 4]];
     assert_eq!(m.nrows(), 2);
     assert_eq!(m.ncols(), 2);
     assert_eq!(format!("{}", m.get(0, 0)), "1");
@@ -222,7 +222,7 @@ fn matrix_2x2_numeric() {
 fn matrix_with_expressions() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let m = matrix![[x, sin(x)], [cos(x), x ^ 2]];
+    let m = matrix![ctx, [x, sin(x)], [cos(x), x ^ 2]];
     assert_eq!(m.nrows(), 2);
     assert_eq!(m.ncols(), 2);
     let s = format!("{}", m.get(0, 1));
@@ -232,7 +232,7 @@ fn matrix_with_expressions() {
 #[test]
 fn matrix_with_constants() {
     let ctx = Context::new();
-    let m = matrix![[pi, E], [I, 0]];
+    let m = matrix![ctx, [pi, E], [I, 0]];
     assert_eq!(format!("{}", m.get(0, 0)), "pi");
     assert_eq!(format!("{}", m.get(0, 1)), "E");
     assert_eq!(format!("{}", m.get(1, 0)), "I");
@@ -241,14 +241,14 @@ fn matrix_with_constants() {
 #[test]
 fn matrix_with_rationals() {
     let ctx = Context::new();
-    let m = matrix![[1 / 2, 0], [0, 1 / 2]];
+    let m = matrix![ctx, [1 / 2, 0], [0, 1 / 2]];
     assert_eq!(format!("{}", m.get(0, 0)), "1/2");
 }
 
 #[test]
 fn matrix_det() {
     let ctx = Context::new();
-    let m = matrix![[3, 7], [1, 5]];
+    let m = matrix![ctx, [3, 7], [1, 5]];
     let det = m.det().unwrap();
     assert_eq!(format!("{det}"), "8");
 }
@@ -257,7 +257,7 @@ fn matrix_det() {
 fn matrix_1x1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let m = matrix![[x ^ 2 + 1]];
+    let m = matrix![ctx, [x ^ 2 + 1]];
     assert_eq!(m.nrows(), 1);
     assert_eq!(m.ncols(), 1);
 }
@@ -265,7 +265,7 @@ fn matrix_1x1() {
 #[test]
 fn matrix_3x3_identity() {
     let ctx = Context::new();
-    let m = matrix![[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    let m = matrix![ctx, [1, 0, 0], [0, 1, 0], [0, 0, 1]];
     let det = m.det().unwrap();
     assert_eq!(format!("{det}"), "1");
 }
@@ -278,7 +278,7 @@ fn matrix_3x3_identity() {
 fn workflow_eq_with_constants() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(x ^ 2 + 1 = 0);
+    let equation = eq!(ctx, x ^ 2 + 1 = 0);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²+1=0 should have complex roots");
 }
@@ -289,8 +289,8 @@ fn workflow_matrix_jacobian() {
     use symplex::matrix::jacobian;
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let f1 = expr!(x ^ 2 + y);
-    let f2 = expr!(x * y);
+    let f1 = expr!(ctx, x ^ 2 + y);
+    let f2 = expr!(ctx, x * y);
     let j = jacobian(&[&f1, &f2], &[&x, &y]);
     assert_eq!(j.nrows(), 2);
     assert_eq!(j.ncols(), 2);
@@ -300,7 +300,7 @@ fn workflow_matrix_jacobian() {
 fn workflow_rational_solve() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let equation = eq!(2 * x = 1);
+    let equation = eq!(ctx, 2 * x = 1);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(roots.len(), 1);
     assert_eq!(format!("{}", roots[0]), "1/2");
@@ -309,7 +309,7 @@ fn workflow_rational_solve() {
 #[test]
 fn workflow_euler_in_matrix() {
     let ctx = Context::new();
-    let m = matrix![[exp(I * pi), 0], [0, 1]];
+    let m = matrix![ctx, [exp(I * pi), 0], [0, 1]];
     let evald = m.eval();
     assert_eq!(format!("{}", evald.get(0, 0)), "-1");
 }

@@ -257,27 +257,27 @@ fn piecewise_eval_known_condition() {
 fn expr_macro_gt() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let cond: BoolEx = expr!(x > 0);
+    let cond: BoolEx = expr!(ctx, x > 0);
     let s = format!("{cond}");
-    assert!(s.contains(">"), "expr!(x > 0): {s}");
+    assert!(s.contains(">"), "expr!(ctx, x > 0): {s}");
 }
 
 #[test]
 fn expr_macro_lt() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let cond: BoolEx = expr!(x < 5);
+    let cond: BoolEx = expr!(ctx, x < 5);
     let s = format!("{cond}");
-    assert!(s.contains("x") && s.contains("5"), "expr!(x < 5): {s}");
+    assert!(s.contains("x") && s.contains("5"), "expr!(ctx, x < 5): {s}");
 }
 
 #[test]
 fn expr_macro_le() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let cond: BoolEx = expr!(x <= 3);
+    let cond: BoolEx = expr!(ctx, x <= 3);
     let s = format!("{cond}");
-    assert!(s.contains("x"), "expr!(x <= 3): {s}");
+    assert!(s.contains("x"), "expr!(ctx, x <= 3): {s}");
 }
 
 #[test]
@@ -285,7 +285,7 @@ fn expr_macro_and() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let cond: BoolEx = expr!(x > 0 && y > 0);
+    let cond: BoolEx = expr!(ctx, x > 0 && y > 0);
     let s = format!("{cond}");
     assert!(s.contains("x") && s.contains("y"), "and: {s}");
 }
@@ -295,7 +295,7 @@ fn expr_macro_or() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let cond: BoolEx = expr!(x > 0 || y > 0);
+    let cond: BoolEx = expr!(ctx, x > 0 || y > 0);
     let s = format!("{cond}");
     assert!(s.contains("x") && s.contains("y"), "or: {s}");
 }
@@ -304,7 +304,7 @@ fn expr_macro_or() {
 fn expr_macro_not() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let cond: BoolEx = expr!(!(x > 0));
+    let cond: BoolEx = expr!(ctx, !(x > 0));
     let s = format!("{cond}");
     assert!(s.contains("x"), "not: {s}");
 }
@@ -313,7 +313,7 @@ fn expr_macro_not() {
 fn expr_macro_gt_eval() {
     let ctx = Context::new();
     let x = ctx.int(5);
-    let result = expr!(x > 3).eval();
+    let result = expr!(ctx, x > 3).eval();
     assert_eq!(format!("{result}"), "True");
 }
 
@@ -322,7 +322,7 @@ fn expr_macro_and_eval() {
     let ctx = Context::new();
     let x = ctx.int(5);
     let y = ctx.int(3);
-    let result = expr!(x > 0 && y > 0).eval();
+    let result = expr!(ctx, x > 0 && y > 0).eval();
     assert_eq!(format!("{result}"), "True");
 }
 
@@ -331,7 +331,7 @@ fn expr_macro_or_eval() {
     let ctx = Context::new();
     let x = ctx.int(5);
     let y = ctx.int(-3);
-    let result = expr!(x > 0 || y > 0).eval();
+    let result = expr!(ctx, x > 0 || y > 0).eval();
     assert_eq!(format!("{result}"), "True");
 }
 
@@ -339,7 +339,7 @@ fn expr_macro_or_eval() {
 fn expr_macro_not_eval() {
     let ctx = Context::new();
     let x = ctx.int(5);
-    let result = expr!(!(x > 10)).eval();
+    let result = expr!(ctx, !(x > 10)).eval();
     assert_eq!(format!("{result}"), "True");
 }
 

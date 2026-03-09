@@ -212,7 +212,7 @@ fn cubic_eq_macro() {
     let ctx = Context::new();
     // Using the eq! macro
     let x = ctx.symbol("x");
-    let equation = eq!(x ^ 3 - 6 * x ^ 2 + 11 * x - 6 = 0);
+    let equation = eq!(ctx, x ^ 3 - 6 * x ^ 2 + 11 * x - 6 = 0);
     let roots = equation.solve_or_empty(&x);
     assert_eq!(
         roots.len(),

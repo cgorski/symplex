@@ -360,7 +360,7 @@ fn expr_macro_separable_ode() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) - x); // y' - x = 0
+    let ode = expr!(ctx, diff(y, x) - x); // y' - x = 0
 
     let sol = ode
         .try_solve_ode(&y, &x)
@@ -374,7 +374,7 @@ fn expr_macro_first_order_linear_ode() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + 2 * y); // y' + 2y = 0
+    let ode = expr!(ctx, diff(y, x) + 2 * y); // y' + 2y = 0
 
     let sol = ode
         .try_solve_ode(&y, &x)

@@ -75,7 +75,7 @@ use syn::Ident;
 #[proc_macro]
 pub fn expr(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as ExprMacroInput);
-    match generate_expr(&input.expr) {
+    match generate_expr(&input.ctx, &input.expr) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -86,35 +86,35 @@ pub fn expr(input: TokenStream) -> TokenStream {
 /// Every identifier is emitted as `(&ident)`.  Integer literals stay
 /// as `i64`.  `^` becomes `.powi(n)` for integer RHS or `.pow(&rhs)`
 /// for expression RHS.  Known function names become method calls.
-fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
+fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
     match expr {
         MathExpr::Int(n, _span) => Ok(quote! { #n }),
 
         MathExpr::Ident(id) => {
             let name = id.to_string();
             match name.as_str() {
-                "pi" | "Pi" | "PI" => Ok(quote! { ctx.pi() }),
-                "E" => Ok(quote! { ctx.e() }),
-                "I" => Ok(quote! { ctx.i_unit() }),
-                "oo" | "inf" => Ok(quote! { ctx.infinity() }),
+                "pi" | "Pi" | "PI" => Ok(quote! { #ctx.pi() }),
+                "E" => Ok(quote! { #ctx.e() }),
+                "I" => Ok(quote! { #ctx.i_unit() }),
+                "oo" | "inf" => Ok(quote! { #ctx.infinity() }),
                 _ => Ok(quote! { (&#id) }),
             }
         }
 
         MathExpr::Neg(inner) => {
-            let inner_code = generate_expr(inner)?;
+            let inner_code = generate_expr(ctx, inner)?;
             Ok(quote! { (-(#inner_code)) })
         }
 
         MathExpr::LogicalNot(inner) => {
-            let inner_code = generate_expr(inner)?;
+            let inner_code = generate_expr(ctx, inner)?;
             Ok(quote! { (#inner_code).not() })
         }
 
         MathExpr::BinOp { op, lhs, rhs } => {
             match op {
                 BinOp::Pow => {
-                    let lhs_code = generate_expr(lhs)?;
+                    let lhs_code = generate_expr(ctx, lhs)?;
                     // If RHS is an integer literal, use .powi(n).
                     // If RHS is Neg(Int), use .powi(-n).
                     if let Some(n) = rhs.as_int() {
@@ -124,11 +124,11 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                             let neg_n = -n;
                             Ok(quote! { (#lhs_code).powi(#neg_n) })
                         } else {
-                            let rhs_code = generate_expr(rhs)?;
+                            let rhs_code = generate_expr(ctx, rhs)?;
                             Ok(quote! { (#lhs_code).pow(&(#rhs_code)) })
                         }
                     } else {
-                        let rhs_code = generate_expr(rhs)?;
+                        let rhs_code = generate_expr(ctx, rhs)?;
                         Ok(quote! { (#lhs_code).pow(&(#rhs_code)) })
                     }
                 }
@@ -140,7 +140,7 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                                 "division by zero in expr!()",
                             ));
                         }
-                        return Ok(quote! { ctx.rational(#p, #q) });
+                        return Ok(quote! { #ctx.rational(#p, #q) });
                     }
                     // Handle -Int / Int → rational(-n, q).
                     // Due to precedence, `-1/2` parses as `Neg(1) / 2`.
@@ -155,56 +155,56 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                                 ));
                             }
                             let neg_p = -p;
-                            return Ok(quote! { ctx.rational(#neg_p, #q) });
+                            return Ok(quote! { #ctx.rational(#neg_p, #q) });
                         }
                     }
-                    let lhs_code = generate_expr(lhs)?;
-                    let rhs_code = generate_expr(rhs)?;
+                    let lhs_code = generate_expr(ctx, lhs)?;
+                    let rhs_code = generate_expr(ctx, rhs)?;
                     Ok(quote! { ((#lhs_code) / (#rhs_code)) })
                 }
                 BinOp::Gt => {
-                    let lhs_code = generate_expr_as_ex(lhs)?;
-                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    let lhs_code = generate_expr_as_ex(ctx, lhs)?;
+                    let rhs_code = generate_expr_as_ex(ctx, rhs)?;
                     Ok(quote! { (#lhs_code).gt(&(#rhs_code)) })
                 }
                 BinOp::Lt => {
-                    let lhs_code = generate_expr_as_ex(lhs)?;
-                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    let lhs_code = generate_expr_as_ex(ctx, lhs)?;
+                    let rhs_code = generate_expr_as_ex(ctx, rhs)?;
                     Ok(quote! { (#lhs_code).lt(&(#rhs_code)) })
                 }
                 BinOp::Ge => {
-                    let lhs_code = generate_expr_as_ex(lhs)?;
-                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    let lhs_code = generate_expr_as_ex(ctx, lhs)?;
+                    let rhs_code = generate_expr_as_ex(ctx, rhs)?;
                     Ok(quote! { (#lhs_code).ge(&(#rhs_code)) })
                 }
                 BinOp::Le => {
-                    let lhs_code = generate_expr_as_ex(lhs)?;
-                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    let lhs_code = generate_expr_as_ex(ctx, lhs)?;
+                    let rhs_code = generate_expr_as_ex(ctx, rhs)?;
                     Ok(quote! { (#lhs_code).le(&(#rhs_code)) })
                 }
                 BinOp::EqEq => {
-                    let lhs_code = generate_expr_as_ex(lhs)?;
-                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    let lhs_code = generate_expr_as_ex(ctx, lhs)?;
+                    let rhs_code = generate_expr_as_ex(ctx, rhs)?;
                     Ok(quote! { (#lhs_code).eq_expr(&(#rhs_code)) })
                 }
                 BinOp::Ne => {
-                    let lhs_code = generate_expr_as_ex(lhs)?;
-                    let rhs_code = generate_expr_as_ex(rhs)?;
+                    let lhs_code = generate_expr_as_ex(ctx, lhs)?;
+                    let rhs_code = generate_expr_as_ex(ctx, rhs)?;
                     Ok(quote! { (#lhs_code).ne_expr(&(#rhs_code)) })
                 }
                 BinOp::AndAnd => {
-                    let lhs_code = generate_expr(lhs)?;
-                    let rhs_code = generate_expr(rhs)?;
+                    let lhs_code = generate_expr(ctx, lhs)?;
+                    let rhs_code = generate_expr(ctx, rhs)?;
                     Ok(quote! { (#lhs_code).and(&(#rhs_code)) })
                 }
                 BinOp::OrOr => {
-                    let lhs_code = generate_expr(lhs)?;
-                    let rhs_code = generate_expr(rhs)?;
+                    let lhs_code = generate_expr(ctx, lhs)?;
+                    let rhs_code = generate_expr(ctx, rhs)?;
                     Ok(quote! { (#lhs_code).or(&(#rhs_code)) })
                 }
                 _ => {
-                    let lhs_code = generate_expr(lhs)?;
-                    let rhs_code = generate_expr(rhs)?;
+                    let lhs_code = generate_expr(ctx, lhs)?;
+                    let rhs_code = generate_expr(ctx, rhs)?;
                     let op_token = match op {
                         BinOp::Add => quote! { + },
                         BinOp::Sub => quote! { - },
@@ -219,72 +219,72 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
         MathExpr::Func { name, span, args } => {
             // Multi-argument functions
             if name == "log" && args.len() == 2 {
-                let arg_code = generate_expr(&args[0])?;
+                let arg_code = generate_expr(ctx, &args[0])?;
                 // The base must be an Ex; bare integer literals from
                 // generate_expr would be i64, so promote them.
-                let base_code = generate_expr_as_ex(&args[1])?;
+                let base_code = generate_expr_as_ex(ctx, &args[1])?;
                 return Ok(quote! { (#arg_code).log(&(#base_code)) });
             }
 
             // diff(f, x) → formal derivative node (unevaluated)
             if name == "diff" && args.len() == 2 {
-                let f_code = generate_expr(&args[0])?;
-                let var_code = generate_expr(&args[1])?;
+                let f_code = generate_expr(ctx, &args[0])?;
+                let var_code = generate_expr(ctx, &args[1])?;
                 return Ok(quote! { (#f_code).formal_diff(&(#var_code)) });
             }
 
             // factorial(n) → n.factorial()
             if name == "factorial" && args.len() == 1 {
-                let arg_code = generate_expr_as_ex(&args[0])?;
+                let arg_code = generate_expr_as_ex(ctx, &args[0])?;
                 return Ok(quote! { (#arg_code).factorial() });
             }
 
             // binomial(n, k) or C(n, k) → n.binomial(&k)
             if (name == "binomial" || name == "C") && args.len() == 2 {
-                let n_code = generate_expr_as_ex(&args[0])?;
-                let k_code = generate_expr_as_ex(&args[1])?;
+                let n_code = generate_expr_as_ex(ctx, &args[0])?;
+                let k_code = generate_expr_as_ex(ctx, &args[1])?;
                 return Ok(quote! { (#n_code).binomial(&(#k_code)) });
             }
 
             // atan2(y, x) → y.atan2(&x)
             if name == "atan2" && args.len() == 2 {
-                let y_code = generate_expr_as_ex(&args[0])?;
-                let x_code = generate_expr_as_ex(&args[1])?;
+                let y_code = generate_expr_as_ex(ctx, &args[0])?;
+                let x_code = generate_expr_as_ex(ctx, &args[1])?;
                 return Ok(quote! { (#y_code).atan2(&(#x_code)) });
             }
 
             // rising_factorial(x, n) → x.rising_factorial(&n)
             if name == "rising_factorial" && args.len() == 2 {
-                let x_code = generate_expr_as_ex(&args[0])?;
-                let n_code = generate_expr_as_ex(&args[1])?;
+                let x_code = generate_expr_as_ex(ctx, &args[0])?;
+                let n_code = generate_expr_as_ex(ctx, &args[1])?;
                 return Ok(quote! { (#x_code).rising_factorial(&(#n_code)) });
             }
 
             // falling_factorial(x, n) → x.falling_factorial(&n)
             if name == "falling_factorial" && args.len() == 2 {
-                let x_code = generate_expr_as_ex(&args[0])?;
-                let n_code = generate_expr_as_ex(&args[1])?;
+                let x_code = generate_expr_as_ex(ctx, &args[0])?;
+                let n_code = generate_expr_as_ex(ctx, &args[1])?;
                 return Ok(quote! { (#x_code).falling_factorial(&(#n_code)) });
             }
 
             // beta(a, b) → a.beta(&b)
             if name == "beta" && args.len() == 2 {
-                let a_code = generate_expr_as_ex(&args[0])?;
-                let b_code = generate_expr_as_ex(&args[1])?;
+                let a_code = generate_expr_as_ex(ctx, &args[0])?;
+                let b_code = generate_expr_as_ex(ctx, &args[1])?;
                 return Ok(quote! { (#a_code).beta(&(#b_code)) });
             }
 
             // min(a, b) → a.min_with(&b)
             if name == "min" && args.len() == 2 {
-                let a = generate_expr_as_ex(&args[0])?;
-                let b = generate_expr_as_ex(&args[1])?;
+                let a = generate_expr_as_ex(ctx, &args[0])?;
+                let b = generate_expr_as_ex(ctx, &args[1])?;
                 return Ok(quote! { (#a).min_with(&(#b)) });
             }
 
             // max(a, b) → a.max_with(&b)
             if name == "max" && args.len() == 2 {
-                let a = generate_expr_as_ex(&args[0])?;
-                let b = generate_expr_as_ex(&args[1])?;
+                let a = generate_expr_as_ex(ctx, &args[0])?;
+                let b = generate_expr_as_ex(ctx, &args[1])?;
                 return Ok(quote! { (#a).max_with(&(#b)) });
             }
 
@@ -319,7 +319,7 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                     format!("{}() takes exactly 1 argument in expr!()", name),
                 ));
             }
-            let arg_code = generate_expr_as_ex(&args[0])?;
+            let arg_code = generate_expr_as_ex(ctx, &args[0])?;
             let method = match name.as_str() {
                 "sin" => quote! { sin },
                 "cos" => quote! { cos },
@@ -436,7 +436,7 @@ fn generate_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
 pub fn dim(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DimMacroInput);
     let output_type = &input.output_type;
-    match generate_dim_expr(&input.expr) {
+    match generate_dim_expr(&input.ctx, &input.expr) {
         Ok(expr_tokens) => quote! {
             <#output_type as ::symplex::units::qty::FromDimExpr<_>>::from_dim_expr(#expr_tokens)
         }
@@ -450,7 +450,7 @@ pub fn dim(input: TokenStream) -> TokenStream {
 /// Each `MathExpr` node is translated to code producing a `Qty<D>`,
 /// where the dimension `D` is computed at the type level by Rust's
 /// type system via the `Qty` arithmetic operator impls.
-fn generate_dim_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
+fn generate_dim_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
     match expr {
         MathExpr::Int(n, _span) => Ok(quote! {
             ::symplex::units::Dimensionless::constant(#n).as_qty()
@@ -460,17 +460,17 @@ fn generate_dim_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
             let name = id.to_string();
             match name.as_str() {
                 "pi" | "Pi" | "PI" => Ok(quote! {
-                    ::symplex::units::Dimensionless::from_ex(ctx.pi()).as_qty()
+                    ::symplex::units::Dimensionless::from_ex(#ctx.pi()).as_qty()
                 }),
                 "E" => Ok(quote! {
-                    ::symplex::units::Dimensionless::from_ex(ctx.e()).as_qty()
+                    ::symplex::units::Dimensionless::from_ex(#ctx.e()).as_qty()
                 }),
                 _ => Ok(quote! { (#id).clone().as_qty() }),
             }
         }
 
         MathExpr::Neg(inner) => {
-            let inner_code = generate_dim_expr(inner)?;
+            let inner_code = generate_dim_expr(ctx, inner)?;
             Ok(quote! { (-(#inner_code)) })
         }
 
@@ -481,18 +481,18 @@ fn generate_dim_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
 
         MathExpr::BinOp { op, lhs, rhs } => match op {
             BinOp::Add => {
-                let l = generate_dim_expr(lhs)?;
-                let r = generate_dim_expr(rhs)?;
+                let l = generate_dim_expr(ctx, lhs)?;
+                let r = generate_dim_expr(ctx, rhs)?;
                 Ok(quote! { ((#l) + (#r)) })
             }
             BinOp::Sub => {
-                let l = generate_dim_expr(lhs)?;
-                let r = generate_dim_expr(rhs)?;
+                let l = generate_dim_expr(ctx, lhs)?;
+                let r = generate_dim_expr(ctx, rhs)?;
                 Ok(quote! { ((#l) - (#r)) })
             }
             BinOp::Mul => {
-                let l = generate_dim_expr(lhs)?;
-                let r = generate_dim_expr(rhs)?;
+                let l = generate_dim_expr(ctx, lhs)?;
+                let r = generate_dim_expr(ctx, rhs)?;
                 Ok(quote! { ((#l) * (#r)) })
             }
             BinOp::Div => {
@@ -523,20 +523,20 @@ fn generate_dim_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                         });
                     }
                 }
-                let l = generate_dim_expr(lhs)?;
-                let r = generate_dim_expr(rhs)?;
+                let l = generate_dim_expr(ctx, lhs)?;
+                let r = generate_dim_expr(ctx, rhs)?;
                 Ok(quote! { ((#l) / (#r)) })
             }
             BinOp::Pow => {
                 // Integer exponents: expand to repeated multiplication for
                 // type-level dimension tracking.
                 if let Some(n) = rhs.as_int() {
-                    return generate_dim_pow(lhs, n);
+                    return generate_dim_pow(ctx, lhs, n);
                 }
                 // Negative integer exponent: x^(-n) = 1 / x^n
                 if let MathExpr::Neg(inner_rhs) = rhs.as_ref() {
                     if let Some(n) = inner_rhs.as_int() {
-                        let pow_code = generate_dim_pow(lhs, n)?;
+                        let pow_code = generate_dim_pow(ctx, lhs, n)?;
                         return Ok(quote! {
                             (::symplex::units::Dimensionless::constant(1).as_qty() / (#pow_code))
                         });
@@ -544,8 +544,8 @@ fn generate_dim_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
                 }
                 // Non-integer exponent: fall back to inner Ex operations.
                 // This loses dimension tracking — result is Dimensionless.
-                let b = generate_dim_expr(lhs)?;
-                let e = generate_dim_expr(rhs)?;
+                let b = generate_dim_expr(ctx, lhs)?;
+                let e = generate_dim_expr(ctx, rhs)?;
                 Ok(quote! {
                     ::symplex::units::Dimensionless::from_ex(
                         (#b).into_inner().pow(&#e.into_inner())
@@ -563,7 +563,7 @@ fn generate_dim_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
             // Extract inner Ex, call the method, wrap as Dimensionless.
             let func_str = name.as_str();
             if args.len() == 1 {
-                let arg = generate_dim_expr(&args[0])?;
+                let arg = generate_dim_expr(ctx, &args[0])?;
                 let method = match func_str {
                     "sin" => quote! { sin },
                     "cos" => quote! { cos },
@@ -609,12 +609,12 @@ fn generate_dim_expr(expr: &MathExpr) -> syn::Result<TokenStream2> {
 /// For small `n` (0–8), this expands to repeated multiplication so the
 /// type system tracks the resulting dimension.  For larger `n`, it falls
 /// back to `.powi()` on the inner `Ex` (losing dimension tracking).
-fn generate_dim_pow(base: &MathExpr, n: i64) -> syn::Result<TokenStream2> {
+fn generate_dim_pow(ctx: &Ident, base: &MathExpr, n: i64) -> syn::Result<TokenStream2> {
     if n == 0 {
         return Ok(quote! { ::symplex::units::Dimensionless::constant(1).as_qty() });
     }
     if n == 1 {
-        return generate_dim_expr(base);
+        return generate_dim_expr(ctx, base);
     }
     if n >= 2 && n <= 8 {
         // Expand x^n = x * x * ... * x  (n factors).
@@ -622,7 +622,7 @@ fn generate_dim_pow(base: &MathExpr, n: i64) -> syn::Result<TokenStream2> {
         // type-level dimension products compose correctly.
         let mut factors = Vec::new();
         for _ in 0..n {
-            factors.push(generate_dim_expr(base)?);
+            factors.push(generate_dim_expr(ctx, base)?);
         }
         let mut result = factors.remove(0);
         for factor in factors {
@@ -632,7 +632,7 @@ fn generate_dim_pow(base: &MathExpr, n: i64) -> syn::Result<TokenStream2> {
     }
     // n > 8: fall back to extracting inner Ex and using powi.
     // Dimension tracking is lost — the result is treated as Dimensionless.
-    let base_code = generate_dim_expr(base)?;
+    let base_code = generate_dim_expr(ctx, base)?;
     Ok(quote! {
         ::symplex::units::Dimensionless::from_ex(
             (#base_code).into_inner().powi(#n)
@@ -1035,18 +1035,18 @@ impl RuleCodeGen {
 #[proc_macro]
 pub fn matrix(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as MatrixMacroInput);
-    match generate_matrix(&input) {
+    match generate_matrix(&input.ctx, &input) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
 }
 
-fn generate_matrix(input: &MatrixMacroInput) -> syn::Result<TokenStream2> {
+fn generate_matrix(ctx: &Ident, input: &MatrixMacroInput) -> syn::Result<TokenStream2> {
     let mut row_codes = Vec::new();
     for row in &input.rows {
         let mut cell_codes = Vec::new();
         for cell in row {
-            let cell_expr = generate_expr_as_ex(cell)?;
+            let cell_expr = generate_expr_as_ex(ctx, cell)?;
             cell_codes.push(quote! { #cell_expr });
         }
         row_codes.push(quote! { vec![#(#cell_codes),*] });
@@ -1075,15 +1075,15 @@ fn generate_matrix(input: &MatrixMacroInput) -> syn::Result<TokenStream2> {
 #[proc_macro]
 pub fn eq(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as EqMacroInput);
-    match generate_eq(&input) {
+    match generate_eq(&input.ctx, &input) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
 }
 
-fn generate_eq(input: &EqMacroInput) -> syn::Result<TokenStream2> {
-    let lhs_code = generate_expr_as_ex(&input.lhs)?;
-    let rhs_code = generate_expr_as_ex(&input.rhs)?;
+fn generate_eq(ctx: &Ident, input: &EqMacroInput) -> syn::Result<TokenStream2> {
+    let lhs_code = generate_expr_as_ex(ctx, &input.lhs)?;
+    let rhs_code = generate_expr_as_ex(ctx, &input.rhs)?;
     Ok(quote! {
         ::symplex::eq::Equation::new(#lhs_code, #rhs_code)
     })
@@ -1095,21 +1095,21 @@ fn generate_eq(input: &EqMacroInput) -> syn::Result<TokenStream2> {
 /// Function calls (including `diff`, `factorial`, `binomial`, `C`, `log`,
 /// and all single-arg functions) always return `Ex`, so we delegate
 /// directly to [`generate_expr`] for those.
-fn generate_expr_as_ex(expr: &MathExpr) -> syn::Result<TokenStream2> {
+fn generate_expr_as_ex(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
     match expr {
-        MathExpr::Int(n, _) => Ok(quote! { ctx.int(#n) }),
+        MathExpr::Int(n, _) => Ok(quote! { #ctx.int(#n) }),
         MathExpr::Neg(inner) => {
             if let Some(n) = inner.as_int() {
                 let neg_n = -n;
-                Ok(quote! { ctx.int(#neg_n) })
+                Ok(quote! { #ctx.int(#neg_n) })
             } else {
-                let code = generate_expr(expr)?;
+                let code = generate_expr(ctx, expr)?;
                 Ok(quote! { { let __v: ::symplex::expr::Ex = (#code).clone(); __v } })
             }
         }
-        MathExpr::Func { .. } => generate_expr(expr),
+        MathExpr::Func { .. } => generate_expr(ctx, expr),
         _ => {
-            let code = generate_expr(expr)?;
+            let code = generate_expr(ctx, expr)?;
             Ok(quote! { { let __v: ::symplex::expr::Ex = (#code).clone(); __v } })
         }
     }

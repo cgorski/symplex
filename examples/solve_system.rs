@@ -14,7 +14,7 @@ fn main() {
     // Circle and line intersection
     println!("--- Circle ∩ Line ---");
     let solutions = symplex::polysys::solve_system_ex(
-        &[expr!(x ^ 2 + y ^ 2 - 1), expr!(x + y - 1)],
+        &[expr!(ctx, x ^ 2 + y ^ 2 - 1), expr!(ctx, x + y - 1)],
         &[x.clone(), y.clone()],
     )
     .unwrap();
@@ -26,7 +26,7 @@ fn main() {
     // Two conics
     println!("\n--- Two Conics ---");
     let solutions = symplex::polysys::solve_system_ex(
-        &[expr!(x ^ 2 + y ^ 2 - 5), expr!(x * y - 2)],
+        &[expr!(ctx, x ^ 2 + y ^ 2 - 5), expr!(ctx, x * y - 2)],
         &[x.clone(), y.clone()],
     )
     .unwrap();
@@ -39,7 +39,7 @@ fn main() {
     // Cubic system (univariate)
     println!("\n--- Cubic ---");
     let solutions = symplex::polysys::solve_system_ex(
-        &[expr!(x ^ 3 - 6 * x ^ 2 + 11 * x - 6)],
+        &[expr!(ctx, x ^ 3 - 6 * x ^ 2 + 11 * x - 6)],
         std::slice::from_ref(&x),
     )
     .unwrap();

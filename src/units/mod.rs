@@ -10,7 +10,7 @@
 //! - **Named newtypes** (30 types): `Force`, `Voltage`, `Energy`, etc. — best error messages
 //! - **Generic `Qty<D>`**: Fallback for intermediate/exotic dimensions — uses typenum Dim
 //! - **Blanket `Mul`/`Div`**: Any `Qty<D1> * Qty<D2>` computes output dimension via typenum
-//! - **`dim!` macro**: Ergonomic dimension-checked arithmetic: `dim!(Force: m * a)`
+//! - **`dim!` macro**: Ergonomic dimension-checked arithmetic: `dim!(ctx, Force: m * a)`
 //! - **`assert_dim!`**: Compile-time checkpoint assertions
 //! - **`const_assert_dim!`**: Compile-time formula verification with custom error messages
 

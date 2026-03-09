@@ -927,7 +927,7 @@ impl Matrix {
     /// let ctx = Context::new();
     /// let ctx = ctx.clone();
     /// let var = ctx.symbol("λ");
-    /// let m = symplex::matrix![[2, 1], [0, 3]];
+    /// let m = symplex::matrix![ctx, [2, 1], [0, 3]];
     /// let evs = m.eigenvects(&var).unwrap();
     /// for (val, mult, vecs) in &evs {
     ///     assert!(!vecs.is_empty());
@@ -1015,7 +1015,7 @@ impl Matrix {
     /// let ctx = Context::new();
     /// let ctx = ctx.clone();
     /// let var = ctx.symbol("λ");
-    /// let m = symplex::matrix![[2, 1], [0, 3]];
+    /// let m = symplex::matrix![ctx, [2, 1], [0, 3]];
     /// let (p, d) = m.diagonalize(&var).unwrap();
     /// assert_eq!(d.nrows(), 2);
     /// ```
@@ -1084,7 +1084,7 @@ impl Matrix {
     /// let ctx = ctx.clone();
     /// let var = ctx.symbol("λ");
     /// // Defective matrix: eigenvalue 2 with algebraic mult 2, geometric mult 1
-    /// let m = symplex::matrix![[2, 1, 0, 0],
+    /// let m = symplex::matrix![ctx, [2, 1, 0, 0],
     ///                          [0, 2, 0, 0],
     ///                          [0, 0, 3, 0],
     ///                          [0, 0, 0, 4]];
@@ -1375,7 +1375,7 @@ impl Matrix {
     /// let ctx = Context::new();
     /// let ctx = ctx.clone();
     /// let var = ctx.symbol("λ");
-    /// let m = symplex::matrix![[0, 1], [-1, 0]];
+    /// let m = symplex::matrix![ctx, [0, 1], [-1, 0]];
     /// // e^[[0,1],[-1,0]] involves sin and cos
     /// let result = m.matrix_exp(&var);
     /// assert!(result.is_ok());
@@ -1664,7 +1664,7 @@ impl Matrix {
     /// ```
     /// use symplex::prelude::*;
     /// let ctx = Context::new();
-    /// let m = matrix![[1, 2], [3, 4]];
+    /// let m = matrix![ctx, [1, 2], [3, 4]];
     /// assert!(m.to_latex().contains(r"\begin{bmatrix}"));
     /// ```
     pub fn to_latex(&self) -> String {

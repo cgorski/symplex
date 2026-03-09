@@ -11,7 +11,7 @@ use symplex::prelude::*;
 fn checksol_quadratic_root() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let poly = expr!(x ^ 2 - 4);
+    let poly = expr!(ctx, x ^ 2 - 4);
     assert_eq!(poly.check_solution(&x, &ctx.int(2)), Some(true));
     assert_eq!(poly.check_solution(&x, &ctx.int(-2)), Some(true));
     assert_eq!(poly.check_solution(&x, &ctx.int(3)), Some(false));
@@ -31,7 +31,7 @@ fn checksol_linear() {
 fn checksol_cubic_root() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let poly = expr!(x ^ 3 - 8);
+    let poly = expr!(ctx, x ^ 3 - 8);
     assert_eq!(poly.check_solution(&x, &ctx.int(2)), Some(true));
     assert_eq!(poly.check_solution(&x, &ctx.int(-2)), Some(false));
 }
@@ -49,7 +49,7 @@ fn checksol_with_trig() {
 fn solve_then_check() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let poly = expr!(x ^ 2 - 5 * x + 6);
+    let poly = expr!(ctx, x ^ 2 - 5 * x + 6);
     let roots = poly.solve_or_empty(&x);
     assert!(!roots.is_empty(), "solver should find roots of x²-5x+6");
     for root in &roots {

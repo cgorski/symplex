@@ -41,7 +41,7 @@ fn section_1_motor_specs() {
     println!("  Winding L:      {}", l_wind);
 
     // Ohm's law: V = IR (compile-time dimension check)
-    let v_drop = symplex::dim!(Voltage: i_rated * r_wind);
+    let v_drop = symplex::dim!(ctx, Voltage: i_rated * r_wind);
     println!("\n  Voltage drop across winding: V = IR = {}", v_drop);
 
     // Back-EMF voltage
@@ -59,12 +59,12 @@ fn section_2_power_analysis() {
     let r = Resistance::rational(12, 10);
 
     // Input power: P_in = I × V  (Current × Voltage → Power, dimension-checked via dim!)
-    let p_in = symplex::dim!(Power: i * v);
+    let p_in = symplex::dim!(ctx, Power: i * v);
     println!("  P_in = V × I = {}", p_in);
 
     // Copper losses: P_loss = I²R = I × (I × R) = I × V_drop
-    let v_drop = symplex::dim!(Voltage: i * r);
-    let p_loss = symplex::dim!(Power: i * v_drop);
+    let v_drop = symplex::dim!(ctx, Voltage: i * r);
+    let p_loss = symplex::dim!(ctx, Power: i * v_drop);
     println!("  P_loss = I²R = {}", p_loss);
 
     // Mechanical power: P_mech = P_in - P_loss
@@ -177,7 +177,7 @@ fn section_5_codegen_with_uom() {
 
     // Stall torque: τ = Kt·V/R
     // At stall (ω=0): I_stall = V/R, τ_stall = Kt × V/R
-    let tau_stall = expr!(Kt * V / R_m);
+    let tau_stall = expr!(ctx, Kt * V / R_m);
 
     println!("  Stall torque: τ = Kt·V/R = {}", tau_stall);
 

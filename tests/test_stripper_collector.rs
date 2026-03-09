@@ -15,7 +15,7 @@ use symplex::expr;
 fn stripper_collector_pythagorean_plus_constant() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let expr = expr!(sin(x) ^ 2 + cos(x) ^ 2 + 5);
+    let expr = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2 + 5);
     let result = expr.simplify();
     assert_eq!(format!("{result}"), "6");
 }
@@ -37,7 +37,7 @@ fn stripper_collector_5_term_add() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     // 1 + 2 + sin²(x) + 3 + cos²(x) → 7
-    let expr = expr!(1 + 2 + sin(x) ^ 2 + 3 + cos(x) ^ 2);
+    let expr = expr!(ctx, 1 + 2 + sin(x) ^ 2 + 3 + cos(x) ^ 2);
     let result = expr.simplify();
     assert_eq!(format!("{result}"), "7");
 }
@@ -64,7 +64,7 @@ fn stripper_collector_cosh_sinh_in_sum() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     // cosh²(x) - sinh²(x) + 3 → 4
-    let expr = expr!(cosh(x) ^ 2 - sinh(x) ^ 2 + 3);
+    let expr = expr!(ctx, cosh(x) ^ 2 - sinh(x) ^ 2 + 3);
     let result = expr.simplify();
     assert_eq!(format!("{result}"), "4");
 }
@@ -97,7 +97,7 @@ fn regression_exact_2_term_pythagorean() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     // sin²(x) + cos²(x) → 1  (exact match, no sub-expression needed)
-    let expr = expr!(sin(x) ^ 2 + cos(x) ^ 2);
+    let expr = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2);
     let result = expr.simplify();
     assert_eq!(format!("{result}"), "1");
 }
@@ -108,7 +108,7 @@ fn regression_3_term_add_pythagorean() {
     // The original sub-expression matching handled 3-term sums.
     // Verify it still works.
     symplex::syms!(ctx; x);
-    let expr = expr!(sin(x) ^ 2 + cos(x) ^ 2 + 3);
+    let expr = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2 + 3);
     let result = expr.simplify();
     assert_eq!(format!("{result}"), "4");
 }
@@ -122,7 +122,7 @@ fn no_false_match_different_args() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
     // sin²(x) + cos²(y) should NOT simplify via Pythagorean (different args)
-    let expr = expr!(sin(x) ^ 2 + cos(y) ^ 2 + 3);
+    let expr = expr!(ctx, sin(x) ^ 2 + cos(y) ^ 2 + 3);
     let result = expr.simplify();
     let s = format!("{result}");
     assert!(s.contains("sin"), "sin should remain (different args): {s}");
@@ -134,7 +134,7 @@ fn no_false_match_sin_sin() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     // sin²(x) + sin²(x) → 2*sin²(x), not 1
-    let expr = expr!(sin(x) ^ 2 + sin(x) ^ 2);
+    let expr = expr!(ctx, sin(x) ^ 2 + sin(x) ^ 2);
     let result = expr.simplify();
     let s = format!("{result}");
     assert!(s.contains("sin"), "should still contain sin: {s}");

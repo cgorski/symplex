@@ -108,12 +108,12 @@ fn main() {
     println!("L⁻¹{{1/(s+3)}}   = {result}");
 
     // L⁻¹{s/(s²+1)} = cos(t)
-    let f5 = &s / &(expr!(s ^ 2 + 1));
+    let f5 = &s / &(expr!(ctx, s ^ 2 + 1));
     let result = f5.inverse_laplace(&s, &t);
     println!("L⁻¹{{s/(s²+1)}}  = {result}");
 
     // L⁻¹{1/(s²+1)} = sin(t)
-    let f6 = 1 / &(expr!(s ^ 2 + 1));
+    let f6 = 1 / &(expr!(ctx, s ^ 2 + 1));
     let result = f6.inverse_laplace(&s, &t);
     println!("L⁻¹{{1/(s²+1)}}  = {result}");
 
@@ -176,7 +176,7 @@ fn main() {
     );
 
     // Impulse response: h(t) = L⁻¹{G(s)}
-    let gs_expr = 1 / &(expr!(s ^ 2 + 3 * s + 4));
+    let gs_expr = 1 / &(expr!(ctx, s ^ 2 + 3 * s + 4));
     println!("\n  G(s) as expression: {gs_expr}");
     let ht = gs_expr.inverse_laplace(&s, &t);
     println!("  Impulse response h(t) = {ht}");

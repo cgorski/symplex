@@ -236,7 +236,7 @@ fn no_regression_existing_odes() {
     {
         let x = ctx.symbol("x");
         let y = ctx.symbol("y");
-        let ode = expr!(diff(y, x) - x);
+        let ode = expr!(ctx, diff(y, x) - x);
         let result = ode.solve_ode(&y, &x);
         assert!(result.expr_type() != ExprType::Unevaluated, "y' = x should still work (simple separable)");
     }
@@ -245,7 +245,7 @@ fn no_regression_existing_odes() {
     {
         let x = ctx.symbol("x");
         let y = ctx.symbol("y");
-        let ode = expr!(diff(y, x) + 2 * y);
+        let ode = expr!(ctx, diff(y, x) + 2 * y);
         let result = ode.solve_ode(&y, &x);
         assert!(result.expr_type() != ExprType::Unevaluated, "y' + 2y = 0 should still work (linear CC)");
         let sol = result;
@@ -279,7 +279,7 @@ fn no_regression_existing_odes() {
     {
         let x = ctx.symbol("x");
         let y = ctx.symbol("y");
-        let ode = expr!(diff(y, x) - x * y);
+        let ode = expr!(ctx, diff(y, x) - x * y);
         let result = ode.solve_ode(&y, &x);
         assert!(result.expr_type() != ExprType::Unevaluated, "y' = xy should still work (full separable)");
         let sol = result;
@@ -292,7 +292,7 @@ fn no_regression_existing_odes() {
     {
         let x = ctx.symbol("x");
         let y = ctx.symbol("y");
-        let ode = expr!(diff(y, x) + 2 * x * y);
+        let ode = expr!(ctx, diff(y, x) + 2 * x * y);
         let result = ode.solve_ode(&y, &x);
         assert!(result.expr_type() != ExprType::Unevaluated, "y' + 2xy = 0 should still work");
     }
@@ -303,7 +303,7 @@ fn no_regression_classification_simple_separable() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) - x);
+    let ode = expr!(ctx, diff(y, x) - x);
 
     let ode_type = ode.classify_ode(&y, &x);
     assert_eq!(

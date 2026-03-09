@@ -33,11 +33,11 @@ fn main() {
     println!();
     println!("  a) expr! + from_ex()        — MOST ERGONOMIC");
     println!("     Build complex formulas with natural math syntax.");
-    println!("     Example: Energy::from_ex(expr!(1/2 * m * v^2))");
+    println!("     Example: Energy::from_ex(expr!(ctx, 1/2 * m * v^2))");
     println!();
     println!("  b) dim! macro arithmetic    — COMPILE-TIME CHECKED");
     println!("     Simple products with dimension-checked output type.");
-    println!("     Example: let f = symplex::dim!(Force: m * a);");
+    println!("     Example: let f = symplex::dim!(ctx, Force: m * a);");
     println!();
     println!("  c) diff_wrt / integrate_wrt — UNIQUE FEATURE");
     println!("     Typed calculus: the compiler verifies physical laws.");
@@ -61,18 +61,18 @@ fn pattern_1_expr_and_from_ex() {
 
     // Build complex expressions ergonomically with expr!, wrap with from_ex()
     // from_ex() accepts both Ex and &Ex — no .clone() needed!
-    let ke = Energy::from_ex(expr!(1/2 * m * v^2));
+    let ke = Energy::from_ex(expr!(ctx, 1/2 * m * v^2));
     println!("  KE = ½mv² = {}", ke);
 
-    let pe = Energy::from_ex(expr!(m * g * x));
+    let pe = Energy::from_ex(expr!(ctx, m * g * x));
     println!("  PE = mgx  = {}", pe);
 
     // Constant gravity as an Acceleration
-    let grav = Acceleration::from_ex(expr!(g));
+    let grav = Acceleration::from_ex(expr!(ctx, g));
     println!("  g = {}", grav);
 
     // Force = -dPE/dx (Hooke's law from spring PE)
-    let spring_pe = Energy::from_ex(expr!(1/2 * k * x^2));
+    let spring_pe = Energy::from_ex(expr!(ctx, 1/2 * k * x^2));
     let spring_force = Force::from_ex(-spring_pe.diff(&x));
     println!("  F = -d(½kx²)/dx = {}", spring_force);
 
@@ -99,7 +99,7 @@ fn pattern_2_named_arithmetic() {
     let accel = Acceleration::symbol("a");
 
     // Mass × Acceleration → Force (compile-time checked!)
-    let force = symplex::dim!(Force: mass * accel);
+    let force = symplex::dim!(ctx, Force: mass * accel);
     println!("  F = m·a = {}", force);
 
     // Force + Force → Force (same-type addition)
@@ -112,7 +112,7 @@ fn pattern_2_named_arithmetic() {
     println!("  2F = {}", doubled);
 
     // Division: Force / Mass → Acceleration
-    let a_back = symplex::dim!(Acceleration: force / mass);
+    let a_back = symplex::dim!(ctx, Acceleration: force / mass);
     println!("  F/m = {}", a_back);
 
     // Negation preserves dimension
@@ -140,7 +140,7 @@ fn pattern_3_typed_calculus_diff_wrt() {
     let t_var = Time::symbol("t");
 
     // Build a position expression: x(t) = ½at²
-    let position = Length::from_ex(expr!(1/2 * a * t^2));
+    let position = Length::from_ex(expr!(ctx, 1/2 * a * t^2));
     println!("  x(t) = {}", position);
 
     // Typed differentiation: d(Length)/d(Time) → Velocity
@@ -172,7 +172,7 @@ fn pattern_4_kinematics_chain() {
     symplex::syms!(ctx; g, t, v0, x0);
 
     // Free-fall: x(t) = x₀ + v₀t + ½gt²
-    let position = Length::from_ex(expr!(x0 + v0 * t + 1/2 * g * t^2));
+    let position = Length::from_ex(expr!(ctx, x0 + v0 * t + 1/2 * g * t^2));
     println!("  x(t) = {}", position);
 
     // v = dx/dt  (use untyped diff + from_ex wrapping)
@@ -207,11 +207,11 @@ fn pattern_5_electrical_power() {
     let r = Resistance::symbol("R");
 
     // V = IR (dim! macro: Current × Resistance → Voltage)
-    let v = symplex::dim!(Voltage: i_cur * r);
+    let v = symplex::dim!(ctx, Voltage: i_cur * r);
     println!("  V = IR = {}", v);
 
     // P = IV (dim! macro: Current × Voltage → Power)
-    let p = symplex::dim!(Power: i_cur * v);
+    let p = symplex::dim!(ctx, Power: i_cur * v);
     println!("  P = IV = {}", p);
 
     // Expand to see I²R form
@@ -248,8 +248,8 @@ fn pattern_6_pendulum_lagrangian() {
     let theta_dot_var = AngularVelocity::symbol("theta_dot");
 
     // ── Build energies with expr! ──
-    let ke = Energy::from_ex(expr!(1/2 * m * l^2 * theta_dot^2));
-    let pe = Energy::from_ex(expr!(m * g * l * (1 - cos(theta))));
+    let ke = Energy::from_ex(expr!(ctx, 1/2 * m * l^2 * theta_dot^2));
+    let pe = Energy::from_ex(expr!(ctx, m * g * l * (1 - cos(theta))));
     println!("  T = {}", ke);
     println!("  V = {}", pe);
 
@@ -299,8 +299,8 @@ fn pattern_7_spring_mass_damper() {
     let v = Velocity::symbol("v");
 
     // dim! macro: Stiffness × Length → Force, Damping × Velocity → Force
-    let f_spring = symplex::dim!(Force: -(k * x));
-    let f_damper = symplex::dim!(Force: -(c * v));
+    let f_spring = symplex::dim!(ctx, Force: -(k * x));
+    let f_damper = symplex::dim!(ctx, Force: -(c * v));
     let f_ext = Force::symbol("F_ext");
 
     // Force + Force + Force → Force (same-type addition)
@@ -309,7 +309,7 @@ fn pattern_7_spring_mass_damper() {
 
     // Newton's law: a = F/m
     let mass = Mass::symbol("m");
-    let accel = symplex::dim!(Acceleration: f_total / mass);
+    let accel = symplex::dim!(ctx, Acceleration: f_total / mass);
     println!("  a = F/m = {}", accel);
 
     // Expand to see full form
@@ -408,8 +408,8 @@ fn pattern_9_compile_time_assertions() {
     // Runtime dim! checkpoint
     let m = Mass::symbol("m");
     let a = Acceleration::symbol("a");
-    let f = symplex::dim!(Force: m * a);
-    println!("  ✓ dim!(Force: m*a) = {}", f);
+    let f = symplex::dim!(ctx, Force: m * a);
+    println!("  ✓ dim!(ctx, Force: m*a) = {}", f);
 
     println!();
 }
@@ -423,7 +423,7 @@ fn pattern_10_physical_constants() {
 
     let c = constants::speed_of_light();
     let m = Mass::symbol("m");
-    let energy = symplex::dim!(Energy: m * c * c);
+    let energy = symplex::dim!(ctx, Energy: m * c * c);
 
     // Symbolic display
     println!("  E = mc² = {}", energy);

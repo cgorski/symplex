@@ -884,7 +884,7 @@ fn multi_var_gradient_of_sum_of_squares() {
     let ctx = Context::new();
     // f = x² + y² + z²  →  ∇f = [2x, 2y, 2z]
     symplex::syms!(ctx; x, y, z);
-    let f = expr!(x ^ 2 + y ^ 2 + z ^ 2);
+    let f = expr!(ctx, x ^ 2 + y ^ 2 + z ^ 2);
     let grad = gradient(&f, &[&x, &y, &z]);
 
     assert_eq!(grad.nrows(), 3);

@@ -12,11 +12,11 @@ fn main() {
     symplex::syms!(ctx; x, y);
 
     let exprs: Vec<(&str, Ex)> = vec![
-        ("Quadratic", expr!(x ^ 2 + 2 * x + 1)),
+        ("Quadratic", expr!(ctx, x ^ 2 + 2 * x + 1)),
         ("Fraction", ctx.rational(3, 7)),
-        ("Trig", expr!(sin(x) ^ 2 + cos(x) ^ 2)),
-        ("Derivative", expr!(x ^ 3 + x).diff(&x)),
-        ("Square root", expr!(x).sqrt()),
+        ("Trig", expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2)),
+        ("Derivative", expr!(ctx, x ^ 3 + x).diff(&x)),
+        ("Square root", expr!(ctx, x).sqrt()),
     ];
 
     for (name, e) in &exprs {
@@ -27,7 +27,7 @@ fn main() {
     }
 
     // Integral rendered as LaTeX
-    let anti = expr!(x ^ 2).integrate(&x);
+    let anti = expr!(ctx, x ^ 2).integrate(&x);
     println!("Integral:");
     println!("  Display: {anti}");
     println!("  LaTeX:   {}", anti.to_latex());
@@ -41,14 +41,14 @@ fn main() {
     println!();
 
     // Matrix LaTeX
-    let m = matrix![[1, 2], [3, 4]];
+    let m = matrix![ctx, [1, 2], [3, 4]];
     println!("Matrix:");
     println!("  Display: {m}");
     println!("  LaTeX:\n  {}", m.to_latex());
     println!();
 
     // Inline and display modes
-    let f = expr!(x ^ 2 + 1);
+    let f = expr!(ctx, x ^ 2 + 1);
     println!("Inline:  {}", f.to_latex_inline());
     println!("Display: {}", f.to_latex_display());
 

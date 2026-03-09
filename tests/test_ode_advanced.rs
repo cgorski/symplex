@@ -515,7 +515,7 @@ fn regression_simple_separable() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) - x);
+    let ode = expr!(ctx, diff(y, x) - x);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' = x should still work");
 }
@@ -525,7 +525,7 @@ fn regression_first_order_linear_cc() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + 2 * y);
+    let ode = expr!(ctx, diff(y, x) + 2 * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' + 2y = 0 should still work");
 }
@@ -547,7 +547,7 @@ fn regression_full_separable() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) - x * y);
+    let ode = expr!(ctx, diff(y, x) - x * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' = xy should still work");
 }
@@ -557,7 +557,7 @@ fn regression_variable_coeff_linear() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + 2 * x * y);
+    let ode = expr!(ctx, diff(y, x) + 2 * x * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' + 2xy = 0 should still work");
 }
@@ -623,7 +623,7 @@ fn non_bernoulli_linear_not_misclassified() {
     // y' + y = 0 (linear, not Bernoulli since n=1 is excluded)
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + y);
+    let ode = expr!(ctx, diff(y, x) + y);
     let ode_type = ode.classify_ode(&y, &x);
     assert_ne!(
         ode_type,

@@ -211,7 +211,7 @@ fn display_neg_fraction_coeff() {
 #[test]
 fn matrix_to_latex_works() {
     let ctx = Context::new();
-    let m = matrix![[1, 2], [3, 4]];
+    let m = matrix![ctx, [1, 2], [3, 4]];
     let latex = m.to_latex();
     assert!(
         latex.contains("\\begin{bmatrix}"),

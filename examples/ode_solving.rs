@@ -24,7 +24,7 @@ fn main() {
     // y' - x = 0  →  y = x²/2 + C1
 
     println!("--- Simple Separable: y' = x ---");
-    let ode1 = expr!(diff(y, x) - x);
+    let ode1 = expr!(ctx, diff(y, x) - x);
     println!("ODE: {ode1} = 0");
     println!("Type: {:?}", ode1.classify_ode(&y, &x));
 
@@ -48,7 +48,7 @@ fn main() {
     // Solution: y = C1·exp(-2x)
 
     println!("\n--- First-Order Linear CC: y' + 2y = 0 ---");
-    let ode2 = expr!(diff(y, x) + 2 * y);
+    let ode2 = expr!(ctx, diff(y, x) + 2 * y);
     println!("ODE: {ode2} = 0");
     println!("Type: {:?}", ode2.classify_ode(&y, &x));
 
@@ -152,8 +152,8 @@ fn main() {
     // ── 7. Using expr! macro for ODE construction ──────────────────
 
     println!("\n--- ODE via expr! Macro ---");
-    let ode_macro = expr!(diff(y, x) + y);
-    println!("expr!(diff(y, x) + y) = {ode_macro}");
+    let ode_macro = expr!(ctx, diff(y, x) + y);
+    println!("expr!(ctx, diff(y, x) + y) = {ode_macro}");
     println!("Type: {:?}", ode_macro.classify_ode(&y, &x));
 
     let sol = ode_macro.solve_ode(&y, &x);
@@ -166,8 +166,8 @@ fn main() {
     println!("\n--- Classification Summary ---");
 
     let odes: Vec<(&str, Ex)> = vec![
-        ("y' = x", expr!(diff(y, x) - x)),
-        ("y' + 2y = 0", expr!(diff(y, x) + 2 * y)),
+        ("y' = x", expr!(ctx, diff(y, x) - x)),
+        ("y' + 2y = 0", expr!(ctx, diff(y, x) + 2 * y)),
         ("y' = x·y", {
             let dy = y.formal_diff(&x);
             &dy - &(&x * &y)

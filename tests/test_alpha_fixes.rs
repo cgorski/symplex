@@ -65,7 +65,7 @@ fn gamma_seven_halves() {
 fn macro_floor() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let e = expr!(floor(x));
+    let e = expr!(ctx, floor(x));
     let s = format!("{e}");
     assert!(
         s.contains("floor"),
@@ -77,7 +77,7 @@ fn macro_floor() {
 fn macro_ceiling() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let e = expr!(ceiling(x));
+    let e = expr!(ctx, ceiling(x));
     let s = format!("{e}");
     assert!(
         s.contains("ceiling") || s.contains("ceil"),
@@ -92,7 +92,7 @@ fn macro_min() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let e = expr!(min(x, y));
+    let e = expr!(ctx, min(x, y));
     let s = format!("{e}");
     assert!(
         s.contains("min") || s.contains("Min"),
@@ -105,7 +105,7 @@ fn macro_max() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let e = expr!(max(x, y));
+    let e = expr!(ctx, max(x, y));
     let s = format!("{e}");
     assert!(
         s.contains("max") || s.contains("Max"),
@@ -118,14 +118,14 @@ fn macro_max() {
 #[test]
 fn macro_heaviside_eval_positive() {
     let ctx = Context::new();
-    let result = expr!(heaviside(5)).eval();
+    let result = expr!(ctx, heaviside(5)).eval();
     assert_eq!(format!("{result}"), "1", "heaviside(5) should eval to 1");
 }
 
 #[test]
 fn macro_heaviside_eval_negative() {
     let ctx = Context::new();
-    let result = expr!(heaviside(-3)).eval();
+    let result = expr!(ctx, heaviside(-3)).eval();
     assert_eq!(format!("{result}"), "0", "heaviside(-3) should eval to 0");
 }
 
@@ -133,7 +133,7 @@ fn macro_heaviside_eval_negative() {
 fn macro_dirac_delta_symbolic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let e = expr!(dirac_delta(x));
+    let e = expr!(ctx, dirac_delta(x));
     let s = format!("{e}");
     assert!(
         s.contains("dirac") || s.contains("Dirac") || s.contains("delta") || s.contains("δ"),
@@ -145,7 +145,7 @@ fn macro_dirac_delta_symbolic() {
 fn macro_lambertw_symbolic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let e = expr!(lambertw(x));
+    let e = expr!(ctx, lambertw(x));
     let s = format!("{e}");
     assert!(
         s.contains("lambert") || s.contains("Lambert") || s.contains("W("),

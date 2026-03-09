@@ -61,7 +61,7 @@ fn ode_full_separable_dy_dx_eq_xy() {
     // y' - xy = 0 → y' = xy → separable → y = C1·exp(x²/2)
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) - x * y);
+    let ode = expr!(ctx, diff(y, x) - x * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' = xy should be solvable");
 
@@ -80,7 +80,7 @@ fn ode_full_separable_neg_xy() {
     // Solution: y = C1·exp(-x²/2)
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + x * y);
+    let ode = expr!(ctx, diff(y, x) + x * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' = -xy should be solvable");
 
@@ -122,7 +122,7 @@ fn ode_variable_coeff_linear_homogeneous() {
     // y' + 2xy = 0 → y = C1·exp(-x²)
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + 2 * x * y);
+    let ode = expr!(ctx, diff(y, x) + 2 * x * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y' + 2xy = 0 should be solvable");
 
@@ -166,7 +166,7 @@ fn ode_existing_types_still_work() {
     let y = ctx.symbol("y");
 
     // Regression: y' + 2y = 0 (constant coeff) still works
-    let ode = expr!(diff(y, x) + 2 * y);
+    let ode = expr!(ctx, diff(y, x) + 2 * y);
     let result = ode.solve_ode(&y, &x);
     assert!(!result.has_unevaluated(), "y' + 2y = 0 should still be solvable");
 
@@ -179,7 +179,7 @@ fn ode_existing_types_still_work() {
     assert!(!result2.has_unevaluated(), "y'' + y = 0 should return Some (second-order CC with complex roots)");
 
     // Regression: y' = x still works (simple separable)
-    let ode3 = expr!(diff(y, x) - x);
+    let ode3 = expr!(ctx, diff(y, x) - x);
     assert!(
         !ode3.solve_ode(&y, &x).has_unevaluated(),
         "y' = x should still be solvable"
@@ -194,7 +194,7 @@ fn ode_constant_coeff_not_broken_by_new_dispatch() {
     // the variable-coefficient solver now runs first in dispatch order.
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + 5 * y);
+    let ode = expr!(ctx, diff(y, x) + 5 * y);
     let sol = ode.try_solve_ode(&y, &x).expect("y' + 5y = 0 should solve");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");

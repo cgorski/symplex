@@ -12,7 +12,7 @@ use symplex::vector::*;
 fn gradient_of_x2_plus_y2() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
-    let f = expr!(x ^ 2 + y ^ 2);
+    let f = expr!(ctx, x ^ 2 + y ^ 2);
     let grad = gradient(&f, &[&x, &y]);
     // ∇(x² + y²) = [2x, 2y]
     assert_eq!(grad.nrows(), 2);
@@ -26,7 +26,7 @@ fn gradient_of_xyz() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y, z);
     // f = x*y*z
-    let f = expr!(x * y * z);
+    let f = expr!(ctx, x * y * z);
     let grad = gradient(&f, &[&x, &y, &z]);
     // ∇(xyz) = [yz, xz, xy]
     assert_eq!(grad.nrows(), 3);
@@ -64,7 +64,7 @@ fn divergence_of_quadratic_field() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
     // F = [x², y²], ∇·F = 2x + 2y
-    let field = Matrix::col_vector(vec![expr!(x ^ 2), expr!(y ^ 2)]);
+    let field = Matrix::col_vector(vec![expr!(ctx, x ^ 2), expr!(ctx, y ^ 2)]);
     let div = divergence(&field, &[&x, &y]);
     let simplified = div.eval().simplify();
     let s = format!("{simplified}");
@@ -111,7 +111,7 @@ fn curl_of_rotation_field() {
 fn laplacian_of_x2_y2_z2() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y, z);
-    let f = expr!(x ^ 2 + y ^ 2 + z ^ 2);
+    let f = expr!(ctx, x ^ 2 + y ^ 2 + z ^ 2);
     let lap = laplacian(&f, &[&x, &y, &z]);
     assert_eq!(format!("{lap}"), "6");
 }
@@ -135,7 +135,7 @@ fn laplacian_of_x4() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     // f = x^4, ∇²f = 12x²
-    let f = expr!(x ^ 4);
+    let f = expr!(ctx, x ^ 4);
     let lap = laplacian(&f, &[&x]);
     let simplified = lap.eval().simplify();
     let s = format!("{simplified}");
@@ -151,7 +151,7 @@ fn conservative_gradient_field() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y, z);
     // Any gradient field is conservative: F = ∇(x²+y²+z²) = [2x,2y,2z]
-    let f = expr!(x ^ 2 + y ^ 2 + z ^ 2);
+    let f = expr!(ctx, x ^ 2 + y ^ 2 + z ^ 2);
     let field = gradient(&f, &[&x, &y, &z]);
     assert!(is_conservative(&field, &[&x, &y, &z]));
 }

@@ -33,9 +33,9 @@ fn formal_diff_via_expr_macro() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let dy = expr!(diff(y, x));
+    let dy = expr!(ctx, diff(y, x));
     let s = format!("{dy}");
-    assert!(s != "0", "expr!(diff(y,x)) should not evaluate: {s}");
+    assert!(s != "0", "expr!(ctx, diff(y,x)) should not evaluate: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -77,7 +77,7 @@ fn dsolve_via_expr_macro() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + 2 * y); // y' + 2y = 0
+    let ode = expr!(ctx, diff(y, x) + 2 * y); // y' + 2y = 0
     let sol = ode.try_solve_ode(&y, &x)
         .expect("dsolve should handle y' + 2y = 0 via expr macro");
     let s = format!("{sol}");
@@ -131,21 +131,21 @@ fn binomial_via_method() {
 #[test]
 fn factorial_via_expr_macro() {
     let ctx = Context::new();
-    let result = expr!(factorial(5)).eval();
+    let result = expr!(ctx, factorial(5)).eval();
     assert_eq!(format!("{result}"), "120");
 }
 
 #[test]
 fn binomial_via_expr_macro() {
     let ctx = Context::new();
-    let result = expr!(C(10, 3)).eval();
+    let result = expr!(ctx, C(10, 3)).eval();
     assert_eq!(format!("{result}"), "120");
 }
 
 #[test]
 fn binomial_via_binomial_name() {
     let ctx = Context::new();
-    let result = expr!(binomial(10, 5)).eval();
+    let result = expr!(ctx, binomial(10, 5)).eval();
     assert_eq!(format!("{result}"), "252");
 }
 
@@ -179,7 +179,7 @@ fn ode_via_eq_macro() {
     let y = ctx.symbol("y");
     // Build y' + y = 0 via eq! macro...
     // eq! doesn't support diff() yet, so build manually
-    let ode = expr!(diff(y, x) + y);
+    let ode = expr!(ctx, diff(y, x) + y);
     let sol = ode.try_solve_ode(&y, &x)
         .expect("dsolve should handle y' + y = 0");
     let s = format!("{sol}");

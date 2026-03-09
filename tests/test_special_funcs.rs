@@ -34,7 +34,7 @@ fn gamma_at_half() {
 fn gamma_symbolic_stays() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let g = expr!(gamma(x));
+    let g = expr!(ctx, gamma(x));
     let s = format!("{g}");
     assert!(
         s.contains("Gamma") || s.contains("gamma"),
@@ -46,7 +46,7 @@ fn gamma_symbolic_stays() {
 fn gamma_via_macro() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let g = expr!(gamma(x));
+    let g = expr!(ctx, gamma(x));
     let result = g.subs(&x, &ctx.int(5)).eval();
     assert_eq!(format!("{result}"), "24");
 }
@@ -120,7 +120,7 @@ fn erf_at_zero() {
 fn erf_symbolic_stays() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let e = expr!(erf(x));
+    let e = expr!(ctx, erf(x));
     let s = format!("{e}");
     assert!(s.contains("erf"), "symbolic erf: {s}");
 }
@@ -129,7 +129,7 @@ fn erf_symbolic_stays() {
 fn erf_via_macro() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(erf(x)).subs(&x, &ctx.int(0)).eval();
+    let result = expr!(ctx, erf(x)).subs(&x, &ctx.int(0)).eval();
     assert_eq!(format!("{result}"), "0");
 }
 
@@ -156,7 +156,7 @@ fn erfc_at_zero() {
 fn erfc_symbolic_stays() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let e = expr!(erfc(x));
+    let e = expr!(ctx, erfc(x));
     let s = format!("{e}");
     assert!(s.contains("erfc"), "symbolic erfc: {s}");
 }
@@ -165,7 +165,7 @@ fn erfc_symbolic_stays() {
 fn erfc_via_macro() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(erfc(x)).subs(&x, &ctx.int(0)).eval();
+    let result = expr!(ctx, erfc(x)).subs(&x, &ctx.int(0)).eval();
     assert_eq!(format!("{result}"), "1");
 }
 
@@ -229,7 +229,7 @@ fn beta_symbolic_display() {
 #[test]
 fn beta_via_macro() {
     let ctx = Context::new();
-    let result = expr!(beta(2, 3)).eval();
+    let result = expr!(ctx, beta(2, 3)).eval();
     assert_eq!(format!("{result}"), "1/12");
 }
 
@@ -241,7 +241,7 @@ fn beta_via_macro() {
 fn diff_erf() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let de = expr!(erf(x)).diff(&x);
+    let de = expr!(ctx, erf(x)).diff(&x);
     // d/dx erf(x) = 2/sqrt(pi) * exp(-x^2)
     let s = format!("{de}");
     assert!(s.contains("exp"), "d/dx erf should contain exp: {s}");
@@ -251,7 +251,7 @@ fn diff_erf() {
 fn diff_erfc() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let de = expr!(erfc(x)).diff(&x);
+    let de = expr!(ctx, erfc(x)).diff(&x);
     // d/dx erfc(x) = -2/sqrt(pi) * exp(-x^2)
     let s = format!("{de}");
     assert!(s.contains("exp"), "d/dx erfc should contain exp: {s}");

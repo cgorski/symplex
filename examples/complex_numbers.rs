@@ -91,7 +91,7 @@ fn main() {
 
     println!("\n--- Complex Quadratic Roots ---");
 
-    let eq1 = expr!(x ^ 2 + 1);
+    let eq1 = expr!(ctx, x ^ 2 + 1);
     let roots = eq1.solve_or_empty(&x);
     println!("x² + 1 = 0:");
     for r in &roots {
@@ -99,7 +99,7 @@ fn main() {
     }
 
     // x² + 2x + 5 = 0 → x = -1 ± 2I
-    let eq2 = expr!(x ^ 2 + 2 * x + 5);
+    let eq2 = expr!(ctx, x ^ 2 + 2 * x + 5);
     let roots2 = eq2.solve_or_empty(&x);
     println!("\nx² + 2x + 5 = 0:");
     for r in &roots2 {
@@ -107,7 +107,7 @@ fn main() {
     }
 
     // x² - 2x + 2 = 0 → x = 1 ± I
-    let eq3 = expr!(x ^ 2 - 2 * x + 2);
+    let eq3 = expr!(ctx, x ^ 2 - 2 * x + 2);
     let roots3 = eq3.solve_or_empty(&x);
     println!("\nx² - 2x + 2 = 0:");
     for r in &roots3 {
@@ -115,7 +115,7 @@ fn main() {
     }
 
     // x⁴ - 1 = 0 → x = 1, -1, I, -I
-    let eq4 = expr!(x ^ 4 - 1);
+    let eq4 = expr!(ctx, x ^ 4 - 1);
     let roots4 = eq4.solve_or_empty(&x);
     println!("\nx⁴ - 1 = 0:");
     for r in &roots4 {

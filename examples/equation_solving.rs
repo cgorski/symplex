@@ -24,7 +24,7 @@ fn main() {
     // ── Single-variable polynomial equations ───────────────────────
 
     println!("--- Quadratic ---");
-    let quadratic = expr!(x ^ 2 - 5 * x + 6);
+    let quadratic = expr!(ctx, x ^ 2 - 5 * x + 6);
     let roots = quadratic.solve_or_empty(&x);
     println!(
         "x² - 5x + 6 = 0 → x ∈ {:?}",
@@ -38,7 +38,7 @@ fn main() {
     }
 
     println!("\n--- Cubic ---");
-    let cubic = expr!(x ^ 3 - 6 * x ^ 2 + 11 * x - 6);
+    let cubic = expr!(ctx, x ^ 3 - 6 * x ^ 2 + 11 * x - 6);
     let roots = cubic.solve_or_empty(&x);
     println!(
         "x³ - 6x² + 11x - 6 = 0 → x ∈ {:?}",
@@ -51,7 +51,7 @@ fn main() {
     }
 
     println!("\n--- Quartic ---");
-    let quartic = expr!(x ^ 4 - 5 * x ^ 2 + 4);
+    let quartic = expr!(ctx, x ^ 4 - 5 * x ^ 2 + 4);
     let roots = quartic.solve_or_empty(&x);
     println!(
         "x⁴ - 5x² + 4 = 0 → x ∈ {:?}",
@@ -60,7 +60,7 @@ fn main() {
     // Should include ±1, ±2
 
     println!("\n--- Quartic with complex roots ---");
-    let roots = expr!(x ^ 4 - 1).solve_or_empty(&x);
+    let roots = expr!(ctx, x ^ 4 - 1).solve_or_empty(&x);
     println!(
         "x⁴ - 1 = 0 → x ∈ {:?}",
         roots.iter().map(|r| format!("{r}")).collect::<Vec<_>>()
@@ -78,7 +78,7 @@ fn main() {
     }
 
     println!("\n--- Quadratic with only complex roots ---");
-    let complex_quad = expr!(x ^ 2 + 1);
+    let complex_quad = expr!(ctx, x ^ 2 + 1);
     let roots = complex_quad.solve_or_empty(&x);
     println!(
         "x² + 1 = 0 → x ∈ {:?}",
@@ -112,14 +112,14 @@ fn main() {
     // ── Set-valued solutions ───────────────────────────────────────
 
     println!("\n--- Set-Valued Solutions ---");
-    let result = expr!(x ^ 2 - 5 * x + 6).solve_as_set(&x);
+    let result = expr!(ctx, x ^ 2 - 5 * x + 6).solve_as_set(&x);
     println!("x² - 5x + 6 = 0 as set: {result}");
 
     // ── Polynomial system (Gröbner bases) ──────────────────────────
 
     println!("\n--- System: Circle ∩ Line ---");
-    let eq1 = expr!(x ^ 2 + y ^ 2 - 1);
-    let eq2 = expr!(x + y - 1);
+    let eq1 = expr!(ctx, x ^ 2 + y ^ 2 - 1);
+    let eq2 = expr!(ctx, x + y - 1);
     let solutions = symplex::polysys::solve_system_ex(
         &[eq1.clone(), eq2.clone()],
         &[x.clone(), y.clone()],
@@ -139,7 +139,7 @@ fn main() {
 
     println!("\n--- System: Two Conics ---");
     let solutions = symplex::polysys::solve_system_ex(
-        &[expr!(x ^ 2 + y ^ 2 - 5), expr!(x * y - 2)],
+        &[expr!(ctx, x ^ 2 + y ^ 2 - 5), expr!(ctx, x * y - 2)],
         &[x.clone(), y.clone()],
     )
     .unwrap();
@@ -155,7 +155,7 @@ fn main() {
     // x² + y² = 3, x + y = 1
     // Solutions involve √-expressions
     match symplex::polysys::solve_system_ex(
-        &[expr!(x ^ 2 + y ^ 2 - 3), expr!(x + y - 1)],
+        &[expr!(ctx, x ^ 2 + y ^ 2 - 3), expr!(ctx, x + y - 1)],
         &[x.clone(), y.clone()],
     ) {
         Ok(solutions) => {
@@ -173,17 +173,17 @@ fn main() {
     // ── Factoring ──────────────────────────────────────────────────
 
     println!("\n--- Factoring ---");
-    println!("x² - 1       = {}", expr!(x ^ 2 - 1).factor(&x));
-    println!("x² + 2x + 1  = {}", expr!(x ^ 2 + 2 * x + 1).factor(&x));
-    println!("x³ - 1        = {}", expr!(x ^ 3 - 1).factor(&x));
-    println!("x⁴ - 1        = {}", expr!(x ^ 4 - 1).factor(&x));
+    println!("x² - 1       = {}", expr!(ctx, x ^ 2 - 1).factor(&x));
+    println!("x² + 2x + 1  = {}", expr!(ctx, x ^ 2 + 2 * x + 1).factor(&x));
+    println!("x³ - 1        = {}", expr!(ctx, x ^ 3 - 1).factor(&x));
+    println!("x⁴ - 1        = {}", expr!(ctx, x ^ 4 - 1).factor(&x));
     println!(
         "x² - 5x + 6   = {}",
-        expr!(x ^ 2 - 5 * x + 6).factor(&x)
+        expr!(ctx, x ^ 2 - 5 * x + 6).factor(&x)
     );
 
     // x² + 1 has no real factors
-    let no_factor = expr!(x ^ 2 + 1).factor(&x);
+    let no_factor = expr!(ctx, x ^ 2 + 1).factor(&x);
     println!("x² + 1        = {no_factor} (no real factors)");
 
     // ── Inequality solving ─────────────────────────────────────────
@@ -191,19 +191,19 @@ fn main() {
     println!("\n--- Inequality Solving ---");
 
     // x² - 4 > 0 → x < -2 or x > 2
-    let result = expr!(x ^ 2 - 4).solve_gt(&x);
+    let result = expr!(ctx, x ^ 2 - 4).solve_gt(&x);
     println!("x² - 4 > 0:  {result}");
 
     // x² - 4 >= 0
-    let result = expr!(x ^ 2 - 4).solve_ge(&x);
+    let result = expr!(ctx, x ^ 2 - 4).solve_ge(&x);
     println!("x² - 4 ≥ 0:  {result}");
 
     // x² - 4 < 0 → -2 < x < 2
-    let result = expr!(x ^ 2 - 4).solve_lt(&x);
+    let result = expr!(ctx, x ^ 2 - 4).solve_lt(&x);
     println!("x² - 4 < 0:  {result}");
 
     // x² - 4 <= 0 → -2 <= x <= 2
-    let result = expr!(x ^ 2 - 4).solve_le(&x);
+    let result = expr!(ctx, x ^ 2 - 4).solve_le(&x);
     println!("x² - 4 ≤ 0:  {result}");
 
     // x > 0
@@ -239,7 +239,7 @@ fn main() {
     }
 
     // Find multiple roots of x³ - 6x² + 11x - 6 = 0 numerically
-    let poly = expr!(x ^ 3 - 6 * x ^ 2 + 11 * x - 6);
+    let poly = expr!(ctx, x ^ 3 - 6 * x ^ 2 + 11 * x - 6);
     println!("\nFinding roots of x³ - 6x² + 11x - 6 = 0 numerically:");
     for guess in [0.5, 1.5, 3.5] {
         match poly.solve_numeric(&x, guess, 50, 1e-12) {
@@ -251,7 +251,7 @@ fn main() {
     // ── Symbolic vs Numerical comparison ───────────────────────────
 
     println!("\n--- Symbolic vs Numerical ---");
-    let eq = expr!(x ^ 2 - 2);
+    let eq = expr!(ctx, x ^ 2 - 2);
     let sym_roots = eq.solve_or_empty(&x);
     println!("x² - 2 = 0:");
     println!(

@@ -175,7 +175,7 @@ fn comprehensive_simple_separable_expr_macro() {
     // y' - x² = 0 via expr! macro
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) - x ^ 2);
+    let ode = expr!(ctx, diff(y, x) - x ^ 2);
 
     let sol = ode
         .try_solve_ode(&y, &x)
@@ -198,7 +198,7 @@ fn comprehensive_full_separable_xy() {
     // → y = C1·exp(x²/2)
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) - x * y); // y' - xy = 0
+    let ode = expr!(ctx, diff(y, x) - x * y); // y' - xy = 0
 
     // Classification
     let ode_type = ode.classify_ode(&y, &x);
@@ -255,7 +255,7 @@ fn comprehensive_first_order_linear_cc_homogeneous() {
     // y' + 2y = 0 → y = C1·exp(-2x)
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + 2 * y); // y' + 2y = 0
+    let ode = expr!(ctx, diff(y, x) + 2 * y); // y' + 2y = 0
 
     // Classification
     let ode_type = ode.classify_ode(&y, &x);
@@ -310,7 +310,7 @@ fn comprehensive_first_order_linear_vc_homogeneous() {
     // y' + 2xy = 0 → y = C1·exp(-x²)
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + 2 * x * y);
+    let ode = expr!(ctx, diff(y, x) + 2 * x * y);
 
     let sol = ode
         .try_solve_ode(&y, &x)
@@ -1192,7 +1192,7 @@ fn comprehensive_not_bernoulli() {
     // y' + y = 0 — linear, NOT Bernoulli (n=1 is excluded from Bernoulli)
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + y);
+    let ode = expr!(ctx, diff(y, x) + y);
 
     let ode_type = ode.classify_ode(&y, &x);
     assert_ne!(
@@ -1283,7 +1283,7 @@ fn comprehensive_check_ode_solution_first_order_linear() {
     // y' + 2y = 0 → y = C1·exp(-2x)
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + 2 * y);
+    let ode = expr!(ctx, diff(y, x) + 2 * y);
 
     let sol = ode
         .try_solve_ode(&y, &x)
@@ -1309,28 +1309,28 @@ fn comprehensive_regression_all_basic_types() {
     let d2y = dy.formal_diff(&x);
 
     // SimpleSeparable: y' = x
-    let ode1 = expr!(diff(y, x) - x);
+    let ode1 = expr!(ctx, diff(y, x) - x);
     assert!(
         !ode1.solve_ode(&y, &x).has_unevaluated(),
         "y' = x should still work"
     );
 
     // FullSeparable: y' = xy
-    let ode2 = expr!(diff(y, x) - x * y);
+    let ode2 = expr!(ctx, diff(y, x) - x * y);
     assert!(
         !ode2.solve_ode(&y, &x).has_unevaluated(),
         "y' = xy should still work"
     );
 
     // FirstOrderLinearCC: y' + 5y = 0
-    let ode3 = expr!(diff(y, x) + 5 * y);
+    let ode3 = expr!(ctx, diff(y, x) + 5 * y);
     assert!(
         !ode3.solve_ode(&y, &x).has_unevaluated(),
         "y' + 5y = 0 should still work"
     );
 
     // FirstOrderLinearVC: y' + 2xy = 0
-    let ode4 = expr!(diff(y, x) + 2 * x * y);
+    let ode4 = expr!(ctx, diff(y, x) + 2 * x * y);
     assert!(
         !ode4.solve_ode(&y, &x).has_unevaluated(),
         "y' + 2xy = 0 should still work"
@@ -1361,7 +1361,7 @@ fn comprehensive_multipoint_first_order_linear_cc() {
     // y' + 2y = 0 → y = C1·exp(-2x)
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let ode = expr!(diff(y, x) + 2 * y);
+    let ode = expr!(ctx, diff(y, x) + 2 * y);
     let sol = ode
         .try_solve_ode(&y, &x)
         .expect("should solve y' + 2y = 0");

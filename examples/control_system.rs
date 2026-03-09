@@ -39,10 +39,10 @@ fn main() {
     //
     // Output: y = x1 (position measurement)
 
-    let a = matrix![[0, 1], [-4, -3]];
-    let b = matrix![[0], [1]];
-    let c = matrix![[1, 0]];
-    let d = matrix![[0]];
+    let a = matrix![ctx, [0, 1], [-4, -3]];
+    let b = matrix![ctx, [0], [1]];
+    let c = matrix![ctx, [1, 0]];
+    let d = matrix![ctx, [0]];
 
     let sys = StateSpace::new(a.clone(), b.clone(), c.clone(), d.clone());
 
@@ -305,7 +305,7 @@ fn main() {
     // Derive transfer function from impulse response
     // For the mass-spring-damper, the impulse response is the
     // inverse Laplace of G(s) = 1/(s² + 3s + 4)
-    let gs = 1 / &(expr!(s ^ 2 + 3 * s + 4));
+    let gs = 1 / &(expr!(ctx, s ^ 2 + 3 * s + 4));
     println!("G(s) = {gs}");
 
     // Inverse Laplace to get impulse response h(t)

@@ -25,8 +25,8 @@ fn main() {
     // ── Basic ──────────────────────────────────────────────────────────
     println!("--- Basic ---");
     let cases_basic: Vec<(&str, Ex)> = vec![
-        ("x^2", expr!(x ^ 2)),
-        ("x^5", expr!(x ^ 5)),
+        ("x^2", expr!(ctx, x ^ 2)),
+        ("x^5", expr!(ctx, x ^ 5)),
         ("sin(x)", x.sin()),
         ("cos(x)", x.cos()),
         ("exp(x)", x.exp()),
@@ -72,7 +72,7 @@ fn main() {
         ("cos^2(x)", x.cos().powi(2)),
         ("sin^3(x)", x.sin().powi(3)),
         ("sin^4(x)", x.sin().powi(4)),
-        ("sec^2(x)", expr!(sec(x) ^ 2)),
+        ("sec^2(x)", expr!(ctx, sec(x) ^ 2)),
         ("tan^2(x)", x.tan().powi(2)),
         ("sin(x)*cos(x)", &x.sin() * &x.cos()),
         ("sin^2(x)*cos^2(x)", &x.sin().powi(2) * &x.cos().powi(2)),
@@ -149,7 +149,7 @@ fn main() {
         ("sinh(x)", x.sinh()),
         ("cosh(x)", x.cosh()),
         ("tanh(x)", x.tanh()),
-        ("sech^2(x)", expr!(sech(x) ^ 2)),
+        ("sech^2(x)", expr!(ctx, sech(x) ^ 2)),
         ("sinh^2(x)", x.sinh().powi(2)),
     ];
     for (label, expr) in &cases_hyp {

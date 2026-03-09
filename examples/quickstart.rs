@@ -19,11 +19,11 @@ fn main() {
 
     // ── 1. Building expressions ────────────────────────────────────
     println!("--- Expression Building ---");
-    let f = expr!(x ^ 2 + 2 * x + 1);
+    let f = expr!(ctx, x ^ 2 + 2 * x + 1);
     println!("f(x) = {f}");
 
     // Exact rationals — no floating-point approximation
-    let half = expr!(1 / 2);
+    let half = expr!(ctx, 1 / 2);
     println!("1/2 = {half}");
 
     let g = &half * &x;
@@ -38,13 +38,13 @@ fn main() {
     println!("f''(x) = {d2f}");
 
     // Partial derivatives
-    let h = expr!(x ^ 2 * y + y ^ 3);
+    let h = expr!(ctx, x ^ 2 * y + y ^ 3);
     println!("\nh(x,y) = {h}");
     println!("∂h/∂x  = {}", h.diff(&x));
     println!("∂h/∂y  = {}", h.diff(&y));
 
     // Higher-order derivative
-    let p = expr!(x ^ 5);
+    let p = expr!(ctx, x ^ 5);
     println!("\nd⁴/dx⁴ (x⁵) = {}", p.diff_n(&x, 4));
 
     // ── 3. Physics with Units ────────────────────────────────────────
@@ -57,7 +57,7 @@ fn main() {
         let a = Acceleration::symbol("a");
 
         // Mass × Acceleration → Force (compile-time verified!)
-        let f = symplex::dim!(Force: m * a);
+        let f = symplex::dim!(ctx, Force: m * a);
         println!("\n--- Physics with Units ---");
         println!("F = m·a = {}", f);
 
@@ -67,7 +67,7 @@ fn main() {
         // Build complex formulas with expr!, wrap with from_ex
         let ctx = Context::new();
         symplex::syms!(ctx; k, x_var);
-        let pe = Energy::from_ex(expr!(1/2 * k * x_var^2));
+        let pe = Energy::from_ex(expr!(ctx, 1/2 * k * x_var^2));
         println!("PE = ½kx² = {}", pe);
 
         // Derive force from potential energy
@@ -78,7 +78,7 @@ fn main() {
 
     // ── 4. Integration ─────────────────────────────────────────────
     println!("--- Integration ---");
-    let anti = expr!(x ^ 2).integrate(&x);
+    let anti = expr!(ctx, x ^ 2).integrate(&x);
     println!("∫ x² dx = {anti}");
 
     let poly_anti = f.integrate(&x);
@@ -87,12 +87,12 @@ fn main() {
     // Definite integral
     let zero = ctx.int(0);
     let one = ctx.int(1);
-    let area = expr!(x ^ 2).definite_integral(&x, &zero, &one);
+    let area = expr!(ctx, x ^ 2).definite_integral(&x, &zero, &one);
     println!("∫₀¹ x² dx = {area}");
 
     // ── 5. Simplification ──────────────────────────────────────────
     println!("\n--- Simplification ---");
-    let trig = expr!(sin(x) ^ 2 + cos(x) ^ 2);
+    let trig = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2);
     println!("{trig} → {}", trig.simplify());
 
     let exp_ln = x.ln().exp();
@@ -102,7 +102,7 @@ fn main() {
     println!("(x+1)² - x² - 2x → {}", complicated.full_simplify());
 
     // Trig simplification
-    let trig2 = expr!(sin(x) ^ 2 + cos(x) ^ 2 + x);
+    let trig2 = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2 + x);
     println!("{trig2} → {}", trig2.simplify_trig());
 
     // ── 6. Physical Constants ────────────────────────────────────────
@@ -113,7 +113,7 @@ fn main() {
 
         let c = constants::speed_of_light();  // returns Velocity
         let m = Mass::symbol("m");
-        let energy = symplex::dim!(Energy: m * c * c);  // E = mc²
+        let energy = symplex::dim!(ctx, Energy: m * c * c);  // E = mc²
 
         // Displays symbolically, not as a huge number:
         println!("\n--- Physical Constants ---");
@@ -127,19 +127,19 @@ fn main() {
 
     // ── 7. Factoring ───────────────────────────────────────────────
     println!("--- Factoring ---");
-    println!("x² - 1 = {}", expr!(x ^ 2 - 1).factor(&x));
-    println!("x² - 5x + 6 = {}", expr!(x ^ 2 - 5 * x + 6).factor(&x));
-    println!("x⁴ - 1 = {}", expr!(x ^ 4 - 1).factor(&x));
+    println!("x² - 1 = {}", expr!(ctx, x ^ 2 - 1).factor(&x));
+    println!("x² - 5x + 6 = {}", expr!(ctx, x ^ 2 - 5 * x + 6).factor(&x));
+    println!("x⁴ - 1 = {}", expr!(ctx, x ^ 4 - 1).factor(&x));
 
     // ── 8. Equation Solving ────────────────────────────────────────
     println!("\n--- Equation Solving ---");
-    let roots = expr!(x ^ 2 - 5 * x + 6).solve_or_empty(&x);
+    let roots = expr!(ctx, x ^ 2 - 5 * x + 6).solve_or_empty(&x);
     println!(
         "x² - 5x + 6 = 0 → {:?}",
         roots.iter().map(|r| format!("{r}")).collect::<Vec<_>>()
     );
 
-    let cubic_roots = expr!(x ^ 3 - 6 * x ^ 2 + 11 * x - 6).solve_or_empty(&x);
+    let cubic_roots = expr!(ctx, x ^ 3 - 6 * x ^ 2 + 11 * x - 6).solve_or_empty(&x);
     println!(
         "x³ - 6x² + 11x - 6 = 0 → {:?}",
         cubic_roots
@@ -156,7 +156,7 @@ fn main() {
         symplex::syms!(ctx; a, t);
         let t_var = Time::symbol("t");
 
-        let position = Length::from_ex(expr!(1/2 * a * t^2));
+        let position = Length::from_ex(expr!(ctx, 1/2 * a * t^2));
         let velocity: Velocity = position.diff_wrt(&t_var);
         let acceleration: Acceleration = velocity.diff_wrt(&t_var);
 
@@ -169,7 +169,7 @@ fn main() {
 
     // ── 10. Numerical Evaluation ────────────────────────────────────
     println!("--- Numerical Evaluation ---");
-    let val = expr!(sin(x) + cos(x)).eval_f64_with(&[(&x, 1)]).unwrap();
+    let val = expr!(ctx, sin(x) + cos(x)).eval_f64_with(&[(&x, 1)]).unwrap();
     println!("sin(1) + cos(1) = {val:.6}");
 
     let val2 = f.subs_i64(&x, 3);
@@ -183,7 +183,7 @@ fn main() {
 
     // ── 11. Matrix Algebra ──────────────────────────────────────────
     println!("\n--- Matrix Algebra ---");
-    let m = matrix![[2, 1], [1, 3]];
+    let m = matrix![ctx, [2, 1], [1, 3]];
     println!("M = {m}");
     println!("det(M) = {}", m.det().unwrap());
     println!("trace(M) = {}", m.trace().unwrap());
@@ -202,7 +202,7 @@ fn main() {
     );
 
     // Symbolic matrix
-    let sym_m = matrix![[x, 1], [0, x]];
+    let sym_m = matrix![ctx, [x, 1], [0, x]];
     println!("\nB = {sym_m}");
     println!("det(B) = {}", sym_m.det().unwrap());
 
@@ -223,7 +223,7 @@ fn main() {
     println!("--- LaTeX Output ---");
     println!("f(x):    {}", f.to_latex());
     println!("f'(x):   {}", df.to_latex());
-    println!("sin²(x): {}", expr!(sin(x) ^ 2).to_latex());
+    println!("sin²(x): {}", expr!(ctx, sin(x) ^ 2).to_latex());
     println!("Matrix:  {}", m.to_latex());
 
     // ── 14. Limits ─────────────────────────────────────────────────

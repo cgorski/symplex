@@ -12,7 +12,7 @@ fn solve_linear() {
     // 2*x - 6 = 0 → x = 3
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let expr = expr!(x * 2 - 6);
+    let expr = expr!(ctx, x * 2 - 6);
     let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 1, "expected 1 root, got {}", roots.len());
     assert_eq!(format!("{}", roots[0]), "3");
@@ -24,7 +24,7 @@ fn solve_linear_negative() {
     // x + 3 = 0 → x = -3
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let expr = expr!(x + 3);
+    let expr = expr!(ctx, x + 3);
     let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 1, "expected 1 root, got {}", roots.len());
     assert_eq!(format!("{}", roots[0]), "-3");
@@ -36,7 +36,7 @@ fn solve_linear_rational() {
     // 3*x - 1 = 0 → x = 1/3
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let expr = expr!(x * 3 - 1);
+    let expr = expr!(ctx, x * 3 - 1);
     let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 1, "expected 1 root, got {}", roots.len());
     assert_eq!(format!("{}", roots[0]), "1/3");
@@ -48,7 +48,7 @@ fn solve_quadratic_two_roots() {
     // x^2 - 5*x + 6 = 0 → x = 2, x = 3
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let expr = expr!(x ^ 2 - 5 * x + 6);
+    let expr = expr!(ctx, x ^ 2 - 5 * x + 6);
     let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 2, "expected 2 roots, got {}", roots.len());
     let vals: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -68,7 +68,7 @@ fn solve_quadratic_double_root() {
     // x^2 - 4*x + 4 = 0 → x = 2 (double root, may appear once or twice)
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let expr = expr!(x ^ 2 - 4 * x + 4);
+    let expr = expr!(ctx, x ^ 2 - 4 * x + 4);
     let roots = expr.solve(&x).unwrap();
     assert!(
         !roots.is_empty(),
@@ -85,7 +85,7 @@ fn solve_quadratic_complex_roots() {
     // x^2 + 1 = 0 → complex roots ±i
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let expr = expr!(x ^ 2 + 1);
+    let expr = expr!(ctx, x ^ 2 + 1);
     let roots = expr.solve(&x).unwrap();
     assert_eq!(
         roots.len(),
@@ -107,7 +107,7 @@ fn solve_cubic_rational_roots() {
     // x^3 - 6*x^2 + 11*x - 6 = 0 → x = 1, 2, 3
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let expr = expr!(x ^ 3 - 6 * x ^ 2 + 11 * x - 6);
+    let expr = expr!(ctx, x ^ 3 - 6 * x ^ 2 + 11 * x - 6);
     let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 3, "expected 3 roots, got {}", roots.len());
     let vals: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -169,7 +169,7 @@ fn solve_verify_quadratic_roots() {
     // Solve x^2 - 5*x + 6 = 0, substitute each root back, verify it is zero
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let expr = expr!(x ^ 2 - 5 * x + 6);
+    let expr = expr!(ctx, x ^ 2 - 5 * x + 6);
     let roots = expr.solve(&x).unwrap();
     assert_eq!(roots.len(), 2, "expected 2 roots, got {}", roots.len());
     for root in &roots {

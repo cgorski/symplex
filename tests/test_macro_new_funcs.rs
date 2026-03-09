@@ -10,7 +10,7 @@ use symplex::prelude::*;
 fn expr_macro_sec() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(sec(x));
+    let result = expr!(ctx, sec(x));
     assert_eq!(result, x.sec());
 }
 
@@ -18,7 +18,7 @@ fn expr_macro_sec() {
 fn expr_macro_csc() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(csc(x));
+    let result = expr!(ctx, csc(x));
     assert_eq!(result, x.csc());
 }
 
@@ -26,7 +26,7 @@ fn expr_macro_csc() {
 fn expr_macro_cot() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(cot(x));
+    let result = expr!(ctx, cot(x));
     assert_eq!(result, x.cot());
 }
 
@@ -34,7 +34,7 @@ fn expr_macro_cot() {
 fn expr_macro_sinc() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(sinc(x));
+    let result = expr!(ctx, sinc(x));
     assert_eq!(result, x.sinc());
 }
 
@@ -42,27 +42,27 @@ fn expr_macro_sinc() {
 fn expr_macro_cosh_coth_sech_csch() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    assert_eq!(expr!(coth(x)), x.coth());
-    assert_eq!(expr!(sech(x)), x.sech());
-    assert_eq!(expr!(csch(x)), x.csch());
+    assert_eq!(expr!(ctx, coth(x)), x.coth());
+    assert_eq!(expr!(ctx, sech(x)), x.sech());
+    assert_eq!(expr!(ctx, csch(x)), x.csch());
 }
 
 #[test]
 fn expr_macro_inverse_reciprocal_trig() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    assert_eq!(expr!(acot(x)), x.acot());
-    assert_eq!(expr!(asec(x)), x.asec());
-    assert_eq!(expr!(acsc(x)), x.acsc());
+    assert_eq!(expr!(ctx, acot(x)), x.acot());
+    assert_eq!(expr!(ctx, asec(x)), x.asec());
+    assert_eq!(expr!(ctx, acsc(x)), x.acsc());
 }
 
 #[test]
 fn expr_macro_inverse_reciprocal_hyp() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    assert_eq!(expr!(acoth(x)), x.acoth());
-    assert_eq!(expr!(asech(x)), x.asech());
-    assert_eq!(expr!(acsch(x)), x.acsch());
+    assert_eq!(expr!(ctx, acoth(x)), x.acoth());
+    assert_eq!(expr!(ctx, asech(x)), x.asech());
+    assert_eq!(expr!(ctx, acsch(x)), x.acsch());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -73,7 +73,7 @@ fn expr_macro_inverse_reciprocal_hyp() {
 fn expr_macro_conjugate() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(conjugate(x));
+    let result = expr!(ctx, conjugate(x));
     assert_eq!(result, x.conjugate());
 }
 
@@ -81,7 +81,7 @@ fn expr_macro_conjugate() {
 fn expr_macro_arg() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(arg(x));
+    let result = expr!(ctx, arg(x));
     assert_eq!(result, x.arg());
 }
 
@@ -93,7 +93,7 @@ fn expr_macro_arg() {
 fn expr_macro_atan2() {
     let ctx = Context::new();
     symplex::syms!(ctx; y, x);
-    let result = expr!(atan2(y, x));
+    let result = expr!(ctx, atan2(y, x));
     assert_eq!(result, y.atan2(&x));
 }
 
@@ -105,7 +105,7 @@ fn expr_macro_atan2() {
 fn expr_macro_fibonacci() {
     let ctx = Context::new();
     let n = ctx.int(10);
-    let result = expr!(fibonacci(n));
+    let result = expr!(ctx, fibonacci(n));
     let evaled = result.eval();
     assert_eq!(format!("{evaled}"), "55");
 }
@@ -114,7 +114,7 @@ fn expr_macro_fibonacci() {
 fn expr_macro_catalan() {
     let ctx = Context::new();
     let n = ctx.int(4);
-    let result = expr!(catalan_number(n));
+    let result = expr!(ctx, catalan_number(n));
     assert_eq!(format!("{}", result.eval()), "14");
 }
 
@@ -122,7 +122,7 @@ fn expr_macro_catalan() {
 fn expr_macro_bernoulli() {
     let ctx = Context::new();
     let n = ctx.int(2);
-    let result = expr!(bernoulli_number(n));
+    let result = expr!(ctx, bernoulli_number(n));
     assert_eq!(format!("{}", result.eval()), "1/6");
 }
 
@@ -131,7 +131,7 @@ fn expr_macro_rising_factorial() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let n = ctx.int(3);
-    let result = expr!(rising_factorial(x, n));
+    let result = expr!(ctx, rising_factorial(x, n));
     assert_eq!(result, x.rising_factorial(&n));
 }
 
@@ -140,7 +140,7 @@ fn expr_macro_falling_factorial() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let n = ctx.int(3);
-    let result = expr!(falling_factorial(x, n));
+    let result = expr!(ctx, falling_factorial(x, n));
     assert_eq!(result, x.falling_factorial(&n));
 }
 
@@ -153,7 +153,7 @@ fn expr_macro_complex_expression() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     // sec(x)^2 + csc(x)^2 — uses both new trig functions
-    let result = expr!(sec(x) ^ 2 + csc(x) ^ 2);
+    let result = expr!(ctx, sec(x) ^ 2 + csc(x) ^ 2);
     let expected = &x.sec().powi(2) + &x.csc().powi(2);
     assert_eq!(result, expected);
 }

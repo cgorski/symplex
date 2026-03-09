@@ -16,7 +16,7 @@ fn main() {
     symplex::syms!(ctx; x, y);
 
     // Function: f(x,y) = x² + y² - 2x - 4y + 5
-    let f = expr!(x ^ 2 + y ^ 2 - 2 * x - 4 * y + 5);
+    let f = expr!(ctx, x ^ 2 + y ^ 2 - 2 * x - 4 * y + 5);
     println!("f(x,y) = {f}");
 
     // Gradient: ∇f = [∂f/∂x, ∂f/∂y]
@@ -44,7 +44,7 @@ fn main() {
     let fxy = f.diff(&x).diff(&y);
     let fyx = f.diff(&y).diff(&x);
     let fyy = f.diff(&y).diff(&y);
-    let hessian = matrix![
+    let hessian = matrix![ctx, 
         [fxx, fxy],
         [fyx, fyy]
     ];
