@@ -100,9 +100,17 @@ pub fn try_risch_rational(
         return None;
     }
 
+    // Expand and evaluate both numer and denom before converting to Poly.
+    // This handles cases like (x²+1)² which need expansion to x⁴+2x²+1
+    // before expr_to_poly can parse them as univariate polynomials.
+    let numer_exp = crate::transforms::expand::expand(arena, numer_id);
+    let numer_expanded = crate::transforms::eval::eval(arena, numer_exp);
+    let denom_exp = crate::transforms::expand::expand(arena, denom_id);
+    let denom_expanded = crate::transforms::eval::eval(arena, denom_exp);
+
     // Convert arena expressions to Poly using existing polybridge.
-    let numer_poly = crate::poly::polybridge::expr_to_poly(arena, numer_id, var)?;
-    let denom_poly = crate::poly::polybridge::expr_to_poly(arena, denom_id, var)?;
+    let numer_poly = crate::poly::polybridge::expr_to_poly(arena, numer_expanded, var)?;
+    let denom_poly = crate::poly::polybridge::expr_to_poly(arena, denom_expanded, var)?;
 
     // Skip if denominator is constant (not a rational function integration problem).
     if denom_poly.is_constant() {
@@ -134,6 +142,7 @@ pub fn try_risch_rational(
     }
 
     // Logarithmic terms.
+    let mut has_algebraic = false;
     for term in &log_result.terms {
         match term {
             LogTerm::Rational { coeff, argument } => {
@@ -150,10 +159,22 @@ pub fn try_risch_rational(
             }
             LogTerm::Algebraic { .. } => {
                 // We can't represent algebraic log terms in the arena yet.
-                // Fall back to the existing integrator.
-                return None;
+                // Instead of bailing entirely, we'll emit the rational part
+                // we computed (from Hermite) and leave the algebraic remainder
+                // as an unevaluated Integral.
+                has_algebraic = true;
             }
         }
+    }
+
+    // If there are algebraic log terms, add an unevaluated Integral for the
+    // square-free remainder that we couldn't fully resolve.
+    if has_algebraic && !hr.h_numer.is_zero() {
+        let h_num_id = crate::poly::polybridge::poly_to_expr(arena, &hr.h_numer, var);
+        let h_den_id = crate::poly::polybridge::poly_to_expr(arena, &hr.h_denom, var);
+        let remainder = arena.div(h_num_id, h_den_id);
+        let unevaluated = arena.intern(ExprNode::Integral(remainder, var));
+        terms.push(unevaluated);
     }
 
     if terms.is_empty() {
@@ -243,6 +264,34 @@ mod tests {
         assert!(
             s.contains("ln") && s.contains("x"),
             "∫ 1/x dx should contain ln(x), got: {s}"
+        );
+    }
+
+    #[test]
+    fn try_risch_rational_one_over_x_sq_plus_1_squared() {
+        // 1/(x²+1)² = Pow(Add(x²,1), -2).
+        // Hermite reduction extracts the rational part x/(2(x²+1)).
+        // The remaining 1/(2(x²+1)) has algebraic log terms (arctan).
+        // The bridge returns a partial result: rational part + unevaluated Integral.
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let two = arena.int(2);
+        let x_sq = arena.pow(x, two);
+        let one = arena.one();
+        let x_sq_plus_1 = arena.add(&[x_sq, one]);
+        let neg2 = arena.int(-2);
+        let expr = arena.pow(x_sq_plus_1, neg2); // (x²+1)^(-2)
+
+        let result = try_risch_rational(&mut arena, expr, x);
+        assert!(result.is_some(), "∫ 1/(x²+1)² dx should produce a partial result");
+
+        let result_expr = result.unwrap();
+        let s = display(&arena, result_expr);
+        // Should contain the Hermite rational part (x/(2(x²+1)) or similar)
+        // and an unevaluated Integral for the arctan remainder.
+        assert!(
+            s.contains("x") && s.contains("Integral"),
+            "result should have rational part + unevaluated remainder, got: {s}"
         );
     }
 
