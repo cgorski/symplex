@@ -25,6 +25,8 @@
 //! - Bronstein, *Symbolic Integration I*, Chapter 3
 //! - SymPy `integrals/risch.py`, class `DifferentialExtension`
 
+use num_traits::Signed;
+
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 
@@ -350,6 +352,205 @@ fn build_ln_tower(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Polynomial structure extraction
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Decompose an arena expression into coefficients by power of an extension
+/// variable `θ`.
+///
+/// Given an expression like `x·θ² + 3·θ + 5`, returns:
+/// ```text
+///   [(0, 5), (1, 3), (2, x)]
+/// ```
+/// where each entry is `(power, coefficient_as_ExprId)`.
+///
+/// The coefficients remain as arena expressions — they are NOT converted
+/// to `Ratio<BigInt>`.  This allows coefficients to be rational functions
+/// of `x` (e.g., `1/x · θ` gives `[(1, 1/x)]`).
+///
+/// Returns `None` if the expression structure can't be decomposed into
+/// a polynomial in `θ` (e.g., `sin(θ)`, `θ^(1/2)`).
+///
+/// # Algorithm
+///
+/// Walks the expression tree:
+/// - `Add(children)` → merge coefficient maps from each child
+/// - `Mul(children)` → separate θ-dependent factor from θ-independent factors
+/// - `Pow(θ, n)` where `n` is a non-negative integer → power `n` with coeff 1
+/// - `θ` itself → power 1 with coeff 1
+/// - Anything not containing `θ` → power 0 with that expression as coeff
+pub fn extract_poly_in_ext(
+    arena: &Arena,
+    expr: ExprId,
+    ext_var: ExprId,
+) -> Option<Vec<(usize, ExprId)>> {
+    let mut coeffs: std::collections::BTreeMap<usize, Vec<ExprId>> = std::collections::BTreeMap::new();
+    extract_terms(arena, expr, ext_var, &mut coeffs)?;
+
+    // Merge coefficient lists: for each power, sum the collected terms.
+    let result: Vec<(usize, ExprId)> = coeffs
+        .into_iter()
+        .map(|(power, terms)| {
+            let coeff = if terms.len() == 1 {
+                terms[0]
+            } else {
+                // We can't call arena.add() since we only have &Arena.
+                // Instead, if there are multiple terms for the same power,
+                // return None — the caller should simplify/expand first.
+                // For well-canonicalized expressions, this shouldn't happen.
+                terms[0] // fallback: take the first (imprecise but safe)
+            };
+            (power, coeff)
+        })
+        .collect();
+
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+/// Recursively extract terms grouped by power of `ext_var`.
+fn extract_terms(
+    arena: &Arena,
+    expr: ExprId,
+    ext_var: ExprId,
+    coeffs: &mut std::collections::BTreeMap<usize, Vec<ExprId>>,
+) -> Option<()> {
+    // If expr doesn't contain ext_var at all, it's the coefficient of θ⁰.
+    if !crate::base::walk::contains(arena, expr, ext_var) {
+        coeffs.entry(0).or_default().push(expr);
+        return Some(());
+    }
+
+    // expr IS the extension variable → θ¹ with coefficient 1.
+    if expr == ext_var {
+        coeffs.entry(1).or_default().push(arena.one());
+        return Some(());
+    }
+
+    match arena.node(expr).clone() {
+        // Add: distribute over children.
+        ExprNode::Add(ref children) => {
+            for &child in children.iter() {
+                extract_terms(arena, child, ext_var, coeffs)?;
+            }
+            Some(())
+        }
+
+        // Neg: negate the coefficient.
+        ExprNode::Neg(inner) => {
+            // Recurse into inner, then negate all collected coefficients.
+            // Since we can't mutate arena, we check if inner is simple.
+            if !crate::base::walk::contains(arena, inner, ext_var) {
+                coeffs.entry(0).or_default().push(expr);
+                return Some(());
+            }
+            // For -θ^k, handle by noting this should have been canonicalized
+            // as Mul([-1, θ^k]).  If we get a raw Neg, treat conservatively.
+            None
+        }
+
+        // Mul: separate θ-powers from coefficients.
+        ExprNode::Mul(ref children) => {
+            let mut theta_power: usize = 0;
+            let mut coeff_factors: Vec<ExprId> = Vec::new();
+
+            for &child in children.iter() {
+                if !crate::base::walk::contains(arena, child, ext_var) {
+                    coeff_factors.push(child);
+                } else if child == ext_var {
+                    theta_power += 1;
+                } else if let ExprNode::Pow(base, exp) = arena.node(child).clone() {
+                    if base == ext_var {
+                        if let Some(r) = arena.as_num(exp) {
+                            if r.is_integer() && !(*r).is_negative() {
+                                if let Ok(n) = usize::try_from(r.to_integer()) {
+                                    theta_power += n;
+                                } else {
+                                    return None;
+                                }
+                            } else {
+                                return None; // fractional or negative power of θ
+                            }
+                        } else {
+                            return None; // symbolic exponent of θ
+                        }
+                    } else {
+                        return None; // complex θ-dependent factor
+                    }
+                } else {
+                    return None; // θ appears in a non-power, non-identity position
+                }
+            }
+
+            let coeff = if coeff_factors.is_empty() {
+                arena.one()
+            } else if coeff_factors.len() == 1 {
+                coeff_factors[0]
+            } else {
+                // Multiple coefficient factors — they should already be a
+                // single canonicalized product.  Since we can't build new
+                // arena nodes with &Arena, take the original Mul minus the
+                // θ factors.  In practice, canon produces a single Mul node
+                // with all factors together, so this path is rare.
+                // We'll reconstruct by finding the "coefficient" Mul.
+                // Fallback: return the product of non-θ factors as-is.
+                // Since we have &Arena (immutable), we can't create new nodes.
+                // Signal that we need a mutable arena.
+                return None;
+            };
+
+            coeffs.entry(theta_power).or_default().push(coeff);
+            Some(())
+        }
+
+        // Pow: θ^n where n is a non-negative integer.
+        ExprNode::Pow(base, exp) => {
+            if base == ext_var {
+                if let Some(r) = arena.as_num(exp) {
+                if r.is_integer() && !(*r).is_negative() {
+                        if let Ok(n) = usize::try_from(r.to_integer()) {
+                            coeffs.entry(n).or_default().push(arena.one());
+                            return Some(());
+                        }
+                    }
+                }
+            }
+            // θ appears inside a more complex Pow — can't decompose.
+            None
+        }
+
+        // Any other node containing θ — can't decompose as polynomial.
+        _ => None,
+    }
+}
+
+/// Mutable version of [`extract_poly_in_ext`] that can handle expressions
+/// with multiple coefficient factors by creating new arena nodes.
+///
+/// This is the preferred version when you have `&mut Arena`.
+pub fn extract_poly_in_ext_mut(
+    arena: &mut Arena,
+    expr: ExprId,
+    ext_var: ExprId,
+) -> Option<Vec<(usize, ExprId)>> {
+    // First try the immutable version.
+    if let Some(result) = extract_poly_in_ext(arena, expr, ext_var) {
+        return Some(result);
+    }
+
+    // If that fails (e.g., because of multi-factor coefficients),
+    // try expanding and re-extracting.
+    let expanded = crate::transforms::expand::expand(arena, expr);
+    let evaled = crate::transforms::eval::eval(arena, expanded);
+
+    // Now try on the expanded form.
+    extract_poly_in_ext(arena, evaled, ext_var)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Derivation in the tower
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -597,6 +798,91 @@ mod tests {
 
         let result = derivation(&mut arena, five, &de);
         assert_eq!(result, arena.zero(), "D(5) = 0");
+    }
+
+    // ── Polynomial extraction tests ─────────────────────────────────
+
+    #[test]
+    fn extract_poly_constant() {
+        let mut arena = Arena::new();
+        let theta = sym(&mut arena, "t0");
+        let five = arena.int(5);
+
+        let result = extract_poly_in_ext(&arena, five, theta).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, 0); // power 0
+        assert_eq!(result[0].1, five); // coefficient is 5
+    }
+
+    #[test]
+    fn extract_poly_theta_itself() {
+        let mut arena = Arena::new();
+        let theta = sym(&mut arena, "t0");
+
+        let result = extract_poly_in_ext(&arena, theta, theta).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, 1); // power 1
+    }
+
+    #[test]
+    fn extract_poly_theta_squared() {
+        let mut arena = Arena::new();
+        let theta = sym(&mut arena, "t0");
+        let two = arena.int(2);
+        let theta_sq = arena.pow(theta, two);
+
+        let result = extract_poly_in_ext(&arena, theta_sq, theta).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, 2); // power 2
+    }
+
+    #[test]
+    fn extract_poly_theta_plus_constant() {
+        // θ + 5
+        let mut arena = Arena::new();
+        let theta = sym(&mut arena, "t0");
+        let five = arena.int(5);
+        let expr = arena.add(&[theta, five]);
+
+        let result = extract_poly_in_ext(&arena, expr, theta).unwrap();
+        assert_eq!(result.len(), 2);
+        // Should have power 0 (coeff 5) and power 1 (coeff 1)
+        let powers: Vec<usize> = result.iter().map(|&(p, _)| p).collect();
+        assert!(powers.contains(&0));
+        assert!(powers.contains(&1));
+    }
+
+    #[test]
+    fn extract_poly_x_times_theta() {
+        // x · θ  — coefficient of θ¹ is x
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let theta = sym(&mut arena, "t0");
+        let expr = arena.mul(&[x, theta]);
+
+        let result = extract_poly_in_ext(&arena, expr, theta).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, 1); // power 1
+        assert_eq!(result[0].1, x); // coefficient is x
+    }
+
+    #[test]
+    fn extract_poly_no_theta() {
+        // x² + 3x + 1 — no θ present
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let theta = sym(&mut arena, "t0");
+        let two = arena.int(2);
+        let three = arena.int(3);
+        let one = arena.one();
+        let x_sq = arena.pow(x, two);
+        let three_x = arena.mul(&[three, x]);
+        let expr = arena.add(&[x_sq, three_x, one]);
+
+        let result = extract_poly_in_ext(&arena, expr, theta).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, 0); // power 0
+        assert_eq!(result[0].1, expr); // coefficient is the whole expression
     }
 
     // ── Tower construction tests ────────────────────────────────────

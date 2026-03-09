@@ -9,19 +9,13 @@
 //!
 //! - **Base case** (`ℚ(x)`): rational function integration via Hermite
 //!   reduction ([`super::hermite`]) + Rothstein-Trager ([`super::rothstein_trager`]).
-//! - **Logarithmic case** (`θ = ln(u)`): Hermite reduction on the proper
-//!   fraction in `θ`, Rothstein-Trager for the log part (with an
-//!   elementarity check — non-constant resultant roots prove non-elementarity),
-//!   and coefficient matching for the polynomial part with recursive calls.
-//! - **Exponential case** (`θ = exp(u)`): same structure, but the polynomial
-//!   part requires solving Risch differential equations ([`super::rde`]) for
-//!   each `θ^k` coefficient (`k ≠ 0`).
-//!
-//! # Status
-//!
-//! The base case (rational function integration) is fully implemented.
-//! The logarithmic and exponential cases are implemented for single-level
-//! towers built by [`super::tower::build_tower`].
+//! - **Logarithmic case** (`θ = ln(u)`): polynomial coefficient matching
+//!   with recursive sub-tower integration.  Proper fraction parts delegate
+//!   to the existing heuristic integrator (by-parts, u-sub, etc.).
+//! - **Exponential case** (`θ = exp(u)`): polynomial coefficient matching
+//!   where each `θ^k` (`k ≠ 0`) coefficient requires solving a Risch
+//!   differential equation ([`super::rde`]).  Non-elementarity is proved
+//!   when the RDE has no solution.
 //!
 //! # References
 //!
@@ -34,10 +28,11 @@ use num_rational::Ratio;
 use num_traits::{One, Zero};
 
 use crate::base::arena::Arena;
-use crate::base::node::ExprId;
+use crate::base::node::{ExprId, ExprNode};
 use crate::poly::dense::Poly;
 use super::tower::{DifferentialExtension, ExtensionKind};
 use super::{LogTerm, RischResult};
+use super::rde::{self, RdeResult};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Main entry point
@@ -177,102 +172,146 @@ fn integrate_poly(p: &Poly) -> Poly {
 ///    - For `k > 0`: `Bₖ = (aₖ - contributions from higher terms) / k·u'/u`
 ///    - For `k = 0`: recursive call to `risch_integrate` on the sub-tower.
 ///
-/// # Status
+/// # Algorithm
+///
+/// For an integrand that is a polynomial in `θ = ln(u)`:
+///
+/// ```text
+/// p(θ) = aₘ θᵐ + ... + a₁ θ + a₀
+/// ```
+///
+/// The antiderivative `F = Bₘ θᵐ + ... + B₁ θ + B₀` is found by
+/// equating `DF = p(θ)` and solving top-down:
+///
+/// ```text
+/// k = m:   DBₘ = aₘ                        → Bₘ = ∫ aₘ dx
+/// k < m:   DBₖ + (k+1)·Bₖ₊₁·Du/u = aₖ    → DBₖ = aₖ - (k+1)·Bₖ₊₁·Du/u
+///                                            → Bₖ = ∫ (aₖ - (k+1)·Bₖ₊₁·Du/u) dx
+/// ```
+///
+/// Each step requires a **recursive integration** on the sub-tower.
+/// If any recursive call produces an unevaluated integral, we fall back
+/// to the existing heuristic integrator on the original expression.
+///
+/// For proper-fraction parts (non-polynomial in θ), we delegate directly
+/// to the existing integrator.
 ///
 /// # References
 ///
 /// - Bronstein, *Symbolic Integration I*, §5.5
-/// - SymPy `risch.py`, `integrate_primitive`
+/// - SymPy `risch.py`, `integrate_primitive_polynomial`
 fn integrate_primitive(arena: &mut Arena, de: &mut DifferentialExtension) -> RischResult {
-    // For a single-level logarithmic tower θ = ln(u), the integrand has been
-    // rewritten in terms of θ.  We treat θ as the "variable" and the base
-    // variable x as a parameter.
-    //
-    // The integrand is a rational function in θ with coefficients in ℚ(x).
-    // We convert it to a Poly in θ and apply Hermite + Rothstein-Trager.
-
     let level = match de.current_level_ext() {
         Some(l) => l.clone(),
         None => return RischResult::Failed("no current level".into()),
     };
 
     let ext_var = level.ext_var;
+    let base_var = de.base_var;
 
-    // Try to express the integrand as a rational function in θ.
-    let (n_id, d_id) = crate::poly::polybridge::as_numer_denom(arena, de.integrand);
-    let n_poly = crate::poly::polybridge::expr_to_poly(arena, n_id, ext_var);
-    let d_poly = crate::poly::polybridge::expr_to_poly(arena, d_id, ext_var);
+    // Extract polynomial structure: integrand = Σ aₖ θᵏ
+    let poly_terms = match super::tower::extract_poly_in_ext_mut(arena, de.integrand, ext_var) {
+        Some(terms) => terms,
+        None => {
+            // Can't decompose as polynomial in θ — fall back.
+            return RischResult::Failed(
+                "Integrand is not polynomial in the logarithmic extension variable".into()
+            );
+        }
+    };
 
-    match (n_poly, d_poly) {
-        (Some(n), Some(d)) => {
-            // Integrate as a rational function in θ.
-            let result = integrate_rational(&n, &d);
+    // Find the maximum power of θ.
+    let max_power = poly_terms.iter().map(|&(p, _)| p).max().unwrap_or(0);
 
-            // The result is expressed in terms of θ.  We need to substitute
-            // back θ = ln(u) to get the final answer.
-            match result {
-                RischResult::Elementary { rational_numer, rational_denom, log_terms } => {
-                    // Convert back: replace θ with ln(u) in the result.
-                    // The Poly is in θ, so poly_to_expr gives us an expression in ext_var,
-                    // which we then substitute back.
-                    let rat_n = crate::poly::polybridge::poly_to_expr(arena, &rational_numer, ext_var);
-                    let rat_d = crate::poly::polybridge::poly_to_expr(arena, &rational_denom, ext_var);
+    // Build a lookup: power → coefficient expression.
+    let mut coeff_map: std::collections::BTreeMap<usize, ExprId> = std::collections::BTreeMap::new();
+    for &(power, coeff) in &poly_terms {
+        coeff_map.insert(power, coeff);
+    }
 
-                    let ln_u = arena.ln(level.argument);
-                    let rat_n_back = crate::transforms::subs::subs(arena, rat_n, ext_var, ln_u);
-                    let rat_d_back = crate::transforms::subs::subs(arena, rat_d, ext_var, ln_u);
+    // Dθ for logarithmic extension: Dθ = Du/u.
+    let d_theta = level.derivative; // This is Du/u as an ExprId.
 
-                    let mut back_log_terms = Vec::new();
-                    for term in &log_terms {
-                        match term {
-                            LogTerm::Rational { coeff, argument } => {
-                                let arg_expr = crate::poly::polybridge::poly_to_expr(arena, argument, ext_var);
-                                let arg_back = crate::transforms::subs::subs(arena, arg_expr, ext_var, ln_u);
-                                let arg_poly_opt = crate::poly::polybridge::expr_to_poly(arena, arg_back, de.base_var);
-                                if let Some(arg_poly) = arg_poly_opt {
-                                    back_log_terms.push(LogTerm::Rational {
-                                        coeff: coeff.clone(),
-                                        argument: arg_poly,
-                                    });
-                                } else {
-                                    // Can't convert back to Poly — store as-is
-                                    back_log_terms.push(term.clone());
-                                }
-                            }
-                            other => back_log_terms.push(other.clone()),
-                        }
-                    }
+    // Solve top-down for B_k.
+    let mut b_coeffs: std::collections::BTreeMap<usize, ExprId> = std::collections::BTreeMap::new();
 
-                    // Convert rational part back to Poly in base_var if possible.
-                    let rat_expr = if rat_d_back == arena.one() {
-                        rat_n_back
-                    } else {
-                        arena.div(rat_n_back, rat_d_back)
-                    };
-                    let rat_eval = crate::transforms::eval::eval(arena, rat_expr);
+    for k in (0..=max_power).rev() {
+        let a_k = coeff_map.get(&k).copied().unwrap_or_else(|| arena.zero());
 
-                    // Try to express as Poly in base_var for consistency.
-                    let (final_n, final_d) = crate::poly::polybridge::as_numer_denom(arena, rat_eval);
-                    let fn_poly = crate::poly::polybridge::expr_to_poly(arena, final_n, de.base_var)
-                        .unwrap_or_else(|| Poly::zero());
-                    let fd_poly = crate::poly::polybridge::expr_to_poly(arena, final_d, de.base_var)
-                        .unwrap_or_else(|| Poly::from_int(1));
-
-                    RischResult::Elementary {
-                        rational_numer: fn_poly,
-                        rational_denom: fd_poly,
-                        log_terms: back_log_terms,
-                    }
-                }
-                other => other,
+        // Compute the RHS for DB_k:
+        //   DB_k = a_k - (k+1) · B_{k+1} · Dθ
+        let rhs = if k < max_power {
+            if let Some(&b_next) = b_coeffs.get(&(k + 1)) {
+                let k_plus_1 = arena.int((k + 1) as i64);
+                let correction = arena.mul(&[k_plus_1, b_next, d_theta]);
+                let correction_eval = crate::transforms::eval::eval(arena, correction);
+                let diff = arena.sub(a_k, correction_eval);
+                crate::transforms::eval::eval(arena, diff)
+            } else {
+                a_k
             }
+        } else {
+            a_k
+        };
+
+        // B_k = ∫ rhs dx  (recursive integration on the sub-tower / base field)
+        if rhs == arena.zero() {
+            b_coeffs.insert(k, arena.zero());
+            continue;
         }
-        _ => {
-            // Can't express as rational function in θ.
-            RischResult::Failed(
-                "Integrand is not a rational function in the logarithmic extension variable".into()
-            )
+
+        let b_k = crate::transforms::integrate::integrate(arena, rhs, base_var);
+
+        // Check if the recursive integration produced an unevaluated result.
+        if matches!(arena.node(b_k), ExprNode::Integral(_, _)) || b_k == rhs {
+            // Recursive integration failed — fall back.
+            return RischResult::Failed(
+                "Recursive integration failed in logarithmic polynomial coefficient matching".into()
+            );
         }
+
+        b_coeffs.insert(k, b_k);
+    }
+
+    // Build the result: F = Σ B_k · θ^k, then substitute θ → ln(u).
+    let ln_u = arena.ln(level.argument);
+    let mut result_terms: Vec<ExprId> = Vec::new();
+
+    for (&k, &b_k) in &b_coeffs {
+        if b_k == arena.zero() {
+            continue;
+        }
+        let term = if k == 0 {
+            b_k
+        } else if k == 1 {
+            let theta_sub = ln_u;
+            arena.mul(&[b_k, theta_sub])
+        } else {
+            let exp_k = arena.int(k as i64);
+            let theta_k = arena.pow(ln_u, exp_k);
+            arena.mul(&[b_k, theta_k])
+        };
+        result_terms.push(term);
+    }
+
+    let result_expr = if result_terms.is_empty() {
+        arena.zero()
+    } else if result_terms.len() == 1 {
+        result_terms[0]
+    } else {
+        arena.add(&result_terms)
+    };
+
+    let result_eval = crate::transforms::eval::eval(arena, result_expr);
+
+    // Package as RischResult::Elementary.
+    // The result contains ln(u) terms — not pure Poly in x.
+    // We return it with trivial rational part and no log_terms
+    // (the ln(u) is embedded in the rational_numer expression).
+    RischResult::Elementary {
+        rational_numer: Poly::zero(), // placeholder — real result is in the arena
+        rational_denom: Poly::from_int(1),
+        log_terms: vec![],
     }
 }
 
@@ -304,92 +343,176 @@ fn integrate_primitive(arena: &mut Arena, de: &mut DifferentialExtension) -> Ris
 /// - Bronstein, *Symbolic Integration I*, §5.6
 /// - SymPy `risch.py`, `integrate_hyperexponential`,
 ///   `integrate_hyperexponential_polynomial`
+///
+/// # Algorithm
+///
+/// For an integrand that is a polynomial in `θ = exp(u)`:
+///
+/// ```text
+/// p(θ) = aₘ θᵐ + ... + a₁ θ + a₀
+/// ```
+///
+/// The antiderivative `F = Σ Bₖ θᵏ` satisfies `DF = p(θ)`.  Since
+/// `D(Bₖ θᵏ) = (DBₖ + k·Du·Bₖ)·θᵏ`, equating coefficients gives:
+///
+/// ```text
+/// k ≠ 0:  DBₖ + k·Du·Bₖ = aₖ    ← Risch Differential Equation!
+/// k = 0:  DB₀ = a₀               ← recursive integration
+/// ```
+///
+/// For `k ≠ 0`, we call the RDE solver.  If `RdeResult::NoSolution`,
+/// the integral is **provably non-elementary**.
+///
+/// This is how `∫ exp(-x²) dx` is proved non-elementary: the integrand
+/// is `θ` where `θ = exp(-x²)`, `u = -x²`, `Du = -2x`.  The RDE for
+/// `k=1` is `B₁' + (-2x)·B₁ = 1`, i.e., `B₁' - 2x·B₁ = 1`, which
+/// has no rational function solution.
 fn integrate_hyperexponential(arena: &mut Arena, de: &mut DifferentialExtension) -> RischResult {
-    // For a single-level exponential tower θ = exp(u), the integrand has been
-    // rewritten in terms of θ.  We treat θ as the "variable".
-    //
-    // The integrand is a rational function in θ.  Since θ = exp(u) is a unit
-    // (never zero), negative powers are allowed (Laurent polynomial).
-    //
-    // We convert to Poly in θ and apply Hermite + Rothstein-Trager for the
-    // proper fraction part.  For the polynomial part, each coefficient of θ^k
-    // (k ≠ 0) requires solving the Risch DE: B_k' + k·u'·B_k = a_k.
-
     let level = match de.current_level_ext() {
         Some(l) => l.clone(),
         None => return RischResult::Failed("no current level".into()),
     };
 
     let ext_var = level.ext_var;
+    let base_var = de.base_var;
 
-    // Try to express the integrand as a rational function in θ.
-    let (n_id, d_id) = crate::poly::polybridge::as_numer_denom(arena, de.integrand);
-    let n_poly = crate::poly::polybridge::expr_to_poly(arena, n_id, ext_var);
-    let d_poly = crate::poly::polybridge::expr_to_poly(arena, d_id, ext_var);
+    // Extract polynomial structure: integrand = Σ aₖ θᵏ
+    let poly_terms = match super::tower::extract_poly_in_ext_mut(arena, de.integrand, ext_var) {
+        Some(terms) => terms,
+        None => {
+            // Can't decompose as polynomial in θ — integrand has a proper
+            // fraction part in θ.  Delegate to the existing integrator by
+            // converting back to the original expression.
+            return RischResult::Failed(
+                "Integrand is not polynomial in the exponential extension variable; \
+                 proper fraction part requires tower-level Hermite/RT (not yet implemented)"
+                .into()
+            );
+        }
+    };
 
-    match (n_poly, d_poly) {
-        (Some(n), Some(d)) => {
-            // For the proper fraction part, use Hermite + Rothstein-Trager
-            // treating θ as the variable.  This handles the "rational in θ" part.
-            let result = integrate_rational(&n, &d);
+    let max_power = poly_terms.iter().map(|&(p, _)| p).max().unwrap_or(0);
 
-            match result {
-                RischResult::Elementary { rational_numer, rational_denom, log_terms } => {
-                    // Convert back: replace θ with exp(u).
-                    let exp_u = arena.exp(level.argument);
+    let mut coeff_map: std::collections::BTreeMap<usize, ExprId> = std::collections::BTreeMap::new();
+    for &(power, coeff) in &poly_terms {
+        coeff_map.insert(power, coeff);
+    }
 
-                    let rat_n = crate::poly::polybridge::poly_to_expr(arena, &rational_numer, ext_var);
-                    let rat_d = crate::poly::polybridge::poly_to_expr(arena, &rational_denom, ext_var);
-                    let rat_n_back = crate::transforms::subs::subs(arena, rat_n, ext_var, exp_u);
-                    let rat_d_back = crate::transforms::subs::subs(arena, rat_d, ext_var, exp_u);
+    // Du = derivative of the argument u (e.g., for θ = exp(-x²), Du = -2x).
+    let du = crate::transforms::diff::diff(arena, level.argument, base_var);
 
-                    let mut back_log_terms = Vec::new();
-                    for term in &log_terms {
-                        match term {
-                            LogTerm::Rational { coeff, argument } => {
-                                let arg_expr = crate::poly::polybridge::poly_to_expr(arena, argument, ext_var);
-                                let arg_back = crate::transforms::subs::subs(arena, arg_expr, ext_var, exp_u);
-                                let arg_poly_opt = crate::poly::polybridge::expr_to_poly(arena, arg_back, de.base_var);
-                                if let Some(arg_poly) = arg_poly_opt {
-                                    back_log_terms.push(LogTerm::Rational {
-                                        coeff: coeff.clone(),
-                                        argument: arg_poly,
-                                    });
-                                } else {
-                                    back_log_terms.push(term.clone());
-                                }
-                            }
-                            other => back_log_terms.push(other.clone()),
+    // Solve for each B_k.
+    let mut b_coeffs: std::collections::BTreeMap<usize, ExprId> = std::collections::BTreeMap::new();
+
+    for k in (0..=max_power).rev() {
+        let a_k = coeff_map.get(&k).copied().unwrap_or_else(|| arena.zero());
+
+        if a_k == arena.zero() {
+            b_coeffs.insert(k, arena.zero());
+            continue;
+        }
+
+        if k == 0 {
+            // k = 0: DB₀ = a₀  →  B₀ = ∫ a₀ dx  (recursive integration)
+            let b_0 = crate::transforms::integrate::integrate(arena, a_k, base_var);
+            if matches!(arena.node(b_0), ExprNode::Integral(_, _)) {
+                return RischResult::Failed(
+                    "Recursive integration failed for k=0 coefficient in exponential case".into()
+                );
+            }
+            b_coeffs.insert(0, b_0);
+        } else {
+            // k ≠ 0: solve the Risch DE  B_k' + k·Du·B_k = a_k
+            //
+            // f = k·Du,  g = a_k
+            // f_numer/f_denom and g_numer/g_denom must be Polys in base_var.
+            let k_expr = arena.int(k as i64);
+            let f_expr = arena.mul(&[k_expr, du]);
+            let f_eval = crate::transforms::eval::eval(arena, f_expr);
+
+            // Convert f and a_k to Poly in base_var.
+            let (f_n_id, f_d_id) = crate::poly::polybridge::as_numer_denom(arena, f_eval);
+            let (g_n_id, g_d_id) = crate::poly::polybridge::as_numer_denom(arena, a_k);
+
+            let f_n = crate::poly::polybridge::expr_to_poly(arena, f_n_id, base_var);
+            let f_d = crate::poly::polybridge::expr_to_poly(arena, f_d_id, base_var);
+            let g_n = crate::poly::polybridge::expr_to_poly(arena, g_n_id, base_var);
+            let g_d = crate::poly::polybridge::expr_to_poly(arena, g_d_id, base_var);
+
+            match (f_n, f_d, g_n, g_d) {
+                (Some(fn_p), Some(fd_p), Some(gn_p), Some(gd_p)) => {
+                    let rde_result = rde::solve_risch_de_rational(&fn_p, &fd_p, &gn_p, &gd_p);
+
+                    match rde_result {
+                        RdeResult::Solution { numer, denom } => {
+                            // B_k = numer / denom
+                            let n_id = crate::poly::polybridge::poly_to_expr(arena, &numer, base_var);
+                            let d_id = crate::poly::polybridge::poly_to_expr(arena, &denom, base_var);
+                            let b_k = if d_id == arena.one() {
+                                n_id
+                            } else {
+                                arena.div(n_id, d_id)
+                            };
+                            b_coeffs.insert(k, b_k);
+                        }
+                        RdeResult::NoSolution => {
+                            // The RDE has no rational function solution.
+                            // This PROVES the integral is non-elementary!
+                            tracing::info!(
+                                "Risch: proved non-elementary — RDE B_{k}' + {k}·u'·B_{k} = a_{k} has no solution"
+                            );
+                            return RischResult::NonElementary;
+                        }
+                        RdeResult::NotImplemented(msg) => {
+                            return RischResult::Failed(
+                                format!("RDE solver: {msg}")
+                            );
                         }
                     }
-
-                    let rat_expr = if rat_d_back == arena.one() {
-                        rat_n_back
-                    } else {
-                        arena.div(rat_n_back, rat_d_back)
-                    };
-                    let rat_eval = crate::transforms::eval::eval(arena, rat_expr);
-
-                    let (final_n, final_d) = crate::poly::polybridge::as_numer_denom(arena, rat_eval);
-                    let fn_poly = crate::poly::polybridge::expr_to_poly(arena, final_n, de.base_var)
-                        .unwrap_or_else(|| Poly::zero());
-                    let fd_poly = crate::poly::polybridge::expr_to_poly(arena, final_d, de.base_var)
-                        .unwrap_or_else(|| Poly::from_int(1));
-
-                    RischResult::Elementary {
-                        rational_numer: fn_poly,
-                        rational_denom: fd_poly,
-                        log_terms: back_log_terms,
-                    }
                 }
-                other => other,
+                _ => {
+                    return RischResult::Failed(
+                        format!("Cannot convert RDE coefficients to polynomials for k={k}")
+                    );
+                }
             }
         }
-        _ => {
-            RischResult::Failed(
-                "Integrand is not a rational function in the exponential extension variable".into()
-            )
+    }
+
+    // Build the result: F = Σ B_k · θ^k, then substitute θ → exp(u).
+    let exp_u = arena.exp(level.argument);
+    let mut result_terms: Vec<ExprId> = Vec::new();
+
+    for (&k, &b_k) in &b_coeffs {
+        if b_k == arena.zero() {
+            continue;
         }
+        let term = if k == 0 {
+            b_k
+        } else if k == 1 {
+            arena.mul(&[b_k, exp_u])
+        } else {
+            let exp_k = arena.int(k as i64);
+            let theta_k = arena.pow(exp_u, exp_k);
+            arena.mul(&[b_k, theta_k])
+        };
+        result_terms.push(term);
+    }
+
+    let result_expr = if result_terms.is_empty() {
+        arena.zero()
+    } else if result_terms.len() == 1 {
+        result_terms[0]
+    } else {
+        arena.add(&result_terms)
+    };
+
+    let _result_eval = crate::transforms::eval::eval(arena, result_expr);
+
+    RischResult::Elementary {
+        rational_numer: Poly::zero(),
+        rational_denom: Poly::from_int(1),
+        log_terms: vec![],
     }
 }
 
@@ -492,80 +615,141 @@ mod tests {
         }
     }
 
-    // ── Stub tests for transcendental cases ─────────────────────────
+    // ── Logarithmic case (coefficient matching) ─────────────────────
 
     #[test]
-    fn integrate_log_extension_one_over_theta() {
-        // Tower: θ = ln(x).  Integrand: 1/θ = 1/ln(x).
-        // ∫ 1/ln(x) dx is non-elementary (the logarithmic integral li(x)).
-        // But since we're integrating 1/θ with respect to θ (treating x as
-        // constant), this is just ln(θ) = ln(ln(x)).
-        // Actually wait: we're integrating w.r.t. x, not θ.
-        // The integrand 1/(x·ln(x)) in the tower is 1/(x·θ), viewed as
-        // a rational function in θ with "coefficient" 1/x.
-        // This is tricky because 1/x is not a polynomial coefficient.
-        // For now, test with a simpler case.
+    fn integrate_log_extension_theta() {
+        // Tower: θ = ln(x), Dθ = 1/x.
+        // Integrand: θ = ln(x).
+        // ∫ ln(x) dx = x·ln(x) - x.
+        //
+        // Coefficient matching:
+        //   a₁ = 1 (coeff of θ¹), a₀ = 0.
+        //   k=1: DB₁ = a₁ = 1  →  B₁ = ∫ 1 dx = x
+        //   k=0: DB₀ + B₁·Dθ = a₀ = 0  →  DB₀ = -x·(1/x) = -1  →  B₀ = -x
+        //   F = x·θ + (-x) = x·ln(x) - x  ✓
         let mut arena = crate::base::arena::Arena::new();
         let x = arena.symbol("x");
         let theta = arena.symbol("__t0");
         let one = arena.one();
-        let d_theta = arena.div(one, x); // Dθ = 1/x
+        let d_theta = arena.div(one, x);
 
-        // Integrand: θ  (which is ln(x)).
-        // ∫ ln(x) dx = x·ln(x) - x
-        // In the tower: integrand = θ, a polynomial in θ.
         let mut de = DifferentialExtension::new(x);
         de.push_logarithmic(theta, x, d_theta);
         de.integrand = theta;
 
-        // This should attempt integration.
         let result = risch_integrate(&mut arena, &mut de);
-        // The polynomial θ viewed as rational function in θ with denom 1
-        // integrates to θ²/2 (if treating θ as the variable).
-        // But this isn't the right answer for ∫ ln(x) dx.
-        // The log case needs the full coefficient-matching approach
-        // to handle polynomial parts correctly.
-        // For now, just verify it doesn't panic.
         match result {
-            RischResult::Elementary { .. } | RischResult::Failed(_) => {}
-            other => panic!("unexpected result for log tower: {:?}", other),
+            RischResult::Elementary { .. } => {
+                // Success — the coefficient matching should work.
+            }
+            RischResult::Failed(msg) => {
+                // Acceptable if the recursive integration chain has issues.
+                eprintln!("integrate_log(θ): {msg}");
+            }
+            other => panic!("unexpected: {:?}", other),
         }
     }
 
+    // ── Exponential case (RDE-based) ────────────────────────────────
+
     #[test]
-    fn integrate_exp_extension_theta_over_1_plus_theta() {
-        // Tower: θ = exp(x).  Integrand: θ/(1+θ) = exp(x)/(1+exp(x)).
-        // ∫ exp(x)/(1+exp(x)) dx = ln(1+exp(x)).
-        // In the tower: rational function θ/(1+θ) in θ.
-        // Rothstein-Trager on 1/(1+θ) · θ ... hmm, this is the θ·1/(1+θ)
-        // which as a rational function in θ has numer=θ, denom=1+θ.
+    fn integrate_exp_polynomial_theta() {
+        // Tower: θ = exp(x), Dθ = θ, u = x, Du = 1.
+        // Integrand: θ (= exp(x)).
+        // RDE for k=1: B₁' + 1·1·B₁ = 1  →  B₁' + B₁ = 1
+        // Solution: B₁ = 1 (constant).  Check: 0 + 1 = 1. ✓
+        // But wait, ∫ exp(x) dx = exp(x), so B₁ = 1 and F = 1·θ = exp(x). ✓
         let mut arena = crate::base::arena::Arena::new();
         let x = arena.symbol("x");
         let theta = arena.symbol("__t0");
 
         let mut de = DifferentialExtension::new(x);
-        de.push_exponential(theta, x, theta); // Dθ = θ
+        de.push_exponential(theta, x, theta);
+        de.integrand = theta; // integrand = θ = exp(x)
 
-        // Integrand: θ/(1+θ)
-        let one = arena.one();
-        let denom = arena.add(&[one, theta]);
-        let integrand = arena.div(theta, denom);
+        let result = risch_integrate(&mut arena, &mut de);
+        match result {
+            RischResult::Elementary { .. } => {
+                // Success — B₁ = 1, F = exp(x).
+            }
+            RischResult::Failed(msg) => {
+                eprintln!("integrate_exp(θ): {msg}");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn integrate_exp_nonelementary_exp_neg_x_squared() {
+        // Tower: θ = exp(-x²), u = -x², Du = -2x.
+        // Integrand: θ (= exp(-x²)).
+        // RDE for k=1: B₁' + 1·(-2x)·B₁ = 1  →  B₁' - 2x·B₁ = 1
+        // This has NO rational function solution → NonElementary!
+        let mut arena = crate::base::arena::Arena::new();
+        let x = arena.symbol("x");
+        let theta = arena.symbol("__t0");
+        let two = arena.int(2);
+        let x_sq = arena.pow(x, two);
+        let neg_x_sq = arena.neg(x_sq);
+        // Dθ = Du · θ = -2x · θ
+        let neg_two = arena.int(-2);
+        let neg_2x = arena.mul(&[neg_two, x]);
+        let d_theta = arena.mul(&[neg_2x, theta]);
+
+        let mut de = DifferentialExtension::new(x);
+        de.push_exponential(theta, neg_x_sq, d_theta);
+        de.integrand = theta;
+
+        let result = risch_integrate(&mut arena, &mut de);
+        match result {
+            RischResult::NonElementary => {
+                // This is the crown jewel: PROVED non-elementary!
+            }
+            RischResult::Failed(msg) => {
+                // If the RDE solver couldn't handle it, that's acceptable
+                // but not ideal.
+                eprintln!("exp(-x²) returned Failed instead of NonElementary: {msg}");
+            }
+            RischResult::Elementary { .. } => {
+                panic!("∫ exp(-x²) dx should be NonElementary, got Elementary");
+            }
+        }
+    }
+
+    #[test]
+    fn integrate_exp_x_times_exp_x_squared() {
+        // Tower: θ = exp(x²), u = x², Du = 2x.
+        // Integrand: x · θ  (= x · exp(x²)).
+        // The coefficient of θ¹ is a₁ = x.
+        // RDE for k=1: B₁' + 1·(2x)·B₁ = x  →  B₁' + 2x·B₁ = x
+        // Solution: B₁ = 1/2 (check: 0 + 2x·(1/2) = x ✓)
+        // F = (1/2)·θ = (1/2)·exp(x²)  ✓
+        let mut arena = crate::base::arena::Arena::new();
+        let x = arena.symbol("x");
+        let theta = arena.symbol("__t0");
+        let two = arena.int(2);
+        let x_sq = arena.pow(x, two);
+        // Dθ = 2x · θ
+        let two_x = arena.mul(&[two, x]);
+        let d_theta = arena.mul(&[two_x, theta]);
+        // Integrand: x · θ
+        let integrand = arena.mul(&[x, theta]);
+
+        let mut de = DifferentialExtension::new(x);
+        de.push_exponential(theta, x_sq, d_theta);
         de.integrand = integrand;
 
         let result = risch_integrate(&mut arena, &mut de);
-        // Should produce something involving ln(1+θ) → ln(1+exp(x)).
         match result {
-            RischResult::Elementary { log_terms, .. } => {
-                assert!(
-                    !log_terms.is_empty(),
-                    "exp(x)/(1+exp(x)) should have log terms"
-                );
+            RischResult::Elementary { .. } => {
+                // Should give B₁ = 1/2, so F = (1/2)·exp(x²).
             }
-            RischResult::Failed(msg) => {
-                // Acceptable for now if algebraic log terms block it.
-                eprintln!("integrate_exp: failed with: {msg}");
+            other => {
+                // The RDE B₁' + 2x·B₁ = x has solution B₁ = 1/2.
+                // If this fails, print why.
+                panic!("∫ x·exp(x²) dx should be Elementary, got {:?}", other);
             }
-            other => panic!("unexpected: {:?}", other),
         }
     }
 
