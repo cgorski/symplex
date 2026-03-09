@@ -9,7 +9,7 @@ use std::ops;
 use std::sync::Arc;
 
 use crate::output::display::fmt_expr;
-use crate::base::errors::SymplexError;
+
 use crate::api::context::Context;
 use crate::api::expr::{Ex, Expr, Sort};
 use crate::base::node::ExprId;
@@ -444,31 +444,5 @@ impl<'a> std::iter::Product<&'a Ex> for Ex {
             guard.arena.mul(&ids)
         };
         Ex::from_raw_parts(ctx_id, inner, id)
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// FromStr — parse from string using the global default context
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl std::str::FromStr for Ex {
-    type Err = SymplexError;
-
-    /// Parse a mathematical expression string using the global default context.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let expr: Ex = "x^2 + 1".parse().unwrap();
-    /// assert_eq!(format!("{expr}"), "x^2 + 1");
-    /// ```
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let ctx = crate::api::context::Context::new();
-        crate::output::parse::parse(&ctx, s).map_err(|e| SymplexError::ComputationFailed {
-            operation: "parse",
-            reason: e.to_string(),
-        })
     }
 }

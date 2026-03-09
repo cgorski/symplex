@@ -391,49 +391,72 @@ pub enum ExprTree {
     },
     /// Limit: lim_{var -> point} body.
     Limit {
+        /// The expression to take the limit of.
         body: Box<ExprTree>,
+        /// The variable approaching the limit point.
         var: Box<ExprTree>,
+        /// The point being approached.
         point: Box<ExprTree>,
     },
     /// Series expansion of body around point in var up to order.
     Series {
+        /// The expression to expand.
         body: Box<ExprTree>,
+        /// The expansion variable.
         var: Box<ExprTree>,
+        /// The expansion point.
         point: Box<ExprTree>,
+        /// The truncation order.
         order: Box<ExprTree>,
     },
     /// Laplace transform: L{body}(t -> s).
     LaplaceTransform {
+        /// The time-domain expression.
         body: Box<ExprTree>,
+        /// The time variable.
         t: Box<ExprTree>,
+        /// The frequency variable.
         s: Box<ExprTree>,
     },
     /// Inverse Laplace transform: L^{-1}{body}(s -> t).
     InverseLaplaceTransform {
+        /// The frequency-domain expression.
         body: Box<ExprTree>,
+        /// The frequency variable.
         s: Box<ExprTree>,
+        /// The time variable.
         t: Box<ExprTree>,
     },
     /// Residue of body at var = point.
     Residue {
+        /// The expression to compute the residue of.
         body: Box<ExprTree>,
+        /// The variable.
         var: Box<ExprTree>,
+        /// The pole location.
         point: Box<ExprTree>,
     },
     /// Root of a polynomial: RootOf(poly, index).
     RootOf {
+        /// The polynomial expression.
         poly: Box<ExprTree>,
+        /// The root index (0-based).
         index: Box<ExprTree>,
     },
     /// Differential equation solver: DSolve(expr, func, var).
     DSolve {
+        /// The ODE expression (equal to zero).
         expr: Box<ExprTree>,
+        /// The unknown function.
         func: Box<ExprTree>,
+        /// The independent variable.
         var: Box<ExprTree>,
     },
     /// Condition set: {var | condition}.
     ConditionSet {
+        /// The set variable.
         var: Box<ExprTree>,
+        /// The membership condition.
         condition: Box<ExprTree>,
     },
 }

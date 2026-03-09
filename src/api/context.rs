@@ -121,6 +121,29 @@ impl Context {
         self.symbol(name)
     }
 
+    /// Parse a mathematical expression string in this context.
+    ///
+    /// All symbols created during parsing belong to this context,
+    /// so the result can be freely combined with other expressions
+    /// from the same context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let expr = ctx.parse("x^2 + 1").unwrap();
+    /// assert!(format!("{expr}").contains("x"));
+    /// ```
+    pub fn parse(&self, input: &str) -> Result<crate::api::expr::Ex, crate::base::errors::SymplexError> {
+        crate::output::parse::parse(self, input)
+            .map_err(|e| crate::base::errors::SymplexError::ComputationFailed {
+                operation: "parse",
+                reason: e.to_string(),
+            })
+    }
+
     /// Create a symbol with mathematical assumptions.
     ///
     /// # Examples

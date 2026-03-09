@@ -139,69 +139,77 @@ fn exp_ln_simplifies_for_integer() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 2. FromStr for Ex
+// 2. Context::parse() for expressions
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn from_str_basic() {
-    let expr: Ex = "x^2 + 1".parse().unwrap();
+fn parse_basic() {
+    let ctx = Context::new();
+    let expr = ctx.parse("x^2 + 1").unwrap();
     assert_eq!(format!("{expr}"), "x^2 + 1");
 }
 
 #[test]
-fn from_str_with_functions() {
-    let expr: Ex = "sin(x)".parse().unwrap();
+fn parse_with_functions() {
+    let ctx = Context::new();
+    let expr = ctx.parse("sin(x)").unwrap();
     assert_eq!(format!("{expr}"), "sin(x)");
 }
 
 #[test]
-fn from_str_error_on_garbage() {
-    let result = "!!!garbage".parse::<Ex>();
+fn parse_error_on_garbage() {
+    let ctx = Context::new();
+    let result = ctx.parse("!!!garbage");
     assert!(result.is_err(), "parsing garbage should produce an error");
 }
 
 #[test]
-fn from_str_roundtrip() {
-    let __ctx = Context::new();
-    let original = __ctx.symbol("x").powi(2) + __ctx.int(1);
+fn parse_roundtrip() {
+    let ctx = Context::new();
+    let original = ctx.symbol("x").powi(2) + ctx.int(1);
     let text = format!("{original}");
-    let parsed: Ex = text.parse().unwrap();
+    let parsed = ctx.parse(&text).unwrap();
     assert_eq!(
         format!("{parsed}"),
         format!("{original}"),
-        "Display → FromStr round-trip should preserve representation"
+        "Display → parse round-trip should preserve representation"
     );
 }
 
 #[test]
-fn from_str_constants() {
-    let expr: Ex = "pi".parse().unwrap();
+fn parse_constants() {
+    let ctx = Context::new();
+    let expr = ctx.parse("pi").unwrap();
     assert_eq!(format!("{expr}"), "pi");
 }
 
 #[test]
-fn from_str_nested_functions() {
-    let expr: Ex = "sin(cos(x))".parse().unwrap();
+fn parse_nested_functions() {
+    let ctx = Context::new();
+    let expr = ctx.parse("sin(cos(x))").unwrap();
     assert_eq!(format!("{expr}"), "sin(cos(x))");
 }
 
 #[test]
-fn from_str_negative_integer() {
-    let expr: Ex = "-7".parse().unwrap();
+fn parse_negative_integer() {
+    let ctx = Context::new();
+    let expr = ctx.parse("-7").unwrap();
     assert_eq!(format!("{expr}"), "-7");
 }
 
 #[test]
-fn from_str_addition() {
-    let expr: Ex = "a + b".parse().unwrap();
+fn parse_addition() {
+    let ctx = Context::new();
+    let expr = ctx.parse("a + b").unwrap();
     let s = format!("{expr}");
     // Canonical ordering may reorder — just check both symbols appear.
     assert!(s.contains('a') && s.contains('b'), "got: {s}");
 }
 
 #[test]
-fn from_str_multiplication() {
-    let expr: Ex = "2*x".parse().unwrap();
+fn parse_multiplication() {
+    let ctx = Context::new();
+    let expr = ctx.parse("2*x").unwrap();
     assert_eq!(format!("{expr}"), "2*x");
 }
 
