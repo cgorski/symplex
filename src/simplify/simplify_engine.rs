@@ -9,6 +9,7 @@
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
+use num_bigint::BigInt;
 use num_traits::Signed;
 
 /// Count the number of operations (nodes) in an expression.
@@ -47,6 +48,12 @@ struct ExprFlags {
     has_floor_ceil: bool,
     /// Expression contains `Pow` nodes (general, not just negative exponent).
     has_pow: bool,
+    /// Expression contains `Factorial` or `Binomial` nodes — gates combsimp strategy.
+    has_factorial: bool,
+    /// Expression contains `Gamma` or `LogGamma` nodes — gates combsimp strategy.
+    has_gamma: bool,
+    /// Expression contains `Pow` with exponent 1/2 (square root) — gates radsimp strategy.
+    has_sqrt: bool,
 }
 
 /// Compute expression flags in a single tree walk.
@@ -65,6 +72,9 @@ fn compute_flags(arena: &Arena, expr: ExprId) -> ExprFlags {
         has_sign: false,
         has_floor_ceil: false,
         has_pow: false,
+        has_factorial: false,
+        has_gamma: false,
+        has_sqrt: false,
     };
 
     for &id in &post_order {
@@ -90,10 +100,21 @@ fn compute_flags(arena: &Arena, expr: ExprId) -> ExprFlags {
             }
             ExprNode::Pow(_, exp) => {
                 flags.has_pow = true;
-                if let Some(r) = arena.as_num(*exp)
-                    && r.is_negative() {
+                if let Some(r) = arena.as_num(*exp) {
+                    if r.is_negative() {
                         flags.has_neg_pow = true;
                     }
+                    // Check for sqrt: exponent == 1/2
+                    if *r.numer() == BigInt::from(1) && *r.denom() == BigInt::from(2) {
+                        flags.has_sqrt = true;
+                    }
+                }
+            }
+            ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => {
+                flags.has_factorial = true;
+            }
+            ExprNode::Gamma(_) | ExprNode::LogGamma(_) => {
+                flags.has_gamma = true;
             }
             ExprNode::Add(_) => flags.has_add = true,
             ExprNode::Apply(_, _) => flags.has_apply = true,
@@ -283,6 +304,51 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         tracing::debug!("smart_simplify: skipping refine (no abs/sign/floor/ceil/pow nodes)");
     }
 
+    // Strategy 9: eval → powsimp → eval (only if has Pow nodes)
+    if flags.has_pow {
+        let s9_eval = crate::transforms::eval::eval(arena, expr);
+        let s9_pow = crate::simplify::powsimp::powsimp(arena, s9_eval);
+        let s9 = crate::transforms::eval::eval(arena, s9_pow);
+        tracing::trace!(
+            strategy = "eval+powsimp",
+            ops = count_ops(arena, s9),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s9);
+    } else {
+        tracing::debug!("smart_simplify: skipping powsimp (no Pow nodes)");
+    }
+
+    // Strategy 10: eval → combsimp → eval (only if has factorial/gamma)
+    if flags.has_factorial || flags.has_gamma {
+        let s10_eval = crate::transforms::eval::eval(arena, expr);
+        let s10_comb = crate::simplify::combsimp::combsimp(arena, s10_eval);
+        let s10 = crate::transforms::eval::eval(arena, s10_comb);
+        tracing::trace!(
+            strategy = "eval+combsimp",
+            ops = count_ops(arena, s10),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s10);
+    } else {
+        tracing::debug!("smart_simplify: skipping combsimp (no factorial/gamma nodes)");
+    }
+
+    // Strategy 11: eval → radsimp (rationalize denominator) (only if has sqrt in denominator)
+    if flags.has_sqrt && flags.has_neg_pow {
+        let s11_eval = crate::transforms::eval::eval(arena, expr);
+        let s11_rad = crate::simplify::radsimp::rationalize_denom(arena, s11_eval);
+        let s11 = crate::transforms::eval::eval(arena, s11_rad);
+        tracing::trace!(
+            strategy = "eval+radsimp",
+            ops = count_ops(arena, s11),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s11);
+    } else {
+        tracing::debug!("smart_simplify: skipping radsimp (no sqrt+neg_pow nodes)");
+    }
+
     tracing::debug!(
         ops_original = original_ops,
         ops_result = best_ops,
@@ -293,6 +359,9 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         has_neg_pow = flags.has_neg_pow,
         has_add = flags.has_add,
         has_apply = flags.has_apply,
+        has_factorial = flags.has_factorial,
+        has_gamma = flags.has_gamma,
+        has_sqrt = flags.has_sqrt,
         "smart_simplify selected best"
     );
 
