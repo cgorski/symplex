@@ -450,24 +450,75 @@ fn eval_polynomial_at_point() {
 fn gosper_sum_of_k() {
     let c = ctx();
     let k = c.symbol("k");
-    // Gosper should produce a result without panicking
-    let result = k.gosper_sum(&k);
-    // The result should be evaluable at several points
-    for pt in [0, 1, 5, 10] {
-        let _ = result.subs_i64(&k, pt).eval_f64();
-    }
+    let n = c.symbol("n");
+    // Build a proper Sum node: Σ_{k=0}^{n} k
+    let sum_node = Ex::symbolic_sum(&k, &k, &c.int(0), &n);
+    let result = sum_node.gosper_sum(&k);
+    // Σ_{k=0}^{n} k = n(n+1)/2
+    // At n=10: 10*11/2 = 55
+    let val = result.subs_i64(&n, 10).eval_f64().unwrap();
+    assert!(
+        approx(val, 55.0, 1e-10),
+        "sum of k from 0 to 10 should be 55, got {val}"
+    );
+    // At n=0: 0
+    let val0 = result.subs_i64(&n, 0).eval_f64().unwrap();
+    assert!(
+        approx(val0, 0.0, 1e-10),
+        "sum of k from 0 to 0 should be 0, got {val0}"
+    );
+    // At n=100: 100*101/2 = 5050
+    let val100 = result.subs_i64(&n, 100).eval_f64().unwrap();
+    assert!(
+        approx(val100, 5050.0, 1e-10),
+        "sum of k from 0 to 100 should be 5050, got {val100}"
+    );
 }
 
 #[test]
 fn gosper_sum_of_k_squared() {
     let c = ctx();
     let k = c.symbol("k");
-    // Gosper should produce a result without panicking
-    let result = k.powi(2).gosper_sum(&k);
-    // The result should be evaluable
-    for pt in [0, 1, 5, 10] {
-        let _ = result.subs_i64(&k, pt).eval_f64();
-    }
+    let n = c.symbol("n");
+    // Build a proper Sum node: Σ_{k=0}^{n} k²
+    let sum_node = Ex::symbolic_sum(&k.powi(2), &k, &c.int(0), &n);
+    let result = sum_node.gosper_sum(&k);
+    // Σ_{k=0}^{n} k² = n(n+1)(2n+1)/6
+    // At n=5: 0+1+4+9+16+25 = 55
+    let val5 = result.subs_i64(&n, 5).eval_f64().unwrap();
+    assert!(
+        approx(val5, 55.0, 1e-10),
+        "sum of k² from 0 to 5 should be 55, got {val5}"
+    );
+    // At n=10: 10*11*21/6 = 385
+    let val10 = result.subs_i64(&n, 10).eval_f64().unwrap();
+    assert!(
+        approx(val10, 385.0, 1e-10),
+        "sum of k² from 0 to 10 should be 385, got {val10}"
+    );
+}
+
+#[test]
+fn gosper_sum_geometric() {
+    let c = ctx();
+    let k = c.symbol("k");
+    let n = c.symbol("n");
+    // Σ_{k=0}^{n} 2^k = 2^(n+1) - 1
+    let body = c.int(2).pow(&k);
+    let sum_node = Ex::symbolic_sum(&body, &k, &c.int(0), &n);
+    let result = sum_node.gosper_sum(&k);
+    // At n=5: 1+2+4+8+16+32 = 63 = 2^6 - 1
+    let val5 = result.subs_i64(&n, 5).eval_f64().unwrap();
+    assert!(
+        approx(val5, 63.0, 1e-10),
+        "sum of 2^k from 0 to 5 should be 63, got {val5}"
+    );
+    // At n=10: 2^11 - 1 = 2047
+    let val10 = result.subs_i64(&n, 10).eval_f64().unwrap();
+    assert!(
+        approx(val10, 2047.0, 1e-10),
+        "sum of 2^k from 0 to 10 should be 2047, got {val10}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

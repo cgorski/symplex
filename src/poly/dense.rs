@@ -1462,6 +1462,269 @@ mod tests {
         assert_eq!(p.derivative(), Poly::from_int(3));
     }
 
+    #[test]
+    fn derivative_high_degree_exact() {
+        // p = x^10 + x^5 + 1
+        // p' = 10x^9 + 5x^4
+        let mut coeffs = vec![ri(0); 11];
+        coeffs[0] = ri(1);
+        coeffs[5] = ri(1);
+        coeffs[10] = ri(1);
+        let p = Poly::from_coeffs(coeffs);
+        let dp = p.derivative();
+
+        assert_eq!(dp.degree(), Some(9));
+        assert_eq!(dp.coeff(9), ri(10), "coeff of x^9 should be 10");
+        assert_eq!(dp.coeff(4), ri(5), "coeff of x^4 should be 5");
+        // All other coefficients should be zero
+        for i in [0, 1, 2, 3, 5, 6, 7, 8] {
+            assert_eq!(dp.coeff(i), ri(0), "coeff of x^{i} should be 0");
+        }
+    }
+
+    #[test]
+    fn derivative_degree_20_coefficient_check() {
+        // p = Σ_{k=0}^{20} x^k  (all coefficients = 1)
+        // p' = Σ_{k=1}^{20} k * x^{k-1} = Σ_{j=0}^{19} (j+1) * x^j
+        let coeffs: Vec<_> = (0..=20).map(|_| ri(1)).collect();
+        let p = Poly::from_coeffs(coeffs);
+        let dp = p.derivative();
+        assert_eq!(dp.degree(), Some(19));
+        for j in 0..=19usize {
+            assert_eq!(
+                dp.coeff(j),
+                ri(j as i64 + 1),
+                "derivative coeff at x^{j} should be {}", j + 1
+            );
+        }
+    }
+
+    #[test]
+    fn derivative_evaluation_cross_check() {
+        // For p(x) = x^7 - 3x^4 + 2x^2 + 5x - 1
+        // verify p'(x) by evaluating at multiple rational points
+        // and comparing against (p(x+h) - p(x-h)) / (2h) for small h
+        let p = Poly::from_coeffs(vec![ri(-1), ri(5), ri(2), ri(0), ri(-3), ri(0), ri(0), ri(1)]);
+        let dp = p.derivative();
+
+        // Check exact derivative at x=0: p'(0) = 5
+        assert_eq!(dp.eval(&ri(0)), ri(5));
+
+        // Check exact derivative at x=1: 7(1)^6 - 12(1)^3 + 4(1) + 5 = 7-12+4+5 = 4
+        assert_eq!(dp.eval(&ri(1)), ri(4));
+
+        // Check exact derivative at x=-1: 7(-1)^6 - 12(-1)^3 + 4(-1) + 5 = 7+12-4+5 = 20
+        assert_eq!(dp.eval(&ri(-1)), ri(20));
+
+        // Numerical finite-difference cross-check at x=2
+        let h = r(1, 1000);
+        let x = ri(2);
+        let x_plus_h = &x + &h;
+        let x_minus_h = &x - &h;
+        let fd = (p.eval(&x_plus_h) - p.eval(&x_minus_h)) / (Ratio::from_integer(BigInt::from(2)) * &h);
+        let exact = dp.eval(&x);
+        // Finite difference should be close to the exact derivative
+        let diff = (&fd - &exact).abs();
+        assert!(
+            diff < r(1, 100),
+            "finite diff at x=2: fd={fd}, exact={exact}, diff={diff}"
+        );
+    }
+
+    #[test]
+    fn derivative_product_rule_cross_check() {
+        // Verify (fg)' = f'g + fg' for two polynomials
+        let f = Poly::from_coeffs(vec![ri(1), ri(2), ri(3)]); // 3x^2 + 2x + 1
+        let g = Poly::from_coeffs(vec![ri(-1), ri(1)]);        // x - 1
+        let fg = &f * &g;
+        let fg_prime = fg.derivative();
+        let f_prime_g = &f.derivative() * &g;
+        let f_g_prime = &f * &g.derivative();
+        let leibniz = &f_prime_g + &f_g_prime;
+        assert_eq!(
+            fg_prime, leibniz,
+            "product rule: (fg)' should equal f'g + fg'"
+        );
+    }
+
+    #[test]
+    fn derivative_chain_rule_power_cross_check() {
+        // Verify d/dx[p(x)^2] = 2 p(x) p'(x) via evaluation
+        let p = Poly::from_coeffs(vec![ri(1), ri(-1), ri(1)]); // x^2 - x + 1
+        let p_sq = &p * &p;
+        let p_sq_prime = p_sq.derivative();
+        let two_p_pprime = &(&p * &p.derivative()).scale(&ri(2));
+        // Check at several points
+        for x_val in [0i64, 1, 2, -1, -2, 3] {
+            let xr = ri(x_val);
+            let lhs = p_sq_prime.eval(&xr);
+            let rhs = two_p_pprime.eval(&xr);
+            assert_eq!(
+                lhs, rhs,
+                "chain rule failed at x={x_val}: d/dx[p²]={lhs}, 2pp'={rhs}"
+            );
+        }
+    }
+
+    // ── Cross-validation: GenPoly operations match expected math ─────
+
+    #[test]
+    fn extended_gcd_bezout_identity() {
+        // For a = x^3 - 1, b = x^2 - 1
+        // verify s*a + t*b = gcd(a, b) (Bézout's identity)
+        let a = Poly::from_coeffs(vec![ri(-1), ri(0), ri(0), ri(1)]); // x^3 - 1
+        let b = Poly::from_coeffs(vec![ri(-1), ri(0), ri(1)]);         // x^2 - 1
+        let (s, t, g) = Poly::extended_gcd(&a, &b);
+
+        // Check that g divides both a and b
+        assert!(a.rem(&g).is_zero(), "gcd should divide a");
+        assert!(b.rem(&g).is_zero(), "gcd should divide b");
+
+        // Check Bézout: s*a + t*b == g at several points
+        for x_val in [-3i64, -1, 0, 1, 2, 5] {
+            let xr = ri(x_val);
+            let lhs = s.eval(&xr) * a.eval(&xr) + t.eval(&xr) * b.eval(&xr);
+            let rhs = g.eval(&xr);
+            assert_eq!(
+                lhs, rhs,
+                "Bézout identity failed at x={x_val}: sa+tb={lhs}, g={rhs}"
+            );
+        }
+    }
+
+    #[test]
+    fn extended_gcd_bezout_identity_coprime() {
+        // For coprime polynomials, gcd should be 1 and s*a + t*b = 1
+        let a = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]);  // x^2 + 1
+        let b = Poly::from_coeffs(vec![ri(1), ri(1)]);          // x + 1
+        let (s, t, g) = Poly::extended_gcd(&a, &b);
+
+        assert!(g.is_constant(), "gcd of coprime polys should be constant");
+        assert_eq!(g.coeff(0), ri(1), "gcd should be 1");
+
+        for x_val in [-2i64, 0, 1, 3, 7] {
+            let xr = ri(x_val);
+            let lhs = s.eval(&xr) * a.eval(&xr) + t.eval(&xr) * b.eval(&xr);
+            assert_eq!(lhs, ri(1), "Bézout s*a+t*b should be 1 at x={x_val}");
+        }
+    }
+
+    #[test]
+    fn div_rem_identity_multipoint() {
+        // For several (a, b) pairs, verify a = q*b + r at multiple points
+        let pairs = [
+            (
+                Poly::from_coeffs(vec![ri(1), ri(-3), ri(0), ri(2), ri(1)]),
+                Poly::from_coeffs(vec![ri(1), ri(1)]),
+            ),
+            (
+                Poly::from_coeffs(vec![ri(6), ri(-5), ri(1)]),  // x^2 - 5x + 6
+                Poly::from_coeffs(vec![ri(-2), ri(1)]),           // x - 2
+            ),
+            (
+                Poly::from_coeffs(vec![ri(1), ri(0), ri(0), ri(0), ri(0), ri(1)]),  // x^5 + 1
+                Poly::from_coeffs(vec![ri(1), ri(1)]),  // x + 1
+            ),
+        ];
+        for (a, b) in &pairs {
+            let (q, r) = a.div_rem(b);
+            // Structural check
+            let reconstructed = &(&q * b) + &r;
+            assert_eq!(a, &reconstructed, "a != q*b+r structurally");
+            // Point-wise check
+            for x_val in [-5i64, -1, 0, 1, 2, 7] {
+                let xr = ri(x_val);
+                let lhs = a.eval(&xr);
+                let rhs = q.eval(&xr) * b.eval(&xr) + r.eval(&xr);
+                assert_eq!(
+                    lhs, rhs,
+                    "div_rem identity failed at x={x_val}: a={lhs}, qb+r={rhs}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn square_free_part_removes_repeated_roots() {
+        // p = (x-1)^3 * (x-2) = x^4 - 5x^3 + 9x^2 - 7x + 2
+        let x_minus = |n: i64| Poly::from_coeffs(vec![ri(-n), ri(1)]);
+        let p = &(&(&x_minus(1) * &x_minus(1)) * &x_minus(1)) * &x_minus(2);
+
+        let sfp = p.square_free_part();
+        // Square-free part should have roots at x=1 and x=2, each with multiplicity 1
+        assert_eq!(sfp.eval(&ri(1)), ri(0), "x=1 should be root of sfp");
+        assert_eq!(sfp.eval(&ri(2)), ri(0), "x=2 should be root of sfp");
+        // Degree should be 2 (two distinct roots)
+        assert_eq!(sfp.degree(), Some(2), "sfp should be degree 2");
+    }
+
+    #[test]
+    fn gcd_value_divides_both_inputs_at_all_points() {
+        // a = (x-1)(x-2)(x-3), b = (x-2)(x-4)(x-6)
+        // gcd should divide both at all evaluation points
+        let x_minus = |n: i64| Poly::from_coeffs(vec![ri(-n), ri(1)]);
+        let a = &(&x_minus(1) * &x_minus(2)) * &x_minus(3);
+        let b = &(&x_minus(2) * &x_minus(4)) * &x_minus(6);
+        let g = Poly::gcd(&a, &b);
+
+        // g should be monic degree 1 (just x-2)
+        assert_eq!(g.degree(), Some(1), "gcd degree");
+        assert_eq!(g.eval(&ri(2)), ri(0), "x=2 should be root of gcd");
+        assert!(g.eval(&ri(4)) != ri(0), "x=4 should NOT be root of gcd");
+
+        // Verify division is exact
+        assert!(a.rem(&g).is_zero(), "g should divide a");
+        assert!(b.rem(&g).is_zero(), "g should divide b");
+    }
+
+    #[test]
+    fn resultant_matches_evaluation_at_roots() {
+        // res(f, g) = lc(g)^deg(f) * ∏ f(root_of_g)
+        // For g = (x-2)(x-3) = x^2-5x+6, roots are 2 and 3
+        // f = x^2 + 1
+        // res = 1^2 * f(2) * f(3) = 5 * 10 = 50
+        let f = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // x^2 + 1
+        let g = Poly::from_coeffs(vec![ri(6), ri(-5), ri(1)]); // x^2-5x+6
+        let res = Poly::resultant(&f, &g);
+        let expected = f.eval(&ri(2)) * f.eval(&ri(3)); // 5 * 10 = 50
+        assert_eq!(res, expected, "resultant should be 50, got {res}");
+    }
+
+    #[test]
+    fn squarefree_factors_reconstruct_to_original() {
+        // (x-1)^2 * (x+1)^3 * (x-5)
+        let x_minus = |n: i64| Poly::from_coeffs(vec![ri(-n), ri(1)]);
+        let p = &(&(&(&x_minus(1) * &x_minus(1)) * &(&(&x_minus(-1) * &x_minus(-1)) * &x_minus(-1))) * &x_minus(5));
+
+        let factors = p.squarefree_factors();
+
+        // Reconstruct
+        let mut product = Poly::from_int(1);
+        for (f, m) in &factors {
+            for _ in 0..*m {
+                product = &product * f;
+            }
+        }
+        // Monic versions should match
+        let p_monic = p.make_monic();
+        let prod_monic = product.make_monic();
+        assert_eq!(
+            p_monic, prod_monic,
+            "squarefree factor product should reconstruct original"
+        );
+
+        // Verify at evaluation points
+        for x_val in [-2i64, -1, 0, 1, 2, 5, 7] {
+            let xr = ri(x_val);
+            let orig = p_monic.eval(&xr);
+            let recon = prod_monic.eval(&xr);
+            assert_eq!(
+                orig, recon,
+                "squarefree reconstruction mismatch at x={x_val}"
+            );
+        }
+    }
+
     // ── Eq and Hash ─────────────────────────────────────────────────
 
     #[test]
