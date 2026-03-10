@@ -5,5 +5,6 @@ pub mod robotics;
 pub mod quaternion;
 pub mod vector;
 pub mod ntheory;
+pub mod combinatorics;
 pub(crate) mod linalg;
 pub(crate) mod separatevars;

@@ -100,6 +100,8 @@ pub use domains::control;
 pub use domains::dynamics;
 /// Symbolic matrix type and operations.
 pub use domains::matrix;
+/// Combinatorics: Stirling numbers, multinomial coefficients, partition counting.
+pub use domains::combinatorics;
 /// Number theory: primality, factorization, divisors, modular arithmetic.
 pub use domains::ntheory;
 /// Symbolic quaternion algebra for attitude representation.

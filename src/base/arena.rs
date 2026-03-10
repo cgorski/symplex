@@ -42,6 +42,11 @@ pub(crate) const FN_CATALAN: &str = "catalan";
 pub(crate) const FN_BELL: &str = "bell";
 pub(crate) const FN_EULER_NUMBER: &str = "euler_number";
 
+// ── Combinatorial function name constants (Phase 1) ────────────────────
+pub(crate) const FN_STIRLING1: &str = "stirling1";
+pub(crate) const FN_STIRLING2: &str = "stirling2";
+pub(crate) const FN_PARTITION_COUNT: &str = "partition_count";
+
 #[allow(dead_code)]
 pub(crate) const FN_LAMBERTW: &str = "lambertw";
 
@@ -1291,6 +1296,29 @@ impl Arena {
     /// Creates an `euler_number` node: `E(n)`.
     pub fn euler_number(&mut self, n: ExprId) -> ExprId {
         let sym_id = self.symbols.intern(FN_EULER_NUMBER);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    // ── Combinatorial functions — Phase 1 (Apply-based) ────────────
+
+    /// Creates a `stirling1` (signed Stirling number of the first kind) node: `s(n, k)`.
+    pub fn stirling1(&mut self, n: ExprId, k: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_STIRLING1);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, k];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `stirling2` (Stirling number of the second kind) node: `S(n, k)`.
+    pub fn stirling2(&mut self, n: ExprId, k: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_STIRLING2);
+        let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n, k];
+        self.intern(ExprNode::Apply(sym_id, args))
+    }
+
+    /// Creates a `partition_count` node: `p(n)`.
+    pub fn partition_count(&mut self, n: ExprId) -> ExprId {
+        let sym_id = self.symbols.intern(FN_PARTITION_COUNT);
         let args: SmallVec<[ExprId; 2]> = smallvec::smallvec![n];
         self.intern(ExprNode::Apply(sym_id, args))
     }

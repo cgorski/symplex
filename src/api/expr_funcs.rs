@@ -782,6 +782,77 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
+    // ── Combinatorial functions — Phase 1 (Apply-based) ────────────
+
+    /// Stirling number of the second kind: `S(self, k)`.
+    ///
+    /// Counts the number of ways to partition a set of `self` elements
+    /// into exactly `k` non-empty subsets.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let result = ctx.int(5).stirling2(&ctx.int(3)).eval();
+    /// assert_eq!(format!("{result}"), "25");
+    /// ```
+    #[must_use]
+    pub fn stirling2(&self, k: &Ex) -> Ex {
+        let k_id = self.checked_id(k);
+        let id = self.inner.write().arena.stirling2(self.raw_id(), k_id);
+        self.wrap(id)
+    }
+
+    /// Signed Stirling number of the first kind: `s(self, k)`.
+    ///
+    /// Related to the number of permutations of `self` elements with
+    /// exactly `k` cycles.  Satisfies `x^{(n)} = Σ_k s(n, k) x^k`
+    /// where `x^{(n)}` is the falling factorial.
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let result = ctx.int(4).stirling1(&ctx.int(2)).eval();
+    /// assert_eq!(format!("{result}"), "11");
+    /// ```
+    #[must_use]
+    pub fn stirling1(&self, k: &Ex) -> Ex {
+        let k_id = self.checked_id(k);
+        let id = self.inner.write().arena.stirling1(self.raw_id(), k_id);
+        self.wrap(id)
+    }
+
+    /// Number of integer partitions of `self`.
+    ///
+    /// An integer partition of `n` is a way to write `n` as a sum of
+    /// positive integers (order doesn't matter).
+    ///
+    /// For non-negative integer arguments, `.eval()` computes the exact value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let result = ctx.int(5).partition_count().eval();
+    /// assert_eq!(format!("{result}"), "7");
+    /// ```
+    #[must_use]
+    pub fn partition_count(&self) -> Ex {
+        let id = self.inner.write().arena.partition_count(self.raw_id());
+        self.wrap(id)
+    }
+
     // ── Special functions (Apply-based) ────────────────────────────
 
     /// Heaviside step function: 0 for x<0, 1/2 for x=0, 1 for x>0.

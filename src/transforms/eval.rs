@@ -56,7 +56,8 @@ use crate::base::arena::{
     Arena, FN_BELL, FN_BERNOULLI, FN_BESSELJ, FN_BESSELY, FN_BESSELI, FN_BESSELK,
     FN_CATALAN, FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_EULER_NUMBER, FN_FACTORIAL2,
     FN_FALLING_FACTORIAL, FN_FIBONACCI, FN_HARMONIC, FN_HERMITE, FN_LAGUERRE,
-    FN_LEGENDRE, FN_LUCAS, FN_RISING_FACTORIAL, FN_SUBFACTORIAL,
+    FN_LEGENDRE, FN_LUCAS, FN_PARTITION_COUNT, FN_RISING_FACTORIAL,
+    FN_STIRLING1, FN_STIRLING2, FN_SUBFACTORIAL,
 };
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
@@ -591,6 +592,35 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                             id
                         } else {
                             arena.euler_number(new_args[0])
+                        }
+                    }
+
+                    // ── Combinatorial (Phase 1) ────────────────────
+                    FN_STIRLING2 if new_args.len() == 2 => {
+                        if let Some(result) = eval_stirling2(arena, new_args[0], new_args[1]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.stirling2(new_args[0], new_args[1])
+                        }
+                    }
+                    FN_STIRLING1 if new_args.len() == 2 => {
+                        if let Some(result) = eval_stirling1(arena, new_args[0], new_args[1]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.stirling1(new_args[0], new_args[1])
+                        }
+                    }
+                    FN_PARTITION_COUNT if new_args.len() == 1 => {
+                        if let Some(result) = eval_partition_count(arena, new_args[0]) {
+                            result
+                        } else if new_args[..] == args[..] {
+                            id
+                        } else {
+                            arena.partition_count(new_args[0])
                         }
                     }
 
@@ -1547,6 +1577,45 @@ fn eval_catalan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     }
     let result = Ratio::new(binom, BigInt::from(n + 1));
     let nid = arena.intern_num(result);
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Stirling number of the second kind S(n, k).
+/// Delegates to `combinatorics::stirling2` which returns `Option<BigInt>`.
+/// `None` propagates → the expression node stays unevaluated.
+fn eval_stirling2(arena: &mut Arena, n_id: ExprId, k_id: ExprId) -> Option<ExprId> {
+    let n_r = arena.as_num(n_id)?;
+    let k_r = arena.as_num(k_id)?;
+    if !n_r.is_integer() || !k_r.is_integer() || n_r.is_negative() || k_r.is_negative() {
+        return None;
+    }
+    let result = crate::domains::combinatorics::stirling2(n_r.to_integer(), k_r.to_integer())?;
+    let nid = arena.intern_num(Ratio::from_integer(result));
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Signed Stirling number of the first kind s(n, k).
+/// Delegates to `combinatorics::stirling1` which returns `Option<BigInt>`.
+fn eval_stirling1(arena: &mut Arena, n_id: ExprId, k_id: ExprId) -> Option<ExprId> {
+    let n_r = arena.as_num(n_id)?;
+    let k_r = arena.as_num(k_id)?;
+    if !n_r.is_integer() || !k_r.is_integer() || n_r.is_negative() || k_r.is_negative() {
+        return None;
+    }
+    let result = crate::domains::combinatorics::stirling1(n_r.to_integer(), k_r.to_integer())?;
+    let nid = arena.intern_num(Ratio::from_integer(result));
+    Some(arena.intern(ExprNode::Num(nid)))
+}
+
+/// Number of integer partitions p(n).
+/// Delegates to `combinatorics::partition_count` which returns `Option<BigInt>`.
+fn eval_partition_count(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
+    let r = arena.as_num(inner)?;
+    if !r.is_integer() || r.is_negative() {
+        return None;
+    }
+    let result = crate::domains::combinatorics::partition_count(r.to_integer())?;
+    let nid = arena.intern_num(Ratio::from_integer(result));
     Some(arena.intern(ExprNode::Num(nid)))
 }
 
