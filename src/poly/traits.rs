@@ -24,8 +24,8 @@
 //!
 //! # References
 //!
-//! Pattern follows feanor-math (`RingBase` hierarchy) and Symbolica
-//! (`Ring → EuclideanDomain → Field`).
+//! Pattern uses the standard algebraic hierarchy
+//! `Ring → EuclideanDomain → Field`.
 
 use std::fmt;
 
