@@ -3909,27 +3909,6 @@ impl Expr<Numeric> {
         }
     }
 
-    /// Deprecated: use [`factorize`](Self::factorize) instead.
-    #[deprecated(
-        since = "0.2.0",
-        note = "use `factorize()` which returns BigInt factors"
-    )]
-    pub fn factorize_int(&self) -> Option<Vec<(i64, u32)>> {
-        use num_traits::ToPrimitive;
-        self.factorize().map(|factors| {
-            factors
-                .into_iter()
-                .map(|(p, e)| (p.to_i64().unwrap_or(0), e))
-                .collect()
-        })
-    }
-
-    /// Deprecated: use [`factorize`](Self::factorize) instead.
-    #[deprecated(since = "0.2.0", note = "use `factorize()` — it is the same thing now")]
-    pub fn factorize_int_bigint(&self) -> Option<Vec<(BigInt, u32)>> {
-        self.factorize()
-    }
-
     /// Check if this expression evaluates to a prime number.
     ///
     /// Accesses the exact `Ratio<BigInt>` value in the arena and uses the

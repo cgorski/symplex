@@ -34,7 +34,7 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{Signed, Zero};
+use num_traits::Zero;
 
 use super::LogTerm;
 use crate::poly::dense::Poly;

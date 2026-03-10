@@ -1118,7 +1118,7 @@ mod tests {
 
         let de = build_tower(&mut arena, expr, x).unwrap();
         let ext_var = de.levels[0].ext_var;
-        let arg = de.levels[0].argument;
+        let _arg = de.levels[0].argument;
 
         // Substitute x=1 in original.
         let one = arena.int(1);

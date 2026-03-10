@@ -987,55 +987,6 @@ pub fn legendre_symbol(a: impl Into<BigInt>, p: impl Into<BigInt>) -> i8 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Deprecated aliases — ease migration for code that hasn't been updated yet
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Deprecated: use [`isprime`] instead (same function, now accepts any integer type).
-#[deprecated(
-    since = "0.2.0",
-    note = "use `isprime()` which now accepts BigInt directly"
-)]
-pub fn isprime_bigint(n: &BigInt) -> bool {
-    if let Some(ni) = n.to_i64() {
-        return isprime_i64(ni);
-    }
-    isprime_big_internal(n)
-}
-
-/// Deprecated: use [`factorint`] instead (same function, now accepts any integer type).
-#[deprecated(
-    since = "0.2.0",
-    note = "use `factorint()` which now accepts BigInt directly"
-)]
-pub fn factorint_bigint(n: &BigInt) -> Vec<(BigInt, u32)> {
-    factorint_big_internal(n)
-}
-
-/// Deprecated: use [`gcd`] instead.
-#[deprecated(since = "0.2.0", note = "use `gcd()` which now returns BigInt")]
-pub fn gcd_int(a: i64, b: i64) -> i64 {
-    num_integer::gcd(a, b)
-}
-
-/// Deprecated: use [`lcm`] instead.
-#[deprecated(since = "0.2.0", note = "use `lcm()` which now returns BigInt")]
-pub fn lcm_int(a: i64, b: i64) -> i64 {
-    num_integer::lcm(a, b)
-}
-
-/// Deprecated: use [`mod_pow`] instead.
-#[deprecated(since = "0.2.0", note = "use `mod_pow()` which now accepts BigInt")]
-pub fn mod_pow_int(base: i64, exp: i64, modulus: i64) -> i64 {
-    if modulus <= 0 || exp < 0 {
-        return 0;
-    }
-    mod_pow_u64(
-        ((base % modulus) + modulus) as u64 % modulus as u64,
-        exp as u64,
-        modulus as u64,
-    ) as i64
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Unit tests
 // ═══════════════════════════════════════════════════════════════════════════

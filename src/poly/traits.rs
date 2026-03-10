@@ -139,28 +139,6 @@ pub trait Field: EuclideanDomain {
 // Extension traits for type-specific capabilities
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Coefficient types that support ordering.
-///
-/// Only implemented for coefficient types where a total order exists
-/// and is mathematically meaningful (e.g., ℚ, ℝ — but not ℂ or
-/// finite fields).
-pub trait OrderedCoeff: Ring {
-    /// Strictly greater than zero.
-    fn is_positive(&self) -> bool;
-
-    /// Strictly less than zero.
-    fn is_negative(&self) -> bool;
-
-    /// Absolute value.
-    fn abs(&self) -> Self {
-        if self.is_negative() {
-            self.neg()
-        } else {
-            self.clone()
-        }
-    }
-}
-
 /// Coefficient types that embed the integers.
 ///
 /// Provides conversion between the coefficient type and `BigInt`,
@@ -294,23 +272,6 @@ impl Field for Ratio<BigInt> {
     #[inline]
     fn inv(&self) -> Self {
         Ratio::new(self.denom().clone(), self.numer().clone())
-    }
-}
-
-impl OrderedCoeff for Ratio<BigInt> {
-    #[inline]
-    fn is_positive(&self) -> bool {
-        Signed::is_positive(self)
-    }
-
-    #[inline]
-    fn is_negative(&self) -> bool {
-        Signed::is_negative(self)
-    }
-
-    #[inline]
-    fn abs(&self) -> Self {
-        Signed::abs(self)
     }
 }
 

@@ -146,7 +146,7 @@ fn hermite_reduce_proper(a: &Poly, d: &Poly, poly_part: &Poly) -> HermiteResult 
 
         // B = s · scale, C = t · scale
         let b_full = &s * &scale;
-        let c_full = &t * &scale;
+        let _c_full = &t * &scale;
 
         // Reduce B mod D₋* to ensure deg(B) < deg(D₋*).
         let (_, b) = b_full.div_rem(&d_minus_star);

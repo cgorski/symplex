@@ -1305,7 +1305,7 @@ mod tests {
         use super::super::GenPoly;
         use crate::poly::dense::Poly;
         use crate::poly::ratfn::RationalFn;
-        use crate::poly::traits::{EuclideanDomain, Field, Ring};
+        use crate::poly::traits::Ring;
         use num_bigint::BigInt;
         use num_rational::Ratio;
 

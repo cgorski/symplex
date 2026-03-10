@@ -30,7 +30,7 @@ use std::cell::Cell;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Zero};
+use num_traits::One;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};

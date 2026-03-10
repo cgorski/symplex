@@ -32,7 +32,7 @@
 //! ```
 
 use num_bigint::BigInt;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, Zero};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Stirling numbers of the second kind: S(n, k)

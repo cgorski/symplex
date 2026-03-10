@@ -21,11 +21,10 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Zero};
 
 use crate::poly::generic::GenPoly;
 use crate::poly::ratfn::RationalFn;
-use crate::poly::traits::{EuclideanDomain, Field, Ring};
+use crate::poly::traits::{Field, Ring};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Result types
@@ -155,7 +154,7 @@ pub fn tower_hermite_reduce(
         }
 
         let b_full = s.mul(&scale);
-        let c_full = t.mul(&scale);
+        let _c_full = t.mul(&scale);
 
         // Reduce B mod D₋* to ensure deg(B) < deg(D₋*).
         let (_, b) = b_full.div_rem(&d_minus_star);

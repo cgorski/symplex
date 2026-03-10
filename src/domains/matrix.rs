@@ -3388,7 +3388,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn get_out_of_bounds_panics() {
-        let ctx = tctx();
         let ctx = Context::new();
         let m = Matrix::zeros(&ctx, 2, 2);
         let _ = m.get(2, 0);

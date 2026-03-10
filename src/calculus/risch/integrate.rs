@@ -35,7 +35,7 @@ use crate::base::node::{ExprId, ExprNode};
 use crate::poly::dense::Poly;
 use crate::poly::generic::GenPoly;
 use crate::poly::ratfn::RationalFn;
-use crate::poly::traits::{Field, Ring};
+use crate::poly::traits::Ring;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Main entry point
@@ -402,7 +402,7 @@ fn integrate_primitive(arena: &mut Arena, de: &mut DifferentialExtension) -> Ris
         arena.add(&result_terms)
     };
 
-    let result_eval = crate::transforms::eval::eval(arena, result_expr);
+    let _result_eval = crate::transforms::eval::eval(arena, result_expr);
 
     // Package as RischResult::Elementary.
     // The result contains ln(u) terms — not pure Poly in x.
@@ -680,8 +680,8 @@ mod tests {
         match integrate_rational(&a, &d) {
             RischResult::Elementary {
                 rational_numer,
-                rational_denom,
                 log_terms,
+                ..
             } => {
                 assert!(log_terms.is_empty(), "1/x² should have no log terms");
                 // Rational part should be -1/x or equivalent.
