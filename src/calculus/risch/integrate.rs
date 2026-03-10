@@ -30,7 +30,11 @@ use num_traits::{One, Zero};
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::poly::dense::Poly;
+use crate::poly::generic::GenPoly;
+use crate::poly::ratfn::RationalFn;
+use crate::poly::traits::{Ring, Field};
 use super::tower::{DifferentialExtension, ExtensionKind};
+use super::tower_integrate::{tower_hermite_reduce, tower_logarithmic_part, TowerLogTerm};
 use super::{LogTerm, RischResult};
 use super::rde::{self, RdeResult};
 
@@ -108,7 +112,7 @@ fn integrate_rational(a: &Poly, d: &Poly) -> RischResult {
     // If denominator is 1, the integrand is a polynomial.
     if d.is_constant() {
         let scaled = if let Some(lc) = d.leading_coeff() {
-            let inv = Ratio::one() / lc;
+            let inv = <Ratio<BigInt> as num_traits::One>::one() / lc;
             a.scale(&inv)
         } else {
             a.clone()
@@ -138,13 +142,113 @@ fn integrate_rational(a: &Poly, d: &Poly) -> RischResult {
     }
 }
 
+/// Try the tower-level Hermite + Rothstein-Trager path for a proper-fraction
+/// integrand in the extension variable θ.
+///
+/// Converts the arena expression to `GenPoly<RationalFn>` (polynomial in θ
+/// with ℚ(x) coefficients), runs tower Hermite reduction and Rothstein-Trager,
+/// and checks the elementarity condition.
+fn try_tower_rational_path(
+    arena: &mut Arena,
+    integrand: ExprId,
+    ext_var: ExprId,
+    base_var: ExprId,
+) -> RischResult {
+    // Decompose integrand into numer/denom w.r.t. ext_var (θ).
+    let (n_id, d_id) = crate::poly::polybridge::as_numer_denom(arena, integrand);
+
+    // Try to convert numer and denom to GenPoly<RationalFn>.
+    let n_gp = match arena_to_genpoly_ratfn(arena, n_id, ext_var, base_var) {
+        Some(gp) => gp,
+        None => return RischResult::Failed(
+            "Cannot convert numerator to GenPoly<RationalFn>".into()
+        ),
+    };
+    let d_gp = match arena_to_genpoly_ratfn(arena, d_id, ext_var, base_var) {
+        Some(gp) => gp,
+        None => return RischResult::Failed(
+            "Cannot convert denominator to GenPoly<RationalFn>".into()
+        ),
+    };
+
+    if d_gp.is_zero() {
+        return RischResult::Failed("zero denominator in tower rational path".into());
+    }
+
+    // Tower Hermite reduction.
+    let hr = tower_hermite_reduce(&n_gp, &d_gp);
+
+    // Tower Rothstein-Trager on the square-free remainder.
+    if !hr.h_numer.is_zero() {
+        let rt = tower_logarithmic_part(&hr.h_numer, &hr.h_denom);
+        if rt.is_non_elementary {
+            return RischResult::NonElementary;
+        }
+    }
+
+    // If we got here, the integral is elementary at the tower level.
+    // Return as Elementary with placeholder Poly (the real result is
+    // in the GenPoly<RationalFn> form which we can't easily convert
+    // back to Poly in base_var since it involves θ).
+    //
+    // For now, return Failed to let the heuristic integrator handle
+    // the actual computation — the tower HR+RT proved elementarity
+    // but we don't yet have the arena conversion for the result.
+    //
+    // TODO: convert GenPoly<RationalFn> result back to arena ExprId.
+    RischResult::Failed(
+        "Tower HR+RT proved elementary but arena conversion not yet implemented".into()
+    )
+}
+
+/// Convert an arena expression to a `GenPoly<RationalFn>` — a polynomial in
+/// `ext_var` (θ) with ℚ(x) coefficients.
+///
+/// Returns `None` if the expression can't be decomposed this way.
+fn arena_to_genpoly_ratfn(
+    arena: &mut Arena,
+    expr: ExprId,
+    ext_var: ExprId,
+    base_var: ExprId,
+) -> Option<GenPoly<RationalFn>> {
+    // First try to decompose as polynomial in ext_var.
+    let terms = super::tower::extract_poly_in_ext_mut(arena, expr, ext_var)?;
+
+    let mut coeffs_map: std::collections::BTreeMap<usize, RationalFn> =
+        std::collections::BTreeMap::new();
+
+    for &(power, coeff_expr) in &terms {
+        // Convert each coefficient (an arena expression in base_var) to RationalFn.
+        let (cn, cd) = crate::poly::polybridge::as_numer_denom(arena, coeff_expr);
+        let cn_exp = crate::transforms::expand::expand(arena, cn);
+        let cn_eval = crate::transforms::eval::eval(arena, cn_exp);
+        let cd_exp = crate::transforms::expand::expand(arena, cd);
+        let cd_eval = crate::transforms::eval::eval(arena, cd_exp);
+
+        let cn_poly = crate::poly::polybridge::expr_to_poly(arena, cn_eval, base_var)?;
+        let cd_poly = crate::poly::polybridge::expr_to_poly(arena, cd_eval, base_var)?;
+
+        let rf = RationalFn::new(cn_poly, cd_poly);
+        coeffs_map.insert(power, rf);
+    }
+
+    // Build GenPoly<RationalFn> from the coefficient map.
+    let max_power = coeffs_map.keys().max().copied().unwrap_or(0);
+    let mut coeffs = Vec::with_capacity(max_power + 1);
+    for i in 0..=max_power {
+        coeffs.push(coeffs_map.remove(&i).unwrap_or_else(|| Ring::zero()));
+    }
+
+    Some(GenPoly::from_coeffs(coeffs))
+}
+
 /// Integrate a polynomial term-by-term: `∫ Σ aₖ xᵏ dx = Σ aₖ/(k+1) x^{k+1}`.
 fn integrate_poly(p: &Poly) -> Poly {
     if p.is_zero() {
         return Poly::zero();
     }
     let coeffs = p.coeffs();
-    let mut result = vec![Ratio::zero()]; // constant term = 0
+    let mut result = vec![<Ratio<BigInt> as num_traits::Zero>::zero()]; // constant term = 0
     for (k, c) in coeffs.iter().enumerate() {
         let k_plus_1 = Ratio::from_integer(BigInt::from((k + 1) as i64));
         result.push(c / &k_plus_1);
@@ -213,10 +317,9 @@ fn integrate_primitive(arena: &mut Arena, de: &mut DifferentialExtension) -> Ris
     let poly_terms = match super::tower::extract_poly_in_ext_mut(arena, de.integrand, ext_var) {
         Some(terms) => terms,
         None => {
-            // Can't decompose as polynomial in θ — fall back.
-            return RischResult::Failed(
-                "Integrand is not polynomial in the logarithmic extension variable".into()
-            );
+            // Can't decompose as polynomial in θ — try the tower-level
+            // Hermite + Rothstein-Trager path for proper fractions.
+            return try_tower_rational_path(arena, de.integrand, ext_var, base_var);
         }
     };
 
@@ -380,14 +483,9 @@ fn integrate_hyperexponential(arena: &mut Arena, de: &mut DifferentialExtension)
     let poly_terms = match super::tower::extract_poly_in_ext_mut(arena, de.integrand, ext_var) {
         Some(terms) => terms,
         None => {
-            // Can't decompose as polynomial in θ — integrand has a proper
-            // fraction part in θ.  Delegate to the existing integrator by
-            // converting back to the original expression.
-            return RischResult::Failed(
-                "Integrand is not polynomial in the exponential extension variable; \
-                 proper fraction part requires tower-level Hermite/RT (not yet implemented)"
-                .into()
-            );
+            // Can't decompose as polynomial in θ — try the tower-level
+            // Hermite + Rothstein-Trager path for proper fractions.
+            return try_tower_rational_path(arena, de.integrand, ext_var, base_var);
         }
     };
 
