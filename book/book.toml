@@ -1,0 +1,15 @@
+[book]
+title = "The Symplex Book"
+authors = ["symplex contributors"]
+description = "Documentation for symplex, a symbolic mathematics library for Rust."
+src = "src"
+language = "en"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/cgorski/symplex"
+edit-url-template = "https://github.com/cgorski/symplex/edit/main/book/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
