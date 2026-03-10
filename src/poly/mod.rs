@@ -1,5 +1,6 @@
 pub mod traits;
 pub mod generic;
+pub mod ratfn;
 pub(crate) mod dense;
 pub mod multipoly;
 pub mod groebner;
