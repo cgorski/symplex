@@ -25,7 +25,7 @@ use num_traits::{One, Zero};
 
 use crate::poly::generic::GenPoly;
 use crate::poly::ratfn::RationalFn;
-use crate::poly::traits::{Ring, Field, EuclideanDomain, IntegralCoeff};
+use crate::poly::traits::{Ring, Field, EuclideanDomain};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Result types

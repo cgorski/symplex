@@ -130,7 +130,7 @@ fn hermite_reduce_proper(a: &Poly, d: &Poly, poly_part: &Poly) -> HermiteResult 
         //   B · (-D* · D₋' / D₋) + C · D₋* = A
         //
         // Let lhs_coeff = (-D* · D₋') / D₋  (exact division).
-        let neg_dstar_dminus_prime = (-&(&d_star * &d_minus_prime));
+        let neg_dstar_dminus_prime = -&(&d_star * &d_minus_prime);
         let lhs_coeff = neg_dstar_dminus_prime.div(&d_minus);
 
         // Extended GCD: find (s, t, g) such that s·lhs_coeff + t·D₋* = g.

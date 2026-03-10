@@ -36,7 +36,7 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Zero, Signed};
+use num_traits::{One, Zero};
 
 use crate::poly::dense::Poly;
 
@@ -80,6 +80,7 @@ pub enum RdeResult {
 /// # Panics
 ///
 /// Panics if `f_denom` or `g_denom` is zero.
+#[allow(dead_code)]
 pub fn solve_risch_de_rational(
     f_numer: &Poly,
     f_denom: &Poly,
@@ -155,6 +156,7 @@ pub fn solve_risch_de_rational(
 /// # Status
 ///
 /// Stub — delegates to the rational case when at the base level.
+#[allow(dead_code)]
 pub fn solve_risch_de(
     f_numer: &Poly,
     f_denom: &Poly,

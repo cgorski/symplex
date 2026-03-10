@@ -25,7 +25,7 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Zero};
+
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
@@ -34,8 +34,8 @@ use crate::poly::generic::GenPoly;
 use crate::poly::ratfn::RationalFn;
 use crate::poly::traits::{Ring, Field};
 use super::tower::{DifferentialExtension, ExtensionKind};
-use super::tower_integrate::{tower_hermite_reduce, tower_logarithmic_part, TowerLogTerm};
-use super::{LogTerm, RischResult};
+use super::tower_integrate::{tower_hermite_reduce, tower_logarithmic_part};
+use super::RischResult;
 use super::rde::{self, RdeResult};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -64,6 +64,7 @@ use super::rde::{self, RdeResult};
 /// the logarithmic or exponential case.
 ///
 /// The `arena` is needed for tower-level integration (derivation, substitution).
+#[allow(dead_code)]
 pub fn risch_integrate(arena: &mut Arena, de: &mut DifferentialExtension) -> RischResult {
     if de.is_base_level() {
         // Base case: rational function integration.
@@ -112,7 +113,7 @@ fn integrate_rational(a: &Poly, d: &Poly) -> RischResult {
     // If denominator is 1, the integrand is a polynomial.
     if d.is_constant() {
         let scaled = if let Some(lc) = d.leading_coeff() {
-            let inv = <Ratio<BigInt> as num_traits::One>::one() / lc;
+            let inv = Ratio::new(lc.denom().clone(), lc.numer().clone());
             a.scale(&inv)
         } else {
             a.clone()
@@ -205,6 +206,7 @@ fn try_tower_rational_path(
 /// `ext_var` (θ) with ℚ(x) coefficients.
 ///
 /// Returns `None` if the expression can't be decomposed this way.
+#[allow(dead_code)]
 fn arena_to_genpoly_ratfn(
     arena: &mut Arena,
     expr: ExprId,
