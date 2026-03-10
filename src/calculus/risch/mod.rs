@@ -37,8 +37,41 @@ use crate::poly::dense::Poly;
 
 // Recursion guard: prevents try_risch_rational from re-entering itself
 // when it calls the heuristic integrator on an algebraic remainder.
+//
+// Uses a RAII pattern so the guard is reset even if the integration
+// panics — the Drop impl runs during unwinding.  This is also safe
+// with tokio: our integrate path is entirely synchronous (no .await
+// points), so a single call completes without yielding the thread.
 thread_local! {
     static RISCH_GUARD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// RAII guard that sets `RISCH_GUARD` to `true` on creation and
+/// resets it to `false` on drop (including during panic unwinding).
+struct RischRecursionGuard;
+
+impl RischRecursionGuard {
+    /// Try to enter the Risch rational integration path.
+    ///
+    /// Returns `Some(guard)` if we're not already inside a Risch call.
+    /// Returns `None` if we're already inside (recursion detected).
+    /// The guard resets the flag when dropped.
+    fn enter() -> Option<Self> {
+        RISCH_GUARD.with(|g| {
+            if g.get() {
+                None // already inside — recursion detected
+            } else {
+                g.set(true);
+                Some(RischRecursionGuard)
+            }
+        })
+    }
+}
+
+impl Drop for RischRecursionGuard {
+    fn drop(&mut self) {
+        RISCH_GUARD.with(|g| g.set(false));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -102,10 +135,11 @@ pub fn try_risch_rational(
 ) -> Option<ExprId> {
     // Recursion guard: if we're already inside try_risch_rational
     // (integrating an algebraic remainder), skip to avoid infinite loop.
-    let already_inside = RISCH_GUARD.with(|g| g.get());
-    if already_inside {
-        return None;
-    }
+    // The RAII guard resets the flag on drop, even during panics.
+    let _guard = match RischRecursionGuard::enter() {
+        Some(g) => g,
+        None => return None, // already inside — skip to avoid infinite recursion
+    };
 
     // Decompose expr into numerator / denominator.
     let (numer_id, denom_id) = crate::poly::polybridge::as_numer_denom(arena, expr);
@@ -192,14 +226,11 @@ pub fn try_risch_rational(
         let remainder = arena.div(h_num_id, h_den_id);
 
         // Try the heuristic integrator on the remainder.
-        // Set the recursion guard so that try_risch_rational returns None
-        // if called from inside integrate — this prevents infinite loops
-        // where Risch→integrate→Risch→integrate→... for the same algebraic
-        // remainder.  The heuristic integrator's other strategies (standard
-        // forms, partial fractions, u-sub) will still fire.
-        RISCH_GUARD.with(|g| g.set(true));
+        // The RAII guard (_guard) is still active, so try_risch_rational
+        // will return None if called from inside integrate — preventing
+        // infinite loops.  The heuristic integrator's other strategies
+        // (standard forms, partial fractions, u-sub) will still fire.
         let remainder_integral = crate::transforms::integrate::integrate(arena, remainder, var);
-        RISCH_GUARD.with(|g| g.set(false));
 
         terms.push(remainder_integral);
     }
