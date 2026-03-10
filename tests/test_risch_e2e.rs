@@ -134,27 +134,20 @@ fn e2e_one_over_x_squared_minus_1() {
 
 #[test]
 fn e2e_repeated_quadratic() {
-    // ∫ 1/(x²+1)² dx — Hermite reduction extracts the rational part.
-    // The Risch rational path (Hermite + Rothstein-Trager) handles this
-    // via the top-of-integrator type-dispatch.
+    // ∫ 1/(x²+1)² dx = x/(2(x²+1)) + (1/2)·arctan(x)
+    //
+    // Hermite reduction extracts the rational part x/(2(x²+1)).
+    // The remainder 1/(2(x²+1)) has algebraic residues (±i/2),
+    // so Rothstein-Trager flags it as algebraic.  The recursive
+    // integration then resolves it via the standard-form detector
+    // (arctan).
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let denom = expr!(ctx, (x ^ 2 + 1) ^ 2);
     let integrand = &ctx.int(1) / &denom;
     let result = integrand.integrate(&x);
-    if !result.has_unevaluated() {
-        // Risch rational path succeeded — verify FTC.
-        verify_ftc(&integrand, &result, &x, POINTS_WITH_ZERO, 1e-8, "∫ 1/(x²+1)² dx");
-    } else {
-        // The Hermite reduction produces a rational part, but the remaining
-        // log part has algebraic coefficients (arctan via complex logs) that
-        // the Rothstein-Trager can't fully resolve to rational log terms.
-        // This is acceptable — the algebraic log terms are flagged, not wrong.
-        eprintln!(
-            "NOTE: ∫ 1/(x²+1)² dx has unevaluated parts: {}",
-            result
-        );
-    }
+    assert_evaluated(&result, "∫ 1/(x²+1)² dx");
+    verify_ftc(&integrand, &result, &x, POINTS_WITH_ZERO, 1e-8, "∫ 1/(x²+1)² dx");
 }
 
 #[test]
@@ -228,22 +221,19 @@ fn e2e_ln_x() {
 
 #[test]
 fn e2e_one_over_x_ln_x() {
-    // ∫ 1/(x·ln(x)) dx = ln(ln(x))  (u-sub with u = ln(x), du = 1/x dx)
+    // ∫ 1/(x·ln(x)) dx = ln(ln(x))
+    //
+    // The expression 1/(x·ln(x)) is stored as Pow(Mul(x, Ln(x)), -1).
+    // The Pow arm distributes the inverse: Mul(x^(-1), ln(x)^(-1)).
+    // The Mul arm's u-sub then finds u = ln(x), du = 1/x dx,
+    // giving ∫ 1/u du = ln(u) = ln(ln(x)).
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let integrand = &ctx.int(1) / &(&x * &x.ln());
     let result = integrand.integrate(&x);
-    if !result.has_unevaluated() {
-        // u-sub found u = ln(x) — verify FTC.
-        // Only use x > 1 so ln(x) > 0.
-        verify_ftc(&integrand, &result, &x, &[2, 3, 5, 7], 1e-6, "∫ 1/(x·ln(x)) dx");
-    } else {
-        // If u-sub still doesn't find it, don't fail the test — just note it.
-        eprintln!(
-            "NOTE: ∫ 1/(x·ln(x)) dx still unevaluated: {}",
-            result
-        );
-    }
+    assert_evaluated(&result, "∫ 1/(x·ln(x)) dx");
+    // Only use x > 1 so ln(x) > 0.
+    verify_ftc(&integrand, &result, &x, &[2, 3, 5, 7], 1e-6, "∫ 1/(x·ln(x)) dx");
 }
 
 #[test]

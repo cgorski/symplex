@@ -25,6 +25,8 @@ pub mod tower;
 pub mod rde;
 pub mod integrate;
 
+use std::cell::Cell;
+
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, Zero};
@@ -32,6 +34,12 @@ use num_traits::{One, Zero};
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::poly::dense::Poly;
+
+// Recursion guard: prevents try_risch_rational from re-entering itself
+// when it calls the heuristic integrator on an algebraic remainder.
+thread_local! {
+    static RISCH_GUARD: Cell<bool> = const { Cell::new(false) };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Public result types
@@ -92,6 +100,13 @@ pub fn try_risch_rational(
     expr: ExprId,
     var: ExprId,
 ) -> Option<ExprId> {
+    // Recursion guard: if we're already inside try_risch_rational
+    // (integrating an algebraic remainder), skip to avoid infinite loop.
+    let already_inside = RISCH_GUARD.with(|g| g.get());
+    if already_inside {
+        return None;
+    }
+
     // Decompose expr into numerator / denominator.
     let (numer_id, denom_id) = crate::poly::polybridge::as_numer_denom(arena, expr);
 
@@ -167,14 +182,26 @@ pub fn try_risch_rational(
         }
     }
 
-    // If there are algebraic log terms, add an unevaluated Integral for the
-    // square-free remainder that we couldn't fully resolve.
+    // If there are algebraic log terms, try to recursively integrate the
+    // square-free remainder using the heuristic integrator.  For example,
+    // 1/(x²+1) has algebraic residues (±i/2) but the heuristic integrator
+    // knows it's arctan(x) via the standard-form detector.
     if has_algebraic && !hr.h_numer.is_zero() {
         let h_num_id = crate::poly::polybridge::poly_to_expr(arena, &hr.h_numer, var);
         let h_den_id = crate::poly::polybridge::poly_to_expr(arena, &hr.h_denom, var);
         let remainder = arena.div(h_num_id, h_den_id);
-        let unevaluated = arena.intern(ExprNode::Integral(remainder, var));
-        terms.push(unevaluated);
+
+        // Try the heuristic integrator on the remainder.
+        // Set the recursion guard so that try_risch_rational returns None
+        // if called from inside integrate — this prevents infinite loops
+        // where Risch→integrate→Risch→integrate→... for the same algebraic
+        // remainder.  The heuristic integrator's other strategies (standard
+        // forms, partial fractions, u-sub) will still fire.
+        RISCH_GUARD.with(|g| g.set(true));
+        let remainder_integral = crate::transforms::integrate::integrate(arena, remainder, var);
+        RISCH_GUARD.with(|g| g.set(false));
+
+        terms.push(remainder_integral);
     }
 
     if terms.is_empty() {
@@ -272,7 +299,9 @@ mod tests {
         // 1/(x²+1)² = Pow(Add(x²,1), -2).
         // Hermite reduction extracts the rational part x/(2(x²+1)).
         // The remaining 1/(2(x²+1)) has algebraic log terms (arctan).
-        // The bridge returns a partial result: rational part + unevaluated Integral.
+        // The recursive integration resolves the arctan remainder via
+        // the heuristic integrator's standard-form detector.
+        // Final result: x/(2(x²+1)) + (1/2)·arctan(x).
         let mut arena = Arena::new();
         let x = sym(&mut arena, "x");
         let two = arena.int(2);
@@ -283,15 +312,19 @@ mod tests {
         let expr = arena.pow(x_sq_plus_1, neg2); // (x²+1)^(-2)
 
         let result = try_risch_rational(&mut arena, expr, x);
-        assert!(result.is_some(), "∫ 1/(x²+1)² dx should produce a partial result");
+        assert!(result.is_some(), "∫ 1/(x²+1)² dx should succeed");
 
         let result_expr = result.unwrap();
         let s = display(&arena, result_expr);
-        // Should contain the Hermite rational part (x/(2(x²+1)) or similar)
-        // and an unevaluated Integral for the arctan remainder.
+        // Should contain the Hermite rational part and arctan — fully evaluated.
         assert!(
-            s.contains("x") && s.contains("Integral"),
-            "result should have rational part + unevaluated remainder, got: {s}"
+            s.contains("x") && s.contains("atan"),
+            "result should have rational part + arctan, got: {s}"
+        );
+        // Should NOT contain unevaluated Integral.
+        assert!(
+            !s.contains("Integral"),
+            "result should be fully evaluated, got: {s}"
         );
     }
 
