@@ -23,8 +23,9 @@
 //! Non-zero polynomials are normalized: the leading coefficient is nonzero.
 
 use std::fmt;
+use std::hash;
 
-use super::traits::{Ring, Field, CoeffDisplay, BindingStrength};
+use super::traits::{Ring, Field, CoeffDisplay, BindingStrength, IntegralCoeff};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // The type
@@ -39,7 +40,19 @@ pub struct GenPoly<C> {
     /// Coefficients in ascending degree order.
     /// `coeffs[i]` is the coefficient of θ^i.
     /// Invariant: if non-empty, the last element is nonzero.
-    coeffs: Vec<C>,
+    pub(crate) coeffs: Vec<C>,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Conditional Eq and Hash
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<C: Eq> Eq for GenPoly<C> {}
+
+impl<C: hash::Hash> hash::Hash for GenPoly<C> {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.coeffs.hash(state);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -237,6 +250,17 @@ impl<C: Ring> GenPoly<C> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// IntegralCoeff convenience constructors
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl<C: IntegralCoeff> GenPoly<C> {
+    /// A constant polynomial from an integer.
+    pub fn from_int(n: i64) -> Self {
+        Self::constant(C::from_i64(n))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Operator overloads for ergonomic syntax
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -265,6 +289,82 @@ impl<C: Ring> std::ops::Neg for &GenPoly<C> {
     type Output = GenPoly<C>;
     fn neg(self) -> GenPoly<C> {
         GenPoly::neg(self)
+    }
+}
+
+// Owned-value overloads: GenPoly op GenPoly
+
+impl<C: Ring> std::ops::Add for GenPoly<C> {
+    type Output = GenPoly<C>;
+    fn add(self, rhs: GenPoly<C>) -> GenPoly<C> {
+        GenPoly::add(&self, &rhs)
+    }
+}
+
+impl<C: Ring> std::ops::Sub for GenPoly<C> {
+    type Output = GenPoly<C>;
+    fn sub(self, rhs: GenPoly<C>) -> GenPoly<C> {
+        GenPoly::sub(&self, &rhs)
+    }
+}
+
+impl<C: Ring> std::ops::Mul for GenPoly<C> {
+    type Output = GenPoly<C>;
+    fn mul(self, rhs: GenPoly<C>) -> GenPoly<C> {
+        GenPoly::mul(&self, &rhs)
+    }
+}
+
+impl<C: Ring> std::ops::Neg for GenPoly<C> {
+    type Output = GenPoly<C>;
+    fn neg(self) -> GenPoly<C> {
+        GenPoly::neg(&self)
+    }
+}
+
+// Mixed overloads: &GenPoly op GenPoly
+
+impl<C: Ring> std::ops::Add<GenPoly<C>> for &GenPoly<C> {
+    type Output = GenPoly<C>;
+    fn add(self, rhs: GenPoly<C>) -> GenPoly<C> {
+        GenPoly::add(self, &rhs)
+    }
+}
+
+impl<C: Ring> std::ops::Sub<GenPoly<C>> for &GenPoly<C> {
+    type Output = GenPoly<C>;
+    fn sub(self, rhs: GenPoly<C>) -> GenPoly<C> {
+        GenPoly::sub(self, &rhs)
+    }
+}
+
+impl<C: Ring> std::ops::Mul<GenPoly<C>> for &GenPoly<C> {
+    type Output = GenPoly<C>;
+    fn mul(self, rhs: GenPoly<C>) -> GenPoly<C> {
+        GenPoly::mul(self, &rhs)
+    }
+}
+
+// Mixed overloads: GenPoly op &GenPoly
+
+impl<C: Ring> std::ops::Add<&GenPoly<C>> for GenPoly<C> {
+    type Output = GenPoly<C>;
+    fn add(self, rhs: &GenPoly<C>) -> GenPoly<C> {
+        GenPoly::add(&self, rhs)
+    }
+}
+
+impl<C: Ring> std::ops::Sub<&GenPoly<C>> for GenPoly<C> {
+    type Output = GenPoly<C>;
+    fn sub(self, rhs: &GenPoly<C>) -> GenPoly<C> {
+        GenPoly::sub(&self, rhs)
+    }
+}
+
+impl<C: Ring> std::ops::Mul<&GenPoly<C>> for GenPoly<C> {
+    type Output = GenPoly<C>;
+    fn mul(self, rhs: &GenPoly<C>) -> GenPoly<C> {
+        GenPoly::mul(&self, rhs)
     }
 }
 
@@ -624,6 +724,14 @@ impl<C: Ring + CoeffDisplay> fmt::Display for GenPoly<C> {
             return write!(f, "0");
         }
 
+        // Helper to render a coefficient into a String via CoeffDisplay.
+        struct FmtCoeff<'a, C>(&'a C, BindingStrength);
+        impl<C: CoeffDisplay> fmt::Display for FmtCoeff<'_, C> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt_coeff(f, self.1)
+            }
+        }
+
         let mut first = true;
         // Print in descending degree order for readability.
         for i in (0..self.coeffs.len()).rev() {
@@ -631,29 +739,52 @@ impl<C: Ring + CoeffDisplay> fmt::Display for GenPoly<C> {
             if c.is_zero() {
                 continue;
             }
-            if !first {
+
+            // Detect sign by formatting at Weakest level (no forced parens).
+            let weak_str = format!("{}", FmtCoeff(c, BindingStrength::Weakest));
+            let is_neg = weak_str.starts_with('-');
+
+            // Get the positive version of the coefficient for display.
+            let abs_c;
+            let pos = if is_neg {
+                abs_c = Ring::neg(c);
+                &abs_c
+            } else {
+                c
+            };
+
+            // Separator / sign.
+            if first {
+                if is_neg {
+                    write!(f, "-")?;
+                }
+                first = false;
+            } else if is_neg {
+                write!(f, " - ")?;
+            } else {
                 write!(f, " + ")?;
             }
-            first = false;
 
+            // Coefficient and variable.
             match i {
                 0 => {
-                    c.fmt_coeff(f, BindingStrength::Sum)?;
+                    // Constant term: always print the (positive) coefficient.
+                    pos.fmt_coeff(f, BindingStrength::Sum)?;
                 }
                 1 => {
-                    if c.is_one() {
+                    if pos.is_one() {
                         write!(f, "θ")?;
                     } else {
-                        c.fmt_coeff(f, BindingStrength::Product)?;
+                        pos.fmt_coeff(f, BindingStrength::Product)?;
                         write!(f, "*θ")?;
                     }
                 }
                 n => {
-                    if c.is_one() {
-                        write!(f, "θ^{}", n)?;
+                    if pos.is_one() {
+                        write!(f, "θ^{n}")?;
                     } else {
-                        c.fmt_coeff(f, BindingStrength::Product)?;
-                        write!(f, "*θ^{}", n)?;
+                        pos.fmt_coeff(f, BindingStrength::Product)?;
+                        write!(f, "*θ^{n}")?;
                     }
                 }
             }
