@@ -24,6 +24,7 @@ pub mod rothstein_trager;
 pub mod tower;
 pub mod rde;
 pub mod integrate;
+pub mod tower_integrate;
 
 use std::cell::Cell;
 
@@ -196,7 +197,11 @@ pub fn try_risch_rational(
         match term {
             LogTerm::Rational { coeff, argument } => {
                 let arg_id = crate::poly::polybridge::poly_to_expr(arena, argument, var);
-                let ln_arg = arena.ln(arg_id);
+                // Wrap in abs() for real-valued integration correctness:
+                // ln(|v(x)|) is defined on the full real domain, while
+                // ln(v(x)) requires v(x) > 0.
+                let abs_arg = arena.abs(arg_id);
+                let ln_arg = arena.ln(abs_arg);
                 if coeff.is_one() {
                     terms.push(ln_arg);
                 } else if (-coeff.clone()).is_one() {

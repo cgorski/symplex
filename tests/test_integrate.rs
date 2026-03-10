@@ -35,14 +35,7 @@ fn integrate_x_inverse() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(-1).integrate(&x);
-    let s = format!("{result}");
-    // The Risch rational path returns ln(x) (via Rothstein-Trager),
-    // while the direct power-rule path returns ln(abs(x)).
-    // Both are correct for real x ≠ 0.
-    assert!(
-        s == "ln(abs(x))" || s == "ln(x)",
-        "∫ 1/x dx should be ln(x) or ln(abs(x)), got: {s}"
-    );
+    assert_eq!(format!("{result}"), "ln(abs(x))");
 }
 
 #[test]

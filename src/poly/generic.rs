@@ -529,6 +529,89 @@ impl<C: Field> GenPoly<C> {
 
         Ring::mul(&Ring::mul(&sign, &factor), &Self::resultant(b, &r))
     }
+
+    /// Compute the parametric resultant `R(z) = res_θ(f(θ), g(θ) − z·h(θ))`
+    /// as a polynomial in `z` with `C`-coefficients.
+    ///
+    /// This is used by Rothstein-Trager: given a square-free denominator `D(θ)`
+    /// and numerator `A(θ)`, compute `R(z) = res_θ(D, A − z·D')` where the
+    /// roots of `R(z)` are the residues of `A/D`.
+    ///
+    /// Uses evaluation-interpolation: evaluate at `z = 0, 1, 2, …, deg(f)`
+    /// (embedded via `IntegralCoeff::from_i64`), compute scalar resultants,
+    /// then Lagrange-interpolate to recover `R(z)`.
+    pub fn resultant_poly(f: &Self, g: &Self, h: &Self) -> Self
+    where
+        C: Field + super::traits::IntegralCoeff,
+    {
+        let d = match f.degree() {
+            Some(deg) => deg,
+            None => return Self::zero(),
+        };
+
+        // We need d+1 evaluation points (R(z) has degree ≤ d in z).
+        let num_pts = d + 1;
+        let mut points: Vec<(i64, C)> = Vec::with_capacity(num_pts);
+
+        for k in 0..num_pts {
+            let z_val = <C as super::traits::IntegralCoeff>::from_i64(k as i64);
+            // b_at_z(θ) = g(θ) − z_val · h(θ)
+            let z_h = h.scale(&z_val);
+            let b_at_z = g.sub(&z_h);
+            let res_val = Self::resultant(f, &b_at_z);
+            points.push((k as i64, res_val));
+        }
+
+        lagrange_interpolate_generic(&points)
+    }
+}
+
+/// Lagrange interpolation for `GenPoly<C>` through rational-valued points
+/// at integer abscissae.
+///
+/// Given `(x₀, y₀), …, (xₙ, yₙ)` with integer `xᵢ` and `C`-valued `yᵢ`,
+/// returns the unique polynomial of degree ≤ n passing through all points.
+fn lagrange_interpolate_generic<C: Field + super::traits::IntegralCoeff>(
+    points: &[(i64, C)],
+) -> GenPoly<C> {
+    let n = points.len();
+    if n == 0 {
+        return GenPoly::zero();
+    }
+
+    let mut result = GenPoly::zero();
+
+    for i in 0..n {
+        let (xi, yi) = &points[i];
+        if yi.is_zero() {
+            continue;
+        }
+
+        // L_i(z) = ∏_{j≠i} (z − xⱼ) / (xᵢ − xⱼ)
+        let mut basis = GenPoly::one();
+        let mut denom_scalar = C::one();
+
+        for (j, (xj, _)) in points.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            // (z - xj)
+            let neg_xj = Ring::neg(&<C as super::traits::IntegralCoeff>::from_i64(*xj));
+            let linear = GenPoly::from_coeffs(vec![neg_xj, C::one()]);
+            basis = basis.mul(&linear);
+
+            // (xi - xj)
+            let diff = <C as super::traits::IntegralCoeff>::from_i64(*xi - *xj);
+            denom_scalar = Ring::mul(&denom_scalar, &diff);
+        }
+
+        // L_i(z) = basis / denom_scalar
+        let inv_denom = Field::inv(&denom_scalar);
+        let scaled_basis = basis.scale(&Ring::mul(yi, &inv_denom));
+        result = result.add(&scaled_basis);
+    }
+
+    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

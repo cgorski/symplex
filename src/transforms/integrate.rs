@@ -2683,14 +2683,7 @@ mod tests {
         let neg_one = a.int(-1);
         let x_inv = a.pow(x, neg_one);
         let result = integrate(&mut a, x_inv, x);
-        let s = display(&a, result);
-        // The Risch rational path returns ln(x) (via Rothstein-Trager),
-        // while the direct power-rule path returns ln(abs(x)).
-        // Both are correct for real x ≠ 0.
-        assert!(
-            s == "ln(abs(x))" || s == "ln(x)",
-            "∫ 1/x dx should be ln(x) or ln(abs(x)), got: {s}"
-        );
+        assert_eq!(display(&a, result), "ln(abs(x))");
     }
 
     #[test]
