@@ -86,7 +86,11 @@ fn cauchy_bound(poly: &Poly, prec: usize) -> BigFloat {
         return BigFloat::from_i32(1, prec);
     }
     let mut max_ratio = BigFloat::from_i32(0, prec);
-    for c in poly.coeffs().iter().take(poly.coeffs().len().saturating_sub(1)) {
+    for c in poly
+        .coeffs()
+        .iter()
+        .take(poly.coeffs().len().saturating_sub(1))
+    {
         let ratio = c / &lc;
         let abs_ratio = if ratio.is_negative() { -ratio } else { ratio };
         let bf = ratio_to_bigfloat(&abs_ratio, prec);
@@ -127,16 +131,13 @@ fn initial_guesses(poly: &Poly, n: usize, prec: usize, cc: &mut Consts) -> Vec<C
         .map(|k| {
             // angle = 2π * (k + 1/4) / n
             let k_bf = BigFloat::from_i64(k as i64, prec);
-            let frac = k_bf
-                .add(&quarter, prec, rm)
-                .div(&n_bf, prec, rm);
+            let frac = k_bf.add(&quarter, prec, rm).div(&n_bf, prec, rm);
             let angle = two_pi.mul(&frac, prec, rm);
 
             let cos_a = angle.cos(prec, rm, cc);
             let sin_a = angle.sin(prec, rm, cc);
 
-            let re = center
-                .add(&radius.mul(&cos_a, prec, rm), prec, rm);
+            let re = center.add(&radius.mul(&cos_a, prec, rm), prec, rm);
             let im = radius.mul(&sin_a, prec, rm);
 
             (re, im)
@@ -159,11 +160,7 @@ fn initial_guesses(poly: &Poly, n: usize, prec: usize, cc: &mut Consts) -> Vec<C
 ///
 /// A vector of `n` complex roots as `(BigFloat, BigFloat)` pairs, sorted
 /// by real part (then imaginary part for ties).
-pub(crate) fn aberth_roots(
-    poly: &Poly,
-    prec: usize,
-    max_iter: usize,
-) -> Vec<Complex> {
+pub(crate) fn aberth_roots(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Complex> {
     let n = match poly.degree() {
         Some(d) if d >= 1 => d,
         _ => return vec![],
@@ -199,10 +196,10 @@ pub(crate) fn aberth_roots(
                 if j != i {
                     let diff = c_sub(&roots[i], &roots[j], wp, rm);
                     // Avoid division by zero for near-coincident roots
-                    let diff_abs_sq = diff
-                        .0
-                        .mul(&diff.0, wp, rm)
-                        .add(&diff.1.mul(&diff.1, wp, rm), wp, rm);
+                    let diff_abs_sq =
+                        diff.0
+                            .mul(&diff.0, wp, rm)
+                            .add(&diff.1.mul(&diff.1, wp, rm), wp, rm);
                     if diff_abs_sq.is_zero() {
                         continue;
                     }
@@ -216,10 +213,11 @@ pub(crate) fn aberth_roots(
             let denom = c_sub(&pp_zi, &pz_sum, wp, rm);
 
             // w_i = p(z_i) / denom
-            let denom_abs_sq = denom
-                .0
-                .mul(&denom.0, wp, rm)
-                .add(&denom.1.mul(&denom.1, wp, rm), wp, rm);
+            let denom_abs_sq =
+                denom
+                    .0
+                    .mul(&denom.0, wp, rm)
+                    .add(&denom.1.mul(&denom.1, wp, rm), wp, rm);
             let correction = if denom_abs_sq.is_zero() {
                 // Degenerate: skip this root
                 c_zero(wp)
@@ -228,10 +226,11 @@ pub(crate) fn aberth_roots(
             };
 
             // Track maximum correction magnitude
-            let corr_abs_sq = correction
-                .0
-                .mul(&correction.0, wp, rm)
-                .add(&correction.1.mul(&correction.1, wp, rm), wp, rm);
+            let corr_abs_sq = correction.0.mul(&correction.0, wp, rm).add(
+                &correction.1.mul(&correction.1, wp, rm),
+                wp,
+                rm,
+            );
             if corr_abs_sq.sub(&max_correction, prec, rm).is_positive() {
                 max_correction = corr_abs_sq;
             }
@@ -246,9 +245,7 @@ pub(crate) fn aberth_roots(
 
         // Check convergence: max |correction|^2 < threshold^2
         let threshold_sq = threshold.mul(&threshold, wp, rm);
-        if max_correction.is_zero()
-            || !max_correction.sub(&threshold_sq, prec, rm).is_positive()
-        {
+        if max_correction.is_zero() || !max_correction.sub(&threshold_sq, prec, rm).is_positive() {
             break;
         }
     }
@@ -326,8 +323,16 @@ mod tests {
         let mut real_parts: Vec<f64> = roots.iter().map(|r| bigfloat_to_f64(&r.0)).collect();
         real_parts.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-        assert!((real_parts[0] - 2.0).abs() < 1e-10, "root 0: {}", real_parts[0]);
-        assert!((real_parts[1] - 3.0).abs() < 1e-10, "root 1: {}", real_parts[1]);
+        assert!(
+            (real_parts[0] - 2.0).abs() < 1e-10,
+            "root 0: {}",
+            real_parts[0]
+        );
+        assert!(
+            (real_parts[1] - 3.0).abs() < 1e-10,
+            "root 1: {}",
+            real_parts[1]
+        );
     }
 
     #[test]

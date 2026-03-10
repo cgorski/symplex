@@ -8,7 +8,6 @@
 
 use symplex::prelude::*;
 
-
 fn main() {
     println!("=== Symplex Calculus Example ===\n");
 
@@ -126,7 +125,9 @@ fn main() {
     println!("f(5) where f = x³ - 3x² + 2x: {val2}");
 
     // Float evaluation
-    let float_val = expr!(ctx, sin(x) + cos(x)).eval_f64_with(&[(&x, 1)]).unwrap();
+    let float_val = expr!(ctx, sin(x) + cos(x))
+        .eval_f64_with(&[(&x, 1)])
+        .unwrap();
     println!("sin(1) + cos(1) = {float_val:.8}");
 
     // ── 12. Factor a polynomial ────────────────────────────────────────

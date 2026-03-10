@@ -11,8 +11,8 @@
 //!
 //! Run with: `cargo run --example pid_controller`
 
-use symplex::prelude::*;
 use symplex::control::*;
+use symplex::prelude::*;
 
 fn main() {
     println!("=== PID Controller Design for a DC Motor ===\n");
@@ -119,7 +119,12 @@ fn main() {
                 let val_str = val
                     .map(|v| format!("{v:.4}"))
                     .unwrap_or_else(|_| format!("{root}"));
-                println!("  p{} = {} {}", i + 1, val_str, if stable { "✓" } else { "✗" });
+                println!(
+                    "  p{} = {} {}",
+                    i + 1,
+                    val_str,
+                    if stable { "✓" } else { "✗" }
+                );
             }
             println!(
                 "\nStability: {}",

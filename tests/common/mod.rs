@@ -70,14 +70,7 @@ pub fn assert_math_eq(a: &Ex, b: &Ex, var: &Ex, label: &str) {
 }
 
 /// Assert two expressions are numerically equal at specified integer points.
-pub fn assert_math_eq_tol(
-    a: &Ex,
-    b: &Ex,
-    var: &Ex,
-    points: &[i64],
-    tol: f64,
-    label: &str,
-) {
+pub fn assert_math_eq_tol(a: &Ex, b: &Ex, var: &Ex, points: &[i64], tol: f64, label: &str) {
     let mut checked = 0usize;
     for &pt in points {
         let va = a.subs_i64(var, pt).eval().eval_f64();
@@ -202,14 +195,10 @@ pub fn assert_ftc_tol(integrand: &Ex, var: &Ex, tol: f64, label: &str) {
             }
             (Err(_), Err(_)) => {}
             (Ok(o), Err(e)) => {
-                panic!(
-                    "FTC {label} at {var}={pt_f}: integrand={o} but derivative failed: {e}"
-                );
+                panic!("FTC {label} at {var}={pt_f}: integrand={o} but derivative failed: {e}");
             }
             (Err(e), Ok(d)) => {
-                panic!(
-                    "FTC {label} at {var}={pt_f}: integrand failed: {e} but derivative={d}"
-                );
+                panic!("FTC {label} at {var}={pt_f}: integrand failed: {e} but derivative={d}");
             }
         }
     }
@@ -307,7 +296,12 @@ pub fn verify_roots(poly: &Ex, var: &Ex, roots: &[Ex], tol: f64) {
 /// original at multiple evaluation points.
 pub fn assert_simplify_preserves_value(expr: &Ex, var: &Ex, label: &str) {
     let simplified = expr.simplify();
-    assert_math_eq(expr, &simplified, var, &format!("simplify preserves value: {label}"));
+    assert_math_eq(
+        expr,
+        &simplified,
+        var,
+        &format!("simplify preserves value: {label}"),
+    );
 }
 
 /// Assert that `expr.full_simplify()` produces the same numerical value as
@@ -326,7 +320,12 @@ pub fn assert_full_simplify_preserves_value(expr: &Ex, var: &Ex, label: &str) {
 /// original at multiple evaluation points.
 pub fn assert_expand_preserves_value(expr: &Ex, var: &Ex, label: &str) {
     let expanded = expr.expand();
-    assert_math_eq(expr, &expanded, var, &format!("expand preserves value: {label}"));
+    assert_math_eq(
+        expr,
+        &expanded,
+        var,
+        &format!("expand preserves value: {label}"),
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -441,7 +440,8 @@ impl BailCounter {
         assert!(
             self.checked > 0,
             "{}: all {} iterations were skipped — test is vacuous",
-            self.label, self.skipped
+            self.label,
+            self.skipped
         );
     }
 
@@ -616,8 +616,8 @@ pub fn classify_domain_from_display(expr: &Ex) -> ExprDomain {
 
     // Check for trig functions
     let trig_names = [
-        "sin(", "cos(", "tan(", "asin(", "acos(", "atan(",
-        "sinh(", "cosh(", "tanh(", "sec(", "csc(", "cot(",
+        "sin(", "cos(", "tan(", "asin(", "acos(", "atan(", "sinh(", "cosh(", "tanh(", "sec(",
+        "csc(", "cot(",
     ];
     for name in &trig_names {
         if s.contains(name) {
@@ -633,8 +633,14 @@ pub fn classify_domain_from_display(expr: &Ex) -> ExprDomain {
 
     // Check for special functions
     let special_names = [
-        "Gamma(", "erf(", "erfc(", "Beta(", "DiracDelta(",
-        "Heaviside(", "lambertw(", "Digamma(",
+        "Gamma(",
+        "erf(",
+        "erfc(",
+        "Beta(",
+        "DiracDelta(",
+        "Heaviside(",
+        "lambertw(",
+        "Digamma(",
     ];
     for name in &special_names {
         if s.contains(name) {

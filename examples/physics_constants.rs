@@ -6,8 +6,8 @@
 //! Run with: cargo run --example physical_constants
 
 use symplex::prelude::*;
-use symplex::units::*;
 use symplex::units::constants;
+use symplex::units::*;
 
 fn main() {
     println!("═══════════════════════════════════════════════════════════════");
@@ -103,7 +103,10 @@ fn section_4_thermal_energy() {
     let t_room = 300.0_f64;
     let e_thermal = kb.eval_f64().unwrap() * t_room;
     println!("  k_B·T at 300 K = {:.4e} J", e_thermal);
-    println!("                 = {:.4} meV", e_thermal / 1.602176634e-19 * 1000.0);
+    println!(
+        "                 = {:.4} meV",
+        e_thermal / 1.602176634e-19 * 1000.0
+    );
     println!("  (Thermal energy at room temperature ≈ 25.9 meV)");
     println!();
 }
@@ -157,9 +160,18 @@ fn section_7_dimensional_checking() {
     let c = constants::speed_of_light(&ctx);
     let g = constants::standard_gravity(&ctx);
 
-    println!("  speed_of_light()   → {} (Velocity)", Velocity::dim_name_str());
-    println!("  planck_constant()  → {} (AngularMomentum)", AngularMomentum::dim_name_str());
-    println!("  standard_gravity() → {} (Acceleration)", Acceleration::dim_name_str());
+    println!(
+        "  speed_of_light()   → {} (Velocity)",
+        Velocity::dim_name_str()
+    );
+    println!(
+        "  planck_constant()  → {} (AngularMomentum)",
+        AngularMomentum::dim_name_str()
+    );
+    println!(
+        "  standard_gravity() → {} (Acceleration)",
+        Acceleration::dim_name_str()
+    );
 
     // mc² type-checks as Energy
     let m = Mass::symbol(&ctx, "m");

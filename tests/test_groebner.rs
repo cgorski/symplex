@@ -183,9 +183,7 @@ fn buchberger_katsura3() {
         .sub(&x0);
 
     // f3 = 2*x0*x1 + 2*x1*x2 - x1
-    let f3 = (&two * &(&x0 * &x1))
-        .add(&(&two * &(&x1 * &x2)))
-        .sub(&x1);
+    let f3 = (&two * &(&x0 * &x1)).add(&(&two * &(&x1 * &x2))).sub(&x1);
 
     let gb = groebner_basis(&[f1.clone(), f2.clone(), f3.clone()]);
 
@@ -418,10 +416,7 @@ fn full_pipeline_circle_line() {
     // Step 7: known solutions satisfy all elements
     // Solutions are (1/√2, 1/√2) and (-1/√2, -1/√2)
     // We can check that 2y² - 1 = 0 is in the lex GB (or equivalent)
-    let uni_y: Vec<&MultiPoly<Lex>> = lex_gb
-        .iter()
-        .filter(|p| p.degree_in(0) == 0)
-        .collect();
+    let uni_y: Vec<&MultiPoly<Lex>> = lex_gb.iter().filter(|p| p.degree_in(0) == 0).collect();
     assert!(!uni_y.is_empty());
     println!("Univariate in y: {}", uni_y[0]);
 }
@@ -767,9 +762,7 @@ fn katsura3_fglm_to_lex() {
         .add(&(&two * &(&x1 * &x1)))
         .add(&(&two * &(&x2 * &x2)))
         .sub(&x0);
-    let f3 = (&two * &(&x0 * &x1))
-        .add(&(&two * &(&x1 * &x2)))
-        .sub(&x1);
+    let f3 = (&two * &(&x0 * &x1)).add(&(&two * &(&x1 * &x2))).sub(&x1);
 
     let grevlex_gb = groebner_basis(&[f1, f2, f3]);
 
@@ -792,10 +785,7 @@ fn katsura3_fglm_to_lex() {
         let has_uni_x2 = lex_gb
             .iter()
             .any(|p| p.degree_in(0) == 0 && p.degree_in(1) == 0 && p.degree_in(2) > 0);
-        assert!(
-            has_uni_x2,
-            "Katsura-3 lex GB should have univariate in x2"
-        );
+        assert!(has_uni_x2, "Katsura-3 lex GB should have univariate in x2");
     } else {
         // If not zero-dim, it's still a valid GB
         println!("Katsura-3 is not zero-dimensional (unusual), skipping FGLM");

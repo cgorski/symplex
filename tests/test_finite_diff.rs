@@ -84,8 +84,7 @@ fn forward_diff_weights_two_points() {
         let one = arena.int(1);
         let x_list = vec![zero, one];
 
-        let weights =
-            symplex::finite_diff::finite_diff_weights(arena, 1, &x_list, zero);
+        let weights = symplex::finite_diff::finite_diff_weights(arena, 1, &x_list, zero);
 
         let w = &weights[1][1];
         assert_eq!(w.len(), 2);
@@ -108,8 +107,7 @@ fn central_diff_first_derivative_weights() {
         let one = arena.int(1);
         let x_list = vec![neg_one, zero, one];
 
-        let weights =
-            symplex::finite_diff::finite_diff_weights(arena, 1, &x_list, zero);
+        let weights = symplex::finite_diff::finite_diff_weights(arena, 1, &x_list, zero);
 
         let w = &weights[1][2];
         assert_eq!(w.len(), 3);
@@ -135,8 +133,7 @@ fn central_diff_second_derivative_weights() {
         let one = arena.int(1);
         let x_list = vec![neg_one, zero, one];
 
-        let weights =
-            symplex::finite_diff::finite_diff_weights(arena, 2, &x_list, zero);
+        let weights = symplex::finite_diff::finite_diff_weights(arena, 2, &x_list, zero);
 
         let w = &weights[2][2];
         assert_eq!(w.len(), 3);
@@ -166,9 +163,7 @@ fn apply_finite_diff_quadratic_first_deriv_at_zero() {
         let x_list = vec![neg_one, zero, one];
         let y_list = vec![one, zero, one]; // f(-1)=1, f(0)=0, f(1)=1
 
-        let result = symplex::finite_diff::apply_finite_diff(
-            arena, 1, &x_list, &y_list, zero,
-        );
+        let result = symplex::finite_diff::apply_finite_diff(arena, 1, &x_list, &y_list, zero);
         let result_eval = arena.eval_expr(result);
         assert!(
             arena.is_zero_structural(result_eval),
@@ -192,13 +187,12 @@ fn apply_finite_diff_quadratic_second_deriv() {
         let x_list = vec![neg_one, zero, one];
         let y_list = vec![one, zero, one];
 
-        let result = symplex::finite_diff::apply_finite_diff(
-            arena, 2, &x_list, &y_list, zero,
-        );
+        let result = symplex::finite_diff::apply_finite_diff(arena, 2, &x_list, &y_list, zero);
         let result_eval = arena.eval_expr(result);
         let two = arena.int(2);
         assert_eq!(
-            result_eval, two,
+            result_eval,
+            two,
             "2nd derivative of x^2 should be 2, got {}",
             arena.display(result_eval)
         );
@@ -220,13 +214,12 @@ fn apply_finite_diff_linear_first_deriv() {
         let x_list = vec![zero, one];
         let y_list = vec![y0, y1];
 
-        let result = symplex::finite_diff::apply_finite_diff(
-            arena, 1, &x_list, &y_list, zero,
-        );
+        let result = symplex::finite_diff::apply_finite_diff(arena, 1, &x_list, &y_list, zero);
         let result_eval = arena.eval_expr(result);
         let three = arena.int(3);
         assert_eq!(
-            result_eval, three,
+            result_eval,
+            three,
             "derivative of 3x+1 should be 3, got {}",
             arena.display(result_eval)
         );
@@ -277,8 +270,7 @@ fn four_point_forward_first_deriv_weights() {
         let three = arena.int(3);
         let x_list = vec![zero, one, two, three];
 
-        let weights =
-            symplex::finite_diff::finite_diff_weights(arena, 1, &x_list, zero);
+        let weights = symplex::finite_diff::finite_diff_weights(arena, 1, &x_list, zero);
         let w = &weights[1][3]; // 1st derivative, all 4 points
 
         assert_eq!(w.len(), 4);

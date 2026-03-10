@@ -75,9 +75,7 @@ pub fn solve_polynomial_system(
     }
 
     // Step 4: FGLM to lex ordering
-    let lex_gb = groebner::groebner_basis_lex(
-        &nonzero.to_vec(),
-    );
+    let lex_gb = groebner::groebner_basis_lex(&nonzero.to_vec());
 
     if lex_gb.is_empty() {
         return Ok(vec![]);
@@ -169,10 +167,7 @@ fn solve_triangular(
 
 /// Extract rational roots from a multivariate polynomial that is known to be
 /// univariate in `var_idx` (all other variables have exponent 0).
-fn rational_roots_of_univariate(
-    poly: &MultiPoly<Lex>,
-    var_idx: usize,
-) -> Vec<Ratio<BigInt>> {
+fn rational_roots_of_univariate(poly: &MultiPoly<Lex>, var_idx: usize) -> Vec<Ratio<BigInt>> {
     // Determine the maximum degree in var_idx
     let mut max_deg: u32 = 0;
     for (exp, _) in poly.terms() {
@@ -222,11 +217,7 @@ fn rational_roots_of_poly(poly: &crate::poly::Poly) -> Vec<Ratio<BigInt>> {
     };
 
     // Extract integer values (they should be integers after primitive_part)
-    let const_abs = const_term
-        .numer()
-        .to_i64()
-        .map(|n| n.abs())
-        .unwrap_or(0);
+    let const_abs = const_term.numer().to_i64().map(|n| n.abs()).unwrap_or(0);
     let lc_abs = lc.numer().to_i64().map(|n| n.abs()).unwrap_or(1);
 
     if const_abs == 0 {
@@ -475,11 +466,8 @@ pub fn solve_system_ex(
 
     // Build variable ExprId → column-index map.
     let var_ids: Vec<ExprId> = vars.iter().map(|v| v.raw_id()).collect();
-    let var_map: FxHashMap<ExprId, usize> = var_ids
-        .iter()
-        .enumerate()
-        .map(|(i, &id)| (id, i))
-        .collect();
+    let var_map: FxHashMap<ExprId, usize> =
+        var_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
     // Convert each equation to MultiPoly<GrevLex>.
     let inner = first.inner.read();
@@ -620,17 +608,15 @@ fn solve_triangular_symbolic(
             let mut reduced_exprs = Vec::new();
             for p in basis {
                 let poly_expr = multipoly_to_expr(arena, p, var_ids);
-                let subst = crate::transforms::subs::subs(arena, poly_expr, last_var_id, root.value);
+                let subst =
+                    crate::transforms::subs::subs(arena, poly_expr, last_var_id, root.value);
                 if !arena.is_zero_structural(subst) {
                     reduced_exprs.push(subst);
                 }
             }
 
-            let sub_solutions = solve_remaining_symbolic(
-                arena,
-                &reduced_exprs,
-                &var_ids[..last_var_idx],
-            );
+            let sub_solutions =
+                solve_remaining_symbolic(arena, &reduced_exprs, &var_ids[..last_var_idx]);
 
             for mut sub_sol in sub_solutions {
                 sub_sol.push(root.value);
@@ -691,11 +677,7 @@ fn solve_remaining_symbolic(
                     }
                 }
 
-                let sub_sols = solve_remaining_symbolic(
-                    arena,
-                    &reduced,
-                    &var_ids[..last_idx],
-                );
+                let sub_sols = solve_remaining_symbolic(arena, &reduced, &var_ids[..last_idx]);
 
                 for mut sub_sol in sub_sols {
                     sub_sol.push(root.value);
@@ -741,11 +723,7 @@ fn univariate_multipoly_to_expr(
 
 /// Convert a general [`MultiPoly<Lex>`] to a symbolic expression in the
 /// arena, using the given variable ExprIds.
-fn multipoly_to_expr(
-    arena: &mut Arena,
-    poly: &MultiPoly<Lex>,
-    var_ids: &[ExprId],
-) -> ExprId {
+fn multipoly_to_expr(arena: &mut Arena, poly: &MultiPoly<Lex>, var_ids: &[ExprId]) -> ExprId {
     let mut terms = Vec::new();
     for (exp, coeff) in poly.terms() {
         let coeff_id = ratio_to_expr(arena, coeff);
@@ -831,8 +809,7 @@ mod tests {
     #[test]
     fn test_solve_linear_single_var() {
         // x - 3 = 0 → x = 3
-        let p = MultiPoly::<GrevLex>::var(1, 0)
-            .add(&MultiPoly::from_int(1, -3));
+        let p = MultiPoly::<GrevLex>::var(1, 0).add(&MultiPoly::from_int(1, -3));
         let sols = solve_polynomial_system(&[p]).unwrap();
         assert_eq!(sols.len(), 1);
         assert_eq!(sols[0], vec![rat(3)]);

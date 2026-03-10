@@ -59,7 +59,8 @@ fn assume_positive() {
 #[test]
 fn assume_chained() {
     let ctx = Context::new();
-    let t = ctx.symbol("t")
+    let t = ctx
+        .symbol("t")
         .assume(Assumption::Positive)
         .assume(Assumption::Real);
     assert_eq!(t.is_positive(), Some(true));
@@ -87,10 +88,18 @@ fn assume_on_non_symbol_ignored() {
     // Verify that assume actually works on symbols by checking a non-positive value.
     // A symbol with no assumptions should return None for is_positive().
     let y = ctx.symbol("y");
-    assert_eq!(y.is_positive(), None, "bare symbol should not be known positive");
+    assert_eq!(
+        y.is_positive(),
+        None,
+        "bare symbol should not be known positive"
+    );
     // After assuming positive, it should be Some(true).
     let y_pos = y.assume(Assumption::Positive);
-    assert_eq!(y_pos.is_positive(), Some(true), "assumed-positive symbol should be positive");
+    assert_eq!(
+        y_pos.is_positive(),
+        Some(true),
+        "assumed-positive symbol should be positive"
+    );
     // And a negative integer should be known not positive.
     let neg = ctx.int(-3);
     assert_eq!(neg.is_positive(), Some(false), "-3 should not be positive");
@@ -160,9 +169,15 @@ fn integrate_x_sin_x() {
 
     // Numerical FTC check: ∫₁² x·sin(x) dx ≈ F(2) - F(1)
     // where F is the antiderivative we just computed.
-    let f_at_2 = result.subs_i64(&x, 2).eval().eval_f64()
+    let f_at_2 = result
+        .subs_i64(&x, 2)
+        .eval()
+        .eval_f64()
         .expect("F(2) should evaluate");
-    let f_at_1 = result.subs_i64(&x, 1).eval().eval_f64()
+    let f_at_1 = result
+        .subs_i64(&x, 1)
+        .eval()
+        .eval_f64()
         .expect("F(1) should evaluate");
     let ftc_value = f_at_2 - f_at_1;
 
@@ -248,7 +263,9 @@ fn log_base_2() {
     let result = ctx.int(8).log(&ctx.int(2));
     // log_2(8) = ln(8)/ln(2) = 3
     // The symbolic form may not fully simplify, so verify numerically.
-    let val = result.eval().eval_f64()
+    let val = result
+        .eval()
+        .eval_f64()
         .expect("log_2(8) should evaluate to a float");
     assert!(
         (val - 3.0).abs() < 1e-9,

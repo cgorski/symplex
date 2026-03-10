@@ -9,20 +9,13 @@ use symplex::prelude::*;
 
 /// Evaluate the z-transform result expression at a specific numeric z value
 /// and compare against the expected numeric value.
-fn verify_z_numerically(
-    result: &Ex,
-    z: &Ex,
-    z_num: i64,
-    z_den: i64,
-    expected: f64,
-    label: &str,
-) {
+fn verify_z_numerically(result: &Ex, z: &Ex, z_num: i64, z_den: i64, expected: f64, label: &str) {
     let ctx = result.context();
     let z_val = ctx.rational(z_num, z_den);
     let at_z = result.subs(z, &z_val).eval();
-    let val = at_z.eval_f64().unwrap_or_else(|_| {
-        panic!("{label}: should evaluate numerically at z={z_num}/{z_den}")
-    });
+    let val = at_z
+        .eval_f64()
+        .unwrap_or_else(|_| panic!("{label}: should evaluate numerically at z={z_num}/{z_den}"));
     assert!(
         (val - expected).abs() < 1e-3,
         "{label}: at z={z_num}/{z_den}, expected {expected}, got {val}"
@@ -48,9 +41,9 @@ fn verify_z_transform_partial_sum(
     // Evaluate X(z) at z = r
     let r_val = ctx.rational(r_num, r_den);
     let xz_at_r = x_of_z.subs(z, &r_val).eval();
-    let xz_f64 = xz_at_r.eval_f64().unwrap_or_else(|_| {
-        panic!("{label}: X(z) should evaluate at z={r_num}/{r_den}")
-    });
+    let xz_f64 = xz_at_r
+        .eval_f64()
+        .unwrap_or_else(|_| panic!("{label}: X(z) should evaluate at z={r_num}/{r_den}"));
 
     // Compute partial sum Σₖ₌₀^N x(k) · r⁻ᵏ
     let mut partial_sum: f64 = 0.0;
@@ -116,10 +109,7 @@ fn z_transform_exponential() {
     // Z{(1/2)^n} = z/(z - 1/2) = 2z/(2z - 1)
     let result = f.z_transform(&n, &z).unwrap();
     let d = format!("{result}");
-    assert!(
-        d.contains("z"),
-        "Z{{(1/2)^n}} should involve z, got: {d}"
-    );
+    assert!(d.contains("z"), "Z{{(1/2)^n}} should involve z, got: {d}");
     // Numerical: at z=3, 3/(3-0.5) = 3/2.5 = 1.2
     verify_z_numerically(&result, &z, 3, 1, 3.0 / 2.5, "Z{(1/2)^n}");
 }
@@ -184,11 +174,7 @@ fn z_transform_linearity() {
     let term2 = &third.pow(&n) * 2;
     let f = &term1 + &term2;
     let result = f.z_transform(&n, &z);
-    assert!(
-        result.is_ok(),
-        "linearity should work: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "linearity should work: {:?}", result.err());
     let r = result.unwrap();
     let d = format!("{r}");
     assert!(d.contains("z"), "result should contain z, got: {d}");
@@ -206,10 +192,7 @@ fn z_transform_n_var() {
     // Z{n} = z/(z-1)²
     let result = n.z_transform(&n, &z).unwrap();
     let d = format!("{result}");
-    assert!(
-        d.contains("z"),
-        "Z{{n}} should involve z, got: {d}"
-    );
+    assert!(d.contains("z"), "Z{{n}} should involve z, got: {d}");
     // Numerical: at z=3, 3/(3-1)^2 = 3/4 = 0.75
     verify_z_numerically(&result, &z, 3, 1, 0.75, "Z{n}");
 }

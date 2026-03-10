@@ -392,7 +392,10 @@ fn try_mul_patterns(
     };
 
     // ── Pattern: n · a^n → a·z/(z−a)² ──
-    if has_n && let Some(a) = pow_base && trig.is_none() {
+    if has_n
+        && let Some(a) = pow_base
+        && trig.is_none()
+    {
         let z_minus_a = arena.sub(z_var, a);
         let two = arena.int(2);
         let denom = arena.pow(z_minus_a, two);

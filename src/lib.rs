@@ -40,16 +40,16 @@
 extern crate self as symplex;
 
 // ── Directory modules (internal organisation) ──────────────────────────
+pub(crate) mod api;
 /// Foundation layer: expression nodes, arena, tree traversal, canonicalization, and core types.
 pub mod base;
-pub(crate) mod poly;
-pub(crate) mod transforms;
-pub(crate) mod simplify;
 pub(crate) mod calculus;
+pub(crate) mod domains;
 pub(crate) mod output;
 pub(crate) mod plotting;
-pub(crate) mod domains;
-pub(crate) mod api;
+pub(crate) mod poly;
+pub(crate) mod simplify;
+pub(crate) mod transforms;
 /// Compile-time dimensional analysis for physical quantities.
 pub mod units;
 
@@ -64,20 +64,20 @@ pub use base::config;
 pub use base::errors;
 
 // poly
-/// Sparse multivariate polynomials over ℚ.
-pub use poly::multipoly;
 /// Gröbner basis computation via Buchberger's algorithm with FGLM order conversion.
 pub use poly::groebner;
+/// Sparse multivariate polynomials over ℚ.
+pub use poly::multipoly;
 /// Polynomial system solving via Gröbner bases.
 pub use poly::polysys;
 
 // calculus
-/// Symbolic Fourier transform.
-pub use calculus::fourier_transform;
-/// Formal power series representations and algorithms.
-pub use calculus::formal_series;
 /// Finite difference methods: weights, application, and differentiation.
 pub use calculus::finite_diff;
+/// Formal power series representations and algorithms.
+pub use calculus::formal_series;
+/// Symbolic Fourier transform.
+pub use calculus::fourier_transform;
 /// Ordinary differential equation solver.
 pub use calculus::ode;
 /// Z-transform for discrete-time signal analysis.
@@ -94,14 +94,14 @@ pub use output::tree;
 pub use plotting::data_export;
 
 // domains
+/// Combinatorics: Stirling numbers, multinomial coefficients, partition counting.
+pub use domains::combinatorics;
 /// Control systems: state-space models, transfer functions, stability analysis.
 pub use domains::control;
 /// Lagrangian dynamics: equations of motion, mass matrix, Coriolis, gravity.
 pub use domains::dynamics;
 /// Symbolic matrix type and operations.
 pub use domains::matrix;
-/// Combinatorics: Stirling numbers, multinomial coefficients, partition counting.
-pub use domains::combinatorics;
 /// Number theory: primality, factorization, divisors, modular arithmetic.
 pub use domains::ntheory;
 /// Symbolic quaternion algebra for attitude representation.
@@ -112,14 +112,14 @@ pub use domains::robotics;
 pub use domains::vector;
 
 // api
-/// The core expression handle and types.
-pub use api::expr;
-/// Symbolic equation type (`lhs = rhs`).
-pub use api::eq;
-/// A non-locking, read-only view of an expression node for use in `replace()`.
-pub use api::expr_view;
 /// Expression context — arena, symbol table, configuration.
 pub use api::context;
+/// Symbolic equation type (`lhs = rhs`).
+pub use api::eq;
+/// The core expression handle and types.
+pub use api::expr;
+/// A non-locking, read-only view of an expression node for use in `replace()`.
+pub use api::expr_view;
 /// Convenience macros for building expressions.
 pub use api::macros;
 
@@ -148,17 +148,19 @@ impl Default for base::assumptions::Props {
 /// use symplex::prelude::*;
 /// ```
 pub mod prelude {
+    pub use crate::api::context::Context;
+    pub use crate::api::eq::Equation;
+    pub use crate::api::expr::{
+        BoolEx, Boolean, Ex, Expr, ExprType, Numeric, SetEx, SetValued, Sort,
+    };
+    pub use crate::api::expr_view::ExprView;
     pub use crate::base::assumptions::{Assumption, Assumptions, Props};
     pub use crate::base::config::EvalConfig;
-    pub use crate::api::context::Context;
-    pub use crate::domains::control::{StateSpace, TransferFunction};
-    pub use crate::api::eq::Equation;
     pub use crate::base::errors::SymplexError;
-    pub use crate::api::expr::{BoolEx, Boolean, Ex, Expr, ExprType, Numeric, SetEx, SetValued, Sort};
-    pub use crate::api::expr_view::ExprView;
+    pub use crate::domains::control::{StateSpace, TransferFunction};
     pub use crate::domains::matrix::Matrix;
-    pub use crate::transforms::pattern::Step;
     pub use crate::domains::quaternion::Quaternion;
+    pub use crate::transforms::pattern::Step;
     pub use symplex_macros::{dim, eq, expr, matrix, rule};
 
     // NOTE: `vars!`, `syms!`, and `sym!` are `#[macro_export]` macros and

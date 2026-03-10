@@ -68,11 +68,13 @@ fn matrix_add() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![
         vec![ctx.int(10), ctx.int(20)],
         vec![ctx.int(30), ctx.int(40)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let c = a.add(&b).unwrap();
     assert_eq!(format!("{}", c.get(0, 0)), "11");
     assert_eq!(format!("{}", c.get(1, 1)), "44");
@@ -103,11 +105,13 @@ fn matrix_matmul_2x2() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![
         vec![ctx.int(5), ctx.int(6)],
         vec![ctx.int(7), ctx.int(8)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let c = a.matmul(&b).unwrap();
     // [1*5+2*7, 1*6+2*8] = [19, 22]
     // [3*5+4*7, 3*6+4*8] = [43, 50]
@@ -123,7 +127,8 @@ fn matrix_det_2x2() {
     let m = Matrix::new(vec![
         vec![ctx.int(3), ctx.int(7)],
         vec![ctx.int(1), ctx.int(5)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert_eq!(format!("{}", m.det().unwrap()), "8");
 }
 
@@ -134,7 +139,8 @@ fn matrix_det_3x3_singular() {
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
         vec![ctx.int(7), ctx.int(8), ctx.int(9)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert_eq!(format!("{}", m.det().unwrap()), "0");
 }
 
@@ -145,7 +151,8 @@ fn matrix_det_3x3_nonsingular() {
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(0), ctx.int(1), ctx.int(4)],
         vec![ctx.int(5), ctx.int(6), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let det = m.det().unwrap();
     // det = 1(0-24) - 2(0-20) + 3(0-5) = -24 + 40 - 15 = 1
     assert_eq!(format!("{det}"), "1");
@@ -157,7 +164,8 @@ fn matrix_trace() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert_eq!(format!("{}", m.trace().unwrap()), "5");
 }
 
@@ -211,13 +219,18 @@ fn matrix_display() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let s = format!("{m}");
     // Verify all four entries appear and the matrix renders with structure
-    assert!(s.contains("1") && s.contains("2") && s.contains("3") && s.contains("4"),
-        "display should contain all entries 1,2,3,4: {s}");
-    assert!(s.contains('[') || s.contains('|') || s.contains('\n'),
-        "display should have matrix structure (brackets, pipes, or newlines): {s}");
+    assert!(
+        s.contains("1") && s.contains("2") && s.contains("3") && s.contains("4"),
+        "display should contain all entries 1,2,3,4: {s}"
+    );
+    assert!(
+        s.contains('[') || s.contains('|') || s.contains('\n'),
+        "display should have matrix structure (brackets, pipes, or newlines): {s}"
+    );
 }
 
 #[test]
@@ -226,7 +239,8 @@ fn matrix_map() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(4)],
         vec![ctx.int(9), ctx.int(16)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let sqrt_m = m.map(|e| e.sqrt().eval());
     assert_eq!(format!("{}", sqrt_m.get(0, 0)), "1");
     assert_eq!(format!("{}", sqrt_m.get(0, 1)), "2");

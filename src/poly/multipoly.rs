@@ -183,7 +183,10 @@ fn rat(n: i64) -> Ratio<BigInt> {
 
 /// Component-wise maximum of two exponent vectors (LCM of monomials).
 pub fn monomial_lcm(a: &[u32], b: &[u32]) -> Vec<u32> {
-    a.iter().zip(b.iter()).map(|(&ai, &bi)| ai.max(bi)).collect()
+    a.iter()
+        .zip(b.iter())
+        .map(|(&ai, &bi)| ai.max(bi))
+        .collect()
 }
 
 /// Check if monomial a divides monomial b (component-wise ≤).
@@ -325,10 +328,7 @@ impl<O: MonomialOrd> MultiPoly<O> {
     ///
     /// Returns `None` for the zero polynomial (which has no defined degree).
     pub fn total_degree(&self) -> Option<u32> {
-        self.terms
-            .keys()
-            .map(|k| k.exponents.iter().sum())
-            .max()
+        self.terms.keys().map(|k| k.exponents.iter().sum()).max()
     }
 
     /// Degree in a specific variable.
@@ -373,19 +373,14 @@ impl<O: MonomialOrd> MultiPoly<O> {
 
     /// Iterate over all terms as `(exponent_slice, coefficient)` pairs.
     pub fn terms(&self) -> impl Iterator<Item = (&[u32], &Ratio<BigInt>)> {
-        self.terms
-            .iter()
-            .map(|(k, v)| (k.exponents.as_slice(), v))
+        self.terms.iter().map(|(k, v)| (k.exponents.as_slice(), v))
     }
 
     /// Convert this polynomial to a different monomial ordering.
     pub fn convert_order<B: MonomialOrd>(&self) -> MultiPoly<B> {
         let mut new_terms = BTreeMap::new();
         for (key, coeff) in &self.terms {
-            new_terms.insert(
-                MonoKey::<B>::new(key.exponents.clone()),
-                coeff.clone(),
-            );
+            new_terms.insert(MonoKey::<B>::new(key.exponents.clone()), coeff.clone());
         }
         MultiPoly {
             num_vars: self.num_vars,
@@ -884,7 +879,9 @@ impl<O: MonomialOrd> ops::Add<i64> for &MultiPoly<O> {
 }
 impl<O: MonomialOrd> ops::Add<i64> for MultiPoly<O> {
     type Output = MultiPoly<O>;
-    fn add(self, rhs: i64) -> MultiPoly<O> { (&self) + rhs }
+    fn add(self, rhs: i64) -> MultiPoly<O> {
+        (&self) + rhs
+    }
 }
 
 impl<O: MonomialOrd> ops::Sub<i64> for &MultiPoly<O> {
@@ -896,7 +893,9 @@ impl<O: MonomialOrd> ops::Sub<i64> for &MultiPoly<O> {
 }
 impl<O: MonomialOrd> ops::Sub<i64> for MultiPoly<O> {
     type Output = MultiPoly<O>;
-    fn sub(self, rhs: i64) -> MultiPoly<O> { (&self) - rhs }
+    fn sub(self, rhs: i64) -> MultiPoly<O> {
+        (&self) - rhs
+    }
 }
 
 impl<O: MonomialOrd> ops::Mul<i64> for &MultiPoly<O> {
@@ -908,7 +907,9 @@ impl<O: MonomialOrd> ops::Mul<i64> for &MultiPoly<O> {
 }
 impl<O: MonomialOrd> ops::Mul<i64> for MultiPoly<O> {
     type Output = MultiPoly<O>;
-    fn mul(self, rhs: i64) -> MultiPoly<O> { (&self) * rhs }
+    fn mul(self, rhs: i64) -> MultiPoly<O> {
+        (&self) * rhs
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

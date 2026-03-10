@@ -4,8 +4,8 @@
 //! The stripper-collector algorithm replaces O(n²) pairwise enumeration
 //! with O(k·n) scanning for k-term patterns inside n-term Add/Mul nodes.
 
-use symplex::prelude::*;
 use symplex::expr;
+use symplex::prelude::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Pythagorean identity inside sums of increasing size
@@ -85,7 +85,10 @@ fn stripper_collector_exp_mul_in_product() {
     assert!(s.contains("z"), "should still contain z: {s}");
     // There should be only one exp() call, not two
     let exp_count = s.matches("exp(").count();
-    assert_eq!(exp_count, 1, "should have exactly one exp after combining: {s}");
+    assert_eq!(
+        exp_count, 1,
+        "should have exactly one exp after combining: {s}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

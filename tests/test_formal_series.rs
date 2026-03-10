@@ -17,7 +17,8 @@ fn assert_coeff_eq(series: &symplex::formal_series::FormalPowerSeries, k: usize,
     let actual = series.coefficient_rational(k);
     let expected = Ratio::new(BigInt::from(p), BigInt::from(q));
     assert_eq!(
-        actual, expected,
+        actual,
+        expected,
         "coefficient a_{k} should be {p}/{q}, got {actual}",
         k = k
     );

@@ -10,7 +10,9 @@
 
 mod parse;
 
-use parse::{BinOp, DimMacroInput, EqMacroInput, ExprMacroInput, MathExpr, MatrixMacroInput, RuleMacroInput};
+use parse::{
+    BinOp, DimMacroInput, EqMacroInput, ExprMacroInput, MathExpr, MatrixMacroInput, RuleMacroInput,
+};
 use parse::{KNOWN_FUNCTIONS, is_known_constant, is_known_function};
 
 use proc_macro::TokenStream;

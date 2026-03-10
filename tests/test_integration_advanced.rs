@@ -32,10 +32,7 @@ fn integrate_completing_square() {
         s.contains("atan"),
         "∫ 1/(x²+2x+5) dx should use atan, got: {s}"
     );
-    assert!(
-        !s.contains("Integral"),
-        "should not be unevaluated: {s}"
-    );
+    assert!(!s.contains("Integral"), "should not be unevaluated: {s}");
     // FTC verification: d/dx(antiderivative) ≈ integrand
     common::assert_ftc(&integrand, &x, "1/(x²+2x+5)");
 }
@@ -54,10 +51,7 @@ fn integrate_1_over_x2_plus_4() {
         s.contains("atan"),
         "∫ 1/(x²+4) dx should use atan, got: {s}"
     );
-    assert!(
-        !s.contains("Integral"),
-        "should not be unevaluated: {s}"
-    );
+    assert!(!s.contains("Integral"), "should not be unevaluated: {s}");
     common::assert_ftc(&integrand, &x, "1/(x²+4)");
 }
 
@@ -134,10 +128,7 @@ fn integrate_completing_square_x2_plus_x_plus_1() {
         s.contains("atan"),
         "∫ 1/(x²+x+1) dx should use atan, got: {s}"
     );
-    assert!(
-        !s.contains("Integral"),
-        "should not be unevaluated: {s}"
-    );
+    assert!(!s.contains("Integral"), "should not be unevaluated: {s}");
     common::assert_ftc(&integrand, &x, "1/(x²+x+1)");
 }
 
@@ -169,10 +160,7 @@ fn ode_exact_simple() {
     let s = format!("{sol}");
     eprintln!("exact ODE (2x+y)+(x+2y)y' = 0 solution: {s}");
     // Exact ODE solver returns the potential F(x,y); the constant is implicit.
-    assert!(
-        !s.is_empty(),
-        "should produce a non-empty solution: {s}"
-    );
+    assert!(!s.is_empty(), "should produce a non-empty solution: {s}");
 }
 
 #[test]
@@ -199,10 +187,7 @@ fn ode_exact_verify() {
     let s = format!("{sol}");
     eprintln!("y + x·y' = 0 solution: {s}");
     // Solution may or may not contain an explicit C1 (exact solver returns F(x,y)).
-    assert!(
-        !s.is_empty(),
-        "solution should be non-empty: {s}"
-    );
+    assert!(!s.is_empty(), "solution should be non-empty: {s}");
 }
 
 #[test]
@@ -282,10 +267,7 @@ fn ode_integrating_factor_x() {
     if !sol.has_unevaluated() {
         let s = format!("{sol}");
         eprintln!("y' + y/x = x  solution: {s}");
-        assert!(
-            s.contains("C1"),
-            "should have constant C1: {s}"
-        );
+        assert!(s.contains("C1"), "should have constant C1: {s}");
     } else {
         eprintln!(
             "NOTE: y' + y/x = x not yet solved (may need exp(ln(x)) \
@@ -310,10 +292,7 @@ fn ode_existing_simple_separable() {
     assert!(!sol.has_unevaluated(), "should solve y' = x");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "y' = x solution should have C1: {s}");
-    assert!(
-        s.contains("x"),
-        "y' = x solution should contain x: {s}"
-    );
+    assert!(s.contains("x"), "y' = x solution should contain x: {s}");
 }
 
 #[test]
@@ -327,14 +306,8 @@ fn ode_existing_first_order_linear() {
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "should solve y' + 2y = 0");
     let s = format!("{sol}");
-    assert!(
-        s.contains("exp"),
-        "y' + 2y = 0 should have exp: {s}"
-    );
-    assert!(
-        s.contains("C1"),
-        "y' + 2y = 0 should have C1: {s}"
-    );
+    assert!(s.contains("exp"), "y' + 2y = 0 should have exp: {s}");
+    assert!(s.contains("C1"), "y' + 2y = 0 should have C1: {s}");
 }
 
 #[test]
@@ -349,11 +322,11 @@ fn ode_existing_second_order_cc() {
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "should solve y'' − 3y' + 2y = 0");
     let s = format!("{sol}");
-    assert!(s.contains("C1") && s.contains("C2"), "should have C1 and C2: {s}");
     assert!(
-        s.contains("exp"),
-        "should contain exp: {s}"
+        s.contains("C1") && s.contains("C2"),
+        "should have C1 and C2: {s}"
     );
+    assert!(s.contains("exp"), "should contain exp: {s}");
 }
 
 #[test]
@@ -367,10 +340,7 @@ fn ode_existing_separable_xy() {
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "should solve y' − xy = 0");
     let s = format!("{sol}");
-    assert!(
-        s.contains("exp"),
-        "y' = xy should have exp: {s}"
-    );
+    assert!(s.contains("exp"), "y' = xy should have exp: {s}");
 }
 
 #[test]
@@ -384,12 +354,6 @@ fn ode_existing_variable_coeff_linear() {
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "should solve y' + 2xy = 0");
     let s = format!("{sol}");
-    assert!(
-        s.contains("exp"),
-        "y' + 2xy = 0 should have exp: {s}"
-    );
-    assert!(
-        s.contains("C1"),
-        "y' + 2xy = 0 should have C1: {s}"
-    );
+    assert!(s.contains("exp"), "y' + 2xy = 0 should have exp: {s}");
+    assert!(s.contains("C1"), "y' + 2xy = 0 should have C1: {s}");
 }

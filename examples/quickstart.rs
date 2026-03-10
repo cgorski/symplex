@@ -10,7 +10,6 @@
 
 use symplex::prelude::*;
 
-
 fn main() {
     println!("=== Symplex Quick Start ===\n");
 
@@ -66,7 +65,7 @@ fn main() {
 
         // Build complex formulas with expr!, wrap with from_ex
         symplex::syms!(ctx; k, x_var);
-        let pe = Energy::from_ex(expr!(ctx, 1/2 * k * x_var^2));
+        let pe = Energy::from_ex(expr!(ctx, 1 / 2 * k * x_var ^ 2));
         println!("PE = ½kx² = {}", pe);
 
         // Derive force from potential energy
@@ -107,16 +106,16 @@ fn main() {
     // ── 6. Physical Constants ────────────────────────────────────────
     // Constants display as symbols (c, h, k_B) but evaluate to exact values.
     {
-        use symplex::units::*;
         use symplex::units::constants;
+        use symplex::units::*;
 
-        let c = constants::speed_of_light(&ctx);  // returns Velocity
+        let c = constants::speed_of_light(&ctx); // returns Velocity
         let m = Mass::symbol(&ctx, "m");
-        let energy = symplex::dim!(ctx, Energy: m * c * c);  // E = mc²
+        let energy = symplex::dim!(ctx, Energy: m * c * c); // E = mc²
 
         // Displays symbolically, not as a huge number:
         println!("\n--- Physical Constants ---");
-        println!("E = mc² = {}", energy);  // "c^2*m [J]", not "89875517873681764*m"
+        println!("E = mc² = {}", energy); // "c^2*m [J]", not "89875517873681764*m"
 
         // Evaluates to exact value:
         let val = energy.subs(&m, &ctx.int(1)).eval_f64().unwrap();
@@ -154,7 +153,7 @@ fn main() {
         symplex::syms!(ctx; a, t);
         let t_var = Time::symbol(&ctx, "t");
 
-        let position = Length::from_ex(expr!(ctx, 1/2 * a * t^2));
+        let position = Length::from_ex(expr!(ctx, 1 / 2 * a * t ^ 2));
         let velocity: Velocity = position.diff_wrt(&t_var);
         let acceleration: Acceleration = velocity.diff_wrt(&t_var);
 
@@ -167,7 +166,9 @@ fn main() {
 
     // ── 10. Numerical Evaluation ────────────────────────────────────
     println!("--- Numerical Evaluation ---");
-    let val = expr!(ctx, sin(x) + cos(x)).eval_f64_with(&[(&x, 1)]).unwrap();
+    let val = expr!(ctx, sin(x) + cos(x))
+        .eval_f64_with(&[(&x, 1)])
+        .unwrap();
     println!("sin(1) + cos(1) = {val:.6}");
 
     let val2 = f.subs_i64(&x, 3);
@@ -193,10 +194,7 @@ fn main() {
     let eigenvals = m.eigenvals(&x).unwrap();
     println!(
         "Eigenvalues: {:?}",
-        eigenvals
-            .iter()
-            .map(|e| format!("{e}"))
-            .collect::<Vec<_>>()
+        eigenvals.iter().map(|e| format!("{e}")).collect::<Vec<_>>()
     );
 
     // Symbolic matrix
@@ -213,7 +211,10 @@ fn main() {
         println!("1 hp = {} W (exact!)", Power::horsepower(&val).eval());
         println!("1 psi = {} Pa", Pressure::psi(&val).eval());
         println!("1 atm = {} Pa", Pressure::atmospheres(&val).eval());
-        println!("1 nautical mile = {} m", Length::nautical_miles(&val).eval());
+        println!(
+            "1 nautical mile = {} m",
+            Length::nautical_miles(&val).eval()
+        );
         println!();
     }
 

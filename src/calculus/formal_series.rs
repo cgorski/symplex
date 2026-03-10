@@ -242,7 +242,11 @@ impl FormalPowerSeries {
                 terms.push(coeff_id);
             } else {
                 // Build (x - point)^k
-                let x_minus_a = if is_maclaurin { var } else { arena.sub(var, point) };
+                let x_minus_a = if is_maclaurin {
+                    var
+                } else {
+                    arena.sub(var, point)
+                };
 
                 let power = if k == 1 {
                     x_minus_a
@@ -474,12 +478,14 @@ fn is_neg_of(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
             if children.len() == 2 {
                 let (a, b) = (children[0], children[1]);
                 if let Some(val) = arena.as_num(a)
-                    && val.is_negative() && val.abs() == Ratio::one()
+                    && val.is_negative()
+                    && val.abs() == Ratio::one()
                 {
                     return b == var;
                 }
                 if let Some(val) = arena.as_num(b)
-                    && val.is_negative() && val.abs() == Ratio::one()
+                    && val.is_negative()
+                    && val.abs() == Ratio::one()
                 {
                     return a == var;
                 }
@@ -584,9 +590,9 @@ fn is_rational_function(arena: &Arena, expr: ExprId, _var_sym: SymbolId) -> bool
     match arena.node(expr).clone() {
         ExprNode::Num(_) | ExprNode::Pi | ExprNode::E => true,
         ExprNode::Symbol(_sid) => true, // either it IS var or it's a constant
-        ExprNode::Add(ref children) | ExprNode::Mul(ref children) => {
-            children.iter().all(|&c| is_rational_function(arena, c, _var_sym))
-        }
+        ExprNode::Add(ref children) | ExprNode::Mul(ref children) => children
+            .iter()
+            .all(|&c| is_rational_function(arena, c, _var_sym)),
         ExprNode::Neg(inner) => is_rational_function(arena, inner, _var_sym),
         ExprNode::Pow(base, exp) => {
             // base^exp is rational if base is rational and exp is an integer
@@ -614,12 +620,7 @@ const DEFAULT_ORDER: usize = 10;
 ///
 /// Tries known-function patterns first, then the rational algorithm,
 /// then falls back to computing Taylor coefficients.
-pub fn fps(
-    arena: &mut Arena,
-    expr: ExprId,
-    var: ExprId,
-    point: ExprId,
-) -> FormalPowerSeries {
+pub fn fps(arena: &mut Arena, expr: ExprId, var: ExprId, point: ExprId) -> FormalPowerSeries {
     let var_sym = match arena.node(var) {
         ExprNode::Symbol(sid) => *sid,
         _ => {

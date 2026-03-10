@@ -85,7 +85,10 @@ fn main() {
     // exactly one solution (arm fully extended)
     println!("On boundary (distance = {total_reach}):");
     let boundary_solutions = inverse_kinematics_2dof(l1, l2, total_reach, 0.0);
-    println!("  ({total_reach}, 0): {} solution(s)", boundary_solutions.len());
+    println!(
+        "  ({total_reach}, 0): {} solution(s)",
+        boundary_solutions.len()
+    );
     for (i, (t1, t2)) in boundary_solutions.iter().enumerate() {
         println!("    Sol {}: θ₁ = {:.4}, θ₂ = {:.4}", i + 1, t1, t2);
     }
@@ -104,11 +107,7 @@ fn main() {
 
     println!("\n--- Unreachable Targets ---\n");
 
-    let unreachable: [(f64, f64); 3] = [
-        (10.0, 10.0),
-        (3.0, 0.0),
-        (0.0, 5.0),
-    ];
+    let unreachable: [(f64, f64); 3] = [(10.0, 10.0), (3.0, 0.0), (0.0, 5.0)];
 
     for (tx, ty) in &unreachable {
         let dist = (tx * tx + ty * ty).sqrt();
@@ -135,13 +134,8 @@ fn main() {
 
     println!("\n--- Generic Targets (with Numerical Fallback) ---\n");
 
-    let generic_targets: [(f64, f64); 5] = [
-        (1.0, 0.5),
-        (0.7, 0.7),
-        (0.5, 1.2),
-        (1.5, 0.3),
-        (-0.5, 0.8),
-    ];
+    let generic_targets: [(f64, f64); 5] =
+        [(1.0, 0.5), (0.7, 0.7), (0.5, 1.2), (1.5, 0.3), (-0.5, 0.8)];
 
     for (tx, ty) in &generic_targets {
         let dist = (tx * tx + ty * ty).sqrt();
@@ -156,7 +150,13 @@ fn main() {
                 let fx = l1 * t1.cos() + l2 * (t1 + t2).cos();
                 let fy = l1 * t1.sin() + l2 * (t1 + t2).sin();
                 let err = ((fx - tx).powi(2) + (fy - ty).powi(2)).sqrt();
-                println!("    Sol {}: θ₁ = {:.6}, θ₂ = {:.6} (err = {:.2e})", i + 1, t1, t2, err);
+                println!(
+                    "    Sol {}: θ₁ = {:.6}, θ₂ = {:.6} (err = {:.2e})",
+                    i + 1,
+                    t1,
+                    t2,
+                    err
+                );
             }
         } else {
             println!("  Algebraic solver: no solution (irrational angles)");

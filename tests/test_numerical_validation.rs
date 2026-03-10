@@ -5,8 +5,6 @@
 
 use symplex::prelude::*;
 
-
-
 /// Check that two expressions have the same numerical value at several integer points.
 fn assert_numerically_equal(a: &Ex, b: &Ex, x: &Ex, points: &[i64], tolerance: f64, msg: &str) {
     for &pt in points {
@@ -270,7 +268,9 @@ fn maclaurin_sin_approximates_at_small_x() {
     // The series x - x³/6 + x⁵/120 should be close
     // We can't easily substitute 0.1 so use x=1 where sin(1) ≈ 0.841
     // The 5th order Maclaurin of sin at x=1: 1 - 1/6 + 1/120 ≈ 0.8417
-    let approx = series.subs_i64(&x, 1).eval_f64()
+    let approx = series
+        .subs_i64(&x, 1)
+        .eval_f64()
         .expect("Maclaurin sin evaluation should succeed");
     let exact = 1.0f64.sin();
     assert!(
@@ -284,7 +284,9 @@ fn maclaurin_exp_approximates_at_small_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = x.exp().maclaurin(&x, 6).expand();
-    let approx = series.subs_i64(&x, 1).eval_f64()
+    let approx = series
+        .subs_i64(&x, 1)
+        .eval_f64()
         .expect("Maclaurin exp evaluation should succeed");
     let exact = 1.0f64.exp();
     assert!(

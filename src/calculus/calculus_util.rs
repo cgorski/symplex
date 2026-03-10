@@ -8,12 +8,12 @@
 //! Principle 5.
 
 use crate::base::arena::Arena;
+use crate::base::node::{ExprId, ExprNode, INTERVAL_BOTH_OPEN, SymbolId};
+use crate::base::walk;
 use crate::transforms::eval;
 use crate::transforms::evalf;
 use crate::transforms::inequalities::Relation;
-use crate::base::node::{ExprId, ExprNode, SymbolId, INTERVAL_BOTH_OPEN};
 use crate::transforms::solve;
-use crate::base::walk;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // continuous_domain
@@ -52,11 +52,7 @@ pub(crate) fn continuous_domain(
 ///
 /// Returns `Some(set)` if the node restricts the domain, `None` otherwise.
 #[allow(dead_code)]
-fn compute_node_constraint(
-    arena: &mut Arena,
-    node: &ExprNode,
-    var: ExprId,
-) -> Option<ExprId> {
+fn compute_node_constraint(arena: &mut Arena, node: &ExprNode, var: ExprId) -> Option<ExprId> {
     match node {
         // ── Pow(base, exp): negative or fractional exponents ────────
         ExprNode::Pow(base, exp) => {
@@ -179,17 +175,13 @@ fn compute_node_constraint(
 /// Solve `expr > 0` for `var`, returning the solution set.
 #[allow(dead_code)]
 fn solve_gt_zero(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
-    arena
-        .solve_inequality_expr(expr, var, Relation::Gt)
-        .ok()
+    arena.solve_inequality_expr(expr, var, Relation::Gt).ok()
 }
 
 /// Solve `expr >= 0` for `var`, returning the solution set.
 #[allow(dead_code)]
 fn solve_ge_zero(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
-    arena
-        .solve_inequality_expr(expr, var, Relation::Ge)
-        .ok()
+    arena.solve_inequality_expr(expr, var, Relation::Ge).ok()
 }
 
 /// Build the domain that excludes the zeros of `expr` w.r.t. `var`.
@@ -201,11 +193,7 @@ fn domain_exclude_zeros(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
     let solutions = solve::solve(arena, expr, var);
     if solutions.is_empty() {
         // No zeros found → no restriction (denominator never zero for real x)
-        return arena.interval(
-            arena.neg_infinity,
-            arena.infinity,
-            INTERVAL_BOTH_OPEN,
-        );
+        return arena.interval(arena.neg_infinity, arena.infinity, INTERVAL_BOTH_OPEN);
     }
 
     let root_ids: Vec<ExprId> = solutions.into_iter().map(|s| s.value).collect();
@@ -245,7 +233,9 @@ pub(crate) fn singularities(
         let candidates = singularity_candidates(arena, &node, var);
         for root_expr in candidates {
             if let Some(val) = expr_to_f64(arena, root_expr)
-                && val.is_finite() && val >= range.0 && val <= range.1
+                && val.is_finite()
+                && val >= range.0
+                && val <= range.1
             {
                 // Deduplicate
                 if !sing_points.iter().any(|&v| (v - val).abs() < 1e-12) {
@@ -260,11 +250,7 @@ pub(crate) fn singularities(
 }
 
 /// Collect candidate singularity locations (as ExprIds) from a single node.
-fn singularity_candidates(
-    arena: &mut Arena,
-    node: &ExprNode,
-    var: ExprId,
-) -> Vec<ExprId> {
+fn singularity_candidates(arena: &mut Arena, node: &ExprNode, var: ExprId) -> Vec<ExprId> {
     match node {
         // Negative powers → zeros of base are poles
         ExprNode::Pow(base, exp) => {
@@ -431,9 +417,7 @@ fn extract_linear_coefficient(arena: &Arena, expr: ExprId, var: ExprId) -> Optio
             omega
         }
 
-        ExprNode::Neg(inner) => {
-            extract_linear_coefficient(arena, *inner, var).map(|c| -c)
-        }
+        ExprNode::Neg(inner) => extract_linear_coefficient(arena, *inner, var).map(|c| -c),
 
         _ => None,
     }
@@ -470,8 +454,6 @@ mod tests {
             _ => panic!("expected Symbol node"),
         }
     }
-
-
 
     /// Helper: check if a set (as displayed) contains an interval description.
     fn set_display(arena: &Arena, set: ExprId) -> String {
@@ -632,7 +614,12 @@ mod tests {
 
         let sings = singularities(&mut arena, expr, x, x_sym, (-2.0, 2.0));
 
-        assert_eq!(sings.len(), 1, "1/x should have one singularity: {:?}", sings);
+        assert_eq!(
+            sings.len(),
+            1,
+            "1/x should have one singularity: {:?}",
+            sings
+        );
         assert!(
             sings[0].abs() < 1e-10,
             "1/x singularity should be at 0, got: {}",

@@ -32,8 +32,8 @@ use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
-use crate::poly::Poly;
 use crate::base::walk;
+use crate::poly::Poly;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Expression → Poly
@@ -108,7 +108,9 @@ fn convert_node(
         }
 
         // Constants.
-        ExprNode::Pi | ExprNode::E | ExprNode::ImaginaryUnit | ExprNode::PhysicalConstant(_, _) => None,
+        ExprNode::Pi | ExprNode::E | ExprNode::ImaginaryUnit | ExprNode::PhysicalConstant(_, _) => {
+            None
+        }
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN => {
             None
         }

@@ -55,9 +55,7 @@ pub(crate) fn factor(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     // Step 2: Try enhanced polynomial factoring (SFD + rational roots + Kronecker).
     let (content, factors) = poly.factor_over_z();
 
-    let nontrivial = factors.len() > 1
-        || factors.iter().any(|(_, m)| *m > 1)
-        || !content.is_one();
+    let nontrivial = factors.len() > 1 || factors.iter().any(|(_, m)| *m > 1) || !content.is_one();
 
     if nontrivial {
         return build_factored_expr(arena, var, &content, &factors);

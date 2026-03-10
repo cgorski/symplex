@@ -478,9 +478,11 @@ fn expand_power_base(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<Exp
     // Skip when exponent is a positive integer — those cases are
     // already fully handled by canonicalization or multinomial expansion.
     if let Some(r) = arena.as_num(exp)
-        && r.is_integer() && r.is_positive() {
-            return None;
-        }
+        && r.is_integer()
+        && r.is_positive()
+    {
+        return None;
+    }
     if let ExprNode::Mul(ref children) = arena.node(base).clone() {
         let factors: Vec<ExprId> = children.iter().map(|&c| arena.pow(c, exp)).collect();
         Some(arena.mul(&factors))
@@ -514,8 +516,12 @@ fn expand_power_exp(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<Expr
             let mut all_nonpos = true;
             for &child in children.iter() {
                 if let Some(r) = arena.as_num(child) {
-                    if r.is_negative() { all_nonneg = false; }
-                    if r.is_positive() { all_nonpos = false; }
+                    if r.is_negative() {
+                        all_nonneg = false;
+                    }
+                    if r.is_positive() {
+                        all_nonpos = false;
+                    }
                 } else {
                     // Can't determine sign of symbolic term — be conservative
                     all_nonneg = false;

@@ -619,7 +619,10 @@ fn to_latex_preserves_dimension() {
     let latex = force.to_latex();
     // to_latex should return a non-empty LaTeX string
     assert!(!latex.is_empty(), "LaTeX output should not be empty");
-    assert!(latex.contains("f"), "LaTeX should contain the variable name f: {latex}");
+    assert!(
+        latex.contains("f"),
+        "LaTeX should contain the variable name f: {latex}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -671,7 +674,10 @@ fn subs_chain_no_inner() {
     let f = Force::from_ex(expr!(ctx, m * a));
     let m_var = Mass::symbol(&ctx, "m");
     let a_var = Acceleration::symbol(&ctx, "a");
-    let result = f.subs(&m_var, &ctx.int(5)).subs(&a_var, &ctx.int(10)).eval();
+    let result = f
+        .subs(&m_var, &ctx.int(5))
+        .subs(&a_var, &ctx.int(10))
+        .eval();
     assert_eq!(format!("{}", result.inner()), "50");
 }
 
@@ -752,7 +758,10 @@ fn named_display_keeps_suffix() {
     let ctx = Context::new();
     let f = Force::constant(&ctx, 98);
     let s = format!("{}", f);
-    assert!(s.contains("[N]"), "Force display should keep unit suffix: {s}");
+    assert!(
+        s.contains("[N]"),
+        "Force display should keep unit suffix: {s}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

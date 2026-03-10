@@ -249,10 +249,7 @@ fn taylor_composition_exp_sin() {
     // requiring the general Taylor expansion machinery.
     let expr = x.sin().exp();
     let series = expr.maclaurin(&x, 6);
-    assert!(
-        !series.has_unevaluated(),
-        "exp(sin(x)) maclaurin failed"
-    );
+    assert!(!series.has_unevaluated(), "exp(sin(x)) maclaurin failed");
     let expanded = series.expand().eval();
 
     // exp(sin(x)) at x=0: exp(sin(0)) = exp(0) = 1
@@ -298,11 +295,7 @@ fn series_numerical_accuracy_sin() {
     for &order in &orders {
         let series = x.sin().maclaurin(&x, order);
         let expanded = series.expand().eval();
-        if let Ok(val) = expanded
-            .subs(&x, &ctx.rational(1, 2))
-            .eval()
-            .eval_f64()
-        {
+        if let Ok(val) = expanded.subs(&x, &ctx.rational(1, 2)).eval().eval_f64() {
             let err = (val - exact).abs();
             assert!(
                 err < prev_err,
@@ -335,11 +328,7 @@ fn series_numerical_accuracy_exp() {
     for &order in &orders {
         let series = x.exp().maclaurin(&x, order);
         let expanded = series.expand().eval();
-        if let Ok(val) = expanded
-            .subs(&x, &ctx.rational(1, 2))
-            .eval()
-            .eval_f64()
-        {
+        if let Ok(val) = expanded.subs(&x, &ctx.rational(1, 2)).eval().eval_f64() {
             let err = (val - exact).abs();
             assert!(
                 err < prev_err,

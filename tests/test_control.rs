@@ -1,7 +1,7 @@
 //! Integration tests for the control systems module:
 //! state-space models, transfer functions, and Routh-Hurwitz stability.
 
-use symplex::control::{is_routh_stable, routh_array, StateSpace, TransferFunction};
+use symplex::control::{StateSpace, TransferFunction, is_routh_stable, routh_array};
 use symplex::matrix::Matrix;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -16,7 +16,8 @@ fn state_space_dimensions() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
@@ -40,7 +41,8 @@ fn state_space_poles_2x2() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
@@ -71,7 +73,8 @@ fn state_space_char_poly() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
@@ -108,7 +111,8 @@ fn state_space_controllability() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(0), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
@@ -129,16 +133,14 @@ fn state_space_not_controllable() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(2)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(1)], vec![ctx.int(0)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    assert!(
-        !ss.is_controllable(),
-        "System should NOT be controllable"
-    );
+    assert!(!ss.is_controllable(), "System should NOT be controllable");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -153,7 +155,8 @@ fn state_space_observability() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(0), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
@@ -173,7 +176,8 @@ fn state_space_stable() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
@@ -194,7 +198,8 @@ fn state_space_unstable() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(-1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(1)], vec![ctx.int(0)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
@@ -214,11 +219,7 @@ fn transfer_function_poles() {
     // G(s) = 1 / (s^2 + 3s + 2) = 1 / ((s+1)(s+2))
     // Poles at s = -1 and s = -2
     let s = ctx.symbol("s");
-    let tf = TransferFunction::new(
-        ctx.int(1),
-        &s * &s + &s * 3 + 2,
-        s.clone(),
-    );
+    let tf = TransferFunction::new(ctx.int(1), &s * &s + &s * 3 + 2, s.clone());
 
     let poles = tf.poles();
     assert_eq!(poles.len(), 2, "Expected 2 poles, got {}", poles.len());
@@ -242,11 +243,7 @@ fn transfer_function_zeros() {
     // G(s) = (s + 1) / (s^2 + 3s + 2)
     // Zero at s = -1
     let s = ctx.symbol("s");
-    let tf = TransferFunction::new(
-        &s + 1,
-        &s * &s + &s * 3 + 2,
-        s.clone(),
-    );
+    let tf = TransferFunction::new(&s + 1, &s * &s + &s * 3 + 2, s.clone());
 
     let zeros = tf.zeros();
     assert_eq!(zeros.len(), 1, "Expected 1 zero, got {}", zeros.len());
@@ -374,12 +371,7 @@ fn routh_array_stable() {
     // Row 3: (1*4 - 2*0)/1 = 4
     //
     // First column: [1, 2, 1, 4] — all positive → stable
-    let coeffs = vec![
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(3),
-        ctx.int(4),
-    ];
+    let coeffs = vec![ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4)];
 
     let table = routh_array(&coeffs);
     assert_eq!(table.len(), 4, "Routh array should have 4 rows");
@@ -410,12 +402,7 @@ fn routh_array_unstable() {
     // Row 3: (-3*8 - 2*0)/(-3) = 8
     //
     // First column: [1, 2, -3, 8] — sign change → unstable
-    let coeffs = vec![
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(1),
-        ctx.int(8),
-    ];
+    let coeffs = vec![ctx.int(1), ctx.int(2), ctx.int(1), ctx.int(8)];
 
     let stability = is_routh_stable(&coeffs);
     assert_eq!(
@@ -437,17 +424,15 @@ fn controllability_matrix_size() {
         vec![ctx.int(1), ctx.int(0), ctx.int(0)],
         vec![ctx.int(0), ctx.int(2), ctx.int(0)],
         vec![ctx.int(0), ctx.int(0), ctx.int(3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(0), ctx.int(0)],
-    ]).unwrap();
-    let c = Matrix::new(vec![vec![
-        ctx.int(1),
-        ctx.int(0),
-        ctx.int(0),
-    ]]).unwrap();
+    ])
+    .unwrap();
+    let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0), ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
@@ -471,21 +456,19 @@ fn observability_matrix_size() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
     let om = ss.observability_matrix();
-    assert_eq!(
-        om.nrows(),
-        4,
-        "Observability matrix should have 2*2=4 rows"
-    );
+    assert_eq!(om.nrows(), 4, "Observability matrix should have 2*2=4 rows");
     assert_eq!(om.ncols(), 2, "Observability matrix should have 2 cols");
 }
 
@@ -504,16 +487,10 @@ fn transfer_function_eval_at() {
     let tf = TransferFunction::new(&s + 3, &s + 1, s.clone());
 
     let val0 = tf.eval_at(&ctx.int(0)).eval_f64().unwrap();
-    assert!(
-        (val0 - 3.0).abs() < 1e-10,
-        "G(0) should be 3, got: {val0}"
-    );
+    assert!((val0 - 3.0).abs() < 1e-10, "G(0) should be 3, got: {val0}");
 
     let val1 = tf.eval_at(&ctx.int(1)).eval_f64().unwrap();
-    assert!(
-        (val1 - 2.0).abs() < 1e-10,
-        "G(1) should be 2, got: {val1}"
-    );
+    assert!((val1 - 2.0).abs() < 1e-10, "G(1) should be 2, got: {val1}");
 
     let val2 = tf.eval_at(&ctx.int(2)).eval_f64().unwrap();
     assert!(
@@ -610,7 +587,8 @@ fn state_space_char_poly_nonzero_at_non_root() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
@@ -680,7 +658,8 @@ fn state_space_display() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
@@ -724,14 +703,12 @@ fn state_space_not_observable() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(2)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![vec![ctx.int(1)], vec![ctx.int(0)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    assert!(
-        !ss.is_observable(),
-        "System should NOT be observable"
-    );
+    assert!(!ss.is_observable(), "System should NOT be observable");
 }

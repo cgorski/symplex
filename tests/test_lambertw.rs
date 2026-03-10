@@ -39,10 +39,7 @@ fn lambertw_symbolic_stays_symbolic() {
     // W(5) has no closed form — should remain as lambertw(5)
     let result = ctx.int(5).lambertw().eval();
     let s = format!("{result}");
-    assert!(
-        s.contains("W("),
-        "W(5) should stay symbolic, got: {s}"
-    );
+    assert!(s.contains("W("), "W(5) should stay symbolic, got: {s}");
 }
 
 #[test]
@@ -51,10 +48,7 @@ fn lambertw_of_negative_stays_symbolic() {
     // W(-1) has no simple closed form on the principal branch
     let result = ctx.int(-1).lambertw().eval();
     let s = format!("{result}");
-    assert!(
-        s.contains("W("),
-        "W(-1) should stay symbolic, got: {s}"
-    );
+    assert!(s.contains("W("), "W(-1) should stay symbolic, got: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -79,10 +73,7 @@ fn lambertw_of_expression() {
     let x = ctx.symbol("x");
     let expr = (&x + 1).lambertw();
     let s = format!("{expr}");
-    assert!(
-        s.contains("W("),
-        "W(x+1) should display with W, got: {s}"
-    );
+    assert!(s.contains("W("), "W(x+1) should display with W, got: {s}");
 }
 
 #[test]

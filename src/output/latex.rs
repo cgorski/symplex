@@ -32,15 +32,61 @@ use super::common::{display_sort_key, extract_negative_power, is_neg_coeff_mul, 
 // ═══════════════════════════════════════════════════════════════════════════
 
 const GREEK_LETTERS: &[&str] = &[
-    "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta",
-    "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron", "pi", "rho",
-    "sigma", "tau", "upsilon", "phi", "chi", "psi", "omega",
+    "alpha",
+    "beta",
+    "gamma",
+    "delta",
+    "epsilon",
+    "zeta",
+    "eta",
+    "theta",
+    "iota",
+    "kappa",
+    "lambda",
+    "mu",
+    "nu",
+    "xi",
+    "omicron",
+    "pi",
+    "rho",
+    "sigma",
+    "tau",
+    "upsilon",
+    "phi",
+    "chi",
+    "psi",
+    "omega",
     // Uppercase variants
-    "Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta",
-    "Iota", "Kappa", "Lambda", "Mu", "Nu", "Xi", "Omicron", "Pi", "Rho",
-    "Sigma", "Tau", "Upsilon", "Phi", "Chi", "Psi", "Omega",
+    "Alpha",
+    "Beta",
+    "Gamma",
+    "Delta",
+    "Epsilon",
+    "Zeta",
+    "Eta",
+    "Theta",
+    "Iota",
+    "Kappa",
+    "Lambda",
+    "Mu",
+    "Nu",
+    "Xi",
+    "Omicron",
+    "Pi",
+    "Rho",
+    "Sigma",
+    "Tau",
+    "Upsilon",
+    "Phi",
+    "Chi",
+    "Psi",
+    "Omega",
     // Common variants
-    "varepsilon", "varphi", "vartheta", "varrho", "varsigma",
+    "varepsilon",
+    "varphi",
+    "vartheta",
+    "varrho",
+    "varsigma",
 ];
 
 /// Convert a symbol name to LaTeX, handling Greek letters and subscripts.
@@ -91,11 +137,7 @@ enum LatexItem {
 /// Format an expression rooted at `id` as LaTeX into `f`.
 ///
 /// **This function uses an explicit stack — it never recurses.**
-pub(crate) fn fmt_latex(
-    arena: &Arena,
-    f: &mut fmt::Formatter<'_>,
-    id: ExprId,
-) -> fmt::Result {
+pub(crate) fn fmt_latex(arena: &Arena, f: &mut fmt::Formatter<'_>, id: ExprId) -> fmt::Result {
     let mut stack: Vec<LatexItem> = Vec::with_capacity(32);
     stack.push(LatexItem::Expr(id));
 
@@ -386,7 +428,9 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::E => stack.push(LatexItem::Lit("e")),
         ExprNode::ImaginaryUnit => stack.push(LatexItem::Lit("i")),
         ExprNode::PhysicalConstant(name_id, _) => {
-            stack.push(LatexItem::Owned(symbol_to_latex(arena.symbol_name(name_id))));
+            stack.push(LatexItem::Owned(symbol_to_latex(
+                arena.symbol_name(name_id),
+            )));
         }
         ExprNode::Infinity => stack.push(LatexItem::Lit(r"\infty")),
         ExprNode::NegInfinity => stack.push(LatexItem::Lit(r"-\infty")),
@@ -506,10 +550,7 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
                     return;
                 }
                 // exp = 1/n → \sqrt[n]{base}
-                if !r.is_integer()
-                    && !r.is_negative()
-                    && *r.numer() == BigInt::from(1)
-                {
+                if !r.is_integer() && !r.is_negative() && *r.numer() == BigInt::from(1) {
                     let n = r.denom();
                     stack.push(LatexItem::Lit("}"));
                     stack.push(LatexItem::Expr(base));
@@ -519,10 +560,7 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
                 // exp = -1 → \frac{1}{base}
                 if *r == Ratio::from(BigInt::from(-1)) {
                     let base_latex = render_pow_base(arena, base);
-                    stack.push(LatexItem::Owned(format!(
-                        "\\frac{{1}}{{{}}}",
-                        base_latex
-                    )));
+                    stack.push(LatexItem::Owned(format!("\\frac{{1}}{{{}}}", base_latex)));
                     return;
                 }
                 // exp = -n (negative integer, not -1) → \frac{1}{base^{n}}
@@ -1043,32 +1081,58 @@ mod tests {
 
     #[test]
     fn latex_symbol() {
-        assert_eq!(crate::api::context::Context::new().symbol("x").to_latex(), "x");
+        assert_eq!(
+            crate::api::context::Context::new().symbol("x").to_latex(),
+            "x"
+        );
     }
 
     #[test]
     fn latex_symbol_multichar() {
-        assert_eq!(crate::api::context::Context::new().symbol("foo").to_latex(), "foo");
+        assert_eq!(
+            crate::api::context::Context::new().symbol("foo").to_latex(),
+            "foo"
+        );
     }
 
     #[test]
     fn latex_greek_theta() {
-        assert_eq!(crate::api::context::Context::new().symbol("theta").to_latex(), r"\theta");
+        assert_eq!(
+            crate::api::context::Context::new()
+                .symbol("theta")
+                .to_latex(),
+            r"\theta"
+        );
     }
 
     #[test]
     fn latex_greek_alpha() {
-        assert_eq!(crate::api::context::Context::new().symbol("alpha").to_latex(), r"\alpha");
+        assert_eq!(
+            crate::api::context::Context::new()
+                .symbol("alpha")
+                .to_latex(),
+            r"\alpha"
+        );
     }
 
     #[test]
     fn latex_greek_omega() {
-        assert_eq!(crate::api::context::Context::new().symbol("omega").to_latex(), r"\omega");
+        assert_eq!(
+            crate::api::context::Context::new()
+                .symbol("omega")
+                .to_latex(),
+            r"\omega"
+        );
     }
 
     #[test]
     fn latex_greek_lambda() {
-        assert_eq!(crate::api::context::Context::new().symbol("lambda").to_latex(), r"\lambda");
+        assert_eq!(
+            crate::api::context::Context::new()
+                .symbol("lambda")
+                .to_latex(),
+            r"\lambda"
+        );
     }
 
     #[test]
@@ -1096,12 +1160,20 @@ mod tests {
 
     #[test]
     fn latex_infinity() {
-        assert_eq!(crate::api::context::Context::new().infinity().to_latex(), r"\infty");
+        assert_eq!(
+            crate::api::context::Context::new().infinity().to_latex(),
+            r"\infty"
+        );
     }
 
     #[test]
     fn latex_neg_infinity() {
-        assert_eq!(crate::api::context::Context::new().neg_infinity().to_latex(), r"-\infty");
+        assert_eq!(
+            crate::api::context::Context::new()
+                .neg_infinity()
+                .to_latex(),
+            r"-\infty"
+        );
     }
 
     // ── Pow tests ──────────────────────────────────────────────────
@@ -1158,10 +1230,7 @@ mod tests {
         let x = crate::api::context::Context::new().symbol("x");
         let expr = &x + 1;
         let latex = expr.to_latex();
-        assert!(
-            latex == "x + 1" || latex == "1 + x",
-            "got: {latex}"
-        );
+        assert!(latex == "x + 1" || latex == "1 + x", "got: {latex}");
     }
 
     #[test]
@@ -1372,10 +1441,7 @@ mod tests {
         let y = ctx.symbol("y");
         let expr = &x - &y;
         let latex = expr.to_latex();
-        assert!(
-            latex == "x - y" || latex == "-y + x",
-            "got: {latex}"
-        );
+        assert!(latex == "x - y" || latex == "-y + x", "got: {latex}");
     }
 
     // ── Binomial ───────────────────────────────────────────────────

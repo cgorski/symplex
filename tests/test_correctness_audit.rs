@@ -302,10 +302,7 @@ fn process_definite_integral(
     }
 }
 
-fn process_ftc(
-    ctx: &symplex::context::Context,
-    fixture: &FtcFixture,
-) -> TestOutcome {
+fn process_ftc(ctx: &symplex::context::Context, fixture: &FtcFixture) -> TestOutcome {
     let label = &fixture.label;
     let var = ctx.symbol(&fixture.variable);
 
@@ -423,10 +420,7 @@ fn process_ftc(
     }
 }
 
-fn process_simplify(
-    ctx: &symplex::context::Context,
-    fixture: &SimplifyFixture,
-) -> TestOutcome {
+fn process_simplify(ctx: &symplex::context::Context, fixture: &SimplifyFixture) -> TestOutcome {
     let label = &fixture.label;
 
     let expr = match parse_expr(ctx, &fixture.input) {
@@ -468,10 +462,7 @@ fn process_simplify(
         if let (Some(ov), Some(sv)) = (orig_val, simp_val) {
             checked += 1;
             if !approx_eq(ov, sv, TOLERANCE) {
-                mismatches.push(format!(
-                    "x={}: orig={:.6} simp={:.6}",
-                    pt.x, ov, sv
-                ));
+                mismatches.push(format!("x={}: orig={:.6} simp={:.6}", pt.x, ov, sv));
             }
         }
     }
@@ -542,10 +533,7 @@ fn process_gosper(fixture: &GosperFixture) -> TestOutcome {
     }
 }
 
-fn process_series(
-    ctx: &symplex::context::Context,
-    fixture: &SeriesFixture,
-) -> TestOutcome {
+fn process_series(ctx: &symplex::context::Context, fixture: &SeriesFixture) -> TestOutcome {
     let label = &fixture.label;
     let var = ctx.symbol(&fixture.variable);
 

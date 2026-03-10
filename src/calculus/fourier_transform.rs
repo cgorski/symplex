@@ -186,9 +186,7 @@ fn try_table_forward(
         ExprNode::Symbol(sid) if sid == t_sym => None,
 
         // Rule 6: Mul — look for exp(a*t)·H(t) or t^n·exp(a*t)·H(t)
-        ExprNode::Mul(ref children) => {
-            try_exp_heaviside_mul(arena, &children.clone(), t, omega)
-        }
+        ExprNode::Mul(ref children) => try_exp_heaviside_mul(arena, &children.clone(), t, omega),
 
         _ => None,
     }
@@ -403,7 +401,8 @@ fn try_table_inverse(
         // Represented as Pow(iω − a, -1) or as a Mul with Pow
         ExprNode::Pow(base, exp) => {
             if let Some(r) = arena.as_num(exp).cloned()
-                && r.is_negative() && r.is_integer()
+                && r.is_negative()
+                && r.is_integer()
                 && let Some(a) = extract_i_omega_minus_a(arena, base, omega)
             {
                 let n_val = (-r.to_integer()).to_u64()?;
@@ -771,9 +770,6 @@ mod tests {
         let result = inverse_fourier_transform(&mut a, delta_omega, omega, t).unwrap();
         let d = display(&a, result);
         // F⁻¹{δ(ω)} = 1/(2π)
-        assert!(
-            d.contains("pi"),
-            "F⁻¹{{δ(ω)}} should be 1/(2π): {d}"
-        );
+        assert!(d.contains("pi"), "F⁻¹{{δ(ω)}} should be 1/(2π): {d}");
     }
 }

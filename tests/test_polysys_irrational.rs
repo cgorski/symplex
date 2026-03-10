@@ -160,7 +160,8 @@ fn solve_system_univariate_irrational() {
                     let check = xv * xv - 2.0;
                     assert!(
                         approx_zero(check, 1e-10),
-                        "x² should be 2, got x={xv}, x²={}", xv * xv
+                        "x² should be 2, got x={xv}, x²={}",
+                        xv * xv
                     );
                 }
             }
@@ -246,10 +247,7 @@ fn polysys_circle_line_no_regression() {
         let yv = &sol[1];
         // x² + y² = 1
         let check = xv * xv + yv * yv;
-        assert!(
-            check == rat(1),
-            "x²+y²=1 check failed: got {check}"
-        );
+        assert!(check == rat(1), "x²+y²=1 check failed: got {check}");
     }
 }
 
@@ -279,10 +277,7 @@ fn solve_system_ex_irrational_symmetric() {
 
             for sol in &sols {
                 if let (Some(xv), Some(yv)) = (eval(&sol[0]), eval(&sol[1])) {
-                    assert!(
-                        approx_zero(xv - yv, 1e-10),
-                        "x should equal y"
-                    );
+                    assert!(approx_zero(xv - yv, 1e-10), "x should equal y");
                     assert!(
                         approx_zero(xv * xv + yv * yv - 2.0, 1e-10),
                         "x²+y² should be 2"
@@ -348,7 +343,8 @@ fn solve_system_linear_no_regression() {
     let eq1 = &x + &y - 1;
     let eq2 = &x - &y;
 
-    let solutions = symplex::polysys::solve_system_ex(&[eq1, eq2], &[x.clone(), y.clone()]).unwrap();
+    let solutions =
+        symplex::polysys::solve_system_ex(&[eq1, eq2], &[x.clone(), y.clone()]).unwrap();
 
     assert_eq!(solutions.len(), 1, "linear system should have 1 solution");
 

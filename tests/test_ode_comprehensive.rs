@@ -21,9 +21,9 @@
 //! 13. HomogeneousCoefficient  — y' = f(y/x)
 //! 14. NthOrderReducible       — F(y, y', y'') = 0 (no explicit x)
 
+use symplex::expr::ExprType;
 use symplex::ode::OdeType;
 use symplex::prelude::*;
-use symplex::expr::ExprType;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers: numerically verify ODE solutions by substitution
@@ -158,9 +158,7 @@ fn comprehensive_simple_separable_x_squared() {
     );
 
     // Solve
-    let sol = ode
-        .try_solve_ode(&y, &x)
-        .expect("should solve y' = x²");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' = x²");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
 
@@ -207,15 +205,10 @@ fn comprehensive_full_separable_xy() {
     eprintln!("y' - xy = 0 classified as: {ode_type:?}");
 
     // Solve
-    let sol = ode
-        .try_solve_ode(&y, &x)
-        .expect("should solve y' = xy");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' = xy");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
-    assert!(
-        s.contains("exp"),
-        "solution should involve exp: {s}"
-    );
+    assert!(s.contains("exp"), "solution should involve exp: {s}");
 
     // Verify numerically
     let c1 = ctx.symbol("C1");
@@ -234,10 +227,7 @@ fn comprehensive_full_separable_y_over_x() {
     let sol = ode.solve_ode(&y, &x);
     if !sol.has_unevaluated() {
         let s = format!("{sol}");
-        assert!(
-            s.contains("C1"),
-            "solution should have a constant: {s}"
-        );
+        assert!(s.contains("C1"), "solution should have a constant: {s}");
         let c1 = ctx.symbol("C1");
         verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, POSITIVE_POINTS);
     } else {
@@ -266,9 +256,7 @@ fn comprehensive_first_order_linear_cc_homogeneous() {
     );
 
     // Solve
-    let sol = ode
-        .try_solve_ode(&y, &x)
-        .expect("should solve y' + 2y = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' + 2y = 0");
     let s = format!("{sol}");
     assert!(s.contains("exp"), "solution should contain exp: {s}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
@@ -338,17 +326,12 @@ fn comprehensive_first_order_linear_vc_nonhomogeneous() {
     if !sol.has_unevaluated() {
         let s = format!("{sol}");
         eprintln!("y' + y/x = x  solution: {s}");
-        assert!(
-            s.contains("C1"),
-            "should have constant C1: {s}"
-        );
+        assert!(s.contains("C1"), "should have constant C1: {s}");
         // Verify at positive x (to avoid singularity at x=0)
         let c1 = ctx.symbol("C1");
         verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, POSITIVE_POINTS);
     } else {
-        eprintln!(
-            "NOTE: y' + y/x = x not yet solved — may need exp(ln(x)) simplification"
-        );
+        eprintln!("NOTE: y' + y/x = x not yet solved — may need exp(ln(x)) simplification");
     }
 }
 
@@ -427,13 +410,13 @@ fn comprehensive_exact_simple_ydx_xdy() {
     let ode = &y + &(&x * &dy); // y + x·y' = 0
 
     let sol = ode.solve_ode(&y, &x);
-    assert!(!sol.has_unevaluated(), "y + x·y' = 0 should be solvable (exact)");
+    assert!(
+        !sol.has_unevaluated(),
+        "y + x·y' = 0 should be solvable (exact)"
+    );
 
     let s = format!("{sol}");
-    assert!(
-        s.contains("C1"),
-        "solution should have a constant: {s}"
-    );
+    assert!(s.contains("C1"), "solution should have a constant: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -467,10 +450,7 @@ fn comprehensive_bernoulli_n2_constant_coeff() {
     );
 
     let s = format!("{sol}");
-    assert!(
-        s.contains("C1"),
-        "solution should have a constant: {s}"
-    );
+    assert!(s.contains("C1"), "solution should have a constant: {s}");
 
     // Verify numerically
     let c1 = ctx.symbol("C1");
@@ -525,10 +505,7 @@ fn comprehensive_bernoulli_n2_p_equals_2() {
     );
 
     let s = format!("{sol}");
-    assert!(
-        s.contains("C1"),
-        "solution should have a constant: {s}"
-    );
+    assert!(s.contains("C1"), "solution should have a constant: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -726,9 +703,7 @@ fn comprehensive_second_order_cc_nonhomogeneous_constant_rhs() {
     let one = ctx.int(1);
     let ode = &d2y + &y - &one; // y'' + y - 1 = 0
 
-    let sol = ode
-        .try_solve_ode(&y, &x)
-        .expect("should solve y'' + y = 1");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y'' + y = 1");
     let s = format!("{sol}");
     assert!(
         s.contains("C1") && s.contains("C2"),
@@ -784,7 +759,14 @@ fn comprehensive_second_order_cc_nonhomogeneous_distinct_roots() {
 
     let c1 = ctx.symbol("C1");
     let c2 = ctx.symbol("C2");
-    verify_second_order_numerically(&ode, &sol, &[c1.clone(), c2.clone()], &y, &x, SECOND_ORDER_POINTS);
+    verify_second_order_numerically(
+        &ode,
+        &sol,
+        &[c1.clone(), c2.clone()],
+        &y,
+        &x,
+        SECOND_ORDER_POINTS,
+    );
 
     // Also verify that with C1=0, C2=0 the particular solution ≈ 3
     let zero = ctx.int(0);
@@ -862,7 +844,10 @@ fn comprehensive_euler_cauchy_x_sq_y_pp_minus_2y() {
         .try_solve_ode(&y, &x)
         .expect("should solve x²y'' - 2y = 0");
     let s = format!("{sol}");
-    assert!(s.contains("C1") && s.contains("C2"), "should have two constants: {s}");
+    assert!(
+        s.contains("C1") && s.contains("C2"),
+        "should have two constants: {s}"
+    );
 
     let c1 = ctx.symbol("C1");
     let c2 = ctx.symbol("C2");
@@ -955,14 +940,7 @@ fn comprehensive_euler_cauchy_with_coefficients() {
     // Verify at x = 4 (nice for √x)
     let c1 = ctx.symbol("C1");
     let c2 = ctx.symbol("C2");
-    verify_second_order_numerically(
-        &ode,
-        &sol,
-        &[c1, c2],
-        &y,
-        &x,
-        &[(4, 1), (9, 4), (2, 1)],
-    );
+    verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, &[(4, 1), (9, 4), (2, 1)]);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -994,14 +972,7 @@ fn comprehensive_variation_of_parameters_tan() {
         // Verify numerically at a point where tan is well-behaved
         let c1 = ctx.symbol("C1");
         let c2 = ctx.symbol("C2");
-        verify_second_order_numerically(
-            &ode,
-            &sol,
-            &[c1, c2],
-            &y,
-            &x,
-            &[(1, 4), (1, 10), (3, 10)],
-        );
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, &[(1, 4), (1, 10), (3, 10)]);
     } else {
         eprintln!("NOTE: y'' + y = tan(x) not solved — VoP integrals may be too hard");
     }
@@ -1061,10 +1032,7 @@ fn comprehensive_homogeneous_coefficient_classify() {
     let sol = ode.solve_ode(&y, &x);
     if !sol.has_unevaluated() {
         let s = format!("{sol}");
-        assert!(
-            s.contains("C1"),
-            "solution should contain a constant: {s}"
-        );
+        assert!(s.contains("C1"), "solution should contain a constant: {s}");
     } else {
         eprintln!("NOTE: HomogeneousCoefficient y' = (x²+y²)/x² not solved");
     }
@@ -1086,10 +1054,7 @@ fn comprehensive_homogeneous_coefficient_simple() {
     let sol = ode.solve_ode(&y, &x);
     if !sol.has_unevaluated() {
         let s = format!("{sol}");
-        assert!(
-            s.contains("C1"),
-            "solution should contain a constant: {s}"
-        );
+        assert!(s.contains("C1"), "solution should contain a constant: {s}");
     } else {
         eprintln!("NOTE: HomogeneousCoefficient y' = (x²+y²)/(xy) not solved");
     }
@@ -1230,7 +1195,10 @@ fn comprehensive_pure_number_returns_none() {
     let expr = ctx.int(42);
 
     let result = expr.solve_ode(&y, &x);
-    assert!(result.has_unevaluated(), "pure number should return unevaluated DSolve");
+    assert!(
+        result.has_unevaluated(),
+        "pure number should return unevaluated DSolve"
+    );
 }
 
 #[test]
@@ -1285,9 +1253,7 @@ fn comprehensive_check_ode_solution_first_order_linear() {
     let y = ctx.symbol("y");
     let ode = expr!(ctx, diff(y, x) + 2 * y);
 
-    let sol = ode
-        .try_solve_ode(&y, &x)
-        .expect("should solve y' + 2y = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' + 2y = 0");
 
     let verified = ode.check_ode_solution(&sol, &y, &x);
     if !verified {
@@ -1362,9 +1328,7 @@ fn comprehensive_multipoint_first_order_linear_cc() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let ode = expr!(ctx, diff(y, x) + 2 * y);
-    let sol = ode
-        .try_solve_ode(&y, &x)
-        .expect("should solve y' + 2y = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y' + 2y = 0");
 
     // Verify at many points
     let c1 = ctx.symbol("C1");

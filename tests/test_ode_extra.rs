@@ -6,9 +6,9 @@
 //! - **ln(ln(x)) integration:** ∫ ln(ln(x)) dx = x·ln(ln(x)) − li(x)
 //! - **Regression:** existing ODE types still work after new additions
 
+use symplex::expr::ExprType;
 use symplex::ode::OdeType;
 use symplex::prelude::*;
-use symplex::expr::ExprType;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -71,12 +71,12 @@ fn ode_homogeneous_coeff_basic() {
 
     let sol = ode.solve_ode(&y, &x);
     let s_check = format!("{sol}");
-    assert!(sol.expr_type() != ExprType::Unevaluated, "should solve y' = (x+y)/x, got: {s_check}");
-    let s = format!("{sol}");
     assert!(
-        s.contains("C1"),
-        "solution should contain constant C1: {s}"
+        sol.expr_type() != ExprType::Unevaluated,
+        "should solve y' = (x+y)/x, got: {s_check}"
     );
+    let s = format!("{sol}");
+    assert!(s.contains("C1"), "solution should contain constant C1: {s}");
     // The solution should involve x and ln — either explicit or implicit
     assert!(
         s.contains("x") || s.contains("ln"),
@@ -103,12 +103,12 @@ fn ode_homogeneous_coeff_quadratic() {
 
     let sol = ode.solve_ode(&y, &x);
     let s_check = format!("{sol}");
-    assert!(sol.expr_type() != ExprType::Unevaluated, "should solve y' = (x²+y²)/(xy), got: {s_check}");
-    let s = format!("{sol}");
     assert!(
-        s.contains("C1"),
-        "solution should contain constant C1: {s}"
+        sol.expr_type() != ExprType::Unevaluated,
+        "should solve y' = (x²+y²)/(xy), got: {s_check}"
     );
+    let s = format!("{sol}");
+    assert!(s.contains("C1"), "solution should contain constant C1: {s}");
 }
 
 #[test]
@@ -153,7 +153,10 @@ fn ode_nth_reducible_basic() {
 
     let sol = ode.solve_ode(&y, &x);
     let s_check = format!("{sol}");
-    assert!(sol.expr_type() != ExprType::Unevaluated, "should solve y'' - y' = 0 via nth-order reducible, got: {s_check}");
+    assert!(
+        sol.expr_type() != ExprType::Unevaluated,
+        "should solve y'' - y' = 0 via nth-order reducible, got: {s_check}"
+    );
     let s = format!("{sol}");
     // Should contain at least one constant
     assert!(
@@ -188,7 +191,8 @@ fn ode_nth_reducible_nonlinear() {
 
     // Solving may or may not succeed depending on how well the substitution
     // pipeline handles the nonlinear case.
-    let sol = ode.solve_ode(&y, &x); if sol.expr_type() != ExprType::Unevaluated {
+    let sol = ode.solve_ode(&y, &x);
+    if sol.expr_type() != ExprType::Unevaluated {
         let s = format!("{sol}");
         // If solved, it should have constants
         assert!(
@@ -238,7 +242,10 @@ fn no_regression_existing_odes() {
         let y = ctx.symbol("y");
         let ode = expr!(ctx, diff(y, x) - x);
         let result = ode.solve_ode(&y, &x);
-        assert!(result.expr_type() != ExprType::Unevaluated, "y' = x should still work (simple separable)");
+        assert!(
+            result.expr_type() != ExprType::Unevaluated,
+            "y' = x should still work (simple separable)"
+        );
     }
 
     // First-order linear CC: y' + 2y = 0 → y = C1·exp(-2x)
@@ -247,7 +254,10 @@ fn no_regression_existing_odes() {
         let y = ctx.symbol("y");
         let ode = expr!(ctx, diff(y, x) + 2 * y);
         let result = ode.solve_ode(&y, &x);
-        assert!(result.expr_type() != ExprType::Unevaluated, "y' + 2y = 0 should still work (linear CC)");
+        assert!(
+            result.expr_type() != ExprType::Unevaluated,
+            "y' + 2y = 0 should still work (linear CC)"
+        );
         let sol = result;
         let s = format!("{sol}");
         assert!(s.contains("C1"), "should have constant: {s}");
@@ -262,7 +272,10 @@ fn no_regression_existing_odes() {
         let d2y = dy.formal_diff(&x);
         let ode = &d2y + &y;
         let result = ode.solve_ode(&y, &x);
-        assert!(result.expr_type() != ExprType::Unevaluated, "y'' + y = 0 should still work");
+        assert!(
+            result.expr_type() != ExprType::Unevaluated,
+            "y'' + y = 0 should still work"
+        );
         let sol = result;
         let s = format!("{sol}");
         assert!(
@@ -281,7 +294,10 @@ fn no_regression_existing_odes() {
         let y = ctx.symbol("y");
         let ode = expr!(ctx, diff(y, x) - x * y);
         let result = ode.solve_ode(&y, &x);
-        assert!(result.expr_type() != ExprType::Unevaluated, "y' = xy should still work (full separable)");
+        assert!(
+            result.expr_type() != ExprType::Unevaluated,
+            "y' = xy should still work (full separable)"
+        );
         let sol = result;
         let s = format!("{sol}");
         assert!(s.contains("C1"), "should have constant: {s}");
@@ -294,7 +310,10 @@ fn no_regression_existing_odes() {
         let y = ctx.symbol("y");
         let ode = expr!(ctx, diff(y, x) + 2 * x * y);
         let result = ode.solve_ode(&y, &x);
-        assert!(result.expr_type() != ExprType::Unevaluated, "y' + 2xy = 0 should still work");
+        assert!(
+            result.expr_type() != ExprType::Unevaluated,
+            "y' + 2xy = 0 should still work"
+        );
     }
 }
 

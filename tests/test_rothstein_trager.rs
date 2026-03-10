@@ -117,12 +117,7 @@ fn hermite_x_over_x2_plus_1_cubed() {
     let f1 = eval_at(&anti, &x, 1);
     let f0 = eval_at(&anti, &x, 0);
     if let (Some(f1v), Some(f0v)) = (f1, f0) {
-        let numeric = numerical_integrate(
-            |t| t / (t * t + 1.0).powi(3),
-            0.0,
-            1.0,
-            10000,
-        );
+        let numeric = numerical_integrate(|t| t / (t * t + 1.0).powi(3), 0.0, 1.0, 10000);
         let symbolic = f1v - f0v;
         assert!(
             (symbolic - numeric).abs() < 1e-4,
@@ -392,12 +387,8 @@ fn integrate_1_over_x4_plus_5x2_plus_6() {
     let f0 = eval_at(&anti, &x, 0);
     if let (Some(f2v), Some(f0v)) = (f2, f0) {
         let symbolic = f2v - f0v;
-        let numeric = numerical_integrate(
-            |t| 1.0 / (t.powi(4) + 5.0 * t * t + 6.0),
-            0.0,
-            2.0,
-            100000,
-        );
+        let numeric =
+            numerical_integrate(|t| 1.0 / (t.powi(4) + 5.0 * t * t + 6.0), 0.0, 2.0, 100000);
         assert!(
             (symbolic - numeric).abs() < 1e-3,
             "∫₀² 1/(x⁴+5x²+6) dx: symbolic={symbolic}, numeric={numeric}"
@@ -696,12 +687,8 @@ fn integrate_1_over_x4_plus_5x2_plus_6_definite_0_to_2() {
     let f0 = eval_at(&anti, &x, 0);
     if let (Some(f2v), Some(f0v)) = (f2, f0) {
         let symbolic = f2v - f0v;
-        let numeric = numerical_integrate(
-            |t| 1.0 / (t.powi(4) + 5.0 * t * t + 6.0),
-            0.0,
-            2.0,
-            100000,
-        );
+        let numeric =
+            numerical_integrate(|t| 1.0 / (t.powi(4) + 5.0 * t * t + 6.0), 0.0, 2.0, 100000);
         assert!(
             (symbolic - numeric).abs() < 1e-3,
             "∫₀² 1/(x⁴+5x²+6) dx: symbolic={symbolic}, numeric={numeric}"
@@ -725,12 +712,7 @@ fn integrate_x_over_x4_plus_x2_plus_1_definite() {
     let f0 = eval_at(&anti, &x, 0);
     if let (Some(f2v), Some(f0v)) = (f2, f0) {
         let symbolic = f2v - f0v;
-        let numeric = numerical_integrate(
-            |t| t / (t.powi(4) + t * t + 1.0),
-            0.0,
-            2.0,
-            100000,
-        );
+        let numeric = numerical_integrate(|t| t / (t.powi(4) + t * t + 1.0), 0.0, 2.0, 100000);
         assert!(
             (symbolic - numeric).abs() < 1e-3,
             "∫₀² x/(x⁴+x²+1) dx: symbolic={symbolic}, numeric={numeric}"

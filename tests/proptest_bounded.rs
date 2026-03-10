@@ -144,9 +144,9 @@ fn exhaustive_pythagorean_unit_circle() {
         // Try symbolic check first, fall back to numerical
         let s = format!("{simplified}");
         if s != "1" {
-            let val = simplified.eval_f64().unwrap_or_else(|_| {
-                panic!("sin²({k}π/12) + cos²({k}π/12) should be evaluable")
-            });
+            let val = simplified
+                .eval_f64()
+                .unwrap_or_else(|_| panic!("sin²({k}π/12) + cos²({k}π/12) should be evaluable"));
             assert!(
                 (val - 1.0).abs() < 1e-10,
                 "sin²({k}π/12) + cos²({k}π/12) should be 1, got: {val} (symbolic: {s})"

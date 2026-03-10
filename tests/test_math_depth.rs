@@ -176,10 +176,7 @@ fn i_squared_in_expression() {
     // x + i^2 should canonicalize to x - 1
     let expr = &x + &i.powi(2);
     let s = format!("{expr}");
-    assert_eq!(
-        s, "x - 1",
-        "x + i² should be x - 1, got: {s}"
-    );
+    assert_eq!(s, "x - 1", "x + i² should be x - 1, got: {s}");
 }
 
 #[test]

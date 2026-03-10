@@ -110,10 +110,7 @@ fn bessel_y_stays_symbolic() {
         let y = arena.bessely(zero, x);
         let result = arena.eval_expr(y);
         let d = arena.display(result).to_string();
-        assert!(
-            d.contains("bessely"),
-            "Y_0(x) should remain symbolic: {d}"
-        );
+        assert!(d.contains("bessely"), "Y_0(x) should remain symbolic: {d}");
     });
 }
 
@@ -126,10 +123,7 @@ fn bessel_k_stays_symbolic() {
         let k = arena.besselk(zero, x);
         let result = arena.eval_expr(k);
         let d = arena.display(result).to_string();
-        assert!(
-            d.contains("besselk"),
-            "K_0(x) should remain symbolic: {d}"
-        );
+        assert!(d.contains("besselk"), "K_0(x) should remain symbolic: {d}");
     });
 }
 
@@ -327,7 +321,10 @@ fn chebyshev_u1_is_2x() {
         let u = arena.chebyshev_u(one, x);
         let result = arena.eval_expr(u);
         let d = arena.display(result).to_string();
-        assert!(d.contains("2") && d.contains("x"), "U_1(x) should be 2*x: {d}");
+        assert!(
+            d.contains("2") && d.contains("x"),
+            "U_1(x) should be 2*x: {d}"
+        );
     });
 }
 
@@ -369,7 +366,10 @@ fn hermite_h1_is_2x() {
         let h = arena.hermite(one, x);
         let result = arena.eval_expr(h);
         let d = arena.display(result).to_string();
-        assert!(d.contains("2") && d.contains("x"), "H_1(x) should be 2x: {d}");
+        assert!(
+            d.contains("2") && d.contains("x"),
+            "H_1(x) should be 2x: {d}"
+        );
     });
 }
 
@@ -522,7 +522,10 @@ fn laurent_exp_no_pole() {
         let result = arena.laurent_series_expr(exp_x, x, zero, 4);
         assert!(result.is_ok(), "Laurent of exp(x) should succeed");
         let d = arena.display(result.unwrap()).to_string();
-        assert!(d.contains("1") && d.contains("x"), "should be a Taylor series: {d}");
+        assert!(
+            d.contains("1") && d.contains("x"),
+            "should be a Taylor series: {d}"
+        );
     });
 }
 
@@ -571,7 +574,10 @@ fn fourier_sin_gives_deltas() {
         let result = arena.fourier_transform_expr(sin_3t, t, omega).unwrap();
         let d = arena.display(result).to_string();
         // F{sin(3t)} = iπ[δ(ω+3) - δ(ω-3)]
-        assert!(d.contains("DiracDelta") || d.contains("delta"), "F{{sin(3t)}} should have deltas: {d}");
+        assert!(
+            d.contains("DiracDelta") || d.contains("delta"),
+            "F{{sin(3t)}} should have deltas: {d}"
+        );
     });
 }
 
@@ -586,7 +592,10 @@ fn fourier_cos_gives_deltas() {
         let cos_2t = arena.cos(two_t);
         let result = arena.fourier_transform_expr(cos_2t, t, omega).unwrap();
         let d = arena.display(result).to_string();
-        assert!(d.contains("DiracDelta") || d.contains("delta"), "F{{cos(2t)}} should have deltas: {d}");
+        assert!(
+            d.contains("DiracDelta") || d.contains("delta"),
+            "F{{cos(2t)}} should have deltas: {d}"
+        );
     });
 }
 
@@ -693,10 +702,15 @@ fn inverse_fourier_constant_gives_delta() {
         let t = arena.symbol("t");
         let omega = arena.symbol("omega");
         let three = arena.int(3);
-        let result = arena.inverse_fourier_transform_expr(three, omega, t).unwrap();
+        let result = arena
+            .inverse_fourier_transform_expr(three, omega, t)
+            .unwrap();
         let d = arena.display(result).to_string();
         // F⁻¹{3} = 3·δ(t)
-        assert!(d.contains("DiracDelta") || d.contains("delta"), "F⁻¹{{3}} should contain δ(t): {d}");
+        assert!(
+            d.contains("DiracDelta") || d.contains("delta"),
+            "F⁻¹{{3}} should contain δ(t): {d}"
+        );
     });
 }
 
@@ -707,7 +721,9 @@ fn inverse_fourier_delta_omega_gives_recip_2pi() {
         let t = arena.symbol("t");
         let omega = arena.symbol("omega");
         let delta_omega = arena.dirac_delta(omega);
-        let result = arena.inverse_fourier_transform_expr(delta_omega, omega, t).unwrap();
+        let result = arena
+            .inverse_fourier_transform_expr(delta_omega, omega, t)
+            .unwrap();
         let d = arena.display(result).to_string();
         // F⁻¹{δ(ω)} = 1/(2π)
         assert!(d.contains("pi"), "F⁻¹{{δ(ω)}} should contain pi: {d}");
@@ -751,7 +767,8 @@ fn legendre_p3_at_half() {
         let result = arena.eval_expr(p);
         let expected = arena.rational(-7, 16);
         assert_eq!(
-            result, expected,
+            result,
+            expected,
             "P_3(1/2) should be -7/16, got: {}",
             arena.display(result)
         );
@@ -769,7 +786,8 @@ fn chebyshev_t2_at_half() {
         let result = arena.eval_expr(t);
         let expected = arena.rational(-1, 2);
         assert_eq!(
-            result, expected,
+            result,
+            expected,
             "T_2(1/2) should be -1/2, got: {}",
             arena.display(result)
         );
@@ -788,7 +806,8 @@ fn hermite_h3_at_one() {
         let result = arena.eval_expr(h);
         let expected = arena.int(-4);
         assert_eq!(
-            result, expected,
+            result,
+            expected,
             "H_3(1) should be -4, got: {}",
             arena.display(result)
         );
@@ -806,7 +825,8 @@ fn laguerre_l2_at_one() {
         let result = arena.eval_expr(l);
         let expected = arena.rational(-1, 2);
         assert_eq!(
-            result, expected,
+            result,
+            expected,
             "L_2(1) should be -1/2, got: {}",
             arena.display(result)
         );
@@ -872,11 +892,17 @@ fn orthogonal_poly_constructors_produce_apply_nodes() {
 
         let t = arena.chebyshev_t(n, x);
         let d = arena.display(t).to_string();
-        assert!(d.contains("chebyshev_t"), "display should show chebyshev_t: {d}");
+        assert!(
+            d.contains("chebyshev_t"),
+            "display should show chebyshev_t: {d}"
+        );
 
         let u = arena.chebyshev_u(n, x);
         let d = arena.display(u).to_string();
-        assert!(d.contains("chebyshev_u"), "display should show chebyshev_u: {d}");
+        assert!(
+            d.contains("chebyshev_u"),
+            "display should show chebyshev_u: {d}"
+        );
 
         let h = arena.hermite(n, x);
         let d = arena.display(h).to_string();
@@ -907,7 +933,10 @@ fn fourier_neg_term() {
         let result = arena.fourier_transform_expr(neg_delta, t, omega).unwrap();
         let d = arena.display(result).to_string();
         // F{-δ(t)} = -1
-        assert!(d.contains("-1") || d.contains("−1"), "F{{-δ(t)}} should be -1: {d}");
+        assert!(
+            d.contains("-1") || d.contains("−1"),
+            "F{{-δ(t)}} should be -1: {d}"
+        );
     });
 }
 

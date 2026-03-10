@@ -191,8 +191,8 @@ fn limit_one_plus_one_over_x_to_the_x_is_e() {
     // The most famous limit: lim(x→∞) (1 + 1/x)^x = e
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let base = &ctx.int(1) + &(1 / &x);  // 1 + 1/x
-    let expr = base.pow(&x);               // (1 + 1/x)^x
+    let base = &ctx.int(1) + &(1 / &x); // 1 + 1/x
+    let expr = base.pow(&x); // (1 + 1/x)^x
     let result = expr.limit(&x, &ctx.infinity());
     // Should be E (Euler's number), not ∞
     let s = format!("{result}");
@@ -208,8 +208,8 @@ fn limit_one_plus_a_over_x_to_the_x_is_exp_a() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let a = ctx.symbol("a");
-    let base = &ctx.int(1) + &(&a / &x);  // 1 + a/x
-    let expr = base.pow(&x);               // (1 + a/x)^x
+    let base = &ctx.int(1) + &(&a / &x); // 1 + a/x
+    let expr = base.pow(&x); // (1 + a/x)^x
     let result = expr.limit(&x, &ctx.infinity());
     let s = format!("{result}");
     assert!(

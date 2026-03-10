@@ -88,11 +88,7 @@ impl SturmChain {
     /// At +∞ the sign of a polynomial equals the sign of its leading
     /// coefficient.
     pub fn sign_variations_at_pos_inf(&self) -> usize {
-        let signs: Vec<i8> = self
-            .chain
-            .iter()
-            .map(leading_sign)
-            .collect();
+        let signs: Vec<i8> = self.chain.iter().map(leading_sign).collect();
         count_sign_changes(&signs)
     }
 
@@ -110,11 +106,7 @@ impl SturmChain {
                     return 0;
                 }
                 let deg = p.degree().unwrap_or(0);
-                if deg % 2 == 0 {
-                    ls
-                } else {
-                    -ls
-                }
+                if deg % 2 == 0 { ls } else { -ls }
             })
             .collect();
         count_sign_changes(&signs)

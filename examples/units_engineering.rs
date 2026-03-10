@@ -6,8 +6,8 @@
 //! Run with: cargo run --example units_engineering
 
 use symplex::prelude::*;
-use symplex::units::*;
 use symplex::units::constants;
+use symplex::units::*;
 
 fn main() {
     println!("═══════════════════════════════════════════════════════════════");
@@ -30,10 +30,10 @@ fn section_1_motor_specs() {
     println!("── 1. DC Motor Specification ──\n");
 
     // Define motor parameters with units
-    let v_rated = Voltage::constant(&ctx, 24);          // 24 V
-    let i_rated = Current::constant(&ctx, 10);          // 10 A
-    let r_wind = Resistance::rational(&ctx, 12, 10);    // 1.2 Ω
-    let l_wind = Inductance::rational(&ctx, 5, 1000);   // 5 mH
+    let v_rated = Voltage::constant(&ctx, 24); // 24 V
+    let i_rated = Current::constant(&ctx, 10); // 10 A
+    let r_wind = Resistance::rational(&ctx, 12, 10); // 1.2 Ω
+    let l_wind = Inductance::rational(&ctx, 5, 1000); // 5 mH
 
     println!("  Rated voltage:  {}", v_rated);
     println!("  Rated current:  {}", i_rated);
@@ -74,9 +74,12 @@ fn section_2_power_analysis() {
     // Efficiency
     let p_mech_f64 = p_mech.eval_f64().unwrap();
     let p_in_f64 = p_in.eval_f64().unwrap();
-    println!("\n  Efficiency = P_mech/P_in = {}/{} = {}%",
-             p_mech.inner(), p_in.inner(),
-             (p_mech_f64 / p_in_f64 * 100.0) as i32);
+    println!(
+        "\n  Efficiency = P_mech/P_in = {}/{} = {}%",
+        p_mech.inner(),
+        p_in.inner(),
+        (p_mech_f64 / p_in_f64 * 100.0) as i32
+    );
 
     // Convert to horsepower (exact!)
     let one = ctx.int(1);
@@ -107,18 +110,24 @@ fn section_3_imperial_conversions() {
 
     println!("  Volume:");
     println!("    1 US gal = {} m³", Volume::us_gallons(&one).eval());
-    println!("    1 US gal = {:.6} L",
-             Volume::us_gallons(&one).eval_f64().unwrap() * 1000.0);
-    println!("    1 imp gal = {} m³", Volume::imperial_gallons(&one).eval());
+    println!(
+        "    1 US gal = {:.6} L",
+        Volume::us_gallons(&one).eval_f64().unwrap() * 1000.0
+    );
+    println!(
+        "    1 imp gal = {} m³",
+        Volume::imperial_gallons(&one).eval()
+    );
 
     println!("  Speed:");
-    println!("    60 mph = {} m/s",
-             Velocity::miles_per_hour(&ctx.int(60)).eval());
+    println!(
+        "    60 mph = {} m/s",
+        Velocity::miles_per_hour(&ctx.int(60)).eval()
+    );
     println!("    1 knot = {} m/s", Velocity::knots(&one).eval());
 
     println!("  Mass:");
-    println!("    1 slug = {} kg",
-             Mass::slugs(&one).eval());
+    println!("    1 slug = {} kg", Mass::slugs(&one).eval());
     println!("    1 oz = {} kg", Mass::ounces(&one).eval());
 
     println!();
@@ -131,37 +140,50 @@ fn section_4_unit_conversion_showcase() {
     // Tire pressure: 32 psi → kPa
     let tire_psi = ctx.int(32);
     let tire_pa = Pressure::psi(&tire_psi);
-    println!("  Tire pressure: 32 psi = {:.1} kPa",
-             tire_pa.eval_f64().unwrap() / 1000.0);
+    println!(
+        "  Tire pressure: 32 psi = {:.1} kPa",
+        tire_pa.eval_f64().unwrap() / 1000.0
+    );
 
     // Speed limit: 65 mph → km/h
     let speed_mph = ctx.int(65);
     let speed_ms = Velocity::miles_per_hour(&speed_mph);
-    println!("  Speed limit: 65 mph = {:.1} km/h",
-             speed_ms.eval_f64().unwrap() * 3.6);
+    println!(
+        "  Speed limit: 65 mph = {:.1} km/h",
+        speed_ms.eval_f64().unwrap() * 3.6
+    );
 
     // Engine power: 200 hp → kW
     let engine_hp = ctx.int(200);
     let engine_w = Power::horsepower(&engine_hp);
-    println!("  Engine power: 200 hp = {:.1} kW",
-             engine_w.eval_f64().unwrap() / 1000.0);
+    println!(
+        "  Engine power: 200 hp = {:.1} kW",
+        engine_w.eval_f64().unwrap() / 1000.0
+    );
 
     // Fuel tank: 15 US gallons → liters
     let tank_gal = ctx.int(15);
     let tank_m3 = Volume::us_gallons(&tank_gal);
-    println!("  Fuel tank: 15 gal = {:.1} L",
-             tank_m3.eval_f64().unwrap() * 1000.0);
+    println!(
+        "  Fuel tank: 15 gal = {:.1} L",
+        tank_m3.eval_f64().unwrap() * 1000.0
+    );
 
     // Room temperature: 72°F → K
     let temp_f = ctx.int(72);
     let temp_k = Temperature::from_fahrenheit(&temp_f);
-    println!("  Room temp: 72°F = {:.2} K = {:.2}°C",
-             temp_k.eval_f64().unwrap(),
-             temp_k.eval_f64().unwrap() - 273.15);
+    println!(
+        "  Room temp: 72°F = {:.2} K = {:.2}°C",
+        temp_k.eval_f64().unwrap(),
+        temp_k.eval_f64().unwrap() - 273.15
+    );
 
     // Standard gravity from physical constants
     let g = constants::standard_gravity(&ctx);
-    println!("\n  Standard gravity: g₀ = {} (physical constant, exact)", g);
+    println!(
+        "\n  Standard gravity: g₀ = {} (physical constant, exact)",
+        g
+    );
     println!("  g₀ = {:.5} m/s²", g.eval_f64().unwrap());
 
     println!();
@@ -190,9 +212,7 @@ fn section_5_codegen_with_uom() {
         .param_unit("Kt", "Torque")
         .return_unit_type("Torque");
 
-    let code = tau_stall.to_rust_fn_with_options(
-        "stall_torque", &["Kt", "V", "R_m"], &opts
-    );
+    let code = tau_stall.to_rust_fn_with_options("stall_torque", &["Kt", "V", "R_m"], &opts);
 
     match code {
         Ok(c) => {

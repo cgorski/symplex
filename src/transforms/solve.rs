@@ -371,7 +371,10 @@ fn solve_by_peeling(
                 tracing::debug!("solve_by_peeling: constant-base exponential a^f(x) = rhs");
 
                 // Integer shortcut: try to find k such that base^k == rhs
-                if let (Some(b), Some(r)) = (arena.as_num(inner_base).cloned(), arena.as_num(rhs).cloned()) {
+                if let (Some(b), Some(r)) = (
+                    arena.as_num(inner_base).cloned(),
+                    arena.as_num(rhs).cloned(),
+                ) {
                     if b.is_integer() && r.is_integer() && b > Ratio::one() && r.is_positive() {
                         let b_int = b.to_integer();
                         let r_int = r.to_integer();
@@ -380,7 +383,9 @@ fn solve_by_peeling(
                         for k in 0u32..65 {
                             if power == r_int {
                                 let k_expr = arena.int(k as i64);
-                                tracing::debug!("solve_by_peeling: integer log shortcut, base^{k} = rhs");
+                                tracing::debug!(
+                                    "solve_by_peeling: integer log shortcut, base^{k} = rhs"
+                                );
                                 return solve_by_peeling(arena, inner_exp, k_expr, var);
                             }
                             if power > r_int {
@@ -458,7 +463,11 @@ fn solve_by_peeling(
                     }
                 }
             }
-            if solutions.is_empty() { None } else { Some(solutions) }
+            if solutions.is_empty() {
+                None
+            } else {
+                Some(solutions)
+            }
         }
         _ => None,
     }
@@ -1499,7 +1508,11 @@ fn classify_lambert_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option
 /// For example: `k*x - F = 0` → `x = F/k`.
 ///
 /// Returns `Some(solutions)` if `expr` is linear in `var`, `None` otherwise.
-pub(crate) fn try_solve_linear_symbolic(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<Vec<Solution>> {
+pub(crate) fn try_solve_linear_symbolic(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+) -> Option<Vec<Solution>> {
     // Get the Add children (or treat expr as a single-term sum).
     let terms: Vec<ExprId> = match arena.node(expr).clone() {
         ExprNode::Add(children) => children.to_vec(),
@@ -2296,10 +2309,7 @@ mod tests {
         let solutions = solve(&mut a, expr, x);
         assert_eq!(solutions.len(), 1, "x·exp(x)=1 should have 1 solution");
         let val = display(&a, solutions[0].value);
-        assert!(
-            val.contains("W("),
-            "solution should be W(1): {val}"
-        );
+        assert!(val.contains("W("), "solution should be W(1): {val}");
     }
 
     #[test]
@@ -2314,10 +2324,7 @@ mod tests {
         let solutions = solve(&mut a, expr, x);
         assert_eq!(solutions.len(), 1, "x·exp(x)=5 should have 1 solution");
         let val = display(&a, solutions[0].value);
-        assert!(
-            val.contains("W("),
-            "solution should be W(5): {val}"
-        );
+        assert!(val.contains("W("), "solution should be W(5): {val}");
     }
 
     #[test]
@@ -2350,10 +2357,7 @@ mod tests {
         let solutions = solve(&mut a, expr, x);
         assert_eq!(solutions.len(), 1, "2·x·exp(x)=4 should have 1 solution");
         let val = display(&a, solutions[0].value);
-        assert!(
-            val.contains("W("),
-            "solution should involve W: {val}"
-        );
+        assert!(val.contains("W("), "solution should involve W: {val}");
     }
 
     #[test]
@@ -2371,10 +2375,7 @@ mod tests {
         let solutions = solve(&mut a, expr, x);
         assert_eq!(solutions.len(), 1, "x·exp(2x)=3 should have 1 solution");
         let val = display(&a, solutions[0].value);
-        assert!(
-            val.contains("W("),
-            "solution should involve W: {val}"
-        );
+        assert!(val.contains("W("), "solution should involve W: {val}");
     }
 
     #[test]
@@ -2390,10 +2391,7 @@ mod tests {
         let solutions = solve(&mut a, expr, x);
         assert_eq!(solutions.len(), 1, "exp(x)+x-2=0 should have 1 solution");
         let val = display(&a, solutions[0].value);
-        assert!(
-            val.contains("W("),
-            "solution should involve W: {val}"
-        );
+        assert!(val.contains("W("), "solution should involve W: {val}");
     }
 
     #[test]
@@ -2410,10 +2408,7 @@ mod tests {
         let solutions = solve(&mut a, expr, x);
         assert_eq!(solutions.len(), 1, "-exp(x)-x+2=0 should have 1 solution");
         let val = display(&a, solutions[0].value);
-        assert!(
-            val.contains("W("),
-            "solution should involve W: {val}"
-        );
+        assert!(val.contains("W("), "solution should involve W: {val}");
     }
 
     #[test]

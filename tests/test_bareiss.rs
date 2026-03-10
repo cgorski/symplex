@@ -57,8 +57,7 @@ fn bareiss_4x4_integer() {
         out
     }
 
-    let expected = rows[0][0] * det3(minor3(&rows, 0))
-        - rows[0][1] * det3(minor3(&rows, 1))
+    let expected = rows[0][0] * det3(minor3(&rows, 0)) - rows[0][1] * det3(minor3(&rows, 1))
         + rows[0][2] * det3(minor3(&rows, 2))
         - rows[0][3] * det3(minor3(&rows, 3));
 
@@ -127,7 +126,13 @@ fn bareiss_symbolic_2x2_matches_direct() {
 fn bareiss_4x4_known_det() {
     let ctx = Context::new();
     // Upper triangular → det = product of diagonal = 1*2*3*4 = 24
-    let m = matrix![ctx, [1, 5, 9, 13], [0, 2, 7, 11], [0, 0, 3, 8], [0, 0, 0, 4]];
+    let m = matrix![
+        ctx,
+        [1, 5, 9, 13],
+        [0, 2, 7, 11],
+        [0, 0, 3, 8],
+        [0, 0, 0, 4]
+    ];
     let d = m.det().unwrap();
     let d_val = d.eval_f64().unwrap();
     assert!(
@@ -238,7 +243,8 @@ fn bareiss_4x4_negative_det() {
 #[test]
 fn bareiss_4x4_all_negative() {
     let ctx = Context::new();
-    let m = matrix![ctx, 
+    let m = matrix![
+        ctx,
         [-1, -2, -3, -4],
         [-5, -6, -7, -8],
         [-2, -6, -4, -8],

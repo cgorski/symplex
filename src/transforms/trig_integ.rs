@@ -537,17 +537,19 @@ pub(crate) fn try_trig_power_integral(
 
     // ── Single factor: Pow(Sinh(var), n) — handle n=2 via half-angle ──
     if let Some(n) = extract_sinh_power(arena, expr, var)
-        && n == 2 {
-            return Some(sinh_squared_integrate(arena, var));
-        }
-        // Other sinh powers not yet handled
+        && n == 2
+    {
+        return Some(sinh_squared_integrate(arena, var));
+    }
+    // Other sinh powers not yet handled
 
     // ── Single factor: Pow(Cosh(var), n) — handle n=2 via half-angle ──
     if let Some(n) = extract_cosh_power(arena, expr, var)
-        && n == 2 {
-            return Some(cosh_squared_integrate(arena, var));
-        }
-        // Other cosh powers not yet handled
+        && n == 2
+    {
+        return Some(cosh_squared_integrate(arena, var));
+    }
+    // Other cosh powers not yet handled
 
     // ── Product: Mul(...) containing sin/cos powers ────────────────
     if let ExprNode::Mul(ref children) = node {

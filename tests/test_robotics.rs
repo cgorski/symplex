@@ -47,17 +47,11 @@ fn dh_matrix_pure_rotation() {
 
     // (0,0) = cos(π/2) = 0
     let r00 = t.get(0, 0).eval().eval_f64().unwrap();
-    assert!(
-        r00.abs() < 1e-12,
-        "cos(π/2) should be 0, got {r00}"
-    );
+    assert!(r00.abs() < 1e-12, "cos(π/2) should be 0, got {r00}");
 
     // (1,0) = sin(π/2) = 1
     let r10 = t.get(1, 0).eval().eval_f64().unwrap();
-    assert!(
-        (r10 - 1.0).abs() < 1e-12,
-        "sin(π/2) should be 1, got {r10}"
-    );
+    assert!((r10 - 1.0).abs() < 1e-12, "sin(π/2) should be 1, got {r10}");
 
     // (0,1) = -sin(π/2)cos(0) = -1
     let r01 = t.get(0, 1).eval().eval_f64().unwrap();
@@ -68,17 +62,11 @@ fn dh_matrix_pure_rotation() {
 
     // (1,1) = cos(π/2)cos(0) = 0
     let r11 = t.get(1, 1).eval().eval_f64().unwrap();
-    assert!(
-        r11.abs() < 1e-12,
-        "cos(π/2)cos(0) should be 0, got {r11}"
-    );
+    assert!(r11.abs() < 1e-12, "cos(π/2)cos(0) should be 0, got {r11}");
 
     // Last row is [0, 0, 0, 1]
     let r33 = t.get(3, 3).eval().eval_f64().unwrap();
-    assert!(
-        (r33 - 1.0).abs() < 1e-12,
-        "(3,3) should be 1, got {r33}"
-    );
+    assert!((r33 - 1.0).abs() < 1e-12, "(3,3) should be 1, got {r33}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -96,23 +84,14 @@ fn dh_matrix_with_translation() {
     let t = dh_matrix(&zero, &zero, &one, &zero);
 
     let r03 = t.get(0, 3).eval().eval_f64().unwrap();
-    assert!(
-        (r03 - 1.0).abs() < 1e-12,
-        "a·cos(0) should be 1, got {r03}"
-    );
+    assert!((r03 - 1.0).abs() < 1e-12, "a·cos(0) should be 1, got {r03}");
 
     let r13 = t.get(1, 3).eval().eval_f64().unwrap();
-    assert!(
-        r13.abs() < 1e-12,
-        "a·sin(0) should be 0, got {r13}"
-    );
+    assert!(r13.abs() < 1e-12, "a·sin(0) should be 0, got {r13}");
 
     // The rotation part should be identity (θ=0, α=0)
     let r00 = t.get(0, 0).eval().eval_f64().unwrap();
-    assert!(
-        (r00 - 1.0).abs() < 1e-12,
-        "cos(0) should be 1, got {r00}"
-    );
+    assert!((r00 - 1.0).abs() < 1e-12, "cos(0) should be 1, got {r00}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -232,10 +211,7 @@ fn fk_chain_two_joint_planar() {
         (y_val - expected_y).abs() < 1e-10,
         "y: got {y_val}, expected {expected_y}"
     );
-    assert!(
-        z_val.abs() < 1e-10,
-        "z: got {z_val}, expected {expected_z}"
-    );
+    assert!(z_val.abs() < 1e-10, "z: got {z_val}, expected {expected_z}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -396,14 +372,8 @@ fn fk_jacobian_two_joint() {
         (j11 - expected_j11).abs() < 1e-8,
         "J[1,1]: got {j11}, expected {expected_j11}"
     );
-    assert!(
-        j20.abs() < 1e-10,
-        "J[2,0]: got {j20}, expected 0"
-    );
-    assert!(
-        j21.abs() < 1e-10,
-        "J[2,1]: got {j21}, expected 0"
-    );
+    assert!(j20.abs() < 1e-10, "J[2,0]: got {j20}, expected 0");
+    assert!(j21.abs() < 1e-10, "J[2,1]: got {j21}, expected 0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -439,10 +409,8 @@ fn fk_chain_three_joint() {
     let l2: f64 = 0.8;
     let l3: f64 = 0.5;
 
-    let expected_x =
-        l1 * t1v.cos() + l2 * (t1v + t2v).cos() + l3 * (t1v + t2v + t3v).cos();
-    let expected_y =
-        l1 * t1v.sin() + l2 * (t1v + t2v).sin() + l3 * (t1v + t2v + t3v).sin();
+    let expected_x = l1 * t1v.cos() + l2 * (t1v + t2v).cos() + l3 * (t1v + t2v + t3v).cos();
+    let expected_y = l1 * t1v.sin() + l2 * (t1v + t2v).sin() + l3 * (t1v + t2v + t3v).sin();
 
     let t1_val = ctx.rational(1, 5);
     let t2_val = ctx.rational(2, 5);
@@ -530,16 +498,10 @@ fn dh_matrix_symbolic_entries() {
 
     // Check that the matrix contains trig functions by looking at string repr
     let s00 = format!("{}", t.get(0, 0));
-    assert!(
-        s00.contains("cos"),
-        "(0,0) should contain cos, got: {s00}"
-    );
+    assert!(s00.contains("cos"), "(0,0) should contain cos, got: {s00}");
 
     let s10 = format!("{}", t.get(1, 0));
-    assert!(
-        s10.contains("sin"),
-        "(1,0) should contain sin, got: {s10}"
-    );
+    assert!(s10.contains("sin"), "(1,0) should contain sin, got: {s10}");
 
     // (3,3) should be 1
     let s33 = format!("{}", t.get(3, 3));
@@ -556,7 +518,7 @@ fn dh_matrix_symbolic_entries() {
     // Verify numerically at a random point
     let tv = ctx.rational(7, 10); // 0.7
     let dv = ctx.rational(3, 10); // 0.3
-    let av = ctx.rational(1, 2);  // 0.5
+    let av = ctx.rational(1, 2); // 0.5
     let alv = ctx.rational(4, 10); // 0.4
 
     let t_val: f64 = 0.7;
@@ -688,10 +650,7 @@ fn dh_matrix_with_d_offset() {
 
     // Rotation part is still identity
     let r00 = t.get(0, 0).eval().eval_f64().unwrap();
-    assert!(
-        (r00 - 1.0).abs() < 1e-12,
-        "(0,0) should be 1, got {r00}"
-    );
+    assert!((r00 - 1.0).abs() < 1e-12, "(0,0) should be 1, got {r00}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -991,14 +950,8 @@ fn skew3_cross_product() {
     let r0 = result.get(0, 0).eval().eval_f64().unwrap();
     let r1 = result.get(1, 0).eval().eval_f64().unwrap();
     let r2 = result.get(2, 0).eval().eval_f64().unwrap();
-    assert!(
-        r0.abs() < 1e-10,
-        "cross product x = {r0}, expected 0"
-    );
-    assert!(
-        r1.abs() < 1e-10,
-        "cross product y = {r1}, expected 0"
-    );
+    assert!(r0.abs() < 1e-10, "cross product x = {r0}, expected 0");
+    assert!(r1.abs() < 1e-10, "cross product y = {r1}, expected 0");
     assert!(
         (r2 - 1.0).abs() < 1e-10,
         "cross product z = {r2}, expected 1"
@@ -1052,11 +1005,7 @@ fn homogeneous_translation() {
 #[test]
 fn translation_pure() {
     let ctx = Context::new();
-    let t = symplex::robotics::translation(
-        &ctx.int(1),
-        &ctx.int(2),
-        &ctx.int(3),
-    );
+    let t = symplex::robotics::translation(&ctx.int(1), &ctx.int(2), &ctx.int(3));
     assert_eq!(t.shape(), (4, 4));
     // Check last column = [1, 2, 3, 1]
     let expected = [1.0, 2.0, 3.0, 1.0];
@@ -1117,11 +1066,7 @@ fn rot_euler_zyx_numerical() {
     // Rz(π/2) = | 0  -1  0 |
     //           | 1   0  0 |
     //           | 0   0  1 |
-    let expected = [
-        [0.0, -1.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0],
-    ];
+    let expected = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
     for (i, expected_row) in expected.iter().enumerate() {
         for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = r.get(i, j).eval().eval_f64().unwrap();
@@ -1145,10 +1090,9 @@ fn matrix_powi_identity() {
     let b = ctx.symbol("b");
     let c = ctx.symbol("c");
     let d = ctx.symbol("d");
-    let m = symplex::matrix::Matrix::new(vec![
-        vec![a.clone(), b.clone()],
-        vec![c.clone(), d.clone()],
-    ]).unwrap();
+    let m =
+        symplex::matrix::Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]])
+            .unwrap();
     let result = m.powi(0).unwrap();
     assert_eq!(result.shape(), (2, 2));
     for i in 0..2 {
@@ -1170,7 +1114,8 @@ fn matrix_powi_one() {
     let m = symplex::matrix::Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let result = m.powi(1).unwrap();
     let expected = [[1.0, 2.0], [3.0, 4.0]];
     for (i, expected_row) in expected.iter().enumerate() {
@@ -1191,7 +1136,8 @@ fn matrix_powi_square() {
     let m = symplex::matrix::Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let m2 = m.powi(2).unwrap();
     let m_times_m = m.matmul(&m).unwrap();
     for i in 0..2 {
@@ -1215,7 +1161,8 @@ fn matrix_powi_cube() {
     let m = symplex::matrix::Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let m3 = m.powi(3).unwrap();
     let expected = [[37.0, 54.0], [81.0, 118.0]];
     for (i, expected_row) in expected.iter().enumerate() {

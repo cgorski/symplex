@@ -202,11 +202,10 @@ pub(crate) fn extract_negative_power(arena: &Arena, id: ExprId) -> Option<(ExprI
                 let n = pos_r.to_integer();
                 return Some((*base, format!("{}", n)));
             } else {
-                return Some((*base, format!(
-                    "\\frac{{{}}}{{{}}}",
-                    pos_r.numer(),
-                    pos_r.denom()
-                )));
+                return Some((
+                    *base,
+                    format!("\\frac{{{}}}{{{}}}", pos_r.numer(), pos_r.denom()),
+                ));
             }
         }
     }

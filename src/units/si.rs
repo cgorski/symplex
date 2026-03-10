@@ -21,9 +21,9 @@
 use std::fmt;
 use std::ops;
 
-use crate::prelude::Ex;
 use super::dim::*;
 use super::qty::Qty;
+use crate::prelude::Ex;
 
 // ===========================================================================
 // define_quantity! — generates a named newtype plus all trait impls
@@ -525,13 +525,19 @@ define_quantity!(
 
 impl Angle {
     /// Sine of this angle, returning a dimensionless result.
-    pub fn sin(&self) -> Dimensionless { Dimensionless(self.0.sin()) }
+    pub fn sin(&self) -> Dimensionless {
+        Dimensionless(self.0.sin())
+    }
 
     /// Cosine of this angle, returning a dimensionless result.
-    pub fn cos(&self) -> Dimensionless { Dimensionless(self.0.cos()) }
+    pub fn cos(&self) -> Dimensionless {
+        Dimensionless(self.0.cos())
+    }
 
     /// Tangent of this angle, returning a dimensionless result.
-    pub fn tan(&self) -> Dimensionless { Dimensionless(self.0.tan()) }
+    pub fn tan(&self) -> Dimensionless {
+        Dimensionless(self.0.tan())
+    }
 }
 
 // ===========================================================================
@@ -540,18 +546,26 @@ impl Angle {
 
 // Energy ↔ Torque (both Dim<P2,P1,N2,Z0,Z0,Z0,Z0>)
 impl From<Energy> for Torque {
-    fn from(e: Energy) -> Self { Torque(e.0) }
+    fn from(e: Energy) -> Self {
+        Torque(e.0)
+    }
 }
 impl From<Torque> for Energy {
-    fn from(t: Torque) -> Self { Energy(t.0) }
+    fn from(t: Torque) -> Self {
+        Energy(t.0)
+    }
 }
 
 // Frequency ↔ AngularVelocity (both Dim<Z0,Z0,N1,Z0,Z0,Z0,Z0>)
 impl From<Frequency> for AngularVelocity {
-    fn from(f: Frequency) -> Self { AngularVelocity(f.0) }
+    fn from(f: Frequency) -> Self {
+        AngularVelocity(f.0)
+    }
 }
 impl From<AngularVelocity> for Frequency {
-    fn from(w: AngularVelocity) -> Self { Frequency(w.0) }
+    fn from(w: AngularVelocity) -> Self {
+        Frequency(w.0)
+    }
 }
 
 // ===========================================================================

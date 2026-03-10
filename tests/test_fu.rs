@@ -42,8 +42,12 @@ fn verify_2var(original: &Ex, simplified: &Ex, v1: &Ex, v2: &Ex, label: &str) {
                 );
             }
             (Err(_), Err(_)) => {} // both fail — skip (singularity)
-            (Ok(a), Err(e)) => panic!("{label} at ({p1},{p2}): orig={a} but simplified failed: {e}"),
-            (Err(e), Ok(b)) => panic!("{label} at ({p1},{p2}): orig failed: {e} but simplified={b}"),
+            (Ok(a), Err(e)) => {
+                panic!("{label} at ({p1},{p2}): orig={a} but simplified failed: {e}")
+            }
+            (Err(e), Ok(b)) => {
+                panic!("{label} at ({p1},{p2}): orig failed: {e} but simplified={b}")
+            }
         }
     }
 }
@@ -176,8 +180,8 @@ fn fu_complex_example() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let expr = &x.sin().powi(4) - &y.cos().powi(2) + &y.sin().powi(2)
-        + &ctx.int(2) * &x.cos().powi(2);
+    let expr =
+        &x.sin().powi(4) - &y.cos().powi(2) + &y.sin().powi(2) + &ctx.int(2) * &x.cos().powi(2);
     let result = expr.fu();
     verify_2var(&expr, &result, &x, &y, "fu_complex_example");
     // The result should have fewer or equal trig nodes.

@@ -17,8 +17,8 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
     if let (Ok(o), Ok(d)) = (
         integrand.subs(var, &test_point).eval_f64(),
         deriv.subs(var, &test_point).eval_f64(),
-    )
-        && o.is_finite() && d.is_finite()
+    ) && o.is_finite()
+        && d.is_finite()
     {
         assert!(
             (o - d).abs() < 1e-6 * o.abs().max(1.0),

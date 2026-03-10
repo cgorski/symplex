@@ -139,9 +139,7 @@ impl GenPoly<Ratio<BigInt>> {
 ///
 /// Given `(x₀, y₀), …, (xₙ, yₙ)` with integer `xᵢ` and rational `yᵢ`,
 /// returns the unique polynomial of degree ≤ n passing through all points.
-pub(crate) fn lagrange_interpolate_rational(
-    points: &[(i64, Ratio<BigInt>)],
-) -> Poly {
+pub(crate) fn lagrange_interpolate_rational(points: &[(i64, Ratio<BigInt>)]) -> Poly {
     let n = points.len();
     if n == 0 {
         return Poly::zero();
@@ -163,10 +161,8 @@ pub(crate) fn lagrange_interpolate_rational(
             if i == j {
                 continue;
             }
-            let linear = Poly::from_coeffs(vec![
-                Ratio::from_integer(BigInt::from(-*xj)),
-                Ratio::one(),
-            ]);
+            let linear =
+                Poly::from_coeffs(vec![Ratio::from_integer(BigInt::from(-*xj)), Ratio::one()]);
             basis = &basis * &linear;
             denom *= BigInt::from(*xi - *xj);
         }
@@ -559,10 +555,8 @@ fn lagrange_interpolate(points: &[(i64, BigInt)]) -> Option<Poly> {
                 continue;
             }
             let xj = point_j.0;
-            let linear = Poly::from_coeffs(vec![
-                Ratio::from_integer(BigInt::from(-xj)),
-                Ratio::one(),
-            ]);
+            let linear =
+                Poly::from_coeffs(vec![Ratio::from_integer(BigInt::from(-xj)), Ratio::one()]);
             basis = &basis * &linear;
             denom *= BigInt::from(*xi - xj);
         }
@@ -1494,7 +1488,8 @@ mod tests {
             assert_eq!(
                 dp.coeff(j),
                 ri(j as i64 + 1),
-                "derivative coeff at x^{j} should be {}", j + 1
+                "derivative coeff at x^{j} should be {}",
+                j + 1
             );
         }
     }
@@ -1504,7 +1499,16 @@ mod tests {
         // For p(x) = x^7 - 3x^4 + 2x^2 + 5x - 1
         // verify p'(x) by evaluating at multiple rational points
         // and comparing against (p(x+h) - p(x-h)) / (2h) for small h
-        let p = Poly::from_coeffs(vec![ri(-1), ri(5), ri(2), ri(0), ri(-3), ri(0), ri(0), ri(1)]);
+        let p = Poly::from_coeffs(vec![
+            ri(-1),
+            ri(5),
+            ri(2),
+            ri(0),
+            ri(-3),
+            ri(0),
+            ri(0),
+            ri(1),
+        ]);
         let dp = p.derivative();
 
         // Check exact derivative at x=0: p'(0) = 5
@@ -1521,7 +1525,8 @@ mod tests {
         let x = ri(2);
         let x_plus_h = &x + &h;
         let x_minus_h = &x - &h;
-        let fd = (p.eval(&x_plus_h) - p.eval(&x_minus_h)) / (Ratio::from_integer(BigInt::from(2)) * &h);
+        let fd =
+            (p.eval(&x_plus_h) - p.eval(&x_minus_h)) / (Ratio::from_integer(BigInt::from(2)) * &h);
         let exact = dp.eval(&x);
         // Finite difference should be close to the exact derivative
         let diff = (&fd - &exact).abs();
@@ -1535,7 +1540,7 @@ mod tests {
     fn derivative_product_rule_cross_check() {
         // Verify (fg)' = f'g + fg' for two polynomials
         let f = Poly::from_coeffs(vec![ri(1), ri(2), ri(3)]); // 3x^2 + 2x + 1
-        let g = Poly::from_coeffs(vec![ri(-1), ri(1)]);        // x - 1
+        let g = Poly::from_coeffs(vec![ri(-1), ri(1)]); // x - 1
         let fg = &f * &g;
         let fg_prime = fg.derivative();
         let f_prime_g = &f.derivative() * &g;
@@ -1573,7 +1578,7 @@ mod tests {
         // For a = x^3 - 1, b = x^2 - 1
         // verify s*a + t*b = gcd(a, b) (Bézout's identity)
         let a = Poly::from_coeffs(vec![ri(-1), ri(0), ri(0), ri(1)]); // x^3 - 1
-        let b = Poly::from_coeffs(vec![ri(-1), ri(0), ri(1)]);         // x^2 - 1
+        let b = Poly::from_coeffs(vec![ri(-1), ri(0), ri(1)]); // x^2 - 1
         let (s, t, g) = Poly::extended_gcd(&a, &b);
 
         // Check that g divides both a and b
@@ -1595,8 +1600,8 @@ mod tests {
     #[test]
     fn extended_gcd_bezout_identity_coprime() {
         // For coprime polynomials, gcd should be 1 and s*a + t*b = 1
-        let a = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]);  // x^2 + 1
-        let b = Poly::from_coeffs(vec![ri(1), ri(1)]);          // x + 1
+        let a = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // x^2 + 1
+        let b = Poly::from_coeffs(vec![ri(1), ri(1)]); // x + 1
         let (s, t, g) = Poly::extended_gcd(&a, &b);
 
         assert!(g.is_constant(), "gcd of coprime polys should be constant");
@@ -1618,12 +1623,12 @@ mod tests {
                 Poly::from_coeffs(vec![ri(1), ri(1)]),
             ),
             (
-                Poly::from_coeffs(vec![ri(6), ri(-5), ri(1)]),  // x^2 - 5x + 6
-                Poly::from_coeffs(vec![ri(-2), ri(1)]),           // x - 2
+                Poly::from_coeffs(vec![ri(6), ri(-5), ri(1)]), // x^2 - 5x + 6
+                Poly::from_coeffs(vec![ri(-2), ri(1)]),        // x - 2
             ),
             (
-                Poly::from_coeffs(vec![ri(1), ri(0), ri(0), ri(0), ri(0), ri(1)]),  // x^5 + 1
-                Poly::from_coeffs(vec![ri(1), ri(1)]),  // x + 1
+                Poly::from_coeffs(vec![ri(1), ri(0), ri(0), ri(0), ri(0), ri(1)]), // x^5 + 1
+                Poly::from_coeffs(vec![ri(1), ri(1)]),                             // x + 1
             ),
         ];
         for (a, b) in &pairs {
@@ -1694,7 +1699,9 @@ mod tests {
     fn squarefree_factors_reconstruct_to_original() {
         // (x-1)^2 * (x+1)^3 * (x-5)
         let x_minus = |n: i64| Poly::from_coeffs(vec![ri(-n), ri(1)]);
-        let p = &(&(&(&x_minus(1) * &x_minus(1)) * &(&(&x_minus(-1) * &x_minus(-1)) * &x_minus(-1))) * &x_minus(5));
+        let p = &(&(&(&x_minus(1) * &x_minus(1))
+            * &(&(&x_minus(-1) * &x_minus(-1)) * &x_minus(-1)))
+            * &x_minus(5));
 
         let factors = p.squarefree_factors();
 

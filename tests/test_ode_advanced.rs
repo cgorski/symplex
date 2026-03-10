@@ -7,9 +7,9 @@
 //! - **Variation of parameters:** y'' + p·y' + q·y = g(x), fallback method
 //! - **Classification:** verify `classify_ode()` returns the correct `OdeType`
 
+use symplex::expr::ExprType;
 use symplex::ode::OdeType;
 use symplex::prelude::*;
-use symplex::expr::ExprType;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -118,14 +118,14 @@ fn exact_2xy_plus_3_and_xsq_plus_4y() {
     let ode = &m + &(&n * &dy);
 
     let sol = ode.solve_ode(&y, &x);
-    assert!(!sol.has_unevaluated(), "exact ODE (2xy+3) + (x²+4y)y' = 0 should be solvable");
+    assert!(
+        !sol.has_unevaluated(),
+        "exact ODE (2xy+3) + (x²+4y)y' = 0 should be solvable"
+    );
 
     let s = format!("{sol}");
     // Exact ODE solver returns the potential F(x,y); the constant is implicit.
-    assert!(
-        !s.is_empty(),
-        "solution should be non-empty: {s}"
-    );
+    assert!(!s.is_empty(), "solution should be non-empty: {s}");
 }
 
 #[test]
@@ -161,14 +161,14 @@ fn exact_simple_ydx_xdy() {
     let ode = &y + &(&x * &dy); // y + x·y' = 0
 
     let sol = ode.solve_ode(&y, &x);
-    assert!(!sol.has_unevaluated(), "y + x·y' = 0 should be solvable (exact)");
+    assert!(
+        !sol.has_unevaluated(),
+        "y + x·y' = 0 should be solvable (exact)"
+    );
 
     let s = format!("{sol}");
     // Exact solver may return F(x,y) without explicit C1, or separable solver may include it.
-    assert!(
-        !s.is_empty(),
-        "solution should be non-empty: {s}"
-    );
+    assert!(!s.is_empty(), "solution should be non-empty: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -199,10 +199,7 @@ fn bernoulli_y_prime_plus_y_over_x_eq_y_squared() {
         sol.expr_type() != ExprType::Unevaluated,
         "Bernoulli ODE y' + y/x = y² should be solvable, got: {s}"
     );
-    assert!(
-        !s.is_empty(),
-        "Bernoulli solution should be non-empty: {s}"
-    );
+    assert!(!s.is_empty(), "Bernoulli solution should be non-empty: {s}");
 }
 
 #[test]
@@ -217,11 +214,7 @@ fn bernoulli_classify() {
     let ode = &(&dy + &y_over_x) - &y_sq;
 
     let ode_type = ode.classify_ode(&y, &x);
-    assert_eq!(
-        ode_type,
-        OdeType::Bernoulli,
-        "should classify as Bernoulli"
-    );
+    assert_eq!(ode_type, OdeType::Bernoulli, "should classify as Bernoulli");
 }
 
 #[test]
@@ -269,10 +262,7 @@ fn bernoulli_simple_n2_constant_coefficients() {
     );
 
     let s = format!("{sol}");
-    assert!(
-        s.contains("C1"),
-        "solution should have C1: {s}"
-    );
+    assert!(s.contains("C1"), "solution should have C1: {s}");
 
     // Numerically verify the Bernoulli solution
     let c1 = ctx.symbol("C1");
@@ -399,7 +389,10 @@ fn euler_cauchy_repeated_root() {
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have C1: {s}");
     assert!(s.contains("C2"), "should have C2: {s}");
-    assert!(s.contains("ln"), "repeated root solution should contain ln(x): {s}");
+    assert!(
+        s.contains("ln"),
+        "repeated root solution should contain ln(x): {s}"
+    );
 
     let c1 = ctx.symbol("C1");
     let c2 = ctx.symbol("C2");
@@ -644,7 +637,9 @@ fn euler_cauchy_distinct_real_verify_at_multiple_points() {
     let two = ctx.int(2);
     let ode = &(&x_sq * &d2y) - &(&two * &y);
 
-    let sol = ode.try_solve_ode(&y, &x).expect("should solve Euler-Cauchy distinct real");
+    let sol = ode
+        .try_solve_ode(&y, &x)
+        .expect("should solve Euler-Cauchy distinct real");
     let c1 = ctx.symbol("C1");
     let c2 = ctx.symbol("C2");
 
@@ -665,7 +660,9 @@ fn euler_cauchy_complex_verify_at_multiple_points() {
     let x_sq = x.powi(2);
     let ode = &(&(&x_sq * &d2y) + &(&x * &dy)) + &y;
 
-    let sol = ode.try_solve_ode(&y, &x).expect("should solve Euler-Cauchy complex");
+    let sol = ode
+        .try_solve_ode(&y, &x)
+        .expect("should solve Euler-Cauchy complex");
     let c1 = ctx.symbol("C1");
     let c2 = ctx.symbol("C2");
 
@@ -696,10 +693,7 @@ fn bernoulli_n2_with_constant_p() {
     );
 
     let s = format!("{sol}");
-    assert!(
-        s.contains("C1"),
-        "solution should have a constant: {s}"
-    );
+    assert!(s.contains("C1"), "solution should have a constant: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -730,7 +724,10 @@ fn euler_cauchy_4x2_y_pp_minus_4x_yp_plus_3y() {
     );
 
     let s = format!("{sol}");
-    assert!(s.contains("C1") && s.contains("C2"), "should have two constants: {s}");
+    assert!(
+        s.contains("C1") && s.contains("C2"),
+        "should have two constants: {s}"
+    );
 
     // Verify at x = 4
     let c1 = ctx.symbol("C1");

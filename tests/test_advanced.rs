@@ -25,7 +25,8 @@ fn matrix_det_2x2_numeric() {
     let m = Matrix::new(vec![
         vec![ctx.int(3), ctx.int(7)],
         vec![ctx.int(1), ctx.int(5)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let det = m.det().unwrap();
     // 3*5 - 7*1 = 8
     assert_eq!(format!("{det}"), "8");
@@ -73,7 +74,8 @@ fn matrix_trace() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let tr = m.trace().unwrap();
     assert_eq!(format!("{tr}"), "5");
 }
@@ -85,11 +87,13 @@ fn matrix_add_numeric() {
     let m1 = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let m2 = Matrix::new(vec![
         vec![ctx.int(10), ctx.int(20)],
         vec![ctx.int(30), ctx.int(40)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let sum = m1.add(&m2).unwrap();
     assert_eq!(format!("{}", sum.get(0, 0)), "11");
     assert_eq!(format!("{}", sum.get(1, 1)), "44");

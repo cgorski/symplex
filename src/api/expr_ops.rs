@@ -76,7 +76,11 @@ macro_rules! impl_nary_binop {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
                 let rhs_id = self.checked_id(&rhs);
-                let id = self.inner.write().arena.$arena_method(&[self.raw_id(), rhs_id]);
+                let id = self
+                    .inner
+                    .write()
+                    .arena
+                    .$arena_method(&[self.raw_id(), rhs_id]);
                 self.wrap(id)
             }
         }
@@ -84,7 +88,11 @@ macro_rules! impl_nary_binop {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
                 let rhs_id = self.checked_id(rhs);
-                let id = self.inner.write().arena.$arena_method(&[self.raw_id(), rhs_id]);
+                let id = self
+                    .inner
+                    .write()
+                    .arena
+                    .$arena_method(&[self.raw_id(), rhs_id]);
                 self.wrap(id)
             }
         }
@@ -92,7 +100,11 @@ macro_rules! impl_nary_binop {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
                 let rhs_id = self.checked_id(&rhs);
-                let id = self.inner.write().arena.$arena_method(&[self.raw_id(), rhs_id]);
+                let id = self
+                    .inner
+                    .write()
+                    .arena
+                    .$arena_method(&[self.raw_id(), rhs_id]);
                 self.wrap(id)
             }
         }
@@ -100,7 +112,11 @@ macro_rules! impl_nary_binop {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
                 let rhs_id = self.checked_id(rhs);
-                let id = self.inner.write().arena.$arena_method(&[self.raw_id(), rhs_id]);
+                let id = self
+                    .inner
+                    .write()
+                    .arena
+                    .$arena_method(&[self.raw_id(), rhs_id]);
                 self.wrap(id)
             }
         }
@@ -120,7 +136,11 @@ macro_rules! impl_binary_binop {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
                 let rhs_id = self.checked_id(&rhs);
-                let id = self.inner.write().arena.$arena_method(self.raw_id(), rhs_id);
+                let id = self
+                    .inner
+                    .write()
+                    .arena
+                    .$arena_method(self.raw_id(), rhs_id);
                 self.wrap(id)
             }
         }
@@ -128,7 +148,11 @@ macro_rules! impl_binary_binop {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
                 let rhs_id = self.checked_id(rhs);
-                let id = self.inner.write().arena.$arena_method(self.raw_id(), rhs_id);
+                let id = self
+                    .inner
+                    .write()
+                    .arena
+                    .$arena_method(self.raw_id(), rhs_id);
                 self.wrap(id)
             }
         }
@@ -136,7 +160,11 @@ macro_rules! impl_binary_binop {
             type Output = Ex;
             fn $method(self, rhs: Ex) -> Ex {
                 let rhs_id = self.checked_id(&rhs);
-                let id = self.inner.write().arena.$arena_method(self.raw_id(), rhs_id);
+                let id = self
+                    .inner
+                    .write()
+                    .arena
+                    .$arena_method(self.raw_id(), rhs_id);
                 self.wrap(id)
             }
         }
@@ -144,7 +172,11 @@ macro_rules! impl_binary_binop {
             type Output = Ex;
             fn $method(self, rhs: &Ex) -> Ex {
                 let rhs_id = self.checked_id(rhs);
-                let id = self.inner.write().arena.$arena_method(self.raw_id(), rhs_id);
+                let id = self
+                    .inner
+                    .write()
+                    .arena
+                    .$arena_method(self.raw_id(), rhs_id);
                 self.wrap(id)
             }
         }
@@ -277,8 +309,6 @@ macro_rules! impl_binary_binop_i64 {
 
 impl_binary_binop_i64!(Sub, sub, sub);
 impl_binary_binop_i64!(Div, div, div);
-
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sum and Product trait implementations

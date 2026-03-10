@@ -1,10 +1,10 @@
-pub mod matrix;
+pub mod combinatorics;
 pub mod control;
 pub mod dynamics;
-pub mod robotics;
-pub mod quaternion;
-pub mod vector;
-pub mod ntheory;
-pub mod combinatorics;
 pub(crate) mod linalg;
+pub mod matrix;
+pub mod ntheory;
+pub mod quaternion;
+pub mod robotics;
 pub(crate) mod separatevars;
+pub mod vector;

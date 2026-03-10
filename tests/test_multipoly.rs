@@ -4,8 +4,8 @@
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use symplex::multipoly::{
-    monomial_coprime, monomial_div, monomial_divides, monomial_lcm, monomial_mul, s_polynomial,
-    GrLex, GrevLex, Lex, MonomialOrd, MultiPoly,
+    GrLex, GrevLex, Lex, MonomialOrd, MultiPoly, monomial_coprime, monomial_div, monomial_divides,
+    monomial_lcm, monomial_mul, s_polynomial,
 };
 
 // Alias for the default ordering — avoids type annotations on every constructor call.
@@ -525,13 +525,25 @@ fn lex_ordering_basic() {
     use std::cmp::Ordering;
     // In lex: x² > xy > xz > x > y² > yz > y > z² > z > 1
     // x² = [2,0,0] vs xy = [1,1,0]
-    assert_eq!(Lex::cmp_exponents(&[2, 0, 0], &[1, 1, 0]), Ordering::Greater);
+    assert_eq!(
+        Lex::cmp_exponents(&[2, 0, 0], &[1, 1, 0]),
+        Ordering::Greater
+    );
     // xy = [1,1,0] vs y² = [0,2,0]
-    assert_eq!(Lex::cmp_exponents(&[1, 1, 0], &[0, 2, 0]), Ordering::Greater);
+    assert_eq!(
+        Lex::cmp_exponents(&[1, 1, 0], &[0, 2, 0]),
+        Ordering::Greater
+    );
     // x = [1,0,0] vs y² = [0,2,0]
-    assert_eq!(Lex::cmp_exponents(&[1, 0, 0], &[0, 2, 0]), Ordering::Greater);
+    assert_eq!(
+        Lex::cmp_exponents(&[1, 0, 0], &[0, 2, 0]),
+        Ordering::Greater
+    );
     // In lex, degree doesn't matter — first variable is king
-    assert_eq!(Lex::cmp_exponents(&[1, 0, 0], &[0, 5, 5]), Ordering::Greater);
+    assert_eq!(
+        Lex::cmp_exponents(&[1, 0, 0], &[0, 5, 5]),
+        Ordering::Greater
+    );
     // Equal
     assert_eq!(Lex::cmp_exponents(&[1, 2, 3], &[1, 2, 3]), Ordering::Equal);
 }

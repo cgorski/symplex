@@ -104,10 +104,7 @@ fn solve_cos_x_eq_zero_verify() {
     let pi_half = &pi * &half;
     let val = eval(&pi_half.cos());
     if let Some(v) = val {
-        assert!(
-            approx_zero(v, 1e-10),
-            "cos(π/2) should ≈ 0, got {v}"
-        );
+        assert!(approx_zero(v, 1e-10), "cos(π/2) should ≈ 0, got {v}");
     }
 }
 
@@ -285,10 +282,7 @@ fn solve_exp_x_eq_one_verify() {
     let zero = ctx.int(0);
     let substituted = expr.subs(&x, &zero);
     if let Some(v) = eval(&substituted) {
-        assert!(
-            approx_zero(v, 1e-15),
-            "exp(0) - 1 should be 0, got {v}"
-        );
+        assert!(approx_zero(v, 1e-15), "exp(0) - 1 should be 0, got {v}");
     }
 }
 
@@ -310,10 +304,7 @@ fn solve_exp_x_eq_five() {
         !s.contains("EmptySet"),
         "exp(x)=5 should have a solution: {s}"
     );
-    assert!(
-        s.contains("ln"),
-        "exp(x)=5 solution should contain ln: {s}"
-    );
+    assert!(s.contains("ln"), "exp(x)=5 solution should contain ln: {s}");
 }
 
 #[test]

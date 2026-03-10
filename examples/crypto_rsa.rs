@@ -149,7 +149,10 @@ fn main() {
     // ── 6. Key properties ──────────────────────────────────────────
 
     println!("\n--- Key Properties ---");
-    println!("  Key size:         {} bits (toy — real RSA uses 2048+)", n.bits());
+    println!(
+        "  Key size:         {} bits (toy — real RSA uses 2048+)",
+        n.bits()
+    );
     println!("  p is prime:       {}", isprime(p.clone()));
     println!("  q is prime:       {}", isprime(q.clone()));
     println!("  n is composite:   {}", !isprime(n.clone()));

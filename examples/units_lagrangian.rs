@@ -6,8 +6,8 @@
 //! Run with: cargo run --example units_lagrangian
 
 use symplex::prelude::*;
-use symplex::units::*;
 use symplex::units::constants;
+use symplex::units::*;
 
 fn main() {
     println!("═══════════════════════════════════════════════════════════════");
@@ -36,7 +36,7 @@ fn main() {
 
     // ── Build energies with expr! ──
     // Kinetic energy: T = ½ml²θ̇²
-    let ke = Energy::from_ex(expr!(ctx, 1/2 * m * l^2 * theta_dot^2));
+    let ke = Energy::from_ex(expr!(ctx, 1 / 2 * m * l ^ 2 * theta_dot ^ 2));
     println!("  T = {}", ke);
 
     // Potential energy: V = mgl(1 − cos θ)
@@ -107,7 +107,7 @@ fn main() {
     // ── Potential energy approach: PE = ½kx² ──
     // Use expr! for the formula, then derive force via differentiation
     symplex::syms!(ctx; k_var, x_var);
-    let spring_pe = Energy::from_ex(expr!(ctx, 1/2 * k_var * x_var^2));
+    let spring_pe = Energy::from_ex(expr!(ctx, 1 / 2 * k_var * x_var ^ 2));
     println!("\n  PE = ½kx² = {}", spring_pe);
 
     // Force from potential: F = −dPE/dx
@@ -121,7 +121,7 @@ fn main() {
     // ── Energy conservation check ──
     // KE = ½mv² using expr!
     symplex::syms!(ctx; m_raw, v_raw);
-    let spring_ke = Energy::from_ex(expr!(ctx, 1/2 * m_raw * v_raw^2));
+    let spring_ke = Energy::from_ex(expr!(ctx, 1 / 2 * m_raw * v_raw ^ 2));
     println!("\n  KE = ½mv² = {}", spring_ke);
 
     // Total energy: Energy + Energy = Energy
@@ -139,7 +139,8 @@ fn main() {
     println!("  Parameters: m=1 kg, l=0.5 m, g=9.81 m/s², θ=0.1 rad");
 
     // Evaluate the angular momentum ∂L/∂θ̇ at θ̇ = 2 rad/s
-    let ang_mom_num = dl_dthetadot.clone()
+    let ang_mom_num = dl_dthetadot
+        .clone()
         .subs(&m, &ctx.int(1))
         .subs(&l, &ctx.rational(1, 2))
         .subs(&theta_dot, &ctx.int(2))
@@ -147,7 +148,8 @@ fn main() {
     println!("  ∂L/∂θ̇(m=1, l=0.5, θ̇=2) = {}", ang_mom_num);
 
     // Evaluate the torque ∂L/∂θ at θ = 0.1 rad
-    let torque_num = dl_dtheta.clone()
+    let torque_num = dl_dtheta
+        .clone()
         .subs(&m, &ctx.int(1))
         .subs(&g, &ctx.rational(981, 100))
         .subs(&l, &ctx.rational(1, 2))
@@ -164,7 +166,8 @@ fn main() {
     // Evaluate PE at various angles
     println!("\n  PE at various angles (m=1, g=10, l=1):");
     for angle_deg in [0, 15, 30, 45, 60, 90] {
-        let pe_val = pe.clone()
+        let pe_val = pe
+            .clone()
             .subs(&m, &ctx.int(1))
             .subs(&g, &ctx.int(10))
             .subs(&l, &ctx.int(1))
@@ -180,11 +183,15 @@ fn main() {
 
     // Spring-mass numerical check: PE = ½kx²
     // k = 100 N/m, x = 0.2 m → PE = ½·100·0.04 = 2 J
-    let spring_pe_num = spring_pe.clone()
+    let spring_pe_num = spring_pe
+        .clone()
         .subs(&k_var, &ctx.int(100))
         .subs(&x_var, &ctx.rational(1, 5))
         .eval();
-    println!("\n  Spring PE(k=100, x=0.2) = {} (expect 2 J)", spring_pe_num);
+    println!(
+        "\n  Spring PE(k=100, x=0.2) = {} (expect 2 J)",
+        spring_pe_num
+    );
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Section 4: Code Generation

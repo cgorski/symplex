@@ -54,7 +54,10 @@ fn arb_expr(depth: u32) -> impl Strategy<Value = Ex> {
                 inner.clone().prop_map(|a| a.exp()),
                 inner.clone().prop_map(|a| a.abs()),
                 // powi with varied exponent
-                (inner.clone(), prop_oneof![Just(0i64), Just(1), Just(2), Just(3), Just(-1)])
+                (
+                    inner.clone(),
+                    prop_oneof![Just(0i64), Just(1), Just(2), Just(3), Just(-1)]
+                )
                     .prop_map(|(a, n)| a.powi(n)),
             ]
         },

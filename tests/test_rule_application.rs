@@ -183,7 +183,10 @@ fn rule_ln_exp_fires_for_unassumed_symbol() {
     let x = ctx.symbol("x");
     let expr = x.exp().ln();
     let s = format!("{}", expr.simplify());
-    assert_eq!(s, "x", "ln(exp(x)) should simplify to x for unassumed symbols");
+    assert_eq!(
+        s, "x",
+        "ln(exp(x)) should simplify to x for unassumed symbols"
+    );
 }
 
 #[test]
@@ -270,10 +273,7 @@ fn rule_cosh_sinh_identity_fires() {
 fn rule_cosh_sinh_identity_trace() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    assert_trace_contains_rule!(
-        &x.cosh().powi(2) - &x.sinh().powi(2),
-        "cosh_sinh_identity"
-    );
+    assert_trace_contains_rule!(&x.cosh().powi(2) - &x.sinh().powi(2), "cosh_sinh_identity");
 }
 
 #[test]
@@ -436,7 +436,10 @@ fn rule_sin_div_cos_different_args_no_fire() {
     let y = ctx.symbol("y");
     let expr = &x.sin() / &y.cos();
     let s = format!("{}", expr.simplify());
-    assert!(!s.contains("tan("), "sin(x)/cos(y) must not become tan, got: {s}");
+    assert!(
+        !s.contains("tan("),
+        "sin(x)/cos(y) must not become tan, got: {s}"
+    );
 }
 
 #[test]
@@ -561,7 +564,11 @@ fn rule_exp_mul_value_preserved() {
     // Substitute a=1, b=2 and compare
     let one = ctx.int(1);
     let two = ctx.int(2);
-    let before_val = expr.subs(&a, &one).subs(&b, &two).eval_f64().expect("evalf before");
+    let before_val = expr
+        .subs(&a, &one)
+        .subs(&b, &two)
+        .eval_f64()
+        .expect("evalf before");
     let after_val = expr
         .simplify()
         .subs(&a, &one)

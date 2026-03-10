@@ -29,12 +29,12 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::walk;
 use crate::poly::Poly;
+use crate::poly::polybridge;
 use crate::simplify::combsimp;
 use crate::transforms::eval;
-use crate::poly::polybridge;
 use crate::transforms::subs;
-use crate::base::walk;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Polynomial shift: p(k) → p(k + n)
@@ -51,10 +51,7 @@ pub(crate) fn poly_shift(p: &Poly, n: i64) -> Poly {
         None => return Poly::zero(),
     };
 
-    let shift_poly = Poly::from_coeffs(vec![
-        Ratio::from_integer(BigInt::from(n)),
-        Ratio::one(),
-    ]);
+    let shift_poly = Poly::from_coeffs(vec![Ratio::from_integer(BigInt::from(n)), Ratio::one()]);
 
     let coeffs = p.coeffs();
     let mut result = Poly::constant(coeffs[deg].clone());
@@ -393,11 +390,7 @@ fn compute_degree_bound(
 /// of expressions that are polynomial in `k`.
 ///
 /// Returns `None` if `f` is not recognised as hypergeometric.
-fn hypergeometric_ratio(
-    arena: &mut Arena,
-    f: ExprId,
-    k: ExprId,
-) -> Option<(ExprId, ExprId)> {
+fn hypergeometric_ratio(arena: &mut Arena, f: ExprId, k: ExprId) -> Option<(ExprId, ExprId)> {
     // If f doesn't depend on k it is a constant term; ratio = 1.
     if !walk::free_symbols(arena, f).contains(&k) {
         return Some((arena.one, arena.one));
@@ -420,7 +413,8 @@ fn hypergeometric_ratio(
         // factorial(expr(k)) where expr is linear in k
         ExprNode::Factorial(arg) => {
             if let Some(arg_poly) = polybridge::expr_to_poly(arena, arg, k)
-                && arg_poly.degree() == Some(1) && arg_poly.coeff(1).is_one()
+                && arg_poly.degree() == Some(1)
+                && arg_poly.coeff(1).is_one()
             {
                 // factorial(k + c): ratio = k + c + 1
                 let shifted = poly_shift(&arg_poly, 1);
@@ -432,9 +426,7 @@ fn hypergeometric_ratio(
         }
 
         // binomial(n, k) → ratio = (n − k)/(k + 1)
-        ExprNode::Binomial(n, kk)
-            if kk == k && !walk::free_symbols(arena, n).contains(&k) =>
-        {
+        ExprNode::Binomial(n, kk) if kk == k && !walk::free_symbols(arena, n).contains(&k) => {
             let n_minus_k = arena.sub(n, k);
             let k1 = arena.add(&[k, arena.one]);
             Some((n_minus_k, k1))
@@ -468,9 +460,7 @@ fn hypergeometric_ratio(
         }
 
         // pow(k, n) where n is k-free integer
-        ExprNode::Pow(base, exp)
-            if base == k && !walk::free_symbols(arena, exp).contains(&k) =>
-        {
+        ExprNode::Pow(base, exp) if base == k && !walk::free_symbols(arena, exp).contains(&k) => {
             // Check if n is a negative rational
             let k1 = arena.add(&[k, arena.one]);
             if let Some(r) = arena.as_num(exp) {
@@ -558,11 +548,7 @@ fn hypergeometric_ratio(
 
 /// Fallback: compute the ratio by direct substitution k → k+1, division,
 /// and combinatorial simplification.
-fn try_ratio_by_substitution(
-    arena: &mut Arena,
-    f: ExprId,
-    k: ExprId,
-) -> Option<(ExprId, ExprId)> {
+fn try_ratio_by_substitution(arena: &mut Arena, f: ExprId, k: ExprId) -> Option<(ExprId, ExprId)> {
     let k_plus_1 = arena.add(&[k, arena.one]);
     let f_k1 = subs::subs(arena, f, k, k_plus_1);
     let ratio = arena.div(f_k1, f);
@@ -677,7 +663,6 @@ mod tests {
     use super::*;
     use num_bigint::BigInt;
     use num_rational::Ratio;
-
 
     fn r(n: i64) -> Ratio<BigInt> {
         Ratio::from_integer(BigInt::from(n))
@@ -803,8 +788,7 @@ mod tests {
             let k_val = r(kv);
             let k1_val = r(kv + 1);
             let lhs = &p.eval(&k_val) / &q.eval(&k_val);
-            let rhs = &(&a.eval(&k_val) * &c.eval(&k1_val))
-                / &(&b.eval(&k_val) * &c.eval(&k_val));
+            let rhs = &(&a.eval(&k_val) * &c.eval(&k1_val)) / &(&b.eval(&k_val) * &c.eval(&k_val));
             assert_eq!(lhs, rhs, "mismatch at k={kv}");
         }
     }
@@ -822,8 +806,7 @@ mod tests {
             let k_val = r(kv);
             let k1_val = r(kv + 1);
             let lhs = &p.eval(&k_val) / &q.eval(&k_val);
-            let rhs = &(&a.eval(&k_val) * &c.eval(&k1_val))
-                / &(&b.eval(&k_val) * &c.eval(&k_val));
+            let rhs = &(&a.eval(&k_val) * &c.eval(&k1_val)) / &(&b.eval(&k_val) * &c.eval(&k_val));
             assert_eq!(lhs, rhs, "mismatch at k={kv}");
         }
     }
@@ -972,7 +955,10 @@ mod tests {
         let lower = arena.one;
 
         let result = gosper_sum(&mut arena, body, k, lower, n);
-        assert!(result.is_none(), "harmonic series should NOT be Gosper-summable");
+        assert!(
+            result.is_none(),
+            "harmonic series should NOT be Gosper-summable"
+        );
     }
 
     #[test]

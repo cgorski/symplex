@@ -287,7 +287,10 @@ fn together_simple_fractions() {
     // Verify value at x=2: 1/2 + 1/3 = 5/6
     let val = combined.subs_i64(&x, 2).eval_f64().unwrap();
     let expected = 1.0 / 2.0 + 1.0 / 3.0;
-    assert!(approx(val, expected, 1e-10), "expected {expected}, got {val}");
+    assert!(
+        approx(val, expected, 1e-10),
+        "expected {expected}, got {val}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -698,16 +701,12 @@ fn stress_factor_then_solve() {
     let roots = expr.solve(&x);
     if let Ok(roots) = roots {
         // x=1 and x=-1 should be among them
-        let has_one = roots.iter().any(|r| {
-            r.eval_f64()
-                .map(|v| approx(v, 1.0, 1e-8))
-                .unwrap_or(false)
-        });
-        let has_neg_one = roots.iter().any(|r| {
-            r.eval_f64()
-                .map(|v| approx(v, -1.0, 1e-8))
-                .unwrap_or(false)
-        });
+        let has_one = roots
+            .iter()
+            .any(|r| r.eval_f64().map(|v| approx(v, 1.0, 1e-8)).unwrap_or(false));
+        let has_neg_one = roots
+            .iter()
+            .any(|r| r.eval_f64().map(|v| approx(v, -1.0, 1e-8)).unwrap_or(false));
         assert!(has_one, "x=1 should be a root of x⁶-1");
         assert!(has_neg_one, "x=-1 should be a root of x⁶-1");
     }
@@ -753,24 +752,15 @@ fn polynomial_arithmetic_identities() {
 
         // p + q
         let sum_v = (&p + &q).subs_i64(&x, pt).eval_f64().unwrap();
-        assert!(
-            approx(sum_v, pv + qv, 1e-10),
-            "p+q mismatch at x={pt}"
-        );
+        assert!(approx(sum_v, pv + qv, 1e-10), "p+q mismatch at x={pt}");
 
         // p - q
         let diff_v = (&p - &q).subs_i64(&x, pt).eval_f64().unwrap();
-        assert!(
-            approx(diff_v, pv - qv, 1e-10),
-            "p-q mismatch at x={pt}"
-        );
+        assert!(approx(diff_v, pv - qv, 1e-10), "p-q mismatch at x={pt}");
 
         // p * q
         let prod_v = (&p * &q).subs_i64(&x, pt).eval_f64().unwrap();
-        assert!(
-            approx(prod_v, pv * qv, 1e-10),
-            "p*q mismatch at x={pt}"
-        );
+        assert!(approx(prod_v, pv * qv, 1e-10), "p*q mismatch at x={pt}");
     }
 }
 

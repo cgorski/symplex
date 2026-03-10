@@ -28,8 +28,6 @@ pub struct Quaternion {
     pub z: Ex,
 }
 
-
-
 impl Quaternion {
     /// Create a quaternion from four symbolic expressions.
     pub fn new(w: Ex, x: Ex, y: Ex, z: Ex) -> Self {
@@ -189,19 +187,15 @@ impl Quaternion {
             vec![r00, r01, r02],
             vec![r10, r11, r12],
             vec![r20, r21, r22],
-        ]).unwrap()
+        ])
+        .unwrap()
     }
 
     /// Create a quaternion from an axis-angle representation.
     ///
     /// q = cos(θ/2) + sin(θ/2)·(axisₓi + axisᵧj + axis_zk)
     /// Assumes axis is a unit vector.
-    pub fn from_axis_angle(
-        axis_x: &Ex,
-        axis_y: &Ex,
-        axis_z: &Ex,
-        angle: &Ex,
-    ) -> Quaternion {
+    pub fn from_axis_angle(axis_x: &Ex, axis_y: &Ex, axis_z: &Ex, angle: &Ex) -> Quaternion {
         let two = angle.context().int(2);
         let half_angle = angle / &two;
         let c = half_angle.cos();

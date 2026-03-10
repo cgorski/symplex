@@ -1,13 +1,13 @@
-pub mod traits;
-pub mod generic;
-pub mod ratfn;
 pub(crate) mod dense;
-pub mod multipoly;
+pub mod generic;
 pub mod groebner;
+pub mod multipoly;
 pub(crate) mod polybridge;
 pub mod polysys;
+pub mod ratfn;
 pub(crate) mod roots;
 pub(crate) mod sturm;
+pub mod traits;
 
 // Re-export the type alias and ℚ-specific free function.
 // Poly is now `type Poly = GenPoly<Ratio<BigInt>>` defined in dense.rs.

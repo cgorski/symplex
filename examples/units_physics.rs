@@ -79,7 +79,8 @@ fn main() {
     println!("  F = m·a = {}", f);
 
     // Substitute numerical values: m = 10 kg, a = 9.81 m/s²
-    let f_num = f.clone()
+    let f_num = f
+        .clone()
         .subs(&m, &ctx.rational(10, 1))
         .subs(&a, &ctx.rational(981, 100))
         .eval();
@@ -116,7 +117,8 @@ fn main() {
     println!("  P expanded = {}", p_expanded);
 
     // Numerical: I = 3 A, R = 47 Ω → V = 141 V, P = 423 W
-    let v_num = volt.clone()
+    let v_num = volt
+        .clone()
         .subs(&i, &ctx.rational(3, 1))
         .subs(&r, &ctx.rational(47, 1))
         .eval();
@@ -261,7 +263,7 @@ fn main() {
     let t_var = Time::symbol(&ctx, "t");
 
     // Position x(t) = ½at²  (built with expr!, typed with from_ex)
-    let position = Length::from_ex(expr!(ctx, 1/2 * a * t^2));
+    let position = Length::from_ex(expr!(ctx, 1 / 2 * a * t ^ 2));
     println!("  x(t) = {}", position);
 
     // d(Length)/d(Time) → Velocity  (compiler-verified!)
@@ -283,7 +285,7 @@ fn main() {
     // ── More DiffWrt examples ──
 
     // Energy / Time → Power
-    let energy = Energy::from_ex(expr!(ctx, 1/2 * a * t^2));
+    let energy = Energy::from_ex(expr!(ctx, 1 / 2 * a * t ^ 2));
     let power: Power = energy.diff_wrt(&t_var);
     println!("  dE/dt = {} (Power)", power);
 
@@ -305,14 +307,14 @@ fn main() {
     // Energy / Length → Force (F = -dU/dx)
     symplex::syms!(ctx; k, x);
     let x_var = Length::symbol(&ctx, "x");
-    let spring_pe = Energy::from_ex(expr!(ctx, 1/2 * k * x^2));
+    let spring_pe = Energy::from_ex(expr!(ctx, 1 / 2 * k * x ^ 2));
     let spring_force: Force = spring_pe.diff_wrt(&x_var);
     println!("  dU/dx = {} (Force from spring PE)", spring_force);
 
     // Power / Current → Voltage (dP/dI)
     symplex::syms!(ctx; i_p, r_p);
     let i_var = Current::symbol(&ctx, "i_p");
-    let power_expr = Power::from_ex(expr!(ctx, i_p^2 * r_p));
+    let power_expr = Power::from_ex(expr!(ctx, i_p ^ 2 * r_p));
     let dp_di: Voltage = power_expr.diff_wrt(&i_var);
     println!("  dP/dI = {} (Voltage)", dp_di);
 
@@ -368,7 +370,10 @@ fn main() {
         let energy = symplex::dim!(ctx, Energy: m * c * c);
         println!("  E = mc² = {}", energy);
         println!("  (Displays symbolically — 'c' not '299792458')");
-        println!("  E(m=1kg) = {:.3e} J", energy.subs(&m, &ctx.int(1)).eval_f64().unwrap());
+        println!(
+            "  E(m=1kg) = {:.3e} J",
+            energy.subs(&m, &ctx.int(1)).eval_f64().unwrap()
+        );
     }
 
     println!("\n✓ All dimensional checks passed!");

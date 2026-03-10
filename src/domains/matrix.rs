@@ -4,9 +4,9 @@
 //! operations: construction, display, transpose, addition, scalar
 //! multiplication, matrix multiplication, determinant, and trace.
 
-use crate::base::errors::SymplexError;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
+use crate::base::errors::SymplexError;
 use std::fmt;
 use tracing::{debug, trace, warn};
 
@@ -53,10 +53,7 @@ impl Matrix {
             if row.len() != ncols {
                 return Err(SymplexError::ComputationFailed {
                     operation: "Matrix::new",
-                    reason: format!(
-                        "row {i} has length {} but expected {ncols}",
-                        row.len()
-                    ),
+                    reason: format!("row {i} has length {} but expected {ncols}", row.len()),
                 });
             }
         }
@@ -987,7 +984,9 @@ impl Matrix {
             tracing::warn!(
                 "eigenvals: found {} eigenvalue(s) for a {}×{} matrix — \
                  characteristic polynomial may have factors beyond solver capability",
-                roots.len(), n, n
+                roots.len(),
+                n,
+                n
             );
         }
         Ok(roots)
@@ -1107,7 +1106,10 @@ impl Matrix {
     /// assert_eq!(d.nrows(), 2);
     /// ```
     pub fn diagonalize(&self, var: &Ex) -> Result<(Matrix, Matrix), SymplexError> {
-        debug!("diagonalize: attempting for {}×{} matrix", self.nrows, self.ncols);
+        debug!(
+            "diagonalize: attempting for {}×{} matrix",
+            self.nrows, self.ncols
+        );
         let eigvs = self.eigenvects(var)?;
 
         // Verify diagonalizability: need n linearly independent eigenvectors.
@@ -1127,8 +1129,7 @@ impl Matrix {
         if total_vecs != n {
             return Err(SymplexError::ComputationFailed {
                 operation: "diagonalize",
-                reason: "matrix is not diagonalizable: insufficient eigenvectors found"
-                    .into(),
+                reason: "matrix is not diagonalizable: insufficient eigenvectors found".into(),
             });
         }
 
@@ -1275,17 +1276,13 @@ impl Matrix {
                     };
 
                     // Pick a vector in null_big but not in span(null_small ∪ eig_basis)
-                    let exclude: Vec<&Matrix> = null_small
-                        .iter()
-                        .chain(eig_basis.iter())
-                        .collect();
+                    let exclude: Vec<&Matrix> = null_small.iter().chain(eig_basis.iter()).collect();
                     let vec = match pick_independent_vec(&null_big, &exclude, n)? {
                         Some(v) => v,
                         None => {
                             return Err(SymplexError::ComputationFailed {
                                 operation: "jordan_form",
-                                reason: "could not find independent generalized eigenvector"
-                                    .into(),
+                                reason: "could not find independent generalized eigenvector".into(),
                             });
                         }
                     };
@@ -1477,7 +1474,10 @@ impl Matrix {
                 ),
             });
         }
-        debug!("matrix_exp: computing for {}×{} matrix", self.nrows, self.ncols);
+        debug!(
+            "matrix_exp: computing for {}×{} matrix",
+            self.nrows, self.ncols
+        );
 
         let n = self.nrows;
 
@@ -1595,9 +1595,10 @@ impl Matrix {
             let diag_simplified = diag.simplify();
             // For numeric matrices, check positive-definiteness
             if let Ok(v) = diag_simplified.eval_f64()
-                && v <= 0.0 {
-                    return Ok(None);
-                }
+                && v <= 0.0
+            {
+                return Ok(None);
+            }
             l_rows[j][j] = diag_simplified.sqrt();
 
             // L[i][j] = (A[i][j] - sum(L[i][k]*L[j][k] for k < j)) / L[j][j]
@@ -2016,10 +2017,7 @@ impl Matrix {
             if m.nrows != nrows {
                 return Err(SymplexError::ComputationFailed {
                     operation: "hstack",
-                    reason: format!(
-                        "matrix {idx} has {} rows, expected {nrows}",
-                        m.nrows
-                    ),
+                    reason: format!("matrix {idx} has {} rows, expected {nrows}", m.nrows),
                 });
             }
         }
@@ -2054,10 +2052,7 @@ impl Matrix {
             if m.ncols != ncols {
                 return Err(SymplexError::ComputationFailed {
                     operation: "vstack",
-                    reason: format!(
-                        "matrix {idx} has {} cols, expected {ncols}",
-                        m.ncols
-                    ),
+                    reason: format!("matrix {idx} has {} cols, expected {ncols}", m.ncols),
                 });
             }
         }
@@ -2145,7 +2140,9 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
             let root_check: Result<i64, _> = root_val.numer().clone().try_into();
             let denom_check: Result<i64, _> = root_val.denom().clone().try_into();
             let root_ex = if root_check.is_ok() && denom_check.is_ok() {
-                char_poly.context().rational(root_check.unwrap(), denom_check.unwrap())
+                char_poly
+                    .context()
+                    .rational(root_check.unwrap(), denom_check.unwrap())
             } else {
                 // Root doesn't fit i64 — fall back to constructing from BigInt.
                 // Use the flat solver as a workaround.
@@ -2165,19 +2162,14 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
             };
             trace!(
                 mult,
-                "eigvals_via_poly_factor: linear factor, root = {}, mult = {}",
-                root_ex,
-                mult
+                "eigvals_via_poly_factor: linear factor, root = {}, mult = {}", root_ex, mult
             );
             eigen_pairs.push((root_ex, *mult as usize));
         } else {
             // Higher-degree factor: solve it for roots.
             let mut write_inner = char_poly.inner.write();
-            let factor_expr = crate::poly::polybridge::poly_to_expr(
-                &mut write_inner.arena,
-                factor,
-                var.raw_id(),
-            );
+            let factor_expr =
+                crate::poly::polybridge::poly_to_expr(&mut write_inner.arena, factor, var.raw_id());
             drop(write_inner);
             let factor_ex = char_poly.wrap(factor_expr);
             let roots = factor_ex.solve_or_empty(var);
@@ -2244,8 +2236,7 @@ fn eigvals_via_derivative(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
         let mult = if mult == 0 { 1 } else { mult };
         trace!(
             mult,
-            "eigvals_via_derivative: root has algebraic multiplicity {}",
-            mult
+            "eigvals_via_derivative: root has algebraic multiplicity {}", mult
         );
         eigen_pairs.push((root.clone(), mult));
     }
@@ -2272,7 +2263,11 @@ fn eigvals_via_derivative(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Compute nullspace of `(a_minus_lambda)^power`.
-fn jordan_null_power(a_minus_lambda: &Matrix, power: usize, _n: usize) -> Result<Vec<Matrix>, SymplexError> {
+fn jordan_null_power(
+    a_minus_lambda: &Matrix,
+    power: usize,
+    _n: usize,
+) -> Result<Vec<Matrix>, SymplexError> {
     if power == 0 {
         return Ok(Vec::new());
     }
@@ -2284,7 +2279,11 @@ fn jordan_null_power(a_minus_lambda: &Matrix, power: usize, _n: usize) -> Result
 }
 
 /// Compute `(a_minus_lambda)^power * vec` where vec is a column vector.
-fn matrix_pow_vec(a_minus_lambda: &Matrix, vec: &Matrix, power: usize) -> Result<Matrix, SymplexError> {
+fn matrix_pow_vec(
+    a_minus_lambda: &Matrix,
+    vec: &Matrix,
+    power: usize,
+) -> Result<Matrix, SymplexError> {
     let mut result = vec.clone();
     for _ in 0..power {
         result = a_minus_lambda.matmul(&result)?;
@@ -2431,25 +2430,29 @@ impl fmt::Debug for Matrix {
 impl std::ops::Add for &Matrix {
     type Output = Matrix;
     fn add(self, rhs: &Matrix) -> Matrix {
-        self.add_elementwise(rhs).expect("operator +: dimensions validated by type")
+        self.add_elementwise(rhs)
+            .expect("operator +: dimensions validated by type")
     }
 }
 impl std::ops::Add for Matrix {
     type Output = Matrix;
     fn add(self, rhs: Matrix) -> Matrix {
-        self.add_elementwise(&rhs).expect("operator +: dimensions validated by type")
+        self.add_elementwise(&rhs)
+            .expect("operator +: dimensions validated by type")
     }
 }
 impl std::ops::Add<&Matrix> for Matrix {
     type Output = Matrix;
     fn add(self, rhs: &Matrix) -> Matrix {
-        self.add_elementwise(rhs).expect("operator +: dimensions validated by type")
+        self.add_elementwise(rhs)
+            .expect("operator +: dimensions validated by type")
     }
 }
 impl std::ops::Add<Matrix> for &Matrix {
     type Output = Matrix;
     fn add(self, rhs: Matrix) -> Matrix {
-        self.add_elementwise(&rhs).expect("operator +: dimensions validated by type")
+        self.add_elementwise(&rhs)
+            .expect("operator +: dimensions validated by type")
     }
 }
 
@@ -2457,25 +2460,29 @@ impl std::ops::Add<Matrix> for &Matrix {
 impl std::ops::Sub for &Matrix {
     type Output = Matrix;
     fn sub(self, rhs: &Matrix) -> Matrix {
-        self.sub_elementwise(rhs).expect("operator -: dimensions validated by type")
+        self.sub_elementwise(rhs)
+            .expect("operator -: dimensions validated by type")
     }
 }
 impl std::ops::Sub for Matrix {
     type Output = Matrix;
     fn sub(self, rhs: Matrix) -> Matrix {
-        self.sub_elementwise(&rhs).expect("operator -: dimensions validated by type")
+        self.sub_elementwise(&rhs)
+            .expect("operator -: dimensions validated by type")
     }
 }
 impl std::ops::Sub<&Matrix> for Matrix {
     type Output = Matrix;
     fn sub(self, rhs: &Matrix) -> Matrix {
-        self.sub_elementwise(rhs).expect("operator -: dimensions validated by type")
+        self.sub_elementwise(rhs)
+            .expect("operator -: dimensions validated by type")
     }
 }
 impl std::ops::Sub<Matrix> for &Matrix {
     type Output = Matrix;
     fn sub(self, rhs: Matrix) -> Matrix {
-        self.sub_elementwise(&rhs).expect("operator -: dimensions validated by type")
+        self.sub_elementwise(&rhs)
+            .expect("operator -: dimensions validated by type")
     }
 }
 
@@ -2483,25 +2490,29 @@ impl std::ops::Sub<Matrix> for &Matrix {
 impl std::ops::Mul for &Matrix {
     type Output = Matrix;
     fn mul(self, rhs: &Matrix) -> Matrix {
-        self.matmul(rhs).expect("operator *: dimensions validated by type")
+        self.matmul(rhs)
+            .expect("operator *: dimensions validated by type")
     }
 }
 impl std::ops::Mul for Matrix {
     type Output = Matrix;
     fn mul(self, rhs: Matrix) -> Matrix {
-        self.matmul(&rhs).expect("operator *: dimensions validated by type")
+        self.matmul(&rhs)
+            .expect("operator *: dimensions validated by type")
     }
 }
 impl std::ops::Mul<&Matrix> for Matrix {
     type Output = Matrix;
     fn mul(self, rhs: &Matrix) -> Matrix {
-        self.matmul(rhs).expect("operator *: dimensions validated by type")
+        self.matmul(rhs)
+            .expect("operator *: dimensions validated by type")
     }
 }
 impl std::ops::Mul<Matrix> for &Matrix {
     type Output = Matrix;
     fn mul(self, rhs: Matrix) -> Matrix {
-        self.matmul(&rhs).expect("operator *: dimensions validated by type")
+        self.matmul(&rhs)
+            .expect("operator *: dimensions validated by type")
     }
 }
 
@@ -2639,7 +2650,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2)],
             vec![ctx.int(3), ctx.int(4)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let r = m.row(0);
         assert_eq!(r.len(), 2);
         assert_eq!(format!("{}", r[0]), "1");
@@ -2682,7 +2694,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2), ctx.int(3)],
             vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let t = m.transpose();
         assert_eq!(t.shape(), (3, 2));
         assert_eq!(format!("{}", t.get(2, 0)), "3");
@@ -2698,11 +2711,13 @@ mod tests {
         let m1 = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2)],
             vec![ctx.int(3), ctx.int(4)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let m2 = Matrix::new(vec![
             vec![ctx.int(5), ctx.int(6)],
             vec![ctx.int(7), ctx.int(8)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let sum = m1.add(&m2).unwrap();
         assert_eq!(format!("{}", sum.get(0, 0)), "6");
         assert_eq!(format!("{}", sum.get(1, 1)), "12");
@@ -2783,11 +2798,13 @@ mod tests {
         let a = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2)],
             vec![ctx.int(3), ctx.int(4)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let b = Matrix::new(vec![
             vec![ctx.int(5), ctx.int(6)],
             vec![ctx.int(7), ctx.int(8)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let c = a.matmul(&b).unwrap();
         // [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]] = [[19, 22], [43, 50]]
         assert_eq!(format!("{}", c.get(0, 0)), "19");
@@ -2822,7 +2839,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2)],
             vec![ctx.int(3), ctx.int(4)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let tr = m.trace().unwrap();
         assert_eq!(format!("{tr}"), "5");
     }
@@ -2864,7 +2882,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(3), ctx.int(8)],
             vec![ctx.int(4), ctx.int(6)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let det = m.det().unwrap();
         // 3*6 - 8*4 = 18 - 32 = -14
         assert_eq!(format!("{det}"), "-14");
@@ -2878,7 +2897,8 @@ mod tests {
             vec![ctx.int(1), ctx.int(2), ctx.int(3)],
             vec![ctx.int(4), ctx.int(5), ctx.int(6)],
             vec![ctx.int(7), ctx.int(8), ctx.int(9)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let det = m.det().unwrap();
         // This matrix is singular: det = 0
         assert_eq!(format!("{det}"), "0");
@@ -2892,7 +2912,8 @@ mod tests {
             vec![ctx.int(1), ctx.int(0), ctx.int(2)],
             vec![ctx.int(0), ctx.int(1), ctx.int(0)],
             vec![ctx.int(3), ctx.int(0), ctx.int(1)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let det = m.det().unwrap();
         // det = 1*(1*1 - 0*0) - 0 + 2*(0*0 - 1*3) = 1 + 2*(-3) = -5
         assert_eq!(format!("{det}"), "-5");
@@ -2907,7 +2928,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2)],
             vec![ctx.int(3), ctx.int(4)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let doubled = m.map(|e| {
             let two = ctx.int(2);
             &two * e
@@ -2992,8 +3014,11 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(2), ctx.int(1)],
             vec![ctx.int(0), ctx.int(3)],
-        ]).unwrap();
-        let evs = m.eigenvects(&var).expect("eigenvects should succeed for square matrix");
+        ])
+        .unwrap();
+        let evs = m
+            .eigenvects(&var)
+            .expect("eigenvects should succeed for square matrix");
         assert_eq!(evs.len(), 2, "should have 2 distinct eigenvalues");
         for (eigenval, mult, vecs) in &evs {
             assert_eq!(*mult, 1, "each mult should be 1");
@@ -3019,7 +3044,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2), ctx.int(3)],
             vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let result = m.eigenvects(&var);
         assert!(result.is_err(), "non-square matrix should return Err");
         let err_msg = format!("{}", result.unwrap_err());
@@ -3054,7 +3080,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(2), ctx.int(1)],
             vec![ctx.int(0), ctx.int(3)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let (p, d) = m
             .diagonalize(&var)
             .expect("upper triangular should be diagonalizable");
@@ -3065,8 +3092,7 @@ mod tests {
             let reconstructed = p.matmul(&d).unwrap().matmul(&p_inv).unwrap();
             for i in 0..2 {
                 for j in 0..2 {
-                    let diff =
-                        (reconstructed.get(i, j) - m.get(i, j)).expand().eval();
+                    let diff = (reconstructed.get(i, j) - m.get(i, j)).expand().eval();
                     assert!(
                         diff.simplify().is_zero_structural(),
                         "P·D·P⁻¹ ≠ M at ({i},{j})"
@@ -3085,7 +3111,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(1)],
             vec![ctx.int(0), ctx.int(1)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let result = m.diagonalize(&var);
         assert!(
             result.is_err(),
@@ -3144,8 +3171,11 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(1)],
             vec![ctx.int(0), ctx.int(1)],
-        ]).unwrap();
-        let (_p, j) = m.jordan_form(&var).expect("should succeed for defective matrix");
+        ])
+        .unwrap();
+        let (_p, j) = m
+            .jordan_form(&var)
+            .expect("should succeed for defective matrix");
         assert_eq!(j.nrows(), 2);
         // J should have 1 on diagonal and 1 on superdiagonal
         let j_01 = j.get(0, 1).eval();
@@ -3164,8 +3194,11 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(2), ctx.int(1)],
             vec![ctx.int(0), ctx.int(3)],
-        ]).unwrap();
-        let (p, j) = m.jordan_form(&var).expect("distinct eigenvalues should succeed");
+        ])
+        .unwrap();
+        let (p, j) = m
+            .jordan_form(&var)
+            .expect("distinct eigenvalues should succeed");
         assert_eq!(j.nrows(), 2);
         // Since eigenvalues are distinct, Jordan form = diagonal form.
         // Verify P * J * P^{-1} = M
@@ -3231,7 +3264,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2), ctx.int(3)],
             vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-        ]).unwrap();
+        ])
+        .unwrap();
         assert!(m.matrix_exp(&var).is_err());
     }
 
@@ -3243,7 +3277,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2), ctx.int(3)],
             vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-        ]).unwrap();
+        ])
+        .unwrap();
         assert!(m.jordan_form(&var).is_err());
     }
 
@@ -3255,11 +3290,9 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2), ctx.int(3)],
             vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-        ]).unwrap();
-        assert!(
-            m.diagonalize(&var).is_err(),
-            "non-square should return Err"
-        );
+        ])
+        .unwrap();
+        assert!(m.diagonalize(&var).is_err(), "non-square should return Err");
         assert!(
             m.is_diagonalizable(&var).is_err(),
             "non-square should return Err"
@@ -3275,7 +3308,8 @@ mod tests {
         let m = Matrix::new(vec![
             vec![ctx.int(1), ctx.int(2)],
             vec![ctx.int(3), ctx.int(4)],
-        ]).unwrap();
+        ])
+        .unwrap();
         let s = format!("{m}");
         assert!(s.contains("1") && s.contains("4"), "display: {s}");
     }
@@ -3377,10 +3411,7 @@ mod tests {
     fn new_jagged_returns_error() {
         let ctx = tctx();
         let ctx = ctx;
-        let result = Matrix::new(vec![
-            vec![ctx.int(1), ctx.int(2)],
-            vec![ctx.int(3)],
-        ]);
+        let result = Matrix::new(vec![vec![ctx.int(1), ctx.int(2)], vec![ctx.int(3)]]);
         assert!(result.is_err(), "jagged rows should return Err");
         let err_msg = format!("{}", result.unwrap_err());
         assert!(

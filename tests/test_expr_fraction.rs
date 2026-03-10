@@ -138,10 +138,7 @@ fn expr_half_plus_third_equals_five_sixths() {
     let ctx = Context::new();
     let sum = symplex::expr!(ctx, 1 / 2 + 1 / 3);
     let s = format!("{sum}");
-    assert_eq!(
-        s, "5/6",
-        "expr!(ctx, 1/2 + 1/3) should be 5/6, got {s}"
-    );
+    assert_eq!(s, "5/6", "expr!(ctx, 1/2 + 1/3) should be 5/6, got {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -177,11 +174,7 @@ fn expr_fraction_in_addition() {
     // Substituting x = 1/2 should give 1.
     let half = ctx.rational(1, 2);
     let result = expr.subs(&x, &half);
-    assert_eq!(
-        format!("{result}"),
-        "1",
-        "x + 1/2 with x=1/2 should be 1"
-    );
+    assert_eq!(format!("{result}"), "1", "x + 1/2 with x=1/2 should be 1");
 }
 
 #[test]
@@ -192,11 +185,7 @@ fn expr_fraction_in_subtraction() {
     // Substituting x = 1/2 should give 0.
     let half = ctx.rational(1, 2);
     let result = expr.subs(&x, &half);
-    assert_eq!(
-        format!("{result}"),
-        "0",
-        "x - 1/2 with x=1/2 should be 0"
-    );
+    assert_eq!(format!("{result}"), "0", "x - 1/2 with x=1/2 should be 0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -208,7 +197,10 @@ fn expr_auto_reduces_fraction() {
     let ctx = Context::new();
     let val = symplex::expr!(ctx, 2 / 4);
     let s = format!("{val}");
-    assert_eq!(s, "1/2", "expr!(ctx, 2/4) should auto-reduce to 1/2, got {s}");
+    assert_eq!(
+        s, "1/2",
+        "expr!(ctx, 2/4) should auto-reduce to 1/2, got {s}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

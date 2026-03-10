@@ -86,11 +86,7 @@ pub(crate) fn refine_full(
 /// Phase A: rewrites that only return existing ExprIds (no new nodes).
 ///
 /// Uses `walk_and_rebuild` which takes `&Arena` in the closure.
-fn refine_immutable(
-    arena: &mut Arena,
-    assumptions: &mut AssumptionCache,
-    root: ExprId,
-) -> ExprId {
+fn refine_immutable(arena: &mut Arena, assumptions: &mut AssumptionCache, root: ExprId) -> ExprId {
     // ── Phase 1: pre-compute assumptions for every subexpression ────
     let post_order = walk::post_order_ids(arena, root);
     let mut prop_cache: FxHashMap<ExprId, CachedProps> = FxHashMap::default();
@@ -171,9 +167,7 @@ fn refine_node_immut(
 
         // ── sqrt(x²) patterns ──────────────────────────────────────
         // Pow(Pow(x, 2), 1/2) where x > 0  →  x
-        ExprNode::Pow(base, exp) => {
-            refine_pow_immut(arena, base, exp, prop_cache)
-        }
+        ExprNode::Pow(base, exp) => refine_pow_immut(arena, base, exp, prop_cache),
 
         _ => None,
     }
@@ -238,11 +232,7 @@ fn refine_pow_immut(
 /// Phase B: rewrites that need `&mut Arena` to create new nodes.
 ///
 /// Runs a post-order traversal and applies mutable rewrites directly.
-fn refine_mutable(
-    arena: &mut Arena,
-    assumptions: &mut AssumptionCache,
-    root: ExprId,
-) -> ExprId {
+fn refine_mutable(arena: &mut Arena, assumptions: &mut AssumptionCache, root: ExprId) -> ExprId {
     let post_order = walk::post_order_ids(arena, root);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
 
@@ -290,24 +280,17 @@ fn refine_mutable(
 
                 if let Some(exp_num) = arena.as_num(exp) {
                     if *exp_num == half {
-                        if let ExprNode::Pow(inner_base, inner_exp) =
-                            arena.node(base).clone()
-                        {
+                        if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone() {
                             if let Some(ie_num) = arena.as_num(inner_exp) {
                                 if *ie_num == two {
-                                    let is_real = assumptions
-                                        .query(arena, inner_base, Props::REAL);
-                                    let is_positive = assumptions
-                                        .query(arena, inner_base, Props::POSITIVE);
+                                    let is_real = assumptions.query(arena, inner_base, Props::REAL);
+                                    let is_positive =
+                                        assumptions.query(arena, inner_base, Props::POSITIVE);
 
                                     // Positive was already handled in immutable pass.
                                     // Here we handle the real-but-not-positive case.
-                                    if is_real == Some(true)
-                                        && is_positive != Some(true)
-                                    {
-                                        tracing::debug!(
-                                            "refine: sqrt(x²) -> abs(x) (real)"
-                                        );
+                                    if is_real == Some(true) && is_positive != Some(true) {
+                                        tracing::debug!("refine: sqrt(x²) -> abs(x) (real)");
                                         return arena.abs(inner_base);
                                     }
                                 }
@@ -351,7 +334,11 @@ mod tests {
     }
 
     /// Helper: create a variable with assumptions, returning (context, var_ex).
-    fn var_with(ctx: &crate::api::context::Context, name: &str, assumption: Assumption) -> crate::api::expr::Ex {
+    fn var_with(
+        ctx: &crate::api::context::Context,
+        name: &str,
+        assumption: Assumption,
+    ) -> crate::api::expr::Ex {
         let v = ctx.symbol(name);
         v.assume(assumption)
     }
@@ -382,7 +369,11 @@ mod tests {
         let x = var_with(&ctx, "x_ref_apos", Assumption::Positive);
         let expr = x.abs();
         let result = do_refine(&expr);
-        assert_eq!(result.id(), x.id(), "abs(x) should refine to x when positive");
+        assert_eq!(
+            result.id(),
+            x.id(),
+            "abs(x) should refine to x when positive"
+        );
     }
 
     #[test]
@@ -415,7 +406,11 @@ mod tests {
         let x = ctx.symbol("x_ref_aunk");
         let expr = x.abs();
         let result = do_refine(&expr);
-        assert_eq!(result.id(), expr.id(), "abs(x) should be unchanged with no assumptions");
+        assert_eq!(
+            result.id(),
+            expr.id(),
+            "abs(x) should be unchanged with no assumptions"
+        );
     }
 
     // ── sign ───────────────────────────────────────────────────────
@@ -456,7 +451,11 @@ mod tests {
         let x = ctx.symbol("x_ref_sunk");
         let expr = x.sign();
         let result = do_refine(&expr);
-        assert_eq!(result.id(), expr.id(), "sign(x) should be unchanged with no assumptions");
+        assert_eq!(
+            result.id(),
+            expr.id(),
+            "sign(x) should be unchanged with no assumptions"
+        );
     }
 
     // ── floor / ceiling ────────────────────────────────────────────
@@ -476,7 +475,11 @@ mod tests {
         let x = ctx.symbol("x_ref_flunk");
         let expr = x.floor();
         let result = do_refine(&expr);
-        assert_eq!(result.id(), expr.id(), "floor(x) unchanged with no assumptions");
+        assert_eq!(
+            result.id(),
+            expr.id(),
+            "floor(x) unchanged with no assumptions"
+        );
     }
 
     #[test]
@@ -518,7 +521,11 @@ mod tests {
         let x2 = x.powi(2);
         let expr = x2.sqrt();
         let result = do_refine(&expr);
-        assert_eq!(result.id(), expr.id(), "sqrt(x²) unchanged with no assumptions");
+        assert_eq!(
+            result.id(),
+            expr.id(),
+            "sqrt(x²) unchanged with no assumptions"
+        );
     }
 
     // ── (-1)^(even) ────────────────────────────────────────────────
@@ -546,11 +553,7 @@ mod tests {
         let sum = &x + &y;
         let expr = sum.abs();
         let result = do_refine(&expr);
-        assert_eq!(
-            result.id(),
-            sum.id(),
-            "abs(x+y) -> x+y when both positive"
-        );
+        assert_eq!(result.id(), sum.id(), "abs(x+y) -> x+y when both positive");
     }
 
     // ── no-op (expression with nothing to refine) ──────────────────
@@ -561,7 +564,11 @@ mod tests {
         let x = ctx.symbol("x_ref_noop");
         let expr = &x + &ctx.int(1);
         let result = do_refine(&expr);
-        assert_eq!(result.id(), expr.id(), "x + 1 should be unchanged by refine");
+        assert_eq!(
+            result.id(),
+            expr.id(),
+            "x + 1 should be unchanged by refine"
+        );
     }
 
     // ── known numeric constants ────────────────────────────────────

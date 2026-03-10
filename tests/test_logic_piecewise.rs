@@ -58,46 +58,31 @@ fn ne_display() {
 #[test]
 fn gt_true() {
     let ctx = Context::new();
-    assert_eq!(
-        format!("{}", ctx.int(5).gt(&ctx.int(3)).eval()),
-        "True"
-    );
+    assert_eq!(format!("{}", ctx.int(5).gt(&ctx.int(3)).eval()), "True");
 }
 
 #[test]
 fn gt_false() {
     let ctx = Context::new();
-    assert_eq!(
-        format!("{}", ctx.int(2).gt(&ctx.int(7)).eval()),
-        "False"
-    );
+    assert_eq!(format!("{}", ctx.int(2).gt(&ctx.int(7)).eval()), "False");
 }
 
 #[test]
 fn ge_equal() {
     let ctx = Context::new();
-    assert_eq!(
-        format!("{}", ctx.int(3).ge(&ctx.int(3)).eval()),
-        "True"
-    );
+    assert_eq!(format!("{}", ctx.int(3).ge(&ctx.int(3)).eval()), "True");
 }
 
 #[test]
 fn lt_true() {
     let ctx = Context::new();
-    assert_eq!(
-        format!("{}", ctx.int(1).lt(&ctx.int(5)).eval()),
-        "True"
-    );
+    assert_eq!(format!("{}", ctx.int(1).lt(&ctx.int(5)).eval()), "True");
 }
 
 #[test]
 fn le_true() {
     let ctx = Context::new();
-    assert_eq!(
-        format!("{}", ctx.int(3).le(&ctx.int(3)).eval()),
-        "True"
-    );
+    assert_eq!(format!("{}", ctx.int(3).le(&ctx.int(3)).eval()), "True");
 }
 
 #[test]

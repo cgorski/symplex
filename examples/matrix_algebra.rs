@@ -16,7 +16,6 @@
 use symplex::matrix::jacobian;
 use symplex::prelude::*;
 
-
 fn main() {
     println!("=== Matrix Algebra ===\n");
 
@@ -38,9 +37,7 @@ fn main() {
     let d = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]);
     println!("diag(1,2,3) = {d}");
 
-    let built = Matrix::from_fn(3, 3, |i, j| {
-        ctx.int((i * 3 + j + 1) as i64)
-    });
+    let built = Matrix::from_fn(3, 3, |i, j| ctx.int((i * 3 + j + 1) as i64));
     println!("from_fn(3×3) = {built}");
 
     let row = Matrix::row_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
@@ -97,10 +94,7 @@ fn main() {
     let eigenvals = a.eigenvals(&x).unwrap();
     println!(
         "Eigenvalues of A: {:?}",
-        eigenvals
-            .iter()
-            .map(|e| format!("{e}"))
-            .collect::<Vec<_>>()
+        eigenvals.iter().map(|e| format!("{e}")).collect::<Vec<_>>()
     );
 
     // Characteristic polynomial
@@ -145,7 +139,8 @@ fn main() {
     let trig_m = Matrix::new(vec![
         vec![&x.sin().powi(2) + &x.cos().powi(2), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     println!("\nTrig matrix: {trig_m}");
     println!("Simplified:  {}", trig_m.simplify());
 
@@ -153,7 +148,8 @@ fn main() {
     let expand_m = Matrix::new(vec![
         vec![(&x + 1).powi(2), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     println!("Before expand: {expand_m}");
     println!("After expand:  {}", expand_m.expand());
 
@@ -206,7 +202,10 @@ fn main() {
     // Full rank example
     let full_rank = matrix![ctx, [1, 0, 0], [0, 1, 0], [0, 0, 1]];
     println!("\nIdentity rank = {}", full_rank.rank());
-    println!("Identity nullspace: {} vectors (trivial)", full_rank.nullspace().len());
+    println!(
+        "Identity nullspace: {} vectors (trivial)",
+        full_rank.nullspace().len()
+    );
 
     // Column space
     let colspace = rank_mat.columnspace();
@@ -285,10 +284,7 @@ fn main() {
     println!("\n--- Matrix Code Generation ---");
 
     let neg_sin_x = -&x.sin();
-    let rot_mat = Matrix::new(vec![
-        vec![x.cos(), neg_sin_x],
-        vec![x.sin(), x.cos()],
-    ]).unwrap();
+    let rot_mat = Matrix::new(vec![vec![x.cos(), neg_sin_x], vec![x.sin(), x.cos()]]).unwrap();
     println!("R(x) = {rot_mat}");
 
     let code = rot_mat

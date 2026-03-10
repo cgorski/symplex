@@ -152,7 +152,9 @@ fn codegen_libm_backend_expm1() {
         math_backend: MathBackend::Libm,
         ..Default::default()
     };
-    let code = f.to_rust_fn_with_options("libm_expm1", &["x"], &opts).unwrap();
+    let code = f
+        .to_rust_fn_with_options("libm_expm1", &["x"], &opts)
+        .unwrap();
     assert!(
         code.contains("libm::expm1("),
         "expected libm::expm1 with Libm backend, got:\n{code}"

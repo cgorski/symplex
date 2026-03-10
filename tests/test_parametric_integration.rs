@@ -14,12 +14,7 @@ use symplex::prelude::*;
 /// substituting symbolic parameters with concrete values.
 ///
 /// `param_subs` is a list of `(symbol, f64_value)` for all free parameters.
-fn assert_ftc_parametric(
-    integrand: &Ex,
-    var: &Ex,
-    param_subs: &[(&Ex, f64)],
-    label: &str,
-) {
+fn assert_ftc_parametric(integrand: &Ex, var: &Ex, param_subs: &[(&Ex, f64)], label: &str) {
     let ctx = integrand.context();
     let anti = integrand.integrate(var);
     let s = format!("{anti}");
@@ -181,10 +176,7 @@ fn integrate_inv_x2_plus_a2() {
 
     let anti = integrand.integrate(&x);
     let s = format!("{anti}");
-    assert!(
-        !s.contains("Integral"),
-        "should not be unevaluated: {s}"
-    );
+    assert!(!s.contains("Integral"), "should not be unevaluated: {s}");
     assert!(s.contains("atan"), "should contain atan: {s}");
 
     // Numerical check: at a=2, x=1
@@ -226,10 +218,7 @@ fn integrate_sin_2x_plus_3() {
         deriv.subs(&x, &test_pt).eval_f64(),
     ) {
         let err = (o - d).abs();
-        assert!(
-            err < 1e-8,
-            "FTC for ∫sin(2x+3)dx: integrand={o}, deriv={d}"
-        );
+        assert!(err < 1e-8, "FTC for ∫sin(2x+3)dx: integrand={o}, deriv={d}");
     }
 }
 

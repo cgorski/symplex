@@ -59,7 +59,11 @@ pub fn finite_diff_weights(
     x0: ExprId,
 ) -> Vec<Vec<Vec<ExprId>>> {
     let n_points = x_list.len();
-    tracing::debug!("finite_diff: computing weights order={}, {} points", order, n_points);
+    tracing::debug!(
+        "finite_diff: computing weights order={}, {} points",
+        order,
+        n_points
+    );
     if n_points == 0 {
         return vec![Vec::new(); order + 1];
     }
@@ -220,11 +224,7 @@ pub fn apply_finite_diff(
 ///
 /// This is useful for converting symbolic derivative expressions into
 /// numerical approximation formulas.
-pub fn differentiate_finite(
-    arena: &mut Arena,
-    expr: ExprId,
-    var: ExprId,
-) -> ExprId {
+pub fn differentiate_finite(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     let var_sym = match arena.node(var) {
         ExprNode::Symbol(sid) => *sid,
         _ => return expr,
@@ -306,12 +306,7 @@ fn differentiate_finite_inner(
 /// centered at `x0` with step `h` and `2n+1` points.
 ///
 /// Returns the grid as a Vec of ExprIds.
-pub fn equispaced_grid(
-    arena: &mut Arena,
-    x0: ExprId,
-    h: ExprId,
-    half_width: usize,
-) -> Vec<ExprId> {
+pub fn equispaced_grid(arena: &mut Arena, x0: ExprId, h: ExprId, half_width: usize) -> Vec<ExprId> {
     let mut grid = Vec::with_capacity(2 * half_width + 1);
     for i in -(half_width as i64)..=(half_width as i64) {
         if i == 0 {
@@ -462,7 +457,8 @@ mod tests {
 
         let two = a.int(2);
         assert_eq!(
-            result_eval, two,
+            result_eval,
+            two,
             "2nd derivative of x^2 should be 2, got {}",
             display(&a, result_eval)
         );
@@ -487,7 +483,8 @@ mod tests {
 
         let three = a.int(3);
         assert_eq!(
-            result_eval, three,
+            result_eval,
+            three,
             "derivative of 3x+1 should be 3, got {}",
             display(&a, result_eval)
         );
@@ -512,10 +509,7 @@ mod tests {
             "should not contain unevaluated Derivative: {s}"
         );
         // It should mention _h (the step size symbol)
-        assert!(
-            s.contains("_h"),
-            "should contain step size symbol _h: {s}"
-        );
+        assert!(s.contains("_h"), "should contain step size symbol _h: {s}");
     }
 
     #[test]

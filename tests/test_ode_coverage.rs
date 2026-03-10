@@ -56,9 +56,9 @@ fn verify_first_order_numerically(
     let sample_val = ctx.rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
-    let val = residual_at.eval_f64().expect(
-        "evalf_f64 should succeed for first-order ODE residual evaluation"
-    );
+    let val = residual_at
+        .eval_f64()
+        .expect("evalf_f64 should succeed for first-order ODE residual evaluation");
     assert!(
         val.abs() < 1e-6,
         "First-order ODE residual should be ~0, got {val} at x={sample_x_num}/{sample_x_den}\n  \
@@ -99,9 +99,9 @@ fn verify_second_order_numerically(
     let sample_val = ctx.rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
-    let val = residual_at.eval_f64().expect(
-        "evalf_f64 should succeed for second-order ODE residual evaluation"
-    );
+    let val = residual_at
+        .eval_f64()
+        .expect("evalf_f64 should succeed for second-order ODE residual evaluation");
     assert!(
         val.abs() < 1e-4,
         "Second-order ODE residual should be ~0, got {val} at x={sample_x_num}/{sample_x_den}\n  \
@@ -233,7 +233,9 @@ fn second_order_distinct_real_roots() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 3) + &(&y * 2); // y'' - 3y' + 2y = 0
 
-    let sol = ode.try_solve_ode(&y, &x).expect("should solve y'' - 3y' + 2y = 0");
+    let sol = ode
+        .try_solve_ode(&y, &x)
+        .expect("should solve y'' - 3y' + 2y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("C2"), "solution should have C2: {s}");
@@ -255,7 +257,9 @@ fn second_order_repeated_root() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &(&dy * 2) + &y; // y'' - 2y' + y = 0
 
-    let sol = ode.try_solve_ode(&y, &x).expect("should solve y'' - 2y' + y = 0");
+    let sol = ode
+        .try_solve_ode(&y, &x)
+        .expect("should solve y'' - 2y' + y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("C2"), "solution should have C2: {s}");
@@ -283,7 +287,8 @@ fn second_order_complex_roots() {
     let ode = &d2y + &y; // y'' + y = 0
 
     // Complex roots may or may not be supported — verify gracefully.
-    let sol = ode.solve_ode(&y, &x); if !sol.has_unevaluated() {
+    let sol = ode.solve_ode(&y, &x);
+    if !sol.has_unevaluated() {
         let s = format!("{sol}");
         assert!(
             s.contains("C1") && s.contains("C2"),
@@ -309,7 +314,9 @@ fn second_order_distinct_real_negative_roots() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &(&dy * 5) + &(&y * 6); // y'' + 5y' + 6y = 0
 
-    let sol = ode.try_solve_ode(&y, &x).expect("should solve y'' + 5y' + 6y = 0");
+    let sol = ode
+        .try_solve_ode(&y, &x)
+        .expect("should solve y'' + 5y' + 6y = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
     assert!(s.contains("C2"), "solution should have C2: {s}");

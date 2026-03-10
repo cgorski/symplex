@@ -19,12 +19,7 @@ use symplex::prelude::*;
 
 /// Verify that a solution vector satisfies x'(t) = A·x(t) numerically
 /// by substituting a concrete value t = t0 and checking the residual.
-fn verify_system_numerically(
-    a_matrix: &Matrix,
-    solution: &[Ex],
-    t_var: &Ex,
-    t0: f64,
-) -> bool {
+fn verify_system_numerically(a_matrix: &Matrix, solution: &[Ex], t_var: &Ex, t0: f64) -> bool {
     let ctx = t_var.context();
     let n = solution.len();
     let t_val = ctx.rational((t0 * 1000.0) as i64, 1000);
@@ -49,10 +44,7 @@ fn verify_system_numerically(
     for (i, &xp_i) in xp_vals.iter().enumerate().take(n) {
         let mut ax_i = 0.0;
         for (j, &x_j) in x_vals.iter().enumerate().take(n) {
-            let a_ij = a_matrix
-                .get(i, j)
-                .eval_f64()
-                .unwrap_or(0.0);
+            let a_ij = a_matrix.get(i, j).eval_f64().unwrap_or(0.0);
             ax_i += a_ij * x_j;
         }
         let residual = (xp_i - ax_i).abs();
@@ -77,10 +69,11 @@ fn ode_system_2x2_real_eigenvalues() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("should solve 2x2 real-eigenvalue system");
+    let sol =
+        symplex::ode::solve_ode_system(&a, &t).expect("should solve 2x2 real-eigenvalue system");
 
     assert_eq!(sol.len(), 2, "should return 2 solution components");
 
@@ -121,10 +114,10 @@ fn ode_system_2x2_complex_eigenvalues() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-1), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("should solve oscillator system");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("should solve oscillator system");
 
     assert_eq!(sol.len(), 2, "should return 2 solution components");
 
@@ -169,10 +162,10 @@ fn ode_system_diagonal() {
     let a = Matrix::new(vec![
         vec![a_sym.clone(), ctx.int(0)],
         vec![ctx.int(0), b_sym.clone()],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("should solve diagonal system");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("should solve diagonal system");
 
     assert_eq!(sol.len(), 2, "should return 2 solution components");
 
@@ -215,10 +208,10 @@ fn ode_system_3x3() {
         vec![ctx.int(1), ctx.int(0), ctx.int(0)],
         vec![ctx.int(0), ctx.int(2), ctx.int(0)],
         vec![ctx.int(0), ctx.int(0), ctx.int(3)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("should solve 3x3 diagonal system");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("should solve 3x3 diagonal system");
 
     assert_eq!(sol.len(), 3, "should return 3 solution components");
 
@@ -232,12 +225,7 @@ fn ode_system_3x3() {
             ci,
             s,
         );
-        assert!(
-            s.contains("exp"),
-            "x{}(t) should contain exp: {}",
-            i + 1,
-            s,
-        );
+        assert!(s.contains("exp"), "x{}(t) should contain exp: {}", i + 1, s,);
     }
 }
 
@@ -254,10 +242,10 @@ fn ode_system_3x3_coupled() {
         vec![ctx.int(-1), ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(-2), ctx.int(1)],
         vec![ctx.int(0), ctx.int(0), ctx.int(-3)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("should solve 3x3 coupled system");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("should solve 3x3 coupled system");
 
     assert_eq!(sol.len(), 3, "should return 3 solution components");
 
@@ -283,8 +271,7 @@ fn ode_system_identity_matrix() {
     let t = ctx.symbol("t");
     let a = Matrix::identity(&ctx, 2);
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("should solve identity system");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("should solve identity system");
 
     assert_eq!(sol.len(), 2, "should return 2 components");
 
@@ -319,10 +306,10 @@ fn ode_system_numerical_verification_diagonal() {
     let a = Matrix::new(vec![
         vec![ctx.int(-1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(-2)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("should solve");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("should solve");
 
     let c1 = ctx.symbol("C1");
     let c2 = ctx.symbol("C2");
@@ -330,11 +317,7 @@ fn ode_system_numerical_verification_diagonal() {
     // Substitute specific constant values
     let sol_concrete: Vec<Ex> = sol
         .iter()
-        .map(|xi| {
-            xi.subs(&c1, &ctx.int(1))
-                .subs(&c2, &ctx.int(1))
-                .eval()
-        })
+        .map(|xi| xi.subs(&c1, &ctx.int(1)).subs(&c2, &ctx.int(1)).eval())
         .collect();
 
     // Verify x'(t) = A·x(t) at several time points
@@ -351,21 +334,17 @@ fn ode_system_numerical_verification_coupled() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("should solve");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("should solve");
 
     let c1 = ctx.symbol("C1");
     let c2 = ctx.symbol("C2");
 
     let sol_concrete: Vec<Ex> = sol
         .iter()
-        .map(|xi| {
-            xi.subs(&c1, &ctx.int(1))
-                .subs(&c2, &ctx.int(1))
-                .eval()
-        })
+        .map(|xi| xi.subs(&c1, &ctx.int(1)).subs(&c2, &ctx.int(1)).eval())
         .collect();
 
     for &t0 in &[0.0, 0.5, 1.0] {
@@ -385,7 +364,8 @@ fn ode_system_rejects_non_square() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert!(
         symplex::ode::solve_ode_system(&a, &t).is_none(),
         "non-square matrix should return None"
@@ -399,7 +379,8 @@ fn ode_system_rejects_time_dependent() {
     let a = Matrix::new(vec![
         vec![t.clone(), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert!(
         symplex::ode::solve_ode_system(&a, &t).is_none(),
         "time-dependent matrix should return None"
@@ -412,8 +393,7 @@ fn ode_system_zero_matrix() {
     let t = ctx.symbol("t");
     let a = Matrix::zeros(&ctx, 2, 2);
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("zero matrix should be solvable");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("zero matrix should be solvable");
 
     assert_eq!(sol.len(), 2);
 
@@ -431,8 +411,7 @@ fn ode_system_1x1() {
     let t = ctx.symbol("t");
     let a = Matrix::new(vec![vec![ctx.int(-3)]]).unwrap();
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("1x1 system should be solvable");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("1x1 system should be solvable");
 
     assert_eq!(sol.len(), 1);
     let s = format!("{}", sol[0]);
@@ -452,7 +431,8 @@ fn classify_constant_coefficient_system() {
     let a_const = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert!(
         symplex::ode::classify_ode_system_is_constant(&a_const, &t),
         "pure numeric matrix should be constant-coefficient"
@@ -462,7 +442,8 @@ fn classify_constant_coefficient_system() {
     let a_sym = Matrix::new(vec![
         vec![x.clone(), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert!(
         symplex::ode::classify_ode_system_is_constant(&a_sym, &t),
         "matrix with symbols other than t should be constant-coefficient"
@@ -471,7 +452,8 @@ fn classify_constant_coefficient_system() {
     let a_time = Matrix::new(vec![
         vec![t.clone(), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert!(
         !symplex::ode::classify_ode_system_is_constant(&a_time, &t),
         "matrix containing t should NOT be constant-coefficient"
@@ -492,7 +474,8 @@ fn ode_system_nonhomogeneous_basic() {
     let a = Matrix::new(vec![
         vec![ctx.int(-1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(-1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = vec![ctx.int(1), ctx.int(0)];
 
     let sol = symplex::ode::solve_ode_system_nonhomogeneous(&a, &b, &t);
@@ -525,7 +508,8 @@ fn ode_system_nonhomogeneous_rejects_mismatched_dims() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = vec![ctx.int(1)]; // wrong size
 
     assert!(
@@ -566,10 +550,10 @@ fn ode_system_nilpotent_2x2() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(0), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("should solve nilpotent system");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("should solve nilpotent system");
 
     assert_eq!(sol.len(), 2);
 
@@ -596,10 +580,10 @@ fn ode_system_negative_diagonal() {
     let a = Matrix::new(vec![
         vec![ctx.int(-1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(-2)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let sol = symplex::ode::solve_ode_system(&a, &t)
-        .expect("should solve negative diagonal");
+    let sol = symplex::ode::solve_ode_system(&a, &t).expect("should solve negative diagonal");
 
     assert_eq!(sol.len(), 2);
 

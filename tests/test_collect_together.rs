@@ -41,7 +41,9 @@ fn collect_groups_by_variable() {
         let c_at_y = collected.subs_i64(&y, yval);
         let e_at_y = expr.subs_i64(&y, yval);
         common::assert_math_eq(
-            &c_at_y, &e_at_y, &x,
+            &c_at_y,
+            &e_at_y,
+            &x,
             &format!("collect_groups_by_variable (y={yval}, vary x)"),
         );
     }
@@ -49,7 +51,9 @@ fn collect_groups_by_variable() {
         let c_at_x = collected.subs_i64(&x, xval);
         let e_at_x = expr.subs_i64(&x, xval);
         common::assert_math_eq(
-            &c_at_x, &e_at_x, &y,
+            &c_at_x,
+            &e_at_x,
+            &y,
             &format!("collect_groups_by_variable (x={xval}, vary y)"),
         );
     }
@@ -111,7 +115,9 @@ fn together_two_fractions() {
         let r_at_y = result.subs_i64(&y, yval);
         let e_at_y = expr.subs_i64(&y, yval);
         common::assert_math_eq(
-            &r_at_y, &e_at_y, &x,
+            &r_at_y,
+            &e_at_y,
+            &x,
             &format!("together_two_fractions (y={yval}, vary x)"),
         );
     }
@@ -119,7 +125,9 @@ fn together_two_fractions() {
         let r_at_x = result.subs_i64(&x, xval);
         let e_at_x = expr.subs_i64(&x, xval);
         common::assert_math_eq(
-            &r_at_x, &e_at_x, &y,
+            &r_at_x,
+            &e_at_x,
+            &y,
             &format!("together_two_fractions (x={xval}, vary y)"),
         );
     }
@@ -156,7 +164,12 @@ fn together_mixed_fraction_and_non_fraction() {
     let s = format!("{result}");
     // Should have x as denominator
     assert!(s.contains("1/x") || s.contains("("), "should combine: {s}");
-    common::assert_math_eq(&result, &expr, &x, "together_mixed_fraction_and_non_fraction");
+    common::assert_math_eq(
+        &result,
+        &expr,
+        &x,
+        "together_mixed_fraction_and_non_fraction",
+    );
 }
 
 #[test]

@@ -18,7 +18,6 @@ use symplex::matrix::jacobian;
 use symplex::prelude::*;
 use symplex::robotics::*;
 
-
 fn main() {
     println!("=== Symplex Robotics Code Generation ===\n");
 
@@ -136,7 +135,10 @@ fn main() {
         .to_rust_fn("robot_jacobian", &["theta1", "theta2", "theta3"])
         .expect("codegen failed");
     let codegen_time = t2.elapsed();
-    println!("Code generated in {codegen_time:?} ({} bytes)\n", code.len());
+    println!(
+        "Code generated in {codegen_time:?} ({} bytes)\n",
+        code.len()
+    );
     println!("{code}");
 
     // Also generate code for the FK position itself
@@ -176,9 +178,9 @@ fn main() {
     println!("--- Numerical Verification ---");
 
     let test_configs: &[(f64, f64, f64)] = &[
-        (0.0, 0.0, 0.0),                     // fully extended along +x
+        (0.0, 0.0, 0.0),                         // fully extended along +x
         (std::f64::consts::FRAC_PI_4, 0.0, 0.0), // 45° first joint
-        (0.5, 0.3, 0.1),                      // arbitrary configuration
+        (0.5, 0.3, 0.1),                         // arbitrary configuration
     ];
 
     for (t1, t2, t3) in test_configs {

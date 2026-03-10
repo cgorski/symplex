@@ -55,9 +55,10 @@ fn test_convergence(arena: &mut Arena, body: ExprId, var: ExprId) -> Convergence
             return Convergence::Converges;
         }
         if let Some(r) = arena.as_num(body)
-            && r.is_zero() {
-                return Convergence::Converges;
-            }
+            && r.is_zero()
+        {
+            return Convergence::Converges;
+        }
         return Convergence::Diverges;
     }
 
@@ -84,33 +85,34 @@ fn test_convergence(arena: &mut Arena, body: ExprId, var: ExprId) -> Convergence
 fn test_p_series(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Convergence> {
     // Check: body = var^exp
     if let ExprNode::Pow(base, exp) = arena.node(body).clone()
-        && base == var {
-            // body = var^exp. For p-series we need exp to be a negative rational.
-            // p-series: Σ k^(-p) converges iff p > 1, i.e. exp < -1
-            if let Some(r) = arena.as_num(exp).cloned() {
-                use num_traits::Signed;
-                if r.is_negative() {
-                    // exp = -p, so p = -exp
-                    let neg_r = -&r;
-                    let one = num_rational::Ratio::from_integer(num_bigint::BigInt::from(1));
-                    if neg_r > one {
-                        trace!("convergence: p-series with p = {} > 1 → converges", neg_r);
-                        return Some(Convergence::Converges);
-                    } else if neg_r == one {
-                        trace!("convergence: harmonic series (p=1) → diverges");
-                        return Some(Convergence::Diverges);
-                    } else {
-                        trace!("convergence: p-series with p = {} < 1 → diverges", neg_r);
-                        return Some(Convergence::Diverges);
-                    }
-                } else if r.is_positive() {
-                    // body = k^p with p > 0 — terms grow, diverges
-                    trace!("convergence: body = k^{} grows → diverges", r);
+        && base == var
+    {
+        // body = var^exp. For p-series we need exp to be a negative rational.
+        // p-series: Σ k^(-p) converges iff p > 1, i.e. exp < -1
+        if let Some(r) = arena.as_num(exp).cloned() {
+            use num_traits::Signed;
+            if r.is_negative() {
+                // exp = -p, so p = -exp
+                let neg_r = -&r;
+                let one = num_rational::Ratio::from_integer(num_bigint::BigInt::from(1));
+                if neg_r > one {
+                    trace!("convergence: p-series with p = {} > 1 → converges", neg_r);
+                    return Some(Convergence::Converges);
+                } else if neg_r == one {
+                    trace!("convergence: harmonic series (p=1) → diverges");
+                    return Some(Convergence::Diverges);
+                } else {
+                    trace!("convergence: p-series with p = {} < 1 → diverges", neg_r);
                     return Some(Convergence::Diverges);
                 }
-                // exp = 0 means body = 1, constant — handled earlier
+            } else if r.is_positive() {
+                // body = k^p with p > 0 — terms grow, diverges
+                trace!("convergence: body = k^{} grows → diverges", r);
+                return Some(Convergence::Diverges);
             }
+            // exp = 0 means body = 1, constant — handled earlier
         }
+    }
 
     // Check: body = 1/var = var^(-1), might be represented as Mul([1, Pow(var, -1)])
     // or directly. Let's also check the Mul form for 1/var^p patterns.
@@ -142,24 +144,25 @@ fn test_p_series(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Converg
 /// converges iff `|r| < 1`.
 fn test_geometric(arena: &mut Arena, body: ExprId, var: ExprId) -> Option<Convergence> {
     if let ExprNode::Pow(base, exp) = arena.node(body).clone()
-        && exp == var {
-            let base_syms = walk::free_symbols(arena, base);
-            if !base_syms.contains(&var) {
-                // body = base^var, base is constant
-                if let Some(r) = arena.as_num(base).cloned() {
-                    use num_traits::Signed;
-                    let abs_r = r.abs();
-                    let one = num_rational::Ratio::from_integer(num_bigint::BigInt::from(1));
-                    if abs_r < one {
-                        trace!("convergence: geometric |r| = {} < 1 → converges", abs_r);
-                        return Some(Convergence::Converges);
-                    } else {
-                        trace!("convergence: geometric |r| = {} >= 1 → diverges", abs_r);
-                        return Some(Convergence::Diverges);
-                    }
+        && exp == var
+    {
+        let base_syms = walk::free_symbols(arena, base);
+        if !base_syms.contains(&var) {
+            // body = base^var, base is constant
+            if let Some(r) = arena.as_num(base).cloned() {
+                use num_traits::Signed;
+                let abs_r = r.abs();
+                let one = num_rational::Ratio::from_integer(num_bigint::BigInt::from(1));
+                if abs_r < one {
+                    trace!("convergence: geometric |r| = {} < 1 → converges", abs_r);
+                    return Some(Convergence::Converges);
+                } else {
+                    trace!("convergence: geometric |r| = {} >= 1 → diverges", abs_r);
+                    return Some(Convergence::Diverges);
                 }
             }
         }
+    }
     None
 }
 

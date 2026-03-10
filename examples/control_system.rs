@@ -15,7 +15,6 @@
 use symplex::control::*;
 use symplex::prelude::*;
 
-
 fn main() {
     println!("=== Control System Analysis ===\n");
 
@@ -160,12 +159,7 @@ fn main() {
     }
 
     // Routh array for a more interesting polynomial: s³ + 2s² + 3s + 4
-    let coeffs3 = [
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(3),
-        ctx.int(4),
-    ];
+    let coeffs3 = [ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4)];
     match is_routh_stable(&coeffs3) {
         Some(true) => println!("s³ + 2s² + 3s + 4: Routh stable (yes)"),
         Some(false) => println!("s³ + 2s² + 3s + 4: Routh stable (no)"),
@@ -181,15 +175,12 @@ fn main() {
     }
 
     // Unstable example: s³ + s² - 2s + 1
-    let unstable_coeffs = [
-        ctx.int(1),
-        ctx.int(1),
-        ctx.int(-2),
-        ctx.int(1),
-    ];
+    let unstable_coeffs = [ctx.int(1), ctx.int(1), ctx.int(-2), ctx.int(1)];
     match is_routh_stable(&unstable_coeffs) {
         Some(true) => println!("\ns³ + s² - 2s + 1: Routh stable (yes)"),
-        Some(false) => println!("\ns³ + s² - 2s + 1: Routh stable (no — sign change in first column)"),
+        Some(false) => {
+            println!("\ns³ + s² - 2s + 1: Routh stable (no — sign change in first column)")
+        }
         None => println!("\ns³ + s² - 2s + 1: Routh stable (undetermined)"),
     }
 
@@ -221,10 +212,7 @@ fn main() {
             let cl_poles = a_cl.eigenvals(&s).unwrap();
             println!(
                 "Closed-loop poles: {:?}",
-                cl_poles
-                    .iter()
-                    .map(|p| format!("{p}"))
-                    .collect::<Vec<_>>()
+                cl_poles.iter().map(|p| format!("{p}")).collect::<Vec<_>>()
             );
         }
         None => {

@@ -94,18 +94,19 @@ pub(crate) fn eval_sum_symbolic(
 
     if let ExprNode::Pow(base, exp) = arena.node(body).clone()
         && base == var
-            && let Some(n) = arena.as_num(exp).and_then(|r| {
-                if r.is_integer() && r.is_positive() {
-                    r.to_integer().to_usize()
-                } else {
-                    None
-                }
-            })
-                && n <= 4 {
-                    trace!("eval_sum_symbolic: matched k^{} (Faulhaber)", n);
-                    return Some(faulhaber(arena, n, lower, upper));
-                }
-            // Also check if exp == var (geometric case handled below)
+        && let Some(n) = arena.as_num(exp).and_then(|r| {
+            if r.is_integer() && r.is_positive() {
+                r.to_integer().to_usize()
+            } else {
+                None
+            }
+        })
+        && n <= 4
+    {
+        trace!("eval_sum_symbolic: matched k^{} (Faulhaber)", n);
+        return Some(faulhaber(arena, n, lower, upper));
+    }
+    // Also check if exp == var (geometric case handled below)
 
     // Strategy 3: Constant body (independent of var): body * (upper - lower + 1)
     {
@@ -121,21 +122,22 @@ pub(crate) fn eval_sum_symbolic(
 
     // Strategy 4: Geometric — check if body is r^k where r doesn't depend on var
     if let ExprNode::Pow(base, exp) = arena.node(body).clone()
-        && exp == var {
-            let base_syms = walk::free_symbols(arena, base);
-            if !base_syms.contains(&var) {
-                trace!("eval_sum_symbolic: matched geometric series r^k");
-                // Σ r^k from a to b = (r^a - r^(b+1)) / (1 - r)
-                let r = base;
-                let r_a = arena.pow(r, lower);
-                let one = arena.one;
-                let b_plus_1 = arena.add(&[upper, one]);
-                let r_b1 = arena.pow(r, b_plus_1);
-                let numer = arena.sub(r_a, r_b1);
-                let denom = arena.sub(one, r);
-                return Some(arena.div(numer, denom));
-            }
+        && exp == var
+    {
+        let base_syms = walk::free_symbols(arena, base);
+        if !base_syms.contains(&var) {
+            trace!("eval_sum_symbolic: matched geometric series r^k");
+            // Σ r^k from a to b = (r^a - r^(b+1)) / (1 - r)
+            let r = base;
+            let r_a = arena.pow(r, lower);
+            let one = arena.one;
+            let b_plus_1 = arena.add(&[upper, one]);
+            let r_b1 = arena.pow(r, b_plus_1);
+            let numer = arena.sub(r_a, r_b1);
+            let denom = arena.sub(one, r);
+            return Some(arena.div(numer, denom));
         }
+    }
 
     trace!("eval_sum_symbolic: no closed form found");
     None

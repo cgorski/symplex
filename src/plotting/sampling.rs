@@ -47,7 +47,9 @@ impl Default for SampleOptions {
 
 /// Deterministic jitter based on the bit pattern of `x` (reproducible).
 fn jitter(x: f64, interval_width: f64) -> f64 {
-    let hash = (x.to_bits()).wrapping_mul(6364136223846793005u64).wrapping_add(1);
+    let hash = (x.to_bits())
+        .wrapping_mul(6364136223846793005u64)
+        .wrapping_add(1);
     let offset = ((hash >> 33) as f64 / u32::MAX as f64 - 0.5) * 0.02 * interval_width;
     x + offset
 }
@@ -159,10 +161,7 @@ pub(crate) fn sample_compiled(
     refined.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     refined.dedup_by(|a, b| (a.0 - b.0).abs() < eps);
 
-    tracing::debug!(
-        total_points = refined.len(),
-        "adaptive refinement complete"
-    );
+    tracing::debug!(total_points = refined.len(), "adaptive refinement complete");
 
     // ── Step 3: Discontinuity detection ────────────────────────────────
     let mut asymptotes: Vec<f64> = Vec::new();
@@ -217,10 +216,32 @@ fn adaptive_refine(
     }
 
     // Refine between p1 and p2
-    refine_segment(f, p1, p2, out, excluded_points, recorded_excluded, opts, y_range, eps, depth);
+    refine_segment(
+        f,
+        p1,
+        p2,
+        out,
+        excluded_points,
+        recorded_excluded,
+        opts,
+        y_range,
+        eps,
+        depth,
+    );
 
     // Refine between p2 and p3
-    refine_segment(f, p2, p3, out, excluded_points, recorded_excluded, opts, y_range, eps, depth);
+    refine_segment(
+        f,
+        p2,
+        p3,
+        out,
+        excluded_points,
+        recorded_excluded,
+        opts,
+        y_range,
+        eps,
+        depth,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -261,10 +282,32 @@ fn refine_segment(
     if deviation > opts.tolerance {
         let pm = (xm, ym);
         // Recurse left half
-        refine_segment(f, p1, pm, out, excluded_points, recorded_excluded, opts, y_range, eps, depth + 1);
+        refine_segment(
+            f,
+            p1,
+            pm,
+            out,
+            excluded_points,
+            recorded_excluded,
+            opts,
+            y_range,
+            eps,
+            depth + 1,
+        );
         out.push(pm);
         // Recurse right half
-        refine_segment(f, pm, p3, out, excluded_points, recorded_excluded, opts, y_range, eps, depth + 1);
+        refine_segment(
+            f,
+            pm,
+            p3,
+            out,
+            excluded_points,
+            recorded_excluded,
+            opts,
+            y_range,
+            eps,
+            depth + 1,
+        );
     }
 }
 

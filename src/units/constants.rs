@@ -18,9 +18,9 @@
 //! // Displays as "c^2*m", not "89875517873681764*m"
 //! ```
 
-use super::si::*;
-use super::qty::Qty;
 use super::dim::*;
+use super::qty::Qty;
+use super::si::*;
 use typenum::{N1, N2, P1, P2, P3, Z0};
 
 /// Speed of light in vacuum: c = 299,792,458 m/s (exact since 2019 SI redefinition).
@@ -42,7 +42,9 @@ pub fn elementary_charge(ctx: &crate::api::context::Context) -> Charge {
 ///
 /// Returns as `AngularMomentum` (dimension M·L²·T⁻¹, same as Action = Energy × Time).
 pub fn planck_constant(ctx: &crate::api::context::Context) -> AngularMomentum {
-    AngularMomentum::from_ex(ctx.physical_constant("h", &ctx.int(662_607_015) / &ctx.int(10).powi(42)))
+    AngularMomentum::from_ex(
+        ctx.physical_constant("h", &ctx.int(662_607_015) / &ctx.int(10).powi(42)),
+    )
 }
 
 /// Reduced Planck constant: ℏ = h/(2π) (exact).
@@ -59,7 +61,9 @@ pub fn reduced_planck_constant(ctx: &crate::api::context::Context) -> AngularMom
 ///
 /// Dimension: M·L²·T⁻²·Θ⁻¹ (Energy per Temperature).
 /// Returns as `Qty` since there's no named type for this dimension.
-pub fn boltzmann_constant(ctx: &crate::api::context::Context) -> Qty<Dim<P2, P1, N2, Z0, N1, Z0, Z0>> {
+pub fn boltzmann_constant(
+    ctx: &crate::api::context::Context,
+) -> Qty<Dim<P2, P1, N2, Z0, N1, Z0, Z0>> {
     Qty::from_ex(ctx.physical_constant("k_B", &ctx.int(1_380_649) / &ctx.int(10).powi(29)))
 }
 
@@ -67,7 +71,9 @@ pub fn boltzmann_constant(ctx: &crate::api::context::Context) -> Qty<Dim<P2, P1,
 ///
 /// Dimension: N⁻¹ (inverse amount of substance).
 /// Returns as `Qty` since there's no named type for this dimension.
-pub fn avogadro_constant(ctx: &crate::api::context::Context) -> Qty<Dim<Z0, Z0, Z0, Z0, Z0, N1, Z0>> {
+pub fn avogadro_constant(
+    ctx: &crate::api::context::Context,
+) -> Qty<Dim<Z0, Z0, Z0, Z0, Z0, N1, Z0>> {
     // N_A = 602214076 × 10^15
     let val = &ctx.int(602_214_076) * &ctx.int(10).powi(15);
     Qty::from_ex(ctx.physical_constant("N_A", val))
@@ -78,7 +84,9 @@ pub fn avogadro_constant(ctx: &crate::api::context::Context) -> Qty<Dim<Z0, Z0, 
 /// NOTE: Unlike the other constants here, G is NOT exact — it is measured experimentally.
 /// The value 6.67430e-11 is the 2018 CODATA recommended value.
 /// Dimension: L³·M⁻¹·T⁻²
-pub fn gravitational_constant(ctx: &crate::api::context::Context) -> Qty<Dim<P3, N1, N2, Z0, Z0, Z0, Z0>> {
+pub fn gravitational_constant(
+    ctx: &crate::api::context::Context,
+) -> Qty<Dim<P3, N1, N2, Z0, Z0, Z0, Z0>> {
     Qty::from_ex(ctx.physical_constant("G", &ctx.int(667_430) / &ctx.int(10).powi(16)))
 }
 
@@ -107,7 +115,10 @@ mod tests {
     fn speed_of_light_is_velocity() {
         let ctx = crate::api::context::Context::new();
         let c = speed_of_light(&ctx);
-        assert!(format!("{}", c.inner()).contains("c"), "should display as c");
+        assert!(
+            format!("{}", c.inner()).contains("c"),
+            "should display as c"
+        );
     }
 
     #[test]
@@ -123,8 +134,10 @@ mod tests {
         let ctx = crate::api::context::Context::new();
         let e = elementary_charge(&ctx);
         let val = e.eval_f64().unwrap();
-        assert!((val - 1.602176634e-19).abs() / 1.602176634e-19 < 1e-10,
-            "e = {val}");
+        assert!(
+            (val - 1.602176634e-19).abs() / 1.602176634e-19 < 1e-10,
+            "e = {val}"
+        );
     }
 
     #[test]
@@ -132,8 +145,10 @@ mod tests {
         let ctx = crate::api::context::Context::new();
         let h = planck_constant(&ctx);
         let val = h.eval_f64().unwrap();
-        assert!((val - 6.62607015e-34).abs() / 6.62607015e-34 < 1e-10,
-            "h = {val}");
+        assert!(
+            (val - 6.62607015e-34).abs() / 6.62607015e-34 < 1e-10,
+            "h = {val}"
+        );
     }
 
     #[test]
@@ -141,8 +156,10 @@ mod tests {
         let ctx = crate::api::context::Context::new();
         let kb = boltzmann_constant(&ctx);
         let val = kb.eval_f64().unwrap();
-        assert!((val - 1.380649e-23).abs() / 1.380649e-23 < 1e-10,
-            "k_B = {val}");
+        assert!(
+            (val - 1.380649e-23).abs() / 1.380649e-23 < 1e-10,
+            "k_B = {val}"
+        );
     }
 
     #[test]
@@ -155,61 +172,80 @@ mod tests {
 
     #[test]
     fn e_equals_mc_squared() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; m);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; m);
         let c = speed_of_light(&ctx);
         let mass = Mass::symbol(&ctx, "m");
         // Use raw expression arithmetic to avoid missing named-mul impls
         let energy = Energy::from_ex(mass.inner() * c.inner() * c.inner());
         // Display should contain "c", not the numeric value
         let display = format!("{}", energy.inner());
-        assert!(display.contains("c"), "E=mc² should display symbolically: {display}");
+        assert!(
+            display.contains("c"),
+            "E=mc² should display symbolically: {display}"
+        );
         // Evaluate with m=1 kg
         let val = energy.subs(&m, &ctx.int(1)).eval_f64().unwrap();
         let expected = 299_792_458.0_f64 * 299_792_458.0;
-        assert!((val - expected).abs() / expected < 1e-10,
-            "E(m=1) = {val}, expected {expected}");
+        assert!(
+            (val - expected).abs() / expected < 1e-10,
+            "E(m=1) = {val}, expected {expected}"
+        );
     }
 
     #[test]
     fn constant_diff_is_zero() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; x);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; x);
         let c = speed_of_light(&ctx);
         let dc_dx = c.inner().diff(&x);
-        assert!(dc_dx.is_zero().unwrap_or(false) || format!("{}", dc_dx) == "0",
-            "d/dx(c) should be 0, got {dc_dx}");
+        assert!(
+            dc_dx.is_zero().unwrap_or(false) || format!("{}", dc_dx) == "0",
+            "d/dx(c) should be 0, got {dc_dx}"
+        );
     }
 
     #[test]
     fn constant_in_product_diff() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; x);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; x);
         let c = speed_of_light(&ctx);
         let cx = c.inner() * &x;
         let d = cx.diff(&x);
         // d/dx(c*x) = c
         let display = format!("{}", d);
-        assert!(display.contains("c"), "d/dx(c*x) should contain c: {display}");
+        assert!(
+            display.contains("c"),
+            "d/dx(c*x) should contain c: {display}"
+        );
     }
 
     #[test]
     fn constant_survives_simplify() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; x, y);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; x, y);
         let c = speed_of_light(&ctx);
         let expr = c.inner() * &x + c.inner() * &y;
         let simplified = expr.simplify();
         let display = format!("{}", simplified);
-        assert!(display.contains("c"), "simplify should preserve c: {display}");
+        assert!(
+            display.contains("c"),
+            "simplify should preserve c: {display}"
+        );
     }
 
     #[test]
     fn physical_constants_dimmap_works() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; m);
-        let dims = physical_constants_dimmap()
-            .with("m", ConstDim::MASS);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; m);
+        let dims = physical_constants_dimmap().with("m", ConstDim::MASS);
         let c = speed_of_light(&ctx);
         let mc2 = &(m.clone() * c.inner()) * c.inner();
         let dim = crate::units::inference::infer_dimension(&mc2, &dims);
         assert!(dim.is_ok(), "should infer dimension of mc²: {:?}", dim);
-        assert!(dim.unwrap().eq(ConstDim::ENERGY),
-            "mc² should have Energy dimension");
+        assert!(
+            dim.unwrap().eq(ConstDim::ENERGY),
+            "mc² should have Energy dimension"
+        );
     }
 }

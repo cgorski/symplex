@@ -1,8 +1,8 @@
 //! Integration tests for physical constants with units.
 
 use symplex::prelude::*;
-use symplex::units::*;
 use symplex::units::constants;
+use symplex::units::*;
 
 #[test]
 fn e_mc_squared_symbolic_display() {
@@ -43,10 +43,7 @@ fn photon_energy_e_equals_hf() {
     let e_qty = h_qty * f_qty;
     let e: Energy = e_qty.into();
     let display = format!("{}", e.inner());
-    assert!(
-        display.contains("h"),
-        "E=hf should contain h: {display}"
-    );
+    assert!(display.contains("h"), "E=hf should contain h: {display}");
 }
 
 #[test]
@@ -58,10 +55,7 @@ fn thermal_energy_kb_t() {
     // kb × T should have dimension Energy (M·L²·T⁻²·Θ⁻¹ × Θ = M·L²·T⁻²)
     let e: Energy = e_thermal.into();
     let display = format!("{}", e.inner());
-    assert!(
-        display.contains("k_B"),
-        "should contain k_B: {display}"
-    );
+    assert!(display.contains("k_B"), "should contain k_B: {display}");
 }
 
 #[test]

@@ -85,7 +85,8 @@ pub fn dh_matrix(theta: &Ex, d: &Ex, a: &Ex, alpha: &Ex) -> Matrix {
         vec![r10, r11, r12, r13],
         vec![r20, r21, r22, r23],
         vec![r30, r31, r32, r33],
-    ]).unwrap()
+    ])
+    .unwrap()
 }
 
 /// Chain-multiply a sequence of DH transformation matrices to compute
@@ -122,7 +123,9 @@ pub fn fk_chain(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
     let mut result = Matrix::identity(&ctx, 4);
     for &(theta, d, a, alpha) in dh_params {
         let ti = dh_matrix(theta, d, a, alpha);
-        result = result.matmul(&ti).expect("matmul: dimension mismatch in FK chain");
+        result = result
+            .matmul(&ti)
+            .expect("matmul: dimension mismatch in FK chain");
     }
     result
 }
@@ -192,7 +195,8 @@ pub fn fk_rotation(dh_params: &[(&Ex, &Ex, &Ex, &Ex)]) -> Matrix {
             t.get(2, 1).clone(),
             t.get(2, 2).clone(),
         ],
-    ]).unwrap()
+    ])
+    .unwrap()
 }
 
 /// Rotation matrix about the x-axis by angle θ.
@@ -211,7 +215,8 @@ pub fn rot_x(theta: &Ex) -> Matrix {
         vec![one, zero.clone(), zero.clone()],
         vec![zero.clone(), c.clone(), -&s],
         vec![zero, s, c],
-    ]).unwrap()
+    ])
+    .unwrap()
 }
 
 /// Rotation matrix about the y-axis by angle θ.
@@ -230,7 +235,8 @@ pub fn rot_y(theta: &Ex) -> Matrix {
         vec![c.clone(), zero.clone(), s.clone()],
         vec![zero.clone(), one, zero.clone()],
         vec![-&s, zero, c],
-    ]).unwrap()
+    ])
+    .unwrap()
 }
 
 /// Rotation matrix about the z-axis by angle θ.
@@ -249,7 +255,8 @@ pub fn rot_z(theta: &Ex) -> Matrix {
         vec![c.clone(), -&s, zero.clone()],
         vec![s, c, zero.clone()],
         vec![zero.clone(), zero, one],
-    ]).unwrap()
+    ])
+    .unwrap()
 }
 
 /// Skew-symmetric matrix from a 3-vector [a, b, c].
@@ -266,7 +273,8 @@ pub fn skew3(a: &Ex, b: &Ex, c: &Ex) -> Matrix {
         vec![zero.clone(), -c, b.clone()],
         vec![c.clone(), zero.clone(), -a],
         vec![-b, a.clone(), zero],
-    ]).unwrap()
+    ])
+    .unwrap()
 }
 
 /// Build a 4×4 homogeneous transformation matrix from a 3×3 rotation
@@ -300,7 +308,8 @@ pub fn homogeneous(rotation: &Matrix, position: &[Ex; 3]) -> Matrix {
             position[2].clone(),
         ],
         vec![zero.clone(), zero.clone(), zero, one],
-    ]).unwrap()
+    ])
+    .unwrap()
 }
 
 /// Pure translation as a 4×4 homogeneous transformation matrix.
@@ -317,7 +326,8 @@ pub fn translation(x: &Ex, y: &Ex, z: &Ex) -> Matrix {
         vec![zero.clone(), one.clone(), zero.clone(), y.clone()],
         vec![zero.clone(), zero.clone(), one, z.clone()],
         vec![zero.clone(), zero.clone(), zero, x.context().int(1)],
-    ]).unwrap()
+    ])
+    .unwrap()
 }
 
 /// Euler angle convention for rotation composition.
@@ -339,14 +349,22 @@ pub fn rot_euler(phi: &Ex, theta: &Ex, psi: &Ex, convention: EulerConvention) ->
     match convention {
         EulerConvention::ZYX => {
             // R = Rz(phi) * Ry(theta) * Rx(psi)
-            rot_z(phi).matmul(&rot_y(theta)).expect("matmul: dimension mismatch").matmul(&rot_x(psi)).expect("matmul: dimension mismatch")
+            rot_z(phi)
+                .matmul(&rot_y(theta))
+                .expect("matmul: dimension mismatch")
+                .matmul(&rot_x(psi))
+                .expect("matmul: dimension mismatch")
         }
-        EulerConvention::ZXZ => {
-            rot_z(phi).matmul(&rot_x(theta)).expect("matmul: dimension mismatch").matmul(&rot_z(psi)).expect("matmul: dimension mismatch")
-        }
-        EulerConvention::XYZ => {
-            rot_x(phi).matmul(&rot_y(theta)).expect("matmul: dimension mismatch").matmul(&rot_z(psi)).expect("matmul: dimension mismatch")
-        }
+        EulerConvention::ZXZ => rot_z(phi)
+            .matmul(&rot_x(theta))
+            .expect("matmul: dimension mismatch")
+            .matmul(&rot_z(psi))
+            .expect("matmul: dimension mismatch"),
+        EulerConvention::XYZ => rot_x(phi)
+            .matmul(&rot_y(theta))
+            .expect("matmul: dimension mismatch")
+            .matmul(&rot_z(psi))
+            .expect("matmul: dimension mismatch"),
     }
 }
 
@@ -384,12 +402,7 @@ fn f64_to_ratio(v: f64) -> Ratio<BigInt> {
 ///
 /// Returns all solution branches as `(θ₁, θ₂)` pairs in radians.
 /// Returns an empty vec if the target is unreachable.
-pub fn inverse_kinematics_2dof(
-    l1: f64,
-    l2: f64,
-    target_x: f64,
-    target_y: f64,
-) -> Vec<(f64, f64)> {
+pub fn inverse_kinematics_2dof(l1: f64, l2: f64, target_x: f64, target_y: f64) -> Vec<(f64, f64)> {
     // Variables: 0=s1, 1=c1, 2=s2, 3=c2
     let nv = 4;
 
@@ -500,7 +513,11 @@ pub fn fk_position_typed(dh_params: &[DhParams<'_>]) -> (Length, Length, Length)
         .collect();
 
     let (px, py, pz) = fk_position(&untyped);
-    (Length::from_ex(px), Length::from_ex(py), Length::from_ex(pz))
+    (
+        Length::from_ex(px),
+        Length::from_ex(py),
+        Length::from_ex(pz),
+    )
 }
 
 /// Compute the full 4×4 FK transformation matrix from typed DH parameters.

@@ -36,8 +36,8 @@ use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{Signed, Zero};
 
-use crate::poly::dense::Poly;
 use super::LogTerm;
+use crate::poly::dense::Poly;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Public types
@@ -63,7 +63,10 @@ pub struct LogPartResult {
 ///
 /// Panics if `D` is zero.
 pub fn logarithmic_part(a: &Poly, d: &Poly) -> LogPartResult {
-    assert!(!d.is_zero(), "logarithmic_part: denominator must be nonzero");
+    assert!(
+        !d.is_zero(),
+        "logarithmic_part: denominator must be nonzero"
+    );
 
     if a.is_zero() {
         return LogPartResult { terms: vec![] };
@@ -164,11 +167,7 @@ pub fn logarithmic_part(a: &Poly, d: &Poly) -> LogPartResult {
 fn extract_linear_root(factor: &Poly) -> Ratio<BigInt> {
     let a = factor.coeff(1);
     let b = factor.coeff(0);
-    if a.is_zero() {
-        Ratio::zero()
-    } else {
-        -b / a
-    }
+    if a.is_zero() { Ratio::zero() } else { -b / a }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -271,7 +270,11 @@ mod tests {
 
         let result = logarithmic_part(&a, &d);
         // Should have 2 rational log terms with coefficients ±1/2.
-        let rational_count = result.terms.iter().filter(|t| matches!(t, LogTerm::Rational { .. })).count();
+        let rational_count = result
+            .terms
+            .iter()
+            .filter(|t| matches!(t, LogTerm::Rational { .. }))
+            .count();
         assert!(
             rational_count >= 1,
             "should have rational log terms for 1/(x^2-1), got {} rational terms out of {} total",
@@ -309,7 +312,10 @@ mod tests {
 
         let result = logarithmic_part(&a, &d);
         // Should have an algebraic term (roots are ±i/2).
-        let has_algebraic = result.terms.iter().any(|t| matches!(t, LogTerm::Algebraic { .. }));
+        let has_algebraic = result
+            .terms
+            .iter()
+            .any(|t| matches!(t, LogTerm::Algebraic { .. }));
         assert!(
             has_algebraic || result.terms.is_empty(),
             "1/(x^2+1) should produce algebraic log terms or be handled as arctan"
@@ -321,7 +327,10 @@ mod tests {
         let a = Poly::zero();
         let d = Poly::from_coeffs(vec![rat(-1, 1), rat(0, 1), rat(1, 1)]); // x^2 - 1
         let result = logarithmic_part(&a, &d);
-        assert!(result.terms.is_empty(), "zero numerator should give empty result");
+        assert!(
+            result.terms.is_empty(),
+            "zero numerator should give empty result"
+        );
     }
 
     #[test]
@@ -335,24 +344,32 @@ mod tests {
         verify_log_part(&a, &d, &result);
 
         // Should have exactly 2 rational log terms.
-        let rational_terms: Vec<_> = result.terms.iter()
+        let rational_terms: Vec<_> = result
+            .terms
+            .iter()
             .filter_map(|t| match t {
                 LogTerm::Rational { coeff, argument } => Some((coeff.clone(), argument.clone())),
                 _ => None,
             })
             .collect();
         assert_eq!(
-            rational_terms.len(), 2,
+            rational_terms.len(),
+            2,
             "should have 2 rational log terms, got {}: {:?}",
-            rational_terms.len(), rational_terms
+            rational_terms.len(),
+            rational_terms
         );
 
         // Check coefficients sum to 3 (= leading coeff of A divided by leading coeff of D)
         // Actually, the coefficients should be 2 and 1.
-        let mut coeffs: Vec<Ratio<BigInt>> = rational_terms.iter().map(|(c, _)| c.clone()).collect();
+        let mut coeffs: Vec<Ratio<BigInt>> =
+            rational_terms.iter().map(|(c, _)| c.clone()).collect();
         coeffs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert_eq!(coeffs, vec![rat(1, 1), rat(2, 1)],
-            "coefficients should be [1, 2], got {coeffs:?}");
+        assert_eq!(
+            coeffs,
+            vec![rat(1, 1), rat(2, 1)],
+            "coefficients should be [1, 2], got {coeffs:?}"
+        );
     }
 
     #[test]
@@ -362,19 +379,17 @@ mod tests {
         // The (x-1) factor gives a rational log term.
         // The (x^2+x+1) factor gives algebraic log terms (cube roots of unity).
         let a = Poly::from_int(1);
-        let d = Poly::from_coeffs(vec![
-            rat(-1, 1), rat(0, 1), rat(0, 1), rat(1, 1),
-        ]); // x^3 - 1
+        let d = Poly::from_coeffs(vec![rat(-1, 1), rat(0, 1), rat(0, 1), rat(1, 1)]); // x^3 - 1
 
         let result = logarithmic_part(&a, &d);
         // Should have at least one rational term (from the x-1 factor)
         // and possibly algebraic terms.
-        assert!(
-            !result.terms.is_empty(),
-            "1/(x^3-1) should have log terms"
-        );
+        assert!(!result.terms.is_empty(), "1/(x^3-1) should have log terms");
         // Only verify if all terms are rational (can't verify algebraic).
-        let all_rational = result.terms.iter().all(|t| matches!(t, LogTerm::Rational { .. }));
+        let all_rational = result
+            .terms
+            .iter()
+            .all(|t| matches!(t, LogTerm::Rational { .. }));
         if all_rational {
             verify_log_part(&a, &d, &result);
         }
@@ -390,15 +405,16 @@ mod tests {
         verify_log_part(&a, &d, &result);
 
         // Both log terms should have coefficient 1/2.
-        let rational_terms: Vec<_> = result.terms.iter()
+        let rational_terms: Vec<_> = result
+            .terms
+            .iter()
             .filter_map(|t| match t {
                 LogTerm::Rational { coeff, .. } => Some(coeff.clone()),
                 _ => None,
             })
             .collect();
         for c in &rational_terms {
-            assert_eq!(c.abs(), rat(1, 2),
-                "coefficients should be ±1/2, got {c}");
+            assert_eq!(c.abs(), rat(1, 2), "coefficients should be ±1/2, got {c}");
         }
     }
 

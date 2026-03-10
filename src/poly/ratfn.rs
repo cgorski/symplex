@@ -30,9 +30,7 @@ use num_rational::Ratio;
 use num_traits::{One, Zero};
 
 use super::dense::Poly;
-use super::traits::{
-    BindingStrength, CoeffDisplay, EuclideanDomain, Field, IntegralCoeff, Ring,
-};
+use super::traits::{BindingStrength, CoeffDisplay, EuclideanDomain, Field, IntegralCoeff, Ring};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // The type
@@ -317,11 +315,7 @@ impl fmt::Debug for RationalFn {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl CoeffDisplay for RationalFn {
-    fn fmt_coeff(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        env: BindingStrength,
-    ) -> fmt::Result {
+    fn fmt_coeff(&self, f: &mut fmt::Formatter<'_>, env: BindingStrength) -> fmt::Result {
         if self.denom.is_constant() && One::is_one(&self.denom.coeff(0)) {
             // Denominator is 1: display the numerator.
             if self.numer.is_constant() {
@@ -329,8 +323,8 @@ impl CoeffDisplay for RationalFn {
                 self.numer.coeff(0).fmt_coeff(f, env)
             } else {
                 // Polynomial numerator: needs parens in Product context or tighter.
-                let needs_parens = env >= BindingStrength::Product
-                    && self.numer.degree().unwrap_or(0) > 0;
+                let needs_parens =
+                    env >= BindingStrength::Product && self.numer.degree().unwrap_or(0) > 0;
                 if needs_parens {
                     write!(f, "({})", self.numer)
                 } else {
@@ -378,8 +372,12 @@ mod tests {
     }
 
     // Disambiguated helpers.
-    fn rfzero() -> RationalFn { <RationalFn as Ring>::zero() }
-    fn rfone() -> RationalFn { <RationalFn as Ring>::one() }
+    fn rfzero() -> RationalFn {
+        <RationalFn as Ring>::zero()
+    }
+    fn rfone() -> RationalFn {
+        <RationalFn as Ring>::one()
+    }
 
     // ── Construction ────────────────────────────────────────────────
 
@@ -402,7 +400,7 @@ mod tests {
     fn reduction_cancels_common_factor() {
         // (x² - 1) / (x - 1) should reduce to (x + 1) / 1
         let numer = Poly::from_coeffs(vec![r(-1, 1), r(0, 1), r(1, 1)]); // x² - 1
-        let denom = Poly::from_coeffs(vec![r(-1, 1), r(1, 1)]);          // x - 1
+        let denom = Poly::from_coeffs(vec![r(-1, 1), r(1, 1)]); // x - 1
         let a = RationalFn::new(numer, denom);
         assert_eq!(a.denom(), &Poly::from_int(1));
         // numer should be x + 1
@@ -488,8 +486,8 @@ mod tests {
     #[test]
     fn add_different_denom() {
         // 1/x + 1/x² = (x + 1)/x²
-        let a = rf(&[1], &[0, 1]);       // 1/x
-        let b = rf(&[1], &[0, 0, 1]);    // 1/x²
+        let a = rf(&[1], &[0, 1]); // 1/x
+        let b = rf(&[1], &[0, 0, 1]); // 1/x²
         let c = Ring::add(&a, &b);
         // Should be (x + 1)/x²
         assert_eq!(c.numer().degree(), Some(1));
@@ -499,8 +497,8 @@ mod tests {
     #[test]
     fn mul_inverse_gives_one() {
         // (x + 1) * 1/(x + 1) = 1
-        let a = rf_poly(&[1, 1]);       // x + 1
-        let b = rf(&[1], &[1, 1]);      // 1/(x + 1)
+        let a = rf_poly(&[1, 1]); // x + 1
+        let b = rf(&[1], &[1, 1]); // 1/(x + 1)
         let c = Ring::mul(&a, &b);
         assert!(Ring::is_one(&c), "(x+1) * 1/(x+1) should be 1, got {c}");
     }
@@ -508,8 +506,8 @@ mod tests {
     #[test]
     fn mul_fractions() {
         // (x+1)/x * x/(x-1) = (x+1)/(x-1)
-        let a = rf(&[1, 1], &[0, 1]);    // (x+1)/x
-        let b = rf(&[0, 1], &[-1, 1]);   // x/(x-1)
+        let a = rf(&[1, 1], &[0, 1]); // (x+1)/x
+        let b = rf(&[0, 1], &[-1, 1]); // x/(x-1)
         let c = Ring::mul(&a, &b);
         assert_eq!(c, rf(&[1, 1], &[-1, 1])); // (x+1)/(x-1)
     }
@@ -526,8 +524,8 @@ mod tests {
     #[test]
     fn field_division() {
         // (1/x) / (1/x²) = (1/x) * (x²/1) = x
-        let a = rf(&[1], &[0, 1]);       // 1/x
-        let b = rf(&[1], &[0, 0, 1]);    // 1/x²
+        let a = rf(&[1], &[0, 1]); // 1/x
+        let b = rf(&[1], &[0, 0, 1]); // 1/x²
         let c = Field::div(&a, &b);
         assert_eq!(c, rf_poly(&[0, 1])); // x
     }
@@ -537,7 +535,10 @@ mod tests {
         let a = rf(&[1, 1], &[0, 1]); // (x+1)/x
         let inv = Field::inv(&a);
         let product = Ring::mul(&a, &inv);
-        assert!(Ring::is_one(&product), "a * inv(a) should be 1, got {product}");
+        assert!(
+            Ring::is_one(&product),
+            "a * inv(a) should be 1, got {product}"
+        );
     }
 
     #[test]
@@ -576,7 +577,9 @@ mod tests {
     fn integral_is_integer() {
         assert!(IntegralCoeff::is_integer(&rf_int(5)));
         assert!(IntegralCoeff::is_integer(&rf_int(0)));
-        assert!(!IntegralCoeff::is_integer(&RationalFn::from_rational(r(1, 2))));
+        assert!(!IntegralCoeff::is_integer(&RationalFn::from_rational(r(
+            1, 2
+        ))));
         assert!(!IntegralCoeff::is_integer(&rf_poly(&[0, 1]))); // x
     }
 
@@ -636,7 +639,10 @@ mod tests {
         // (x+1) as a coefficient in a product context → needs parens
         let a = rf_poly(&[1, 1]);
         let s = format_rfc(&a, BindingStrength::Product);
-        assert!(s.starts_with('('), "polynomial coeff in product should have parens: {s}");
+        assert!(
+            s.starts_with('('),
+            "polynomial coeff in product should have parens: {s}"
+        );
     }
 
     #[test]
@@ -644,7 +650,10 @@ mod tests {
         // 1/(x+1) as a coefficient in a product context
         let a = rf(&[1], &[1, 1]);
         let s = format_rfc(&a, BindingStrength::Product);
-        assert!(s.starts_with('('), "fraction coeff in product should have parens: {s}");
+        assert!(
+            s.starts_with('('),
+            "fraction coeff in product should have parens: {s}"
+        );
     }
 
     #[test]
@@ -677,11 +686,14 @@ mod tests {
     #[test]
     fn distributivity() {
         // a * (b + c) = a*b + a*c
-        let a = rf(&[1], &[1, 1]);     // 1/(x+1)
-        let b = rf(&[0, 1], &[1]);      // x
-        let c = rf(&[1], &[-1, 1]);     // 1/(x-1)
+        let a = rf(&[1], &[1, 1]); // 1/(x+1)
+        let b = rf(&[0, 1], &[1]); // x
+        let c = rf(&[1], &[-1, 1]); // 1/(x-1)
         let lhs = Ring::mul(&a, &Ring::add(&b, &c));
         let rhs = Ring::add(&Ring::mul(&a, &b), &Ring::mul(&a, &c));
-        assert_eq!(lhs, rhs, "distributivity failed:\n  lhs = {lhs}\n  rhs = {rhs}");
+        assert_eq!(
+            lhs, rhs,
+            "distributivity failed:\n  lhs = {lhs}\n  rhs = {rhs}"
+        );
     }
 }

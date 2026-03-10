@@ -43,12 +43,7 @@ fn quaternion_identity() {
 #[test]
 fn quaternion_mul_identity() {
     let ctx = Context::new();
-    let q = Quaternion::new(
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(3),
-        ctx.int(4),
-    );
+    let q = Quaternion::new(ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4));
     let id = Quaternion::identity(&ctx);
 
     // q * identity = q
@@ -75,12 +70,7 @@ fn quaternion_mul_identity() {
 #[test]
 fn quaternion_mul_conjugate() {
     let ctx = Context::new();
-    let q = Quaternion::new(
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(3),
-        ctx.int(4),
-    );
+    let q = Quaternion::new(ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4));
     let qc = q.conjugate();
     let product = q.mul(&qc).eval();
 
@@ -99,12 +89,7 @@ fn quaternion_mul_conjugate() {
 #[test]
 fn quaternion_i_squared() {
     let ctx = Context::new();
-    let qi = Quaternion::new(
-        ctx.int(0),
-        ctx.int(1),
-        ctx.int(0),
-        ctx.int(0),
-    );
+    let qi = Quaternion::new(ctx.int(0), ctx.int(1), ctx.int(0), ctx.int(0));
     let result = qi.mul(&qi).eval();
     let (w, x, y, z) = quat_to_f64(&result);
     assert_close(w, -1.0, 1e-12, "i² w");
@@ -120,12 +105,7 @@ fn quaternion_i_squared() {
 #[test]
 fn quaternion_j_squared() {
     let ctx = Context::new();
-    let qj = Quaternion::new(
-        ctx.int(0),
-        ctx.int(0),
-        ctx.int(1),
-        ctx.int(0),
-    );
+    let qj = Quaternion::new(ctx.int(0), ctx.int(0), ctx.int(1), ctx.int(0));
     let result = qj.mul(&qj).eval();
     let (w, x, y, z) = quat_to_f64(&result);
     assert_close(w, -1.0, 1e-12, "j² w");
@@ -141,12 +121,7 @@ fn quaternion_j_squared() {
 #[test]
 fn quaternion_k_squared() {
     let ctx = Context::new();
-    let qk = Quaternion::new(
-        ctx.int(0),
-        ctx.int(0),
-        ctx.int(0),
-        ctx.int(1),
-    );
+    let qk = Quaternion::new(ctx.int(0), ctx.int(0), ctx.int(0), ctx.int(1));
     let result = qk.mul(&qk).eval();
     let (w, x, y, z) = quat_to_f64(&result);
     assert_close(w, -1.0, 1e-12, "k² w");
@@ -162,18 +137,8 @@ fn quaternion_k_squared() {
 #[test]
 fn quaternion_ij_equals_k() {
     let ctx = Context::new();
-    let qi = Quaternion::new(
-        ctx.int(0),
-        ctx.int(1),
-        ctx.int(0),
-        ctx.int(0),
-    );
-    let qj = Quaternion::new(
-        ctx.int(0),
-        ctx.int(0),
-        ctx.int(1),
-        ctx.int(0),
-    );
+    let qi = Quaternion::new(ctx.int(0), ctx.int(1), ctx.int(0), ctx.int(0));
+    let qj = Quaternion::new(ctx.int(0), ctx.int(0), ctx.int(1), ctx.int(0));
     let result = qi.mul(&qj).eval();
     let (w, x, y, z) = quat_to_f64(&result);
     assert_close(w, 0.0, 1e-12, "i*j w");
@@ -189,18 +154,8 @@ fn quaternion_ij_equals_k() {
 #[test]
 fn quaternion_ji_equals_neg_k() {
     let ctx = Context::new();
-    let qi = Quaternion::new(
-        ctx.int(0),
-        ctx.int(1),
-        ctx.int(0),
-        ctx.int(0),
-    );
-    let qj = Quaternion::new(
-        ctx.int(0),
-        ctx.int(0),
-        ctx.int(1),
-        ctx.int(0),
-    );
+    let qi = Quaternion::new(ctx.int(0), ctx.int(1), ctx.int(0), ctx.int(0));
+    let qj = Quaternion::new(ctx.int(0), ctx.int(0), ctx.int(1), ctx.int(0));
     let result = qj.mul(&qi).eval();
     let (w, x, y, z) = quat_to_f64(&result);
     assert_close(w, 0.0, 1e-12, "j*i w");
@@ -216,12 +171,7 @@ fn quaternion_ji_equals_neg_k() {
 #[test]
 fn quaternion_conjugate() {
     let ctx = Context::new();
-    let q = Quaternion::new(
-        ctx.int(5),
-        ctx.int(3),
-        ctx.int(-7),
-        ctx.int(2),
-    );
+    let q = Quaternion::new(ctx.int(5), ctx.int(3), ctx.int(-7), ctx.int(2));
     let qc = q.conjugate().eval();
     let (w, x, y, z) = quat_to_f64(&qc);
     assert_close(w, 5.0, 1e-12, "conjugate w");
@@ -237,12 +187,7 @@ fn quaternion_conjugate() {
 #[test]
 fn quaternion_norm_squared() {
     let ctx = Context::new();
-    let q = Quaternion::new(
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(3),
-        ctx.int(4),
-    );
+    let q = Quaternion::new(ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4));
     let n2 = q.norm_squared().eval().eval_f64().unwrap();
     assert_close(n2, 30.0, 1e-12, "|q|²");
 }
@@ -254,12 +199,7 @@ fn quaternion_norm_squared() {
 #[test]
 fn quaternion_inverse() {
     let ctx = Context::new();
-    let q = Quaternion::new(
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(3),
-        ctx.int(4),
-    );
+    let q = Quaternion::new(ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4));
     let qi = q.inverse();
     let product = q.mul(&qi).eval();
     let (w, x, y, z) = quat_to_f64(&product);
@@ -286,12 +226,7 @@ fn quaternion_to_rotation_identity() {
         for j in 0..3 {
             let val = r.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
-            assert_close(
-                val,
-                expected,
-                1e-12,
-                &format!("R_id[{i}][{j}]"),
-            );
+            assert_close(val, expected, 1e-12, &format!("R_id[{i}][{j}]"));
         }
     }
 }
@@ -308,29 +243,15 @@ fn quaternion_to_rotation_180_z() {
     // | -1  0  0 |
     // |  0 -1  0 |
     // |  0  0  1 |
-    let q = Quaternion::new(
-        ctx.int(0),
-        ctx.int(0),
-        ctx.int(0),
-        ctx.int(1),
-    );
+    let q = Quaternion::new(ctx.int(0), ctx.int(0), ctx.int(0), ctx.int(1));
     let r = q.to_rotation_matrix();
 
-    let expected = [
-        [-1.0, 0.0, 0.0],
-        [0.0, -1.0, 0.0],
-        [0.0, 0.0, 1.0],
-    ];
+    let expected = [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]];
 
     for (i, expected_row) in expected.iter().enumerate() {
         for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = r.get(i, j).eval().eval_f64().unwrap();
-            assert_close(
-                val,
-                exp_val,
-                1e-12,
-                &format!("R_180z[{i}][{j}]"),
-            );
+            assert_close(val, exp_val, 1e-12, &format!("R_180z[{i}][{j}]"));
         }
     }
 }
@@ -361,21 +282,12 @@ fn quaternion_from_axis_angle_z_90() {
     // | 1  0  0 |
     // | 0  0  1 |
     let r = q.to_rotation_matrix();
-    let expected = [
-        [0.0, -1.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0],
-    ];
+    let expected = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
 
     for (i, expected_row) in expected.iter().enumerate() {
         for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = r.get(i, j).eval().eval_f64().unwrap();
-            assert_close(
-                val,
-                exp_val,
-                1e-10,
-                &format!("R_z90[{i}][{j}]"),
-            );
+            assert_close(val, exp_val, 1e-10, &format!("R_z90[{i}][{j}]"));
         }
     }
 }
@@ -415,12 +327,7 @@ fn quaternion_angular_velocity_derivative() {
 #[test]
 fn quaternion_display() {
     let ctx = Context::new();
-    let q = Quaternion::new(
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(3),
-        ctx.int(4),
-    );
+    let q = Quaternion::new(ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4));
     let s = format!("{q}");
     assert_eq!(s, "(1 + 2i + 3j + 4k)");
 }
@@ -465,24 +372,9 @@ fn quaternion_from_vector() {
 #[test]
 fn quaternion_ijk_equals_neg_one() {
     let ctx = Context::new();
-    let qi = Quaternion::new(
-        ctx.int(0),
-        ctx.int(1),
-        ctx.int(0),
-        ctx.int(0),
-    );
-    let qj = Quaternion::new(
-        ctx.int(0),
-        ctx.int(0),
-        ctx.int(1),
-        ctx.int(0),
-    );
-    let qk = Quaternion::new(
-        ctx.int(0),
-        ctx.int(0),
-        ctx.int(0),
-        ctx.int(1),
-    );
+    let qi = Quaternion::new(ctx.int(0), ctx.int(1), ctx.int(0), ctx.int(0));
+    let qj = Quaternion::new(ctx.int(0), ctx.int(0), ctx.int(1), ctx.int(0));
+    let qk = Quaternion::new(ctx.int(0), ctx.int(0), ctx.int(0), ctx.int(1));
     let ij = qi.mul(&qj);
     let ijk = ij.mul(&qk).eval();
     let (w, x, y, z) = quat_to_f64(&ijk);
@@ -499,12 +391,7 @@ fn quaternion_ijk_equals_neg_one() {
 #[test]
 fn quaternion_normalize() {
     let ctx = Context::new();
-    let q = Quaternion::new(
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(3),
-        ctx.int(4),
-    );
+    let q = Quaternion::new(ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4));
     let qn = q.normalize();
     let norm_val = qn.norm_squared().eval().eval_f64().unwrap();
     assert_close(norm_val, 1.0, 1e-10, "|normalize(q)|²");
@@ -518,12 +405,7 @@ fn quaternion_normalize() {
 fn quaternion_subs() {
     let ctx = Context::new();
     let theta = ctx.symbol("theta");
-    let q = Quaternion::new(
-        theta.cos(),
-        theta.sin(),
-        ctx.int(0),
-        ctx.int(0),
-    );
+    let q = Quaternion::new(theta.cos(), theta.sin(), ctx.int(0), ctx.int(0));
     let pi_half = &ctx.pi() / &ctx.int(2);
     let q2 = q.subs(&theta, &pi_half).eval();
     let (w, x, y, z) = quat_to_f64(&q2);
@@ -551,21 +433,12 @@ fn quaternion_from_axis_angle_x_90() {
     // | 1  0  0 |
     // | 0  0 -1 |
     // | 0  1  0 |
-    let expected = [
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, -1.0],
-        [0.0, 1.0, 0.0],
-    ];
+    let expected = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
 
     for (i, expected_row) in expected.iter().enumerate() {
         for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = r.get(i, j).eval().eval_f64().unwrap();
-            assert_close(
-                val,
-                exp_val,
-                1e-10,
-                &format!("R_x90[{i}][{j}]"),
-            );
+            assert_close(val, exp_val, 1e-10, &format!("R_x90[{i}][{j}]"));
         }
     }
 }
@@ -594,12 +467,7 @@ fn quaternion_rotation_matrix_orthogonal() {
         for j in 0..3 {
             let val = product.get(i, j).eval().eval_f64().unwrap();
             let expected = if i == j { 1.0 } else { 0.0 };
-            assert_close(
-                val,
-                expected,
-                1e-10,
-                &format!("R*Rᵀ[{i}][{j}]"),
-            );
+            assert_close(val, expected, 1e-10, &format!("R*Rᵀ[{i}][{j}]"));
         }
     }
 }
@@ -611,24 +479,9 @@ fn quaternion_rotation_matrix_orthogonal() {
 #[test]
 fn quaternion_mul_associative() {
     let ctx = Context::new();
-    let p = Quaternion::new(
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(3),
-        ctx.int(4),
-    );
-    let q = Quaternion::new(
-        ctx.int(5),
-        ctx.int(-1),
-        ctx.int(2),
-        ctx.int(-3),
-    );
-    let r = Quaternion::new(
-        ctx.int(-2),
-        ctx.int(1),
-        ctx.int(0),
-        ctx.int(7),
-    );
+    let p = Quaternion::new(ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4));
+    let q = Quaternion::new(ctx.int(5), ctx.int(-1), ctx.int(2), ctx.int(-3));
+    let r = Quaternion::new(ctx.int(-2), ctx.int(1), ctx.int(0), ctx.int(7));
 
     let lhs = p.mul(&q).mul(&r).eval();
     let rhs = p.mul(&q.mul(&r)).eval();
@@ -649,18 +502,8 @@ fn quaternion_mul_associative() {
 #[test]
 fn quaternion_norm_product() {
     let ctx = Context::new();
-    let p = Quaternion::new(
-        ctx.int(1),
-        ctx.int(2),
-        ctx.int(3),
-        ctx.int(4),
-    );
-    let q = Quaternion::new(
-        ctx.int(5),
-        ctx.int(-1),
-        ctx.int(2),
-        ctx.int(-3),
-    );
+    let p = Quaternion::new(ctx.int(1), ctx.int(2), ctx.int(3), ctx.int(4));
+    let q = Quaternion::new(ctx.int(5), ctx.int(-1), ctx.int(2), ctx.int(-3));
 
     let norm_p = p.norm().eval().eval_f64().unwrap();
     let norm_q = q.norm().eval().eval_f64().unwrap();

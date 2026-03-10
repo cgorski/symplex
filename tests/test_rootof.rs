@@ -24,10 +24,7 @@ fn solve_quintic_returns_rootof() {
     // rational roots and no radical formula for degree 5.
     for root in &roots {
         let s = format!("{root}");
-        assert!(
-            s.contains("RootOf"),
-            "expected RootOf in display, got: {s}"
-        );
+        assert!(s.contains("RootOf"), "expected RootOf in display, got: {s}");
     }
 }
 
@@ -78,10 +75,7 @@ fn solve_quintic_with_rational_root_mixed() {
     let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     let has_one = strs.iter().any(|s| s == "1");
     let has_rootof = strs.iter().any(|s| s.contains("RootOf"));
-    assert!(
-        has_one,
-        "should find rational root x = 1 among: {strs:?}"
-    );
+    assert!(has_one, "should find rational root x = 1 among: {strs:?}");
     assert!(
         has_rootof,
         "should also have RootOf entries for the quintic factor: {strs:?}"
@@ -158,7 +152,10 @@ fn rootof_eval_decimal_quintic() {
             }
         }
     }
-    assert!(found_real, "should find the real root ≈ 1.167 among the RootOf objects");
+    assert!(
+        found_real,
+        "should find the real root ≈ 1.167 among the RootOf objects"
+    );
 }
 
 #[test]

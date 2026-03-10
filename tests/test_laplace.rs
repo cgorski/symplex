@@ -20,9 +20,9 @@ fn verify_laplace_numerically(
     let ctx = result.context();
     let s_val = ctx.rational(s_num, s_den);
     let at_s = result.subs(s, &s_val);
-    let val = at_s.eval_f64().unwrap_or_else(|_| panic!(
-        "{label}: should evaluate numerically at s={s_num}/{s_den}"
-    ));
+    let val = at_s
+        .eval_f64()
+        .unwrap_or_else(|_| panic!("{label}: should evaluate numerically at s={s_num}/{s_den}"));
     assert!(
         (val - expected).abs() < 1e-3,
         "{label}: at s={s_num}/{s_den}, expected {expected}, got {val}"
@@ -160,14 +160,7 @@ fn laplace_linearity() {
     let d = format!("{r}");
     assert!(d.contains("s"), "result should contain s, got: {d}");
     // Numerical: at s=4, 3/(4-1) + 2/(16+1) = 1 + 2/17 ≈ 1.1176
-    verify_laplace_numerically(
-        &r,
-        &s,
-        4,
-        1,
-        3.0 / 3.0 + 2.0 / 17.0,
-        "L{3*exp(t)+2*sin(t)}",
-    );
+    verify_laplace_numerically(&r, &s, 4, 1, 3.0 / 3.0 + 2.0 / 17.0, "L{3*exp(t)+2*sin(t)}");
 }
 
 #[test]
@@ -247,10 +240,7 @@ fn inverse_laplace_1_over_s_minus_a() {
     let f = &ctx.int(1) / &(&s - 2);
     let r = f.inverse_laplace(&s, &t);
     let d = format!("{r}");
-    assert!(
-        d.contains("exp"),
-        "L⁻¹{{1/(s-2)}} should contain exp: {d}"
-    );
+    assert!(d.contains("exp"), "L⁻¹{{1/(s-2)}} should contain exp: {d}");
 }
 
 #[test]
@@ -272,7 +262,10 @@ fn laplace_rejects_non_symbol_t() {
     let f = ctx.int(1);
     let bad_t = ctx.int(42); // not a symbol
     let result = f.laplace(&bad_t, &s);
-    assert!(result.has_unevaluated(), "should produce unevaluated node for non-symbol t");
+    assert!(
+        result.has_unevaluated(),
+        "should produce unevaluated node for non-symbol t"
+    );
 }
 
 #[test]
@@ -282,5 +275,8 @@ fn laplace_rejects_non_symbol_s() {
     let f = ctx.int(1);
     let bad_s = ctx.int(42); // not a symbol
     let result = f.laplace(&t, &bad_s);
-    assert!(result.has_unevaluated(), "should produce unevaluated node for non-symbol s");
+    assert!(
+        result.has_unevaluated(),
+        "should produce unevaluated node for non-symbol s"
+    );
 }

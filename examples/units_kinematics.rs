@@ -6,8 +6,8 @@
 //! Run with: cargo run --example units_kinematics
 
 use symplex::prelude::*;
-use symplex::units::*;
 use symplex::units::constants;
+use symplex::units::*;
 
 fn main() {
     println!("═══════════════════════════════════════════════════════════════");
@@ -30,7 +30,7 @@ fn main() {
 
     // Position: x(t) = ½gt² — built ergonomically with expr!
     // from_ex wraps the raw expression in the Length type
-    let x_t = Length::from_ex(expr!(ctx, 1/2 * g * t^2));
+    let x_t = Length::from_ex(expr!(ctx, 1 / 2 * g * t ^ 2));
     println!("  x(t) = {}", x_t);
 
     // Velocity: v(t) = dx/dt — typed differentiation!
@@ -47,16 +47,15 @@ fn main() {
     println!("  ✓ a(t) = {} (should be g)", a_t.inner());
 
     // Numerical evaluation: x at t=3s with g=9.81 m/s²
-    let x_num = x_t.clone()
+    let x_num = x_t
+        .clone()
         .subs(&g, &ctx.rational(981, 100))
         .subs(&t, &ctx.int(3))
         .eval();
     println!("  x(t=3, g=9.81) = {} (≈44.145 m)", x_num);
 
     // Also demonstrate eval_f64_with for quick numeric answers
-    let x_f64 = x_t
-        .eval_f64_with(&[(&g, 10), (&t, 3)])
-        .unwrap();
+    let x_f64 = x_t.eval_f64_with(&[(&g, 10), (&t, 3)]).unwrap();
     println!("  x(t=3, g=10)   = {:.2} m (f64)", x_f64);
 
     // Using the physical constant for g:
@@ -79,7 +78,7 @@ fn main() {
     println!("  x(t) = {}", x_proj);
 
     // Vertical position: y(t) = v₀·sin(θ)·t - ½gt²
-    let y_proj = Length::from_ex(expr!(ctx, v0 * sin(theta) * t - 1/2 * g * t^2));
+    let y_proj = Length::from_ex(expr!(ctx, v0 * sin(theta) * t - 1 / 2 * g * t ^ 2));
     println!("  y(t) = {}", y_proj);
 
     // Horizontal velocity: vx = dx/dt (use raw diff + from_ex)
@@ -101,14 +100,16 @@ fn main() {
     let g_val = ctx.rational(981, 100);
 
     for t_val in [0, 1, 2, 3] {
-        let x_val = x_proj.clone()
+        let x_val = x_proj
+            .clone()
             .subs(&v0, &ctx.int(20))
             .subs(&theta, &pi_over_4)
             .subs(&g, &g_val)
             .subs(&t, &ctx.int(t_val))
             .eval();
 
-        let y_val = y_proj.clone()
+        let y_val = y_proj
+            .clone()
             .subs(&v0, &ctx.int(20))
             .subs(&theta, &pi_over_4)
             .subs(&g, &g_val)
@@ -152,7 +153,7 @@ fn main() {
 
     // Kinetic energy: KE = ½mv² using expr!
     symplex::syms!(ctx; m, v);
-    let ke = Energy::from_ex(expr!(ctx, 1/2 * m * v^2));
+    let ke = Energy::from_ex(expr!(ctx, 1 / 2 * m * v ^ 2));
     println!("  KE = ½mv² = {}", ke);
 
     // Differentiate KE w.r.t. velocity → Momentum (p = mv)
@@ -166,10 +167,7 @@ fn main() {
     println!("  dp/dt = F = {}", force_from_p);
 
     // Numerical: m=2kg moving at v=5m/s → KE = 25 J
-    let ke_num = ke
-        .subs(&m, &ctx.int(2))
-        .subs(&v, &ctx.int(5))
-        .eval();
+    let ke_num = ke.subs(&m, &ctx.int(2)).subs(&v, &ctx.int(5)).eval();
     println!("\n  KE(m=2, v=5) = {} (should be 25 J)", ke_num);
 
     // Work = F·d = ma·d. With m=2, a=3, d=10 → W = 60 J

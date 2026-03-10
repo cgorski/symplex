@@ -130,12 +130,7 @@ impl DifferentialExtension {
     /// - `ext_var`: the arena symbol for `θ`
     /// - `argument`: the arena expression for `u`
     /// - `derivative`: the arena expression for `Dθ = Du/u`
-    pub fn push_logarithmic(
-        &mut self,
-        ext_var: ExprId,
-        argument: ExprId,
-        derivative: ExprId,
-    ) {
+    pub fn push_logarithmic(&mut self, ext_var: ExprId, argument: ExprId, derivative: ExprId) {
         self.levels.push(ExtensionLevel {
             kind: ExtensionKind::Logarithmic,
             ext_var,
@@ -150,12 +145,7 @@ impl DifferentialExtension {
     /// - `ext_var`: the arena symbol for `θ`
     /// - `argument`: the arena expression for `u`
     /// - `derivative`: the arena expression for `Dθ = Du · θ`
-    pub fn push_exponential(
-        &mut self,
-        ext_var: ExprId,
-        argument: ExprId,
-        derivative: ExprId,
-    ) {
+    pub fn push_exponential(&mut self, ext_var: ExprId, argument: ExprId, derivative: ExprId) {
         self.levels.push(ExtensionLevel {
             kind: ExtensionKind::Exponential,
             ext_var,
@@ -344,7 +334,9 @@ fn find_integer_multiples(
     }
 
     let mut ratios: Vec<num_rational::Ratio<num_bigint::BigInt>> = Vec::new();
-    ratios.push(num_rational::Ratio::from_integer(num_bigint::BigInt::from(1)));
+    ratios.push(num_rational::Ratio::from_integer(num_bigint::BigInt::from(
+        1,
+    )));
 
     for poly in &polys[1..] {
         let (quot, rem) = poly.div_rem(ref_poly);
@@ -368,10 +360,8 @@ fn find_integer_multiples(
     // Simpler approach: find the minimum ratio and divide all by it.
     // This gives multipliers ≥ 1.  Then check they're all integers.
     let min_ratio = ratios.iter().min().cloned().unwrap();
-    let int_multiples: Vec<num_rational::Ratio<num_bigint::BigInt>> = ratios
-        .iter()
-        .map(|r| r / &min_ratio)
-        .collect();
+    let int_multiples: Vec<num_rational::Ratio<num_bigint::BigInt>> =
+        ratios.iter().map(|r| r / &min_ratio).collect();
 
     // Check all are positive integers.
     for m in &int_multiples {
@@ -385,9 +375,7 @@ fn find_integer_multiples(
     // Otherwise, we need to scale — but we don't have &mut Arena.
     // We can only return a base if min_ratio is 1 (i.e., the first arg
     // is the smallest).  Otherwise, check if any arg IS the base.
-    let base_idx = ratios
-        .iter()
-        .position(|r| *r == min_ratio);
+    let base_idx = ratios.iter().position(|r| *r == min_ratio);
 
     let base_idx = match base_idx {
         Some(i) => i,
@@ -506,7 +494,8 @@ pub fn extract_poly_in_ext(
     expr: ExprId,
     ext_var: ExprId,
 ) -> Option<Vec<(usize, ExprId)>> {
-    let mut coeffs: std::collections::BTreeMap<usize, Vec<ExprId>> = std::collections::BTreeMap::new();
+    let mut coeffs: std::collections::BTreeMap<usize, Vec<ExprId>> =
+        std::collections::BTreeMap::new();
     extract_terms(arena, expr, ext_var, &mut coeffs)?;
 
     // Merge coefficient lists: for each power, sum the collected terms.
@@ -632,7 +621,7 @@ fn extract_terms(
         ExprNode::Pow(base, exp) => {
             if base == ext_var {
                 if let Some(r) = arena.as_num(exp) {
-                if r.is_integer() && !(*r).is_negative() {
+                    if r.is_integer() && !(*r).is_negative() {
                         if let Ok(n) = usize::try_from(r.to_integer()) {
                             coeffs.entry(n).or_default().push(arena.one());
                             return Some(());
@@ -692,11 +681,7 @@ pub fn extract_poly_in_ext_mut(
 ///
 /// This works at the arena `ExprId` level — the result is a symbolic
 /// expression in the arena, not a polynomial.
-pub fn derivation(
-    arena: &mut Arena,
-    expr: ExprId,
-    de: &DifferentialExtension,
-) -> ExprId {
+pub fn derivation(arena: &mut Arena, expr: ExprId, de: &DifferentialExtension) -> ExprId {
     if de.levels.is_empty() {
         // Base case: no extensions, just d/dx.
         return crate::transforms::diff::diff(arena, expr, de.base_var);
@@ -899,10 +884,7 @@ mod tests {
         let result = derivation(&mut arena, theta, &de);
         let s = display(&arena, result);
         // Should be 1/x or x^(-1).
-        assert!(
-            s.contains("x"),
-            "D(θ) = 1/x for ln extension, got: {s}"
-        );
+        assert!(s.contains("x"), "D(θ) = 1/x for ln extension, got: {s}");
     }
 
     #[test]
@@ -1052,9 +1034,11 @@ mod tests {
         let recon_val = crate::transforms::subs::subs(&mut arena, reconstructed, theta, seven);
         let recon_eval = crate::transforms::eval::eval(&mut arena, recon_val);
         assert_eq!(
-            orig_eval, recon_eval,
+            orig_eval,
+            recon_eval,
             "reconstruction at θ=7: orig={}, recon={}",
-            display(&arena, orig_eval), display(&arena, recon_eval)
+            display(&arena, orig_eval),
+            display(&arena, recon_eval)
         );
     }
 
@@ -1143,14 +1127,17 @@ mod tests {
         // Substitute x=1 in integrand, then θ = exp(1).
         let integrand_at_1 = crate::transforms::subs::subs(&mut arena, de.integrand, x, one);
         let exp_1 = arena.exp(one);
-        let integrand_back = crate::transforms::subs::subs(&mut arena, integrand_at_1, ext_var, exp_1);
+        let integrand_back =
+            crate::transforms::subs::subs(&mut arena, integrand_at_1, ext_var, exp_1);
         let integrand_eval = crate::transforms::eval::eval(&mut arena, integrand_back);
 
         let orig_eval = crate::transforms::eval::eval(&mut arena, orig_at_1);
         assert_eq!(
-            orig_eval, integrand_eval,
+            orig_eval,
+            integrand_eval,
             "tower equivalence at x=1: orig={}, rewritten={}",
-            display(&arena, orig_eval), display(&arena, integrand_eval)
+            display(&arena, orig_eval),
+            display(&arena, integrand_eval)
         );
     }
 
@@ -1171,14 +1158,17 @@ mod tests {
 
         let integrand_at_2 = crate::transforms::subs::subs(&mut arena, de.integrand, x, two);
         let ln_2 = arena.ln(two);
-        let integrand_back = crate::transforms::subs::subs(&mut arena, integrand_at_2, ext_var, ln_2);
+        let integrand_back =
+            crate::transforms::subs::subs(&mut arena, integrand_at_2, ext_var, ln_2);
         let integrand_eval = crate::transforms::eval::eval(&mut arena, integrand_back);
 
         let orig_eval = crate::transforms::eval::eval(&mut arena, orig_at_2);
         assert_eq!(
-            orig_eval, integrand_eval,
+            orig_eval,
+            integrand_eval,
             "tower equivalence at x=2: orig={}, rewritten={}",
-            display(&arena, orig_eval), display(&arena, integrand_eval)
+            display(&arena, orig_eval),
+            display(&arena, integrand_eval)
         );
     }
 
@@ -1209,9 +1199,11 @@ mod tests {
         let int_eval = crate::transforms::eval::eval(&mut arena, int_back);
 
         assert_eq!(
-            display(&arena, orig_eval), display(&arena, int_eval),
+            display(&arena, orig_eval),
+            display(&arena, int_eval),
             "tower equivalence at x=0: orig={}, rewritten={}",
-            display(&arena, orig_eval), display(&arena, int_eval)
+            display(&arena, orig_eval),
+            display(&arena, int_eval)
         );
     }
 
@@ -1244,10 +1236,7 @@ mod tests {
         assert_eq!(de.current_kind(), Some(&ExtensionKind::Exponential));
         // Integrand should be rewritten as θ.
         let s = display(&arena, de.integrand);
-        assert!(
-            s.contains("__t0"),
-            "integrand should use __t0, got: {s}"
-        );
+        assert!(s.contains("__t0"), "integrand should use __t0, got: {s}");
     }
 
     #[test]
@@ -1265,10 +1254,7 @@ mod tests {
         assert_eq!(de.depth(), 1);
         assert_eq!(de.current_kind(), Some(&ExtensionKind::Exponential));
         let s = display(&arena, de.integrand);
-        assert!(
-            s.contains("__t0"),
-            "integrand should use __t0, got: {s}"
-        );
+        assert!(s.contains("__t0"), "integrand should use __t0, got: {s}");
     }
 
     #[test]
@@ -1282,10 +1268,7 @@ mod tests {
         assert_eq!(de.depth(), 1);
         assert_eq!(de.current_kind(), Some(&ExtensionKind::Logarithmic));
         let s = display(&arena, de.integrand);
-        assert!(
-            s.contains("__t0"),
-            "integrand should use __t0, got: {s}"
-        );
+        assert!(s.contains("__t0"), "integrand should use __t0, got: {s}");
     }
 
     #[test]
@@ -1304,10 +1287,7 @@ mod tests {
         assert_eq!(de.depth(), 1);
         assert_eq!(de.current_kind(), Some(&ExtensionKind::Exponential));
         let s = display(&arena, de.integrand);
-        assert!(
-            s.contains("__t0"),
-            "integrand should use __t0, got: {s}"
-        );
+        assert!(s.contains("__t0"), "integrand should use __t0, got: {s}");
         // Should contain θ² (as __t0^2) and θ.
         assert!(
             s.contains("__t0^2") || s.contains("__t0"),
@@ -1329,10 +1309,7 @@ mod tests {
         let de = build_tower(&mut arena, expr, x).unwrap();
         assert_eq!(de.depth(), 1);
         let s = display(&arena, de.integrand);
-        assert!(
-            s.contains("__t0"),
-            "integrand should use __t0, got: {s}"
-        );
+        assert!(s.contains("__t0"), "integrand should use __t0, got: {s}");
     }
 
     #[test]
@@ -1347,7 +1324,11 @@ mod tests {
         let expr = arena.add(&[exp_x, exp_x_sq]);
 
         let result = build_tower(&mut arena, expr, x);
-        assert!(result.is_err(), "independent exps should fail: {:?}", result);
+        assert!(
+            result.is_err(),
+            "independent exps should fail: {:?}",
+            result
+        );
     }
 
     #[test]

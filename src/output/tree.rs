@@ -1013,7 +1013,12 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let p = tree_to_expr(arena, point);
             arena.intern(ExprNode::Limit(b, v, p))
         }
-        ExprTree::Series { body, var, point, order } => {
+        ExprTree::Series {
+            body,
+            var,
+            point,
+            order,
+        } => {
             let b = tree_to_expr(arena, body);
             let v = tree_to_expr(arena, var);
             let p = tree_to_expr(arena, point);

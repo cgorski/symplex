@@ -125,7 +125,10 @@ fn main() {
     println!("\n--- Verification ---");
     println!("  Known minimum:  (1.0000, 1.0000)");
     println!("  Found:          ({px:.4}, {py:.4})");
-    println!("  Distance:       {:.6}", ((px - 1.0).powi(2) + (py - 1.0).powi(2)).sqrt());
+    println!(
+        "  Distance:       {:.6}",
+        ((px - 1.0).powi(2) + (py - 1.0).powi(2)).sqrt()
+    );
     println!("  Final loss:     {best_loss:.10}");
 
     // ── 6. Show the generated code ─────────────────────────────────

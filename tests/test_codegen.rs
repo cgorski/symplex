@@ -209,7 +209,10 @@ fn codegen_output_is_valid_rust_syntax() {
     // Verify balanced parentheses
     let open_parens = code.chars().filter(|&c| c == '(').count();
     let close_parens = code.chars().filter(|&c| c == ')').count();
-    assert_eq!(open_parens, close_parens, "unbalanced parentheses in: {code}");
+    assert_eq!(
+        open_parens, close_parens,
+        "unbalanced parentheses in: {code}"
+    );
 }
 
 #[test]

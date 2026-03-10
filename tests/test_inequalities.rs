@@ -276,13 +276,23 @@ fn solveset_quadratic() {
     assert!(s.contains("2"), "should contain root 2: {s}");
     assert!(s.contains("3"), "should contain root 3: {s}");
     // Verify roots: poly at x=2 → 4-10+6=0
-    let val_at_2 = poly.subs(&x, &ctx.int(2)).eval_f64()
+    let val_at_2 = poly
+        .subs(&x, &ctx.int(2))
+        .eval_f64()
         .expect("eval at root 2 should succeed");
-    assert!(val_at_2.abs() < 1e-10, "poly(2) should be 0, got {val_at_2}");
+    assert!(
+        val_at_2.abs() < 1e-10,
+        "poly(2) should be 0, got {val_at_2}"
+    );
     // Verify roots: poly at x=3 → 9-15+6=0
-    let val_at_3 = poly.subs(&x, &ctx.int(3)).eval_f64()
+    let val_at_3 = poly
+        .subs(&x, &ctx.int(3))
+        .eval_f64()
         .expect("eval at root 3 should succeed");
-    assert!(val_at_3.abs() < 1e-10, "poly(3) should be 0, got {val_at_3}");
+    assert!(
+        val_at_3.abs() < 1e-10,
+        "poly(3) should be 0, got {val_at_3}"
+    );
 }
 
 #[test]
@@ -295,9 +305,14 @@ fn solveset_linear() {
     // x - 7 = 0 → {7}
     assert!(s.contains("7"), "should contain root 7: {s}");
     // Verify root
-    let val_at_7 = expr.subs(&x, &ctx.int(7)).eval_f64()
+    let val_at_7 = expr
+        .subs(&x, &ctx.int(7))
+        .eval_f64()
         .expect("eval at root 7 should succeed");
-    assert!(val_at_7.abs() < 1e-10, "expr(7) should be 0, got {val_at_7}");
+    assert!(
+        val_at_7.abs() < 1e-10,
+        "expr(7) should be 0, got {val_at_7}"
+    );
 }
 
 #[test]
@@ -549,10 +564,7 @@ fn solve_always_negative() {
     let poly = -&(&x.powi(2) + 1);
     let result = poly.solve_gt(&x);
     let s = format!("{result}");
-    assert_eq!(
-        s, "EmptySet",
-        "-(x²+1) > 0 should be EmptySet, got: {s}"
-    );
+    assert_eq!(s, "EmptySet", "-(x²+1) > 0 should be EmptySet, got: {s}");
     // Verify polynomial is negative at several points
     common::assert_negative_at(&poly, &x, 0, "-(x²+1) at x=0");
     common::assert_negative_at(&poly, &x, 5, "-(x²+1) at x=5");
@@ -572,14 +584,18 @@ fn solve_ge_includes_boundary() {
         "x²-4 >= 0 should have solutions: {s}"
     );
     // At the boundary x=2, x²-4 = 0 which satisfies >= 0
-    let val_at_2 = poly.subs(&x, &ctx.int(2)).eval_f64()
+    let val_at_2 = poly
+        .subs(&x, &ctx.int(2))
+        .eval_f64()
         .expect("eval at boundary x=2 should succeed");
     assert!(
         val_at_2.abs() < 1e-10,
         "x²-4 at x=2 should be 0, got {val_at_2}"
     );
     // At the boundary x=-2, x²-4 = 0
-    let val_at_neg2 = poly.subs(&x, &ctx.int(-2)).eval_f64()
+    let val_at_neg2 = poly
+        .subs(&x, &ctx.int(-2))
+        .eval_f64()
         .expect("eval at boundary x=-2 should succeed");
     assert!(
         val_at_neg2.abs() < 1e-10,

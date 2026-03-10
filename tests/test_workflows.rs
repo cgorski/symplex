@@ -7,7 +7,7 @@
 mod common;
 
 use symplex::eq::Equation;
-use symplex::matrix::{jacobian, Matrix};
+use symplex::matrix::{Matrix, jacobian};
 use symplex::prelude::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -49,23 +49,23 @@ fn workflow_calculus_optimization() {
 
     // f''(1) = 6(1)-12 = -6 < 0  → local max
     let fpp_at1 = fpp.subs_i64(&x, 1).eval().eval_f64().expect("f''(1)");
-    assert!(fpp_at1 < 0.0, "f''(1) should be negative (local max), got {fpp_at1}");
+    assert!(
+        fpp_at1 < 0.0,
+        "f''(1) should be negative (local max), got {fpp_at1}"
+    );
 
     // f''(3) = 6(3)-12 = 6 > 0  → local min
     let fpp_at3 = fpp.subs_i64(&x, 3).eval().eval_f64().expect("f''(3)");
-    assert!(fpp_at3 > 0.0, "f''(3) should be positive (local min), got {fpp_at3}");
+    assert!(
+        fpp_at3 > 0.0,
+        "f''(3) should be positive (local min), got {fpp_at3}"
+    );
 
     // Step 4: verify function values  f(1)=5, f(3)=1
     let f1 = f.subs_i64(&x, 1).eval().eval_f64().expect("f(1)");
-    assert!(
-        (f1 - 5.0).abs() < 1e-9,
-        "f(1) should be 5, got {f1}"
-    );
+    assert!((f1 - 5.0).abs() < 1e-9, "f(1) should be 5, got {f1}");
     let f3 = f.subs_i64(&x, 3).eval().eval_f64().expect("f(3)");
-    assert!(
-        (f3 - 1.0).abs() < 1e-9,
-        "f(3) should be 1, got {f3}"
-    );
+    assert!((f3 - 1.0).abs() < 1e-9, "f(3) should be 1, got {f3}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -101,7 +101,9 @@ fn workflow_diff_integrate_roundtrip() {
         assert!(
             (d - c).abs() < 1e-9,
             "g(x)-f(x) should be constant; at x={} diff={}, expected {}",
-            pts[i], d, c
+            pts[i],
+            d,
+            c
         );
     }
 }
@@ -111,8 +113,8 @@ fn workflow_diff_integrate_roundtrip_trig() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = x.sin();
-    let fp = f.diff(&x);       // cos(x)
-    let g = fp.integrate(&x);  // should give sin(x) (+ C)
+    let fp = f.diff(&x); // cos(x)
+    let g = fp.integrate(&x); // should give sin(x) (+ C)
 
     // Numerically: g(x) - f(x) should be constant
     let pts: &[(i64, i64)] = &[(1, 10), (3, 10), (7, 10), (11, 10)];
@@ -128,7 +130,9 @@ fn workflow_diff_integrate_roundtrip_trig() {
         assert!(
             (d - c).abs() < 1e-9,
             "sin round-trip: diff at pt {} = {}, expected const {}",
-            i, d, c
+            i,
+            d,
+            c
         );
     }
 }
@@ -189,7 +193,10 @@ fn workflow_taylor_convergence() {
         (5, 10, 0.5_f64.sin()),
     ] {
         let pt = ctx.rational(num, denom);
-        let sv = series_expanded.subs(&x, &pt).eval().eval_f64()
+        let sv = series_expanded
+            .subs(&x, &pt)
+            .eval()
+            .eval_f64()
             .expect("series eval");
         let x_val = num as f64 / denom as f64;
         assert!(
@@ -210,7 +217,10 @@ fn workflow_taylor_exp_convergence() {
 
     for &(num, denom) in &[(1i64, 10i64), (5, 10), (1, 1)] {
         let pt = ctx.rational(num, denom);
-        let sv = series_expanded.subs(&x, &pt).eval().eval_f64()
+        let sv = series_expanded
+            .subs(&x, &pt)
+            .eval()
+            .eval_f64()
             .expect("series eval");
         let x_val = num as f64 / denom as f64;
         let expected = x_val.exp();
@@ -273,16 +283,23 @@ fn workflow_matrix_eigenvalue_properties() {
     let m = Matrix::new(vec![
         vec![ctx.int(2), ctx.int(1)],
         vec![ctx.int(1), ctx.int(2)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     // Step 1: trace and determinant
     let tr = m.trace().unwrap();
     let tr_val = tr.eval_f64().expect("trace eval");
-    assert!((tr_val - 4.0).abs() < 1e-9, "trace should be 4, got {tr_val}");
+    assert!(
+        (tr_val - 4.0).abs() < 1e-9,
+        "trace should be 4, got {tr_val}"
+    );
 
     let det = m.det().unwrap();
     let det_val = det.eval_f64().expect("det eval");
-    assert!((det_val - 3.0).abs() < 1e-9, "det should be 3, got {det_val}");
+    assert!(
+        (det_val - 3.0).abs() < 1e-9,
+        "det should be 3, got {det_val}"
+    );
 
     // Step 2: eigenvalues
     let eigs = m.eigenvals(&lam).unwrap();
@@ -295,8 +312,16 @@ fn workflow_matrix_eigenvalue_properties() {
     eig_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     // eigenvalues of [[2,1],[1,2]] are 1 and 3
-    assert!((eig_vals[0] - 1.0).abs() < 1e-9, "λ₁ should be 1, got {}", eig_vals[0]);
-    assert!((eig_vals[1] - 3.0).abs() < 1e-9, "λ₂ should be 3, got {}", eig_vals[1]);
+    assert!(
+        (eig_vals[0] - 1.0).abs() < 1e-9,
+        "λ₁ should be 1, got {}",
+        eig_vals[0]
+    );
+    assert!(
+        (eig_vals[1] - 3.0).abs() < 1e-9,
+        "λ₂ should be 3, got {}",
+        eig_vals[1]
+    );
 
     // Step 3: verify sum(eigenvalues) = trace
     let eig_sum = eig_vals[0] + eig_vals[1];
@@ -388,7 +413,11 @@ fn workflow_trig_simplify_chain() {
         let x_val = num as f64 / denom as f64;
 
         let orig_val = expr.subs(&x, &pt).eval().eval_f64().expect("orig eval");
-        let simp_val = simplified.subs(&x, &pt).eval().eval_f64().expect("simp eval");
+        let simp_val = simplified
+            .subs(&x, &pt)
+            .eval()
+            .eval_f64()
+            .expect("simp eval");
         let expected = 1.0 + (2.0 * x_val).sin();
 
         assert!(
@@ -419,10 +448,7 @@ fn workflow_complex_euler() {
         (re - (-1.0)).abs() < 1e-9,
         "Re(exp(iπ)) should be -1, got {re}"
     );
-    assert!(
-        im.abs() < 1e-9,
-        "Im(exp(iπ)) should be 0, got {im}"
-    );
+    assert!(im.abs() < 1e-9, "Im(exp(iπ)) should be 0, got {im}");
 
     // exp(i*π) + 1 should be 0  (Euler's identity)
     let euler = &(&i * &pi).exp() + 1;
@@ -502,7 +528,8 @@ fn workflow_polynomial_algebra_factor_expand() {
 
 #[test]
 fn workflow_definite_integral_verification() {
-    let ctx = Context::new(); let ctx = ctx.clone();
+    let ctx = Context::new();
+    let ctx = ctx.clone();
     let x = ctx.symbol("x");
 
     // ∫₀¹ x² dx = 1/3
@@ -524,7 +551,8 @@ fn workflow_definite_integral_verification() {
 
 #[test]
 fn workflow_definite_integral_polynomial() {
-    let ctx = Context::new(); let ctx = ctx.clone();
+    let ctx = Context::new();
+    let ctx = ctx.clone();
     let x = ctx.symbol("x");
 
     // ∫₁² (x² + x) dx = [x³/3 + x²/2]₁² = (8/3 + 2) - (1/3 + 1/2) = 23/6
@@ -662,8 +690,16 @@ fn workflow_equation_solve_check() {
         .map(|r| r.eval_f64().expect("root eval"))
         .collect();
     vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    assert!((vals[0] - 2.0).abs() < 1e-9, "root 1 should be 2, got {}", vals[0]);
-    assert!((vals[1] - 3.0).abs() < 1e-9, "root 2 should be 3, got {}", vals[1]);
+    assert!(
+        (vals[0] - 2.0).abs() < 1e-9,
+        "root 1 should be 2, got {}",
+        vals[0]
+    );
+    assert!(
+        (vals[1] - 3.0).abs() < 1e-9,
+        "root 2 should be 3, got {}",
+        vals[1]
+    );
 }
 
 #[test]
@@ -792,7 +828,11 @@ fn workflow_chain_rule_verification() {
     for &(num, denom) in &[(3i64, 10i64), (7, 10), (12, 10)] {
         let pt = ctx.rational(num, denom);
         let dv = deriv.subs(&x, &pt).eval().eval_f64().expect("deriv eval");
-        let ev = expected.subs(&x, &pt).eval().eval_f64().expect("expected eval");
+        let ev = expected
+            .subs(&x, &pt)
+            .eval()
+            .eval_f64()
+            .expect("expected eval");
         assert!(
             common::approx_eq(dv, ev, 1e-9),
             "chain rule at {num}/{denom}: computed={dv}, expected={ev}"
@@ -829,7 +869,8 @@ fn workflow_matrix_inverse_verify() {
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(0), ctx.int(1), ctx.int(4)],
         vec![ctx.int(5), ctx.int(6), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let det = m.det().unwrap();
     let det_val = det.eval_f64().expect("det eval");

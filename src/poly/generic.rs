@@ -25,7 +25,7 @@
 use std::fmt;
 use std::hash;
 
-use super::traits::{Ring, Field, CoeffDisplay, BindingStrength, IntegralCoeff};
+use super::traits::{BindingStrength, CoeffDisplay, Field, IntegralCoeff, Ring};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // The type
@@ -67,7 +67,9 @@ impl<C: Ring> GenPoly<C> {
 
     /// The constant polynomial `1`.
     pub fn one() -> Self {
-        GenPoly { coeffs: vec![C::one()] }
+        GenPoly {
+            coeffs: vec![C::one()],
+        }
     }
 
     /// A constant polynomial.
@@ -417,7 +419,9 @@ impl<C: Field> GenPoly<C> {
             rem.normalize();
         }
 
-        let mut q = GenPoly { coeffs: quot_coeffs };
+        let mut q = GenPoly {
+            coeffs: quot_coeffs,
+        };
         q.normalize();
         (q, rem)
     }
@@ -808,14 +812,28 @@ impl<C: Ring + fmt::Debug> fmt::Debug for GenPoly<C> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl<C: Ring> Ring for GenPoly<C> {
-    fn zero() -> Self { GenPoly::zero() }
-    fn one() -> Self { GenPoly::one() }
-    fn is_zero(&self) -> bool { self.is_zero() }
+    fn zero() -> Self {
+        GenPoly::zero()
+    }
+    fn one() -> Self {
+        GenPoly::one()
+    }
+    fn is_zero(&self) -> bool {
+        self.is_zero()
+    }
 
-    fn add(&self, rhs: &Self) -> Self { GenPoly::add(self, rhs) }
-    fn sub(&self, rhs: &Self) -> Self { GenPoly::sub(self, rhs) }
-    fn mul(&self, rhs: &Self) -> Self { GenPoly::mul(self, rhs) }
-    fn neg(&self) -> Self { GenPoly::neg(self) }
+    fn add(&self, rhs: &Self) -> Self {
+        GenPoly::add(self, rhs)
+    }
+    fn sub(&self, rhs: &Self) -> Self {
+        GenPoly::sub(self, rhs)
+    }
+    fn mul(&self, rhs: &Self) -> Self {
+        GenPoly::mul(self, rhs)
+    }
+    fn neg(&self) -> Self {
+        GenPoly::neg(self)
+    }
 }
 
 impl<C: Field> super::traits::EuclideanDomain for GenPoly<C> {
@@ -845,7 +863,9 @@ mod tests {
         Ratio::new(BigInt::from(n), BigInt::from(d))
     }
 
-    fn qz() -> Q { <Q as Ring>::zero() }
+    fn qz() -> Q {
+        <Q as Ring>::zero()
+    }
 
     /// Build a polynomial from integer coefficients (ascending degree).
     fn p(cs: &[i64]) -> P {
@@ -907,7 +927,7 @@ mod tests {
     #[test]
     fn add_polynomials() {
         let a = p(&[1, 2, 3]); // 3θ² + 2θ + 1
-        let b = p(&[4, 5]);    // 5θ + 4
+        let b = p(&[4, 5]); // 5θ + 4
         let c = a.add(&b);
         assert_eq!(c.coeff(0), q(5, 1));
         assert_eq!(c.coeff(1), q(7, 1));
@@ -916,9 +936,9 @@ mod tests {
 
     #[test]
     fn sub_polynomials() {
-        let a = p(&[3, 5]);    // 5θ + 3
-        let b = p(&[1, 2]);    // 2θ + 1
-        let c = a.sub(&b);     // 3θ + 2
+        let a = p(&[3, 5]); // 5θ + 3
+        let b = p(&[1, 2]); // 2θ + 1
+        let c = a.sub(&b); // 3θ + 2
         assert_eq!(c.coeff(0), q(2, 1));
         assert_eq!(c.coeff(1), q(3, 1));
     }
@@ -1062,8 +1082,8 @@ mod tests {
     #[test]
     fn gcd_common_factor() {
         // gcd(θ² - 1, θ² - 2θ + 1) = θ - 1
-        let a = p(&[-1, 0, 1]);         // θ² - 1 = (θ-1)(θ+1)
-        let b = p(&[1, -2, 1]);         // θ² - 2θ + 1 = (θ-1)²
+        let a = p(&[-1, 0, 1]); // θ² - 1 = (θ-1)(θ+1)
+        let b = p(&[1, -2, 1]); // θ² - 2θ + 1 = (θ-1)²
         let g = P::gcd(&a, &b);
         assert_eq!(g.degree(), Some(1));
         // Should be monic: θ - 1
@@ -1084,8 +1104,8 @@ mod tests {
     #[test]
     fn extended_gcd_bezout() {
         // Verify: s*a + t*b = gcd(a, b)
-        let a = p(&[-1, 0, 1]);   // θ² - 1
-        let b = p(&[1, -2, 1]);   // (θ - 1)²
+        let a = p(&[-1, 0, 1]); // θ² - 1
+        let b = p(&[1, -2, 1]); // (θ - 1)²
         let (s, t, g) = P::extended_gcd(&a, &b);
 
         // Check s*a + t*b = g
@@ -1095,8 +1115,8 @@ mod tests {
 
     #[test]
     fn extended_gcd_coprime() {
-        let a = p(&[1, 1]);  // θ + 1
-        let b = p(&[2, 1]);  // θ + 2
+        let a = p(&[1, 1]); // θ + 1
+        let b = p(&[2, 1]); // θ + 2
         let (s, t, g) = P::extended_gcd(&a, &b);
         assert_eq!(g.degree(), Some(0)); // gcd = 1
         let lhs = s.mul(&a).add(&t.mul(&b));
@@ -1108,9 +1128,9 @@ mod tests {
     #[test]
     fn square_free_part_simple() {
         // (θ - 1)²(θ + 1) → square-free part = (θ - 1)(θ + 1) = θ² - 1
-        let a = p(&[1, -2, 1]);  // (θ - 1)²
-        let b = p(&[1, 1]);      // (θ + 1)
-        let prod = a.mul(&b);    // (θ - 1)²(θ + 1)
+        let a = p(&[1, -2, 1]); // (θ - 1)²
+        let b = p(&[1, 1]); // (θ + 1)
+        let prod = a.mul(&b); // (θ - 1)²(θ + 1)
         let sfp = prod.square_free_part();
         // Should have degree 2 (the two distinct roots)
         assert_eq!(sfp.degree(), Some(2));
@@ -1119,8 +1139,8 @@ mod tests {
     #[test]
     fn squarefree_factors_basic() {
         // (θ + 1)²(θ - 1)
-        let f1 = p(&[1, 1]);     // θ + 1
-        let f2 = p(&[-1, 1]);    // θ - 1
+        let f1 = p(&[1, 1]); // θ + 1
+        let f2 = p(&[-1, 1]); // θ - 1
         let poly = f1.mul(&f1).mul(&f2); // (θ+1)²(θ-1)
         let factors = poly.squarefree_factors();
         assert!(!factors.is_empty());
@@ -1270,8 +1290,8 @@ mod tests {
     #[test]
     fn div_rem_reconstructs() {
         // For random-ish polynomials, verify a = q*b + r
-        let a = p(&[3, -1, 4, 1, 5]);  // degree 4
-        let b = p(&[1, 0, 1]);         // θ² + 1
+        let a = p(&[3, -1, 4, 1, 5]); // degree 4
+        let b = p(&[1, 0, 1]); // θ² + 1
         let (q_poly, r) = a.div_rem(&b);
         let reconstructed = q_poly.mul(&b).add(&r);
         assert_eq!(reconstructed, a, "a should equal q*b + r");
@@ -1283,9 +1303,9 @@ mod tests {
 
     mod ratfn_tests {
         use super::super::GenPoly;
-        use crate::poly::ratfn::RationalFn;
         use crate::poly::dense::Poly;
-        use crate::poly::traits::{Ring, Field, EuclideanDomain};
+        use crate::poly::ratfn::RationalFn;
+        use crate::poly::traits::{EuclideanDomain, Field, Ring};
         use num_bigint::BigInt;
         use num_rational::Ratio;
 
@@ -1303,9 +1323,7 @@ mod tests {
 
         /// RationalFn = polynomial from integer coefficients.
         fn rf_poly(cs: &[i64]) -> RF {
-            RationalFn::from_poly(Poly::from_coeffs(
-                cs.iter().map(|&c| r(c, 1)).collect(),
-            ))
+            RationalFn::from_poly(Poly::from_coeffs(cs.iter().map(|&c| r(c, 1)).collect()))
         }
 
         /// RationalFn = p(x)/q(x) from integer coefficient slices.
@@ -1342,8 +1360,8 @@ mod tests {
         #[test]
         fn mul_polynomials() {
             // (θ + 1)(θ - 1) = θ² - 1  (with integer coefficients in ℚ(x))
-            let a = rp(&[rf_int(1), rf_int(1)]);   // θ + 1
-            let b = rp(&[rf_int(-1), rf_int(1)]);  // θ - 1
+            let a = rp(&[rf_int(1), rf_int(1)]); // θ + 1
+            let b = rp(&[rf_int(-1), rf_int(1)]); // θ - 1
             let c = a.mul(&b);
             assert_eq!(c.degree(), Some(2));
             assert_eq!(c.coeff(0), rf_int(-1));
@@ -1355,7 +1373,7 @@ mod tests {
         fn mul_with_ratfn_coefficients() {
             // ((1/x)·θ) · (x·θ) = θ²  (coefficients cancel)
             let a = rp(&[<RF as Ring>::zero(), rf(&[1], &[0, 1])]); // (1/x)·θ
-            let b = rp(&[<RF as Ring>::zero(), rf_poly(&[0, 1])]);  // x·θ
+            let b = rp(&[<RF as Ring>::zero(), rf_poly(&[0, 1])]); // x·θ
             let c = a.mul(&b);
             assert_eq!(c.degree(), Some(2));
             // θ² coefficient should be (1/x)·x = 1
@@ -1365,8 +1383,8 @@ mod tests {
         #[test]
         fn div_rem_exact() {
             // (θ² - 1) / (θ + 1) = (θ - 1), remainder 0
-            let a = rp(&[rf_int(-1), rf_int(0), rf_int(1)]);  // θ² - 1
-            let b = rp(&[rf_int(1), rf_int(1)]);               // θ + 1
+            let a = rp(&[rf_int(-1), rf_int(0), rf_int(1)]); // θ² - 1
+            let b = rp(&[rf_int(1), rf_int(1)]); // θ + 1
             let (q, rem) = a.div_rem(&b);
             assert!(rem.is_zero(), "remainder should be 0, got {rem}");
             assert_eq!(q.coeff(0), rf_int(-1));
@@ -1376,7 +1394,7 @@ mod tests {
         #[test]
         fn div_rem_with_ratfn_coefficients() {
             // ((1/x)·θ + 1) / ((1/x)·θ) = 1, remainder 1
-            let a = rp(&[rf_int(1), rf(&[1], &[0, 1])]);       // (1/x)·θ + 1
+            let a = rp(&[rf_int(1), rf(&[1], &[0, 1])]); // (1/x)·θ + 1
             let b = rp(&[<RF as Ring>::zero(), rf(&[1], &[0, 1])]); // (1/x)·θ
             let (q, rem) = a.div_rem(&b);
             assert!(Ring::is_one(&q.coeff(0)), "quotient should be 1, got {q}");
@@ -1386,8 +1404,8 @@ mod tests {
         #[test]
         fn div_rem_reconstructs() {
             // Verify a = q*b + r for a non-trivial case
-            let a = rp(&[rf_int(1), rf_int(2), rf_int(3)]);  // 3θ² + 2θ + 1
-            let b = rp(&[rf_int(1), rf_int(1)]);              // θ + 1
+            let a = rp(&[rf_int(1), rf_int(2), rf_int(3)]); // 3θ² + 2θ + 1
+            let b = rp(&[rf_int(1), rf_int(1)]); // θ + 1
             let (q, rem) = a.div_rem(&b);
             let reconstructed = q.mul(&b).add(&rem);
             assert_eq!(reconstructed, a, "a should equal q*b + r");
@@ -1399,14 +1417,18 @@ mod tests {
             let a = rp(&[rf_int(1), rf_int(1)]);
             let b = rp(&[rf_int(2), rf_int(1)]);
             let g = RP::gcd(&a, &b);
-            assert_eq!(g.degree(), Some(0), "coprime polys should have gcd of degree 0");
+            assert_eq!(
+                g.degree(),
+                Some(0),
+                "coprime polys should have gcd of degree 0"
+            );
         }
 
         #[test]
         fn gcd_common_factor() {
             // gcd(θ² - 1, (θ - 1)²) = θ - 1
-            let a = rp(&[rf_int(-1), rf_int(0), rf_int(1)]);  // θ² - 1
-            let b = rp(&[rf_int(1), rf_int(-2), rf_int(1)]);  // θ² - 2θ + 1
+            let a = rp(&[rf_int(-1), rf_int(0), rf_int(1)]); // θ² - 1
+            let b = rp(&[rf_int(1), rf_int(-2), rf_int(1)]); // θ² - 2θ + 1
             let g = RP::gcd(&a, &b);
             assert_eq!(g.degree(), Some(1), "gcd should be degree 1 (θ-1)");
         }
@@ -1421,20 +1443,22 @@ mod tests {
                 <RF as Ring>::zero(),
                 inv_x.clone(),
             ]); // (1/x)·θ² - (1/x)
-            let b = rp(&[
-                Ring::mul(&inv_x, &rf_int(-1)),
-                inv_x.clone(),
-            ]); // (1/x)·θ - (1/x)
+            let b = rp(&[Ring::mul(&inv_x, &rf_int(-1)), inv_x.clone()]); // (1/x)·θ - (1/x)
             let g = RP::gcd(&a, &b);
             // GCD should be degree 1 (monic: θ - 1)
-            assert_eq!(g.degree(), Some(1), "gcd should be degree 1, got {:?}", g.degree());
+            assert_eq!(
+                g.degree(),
+                Some(1),
+                "gcd should be degree 1, got {:?}",
+                g.degree()
+            );
         }
 
         #[test]
         fn extended_gcd_bezout() {
             // Verify s*a + t*b = gcd
-            let a = rp(&[rf_int(-1), rf_int(0), rf_int(1)]);  // θ² - 1
-            let b = rp(&[rf_int(1), rf_int(-2), rf_int(1)]);  // (θ - 1)²
+            let a = rp(&[rf_int(-1), rf_int(0), rf_int(1)]); // θ² - 1
+            let b = rp(&[rf_int(1), rf_int(-2), rf_int(1)]); // (θ - 1)²
             let (s, t, g) = RP::extended_gcd(&a, &b);
             let lhs = s.mul(&a).add(&t.mul(&b));
             assert_eq!(lhs, g, "Bézout identity failed for GenPoly<RationalFn>");
@@ -1443,9 +1467,9 @@ mod tests {
         #[test]
         fn squarefree_factors_over_ratfn() {
             // (θ + 1)²(θ - 1) should factor as [(θ-1, 1), (θ+1, 2)]
-            let f1 = rp(&[rf_int(1), rf_int(1)]);    // θ + 1
-            let f2 = rp(&[rf_int(-1), rf_int(1)]);   // θ - 1
-            let poly = f1.mul(&f1).mul(&f2);          // (θ+1)²(θ-1)
+            let f1 = rp(&[rf_int(1), rf_int(1)]); // θ + 1
+            let f2 = rp(&[rf_int(-1), rf_int(1)]); // θ - 1
+            let poly = f1.mul(&f1).mul(&f2); // (θ+1)²(θ-1)
             let factors = poly.squarefree_factors();
             assert!(!factors.is_empty(), "should have factors");
             let max_mult = factors.iter().map(|(_, m)| *m).max().unwrap();
@@ -1477,7 +1501,10 @@ mod tests {
             let a = rp(&[rf_int(-1), rf_int(1)]);
             let b = rp(&[rf_int(-1), rf_int(0), rf_int(1)]);
             let res = RP::resultant(&a, &b);
-            assert!(Ring::is_zero(&res), "resultant should be zero for common root");
+            assert!(
+                Ring::is_zero(&res),
+                "resultant should be zero for common root"
+            );
         }
 
         #[test]
@@ -1486,22 +1513,25 @@ mod tests {
             let a = rp(&[rf_int(1), rf_int(1)]);
             let b = rp(&[rf_int(2), rf_int(1)]);
             let res = RP::resultant(&a, &b);
-            assert!(!Ring::is_zero(&res), "resultant should be nonzero for coprime polys");
+            assert!(
+                !Ring::is_zero(&res),
+                "resultant should be nonzero for coprime polys"
+            );
         }
 
         #[test]
         fn eval_at_ratfn_point() {
             // p(θ) = θ + 1 evaluated at θ = 1/x: should give 1/x + 1 = (x+1)/x
-            let p = rp(&[rf_int(1), rf_int(1)]);  // θ + 1
-            let point = rf(&[1], &[0, 1]);         // 1/x
+            let p = rp(&[rf_int(1), rf_int(1)]); // θ + 1
+            let point = rf(&[1], &[0, 1]); // 1/x
             let val = p.eval(&point);
-            let expected = rf(&[1, 1], &[0, 1]);   // (x+1)/x
+            let expected = rf(&[1, 1], &[0, 1]); // (x+1)/x
             assert_eq!(val, expected, "θ+1 at θ=1/x should be (x+1)/x");
         }
 
         #[test]
         fn display_genpoly_ratfn() {
-            let p = rp(&[rf_int(1), rf(&[1], &[0, 1])]);  // (1/x)·θ + 1
+            let p = rp(&[rf_int(1), rf(&[1], &[0, 1])]); // (1/x)·θ + 1
             let s = format!("{p}");
             assert!(s.contains("θ"), "should display θ: {s}");
         }

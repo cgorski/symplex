@@ -120,10 +120,7 @@ fn factor_quadratic_in_x_squared() {
     let expr = &x.powi(4) + &x.powi(2) * 5 + 6;
     let factored = expr.factor(&x);
     let s = format!("{factored}");
-    assert!(
-        !s.contains("x^4"),
-        "should be factored (no x^4): {s}"
-    );
+    assert!(!s.contains("x^4"), "should be factored (no x^4): {s}");
     assert_values_match(&expr, &factored, &x, "x⁴+5x²+6");
 }
 
@@ -271,10 +268,7 @@ fn factor_x4_plus_x2_plus_1() {
     let expr = &x.powi(4) + &x.powi(2) + 1;
     let factored = expr.factor(&x);
     let s = format!("{factored}");
-    assert!(
-        !s.contains("x^4"),
-        "should be factored (no x^4): {s}"
-    );
+    assert!(!s.contains("x^4"), "should be factored (no x^4): {s}");
     assert_values_match(&expr, &factored, &x, "x⁴+x²+1");
 }
 
@@ -322,9 +316,6 @@ fn factor_quartic_two_double_roots() {
     let expr = &x.powi(4) - &x.powi(2) * 2 + 1;
     let factored = expr.factor(&x);
     let s = format!("{factored}");
-    assert!(
-        !s.contains("x^4"),
-        "should be factored: {s}"
-    );
+    assert!(!s.contains("x^4"), "should be factored: {s}");
     assert_values_match(&expr, &factored, &x, "(x−1)²(x+1)²");
 }

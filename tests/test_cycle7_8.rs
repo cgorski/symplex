@@ -30,10 +30,7 @@ fn sqrt_neg_four_without_eval() {
     // Previously it only partially simplified to sqrt(4)*I; the improved
     // eval pipeline now reduces sqrt(4) → 2 as well.
     let s = format!("{result}");
-    assert!(
-        s.contains("I"),
-        "sqrt(-4) should contain I, got: {s}"
-    );
+    assert!(s.contains("I"), "sqrt(-4) should contain I, got: {s}");
     assert!(
         s == "2*I" || (s.contains("I") && s.contains("sqrt(4)")),
         "sqrt(-4) should be 2*I (fully simplified) or sqrt(4)*I (partial), got: {s}"
@@ -627,10 +624,7 @@ fn solve_sqrt_x_minus_3_is_transcendental() {
         "sqrt(x)-3 should have at least one root (9)"
     );
     let val = roots[0].eval_f64().expect("root should evaluate");
-    assert!(
-        (val - 9.0).abs() < 1e-9,
-        "root should be 9, got {val}"
-    );
+    assert!((val - 9.0).abs() < 1e-9, "root should be 9, got {val}");
 }
 
 #[test]

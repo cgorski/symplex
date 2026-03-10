@@ -51,10 +51,7 @@ fn trigsimp_preserves_numeric_value() {
     let e = &x.sin().powi(2) + &x.cos().powi(2) + &x;
     let val_before = e.subs(&x, &ctx.rational(7, 10)).eval_f64().unwrap();
     let result = e.simplify_trig();
-    let val_after = result
-        .subs(&x, &ctx.rational(7, 10))
-        .eval_f64()
-        .unwrap();
+    let val_after = result.subs(&x, &ctx.rational(7, 10)).eval_f64().unwrap();
     assert!(
         (val_before - val_after).abs() < 1e-10,
         "trigsimp should preserve value: {val_before} vs {val_after}"

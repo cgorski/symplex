@@ -48,11 +48,7 @@ use crate::prelude::*;
 /// let val = result.subs(&qd, &ctx.int(7)).eval().eval_f64().unwrap();
 /// assert!((val - 7.0).abs() < 1e-12);
 /// ```
-pub fn total_time_derivative(
-    expr: &Ex,
-    coords: &[(&Ex, &Ex)],
-    accels: &[&Ex],
-) -> Ex {
+pub fn total_time_derivative(expr: &Ex, coords: &[(&Ex, &Ex)], accels: &[&Ex]) -> Ex {
     assert_eq!(
         coords.len(),
         accels.len(),
@@ -181,10 +177,7 @@ pub fn euler_lagrange(
 /// let mm = mass_matrix(&ke, &[&qd]);
 /// assert_eq!(mm.shape(), (1, 1));
 /// ```
-pub fn mass_matrix(
-    kinetic_energy: &Ex,
-    qdot_vars: &[&Ex],
-) -> Matrix {
+pub fn mass_matrix(kinetic_energy: &Ex, qdot_vars: &[&Ex]) -> Matrix {
     let n = qdot_vars.len();
     let mut rows = Vec::with_capacity(n);
     for i in 0..n {
@@ -234,10 +227,7 @@ pub fn mass_matrix(
 /// assert_eq!(cs[0].len(), 1);
 /// assert_eq!(cs[0][0].len(), 1);
 /// ```
-pub fn christoffel_symbols(
-    mass_mat: &Matrix,
-    q_vars: &[&Ex],
-) -> Vec<Vec<Vec<Ex>>> {
+pub fn christoffel_symbols(mass_mat: &Matrix, q_vars: &[&Ex]) -> Vec<Vec<Vec<Ex>>> {
     let n = q_vars.len();
     assert_eq!(
         mass_mat.shape(),
@@ -305,11 +295,7 @@ pub fn christoffel_symbols(
 /// let c = coriolis_matrix(&mm, &[&q], &[&qd]);
 /// assert_eq!(c.shape(), (1, 1));
 /// ```
-pub fn coriolis_matrix(
-    mass_mat: &Matrix,
-    q_vars: &[&Ex],
-    qdot_vars: &[&Ex],
-) -> Matrix {
+pub fn coriolis_matrix(mass_mat: &Matrix, q_vars: &[&Ex], qdot_vars: &[&Ex]) -> Matrix {
     let n = q_vars.len();
     assert_eq!(
         qdot_vars.len(),
@@ -362,11 +348,11 @@ pub fn coriolis_matrix(
 /// let gv = gravity_vector(&pe, &[&q]);
 /// assert_eq!(gv.len(), 1);
 /// ```
-pub fn gravity_vector(
-    potential_energy: &Ex,
-    q_vars: &[&Ex],
-) -> Vec<Ex> {
-    q_vars.iter().map(|qi| potential_energy.diff(qi).eval()).collect()
+pub fn gravity_vector(potential_energy: &Ex, q_vars: &[&Ex]) -> Vec<Ex> {
+    q_vars
+        .iter()
+        .map(|qi| potential_energy.diff(qi).eval())
+        .collect()
 }
 
 /// Compute the full manipulator equation components: M(q), C(q, q̇), g(q).
@@ -420,5 +406,9 @@ pub fn manipulator_equation(
     let m = mass_matrix(kinetic_energy, qdot_vars);
     let c = coriolis_matrix(&m, q_vars, qdot_vars);
     let g = gravity_vector(potential_energy, q_vars);
-    (m.eval(), c.eval(), g.into_iter().map(|e| e.eval()).collect())
+    (
+        m.eval(),
+        c.eval(),
+        g.into_iter().map(|e| e.eval()).collect(),
+    )
 }

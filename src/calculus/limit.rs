@@ -54,8 +54,7 @@ pub(crate) fn limit(
                 // Use Gruntz for this inner limit — the product is typically
                 // a simple rational function that Gruntz handles well.
                 if let Ok(inner_lim) = crate::calculus::gruntz::gruntz(arena, product, var, point) {
-                    let is_inf = inner_lim == arena.infinity()
-                        || inner_lim == arena.neg_infinity();
+                    let is_inf = inner_lim == arena.infinity() || inner_lim == arena.neg_infinity();
                     if !is_inf {
                         tracing::debug!("limit: 1^∞ heuristic succeeded, inner limit is finite");
                         let result = arena.exp(inner_lim);
@@ -281,15 +280,16 @@ pub(crate) fn limit_at_infinity(
                 let n_coeffs = crate::poly::polybridge::poly_coefficients(arena, orig_numer, var);
                 let d_coeffs = crate::poly::polybridge::poly_coefficients(arena, orig_denom, var);
                 if let (Some(nc), Some(dc)) = (n_coeffs, d_coeffs)
-                    && let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last()) {
-                        let ratio = arena.div(*n_lead, *d_lead);
-                        let result = crate::transforms::eval::eval(arena, ratio);
-                        if is_finite_result(arena, result) {
-                            // For -∞ with odd degree: negate if the sign flips
-                            // (but for equal degrees the sign doesn't flip)
-                            return Ok(result);
-                        }
+                    && let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last())
+                {
+                    let ratio = arena.div(*n_lead, *d_lead);
+                    let result = crate::transforms::eval::eval(arena, ratio);
+                    if is_finite_result(arena, result) {
+                        // For -∞ with odd degree: negate if the sign flips
+                        // (but for equal degrees the sign doesn't flip)
+                        return Ok(result);
                     }
+                }
             }
             if nd > dd {
                 // Numerator grows faster → ±∞
@@ -318,14 +318,15 @@ pub(crate) fn limit_at_infinity(
         // Expression is not a fraction — check if it's polynomial
         let deg = crate::poly::polybridge::poly_degree(arena, expr, var);
         if let Some(d) = deg
-            && d == 0 {
-                // Constant expression — the limit is the expression itself
-                let result = crate::transforms::eval::eval(arena, expr);
-                if is_finite_result(arena, result) {
-                    return Ok(result);
-                }
+            && d == 0
+        {
+            // Constant expression — the limit is the expression itself
+            let result = crate::transforms::eval::eval(arena, expr);
+            if is_finite_result(arena, result) {
+                return Ok(result);
             }
-            // For d > 0: polynomial → ±∞
+        }
+        // For d > 0: polynomial → ±∞
     }
 
     // ── Strategy 1: Substitution x = 1/t, then together+cancel ──

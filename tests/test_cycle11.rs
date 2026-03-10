@@ -710,7 +710,10 @@ fn maclaurin_exp_order_5() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = x.exp().maclaurin(&x, 5);
-    assert!(!series.has_unevaluated(), "maclaurin of exp(x) should succeed");
+    assert!(
+        !series.has_unevaluated(),
+        "maclaurin of exp(x) should succeed"
+    );
     let expanded = series.expand();
     let s = format!("{expanded}");
     assert!(s.contains("x"), "Taylor series should contain x: {s}");
@@ -726,7 +729,10 @@ fn maclaurin_sin_order_5() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = x.sin().maclaurin(&x, 5);
-    assert!(!series.has_unevaluated(), "maclaurin of sin(x) should succeed");
+    assert!(
+        !series.has_unevaluated(),
+        "maclaurin of sin(x) should succeed"
+    );
     let s = format!("{}", series.expand());
     assert!(s.contains("x"), "sin series should contain x: {s}");
 }

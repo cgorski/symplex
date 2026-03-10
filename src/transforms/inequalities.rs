@@ -81,9 +81,10 @@ pub(crate) fn solve_inequality(
     for &root in &roots {
         let evaled = crate::transforms::eval::eval(arena, root);
         if let Some(val) = try_evalf_f64(arena, evaled)
-            && val.is_finite() {
-                root_vals.push((root, val));
-            }
+            && val.is_finite()
+        {
+            root_vals.push((root, val));
+        }
     }
     root_vals.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     // Deduplicate roots that are numerically very close.

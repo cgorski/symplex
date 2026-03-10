@@ -720,7 +720,11 @@ impl Arena {
     /// Solve `expr = 0` for `var`.
     ///
     /// Returns a vector of solutions. Delegates to [`solve::solve`].
-    pub fn solve_for(&mut self, expr: ExprId, var: ExprId) -> Vec<crate::transforms::solve::Solution> {
+    pub fn solve_for(
+        &mut self,
+        expr: ExprId,
+        var: ExprId,
+    ) -> Vec<crate::transforms::solve::Solution> {
         crate::transforms::solve::solve(self, expr, var)
     }
 

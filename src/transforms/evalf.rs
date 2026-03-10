@@ -224,7 +224,9 @@ fn eval_node(
                 }
                 let ln_pi = cc.pi(prec, rm).clone().ln(prec, rm, cc);
                 let ln_abs_sin = abs_sin.ln(prec, rm, cc);
-                let result = ln_pi.sub(&ln_abs_sin, prec, rm).sub(&log_gamma_1mx, prec, rm);
+                let result = ln_pi
+                    .sub(&ln_abs_sin, prec, rm)
+                    .sub(&log_gamma_1mx, prec, rm);
                 Ok((result, BigFloat::new(prec)))
             } else {
                 debug!(prec, "evalf: LogGamma via Stirling series");
@@ -728,7 +730,7 @@ fn eval_node(
                 }
                 _ => Err(SymplexError::Unevaluable {
                     reason: format!("cannot evaluate function '{name}'"),
-                })
+                }),
             }
         }
 
@@ -878,7 +880,9 @@ fn eval_node(
                     debug!("evalf: Piecewise — using explicit else branch");
                     return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
                 }
-                tracing::warn!("evalf: Piecewise — no condition resolved and last branch is not an else; returning error");
+                tracing::warn!(
+                    "evalf: Piecewise — no condition resolved and last branch is not an else; returning error"
+                );
             }
             Err(SymplexError::Unevaluable {
                 reason: "cannot evaluate piecewise: no condition is definitively true and no else branch exists".into(),
@@ -953,7 +957,7 @@ fn eval_node(
                 _ => {
                     return Err(SymplexError::Unevaluable {
                         reason: "RootOf index must be numeric".into(),
-                    })
+                    });
                 }
             };
 
@@ -972,7 +976,7 @@ fn eval_node(
                 None => {
                     return Err(SymplexError::Unevaluable {
                         reason: "could not convert RootOf expression to polynomial".into(),
-                    })
+                    });
                 }
             };
 
@@ -1374,8 +1378,6 @@ fn bigfloat_to_f64(bf: &BigFloat, rm: RoundingMode, cc: &mut Consts) -> Result<f
     })
 }
 
-
-
 /// Lanczos approximation for the Gamma function (g=7, 9 coefficients).
 #[allow(dead_code)]
 #[allow(clippy::excessive_precision)]
@@ -1460,8 +1462,6 @@ fn erf_f64(x: f64) -> f64 {
         sign * (1.0 - erfc)
     }
 }
-
-
 
 /// Arbitrary-precision digamma (psi) function via recurrence + asymptotic series.
 ///
@@ -1555,9 +1555,18 @@ fn arb_digamma(
     // B14=7/6, B16=−3617/510, B18=43867/798, B20=−174611/330
     // B22=854513/138, B24=−236364091/2730
     let bernoulli_nums: &[(i128, i128)] = &[
-        (1, 6), (-1, 30), (1, 42), (-1, 30), (5, 66), (-691, 2730),
-        (7, 6), (-3617, 510), (43867, 798), (-174611, 330),
-        (854513, 138), (-236364091, 2730),
+        (1, 6),
+        (-1, 30),
+        (1, 42),
+        (-1, 30),
+        (5, 66),
+        (-691, 2730),
+        (7, 6),
+        (-3617, 510),
+        (43867, 798),
+        (-174611, 330),
+        (854513, 138),
+        (-236364091, 2730),
     ];
 
     let n_terms = (prec / 6 + 2).min(bernoulli_nums.len());
@@ -1675,18 +1684,20 @@ fn stirling_log_gamma(
         // Divergence / convergence detection via binary exponents.
         if let Some(t_exp) = term.exponent() {
             if let Some(prev) = prev_term_exp
-                && t_exp > prev + 10 {
-                    tracing::trace!(k, "stirling series: diverging, stopping");
-                    break;
-                }
+                && t_exp > prev + 10
+            {
+                tracing::trace!(k, "stirling series: diverging, stopping");
+                break;
+            }
             prev_term_exp = Some(t_exp);
 
             // Term is negligible relative to accumulated result.
             if let Some(r_exp) = result.exponent()
-                && (r_exp as i64 - t_exp as i64) > wp as i64 {
-                    tracing::trace!(k, "stirling series: converged");
-                    break;
-                }
+                && (r_exp as i64 - t_exp as i64) > wp as i64
+            {
+                tracing::trace!(k, "stirling series: converged");
+                break;
+            }
         }
 
         result = result.add(&term, wp, rm);
@@ -1758,11 +1769,12 @@ fn arb_gamma_real(
             });
         }
         if let Some(s_exp) = sin_pi_x.exponent()
-            && (s_exp as i64) < -(prec as i64 / 2) {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Gamma at non-positive integer pole".into(),
-                });
-            }
+            && (s_exp as i64) < -(prec as i64 / 2)
+        {
+            return Err(SymplexError::Unevaluable {
+                reason: "Gamma at non-positive integer pole".into(),
+            });
+        }
 
         let denom = sin_pi_x.mul(&gamma_1mx, prec, rm);
         let pi_val2 = cc.pi(prec, rm).clone();
@@ -1806,7 +1818,7 @@ fn arb_erf(
         // where prod_0 = x, prod_{n+1} = prod_n · (-x²) / (n+1)
         let neg_x_sq = x.mul(x, wp, rm).neg();
         let mut prod = x.clone(); // (-x²)^n · x / n!
-        let mut sum = x.clone();  // accumulator (first term = x)
+        let mut sum = x.clone(); // accumulator (first term = x)
 
         let max_terms = (wp as f64 * 0.6) as usize + 60;
         for n in 1..=max_terms {
@@ -1820,9 +1832,10 @@ fn arb_erf(
 
             // Convergence check
             if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
-                && (s_exp as i64 - t_exp as i64) > wp as i64 {
-                    break;
-                }
+                && (s_exp as i64 - t_exp as i64) > wp as i64
+            {
+                break;
+            }
 
             sum = sum.add(&term, wp, rm);
         }
@@ -1855,9 +1868,10 @@ fn arb_erf(
 
             // Divergence check: if |term| starts growing, stop
             if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
-                && t_exp > s_exp {
-                    break;
-                }
+                && t_exp > s_exp
+            {
+                break;
+            }
 
             sum = sum.add(&term, wp, rm);
         }
@@ -2252,10 +2266,7 @@ fn arb_bessel_j(
         let mut sum = BigFloat::new(wp); // will add 1/Γ(ν+1) as first term
 
         // First term (k=0): 1 / Γ(ν+1)
-        let gamma_nu1 = arb_gamma_real(
-            &order.add(&BigFloat::from_i32(1, wp), wp, rm),
-            wp, rm, cc,
-        )?;
+        let gamma_nu1 = arb_gamma_real(&order.add(&BigFloat::from_i32(1, wp), wp, rm), wp, rm, cc)?;
         let mut term = BigFloat::from_i32(1, wp).div(&gamma_nu1, wp, rm);
         sum = sum.add(&term, wp, rm);
 
@@ -2413,11 +2424,7 @@ fn arb_bessel_y(
             let k_bf = BigFloat::from_i32(k as i32, wp);
             let k_sq = k_bf.mul(&k_bf, wp, rm);
             factorial_sq = factorial_sq.mul(&k_sq, wp, rm);
-            harmonic = harmonic.add(
-                &BigFloat::from_i32(1, wp).div(&k_bf, wp, rm),
-                wp,
-                rm,
-            );
+            harmonic = harmonic.add(&BigFloat::from_i32(1, wp).div(&k_bf, wp, rm), wp, rm);
         }
 
         // term = (-1)^{k+1} · H_k · (x/2)^{2k} / (k!)²
@@ -3217,10 +3224,7 @@ mod tests {
         let j1_0 = a.besselj(one, zero);
         let result = evalf(&a, j1_0, 15).unwrap();
         let val: f64 = result.parse().unwrap_or(f64::NAN);
-        assert!(
-            val.abs() < 1e-10,
-            "J_1(0) should be 0, got {result}"
-        );
+        assert!(val.abs() < 1e-10, "J_1(0) should be 0, got {result}");
     }
 
     #[test]

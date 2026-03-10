@@ -133,8 +133,11 @@ fn main() {
 
     // Quick sanity check
     println!("\nCompiled filter verification:");
-    println!("  y = f(1.0, 0.0, 0.0) = {:.6}", filter_fn(&[1.0, 0.0, 0.0]));
-    println!("  Expected: b0·1 = 1/21 ≈ {:.6}", 1.0/21.0);
+    println!(
+        "  y = f(1.0, 0.0, 0.0) = {:.6}",
+        filter_fn(&[1.0, 0.0, 0.0])
+    );
+    println!("  Expected: b0·1 = 1/21 ≈ {:.6}", 1.0 / 21.0);
 
     // ── 5. Step response simulation ─────────────────────────────────
     //

@@ -143,11 +143,7 @@ fn heaviside_evaluates_to_one_for_positive_arg() {
     let h = ctx.int(5).heaviside();
     let result = h.eval().eval_f64();
     if let Ok(v) = result {
-        assert!(
-            (v - 1.0).abs() < 1e-10,
-            "H(5) should be 1, got {}",
-            v
-        );
+        assert!((v - 1.0).abs() < 1e-10, "H(5) should be 1, got {}", v);
     }
 }
 
@@ -158,10 +154,6 @@ fn heaviside_evaluates_to_zero_for_negative_arg() {
     let h = ctx.int(-3).heaviside();
     let result = h.eval().eval_f64();
     if let Ok(v) = result {
-        assert!(
-            v.abs() < 1e-10,
-            "H(-3) should be 0, got {}",
-            v
-        );
+        assert!(v.abs() < 1e-10, "H(-3) should be 0, got {}", v);
     }
 }

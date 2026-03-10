@@ -48,10 +48,7 @@ use crate::poly::dense::Poly;
 #[derive(Clone, Debug)]
 pub enum RdeResult {
     /// Found a solution `y = numer / denom`.
-    Solution {
-        numer: Poly,
-        denom: Poly,
-    },
+    Solution { numer: Poly, denom: Poly },
     /// Proved that no solution exists in the field.
     NoSolution,
     /// Hit an unimplemented case.
@@ -172,9 +169,7 @@ pub fn solve_risch_de(
     // For logarithmic extensions, the denominator/degree bounding
     // generalizes using the extension's derivation.
     // For exponential extensions, additional structure is exploited.
-    RdeResult::NotImplemented(
-        "Risch DE in monomial extensions not yet implemented".into()
-    )
+    RdeResult::NotImplemented("Risch DE in monomial extensions not yet implemented".into())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -273,14 +268,12 @@ fn compute_degree_bound(
     // Simplified bound: deg(N) ≤ max(deg(g) + deg(D_y) - deg(f), deg(D_y) + 1)
     //
     // We use a generous bound to avoid missing solutions.
-    let deg_f = f_numer.degree().unwrap_or(0) as i64
-        - f_denom.degree().unwrap_or(0) as i64;
-    let deg_g = g_numer.degree().unwrap_or(0) as i64
-        - g_denom.degree().unwrap_or(0) as i64;
+    let deg_f = f_numer.degree().unwrap_or(0) as i64 - f_denom.degree().unwrap_or(0) as i64;
+    let deg_g = g_numer.degree().unwrap_or(0) as i64 - g_denom.degree().unwrap_or(0) as i64;
     let deg_dy = d_y.degree().unwrap_or(0) as i64;
 
     let bound1 = deg_g + deg_dy; // from matching the g side
-    let bound2 = deg_dy + 1;      // from the N' term
+    let bound2 = deg_dy + 1; // from the N' term
     let bound3 = deg_g - deg_f + deg_dy; // from the f·y = g balance
 
     let bound = bound1.max(bound2).max(bound3).max(0);
@@ -354,7 +347,8 @@ fn solve_with_ansatz(
     }
 
     // Determine the number of equations: max degree across all LHS polys and RHS + 1.
-    let max_lhs_degree = lhs_polys.iter()
+    let max_lhs_degree = lhs_polys
+        .iter()
         .filter_map(|p| p.degree())
         .max()
         .unwrap_or(0);
@@ -494,9 +488,12 @@ mod tests {
 
     /// Verify a solution by substituting back: y' + f·y should equal g.
     fn verify_rde_solution(
-        f_numer: &Poly, f_denom: &Poly,
-        g_numer: &Poly, g_denom: &Poly,
-        y_numer: &Poly, y_denom: &Poly,
+        f_numer: &Poly,
+        f_denom: &Poly,
+        g_numer: &Poly,
+        g_denom: &Poly,
+        y_numer: &Poly,
+        y_denom: &Poly,
     ) {
         // y = y_n / y_d
         // y' = (y_n' · y_d - y_n · y_d') / y_d²
@@ -597,7 +594,8 @@ mod tests {
         let result = solve_risch_de_rational(&f_n, &f_d, &g_n, &g_d);
         assert!(
             matches!(result, RdeResult::NoSolution),
-            "y' - 2x·y = 1 should have no rational solution, got {:?}", result
+            "y' - 2x·y = 1 should have no rational solution, got {:?}",
+            result
         );
     }
 
@@ -630,7 +628,8 @@ mod tests {
         let result = solve_risch_de_rational(&f_n, &f_d, &g_n, &g_d);
         assert!(
             matches!(result, RdeResult::NoSolution),
-            "y' = 1/x should have no rational solution, got {:?}", result
+            "y' = 1/x should have no rational solution, got {:?}",
+            result
         );
     }
 
@@ -710,7 +709,12 @@ mod tests {
         let f_n = Poly::from_int(1);
         let f_d = Poly::from_int(1);
         let g_n = Poly::from_coeffs(vec![
-            rat(0, 1), rat(1, 1), rat(0, 1), rat(1, 1), rat(0, 1), rat(1, 1),
+            rat(0, 1),
+            rat(1, 1),
+            rat(0, 1),
+            rat(1, 1),
+            rat(0, 1),
+            rat(1, 1),
         ]); // x^5 + x^3 + x
         let g_d = Poly::from_int(1);
 
@@ -750,7 +754,10 @@ mod tests {
 
         match solve_risch_de_rational(&f_n, &f_d, &g_n, &g_d) {
             RdeResult::Solution { numer, .. } => {
-                assert!(numer.is_zero(), "y' - 3y = 0: only rational solution is y=0");
+                assert!(
+                    numer.is_zero(),
+                    "y' - 3y = 0: only rational solution is y=0"
+                );
             }
             other => panic!("expected Solution(0), got {:?}", other),
         }
@@ -787,7 +794,8 @@ mod tests {
         let result = solve_risch_de_rational(&f_n, &f_d, &g_n, &g_d);
         assert!(
             matches!(result, RdeResult::NoSolution),
-            "y' + x²·y = 1 should have no rational solution, got {:?}", result
+            "y' + x²·y = 1 should have no rational solution, got {:?}",
+            result
         );
     }
 

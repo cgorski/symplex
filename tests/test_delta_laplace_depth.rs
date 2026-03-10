@@ -92,9 +92,9 @@ fn verify_laplace_numerically(
     let ctx = result.context();
     let s_val = ctx.rational(s_num, s_den);
     let at_s = result.subs(s_var, &s_val);
-    let val = at_s.eval_f64().unwrap_or_else(|_| panic!(
-        "{label}: should evaluate numerically at s={s_num}/{s_den}"
-    ));
+    let val = at_s
+        .eval_f64()
+        .unwrap_or_else(|_| panic!("{label}: should evaluate numerically at s={s_num}/{s_den}"));
     assert!(
         (val - expected).abs() < 1e-2,
         "{label}: at s={s_num}/{s_den}, expected {expected}, got {val}"

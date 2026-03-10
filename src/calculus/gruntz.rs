@@ -226,7 +226,10 @@ fn sign_at_inf(
 }
 
 /// Determine the sign of a constant expression (no free variable x).
-fn sign_of_constant(arena: &mut Arena, e: ExprId) -> Result<i32, crate::base::errors::SymplexError> {
+fn sign_of_constant(
+    arena: &mut Arena,
+    e: ExprId,
+) -> Result<i32, crate::base::errors::SymplexError> {
     if arena.is_zero_structural(e) {
         return Ok(0);
     }
@@ -944,8 +947,8 @@ fn leadterm(
             // which still contains w. The TRUE leading term requires knowing
             // that exp(w) - 1 ≈ w, so the product is w * w^(-1) = w^0.
             // Only series expansion can resolve this.
-            let needs_series =
-                arena.is_zero_structural(coeff_sum) || crate::base::walk::contains(arena, coeff_sum, w);
+            let needs_series = arena.is_zero_structural(coeff_sum)
+                || crate::base::walk::contains(arena, coeff_sum, w);
 
             if needs_series {
                 let coeff_display = arena.display(coeff_sum).to_string();
@@ -1408,7 +1411,9 @@ fn expand_functions_as_series(arena: &mut Arena, expr: ExprId, w: ExprId, order:
             _ => false,
         };
 
-        if should_expand && let Ok(series) = crate::calculus::series::series(arena, id, w, zero, order) {
+        if should_expand
+            && let Ok(series) = crate::calculus::series::series(arena, id, w, zero, order)
+        {
             let expanded = crate::transforms::expand::expand(arena, series);
             let evaled = crate::transforms::eval::eval(arena, expanded);
             let old_display = arena.display(id).to_string();

@@ -774,7 +774,11 @@ fn solve_quadratic_x2_eq_9() {
     assert_eq!(roots.len(), 2, "x²-9=0 should have 2 roots");
     let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     strs.sort();
-    assert_eq!(strs, vec!["-3", "3"], "roots of x²-9 should be exactly -3 and 3");
+    assert_eq!(
+        strs,
+        vec!["-3", "3"],
+        "roots of x²-9 should be exactly -3 and 3"
+    );
 }
 
 #[test]
@@ -787,7 +791,11 @@ fn solve_quadratic_x2_eq_neg1_complex() {
     assert_eq!(roots.len(), 2, "x²+1=0 should have 2 complex roots");
     let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     strs.sort();
-    assert_eq!(strs, vec!["-I", "I"], "roots of x²+1 should be exactly I and -I");
+    assert_eq!(
+        strs,
+        vec!["-I", "I"],
+        "roots of x²+1 should be exactly I and -I"
+    );
 }
 
 #[test]

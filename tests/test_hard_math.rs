@@ -200,8 +200,14 @@ fn hard_solve_biquadratic() {
     // Check that we got the expected roots ±1, ±2
     let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     strs.sort();
-    assert!(strs.contains(&"-2".to_string()), "missing root -2: {strs:?}");
-    assert!(strs.contains(&"-1".to_string()), "missing root -1: {strs:?}");
+    assert!(
+        strs.contains(&"-2".to_string()),
+        "missing root -2: {strs:?}"
+    );
+    assert!(
+        strs.contains(&"-1".to_string()),
+        "missing root -1: {strs:?}"
+    );
     assert!(strs.contains(&"1".to_string()), "missing root 1: {strs:?}");
     assert!(strs.contains(&"2".to_string()), "missing root 2: {strs:?}");
 }
@@ -258,10 +264,7 @@ fn hard_solve_2x3_minus_3x2_minus_8x_plus_12() {
     let poly = &(&(&x.powi(3) * 2) - &(&x.powi(2) * 3)) - &(&x * 8) + 12;
     let roots = poly.solve_or_empty(&x);
 
-    assert!(
-        !roots.is_empty(),
-        "2x³-3x²-8x+12 should have roots"
-    );
+    assert!(!roots.is_empty(), "2x³-3x²-8x+12 should have roots");
 
     // Verify every claimed root is actually correct — no wrong roots allowed
     common::verify_roots(&poly, &x, &roots, 1e-9);
@@ -269,7 +272,10 @@ fn hard_solve_2x3_minus_3x2_minus_8x_plus_12() {
     if roots.len() == 3 {
         let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
         strs.sort();
-        assert!(strs.contains(&"-2".to_string()), "missing root -2: {strs:?}");
+        assert!(
+            strs.contains(&"-2".to_string()),
+            "missing root -2: {strs:?}"
+        );
         assert!(strs.contains(&"2".to_string()), "missing root 2: {strs:?}");
         assert!(
             strs.contains(&"3/2".to_string()),
@@ -319,10 +325,7 @@ fn hard_solve_cubic_verify_by_substitution() {
     let poly = &x.powi(3) + &(&x.powi(2) * 3) - 4;
     let roots = poly.solve_or_empty(&x);
 
-    assert!(
-        !roots.is_empty(),
-        "x³+3x²-4 should have at least one root"
-    );
+    assert!(!roots.is_empty(), "x³+3x²-4 should have at least one root");
 
     // Every claimed root must be correct
     common::verify_roots(&poly, &x, &roots, 1e-9);
@@ -498,11 +501,7 @@ fn hard_limit_sin_x_over_x() {
     let x = ctx.symbol("x");
     let expr = &x.sin() / &x;
     let result = expr.limit(&x, &ctx.int(0));
-    assert_eq!(
-        format!("{result}"),
-        "1",
-        "lim sin(x)/x as x→0 should be 1"
-    );
+    assert_eq!(format!("{result}"), "1", "lim sin(x)/x as x→0 should be 1");
 }
 
 #[test]
@@ -564,10 +563,7 @@ fn hard_limit_1_minus_cos_over_x2() {
     match result {
         Ok(r) => {
             let s = format!("{r}");
-            assert_eq!(
-                s, "1/2",
-                "lim (1-cos(x))/x² as x→0 should be 1/2, got: {s}"
-            );
+            assert_eq!(s, "1/2", "lim (1-cos(x))/x² as x→0 should be 1/2, got: {s}");
         }
         Err(_) => {
             // Acceptable if the engine can't compute it
@@ -584,11 +580,7 @@ fn hard_limit_x_exp_neg_x_at_infinity() {
     let result = expr.try_limit(&x, &ctx.infinity());
     match result {
         Ok(r) => {
-            assert_eq!(
-                format!("{r}"),
-                "0",
-                "lim x·exp(-x) as x→∞ should be 0"
-            );
+            assert_eq!(format!("{r}"), "0", "lim x·exp(-x) as x→∞ should be 0");
         }
         Err(_) => {
             // Acceptable
@@ -849,7 +841,7 @@ fn multi_var_mixed_partial_derivative() {
     let y = ctx.symbol("y");
     let f = &x.powi(2) * &y.powi(3);
 
-    let df_dy = f.diff(&y);      // 3x²y²
+    let df_dy = f.diff(&y); // 3x²y²
     let d2f_dxdy = df_dy.diff(&x); // 6xy²
 
     // Verify numerically: at x=2, y=3: 6·2·9 = 108
@@ -865,7 +857,7 @@ fn multi_var_mixed_partial_derivative() {
     );
 
     // Also verify symmetry: ∂²f/∂y∂x should give the same result (Clairaut's theorem)
-    let df_dx = f.diff(&x);        // 2xy³
+    let df_dx = f.diff(&x); // 2xy³
     let d2f_dydx = df_dx.diff(&y); // 6xy²
     let val2 = d2f_dydx
         .subs(&x, &ctx.int(2))
@@ -920,9 +912,18 @@ fn multi_var_gradient_of_sum_of_squares() {
         .eval()
         .eval_f64()
         .expect("gradient component 2");
-    assert!((g0_val - 2.0).abs() < 1e-12, "∂f/∂x at (1,2,3) = 2, got {g0_val}");
-    assert!((g1_val - 4.0).abs() < 1e-12, "∂f/∂y at (1,2,3) = 4, got {g1_val}");
-    assert!((g2_val - 6.0).abs() < 1e-12, "∂f/∂z at (1,2,3) = 6, got {g2_val}");
+    assert!(
+        (g0_val - 2.0).abs() < 1e-12,
+        "∂f/∂x at (1,2,3) = 2, got {g0_val}"
+    );
+    assert!(
+        (g1_val - 4.0).abs() < 1e-12,
+        "∂f/∂y at (1,2,3) = 4, got {g1_val}"
+    );
+    assert!(
+        (g2_val - 6.0).abs() < 1e-12,
+        "∂f/∂z at (1,2,3) = 6, got {g2_val}"
+    );
 }
 
 #[test]
@@ -944,15 +945,51 @@ fn multi_var_jacobian_2x2() {
     assert_eq!(j.ncols(), 2);
 
     // Verify Jacobian entries numerically at (x,y) = (3,2)
-    let j00 = j.get(0, 0).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[0,0]");
-    let j01 = j.get(0, 1).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[0,1]");
-    let j10 = j.get(1, 0).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[1,0]");
-    let j11 = j.get(1, 1).subs(&x, &ctx.int(3)).subs(&y, &ctx.int(2)).eval().eval_f64().expect("J[1,1]");
+    let j00 = j
+        .get(0, 0)
+        .subs(&x, &ctx.int(3))
+        .subs(&y, &ctx.int(2))
+        .eval()
+        .eval_f64()
+        .expect("J[0,0]");
+    let j01 = j
+        .get(0, 1)
+        .subs(&x, &ctx.int(3))
+        .subs(&y, &ctx.int(2))
+        .eval()
+        .eval_f64()
+        .expect("J[0,1]");
+    let j10 = j
+        .get(1, 0)
+        .subs(&x, &ctx.int(3))
+        .subs(&y, &ctx.int(2))
+        .eval()
+        .eval_f64()
+        .expect("J[1,0]");
+    let j11 = j
+        .get(1, 1)
+        .subs(&x, &ctx.int(3))
+        .subs(&y, &ctx.int(2))
+        .eval()
+        .eval_f64()
+        .expect("J[1,1]");
 
-    assert!((j00 - 6.0).abs() < 1e-12, "J[0,0] at (3,2) should be 2*3=6, got {j00}");
-    assert!((j01 - 1.0).abs() < 1e-12, "J[0,1] at (3,2) should be 1, got {j01}");
-    assert!((j10 - 2.0).abs() < 1e-12, "J[1,0] at (3,2) should be y=2, got {j10}");
-    assert!((j11 - 3.0).abs() < 1e-12, "J[1,1] at (3,2) should be x=3, got {j11}");
+    assert!(
+        (j00 - 6.0).abs() < 1e-12,
+        "J[0,0] at (3,2) should be 2*3=6, got {j00}"
+    );
+    assert!(
+        (j01 - 1.0).abs() < 1e-12,
+        "J[0,1] at (3,2) should be 1, got {j01}"
+    );
+    assert!(
+        (j10 - 2.0).abs() < 1e-12,
+        "J[1,0] at (3,2) should be y=2, got {j10}"
+    );
+    assert!(
+        (j11 - 3.0).abs() < 1e-12,
+        "J[1,1] at (3,2) should be x=3, got {j11}"
+    );
 
     // Verify determinant: 2x²-y at (3,2) = 18-2 = 16
     let det = j.det().unwrap();
@@ -1004,7 +1041,12 @@ fn hard_solve_quadratic_with_parameters() {
     let x = ctx.symbol("x");
     let poly = &x.powi(2) - &(&x * 5) + 6;
     let roots = poly.solve_or_empty(&x);
-    assert_eq!(roots.len(), 2, "x²-5x+6 should have 2 roots, got {}", roots.len());
+    assert_eq!(
+        roots.len(),
+        2,
+        "x²-5x+6 should have 2 roots, got {}",
+        roots.len()
+    );
     common::verify_roots(&poly, &x, &roots, 1e-12);
 
     let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
@@ -1022,12 +1064,7 @@ fn hard_simp_trig_double_angle_expansion() {
     let sin_2x = (&x * 2).sin();
     let double_angle = &(&x.sin() * &x.cos()) * 2;
 
-    common::assert_math_eq(
-        &sin_2x,
-        &double_angle,
-        &x,
-        "sin(2x) = 2·sin(x)·cos(x)",
-    );
+    common::assert_math_eq(&sin_2x, &double_angle, &x, "sin(2x) = 2·sin(x)·cos(x)");
 }
 
 #[test]
@@ -1112,12 +1149,7 @@ fn hard_int_then_diff_roundtrip_complex() {
     if !s.contains("Integral") {
         // Differentiate and check roundtrip numerically
         let back = antideriv.diff(&x);
-        common::assert_math_eq(
-            &integrand,
-            &back,
-            &x,
-            "d/dx(∫ x²cos(x) dx) = x²cos(x)",
-        );
+        common::assert_math_eq(&integrand, &back, &x, "d/dx(∫ x²cos(x) dx) = x²cos(x)");
     }
 }
 

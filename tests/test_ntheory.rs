@@ -58,10 +58,7 @@ fn isprime_carmichael_numbers() {
 fn isprime_bigint_small_primes() {
     let small_primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47];
     for &p in &small_primes {
-        assert!(
-            isprime(BigInt::from(p)),
-            "{p} should be prime (BigInt)"
-        );
+        assert!(isprime(BigInt::from(p)), "{p} should be prime (BigInt)");
     }
 }
 
@@ -135,7 +132,14 @@ fn factorint_product_of_primes() {
     // 2 * 3 * 5 * 7 * 11 * 13 = 30030
     assert_eq!(
         factorint(30030),
-        vec![(bi(2), 1), (bi(3), 1), (bi(5), 1), (bi(7), 1), (bi(11), 1), (bi(13), 1)]
+        vec![
+            (bi(2), 1),
+            (bi(3), 1),
+            (bi(5), 1),
+            (bi(7), 1),
+            (bi(11), 1),
+            (bi(13), 1)
+        ]
     );
 }
 
@@ -188,10 +192,7 @@ fn factorint_all_factors_are_prime() {
 #[test]
 fn factorint_bigint_basic() {
     let factors = factorint(BigInt::from(60));
-    assert_eq!(
-        factors,
-        vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]
-    );
+    assert_eq!(factors, vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]);
 }
 
 #[test]
@@ -203,10 +204,7 @@ fn factorint_bigint_zero_and_one() {
 #[test]
 fn factorint_bigint_negative() {
     let factors = factorint(BigInt::from(-60));
-    assert_eq!(
-        factors,
-        vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]
-    );
+    assert_eq!(factors, vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]);
 }
 
 #[test]
@@ -391,31 +389,20 @@ fn divisor_count_formula() {
 #[test]
 fn totient_multiplicative() {
     // φ(m·n) = φ(m)·φ(n) when gcd(m, n) = 1
-    let pairs: &[(i64, i64)] = &[
-        (3, 5),
-        (4, 9),
-        (7, 11),
-        (8, 15),
-        (13, 17),
-        (100, 21),
-    ];
+    let pairs: &[(i64, i64)] = &[(3, 5), (4, 9), (7, 11), (8, 15), (13, 17), (100, 21)];
     for &(m, n) in pairs {
         assert_eq!(gcd(m, n), bi(1), "precondition: gcd({m},{n})=1");
         let phi_mn = totient(m * n);
         let phi_m = totient(m);
         let phi_n = totient(n);
-        assert_eq!(
-            phi_mn,
-            &phi_m * &phi_n,
-            "φ({m}·{n}) ≠ φ({m})·φ({n})"
-        );
+        assert_eq!(phi_mn, &phi_m * &phi_n, "φ({m}·{n}) ≠ φ({m})·φ({n})");
     }
 }
 
 #[test]
 fn totient_prime_power() {
     // φ(p^k) = p^k - p^(k-1) = p^(k-1) * (p-1)
-    assert_eq!(totient(8), bi(4));   // 2^3: 2^2 * 1 = 4
+    assert_eq!(totient(8), bi(4)); // 2^3: 2^2 * 1 = 4
     assert_eq!(totient(27), bi(18)); // 3^3: 3^2 * 2 = 18
     assert_eq!(totient(25), bi(20)); // 5^2: 5^1 * 4 = 20
 }
@@ -436,9 +423,9 @@ fn totient_divisor_sum_identity() {
 
 #[test]
 fn mobius_squarefree() {
-    assert_eq!(mobius(2), -1);     // 1 prime
-    assert_eq!(mobius(3), -1);     // 1 prime
-    assert_eq!(mobius(6), 1);      // 2 primes
+    assert_eq!(mobius(2), -1); // 1 prime
+    assert_eq!(mobius(3), -1); // 1 prime
+    assert_eq!(mobius(6), 1); // 2 primes
     assert_eq!(mobius(2 * 3 * 5), -1); // 3 primes
     assert_eq!(mobius(2 * 3 * 5 * 7), 1); // 4 primes
 }
@@ -519,11 +506,7 @@ fn gcd_lcm_identity() {
     // gcd(a,b) * lcm(a,b) = |a*b|
     for &(a, b) in &[(12i64, 8), (15, 25), (7, 13), (100, 75)] {
         let product = &gcd(a, b) * &lcm(a, b);
-        assert_eq!(
-            product,
-            bi((a * b).abs()),
-            "gcd·lcm ≠ |a·b| for ({a},{b})"
-        );
+        assert_eq!(product, bi((a * b).abs()), "gcd·lcm ≠ |a·b| for ({a},{b})");
     }
 }
 

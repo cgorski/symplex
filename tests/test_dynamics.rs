@@ -549,8 +549,7 @@ fn euler_lagrange_matches_manipulator_equation() {
     let (mass, coriolis, grav) = manipulator_equation(&ke, &pe, &[&q], &[&qd]);
 
     // M·q̈ + C·q̇ + g for 1-DOF: M[0,0]·qdd + C[0,0]·qd + g[0]
-    let manip_result = &(mass.get(0, 0) * &qdd)
-        + &(&(coriolis.get(0, 0) * &qd) + &grav[0]);
+    let manip_result = &(mass.get(0, 0) * &qdd) + &(&(coriolis.get(0, 0) * &qd) + &grav[0]);
 
     // Evaluate both at specific values
     let m_val = ctx.int(2);
@@ -670,7 +669,12 @@ fn mass_matrix_is_symmetric() {
         .eval()
         .eval_f64()
         .unwrap();
-    assert_near(m01, m10, 1e-12, "Mass matrix must be symmetric: M[0,1] = M[1,0]");
+    assert_near(
+        m01,
+        m10,
+        1e-12,
+        "Mass matrix must be symmetric: M[0,1] = M[1,0]",
+    );
 }
 
 #[test]

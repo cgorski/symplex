@@ -163,10 +163,7 @@ fn lambertw_stays_symbolic() {
     // W(5) has no closed form — should remain as lambertw(5)
     let w5 = ctx.int(5).lambertw().eval();
     let s = format!("{w5}");
-    assert!(
-        s.contains("W("),
-        "W(5) should stay symbolic, got: {s}"
-    );
+    assert!(s.contains("W("), "W(5) should stay symbolic, got: {s}");
 }
 
 #[test]
@@ -178,10 +175,7 @@ fn lambertw_solve_exp_equation() {
     // that at least the expression parses and W(-1/2) is well-formed.
     let w = ctx.rational(-1, 2).lambertw();
     let s = format!("{w}");
-    assert!(
-        s.contains("W("),
-        "W(-1/2) should be symbolic, got: {s}"
-    );
+    assert!(s.contains("W("), "W(-1/2) should be symbolic, got: {s}");
 }
 
 #[test]
@@ -403,7 +397,11 @@ fn integrate_sqrt_x2_plus_one_ftc() {
         assert!(
             diff < tol,
             "FTC sqrt(x^2+1): F({}) - F({}) = {}, numerical = {}, diff = {}",
-            b, a, antideriv_diff, numerical, diff
+            b,
+            a,
+            antideriv_diff,
+            numerical,
+            diff
         );
     }
 }

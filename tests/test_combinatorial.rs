@@ -116,10 +116,7 @@ fn falling_factorial_known_values() {
     check(&n3.falling_factorial(&n3).eval(), "6");
 
     // 7^(4) = 7 * 6 * 5 * 4 = 840
-    check(
-        &ctx.int(7).falling_factorial(&ctx.int(4)).eval(),
-        "840",
-    );
+    check(&ctx.int(7).falling_factorial(&ctx.int(4)).eval(), "840");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

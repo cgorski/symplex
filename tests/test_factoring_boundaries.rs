@@ -49,14 +49,8 @@ fn factor_product_of_linears() {
 
     // Should be factored — no x^5 in the top-level display
     let s = format!("{factored}");
-    assert!(
-        !s.contains("x^5"),
-        "should be factored (no x^5): {s}"
-    );
-    assert!(
-        !s.contains("x^4"),
-        "should be fully factored (no x^4): {s}"
-    );
+    assert!(!s.contains("x^5"), "should be factored (no x^5): {s}");
+    assert!(!s.contains("x^4"), "should be fully factored (no x^4): {s}");
 
     // Full value preservation at many points
     assert_values_match(&expanded, &factored, &x, "(x-1)(x-2)(x-3)(x-4)(x-5)");
@@ -77,10 +71,7 @@ fn factor_degree_4_into_quadratics() {
     let factored = expr.factor(&x);
 
     let s = format!("{factored}");
-    assert!(
-        !s.contains("x^4"),
-        "should be factored (no x^4): {s}"
-    );
+    assert!(!s.contains("x^4"), "should be factored (no x^4): {s}");
 
     // Verify roots: f(1)=0, f(-1)=0, f(2)=0, f(-2)=0
     for &root in &[1i64, -1, 2, -2] {
@@ -159,15 +150,9 @@ fn factor_irreducible_quintic() {
     // only ±1 could be rational roots, and neither works).
     // If the engine can factor it, great; if not, it should be unchanged.
     let val_1 = common::eval_at_i64(&expr, &x, 1);
-    assert!(
-        val_1.abs() > 0.5,
-        "x⁵+x+1 should not be zero at x=1"
-    );
+    assert!(val_1.abs() > 0.5, "x⁵+x+1 should not be zero at x=1");
     let val_m1 = common::eval_at_i64(&expr, &x, -1);
-    assert!(
-        val_m1.abs() > 0.5,
-        "x⁵+x+1 should not be zero at x=-1"
-    );
+    assert!(val_m1.abs() > 0.5, "x⁵+x+1 should not be zero at x=-1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -22,7 +22,8 @@ fn assert_ftc(integrand: &Ex, var: &Ex, label: &str) {
     if let (Ok(o), Ok(d)) = (
         integrand.subs(var, &test_point).eval_f64(),
         deriv.subs(var, &test_point).eval_f64(),
-    ) && o.is_finite() && d.is_finite()
+    ) && o.is_finite()
+        && d.is_finite()
     {
         let diff = (o - d).abs();
         let tol = 1e-7 * o.abs().max(1.0);
@@ -228,9 +229,7 @@ fn ode_y_double_prime_plus_y_eq_0_uses_trig() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y + &y; // y'' + y = 0
 
-    let sol = ode
-        .try_solve_ode(&y, &x)
-        .expect("should solve y'' + y = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y'' + y = 0");
     let s = format!("{sol}");
 
     // Must have two constants
@@ -259,9 +258,7 @@ fn ode_y_double_prime_plus_y_eq_0_trig_solution_correct() {
     // Substitute C1=1, C2=0: y = cos(x) → y'' + y = -cos(x) + cos(x) = 0
     let c1 = ctx.symbol("C1");
     let c2 = ctx.symbol("C2");
-    let sol_c = sol
-        .subs(&c1, &ctx.int(1))
-        .subs(&c2, &ctx.int(0));
+    let sol_c = sol.subs(&c1, &ctx.int(1)).subs(&c2, &ctx.int(0));
 
     // Compute y'' + y numerically
     let sol_dd = sol_c.diff(&x).diff(&x);
@@ -317,9 +314,7 @@ fn ode_y_double_prime_plus_y_eq_sin_x_verifies() {
     if !sol.has_unevaluated() {
         let c1 = ctx.symbol("C1");
         let c2 = ctx.symbol("C2");
-        let sol_specific = sol
-            .subs(&c1, &ctx.int(0))
-            .subs(&c2, &ctx.int(0));
+        let sol_specific = sol.subs(&c1, &ctx.int(0)).subs(&c2, &ctx.int(0));
 
         // Check y'' + y − sin(x) ≈ 0
         let sol_dd = sol_specific.diff(&x).diff(&x);
@@ -368,11 +363,12 @@ fn ode_y_double_prime_minus_y_eq_0_real_exp() {
     let d2y = dy.formal_diff(&x);
     let ode = &d2y - &y; // y'' - y = 0
 
-    let sol = ode
-        .try_solve_ode(&y, &x)
-        .expect("should solve y'' - y = 0");
+    let sol = ode.try_solve_ode(&y, &x).expect("should solve y'' - y = 0");
     let s = format!("{sol}");
-    assert!(s.contains("C1") && s.contains("C2"), "should have 2 constants: {s}");
+    assert!(
+        s.contains("C1") && s.contains("C2"),
+        "should have 2 constants: {s}"
+    );
     assert!(s.contains("exp"), "should use exp: {s}");
 }
 

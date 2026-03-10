@@ -45,23 +45,22 @@ fn main() {
     println!("  dP/dI = {} (should be 2·I·R)", dp_di);
 
     // Numerical evaluation: I = 3 A, R = 47 Ω
-    let v_num = v.clone()
+    let v_num = v
+        .clone()
         .subs(&i, &ctx.int(3))
         .subs(&r, &ctx.int(47))
         .eval();
     println!("\n  Numerical (I=3 A, R=47 Ω):");
     println!("    V = {}", v_num);
 
-    let p_num = p.clone()
+    let p_num = p
+        .clone()
         .subs(&i, &ctx.int(3))
         .subs(&r, &ctx.int(47))
         .eval();
     println!("    P = {}", p_num);
 
-    let dp_di_num = dp_di
-        .subs(&i, &ctx.int(3))
-        .subs(&r, &ctx.int(47))
-        .eval();
+    let dp_di_num = dp_di.subs(&i, &ctx.int(3)).subs(&r, &ctx.int(47)).eval();
     println!("    dP/dI = {}", dp_di_num);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -100,7 +99,8 @@ fn main() {
     println!("\n  Numerical (R=1kΩ, C=100µF, V₀=5V):");
     println!("    τ = {}", tau_num);
 
-    let v_cap_at_tau = v_cap.clone()
+    let v_cap_at_tau = v_cap
+        .clone()
         .subs(&R, &ctx.int(1000))
         .subs(&C, &ctx.rational(1, 10000))
         .subs(&V0, &ctx.int(5))
@@ -181,15 +181,13 @@ fn main() {
     let p_mech_f64 = p_mech
         .eval_f64_with(&[
             (i_m_ex, 3),
-            (ke_ex, 1),   // approximate Ke=1 for integer check
+            (ke_ex, 1), // approximate Ke=1 for integer check
             (omega_ex, 100),
         ])
         .unwrap();
     println!("    P_mech(I=3, Ke≈1, ω=100) ≈ {:.1} W (f64)", p_mech_f64);
 
-    let p_loss_f64 = p_loss
-        .eval_f64_with(&[(i_m_ex, 3), (r_m_ex, 2)])
-        .unwrap();
+    let p_loss_f64 = p_loss.eval_f64_with(&[(i_m_ex, 3), (r_m_ex, 2)]).unwrap();
     println!("    P_loss(I=3, R=2) = {:.1} W (f64)", p_loss_f64);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -242,7 +240,11 @@ fn main() {
         let one_volt = Voltage::constant(&ctx, 1);
         // charge × voltage = energy (Charge × Voltage = Energy via dim!)
         let energy = symplex::dim!(ctx, Energy: e_charge * one_volt);
-        println!("  Energy of 1 eV = {} = {:.6e} J", energy, energy.eval_f64().unwrap());
+        println!(
+            "  Energy of 1 eV = {} = {:.6e} J",
+            energy,
+            energy.eval_f64().unwrap()
+        );
     }
 
     println!("\n✓ All done!");

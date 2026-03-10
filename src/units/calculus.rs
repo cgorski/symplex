@@ -13,7 +13,6 @@
 /// let t = Time::symbol(&ctx, "t");
 /// let v: Velocity = diff_qty(&x.as_qty(), &t.as_qty()).into();
 /// ```
-
 use std::ops;
 
 use typenum::operator_aliases::{Diff, Sum};
@@ -45,20 +44,28 @@ use super::qty::Qty;
 /// let t: Qty<TimeDim>   = Qty::from_ex(ctx.symbol("t"));
 /// let v: Qty<VelocityDim> = diff_qty(&x, &t);   // Length / Time = Velocity
 /// ```
-pub fn diff_qty<L1, M1, T1, I1, Th1, N1x, J1,
-                L2, M2, T2, I2, Th2, N2x, J2>(
+pub fn diff_qty<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>(
     expr: &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>,
-    var:  &Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>,
-) -> Qty<Dim<Diff<L1, L2>, Diff<M1, M2>, Diff<T1, T2>,
-            Diff<I1, I2>, Diff<Th1, Th2>, Diff<N1x, N2x>, Diff<J1, J2>>>
+    var: &Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>,
+) -> Qty<
+    Dim<
+        Diff<L1, L2>,
+        Diff<M1, M2>,
+        Diff<T1, T2>,
+        Diff<I1, I2>,
+        Diff<Th1, Th2>,
+        Diff<N1x, N2x>,
+        Diff<J1, J2>,
+    >,
+>
 where
-    L1:  ops::Sub<L2>,
-    M1:  ops::Sub<M2>,
-    T1:  ops::Sub<T2>,
-    I1:  ops::Sub<I2>,
+    L1: ops::Sub<L2>,
+    M1: ops::Sub<M2>,
+    T1: ops::Sub<T2>,
+    I1: ops::Sub<I2>,
     Th1: ops::Sub<Th2>,
     N1x: ops::Sub<N2x>,
-    J1:  ops::Sub<J2>,
+    J1: ops::Sub<J2>,
 {
     Qty::from_ex(expr.inner().diff(var.inner()))
 }
@@ -87,20 +94,28 @@ where
 /// let x: Qty<LengthDim> = Qty::from_ex(ctx.symbol("x"));
 /// let w: Qty<EnergyDim> = integrate_qty(&f, &x);  // Force × Length = Energy
 /// ```
-pub fn integrate_qty<L1, M1, T1, I1, Th1, N1x, J1,
-                     L2, M2, T2, I2, Th2, N2x, J2>(
+pub fn integrate_qty<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>(
     expr: &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>,
-    var:  &Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>,
-) -> Qty<Dim<Sum<L1, L2>, Sum<M1, M2>, Sum<T1, T2>,
-            Sum<I1, I2>, Sum<Th1, Th2>, Sum<N1x, N2x>, Sum<J1, J2>>>
+    var: &Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>,
+) -> Qty<
+    Dim<
+        Sum<L1, L2>,
+        Sum<M1, M2>,
+        Sum<T1, T2>,
+        Sum<I1, I2>,
+        Sum<Th1, Th2>,
+        Sum<N1x, N2x>,
+        Sum<J1, J2>,
+    >,
+>
 where
-    L1:  ops::Add<L2>,
-    M1:  ops::Add<M2>,
-    T1:  ops::Add<T2>,
-    I1:  ops::Add<I2>,
+    L1: ops::Add<L2>,
+    M1: ops::Add<M2>,
+    T1: ops::Add<T2>,
+    I1: ops::Add<I2>,
     Th1: ops::Add<Th2>,
     N1x: ops::Add<N2x>,
-    J1:  ops::Add<J2>,
+    J1: ops::Add<J2>,
 {
     Qty::from_ex(expr.inner().integrate(var.inner()))
 }
@@ -111,9 +126,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::dim::*;
     use super::super::si::*;
+    use super::*;
 
     // --- Differentiation tests ---
 
@@ -122,7 +137,7 @@ mod tests {
     fn diff_length_by_time_is_velocity() {
         let ctx = crate::api::context::Context::new();
         let x: Qty<LengthDim> = Qty::from_ex(ctx.symbol("x"));
-        let t: Qty<TimeDim>   = Qty::from_ex(ctx.symbol("t"));
+        let t: Qty<TimeDim> = Qty::from_ex(ctx.symbol("t"));
 
         let result = diff_qty(&x, &t);
 
@@ -135,7 +150,7 @@ mod tests {
     fn diff_velocity_by_time_is_acceleration() {
         let ctx = crate::api::context::Context::new();
         let v: Qty<VelocityDim> = Qty::from_ex(ctx.symbol("v"));
-        let t: Qty<TimeDim>     = Qty::from_ex(ctx.symbol("t"));
+        let t: Qty<TimeDim> = Qty::from_ex(ctx.symbol("t"));
 
         let result = diff_qty(&v, &t);
 
@@ -146,8 +161,8 @@ mod tests {
     #[test]
     fn diff_energy_by_length_is_force() {
         let ctx = crate::api::context::Context::new();
-        let e: Qty<EnergyDim>  = Qty::from_ex(ctx.symbol("E"));
-        let x: Qty<LengthDim>  = Qty::from_ex(ctx.symbol("x"));
+        let e: Qty<EnergyDim> = Qty::from_ex(ctx.symbol("E"));
+        let x: Qty<LengthDim> = Qty::from_ex(ctx.symbol("x"));
 
         let result = diff_qty(&e, &x);
 
@@ -160,8 +175,8 @@ mod tests {
     #[test]
     fn integrate_force_over_length_is_energy() {
         let ctx = crate::api::context::Context::new();
-        let f: Qty<ForceDim>   = Qty::from_ex(ctx.symbol("F"));
-        let x: Qty<LengthDim>  = Qty::from_ex(ctx.symbol("x"));
+        let f: Qty<ForceDim> = Qty::from_ex(ctx.symbol("F"));
+        let x: Qty<LengthDim> = Qty::from_ex(ctx.symbol("x"));
 
         let result = integrate_qty(&f, &x);
 
@@ -173,7 +188,7 @@ mod tests {
     fn integrate_velocity_over_time_is_length() {
         let ctx = crate::api::context::Context::new();
         let v: Qty<VelocityDim> = Qty::from_ex(ctx.symbol("v"));
-        let t: Qty<TimeDim>     = Qty::from_ex(ctx.symbol("t"));
+        let t: Qty<TimeDim> = Qty::from_ex(ctx.symbol("t"));
 
         let result = integrate_qty(&v, &t);
 
@@ -190,7 +205,7 @@ mod tests {
     fn ftc_roundtrip_velocity() {
         let ctx = crate::api::context::Context::new();
         let v: Qty<VelocityDim> = Qty::from_ex(ctx.symbol("v"));
-        let t: Qty<TimeDim>     = Qty::from_ex(ctx.symbol("t"));
+        let t: Qty<TimeDim> = Qty::from_ex(ctx.symbol("t"));
 
         // integrate: Velocity × Time = Length
         let integrated = integrate_qty(&v, &t);
@@ -283,7 +298,7 @@ impl_diff_wrt!(MagneticFlux, Time => Voltage);
 // ── Spatial derivatives ──
 impl_diff_wrt!(Energy, Length => Force);
 impl_diff_wrt!(Energy, Angle => Torque);
-impl_diff_wrt!(Momentum, Length => Stiffness);  // dp/dx in wave context
+impl_diff_wrt!(Momentum, Length => Stiffness); // dp/dx in wave context
 impl_diff_wrt!(Force, Length => Stiffness);
 
 // ── Energy w.r.t. generalized velocities ──
@@ -306,7 +321,7 @@ impl_int_wrt!(Current, Time => Charge);
 impl_int_wrt!(Voltage, Time => MagneticFlux);
 impl_int_wrt!(Force, Length => Energy);
 impl_int_wrt!(Stiffness, Length => Force);
-impl_int_wrt!(Momentum, Velocity => Energy);  // ∫p dv = KE
+impl_int_wrt!(Momentum, Velocity => Energy); // ∫p dv = KE
 impl_int_wrt!(AngularMomentum, AngularVelocity => Energy);
 
 // ── Angle-based derivatives (for robotics Jacobians) ──
@@ -320,7 +335,7 @@ impl_diff_wrt!(AngularMomentum, Angle => AngularMomentum);
 impl_diff_wrt!(MomentOfInertia, Angle => MomentOfInertia);
 
 // Angle-based integration
-impl_int_wrt!(Torque, Angle => Energy);      // ∫τ dθ = work done
-impl_int_wrt!(Length, Angle => Length);       // Arc length integration
+impl_int_wrt!(Torque, Angle => Energy); // ∫τ dθ = work done
+impl_int_wrt!(Length, Angle => Length); // Arc length integration
 impl_int_wrt!(Force, Angle => Force);
 impl_int_wrt!(AngularMomentum, Angle => AngularMomentum);

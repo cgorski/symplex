@@ -20,14 +20,7 @@ use symplex::prelude::*;
 ///
 /// `points` are integer x-values to test at.  We substitute each,
 /// evaluate both sides to f64, and compare within `tol`.
-fn verify_ftc(
-    integrand: &Ex,
-    result: &Ex,
-    x: &Ex,
-    points: &[i64],
-    tol: f64,
-    label: &str,
-) {
+fn verify_ftc(integrand: &Ex, result: &Ex, x: &Ex, points: &[i64], tol: f64, label: &str) {
     let d_result = result.diff(x);
     let mut checked = 0;
     for &pt in points {
@@ -84,7 +77,14 @@ fn e2e_polynomial() {
     let integrand = expr!(ctx, x ^ 3 + 2 * x);
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ x³+2x dx");
-    verify_ftc(&integrand, &result, &x, POINTS_WITH_ZERO, 1e-8, "∫ x³+2x dx");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        POINTS_WITH_ZERO,
+        1e-8,
+        "∫ x³+2x dx",
+    );
 }
 
 #[test]
@@ -129,7 +129,14 @@ fn e2e_one_over_x_squared_minus_1() {
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ 1/(x²-1) dx");
     // Avoid x = ±1 (poles).
-    verify_ftc(&integrand, &result, &x, &[-3, -2, 2, 3, 5], 1e-8, "∫ 1/(x²-1) dx");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        &[-3, -2, 2, 3, 5],
+        1e-8,
+        "∫ 1/(x²-1) dx",
+    );
 }
 
 #[test]
@@ -147,7 +154,14 @@ fn e2e_repeated_quadratic() {
     let integrand = &ctx.int(1) / &denom;
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ 1/(x²+1)² dx");
-    verify_ftc(&integrand, &result, &x, POINTS_WITH_ZERO, 1e-8, "∫ 1/(x²+1)² dx");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        POINTS_WITH_ZERO,
+        1e-8,
+        "∫ 1/(x²+1)² dx",
+    );
 }
 
 #[test]
@@ -161,7 +175,14 @@ fn e2e_2x_plus_1_over_x_plus_1_squared() {
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ (2x+1)/(x+1)² dx");
     // Avoid x = -1 (pole).
-    verify_ftc(&integrand, &result, &x, &[-3, -2, 0, 2, 3, 5], 1e-8, "∫ (2x+1)/(x+1)² dx");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        &[-3, -2, 0, 2, 3, 5],
+        1e-8,
+        "∫ (2x+1)/(x+1)² dx",
+    );
 }
 
 #[test]
@@ -172,7 +193,14 @@ fn e2e_sin_x() {
     let integrand = x.sin();
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ sin(x) dx");
-    verify_ftc(&integrand, &result, &x, POINTS_WITH_ZERO, 1e-8, "∫ sin(x) dx");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        POINTS_WITH_ZERO,
+        1e-8,
+        "∫ sin(x) dx",
+    );
 }
 
 #[test]
@@ -183,7 +211,14 @@ fn e2e_cos_x() {
     let integrand = x.cos();
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ cos(x) dx");
-    verify_ftc(&integrand, &result, &x, POINTS_WITH_ZERO, 1e-8, "∫ cos(x) dx");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        POINTS_WITH_ZERO,
+        1e-8,
+        "∫ cos(x) dx",
+    );
 }
 
 #[test]
@@ -194,7 +229,14 @@ fn e2e_exp_x() {
     let integrand = x.exp();
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ exp(x) dx");
-    verify_ftc(&integrand, &result, &x, &[-2, -1, 0, 1, 2], 1e-8, "∫ exp(x) dx");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        &[-2, -1, 0, 1, 2],
+        1e-8,
+        "∫ exp(x) dx",
+    );
 }
 
 #[test]
@@ -205,7 +247,14 @@ fn e2e_x_times_exp_x() {
     let integrand = &x * &x.exp();
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ x·exp(x) dx");
-    verify_ftc(&integrand, &result, &x, &[-2, -1, 0, 1, 2], 1e-8, "∫ x·exp(x) dx");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        &[-2, -1, 0, 1, 2],
+        1e-8,
+        "∫ x·exp(x) dx",
+    );
 }
 
 #[test]
@@ -233,7 +282,14 @@ fn e2e_one_over_x_ln_x() {
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ 1/(x·ln(x)) dx");
     // Only use x > 1 so ln(x) > 0.
-    verify_ftc(&integrand, &result, &x, &[2, 3, 5, 7], 1e-6, "∫ 1/(x·ln(x)) dx");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        &[2, 3, 5, 7],
+        1e-6,
+        "∫ 1/(x·ln(x)) dx",
+    );
 }
 
 #[test]
@@ -244,7 +300,14 @@ fn e2e_x_squared_exp_x() {
     let integrand = &x.powi(2) * &x.exp();
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ x²·exp(x) dx");
-    verify_ftc(&integrand, &result, &x, &[-2, -1, 0, 1, 2], 1e-7, "∫ x²·exp(x) dx");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        &[-2, -1, 0, 1, 2],
+        1e-7,
+        "∫ x²·exp(x) dx",
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -282,7 +345,14 @@ fn risch_doesnt_regress_sin_x() {
     symplex::syms!(ctx; x);
     let result = x.sin().integrate(&x);
     assert_evaluated(&result, "∫ sin(x) dx regression");
-    verify_ftc(&x.sin(), &result, &x, POINTS_WITH_ZERO, 1e-8, "sin(x) regression");
+    verify_ftc(
+        &x.sin(),
+        &result,
+        &x,
+        POINTS_WITH_ZERO,
+        1e-8,
+        "sin(x) regression",
+    );
 }
 
 #[test]
@@ -291,7 +361,14 @@ fn risch_doesnt_regress_cos_x() {
     symplex::syms!(ctx; x);
     let result = x.cos().integrate(&x);
     assert_evaluated(&result, "∫ cos(x) dx regression");
-    verify_ftc(&x.cos(), &result, &x, POINTS_WITH_ZERO, 1e-8, "cos(x) regression");
+    verify_ftc(
+        &x.cos(),
+        &result,
+        &x,
+        POINTS_WITH_ZERO,
+        1e-8,
+        "cos(x) regression",
+    );
 }
 
 #[test]
@@ -300,7 +377,14 @@ fn risch_doesnt_regress_exp_x() {
     symplex::syms!(ctx; x);
     let result = x.exp().integrate(&x);
     assert_evaluated(&result, "∫ exp(x) dx regression");
-    verify_ftc(&x.exp(), &result, &x, &[-2, -1, 0, 1, 2], 1e-8, "exp(x) regression");
+    verify_ftc(
+        &x.exp(),
+        &result,
+        &x,
+        &[-2, -1, 0, 1, 2],
+        1e-8,
+        "exp(x) regression",
+    );
 }
 
 #[test]
@@ -310,7 +394,14 @@ fn risch_doesnt_regress_x_exp_x_by_parts() {
     let integrand = &x * &x.exp();
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ x·exp(x) dx regression");
-    verify_ftc(&integrand, &result, &x, &[-2, -1, 0, 1, 2], 1e-8, "x·exp(x) regression");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        &[-2, -1, 0, 1, 2],
+        1e-8,
+        "x·exp(x) regression",
+    );
 }
 
 #[test]
@@ -320,7 +411,14 @@ fn risch_doesnt_regress_x_sin_x_by_parts() {
     let integrand = &x * &x.sin();
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ x·sin(x) dx regression");
-    verify_ftc(&integrand, &result, &x, POINTS_WITH_ZERO, 1e-8, "x·sin(x) regression");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        POINTS_WITH_ZERO,
+        1e-8,
+        "x·sin(x) regression",
+    );
 }
 
 #[test]
@@ -330,7 +428,14 @@ fn risch_doesnt_regress_polynomial_power_rule() {
     let integrand = expr!(ctx, 5 * x ^ 4 + 3 * x ^ 2 + 1);
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ 5x⁴+3x²+1 dx regression");
-    verify_ftc(&integrand, &result, &x, POINTS_WITH_ZERO, 1e-8, "poly regression");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        POINTS_WITH_ZERO,
+        1e-8,
+        "poly regression",
+    );
 }
 
 #[test]
@@ -341,7 +446,14 @@ fn risch_doesnt_regress_trig_identity() {
     let integrand = x.sin().powi(2);
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ sin²(x) dx regression");
-    verify_ftc(&integrand, &result, &x, POINTS_WITH_ZERO, 1e-7, "sin²(x) regression");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        POINTS_WITH_ZERO,
+        1e-7,
+        "sin²(x) regression",
+    );
 }
 
 #[test]
@@ -352,7 +464,14 @@ fn risch_doesnt_regress_partial_fractions() {
     let integrand = &ctx.int(1) / &expr!(ctx, x ^ 2 - 1);
     let result = integrand.integrate(&x);
     assert_evaluated(&result, "∫ 1/(x²-1) dx regression");
-    verify_ftc(&integrand, &result, &x, &[-3, -2, 2, 3, 5], 1e-8, "1/(x²-1) regression");
+    verify_ftc(
+        &integrand,
+        &result,
+        &x,
+        &[-3, -2, 2, 3, 5],
+        1e-8,
+        "1/(x²-1) regression",
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -409,7 +528,11 @@ fn ftc_simple_rational_functions() {
         ("1/(x+1)", &ctx.int(1) / &(&x + 1), &[-3, -2, 0, 2, 3]),
         ("1/(x+2)", &ctx.int(1) / &(&x + 2), &[-3, -1, 0, 1, 3]),
         ("x/(x+1)", &x / &(&x + 1), &[-3, -2, 0, 2, 3]),
-        ("1/(x²+1)", &ctx.int(1) / &(&x.powi(2) + 1), &[-3, -2, 0, 2, 3]),
+        (
+            "1/(x²+1)",
+            &ctx.int(1) / &(&x.powi(2) + 1),
+            &[-3, -2, 0, 2, 3],
+        ),
     ];
 
     for (label, integrand, points) in &test_cases {

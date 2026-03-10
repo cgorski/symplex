@@ -843,18 +843,18 @@ impl fmt::Debug for ExprNode {
                 .field(var)
                 .field(point)
                 .finish(),
-            ExprNode::RootOf(poly, idx) => {
-                f.debug_tuple("RootOf").field(poly).field(idx).finish()
-            }
+            ExprNode::RootOf(poly, idx) => f.debug_tuple("RootOf").field(poly).field(idx).finish(),
             ExprNode::DSolve(expr, func, var) => f
                 .debug_tuple("DSolve")
                 .field(expr)
                 .field(func)
                 .field(var)
                 .finish(),
-            ExprNode::ConditionSet(var, cond) => {
-                f.debug_tuple("ConditionSet").field(var).field(cond).finish()
-            }
+            ExprNode::ConditionSet(var, cond) => f
+                .debug_tuple("ConditionSet")
+                .field(var)
+                .field(cond)
+                .finish(),
         }
     }
 }

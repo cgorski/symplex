@@ -53,11 +53,10 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 
 use crate::base::arena::{
-    Arena, FN_BELL, FN_BERNOULLI, FN_BESSELJ, FN_BESSELY, FN_BESSELI, FN_BESSELK,
-    FN_CATALAN, FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_EULER_NUMBER, FN_FACTORIAL2,
-    FN_FALLING_FACTORIAL, FN_FIBONACCI, FN_HARMONIC, FN_HERMITE, FN_LAGUERRE,
-    FN_LEGENDRE, FN_LUCAS, FN_PARTITION_COUNT, FN_RISING_FACTORIAL,
-    FN_STIRLING1, FN_STIRLING2, FN_SUBFACTORIAL,
+    Arena, FN_BELL, FN_BERNOULLI, FN_BESSELI, FN_BESSELJ, FN_BESSELK, FN_BESSELY, FN_CATALAN,
+    FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_EULER_NUMBER, FN_FACTORIAL2, FN_FALLING_FACTORIAL,
+    FN_FIBONACCI, FN_HARMONIC, FN_HERMITE, FN_LAGUERRE, FN_LEGENDRE, FN_LUCAS, FN_PARTITION_COUNT,
+    FN_RISING_FACTORIAL, FN_STIRLING1, FN_STIRLING2, FN_SUBFACTORIAL,
 };
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
@@ -929,11 +928,12 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
 
                 // Check for empty range before anything else
                 if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int)
-                    && hi_val < lo_val {
-                        // Empty range: sum is 0
-                        cache.insert(id, arena.zero);
-                        continue;
-                    }
+                    && hi_val < lo_val
+                {
+                    // Empty range: sum is 0
+                    cache.insert(id, arena.zero);
+                    continue;
+                }
 
                 // Try closed-form symbolic evaluation (Faulhaber, geometric, etc.)
                 if let Some(closed) =

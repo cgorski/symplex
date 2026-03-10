@@ -600,8 +600,8 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
     lines.push("#[cfg(feature = \"std\")]".to_string());
     lines.push("mod math {".to_string());
     for func in &[
-        "sin", "cos", "tan", "exp", "ln", "abs", "sqrt", "cbrt", "asin", "acos", "atan",
-        "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "floor", "ceil", "signum",
+        "sin", "cos", "tan", "exp", "ln", "abs", "sqrt", "cbrt", "asin", "acos", "atan", "sinh",
+        "cosh", "tanh", "asinh", "acosh", "atanh", "floor", "ceil", "signum",
     ] {
         let method = *func;
         lines.push(format!(
@@ -646,8 +646,8 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
     lines.push("#[cfg(not(feature = \"std\"))]".to_string());
     lines.push("mod math {".to_string());
     for func in &[
-        "sin", "cos", "tan", "exp", "abs", "sqrt", "cbrt", "asin", "acos", "atan",
-        "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "floor", "ceil",
+        "sin", "cos", "tan", "exp", "abs", "sqrt", "cbrt", "asin", "acos", "atan", "sinh", "cosh",
+        "tanh", "asinh", "acosh", "atanh", "floor", "ceil",
     ] {
         let method = *func;
         lines.push(format!(
@@ -778,10 +778,7 @@ fn expr_to_rust_cse(
             let live: Vec<ExprId> = children
                 .iter()
                 .copied()
-                .filter(|&c| {
-                    try_resolve_constant(arena, c, cse_constants)
-                        .is_none_or(|v| v != 0.0)
-                })
+                .filter(|&c| try_resolve_constant(arena, c, cse_constants).is_none_or(|v| v != 0.0))
                 .collect();
             if live.is_empty() {
                 return Ok(format!("0.0{suffix}"));
@@ -803,8 +800,7 @@ fn expr_to_rust_cse(
                 non_fma_children.push(child);
             }
 
-            if !fma_children.is_empty()
-                && (!non_fma_children.is_empty() || fma_children.len() >= 2)
+            if !fma_children.is_empty() && (!non_fma_children.is_empty() || fma_children.len() >= 2)
             {
                 return emit_fma_chain(
                     arena,
@@ -821,14 +817,23 @@ fn expr_to_rust_cse(
             for (i, &child) in live.iter().enumerate() {
                 let (is_neg, code) = if matches!(arena.node(child), ExprNode::Neg(_)) {
                     if let ExprNode::Neg(inner) = arena.node(child).clone() {
-                        (true, expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?)
+                        (
+                            true,
+                            expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?,
+                        )
                     } else {
                         unreachable!()
                     }
                 } else if is_neg_one_mul_codegen(arena, child) {
-                    (true, emit_mul_without_neg_one(arena, child, var_names, options, cse_constants)?)
+                    (
+                        true,
+                        emit_mul_without_neg_one(arena, child, var_names, options, cse_constants)?,
+                    )
                 } else {
-                    (false, expr_to_rust_cse(arena, child, var_names, options, cse_constants)?)
+                    (
+                        false,
+                        expr_to_rust_cse(arena, child, var_names, options, cse_constants)?,
+                    )
                 };
                 if i == 0 {
                     if is_neg {
@@ -860,10 +865,7 @@ fn expr_to_rust_cse(
             let live: Vec<ExprId> = children
                 .iter()
                 .copied()
-                .filter(|&c| {
-                    try_resolve_constant(arena, c, cse_constants)
-                        .is_none_or(|v| v != 1.0)
-                })
+                .filter(|&c| try_resolve_constant(arena, c, cse_constants).is_none_or(|v| v != 1.0))
                 .collect();
             if live.is_empty() {
                 return Ok(format!("1.0{suffix}"));
@@ -989,7 +991,8 @@ fn expr_to_rust_cse(
         | ExprNode::Erfc(_)
         | ExprNode::LambertW(_)
         | ExprNode::Beta(_, _) => Err(SymplexError::NotImplemented(
-            "cannot generate Rust code for special functions (gamma, erf, beta, lambertw)".to_string(),
+            "cannot generate Rust code for special functions (gamma, erf, beta, lambertw)"
+                .to_string(),
         )),
         ExprNode::Apply(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for user-defined Apply nodes".to_string(),
@@ -1106,7 +1109,14 @@ fn try_numopt(
                 _ => unreachable!(),
             };
             return Some(emit_exp_m1_in_add(
-                arena, children, ei, ni, x, var_names, options, cse_constants,
+                arena,
+                children,
+                ei,
+                ni,
+                x,
+                var_names,
+                options,
+                cse_constants,
             ));
         }
     }
@@ -1122,10 +1132,24 @@ fn try_numopt(
     if let ExprNode::Mul(children) = node
         && children.len() == 2
     {
-        if let Some(r) = try_log2(arena, children[0], children[1], var_names, options, cse_constants) {
+        if let Some(r) = try_log2(
+            arena,
+            children[0],
+            children[1],
+            var_names,
+            options,
+            cse_constants,
+        ) {
             return Some(r);
         }
-        if let Some(r) = try_log2(arena, children[1], children[0], var_names, options, cse_constants) {
+        if let Some(r) = try_log2(
+            arena,
+            children[1],
+            children[0],
+            var_names,
+            options,
+            cse_constants,
+        ) {
             return Some(r);
         }
     }
@@ -1157,12 +1181,16 @@ fn try_ln_1p(
         if numopt_resolves_to(arena, children[0], cse_constants, 1.0) {
             let x = children[1];
             let x_code = expr_to_rust_cse(arena, x, var_names, options, cse_constants);
-            return Some(x_code.and_then(|code| emit_numopt_call(&code, "ln_1p", "log1p", options)));
+            return Some(
+                x_code.and_then(|code| emit_numopt_call(&code, "ln_1p", "log1p", options)),
+            );
         }
         if numopt_resolves_to(arena, children[1], cse_constants, 1.0) {
             let x = children[0];
             let x_code = expr_to_rust_cse(arena, x, var_names, options, cse_constants);
-            return Some(x_code.and_then(|code| emit_numopt_call(&code, "ln_1p", "log1p", options)));
+            return Some(
+                x_code.and_then(|code| emit_numopt_call(&code, "ln_1p", "log1p", options)),
+            );
         }
     }
     None
@@ -1255,14 +1283,23 @@ fn emit_exp_m1_in_add(
     for &child in &remaining {
         let (is_neg, code) = if matches!(arena.node(child), ExprNode::Neg(_)) {
             if let ExprNode::Neg(inner) = arena.node(child).clone() {
-                (true, expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?)
+                (
+                    true,
+                    expr_to_rust_cse(arena, inner, var_names, options, cse_constants)?,
+                )
             } else {
                 unreachable!()
             }
         } else if is_neg_one_mul_codegen(arena, child) {
-            (true, emit_mul_without_neg_one(arena, child, var_names, options, cse_constants)?)
+            (
+                true,
+                emit_mul_without_neg_one(arena, child, var_names, options, cse_constants)?,
+            )
         } else {
-            (false, expr_to_rust_cse(arena, child, var_names, options, cse_constants)?)
+            (
+                false,
+                expr_to_rust_cse(arena, child, var_names, options, cse_constants)?,
+            )
         };
 
         if is_neg {
@@ -1739,18 +1776,17 @@ fn emit_unary_call(
         MathBackend::Std => format!("{arg_code}.{func}()"),
         MathBackend::Libm => {
             let libm_fn = libm_function_name(func);
-            format!("libm::{libm_fn}({arg_code} as f64) as {}", options.precision.type_name())
+            format!(
+                "libm::{libm_fn}({arg_code} as f64) as {}",
+                options.precision.type_name()
+            )
         }
         MathBackend::CfgGated => format!("math::{func}({arg_code})"),
     })
 }
 
 /// Emit a powi call.
-fn emit_powi(
-    base_code: &str,
-    exp: i64,
-    options: &CodegenOptions,
-) -> Result<String, SymplexError> {
+fn emit_powi(base_code: &str, exp: i64, options: &CodegenOptions) -> Result<String, SymplexError> {
     // Horner-style expansion for small positive exponents (3..=6)
     if let Some(expanded) = expand_powi(base_code, exp) {
         return Ok(expanded);
@@ -1772,7 +1808,9 @@ fn expand_powi(base: &str, n: i64) -> Option<String> {
     match n {
         3 => Some(format!("({base} * {base} * {base})")),
         4 => Some(format!("{{ let _p2 = {base} * {base}; _p2 * _p2 }}")),
-        5 => Some(format!("{{ let _p2 = {base} * {base}; _p2 * _p2 * {base} }}")),
+        5 => Some(format!(
+            "{{ let _p2 = {base} * {base}; _p2 * _p2 * {base} }}"
+        )),
         6 => Some(format!("{{ let _p2 = {base} * {base}; _p2 * _p2 * _p2 }}")),
         _ => None,
     }
@@ -2220,10 +2258,7 @@ mod tests {
             ..Default::default()
         };
         let code = to_rust_fn_with_options(&mut a, x2, "square", &["x"], &opts).unwrap();
-        assert!(
-            code.contains("f32"),
-            "expected f32 in output, got:\n{code}"
-        );
+        assert!(code.contains("f32"), "expected f32 in output, got:\n{code}");
         assert!(
             code.contains("pub fn square(x: f32) -> f32"),
             "expected f32 signature, got:\n{code}"
@@ -2353,8 +2388,7 @@ mod tests {
         let zero = a.int(0);
         let entries = vec![sin_x, cos_y, zero, one];
         let opts = CodegenOptions::default();
-        let code =
-            matrix_to_rust_fn(&mut a, &entries, 2, 2, "rot", &["x", "y"], &opts).unwrap();
+        let code = matrix_to_rust_fn(&mut a, &entries, 2, 2, "rot", &["x", "y"], &opts).unwrap();
         assert!(
             code.contains("[f64; 4]"),
             "expected [f64; 4] return type, got:\n{code}"
@@ -2373,7 +2407,10 @@ mod tests {
         let zero = a.int(0);
         let cos_zero = a.cos(zero);
         let code = expr_to_rust(&a, cos_zero, &[], &default_opts()).unwrap();
-        assert!(!code.contains(".cos()"), "should constant-fold cos(0): {code}");
+        assert!(
+            !code.contains(".cos()"),
+            "should constant-fold cos(0): {code}"
+        );
         assert!(code.contains("1.0"), "should produce 1.0: {code}");
     }
 
@@ -2383,7 +2420,10 @@ mod tests {
         let zero = a.int(0);
         let sin_zero = a.sin(zero);
         let code = expr_to_rust(&a, sin_zero, &[], &default_opts()).unwrap();
-        assert!(!code.contains(".sin()"), "should constant-fold sin(0): {code}");
+        assert!(
+            !code.contains(".sin()"),
+            "should constant-fold sin(0): {code}"
+        );
         assert!(code.contains("0.0"), "should produce 0.0: {code}");
     }
 
@@ -2393,7 +2433,10 @@ mod tests {
         let zero = a.int(0);
         let exp_zero = a.exp(zero);
         let code = expr_to_rust(&a, exp_zero, &[], &default_opts()).unwrap();
-        assert!(!code.contains(".exp()"), "should constant-fold exp(0): {code}");
+        assert!(
+            !code.contains(".exp()"),
+            "should constant-fold exp(0): {code}"
+        );
         assert!(code.contains("1.0"), "should produce 1.0: {code}");
     }
 
@@ -2404,7 +2447,10 @@ mod tests {
         let sin_pi = a.sin(pi);
         let code = expr_to_rust(&a, sin_pi, &[], &default_opts()).unwrap();
         // sin(pi) ≈ 0 — should be constant-folded (not a .sin() call)
-        assert!(!code.contains(".sin()"), "should constant-fold sin(pi): {code}");
+        assert!(
+            !code.contains(".sin()"),
+            "should constant-fold sin(pi): {code}"
+        );
     }
 
     #[test]
@@ -2413,7 +2459,10 @@ mod tests {
         let x = sym(&mut a, "x");
         let sin_x = a.sin(x);
         let code = expr_to_rust(&a, sin_x, &["x"], &default_opts()).unwrap();
-        assert!(code.contains(".sin()"), "variable arg should NOT be folded: {code}");
+        assert!(
+            code.contains(".sin()"),
+            "variable arg should NOT be folded: {code}"
+        );
     }
 
     #[test]
@@ -2423,7 +2472,10 @@ mod tests {
         let neg_one = a.int(-1);
         let product = a.mul(&[neg_one, x]);
         let code = expr_to_rust(&a, product, &["x"], &default_opts()).unwrap();
-        assert!(!code.contains("-1"), "should not contain -1 literal: {code}");
+        assert!(
+            !code.contains("-1"),
+            "should not contain -1 literal: {code}"
+        );
         assert!(code.contains("(-x)"), "should emit (-x): {code}");
     }
 
@@ -2438,8 +2490,7 @@ mod tests {
             .with_uom()
             .param_unit("theta", "Angle")
             .return_unit_type("Length");
-        let code =
-            to_rust_fn_with_options(&mut a, body, "my_fn", &["theta"], &opts).unwrap();
+        let code = to_rust_fn_with_options(&mut a, body, "my_fn", &["theta"], &opts).unwrap();
         assert!(
             code.contains("use uom::si::f64::*;"),
             "missing f64 wildcard import:\n{code}"
@@ -2463,8 +2514,7 @@ mod tests {
             .with_uom()
             .param_unit("theta", "Angle")
             .return_unit_type("Length");
-        let code =
-            to_rust_fn_with_options(&mut a, body, "compute", &["theta"], &opts).unwrap();
+        let code = to_rust_fn_with_options(&mut a, body, "compute", &["theta"], &opts).unwrap();
         assert!(
             code.contains("theta: Angle"),
             "param should be typed as Angle:\n{code}"
@@ -2484,8 +2534,7 @@ mod tests {
             .with_uom()
             .param_unit("theta", "Angle")
             .return_unit_type("Length");
-        let code =
-            to_rust_fn_with_options(&mut a, body, "f", &["theta"], &opts).unwrap();
+        let code = to_rust_fn_with_options(&mut a, body, "f", &["theta"], &opts).unwrap();
         assert!(
             code.contains("let theta = theta.get::<radian>();"),
             "should extract raw value from Angle:\n{code}"
@@ -2501,8 +2550,7 @@ mod tests {
             .with_uom()
             .param_unit("theta", "Angle")
             .return_unit_type("Length");
-        let code =
-            to_rust_fn_with_options(&mut a, body, "f", &["theta"], &opts).unwrap();
+        let code = to_rust_fn_with_options(&mut a, body, "f", &["theta"], &opts).unwrap();
         assert!(
             code.contains("Length::new::<meter>("),
             "return value should be wrapped in Length::new:\n{code}"
@@ -2515,8 +2563,7 @@ mod tests {
         let x = sym(&mut a, "x");
         let body = a.sin(x);
         let opts = CodegenOptions::default();
-        let code =
-            to_rust_fn_with_options(&mut a, body, "f", &["x"], &opts).unwrap();
+        let code = to_rust_fn_with_options(&mut a, body, "f", &["x"], &opts).unwrap();
         assert!(
             !code.contains("uom"),
             "UnitAnnotation::None should not emit uom code:\n{code}"
@@ -2544,18 +2591,9 @@ mod tests {
             .param_unit("theta1", "Angle")
             .param_unit("theta2", "Angle")
             .return_unit_type("Length");
-        let code = to_rust_fn_with_options(
-            &mut a,
-            body,
-            "jacobian",
-            &["theta1", "theta2"],
-            &opts,
-        )
-        .unwrap();
-        assert!(
-            code.contains("theta1: Angle"),
-            "first param typed:\n{code}"
-        );
+        let code = to_rust_fn_with_options(&mut a, body, "jacobian", &["theta1", "theta2"], &opts)
+            .unwrap();
+        assert!(code.contains("theta1: Angle"), "first param typed:\n{code}");
         assert!(
             code.contains("theta2: Angle"),
             "second param typed:\n{code}"
@@ -2586,8 +2624,7 @@ mod tests {
             .with_uom()
             .param_unit("x", "Angle")
             .return_unit_type("Length");
-        let code =
-            matrix_to_rust_fn(&mut a, &entries, 2, 2, "rot", &["x"], &opts).unwrap();
+        let code = matrix_to_rust_fn(&mut a, &entries, 2, 2, "rot", &["x"], &opts).unwrap();
         assert!(
             code.contains("[Length; 4]"),
             "expected [Length; 4] return type:\n{code}"
@@ -2611,8 +2648,7 @@ mod tests {
             .with_uom()
             .param_unit("theta", "Angle");
         // No return_unit set — return type should be f64
-        let code =
-            to_rust_fn_with_options(&mut a, body, "f", &["theta"], &opts).unwrap();
+        let code = to_rust_fn_with_options(&mut a, body, "f", &["theta"], &opts).unwrap();
         assert!(
             code.contains("-> f64 {"),
             "return type should fall back to f64:\n{code}"
@@ -2634,8 +2670,7 @@ mod tests {
             .param_unit("t", "Time")
             .param_unit("v", "Velocity")
             .return_unit_type("Length");
-        let code =
-            to_rust_fn_with_options(&mut a, body, "distance", &["t", "v"], &opts).unwrap();
+        let code = to_rust_fn_with_options(&mut a, body, "distance", &["t", "v"], &opts).unwrap();
         assert!(code.contains("t: Time"), "t param typed:\n{code}");
         assert!(code.contains("v: Velocity"), "v param typed:\n{code}");
         assert!(
@@ -2677,7 +2712,10 @@ mod tests {
     #[test]
     fn codegen_uom_type_to_module_mapping() {
         assert_eq!(uom_type_to_module("Length"), "length");
-        assert_eq!(uom_type_to_module("ElectricPotential"), "electric_potential");
+        assert_eq!(
+            uom_type_to_module("ElectricPotential"),
+            "electric_potential"
+        );
         assert_eq!(uom_type_to_module("AngularVelocity"), "angular_velocity");
     }
 }

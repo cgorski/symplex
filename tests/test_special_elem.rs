@@ -29,20 +29,14 @@ fn heaviside_zero() {
 fn heaviside_positive_rational() {
     let ctx = Context::new();
     // Heaviside(3/7) should be 1 (positive argument)
-    assert_eq!(
-        format!("{}", ctx.rational(3, 7).heaviside().eval()),
-        "1"
-    );
+    assert_eq!(format!("{}", ctx.rational(3, 7).heaviside().eval()), "1");
 }
 
 #[test]
 fn heaviside_negative_rational() {
     let ctx = Context::new();
     // Heaviside(-2/5) should be 0 (negative argument)
-    assert_eq!(
-        format!("{}", ctx.rational(-2, 5).heaviside().eval()),
-        "0"
-    );
+    assert_eq!(format!("{}", ctx.rational(-2, 5).heaviside().eval()), "0");
 }
 
 #[test]
@@ -92,10 +86,7 @@ fn dirac_delta_negative_nonzero() {
 #[test]
 fn dirac_delta_rational_nonzero() {
     let ctx = Context::new();
-    assert_eq!(
-        format!("{}", ctx.rational(1, 3).dirac_delta().eval()),
-        "0"
-    );
+    assert_eq!(format!("{}", ctx.rational(1, 3).dirac_delta().eval()), "0");
 }
 
 #[test]

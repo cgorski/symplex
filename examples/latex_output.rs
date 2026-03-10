@@ -4,7 +4,6 @@
 
 use symplex::prelude::*;
 
-
 fn main() {
     println!("=== LaTeX Output ===\n");
 

@@ -381,10 +381,7 @@ pub fn is_zero_dimensional<O: MonomialOrd>(basis: &[MultiPoly<O>]) -> bool {
         let has_pure_power = basis.iter().any(|p| {
             if let Some(lm) = p.leading_monomial() {
                 // Check: only variable `var` has nonzero exponent, and it's positive
-                lm.iter()
-                    .enumerate()
-                    .all(|(i, &e)| i == var || e == 0)
-                    && lm[var] > 0
+                lm.iter().enumerate().all(|(i, &e)| i == var || e == 0) && lm[var] > 0
             } else {
                 false
             }
@@ -418,7 +415,9 @@ fn standard_monomials<O: MonomialOrd>(basis: &[MultiPoly<O>], num_vars: usize) -
         visited.insert(mono.clone());
 
         // Check if this monomial is divisible by any leading monomial
-        let is_divisible = leading_monomials.iter().any(|lm| monomial_divides(lm, &mono));
+        let is_divisible = leading_monomials
+            .iter()
+            .any(|lm| monomial_divides(lm, &mono));
 
         if !is_divisible {
             staircase.push(mono.clone());
@@ -576,8 +575,7 @@ pub fn fglm<From: MonomialOrd, To: MonomialOrd>(
                 let mut new_poly = MultiPoly::<To>::monomial(Ratio::one(), mono.clone());
                 for (i, c) in coeffs.iter().enumerate() {
                     if !c.is_zero() {
-                        let term =
-                            MultiPoly::<To>::monomial(-c.clone(), to_staircase[i].clone());
+                        let term = MultiPoly::<To>::monomial(-c.clone(), to_staircase[i].clone());
                         new_poly = new_poly.add(&term);
                     }
                 }
@@ -661,7 +659,11 @@ fn compute_nf_via_matrices(
 }
 
 /// Multiply a D×D matrix by a D-vector.
-fn matrix_vector_mul(matrix: &[Vec<Ratio<BigInt>>], vec: &[Ratio<BigInt>], d: usize) -> Vec<Ratio<BigInt>> {
+fn matrix_vector_mul(
+    matrix: &[Vec<Ratio<BigInt>>],
+    vec: &[Ratio<BigInt>],
+    d: usize,
+) -> Vec<Ratio<BigInt>> {
     let mut result = vec![Ratio::<BigInt>::zero(); d];
     for i in 0..d {
         for j in 0..d {
@@ -766,8 +768,7 @@ impl IncrementalEchelon {
             // The echelon row = nf - Σ trail[i] * v_i = v_remaining
             // Express it as: echelon_row = (-trail[0])*v_0 + ... + (-trail[m-1])*v_{m-1} + 1*v_m
             // where v_m is this new independent vector (nf itself)
-            let mut coeff: Vec<Ratio<BigInt>> =
-                trail.iter().map(|t| -t.clone()).collect();
+            let mut coeff: Vec<Ratio<BigInt>> = trail.iter().map(|t| -t.clone()).collect();
             coeff.push(Ratio::one()); // coefficient for v_m = this vector
 
             self.rows.push((pivot_col, v, coeff));

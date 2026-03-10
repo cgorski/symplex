@@ -260,7 +260,10 @@ fn solve_two_linear_unique() {
     let x = MultiPoly::<GrevLex>::var(nv, 0);
     let y = MultiPoly::<GrevLex>::var(nv, 1);
 
-    let p1 = x.scale(&rat(2)).add(&y.scale(&rat(3))).sub(&MultiPoly::from_int(nv, 8));
+    let p1 = x
+        .scale(&rat(2))
+        .add(&y.scale(&rat(3)))
+        .sub(&MultiPoly::from_int(nv, 8));
     let p2 = x.sub(&y).sub(&MultiPoly::from_int(nv, 1));
 
     let system = vec![p1, p2];
@@ -359,11 +362,11 @@ fn ik_2dof_basic() {
 fn ik_2dof_verify_fk() {
     // Test a few different targets and verify FK for every returned solution.
     let cases: Vec<(f64, f64, f64, f64)> = vec![
-        (1.0, 1.0, 2.0, 0.0),   // fully extended
-        (1.0, 1.0, 0.0, 2.0),   // fully extended upward
-        (1.0, 1.0, -2.0, 0.0),  // fully extended backward
-        (2.0, 1.0, 3.0, 0.0),   // different link lengths, extended
-        (1.0, 1.0, 0.0, 0.0),   // folded back to origin (boundary)
+        (1.0, 1.0, 2.0, 0.0),  // fully extended
+        (1.0, 1.0, 0.0, 2.0),  // fully extended upward
+        (1.0, 1.0, -2.0, 0.0), // fully extended backward
+        (2.0, 1.0, 3.0, 0.0),  // different link lengths, extended
+        (1.0, 1.0, 0.0, 0.0),  // folded back to origin (boundary)
     ];
 
     for (l1, l2, tx, ty) in cases {

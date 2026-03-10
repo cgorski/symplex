@@ -208,7 +208,8 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     if flags.has_add {
         let rules = crate::transforms::pattern::basic_rules(arena);
         let s4_eval = crate::transforms::eval::eval(arena, expr);
-        let (gcd_id, s4_inner) = crate::simplify::factor_terms::symbolic_factor_terms_pair(arena, s4_eval);
+        let (gcd_id, s4_inner) =
+            crate::simplify::factor_terms::symbolic_factor_terms_pair(arena, s4_eval);
         let (s4_simplified, _) = crate::transforms::pattern::apply_rules(arena, s4_inner, &rules);
         let s4 = if gcd_id == arena.one {
             s4_simplified
@@ -268,7 +269,8 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         for &sym in &free {
             let cancelled = crate::poly::polybridge::cancel(arena, evaled, sym);
             let cancelled_eval = crate::transforms::eval::eval(arena, cancelled);
-            let (cancelled_simp, _) = crate::transforms::pattern::apply_rules(arena, cancelled_eval, &rules);
+            let (cancelled_simp, _) =
+                crate::transforms::pattern::apply_rules(arena, cancelled_eval, &rules);
             let ops = count_ops(arena, cancelled_simp);
             if ops < cancel_best_ops {
                 cancel_best = cancelled_simp;

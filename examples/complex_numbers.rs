@@ -12,7 +12,6 @@
 
 use symplex::prelude::*;
 
-
 fn main() {
     println!("=== Complex Numbers ===\n");
 

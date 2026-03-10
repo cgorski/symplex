@@ -12,7 +12,6 @@
 
 use symplex::prelude::*;
 
-
 fn main() {
     println!("=== ODE Solving ===\n");
 
@@ -97,12 +96,21 @@ fn main() {
         // Verify particular solutions
         let cos_sol = x.cos();
         let sin_sol = x.sin();
-        println!("Verify y = cos(x): {}", ode4.check_ode_solution(&cos_sol, &y, &x));
-        println!("Verify y = sin(x): {}", ode4.check_ode_solution(&sin_sol, &y, &x));
+        println!(
+            "Verify y = cos(x): {}",
+            ode4.check_ode_solution(&cos_sol, &y, &x)
+        );
+        println!(
+            "Verify y = sin(x): {}",
+            ode4.check_ode_solution(&sin_sol, &y, &x)
+        );
 
         // Wrong solution
         let wrong = x.exp();
-        println!("Verify y = exp(x): {} (should be false)", ode4.check_ode_solution(&wrong, &y, &x));
+        println!(
+            "Verify y = exp(x): {} (should be false)",
+            ode4.check_ode_solution(&wrong, &y, &x)
+        );
     }
 
     // ── 5. Second-order with damping: y'' + 3y' + 2y = 0 ─────────

@@ -62,10 +62,7 @@ fn sturm_neg_x2_plus_1_gt_0_empty() {
     let poly = -&(&x.powi(2) + 1);
     let result = poly.solve_gt(&x);
     let s = format!("{result}");
-    assert_eq!(
-        s, "EmptySet",
-        "-(x²+1) > 0 should be EmptySet, got: {s}"
-    );
+    assert_eq!(s, "EmptySet", "-(x²+1) > 0 should be EmptySet, got: {s}");
     // Verify polynomial is negative everywhere
     common::assert_negative_at(&poly, &x, 0, "-(x²+1) at x=0");
     common::assert_negative_at(&poly, &x, 5, "-(x²+1) at x=5");
@@ -113,7 +110,9 @@ fn sturm_x2_ge_0_universal() {
     );
     // x² is non-negative everywhere, so the solution should cover the whole line
     // Verify at specific points
-    let val0 = poly.subs(&x, &ctx.int(0)).eval_f64()
+    let val0 = poly
+        .subs(&x, &ctx.int(0))
+        .eval_f64()
         .expect("eval at x=0 should succeed");
     assert!(val0.abs() < 1e-10, "x² at x=0 should be 0, got {val0}");
     common::assert_positive_at(&poly, &x, 1, "x² at x=1");
@@ -197,10 +196,7 @@ fn sturm_x2_plus_1_lt_0_empty() {
     let poly = &x.powi(2) + 1;
     let result = poly.solve_lt(&x);
     let s = format!("{result}");
-    assert_eq!(
-        s, "EmptySet",
-        "x²+1 < 0 should be EmptySet, got: {s}"
-    );
+    assert_eq!(s, "EmptySet", "x²+1 < 0 should be EmptySet, got: {s}");
 }
 
 #[test]

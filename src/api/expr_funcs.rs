@@ -7,9 +7,9 @@ use num_bigint::BigInt;
 use num_traits::Zero;
 use tracing::debug_span;
 
+use crate::api::expr::{BoolEx, Ex, Expr, Numeric, SetEx, SetValued};
 use crate::base::assumptions::{Assumption, Props};
 use crate::base::errors::SymplexError;
-use crate::api::expr::{BoolEx, Ex, Expr, Numeric, SetEx, SetValued};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // impl Expr<Numeric> — Numeric-specific methods
@@ -396,7 +396,10 @@ impl Expr<Numeric> {
         let upper_id = body.checked_id(upper);
         let mut inner = body.inner.write();
         let id = inner.arena.intern(crate::base::node::ExprNode::Sum(
-            body.raw_id(), var_id, lower_id, upper_id,
+            body.raw_id(),
+            var_id,
+            lower_id,
+            upper_id,
         ));
         drop(inner);
         body.wrap(id)
@@ -412,7 +415,10 @@ impl Expr<Numeric> {
         let upper_id = body.checked_id(upper);
         let mut inner = body.inner.write();
         let id = inner.arena.intern(crate::base::node::ExprNode::Product_(
-            body.raw_id(), var_id, lower_id, upper_id,
+            body.raw_id(),
+            var_id,
+            lower_id,
+            upper_id,
         ));
         drop(inner);
         body.wrap(id)
@@ -701,7 +707,11 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn rising_factorial(&self, n: &Ex) -> Ex {
         let n_id = self.checked_id(n);
-        let id = self.inner.write().arena.rising_factorial(self.raw_id(), n_id);
+        let id = self
+            .inner
+            .write()
+            .arena
+            .rising_factorial(self.raw_id(), n_id);
         self.wrap(id)
     }
 
@@ -709,7 +719,11 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn falling_factorial(&self, n: &Ex) -> Ex {
         let n_id = self.checked_id(n);
-        let id = self.inner.write().arena.falling_factorial(self.raw_id(), n_id);
+        let id = self
+            .inner
+            .write()
+            .arena
+            .falling_factorial(self.raw_id(), n_id);
         self.wrap(id)
     }
 
@@ -935,8 +949,10 @@ impl Expr<Numeric> {
             return crate::api::context::Context::new().zero();
         }
         let first = pairs[0].0;
-        let arena_pairs: Vec<(crate::base::node::ExprId, crate::base::node::ExprId)> =
-            pairs.iter().map(|(v, c)| (first.checked_id(v), first.checked_id(c))).collect();
+        let arena_pairs: Vec<(crate::base::node::ExprId, crate::base::node::ExprId)> = pairs
+            .iter()
+            .map(|(v, c)| (first.checked_id(v), first.checked_id(c)))
+            .collect();
         let id = first.inner.write().arena.piecewise(&arena_pairs);
         first.wrap(id)
     }
@@ -985,7 +1001,10 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn query(&self, prop: Props) -> Option<bool> {
         let inner = self.inner.read();
-        inner.assumptions.lock().query(&inner.arena, self.raw_id(), prop)
+        inner
+            .assumptions
+            .lock()
+            .query(&inner.arena, self.raw_id(), prop)
     }
 
     /// Query whether this expression is negative.
@@ -1143,7 +1162,10 @@ impl Expr<Numeric> {
                 a.assert_false(prop);
             }
             inner.arena.set_symbol_assumptions(sid, a);
-            inner.assumptions.lock().set_symbol_assumptions(self.raw_id(), a);
+            inner
+                .assumptions
+                .lock()
+                .set_symbol_assumptions(self.raw_id(), a);
         }
         drop(inner);
         self
@@ -1251,7 +1273,10 @@ impl Expr<Numeric> {
             .inner
             .write()
             .arena
-            .intern(crate::base::node::ExprNode::Derivative(self.raw_id(), var_id));
+            .intern(crate::base::node::ExprNode::Derivative(
+                self.raw_id(),
+                var_id,
+            ));
         self.wrap(id)
     }
 
@@ -1341,7 +1366,11 @@ impl Expr<Numeric> {
     pub fn integrate(&self, var: &Ex) -> Ex {
         let var_id = self.checked_id(var);
         let _span = debug_span!("integrate", expr = ?self.raw_id(), var = ?var_id).entered();
-        let id = self.inner.write().arena.integrate_expr(self.raw_id(), var_id);
+        let id = self
+            .inner
+            .write()
+            .arena
+            .integrate_expr(self.raw_id(), var_id);
         self.wrap(id)
     }
 
@@ -1413,16 +1442,22 @@ impl Expr<Numeric> {
         let point_id = self.checked_id(point);
         let _span = debug_span!("series", expr = ?self.raw_id(), order = order).entered();
         let mut inner = self.inner.write();
-        match inner.arena.series_expr(self.raw_id(), var_id, point_id, order) {
+        match inner
+            .arena
+            .series_expr(self.raw_id(), var_id, point_id, order)
+        {
             Ok(id) => {
                 drop(inner);
                 self.wrap(id)
             }
             Err(_) => {
                 let order_id = inner.arena.int(order as i64);
-                let id = inner.arena.intern(
-                    crate::base::node::ExprNode::Series(self.raw_id(), var_id, point_id, order_id),
-                );
+                let id = inner.arena.intern(crate::base::node::ExprNode::Series(
+                    self.raw_id(),
+                    var_id,
+                    point_id,
+                    order_id,
+                ));
                 drop(inner);
                 self.wrap(id)
             }
@@ -1474,9 +1509,12 @@ impl Expr<Numeric> {
             }
             Err(_) => {
                 let order_id = inner.arena.int(order as i64);
-                let id = inner.arena.intern(
-                    crate::base::node::ExprNode::Series(self.raw_id(), var_id, zero, order_id),
-                );
+                let id = inner.arena.intern(crate::base::node::ExprNode::Series(
+                    self.raw_id(),
+                    var_id,
+                    zero,
+                    order_id,
+                ));
                 drop(inner);
                 self.wrap(id)
             }
@@ -1527,9 +1565,11 @@ impl Expr<Numeric> {
                 self.wrap(id)
             }
             Err(_) => {
-                let id = inner.arena.intern(
-                    crate::base::node::ExprNode::Residue(self.raw_id(), var_id, point_id),
-                );
+                let id = inner.arena.intern(crate::base::node::ExprNode::Residue(
+                    self.raw_id(),
+                    var_id,
+                    point_id,
+                ));
                 drop(inner);
                 self.wrap(id)
             }
@@ -1605,15 +1645,22 @@ impl Expr<Numeric> {
         let s_id = self.checked_id(s);
         let _span = debug_span!("laplace", expr = ?self.raw_id(), t = ?t_id, s = ?s_id).entered();
         let mut inner = self.inner.write();
-        match inner.arena.laplace_transform_expr(self.raw_id(), t_id, s_id) {
+        match inner
+            .arena
+            .laplace_transform_expr(self.raw_id(), t_id, s_id)
+        {
             Ok(id) => {
                 drop(inner);
                 self.wrap(id)
             }
             Err(_) => {
-                let id = inner.arena.intern(
-                    crate::base::node::ExprNode::LaplaceTransform(self.raw_id(), t_id, s_id),
-                );
+                let id = inner
+                    .arena
+                    .intern(crate::base::node::ExprNode::LaplaceTransform(
+                        self.raw_id(),
+                        t_id,
+                        s_id,
+                    ));
                 drop(inner);
                 self.wrap(id)
             }
@@ -1658,17 +1705,25 @@ impl Expr<Numeric> {
     pub fn inverse_laplace(&self, s: &Ex, t: &Ex) -> Ex {
         let s_id = self.checked_id(s);
         let t_id = self.checked_id(t);
-        let _span = debug_span!("inverse_laplace", expr = ?self.raw_id(), s = ?s_id, t = ?t_id).entered();
+        let _span =
+            debug_span!("inverse_laplace", expr = ?self.raw_id(), s = ?s_id, t = ?t_id).entered();
         let mut inner = self.inner.write();
-        match inner.arena.inverse_laplace_transform_expr(self.raw_id(), s_id, t_id) {
+        match inner
+            .arena
+            .inverse_laplace_transform_expr(self.raw_id(), s_id, t_id)
+        {
             Ok(id) => {
                 drop(inner);
                 self.wrap(id)
             }
             Err(_) => {
-                let id = inner.arena.intern(
-                    crate::base::node::ExprNode::InverseLaplaceTransform(self.raw_id(), s_id, t_id),
-                );
+                let id = inner
+                    .arena
+                    .intern(crate::base::node::ExprNode::InverseLaplaceTransform(
+                        self.raw_id(),
+                        s_id,
+                        t_id,
+                    ));
                 drop(inner);
                 self.wrap(id)
             }
@@ -1720,9 +1775,11 @@ impl Expr<Numeric> {
                 self.wrap(id)
             }
             Err(_) => {
-                let id = inner.arena.intern(
-                    crate::base::node::ExprNode::Limit(self.raw_id(), var_id, point_id),
-                );
+                let id = inner.arena.intern(crate::base::node::ExprNode::Limit(
+                    self.raw_id(),
+                    var_id,
+                    point_id,
+                ));
                 drop(inner);
                 self.wrap(id)
             }
@@ -1902,7 +1959,12 @@ impl Expr<Numeric> {
     #[must_use = "returns the rendered string; does not modify in place"]
     pub fn pretty(&self) -> String {
         let inner = self.inner.read();
-        crate::output::pretty::pretty_print(&inner.arena, self.raw_id(), crate::output::pretty::RenderMode::Unicode).render()
+        crate::output::pretty::pretty_print(
+            &inner.arena,
+            self.raw_id(),
+            crate::output::pretty::RenderMode::Unicode,
+        )
+        .render()
     }
 
     /// Render this expression as a 2D ASCII string for terminal display.
@@ -1925,7 +1987,12 @@ impl Expr<Numeric> {
     #[must_use = "returns the rendered string; does not modify in place"]
     pub fn pretty_ascii(&self) -> String {
         let inner = self.inner.read();
-        crate::output::pretty::pretty_print(&inner.arena, self.raw_id(), crate::output::pretty::RenderMode::Ascii).render()
+        crate::output::pretty::pretty_print(
+            &inner.arena,
+            self.raw_id(),
+            crate::output::pretty::RenderMode::Ascii,
+        )
+        .render()
     }
 
     /// Simplify an expression using assumptions.
@@ -1945,11 +2012,7 @@ impl Expr<Numeric> {
             ..
         } = *inner;
         let mut assumptions_guard = assumptions.lock();
-        let id = crate::simplify::refine::refine_full(
-            arena,
-            &mut assumptions_guard,
-            self.raw_id(),
-        );
+        let id = crate::simplify::refine::refine_full(arena, &mut assumptions_guard, self.raw_id());
         drop(assumptions_guard);
         drop(inner);
         self.wrap(id)
@@ -1980,7 +2043,10 @@ impl Expr<Numeric> {
     /// assert!(x.is_positive().is_none());
     /// ```
     #[must_use = "returns the refined form; does not modify in place"]
-    pub fn refine_with(&self, temp_assumptions: &[(&Ex, crate::base::assumptions::Assumption)]) -> Ex {
+    pub fn refine_with(
+        &self,
+        temp_assumptions: &[(&Ex, crate::base::assumptions::Assumption)],
+    ) -> Ex {
         use crate::base::assumptions::{AssumptionCache, Assumptions};
         use crate::base::node::ExprNode;
 
@@ -2133,7 +2199,8 @@ impl Expr<Numeric> {
         let mut inner = self.inner.write();
         let node = inner.arena.node(self.raw_id()).clone();
         if let crate::base::node::ExprNode::Sum(body, _sum_var, lower, upper) = node {
-            let result = crate::calculus::gosper::gosper_sum(&mut inner.arena, body, var_id, lower, upper);
+            let result =
+                crate::calculus::gosper::gosper_sum(&mut inner.arena, body, var_id, lower, upper);
             drop(inner);
             if let Some(id) = result {
                 return self.wrap(id);
@@ -2198,7 +2265,11 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn simplify_numeric(&self, tolerance: f64) -> Ex {
-        let id = self.inner.write().arena.nsimplify_expr(self.raw_id(), tolerance);
+        let id = self
+            .inner
+            .write()
+            .arena
+            .nsimplify_expr(self.raw_id(), tolerance);
         self.wrap(id)
     }
 
@@ -2463,7 +2534,11 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn factor_terms(&self) -> (Ex, Ex) {
-        let (gcd_id, inner_id) = self.inner.write().arena.factor_terms_pair_expr(self.raw_id());
+        let (gcd_id, inner_id) = self
+            .inner
+            .write()
+            .arena
+            .factor_terms_pair_expr(self.raw_id());
         (self.wrap(gcd_id), self.wrap(inner_id))
     }
 
@@ -2488,7 +2563,11 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the rationalized form; does not modify in place"]
     pub fn rationalize_denom(&self) -> Ex {
-        let id = self.inner.write().arena.rationalize_denom_expr(self.raw_id());
+        let id = self
+            .inner
+            .write()
+            .arena
+            .rationalize_denom_expr(self.raw_id());
         self.wrap(id)
     }
 
@@ -2517,7 +2596,8 @@ impl Expr<Numeric> {
     /// ```
     #[must_use]
     pub fn separate_vars(&self, vars: &[&Ex]) -> Vec<(Vec<Ex>, Ex)> {
-        let var_ids: Vec<crate::base::node::ExprId> = vars.iter().map(|v| self.checked_id(v)).collect();
+        let var_ids: Vec<crate::base::node::ExprId> =
+            vars.iter().map(|v| self.checked_id(v)).collect();
         let raw = self
             .inner
             .write()
@@ -2796,7 +2876,9 @@ impl Expr<Numeric> {
             Err(_) => {
                 let zero = inner.arena.zero;
                 let cond = inner.arena.gt(self.raw_id(), zero);
-                let id = inner.arena.intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
+                let id = inner
+                    .arena
+                    .intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
                 drop(inner);
                 self.wrap_as::<SetValued>(id)
             }
@@ -2836,7 +2918,9 @@ impl Expr<Numeric> {
             Err(_) => {
                 let zero = inner.arena.zero;
                 let cond = inner.arena.ge(self.raw_id(), zero);
-                let id = inner.arena.intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
+                let id = inner
+                    .arena
+                    .intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
                 drop(inner);
                 self.wrap_as::<SetValued>(id)
             }
@@ -2875,7 +2959,9 @@ impl Expr<Numeric> {
             Err(_) => {
                 let zero = inner.arena.zero;
                 let cond = inner.arena.gt(zero, self.raw_id());
-                let id = inner.arena.intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
+                let id = inner
+                    .arena
+                    .intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
                 drop(inner);
                 self.wrap_as::<SetValued>(id)
             }
@@ -2914,7 +3000,9 @@ impl Expr<Numeric> {
             Err(_) => {
                 let zero = inner.arena.zero;
                 let cond = inner.arena.ge(zero, self.raw_id());
-                let id = inner.arena.intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
+                let id = inner
+                    .arena
+                    .intern(crate::base::node::ExprNode::ConditionSet(var_id, cond));
                 drop(inner);
                 self.wrap_as::<SetValued>(id)
             }
@@ -2955,7 +3043,11 @@ impl Expr<Numeric> {
     /// ```
     pub fn solve_as_set(&self, var: &Ex) -> SetEx {
         let var_id = self.checked_id(var);
-        let id = self.inner.write().arena.solveset_expr(self.raw_id(), var_id);
+        let id = self
+            .inner
+            .write()
+            .arena
+            .solveset_expr(self.raw_id(), var_id);
         self.wrap_as::<SetValued>(id)
     }
 
@@ -3075,7 +3167,11 @@ impl Expr<Numeric> {
                 self.wrap(sol_id)
             }
             None => {
-                let id = inner.arena.intern(crate::base::node::ExprNode::DSolve(self.raw_id(), func_id, var_id));
+                let id = inner.arena.intern(crate::base::node::ExprNode::DSolve(
+                    self.raw_id(),
+                    func_id,
+                    var_id,
+                ));
                 drop(inner);
                 self.wrap(id)
             }
@@ -3287,7 +3383,13 @@ impl Expr<Numeric> {
         options: &crate::output::codegen::CodegenOptions,
     ) -> Result<String, SymplexError> {
         let mut guard = self.inner.write();
-        crate::output::codegen::to_rust_fn_with_options(&mut guard.arena, self.raw_id(), name, args, options)
+        crate::output::codegen::to_rust_fn_with_options(
+            &mut guard.arena,
+            self.raw_id(),
+            name,
+            args,
+            options,
+        )
     }
 
     // ── Collection reduction ───────────────────────────────────────
@@ -3335,7 +3437,10 @@ impl Expr<Numeric> {
     /// let total = Ex::product_of(&ctx, factors);
     /// assert_eq!(format!("{total}"), "24");
     /// ```
-    pub fn product_of(ctx: &crate::api::context::Context, exprs: impl IntoIterator<Item = Ex>) -> Ex {
+    pub fn product_of(
+        ctx: &crate::api::context::Context,
+        exprs: impl IntoIterator<Item = Ex>,
+    ) -> Ex {
         let items: Vec<Ex> = exprs.into_iter().collect();
         if items.is_empty() {
             return ctx.int(1);
@@ -3493,7 +3598,13 @@ impl Expr<Numeric> {
         let var_id = self.checked_id(var);
         {
             let mut guard = self.inner.write();
-            crate::calculus::ode::checkodesol(&mut guard.arena, self.raw_id(), solution_id, func_id, var_id)
+            crate::calculus::ode::checkodesol(
+                &mut guard.arena,
+                self.raw_id(),
+                solution_id,
+                func_id,
+                var_id,
+            )
         }
     }
 
@@ -3514,11 +3625,11 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn closed_interval(&self, end: &Ex) -> SetEx {
         let end_id = self.checked_id(end);
-        let id =
-            self.inner
-                .write()
-                .arena
-                .interval(self.raw_id(), end_id, crate::base::node::INTERVAL_BOTH_CLOSED);
+        let id = self.inner.write().arena.interval(
+            self.raw_id(),
+            end_id,
+            crate::base::node::INTERVAL_BOTH_CLOSED,
+        );
         self.wrap_as(id)
     }
 
@@ -3537,11 +3648,11 @@ impl Expr<Numeric> {
     #[must_use]
     pub fn open_interval(&self, end: &Ex) -> SetEx {
         let end_id = self.checked_id(end);
-        let id =
-            self.inner
-                .write()
-                .arena
-                .interval(self.raw_id(), end_id, crate::base::node::INTERVAL_BOTH_OPEN);
+        let id = self.inner.write().arena.interval(
+            self.raw_id(),
+            end_id,
+            crate::base::node::INTERVAL_BOTH_OPEN,
+        );
         self.wrap_as(id)
     }
 
@@ -3693,11 +3804,7 @@ impl Expr<Numeric> {
     /// assert!(series.has_closed_form());
     /// ```
     #[must_use]
-    pub fn fps(
-        &self,
-        var: &Ex,
-        point: &Ex,
-    ) -> crate::calculus::formal_series::FormalPowerSeries {
+    pub fn fps(&self, var: &Ex, point: &Ex) -> crate::calculus::formal_series::FormalPowerSeries {
         let var_id = self.checked_id(var);
         let point_id = self.checked_id(point);
         let mut inner = self.inner.write();
@@ -3719,10 +3826,7 @@ impl Expr<Numeric> {
     /// assert!(series.has_closed_form());
     /// ```
     #[must_use]
-    pub fn fps_maclaurin(
-        &self,
-        var: &Ex,
-    ) -> crate::calculus::formal_series::FormalPowerSeries {
+    pub fn fps_maclaurin(&self, var: &Ex) -> crate::calculus::formal_series::FormalPowerSeries {
         let var_id = self.checked_id(var);
         let mut inner = self.inner.write();
         let zero = inner.arena.zero;
@@ -3755,7 +3859,11 @@ impl Expr<Numeric> {
         let var_id = self.checked_id(var);
         let id = {
             let mut guard = self.inner.write();
-            crate::calculus::finite_diff::differentiate_finite(&mut guard.arena, self.raw_id(), var_id)
+            crate::calculus::finite_diff::differentiate_finite(
+                &mut guard.arena,
+                self.raw_id(),
+                var_id,
+            )
         };
         self.wrap(id)
     }
@@ -3802,7 +3910,10 @@ impl Expr<Numeric> {
     }
 
     /// Deprecated: use [`factorize`](Self::factorize) instead.
-    #[deprecated(since = "0.2.0", note = "use `factorize()` which returns BigInt factors")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "use `factorize()` which returns BigInt factors"
+    )]
     pub fn factorize_int(&self) -> Option<Vec<(i64, u32)>> {
         use num_traits::ToPrimitive;
         self.factorize().map(|factors| {
@@ -3889,9 +4000,7 @@ impl Expr<Numeric> {
                         sid,
                     );
                     let min_pts = match freq {
-                        Some(f) => {
-                            crate::plotting::sampling::min_points_for_frequency(f, (a, b))
-                        }
+                        Some(f) => crate::plotting::sampling::min_points_for_frequency(f, (a, b)),
                         None => 200,
                     };
                     (excluded, min_pts)
@@ -3910,7 +4019,12 @@ impl Expr<Numeric> {
                     ..Default::default()
                 };
                 let f_single = move |x: f64| -> f64 { f(&[x]) };
-                crate::plotting::sampling::sample_compiled(&f_single, (a, b), &excluded_points, &opts)
+                crate::plotting::sampling::sample_compiled(
+                    &f_single,
+                    (a, b),
+                    &excluded_points,
+                    &opts,
+                )
             }
             None => {
                 // Fallback: symbolic substitution
@@ -3921,11 +4035,7 @@ impl Expr<Numeric> {
                         let x = a + i as f64 * step;
                         let (p, q) = f64_to_rational_approx(x);
                         let val = self.context().rational(p, q);
-                        let y = self
-                            .subs(var, &val)
-                            .eval()
-                            .eval_f64()
-                            .unwrap_or(f64::NAN);
+                        let y = self.subs(var, &val).eval().eval_f64().unwrap_or(f64::NAN);
                         (x, y)
                     })
                     .collect();
@@ -4050,11 +4160,7 @@ impl Expr<Numeric> {
                         let x = a + i as f64 * step;
                         let (p, q) = f64_to_rational_approx(x);
                         let val = self.context().rational(p, q);
-                        let y = self
-                            .subs(var, &val)
-                            .eval()
-                            .eval_f64()
-                            .unwrap_or(f64::NAN);
+                        let y = self.subs(var, &val).eval().eval_f64().unwrap_or(f64::NAN);
                         (x, y)
                     })
                     .collect()
@@ -4084,7 +4190,9 @@ impl Expr<Numeric> {
         let compiled = self.compile(&[&var_name]);
         match compiled {
             Some(f) => {
-                crate::plotting::data_export::DataTable::from_evaluation("x", "f(x)", points, |x| f(&[x]))
+                crate::plotting::data_export::DataTable::from_evaluation("x", "f(x)", points, |x| {
+                    f(&[x])
+                })
             }
             None => {
                 let values: Vec<(f64, f64)> = points
@@ -4092,11 +4200,7 @@ impl Expr<Numeric> {
                     .map(|&x| {
                         let (p, q) = f64_to_rational_approx(x);
                         let val = self.context().rational(p, q);
-                        let y = self
-                            .subs(var, &val)
-                            .eval()
-                            .eval_f64()
-                            .unwrap_or(f64::NAN);
+                        let y = self.subs(var, &val).eval().eval_f64().unwrap_or(f64::NAN);
                         (x, y)
                     })
                     .collect();

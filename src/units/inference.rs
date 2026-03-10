@@ -10,8 +10,8 @@
 
 use std::collections::HashMap;
 
-use crate::prelude::Ex;
 use super::dim::ConstDim;
+use crate::prelude::Ex;
 
 // ---------------------------------------------------------------------------
 // DimMap — variable → dimension mapping
@@ -145,12 +145,7 @@ pub fn infer_dimension(expr: &Ex, dims: &DimMap) -> Result<ConstDim, String> {
             let name = format!("{}", expr);
             dims.get(&name)
                 .copied()
-                .ok_or_else(|| {
-                    format!(
-                        "Unknown variable '{}' — not in dimension map",
-                        name
-                    )
-                })
+                .ok_or_else(|| format!("Unknown variable '{}' — not in dimension map", name))
         }
 
         ExprType::Constant => {
@@ -208,10 +203,7 @@ pub fn infer_dimension(expr: &Ex, dims: &DimMap) -> Result<ConstDim, String> {
 
             // Exponent must be dimensionless
             if !exp_dim.eq(ConstDim::DIMENSIONLESS) {
-                return Err(format!(
-                    "Exponent must be dimensionless, got {}",
-                    exp_dim,
-                ));
+                return Err(format!("Exponent must be dimensionless, got {}", exp_dim,));
             }
 
             // If the base is already dimensionless, short-circuit
@@ -318,11 +310,7 @@ pub fn check_dimensions(expr: &Ex, dims: &DimMap) -> Result<(), String> {
 /// Infer the dimension and assert it matches the expected dimension.
 ///
 /// Returns `Ok(())` if it matches, or `Err(message)` describing the mismatch.
-pub fn assert_dimension(
-    expr: &Ex,
-    dims: &DimMap,
-    expected: ConstDim,
-) -> Result<(), String> {
+pub fn assert_dimension(expr: &Ex, dims: &DimMap, expected: ConstDim) -> Result<(), String> {
     let actual = infer_dimension(expr, dims)?;
     if actual.eq(expected) {
         Ok(())
@@ -361,7 +349,8 @@ mod tests {
 
     #[test]
     fn infer_mass_times_accel_is_force() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; m, a);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; m, a);
         let expr = &m * &a;
         let d = infer_dimension(&expr, &dims()).unwrap();
         assert!(d.eq(ConstDim::FORCE), "Expected Force, got {}", d);
@@ -369,7 +358,8 @@ mod tests {
 
     #[test]
     fn infer_half_mv_squared_is_energy() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; m, v);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; m, v);
         // (1/2) * m * v^2
         let half = ctx.int(1) / ctx.int(2);
         let expr = &half * &m * v.powi(2);
@@ -379,7 +369,8 @@ mod tests {
 
     #[test]
     fn infer_add_mismatch_is_error() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; m, a);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; m, a);
         let expr = &m + &a;
         let result = infer_dimension(&expr, &dims());
         assert!(
@@ -400,7 +391,8 @@ mod tests {
 
     #[test]
     fn infer_spring_force() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; k, x);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; k, x);
         let expr = &k * &x;
         let d = infer_dimension(&expr, &dims()).unwrap();
         assert!(d.eq(ConstDim::FORCE), "Expected Force, got {}", d);
@@ -415,7 +407,8 @@ mod tests {
 
     #[test]
     fn infer_unknown_variable_is_error() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; unknown);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; unknown);
         let result = infer_dimension(&unknown, &dims());
         assert!(result.is_err(), "Unknown variable should produce an error");
     }
@@ -491,7 +484,8 @@ mod tests {
 
     #[test]
     fn infer_add_consistent_is_ok() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; m, a, g);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; m, a, g);
         // m*a + m*g — both are Force
         let expr = &m * &a + &m * &g;
         let d = infer_dimension(&expr, &dims()).unwrap();
@@ -503,7 +497,8 @@ mod tests {
     #[test]
     #[allow(non_snake_case)]
     fn infer_negation_preserves_dimension() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; F);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; F);
         let expr = -&F;
         let d = infer_dimension(&expr, &dims()).unwrap();
         assert!(d.eq(ConstDim::FORCE), "Expected Force, got {}", d);
@@ -513,14 +508,16 @@ mod tests {
 
     #[test]
     fn assert_dimension_ok() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; m, a);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; m, a);
         let expr = &m * &a;
         assert!(assert_dimension(&expr, &dims(), ConstDim::FORCE).is_ok());
     }
 
     #[test]
     fn assert_dimension_mismatch() {
-        let ctx = crate::api::context::Context::new(); crate::syms!(ctx; m, a);
+        let ctx = crate::api::context::Context::new();
+        crate::syms!(ctx; m, a);
         let expr = &m * &a;
         assert!(assert_dimension(&expr, &dims(), ConstDim::ENERGY).is_err());
     }

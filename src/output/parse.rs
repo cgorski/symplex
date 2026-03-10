@@ -26,9 +26,9 @@ use std::sync::Arc;
 use num_bigint::BigInt;
 use num_rational::Ratio;
 
-use crate::base::arena::Arena;
 use crate::api::context::Context;
 use crate::api::expr::Ex;
+use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 
 /// Error returned when parsing fails.
@@ -395,9 +395,8 @@ impl<'a> Parser<'a> {
                     // 4-argument functions
                     let name_lower = name.to_ascii_lowercase();
                     return match name_lower.as_str() {
-                        "series" => Ok(arena.intern(
-                            crate::base::node::ExprNode::Series(arg, arg2, arg3, arg4),
-                        )),
+                        "series" => Ok(arena
+                            .intern(crate::base::node::ExprNode::Series(arg, arg2, arg3, arg4))),
                         _ => Err(ParseError {
                             message: format!(
                                 "unknown 4-argument function '{}'. Supported: Series",
@@ -413,21 +412,21 @@ impl<'a> Parser<'a> {
                 // 3-argument functions
                 let name_lower = name.to_ascii_lowercase();
                 return match name_lower.as_str() {
-                    "limit" => Ok(arena.intern(
-                        crate::base::node::ExprNode::Limit(arg, arg2, arg3),
-                    )),
+                    "limit" => {
+                        Ok(arena.intern(crate::base::node::ExprNode::Limit(arg, arg2, arg3)))
+                    }
                     "laplacetransform" => Ok(arena.intern(
                         crate::base::node::ExprNode::LaplaceTransform(arg, arg2, arg3),
                     )),
                     "inverselaplacetransform" => Ok(arena.intern(
                         crate::base::node::ExprNode::InverseLaplaceTransform(arg, arg2, arg3),
                     )),
-                    "residue" => Ok(arena.intern(
-                        crate::base::node::ExprNode::Residue(arg, arg2, arg3),
-                    )),
-                    "dsolve" => Ok(arena.intern(
-                        crate::base::node::ExprNode::DSolve(arg, arg2, arg3),
-                    )),
+                    "residue" => {
+                        Ok(arena.intern(crate::base::node::ExprNode::Residue(arg, arg2, arg3)))
+                    }
+                    "dsolve" => {
+                        Ok(arena.intern(crate::base::node::ExprNode::DSolve(arg, arg2, arg3)))
+                    }
                     _ => Err(ParseError {
                         message: format!(
                             "unknown 3-argument function '{}'. Supported: Limit, LaplaceTransform, InverseLaplaceTransform, Residue, DSolve",
@@ -449,12 +448,10 @@ impl<'a> Parser<'a> {
                     let ln_base = arena.ln(arg2);
                     Ok(arena.div(ln_x, ln_base))
                 }
-                "rootof" => Ok(arena.intern(
-                    crate::base::node::ExprNode::RootOf(arg, arg2),
-                )),
-                "conditionset" => Ok(arena.intern(
-                    crate::base::node::ExprNode::ConditionSet(arg, arg2),
-                )),
+                "rootof" => Ok(arena.intern(crate::base::node::ExprNode::RootOf(arg, arg2))),
+                "conditionset" => {
+                    Ok(arena.intern(crate::base::node::ExprNode::ConditionSet(arg, arg2)))
+                }
                 _ => Err(ParseError {
                     message: format!(
                         "unknown 2-argument function '{}'. Supported: log, RootOf, ConditionSet",

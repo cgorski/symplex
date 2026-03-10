@@ -603,8 +603,10 @@ mod tests {
         assert_eq!(gcd_s, "m", "GCD should be m, got: {gcd_s}");
         // Verify inner: m*(g*l + x) factored → inner should be (g*l + x)
         let inner_s = display(&a, inner);
-        assert!(inner_s.contains("g") && inner_s.contains("x"),
-            "inner should contain both g and x terms, got: {inner_s}");
+        assert!(
+            inner_s.contains("g") && inner_s.contains("x"),
+            "inner should contain both g and x terms, got: {inner_s}"
+        );
     }
 
     #[test]
@@ -625,8 +627,10 @@ mod tests {
         );
         // Verify inner: m^2*(x + 1) factored → inner should be (x + 1)
         let inner_s = display(&a, inner);
-        assert!(inner_s.contains("x"),
-            "inner should contain x, got: {inner_s}");
+        assert!(
+            inner_s.contains("x"),
+            "inner should contain x, got: {inner_s}"
+        );
     }
 
     #[test]
@@ -678,10 +682,7 @@ mod tests {
         let expr = a.add(&[t1, sin_x]);
         let (gcd, inner) = symbolic_factor_terms_pair(&mut a, expr);
         let gcd_s = display(&a, gcd);
-        assert!(
-            gcd_s.contains("sin"),
-            "GCD should be sin(x), got: {gcd_s}"
-        );
+        assert!(gcd_s.contains("sin"), "GCD should be sin(x), got: {gcd_s}");
         let _inner_s = display(&a, inner);
     }
 }

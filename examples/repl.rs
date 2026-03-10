@@ -218,9 +218,7 @@ fn parse_expr_and_optional_var(
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_');
 
-        if looks_like_var
-            && let Ok(expr) = symplex::parse::parse(ctx, expr_str)
-        {
+        if looks_like_var && let Ok(expr) = symplex::parse::parse(ctx, expr_str) {
             let var = ctx.symbol(var_candidate);
             return Ok((expr, var));
         }

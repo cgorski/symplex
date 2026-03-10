@@ -288,7 +288,9 @@ mod tests {
         // h should be 0/1 (no logarithmic part for 1/x^2)
         assert!(
             result.h_numer.is_zero(),
-            "∫ 1/x^2: log part should be zero, got h = {}/{}", result.h_numer, result.h_denom
+            "∫ 1/x^2: log part should be zero, got h = {}/{}",
+            result.h_numer,
+            result.h_denom
         );
         verify_hermite(&a, &d, &result);
     }
@@ -305,7 +307,8 @@ mod tests {
         assert!(
             result.h_numer.is_zero(),
             "∫ 1/(x+1)^2: log part should be zero, got h = {}/{}",
-            result.h_numer, result.h_denom
+            result.h_numer,
+            result.h_denom
         );
         verify_hermite(&a, &d, &result);
     }
@@ -315,15 +318,10 @@ mod tests {
         // ∫ 1/x^3 dx = -1/(2x^2)
         // D = x^3 (triple root at 0).
         let a = Poly::from_int(1);
-        let d = Poly::from_coeffs(vec![
-            rat(0, 1), rat(0, 1), rat(0, 1), rat(1, 1),
-        ]); // x^3
+        let d = Poly::from_coeffs(vec![rat(0, 1), rat(0, 1), rat(0, 1), rat(1, 1)]); // x^3
 
         let result = hermite_reduce(&a, &d);
-        assert!(
-            result.h_numer.is_zero(),
-            "∫ 1/x^3: log part should be zero"
-        );
+        assert!(result.h_numer.is_zero(), "∫ 1/x^3: log part should be zero");
         verify_hermite(&a, &d, &result);
     }
 
@@ -332,9 +330,7 @@ mod tests {
         // ∫ 1/(x^2+1)^2 dx — repeated irreducible quadratic.
         // D = x^4 + 2x^2 + 1 = (x^2 + 1)^2
         let a = Poly::from_int(1);
-        let d = Poly::from_coeffs(vec![
-            rat(1, 1), rat(0, 1), rat(2, 1), rat(0, 1), rat(1, 1),
-        ]); // x^4 + 2x^2 + 1
+        let d = Poly::from_coeffs(vec![rat(1, 1), rat(0, 1), rat(2, 1), rat(0, 1), rat(1, 1)]); // x^4 + 2x^2 + 1
 
         let result = hermite_reduce(&a, &d);
         // Hermite should extract a rational part; remainder has denom (x^2+1).
@@ -351,9 +347,7 @@ mod tests {
         // ∫ (2x+3)/(x+1)^3 dx
         // D = (x+1)^3 = x^3 + 3x^2 + 3x + 1
         let a = Poly::from_coeffs(vec![rat(3, 1), rat(2, 1)]); // 2x + 3
-        let d = Poly::from_coeffs(vec![
-            rat(1, 1), rat(3, 1), rat(3, 1), rat(1, 1),
-        ]); // x^3 + 3x^2 + 3x + 1
+        let d = Poly::from_coeffs(vec![rat(1, 1), rat(3, 1), rat(3, 1), rat(1, 1)]); // x^3 + 3x^2 + 3x + 1
 
         let result = hermite_reduce(&a, &d);
         verify_hermite(&a, &d, &result);
@@ -363,9 +357,7 @@ mod tests {
     fn hermite_reduce_improper_fraction() {
         // ∫ x^3 / (x+1)^2 dx — improper fraction (deg(A) > deg(D))
         // Should extract polynomial part first, then reduce remainder.
-        let a = Poly::from_coeffs(vec![
-            rat(0, 1), rat(0, 1), rat(0, 1), rat(1, 1),
-        ]); // x^3
+        let a = Poly::from_coeffs(vec![rat(0, 1), rat(0, 1), rat(0, 1), rat(1, 1)]); // x^3
         let d = Poly::from_coeffs(vec![rat(1, 1), rat(2, 1), rat(1, 1)]); // (x+1)^2
 
         let result = hermite_reduce(&a, &d);
@@ -377,9 +369,7 @@ mod tests {
         // D = x^2 * (x - 1) = x^3 - x^2  (one simple root, one double root)
         // A = 1
         let a = Poly::from_int(1);
-        let d = Poly::from_coeffs(vec![
-            rat(0, 1), rat(0, 1), rat(-1, 1), rat(1, 1),
-        ]); // x^3 - x^2
+        let d = Poly::from_coeffs(vec![rat(0, 1), rat(0, 1), rat(-1, 1), rat(1, 1)]); // x^3 - x^2
 
         let result = hermite_reduce(&a, &d);
         // Remainder denominator should be square-free part: x*(x-1) = x^2 - x
@@ -438,9 +428,7 @@ mod tests {
             // (x+2)/(x^2(x-1)^2) = (x+2)/(x^4 - 2x^3 + x^2)
             (
                 Poly::from_coeffs(vec![rat(2, 1), rat(1, 1)]),
-                Poly::from_coeffs(vec![
-                    rat(0, 1), rat(0, 1), rat(1, 1), rat(-2, 1), rat(1, 1),
-                ]),
+                Poly::from_coeffs(vec![rat(0, 1), rat(0, 1), rat(1, 1), rat(-2, 1), rat(1, 1)]),
             ),
         ];
 

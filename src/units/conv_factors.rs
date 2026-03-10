@@ -121,7 +121,6 @@ mod tests {
     use num_bigint::BigInt;
     use num_rational::Ratio;
 
-
     fn r(n: i64, d: i64) -> Ratio<BigInt> {
         Ratio::new(BigInt::from(n), BigInt::from(d))
     }
@@ -130,25 +129,48 @@ mod tests {
         let en = BigInt::from(expected.0);
         let ed = BigInt::from(expected.1);
         let expected_r = Ratio::new(en.clone(), ed.clone());
-        assert_eq!(computed, expected_r,
-            "{name}: computed {computed} != expected {}/{}", en, ed);
+        assert_eq!(
+            computed, expected_r,
+            "{name}: computed {computed} != expected {}/{}",
+            en, ed
+        );
     }
 
     fn check_float(val: (i64, i64), expected: f64, name: &str) {
         let actual = val.0 as f64 / val.1 as f64;
         let rel_err = ((actual - expected) / expected).abs();
-        assert!(rel_err < 1e-14,
-            "{name}: {actual} vs {expected}, relative error {rel_err}");
+        assert!(
+            rel_err < 1e-14,
+            "{name}: {actual} vs {expected}, relative error {rel_err}"
+        );
     }
 
     // ── Base constant float checks ──
 
-    #[test] fn base_inch()  { check_float(base::INCH, 0.0254, "inch"); }
-    #[test] fn base_pound() { check_float(base::POUND, 0.45359237, "pound"); }
-    #[test] fn base_g_n()   { check_float(base::G_N, 9.80665, "g_n"); }
-    #[test] fn base_cal()   { check_float(base::CALORIE_TH, 4.184, "calorie"); }
-    #[test] fn base_atm()   { assert_eq!(base::ATM, (101325, 1)); }
-    #[test] fn base_nmi()   { assert_eq!(base::NAUTICAL_MILE, (1852, 1)); }
+    #[test]
+    fn base_inch() {
+        check_float(base::INCH, 0.0254, "inch");
+    }
+    #[test]
+    fn base_pound() {
+        check_float(base::POUND, 0.45359237, "pound");
+    }
+    #[test]
+    fn base_g_n() {
+        check_float(base::G_N, 9.80665, "g_n");
+    }
+    #[test]
+    fn base_cal() {
+        check_float(base::CALORIE_TH, 4.184, "calorie");
+    }
+    #[test]
+    fn base_atm() {
+        assert_eq!(base::ATM, (101325, 1));
+    }
+    #[test]
+    fn base_nmi() {
+        assert_eq!(base::NAUTICAL_MILE, (1852, 1));
+    }
 
     // ── Derived constant verification ──
 
@@ -200,7 +222,11 @@ mod tests {
     #[test]
     fn verify_metric_horsepower() {
         let kgf = r(derived::KILOGRAM_FORCE.0, derived::KILOGRAM_FORCE.1);
-        check(r(75, 1) * kgf, derived::METRIC_HORSEPOWER, "PS = 75 kgf·m/s");
+        check(
+            r(75, 1) * kgf,
+            derived::METRIC_HORSEPOWER,
+            "PS = 75 kgf·m/s",
+        );
     }
 
     #[test]
@@ -245,7 +271,11 @@ mod tests {
     #[test]
     fn verify_us_fl_oz() {
         let gal = r(derived::US_GALLON.0, derived::US_GALLON.1);
-        check(gal / r(128, 1), derived::US_FLUID_OUNCE, "US fl oz = gal/128");
+        check(
+            gal / r(128, 1),
+            derived::US_FLUID_OUNCE,
+            "US fl oz = gal/128",
+        );
     }
 
     #[test]
@@ -257,7 +287,11 @@ mod tests {
     #[test]
     fn verify_short_ton() {
         let pound = r(base::POUND.0, base::POUND.1);
-        check(r(2000, 1) * pound, derived::SHORT_TON, "short ton = 2000 lb");
+        check(
+            r(2000, 1) * pound,
+            derived::SHORT_TON,
+            "short ton = 2000 lb",
+        );
     }
 
     #[test]

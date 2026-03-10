@@ -435,40 +435,42 @@ fn try_trig_recip_product(
         // Pattern: sin(g) · cos(g)^{-2} → cos(g)^{-1} [/ chain coeff]
         if let ExprNode::Sin(inner_sin) = node_i
             && let ExprNode::Pow(base_j, exp_j) = node_j
-                && let ExprNode::Cos(inner_cos) = arena.node(base_j).clone()
-                    && inner_sin == inner_cos
-                        && let Some(e) = arena.as_num(exp_j)
-                            && *e == neg_two {
-                                let neg_one_e = arena.int(-1);
-                                if inner_sin == var {
-                                    return Some(arena.pow(base_j, neg_one_e));
-                                } else if let Some((a_expr, _)) =
-                                    symbolic_linear_coeff_of(arena, inner_sin, var, var_sym)
-                                {
-                                    let recip = arena.pow(base_j, neg_one_e);
-                                    return Some(arena.div(recip, a_expr));
-                                }
-                            }
+            && let ExprNode::Cos(inner_cos) = arena.node(base_j).clone()
+            && inner_sin == inner_cos
+            && let Some(e) = arena.as_num(exp_j)
+            && *e == neg_two
+        {
+            let neg_one_e = arena.int(-1);
+            if inner_sin == var {
+                return Some(arena.pow(base_j, neg_one_e));
+            } else if let Some((a_expr, _)) =
+                symbolic_linear_coeff_of(arena, inner_sin, var, var_sym)
+            {
+                let recip = arena.pow(base_j, neg_one_e);
+                return Some(arena.div(recip, a_expr));
+            }
+        }
 
         // Pattern: cos(g) · sin(g)^{-2} → −sin(g)^{-1} [/ chain coeff]
         if let ExprNode::Cos(inner_cos) = node_i
             && let ExprNode::Pow(base_j, exp_j) = node_j
-                && let ExprNode::Sin(inner_sin) = arena.node(base_j).clone()
-                    && inner_cos == inner_sin
-                        && let Some(e) = arena.as_num(exp_j)
-                            && *e == neg_two {
-                                let neg_one_e = arena.int(-1);
-                                if inner_cos == var {
-                                    let recip = arena.pow(base_j, neg_one_e);
-                                    return Some(arena.neg(recip));
-                                } else if let Some((a_expr, _)) =
-                                    symbolic_linear_coeff_of(arena, inner_cos, var, var_sym)
-                                {
-                                    let recip = arena.pow(base_j, neg_one_e);
-                                    let neg_recip = arena.neg(recip);
-                                    return Some(arena.div(neg_recip, a_expr));
-                                }
-                            }
+            && let ExprNode::Sin(inner_sin) = arena.node(base_j).clone()
+            && inner_cos == inner_sin
+            && let Some(e) = arena.as_num(exp_j)
+            && *e == neg_two
+        {
+            let neg_one_e = arena.int(-1);
+            if inner_cos == var {
+                let recip = arena.pow(base_j, neg_one_e);
+                return Some(arena.neg(recip));
+            } else if let Some((a_expr, _)) =
+                symbolic_linear_coeff_of(arena, inner_cos, var, var_sym)
+            {
+                let recip = arena.pow(base_j, neg_one_e);
+                let neg_recip = arena.neg(recip);
+                return Some(arena.div(neg_recip, a_expr));
+            }
+        }
     }
 
     None
@@ -771,8 +773,7 @@ fn try_linear_over_quadratic(
     // Second term: remainder · ∫ 1/(cx²+dx+e) dx
     if !remainder.is_zero() {
         let inv_quad = arena.pow(pow_base, pow_exp); // (quad)^{-1}
-        let inv_integral =
-            integrate_node(arena, inv_quad, var, var_sym, depth.saturating_sub(1));
+        let inv_integral = integrate_node(arena, inv_quad, var, var_sym, depth.saturating_sub(1));
         if matches!(arena.node(inv_integral), ExprNode::Integral(_, _)) {
             return None;
         }
@@ -1001,7 +1002,9 @@ fn integrate_node(
     }
 
     // Try trig power/product integration first (sin^n, cos^n, sin^m*cos^n)
-    if let Some(result) = crate::transforms::trig_integ::try_trig_power_integral(arena, expr, var, var_sym) {
+    if let Some(result) =
+        crate::transforms::trig_integ::try_trig_power_integral(arena, expr, var, var_sym)
+    {
         // Only use the trig-power result when it is fully evaluated;
         // negative-exponent cases (e.g. sin·cos^{-2}) come back as
         // unevaluated Integral nodes — fall through so the Mul handler
@@ -1112,13 +1115,13 @@ fn integrate_node(
             for d in dependent.iter_mut() {
                 if let ExprNode::Pow(pow_base, pow_exp) = arena.node(*d).clone()
                     && let ExprNode::Pow(inner_base, inner_exp) = arena.node(pow_base).clone()
-                        && let (Some(m), Some(n)) = (arena.as_num(inner_exp), arena.as_num(pow_exp))
-                        {
-                            let combined = m.clone() * n.clone();
-                            let combined_id = rational_to_expr(arena, &combined);
-                            let flattened = arena.pow(inner_base, combined_id);
-                            *d = flattened;
-                        }
+                    && let (Some(m), Some(n)) = (arena.as_num(inner_exp), arena.as_num(pow_exp))
+                {
+                    let combined = m.clone() * n.clone();
+                    let combined_id = rational_to_expr(arena, &combined);
+                    let flattened = arena.pow(inner_base, combined_id);
+                    *d = flattened;
+                }
             }
 
             if dependent.is_empty() {
@@ -1140,43 +1143,44 @@ fn integrate_node(
 
             // ── sec(x)·tan(x) and csc(x)·cot(x) forms ──────────────
             if dependent.len() == 2
-                && let Some(result) = try_trig_recip_product(arena, &dependent, var, var_sym) {
-                    if constants.is_empty() {
-                        return result;
-                    } else {
-                        let mut all = constants.clone();
-                        all.push(result);
-                        return arena.mul(&all);
-                    }
+                && let Some(result) = try_trig_recip_product(arena, &dependent, var, var_sym)
+            {
+                if constants.is_empty() {
+                    return result;
+                } else {
+                    let mut all = constants.clone();
+                    all.push(result);
+                    return arena.mul(&all);
                 }
+            }
 
             // ── x/√(ax²+bx+c) form ──────────────────────────────────
             if dependent.len() == 2
                 && let Some(result) =
                     try_x_over_sqrt_quadratic(arena, &dependent, var, var_sym, depth)
-                {
-                    if constants.is_empty() {
-                        return result;
-                    } else {
-                        let mut all = constants.clone();
-                        all.push(result);
-                        return arena.mul(&all);
-                    }
+            {
+                if constants.is_empty() {
+                    return result;
+                } else {
+                    let mut all = constants.clone();
+                    all.push(result);
+                    return arena.mul(&all);
                 }
+            }
 
             // ── (linear) / (irreducible quadratic) ───────────────────
             if dependent.len() == 2
                 && let Some(result) =
                     try_linear_over_quadratic(arena, &dependent, var, var_sym, depth)
-                {
-                    if constants.is_empty() {
-                        return result;
-                    } else {
-                        let mut all = constants.clone();
-                        all.push(result);
-                        return arena.mul(&all);
-                    }
+            {
+                if constants.is_empty() {
+                    return result;
+                } else {
+                    let mut all = constants.clone();
+                    all.push(result);
+                    return arena.mul(&all);
                 }
+            }
 
             // ── DiracDelta sifting property: ∫ f(x)·δ(g(x)) dx = f(root)·H(g(x)) ──
             // Check if any factor in the product is a DiracDelta.
@@ -1205,7 +1209,8 @@ fn integrate_node(
 
                         // Simple case: δ(x) → root = 0
                         if delta_arg == var {
-                            let f_at_0 = crate::transforms::subs::subs(arena, f_expr, var, arena.zero);
+                            let f_at_0 =
+                                crate::transforms::subs::subs(arena, f_expr, var, arena.zero);
                             let f_at_0_eval = crate::transforms::eval::eval(arena, f_at_0);
                             let heaviside = arena.intern(ExprNode::Heaviside(var));
                             return arena.mul(&[f_at_0_eval, heaviside]);
@@ -1325,9 +1330,7 @@ fn integrate_node(
             }
 
             // ── Weierstrass substitution for rational trig functions ──
-            if let Some(result) =
-                try_weierstrass_substitution(arena, expr, var, var_sym, depth)
-            {
+            if let Some(result) = try_weierstrass_substitution(arena, expr, var, var_sym, depth) {
                 if constants.is_empty() {
                     return result;
                 } else {
@@ -1338,7 +1341,9 @@ fn integrate_node(
             }
 
             // ── Special function integration table ──────────────────
-            if let Some(result) = try_special_function_integral(arena, &dependent, &constants, var, var_sym) {
+            if let Some(result) =
+                try_special_function_integral(arena, &dependent, &constants, var, var_sym)
+            {
                 return result;
             }
 
@@ -1364,16 +1369,17 @@ fn integrate_node(
             // Pow(x²+1, -1/2) and hits the standard-form / completing-
             // the-square handlers.
             if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone()
-                && let (Some(m), Some(n)) = (arena.as_num(inner_exp), arena.as_num(exp)) {
-                    let m = m.clone();
-                    let n = n.clone();
-                    let combined = &m * &n;
-                    let combined_id = rational_to_expr(arena, &combined);
-                    let flattened = arena.pow(inner_base, combined_id);
-                    if flattened != expr {
-                        return integrate_node(arena, flattened, var, var_sym, depth - 1);
-                    }
+                && let (Some(m), Some(n)) = (arena.as_num(inner_exp), arena.as_num(exp))
+            {
+                let m = m.clone();
+                let n = n.clone();
+                let combined = &m * &n;
+                let combined_id = rational_to_expr(arena, &combined);
+                let flattened = arena.pow(inner_base, combined_id);
+                if flattened != expr {
+                    return integrate_node(arena, flattened, var, var_sym, depth - 1);
                 }
+            }
 
             let base_is_var = base == var;
             let exp_has_var = contains_var(arena, exp, var_sym);
@@ -1420,12 +1426,14 @@ fn integrate_node(
             if let ExprNode::Cosh(inner) = arena.node(base).clone()
                 && let Some(e_val) = arena.as_num(exp)
             {
-                let neg_two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-2).into());
+                let neg_two_r =
+                    num_rational::Ratio::<num_bigint::BigInt>::from_integer((-2).into());
                 if *e_val == neg_two_r {
                     if inner == var {
                         return arena.tanh(var);
                     }
-                    if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
+                    if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym)
+                    {
                         let tanh_inner = arena.tanh(inner);
                         return arena.div(tanh_inner, a_expr);
                     }
@@ -1436,7 +1444,8 @@ fn integrate_node(
             if let ExprNode::Sinh(inner) = arena.node(base).clone()
                 && let Some(e_val) = arena.as_num(exp)
             {
-                let neg_two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-2).into());
+                let neg_two_r =
+                    num_rational::Ratio::<num_bigint::BigInt>::from_integer((-2).into());
                 if *e_val == neg_two_r {
                     if inner == var {
                         let cosh_v = arena.cosh(var);
@@ -1446,7 +1455,8 @@ fn integrate_node(
                         let coth_v = arena.mul(&[cosh_v, sinh_inv]);
                         return arena.neg(coth_v);
                     }
-                    if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
+                    if let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym)
+                    {
                         let cosh_i = arena.cosh(inner);
                         let sinh_i = arena.sinh(inner);
                         let neg1 = arena.int(-1);
@@ -1460,7 +1470,8 @@ fn integrate_node(
 
             // ── ln(x)^n by parts: ∫ ln(x)^n dx = x·ln(x)^n − n·∫ ln(x)^(n−1) dx ──
             if let ExprNode::Ln(inner) = arena.node(base).clone()
-                && inner == var && !exp_has_var
+                && inner == var
+                && !exp_has_var
                 && let Some(n_val) = arena.as_num(exp)
             {
                 let n_val = n_val.clone();
@@ -1474,7 +1485,11 @@ fn integrate_node(
                             rational_to_expr(arena, &v)
                         };
                         let ln_x = arena.ln(var);
-                        let ln_nm1 = if n_i64 == 2 { ln_x } else { arena.pow(ln_x, n_minus_1) };
+                        let ln_nm1 = if n_i64 == 2 {
+                            ln_x
+                        } else {
+                            arena.pow(ln_x, n_minus_1)
+                        };
                         let sub_int = integrate_node(arena, ln_nm1, var, var_sym, depth - 1);
                         let n_times_sub = arena.mul(&[n_id, sub_int]);
                         return arena.sub(x_ln_n, n_times_sub);
@@ -1517,10 +1532,12 @@ fn integrate_node(
 
             // ── Symbolic standard form: ∫ (x² + k)^{-1} dx ──────────
             // where k is free of var (handles e.g. ∫ 1/(x²+a²) dx)
-            if base_has_var && !exp_has_var
+            if base_has_var
+                && !exp_has_var
                 && let Some(exp_val) = arena.as_num(exp)
             {
-                let neg_one_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
+                let neg_one_r =
+                    num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
                 if *exp_val == neg_one_r
                     && let ExprNode::Add(ref ac) = arena.node(base).clone()
                     && ac.len() == 2
@@ -1562,8 +1579,7 @@ fn integrate_node(
             // ── Trig substitution: √(a²±x²), √(x²±a²) ──────────────
             if base_has_var
                 && !exp_has_var
-                && let Some(result) =
-                    try_trig_sub_sqrt_integral(arena, base, exp, var, var_sym)
+                && let Some(result) = try_trig_sub_sqrt_integral(arena, base, exp, var, var_sym)
             {
                 return result;
             }
@@ -1601,9 +1617,7 @@ fn integrate_node(
             }
 
             // ── Weierstrass substitution (Pow arm) ────────────────────
-            if let Some(result) =
-                try_weierstrass_substitution(arena, expr, var, var_sym, depth)
-            {
+            if let Some(result) = try_weierstrass_substitution(arena, expr, var, var_sym, depth) {
                 return result;
             }
 
@@ -1612,7 +1626,8 @@ fn integrate_node(
                 && inner == var
                 && let Some(n_val) = arena.as_num(exp)
             {
-                let neg_one_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
+                let neg_one_r =
+                    num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
                 if *n_val == neg_one_r {
                     return make_apply(arena, "li", &[var]);
                 }
@@ -1620,9 +1635,12 @@ fn integrate_node(
 
             // ── 1/(ax+b) with symbolic coefficients → ln|ax+b|/a ────
             if let Some(n_val) = arena.as_num(exp) {
-                let neg_one_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
-                if *n_val == neg_one_r && base_has_var
-                    && let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, base, var, var_sym)
+                let neg_one_r =
+                    num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
+                if *n_val == neg_one_r
+                    && base_has_var
+                    && let Some((a_expr, _b_expr)) =
+                        symbolic_linear_coeff_of(arena, base, var, var_sym)
                 {
                     let abs_base = arena.abs(base);
                     let ln_abs = arena.ln(abs_base);
@@ -1644,7 +1662,8 @@ fn integrate_node(
                             .collect();
                         let distributed = arena.mul(&factors);
                         if distributed != expr {
-                            let result = integrate_node(arena, distributed, var, var_sym, depth - 1);
+                            let result =
+                                integrate_node(arena, distributed, var, var_sym, depth - 1);
                             if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
                                 return result;
                             }
@@ -1947,8 +1966,7 @@ fn integrate_node(
                 return arena.sub(x_asinh, sqrt_term);
             }
             // Linear chain rule: ∫ asinh(ax+b) dx = (ax+b)·asinh(ax+b)/a - √((ax+b)²+1)/a
-            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym)
-            {
+            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 tracing::debug!("integrate: matched asinh(ax+b) linear");
                 let asinh_g = arena.asinh(inner);
                 let g_asinh = arena.mul(&[inner, asinh_g]);
@@ -1979,8 +1997,7 @@ fn integrate_node(
                 return arena.sub(x_acosh, sqrt_term);
             }
             // Linear chain rule: ∫ acosh(ax+b) dx
-            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym)
-            {
+            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 tracing::debug!("integrate: matched acosh(ax+b) linear");
                 let acosh_g = arena.acosh(inner);
                 let g_acosh = arena.mul(&[inner, acosh_g]);
@@ -2012,8 +2029,7 @@ fn integrate_node(
                 return arena.add(&[x_atanh, half_ln]);
             }
             // Linear chain rule: ∫ atanh(ax+b) dx
-            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym)
-            {
+            if let Some((a_expr, _b_expr)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) {
                 tracing::debug!("integrate: matched atanh(ax+b) linear");
                 let atanh_g = arena.atanh(inner);
                 let g_atanh = arena.mul(&[inner, atanh_g]);
@@ -2452,7 +2468,10 @@ fn try_piecewise_wrap(
                 let degen_val = sol.value;
 
                 // Avoid duplicate wrapping for the same (param, value) pair.
-                if handled.iter().any(|&(p, v)| p == *sym_expr && v == degen_val) {
+                if handled
+                    .iter()
+                    .any(|&(p, v)| p == *sym_expr && v == degen_val)
+                {
                     continue;
                 }
 
@@ -2478,10 +2497,7 @@ fn try_piecewise_wrap(
                 // Build Piecewise: [(generic, Ne(param, degen)), (degen_result, True)]
                 let condition = arena.ne_(*sym_expr, degen_val);
                 let true_cond = arena.bool_true;
-                wrapped = arena.piecewise(&[
-                    (wrapped, condition),
-                    (degen_result, true_cond),
-                ]);
+                wrapped = arena.piecewise(&[(wrapped, condition), (degen_result, true_cond)]);
 
                 handled.push((*sym_expr, degen_val));
             }
@@ -2532,7 +2548,8 @@ fn has_zero_denominator(arena: &Arena, expr: ExprId) -> bool {
         }
         if let ExprNode::Pow(base, exp) = arena.node(id).clone()
             && let Some(r) = arena.as_num(exp)
-            && r.is_negative() && arena.is_zero_structural(base)
+            && r.is_negative()
+            && arena.is_zero_structural(base)
         {
             return true;
         }
@@ -2575,15 +2592,9 @@ fn try_special_function_integral(
 
     // Match the function factor against known special functions.
     let sf_result = match arena.node(func_factor).clone() {
-        ExprNode::Sin(inner) if inner == var => {
-            Some(make_apply(arena, "Si", &[var]))
-        }
-        ExprNode::Cos(inner) if inner == var => {
-            Some(make_apply(arena, "Ci", &[var]))
-        }
-        ExprNode::Exp(inner) if inner == var => {
-            Some(make_apply(arena, "Ei", &[var]))
-        }
+        ExprNode::Sin(inner) if inner == var => Some(make_apply(arena, "Si", &[var])),
+        ExprNode::Cos(inner) if inner == var => Some(make_apply(arena, "Ci", &[var])),
+        ExprNode::Exp(inner) if inner == var => Some(make_apply(arena, "Ei", &[var])),
         ExprNode::Exp(inner) => {
             // exp(-x)/x → -Ei(-x)
             if let ExprNode::Neg(neg_inner) = arena.node(inner).clone()
@@ -2608,8 +2619,7 @@ fn is_inv_of_var(arena: &Arena, expr: ExprId, var: ExprId) -> bool {
         && *base == var
         && let Some(r) = arena.as_num(*exp)
     {
-        return *r
-            == num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
+        return *r == num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
     }
     false
 }
@@ -3170,10 +3180,24 @@ mod tests {
             _ => panic!("x should be a symbol"),
         };
         let result = super::symbolic_linear_coeff_of(&mut a, ax, x, var_sym);
-        assert!(result.is_some(), "a*x should be recognized as linear in x, node: {:?}", a.node(ax));
+        assert!(
+            result.is_some(),
+            "a*x should be recognized as linear in x, node: {:?}",
+            a.node(ax)
+        );
         let (coeff, constant) = result.unwrap();
-        assert_eq!(coeff, param_a, "coefficient should be a, got {}", display(&a, coeff));
-        assert_eq!(constant, a.zero, "constant should be 0, got {}", display(&a, constant));
+        assert_eq!(
+            coeff,
+            param_a,
+            "coefficient should be a, got {}",
+            display(&a, coeff)
+        );
+        assert_eq!(
+            constant,
+            a.zero,
+            "constant should be 0, got {}",
+            display(&a, constant)
+        );
     }
 
     #[test]
@@ -3190,10 +3214,24 @@ mod tests {
             _ => panic!("x should be a symbol"),
         };
         let result = super::symbolic_linear_coeff_of(&mut a, ax_plus_b, x, var_sym);
-        assert!(result.is_some(), "a*x+b should be recognized as linear in x, expr: {}", display(&a, ax_plus_b));
+        assert!(
+            result.is_some(),
+            "a*x+b should be recognized as linear in x, expr: {}",
+            display(&a, ax_plus_b)
+        );
         let (coeff, constant) = result.unwrap();
-        assert_eq!(coeff, param_a, "coefficient should be a, got {}", display(&a, coeff));
-        assert_eq!(constant, param_b, "constant should be b, got {}", display(&a, constant));
+        assert_eq!(
+            coeff,
+            param_a,
+            "coefficient should be a, got {}",
+            display(&a, coeff)
+        );
+        assert_eq!(
+            constant,
+            param_b,
+            "constant should be b, got {}",
+            display(&a, constant)
+        );
     }
 
     #[test]
@@ -3222,7 +3260,10 @@ mod tests {
         let sin_ax = a.sin(ax);
         let result = integrate(&mut a, sin_ax, x);
         let s = display(&a, result);
-        assert!(!s.contains("Integral"), "∫sin(a*x)dx should not be unevaluated: {s}");
+        assert!(
+            !s.contains("Integral"),
+            "∫sin(a*x)dx should not be unevaluated: {s}"
+        );
         assert!(s.contains("cos"), "should contain cos: {s}");
     }
 
@@ -3236,7 +3277,10 @@ mod tests {
         let exp_ax = a.exp(ax);
         let result = integrate(&mut a, exp_ax, x);
         let s = display(&a, result);
-        assert!(!s.contains("Integral"), "∫exp(a*x)dx should not be unevaluated: {s}");
+        assert!(
+            !s.contains("Integral"),
+            "∫exp(a*x)dx should not be unevaluated: {s}"
+        );
         assert!(s.contains("exp"), "should contain exp: {s}");
     }
 
@@ -3250,14 +3294,23 @@ mod tests {
         let cosh_ax = a.cosh(ax);
         let result = integrate(&mut a, cosh_ax, x);
         let s = display(&a, result);
-        assert!(!s.contains("Integral"), "∫cosh(a*x)dx should not be unevaluated: {s}");
+        assert!(
+            !s.contains("Integral"),
+            "∫cosh(a*x)dx should not be unevaluated: {s}"
+        );
     }
 
     // ── Inverse hyperbolic integration tests ───────────────────────
 
     /// Helper: substitute a rational value for a symbol and evaluate to f64.
     /// Returns None if evaluation fails.
-    fn eval_at(arena: &mut Arena, expr: ExprId, var: ExprId, numer: i64, denom: i64) -> Option<f64> {
+    fn eval_at(
+        arena: &mut Arena,
+        expr: ExprId,
+        var: ExprId,
+        numer: i64,
+        denom: i64,
+    ) -> Option<f64> {
         let val = arena.rational(numer, denom);
         let substituted = crate::transforms::subs::subs(arena, expr, var, val);
         let evaled = crate::transforms::eval::eval(arena, substituted);
@@ -3317,7 +3370,10 @@ mod tests {
 
         // Numerical FTC: d/dx(result) ≈ asinh(x) at multiple points
         assert_ftc(
-            &mut a, asinh_x, result, x,
+            &mut a,
+            asinh_x,
+            result,
+            x,
             &[(1, 2), (3, 2), (5, 1)],
             1e-8,
             "∫asinh(x)dx",
@@ -3342,7 +3398,10 @@ mod tests {
 
         // Numerical FTC: test at x > 1 only (acosh domain)
         assert_ftc(
-            &mut a, acosh_x, result, x,
+            &mut a,
+            acosh_x,
+            result,
+            x,
             &[(3, 2), (2, 1), (5, 1)],
             1e-8,
             "∫acosh(x)dx",
@@ -3368,7 +3427,10 @@ mod tests {
 
         // Numerical FTC: test at |x| < 1 only (atanh domain)
         assert_ftc(
-            &mut a, atanh_x, result, x,
+            &mut a,
+            atanh_x,
+            result,
+            x,
             &[(1, 4), (1, 2), (3, 4)],
             1e-8,
             "∫atanh(x)dx",

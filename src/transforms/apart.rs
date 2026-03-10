@@ -164,7 +164,8 @@ pub(crate) fn apart(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     let terms: Vec<(Poly, Poly, u32)> = initial_terms
         .into_iter()
         .flat_map(|(n, f, p)| {
-            if p == 1 && f.degree().unwrap_or(0) > 2
+            if p == 1
+                && f.degree().unwrap_or(0) > 2
                 && let Some(sub_factors) = try_rt_refine(&n, &f)
             {
                 let sub_terms = decompose_poly_fraction(&n, &sub_factors);
@@ -223,10 +224,7 @@ pub(crate) fn apart(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
 /// `(R, f_i, j)` triples representing `R / f_i^j`.
 ///
 /// All `f_i` must be pairwise coprime (guaranteed by `factor_over_z`).
-fn decompose_poly_fraction(
-    numer: &Poly,
-    factors: &[(Poly, u32)],
-) -> Vec<(Poly, Poly, u32)> {
+fn decompose_poly_fraction(numer: &Poly, factors: &[(Poly, u32)]) -> Vec<(Poly, Poly, u32)> {
     if factors.is_empty() || numer.is_zero() {
         return vec![];
     }
@@ -241,9 +239,9 @@ fn decompose_poly_fraction(
     let rest = &factors[1..];
 
     let d1 = poly_pow(f1, *e1);
-    let d2 = rest.iter().fold(Poly::from_int(1), |acc, (f, e)| {
-        &acc * &poly_pow(f, *e)
-    });
+    let d2 = rest
+        .iter()
+        .fold(Poly::from_int(1), |acc, (f, e)| &acc * &poly_pow(f, *e));
 
     // Extended GCD: s*d1 + t*d2 = 1 (since d1 and d2 are coprime).
     let (s, t, _g) = Poly::extended_gcd(&d1, &d2);
@@ -262,11 +260,7 @@ fn decompose_poly_fraction(
 
 /// Decompose `numer / factor^power` into terms `R_k / factor^k`
 /// for `k = 1, …, power` via repeated polynomial division.
-fn decompose_single_factor(
-    numer: &Poly,
-    factor: &Poly,
-    power: u32,
-) -> Vec<(Poly, Poly, u32)> {
+fn decompose_single_factor(numer: &Poly, factor: &Poly, power: u32) -> Vec<(Poly, Poly, u32)> {
     if power == 0 || numer.is_zero() {
         return vec![];
     }
@@ -429,19 +423,13 @@ fn try_root_based_apart(
 
             // Compute quadratic factor and (Ax+B) numerator from the
             // conjugate pair.
-            if let Some(term) = build_conjugate_pair_term(
-                arena,
-                var,
-                root,
-                remainder,
-                &denom_deriv,
-            ) {
+            if let Some(term) = build_conjugate_pair_term(arena, var, root, remainder, &denom_deriv)
+            {
                 partial_terms.push(term);
             }
         } else {
             // No conjugate found — try a plain symbolic residue.
-            if let Some(term) =
-                try_symbolic_residue_term(arena, var, root, remainder, &denom_deriv)
+            if let Some(term) = try_symbolic_residue_term(arena, var, root, remainder, &denom_deriv)
             {
                 partial_terms.push(term);
             }
@@ -583,7 +571,10 @@ fn try_log_to_real_numeric(
     denom_deriv: &Poly,
 ) -> Option<Vec<ExprId>> {
     let n_roots = solutions.len();
-    tracing::debug!("log_to_real: attempting numeric conversion for {} roots", n_roots);
+    tracing::debug!(
+        "log_to_real: attempting numeric conversion for {} roots",
+        n_roots
+    );
 
     // Evaluate all roots to complex f64.
     let mut complex_vals: Vec<(f64, f64)> = Vec::with_capacity(n_roots);
@@ -766,7 +757,11 @@ fn parse_evalf_complex(s: &str) -> Option<(f64, f64)> {
         if tail.contains('i') {
             let re = s[..pos].parse::<f64>().ok()?;
             let im_str = tail.trim_end_matches("*i").trim_end_matches('i');
-            let im = if im_str.is_empty() { 1.0 } else { im_str.parse::<f64>().ok()? };
+            let im = if im_str.is_empty() {
+                1.0
+            } else {
+                im_str.parse::<f64>().ok()?
+            };
             return Some((re, im));
         }
     }
@@ -775,7 +770,11 @@ fn parse_evalf_complex(s: &str) -> Option<(f64, f64)> {
         if tail.contains('i') {
             let re = s[..pos].parse::<f64>().ok()?;
             let im_str = tail.trim_end_matches("*i").trim_end_matches('i');
-            let im = if im_str.is_empty() { 1.0 } else { im_str.parse::<f64>().ok()? };
+            let im = if im_str.is_empty() {
+                1.0
+            } else {
+                im_str.parse::<f64>().ok()?
+            };
             return Some((re, -im));
         }
     }
@@ -876,13 +875,7 @@ fn find_rational_plus_sqrt(arena: &mut Arena, val: f64, tol: f64) -> Option<Expr
 }
 
 /// Build the symbolic expression `(a + b·√n) / c`, simplified.
-fn build_rational_plus_sqrt_expr(
-    arena: &mut Arena,
-    a: i64,
-    b: i64,
-    n: i64,
-    c: i64,
-) -> ExprId {
+fn build_rational_plus_sqrt_expr(arena: &mut Arena, a: i64, b: i64, n: i64, c: i64) -> ExprId {
     let half = arena.rational(1, 2);
     let n_expr = arena.int(n);
     let sqrt_n = arena.pow(n_expr, half);
@@ -1347,12 +1340,20 @@ mod tests {
         // Rational part: A/D* = (x/2)/(x²+1) → A = x/2.
         // Check that 2·A = x.
         let two_a = a_num.scale(&ri(2));
-        assert_eq!(two_a, Poly::x(), "rational numer should be x/2, got {a_num}");
+        assert_eq!(
+            two_a,
+            Poly::x(),
+            "rational numer should be x/2, got {a_num}"
+        );
         // Rational denom = x²+1
         assert_eq!(a_den, factor, "rational denom should be x²+1");
         // Logarithmic part: B/Ds = (1/2)/(x²+1) → B = 1/2.
         let two_b = b_num.scale(&ri(2));
-        assert_eq!(two_b, Poly::from_int(1), "log numer should be 1/2, got {b_num}");
+        assert_eq!(
+            two_b,
+            Poly::from_int(1),
+            "log numer should be 1/2, got {b_num}"
+        );
         assert_eq!(b_den, factor, "log denom should be x²+1");
     }
 
@@ -1376,7 +1377,10 @@ mod tests {
         // Rational denom should be (x−1)²
         assert_eq!(a_den.degree(), Some(2));
         // Logarithmic numer should be zero
-        assert!(b_num.is_zero(), "log numer should be 0 for 1/(x−1)³, got {b_num}");
+        assert!(
+            b_num.is_zero(),
+            "log numer should be 0 for 1/(x−1)³, got {b_num}"
+        );
     }
 
     #[test]

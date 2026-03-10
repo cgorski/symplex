@@ -14,7 +14,6 @@
 
 use symplex::prelude::*;
 
-
 fn main() {
     println!("=== Equation Solving ===\n");
 
@@ -120,11 +119,9 @@ fn main() {
     println!("\n--- System: Circle ∩ Line ---");
     let eq1 = expr!(ctx, x ^ 2 + y ^ 2 - 1);
     let eq2 = expr!(ctx, x + y - 1);
-    let solutions = symplex::polysys::solve_system_ex(
-        &[eq1.clone(), eq2.clone()],
-        &[x.clone(), y.clone()],
-    )
-    .unwrap();
+    let solutions =
+        symplex::polysys::solve_system_ex(&[eq1.clone(), eq2.clone()], &[x.clone(), y.clone()])
+            .unwrap();
     for (i, sol) in solutions.iter().enumerate() {
         println!("  Solution {}: x = {}, y = {}", i + 1, sol[0], sol[1]);
     }
@@ -134,7 +131,10 @@ fn main() {
     for (i, sol) in solutions.iter().enumerate() {
         let r1 = eq1.subs(&x, &sol[0]).subs(&y, &sol[1]).eval();
         let r2 = eq2.subs(&x, &sol[0]).subs(&y, &sol[1]).eval();
-        println!("    Sol {}: eq1 residual = {r1}, eq2 residual = {r2}", i + 1);
+        println!(
+            "    Sol {}: eq1 residual = {r1}, eq2 residual = {r2}",
+            i + 1
+        );
     }
 
     println!("\n--- System: Two Conics ---");
@@ -174,7 +174,10 @@ fn main() {
 
     println!("\n--- Factoring ---");
     println!("x² - 1       = {}", expr!(ctx, x ^ 2 - 1).factor(&x));
-    println!("x² + 2x + 1  = {}", expr!(ctx, x ^ 2 + 2 * x + 1).factor(&x));
+    println!(
+        "x² + 2x + 1  = {}",
+        expr!(ctx, x ^ 2 + 2 * x + 1).factor(&x)
+    );
     println!("x³ - 1        = {}", expr!(ctx, x ^ 3 - 1).factor(&x));
     println!("x⁴ - 1        = {}", expr!(ctx, x ^ 4 - 1).factor(&x));
     println!(
@@ -256,10 +259,7 @@ fn main() {
     println!("x² - 2 = 0:");
     println!(
         "  Symbolic: {:?}",
-        sym_roots
-            .iter()
-            .map(|r| format!("{r}"))
-            .collect::<Vec<_>>()
+        sym_roots.iter().map(|r| format!("{r}")).collect::<Vec<_>>()
     );
     println!("  (These are exact — involving √2)");
 

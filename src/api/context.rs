@@ -136,12 +136,16 @@ impl Context {
     /// let expr = ctx.parse("x^2 + 1").unwrap();
     /// assert!(format!("{expr}").contains("x"));
     /// ```
-    pub fn parse(&self, input: &str) -> Result<crate::api::expr::Ex, crate::base::errors::SymplexError> {
-        crate::output::parse::parse(self, input)
-            .map_err(|e| crate::base::errors::SymplexError::ComputationFailed {
+    pub fn parse(
+        &self,
+        input: &str,
+    ) -> Result<crate::api::expr::Ex, crate::base::errors::SymplexError> {
+        crate::output::parse::parse(self, input).map_err(|e| {
+            crate::base::errors::SymplexError::ComputationFailed {
                 operation: "parse",
                 reason: e.to_string(),
-            })
+            }
+        })
     }
 
     /// Create a symbol with mathematical assumptions.
@@ -163,7 +167,9 @@ impl Context {
 
         let mut inner = self.inner.write();
         let sym_id = inner.arena.symbols.intern(name);
-        let expr_id = inner.arena.intern(crate::base::node::ExprNode::Symbol(sym_id));
+        let expr_id = inner
+            .arena
+            .intern(crate::base::node::ExprNode::Symbol(sym_id));
 
         // Build assumption set from the provided assumptions.
         let mut a = crate::base::assumptions::Assumptions::default();
@@ -203,7 +209,10 @@ impl Context {
     /// ```
     pub fn query(&self, ex: &crate::api::expr::Ex, prop: Props) -> Option<bool> {
         let inner = self.inner.read();
-        inner.assumptions.lock().query(&inner.arena, ex.raw_id(), prop)
+        inner
+            .assumptions
+            .lock()
+            .query(&inner.arena, ex.raw_id(), prop)
     }
 
     /// Creates an integer expression.
@@ -285,7 +294,11 @@ impl Context {
     /// let c = ctx.physical_constant("c", ctx.int(299_792_458));
     /// assert_eq!(format!("{c}"), "c");
     /// ```
-    pub fn physical_constant(&self, name: &str, value: crate::api::expr::Ex) -> crate::api::expr::Ex {
+    pub fn physical_constant(
+        &self,
+        name: &str,
+        value: crate::api::expr::Ex,
+    ) -> crate::api::expr::Ex {
         let val_id = value.raw_id();
         let id = self.inner.write().arena.physical_constant(name, val_id);
         self.make_ex(id)
@@ -403,7 +416,11 @@ impl Context {
         if right_open {
             flags |= crate::base::node::INTERVAL_RIGHT_OPEN;
         }
-        let id = self.inner.write().arena.interval(start.raw_id(), end.raw_id(), flags);
+        let id = self
+            .inner
+            .write()
+            .arena
+            .interval(start.raw_id(), end.raw_id(), flags);
         self.make_set_ex(id)
     }
 
@@ -551,10 +568,12 @@ impl Context {
         variables: &[crate::api::expr::Ex],
     ) -> Option<Vec<(crate::api::expr::Ex, crate::api::expr::Ex)>> {
         let eq_ids: Vec<crate::base::node::ExprId> = equations.iter().map(|e| e.raw_id()).collect();
-        let var_ids: Vec<crate::base::node::ExprId> = variables.iter().map(|v| v.raw_id()).collect();
+        let var_ids: Vec<crate::base::node::ExprId> =
+            variables.iter().map(|v| v.raw_id()).collect();
 
         let mut inner = self.inner.write();
-        let result = crate::domains::linalg::solve_linear_system(&mut inner.arena, &eq_ids, &var_ids)?;
+        let result =
+            crate::domains::linalg::solve_linear_system(&mut inner.arena, &eq_ids, &var_ids)?;
         drop(inner);
 
         Some(

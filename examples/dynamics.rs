@@ -8,9 +8,8 @@
 //!
 //! Run with: cargo run --example dynamics
 
-use symplex::prelude::*;
 use symplex::dynamics::*;
-
+use symplex::prelude::*;
 
 fn main() {
     println!("=== Lagrangian Dynamics ===\n");
@@ -156,12 +155,8 @@ fn main() {
     println!("  C[1,1] = {}", coriolis.get(1, 1));
 
     // ── Full manipulator equation via convenience function ─────────
-    let (mass, cor, grav) = manipulator_equation(
-        &ke_double,
-        &pe_double,
-        &[&q1, &q2],
-        &[&qd1, &qd2],
-    );
+    let (mass, cor, grav) =
+        manipulator_equation(&ke_double, &pe_double, &[&q1, &q2], &[&qd1, &qd2]);
     println!("\nFull manipulator equation: M(q)q̈ + C(q,q̇)q̇ + g(q) = τ");
     println!("  M shape: {:?}", mass.shape());
     println!("  C shape: {:?}", cor.shape());
@@ -203,8 +198,16 @@ fn main() {
     let m10 = mm_double.get(1, 0).eval_f64_with(subs_no_g);
     let m11 = mm_double.get(1, 1).eval_f64_with(subs_no_g);
     println!("\nNumerical mass matrix at q=(0,0):");
-    println!("  M = [[{:.4}, {:.4}],", m00.unwrap_or(f64::NAN), m01.unwrap_or(f64::NAN));
-    println!("       [{:.4}, {:.4}]]", m10.unwrap_or(f64::NAN), m11.unwrap_or(f64::NAN));
+    println!(
+        "  M = [[{:.4}, {:.4}],",
+        m00.unwrap_or(f64::NAN),
+        m01.unwrap_or(f64::NAN)
+    );
+    println!(
+        "       [{:.4}, {:.4}]]",
+        m10.unwrap_or(f64::NAN),
+        m11.unwrap_or(f64::NAN)
+    );
 
     // At q1=q2=0, cos(q1-q2) = cos(0) = 1, so:
     //   M[0,0] = (m1+m2)·L1² = 2
@@ -212,36 +215,32 @@ fn main() {
     //   M[1,1] = m2·L2² = 1
 
     // Evaluate the EOM torques at the test configuration
-    let tau1 = eqs_double[0].eval_f64_with(
-        &[
-            (&m1, 1),
-            (&m2, 1),
-            (&l1, 1),
-            (&l2, 1),
-            (&g, 10),
-            (&q1, 0),
-            (&q2, 0),
-            (&qd1, 0),
-            (&qd2, 0),
-            (&qdd1, 1),
-            (&qdd2, 0),
-        ],
-    );
-    let tau2 = eqs_double[1].eval_f64_with(
-        &[
-            (&m1, 1),
-            (&m2, 1),
-            (&l1, 1),
-            (&l2, 1),
-            (&g, 10),
-            (&q1, 0),
-            (&q2, 0),
-            (&qd1, 0),
-            (&qd2, 0),
-            (&qdd1, 1),
-            (&qdd2, 0),
-        ],
-    );
+    let tau1 = eqs_double[0].eval_f64_with(&[
+        (&m1, 1),
+        (&m2, 1),
+        (&l1, 1),
+        (&l2, 1),
+        (&g, 10),
+        (&q1, 0),
+        (&q2, 0),
+        (&qd1, 0),
+        (&qd2, 0),
+        (&qdd1, 1),
+        (&qdd2, 0),
+    ]);
+    let tau2 = eqs_double[1].eval_f64_with(&[
+        (&m1, 1),
+        (&m2, 1),
+        (&l1, 1),
+        (&l2, 1),
+        (&g, 10),
+        (&q1, 0),
+        (&q2, 0),
+        (&qd1, 0),
+        (&qd2, 0),
+        (&qdd1, 1),
+        (&qdd2, 0),
+    ]);
 
     println!("\nTorques at test config (g=10):");
     println!("  τ₁ = {:.4}", tau1.unwrap_or(f64::NAN));
@@ -264,10 +263,7 @@ fn main() {
     println!("\n--- Total Time Derivative ---");
     // d/dt(q1) = qd1
     let dt_q1 = total_time_derivative(&q1, &[(&q1, &qd1), (&q2, &qd2)], &[&qdd1, &qdd2]);
-    let dt_q1_val = dt_q1
-        .subs(&qd1, &ctx.int(7))
-        .subs(&qd2, &ctx.int(0))
-        .eval();
+    let dt_q1_val = dt_q1.subs(&qd1, &ctx.int(7)).subs(&qd2, &ctx.int(0)).eval();
     println!("d/dt(q1) = {dt_q1}");
     println!("  at qd1=7: {dt_q1_val}");
 

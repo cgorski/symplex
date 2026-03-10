@@ -41,9 +41,9 @@ fn verify_first_order(
     let sample_val = ctx.rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
 
-    let val = residual_at.eval_f64().expect(
-        "residual should evaluate to f64 for numerical ODE verification"
-    );
+    let val = residual_at
+        .eval_f64()
+        .expect("residual should evaluate to f64 for numerical ODE verification");
     assert!(
         val.abs() < 1e-6,
         "First-order ODE residual should be ~0, got {val} at x={sample_x_num}/{sample_x_den}\n  \
@@ -168,7 +168,10 @@ fn ode_existing_types_still_work() {
     // Regression: y' + 2y = 0 (constant coeff) still works
     let ode = expr!(ctx, diff(y, x) + 2 * y);
     let result = ode.solve_ode(&y, &x);
-    assert!(!result.has_unevaluated(), "y' + 2y = 0 should still be solvable");
+    assert!(
+        !result.has_unevaluated(),
+        "y' + 2y = 0 should still be solvable"
+    );
 
     // Regression: y'' + y = 0 still works (second-order CC)
     let dy = y.formal_diff(&x);
@@ -176,7 +179,10 @@ fn ode_existing_types_still_work() {
     let ode2 = &d2y + &y;
     // Complex roots — should still return Some (even if trig/complex form)
     let result2 = ode2.solve_ode(&y, &x);
-    assert!(!result2.has_unevaluated(), "y'' + y = 0 should return Some (second-order CC with complex roots)");
+    assert!(
+        !result2.has_unevaluated(),
+        "y'' + y = 0 should return Some (second-order CC with complex roots)"
+    );
 
     // Regression: y' = x still works (simple separable)
     let ode3 = expr!(ctx, diff(y, x) - x);
@@ -212,7 +218,9 @@ fn ode_no_y_dependence_still_simple_separable() {
     let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &(x.powi(2) + ctx.int(1));
-    let sol = ode.try_solve_ode(&y, &x).expect("y' = x² + 1 should be solvable");
+    let sol = ode
+        .try_solve_ode(&y, &x)
+        .expect("y' = x² + 1 should be solvable");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "solution should have C1: {s}");
 

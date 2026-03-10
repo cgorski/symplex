@@ -58,9 +58,7 @@ fn piecewise_sin_ax() {
     check_not_contains(&result, "Integral", "∫sin(a*x)dx");
 
     // Verify numeric evaluation at a=2, x=1 matches the generic branch
-    let val = result
-        .subs(&a, &ctx.int(2))
-        .subs(&x, &ctx.int(1));
+    let val = result.subs(&a, &ctx.int(2)).subs(&x, &ctx.int(1));
     if let Ok(v) = val.eval_f64() {
         let expected = -(2.0_f64).cos() / 2.0;
         assert!(
@@ -91,9 +89,7 @@ fn piecewise_exp_ax() {
     check_not_contains(&result, "Integral", "∫exp(a*x)dx");
 
     // Verify numeric evaluation at a=3, x=1 matches the generic branch
-    let val = result
-        .subs(&a, &ctx.int(3))
-        .subs(&x, &ctx.int(1));
+    let val = result.subs(&a, &ctx.int(3)).subs(&x, &ctx.int(1));
     if let Ok(v) = val.eval_f64() {
         let expected = (3.0_f64).exp() / 3.0;
         assert!(
@@ -123,9 +119,7 @@ fn piecewise_x_to_n() {
     check_not_contains(&result, "Integral", "∫x^n dx");
 
     // Verify numeric evaluation at n=2, x=3: x^3/3 = 9
-    let val = result
-        .subs(&n, &ctx.int(2))
-        .subs(&x, &ctx.int(3));
+    let val = result.subs(&n, &ctx.int(2)).subs(&x, &ctx.int(3));
     if let Ok(v) = val.eval_f64() {
         let expected = 27.0 / 3.0; // 3^3 / 3 = 9
         assert!(
@@ -322,12 +316,8 @@ fn piecewise_sin_ax_ftc() {
     let a_val = ctx.int(2);
     let x_val = ctx.int(1);
 
-    let orig = integrand
-        .subs(&a, &a_val)
-        .subs(&x, &x_val);
-    let diff = deriv
-        .subs(&a, &a_val)
-        .subs(&x, &x_val);
+    let orig = integrand.subs(&a, &a_val).subs(&x, &x_val);
+    let diff = deriv.subs(&a, &a_val).subs(&x, &x_val);
 
     if let (Ok(o), Ok(d)) = (orig.eval_f64(), diff.eval_f64()) {
         let err = (o - d).abs();
@@ -352,12 +342,8 @@ fn piecewise_exp_ax_ftc() {
     let a_val = ctx.int(3);
     let x_val = ctx.int(1);
 
-    let orig = integrand
-        .subs(&a, &a_val)
-        .subs(&x, &x_val);
-    let diff = deriv
-        .subs(&a, &a_val)
-        .subs(&x, &x_val);
+    let orig = integrand.subs(&a, &a_val).subs(&x, &x_val);
+    let diff = deriv.subs(&a, &a_val).subs(&x, &x_val);
 
     if let (Ok(o), Ok(d)) = (orig.eval_f64(), diff.eval_f64()) {
         let err = (o - d).abs();

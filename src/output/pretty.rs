@@ -386,7 +386,11 @@ fn pretty_node(arena: &Arena, id: ExprId, mode: RenderMode, depth: u8) -> MathBo
         // ── Atoms ──────────────────────────────────────────────────
         ExprNode::Num(nid) => pretty_num(arena, nid, mode, depth),
         ExprNode::Symbol(sid) => MathBox::text(arena.symbol_name(sid)),
-        ExprNode::Pi => MathBox::text(if mode == RenderMode::Unicode { "π" } else { "pi" }),
+        ExprNode::Pi => MathBox::text(if mode == RenderMode::Unicode {
+            "π"
+        } else {
+            "pi"
+        }),
         ExprNode::E => MathBox::text("e"),
         ExprNode::ImaginaryUnit => MathBox::text("i"),
         ExprNode::Infinity => MathBox::text("∞"),
@@ -406,10 +410,7 @@ fn pretty_node(arena: &Arena, id: ExprId, mode: RenderMode, depth: u8) -> MathBo
         ExprNode::Neg(inner) => {
             let inner_box = pretty_node(arena, inner, mode, depth);
             let minus = MathBox::text("-");
-            let needs_parens = matches!(
-                arena.node(inner),
-                ExprNode::Add(_)
-            );
+            let needs_parens = matches!(arena.node(inner), ExprNode::Add(_));
             if needs_parens {
                 MathBox::hcat(&[minus, MathBox::parens(inner_box, mode)])
             } else {
@@ -442,7 +443,11 @@ fn pretty_node(arena: &Arena, id: ExprId, mode: RenderMode, depth: u8) -> MathBo
         ExprNode::Exp(inner) => pretty_func("exp", arena, inner, mode, depth),
         ExprNode::Ln(inner) => pretty_func("ln", arena, inner, mode, depth),
         ExprNode::Gamma(inner) => {
-            let name = if mode == RenderMode::Unicode { "Γ" } else { "Gamma" };
+            let name = if mode == RenderMode::Unicode {
+                "Γ"
+            } else {
+                "Gamma"
+            };
             pretty_func(name, arena, inner, mode, depth)
         }
         ExprNode::Erf(inner) => pretty_func("erf", arena, inner, mode, depth),
@@ -450,7 +455,11 @@ fn pretty_node(arena: &Arena, id: ExprId, mode: RenderMode, depth: u8) -> MathBo
         ExprNode::LambertW(inner) => pretty_func("W", arena, inner, mode, depth),
         ExprNode::LogGamma(inner) => pretty_func("lgamma", arena, inner, mode, depth),
         ExprNode::Digamma(inner) => {
-            let name = if mode == RenderMode::Unicode { "ψ" } else { "psi" };
+            let name = if mode == RenderMode::Unicode {
+                "ψ"
+            } else {
+                "psi"
+            };
             pretty_func(name, arena, inner, mode, depth)
         }
         ExprNode::Floor(inner) => {
@@ -474,10 +483,7 @@ fn pretty_node(arena: &Arena, id: ExprId, mode: RenderMode, depth: u8) -> MathBo
         ExprNode::Sign(inner) => pretty_func("sgn", arena, inner, mode, depth),
         ExprNode::Factorial(inner) => {
             let inner_box = pretty_node(arena, inner, mode, depth);
-            let needs_parens = !matches!(
-                arena.node(inner),
-                ExprNode::Num(_) | ExprNode::Symbol(_)
-            );
+            let needs_parens = !matches!(arena.node(inner), ExprNode::Num(_) | ExprNode::Symbol(_));
             if needs_parens {
                 MathBox::hcat(&[MathBox::parens(inner_box, mode), MathBox::text("!")])
             } else {
@@ -497,7 +503,12 @@ fn pretty_node(arena: &Arena, id: ExprId, mode: RenderMode, depth: u8) -> MathBo
 // Number rendering
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn pretty_num(arena: &Arena, nid: crate::base::node::NumId, mode: RenderMode, depth: u8) -> MathBox {
+fn pretty_num(
+    arena: &Arena,
+    nid: crate::base::node::NumId,
+    mode: RenderMode,
+    depth: u8,
+) -> MathBox {
     let r = arena.num(nid);
     if r.is_integer() {
         MathBox::text(&r.numer().to_string())
@@ -516,12 +527,7 @@ fn pretty_num(arena: &Arena, nid: crate::base::node::NumId, mode: RenderMode, de
 // Add rendering
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn pretty_add(
-    arena: &Arena,
-    children: &[ExprId],
-    mode: RenderMode,
-    depth: u8,
-) -> MathBox {
+fn pretty_add(arena: &Arena, children: &[ExprId], mode: RenderMode, depth: u8) -> MathBox {
     if children.is_empty() {
         return MathBox::text("0");
     }
@@ -618,12 +624,7 @@ fn pretty_ratio(r: &Ratio<BigInt>, mode: RenderMode, depth: u8) -> MathBox {
 // Mul rendering
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn pretty_mul(
-    arena: &Arena,
-    children: &[ExprId],
-    mode: RenderMode,
-    depth: u8,
-) -> MathBox {
+fn pretty_mul(arena: &Arena, children: &[ExprId], mode: RenderMode, depth: u8) -> MathBox {
     if children.is_empty() {
         return MathBox::text("1");
     }
@@ -766,18 +767,16 @@ fn mul_dot(mode: RenderMode) -> MathBox {
 // Pow rendering
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn pretty_pow(
-    arena: &Arena,
-    base: ExprId,
-    exp: ExprId,
-    mode: RenderMode,
-    depth: u8,
-) -> MathBox {
+fn pretty_pow(arena: &Arena, base: ExprId, exp: ExprId, mode: RenderMode, depth: u8) -> MathBox {
     // Special case: exp = 1/2 → sqrt
     if let Some(r) = arena.as_num(exp) {
         if *r == Ratio::new(BigInt::from(1), BigInt::from(2)) {
             let inner_box = pretty_node(arena, base, mode, depth);
-            let sqrt_sym = if mode == RenderMode::Unicode { "√" } else { "sqrt" };
+            let sqrt_sym = if mode == RenderMode::Unicode {
+                "√"
+            } else {
+                "sqrt"
+            };
             return MathBox::hcat(&[
                 MathBox::text(sqrt_sym),
                 MathBox::text("("),
@@ -954,7 +953,10 @@ mod tests {
         //  1
         // ━━━
         //  2
-        assert!(s.contains('━'), "should use heavy bar for outer fraction: {s}");
+        assert!(
+            s.contains('━'),
+            "should use heavy bar for outer fraction: {s}"
+        );
         assert!(s.lines().count() == 3, "fraction should be 3 lines: {s}");
     }
 
@@ -1026,11 +1028,7 @@ mod tests {
         let sum = a.add(&[x, half]);
         let s = pp(&a, sum);
         let lines: Vec<&str> = s.lines().collect();
-        assert_eq!(
-            lines.len(),
-            3,
-            "sum with fraction should be 3 lines: {s}"
-        );
+        assert_eq!(lines.len(), 3, "sum with fraction should be 3 lines: {s}");
         // The middle line (baseline) should contain both x and the fraction bar.
         assert!(
             lines[1].contains('x') || lines[1].contains('+'),

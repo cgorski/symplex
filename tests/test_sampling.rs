@@ -12,7 +12,9 @@ use std::f64::consts::PI;
 
 /// Minimal re-implementation of the jitter function for verification.
 fn jitter(x: f64, interval_width: f64) -> f64 {
-    let hash = (x.to_bits()).wrapping_mul(6364136223846793005u64).wrapping_add(1);
+    let hash = (x.to_bits())
+        .wrapping_mul(6364136223846793005u64)
+        .wrapping_add(1);
     let offset = ((hash >> 33) as f64 / u32::MAX as f64 - 0.5) * 0.02 * interval_width;
     x + offset
 }
@@ -101,9 +103,31 @@ fn refine_segment(
     let deviation = (ym - y_interp).abs() / y_range.max(1e-10);
     if deviation > opts.tolerance {
         let pm = (xm, ym);
-        refine_segment(f, p1, pm, out, excluded_points, recorded_excluded, opts, y_range, eps, depth + 1);
+        refine_segment(
+            f,
+            p1,
+            pm,
+            out,
+            excluded_points,
+            recorded_excluded,
+            opts,
+            y_range,
+            eps,
+            depth + 1,
+        );
         out.push(pm);
-        refine_segment(f, pm, p3, out, excluded_points, recorded_excluded, opts, y_range, eps, depth + 1);
+        refine_segment(
+            f,
+            pm,
+            p3,
+            out,
+            excluded_points,
+            recorded_excluded,
+            opts,
+            y_range,
+            eps,
+            depth + 1,
+        );
     }
 }
 
@@ -154,9 +178,31 @@ fn sample_compiled(
             let p2 = samples[i + 1];
             let p3 = samples[i + 2];
             // Refine between p1 and p2
-            refine_segment(f, p1, p2, &mut refined, excluded_points, &mut recorded_excluded, opts, y_range, eps, 0);
+            refine_segment(
+                f,
+                p1,
+                p2,
+                &mut refined,
+                excluded_points,
+                &mut recorded_excluded,
+                opts,
+                y_range,
+                eps,
+                0,
+            );
             // Refine between p2 and p3
-            refine_segment(f, p2, p3, &mut refined, excluded_points, &mut recorded_excluded, opts, y_range, eps, 0);
+            refine_segment(
+                f,
+                p2,
+                p3,
+                &mut refined,
+                excluded_points,
+                &mut recorded_excluded,
+                opts,
+                y_range,
+                eps,
+                0,
+            );
             refined.push(p2);
         }
         refined.push(*samples.last().unwrap());
@@ -432,12 +478,7 @@ fn sample_sqrt_x() {
     // All finite y-values must be non-negative
     for &(x, y) in &data.points {
         if y.is_finite() {
-            assert!(
-                y >= -1e-12,
-                "sqrt({}) = {} should be non-negative",
-                x,
-                y
-            );
+            assert!(y >= -1e-12, "sqrt({}) = {} should be non-negative", x, y);
         }
     }
 
@@ -452,11 +493,7 @@ fn sample_sqrt_x() {
     // sqrt(0) ≈ 0, sqrt(4) ≈ 2
     let first_y = data.points.first().map(|p| p.1).unwrap_or(f64::NAN);
     let last_y = data.points.last().map(|p| p.1).unwrap_or(f64::NAN);
-    assert!(
-        first_y.abs() < 0.1,
-        "sqrt(0) ≈ {}, expected ~0",
-        first_y
-    );
+    assert!(first_y.abs() < 0.1, "sqrt(0) ≈ {}, expected ~0", first_y);
     assert!(
         (last_y - 2.0).abs() < 0.1,
         "sqrt(4) ≈ {}, expected ~2",

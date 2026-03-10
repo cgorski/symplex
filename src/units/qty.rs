@@ -37,11 +37,15 @@ pub trait IntoEx {
 }
 
 impl IntoEx for Ex {
-    fn into_ex(self) -> Ex { self }
+    fn into_ex(self) -> Ex {
+        self
+    }
 }
 
 impl IntoEx for &Ex {
-    fn into_ex(self) -> Ex { self.clone() }
+    fn into_ex(self) -> Ex {
+        self.clone()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -103,84 +107,134 @@ impl<D> Qty<D> {
 
 impl<D> Qty<D> {
     /// Simplify the inner expression (single-pass rewrite rules).
-    pub fn simplify(&self) -> Self { Self::from_ex(self.inner.simplify()) }
+    pub fn simplify(&self) -> Self {
+        Self::from_ex(self.inner.simplify())
+    }
 
     /// Algebraic expansion.
-    pub fn expand(&self) -> Self { Self::from_ex(self.inner.expand()) }
+    pub fn expand(&self) -> Self {
+        Self::from_ex(self.inner.expand())
+    }
 
     /// Evaluate special values (sin(π)→0, etc).
-    pub fn eval(&self) -> Self { Self::from_ex(self.inner.eval()) }
+    pub fn eval(&self) -> Self {
+        Self::from_ex(self.inner.eval())
+    }
 
     /// Substitute a variable with a value, preserving dimension.
-    pub fn subs(&self, var: &impl AsRef<Ex>, val: &impl AsRef<Ex>) -> Self { Self::from_ex(self.inner.subs(var.as_ref(), val.as_ref())) }
+    pub fn subs(&self, var: &impl AsRef<Ex>, val: &impl AsRef<Ex>) -> Self {
+        Self::from_ex(self.inner.subs(var.as_ref(), val.as_ref()))
+    }
 
     /// Trigonometric simplification.
-    pub fn simplify_trig(&self) -> Self { Self::from_ex(self.inner.simplify_trig()) }
+    pub fn simplify_trig(&self) -> Self {
+        Self::from_ex(self.inner.simplify_trig())
+    }
 
     /// Power simplification.
-    pub fn simplify_powers(&self) -> Self { Self::from_ex(self.inner.simplify_powers()) }
+    pub fn simplify_powers(&self) -> Self {
+        Self::from_ex(self.inner.simplify_powers())
+    }
 
     /// Rational simplification (cancel + together).
-    pub fn simplify_rational(&self) -> Self { Self::from_ex(self.inner.simplify_rational()) }
+    pub fn simplify_rational(&self) -> Self {
+        Self::from_ex(self.inner.simplify_rational())
+    }
 
     /// Trig expansion (sin(a+b) → sin(a)cos(b)+cos(a)sin(b)).
-    pub fn expand_trig(&self) -> Self { Self::from_ex(self.inner.expand_trig()) }
+    pub fn expand_trig(&self) -> Self {
+        Self::from_ex(self.inner.expand_trig())
+    }
 
     /// Log expansion (ln(ab) → ln(a)+ln(b)).
-    pub fn expand_log(&self) -> Self { Self::from_ex(self.inner.expand_log()) }
+    pub fn expand_log(&self) -> Self {
+        Self::from_ex(self.inner.expand_log())
+    }
 
     /// Combine logarithms (ln(a)+ln(b) → ln(ab)).
-    pub fn log_combine(&self) -> Self { Self::from_ex(self.inner.log_combine()) }
+    pub fn log_combine(&self) -> Self {
+        Self::from_ex(self.inner.log_combine())
+    }
 
     /// Trig product-to-sum.
-    pub fn trig_combine(&self) -> Self { Self::from_ex(self.inner.trig_combine()) }
+    pub fn trig_combine(&self) -> Self {
+        Self::from_ex(self.inner.trig_combine())
+    }
 
     /// Factor a polynomial.
-    pub fn factor(&self, var: &impl AsRef<Ex>) -> Self { Self::from_ex(self.inner.factor(var.as_ref())) }
+    pub fn factor(&self, var: &impl AsRef<Ex>) -> Self {
+        Self::from_ex(self.inner.factor(var.as_ref()))
+    }
 
     /// Collect by variable.
-    pub fn collect(&self, var: &impl AsRef<Ex>) -> Self { Self::from_ex(self.inner.collect(var.as_ref())) }
+    pub fn collect(&self, var: &impl AsRef<Ex>) -> Self {
+        Self::from_ex(self.inner.collect(var.as_ref()))
+    }
 
     /// Cancel common polynomial factors.
-    pub fn cancel(&self, var: &Ex) -> Self { Self::from_ex(self.inner.cancel(var)) }
+    pub fn cancel(&self, var: &Ex) -> Self {
+        Self::from_ex(self.inner.cancel(var))
+    }
 
     /// Combine fractions over common denominator.
-    pub fn together(&self) -> Self { Self::from_ex(self.inner.together()) }
+    pub fn together(&self) -> Self {
+        Self::from_ex(self.inner.together())
+    }
 
     /// Partial fraction decomposition.
-    pub fn partial_fractions(&self, var: &impl AsRef<Ex>) -> Self { Self::from_ex(self.inner.partial_fractions(var.as_ref())) }
+    pub fn partial_fractions(&self, var: &impl AsRef<Ex>) -> Self {
+        Self::from_ex(self.inner.partial_fractions(var.as_ref()))
+    }
 
     /// Rationalize the denominator.
-    pub fn rationalize_denom(&self) -> Self { Self::from_ex(self.inner.rationalize_denom()) }
+    pub fn rationalize_denom(&self) -> Self {
+        Self::from_ex(self.inner.rationalize_denom())
+    }
 
     // ── Calculus (returns raw Ex — user wraps in correct output type) ──
 
     /// Differentiate with respect to a variable. Returns raw `Ex`.
     /// Wrap the result in the appropriate output dimension type.
-    pub fn diff(&self, var: &impl AsRef<Ex>) -> Ex { self.inner.diff(var.as_ref()) }
+    pub fn diff(&self, var: &impl AsRef<Ex>) -> Ex {
+        self.inner.diff(var.as_ref())
+    }
 
     /// Integrate with respect to a variable. Returns raw `Ex`.
-    pub fn integrate(&self, var: &impl AsRef<Ex>) -> Ex { self.inner.integrate(var.as_ref()) }
+    pub fn integrate(&self, var: &impl AsRef<Ex>) -> Ex {
+        self.inner.integrate(var.as_ref())
+    }
 
     // ── Queries (dimension-independent) ──
 
     /// LaTeX rendering of the inner expression.
-    pub fn to_latex(&self) -> String { self.inner.to_latex() }
+    pub fn to_latex(&self) -> String {
+        self.inner.to_latex()
+    }
 
     /// Free symbols in the expression.
-    pub fn free_symbols(&self) -> Vec<Ex> { self.inner.free_symbols() }
+    pub fn free_symbols(&self) -> Vec<Ex> {
+        self.inner.free_symbols()
+    }
 
     /// Check if expression contains a subexpression.
-    pub fn contains(&self, other: &impl AsRef<Ex>) -> bool { self.inner.contains(other.as_ref()) }
+    pub fn contains(&self, other: &impl AsRef<Ex>) -> bool {
+        self.inner.contains(other.as_ref())
+    }
 
     /// Number of additive terms.
-    pub fn term_count(&self) -> usize { self.inner.term_count() }
+    pub fn term_count(&self) -> usize {
+        self.inner.term_count()
+    }
 
     /// Operation count (for complexity measure).
-    pub fn count_ops(&self) -> usize { self.inner.count_ops() }
+    pub fn count_ops(&self) -> usize {
+        self.inner.count_ops()
+    }
 
     /// Check if structurally zero.
-    pub fn is_zero(&self) -> Option<bool> { self.inner.is_zero() }
+    pub fn is_zero(&self) -> Option<bool> {
+        self.inner.is_zero()
+    }
 
     // ── Numerical evaluation ──
 
@@ -190,7 +244,10 @@ impl<D> Qty<D> {
     }
 
     /// Evaluate with integer substitutions.
-    pub fn eval_f64_with(&self, subs: &[(&Ex, i64)]) -> Result<f64, crate::base::errors::SymplexError> {
+    pub fn eval_f64_with(
+        &self,
+        subs: &[(&Ex, i64)],
+    ) -> Result<f64, crate::base::errors::SymplexError> {
         self.inner.eval_f64_with(subs)
     }
 
@@ -201,7 +258,9 @@ impl<D> Qty<D> {
 }
 
 impl<D> AsRef<Ex> for Qty<D> {
-    fn as_ref(&self) -> &Ex { &self.inner }
+    fn as_ref(&self) -> &Ex {
+        &self.inner
+    }
 }
 
 // ── DimName-gated methods ──────────────────────────────────────────────
@@ -249,10 +308,7 @@ impl<D> fmt::Debug for Qty<D> {
 )]
 pub trait SameDim<Rhs> {}
 
-impl<L, M, T, I, Th, N, J> SameDim<Dim<L, M, T, I, Th, N, J>>
-    for Dim<L, M, T, I, Th, N, J>
-{
-}
+impl<L, M, T, I, Th, N, J> SameDim<Dim<L, M, T, I, Th, N, J>> for Dim<L, M, T, I, Th, N, J> {}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FromDimExpr trait — used by the dim!(ctx, ) proc macro
@@ -404,8 +460,7 @@ impl<D> ops::Neg for &Qty<D> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>
-    ops::Mul<Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>>
-    for Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
+    ops::Mul<Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>> for Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
 where
     L1: ops::Add<L2>,
     M1: ops::Add<M2>,
@@ -415,15 +470,17 @@ where
     N1x: ops::Add<N2x>,
     J1: ops::Add<J2>,
 {
-    type Output = Qty<Dim<
-        Sum<L1, L2>,
-        Sum<M1, M2>,
-        Sum<T1, T2>,
-        Sum<I1, I2>,
-        Sum<Th1, Th2>,
-        Sum<N1x, N2x>,
-        Sum<J1, J2>,
-    >>;
+    type Output = Qty<
+        Dim<
+            Sum<L1, L2>,
+            Sum<M1, M2>,
+            Sum<T1, T2>,
+            Sum<I1, I2>,
+            Sum<Th1, Th2>,
+            Sum<N1x, N2x>,
+            Sum<J1, J2>,
+        >,
+    >;
 
     #[inline]
     fn mul(self, rhs: Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>) -> Self::Output {
@@ -432,8 +489,7 @@ where
 }
 
 impl<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>
-    ops::Mul<&Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>>
-    for Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
+    ops::Mul<&Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>> for Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
 where
     L1: ops::Add<L2>,
     M1: ops::Add<M2>,
@@ -443,15 +499,17 @@ where
     N1x: ops::Add<N2x>,
     J1: ops::Add<J2>,
 {
-    type Output = Qty<Dim<
-        Sum<L1, L2>,
-        Sum<M1, M2>,
-        Sum<T1, T2>,
-        Sum<I1, I2>,
-        Sum<Th1, Th2>,
-        Sum<N1x, N2x>,
-        Sum<J1, J2>,
-    >>;
+    type Output = Qty<
+        Dim<
+            Sum<L1, L2>,
+            Sum<M1, M2>,
+            Sum<T1, T2>,
+            Sum<I1, I2>,
+            Sum<Th1, Th2>,
+            Sum<N1x, N2x>,
+            Sum<J1, J2>,
+        >,
+    >;
 
     #[inline]
     fn mul(self, rhs: &Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>) -> Self::Output {
@@ -460,8 +518,7 @@ where
 }
 
 impl<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>
-    ops::Mul<Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>>
-    for &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
+    ops::Mul<Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>> for &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
 where
     L1: ops::Add<L2>,
     M1: ops::Add<M2>,
@@ -471,15 +528,17 @@ where
     N1x: ops::Add<N2x>,
     J1: ops::Add<J2>,
 {
-    type Output = Qty<Dim<
-        Sum<L1, L2>,
-        Sum<M1, M2>,
-        Sum<T1, T2>,
-        Sum<I1, I2>,
-        Sum<Th1, Th2>,
-        Sum<N1x, N2x>,
-        Sum<J1, J2>,
-    >>;
+    type Output = Qty<
+        Dim<
+            Sum<L1, L2>,
+            Sum<M1, M2>,
+            Sum<T1, T2>,
+            Sum<I1, I2>,
+            Sum<Th1, Th2>,
+            Sum<N1x, N2x>,
+            Sum<J1, J2>,
+        >,
+    >;
 
     #[inline]
     fn mul(self, rhs: Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>) -> Self::Output {
@@ -488,8 +547,7 @@ where
 }
 
 impl<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>
-    ops::Mul<&Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>>
-    for &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
+    ops::Mul<&Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>> for &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
 where
     L1: ops::Add<L2>,
     M1: ops::Add<M2>,
@@ -499,15 +557,17 @@ where
     N1x: ops::Add<N2x>,
     J1: ops::Add<J2>,
 {
-    type Output = Qty<Dim<
-        Sum<L1, L2>,
-        Sum<M1, M2>,
-        Sum<T1, T2>,
-        Sum<I1, I2>,
-        Sum<Th1, Th2>,
-        Sum<N1x, N2x>,
-        Sum<J1, J2>,
-    >>;
+    type Output = Qty<
+        Dim<
+            Sum<L1, L2>,
+            Sum<M1, M2>,
+            Sum<T1, T2>,
+            Sum<I1, I2>,
+            Sum<Th1, Th2>,
+            Sum<N1x, N2x>,
+            Sum<J1, J2>,
+        >,
+    >;
 
     #[inline]
     fn mul(self, rhs: &Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>) -> Self::Output {
@@ -520,8 +580,7 @@ where
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>
-    ops::Div<Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>>
-    for Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
+    ops::Div<Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>> for Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
 where
     L1: ops::Sub<L2>,
     M1: ops::Sub<M2>,
@@ -531,15 +590,17 @@ where
     N1x: ops::Sub<N2x>,
     J1: ops::Sub<J2>,
 {
-    type Output = Qty<Dim<
-        Diff<L1, L2>,
-        Diff<M1, M2>,
-        Diff<T1, T2>,
-        Diff<I1, I2>,
-        Diff<Th1, Th2>,
-        Diff<N1x, N2x>,
-        Diff<J1, J2>,
-    >>;
+    type Output = Qty<
+        Dim<
+            Diff<L1, L2>,
+            Diff<M1, M2>,
+            Diff<T1, T2>,
+            Diff<I1, I2>,
+            Diff<Th1, Th2>,
+            Diff<N1x, N2x>,
+            Diff<J1, J2>,
+        >,
+    >;
 
     #[inline]
     fn div(self, rhs: Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>) -> Self::Output {
@@ -548,8 +609,7 @@ where
 }
 
 impl<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>
-    ops::Div<&Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>>
-    for Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
+    ops::Div<&Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>> for Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
 where
     L1: ops::Sub<L2>,
     M1: ops::Sub<M2>,
@@ -559,15 +619,17 @@ where
     N1x: ops::Sub<N2x>,
     J1: ops::Sub<J2>,
 {
-    type Output = Qty<Dim<
-        Diff<L1, L2>,
-        Diff<M1, M2>,
-        Diff<T1, T2>,
-        Diff<I1, I2>,
-        Diff<Th1, Th2>,
-        Diff<N1x, N2x>,
-        Diff<J1, J2>,
-    >>;
+    type Output = Qty<
+        Dim<
+            Diff<L1, L2>,
+            Diff<M1, M2>,
+            Diff<T1, T2>,
+            Diff<I1, I2>,
+            Diff<Th1, Th2>,
+            Diff<N1x, N2x>,
+            Diff<J1, J2>,
+        >,
+    >;
 
     #[inline]
     fn div(self, rhs: &Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>) -> Self::Output {
@@ -576,8 +638,7 @@ where
 }
 
 impl<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>
-    ops::Div<Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>>
-    for &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
+    ops::Div<Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>> for &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
 where
     L1: ops::Sub<L2>,
     M1: ops::Sub<M2>,
@@ -587,15 +648,17 @@ where
     N1x: ops::Sub<N2x>,
     J1: ops::Sub<J2>,
 {
-    type Output = Qty<Dim<
-        Diff<L1, L2>,
-        Diff<M1, M2>,
-        Diff<T1, T2>,
-        Diff<I1, I2>,
-        Diff<Th1, Th2>,
-        Diff<N1x, N2x>,
-        Diff<J1, J2>,
-    >>;
+    type Output = Qty<
+        Dim<
+            Diff<L1, L2>,
+            Diff<M1, M2>,
+            Diff<T1, T2>,
+            Diff<I1, I2>,
+            Diff<Th1, Th2>,
+            Diff<N1x, N2x>,
+            Diff<J1, J2>,
+        >,
+    >;
 
     #[inline]
     fn div(self, rhs: Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>) -> Self::Output {
@@ -604,8 +667,7 @@ where
 }
 
 impl<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>
-    ops::Div<&Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>>
-    for &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
+    ops::Div<&Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>> for &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>
 where
     L1: ops::Sub<L2>,
     M1: ops::Sub<M2>,
@@ -615,15 +677,17 @@ where
     N1x: ops::Sub<N2x>,
     J1: ops::Sub<J2>,
 {
-    type Output = Qty<Dim<
-        Diff<L1, L2>,
-        Diff<M1, M2>,
-        Diff<T1, T2>,
-        Diff<I1, I2>,
-        Diff<Th1, Th2>,
-        Diff<N1x, N2x>,
-        Diff<J1, J2>,
-    >>;
+    type Output = Qty<
+        Dim<
+            Diff<L1, L2>,
+            Diff<M1, M2>,
+            Diff<T1, T2>,
+            Diff<I1, I2>,
+            Diff<Th1, Th2>,
+            Diff<N1x, N2x>,
+            Diff<J1, J2>,
+        >,
+    >;
 
     #[inline]
     fn div(self, rhs: &Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>) -> Self::Output {

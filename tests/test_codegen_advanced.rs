@@ -315,9 +315,7 @@ fn codegen_fma_balanced_delimiters() {
     let z = ctx.symbol("z");
     let w = ctx.symbol("w");
     let f = &x * &y + &z * &w + &x;
-    let code = f
-        .to_rust_fn("fma_balance", &["x", "y", "z", "w"])
-        .unwrap();
+    let code = f.to_rust_fn("fma_balance", &["x", "y", "z", "w"]).unwrap();
     let open_parens = code.chars().filter(|&c| c == '(').count();
     let close_parens = code.chars().filter(|&c| c == ')').count();
     assert_eq!(

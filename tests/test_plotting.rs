@@ -2,8 +2,8 @@
 //! and the public `Ex` API methods (`textplot`, `to_svg`, `to_tikz`,
 //! `plot_data`, `eval_table`).
 
-use symplex::prelude::*;
 use std::f64::consts::PI;
+use symplex::prelude::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. textplot_sin_x — textplot of sin(x) contains characters, has height
@@ -18,7 +18,10 @@ fn textplot_sin_x() {
 
     // Should contain plot marker characters
     let has_markers = plot.contains('.') || plot.contains('/') || plot.contains('\\');
-    assert!(has_markers, "textplot should contain marker chars (.  /  \\):\n{plot}");
+    assert!(
+        has_markers,
+        "textplot should contain marker chars (.  /  \\):\n{plot}"
+    );
 
     // Should have y-axis separator bars
     assert!(
@@ -43,7 +46,10 @@ fn svg_sin_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let svg = x.sin().to_svg(&x, 0.0, 2.0 * PI);
-    assert!(svg.contains("<svg"), "SVG output should contain <svg tag:\n{svg}");
+    assert!(
+        svg.contains("<svg"),
+        "SVG output should contain <svg tag:\n{svg}"
+    );
     assert!(
         svg.contains("</svg>"),
         "SVG output should contain </svg> closing tag"
@@ -123,10 +129,7 @@ fn svg_multi_series() {
 
     // The sin and cos SVGs should have different point data
     // (they are different functions)
-    assert_ne!(
-        svg_sin, svg_cos,
-        "sin and cos SVGs should be different"
-    );
+    assert_ne!(svg_sin, svg_cos, "sin and cos SVGs should be different");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -323,7 +326,11 @@ fn eval_table_quadratic() {
     let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]);
 
     assert_eq!(table.nrows(), 3, "eval_table should have 3 rows");
-    assert_eq!(table.ncols(), 2, "eval_table should have 2 columns (x, f(x))");
+    assert_eq!(
+        table.ncols(),
+        2,
+        "eval_table should have 2 columns (x, f(x))"
+    );
 
     // Check headers
     assert_eq!(table.headers[0], "x");
@@ -368,7 +375,10 @@ fn data_table_to_csv() {
     );
 
     // Should contain the value 9 (3²=9)
-    assert!(csv.contains('9'), "CSV should contain value 9 for 3²:\n{csv}");
+    assert!(
+        csv.contains('9'),
+        "CSV should contain value 9 for 3²:\n{csv}"
+    );
 
     // Verify round-trip: parse CSV back and check a value
     let lines: Vec<&str> = csv.lines().collect();
@@ -515,10 +525,7 @@ fn eval_table_to_markdown() {
 
     // Should contain column headers
     assert!(md.contains("x"), "Markdown should contain 'x' header");
-    assert!(
-        md.contains("f(x)"),
-        "Markdown should contain 'f(x)' header"
-    );
+    assert!(md.contains("f(x)"), "Markdown should contain 'f(x)' header");
 
     // Should contain values
     assert!(md.contains('4'), "Markdown should contain value 4 for 2²");

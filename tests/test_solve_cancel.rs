@@ -132,7 +132,11 @@ fn solve_non_polynomial_returns_empty() {
     let x = ctx.symbol("x");
     let expr = x.sin();
     let result = expr.solve(&x);
-    assert!(result.is_ok(), "sin(x) should be solvable via inversion peeling, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "sin(x) should be solvable via inversion peeling, got: {:?}",
+        result.err()
+    );
 }
 
 #[test]

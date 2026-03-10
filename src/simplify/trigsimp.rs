@@ -10,8 +10,8 @@
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
-use crate::simplify::simplify_engine::count_ops;
 use crate::base::walk;
+use crate::simplify::simplify_engine::count_ops;
 
 /// Walk the expression tree and return `true` if any node matches the predicate.
 /// Short-circuits on first match for efficiency.

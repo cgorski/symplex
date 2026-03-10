@@ -64,9 +64,13 @@ fn cholesky_2x2() {
     let a = Matrix::new(vec![
         vec![ctx.int(4), ctx.int(2)],
         vec![ctx.int(2), ctx.int(3)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let l = a.cholesky().unwrap().expect("Cholesky should succeed for SPD matrix");
+    let l = a
+        .cholesky()
+        .unwrap()
+        .expect("Cholesky should succeed for SPD matrix");
 
     // Verify L is lower triangular: L[0][1] should be 0
     let l01 = l.get(0, 1).simplify().eval_f64().unwrap();
@@ -88,9 +92,13 @@ fn cholesky_3x3() {
         vec![ctx.int(4), ctx.int(12), ctx.int(-16)],
         vec![ctx.int(12), ctx.int(37), ctx.int(-43)],
         vec![ctx.int(-16), ctx.int(-43), ctx.int(98)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let l = a.cholesky().unwrap().expect("Cholesky should succeed for SPD matrix");
+    let l = a
+        .cholesky()
+        .unwrap()
+        .expect("Cholesky should succeed for SPD matrix");
 
     // Verify L * Lᵀ = A numerically
     let lt = l.transpose();
@@ -102,11 +110,7 @@ fn cholesky_3x3() {
     );
 
     // Verify specific L entries
-    assert_matrix_approx(
-        &l,
-        &[2.0, 0.0, 0.0, 6.0, 1.0, 0.0, -8.0, 5.0, 3.0],
-        1e-9,
-    );
+    assert_matrix_approx(&l, &[2.0, 0.0, 0.0, 6.0, 1.0, 0.0, -8.0, 5.0, 3.0], 1e-9);
 }
 
 #[test]
@@ -116,7 +120,8 @@ fn cholesky_not_positive_definite() {
     let a = Matrix::new(vec![
         vec![ctx.int(-1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     assert!(
         a.cholesky().unwrap().is_none(),
@@ -129,7 +134,10 @@ fn cholesky_identity() {
     // I₃ → L = I₃
     let ctx = Context::new();
     let eye = Matrix::identity(&ctx, 3);
-    let l = eye.cholesky().unwrap().expect("Cholesky of identity should succeed");
+    let l = eye
+        .cholesky()
+        .unwrap()
+        .expect("Cholesky of identity should succeed");
 
     // L should be the identity
     assert_matrix_approx(&l, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 1e-12);
@@ -147,7 +155,8 @@ fn pinv_full_rank() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let pinv = a.pinv().expect("pinv should succeed for full-rank matrix");
     let inv = a.inv().expect("inv should succeed for invertible matrix");
@@ -177,9 +186,12 @@ fn pinv_overdetermined() {
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(1), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let pinv = a.pinv().expect("pinv should succeed for full-column-rank matrix");
+    let pinv = a
+        .pinv()
+        .expect("pinv should succeed for full-column-rank matrix");
 
     // pinv should be 2×3
     assert_eq!(pinv.shape(), (2, 3));
@@ -208,11 +220,9 @@ fn riccati_residual_setup() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
-    let b = Matrix::new(vec![
-        vec![ctx.int(0)],
-        vec![ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
+    let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
@@ -269,11 +279,9 @@ fn ackermann_simple() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(0), ctx.int(0)],
-    ]).unwrap();
-    let b = Matrix::new(vec![
-        vec![ctx.int(0)],
-        vec![ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
+    let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a.clone(), b.clone(), c, d);
@@ -320,11 +328,9 @@ fn ackermann_not_controllable_returns_none() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(2)],
-    ]).unwrap();
-    let b = Matrix::new(vec![
-        vec![ctx.int(1)],
-        vec![ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
+    let b = Matrix::new(vec![vec![ctx.int(1)], vec![ctx.int(0)]]).unwrap();
     let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
@@ -343,11 +349,13 @@ fn ackermann_multi_input_returns_none() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(0), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let c = Matrix::identity(&ctx, 2);
     let d = Matrix::zeros(&ctx, 2, 2);
     let ss = StateSpace::new(a, b, c, d);

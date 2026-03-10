@@ -156,7 +156,9 @@ pub type Ex = Expr<Numeric>;
 
 impl AsRef<Ex> for Ex {
     #[inline]
-    fn as_ref(&self) -> &Ex { self }
+    fn as_ref(&self) -> &Ex {
+        self
+    }
 }
 
 /// A boolean expression — comparisons and logical operations.
@@ -181,7 +183,12 @@ impl<S: Sort> Expr<S> {
         inner: Arc<RwLock<ContextInner>>,
         id: ExprId,
     ) -> Self {
-        Expr { ctx_id, inner, id, _sort: PhantomData }
+        Expr {
+            ctx_id,
+            inner,
+            id,
+            _sort: PhantomData,
+        }
     }
 
     /// Helper — build a new Expr of the SAME sort from the same context.
@@ -549,7 +556,10 @@ impl<S: Sort> Expr<S> {
     #[must_use = "returns a new expression with substitutions applied"]
     pub fn subs_map(&self, replacements: &[(&Ex, &Ex)]) -> Expr<S> {
         let pairs: smallvec::SmallVec<[(crate::base::node::ExprId, crate::base::node::ExprId); 4]> =
-            replacements.iter().map(|(o, n)| (self.checked_id(o), self.checked_id(n))).collect();
+            replacements
+                .iter()
+                .map(|(o, n)| (self.checked_id(o), self.checked_id(n)))
+                .collect();
         let id = self
             .inner
             .write()
@@ -659,7 +669,8 @@ impl<S: Sort> Expr<S> {
             .as_ref()
             .expect("cached_rules should be populated by is_none() check above")
             .clone();
-        let (result_id, steps) = crate::transforms::pattern::apply_rules(&mut inner.arena, self.id, &rules);
+        let (result_id, steps) =
+            crate::transforms::pattern::apply_rules(&mut inner.arena, self.id, &rules);
         drop(inner);
         (self.wrap(result_id), steps)
     }
@@ -764,20 +775,18 @@ impl<S: Sort> Expr<S> {
     /// assert!(json.contains("\"type\":\"Pow\""));
     /// ```
     pub fn to_json(&self) -> Result<String, SymplexError> {
-        serde_json::to_string(&self.to_tree())
-            .map_err(|e| SymplexError::ComputationFailed {
-                operation: "to_json",
-                reason: e.to_string(),
-            })
+        serde_json::to_string(&self.to_tree()).map_err(|e| SymplexError::ComputationFailed {
+            operation: "to_json",
+            reason: e.to_string(),
+        })
     }
 
     /// Serialize this expression to a pretty-printed JSON string.
     pub fn to_json_pretty(&self) -> Result<String, SymplexError> {
-        serde_json::to_string_pretty(&self.to_tree())
-            .map_err(|e| SymplexError::ComputationFailed {
-                operation: "to_json_pretty",
-                reason: e.to_string(),
-            })
+        serde_json::to_string_pretty(&self.to_tree()).map_err(|e| SymplexError::ComputationFailed {
+            operation: "to_json_pretty",
+            reason: e.to_string(),
+        })
     }
 
     /// Apply a transformation repeatedly until the expression stops changing,

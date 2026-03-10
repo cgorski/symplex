@@ -19,7 +19,16 @@ pub(crate) fn tikz_plot(
     log_x: bool,
     log_y: bool,
 ) -> String {
-    let colors = ["blue", "red", "green!60!black", "orange", "purple", "cyan", "brown", "magenta"];
+    let colors = [
+        "blue",
+        "red",
+        "green!60!black",
+        "orange",
+        "purple",
+        "cyan",
+        "brown",
+        "magenta",
+    ];
 
     let mut out = String::with_capacity(4096);
     out.push_str("\\begin{tikzpicture}\n");
@@ -66,7 +75,13 @@ pub(crate) fn tikz_plot(
 }
 
 /// Emit one logical series, splitting on NaN gaps.
-fn emit_series(out: &mut String, points: &[(f64, f64)], label: &str, color: &str, show_legend: bool) {
+fn emit_series(
+    out: &mut String,
+    points: &[(f64, f64)],
+    label: &str,
+    color: &str,
+    show_legend: bool,
+) {
     // Split points into contiguous segments (no NaN).
     let segments = split_on_nan(points);
 
@@ -88,10 +103,7 @@ fn emit_series(out: &mut String, points: &[(f64, f64)], label: &str, color: &str
 
         // Only add legend entry for the first segment of this series.
         if seg_idx == 0 && show_legend && !label.is_empty() {
-            out.push_str(&format!(
-                "\\addlegendentry{{{}}}\n",
-                latex_escape(label)
-            ));
+            out.push_str(&format!("\\addlegendentry{{{}}}\n", latex_escape(label)));
         }
     }
 }
@@ -153,7 +165,14 @@ mod tests {
     #[test]
     fn basic_tikz_output() {
         let pts: Vec<(f64, f64)> = (0..5).map(|i| (i as f64, (i * i) as f64)).collect();
-        let output = tikz_plot(&[(&pts, "x^2")], Some("Quadratic"), Some("x"), Some("y"), false, false);
+        let output = tikz_plot(
+            &[(&pts, "x^2")],
+            Some("Quadratic"),
+            Some("x"),
+            Some("y"),
+            false,
+            false,
+        );
         assert!(output.contains("\\begin{tikzpicture}"));
         assert!(output.contains("\\end{tikzpicture}"));
         assert!(output.contains("\\begin{axis}"));
@@ -177,7 +196,10 @@ mod tests {
         let output = tikz_plot(&[(&pts, "f")], None, None, None, false, false);
         // Should have two \addplot commands (one per segment).
         let count = output.matches("\\addplot[").count();
-        assert_eq!(count, 2, "expected 2 addplot blocks for NaN-split data, got {count}");
+        assert_eq!(
+            count, 2,
+            "expected 2 addplot blocks for NaN-split data, got {count}"
+        );
     }
 
     #[test]
@@ -194,7 +216,11 @@ mod tests {
         let pts2: Vec<(f64, f64)> = (0..3).map(|i| (i as f64, (i * 2) as f64)).collect();
         let output = tikz_plot(
             &[(&pts1, "linear"), (&pts2, "double")],
-            None, None, None, false, false,
+            None,
+            None,
+            None,
+            false,
+            false,
         );
         assert!(output.contains("\\addlegendentry{linear}"));
         assert!(output.contains("\\addlegendentry{double}"));

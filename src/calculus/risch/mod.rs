@@ -20,10 +20,10 @@
 //! [`polybridge`](crate::poly::polybridge) infrastructure.
 
 pub mod hermite;
+pub mod integrate;
+pub mod rde;
 pub mod rothstein_trager;
 pub mod tower;
-pub mod rde;
-pub mod integrate;
 pub mod tower_integrate;
 
 use std::cell::Cell;
@@ -129,11 +129,7 @@ pub enum RischResult {
 /// Returns `Some(result_expr_id)` if the expression is a rational function
 /// and integration succeeds.  Returns `None` if the expression is not a
 /// rational function or if algebraic log terms can't be represented.
-pub fn try_risch_rational(
-    arena: &mut Arena,
-    expr: ExprId,
-    var: ExprId,
-) -> Option<ExprId> {
+pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
     // Recursion guard: if we're already inside try_risch_rational
     // (integrating an algebraic remainder), skip to avoid infinite loop.
     // The RAII guard resets the flag on drop, even during panics.
@@ -322,7 +318,10 @@ mod tests {
         let result = try_risch_rational(&mut arena, expr, x);
         // 1/x should integrate — the Hermite reduction is a no-op (denom is
         // already square-free), and Rothstein-Trager gives ln(x).
-        assert!(result.is_some(), "∫ 1/x dx should succeed via Risch rational");
+        assert!(
+            result.is_some(),
+            "∫ 1/x dx should succeed via Risch rational"
+        );
         let s = display(&arena, result.unwrap());
         assert!(
             s.contains("ln") && s.contains("x"),
@@ -373,12 +372,12 @@ mod tests {
         let expr = arena.pow(x, neg2);
         let result = try_risch_rational(&mut arena, expr, x);
         // Hermite reduction extracts -1/x, no log part.
-        assert!(result.is_some(), "∫ 1/x^2 dx should succeed via Risch rational");
+        assert!(
+            result.is_some(),
+            "∫ 1/x^2 dx should succeed via Risch rational"
+        );
         let s = display(&arena, result.unwrap());
         // Should be -1/x or equivalent
-        assert!(
-            s.contains("x"),
-            "∫ 1/x^2 dx should be -1/x, got: {s}"
-        );
+        assert!(s.contains("x"), "∫ 1/x^2 dx should be -1/x, got: {s}");
     }
 }

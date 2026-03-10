@@ -218,23 +218,25 @@ fn find_rational_sqrt(arena: &mut Arena, val: f64, tol: f64) -> Option<ExprId> {
 
         // Use continued fractions to find a simple rational for ratio.
         if let Some((p, q)) = find_rational_pair(ratio, tol / sqrt_n)
-            && q <= 100 && p.unsigned_abs() <= 100 {
-                let p_signed = sign * p;
-                // Build (p/q) * √n.
-                let half = arena.rational(1, 2);
-                let n_expr = arena.int(n);
-                let sqrt_expr = arena.pow(n_expr, half);
+            && q <= 100
+            && p.unsigned_abs() <= 100
+        {
+            let p_signed = sign * p;
+            // Build (p/q) * √n.
+            let half = arena.rational(1, 2);
+            let n_expr = arena.int(n);
+            let sqrt_expr = arena.pow(n_expr, half);
 
-                if p_signed == 1 && q == 1 {
-                    return Some(sqrt_expr);
-                } else if q == 1 {
-                    let p_expr = arena.int(p_signed);
-                    return Some(arena.mul(&[p_expr, sqrt_expr]));
-                } else {
-                    let coeff = arena.rational(p_signed, q);
-                    return Some(arena.mul(&[coeff, sqrt_expr]));
-                }
+            if p_signed == 1 && q == 1 {
+                return Some(sqrt_expr);
+            } else if q == 1 {
+                let p_expr = arena.int(p_signed);
+                return Some(arena.mul(&[p_expr, sqrt_expr]));
+            } else {
+                let coeff = arena.rational(p_signed, q);
+                return Some(arena.mul(&[coeff, sqrt_expr]));
             }
+        }
     }
     None
 }

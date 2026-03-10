@@ -14,24 +14,24 @@
 //! - **`assert_dim!`**: Compile-time checkpoint assertions
 //! - **`const_assert_dim!`**: Compile-time formula verification with custom error messages
 
-/// Dimension vectors: phantom-typed compile-time SI dimension tracking.
-pub mod dim;
-/// Generic dimensioned quantity wrapper and arithmetic operators.
-pub mod qty;
-/// Named SI newtypes (e.g. `Force`, `Voltage`, `Energy`) with constructor helpers.
-pub mod si;
-/// Unit-conversion helpers between SI prefixes and common non-SI units.
-pub mod conversions;
 /// Compile-time dimension-assertion macros (`assert_dim!`, `const_assert_dim!`).
 pub mod assert_macros;
 /// Dimensional calculus: differentiation and integration that track dimensions.
 pub mod calculus;
-/// Runtime dimension inference for expression trees.
-pub mod inference;
-/// Exact conversion factor constants with derivation verification tests.
-pub mod conv_factors;
 /// Physical constants as dimension-typed symbolic expressions.
 pub mod constants;
+/// Exact conversion factor constants with derivation verification tests.
+pub mod conv_factors;
+/// Unit-conversion helpers between SI prefixes and common non-SI units.
+pub mod conversions;
+/// Dimension vectors: phantom-typed compile-time SI dimension tracking.
+pub mod dim;
+/// Runtime dimension inference for expression trees.
+pub mod inference;
+/// Generic dimensioned quantity wrapper and arithmetic operators.
+pub mod qty;
+/// Named SI newtypes (e.g. `Force`, `Voltage`, `Energy`) with constructor helpers.
+pub mod si;
 
 // Re-export all public items for `use symplex::units::*`
 pub use dim::*;

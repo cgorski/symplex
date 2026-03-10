@@ -650,7 +650,9 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         let n: u64 = base_r.to_integer().try_into().unwrap_or(0);
         if q > 1 && p > 0 && n > 1 {
             let (outside, inside) = extract_perfect_power(n, q);
-            if outside > 1 && outside <= i64::MAX as u64 && inside <= i64::MAX as u64
+            if outside > 1
+                && outside <= i64::MAX as u64
+                && inside <= i64::MAX as u64
                 && let Some(outside_pow) = outside.checked_pow(p)
                 && outside_pow <= i64::MAX as u64
             {

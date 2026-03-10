@@ -32,7 +32,10 @@ fn main() {
     let ways = stirling2(8, 3).unwrap();
     println!("  8 students into 3 groups: S(8,3) = {ways}");
     // If the groups are LABELED (e.g., Team A, B, C), multiply by 3! = 6
-    println!("  Into 3 LABELED teams:     S(8,3)·3! = {}", &ways * BigInt::from(6));
+    println!(
+        "  Into 3 LABELED teams:     S(8,3)·3! = {}",
+        &ways * BigInt::from(6)
+    );
 
     // More examples
     for (n, k) in [(10, 4), (12, 3), (6, 2), (5, 5)] {
@@ -57,14 +60,8 @@ fn main() {
 
     for k in 1..=6u64 {
         let s = stirling1(6, k).unwrap();
-        let abs_s = if s < BigInt::from(0) {
-            -&s
-        } else {
-            s.clone()
-        };
-        println!(
-            "  Perms of 6 elements with {k} cycle(s): |s(6,{k})| = {abs_s:>5}  (signed: {s})"
-        );
+        let abs_s = if s < BigInt::from(0) { -&s } else { s.clone() };
+        println!("  Perms of 6 elements with {k} cycle(s): |s(6,{k})| = {abs_s:>5}  (signed: {s})");
     }
 
     // The unsigned values should sum to 6! = 720

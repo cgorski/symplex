@@ -144,11 +144,13 @@ fn evalf_beta_2_3() {
 fn evalf_beta_symmetry() {
     let ctx = Context::new();
     // Beta(a,b) = Beta(b,a)
-    let ab = ctx.rational(3, 2)
+    let ab = ctx
+        .rational(3, 2)
         .beta(&ctx.rational(5, 2))
         .eval_f64()
         .unwrap();
-    let ba = ctx.rational(5, 2)
+    let ba = ctx
+        .rational(5, 2)
         .beta(&ctx.rational(3, 2))
         .eval_f64()
         .unwrap();
@@ -162,7 +164,8 @@ fn evalf_beta_symmetry() {
 fn evalf_beta_half_half() {
     let ctx = Context::new();
     // Beta(1/2, 1/2) = Gamma(1/2)^2 / Gamma(1) = pi / 1 = pi
-    let result = ctx.rational(1, 2)
+    let result = ctx
+        .rational(1, 2)
         .beta(&ctx.rational(1, 2))
         .eval_f64()
         .unwrap();

@@ -8,7 +8,6 @@
 
 use symplex::prelude::*;
 
-
 fn main() {
     println!("=== Symbolic Optimization ===\n");
 
@@ -29,14 +28,8 @@ fn main() {
     let y_crit = grad_y.solve_or_empty(&y);
     println!(
         "Critical point: x = {}, y = {}",
-        x_crit
-            .first()
-            .map(|v| format!("{v}"))
-            .unwrap_or("?".into()),
-        y_crit
-            .first()
-            .map(|v| format!("{v}"))
-            .unwrap_or("?".into()),
+        x_crit.first().map(|v| format!("{v}")).unwrap_or("?".into()),
+        y_crit.first().map(|v| format!("{v}")).unwrap_or("?".into()),
     );
 
     // Hessian: H = [[∂²f/∂x², ∂²f/∂x∂y], [∂²f/∂y∂x, ∂²f/∂y²]]
@@ -44,10 +37,7 @@ fn main() {
     let fxy = f.diff(&x).diff(&y);
     let fyx = f.diff(&y).diff(&x);
     let fyy = f.diff(&y).diff(&y);
-    let hessian = matrix![ctx, 
-        [fxx, fxy],
-        [fyx, fyy]
-    ];
+    let hessian = matrix![ctx, [fxx, fxy], [fyx, fyy]];
     println!("Hessian: {hessian}");
     println!("det(H) = {}", hessian.det().unwrap());
 

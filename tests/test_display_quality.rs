@@ -15,14 +15,8 @@ fn display_sub_neg_int() {
     symplex::syms!(ctx; x);
     let expr = &x + ctx.int(-3);
     let s = format!("{expr}");
-    assert!(
-        s.contains("- 3"),
-        "expected 'x - 3' pattern, got: {s}"
-    );
-    assert!(
-        !s.contains("+ -"),
-        "must not contain '+ -', got: {s}"
-    );
+    assert!(s.contains("- 3"), "expected 'x - 3' pattern, got: {s}");
+    assert!(!s.contains("+ -"), "must not contain '+ -', got: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -35,14 +29,8 @@ fn display_sub_neg_frac() {
     symplex::syms!(ctx; x);
     let expr = &x + ctx.rational(-1, 2);
     let s = format!("{expr}");
-    assert!(
-        s.contains("- 1/2"),
-        "expected '- 1/2' pattern, got: {s}"
-    );
-    assert!(
-        !s.contains("+ -"),
-        "must not contain '+ -', got: {s}"
-    );
+    assert!(s.contains("- 1/2"), "expected '- 1/2' pattern, got: {s}");
+    assert!(!s.contains("+ -"), "must not contain '+ -', got: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -55,14 +43,8 @@ fn display_sub_neg_symbol() {
     symplex::syms!(ctx; x, y);
     let expr = &x - &y;
     let s = format!("{expr}");
-    assert!(
-        s.contains("- y"),
-        "expected '- y' pattern, got: {s}"
-    );
-    assert!(
-        !s.contains("+ -"),
-        "must not contain '+ -', got: {s}"
-    );
+    assert!(s.contains("- y"), "expected '- y' pattern, got: {s}");
+    assert!(!s.contains("+ -"), "must not contain '+ -', got: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -75,10 +57,7 @@ fn display_leading_neg_int() {
     symplex::syms!(ctx; x);
     let expr = ctx.int(-3) + &x;
     let s = format!("{expr}");
-    assert!(
-        !s.contains("+ -"),
-        "must not contain '+ -', got: {s}"
-    );
+    assert!(!s.contains("+ -"), "must not contain '+ -', got: {s}");
     // The display should have a subtraction for the negative constant
     assert!(
         s.contains("- 3"),
@@ -96,10 +75,7 @@ fn display_double_neg() {
     symplex::syms!(ctx; x, y);
     let expr = -&x + (-&y);
     let s = format!("{expr}");
-    assert!(
-        !s.contains("+ -"),
-        "must not contain '+ -', got: {s}"
-    );
+    assert!(!s.contains("+ -"), "must not contain '+ -', got: {s}");
     // Should have a leading minus and a subtraction
     assert!(
         s.contains('-'),
@@ -117,10 +93,7 @@ fn display_neg_mul_coeff() {
     symplex::syms!(ctx; x, y);
     let expr = &x + ctx.int(-2) * &y;
     let s = format!("{expr}");
-    assert!(
-        !s.contains("+ -"),
-        "must not contain '+ -', got: {s}"
-    );
+    assert!(!s.contains("+ -"), "must not contain '+ -', got: {s}");
     assert!(
         s.contains("- 2*y") || s.contains("- 2y"),
         "expected subtraction of 2*y term, got: {s}"
@@ -192,16 +165,10 @@ fn display_neg_fraction_coeff() {
     symplex::syms!(ctx; x, y);
     let expr = ctx.rational(-3, 4) * &x + &y;
     let s = format!("{expr}");
-    assert!(
-        !s.contains("+ -"),
-        "must not contain '+ -', got: {s}"
-    );
+    assert!(!s.contains("+ -"), "must not contain '+ -', got: {s}");
     // y should appear without a negative prefix, and the fraction term
     // should use subtraction syntax
-    assert!(
-        s.contains('y'),
-        "expected 'y' in output, got: {s}"
-    );
+    assert!(s.contains('y'), "expected 'y' in output, got: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

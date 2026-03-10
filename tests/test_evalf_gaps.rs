@@ -57,10 +57,7 @@ fn evalf_finite_product() {
 fn evalf_binomial_5_2() {
     let ctx = Context::new();
     // C(5,2) = 10
-    let result = ctx.int(5)
-        .binomial(&ctx.int(2))
-        .eval_f64()
-        .unwrap();
+    let result = ctx.int(5).binomial(&ctx.int(2)).eval_f64().unwrap();
     assert!(
         (result - 10.0).abs() < 1e-6,
         "C(5,2) should be 10, got {result}"
@@ -71,10 +68,7 @@ fn evalf_binomial_5_2() {
 fn evalf_binomial_10_3() {
     let ctx = Context::new();
     // C(10,3) = 120
-    let result = ctx.int(10)
-        .binomial(&ctx.int(3))
-        .eval_f64()
-        .unwrap();
+    let result = ctx.int(10).binomial(&ctx.int(3)).eval_f64().unwrap();
     assert!(
         (result - 120.0).abs() < 1e-6,
         "C(10,3) should be 120, got {result}"
@@ -108,7 +102,10 @@ fn piecewise_with_else_branch() {
     let cond = ctx.int(1).gt(&ctx.int(0)); // 1 > 0 → True
     let pw = Ex::piecewise(&[(&val, &cond)]);
     let result = pw.eval_f64();
-    assert!(result.is_ok(), "piecewise with True condition should evaluate");
+    assert!(
+        result.is_ok(),
+        "piecewise with True condition should evaluate"
+    );
     assert!((result.unwrap() - 42.0).abs() < 1e-10);
 }
 
@@ -118,12 +115,13 @@ fn piecewise_all_false_returns_error() {
     // Piecewise where all conditions are False should return Err
     let cond_f1 = ctx.int(0).gt(&ctx.int(1)); // 0 > 1 → False
     let cond_f2 = ctx.int(0).gt(&ctx.int(1)); // 0 > 1 → False
-    let pw = Ex::piecewise(&[
-        (&ctx.int(1), &cond_f1),
-        (&ctx.int(2), &cond_f2),
-    ]);
+    let pw = Ex::piecewise(&[(&ctx.int(1), &cond_f1), (&ctx.int(2), &cond_f2)]);
     let result = pw.eval_f64();
-    assert!(result.is_err(), "piecewise with all-False conditions should return Err, got: {:?}", result);
+    assert!(
+        result.is_err(),
+        "piecewise with all-False conditions should return Err, got: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -132,11 +130,11 @@ fn piecewise_first_true_wins() {
     // First True condition should be selected
     let cond_t1 = ctx.int(1).gt(&ctx.int(0)); // 1 > 0 → True
     let cond_t2 = ctx.int(1).gt(&ctx.int(0)); // 1 > 0 → True
-    let pw = Ex::piecewise(&[
-        (&ctx.int(1), &cond_t1),
-        (&ctx.int(2), &cond_t2),
-    ]);
+    let pw = Ex::piecewise(&[(&ctx.int(1), &cond_t1), (&ctx.int(2), &cond_t2)]);
     let result = pw.eval_f64();
     assert!(result.is_ok());
-    assert!((result.unwrap() - 1.0).abs() < 1e-10, "first True branch should win");
+    assert!(
+        (result.unwrap() - 1.0).abs() < 1e-10,
+        "first True branch should win"
+    );
 }

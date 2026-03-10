@@ -628,6 +628,10 @@ impl Parse for DimMacroInput {
         let output_type: syn::Type = input.parse()?;
         input.parse::<Token![:]>()?;
         let expr = parse_math_expr(input)?;
-        Ok(DimMacroInput { ctx, output_type, expr })
+        Ok(DimMacroInput {
+            ctx,
+            output_type,
+            expr,
+        })
     }
 }

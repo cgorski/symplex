@@ -238,8 +238,8 @@ fn factorint_i64(n: i64) -> Vec<(i64, u32)> {
     let mut factors = Vec::new();
 
     const SMALL_PRIMES: [u64; 25] = [
-        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83,
-        89, 97,
+        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89,
+        97,
     ];
     for &p in &SMALL_PRIMES {
         if p * p > n && n > 1 {
@@ -290,8 +290,8 @@ fn factorint_big_internal(n: &BigInt) -> Vec<(BigInt, u32)> {
 
     // Trial division with a table of small primes
     const SMALL_PRIMES: [u64; 25] = [
-        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83,
-        89, 97,
+        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89,
+        97,
     ];
 
     for &p in &SMALL_PRIMES {
@@ -385,8 +385,6 @@ fn prevprime_i64(n: i64) -> Option<i64> {
         None
     }
 }
-
-
 
 /// Integer square root (i64 fast path).
 fn isqrt_i64(n: i64) -> Option<i64> {
@@ -781,8 +779,7 @@ pub fn crt_i64(remainders: &[i64], moduli: &[i64]) -> Option<i64> {
         if (remainders[i] - result) % g != 0 {
             return None;
         }
-        result =
-            result + modulus * ((remainders[i] - result) / g % (moduli[i] / g)) * p;
+        result = result + modulus * ((remainders[i] - result) / g % (moduli[i] / g)) * p;
         modulus = modulus / g * moduli[i];
         result = ((result % modulus) + modulus) % modulus;
     }
@@ -850,7 +847,11 @@ pub fn is_coprime(a: impl Into<BigInt>, b: impl Into<BigInt>) -> bool {
 /// assert_eq!(mod_pow(2, 10, 1000), BigInt::from(24));  // 1024 mod 1000
 /// assert_eq!(mod_pow(3, 4, 17), BigInt::from(13));     // 81 mod 17
 /// ```
-pub fn mod_pow(base: impl Into<BigInt>, exp: impl Into<BigInt>, modulus: impl Into<BigInt>) -> BigInt {
+pub fn mod_pow(
+    base: impl Into<BigInt>,
+    exp: impl Into<BigInt>,
+    modulus: impl Into<BigInt>,
+) -> BigInt {
     let base: BigInt = base.into();
     let exp: BigInt = exp.into();
     let modulus: BigInt = modulus.into();
@@ -971,19 +972,18 @@ pub fn primes_up_to(limit: i64) -> Vec<i64> {
 pub fn legendre_symbol(a: impl Into<BigInt>, p: impl Into<BigInt>) -> i8 {
     let a: BigInt = a.into();
     let p: BigInt = p.into();
-    assert!(p > BigInt::from(2) && isprime_big_internal(&p) || p.to_i64().is_some_and(|pi| pi > 2 && isprime_i64(pi)),
-            "p must be an odd prime");
+    assert!(
+        p > BigInt::from(2) && isprime_big_internal(&p)
+            || p.to_i64().is_some_and(|pi| pi > 2 && isprime_i64(pi)),
+        "p must be an odd prime"
+    );
     let a_mod = ((&a % &p) + &p) % &p;
     if a_mod.is_zero() {
         return 0;
     }
     let exp = (&p - BigInt::one()) / BigInt::from(2);
     let result = a_mod.modpow(&exp, &p);
-    if result.is_one() {
-        1
-    } else {
-        -1
-    }
+    if result.is_one() { 1 } else { -1 }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -991,7 +991,10 @@ pub fn legendre_symbol(a: impl Into<BigInt>, p: impl Into<BigInt>) -> i8 {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Deprecated: use [`isprime`] instead (same function, now accepts any integer type).
-#[deprecated(since = "0.2.0", note = "use `isprime()` which now accepts BigInt directly")]
+#[deprecated(
+    since = "0.2.0",
+    note = "use `isprime()` which now accepts BigInt directly"
+)]
 pub fn isprime_bigint(n: &BigInt) -> bool {
     if let Some(ni) = n.to_i64() {
         return isprime_i64(ni);
@@ -1000,7 +1003,10 @@ pub fn isprime_bigint(n: &BigInt) -> bool {
 }
 
 /// Deprecated: use [`factorint`] instead (same function, now accepts any integer type).
-#[deprecated(since = "0.2.0", note = "use `factorint()` which now accepts BigInt directly")]
+#[deprecated(
+    since = "0.2.0",
+    note = "use `factorint()` which now accepts BigInt directly"
+)]
 pub fn factorint_bigint(n: &BigInt) -> Vec<(BigInt, u32)> {
     factorint_big_internal(n)
 }
@@ -1143,10 +1149,7 @@ mod tests {
     #[test]
     fn test_factorint_bigint_60() {
         let factors = factorint(BigInt::from(60));
-        assert_eq!(
-            factors,
-            vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]
-        );
+        assert_eq!(factors, vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]);
     }
 
     #[test]
@@ -1158,10 +1161,7 @@ mod tests {
     #[test]
     fn test_factorint_bigint_negative() {
         let factors = factorint(BigInt::from(-60));
-        assert_eq!(
-            factors,
-            vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]
-        );
+        assert_eq!(factors, vec![(bi(2), 2), (bi(3), 1), (bi(5), 1)]);
     }
 
     #[test]
@@ -1206,10 +1206,7 @@ mod tests {
             let n = BigInt::from(val);
             let factors = factorint(n);
             for (p, _) in &factors {
-                assert!(
-                    isprime(p.clone()),
-                    "factor {p} of {val} is not prime"
-                );
+                assert!(isprime(p.clone()), "factor {p} of {val} is not prime");
             }
         }
     }
@@ -1224,7 +1221,10 @@ mod tests {
                 product *= p;
             }
         }
-        assert_eq!(product, n, "factorization beyond f64 precision must be exact");
+        assert_eq!(
+            product, n,
+            "factorization beyond f64 precision must be exact"
+        );
         for (p, _) in &factors {
             assert!(isprime(p.clone()), "factor {p} should be prime");
         }
@@ -1256,7 +1256,10 @@ mod tests {
     // ── divisors ──────────────────────────────────────────────────────
     #[test]
     fn test_divisors_12() {
-        assert_eq!(divisors(12), vec![bi(1), bi(2), bi(3), bi(4), bi(6), bi(12)]);
+        assert_eq!(
+            divisors(12),
+            vec![bi(1), bi(2), bi(3), bi(4), bi(6), bi(12)]
+        );
     }
 
     #[test]
@@ -1379,10 +1382,7 @@ mod tests {
     // ── primes_up_to ─────────────────────────────────────────────────
     #[test]
     fn test_primes_up_to() {
-        assert_eq!(
-            primes_up_to(30),
-            vec![2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
-        );
+        assert_eq!(primes_up_to(30), vec![2, 3, 5, 7, 11, 13, 17, 19, 23, 29]);
     }
 
     // ── legendre_symbol ──────────────────────────────────────────────

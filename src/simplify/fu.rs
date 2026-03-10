@@ -8,8 +8,8 @@
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
-use crate::simplify::simplify_engine::count_ops;
 use crate::base::walk;
+use crate::simplify::simplify_engine::count_ops;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -109,9 +109,7 @@ fn has_sin_or_cos(arena: &Arena, expr: ExprId) -> bool {
 fn is_integer_val(arena: &Arena, id: ExprId, val: i64) -> bool {
     arena
         .as_num(id)
-        .is_some_and(|r| {
-            r.is_integer() && *r == Ratio::from_integer(BigInt::from(val))
-        })
+        .is_some_and(|r| r.is_integer() && *r == Ratio::from_integer(BigInt::from(val)))
 }
 
 /// Extract the base argument `x` from `2*x` (i.e. `Mul([2, x])`).
@@ -316,13 +314,17 @@ fn tr5i(arena: &mut Arena, expr: ExprId) -> ExprId {
                     let sin_x = arena.sin(base_arg);
                     let two = arena.int(2);
                     let result = arena.pow(sin_x, two);
-                    return Some(replace_pair_in_add(arena, children, half_idx, cos_idx, result));
+                    return Some(replace_pair_in_add(
+                        arena, children, half_idx, cos_idx, result,
+                    ));
                 } else {
                     // 1/2 + cos(2x)/2 → cos²(x)
                     let cos_x = arena.cos(base_arg);
                     let two = arena.int(2);
                     let result = arena.pow(cos_x, two);
-                    return Some(replace_pair_in_add(arena, children, half_idx, cos_idx, result));
+                    return Some(replace_pair_in_add(
+                        arena, children, half_idx, cos_idx, result,
+                    ));
                 }
             }
         }
@@ -512,7 +514,13 @@ fn tr9(arena: &mut Arena, expr: ExprId) -> ExprId {
                         }
                     };
 
-                    return Some(replace_pair_in_add(arena, children, idx_i, idx_j, replacement));
+                    return Some(replace_pair_in_add(
+                        arena,
+                        children,
+                        idx_i,
+                        idx_j,
+                        replacement,
+                    ));
                 }
             }
         }
@@ -617,11 +625,13 @@ fn tr10i(arena: &mut Arena, expr: ExprId) -> ExprId {
             for i in 0..children.len() {
                 for j in (i + 1)..children.len() {
                     // Pattern 1: sin(a)*cos(b) ± cos(a)*sin(b) → sin(a±b)
-                    if let Some(result) = try_sin_addition_formula(arena, children[i], children[j]) {
+                    if let Some(result) = try_sin_addition_formula(arena, children[i], children[j])
+                    {
                         return Some(replace_pair_in_add(arena, children, i, j, result));
                     }
                     // Pattern 2: cos(a)*cos(b) ∓ sin(a)*sin(b) → cos(a±b)
-                    if let Some(result) = try_cos_addition_formula(arena, children[i], children[j]) {
+                    if let Some(result) = try_cos_addition_formula(arena, children[i], children[j])
+                    {
                         return Some(replace_pair_in_add(arena, children, i, j, result));
                     }
                 }
@@ -633,11 +643,7 @@ fn tr10i(arena: &mut Arena, expr: ExprId) -> ExprId {
 
 /// Try to match `c*sin(a)*cos(b) + c*cos(a)*sin(b)` → `c*sin(a+b)` or
 /// `c*sin(a)*cos(b) - c*cos(a)*sin(b)` → `c*sin(a-b)`.
-fn try_sin_addition_formula(
-    arena: &mut Arena,
-    term1: ExprId,
-    term2: ExprId,
-) -> Option<ExprId> {
+fn try_sin_addition_formula(arena: &mut Arena, term1: ExprId, term2: ExprId) -> Option<ExprId> {
     let p1 = extract_sin_cos_pair(arena, term1)?;
     let p2 = extract_sin_cos_pair(arena, term2)?;
 
@@ -660,9 +666,7 @@ fn try_sin_addition_formula(
     }
 
     // Also check the reverse: p1 has (sin=b, cos=a) and p2 has (sin=a, cos=b)
-    if p1.cos_arg == p2.sin_arg && p1.sin_arg == p2.cos_arg
-        && p1.coeff == p2.coeff
-    {
+    if p1.cos_arg == p2.sin_arg && p1.sin_arg == p2.cos_arg && p1.coeff == p2.coeff {
         let sum = arena.add(&[p2.sin_arg, p2.cos_arg]);
         let sin_sum = arena.sin(sum);
         return Some(arena.make_coeff_term(p1.coeff, sin_sum));
@@ -672,11 +676,7 @@ fn try_sin_addition_formula(
 }
 
 /// Try to match `c*cos(a)*cos(b) - c*sin(a)*sin(b)` → `c*cos(a+b)`.
-fn try_cos_addition_formula(
-    arena: &mut Arena,
-    term1: ExprId,
-    term2: ExprId,
-) -> Option<ExprId> {
+fn try_cos_addition_formula(arena: &mut Arena, term1: ExprId, term2: ExprId) -> Option<ExprId> {
     let cos_pair;
     let sin_pair;
 
@@ -826,7 +826,9 @@ pub(crate) fn tr14(arena: &mut Arena, expr: ExprId) -> ExprId {
                         let sin_sq = arena.pow(sin_half, two);
                         let neg_two = arena.int(-2);
                         let result = arena.mul(&[neg_two, sin_sq]);
-                        return Some(replace_pair_in_add(arena, children, cos_idx, one_idx, result));
+                        return Some(replace_pair_in_add(
+                            arena, children, cos_idx, one_idx, result,
+                        ));
                     }
 
                     // cos(x) + 1: cos_coeff=1, one_coeff=1
@@ -838,7 +840,9 @@ pub(crate) fn tr14(arena: &mut Arena, expr: ExprId) -> ExprId {
                         let cos_sq = arena.pow(cos_half, two);
                         let two_val = arena.int(2);
                         let result = arena.mul(&[two_val, cos_sq]);
-                        return Some(replace_pair_in_add(arena, children, cos_idx, one_idx, result));
+                        return Some(replace_pair_in_add(
+                            arena, children, cos_idx, one_idx, result,
+                        ));
                     }
                 }
             }
@@ -980,7 +984,11 @@ pub(crate) fn linearize_sin_power(arena: &mut Arena, arg: ExprId, n: u32) -> Exp
 
         for k in 0..half_n {
             let binom = binomial_coeff(n, k);
-            let sign = if (half_n - k).is_multiple_of(2) { 1i64 } else { -1i64 };
+            let sign = if (half_n - k).is_multiple_of(2) {
+                1i64
+            } else {
+                -1i64
+            };
             let coeff = arena.int(2 * sign * binom);
             let mult = arena.int((n - 2 * k) as i64);
             let mult_arg = arena.mul(&[mult, arg]);
@@ -991,7 +999,11 @@ pub(crate) fn linearize_sin_power(arena: &mut Arena, arg: ExprId, n: u32) -> Exp
         let half_n = (n - 1) / 2;
         for k in 0..=half_n {
             let binom = binomial_coeff(n, k);
-            let sign = if (half_n - k).is_multiple_of(2) { 1i64 } else { -1i64 };
+            let sign = if (half_n - k).is_multiple_of(2) {
+                1i64
+            } else {
+                -1i64
+            };
             let coeff = arena.int(2 * sign * binom);
             let mult = arena.int((n - 2 * k) as i64);
             let mult_arg = arena.mul(&[mult, arg]);
@@ -1073,7 +1085,8 @@ fn pyth_sub_sin2(arena: &mut Arena, expr: ExprId) -> ExprId {
             && let Some(n_ratio) = arena.as_num(exp).cloned()
             && n_ratio.is_integer()
             && let Ok(n) = TryInto::<i64>::try_into(n_ratio.to_integer())
-            && n >= 2 && n % 2 == 0
+            && n >= 2
+            && n % 2 == 0
         {
             let k = n / 2;
             let cos_inner = arena.cos(inner);
@@ -1099,7 +1112,8 @@ fn pyth_sub_cos2(arena: &mut Arena, expr: ExprId) -> ExprId {
             && let Some(n_ratio) = arena.as_num(exp).cloned()
             && n_ratio.is_integer()
             && let Ok(n) = TryInto::<i64>::try_into(n_ratio.to_integer())
-            && n >= 2 && n % 2 == 0
+            && n >= 2
+            && n % 2 == 0
         {
             let k = n / 2;
             let sin_inner = arena.sin(inner);
@@ -1244,7 +1258,10 @@ fn rl2(arena: &mut Arena, expr: ExprId) -> ExprId {
         tr0(arena, r)
     };
 
-    pick_best(arena, &[expr, alt1, alt2, alt3, alt_pyth1, alt_pyth2, alt_tr5i])
+    pick_best(
+        arena,
+        &[expr, alt1, alt2, alt3, alt_pyth1, alt_pyth2, alt_tr5i],
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1468,10 +1485,7 @@ mod tests {
         let expr = arena.div(sin_x, cos_x);
         let result = tr2i(&mut arena, expr);
         let s = display(&arena, result);
-        assert!(
-            s.contains("tan"),
-            "TR2i should produce tan(x): {s}"
-        );
+        assert!(s.contains("tan"), "TR2i should produce tan(x): {s}");
     }
 
     // ── TR5 tests ──────────────────────────────────────────────────────
@@ -1487,10 +1501,7 @@ mod tests {
         let result = tr5(&mut arena, sin2);
         let s = display(&arena, result);
         // Should contain cos(2*x) in some form
-        assert!(
-            s.contains("cos"),
-            "TR5 should produce cos(2x) form: {s}"
-        );
+        assert!(s.contains("cos"), "TR5 should produce cos(2x) form: {s}");
         assert_numerically_equal(&mut arena, original, result, x);
     }
 
@@ -1506,10 +1517,7 @@ mod tests {
         let original = cos2;
         let result = tr6(&mut arena, cos2);
         let s = display(&arena, result);
-        assert!(
-            s.contains("cos"),
-            "TR6 should produce cos(2x) form: {s}"
-        );
+        assert!(s.contains("cos"), "TR6 should produce cos(2x) form: {s}");
         assert_numerically_equal(&mut arena, original, result, x);
     }
 
@@ -1565,10 +1573,7 @@ mod tests {
         let expr = arena.add(&[term1, term2]);
         let result = tr10i(&mut arena, expr);
         let s = display(&arena, result);
-        assert!(
-            s.contains("sin"),
-            "TR10i should produce sin(x+y): {s}"
-        );
+        assert!(s.contains("sin"), "TR10i should produce sin(x+y): {s}");
         // The result should have fewer trig nodes
         assert!(
             trig_count(&arena, result) <= trig_count(&arena, expr),
@@ -1831,10 +1836,7 @@ mod tests {
         let result = fu(&mut arena, expr);
         let s = display(&arena, result);
         // Should contain sin (from Morrie's law: sin(8x)/(8sin(x)))
-        assert!(
-            s.contains("sin"),
-            "fu Morrie should produce sin form: {s}"
-        );
+        assert!(s.contains("sin"), "fu Morrie should produce sin form: {s}");
         assert_numerically_equal(&mut arena, original, result, x);
     }
 

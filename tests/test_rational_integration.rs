@@ -15,8 +15,6 @@ fn eval_at_int(expr: &Ex, var: &Ex, val: i64) -> Option<f64> {
     expr.subs_i64(var, val).eval().eval_f64().ok()
 }
 
-
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Partial fraction decomposition tests
 // ═══════════════════════════════════════════════════════════════════════════
@@ -143,11 +141,7 @@ fn apart_x_over_x4_plus_x2_plus_1() {
     let decomposed = expr.partial_fractions(&x);
     let s = format!("{decomposed}");
 
-    assert_ne!(
-        s,
-        format!("{expr}"),
-        "x/(x⁴+x²+1) should decompose: {s}"
-    );
+    assert_ne!(s, format!("{expr}"), "x/(x⁴+x²+1) should decompose: {s}");
 
     // Numerically verify at x=1: 1/(1+1+1) = 1/3.
     let orig_val = eval_at_int(&expr, &x, 1).unwrap();
@@ -197,11 +191,7 @@ fn apart_repeated_linear_factor() {
     let decomposed = expr.partial_fractions(&x);
     let s = format!("{decomposed}");
 
-    assert_ne!(
-        s,
-        format!("{expr}"),
-        "(2x+3)/(x+1)² should decompose: {s}"
-    );
+    assert_ne!(s, format!("{expr}"), "(2x+3)/(x+1)² should decompose: {s}");
 
     // Numerically verify at x=2: (7)/(9) vs decomposed at x=2.
     let orig_val = eval_at_int(&expr, &x, 2).unwrap();
@@ -248,11 +238,7 @@ fn apart_x6_minus_1_factored() {
     let decomposed = expr.partial_fractions(&x);
     let s = format!("{decomposed}");
 
-    assert_ne!(
-        s,
-        format!("{expr}"),
-        "1/(x⁶-1) should decompose: {s}"
-    );
+    assert_ne!(s, format!("{expr}"), "1/(x⁶-1) should decompose: {s}");
 
     // Verify at x=2: 1/(64-1) = 1/63.
     let orig_val = eval_at_int(&expr, &x, 2).unwrap();
@@ -308,10 +294,7 @@ fn integrate_1_over_x2_plus_1_is_atan() {
     let expr = 1 / (&x.powi(2) + 1);
     let anti = expr.integrate(&x);
     let s = format!("{anti}");
-    assert!(
-        s.contains("atan"),
-        "∫ 1/(x²+1) dx should be atan(x): {s}"
-    );
+    assert!(s.contains("atan"), "∫ 1/(x²+1) dx should be atan(x): {s}");
 
     // Numerical: F(1) - F(0) should be atan(1) - atan(0) = π/4 ≈ 0.7854
     let f1 = eval_at_int(&anti, &x, 1);
@@ -335,10 +318,7 @@ fn integrate_1_over_x2_minus_1() {
     let s = format!("{anti}");
 
     // Should contain ln (logarithmic terms).
-    assert!(
-        s.contains("ln"),
-        "∫ 1/(x²-1) dx should contain ln: {s}"
-    );
+    assert!(s.contains("ln"), "∫ 1/(x²-1) dx should contain ln: {s}");
 
     // Numerical: F(3) - F(2) — avoiding the pole at x=1.
     // 1/(x²-1) = 1/2*(1/(x-1) - 1/(x+1))
@@ -620,11 +600,7 @@ fn apart_x4_minus_1_four_factors() {
     let decomposed = expr.partial_fractions(&x);
     let s = format!("{decomposed}");
 
-    assert_ne!(
-        s,
-        format!("{expr}"),
-        "1/(x⁴-1) should decompose: {s}"
-    );
+    assert_ne!(s, format!("{expr}"), "1/(x⁴-1) should decompose: {s}");
 
     // Verify at x=2: 1/15.
     let orig_val = eval_at_int(&expr, &x, 2).unwrap();
@@ -712,14 +688,8 @@ fn integrate_1_over_x3_minus_1_has_both_ln_and_atan() {
     // The correct antiderivative is:
     //   1/3*ln|x-1| - 1/6*ln(x²+x+1) - 1/√3*atan((2x+1)/√3)
     // So it should contain both ln and atan.
-    assert!(
-        s.contains("ln"),
-        "∫ 1/(x³-1) dx should contain ln: {s}"
-    );
-    assert!(
-        s.contains("atan"),
-        "∫ 1/(x³-1) dx should contain atan: {s}"
-    );
+    assert!(s.contains("ln"), "∫ 1/(x³-1) dx should contain ln: {s}");
+    assert!(s.contains("atan"), "∫ 1/(x³-1) dx should contain atan: {s}");
 }
 
 #[test]
@@ -788,11 +758,7 @@ fn apart_high_degree_multiple_factors() {
     let decomposed = expr.partial_fractions(&x);
     let s = format!("{decomposed}");
 
-    assert_ne!(
-        s,
-        format!("{expr}"),
-        "1/(x⁴+5x²+6) should decompose: {s}"
-    );
+    assert_ne!(s, format!("{expr}"), "1/(x⁴+5x²+6) should decompose: {s}");
 
     // Verify at x=1: 1/(1+5+6) = 1/12.
     let orig_val = eval_at_int(&expr, &x, 1).unwrap();

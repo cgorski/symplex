@@ -81,9 +81,7 @@ fn verify_first_order_numerically(
     let sol_prime = concrete_sol.diff(x);
 
     let dy_formal = y.formal_diff(x);
-    let residual = ode_expr
-        .subs(&dy_formal, &sol_prime)
-        .subs(y, &concrete_sol);
+    let residual = ode_expr.subs(&dy_formal, &sol_prime).subs(y, &concrete_sol);
 
     let sample_val = ctx.rational(sample_x_num, sample_x_den);
     let residual_at = residual.subs(x, &sample_val);
@@ -127,7 +125,11 @@ fn ode_second_order_constant_rhs() {
 
     // The solution should contain exp terms (homogeneous) and the constant 1 (particular).
     // Verify numerically at a test point.
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 7, 10); }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 7, 10);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -149,7 +151,10 @@ fn ode_second_order_linear_rhs() {
     let ode = &d2y + &dy + &y - &x; // y'' + y' + y - x = 0
 
     let sol = ode.solve_ode(&y, &x);
-    assert!(!sol.has_unevaluated(), "y'' + y' + y = x should be solvable");
+    assert!(
+        !sol.has_unevaluated(),
+        "y'' + y' + y = x should be solvable"
+    );
 
     let s = format!("{sol}");
     assert!(
@@ -158,7 +163,11 @@ fn ode_second_order_linear_rhs() {
     );
 
     // Verify numerically
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2); }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -192,7 +201,11 @@ fn ode_second_order_quadratic_rhs() {
     );
 
     // Verify numerically
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 3, 10); }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 3, 10);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -218,9 +231,21 @@ fn ode_second_order_nonhomogeneous_verify() {
         .expect("y'' - 3y' + 2y = 6 should be solvable");
 
     // Verify at multiple points for robustness
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 4); }
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2); }
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 3, 4); }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 4);
+    }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2);
+    }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 3, 4);
+    }
 
     // Also verify with C1=0, C2=0 to isolate the particular solution
     let c1 = ctx.symbol("C1");
@@ -272,7 +297,11 @@ fn ode_homogeneous_still_works() {
         s2.contains("C1") && s2.contains("C2"),
         "homogeneous should have two constants: {s2}"
     );
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode2, &sol2, &[c1, c2], &y, &x, 3, 10); }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode2, &sol2, &[c1, c2], &y, &x, 3, 10);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -333,7 +362,11 @@ fn ode_exponential_rhs() {
     // It's OK if this returns unevaluated — we just must not return a wrong answer.
     // If it does return something, verify it numerically to ensure correctness.
     if !sol.has_unevaluated() {
-        { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2); }
+        {
+            let c1 = ctx.symbol("C1");
+            let c2 = ctx.symbol("C2");
+            verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2);
+        }
     }
     // No assertion failure = pass (graceful None or correct answer)
 }
@@ -358,7 +391,10 @@ fn ode_first_order_still_works() {
     assert!(s.contains("C1"), "should have constant: {s}");
     assert!(s.contains("exp"), "should contain exp: {s}");
 
-    { let c1 = ctx.symbol("C1"); verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, 1, 2); }
+    {
+        let c1 = ctx.symbol("C1");
+        verify_first_order_numerically(&ode, &sol, &[c1], &y, &x, 1, 2);
+    }
 
     // Also: y' = x should still work (simple separable)
     let ode2 = &dy - &x; // y' - x = 0
@@ -368,7 +404,10 @@ fn ode_first_order_still_works() {
     let s2 = format!("{sol2}");
     assert!(s2.contains("C1"), "should have constant: {s2}");
 
-    { let c1 = ctx.symbol("C1"); verify_first_order_numerically(&ode2, &sol2, &[c1], &y, &x, 3, 2); }
+    {
+        let c1 = ctx.symbol("C1");
+        verify_first_order_numerically(&ode2, &sol2, &[c1], &y, &x, 3, 2);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -397,8 +436,16 @@ fn ode_distinct_roots_linear_forcing() {
         "should have two constants: {s}"
     );
 
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 1, 4); }
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 1, 1); }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 1, 4);
+    }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 1, 1);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -427,8 +474,16 @@ fn ode_repeated_root_constant_forcing() {
         "should have two constants: {s}"
     );
 
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 1, 5); }
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 3, 10); }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 1, 5);
+    }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol_expr, &[c1, c2], &y, &x, 3, 10);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -451,7 +506,11 @@ fn ode_c_zero_constant_forcing() {
 
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y'' + y' = 2 should be solvable");
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2); }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -473,8 +532,16 @@ fn ode_b_c_zero_constant_forcing() {
 
     let sol = ode.solve_ode(&y, &x);
     assert!(!sol.has_unevaluated(), "y'' = 6 should be solvable");
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2); }
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 2, 1); }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 2);
+    }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 2, 1);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -527,5 +594,9 @@ fn ode_scaled_leading_coefficient() {
     );
 
     let _ = two; // suppress unused warning
-    { let c1 = ctx.symbol("C1"); let c2 = ctx.symbol("C2"); verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 3); }
+    {
+        let c1 = ctx.symbol("C1");
+        let c2 = ctx.symbol("C2");
+        verify_second_order_numerically(&ode, &sol, &[c1, c2], &y, &x, 1, 3);
+    }
 }

@@ -66,14 +66,12 @@ fn matrix_exp_nilpotent() {
     let n = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(0), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let result = n.exp_series(2).unwrap();
 
     // Expected: [[1, 1], [0, 1]]
-    let expected = [
-        [1.0, 1.0],
-        [0.0, 1.0],
-    ];
+    let expected = [[1.0, 1.0], [0.0, 1.0]];
     for (i, expected_row) in expected.iter().enumerate() {
         for (j, &exp_val) in expected_row.iter().enumerate() {
             let val = result.get(i, j).eval().eval_f64().unwrap();
@@ -95,7 +93,8 @@ fn matrix_exp_diagonal() {
     let m = Matrix::new(vec![
         vec![ctx.rational(1, 2), ctx.int(0)],
         vec![ctx.int(0), ctx.rational(-1, 3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let result = m.exp_series(15).unwrap();
 
     let expected_00 = a_val.exp();
@@ -130,7 +129,8 @@ fn matrix_exp_2x2_numerical() {
     let m = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(0), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let result = m.exp_series(10).unwrap();
 
     let val_00 = result.get(0, 0).eval().eval_f64().unwrap();
@@ -153,7 +153,8 @@ fn matrix_exp_series_converges() {
     let m = Matrix::new(vec![
         vec![ctx.rational(1, 10), ctx.rational(1, 5)],
         vec![ctx.rational(3, 10), ctx.rational(1, 10)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let low = m.exp_series(5).unwrap();
     let high = m.exp_series(15).unwrap();
@@ -200,7 +201,8 @@ fn kronecker_identity() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let i2 = Matrix::identity(&ctx, 2);
     let result = a.kronecker(&i2);
 
@@ -233,7 +235,8 @@ fn kronecker_scalar() {
     let b = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(4), ctx.int(5)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let result = s.kronecker(&b);
 
     assert_eq!(result.nrows(), 2);
@@ -264,11 +267,13 @@ fn kronecker_known_values() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(5)],
         vec![ctx.int(6), ctx.int(7)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let result = a.kronecker(&b);
 
     assert_eq!(result.nrows(), 4);
@@ -302,14 +307,10 @@ fn discretize_zoh_simple() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(-2), ctx.int(-3)],
-    ]).unwrap();
-    let b = Matrix::new(vec![
-        vec![ctx.int(0)],
-        vec![ctx.int(1)],
-    ]).unwrap();
-    let c = Matrix::new(vec![
-        vec![ctx.int(1), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
+    let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
@@ -335,14 +336,10 @@ fn discretize_zoh_integrator() {
     let a = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(1)],
         vec![ctx.int(0), ctx.int(0)],
-    ]).unwrap();
-    let b = Matrix::new(vec![
-        vec![ctx.int(0)],
-        vec![ctx.int(1)],
-    ]).unwrap();
-    let c = Matrix::new(vec![
-        vec![ctx.int(1), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
+    let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
+    let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
@@ -430,7 +427,8 @@ fn matrix_exp_negative_entries() {
     let m = Matrix::new(vec![
         vec![ctx.int(-1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(-2)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let result = m.exp_series(20).unwrap();
     let val_00 = result.get(0, 0).eval().eval_f64().unwrap();
     let val_11 = result.get(1, 1).eval().eval_f64().unwrap();

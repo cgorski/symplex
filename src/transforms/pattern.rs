@@ -572,11 +572,17 @@ fn try_stripper_collector_add(
             }
 
             let mut trial_bindings = bindings.clone();
-            if match_recursive(arena, &rule.pattern, stripper, subj_child, &mut trial_bindings) {
+            if match_recursive(
+                arena,
+                &rule.pattern,
+                stripper,
+                subj_child,
+                &mut trial_bindings,
+            ) {
                 // Verify consistency with previously-bound wilds.
-                let consistent = trial_bindings.iter().all(|(wid, eid)| {
-                    bindings.get(wid).is_none_or(|existing| *existing == *eid)
-                });
+                let consistent = trial_bindings
+                    .iter()
+                    .all(|(wid, eid)| bindings.get(wid).is_none_or(|existing| *existing == *eid));
                 if consistent {
                     tracing::debug!(
                         "stripper-collector-add: stripper matched subject[{}]",
@@ -622,10 +628,11 @@ fn try_stripper_collector_add(
 
     // Check rule condition.
     if let Some(cond) = rule.condition
-        && !cond(arena, &bindings) {
-            tracing::debug!("stripper-collector-add: condition rejected");
-            return None;
-        }
+        && !cond(arena, &bindings)
+    {
+        tracing::debug!("stripper-collector-add: condition rejected");
+        return None;
+    }
 
     let replacement = instantiate(arena, rule.template, &rule.pattern.wilds, &bindings);
     Some((replacement, matched_subject_indices))
@@ -687,10 +694,16 @@ fn try_stripper_collector_mul(
             }
 
             let mut trial_bindings = bindings.clone();
-            if match_recursive(arena, &rule.pattern, stripper, subj_child, &mut trial_bindings) {
-                let consistent = trial_bindings.iter().all(|(wid, eid)| {
-                    bindings.get(wid).is_none_or(|existing| *existing == *eid)
-                });
+            if match_recursive(
+                arena,
+                &rule.pattern,
+                stripper,
+                subj_child,
+                &mut trial_bindings,
+            ) {
+                let consistent = trial_bindings
+                    .iter()
+                    .all(|(wid, eid)| bindings.get(wid).is_none_or(|existing| *existing == *eid));
                 if consistent {
                     tracing::debug!(
                         "stripper-collector-mul: stripper matched subject[{}]",
@@ -730,10 +743,11 @@ fn try_stripper_collector_mul(
     }
 
     if let Some(cond) = rule.condition
-        && !cond(arena, &bindings) {
-            tracing::debug!("stripper-collector-mul: condition rejected");
-            return None;
-        }
+        && !cond(arena, &bindings)
+    {
+        tracing::debug!("stripper-collector-mul: condition rejected");
+        return None;
+    }
 
     let replacement = instantiate(arena, rule.template, &rule.pattern.wilds, &bindings);
     Some((replacement, matched_subject_indices))
@@ -817,9 +831,7 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
 
                 // Fall back to O(n²) pairwise enumeration for k=2 patterns.
                 for rule in rules {
-                    if let ExprNode::Add(ref pat_children) =
-                        arena.node(rule.pattern.root).clone()
-                    {
+                    if let ExprNode::Add(ref pat_children) = arena.node(rule.pattern.root).clone() {
                         let k = pat_children.len();
                         if k == 2 && children.len() >= 2 {
                             for i in 0..children.len() {
@@ -892,9 +904,7 @@ pub(crate) fn apply_rules(arena: &mut Arena, expr: ExprId, rules: &[Rule]) -> (E
 
                 // Fall back to O(n²) pairwise enumeration for k=2 patterns.
                 for rule in rules {
-                    if let ExprNode::Mul(ref pat_children) =
-                        arena.node(rule.pattern.root).clone()
-                    {
+                    if let ExprNode::Mul(ref pat_children) = arena.node(rule.pattern.root).clone() {
                         let k = pat_children.len();
                         if k == 2 && children.len() >= 2 {
                             for i in 0..children.len() {
@@ -1922,7 +1932,10 @@ mod tests {
         let expr = arena.ln(exp_x); // ln(exp(x))
         let rules = basic_rules(&mut arena);
         let (result, _) = apply_rules(&mut arena, expr, &rules);
-        assert_eq!(result, x, "ln(exp(x)) should simplify to x without assumptions");
+        assert_eq!(
+            result, x,
+            "ln(exp(x)) should simplify to x without assumptions"
+        );
     }
 
     #[test]
@@ -1940,7 +1953,10 @@ mod tests {
         let expr = arena.ln(exp_x);
         let rules = basic_rules(&mut arena);
         let (result, _) = apply_rules(&mut arena, expr, &rules);
-        assert_eq!(result, x, "ln(exp(x)) should simplify to x with Real assumption");
+        assert_eq!(
+            result, x,
+            "ln(exp(x)) should simplify to x with Real assumption"
+        );
     }
 
     #[test]
@@ -1958,6 +1974,9 @@ mod tests {
         let expr = arena.ln(exp_x);
         let rules = basic_rules(&mut arena);
         let (result, _) = apply_rules(&mut arena, expr, &rules);
-        assert_eq!(result, expr, "ln(exp(x)) should NOT simplify for Imaginary x");
+        assert_eq!(
+            result, expr,
+            "ln(exp(x)) should NOT simplify for Imaginary x"
+        );
     }
 }

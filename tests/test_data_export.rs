@@ -8,10 +8,16 @@ fn table_to_csv_basic() {
     let csv = table.to_csv();
     assert_eq!(table.nrows(), 3);
     // Header line
-    assert!(csv.starts_with("x,f(x)\n"), "CSV should start with header line, got:\n{csv}");
+    assert!(
+        csv.starts_with("x,f(x)\n"),
+        "CSV should start with header line, got:\n{csv}"
+    );
     // Data rows
     assert!(csv.contains("0,1\n"), "expected row '0,1', got:\n{csv}");
-    assert!(csv.contains("0.5,2.25\n"), "expected row '0.5,2.25', got:\n{csv}");
+    assert!(
+        csv.contains("0.5,2.25\n"),
+        "expected row '0.5,2.25', got:\n{csv}"
+    );
     assert!(csv.contains("1,4\n"), "expected row '1,4', got:\n{csv}");
     // Exactly 4 lines (header + 3 data rows)
     let line_count = csv.lines().count();
@@ -22,11 +28,23 @@ fn table_to_csv_basic() {
 fn table_to_json_basic() {
     let table = DataTable::from_points("x", "f(x)", &[(0.0, 1.0), (0.5, 2.25), (1.0, 4.0)]);
     let json = table.to_json();
-    assert!(json.starts_with('['), "JSON should start with '[', got:\n{json}");
-    assert!(json.trim_end().ends_with(']'), "JSON should end with ']', got:\n{json}");
+    assert!(
+        json.starts_with('['),
+        "JSON should start with '[', got:\n{json}"
+    );
+    assert!(
+        json.trim_end().ends_with(']'),
+        "JSON should end with ']', got:\n{json}"
+    );
     // Should contain header keys
-    assert!(json.contains("\"x\""), "JSON should contain key 'x', got:\n{json}");
-    assert!(json.contains("\"f(x)\""), "JSON should contain key 'f(x)', got:\n{json}");
+    assert!(
+        json.contains("\"x\""),
+        "JSON should contain key 'x', got:\n{json}"
+    );
+    assert!(
+        json.contains("\"f(x)\""),
+        "JSON should contain key 'f(x)', got:\n{json}"
+    );
     // Should contain numeric values (not quoted)
     assert!(json.contains(": 0"), "JSON should contain value 0");
     assert!(json.contains(": 2.25"), "JSON should contain value 2.25");
@@ -41,16 +59,38 @@ fn table_to_markdown_basic() {
     let md = table.to_markdown();
     let lines: Vec<&str> = md.lines().collect();
     // At least header + separator + 3 data rows = 5 lines
-    assert!(lines.len() >= 5, "expected at least 5 lines, got {}:\n{md}", lines.len());
+    assert!(
+        lines.len() >= 5,
+        "expected at least 5 lines, got {}:\n{md}",
+        lines.len()
+    );
     // Header line has pipes
-    assert!(lines[0].contains("| x"), "header should contain '| x', got: {}", lines[0]);
-    assert!(lines[0].contains("| f(x)"), "header should contain '| f(x)', got: {}", lines[0]);
+    assert!(
+        lines[0].contains("| x"),
+        "header should contain '| x', got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("| f(x)"),
+        "header should contain '| f(x)', got: {}",
+        lines[0]
+    );
     // Separator line has dashes
-    assert!(lines[1].contains("|---") || lines[1].contains("|-"), "separator should have dashes, got: {}", lines[1]);
+    assert!(
+        lines[1].contains("|---") || lines[1].contains("|-"),
+        "separator should have dashes, got: {}",
+        lines[1]
+    );
     // Data rows have pipes
     for line in &lines[2..] {
-        assert!(line.starts_with('|'), "data line should start with '|', got: {line}");
-        assert!(line.ends_with('|'), "data line should end with '|', got: {line}");
+        assert!(
+            line.starts_with('|'),
+            "data line should start with '|', got: {line}"
+        );
+        assert!(
+            line.ends_with('|'),
+            "data line should end with '|', got: {line}"
+        );
     }
 }
 
@@ -65,16 +105,34 @@ fn table_to_html_basic() {
     assert!(html.contains("<tbody>"), "should contain <tbody>");
     // Headers
     assert!(html.contains("<th>x</th>"), "should contain <th>x</th>");
-    assert!(html.contains("<th>f(x)</th>"), "should contain <th>f(x)</th>");
+    assert!(
+        html.contains("<th>f(x)</th>"),
+        "should contain <th>f(x)</th>"
+    );
     // Data cells
-    assert!(html.contains("<td>0</td>"), "should contain <td>0</td>, got:\n{html}");
-    assert!(html.contains("<td>1</td>"), "should contain <td>1</td>, got:\n{html}");
-    assert!(html.contains("<td>0.5</td>"), "should contain <td>0.5</td>, got:\n{html}");
-    assert!(html.contains("<td>2.25</td>"), "should contain <td>2.25</td>, got:\n{html}");
+    assert!(
+        html.contains("<td>0</td>"),
+        "should contain <td>0</td>, got:\n{html}"
+    );
+    assert!(
+        html.contains("<td>1</td>"),
+        "should contain <td>1</td>, got:\n{html}"
+    );
+    assert!(
+        html.contains("<td>0.5</td>"),
+        "should contain <td>0.5</td>, got:\n{html}"
+    );
+    assert!(
+        html.contains("<td>2.25</td>"),
+        "should contain <td>2.25</td>, got:\n{html}"
+    );
     // 3 data rows
     let tr_count = html.matches("<tr>").count();
     // 1 header <tr> + 3 data <tr>
-    assert_eq!(tr_count, 4, "expected 4 <tr> tags (1 header + 3 data), got {tr_count}");
+    assert_eq!(
+        tr_count, 4,
+        "expected 4 <tr> tags (1 header + 3 data), got {tr_count}"
+    );
 }
 
 #[test]
@@ -82,18 +140,30 @@ fn table_to_latex_basic() {
     let table = DataTable::from_points("x", "f(x)", &[(0.0, 1.0), (0.5, 2.25), (1.0, 4.0)]);
     let latex = table.to_latex();
     // Booktabs commands
-    assert!(latex.contains("\\begin{tabular}"), "should contain \\begin{{tabular}}");
-    assert!(latex.contains("\\end{tabular}"), "should contain \\end{{tabular}}");
+    assert!(
+        latex.contains("\\begin{tabular}"),
+        "should contain \\begin{{tabular}}"
+    );
+    assert!(
+        latex.contains("\\end{tabular}"),
+        "should contain \\end{{tabular}}"
+    );
     assert!(latex.contains("\\toprule"), "should contain \\toprule");
     assert!(latex.contains("\\midrule"), "should contain \\midrule");
-    assert!(latex.contains("\\bottomrule"), "should contain \\bottomrule");
+    assert!(
+        latex.contains("\\bottomrule"),
+        "should contain \\bottomrule"
+    );
     // Headers wrapped in $...$
     assert!(latex.contains("$x$"), "should contain $x$ header");
     assert!(latex.contains("$f(x)$"), "should contain $f(x)$ header");
     // Column separator
     assert!(latex.contains(" & "), "should use '&' column separator");
     // Row terminator
-    assert!(latex.contains("\\\\"), "should contain '\\\\' row terminator");
+    assert!(
+        latex.contains("\\\\"),
+        "should contain '\\\\' row terminator"
+    );
 }
 
 #[test]
@@ -143,7 +213,10 @@ fn table_multi_column() {
     assert_eq!(table.rows[1][1], "1");
     // cos(π/2) should be very close to 0
     let cos_pi2: f64 = table.rows[1][2].parse().unwrap_or(999.0);
-    assert!(cos_pi2.abs() < 1e-10, "cos(π/2) should be ~0, got {cos_pi2}");
+    assert!(
+        cos_pi2.abs() < 1e-10,
+        "cos(π/2) should be ~0, got {cos_pi2}"
+    );
 }
 
 #[test]
@@ -152,7 +225,10 @@ fn csv_handles_nan() {
     let table = DataTable::from_evaluation("x", "y", &[0.0, f64::NAN, 1.0], |x| x);
     let csv = table.to_csv();
     // NaN should appear in the output (not crash, not produce empty string)
-    assert!(csv.contains("NaN"), "NaN values should be rendered as 'NaN', got:\n{csv}");
+    assert!(
+        csv.contains("NaN"),
+        "NaN values should be rendered as 'NaN', got:\n{csv}"
+    );
 
     // Also test with a direct NaN value in rows
     let table2 = DataTable::new(
@@ -164,7 +240,10 @@ fn csv_handles_nan() {
     );
     let csv2 = table2.to_csv();
     let nan_count = csv2.matches("NaN").count();
-    assert_eq!(nan_count, 2, "should have 2 NaN values in CSV, got:\n{csv2}");
+    assert_eq!(
+        nan_count, 2,
+        "should have 2 NaN values in CSV, got:\n{csv2}"
+    );
 }
 
 #[test]
@@ -182,11 +261,23 @@ fn freq_response_to_csv() {
     );
     // Check that all 5 data rows are present
     let line_count = csv.lines().count();
-    assert_eq!(line_count, 6, "expected 6 lines (1 header + 5 data), got {line_count}");
+    assert_eq!(
+        line_count, 6,
+        "expected 6 lines (1 header + 5 data), got {line_count}"
+    );
     // Check specific values
-    assert!(csv.contains("1,0,-5\n"), "should contain row for ω=1, got:\n{csv}");
-    assert!(csv.contains("10,-3,-45\n"), "should contain row for ω=10, got:\n{csv}");
-    assert!(csv.contains("1000,-40,-90\n"), "should contain row for ω=1000, got:\n{csv}");
+    assert!(
+        csv.contains("1,0,-5\n"),
+        "should contain row for ω=1, got:\n{csv}"
+    );
+    assert!(
+        csv.contains("10,-3,-45\n"),
+        "should contain row for ω=10, got:\n{csv}"
+    );
+    assert!(
+        csv.contains("1000,-40,-90\n"),
+        "should contain row for ω=1000, got:\n{csv}"
+    );
 
     // Also check JSON export works
     let json = data.to_json();

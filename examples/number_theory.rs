@@ -6,10 +6,10 @@
 //!
 //! Run with: cargo run --example number_theory
 
-use symplex::prelude::*;
 use num_bigint::BigInt;
 use num_traits::One;
 use symplex::ntheory::*;
+use symplex::prelude::*;
 
 fn main() {
     let ctx = Context::new();
@@ -20,10 +20,7 @@ fn main() {
     println!("Primality testing:");
     println!("  Is 104729 prime?  {}", isprime(104729));
     println!("  Is 104730 prime?  {}", isprime(104730));
-    println!(
-        "  Is 2^31-1 (M31) prime?  {}",
-        isprime(2_147_483_647i64)
-    );
+    println!("  Is 2^31-1 (M31) prime?  {}", isprime(2_147_483_647i64));
 
     // Pass a BigInt for truly huge numbers — same function name
     let m61 = BigInt::from(2u64.pow(61) - 1);
@@ -36,10 +33,7 @@ fn main() {
     let composite_is_prime = isprime(composite.clone());
     println!(
         "  Is {} × {} = {} prime?  {}",
-        p1,
-        p2,
-        composite,
-        composite_is_prime
+        p1, p2, composite, composite_is_prime
     );
 
     // ── Next / previous prime ──────────────────────────────────────────

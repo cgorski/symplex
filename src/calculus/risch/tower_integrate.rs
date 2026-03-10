@@ -25,7 +25,7 @@ use num_traits::{One, Zero};
 
 use crate::poly::generic::GenPoly;
 use crate::poly::ratfn::RationalFn;
-use crate::poly::traits::{Ring, Field, EuclideanDomain};
+use crate::poly::traits::{EuclideanDomain, Field, Ring};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Result types
@@ -95,7 +95,10 @@ pub fn tower_hermite_reduce(
     a: &GenPoly<RationalFn>,
     d: &GenPoly<RationalFn>,
 ) -> TowerHermiteResult {
-    assert!(!d.is_zero(), "tower_hermite_reduce: denominator must be nonzero");
+    assert!(
+        !d.is_zero(),
+        "tower_hermite_reduce: denominator must be nonzero"
+    );
 
     // Make d monic.
     let d_monic = d.make_monic();
@@ -245,7 +248,10 @@ pub fn tower_logarithmic_part(
     a: &GenPoly<RationalFn>,
     d: &GenPoly<RationalFn>,
 ) -> TowerLogPartResult {
-    assert!(!d.is_zero(), "tower_logarithmic_part: denominator must be nonzero");
+    assert!(
+        !d.is_zero(),
+        "tower_logarithmic_part: denominator must be nonzero"
+    );
 
     if a.is_zero() {
         return TowerLogPartResult {
@@ -373,7 +379,8 @@ pub fn tower_logarithmic_part(
             // Check for non-constant roots by verifying the resultant
             // has been fully accounted for.  If we found fewer roots than
             // deg(R), there may be non-constant or algebraic roots.
-            let found_degree: usize = terms.iter()
+            let found_degree: usize = terms
+                .iter()
                 .filter_map(|t| match t {
                     TowerLogTerm::Constant { argument, .. } => argument.degree(),
                     TowerLogTerm::NonConstant { argument, .. } => argument.degree(),
@@ -448,7 +455,8 @@ mod tests {
         assert!(
             result.h_numer.is_zero(),
             "1/θ² should have no log remainder, got h = {}/{}",
-            result.h_numer, result.h_denom
+            result.h_numer,
+            result.h_denom
         );
     }
 
@@ -479,21 +487,22 @@ mod tests {
         // d/dθ(g_numer / g_denom) = (g_n' · g_d - g_n · g_d') / g_d²
         let gn_prime = result.g_numer.derivative();
         let gd_prime = result.g_denom.derivative();
-        let dg_numer = gn_prime.mul(&result.g_denom).sub(&result.g_numer.mul(&gd_prime));
+        let dg_numer = gn_prime
+            .mul(&result.g_denom)
+            .sub(&result.g_numer.mul(&gd_prime));
         let dg_denom = result.g_denom.mul(&result.g_denom);
 
         // d/dθ(g) + h = (dg_numer · h_denom + h_numer · dg_denom) / (dg_denom · h_denom)
-        let sum_numer = dg_numer.mul(&result.h_denom).add(&result.h_numer.mul(&dg_denom));
+        let sum_numer = dg_numer
+            .mul(&result.h_denom)
+            .add(&result.h_numer.mul(&dg_denom));
         let sum_denom = dg_denom.mul(&result.h_denom);
 
         // Should equal A/D: sum_numer · D == A · sum_denom
         let lhs = sum_numer.mul(&d);
         let rhs = a.mul(&sum_denom);
         let diff = lhs.sub(&rhs);
-        assert!(
-            diff.is_zero(),
-            "FTC verification failed: d/dθ(g) + h ≠ A/D"
-        );
+        assert!(diff.is_zero(), "FTC verification failed: d/dθ(g) + h ≠ A/D");
     }
 
     // ── Tower Rothstein-Trager ──────────────────────────────────────
@@ -547,7 +556,9 @@ mod tests {
         let result = tower_logarithmic_part(&a, &d);
         assert!(!result.is_non_elementary, "1/(θ²-1) should be elementary");
         // Should have log terms with constant coefficients ±1/2.
-        let constant_count = result.terms.iter()
+        let constant_count = result
+            .terms
+            .iter()
             .filter(|t| matches!(t, TowerLogTerm::Constant { .. }))
             .count();
         assert!(
@@ -574,9 +585,9 @@ mod tests {
         let integral = integrate_tower_poly(&p);
         assert_eq!(integral.degree(), Some(3));
         assert!(Ring::is_zero(&integral.coeff(0))); // constant = 0
-        assert_eq!(integral.coeff(1), rf_int(1));   // 1/1 · θ
-        assert_eq!(integral.coeff(2), rf_int(1));   // 2/2 · θ²
-        assert_eq!(integral.coeff(3), rf_int(1));   // 3/3 · θ³
+        assert_eq!(integral.coeff(1), rf_int(1)); // 1/1 · θ
+        assert_eq!(integral.coeff(2), rf_int(1)); // 2/2 · θ²
+        assert_eq!(integral.coeff(3), rf_int(1)); // 3/3 · θ³
     }
 
     #[test]

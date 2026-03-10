@@ -217,11 +217,7 @@ pub trait CoeffDisplay {
     /// natural binding strength is weaker than `env`.  For example,
     /// a fraction `3/4` in a `Product` context should display as
     /// `(3/4)` to avoid ambiguity with `3/4*x`.
-    fn fmt_coeff(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        env: BindingStrength,
-    ) -> fmt::Result;
+    fn fmt_coeff(&self, f: &mut fmt::Formatter<'_>, env: BindingStrength) -> fmt::Result;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -339,11 +335,7 @@ impl IntegralCoeff for Ratio<BigInt> {
 }
 
 impl CoeffDisplay for Ratio<BigInt> {
-    fn fmt_coeff(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        env: BindingStrength,
-    ) -> fmt::Result {
+    fn fmt_coeff(&self, f: &mut fmt::Formatter<'_>, env: BindingStrength) -> fmt::Result {
         if self.denom().is_one() {
             // Integer: no parens needed unless it's negative in a tight context.
             let n = self.numer();
@@ -378,8 +370,12 @@ mod tests {
     }
 
     // Disambiguated helpers — avoid collision between Ring::zero and num_traits::Zero::zero
-    fn qzero() -> Q { <Q as Ring>::zero() }
-    fn qone() -> Q { <Q as Ring>::one() }
+    fn qzero() -> Q {
+        <Q as Ring>::zero()
+    }
+    fn qone() -> Q {
+        <Q as Ring>::one()
+    }
 
     // ── Ring axiom tests ────────────────────────────────────────────
 
@@ -532,10 +528,7 @@ mod tests {
 
     #[test]
     fn integral_to_integer() {
-        assert_eq!(
-            IntegralCoeff::to_integer(&q(7, 1)),
-            Some(BigInt::from(7))
-        );
+        assert_eq!(IntegralCoeff::to_integer(&q(7, 1)), Some(BigInt::from(7)));
         assert_eq!(IntegralCoeff::to_integer(&q(7, 3)), None);
     }
 

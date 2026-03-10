@@ -5,8 +5,8 @@
 
 use std::time::Instant;
 
-use symplex::dynamics::{euler_lagrange, mass_matrix, manipulator_equation};
-use symplex::matrix::{jacobian, Matrix};
+use symplex::dynamics::{euler_lagrange, manipulator_equation, mass_matrix};
+use symplex::matrix::{Matrix, jacobian};
 use symplex::prelude::*;
 use symplex::robotics::{dh_matrix, fk_chain, fk_position};
 
@@ -106,16 +106,8 @@ fn experiment_3dof_planar_arm_dynamics() {
 
     let fk_time = t0.elapsed();
     println!("  FK positions built in {:?}", fk_time);
-    println!(
-        "  x3 ops={}, terms={}",
-        x3.count_ops(),
-        x3.term_count()
-    );
-    println!(
-        "  y3 ops={}, terms={}",
-        y3.count_ops(),
-        y3.term_count()
-    );
+    println!("  x3 ops={}, terms={}", x3.count_ops(), x3.term_count());
+    println!("  y3 ops={}, terms={}", y3.count_ops(), y3.term_count());
 
     // ── Step 2: COM velocities ───────────────────────────────────────────
     //
@@ -139,18 +131,12 @@ fn experiment_3dof_planar_arm_dynamics() {
     // Link 3 velocity
     //   ẋ3 = ∂x3/∂q1 · qd1 + ∂x3/∂q2 · qd2 + ∂x3/∂q3 · qd3
     //   ẏ3 = ∂y3/∂q1 · qd1 + ∂y3/∂q2 · qd2 + ∂y3/∂q3 · qd3
-    let xd3 = &(&(&x3.diff(&q1) * &qd1) + &(&x3.diff(&q2) * &qd2))
-        + &(&x3.diff(&q3) * &qd3);
-    let yd3 = &(&(&y3.diff(&q1) * &qd1) + &(&y3.diff(&q2) * &qd2))
-        + &(&y3.diff(&q3) * &qd3);
+    let xd3 = &(&(&x3.diff(&q1) * &qd1) + &(&x3.diff(&q2) * &qd2)) + &(&x3.diff(&q3) * &qd3);
+    let yd3 = &(&(&y3.diff(&q1) * &qd1) + &(&y3.diff(&q2) * &qd2)) + &(&y3.diff(&q3) * &qd3);
 
     let vel_time = t0.elapsed();
     println!("  Velocities built in {:?}", vel_time);
-    println!(
-        "  xd3 ops={}, terms={}",
-        xd3.count_ops(),
-        xd3.term_count()
-    );
+    println!("  xd3 ops={}, terms={}", xd3.count_ops(), xd3.term_count());
 
     // ── Step 3: Kinetic energy T = ½ Σ m_i (ẋ_i² + ẏ_i²) ──────────────
     println!("\nStep 3: Building kinetic energy T...");
@@ -160,8 +146,8 @@ fn experiment_3dof_planar_arm_dynamics() {
     let v2_sq = &(&xd2 * &xd2) + &(&yd2 * &yd2);
     let v3_sq = &(&xd3 * &xd3) + &(&yd3 * &yd3);
 
-    let ke = &(&(&half * &m1) * &v1_sq)
-        + &(&(&(&half * &m2) * &v2_sq) + &(&(&half * &m3) * &v3_sq));
+    let ke =
+        &(&(&half * &m1) * &v1_sq) + &(&(&(&half * &m2) * &v2_sq) + &(&(&half * &m3) * &v3_sq));
 
     let ke_build_time = t0.elapsed();
     println!("  T built in {:?}", ke_build_time);
@@ -183,8 +169,7 @@ fn experiment_3dof_planar_arm_dynamics() {
     println!("\nStep 4: Building potential energy V...");
     let t0 = Instant::now();
 
-    let pe = &(&(&m1 * &g_sym) * &y1)
-        + &(&(&(&m2 * &g_sym) * &y2) + &(&(&m3 * &g_sym) * &y3));
+    let pe = &(&(&m1 * &g_sym) * &y1) + &(&(&(&m2 * &g_sym) * &y2) + &(&(&m3 * &g_sym) * &y3));
 
     let pe_build_time = t0.elapsed();
     println!("  V built in {:?}", pe_build_time);
@@ -290,15 +275,30 @@ fn experiment_3dof_planar_arm_dynamics() {
     // Check M is symmetric: M[0,1] == M[1,0]
     let m01_val = subs_numeric(mm.get(0, 1));
     let m10_val = subs_numeric(mm.get(1, 0));
-    assert_near(m01_val, m10_val, 1e-8, "M must be symmetric: M[0,1] vs M[1,0]");
+    assert_near(
+        m01_val,
+        m10_val,
+        1e-8,
+        "M must be symmetric: M[0,1] vs M[1,0]",
+    );
 
     let m02_val = subs_numeric(mm.get(0, 2));
     let m20_val = subs_numeric(mm.get(2, 0));
-    assert_near(m02_val, m20_val, 1e-8, "M must be symmetric: M[0,2] vs M[2,0]");
+    assert_near(
+        m02_val,
+        m20_val,
+        1e-8,
+        "M must be symmetric: M[0,2] vs M[2,0]",
+    );
 
     let m12_val = subs_numeric(mm.get(1, 2));
     let m21_val = subs_numeric(mm.get(2, 1));
-    assert_near(m12_val, m21_val, 1e-8, "M must be symmetric: M[1,2] vs M[2,1]");
+    assert_near(
+        m12_val,
+        m21_val,
+        1e-8,
+        "M must be symmetric: M[1,2] vs M[2,1]",
+    );
     println!("  ✓ Mass matrix is symmetric");
 
     // Check M[0,0] > 0 (positive definite diagonal)
@@ -308,7 +308,9 @@ fn experiment_3dof_planar_arm_dynamics() {
     assert!(m11_val > 0.0, "M[1,1] must be positive, got {m11_val}");
     let m22_val = subs_numeric(mm.get(2, 2));
     assert!(m22_val > 0.0, "M[2,2] must be positive, got {m22_val}");
-    println!("  ✓ Diagonal entries are positive: M[0,0]={m00_val:.6}, M[1,1]={m11_val:.6}, M[2,2]={m22_val:.6}");
+    println!(
+        "  ✓ Diagonal entries are positive: M[0,0]={m00_val:.6}, M[1,1]={m11_val:.6}, M[2,2]={m22_val:.6}"
+    );
 
     // Verify M[0,0] against hand-computed value
     // M[0,0] = m1*(L1/2)^2 + m2*(L1^2 + (L2/2)^2 + 2*L1*(L2/2)*cos(q2))
@@ -325,23 +327,14 @@ fn experiment_3dof_planar_arm_dynamics() {
                 + 2.0 * lv1 * lv2 * qv2.cos()
                 + 2.0 * lv1 * (lv3 / 2.0) * (qv2 + qv3).cos()
                 + 2.0 * lv2 * (lv3 / 2.0) * qv3.cos());
-    assert_near(
-        m00_val,
-        expected_m00,
-        1e-6,
-        "M[0,0] vs hand-computed value",
-    );
+    assert_near(m00_val, expected_m00, 1e-6, "M[0,0] vs hand-computed value");
     println!("  ✓ M[0,0] = {m00_val:.6} matches expected {expected_m00:.6}");
 
     // ── Step 9: Full manipulator equation ────────────────────────────────
     println!("\nStep 9: Computing full manipulator equation M, C, g...");
     let t0 = Instant::now();
-    let (mm2, coriolis, grav) = manipulator_equation(
-        &ke_expanded,
-        &pe,
-        &[&q1, &q2, &q3],
-        &[&qd1, &qd2, &qd3],
-    );
+    let (mm2, coriolis, grav) =
+        manipulator_equation(&ke_expanded, &pe, &[&q1, &q2, &q3], &[&qd1, &qd2, &qd3]);
     let manip_time = t0.elapsed();
     println!("  manipulator_equation() completed in {:?}", manip_time);
     assert_eq!(mm2.shape(), (3, 3));
@@ -482,30 +475,15 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     let pz = fk_total.get(2, 3).clone();
     let pos_time = t0_pos.elapsed();
     println!("  Position extracted in {:?}", pos_time);
-    println!(
-        "  px: ops={}, terms={}",
-        px.count_ops(),
-        px.term_count()
-    );
-    println!(
-        "  py: ops={}, terms={}",
-        py.count_ops(),
-        py.term_count()
-    );
-    println!(
-        "  pz: ops={}, terms={}",
-        pz.count_ops(),
-        pz.term_count()
-    );
+    println!("  px: ops={}, terms={}", px.count_ops(), px.term_count());
+    println!("  py: ops={}, terms={}", py.count_ops(), py.term_count());
+    println!("  pz: ops={}, terms={}", pz.count_ops(), pz.term_count());
 
     // ── Step 4: Compute the position Jacobian (3×6) ──────────────────────
     println!("\nStep 4: Computing 3×6 position Jacobian...");
     let t0_jac = Instant::now();
 
-    let jac = jacobian(
-        &[&px, &py, &pz],
-        &[&q1, &q2, &q3, &q4, &q5, &q6],
-    );
+    let jac = jacobian(&[&px, &py, &pz], &[&q1, &q2, &q3, &q4, &q5, &q6]);
 
     let jac_time = t0_jac.elapsed();
     println!("  Jacobian computed in {:?}", jac_time);
@@ -659,10 +637,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     // Use the first 3 joints' FK positions for a simplified dynamics test
     let dh_1 = [(&q1, &zero, &zero, &half_pi)];
-    let dh_2 = [
-        (&q1, &zero, &zero, &half_pi),
-        (&q2, &zero, &a2, &zero),
-    ];
+    let dh_2 = [(&q1, &zero, &zero, &half_pi), (&q2, &zero, &a2, &zero)];
     let dh_3 = [
         (&q1, &zero, &zero, &half_pi),
         (&q2, &zero, &a2, &zero),
@@ -678,16 +653,11 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     // For a simplified spatial arm, potential energy uses z component
     // (assuming gravity is along -z)
     let g_sym = ctx.symbol("g");
-    let pe_6 = &(&(&m1 * &g_sym) * &p1z)
-        + &(&(&(&m2 * &g_sym) * &p2z) + &(&(&m3 * &g_sym) * &p3z));
+    let pe_6 = &(&(&m1 * &g_sym) * &p1z) + &(&(&(&m2 * &g_sym) * &p2z) + &(&(&m3 * &g_sym) * &p3z));
 
     let dyn_setup_time = t0_dyn.elapsed();
     println!("  6-DOF potential energy built in {:?}", dyn_setup_time);
-    println!(
-        "  V ops={}, terms={}",
-        pe_6.count_ops(),
-        pe_6.term_count()
-    );
+    println!("  V ops={}, terms={}", pe_6.count_ops(), pe_6.term_count());
 
     // Build kinetic energy using the position Jacobian approach
     // T = ½ Σ mᵢ Jᵢᵀ Jᵢ integrated over qdot
@@ -724,11 +694,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
 
     let ke6_time = t0_ke6.elapsed();
     println!("  Spatial KE (3 joints) built in {:?}", ke6_time);
-    println!(
-        "  T ops={}, terms={}",
-        ke_6.count_ops(),
-        ke_6.term_count()
-    );
+    println!("  T ops={}, terms={}", ke_6.count_ops(), ke_6.term_count());
 
     // Expand before mass_matrix extraction
     let t0_expand6 = Instant::now();
@@ -745,10 +711,7 @@ fn experiment_6dof_puma_fk_jacobian_codegen() {
     let t0_mm6 = Instant::now();
     let mm_6 = mass_matrix(&ke_6_expanded, &[&qd1, &qd2, &qd3]);
     let mm6_time = t0_mm6.elapsed();
-    println!(
-        "  mass_matrix() for spatial 3-DOF in {:?}",
-        mm6_time
-    );
+    println!("  mass_matrix() for spatial 3-DOF in {:?}", mm6_time);
     assert_eq!(mm_6.shape(), (3, 3));
     println!(
         "  M total ops={}, total terms={}",

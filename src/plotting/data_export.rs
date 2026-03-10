@@ -483,8 +483,7 @@ mod tests {
 
     #[test]
     fn table_from_evaluation() {
-        let table =
-            DataTable::from_evaluation("x", "x^2", &[0.0, 1.0, 2.0], |x| x * x);
+        let table = DataTable::from_evaluation("x", "x^2", &[0.0, 1.0, 2.0], |x| x * x);
         assert_eq!(table.nrows(), 3);
         let csv = table.to_csv();
         assert!(csv.contains("0,0\n"));

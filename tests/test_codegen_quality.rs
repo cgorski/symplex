@@ -15,10 +15,8 @@ fn codegen_2dof_no_trivial_temps() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let dh: [(&Ex, &Ex, &Ex, &Ex); 2] = [
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
-    ];
+    let dh: [(&Ex, &Ex, &Ex, &Ex); 2] =
+        [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
 
     let (px, py, _pz) = fk_position(&dh);
     let jac = jacobian(&[&px, &py], &[&theta1, &theta2]);
@@ -116,10 +114,7 @@ fn codegen_fraction_as_decimal() {
         .to_rust_fn("frac_test", &["x"])
         .expect("codegen should succeed");
 
-    assert!(
-        code.contains("0.25"),
-        "expected decimal `0.25` in:\n{code}"
-    );
+    assert!(code.contains("0.25"), "expected decimal `0.25` in:\n{code}");
     assert!(
         !code.contains("1_f64 / 4_f64"),
         "should not contain fraction syntax `1_f64 / 4_f64` in:\n{code}"

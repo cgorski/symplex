@@ -468,8 +468,8 @@ mod tests {
         for n in 2..=10u64 {
             for k in 1..=n {
                 let lhs = stirling2(n, k).unwrap();
-                let rhs = bi(k as i64) * stirling2(n - 1, k).unwrap()
-                    + stirling2(n - 1, k - 1).unwrap();
+                let rhs =
+                    bi(k as i64) * stirling2(n - 1, k).unwrap() + stirling2(n - 1, k - 1).unwrap();
                 assert_eq!(lhs, rhs, "recurrence failed for S({n}, {k})");
             }
         }

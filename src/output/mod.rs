@@ -1,9 +1,9 @@
-pub(crate) mod common;
-pub(crate) mod display;
-pub(crate) mod latex;
-pub(crate) mod pretty;
 pub(crate) mod codegen;
+pub(crate) mod common;
 pub(crate) mod cse;
+pub(crate) mod display;
 pub(crate) mod lambdify;
-pub mod tree;
+pub(crate) mod latex;
 pub mod parse;
+pub(crate) mod pretty;
+pub mod tree;

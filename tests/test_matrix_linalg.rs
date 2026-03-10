@@ -13,7 +13,8 @@ fn minor_2x2_removes_row_and_col() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     // Removing row 0, col 0 → [[4]]
     let m00 = m.minor(0, 0).unwrap();
     assert_eq!(m00.nrows(), 1);
@@ -40,7 +41,8 @@ fn minor_3x3_produces_2x2() {
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
         vec![ctx.int(7), ctx.int(8), ctx.int(9)],
-    ]).unwrap();
+    ])
+    .unwrap();
     // Remove row 1, col 1 → [[1,3],[7,9]]
     let sub = m.minor(1, 1).unwrap();
     assert_eq!(sub.nrows(), 2);
@@ -61,7 +63,8 @@ fn cofactor_2x2_numeric() {
     let m = Matrix::new(vec![
         vec![ctx.int(3), ctx.int(7)],
         vec![ctx.int(1), ctx.int(5)],
-    ]).unwrap();
+    ])
+    .unwrap();
     // C(0,0) = (+1)*det([[5]]) = 5
     let c00 = m.cofactor(0, 0).unwrap();
     assert_eq!(format!("{c00}"), "5");
@@ -87,7 +90,8 @@ fn adjugate_2x2_numeric() {
     let m = Matrix::new(vec![
         vec![ctx.int(3), ctx.int(7)],
         vec![ctx.int(1), ctx.int(5)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let adj = m.adjugate().unwrap();
     assert_eq!(format!("{}", adj.get(0, 0)), "5");
     assert_eq!(format!("{}", adj.get(0, 1)), "-7");
@@ -126,7 +130,8 @@ fn inverse_2x2_numeric() {
     let m = Matrix::new(vec![
         vec![ctx.int(3), ctx.int(7)],
         vec![ctx.int(1), ctx.int(5)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let inv = m.inv().expect("non-singular 2x2 should be invertible");
     let inv = inv.simplify();
     assert_eq!(format!("{}", inv.get(0, 0)), "5/8");
@@ -142,7 +147,8 @@ fn inverse_singular_returns_none() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(2), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert!(m.inv().is_err(), "singular matrix should return Err");
 }
 
@@ -152,7 +158,8 @@ fn inverse_times_original_is_identity_2x2() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let inv = m.inv().expect("non-singular");
     let product = m.matmul(&inv).unwrap().simplify();
     for i in 0..2 {
@@ -175,7 +182,8 @@ fn inverse_3x3_numeric() {
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(0), ctx.int(1), ctx.int(4)],
         vec![ctx.int(0), ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let det = m.det().unwrap();
     assert_eq!(format!("{det}"), "1", "det should be 1");
 
@@ -239,7 +247,8 @@ fn char_poly_2x2_numeric() {
     let m = Matrix::new(vec![
         vec![ctx.int(2), ctx.int(1)],
         vec![ctx.int(1), ctx.int(2)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let cp = m.char_poly(&lambda).unwrap();
     let s = format!("{cp}");
     assert!(s.contains("lambda"), "char poly should mention lambda: {s}");
@@ -261,7 +270,8 @@ fn char_poly_diagonal_3x3() {
         vec![ctx.int(2), ctx.int(0), ctx.int(0)],
         vec![ctx.int(0), ctx.int(5), ctx.int(0)],
         vec![ctx.int(0), ctx.int(0), ctx.int(7)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let cp = m.char_poly(&lambda).unwrap();
 
     // Verify roots at 2, 5, 7
@@ -299,7 +309,8 @@ fn eigenvals_2x2() {
     let m = Matrix::new(vec![
         vec![ctx.int(2), ctx.int(1)],
         vec![ctx.int(1), ctx.int(2)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let evals = m.eigenvals(&lambda).unwrap();
     assert_eq!(
         evals.len(),
@@ -326,7 +337,8 @@ fn eigenvals_3x3_diagonal() {
         vec![ctx.int(1), ctx.int(0), ctx.int(0)],
         vec![ctx.int(0), ctx.int(2), ctx.int(0)],
         vec![ctx.int(0), ctx.int(0), ctx.int(3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let evals = m.eigenvals(&lambda).unwrap();
     assert_eq!(
         evals.len(),
@@ -386,7 +398,8 @@ fn minor_non_square_panics() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let _ = m.minor(0, 0).unwrap();
 }
 
@@ -397,7 +410,8 @@ fn inverse_non_square_panics() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let _ = m.inv().unwrap();
 }
 
@@ -410,7 +424,8 @@ fn char_poly_non_square_panics() {
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
         vec![ctx.int(5), ctx.int(6)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let _ = m.char_poly(&lambda).unwrap();
 }
 
@@ -427,7 +442,8 @@ fn eigenvector_satisfies_eigenvalue_equation() {
     let a = Matrix::new(vec![
         vec![ctx.int(2), ctx.int(1)],
         vec![ctx.int(1), ctx.int(2)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     // Verify eigenvalues first
     let lambda = ctx.symbol("lambda");
@@ -472,7 +488,8 @@ fn complex_eigenvalues_rotation_matrix() {
     let m = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(-1)],
         vec![ctx.int(1), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     // Verify characteristic polynomial: λ² + 1
     let cp = m.char_poly(&lambda).unwrap();
@@ -517,7 +534,8 @@ fn det_inverse_equals_reciprocal_det() {
     let a = Matrix::new(vec![
         vec![ctx.int(3), ctx.int(7)],
         vec![ctx.int(1), ctx.int(5)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let det_a = a.det().unwrap();
     assert_eq!(format!("{det_a}"), "8", "det(A) should be 8");
 
@@ -534,7 +552,8 @@ fn det_inverse_equals_reciprocal_det() {
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(0), ctx.int(1), ctx.int(4)],
         vec![ctx.int(0), ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let det_b = b.det().unwrap();
     assert_eq!(format!("{det_b}"), "1", "det(B) should be 1");
 
@@ -559,7 +578,8 @@ fn eigenvals_2x2_irrational() {
     let m = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(2)],
         vec![ctx.int(1), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let evals = m.eigenvals(&lambda).unwrap();
     assert_eq!(
         evals.len(),
@@ -572,8 +592,12 @@ fn eigenvals_2x2_irrational() {
     let mut found_neg = false;
     for ev in &evals {
         if let Ok(v) = ev.eval_f64() {
-            if (v - std::f64::consts::SQRT_2).abs() < 1e-8 { found_pos = true; }
-            if (v + std::f64::consts::SQRT_2).abs() < 1e-8 { found_neg = true; }
+            if (v - std::f64::consts::SQRT_2).abs() < 1e-8 {
+                found_pos = true;
+            }
+            if (v + std::f64::consts::SQRT_2).abs() < 1e-8 {
+                found_neg = true;
+            }
         }
     }
     assert!(
@@ -591,17 +615,13 @@ fn det_equals_det_transpose() {
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(0), ctx.int(4), ctx.int(5)],
         vec![ctx.int(1), ctx.int(0), ctx.int(6)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let det_a = m.det().unwrap();
     let det_at = m.transpose().det().unwrap();
     let d1 = det_a.eval_f64().expect("det(A) should evaluate to f64");
     let d2 = det_at.eval_f64().expect("det(A^T) should evaluate to f64");
-    assert!(
-        (d1 - d2).abs() < 1e-10,
-        "det(A)={} ≠ det(A^T)={}",
-        d1,
-        d2
-    );
+    assert!((d1 - d2).abs() < 1e-10, "det(A)={} ≠ det(A^T)={}", d1, d2);
 }
 
 #[test]
@@ -613,7 +633,8 @@ fn eigenvals_3x3_upper_triangular() {
         vec![ctx.int(1), ctx.int(5), ctx.int(3)],
         vec![ctx.int(0), ctx.int(2), ctx.int(7)],
         vec![ctx.int(0), ctx.int(0), ctx.int(3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let evals = m.eigenvals(&lambda).unwrap();
     assert_eq!(
         evals.len(),

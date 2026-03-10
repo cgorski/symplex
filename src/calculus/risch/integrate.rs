@@ -26,17 +26,16 @@
 use num_bigint::BigInt;
 use num_rational::Ratio;
 
-
+use super::RischResult;
+use super::rde::{self, RdeResult};
+use super::tower::{DifferentialExtension, ExtensionKind};
+use super::tower_integrate::{tower_hermite_reduce, tower_logarithmic_part};
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::poly::dense::Poly;
 use crate::poly::generic::GenPoly;
 use crate::poly::ratfn::RationalFn;
-use crate::poly::traits::{Ring, Field};
-use super::tower::{DifferentialExtension, ExtensionKind};
-use super::tower_integrate::{tower_hermite_reduce, tower_logarithmic_part};
-use super::RischResult;
-use super::rde::{self, RdeResult};
+use crate::poly::traits::{Field, Ring};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Main entry point
@@ -84,15 +83,9 @@ pub fn risch_integrate(arena: &mut Arena, de: &mut DifferentialExtension) -> Ris
     }
 
     match de.current_kind().cloned() {
-        Some(ExtensionKind::Logarithmic) => {
-            integrate_primitive(arena, de)
-        }
-        Some(ExtensionKind::Exponential) => {
-            integrate_hyperexponential(arena, de)
-        }
-        None => {
-            RischResult::Failed("no extension kind at current level".into())
-        }
+        Some(ExtensionKind::Logarithmic) => integrate_primitive(arena, de),
+        Some(ExtensionKind::Exponential) => integrate_hyperexponential(arena, de),
+        None => RischResult::Failed("no extension kind at current level".into()),
     }
 }
 
@@ -161,15 +154,15 @@ fn try_tower_rational_path(
     // Try to convert numer and denom to GenPoly<RationalFn>.
     let n_gp = match arena_to_genpoly_ratfn(arena, n_id, ext_var, base_var) {
         Some(gp) => gp,
-        None => return RischResult::Failed(
-            "Cannot convert numerator to GenPoly<RationalFn>".into()
-        ),
+        None => {
+            return RischResult::Failed("Cannot convert numerator to GenPoly<RationalFn>".into());
+        }
     };
     let d_gp = match arena_to_genpoly_ratfn(arena, d_id, ext_var, base_var) {
         Some(gp) => gp,
-        None => return RischResult::Failed(
-            "Cannot convert denominator to GenPoly<RationalFn>".into()
-        ),
+        None => {
+            return RischResult::Failed("Cannot convert denominator to GenPoly<RationalFn>".into());
+        }
     };
 
     if d_gp.is_zero() {
@@ -198,7 +191,7 @@ fn try_tower_rational_path(
     //
     // TODO: convert GenPoly<RationalFn> result back to arena ExprId.
     RischResult::Failed(
-        "Tower HR+RT proved elementary but arena conversion not yet implemented".into()
+        "Tower HR+RT proved elementary but arena conversion not yet implemented".into(),
     )
 }
 
@@ -329,7 +322,8 @@ fn integrate_primitive(arena: &mut Arena, de: &mut DifferentialExtension) -> Ris
     let max_power = poly_terms.iter().map(|&(p, _)| p).max().unwrap_or(0);
 
     // Build a lookup: power → coefficient expression.
-    let mut coeff_map: std::collections::BTreeMap<usize, ExprId> = std::collections::BTreeMap::new();
+    let mut coeff_map: std::collections::BTreeMap<usize, ExprId> =
+        std::collections::BTreeMap::new();
     for &(power, coeff) in &poly_terms {
         coeff_map.insert(power, coeff);
     }
@@ -371,7 +365,8 @@ fn integrate_primitive(arena: &mut Arena, de: &mut DifferentialExtension) -> Ris
         if matches!(arena.node(b_k), ExprNode::Integral(_, _)) || b_k == rhs {
             // Recursive integration failed — fall back.
             return RischResult::Failed(
-                "Recursive integration failed in logarithmic polynomial coefficient matching".into()
+                "Recursive integration failed in logarithmic polynomial coefficient matching"
+                    .into(),
             );
         }
 
@@ -493,7 +488,8 @@ fn integrate_hyperexponential(arena: &mut Arena, de: &mut DifferentialExtension)
 
     let max_power = poly_terms.iter().map(|&(p, _)| p).max().unwrap_or(0);
 
-    let mut coeff_map: std::collections::BTreeMap<usize, ExprId> = std::collections::BTreeMap::new();
+    let mut coeff_map: std::collections::BTreeMap<usize, ExprId> =
+        std::collections::BTreeMap::new();
     for &(power, coeff) in &poly_terms {
         coeff_map.insert(power, coeff);
     }
@@ -517,7 +513,7 @@ fn integrate_hyperexponential(arena: &mut Arena, de: &mut DifferentialExtension)
             let b_0 = crate::transforms::integrate::integrate(arena, a_k, base_var);
             if matches!(arena.node(b_0), ExprNode::Integral(_, _)) {
                 return RischResult::Failed(
-                    "Recursive integration failed for k=0 coefficient in exponential case".into()
+                    "Recursive integration failed for k=0 coefficient in exponential case".into(),
                 );
             }
             b_coeffs.insert(0, b_0);
@@ -546,8 +542,10 @@ fn integrate_hyperexponential(arena: &mut Arena, de: &mut DifferentialExtension)
                     match rde_result {
                         RdeResult::Solution { numer, denom } => {
                             // B_k = numer / denom
-                            let n_id = crate::poly::polybridge::poly_to_expr(arena, &numer, base_var);
-                            let d_id = crate::poly::polybridge::poly_to_expr(arena, &denom, base_var);
+                            let n_id =
+                                crate::poly::polybridge::poly_to_expr(arena, &numer, base_var);
+                            let d_id =
+                                crate::poly::polybridge::poly_to_expr(arena, &denom, base_var);
                             let b_k = if d_id == arena.one() {
                                 n_id
                             } else {
@@ -564,16 +562,14 @@ fn integrate_hyperexponential(arena: &mut Arena, de: &mut DifferentialExtension)
                             return RischResult::NonElementary;
                         }
                         RdeResult::NotImplemented(msg) => {
-                            return RischResult::Failed(
-                                format!("RDE solver: {msg}")
-                            );
+                            return RischResult::Failed(format!("RDE solver: {msg}"));
                         }
                     }
                 }
                 _ => {
-                    return RischResult::Failed(
-                        format!("Cannot convert RDE coefficients to polynomials for k={k}")
-                    );
+                    return RischResult::Failed(format!(
+                        "Cannot convert RDE coefficients to polynomials for k={k}"
+                    ));
                 }
             }
         }
@@ -636,8 +632,15 @@ mod tests {
         let a = Poly::from_coeffs(vec![rat(1, 1), rat(2, 1), rat(3, 1)]);
         let d = Poly::from_int(1);
         match integrate_rational(&a, &d) {
-            RischResult::Elementary { rational_numer, rational_denom, log_terms } => {
-                assert!(log_terms.is_empty(), "polynomial integral should have no log terms");
+            RischResult::Elementary {
+                rational_numer,
+                rational_denom,
+                log_terms,
+            } => {
+                assert!(
+                    log_terms.is_empty(),
+                    "polynomial integral should have no log terms"
+                );
                 assert_eq!(rational_denom.degree().unwrap_or(0), 0, "denom should be 1");
                 // Integral should be x + x² + x³
                 assert_eq!(rational_numer.degree(), Some(3));
@@ -652,10 +655,16 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::x();
         match integrate_rational(&a, &d) {
-            RischResult::Elementary { rational_numer, log_terms, .. } => {
+            RischResult::Elementary {
+                rational_numer,
+                log_terms,
+                ..
+            } => {
                 // Rational part should be zero (1/x has no Hermite reduction).
-                assert!(rational_numer.is_zero() || rational_numer.degree().unwrap_or(0) == 0,
-                    "1/x should have zero rational part");
+                assert!(
+                    rational_numer.is_zero() || rational_numer.degree().unwrap_or(0) == 0,
+                    "1/x should have zero rational part"
+                );
                 // Should have one log term: 1·ln(x).
                 assert!(!log_terms.is_empty(), "should have log terms for 1/x");
             }
@@ -669,7 +678,11 @@ mod tests {
         let a = Poly::from_int(1);
         let d = Poly::from_coeffs(vec![rat(0, 1), rat(0, 1), rat(1, 1)]); // x²
         match integrate_rational(&a, &d) {
-            RischResult::Elementary { rational_numer, rational_denom, log_terms } => {
+            RischResult::Elementary {
+                rational_numer,
+                rational_denom,
+                log_terms,
+            } => {
                 assert!(log_terms.is_empty(), "1/x² should have no log terms");
                 // Rational part should be -1/x or equivalent.
                 assert!(
@@ -689,10 +702,7 @@ mod tests {
         match integrate_rational(&a, &d) {
             RischResult::Elementary { log_terms, .. } => {
                 // Should have log terms (partial fractions).
-                assert!(
-                    !log_terms.is_empty(),
-                    "1/(x²-1) should have log terms"
-                );
+                assert!(!log_terms.is_empty(), "1/(x²-1) should have log terms");
             }
             other => panic!("expected Elementary, got {:?}", other),
         }

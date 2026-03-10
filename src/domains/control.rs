@@ -60,13 +60,43 @@ impl StateSpace {
     /// - D must be p×m
     pub fn new(a: Matrix, b: Matrix, c: Matrix, d: Matrix) -> Self {
         let n = a.nrows();
-        assert_eq!(a.ncols(), n, "A must be square: got {}×{}", a.nrows(), a.ncols());
-        assert_eq!(b.nrows(), n, "B must have {} rows (same as A), got {}", n, b.nrows());
-        assert_eq!(c.ncols(), n, "C must have {} cols (same as A), got {}", n, c.ncols());
+        assert_eq!(
+            a.ncols(),
+            n,
+            "A must be square: got {}×{}",
+            a.nrows(),
+            a.ncols()
+        );
+        assert_eq!(
+            b.nrows(),
+            n,
+            "B must have {} rows (same as A), got {}",
+            n,
+            b.nrows()
+        );
+        assert_eq!(
+            c.ncols(),
+            n,
+            "C must have {} cols (same as A), got {}",
+            n,
+            c.ncols()
+        );
         let m = b.ncols();
         let p = c.nrows();
-        assert_eq!(d.nrows(), p, "D must have {} rows (same as C), got {}", p, d.nrows());
-        assert_eq!(d.ncols(), m, "D must have {} cols (same as B), got {}", m, d.ncols());
+        assert_eq!(
+            d.nrows(),
+            p,
+            "D must have {} rows (same as C), got {}",
+            p,
+            d.nrows()
+        );
+        assert_eq!(
+            d.ncols(),
+            m,
+            "D must have {} cols (same as B), got {}",
+            m,
+            d.ncols()
+        );
         StateSpace { a, b, c, d }
     }
 
@@ -190,7 +220,9 @@ impl StateSpace {
     pub fn discretize_zoh(&self, dt: &Ex, order: usize) -> StateSpace {
         let n = self.num_states();
         let a_dt = self.a.scale(dt);
-        let exp_a_dt = a_dt.exp_series(order).expect("exp_series: matrix must be square");
+        let exp_a_dt = a_dt
+            .exp_series(order)
+            .expect("exp_series: matrix must be square");
 
         // Bᵈ = (I·dt + A·dt²/2! + A²·dt³/3! + ...)B
         let ctx = self.ctx();
@@ -223,14 +255,25 @@ impl StateSpace {
         let r_inv = r.inv().ok()?;
         let bt = self.b.transpose();
 
-        let term1 = at.matmul(p).expect("matmul: dimension mismatch");           // AᵀP
-        let term2 = p.matmul(&self.a).expect("matmul: dimension mismatch");       // PA
-        let term3 = p.matmul(&self.b).expect("matmul: dimension mismatch")        // PBR⁻¹BᵀP
-            .matmul(&r_inv).expect("matmul: dimension mismatch")
-            .matmul(&bt).expect("matmul: dimension mismatch")
-            .matmul(p).expect("matmul: dimension mismatch");
+        let term1 = at.matmul(p).expect("matmul: dimension mismatch"); // AᵀP
+        let term2 = p.matmul(&self.a).expect("matmul: dimension mismatch"); // PA
+        let term3 = p
+            .matmul(&self.b)
+            .expect("matmul: dimension mismatch") // PBR⁻¹BᵀP
+            .matmul(&r_inv)
+            .expect("matmul: dimension mismatch")
+            .matmul(&bt)
+            .expect("matmul: dimension mismatch")
+            .matmul(p)
+            .expect("matmul: dimension mismatch");
 
-        let residual = term1.add(&term2).expect("add: shape mismatch").sub(&term3).expect("sub: shape mismatch").add(q).expect("add: shape mismatch");
+        let residual = term1
+            .add(&term2)
+            .expect("add: shape mismatch")
+            .sub(&term3)
+            .expect("sub: shape mismatch")
+            .add(q)
+            .expect("add: shape mismatch");
         Some(residual)
     }
 
@@ -291,12 +334,12 @@ impl StateSpace {
         // K = eₙᵀ · C⁻¹ · p(A)
         // where eₙᵀ is the last standard basis row vector,
         // so eₙᵀ · C⁻¹ is the last row of C⁻¹.
-        let last_row: Vec<Ex> = (0..n)
-            .map(|j| ctrb_inv.get(n - 1, j).clone())
-            .collect();
+        let last_row: Vec<Ex> = (0..n).map(|j| ctrb_inv.get(n - 1, j).clone()).collect();
         let last_row_mat = Matrix::new(vec![last_row]).unwrap(); // 1×n
 
-        let k = last_row_mat.matmul(&p_a).expect("matmul: dimension mismatch"); // 1×n
+        let k = last_row_mat
+            .matmul(&p_a)
+            .expect("matmul: dimension mismatch"); // 1×n
         Some(k)
     }
 }
@@ -503,7 +546,10 @@ impl std::fmt::Display for TransferFunction {
 ///
 /// Panics if `coeffs` is empty.
 pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
-    assert!(!coeffs.is_empty(), "routh_array: coefficients must not be empty");
+    assert!(
+        !coeffs.is_empty(),
+        "routh_array: coefficients must not be empty"
+    );
 
     let n = coeffs.len();
     if n == 1 {
@@ -630,17 +676,11 @@ mod tests {
         let a = Matrix::new(vec![
             vec![ctx.int(0), ctx.int(1)],
             vec![ctx.int(-2), ctx.int(-3)],
-        ]).unwrap();
-        let b = Matrix::new(vec![
-            vec![ctx.int(0)],
-            vec![ctx.int(1)],
-        ]).unwrap();
-        let c = Matrix::new(vec![
-            vec![ctx.int(1), ctx.int(0)],
-        ]).unwrap();
-        let d = Matrix::new(vec![
-            vec![ctx.int(0)],
-        ]).unwrap();
+        ])
+        .unwrap();
+        let b = Matrix::new(vec![vec![ctx.int(0)], vec![ctx.int(1)]]).unwrap();
+        let c = Matrix::new(vec![vec![ctx.int(1), ctx.int(0)]]).unwrap();
+        let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
         let ss = StateSpace::new(a, b, c, d);
         assert_eq!(ss.num_states(), 2);
         assert_eq!(ss.num_inputs(), 1);
@@ -651,13 +691,12 @@ mod tests {
     fn transfer_function_basic_display() {
         let ctx = crate::api::context::Context::new();
         let s = ctx.symbol("s");
-        let tf = TransferFunction::new(
-            ctx.int(1),
-            &s * &s + &s * 3 + 2,
-            s,
-        );
+        let tf = TransferFunction::new(ctx.int(1), &s * &s + &s * 3 + 2, s);
         let display = format!("{tf}");
-        assert!(display.contains("/"), "Display should show fraction: {display}");
+        assert!(
+            display.contains("/"),
+            "Display should show fraction: {display}"
+        );
     }
 
     #[test]

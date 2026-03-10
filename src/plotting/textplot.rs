@@ -231,9 +231,7 @@ mod tests {
 
     #[test]
     fn textplot_constant_function() {
-        let points: Vec<(f64, f64)> = (0..50)
-            .map(|i| (i as f64, 5.0))
-            .collect();
+        let points: Vec<(f64, f64)> = (0..50).map(|i| (i as f64, 5.0)).collect();
         let plot = textplot(&points, 50, 15, Some("y=5"));
         assert!(plot.contains("y=5"));
         assert!(!plot.is_empty());

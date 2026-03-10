@@ -50,7 +50,8 @@ fn dsolve_simple_separable() {
     let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy - &x; // y' - x = 0
-    let sol = ode.try_solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("dsolve should handle y' - x = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should have constant: {s}");
@@ -65,7 +66,8 @@ fn dsolve_exponential_decay() {
     let y = ctx.symbol("y");
     let dy = y.formal_diff(&x);
     let ode = &dy + &(&y * 2); // y' + 2y = 0
-    let sol = ode.try_solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("dsolve should handle y' + 2y = 0");
     let s = format!("{sol}");
     assert!(s.contains("exp"), "should contain exp: {s}");
@@ -78,7 +80,8 @@ fn dsolve_via_expr_macro() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let ode = expr!(ctx, diff(y, x) + 2 * y); // y' + 2y = 0
-    let sol = ode.try_solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("dsolve should handle y' + 2y = 0 via expr macro");
     let s = format!("{sol}");
     assert!(s.contains("exp") || s.contains("C1"), "solution: {s}");
@@ -91,7 +94,8 @@ fn dsolve_dy_equals_zero() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let ode = y.formal_diff(&x); // y' = 0
-    let sol = ode.try_solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("dsolve should handle y' = 0");
     let s = format!("{sol}");
     assert!(s.contains("C1"), "should be constant: {s}");
@@ -180,7 +184,8 @@ fn ode_via_eq_macro() {
     // Build y' + y = 0 via eq! macro...
     // eq! doesn't support diff() yet, so build manually
     let ode = expr!(ctx, diff(y, x) + y);
-    let sol = ode.try_solve_ode(&y, &x)
+    let sol = ode
+        .try_solve_ode(&y, &x)
         .expect("dsolve should handle y' + y = 0");
     let s = format!("{sol}");
     assert!(s.contains("exp") || s.contains("C1"), "ODE solution: {s}");

@@ -46,10 +46,11 @@ impl SymbolTable {
                 .expect("symbol table overflow: more than 4 billion symbols"),
         );
         self.names.push(name.to_owned());
-        self.assumptions.push(crate::base::assumptions::Assumptions {
-            known_true: crate::base::assumptions::Props::empty(),
-            known_false: crate::base::assumptions::Props::empty(),
-        });
+        self.assumptions
+            .push(crate::base::assumptions::Assumptions {
+                known_true: crate::base::assumptions::Props::empty(),
+                known_false: crate::base::assumptions::Props::empty(),
+            });
         self.lookup.insert(name.to_owned(), id);
         id
     }

@@ -117,7 +117,11 @@ fn heurisch_attempt(
 
     // ── Step 4: Degree bound ───────────────────────────────────────
     let degree_bound = compute_degree_bound(arena, &components, var_sym) + degree_offset;
-    tracing::debug!("heurisch: degree bound total={}, offset={}", degree_bound, degree_offset);
+    tracing::debug!(
+        "heurisch: degree bound total={}, offset={}",
+        degree_bound,
+        degree_offset
+    );
     if degree_bound > 12 {
         // Bail out if degree bound is too large (would create huge systems).
         return None;
@@ -130,7 +134,11 @@ fn heurisch_attempt(
     }
 
     let n_unknowns = monomials.len();
-    tracing::debug!("heurisch: {} monomials, {} unknowns", monomials.len(), n_unknowns);
+    tracing::debug!(
+        "heurisch: {} monomials, {} unknowns",
+        monomials.len(),
+        n_unknowns
+    );
     if n_unknowns > 60 {
         // Too many unknowns for reliable f64 solution.
         return None;
@@ -200,8 +208,7 @@ fn heurisch_attempt(
         // the derivative using the chain rule numerically.
         let mut row: Vec<f64> = Vec::with_capacity(n_unknowns);
         for monomial in monomials.iter().take(n_unknowns) {
-            let monomial_deriv =
-                eval_monomial_deriv(&comp_vals, &comp_deriv_vals, monomial);
+            let monomial_deriv = eval_monomial_deriv(&comp_vals, &comp_deriv_vals, monomial);
             if !monomial_deriv.is_finite() {
                 // Skip this point entirely.
                 row.clear();
@@ -232,7 +239,11 @@ fn heurisch_attempt(
         .iter()
         .map(|&c| rationalize(c, 1000))
         .collect::<Option<Vec<_>>>()?;
-    tracing::debug!("heurisch: reconstructed {}/{} coefficients", rational_coeffs.len(), coeffs.len());
+    tracing::debug!(
+        "heurisch: reconstructed {}/{} coefficients",
+        rational_coeffs.len(),
+        coeffs.len()
+    );
 
     // ── Step 10: Build symbolic candidate ──────────────────────────
     let candidate = build_candidate(arena, &monomials, &rational_coeffs, &components, &comp_syms);
@@ -261,12 +272,11 @@ fn heurisch_attempt(
         }
     }
 
-    tracing::debug!("heurisch: verification {}", if verified { "passed" } else { "failed" });
-    if verified {
-        Some(candidate)
-    } else {
-        None
-    }
+    tracing::debug!(
+        "heurisch: verification {}",
+        if verified { "passed" } else { "failed" }
+    );
+    if verified { Some(candidate) } else { None }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -691,8 +701,7 @@ fn erf_approx_f64(x: f64) -> f64 {
     let t = 1.0 / (1.0 + 0.3275911 * x);
     let poly = t
         * (0.254829592
-            + t * (-0.284496736
-                + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+            + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
     sign * (1.0 - poly * (-x * x).exp())
 }
 

@@ -230,7 +230,9 @@ fn atan2_basic() {
     // atan2(1, 1) = π/4
     let one = ctx.int(1);
     let result = one.atan2(&one).eval();
-    let v = result.eval_f64().expect("evalf should succeed for atan2(1,1)");
+    let v = result
+        .eval_f64()
+        .expect("evalf should succeed for atan2(1,1)");
     assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
 }
 

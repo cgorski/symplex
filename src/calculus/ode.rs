@@ -16,10 +16,10 @@
 //!   via eigendecomposition (exact) or matrix exponential series (fallback)
 //! - **Non-homogeneous systems:** `ẋ = A·x + b(t)` → variation of parameters
 
-use crate::base::arena::Arena;
 use crate::api::expr::Ex;
-use crate::domains::matrix::Matrix;
+use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::domains::matrix::Matrix;
 use num_traits::One;
 use num_traits::Signed;
 
@@ -76,9 +76,7 @@ pub fn dsolve(
     }
 
     // Type 1d: Variation of parameters: y'' + p·y' + q·y = g(x) (fallback)
-    if let Some(result) =
-        try_variation_of_parameters(arena, expr, func, var, func_sym, var_sym)
-    {
+    if let Some(result) = try_variation_of_parameters(arena, expr, func, var, func_sym, var_sym) {
         return Some(result);
     }
 
@@ -482,7 +480,8 @@ fn try_second_order_cc_nonhomogeneous(
                 }
             }
             if all_numeric {
-                find_particular_polynomial(&b, &c, &rhs_coeffs).map(|pc| build_polynomial_expr(arena, &pc, var))
+                find_particular_polynomial(&b, &c, &rhs_coeffs)
+                    .map(|pc| build_polynomial_expr(arena, &pc, var))
             } else {
                 None
             }
@@ -553,10 +552,8 @@ fn find_particular_polynomial(
             } else {
                 Ratio::zero()
             };
-            let factor2 =
-                Ratio::from_integer(BigInt::from(((j + 2) * (j + 1)) as i64)) * a_j2;
-            let factor1 =
-                Ratio::from_integer(BigInt::from((j + 1) as i64)) * b.clone() * a_j1;
+            let factor2 = Ratio::from_integer(BigInt::from(((j + 2) * (j + 1)) as i64)) * a_j2;
+            let factor1 = Ratio::from_integer(BigInt::from((j + 1) as i64)) * b.clone() * a_j1;
             a[j] = (rhs_coeffs[j].clone() - factor2 - factor1) / c.clone();
         }
         Some(a)
@@ -569,13 +566,11 @@ fn find_particular_polynomial(
         let mut bb = vec![Ratio::<BigInt>::zero(); n + 1];
         for j in (0..=n).rev() {
             let deriv_term = if j < n {
-                Ratio::from_integer(BigInt::from(((j + 2) * (j + 1)) as i64))
-                    * bb[j + 1].clone()
+                Ratio::from_integer(BigInt::from(((j + 2) * (j + 1)) as i64)) * bb[j + 1].clone()
             } else {
                 Ratio::zero()
             };
-            let denom =
-                Ratio::from_integer(BigInt::from((j + 1) as i64)) * b.clone();
+            let denom = Ratio::from_integer(BigInt::from((j + 1) as i64)) * b.clone();
             if denom.is_zero() {
                 return None;
             }
@@ -591,8 +586,7 @@ fn find_particular_polynomial(
         // Coefficient of x^{j+2} = r_j / ((j+1)(j+2))
         let mut result = vec![Ratio::<BigInt>::zero(); 2];
         for (j, r_j) in rhs_coeffs.iter().enumerate() {
-            let denom =
-                Ratio::from_integer(BigInt::from(((j + 1) * (j + 2)) as i64));
+            let denom = Ratio::from_integer(BigInt::from(((j + 1) * (j + 2)) as i64));
             result.push(r_j.clone() / denom);
         }
         Some(result)
@@ -1162,16 +1156,17 @@ fn extract_coeff_of_func(
     // Use as_coeff_term to peel off a numeric coefficient, then check the term
     {
         let (coeff, term) = arena.as_coeff_term(expr);
-        if !coeff.is_one() && term != expr
+        if !coeff.is_one()
+            && term != expr
             && let Some(inner_coeff) = extract_coeff_of_func(arena, term, func, func_sym, _var_sym)
-            {
-                let coeff_id = {
-                    let nid = arena.intern_num(coeff);
-                    arena.intern(ExprNode::Num(nid))
-                };
-                let result = arena.mul(&[coeff_id, inner_coeff]);
-                return Some(result);
-            }
+        {
+            let coeff_id = {
+                let nid = arena.intern_num(coeff);
+                arena.intern(ExprNode::Num(nid))
+            };
+            let result = arena.mul(&[coeff_id, inner_coeff]);
+            return Some(result);
+        }
     }
 
     None
@@ -1420,9 +1415,7 @@ fn try_integrating_factor_ode(
                 let new_expr = arena.add(&[new_m, n_dy]);
                 let new_expr = crate::transforms::eval::eval(arena, new_expr);
 
-                if let Some(result) =
-                    try_exact_ode(arena, new_expr, func, var, func_sym, var_sym)
-                {
+                if let Some(result) = try_exact_ode(arena, new_expr, func, var, func_sym, var_sym) {
                     return Some(result);
                 }
             }
@@ -1451,9 +1444,7 @@ fn try_integrating_factor_ode(
                 let new_expr = arena.add(&[new_m, n_dy]);
                 let new_expr = crate::transforms::eval::eval(arena, new_expr);
 
-                if let Some(result) =
-                    try_exact_ode(arena, new_expr, func, var, func_sym, var_sym)
-                {
+                if let Some(result) = try_exact_ode(arena, new_expr, func, var, func_sym, var_sym) {
                     return Some(result);
                 }
             }
@@ -1742,10 +1733,7 @@ fn contains_sym(arena: &Arena, expr: ExprId, sym: SymbolId) -> bool {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Convert a `Ratio<BigInt>` to an arena `ExprId`.
-fn ode_ratio_to_expr(
-    arena: &mut Arena,
-    r: &num_rational::Ratio<num_bigint::BigInt>,
-) -> ExprId {
+fn ode_ratio_to_expr(arena: &mut Arena, r: &num_rational::Ratio<num_bigint::BigInt>) -> ExprId {
     let nid = arena.intern_num(r.clone());
     arena.intern(ExprNode::Num(nid))
 }
@@ -1825,19 +1813,25 @@ fn try_undetermined_trig_exp(
     match node {
         ExprNode::Sin(inner) => {
             let (omega, constant) = extract_linear_numeric(arena, inner, var)?;
-            if !constant.is_zero() { return None; }
+            if !constant.is_zero() {
+                return None;
+            }
             let zero_r = num_rational::Ratio::<num_bigint::BigInt>::zero();
             try_trig_particular(arena, &coeff_r, &zero_r, &omega, b, c, var)
         }
         ExprNode::Cos(inner) => {
             let (omega, constant) = extract_linear_numeric(arena, inner, var)?;
-            if !constant.is_zero() { return None; }
+            if !constant.is_zero() {
+                return None;
+            }
             let zero_r = num_rational::Ratio::<num_bigint::BigInt>::zero();
             try_trig_particular(arena, &zero_r, &coeff_r, &omega, b, c, var)
         }
         ExprNode::Exp(inner) => {
             let (r_val, constant) = extract_linear_numeric(arena, inner, var)?;
-            if !constant.is_zero() { return None; }
+            if !constant.is_zero() {
+                return None;
+            }
             try_exp_particular(arena, &coeff_r, &r_val, b, c, var)
         }
         _ => None,
@@ -1850,9 +1844,14 @@ fn extract_linear_numeric(
     arena: &Arena,
     expr: ExprId,
     var: ExprId,
-) -> Option<(num_rational::Ratio<num_bigint::BigInt>, num_rational::Ratio<num_bigint::BigInt>)> {
+) -> Option<(
+    num_rational::Ratio<num_bigint::BigInt>,
+    num_rational::Ratio<num_bigint::BigInt>,
+)> {
     let poly = crate::poly::polybridge::expr_to_poly(arena, expr, var)?;
-    if poly.degree()? != 1 { return None; }
+    if poly.degree()? != 1 {
+        return None;
+    }
     Some((poly.coeff(1), poly.coeff(0)))
 }
 
@@ -1870,8 +1869,8 @@ fn try_trig_particular(
     use num_traits::Zero;
 
     let omega_sq = omega * omega;
-    let d = c - &omega_sq;        // c − ω²
-    let bw = b * omega;            // b·ω
+    let d = c - &omega_sq; // c − ω²
+    let bw = b * omega; // b·ω
 
     let det = &d * &d + &bw * &bw; // (c−ω²)² + (bω)²
 
@@ -1902,10 +1901,10 @@ fn try_trig_particular(
         }
     } else {
         // Resonance: d = 0 and bω = 0 ⟹ b = 0 and c = ω²
-        if omega.is_zero() { return None; }
-        let two_omega = num_rational::Ratio::from_integer(
-            num_bigint::BigInt::from(2),
-        ) * omega;
+        if omega.is_zero() {
+            return None;
+        }
+        let two_omega = num_rational::Ratio::from_integer(num_bigint::BigInt::from(2)) * omega;
         let alpha = q / &two_omega;
         let beta = -(p / &two_omega);
 
@@ -1963,9 +1962,7 @@ fn try_exp_particular(
         Some(arena.mul(&[a_id, exp_rx]))
     } else {
         // r is a root of the characteristic equation.
-        let deriv_val = num_rational::Ratio::from_integer(
-            num_bigint::BigInt::from(2),
-        ) * r + b;
+        let deriv_val = num_rational::Ratio::from_integer(num_bigint::BigInt::from(2)) * r + b;
         if !deriv_val.is_zero() {
             // Single root: y_p = A·x·exp(rx) where A = R / (2r + b)
             let a_val = coeff_r / &deriv_val;
@@ -1974,9 +1971,7 @@ fn try_exp_particular(
             Some(arena.mul(&[a_id, x_exp]))
         } else {
             // Double root: y_p = A·x²·exp(rx) where A = R / 2
-            let two_r_val = num_rational::Ratio::from_integer(
-                num_bigint::BigInt::from(2),
-            );
+            let two_r_val = num_rational::Ratio::from_integer(num_bigint::BigInt::from(2));
             let a_val = coeff_r / &two_r_val;
             let a_id = ode_ratio_to_expr(arena, &a_val);
             let two_id = arena.int(2);
@@ -2031,12 +2026,9 @@ fn try_bernoulli(
             dy_coeff += coeff;
         } else if !contains_sym(arena, child, func_sym) {
             return None; // Free terms not allowed in standard Bernoulli
-        } else if let Some(px) =
-            extract_coeff_of_func(arena, child, func, func_sym, var_sym)
-        {
+        } else if let Some(px) = extract_coeff_of_func(arena, child, func, func_sym, var_sym) {
             p_x_terms.push(px);
-        } else if let Some((qx, n)) =
-            extract_bernoulli_term(arena, child, func, func_sym, var_sym)
+        } else if let Some((qx, n)) = extract_bernoulli_term(arena, child, func, func_sym, var_sym)
         {
             q_x_terms.push((qx, n));
         } else {
@@ -2080,7 +2072,11 @@ fn try_bernoulli(
     // Q_raw·y^n appears on the LHS: y' + P·y + Q_raw·y^n = 0
     // So actual Q in y' + P·y = Q·y^n is −Q_raw
     let q_sum: Vec<ExprId> = q_x_terms.iter().map(|(qx, _)| *qx).collect();
-    let q_raw = if q_sum.len() == 1 { q_sum[0] } else { arena.add(&q_sum) };
+    let q_raw = if q_sum.len() == 1 {
+        q_sum[0]
+    } else {
+        arena.add(&q_sum)
+    };
     let neg_q_raw = arena.neg(q_raw);
     let q_x = if dy_coeff.is_one() {
         neg_q_raw
@@ -2116,10 +2112,8 @@ fn try_bernoulli(
     };
 
     // Solve the linear ODE for v (fall back to simple separable if P=0)
-    let v_result = try_first_order_linear_general(
-        arena, linear_expr, v, var, v_sym, var_sym,
-    )
-    .or_else(|| try_simple_separable(arena, linear_expr, v, var, v_sym, var_sym))?;
+    let v_result = try_first_order_linear_general(arena, linear_expr, v, var, v_sym, var_sym)
+        .or_else(|| try_simple_separable(arena, linear_expr, v, var, v_sym, var_sym))?;
 
     // Recover y = v^(1/(1−n))
     let inv_one_minus_n = num_rational::Ratio::<num_bigint::BigInt>::one() / &one_minus_n;
@@ -2188,7 +2182,8 @@ fn extract_bernoulli_term(
     // Case 3: numeric coefficient × something
     {
         let (coeff, term) = arena.as_coeff_term(expr);
-        if !coeff.is_one() && term != expr
+        if !coeff.is_one()
+            && term != expr
             && let Some((inner_qx, n)) =
                 extract_bernoulli_term(arena, term, func, func_sym, _var_sym)
         {
@@ -2200,8 +2195,7 @@ fn extract_bernoulli_term(
 
     // Case 4: Neg(something)
     if let ExprNode::Neg(inner) = arena.node(expr).clone()
-        && let Some((inner_qx, n)) =
-            extract_bernoulli_term(arena, inner, func, func_sym, _var_sym)
+        && let Some((inner_qx, n)) = extract_bernoulli_term(arena, inner, func, func_sym, _var_sym)
     {
         let neg_qx = arena.neg(inner_qx);
         return Some((neg_qx, n));
@@ -2271,9 +2265,7 @@ fn try_euler_cauchy(
                 .filter(|&f| f != d2y_dx2 && f != dy_dx && f != x_sq && f != var)
                 .collect();
             for &of in &other {
-                if contains_sym(arena, of, func_sym)
-                    || contains_sym(arena, of, var_sym)
-                {
+                if contains_sym(arena, of, func_sym) || contains_sym(arena, of, var_sym) {
                     return None;
                 }
             }
@@ -2342,8 +2334,7 @@ fn try_euler_cauchy(
         }
     } else if disc.is_zero() {
         // Repeated root: r = −p/2
-        let two_r =
-            num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+        let two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
         let r = -(&p) / &two_r;
         let r_id = ode_ratio_to_expr(arena, &r);
         let x_r = arena.pow(var, r_id);
@@ -2357,8 +2348,7 @@ fn try_euler_cauchy(
         })
     } else {
         // Complex roots α ± βi: α = −p/2, β = √(−disc)/2
-        let two_r =
-            num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+        let two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
         let alpha = -(&p) / &two_r;
         let neg_disc = -disc;
         let neg_disc_id = ode_ratio_to_expr(arena, &neg_disc);
@@ -2731,17 +2721,9 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
                     bn_has_dy = true;
                 } else if !contains_sym(arena, child, func_sym) {
                     bn_has_free = true;
-                } else if extract_coeff_of_func(
-                    arena, child, func, func_sym, var_sym,
-                )
-                .is_some()
-                {
+                } else if extract_coeff_of_func(arena, child, func, func_sym, var_sym).is_some() {
                     // linear in y — OK
-                } else if extract_bernoulli_term(
-                    arena, child, func, func_sym, var_sym,
-                )
-                .is_some()
-                {
+                } else if extract_bernoulli_term(arena, child, func, func_sym, var_sym).is_some() {
                     bn_has_yn = true;
                 } else {
                     bn_ok = false;
@@ -2774,9 +2756,7 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
                     arena.neg(s)
                 };
                 // RHS must depend on both x and y
-                if contains_sym(arena, hc_rhs, func_sym)
-                    && contains_sym(arena, hc_rhs, var_sym)
-                {
+                if contains_sym(arena, hc_rhs, func_sym) && contains_sym(arena, hc_rhs, var_sym) {
                     // Use x→1 trick: for degree-0 homogeneous f(x,y),
                     // f(1, v) should be free of x.
                     let v_cls = arena.symbol("__v_cls");
@@ -2962,10 +2942,7 @@ pub fn checkodesol(
 /// let sol = symplex::ode::solve_ode_system(&a, &t).unwrap();
 /// assert_eq!(sol.len(), 2);
 /// ```
-pub fn solve_ode_system(
-    a_matrix: &Matrix,
-    t_var: &Ex,
-) -> Option<Vec<Ex>> {
+pub fn solve_ode_system(a_matrix: &Matrix, t_var: &Ex) -> Option<Vec<Ex>> {
     let n = a_matrix.nrows();
     if !a_matrix.is_square() || n == 0 {
         return None;
@@ -3033,11 +3010,16 @@ pub fn solve_ode_system_nonhomogeneous(
     let neg_at = neg_a.scale(t_var);
     let lambda_sym = ctx.symbol("__ode_lambda");
     let exp_neg_at = neg_at.matrix_exp(&lambda_sym).unwrap_or_else(|_| {
-        neg_at.exp_series(12).expect("exp_series: matrix must be square")
+        neg_at
+            .exp_series(12)
+            .expect("exp_series: matrix must be square")
     });
 
     let b_col = Matrix::col_vector(b_vec.to_vec());
-    let integrand_matrix = exp_neg_at.matmul(&b_col).expect("matmul: dimension mismatch").eval();
+    let integrand_matrix = exp_neg_at
+        .matmul(&b_col)
+        .expect("matmul: dimension mismatch")
+        .eval();
 
     // Integrate each component w.r.t. t
     let mut integrated = Vec::with_capacity(n);
@@ -3049,9 +3031,13 @@ pub fn solve_ode_system_nonhomogeneous(
     // Multiply by exp(At)
     let at = a_matrix.scale(t_var);
     let exp_at = at.matrix_exp(&lambda_sym).unwrap_or_else(|_| {
-        at.exp_series(12).expect("exp_series: matrix must be square")
+        at.exp_series(12)
+            .expect("exp_series: matrix must be square")
     });
-    let particular = exp_at.matmul(&integrated_col).expect("matmul: dimension mismatch").eval();
+    let particular = exp_at
+        .matmul(&integrated_col)
+        .expect("matmul: dimension mismatch")
+        .eval();
 
     // Combine: x = x_h + x_p
     let mut solution = Vec::with_capacity(n);
@@ -3117,12 +3103,10 @@ fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
     let ctx = t_var.context();
     let m = a_matrix.scale(t_var);
     let lambda_sym = ctx.symbol("__ode_series_lambda");
-    let exp_m = m.matrix_exp(&lambda_sym).unwrap_or_else(|_| {
-        m.exp_series(12).expect("exp_series: matrix must be square")
-    });
-    let constants: Vec<Ex> = (1..=n)
-        .map(|i| ctx.symbol(&format!("C{i}")))
-        .collect();
+    let exp_m = m
+        .matrix_exp(&lambda_sym)
+        .unwrap_or_else(|_| m.exp_series(12).expect("exp_series: matrix must be square"));
+    let constants: Vec<Ex> = (1..=n).map(|i| ctx.symbol(&format!("C{i}"))).collect();
     let c_vec = Matrix::col_vector(constants);
     let result = exp_m.matmul(&c_vec).expect("matmul: dimension mismatch");
     (0..n).map(|i| result.get(i, 0).eval()).collect()
@@ -3136,11 +3120,7 @@ fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
 ///
 /// Returns `None` if fewer than `n` eigenvalues are found or if any
 /// eigenvector computation fails.
-fn solve_ode_system_eigen(
-    a_matrix: &Matrix,
-    t_var: &Ex,
-    n: usize,
-) -> Option<Vec<Ex>> {
+fn solve_ode_system_eigen(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec<Ex>> {
     let ctx = t_var.context();
     let lambda_sym = ctx.symbol("__ode_lambda");
     let eigenvalues = match a_matrix.eigenvals(&lambda_sym) {
@@ -3181,10 +3161,7 @@ fn solve_ode_system_eigen(
             // Find and mark the conjugate eigenvalue as processed
             for j in (idx + 1)..eigenvalues.len() {
                 if !used[j] && eigenvalues[j].contains(&i_unit) {
-                    let alpha_j = eigenvalues[j]
-                        .subs(&i_unit, &zero_ex)
-                        .eval()
-                        .simplify();
+                    let alpha_j = eigenvalues[j].subs(&i_unit, &zero_ex).eval().simplify();
                     let ej_diff = &eigenvalues[j] - &alpha_j;
                     let beta_j = (&ej_diff * &neg_i).eval().simplify();
                     let beta_sum = (&beta + &beta_j).eval().simplify();
@@ -3197,7 +3174,11 @@ fn solve_ode_system_eigen(
 
             // Eigenvector via null(A − λI)
             let ev_identity = identity.scale(ev);
-            let a_shifted = a_matrix.sub(&ev_identity).expect("sub: shape mismatch").eval().simplify();
+            let a_shifted = a_matrix
+                .sub(&ev_identity)
+                .expect("sub: shape mismatch")
+                .eval()
+                .simplify();
             let null_basis = a_shifted.nullspace();
             if null_basis.is_empty() {
                 return None;
@@ -3249,7 +3230,11 @@ fn solve_ode_system_eigen(
         } else {
             // ── Real eigenvalue ───────────────────────────────────────
             let ev_identity = identity.scale(ev);
-            let a_shifted = a_matrix.sub(&ev_identity).expect("sub: shape mismatch").eval().simplify();
+            let a_shifted = a_matrix
+                .sub(&ev_identity)
+                .expect("sub: shape mismatch")
+                .eval()
+                .simplify();
             let null_basis = a_shifted.nullspace();
             if null_basis.is_empty() {
                 return None;

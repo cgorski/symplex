@@ -186,8 +186,6 @@ pub(crate) fn format_expr(arena: &Arena, id: ExprId) -> String {
     format!("{}", FmtAdapter(arena, id))
 }
 
-
-
 /// Expand a single expression node into work items on the stack.
 ///
 /// For atoms this directly writes to `f` (via a pushed `Owned`).
@@ -862,8 +860,6 @@ fn neg_coeff_mul_display(arena: &Arena, id: ExprId) -> String {
         arena.display(id).to_string()
     }
 }
-
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Arena::display

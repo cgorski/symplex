@@ -1,7 +1,7 @@
 //! Tests for Wave E: matrix decompositions and utilities.
 
-use symplex::prelude::*;
 use symplex::matrix::{Matrix, cross, dot};
+use symplex::prelude::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RREF
@@ -28,7 +28,8 @@ fn rref_2x3() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let (rref_mat, pivots) = m.rref();
     assert_eq!(pivots.len(), 2); // rank 2
     // First pivot column 0, second pivot column 1
@@ -47,7 +48,8 @@ fn rref_rank_deficient() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(1), ctx.int(2)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let (_, pivots) = m.rref();
     assert_eq!(pivots.len(), 1);
 }
@@ -76,7 +78,8 @@ fn rank_rectangular() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0), ctx.int(2)],
         vec![ctx.int(0), ctx.int(1), ctx.int(3)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert_eq!(m.rank(), 2);
 }
 
@@ -97,7 +100,8 @@ fn nullspace_rank_deficient() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(2), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let ns = m.nullspace();
     assert_eq!(ns.len(), 1, "rank-1 2x2 should have 1-dim nullspace");
     // The nullspace vector should be a 2x1 column vector
@@ -112,7 +116,8 @@ fn nullspace_vector_is_in_kernel() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(2), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let ns = a.nullspace();
     assert_eq!(ns.len(), 1);
     // Multiply A * v; result should be the zero vector (structurally after simplify)
@@ -149,7 +154,8 @@ fn columnspace_rank_deficient() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(2), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let cs = m.columnspace();
     assert_eq!(cs.len(), 1, "rank-1 matrix has 1-dim column space");
 }
@@ -180,7 +186,8 @@ fn lu_2x2_verify_pa_eq_lu() {
     let a = Matrix::new(vec![
         vec![ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(7)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let (l, u, perm) = a.lu().expect("non-singular 2x2 should have LU");
 
     // Reconstruct PA
@@ -188,7 +195,8 @@ fn lu_2x2_verify_pa_eq_lu() {
         perm.iter()
             .map(|&r| (0..a.ncols()).map(|c| a.get(r, c).clone()).collect())
             .collect(),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Reconstruct LU
     let lu = l.matmul(&u).unwrap().simplify();
@@ -213,7 +221,8 @@ fn lu_singular_returns_none() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(2), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert!(m.lu().is_none(), "singular matrix should return None");
 }
 
@@ -277,7 +286,9 @@ fn norm_identity() {
     let m = Matrix::identity(&ctx, 2);
     // Frobenius norm of 2x2 identity is sqrt(2)
     let n = m.norm();
-    let v = n.eval_f64().expect("norm of identity should evaluate to f64");
+    let v = n
+        .eval_f64()
+        .expect("norm of identity should evaluate to f64");
     assert!(
         (v - std::f64::consts::SQRT_2).abs() < 1e-10,
         "expected sqrt(2), got {v}"
@@ -295,7 +306,8 @@ fn is_square_and_not() {
     let rect = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert!(!rect.is_square());
 }
 
@@ -305,7 +317,8 @@ fn is_symmetric_true() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(2), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert!(m.is_symmetric());
 }
 
@@ -315,7 +328,8 @@ fn is_symmetric_false() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
     assert!(!m.is_symmetric());
 }
 
@@ -355,7 +369,8 @@ fn rank_nullity_theorem() {
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
         vec![ctx.int(7), ctx.int(8), ctx.int(9)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let r = m.rank();
     let ns = m.nullspace();
     assert_eq!(

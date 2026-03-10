@@ -322,10 +322,7 @@ fn solve_2_pow_x_eq_5_general() {
     let x = ctx.symbol("x");
     let expr = &ctx.int(2).pow(&x) - 5;
     let roots = expr.solve_or_empty(&x);
-    assert!(
-        !roots.is_empty(),
-        "2^x = 5 should have a solution"
-    );
+    assert!(!roots.is_empty(), "2^x = 5 should have a solution");
     // Verify numerically: x ≈ 2.32193
     if let Ok(v) = roots[0].eval_f64() {
         let expected = 5.0_f64.ln() / 2.0_f64.ln();
@@ -348,10 +345,7 @@ fn solve_asin_x_eq_value() {
     let pi_over_6 = &ctx.pi() / 6;
     let expr = &x.asin() - &pi_over_6;
     let roots = expr.solve_or_empty(&x);
-    assert!(
-        !roots.is_empty(),
-        "asin(x) = π/6 should have a solution"
-    );
+    assert!(!roots.is_empty(), "asin(x) = π/6 should have a solution");
     // sin(π/6) = 1/2
     if let Ok(v) = roots[0].eval_f64() {
         assert!(
@@ -369,10 +363,7 @@ fn solve_atan_x_eq_value() {
     let pi_over_4 = &ctx.pi() / 4;
     let expr = &x.atan() - &pi_over_4;
     let roots = expr.solve_or_empty(&x);
-    assert!(
-        !roots.is_empty(),
-        "atan(x) = π/4 should have a solution"
-    );
+    assert!(!roots.is_empty(), "atan(x) = π/4 should have a solution");
     if let Ok(v) = roots[0].eval_f64() {
         assert!(
             (v - 1.0).abs() < 1e-8,
@@ -392,16 +383,10 @@ fn solve_sinh_x_eq_zero() {
     let x = ctx.symbol("x");
     let expr = x.sinh();
     let roots = expr.solve_or_empty(&x);
-    assert!(
-        !roots.is_empty(),
-        "sinh(x) = 0 should have a solution"
-    );
+    assert!(!roots.is_empty(), "sinh(x) = 0 should have a solution");
     // The solver returns asinh(0) which evaluates numerically to 0
     if let Ok(v) = roots[0].eval_f64() {
-        assert!(
-            v.abs() < 1e-10,
-            "sinh(x) = 0: root should be ≈ 0, got {v}"
-        );
+        assert!(v.abs() < 1e-10, "sinh(x) = 0: root should be ≈ 0, got {v}");
     } else {
         // If eval_f64 fails, check if simplify/eval produces 0
         let simplified = roots[0].eval();

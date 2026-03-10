@@ -5,7 +5,7 @@
 
 mod common;
 
-use symplex::matrix::{jacobian, CodegenOptions, MathBackend, Matrix, Precision};
+use symplex::matrix::{CodegenOptions, MathBackend, Matrix, Precision, jacobian};
 use symplex::prelude::*;
 use symplex::robotics::*;
 
@@ -83,10 +83,7 @@ fn assert_balanced_brackets(code: &str) {
 
     let open_sq = code.chars().filter(|&c| c == '[').count();
     let close_sq = code.chars().filter(|&c| c == ']').count();
-    assert_eq!(
-        open_sq, close_sq,
-        "unbalanced square brackets in:\n{code}"
-    );
+    assert_eq!(open_sq, close_sq, "unbalanced square brackets in:\n{code}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -130,10 +127,7 @@ fn matrix_codegen_simple_jacobian() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let params = [
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
-    ];
+    let params = [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
     let (x, y, _z) = fk_position(&params);
 
     // 2×2 Jacobian of (x, y) w.r.t. (theta1, theta2)
@@ -177,7 +171,8 @@ fn matrix_codegen_has_cse_across_entries() {
     let m = Matrix::new(vec![
         vec![&shared * 2, &shared + &x],
         vec![&shared * &y, &shared * 3],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let code = m.to_rust_fn("shared_trig", &["x", "y"]).unwrap();
 
@@ -207,10 +202,7 @@ fn matrix_codegen_numerical_correctness() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let params = [
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
-    ];
+    let params = [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
     let (x, y, _z) = fk_position(&params);
 
     // 2×2 Jacobian of (x, y) w.r.t. (theta1, theta2)
@@ -292,10 +284,7 @@ fn matrix_codegen_3dof_robot() {
     let (x, y, z) = fk_position(&params);
 
     // 3×3 Jacobian of (x, y, z) w.r.t. (θ1, θ2, θ3)
-    let j = jacobian(
-        &[&x, &y, &z],
-        &[&theta1, &theta2, &theta3],
-    );
+    let j = jacobian(&[&x, &y, &z], &[&theta1, &theta2, &theta3]);
     assert_eq!(j.shape(), (3, 3));
 
     let code = j
@@ -324,10 +313,7 @@ fn matrix_codegen_3dof_robot() {
 fn codegen_options_f32() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let m = Matrix::new(vec![
-        vec![x.sin(), x.cos()],
-        vec![-x.cos(), x.sin()],
-    ]).unwrap();
+    let m = Matrix::new(vec![vec![x.sin(), x.cos()], vec![-x.cos(), x.sin()]]).unwrap();
 
     let opts = CodegenOptions {
         precision: Precision::F32,
@@ -456,7 +442,8 @@ fn codegen_options_no_cse() {
     let m = Matrix::new(vec![
         vec![&shared * 2, &shared + 1],
         vec![&shared * &x, &shared * 3],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     // With CSE enabled (default) — should have let bindings
     let opts_cse = CodegenOptions::default();
@@ -498,10 +485,7 @@ fn pipeline_dh_to_codegen_2dof() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let dh = [
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
-    ];
+    let dh = [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
 
     // Step 2: Compute FK position
     let (x, y, _z) = fk_position(&dh);
@@ -578,10 +562,7 @@ fn pipeline_dh_to_codegen_3dof() {
     let (x, y, z) = fk_position(&dh);
 
     // 3 position components × 3 joints = 3×3 = 9 entries
-    let j = jacobian(
-        &[&x, &y, &z],
-        &[&theta1, &theta2, &theta3],
-    );
+    let j = jacobian(&[&x, &y, &z], &[&theta1, &theta2, &theta3]);
     assert_eq!(j.shape(), (3, 3));
 
     let code = j
@@ -609,10 +590,7 @@ fn pipeline_fk_codegen() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let dh = [
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
-    ];
+    let dh = [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
 
     let (x, y, z) = fk_position(&dh);
 
@@ -827,10 +805,7 @@ fn matrix_codegen_preserves_entry_order() {
 
     // 2×2 matrix: [[a, b], [c, d]]
     // Row-major flat order should be: a, b, c, d
-    let m = Matrix::new(vec![
-        vec![a.clone(), b.clone()],
-        vec![c.clone(), d.clone()],
-    ]).unwrap();
+    let m = Matrix::new(vec![vec![a.clone(), b.clone()], vec![c.clone(), d.clone()]]).unwrap();
 
     // Use no CSE to make the output easier to parse
     let opts = CodegenOptions {
@@ -913,10 +888,7 @@ fn codegen_options_f32_with_libm() {
         code.contains("[f32; 2]"),
         "should have [f32; 2] return type:\n{code}"
     );
-    assert!(
-        code.contains("libm::"),
-        "should use libm:: prefix:\n{code}"
-    );
+    assert!(code.contains("libm::"), "should use libm:: prefix:\n{code}");
     // Note: libm backend internally casts via `as f64`, so f64 may appear
     // in the function body — that's expected for the libm codepath.
     assert_balanced_brackets(&code);
@@ -937,10 +909,7 @@ fn codegen_options_inline_with_must_use() {
         .to_rust_fn_with_options("annotated_matrix", &["x"], &opts)
         .unwrap();
 
-    assert!(
-        code.contains("#[inline]"),
-        "should have #[inline]:\n{code}"
-    );
+    assert!(code.contains("#[inline]"), "should have #[inline]:\n{code}");
     assert!(
         code.contains("#[must_use]"),
         "should have #[must_use]:\n{code}"
@@ -962,7 +931,8 @@ fn matrix_codegen_constant_matrix() {
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let code = m.to_rust_fn("const_id", &[]).unwrap();
 
@@ -970,10 +940,7 @@ fn matrix_codegen_constant_matrix() {
         code.contains("fn const_id()"),
         "should have zero-arg function:\n{code}"
     );
-    assert!(
-        code.contains("[f64; 4]"),
-        "should return [f64; 4]:\n{code}"
-    );
+    assert!(code.contains("[f64; 4]"), "should return [f64; 4]:\n{code}");
     assert_balanced_brackets(&code);
 }
 
@@ -987,14 +954,15 @@ fn matrix_codegen_large_matrix_balanced() {
     let m = Matrix::new(vec![
         vec![x.sin(), x.cos(), y.sin(), y.cos()],
         vec![x.cos(), -x.sin(), y.cos(), -y.sin()],
-        vec![(&x + &y).sin(), (&x + &y).cos(), (&x - &y).sin(), (&x - &y).cos()],
         vec![
-            ctx.int(1),
-            ctx.int(0),
-            ctx.int(0),
-            ctx.int(1),
+            (&x + &y).sin(),
+            (&x + &y).cos(),
+            (&x - &y).sin(),
+            (&x - &y).cos(),
         ],
-    ]).unwrap();
+        vec![ctx.int(1), ctx.int(0), ctx.int(0), ctx.int(1)],
+    ])
+    .unwrap();
 
     let code = m.to_rust_fn("big_matrix", &["x", "y"]).unwrap();
 
@@ -1012,10 +980,7 @@ fn pipeline_dh_jacobian_numerical_at_zero() {
     let l2 = ctx.symbol("L2");
     let zero = ctx.int(0);
 
-    let dh = [
-        (&theta1, &zero, &l1, &zero),
-        (&theta2, &zero, &l2, &zero),
-    ];
+    let dh = [(&theta1, &zero, &l1, &zero), (&theta2, &zero, &l2, &zero)];
     let (x, y, _z) = fk_position(&dh);
 
     let j = jacobian(&[&x, &y], &[&theta1, &theta2]);

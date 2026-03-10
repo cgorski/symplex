@@ -881,7 +881,10 @@ fn solve_exp_minus_1_non_polynomial() {
     let x = ctx.symbol("x");
     let r = (&x.exp() - 1).solve_or_empty(&x);
     // exp(x)-1=0 → x=ln(1)=0, the internal solver handles this via inversion peeling.
-    assert!(!r.is_empty(), "exp(x)-1 should be solvable now via inversion peeling");
+    assert!(
+        !r.is_empty(),
+        "exp(x)-1 should be solvable now via inversion peeling"
+    );
     let val = r[0].eval_f64().expect("root should evaluate");
     assert!(val.abs() < 1e-9, "root should be 0, got {val}");
 }
@@ -892,7 +895,10 @@ fn solve_sqrt_x_minus_2_non_polynomial() {
     let x = ctx.symbol("x");
     let r = (&x.sqrt() - 2).solve_or_empty(&x);
     // sqrt(x)-2=0 → x=4, the internal solver handles this via inversion peeling.
-    assert!(!r.is_empty(), "sqrt(x)-2 should be solvable now via inversion peeling");
+    assert!(
+        !r.is_empty(),
+        "sqrt(x)-2 should be solvable now via inversion peeling"
+    );
     let val = r[0].eval_f64().expect("root should evaluate");
     assert!((val - 4.0).abs() < 1e-9, "root should be 4, got {val}");
 }
@@ -903,7 +909,11 @@ fn solve_sin_non_polynomial() {
     let x = ctx.symbol("x");
     // sin(x)=0 is now handled by the internal solver via inversion peeling.
     let result = x.sin().solve(&x);
-    assert!(result.is_ok(), "sin(x) should be solvable via inversion peeling, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "sin(x) should be solvable via inversion peeling, got: {:?}",
+        result.err()
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1173,19 +1183,13 @@ fn eval_atan_0() {
 #[test]
 fn eval_asin_half() {
     let ctx = Context::new();
-    check(
-        &ctx.rational(1, 2).asin().eval(),
-        "1/6*pi",
-    );
+    check(&ctx.rational(1, 2).asin().eval(), "1/6*pi");
 }
 
 #[test]
 fn eval_acos_half() {
     let ctx = Context::new();
-    check(
-        &ctx.rational(1, 2).acos().eval(),
-        "1/3*pi",
-    );
+    check(&ctx.rational(1, 2).acos().eval(), "1/3*pi");
 }
 
 #[test]

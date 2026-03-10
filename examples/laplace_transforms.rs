@@ -11,7 +11,6 @@
 
 use symplex::prelude::*;
 
-
 fn main() {
     println!("=== Laplace Transforms ===\n");
 
