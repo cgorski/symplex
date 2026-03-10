@@ -740,7 +740,7 @@ mod tests {
         let mut a = Arena::new();
         let x = sym(&mut a, "x");
         let p = expr_to_poly(&a, x, x).unwrap();
-        assert_eq!(format!("{p}"), "x");
+        assert_eq!(format!("{p}"), "θ");
     }
 
     #[test]
@@ -754,7 +754,7 @@ mod tests {
         let expr = a.add(&[two_x, three]);
         let p = expr_to_poly(&a, expr, x).unwrap();
         assert_eq!(p.degree(), Some(1));
-        assert_eq!(format!("{p}"), "2*x + 3");
+        assert_eq!(format!("{p}"), "2*θ + 3");
     }
 
     #[test]

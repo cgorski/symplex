@@ -254,7 +254,7 @@ mod tests {
 
         // Reduce both to monic form for comparison.
         // Actually, just check lhs - rhs == 0.
-        let diff = &lhs - &rhs;
+        let diff = &lhs - rhs;
         assert!(
             diff.is_zero(),
             "FTC verification failed:\n  d/dx(g) + h ≠ A/D\n  diff = {diff}"

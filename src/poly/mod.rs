@@ -9,7 +9,8 @@ pub mod polysys;
 pub(crate) mod roots;
 pub(crate) mod sturm;
 
-// Re-export commonly used items so crate::poly::Poly still works
+// Re-export the type alias and ℚ-specific free function.
+// Poly is now `type Poly = GenPoly<Ratio<BigInt>>` defined in dense.rs.
 pub(crate) use dense::Poly;
 pub(crate) use dense::lagrange_interpolate_rational;
 

@@ -603,7 +603,7 @@ mod tests {
     fn display_polynomial() {
         let a = rf_poly(&[1, 1]); // x + 1
         let s = format!("{a}");
-        assert!(s.contains("x"), "should display as polynomial, got: {s}");
+        assert!(s.contains("θ"), "should display as polynomial, got: {s}");
     }
 
     #[test]

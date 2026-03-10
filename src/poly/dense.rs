@@ -1,381 +1,51 @@
-//! Dense univariate polynomials over ℚ.
+//! Dense univariate polynomials over ℚ — specialization of [`GenPoly`].
 //!
-//! This module provides [`Poly`], a dense univariate polynomial with
-//! rational coefficients (`Ratio<BigInt>` from `num-rational`).
+//! This module defines [`Poly`] as a type alias for
+//! `GenPoly<Ratio<BigInt>>`, inheriting all generic polynomial arithmetic
+//! from [`GenPoly`](super::generic::GenPoly).  It adds ℚ-specific
+//! operations that depend on integer structure:
+//!
+//! - [`has_integer_coeffs`](GenPoly::has_integer_coeffs) — check all denominators are 1
+//! - [`content`](GenPoly::content) / [`primitive_part`](GenPoly::primitive_part) — integer GCD of coefficients
+//! - [`factor_over_z`](GenPoly::factor_over_z) — full factorization over ℤ
+//! - [`derivative`](GenPoly::derivative) — specialized O(1)-per-coefficient version
+//!
+//! The generic operations (add, mul, div_rem, gcd, extended_gcd,
+//! squarefree_factors, resultant, Display, etc.) are all provided by
+//! `GenPoly<C>` in [`super::generic`].
 //!
 //! # Representation
 //!
-//! A polynomial is stored as a `Vec<Ratio<BigInt>>` of coefficients in
-//! ascending degree order: `coeffs[i]` is the coefficient of `x^i`.
-//! The zero polynomial has an empty coefficient vector.  Non-zero
-//! polynomials are kept in *normalised* form — the leading coefficient
-//! (last element) is always nonzero.
-//!
-//! # Arithmetic
-//!
-//! Standard operations are implemented: addition, subtraction,
-//! multiplication, Euclidean division (`div_rem`), and GCD.
-//!
-//! # GCD
-//!
-//! [`Poly::gcd`] computes the greatest common divisor of two
-//! polynomials using the Euclidean algorithm.  The result is
-//! normalised to be monic (leading coefficient = 1).
+//! Coefficients are stored as `Vec<Ratio<BigInt>>` in ascending degree
+//! order: `coeffs[i]` is the coefficient of `x^i`.  The zero polynomial
+//! has an empty coefficient vector.  Non-zero polynomials are normalized
+//! (leading coefficient is nonzero).
 
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
-use std::fmt;
-use std::ops;
+
+use super::generic::GenPoly;
 
 /// A dense univariate polynomial over ℚ.
 ///
-/// Coefficients are stored in ascending degree order:
-/// `p(x) = coeffs[0] + coeffs[1]*x + coeffs[2]*x² + …`
-///
-/// # Invariants
-///
-/// - The zero polynomial has `coeffs.is_empty()`.
-/// - For non-zero polynomials, `coeffs.last()` is always nonzero.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Poly {
-    /// Coefficients in ascending degree order.
-    coeffs: Vec<Ratio<BigInt>>,
-}
+/// This is a type alias for `GenPoly<Ratio<BigInt>>`.  All generic
+/// polynomial operations (arithmetic, GCD, factorization, Display)
+/// are inherited.  ℚ-specific methods like [`content`](GenPoly::content),
+/// [`primitive_part`](GenPoly::primitive_part), and
+/// [`factor_over_z`](GenPoly::factor_over_z) are added via a specialized
+/// `impl` block in this module.
+pub type Poly = GenPoly<Ratio<BigInt>>;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Construction
+// ℚ-specific methods (specialized impl on GenPoly<Ratio<BigInt>>)
 // ═══════════════════════════════════════════════════════════════════════════
 
-impl Poly {
-    /// The zero polynomial.
-    pub fn zero() -> Self {
-        Poly { coeffs: Vec::new() }
-    }
-
-    /// A constant polynomial.
-    pub fn constant(c: Ratio<BigInt>) -> Self {
-        if c.is_zero() {
-            Self::zero()
-        } else {
-            Poly { coeffs: vec![c] }
-        }
-    }
-
-    /// A constant polynomial from an integer.
-    pub fn from_int(n: i64) -> Self {
-        Self::constant(Ratio::from_integer(BigInt::from(n)))
-    }
-
-    /// The monomial `x` (degree 1, coefficient 1).
-    pub fn x() -> Self {
-        Poly {
-            coeffs: vec![Ratio::zero(), Ratio::one()],
-        }
-    }
-
-    /// A monomial `c * x^n`.
-    pub fn monomial(c: Ratio<BigInt>, degree: usize) -> Self {
-        if c.is_zero() {
-            return Self::zero();
-        }
-        let mut coeffs = vec![Ratio::zero(); degree + 1];
-        coeffs[degree] = c;
-        Poly { coeffs }
-    }
-
-    /// Construct from a vector of coefficients (ascending degree order).
-    ///
-    /// Automatically strips trailing zeros.
-    pub fn from_coeffs(coeffs: Vec<Ratio<BigInt>>) -> Self {
-        let mut p = Poly { coeffs };
-        p.normalise();
-        p
-    }
-
-    /// Strip trailing zero coefficients.
-    fn normalise(&mut self) {
-        while self.coeffs.last().is_some_and(|c| c.is_zero()) {
-            self.coeffs.pop();
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Queries
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl Poly {
-    /// Returns `true` if this is the zero polynomial.
-    pub fn is_zero(&self) -> bool {
-        self.coeffs.is_empty()
-    }
-
-    /// The degree of the polynomial, or `None` for the zero polynomial.
-    pub fn degree(&self) -> Option<usize> {
-        if self.coeffs.is_empty() {
-            None
-        } else {
-            Some(self.coeffs.len() - 1)
-        }
-    }
-
-    /// The leading coefficient, or `None` for the zero polynomial.
-    pub fn leading_coeff(&self) -> Option<&Ratio<BigInt>> {
-        self.coeffs.last()
-    }
-
-    /// The coefficient of `x^i`.  Returns zero for degrees beyond
-    /// the polynomial's degree.
-    pub fn coeff(&self, i: usize) -> Ratio<BigInt> {
-        self.coeffs.get(i).cloned().unwrap_or_else(Ratio::zero)
-    }
-
-    /// The raw coefficient slice.
-    pub fn coeffs(&self) -> &[Ratio<BigInt>] {
-        &self.coeffs
-    }
-
-    /// Returns `true` if this polynomial has degree ≤ 0.
-    pub fn is_constant(&self) -> bool {
-        self.coeffs.len() <= 1
-    }
-
-    /// Evaluate the polynomial at a rational point using Horner's method.
-    pub fn eval(&self, x: &Ratio<BigInt>) -> Ratio<BigInt> {
-        if self.coeffs.is_empty() {
-            return Ratio::zero();
-        }
-        let mut result = Ratio::zero();
-        for c in self.coeffs.iter().rev() {
-            result = result * x + c;
-        }
-        result
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Arithmetic: Add
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl ops::Add for &Poly {
-    type Output = Poly;
-
-    fn add(self, rhs: &Poly) -> Poly {
-        let len = self.coeffs.len().max(rhs.coeffs.len());
-        let mut coeffs = Vec::with_capacity(len);
-        for i in 0..len {
-            let a = self.coeffs.get(i).cloned().unwrap_or_else(Ratio::zero);
-            let b = rhs.coeffs.get(i).cloned().unwrap_or_else(Ratio::zero);
-            coeffs.push(a + b);
-        }
-        Poly::from_coeffs(coeffs)
-    }
-}
-
-impl ops::Add for Poly {
-    type Output = Poly;
-    fn add(self, rhs: Poly) -> Poly {
-        &self + &rhs
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Arithmetic: Sub
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl ops::Sub for &Poly {
-    type Output = Poly;
-
-    fn sub(self, rhs: &Poly) -> Poly {
-        let len = self.coeffs.len().max(rhs.coeffs.len());
-        let mut coeffs = Vec::with_capacity(len);
-        for i in 0..len {
-            let a = self.coeffs.get(i).cloned().unwrap_or_else(Ratio::zero);
-            let b = rhs.coeffs.get(i).cloned().unwrap_or_else(Ratio::zero);
-            coeffs.push(a - b);
-        }
-        Poly::from_coeffs(coeffs)
-    }
-}
-
-impl ops::Sub for Poly {
-    type Output = Poly;
-    fn sub(self, rhs: Poly) -> Poly {
-        &self - &rhs
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Arithmetic: Neg
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl ops::Neg for &Poly {
-    type Output = Poly;
-
-    fn neg(self) -> Poly {
-        Poly::from_coeffs(self.coeffs.iter().map(|c| -c).collect())
-    }
-}
-
-impl ops::Neg for Poly {
-    type Output = Poly;
-    fn neg(self) -> Poly {
-        -&self
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Arithmetic: Mul
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl ops::Mul for &Poly {
-    type Output = Poly;
-
-    fn mul(self, rhs: &Poly) -> Poly {
-        if self.is_zero() || rhs.is_zero() {
-            return Poly::zero();
-        }
-        let n = self.coeffs.len();
-        let m = rhs.coeffs.len();
-        let mut coeffs = vec![Ratio::zero(); n + m - 1];
-        for i in 0..n {
-            for j in 0..m {
-                coeffs[i + j] += &self.coeffs[i] * &rhs.coeffs[j];
-            }
-        }
-        Poly::from_coeffs(coeffs)
-    }
-}
-
-impl ops::Mul for Poly {
-    type Output = Poly;
-    fn mul(self, rhs: Poly) -> Poly {
-        &self * &rhs
-    }
-}
-
-/// Scalar multiplication: `c * poly`.
-impl Poly {
-    /// Multiply every coefficient by a scalar.
-    #[must_use]
-    pub fn scale(&self, c: &Ratio<BigInt>) -> Poly {
-        if c.is_zero() {
-            return Poly::zero();
-        }
-        Poly::from_coeffs(self.coeffs.iter().map(|a| a * c).collect())
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Arithmetic: Euclidean division
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl Poly {
-    /// Euclidean division: `self = quotient * divisor + remainder`.
-    ///
-    /// Returns `(quotient, remainder)`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `divisor` is the zero polynomial.
-    pub fn div_rem(&self, divisor: &Poly) -> (Poly, Poly) {
-        assert!(!divisor.is_zero(), "polynomial division by zero");
-
-        if self.is_zero() {
-            return (Poly::zero(), Poly::zero());
-        }
-
-        let d_deg = divisor.degree().unwrap();
-        let mut remainder = self.clone();
-
-        if remainder.degree().is_none_or(|rd| rd < d_deg) {
-            return (Poly::zero(), remainder);
-        }
-
-        let lc_inv = Ratio::one() / divisor.leading_coeff().unwrap();
-        let mut quotient_coeffs = vec![Ratio::zero(); remainder.coeffs.len() - d_deg];
-
-        while let Some(r_deg) = remainder.degree() {
-            if r_deg < d_deg {
-                break;
-            }
-            let coeff = remainder.leading_coeff().unwrap() * &lc_inv;
-            let shift = r_deg - d_deg;
-            quotient_coeffs[shift] = coeff.clone();
-
-            // remainder -= coeff * x^shift * divisor
-            for (i, dc) in divisor.coeffs.iter().enumerate() {
-                remainder.coeffs[shift + i] -= &coeff * dc;
-            }
-            remainder.normalise();
-        }
-
-        (Poly::from_coeffs(quotient_coeffs), remainder)
-    }
-
-    /// Polynomial quotient: `self / divisor` (discarding remainder).
-    #[must_use]
-    pub fn div(&self, divisor: &Poly) -> Poly {
-        self.div_rem(divisor).0
-    }
-
-    /// Polynomial remainder: `self % divisor`.
-    #[must_use]
-    pub fn rem(&self, divisor: &Poly) -> Poly {
-        self.div_rem(divisor).1
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// GCD
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// GCD of two positive rationals: gcd(a/b, c/d) = gcd(a,c) / lcm(b,d).
-fn rational_gcd(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
-    use num_integer::Integer;
-    let numer_gcd = a.numer().gcd(b.numer());
-    let denom_lcm = a.denom().lcm(b.denom());
-    Ratio::new(numer_gcd, denom_lcm)
-}
-
-impl Poly {
-    /// Compute the GCD of two polynomials using the Euclidean algorithm.
-    ///
-    /// The result is normalised to be **monic** (leading coefficient = 1).
-    /// The GCD of two zero polynomials is the zero polynomial.
-    pub fn gcd(a: &Poly, b: &Poly) -> Poly {
-        if a.is_zero() {
-            return b.make_monic();
-        }
-        if b.is_zero() {
-            return a.make_monic();
-        }
-
-        let mut r0 = a.clone();
-        let mut r1 = b.clone();
-
-        while !r1.is_zero() {
-            let r2 = r0.rem(&r1);
-            r0 = r1;
-            r1 = r2;
-        }
-
-        r0.make_monic()
-    }
-
-    /// Return a monic version of this polynomial (leading coeff = 1).
-    ///
-    /// Returns the zero polynomial unchanged.
-    #[must_use]
-    pub fn make_monic(&self) -> Poly {
-        if self.is_zero() {
-            return Poly::zero();
-        }
-        let lc = self.leading_coeff().unwrap().clone();
-        let lc_inv = Ratio::one() / lc;
-        self.scale(&lc_inv)
+impl GenPoly<Ratio<BigInt>> {
+    /// Returns `true` if every coefficient is an integer (denominator 1).
+    pub fn has_integer_coeffs(&self) -> bool {
+        self.coeffs.iter().all(|c| c.denom().is_one())
     }
 
     /// Compute the content (GCD of all coefficients) of the polynomial.
@@ -385,16 +55,12 @@ impl Poly {
         if self.is_zero() {
             return Ratio::zero();
         }
-        let coeffs: Vec<_> = (0..=self.degree().unwrap_or(0))
-            .map(|i| self.coeff(i))
-            .filter(|c| !c.is_zero())
-            .collect();
-        if coeffs.is_empty() {
+        let nonzero: Vec<_> = self.coeffs().iter().filter(|c| !c.is_zero()).collect();
+        if nonzero.is_empty() {
             return Ratio::one();
         }
-        // GCD of rationals: gcd(a/b, c/d) = gcd(a,c) / lcm(b,d)
-        let mut result = coeffs[0].clone();
-        for c in &coeffs[1..] {
+        let mut result = (*nonzero[0]).clone();
+        for c in &nonzero[1..] {
             result = rational_gcd(&result, c);
         }
         if result.is_negative() {
@@ -412,266 +78,6 @@ impl Poly {
             return self.clone();
         }
         self.scale(&(Ratio::one() / c))
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Calculus / square-free
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl Poly {
-    /// Compute the formal derivative of this polynomial.
-    /// For p(x) = a_0 + a_1 x + a_2 x^2 + ... + a_n x^n,
-    /// p'(x) = a_1 + 2 a_2 x + ... + n a_n x^(n-1).
-    #[must_use]
-    pub fn derivative(&self) -> Poly {
-        if self.coeffs.len() <= 1 {
-            return Poly::zero();
-        }
-        let new_coeffs: Vec<Ratio<BigInt>> = self.coeffs[1..]
-            .iter()
-            .enumerate()
-            .map(|(i, c)| c * Ratio::from_integer(BigInt::from(i as i64 + 1)))
-            .collect();
-        Poly::from_coeffs(new_coeffs)
-    }
-
-    /// Extended Euclidean algorithm for polynomials.
-    ///
-    /// Returns `(s, t, g)` such that `s * a + t * b = g` where
-    /// `g = gcd(a, b)`, normalised to be monic.
-    pub fn extended_gcd(a: &Poly, b: &Poly) -> (Poly, Poly, Poly) {
-        if b.is_zero() {
-            if a.is_zero() {
-                return (Poly::from_int(1), Poly::zero(), Poly::zero());
-            }
-            let lc_inv = Ratio::one() / a.leading_coeff().unwrap();
-            return (Poly::constant(lc_inv), Poly::zero(), a.make_monic());
-        }
-
-        let (mut r_prev, mut r_curr) = (a.clone(), b.clone());
-        let (mut s_prev, mut s_curr) = (Poly::from_int(1), Poly::zero());
-        let (mut t_prev, mut t_curr) = (Poly::zero(), Poly::from_int(1));
-
-        while !r_curr.is_zero() {
-            let (q, r_next) = r_prev.div_rem(&r_curr);
-            let s_next = &s_prev - &(&q * &s_curr);
-            let t_next = &t_prev - &(&q * &t_curr);
-
-            r_prev = r_curr;
-            r_curr = r_next;
-            s_prev = s_curr;
-            s_curr = s_next;
-            t_prev = t_curr;
-            t_curr = t_next;
-        }
-
-        // Normalise GCD to be monic.
-        if !r_prev.is_zero() {
-            let lc_inv = Ratio::one() / r_prev.leading_coeff().unwrap();
-            r_prev = r_prev.scale(&lc_inv);
-            s_prev = s_prev.scale(&lc_inv);
-            t_prev = t_prev.scale(&lc_inv);
-        }
-
-        (s_prev, t_prev, r_prev)
-    }
-
-    /// Compute the square-free part: p / gcd(p, p').
-    /// This removes repeated roots while preserving all distinct roots.
-    #[must_use]
-    pub fn square_free_part(&self) -> Poly {
-        if self.is_zero() {
-            return Poly::zero();
-        }
-        let dp = self.derivative();
-        if dp.is_zero() {
-            return self.clone(); // constant polynomial
-        }
-        let g = Poly::gcd(self, &dp);
-        self.div_rem(&g).0 // quotient only
-    }
-
-    /// Square-free factorisation via Yun's algorithm.
-    ///
-    /// Returns `[(f₁, 1), (f₂, 2), …]` where `self = content · ∏ fᵢ^i`
-    /// and each `fᵢ` is square-free and pairwise coprime.
-    /// Constant / zero polynomials return an empty list.
-    pub fn squarefree_factors(&self) -> Vec<(Poly, usize)> {
-        if self.is_zero() || self.is_constant() {
-            return vec![];
-        }
-        let mut content = self.content();
-        let mut prim = self.primitive_part();
-        if prim.leading_coeff().is_some_and(|lc| lc.is_negative()) {
-            content = -content;
-            prim = -&prim;
-        }
-        let _ = content; // content is separated out
-        square_free_decomposition(&prim)
-            .into_iter()
-            .map(|(f, m)| (f, m as usize))
-            .collect()
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Resultant
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl Poly {
-    /// Compute the resultant of two polynomials via the Euclidean algorithm.
-    ///
-    /// The resultant is zero iff the two polynomials share a common root
-    /// (including at infinity when one has smaller degree than expected).
-    ///
-    /// Uses the identity:
-    ///   `res(f, g) = (-1)^(mn) · lc(g)^(m - deg(r)) · res(g, r)`
-    /// where `r = f mod g`, `m = deg(f)`, `n = deg(g)`.
-    pub fn resultant(a: &Poly, b: &Poly) -> Ratio<BigInt> {
-        // Base cases.
-        if a.is_zero() || b.is_zero() {
-            return Ratio::zero();
-        }
-
-        let m = match a.degree() {
-            Some(d) => d,
-            None => return Ratio::zero(),
-        };
-        let n = match b.degree() {
-            Some(d) => d,
-            None => return Ratio::zero(),
-        };
-
-        // If both are constants: res = 1 (they share no root).
-        if m == 0 && n == 0 {
-            return Ratio::one();
-        }
-
-        // res(constant, g) = constant^deg(g).
-        if m == 0 {
-            return num_traits::pow(a.coeff(0), n);
-        }
-        if n == 0 {
-            return num_traits::pow(b.coeff(0), m);
-        }
-
-        // Ensure deg(a) >= deg(b); swap with sign correction.
-        if m < n {
-            let sign = if (m * n) % 2 == 0 {
-                Ratio::one()
-            } else {
-                -Ratio::<BigInt>::one()
-            };
-            return sign * Poly::resultant(b, a);
-        }
-
-        // Recursive step: r = a mod b.
-        let r = a.rem(b);
-
-        if r.is_zero() {
-            // gcd has positive degree → resultant is 0.
-            return Ratio::zero();
-        }
-
-        let s = r.degree().unwrap_or(0);
-        let sign = if (m * n) % 2 == 0 {
-            Ratio::one()
-        } else {
-            -Ratio::<BigInt>::one()
-        };
-        let lc_b = b.leading_coeff().unwrap().clone();
-        let factor = num_traits::pow(lc_b, m - s);
-
-        sign * factor * Poly::resultant(b, &r)
-    }
-
-    /// Compute `R(t) = res_x(f(x), g(x) − t · h(x))` as a polynomial in `t`
-    /// using evaluation–interpolation.
-    ///
-    /// The polynomial `g(x) − t · h(x)` is linear in the parameter `t`.
-    /// We evaluate at `t = 0, 1, 2, …, d` (where `d = deg_x(f)`) to obtain
-    /// `d+1` scalar resultants, then Lagrange-interpolate to recover `R(t)`.
-    ///
-    /// This avoids building bivariate polynomial infrastructure entirely.
-    pub fn resultant_poly(f: &Poly, g: &Poly, h: &Poly) -> Poly {
-        let d = match f.degree() {
-            Some(deg) => deg,
-            None => return Poly::zero(),
-        };
-
-        // We need d+1 evaluation points (R(t) has degree ≤ d in t).
-        let num_pts = d + 1;
-        let mut points: Vec<(i64, Ratio<BigInt>)> = Vec::with_capacity(num_pts);
-
-        for k in 0..num_pts {
-            let t_val = Ratio::from_integer(BigInt::from(k as i64));
-            // b_at_t(x) = g(x) − t_val · h(x)
-            let b_at_t = g - &h.scale(&t_val);
-            let res_val = Poly::resultant(f, &b_at_t);
-            points.push((k as i64, res_val));
-        }
-
-        lagrange_interpolate_rational(&points)
-    }
-}
-
-/// Lagrange interpolation through rational-valued points at integer abscissae.
-///
-/// Given `(x₀, y₀), …, (xₙ, yₙ)` with integer `xᵢ` and rational `yᵢ`,
-/// returns the unique polynomial of degree ≤ n passing through all points.
-pub(crate) fn lagrange_interpolate_rational(
-    points: &[(i64, Ratio<BigInt>)],
-) -> Poly {
-    let n = points.len();
-    if n == 0 {
-        return Poly::zero();
-    }
-
-    let mut result = Poly::zero();
-
-    for i in 0..n {
-        let (xi, yi) = &points[i];
-        if yi.is_zero() {
-            continue;
-        }
-
-        // L_i(x) = ∏_{j≠i} (x − xⱼ) / (xᵢ − xⱼ)
-        let mut basis = Poly::from_int(1);
-        let mut denom = BigInt::one();
-
-        for (j, (xj, _)) in points.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            let linear = Poly::from_coeffs(vec![
-                Ratio::from_integer(BigInt::from(-*xj)),
-                Ratio::one(),
-            ]);
-            basis = &basis * &linear;
-            denom *= BigInt::from(*xi - *xj);
-        }
-
-        if denom.is_zero() {
-            // Duplicate x-values — shouldn't happen with our construction.
-            continue;
-        }
-
-        let scale = Ratio::new(yi.numer().clone() * denom.signum(), yi.denom().clone() * denom.abs());
-        result = &result + &basis.scale(&scale);
-    }
-
-    result
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Factoring over ℤ
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl Poly {
-    /// Returns `true` if every coefficient is an integer (denominator 1).
-    pub fn has_integer_coeffs(&self) -> bool {
-        self.coeffs.iter().all(|c| c.denom().is_one())
     }
 
     /// Factor this polynomial over ℤ.
@@ -725,7 +131,75 @@ impl Poly {
     }
 }
 
-// ── Square-free decomposition (Yun's algorithm) ────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Lagrange interpolation (ℚ-specific free function)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Lagrange interpolation through rational-valued points at integer abscissae.
+///
+/// Given `(x₀, y₀), …, (xₙ, yₙ)` with integer `xᵢ` and rational `yᵢ`,
+/// returns the unique polynomial of degree ≤ n passing through all points.
+pub(crate) fn lagrange_interpolate_rational(
+    points: &[(i64, Ratio<BigInt>)],
+) -> Poly {
+    let n = points.len();
+    if n == 0 {
+        return Poly::zero();
+    }
+
+    let mut result = Poly::zero();
+
+    for i in 0..n {
+        let (xi, yi) = &points[i];
+        if yi.is_zero() {
+            continue;
+        }
+
+        // L_i(x) = ∏_{j≠i} (x − xⱼ) / (xᵢ − xⱼ)
+        let mut basis = Poly::from_int(1);
+        let mut denom = BigInt::one();
+
+        for (j, (xj, _)) in points.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let linear = Poly::from_coeffs(vec![
+                Ratio::from_integer(BigInt::from(-*xj)),
+                Ratio::one(),
+            ]);
+            basis = &basis * &linear;
+            denom *= BigInt::from(*xi - *xj);
+        }
+
+        if denom.is_zero() {
+            // Duplicate x-values — shouldn't happen with our construction.
+            continue;
+        }
+
+        let scale = Ratio::new(
+            yi.numer().clone() * denom.signum(),
+            yi.denom().clone() * denom.abs(),
+        );
+        result = &result + &basis.scale(&scale);
+    }
+
+    result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Private helpers: rational GCD
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// GCD of two positive rationals: gcd(a/b, c/d) = gcd(a,c) / lcm(b,d).
+fn rational_gcd(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
+    let numer_gcd = a.numer().gcd(b.numer());
+    let denom_lcm = a.denom().lcm(b.denom());
+    Ratio::new(numer_gcd, denom_lcm)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Private helpers: square-free decomposition (Yun's algorithm)
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// Compute the square-free decomposition of a primitive polynomial with
 /// positive leading coefficient.
@@ -800,7 +274,9 @@ fn ensure_positive_lc(p: &Poly) -> Poly {
     }
 }
 
-// ── Irreducible factoring of a square-free polynomial ──────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Private helpers: irreducible factoring of square-free polynomials
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// Factor a square-free, primitive polynomial into irreducible factors
 /// over ℤ using the Rational Root Theorem followed by Kronecker's method.
@@ -861,7 +337,9 @@ fn factor_squarefree(f: &Poly) -> Vec<Poly> {
     factors
 }
 
-// ── Rational Root Theorem ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Private helpers: Rational Root Theorem
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// Extract all linear factors using the Rational Root Theorem.
 ///
@@ -919,10 +397,7 @@ fn extract_rational_roots(f: &Poly) -> (Poly, Vec<Poly>) {
                     continue;
                 }
                 for &sign in &[1i64, -1i64] {
-                    let candidate = Ratio::new(
-                        p * BigInt::from(sign),
-                        q.clone(),
-                    );
+                    let candidate = Ratio::new(p * BigInt::from(sign), q.clone());
                     if remaining.eval(&candidate).is_zero() {
                         // Build integer linear factor (q·x − sign·p).
                         let int_factor = Poly::from_coeffs(vec![
@@ -956,7 +431,9 @@ fn extract_rational_roots(f: &Poly) -> (Poly, Vec<Poly>) {
     (remaining, factors)
 }
 
-// ── Kronecker's method ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Private helpers: Kronecker's method
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// Try to find a non-trivial factor of `f` with degree exactly
 /// `trial_deg` using Kronecker's method.
@@ -1021,7 +498,8 @@ fn kronecker_find_factor(f: &Poly, trial_deg: usize) -> Option<(Poly, Poly)> {
             .collect();
 
         if let Some(candidate) = lagrange_interpolate(&points)
-            && candidate.degree() == Some(trial_deg) && candidate.has_integer_coeffs()
+            && candidate.degree() == Some(trial_deg)
+            && candidate.has_integer_coeffs()
         {
             let prim = ensure_positive_lc(&candidate.primitive_part());
             if prim.degree() == Some(trial_deg) {
@@ -1057,7 +535,9 @@ fn kronecker_find_factor(f: &Poly, trial_deg: usize) -> Option<(Poly, Poly)> {
     None
 }
 
-// ── Helper: Lagrange interpolation ─────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Private helpers: Lagrange interpolation over ℤ (for Kronecker)
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// Lagrange interpolation through `(xᵢ, yᵢ)` integer points.
 fn lagrange_interpolate(points: &[(i64, BigInt)]) -> Option<Poly> {
@@ -1098,7 +578,9 @@ fn lagrange_interpolate(points: &[(i64, BigInt)]) -> Option<Poly> {
     Some(result)
 }
 
-// ── Helper: integer point generation ───────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Private helpers: integer point generation and divisors
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// Generate `n` distinct small integer points: 0, 1, −1, 2, −2, …
 fn small_integer_points(n: usize) -> Vec<i64> {
@@ -1114,8 +596,6 @@ fn small_integer_points(n: usize) -> Vec<i64> {
     }
     pts
 }
-
-// ── Helper: integer divisors ───────────────────────────────────────────
 
 /// All positive divisors of `|n|` in ascending order.
 ///
@@ -1167,69 +647,6 @@ fn signed_divisors(n: &BigInt) -> Vec<BigInt> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Display
-// ═══════════════════════════════════════════════════════════════════════════
-
-impl fmt::Display for Poly {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_zero() {
-            return write!(f, "0");
-        }
-
-        let mut first = true;
-        for (i, c) in self.coeffs.iter().enumerate().rev() {
-            if c.is_zero() {
-                continue;
-            }
-
-            let is_neg = c.is_negative();
-            let abs_c = c.abs();
-            let is_one = abs_c.is_one();
-
-            // Sign / separator.
-            if first {
-                if is_neg {
-                    write!(f, "-")?;
-                }
-                first = false;
-            } else if is_neg {
-                write!(f, " - ")?;
-            } else {
-                write!(f, " + ")?;
-            }
-
-            // Coefficient and variable.
-            if i == 0 {
-                // Constant term: always print the coefficient.
-                write!(f, "{abs_c}")?;
-            } else if is_one {
-                // Coefficient is ±1: omit it.
-                if i == 1 {
-                    write!(f, "x")?;
-                } else {
-                    write!(f, "x^{i}")?;
-                }
-            } else {
-                // General case.
-                if i == 1 {
-                    write!(f, "{abs_c}*x")?;
-                } else {
-                    write!(f, "{abs_c}*x^{i}")?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl fmt::Debug for Poly {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Poly({self})")
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1261,7 +678,7 @@ mod tests {
     fn resultant_common_root() {
         // x^2-1 and x-1 share root x=1 → resultant = 0
         let a = Poly::from_coeffs(vec![ri(-1), ri(0), ri(1)]); // x^2 - 1
-        let b = Poly::from_coeffs(vec![ri(-1), ri(1)]);         // x - 1
+        let b = Poly::from_coeffs(vec![ri(-1), ri(1)]); // x - 1
         assert_eq!(Poly::resultant(&a, &b), ri(0));
     }
 
@@ -1269,7 +686,7 @@ mod tests {
     fn resultant_x2_plus_1_x_minus_1() {
         // res(x^2+1, x-1) = (x^2+1) at x=1 = 2
         let a = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // x^2 + 1
-        let b = Poly::from_coeffs(vec![ri(-1), ri(1)]);        // x - 1
+        let b = Poly::from_coeffs(vec![ri(-1), ri(1)]); // x - 1
         let res = Poly::resultant(&a, &b);
         assert_eq!(res, ri(2));
     }
@@ -1313,8 +730,8 @@ mod tests {
         // f = x^2 + 1, g = x, h = 1  →  res_x(x^2+1, x - t)
         // = (x^2+1) evaluated at x=t = t^2 + 1
         let f = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // x^2+1
-        let g = Poly::x();                                      // x
-        let h = Poly::from_int(1);                               // 1
+        let g = Poly::x(); // x
+        let h = Poly::from_int(1); // 1
         let r = Poly::resultant_poly(&f, &g, &h);
         let expected = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]); // t^2+1
         assert_eq!(r, expected, "res_x(x^2+1, x-t) should be t^2+1, got {r}");
@@ -1337,9 +754,19 @@ mod tests {
 
         let r = Poly::resultant_poly(&f, &g, &h);
         // R(t) should be 1 - 3125 t^5
-        assert_eq!(r.degree(), Some(5), "R(t) should have degree 5, got {:?}", r.degree());
+        assert_eq!(
+            r.degree(),
+            Some(5),
+            "R(t) should have degree 5, got {:?}",
+            r.degree()
+        );
         assert_eq!(r.coeff(0), ri(1), "constant term should be 1");
-        assert_eq!(r.coeff(5), ri(-3125), "t^5 coeff should be -3125, got {}", r.coeff(5));
+        assert_eq!(
+            r.coeff(5),
+            ri(-3125),
+            "t^5 coeff should be -3125, got {}",
+            r.coeff(5)
+        );
         // Middle terms should be 0
         for k in 1..5 {
             assert_eq!(r.coeff(k), ri(0), "coeff of t^{k} should be 0");
@@ -1383,8 +810,10 @@ mod tests {
         }
         let product_monic = product.make_monic();
         let p_monic = p.make_monic();
-        assert_eq!(product_monic, p_monic,
-            "product of squarefree factors should reconstruct original");
+        assert_eq!(
+            product_monic, p_monic,
+            "product of squarefree factors should reconstruct original"
+        );
     }
 
     // ── Lagrange interpolation (rational) ───────────────────────────
@@ -1435,7 +864,7 @@ mod tests {
     fn monomial_x() {
         let p = Poly::x();
         assert_eq!(p.degree(), Some(1));
-        assert_eq!(format!("{p}"), "x");
+        assert_eq!(format!("{p}"), "θ");
     }
 
     #[test]
@@ -1448,21 +877,21 @@ mod tests {
     fn display_polynomial() {
         // x^2 + 2x + 1
         let p = Poly::from_coeffs(vec![ri(1), ri(2), ri(1)]);
-        assert_eq!(format!("{p}"), "x^2 + 2*x + 1");
+        assert_eq!(format!("{p}"), "θ^2 + 2*θ + 1");
     }
 
     #[test]
     fn display_negative_terms() {
         // x^2 - 3x + 2
         let p = Poly::from_coeffs(vec![ri(2), ri(-3), ri(1)]);
-        assert_eq!(format!("{p}"), "x^2 - 3*x + 2");
+        assert_eq!(format!("{p}"), "θ^2 - 3*θ + 2");
     }
 
     #[test]
     fn display_rational_coeffs() {
         // (1/2)x + 1/3
         let p = Poly::from_coeffs(vec![r(1, 3), r(1, 2)]);
-        assert_eq!(format!("{p}"), "1/2*x + 1/3");
+        assert_eq!(format!("{p}"), "(1/2)*θ + 1/3");
     }
 
     // ── Evaluation ──────────────────────────────────────────────────
@@ -1488,7 +917,7 @@ mod tests {
         let a = Poly::from_coeffs(vec![ri(1), ri(1)]);
         let b = Poly::from_coeffs(vec![ri(2), ri(0), ri(1)]);
         let c = &a + &b;
-        assert_eq!(format!("{c}"), "x^2 + x + 3");
+        assert_eq!(format!("{c}"), "θ^2 + θ + 3");
     }
 
     #[test]
@@ -1516,7 +945,7 @@ mod tests {
         let a = Poly::from_coeffs(vec![ri(0), ri(1), ri(1)]);
         let b = Poly::from_coeffs(vec![ri(-1), ri(1)]);
         let c = &a - &b;
-        assert_eq!(format!("{c}"), "x^2 + 1");
+        assert_eq!(format!("{c}"), "θ^2 + 1");
     }
 
     #[test]
@@ -1532,7 +961,7 @@ mod tests {
     fn neg_polynomial() {
         let a = Poly::from_coeffs(vec![ri(1), ri(-2), ri(3)]);
         let b = -&a;
-        assert_eq!(format!("{b}"), "-3*x^2 + 2*x - 1");
+        assert_eq!(format!("{b}"), "-3*θ^2 + 2*θ - 1");
     }
 
     // ── Mul ─────────────────────────────────────────────────────────
@@ -1543,7 +972,7 @@ mod tests {
         let a = Poly::from_coeffs(vec![ri(1), ri(1)]);
         let b = Poly::from_coeffs(vec![ri(-1), ri(1)]);
         let c = &a * &b;
-        assert_eq!(format!("{c}"), "x^2 - 1");
+        assert_eq!(format!("{c}"), "θ^2 - 1");
     }
 
     #[test]
@@ -1558,7 +987,7 @@ mod tests {
         let a = Poly::from_coeffs(vec![ri(1), ri(2)]);
         let b = Poly::from_int(3);
         let c = &a * &b;
-        assert_eq!(format!("{c}"), "6*x + 3");
+        assert_eq!(format!("{c}"), "6*θ + 3");
     }
 
     #[test]
@@ -1566,14 +995,14 @@ mod tests {
         // (x + 1)^2 = x^2 + 2x + 1
         let a = Poly::from_coeffs(vec![ri(1), ri(1)]);
         let c = &a * &a;
-        assert_eq!(format!("{c}"), "x^2 + 2*x + 1");
+        assert_eq!(format!("{c}"), "θ^2 + 2*θ + 1");
     }
 
     #[test]
     fn scale_polynomial() {
         let a = Poly::from_coeffs(vec![ri(2), ri(4)]);
         let b = a.scale(&r(1, 2));
-        assert_eq!(format!("{b}"), "2*x + 1");
+        assert_eq!(format!("{b}"), "2*θ + 1");
     }
 
     // ── Div / Rem ───────────────────────────────────────────────────
@@ -1584,7 +1013,7 @@ mod tests {
         let dividend = Poly::from_coeffs(vec![ri(-1), ri(0), ri(1)]);
         let divisor = Poly::from_coeffs(vec![ri(-1), ri(1)]);
         let (q, r) = dividend.div_rem(&divisor);
-        assert_eq!(format!("{q}"), "x + 1");
+        assert_eq!(format!("{q}"), "θ + 1");
         assert!(r.is_zero(), "remainder should be zero, got: {r}");
     }
 
@@ -1594,7 +1023,7 @@ mod tests {
         let dividend = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]);
         let divisor = Poly::from_coeffs(vec![ri(-1), ri(1)]);
         let (q, r) = dividend.div_rem(&divisor);
-        assert_eq!(format!("{q}"), "x + 1");
+        assert_eq!(format!("{q}"), "θ + 1");
         assert_eq!(format!("{r}"), "2");
     }
 
@@ -1605,7 +1034,7 @@ mod tests {
         let divisor = Poly::from_coeffs(vec![ri(1), ri(0), ri(1)]);
         let (q, r) = dividend.div_rem(&divisor);
         assert!(q.is_zero());
-        assert_eq!(format!("{r}"), "x + 1");
+        assert_eq!(format!("{r}"), "θ + 1");
     }
 
     #[test]
@@ -1614,12 +1043,12 @@ mod tests {
         let dividend = Poly::from_coeffs(vec![ri(4), ri(2)]);
         let divisor = Poly::from_int(2);
         let (q, r) = dividend.div_rem(&divisor);
-        assert_eq!(format!("{q}"), "x + 2");
+        assert_eq!(format!("{q}"), "θ + 2");
         assert!(r.is_zero());
     }
 
     #[test]
-    #[should_panic(expected = "polynomial division by zero")]
+    #[should_panic(expected = "division by zero polynomial")]
     fn div_by_zero_panics() {
         let a = Poly::from_int(1);
         let _ = a.div_rem(&Poly::zero());
@@ -1660,10 +1089,9 @@ mod tests {
 
     #[test]
     fn gcd_with_zero() {
-        let a = Poly::from_coeffs(vec![ri(2), ri(4)]);
+        let a = Poly::from_coeffs(vec![ri(4), ri(2)]);
         let g = Poly::gcd(&a, &Poly::zero());
-        // GCD(a, 0) = monic(a) = x + 1/2 ... actually monic(2x + 2) = x + 1.
-        // Wait: 2x + 4. monic → x + 2.
+        // GCD(a, 0) = monic(a): 2x + 4 → monic → x + 2.
         assert_eq!(g.degree(), Some(1));
         assert_eq!(g.leading_coeff(), Some(&ri(1)));
     }
@@ -1699,7 +1127,7 @@ mod tests {
         let p = Poly::from_coeffs(vec![ri(2), ri(4)]);
         let m = p.make_monic();
         assert_eq!(m.leading_coeff(), Some(&ri(1)));
-        assert_eq!(format!("{m}"), "x + 1/2");
+        assert_eq!(format!("{m}"), "θ + 1/2");
     }
 
     #[test]
@@ -1802,7 +1230,7 @@ mod tests {
         assert_eq!(pp, expected);
     }
 
-    // ── Factoring over ℤ ────────────────────────────────────────────────
+    // ── Factoring over ℤ ────────────────────────────────────────────
 
     #[test]
     fn has_integer_coeffs_true() {
@@ -1914,7 +1342,11 @@ mod tests {
         let p = Poly::from_coeffs(vec![ri(-6), ri(11), ri(-6), ri(1)]);
         let (content, factors) = p.factor_over_z();
         assert_eq!(content, ri(1));
-        assert_eq!(factors.len(), 3, "should have 3 linear factors: {factors:?}");
+        assert_eq!(
+            factors.len(),
+            3,
+            "should have 3 linear factors: {factors:?}"
+        );
         // Verify product.
         let mut product = Poly::from_int(1);
         for (f, m) in &factors {
@@ -1998,5 +1430,92 @@ mod tests {
                 "value mismatch at x={x}: orig={original}, factored={factored}"
             );
         }
+    }
+
+    // ── Specialized derivative ───────────────────────────────────────
+
+    #[test]
+    fn derivative_specialized_matches_generic() {
+        // Verify the specialized derivative matches manual calculation
+        // p = 3x^3 + 2x^2 + x + 5  →  p' = 9x^2 + 4x + 1
+        let p = Poly::from_coeffs(vec![ri(5), ri(1), ri(2), ri(3)]);
+        let dp = p.derivative();
+        let expected = Poly::from_coeffs(vec![ri(1), ri(4), ri(9)]);
+        assert_eq!(dp, expected);
+    }
+
+    #[test]
+    fn derivative_constant_is_zero() {
+        let p = Poly::from_int(42);
+        assert!(p.derivative().is_zero());
+    }
+
+    #[test]
+    fn derivative_zero_is_zero() {
+        assert!(Poly::zero().derivative().is_zero());
+    }
+
+    #[test]
+    fn derivative_linear() {
+        // 3x + 7 → 3
+        let p = Poly::from_coeffs(vec![ri(7), ri(3)]);
+        assert_eq!(p.derivative(), Poly::from_int(3));
+    }
+
+    // ── Eq and Hash ─────────────────────────────────────────────────
+
+    #[test]
+    fn eq_and_hash_consistent() {
+        use std::collections::HashSet;
+        let a = Poly::from_coeffs(vec![ri(1), ri(2), ri(1)]);
+        let b = Poly::from_coeffs(vec![ri(1), ri(2), ri(1)]);
+        let c = Poly::from_coeffs(vec![ri(1), ri(3), ri(1)]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        let mut set = HashSet::new();
+        set.insert(a.clone());
+        assert!(set.contains(&b));
+        assert!(!set.contains(&c));
+    }
+
+    // ── Operator overloads (owned + mixed) ──────────────────────────
+
+    #[test]
+    fn owned_add() {
+        let a = Poly::from_coeffs(vec![ri(1), ri(1)]);
+        let b = Poly::from_coeffs(vec![ri(2), ri(0), ri(1)]);
+        let c = a + b;
+        assert_eq!(c, Poly::from_coeffs(vec![ri(3), ri(1), ri(1)]));
+    }
+
+    #[test]
+    fn mixed_ref_owned_add() {
+        let a = Poly::from_coeffs(vec![ri(1), ri(1)]);
+        let b = Poly::from_coeffs(vec![ri(2), ri(0), ri(1)]);
+        let c = &a + b;
+        assert_eq!(c, Poly::from_coeffs(vec![ri(3), ri(1), ri(1)]));
+    }
+
+    #[test]
+    fn mixed_owned_ref_sub() {
+        let a = Poly::from_coeffs(vec![ri(3), ri(2)]);
+        let b = Poly::from_coeffs(vec![ri(1), ri(1)]);
+        let c = a - &b;
+        assert_eq!(c, Poly::from_coeffs(vec![ri(2), ri(1)]));
+    }
+
+    #[test]
+    fn owned_mul() {
+        let a = Poly::from_coeffs(vec![ri(1), ri(1)]);
+        let b = Poly::from_coeffs(vec![ri(-1), ri(1)]);
+        let c = a * b;
+        assert_eq!(c, Poly::from_coeffs(vec![ri(-1), ri(0), ri(1)]));
+    }
+
+    #[test]
+    fn owned_neg() {
+        let a = Poly::from_coeffs(vec![ri(1), ri(-2)]);
+        let b = -a;
+        assert_eq!(b, Poly::from_coeffs(vec![ri(-1), ri(2)]));
     }
 }

@@ -217,7 +217,7 @@ mod tests {
         // i.e., sum_numer * D == A * sum_denom
         let lhs = &sum_numer * d;
         let rhs = &(a * &sum_denom);
-        let diff = &lhs - &rhs;
+        let diff = &lhs - rhs;
 
         assert!(
             diff.is_zero(),
