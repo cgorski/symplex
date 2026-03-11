@@ -534,6 +534,25 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
             let prod_expr = arena.intern(ExprNode::Num(prod_id));
             return canon_pow(arena, inner_base, prod_expr);
         }
+
+        // Also flatten when the inner base is a positive rational and the
+        // outer exponent is an integer.  This handles cases like
+        //   (5^{1/2})^2 → 5^{1/2 * 2} = 5^1 → 5
+        //   (2^{1/3})^3 → 2^{1/3 * 3} = 2^1 → 2
+        //   (3^{1/4})^2 → 3^{1/4 * 2} = 3^{1/2} = √3
+        // Safe because a > 0 avoids all branch-cut ambiguity.
+        if c.is_integer()
+            && let Some(base_r) = arena.as_num(inner_base)
+            && base_r.is_positive()
+        {
+            tracing::trace!(
+                "canon_pow: flattening Pow(Pow(pos_rational, frac), int) → Pow(pos_rational, frac*int)"
+            );
+            let product = b * c;
+            let prod_id = arena.intern_num(product);
+            let prod_expr = arena.intern(ExprNode::Num(prod_id));
+            return canon_pow(arena, inner_base, prod_expr);
+        }
     }
 
     // i^n reduction: i^0=1, i^1=i, i^2=-1, i^3=-i, then repeats with period 4.

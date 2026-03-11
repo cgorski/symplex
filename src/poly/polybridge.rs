@@ -339,6 +339,28 @@ pub(crate) fn poly_to_expr(arena: &mut Arena, poly: &Poly, var: ExprId) -> ExprI
     }
 }
 
+/// Convert a [`RationalFn`] (a rational function `p(var)/q(var)`) to an
+/// arena expression.
+///
+/// Uses [`poly_to_expr`] for both the numerator and denominator polynomials.
+/// If the denominator is the constant 1, only the numerator expression is
+/// returned (no division node).
+pub(crate) fn ratfn_to_expr(
+    arena: &mut Arena,
+    rf: &crate::poly::ratfn::RationalFn,
+    var: ExprId,
+) -> ExprId {
+    let n = poly_to_expr(arena, rf.numer(), var);
+    if rf.denom().is_constant() {
+        let d_val = rf.denom().coeff(0);
+        if d_val.is_one() {
+            return n;
+        }
+    }
+    let d = poly_to_expr(arena, rf.denom(), var);
+    arena.div(n, d)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Numerator / Denominator decomposition
 // ═══════════════════════════════════════════════════════════════════════════

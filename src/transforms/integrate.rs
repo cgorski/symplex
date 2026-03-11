@@ -2276,6 +2276,182 @@ fn symbolic_linear_coeff_of(
     None
 }
 
+/// Extract symbolic quadratic coefficients from `cx² + dx + e`.
+///
+/// Given an expression that is quadratic in `var`, returns
+/// `Some((c_expr, d_expr, e_expr))` where `c` is the coefficient of `var²`,
+/// `d` is the coefficient of `var`, and `e` is the constant term — all as
+/// `ExprId`s that are free of `var`.
+///
+/// Returns `None` if the expression is not quadratic in `var` (e.g., it
+/// contains `var³` or non-polynomial dependence on `var`).
+///
+/// This is the quadratic analogue of [`symbolic_linear_coeff_of`], used when
+/// [`expr_to_poly`] fails because coefficients are irrational (e.g., `√5`).
+fn symbolic_quadratic_coeffs(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<(ExprId, ExprId, ExprId)> {
+    // Fast path: try numeric first.
+    if let Some(poly) = crate::poly::polybridge::expr_to_poly(arena, expr, var) {
+        if poly.degree()? == 2 {
+            let c = rational_to_expr(arena, &poly.coeff(2));
+            let d = rational_to_expr(arena, &poly.coeff(1));
+            let e = rational_to_expr(arena, &poly.coeff(0));
+            return Some((c, d, e));
+        }
+        return None;
+    }
+
+    // Symbolic path: walk the Add children and classify each term.
+    let children = match arena.node(expr).clone() {
+        ExprNode::Add(c) => c.to_vec(),
+        _ => vec![expr],
+    };
+
+    let mut x2_terms: SmallVec<[ExprId; 4]> = SmallVec::new(); // coefficients of var²
+    let mut x1_terms: SmallVec<[ExprId; 4]> = SmallVec::new(); // coefficients of var
+    let mut x0_terms: SmallVec<[ExprId; 4]> = SmallVec::new(); // constant terms
+
+    let two = arena.int(2);
+
+    for &child in &children {
+        if !contains_var(arena, child, var_sym) {
+            // Constant term.
+            x0_terms.push(child);
+            continue;
+        }
+
+        // Check for var² or scalar * var²
+        if child == arena.pow(var, two) {
+            x2_terms.push(arena.one);
+            continue;
+        }
+
+        // Check for Pow(var, 2)
+        if let ExprNode::Pow(base, exp) = arena.node(child).clone() {
+            if base == var {
+                if let Some(e) = arena.as_num(exp) {
+                    if *e == num_rational::Ratio::from_integer(2.into()) {
+                        x2_terms.push(arena.one);
+                        continue;
+                    }
+                }
+                // var^(something else) — not quadratic
+                return None;
+            }
+        }
+
+        // Check for Mul containing var² or var
+        if let ExprNode::Mul(ref mul_children) = arena.node(child).clone() {
+            let mul_children = mul_children.clone();
+            let mut has_var_sq = false;
+            let mut has_var = false;
+            let mut var_count = 0u32;
+            let mut other_factors: SmallVec<[ExprId; 4]> = SmallVec::new();
+
+            for &mc in &mul_children {
+                if mc == var {
+                    var_count += 1;
+                    if var_count > 2 {
+                        return None; // var³ or higher
+                    }
+                } else if let ExprNode::Pow(base, exp) = arena.node(mc).clone() {
+                    if base == var {
+                        if let Some(e) = arena.as_num(exp) {
+                            if *e == num_rational::Ratio::from_integer(2.into()) {
+                                has_var_sq = true;
+                            } else if e.is_integer() && *e > num_rational::Ratio::from_integer(2.into()) {
+                                return None; // var³ or higher
+                            } else {
+                                // fractional power of var — not polynomial
+                                return None;
+                            }
+                        } else {
+                            return None; // symbolic exponent of var
+                        }
+                    } else if contains_var(arena, mc, var_sym) {
+                        return None; // non-trivial var dependence
+                    } else {
+                        other_factors.push(mc);
+                    }
+                } else if contains_var(arena, mc, var_sym) {
+                    return None; // non-trivial var dependence
+                } else {
+                    other_factors.push(mc);
+                }
+            }
+
+            let scalar = match other_factors.len() {
+                0 => arena.one,
+                1 => other_factors[0],
+                _ => arena.mul(&other_factors),
+            };
+
+            if has_var_sq || var_count == 2 {
+                x2_terms.push(scalar);
+            } else if var_count == 1 {
+                has_var = true;
+                x1_terms.push(scalar);
+            } else if !has_var {
+                // No var at all in this Mul child — should have been caught
+                // by the contains_var check above, but be safe.
+                x0_terms.push(child);
+            }
+            continue;
+        }
+
+        // Check for bare var
+        if child == var {
+            x1_terms.push(arena.one);
+            continue;
+        }
+
+        // Check for Neg(something)
+        if let ExprNode::Neg(inner) = arena.node(child).clone() {
+            if let Some((c, d, e)) = symbolic_quadratic_coeffs(arena, inner, var, var_sym) {
+                x2_terms.push(arena.neg(c));
+                x1_terms.push(arena.neg(d));
+                x0_terms.push(arena.neg(e));
+                continue;
+            }
+            return None;
+        }
+
+        // Unrecognized var-dependent term.
+        return None;
+    }
+
+    // The expression must have a nonzero x² coefficient to be quadratic.
+    if x2_terms.is_empty() {
+        return None;
+    }
+
+    let c_expr = match x2_terms.len() {
+        1 => x2_terms[0],
+        _ => arena.add(&x2_terms),
+    };
+    let d_expr = match x1_terms.len() {
+        0 => arena.zero,
+        1 => x1_terms[0],
+        _ => arena.add(&x1_terms),
+    };
+    let e_expr = match x0_terms.len() {
+        0 => arena.zero,
+        1 => x0_terms[0],
+        _ => arena.add(&x0_terms),
+    };
+
+    // Verify c is free of var.
+    if contains_var(arena, c_expr, var_sym) {
+        return None;
+    }
+
+    Some((c_expr, d_expr, e_expr))
+}
+
 /// Convert a Ratio<BigInt> to an ExprId.
 fn rational_to_expr(arena: &mut Arena, r: &num_rational::Ratio<num_bigint::BigInt>) -> ExprId {
     let nid = arena.intern_num(r.clone());

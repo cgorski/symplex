@@ -106,6 +106,34 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
     format_complex(result, digits, prec, rm, &mut cc)
 }
 
+/// Evaluate a constant (variable-free) arena expression to `f64`.
+///
+/// Returns `None` if the expression contains free symbols, produces
+/// a complex result, or evaluation fails for any reason.
+///
+/// The expression is first simplified via [`eval`](crate::transforms::eval::eval)
+/// to reduce exact values (e.g., `sin(π) → 0`, `Γ(5) → 24`) before
+/// numerical evaluation.
+pub(crate) fn eval_const_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
+    // Simplify exact values first.
+    let evaled = crate::transforms::eval::eval(arena, expr);
+
+    // Fast path: if the result is already a rational number, convert directly
+    // without invoking the expensive arbitrary-precision machinery.
+    if let Some(r) = arena.as_num(evaled) {
+        let n: f64 = r.numer().to_string().parse().ok()?;
+        let d: f64 = r.denom().to_string().parse().ok()?;
+        return if d == 0.0 { None } else { Some(n / d) };
+    }
+
+    // Fall back to arbitrary-precision evaluation to 16 decimal digits,
+    // then parse the resulting string.  The `evalf` call takes `&Arena`
+    // (immutable), which Rust allows via automatic reborrowing of our
+    // `&mut Arena`.
+    let s = evalf(arena, evaled, 16).ok()?;
+    s.parse::<f64>().ok()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Node evaluation
 // ═══════════════════════════════════════════════════════════════════════════

@@ -470,6 +470,56 @@ impl<C: Field> GenPoly<C> {
         a.make_monic()
     }
 
+    /// Compute the Euclidean polynomial remainder sequence (PRS).
+    ///
+    /// Returns a map from degree to the PRS member at that degree.
+    /// The PRS is the sequence of remainders produced during the
+    /// Euclidean algorithm: `[a, b, rem(a,b), rem(b,rem(a,b)), ...]`.
+    ///
+    /// This is used by the Lazard-Rioboo-Trager algorithm to extract
+    /// the bivariate logarithmic argument `h(t, x)` from the resultant
+    /// computation.
+    ///
+    /// Assumes `deg(a) >= deg(b)`.  If not, the arguments are swapped
+    /// internally.
+    pub fn euclidean_prs(
+        a: &Self,
+        b: &Self,
+    ) -> std::collections::BTreeMap<usize, Self> {
+        let mut prs = std::collections::BTreeMap::new();
+
+        if a.is_zero() || b.is_zero() {
+            return prs;
+        }
+
+        // Ensure deg(curr) >= deg(next).
+        let (mut curr, mut next) = if a.degree().unwrap_or(0) >= b.degree().unwrap_or(0) {
+            (a.clone(), b.clone())
+        } else {
+            (b.clone(), a.clone())
+        };
+
+        // Record initial members.
+        if let Some(d) = curr.degree() {
+            prs.insert(d, curr.clone());
+        }
+        if let Some(d) = next.degree() {
+            prs.insert(d, next.clone());
+        }
+
+        // Euclidean remainder loop.
+        while !next.is_zero() {
+            let (_, r) = curr.div_rem(&next);
+            if let Some(d) = r.degree() {
+                prs.insert(d, r.clone());
+            }
+            curr = next;
+            next = r;
+        }
+
+        prs
+    }
+
     /// Extended Euclidean algorithm.
     ///
     /// Returns `(s, t, g)` where `s*a + t*b = g` and `g = gcd(a, b)` (monic).

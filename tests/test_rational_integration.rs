@@ -353,13 +353,13 @@ fn integrate_1_over_x3_minus_1_numerically() {
     let has_atan = s.contains("atan");
 
     // Numerical verification: ∫₂³ 1/(x³-1) dx.
-    // The exact answer is approximately 0.08297...
+    // The exact answer is approximately 0.07539...
     let f3 = eval_at_int(&anti, &x, 3);
     let f2 = eval_at_int(&anti, &x, 2);
 
     if let (Some(f3), Some(f2)) = (f3, f2) {
         let val = f3 - f2;
-        let expected = 0.08297; // approximate
+        let expected = 0.07539; // approximate (verified via numerical quadrature)
         assert!(
             (val - expected).abs() < 0.01,
             "∫₂³ 1/(x³-1) dx ≈ {expected}: got {val} (antiderivative: {s})"
