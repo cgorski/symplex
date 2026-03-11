@@ -477,4 +477,171 @@ mod tests {
         // Should be -1/x or equivalent
         assert!(s.contains("x"), "∫ 1/x^2 dx should be -1/x, got: {s}");
     }
+
+    // ── Phase 4 infrastructure verification ────────────────────────
+
+    #[test]
+    fn prs_x3_minus_1_has_degree_1_member() {
+        // Verify that the Euclidean PRS of D(x) = x³-1 and B(x,t) = 1-3t·x²
+        // (computed in GenPoly<RationalFn>) has a degree-1 member h(t,x) = x - 3t.
+        use crate::poly::dense::Poly;
+        use crate::poly::generic::GenPoly;
+        use crate::poly::ratfn::RationalFn;
+        use crate::poly::traits::Ring;
+
+        fn r(n: i64, d: i64) -> Ratio<BigInt> {
+            Ratio::new(BigInt::from(n), BigInt::from(d))
+        }
+
+        // D(x) = x³ - 1
+        let d_gp: GenPoly<RationalFn> = GenPoly::from_coeffs(vec![
+            RationalFn::from_rational(r(-1, 1)),
+            RationalFn::from_rational(r(0, 1)),
+            RationalFn::from_rational(r(0, 1)),
+            RationalFn::from_rational(r(1, 1)),
+        ]);
+
+        // B(x,t) = 1 - 3t·x²
+        let neg_3t = RationalFn::from_poly(Poly::from_coeffs(vec![r(0, 1), r(-3, 1)]));
+        let b_gp: GenPoly<RationalFn> = GenPoly::from_coeffs(vec![
+            RationalFn::from_rational(r(1, 1)),
+            RationalFn::from_rational(r(0, 1)),
+            neg_3t,
+        ]);
+
+        // Compute PRS
+        let prs = GenPoly::<RationalFn>::euclidean_prs(&d_gp, &b_gp);
+
+        // Must have a degree-1 member
+        assert!(
+            prs.contains_key(&1),
+            "PRS should contain a degree-1 member, got degrees: {:?}",
+            prs.keys().collect::<Vec<_>>()
+        );
+
+        // Make it monic
+        let h = prs.get(&1).unwrap();
+        let h_monic = h.make_monic();
+
+        // h(t,x) should be x - 3t (monic in x)
+        // coeff(1) should be RF(1) (the leading coefficient, monic)
+        let c1 = h_monic.coeff(1);
+        assert!(
+            c1.numer().is_constant() && c1.denom().is_constant(),
+            "x coefficient should be a constant RationalFn"
+        );
+        let c1_val = c1.to_rational().expect("should be rational");
+        assert_eq!(c1_val, r(1, 1), "x coefficient should be 1");
+
+        // coeff(0) should be RF(-3t) = RationalFn(numer=-3t, denom=1)
+        let c0 = h_monic.coeff(0);
+        assert!(
+            c0.denom().is_constant(),
+            "constant term denominator should be 1"
+        );
+        let c0_numer = c0.numer();
+        assert_eq!(c0_numer.degree(), Some(1), "constant term should be linear in t");
+        assert_eq!(c0_numer.coeff(0), r(0, 1), "constant of -3t should be 0");
+        assert_eq!(c0_numer.coeff(1), r(-3, 1), "slope of -3t should be -3");
+    }
+
+    #[test]
+    fn solve_quadratic_factor_produces_conjugate_roots() {
+        // Verify that solve on q(t) = 9t²+3t+1 produces complex roots
+        // that as_real_imag can decompose into (u, v) = (-1/6, ±√3/6).
+        let mut arena = Arena::new();
+        let t = sym(&mut arena, "t");
+
+        // q(t) = 9t² + 3t + 1
+        let nine = arena.int(9);
+        let three = arena.int(3);
+        let one = arena.one();
+        let two = arena.int(2);
+        let t_sq = arena.pow(t, two);
+        let term_9t2 = arena.mul(&[nine, t_sq]);
+        let term_3t = arena.mul(&[three, t]);
+        let q_expr = arena.add(&[term_9t2, term_3t, one]);
+
+        let roots = crate::transforms::solve::solve(&mut arena, q_expr, t);
+        assert_eq!(roots.len(), 2, "quadratic should have 2 roots, got {}", roots.len());
+
+        // Decompose each root into (Re, Im)
+        let mut pos_im_found = false;
+        let mut neg_im_found = false;
+
+        for root in &roots {
+            let (re, im) = crate::base::complex::as_real_imag(&mut arena, root.value);
+            let re = crate::transforms::eval::eval(&mut arena, re);
+            let im = crate::transforms::eval::eval(&mut arena, im);
+
+            // Re should be -1/6
+            let re_f64 = crate::transforms::evalf::eval_const_f64(&mut arena, re);
+            let im_f64 = crate::transforms::evalf::eval_const_f64(&mut arena, im);
+
+            if let (Some(re_v), Some(im_v)) = (re_f64, im_f64) {
+                assert!(
+                    (re_v - (-1.0 / 6.0)).abs() < 1e-10,
+                    "Re should be -1/6, got {re_v}"
+                );
+                let expected_im = 3.0_f64.sqrt() / 6.0;
+                assert!(
+                    (im_v.abs() - expected_im).abs() < 1e-10,
+                    "|Im| should be √3/6 ≈ {expected_im}, got {}", im_v.abs()
+                );
+                if im_v > 0.0 {
+                    pos_im_found = true;
+                } else {
+                    neg_im_found = true;
+                }
+            } else {
+                panic!("Could not evaluate root to f64: {}", display(&arena, root.value));
+            }
+        }
+
+        assert!(pos_im_found, "should have a root with positive imaginary part");
+        assert!(neg_im_found, "should have a root with negative imaginary part");
+    }
+
+    #[test]
+    fn try_risch_rational_one_over_x_cubed_minus_1_numerical() {
+        // End-to-end: ∫ 1/(x³-1) dx with numerical verification.
+        // This exercises the Phase 1 fix (algebraic remainder subtraction).
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let three = arena.int(3);
+        let one = arena.one();
+        let x_cubed = arena.pow(x, three);
+        let denom = arena.sub(x_cubed, one);
+        let neg1 = arena.int(-1);
+        let expr = arena.pow(denom, neg1); // (x³-1)^(-1)
+
+        let result = try_risch_rational(&mut arena, expr, x);
+        assert!(result.is_some(), "∫ 1/(x³-1) dx should succeed");
+
+        let anti = result.unwrap();
+        assert!(
+            !crate::base::walk::has_unevaluated(&arena, anti),
+            "result should not contain unevaluated integrals: {}",
+            display(&arena, anti)
+        );
+
+        // Numerical check: F(3) - F(2)
+        let val_3 = arena.int(3);
+        let val_2 = arena.int(2);
+        let f3 = crate::transforms::subs::subs(&mut arena, anti, x, val_3);
+        let f3 = crate::transforms::eval::eval(&mut arena, f3);
+        let f2 = crate::transforms::subs::subs(&mut arena, anti, x, val_2);
+        let f2 = crate::transforms::eval::eval(&mut arena, f2);
+
+        let f3_f64 = crate::transforms::evalf::eval_const_f64(&mut arena, f3);
+        let f2_f64 = crate::transforms::evalf::eval_const_f64(&mut arena, f2);
+
+        if let (Some(f3v), Some(f2v)) = (f3_f64, f2_f64) {
+            let integral = f3v - f2v;
+            assert!(
+                (integral - 0.07539).abs() < 0.001,
+                "∫₂³ 1/(x³-1) dx ≈ 0.07539, got {integral}"
+            );
+        }
+    }
 }
