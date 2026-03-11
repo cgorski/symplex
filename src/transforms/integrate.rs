@@ -1257,9 +1257,12 @@ fn integrate_node(
                         continue;
                     }
 
-                    // Check that dv is directly integrable
+                    // Check that dv is directly integrable (deep check: reject
+                    // results that contain nested unevaluated Integral nodes,
+                    // e.g. Add(Integral(..), Integral(..)) which has a non-
+                    // Integral top node but is still not fully evaluated).
                     let v = integrate_node(arena, dv, var, var_sym, depth - 1);
-                    if let ExprNode::Integral(_, _) = arena.node(v) {
+                    if crate::base::walk::has_unevaluated(arena, v) {
                         continue; // dv not integrable
                     }
 
@@ -1270,8 +1273,9 @@ fn integrate_node(
                     let v_du = arena.mul(&[v, du]);
                     let integral_v_du = integrate_node(arena, v_du, var, var_sym, depth - 1);
 
-                    // Check if the remaining integral was resolved
-                    if let ExprNode::Integral(_, _) = arena.node(integral_v_du) {
+                    // Check if the remaining integral was resolved (deep check:
+                    // an Add of unevaluated Integrals should not be accepted).
+                    if crate::base::walk::has_unevaluated(arena, integral_v_du) {
                         continue; // Remaining integral not solvable
                     }
 
