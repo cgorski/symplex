@@ -64,8 +64,8 @@ fn main() {
     let denom = &z * 21 - 19;
 
     // DC gain: H(z=1) = H(s=0) = 1 (z=1 maps to s=0 in bilinear)
-    let dc_gain = (&numer.subs(&z, &ctx.int(1)).eval_f64().unwrap())
-        / (&denom.subs(&z, &ctx.int(1)).eval_f64().unwrap());
+    let dc_gain = numer.subs(&z, &ctx.int(1)).eval_f64().unwrap()
+        / denom.subs(&z, &ctx.int(1)).eval_f64().unwrap();
     println!("\n  DC gain check: H(z=1) = {dc_gain:.4} (should be 1.0)");
     assert!((dc_gain - 1.0).abs() < 1e-10, "DC gain must be 1");
 

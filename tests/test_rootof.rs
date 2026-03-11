@@ -146,10 +146,10 @@ fn rootof_eval_decimal_quintic() {
     // to decimal strings like "-0.764... - 0.352...*i".
     let mut found_real = false;
     for root in &roots {
-        if let Ok(dec) = root.eval_decimal(15) {
-            if dec.starts_with("1.167") {
-                found_real = true;
-            }
+        if let Ok(dec) = root.eval_decimal(15)
+            && dec.starts_with("1.167")
+        {
+            found_real = true;
         }
     }
     assert!(

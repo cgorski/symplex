@@ -365,10 +365,10 @@ fn integrate_sqrt_x2_plus_one_ftc() {
     for &(p, q) in pts {
         let pt = ctx.rational(p, q);
         let f_at_pt = antideriv.subs(&x, &pt).eval();
-        if let Ok(v) = f_at_pt.eval_f64() {
-            if v.is_finite() {
-                eval_pts.push((p as f64 / q as f64, v));
-            }
+        if let Ok(v) = f_at_pt.eval_f64()
+            && v.is_finite()
+        {
+            eval_pts.push((p as f64 / q as f64, v));
         }
     }
 

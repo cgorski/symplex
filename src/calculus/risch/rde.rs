@@ -286,6 +286,7 @@ fn compute_degree_bound(
 ///
 /// Sets up a linear system by substituting the ansatz into y' + f·y = g,
 /// clearing denominators, and equating coefficients.
+#[allow(clippy::needless_range_loop)]
 fn solve_with_ansatz(
     f_numer: &Poly,
     f_denom: &Poly,
@@ -397,6 +398,7 @@ fn solve_with_ansatz(
 ///
 /// `matrix` is an `m × (n+1)` augmented matrix (last column is RHS).
 /// Returns `Some(solution)` with `n` values if consistent, `None` otherwise.
+#[allow(clippy::needless_range_loop)]
 fn solve_linear_system(
     matrix: &mut [Vec<Ratio<BigInt>>],
     num_unknowns: usize,
@@ -466,7 +468,7 @@ fn solve_linear_system(
 
         let mut rhs = matrix[row][n].clone();
         for j in (col + 1)..n {
-            rhs = rhs - &matrix[row][j] * &solution[j];
+            rhs -= &matrix[row][j] * &solution[j];
         }
         solution[col] = rhs / &matrix[row][col];
     }

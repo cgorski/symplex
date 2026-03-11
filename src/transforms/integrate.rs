@@ -1050,10 +1050,10 @@ fn integrate_node(
     // This is the standard CAS architecture: rational function integration
     // is a solved problem with efficient algorithms, and it should run
     // before any heuristic pattern matching.
-    if let Some(result) = crate::calculus::risch::try_risch_rational(arena, expr, var) {
-        if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
-            return result;
-        }
+    if let Some(result) = crate::calculus::risch::try_risch_rational(arena, expr, var)
+        && !matches!(arena.node(result), ExprNode::Integral(_, _))
+    {
+        return result;
     }
 
     let node = arena.node(expr).clone();
@@ -1653,21 +1653,20 @@ fn integrate_node(
             // distribute the power over each factor.  This transforms
             // Pow(Mul(x, ln(x)), -1) into Mul(x^(-1), ln(x)^(-1)), which
             // lets the Mul arm's u-substitution logic find candidates.
-            if let ExprNode::Mul(ref children) = arena.node(base).clone() {
-                if let Some(e_val) = arena.as_num(exp) {
-                    if e_val.is_negative() && e_val.is_integer() {
-                        let factors: SmallVec<[ExprId; 6]> = children
-                            .iter()
-                            .map(|&child| arena.pow(child, exp))
-                            .collect();
-                        let distributed = arena.mul(&factors);
-                        if distributed != expr {
-                            let result =
-                                integrate_node(arena, distributed, var, var_sym, depth - 1);
-                            if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
-                                return result;
-                            }
-                        }
+            if let ExprNode::Mul(ref children) = arena.node(base).clone()
+                && let Some(e_val) = arena.as_num(exp)
+                && e_val.is_negative()
+                && e_val.is_integer()
+            {
+                let factors: SmallVec<[ExprId; 6]> = children
+                    .iter()
+                    .map(|&child| arena.pow(child, exp))
+                    .collect();
+                let distributed = arena.mul(&factors);
+                if distributed != expr {
+                    let result = integrate_node(arena, distributed, var, var_sym, depth - 1);
+                    if !matches!(arena.node(result), ExprNode::Integral(_, _)) {
+                        return result;
                     }
                 }
             }

@@ -81,11 +81,13 @@ impl RationalFn {
     }
 
     /// The numerator polynomial.
+    #[allow(dead_code)] // public API for future use
     pub fn numer(&self) -> &Poly {
         &self.numer
     }
 
     /// The denominator polynomial.
+    #[allow(dead_code)] // public API for future use
     pub fn denom(&self) -> &Poly {
         &self.denom
     }
@@ -123,21 +125,21 @@ impl RationalFn {
 
         // Cancel common factors.
         let g = Poly::gcd(&self.numer, &self.denom);
-        if let Some(g_deg) = g.degree() {
-            if g_deg > 0 || !One::is_one(g.leading_coeff().unwrap()) {
-                self.numer = self.numer.div_rem(&g).0;
-                self.denom = self.denom.div_rem(&g).0;
-            }
+        if let Some(g_deg) = g.degree()
+            && (g_deg > 0 || !One::is_one(g.leading_coeff().unwrap()))
+        {
+            self.numer = self.numer.div_rem(&g).0;
+            self.denom = self.denom.div_rem(&g).0;
         }
 
         // Make denom monic.
-        if let Some(lc) = self.denom.leading_coeff() {
-            if !One::is_one(lc) {
-                let lc = lc.clone();
-                let inv_lc = Ratio::new(lc.denom().clone(), lc.numer().clone());
-                self.numer = self.numer.scale(&inv_lc);
-                self.denom = self.denom.scale(&inv_lc);
-            }
+        if let Some(lc) = self.denom.leading_coeff()
+            && !One::is_one(lc)
+        {
+            let lc = lc.clone();
+            let inv_lc = Ratio::new(lc.denom().clone(), lc.numer().clone());
+            self.numer = self.numer.scale(&inv_lc);
+            self.denom = self.denom.scale(&inv_lc);
         }
     }
 }

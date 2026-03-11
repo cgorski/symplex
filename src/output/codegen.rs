@@ -34,19 +34,14 @@ pub enum Precision {
 }
 
 /// Unit annotation style for generated code.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum UnitAnnotation {
     /// No unit annotations — all parameters and return values are raw f64/f32.
+    #[default]
     None,
     /// Annotate with `uom` crate types at function boundaries.
     /// The function body uses raw f64/f32 internally.
     Uom,
-}
-
-impl Default for UnitAnnotation {
-    fn default() -> Self {
-        UnitAnnotation::None
-    }
 }
 
 /// Configuration for Rust code generation.

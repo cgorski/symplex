@@ -56,15 +56,15 @@ fn verify_first_order_numerically(
         let sample_val = ctx.rational(num, den);
         let residual_at = residual.subs(x, &sample_val);
 
-        if let Ok(val) = residual_at.eval_f64() {
-            if val.is_finite() {
-                checked += 1;
-                assert!(
-                    val.abs() < 1e-4,
-                    "First-order ODE residual should be ~0, got {val} at x={num}/{den}\n  \
+        if let Ok(val) = residual_at.eval_f64()
+            && val.is_finite()
+        {
+            checked += 1;
+            assert!(
+                val.abs() < 1e-4,
+                "First-order ODE residual should be ~0, got {val} at x={num}/{den}\n  \
                      solution (C=1): {concrete_sol}\n  residual: {residual_at}"
-                );
-            }
+            );
         }
     }
     assert!(
@@ -108,15 +108,15 @@ fn verify_second_order_numerically(
         let sample_val = ctx.rational(num, den);
         let residual_at = residual.subs(x, &sample_val);
 
-        if let Ok(val) = residual_at.eval_f64() {
-            if val.is_finite() {
-                checked += 1;
-                assert!(
-                    val.abs() < 1e-3,
-                    "Second-order ODE residual should be ~0, got {val} at x={num}/{den}\n  \
+        if let Ok(val) = residual_at.eval_f64()
+            && val.is_finite()
+        {
+            checked += 1;
+            assert!(
+                val.abs() < 1e-3,
+                "Second-order ODE residual should be ~0, got {val} at x={num}/{den}\n  \
                      solution (C=1): {concrete_sol}\n  residual: {residual_at}"
-                );
-            }
+            );
         }
     }
     assert!(

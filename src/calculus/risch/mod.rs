@@ -81,6 +81,7 @@ impl Drop for RischRecursionGuard {
 
 /// A single logarithmic term in the integral.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum LogTerm {
     /// `coeff * ln(argument(x))` where `coeff` is rational.
     Rational {
@@ -102,6 +103,7 @@ pub enum LogTerm {
 
 /// Result of the Risch integration.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum RischResult {
     /// Successfully found an elementary antiderivative, expressed as
     /// the sum of a rational function plus logarithmic terms.
@@ -133,10 +135,7 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
     // Recursion guard: if we're already inside try_risch_rational
     // (integrating an algebraic remainder), skip to avoid infinite loop.
     // The RAII guard resets the flag on drop, even during panics.
-    let _guard = match RischRecursionGuard::enter() {
-        Some(g) => g,
-        None => return None, // already inside — skip to avoid infinite recursion
-    };
+    let _guard = RischRecursionGuard::enter()?;
 
     // Decompose expr into numerator / denominator.
     let (numer_id, denom_id) = crate::poly::polybridge::as_numer_denom(arena, expr);

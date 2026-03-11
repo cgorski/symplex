@@ -61,7 +61,7 @@ fn main() {
     println!("  d = e⁻¹ mod φ(n) = {d}");
 
     // Verify: e·d ≡ 1 (mod φ(n))
-    let check = mod_pow(e.clone(), BigInt::from(1), phi.clone());
+    let _check = mod_pow(e.clone(), BigInt::from(1), phi.clone());
     let ed_mod_phi = (&e * &d) % &phi;
     println!("  e·d mod φ(n) = {ed_mod_phi}");
     assert_eq!(ed_mod_phi, BigInt::from(1), "e·d should be 1 mod φ(n)");

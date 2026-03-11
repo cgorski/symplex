@@ -32,6 +32,7 @@ use crate::poly::traits::{Field, Ring};
 
 /// Result of tower-level Hermite reduction.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct TowerHermiteResult {
     /// Rational part numerator (in θ).
     pub g_numer: GenPoly<RationalFn>,
@@ -45,6 +46,7 @@ pub struct TowerHermiteResult {
 
 /// A single logarithmic term from tower-level Rothstein-Trager.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum TowerLogTerm {
     /// `coeff · ln(argument(θ))` where `coeff` is a constant (in ℚ).
     Constant {
@@ -61,6 +63,7 @@ pub enum TowerLogTerm {
 
 /// Result of tower-level Rothstein-Trager.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct TowerLogPartResult {
     /// The logarithmic terms.
     pub terms: Vec<TowerLogTerm>,
@@ -185,14 +188,13 @@ pub fn tower_hermite_reduce(
     }
 
     // Make g_denom monic.
-    if !g_denom.is_zero() {
-        if let Some(lc) = g_denom.leading_coeff() {
-            if !lc.is_one() {
-                let inv = Field::inv(lc);
-                g_numer = g_numer.scale(&inv);
-                g_denom = g_denom.scale(&inv);
-            }
-        }
+    if !g_denom.is_zero()
+        && let Some(lc) = g_denom.leading_coeff()
+        && !lc.is_one()
+    {
+        let inv = Field::inv(lc);
+        g_numer = g_numer.scale(&inv);
+        g_denom = g_denom.scale(&inv);
     }
 
     // Add the polynomial part integral.
@@ -355,7 +357,7 @@ pub fn tower_logarithmic_part(
                     }
                     let c = Ratio::new(BigInt::from(numer), BigInt::from(denom));
                     // Skip if we already found this root (after reduction).
-                    if found_roots.iter().any(|r| *r == c) {
+                    if found_roots.contains(&c) {
                         continue;
                     }
                     let c_rf = RationalFn::from_rational(c.clone());
@@ -598,7 +600,7 @@ mod tests {
         assert_eq!(integral.degree(), Some(2));
         // Coefficient of θ² should be 1/(2x)
         let c2 = integral.coeff(2);
-        assert!(c2.is_constant_rational() == false, "1/(2x) is not constant");
+        assert!(!c2.is_constant_rational(), "1/(2x) is not constant");
     }
 
     #[test]

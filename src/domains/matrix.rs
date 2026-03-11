@@ -757,7 +757,7 @@ impl Matrix {
             }
             rows.push(new_row);
         }
-        Ok(Matrix::new(rows)?)
+        Matrix::new(rows)
     }
 
     /// Cofactor C(i, j) = (-1)^(i+j) * det(minor(i, j)).
@@ -803,7 +803,7 @@ impl Matrix {
             }
             rows.push(row);
         }
-        Ok(Matrix::new(rows)?)
+        Matrix::new(rows)
     }
 
     /// Matrix inverse: A⁻¹ = adj(A) / det(A).
@@ -834,7 +834,7 @@ impl Matrix {
         // 1×1 special case: inverse is just [[1/a]]
         if self.nrows() == 1 {
             let one_over_det = &self.ctx_one() / &d;
-            return Ok(Matrix::new(vec![vec![one_over_det]])?);
+            return Matrix::new(vec![vec![one_over_det]]);
         }
         let adj = self.adjugate()?;
         let one_over_det = &self.ctx_one() / &d;
@@ -1221,7 +1221,7 @@ impl Matrix {
         let mut basis_cols: Vec<Matrix> = Vec::new();
 
         for (eigenval, alg_mult, _) in &eigvs {
-            let a_minus_lambda = self.sub_elementwise(&eye.scale(&eigenval))?;
+            let a_minus_lambda = self.sub_elementwise(&eye.scale(eigenval))?;
 
             // Nullity chain: [0, nullity(E), nullity(E²), ...] where E = A - λI
             trace!("jordan_form: computing nullity chain for eigenvalue");
@@ -2089,14 +2089,14 @@ impl Matrix {
 fn eigvals_with_multiplicity(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
     // ── Primary path: Poly::factor_over_z() ────────────────────────
     // This gives exact multiplicities via Yun's square-free decomposition.
-    if let Some(pairs) = eigvals_via_poly_factor(char_poly, var) {
-        if !pairs.is_empty() {
-            debug!(
-                count = pairs.len(),
-                "eigvals_with_multiplicity: used Poly::factor_over_z path"
-            );
-            return pairs;
-        }
+    if let Some(pairs) = eigvals_via_poly_factor(char_poly, var)
+        && !pairs.is_empty()
+    {
+        debug!(
+            count = pairs.len(),
+            "eigvals_with_multiplicity: used Poly::factor_over_z path"
+        );
+        return pairs;
     }
 
     // ── Fallback: derivative-based multiplicity detection ──────────
@@ -2137,12 +2137,10 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
             let b = &coeffs[0]; // constant term
             let root_val = -(b / a);
             // For large BigInt roots that don't fit i64, use the general path.
-            let root_check: Result<i64, _> = root_val.numer().clone().try_into();
-            let denom_check: Result<i64, _> = root_val.denom().clone().try_into();
-            let root_ex = if root_check.is_ok() && denom_check.is_ok() {
-                char_poly
-                    .context()
-                    .rational(root_check.unwrap(), denom_check.unwrap())
+            let root_numer: Result<i64, _> = root_val.numer().clone().try_into();
+            let root_denom: Result<i64, _> = root_val.denom().clone().try_into();
+            let root_ex = if let (Ok(n), Ok(d)) = (root_numer, root_denom) {
+                char_poly.context().rational(n, d)
             } else {
                 // Root doesn't fit i64 — fall back to constructing from BigInt.
                 // Use the flat solver as a workaround.
@@ -3131,7 +3129,7 @@ mod tests {
         let ctx = ctx;
         let var = ctx.symbol("lam_diag_y");
         let m = Matrix::diag(&[ctx.int(1), ctx.int(2), ctx.int(3)]);
-        assert_eq!(m.is_diagonalizable(&var).unwrap(), true);
+        assert!(m.is_diagonalizable(&var).unwrap());
     }
 
     // ── Jordan form tests ──────────────────────────────────────────

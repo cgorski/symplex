@@ -1191,10 +1191,10 @@ fn eval_log_gamma(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 /// erf(0) → 0
 fn eval_erf(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // erf(0) = 0
-    if let Some(r) = arena.as_num(inner) {
-        if r.is_zero() {
-            return Some(arena.zero);
-        }
+    if let Some(r) = arena.as_num(inner)
+        && r.is_zero()
+    {
+        return Some(arena.zero);
     }
 
     // erf(∞) = 1
@@ -1219,11 +1219,11 @@ fn eval_erf(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 /// erfc(0) → 1
 fn eval_lambertw(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // W(0) = 0
-    if let Some(r) = arena.as_num(inner) {
-        if r.is_zero() {
-            tracing::debug!("eval: LambertW(0) = 0");
-            return Some(arena.zero);
-        }
+    if let Some(r) = arena.as_num(inner)
+        && r.is_zero()
+    {
+        tracing::debug!("eval: LambertW(0) = 0");
+        return Some(arena.zero);
     }
 
     // W(e) = 1
@@ -1308,10 +1308,10 @@ fn eval_lambertw(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 
 fn eval_erfc(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     // erfc(0) = 1
-    if let Some(r) = arena.as_num(inner) {
-        if r.is_zero() {
-            return Some(arena.one);
-        }
+    if let Some(r) = arena.as_num(inner)
+        && r.is_zero()
+    {
+        return Some(arena.one);
     }
 
     // erfc(∞) = 0

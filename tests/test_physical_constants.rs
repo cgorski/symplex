@@ -1,6 +1,5 @@
 //! Integration tests for physical constants with units.
 
-use symplex::prelude::*;
 use symplex::units::constants;
 use symplex::units::*;
 

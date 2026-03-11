@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 //! PID Controller Design — model a plant, tune gains, verify stability, generate code.
 //!
 //! This example walks through a real controls engineering workflow:
@@ -11,7 +12,6 @@
 //!
 //! Run with: `cargo run --example pid_controller`
 
-use symplex::control::*;
 use symplex::prelude::*;
 
 fn main() {
@@ -31,8 +31,8 @@ fn main() {
     //   G(s) = 20 / (s² + 10s)
 
     println!("--- Plant Model ---");
-    let plant_num = ctx.int(20);
-    let plant_den = expr!(ctx, s ^ 2 + 10 * s);
+    let _plant_num = ctx.int(20);
+    let _plant_den = expr!(ctx, s ^ 2 + 10 * s);
     println!("G(s) = 20 / (s² + 10s)");
     println!("  Open-loop poles: s = 0, s = -10");
 
@@ -42,8 +42,8 @@ fn main() {
 
     println!("\n--- PID Controller ---");
     symplex::syms!(ctx; Kp, Ki, Kd);
-    let pid_num = expr!(ctx, Kd * s ^ 2 + Kp * s + Ki);
-    let pid_den = s.clone();
+    let _pid_num = expr!(ctx, Kd * s ^ 2 + Kp * s + Ki);
+    let _pid_den = s.clone();
     println!("C(s) = Kp + Ki/s + Kd·s");
     println!("     = (Kd·s² + Kp·s + Ki) / s");
 
@@ -88,7 +88,7 @@ fn main() {
 
     println!("\n--- Gain Selection: Kp=5, Ki=2, Kd=0.5 ---");
 
-    let gains = [(&Kp, 5i64), (&Ki, 2i64), (&Kd, 1i64)]; // Kd = 1 for now
+    let _gains = [(&Kp, 5i64), (&Ki, 2i64), (&Kd, 1i64)]; // Kd = 1 for now
     let char_concrete = char_poly
         .subs(&Kp, &ctx.int(5))
         .subs(&Ki, &ctx.int(2))

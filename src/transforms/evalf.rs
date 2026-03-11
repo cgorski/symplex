@@ -1498,12 +1498,12 @@ fn arb_digamma(
                 reason: "Digamma at non-positive integer pole".into(),
             });
         }
-        if let Some(s_exp) = sin_val.exponent() {
-            if (s_exp as i64) < -(wp as i64 / 2) {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Digamma at non-positive integer pole".into(),
-                });
-            }
+        if let Some(s_exp) = sin_val.exponent()
+            && (s_exp as i64) < -(wp as i64 / 2)
+        {
+            return Err(SymplexError::Unevaluable {
+                reason: "Digamma at non-positive integer pole".into(),
+            });
         }
 
         let cos_val = pi_x.cos(wp, rm, cc);
@@ -1527,12 +1527,12 @@ fn arb_digamma(
                 reason: "Digamma at non-positive integer pole".into(),
             });
         }
-        if let Some(x_exp) = x.exponent() {
-            if (x_exp as i64) < -(wp as i64 / 2) {
-                return Err(SymplexError::Unevaluable {
-                    reason: "Digamma at non-positive integer pole".into(),
-                });
-            }
+        if let Some(x_exp) = x.exponent()
+            && (x_exp as i64) < -(wp as i64 / 2)
+        {
+            return Err(SymplexError::Unevaluable {
+                reason: "Digamma at non-positive integer pole".into(),
+            });
         }
         let inv_x = one.div(&x, wp, rm);
         result = result.sub(&inv_x, wp, rm);
@@ -1571,10 +1571,9 @@ fn arb_digamma(
 
     let n_terms = (prec / 6 + 2).min(bernoulli_nums.len());
 
-    for k_idx in 0..n_terms {
+    for (k_idx, &(bn, bd)) in bernoulli_nums[..n_terms].iter().enumerate() {
         let k = (k_idx + 1) as i128;
         let two_k = 2 * k;
-        let (bn, bd) = bernoulli_nums[k_idx];
         // Term = B_{2k} / (2k · x^{2k})
         let coeff_n = BigFloat::from_i128(bn, wp);
         let coeff_d = BigFloat::from_i128(bd * two_k, wp);
@@ -1584,10 +1583,10 @@ fn arb_digamma(
         result = result.sub(&term, wp, rm);
 
         // Convergence check via binary exponents
-        if let (Some(t_exp), Some(r_exp)) = (term.exponent(), result.exponent()) {
-            if (r_exp as i64 - t_exp as i64) > wp as i64 {
-                break;
-            }
+        if let (Some(t_exp), Some(r_exp)) = (term.exponent(), result.exponent())
+            && (r_exp as i64 - t_exp as i64) > wp as i64
+        {
+            break;
         }
 
         x_pow = x_pow.mul(&x2, wp, rm);
@@ -1989,10 +1988,10 @@ fn arb_lambert_w(
         if delta.is_zero() {
             break;
         }
-        if let (Some(d_exp), Some(w_e)) = (delta.exponent(), w.exponent()) {
-            if (d_exp as i64) < (w_e as i64) - (wp as i64) {
-                break;
-            }
+        if let (Some(d_exp), Some(w_e)) = (delta.exponent(), w.exponent())
+            && (d_exp as i64) < (w_e as i64) - (wp as i64)
+        {
+            break;
         }
     }
 
@@ -2063,8 +2062,8 @@ fn arb_euler_gamma(
         v = v.add(&b, wp, rm);
 
         // Convergence: both A and B are negligibly small.
-        let a_small = a.exponent().map_or(true, |e| e < -(wp as i32) + 10);
-        let b_small = b.exponent().map_or(true, |e| e < -(wp as i32) + 10);
+        let a_small = a.exponent().is_none_or(|e| e < -(wp as i32) + 10);
+        let b_small = b.exponent().is_none_or(|e| e < -(wp as i32) + 10);
         if a_small && b_small {
             tracing::trace!(k, "arb_euler_gamma: converged");
             break;
@@ -2148,11 +2147,12 @@ fn hankel_pq(
 
         // Check for divergence: if |term| > |prev_term|, stop.
         let term_abs = term.abs();
-        if let Some(ref prev) = prev_a_abs {
-            if term_abs.partial_cmp(prev) == Some(std::cmp::Ordering::Greater) && k > 2 {
-                tracing::trace!(k, "hankel_pq: optimal truncation (terms diverging)");
-                break;
-            }
+        if let Some(ref prev) = prev_a_abs
+            && term_abs.partial_cmp(prev) == Some(std::cmp::Ordering::Greater)
+            && k > 2
+        {
+            tracing::trace!(k, "hankel_pq: optimal truncation (terms diverging)");
+            break;
         }
 
         // Convergence: term negligible relative to accumulated sums.
@@ -2190,7 +2190,6 @@ fn hankel_pq(
     (p_sum, q_sum)
 }
 
-/// Look up a cached value, returning an error if not found.
 // ═══════════════════════════════════════════════════════════════════════════
 // Bessel function evaluation (arbitrary precision)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2280,11 +2279,11 @@ fn arb_bessel_j(
             term = term.div(&denom, wp, rm);
 
             // Convergence check.
-            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent()) {
-                if (s_exp as i64 - t_exp as i64) > wp as i64 {
-                    tracing::trace!(k, "arb_bessel_j: series converged");
-                    break;
-                }
+            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+                && (s_exp as i64 - t_exp as i64) > wp as i64
+            {
+                tracing::trace!(k, "arb_bessel_j: series converged");
+                break;
             }
 
             sum = sum.add(&term, wp, rm);
@@ -2437,11 +2436,12 @@ fn arb_bessel_y(
             .mul(&harmonic, wp, rm)
             .div(&factorial_sq, wp, rm);
 
-        if let (Some(t_exp), Some(s_exp)) = (term.exponent(), series_sum.exponent()) {
-            if s_exp != 0 && (s_exp as i64 - t_exp as i64) > wp as i64 {
-                tracing::trace!(k, "arb_bessel_y: Y_0 series converged");
-                break;
-            }
+        if let (Some(t_exp), Some(s_exp)) = (term.exponent(), series_sum.exponent())
+            && s_exp != 0
+            && (s_exp as i64 - t_exp as i64) > wp as i64
+        {
+            tracing::trace!(k, "arb_bessel_y: Y_0 series converged");
+            break;
         }
 
         series_sum = series_sum.add(&term, wp, rm);

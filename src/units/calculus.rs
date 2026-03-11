@@ -7,12 +7,13 @@
 //! Named newtypes use `.as_qty()` before calling these functions,
 //! then convert back via `.into()`:
 //!
-/// ```ignore
-/// let ctx = Context::new();
-/// let x = Length::symbol(&ctx, "x");
-/// let t = Time::symbol(&ctx, "t");
-/// let v: Velocity = diff_qty(&x.as_qty(), &t.as_qty()).into();
-/// ```
+//! ```ignore
+//! let ctx = Context::new();
+//! let x = Length::symbol(&ctx, "x");
+//! let t = Time::symbol(&ctx, "t");
+//! let v: Velocity = diff_qty(&x.as_qty(), &t.as_qty()).into();
+//! ```
+
 use std::ops;
 
 use typenum::operator_aliases::{Diff, Sum};
@@ -44,6 +45,7 @@ use super::qty::Qty;
 /// let t: Qty<TimeDim>   = Qty::from_ex(ctx.symbol("t"));
 /// let v: Qty<VelocityDim> = diff_qty(&x, &t);   // Length / Time = Velocity
 /// ```
+#[allow(clippy::type_complexity)]
 pub fn diff_qty<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>(
     expr: &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>,
     var: &Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>,
@@ -94,6 +96,7 @@ where
 /// let x: Qty<LengthDim> = Qty::from_ex(ctx.symbol("x"));
 /// let w: Qty<EnergyDim> = integrate_qty(&f, &x);  // Force × Length = Energy
 /// ```
+#[allow(clippy::type_complexity)]
 pub fn integrate_qty<L1, M1, T1, I1, Th1, N1x, J1, L2, M2, T2, I2, Th2, N2x, J2>(
     expr: &Qty<Dim<L1, M1, T1, I1, Th1, N1x, J1>>,
     var: &Qty<Dim<L2, M2, T2, I2, Th2, N2x, J2>>,

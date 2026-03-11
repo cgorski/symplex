@@ -189,37 +189,32 @@ fn refine_pow_immut(
 
     // ── Pattern: Pow(Pow(inner, 2), 1/2) = sqrt(x²) ───────────────
     // Only applies when exponent is literally 1/2.
-    if let Some(exp_num) = arena.as_num(exp) {
-        if *exp_num == half {
-            if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone() {
-                if let Some(inner_exp_num) = arena.as_num(inner_exp) {
-                    if *inner_exp_num == two {
-                        // sqrt(x²) where x > 0 → x
-                        if let Some(inner_props) = prop_cache.get(&inner_base) {
-                            if inner_props.is_positive == Some(true) {
-                                tracing::debug!("refine: sqrt(x²) -> x (positive)");
-                                return Some(inner_base);
-                            }
-                        }
-                        // sqrt(x²) where x ∈ ℝ → abs(x) — needs arena.abs(),
-                        // handled in mutable pass.
-                    }
-                }
-            }
+    if let Some(exp_num) = arena.as_num(exp)
+        && *exp_num == half
+        && let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone()
+        && let Some(inner_exp_num) = arena.as_num(inner_exp)
+        && *inner_exp_num == two
+    {
+        // sqrt(x²) where x > 0 → x
+        if let Some(inner_props) = prop_cache.get(&inner_base)
+            && inner_props.is_positive == Some(true)
+        {
+            tracing::debug!("refine: sqrt(x²) -> x (positive)");
+            return Some(inner_base);
         }
+        // sqrt(x²) where x ∈ ℝ → abs(x) — needs arena.abs(),
+        // handled in mutable pass.
     }
 
     // ── Pattern: base^exp where exp is known even → simplify ───────
     // Special case: (-1)^(even) → 1
-    if let Some(exp_props) = prop_cache.get(&exp) {
-        if exp_props.is_even == Some(true) {
-            if let Some(base_num) = arena.as_num(base) {
-                if *base_num == Ratio::from(BigInt::from(-1)) {
-                    tracing::debug!("refine: (-1)^(even) -> 1");
-                    return Some(arena.one);
-                }
-            }
-        }
+    if let Some(exp_props) = prop_cache.get(&exp)
+        && exp_props.is_even == Some(true)
+        && let Some(base_num) = arena.as_num(base)
+        && *base_num == Ratio::from(BigInt::from(-1))
+    {
+        tracing::debug!("refine: (-1)^(even) -> 1");
+        return Some(arena.one);
     }
 
     None
@@ -278,24 +273,20 @@ fn refine_mutable(arena: &mut Arena, assumptions: &mut AssumptionCache, root: Ex
                 let half = Ratio::new(BigInt::from(1), BigInt::from(2));
                 let two = Ratio::from(BigInt::from(2));
 
-                if let Some(exp_num) = arena.as_num(exp) {
-                    if *exp_num == half {
-                        if let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone() {
-                            if let Some(ie_num) = arena.as_num(inner_exp) {
-                                if *ie_num == two {
-                                    let is_real = assumptions.query(arena, inner_base, Props::REAL);
-                                    let is_positive =
-                                        assumptions.query(arena, inner_base, Props::POSITIVE);
+                if let Some(exp_num) = arena.as_num(exp)
+                    && *exp_num == half
+                    && let ExprNode::Pow(inner_base, inner_exp) = arena.node(base).clone()
+                    && let Some(ie_num) = arena.as_num(inner_exp)
+                    && *ie_num == two
+                {
+                    let is_real = assumptions.query(arena, inner_base, Props::REAL);
+                    let is_positive = assumptions.query(arena, inner_base, Props::POSITIVE);
 
-                                    // Positive was already handled in immutable pass.
-                                    // Here we handle the real-but-not-positive case.
-                                    if is_real == Some(true) && is_positive != Some(true) {
-                                        tracing::debug!("refine: sqrt(x²) -> abs(x) (real)");
-                                        return arena.abs(inner_base);
-                                    }
-                                }
-                            }
-                        }
+                    // Positive was already handled in immutable pass.
+                    // Here we handle the real-but-not-positive case.
+                    if is_real == Some(true) && is_positive != Some(true) {
+                        tracing::debug!("refine: sqrt(x²) -> abs(x) (real)");
+                        return arena.abs(inner_base);
                     }
                 }
 

@@ -206,7 +206,7 @@ fn exhaustive_factor_expand_roundtrip() {
 fn exhaustive_from_conversions() {
     let ctx = Context::new();
     for n in -50i64..=50 {
-        let ex = ctx.int(n as i64);
+        let ex = ctx.int(n);
         assert_eq!(format!("{ex}"), n.to_string(), "From<i64>({n})");
     }
     for n in 0u32..=100 {

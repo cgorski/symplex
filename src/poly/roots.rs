@@ -276,6 +276,7 @@ pub(crate) fn aberth_roots(poly: &Poly, prec: usize, max_iter: usize) -> Vec<Com
 /// `(f64, f64)` pair.
 ///
 /// Returns `None` if the index is out of range.
+#[allow(dead_code)] // Used by tests; will be wired to evalf in a future PR
 pub(crate) fn rootof_eval_f64(poly: &Poly, index: usize) -> Option<(f64, f64)> {
     let n = poly.degree()?;
     if index >= n {
@@ -295,6 +296,7 @@ pub(crate) fn rootof_eval_f64(poly: &Poly, index: usize) -> Option<(f64, f64)> {
 }
 
 /// Convert a `BigFloat` to `f64` (best-effort).
+#[allow(dead_code)]
 fn bigfloat_to_f64(bf: &BigFloat) -> f64 {
     // Try direct conversion via the Display trait
     let s = format!("{}", bf);

@@ -98,11 +98,9 @@ fn main() {
 
         let loss = loss_fn(&[px, py]);
 
-        // Print progress at exponential intervals
-        if i <= 10 || i % 10_000 == 0 || (loss - best_loss).abs() < tolerance {
-            if i <= 10 || i % 10_000 == 0 {
-                println!("  Iter {i:>5}:  ({px:.4}, {py:.4}), loss = {loss:.6}");
-            }
+        // Print progress at key iterations
+        if i <= 10 || i % 10_000 == 0 {
+            println!("  Iter {i:>5}:  ({px:.4}, {py:.4}), loss = {loss:.6}");
         }
 
         if (best_loss - loss).abs() < tolerance && loss < 1e-6 {

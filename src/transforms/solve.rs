@@ -374,25 +374,27 @@ fn solve_by_peeling(
                 if let (Some(b), Some(r)) = (
                     arena.as_num(inner_base).cloned(),
                     arena.as_num(rhs).cloned(),
-                ) {
-                    if b.is_integer() && r.is_integer() && b > Ratio::one() && r.is_positive() {
-                        let b_int = b.to_integer();
-                        let r_int = r.to_integer();
-                        // Try small powers: b^1, b^2, ... up to b^64
-                        let mut power = BigInt::one();
-                        for k in 0u32..65 {
-                            if power == r_int {
-                                let k_expr = arena.int(k as i64);
-                                tracing::debug!(
-                                    "solve_by_peeling: integer log shortcut, base^{k} = rhs"
-                                );
-                                return solve_by_peeling(arena, inner_exp, k_expr, var);
-                            }
-                            if power > r_int {
-                                break;
-                            }
-                            power *= &b_int;
+                ) && b.is_integer()
+                    && r.is_integer()
+                    && b > Ratio::one()
+                    && r.is_positive()
+                {
+                    let b_int = b.to_integer();
+                    let r_int = r.to_integer();
+                    // Try small powers: b^1, b^2, ... up to b^64
+                    let mut power = BigInt::one();
+                    for k in 0u32..65 {
+                        if power == r_int {
+                            let k_expr = arena.int(k as i64);
+                            tracing::debug!(
+                                "solve_by_peeling: integer log shortcut, base^{k} = rhs"
+                            );
+                            return solve_by_peeling(arena, inner_exp, k_expr, var);
                         }
+                        if power > r_int {
+                            break;
+                        }
+                        power *= &b_int;
                     }
                 }
 
@@ -446,10 +448,10 @@ fn solve_by_peeling(
         // |f(x)| = rhs → f(x) = rhs OR f(x) = -rhs (when rhs ≥ 0)
         ExprNode::Abs(inner) => {
             // |f(x)| = negative has no solutions
-            if let Some(r) = arena.as_num(rhs) {
-                if r.is_negative() {
-                    return Some(vec![]);
-                }
+            if let Some(r) = arena.as_num(rhs)
+                && r.is_negative()
+            {
+                return Some(vec![]);
             }
             let neg_rhs = arena.neg(rhs);
             let mut solutions = Vec::new();
@@ -1493,10 +1495,6 @@ fn classify_lambert_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option
     }
 }
 
-/// Extract the coefficient `k` such that `expr == k * var`.
-///
-/// Returns `Some(k)` if expr is `var` (k=1) or `Mul([..constants.., var])`.
-/// Returns `None` otherwise.
 // ═══════════════════════════════════════════════════════════════════════════
 // Symbolic linear solver: a*x + b = 0 where a, b may be symbolic
 // ═══════════════════════════════════════════════════════════════════════════

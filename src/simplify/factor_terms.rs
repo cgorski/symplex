@@ -49,7 +49,7 @@ fn pow_rational(r: &Ratio<BigInt>, n: i64) -> Ratio<BigInt> {
     }
     let mut result = r.clone();
     for _ in 1..n {
-        result = result * r;
+        result *= r;
     }
     result
 }
@@ -78,7 +78,7 @@ fn decompose_product(arena: &mut Arena, id: ExprId) -> (Ratio<BigInt>, FxHashMap
                 if let Some(n) = try_as_integer(arena, exp_id) {
                     // Check if base is an Add — extract content if so
                     let (content, clean_base) = extract_add_content(arena, base, n);
-                    coeff = coeff * content;
+                    coeff *= content;
                     if clean_base != arena.one {
                         *factors.entry(clean_base).or_insert(0) += n;
                     }
@@ -91,7 +91,7 @@ fn decompose_product(arena: &mut Arena, id: ExprId) -> (Ratio<BigInt>, FxHashMap
         ExprNode::Pow(base, exp) => {
             if let Some(n) = try_as_integer(arena, exp) {
                 let (content, clean_base) = extract_add_content(arena, base, n);
-                coeff = coeff * content;
+                coeff *= content;
                 if clean_base != arena.one {
                     factors.insert(clean_base, n);
                 }

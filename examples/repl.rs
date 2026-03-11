@@ -22,7 +22,6 @@
 
 use std::io::{self, BufRead, Write};
 
-use symplex::prelude::*;
 fn main() {
     let ctx = symplex::prelude::Context::new();
     let stdin = io::stdin();

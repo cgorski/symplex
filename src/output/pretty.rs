@@ -43,18 +43,13 @@ use crate::base::node::{ExprId, ExprNode};
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Controls whether Unicode or ASCII characters are used for rendering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(crate) enum RenderMode {
     /// Use Unicode box-drawing, bracket pieces, middle-dot, etc.
+    #[default]
     Unicode,
     /// Use only ASCII: `-`, `(`, `|`, `)`, `*`, `^`.
     Ascii,
-}
-
-impl Default for RenderMode {
-    fn default() -> Self {
-        RenderMode::Unicode
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -212,7 +207,7 @@ impl MathBox {
             },
             RenderMode::Ascii => '-',
         };
-        let bar: String = std::iter::repeat(bar_char).take(bar_width).collect();
+        let bar: String = std::iter::repeat_n(bar_char, bar_width).collect();
 
         // Center numerator and denominator within bar_width.
         let numer_centered = center_box(&numer, bar_width);
@@ -572,37 +567,35 @@ fn pretty_add(arena: &Arena, children: &[ExprId], mode: RenderMode, depth: u8) -
 
 /// Check if a Mul node has a negative leading coefficient.
 fn is_neg_coeff(arena: &Arena, id: ExprId) -> bool {
-    if let ExprNode::Mul(ref children) = arena.node(id).clone() {
-        if let Some(&first) = children.first() {
-            if let ExprNode::Num(nid) = arena.node(first) {
-                return arena.num(*nid).is_negative();
-            }
-        }
+    if let ExprNode::Mul(ref children) = arena.node(id).clone()
+        && let Some(&first) = children.first()
+        && let ExprNode::Num(nid) = arena.node(first)
+    {
+        return arena.num(*nid).is_negative();
     }
     false
 }
 
 /// Render a Mul node with its leading negative coefficient negated.
 fn pretty_negated_mul(arena: &Arena, id: ExprId, mode: RenderMode, depth: u8) -> MathBox {
-    if let ExprNode::Mul(ref children) = arena.node(id).clone() {
-        if children.len() >= 2 {
-            if let ExprNode::Num(nid) = arena.node(children[0]) {
-                let r = arena.num(*nid);
-                let pos = -r;
-                let mut parts: Vec<MathBox> = Vec::new();
-                if !pos.is_one() {
-                    parts.push(pretty_ratio(&pos, mode, depth));
-                    parts.push(mul_dot(mode));
-                }
-                for (i, &factor) in children.iter().enumerate().skip(1) {
-                    if i > 1 {
-                        parts.push(mul_dot(mode));
-                    }
-                    parts.push(pretty_node(arena, factor, mode, depth));
-                }
-                return MathBox::hcat(&parts);
-            }
+    if let ExprNode::Mul(ref children) = arena.node(id).clone()
+        && children.len() >= 2
+        && let ExprNode::Num(nid) = arena.node(children[0])
+    {
+        let r = arena.num(*nid);
+        let pos = -r;
+        let mut parts: Vec<MathBox> = Vec::new();
+        if !pos.is_one() {
+            parts.push(pretty_ratio(&pos, mode, depth));
+            parts.push(mul_dot(mode));
         }
+        for (i, &factor) in children.iter().enumerate().skip(1) {
+            if i > 1 {
+                parts.push(mul_dot(mode));
+            }
+            parts.push(pretty_node(arena, factor, mode, depth));
+        }
+        return MathBox::hcat(&parts);
     }
     // Fallback.
     pretty_node(arena, id, mode, depth)
@@ -634,21 +627,20 @@ fn pretty_mul(arena: &Arena, children: &[ExprId], mode: RenderMode, depth: u8) -
     let mut denom_factors: Vec<ExprId> = Vec::new();
 
     for &child in children {
-        if let ExprNode::Pow(base, exp) = arena.node(child).clone() {
-            if let Some(r) = arena.as_num(exp) {
-                if r.is_negative() {
-                    // This is base^(-|exp|) → goes in denominator as base^|exp|.
-                    let pos_exp_r = -r;
-                    if pos_exp_r.is_one() {
-                        denom_factors.push(base);
-                    } else {
-                        // We can't easily reconstruct base^pos_exp here without arena,
-                        // so just track the original and handle in rendering.
-                        denom_factors.push(child);
-                    }
-                    continue;
-                }
+        if let ExprNode::Pow(base, exp) = arena.node(child).clone()
+            && let Some(r) = arena.as_num(exp)
+            && r.is_negative()
+        {
+            // This is base^(-|exp|) → goes in denominator as base^|exp|.
+            let pos_exp_r = -r;
+            if pos_exp_r.is_one() {
+                denom_factors.push(base);
+            } else {
+                // We can't easily reconstruct base^pos_exp here without arena,
+                // so just track the original and handle in rendering.
+                denom_factors.push(child);
             }
+            continue;
         }
         numer_factors.push(child);
     }
@@ -679,23 +671,23 @@ fn render_product(arena: &Arena, factors: &[ExprId], mode: RenderMode, depth: u8
 
     for (i, &factor) in factors.iter().enumerate() {
         // Leading numeric coefficient: don't put dot between number and symbol.
-        if i == 0 {
-            if let ExprNode::Num(nid) = arena.node(factor) {
-                let r = arena.num(*nid);
-                if r.is_one() && factors.len() > 1 {
-                    // Skip coefficient of 1.
-                    continue;
-                }
-                if (*r == Ratio::from(BigInt::from(-1))) && factors.len() > 1 {
-                    // Coefficient of -1: just show minus.
-                    parts.push(MathBox::text("-"));
-                    skip_dot_before_next = true;
-                    continue;
-                }
-                parts.push(pretty_ratio(r, mode, depth));
-                skip_dot_before_next = false;
+        if i == 0
+            && let ExprNode::Num(nid) = arena.node(factor)
+        {
+            let r = arena.num(*nid);
+            if r.is_one() && factors.len() > 1 {
+                // Skip coefficient of 1.
                 continue;
             }
+            if (*r == Ratio::from(BigInt::from(-1))) && factors.len() > 1 {
+                // Coefficient of -1: just show minus.
+                parts.push(MathBox::text("-"));
+                skip_dot_before_next = true;
+                continue;
+            }
+            parts.push(pretty_ratio(r, mode, depth));
+            skip_dot_before_next = false;
+            continue;
         }
 
         if i > 0 && !skip_dot_before_next {
@@ -720,17 +712,17 @@ fn render_denom_product(arena: &Arena, factors: &[ExprId], mode: RenderMode, dep
     if factors.len() == 1 {
         let factor = factors[0];
         // If it was base^(-n), render just base^n or base.
-        if let ExprNode::Pow(base, exp) = arena.node(factor).clone() {
-            if let Some(r) = arena.as_num(exp) {
-                let pos = -r;
-                if pos.is_one() {
-                    return pretty_node(arena, base, mode, depth);
-                }
-                // base^pos_exp — render as base with superscript.
-                let base_box = pretty_node(arena, base, mode, depth);
-                let exp_box = pretty_ratio(&pos, mode, depth.saturating_add(1));
-                return MathBox::superscript(base_box, exp_box);
+        if let ExprNode::Pow(base, exp) = arena.node(factor).clone()
+            && let Some(r) = arena.as_num(exp)
+        {
+            let pos = -r;
+            if pos.is_one() {
+                return pretty_node(arena, base, mode, depth);
             }
+            // base^pos_exp — render as base with superscript.
+            let base_box = pretty_node(arena, base, mode, depth);
+            let exp_box = pretty_ratio(&pos, mode, depth.saturating_add(1));
+            return MathBox::superscript(base_box, exp_box);
         }
         return pretty_node(arena, factor, mode, depth);
     }
@@ -742,13 +734,13 @@ fn render_denom_product(arena: &Arena, factors: &[ExprId], mode: RenderMode, dep
             parts.push(mul_dot(mode));
         }
         // Strip negative exponent for display.
-        if let ExprNode::Pow(base, exp) = arena.node(factor).clone() {
-            if let Some(r) = arena.as_num(exp) {
-                let pos = -r;
-                if pos.is_one() {
-                    parts.push(pretty_node(arena, base, mode, depth));
-                    continue;
-                }
+        if let ExprNode::Pow(base, exp) = arena.node(factor).clone()
+            && let Some(r) = arena.as_num(exp)
+        {
+            let pos = -r;
+            if pos.is_one() {
+                parts.push(pretty_node(arena, base, mode, depth));
+                continue;
             }
         }
         parts.push(pretty_node(arena, factor, mode, depth));
@@ -796,25 +788,25 @@ fn pretty_pow(arena: &Arena, base: ExprId, exp: ExprId, mode: RenderMode, depth:
     let exp_box = pretty_node(arena, exp, mode, depth.saturating_add(1));
 
     // If exponent is a single-line small integer, try Unicode superscript.
-    if mode == RenderMode::Unicode && exp_box.height() == 1 {
-        if let Some(r) = arena.as_num(exp) {
-            if r.is_integer() {
-                let n = r.numer();
-                // Only use Unicode superscripts for small non-negative integers
-                // (avoid the EAW Ambiguous chars ¹²³⁴ for now — use 2D layout).
-                if let Some(sup) = to_unicode_superscript_safe(n) {
-                    let needs_parens = matches!(
-                        arena.node(base),
-                        ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_)
-                    );
-                    let base_box = if needs_parens {
-                        MathBox::parens(base_box, mode)
-                    } else {
-                        base_box
-                    };
-                    return MathBox::hcat(&[base_box, MathBox::text(&sup)]);
-                }
-            }
+    if mode == RenderMode::Unicode
+        && exp_box.height() == 1
+        && let Some(r) = arena.as_num(exp)
+        && r.is_integer()
+    {
+        let n = r.numer();
+        // Only use Unicode superscripts for small non-negative integers
+        // (avoid the EAW Ambiguous chars ¹²³⁴ for now — use 2D layout).
+        if let Some(sup) = to_unicode_superscript_safe(n) {
+            let needs_parens = matches!(
+                arena.node(base),
+                ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_)
+            );
+            let base_box = if needs_parens {
+                MathBox::parens(base_box, mode)
+            } else {
+                base_box
+            };
+            return MathBox::hcat(&[base_box, MathBox::text(&sup)]);
         }
     }
 

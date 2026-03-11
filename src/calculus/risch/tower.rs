@@ -1,3 +1,4 @@
+#![allow(dead_code)] // WIP scaffolding — functions are tested but not yet called from production code
 //! Differential extension tower for the Risch algorithm.
 //!
 //! Given an expression containing `exp` and `ln` subexpressions, builds
@@ -377,10 +378,7 @@ fn find_integer_multiples(
     // is the smallest).  Otherwise, check if any arg IS the base.
     let base_idx = ratios.iter().position(|r| *r == min_ratio);
 
-    let base_idx = match base_idx {
-        Some(i) => i,
-        None => return None,
-    };
+    let base_idx = base_idx?;
 
     let base_arg = args[base_idx];
     let multiples: Vec<(ExprId, i64)> = args
@@ -619,15 +617,14 @@ fn extract_terms(
 
         // Pow: θ^n where n is a non-negative integer.
         ExprNode::Pow(base, exp) => {
-            if base == ext_var {
-                if let Some(r) = arena.as_num(exp) {
-                    if r.is_integer() && !(*r).is_negative() {
-                        if let Ok(n) = usize::try_from(r.to_integer()) {
-                            coeffs.entry(n).or_default().push(arena.one());
-                            return Some(());
-                        }
-                    }
-                }
+            if base == ext_var
+                && let Some(r) = arena.as_num(exp)
+                && r.is_integer()
+                && !(*r).is_negative()
+                && let Ok(n) = usize::try_from(r.to_integer())
+            {
+                coeffs.entry(n).or_default().push(arena.one());
+                return Some(());
             }
             // θ appears inside a more complex Pow — can't decompose.
             None

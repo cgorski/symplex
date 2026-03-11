@@ -56,6 +56,7 @@ use crate::poly::traits::Ring;
 /// - `RischResult::NonElementary` if it was proved that no elementary
 ///   antiderivative exists.
 /// - `RischResult::Failed` if the algorithm hit an unimplemented case.
+///
 /// Main entry point: integrate the expression in the tower.
 ///
 /// For base-level towers (no extensions), uses Hermite + Rothstein-Trager
@@ -231,7 +232,7 @@ fn arena_to_genpoly_ratfn(
     let max_power = coeffs_map.keys().max().copied().unwrap_or(0);
     let mut coeffs = Vec::with_capacity(max_power + 1);
     for i in 0..=max_power {
-        coeffs.push(coeffs_map.remove(&i).unwrap_or_else(|| Ring::zero()));
+        coeffs.push(coeffs_map.remove(&i).unwrap_or_else(Ring::zero));
     }
 
     Some(GenPoly::from_coeffs(coeffs))

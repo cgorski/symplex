@@ -9,7 +9,7 @@
 //!
 //! Extension traits for type-specific capabilities:
 //!
-//! - [`OrderedCoeff`] — ordering (is_positive, is_negative)
+
 //! - [`IntegralCoeff`] — integer embedding (is_integer, from_integer)
 //! - [`CoeffDisplay`] — precedence-aware formatting for nested display
 //!
@@ -20,7 +20,7 @@
 //!
 //! - `impl<C: Ring> Poly<C>` — add, mul, derivative, etc.
 //! - `impl<C: Field> Poly<C>` — div_rem, gcd, extended_gcd, etc.
-//! - `impl<C: Field + OrderedCoeff> Poly<C>` — sign normalization, factoring
+
 //!
 //! # References
 //!
@@ -31,7 +31,7 @@ use std::fmt;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Signed, Zero};
+use num_traits::{One, Zero};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Core algebraic hierarchy
@@ -453,29 +453,6 @@ mod tests {
         let b = q(5, 6);
         assert_eq!(EuclideanDomain::gcd(&a, &b), qone());
         assert!(Ring::is_zero(&EuclideanDomain::gcd(&a, &a)));
-    }
-
-    // ── OrderedCoeff tests ──────────────────────────────────────────
-
-    #[test]
-    fn ordered_positive() {
-        assert!(OrderedCoeff::is_positive(&q(3, 4)));
-        assert!(!OrderedCoeff::is_positive(&q(-3, 4)));
-        assert!(!OrderedCoeff::is_positive(&qzero()));
-    }
-
-    #[test]
-    fn ordered_negative() {
-        assert!(!OrderedCoeff::is_negative(&q(3, 4)));
-        assert!(OrderedCoeff::is_negative(&q(-3, 4)));
-        assert!(!OrderedCoeff::is_negative(&qzero()));
-    }
-
-    #[test]
-    fn ordered_abs() {
-        assert_eq!(OrderedCoeff::abs(&q(-3, 4)), q(3, 4));
-        assert_eq!(OrderedCoeff::abs(&q(3, 4)), q(3, 4));
-        assert_eq!(OrderedCoeff::abs(&qzero()), qzero());
     }
 
     // ── IntegralCoeff tests ─────────────────────────────────────────

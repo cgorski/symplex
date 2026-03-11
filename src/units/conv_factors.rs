@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn verify_hp_float() {
-        check_float(derived::HORSEPOWER, 745.69987158227022, "horsepower");
+        check_float(derived::HORSEPOWER, 745.699_871_582_270_2, "horsepower");
     }
 
     #[test]

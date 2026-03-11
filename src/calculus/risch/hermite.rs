@@ -179,14 +179,13 @@ fn hermite_reduce_proper(a: &Poly, d: &Poly, poly_part: &Poly) -> HermiteResult 
     }
 
     // Make g_denom monic for cleanliness.
-    if !g_denom.is_zero() {
-        if let Some(lc) = g_denom.leading_coeff() {
-            if !lc.is_one() {
-                let inv = Ratio::one() / lc;
-                g_numer = g_numer.scale(&inv);
-                g_denom = g_denom.scale(&inv);
-            }
-        }
+    if !g_denom.is_zero()
+        && let Some(lc) = g_denom.leading_coeff()
+        && !lc.is_one()
+    {
+        let inv = Ratio::one() / lc;
+        g_numer = g_numer.scale(&inv);
+        g_denom = g_denom.scale(&inv);
     }
 
     // Add the polynomial part integral to g.

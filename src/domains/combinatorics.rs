@@ -181,7 +181,7 @@ fn stirling1_u64(n: u64, k: u64) -> BigInt {
         for i in 1..n {
             fact *= BigInt::from(i);
         }
-        if (n - 1) % 2 == 0 {
+        if (n - 1).is_multiple_of(2) {
             return fact;
         } else {
             return -fact;

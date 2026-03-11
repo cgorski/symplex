@@ -789,7 +789,7 @@ impl<D> ops::Mul<Qty<D>> for &Ex {
     }
 }
 
-impl<'a, D> ops::Mul<&Qty<D>> for &'a Ex {
+impl<D> ops::Mul<&Qty<D>> for &Ex {
     type Output = Qty<D>;
 
     #[inline]

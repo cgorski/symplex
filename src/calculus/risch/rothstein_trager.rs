@@ -177,6 +177,7 @@ fn extract_linear_root(factor: &Poly) -> Ratio<BigInt> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_traits::Signed;
 
     fn rat(n: i64, d: i64) -> Ratio<BigInt> {
         Ratio::new(BigInt::from(n), BigInt::from(d))

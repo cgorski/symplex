@@ -11,7 +11,7 @@ use symplex::{expr, rule, syms};
 
 #[test]
 fn expr_add() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
     let result = expr!(ctx, x + y);
@@ -20,7 +20,7 @@ fn expr_add() {
 
 #[test]
 fn expr_sub() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
     let result = expr!(ctx, x - y);
@@ -29,7 +29,7 @@ fn expr_sub() {
 
 #[test]
 fn expr_mul() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
     let result = expr!(ctx, x * y);
@@ -38,7 +38,7 @@ fn expr_mul() {
 
 #[test]
 fn expr_div() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
     let result = expr!(ctx, x / y);
@@ -47,7 +47,7 @@ fn expr_div() {
 
 #[test]
 fn expr_neg() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, -x);
@@ -58,7 +58,7 @@ fn expr_neg() {
 
 #[test]
 fn expr_power_integer() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, x ^ 2);
@@ -67,7 +67,7 @@ fn expr_power_integer() {
 
 #[test]
 fn expr_power_cubed() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, x ^ 3);
@@ -76,7 +76,7 @@ fn expr_power_cubed() {
 
 #[test]
 fn expr_power_negative() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, x ^ (-1));
@@ -85,7 +85,7 @@ fn expr_power_negative() {
 
 #[test]
 fn expr_power_symbolic() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, n);
     let result = expr!(ctx, x ^ n);
@@ -97,7 +97,7 @@ fn expr_power_symbolic() {
 
 #[test]
 fn expr_precedence_add_mul() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y, z);
     // x + y * z should be x + (y*z), not (x+y)*z
@@ -108,7 +108,7 @@ fn expr_precedence_add_mul() {
 
 #[test]
 fn expr_precedence_pow_mul() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
     // x^2 * y should be (x^2) * y
@@ -119,7 +119,7 @@ fn expr_precedence_pow_mul() {
 
 #[test]
 fn expr_precedence_parens() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
     // (x + y)^2 should group correctly
@@ -132,7 +132,7 @@ fn expr_precedence_parens() {
 
 #[test]
 fn expr_with_integer_literal() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, x + 1);
@@ -141,7 +141,7 @@ fn expr_with_integer_literal() {
 
 #[test]
 fn expr_integer_mul() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, 2 * x);
@@ -150,7 +150,7 @@ fn expr_integer_mul() {
 
 #[test]
 fn expr_polynomial() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, x ^ 2 + 2 * x + 1);
@@ -161,7 +161,7 @@ fn expr_polynomial() {
 
 #[test]
 fn expr_sin() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, sin(x));
@@ -170,7 +170,7 @@ fn expr_sin() {
 
 #[test]
 fn expr_cos() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, cos(x));
@@ -179,7 +179,7 @@ fn expr_cos() {
 
 #[test]
 fn expr_tan() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, tan(x));
@@ -188,7 +188,7 @@ fn expr_tan() {
 
 #[test]
 fn expr_exp() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, exp(x));
@@ -197,7 +197,7 @@ fn expr_exp() {
 
 #[test]
 fn expr_ln() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, ln(x));
@@ -206,7 +206,7 @@ fn expr_ln() {
 
 #[test]
 fn expr_sqrt() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, sqrt(x));
@@ -215,7 +215,7 @@ fn expr_sqrt() {
 
 #[test]
 fn expr_abs() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, abs(x));
@@ -226,7 +226,7 @@ fn expr_abs() {
 
 #[test]
 fn expr_sin_of_power() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, sin(x ^ 2));
@@ -235,7 +235,7 @@ fn expr_sin_of_power() {
 
 #[test]
 fn expr_function_in_sum() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2);
@@ -245,7 +245,7 @@ fn expr_function_in_sum() {
 
 #[test]
 fn expr_nested_function() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, sin(cos(x)));
@@ -256,7 +256,7 @@ fn expr_nested_function() {
 
 #[test]
 fn expr_quadratic() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = expr!(ctx, x ^ 2 - 5 * x + 6);
@@ -269,7 +269,7 @@ fn expr_quadratic() {
 
 #[test]
 fn expr_product_of_sum() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     syms!(ctx; x, y);
     let result = expr!(ctx, (x + 1) * (y - 1));
@@ -279,7 +279,7 @@ fn expr_product_of_sum() {
 
 #[test]
 fn expr_right_associative_power() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // x^(2^3) = x^8.  We write it as x^8 directly because the macro
@@ -294,7 +294,7 @@ fn expr_right_associative_power() {
 
 #[test]
 fn expr_reuse_variable() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let a = expr!(ctx, x ^ 2 + 1);
@@ -308,7 +308,7 @@ fn expr_reuse_variable() {
 
 #[test]
 fn expr_with_pre_built_expression() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let inner = &x + 1; // pre-built Ex
@@ -414,7 +414,7 @@ fn rule_with_different_wild_names() {
 
 #[test]
 fn expr_then_diff() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = expr!(ctx, x ^ 3 + 2 * x + 1);
@@ -426,7 +426,7 @@ fn expr_then_diff() {
 
 #[test]
 fn expr_then_subs() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = expr!(ctx, x ^ 2 + 1);
@@ -436,7 +436,7 @@ fn expr_then_subs() {
 
 #[test]
 fn expr_then_expand() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = expr!(ctx, (x + 1) ^ 2);
@@ -446,7 +446,7 @@ fn expr_then_expand() {
 
 #[test]
 fn expr_then_solve() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = expr!(ctx, x ^ 2 - 5 * x + 6);
@@ -465,7 +465,7 @@ fn expr_then_solve() {
 
 #[test]
 fn expr_then_evalf() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = expr!(ctx, x ^ 2 + 1);

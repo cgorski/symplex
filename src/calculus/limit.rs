@@ -44,26 +44,26 @@ pub(crate) fn limit(
         //
         // This handles the classic  lim(x→∞) (1 + 1/x)^x = e  and
         // similar 1^∞ indeterminate forms that Gruntz struggles with.
-        if let ExprNode::Pow(base, exponent) = arena.node(expr).clone() {
-            if crate::base::walk::contains(arena, exponent, var) {
-                tracing::debug!("limit: trying 1^∞ heuristic for Pow with var-dependent exponent");
-                let one = arena.one();
-                let base_minus_1 = arena.sub(base, one);
-                let product = arena.mul(&[exponent, base_minus_1]);
-                // Try to compute lim(exp * (base - 1)).
-                // Use Gruntz for this inner limit — the product is typically
-                // a simple rational function that Gruntz handles well.
-                if let Ok(inner_lim) = crate::calculus::gruntz::gruntz(arena, product, var, point) {
-                    let is_inf = inner_lim == arena.infinity() || inner_lim == arena.neg_infinity();
-                    if !is_inf {
-                        tracing::debug!("limit: 1^∞ heuristic succeeded, inner limit is finite");
-                        let result = arena.exp(inner_lim);
-                        let result = crate::transforms::eval::eval(arena, result);
-                        return Ok(result);
-                    }
+        if let ExprNode::Pow(base, exponent) = arena.node(expr).clone()
+            && crate::base::walk::contains(arena, exponent, var)
+        {
+            tracing::debug!("limit: trying 1^∞ heuristic for Pow with var-dependent exponent");
+            let one = arena.one();
+            let base_minus_1 = arena.sub(base, one);
+            let product = arena.mul(&[exponent, base_minus_1]);
+            // Try to compute lim(exp * (base - 1)).
+            // Use Gruntz for this inner limit — the product is typically
+            // a simple rational function that Gruntz handles well.
+            if let Ok(inner_lim) = crate::calculus::gruntz::gruntz(arena, product, var, point) {
+                let is_inf = inner_lim == arena.infinity() || inner_lim == arena.neg_infinity();
+                if !is_inf {
+                    tracing::debug!("limit: 1^∞ heuristic succeeded, inner limit is finite");
+                    let result = arena.exp(inner_lim);
+                    let result = crate::transforms::eval::eval(arena, result);
+                    return Ok(result);
                 }
-                tracing::debug!("limit: 1^∞ heuristic did not apply, falling through to Gruntz");
             }
+            tracing::debug!("limit: 1^∞ heuristic did not apply, falling through to Gruntz");
         }
 
         tracing::debug!("limit: at infinity, trying Gruntz algorithm first");
@@ -298,17 +298,16 @@ pub(crate) fn limit_at_infinity(
                 let d_coeffs = crate::poly::polybridge::poly_coefficients(arena, orig_denom, var);
                 if let (Some(nc), Some(dc)) = (n_coeffs, d_coeffs)
                     && let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last())
+                    && let (Some(nr), Some(dr)) = (arena.as_num(*n_lead), arena.as_num(*d_lead))
                 {
-                    if let (Some(nr), Some(dr)) = (arena.as_num(*n_lead), arena.as_num(*d_lead)) {
-                        let ratio_positive = nr.is_positive() == dr.is_positive();
-                        // For x → -∞, an odd degree difference flips the sign
-                        let flip = !positive && ((nd - dd) % 2 == 1);
-                        let result_positive = ratio_positive ^ flip;
-                        if result_positive {
-                            return Ok(arena.infinity());
-                        } else {
-                            return Ok(arena.neg_infinity());
-                        }
+                    let ratio_positive = nr.is_positive() == dr.is_positive();
+                    // For x → -∞, an odd degree difference flips the sign
+                    let flip = !positive && ((nd - dd) % 2 == 1);
+                    let result_positive = ratio_positive ^ flip;
+                    if result_positive {
+                        return Ok(arena.infinity());
+                    } else {
+                        return Ok(arena.neg_infinity());
                     }
                 }
                 // Fall through to Strategy 1 if we can't determine sign
@@ -399,14 +398,13 @@ pub(crate) fn limit_at_infinity(
                 let d_coeffs = crate::poly::polybridge::poly_coefficients(arena, denom, t);
                 if let (Some(nc), Some(dc)) = (n_coeffs, d_coeffs)
                     && let (Some(n_lead), Some(d_lead)) = (nc.last(), dc.last())
+                    && let (Some(nr), Some(dr)) = (arena.as_num(*n_lead), arena.as_num(*d_lead))
                 {
-                    if let (Some(nr), Some(dr)) = (arena.as_num(*n_lead), arena.as_num(*d_lead)) {
-                        let ratio_positive = nr.is_positive() == dr.is_positive();
-                        if ratio_positive {
-                            return Ok(arena.infinity);
-                        } else {
-                            return Ok(arena.neg_infinity);
-                        }
+                    let ratio_positive = nr.is_positive() == dr.is_positive();
+                    if ratio_positive {
+                        return Ok(arena.infinity);
+                    } else {
+                        return Ok(arena.neg_infinity);
                     }
                 }
                 // Fall through to Strategy 3 if we can't determine sign
