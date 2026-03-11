@@ -21,6 +21,7 @@
 
 pub mod hermite;
 pub mod integrate;
+pub mod log_to_real;
 pub mod rde;
 pub mod rothstein_trager;
 pub mod tower;
@@ -256,80 +257,156 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
     // After GCD cancellation, the reduced A_alg/D_reduced has only the
     // irreducible quadratic (or higher) factors in its denominator.
     if has_algebraic && !hr.h_numer.is_zero() {
-        tracing::debug!(
-            h_numer_degree = ?hr.h_numer.degree(),
-            h_denom_degree = ?hr.h_denom.degree(),
-            n_rational_to_subtract = rational_log_parts.len(),
-            "try_risch_rational: computing algebraic remainder"
-        );
+        // ── Try log_to_real first (Phase 4: Lazard-Rioboo-Trager) ──
+        //
+        // Compute the Euclidean PRS to get h(t,x), then call log_to_real
+        // for each irreducible algebraic factor of R(t).  If all factors
+        // are converted successfully, we get exact ln + atan terms with
+        // radical coefficients — no recursive integration or apart needed.
+        //
+        // If log_to_real fails (e.g., degree ≥ 5 non-solvable factor),
+        // fall back to the Phase 1 algebraic remainder path.
+        let log_to_real_terms: Option<Vec<ExprId>> = 'ltr: {
+            // Build D(x) and A(x) − t·D'(x) as GenPoly<RationalFn>.
+            let h_denom_deriv = hr.h_denom.derivative();
+            let d_gp = log_to_real::poly_to_genpoly_rf(&hr.h_denom);
+            let a_gp = log_to_real::poly_to_genpoly_rf(&hr.h_numer);
+            let dprime_t_gp = log_to_real::poly_to_genpoly_rf_times_t(&h_denom_deriv);
+            let b_gp = &a_gp - &dprime_t_gp;
 
-        // Compute A_alg = h_numer − Σ c_i · v_i' · (h_denom / v_i)
-        let mut a_alg = hr.h_numer.clone();
-        for (coeff, v_i) in &rational_log_parts {
-            let v_i_prime = v_i.derivative();
-            let cofactor = hr.h_denom.div(v_i); // exact: v_i | h_denom
-            debug_assert!(
-                {
-                    let product = &cofactor * v_i;
-                    product == hr.h_denom
-                },
-                "h_denom / v_i must be exact polynomial division"
-            );
-            let contribution = (&v_i_prime * &cofactor).scale(coeff);
-            tracing::trace!(
-                coeff = %coeff,
-                v_i_degree = ?v_i.degree(),
-                cofactor_degree = ?cofactor.degree(),
-                "try_risch_rational: subtracting rational contribution"
-            );
-            a_alg = &a_alg - &contribution;
-        }
+            // Compute PRS, extract degree-1 member.
+            let prs = crate::poly::generic::GenPoly::<crate::poly::ratfn::RationalFn>::euclidean_prs(&d_gp, &b_gp);
+            let h_prs = match prs.get(&1) {
+                Some(h) => {
+                    let monic: crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn> = h.make_monic();
+                    monic
+                }
+                None => {
+                    tracing::debug!(
+                        prs_degrees = ?prs.keys().collect::<Vec<_>>(),
+                        "try_risch_rational: no degree-1 PRS member, skipping log_to_real"
+                    );
+                    break 'ltr None;
+                }
+            };
 
-        if !a_alg.is_zero() {
-            // GCD-cancel: A_alg is divisible by Π v_i (mathematical guarantee).
-            let g = Poly::gcd(&a_alg, &hr.h_denom);
-            let a_reduced = a_alg.div(&g);
-            let d_reduced = hr.h_denom.div(&g);
+            tracing::debug!("try_risch_rational: PRS computed, attempting log_to_real");
 
+            // Try log_to_real for each algebraic LogTerm.
+            let mut ltr_terms: Vec<ExprId> = Vec::new();
+            for term in &log_result.terms {
+                if let LogTerm::Algebraic { min_poly, .. } = term {
+                    match log_to_real::log_to_real(arena, var, min_poly, &h_prs) {
+                        Some(real_terms) => {
+                            tracing::debug!(
+                                n_terms = real_terms.len(),
+                                min_poly_degree = ?min_poly.degree(),
+                                "try_risch_rational: log_to_real succeeded for algebraic factor"
+                            );
+                            ltr_terms.extend(real_terms);
+                        }
+                        None => {
+                            tracing::debug!(
+                                min_poly_degree = ?min_poly.degree(),
+                                "try_risch_rational: log_to_real failed for algebraic factor"
+                            );
+                            break 'ltr None;
+                        }
+                    }
+                }
+            }
+            Some(ltr_terms)
+        };
+
+        if let Some(ltr_terms) = log_to_real_terms {
+            // log_to_real succeeded for all algebraic factors.
             tracing::debug!(
-                a_alg_degree = ?a_alg.degree(),
-                gcd_degree = ?g.degree(),
-                a_reduced_degree = ?a_reduced.degree(),
-                d_reduced_degree = ?d_reduced.degree(),
-                "try_risch_rational: algebraic remainder after GCD cancellation"
+                n_terms = ltr_terms.len(),
+                "try_risch_rational: log_to_real path complete — no recursive integration needed"
             );
-
-            debug_assert!(
-                {
-                    let (_, rem) = a_alg.div_rem(&g);
-                    rem.is_zero()
-                },
-                "A_alg must be divisible by gcd(A_alg, h_denom)"
-            );
-
-            let alg_num_id = crate::poly::polybridge::poly_to_expr(arena, &a_reduced, var);
-            let alg_den_id = crate::poly::polybridge::poly_to_expr(arena, &d_reduced, var);
-            let algebraic_remainder = arena.div(alg_num_id, alg_den_id);
-
-            // Recursively integrate only the algebraic remainder.
-            // The RAII guard (_guard) is still active, so try_risch_rational
-            // will return None if called from inside integrate — preventing
-            // infinite loops.  The heuristic integrator's other strategies
-            // (standard forms, partial fractions, u-sub) will still fire.
-            tracing::debug!("try_risch_rational: recursively integrating algebraic remainder");
-            let alg_integral =
-                crate::transforms::integrate::integrate(arena, algebraic_remainder, var);
-
-            let alg_has_uneval = crate::base::walk::has_unevaluated(arena, alg_integral);
-            tracing::debug!(
-                has_unevaluated = alg_has_uneval,
-                "try_risch_rational: algebraic remainder integration complete"
-            );
-            terms.push(alg_integral);
+            terms.extend(ltr_terms);
         } else {
+            // ── Fallback: algebraic remainder path (Phase 1) ───────
+            //
+            // log_to_real couldn't handle all algebraic terms.  Fall back
+            // to subtracting the rational contributions from h_numer at
+            // the Poly level, GCD-cancelling, and recursively integrating
+            // only the reduced algebraic remainder.
             tracing::debug!(
-                "try_risch_rational: A_alg is zero — rational terms fully account for the integrand"
+                h_numer_degree = ?hr.h_numer.degree(),
+                h_denom_degree = ?hr.h_denom.degree(),
+                n_rational_to_subtract = rational_log_parts.len(),
+                "try_risch_rational: falling back to algebraic remainder path"
             );
+
+            // Compute A_alg = h_numer − Σ c_i · v_i' · (h_denom / v_i)
+            let mut a_alg = hr.h_numer.clone();
+            for (coeff, v_i) in &rational_log_parts {
+                let v_i_prime = v_i.derivative();
+                let cofactor = hr.h_denom.div(v_i); // exact: v_i | h_denom
+                debug_assert!(
+                    {
+                        let product = &cofactor * v_i;
+                        product == hr.h_denom
+                    },
+                    "h_denom / v_i must be exact polynomial division"
+                );
+                let contribution = (&v_i_prime * &cofactor).scale(coeff);
+                tracing::trace!(
+                    coeff = %coeff,
+                    v_i_degree = ?v_i.degree(),
+                    cofactor_degree = ?cofactor.degree(),
+                    "try_risch_rational: subtracting rational contribution"
+                );
+                a_alg = &a_alg - &contribution;
+            }
+
+            if !a_alg.is_zero() {
+                // GCD-cancel: A_alg is divisible by Π v_i (mathematical guarantee).
+                let g = Poly::gcd(&a_alg, &hr.h_denom);
+                let a_reduced = a_alg.div(&g);
+                let d_reduced = hr.h_denom.div(&g);
+
+                tracing::debug!(
+                    a_alg_degree = ?a_alg.degree(),
+                    gcd_degree = ?g.degree(),
+                    a_reduced_degree = ?a_reduced.degree(),
+                    d_reduced_degree = ?d_reduced.degree(),
+                    "try_risch_rational: algebraic remainder after GCD cancellation"
+                );
+
+                debug_assert!(
+                    {
+                        let (_, rem) = a_alg.div_rem(&g);
+                        rem.is_zero()
+                    },
+                    "A_alg must be divisible by gcd(A_alg, h_denom)"
+                );
+
+                let alg_num_id = crate::poly::polybridge::poly_to_expr(arena, &a_reduced, var);
+                let alg_den_id = crate::poly::polybridge::poly_to_expr(arena, &d_reduced, var);
+                let algebraic_remainder = arena.div(alg_num_id, alg_den_id);
+
+                // Recursively integrate only the algebraic remainder.
+                // The RAII guard (_guard) is still active, so try_risch_rational
+                // will return None if called from inside integrate — preventing
+                // infinite loops.  The heuristic integrator's other strategies
+                // (standard forms, partial fractions, u-sub) will still fire.
+                tracing::debug!("try_risch_rational: recursively integrating algebraic remainder");
+                let alg_integral =
+                    crate::transforms::integrate::integrate(arena, algebraic_remainder, var);
+
+                let alg_has_uneval = crate::base::walk::has_unevaluated(arena, alg_integral);
+                tracing::debug!(
+                    has_unevaluated = alg_has_uneval,
+                    "try_risch_rational: algebraic remainder integration complete"
+                );
+                terms.push(alg_integral);
+            } else {
+                tracing::debug!(
+                    "try_risch_rational: A_alg is zero — rational terms fully account for the integrand"
+                );
+            }
         }
     }
 
