@@ -186,53 +186,101 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
         }
     }
 
-    // Logarithmic terms.
+    // ── Logarithmic terms ──────────────────────────────────────────────
+    //
+    // Pass 1: Collect rational (c_i, v_i) pairs and detect algebraic terms.
+    let mut rational_log_parts: Vec<(Ratio<BigInt>, Poly)> = Vec::new();
     let mut has_algebraic = false;
+
     for term in &log_result.terms {
         match term {
             LogTerm::Rational { coeff, argument } => {
-                let arg_id = crate::poly::polybridge::poly_to_expr(arena, argument, var);
-                // Wrap in abs() for real-valued integration correctness:
-                // ln(|v(x)|) is defined on the full real domain, while
-                // ln(v(x)) requires v(x) > 0.
-                let abs_arg = arena.abs(arg_id);
-                let ln_arg = arena.ln(abs_arg);
-                if coeff.is_one() {
-                    terms.push(ln_arg);
-                } else if (-coeff.clone()).is_one() {
-                    terms.push(arena.neg(ln_arg));
-                } else {
-                    let coeff_id = rational_to_expr(arena, coeff);
-                    terms.push(arena.mul(&[coeff_id, ln_arg]));
-                }
+                rational_log_parts.push((coeff.clone(), argument.clone()));
             }
             LogTerm::Algebraic { .. } => {
-                // We can't represent algebraic log terms in the arena yet.
-                // Instead of bailing entirely, we'll emit the rational part
-                // we computed (from Hermite) and leave the algebraic remainder
-                // as an unevaluated Integral.
                 has_algebraic = true;
             }
         }
     }
 
-    // If there are algebraic log terms, try to recursively integrate the
-    // square-free remainder using the heuristic integrator.  For example,
-    // 1/(x²+1) has algebraic residues (±i/2) but the heuristic integrator
-    // knows it's arctan(x) via the standard-form detector.
+    // Pass 2: Always emit the rational log terms — these are exact
+    // coefficients from the Rothstein-Trager algorithm.
+    for (coeff, argument) in &rational_log_parts {
+        let arg_id = crate::poly::polybridge::poly_to_expr(arena, argument, var);
+        // Wrap in abs() for real-valued integration correctness:
+        // ln(|v(x)|) is defined on the full real domain, while
+        // ln(v(x)) requires v(x) > 0.
+        let abs_arg = arena.abs(arg_id);
+        let ln_arg = arena.ln(abs_arg);
+        if coeff.is_one() {
+            terms.push(ln_arg);
+        } else if (-coeff.clone()).is_one() {
+            terms.push(arena.neg(ln_arg));
+        } else {
+            let coeff_id = rational_to_expr(arena, coeff);
+            terms.push(arena.mul(&[coeff_id, ln_arg]));
+        }
+    }
+
+    // Pass 3: If algebraic terms exist, compute the algebraic remainder
+    // by subtracting the rational log contributions from the integrand.
+    //
+    // The key identity: if the rational log terms contribute
+    //   Σ c_i · ln(v_i)
+    // then their derivative is
+    //   Σ c_i · v_i'(x) / v_i(x)
+    // and the algebraic part of the integrand is
+    //   A/D − Σ c_i · v_i' · (D/v_i) / D  =  A_alg / D
+    // where A_alg = A − Σ c_i · v_i' · (D / v_i).
+    //
+    // The divisibility Π v_i | A_alg is guaranteed by the residue theorem:
+    // subtracting the rational poles removes them from the numerator.
+    // After GCD cancellation, the reduced A_alg/D_reduced has only the
+    // irreducible quadratic (or higher) factors in its denominator.
     if has_algebraic && !hr.h_numer.is_zero() {
-        let h_num_id = crate::poly::polybridge::poly_to_expr(arena, &hr.h_numer, var);
-        let h_den_id = crate::poly::polybridge::poly_to_expr(arena, &hr.h_denom, var);
-        let remainder = arena.div(h_num_id, h_den_id);
+        // Compute A_alg = h_numer − Σ c_i · v_i' · (h_denom / v_i)
+        let mut a_alg = hr.h_numer.clone();
+        for (coeff, v_i) in &rational_log_parts {
+            let v_i_prime = v_i.derivative();
+            let cofactor = hr.h_denom.div(v_i); // exact: v_i | h_denom
+            debug_assert!(
+                {
+                    let product = &cofactor * v_i;
+                    product == hr.h_denom
+                },
+                "h_denom / v_i must be exact polynomial division"
+            );
+            let contribution = (&v_i_prime * &cofactor).scale(coeff);
+            a_alg = &a_alg - &contribution;
+        }
 
-        // Try the heuristic integrator on the remainder.
-        // The RAII guard (_guard) is still active, so try_risch_rational
-        // will return None if called from inside integrate — preventing
-        // infinite loops.  The heuristic integrator's other strategies
-        // (standard forms, partial fractions, u-sub) will still fire.
-        let remainder_integral = crate::transforms::integrate::integrate(arena, remainder, var);
+        if !a_alg.is_zero() {
+            // GCD-cancel: A_alg is divisible by Π v_i (mathematical guarantee).
+            let g = Poly::gcd(&a_alg, &hr.h_denom);
+            let a_reduced = a_alg.div(&g);
+            let d_reduced = hr.h_denom.div(&g);
 
-        terms.push(remainder_integral);
+            debug_assert!(
+                {
+                    let (_, rem) = a_alg.div_rem(&g);
+                    rem.is_zero()
+                },
+                "A_alg must be divisible by gcd(A_alg, h_denom)"
+            );
+
+            let alg_num_id = crate::poly::polybridge::poly_to_expr(arena, &a_reduced, var);
+            let alg_den_id = crate::poly::polybridge::poly_to_expr(arena, &d_reduced, var);
+            let algebraic_remainder = arena.div(alg_num_id, alg_den_id);
+
+            // Recursively integrate only the algebraic remainder.
+            // The RAII guard (_guard) is still active, so try_risch_rational
+            // will return None if called from inside integrate — preventing
+            // infinite loops.  The heuristic integrator's other strategies
+            // (standard forms, partial fractions, u-sub) will still fire.
+            let alg_integral =
+                crate::transforms::integrate::integrate(arena, algebraic_remainder, var);
+            terms.push(alg_integral);
+        }
     }
 
     if terms.is_empty() {
