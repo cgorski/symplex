@@ -123,15 +123,30 @@ pub(crate) fn eval_const_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
     if let Some(r) = arena.as_num(evaled) {
         let n: f64 = r.numer().to_string().parse().ok()?;
         let d: f64 = r.denom().to_string().parse().ok()?;
-        return if d == 0.0 { None } else { Some(n / d) };
+        if d == 0.0 {
+            tracing::debug!("eval_const_f64: rational with zero denominator");
+            return None;
+        }
+        let result = n / d;
+        tracing::trace!(result, "eval_const_f64: rational fast path");
+        return Some(result);
     }
 
     // Fall back to arbitrary-precision evaluation to 16 decimal digits,
     // then parse the resulting string.  The `evalf` call takes `&Arena`
     // (immutable), which Rust allows via automatic reborrowing of our
     // `&mut Arena`.
-    let s = evalf(arena, evaled, 16).ok()?;
-    s.parse::<f64>().ok()
+    match evalf(arena, evaled, 16) {
+        Ok(s) => {
+            let result = s.parse::<f64>().ok();
+            tracing::trace!(?result, decimal_str = %s, "eval_const_f64: evalf path");
+            result
+        }
+        Err(e) => {
+            tracing::debug!(?e, "eval_const_f64: evalf failed");
+            None
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

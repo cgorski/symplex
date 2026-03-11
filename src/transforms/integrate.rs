@@ -277,7 +277,55 @@ fn try_complete_square_integral(
     }
 
     // base must be a quadratic in var: ax² + bx + c
-    let poly = crate::poly::polybridge::expr_to_poly(arena, base, var)?;
+    let poly_opt = crate::poly::polybridge::expr_to_poly(arena, base, var);
+
+    // ── Symbolic fallback for irrational coefficients ──────────────
+    // When expr_to_poly fails (e.g., coefficients contain √5 or ∛2),
+    // try symbolic_quadratic_coeffs and arena-level completing the square.
+    // This enables integration of terms produced by apart for cyclotomic
+    // denominators like x⁵−1 and x⁸−1.
+    if poly_opt.is_none() && is_neg_one {
+        tracing::debug!("try_complete_square: expr_to_poly failed, trying symbolic quadratic coefficients");
+        if let Some((c_id, d_id, e_id)) =
+            symbolic_quadratic_coeffs(arena, base, var, _var_sym)
+        {
+            tracing::debug!("try_complete_square: symbolic quadratic coefficients extracted, completing the square");
+
+            // Normalize to monic: b_sym = d/c, c_norm = e/c
+            let b_sym = arena.div(d_id, c_id);
+            let c_norm = arena.div(e_id, c_id);
+
+            // Complete the square: x² + bx + c_norm = (x + b/2)² + (c_norm − b²/4)
+            let two = arena.int(2);
+            let half_b = arena.div(b_sym, two);
+            let half_b_sq = arena.mul(&[half_b, half_b]);
+            let disc = arena.sub(c_norm, half_b_sq);
+            let disc = crate::transforms::eval::eval(arena, disc);
+
+            // Sign test: discriminant must be positive for the atan form.
+            let disc_f64 = crate::transforms::evalf::eval_const_f64(arena, disc)?;
+            tracing::debug!(disc_f64, "try_complete_square: symbolic discriminant evaluated");
+            if disc_f64 <= 0.0 {
+                tracing::debug!("try_complete_square: discriminant non-positive, atan form not applicable");
+                return None;
+            }
+
+            // Result: (1/(a·√d)) · atan((x + b/2) / √d)
+            let half = arena.rational(1, 2);
+            let sqrt_disc = arena.pow(disc, half);
+            let shifted = arena.add(&[var, half_b]);
+            let ratio = arena.div(shifted, sqrt_disc);
+            let atan_val = arena.atan(ratio);
+
+            let sqrt_disc2 = arena.pow(disc, half);
+            let a_sqrt_d = arena.mul(&[c_id, sqrt_disc2]);
+            tracing::debug!("try_complete_square: symbolic completing-the-square succeeded → atan form");
+            return Some(arena.div(atan_val, a_sqrt_d));
+        }
+    }
+
+    // ── Rational-coefficient path ──────────────────────────────────
+    let poly = poly_opt?;
     if poly.degree()? != 2 {
         return None;
     }
@@ -734,51 +782,104 @@ fn try_linear_over_quadratic(
         return None;
     }
 
-    // linear must be degree 1 in var.
-    let lin_poly = crate::poly::polybridge::expr_to_poly(arena, linear, var)?;
-    if lin_poly.degree()? != 1 {
+    // ── Try rational-coefficient path first ────────────────────────
+    let lin_poly = crate::poly::polybridge::expr_to_poly(arena, linear, var);
+    let quad_poly = crate::poly::polybridge::expr_to_poly(arena, pow_base, var);
+
+    if let (Some(lp), Some(qp)) = (&lin_poly, &quad_poly) {
+        tracing::trace!("try_linear_over_quadratic: rational coefficient path");
+        if lp.degree() == Some(1) && qp.degree() == Some(2) {
+            let a_coeff = lp.coeff(1);
+            let b_coeff = lp.coeff(0);
+            let c_coeff = qp.coeff(2);
+            let d_coeff = qp.coeff(1);
+
+            use num_traits::Zero;
+            if !c_coeff.is_zero() && !a_coeff.is_zero() {
+                // Decompose: ax+b = (a/(2c))·(2cx+d) + (b − ad/(2c))
+                let two_r =
+                    num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
+                let a_over_2c = &a_coeff / &(&c_coeff * &two_r);
+                let remainder =
+                    &b_coeff - &(&a_coeff * &d_coeff / &(&c_coeff * &two_r));
+
+                let mut terms: Vec<ExprId> = Vec::new();
+
+                // First term: (a/(2c)) · ln|cx²+dx+e|
+                if !a_over_2c.is_zero() {
+                    let coeff_id = rational_to_expr(arena, &a_over_2c);
+                    let abs_quad = arena.abs(pow_base);
+                    let ln_quad = arena.ln(abs_quad);
+                    terms.push(arena.mul(&[coeff_id, ln_quad]));
+                }
+
+                // Second term: remainder · ∫ 1/(cx²+dx+e) dx
+                if !remainder.is_zero() {
+                    let inv_quad = arena.pow(pow_base, pow_exp); // (quad)^{-1}
+                    let inv_integral = integrate_node(
+                        arena, inv_quad, var, var_sym, depth.saturating_sub(1),
+                    );
+                    if matches!(arena.node(inv_integral), ExprNode::Integral(_, _)) {
+                        return None;
+                    }
+                    let rem_id = rational_to_expr(arena, &remainder);
+                    terms.push(arena.mul(&[rem_id, inv_integral]));
+                }
+
+                return match terms.len() {
+                    0 => Some(arena.zero),
+                    1 => Some(terms[0]),
+                    _ => Some(arena.add(&terms)),
+                };
+            }
+        }
+
+        // Rational polys exist but don't match expected shape.
         return None;
     }
-    let a_coeff = lin_poly.coeff(1);
-    let b_coeff = lin_poly.coeff(0);
 
-    // pow_base must be degree 2 in var.
-    let quad_poly = crate::poly::polybridge::expr_to_poly(arena, pow_base, var)?;
-    if quad_poly.degree()? != 2 {
-        return None;
-    }
-    let c_coeff = quad_poly.coeff(2);
-    let d_coeff = quad_poly.coeff(1);
+    // ── Symbolic fallback for irrational coefficients ──────────────
+    // When expr_to_poly fails (e.g., coefficients contain √5 or √2),
+    // extract symbolic coefficients and decompose using arena arithmetic.
+    tracing::debug!("try_linear_over_quadratic: expr_to_poly failed, trying symbolic coefficient path");
+    let (a_id, b_id) = symbolic_linear_coeff_of(arena, linear, var, var_sym)?;
+    let (c_id, d_id, _e_id) = symbolic_quadratic_coeffs(arena, pow_base, var, var_sym)?;
+    tracing::debug!("try_linear_over_quadratic: symbolic coefficients extracted for linear/quadratic decomposition");
 
-    use num_traits::Zero;
-    if c_coeff.is_zero() || a_coeff.is_zero() {
-        return None;
-    }
+    // log_coeff = a / (2c)
+    let two = arena.int(2);
+    let two_c = arena.mul(&[two, c_id]);
+    let log_coeff = arena.div(a_id, two_c);
+    let log_coeff = crate::transforms::eval::eval(arena, log_coeff);
 
-    // Decompose: ax+b = (a/(2c))·(2cx+d) + (b − ad/(2c))
-    let two_r = num_rational::Ratio::<num_bigint::BigInt>::from_integer(2.into());
-    let a_over_2c = &a_coeff / &(&c_coeff * &two_r);
-    let remainder = &b_coeff - &(&a_coeff * &d_coeff / &(&c_coeff * &two_r));
+    // remainder = b − a·d/(2c)
+    let a_d = arena.mul(&[a_id, d_id]);
+    let a_d_over_2c = arena.div(a_d, two_c);
+    let remainder_expr = arena.sub(b_id, a_d_over_2c);
+    let remainder_expr = crate::transforms::eval::eval(arena, remainder_expr);
 
     let mut terms: Vec<ExprId> = Vec::new();
 
-    // First term: (a/(2c)) · ln|cx²+dx+e|
-    if !a_over_2c.is_zero() {
-        let coeff_id = rational_to_expr(arena, &a_over_2c);
+    // First term: log_coeff · ln|quadratic|
+    let log_coeff_f64 = crate::transforms::evalf::eval_const_f64(arena, log_coeff);
+    tracing::trace!(?log_coeff_f64, "try_linear_over_quadratic: symbolic log coefficient");
+    if log_coeff_f64.is_some_and(|v| v.abs() > 1e-14) {
         let abs_quad = arena.abs(pow_base);
         let ln_quad = arena.ln(abs_quad);
-        terms.push(arena.mul(&[coeff_id, ln_quad]));
+        terms.push(arena.mul(&[log_coeff, ln_quad]));
     }
 
     // Second term: remainder · ∫ 1/(cx²+dx+e) dx
-    if !remainder.is_zero() {
+    let remainder_f64 = crate::transforms::evalf::eval_const_f64(arena, remainder_expr);
+    tracing::trace!(?remainder_f64, "try_linear_over_quadratic: symbolic remainder coefficient");
+    if remainder_f64.is_some_and(|v| v.abs() > 1e-14) {
         let inv_quad = arena.pow(pow_base, pow_exp); // (quad)^{-1}
-        let inv_integral = integrate_node(arena, inv_quad, var, var_sym, depth.saturating_sub(1));
-        if matches!(arena.node(inv_integral), ExprNode::Integral(_, _)) {
+        let inv_integral =
+            integrate_node(arena, inv_quad, var, var_sym, depth.saturating_sub(1));
+        if crate::base::walk::has_unevaluated(arena, inv_integral) {
             return None;
         }
-        let rem_id = rational_to_expr(arena, &remainder);
-        terms.push(arena.mul(&[rem_id, inv_integral]));
+        terms.push(arena.mul(&[remainder_expr, inv_integral]));
     }
 
     match terms.len() {
@@ -938,7 +1039,8 @@ fn try_cyclic_ibp(
 
     // ── Round 1: ∫ u1·dv1 dx = u1·v1 − ∫ v1·du1 dx ──────────────
     let v1 = integrate_node(arena, dv1, var, var_sym, depth - 1);
-    if matches!(arena.node(v1), ExprNode::Integral(_, _)) {
+    if crate::base::walk::has_unevaluated(arena, v1) {
+        tracing::trace!("try_cyclic_ibp: v1 has unevaluated nodes, bailing");
         return None;
     }
     let du1 = crate::transforms::diff::diff(arena, u1, var);
@@ -946,7 +1048,8 @@ fn try_cyclic_ibp(
 
     // ── Round 2: ∫ v1·du1 dx  with u₂ = du1, dv₂ = v1 ───────────
     let v2 = integrate_node(arena, v1, var, var_sym, depth - 1);
-    if matches!(arena.node(v2), ExprNode::Integral(_, _)) {
+    if crate::base::walk::has_unevaluated(arena, v2) {
+        tracing::trace!("try_cyclic_ibp: v2 has unevaluated nodes, bailing");
         return None;
     }
     let du2 = crate::transforms::diff::diff(arena, du1, var); // u1''
@@ -1263,6 +1366,7 @@ fn integrate_node(
                     // Integral top node but is still not fully evaluated).
                     let v = integrate_node(arena, dv, var, var_sym, depth - 1);
                     if crate::base::walk::has_unevaluated(arena, v) {
+                        tracing::trace!("by-parts: v = ∫dv has unevaluated nodes, skipping this ordering");
                         continue; // dv not integrable
                     }
 
@@ -1276,6 +1380,7 @@ fn integrate_node(
                     // Check if the remaining integral was resolved (deep check:
                     // an Add of unevaluated Integrals should not be accepted).
                     if crate::base::walk::has_unevaluated(arena, integral_v_du) {
+                        tracing::trace!("by-parts: ∫v·du has unevaluated nodes, skipping this ordering");
                         continue; // Remaining integral not solvable
                     }
 
@@ -2299,6 +2404,7 @@ fn symbolic_quadratic_coeffs(
     var_sym: SymbolId,
 ) -> Option<(ExprId, ExprId, ExprId)> {
     // Fast path: try numeric first.
+    tracing::trace!("symbolic_quadratic_coeffs: attempting to extract quadratic coefficients");
     if let Some(poly) = crate::poly::polybridge::expr_to_poly(arena, expr, var) {
         if poly.degree()? == 2 {
             let c = rational_to_expr(arena, &poly.coeff(2));
@@ -2310,6 +2416,7 @@ fn symbolic_quadratic_coeffs(
     }
 
     // Symbolic path: walk the Add children and classify each term.
+    tracing::trace!("symbolic_quadratic_coeffs: rational path failed, trying symbolic extraction");
     let children = match arena.node(expr).clone() {
         ExprNode::Add(c) => c.to_vec(),
         _ => vec![expr],
@@ -2430,8 +2537,16 @@ fn symbolic_quadratic_coeffs(
 
     // The expression must have a nonzero x² coefficient to be quadratic.
     if x2_terms.is_empty() {
+        tracing::trace!("symbolic_quadratic_coeffs: no x² terms found, not quadratic");
         return None;
     }
+
+    tracing::trace!(
+        n_x2_terms = x2_terms.len(),
+        n_x1_terms = x1_terms.len(),
+        n_x0_terms = x0_terms.len(),
+        "symbolic_quadratic_coeffs: classified terms"
+    );
 
     let c_expr = match x2_terms.len() {
         1 => x2_terms[0],

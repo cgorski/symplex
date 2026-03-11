@@ -489,6 +489,7 @@ impl<C: Field> GenPoly<C> {
         let mut prs = std::collections::BTreeMap::new();
 
         if a.is_zero() || b.is_zero() {
+            tracing::debug!("euclidean_prs: input is zero, returning empty PRS");
             return prs;
         }
 
@@ -499,6 +500,12 @@ impl<C: Field> GenPoly<C> {
             (b.clone(), a.clone())
         };
 
+        tracing::debug!(
+            deg_a = ?curr.degree(),
+            deg_b = ?next.degree(),
+            "euclidean_prs: starting PRS computation"
+        );
+
         // Record initial members.
         if let Some(d) = curr.degree() {
             prs.insert(d, curr.clone());
@@ -508,14 +515,23 @@ impl<C: Field> GenPoly<C> {
         }
 
         // Euclidean remainder loop.
+        let mut step = 0u32;
         while !next.is_zero() {
             let (_, r) = curr.div_rem(&next);
             if let Some(d) = r.degree() {
+                tracing::trace!(step, remainder_degree = d, "euclidean_prs: remainder");
                 prs.insert(d, r.clone());
             }
             curr = next;
             next = r;
+            step += 1;
         }
+
+        tracing::debug!(
+            num_members = prs.len(),
+            degrees = ?prs.keys().collect::<Vec<_>>(),
+            "euclidean_prs: PRS complete"
+        );
 
         prs
     }

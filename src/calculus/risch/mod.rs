@@ -191,17 +191,35 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
     // Pass 1: Collect rational (c_i, v_i) pairs and detect algebraic terms.
     let mut rational_log_parts: Vec<(Ratio<BigInt>, Poly)> = Vec::new();
     let mut has_algebraic = false;
+    let mut n_algebraic = 0usize;
 
     for term in &log_result.terms {
         match term {
             LogTerm::Rational { coeff, argument } => {
+                tracing::debug!(
+                    coeff = %coeff,
+                    argument_degree = ?argument.degree(),
+                    "try_risch_rational: found rational log term"
+                );
                 rational_log_parts.push((coeff.clone(), argument.clone()));
             }
-            LogTerm::Algebraic { .. } => {
+            LogTerm::Algebraic { min_poly, .. } => {
+                tracing::debug!(
+                    min_poly_degree = ?min_poly.degree(),
+                    "try_risch_rational: found algebraic log term"
+                );
                 has_algebraic = true;
+                n_algebraic += 1;
             }
         }
     }
+
+    tracing::debug!(
+        n_rational = rational_log_parts.len(),
+        n_algebraic,
+        has_algebraic,
+        "try_risch_rational: Rothstein-Trager classification"
+    );
 
     // Pass 2: Always emit the rational log terms — these are exact
     // coefficients from the Rothstein-Trager algorithm.
@@ -238,6 +256,13 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
     // After GCD cancellation, the reduced A_alg/D_reduced has only the
     // irreducible quadratic (or higher) factors in its denominator.
     if has_algebraic && !hr.h_numer.is_zero() {
+        tracing::debug!(
+            h_numer_degree = ?hr.h_numer.degree(),
+            h_denom_degree = ?hr.h_denom.degree(),
+            n_rational_to_subtract = rational_log_parts.len(),
+            "try_risch_rational: computing algebraic remainder"
+        );
+
         // Compute A_alg = h_numer − Σ c_i · v_i' · (h_denom / v_i)
         let mut a_alg = hr.h_numer.clone();
         for (coeff, v_i) in &rational_log_parts {
@@ -251,6 +276,12 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
                 "h_denom / v_i must be exact polynomial division"
             );
             let contribution = (&v_i_prime * &cofactor).scale(coeff);
+            tracing::trace!(
+                coeff = %coeff,
+                v_i_degree = ?v_i.degree(),
+                cofactor_degree = ?cofactor.degree(),
+                "try_risch_rational: subtracting rational contribution"
+            );
             a_alg = &a_alg - &contribution;
         }
 
@@ -259,6 +290,14 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
             let g = Poly::gcd(&a_alg, &hr.h_denom);
             let a_reduced = a_alg.div(&g);
             let d_reduced = hr.h_denom.div(&g);
+
+            tracing::debug!(
+                a_alg_degree = ?a_alg.degree(),
+                gcd_degree = ?g.degree(),
+                a_reduced_degree = ?a_reduced.degree(),
+                d_reduced_degree = ?d_reduced.degree(),
+                "try_risch_rational: algebraic remainder after GCD cancellation"
+            );
 
             debug_assert!(
                 {
@@ -277,9 +316,20 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
             // will return None if called from inside integrate — preventing
             // infinite loops.  The heuristic integrator's other strategies
             // (standard forms, partial fractions, u-sub) will still fire.
+            tracing::debug!("try_risch_rational: recursively integrating algebraic remainder");
             let alg_integral =
                 crate::transforms::integrate::integrate(arena, algebraic_remainder, var);
+
+            let alg_has_uneval = crate::base::walk::has_unevaluated(arena, alg_integral);
+            tracing::debug!(
+                has_unevaluated = alg_has_uneval,
+                "try_risch_rational: algebraic remainder integration complete"
+            );
             terms.push(alg_integral);
+        } else {
+            tracing::debug!(
+                "try_risch_rational: A_alg is zero — rational terms fully account for the integrand"
+            );
         }
     }
 
