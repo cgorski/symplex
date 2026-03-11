@@ -2459,7 +2459,6 @@ fn symbolic_quadratic_coeffs(
         if let ExprNode::Mul(ref mul_children) = arena.node(child).clone() {
             let mul_children = mul_children.clone();
             let mut has_var_sq = false;
-            let mut has_var = false;
             let mut var_count = 0u32;
             let mut other_factors: SmallVec<[ExprId; 4]> = SmallVec::new();
 
@@ -2504,9 +2503,8 @@ fn symbolic_quadratic_coeffs(
             if has_var_sq || var_count == 2 {
                 x2_terms.push(scalar);
             } else if var_count == 1 {
-                has_var = true;
                 x1_terms.push(scalar);
-            } else if !has_var {
+            } else {
                 // No var at all in this Mul child — should have been caught
                 // by the contains_var check above, but be safe.
                 x0_terms.push(child);

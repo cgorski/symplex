@@ -351,6 +351,54 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         tracing::debug!("smart_simplify: skipping radsimp (no sqrt+neg_pow nodes)");
     }
 
+    // Strategy 12: eval → powdenest → powsimp_base → eval (only if has Pow)
+    //
+    // Full radical simplification chain:
+    //   powdenest:    (a·b)^n → a^n · b^n  (e.g., (½·√5)² → ¼·5 = 5/4)
+    //   powsimp_base: a^e · b^e → (a·b)^e  (e.g., √2·√3 → √6)
+    //
+    // Both are applied in sequence because they are complementary:
+    // powdenest breaks apart compound bases, powsimp_base recombines
+    // separate bases.  The eval passes before and after handle
+    // canonicalization of the results (e.g., 5/4 - 5/4 → 0).
+    if flags.has_pow {
+        let s12_eval = crate::transforms::eval::eval(arena, expr);
+        let s12_denest = crate::simplify::powsimp::powdenest(arena, s12_eval);
+        let s12_base = crate::simplify::powsimp::powsimp_base(arena, s12_denest);
+        let s12 = crate::transforms::eval::eval(arena, s12_base);
+        tracing::trace!(
+            strategy = "eval+powdenest+powsimp_base+eval",
+            ops = count_ops(arena, s12),
+            changed = (s12 != s12_eval),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s12);
+
+        // Also try the individual strategies alone (one may help where
+        // the other doesn't, and the combined chain may increase op count).
+        let s12b_denest = crate::simplify::powsimp::powdenest(arena, s12_eval);
+        let s12b = crate::transforms::eval::eval(arena, s12b_denest);
+        tracing::trace!(
+            strategy = "eval+powdenest",
+            ops = count_ops(arena, s12b),
+            changed = (s12b != s12_eval),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s12b);
+
+        let s12c_base = crate::simplify::powsimp::powsimp_base(arena, s12_eval);
+        let s12c = crate::transforms::eval::eval(arena, s12c_base);
+        tracing::trace!(
+            strategy = "eval+powsimp_base",
+            ops = count_ops(arena, s12c),
+            changed = (s12c != s12_eval),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s12c);
+    } else {
+        tracing::debug!("smart_simplify: skipping powdenest/powsimp_base (no Pow nodes)");
+    }
+
     tracing::debug!(
         ops_original = original_ops,
         ops_result = best_ops,
@@ -419,12 +467,29 @@ pub(crate) fn full_simplify_trace(
             crate::transforms::pattern::apply_rules(arena, expanded_eval, &rules);
         all_steps.extend(expand_steps);
 
-        // Pick whichever result has fewer operations.
-        let best = if count_ops(arena, cancelled_simp) <= count_ops(arena, expanded_simp) {
-            cancelled_simp
-        } else {
-            expanded_simp
-        };
+        // ── also try radical simplification: powdenest → powsimp_base → eval ──
+        let radical_denest = crate::simplify::powsimp::powdenest(arena, evaled);
+        let radical_base = crate::simplify::powsimp::powsimp_base(arena, radical_denest);
+        let radical_simp = crate::transforms::eval::eval(arena, radical_base);
+
+        // Pick whichever result has fewest operations.
+        let mut best = cancelled_simp;
+        let mut best_ops = count_ops(arena, best);
+        let expanded_ops = count_ops(arena, expanded_simp);
+        if expanded_ops < best_ops {
+            best = expanded_simp;
+            best_ops = expanded_ops;
+        }
+        let radical_ops = count_ops(arena, radical_simp);
+        if radical_ops < best_ops {
+            tracing::trace!(
+                iteration = i,
+                radical_ops,
+                prev_best_ops = best_ops,
+                "full_simplify: radical simplification produced better result"
+            );
+            best = radical_simp;
+        }
 
         tracing::debug!(
             iteration = i,
