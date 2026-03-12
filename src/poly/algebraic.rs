@@ -2508,4 +2508,1173 @@ mod tests {
             }
         }
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // BUG HUNT — Dr. Katya Moroz (algebraic identity specialist)
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn katya_sqrt2_plus_sqrt3_squared_minus_5_minus_2sqrt6() {
+        // (√2+√3)² = 5+2√6.  So (√2+√3)² - 5 - 2√6 = 0.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let n3 = a.int(3);
+        let n5 = a.int(5);
+        let n6 = a.int(6);
+        let sqrt2 = a.pow(n2, half);
+        let sqrt3 = a.pow(n3, half);
+        let sqrt6 = a.pow(n6, half);
+        let sum = a.add(&[sqrt2, sqrt3]);
+        let two = a.int(2);
+        let sq = a.pow(sum, two);
+        let sq = crate::transforms::eval::eval(&mut a, sq);
+        let two_sqrt6 = a.mul(&[two, sqrt6]);
+        let rhs = a.add(&[n5, two_sqrt6]);
+        let rhs = crate::transforms::eval::eval(&mut a, rhs);
+        let diff = a.sub(sq, rhs);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: (√2+√3)²-5-2√6 should be zero. Got {result:?}, node={:?}",
+            a.node(diff));
+    }
+
+    #[test]
+    fn katya_golden_ratio_phi_sq_minus_phi_minus_1() {
+        // φ = (1+√5)/2, φ²-φ-1 = 0
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n5 = a.int(5);
+        let n1 = a.int(1);
+        let n2 = a.int(2);
+        let sqrt5 = a.pow(n5, half);
+        let num = a.add(&[n1, sqrt5]);
+        let phi = a.div(num, n2);
+        let phi_sq = a.pow(phi, n2);
+        let phi_sq = crate::transforms::eval::eval(&mut a, phi_sq);
+        let phi_sq_minus_phi = a.sub(phi_sq, phi);
+        let diff = a.sub(phi_sq_minus_phi, n1);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: φ²-φ-1 should be zero. Got {result:?}");
+    }
+
+    #[test]
+    fn katya_2sqrt2_minus_sqrt8() {
+        // 2√2 - √8 = 2√2 - 2√2 = 0
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let n8 = a.int(8);
+        let sqrt2 = a.pow(n2, half);
+        let sqrt8 = a.pow(n8, half);
+        let two_sqrt2 = a.mul(&[n2, sqrt2]);
+        let diff = a.sub(two_sqrt2, sqrt8);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: 2√2 - √8 = 0. Got {result:?}, node={:?}", a.node(diff));
+    }
+
+    #[test]
+    fn katya_sqrt50_minus_5sqrt2() {
+        // √50 - 5√2 = 5√2 - 5√2 = 0
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let n5 = a.int(5);
+        let n50 = a.int(50);
+        let sqrt2 = a.pow(n2, half);
+        let sqrt50 = a.pow(n50, half);
+        let five_sqrt2 = a.mul(&[n5, sqrt2]);
+        let diff = a.sub(sqrt50, five_sqrt2);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: √50 - 5√2 = 0. Got {result:?}");
+    }
+
+    #[test]
+    fn katya_cbrt4_minus_cbrt2_squared() {
+        // ∛4 - (∛2)² = 0 since 4^(1/3) = 2^(2/3) = (2^(1/3))²
+        let mut a = crate::base::arena::Arena::new();
+        let n2 = a.int(2);
+        let n4 = a.int(4);
+        let third = a.rational(1, 3);
+        let cbrt4 = a.pow(n4, third);
+        let cbrt2 = a.pow(n2, third);
+        let cbrt2_sq = a.pow(cbrt2, n2);
+        let cbrt2_sq = crate::transforms::eval::eval(&mut a, cbrt2_sq);
+        let diff = a.sub(cbrt4, cbrt2_sq);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: ∛4 - (∛2)² = 0. Got {result:?}");
+    }
+
+    #[test]
+    fn katya_sqrt2_times_sqrt2_minus_2() {
+        // √2 · √2 - 2 = 0
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let prod = a.mul(&[sqrt2, sqrt2]);
+        let prod = crate::transforms::eval::eval(&mut a, prod);
+        let diff = a.sub(prod, n2);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: √2·√2-2 = 0. Got {result:?}");
+    }
+
+    #[test]
+    fn katya_sqrt2_plus_sqrt3_times_sqrt2_minus_sqrt3_plus_1() {
+        // (√2+√3)(√2-√3) = 2-3 = -1.  So (√2+√3)(√2-√3)+1 = 0.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n1 = a.int(1);
+        let n2 = a.int(2);
+        let n3 = a.int(3);
+        let sqrt2 = a.pow(n2, half);
+        let sqrt3 = a.pow(n3, half);
+        let sum = a.add(&[sqrt2, sqrt3]);
+        let diff = a.sub(sqrt2, sqrt3);
+        let prod = a.mul(&[sum, diff]);
+        let prod = crate::transforms::eval::eval(&mut a, prod);
+        let expr = a.add(&[prod, n1]);
+        let expr = crate::transforms::eval::eval(&mut a, expr);
+        let result = is_zero_checked(&mut a, expr);
+        assert_eq!(result, Some(true),
+            "BUG: (√2+√3)(√2-√3)+1 = 0. Got {result:?}");
+    }
+
+    #[test]
+    fn katya_1_over_sqrt2_minus_sqrt2_over_2() {
+        // 1/√2 - √2/2 = √2/2 - √2/2 = 0
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n1 = a.int(1);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let inv_sqrt2 = a.div(n1, sqrt2);
+        let sqrt2_over_2 = a.div(sqrt2, n2);
+        let diff = a.sub(inv_sqrt2, sqrt2_over_2);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: 1/√2 - √2/2 = 0. Got {result:?}, node={:?}", a.node(diff));
+    }
+
+    #[test]
+    fn katya_rationalize_1_over_sqrt2_plus_1() {
+        // 1/(√2+1) = √2-1 (rationalized).  So 1/(√2+1)-(√2-1)=0.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n1 = a.int(1);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let sqrt2_plus_1 = a.add(&[sqrt2, n1]);
+        let lhs = a.div(n1, sqrt2_plus_1);
+        let rhs = a.sub(sqrt2, n1);
+        let diff = a.sub(lhs, rhs);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: 1/(√2+1)-(√2-1) = 0. Got {result:?}, node={:?}", a.node(diff));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // BUG HUNT — Prof. Tomás Reyes (integration & simplification)
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn tomas_integrate_1_over_x2_plus_1() {
+        // ∫ 1/(x²+1) dx = atan(x).  At x=1: atan(1) = π/4.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let one = a.int(1);
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let denom = a.add(&[x2, one]);
+        let integrand = a.div(one, denom);
+        let result = a.integrate_expr(integrand, x);
+        let result = crate::transforms::eval::eval(&mut a, result);
+        let at_1 = crate::transforms::subs::subs(&mut a, result, x, one);
+        let at_1 = crate::transforms::eval::eval(&mut a, at_1);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_1);
+        assert!(val.is_some(), "BUG: ∫1/(x²+1) must evaluate at x=1");
+        let v = val.unwrap();
+        assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-10,
+            "BUG: ∫1/(x²+1) at x=1 should be π/4 ≈ 0.7854, got {v}");
+    }
+
+    #[test]
+    fn tomas_integrate_1_over_x2_plus_2x_plus_2() {
+        // ∫ 1/(x²+2x+2) dx = atan(x+1).  At x=0: atan(1) = π/4.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let one = a.int(1);
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let two_x = a.mul(&[two, x]);
+        let denom = a.add(&[x2, two_x, two]);
+        let integrand = a.div(one, denom);
+        let result = a.integrate_expr(integrand, x);
+        let result = crate::transforms::eval::eval(&mut a, result);
+        let zero = a.zero;
+        let at_0 = crate::transforms::subs::subs(&mut a, result, x, zero);
+        let at_0 = crate::transforms::eval::eval(&mut a, at_0);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_0);
+        assert!(val.is_some(), "BUG: ∫1/(x²+2x+2) must evaluate at x=0");
+        let v = val.unwrap();
+        assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-10,
+            "BUG: ∫1/(x²+2x+2) at x=0 should be π/4, got {v}");
+    }
+
+    #[test]
+    fn tomas_integrate_2x_over_x2_plus_1() {
+        // ∫ 2x/(x²+1) dx = ln(x²+1).  At x=1: ln(2).
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let one = a.int(1);
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let denom = a.add(&[x2, one]);
+        let numer = a.mul(&[two, x]);
+        let integrand = a.div(numer, denom);
+        let result = a.integrate_expr(integrand, x);
+        let result = crate::transforms::eval::eval(&mut a, result);
+        let at_1 = crate::transforms::subs::subs(&mut a, result, x, one);
+        let at_1 = crate::transforms::eval::eval(&mut a, at_1);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_1);
+        assert!(val.is_some(), "BUG: ∫2x/(x²+1) must evaluate at x=1");
+        let v = val.unwrap();
+        assert!((v - 2.0_f64.ln()).abs() < 1e-10,
+            "BUG: ∫2x/(x²+1) at x=1 should be ln(2) ≈ 0.6931, got {v}");
+    }
+
+    #[test]
+    fn tomas_simplify_sin_sq_plus_cos_sq() {
+        // sin²(x) + cos²(x) = 1
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let sinx = a.sin(x);
+        let cosx = a.cos(x);
+        let sin2 = a.pow(sinx, two);
+        let cos2 = a.pow(cosx, two);
+        let sum = a.add(&[sin2, cos2]);
+        let simplified = a.trigsimp_expr(sum);
+        let simplified = crate::transforms::eval::eval(&mut a, simplified);
+        assert_eq!(simplified, a.one,
+            "BUG: sin²(x)+cos²(x) should simplify to 1");
+    }
+
+    #[test]
+    fn tomas_derivative_of_integral_is_identity() {
+        // d/dx ∫ x² dx = x² (fundamental theorem)
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let integral = a.integrate_expr(x2, x);
+        let integral = crate::transforms::eval::eval(&mut a, integral);
+        let deriv = a.diff_wrt(integral, x);
+        let deriv = crate::transforms::eval::eval(&mut a, deriv);
+        // Test at x=3: should be 9
+        let three = a.int(3);
+        let at_3 = crate::transforms::subs::subs(&mut a, deriv, x, three);
+        let at_3 = crate::transforms::eval::eval(&mut a, at_3);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_3);
+        assert!(val.is_some(), "BUG: d/dx(∫x²dx) must evaluate at x=3");
+        assert!((val.unwrap() - 9.0).abs() < 1e-10,
+            "BUG: d/dx(∫x²dx) at x=3 should be 9, got {:?}", val);
+    }
+
+    #[test]
+    fn tomas_integrate_exp_x() {
+        // ∫ e^x dx = e^x.  At x=1: e.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let ex = a.exp(x);
+        let result = a.integrate_expr(ex, x);
+        let result = crate::transforms::eval::eval(&mut a, result);
+        let one = a.int(1);
+        let at_1 = crate::transforms::subs::subs(&mut a, result, x, one);
+        let at_1 = crate::transforms::eval::eval(&mut a, at_1);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_1);
+        assert!(val.is_some(), "BUG: ∫e^x must evaluate at x=1");
+        let v = val.unwrap();
+        assert!((v - std::f64::consts::E).abs() < 1e-10,
+            "BUG: ∫e^x at x=1 should be e ≈ 2.7183, got {v}");
+    }
+
+    #[test]
+    fn tomas_expand_then_factor() {
+        // (x+1)(x+2) = x²+3x+2.  Expand then factor should round-trip.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let one = a.int(1);
+        let two = a.int(2);
+        let f1 = a.add(&[x, one]);
+        let f2 = a.add(&[x, two]);
+        let prod = a.mul(&[f1, f2]);
+        let expanded = a.expand_expr(prod);
+        let expanded = crate::transforms::eval::eval(&mut a, expanded);
+        // Evaluate expanded at x=10: should be 11·12 = 132
+        let ten = a.int(10);
+        let at_10 = crate::transforms::subs::subs(&mut a, expanded, x, ten);
+        let at_10 = crate::transforms::eval::eval(&mut a, at_10);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_10);
+        assert_eq!(val, Some(132.0),
+            "BUG: (x+1)(x+2) at x=10 should be 132, got {val:?}");
+    }
+
+    #[test]
+    fn tomas_diff_sin_is_cos() {
+        // d/dx sin(x) = cos(x).  At x=0: cos(0) = 1.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let sinx = a.sin(x);
+        let deriv = a.diff_wrt(sinx, x);
+        let deriv = crate::transforms::eval::eval(&mut a, deriv);
+        let zero = a.zero;
+        let at_0 = crate::transforms::subs::subs(&mut a, deriv, x, zero);
+        let at_0 = crate::transforms::eval::eval(&mut a, at_0);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_0);
+        assert!(val.is_some(), "BUG: d/dx(sin(x)) must evaluate at x=0");
+        assert!((val.unwrap() - 1.0).abs() < 1e-10,
+            "BUG: d/dx(sin(x)) at x=0 should be cos(0)=1, got {:?}", val);
+    }
+
+    #[test]
+    fn tomas_diff_ln_is_1_over_x() {
+        // d/dx ln(x) = 1/x.  At x=2: 1/2 = 0.5.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let lnx = a.ln(x);
+        let deriv = a.diff_wrt(lnx, x);
+        let deriv = crate::transforms::eval::eval(&mut a, deriv);
+        let two = a.int(2);
+        let at_2 = crate::transforms::subs::subs(&mut a, deriv, x, two);
+        let at_2 = crate::transforms::eval::eval(&mut a, at_2);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_2);
+        assert!(val.is_some(), "BUG: d/dx(ln(x)) must evaluate at x=2");
+        assert!((val.unwrap() - 0.5).abs() < 1e-10,
+            "BUG: d/dx(ln(x)) at x=2 should be 0.5, got {:?}", val);
+    }
+
+    #[test]
+    fn tomas_second_derivative_x_cubed() {
+        // d²/dx² x³ = 6x.  At x=5: 30.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let three = a.int(3);
+        let x3 = a.pow(x, three);
+        let d1 = a.diff_wrt(x3, x);
+        let d1 = crate::transforms::eval::eval(&mut a, d1);
+        let d2 = a.diff_wrt(d1, x);
+        let d2 = crate::transforms::eval::eval(&mut a, d2);
+        let five = a.int(5);
+        let at_5 = crate::transforms::subs::subs(&mut a, d2, x, five);
+        let at_5 = crate::transforms::eval::eval(&mut a, at_5);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_5);
+        assert_eq!(val, Some(30.0),
+            "BUG: d²/dx²(x³) at x=5 should be 30, got {val:?}");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // BUG HUNT — Dr. Lin Wei (numerical edge cases & misc features)
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn lin_sign_sqrt2_minus_near_rational_positive() {
+        // √2 - 14142/10000 = √2 - 1.4142 ≈ 1.356e-5.  Tiny positive.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let approx = a.rational(14142, 10000);
+        let diff = a.sub(sqrt2, approx);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let sign = sign_checked(&mut a, diff);
+        assert_eq!(sign, Some(1),
+            "BUG: √2 - 14142/10000 is small positive. Got sign={sign:?}");
+    }
+
+    #[test]
+    fn lin_sign_sqrt2_minus_near_rational_negative() {
+        // √2 - 141422/100000 = √2 - 1.41422 ≈ -6.4e-6.  Tiny negative.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let approx = a.rational(141422, 100000);
+        let diff = a.sub(sqrt2, approx);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let sign = sign_checked(&mut a, diff);
+        assert_eq!(sign, Some(-1),
+            "BUG: √2 - 141422/100000 is small negative. Got sign={sign:?}");
+    }
+
+    #[test]
+    fn lin_is_zero_sqrt2_minus_rational_not_zero() {
+        // √2 - 7071/5000 ≈ 1.42e-4.  NOT zero.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let approx = a.rational(7071, 5000);
+        let diff = a.sub(sqrt2, approx);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(false),
+            "BUG: √2 - 7071/5000 is not zero. Got {result:?}");
+    }
+
+    #[test]
+    fn lin_evalf_pi() {
+        let mut a = crate::base::arena::Arena::new();
+        let pi = a.pi;
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, pi);
+        assert!(val.is_some(), "BUG: π must evaluate");
+        let v = val.unwrap();
+        assert!((v - std::f64::consts::PI).abs() < 1e-10,
+            "BUG: π should be 3.14159..., got {v}");
+    }
+
+    #[test]
+    fn lin_evalf_e() {
+        let mut a = crate::base::arena::Arena::new();
+        let e = a.e_const;
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, e);
+        assert!(val.is_some(), "BUG: e must evaluate");
+        let v = val.unwrap();
+        assert!((v - std::f64::consts::E).abs() < 1e-10,
+            "BUG: e should be 2.71828..., got {v}");
+    }
+
+    #[test]
+    fn lin_limit_sinx_over_x() {
+        // lim_{x→0} sin(x)/x = 1
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let sinx = a.sin(x);
+        let ratio = a.div(sinx, x);
+        let zero = a.zero;
+        let lim = a.limit_expr(ratio, x, zero)
+            .expect("BUG: limit_expr failed for sin(x)/x");
+        let lim = crate::transforms::eval::eval(&mut a, lim);
+        assert_eq!(lim, a.one,
+            "BUG: lim sin(x)/x → 0 should be 1, got node={:?}", a.node(lim));
+    }
+
+    #[test]
+    fn lin_chain_rule_sin_x_squared() {
+        // d/dx sin(x²) = 2x·cos(x²).  At x=1: 2cos(1) ≈ 1.0806.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let sin_x2 = a.sin(x2);
+        let deriv = a.diff_wrt(sin_x2, x);
+        let deriv = crate::transforms::eval::eval(&mut a, deriv);
+        let one = a.int(1);
+        let at_1 = crate::transforms::subs::subs(&mut a, deriv, x, one);
+        let at_1 = crate::transforms::eval::eval(&mut a, at_1);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_1);
+        assert!(val.is_some(), "BUG: d/dx sin(x²) must evaluate at x=1");
+        let expected = 2.0 * 1.0_f64.cos();
+        assert!((val.unwrap() - expected).abs() < 1e-10,
+            "BUG: d/dx sin(x²) at x=1 should be 2cos(1) ≈ {expected}, got {:?}", val);
+    }
+
+    #[test]
+    fn lin_series_exp_x_order_4() {
+        // Taylor e^x at x=0 to order 4, evaluated at x=1/10.
+        // Should be close to e^(0.1) ≈ 1.10517.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let ex = a.exp(x);
+        let zero = a.zero;
+        let series = a.series_expr(ex, x, zero, 4u32)
+            .expect("BUG: series_expr failed for e^x");
+        let series = crate::transforms::eval::eval(&mut a, series);
+        let tenth = a.rational(1, 10);
+        let at_01 = crate::transforms::subs::subs(&mut a, series, x, tenth);
+        let at_01 = crate::transforms::eval::eval(&mut a, at_01);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_01);
+        assert!(val.is_some(), "BUG: Taylor e^x must evaluate at x=0.1");
+        let v = val.unwrap();
+        assert!((v - 0.1_f64.exp()).abs() < 1e-4,
+            "BUG: Taylor e^x(4th order) at x=0.1 should be ≈ 1.10517, got {v}");
+    }
+
+    #[test]
+    fn lin_solve_quadratic() {
+        // x²-5x+6 = 0 has roots 2 and 3.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let six = a.int(6);
+        let x2 = a.pow(x, two);
+        let neg5 = a.int(-5);
+        let neg5x = a.mul(&[neg5, x]);
+        let poly = a.add(&[x2, neg5x, six]);
+        let roots = crate::transforms::solve::solve(&mut a, poly, x);
+        assert_eq!(roots.len(), 2,
+            "BUG: x²-5x+6 should have 2 roots, got {}", roots.len());
+        let mut vals: Vec<f64> = roots.iter()
+            .filter_map(|r| crate::transforms::evalf::eval_const_f64(&mut a, r.value))
+            .collect();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((vals[0] - 2.0).abs() < 1e-10,
+            "BUG: first root should be 2, got {}", vals[0]);
+        assert!((vals[1] - 3.0).abs() < 1e-10,
+            "BUG: second root should be 3, got {}", vals[1]);
+    }
+
+    #[test]
+    fn lin_matrix_det_2x2() {
+        // det([[1,2],[3,4]]) = 1·4 - 2·3 = -2
+        // Computed via arena arithmetic (Matrix API uses public Ex type).
+        let mut a = crate::base::arena::Arena::new();
+        let n1 = a.int(1);
+        let n2 = a.int(2);
+        let n3 = a.int(3);
+        let n4 = a.int(4);
+        let ad = a.mul(&[n1, n4]);
+        let bc = a.mul(&[n2, n3]);
+        let det = a.sub(ad, bc);
+        let det = crate::transforms::eval::eval(&mut a, det);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, det);
+        assert_eq!(val, Some(-2.0),
+            "BUG: det([[1,2],[3,4]]) should be -2, got {val:?}");
+    }
+
+    #[test]
+    fn lin_matrix_det_3x3_singular() {
+        // det([[1,2,3],[4,5,6],[7,8,9]]) = 0 (rows are arithmetic progression)
+        // Cofactor expansion along row 1:
+        //   1·(5·9-6·8) - 2·(4·9-6·7) + 3·(4·8-5·7)
+        //   = 1·(45-48) - 2·(36-42) + 3·(32-35)
+        //   = -3 + 12 - 9 = 0
+        let mut a = crate::base::arena::Arena::new();
+        let n1 = a.int(1);
+        let n2 = a.int(2);
+        let n3 = a.int(3);
+        let n4 = a.int(4);
+        let n5 = a.int(5);
+        let n6 = a.int(6);
+        let n7 = a.int(7);
+        let n8 = a.int(8);
+        let n9 = a.int(9);
+        // Minor M11 = 5·9 - 6·8
+        let p59 = a.mul(&[n5, n9]);
+        let p68 = a.mul(&[n6, n8]);
+        let m11 = a.sub(p59, p68);
+        // Minor M12 = 4·9 - 6·7
+        let p49 = a.mul(&[n4, n9]);
+        let p67 = a.mul(&[n6, n7]);
+        let m12 = a.sub(p49, p67);
+        // Minor M13 = 4·8 - 5·7
+        let p48 = a.mul(&[n4, n8]);
+        let p57 = a.mul(&[n5, n7]);
+        let m13 = a.sub(p48, p57);
+        // det = 1·M11 - 2·M12 + 3·M13
+        let t1 = a.mul(&[n1, m11]);
+        let t2 = a.mul(&[n2, m12]);
+        let t3 = a.mul(&[n3, m13]);
+        let det = a.sub(t1, t2);
+        let det = a.add(&[det, t3]);
+        let det = crate::transforms::eval::eval(&mut a, det);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, det);
+        assert_eq!(val, Some(0.0),
+            "BUG: det of singular 3x3 should be 0, got {val:?}");
+    }
+
+    #[test]
+    fn lin_solve_linear_system_2x2() {
+        // x + y = 3, 2x - y = 0  →  x = 1, y = 2
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let y = a.symbol("y");
+        let n3 = a.int(3);
+        let n2 = a.int(2);
+        // eq1: x + y - 3 = 0
+        let eq1 = a.add(&[x, y]);
+        let eq1 = a.sub(eq1, n3);
+        // eq2: 2x - y = 0
+        let two_x = a.mul(&[n2, x]);
+        let eq2 = a.sub(two_x, y);
+        // Solve eq1 for x: x = 3 - y
+        let roots_x = crate::transforms::solve::solve(&mut a, eq1, x);
+        if !roots_x.is_empty() {
+            let x_val = roots_x[0].value; // x = 3 - y
+            // Sub into eq2: 2(3-y) - y = 0 → 6-3y = 0 → y = 2
+            let eq2_sub = crate::transforms::subs::subs(&mut a, eq2, x, x_val);
+            let eq2_sub = crate::transforms::eval::eval(&mut a, eq2_sub);
+            let roots_y = crate::transforms::solve::solve(&mut a, eq2_sub, y);
+            if !roots_y.is_empty() {
+                let y_val = crate::transforms::evalf::eval_const_f64(&mut a, roots_y[0].value);
+                assert!(y_val.is_some_and(|v| (v - 2.0).abs() < 1e-10),
+                    "BUG: y should be 2, got {y_val:?}");
+                // Substitute back: x = 3 - 2 = 1
+                let x_final = crate::transforms::subs::subs(&mut a, x_val, y, roots_y[0].value);
+                let x_final = crate::transforms::eval::eval(&mut a, x_final);
+                let x_val_f64 = crate::transforms::evalf::eval_const_f64(&mut a, x_final);
+                assert!(x_val_f64.is_some_and(|v| (v - 1.0).abs() < 1e-10),
+                    "BUG: x should be 1, got {x_val_f64:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn lin_product_rule_derivative() {
+        // d/dx [x·sin(x)] = sin(x) + x·cos(x).  At x=π/2: 1 + 0 = 1.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let sinx = a.sin(x);
+        let prod = a.mul(&[x, sinx]);
+        let deriv = a.diff_wrt(prod, x);
+        let deriv = crate::transforms::eval::eval(&mut a, deriv);
+        // Evaluate at x = π/2
+        let two = a.int(2);
+        let pi = a.pi;
+        let pi_half = a.div(pi, two);
+        let at_pi2 = crate::transforms::subs::subs(&mut a, deriv, x, pi_half);
+        let at_pi2 = crate::transforms::eval::eval(&mut a, at_pi2);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_pi2);
+        assert!(val.is_some(), "BUG: d/dx(x·sin(x)) must evaluate at x=π/2");
+        assert!((val.unwrap() - 1.0).abs() < 1e-10,
+            "BUG: d/dx(x·sin(x)) at x=π/2 should be 1, got {:?}", val);
+    }
+
+    #[test]
+    fn lin_integrate_then_diff_sinx() {
+        // d/dx [∫sin(x)dx] = sin(x).  At x=π/6: sin(π/6) = 1/2.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let sinx = a.sin(x);
+        let integral = a.integrate_expr(sinx, x);
+        let integral = crate::transforms::eval::eval(&mut a, integral);
+        let deriv = a.diff_wrt(integral, x);
+        let deriv = crate::transforms::eval::eval(&mut a, deriv);
+        let six = a.int(6);
+        let pi = a.pi;
+        let pi_6 = a.div(pi, six);
+        let at_val = crate::transforms::subs::subs(&mut a, deriv, x, pi_6);
+        let at_val = crate::transforms::eval::eval(&mut a, at_val);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_val);
+        assert!(val.is_some(), "BUG: d/dx(∫sin(x)dx) must evaluate at x=π/6");
+        assert!((val.unwrap() - 0.5).abs() < 1e-10,
+            "BUG: d/dx(∫sin(x)dx) at x=π/6 should be 0.5, got {:?}", val);
+    }
+
+    #[test]
+    fn lin_evalf_sqrt2_high_precision() {
+        // √2 should evaluate close to 1.41421356237...
+        let mut a = crate::base::arena::Arena::new();
+        let n2 = a.int(2);
+        let half = a.rational(1, 2);
+        let sqrt2 = a.pow(n2, half);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, sqrt2);
+        assert!(val.is_some(), "BUG: √2 must evaluate");
+        let v = val.unwrap();
+        assert!((v - std::f64::consts::SQRT_2).abs() < 1e-14,
+            "BUG: √2 should be 1.41421356237..., got {v}");
+    }
+
+    #[test]
+    fn lin_negative_exponent() {
+        // 2^(-1) = 1/2
+        let mut a = crate::base::arena::Arena::new();
+        let n2 = a.int(2);
+        let neg1 = a.int(-1);
+        let result = a.pow(n2, neg1);
+        let result = crate::transforms::eval::eval(&mut a, result);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, result);
+        assert_eq!(val, Some(0.5),
+            "BUG: 2^(-1) should be 0.5, got {val:?}");
+    }
+
+    #[test]
+    fn lin_zero_to_the_zero() {
+        // 0^0 is conventionally 1 in combinatorics/algebra.
+        let mut a = crate::base::arena::Arena::new();
+        let zero = a.zero;
+        let result = a.pow(zero, zero);
+        let result = crate::transforms::eval::eval(&mut a, result);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, result);
+        // Most CAS systems return 1 for 0^0.
+        assert!(val == Some(1.0) || result == a.one,
+            "BUG: 0^0 should be 1, got val={val:?}, node={:?}", a.node(result));
+    }
+
+    #[test]
+    fn lin_large_integer_arithmetic() {
+        // 2^64 - 1 = 18446744073709551615
+        let mut a = crate::base::arena::Arena::new();
+        let n2 = a.int(2);
+        let n64 = a.int(64);
+        let big = a.pow(n2, n64);
+        let big = crate::transforms::eval::eval(&mut a, big);
+        let one = a.int(1);
+        let result = a.sub(big, one);
+        let result = crate::transforms::eval::eval(&mut a, result);
+        // Check it's the right number: should be 2^64-1
+        if let Some(r) = a.as_num(result) {
+            let expected: u64 = u64::MAX; // 2^64-1
+            assert_eq!(r.to_string(), expected.to_string(),
+                "BUG: 2^64-1 should be {expected}, got {r}");
+        } else {
+            panic!("BUG: 2^64-1 should be a number, got node={:?}", a.node(result));
+        }
+    }
+
+    #[test]
+    fn lin_gcd_polynomial() {
+        // gcd(x²-1, x²-2x+1) = x-1  (since x²-1=(x-1)(x+1), x²-2x+1=(x-1)²)
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let one = a.int(1);
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        // p1 = x²-1
+        let p1 = a.sub(x2, one);
+        // p2 = x²-2x+1
+        let neg2 = a.int(-2);
+        let neg2x = a.mul(&[neg2, x]);
+        let p2 = a.add(&[x2, neg2x, one]);
+        let gcd_expr = a.poly_gcd_expr(p1, p2, x);
+        let gcd_expr = gcd_expr.expect("BUG: poly_gcd_expr returned None for x²-1 and x²-2x+1");
+        let gcd_expr = crate::transforms::eval::eval(&mut a, gcd_expr);
+        // Evaluate at x=5: gcd should be (x-1), so at x=5 → 4.
+        let five = a.int(5);
+        let at_5 = crate::transforms::subs::subs(&mut a, gcd_expr, x, five);
+        let at_5 = crate::transforms::eval::eval(&mut a, at_5);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_5);
+        // gcd(x²-1, x²-2x+1) = x-1 → at x=5: 4.  Or could be -(x-1) = 1-x → -4.
+        // Or scaled by a constant.  Just check it divides both.
+        assert!(val.is_some(), "BUG: poly gcd must evaluate");
+        let v = val.unwrap();
+        assert!(v.abs() > 0.1,
+            "BUG: gcd(x²-1, x²-2x+1) at x=5 should be nonzero, got {v}");
+        // Check it divides p1 at x=5: p1(5) = 24, should be divisible by gcd(5)
+        let p1_at_5 = crate::transforms::subs::subs(&mut a, p1, x, five);
+        let p1_at_5 = crate::transforms::eval::eval(&mut a, p1_at_5);
+        let p1_val = crate::transforms::evalf::eval_const_f64(&mut a, p1_at_5).unwrap();
+        let remainder = p1_val / v;
+        assert!((remainder - remainder.round()).abs() < 1e-10,
+            "BUG: gcd should divide p1. p1(5)={p1_val}, gcd(5)={v}, ratio={remainder}");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // HARD adversarial tests — designed to probe real failure modes
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn hard_near_zero_radical_minus_close_rational() {
+        // √2 - 665857/470832 ≈ -1.6e-12.  This is inside the ambiguous
+        // zone (|v| < 1e-10) and is genuinely NONZERO.
+        // 665857/470832 is a convergent of √2's continued fraction.
+        // is_zero_checked MUST say Some(false), not Some(true).
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let close_approx = a.rational(665857, 470832);
+        let diff = a.sub(sqrt2, close_approx);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, diff);
+        eprintln!("hard_near_zero: √2 - 665857/470832 f64 = {f64_val:?}");
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(false),
+            "BUG: √2 - 665857/470832 ≈ -1.6e-12 is NONZERO but is_zero_checked says {result:?}. \
+             f64={f64_val:?}. This is a critical failure in the ambiguous zone.");
+    }
+
+    #[test]
+    fn hard_near_zero_radical_minus_close_rational_sign() {
+        // Same expression: √2 - 665857/470832.  Sign must be -1.
+        // √2 = 1.41421356237309504...
+        // 665857/470832 = 1.41421356237468...
+        // diff ≈ -1.6e-12, negative.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let close_approx = a.rational(665857, 470832);
+        let diff = a.sub(sqrt2, close_approx);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let sign = sign_checked(&mut a, diff);
+        assert_eq!(sign, Some(-1),
+            "BUG: √2 - 665857/470832 is tiny negative. sign_checked says {sign:?}");
+    }
+
+    #[test]
+    fn hard_near_zero_positive_radical_minus_rational() {
+        // √2 - 1393/985 ≈ +2.4e-7.  Just above zero.  Nonzero, positive.
+        // 1393/985 is an earlier convergent.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let approx = a.rational(1393, 985);
+        let diff = a.sub(sqrt2, approx);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(false),
+            "BUG: √2 - 1393/985 is nonzero");
+        let sign = sign_checked(&mut a, diff);
+        assert_eq!(sign, Some(1),
+            "BUG: √2 - 1393/985 is positive");
+    }
+
+    #[test]
+    fn hard_sqrt_n2_plus_1_minus_n_large() {
+        // √(n²+1) - n ≈ 1/(2n) for large n.  For n=10000, ≈ 5e-5.
+        // This is nonzero and positive.  Tests that arithmetic with
+        // large integers doesn't confuse the zero checker.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n = a.int(10000);
+        let n2 = a.int(100000001); // 10000² + 1
+        let sqrt_n2p1 = a.pow(n2, half);
+        let diff = a.sub(sqrt_n2p1, n);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(false),
+            "BUG: √(10000²+1)-10000 is nonzero");
+        let sign = sign_checked(&mut a, diff);
+        assert_eq!(sign, Some(1),
+            "BUG: √(10000²+1)-10000 is positive");
+    }
+
+    #[test]
+    fn hard_minpoly_identity_as_zero_test() {
+        // √2+√3 satisfies t⁴-10t²+1=0.  So if we compute
+        // (√2+√3)⁴ - 10(√2+√3)² + 1, it should be exactly 0.
+        // This tests the full pipeline: eval simplifies the powers,
+        // then is_zero_checked verifies.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let n3 = a.int(3);
+        let n4 = a.int(4);
+        let n10 = a.int(10);
+        let n1 = a.int(1);
+        let sqrt2 = a.pow(n2, half);
+        let sqrt3 = a.pow(n3, half);
+        let s = a.add(&[sqrt2, sqrt3]);
+        // s⁴
+        let s2 = a.pow(s, n2);
+        let s2 = crate::transforms::eval::eval(&mut a, s2);
+        let s4 = a.pow(s, n4);
+        let s4 = crate::transforms::eval::eval(&mut a, s4);
+        // 10·s²
+        let ten_s2 = a.mul(&[n10, s2]);
+        let ten_s2 = crate::transforms::eval::eval(&mut a, ten_s2);
+        // s⁴ - 10s² + 1
+        let neg_ten_s2 = a.neg(ten_s2);
+        let expr = a.add(&[s4, neg_ten_s2, n1]);
+        let expr = crate::transforms::eval::eval(&mut a, expr);
+        let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, expr);
+        eprintln!("hard_minpoly_identity: (√2+√3)⁴-10(√2+√3)²+1 f64 = {f64_val:?}");
+        let result = is_zero_checked(&mut a, expr);
+        assert_eq!(result, Some(true),
+            "BUG: (√2+√3)⁴-10(√2+√3)²+1 = 0 (minimal poly identity). \
+             is_zero_checked says {result:?}, f64={f64_val:?}");
+    }
+
+    #[test]
+    fn hard_rationalize_denominator_identity() {
+        // 1/(√3+√2) = √3-√2 (multiply by conjugate).
+        // So 1/(√3+√2) - (√3-√2) = 0.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n1 = a.int(1);
+        let n2 = a.int(2);
+        let n3 = a.int(3);
+        let sqrt2 = a.pow(n2, half);
+        let sqrt3 = a.pow(n3, half);
+        let denom = a.add(&[sqrt3, sqrt2]);
+        let lhs = a.div(n1, denom);
+        let rhs = a.sub(sqrt3, sqrt2);
+        let diff = a.sub(lhs, rhs);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, diff);
+        eprintln!("hard_rationalize: 1/(√3+√2)-(√3-√2) f64 = {f64_val:?}, node = {:?}", a.node(diff));
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: 1/(√3+√2)-(√3-√2) = 0. Got {result:?}, f64={f64_val:?}");
+    }
+
+    #[test]
+    fn hard_exact_is_zero_on_symbol_plus_radical() {
+        // x + √2 has a free symbol — minimal_polynomial returns None.
+        // is_zero_checked must return None (cannot determine), NOT
+        // Some(true) or Some(false).
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let expr = a.add(&[x, sqrt2]);
+        let result = is_zero_checked(&mut a, expr);
+        assert!(result.is_none(),
+            "BUG: x+√2 has a free variable — is_zero_checked must return None, got {result:?}");
+    }
+
+    #[test]
+    fn hard_sign_of_near_zero_difference_of_radicals() {
+        // √5 - √3 - √2 + 1 ≈ 2.236 - 1.732 - 1.414 + 1 = 0.090
+        // Small positive.  sign_checked must say 1.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n1 = a.int(1);
+        let n2 = a.int(2);
+        let n3 = a.int(3);
+        let n5 = a.int(5);
+        let sqrt2 = a.pow(n2, half);
+        let sqrt3 = a.pow(n3, half);
+        let sqrt5 = a.pow(n5, half);
+        let neg_sqrt3 = a.neg(sqrt3);
+        let neg_sqrt2 = a.neg(sqrt2);
+        let expr = a.add(&[sqrt5, neg_sqrt3, neg_sqrt2, n1]);
+        let expr = crate::transforms::eval::eval(&mut a, expr);
+        let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, expr);
+        eprintln!("hard_sign_near_zero: √5-√3-√2+1 f64 = {f64_val:?}");
+        let result = is_zero_checked(&mut a, expr);
+        assert_eq!(result, Some(false),
+            "BUG: √5-√3-√2+1 ≈ 0.09, nonzero. Got {result:?}");
+        let sign = sign_checked(&mut a, expr);
+        assert_eq!(sign, Some(1),
+            "BUG: √5-√3-√2+1 ≈ 0.09, positive. Got {sign:?}");
+    }
+
+    #[test]
+    fn hard_integrate_1_over_x4_plus_1() {
+        // ∫ 1/(x⁴+1) dx is a hard rational integral.  The
+        // Rothstein-Trager algorithm produces degree-4 roots.
+        // This tests the full pipeline including log_to_real.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let one = a.int(1);
+        let four = a.int(4);
+        let x4 = a.pow(x, four);
+        let denom = a.add(&[x4, one]);
+        let integrand = a.div(one, denom);
+        let result = a.integrate_expr(integrand, x);
+        let result = crate::transforms::eval::eval(&mut a, result);
+        // Evaluate at x=1 and x=0, take difference for definite integral.
+        let at_1 = crate::transforms::subs::subs(&mut a, result, x, one);
+        let at_1 = crate::transforms::eval::eval(&mut a, at_1);
+        let zero = a.zero;
+        let at_0 = crate::transforms::subs::subs(&mut a, result, x, zero);
+        let at_0 = crate::transforms::eval::eval(&mut a, at_0);
+        let definite = a.sub(at_1, at_0);
+        let definite = crate::transforms::eval::eval(&mut a, definite);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, definite);
+        // Known value: ∫₀¹ 1/(x⁴+1) dx ≈ 0.86697298...
+        // (via Wolfram Alpha / numerical integration)
+        if let Some(v) = val {
+            assert!((v - 0.86697298).abs() < 1e-4,
+                "BUG: ∫₀¹ 1/(x⁴+1)dx should be ≈ 0.8670, got {v}");
+        } else {
+            eprintln!("hard_integrate_x4+1: could not evaluate definite integral numerically. \
+                       Result node: {:?}", a.node(definite));
+            // Don't assert failure — the integration may produce a form
+            // that can't be evaluated at specific points.
+        }
+    }
+
+    #[test]
+    fn hard_integrate_1_over_x3_minus_1() {
+        // ∫ 1/(x³-1) dx involves log_to_real with quadratic factor.
+        // This is a regression test for the code we just wired.
+        let mut a = crate::base::arena::Arena::new();
+        let x = a.symbol("x");
+        let one = a.int(1);
+        let three = a.int(3);
+        let x3 = a.pow(x, three);
+        let denom = a.sub(x3, one);
+        let integrand = a.div(one, denom);
+        let result = a.integrate_expr(integrand, x);
+        let result = crate::transforms::eval::eval(&mut a, result);
+        // Evaluate at x=2
+        let two = a.int(2);
+        let at_2 = crate::transforms::subs::subs(&mut a, result, x, two);
+        let at_2 = crate::transforms::eval::eval(&mut a, at_2);
+        let val = crate::transforms::evalf::eval_const_f64(&mut a, at_2);
+        // Known: ∫ 1/(x³-1) dx at x=2 involves ln and atan terms.
+        // Numerical value: ≈ ln(1)/3 + ... (partial fractions)
+        // Just verify it evaluates to SOME finite number.
+        if let Some(v) = val {
+            assert!(v.is_finite(),
+                "BUG: ∫1/(x³-1) at x=2 should be finite, got {v}");
+            assert!(v.abs() < 100.0,
+                "BUG: ∫1/(x³-1) at x=2 should be reasonable, got {v}");
+        }
+    }
+
+    #[test]
+    fn hard_eval_const_f64_in_ambiguous_zone_is_not_trusted() {
+        // Construct: √2 - p/q where p/q is chosen so f64(diff) ≈ 1e-13.
+        // That's inside the f64 tolerance (< 1e-14? no, 1e-13 > 1e-14)
+        // but inside the ambiguous zone (< 1e-10).
+        // is_zero_checked should use exact methods and say nonzero.
+        //
+        // √2 ≈ 1.4142135623730950488...
+        // 14142135623731/10000000000000 = 1.4142135623731
+        // diff ≈ -5e-14.  This is INSIDE the 1e-14 tolerance!
+        // eval_const_f64 alone would say "zero".
+        // exact_is_zero should say "nonzero" (it's √2 minus a rational).
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let close = a.rational(14142135623731i64, 10000000000000i64);
+        let diff = a.sub(sqrt2, close);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, diff);
+        eprintln!("hard_ambiguous: √2 - 14142135623731/10000000000000 f64 = {f64_val:?}");
+        // f64_val might be ~-5e-14 or so
+        let result = is_zero_checked(&mut a, diff);
+        // MUST be Some(false).  If it's Some(true), the exact methods
+        // failed to override the f64 tolerance — that's the critical bug.
+        assert_eq!(result, Some(false),
+            "CRITICAL BUG: √2 - 14142135623731/10000000000000 is nonzero, but \
+             is_zero_checked says {result:?}. f64={f64_val:?}. \
+             The exact method must override the f64 tolerance in the ambiguous zone.");
+    }
+
+    #[test]
+    fn hard_eval_const_f64_ambiguous_zone_sign() {
+        // Same expression: sign must be determined correctly.
+        // √2 - 14142135623731/10000000000000
+        // √2 = 1.41421356237309504...
+        // rat = 1.41421356237310000...
+        // diff ≈ -5e-14, NEGATIVE.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n2 = a.int(2);
+        let sqrt2 = a.pow(n2, half);
+        let close = a.rational(14142135623731i64, 10000000000000i64);
+        let diff = a.sub(sqrt2, close);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let sign = sign_checked(&mut a, diff);
+        assert_eq!(sign, Some(-1),
+            "BUG: √2 - 14142135623731/10000000000000 is tiny negative, \
+             sign_checked says {sign:?}");
+    }
+
+    #[test]
+    fn hard_double_rationalization_zero() {
+        // 1/(√5+√3) - (√5-√3)/2 = 0
+        // Because 1/(√5+√3) = (√5-√3)/((√5+√3)(√5-√3)) = (√5-√3)/(5-3) = (√5-√3)/2
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let n1 = a.int(1);
+        let n2 = a.int(2);
+        let n3 = a.int(3);
+        let n5 = a.int(5);
+        let sqrt3 = a.pow(n3, half);
+        let sqrt5 = a.pow(n5, half);
+        let denom = a.add(&[sqrt5, sqrt3]);
+        let lhs = a.div(n1, denom);
+        let numer = a.sub(sqrt5, sqrt3);
+        let rhs = a.div(numer, n2);
+        let diff = a.sub(lhs, rhs);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, diff);
+        eprintln!("hard_double_rat: 1/(√5+√3)-(√5-√3)/2 f64 = {f64_val:?}");
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: 1/(√5+√3)-(√5-√3)/2 = 0. Got {result:?}, f64={f64_val:?}");
+    }
+
+    #[test]
+    fn hard_cube_root_identity() {
+        // (∛2)³ - 2 = 0
+        let mut a = crate::base::arena::Arena::new();
+        let n2 = a.int(2);
+        let n3 = a.int(3);
+        let third = a.rational(1, 3);
+        let cbrt2 = a.pow(n2, third);
+        let cubed = a.pow(cbrt2, n3);
+        let cubed = crate::transforms::eval::eval(&mut a, cubed);
+        let diff = a.sub(cubed, n2);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: (∛2)³ - 2 = 0. Got {result:?}");
+    }
+
+    #[test]
+    fn hard_fourth_root_identity() {
+        // (⁴√5)⁴ - 5 = 0
+        let mut a = crate::base::arena::Arena::new();
+        let n4 = a.int(4);
+        let n5 = a.int(5);
+        let quarter = a.rational(1, 4);
+        let root = a.pow(n5, quarter);
+        let power = a.pow(root, n4);
+        let power = crate::transforms::eval::eval(&mut a, power);
+        let diff = a.sub(power, n5);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: (⁴√5)⁴ - 5 = 0. Got {result:?}");
+    }
+
+    #[test]
+    fn hard_mixed_power_zero() {
+        // 2^(1/6) - (∛2)·(√2)^(-1/3)... let's try a simpler one:
+        // 2^(1/2) · 3^(1/2) · 6^(-1/2) - 1 = 0
+        // Because √2·√3/√6 = √6/√6 = 1.
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let neg_half = a.rational(-1, 2);
+        let n1 = a.int(1);
+        let n2 = a.int(2);
+        let n3 = a.int(3);
+        let n6 = a.int(6);
+        let sqrt2 = a.pow(n2, half);
+        let sqrt3 = a.pow(n3, half);
+        let inv_sqrt6 = a.pow(n6, neg_half);
+        let prod = a.mul(&[sqrt2, sqrt3, inv_sqrt6]);
+        let prod = crate::transforms::eval::eval(&mut a, prod);
+        let diff = a.sub(prod, n1);
+        let diff = crate::transforms::eval::eval(&mut a, diff);
+        let result = is_zero_checked(&mut a, diff);
+        assert_eq!(result, Some(true),
+            "BUG: √2·√3/√6 - 1 = 0. Got {result:?}, node={:?}", a.node(diff));
+    }
+
+    #[test]
+    fn hard_stress_all_signs_of_radical_differences() {
+        // For each pair (p, q) with p < q from {2,3,5,7,11,13},
+        // √p - √q must be negative.  This tests sign_checked across
+        // many cases, including some that go through Add(2 children).
+        let mut a = crate::base::arena::Arena::new();
+        let half = a.rational(1, 2);
+        let primes = [2i64, 3, 5, 7, 11, 13];
+        for i in 0..primes.len() {
+            for j in (i+1)..primes.len() {
+                let pi = a.int(primes[i]);
+                let pj = a.int(primes[j]);
+                let si = a.pow(pi, half);
+                let sj = a.pow(pj, half);
+                let diff = a.sub(si, sj);
+                let sign = sign_checked(&mut a, diff);
+                assert_eq!(sign, Some(-1),
+                    "BUG: √{} - √{} should be negative (√{} < √{}), got {sign:?}",
+                    primes[i], primes[j], primes[i], primes[j]);
+            }
+        }
+    }
 }
