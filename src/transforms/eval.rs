@@ -1034,6 +1034,14 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 {
                     tracing::debug!("eval: RootSum expanded via rootsum_doit");
                     expanded
+                } else if let Some(rational_val) =
+                    crate::calculus::risch::log_to_real::vieta_rootsum_poly_body(arena, poly, body, sumvar)
+                {
+                    // Body is a polynomial in sumvar — Vieta's formulas give
+                    // the exact rational sum without finding roots.
+                    tracing::debug!("eval: RootSum evaluated via Vieta's formulas");
+                    let num_id = arena.intern_num(rational_val);
+                    arena.intern(ExprNode::Num(num_id))
                 } else {
                     // Can't expand — rebuild with evaluated children.
                     arena.intern(ExprNode::RootSum(poly, body, sumvar))

@@ -6,26 +6,30 @@
 //!
 //! # Production Status
 //!
-//! **This module is tested infrastructure, not yet wired into production
-//! code paths.** The core arithmetic (`AlgNum` Ring/Field) and sign testing
-//! (Sturm sequences) are proven correct. However, the [`minimal_polynomial`]
-//! function's irreducible factor selection (`pick_factor_by_numerical_eval`)
-//! uses a **heuristic** (smallest-degree factor) that is not guaranteed to
-//! choose the correct factor for compound expressions like `√2 + √3`.
+//! **This module is wired into production code.**  The standalone functions
+//! [`is_zero_checked`] and [`sign_checked`] are used in `log_to_real.rs`
+//! and `integrate.rs` for zero/sign testing of algebraic constant
+//! expressions.  They use a cross-checked strategy:
 //!
-//! **Until factor selection is made rigorous**, the production code continues
-//! to use [`eval_const_f64`](crate::transforms::evalf::eval_const_f64) with
-//! `1e-14` tolerance for zero/sign testing.  This is reliable for all cases
-//! arising from integration (where algebraic numbers have well-separated
-//! roots from small-integer polynomials).
+//! - **Primary**: [`eval_const_f64`](crate::transforms::evalf::eval_const_f64)
+//!   (fast, battle-tested).
+//! - **Fallback**: [`exact_is_zero`] / [`exact_sign`] (Sturm-based) when
+//!   the f64 value is within `1e-10` of zero (the ambiguous zone).
+//! - **Cross-check**: if both methods produce a result and disagree, a
+//!   warning is logged and the exact answer is trusted.
 //!
-//! **To make this production-ready:**
-//! 1. Fix `pick_factor_by_numerical_eval` to evaluate the target expression
-//!    at high precision and reliably select the vanishing factor
-//! 2. Add cross-validation tests: verify `exact_is_zero` agrees with
-//!    `eval_const_f64` for all integration test cases
-//! 3. Wire `exact_is_zero`/`exact_sign` into `log_to_real.rs` and
-//!    `integrate.rs` with cross-checking against `eval_const_f64`
+//! The [`AlgNum`] struct (Ring/Field arithmetic in ℚ(α)) is tested
+//! infrastructure not yet used in production, but available for future
+//! use (e.g., exact simplification of nested radicals).
+//!
+//! ## Completed milestones
+//!
+//! 1. ✅ `pick_factor_by_numerical_eval` evaluates the target expression
+//!    via `eval_const_f64` and selects the vanishing irreducible factor
+//! 2. ✅ Cross-validation tests verify `is_zero_checked`/`sign_checked`
+//!    agree with `eval_const_f64` for integration-relevant expressions
+//! 3. ✅ `is_zero_checked`/`sign_checked` wired into `log_to_real.rs`
+//!    and `integrate.rs` with cross-checking against `eval_const_f64`
 //!
 //! # Arithmetic
 //!
@@ -549,7 +553,7 @@ fn cauchy_bound(p: &Poly) -> Ratio<BigInt> {
 ///
 /// - SymPy `polys/numberfields/minpoly.py::_minpoly_compose`
 pub fn minimal_polynomial(
-    arena: &crate::base::arena::Arena,
+    arena: &mut crate::base::arena::Arena,
     expr: crate::base::node::ExprId,
 ) -> Option<Poly> {
     use crate::base::node::ExprNode;
@@ -619,9 +623,9 @@ pub fn minimal_polynomial(
             for &child in &children[1..] {
                 let child_mp = minimal_polynomial(arena, child)?;
                 acc_mp = minpoly_add(&acc_mp, &child_mp, arena, acc_expr, child)?;
-                // We don't have a simple arena expr for the accumulator,
-                // but we can approximate numerically for factor selection.
-                acc_expr = child; // This is a simplification; factor selection uses numerical eval.
+                // Build the running sum expression so that factor selection
+                // evaluates the correct combined value (a+b, then a+b+c, etc.).
+                acc_expr = arena.add(&[acc_expr, child]);
             }
             Some(acc_mp)
         }
@@ -629,13 +633,13 @@ pub fn minimal_polynomial(
         // Multiplication: min_poly(a * b) via resultant
         ExprNode::Mul(ref children) if children.len() == 2 => {
             // Check if one factor is rational.
-            if let Some(r) = arena.as_num(children[0]) {
+            if let Some(r) = arena.as_num(children[0]).cloned() {
                 let mp_b = minimal_polynomial(arena, children[1])?;
-                return Some(minpoly_rational_mul(&mp_b, r));
+                return Some(minpoly_rational_mul(&mp_b, &r));
             }
-            if let Some(r) = arena.as_num(children[1]) {
+            if let Some(r) = arena.as_num(children[1]).cloned() {
                 let mp_a = minimal_polynomial(arena, children[0])?;
-                return Some(minpoly_rational_mul(&mp_a, r));
+                return Some(minpoly_rational_mul(&mp_a, &r));
             }
             let mp_a = minimal_polynomial(arena, children[0])?;
             let mp_b = minimal_polynomial(arena, children[1])?;
@@ -658,10 +662,14 @@ pub fn minimal_polynomial(
                 return Some(Poly::from_coeffs(vec![-rational_coeff, rat(1, 1)]));
             }
             // Compute min_poly for the symbolic product.
-            let mut acc_mp = minimal_polynomial(arena, symbolic[0])?;
+            let mut acc_expr = symbolic[0];
+            let mut acc_mp = minimal_polynomial(arena, acc_expr)?;
             for &child in &symbolic[1..] {
                 let child_mp = minimal_polynomial(arena, child)?;
-                acc_mp = minpoly_mul(&acc_mp, &child_mp, arena, symbolic[0], child)?;
+                acc_mp = minpoly_mul(&acc_mp, &child_mp, arena, acc_expr, child)?;
+                // Build the running product expression so that factor selection
+                // evaluates the correct combined value (a·b, then a·b·c, etc.).
+                acc_expr = arena.mul(&[acc_expr, child]);
             }
             // Scale by rational coefficient: if α has min_poly m(t),
             // then r·α has min_poly m(t/r) (with appropriate scaling).
@@ -686,7 +694,7 @@ pub fn minimal_polynomial(
 fn minpoly_add(
     mp_a: &Poly,
     mp_b: &Poly,
-    arena: &crate::base::arena::Arena,
+    arena: &mut crate::base::arena::Arena,
     expr_a: crate::base::node::ExprId,
     expr_b: crate::base::node::ExprId,
 ) -> Option<Poly> {
@@ -733,7 +741,7 @@ fn minpoly_add(
 fn minpoly_mul(
     mp_a: &Poly,
     mp_b: &Poly,
-    arena: &crate::base::arena::Arena,
+    arena: &mut crate::base::arena::Arena,
     expr_a: crate::base::node::ExprId,
     expr_b: crate::base::node::ExprId,
 ) -> Option<Poly> {
@@ -829,21 +837,45 @@ pub fn exact_is_zero(
 
     // m(0) = 0, so 0 is a root of m.  But is the EXPRESSION equal to 0,
     // or is it a different root of m?
-    // Check numerically.
+    // Use numerical approximation + Sturm root isolation to determine
+    // which root of m the expression corresponds to.
     let approx = crate::transforms::evalf::eval_const_f64(arena, expr)?;
+
+    // Fast path: if numerically far from zero, it's a different root of m.
     if approx.abs() > 1e-10 {
-        // The expression is numerically far from 0, even though m(0) = 0.
-        // This means the expression corresponds to a different root of m.
         tracing::trace!("exact_is_zero: m(0)=0 but |expr|={approx} > 1e-10 → nonzero root");
         return Some(false);
     }
 
-    // Numerically very close to 0 and m(0) = 0.  This is strong evidence
-    // that the expression IS zero.  For rigorous certainty, we'd isolate
-    // the roots of m and check which one the expression corresponds to.
-    // For now, return true (this is correct for all practical cases from
-    // integration, where the algebraic numbers have well-separated roots).
-    tracing::trace!("exact_is_zero: m(0)=0 and |expr| < 1e-10 → zero");
+    // Numerically near zero.  Use Sturm root isolation to rigorously verify.
+    // Isolate the root of m nearest to the numerical approximation.
+    if let Some(interval) = isolate_root_near(&mp, approx) {
+        // If the interval is entirely positive or entirely negative,
+        // the expression corresponds to a nonzero root.
+        if interval.0.is_positive() || interval.1.is_negative() {
+            tracing::trace!("exact_is_zero: isolated root interval excludes 0 → nonzero");
+            return Some(false);
+        }
+        // Interval straddles zero.  Check that 0 is the only root in it.
+        let chain = SturmChain::new(&mp);
+        let zero_rat = rat(0, 1);
+        let roots_in_neg = chain.count_roots_in(&interval.0, &zero_rat);
+        let roots_in_pos = chain.count_roots_in(&zero_rat, &interval.1);
+        if roots_in_neg == 0 && roots_in_pos == 0 {
+            // 0 is the only root in this interval — expression is zero.
+            tracing::trace!("exact_is_zero: isolated interval contains only 0 → zero");
+            return Some(true);
+        }
+        // Other roots share the interval with 0 — cannot fully resolve
+        // via isolation alone.  Fall through to numerical heuristic.
+        tracing::trace!(
+            "exact_is_zero: interval has roots besides 0, relying on numerical approx"
+        );
+    }
+
+    // Fallback: trust the numerical approximation (correct for all practical
+    // cases from integration, where algebraic numbers have well-separated roots).
+    tracing::trace!("exact_is_zero: m(0)=0 and |expr| < 1e-10 → zero (numerical fallback)");
     Some(true)
 }
 
@@ -916,6 +948,142 @@ pub fn exact_sign(
             } else {
                 Some(-1)
             }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Production cross-checked zero / sign tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Cross-checked zero test for production use.
+///
+/// **Primary**: `eval_const_f64` (fast, battle-tested).
+/// **Fallback**: `exact_is_zero` (Sturm-based) when the f64 value is
+/// ambiguous (within `1e-10` of zero).
+///
+/// If both methods produce a result and they **disagree**, a warning is
+/// logged and the `eval_const_f64` result is trusted.
+///
+/// Returns `Some(true)` if zero, `Some(false)` if nonzero, `None` if
+/// the test is inconclusive.
+pub fn is_zero_checked(
+    arena: &mut crate::base::arena::Arena,
+    expr: crate::base::node::ExprId,
+) -> Option<bool> {
+    // Quick structural check.
+    if expr == arena.zero {
+        return Some(true);
+    }
+    if let Some(r) = arena.as_num(expr) {
+        return Some(r.is_zero());
+    }
+
+    // Primary: numerical evaluation.
+    let f64_val = crate::transforms::evalf::eval_const_f64(arena, expr);
+
+    match f64_val {
+        Some(v) if v.abs() >= 1e-10 => {
+            // Clearly nonzero — no need for exact methods.
+            Some(false)
+        }
+        Some(v) => {
+            // Ambiguous zone: |v| < 1e-10.  Try exact method.
+            let f64_says_zero = v.abs() < 1e-14;
+            match exact_is_zero(arena, expr) {
+                Some(exact_answer) => {
+                    if exact_answer != f64_says_zero {
+                        tracing::warn!(
+                            f64_val = v,
+                            exact_answer,
+                            "is_zero_checked: eval_const_f64 and exact_is_zero DISAGREE — trusting exact"
+                        );
+                    }
+                    // In the ambiguous zone, trust the exact answer when available.
+                    Some(exact_answer)
+                }
+                None => {
+                    // Exact method inconclusive — fall back to f64 tolerance.
+                    tracing::trace!(
+                        f64_val = v,
+                        "is_zero_checked: exact_is_zero returned None, using f64 tolerance"
+                    );
+                    Some(f64_says_zero)
+                }
+            }
+        }
+        None => {
+            // eval_const_f64 failed entirely — try exact method alone.
+            exact_is_zero(arena, expr)
+        }
+    }
+}
+
+/// Cross-checked sign test for production use.
+///
+/// **Primary**: `eval_const_f64` (fast, battle-tested).
+/// **Fallback**: `exact_sign` (Sturm-based) when the f64 value is
+/// ambiguous (within `1e-10` of zero).
+///
+/// Returns `Some(1)` for positive, `Some(-1)` for negative, `Some(0)`
+/// for zero, or `None` if inconclusive.
+pub fn sign_checked(
+    arena: &mut crate::base::arena::Arena,
+    expr: crate::base::node::ExprId,
+) -> Option<i8> {
+    // Quick structural check.
+    if expr == arena.zero {
+        return Some(0);
+    }
+    if let Some(r) = arena.as_num(expr) {
+        return Some(if r.is_positive() {
+            1
+        } else if r.is_negative() {
+            -1
+        } else {
+            0
+        });
+    }
+
+    // Primary: numerical evaluation.
+    let f64_val = crate::transforms::evalf::eval_const_f64(arena, expr);
+
+    match f64_val {
+        Some(v) if v > 1e-10 => Some(1),
+        Some(v) if v < -1e-10 => Some(-1),
+        Some(v) => {
+            // Ambiguous zone: |v| < 1e-10.  Try exact method.
+            let f64_sign: i8 = if v > 1e-14 {
+                1
+            } else if v < -1e-14 {
+                -1
+            } else {
+                0
+            };
+            match exact_sign(arena, expr) {
+                Some(exact_answer) => {
+                    if exact_answer != f64_sign {
+                        tracing::warn!(
+                            f64_val = v,
+                            exact_sign = exact_answer,
+                            f64_sign,
+                            "sign_checked: eval_const_f64 and exact_sign DISAGREE — trusting exact"
+                        );
+                    }
+                    Some(exact_answer)
+                }
+                None => {
+                    tracing::trace!(
+                        f64_val = v,
+                        "sign_checked: exact_sign returned None, using f64"
+                    );
+                    Some(f64_sign)
+                }
+            }
+        }
+        None => {
+            // eval_const_f64 failed — try exact method alone.
+            exact_sign(arena, expr)
         }
     }
 }
@@ -997,7 +1165,7 @@ fn reciprocal_scale(p: &Poly, x_val: &Ratio<BigInt>) -> Poly {
 /// root matches the numerical value of the combined expression.
 fn pick_factor_by_numerical_eval(
     r_poly: &Poly,
-    _arena: &crate::base::arena::Arena,
+    arena: &mut crate::base::arena::Arena,
     expr_a: crate::base::node::ExprId,
     expr_b: Option<crate::base::node::ExprId>,
     is_addition: bool,
@@ -1010,32 +1178,47 @@ fn pick_factor_by_numerical_eval(
         return Some(factors[0].0.make_monic());
     }
 
-    // Compute numerical value of the combined expression.
-    // We need a mutable arena for eval_const_f64, but we only have &Arena here.
-    // Use a workaround: evaluate each sub-expression separately.
-    // Since we can't call eval_const_f64 with &Arena, we use a simpler approach:
-    // evaluate each factor at the numerical approximation and pick the one
-    // closest to zero.
-    //
-    // We compute the numerical target from the roots of the minimal polynomials.
-    let a_roots = super::roots::aberth_roots(&factors[0].0.make_monic(), 128, 100);
-    if a_roots.is_empty() && factors.len() > 1 {
-        // Try a different approach: just return the first factor.
-        // This is a heuristic — for rigorous correctness we'd need numerical eval.
-        return Some(factors[0].0.make_monic());
-    }
+    // Compute the numerical value of the combined expression (a+b or a*b)
+    // using eval_const_f64, then evaluate each irreducible factor at that
+    // value and pick the one closest to zero — the vanishing factor is the
+    // minimal polynomial.
+    let target_f64 = if let Some(eb) = expr_b {
+        let combined = if is_addition {
+            arena.add(&[expr_a, eb])
+        } else {
+            arena.mul(&[expr_a, eb])
+        };
+        crate::transforms::evalf::eval_const_f64(arena, combined)
+    } else {
+        crate::transforms::evalf::eval_const_f64(arena, expr_a)
+    };
 
-    // For now, return the factor of smallest degree as a heuristic.
-    // A full implementation would evaluate the expression numerically
-    // and pick the factor vanishing at that value.
-    let mut best = &factors[0];
-    for factor in &factors[1..] {
-        if factor.0.degree().unwrap_or(usize::MAX) < best.0.degree().unwrap_or(usize::MAX) {
-            best = factor;
+    if let Some(target) = target_f64 {
+        let target_rat = f64_to_rational_approx(target);
+        let mut best_factor = &factors[0].0;
+        let mut best_val = factors[0].0.eval(&target_rat).abs();
+
+        for (factor, _) in &factors[1..] {
+            let val = factor.eval(&target_rat).abs();
+            if val < best_val {
+                best_factor = factor;
+                best_val = val;
+            }
         }
+        Some(best_factor.make_monic())
+    } else {
+        // Numerical evaluation failed — fall back to smallest-degree heuristic.
+        tracing::debug!(
+            "pick_factor_by_numerical_eval: eval_const_f64 failed, using degree heuristic"
+        );
+        let mut best = &factors[0];
+        for factor in &factors[1..] {
+            if factor.0.degree().unwrap_or(usize::MAX) < best.0.degree().unwrap_or(usize::MAX) {
+                best = factor;
+            }
+        }
+        Some(best.0.make_monic())
     }
-    let _ = (expr_a, expr_b, is_addition, a_roots); // suppress unused warnings
-    Some(best.0.make_monic())
 }
 
 /// Pick the irreducible factor of `mp` that contains the root `base^exp`.
@@ -1295,7 +1478,7 @@ mod tests {
     fn minpoly_rational() {
         let mut arena = crate::base::arena::Arena::new();
         let expr = arena.rational(3, 4);
-        let mp = minimal_polynomial(&arena, expr).unwrap();
+        let mp = minimal_polynomial(&mut arena, expr).unwrap();
         // min_poly of 3/4 is t - 3/4, but we return monic integer-coeff form:
         // 4t - 3 → monic: t - 3/4
         assert_eq!(mp.degree(), Some(1));
@@ -1308,7 +1491,7 @@ mod tests {
         let two = arena.int(2);
         let half = arena.rational(1, 2);
         let sqrt2 = arena.pow(two, half);
-        let mp = minimal_polynomial(&arena, sqrt2).unwrap();
+        let mp = minimal_polynomial(&mut arena, sqrt2).unwrap();
         assert_eq!(mp.degree(), Some(2));
         // Should be t² - 2
         assert_eq!(mp.coeff(0), r(-2, 1));
@@ -1321,7 +1504,7 @@ mod tests {
         let two = arena.int(2);
         let third = arena.rational(1, 3);
         let cbrt2 = arena.pow(two, third);
-        let mp = minimal_polynomial(&arena, cbrt2).unwrap();
+        let mp = minimal_polynomial(&mut arena, cbrt2).unwrap();
         assert_eq!(mp.degree(), Some(3));
         // Should be t³ - 2
         assert_eq!(mp.coeff(0), r(-2, 1));
@@ -1330,9 +1513,9 @@ mod tests {
 
     #[test]
     fn minpoly_imaginary_unit() {
-        let arena = crate::base::arena::Arena::new();
+        let mut arena = crate::base::arena::Arena::new();
         let i_unit = arena.i_unit;
-        let mp = minimal_polynomial(&arena, i_unit).unwrap();
+        let mp = minimal_polynomial(&mut arena, i_unit).unwrap();
         assert_eq!(mp.degree(), Some(2));
         // t² + 1
         assert_eq!(mp.coeff(0), r(1, 1));
@@ -1391,5 +1574,938 @@ mod tests {
         let mut arena = crate::base::arena::Arena::new();
         let zero = arena.zero;
         assert_eq!(exact_sign(&mut arena, zero), Some(0));
+    }
+
+    // ── Cross-validation: is_zero_checked / sign_checked vs eval_const_f64 ──
+
+    /// Helper: assert that `is_zero_checked` agrees with `eval_const_f64`
+    /// for the given expression.
+    fn assert_zero_check_agrees(arena: &mut crate::base::arena::Arena, expr: crate::base::node::ExprId, label: &str) {
+        let f64_val = crate::transforms::evalf::eval_const_f64(arena, expr);
+        let checked = is_zero_checked(arena, expr);
+        let f64_says_zero = f64_val.map(|v| v.abs() < 1e-14);
+        if let (Some(c), Some(f)) = (checked, f64_says_zero) {
+            assert_eq!(c, f, "cross-check MISMATCH for {label}: is_zero_checked={c}, f64_says_zero={f}, f64_val={f64_val:?}");
+        }
+    }
+
+    /// Helper: assert that `sign_checked` agrees with `eval_const_f64`
+    /// for the given expression.
+    fn assert_sign_check_agrees(arena: &mut crate::base::arena::Arena, expr: crate::base::node::ExprId, label: &str) {
+        let f64_val = crate::transforms::evalf::eval_const_f64(arena, expr);
+        let checked = sign_checked(arena, expr);
+        let f64_sign: Option<i8> = f64_val.map(|v| {
+            if v > 1e-14 { 1 } else if v < -1e-14 { -1 } else { 0 }
+        });
+        if let (Some(c), Some(f)) = (checked, f64_sign) {
+            assert_eq!(c, f, "cross-check MISMATCH for {label}: sign_checked={c}, f64_sign={f}, f64_val={f64_val:?}");
+        }
+    }
+
+    #[test]
+    fn cross_check_zero_rational() {
+        let mut arena = crate::base::arena::Arena::new();
+        let zero = arena.zero;
+        let one_third = arena.rational(1, 3);
+        let neg_seven = arena.int(-7);
+        assert_zero_check_agrees(&mut arena, zero, "0");
+        assert_zero_check_agrees(&mut arena, one_third, "1/3");
+        assert_zero_check_agrees(&mut arena, neg_seven, "-7");
+    }
+
+    #[test]
+    fn cross_check_sign_rational() {
+        let mut arena = crate::base::arena::Arena::new();
+        let zero = arena.zero;
+        let pos = arena.rational(7, 3);
+        let neg = arena.rational(-2, 5);
+        assert_sign_check_agrees(&mut arena, zero, "0");
+        assert_sign_check_agrees(&mut arena, pos, "7/3");
+        assert_sign_check_agrees(&mut arena, neg, "-2/5");
+    }
+
+    #[test]
+    fn cross_check_sqrt2() {
+        let mut arena = crate::base::arena::Arena::new();
+        let two = arena.int(2);
+        let half = arena.rational(1, 2);
+        let sqrt2 = arena.pow(two, half);
+        assert_zero_check_agrees(&mut arena, sqrt2, "√2");
+        assert_sign_check_agrees(&mut arena, sqrt2, "√2");
+    }
+
+    #[test]
+    fn cross_check_sqrt3() {
+        let mut arena = crate::base::arena::Arena::new();
+        let three = arena.int(3);
+        let half = arena.rational(1, 2);
+        let sqrt3 = arena.pow(three, half);
+        assert_zero_check_agrees(&mut arena, sqrt3, "√3");
+        assert_sign_check_agrees(&mut arena, sqrt3, "√3");
+    }
+
+    #[test]
+    fn cross_check_cbrt2() {
+        let mut arena = crate::base::arena::Arena::new();
+        let two = arena.int(2);
+        let third = arena.rational(1, 3);
+        let cbrt2 = arena.pow(two, third);
+        assert_zero_check_agrees(&mut arena, cbrt2, "∛2");
+        assert_sign_check_agrees(&mut arena, cbrt2, "∛2");
+    }
+
+    #[test]
+    fn cross_check_sqrt5_sq_minus_5() {
+        // (√5)² - 5 = 0
+        let mut arena = crate::base::arena::Arena::new();
+        let five = arena.int(5);
+        let half = arena.rational(1, 2);
+        let sqrt5 = arena.pow(five, half);
+        let two = arena.int(2);
+        let sqrt5_sq = arena.pow(sqrt5, two);
+        let diff = arena.sub(sqrt5_sq, five);
+        assert_zero_check_agrees(&mut arena, diff, "(√5)²-5");
+        assert_sign_check_agrees(&mut arena, diff, "(√5)²-5");
+    }
+
+    #[test]
+    fn cross_check_negative_sqrt() {
+        // -√2 is negative
+        let mut arena = crate::base::arena::Arena::new();
+        let two = arena.int(2);
+        let half = arena.rational(1, 2);
+        let sqrt2 = arena.pow(two, half);
+        let neg_sqrt2 = arena.neg(sqrt2);
+        assert_zero_check_agrees(&mut arena, neg_sqrt2, "-√2");
+        assert_sign_check_agrees(&mut arena, neg_sqrt2, "-√2");
+    }
+
+    #[test]
+    fn cross_check_rational_times_sqrt() {
+        // (3/4)·√2 is positive and nonzero
+        let mut arena = crate::base::arena::Arena::new();
+        let two = arena.int(2);
+        let half = arena.rational(1, 2);
+        let sqrt2 = arena.pow(two, half);
+        let three_fourths = arena.rational(3, 4);
+        let expr = arena.mul(&[three_fourths, sqrt2]);
+        assert_zero_check_agrees(&mut arena, expr, "(3/4)·√2");
+        assert_sign_check_agrees(&mut arena, expr, "(3/4)·√2");
+    }
+
+    #[test]
+    fn cross_check_one_over_sqrt2() {
+        // 1/√2 ≈ 0.707 — positive, nonzero
+        let mut arena = crate::base::arena::Arena::new();
+        let one = arena.int(1);
+        let two = arena.int(2);
+        let half = arena.rational(1, 2);
+        let sqrt2 = arena.pow(two, half);
+        let expr = arena.div(one, sqrt2);
+        assert_zero_check_agrees(&mut arena, expr, "1/√2");
+        assert_sign_check_agrees(&mut arena, expr, "1/√2");
+    }
+
+    #[test]
+    fn cross_check_small_positive_rational() {
+        // 1/1000000 — small but clearly positive, should not be confused with zero
+        let mut arena = crate::base::arena::Arena::new();
+        let expr = arena.rational(1, 1000000);
+        assert_zero_check_agrees(&mut arena, expr, "1/1000000");
+        assert_sign_check_agrees(&mut arena, expr, "1/1000000");
+        assert_eq!(is_zero_checked(&mut arena, expr), Some(false));
+        assert_eq!(sign_checked(&mut arena, expr), Some(1));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Probes: understand arena node shapes before writing attack tests
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn probe_arena_add_arity() {
+        // Does arena.add(&[a, b, c]) produce a 3-child Add node, or a
+        // nested binary tree?  This determines whether the N-ary fold
+        // path in minimal_polynomial ever fires.
+        use crate::base::node::ExprNode;
+        let mut arena = crate::base::arena::Arena::new();
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let n5 = arena.int(5);
+        let half = arena.rational(1, 2);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sqrt5 = arena.pow(n5, half);
+        let sum = arena.add(&[sqrt2, sqrt3, sqrt5]);
+        let arity = match arena.node(sum) {
+            ExprNode::Add(children) => children.len(),
+            _ => 0,
+        };
+        // Record what we got — the test below depends on this.
+        eprintln!("probe_arena_add_arity: Add node has {arity} children");
+        // Whether it's 2 or 3, the test suite must cover both paths.
+        // If arity == 3, the N-ary fold bug is reachable.
+        // If arity == 2, the binary path handles it and the fold is dead code.
+        assert!(arity >= 2, "Add node should have at least 2 children");
+    }
+
+    #[test]
+    fn probe_arena_mul_arity() {
+        use crate::base::node::ExprNode;
+        let mut arena = crate::base::arena::Arena::new();
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let n5 = arena.int(5);
+        let half = arena.rational(1, 2);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sqrt5 = arena.pow(n5, half);
+        let prod = arena.mul(&[sqrt2, sqrt3, sqrt5]);
+        let node = arena.node(prod).clone();
+        eprintln!("probe_arena_mul_arity: node = {node:?}");
+        // √2·√3·√5 might be simplified to √30, or stored as Mul with
+        // 2 or 3 children, or something else.  Record what we get.
+        match &node {
+            ExprNode::Mul(children) => {
+                eprintln!("  Mul with {} children", children.len());
+            }
+            ExprNode::Pow(_, _) => {
+                eprintln!("  Simplified to a Pow (likely √30)");
+            }
+            ExprNode::Num(_) => {
+                eprintln!("  Simplified to a number");
+            }
+            _ => {
+                eprintln!("  Other node type");
+            }
+        }
+    }
+
+    #[test]
+    fn probe_sqrt2_times_sqrt3_simplification() {
+        // Does √2·√3 get simplified to √6 by the arena?
+        // If yes, the Mul path of minimal_polynomial is bypassed.
+        use crate::base::node::ExprNode;
+        let mut arena = crate::base::arena::Arena::new();
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let n6 = arena.int(6);
+        let half = arena.rational(1, 2);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sqrt6 = arena.pow(n6, half);
+        let prod = arena.mul(&[sqrt2, sqrt3]);
+        let structurally_same = prod == sqrt6;
+        eprintln!("probe: √2·√3 == √6 structurally? {structurally_same}");
+        eprintln!("probe: √2·√3 node = {:?}", arena.node(prod));
+        eprintln!("probe: √6 node = {:?}", arena.node(sqrt6));
+
+        // If structurally same, subtraction gives arena.zero directly.
+        let diff = arena.sub(prod, sqrt6);
+        let diff_is_zero = diff == arena.zero;
+        eprintln!("probe: √2·√3 - √6 == 0 structurally? {diff_is_zero}");
+    }
+
+    #[test]
+    fn probe_what_expressions_reach_exact_is_zero() {
+        // The expressions fed to is_zero_checked from log_to_real.rs are:
+        // - Coefficients of polynomials in integration variables
+        //   (b1, b0 from Rothstein-Trager roots)
+        // - Remainders from polynomial division (r = a0 - q·b0)
+        // - Determinants (a1·b0 - b1·a0)
+        // - Imaginary parts of algebraic roots
+        // - Real parts of algebraic roots
+        //
+        // These are typically RATIONAL NUMBERS or SINGLE RADICALS, not
+        // multi-radical sums.  The N-ary fold path is unlikely to fire
+        // from integration.  However, we must still ensure correctness
+        // for all expression types.
+        //
+        // This probe verifies the typical expression types work:
+        let mut arena = crate::base::arena::Arena::new();
+
+        // Type 1: pure rational (most common)
+        let r = arena.rational(1, 6);
+        assert_eq!(is_zero_checked(&mut arena, r), Some(false));
+
+        // Type 2: single radical
+        let n3 = arena.int(3);
+        let half = arena.rational(1, 2);
+        let sqrt3 = arena.pow(n3, half);
+        assert_eq!(is_zero_checked(&mut arena, sqrt3), Some(false));
+
+        // Type 3: rational times radical (common from Rothstein-Trager)
+        let sixth = arena.rational(1, 6);
+        let scaled = arena.mul(&[sixth, sqrt3]);
+        assert_eq!(is_zero_checked(&mut arena, scaled), Some(false));
+
+        // Type 4: negated radical
+        let neg_sqrt3 = arena.neg(sqrt3);
+        assert_eq!(is_zero_checked(&mut arena, neg_sqrt3), Some(false));
+        assert_eq!(sign_checked(&mut arena, neg_sqrt3), Some(-1));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Minimal polynomial correctness — hard assertions
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn minpoly_sqrt2_plus_sqrt3_exact_coefficients() {
+        // The minimal polynomial of √2+√3 is t⁴ - 10t² + 1.
+        // This goes through the 2-child Add resultant path.
+        // We MUST get exactly this polynomial, not a divisor or multiple.
+        let mut arena = crate::base::arena::Arena::new();
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let half = arena.rational(1, 2);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sum = arena.add(&[sqrt2, sqrt3]);
+        let mp = minimal_polynomial(&mut arena, sum)
+            .expect("minimal_polynomial must succeed for √2+√3");
+        assert_eq!(mp.degree(), Some(4), "degree must be exactly 4");
+        // Coefficients: t⁴ - 10t² + 1 = [1, 0, -10, 0, 1]
+        assert_eq!(mp.coeff(0), r(1, 1), "constant term must be 1");
+        assert_eq!(mp.coeff(1), r(0, 1), "t¹ coefficient must be 0");
+        assert_eq!(mp.coeff(2), r(-10, 1), "t² coefficient must be -10");
+        assert_eq!(mp.coeff(3), r(0, 1), "t³ coefficient must be 0");
+        assert_eq!(mp.coeff(4), r(1, 1), "t⁴ coefficient must be 1");
+    }
+
+    #[test]
+    fn minpoly_sqrt2_times_sqrt3_exact() {
+        // √2·√3 — the arena may simplify this to √6.  Either way,
+        // the minimal polynomial must be t² - 6.
+        let mut arena = crate::base::arena::Arena::new();
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let half = arena.rational(1, 2);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let prod = arena.mul(&[sqrt2, sqrt3]);
+        let mp = minimal_polynomial(&mut arena, prod)
+            .expect("minimal_polynomial must succeed for √2·√3");
+        // Whether the arena simplified to √6 or kept it as √2·√3,
+        // the minimal polynomial must be t² - 6.
+        assert_eq!(mp.degree(), Some(2), "degree must be 2");
+        assert_eq!(mp.coeff(0), r(-6, 1), "constant term must be -6");
+        assert_eq!(mp.coeff(2), r(1, 1), "leading coefficient must be 1");
+        // Verify it vanishes at √6 ≈ 2.449.
+        let val = crate::transforms::evalf::eval_const_f64(&mut arena, prod)
+            .expect("must evaluate numerically");
+        assert!((val - 6.0_f64.sqrt()).abs() < 1e-10, "√2·√3 must equal √6");
+    }
+
+    /// Helper: evaluate polynomial at f64 via rational approximation, return f64.
+    fn eval_poly_at_f64(p: &Poly, x: f64) -> f64 {
+        let x_rat = f64_to_rational_approx(x);
+        let result = p.eval(&x_rat);
+        let n: f64 = result.numer().to_string().parse().unwrap_or(f64::NAN);
+        let d: f64 = result.denom().to_string().parse().unwrap_or(1.0);
+        n / d
+    }
+
+    #[test]
+    fn minpoly_nary_add_must_vanish_at_value() {
+        // √2 + √3 + √5 — if the N-ary fold produces a polynomial,
+        // that polynomial MUST vanish at the numerical value.
+        // This is a hard test: wrong factor selection would produce
+        // a polynomial that does NOT vanish.
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let n5 = arena.int(5);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sqrt5 = arena.pow(n5, half);
+        let sum = arena.add(&[sqrt2, sqrt3, sqrt5]);
+
+        let val = crate::transforms::evalf::eval_const_f64(&mut arena, sum)
+            .expect("√2+√3+√5 must evaluate");
+        // √2+√3+√5 ≈ 1.414 + 1.732 + 2.236 ≈ 5.382
+        assert!((val - 5.382).abs() < 0.01, "sanity: √2+√3+√5 ≈ 5.382, got {val}");
+
+        let mp = minimal_polynomial(&mut arena, sum);
+        if let Some(ref mp) = mp {
+            let residual = eval_poly_at_f64(mp, val);
+            // The minimal polynomial MUST vanish at the value.
+            // With f64 evaluation of a degree-8 polynomial, we allow
+            // some numerical noise, but it should be small.
+            assert!(
+                residual.abs() < 1.0,
+                "WRONG MINIMAL POLYNOMIAL: p(√2+√3+√5) = {residual} (should be ≈ 0), \
+                 degree={:?}, poly coeffs: {:?}",
+                mp.degree(),
+                (0..=mp.degree().unwrap_or(0))
+                    .map(|i| mp.coeff(i).to_string())
+                    .collect::<Vec<_>>()
+            );
+        }
+        // If None, minimal_polynomial can't handle it — that's safe
+        // because exact_is_zero will also return None and fall to f64.
+    }
+
+    #[test]
+    fn minpoly_nary_mul_must_vanish_at_value() {
+        // √2 · √3 · √5 = √30 — same test for the Mul fold.
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let n5 = arena.int(5);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sqrt5 = arena.pow(n5, half);
+        let prod = arena.mul(&[sqrt2, sqrt3, sqrt5]);
+
+        let val = crate::transforms::evalf::eval_const_f64(&mut arena, prod)
+            .expect("√2·√3·√5 must evaluate");
+        assert!((val - 30.0_f64.sqrt()).abs() < 1e-10, "sanity: √2·√3·√5 = √30");
+
+        let mp = minimal_polynomial(&mut arena, prod);
+        if let Some(ref mp) = mp {
+            let residual = eval_poly_at_f64(mp, val);
+            assert!(
+                residual.abs() < 1.0,
+                "WRONG MINIMAL POLYNOMIAL: p(√30) = {residual}, degree={:?}",
+                mp.degree()
+            );
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Zero detection — true zeros that must be caught
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn zero_detection_structural_subtraction() {
+        // (√2 + √3) - (√2 + √3) = 0.
+        // Arena should simplify to structural zero.
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sum = arena.add(&[sqrt2, sqrt3]);
+        let diff = arena.sub(sum, sum);
+        // Must detect zero — no excuses.
+        assert_eq!(
+            is_zero_checked(&mut arena, diff),
+            Some(true),
+            "(√2+√3)-(√2+√3) must be zero"
+        );
+    }
+
+    #[test]
+    fn zero_detection_sqrt_product_identity() {
+        // √2 · √3 - √6 = 0 (algebraic identity).
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let n6 = arena.int(6);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sqrt6 = arena.pow(n6, half);
+        let prod = arena.mul(&[sqrt2, sqrt3]);
+        let diff = arena.sub(prod, sqrt6);
+        let result = is_zero_checked(&mut arena, diff);
+        // This MUST be Some(true).  If it's Some(false), that's bad math.
+        // If the arena simplifies √2·√3 to √6, the difference is
+        // structurally zero.  If not, exact methods must detect it.
+        assert_eq!(
+            result,
+            Some(true),
+            "√2·√3 - √6 is exactly zero — is_zero_checked must detect it. \
+             If Some(false), that's BAD MATH."
+        );
+    }
+
+    #[test]
+    fn zero_detection_sqrt5_squared() {
+        // (√5)² - 5 = 0.
+        let mut arena = crate::base::arena::Arena::new();
+        let n5 = arena.int(5);
+        let half = arena.rational(1, 2);
+        let two = arena.int(2);
+        let sqrt5 = arena.pow(n5, half);
+        let sq = arena.pow(sqrt5, two);
+        let diff = arena.sub(sq, n5);
+        assert_eq!(
+            is_zero_checked(&mut arena, diff),
+            Some(true),
+            "(√5)² - 5 must be detected as zero"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Nonzero detection — must NOT be called zero
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn nonzero_radical_sum_clearly_positive() {
+        // √2 + √3 - √5 ≈ 0.728.  Clearly nonzero.
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let n5 = arena.int(5);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sqrt5 = arena.pow(n5, half);
+        let neg_sqrt5 = arena.neg(sqrt5);
+        let expr = arena.add(&[sqrt2, sqrt3, neg_sqrt5]);
+
+        let val = crate::transforms::evalf::eval_const_f64(&mut arena, expr)
+            .expect("must evaluate");
+        assert!(val > 0.5, "√2+√3-√5 ≈ 0.728, got {val}");
+
+        assert_eq!(
+            is_zero_checked(&mut arena, expr),
+            Some(false),
+            "is_zero_checked must say √2+√3-√5 is nonzero"
+        );
+        assert_eq!(
+            sign_checked(&mut arena, expr),
+            Some(1),
+            "sign_checked must say √2+√3-√5 is positive"
+        );
+    }
+
+    #[test]
+    fn nonzero_sqrt2_minus_sqrt3() {
+        // √2 - √3 ≈ -0.318.  Nonzero, negative.
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let diff = arena.sub(sqrt2, sqrt3);
+
+        assert_eq!(
+            is_zero_checked(&mut arena, diff),
+            Some(false),
+            "√2-√3 is not zero"
+        );
+        assert_eq!(
+            sign_checked(&mut arena, diff),
+            Some(-1),
+            "√2-√3 is negative"
+        );
+    }
+
+    #[test]
+    fn nonzero_tiny_rational_in_ambiguous_zone() {
+        // 1e-15 is inside the ambiguous zone (|v| < 1e-10) and inside
+        // the f64 zero-tolerance (|v| < 1e-14).  eval_const_f64 alone
+        // would wrongly call this zero.  The rational fast-path in
+        // is_zero_checked must catch it.
+        let mut arena = crate::base::arena::Arena::new();
+        let expr = arena.rational(1, 1_000_000_000_000_000); // 1e-15
+        assert_eq!(
+            is_zero_checked(&mut arena, expr),
+            Some(false),
+            "1e-15 is tiny but nonzero — MUST NOT be called zero"
+        );
+        assert_eq!(sign_checked(&mut arena, expr), Some(1));
+    }
+
+    #[test]
+    fn nonzero_tiny_negative_rational_in_ambiguous_zone() {
+        let mut arena = crate::base::arena::Arena::new();
+        let expr = arena.rational(-1, 1_000_000_000_000_000);
+        assert_eq!(
+            is_zero_checked(&mut arena, expr),
+            Some(false),
+            "-1e-15 is tiny but nonzero"
+        );
+        assert_eq!(sign_checked(&mut arena, expr), Some(-1));
+    }
+
+    #[test]
+    fn nonzero_very_small_rational_1e_20() {
+        // Even smaller: 1e-20.  Way inside ambiguous zone.
+        let mut arena = crate::base::arena::Arena::new();
+        // Build 1/10^20 without overflow: (1/10^10) * (1/10^10)
+        let a = arena.rational(1, 10_000_000_000); // 1e-10
+        let b = arena.rational(1, 10_000_000_000);
+        let expr = arena.mul(&[a, b]);
+        let expr = crate::transforms::eval::eval(&mut arena, expr);
+        // is_zero_checked: either Some(false) (correct) or None (acceptable)
+        // but NEVER Some(true).
+        let result = is_zero_checked(&mut arena, expr);
+        assert!(
+            result != Some(true),
+            "1e-20 is nonzero — is_zero_checked MUST NOT say it's zero. Got {result:?}"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Nested radical and unsupported expression graceful fallback
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn nested_radical_no_crash_no_wrong_answer() {
+        // √(2 + √3) ≈ 1.932.  minimal_polynomial can't handle this.
+        // is_zero_checked must return Some(false) (via f64 fallback)
+        // or None.  NEVER Some(true).
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n3 = arena.int(3);
+        let n2 = arena.int(2);
+        let sqrt3 = arena.pow(n3, half);
+        let inner = arena.add(&[n2, sqrt3]);
+        let outer = arena.pow(inner, half);
+
+        let result = is_zero_checked(&mut arena, outer);
+        assert!(
+            result != Some(true),
+            "√(2+√3) ≈ 1.93 — must NOT be called zero! Got {result:?}"
+        );
+        // Sign should be positive.
+        let sign = sign_checked(&mut arena, outer);
+        assert!(
+            sign == Some(1) || sign.is_none(),
+            "√(2+√3) is positive — sign must be 1 or unknown, not {sign:?}"
+        );
+    }
+
+    #[test]
+    fn transcendental_pi_no_crash() {
+        // π is transcendental — minimal_polynomial returns None.
+        // is_zero_checked must not crash, must say nonzero.
+        let mut arena = crate::base::arena::Arena::new();
+        let pi = arena.pi;
+        let result = is_zero_checked(&mut arena, pi);
+        assert!(
+            result != Some(true),
+            "π is not zero!"
+        );
+    }
+
+    #[test]
+    fn free_symbol_no_crash() {
+        // A free symbol x has no numerical value.
+        // is_zero_checked should return None (can't determine).
+        let mut arena = crate::base::arena::Arena::new();
+        let x = arena.symbol("x");
+        let result = is_zero_checked(&mut arena, x);
+        // Must not falsely claim zero or nonzero for an unknown symbol.
+        // None is the only correct answer.
+        assert!(
+            result.is_none(),
+            "Free symbol x: is_zero_checked must return None, got {result:?}"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // The N-ary fold bug: direct analysis
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // In minimal_polynomial, the N-ary Add fold does:
+    //
+    //     acc_expr = children[0]
+    //     acc_mp = minimal_polynomial(arena, children[0])
+    //     for child in children[1..]:
+    //         child_mp = minimal_polynomial(arena, child)
+    //         acc_mp = minpoly_add(&acc_mp, &child_mp, arena, acc_expr, child)
+    //         acc_expr = child   // BUG: should be acc_expr + child
+    //
+    // After iteration 1: acc_mp = minpoly(c[0]+c[1]), but acc_expr = c[1]
+    // In iteration 2: pick_factor evaluates c[1]+c[2] instead of c[0]+c[1]+c[2]
+    //
+    // This means the factor selection target is WRONG.  However, the
+    // resultant polynomial is CORRECT (it's computed from acc_mp and
+    // child_mp).  The wrong target only matters if the resultant has
+    // multiple irreducible factors and the wrong target picks a different
+    // factor than the correct target would.
+    //
+    // For this to cause bad math:
+    //   1. The resultant must factor into 2+ irreducible pieces
+    //   2. The wrong target (c[1]+c[2]) must evaluate closer to a root
+    //      of the WRONG factor than to a root of the RIGHT factor
+    //   3. The resulting wrong minimal polynomial must change the
+    //      zero/sign verdict in is_zero_checked
+
+    #[test]
+    fn nary_fold_bug_direct_detection() {
+        // We construct the scenario directly:
+        // acc_mp = minpoly(√2+√3) = t⁴-10t²+1
+        // child_mp = minpoly(√5) = t²-5
+        // resultant = res_y(acc_mp(y), child_mp(x-y)) = degree 8 poly
+        //
+        // The correct target is √2+√3+√5 ≈ 5.382
+        // The buggy target is √3+√5 ≈ 3.968
+        //
+        // If the degree-8 resultant factors and the two targets pick
+        // different factors, we've found the bug.
+        use crate::base::node::ExprNode;
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let n5 = arena.int(5);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sqrt5 = arena.pow(n5, half);
+        let sum3 = arena.add(&[sqrt2, sqrt3, sqrt5]);
+
+        // Check: does the arena produce a 3-child Add?
+        let is_nary = matches!(arena.node(sum3), ExprNode::Add(c) if c.len() > 2);
+
+        if is_nary {
+            // The N-ary fold path fires.  Test rigorously.
+            let mp = minimal_polynomial(&mut arena, sum3);
+            let val = crate::transforms::evalf::eval_const_f64(&mut arena, sum3)
+                .expect("must evaluate");
+
+            if let Some(ref mp) = mp {
+                // HARD CHECK: polynomial must vanish at the value.
+                let residual = eval_poly_at_f64(mp, val);
+                assert!(
+                    residual.abs() < 1.0,
+                    "N-ARY FOLD BUG TRIGGERED: minimal polynomial does NOT vanish \
+                     at √2+√3+√5 = {val}. Residual = {residual}, degree = {:?}. \
+                     The factor selection likely picked the wrong factor due to the \
+                     acc_expr = child bug in the N-ary Add fold.",
+                    mp.degree()
+                );
+
+                // DOUBLE CHECK: is_zero_checked on the full expression
+                // must say nonzero.
+                assert_eq!(
+                    is_zero_checked(&mut arena, sum3),
+                    Some(false),
+                    "√2+√3+√5 is nonzero"
+                );
+            }
+        } else {
+            // Arena binarized the addition — the N-ary fold is unreachable.
+            // The 2-child path handles it correctly.  Still verify:
+            assert_eq!(
+                is_zero_checked(&mut arena, sum3),
+                Some(false),
+                "√2+√3+√5 is nonzero (binary path)"
+            );
+        }
+    }
+
+    #[test]
+    fn nary_fold_bug_zero_expression() {
+        // If the N-ary fold bug fires for a ZERO expression, it could
+        // cause is_zero_checked to return Some(false) — worst case.
+        //
+        // Construct: √2 + √3 + (-√2 - √3) = 0
+        // This should be structurally simplified, but let's verify.
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let neg_sqrt2 = arena.neg(sqrt2);
+        let neg_sqrt3 = arena.neg(sqrt3);
+        // Try constructing with all 4 terms
+        let sum = arena.add(&[sqrt2, sqrt3, neg_sqrt2, neg_sqrt3]);
+        let result = is_zero_checked(&mut arena, sum);
+        assert_eq!(
+            result,
+            Some(true),
+            "√2+√3-√2-√3 must be zero"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Binary Add path (2 children) — the well-tested path
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn binary_add_sqrt2_plus_sqrt3_exact_minpoly() {
+        // √2 + √3 uses the 2-child path. Verify exact coefficients.
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let sum = arena.add(&[sqrt2, sqrt3]);
+
+        let mp = minimal_polynomial(&mut arena, sum)
+            .expect("must succeed for √2+√3");
+        assert_eq!(mp.degree(), Some(4));
+        assert_eq!(mp.coeff(0), r(1, 1));
+        assert_eq!(mp.coeff(1), r(0, 1));
+        assert_eq!(mp.coeff(2), r(-10, 1));
+        assert_eq!(mp.coeff(3), r(0, 1));
+        assert_eq!(mp.coeff(4), r(1, 1));
+
+        // Verify it vanishes at √2+√3.
+        let val = crate::transforms::evalf::eval_const_f64(&mut arena, sum).unwrap();
+        let residual = eval_poly_at_f64(&mp, val);
+        assert!(residual.abs() < 1e-6, "p(√2+√3) = {residual}, expected ≈ 0");
+
+        // Check OTHER roots don't coincide: √2-√3, -√2+√3, -√2-√3
+        let other_roots = [
+            2.0_f64.sqrt() - 3.0_f64.sqrt(), // ≈ -0.318
+            -2.0_f64.sqrt() + 3.0_f64.sqrt(), // ≈ 0.318
+            -2.0_f64.sqrt() - 3.0_f64.sqrt(), // ≈ -3.146
+        ];
+        for root in &other_roots {
+            let res = eval_poly_at_f64(&mp, *root);
+            assert!(res.abs() < 1e-6, "p({root}) = {res}, expected ≈ 0 (it's a root too)");
+        }
+
+        assert_eq!(is_zero_checked(&mut arena, sum), Some(false));
+        assert_eq!(sign_checked(&mut arena, sum), Some(1));
+    }
+
+    #[test]
+    fn binary_add_sqrt2_minus_1_exact_minpoly() {
+        // √2 - 1 has minimal polynomial t² + 2t - 1.
+        // Verify exact coefficients.
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let one = arena.int(1);
+        let sqrt2 = arena.pow(n2, half);
+        let expr = arena.sub(sqrt2, one);
+
+        let mp = minimal_polynomial(&mut arena, expr)
+            .expect("must succeed for √2-1");
+        assert_eq!(mp.degree(), Some(2));
+        // √2-1 is root of t² + 2t - 1 = 0 (completing the square: (t+1)²=2)
+        assert_eq!(mp.coeff(0), r(-1, 1));
+        assert_eq!(mp.coeff(1), r(2, 1));
+        assert_eq!(mp.coeff(2), r(1, 1));
+
+        // √2 - 1 ≈ 0.414.  Positive, nonzero.
+        assert_eq!(is_zero_checked(&mut arena, expr), Some(false));
+        assert_eq!(sign_checked(&mut arena, expr), Some(1));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Sign testing edge cases
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn sign_checked_negative_radical_difference() {
+        // √2 - √3 ≈ -0.318.  sign_checked must say -1.
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+        let n2 = arena.int(2);
+        let n3 = arena.int(3);
+        let sqrt2 = arena.pow(n2, half);
+        let sqrt3 = arena.pow(n3, half);
+        let diff = arena.sub(sqrt2, sqrt3);
+        assert_eq!(sign_checked(&mut arena, diff), Some(-1));
+    }
+
+    #[test]
+    fn sign_checked_zero_expression() {
+        let mut arena = crate::base::arena::Arena::new();
+        let zero = arena.zero;
+        assert_eq!(sign_checked(&mut arena, zero), Some(0));
+    }
+
+    #[test]
+    fn sign_checked_positive_cbrt() {
+        // ∛2 ≈ 1.26.
+        let mut arena = crate::base::arena::Arena::new();
+        let n2 = arena.int(2);
+        let third = arena.rational(1, 3);
+        let cbrt2 = arena.pow(n2, third);
+        assert_eq!(sign_checked(&mut arena, cbrt2), Some(1));
+    }
+
+    #[test]
+    fn sign_checked_negative_cbrt() {
+        // -∛2 ≈ -1.26.
+        let mut arena = crate::base::arena::Arena::new();
+        let n2 = arena.int(2);
+        let third = arena.rational(1, 3);
+        let cbrt2 = arena.pow(n2, third);
+        let neg = arena.neg(cbrt2);
+        assert_eq!(sign_checked(&mut arena, neg), Some(-1));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Stress: many expressions, all must agree with f64
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn stress_cross_check_many_expressions() {
+        let mut arena = crate::base::arena::Arena::new();
+        let half = arena.rational(1, 2);
+
+        // Build a bank of radical expressions and verify cross-check
+        // agreement for every one.
+        let bases: Vec<i64> = vec![2, 3, 5, 7, 11];
+        for &b in &bases {
+            let base = arena.int(b);
+            let sqrt_b = arena.pow(base, half);
+
+            // √b
+            assert_zero_check_agrees(&mut arena, sqrt_b, &format!("√{b}"));
+            assert_sign_check_agrees(&mut arena, sqrt_b, &format!("√{b}"));
+
+            // -√b
+            let neg = arena.neg(sqrt_b);
+            assert_zero_check_agrees(&mut arena, neg, &format!("-√{b}"));
+            assert_sign_check_agrees(&mut arena, neg, &format!("-√{b}"));
+
+            // 1/√b
+            let one = arena.int(1);
+            let inv = arena.div(one, sqrt_b);
+            assert_zero_check_agrees(&mut arena, inv, &format!("1/√{b}"));
+            assert_sign_check_agrees(&mut arena, inv, &format!("1/√{b}"));
+        }
+
+        // Pairwise sums and differences of √p for small primes.
+        for i in 0..bases.len() {
+            for j in (i + 1)..bases.len() {
+                let bi = arena.int(bases[i]);
+                let bj = arena.int(bases[j]);
+                let si = arena.pow(bi, half);
+                let sj = arena.pow(bj, half);
+
+                let sum = arena.add(&[si, sj]);
+                let diff = arena.sub(si, sj);
+
+                let sum_label = format!("√{}+√{}", bases[i], bases[j]);
+                let diff_label = format!("√{}-√{}", bases[i], bases[j]);
+
+                assert_zero_check_agrees(&mut arena, sum, &sum_label);
+                assert_sign_check_agrees(&mut arena, sum, &sum_label);
+                assert_zero_check_agrees(&mut arena, diff, &diff_label);
+                assert_sign_check_agrees(&mut arena, diff, &diff_label);
+
+                // All sums of positive radicals are nonzero and positive.
+                assert_eq!(
+                    is_zero_checked(&mut arena, sum),
+                    Some(false),
+                    "{sum_label} must be nonzero"
+                );
+                assert_eq!(
+                    sign_checked(&mut arena, sum),
+                    Some(1),
+                    "{sum_label} must be positive"
+                );
+
+                // Differences: sign depends on which is larger.
+                let expected_sign: i8 = if bases[i] < bases[j] { -1 } else { 1 };
+                assert_eq!(
+                    is_zero_checked(&mut arena, diff),
+                    Some(false),
+                    "{diff_label} must be nonzero"
+                );
+                let s = sign_checked(&mut arena, diff);
+                assert!(
+                    s == Some(expected_sign) || s.is_none(),
+                    "{diff_label}: expected sign {expected_sign}, got {s:?}"
+                );
+            }
+        }
     }
 }

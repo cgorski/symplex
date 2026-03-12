@@ -303,9 +303,9 @@ fn try_complete_square_integral(
             let disc = crate::transforms::eval::eval(arena, disc);
 
             // Sign test: discriminant must be positive for the atan form.
-            let disc_f64 = crate::transforms::evalf::eval_const_f64(arena, disc)?;
-            tracing::debug!(disc_f64, "try_complete_square: symbolic discriminant evaluated");
-            if disc_f64 <= 0.0 {
+            let disc_sign = crate::poly::algebraic::sign_checked(arena, disc);
+            tracing::debug!(?disc_sign, "try_complete_square: discriminant sign");
+            if disc_sign != Some(1) {
                 tracing::debug!("try_complete_square: discriminant non-positive, atan form not applicable");
                 return None;
             }

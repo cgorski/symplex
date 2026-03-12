@@ -117,16 +117,15 @@ pub(crate) fn log_to_atan_deg1(
 ) -> Option<ExprId> {
     let two = arena.int(2);
 
-    // Check if b1 ≈ 0 (B is constant — the common case).
-    let b1_f64 = crate::transforms::evalf::eval_const_f64(arena, b1);
-    let b1_is_zero = b1_f64.is_some_and(|v| v.abs() < 1e-14);
+    // Check if b1 = 0 (B is constant — the common case).
+    let b1_is_zero = crate::poly::algebraic::is_zero_checked(arena, b1)
+        .unwrap_or(false);
 
     if b1_is_zero {
         tracing::debug!("log_to_atan_deg1: b1 ≈ 0, B is constant → single atan");
 
-        // Check b0 ≠ 0
-        let b0_f64 = crate::transforms::evalf::eval_const_f64(arena, b0)?;
-        if b0_f64.abs() < 1e-14 {
+        // Check b0 ≠ 0 (bail unless we can confirm nonzero, since we divide by b0)
+        if crate::poly::algebraic::is_zero_checked(arena, b0) != Some(false) {
             tracing::debug!("log_to_atan_deg1: b0 ≈ 0, degenerate → None");
             return None;
         }
@@ -150,8 +149,8 @@ pub(crate) fn log_to_atan_deg1(
     let r = arena.sub(a0, q_b0);
     let r = crate::transforms::eval::eval(arena, r);
 
-    let r_f64 = crate::transforms::evalf::eval_const_f64(arena, r);
-    let r_is_zero = r_f64.is_some_and(|v| v.abs() < 1e-14);
+    let r_is_zero = crate::poly::algebraic::is_zero_checked(arena, r)
+        .unwrap_or(false);
 
     if r_is_zero {
         // Division is exact: F = 2 · atan(q)
@@ -181,8 +180,7 @@ pub(crate) fn log_to_atan_deg1(
     let det = arena.sub(a1_b0, b1_a0);
     let det = crate::transforms::eval::eval(arena, det);
 
-    let det_f64 = crate::transforms::evalf::eval_const_f64(arena, det);
-    if det_f64.is_some_and(|v| v.abs() < 1e-14) {
+    if crate::poly::algebraic::is_zero_checked(arena, det).unwrap_or(false) {
         tracing::debug!("log_to_atan_deg1: determinant ≈ 0 (A and B proportional) → None");
         return None;
     }
@@ -274,20 +272,22 @@ pub(crate) fn log_to_real(
         let u_val = crate::transforms::eval::eval(arena, re_raw);
         let v_val = crate::transforms::eval::eval(arena, im_raw);
 
-        // Check imaginary part numerically.
-        let v_f64 = crate::transforms::evalf::eval_const_f64(arena, v_val)?;
+        // Check imaginary part: cross-checked zero test.
+        let v_is_zero = crate::poly::algebraic::is_zero_checked(arena, v_val)
+            .unwrap_or(false);
 
-        if v_f64.abs() < 1e-14 {
+        if v_is_zero {
             // Real root — skip (handled by rational LogTerm path).
-            tracing::trace!(idx, "log_to_real: skipping real root (v ≈ 0)");
+            tracing::trace!(idx, "log_to_real: skipping real root (v = 0)");
             used[idx] = true;
             continue;
         }
 
-        if v_f64 > 0.0 {
+        // Sign test: keep roots with positive imaginary part.
+        let v_sign = crate::poly::algebraic::sign_checked(arena, v_val);
+        if v_sign == Some(1) {
             tracing::trace!(
                 idx,
-                v_f64,
                 "log_to_real: found root with positive Im"
             );
             pairs.push((u_val, v_val));
@@ -297,6 +297,8 @@ pub(crate) fn log_to_real(
         used[idx] = true;
 
         // Find and mark the conjugate root (same Re, opposite Im).
+        // Conjugate matching uses f64 sum-to-zero heuristic.
+        let v_f64 = crate::transforms::evalf::eval_const_f64(arena, v_val)?;
         for j in (idx + 1)..roots.len() {
             if used[j] {
                 continue;
@@ -411,15 +413,16 @@ pub(crate) fn log_to_real(
         tracing::trace!(pair_idx, "log_to_real: norm |h|² computed and simplified");
 
         // ln term: u_j · ln(|h|²)
-        // ── Check if u_j ≈ 0 (pure imaginary root) ────────────────
-        let u_f64 = crate::transforms::evalf::eval_const_f64(arena, *u_j);
-        let u_is_zero = u_f64.is_some_and(|v| v.abs() < 1e-14);
+        // ── Check if u_j = 0 (pure imaginary root) ────────────────
+        let u_is_zero = crate::poly::algebraic::is_zero_checked(arena, *u_j)
+            .unwrap_or(false);
 
-        // ── Check if B(x) ≈ 0 (imaginary part vanishes) ───────────
-        let im_h1_f64 = crate::transforms::evalf::eval_const_f64(arena, im_h1);
-        let im_h0_f64 = crate::transforms::evalf::eval_const_f64(arena, im_h0);
-        let b_is_zero = im_h1_f64.is_some_and(|v| v.abs() < 1e-14)
-            && im_h0_f64.is_some_and(|v| v.abs() < 1e-14);
+        // ── Check if B(x) = 0 (imaginary part vanishes) ───────────
+        let im_h1_is_zero = crate::poly::algebraic::is_zero_checked(arena, im_h1)
+            .unwrap_or(false);
+        let im_h0_is_zero = crate::poly::algebraic::is_zero_checked(arena, im_h0)
+            .unwrap_or(false);
+        let b_is_zero = im_h1_is_zero && im_h0_is_zero;
 
         if u_is_zero && b_is_zero {
             // Both u ≈ 0 and B ≈ 0: this pair contributes nothing.
