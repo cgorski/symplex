@@ -29,7 +29,7 @@ git clone https://github.com/cgorski/symplex
 cd symplex
 cargo build
 
-# Run the test suite (~5,900 tests)
+# Run the test suite (~6,000 tests)
 cargo test
 
 # Run a single test file
@@ -59,10 +59,13 @@ them but should not reach upward.
 ```
 src/
 ├── base/         Expression nodes, arena, tree traversal, canonicalization, assumptions
-├── poly/         Dense/sparse polynomials, Gröbner bases, Sturm sequences, root finding
+├── poly/         Dense/sparse polynomials, Gröbner bases, Sturm sequences, root finding,
+│                 algebraic number fields (ℚ(α) = ℚ[t]/(m(t)))
 ├── transforms/   Differentiation, integration, evaluation, solving, pattern matching
-├── simplify/     Trig, power, log, combinatorial simplification, Fu's algorithm
-├── calculus/     Series, limits, Laplace, ODE, Gosper summation, formal power series
+├── simplify/     Trig, power, log, combinatorial simplification, Fu's algorithm,
+│                 radical simplification (powdenest, powsimp_base)
+├── calculus/     Series, limits, Laplace, ODE, Gosper summation, formal power series,
+│                 Risch algorithm, Lazard-Rioboo-Trager log-to-real conversion
 ├── output/       Display, LaTeX, Rust codegen, CSE, JSON serialization, parser
 ├── plotting/     Adaptive sampling, textplot, SVG, TikZ, data export, RK4
 ├── domains/      Matrices, control systems, dynamics, robotics, number theory, vectors
@@ -82,12 +85,15 @@ base → poly → transforms → simplify → calculus
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `ExprNode` | `src/base/node.rs` | The expression tree — ~80 variants (Add, Mul, Sin, Integral, RootOf, etc.) |
+| `ExprNode` | `src/base/node.rs` | The expression tree — ~80 variants (Add, Mul, Sin, Integral, RootOf, RootSum, etc.) |
 | `Arena` | `src/base/arena.rs` | Hash-consed expression storage. All nodes live here. |
 | `ExprId` | `src/base/node.rs` | A `u32` index into the arena. This is how expressions are referenced internally. |
 | `Context` | `src/api/context.rs` | User-facing entry point. Owns an arena + assumption cache. |
 | `Expr<S>` / `Ex` | `src/api/expr.rs` | User-facing expression handle. Carries a context reference + ExprId. |
-| `Poly` | `src/poly/dense.rs` | Dense univariate polynomial over `Ratio<BigInt>`. |
+| `Poly` | `src/poly/dense.rs` | Dense univariate polynomial over `Ratio<BigInt>`. Type alias for `GenPoly<Ratio<BigInt>>`. |
+| `GenPoly<C>` | `src/poly/generic.rs` | Generic univariate polynomial over any `Ring`/`Field` coefficient type. |
+| `RationalFn` | `src/poly/ratfn.rs` | Rational function `p(x)/q(x)` in ℚ(x). Implements `Field`, enabling `GenPoly<RationalFn>`. |
+| `AlgNum` | `src/poly/algebraic.rs` | Element of ℚ(α) = ℚ[t]/(m(t)). Implements `Ring` + `Field` with exact zero/sign testing. |
 | `MultiPoly` | `src/poly/multipoly.rs` | Sparse multivariate polynomial. |
 | `Matrix` | `src/domains/matrix.rs` | Symbolic matrix (Vec of Vec of Ex). |
 
@@ -357,7 +363,7 @@ Follow the same steps as adding a new function (above), plus:
 ### Test Organization
 
 Tests are in `tests/` (integration tests) and inline `#[cfg(test)]` modules
-(unit tests). There are ~5,900 tests total.
+(unit tests). There are ~6,000 tests total.
 
 | Category | Files | What they test |
 |----------|-------|----------------|

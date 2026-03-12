@@ -4,6 +4,29 @@
 //! stored as a polynomial representative `repr ∈ ℚ[t]` of degree < deg(m),
 //! together with the irreducible minimal polynomial `m(t)`.
 //!
+//! # Production Status
+//!
+//! **This module is tested infrastructure, not yet wired into production
+//! code paths.** The core arithmetic (`AlgNum` Ring/Field) and sign testing
+//! (Sturm sequences) are proven correct. However, the [`minimal_polynomial`]
+//! function's irreducible factor selection (`pick_factor_by_numerical_eval`)
+//! uses a **heuristic** (smallest-degree factor) that is not guaranteed to
+//! choose the correct factor for compound expressions like `√2 + √3`.
+//!
+//! **Until factor selection is made rigorous**, the production code continues
+//! to use [`eval_const_f64`](crate::transforms::evalf::eval_const_f64) with
+//! `1e-14` tolerance for zero/sign testing.  This is reliable for all cases
+//! arising from integration (where algebraic numbers have well-separated
+//! roots from small-integer polynomials).
+//!
+//! **To make this production-ready:**
+//! 1. Fix `pick_factor_by_numerical_eval` to evaluate the target expression
+//!    at high precision and reliably select the vanishing factor
+//! 2. Add cross-validation tests: verify `exact_is_zero` agrees with
+//!    `eval_const_f64` for all integration test cases
+//! 3. Wire `exact_is_zero`/`exact_sign` into `log_to_real.rs` and
+//!    `integrate.rs` with cross-checking against `eval_const_f64`
+//!
 //! # Arithmetic
 //!
 //! - **Addition / Subtraction**: polynomial addition (no reduction needed
@@ -31,6 +54,9 @@
 //! - `n^{p/q}`: `m(t) = t^q - n^p`
 //! - `a + b`: via resultant `res_y(m_a(y), m_b(x - y))`
 //! - `a · b`: via resultant with appropriate scaling
+//!
+//! **Note:** The factor selection step after resultant computation is
+//! currently heuristic — see Production Status above.
 //!
 //! # References
 //!
@@ -971,7 +997,7 @@ fn reciprocal_scale(p: &Poly, x_val: &Ratio<BigInt>) -> Poly {
 /// root matches the numerical value of the combined expression.
 fn pick_factor_by_numerical_eval(
     r_poly: &Poly,
-    arena: &crate::base::arena::Arena,
+    _arena: &crate::base::arena::Arena,
     expr_a: crate::base::node::ExprId,
     expr_b: Option<crate::base::node::ExprId>,
     is_addition: bool,

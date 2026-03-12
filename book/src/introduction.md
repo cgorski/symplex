@@ -20,14 +20,16 @@ The core operations:
 
 | Category | Capabilities |
 |----------|-------------|
-| Calculus | Differentiation (all elementary functions), integration (15+ strategies including Risch), limits (Gruntz algorithm), Taylor/Laurent/formal power series |
+| Calculus | Differentiation (all elementary functions), integration (15+ strategies including Risch + LRT log-to-real), limits (Gruntz algorithm), Taylor/Laurent/formal power series |
 | Algebra | Expansion, factoring over ℤ, GCD, simplification (24 rules + Fu's trig algorithm), partial fractions, Gröbner bases |
-| Solving | Polynomial through quartic by radicals, RootOf for degree ≥ 5, transcendental via Lambert W, systems via Gröbner bases, inequalities, 13 ODE classes |
+| Solving | Polynomial through quartic by radicals, RootOf/RootSum for degree ≥ 5, transcendental via Lambert W, systems via Gröbner bases, inequalities, 13 ODE classes |
 | Linear algebra | Determinant, inverse, eigenvalues, Jordan form, matrix exponential, characteristic polynomial, Cholesky, LU |
 | Transforms | Laplace (forward and inverse), Z-transform, Fourier, Gosper hypergeometric summation |
 | Number theory | Primality testing, integer factorization, Euler's totient, Möbius function, CRT, modular arithmetic |
 | Combinatorics | Stirling numbers (both kinds), Bell, Catalan, Fibonacci, multinomial coefficients, integer partition counting |
 | Special functions | Gamma, Beta, erf, Bessel J/Y/I/K, Lambert W, Legendre, Chebyshev, Hermite, Laguerre |
+| Algebraic numbers | ℚ(α) field arithmetic with exact zero/sign testing, minimal polynomial computation, Vieta's formulas |
+| Radical simplification | Construction-time: `√2·√3 → √6`, `(½·√5)² → 5/4`, `(√5)² → 5` |
 | Output | Rust code generation with CSE, LaTeX rendering, JSON serialization, compiled closures for fast evaluation |
 | Units | 30 physical quantity types with compile-time dimension checking, ~100 unit conversions (all exact rationals) |
 
@@ -39,7 +41,7 @@ Being clear about limitations is important for evaluating whether this library f
 - **PDE solving** is not available. ODE solving covers 13 classes; partial differential equations are out of scope for now.
 - **Group theory** is limited. There is no permutation group, symmetric group, or abstract algebra module.
 - **Interactive notebooks** are not part of the library. symplex is a Rust library, not an application. A basic REPL is available as an example (`cargo run --example repl`), but it is not comparable to a Jupyter + SymPy environment.
-- **Test coverage**, while substantial (~2,500 tests including cross-validation against SymPy), is far less than what SymPy has accumulated over 30 years of development.
+- **Test coverage**, while substantial (~6,000 tests including cross-validation against SymPy), is far less than what SymPy has accumulated over 30 years of development.
 
 ## Design Principles
 

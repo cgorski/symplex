@@ -4,3 +4,14 @@ Cargo.lock
 *.pdb
 TEAM.md
 book/book/
+
+# Python virtualenv (used for SymPy fixture generation)
+.venv/
+__pycache__/
+*.pyc
+
+# Build artifacts and logs
+*.log
+
+# macOS
+.DS_Store

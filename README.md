@@ -70,7 +70,7 @@ cargo add symplex
 - You need a mature CAS with decades of community validation — use [SymPy](https://www.sympy.org/). It has broader coverage, more special functions, and a much larger test corpus.
 - You need geometry, statistics, tensor algebra, or PDE solving — these are not yet available.
 - You need interactive notebook-style exploration — symplex is a library, not an application. (Though see `cargo run --example repl` for a basic REPL.)
-- You need results verified against extensive known-answer databases — symplex has ~2,500 tests, but SymPy has orders of magnitude more coverage.
+- You need results verified against extensive known-answer databases — symplex has ~6,000 tests, but SymPy has orders of magnitude more coverage.
 
 ---
 
@@ -78,7 +78,7 @@ cargo add symplex
 
 ### Calculus
 
-Differentiation handles the chain rule, product rule, and all elementary functions. Integration uses 15+ strategies including by-parts, u-substitution, partial fractions, trig substitution, Risch algorithm, and heuristic integration.
+Differentiation handles the chain rule, product rule, and all elementary functions. Integration uses 15+ strategies including by-parts, u-substitution, partial fractions, trig substitution, Risch algorithm, Lazard-Rioboo-Trager log-to-real conversion, and heuristic integration. Radical coefficients (e.g., `√5` from cyclotomic denominators) are handled exactly via algebraic number field arithmetic.
 
 ```rust
 let ctx = Context::new();
@@ -309,7 +309,7 @@ Queries (`is_positive`, `degree`, `equals`) return `Option<bool>` or `Option<T>`
 |---------|---------|-------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
 | Differentiation | Complete | Complete |
-| Integration | 15+ strategies including Risch | Risch + heurisch (broader) |
+| Integration | 15+ strategies including Risch + LRT log-to-real | Risch + heurisch (broader) |
 | Polynomial solving | Through quartic + RootOf | Through quartic + CRootOf |
 | Series expansion | Taylor / Laurent / FPS | + O() notation |
 | Limits | Gruntz algorithm | Gruntz (more mature) |
@@ -319,15 +319,17 @@ Queries (`is_positive`, `degree`, `equals`) return `Option<bool>` or `Option<T>`
 | Laplace / Z-transforms | Table-based | Broader tables |
 | Combinatorics | Stirling, Bell, partitions, multinomial | Broader (permutation groups, etc.) |
 | Number theory | Primality, factorization, CRT, modular | Broader (Diophantine, quadratic forms) |
+| Radical simplification | Construction-time (`√2·√3 → √6`) | Construction-time (similar) |
+| Algebraic numbers | `ℚ(α)` field with exact zero/sign testing | `AlgebraicNumber` + `ANP` |
 | Code generation | Optimized Rust with CSE | Python / C / Fortran |
 | Dimensional analysis | Compile-time type checking | Not built-in |
 | Thread safety | `Send + Sync`, no GIL | GIL-bound |
 | Expression type safety | `Ex` / `BoolEx` / `SetEx` at compile time | Runtime only |
-| Language | Rust (compiled, ~98K lines) | Python (interpreted) |
+| Language | Rust (compiled, ~103K lines) | Python (interpreted) |
 
 **Where SymPy is stronger:** geometry, statistics, tensor algebra, quantum mechanics, Diophantine equations, PDE solving, and 30 years of community contributions and testing.
 
-**Where symplex is different:** compile-time dimensional analysis, thread safety, Rust code generation with CSE, and exact arithmetic without Python overhead. Operations that can't complete return honest unevaluated forms rather than hanging.
+**Where symplex is different:** compile-time dimensional analysis, thread safety, Rust code generation with CSE, exact arithmetic without Python overhead, algebraic number field arithmetic with exact zero/sign testing, and construction-time radical simplification. Operations that can't complete return honest unevaluated forms (including `RootSum` for degree ≥ 5 polynomial root sums) rather than hanging.
 
 ---
 
