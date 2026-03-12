@@ -344,6 +344,88 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         factors.push((*base, combined_exp));
     }
 
+    // ── Exponent-grouping pass for positive numeric bases ──────────
+    //
+    // Combine factors like 2^{1/2} · 3^{1/2} → 6^{1/2} = √6.
+    //
+    // For factors whose bases are positive rational numbers and whose
+    // exponents are non-integer rationals, group by exponent and multiply
+    // the bases.  This is unconditionally valid for positive reals (no
+    // branch-cut issues).  Matches SymPy's `pnum_rat` grouping in
+    // `Mul.flatten`.
+    //
+    // Only numeric bases are combined — symbolic bases (x, y) are left
+    // for `powsimp_base` with assumption checking.
+    {
+        let mut combined_factors: SmallVec<[(ExprId, ExprId); 8]> = SmallVec::new();
+        // Map: exponent ExprId → (product of bases as Ratio, indices consumed)
+        let mut exp_groups: FxHashMap<ExprId, (Ratio<BigInt>, usize)> = FxHashMap::default();
+        let mut factor_used: SmallVec<[bool; 8]> = smallvec::smallvec![false; factors.len()];
+
+        for (i, &(base, exp_id)) in factors.iter().enumerate() {
+            // Only group: base is a positive rational number, exponent is a
+            // non-integer rational (fractional like 1/2, 1/3, 2/3, -1/2).
+            let dominated = 'check: {
+                let base_r = match arena.as_num(base) {
+                    Some(r) if r.is_positive() => r.clone(),
+                    _ => break 'check false,
+                };
+                let exp_r = match arena.as_num(exp_id) {
+                    Some(r) if !r.is_integer() => r,
+                    _ => break 'check false,
+                };
+                let _ = exp_r; // used only for the is_integer check
+
+                let entry = exp_groups
+                    .entry(exp_id)
+                    .or_insert_with(|| (Ratio::one(), 0));
+                entry.0 *= &base_r;
+                entry.1 += 1;
+                factor_used[i] = true;
+                true
+            };
+            let _ = dominated;
+        }
+
+        // Check if any group actually combined multiple bases.
+        let any_combined = exp_groups.values().any(|&(_, count)| count > 1);
+
+        if any_combined {
+            tracing::trace!(
+                n_groups = exp_groups.len(),
+                "canon_mul: exponent-grouping combined positive numeric bases"
+            );
+
+            // Keep non-grouped factors as-is.
+            for (i, &(base, exp_id)) in factors.iter().enumerate() {
+                if !factor_used[i] {
+                    combined_factors.push((base, exp_id));
+                }
+            }
+
+            // Emit combined factors (and single-entry groups).
+            for (exp_id, (product, count)) in &exp_groups {
+                if *count <= 1 {
+                    // Single entry — find and re-emit the original factor.
+                    for (i, &(_, e)) in factors.iter().enumerate() {
+                        if factor_used[i] && e == *exp_id {
+                            combined_factors.push(factors[i]);
+                            break;
+                        }
+                    }
+                } else {
+                    // Multiple bases combined.  Build Pow(product, exp).
+                    // canon_pow will simplify further (e.g., 8^{1/3} → 2).
+                    let prod_nid = arena.intern_num(product.clone());
+                    let prod_base = arena.intern(ExprNode::Num(prod_nid));
+                    combined_factors.push((prod_base, *exp_id));
+                }
+            }
+
+            factors = combined_factors;
+        }
+    }
+
     // Sort factors by base SortKey.
     factors.sort_by(|(a, _), (b, _)| arena.sort_key(*a).cmp(arena.sort_key(*b)));
 
