@@ -481,6 +481,163 @@ pub(crate) fn log_to_real(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Vieta's formulas — symmetric functions of roots without root-finding
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extract the elementary symmetric polynomials `e_k` from a polynomial's
+/// coefficients using Vieta's formulas.
+///
+/// For a monic polynomial `t^n + a_{n-1}·t^{n-1} + ... + a_1·t + a_0`,
+/// the elementary symmetric polynomials of its roots are:
+///
+/// ```text
+/// e_1 = -a_{n-1}          (sum of roots)
+/// e_2 =  a_{n-2}          (sum of products of pairs)
+/// e_k = (-1)^k · a_{n-k}  (k-th elementary symmetric polynomial)
+/// ```
+///
+/// Returns `e_1, e_2, ..., e_n` as `Ratio<BigInt>` values.
+/// The input polynomial must be monic (leading coefficient = 1).
+///
+/// Returns `None` if the polynomial is zero, constant, or not monic.
+pub(crate) fn vieta_elementary_symmetric(
+    poly: &Poly,
+) -> Option<Vec<Ratio<BigInt>>> {
+    let n = poly.degree()?;
+    if n == 0 {
+        return None;
+    }
+
+    // Check monic (leading coefficient = 1).
+    let lc = poly.leading_coeff()?;
+    if !num_traits::One::is_one(lc) {
+        tracing::trace!("vieta_elementary_symmetric: polynomial is not monic");
+        return None;
+    }
+
+    let one: Ratio<BigInt> = Ratio::from_integer(BigInt::from(1));
+    let neg_one: Ratio<BigInt> = Ratio::from_integer(BigInt::from(-1));
+
+    let mut e = Vec::with_capacity(n);
+    for k in 1..=n {
+        // e_k = (-1)^k · a_{n-k}
+        let coeff = poly.coeff(n - k);
+        let sign = if k % 2 == 0 { &one } else { &neg_one };
+        e.push(sign * &coeff);
+    }
+
+    Some(e)
+}
+
+/// Compute the power sum `p_k = Σ_{i=1}^{n} α_i^k` using Newton's identities,
+/// given the elementary symmetric polynomials `e_1, ..., e_n`.
+///
+/// Newton's identities:
+/// ```text
+/// p_1 = e_1
+/// p_2 = e_1·p_1 - 2·e_2
+/// p_k = Σ_{i=1}^{k-1} (-1)^{i-1}·e_i·p_{k-i} + (-1)^{k-1}·k·e_k   (k ≤ n)
+/// p_k = Σ_{i=1}^{n}   (-1)^{i-1}·e_i·p_{k-i}                        (k > n)
+/// ```
+///
+/// Returns `p_1, p_2, ..., p_max_k`.
+pub(crate) fn vieta_power_sums(
+    elementary: &[Ratio<BigInt>],
+    max_k: usize,
+) -> Vec<Ratio<BigInt>> {
+    let n = elementary.len(); // degree of the polynomial
+    let one: Ratio<BigInt> = Ratio::from_integer(BigInt::from(1));
+    let neg_one: Ratio<BigInt> = Ratio::from_integer(BigInt::from(-1));
+    let mut p: Vec<Ratio<BigInt>> = Vec::with_capacity(max_k);
+
+    for k in 1..=max_k {
+        let mut pk = Ratio::from_integer(BigInt::from(0));
+
+        let upper = if k <= n { k - 1 } else { n };
+        for i in 1..=upper {
+            // (-1)^{i-1} · e_i · p_{k-i}
+            let sign = if (i - 1) % 2 == 0 { &one } else { &neg_one };
+            let e_i = &elementary[i - 1];
+            let p_km = if k - i >= 1 {
+                &p[k - i - 1] // p_{k-i} (0-indexed)
+            } else {
+                // k - i == 0 → this shouldn't happen since i ≤ k-1
+                continue;
+            };
+            pk = pk + sign * e_i * p_km;
+        }
+
+        // For k ≤ n: add the (-1)^{k-1} · k · e_k term
+        if k <= n {
+            let sign = if (k - 1) % 2 == 0 { &one } else { &neg_one };
+            let k_rat = Ratio::from_integer(BigInt::from(k));
+            pk = pk + sign * &k_rat * &elementary[k - 1];
+        }
+
+        p.push(pk);
+    }
+
+    p
+}
+
+/// Try to evaluate `RootSum(poly, body, sumvar)` when the body is a
+/// polynomial in `sumvar` (no other variables), using Vieta's formulas
+/// and Newton's identities.
+///
+/// For `body = c_m·t^m + ... + c_1·t + c_0`, the sum over all roots is:
+/// ```text
+/// Σ body(α_i) = c_m·p_m + ... + c_1·p_1 + n·c_0
+/// ```
+/// where `p_k = Σ α_i^k` (power sums) and `n` is the polynomial degree.
+///
+/// Returns `Some(rational_value)` if the body is a polynomial in sumvar
+/// with rational coefficients and no other free variables.
+/// Returns `None` otherwise.
+pub(crate) fn vieta_rootsum_poly_body(
+    arena: &Arena,
+    poly_id: ExprId,
+    body_id: ExprId,
+    sumvar_id: ExprId,
+) -> Option<Ratio<BigInt>> {
+    // Extract the polynomial as Poly.
+    let poly = crate::poly::polybridge::expr_to_poly(arena, poly_id, sumvar_id)?;
+    let n = poly.degree()?;
+
+    // Make monic for Vieta's formulas.
+    let monic = poly.make_monic();
+
+    // Extract body as Poly in sumvar.
+    let body_poly = crate::poly::polybridge::expr_to_poly(arena, body_id, sumvar_id)?;
+    let body_deg = body_poly.degree().unwrap_or(0);
+
+    tracing::debug!(
+        poly_degree = n,
+        body_degree = body_deg,
+        "vieta_rootsum_poly_body: attempting Vieta evaluation"
+    );
+
+    // Get elementary symmetric polynomials.
+    let elementary = vieta_elementary_symmetric(&monic)?;
+
+    // Compute power sums up to the body degree.
+    let power_sums = vieta_power_sums(&elementary, body_deg);
+
+    // Evaluate: Σ body(α_i) = Σ_k c_k · p_k + n · c_0
+    let n_rat = Ratio::from_integer(BigInt::from(n));
+    let mut result = &n_rat * body_poly.coeff(0); // n · c_0
+
+    for k in 1..=body_deg {
+        let c_k = body_poly.coeff(k);
+        if !c_k.is_zero() && k <= power_sums.len() {
+            result = result + &c_k * &power_sums[k - 1];
+        }
+    }
+
+    tracing::debug!(%result, "vieta_rootsum_poly_body: computed via Vieta");
+    Some(result)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // rootsum_doit — expand RootSum when the polynomial is solvable
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -563,6 +720,109 @@ pub(crate) fn rootsum_doit(
 mod tests {
     use super::*;
     use crate::poly::traits::Field;
+
+
+    // ── Vieta tests ────────────────────────────────────────────────
+
+    #[test]
+    fn vieta_elementary_symmetric_quadratic() {
+        // q(t) = t² + 3t + 2 = (t+1)(t+2)
+        // Roots: -1, -2
+        // e_1 = -(-1-2) = 3  (but Vieta: e_1 = -a_{n-1} = -3)
+        // Wait: for t² + 3t + 2, a_1=3, a_0=2
+        // e_1 = -a_1 = -3  (sum of roots = -1 + -2 = -3) ✓
+        // e_2 = a_0 = 2   (product of roots = (-1)(-2) = 2) ✓
+        let q = Poly::from_coeffs(vec![r(2, 1), r(3, 1), r(1, 1)]);
+        let e = vieta_elementary_symmetric(&q).unwrap();
+        assert_eq!(e.len(), 2);
+        assert_eq!(e[0], r(-3, 1), "e_1 = sum of roots = -3");
+        assert_eq!(e[1], r(2, 1), "e_2 = product of roots = 2");
+    }
+
+    #[test]
+    fn vieta_power_sums_quadratic() {
+        // Roots: -1, -2
+        // p_1 = (-1) + (-2) = -3
+        // p_2 = (-1)² + (-2)² = 1 + 4 = 5
+        // p_3 = (-1)³ + (-2)³ = -1 + (-8) = -9
+        let e = vec![r(-3, 1), r(2, 1)];
+        let p = vieta_power_sums(&e, 3);
+        assert_eq!(p.len(), 3);
+        assert_eq!(p[0], r(-3, 1), "p_1 = -3");
+        assert_eq!(p[1], r(5, 1), "p_2 = 5");
+        assert_eq!(p[2], r(-9, 1), "p_3 = -9");
+    }
+
+    #[test]
+    fn vieta_power_sums_cubic() {
+        // q(t) = t³ - 6t² + 11t - 6 = (t-1)(t-2)(t-3)
+        // Roots: 1, 2, 3
+        // e_1 = 6, e_2 = 11, e_3 = 6
+        let q = Poly::from_coeffs(vec![r(-6, 1), r(11, 1), r(-6, 1), r(1, 1)]);
+        let e = vieta_elementary_symmetric(&q).unwrap();
+        assert_eq!(e[0], r(6, 1), "e_1 = 1+2+3 = 6");
+        assert_eq!(e[1], r(11, 1), "e_2 = 1·2+1·3+2·3 = 11");
+        assert_eq!(e[2], r(6, 1), "e_3 = 1·2·3 = 6");
+
+        // p_1 = 6, p_2 = 1+4+9 = 14, p_3 = 1+8+27 = 36
+        let p = vieta_power_sums(&e, 3);
+        assert_eq!(p[0], r(6, 1), "p_1 = 6");
+        assert_eq!(p[1], r(14, 1), "p_2 = 14");
+        assert_eq!(p[2], r(36, 1), "p_3 = 36");
+    }
+
+    #[test]
+    fn vieta_rootsum_poly_body_sum_of_roots() {
+        // RootSum(t²+3t+2, t -> t) = sum of roots = -3
+        let mut arena = Arena::new();
+        let t = arena.symbol("t");
+        let two = arena.int(2);
+        let three = arena.int(3);
+        let t_sq = arena.pow(t, two);
+        let poly_expr = {
+            let three_t = arena.mul(&[three, t]);
+            arena.add(&[t_sq, three_t, two])
+        };
+
+        let result = vieta_rootsum_poly_body(&arena, poly_expr, t, t);
+        assert_eq!(result, Some(r(-3, 1)), "sum of roots of t²+3t+2 should be -3");
+    }
+
+    #[test]
+    fn vieta_rootsum_poly_body_sum_of_squares() {
+        // RootSum(t²+3t+2, t -> t²) = sum of squares of roots = 5
+        let mut arena = Arena::new();
+        let t = arena.symbol("t");
+        let two = arena.int(2);
+        let three = arena.int(3);
+        let t_sq = arena.pow(t, two);
+        let poly_expr = {
+            let three_t = arena.mul(&[three, t]);
+            arena.add(&[t_sq, three_t, two])
+        };
+        let body = arena.pow(t, two); // t²
+
+        let result = vieta_rootsum_poly_body(&arena, poly_expr, body, t);
+        assert_eq!(result, Some(r(5, 1)), "sum of squares of roots of t²+3t+2 should be 5");
+    }
+
+    #[test]
+    fn vieta_rootsum_constant_body() {
+        // RootSum(t²+3t+2, t -> 7) = 2 * 7 = 14 (n roots, each contributing 7)
+        let mut arena = Arena::new();
+        let t = arena.symbol("t");
+        let two = arena.int(2);
+        let three = arena.int(3);
+        let seven = arena.int(7);
+        let t_sq = arena.pow(t, two);
+        let poly_expr = {
+            let three_t = arena.mul(&[three, t]);
+            arena.add(&[t_sq, three_t, two])
+        };
+
+        let result = vieta_rootsum_poly_body(&arena, poly_expr, seven, t);
+        assert_eq!(result, Some(r(14, 1)), "RootSum with constant body 7 over degree-2 poly = 14");
+    }
 
     fn r(n: i64, d: i64) -> Ratio<BigInt> {
         Ratio::new(BigInt::from(n), BigInt::from(d))
