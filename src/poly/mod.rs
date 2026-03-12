@@ -1,3 +1,4 @@
+pub(crate) mod algebraic;
 pub(crate) mod dense;
 pub mod generic;
 pub mod groebner;
