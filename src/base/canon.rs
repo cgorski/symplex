@@ -555,6 +555,36 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         }
     }
 
+    // Pow(Mul(children), n) → Mul(Pow(child_i, n)) when n is integer, |n| ≤ 10.
+    //
+    // This is the standard algebraic identity (a·b·c)^n = a^n · b^n · c^n,
+    // which is unconditionally valid for integer exponents and commutative
+    // bases (no branch-cut issues).  The threshold prevents expression swell
+    // for very large exponents.
+    //
+    // Each Pow(child_i, n) recurses through canon_pow, enabling further
+    // simplification: e.g., (½·√5)^2 → (½)^2 · (√5)^2 → ¼ · 5 = 5/4.
+    //
+    // Matches SymPy's Mul._eval_power auto-expansion for integer exponents.
+    if let ExprNode::Mul(ref children) = arena.node(base).clone()
+        && let Some(exp_r) = arena.as_num(exp)
+        && exp_r.is_integer()
+    {
+        let n_i64: i64 = exp_r.to_integer().try_into().unwrap_or(i64::MAX);
+        if n_i64.unsigned_abs() <= 10 && children.len() >= 2 {
+            tracing::trace!(
+                n = n_i64,
+                n_factors = children.len(),
+                "canon_pow: distributing integer power over Mul"
+            );
+            let distributed: SmallVec<[ExprId; 6]> = children
+                .iter()
+                .map(|&child| canon_pow(arena, child, exp))
+                .collect();
+            return canon_mul(arena, &distributed);
+        }
+    }
+
     // i^n reduction: i^0=1, i^1=i, i^2=-1, i^3=-i, then repeats with period 4.
     if base == arena.i_unit
         && let Some(exp_r) = arena.as_num(exp)
