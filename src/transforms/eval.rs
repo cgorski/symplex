@@ -1022,6 +1022,24 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             }
 
             // Everything else: unchanged.
+            // ── RootSum: try to expand by solving the polynomial ───
+            ExprNode::RootSum(poly, body, sumvar) => {
+                let poly = cache.get(&poly).copied().unwrap_or(poly);
+                let body = cache.get(&body).copied().unwrap_or(body);
+                let sumvar = cache.get(&sumvar).copied().unwrap_or(sumvar);
+                // Try to expand: solve poly, substitute each root into body, sum.
+                // This succeeds for degree ≤ 4 (exact radicals via Cardano/Ferrari).
+                if let Some(expanded) =
+                    crate::calculus::risch::log_to_real::rootsum_doit(arena, poly, body, sumvar)
+                {
+                    tracing::debug!("eval: RootSum expanded via rootsum_doit");
+                    expanded
+                } else {
+                    // Can't expand — rebuild with evaluated children.
+                    arena.intern(ExprNode::RootSum(poly, body, sumvar))
+                }
+            }
+
             _ => id,
         };
 

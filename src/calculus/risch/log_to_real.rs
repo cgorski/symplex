@@ -481,6 +481,81 @@ pub(crate) fn log_to_real(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// rootsum_doit — expand RootSum when the polynomial is solvable
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to expand a `RootSum(poly, body, sumvar)` into an explicit sum
+/// by finding the roots of the polynomial via [`solve`].
+///
+/// For degree ≤ 4 polynomials, `solve` produces exact radical roots
+/// (quadratic formula, Cardano, Ferrari).  Each root is substituted
+/// into the body, and the results are summed.
+///
+/// Returns `Some(expanded_sum)` if all roots are found, `None` if
+/// `solve` can't find them (degree ≥ 5 non-solvable).
+///
+/// # Example
+///
+/// ```text
+/// RootSum(9t²+3t+1, t -> t·ln(x-3t))
+///   → (-1/6+i√3/6)·ln(x-3(-1/6+i√3/6)) + (-1/6-i√3/6)·ln(x-3(-1/6-i√3/6))
+/// ```
+///
+/// The result can then be simplified via `eval` / `as_real_imag` / etc.
+pub(crate) fn rootsum_doit(
+    arena: &mut Arena,
+    poly_id: ExprId,
+    body_id: ExprId,
+    sumvar_id: ExprId,
+) -> Option<ExprId> {
+    // Solve the polynomial for roots.
+    let roots = crate::transforms::solve::solve(arena, poly_id, sumvar_id);
+
+    if roots.is_empty() {
+        tracing::debug!("rootsum_doit: solve returned no roots, cannot expand");
+        return None;
+    }
+
+    // Check that we got the expected number of roots (= degree of poly).
+    let poly_obj = crate::poly::polybridge::expr_to_poly(arena, poly_id, sumvar_id);
+    if let Some(ref p) = poly_obj {
+        if let Some(deg) = p.degree() {
+            if roots.len() != deg {
+                tracing::debug!(
+                    expected = deg,
+                    found = roots.len(),
+                    "rootsum_doit: solve found fewer roots than polynomial degree, cannot expand fully"
+                );
+                return None;
+            }
+        }
+    }
+
+    tracing::debug!(
+        n_roots = roots.len(),
+        "rootsum_doit: expanding RootSum by substituting each root"
+    );
+
+    // For each root α_k: substitute sumvar = α_k into body, eval.
+    let mut terms: Vec<ExprId> = Vec::with_capacity(roots.len());
+    for root in &roots {
+        let substituted = crate::transforms::subs::subs(arena, body_id, sumvar_id, root.value);
+        let evaluated = crate::transforms::eval::eval(arena, substituted);
+        terms.push(evaluated);
+    }
+
+    // Sum all terms.
+    let result = if terms.len() == 1 {
+        terms[0]
+    } else {
+        arena.add(&terms)
+    };
+
+    tracing::debug!("rootsum_doit: expansion complete");
+    Some(result)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

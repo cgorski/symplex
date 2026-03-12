@@ -1049,36 +1049,68 @@ fn eval_node(
         // evaluate, and sum.  If the body contains free variables other than
         // sumvar, this will fail (those variables must be substituted first).
         ExprNode::RootSum(poly, body, sumvar) => {
-            // Evaluate the polynomial at integer evaluation points to find
-            // roots via the Aberth method (handles degree ≥ 5).
-            // First, try to convert the polynomial to a Poly for root-finding.
-            let poly_eval = cache.get(&poly).ok_or_else(|| SymplexError::Unevaluable {
-                reason: "RootSum polynomial not evaluable".into(),
-            })?;
-            let body_node_id = body;
-            let sumvar_id = sumvar;
+            // RootSum(poly, body, sumvar) = Σ_{α: poly(α)=0} body(α, x).
+            //
+            // Strategy:
+            // 1. Convert the polynomial expression to a Poly via expr_to_poly
+            //    (which takes &Arena — no mutation needed).
+            // 2. Find ALL roots numerically via Aberth's method.
+            // 3. For each root α_k, evaluate body with sumvar = α_k using
+            //    evalf_subtree_with_sub (same mechanism as Sum evaluation).
+            // 4. Sum all contributions.
+            //
+            // The imaginary parts should cancel for real-valued integrals.
 
-            // We need to find roots of the polynomial.  Use the arena-level
-            // solve function (which handles degree ≤ 4 via radicals and
-            // degree ≥ 5 via Aberth numerical roots).
-            //
-            // Since evalf takes &Arena (immutable), we can't call solve
-            // (which needs &mut Arena).  Instead, we'll use the polynomial
-            // root-finding from poly::roots directly if the poly can be
-            // extracted, or return an error.
-            //
-            // For now: if the polynomial evaluates to a numeric value (all
-            // coefficients are known), we attempt to find roots via the
-            // cached sub-expression values.  Otherwise, error.
-            //
-            // A full implementation would use Aberth root-finding on the
-            // polynomial coefficients extracted from the cache.
-            let _ = (poly_eval, body_node_id, sumvar_id);
-            Err(SymplexError::Unevaluable {
-                reason: "RootSum numerical evaluation not yet implemented — \
-                         use .subs() to substitute free variables, then .eval_f64()"
-                    .into(),
-            })
+            let poly_id = *poly;
+            let body_id = *body;
+            let sumvar_id = *sumvar;
+
+            tracing::debug!("evalf: RootSum — attempting numerical evaluation via Aberth roots");
+
+            // Step 1: Convert polynomial expression to Poly.
+            let poly_obj = crate::poly::polybridge::expr_to_poly(arena, poly_id, sumvar_id)
+                .ok_or_else(|| SymplexError::Unevaluable {
+                    reason: "RootSum: cannot convert polynomial expression to Poly \
+                             (may contain free symbols)"
+                        .into(),
+                })?;
+
+            let poly_deg = poly_obj.degree().unwrap_or(0);
+            tracing::debug!(
+                degree = poly_deg,
+                "evalf: RootSum — polynomial extracted, finding roots"
+            );
+
+            // Step 2: Find all roots via Aberth's method.
+            // Use the same working precision as the rest of the evalf computation.
+            let roots = crate::poly::roots::aberth_roots(&poly_obj, prec, 200);
+
+            if roots.len() != poly_deg {
+                tracing::debug!(
+                    expected = poly_deg,
+                    found = roots.len(),
+                    "evalf: RootSum — Aberth returned fewer roots than expected"
+                );
+            }
+
+            // Step 3+4: Evaluate body at each root and sum.
+            let mut sum = c_zero(prec);
+            for (k, root) in roots.iter().enumerate() {
+                let term = evalf_subtree_with_sub(
+                    arena, body_id, sumvar_id, root, prec, rm, cc,
+                )?;
+                tracing::trace!(
+                    root_idx = k,
+                    "evalf: RootSum — evaluated body at root"
+                );
+                sum = c_add(&sum, &term, prec, rm);
+            }
+
+            tracing::debug!(
+                n_roots = roots.len(),
+                "evalf: RootSum — numerical evaluation complete"
+            );
+            Ok(sum)
         }
 
         ExprNode::DSolve(_, _, _) => Err(SymplexError::Unevaluable {
