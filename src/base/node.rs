@@ -288,6 +288,17 @@ pub enum ExprNode {
     /// Root of a polynomial: the index-th root of poly.
     RootOf(ExprId, ExprId),
 
+    /// Sum over roots of a polynomial: Σ_{α: poly(α)=0} body(α, x).
+    ///
+    /// Used by Rothstein-Trager when the resultant has irreducible factors
+    /// of degree ≥ 5 whose roots cannot be expressed in radicals.
+    ///
+    /// `RootSum(poly, body, sumvar)` where:
+    /// - `poly` is the polynomial expression whose roots are summed over
+    /// - `body` is the expression evaluated at each root (contains `sumvar`)
+    /// - `sumvar` is the bound summation variable symbol
+    RootSum(ExprId, ExprId, ExprId),
+
     /// Formal ODE solution: DSolve(expr=0, func, var).
     DSolve(ExprId, ExprId, ExprId),
 
@@ -401,7 +412,8 @@ impl ExprNode {
             | ExprNode::LaplaceTransform(a, b, c)
             | ExprNode::InverseLaplaceTransform(a, b, c)
             | ExprNode::Residue(a, b, c)
-            | ExprNode::DSolve(a, b, c) => smallvec![*a, *b, *c],
+            | ExprNode::DSolve(a, b, c)
+            | ExprNode::RootSum(a, b, c) => smallvec![*a, *b, *c],
 
             // 4-ary: Sum, Product_, Series
             ExprNode::Sum(a, b, c, d)
@@ -530,7 +542,8 @@ impl ExprNode {
             | ExprNode::LaplaceTransform(a, b, c)
             | ExprNode::InverseLaplaceTransform(a, b, c)
             | ExprNode::Residue(a, b, c)
-            | ExprNode::DSolve(a, b, c) => {
+            | ExprNode::DSolve(a, b, c)
+            | ExprNode::RootSum(a, b, c) => {
                 f(*a);
                 f(*b);
                 f(*c);
@@ -630,7 +643,8 @@ impl ExprNode {
             | ExprNode::LaplaceTransform(..)
             | ExprNode::InverseLaplaceTransform(..)
             | ExprNode::Residue(..)
-            | ExprNode::DSolve(..) => 3,
+            | ExprNode::DSolve(..)
+            | ExprNode::RootSum(..) => 3,
             ExprNode::Sum(..) | ExprNode::Product_(..) | ExprNode::Series(..) => 4,
             ExprNode::Neg(_)
             | ExprNode::Floor(_)
@@ -849,6 +863,12 @@ impl fmt::Debug for ExprNode {
                 .field(expr)
                 .field(func)
                 .field(var)
+                .finish(),
+            ExprNode::RootSum(poly, body, sumvar) => f
+                .debug_tuple("RootSum")
+                .field(poly)
+                .field(body)
+                .field(sumvar)
                 .finish(),
             ExprNode::ConditionSet(var, cond) => f
                 .debug_tuple("ConditionSet")

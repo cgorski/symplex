@@ -452,6 +452,15 @@ pub enum ExprTree {
         /// The independent variable.
         var: Box<ExprTree>,
     },
+    /// Sum over roots of a polynomial: RootSum(poly, body, sumvar).
+    RootSum {
+        /// The polynomial whose roots are summed over.
+        poly: Box<ExprTree>,
+        /// The body expression evaluated at each root.
+        body: Box<ExprTree>,
+        /// The bound summation variable.
+        sumvar: Box<ExprTree>,
+    },
     /// Condition set: {var | condition}.
     ConditionSet {
         /// The set variable.
@@ -716,6 +725,11 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
             expr: Box::new(expr_to_tree(arena, expr)),
             func: Box::new(expr_to_tree(arena, func)),
             var: Box::new(expr_to_tree(arena, var)),
+        },
+        ExprNode::RootSum(poly, body, sumvar) => ExprTree::RootSum {
+            poly: Box::new(expr_to_tree(arena, poly)),
+            body: Box::new(expr_to_tree(arena, body)),
+            sumvar: Box::new(expr_to_tree(arena, sumvar)),
         },
         ExprNode::ConditionSet(var, condition) => ExprTree::ConditionSet {
             var: Box::new(expr_to_tree(arena, var)),
@@ -1053,6 +1067,12 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let f = tree_to_expr(arena, func);
             let v = tree_to_expr(arena, var);
             arena.intern(ExprNode::DSolve(e, f, v))
+        }
+        ExprTree::RootSum { poly, body, sumvar } => {
+            let p = tree_to_expr(arena, poly);
+            let b = tree_to_expr(arena, body);
+            let s = tree_to_expr(arena, sumvar);
+            arena.intern(ExprNode::RootSum(p, b, s))
         }
         ExprTree::ConditionSet { var, condition } => {
             let v = tree_to_expr(arena, var);

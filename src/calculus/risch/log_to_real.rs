@@ -412,28 +412,59 @@ pub(crate) fn log_to_real(
         tracing::trace!(pair_idx, "log_to_real: norm |h|² computed and simplified");
 
         // ln term: u_j · ln(|h|²)
-        let ln_norm = arena.ln(norm_sq);
-        let ln_term = arena.mul(&[*u_j, ln_norm]);
+        // ── Check if u_j ≈ 0 (pure imaginary root) ────────────────
+        let u_f64 = crate::transforms::evalf::eval_const_f64(arena, *u_j);
+        let u_is_zero = u_f64.is_some_and(|v| v.abs() < 1e-14);
 
-        // ── Build atan via log_to_atan_deg1 ────────────────────────
-        let atan_result =
-            log_to_atan_deg1(arena, var, re_h1, re_h0, im_h1, im_h0);
+        // ── Check if B(x) ≈ 0 (imaginary part vanishes) ───────────
+        let im_h1_f64 = crate::transforms::evalf::eval_const_f64(arena, im_h1);
+        let im_h0_f64 = crate::transforms::evalf::eval_const_f64(arena, im_h0);
+        let b_is_zero = im_h1_f64.is_some_and(|v| v.abs() < 1e-14)
+            && im_h0_f64.is_some_and(|v| v.abs() < 1e-14);
 
-        match atan_result {
-            Some(atan_expr) => {
-                // atan term: v_j · log_to_atan(A, B)
-                // (log_to_atan already includes the factor of 2)
-                let atan_term = arena.mul(&[*v_j, atan_expr]);
-                result_terms.push(ln_term);
-                result_terms.push(atan_term);
-                tracing::debug!(pair_idx, "log_to_real: emitted ln + atan terms");
-            }
-            None => {
-                tracing::debug!(
-                    pair_idx,
-                    "log_to_real: log_to_atan_deg1 failed, skipping pair"
-                );
-                return None;
+        if u_is_zero && b_is_zero {
+            // Both u ≈ 0 and B ≈ 0: this pair contributes nothing.
+            // This happens for integrands like x/(x⁴+x²+1) where the
+            // Rothstein-Trager roots are pure imaginary and h evaluates
+            // to a real expression.  Return None to let the algebraic
+            // remainder fallback handle this case (via apart).
+            tracing::debug!(
+                pair_idx,
+                "log_to_real: u ≈ 0 and B ≈ 0 — pair contributes nothing, bailing"
+            );
+            return None;
+        }
+
+        // Build ln term: u_j · ln(|h|²)  (skip if u_j ≈ 0)
+        if !u_is_zero {
+            let ln_norm = arena.ln(norm_sq);
+            let ln_term = arena.mul(&[*u_j, ln_norm]);
+            result_terms.push(ln_term);
+        }
+
+        if b_is_zero {
+            // B ≈ 0 but u ≠ 0: only the ln term contributes (already pushed above).
+            tracing::debug!(pair_idx, "log_to_real: B ≈ 0, ln-only term (no atan)");
+        } else {
+            // ── Build atan via log_to_atan_deg1 ────────────────────────
+            let atan_result =
+                log_to_atan_deg1(arena, var, re_h1, re_h0, im_h1, im_h0);
+
+            match atan_result {
+                Some(atan_expr) => {
+                    // atan term: v_j · log_to_atan(A, B)
+                    // (log_to_atan already includes the factor of 2)
+                    let atan_term = arena.mul(&[*v_j, atan_expr]);
+                    result_terms.push(atan_term);
+                    tracing::debug!(pair_idx, "log_to_real: emitted atan term");
+                }
+                None => {
+                    tracing::debug!(
+                        pair_idx,
+                        "log_to_real: log_to_atan_deg1 failed, skipping pair"
+                    );
+                    return None;
+                }
             }
         }
     }

@@ -494,6 +494,7 @@ impl<S: Sort> Expr<S> {
             | crate::base::node::ExprNode::InverseLaplaceTransform(..)
             | crate::base::node::ExprNode::Residue(..)
             | crate::base::node::ExprNode::RootOf(..)
+            | crate::base::node::ExprNode::RootSum(..)
             | crate::base::node::ExprNode::DSolve(..)
             | crate::base::node::ExprNode::ConditionSet(..) => ExprType::Unevaluated,
         }

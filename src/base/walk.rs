@@ -548,6 +548,17 @@ pub(crate) fn rebuild_with_cache(
             }
         }
 
+        ExprNode::RootSum(a, b, c) => {
+            let na = cache.get(&a).copied().unwrap_or(a);
+            let nb = cache.get(&b).copied().unwrap_or(b);
+            let nc = cache.get(&c).copied().unwrap_or(c);
+            if na == a && nb == b && nc == c {
+                id
+            } else {
+                arena.intern(ExprNode::RootSum(na, nb, nc))
+            }
+        }
+
         // 4-field formal node
         ExprNode::Series(a, b, c, d) => {
             let na = cache.get(&a).copied().unwrap_or(a);
@@ -684,6 +695,7 @@ pub(crate) fn has_unevaluated(arena: &Arena, root: ExprId) -> bool {
             | ExprNode::InverseLaplaceTransform(..)
             | ExprNode::Residue(..)
             | ExprNode::RootOf(..)
+            | ExprNode::RootSum(..)
             | ExprNode::DSolve(..)
             | ExprNode::ConditionSet(..)
             | ExprNode::Sum(..)

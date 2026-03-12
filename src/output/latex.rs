@@ -820,6 +820,18 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
             stack.push(LatexItem::Lit(r"\operatorname{DSolve}\left("));
         }
 
+        // ── RootSum ────────────────────────────────────────────────
+        // Display as: \operatorname{RootSum}\left(poly,\, sumvar \mapsto body\right)
+        ExprNode::RootSum(poly, body, sumvar) => {
+            stack.push(LatexItem::Lit(r"\right)"));
+            stack.push(LatexItem::Expr(body));
+            stack.push(LatexItem::Lit(r" \mapsto "));
+            stack.push(LatexItem::Expr(sumvar));
+            stack.push(LatexItem::Lit(r",\, "));
+            stack.push(LatexItem::Expr(poly));
+            stack.push(LatexItem::Lit(r"\operatorname{RootSum}\left("));
+        }
+
         // ── ConditionSet: \left\{var \mid condition\right\} ───────
         ExprNode::ConditionSet(var, condition) => {
             stack.push(LatexItem::Lit(r"\right\}"));

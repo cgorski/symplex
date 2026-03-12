@@ -102,6 +102,9 @@ const RANK_ROOTOF: u8 = 160;
 /// Rank byte for formal DSolve nodes.
 const RANK_DSOLVE: u8 = 162;
 
+/// Rank byte for RootSum nodes.
+const RANK_ROOTSUM: u8 = 163;
+
 /// Rank byte for ConditionSet nodes.
 const RANK_CONDITION_SET: u8 = 164;
 
@@ -781,6 +784,13 @@ pub fn compute_sort_key(
             key.extend(get_key(*expr).as_bytes());
             key.extend(get_key(*func).as_bytes());
             key.extend(get_key(*var).as_bytes());
+        }
+
+        ExprNode::RootSum(poly, body, sumvar) => {
+            key.push(RANK_ROOTSUM);
+            key.extend(get_key(*poly).as_bytes());
+            key.extend(get_key(*body).as_bytes());
+            key.extend(get_key(*sumvar).as_bytes());
         }
 
         ExprNode::ConditionSet(var, cond) => {

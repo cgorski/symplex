@@ -646,6 +646,26 @@ fn diff_node(
             arena.intern(ExprNode::Derivative(id, v))
         }
 
+        // ── RootSum: differentiate the body, keep polynomial and sumvar ──
+        // d/dx RootSum(q, body(t,x), t) = RootSum(q, d/dx body(t,x), t)
+        //
+        // The derivative of a sum over roots is the sum of derivatives.
+        // The polynomial q and bound variable t are unchanged; only the
+        // body (which depends on x) is differentiated.
+        ExprNode::RootSum(poly, body, sumvar) => {
+            if let ExprNode::Symbol(sum_sym) = arena.node(sumvar)
+                && *sum_sym == var
+            {
+                // Differentiating w.r.t. the bound variable — leave formal.
+                let v = var_expr(arena, var);
+                arena.intern(ExprNode::Derivative(id, v))
+            } else {
+                let dbody = get_deriv(cache, body, arena);
+                tracing::trace!("diff: RootSum — differentiating body w.r.t. outer variable");
+                arena.intern(ExprNode::RootSum(poly, dbody, sumvar))
+            }
+        }
+
         // ── Formal / unevaluated nodes: leave as unevaluated derivative ──
         ExprNode::Limit(_, _, _)
         | ExprNode::Series(_, _, _, _)

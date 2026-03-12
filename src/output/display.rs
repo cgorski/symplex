@@ -107,6 +107,7 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Residue(_, _, _)
         | ExprNode::RootOf(_, _)
         | ExprNode::DSolve(_, _, _)
+        | ExprNode::RootSum(_, _, _)
         | ExprNode::ConditionSet(_, _) => PREC_ATOM,
         ExprNode::Or(_) => 10,
         ExprNode::And(_) => 15,
@@ -653,6 +654,18 @@ fn expand_expr(
             stack.push(WorkItem::Lit(", "));
             stack.push(WorkItem::Expr(expr, 0));
             stack.push(WorkItem::Lit("DSolve("));
+        }
+
+        // ── RootSum ────────────────────────────────────────────────
+        // Display as: RootSum(poly, sumvar -> body)
+        ExprNode::RootSum(poly, body, sumvar) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit(" -> "));
+            stack.push(WorkItem::Expr(sumvar, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(poly, 0));
+            stack.push(WorkItem::Lit("RootSum("));
         }
 
         // ── ConditionSet ───────────────────────────────────────────

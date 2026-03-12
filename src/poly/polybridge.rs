@@ -245,6 +245,7 @@ fn convert_node(
         | ExprNode::Residue(_, _, _)
         | ExprNode::RootOf(_, _)
         | ExprNode::DSolve(_, _, _)
+        | ExprNode::RootSum(_, _, _)
         | ExprNode::ConditionSet(_, _) => None,
     }
 }

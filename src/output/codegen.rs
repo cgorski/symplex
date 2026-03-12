@@ -1025,6 +1025,9 @@ fn expr_to_rust_cse(
         ExprNode::DSolve(_, _, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for unevaluated DSolve".to_string(),
         )),
+        ExprNode::RootSum(_, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for RootSum (implicit sum over polynomial roots)".to_string(),
+        )),
         ExprNode::ConditionSet(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for ConditionSet".to_string(),
         )),

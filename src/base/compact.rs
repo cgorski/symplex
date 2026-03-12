@@ -245,6 +245,7 @@ fn remap_node(
         }
         ExprNode::Residue(a, b, c) => ExprNode::Residue(m(a), m(b), m(c)),
         ExprNode::DSolve(a, b, c) => ExprNode::DSolve(m(a), m(b), m(c)),
+        ExprNode::RootSum(a, b, c) => ExprNode::RootSum(m(a), m(b), m(c)),
         ExprNode::Series(a, b, c, d) => ExprNode::Series(m(a), m(b), m(c), m(d)),
         ExprNode::RootOf(a, b) => ExprNode::RootOf(m(a), m(b)),
         ExprNode::ConditionSet(a, b) => ExprNode::ConditionSet(m(a), m(b)),
