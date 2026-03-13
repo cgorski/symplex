@@ -1278,12 +1278,8 @@ fn compile_missing_variable_returns_none() {
 
 #[test]
 fn precision_near_zero_exp_m1() {
-    // BUG FOUND: compile() (lambdify) does NOT apply the exp_m1 numerical
-    // optimization that to_rust_fn codegen does. This means compile() suffers
-    // from catastrophic cancellation for exp(x)-1 near x=0, while the codegen
-    // path correctly emits x.exp_m1() which avoids the issue.
-    //
-    // This is a genuine asymmetry between the two evaluation paths.
+    // FIXED: compile() now detects exp(x)-1 and emits ExpM1 instruction,
+    // matching the codegen path's exp_m1() optimization.
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let f = x.exp() - 1;
@@ -1293,22 +1289,19 @@ fn precision_near_zero_exp_m1() {
     let result = compiled(&[tiny]);
 
     // The correct answer is ~1e-15 (approximately equal to tiny itself).
-    // Due to catastrophic cancellation in the compile() path, we get a
-    // result with ~11% relative error — the subtraction exp(tiny) - 1.0
-    // loses most significant digits.
+    // With the ExpM1 instruction, we get full precision.
     let relative_error = ((result - tiny) / tiny).abs();
     assert!(
-        relative_error > 0.1,
-        "BUG DOCUMENTATION: compile() path SHOULD suffer catastrophic cancellation \
-         for exp(x)-1 near zero (relative error={relative_error}). If this assertion \
-         fails, the lambdify path may have been fixed to use exp_m1!"
+        relative_error < 1e-5,
+        "compile() should use exp_m1 for good precision near zero, \
+         but got relative error {relative_error}"
     );
 
-    // Meanwhile, to_rust_fn correctly uses exp_m1:
+    // codegen also uses exp_m1:
     let code = f.to_rust_fn("expm1_check", &["x"]).unwrap();
     assert!(
         code.contains("exp_m1()"),
-        "codegen should use exp_m1 optimization, but compile() does not"
+        "codegen should use exp_m1 optimization"
     );
 }
 
@@ -1328,14 +1321,15 @@ fn precision_sin_near_zero() {
 
 #[test]
 fn precision_large_cancellation() {
-    // BUG FOUND: Neither compile() nor to_rust_fn perform algebraic
-    // simplification before code generation. The expression (x+1)^2 - x^2 - 2x
-    // is algebraically equal to 1, but when evaluated numerically at large x the
-    // individual terms are ~x^2 in magnitude and their difference is 1.0 —
-    // catastrophic cancellation destroys all significant digits.
+    // PARTIALLY FIXED: compile() now runs eval() as a pre-pass, which catches
+    // exact-zero terms and special values but does NOT do full algebraic
+    // simplification. The expression (x+1)^2 - x^2 - 2x is algebraically 1,
+    // but eval() alone can't prove that — it would need expand() + cancel().
     //
-    // A CAS-aware compiler could simplify this to the constant 1 before emitting
-    // code. Currently neither path does this.
+    // At moderate values the result is close to 1 (floating-point is adequate).
+    // At very large values, catastrophic cancellation still occurs because
+    // the eval() pre-pass doesn't expand/simplify polynomial expressions.
+    // Users should call .simplify() before .compile() for such cases.
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // (x+1)^2 - x^2 - 2x = 1 exactly (algebraically)
@@ -1349,16 +1343,13 @@ fn precision_large_cancellation() {
         compiled(&[100.0])
     );
 
-    // At large values, catastrophic cancellation dominates.
-    // Document the precision loss rather than assert correctness.
-    let large_result = compiled(&[1e10]);
-    let error = (large_result - 1.0).abs();
+    // Workaround: simplify before compiling → exact result
+    let f_simplified = f.simplify();
+    let compiled_simplified = f_simplified.compile(&["x"]).unwrap();
     assert!(
-        error > 1.0,
-        "BUG DOCUMENTATION: at x=1e10, (x+1)^2 - x^2 - 2x should be 1.0 but \
-         compile() gives {large_result} (error={error}). Neither compile() nor \
-         to_rust_fn simplify before emitting code. If this fails, the compiler \
-         may now perform algebraic simplification — great!"
+        approx_eq(compiled_simplified(&[1e10]), 1.0, 1e-10),
+        "simplify() before compile() should give exact result at x=1e10, got {}",
+        compiled_simplified(&[1e10])
     );
 }
 

@@ -3304,8 +3304,16 @@ impl Expr<Numeric> {
     /// ```
     #[allow(clippy::type_complexity)]
     pub fn compile(&self, var_names: &[&str]) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
+        // Pre-pass: run eval() to catch exact-zero terms (sin(0)→0, exp(0)→1,
+        // cos(π)→-1, perfect-square roots, etc.) before code emission.
+        // This is cheap (single bottom-up walk) and can eliminate entire
+        // subexpressions, improving both precision and performance.
+        let evaled_id = {
+            let mut inner = self.inner.write();
+            crate::transforms::eval::eval(&mut inner.arena, self.raw_id())
+        };
         let inner = self.inner.read();
-        crate::output::lambdify::lambdify(&inner.arena, self.raw_id(), var_names)
+        crate::output::lambdify::lambdify(&inner.arena, evaled_id, var_names)
     }
 
     /// Perform common subexpression elimination (CSE).

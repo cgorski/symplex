@@ -59,6 +59,8 @@ enum Instruction {
     Sqrt,
     Cbrt,
     Powi(i32),
+    ExpM1,
+    Ln1p,
     Abs,
     Asin,
     Acos,
@@ -84,6 +86,27 @@ enum Instruction {
 /// Uses an explicit match on every [`ExprNode`] variant.  Returns `None` if
 /// any sub-expression is not numerically evaluable (e.g. `ImaginaryUnit`,
 /// `Factorial`, `Apply`, `Derivative`, `Integral`).
+/// Check if a node is the constant -1 (either Num(-1) or Neg(Num(1))).
+fn is_neg_one(arena: &Arena, id: ExprId) -> bool {
+    if let Some(r) = arena.as_num(id) {
+        return *r == num_rational::Ratio::from_integer((-1).into());
+    }
+    if let ExprNode::Neg(inner) = arena.node(id) {
+        if let Some(r) = arena.as_num(*inner) {
+            return r.is_one();
+        }
+    }
+    false
+}
+
+/// Check if a node is the constant 1.
+fn is_one(arena: &Arena, id: ExprId) -> bool {
+    if let Some(r) = arena.as_num(id) {
+        return r.is_one();
+    }
+    false
+}
+
 fn compile_recursive(
     arena: &Arena,
     id: ExprId,
@@ -119,6 +142,44 @@ fn compile_recursive(
             if children.is_empty() {
                 out.push(Instruction::PushConst(0.0));
                 return Some(());
+            }
+            // Pattern: exp(x) + (-1) → ExpM1(x)  (better precision near zero)
+            if children.len() >= 2 {
+                let mut exp_idx = None;
+                let mut neg_one_idx = None;
+                for (i, &child) in children.iter().enumerate() {
+                    if exp_idx.is_none() {
+                        if let ExprNode::Exp(_) = arena.node(child) {
+                            exp_idx = Some(i);
+                        }
+                    }
+                    if neg_one_idx.is_none() && is_neg_one(arena, child) {
+                        neg_one_idx = Some(i);
+                    }
+                }
+                if let (Some(ei), Some(ni)) = (exp_idx, neg_one_idx) {
+                    if ei != ni {
+                        if let ExprNode::Exp(inner) = arena.node(children[ei]).clone() {
+                            compile_recursive(arena, inner, var_map, out)?;
+                            out.push(Instruction::ExpM1);
+                            // Compile remaining children and add them
+                            let mut first = true;
+                            for (i, &child) in children.iter().enumerate() {
+                                if i != ei && i != ni {
+                                    compile_recursive(arena, child, var_map, out)?;
+                                    if !first {
+                                        out.push(Instruction::Add);
+                                    }
+                                    first = false;
+                                }
+                            }
+                            if !first {
+                                out.push(Instruction::Add);
+                            }
+                            return Some(());
+                        }
+                    }
+                }
             }
             compile_recursive(arena, children[0], var_map, out)?;
             for &child in &children[1..] {
@@ -201,6 +262,21 @@ fn compile_recursive(
             out.push(Instruction::Exp);
         }
         ExprNode::Ln(inner) => {
+            // Pattern: ln(1 + x) → Ln1p(x)  (better precision near zero)
+            if let ExprNode::Add(ref ch) = arena.node(inner).clone() {
+                if ch.len() == 2 {
+                    if is_one(arena, ch[0]) {
+                        compile_recursive(arena, ch[1], var_map, out)?;
+                        out.push(Instruction::Ln1p);
+                        return Some(());
+                    }
+                    if is_one(arena, ch[1]) {
+                        compile_recursive(arena, ch[0], var_map, out)?;
+                        out.push(Instruction::Ln1p);
+                        return Some(());
+                    }
+                }
+            }
             compile_recursive(arena, inner, var_map, out)?;
             out.push(Instruction::Ln);
         }
@@ -407,6 +483,14 @@ fn execute(instructions: &[Instruction], args: &[f64]) -> f64 {
             Instruction::Powi(n) => {
                 let a = stack.pop().unwrap_or(0.0);
                 stack.push(a.powi(*n));
+            }
+            Instruction::ExpM1 => {
+                let a = stack.pop().unwrap_or(0.0);
+                stack.push(a.exp_m1());
+            }
+            Instruction::Ln1p => {
+                let a = stack.pop().unwrap_or(0.0);
+                stack.push(a.ln_1p());
             }
             Instruction::Abs => {
                 let a = stack.pop().unwrap_or(0.0);
