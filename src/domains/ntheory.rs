@@ -148,15 +148,6 @@ fn miller_rabin_big(n: &BigInt, witnesses: &[u64]) -> bool {
 // Internal extended Euclidean algorithm
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Returns `(gcd, x, y)` such that `a*x + b*y = gcd` (i64).
-fn extended_gcd_i64(a: i64, b: i64) -> (i64, i64, i64) {
-    if a == 0 {
-        return (b, 0, 1);
-    }
-    let (g, x1, y1) = extended_gcd_i64(b % a, a);
-    (g, y1 - (b / a) * x1, x1)
-}
-
 /// Returns `(gcd, x, y)` such that `a*x + b*y = gcd` (BigInt).
 fn extended_gcd_big(a: &BigInt, b: &BigInt) -> (BigInt, BigInt, BigInt) {
     if a.is_zero() {
@@ -769,21 +760,13 @@ pub fn crt(remainders: &[BigInt], moduli: &[BigInt]) -> Option<BigInt> {
 /// assert_eq!(crt_i64(&[2, 3, 2], &[3, 5, 7]), Some(23));
 /// ```
 pub fn crt_i64(remainders: &[i64], moduli: &[i64]) -> Option<i64> {
-    if remainders.len() != moduli.len() || remainders.is_empty() {
-        return None;
-    }
-    let mut result = remainders[0];
-    let mut modulus = moduli[0];
-    for i in 1..remainders.len() {
-        let (g, p, _) = extended_gcd_i64(modulus, moduli[i]);
-        if (remainders[i] - result) % g != 0 {
-            return None;
-        }
-        result = result + modulus * ((remainders[i] - result) / g % (moduli[i] / g)) * p;
-        modulus = modulus / g * moduli[i];
-        result = ((result % modulus) + modulus) % modulus;
-    }
-    Some(result)
+    // Delegate to the arbitrary-precision BigInt implementation, which is
+    // proven correct for all input sizes.  The i64 wrapper only converts
+    // at the boundaries — no native-width intermediate arithmetic that
+    // could overflow.
+    let r: Vec<BigInt> = remainders.iter().map(|&r| BigInt::from(r)).collect();
+    let m: Vec<BigInt> = moduli.iter().map(|&m| BigInt::from(m)).collect();
+    crt(&r, &m).and_then(|x| (&x).try_into().ok())
 }
 
 /// Greatest common divisor of two integers.

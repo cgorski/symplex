@@ -243,6 +243,44 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         tracing::debug!("smart_simplify: skipping trig_expand (no trig nodes)");
     }
 
+    // Strategy 5b: eval → fu (Fu's trig algorithm — only if has trig)
+    if flags.has_trig {
+        let s5b_eval = crate::transforms::eval::eval(arena, expr);
+        let s5b_fu = crate::simplify::fu::fu(arena, s5b_eval);
+        tracing::trace!(
+            strategy = "eval+fu",
+            ops = count_ops(arena, s5b_fu),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s5b_fu);
+    } else {
+        tracing::debug!("smart_simplify: skipping fu (no trig nodes)");
+    }
+
+    // Strategy 5c: eval → factor_terms → fu → reassemble (trig + add)
+    //
+    // Handles cases like 2·sin²(x) + 2·cos²(x) → 2·(sin²+cos²) → 2·1 = 2
+    // where the common factor must be extracted before fu can fire.
+    if flags.has_trig && flags.has_add {
+        let s5c_eval = crate::transforms::eval::eval(arena, expr);
+        let (gcd_id, s5c_inner) =
+            crate::simplify::factor_terms::symbolic_factor_terms_pair(arena, s5c_eval);
+        let s5c_fu = crate::simplify::fu::fu(arena, s5c_inner);
+        let s5c = if gcd_id == arena.one {
+            s5c_fu
+        } else {
+            arena.mul(&[gcd_id, s5c_fu])
+        };
+        tracing::trace!(
+            strategy = "eval+factor+fu",
+            ops = count_ops(arena, s5c),
+            "strategy evaluated"
+        );
+        update_best(arena, &mut best, &mut best_ops, s5c);
+    } else {
+        tracing::debug!("smart_simplify: skipping factor+fu (no trig+add nodes)");
+    }
+
     // Strategy 6: eval → logcombine → simplify (only if has Ln nodes)
     if flags.has_exp_ln {
         let rules = crate::transforms::pattern::basic_rules(arena);

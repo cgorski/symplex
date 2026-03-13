@@ -44,23 +44,45 @@ pub(crate) fn limit(
         //
         // This handles the classic  lim(x→∞) (1 + 1/x)^x = e  and
         // similar 1^∞ indeterminate forms that Gruntz struggles with.
+        //
+        // IMPORTANT: The rewrite is only valid when base → 1 (so that
+        // ln(1 + δ) ≈ δ).  We must verify this precondition before
+        // applying the heuristic, otherwise ∞^0 forms like x^(1/x)
+        // produce wrong answers (e.g. e instead of 1).
         if let ExprNode::Pow(base, exponent) = arena.node(expr).clone()
             && crate::base::walk::contains(arena, exponent, var)
         {
-            tracing::debug!("limit: trying 1^∞ heuristic for Pow with var-dependent exponent");
-            let one = arena.one();
-            let base_minus_1 = arena.sub(base, one);
-            let product = arena.mul(&[exponent, base_minus_1]);
-            // Try to compute lim(exp * (base - 1)).
-            // Use Gruntz for this inner limit — the product is typically
-            // a simple rational function that Gruntz handles well.
-            if let Ok(inner_lim) = crate::calculus::gruntz::gruntz(arena, product, var, point) {
-                let is_inf = inner_lim == arena.infinity() || inner_lim == arena.neg_infinity();
-                if !is_inf {
-                    tracing::debug!("limit: 1^∞ heuristic succeeded, inner limit is finite");
-                    let result = arena.exp(inner_lim);
-                    let result = crate::transforms::eval::eval(arena, result);
-                    return Ok(result);
+            // Check whether base → 1.
+            let base_tends_to_one = if !crate::base::walk::contains(arena, base, var) {
+                // Constant base: lim(base) = base itself.
+                base == arena.one()
+            } else {
+                // Variable base: compute lim(base) via Gruntz.
+                match crate::calculus::gruntz::gruntz(arena, base, var, point) {
+                    Ok(lim_base) => lim_base == arena.one(),
+                    Err(_) => false, // Can't confirm base → 1; skip heuristic.
+                }
+            };
+
+            if base_tends_to_one {
+                tracing::debug!("limit: base → 1 confirmed, applying 1^∞ heuristic");
+                let one = arena.one();
+                let base_minus_1 = arena.sub(base, one);
+                let product = arena.mul(&[exponent, base_minus_1]);
+                // Try to compute lim(exp * (base - 1)).
+                // Use Gruntz for this inner limit — the product is typically
+                // a simple rational function that Gruntz handles well.
+                if let Ok(inner_lim) =
+                    crate::calculus::gruntz::gruntz(arena, product, var, point)
+                {
+                    let is_inf =
+                        inner_lim == arena.infinity() || inner_lim == arena.neg_infinity();
+                    if !is_inf {
+                        tracing::debug!("limit: 1^∞ heuristic succeeded, inner limit is finite");
+                        let result = arena.exp(inner_lim);
+                        let result = crate::transforms::eval::eval(arena, result);
+                        return Ok(result);
+                    }
                 }
             }
             tracing::debug!("limit: 1^∞ heuristic did not apply, falling through to Gruntz");
@@ -79,12 +101,9 @@ pub(crate) fn limit(
 
     // Step 1+2 combined: decompose into numerator/denominator first.
     //
-    // We must check for indeterminate forms *before* doing a naive
-    // direct substitution on the whole expression, because the arena's
-    // canonicalization of `Mul([0, Pow(0,-1)])` eagerly collapses
-    // `0 * anything` to `0` without noticing that the "anything" is
-    // actually `0^(-1)` (i.e. infinity).  By evaluating numerator and
-    // denominator *separately* at the point we sidestep this issue.
+    // We check for indeterminate forms *before* doing a naive direct
+    // substitution on the whole expression — evaluating numerator and
+    // denominator separately catches 0/0 forms cleanly via L'Hôpital.
     let (numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
 
     if denom != arena.one() {

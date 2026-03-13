@@ -758,8 +758,101 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
     {
         return arena.zero;
     }
-    // 0^0 was caught above (exp==zero). 0^negative → zoo? We leave
-    // it unevaluated for safety.
+    // 0^(negative numeric) → ComplexInfinity (division by zero).
+    if base == arena.zero
+        && let Some(e) = arena.as_num(exp)
+        && e.is_negative()
+    {
+        return arena.complex_infinity;
+    }
+    // 0^∞ → 0.
+    if base == arena.zero && exp == arena.infinity {
+        return arena.zero;
+    }
+    // 0^(-∞) → ComplexInfinity.
+    if base == arena.zero && exp == arena.neg_infinity {
+        return arena.complex_infinity;
+    }
+    // 0^zoo → NaN (indeterminate).
+    if base == arena.zero && exp == arena.complex_infinity {
+        return arena.nan;
+    }
+
+    // ── Positive infinity base ─────────────────────────────────────
+    // ∞^(positive numeric) → ∞.
+    if base == arena.infinity
+        && let Some(e) = arena.as_num(exp)
+        && e.is_positive()
+    {
+        return arena.infinity;
+    }
+    // ∞^(negative numeric) → 0.
+    if base == arena.infinity
+        && let Some(e) = arena.as_num(exp)
+        && e.is_negative()
+    {
+        return arena.zero;
+    }
+    // ∞^∞ → ∞.
+    if base == arena.infinity && exp == arena.infinity {
+        return arena.infinity;
+    }
+    // ∞^(-∞) → 0.
+    if base == arena.infinity && exp == arena.neg_infinity {
+        return arena.zero;
+    }
+
+    // ── Negative infinity base ─────────────────────────────────────
+    // (-∞)^(positive integer) → ±∞ by parity.
+    if base == arena.neg_infinity
+        && let Some(e) = arena.as_num(exp)
+        && e.is_integer()
+        && e.is_positive()
+    {
+        let n: i64 = e.to_integer().try_into().unwrap_or(0);
+        return if n % 2 == 0 {
+            arena.infinity
+        } else {
+            arena.neg_infinity
+        };
+    }
+    // (-∞)^(negative numeric) → 0 (magnitude → 0 regardless of direction).
+    if base == arena.neg_infinity
+        && let Some(e) = arena.as_num(exp)
+        && e.is_negative()
+    {
+        return arena.zero;
+    }
+    // (-∞)^∞ → NaN, (-∞)^(-∞) → NaN (indeterminate: ∞ is not an integer).
+    if base == arena.neg_infinity
+        && (exp == arena.infinity || exp == arena.neg_infinity)
+    {
+        return arena.nan;
+    }
+
+    // ── Complex infinity (zoo) base ────────────────────────────────
+    // zoo^(positive numeric) → zoo.
+    if base == arena.complex_infinity
+        && let Some(e) = arena.as_num(exp)
+        && e.is_positive()
+    {
+        return arena.complex_infinity;
+    }
+    // zoo^(negative numeric) → 0.
+    if base == arena.complex_infinity
+        && let Some(e) = arena.as_num(exp)
+        && e.is_negative()
+    {
+        return arena.zero;
+    }
+    // zoo^zoo, zoo^∞, zoo^(-∞) → NaN.
+    if base == arena.complex_infinity
+        && (exp == arena.complex_infinity
+            || exp == arena.infinity
+            || exp == arena.neg_infinity)
+    {
+        return arena.nan;
+    }
 
     // Both numeric → try to evaluate.
     if let (Some(b), Some(e)) = (arena.as_num(base).cloned(), arena.as_num(exp).cloned())

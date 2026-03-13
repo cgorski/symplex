@@ -297,7 +297,7 @@ if anti.has_unevaluated() {
 
 Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`) return `Ex` with no `try_` variant — "unchanged" is a valid answer.
 
-Numeric boundary operations (`eval_f64`, `compile`, `to_rust_fn`) always return `Result` — crossing from symbols to numbers can fail if free symbols remain.
+Numeric boundary operations (`eval_f64`, `to_rust_fn`) always return `Result` — crossing from symbols to numbers can fail if free symbols remain. The `compile` method returns `Option` — `None` when the expression contains constructs that cannot be numerically evaluated.
 
 Queries (`is_positive`, `degree`, `equals`) return `Option<bool>` or `Option<T>` — three-valued: yes, no, or unknown.
 

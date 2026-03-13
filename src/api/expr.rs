@@ -647,8 +647,28 @@ impl<S: Sort> Expr<S> {
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn simplify(&self) -> Expr<S> {
         let _span = debug_span!("simplify", expr = ?self.id).entered();
-        let (result, _steps) = self.simplify_trace();
-        result
+        // Run pattern-based rewrite rules.
+        let (pattern_result, _steps) = self.simplify_trace();
+        // Also run the multi-strategy smart_simplify engine (includes fu,
+        // factor_terms, powsimp, etc.) and keep whichever result is simpler.
+        let smart_id = {
+            let mut inner = self.inner.write();
+            crate::simplify::simplify_engine::smart_simplify(&mut inner.arena, self.id)
+        };
+        let smart_result = self.wrap(smart_id);
+        let pattern_ops = {
+            let inner = self.inner.read();
+            crate::simplify::simplify_engine::count_ops(&inner.arena, pattern_result.id)
+        };
+        let smart_ops = {
+            let inner = self.inner.read();
+            crate::simplify::simplify_engine::count_ops(&inner.arena, smart_result.id)
+        };
+        if smart_ops <= pattern_ops {
+            smart_result
+        } else {
+            pattern_result
+        }
     }
 
     /// Like [`simplify`](Expr::simplify), but also returns a trace of
