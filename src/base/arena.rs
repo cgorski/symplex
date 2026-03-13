@@ -775,7 +775,14 @@ impl Arena {
         point: ExprId,
         order: u32,
     ) -> Result<ExprId, crate::base::errors::SymplexError> {
-        crate::calculus::series::series(self, expr, var, point, order)
+        // Try Taylor series first.
+        match crate::calculus::series::series(self, expr, var, point, order) {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                // Taylor failed (likely a pole). Try Laurent series as fallback.
+                crate::calculus::series::laurent_series(self, expr, var, point, order)
+            }
+        }
     }
 
     /// Factor a polynomial expression into a product of linear factors.

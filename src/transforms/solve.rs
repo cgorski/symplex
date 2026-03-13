@@ -246,7 +246,18 @@ fn solve_by_peeling(
             solve_by_peeling(arena, dep[0], new_rhs, var)
         }
         // exp(f(x)) = rhs → f(x) = ln(rhs)
+        // Domain check: exp(x) > 0 for all real x, so rhs must be strictly positive.
         ExprNode::Exp(inner) => {
+            if rhs == arena.zero {
+                tracing::debug!("solve_by_peeling: exp domain error, rhs = 0");
+                return Some(vec![]);
+            }
+            if let Some(c) = arena.as_num(rhs)
+                && !c.is_positive()
+            {
+                tracing::debug!("solve_by_peeling: exp domain error, rhs <= 0");
+                return Some(vec![]);
+            }
             let new_rhs = arena.ln(rhs);
             solve_by_peeling(arena, inner, new_rhs, var)
         }
@@ -435,7 +446,14 @@ fn solve_by_peeling(
             solve_by_peeling(arena, inner, new_rhs, var)
         }
         // cosh(f(x)) = rhs → f(x) = acosh(rhs) (principal branch only)
+        // Domain check: cosh(x) >= 1 for all real x, so rhs must be >= 1.
         ExprNode::Cosh(inner) => {
+            if let Some(c) = arena.as_num(rhs)
+                && *c < Ratio::one()
+            {
+                tracing::debug!("solve_by_peeling: cosh domain error, rhs < 1");
+                return Some(vec![]);
+            }
             let new_rhs = arena.acosh(rhs);
             solve_by_peeling(arena, inner, new_rhs, var)
         }
@@ -2521,5 +2539,85 @@ mod tests {
         assert_eq!(solutions.len(), 1);
         let s = display(&a, solutions[0].value);
         assert!(s.contains('c'), "Expected -c/(a+b), got: {s}");
+    }
+
+    // ── Bug 21 regression: exp/range domain checks ──────────────────
+
+    #[test]
+    fn solve_exp_x_eq_zero_no_solution() {
+        // exp(x) = 0 has no real solution (exp(x) > 0 for all real x).
+        // Regression: previously returned [ln(0)] instead of [].
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let exp_x = a.exp(x);
+        let solutions = solve(&mut a, exp_x, x);
+        assert!(
+            solutions.is_empty(),
+            "exp(x)=0 should have no solutions, got: {:?}",
+            solution_strings(&a, &solutions)
+        );
+    }
+
+    #[test]
+    fn solve_exp_x_eq_negative_no_solution() {
+        // exp(x) + 3 = 0  →  exp(x) = -3, no real solution.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let three = a.int(3);
+        let exp_x = a.exp(x);
+        let expr = a.add(&[exp_x, three]);
+        let solutions = solve(&mut a, expr, x);
+        assert!(
+            solutions.is_empty(),
+            "exp(x)=-3 should have no solutions, got: {:?}",
+            solution_strings(&a, &solutions)
+        );
+    }
+
+    #[test]
+    fn solve_sin_x_eq_2_no_solution() {
+        // sin(x) = 2 has no real solution (sin range is [-1, 1]).
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let two = a.int(2);
+        let sin_x = a.sin(x);
+        let expr = a.sub(sin_x, two);
+        let solutions = solve(&mut a, expr, x);
+        assert!(
+            solutions.is_empty(),
+            "sin(x)=2 should have no solutions, got: {:?}",
+            solution_strings(&a, &solutions)
+        );
+    }
+
+    #[test]
+    fn solve_ln_x_eq_zero() {
+        // ln(x) = 0 → x = exp(0) = 1.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let ln_x = a.ln(x);
+        let solutions = solve(&mut a, ln_x, x);
+        assert_eq!(solutions.len(), 1, "ln(x)=0 should have 1 solution");
+        let val = display(&a, solutions[0].value);
+        assert!(
+            val == "1" || val.contains("exp(0)"),
+            "solution should be 1 or exp(0), got: {val}"
+        );
+    }
+
+    #[test]
+    fn solve_abs_x_plus_1_no_solution() {
+        // |x| + 1 = 0 → |x| = -1, impossible since |x| >= 0.
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let one = a.one;
+        let abs_x = a.abs(x);
+        let expr = a.add(&[abs_x, one]);
+        let solutions = solve(&mut a, expr, x);
+        assert!(
+            solutions.is_empty(),
+            "|x|+1=0 should have no solutions, got: {:?}",
+            solution_strings(&a, &solutions)
+        );
     }
 }

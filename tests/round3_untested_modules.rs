@@ -816,7 +816,7 @@ fn rewrite_exp_ix_to_trig() {
 /// rewrite.rs only matches Sin, Cos, Tan in its ExprNode match — Sinh, Cosh,
 /// and Tanh are silently skipped, returning the expression unchanged.
 #[test]
-#[should_panic(expected = "BUG: sinh(x).rewrite_as_exp() should produce exponential form")]
+
 fn rewrite_sinh_to_exp_numerical() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -853,7 +853,7 @@ fn rewrite_sinh_to_exp_numerical() {
 ///
 /// Same root cause as sinh: the match in rewrite_as_exp only covers Sin/Cos/Tan.
 #[test]
-#[should_panic(expected = "BUG: cosh(x).rewrite_as_exp() should produce exponential form")]
+
 fn rewrite_cosh_to_exp_numerical() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -886,7 +886,7 @@ fn rewrite_cosh_to_exp_numerical() {
 ///
 /// Same root cause: rewrite_as_exp handles Tan but not Tanh.
 #[test]
-#[should_panic(expected = "BUG: tanh(x).rewrite_as_exp() should produce exponential form")]
+
 fn rewrite_tanh_to_exp_numerical() {
     let ctx = Context::new();
     let x = ctx.symbol("x");

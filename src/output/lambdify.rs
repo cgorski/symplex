@@ -5,7 +5,7 @@
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
-use num_traits::ToPrimitive;
+use num_traits::{One, ToPrimitive};
 use std::collections::HashMap;
 
 /// Result type for [`lambdify`]: a boxed, thread-safe closure from `&[f64]` to `f64`,
@@ -57,6 +57,8 @@ enum Instruction {
     Ln,
     #[allow(dead_code)]
     Sqrt,
+    Cbrt,
+    Powi(i32),
     Abs,
     Asin,
     Acos,
@@ -136,6 +138,44 @@ fn compile_recursive(
             }
         }
         ExprNode::Pow(base, exp) => {
+            // Mirror the codegen path's special-casing for common exponents.
+            // This avoids f64::powf(negative, frac) → NaN for odd roots.
+            if let Some(r) = arena.as_num(exp) {
+                // Integer exponent → powi (handles negative bases correctly)
+                if r.is_integer() {
+                    if let Ok(n) = i32::try_from(r.to_integer()) {
+                        compile_recursive(arena, base, var_map, out)?;
+                        out.push(Instruction::Powi(n));
+                        return Some(());
+                    }
+                }
+                let (numer, denom) = (r.numer().clone(), r.denom().clone());
+                // exp == 1/2 → sqrt
+                if numer == 1.into() && denom == 2.into() {
+                    compile_recursive(arena, base, var_map, out)?;
+                    out.push(Instruction::Sqrt);
+                    return Some(());
+                }
+                // exp == 1/3 → cbrt (handles negative bases correctly!)
+                if numer == 1.into() && denom == 3.into() {
+                    compile_recursive(arena, base, var_map, out)?;
+                    out.push(Instruction::Cbrt);
+                    return Some(());
+                }
+                // General odd-denominator fractional exponent →
+                // sign(base) * |base|^(p/q)  (sign-preserving real root)
+                if !r.denom().is_one() && r.denom() % num_bigint::BigInt::from(2) != num_bigint::BigInt::from(0) {
+                    compile_recursive(arena, base, var_map, out)?;
+                    out.push(Instruction::Sign);
+                    compile_recursive(arena, base, var_map, out)?;
+                    out.push(Instruction::Abs);
+                    compile_recursive(arena, exp, var_map, out)?;
+                    out.push(Instruction::Pow);
+                    out.push(Instruction::Mul); // sign * |base|^exp
+                    return Some(());
+                }
+            }
+            // General case: standard powf
             compile_recursive(arena, base, var_map, out)?;
             compile_recursive(arena, exp, var_map, out)?;
             out.push(Instruction::Pow);
@@ -359,6 +399,14 @@ fn execute(instructions: &[Instruction], args: &[f64]) -> f64 {
             Instruction::Sqrt => {
                 let a = stack.pop().unwrap_or(0.0);
                 stack.push(a.sqrt());
+            }
+            Instruction::Cbrt => {
+                let a = stack.pop().unwrap_or(0.0);
+                stack.push(a.cbrt());
+            }
+            Instruction::Powi(n) => {
+                let a = stack.pop().unwrap_or(0.0);
+                stack.push(a.powi(*n));
             }
             Instruction::Abs => {
                 let a = stack.pop().unwrap_or(0.0);

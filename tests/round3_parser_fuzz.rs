@@ -1079,7 +1079,6 @@ fn d_deeply_nested_mixed_functions_50() {
 ///
 /// Run it explicitly with: `cargo test -- --ignored d_deeply_nested_sin_250`
 #[test]
-#[ignore = "BUG-1: stack overflow (SIGABRT) — kills the process"]
 fn d_deeply_nested_sin_250() {
     let mut s = String::from("x");
     for _ in 0..250 {

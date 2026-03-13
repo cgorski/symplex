@@ -4,6 +4,9 @@
 //! - `sin(x) → (exp(ix) - exp(-ix)) / (2i)`
 //! - `cos(x) → (exp(ix) + exp(-ix)) / 2`
 //! - `tan(x) → -i·(exp(ix) - exp(-ix)) / (exp(ix) + exp(-ix))`
+//! - `sinh(x) → (exp(x) - exp(-x)) / 2`
+//! - `cosh(x) → (exp(x) + exp(-x)) / 2`
+//! - `tanh(x) → (exp(x) - exp(-x)) / (exp(x) + exp(-x))`
 //! - `exp(ix) → cos(x) + i·sin(x)` (Euler's formula)
 //!
 //! Uses the same manual post-order + cache pattern as `expand.rs`
@@ -39,11 +42,17 @@ pub(crate) fn rewrite(arena: &mut Arena, expr: ExprId, target: RewriteTarget) ->
 // Trig → Exp
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Rewrite trigonometric functions as complex exponentials.
+/// Rewrite trigonometric and hyperbolic functions as exponentials.
 ///
+/// Circular trig (complex exponentials):
 /// - `sin(x) → (exp(ix) − exp(−ix)) / (2i)`
 /// - `cos(x) → (exp(ix) + exp(−ix)) / 2`
-/// - `tan(x) → sin(x)/cos(x)` converted (i.e. both parts rewritten)
+/// - `tan(x) → −i·(exp(ix) − exp(−ix)) / (exp(ix) + exp(−ix))`
+///
+/// Hyperbolic (real exponentials):
+/// - `sinh(x) → (exp(x) − exp(−x)) / 2`
+/// - `cosh(x) → (exp(x) + exp(−x)) / 2`
+/// - `tanh(x) → (exp(x) − exp(−x)) / (exp(x) + exp(−x))`
 pub(crate) fn rewrite_as_exp(arena: &mut Arena, expr: ExprId) -> ExprId {
     let post_order = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
@@ -86,6 +95,33 @@ pub(crate) fn rewrite_as_exp(arena: &mut Arena, expr: ExprId) -> ExprId {
                 let neg_i = arena.neg(i_unit);
                 let num = arena.mul(&[neg_i, diff]);
                 arena.div(num, sum)
+            }
+            ExprNode::Sinh(inner) => {
+                // sinh(x) = (exp(x) - exp(-x)) / 2
+                let neg_x = arena.neg(inner);
+                let exp_x = arena.exp(inner);
+                let exp_neg_x = arena.exp(neg_x);
+                let diff = arena.sub(exp_x, exp_neg_x);
+                let two = arena.int(2);
+                arena.div(diff, two)
+            }
+            ExprNode::Cosh(inner) => {
+                // cosh(x) = (exp(x) + exp(-x)) / 2
+                let neg_x = arena.neg(inner);
+                let exp_x = arena.exp(inner);
+                let exp_neg_x = arena.exp(neg_x);
+                let sum = arena.add(&[exp_x, exp_neg_x]);
+                let two = arena.int(2);
+                arena.div(sum, two)
+            }
+            ExprNode::Tanh(inner) => {
+                // tanh(x) = (exp(x) - exp(-x)) / (exp(x) + exp(-x))
+                let neg_x = arena.neg(inner);
+                let exp_x = arena.exp(inner);
+                let exp_neg_x = arena.exp(neg_x);
+                let diff = arena.sub(exp_x, exp_neg_x);
+                let sum = arena.add(&[exp_x, exp_neg_x]);
+                arena.div(diff, sum)
             }
             _ => rebuilt,
         };
@@ -282,6 +318,77 @@ mod tests {
         assert!(
             s.contains("exp") || s.contains("E"),
             "rewrite should produce exponentials: {s}"
+        );
+    }
+
+    #[test]
+    fn rewrite_sinh_to_exp() {
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let sinh_x = arena.sinh(x);
+
+        let result = rewrite_as_exp(&mut arena, sinh_x);
+        let s = display(&arena, result);
+        // Should contain exp but NOT imaginary unit (real exponentials only)
+        assert!(
+            s.contains("exp"),
+            "sinh rewrite should produce exponentials: {s}"
+        );
+        assert!(
+            !s.contains("sinh"),
+            "sinh should not survive rewrite: {s}"
+        );
+    }
+
+    #[test]
+    fn rewrite_cosh_to_exp() {
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let cosh_x = arena.cosh(x);
+
+        let result = rewrite_as_exp(&mut arena, cosh_x);
+        let s = display(&arena, result);
+        assert!(
+            s.contains("exp"),
+            "cosh rewrite should produce exponentials: {s}"
+        );
+        assert!(
+            !s.contains("cosh"),
+            "cosh should not survive rewrite: {s}"
+        );
+    }
+
+    #[test]
+    fn rewrite_tanh_to_exp() {
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let tanh_x = arena.tanh(x);
+
+        let result = rewrite_as_exp(&mut arena, tanh_x);
+        let s = display(&arena, result);
+        assert!(
+            s.contains("exp"),
+            "tanh rewrite should produce exponentials: {s}"
+        );
+        assert!(
+            !s.contains("tanh"),
+            "tanh should not survive rewrite: {s}"
+        );
+    }
+
+    #[test]
+    fn rewrite_nested_sinh_cosh() {
+        // sinh(cosh(x)) should rewrite both layers
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let cosh_x = arena.cosh(x);
+        let sinh_cosh_x = arena.sinh(cosh_x);
+
+        let result = rewrite_as_exp(&mut arena, sinh_cosh_x);
+        let s = display(&arena, result);
+        assert!(
+            !s.contains("sinh") && !s.contains("cosh"),
+            "nested hyp trig should be fully expanded: {s}"
         );
     }
 

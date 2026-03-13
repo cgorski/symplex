@@ -1988,7 +1988,11 @@ fn eval_tan(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
     if coeff.is_zero() {
         return Some(arena.zero);
     }
-    // tan(π/2) is undefined — leave unevaluated.
+    // tan(π/2) is a pole → ComplexInfinity.
+    // The mod_positive reduction ensures 3π/2, 5π/2, etc. all map to coeff = 1/2.
+    if coeff == Ratio::new(1.into(), 2.into()) {
+        return Some(arena.complex_infinity);
+    }
     // tan(π/4) = 1
     if coeff == Ratio::new(1.into(), 4.into()) {
         return Some(arena.one);

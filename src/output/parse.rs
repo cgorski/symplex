@@ -266,9 +266,9 @@ impl<'a> Parser<'a> {
     /// Parse an expression with minimum binding power `min_bp`.
     fn parse_expr(&mut self, arena: &mut Arena, min_bp: u8) -> Result<ExprId, ParseError> {
         self.depth += 1;
-        if self.depth > 256 {
+        if self.depth > 128 {
             return Err(ParseError {
-                message: "expression nesting too deep (max 256 levels)".into(),
+                message: "expression nesting too deep (max 128 levels)".into(),
                 position: self.lexer.pos,
             });
         }
