@@ -1035,9 +1035,34 @@ fn leadterm(
             let (c_arg, e_arg) = leadterm(arena, arg, w, logw)?;
             let e_eval = crate::transforms::eval::eval(arena, e_arg);
             if arena.is_zero_structural(e_eval) {
-                // arg → c_arg, so ln(arg) → ln(c_arg)
+                // arg → c_arg as w → 0, so ln(arg) → ln(c_arg)
                 let coeff = arena.ln(c_arg);
-                return Ok((crate::transforms::eval::eval(arena, coeff), arena.zero()));
+                let coeff = crate::transforms::eval::eval(arena, coeff);
+                if !arena.is_zero_structural(coeff) {
+                    return Ok((coeff, arena.zero()));
+                }
+                // ln(c_arg) = 0, meaning c_arg = 1 (or equivalent).
+                // We have ln(1 + δ) where δ = arg − c_arg → 0 as w → 0.
+                // Taylor: ln(1 + δ) = δ − δ²/2 + δ³/3 − …
+                // The leading term of ln(1 + δ) equals the leading term of δ.
+                //
+                // This resolves the ∞·0 form in limits like
+                //   lim(x→∞) x·ln(1+1/x):
+                // After rewriting in terms of w, we need leadterm(ln(1+w))
+                // to return (1, 1) [i.e. ≈ w], NOT (0, 0) [i.e. ≈ ln(1) = 0].
+                // Without this, the Gruntz algorithm incorrectly concludes
+                // that the exponent x·ln(1+1/x) → ∞ instead of → 1.
+                let delta = arena.sub(arg, c_arg);
+                let delta = crate::transforms::eval::eval(arena, delta);
+                if !arena.is_zero_structural(delta)
+                    && crate::base::walk::contains(arena, delta, w)
+                {
+                    tracing::debug!(
+                        "gruntz::leadterm: ln(arg) with arg→1, using ln(1+δ) ≈ δ"
+                    );
+                    return leadterm(arena, delta, w, logw);
+                }
+                return Ok((arena.zero(), arena.zero()));
             }
             // ln(c * w^e) = ln(c) + e*logw — treat as coefficient with power 0
             // since logw doesn't involve w (it involves x)

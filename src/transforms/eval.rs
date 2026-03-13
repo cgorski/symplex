@@ -288,7 +288,22 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 // Detect Pow(base, 1/n) and try perfect nth root
                 if let Some(result) = eval_pow_root(arena, nb, ne) {
                     result
-                } else if nb == base && ne == exp {
+                }
+                // Pow(Exp(f), g) → Exp(f·g): valid because exp(f) > 0 for all
+                // real f, so (exp(f))^g = exp(f·g) without branch-cut issues.
+                //
+                // Critical for the Gruntz algorithm: without this, exp(x)^(1/x)
+                // stays as Pow(Exp(x), 1/x) and mrv creates dangling dummy
+                // variables when trying to rewrite via exp((1/x)·ln(exp(x))).
+                // With this rule, eval simplifies it to Exp(x·(1/x)) = Exp(1).
+                //
+                // Placed in eval (not canon_pow) so the solver's intermediate
+                // Pow(Exp(x), k) nodes survive until substitution completes.
+                else if let ExprNode::Exp(inner) = arena.node(nb).clone() {
+                    let product = arena.mul(&[inner, ne]);
+                    arena.exp(product)
+                }
+                else if nb == base && ne == exp {
                     id
                 } else {
                     arena.pow(nb, ne)
