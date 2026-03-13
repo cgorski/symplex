@@ -586,7 +586,20 @@ pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
     for i in 2..total_rows {
         let prev = &table[i - 1];
         let prev2 = &table[i - 2];
-        let pivot = &prev[0];
+        let mut pivot = prev[0].clone();
+
+        // Epsilon method: if pivot is zero, check if entire row is zero
+        let pivot_is_zero = pivot
+            .eval_f64()
+            .map(|v| v.abs() < 1e-30)
+            .unwrap_or(false);
+
+        if pivot_is_zero {
+            // Epsilon method: replace zero pivot with small ε to preserve
+            // sign information. This handles both the "only pivot is zero"
+            // case and the "entire row is zero" (auxiliary polynomial) case.
+            pivot = coeffs[0].context().rational(1, 1_000_000_000);
+        }
 
         let mut new_row: Vec<Ex> = Vec::with_capacity(num_cols);
         for j in 0..(num_cols - 1) {
@@ -601,8 +614,8 @@ pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
                 coeffs[0].context().int(0)
             };
             // routh[i][j] = (pivot * prev2[j+1] - prev2[0] * prev[j+1]) / pivot
-            let numerator = &(pivot * &prev2_j1) - &(&prev2[0] * &prev_j1);
-            let entry = (&numerator / pivot).eval();
+            let numerator = &(&pivot * &prev2_j1) - &(&prev2[0] * &prev_j1);
+            let entry = (&numerator / &pivot).eval();
             new_row.push(entry);
         }
         // Last column is always zero (or not needed), pad if row is too short

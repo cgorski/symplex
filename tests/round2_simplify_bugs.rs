@@ -2348,7 +2348,6 @@ fn eval_decimal_sqrt2_many_digits() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "BUG: odd-function parity rules missing for sin — sin(-x) stays as sin(-x) instead of -sin(x)"]
 fn bug_sin_negative_arg_not_simplified() {
     // BUG 1: sin(-x) does not simplify to -sin(x).
     // sin is an odd function: sin(-x) = -sin(x).
@@ -2374,7 +2373,6 @@ fn bug_sin_negative_arg_not_simplified() {
 }
 
 #[test]
-#[ignore = "BUG: refine does not infer EVEN for 2*n when n is Integer — (-1)^(2n) stays unsimplified"]
 fn bug_neg1_to_even_power_not_refined() {
     // BUG 2: (-1)^(2*n) where n is Integer does not refine to 1.
     // The exponent 2*n is even (since n is integer), so (-1)^(2*n) = 1.
@@ -2416,7 +2414,6 @@ fn bug_cosh2_minus_sinh2_not_simplified_symbolically() {
 }
 
 #[test]
-#[ignore = "BUG: equals() only tries structural identity and expand, not simplify — misses trig identities"]
 fn bug_equals_misses_trig_identity() {
     // BUG 3: equals() cannot detect sin²(x)+cos²(x) = 1.
     //
@@ -2614,7 +2611,6 @@ fn bug_cos_neg_x_simplify_to_cos_x() {
 }
 
 #[test]
-#[ignore = "BUG: same root cause as sin(-x) — odd-function parity rules missing for tan"]
 fn bug_tan_neg_x_should_be_neg_tan_x() {
     // BUG 4: tan(-x) = -tan(x) (odd function) — not simplified.
     // Same root cause as BUG 1: no parity rules for odd trig functions.
@@ -2630,7 +2626,6 @@ fn bug_tan_neg_x_should_be_neg_tan_x() {
 }
 
 #[test]
-#[ignore = "BUG: same root cause as sin(-x) — odd-function parity rules missing for sinh"]
 fn bug_sinh_neg_x_should_be_neg_sinh_x() {
     // BUG 5: sinh(-x) = -sinh(x) (odd function) — not simplified.
     // Same root cause as BUG 1: no parity rules for odd functions.
@@ -2681,7 +2676,6 @@ fn bug_exp_ln_should_always_simplify() {
 }
 
 #[test]
-#[ignore = "BUG: full_simplify does not factor out common coefficients before applying trig identities"]
 fn bug_full_simplify_catches_scaled_pythagorean() {
     // BUG 6: 3*sin²(x) + 3*cos²(x) is not simplified to 3.
     //

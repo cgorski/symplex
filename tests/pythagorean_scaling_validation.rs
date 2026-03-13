@@ -168,17 +168,13 @@ fn simplify_on_2_sin2_plus_2_cos2() {
 
     eprintln!("[simplify scaled] 2·sin²(x) + 2·cos²(x) → {display}");
 
-    // simplify() uses pattern rules only — the Pythagorean pattern won't
-    // match through the coefficient.  We assert numerical correctness but
-    // do NOT assert display == "2": simplify() is expected to fail here.
+    // simplify() now handles scaled Pythagorean identities.
     let two = ctx.int(2);
     numerical_check(&result, &two, &x, "simplify on 2·sin²+2·cos²");
 
-    // Document the current (expected-to-fail) symbolic result:
-    assert_ne!(
+    assert_eq!(
         display, "2",
-        "simplify() alone cannot handle scaled Pythagorean — \
-         if this starts passing, a new pattern rule was added (Option D)"
+        "simplify() should reduce 2·sin²(x) + 2·cos²(x) to 2"
     );
 }
 
@@ -194,6 +190,7 @@ fn simplify_on_2_sin2_plus_2_cos2() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
+#[allow(deprecated)]
 fn smart_simplify_on_2_sin2_plus_2_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -229,6 +226,7 @@ fn smart_simplify_on_2_sin2_plus_2_cos2() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
+#[allow(deprecated)]
 fn full_simplify_on_2_sin2_plus_2_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -243,11 +241,10 @@ fn full_simplify_on_2_sin2_plus_2_cos2() {
     let two = ctx.int(2);
     numerical_check(&result, &two, &x, "full_simplify on 2·sin²+2·cos²");
 
-    // Document the expected failure:
-    assert_ne!(
+    // Bug is now fixed — full_simplify() handles scaled Pythagorean:
+    assert_eq!(
         display, "2",
-        "full_simplify() cannot handle scaled Pythagorean — \
-         if this starts passing, full_simplify gained fu() or factor_terms"
+        "full_simplify() should reduce 2·sin²(x) + 2·cos²(x) to 2"
     );
 }
 
@@ -269,6 +266,7 @@ fn fu_on_3_sin2_plus_3_cos2() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn smart_simplify_on_3_sin2_plus_3_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -303,6 +301,7 @@ fn fu_on_half_sin2_plus_half_cos2() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn smart_simplify_on_half_sin2_plus_half_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -367,6 +366,7 @@ fn fu_on_y_sin2_plus_y_cos2() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn smart_simplify_on_y_sin2_plus_y_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -412,6 +412,7 @@ fn fu_on_2y_sin2_plus_2y_cos2() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn smart_simplify_on_2y_sin2_plus_2y_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -452,6 +453,7 @@ fn fu_on_3_plus_2_sin2_plus_2_cos2() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn smart_simplify_on_3_plus_2_sin2_plus_2_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -595,6 +597,7 @@ fn fu_on_sin4_plus_cos4() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
+#[allow(deprecated)]
 fn comparison_matrix_2sin2_2cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");

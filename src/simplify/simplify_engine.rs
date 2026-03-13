@@ -3,14 +3,72 @@
 //! This module provides [`count_ops`] for measuring expression complexity,
 //! [`smart_simplify`] which tries multiple simplification strategies
 //! and returns the result with the lowest operation count, and
-//! [`full_simplify`] / [`full_simplify_trace`] which iterate
-//! eval → expand → simplify → **cancel** until convergence.
+//! [`unified_simplify`] which iterates `smart_simplify` to a fixpoint.
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use num_bigint::BigInt;
 use num_traits::Signed;
+use rustc_hash::FxHashSet;
+
+// ── Public configuration types ─────────────────────────────────────────
+
+/// Options for configuring the simplification engine.
+#[derive(Clone, Debug)]
+pub struct SimplifyOpts {
+    /// Maximum number of fixpoint iterations (default: 10).
+    /// Each iteration runs the full `smart_simplify` strategy set.
+    pub max_iterations: usize,
+    /// Whether to collect a trace of rewrite-rule firings (default: false).
+    pub trace: bool,
+}
+
+impl Default for SimplifyOpts {
+    fn default() -> Self {
+        Self {
+            max_iterations: 10,
+            trace: false,
+        }
+    }
+}
+
+impl SimplifyOpts {
+    /// Single-pass simplification (no fixpoint iteration).
+    pub fn single_pass() -> Self {
+        Self {
+            max_iterations: 1,
+            trace: false,
+        }
+    }
+
+    /// Set the maximum number of fixpoint iterations.
+    #[must_use]
+    pub fn max_iterations(mut self, n: usize) -> Self {
+        self.max_iterations = n;
+        self
+    }
+
+    /// Request a rewrite trace.
+    #[must_use]
+    pub fn trace(mut self) -> Self {
+        self.trace = true;
+        self
+    }
+}
+
+/// Result of a simplification run.
+#[derive(Clone, Debug)]
+pub struct SimplifyResult {
+    /// The simplified expression.
+    pub expr: ExprId,
+    /// Rewrite-rule trace (empty unless `SimplifyOpts::trace` was set).
+    pub steps: Vec<crate::transforms::pattern::Step>,
+    /// Number of fixpoint iterations performed.
+    pub iterations: usize,
+    /// Whether the engine converged (expression stopped changing).
+    pub converged: bool,
+}
 
 /// Count the number of operations (nodes) in an expression.
 ///
@@ -128,10 +186,27 @@ fn compute_flags(arena: &Arena, expr: ExprId) -> ExprFlags {
     flags
 }
 
-/// Helper: update `best` / `best_ops` if `candidate` has a lower op-count.
+/// Helper: update `best` / `best_ops` if `candidate` has a strictly lower op-count.
 fn update_best(arena: &Arena, best: &mut ExprId, best_ops: &mut usize, candidate: ExprId) {
     let ops = count_ops(arena, candidate);
     if ops < *best_ops {
+        *best = candidate;
+        *best_ops = ops;
+    }
+}
+
+/// Like [`update_best`], but accepts equal op-count candidates too.
+///
+/// Used for Strategy 1 (eval) so that canonical forms like `-sin(x)` win
+/// over `sin(-x)` even when they have the same number of operations.
+fn update_best_or_equal(
+    arena: &Arena,
+    best: &mut ExprId,
+    best_ops: &mut usize,
+    candidate: ExprId,
+) {
+    let ops = count_ops(arena, candidate);
+    if ops <= *best_ops && candidate != *best {
         *best = candidate;
         *best_ops = ops;
     }
@@ -166,13 +241,16 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     let mut best_ops = original_ops;
 
     // Strategy 1: eval only (always try — cheap)
+    // Use update_best_or_equal so that eval's canonical forms (e.g. -sin(x)
+    // over sin(-x)) win even at equal op count.  This fixes Bug 14 (odd
+    // function parity normalisation).
     let s1 = crate::transforms::eval::eval(arena, expr);
     tracing::trace!(
         strategy = "eval",
         ops = count_ops(arena, s1),
         "strategy evaluated"
     );
-    update_best(arena, &mut best, &mut best_ops, s1);
+    update_best_or_equal(arena, &mut best, &mut best_ops, s1);
 
     // Strategy 2: eval → pattern rules (only if trig/exp/hyp present)
     if flags.has_trig || flags.has_exp_ln || flags.has_hyp {
@@ -297,8 +375,10 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         tracing::debug!("smart_simplify: skipping logcombine (no exp/ln nodes)");
     }
 
-    // Strategy 7: eval → cancel with free symbols → simplify (only if has neg powers / fractions)
-    if flags.has_neg_pow {
+    // Strategy 7: eval → cancel with free symbols → simplify
+    // (Always run — cancel can simplify rational expressions even without
+    // visible negative-power nodes, e.g. after substitution or expand.)
+    {
         let rules = crate::transforms::pattern::basic_rules(arena);
         let evaled = crate::transforms::eval::eval(arena, expr);
         let free = crate::base::walk::free_symbols(arena, evaled);
@@ -321,8 +401,6 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
             "strategy evaluated"
         );
         update_best(arena, &mut best, &mut best_ops, cancel_best);
-    } else {
-        tracing::debug!("smart_simplify: skipping cancel (no negative-power nodes)");
     }
 
     // Strategy 8: eval → refine (assumption-aware) (only if refinable nodes present)
@@ -461,87 +539,123 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     best
 }
 
-/// Fully simplify an expression by iterating eval → expand → simplify → cancel.
+/// Unified simplification engine — iterates [`smart_simplify`] to a fixpoint.
 ///
-/// This is the engine-level counterpart of `Expr::full_simplify`.  Unlike
-/// the original `full_simplify_trace` loop in `expr.rs`, this version
-/// includes a polynomial-cancellation step (via [`crate::poly::polybridge::cancel`])
-/// after every simplify pass, so rational expressions like `(x²-4)/(x-2)`
-/// are reduced to `x+2`.
-#[allow(dead_code)]
-pub(crate) fn full_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
-    full_simplify_trace(arena, expr).0
+/// This is the single engine behind `.simplify()`.  Each iteration runs
+/// the full multi-strategy `smart_simplify` (12+ strategies, flag-gated),
+/// then checks for convergence.  Safety mechanisms:
+///
+/// * **Global bloat guard:** the result is never allowed to exceed 2× the
+///   op-count of the *original* input (iteration 0), preventing the
+///   per-call 1.7× guard from compounding across iterations.
+/// * **Cycle detection:** a set of previously-seen `ExprId`s detects
+///   oscillation (e.g., expand ↔ factor trading off at equal op-count).
+/// * **Fixpoint check:** iteration stops as soon as the expression
+///   doesn't change.
+pub(crate) fn unified_simplify(
+    arena: &mut Arena,
+    expr: ExprId,
+    opts: &SimplifyOpts,
+) -> SimplifyResult {
+    let original_ops = count_ops(arena, expr);
+    let max_ops = 2 * original_ops.max(1); // global bloat ceiling
+    let mut current = expr;
+    let mut seen = FxHashSet::default();
+    seen.insert(current);
+    let mut all_steps: Vec<crate::transforms::pattern::Step> = Vec::new();
+    let mut iterations = 0;
+
+    for i in 0..opts.max_iterations {
+        let next = smart_simplify(arena, current);
+        iterations = i + 1;
+
+        // Optionally collect trace from the winning strategy's pattern rules.
+        if opts.trace {
+            let rules = crate::transforms::pattern::basic_rules(arena);
+            let (_, steps) = crate::transforms::pattern::apply_rules(arena, next, &rules);
+            all_steps.extend(steps);
+        }
+
+        // Global bloat guard: never exceed 2× the original expression.
+        let next_ops = count_ops(arena, next);
+        if next_ops > max_ops {
+            tracing::debug!(
+                iteration = i,
+                next_ops,
+                max_ops,
+                "unified_simplify: global bloat guard triggered, stopping"
+            );
+            return SimplifyResult {
+                expr: current,
+                steps: all_steps,
+                iterations,
+                converged: false,
+            };
+        }
+
+        // Cycle detection: stop if we've seen this expression before.
+        if !seen.insert(next) {
+            tracing::debug!(
+                iteration = i,
+                "unified_simplify: cycle detected, stopping"
+            );
+            // Return the better of current vs next (in case the cycle
+            // revisits the optimal form).
+            let best = if next_ops <= count_ops(arena, current) {
+                next
+            } else {
+                current
+            };
+            return SimplifyResult {
+                expr: best,
+                steps: all_steps,
+                iterations,
+                converged: true,
+            };
+        }
+
+        // Fixpoint: expression didn't change.
+        if next == current {
+            tracing::debug!(
+                iteration = i,
+                "unified_simplify: fixpoint reached"
+            );
+            return SimplifyResult {
+                expr: current,
+                steps: all_steps,
+                iterations,
+                converged: true,
+            };
+        }
+
+        current = next;
+    }
+
+    tracing::debug!(
+        iterations,
+        "unified_simplify: max iterations reached"
+    );
+    SimplifyResult {
+        expr: current,
+        steps: all_steps,
+        iterations,
+        converged: false,
+    }
 }
 
-/// Like [`full_simplify`] but also returns the accumulated rewrite-rule
-/// trace (one [`crate::transforms::pattern::Step`] per rule firing).
+/// Legacy wrapper — iterates `smart_simplify` to fixpoint with default options.
+#[allow(dead_code)]
+pub(crate) fn full_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
+    unified_simplify(arena, expr, &SimplifyOpts::default()).expr
+}
+
+/// Legacy wrapper — iterates `smart_simplify` to fixpoint, returning a trace.
 pub(crate) fn full_simplify_trace(
     arena: &mut Arena,
     expr: ExprId,
 ) -> (ExprId, Vec<crate::transforms::pattern::Step>) {
-    const MAX_ITERATIONS: usize = 10;
-    let rules = crate::transforms::pattern::basic_rules(arena);
-    let mut current = expr;
-    let mut all_steps: Vec<crate::transforms::pattern::Step> = Vec::new();
-
-    for i in 0..MAX_ITERATIONS {
-        let evaled = crate::transforms::eval::eval(arena, current);
-
-        // ── try cancel BEFORE expand (preserves rational structure) ──
-        let free = crate::base::walk::free_symbols(arena, evaled);
-        let mut cancelled = evaled;
-        for &sym in &free {
-            cancelled = crate::poly::polybridge::cancel(arena, cancelled, sym);
-        }
-        let cancelled_eval = crate::transforms::eval::eval(arena, cancelled);
-        let (cancelled_simp, cancel_steps) =
-            crate::transforms::pattern::apply_rules(arena, cancelled_eval, &rules);
-        all_steps.extend(cancel_steps);
-
-        // ── also try the classic path: expand → simplify ──
-        let expanded = crate::transforms::expand::expand(arena, evaled);
-        let expanded_eval = crate::transforms::eval::eval(arena, expanded);
-        let (expanded_simp, expand_steps) =
-            crate::transforms::pattern::apply_rules(arena, expanded_eval, &rules);
-        all_steps.extend(expand_steps);
-
-        // ── also try radical simplification: powdenest → powsimp_base → eval ──
-        let radical_denest = crate::simplify::powsimp::powdenest(arena, evaled);
-        let radical_base = crate::simplify::powsimp::powsimp_base(arena, radical_denest);
-        let radical_simp = crate::transforms::eval::eval(arena, radical_base);
-
-        // Pick whichever result has fewest operations.
-        let mut best = cancelled_simp;
-        let mut best_ops = count_ops(arena, best);
-        let expanded_ops = count_ops(arena, expanded_simp);
-        if expanded_ops < best_ops {
-            best = expanded_simp;
-            best_ops = expanded_ops;
-        }
-        let radical_ops = count_ops(arena, radical_simp);
-        if radical_ops < best_ops {
-            tracing::trace!(
-                iteration = i,
-                radical_ops,
-                prev_best_ops = best_ops,
-                "full_simplify: radical simplification produced better result"
-            );
-            best = radical_simp;
-        }
-
-        tracing::debug!(
-            iteration = i,
-            changed = (best != current),
-            "full_simplify iteration"
-        );
-
-        if best == current {
-            return (best, all_steps);
-        }
-        current = best;
-    }
-
-    (current, all_steps)
+    let result = unified_simplify(arena, expr, &SimplifyOpts::default().trace());
+    (result.expr, result.steps)
 }
 
 #[cfg(test)]

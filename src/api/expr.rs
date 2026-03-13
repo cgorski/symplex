@@ -627,12 +627,17 @@ impl<S: Sort> Expr<S> {
 
     /// Simplification (identity application, trig identities, etc.).
     ///
-    /// Applies built-in rewrite rules (e.g., `sin²(x) + cos²(x) → 1`)
-    /// in a single bottom-up pass.  For fixpoint simplification, call
-    /// repeatedly until the result stops changing.
+    /// Simplify the expression using all available strategies.
     ///
-    /// ⚠️ **This function is heuristic.**  For deterministic
-    /// transformations, use `.expand()`, `.eval()`, or `.diff()` instead.
+    /// Tries 12+ strategies (eval, expand, factor, trig, log, cancel,
+    /// power, radical, assumption-aware refinement, …), picks the
+    /// simplest result, then iterates to a fixpoint (up to 10 passes)
+    /// until the expression stops getting simpler.
+    ///
+    /// This is the "just make this simpler" function.  For finer control,
+    /// use [`simplify_with`](Self::simplify_with) or the domain-specific
+    /// methods ([`simplify_trig`](crate::api::expr_funcs),
+    /// [`simplify_powers`](crate::api::expr_funcs), etc.).
     ///
     /// # Examples
     ///
@@ -641,34 +646,63 @@ impl<S: Sort> Expr<S> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
+    ///
+    /// // Trig identity
     /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
+    /// assert_eq!(format!("{}", expr.simplify()), "1");
+    ///
+    /// // Polynomial cancellation
+    /// let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
     /// assert_eq!(format!("{}", expr.simplify()), "1");
     /// ```
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn simplify(&self) -> Expr<S> {
         let _span = debug_span!("simplify", expr = ?self.id).entered();
-        // Run pattern-based rewrite rules.
-        let (pattern_result, _steps) = self.simplify_trace();
-        // Also run the multi-strategy smart_simplify engine (includes fu,
-        // factor_terms, powsimp, etc.) and keep whichever result is simpler.
-        let smart_id = {
+        let result = {
             let mut inner = self.inner.write();
-            crate::simplify::simplify_engine::smart_simplify(&mut inner.arena, self.id)
+            crate::simplify::simplify_engine::unified_simplify(
+                &mut inner.arena,
+                self.id,
+                &crate::simplify::simplify_engine::SimplifyOpts::default(),
+            )
         };
-        let smart_result = self.wrap(smart_id);
-        let pattern_ops = {
-            let inner = self.inner.read();
-            crate::simplify::simplify_engine::count_ops(&inner.arena, pattern_result.id)
+        self.wrap(result.expr)
+    }
+
+    /// Like [`simplify`](Expr::simplify), but with configurable options.
+    ///
+    /// Use [`SimplifyOpts`](crate::simplify::simplify_engine::SimplifyOpts)
+    /// to control iteration count, request a trace, etc.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::simplify::simplify_engine::SimplifyOpts;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
+    ///
+    /// // Single-pass simplification (no fixpoint iteration)
+    /// let result = expr.simplify_with(&SimplifyOpts::single_pass());
+    /// assert_eq!(format!("{}", result), "1");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn simplify_with(
+        &self,
+        opts: &crate::simplify::simplify_engine::SimplifyOpts,
+    ) -> Expr<S> {
+        let _span = debug_span!("simplify_with", expr = ?self.id).entered();
+        let result = {
+            let mut inner = self.inner.write();
+            crate::simplify::simplify_engine::unified_simplify(
+                &mut inner.arena,
+                self.id,
+                opts,
+            )
         };
-        let smart_ops = {
-            let inner = self.inner.read();
-            crate::simplify::simplify_engine::count_ops(&inner.arena, smart_result.id)
-        };
-        if smart_ops <= pattern_ops {
-            smart_result
-        } else {
-            pattern_result
-        }
+        self.wrap(result.expr)
     }
 
     /// Like [`simplify`](Expr::simplify), but also returns a trace of
@@ -676,6 +710,10 @@ impl<S: Sort> Expr<S> {
     ///
     /// Each [`Step`](crate::transforms::pattern::Step) records the rule name, the
     /// sub-expression before, and the sub-expression after.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `.simplify_with(&SimplifyOpts::default().trace())` instead"
+    )]
     #[must_use = "returns the simplified form and trace"]
     pub fn simplify_trace(&self) -> (Expr<S>, Vec<crate::transforms::pattern::Step>) {
         let mut inner = self.inner.write();
@@ -696,33 +734,24 @@ impl<S: Sort> Expr<S> {
         (self.wrap(result_id), steps)
     }
 
-    /// Full simplification: repeatedly applies [`eval`](Expr::eval),
-    /// [`expand`](Expr::expand), and [`simplify`](Expr::simplify) until
-    /// the expression stops changing (fixpoint), or a maximum of 10
-    /// iterations is reached.
+    /// Deprecated — use [`simplify`](Self::simplify) instead.
     ///
-    /// This is the "just make this simpler" button — it composes all
-    /// available simplification passes into a single call.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// // (x+1)^2 - x^2 - 2*x simplifies to 1 after expand + canonicalization
-    /// let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
-    /// assert_eq!(format!("{}", expr.full_simplify()), "1");
-    /// ```
+    /// `.simplify()` now iterates to fixpoint (like the old `full_simplify`)
+    /// and includes all strategies (trig, log, combinatorial, radical, …).
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `.simplify()` instead — it now iterates to fixpoint with all strategies"
+    )]
     #[must_use = "returns the fully simplified form; does not modify in place"]
     pub fn full_simplify(&self) -> Expr<S> {
-        let (result, _steps) = self.full_simplify_trace();
-        result
+        self.simplify()
     }
 
-    /// Like [`full_simplify`](Expr::full_simplify), but also returns a
-    /// trace of all steps across all iterations.
+    /// Deprecated — use `.simplify_with(&SimplifyOpts::default().trace())` instead.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `.simplify_with(&SimplifyOpts::default().trace())` instead"
+    )]
     #[must_use = "returns the fully simplified form and accumulated trace"]
     pub fn full_simplify_trace(&self) -> (Expr<S>, Vec<crate::transforms::pattern::Step>) {
         let _span = tracing::debug_span!("full_simplify_trace", expr = ?self.id).entered();
@@ -733,27 +762,17 @@ impl<S: Sort> Expr<S> {
         (self.wrap(result_id), steps)
     }
 
-    /// Try multiple simplification strategies and return the simplest result.
+    /// Deprecated — use [`simplify`](Self::simplify) instead.
     ///
-    /// Unlike [`simplify`](Self::simplify) which applies a single pass of
-    /// rewrite rules, this tries eval, expand, factor_terms, trig_expand,
-    /// logcombine and more, then picks whichever result has the fewest
-    /// operations (nodes).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    /// assert_eq!(format!("{}", expr.smart_simplify()), "1");
-    /// ```
+    /// `.simplify()` now uses the same multi-strategy engine that
+    /// `smart_simplify` used, plus fixpoint iteration.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `.simplify()` instead — it now uses the same multi-strategy engine"
+    )]
     #[must_use = "returns the simplified form; does not modify in place"]
     pub fn smart_simplify(&self) -> Expr<S> {
-        let id = self.inner.write().arena.smart_simplify_expr(self.id);
-        self.wrap(id)
+        self.simplify()
     }
 
     // ── Serialization ──────────────────────────────────────────────

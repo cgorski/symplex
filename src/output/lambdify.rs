@@ -402,7 +402,7 @@ fn execute(instructions: &[Instruction], args: &[f64]) -> f64 {
             }
             Instruction::Sign => {
                 let a = stack.pop().unwrap_or(0.0);
-                stack.push(a.signum());
+                stack.push(if a > 0.0 { 1.0 } else if a < 0.0 { -1.0 } else { 0.0 });
             }
             Instruction::Heaviside => {
                 let a = stack.pop().unwrap_or(0.0);

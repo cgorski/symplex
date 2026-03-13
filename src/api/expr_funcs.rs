@@ -1200,6 +1200,12 @@ impl Expr<Numeric> {
             return Some(true);
         }
 
+        // Layer 4: simplify the difference (catches trig identities, etc.)
+        let simplified = diff.smart_simplify();
+        if simplified.is_zero_structural() {
+            return Some(true);
+        }
+
         // Could not determine equality.
         None
     }

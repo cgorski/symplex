@@ -915,6 +915,22 @@ fn inverse_degree2(
 
     // Case 1: No linear term in denom (b == 0) → s² + ω² form
     if b.is_zero() {
+        // Special case: b=0, c=0 → denominator is c₂·s² (Bug 8)
+        if c.is_zero() {
+            if let Some(np) = &numer_poly {
+                let nd = np.degree().unwrap_or(0);
+                if nd == 0 {
+                    // L⁻¹{k / (c₂·s²)} = (k/c₂)·t
+                    let k = np.coeff(0);
+                    let k_id = rational_to_expr(arena, &k);
+                    let c2_id = rational_to_expr(arena, &c2);
+                    let scale = arena.div(k_id, c2_id);
+                    return Some(arena.mul(&[scale, t]));
+                }
+            }
+            return None;
+        }
+
         // ω² = c (must be positive for sin/cos)
         if !c.is_positive() {
             // s² - |c| → could be sinh/cosh, but partial fractions handle it
@@ -997,7 +1013,62 @@ fn inverse_degree2(
     let beta_sq = &c - &(&b * &b) / Ratio::from_integer(BigInt::from(4));
 
     if beta_sq.is_zero() {
-        // Repeated root (s + b/2)² — let inverse_power_form handle it
+        // Repeated root: denominator is c₂·(s - α)² where α = -b/2 (Bug 9)
+        let alpha_id = rational_to_expr(arena, &alpha);
+
+        if let Some(np) = &numer_poly {
+            let nd = np.degree().unwrap_or(0);
+            let c2_id = rational_to_expr(arena, &c2);
+
+            if nd == 0 {
+                // L⁻¹{k / (c₂·(s-α)²)} = (k/c₂)·t·exp(α·t)
+                let k = np.coeff(0);
+                let k_id = rational_to_expr(arena, &k);
+                let scale = arena.div(k_id, c2_id);
+                if alpha.is_zero() {
+                    return Some(arena.mul(&[scale, t]));
+                }
+                let alpha_t = arena.mul(&[alpha_id, t]);
+                let exp_alpha_t = arena.exp(alpha_t);
+                return Some(arena.mul(&[scale, t, exp_alpha_t]));
+            }
+
+            if nd == 1 {
+                let a0 = np.coeff(0);
+                let a1 = np.coeff(1);
+
+                // Decompose: a₁·s + a₀ = a₁·(s - α) + (a₁·α + a₀)
+                let d_const = &a1 * &alpha + &a0;
+
+                let alpha_t = arena.mul(&[alpha_id, t]);
+                let exp_alpha_t = arena.exp(alpha_t);
+
+                let mut terms = Vec::new();
+
+                // exp term: (a₁/c₂) · exp(α·t)
+                if !a1.is_zero() {
+                    let a1_id = rational_to_expr(arena, &a1);
+                    let exp_coeff = arena.div(a1_id, c2_id);
+                    terms.push(arena.mul(&[exp_coeff, exp_alpha_t]));
+                }
+
+                // t·exp term: (d_const/c₂) · t · exp(α·t)
+                if !d_const.is_zero() {
+                    let d_id = rational_to_expr(arena, &d_const);
+                    let t_exp_coeff = arena.div(d_id, c2_id);
+                    terms.push(arena.mul(&[t_exp_coeff, t, exp_alpha_t]));
+                }
+
+                if terms.is_empty() {
+                    return Some(arena.zero);
+                } else if terms.len() == 1 {
+                    return Some(terms[0]);
+                } else {
+                    return Some(arena.add(&terms));
+                }
+            }
+        }
+
         return None;
     }
 

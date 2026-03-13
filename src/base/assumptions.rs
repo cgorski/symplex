@@ -960,6 +960,8 @@ impl AssumptionCache {
         let mut sign_known = true;
         let mut imaginary_count: usize = 0;
         let mut real_count: usize = 0;
+        let mut any_even: bool = false;
+        let mut all_odd: bool = true;
 
         for &child in args.iter() {
             let child_a = self.compute(arena, child);
@@ -1000,6 +1002,15 @@ impl AssumptionCache {
                 }
             }
 
+            if child_a.query(Props::EVEN) == Some(true) {
+                any_even = true;
+                all_odd = false;
+            } else if child_a.query(Props::ODD) == Some(true) {
+                // all_odd stays true
+            } else {
+                all_odd = false;
+            }
+
             if child_a.query(Props::IMAGINARY) == Some(true) {
                 imaginary_count += 1;
             }
@@ -1010,6 +1021,13 @@ impl AssumptionCache {
 
         if all_integer {
             a.known_true |= Props::INTEGER;
+            if any_even {
+                a.known_true |= Props::EVEN;
+                a.known_false |= Props::ODD;
+            } else if all_odd && !args.is_empty() {
+                a.known_true |= Props::ODD;
+                a.known_false |= Props::EVEN;
+            }
         }
         if all_rational {
             a.known_true |= Props::RATIONAL;

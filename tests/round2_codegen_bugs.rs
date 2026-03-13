@@ -1509,9 +1509,8 @@ fn compile_piecewise_returns_none() {
 
 #[test]
 fn sign_function_semantics() {
-    // POTENTIAL BUG: In Rust, 0.0_f64.signum() == 1.0 (IEEE 754 semantics).
-    // Mathematically, sign(0) = 0 in most CAS systems (SymPy, Mathematica).
-    // The lambdify implementation uses `a.signum()` which returns 1.0 at 0.
+    // Bug 12 fixed: sign(0) now returns 0.0 (mathematical convention)
+    // instead of 1.0 (Rust's f64::signum / IEEE 754 semantics).
     let ctx = Context::new();
     let f = symplex::parse::parse(&ctx, "sign(x)").unwrap();
     let compiled = f.compile(&["x"]);
@@ -1519,16 +1518,7 @@ fn sign_function_semantics() {
     if let Some(func) = compiled {
         assert_eq!(func(&[5.0]), 1.0, "sign(5) should be 1");
         assert_eq!(func(&[-3.0]), -1.0, "sign(-3) should be -1");
-
-        // This documents the current behavior.
-        // Mathematically sign(0) = 0, but Rust signum gives 1.0.
-        let sign_zero = func(&[0.0]);
-        if sign_zero != 0.0 {
-            eprintln!(
-                "NOTE: sign(0) via compile = {sign_zero} (Rust signum), \
-                 mathematical sign(0) = 0. Possible semantic mismatch."
-            );
-        }
+        assert_eq!(func(&[0.0]), 0.0, "sign(0) should be 0 (mathematical convention)");
     }
 }
 

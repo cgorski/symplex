@@ -2100,10 +2100,10 @@ fn control_routh_unstable_system_zero_pivot_bug() {
     // s² - 1 = (s+1)(s-1), has positive root → unstable
     let coeffs = vec![ctx.int(1), ctx.int(0), ctx.int(-1)];
     let stable = is_routh_stable(&coeffs);
-    // BUG: should be Some(false) but returns None due to zero-pivot division
     assert_eq!(
-        stable, None,
-        "BUG: is_routh_stable returns None for zero-pivot case (s²-1)"
+        stable,
+        Some(false),
+        "s²-1 has a positive real root and should be unstable"
     );
 }
 

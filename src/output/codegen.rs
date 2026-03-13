@@ -936,7 +936,13 @@ fn expr_to_rust_cse(
         ExprNode::Asinh(x) => emit_unary(arena, x, "asinh", var_names, options, cse_constants),
         ExprNode::Acosh(x) => emit_unary(arena, x, "acosh", var_names, options, cse_constants),
         ExprNode::Atanh(x) => emit_unary(arena, x, "atanh", var_names, options, cse_constants),
-        ExprNode::Sign(x) => emit_unary(arena, x, "signum", var_names, options, cse_constants),
+        ExprNode::Sign(x) => {
+            let code = expr_to_rust_cse(arena, x, var_names, options, cse_constants)?;
+            let s = options.precision.suffix();
+            Ok(format!(
+                "(if {code} > 0.0{s} {{ 1.0{s} }} else if {code} < 0.0{s} {{ -1.0{s} }} else {{ 0.0{s} }})"
+            ))
+        }
         ExprNode::Heaviside(x) => {
             let code = expr_to_rust_cse(arena, x, var_names, options, cse_constants)?;
             let s = options.precision.suffix();
@@ -1359,7 +1365,7 @@ fn eval_unary_f64(func: &str, val: f64) -> Option<f64> {
         "asinh" => val.asinh(),
         "acosh" => val.acosh(),
         "atanh" => val.atanh(),
-        "signum" => val.signum(),
+        "signum" => if val > 0.0 { 1.0 } else if val < 0.0 { -1.0 } else { 0.0 },
         "floor" => val.floor(),
         "ceil" => val.ceil(),
         "sqrt" => val.sqrt(),
@@ -2106,7 +2112,7 @@ mod tests {
 
         let sign_x = a.sign(x);
         let code = expr_to_rust(&a, sign_x, &["x"], &default_opts()).unwrap();
-        assert!(code.contains(".signum()"));
+        assert!(code.contains("if x > 0.0_f64"), "sign(x) should emit inline if-expression, got: {code}");
     }
 
     #[test]
