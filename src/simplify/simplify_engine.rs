@@ -62,12 +62,6 @@ impl SimplifyOpts {
 pub struct SimplifyResult {
     /// The simplified expression.
     pub expr: ExprId,
-    /// Rewrite-rule trace (empty unless `SimplifyOpts::trace` was set).
-    pub steps: Vec<crate::transforms::pattern::Step>,
-    /// Number of fixpoint iterations performed.
-    pub iterations: usize,
-    /// Whether the engine converged (expression stopped changing).
-    pub converged: bool,
 }
 
 /// Count the number of operations (nodes) in an expression.
@@ -562,19 +556,9 @@ pub(crate) fn unified_simplify(
     let mut current = expr;
     let mut seen = FxHashSet::default();
     seen.insert(current);
-    let mut all_steps: Vec<crate::transforms::pattern::Step> = Vec::new();
-    let mut iterations = 0;
 
     for i in 0..opts.max_iterations {
         let next = smart_simplify(arena, current);
-        iterations = i + 1;
-
-        // Optionally collect trace from the winning strategy's pattern rules.
-        if opts.trace {
-            let rules = crate::transforms::pattern::basic_rules(arena);
-            let (_, steps) = crate::transforms::pattern::apply_rules(arena, next, &rules);
-            all_steps.extend(steps);
-        }
 
         // Global bloat guard: never exceed 2× the original expression.
         let next_ops = count_ops(arena, next);
@@ -587,9 +571,6 @@ pub(crate) fn unified_simplify(
             );
             return SimplifyResult {
                 expr: current,
-                steps: all_steps,
-                iterations,
-                converged: false,
             };
         }
 
@@ -608,9 +589,6 @@ pub(crate) fn unified_simplify(
             };
             return SimplifyResult {
                 expr: best,
-                steps: all_steps,
-                iterations,
-                converged: true,
             };
         }
 
@@ -622,9 +600,6 @@ pub(crate) fn unified_simplify(
             );
             return SimplifyResult {
                 expr: current,
-                steps: all_steps,
-                iterations,
-                converged: true,
             };
         }
 
@@ -632,14 +607,10 @@ pub(crate) fn unified_simplify(
     }
 
     tracing::debug!(
-        iterations,
         "unified_simplify: max iterations reached"
     );
     SimplifyResult {
         expr: current,
-        steps: all_steps,
-        iterations,
-        converged: false,
     }
 }
 

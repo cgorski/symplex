@@ -82,7 +82,6 @@ impl Drop for RischRecursionGuard {
 
 /// A single logarithmic term in the integral.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub enum LogTerm {
     /// `coeff * ln(argument(x))` where `coeff` is rational.
     Rational {
@@ -104,7 +103,6 @@ pub enum LogTerm {
 
 /// Result of the Risch integration.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub enum RischResult {
     /// Successfully found an elementary antiderivative, expressed as
     /// the sum of a rational function plus logarithmic terms.
@@ -115,11 +113,91 @@ pub enum RischResult {
         rational_denom: Poly,
         /// Logarithmic terms `Σ cᵢ ln(vᵢ)`.
         log_terms: Vec<LogTerm>,
+        /// Tower-level result as an arena expression (when the result
+        /// involves transcendental extensions like exp/ln and can't be
+        /// represented as a pure `Poly` in the base variable).
+        arena_expr: Option<crate::base::node::ExprId>,
     },
     /// Proved that no elementary antiderivative exists.
     NonElementary,
     /// Hit an unimplemented case or internal limitation.
     Failed(String),
+}
+
+/// Result of attempting the Risch tower integration from the production
+/// `integrate()` dispatcher.
+pub(crate) enum TowerResult {
+    /// Found an elementary antiderivative (as an arena expression).
+    Elementary(crate::base::node::ExprId),
+    /// Proved that no elementary antiderivative exists.
+    NonElementary,
+    /// Tower couldn't handle this expression — fall through to heuristics.
+    NotApplicable,
+}
+
+/// Try to integrate an expression using the Risch algorithm's differential
+/// extension tower.
+///
+/// This handles integrands containing `exp(...)` and `ln(...)` subexpressions
+/// that the rule-based integrator couldn't handle.  Returns
+/// `TowerResult::Elementary(id)` with the antiderivative,
+/// `TowerResult::NonElementary` if no elementary antiderivative exists, or
+/// `TowerResult::NotApplicable` if the expression can't be handled by the tower.
+pub(crate) fn try_risch_tower(
+    arena: &mut crate::base::arena::Arena,
+    expr: crate::base::node::ExprId,
+    var: crate::base::node::ExprId,
+) -> TowerResult {
+    // Build the differential extension tower.
+    let mut de = match tower::build_tower(arena, expr, var) {
+        Ok(de) => de,
+        Err(_reason) => {
+            tracing::debug!(reason = _reason.as_str(), "Risch tower: build_tower failed");
+            return TowerResult::NotApplicable;
+        }
+    };
+
+    // Base-level towers (no exp/ln) are handled by try_risch_rational
+    // inside integrate_node — skip to avoid redundant work.
+    if de.is_base_level() {
+        return TowerResult::NotApplicable;
+    }
+
+    // Run the Risch integrator on the tower.
+    let result = integrate::risch_integrate(arena, &mut de);
+
+    match result {
+        RischResult::Elementary {
+            arena_expr: Some(id),
+            rational_numer: _rn,
+            rational_denom: _rd,
+            log_terms: _lt,
+        } => {
+            tracing::debug!(
+                tower_depth = de.depth(),
+                "Risch tower: elementary antiderivative found"
+            );
+            TowerResult::Elementary(id)
+        }
+        RischResult::Elementary {
+            arena_expr: None,
+            rational_numer: _rn,
+            rational_denom: _rd,
+            log_terms: _lt,
+        } => {
+            // Base-level Poly result (shouldn't happen for tower-level,
+            // but if it does, let heurisch handle it).
+            TowerResult::NotApplicable
+        }
+        RischResult::NonElementary => TowerResult::NonElementary,
+        RischResult::Failed(_msg) => {
+            tracing::debug!(
+                reason = _msg.as_str(),
+                "Risch tower integration failed, falling through"
+            );
+            TowerResult::NotApplicable
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -626,7 +704,6 @@ mod tests {
         use crate::poly::dense::Poly;
         use crate::poly::generic::GenPoly;
         use crate::poly::ratfn::RationalFn;
-        use crate::poly::traits::Ring;
 
         fn r(n: i64, d: i64) -> Ratio<BigInt> {
             Ratio::new(BigInt::from(n), BigInt::from(d))

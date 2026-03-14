@@ -64,7 +64,6 @@ use crate::poly::traits::Ring;
 /// the logarithmic or exponential case.
 ///
 /// The `arena` is needed for tower-level integration (derivation, substitution).
-#[allow(dead_code)]
 pub fn risch_integrate(arena: &mut Arena, de: &mut DifferentialExtension) -> RischResult {
     if de.is_base_level() {
         // Base case: rational function integration.
@@ -117,6 +116,7 @@ fn integrate_rational(a: &Poly, d: &Poly) -> RischResult {
             rational_numer: integral,
             rational_denom: Poly::from_int(1),
             log_terms: vec![],
+            arena_expr: None,
         };
     }
 
@@ -134,6 +134,7 @@ fn integrate_rational(a: &Poly, d: &Poly) -> RischResult {
         rational_numer: hr.g_numer,
         rational_denom: hr.g_denom,
         log_terms: log_result.terms,
+        arena_expr: None,
     }
 }
 
@@ -403,16 +404,16 @@ fn integrate_primitive(arena: &mut Arena, de: &mut DifferentialExtension) -> Ris
         arena.add(&result_terms)
     };
 
-    let _result_eval = crate::transforms::eval::eval(arena, result_expr);
+    let result_eval = crate::transforms::eval::eval(arena, result_expr);
 
     // Package as RischResult::Elementary.
     // The result contains ln(u) terms — not pure Poly in x.
-    // We return it with trivial rational part and no log_terms
-    // (the ln(u) is embedded in the rational_numer expression).
+    // The arena_expr carries the actual answer; the Poly fields are placeholders.
     RischResult::Elementary {
-        rational_numer: Poly::zero(), // placeholder — real result is in the arena
+        rational_numer: Poly::zero(),
         rational_denom: Poly::from_int(1),
         log_terms: vec![],
+        arena_expr: Some(result_eval),
     }
 }
 
@@ -604,12 +605,13 @@ fn integrate_hyperexponential(arena: &mut Arena, de: &mut DifferentialExtension)
         arena.add(&result_terms)
     };
 
-    let _result_eval = crate::transforms::eval::eval(arena, result_expr);
+    let result_eval = crate::transforms::eval::eval(arena, result_expr);
 
     RischResult::Elementary {
         rational_numer: Poly::zero(),
         rational_denom: Poly::from_int(1),
         log_terms: vec![],
+        arena_expr: Some(result_eval),
     }
 }
 
@@ -637,6 +639,7 @@ mod tests {
                 rational_numer,
                 rational_denom,
                 log_terms,
+                ..
             } => {
                 assert!(
                     log_terms.is_empty(),
@@ -659,6 +662,7 @@ mod tests {
             RischResult::Elementary {
                 rational_numer,
                 log_terms,
+                arena_expr: _,
                 ..
             } => {
                 // Rational part should be zero (1/x has no Hermite reduction).
@@ -682,6 +686,7 @@ mod tests {
             RischResult::Elementary {
                 rational_numer,
                 log_terms,
+                arena_expr: _,
                 ..
             } => {
                 assert!(log_terms.is_empty(), "1/x² should have no log terms");

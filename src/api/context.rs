@@ -46,9 +46,6 @@ pub(crate) struct ContextInner {
     /// queries need `&mut` access for caching, but only need `&Arena`
     /// (shared read) for the actual computation.
     pub(crate) assumptions: Mutex<AssumptionCache>,
-    /// Cached simplification rules. Lazily initialized on first
-    /// `simplify()` call to avoid rebuilding rules every time.
-    pub(crate) cached_rules: Option<Vec<crate::transforms::pattern::Rule>>,
 }
 
 /// The user-facing entry point for symplex.
@@ -86,7 +83,6 @@ impl Context {
             inner: Arc::new(RwLock::new(ContextInner {
                 arena: Arena::with_config(config),
                 assumptions: Mutex::new(AssumptionCache::new()),
-                cached_rules: None,
             })),
         }
     }

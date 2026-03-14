@@ -53,12 +53,27 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
     let result = integrate_node(arena, expr, var, var_sym, 20);
 
     // If the rule-based integrator returned an unevaluated Integral node,
-    // try the heuristic Risch integrator as a fallback.
-    let result = if let ExprNode::Integral(_, _) = arena.node(result)
-        && let Some(heurisch_result) =
-            crate::transforms::heurisch::heurisch_integrate(arena, expr, var, var_sym)
-    {
-        heurisch_result
+    // try the Risch tower (exact method for exp/ln integrands) before
+    // falling back to the heuristic integrator.
+    let result = if let ExprNode::Integral(_, _) = arena.node(result) {
+        match crate::calculus::risch::try_risch_tower(arena, expr, var) {
+            crate::calculus::risch::TowerResult::Elementary(id) => id,
+            crate::calculus::risch::TowerResult::NonElementary => {
+                // Proved non-elementary — keep the unevaluated Integral node.
+                // Skip heurisch: it can't succeed and would waste cycles.
+                result
+            }
+            crate::calculus::risch::TowerResult::NotApplicable => {
+                // Tower couldn't handle this — fall through to heurisch.
+                if let Some(heurisch_result) =
+                    crate::transforms::heurisch::heurisch_integrate(arena, expr, var, var_sym)
+                {
+                    heurisch_result
+                } else {
+                    result
+                }
+            }
+        }
     } else {
         result
     };

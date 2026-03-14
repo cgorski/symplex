@@ -721,8 +721,6 @@ pub(crate) fn rootsum_doit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::poly::traits::Field;
-
 
     // ── Vieta tests ────────────────────────────────────────────────
 
@@ -832,10 +830,6 @@ mod tests {
 
     fn sym(arena: &mut Arena, name: &str) -> ExprId {
         arena.symbol(name)
-    }
-
-    fn display(arena: &Arena, id: ExprId) -> String {
-        arena.display(id).to_string()
     }
 
     // ── poly_to_genpoly_rf tests ───────────────────────────────────

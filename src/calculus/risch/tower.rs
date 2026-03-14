@@ -1,4 +1,3 @@
-#![allow(dead_code)] // WIP scaffolding — functions are tested but not yet called from production code
 //! Differential extension tower for the Risch algorithm.
 //!
 //! Given an expression containing `exp` and `ln` subexpressions, builds

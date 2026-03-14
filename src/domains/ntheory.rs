@@ -261,7 +261,7 @@ fn factorint_i64(n: i64) -> Vec<(i64, u32)> {
     }
 
     if n > 1 {
-        factors.push((n as i64, 1));
+        factors.push((i64::try_from(n).expect("cofactor fits in i64 after factoring i64 input"), 1));
     }
 
     factors
