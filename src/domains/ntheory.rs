@@ -347,15 +347,19 @@ fn factorint_big_internal(n: &BigInt) -> Vec<(BigInt, u32)> {
 }
 
 /// Next prime after `n` (i64 fast path).
-fn nextprime_i64(n: i64) -> i64 {
+fn nextprime_i64(n: i64) -> Option<i64> {
     if n < 2 {
-        return 2;
+        return Some(2);
     }
-    let mut candidate = if n % 2 == 0 { n + 1 } else { n + 2 };
+    let mut candidate = if n % 2 == 0 {
+        n.checked_add(1)?
+    } else {
+        n.checked_add(2)?
+    };
     while !isprime_i64(candidate) {
-        candidate += 2;
+        candidate = candidate.checked_add(2)?;
     }
-    candidate
+    Some(candidate)
 }
 
 /// Previous prime before `n` (i64 fast path).
@@ -386,11 +390,12 @@ fn isqrt_i64(n: i64) -> Option<i64> {
         return Some(0);
     }
     let mut s = (n as f64).sqrt() as i64;
-    // Newton correction
-    while s * s > n {
+    let n128 = n as i128;
+    // Newton correction (use i128 to avoid overflow when s ≈ sqrt(i64::MAX))
+    while (s as i128) * (s as i128) > n128 {
         s -= 1;
     }
-    while (s + 1) * (s + 1) <= n {
+    while ((s + 1) as i128) * ((s + 1) as i128) <= n128 {
         s += 1;
     }
     Some(s)
@@ -510,7 +515,13 @@ pub fn factorint(n: impl Into<BigInt>) -> Vec<(BigInt, u32)> {
 pub fn nextprime(n: impl Into<BigInt>) -> BigInt {
     let n: BigInt = n.into();
     if let Some(n_i64) = n.to_i64() {
-        return BigInt::from(nextprime_i64(n_i64));
+        // Guard: skip i64 fast path near i64::MAX to avoid overflow in
+        // candidate arithmetic (n+1, n+2, candidate+=2 can all wrap).
+        if n_i64 <= i64::MAX - 1000 {
+            if let Some(result) = nextprime_i64(n_i64) {
+                return BigInt::from(result);
+            }
+        }
     }
     // BigInt path
     let two = BigInt::from(2);
