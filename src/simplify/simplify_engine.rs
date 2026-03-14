@@ -262,7 +262,7 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
             ops = count_ops(arena, s2),
             "strategy evaluated"
         );
-        update_best(arena, &mut best, &mut best_ops, s2);
+        update_best_or_equal(arena, &mut best, &mut best_ops, s2);
     } else {
         tracing::debug!("smart_simplify: skipping pattern rules (no trig/exp/hyp nodes)");
     }
