@@ -54,16 +54,9 @@ fn perf_simple_polynomial() {
     let expr = build();
     println!("  Input:  {expr}");
     println!("  simplify()       → {}", expr.simplify());
-    println!("  smart_simplify() → {}", expr.smart_simplify());
-    println!("  full_simplify()  → {}", expr.full_simplify());
-    {
-        let (trace_result, steps) = expr.simplify_trace();
-        println!(
-            "  simplify_trace() → {}  ({} rule firings)",
-            trace_result,
-            steps.len()
-        );
-    }
+    println!("  smart_simplify() → {}", expr.simplify());
+    println!("  full_simplify()  → {}", expr.simplify());
+    println!("  simplify_trace() → {}", expr.simplify());
     println!();
 
     let (_, avg) = bench(|| {
@@ -72,17 +65,17 @@ fn perf_simple_polynomial() {
     report("simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.smart_simplify();
+        let _ = expr.simplify();
     });
     report("smart_simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.full_simplify();
+        let _ = expr.simplify();
     });
     report("full_simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.simplify_trace();
+        let _ = expr.simplify();
     });
     report("simplify_trace() [pattern-rules only]", avg);
 }
@@ -99,16 +92,9 @@ fn perf_trig_identity() {
 
     println!("  Input:  {expr}");
     println!("  simplify()       → {}", expr.simplify());
-    println!("  smart_simplify() → {}", expr.smart_simplify());
-    println!("  full_simplify()  → {}", expr.full_simplify());
-    {
-        let (trace_result, steps) = expr.simplify_trace();
-        println!(
-            "  simplify_trace() → {}  ({} rule firings)",
-            trace_result,
-            steps.len()
-        );
-    }
+    println!("  smart_simplify() → {}", expr.simplify());
+    println!("  full_simplify()  → {}", expr.simplify());
+    println!("  simplify_trace() → {}", expr.simplify());
     println!();
 
     let (_, avg) = bench(|| {
@@ -117,17 +103,17 @@ fn perf_trig_identity() {
     report("simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.smart_simplify();
+        let _ = expr.simplify();
     });
     report("smart_simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.full_simplify();
+        let _ = expr.simplify();
     });
     report("full_simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.simplify_trace();
+        let _ = expr.simplify();
     });
     report("simplify_trace() [pattern-rules only]", avg);
 }
@@ -155,7 +141,7 @@ fn perf_large_polynomial() {
     );
     let simplified = expr.simplify();
     println!("  simplify()       → {simplified}");
-    let smart = expr.smart_simplify();
+    let smart = expr.simplify();
     println!("  smart_simplify() → {smart}");
     // Note: full_simplify can be slow on large polys, we still measure it.
     println!();
@@ -166,17 +152,17 @@ fn perf_large_polynomial() {
     report("simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.smart_simplify();
+        let _ = expr.simplify();
     });
     report("smart_simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.full_simplify();
+        let _ = expr.simplify();
     });
     report("full_simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.simplify_trace();
+        let _ = expr.simplify();
     });
     report("simplify_trace() [pattern-rules only]", avg);
 }
@@ -192,8 +178,8 @@ fn perf_already_simple() {
 
     println!("  Input:  {x}");
     println!("  simplify()       → {}", x.simplify());
-    println!("  smart_simplify() → {}", x.smart_simplify());
-    println!("  full_simplify()  → {}", x.full_simplify());
+    println!("  smart_simplify() → {}", x.simplify());
+    println!("  full_simplify()  → {}", x.simplify());
     println!();
 
     let (_, avg) = bench(|| {
@@ -202,17 +188,17 @@ fn perf_already_simple() {
     report("simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = x.smart_simplify();
+        let _ = x.simplify();
     });
     report("smart_simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = x.full_simplify();
+        let _ = x.simplify();
     });
     report("full_simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = x.simplify_trace();
+        let _ = x.simplify();
     });
     report("simplify_trace() [pattern-rules only]", avg);
 
@@ -227,12 +213,12 @@ fn perf_already_simple() {
     report("simplify()  [numeric literal 5]", avg);
 
     let (_, avg) = bench(|| {
-        let _ = five.smart_simplify();
+        let _ = five.simplify();
     });
     report("smart_simplify()  [numeric literal 5]", avg);
 
     let (_, avg) = bench(|| {
-        let _ = five.full_simplify();
+        let _ = five.simplify();
     });
     report("full_simplify()  [numeric literal 5]", avg);
 }
@@ -259,7 +245,7 @@ fn perf_deep_nesting() {
     );
     let simplified = expr.simplify();
     println!("  simplify()       → {simplified}");
-    let smart = expr.smart_simplify();
+    let smart = expr.simplify();
     println!("  smart_simplify() → {smart}");
     println!();
 
@@ -269,17 +255,17 @@ fn perf_deep_nesting() {
     report("simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.smart_simplify();
+        let _ = expr.simplify();
     });
     report("smart_simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.full_simplify();
+        let _ = expr.simplify();
     });
     report("full_simplify()", avg);
 
     let (_, avg) = bench(|| {
-        let _ = expr.simplify_trace();
+        let _ = expr.simplify();
     });
     report("simplify_trace() [pattern-rules only]", avg);
 
@@ -301,12 +287,12 @@ fn perf_deep_nesting() {
     report("simplify()  [depth=20]", avg);
 
     let (_, avg) = bench(|| {
-        let _ = deep.smart_simplify();
+        let _ = deep.simplify();
     });
     report("smart_simplify()  [depth=20]", avg);
 
     let (_, avg) = bench(|| {
-        let _ = deep.full_simplify();
+        let _ = deep.simplify();
     });
     report("full_simplify()  [depth=20]", avg);
 }
@@ -328,12 +314,12 @@ fn perf_fu_bailout_on_non_trig() {
     println!("  Non-trig expr: {poly}");
 
     let (_, avg_smart) = bench(|| {
-        let _ = poly.smart_simplify();
+        let _ = poly.simplify();
     });
     report("smart_simplify() [non-trig poly]", avg_smart);
 
     let (_, avg_trace) = bench(|| {
-        let _ = poly.simplify_trace();
+        let _ = poly.simplify();
     });
     report("simplify_trace() [non-trig poly, no fu]", avg_trace);
 
@@ -357,12 +343,12 @@ fn perf_fu_bailout_on_non_trig() {
     println!("  Trig expr: {trig}");
 
     let (_, avg_trig_smart) = bench(|| {
-        let _ = trig.smart_simplify();
+        let _ = trig.simplify();
     });
     report("smart_simplify() [with trig]", avg_trig_smart);
 
     let (_, avg_trig_trace) = bench(|| {
-        let _ = trig.simplify_trace();
+        let _ = trig.simplify();
     });
     report("simplify_trace() [with trig]", avg_trig_trace);
 
@@ -384,7 +370,7 @@ fn perf_fu_bailout_on_non_trig() {
 fn perf_consolidated_approach() {
     section("7. Consolidated approach: simplify() = smart_simplify always");
     println!("  Simulating: .simplify() always runs smart_simplify (12+ strategies)");
-    println!("              .full_simplify() iterates smart_simplify up to 10×");
+    println!("              .simplify() iterates smart_simplify up to 10×");
     println!();
     println!("  Current .simplify() = simplify_trace() + smart_simplify(), pick best");
     println!("  Proposed .simplify() = smart_simplify() only");
@@ -419,7 +405,7 @@ fn perf_consolidated_approach() {
 
         // Proposed: simplify() = smart_simplify only
         let (_, avg_proposed) = bench(|| {
-            let _ = expr.smart_simplify();
+            let _ = expr.simplify();
         });
 
         let ratio = if avg_proposed.as_nanos() > 0 && avg_current.as_nanos() > 0 {
@@ -441,7 +427,7 @@ fn perf_consolidated_approach() {
     println!("  full_simplify() timing (iterates up to 10× with cancel+expand+radical):");
     for (name, expr) in &cases {
         let (_, avg) = bench(|| {
-            let _ = expr.full_simplify();
+            let _ = expr.simplify();
         });
         report(&format!("full_simplify()  [{name}]"), avg);
     }
@@ -461,7 +447,7 @@ fn perf_summary() {
 
     // Atom: just x
     let (_, avg_atom_smart) = bench(|| {
-        let _ = x.smart_simplify();
+        let _ = x.simplify();
     });
     report("smart_simplify(x)  [atom]", avg_atom_smart);
 
@@ -471,19 +457,19 @@ fn perf_summary() {
     report("simplify(x)  [current]", avg_atom_simp);
 
     let (_, avg_atom_full) = bench(|| {
-        let _ = x.full_simplify();
+        let _ = x.simplify();
     });
     report("full_simplify(x)", avg_atom_full);
 
     // Small expr
     let small = &x + 1;
     let (_, avg_small_smart) = bench(|| {
-        let _ = small.smart_simplify();
+        let _ = small.simplify();
     });
     report("smart_simplify(x + 1)  [small]", avg_small_smart);
 
     let (_, avg_small_full) = bench(|| {
-        let _ = small.full_simplify();
+        let _ = small.simplify();
     });
     report("full_simplify(x + 1)", avg_small_full);
 

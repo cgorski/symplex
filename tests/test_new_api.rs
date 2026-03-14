@@ -11,20 +11,20 @@ fn smart_simplify_trig_identity() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    assert_eq!(format!("{}", expr.smart_simplify()), "1");
+    assert_eq!(format!("{}", expr.simplify()), "1");
 }
 
 #[test]
 fn smart_simplify_exp_ln() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    assert_eq!(format!("{}", x.ln().exp().smart_simplify()), "x");
+    assert_eq!(format!("{}", x.ln().exp().simplify()), "x");
 }
 
 #[test]
 fn smart_simplify_sin_zero() {
     let ctx = Context::new();
-    let result = ctx.int(0).sin().smart_simplify();
+    let result = ctx.int(0).sin().simplify();
     assert_eq!(format!("{result}"), "0");
 }
 
@@ -33,7 +33,7 @@ fn smart_simplify_doesnt_bloat() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let ops_before = x.count_ops();
-    let ops_after = x.smart_simplify().count_ops();
+    let ops_after = x.simplify().count_ops();
     assert!(ops_after <= ops_before + 1);
 }
 
@@ -43,7 +43,7 @@ fn smart_simplify_complex_expr() {
     let x = ctx.symbol("x");
     // (x+1)^2 - x^2 - 2x should simplify to 1
     let expr = &(&x + 1).powi(2) - &x.powi(2) - &(&x * 2);
-    let s = format!("{}", expr.expand().smart_simplify());
+    let s = format!("{}", expr.expand().simplify());
     assert_eq!(s, "1");
 }
 

@@ -350,7 +350,7 @@ fn hard_simp_sin_plus_cos_squared() {
     let x = ctx.symbol("x");
     let expr = (&x.sin() + &x.cos()).powi(2);
     let expanded = expr.expand();
-    let simplified = expanded.full_simplify();
+    let simplified = expanded.simplify();
 
     // Verify numerically: (sin(x)+cos(x))² = 1 + 2·sin(x)·cos(x)
     let expected = &ctx.int(1) + &(&x.sin() * &x.cos()) * 2;
@@ -365,7 +365,7 @@ fn hard_simp_exp_ln_sum() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let expr = (&x.ln() + &y.ln()).exp();
-    let simplified = expr.full_simplify();
+    let simplified = expr.simplify();
 
     // Verify numerically at a specific point
     let pt_x = ctx.int(3);
@@ -466,7 +466,7 @@ fn hard_simp_pythagorean_in_sum() {
     // The Pythagorean identity should fire inside a larger sum
     let x = ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2) + &x;
-    let simplified = expr.full_simplify();
+    let simplified = expr.simplify();
     let expected = &x + 1;
     common::assert_math_eq(
         &simplified,
@@ -482,7 +482,7 @@ fn hard_simp_exp_ln_roundtrip() {
     // exp(ln(x)) → x
     let x = ctx.symbol("x");
     let expr = x.ln().exp();
-    let simplified = expr.full_simplify();
+    let simplified = expr.simplify();
     assert_eq!(
         format!("{simplified}"),
         "x",

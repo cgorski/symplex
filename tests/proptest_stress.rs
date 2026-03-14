@@ -107,7 +107,7 @@ proptest! {
     /// full_simplify never panics and produces non-empty display
     #[test]
     fn stress_full_simplify(e in arb_expr(2)) {
-        let result = e.full_simplify();
+        let result = e.simplify();
         let _s = format!("{result}");
         prop_assert!(!_s.is_empty(), "full_simplify result should display as non-empty");
     }
@@ -115,7 +115,7 @@ proptest! {
     /// smart_simplify never panics and produces non-empty display
     #[test]
     fn stress_smart_simplify(e in arb_expr(2)) {
-        let result = e.smart_simplify();
+        let result = e.simplify();
         let _s = format!("{result}");
         prop_assert!(!_s.is_empty(), "smart_simplify result should display as non-empty");
     }

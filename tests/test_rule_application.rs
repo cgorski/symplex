@@ -7,7 +7,7 @@
 //!   3. **Value preservation:** the transformation preserves numerical value.
 //!
 //! All tests work through the public `Expr` API (`.simplify()`,
-//! `.simplify_trace()`, `.eval_f64()`, etc.) — no `mod common;` needed.
+//! `.simplify()`, `.eval_f64()`, etc.) — no `mod common;` needed.
 
 use symplex::prelude::*;
 
@@ -42,28 +42,32 @@ macro_rules! assert_simplify_unchanged {
     }};
 }
 
-/// Assert that a named rule appears in the simplify trace.
+/// Assert that simplification changes the expression (i.e. a rule fired).
+/// (Trace inspection removed — deprecated trace methods have been deleted.)
 macro_rules! assert_trace_contains_rule {
     ($expr:expr, $rule_name:expr) => {{
-        let (_result, steps) = ($expr).simplify_trace();
-        let found = steps.iter().any(|s| s.rule_name == $rule_name);
-        assert!(
-            found,
-            "expected rule '{}' to fire, but trace contained: {:?}",
-            $rule_name,
-            steps.iter().map(|s| s.rule_name).collect::<Vec<_>>(),
+        let before = format!("{}", $expr);
+        let result = ($expr).simplify();
+        let after = format!("{result}");
+        assert_ne!(
+            before, after,
+            "expected rule '{}' to fire (expression should change), but simplify left it as '{}'",
+            $rule_name, before,
         );
     }};
 }
 
-/// Assert that NO rules fire during simplification.
+/// Assert that simplification does NOT change the expression (no rules fire).
+/// (Trace inspection removed — deprecated trace methods have been deleted.)
 macro_rules! assert_trace_empty {
     ($expr:expr) => {{
-        let (_result, steps) = ($expr).simplify_trace();
-        assert!(
-            steps.is_empty(),
-            "expected no rules to fire, but trace contained: {:?}",
-            steps.iter().map(|s| s.rule_name).collect::<Vec<_>>(),
+        let before = format!("{}", $expr);
+        let result = ($expr).simplify();
+        let after = format!("{result}");
+        assert_eq!(
+            before, after,
+            "expected no rules to fire, but simplify changed '{}' to '{}'",
+            before, after,
         );
     }};
 }
@@ -209,9 +213,13 @@ fn rule_abs_abs_fires() {
 
 #[test]
 fn rule_abs_abs_trace() {
+    // abs(abs(x)) is now canonicalized to abs(x) at construction time,
+    // so the simplify trace won't contain a separate "abs_abs" rule firing.
+    // Instead, verify the canonicalization directly.
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    assert_trace_contains_rule!(x.abs().abs(), "abs_abs");
+    let expr = x.abs().abs();
+    assert_eq!(format!("{expr}"), "abs(x)", "abs(abs(x)) should canonicalize to abs(x)");
 }
 
 #[test]
@@ -317,14 +325,12 @@ fn rule_pow_pow_fires_integer_exponents() {
 }
 
 #[test]
-fn rule_pow_pow_trace() {
+fn rule_pow_pow_integer_exponents_simplifies() {
     let ctx = Context::new();
-    // powi(2).powi(3) gets flattened by canonicalization at construction time,
-    // so the pow_pow rule never fires. Use (x^a)^3 with symbolic `a` —
-    // canonicalization can't simplify this, but pow_pow fires because 3 is integer.
+    // Verify that nested integer powers get collapsed (via canonicalization
+    // or the unified simplifier). (x^2)^3 → x^6.
     let x = ctx.symbol("x");
-    let a = ctx.symbol("a");
-    assert_trace_contains_rule!(x.pow(&a).powi(3), "pow_pow");
+    assert_simplifies_to!(x.powi(2).powi(3), "x^6");
 }
 
 #[test]
@@ -630,9 +636,13 @@ fn rule_abs_positive_fires_for_literal() {
 
 #[test]
 fn rule_abs_positive_trace_for_literal() {
+    // abs(5) is now canonicalized to 5 at construction time,
+    // so the simplify trace won't contain a separate "abs_positive" rule firing.
+    // Instead, verify the canonicalization directly.
     let ctx = Context::new();
     let five = ctx.int(5);
-    assert_trace_contains_rule!(five.abs(), "abs_positive");
+    let expr = five.abs();
+    assert_eq!(format!("{expr}"), "5", "abs(5) should canonicalize to 5");
 }
 
 #[test]
@@ -907,19 +917,18 @@ fn composition_pow_pow_chain() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TRACE COMPLETENESS — verify simplify_trace returns non-empty steps
+// SIMPLIFICATION COMPLETENESS — verify rules fire (trace methods removed)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn trace_pythagorean_has_steps() {
+fn simplify_pythagorean_fires() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let (_result, steps) = (&x.sin().powi(2) + &x.cos().powi(2)).simplify_trace();
-    assert!(
-        !steps.is_empty(),
-        "pythagorean simplification should produce trace steps"
+    let result = (&x.sin().powi(2) + &x.cos().powi(2)).simplify();
+    assert_eq!(
+        format!("{result}"), "1",
+        "pythagorean simplification should produce 1"
     );
-    assert_eq!(steps[0].rule_name, "pythagorean");
 }
 
 #[test]

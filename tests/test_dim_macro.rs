@@ -53,7 +53,7 @@ fn dim_length_div_time_is_velocity() {
     let l = Length::symbol(&ctx, "L");
     let t = Time::symbol(&ctx, "t");
     let v: Velocity = symplex::dim!(ctx, Velocity: l / t);
-    assert_eq!(format!("{}", v.inner()), "L*1/t");
+    assert_eq!(format!("{}", v.inner()), "L/t");
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn dim_energy_div_time_is_power() {
     let e = Energy::symbol(&ctx, "E_val");
     let t = Time::symbol(&ctx, "t");
     let p: Power = symplex::dim!(ctx, Power: e / t);
-    assert_eq!(format!("{}", p.inner()), "E_val*1/t");
+    assert_eq!(format!("{}", p.inner()), "E_val/t");
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn dim_force_div_area_is_pressure() {
     let f = Force::symbol(&ctx, "F");
     let a = Area::symbol(&ctx, "A");
     let p: Pressure = symplex::dim!(ctx, Pressure: f / a);
-    assert_eq!(format!("{}", p.inner()), "F*1/A");
+    assert_eq!(format!("{}", p.inner()), "F/A");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

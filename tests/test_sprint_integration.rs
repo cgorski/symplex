@@ -127,7 +127,7 @@ fn integrate_ln_roundtrip() {
     let x = ctx.symbol("x");
     let integral = x.ln().integrate(&x);
     let deriv = integral.diff(&x);
-    let simplified = deriv.full_simplify();
+    let simplified = deriv.simplify();
     let s = format!("{simplified}");
     assert!(
         s.contains("ln"),
@@ -141,7 +141,7 @@ fn integrate_ln_roundtrip_exact() {
     let x = ctx.symbol("x");
     let integral = x.ln().integrate(&x);
     let deriv = integral.diff(&x);
-    let simplified = deriv.full_simplify();
+    let simplified = deriv.simplify();
     assert_eq!(format!("{simplified}"), "ln(x)");
 }
 
@@ -152,7 +152,7 @@ fn integrate_tan_roundtrip() {
     let x = ctx.symbol("x");
     let integral = x.tan().integrate(&x);
     let deriv = integral.diff(&x);
-    let simplified = deriv.full_simplify();
+    let simplified = deriv.simplify();
     let s = format!("{simplified}");
     assert!(
         s.contains("tan") || s.contains("sin") || s.contains("cos"),
@@ -522,7 +522,7 @@ fn logcombine_preserves_simplification() {
     let combined = (&x.ln() + &y.ln()).log_combine();
     assert_eq!(format!("{combined}"), "ln(x*y)");
     let deriv = combined.diff(&x);
-    let simplified = deriv.full_simplify();
+    let simplified = deriv.simplify();
     let s = format!("{simplified}");
     // The chain rule gives y/(x*y) which is equivalent to 1/x but may not
     // fully cancel. Accept either the simplified or unsimplified form.

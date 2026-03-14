@@ -827,6 +827,77 @@ fn push_func(name: &'static str, arg: ExprId, stack: &mut Vec<WorkItem>) {
 /// Each factor that is an Add gets a parent precedence of `PREC_MUL + 1`
 /// to force parenthesisation.
 fn push_mul_factors(arena: &Arena, factors: &[ExprId], _mul_prec: u8, stack: &mut Vec<WorkItem>) {
+    // Split into numerator and denominator (Pow(base, -1)) factors so that
+    // e.g. `1/x * 1/y * (x+y)` renders as `(x + y)/(x*y)` instead of
+    // the less-readable `1/x*1/y*(x + y)`.
+    let mut numer: SmallVec<[ExprId; 6]> = SmallVec::new();
+    let mut denom_bases: SmallVec<[ExprId; 6]> = SmallVec::new();
+
+    for &f in factors {
+        if let ExprNode::Pow(base, exp) = arena.node(f) {
+            if let ExprNode::Num(nid) = arena.node(*exp) {
+                if *arena.num(*nid) == Ratio::from(BigInt::from(-1)) {
+                    denom_bases.push(*base);
+                    continue;
+                }
+            }
+        }
+        numer.push(f);
+    }
+
+    // Skip fraction display when there are no inverse factors, or when the
+    // numerator contains a non-integer rational (avoids ambiguous "1/2/x").
+    let any_frac_numer = numer.iter().any(|&f| {
+        if let ExprNode::Num(nid) = arena.node(f) {
+            !arena.num(*nid).is_integer()
+        } else {
+            false
+        }
+    });
+
+    if denom_bases.is_empty() || any_frac_numer {
+        push_plain_mul_factors(arena, factors, stack);
+        return;
+    }
+
+    // ── Denominator ────────────────────────────────────────────
+    if denom_bases.len() == 1 {
+        let base = denom_bases[0];
+        // Parenthesise compound bases: .../(x + y), .../(a*b), etc.
+        let base_prec = match arena.node(base) {
+            ExprNode::Add(_)
+            | ExprNode::Mul(_)
+            | ExprNode::Neg(_)
+            | ExprNode::Pow(_, _) => PREC_MUL + 1,
+            _ => PREC_MUL,
+        };
+        stack.push(WorkItem::Expr(base, base_prec));
+    } else {
+        // Multiple denom factors: .../(a*b*c)
+        stack.push(WorkItem::Lit(")"));
+        push_plain_mul_factors(arena, &denom_bases, stack);
+        stack.push(WorkItem::Lit("("));
+    }
+
+    stack.push(WorkItem::Lit("/"));
+
+    // ── Numerator ──────────────────────────────────────────────
+    if numer.is_empty() {
+        stack.push(WorkItem::Lit("1"));
+    } else if numer.len() == 1 {
+        let f = numer[0];
+        let prec = match arena.node(f) {
+            ExprNode::Add(_) => PREC_MUL + 1,
+            _ => PREC_MUL,
+        };
+        stack.push(WorkItem::Expr(f, prec));
+    } else {
+        push_plain_mul_factors(arena, &numer, stack);
+    }
+}
+
+/// Push Mul factors joined by `*` without fraction splitting.
+fn push_plain_mul_factors(arena: &Arena, factors: &[ExprId], stack: &mut Vec<WorkItem>) {
     for (i, &factor) in factors.iter().enumerate().rev() {
         // Add factors need parens inside Mul: x*(a + b).
         let child_prec = match arena.node(factor) {

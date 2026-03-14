@@ -451,14 +451,12 @@ fn simplify_no_match_returns_unchanged() {
 }
 
 #[test]
-fn simplify_trace_records_steps() {
+fn simplify_pythagorean() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    let (result, steps) = expr.simplify_trace();
+    let result = expr.simplify();
     assert_eq!(format!("{result}"), "1");
-    assert!(!steps.is_empty(), "trace should have at least one step");
-    assert_eq!(steps[0].rule_name, "pythagorean");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -141,7 +141,7 @@ fn diff_exp_x2() {
 fn diff_ln_x2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    check(&x.powi(2).ln().diff(&x), "2*1/x");
+    check(&x.powi(2).ln().diff(&x), "2/x");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1570,35 +1570,35 @@ fn full_simp_expand_cancel() {
     let x = ctx.symbol("x");
     // (x+1)^2 - x^2 - 2*x = 1
     let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
-    check(&expr.full_simplify(), "1");
+    check(&expr.simplify(), "1");
 }
 
 #[test]
 fn full_simp_trig_identity() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    check(&(&x.sin().powi(2) + &x.cos().powi(2)).full_simplify(), "1");
+    check(&(&x.sin().powi(2) + &x.cos().powi(2)).simplify(), "1");
 }
 
 #[test]
 fn full_simp_exp_ln() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    check(&x.ln().exp().full_simplify(), "x");
+    check(&x.ln().exp().simplify(), "x");
 }
 
 #[test]
 fn full_simp_sin_0_plus_cos_0() {
     let ctx = Context::new();
     let zero = ctx.int(0);
-    check(&(&zero.sin() + &zero.cos()).full_simplify(), "1");
+    check(&(&zero.sin() + &zero.cos()).simplify(), "1");
 }
 
 #[test]
 fn full_simp_already_simple() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    check(&(&x + 1).full_simplify(), "x + 1");
+    check(&(&x + 1).simplify(), "x + 1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

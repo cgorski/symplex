@@ -150,7 +150,7 @@ macro_rules! define_quantity {
             // ── Dimension-preserving manipulation ──────────────────────
 
             /// Full multi-pass simplification, preserving dimension.
-            pub fn simplify_full(&self) -> Self { $name(self.0.full_simplify()) }
+            pub fn simplify_full(&self) -> Self { $name(self.0.simplify()) }
 
             /// Trigonometric simplification, preserving dimension.
             pub fn simplify_trig(&self) -> Self { $name(self.0.simplify_trig()) }

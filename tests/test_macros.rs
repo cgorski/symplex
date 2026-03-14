@@ -42,7 +42,7 @@ fn expr_div() {
     let ctx = Context::new();
     syms!(ctx; x, y);
     let result = expr!(ctx, x / y);
-    assert_eq!(format!("{result}"), "x*1/y");
+    assert_eq!(format!("{result}"), "x/y");
 }
 
 #[test]

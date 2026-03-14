@@ -649,14 +649,7 @@ pub(crate) fn full_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     unified_simplify(arena, expr, &SimplifyOpts::default()).expr
 }
 
-/// Legacy wrapper — iterates `smart_simplify` to fixpoint, returning a trace.
-pub(crate) fn full_simplify_trace(
-    arena: &mut Arena,
-    expr: ExprId,
-) -> (ExprId, Vec<crate::transforms::pattern::Step>) {
-    let result = unified_simplify(arena, expr, &SimplifyOpts::default().trace());
-    (result.expr, result.steps)
-}
+
 
 #[cfg(test)]
 mod tests {

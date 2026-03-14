@@ -1048,14 +1048,83 @@ impl Arena {
         self.pow(expr, frac)
     }
 
-    /// Creates an `Abs` (absolute value / complex modulus) node.
+    /// Creates a canonical `Abs` (absolute value / complex modulus) node.
+    ///
+    /// Canonicalization rules:
+    /// - `abs(n)` for numeric `n` → `|n|`
+    /// - `abs(abs(x))` → `abs(x)` (idempotent, since `|x| ≥ 0`)
+    /// - `abs(c * x)` → `|c| * abs(x)` (factor out numeric coefficient)
+    /// - `abs(NaN)` → `NaN`, `abs(±∞)` → `∞`
     pub fn abs(&mut self, expr: ExprId) -> ExprId {
-        self.intern(ExprNode::Abs(expr))
+        match self.node(expr).clone() {
+            ExprNode::NaN => return self.nan,
+            ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
+                return self.infinity;
+            }
+            ExprNode::Abs(_) => return expr, // abs(abs(x)) = abs(x)
+            ExprNode::Num(nid) => {
+                let r = self.num(nid).clone();
+                if r < Ratio::zero() {
+                    let pos = -r;
+                    let nid = self.intern_num(pos);
+                    return self.intern(ExprNode::Num(nid));
+                }
+                return expr; // already non-negative
+            }
+            _ => {}
+        }
+        // Factor out numeric coefficient: abs(c*x) = |c|*abs(x)
+        let (coeff, term) = self.as_coeff_term(expr);
+        if coeff == Ratio::one() {
+            self.intern(ExprNode::Abs(expr))
+        } else {
+            let abs_coeff = if coeff < Ratio::zero() {
+                -coeff
+            } else {
+                coeff
+            };
+            let abs_term = self.abs(term); // recursive: canonicalises inner
+            self.make_coeff_term(abs_coeff, abs_term)
+        }
     }
 
-    /// Creates a `Sign` (sign function) node: 1 if x > 0, -1 if x < 0, 0 if x = 0.
+    /// Creates a canonical `Sign` (sign function) node:
+    /// `1` if `x > 0`, `-1` if `x < 0`, `0` if `x = 0`.
+    ///
+    /// Canonicalization rules:
+    /// - `sign(n)` for numeric `n` → `1`, `-1`, or `0`
+    /// - `sign(c * x)` for positive numeric `c` → `sign(x)`
+    /// - `sign(c * x)` for negative numeric `c` → `-sign(x)`
+    /// - `sign(NaN)` → `NaN`, `sign(∞)` → `1`, `sign(-∞)` → `-1`
     pub fn sign(&mut self, expr: ExprId) -> ExprId {
-        self.intern(ExprNode::Sign(expr))
+        match self.node(expr).clone() {
+            ExprNode::NaN => return self.nan,
+            ExprNode::Infinity => return self.one,
+            ExprNode::NegInfinity => return self.neg_one,
+            ExprNode::Num(nid) => {
+                let r = self.num(nid).clone();
+                if r > Ratio::zero() {
+                    return self.one;
+                } else if r < Ratio::zero() {
+                    return self.neg_one;
+                } else {
+                    return self.zero;
+                }
+            }
+            _ => {}
+        }
+        // Factor out numeric coefficient: sign(c*x) = sign(c)*sign(x)
+        let (coeff, term) = self.as_coeff_term(expr);
+        if coeff < Ratio::zero() {
+            // sign(-c * x) = -sign(x) for c > 0
+            let sign_term = self.sign(term); // recursive: canonicalises inner
+            self.neg(sign_term)
+        } else if coeff == Ratio::one() {
+            self.intern(ExprNode::Sign(expr))
+        } else {
+            // sign(c * x) = sign(x) for c > 0, c ≠ 1
+            self.sign(term) // recursive: canonicalises inner
+        }
     }
 
     /// Creates a `Floor` node: ⌊x⌋ (greatest integer ≤ x).

@@ -90,7 +90,7 @@ fn bench_simplify(c: &mut Criterion) {
 
     c.bench_function("full_simplify_sin2_cos2_plus_3", |b| {
         let expr = &x.sin().powi(2) + &x.cos().powi(2) + 3;
-        b.iter(|| expr.full_simplify());
+        b.iter(|| expr.simplify());
     });
 }
 
@@ -277,7 +277,7 @@ fn bench_full_simplify(c: &mut Criterion) {
     let expr = &(&x.sin().powi(2) + &x.cos().powi(2)) + &(&x.exp() * &(-&x).exp());
     c.bench_function("full_simplify_trig_exp", |b| {
         b.iter(|| {
-            let _ = black_box(&expr).full_simplify();
+            let _ = black_box(&expr).simplify();
         })
     });
 }
@@ -593,7 +593,7 @@ fn bench_trigsimp(c: &mut Criterion) {
 
     c.bench_function("smart_simplify_trig", |b| {
         let expr = &x.sin().powi(2) + &x.cos().powi(2) + &x * 3;
-        b.iter(|| black_box(&expr).smart_simplify())
+        b.iter(|| black_box(&expr).simplify())
     });
 }
 

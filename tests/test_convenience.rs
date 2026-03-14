@@ -272,7 +272,7 @@ fn log_base_2() {
         "log_2(8) should equal 3, got {val}"
     );
     // Also check that the symbolic form at least contains ln (structural sanity)
-    let s = format!("{}", result.full_simplify());
+    let s = format!("{}", result.simplify());
     assert!(
         s == "3" || s.contains("ln"),
         "log should simplify to 3 or produce ln expressions: {s}"

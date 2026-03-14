@@ -414,12 +414,12 @@ fn perf_analysis_all() {
                 let five3 = ctx3.int(5);
                 let expr3 = &x3 * 3 + 2;
                 bench_n(1000, || {
-                    let _ = black_box(expr3.subs(&x3, &five3).eval().full_simplify());
+                    let _ = black_box(expr3.subs(&x3, &five3).eval().simplify());
                 })
             };
 
             report(".eval().simplify()      on (3x+2).subs(x,5)", avg_simplify);
-            report(".eval().full_simplify() on (3x+2).subs(x,5)", avg_full);
+            report(".eval().simplify() on (3x+2).subs(x,5)", avg_full);
             println!("  => Ratio full/simple: {}", ratio_str(avg_simplify, avg_full));
         }
     }
@@ -447,12 +447,12 @@ fn perf_analysis_all() {
             let expr = &x.sin().powi(2) + &x.cos().powi(2);
 
             let avg_simplify = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_smart    = bench(|| { let _ = black_box(expr.smart_simplify()); });
-            let avg_full     = bench(|| { let _ = black_box(expr.full_simplify()); });
+            let avg_smart    = bench(|| { let _ = black_box(expr.simplify()); });
+            let avg_full     = bench(|| { let _ = black_box(expr.simplify()); });
 
             report("symplex .simplify()", avg_simplify);
-            report("symplex .smart_simplify()", avg_smart);
-            report("symplex .full_simplify()  (iterated)", avg_full);
+            report("symplex .simplify()", avg_smart);
+            report("symplex .simplify()  (iterated)", avg_full);
 
             let worst_ms = [avg_simplify, avg_smart, avg_full]
                 .iter()
@@ -472,8 +472,8 @@ fn perf_analysis_all() {
         divider("x^3 + 2x + 1");
         {
             let expr = &x.powi(3) + &x * 2 + 1;
-            let avg = bench(|| { let _ = black_box(expr.full_simplify()); });
-            report("symplex .full_simplify()", avg);
+            let avg = bench(|| { let _ = black_box(expr.simplify()); });
+            report("symplex .simplify()", avg);
             let ms = avg.as_nanos() as f64 / 1_000_000.0;
             if ms > 0.0 {
                 println!("  => vs SymPy ~5-20 ms: symplex is {:.0}x-{:.0}x faster", 5.0 / ms, 20.0 / ms);
@@ -519,9 +519,9 @@ fn perf_analysis_all() {
             let ctx = Context::new();
             let x = ctx.symbol("x");
             println!("  Expression: {x}");
-            let avg_smart = bench(|| { let _ = black_box(x.smart_simplify()); });
+            let avg_smart = bench(|| { let _ = black_box(x.simplify()); });
             let avg_simp  = bench(|| { let _ = black_box(x.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(x.full_simplify()); });
+            let avg_full  = bench(|| { let _ = black_box(x.simplify()); });
             report("smart_simplify(x)", avg_smart);
             report("simplify(x)", avg_simp);
             report("full_simplify(x)", avg_full);
@@ -535,9 +535,9 @@ fn perf_analysis_all() {
             let x = ctx.symbol("x");
             let expr = &x.powi(3) + &x * 2 + 1;
             println!("  Expression: {expr}");
-            let avg_smart = bench(|| { let _ = black_box(expr.smart_simplify()); });
+            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
             let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.full_simplify()); });
+            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
@@ -551,12 +551,12 @@ fn perf_analysis_all() {
             let x = ctx.symbol("x");
             let expr = &x.sin().powi(2) + &x.cos().powi(2);
             println!("  Expression: {expr}");
-            println!("  smart_simplify -> {}", expr.smart_simplify());
+            println!("  smart_simplify -> {}", expr.simplify());
             println!("  simplify       -> {}", expr.simplify());
-            println!("  full_simplify  -> {}", expr.full_simplify());
-            let avg_smart = bench(|| { let _ = black_box(expr.smart_simplify()); });
+            println!("  full_simplify  -> {}", expr.simplify());
+            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
             let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.full_simplify()); });
+            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
@@ -570,10 +570,10 @@ fn perf_analysis_all() {
             let i_val = ctx.i_unit();
             let expr = &(&ctx.int(3) + &(&i_val * 2)) - &(&i_val * 2);
             println!("  Expression: {expr}");
-            println!("  full_simplify -> {}", expr.full_simplify());
-            let avg_smart = bench(|| { let _ = black_box(expr.smart_simplify()); });
+            println!("  full_simplify -> {}", expr.simplify());
+            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
             let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.full_simplify()); });
+            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
@@ -587,10 +587,10 @@ fn perf_analysis_all() {
             let x = ctx.symbol("x");
             let expr = x.ln().exp();
             println!("  Expression: {expr}");
-            println!("  full_simplify -> {}", expr.full_simplify());
-            let avg_smart = bench(|| { let _ = black_box(expr.smart_simplify()); });
+            println!("  full_simplify -> {}", expr.simplify());
+            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
             let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.full_simplify()); });
+            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
@@ -604,10 +604,10 @@ fn perf_analysis_all() {
             let x = ctx.symbol("x");
             let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
             println!("  Expression: {expr}");
-            println!("  full_simplify -> {}", expr.full_simplify());
-            let avg_smart = bench(|| { let _ = black_box(expr.smart_simplify()); });
+            println!("  full_simplify -> {}", expr.simplify());
+            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
             let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.full_simplify()); });
+            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
@@ -621,10 +621,10 @@ fn perf_analysis_all() {
             let x = ctx.symbol("x");
             let expr = &(&x.sin().powi(2) + &x.cos().powi(2)) + 5;
             println!("  Expression: {expr}");
-            println!("  full_simplify -> {}", expr.full_simplify());
-            let avg_smart = bench(|| { let _ = black_box(expr.smart_simplify()); });
+            println!("  full_simplify -> {}", expr.simplify());
+            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
             let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.full_simplify()); });
+            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
@@ -657,7 +657,7 @@ fn perf_analysis_all() {
 
     section("6. THE VERDICT: Simulated ODE workload");
     println!("  Simulating: 100 rounds x 5 expressions = 500 calls to");
-    println!("  .subs().eval().simplify() vs .subs().eval().full_simplify()");
+    println!("  .subs().eval().simplify() vs .subs().eval().simplify()");
     println!("  using FRESH contexts per scenario (no cross-caching).");
 
     // Scenario A: 500x subs+eval+simplify (FRESH context)
@@ -706,13 +706,13 @@ fn perf_analysis_all() {
 
         // Warm up
         for expr in &exprs {
-            let _ = black_box(expr.subs(&x, &five).eval().full_simplify());
+            let _ = black_box(expr.subs(&x, &five).eval().simplify());
         }
 
         let start = Instant::now();
         for _ in 0..100 {
             for expr in &exprs {
-                let _ = black_box(expr.subs(&x, &five).eval().full_simplify());
+                let _ = black_box(expr.subs(&x, &five).eval().simplify());
             }
         }
         let elapsed = start.elapsed();

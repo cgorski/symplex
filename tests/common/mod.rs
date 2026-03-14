@@ -304,10 +304,10 @@ pub fn assert_simplify_preserves_value(expr: &Ex, var: &Ex, label: &str) {
     );
 }
 
-/// Assert that `expr.full_simplify()` produces the same numerical value as
+/// Assert that `expr.simplify()` produces the same numerical value as
 /// the original at multiple evaluation points.
 pub fn assert_full_simplify_preserves_value(expr: &Ex, var: &Ex, label: &str) {
-    let simplified = expr.full_simplify();
+    let simplified = expr.simplify();
     assert_math_eq(
         expr,
         &simplified,
@@ -716,7 +716,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
                 return true;
             }
             // If expand didn't reach zero, try full_simplify
-            let simplified = diff_eval.full_simplify();
+            let simplified = diff_eval.simplify();
             let ss = format!("{simplified}");
             if ss == "0" {
                 return true;
@@ -756,7 +756,7 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
                 return true;
             }
             // Try full_simplify
-            let simplified = diff_eval.full_simplify();
+            let simplified = diff_eval.simplify();
             let ss = format!("{simplified}");
             if ss == "0" {
                 return true;
@@ -783,8 +783,8 @@ pub fn canonical_eq(a: &Ex, b: &Ex) -> bool {
             #[allow(clippy::type_complexity)]
             let strategies: Vec<Box<dyn Fn(&Ex) -> Ex>> = vec![
                 Box::new(|e: &Ex| e.simplify_trig()),
-                Box::new(|e: &Ex| e.full_simplify()),
-                Box::new(|e: &Ex| e.smart_simplify()),
+                Box::new(|e: &Ex| e.simplify()),
+                Box::new(|e: &Ex| e.simplify()),
                 Box::new(|e: &Ex| {
                     let x = a.context().symbol("x");
                     e.rewrite_as_exp().cancel(&x)

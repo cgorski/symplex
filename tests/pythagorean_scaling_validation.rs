@@ -190,13 +190,13 @@ fn simplify_on_2_sin2_plus_2_cos2() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[allow(deprecated)]
+
 fn smart_simplify_on_2_sin2_plus_2_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
     let expr = &(&x.sin().powi(2) * 2) + &(&x.cos().powi(2) * 2);
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     let display = format!("{result}");
 
     eprintln!("[smart_simplify] 2·sin²(x) + 2·cos²(x) → {display}");
@@ -226,13 +226,13 @@ fn smart_simplify_on_2_sin2_plus_2_cos2() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[allow(deprecated)]
+
 fn full_simplify_on_2_sin2_plus_2_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
     let expr = &(&x.sin().powi(2) * 2) + &(&x.cos().powi(2) * 2);
-    let result = expr.full_simplify();
+    let result = expr.simplify();
     let display = format!("{result}");
 
     eprintln!("[full_simplify] 2·sin²(x) + 2·cos²(x) → {display}");
@@ -266,13 +266,13 @@ fn fu_on_3_sin2_plus_3_cos2() {
 }
 
 #[test]
-#[allow(deprecated)]
+
 fn smart_simplify_on_3_sin2_plus_3_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
     let expr = &(&x.sin().powi(2) * 3) + &(&x.cos().powi(2) * 3);
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     let display = format!("{result}");
 
     eprintln!("[smart_simplify] 3·sin²(x) + 3·cos²(x) → {display}");
@@ -301,14 +301,14 @@ fn fu_on_half_sin2_plus_half_cos2() {
 }
 
 #[test]
-#[allow(deprecated)]
+
 fn smart_simplify_on_half_sin2_plus_half_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
     let two = ctx.int(2);
     let expr = &(&x.sin().powi(2) / &two) + &(&x.cos().powi(2) / &two);
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     let display = format!("{result}");
 
     eprintln!("[smart_simplify] sin²(x)/2 + cos²(x)/2 → {display}");
@@ -366,14 +366,14 @@ fn fu_on_y_sin2_plus_y_cos2() {
 }
 
 #[test]
-#[allow(deprecated)]
+
 fn smart_simplify_on_y_sin2_plus_y_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
 
     let expr = &(&y * &x.sin().powi(2)) + &(&y * &x.cos().powi(2));
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     let display = format!("{result}");
 
     eprintln!("[smart_simplify] y·sin²(x) + y·cos²(x) → {display}");
@@ -412,7 +412,7 @@ fn fu_on_2y_sin2_plus_2y_cos2() {
 }
 
 #[test]
-#[allow(deprecated)]
+
 fn smart_simplify_on_2y_sin2_plus_2y_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -420,7 +420,7 @@ fn smart_simplify_on_2y_sin2_plus_2y_cos2() {
 
     let two_y = &ctx.int(2) * &y;
     let expr = &(&two_y * &x.sin().powi(2)) + &(&two_y * &x.cos().powi(2));
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     let display = format!("{result}");
 
     eprintln!("[smart_simplify] 2y·sin²(x) + 2y·cos²(x) → {display}");
@@ -453,14 +453,14 @@ fn fu_on_3_plus_2_sin2_plus_2_cos2() {
 }
 
 #[test]
-#[allow(deprecated)]
+
 fn smart_simplify_on_3_plus_2_sin2_plus_2_cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
     let three = ctx.int(3);
     let expr = &three + &(&(&x.sin().powi(2) * 2) + &(&x.cos().powi(2) * 2));
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     let display = format!("{result}");
 
     eprintln!("[smart_simplify] 3 + 2·sin²(x) + 2·cos²(x) → {display}");
@@ -597,7 +597,7 @@ fn fu_on_sin4_plus_cos4() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[allow(deprecated)]
+
 fn comparison_matrix_2sin2_2cos2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -605,8 +605,8 @@ fn comparison_matrix_2sin2_2cos2() {
     let expr = &(&x.sin().powi(2) * 2) + &(&x.cos().powi(2) * 2);
 
     let r_simplify = expr.simplify();
-    let r_full = expr.full_simplify();
-    let r_smart = expr.smart_simplify();
+    let r_full = expr.simplify();
+    let r_smart = expr.simplify();
     let r_fu = expr.fu();
 
     let d_simplify = format!("{r_simplify}");

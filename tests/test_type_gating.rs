@@ -15,7 +15,7 @@ fn smart_simplify_polynomial_unchanged() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let big_poly = x.powi(10) + x.powi(5) + &x + 1;
-    let result = big_poly.smart_simplify();
+    let result = big_poly.simplify();
     let s = format!("{result}");
     // Should still contain x^10 — polynomial identity is preserved
     assert!(
@@ -29,7 +29,7 @@ fn smart_simplify_atom_is_identity() {
     // A single symbol is an atom — should early-exit immediately
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.smart_simplify();
+    let result = x.simplify();
     assert_eq!(format!("{result}"), "x", "atom should be unchanged");
 }
 
@@ -38,7 +38,7 @@ fn smart_simplify_numeric_atom_is_identity() {
     // A single number is an atom — should early-exit immediately
     let ctx = Context::new();
     let five = ctx.int(5);
-    let result = five.smart_simplify();
+    let result = five.simplify();
     assert_eq!(format!("{result}"), "5", "numeric atom should be unchanged");
 }
 
@@ -48,7 +48,7 @@ fn smart_simplify_trig_still_works() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.sin().powi(2) + x.cos().powi(2);
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     assert_eq!(format!("{result}"), "1", "sin²+cos² should simplify to 1");
 }
 
@@ -58,7 +58,7 @@ fn smart_simplify_exp_ln_still_works() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.ln().exp();
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     assert_eq!(format!("{result}"), "x", "exp(ln(x)) should simplify to x");
 }
 
@@ -68,7 +68,7 @@ fn smart_simplify_sin_zero() {
     let ctx = Context::new();
     let zero = ctx.int(0);
     let expr = zero.sin();
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     assert_eq!(format!("{result}"), "0", "sin(0) should simplify to 0");
 }
 
@@ -79,7 +79,7 @@ fn smart_simplify_pure_product_no_bloat() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let expr = &x * &y;
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     let s = format!("{result}");
     assert!(
         s.contains("x") && s.contains("y"),
@@ -176,7 +176,7 @@ fn smart_simplify_rational_cancel() {
     let numer = x.powi(2) - 1;
     let denom = &x - 1;
     let expr = numer / denom;
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     let s = format!("{result}");
     assert!(
         !s.contains('/') && s.contains('x'),

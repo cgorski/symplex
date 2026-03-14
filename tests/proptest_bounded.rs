@@ -140,7 +140,7 @@ fn exhaustive_pythagorean_unit_circle() {
         let sin_a = angle.sin().eval();
         let cos_a = angle.cos().eval();
         let sum = &sin_a.powi(2) + &cos_a.powi(2);
-        let simplified = sum.full_simplify();
+        let simplified = sum.simplify();
         // Try symbolic check first, fall back to numerical
         let s = format!("{simplified}");
         if s != "1" {

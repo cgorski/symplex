@@ -1288,7 +1288,7 @@ mod tests {
         let ctx = Context::new();
         let result = parse(&ctx, "sin(x)**2 + cos(x)**2").unwrap();
         // Should simplify to 1 via full_simplify
-        let simplified = result.full_simplify();
+        let simplified = result.simplify();
         assert_eq!(format!("{simplified}"), "1");
     }
 }

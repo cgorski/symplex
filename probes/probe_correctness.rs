@@ -642,7 +642,7 @@ fn main() {
     let simp_tests = build_simplify_tests(&x);
 
     for test in &simp_tests {
-        let simplified = test.original.full_simplify();
+        let simplified = test.original.simplify();
 
         let mut all_ok = true;
         let mut point_count = 0;

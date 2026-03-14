@@ -516,7 +516,7 @@ fn ln_of_e_is_one() {
     let result = e.ln();
 
     // NOTE: .simplify() alone does NOT reduce ln(E) → 1.
-    // You need .eval() (or .full_simplify()) for this.
+    // You need .eval() (or .simplify()) for this.
     // A regular user would expect .simplify() to handle it.
     let via_eval = result.eval();
     assert_eq!(
@@ -1307,7 +1307,7 @@ fn full_simplify_x_plus_1_squared_minus_x_squared_minus_2x() {
 
     // (x+1)^2 - x^2 - 2x should simplify to 1
     let complicated = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
-    let result = complicated.full_simplify();
+    let result = complicated.simplify();
     assert_eq!(
         format!("{result}"),
         "1",

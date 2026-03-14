@@ -240,7 +240,7 @@ fn trig_hyperbolic_identity_cosh2_minus_sinh2() {
     }
     // Try simplifying — ideally it recognizes this as 1
     let simplified = expr.simplify();
-    let full = expr.full_simplify();
+    let full = expr.simplify();
     let s_simp = fmt(&simplified);
     let s_full = fmt(&full);
     // Report what we got (may or may not simplify — that's what we're testing)
@@ -1048,7 +1048,7 @@ fn equals_zero_difference() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &(&x + 1).powi(2) - &x.powi(2) - &(&x * 2) - 1;
-    let simplified = expr.full_simplify();
+    let simplified = expr.simplify();
     let s = fmt(&simplified);
     eprintln!("(x+1)^2 - x^2 - 2x - 1 fully simplified = {s}");
     let zero = ctx.int(0);
@@ -1192,7 +1192,7 @@ fn full_simplify_polynomial_identity() {
     let expanded = (&x + 1).powi(3);
     let manual = &(&(&x.powi(3) + &(&x.powi(2) * 3)) + &(&x * 3)) + 1;
     let diff = &expanded - &manual;
-    let simplified = diff.full_simplify();
+    let simplified = diff.simplify();
     let s = fmt(&simplified);
     assert_eq!(
         s, "0",
@@ -1301,7 +1301,7 @@ fn smart_simplify_pythagorean() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     assert_eq!(
         fmt(&result), "1",
         "smart_simplify should get sin²+cos²=1, got: {}", fmt(&result)
@@ -2159,8 +2159,8 @@ fn full_simplify_is_idempotent() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &(&x + 1).powi(2) - &x.powi(2) - &(&x * 2) - 1;
-    let s1 = expr.full_simplify();
-    let s2 = s1.full_simplify();
+    let s1 = expr.simplify();
+    let s2 = s1.simplify();
     assert_eq!(
         fmt(&s1),
         fmt(&s2),
@@ -2692,7 +2692,7 @@ fn bug_full_simplify_catches_scaled_pythagorean() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &(&x.sin().powi(2) * 3) + &(&x.cos().powi(2) * 3);
-    let result = expr.full_simplify();
+    let result = expr.simplify();
     let s = fmt(&result);
     assert_eq!(
         s, "3",
@@ -2710,7 +2710,7 @@ fn bug_simplify_sin4_plus_cos4() {
     let x = ctx.symbol("x");
     let original = &x.sin().powi(4) + &x.cos().powi(4);
     let simplified = original.simplify();
-    let full = original.full_simplify();
+    let full = original.simplify();
     let s_orig = fmt(&original);
     let s_simp = fmt(&simplified);
     let s_full = fmt(&full);

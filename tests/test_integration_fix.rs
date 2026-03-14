@@ -390,7 +390,7 @@ fn phase5_sqrt2_times_sqrt3_smart_simplify() {
     let sqrt2 = ctx.int(2).sqrt();
     let sqrt3 = ctx.int(3).sqrt();
     let product = &sqrt2 * &sqrt3;
-    let result = product.smart_simplify();
+    let result = product.simplify();
     assert_eq!(
         format!("{result}"),
         "sqrt(6)",
@@ -405,7 +405,7 @@ fn phase5_sqrt2_times_sqrt3_full_simplify() {
     let sqrt2 = ctx.int(2).sqrt();
     let sqrt3 = ctx.int(3).sqrt();
     let product = &sqrt2 * &sqrt3;
-    let result = product.full_simplify();
+    let result = product.simplify();
     assert_eq!(
         format!("{result}"),
         "sqrt(6)",
@@ -420,7 +420,7 @@ fn phase5_cbrt2_times_cbrt4() {
     let cbrt2 = ctx.int(2).cbrt();
     let cbrt4 = ctx.int(4).cbrt();
     let product = &cbrt2 * &cbrt4;
-    let result = product.smart_simplify();
+    let result = product.simplify();
     assert_eq!(
         format!("{result}"),
         "2",
@@ -435,7 +435,7 @@ fn phase5_golden_ratio_identity() {
     let sqrt5 = ctx.int(5).sqrt();
     let phi = (ctx.int(1) + &sqrt5) / 2;
     let test = phi.powi(2).expand().eval() - &phi - 1;
-    let result = test.smart_simplify();
+    let result = test.simplify();
     assert_eq!(
         format!("{result}"),
         "0",
@@ -451,7 +451,7 @@ fn phase5_sum_of_sqrt_squared_identity() {
     let sqrt3 = ctx.int(3).sqrt();
     let sqrt6 = ctx.int(6).sqrt();
     let test = (&sqrt2 + &sqrt3).powi(2).expand().eval() - 5 - ctx.int(2) * &sqrt6;
-    let result = test.smart_simplify();
+    let result = test.simplify();
     assert_eq!(
         format!("{result}"),
         "0",
@@ -465,7 +465,7 @@ fn phase5_powdenest_half_sqrt5_squared() {
     let ctx = Context::new();
     let half_sqrt5 = ctx.rational(1, 2) * ctx.int(5).sqrt();
     let squared = half_sqrt5.powi(2);
-    let result = squared.smart_simplify();
+    let result = squared.simplify();
     assert_eq!(
         format!("{result}"),
         "5/4",

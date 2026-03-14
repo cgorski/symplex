@@ -672,7 +672,7 @@ fn process_definite_integral(ctx: &Context, fixture: &Fixture) -> Status {
         ));
     }
 
-    let result = result.eval().full_simplify();
+    let result = result.eval().simplify();
 
     if let Some(expected) = &fixture.value {
         match result.eval_f64() {
@@ -710,7 +710,7 @@ fn process_simplify(ctx: &Context, fixture: &Fixture) -> Status {
         Err(e) => return Status::NotImplemented(format!("parse error: {}", e)),
     };
 
-    let result = expr.full_simplify();
+    let result = expr.simplify();
     check_eval_points_fixture_strict(&result, ctx, fixture)
 }
 

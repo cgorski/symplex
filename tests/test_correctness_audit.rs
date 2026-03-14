@@ -437,7 +437,7 @@ fn process_simplify(ctx: &symplex::context::Context, fixture: &SimplifyFixture) 
     };
 
     // Simplify and evaluate at test points
-    let simplified = expr.full_simplify();
+    let simplified = expr.simplify();
     let x = ctx.symbol("x");
 
     let mut mismatches = Vec::new();
@@ -881,7 +881,7 @@ fn audit_simplify_preserves_value() {
     ];
 
     for (label, expr) in &cases {
-        let simplified = expr.full_simplify();
+        let simplified = expr.simplify();
 
         for &(p, q) in &[(1i64, 2i64), (1, 1), (3, 2), (2, 1)] {
             let pt = ctx.rational(p, q);

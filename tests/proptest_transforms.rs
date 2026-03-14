@@ -202,7 +202,7 @@ proptest! {
         // Build expression with numeric coefficients that trigger factor_terms
         let expr = &(&x * (a * 2)) + (b * 2);
 
-        let simplified = expr.smart_simplify();
+        let simplified = expr.simplify();
 
         let point = ctx.rational(3, 7);
         let val_orig = expr.subs(&x, &point).eval_f64();
@@ -227,7 +227,7 @@ proptest! {
         let x = ctx.symbol("x");
         let expr = (&x + a).powi(2);
 
-        let simplified = expr.full_simplify();
+        let simplified = expr.simplify();
 
         let point = ctx.rational(1, 3);
         let val_orig = expr.subs(&x, &point).eval_f64();

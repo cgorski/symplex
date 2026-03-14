@@ -100,7 +100,7 @@ fn main() {
 
     // Full simplify for complex expressions
     let complicated = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
-    println!("(x+1)² - x² - 2x → {}", complicated.full_simplify());
+    println!("(x+1)² - x² - 2x → {}", complicated.simplify());
 
     // ── 10. Limits ─────────────────────────────────────────────────────
     let limit_expr = &x.sin() / &x;
@@ -148,7 +148,7 @@ fn main() {
 
     // ── 14. Full simplify: expand then simplify ────────────────────────
     let complicated2 = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
-    println!("\n(x+1)² - x² - 2x = {}", complicated2.full_simplify());
+    println!("\n(x+1)² - x² - 2x = {}", complicated2.simplify());
 
     // ── 15. Numerical root finding ─────────────────────────────────────
     // Solve x = cos(x) numerically

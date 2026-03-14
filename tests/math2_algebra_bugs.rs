@@ -581,7 +581,7 @@ fn simplify_nested_square_minus_identity() {
     let x = ctx.symbol("x");
     // (x+1)² - x² - 2x should simplify to 1
     let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
-    let simplified = expr.full_simplify();
+    let simplified = expr.simplify();
     assert_eq!(
         format!("{simplified}"),
         "1",
@@ -1425,7 +1425,7 @@ fn simplify_sin_squared_times_two_plus_cos_squared_times_two() {
     // coefficient first and then apply the identity.
     //
     // Also try full_simplify and trigsimp to confirm the bug:
-    let full = expr.full_simplify();
+    let full = expr.simplify();
     let full_s = format!("{full}");
 
     // At minimum the numerical value must be 2 everywhere
@@ -1452,7 +1452,7 @@ fn simplify_sin_squared_times_three_plus_cos_squared_times_three() {
     let x = ctx.symbol("x");
     let expr = &x.sin().powi(2) * 3 + &x.cos().powi(2) * 3;
     let simplified = expr.simplify();
-    let full = expr.full_simplify();
+    let full = expr.simplify();
     let s = format!("{simplified}");
     let full_s = format!("{full}");
 
@@ -1479,7 +1479,7 @@ fn simplify_y_times_sin_squared_plus_y_times_cos_squared() {
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
     let expr = &y * &x.sin().powi(2) + &y * &x.cos().powi(2);
     let simplified = expr.simplify();
-    let full = expr.full_simplify();
+    let full = expr.simplify();
     let s = format!("{simplified}");
     let full_s = format!("{full}");
 
@@ -1497,7 +1497,7 @@ fn simplify_half_sin_squared_plus_half_cos_squared() {
     let x = ctx.symbol("x");
     let expr = &x.sin().powi(2) / 2 + &x.cos().powi(2) / 2;
     let simplified = expr.simplify();
-    let full = expr.full_simplify();
+    let full = expr.simplify();
     let s = format!("{simplified}");
     let full_s = format!("{full}");
 

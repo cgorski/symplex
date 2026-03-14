@@ -64,7 +64,7 @@ fn parse_mul() {
 #[test]
 fn parse_div() {
     let s = p("x / y");
-    assert!(s.contains("1/y"), "should show division: {s}");
+    assert!(s.contains("/y"), "should show division: {s}");
 }
 
 #[test]

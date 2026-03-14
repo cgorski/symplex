@@ -165,7 +165,7 @@ fn main() {
                         println!("  = {}", expr.eval());
                     }
                     ":simplify" => {
-                        println!("  = {}", expr.full_simplify());
+                        println!("  = {}", expr.simplify());
                     }
                     ":integrate" => {
                         let x = ctx.symbol("x");

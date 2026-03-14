@@ -97,7 +97,7 @@ fn main() {
     println!("exp(ln(x)) → {}", exp_ln.simplify());
 
     let complicated = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
-    println!("(x+1)² - x² - 2x → {}", complicated.full_simplify());
+    println!("(x+1)² - x² - 2x → {}", complicated.simplify());
 
     // Trig simplification
     let trig2 = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2 + x);

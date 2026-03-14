@@ -1835,7 +1835,7 @@ mod tests {
         let x = s(&mut a, "x");
         let y = s(&mut a, "y");
         let result = a.div(x, y);
-        assert_eq!(display(&a, result), "x*1/y");
+        assert_eq!(display(&a, result), "x/y");
     }
 
     #[test]

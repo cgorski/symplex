@@ -134,7 +134,7 @@ fn regression_smart_simplify_gcd_dropped() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &(&x * 6) + 12;
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     // Must be mathematically equal to 6x + 12
     let point = ctx.rational(7, 10);
     let val_orig = expr.subs(&x, &point).eval_f64().unwrap();
@@ -152,7 +152,7 @@ fn regression_smart_simplify_gcd_with_pythagorean() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &(&x.sin().powi(2) * 2) + &(&x.cos().powi(2) * 2);
-    let result = expr.smart_simplify();
+    let result = expr.simplify();
     let result_str = format!("{result}");
     assert_eq!(
         result_str, "2",

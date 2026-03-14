@@ -471,8 +471,8 @@ fn full_simplify_idempotent_polynomial() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let e = &x.powi(3) + &x.powi(2) + &x + 1;
-    let s1 = e.full_simplify();
-    let s2 = s1.full_simplify();
+    let s1 = e.simplify();
+    let s2 = s1.simplify();
     assert_eq!(
         format!("{s1}"), format!("{s2}"),
         "full_simplify not idempotent for x³+x²+x+1"
@@ -484,8 +484,8 @@ fn full_simplify_idempotent_trig() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let e = &x.sin().powi(2) + &x.cos().powi(2);
-    let s1 = e.full_simplify();
-    let s2 = s1.full_simplify();
+    let s1 = e.simplify();
+    let s2 = s1.simplify();
     assert_eq!(
         format!("{s1}"), format!("{s2}"),
         "full_simplify not idempotent for sin²+cos²"
@@ -1539,8 +1539,8 @@ fn smart_simplify_idempotent() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let e = &x.sin().powi(2) + &x.cos().powi(2) + &x;
-    let s1 = e.smart_simplify();
-    let s2 = s1.smart_simplify();
+    let s1 = e.simplify();
+    let s2 = s1.simplify();
     // At minimum, they should agree numerically even if not structurally equal
     assert_numerically_equal(&s1, &s2, &x, INT_POINTS, 1e-10,
         "smart_simplify idempotent");
@@ -2065,8 +2065,8 @@ fn full_simplify_idempotent_complex() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let e = &(&x.sin().powi(2) + &x.cos().powi(2)) * &(&x + 1);
-    let s1 = e.full_simplify();
-    let s2 = s1.full_simplify();
+    let s1 = e.simplify();
+    let s2 = s1.simplify();
     assert_eq!(
         format!("{s1}"), format!("{s2}"),
         "full_simplify not idempotent for (sin²+cos²)·(x+1): '{}' vs '{}'", s1, s2
@@ -2800,7 +2800,7 @@ fn full_simplify_pythagorean_in_product() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let e = &(&x.sin().powi(2) + &x.cos().powi(2)) * &(&(&x + 1) * &(&x - 1));
-    let s = e.full_simplify();
+    let s = e.simplify();
     // Numerically it should equal x²-1
     let expected = &x.powi(2) - 1;
     assert_numerically_equal(&s, &expected, &x, INT_POINTS, 1e-10,
@@ -3421,7 +3421,7 @@ fn compile_after_full_simplify() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let e = &x.sin().powi(2) + &x.cos().powi(2) + &x.powi(2);
-    let s = e.full_simplify();
+    let s = e.simplify();
     // Both should give the same numerical values
     let c_orig = e.compile(&["x"]);
     let c_simp = s.compile(&["x"]);

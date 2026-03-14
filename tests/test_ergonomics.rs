@@ -184,9 +184,9 @@ fn display_division_uses_fraction() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let result = &x / &y;
-    // x * y^(-1) displays as x*1/y
+    // x * y^(-1) displays as x/y (fraction form)
     let s = format!("{result}");
-    assert!(s.contains("1/y"), "should display y inverse as 1/y: {s}");
+    assert!(s == "x/y", "should display as x/y: {s}");
 }
 
 #[test]

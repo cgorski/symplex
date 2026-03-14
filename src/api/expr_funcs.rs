@@ -1201,7 +1201,7 @@ impl Expr<Numeric> {
         }
 
         // Layer 4: simplify the difference (catches trig identities, etc.)
-        let simplified = diff.smart_simplify();
+        let simplified = diff.simplify();
         if simplified.is_zero_structural() {
             return Some(true);
         }

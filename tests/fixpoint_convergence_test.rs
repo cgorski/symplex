@@ -43,14 +43,14 @@ fn iterate_simplify(expr: &Ex, max_iters: usize) -> (Vec<String>, Option<usize>)
     (forms, None)
 }
 
-/// Same as above but uses `.smart_simplify()` directly (the engine-level
+/// Same as above but uses `.simplify()` directly (the engine-level
 /// function that tries 15 strategies).
 fn iterate_smart_simplify(expr: &Ex, max_iters: usize) -> (Vec<String>, Option<usize>) {
     let mut current = expr.clone();
     let mut forms: Vec<String> = vec![format!("{current}")];
 
     for i in 1..=max_iters {
-        let next = current.smart_simplify();
+        let next = current.simplify();
         let s = format!("{next}");
         if s == forms[i - 1] {
             forms.push(s);
@@ -62,13 +62,13 @@ fn iterate_smart_simplify(expr: &Ex, max_iters: usize) -> (Vec<String>, Option<u
     (forms, None)
 }
 
-/// Same as above but uses `.full_simplify()` (the existing fixpoint loop).
+/// Same as above but uses `.simplify()` (the existing fixpoint loop).
 fn iterate_full_simplify(expr: &Ex, max_iters: usize) -> (Vec<String>, Option<usize>) {
     let mut current = expr.clone();
     let mut forms: Vec<String> = vec![format!("{current}")];
 
     for i in 1..=max_iters {
-        let next = current.full_simplify();
+        let next = current.simplify();
         let s = format!("{next}");
         if s == forms[i - 1] {
             forms.push(s);
@@ -309,7 +309,7 @@ fn convergence_smart_simplify_expand_factor() {
 
     let expr = &(&x + 1) * 2;
     let (forms, converged) = iterate_smart_simplify(&expr, 20);
-    print_trace("2*(x+1) via .smart_simplify()", &forms, converged);
+    print_trace("2*(x+1) via .simplify()", &forms, converged);
 
     if let Some(cycle) = detect_cycle(&forms) {
         if cycle.1 > 1 {
@@ -332,7 +332,7 @@ fn convergence_smart_simplify_trig() {
 
     let expr = x.sin().powi(2);
     let (forms, converged) = iterate_smart_simplify(&expr, 20);
-    print_trace("sin²(x) via .smart_simplify()", &forms, converged);
+    print_trace("sin²(x) via .simplify()", &forms, converged);
 
     if let Some(cycle) = detect_cycle(&forms) {
         if cycle.1 > 1 {
@@ -372,8 +372,8 @@ fn full_simplify_is_idempotent() {
     ];
 
     for (label, expr) in &exprs {
-        let once = expr.full_simplify();
-        let twice = once.full_simplify();
+        let once = expr.simplify();
+        let twice = once.simplify();
         let s1 = format!("{once}");
         let s2 = format!("{twice}");
         println!("full_simplify idempotence: {label}");
@@ -415,7 +415,7 @@ fn bloat_guard_does_not_compound() {
         let display = format!("{current}");
         let len = display.len(); // proxy for complexity
         op_counts.push(format!("iter {i}: len={len} form={display}"));
-        let next = current.smart_simplify();
+        let next = current.simplify();
         if format!("{next}") == display {
             println!("  Converged at iteration {i}");
             break;
@@ -467,7 +467,7 @@ fn smart_simplify_deterministic() {
     ];
 
     for (label, expr) in &exprs {
-        let results: Vec<String> = (0..5).map(|_| format!("{}", expr.smart_simplify())).collect();
+        let results: Vec<String> = (0..5).map(|_| format!("{}", expr.simplify())).collect();
 
         let all_same = results.iter().all(|r| r == &results[0]);
         println!("Determinism check: {label}");

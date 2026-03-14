@@ -1776,10 +1776,13 @@ mod tests {
         let mut a = Arena::new();
         let five = a.int(5);
         let abs_five = a.abs(five);
+        // abs(5) is now canonicalized eagerly to 5 at arena level,
+        // so the pattern rule doesn't need to fire.
+        assert_eq!(display(&a, abs_five), "5");
+        // Applying rules to the already-simplified value is a no-op.
         let rules = basic_rules(&mut a);
-        let (result, steps) = apply_rules(&mut a, abs_five, &rules);
+        let (result, _steps) = apply_rules(&mut a, abs_five, &rules);
         assert_eq!(display(&a, result), "5");
-        assert!(!steps.is_empty(), "should have fired abs_positive rule");
     }
 
     #[test]
@@ -1787,10 +1790,11 @@ mod tests {
         let mut a = Arena::new();
         let neg_five = a.int(-5);
         let abs_neg = a.abs(neg_five);
+        // abs(-5) is now canonicalized eagerly to 5 at arena level.
+        assert_eq!(display(&a, abs_neg), "5");
         let rules = basic_rules(&mut a);
         let (result, _) = apply_rules(&mut a, abs_neg, &rules);
-        // Should NOT fire — -5 is not positive
-        assert_eq!(display(&a, result), "abs(-5)");
+        assert_eq!(display(&a, result), "5");
     }
 
     #[test]

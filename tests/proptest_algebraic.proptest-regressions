@@ -6,3 +6,5 @@
 # everyone who runs the test benefits from these saved cases.
 cc 236d86e727fb8aba8feee7ace4a3ffe228422f55fa6b64bace6a709180f43065 # shrinks to e = Ex(ctx0, e1319)
 cc aee1b3ebab75790ac1bd7431ef31c150e00217f3042db48b6daa22ecdc7bd44f # shrinks to f = Ex(ctx0, e14), g = Ex(ctx0, e16)
+cc db6c0221e07f7ef70b582eba9b8f3e005dc63225d001e49ce213df2c4e22142f # shrinks to a = Ex(ctx0, e9)
+cc d0c4f185b97f7736e21700101bdf4f6923a90ab952984d725511acb9e9ca6bbc # shrinks to a = Ex(ctx0, e141), b = Ex(ctx0, e9)

@@ -1,4 +1,4 @@
-//! Tests for full_simplify(), sqrt(x^2)→abs(x) rule, and full_simplify_trace().
+//! Tests for simplify(), sqrt(x^2)→abs(x) rule, and related simplifications.
 
 use symplex::prelude::*;
 
@@ -12,7 +12,7 @@ fn full_simplify_expand_plus_cancel() {
     // (x+1)^2 - x^2 - 2*x should become 1 after expand + canonicalization
     let x = ctx.symbol("x");
     let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
-    assert_eq!(format!("{}", expr.full_simplify()), "1");
+    assert_eq!(format!("{}", expr.simplify()), "1");
 }
 
 #[test]
@@ -20,7 +20,7 @@ fn full_simplify_trig_identity() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    assert_eq!(format!("{}", expr.full_simplify()), "1");
+    assert_eq!(format!("{}", expr.simplify()), "1");
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn full_simplify_exp_ln() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.ln().exp();
-    assert_eq!(format!("{}", expr.full_simplify()), "x");
+    assert_eq!(format!("{}", expr.simplify()), "x");
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn full_simplify_nested_eval_then_simplify() {
     let ctx = Context::new();
     let zero = ctx.int(0);
     let expr = &zero.sin() + &zero.cos();
-    assert_eq!(format!("{}", expr.full_simplify()), "1");
+    assert_eq!(format!("{}", expr.simplify()), "1");
 }
 
 #[test]
@@ -45,7 +45,7 @@ fn full_simplify_already_simple() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x + 1;
-    assert_eq!(format!("{}", expr.full_simplify()), "x + 1");
+    assert_eq!(format!("{}", expr.simplify()), "x + 1");
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn full_simplify_pythagorean_in_larger_sum() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2) + 5;
-    assert_eq!(format!("{}", expr.full_simplify()), "6");
+    assert_eq!(format!("{}", expr.simplify()), "6");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -79,29 +79,23 @@ fn simplify_sqrt_of_square_in_sum() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// full_simplify_trace()
+// simplify() on expressions that formerly tested full_simplify_trace()
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn full_simplify_trace_records_steps() {
+fn simplify_pythagorean_identity() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    let (result, steps) = expr.full_simplify_trace();
+    let result = expr.simplify();
     assert_eq!(format!("{result}"), "1");
-    assert!(!steps.is_empty(), "should have recorded at least one step");
-    // The pythagorean rule should have fired
-    assert!(
-        steps.iter().any(|s| s.rule_name == "pythagorean"),
-        "should have fired pythagorean rule"
-    );
 }
 
 #[test]
-fn full_simplify_trace_empty_when_no_change() {
+fn simplify_no_change_on_simple_expr() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x + 1;
-    let (_result, steps) = expr.full_simplify_trace();
-    assert!(steps.is_empty(), "no rules should fire on x + 1");
+    let result = expr.simplify();
+    assert_eq!(format!("{result}"), "x + 1");
 }

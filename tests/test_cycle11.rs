@@ -977,6 +977,6 @@ fn workflow_multi_step_simplification() {
     let x = ctx.symbol("x");
     // Start with sin²(x) + cos²(x), which should simplify to 1
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    let simplified = expr.full_simplify();
+    let simplified = expr.simplify();
     assert_eq!(format!("{simplified}"), "1", "sin²(x) + cos²(x) = 1");
 }

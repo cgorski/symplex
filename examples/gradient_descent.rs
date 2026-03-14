@@ -37,8 +37,8 @@ fn main() {
     // symplex computes the exact symbolic derivative — no finite
     // differences, no approximation errors.
 
-    let df_dx = f.diff(&x).full_simplify();
-    let df_dy = f.diff(&y).full_simplify();
+    let df_dx = f.diff(&x).simplify();
+    let df_dy = f.diff(&y).simplify();
 
     println!("Symbolic gradient:");
     println!("  ∂f/∂x = {df_dx}");
