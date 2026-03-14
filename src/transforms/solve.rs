@@ -868,14 +868,28 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
     };
 
     let resolvent_poly = Poly::from_coeffs(vec![rc0, rc1, rc2, rc3]);
-    let m_solutions = solve_cubic_cardano(arena, &resolvent_poly);
 
-    if m_solutions.is_empty() {
-        return Vec::new();
-    }
+    // Compute p as a rational for filtering resolvent roots.
+    // We need 2m - p ≠ 0 for a non-degenerate Ferrari factorization.
+    let p_rat = {
+        let eight_r = Ratio::from_integer(BigInt::from(8));
+        let three_r = Ratio::from_integer(BigInt::from(3));
+        (&eight_r * &a * &c - &three_r * &b * &b) / (&eight_r * &a * &a)
+    };
 
-    // Pick the first resolvent root m
-    let m = m_solutions[0].value;
+    // Try rational roots of the resolvent cubic first.
+    // This avoids the *casus irreducibilis* problem where Cardano's formula
+    // produces complex cube roots for real rational roots, yielding
+    // unsimplifiable expressions like cbrt(±i·√(1/27)).
+    let m = if let Some(m_rat) = find_preferred_resolvent_root(&resolvent_poly, &p_rat) {
+        rational_to_expr(arena, &m_rat)
+    } else {
+        let m_solutions = solve_cubic_cardano(arena, &resolvent_poly);
+        if m_solutions.is_empty() {
+            return Vec::new();
+        }
+        m_solutions[0].value
+    };
 
     // Factor into two quadratics via √(2m − p):
     //   t² + k·t + (m − q/(2k)) = 0
@@ -936,6 +950,86 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         Solution { value: x3s },
         Solution { value: x4s },
     ]
+}
+
+/// Find a rational root of the resolvent cubic that yields a non-degenerate
+/// Ferrari factorization (i.e. `2m − p ≠ 0`, so that `k = √(2m−p) ≠ 0`).
+///
+/// Uses the Rational Root Theorem: for a polynomial with integer coefficients,
+/// every rational root `p/q` satisfies `p | a₀` and `q | aₙ`.
+///
+/// Returns `None` if no rational root is found (Cardano fallback will be used).
+fn find_preferred_resolvent_root(
+    resolvent: &Poly,
+    p_rat: &Ratio<BigInt>,
+) -> Option<Ratio<BigInt>> {
+    let (int_poly, _scale) = clear_denominators(resolvent);
+    let a0 = int_poly.coeff(0).to_integer();
+    let an = match int_poly.leading_coeff() {
+        Some(v) => v.to_integer(),
+        None => return None,
+    };
+
+    let two_r = Ratio::from_integer(BigInt::from(2));
+    let mut fallback: Option<Ratio<BigInt>> = None;
+
+    if a0.is_zero() {
+        // m = 0 is a root.  Record it but keep looking for a non-degenerate one.
+        let zero = Ratio::zero();
+        if &two_r * &zero - p_rat != Ratio::zero() {
+            return Some(zero);
+        }
+        fallback = Some(zero);
+
+        // Divide out m and check the remaining quadratic for rational roots.
+        let reduced_coeffs: Vec<Ratio<BigInt>> =
+            resolvent.coeffs().iter().skip(1).cloned().collect();
+        let reduced = Poly::from_coeffs(reduced_coeffs);
+        let aq = reduced.coeff(2);
+        let bq = reduced.coeff(1);
+        let cq = reduced.coeff(0);
+        if !aq.is_zero() {
+            let disc = &bq * &bq
+                - Ratio::from_integer(BigInt::from(4)) * &aq * &cq;
+            if let Some(sqrt_d) = rational_sqrt(&disc) {
+                let two_aq = Ratio::from_integer(BigInt::from(2)) * &aq;
+                for candidate in [
+                    (-&bq + &sqrt_d) / &two_aq,
+                    (-&bq - &sqrt_d) / &two_aq,
+                ] {
+                    if &two_r * &candidate - p_rat != Ratio::zero() {
+                        return Some(candidate);
+                    }
+                    if fallback.is_none() {
+                        fallback = Some(candidate);
+                    }
+                }
+            }
+        }
+    } else {
+        let divs_a0 = divisors(&a0.abs());
+        let divs_an = divisors(&an.abs());
+
+        for p_div in &divs_a0 {
+            for q_div in &divs_an {
+                for &sign in &[1i64, -1i64] {
+                    let candidate =
+                        Ratio::new(p_div * BigInt::from(sign), q_div.clone());
+                    if resolvent.eval(&candidate).is_zero() {
+                        // Prefer a root where 2m - p ≠ 0.
+                        if &two_r * &candidate - p_rat != Ratio::zero() {
+                            return Some(candidate);
+                        }
+                        if fallback.is_none() {
+                            fallback = Some(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fallback
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
