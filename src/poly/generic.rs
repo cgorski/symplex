@@ -249,6 +249,53 @@ impl<C: Ring> GenPoly<C> {
         }
         result
     }
+
+    /// `self^n` by repeated squaring.
+    pub fn pow(&self, mut n: usize) -> Self {
+        let mut result = Self::one();
+        let mut base = self.clone();
+        while n > 0 {
+            if n & 1 == 1 {
+                result = result.mul(&base);
+            }
+            n >>= 1;
+            if n > 0 {
+                base = base.mul(&base);
+            }
+        }
+        result
+    }
+
+    /// Functional composition `self(g)`: substitute `g` for the variable.
+    ///
+    /// Evaluated with Horner's rule in the polynomial ring, so the cost is
+    /// `deg(self)` polynomial multiplications by `g`.
+    pub fn compose(&self, g: &Self) -> Self {
+        if self.is_zero() {
+            return Self::zero();
+        }
+        let mut result = Self::constant(self.coeffs.last().unwrap().clone());
+        for c in self.coeffs.iter().rev().skip(1) {
+            result = result.mul(g).add(&Self::constant(c.clone()));
+        }
+        result
+    }
+
+    /// Taylor shift: returns `self(θ + a)`.
+    pub fn taylor_shift(&self, a: &C) -> Self {
+        let shifted = Self::from_coeffs(vec![a.clone(), C::one()]);
+        self.compose(&shifted)
+    }
+
+    /// Reciprocal polynomial `θ^n · self(1/θ)`: the coefficient list reversed.
+    ///
+    /// Trailing zero coefficients of the input become leading zeros and are
+    /// stripped, so the result may have lower degree when `self(0) = 0`.
+    pub fn reverse(&self) -> Self {
+        let mut coeffs = self.coeffs.clone();
+        coeffs.reverse();
+        Self::from_coeffs(coeffs)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -642,6 +689,32 @@ impl<C: Field> GenPoly<C> {
         factors
     }
 
+    /// Discriminant `disc(f) = (−1)^{n(n−1)/2} · res(f, f′) / lc(f)`.
+    ///
+    /// Zero iff `f` has a repeated root.  Constants and the zero polynomial
+    /// return `None`; linear polynomials return `1`.
+    ///
+    /// This formula requires the coefficient ring to have characteristic
+    /// zero (it is used for `ℚ`); over `GF(p)` with `p | n` the derivative
+    /// degenerates and the result is not the algebraic discriminant.
+    pub fn discriminant(&self) -> Option<C> {
+        let n = self.degree()?;
+        if n == 0 {
+            return None;
+        }
+        if n == 1 {
+            return Some(C::one());
+        }
+        let lc = self.leading_coeff()?.clone();
+        let res = Self::resultant(self, &self.derivative());
+        let sign = if (n * (n - 1) / 2) % 2 == 0 {
+            C::one()
+        } else {
+            Ring::neg(&C::one())
+        };
+        Some(Field::div(&Ring::mul(&sign, &res), &lc))
+    }
+
     /// Compute the resultant of two polynomials via the Euclidean algorithm.
     ///
     /// The resultant is zero iff the two polynomials share a common root.
@@ -731,6 +804,105 @@ impl<C: Field> GenPoly<C> {
 
         lagrange_interpolate_generic(&points)
     }
+}
+
+impl<C: Field + IntegralCoeff> GenPoly<C> {
+    /// Functional decomposition `f = g₁ ∘ g₂ ∘ … ∘ gₖ` into indecomposable
+    /// components, outermost first.
+    ///
+    /// Uses the Kozen–Landau approach: for each proper divisor `r` of
+    /// `deg f` (smallest first) the unique monic candidate `h` of degree `r`
+    /// with `h(0) = 0` is read off from the top coefficients of `f`
+    /// (`f ≡ h^{n/r}` in the top `r` coefficients); if `f` is a polynomial
+    /// in `h`, the quotient polynomial `g` is decomposed further.
+    ///
+    /// Indecomposable polynomials (including everything of prime degree)
+    /// return `vec![self.clone()]`; constants and zero return an empty
+    /// vector.  Requires characteristic zero.
+    pub fn decompose(&self) -> Vec<Self> {
+        let Some(n) = self.degree() else {
+            return vec![];
+        };
+        if n == 0 {
+            return vec![];
+        }
+
+        // Iterate: peel the innermost (right) component repeatedly.
+        let mut components: Vec<Self> = Vec::new();
+        let mut current = self.clone();
+        loop {
+            match decompose_step(&current) {
+                Some((g, h)) => {
+                    components.push(h);
+                    current = g;
+                }
+                None => {
+                    components.push(current);
+                    break;
+                }
+            }
+        }
+        components.reverse();
+        components
+    }
+}
+
+/// One step of functional decomposition: find `(g, h)` with `f = g(h)`,
+/// `1 < deg h < deg f`, `h` monic with `h(0) = 0`, and `deg h` minimal.
+fn decompose_step<C: Field + IntegralCoeff>(f: &GenPoly<C>) -> Option<(GenPoly<C>, GenPoly<C>)> {
+    let n = f.degree()?;
+    if n < 4 {
+        // Degree 2 and 3 are prime (or too small): indecomposable.
+        return None;
+    }
+    let f_monic = f.make_monic();
+
+    for r in 2..n {
+        if n % r != 0 {
+            continue;
+        }
+        let s = n / r;
+        let s_c = <C as IntegralCoeff>::from_i64(s as i64);
+
+        // Build h = θ^r + h_{r-1} θ^{r-1} + … + h_1 θ coefficient by coefficient.
+        let mut h_coeffs = vec![C::zero(); r + 1];
+        h_coeffs[r] = C::one();
+        for k in 1..r {
+            let h_partial = GenPoly::from_coeffs(h_coeffs.clone());
+            let hs = h_partial.pow(s);
+            // Coefficient of θ^{n-k} in h^s is s·h_{r-k} + (known terms);
+            // with h_{r-k} = 0 so far, the known part is hs.coeff(n-k).
+            let known = hs.coeff(n - k);
+            let target = f_monic.coeff(n - k);
+            h_coeffs[r - k] = Field::div(&Ring::sub(&target, &known), &s_c);
+        }
+        let h = GenPoly::from_coeffs(h_coeffs);
+        if h.degree() != Some(r) {
+            continue;
+        }
+
+        // Is f a polynomial in h?  Repeated division: f = q₀ + h(q₁ + h(…)).
+        let mut g_coeffs: Vec<C> = Vec::with_capacity(s + 1);
+        let mut rest = f.clone();
+        let mut ok = true;
+        while !rest.is_zero() {
+            let (q, rem) = rest.div_rem(&h);
+            if rem.degree().unwrap_or(0) > 0 {
+                ok = false;
+                break;
+            }
+            g_coeffs.push(rem.coeff(0));
+            rest = q;
+        }
+        if !ok {
+            continue;
+        }
+        let g = GenPoly::from_coeffs(g_coeffs);
+        if g.degree() == Some(s) && g.compose(&h) == *f {
+            return Some((g, h));
+        }
+    }
+    None
 }
 
 /// Lagrange interpolation for `GenPoly<C>` through rational-valued points

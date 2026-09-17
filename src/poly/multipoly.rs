@@ -703,6 +703,68 @@ impl<O: MonomialOrd> MultiPoly<O> {
 
         remainder
     }
+
+    /// Exact division by a single polynomial.
+    ///
+    /// Returns `Some(q)` with `self == q · divisor` when `divisor` divides
+    /// `self` in ℚ[x₁, …, xₙ], and `None` otherwise (including for a zero
+    /// divisor).  Uses the multivariate division algorithm with one divisor,
+    /// for which the remainder vanishes iff the division is exact.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::multipoly::MultiPoly;
+    ///
+    /// let [x, y]: [MultiPoly; 2] = [MultiPoly::var(2, 0), MultiPoly::var(2, 1)];
+    /// let f = x.mul(&x).sub(&y.mul(&y));            // x² − y²
+    /// let g = x.sub(&y);                            // x − y
+    /// assert_eq!(f.div_exact(&g), Some(x.add(&y))); // x + y
+    /// assert_eq!(f.div_exact(&x), None);
+    /// ```
+    pub fn div_exact(&self, divisor: &MultiPoly<O>) -> Option<MultiPoly<O>> {
+        self.assert_compatible(divisor);
+        let (div_lt_exp, div_lt_coeff) = divisor.leading_term()?;
+        let div_lt_exp = div_lt_exp.to_vec();
+        let div_lt_coeff = div_lt_coeff.clone();
+
+        let mut quotient = MultiPoly::zero(self.num_vars);
+        let mut p = self.clone();
+        while let Some((lt_exp, lt_coeff)) = p.leading_term() {
+            let quot_exp = monomial_div(&div_lt_exp, lt_exp)?;
+            let quot_coeff = lt_coeff / &div_lt_coeff;
+            let subtrahend = divisor.mul_monomial(&quot_coeff, &quot_exp);
+            quotient.insert_term(quot_exp, quot_coeff);
+            p = p.sub(&subtrahend);
+        }
+        Some(quotient)
+    }
+
+    /// Component-wise minimum of all exponent vectors: the largest monomial
+    /// dividing every term.  Returns the all-zero vector for the zero
+    /// polynomial.
+    pub fn monomial_content(&self) -> Vec<u32> {
+        let mut min: Option<Vec<u32>> = None;
+        for (exp, _) in self.terms() {
+            match &mut min {
+                None => min = Some(exp.to_vec()),
+                Some(m) => {
+                    for (mi, &e) in m.iter_mut().zip(exp) {
+                        *mi = (*mi).min(e);
+                    }
+                }
+            }
+        }
+        min.unwrap_or_else(|| vec![0; self.num_vars])
+    }
+
+    /// Indices of the variables that actually occur (with positive
+    /// exponent) in some term.
+    pub fn variables_present(&self) -> Vec<usize> {
+        (0..self.num_vars)
+            .filter(|&i| self.terms.keys().any(|k| k.exponents[i] > 0))
+            .collect()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

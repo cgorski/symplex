@@ -34,6 +34,7 @@ use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use crate::poly::Poly;
+use crate::poly::multipoly::{GrevLex, MultiPoly};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Expression → Poly
@@ -360,6 +361,110 @@ pub(crate) fn ratfn_to_expr(
     }
     let d = poly_to_expr(arena, rf.denom(), var);
     arena.div(n, d)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Expression ↔ MultiPoly
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Try to convert an expression into a multivariate polynomial over ℚ in
+/// the given variables (`vars[i]` becomes variable index `i`).
+///
+/// Returns `None` if the expression is not polynomial in those variables
+/// (transcendental functions, fractional or negative powers, or symbols
+/// not listed in `vars`).  Uses an explicit post-order walk.
+pub(crate) fn expr_to_multipoly(
+    arena: &Arena,
+    expr: ExprId,
+    vars: &[ExprId],
+) -> Option<MultiPoly<GrevLex>> {
+    let nv = vars.len();
+    let var_index: FxHashMap<ExprId, usize> =
+        vars.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+
+    let post_order = walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, MultiPoly<GrevLex>> = FxHashMap::default();
+
+    for &id in &post_order {
+        if let Some(&i) = var_index.get(&id) {
+            cache.insert(id, MultiPoly::var(nv, i));
+            continue;
+        }
+        let poly = match arena.node(id) {
+            ExprNode::Num(nid) => MultiPoly::constant(nv, arena.num(*nid).clone()),
+            ExprNode::Add(children) => {
+                let mut acc = MultiPoly::zero(nv);
+                for c in children.iter() {
+                    acc = acc.add(cache.get(c)?);
+                }
+                acc
+            }
+            ExprNode::Mul(children) => {
+                let mut acc = MultiPoly::from_int(nv, 1);
+                for c in children.iter() {
+                    acc = acc.mul(cache.get(c)?);
+                }
+                acc
+            }
+            ExprNode::Pow(base, exp) => {
+                let base_poly = cache.get(base)?;
+                let exp_val = expr_to_rational(arena, *exp)?;
+                if !exp_val.is_integer() {
+                    return None;
+                }
+                let n: u32 = exp_val.to_integer().try_into().ok()?;
+                let mut acc = MultiPoly::from_int(nv, 1);
+                for _ in 0..n {
+                    acc = acc.mul(base_poly);
+                }
+                acc
+            }
+            ExprNode::Neg(inner) => cache.get(inner)?.neg(),
+            _ => return None,
+        };
+        cache.insert(id, poly);
+    }
+
+    cache.remove(&expr)
+}
+
+/// Convert a multivariate polynomial back to an expression, mapping
+/// variable index `i` to `vars[i]`.
+pub(crate) fn multipoly_to_expr(
+    arena: &mut Arena,
+    poly: &MultiPoly<GrevLex>,
+    vars: &[ExprId],
+) -> ExprId {
+    let mut terms: Vec<ExprId> = Vec::with_capacity(poly.num_terms());
+    for (exp, c) in poly.terms() {
+        let mut factors: SmallVec<[ExprId; 6]> = SmallVec::new();
+        if !c.is_one() {
+            let nid = arena.intern_num(c.clone());
+            factors.push(arena.intern(ExprNode::Num(nid)));
+        }
+        for (i, &e) in exp.iter().enumerate() {
+            if e == 0 {
+                continue;
+            }
+            if e == 1 {
+                factors.push(vars[i]);
+            } else {
+                let e_id = arena.int(e as i64);
+                factors.push(arena.pow(vars[i], e_id));
+            }
+        }
+        let term = match factors.len() {
+            0 => arena.one,
+            1 => factors[0],
+            _ => arena.mul(&factors),
+        };
+        terms.push(term);
+    }
+    match terms.len() {
+        0 => arena.zero,
+        1 => terms[0],
+        _ => arena.add(&terms),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
