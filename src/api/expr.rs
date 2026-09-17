@@ -91,7 +91,7 @@ impl Sort for SetValued {}
 /// Structural classification of an expression node.
 ///
 /// Returned by [`Expr::expr_type()`]. This collapses the internal
-/// `ExprNode` enum (30 variants) into a user-friendly classification.
+/// `ExprNode` enum (over 70 variants) into a user-friendly classification.
 ///
 /// # Examples
 ///
@@ -306,17 +306,6 @@ impl<S: Sort> Expr<S> {
             .collect()
     }
 
-    /// Returns `true` if `needle` appears as a sub-expression of `self`.
-    ///
-    /// This is a structural check — it walks the expression DAG and
-    /// returns `true` if any node has the same `ExprId` as `needle`.
-    #[must_use]
-    pub fn contains(&self, needle: &Ex) -> bool {
-        let needle_id = self.checked_id(needle);
-        let inner = self.inner.read();
-        crate::base::walk::contains(&inner.arena, self.id, needle_id)
-    }
-
     /// Returns `true` if this expression contains any unevaluated formal
     /// nodes such as `Integral(...)`, `Derivative(...)`, `Limit(...)`, etc.
     ///
@@ -403,7 +392,7 @@ impl<S: Sort> Expr<S> {
 
     /// Returns the structural type of this expression.
     ///
-    /// Collapses the internal 30-variant `ExprNode` enum into a
+    /// Collapses the internal `ExprNode` enum (over 70 variants) into a
     /// user-friendly [`ExprType`] classification.
     ///
     /// # Examples
@@ -599,82 +588,12 @@ impl<S: Sort> Expr<S> {
         self.wrap(id)
     }
 
-    /// Exact evaluation of known special values.
-    ///
-    /// Replaces function applications with their exact values when the
-    /// arguments are known constants:
-    ///
-    /// - `sin(0)` → `0`, `sin(π)` → `0`, `sin(π/2)` → `1`
-    /// - `cos(0)` → `1`, `cos(π)` → `-1`
-    /// - `exp(0)` → `1`, `ln(1)` → `0`
-    /// - `sqrt(4)` → `2`, `abs(-3)` → `3`
-    ///
-    /// Only evaluates when the result is a simpler atom.
-    /// Does NOT evaluate `cos(π/4)` → `√2/2`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let expr = ctx.pi().cos();
-    /// assert_eq!(format!("{}", expr.eval()), "-1");
-    /// ```
-    #[must_use = "returns the evaluated form; does not modify in place"]
-    pub fn eval(&self) -> Expr<S> {
-        let _span = debug_span!("eval", expr = ?self.id).entered();
-        let id = self.inner.write().arena.eval_expr(self.id);
-        self.wrap(id)
-    }
-
-    /// Simplification (identity application, trig identities, etc.).
-    ///
-    /// Simplify the expression using all available strategies.
-    ///
-    /// Tries 12+ strategies (eval, expand, factor, trig, log, cancel,
-    /// power, radical, assumption-aware refinement, …), picks the
-    /// simplest result, then iterates to a fixpoint (up to 10 passes)
-    /// until the expression stops getting simpler.
-    ///
-    /// This is the "just make this simpler" function.  For finer control,
-    /// use [`simplify_with`](Self::simplify_with) or the domain-specific
-    /// methods ([`simplify_trig`](Ex::simplify_trig),
-    /// [`simplify_powers`](Ex::simplify_powers), etc.).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    ///
-    /// // Trig identity
-    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    /// assert_eq!(format!("{}", expr.simplify()), "1");
-    ///
-    /// // Polynomial cancellation
-    /// let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
-    /// assert_eq!(format!("{}", expr.simplify()), "1");
-    /// ```
-    #[must_use = "returns the simplified form; does not modify in place"]
-    pub fn simplify(&self) -> Expr<S> {
-        let _span = debug_span!("simplify", expr = ?self.id).entered();
-        let result = {
-            let mut inner = self.inner.write();
-            crate::simplify::simplify_engine::unified_simplify(
-                &mut inner.arena,
-                self.id,
-                &crate::simplify::simplify_engine::SimplifyOpts::default(),
-            )
-        };
-        self.wrap(result.expr)
-    }
-
-    /// Like [`simplify`](Expr::simplify), but with configurable options.
+    /// Like [`simplify`](Ex::simplify), but with configurable options.
     ///
     /// Use [`SimplifyOpts`] to control the fixpoint iteration count.
+    /// This always runs the numeric simplification engine, whatever the
+    /// sort of `self`; for [`BoolEx`] and [`SetEx`] prefer their own
+    /// `simplify()`, which additionally applies boolean / set algebra.
     ///
     /// # Examples
     ///
@@ -789,10 +708,121 @@ impl<S: Sort> Expr<S> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// impl Expr<Numeric> — evaluation / simplification / structural search
+//
+// These used to live on the generic `impl<S: Sort>` block.  They are now
+// per-sort so that `BoolEx` and `SetEx` can provide their own `eval`,
+// `simplify` and `contains` with boolean / set semantics (see
+// `expr_sets_ext.rs`).
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Expr<Numeric> {
+    /// Returns `true` if `needle` appears as a sub-expression of `self`.
+    ///
+    /// This is a structural check — it walks the expression DAG and
+    /// returns `true` if any node has the same `ExprId` as `needle`.
+    ///
+    /// For set membership use [`SetEx::contains`] / [`Ex::is_in`].
+    #[must_use]
+    pub fn contains(&self, needle: &Ex) -> bool {
+        let needle_id = self.checked_id(needle);
+        let inner = self.inner.read();
+        crate::base::walk::contains(&inner.arena, self.id, needle_id)
+    }
+
+    /// Exact evaluation of known special values.
+    ///
+    /// Replaces function applications with their exact values when the
+    /// arguments are known constants:
+    ///
+    /// - `sin(0)` → `0`, `sin(π)` → `0`, `sin(π/2)` → `1`
+    /// - `cos(0)` → `1`, `cos(π)` → `-1`
+    /// - `exp(0)` → `1`, `ln(1)` → `0`
+    /// - `sqrt(4)` → `2`, `abs(-3)` → `3`
+    ///
+    /// Only evaluates when the result is a simpler atom.
+    /// Does NOT evaluate `cos(π/4)` → `√2/2`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let expr = ctx.pi().cos();
+    /// assert_eq!(format!("{}", expr.eval()), "-1");
+    /// ```
+    #[must_use = "returns the evaluated form; does not modify in place"]
+    pub fn eval(&self) -> Ex {
+        let _span = debug_span!("eval", expr = ?self.id).entered();
+        let id = self.inner.write().arena.eval_expr(self.id);
+        self.wrap(id)
+    }
+
+    /// Simplification (identity application, trig identities, etc.).
+    ///
+    /// Simplify the expression using all available strategies.
+    ///
+    /// Tries 12+ strategies (eval, expand, factor, trig, log, cancel,
+    /// power, radical, assumption-aware refinement, …), picks the
+    /// simplest result, then iterates to a fixpoint (up to 10 passes)
+    /// until the expression stops getting simpler.
+    ///
+    /// This is the "just make this simpler" function.  For finer control,
+    /// use [`simplify_with`](Self::simplify_with) or the domain-specific
+    /// methods ([`simplify_trig`](Ex::simplify_trig),
+    /// [`simplify_powers`](Ex::simplify_powers), etc.).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    ///
+    /// // Trig identity
+    /// let expr = &x.sin().powi(2) + &x.cos().powi(2);
+    /// assert_eq!(format!("{}", expr.simplify()), "1");
+    ///
+    /// // Polynomial cancellation
+    /// let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
+    /// assert_eq!(format!("{}", expr.simplify()), "1");
+    /// ```
+    #[must_use = "returns the simplified form; does not modify in place"]
+    pub fn simplify(&self) -> Ex {
+        let _span = debug_span!("simplify", expr = ?self.id).entered();
+        let result = {
+            let mut inner = self.inner.write();
+            crate::simplify::simplify_engine::unified_simplify(
+                &mut inner.arena,
+                self.id,
+                &crate::simplify::simplify_engine::SimplifyOpts::default(),
+            )
+        };
+        self.wrap(result.expr)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // impl Expr<Boolean> — Boolean-specific methods
+//
+// Boolean algebra (`simplify`, `eval`, CNF/DNF, satisfiability, …) lives
+// in `expr_sets_ext.rs`; the connectives and escape hatches are here.
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl Expr<Boolean> {
+    /// Returns `true` if `needle` appears as a sub-expression of `self`.
+    ///
+    /// This is a structural check — it walks the expression DAG and
+    /// returns `true` if any node has the same `ExprId` as `needle`.
+    #[must_use]
+    pub fn contains(&self, needle: &Ex) -> bool {
+        let needle_id = self.checked_id(needle);
+        let inner = self.inner.read();
+        crate::base::walk::contains(&inner.arena, self.id, needle_id)
+    }
+
     /// Logical conjunction: `self & other`.
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn and(&self, other: &BoolEx) -> BoolEx {
@@ -877,10 +907,16 @@ impl Expr<Boolean> {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // impl Expr<SetValued> — Set-specific methods
+//
+// The three constructors below are *lazy* (structural, canonicalised
+// only — principle 1: construction is cheap, evaluation is explicit).
+// Set algebra proper (`simplify`, `difference`, `contains`, `is_subset`,
+// `inf`/`sup`/`measure`, topology, …) lives in `expr_sets_ext.rs`.
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl Expr<SetValued> {
-    /// Union: `self ∪ other`.
+    /// Union: `self ∪ other` (structural; call [`simplify`](SetEx::simplify)
+    /// to merge overlapping intervals).
     ///
     /// # Examples
     ///
@@ -901,7 +937,8 @@ impl Expr<SetValued> {
         self.wrap(id)
     }
 
-    /// Intersection: `self ∩ other`.
+    /// Intersection: `self ∩ other` (structural; call
+    /// [`simplify`](SetEx::simplify) to evaluate).
     ///
     /// # Examples
     ///
@@ -924,7 +961,24 @@ impl Expr<SetValued> {
         self.wrap(id)
     }
 
-    /// Relative complement: `self \ other`.
+    /// Relative complement: `self \ other` (structural).
+    ///
+    /// This is the lazy constructor; [`difference`](SetEx::difference)
+    /// returns the evaluated normal form and
+    /// [`absolute_complement`](SetEx::absolute_complement) computes `ℝ \ self`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let a = ctx.interval(&ctx.int(0), &ctx.int(3), false, false);
+    /// let b = ctx.interval(&ctx.int(1), &ctx.int(2), true, true);
+    /// let lazy = a.complement(&b);
+    /// assert_eq!(format!("{lazy}"), "[0, 3] \\ (1, 2)");
+    /// assert_eq!(format!("{}", lazy.simplify()), "[0, 1] ∪ [2, 3]");
+    /// ```
     #[must_use = "returns a new expression; does not modify in place"]
     pub fn complement(&self, other: &SetEx) -> SetEx {
         let other_id = self.checked_id(other);
