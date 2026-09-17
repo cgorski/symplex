@@ -33,6 +33,9 @@ use crate::poly::polybridge;
 /// Maximum number of distinct symbols handled by the multivariate path.
 const MAX_MULTIVARIATE_SYMBOLS: usize = 4;
 
+/// Rational content plus `(factor expression, multiplicity)` pairs.
+type FactorParts = (Ratio<BigInt>, Vec<(ExprId, u32)>);
+
 /// Factor a polynomial expression in `var` into a product of irreducible
 /// factors over ℤ.
 ///
@@ -89,11 +92,7 @@ pub(crate) fn factor_list(
 /// Shared driver: returns the rational content and the irreducible factors
 /// (as expressions) or `None` if the expression is not a non-constant
 /// polynomial in the chosen variable(s).
-fn factor_parts(
-    arena: &mut Arena,
-    expr: ExprId,
-    var: Option<ExprId>,
-) -> Option<(Ratio<BigInt>, Vec<(ExprId, u32)>)> {
+fn factor_parts(arena: &mut Arena, expr: ExprId, var: Option<ExprId>) -> Option<FactorParts> {
     let mut syms = walk::free_symbols(arena, expr);
     syms.sort_by_key(|id| id.0);
     syms.dedup();
@@ -120,11 +119,7 @@ fn factor_parts(
     }
 }
 
-fn factor_univariate(
-    arena: &mut Arena,
-    poly: &Poly,
-    var: ExprId,
-) -> Option<(Ratio<BigInt>, Vec<(ExprId, u32)>)> {
+fn factor_univariate(arena: &mut Arena, poly: &Poly, var: ExprId) -> Option<FactorParts> {
     if poly.is_zero() || poly.is_constant() {
         return None;
     }
@@ -136,11 +131,7 @@ fn factor_univariate(
     Some((content, factor_ids))
 }
 
-fn factor_multi(
-    arena: &mut Arena,
-    expr: ExprId,
-    syms: &[ExprId],
-) -> Option<(Ratio<BigInt>, Vec<(ExprId, u32)>)> {
+fn factor_multi(arena: &mut Arena, expr: ExprId, syms: &[ExprId]) -> Option<FactorParts> {
     if syms.len() < 2 || syms.len() > MAX_MULTIVARIATE_SYMBOLS {
         return None;
     }

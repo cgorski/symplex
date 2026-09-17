@@ -50,13 +50,31 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use super::multipoly::{MonomialOrd, MultiPoly};
 
 // The dense polynomial types live in crate-private modules; re-export them
-// here so that callers of this public module can construct inputs.
+// (and the coefficient traits their documentation refers to) so that callers
+// of this public module can construct inputs.
 pub use super::dense::Poly;
 pub use super::generic::GenPoly;
+
+/// Coefficient-ring traits used by [`GenPoly`] (re-exported so that the
+/// polynomial types above are fully documented and usable generically).
+pub mod traits {
+    pub use crate::poly::traits::{
+        BindingStrength, CoeffDisplay, EuclideanDomain, Field, IntegralCoeff, Ring,
+    };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tunables
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// A factorization over `GF(p)`: the leading coefficient and the monic
+/// irreducible factors (ascending coefficients in `[0, p)`) with
+/// multiplicities.  Returned by [`factor_mod_p`].
+pub type ModPFactorization = (u64, Vec<(Vec<u64>, u32)>);
+
+/// A factorization over ℤ of a multivariate polynomial: rational content
+/// and `(factor, multiplicity)` pairs.  Returned by [`factor_multivariate`].
+pub type MultiFactorization<O> = (Ratio<BigInt>, Vec<(MultiPoly<O>, u32)>);
 
 /// Number of usable primes whose modular factorizations are compared; the
 /// one with the fewest factors is used for lifting.
@@ -332,7 +350,7 @@ pub fn is_irreducible_z(f: &Poly) -> Option<bool> {
 /// assert_eq!(factors, vec![(vec![1, 0, 1], 1)]);
 /// ```
 #[must_use]
-pub fn factor_mod_p(f: &Poly, p: u64) -> Option<(u64, Vec<(Vec<u64>, u32)>)> {
+pub fn factor_mod_p(f: &Poly, p: u64) -> Option<ModPFactorization> {
     if !is_small_odd_prime(p) {
         return None;
     }
@@ -408,9 +426,7 @@ pub fn factor_mod_p(f: &Poly, p: u64) -> Option<(u64, Vec<(Vec<u64>, u32)>)> {
 /// assert_eq!(back, f);
 /// ```
 #[must_use]
-pub fn factor_multivariate<O: MonomialOrd>(
-    f: &MultiPoly<O>,
-) -> Option<(Ratio<BigInt>, Vec<(MultiPoly<O>, u32)>)> {
+pub fn factor_multivariate<O: MonomialOrd>(f: &MultiPoly<O>) -> Option<MultiFactorization<O>> {
     let nv = f.num_vars();
     if f.is_zero() {
         return Some((Ratio::zero(), vec![]));
@@ -900,7 +916,7 @@ fn hensel_lift(f: &ZPoly, p: u64, factors: &[FpPoly], k: u32) -> Vec<ZPoly> {
         // e = (f − prod) / modulus, reduced mod p.
         let mut e_p: FpPoly = vec![0; n.max(1)];
         let mut any = false;
-        for i in 0..n {
+        for (i, slot) in e_p.iter_mut().enumerate().take(n) {
             let fi = f.get(i).cloned().unwrap_or_else(BigInt::zero);
             let pi = prod.get(i).cloned().unwrap_or_else(BigInt::zero);
             let diff = (fi - pi).mod_floor(&next);
@@ -910,7 +926,7 @@ fn hensel_lift(f: &ZPoly, p: u64, factors: &[FpPoly], k: u32) -> Vec<ZPoly> {
             if c != 0 {
                 any = true;
             }
-            e_p[i] = c;
+            *slot = c;
         }
         fp_normalize(&mut e_p);
         if any {
@@ -1206,12 +1222,12 @@ fn mod_inv(a: u64, p: u64) -> u64 {
 
 /// Deterministic primality test for odd `p < 2³¹` by trial division.
 fn is_small_odd_prime(p: u64) -> bool {
-    if p < 3 || p >= MAX_PRIME || p % 2 == 0 {
+    if !(3..MAX_PRIME).contains(&p) || p.is_multiple_of(2) {
         return false;
     }
     let mut d = 3u64;
     while d * d <= p {
-        if p % d == 0 {
+        if p.is_multiple_of(d) {
             return false;
         }
         d += 2;

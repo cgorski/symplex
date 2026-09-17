@@ -40,7 +40,7 @@
 //! # Limitations
 //!
 //! - Only the expression shapes listed above are recognised; anything else
-//! (`π`, `e`, free symbols, transcendental functions) yields `None`.
+//!   (`π`, `e`, free symbols, transcendental functions) yields `None`.
 //! - The resultant-based composition produces a polynomial that *has* `α`
 //!   as a root; the minimal polynomial is obtained by factoring and
 //!   selecting the right irreducible factor numerically, which relies on
