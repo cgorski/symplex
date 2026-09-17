@@ -61,7 +61,7 @@ Before the translation table, a few structural differences to be aware of:
 | `diff(f, x, 3)` | `f.diff_n(&x, 3)` |
 | `diff(f, x, y)` | `f.diff(&x).diff(&y)` |
 | `integrate(f, x)` | `f.integrate(&x)` |
-| `integrate(f, (x, 0, 1))` | `f.definite_integral(&x, &ctx.int(0), &ctx.int(1))` |
+| `integrate(f, (x, 0, 1))` | `f.integrate_definite(&x, &ctx.int(0), &ctx.int(1))` |
 | `limit(f, x, 0)` | `f.limit(&x, &ctx.int(0))` |
 | `limit(f, x, oo)` | `f.limit(&x, &ctx.infinity())` |
 | `series(f, x, 0, 5)` | `f.series(&x, &ctx.int(0), 5)` |

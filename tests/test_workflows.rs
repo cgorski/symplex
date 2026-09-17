@@ -533,7 +533,7 @@ fn workflow_definite_integral_verification() {
     let x = ctx.symbol("x");
 
     // ∫₀¹ x² dx = 1/3
-    let result1 = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result1 = x.powi(2).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let val1 = result1.eval().eval_f64().expect("∫₀¹ x² dx");
     assert!(
         (val1 - 1.0 / 3.0).abs() < 1e-9,
@@ -541,7 +541,7 @@ fn workflow_definite_integral_verification() {
     );
 
     // ∫₀^π sin(x) dx = 2
-    let result2 = x.sin().definite_integral(&x, &ctx.int(0), &ctx.pi());
+    let result2 = x.sin().integrate_definite(&x, &ctx.int(0), &ctx.pi());
     let val2 = result2.eval().eval_f64().expect("∫₀^π sin(x) dx");
     assert!(
         (val2 - 2.0).abs() < 1e-9,
@@ -557,7 +557,7 @@ fn workflow_definite_integral_polynomial() {
 
     // ∫₁² (x² + x) dx = [x³/3 + x²/2]₁² = (8/3 + 2) - (1/3 + 1/2) = 23/6
     let expr = &x.powi(2) + &x;
-    let result = expr.definite_integral(&x, &ctx.int(1), &ctx.int(2));
+    let result = expr.integrate_definite(&x, &ctx.int(1), &ctx.int(2));
     let val = result.eval().eval_f64().expect("∫₁² (x²+x) dx");
     assert!(
         (val - 23.0 / 6.0).abs() < 1e-9,
@@ -752,7 +752,7 @@ fn workflow_series_then_integrate() {
     // Also verify the definite integral over [0,1] against numerical
     // expectation.  The polynomial is 1 + x + x²/2 + x³/6, so
     // ∫₀¹ (1 + x + x²/2 + x³/6) dx = 1 + 1/2 + 1/6 + 1/24 = 41/24 ≈ 1.70833
-    let def_int = poly.definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let def_int = poly.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let def_val = def_int.eval().eval_f64().expect("definite integral");
     let expected = 1.0 + 0.5 + 1.0 / 6.0 + 1.0 / 24.0;
     assert!(

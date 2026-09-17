@@ -779,7 +779,7 @@ fn integrate_sin_x() {
 fn definite_integral_x_squared_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = x.powi(2).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     assert_eq!(format!("{result}"), "1/3", "∫₀¹ x² dx should be 1/3");
 }
 
@@ -1350,7 +1350,7 @@ fn from_examples_definite_integral_sin_0_to_pi() {
     let pi = ctx.pi();
     let zero = ctx.int(0);
 
-    let area = x.sin().definite_integral(&x, &zero, &pi);
+    let area = x.sin().integrate_definite(&x, &zero, &pi);
     let s = format!("{}", area.eval());
     assert_eq!(s, "2", "∫₀^π sin(x) dx should be 2, got: {s}");
 }

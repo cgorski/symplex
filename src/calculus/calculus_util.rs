@@ -211,7 +211,9 @@ fn domain_exclude_zeros(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
 ///
 /// Walks the expression tree, finds denominators and constrained
 /// functions (ln, sqrt, tan, …), and solves for zeros/boundaries
-/// numerically in the given range.
+/// numerically in the given range.  Zeros of `sin`/`cos`/`tan` with a
+/// linear argument are enumerated over the whole range (the generic
+/// solver only reports one period).
 pub(crate) fn singularities(
     arena: &mut Arena,
     expr: ExprId,
@@ -225,22 +227,21 @@ pub(crate) fn singularities(
         "singularities: scanning for singularities"
     );
 
-    let post_order = walk::post_order_ids(arena, expr);
+    let scan = scan_breakpoints(arena, expr, var, Some(range));
     let mut sing_points: Vec<f64> = Vec::new();
 
-    for &id in &post_order {
-        let node = arena.node(id).clone();
-        let candidates = singularity_candidates(arena, &node, var);
-        for root_expr in candidates {
-            if let Some(val) = expr_to_f64(arena, root_expr)
-                && val.is_finite()
-                && val >= range.0
-                && val <= range.1
-            {
-                // Deduplicate
-                if !sing_points.iter().any(|&v| (v - val).abs() < 1e-12) {
-                    sing_points.push(val);
-                }
+    for bp in scan.points {
+        if bp.kind != BreakKind::Singular {
+            continue;
+        }
+        if let Some(val) = bp.value
+            && val.is_finite()
+            && val >= range.0
+            && val <= range.1
+        {
+            // Deduplicate
+            if !sing_points.iter().any(|&v| (v - val).abs() < 1e-12) {
+                sing_points.push(val);
             }
         }
     }
@@ -249,63 +250,568 @@ pub(crate) fn singularities(
     sing_points
 }
 
-/// Collect candidate singularity locations (as ExprIds) from a single node.
-fn singularity_candidates(arena: &mut Arena, node: &ExprNode, var: ExprId) -> Vec<ExprId> {
+/// How a breakpoint affects the integrand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BreakKind {
+    /// The integrand (or its antiderivative) may blow up or leave the
+    /// real domain here: poles, `ln` at zero, `tan` poles, fractional
+    /// powers of a sign-changing base, inverse-trig domain edges.
+    Singular,
+    /// The integrand is bounded but not smooth here: `abs`, `sign`,
+    /// `Heaviside`, `floor`/`ceiling` steps, and `Piecewise` condition
+    /// boundaries.
+    Kink,
+}
+
+/// A candidate breakpoint of an integrand.
+#[derive(Clone, Debug)]
+pub(crate) struct Breakpoint {
+    /// The location as a symbolic expression (may contain parameters).
+    pub point: ExprId,
+    /// Numeric value when the location is a real constant.
+    pub value: Option<f64>,
+    /// Whether this is a genuine singularity or just a kink.
+    pub kind: BreakKind,
+}
+
+/// Result of scanning an expression for breakpoints.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BreakScan {
+    /// All candidate breakpoints (unsorted, may contain duplicates).
+    pub points: Vec<Breakpoint>,
+    /// `false` when some sub-expression depending on `var` could have
+    /// zeros/poles that the solver was unable to locate (e.g. a
+    /// transcendental denominator `solve` gave up on).  A numeric sampling
+    /// guard may still vouch for such an expression.
+    pub complete: bool,
+    /// `true` when the expression contains a node whose behaviour cannot be
+    /// analysed at all (unknown `Apply` functions, formal integrals /
+    /// limits, `RootOf`, `LambertW`).  No numeric guard can compensate.
+    pub opaque: bool,
+}
+
+/// Scan `expr` for every point where it (or an antiderivative of it) may
+/// fail to be smooth with respect to `var`.
+///
+/// When `range` is given, periodic families (`sin`, `cos`, `tan` with a
+/// linear argument, `Gamma` poles, `floor` steps) are enumerated inside
+/// the range; without a range only the solver's representative roots are
+/// reported and `complete` is cleared for such families.
+///
+/// Uses an explicit post-order walk (no recursion).
+pub(crate) fn scan_breakpoints(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    range: Option<(f64, f64)>,
+) -> BreakScan {
+    let post_order = walk::post_order_ids(arena, expr);
+    let mut scan = BreakScan {
+        points: Vec::new(),
+        complete: true,
+        opaque: false,
+    };
+
+    for &id in &post_order {
+        let node = arena.node(id).clone();
+        breakpoints_of_node(arena, &node, var, range, &mut scan);
+    }
+
+    scan
+}
+
+/// Push the real zeros of `g` (w.r.t. `var`) as breakpoints of `kind`.
+///
+/// Trigonometric zero families with a linear argument are enumerated over
+/// `range`.  Returns `false` if `g` depends on `var` but no zero could be
+/// determined at all (the caller records incompleteness).
+fn push_zeros(
+    arena: &mut Arena,
+    g: ExprId,
+    var: ExprId,
+    kind: BreakKind,
+    range: Option<(f64, f64)>,
+    scan: &mut BreakScan,
+) {
+    if !walk::contains(arena, g, var) {
+        return;
+    }
+
+    // Periodic families first: sin/cos/tan of a linear argument.
+    if let Some(done) = push_trig_zeros(arena, g, var, kind, range, scan) {
+        if !done {
+            scan.complete = false;
+        }
+        return;
+    }
+
+    let solutions = solve::solve(arena, g, var);
+    if solutions.is_empty() {
+        // A polynomial with no real roots is fine (solve returns complex
+        // roots explicitly).  Anything the solver silently gave up on is
+        // a hole in our knowledge.
+        if crate::poly::polybridge::expr_to_poly(arena, g, var).is_none() {
+            scan.complete = false;
+        }
+        return;
+    }
+    for s in solutions {
+        push_point(arena, s.value, kind, scan);
+    }
+}
+
+/// Push a single candidate point, filtering out non-real constants.
+fn push_point(arena: &mut Arena, point: ExprId, kind: BreakKind, scan: &mut BreakScan) {
+    if walk::free_symbols(arena, point).is_empty() {
+        // Constant: keep only real, finite ones.
+        match expr_to_f64(arena, point) {
+            Some(v) if v.is_finite() => scan.points.push(Breakpoint {
+                point,
+                value: Some(v),
+                kind,
+            }),
+            _ => {}
+        }
+    } else {
+        // Parametric root — the caller must decide where it lies, unless
+        // it is provably non-real (e.g. ±i·a for x² + a²).
+        let mut cache = crate::base::assumptions::AssumptionCache::new();
+        if cache.query(arena, point, crate::base::assumptions::Props::REAL) == Some(false) {
+            return;
+        }
+        // Structural non-reality: an explicit `I`, or an even root of a
+        // provably negative quantity (e.g. √(−a²) from x² + a² = 0).
+        let mut nonreal = false;
+        let mut stack = vec![point];
+        while let Some(id) = stack.pop() {
+            match arena.node(id).clone() {
+                ExprNode::ImaginaryUnit => {
+                    nonreal = true;
+                    break;
+                }
+                ExprNode::Pow(b, e) => {
+                    if let Some(r) = arena.as_num(e)
+                        && !r.is_integer()
+                        && num_integer::Integer::is_even(r.denom())
+                        && cache.query(arena, b, crate::base::assumptions::Props::NEGATIVE)
+                            == Some(true)
+                    {
+                        nonreal = true;
+                        break;
+                    }
+                    stack.push(b);
+                    stack.push(e);
+                }
+                node => node.for_each_child(|c| stack.push(c)),
+            }
+        }
+        if nonreal && cache.query(arena, point, crate::base::assumptions::Props::REAL) != Some(true)
+        {
+            return;
+        }
+        scan.points.push(Breakpoint {
+            point,
+            value: None,
+            kind,
+        });
+    }
+}
+
+/// If `g` is `sin(αx+β)`, `cos(αx+β)` or `tan(αx+β)` with numeric α, β,
+/// enumerate its zeros in `range`.  Returns `None` if `g` is not such a
+/// form, `Some(true)` on success, `Some(false)` if the family could not
+/// be enumerated (no range or non-numeric coefficients).
+fn push_trig_zeros(
+    arena: &mut Arena,
+    g: ExprId,
+    var: ExprId,
+    kind: BreakKind,
+    range: Option<(f64, f64)>,
+    scan: &mut BreakScan,
+) -> Option<bool> {
+    // offset_k: zeros are at αx+β = offset + kπ
+    let (inner, offset) = match arena.node(g).clone() {
+        ExprNode::Sin(i) | ExprNode::Tan(i) => (i, 0.0),
+        ExprNode::Cos(i) => (i, std::f64::consts::FRAC_PI_2),
+        _ => return None,
+    };
+    if !walk::contains(arena, inner, var) {
+        return None;
+    }
+    let (alpha, beta) = match linear_coeffs_f64(arena, inner, var) {
+        Some(ab) => ab,
+        None => return Some(false),
+    };
+    let (lo, hi) = match range {
+        Some(r) => r,
+        None => return Some(false),
+    };
+    if alpha == 0.0 || !lo.is_finite() || !hi.is_finite() {
+        return Some(false);
+    }
+    // x = (offset + kπ − β)/α.  Enumerate k so that x ∈ [lo, hi].
+    let t_lo = alpha * lo + beta;
+    let t_hi = alpha * hi + beta;
+    let (t_min, t_max) = if t_lo <= t_hi {
+        (t_lo, t_hi)
+    } else {
+        (t_hi, t_lo)
+    };
+    let k_min = ((t_min - offset) / std::f64::consts::PI).floor() as i64 - 1;
+    let k_max = ((t_max - offset) / std::f64::consts::PI).ceil() as i64 + 1;
+    if k_max - k_min > 10_000 {
+        return Some(false);
+    }
+    // Build exact symbolic points: x = ((offset_frac + k)·π − β)/α.
+    let (alpha_ex, beta_ex) = match linear_coeffs_exact(arena, inner, var) {
+        Some(ab) => ab,
+        None => return Some(false),
+    };
+    for k in k_min..=k_max {
+        let t = offset + (k as f64) * std::f64::consts::PI;
+        let xv = (t - beta) / alpha;
+        if xv < lo - 1e-12 || xv > hi + 1e-12 {
+            continue;
+        }
+        // Symbolic: ((k + offset/π)·π − β)/α
+        let k_ex = if offset == 0.0 {
+            arena.int(k)
+        } else {
+            arena.rational(2 * k + 1, 2)
+        };
+        let pi = arena.pi();
+        let k_pi = arena.mul(&[k_ex, pi]);
+        let num = arena.sub(k_pi, beta_ex);
+        let point = arena.div(num, alpha_ex);
+        scan.points.push(Breakpoint {
+            point,
+            value: Some(xv),
+            kind,
+        });
+    }
+    Some(true)
+}
+
+/// Numeric `(α, β)` for `expr = α·var + β` with constant coefficients.
+fn linear_coeffs_f64(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<(f64, f64)> {
+    let (a, b) = linear_coeffs_exact(arena, expr, var)?;
+    let af = expr_to_f64(arena, a)?;
+    let bf = expr_to_f64(arena, b)?;
+    if af.is_finite() && bf.is_finite() {
+        Some((af, bf))
+    } else {
+        None
+    }
+}
+
+/// Exact `(α, β)` expressions for `expr = α·var + β`, where both
+/// coefficients are free of `var`.
+pub(crate) fn linear_coeffs_exact(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+) -> Option<(ExprId, ExprId)> {
+    let coeffs = poly_coeffs_symbolic(arena, expr, var)?;
+    if coeffs.len() != 2 {
+        return None;
+    }
+    Some((coeffs[1], coeffs[0]))
+}
+
+/// Coefficients `[c₀, c₁, …, cₙ]` of `expr` viewed as a polynomial in
+/// `var` with coefficients that may be arbitrary `var`-free expressions.
+///
+/// The expression is expanded first.  Returns `None` if some term is not
+/// of the form `c · var^k` with `k` a non-negative integer, or if the
+/// polynomial is identically zero (the empty coefficient list would be
+/// ambiguous).
+pub(crate) fn poly_coeffs_symbolic(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+) -> Option<Vec<ExprId>> {
+    let expanded = crate::transforms::expand::expand(arena, expr);
+    let expanded = eval::eval(arena, expanded);
+
+    let terms: Vec<ExprId> = match arena.node(expanded).clone() {
+        ExprNode::Add(children) => children.to_vec(),
+        _ => vec![expanded],
+    };
+
+    let mut buckets: Vec<Vec<ExprId>> = Vec::new();
+    for term in terms {
+        let (k, coeff) = split_term_power(arena, term, var)?;
+        while buckets.len() <= k {
+            buckets.push(Vec::new());
+        }
+        buckets[k].push(coeff);
+    }
+
+    if buckets.is_empty() {
+        return None;
+    }
+    let mut result = Vec::with_capacity(buckets.len());
+    for bucket in buckets {
+        let c = if bucket.is_empty() {
+            arena.zero()
+        } else {
+            let s = arena.add(&bucket);
+            eval::eval(arena, s)
+        };
+        result.push(c);
+    }
+    // Trim trailing zeros (keep at least one coefficient).
+    while result.len() > 1 && arena.is_zero_structural(*result.last()?) {
+        result.pop();
+    }
+    if result.len() == 1 && arena.is_zero_structural(result[0]) {
+        return None;
+    }
+    Some(result)
+}
+
+/// Split a single product term into `(k, coefficient)` such that
+/// `term = coefficient · var^k` with the coefficient free of `var`.
+fn split_term_power(arena: &mut Arena, term: ExprId, var: ExprId) -> Option<(usize, ExprId)> {
+    if !walk::contains(arena, term, var) {
+        return Some((0, term));
+    }
+    if term == var {
+        return Some((1, arena.one()));
+    }
+    match arena.node(term).clone() {
+        ExprNode::Pow(base, exp) if base == var => {
+            let r = arena.as_num(exp)?.clone();
+            if !r.is_integer() {
+                return None;
+            }
+            use num_traits::{Signed, ToPrimitive};
+            if r.is_negative() {
+                return None;
+            }
+            let k = r.to_integer().to_usize()?;
+            Some((k, arena.one()))
+        }
+        ExprNode::Mul(children) => {
+            let mut k_total = 0usize;
+            let mut coeff_parts: Vec<ExprId> = Vec::new();
+            for c in children.iter() {
+                if !walk::contains(arena, *c, var) {
+                    coeff_parts.push(*c);
+                    continue;
+                }
+                // Nested Mul is not canonical; only var or var^k allowed here.
+                let (k, cc) = split_term_power(arena, *c, var)?;
+                if !arena.is_one_structural(cc) {
+                    return None;
+                }
+                k_total += k;
+            }
+            let coeff = if coeff_parts.is_empty() {
+                arena.one()
+            } else {
+                arena.mul(&coeff_parts)
+            };
+            Some((k_total, coeff))
+        }
+        ExprNode::Neg(inner) => {
+            let (k, c) = split_term_power(arena, inner, var)?;
+            Some((k, arena.neg(c)))
+        }
+        _ => None,
+    }
+}
+
+/// Collect breakpoint candidates contributed by a single node.
+fn breakpoints_of_node(
+    arena: &mut Arena,
+    node: &ExprNode,
+    var: ExprId,
+    range: Option<(f64, f64)>,
+    scan: &mut BreakScan,
+) {
+    use BreakKind::{Kink, Singular};
     match node {
-        // Negative powers → zeros of base are poles
+        // Negative powers → poles at zeros of base.
+        // Non-integer powers → the base must not change sign (branch
+        // point); its zeros are treated as singular endpoints too.
         ExprNode::Pow(base, exp) => {
             let base = *base;
             let exp = *exp;
             if !walk::contains(arena, base, var) {
-                return Vec::new();
+                return;
             }
-            let is_neg = if let Some(r) = arena.as_num(exp).cloned() {
+            if walk::contains(arena, exp, var) {
+                // f(x)^{g(x)}: only well-behaved for f > 0; we cannot
+                // analyse this in general.
+                scan.complete = false;
+                return;
+            }
+            let matters = if let Some(r) = arena.as_num(exp).cloned() {
                 use num_traits::Signed;
-                r.is_negative()
+                r.is_negative() || !r.is_integer()
             } else {
-                matches!(arena.node(exp), ExprNode::Neg(_))
+                // Symbolic exponent: assume it can be negative.
+                true
             };
-            if is_neg {
-                solve::solve(arena, base, var)
-                    .into_iter()
-                    .map(|s| s.value)
-                    .collect()
-            } else {
-                Vec::new()
+            if matters {
+                push_zeros(arena, base, var, Singular, range, scan);
             }
         }
 
-        // ln(inner) → singularity at inner = 0 boundary
-        ExprNode::Ln(inner) => {
-            let inner = *inner;
-            if !walk::contains(arena, inner, var) {
-                return Vec::new();
-            }
-            solve::solve(arena, inner, var)
-                .into_iter()
-                .map(|s| s.value)
-                .collect()
-        }
+        // ln(g) → singular where g = 0.
+        ExprNode::Ln(inner) => push_zeros(arena, *inner, var, Singular, range, scan),
 
-        // tan(inner) → singularities where cos(inner) = 0
+        // tan(g) → poles where cos(g) = 0.
         ExprNode::Tan(inner) => {
             let inner = *inner;
             if !walk::contains(arena, inner, var) {
-                return Vec::new();
+                return;
             }
             let cos_inner = arena.cos(inner);
-            solve::solve(arena, cos_inner, var)
-                .into_iter()
-                .map(|s| s.value)
-                .collect()
+            push_zeros(arena, cos_inner, var, Singular, range, scan);
         }
 
-        _ => Vec::new(),
+        // Inverse trig / hyperbolic domain edges.
+        ExprNode::Asin(inner) | ExprNode::Acos(inner) | ExprNode::Atanh(inner) => {
+            let inner = *inner;
+            if !walk::contains(arena, inner, var) {
+                return;
+            }
+            let one = arena.one();
+            let g_minus = arena.sub(inner, one);
+            let g_plus = arena.add(&[inner, one]);
+            push_zeros(arena, g_minus, var, Singular, range, scan);
+            push_zeros(arena, g_plus, var, Singular, range, scan);
+        }
+        ExprNode::Acosh(inner) => {
+            let inner = *inner;
+            if !walk::contains(arena, inner, var) {
+                return;
+            }
+            let one = arena.one();
+            let g_minus = arena.sub(inner, one);
+            push_zeros(arena, g_minus, var, Singular, range, scan);
+        }
+
+        // Γ(g), ψ(g), lnΓ(g): poles at non-positive integers.
+        ExprNode::Gamma(inner) | ExprNode::Digamma(inner) | ExprNode::LogGamma(inner) => {
+            let inner = *inner;
+            if !walk::contains(arena, inner, var) {
+                return;
+            }
+            push_integer_family(arena, inner, var, range, Singular, scan, |n| n <= 0);
+        }
+
+        // Kinks: |g|, sign(g), H(g), δ(g) at zeros of g.
+        ExprNode::Abs(inner)
+        | ExprNode::Sign(inner)
+        | ExprNode::Heaviside(inner)
+        | ExprNode::DiracDelta(inner) => push_zeros(arena, *inner, var, Kink, range, scan),
+
+        // Steps at integers.
+        ExprNode::Floor(inner) | ExprNode::Ceiling(inner) => {
+            let inner = *inner;
+            if !walk::contains(arena, inner, var) {
+                return;
+            }
+            push_integer_family(arena, inner, var, range, Kink, scan, |_| true);
+        }
+
+        // Relational conditions (from Piecewise): boundaries where a = b.
+        ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
+            let d = arena.sub(*a, *b);
+            push_zeros(arena, d, var, Kink, range, scan);
+        }
+
+        // Unknown functions and formal nodes: we cannot see inside.
+        ExprNode::Apply(_, args) if args.iter().any(|&a| walk::contains(arena, a, var)) => {
+            scan.complete = false;
+            scan.opaque = true;
+        }
+        ExprNode::Integral(body, _)
+        | ExprNode::Derivative(body, _)
+        | ExprNode::Limit(body, _, _)
+        | ExprNode::Sum(body, _, _, _)
+        | ExprNode::Product_(body, _, _, _)
+        | ExprNode::Residue(body, _, _)
+            if walk::contains(arena, *body, var) =>
+        {
+            scan.complete = false;
+            scan.opaque = true;
+        }
+        ExprNode::RootOf(..) | ExprNode::RootSum(..) | ExprNode::LambertW(_)
+            if node
+                .children()
+                .iter()
+                .any(|&c| walk::contains(arena, c, var)) =>
+        {
+            scan.complete = false;
+            scan.opaque = true;
+        }
+
+        _ => {}
+    }
+}
+
+/// Push the points where the linear expression `inner = αx+β` takes the
+/// integer values selected by `keep`, restricted to `range`.
+fn push_integer_family(
+    arena: &mut Arena,
+    inner: ExprId,
+    var: ExprId,
+    range: Option<(f64, f64)>,
+    kind: BreakKind,
+    scan: &mut BreakScan,
+    keep: impl Fn(i64) -> bool,
+) {
+    let (Some((alpha, beta)), Some((alpha_ex, beta_ex)), Some((lo, hi))) = (
+        linear_coeffs_f64(arena, inner, var),
+        linear_coeffs_exact(arena, inner, var),
+        range,
+    ) else {
+        scan.complete = false;
+        return;
+    };
+    if alpha == 0.0 || !lo.is_finite() || !hi.is_finite() {
+        scan.complete = false;
+        return;
+    }
+    let t_lo = alpha * lo + beta;
+    let t_hi = alpha * hi + beta;
+    let (t_min, t_max) = if t_lo <= t_hi {
+        (t_lo, t_hi)
+    } else {
+        (t_hi, t_lo)
+    };
+    let n_min = t_min.floor() as i64 - 1;
+    let n_max = t_max.ceil() as i64 + 1;
+    if n_max - n_min > 10_000 {
+        scan.complete = false;
+        return;
+    }
+    for n in n_min..=n_max {
+        if !keep(n) {
+            continue;
+        }
+        let xv = ((n as f64) - beta) / alpha;
+        if xv < lo - 1e-12 || xv > hi + 1e-12 {
+            continue;
+        }
+        let n_ex = arena.int(n);
+        let num = arena.sub(n_ex, beta_ex);
+        let point = arena.div(num, alpha_ex);
+        let point = eval::eval(arena, point);
+        scan.points.push(Breakpoint {
+            point,
+            value: Some(xv),
+            kind,
+        });
     }
 }
 
 /// Try to evaluate an ExprId to f64.
-fn expr_to_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
+pub(crate) fn expr_to_f64(arena: &mut Arena, expr: ExprId) -> Option<f64> {
     let evaled = eval::eval(arena, expr);
     // Try exact rational first
     if let Some(r) = arena.as_num(evaled).cloned() {

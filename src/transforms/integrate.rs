@@ -52,6 +52,17 @@ pub(crate) fn integrate(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId 
 
     let result = integrate_node(arena, expr, var, var_sym, 20);
 
+    // Substitution-based strategies (u = e^{ax}, x = s^q, hyperbolic → exp,
+    // piecewise-defined integrands).  Each one re-enters the full pipeline
+    // on the transformed integrand, bounded by `SUBST_DEPTH`.
+    let result = if let ExprNode::Integral(_, _) = arena.node(result)
+        && let Some(r) = try_substitution_strategies(arena, expr, var, var_sym)
+    {
+        r
+    } else {
+        result
+    };
+
     // If the rule-based integrator returned an unevaluated Integral node,
     // try the Risch tower (exact method for exp/ln integrands) before
     // falling back to the heuristic integrator.
@@ -1006,6 +1017,10 @@ fn try_weierstrass_substitution(
     let integrand_t = crate::transforms::eval::eval(arena, integrand_t);
     let integrand_t = arena.cancel_expr(integrand_t, t);
     let integrand_t = crate::transforms::eval::eval(arena, integrand_t);
+    // Clear nested fractions such as 2/((1+t²)(2 + (1−t²)/(1+t²))) by
+    // normalising to a single numerator/denominator pair.
+    let integrand_t = clear_nested_fractions(arena, integrand_t, t);
+    tracing::debug!(integrand_t = %arena.display(integrand_t), "weierstrass: integrand in t");
 
     // Integrate w.r.t. t
     let integral_t = integrate_node(arena, integrand_t, t, t_sym, depth.saturating_sub(2));
@@ -1021,6 +1036,47 @@ fn try_weierstrass_substitution(
     let result = arena.subs_structural(integral_t, t, tan_half);
 
     Some(result)
+}
+
+/// Normalise a rational expression in `var` with nested fractions into a
+/// single cancelled `numer/denom`.
+///
+/// `together` only combines the top-level sum, so sums buried inside
+/// powers (e.g. `2/((1+t²)(2 + (1−t²)/(1+t²)))`) are combined bottom-up
+/// first, then the whole expression is split into numerator/denominator
+/// and cancelled.
+fn clear_nested_fractions(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    let mut current = expr;
+    // Bottom-up: combine every inner sum over a common denominator.
+    for _ in 0..16 {
+        let order = crate::base::walk::post_order_ids(arena, current);
+        let mut changed = false;
+        for id in order {
+            if id == current {
+                continue;
+            }
+            if let ExprNode::Add(_) = arena.node(id) {
+                let t = crate::poly::polybridge::together(arena, id);
+                if t != id {
+                    current = arena.subs_structural(current, id, t);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let together = crate::poly::polybridge::together(arena, current);
+    let (n, d) = crate::poly::polybridge::as_numer_denom(arena, together);
+    let n = crate::transforms::expand::expand(arena, n);
+    let d = crate::transforms::expand::expand(arena, d);
+    let n = crate::transforms::eval::eval(arena, n);
+    let d = crate::transforms::eval::eval(arena, d);
+    let ratio = arena.div(n, d);
+    let cancelled = arena.cancel_expr(ratio, var);
+    crate::transforms::eval::eval(arena, cancelled)
 }
 
 /// Attempt cyclic integration by parts for integrals like `∫ exp(x)·sin(x) dx`.
@@ -1266,6 +1322,13 @@ fn integrate_node(
                 return arena.mul(&constants);
             }
 
+            // ── tanᵐ·sec² and secⁿ·tan forms ───────────────────────────
+            if dependent.len() == 2
+                && let Some(result) = try_tan_sec_patterns(arena, &dependent, var, var_sym)
+            {
+                return wrap_with_constants(arena, result, &constants);
+            }
+
             // ── sec(x)·tan(x) and csc(x)·cot(x) forms ──────────────
             if dependent.len() == 2
                 && let Some(result) = try_trig_recip_product(arena, &dependent, var, var_sym)
@@ -1439,6 +1502,40 @@ fn integrate_node(
                 }
             }
 
+            // ── P(x)·Q(x)^{k/2}: reduction to R√Q + c∫1/√Q ────────────
+            if let Some(result) = try_poly_times_half_power(arena, &dependent, var, var_sym, depth)
+            {
+                return wrap_with_constants(arena, result, &constants);
+            }
+
+            // ── x^{-n}·Q(x)^{-1/2}: substitution x = 1/t ───────────────
+            if let Some(result) =
+                try_reciprocal_sqrt_substitution(arena, &dependent, var, var_sym, depth)
+            {
+                return wrap_with_constants(arena, result, &constants);
+            }
+
+            // ── Three-factor by parts: u = polynomial, dv = product of the rest ──
+            if dependent.len() == 3
+                && let Some(result) =
+                    try_by_parts_poly_times_pair(arena, &dependent, var, var_sym, depth)
+            {
+                return wrap_with_constants(arena, result, &constants);
+            }
+
+            // ── Products of trig factors: product-to-sum, then retry ─────
+            if dependent.len() >= 2
+                && let Some(result) =
+                    try_trig_product_to_sum(arena, expr, &dependent, var, var_sym, depth)
+            {
+                return result;
+            }
+
+            // ── P(x)·|g(x)|, P(x)·sign(g(x)), P(x)·H(g(x)) ─────────────────
+            if let Some(result) = try_abs_sign_product(arena, &dependent, var, var_sym, depth) {
+                return wrap_with_constants(arena, result, &constants);
+            }
+
             // ── Try partial fraction decomposition for rational integrands ──
             {
                 let (_numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
@@ -1555,6 +1652,42 @@ fn integrate_node(
             if !base_has_var && !exp_has_var {
                 // Constant: ∫ c dx = c * x
                 return arena.mul(&[expr, var]);
+            }
+
+            // ── c^{g(x)} with constant c > 0: rewrite as exp(g·ln c) ─────
+            if !base_has_var && exp_has_var && base != arena.e_const() {
+                let ln_c = arena.ln(base);
+                let ln_c = crate::transforms::eval::eval(arena, ln_c);
+                let new_exp = arena.mul(&[exp, ln_c]);
+                let rewritten = arena.exp(new_exp);
+                let result = integrate_node(arena, rewritten, var, var_sym, depth - 1);
+                if !crate::base::walk::has_unevaluated(arena, result) {
+                    return result;
+                }
+                return arena.intern(ExprNode::Integral(expr, var));
+            }
+
+            // ── tanⁿ(g), n ≥ 3 integer: tanⁿ = tanⁿ⁻²·(sec² − 1) ─────────
+            if let ExprNode::Tan(inner) = arena.node(base).clone()
+                && let Some(n_val) = arena.as_num(exp).cloned()
+                && n_val.is_integer()
+                && n_val >= num_rational::Ratio::from_integer(3.into())
+                && n_val <= num_rational::Ratio::from_integer(12.into())
+            {
+                let n_minus_2 = rational_to_expr(
+                    arena,
+                    &(&n_val - &num_rational::Ratio::from_integer(2.into())),
+                );
+                let tan_pow = arena.pow(base, n_minus_2);
+                let cos_inner = arena.cos(inner);
+                let neg_two = arena.int(-2);
+                let sec_sq = arena.pow(cos_inner, neg_two);
+                let term1 = arena.mul(&[tan_pow, sec_sq]);
+                let rewritten = arena.sub(term1, tan_pow);
+                let result = integrate_node(arena, rewritten, var, var_sym, depth - 1);
+                if !crate::base::walk::has_unevaluated(arena, result) {
+                    return result;
+                }
             }
 
             // ── sech²(g) = cosh(g)^{-2} → tanh(g) / chain_coeff ──
@@ -2004,51 +2137,81 @@ fn integrate_node(
             arena.intern(ExprNode::Integral(expr, var))
         }
 
-        ExprNode::Asin(inner) => {
-            if inner == var {
-                // ∫ asin(x) dx = x*asin(x) + sqrt(1-x²)
-                let asin_var = arena.asin(var);
-                let x_asin = arena.mul(&[var, asin_var]);
-                let one = arena.one;
-                let two = arena.int(2);
-                let x2 = arena.pow(var, two);
-                let one_minus_x2 = arena.sub(one, x2);
-                let half = arena.rational(1, 2);
-                let sqrt_term = arena.pow(one_minus_x2, half);
-                return arena.add(&[x_asin, sqrt_term]);
+        // ── asin/acos/atan of a linear argument g = ax+b ──────────────
+        //   ∫ asin(g) = (g·asin(g) + √(1−g²))/a
+        //   ∫ acos(g) = (g·acos(g) − √(1−g²))/a
+        //   ∫ atan(g) = (g·atan(g) − ½ ln(1+g²))/a
+        ExprNode::Asin(inner) | ExprNode::Acos(inner) | ExprNode::Atan(inner) => {
+            let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) else {
+                return arena.intern(ExprNode::Integral(expr, var));
+            };
+            let g = inner;
+            let g_f = arena.mul(&[g, expr]);
+            let one = arena.one;
+            let two = arena.int(2);
+            let g2 = arena.pow(g, two);
+            let half = arena.rational(1, 2);
+            let numer = match node {
+                ExprNode::Asin(_) => {
+                    let one_minus_g2 = arena.sub(one, g2);
+                    let sqrt_term = arena.pow(one_minus_g2, half);
+                    arena.add(&[g_f, sqrt_term])
+                }
+                ExprNode::Acos(_) => {
+                    let one_minus_g2 = arena.sub(one, g2);
+                    let sqrt_term = arena.pow(one_minus_g2, half);
+                    arena.sub(g_f, sqrt_term)
+                }
+                _ => {
+                    let one_plus_g2 = arena.add(&[one, g2]);
+                    let ln_term = arena.ln(one_plus_g2);
+                    let half_ln = arena.mul(&[half, ln_term]);
+                    arena.sub(g_f, half_ln)
+                }
+            };
+            if a_expr == one {
+                return numer;
+            }
+            arena.div(numer, a_expr)
+        }
+
+        // ── erf / erfc of a linear argument g = ax+b ───────────────────
+        //   ∫ erf(g)  = (g·erf(g)  + e^{−g²}/√π)/a
+        //   ∫ erfc(g) = (g·erfc(g) − e^{−g²}/√π)/a
+        ExprNode::Erf(inner) | ExprNode::Erfc(inner) => {
+            let Some((a_expr, _)) = symbolic_linear_coeff_of(arena, inner, var, var_sym) else {
+                return arena.intern(ExprNode::Integral(expr, var));
+            };
+            let g = inner;
+            let g_f = arena.mul(&[g, expr]);
+            let two = arena.int(2);
+            let g2 = arena.pow(g, two);
+            let neg_g2 = arena.neg(g2);
+            let e = arena.exp(neg_g2);
+            let pi = arena.pi();
+            let sqrt_pi = arena.sqrt(pi);
+            let gauss = arena.div(e, sqrt_pi);
+            let numer = if matches!(node, ExprNode::Erf(_)) {
+                arena.add(&[g_f, gauss])
+            } else {
+                arena.sub(g_f, gauss)
+            };
+            if a_expr == arena.one {
+                return numer;
+            }
+            arena.div(numer, a_expr)
+        }
+
+        // ── |g|, sign(g), Piecewise ───────────────────────────────────
+        ExprNode::Abs(_) | ExprNode::Sign(_) => {
+            if let Some(r) = try_abs_sign_product(arena, &[expr], var, var_sym, depth) {
+                return r;
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
-
-        ExprNode::Acos(inner) => {
-            if inner == var {
-                // ∫ acos(x) dx = x*acos(x) - sqrt(1-x²)
-                let acos_var = arena.acos(var);
-                let x_acos = arena.mul(&[var, acos_var]);
-                let one = arena.one;
-                let two = arena.int(2);
-                let x2 = arena.pow(var, two);
-                let one_minus_x2 = arena.sub(one, x2);
-                let half = arena.rational(1, 2);
-                let sqrt_term = arena.pow(one_minus_x2, half);
-                return arena.sub(x_acos, sqrt_term);
-            }
-            arena.intern(ExprNode::Integral(expr, var))
-        }
-
-        ExprNode::Atan(inner) => {
-            if inner == var {
-                // ∫ atan(x) dx = x*atan(x) - 1/2*ln(1+x²)
-                let atan_var = arena.atan(var);
-                let x_atan = arena.mul(&[var, atan_var]);
-                let two = arena.int(2);
-                let x2 = arena.pow(var, two);
-                let one = arena.one;
-                let one_plus_x2 = arena.add(&[one, x2]);
-                let half = arena.rational(1, 2);
-                let ln_term = arena.ln(one_plus_x2);
-                let half_ln = arena.mul(&[half, ln_term]);
-                return arena.sub(x_atan, half_ln);
+        ExprNode::Piecewise(ref pairs) => {
+            if let Some(r) = integrate_piecewise(arena, pairs, var, var_sym, depth) {
+                return r;
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
@@ -2179,9 +2342,6 @@ fn integrate_node(
             }
             arena.intern(ExprNode::Integral(expr, var))
         }
-
-        // Sign: leave as unevaluated integral
-        ExprNode::Sign(_) => arena.intern(ExprNode::Integral(expr, var)),
 
         // Everything else: unevaluated integral.
         _ => {
@@ -2648,7 +2808,8 @@ fn try_u_substitution(
             // quotient = remaining / du — if free of var, we have our constant
             let quotient = arena.div(remaining_expr, du);
 
-            // Try the raw quotient first; fall back to polynomial cancellation
+            // Try the raw quotient first; fall back to polynomial cancellation,
+            // then to trigonometric simplification (e.g. sec²/(1 + tan²) = 1).
             let coeff = if !contains_var(arena, quotient, var_sym) {
                 quotient
             } else {
@@ -2656,7 +2817,13 @@ fn try_u_substitution(
                 if !contains_var(arena, cancelled, var_sym) {
                     cancelled
                 } else {
-                    continue;
+                    let trig = arena.trigsimp_expr(cancelled);
+                    let trig = crate::transforms::eval::eval(arena, trig);
+                    if !contains_var(arena, trig, var_sym) {
+                        trig
+                    } else {
+                        continue;
+                    }
                 }
             };
 
@@ -2734,8 +2901,747 @@ fn remaining_product(arena: &mut Arena, children: &[ExprId], skip: usize) -> Exp
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Tests
+// Substitution strategies (v0.2 gap-fill)
 // ═══════════════════════════════════════════════════════════════════════════
+
+thread_local! {
+    /// Nesting depth of substitution strategies that re-enter [`integrate`].
+    static SUBST_DEPTH: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// Maximum nesting of substitution strategies.
+const MAX_SUBST_DEPTH: u8 = 3;
+
+/// Run the full integration pipeline on a transformed integrand from
+/// inside a substitution strategy, with a re-entrancy bound.
+fn integrate_nested(arena: &mut Arena, expr: ExprId, var: ExprId) -> Option<ExprId> {
+    let depth = SUBST_DEPTH.with(|d| d.get());
+    if depth >= MAX_SUBST_DEPTH {
+        return None;
+    }
+    SUBST_DEPTH.with(|d| d.set(depth + 1));
+    let result = integrate(arena, expr, var);
+    SUBST_DEPTH.with(|d| d.set(depth));
+    if crate::base::walk::has_unevaluated(arena, result) {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+/// Try the substitution-based strategies in order.
+fn try_substitution_strategies(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    if let Some(r) = try_exp_rational_substitution(arena, expr, var, var_sym) {
+        return Some(r);
+    }
+    if let Some(r) = try_radical_substitution(arena, expr, var, var_sym) {
+        return Some(r);
+    }
+    if let Some(r) = try_hyperbolic_to_exp(arena, expr, var, var_sym) {
+        return Some(r);
+    }
+    None
+}
+
+/// Collect the `exp(k·x)` nodes of `expr` (with numeric `k`).  Returns
+/// `None` if some `exp` argument depends on `var` but is not of that form.
+fn collect_exp_multiples(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<Vec<(ExprId, num_rational::Ratio<num_bigint::BigInt>)>> {
+    let order = crate::base::walk::post_order_ids(arena, expr);
+    let mut out = Vec::new();
+    for id in order {
+        if let ExprNode::Exp(arg) = arena.node(id).clone()
+            && contains_var(arena, arg, var_sym)
+        {
+            let (alpha, beta) = symbolic_linear_coeff_of(arena, arg, var, var_sym)?;
+            if !arena.is_zero_structural(beta) {
+                return None;
+            }
+            let k = arena.as_num(alpha)?.clone();
+            out.push((id, k));
+        }
+    }
+    Some(out)
+}
+
+/// `∫ R(e^{ax}) dx` via `u = e^{ax}`: `∫ R(u)/(a·u) du` for a rational `R`.
+///
+/// `a` is chosen as the greatest common divisor of all exponent
+/// coefficients so that every `e^{kx}` becomes an integer power of `u`.
+fn try_exp_rational_substitution(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    use num_integer::Integer;
+    let exps = collect_exp_multiples(arena, expr, var, var_sym)?;
+    if exps.is_empty() {
+        return None;
+    }
+    // a = gcd(k_i) for rationals: gcd(numerators)/lcm(denominators).
+    let mut num_gcd = num_bigint::BigInt::zero();
+    let mut den_lcm = num_bigint::BigInt::one();
+    for (_, k) in &exps {
+        num_gcd = num_gcd.gcd(k.numer());
+        den_lcm = den_lcm.lcm(k.denom());
+    }
+    if num_gcd.is_zero() {
+        return None;
+    }
+    let a = num_rational::Ratio::new(num_gcd, den_lcm);
+
+    let u = arena.symbol("__eu");
+    let u_sym = match arena.node(u) {
+        ExprNode::Symbol(s) => *s,
+        _ => return None,
+    };
+    let mut sub = expr;
+    for (node, k) in &exps {
+        let power = k / &a; // integer
+        let power_id = rational_to_expr(arena, &power);
+        let u_pow = arena.pow(u, power_id);
+        sub = arena.subs_structural(sub, *node, u_pow);
+    }
+    if contains_var(arena, sub, var_sym) {
+        return None;
+    }
+    // Integrand in u: R(u)/(a u)
+    let a_id = rational_to_expr(arena, &a);
+    let a_u = arena.mul(&[a_id, u]);
+    let integrand_u = arena.div(sub, a_u);
+    let integrand_u = clear_nested_fractions(arena, integrand_u, u);
+    // Must be rational in u.
+    let (n, d) = crate::poly::polybridge::as_numer_denom(arena, integrand_u);
+    if crate::poly::polybridge::expr_to_poly(arena, n, u).is_none()
+        || crate::poly::polybridge::expr_to_poly(arena, d, u).is_none()
+    {
+        return None;
+    }
+    let res_u = integrate_node(arena, integrand_u, u, u_sym, 20);
+    if crate::base::walk::has_unevaluated(arena, res_u) {
+        return None;
+    }
+    // Back-substitute u → e^{ax}.
+    let ax = arena.mul(&[a_id, var]);
+    let e_ax = arena.exp(ax);
+    let result = arena.subs_structural(res_u, u, e_ax);
+    Some(crate::transforms::eval::eval(arena, result))
+}
+
+/// `∫ f(x, x^{p/q}) dx` via `x = s^q`: `∫ q·s^{q−1} f(s^q, s^p) ds`.
+fn try_radical_substitution(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    use num_integer::Integer;
+    let order = crate::base::walk::post_order_ids(arena, expr);
+    let mut radicals: Vec<(ExprId, num_rational::Ratio<num_bigint::BigInt>)> = Vec::new();
+    let mut q_lcm = num_bigint::BigInt::one();
+    for id in order {
+        if let ExprNode::Pow(base, e) = arena.node(id).clone()
+            && base == var
+            && let Some(r) = arena.as_num(e).cloned()
+            && !r.is_integer()
+        {
+            q_lcm = q_lcm.lcm(r.denom());
+            radicals.push((id, r));
+        }
+    }
+    if radicals.is_empty() {
+        return None;
+    }
+    let q: i64 = q_lcm.to_string().parse().ok()?;
+    if !(2..=6).contains(&q) {
+        return None;
+    }
+    let s = arena.symbol("__rs");
+    let mut sub = expr;
+    for (node, r) in &radicals {
+        let k = r * num_rational::Ratio::from_integer(num_bigint::BigInt::from(q));
+        let k_id = rational_to_expr(arena, &k);
+        let s_pow = arena.pow(s, k_id);
+        sub = arena.subs_structural(sub, *node, s_pow);
+    }
+    let q_id = arena.int(q);
+    let s_q = arena.pow(s, q_id);
+    sub = arena.subs_structural(sub, var, s_q);
+    if contains_var(arena, sub, var_sym) {
+        return None;
+    }
+    // dx = q s^{q−1} ds
+    let qm1 = arena.int(q - 1);
+    let s_qm1 = arena.pow(s, qm1);
+    let integrand_s = arena.mul(&[q_id, s_qm1, sub]);
+    let integrand_s = crate::transforms::eval::eval(arena, integrand_s);
+    let res_s = integrate_nested(arena, integrand_s, s)?;
+    // Back-substitute s → x^{1/q}.
+    let inv_q = arena.rational(1, q);
+    let root = arena.pow(var, inv_q);
+    let result = arena.subs_structural(res_s, s, root);
+    Some(crate::transforms::eval::eval(arena, result))
+}
+
+/// Rewrite `sinh`/`cosh`/`tanh` in terms of `exp` and retry (e.g.
+/// `1/cosh x = 2e^x/(e^{2x}+1)` → `2 atan(e^x)`).
+fn try_hyperbolic_to_exp(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    let order = crate::base::walk::post_order_ids(arena, expr);
+    let has_hyp = order.iter().any(|&id| {
+        matches!(
+            arena.node(id),
+            ExprNode::Sinh(_) | ExprNode::Cosh(_) | ExprNode::Tanh(_)
+        ) && contains_var(arena, id, var_sym)
+    });
+    if !has_hyp {
+        return None;
+    }
+    let rewritten = arena.rewrite_as_exp_expr(expr);
+    if rewritten == expr {
+        return None;
+    }
+    let rewritten = crate::transforms::eval::eval(arena, rewritten);
+    try_exp_rational_substitution(arena, rewritten, var, var_sym)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Algebraic reductions: P(x)·Q(x)^{k/2}
+// ═══════════════════════════════════════════════════════════════════════════
+
+type Rat = num_rational::Ratio<num_bigint::BigInt>;
+
+/// Split the dependent factors into a rational-coefficient polynomial `P`
+/// and a single factor `Q^{k/2}` (`k` odd, `Q` of degree 1 or 2).
+fn split_poly_and_half_power(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+) -> Option<(crate::poly::Poly, crate::poly::Poly, ExprId, Rat)> {
+    let mut half: Option<(ExprId, Rat)> = None;
+    let mut poly = crate::poly::Poly::from_int(1);
+    for &d in dependent {
+        if let ExprNode::Pow(base, e) = arena.node(d).clone()
+            && let Some(r) = arena.as_num(e).cloned()
+            && *r.denom() == num_bigint::BigInt::from(2)
+        {
+            if half.is_some() {
+                return None;
+            }
+            half = Some((base, r));
+            continue;
+        }
+        let p = crate::poly::polybridge::expr_to_poly(arena, d, var)?;
+        poly = poly.mul(&p);
+    }
+    let (q_expr, k) = half?;
+    let q = crate::poly::polybridge::expr_to_poly(arena, q_expr, var)?;
+    let qd = q.degree()?;
+    if !(1..=2).contains(&qd) {
+        return None;
+    }
+    Some((poly, q, q_expr, k))
+}
+
+/// `∫ P(x)·Q(x)^{k/2} dx` for `k ∈ {−1, 1, 3}`: write `P·Q^{(k+1)/2} = P̃`, then
+/// find a polynomial `R` and constant `c` with
+/// `P̃ = (2R'Q + RQ')/2 + c`, so that the integral is `R√Q + c∫ dx/√Q`.
+fn try_poly_times_half_power(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    let (p, q, q_expr, k) = split_poly_and_half_power(arena, dependent, var)?;
+    let two = Rat::from_integer(2.into());
+    let k2 = &k * &two; // odd integer as rational
+    let k2: i64 = k2.to_integer().to_string().parse().ok()?;
+    if !matches!(k2, -1 | 1 | 3) {
+        return None;
+    }
+    // P̃ = P · Q^{(k+1)/2}
+    let mut p_tilde = p;
+    for _ in 0..((k2 + 1) / 2) {
+        p_tilde = p_tilde.mul(&q);
+    }
+    let pd = p_tilde.degree()?;
+    let qd = q.degree()?;
+    if pd == 0 && qd == 2 {
+        return None; // plain 1/√Q: handled by the standard forms
+    }
+    // Unknowns: R = r_0 + … + r_m x^m (m = pd − qd + 1, or pd for linear Q), c.
+    let m: i64 = if qd == 2 { pd as i64 - 1 } else { pd as i64 };
+    let with_c = qd == 2;
+    let n_unknowns = (m + 1).max(0) as usize + usize::from(with_c);
+    let n_eq = pd + 1;
+    if n_unknowns != n_eq {
+        return None;
+    }
+    // Build the linear system: coefficient of x^j in (2R'Q + RQ')/2 + c.
+    let q_prime = q.derivative();
+    let mut rows: Vec<Vec<Rat>> = vec![vec![Rat::zero(); n_unknowns + 1]; n_eq];
+    for i in 0..=(m.max(-1)) {
+        if i < 0 {
+            break;
+        }
+        let iu = i as usize;
+        // basis monomial x^i for R
+        let mut mono = vec![Rat::zero(); iu + 1];
+        mono[iu] = Rat::one();
+        let r_i = crate::poly::Poly::from_coeffs(mono);
+        let term = r_i
+            .derivative()
+            .mul(&q)
+            .scale(&two)
+            .add(&r_i.mul(&q_prime))
+            .scale(&Rat::new(1.into(), 2.into()));
+        for (j, row) in rows.iter_mut().enumerate() {
+            row[iu] = term.coeff(j);
+        }
+    }
+    if with_c {
+        rows[0][n_unknowns - 1] = Rat::one();
+    }
+    for (j, row) in rows.iter_mut().enumerate() {
+        row[n_unknowns] = p_tilde.coeff(j);
+    }
+    let sol = solve_linear_system(rows, n_unknowns)?;
+    // Assemble R√Q + c∫1/√Q.
+    let r_coeffs: Vec<Rat> = sol[..(m.max(-1) + 1) as usize].to_vec();
+    let r_poly = crate::poly::Poly::from_coeffs(r_coeffs);
+    let r_expr = crate::poly::polybridge::poly_to_expr(arena, &r_poly, var);
+    let half = arena.rational(1, 2);
+    let sqrt_q = arena.pow(q_expr, half);
+    let mut result = arena.mul(&[r_expr, sqrt_q]);
+    if with_c {
+        let c = sol[n_unknowns - 1].clone();
+        if !c.is_zero() {
+            let neg_half = arena.rational(-1, 2);
+            let inv_sqrt = arena.pow(q_expr, neg_half);
+            let base_int = integrate_node(arena, inv_sqrt, var, var_sym, depth - 1);
+            if crate::base::walk::has_unevaluated(arena, base_int) {
+                return None;
+            }
+            let c_id = rational_to_expr(arena, &c);
+            let c_term = arena.mul(&[c_id, base_int]);
+            result = arena.add(&[result, c_term]);
+        }
+    }
+    Some(result)
+}
+
+/// Gaussian elimination over ℚ on an augmented matrix (`n` unknowns).
+fn solve_linear_system(mut rows: Vec<Vec<Rat>>, n: usize) -> Option<Vec<Rat>> {
+    let m = rows.len();
+    let mut pivot_row = 0;
+    let mut pivot_cols: Vec<usize> = Vec::new();
+    for col in 0..n {
+        let Some(p) = (pivot_row..m).find(|&r| !rows[r][col].is_zero()) else {
+            continue;
+        };
+        rows.swap(pivot_row, p);
+        let inv = Rat::one() / rows[pivot_row][col].clone();
+        for v in rows[pivot_row].iter_mut() {
+            *v = &*v * &inv;
+        }
+        let pivot = rows[pivot_row].clone();
+        for (r, row) in rows.iter_mut().enumerate() {
+            if r != pivot_row && !row[col].is_zero() {
+                let f = row[col].clone();
+                for (c, cell) in row.iter_mut().enumerate() {
+                    let sub = &pivot[c] * &f;
+                    *cell = &*cell - &sub;
+                }
+            }
+        }
+        pivot_cols.push(col);
+        pivot_row += 1;
+        if pivot_row == m {
+            break;
+        }
+    }
+    // Inconsistent rows?
+    for row in rows.iter().skip(pivot_row) {
+        if !row[n].is_zero() {
+            return None;
+        }
+    }
+    let mut sol = vec![Rat::zero(); n];
+    for (r, &col) in pivot_cols.iter().enumerate() {
+        sol[col] = rows[r][n].clone();
+    }
+    Some(sol)
+}
+
+/// `∫ x^{−n} Q(x)^{−1/2} dx` (`n ≥ 1`, `Q` quadratic) via `x = 1/t`:
+/// `= −∫ t^{n−2} (c t² + b t + a)^{−1/2} dt` for `Q = a x² + b x + c`.
+fn try_reciprocal_sqrt_substitution(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    if dependent.len() != 2 {
+        return None;
+    }
+    let mut n_neg: Option<i64> = None;
+    let mut half: Option<(ExprId, Rat)> = None;
+    for &d in dependent {
+        if let ExprNode::Pow(base, e) = arena.node(d).clone()
+            && let Some(r) = arena.as_num(e).cloned()
+        {
+            if base == var && r.is_integer() && r.is_negative() {
+                n_neg = Some(-r.to_integer().to_string().parse::<i64>().ok()?);
+                continue;
+            }
+            if *r.denom() == num_bigint::BigInt::from(2) && contains_var(arena, base, var_sym) {
+                half = Some((base, r));
+                continue;
+            }
+        }
+        return None;
+    }
+    let n = n_neg?;
+    let (q_expr, k) = half?;
+    if k != Rat::new((-1).into(), 2.into()) || !(1..=4).contains(&n) {
+        return None;
+    }
+    let q = crate::poly::polybridge::expr_to_poly(arena, q_expr, var)?;
+    if q.degree()? != 2 {
+        return None;
+    }
+    // Q(1/t) = (a + b t + c t²)/t²  ⇒  Q^{-1/2} = |t| (c t² + b t + a)^{-1/2};
+    // x^{-n} = t^n, dx = −dt/t²  ⇒  integrand −|t|·t^{n−2}·(…)^{-1/2}
+    //   = −sign(x)·t^{n−1}·(c t² + b t + a)^{-1/2}.
+    // sign(x) is locally constant, so F(x) = sign(x)·G(1/x) with
+    // G(t) = ∫ −t^{n−1} (c t² + b t + a)^{-1/2} dt.
+    let t = arena.symbol("__rt");
+    let t_sym = match arena.node(t) {
+        ExprNode::Symbol(s) => *s,
+        _ => return None,
+    };
+    let coeffs = q.coeffs().to_vec(); // [c, b, a]
+    let reversed = crate::poly::Poly::from_coeffs(coeffs.iter().rev().cloned().collect());
+    let q_rev = crate::poly::polybridge::poly_to_expr(arena, &reversed, t);
+    let neg_half = arena.rational(-1, 2);
+    let q_rev_pow = arena.pow(q_rev, neg_half);
+    let t_pow_id = arena.int(n - 1);
+    let t_pow = arena.pow(t, t_pow_id);
+    let integrand_t = arena.mul(&[t_pow, q_rev_pow]);
+    let neg_integrand = arena.neg(integrand_t);
+    let res_t = integrate_node(arena, neg_integrand, t, t_sym, depth - 1);
+    if crate::base::walk::has_unevaluated(arena, res_t) {
+        return None;
+    }
+    let inv_x = arena.pow(var, arena.neg_one);
+    let g_of_x = arena.subs_structural(res_t, t, inv_x);
+    let sgn = arena.sign(var);
+    let result = arena.mul(&[sgn, g_of_x]);
+    Some(crate::transforms::eval::eval(arena, result))
+}
+
+/// `tanᵐ(g)·sec²(g)` → `tanᵐ⁺¹(g)/((m+1)·g')` and `secⁿ(g)·tan(g)` →
+/// `secⁿ(g)/(n·g')` for linear `g`.
+fn try_tan_sec_patterns(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+) -> Option<ExprId> {
+    if dependent.len() != 2 {
+        return None;
+    }
+    // Identify tan^m(g) and cos^{-n}(g).
+    let mut tan_part: Option<(ExprId, Rat)> = None;
+    let mut sec_part: Option<(ExprId, Rat)> = None;
+    for &d in dependent {
+        let (base, e) = if let ExprNode::Pow(b, e) = arena.node(d).clone() {
+            (b, arena.as_num(e)?.clone())
+        } else {
+            (d, Rat::one())
+        };
+        match arena.node(base).clone() {
+            ExprNode::Tan(g) if e.is_integer() && e.is_positive() => tan_part = Some((g, e)),
+            ExprNode::Cos(g) if e.is_integer() && e.is_negative() => sec_part = Some((g, -e)),
+            _ => return None,
+        }
+    }
+    let (g, m) = tan_part?;
+    let (g2, n) = sec_part?;
+    if g != g2 {
+        return None;
+    }
+    let (a_expr, _) = symbolic_linear_coeff_of(arena, g, var, var_sym)?;
+    let two = Rat::from_integer(2.into());
+    if n == two {
+        // ∫ tan^m sec² = tan^{m+1}/(m+1)
+        let m1 = &m + &Rat::one();
+        let m1_id = rational_to_expr(arena, &m1);
+        let tan_g = arena.tan(g);
+        let tp = arena.pow(tan_g, m1_id);
+        let denom = arena.mul(&[m1_id, a_expr]);
+        return Some(arena.div(tp, denom));
+    }
+    if m == Rat::one() {
+        // ∫ secⁿ tan = secⁿ/n = cos^{-n}/n
+        let cos_g = arena.cos(g);
+        let neg_n = rational_to_expr(arena, &(-n.clone()));
+        let sec_n = arena.pow(cos_g, neg_n);
+        let n_id = rational_to_expr(arena, &n);
+        let denom = arena.mul(&[n_id, a_expr]);
+        return Some(arena.div(sec_n, denom));
+    }
+    None
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Products: three-factor by parts, trig product-to-sum
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `∫ P(x)·g(x)·h(x) dx` with `P` polynomial: by parts with `u = P`,
+/// `dv = g·h` (e.g. `x·eˣ·sin x`).
+fn try_by_parts_poly_times_pair(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    let idx = dependent
+        .iter()
+        .position(|&d| is_polynomial_in(arena, d, var, var_sym))?;
+    let u = dependent[idx];
+    let dv = remaining_product(arena, dependent, idx);
+    let v = integrate_node(arena, dv, var, var_sym, depth - 1);
+    if crate::base::walk::has_unevaluated(arena, v) {
+        return None;
+    }
+    let du = crate::transforms::diff::diff(arena, u, var);
+    let v_du = arena.mul(&[v, du]);
+    let v_du = crate::transforms::expand::expand(arena, v_du);
+    let rest = integrate_node(arena, v_du, var, var_sym, depth - 1);
+    if crate::base::walk::has_unevaluated(arena, rest) {
+        return None;
+    }
+    let uv = arena.mul(&[u, v]);
+    Some(arena.sub(uv, rest))
+}
+
+/// Rewrite products of `sin`/`cos` factors via product-to-sum identities
+/// and retry (e.g. `x·sin x·cos x = x·sin(2x)/2`).
+fn try_trig_product_to_sum(
+    arena: &mut Arena,
+    expr: ExprId,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    let trig_count = dependent
+        .iter()
+        .filter(|&&d| matches!(arena.node(d), ExprNode::Sin(_) | ExprNode::Cos(_)))
+        .count();
+    if trig_count < 2 {
+        return None;
+    }
+    let combined = arena.trig_combine_expr(expr);
+    let combined = crate::transforms::eval::eval(arena, combined);
+    if combined == expr {
+        return None;
+    }
+    let combined = crate::transforms::expand::expand(arena, combined);
+    let result = integrate_node(arena, combined, var, var_sym, depth - 1);
+    if crate::base::walk::has_unevaluated(arena, result) {
+        return None;
+    }
+    Some(result)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// |g|, sign(g), Heaviside(g), Piecewise
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Real roots of `g` (as expressions) when they can all be determined;
+/// `None` if the solver could not decide.
+fn real_roots(arena: &mut Arena, g: ExprId, var: ExprId) -> Option<Vec<ExprId>> {
+    let poly = crate::poly::polybridge::expr_to_poly(arena, g, var);
+    let sols = crate::transforms::solve::solve(arena, g, var);
+    if sols.is_empty() && poly.is_none() {
+        return None;
+    }
+    let mut roots = Vec::new();
+    for s in sols {
+        if crate::base::walk::free_symbols(arena, s.value).is_empty() {
+            match crate::transforms::evalf::eval_const_f64(arena, s.value) {
+                Some(v) if v.is_finite() => roots.push(s.value),
+                Some(_) => return None,
+                None => {} // complex root
+            }
+        } else {
+            return None; // parametric root: cannot decide
+        }
+    }
+    Some(roots)
+}
+
+/// `∫ P(x)·|g(x)| dx`, `∫ P(x)·sign(g(x)) dx`, `∫ P(x)·H(g(x)) dx` where
+/// `g` has at most one simple real root `r` (or none):
+///
+/// * one root:  `sign(g)·(G(x) − G(r))` with `G = ∫ P·g` (for `|g|`),
+///   `sign(g)·(F(x) − F(r))` with `F = ∫ P` (for `sign`), and
+///   `H(g)·(F(x) − F(r))` for `H` — each continuous at `r`;
+/// * no root: `sign(g(x₀))` is constant and the factor is replaced by
+///   `±g`, `±1` or `0/1` respectively.
+fn try_abs_sign_product(
+    arena: &mut Arena,
+    dependent: &[ExprId],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    let idx = dependent.iter().position(|&d| {
+        matches!(
+            arena.node(d),
+            ExprNode::Abs(_) | ExprNode::Sign(_) | ExprNode::Heaviside(_)
+        ) && contains_var(arena, d, var_sym)
+    })?;
+    let node = arena.node(dependent[idx]).clone();
+    let g = match node {
+        ExprNode::Abs(g) | ExprNode::Sign(g) | ExprNode::Heaviside(g) => g,
+        _ => return None,
+    };
+    let rest = remaining_product(arena, dependent, idx);
+    let roots = real_roots(arena, g, var)?;
+    if roots.len() > 1 {
+        return None;
+    }
+    let root = roots.first().copied();
+    // The "smooth" integrand whose antiderivative gets the sign factor.
+    let smooth = match node {
+        ExprNode::Abs(_) => arena.mul(&[rest, g]),
+        _ => rest,
+    };
+    let smooth_int = integrate_node(arena, smooth, var, var_sym, depth - 1);
+    if crate::base::walk::has_unevaluated(arena, smooth_int) {
+        return None;
+    }
+    match root {
+        Some(r) => {
+            let at_r = crate::transforms::subs::subs(arena, smooth_int, var, r);
+            let at_r = crate::transforms::eval::eval(arena, at_r);
+            let shifted = arena.sub(smooth_int, at_r);
+            let factor = match node {
+                ExprNode::Heaviside(_) => arena.heaviside(g),
+                _ => arena.sign(g),
+            };
+            Some(arena.mul(&[factor, shifted]))
+        }
+        None => {
+            // Constant sign: sample g at a point.
+            let sample = crate::transforms::subs::subs(arena, g, var, arena.zero);
+            let sample = crate::transforms::eval::eval(arena, sample);
+            let sgn = crate::transforms::evalf::eval_const_f64(arena, sample)?;
+            if sgn == 0.0 || !sgn.is_finite() {
+                return None;
+            }
+            let positive = sgn > 0.0;
+            match node {
+                ExprNode::Abs(_) | ExprNode::Sign(_) => {
+                    if positive {
+                        Some(smooth_int)
+                    } else {
+                        Some(arena.neg(smooth_int))
+                    }
+                }
+                _ => {
+                    if positive {
+                        Some(smooth_int)
+                    } else {
+                        Some(arena.zero)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `∫ Piecewise((fᵢ, cᵢ)) dx = Piecewise((Fᵢ + kᵢ, cᵢ))`.
+///
+/// When the conditions form a chain `x < c₁, x < c₂, …, otherwise` (any
+/// of `<`, `≤`) with increasing constants, the constants `kᵢ` are chosen so
+/// that the antiderivative is continuous at every breakpoint.  For other
+/// condition shapes the branch antiderivatives are returned without
+/// matching constants (still a valid antiderivative on each branch).
+fn integrate_piecewise(
+    arena: &mut Arena,
+    pairs: &[(ExprId, ExprId)],
+    var: ExprId,
+    var_sym: SymbolId,
+    depth: usize,
+) -> Option<ExprId> {
+    let mut antis: Vec<ExprId> = Vec::with_capacity(pairs.len());
+    for &(val, _) in pairs {
+        let f = integrate_node(arena, val, var, var_sym, depth - 1);
+        if crate::base::walk::has_unevaluated(arena, f) {
+            return None;
+        }
+        antis.push(f);
+    }
+    // Chain detection: condition i (< last) is `x < c_i` or `x ≤ c_i`,
+    // i.e. Gt(c_i, x) / Ge(c_i, x) with c_i free of var.
+    let mut breakpoints: Vec<ExprId> = Vec::new();
+    let mut chain = true;
+    for &(_, cond) in &pairs[..pairs.len().saturating_sub(1)] {
+        match arena.node(cond).clone() {
+            ExprNode::Gt(c, v) | ExprNode::Ge(c, v)
+                if v == var && !contains_var(arena, c, var_sym) =>
+            {
+                breakpoints.push(c);
+            }
+            _ => {
+                chain = false;
+                break;
+            }
+        }
+    }
+    let mut out: Vec<(ExprId, ExprId)> = Vec::with_capacity(pairs.len());
+    if chain && pairs.len() >= 2 {
+        let mut k = arena.zero;
+        out.push((antis[0], pairs[0].1));
+        for i in 1..pairs.len() {
+            let c = breakpoints[i - 1];
+            // k_i = k_{i-1} + F_{i-1}(c) − F_i(c)
+            let prev_at_c = crate::transforms::subs::subs(arena, antis[i - 1], var, c);
+            let cur_at_c = crate::transforms::subs::subs(arena, antis[i], var, c);
+            let diff = arena.sub(prev_at_c, cur_at_c);
+            k = arena.add(&[k, diff]);
+            k = crate::transforms::eval::eval(arena, k);
+            let branch = arena.add(&[antis[i], k]);
+            out.push((branch, pairs[i].1));
+        }
+    } else {
+        for (i, &(_, cond)) in pairs.iter().enumerate() {
+            out.push((antis[i], cond));
+        }
+    }
+    Some(arena.piecewise(&out))
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Piecewise parametric wrapping

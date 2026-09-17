@@ -1152,7 +1152,7 @@ fn workflow_definite_integral() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // ∫₀¹ x² dx = 1/3
-    let result = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = x.powi(2).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     assert_eq!(format!("{result}"), "1/3");
 }
 

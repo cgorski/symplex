@@ -66,15 +66,15 @@ fn main() {
     // ── 6. Definite integral ───────────────────────────────────────────
     let zero = ctx.int(0);
     let one = ctx.int(1);
-    let area = f.definite_integral(&x, &zero, &one);
+    let area = f.integrate_definite(&x, &zero, &one);
     println!("\n∫₀¹ f(x) dx = {area}");
 
     // More definite integrals
     let pi = ctx.pi();
-    let sin_area = x.sin().definite_integral(&x, &zero, &pi);
+    let sin_area = x.sin().integrate_definite(&x, &zero, &pi);
     println!("∫₀^π sin(x) dx = {}", sin_area.eval());
 
-    let x_squared_area = expr!(ctx, x ^ 2).definite_integral(&x, &ctx.int(-1), &one);
+    let x_squared_area = expr!(ctx, x ^ 2).integrate_definite(&x, &ctx.int(-1), &one);
     println!("∫₋₁¹ x² dx = {x_squared_area}");
 
     // ── 7. Taylor series of sin(x) around 0 ───────────────────────────

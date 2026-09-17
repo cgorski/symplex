@@ -85,7 +85,7 @@ fn main() {
     // Definite integral
     let zero = ctx.int(0);
     let one = ctx.int(1);
-    let area = expr!(ctx, x ^ 2).definite_integral(&x, &zero, &one);
+    let area = expr!(ctx, x ^ 2).integrate_definite(&x, &zero, &one);
     println!("∫₀¹ x² dx = {area}");
 
     // ── 5. Simplification ──────────────────────────────────────────
