@@ -168,9 +168,10 @@ fn cos_equation_two_branches_via_solveset() {
         !s.contains("EmptySet"),
         "cos(x) = 1/2 via solveset should not be empty: {s}"
     );
+    // Solutions are evaluated: acos(1/2) → π/3, so accept either form.
     assert!(
-        s.contains("acos") || s.contains("arccos"),
-        "cos(x) = 1/2 solution should reference acos: {s}"
+        s.contains("acos") || s.contains("arccos") || s.contains("pi"),
+        "cos(x) = 1/2 solution should be ±pi/3 (or reference acos): {s}"
     );
 }
 

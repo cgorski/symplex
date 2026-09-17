@@ -2792,13 +2792,28 @@ impl Expr<Numeric> {
 
     /// Solve `self = 0` for the given variable.
     ///
-    /// Returns a vector of values of `var` that make this expression
-    /// zero.  Supports linear, quadratic, and higher-degree polynomial
-    /// equations (via rational root finding).
+    /// Returns the values of `var` that make this expression zero.
+    /// Supports polynomial equations (exact radicals through degree 4,
+    /// `RootOf` placeholders beyond, all `n` roots of `a·xⁿ + b`),
+    /// symbolic-coefficient linear and quadratic equations, and
+    /// transcendental equations (`exp`, `ln`, trig, hyperbolic, `|·|`,
+    /// change of variable, Lambert W).  For periodic functions only the
+    /// principal branches are returned — use
+    /// [`solve_general`](Ex::solve_general) for full solution families.
     ///
-    /// Returns an empty vector if:
-    /// - The expression is not polynomial in `var`.
-    /// - No closed-form solutions can be found.
+    /// # Errors
+    ///
+    /// - [`SymplexError::InfiniteSolutions`] when the equation reduces to
+    ///   the identity `0 = 0` (every value of `var` is a solution).
+    /// - [`SymplexError::NoSolution`] when the equation is provably
+    ///   unsatisfiable: it reduces to a nonzero constant (`1 = 0`), does
+    ///   not depend on `var` at all, or violates a range restriction such
+    ///   as `exp(x) = 0` or `sin(x) = 2` (no real solution).
+    /// - [`SymplexError::ComputationFailed`] when the expression is not
+    ///   polynomial in `var` and no transcendental strategy applies.
+    ///
+    /// `Ok(vec![])` is reserved for genuine equations whose roots could
+    /// not be found in the searched domain.
     ///
     /// # Examples
     ///
@@ -2811,41 +2826,75 @@ impl Expr<Numeric> {
     /// let expr = &x.powi(2) - &x * 5 + 6;
     /// let solutions = expr.solve(&x).unwrap();
     /// assert_eq!(solutions.len(), 2);
+    ///
+    /// // 0 = 0 is an identity, 1 = 0 a contradiction
+    /// assert!(matches!(
+    ///     ctx.int(0).solve(&x),
+    ///     Err(SymplexError::InfiniteSolutions { .. })
+    /// ));
+    /// assert!(matches!(
+    ///     ctx.int(1).solve(&x),
+    ///     Err(SymplexError::NoSolution { .. })
+    /// ));
     /// ```
     pub fn solve(&self, var: &Ex) -> Result<Vec<Ex>, SymplexError> {
         let var_id = self.checked_id(var);
         let _span = debug_span!("solve", expr = ?self.raw_id(), var = ?var_id).entered();
         let mut inner = self.inner.write();
-        // Try the internal solver first — it handles polynomials, transcendental
-        // equations (exp, ln, sin, sqrt via inversion peeling), change-of-variable,
-        // Lambert W, and symbolic linear equations.
-        let solutions = inner.arena.solve_for(self.raw_id(), var_id);
-        if !solutions.is_empty() {
-            drop(inner);
-            return Ok(solutions
-                .into_iter()
-                .map(|sol| self.wrap(sol.value))
-                .collect());
+        let outcome = crate::transforms::solve::solve_classified(
+            &mut inner.arena,
+            self.raw_id(),
+            var_id,
+        );
+        match outcome {
+            crate::transforms::solve::SolveOutcome::Solutions(solutions) => {
+                if !solutions.is_empty() {
+                    drop(inner);
+                    return Ok(solutions
+                        .into_iter()
+                        .map(|sol| self.wrap(sol.value))
+                        .collect());
+                }
+                // No solutions found — check if the expression is polynomial.
+                // For polynomial expressions, an empty result is valid (no roots).
+                // For non-polynomial expressions, report an error.
+                let poly =
+                    crate::poly::polybridge::expr_to_poly(&inner.arena, self.raw_id(), var_id);
+                drop(inner);
+                if poly.is_none() {
+                    return Err(SymplexError::ComputationFailed {
+                        operation: "solve",
+                        reason: "expression is not polynomial in the given variable and transcendental solver could not find solutions".into(),
+                    });
+                }
+                Ok(vec![])
+            }
+            crate::transforms::solve::SolveOutcome::Identity => {
+                drop(inner);
+                Err(SymplexError::InfiniteSolutions {
+                    operation: "solve",
+                    reason: format!(
+                        "equation is an identity (0 = 0): every value of {var} is a solution"
+                    ),
+                })
+            }
+            crate::transforms::solve::SolveOutcome::NoSolution(reason) => {
+                drop(inner);
+                Err(SymplexError::NoSolution {
+                    operation: "solve",
+                    reason,
+                })
+            }
         }
-        // No solutions found — check if the expression is polynomial.
-        // For polynomial expressions, an empty result is valid (no roots).
-        // For non-polynomial expressions, report an error.
-        let poly = crate::poly::polybridge::expr_to_poly(&inner.arena, self.raw_id(), var_id);
-        drop(inner);
-        if poly.is_none() {
-            return Err(SymplexError::ComputationFailed {
-                operation: "solve",
-                reason: "expression is not polynomial in the given variable and transcendental solver could not find solutions".into(),
-            });
-        }
-        Ok(vec![])
     }
 
     /// Solve `self = 0` for `var`, returning an empty vector on failure.
     ///
     /// This is a convenience wrapper around [`solve`](Ex::solve) that
-    /// returns `vec![]` if the solver fails (e.g., expression is not
-    /// polynomial). Use [`solve`](Ex::solve) for diagnostic information.
+    /// returns `vec![]` whenever `solve` returns an error — including the
+    /// identity (`0 = 0`) and contradiction (`1 = 0`) cases, which have no
+    /// finite list of roots.  Use [`solve`](Ex::solve) for diagnostic
+    /// information.
     pub fn solve_or_empty(&self, var: &Ex) -> Vec<Ex> {
         self.solve(var).unwrap_or_default()
     }
@@ -3029,10 +3078,15 @@ impl Expr<Numeric> {
         }
     }
 
-    /// Solve `self = 0`, returning solutions as a `FiniteSet`.
+    /// Solve `self = 0`, returning solutions as a set.
     ///
     /// This is a set-valued variant of [`solve`](Ex::solve) — instead of
-    /// returning a `Vec<Ex>`, it returns a `SetEx` (a `FiniteSet` node).
+    /// returning a `Vec<Ex>`, it returns a `SetEx`:
+    ///
+    /// - a `FiniteSet` of the roots when they can be found,
+    /// - `UniversalSet` when the equation is the identity `0 = 0`,
+    /// - `EmptySet` when the equation is provably unsatisfiable or no
+    ///   roots were found.
     ///
     /// # Examples
     ///
@@ -3046,6 +3100,8 @@ impl Expr<Numeric> {
     /// let s = format!("{result}");
     /// // Should contain {2, 3} or similar
     /// assert!(!s.contains("EmptySet"), "solve_as_set: {s}");
+    /// assert_eq!(format!("{}", ctx.int(0).solve_as_set(&x)), "UniversalSet");
+    /// assert_eq!(format!("{}", ctx.int(1).solve_as_set(&x)), "EmptySet");
     /// ```
     pub fn solve_as_set(&self, var: &Ex) -> SetEx {
         let var_id = self.checked_id(var);
@@ -3057,10 +3113,22 @@ impl Expr<Numeric> {
         self.wrap_as::<SetValued>(id)
     }
 
-    /// Numerical root finding via Newton's method.
+    /// Numerical root finding via a safeguarded Newton's method.
     ///
-    /// Finds a numerical root of `self = 0` near `initial_guess` by
-    /// iterating `x_{n+1} = x_n - f(x_n)/f'(x_n)`.
+    /// Finds a numerical root of `self = 0` near `initial_guess`.  The
+    /// core iteration is Newton's `x_{n+1} = x_n - f(x_n)/f'(x_n)`, made
+    /// robust by:
+    ///
+    /// - **backtracking** — a step that increases `|f|` is halved (up to
+    ///   30 times) before being accepted;
+    /// - **secant fallback** — when `f'(x)` vanishes, the previous iterate
+    ///   provides a secant step (or a small perturbation on the first step);
+    /// - **bisection fallback** — once two iterates with opposite signs of
+    ///   `f` have been seen, any Newton step that leaves the bracket is
+    ///   replaced by the bracket midpoint, guaranteeing progress.
+    ///
+    /// The expression is compiled to a native closure when possible, so
+    /// each iteration is cheap.
     ///
     /// # Arguments
     /// - `var` — the variable to solve for
@@ -3069,8 +3137,9 @@ impl Expr<Numeric> {
     /// - `tolerance` — convergence threshold (stop when `|f(x)| < tolerance`)
     ///
     /// # Errors
-    /// Returns `Err` if the method doesn't converge within `max_iterations`,
-    /// if the derivative is zero, or if evaluation fails.
+    /// Returns `Err` if the method doesn't converge within `max_iterations`
+    /// (the message reports the final residual), or if evaluation fails
+    /// (e.g. free symbols other than `var`).
     ///
     /// # Examples
     ///
@@ -3083,6 +3152,11 @@ impl Expr<Numeric> {
     /// let expr = &x - &x.cos();
     /// let root = expr.solve_numeric(&x, 1.0, 50, 1e-12).unwrap();
     /// assert!((root - 0.7390851332).abs() < 1e-8);
+    ///
+    /// // atan(x) = 0 from x = 3: undamped Newton diverges, the damped
+    /// // iteration converges to the root at 0.
+    /// let r = x.atan().solve_numeric(&x, 3.0, 100, 1e-12).unwrap();
+    /// assert!(r.abs() < 1e-8);
     /// ```
     pub fn solve_numeric(
         &self,
@@ -3091,50 +3165,135 @@ impl Expr<Numeric> {
         max_iterations: usize,
         tolerance: f64,
     ) -> Result<f64, SymplexError> {
+        let _ = self.checked_id(var);
         let deriv = self.diff(var);
-        let mut x = initial_guess;
+        let name = format!("{var}");
+        let compiled_f = self.compile(&[name.as_str()]);
+        let compiled_fp = deriv.compile(&[name.as_str()]);
 
-        for _ in 0..max_iterations {
-            // Build a rational approximation of x and substitute.
-            let r = match num_rational::Ratio::<num_bigint::BigInt>::from_float(x) {
-                Some(r) => r,
-                None => {
-                    return Err(SymplexError::ComputationFailed {
-                        operation: "solve_numeric",
-                        reason: format!("could not approximate x = {x} as rational"),
-                    });
+        let to_ex = |x: f64| -> Result<Ex, SymplexError> {
+            let r = num_rational::Ratio::<num_bigint::BigInt>::from_float(x).ok_or_else(|| {
+                SymplexError::ComputationFailed {
+                    operation: "solve_numeric",
+                    reason: format!("could not approximate x = {x} as rational"),
+                }
+            })?;
+            let mut inner = self.inner.write();
+            let nid = inner.arena.intern_num(r);
+            let id = inner.arena.intern(crate::base::node::ExprNode::Num(nid));
+            drop(inner);
+            Ok(self.wrap(id))
+        };
+        let eval_f = |x: f64| -> Result<f64, SymplexError> {
+            match &compiled_f {
+                Some(f) => Ok(f(&[x])),
+                None => self.subs(var, &to_ex(x)?).eval_f64(),
+            }
+        };
+        let eval_fp = |x: f64| -> Result<f64, SymplexError> {
+            match &compiled_fp {
+                Some(f) => Ok(f(&[x])),
+                None => deriv.subs(var, &to_ex(x)?).eval_f64(),
+            }
+        };
+
+        let mut x = initial_guess;
+        let mut fx = eval_f(x)?;
+        // Bracket [lo, hi] with f(lo) and f(hi) of opposite sign, once known.
+        let mut bracket: Option<(f64, f64, f64, f64)> = None; // (lo, f_lo, hi, f_hi)
+        let mut prev: Option<(f64, f64)> = None; // previous iterate for secant
+
+        let update_bracket =
+            |bracket: &mut Option<(f64, f64, f64, f64)>, xn: f64, fn_: f64| {
+                if let Some((lo, f_lo, hi, f_hi)) = *bracket {
+                    if xn > lo && xn < hi {
+                        if (fn_ < 0.0) == (f_lo < 0.0) {
+                            *bracket = Some((xn, fn_, hi, f_hi));
+                        } else {
+                            *bracket = Some((lo, f_lo, xn, fn_));
+                        }
+                    }
                 }
             };
-            let x_rational = {
-                let mut inner = self.inner.write();
-                let nid = inner.arena.intern_num(r);
-                let id = inner.arena.intern(crate::base::node::ExprNode::Num(nid));
-                drop(inner);
-                self.wrap(id)
-            };
 
-            let f_val = self.subs(var, &x_rational).eval_f64()?;
-            let fp_val = deriv.subs(var, &x_rational).eval_f64()?;
-
-            if fp_val.abs() < 1e-30 {
-                return Err(SymplexError::ComputationFailed {
-                    operation: "solve_numeric",
-                    reason: "derivative is effectively zero".into(),
-                });
-            }
-
-            x -= f_val / fp_val;
-
-            if f_val.abs() < tolerance {
+        for _ in 0..max_iterations {
+            if fx.abs() < tolerance {
                 return Ok(x);
             }
+            if !fx.is_finite() {
+                break;
+            }
+            // Establish a bracket from the previous iterate if signs differ.
+            if bracket.is_none()
+                && let Some((px, pf)) = prev
+                && pf.is_finite()
+                && (pf < 0.0) != (fx < 0.0)
+            {
+                bracket = if px < x {
+                    Some((px, pf, x, fx))
+                } else {
+                    Some((x, fx, px, pf))
+                };
+            }
+
+            let fp = eval_fp(x)?;
+            let mut dx = if fp.abs() > 1e-300 && fp.is_finite() {
+                -fx / fp
+            } else if let Some((px, pf)) = prev
+                && (fx - pf).abs() > 1e-300
+            {
+                // Secant step.
+                -fx * (x - px) / (fx - pf)
+            } else {
+                // Perturb away from the stationary point.
+                let h = if x.abs() > 1.0 { 1e-3 * x.abs() } else { 1e-3 };
+                if fx > 0.0 { -h } else { h }
+            };
+            if !dx.is_finite() {
+                break;
+            }
+
+            // Bisection safeguard: stay inside a known bracket.
+            let mut x_new = x + dx;
+            if let Some((lo, _, hi, _)) = bracket
+                && (x_new <= lo || x_new >= hi)
+            {
+                x_new = 0.5 * (lo + hi);
+                dx = x_new - x;
+            }
+
+            // Backtracking: halve the step while |f| does not decrease.
+            let mut f_new = eval_f(x_new)?;
+            let mut tries = 0;
+            while (!f_new.is_finite() || f_new.abs() > fx.abs()) && tries < 30 {
+                dx *= 0.5;
+                x_new = x + dx;
+                f_new = eval_f(x_new)?;
+                tries += 1;
+            }
+            if tries == 30
+                && let Some((lo, _, hi, _)) = bracket
+            {
+                // Newton is stuck; bisect instead.
+                x_new = 0.5 * (lo + hi);
+                f_new = eval_f(x_new)?;
+            }
+
+            prev = Some((x, fx));
+            x = x_new;
+            fx = f_new;
+            update_bracket(&mut bracket, x, fx);
         }
 
+        if fx.abs() < tolerance {
+            return Ok(x);
+        }
         Err(SymplexError::ComputationFailed {
             operation: "solve_numeric",
             reason: format!(
-                "did not converge within {} iterations (last x = {x})",
-                max_iterations
+                "did not converge within {} iterations (last x = {x}, residual |f(x)| = {:.3e})",
+                max_iterations,
+                fx.abs()
             ),
         })
     }
@@ -3537,12 +3696,24 @@ impl Expr<Numeric> {
         if substituted.is_zero_structural() {
             return Some(true);
         }
-        // Try numerical evaluation
-        if let Ok(v) = substituted.eval_f64() {
-            if v.abs() < 1e-10 {
+        // A surviving nonzero numeric literal is a definite failure.
+        let is_nonzero_literal = |e: &Ex| -> bool {
+            let inner = e.inner.read();
+            inner
+                .arena
+                .as_num(e.raw_id())
+                .is_some_and(|r| !num_traits::Zero::is_zero(r))
+        };
+        if is_nonzero_literal(&substituted) {
+            return Some(false);
+        }
+        // Try numerical (complex) evaluation.
+        if let Ok((re, im)) = substituted.eval_complex64() {
+            let mag = re.hypot(im);
+            if mag < 1e-10 {
                 return Some(true);
             }
-            if v.abs() > 1e-6 {
+            if mag > 1e-6 {
                 return Some(false);
             }
         }
@@ -3550,6 +3721,14 @@ impl Expr<Numeric> {
         let expanded = substituted.expand().eval();
         if expanded.is_zero_structural() {
             return Some(true);
+        }
+        if is_nonzero_literal(&expanded) {
+            return Some(false);
+        }
+        // Assumption system: a provably nonzero residual (e.g. a positive
+        // symbol) is a definite failure.
+        if expanded.is_zero() == Some(false) {
+            return Some(false);
         }
         None
     }
