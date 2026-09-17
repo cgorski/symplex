@@ -179,6 +179,87 @@ fn scratch_polysys() {
 }
 
 #[test]
+fn scratch_ode() {
+    use symplex::ode::OdeType;
+    let ctx = Context::new();
+    let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    let dy = y.formal_diff(&x);
+    let d2y = dy.formal_diff(&x);
+    let d3y = d2y.formal_diff(&x);
+    let d4y = d3y.formal_diff(&x);
+
+    let check = |label: &str, ode: &Ex| {
+        let sol = ode.solve_ode(&y, &x);
+        let ok = ode.check_ode_solution(&sol, &y, &x);
+        eprintln!("{label}: {sol}   [check={ok}] class={:?}", ode.classify_ode(&y, &x));
+    };
+    check("y'''-y=0", &(&d3y - &y));
+    check("y''''-y=0", &(&d4y - &y));
+    check("y'''-3y''+3y'-y=0", &(&d3y - &d2y * 3 + &dy * 3 - &y));
+    check("y''' - y' = x", &(&d3y - &dy - &x));
+    check("y''''+2y''+y=0", &(&d4y + &d2y * 2 + &y));
+    check("y'' + y = x e^x", &(&d2y + &y - &(&x * &x.exp())));
+    check("y'' - y = e^x (resonance)", &(&d2y - &y - &x.exp()));
+    check("y'' + y = sin x (resonance)", &(&d2y + &y - &x.sin()));
+    check("y''' - y'' = 1", &(&d3y - &d2y - 1));
+    check("y'' + y = tan x", &(&d2y + &y - &x.tan()));
+    check("clairaut y = x y' + y'^2", &(&y - &x * &dy - &dy.powi(2)));
+
+    // IVPs
+    let ivp = |label: &str, ode: &Ex, ics: &[(usize, Ex, Ex)]| match ode.solve_ode_ivp(&y, &x, ics) {
+        Ok(s) => eprintln!("IVP {label}: {s}  [check={}]", ode.check_ode_solution(&s, &y, &x)),
+        Err(e) => eprintln!("IVP {label}: Err {e}"),
+    };
+    ivp("y'=y, y(0)=2", &(&dy - &y), &[(0, ctx.int(0), ctx.int(2))]);
+    ivp(
+        "y''+y=0, y(0)=0,y'(0)=1",
+        &(&d2y + &y),
+        &[(0, ctx.int(0), ctx.int(0)), (1, ctx.int(0), ctx.int(1))],
+    );
+    ivp("y'=-2xy, y(0)=1", &(&dy + &x * &y * 2), &[(0, ctx.int(0), ctx.int(1))]);
+    ivp(
+        "y'''-y=0, y(0)=1,y'(0)=1,y''(0)=1",
+        &(&d3y - &y),
+        &[
+            (0, ctx.int(0), ctx.int(1)),
+            (1, ctx.int(0), ctx.int(1)),
+            (2, ctx.int(0), ctx.int(1)),
+        ],
+    );
+    ivp("y' = y^2, y(0)=1", &(&dy - &y.powi(2)), &[(0, ctx.int(0), ctx.int(1))]);
+
+    // classification
+    let riccati = &dy - &y.powi(2) - &x.powi(2);
+    eprintln!("riccati class: {:?}", riccati.classify_ode(&y, &x));
+    check("riccati y'=y^2+x^2", &riccati);
+    check("y' + y/x = x", &(&dy + &y / &x - &x));
+    check("homog y' = (x^2+y^2)/(xy)", &(&dy - &(&x.powi(2) + &y.powi(2)) / &(&x * &y)));
+    let sep_riccati = &dy - &y.powi(2) - 1;
+    eprintln!("y'=y^2+1 class: {:?}", sep_riccati.classify_ode(&y, &x));
+    let ifac = &(&y * 3 + &x * &y * 2) + &(&x.powi(2) + &y.powi(2) * 0 + &x * 0) * &dy; // placeholder
+    let _ = ifac;
+    // Non-exact with integrating factor mu(x): (3xy + y^2) + (x^2 + xy) y' = 0
+    let ie = &(&x * &y * 3 + &y.powi(2)) + &(&x.powi(2) + &x * &y) * &dy;
+    eprintln!("integrating factor class: {:?}", ie.classify_ode(&y, &x));
+    check("integrating factor ode", &ie);
+    // y' + y/x = x  in M + N y' form with non-exact M: (y - x^2) + x y' = 0 → μ = 1/x? M_y=1, N_x=1 exact already.
+    // (2y) + (x) y' = 0: M_y = 2, N_x = 1, (M_y-N_x)/N = 1/x → μ = x
+    let ie2 = &(&y * 2) + &(&x * &dy);
+    eprintln!("integrating factor class 2: {:?}", ie2.classify_ode(&y, &x));
+    check("integrating factor ode 2", &ie2);
+    let _ = OdeType::Unknown;
+
+    // system IVP
+    let t = ctx.symbol("t");
+    let a = symplex::matrix![ctx, [0, 1], [-1, 0]];
+    let sol = symplex::ode::solve_ode_system_ivp(&a, &t, &[ctx.int(1), ctx.int(0)]).unwrap();
+    show("system ivp", &sol);
+    let a2 = symplex::matrix![ctx, [1, 1], [0, 2]];
+    let sol = symplex::ode::solve_ode_system_ivp(&a2, &t, &[ctx.int(1), ctx.int(1)]).unwrap();
+    show("system ivp 2", &sol);
+}
+
+#[test]
 fn scratch_numeric() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
