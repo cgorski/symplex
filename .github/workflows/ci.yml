@@ -59,8 +59,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # UI snapshot tests are toolchain-pinned; see the `ui` job.
-      - run: cargo test --all-targets -- --skip units_compile_fail
+      # UI snapshot tests are toolchain-pinned; see the `ui` job.  Benches
+      # run separately because the criterion harness rejects `--skip`.
+      - run: cargo test --lib --bins --tests --examples -- --skip units_compile_fail
+      - run: cargo test --benches
       - run: cargo test --doc
 
   ui:
