@@ -1,7 +1,15 @@
 pub mod context;
 pub mod eq;
 pub mod expr;
+pub(crate) mod expr_complex;
 pub(crate) mod expr_funcs;
+pub(crate) mod expr_integrate_ext;
 pub(crate) mod expr_ops;
+pub(crate) mod expr_poly_ext;
+pub(crate) mod expr_rules_ext;
+pub(crate) mod expr_series_ext;
+pub(crate) mod expr_sets_ext;
+pub(crate) mod expr_solve_ext;
+pub(crate) mod expr_transforms_ext;
 pub mod expr_view;
 pub mod macros;

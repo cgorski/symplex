@@ -63,7 +63,13 @@ pub use base::config;
 /// Error types used throughout the library.
 pub use base::errors;
 
+// base
+/// Exact `f64` ↔ rational conversions (dyadic exact, and best bounded-denominator approximations).
+pub use base::numeric;
+
 // poly
+/// Univariate factorization over ℤ via Berlekamp–Zassenhaus.
+pub use poly::factor_zassenhaus;
 /// Gröbner basis computation via Buchberger's algorithm with FGLM order conversion.
 pub use poly::groebner;
 /// Sparse multivariate polynomials over ℚ.
@@ -72,16 +78,30 @@ pub use poly::multipoly;
 pub use poly::polysys;
 
 // calculus
+/// Definite and improper integration.
+pub use calculus::definite;
 /// Finite difference methods: weights, application, and differentiation.
 pub use calculus::finite_diff;
 /// Formal power series representations and algorithms.
 pub use calculus::formal_series;
 /// Symbolic Fourier transform.
 pub use calculus::fourier_transform;
+/// Mellin transform.
+pub use calculus::mellin;
 /// Ordinary differential equation solver.
 pub use calculus::ode;
+/// Symbolic summation and products.
+pub use calculus::summation;
 /// Z-transform for discrete-time signal analysis.
 pub use calculus::z_transform;
+
+// transforms
+/// Boolean-logic simplification, normal forms, satisfiability.
+pub use transforms::logic;
+/// Recurrence-relation solver.
+pub use transforms::rsolve;
+/// Set algebra on intervals, finite sets, unions.
+pub use transforms::sets;
 
 // output
 /// Runtime expression parser — convert strings to symbolic expressions.
@@ -98,10 +118,14 @@ pub use plotting::data_export;
 pub use domains::combinatorics;
 /// Control systems: state-space models, transfer functions, stability analysis.
 pub use domains::control;
+/// Diophantine equations.
+pub use domains::diophantine;
 /// Lagrangian dynamics: equations of motion, mass matrix, Coriolis, gravity.
 pub use domains::dynamics;
 /// Symbolic matrix type and operations.
 pub use domains::matrix;
+/// Additional matrix decompositions (QR, Gram–Schmidt) and structure tests.
+pub use domains::matrix_decomp;
 /// Number theory: primality, factorization, divisors, modular arithmetic.
 pub use domains::ntheory;
 /// Symbolic quaternion algebra for attitude representation.

@@ -1,5 +1,6 @@
 pub(crate) mod algebraic;
 pub(crate) mod dense;
+pub mod factor_zassenhaus;
 pub mod generic;
 pub mod groebner;
 pub mod multipoly;

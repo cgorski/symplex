@@ -1,8 +1,10 @@
 pub mod combinatorics;
 pub mod control;
+pub mod diophantine;
 pub mod dynamics;
 pub(crate) mod linalg;
 pub mod matrix;
+pub mod matrix_decomp;
 pub mod ntheory;
 pub mod quaternion;
 pub mod robotics;

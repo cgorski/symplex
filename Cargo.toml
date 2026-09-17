@@ -1,6 +1,6 @@
 [package]
 name = "symplex"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"
@@ -13,7 +13,7 @@ keywords = ["symbolic", "math", "cas", "robotics", "units"]
 categories = ["mathematics", "science", "development-tools::build-utils"]
 
 [dependencies]
-symplex-macros = { version = "0.1.0", path = "symplex-macros" }
+symplex-macros = { version = "0.2.0", path = "symplex-macros" }
 num-bigint = "0.4"
 num-rational = "0.4"
 num-integer = "0.1"

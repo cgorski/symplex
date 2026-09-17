@@ -1,5 +1,6 @@
 pub(crate) mod calculus_util;
 pub(crate) mod convergence;
+pub mod definite;
 pub mod finite_diff;
 pub mod formal_series;
 pub(crate) mod fourier;
@@ -8,8 +9,10 @@ pub(crate) mod gosper;
 pub(crate) mod gruntz;
 pub(crate) mod laplace;
 pub(crate) mod limit;
+pub mod mellin;
 pub mod ode;
 pub(crate) mod residue;
 pub mod risch;
 pub(crate) mod series;
+pub mod summation;
 pub mod z_transform;

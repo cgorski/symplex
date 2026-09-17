@@ -7,6 +7,7 @@ pub(crate) mod complex;
 pub mod config;
 pub mod errors;
 pub(crate) mod node;
+pub mod numeric;
 pub(crate) mod sort_key;
 pub(crate) mod symbol;
 pub(crate) mod walk;
