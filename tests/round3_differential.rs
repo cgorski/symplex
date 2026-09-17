@@ -47,8 +47,8 @@ enum CompareResult {
 /// Compare compile vs subs+eval_f64 at a given f64 point for a single-variable expression.
 fn compare_at(expr: &Ex, var: &Ex, var_name: &str, val: f64, ctx: &Context) -> CompareResult {
     let compiled = match expr.compile(&[var_name]) {
-        Some(f) => f,
-        None => {
+        Ok(f) => f,
+        Err(_) => {
             // If compile returns None, we can't compare — skip
             return CompareResult::BothNanOrError;
         }
@@ -814,7 +814,7 @@ fn edge_at_zero() {
     for (desc, expr, expected) in &cases {
         let compiled = expr
             .compile(&["x"])
-            .unwrap_or_else(|| panic!("{desc} should compile"));
+            .unwrap_or_else(|_| panic!("{desc} should compile"));
         let compile_val = compiled(&[0.0]);
         assert!(
             approx_eq_rel(compile_val, *expected, 1e-10),
@@ -1187,7 +1187,7 @@ fn multi_missing_variable_returns_none() {
     let expr = &x + &y;
     let result = expr.compile(&["x"]); // y is unbound
     assert!(
-        result.is_none(),
+        result.is_err(),
         "compile should return None when expression has unbound variable 'y'"
     );
 }
@@ -1480,8 +1480,8 @@ fn diff_systematic_sweep_all_expressions() {
 
     for case in &cases {
         let compiled = match case.expr.compile(&["x"]) {
-            Some(f) => f,
-            None => {
+            Ok(f) => f,
+            Err(_) => {
                 all_failures.push(format!("  {}: compile returned None", case.name));
                 continue;
             }
@@ -1687,7 +1687,7 @@ fn consistency_compile_and_codegen_same_expressions() {
     ];
 
     for (desc, expr) in &expressions {
-        let compile_ok = expr.compile(&["x"]).is_some();
+        let compile_ok = expr.compile(&["x"]).is_ok();
         let codegen_ok = expr.to_rust_fn("f", &["x"]).is_ok();
 
         // Both should succeed for basic expressions
@@ -1707,7 +1707,7 @@ fn consistency_compile_and_codegen_same_expressions() {
 fn assert_compile_eq(expr: &Ex, var_name: &str, input: f64, expected: f64, desc: &str) {
     let compiled = expr
         .compile(&[var_name])
-        .unwrap_or_else(|| panic!("{desc}: compile returned None"));
+        .unwrap_or_else(|_| panic!("{desc}: compile returned None"));
     let got = compiled(&[input]);
     assert!(
         approx_eq_rel(got, expected, 1e-10),
@@ -2121,7 +2121,7 @@ fn aggressive_pow_zero_gives_one() {
 
     // The symbolic engine may simplify x^0 to 1 immediately, so compile
     // might just push the constant 1.  Either way the result must be 1.
-    if let Some(compiled) = expr.compile(&["x"]) {
+    if let Ok(compiled) = expr.compile(&["x"]) {
         for &v in &[-2.0, -1.0, 0.0, 1.0, 2.0] {
             let got = compiled(&[v]);
             assert!(
@@ -2350,7 +2350,7 @@ fn aggressive_zero_expression() {
     let expr = &x * &ctx.int(0);
 
     // Might simplify to 0, so compile could be trivial
-    if let Some(compiled) = expr.compile(&["x"]) {
+    if let Ok(compiled) = expr.compile(&["x"]) {
         for &v in STANDARD_VALS {
             let got = compiled(&[v]);
             assert!(approx_eq_rel(got, 0.0, 1e-15), "0*x at x={v}: got {got}");

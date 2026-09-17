@@ -1068,7 +1068,7 @@ fn compile_large_polynomial() {
     let x = ctx.symbol("x");
     let poly = build_large_poly(&ctx, &x, 50);
     let compiled = poly.compile(&["x"]);
-    if let Some(f) = compiled {
+    if let Ok(f) = compiled {
         // Evaluate at many points
         for i in -10..=10 {
             let xval = i as f64;

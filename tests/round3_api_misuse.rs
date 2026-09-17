@@ -17,7 +17,7 @@ fn a1_compile_empty_vars_on_expr_with_x() {
     let expr = &x + 1;
     let result = expr.compile(&[]);
     assert!(
-        result.is_none(),
+        result.is_err(),
         "BUG: compile(&[]) on expr containing x should return None, got Some"
     );
 }
@@ -31,7 +31,7 @@ fn a2_compile_extra_vars_on_one_variable_expr() {
     let expr = &x.powi(2) + 1;
     let result = expr.compile(&["x", "y", "z"]);
     match result {
-        Some(f) => {
+        Ok(f) => {
             // Extra vars should be harmless; evaluate with x=2 (y=0, z=0)
             let val = f(&[2.0, 0.0, 0.0]);
             assert!(
@@ -39,7 +39,7 @@ fn a2_compile_extra_vars_on_one_variable_expr() {
                 "BUG: compiled fn returned {val}, expected 5.0"
             );
         }
-        None => {
+        Err(_) => {
             // Also acceptable — library chose to reject extra vars
             // This is not a bug, just a design choice
         }
@@ -55,7 +55,7 @@ fn a3_compile_nonexistent_var_name() {
     let expr = &x + 1;
     let result = expr.compile(&["nonexistent"]);
     match result {
-        Some(f) => {
+        Ok(f) => {
             let val = f(&[3.0]);
             // x is unresolved, so we'd expect NaN or similar
             assert!(
@@ -63,7 +63,7 @@ fn a3_compile_nonexistent_var_name() {
                 "BUG: compile with wrong var name returned concrete value {val}"
             );
         }
-        None => {
+        Err(_) => {
             // Good — library correctly refused to compile
         }
     }
@@ -147,14 +147,14 @@ fn a8_compile_constant_expression_no_vars() {
     let expr = &ctx.int(3) + &ctx.int(4);
     let result = expr.compile(&[]);
     match result {
-        Some(f) => {
+        Ok(f) => {
             let val = f(&[]);
             assert!(
                 (val - 7.0).abs() < 1e-10,
                 "BUG: compile of 3+4 with no vars returned {val}, expected 7.0"
             );
         }
-        None => panic!("BUG: compile of pure constant 3+4 with &[] returned None"),
+        Err(_) => panic!("BUG: compile of pure constant 3+4 with &[] returned Err"),
     }
 }
 
@@ -1352,14 +1352,14 @@ fn g23_compile_with_pi_and_e() {
     let expr = &x + &ctx.pi();
     let func = expr.compile(&["x"]);
     match func {
-        Some(f) => {
+        Ok(f) => {
             let val = f(&[0.0]);
             assert!(
                 (val - std::f64::consts::PI).abs() < 1e-10,
                 "BUG: compiled (x + pi) at x=0 gave {val}, expected pi"
             );
         }
-        None => {
+        Err(_) => {
             panic!("BUG: compile(x + pi) returned None");
         }
     }

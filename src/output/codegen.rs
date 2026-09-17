@@ -9,6 +9,9 @@ use crate::base::node::{ExprId, ExprNode};
 use num_traits::ToPrimitive;
 use rustc_hash::FxHashMap;
 
+/// Shared `f64` special-function runtime (also embedded into generated code).
+pub(crate) mod numeric_rt;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CodegenOptions types
 // ═══════════════════════════════════════════════════════════════════════════

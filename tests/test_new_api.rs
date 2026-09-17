@@ -248,7 +248,7 @@ fn lambdify_two_vars() {
 fn lambdify_complex_rejects() {
     let ctx = Context::new();
     let i = ctx.i_unit();
-    assert!(i.compile(&[]).is_none());
+    assert!(i.compile(&[]).is_err());
 }
 
 #[test]

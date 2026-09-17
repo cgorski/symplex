@@ -244,7 +244,7 @@ fn main() {
 
     // ── 17. Compiled Function ──────────────────────────────────────
     println!("--- Compiled Evaluation ---");
-    if let Some(compiled) = df.compile(&["x"]) {
+    if let Ok(compiled) = df.compile(&["x"]) {
         for val in [0.0, 1.0, 2.0, 3.0] {
             println!("  f'({val}) = {:.4}", compiled(&[val]));
         }
