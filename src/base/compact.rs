@@ -179,6 +179,9 @@ fn remap_node(
         ExprNode::Pi => ExprNode::Pi,
         ExprNode::E => ExprNode::E,
         ExprNode::ImaginaryUnit => ExprNode::ImaginaryUnit,
+        ExprNode::EulerGamma => ExprNode::EulerGamma,
+        ExprNode::Catalan => ExprNode::Catalan,
+        ExprNode::GoldenRatio => ExprNode::GoldenRatio,
 
         ExprNode::PhysicalConstant(old_sid, old_value_id) => {
             let name = src.symbol_name(*old_sid).to_owned();
@@ -228,6 +231,8 @@ fn remap_node(
         ExprNode::Integral(a, b) => ExprNode::Integral(m(a), m(b)),
         ExprNode::Atan2(a, b) => ExprNode::Atan2(m(a), m(b)),
         ExprNode::Beta(a, b) => ExprNode::Beta(m(a), m(b)),
+        ExprNode::Polygamma(a, b) => ExprNode::Polygamma(m(a), m(b)),
+        ExprNode::KroneckerDelta(a, b) => ExprNode::KroneckerDelta(m(a), m(b)),
         ExprNode::SetComplement(a, b) => ExprNode::SetComplement(m(a), m(b)),
 
         // ── Interval (binary + flags) ────────────────────────────────────
@@ -280,6 +285,15 @@ fn remap_node(
         ExprNode::LambertW(x) => ExprNode::LambertW(m(x)),
         ExprNode::Heaviside(x) => ExprNode::Heaviside(m(x)),
         ExprNode::DiracDelta(x) => ExprNode::DiracDelta(m(x)),
+        ExprNode::Re(x) => ExprNode::Re(m(x)),
+        ExprNode::Im(x) => ExprNode::Im(m(x)),
+        ExprNode::Conjugate(x) => ExprNode::Conjugate(m(x)),
+        ExprNode::Arg(x) => ExprNode::Arg(m(x)),
+        ExprNode::Si(x) => ExprNode::Si(m(x)),
+        ExprNode::Ci(x) => ExprNode::Ci(m(x)),
+        ExprNode::Ei(x) => ExprNode::Ei(m(x)),
+        ExprNode::Li(x) => ExprNode::Li(m(x)),
+        ExprNode::Zeta(x) => ExprNode::Zeta(m(x)),
 
         // ── Piecewise ────────────────────────────────────────────────────
         ExprNode::Piecewise(pairs) => {

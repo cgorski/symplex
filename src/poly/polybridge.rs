@@ -108,9 +108,13 @@ fn convert_node(
         }
 
         // Constants.
-        ExprNode::Pi | ExprNode::E | ExprNode::ImaginaryUnit | ExprNode::PhysicalConstant(_, _) => {
-            None
-        }
+        ExprNode::Pi
+        | ExprNode::E
+        | ExprNode::ImaginaryUnit
+        | ExprNode::EulerGamma
+        | ExprNode::Catalan
+        | ExprNode::GoldenRatio
+        | ExprNode::PhysicalConstant(_, _) => None,
         ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity | ExprNode::NaN => {
             None
         }
@@ -214,7 +218,18 @@ fn convert_node(
         | ExprNode::Erf(_)
         | ExprNode::Erfc(_)
         | ExprNode::LambertW(_)
-        | ExprNode::Beta(_, _) => None,
+        | ExprNode::Beta(_, _)
+        | ExprNode::Re(_)
+        | ExprNode::Im(_)
+        | ExprNode::Conjugate(_)
+        | ExprNode::Arg(_)
+        | ExprNode::Si(_)
+        | ExprNode::Ci(_)
+        | ExprNode::Ei(_)
+        | ExprNode::Li(_)
+        | ExprNode::Zeta(_)
+        | ExprNode::Polygamma(_, _)
+        | ExprNode::KroneckerDelta(_, _) => None,
 
         // Boolean, relational, logical, and piecewise nodes are not polynomial.
         ExprNode::BoolTrue

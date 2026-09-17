@@ -62,6 +62,12 @@ pub enum ExprTree {
     E,
     /// The imaginary unit i.
     ImaginaryUnit,
+    /// The Euler–Mascheroni constant γ.
+    EulerGamma,
+    /// Catalan's constant G.
+    Catalan,
+    /// The golden ratio φ.
+    GoldenRatio,
     /// A named physical constant with a known exact value.
     PhysicalConstant {
         /// The display name (e.g., "c", "h", "k_B").
@@ -237,6 +243,65 @@ pub enum ExprTree {
         a: Box<ExprTree>,
         /// Second parameter.
         b: Box<ExprTree>,
+    },
+    /// Real part: re(z).
+    Re {
+        /// The complex argument.
+        arg: Box<ExprTree>,
+    },
+    /// Imaginary part: im(z).
+    Im {
+        /// The complex argument.
+        arg: Box<ExprTree>,
+    },
+    /// Complex conjugate.
+    Conjugate {
+        /// The complex argument.
+        arg: Box<ExprTree>,
+    },
+    /// Principal complex argument arg(z) ∈ (−π, π].
+    Arg {
+        /// The complex argument.
+        arg: Box<ExprTree>,
+    },
+    /// Sine integral Si(x).
+    Si {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
+    /// Cosine integral Ci(x).
+    Ci {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
+    /// Exponential integral Ei(x).
+    Ei {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
+    /// Logarithmic integral li(x).
+    Li {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
+    /// Riemann zeta function ζ(s).
+    Zeta {
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
+    /// Polygamma function ψ⁽ⁿ⁾(x).
+    Polygamma {
+        /// The derivative order n.
+        n: Box<ExprTree>,
+        /// The function argument.
+        arg: Box<ExprTree>,
+    },
+    /// Kronecker delta δᵢⱼ.
+    KroneckerDelta {
+        /// First index.
+        i: Box<ExprTree>,
+        /// Second index.
+        j: Box<ExprTree>,
     },
     /// Floor function: greatest integer <= x.
     Floor {
@@ -493,6 +558,9 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::Pi => ExprTree::Pi,
         ExprNode::E => ExprTree::E,
         ExprNode::ImaginaryUnit => ExprTree::ImaginaryUnit,
+        ExprNode::EulerGamma => ExprTree::EulerGamma,
+        ExprNode::Catalan => ExprTree::Catalan,
+        ExprNode::GoldenRatio => ExprTree::GoldenRatio,
         ExprNode::PhysicalConstant(name_id, value_id) => ExprTree::PhysicalConstant {
             name: arena.symbol_name(name_id).to_owned(),
             value: Box::new(expr_to_tree(arena, value_id)),
@@ -593,6 +661,41 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::Beta(a, b) => ExprTree::Beta {
             a: Box::new(expr_to_tree(arena, a)),
             b: Box::new(expr_to_tree(arena, b)),
+        },
+        ExprNode::Re(x) => ExprTree::Re {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Im(x) => ExprTree::Im {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Conjugate(x) => ExprTree::Conjugate {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Arg(x) => ExprTree::Arg {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Si(x) => ExprTree::Si {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Ci(x) => ExprTree::Ci {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Ei(x) => ExprTree::Ei {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Li(x) => ExprTree::Li {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Zeta(x) => ExprTree::Zeta {
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::Polygamma(n, x) => ExprTree::Polygamma {
+            n: Box::new(expr_to_tree(arena, n)),
+            arg: Box::new(expr_to_tree(arena, x)),
+        },
+        ExprNode::KroneckerDelta(i, j) => ExprTree::KroneckerDelta {
+            i: Box::new(expr_to_tree(arena, i)),
+            j: Box::new(expr_to_tree(arena, j)),
         },
         ExprNode::Floor(x) => ExprTree::Floor {
             arg: Box::new(expr_to_tree(arena, x)),
@@ -759,6 +862,9 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
         ExprTree::Pi => arena.pi,
         ExprTree::E => arena.e_const,
         ExprTree::ImaginaryUnit => arena.i_unit,
+        ExprTree::EulerGamma => arena.euler_gamma,
+        ExprTree::Catalan => arena.catalan,
+        ExprTree::GoldenRatio => arena.golden_ratio,
         ExprTree::PhysicalConstant { name, value } => {
             let val_id = tree_to_expr(arena, value);
             arena.physical_constant(name, val_id)
@@ -894,6 +1000,52 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let aid = tree_to_expr(arena, a);
             let bid = tree_to_expr(arena, b);
             arena.beta(aid, bid)
+        }
+        ExprTree::Re { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.re(x)
+        }
+        ExprTree::Im { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.im(x)
+        }
+        ExprTree::Conjugate { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.conjugate(x)
+        }
+        ExprTree::Arg { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.arg(x)
+        }
+        ExprTree::Si { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.si(x)
+        }
+        ExprTree::Ci { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.ci(x)
+        }
+        ExprTree::Ei { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.ei(x)
+        }
+        ExprTree::Li { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.li(x)
+        }
+        ExprTree::Zeta { arg } => {
+            let x = tree_to_expr(arena, arg);
+            arena.zeta(x)
+        }
+        ExprTree::Polygamma { n, arg } => {
+            let nid = tree_to_expr(arena, n);
+            let x = tree_to_expr(arena, arg);
+            arena.polygamma(nid, x)
+        }
+        ExprTree::KroneckerDelta { i, j } => {
+            let iid = tree_to_expr(arena, i);
+            let jid = tree_to_expr(arena, j);
+            arena.kronecker_delta(iid, jid)
         }
         ExprTree::Floor { arg } => {
             let x = tree_to_expr(arena, arg);

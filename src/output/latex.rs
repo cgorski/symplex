@@ -427,6 +427,9 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::Pi => stack.push(LatexItem::Lit(r"\pi")),
         ExprNode::E => stack.push(LatexItem::Lit("e")),
         ExprNode::ImaginaryUnit => stack.push(LatexItem::Lit("i")),
+        ExprNode::EulerGamma => stack.push(LatexItem::Lit(r"\gamma")),
+        ExprNode::Catalan => stack.push(LatexItem::Lit("G")),
+        ExprNode::GoldenRatio => stack.push(LatexItem::Lit(r"\phi")),
         ExprNode::PhysicalConstant(name_id, _) => {
             stack.push(LatexItem::Owned(symbol_to_latex(
                 arena.symbol_name(name_id),
@@ -632,6 +635,39 @@ fn expand_latex(arena: &Arena, id: ExprId, stack: &mut Vec<LatexItem>) {
         ExprNode::Erf(x) => push_latex_func(r"\operatorname{erf}", x, stack),
         ExprNode::Erfc(x) => push_latex_func(r"\operatorname{erfc}", x, stack),
         ExprNode::LambertW(x) => push_latex_func(r"\operatorname{W}", x, stack),
+
+        // ── Complex analysis ────────────────────────────────────────────
+        ExprNode::Re(x) => push_latex_func(r"\Re", x, stack),
+        ExprNode::Im(x) => push_latex_func(r"\Im", x, stack),
+        ExprNode::Conjugate(x) => {
+            stack.push(LatexItem::Lit("}"));
+            stack.push(LatexItem::Expr(x));
+            stack.push(LatexItem::Lit(r"\overline{"));
+        }
+        ExprNode::Arg(x) => push_latex_func(r"\arg", x, stack),
+
+        // ── Special functions (0.2) ──────────────────────────────────────
+        ExprNode::Si(x) => push_latex_func(r"\operatorname{Si}", x, stack),
+        ExprNode::Ci(x) => push_latex_func(r"\operatorname{Ci}", x, stack),
+        ExprNode::Ei(x) => push_latex_func(r"\operatorname{Ei}", x, stack),
+        ExprNode::Li(x) => push_latex_func(r"\operatorname{li}", x, stack),
+        ExprNode::Zeta(x) => push_latex_func(r"\zeta", x, stack),
+        ExprNode::Polygamma(n, x) => {
+            // \psi^{(n)}\left(x\right)
+            stack.push(LatexItem::Lit(r"\right)"));
+            stack.push(LatexItem::Expr(x));
+            stack.push(LatexItem::Lit(r")}\left("));
+            stack.push(LatexItem::Expr(n));
+            stack.push(LatexItem::Lit(r"\psi^{("));
+        }
+        ExprNode::KroneckerDelta(i, j) => {
+            // \delta_{i j}
+            stack.push(LatexItem::Lit("}"));
+            stack.push(LatexItem::Expr(j));
+            stack.push(LatexItem::Lit(" "));
+            stack.push(LatexItem::Expr(i));
+            stack.push(LatexItem::Lit(r"\delta_{"));
+        }
 
         // ── Abs: \left|x\right| ───────────────────────────────────
         ExprNode::Abs(x) => {

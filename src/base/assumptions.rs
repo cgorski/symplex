@@ -753,7 +753,32 @@ impl AssumptionCache {
                 self.compute_inverse_trig(arena, inner)
             }
             ExprNode::Acosh(inner) => self.compute_acosh(arena, inner),
-            _ => Assumptions::default(), // Only Apply, Derivative, Integral now
+            // ── 0.2 additions: named constants, complex-analysis nodes, specials ──
+            ExprNode::EulerGamma | ExprNode::Catalan => compute_positive_real_constant(),
+            ExprNode::GoldenRatio => compute_golden_ratio(),
+            ExprNode::Re(_) | ExprNode::Im(_) | ExprNode::Arg(_) => compute_real_valued(),
+            ExprNode::Conjugate(inner) => self.compute_conjugate(arena, inner),
+            ExprNode::KroneckerDelta(..) => compute_kronecker_delta(),
+            ExprNode::Floor(inner) | ExprNode::Ceiling(inner) | ExprNode::Sign(inner) => {
+                self.compute_real_to_integer(arena, inner)
+            }
+            ExprNode::Gamma(inner)
+            | ExprNode::Digamma(inner)
+            | ExprNode::Erf(inner)
+            | ExprNode::Erfc(inner)
+            | ExprNode::Heaviside(inner)
+            | ExprNode::Si(inner)
+            | ExprNode::Ei(inner)
+            | ExprNode::Zeta(inner) => self.compute_real_to_real(arena, inner),
+            ExprNode::LogGamma(inner) | ExprNode::Ci(inner) | ExprNode::Li(inner) => {
+                self.compute_positive_to_real(arena, inner)
+            }
+            ExprNode::Polygamma(_, x) => self.compute_positive_to_real(arena, x),
+            ExprNode::Atan2(a, b) => self.compute_all_real_to_real(arena, &[a, b]),
+            ExprNode::Min(ref args) | ExprNode::Max(ref args) => {
+                self.compute_all_real_to_real(arena, args)
+            }
+            _ => Assumptions::default(), // Apply, Derivative, Integral, formal nodes, …
         };
 
         // Cache the result.
@@ -1108,6 +1133,11 @@ impl AssumptionCache {
             a.known_true |= Props::NONNEGATIVE | Props::REAL;
         }
 
+        // real_base^integer_exp → real (wherever defined)
+        if base_a.query(Props::REAL) == Some(true) && exp_a.query(Props::INTEGER) == Some(true) {
+            a.known_true |= Props::REAL;
+        }
+
         // integer^nonneg_integer → integer
         if base_a.query(Props::INTEGER) == Some(true)
             && exp_a.query(Props::INTEGER) == Some(true)
@@ -1330,10 +1360,182 @@ impl AssumptionCache {
         a
     }
 
+    /// `conjugate(z)` shares realness/imaginariness/finiteness with `z`
+    /// (and is zero/non-zero exactly when `z` is).
+    fn compute_conjugate(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
+        let inner_a = self.compute(arena, inner);
+        let mut a = Assumptions::default();
+        a.known_true |= Props::COMMUTATIVE;
+        for p in [
+            Props::REAL,
+            Props::COMPLEX,
+            Props::IMAGINARY,
+            Props::FINITE,
+            Props::INFINITE,
+            Props::ZERO,
+            Props::NONZERO,
+            Props::RATIONAL,
+            Props::INTEGER,
+            Props::ALGEBRAIC,
+            Props::POSITIVE,
+            Props::NEGATIVE,
+            Props::NONNEGATIVE,
+            Props::NONPOSITIVE,
+        ] {
+            match inner_a.query(p) {
+                Some(true) => a.known_true |= p,
+                Some(false) => a.known_false |= p,
+                None => {}
+            }
+        }
+        a.forward_chain();
+        a
+    }
+
+    /// Functions that map reals to reals (and complex to complex).
+    fn compute_real_to_real(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
+        let inner_a = self.compute(arena, inner);
+        let mut a = Assumptions::default();
+        a.known_true |= Props::COMMUTATIVE;
+        if inner_a.query(Props::REAL) == Some(true) {
+            a.known_true |= Props::REAL;
+        }
+        if inner_a.query(Props::COMPLEX) == Some(true) {
+            a.known_true |= Props::COMPLEX;
+        }
+        a.forward_chain();
+        a
+    }
+
+    /// Functions that are real on the positive reals (`ln Γ`, `Ci`, `li`, `ψ⁽ⁿ⁾`).
+    fn compute_positive_to_real(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
+        let inner_a = self.compute(arena, inner);
+        let mut a = Assumptions::default();
+        a.known_true |= Props::COMMUTATIVE;
+        if inner_a.query(Props::POSITIVE) == Some(true) {
+            a.known_true |= Props::REAL;
+        }
+        if inner_a.query(Props::COMPLEX) == Some(true) {
+            a.known_true |= Props::COMPLEX;
+        }
+        a.forward_chain();
+        a
+    }
+
+    /// Functions that are integer-valued on the reals (`floor`, `ceiling`, `sign`).
+    fn compute_real_to_integer(&mut self, arena: &Arena, inner: ExprId) -> Assumptions {
+        let inner_a = self.compute(arena, inner);
+        let mut a = Assumptions::default();
+        a.known_true |= Props::COMMUTATIVE;
+        if inner_a.query(Props::REAL) == Some(true) {
+            a.known_true |= Props::INTEGER | Props::REAL | Props::FINITE;
+        }
+        if inner_a.query(Props::COMPLEX) == Some(true) {
+            a.known_true |= Props::COMPLEX;
+        }
+        a.forward_chain();
+        a
+    }
+
+    /// Multi-argument functions that are real when every argument is real.
+    fn compute_all_real_to_real(&mut self, arena: &Arena, args: &[ExprId]) -> Assumptions {
+        let mut all_real = true;
+        let mut all_complex = true;
+        for &c in args {
+            let ca = self.compute(arena, c);
+            if ca.query(Props::REAL) != Some(true) {
+                all_real = false;
+            }
+            if ca.query(Props::COMPLEX) != Some(true) {
+                all_complex = false;
+            }
+        }
+        let mut a = Assumptions::default();
+        a.known_true |= Props::COMMUTATIVE;
+        if all_real {
+            a.known_true |= Props::REAL;
+        }
+        if all_complex {
+            a.known_true |= Props::COMPLEX;
+        }
+        a.forward_chain();
+        a
+    }
+
     /// Store user-supplied symbol assumptions in the cache.
     pub fn set_symbol_assumptions(&mut self, id: ExprId, assumptions: Assumptions) {
         self.cache.insert(id, assumptions);
     }
+}
+
+/// `γ` and `G`: positive real constants whose (ir)rationality is unproven.
+fn compute_positive_real_constant() -> Assumptions {
+    let mut a = Assumptions::default();
+    a.known_true |= Props::POSITIVE
+        | Props::NONNEGATIVE
+        | Props::NONZERO
+        | Props::REAL
+        | Props::COMPLEX
+        | Props::FINITE
+        | Props::COMMUTATIVE
+        | Props::HERMITIAN;
+    a.known_false |= Props::NEGATIVE
+        | Props::NONPOSITIVE
+        | Props::ZERO
+        | Props::INTEGER
+        | Props::IMAGINARY
+        | Props::INFINITE
+        | Props::EVEN
+        | Props::ODD
+        | Props::PRIME
+        | Props::COMPOSITE;
+    // Deliberately unknown: RATIONAL, IRRATIONAL, ALGEBRAIC, TRANSCENDENTAL.
+    a
+}
+
+/// `φ = (1+√5)/2`: positive, algebraic, irrational.
+fn compute_golden_ratio() -> Assumptions {
+    let mut a = Assumptions::default();
+    a.known_true |= Props::POSITIVE
+        | Props::NONNEGATIVE
+        | Props::NONZERO
+        | Props::REAL
+        | Props::COMPLEX
+        | Props::FINITE
+        | Props::COMMUTATIVE
+        | Props::ALGEBRAIC
+        | Props::IRRATIONAL
+        | Props::HERMITIAN;
+    a.known_false |= Props::NEGATIVE
+        | Props::NONPOSITIVE
+        | Props::ZERO
+        | Props::INTEGER
+        | Props::RATIONAL
+        | Props::TRANSCENDENTAL
+        | Props::IMAGINARY
+        | Props::INFINITE
+        | Props::EVEN
+        | Props::ODD
+        | Props::PRIME
+        | Props::COMPOSITE;
+    a
+}
+
+/// `re`, `im`, `arg`: real-valued by definition.
+fn compute_real_valued() -> Assumptions {
+    let mut a = Assumptions::default();
+    a.known_true |= Props::REAL | Props::COMPLEX | Props::COMMUTATIVE | Props::HERMITIAN;
+    a.known_false |= Props::IMAGINARY;
+    a
+}
+
+/// `δᵢⱼ ∈ {0, 1}`: a non-negative integer.
+fn compute_kronecker_delta() -> Assumptions {
+    let mut a = Assumptions::default();
+    a.known_true |= Props::INTEGER | Props::NONNEGATIVE | Props::FINITE | Props::COMMUTATIVE;
+    a.known_false |= Props::NEGATIVE;
+    a.forward_chain();
+    a
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

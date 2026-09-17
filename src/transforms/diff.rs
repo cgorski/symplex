@@ -130,6 +130,9 @@ fn diff_node(
         ExprNode::Pi
         | ExprNode::E
         | ExprNode::ImaginaryUnit
+        | ExprNode::EulerGamma
+        | ExprNode::Catalan
+        | ExprNode::GoldenRatio
         | ExprNode::PhysicalConstant(_, _)
         | ExprNode::Infinity
         | ExprNode::NegInfinity
@@ -496,11 +499,144 @@ fn diff_node(
             arena.mul(&[digamma_f, df])
         }
 
-        // ── Digamma: d/dx(ψ(f)) → unevaluated (trigamma is complex)
-        ExprNode::Digamma(_) => {
+        // ── Digamma: d/dx(ψ(f)) = ψ₁(f) · f'  (trigamma = Polygamma(1, f))
+        ExprNode::Digamma(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let one = arena.one;
+            let trigamma = arena.polygamma(one, inner);
+            arena.mul(&[trigamma, df])
+        }
+
+        // ── Polygamma: d/dx(ψ⁽ⁿ⁾(f)) = ψ⁽ⁿ⁺¹⁾(f) · f'  (for constant n)
+        ExprNode::Polygamma(n, inner) => {
+            let dn = get_deriv(cache, n, arena);
+            let df = get_deriv(cache, inner, arena);
+            if !arena.is_zero_structural(dn) {
+                // Differentiating w.r.t. the order is not elementary.
+                let v = var_expr(arena, var);
+                return arena.intern(ExprNode::Derivative(id, v));
+            }
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let one = arena.one;
+            let n_plus_1 = arena.add(&[n, one]);
+            let next = arena.polygamma(n_plus_1, inner);
+            arena.mul(&[next, df])
+        }
+
+        // ── Complex analysis ────────────────────────────────────────────
+        //
+        // re/im/conjugate/arg are not holomorphic, so d/dx only makes sense
+        // as a derivative along the real axis.  When the differentiation
+        // variable is provably real:
+        //   d/dx re(f) = re(f'),  d/dx im(f) = im(f'),
+        //   d/dx conj(f) = conj(f'),  d/dx arg(f) = im(f'/f).
+        // Otherwise the derivative stays formal.
+        ExprNode::Re(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            if !var_is_real(arena, var) {
+                let v = var_expr(arena, var);
+                return arena.intern(ExprNode::Derivative(id, v));
+            }
+            arena.re(df)
+        }
+        ExprNode::Im(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            if !var_is_real(arena, var) {
+                let v = var_expr(arena, var);
+                return arena.intern(ExprNode::Derivative(id, v));
+            }
+            arena.im(df)
+        }
+        ExprNode::Conjugate(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            if !var_is_real(arena, var) {
+                let v = var_expr(arena, var);
+                return arena.intern(ExprNode::Derivative(id, v));
+            }
+            arena.conjugate(df)
+        }
+        ExprNode::Arg(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            if !var_is_real(arena, var) {
+                let v = var_expr(arena, var);
+                return arena.intern(ExprNode::Derivative(id, v));
+            }
+            let ratio = arena.div(df, inner);
+            arena.im(ratio)
+        }
+
+        // ── Si: d/dx Si(f) = sin(f)/f · f' ─────────────────────────────
+        ExprNode::Si(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let sin_f = arena.sin(inner);
+            let ratio = arena.div(sin_f, inner);
+            arena.mul(&[ratio, df])
+        }
+
+        // ── Ci: d/dx Ci(f) = cos(f)/f · f' ─────────────────────────────
+        ExprNode::Ci(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let cos_f = arena.cos(inner);
+            let ratio = arena.div(cos_f, inner);
+            arena.mul(&[ratio, df])
+        }
+
+        // ── Ei: d/dx Ei(f) = e^f/f · f' ───────────────────────────────
+        ExprNode::Ei(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let exp_f = arena.exp(inner);
+            let ratio = arena.div(exp_f, inner);
+            arena.mul(&[ratio, df])
+        }
+
+        // ── li: d/dx li(f) = f' / ln(f) ────────────────────────────────
+        ExprNode::Li(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
+            let ln_f = arena.ln(inner);
+            arena.div(df, ln_f)
+        }
+
+        // ── ζ: no elementary derivative → formal (0 if argument is constant)
+        ExprNode::Zeta(inner) => {
+            let df = get_deriv(cache, inner, arena);
+            if arena.is_zero_structural(df) {
+                return arena.zero;
+            }
             let v = var_expr(arena, var);
             arena.intern(ExprNode::Derivative(id, v))
         }
+
+        // ── Kronecker delta: piecewise constant → 0
+        ExprNode::KroneckerDelta(_, _) => arena.zero,
 
         // ── Erf: d/dx(erf(f)) = 2/√π · exp(-f²) · f' ────────────
         ExprNode::Erf(inner) => {
@@ -572,8 +708,15 @@ fn diff_node(
 
         // ── Apply (user-defined function): chain rule ──────────────
         // d/dx(f(u₁,…,uₙ)) = Σᵢ (∂f/∂uᵢ) · (duᵢ/dx)
-        ExprNode::Apply(_func_sym, ref args) => {
+        ExprNode::Apply(func_sym, ref args) => {
             let args_clone = args.clone();
+
+            // Library special functions with known derivative rules
+            // (Bessel functions, orthogonal polynomials).
+            if let Some(result) = diff_known_apply(arena, func_sym, &args_clone, cache) {
+                return result;
+            }
+
             let mut terms: SmallVec<[ExprId; 4]> = SmallVec::new();
 
             for &arg in &args_clone {
@@ -691,6 +834,133 @@ fn get_deriv(cache: &FxHashMap<ExprId, ExprId>, id: ExprId, arena: &Arena) -> Ex
 /// Reconstruct the Symbol ExprId for the variable.
 fn var_expr(arena: &mut Arena, var: SymbolId) -> ExprId {
     arena.intern(ExprNode::Symbol(var))
+}
+
+/// Is the differentiation variable provably real?
+///
+/// Used by the `re`/`im`/`conjugate`/`arg` rules, which are only valid
+/// for derivatives along the real axis.
+fn var_is_real(arena: &mut Arena, var: SymbolId) -> bool {
+    let v = var_expr(arena, var);
+    crate::base::complex::is_real(arena, v) == Some(true)
+}
+
+/// Derivative rules for library `Apply` functions whose derivative has a
+/// closed form in terms of the same family (chain rule applied):
+///
+/// * Bessel: `Jᵥ' = (Jᵥ₋₁ − Jᵥ₊₁)/2`, `Yᵥ'` likewise,
+///   `Iᵥ' = (Iᵥ₋₁ + Iᵥ₊₁)/2`, `Kᵥ' = −(Kᵥ₋₁ + Kᵥ₊₁)/2`
+/// * Legendre: `Pₙ' = n (x Pₙ − Pₙ₋₁) / (x² − 1)`
+/// * Chebyshev: `Tₙ' = n Uₙ₋₁`, `Uₙ' = ((n+1) Tₙ₊₁ − x Uₙ) / (x² − 1)`
+/// * Hermite: `Hₙ' = 2n Hₙ₋₁`
+/// * Laguerre: `Lₙ' = (n Lₙ − n Lₙ₋₁) / x`
+///
+/// Returns `None` when the function is not one of these, when the
+/// order/degree parameter depends on the variable, or when the arity is
+/// unexpected — the caller then falls back to a formal derivative.
+fn diff_known_apply(
+    arena: &mut Arena,
+    func_sym: SymbolId,
+    args: &[ExprId],
+    cache: &FxHashMap<ExprId, ExprId>,
+) -> Option<ExprId> {
+    use crate::base::arena::{
+        FN_BESSELI, FN_BESSELJ, FN_BESSELK, FN_BESSELY, FN_CHEBYSHEV_T, FN_CHEBYSHEV_U, FN_HERMITE,
+        FN_LAGUERRE, FN_LEGENDRE,
+    };
+
+    if args.len() != 2 {
+        return None;
+    }
+    let name = arena.symbol_name(func_sym).to_owned();
+    let (param, x) = (args[0], args[1]);
+
+    // The order / degree must be constant w.r.t. the variable.
+    let dparam = get_deriv(cache, param, arena);
+    if !arena.is_zero_structural(dparam) {
+        return None;
+    }
+    let dx = get_deriv(cache, x, arena);
+    if arena.is_zero_structural(dx) {
+        return Some(arena.zero);
+    }
+
+    let one = arena.one;
+    let two = arena.int(2);
+    let half = arena.rational(1, 2);
+    let p_minus_1 = arena.sub(param, one);
+    let p_plus_1 = arena.add(&[param, one]);
+
+    let outer = match name.as_str() {
+        FN_BESSELJ => {
+            let a = arena.besselj(p_minus_1, x);
+            let b = arena.besselj(p_plus_1, x);
+            let d = arena.sub(a, b);
+            arena.mul(&[half, d])
+        }
+        FN_BESSELY => {
+            let a = arena.bessely(p_minus_1, x);
+            let b = arena.bessely(p_plus_1, x);
+            let d = arena.sub(a, b);
+            arena.mul(&[half, d])
+        }
+        FN_BESSELI => {
+            let a = arena.besseli(p_minus_1, x);
+            let b = arena.besseli(p_plus_1, x);
+            let s = arena.add(&[a, b]);
+            arena.mul(&[half, s])
+        }
+        FN_BESSELK => {
+            let a = arena.besselk(p_minus_1, x);
+            let b = arena.besselk(p_plus_1, x);
+            let s = arena.add(&[a, b]);
+            let neg_half = arena.rational(-1, 2);
+            arena.mul(&[neg_half, s])
+        }
+        FN_LEGENDRE => {
+            // Pₙ' = n (x Pₙ − Pₙ₋₁) / (x² − 1)
+            let pn = arena.legendre(param, x);
+            let pn_1 = arena.legendre(p_minus_1, x);
+            let x_pn = arena.mul(&[x, pn]);
+            let numer_inner = arena.sub(x_pn, pn_1);
+            let numer = arena.mul(&[param, numer_inner]);
+            let x2 = arena.pow(x, two);
+            let denom = arena.sub(x2, one);
+            arena.div(numer, denom)
+        }
+        FN_CHEBYSHEV_T => {
+            // Tₙ' = n Uₙ₋₁
+            let u = arena.chebyshev_u(p_minus_1, x);
+            arena.mul(&[param, u])
+        }
+        FN_CHEBYSHEV_U => {
+            // Uₙ' = ((n+1) Tₙ₊₁ − x Uₙ) / (x² − 1)
+            let t = arena.chebyshev_t(p_plus_1, x);
+            let un = arena.chebyshev_u(param, x);
+            let a = arena.mul(&[p_plus_1, t]);
+            let b = arena.mul(&[x, un]);
+            let numer = arena.sub(a, b);
+            let x2 = arena.pow(x, two);
+            let denom = arena.sub(x2, one);
+            arena.div(numer, denom)
+        }
+        FN_HERMITE => {
+            // Hₙ' = 2n Hₙ₋₁
+            let h = arena.hermite(p_minus_1, x);
+            arena.mul(&[two, param, h])
+        }
+        FN_LAGUERRE => {
+            // Lₙ' = (n Lₙ − n Lₙ₋₁) / x
+            let ln_ = arena.laguerre(param, x);
+            let ln_1 = arena.laguerre(p_minus_1, x);
+            let d = arena.sub(ln_, ln_1);
+            let numer = arena.mul(&[param, d]);
+            arena.div(numer, x)
+        }
+        _ => return None,
+    };
+
+    Some(arena.mul(&[outer, dx]))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

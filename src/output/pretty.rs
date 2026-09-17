@@ -388,6 +388,21 @@ fn pretty_node(arena: &Arena, id: ExprId, mode: RenderMode, depth: u8) -> MathBo
         }),
         ExprNode::E => MathBox::text("e"),
         ExprNode::ImaginaryUnit => MathBox::text("i"),
+        ExprNode::EulerGamma => MathBox::text(if mode == RenderMode::Unicode {
+            "γ"
+        } else {
+            "EulerGamma"
+        }),
+        ExprNode::Catalan => MathBox::text(if mode == RenderMode::Unicode {
+            "G"
+        } else {
+            "Catalan"
+        }),
+        ExprNode::GoldenRatio => MathBox::text(if mode == RenderMode::Unicode {
+            "φ"
+        } else {
+            "GoldenRatio"
+        }),
         ExprNode::Infinity => MathBox::text("∞"),
         ExprNode::NegInfinity => MathBox::text("-∞"),
         ExprNode::ComplexInfinity => MathBox::text("zoo"),
@@ -476,6 +491,79 @@ fn pretty_node(arena: &Arena, id: ExprId, mode: RenderMode, depth: u8) -> MathBo
             MathBox::hcat(&[MathBox::text(l), inner_box, MathBox::text(r)])
         }
         ExprNode::Sign(inner) => pretty_func("sgn", arena, inner, mode, depth),
+
+        // ── Complex analysis ────────────────────────────────────────────
+        ExprNode::Re(inner) => pretty_func("re", arena, inner, mode, depth),
+        ExprNode::Im(inner) => pretty_func("im", arena, inner, mode, depth),
+        ExprNode::Conjugate(inner) => {
+            if mode == RenderMode::Unicode {
+                // Overline the argument: z̅ rendered as a bar row above.
+                let inner_box = pretty_node(arena, inner, mode, depth);
+                let needs_parens =
+                    !matches!(arena.node(inner), ExprNode::Num(_) | ExprNode::Symbol(_));
+                let body = if needs_parens {
+                    MathBox::parens(inner_box, mode)
+                } else {
+                    inner_box
+                };
+                let bar: String = "‾".repeat(body.width());
+                let mut lines = vec![bar];
+                lines.extend(body.lines.iter().cloned());
+                MathBox {
+                    lines,
+                    baseline: body.baseline + 1,
+                    nesting_depth: body.nesting_depth,
+                }
+            } else {
+                pretty_func("conjugate", arena, inner, mode, depth)
+            }
+        }
+        ExprNode::Arg(inner) => pretty_func("arg", arena, inner, mode, depth),
+
+        // ── Special functions (0.2) ──────────────────────────────────────
+        ExprNode::Si(inner) => pretty_func("Si", arena, inner, mode, depth),
+        ExprNode::Ci(inner) => pretty_func("Ci", arena, inner, mode, depth),
+        ExprNode::Ei(inner) => pretty_func("Ei", arena, inner, mode, depth),
+        ExprNode::Li(inner) => pretty_func("li", arena, inner, mode, depth),
+        ExprNode::Zeta(inner) => {
+            let name = if mode == RenderMode::Unicode {
+                "ζ"
+            } else {
+                "zeta"
+            };
+            pretty_func(name, arena, inner, mode, depth)
+        }
+        ExprNode::Polygamma(n, x) => {
+            // ψ⁽ⁿ⁾(x) as ψ with superscript (n), then the argument.
+            let name = if mode == RenderMode::Unicode {
+                "ψ"
+            } else {
+                "polygamma"
+            };
+            if mode == RenderMode::Unicode {
+                let n_box = pretty_node(arena, n, mode, depth);
+                let sup = MathBox::parens(n_box, mode);
+                let head = MathBox::superscript(MathBox::text(name), sup);
+                let x_box = pretty_node(arena, x, mode, depth);
+                MathBox::hcat(&[head, MathBox::parens(x_box, mode)])
+            } else {
+                let n_box = pretty_node(arena, n, mode, depth);
+                let x_box = pretty_node(arena, x, mode, depth);
+                let args = MathBox::hcat(&[n_box, MathBox::text(", "), x_box]);
+                MathBox::hcat(&[MathBox::text(name), MathBox::parens(args, mode)])
+            }
+        }
+        ExprNode::KroneckerDelta(i, j) => {
+            let i_box = pretty_node(arena, i, mode, depth);
+            let j_box = pretty_node(arena, j, mode, depth);
+            if mode == RenderMode::Unicode {
+                let args = MathBox::hcat(&[i_box, MathBox::text(","), j_box]);
+                MathBox::hcat(&[MathBox::text("δ"), MathBox::parens(args, mode)])
+            } else {
+                let args = MathBox::hcat(&[i_box, MathBox::text(", "), j_box]);
+                MathBox::hcat(&[MathBox::text("KroneckerDelta"), MathBox::parens(args, mode)])
+            }
+        }
         ExprNode::Factorial(inner) => {
             let inner_box = pretty_node(arena, inner, mode, depth);
             let needs_parens = !matches!(arena.node(inner), ExprNode::Num(_) | ExprNode::Symbol(_));

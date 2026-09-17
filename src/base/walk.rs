@@ -158,6 +158,9 @@ pub(crate) fn rebuild_with_cache(
         | ExprNode::Pi
         | ExprNode::E
         | ExprNode::ImaginaryUnit
+        | ExprNode::EulerGamma
+        | ExprNode::Catalan
+        | ExprNode::GoldenRatio
         | ExprNode::PhysicalConstant(_, _)
         | ExprNode::Infinity
         | ExprNode::NegInfinity
@@ -260,6 +263,38 @@ pub(crate) fn rebuild_with_cache(
 
         ExprNode::Heaviside(inner) => rebuild_intern_unary!(arena, id, inner, cache, Heaviside),
         ExprNode::DiracDelta(inner) => rebuild_intern_unary!(arena, id, inner, cache, DiracDelta),
+
+        // Complex analysis — go through the canonical constructors so that
+        // e.g. `re(x)` with `x := 3 + 4i` collapses to `3`.
+        ExprNode::Re(inner) => rebuild_unary(arena, id, inner, cache, Arena::re),
+        ExprNode::Im(inner) => rebuild_unary(arena, id, inner, cache, Arena::im),
+        ExprNode::Conjugate(inner) => rebuild_unary(arena, id, inner, cache, Arena::conjugate),
+        ExprNode::Arg(inner) => rebuild_unary(arena, id, inner, cache, Arena::arg),
+
+        // Special functions (0.2) — canonical constructors fold exact values.
+        ExprNode::Si(inner) => rebuild_unary(arena, id, inner, cache, Arena::si),
+        ExprNode::Ci(inner) => rebuild_unary(arena, id, inner, cache, Arena::ci),
+        ExprNode::Ei(inner) => rebuild_unary(arena, id, inner, cache, Arena::ei),
+        ExprNode::Li(inner) => rebuild_unary(arena, id, inner, cache, Arena::li),
+        ExprNode::Zeta(inner) => rebuild_unary(arena, id, inner, cache, Arena::zeta),
+        ExprNode::Polygamma(n, x) => {
+            let nn = cache.get(&n).copied().unwrap_or(n);
+            let nx = cache.get(&x).copied().unwrap_or(x);
+            if nn == n && nx == x {
+                id
+            } else {
+                arena.polygamma(nn, nx)
+            }
+        }
+        ExprNode::KroneckerDelta(i, j) => {
+            let ni = cache.get(&i).copied().unwrap_or(i);
+            let nj = cache.get(&j).copied().unwrap_or(j);
+            if ni == i && nj == j {
+                id
+            } else {
+                arena.kronecker_delta(ni, nj)
+            }
+        }
 
         ExprNode::Gamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, Gamma),
         ExprNode::LogGamma(inner) => rebuild_intern_unary!(arena, id, inner, cache, LogGamma),
@@ -677,8 +712,14 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
 
 /// Returns `true` if the expression tree rooted at `root` contains any
 /// unevaluated formal node: `Integral`, `Derivative`, `Limit`, `Series`,
-/// `LaplaceTransform`, `InverseLaplaceTransform`, `Residue`, `RootOf`,
-/// `DSolve`, `ConditionSet`, formal `Sum`, or formal `Product_`.
+/// `LaplaceTransform`, `InverseLaplaceTransform`, `Residue`, `DSolve`,
+/// `ConditionSet`, formal `Sum`, or formal `Product_`.
+///
+/// `RootOf` and `RootSum` are **not** counted: they are complete algebraic
+/// answers (an exact description of a polynomial root / a sum over all
+/// roots), not pending computations.  Likewise, function nodes such as
+/// `Re`, `Im`, `Si`, `Zeta`, … are ordinary functions and never count as
+/// unevaluated.
 pub(crate) fn has_unevaluated(arena: &Arena, root: ExprId) -> bool {
     let mut stack = vec![root];
     let mut visited = FxHashSet::default();
@@ -694,8 +735,6 @@ pub(crate) fn has_unevaluated(arena: &Arena, root: ExprId) -> bool {
             | ExprNode::LaplaceTransform(..)
             | ExprNode::InverseLaplaceTransform(..)
             | ExprNode::Residue(..)
-            | ExprNode::RootOf(..)
-            | ExprNode::RootSum(..)
             | ExprNode::DSolve(..)
             | ExprNode::ConditionSet(..)
             | ExprNode::Sum(..)
@@ -885,5 +924,61 @@ mod tests {
         let a = Arena::new();
         let syms = free_symbols(&a, a.pi);
         assert!(syms.is_empty(), "pi has no free symbols");
+    }
+
+    // ── has_unevaluated ────────────────────────────────────────────────
+
+    #[test]
+    fn has_unevaluated_formal_nodes() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let integral = a.intern(ExprNode::Integral(x, x));
+        assert!(has_unevaluated(&a, integral));
+        let deriv = a.intern(ExprNode::Derivative(x, x));
+        assert!(has_unevaluated(&a, deriv));
+        let lim = a.intern(ExprNode::Limit(x, x, a.zero));
+        assert!(has_unevaluated(&a, lim));
+        // Nested inside an Add.
+        let sum = a.add(&[integral, a.one]);
+        assert!(has_unevaluated(&a, sum));
+    }
+
+    #[test]
+    fn root_of_and_root_sum_are_not_unevaluated() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let five = a.int(5);
+        let x5 = a.pow(x, five);
+        let poly = a.add(&[x5, x, a.one]);
+        let root = a.intern(ExprNode::RootOf(poly, a.zero));
+        assert!(
+            !has_unevaluated(&a, root),
+            "RootOf is a complete algebraic answer"
+        );
+        let t = sym(&mut a, "t");
+        let body = a.ln(t);
+        let rs = a.intern(ExprNode::RootSum(poly, body, t));
+        assert!(!has_unevaluated(&a, rs), "RootSum is not unevaluated");
+    }
+
+    #[test]
+    fn function_nodes_are_not_unevaluated() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        for id in [
+            a.intern(ExprNode::Re(x)),
+            a.intern(ExprNode::Im(x)),
+            a.intern(ExprNode::Conjugate(x)),
+            a.intern(ExprNode::Arg(x)),
+            a.intern(ExprNode::Si(x)),
+            a.intern(ExprNode::Ci(x)),
+            a.intern(ExprNode::Ei(x)),
+            a.intern(ExprNode::Li(x)),
+            a.intern(ExprNode::Zeta(x)),
+            a.intern(ExprNode::Polygamma(a.one, x)),
+            a.intern(ExprNode::KroneckerDelta(x, a.one)),
+        ] {
+            assert!(!has_unevaluated(&a, id), "{:?} is a function", a.node(id));
+        }
     }
 }

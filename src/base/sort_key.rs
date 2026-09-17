@@ -152,6 +152,17 @@ const FN_BETA: u8 = 27;
 const FN_HEAVISIDE: u8 = 28;
 const FN_DIRAC_DELTA: u8 = 29;
 const FN_LAMBERT_W: u8 = 30;
+const FN_RE: u8 = 31;
+const FN_IM: u8 = 32;
+const FN_CONJUGATE: u8 = 33;
+const FN_ARG: u8 = 34;
+const FN_SI: u8 = 35;
+const FN_CI: u8 = 36;
+const FN_EI: u8 = 37;
+const FN_LI: u8 = 38;
+const FN_ZETA: u8 = 39;
+const FN_POLYGAMMA: u8 = 40;
+const FN_KRONECKER_DELTA: u8 = 41;
 
 // ---------------------------------------------------------------------------
 // Constant sub-rank bytes (used within the RANK_CONSTANT class)
@@ -161,6 +172,9 @@ const CONST_PI: u8 = 0;
 const CONST_E: u8 = 1;
 const CONST_IMAGINARY_UNIT: u8 = 2;
 const CONST_PHYSICAL: u8 = 3;
+const CONST_EULER_GAMMA: u8 = 4;
+const CONST_CATALAN: u8 = 5;
+const CONST_GOLDEN_RATIO: u8 = 6;
 const CONST_BOOL_TRUE: u8 = 10;
 const CONST_BOOL_FALSE: u8 = 11;
 
@@ -269,7 +283,7 @@ impl fmt::Debug for SortKey {
 /// |  40  | `Pow`                                              |
 /// |  60  | `Mul`                                              |
 /// |  80  | `Add`                                              |
-/// | 100  | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Asinh`, `Acosh`, `Atanh`, `Apply` |
+/// | 100  | `Sin`, `Cos`, `Tan`, `Exp`, `Ln`, `Abs`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Asinh`, `Acosh`, `Atanh`, `Apply`, special functions, `Re`, `Im`, `Conjugate`, `Arg` |
 /// | 110  | `Gt`, `Ge`, `Eq_`, `Ne` (relational)               |
 /// | 112  | `And`                                              |
 /// | 114  | `Or`                                               |
@@ -281,7 +295,7 @@ impl fmt::Debug for SortKey {
 /// | 140  | `Integral`                                         |
 /// | 150  | `Sum`                                              |
 /// | 152  | `Product_`                                         |
-/// | 170  | `Pi`, `E`, `ImaginaryUnit`                         |
+/// | 170  | `Pi`, `E`, `ImaginaryUnit`, `EulerGamma`, `Catalan`, `GoldenRatio` |
 /// | 190  | `EmptySet`, `UniversalSet`, `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`, `SetComplement` |
 /// | 210  | `Infinity`, `NegInfinity`, `ComplexInfinity`, `NaN`, `Neg` |
 pub fn compute_sort_key(
@@ -490,6 +504,76 @@ pub fn compute_sort_key(
             key.extend(get_key(*x).as_bytes());
         }
 
+        // -- complex analysis ------------------------------------------------
+        ExprNode::Re(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_RE);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Im(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_IM);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Conjugate(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_CONJUGATE);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Arg(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ARG);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        // -- special functions (0.2) -----------------------------------------
+        ExprNode::Si(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_SI);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Ci(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_CI);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Ei(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_EI);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Li(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_LI);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Zeta(x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_ZETA);
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::Polygamma(n, x) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_POLYGAMMA);
+            key.extend(get_key(*n).as_bytes());
+            key.extend(get_key(*x).as_bytes());
+        }
+
+        ExprNode::KroneckerDelta(i, j) => {
+            key.push(RANK_FUNCTION);
+            key.push(FN_KRONECKER_DELTA);
+            key.extend(get_key(*i).as_bytes());
+            key.extend(get_key(*j).as_bytes());
+        }
+
         ExprNode::Beta(a, b) => {
             key.push(RANK_FUNCTION);
             key.push(FN_BETA);
@@ -566,6 +650,21 @@ pub fn compute_sort_key(
         ExprNode::ImaginaryUnit => {
             key.push(RANK_CONSTANT);
             key.push(CONST_IMAGINARY_UNIT);
+        }
+
+        ExprNode::EulerGamma => {
+            key.push(RANK_CONSTANT);
+            key.push(CONST_EULER_GAMMA);
+        }
+
+        ExprNode::Catalan => {
+            key.push(RANK_CONSTANT);
+            key.push(CONST_CATALAN);
+        }
+
+        ExprNode::GoldenRatio => {
+            key.push(RANK_CONSTANT);
+            key.push(CONST_GOLDEN_RATIO);
         }
 
         ExprNode::PhysicalConstant(name_id, _) => {
@@ -915,5 +1014,56 @@ mod tests {
         );
         assert_eq!(neg_key.as_bytes()[0], RANK_SPECIAL);
         assert_eq!(neg_key.as_bytes()[1], SPECIAL_NEG);
+    }
+
+    #[test]
+    fn named_constants_have_distinct_constant_subranks() {
+        let keys = [
+            atom_key(&ExprNode::Pi),
+            atom_key(&ExprNode::E),
+            atom_key(&ExprNode::ImaginaryUnit),
+            atom_key(&ExprNode::EulerGamma),
+            atom_key(&ExprNode::Catalan),
+            atom_key(&ExprNode::GoldenRatio),
+        ];
+        for k in &keys {
+            assert_eq!(k.as_bytes()[0], RANK_CONSTANT);
+        }
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                assert!(keys[i] < keys[j], "constant sub-ranks must be ordered");
+            }
+        }
+    }
+
+    #[test]
+    fn new_function_discriminants_are_distinct() {
+        let child = |_| SortKey(SmallVec::from_slice(&[RANK_NUM, 0x01]));
+        let nodes = [
+            ExprNode::Re(ExprId(0)),
+            ExprNode::Im(ExprId(0)),
+            ExprNode::Conjugate(ExprId(0)),
+            ExprNode::Arg(ExprId(0)),
+            ExprNode::Si(ExprId(0)),
+            ExprNode::Ci(ExprId(0)),
+            ExprNode::Ei(ExprId(0)),
+            ExprNode::Li(ExprId(0)),
+            ExprNode::Zeta(ExprId(0)),
+            ExprNode::Polygamma(ExprId(0), ExprId(0)),
+            ExprNode::KroneckerDelta(ExprId(0), ExprId(0)),
+            ExprNode::LambertW(ExprId(0)),
+        ];
+        let keys: Vec<SortKey> = nodes
+            .iter()
+            .map(|n| compute_sort_key(n, child, |_| unreachable!(), |_| unreachable!()))
+            .collect();
+        for k in &keys {
+            assert_eq!(k.as_bytes()[0], RANK_FUNCTION);
+        }
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                assert_ne!(keys[i], keys[j], "{:?} vs {:?}", nodes[i], nodes[j]);
+            }
+        }
     }
 }
