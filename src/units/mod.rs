@@ -1,9 +1,10 @@
 //! Compile-time dimensional analysis for physical quantities.
 //!
 //! This module provides type-safe physical quantity tracking using phantom types
-//! and typenum type-level integers. Named newtypes like [`Force`], [`Voltage`],
-//! and [`Energy`] produce clear compiler error messages ("expected Force, found Mass")
-//! while the generic [`Qty`] type handles exotic dimension combinations.
+//! and typenum type-level integers. Named newtypes like [`Force`](crate::units::si::Force),
+//! [`Voltage`](crate::units::si::Voltage), and [`Energy`](crate::units::si::Energy) produce
+//! clear compiler error messages ("expected Force, found Mass") while the generic
+//! [`Qty`](crate::units::qty::Qty) type handles exotic dimension combinations.
 //!
 //! # Architecture
 //!

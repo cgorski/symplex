@@ -122,13 +122,7 @@ fn compare_at_rational_points(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Helper: verify that apart(together(r), x) ≈ r at multiple points.
-fn assert_apart_together_roundtrip(
-    expr: &Ex,
-    var: &Ex,
-    points: &[i64],
-    tol: f64,
-    label: &str,
-) {
+fn assert_apart_together_roundtrip(expr: &Ex, var: &Ex, points: &[i64], tol: f64, label: &str) {
     let combined = expr.together();
     let decomposed = combined.partial_fractions(var);
 
@@ -200,13 +194,7 @@ fn prop1_apart_together_x_over_x2_minus_x_minus_2() {
     symplex::syms!(ctx; x);
     let expr = &x / (&x.powi(2) - &x - 2);
     // Avoid x = 2, x = -1 (poles)
-    assert_apart_together_roundtrip(
-        &expr,
-        &x,
-        &[-3, -2, 0, 1, 3, 5, 7],
-        1e-9,
-        "x/(x²-x-2)",
-    );
+    assert_apart_together_roundtrip(&expr, &x, &[-3, -2, 0, 1, 3, 5, 7], 1e-9, "x/(x²-x-2)");
 }
 
 #[test]
@@ -216,13 +204,7 @@ fn prop1_apart_together_x2_plus_1_over_x3_minus_1() {
     symplex::syms!(ctx; x);
     let expr = (&x.powi(2) + 1) / (&x.powi(3) - 1);
     // Avoid x = 1 (pole)
-    assert_apart_together_roundtrip(
-        &expr,
-        &x,
-        &[-3, -2, 0, 2, 3, 5],
-        1e-9,
-        "(x²+1)/(x³-1)",
-    );
+    assert_apart_together_roundtrip(&expr, &x, &[-3, -2, 0, 2, 3, 5], 1e-9, "(x²+1)/(x³-1)");
 }
 
 #[test]
@@ -296,13 +278,7 @@ fn prop1_apart_together_1_over_x2_minus_5x_plus_6() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let expr = ctx.int(1) / (&x.powi(2) - &x * 5 + 6);
-    assert_apart_together_roundtrip(
-        &expr,
-        &x,
-        &[-2, -1, 0, 1, 4, 5, 7],
-        1e-9,
-        "1/(x²-5x+6)",
-    );
+    assert_apart_together_roundtrip(&expr, &x, &[-2, -1, 0, 1, 4, 5, 7], 1e-9, "1/(x²-5x+6)");
 }
 
 #[test]
@@ -311,13 +287,7 @@ fn prop1_apart_together_x3_plus_1_over_x2_minus_1() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let expr = (&x.powi(3) + 1) / (&x.powi(2) - 1);
-    assert_apart_together_roundtrip(
-        &expr,
-        &x,
-        &[-3, -2, 0, 2, 3, 5],
-        1e-9,
-        "(x³+1)/(x²-1)",
-    );
+    assert_apart_together_roundtrip(&expr, &x, &[-3, -2, 0, 2, 3, 5], 1e-9, "(x³+1)/(x²-1)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -353,10 +323,14 @@ fn assert_trig_roundtrip_1var(
             }
             (Err(_), Err(_)) => {}
             (Ok(a), Err(e)) => {
-                panic!("trig roundtrip {label} at {var}={p}/{q}: original={a} but roundtrip failed: {e}");
+                panic!(
+                    "trig roundtrip {label} at {var}={p}/{q}: original={a} but roundtrip failed: {e}"
+                );
             }
             (Err(e), Ok(b)) => {
-                panic!("trig roundtrip {label} at {var}={p}/{q}: original failed: {e} but roundtrip={b}");
+                panic!(
+                    "trig roundtrip {label} at {var}={p}/{q}: original failed: {e} but roundtrip={b}"
+                );
             }
         }
     }
@@ -401,10 +375,14 @@ fn assert_trig_roundtrip_2var(
             }
             (Err(_), Err(_)) => {}
             (Ok(a), Err(e)) => {
-                panic!("trig 2var roundtrip {label} at x={xp}/{xq}, y={yp}/{yq}: original={a}, roundtrip err: {e}");
+                panic!(
+                    "trig 2var roundtrip {label} at x={xp}/{xq}, y={yp}/{yq}: original={a}, roundtrip err: {e}"
+                );
             }
             (Err(e), Ok(b)) => {
-                panic!("trig 2var roundtrip {label} at x={xp}/{xq}, y={yp}/{yq}: original err: {e}, roundtrip={b}");
+                panic!(
+                    "trig 2var roundtrip {label} at x={xp}/{xq}, y={yp}/{yq}: original err: {e}, roundtrip={b}"
+                );
             }
         }
     }
@@ -414,14 +392,7 @@ fn assert_trig_roundtrip_2var(
     );
 }
 
-const TRIG_1VAR_POINTS: &[(i64, i64)] = &[
-    (1, 2),
-    (7, 10),
-    (1, 1),
-    (3, 1),
-    (11, 10),
-    (5, 3),
-];
+const TRIG_1VAR_POINTS: &[(i64, i64)] = &[(1, 2), (7, 10), (1, 1), (3, 1), (11, 10), (5, 3)];
 
 const TRIG_2VAR_POINTS: &[(i64, i64, i64, i64)] = &[
     (1, 2, 7, 10),
@@ -622,14 +593,7 @@ fn assert_rewrite_exp_preserves_value(
     );
 }
 
-const EXP_REWRITE_POINTS: &[(i64, i64)] = &[
-    (1, 2),
-    (7, 10),
-    (1, 1),
-    (3, 2),
-    (11, 10),
-    (2, 1),
-];
+const EXP_REWRITE_POINTS: &[(i64, i64)] = &[(1, 2), (7, 10), (1, 1), (3, 2), (11, 10), (2, 1)];
 
 #[test]
 fn prop3_rewrite_exp_sin_x() {
@@ -679,13 +643,7 @@ fn prop3_rewrite_exp_sin2_plus_cos2() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
-    assert_rewrite_exp_preserves_value(
-        &expr,
-        &x,
-        EXP_REWRITE_POINTS,
-        1e-9,
-        "sin²(x)+cos²(x)",
-    );
+    assert_rewrite_exp_preserves_value(&expr, &x, EXP_REWRITE_POINTS, 1e-9, "sin²(x)+cos²(x)");
 }
 
 #[test]
@@ -693,13 +651,7 @@ fn prop3_rewrite_exp_sin_plus_cos() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let expr = &x.sin() + &x.cos();
-    assert_rewrite_exp_preserves_value(
-        &expr,
-        &x,
-        EXP_REWRITE_POINTS,
-        1e-9,
-        "sin(x)+cos(x)",
-    );
+    assert_rewrite_exp_preserves_value(&expr, &x, EXP_REWRITE_POINTS, 1e-9, "sin(x)+cos(x)");
 }
 
 #[test]
@@ -733,7 +685,11 @@ fn prop3_rewrite_exp_atom_unchanged() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let rewritten = x.rewrite_as_exp();
-    assert_eq!(format!("{rewritten}"), "x", "bare symbol should be unchanged");
+    assert_eq!(
+        format!("{rewritten}"),
+        "x",
+        "bare symbol should be unchanged"
+    );
 }
 
 #[test]
@@ -775,9 +731,7 @@ fn assert_subs_commute(
             );
         }
         (Err(e1), Err(e2)) => {
-            eprintln!(
-                "subs commutativity {label}: both orders failed — xy: {e1}, yx: {e2}"
-            );
+            eprintln!("subs commutativity {label}: both orders failed — xy: {e1}, yx: {e2}");
         }
         (Ok(a), Err(e)) => {
             panic!("subs commutativity {label}: xy={a} but yx failed: {e}");
@@ -1221,9 +1175,7 @@ fn assert_series_convergence(
 
         // Check if series is unevaluated
         if series.has_unevaluated() {
-            eprintln!(
-                "SKIP series convergence {label} at order {n}: unevaluated series"
-            );
+            eprintln!("SKIP series convergence {label} at order {n}: unevaluated series");
             continue;
         }
 
@@ -1231,9 +1183,7 @@ fn assert_series_convergence(
         let approx_val = match series_expanded.subs(var, &eval_pt).eval().eval_f64() {
             Ok(v) => v,
             Err(e) => {
-                eprintln!(
-                    "SKIP series convergence {label} at order {n}: eval failed: {e}"
-                );
+                eprintln!("SKIP series convergence {label} at order {n}: eval failed: {e}");
                 continue;
             }
         };
@@ -1375,9 +1325,7 @@ fn assert_ftc_property(
 
     // Check for unevaluated integral
     if antideriv.has_unevaluated() {
-        eprintln!(
-            "SKIP FTC {label}: integration returned unevaluated form: {antideriv_str}"
-        );
+        eprintln!("SKIP FTC {label}: integration returned unevaluated form: {antideriv_str}");
         return;
     }
 
@@ -1423,12 +1371,7 @@ fn assert_ftc_property(
 
 /// Safe evaluation points for FTC: avoid 0 (for 1/x type functions),
 /// avoid negatives (for ln), stay modest in size.
-const FTC_EVAL_POINTS: &[(i64, i64)] = &[
-    (3, 10),
-    (7, 10),
-    (14, 10),
-    (21, 10),
-];
+const FTC_EVAL_POINTS: &[(i64, i64)] = &[(3, 10), (7, 10), (14, 10), (21, 10)];
 
 #[test]
 fn prop7_ftc_x_pow_0() {
@@ -1598,7 +1541,13 @@ fn cross_prop_trig_and_rewrite() {
     let expr = &x.sin() * &x.cos();
 
     // Trig roundtrip
-    assert_trig_roundtrip_1var(&expr, &x, TRIG_1VAR_POINTS, 1e-9, "cross: sin(x)*cos(x) trig");
+    assert_trig_roundtrip_1var(
+        &expr,
+        &x,
+        TRIG_1VAR_POINTS,
+        1e-9,
+        "cross: sin(x)*cos(x) trig",
+    );
 
     // Rewrite as exp
     assert_rewrite_exp_preserves_value(
@@ -1634,13 +1583,7 @@ fn cross_prop_polynomial_ftc_and_solve() {
 // ---------------------------------------------------------------------------
 
 /// Verify that together(apart(r)) ≈ r — the *other* direction.
-fn assert_together_apart_roundtrip(
-    expr: &Ex,
-    var: &Ex,
-    points: &[i64],
-    tol: f64,
-    label: &str,
-) {
+fn assert_together_apart_roundtrip(expr: &Ex, var: &Ex, points: &[i64], tol: f64, label: &str) {
     let decomposed = expr.partial_fractions(var);
     let recombined = decomposed.together();
 
@@ -1690,13 +1633,7 @@ fn prop1_hard_reverse_roundtrip_x_over_x2_minus_x_minus_2() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let expr = &x / (&x.powi(2) - &x - 2);
-    assert_together_apart_roundtrip(
-        &expr,
-        &x,
-        &[-3, -2, 0, 1, 3, 5, 7],
-        1e-9,
-        "rev: x/(x²-x-2)",
-    );
+    assert_together_apart_roundtrip(&expr, &x, &[-3, -2, 0, 1, 3, 5, 7], 1e-9, "rev: x/(x²-x-2)");
 }
 
 #[test]
@@ -1705,13 +1642,7 @@ fn prop1_hard_reverse_roundtrip_1_over_x3_minus_1() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let expr = ctx.int(1) / (&x.powi(3) - 1);
-    assert_together_apart_roundtrip(
-        &expr,
-        &x,
-        &[-3, -2, 0, 2, 3, 5],
-        1e-9,
-        "rev: 1/(x³-1)",
-    );
+    assert_together_apart_roundtrip(&expr, &x, &[-3, -2, 0, 2, 3, 5], 1e-9, "rev: 1/(x³-1)");
 }
 
 #[test]
@@ -1747,13 +1678,7 @@ fn prop1_hard_apart_repeated_roots() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let expr = ctx.int(1) / (&x - 1).powi(3);
-    assert_apart_together_roundtrip(
-        &expr,
-        &x,
-        &[-2, -1, 0, 2, 3, 5],
-        1e-9,
-        "1/(x-1)³ repeated",
-    );
+    assert_apart_together_roundtrip(&expr, &x, &[-2, -1, 0, 2, 3, 5], 1e-9, "1/(x-1)³ repeated");
 }
 
 #[test]
@@ -1762,13 +1687,7 @@ fn prop1_hard_apart_high_degree_denom() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let expr = ctx.int(1) / (&x.powi(4) - 1);
-    assert_apart_together_roundtrip(
-        &expr,
-        &x,
-        &[-3, -2, 0, 2, 3, 5],
-        1e-9,
-        "1/(x⁴-1)",
-    );
+    assert_apart_together_roundtrip(&expr, &x, &[-3, -2, 0, 2, 3, 5], 1e-9, "1/(x⁴-1)");
 }
 
 #[test]
@@ -1832,6 +1751,7 @@ fn prop2_hard_expand_trig_preserves_value() {
 }
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn prop2_hard_trig_combine_preserves_value() {
     // trig_combine alone should preserve value
     let ctx = Context::new();
@@ -1965,10 +1885,8 @@ fn prop3_hard_rewrite_exp_hyp_contains_exp() {
 
     // At minimum, value must still be preserved even if form is unchanged
     let points: &[(i64, i64)] = &[(1, 2), (7, 10), (1, 1), (3, 2)];
-    let sinh_failures =
-        compare_at_rational_points(&x.sinh(), &sinh_rewritten, &x, points, 1e-9);
-    let cosh_failures =
-        compare_at_rational_points(&x.cosh(), &cosh_rewritten, &x, points, 1e-9);
+    let sinh_failures = compare_at_rational_points(&x.sinh(), &sinh_rewritten, &x, points, 1e-9);
+    let cosh_failures = compare_at_rational_points(&x.cosh(), &cosh_rewritten, &x, points, 1e-9);
     assert!(
         sinh_failures.is_empty(),
         "rewrite_as_exp(sinh) value mismatch: {:?}",
@@ -2111,7 +2029,12 @@ fn prop4_hard_subs_simultaneous_swap() {
     // Simultaneous swap
     let swapped = expr.subs_map(&[(&x, &y), (&y, &x)]);
     // This should be y + 2x
-    let v_swap = swapped.subs_i64(&x, 3).subs_i64(&y, 7).eval().eval_f64().unwrap();
+    let v_swap = swapped
+        .subs_i64(&x, 3)
+        .subs_i64(&y, 7)
+        .eval()
+        .eval_f64()
+        .unwrap();
     // y + 2x at x=3, y=7 → 7 + 6 = 13
     assert!(
         approx(v_swap, 13.0, 1e-12),
@@ -2120,7 +2043,12 @@ fn prop4_hard_subs_simultaneous_swap() {
 
     // Sequential (NOT a swap — x→y first, then y→x collapses both)
     let seq = expr.subs(&x, &y).subs(&y, &x);
-    let v_seq = seq.subs_i64(&x, 3).subs_i64(&y, 7).eval().eval_f64().unwrap();
+    let v_seq = seq
+        .subs_i64(&x, 3)
+        .subs_i64(&y, 7)
+        .eval()
+        .eval_f64()
+        .unwrap();
     // After subs(x,y): y + 2y = 3y; after subs(y,x): 3x → at x=3: 9
     assert!(
         approx(v_seq, 9.0, 1e-12),
@@ -2185,13 +2113,13 @@ fn prop5_hard_solve_double_root() {
     for (i, root) in roots.iter().enumerate() {
         let residual = expr.subs(&x, root).eval();
         let s = format!("{residual}");
-        if s != "0" {
-            if let Ok(v) = residual.eval_f64() {
-                assert!(
-                    v.abs() < 1e-9,
-                    "double root: root {i} ({root}) has residual {v}"
-                );
-            }
+        if s != "0"
+            && let Ok(v) = residual.eval_f64()
+        {
+            assert!(
+                v.abs() < 1e-9,
+                "double root: root {i} ({root}) has residual {v}"
+            );
         }
     }
 
@@ -2482,9 +2410,9 @@ fn cross_hard_diff_series_at_zero() {
     let zero = ctx.int(0);
 
     let cases: Vec<(&str, Ex, f64)> = vec![
-        ("exp(x)", x.exp(), 1.0),       // exp(0) = 1
-        ("sin(x)", x.sin(), 0.0),       // sin(0) = 0
-        ("cos(x)", x.cos(), 1.0),       // cos(0) = 1
+        ("exp(x)", x.exp(), 1.0), // exp(0) = 1
+        ("sin(x)", x.sin(), 0.0), // sin(0) = 0
+        ("cos(x)", x.cos(), 1.0), // cos(0) = 1
         ("1/(1-x)", ctx.int(1) / &(ctx.int(1) - &x), 1.0),
         ("ln(1+x)", (&x + 1).ln(), 0.0), // ln(1) = 0
     ];
@@ -2673,10 +2601,7 @@ fn cross_hard_diff_of_constant_is_zero() {
     for (label, c) in &constants {
         let deriv = c.diff(&x);
         let s = format!("{deriv}");
-        assert_eq!(
-            s, "0",
-            "BUG: d/dx({label}) should be '0', got '{s}'"
-        );
+        assert_eq!(s, "0", "BUG: d/dx({label}) should be '0', got '{s}'");
     }
 }
 

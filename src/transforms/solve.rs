@@ -959,10 +959,7 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 /// every rational root `p/q` satisfies `p | a₀` and `q | aₙ`.
 ///
 /// Returns `None` if no rational root is found (Cardano fallback will be used).
-fn find_preferred_resolvent_root(
-    resolvent: &Poly,
-    p_rat: &Ratio<BigInt>,
-) -> Option<Ratio<BigInt>> {
+fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Ratio<BigInt>) -> Option<Ratio<BigInt>> {
     let (int_poly, _scale) = clear_denominators(resolvent);
     let a0 = int_poly.coeff(0).to_integer();
     let an = match int_poly.leading_coeff() {
@@ -989,14 +986,10 @@ fn find_preferred_resolvent_root(
         let bq = reduced.coeff(1);
         let cq = reduced.coeff(0);
         if !aq.is_zero() {
-            let disc = &bq * &bq
-                - Ratio::from_integer(BigInt::from(4)) * &aq * &cq;
+            let disc = &bq * &bq - Ratio::from_integer(BigInt::from(4)) * &aq * &cq;
             if let Some(sqrt_d) = rational_sqrt(&disc) {
                 let two_aq = Ratio::from_integer(BigInt::from(2)) * &aq;
-                for candidate in [
-                    (-&bq + &sqrt_d) / &two_aq,
-                    (-&bq - &sqrt_d) / &two_aq,
-                ] {
+                for candidate in [(-&bq + &sqrt_d) / &two_aq, (-&bq - &sqrt_d) / &two_aq] {
                     if &two_r * &candidate - p_rat != Ratio::zero() {
                         return Some(candidate);
                     }
@@ -1013,8 +1006,7 @@ fn find_preferred_resolvent_root(
         for p_div in &divs_a0 {
             for q_div in &divs_an {
                 for &sign in &[1i64, -1i64] {
-                    let candidate =
-                        Ratio::new(p_div * BigInt::from(sign), q_div.clone());
+                    let candidate = Ratio::new(p_div * BigInt::from(sign), q_div.clone());
                     if resolvent.eval(&candidate).is_zero() {
                         // Prefer a root where 2m - p ≠ 0.
                         if &two_r * &candidate - p_rat != Ratio::zero() {
@@ -1342,26 +1334,23 @@ fn collect_gens_recursive(
         return;
     }
     match arena.node(expr).clone() {
-        ExprNode::Exp(inner) if inner == var => {
-            if !gens.contains(&expr) {
-                gens.push(expr);
-            }
+        ExprNode::Exp(inner) if inner == var && !gens.contains(&expr) => {
+            gens.push(expr);
         }
-        ExprNode::Sin(inner) | ExprNode::Cos(inner) | ExprNode::Tan(inner) if inner == var => {
-            if !gens.contains(&expr) {
-                gens.push(expr);
-            }
+        ExprNode::Sin(inner) | ExprNode::Cos(inner) | ExprNode::Tan(inner)
+            if inner == var && !gens.contains(&expr) =>
+        {
+            gens.push(expr);
         }
-        ExprNode::Ln(inner) if inner == var => {
-            if !gens.contains(&expr) {
-                gens.push(expr);
-            }
+        ExprNode::Ln(inner) if inner == var && !gens.contains(&expr) => {
+            gens.push(expr);
         }
-        ExprNode::Pow(base, exp) if base == var && !expr_contains_var(arena, exp, var) => {
+        ExprNode::Pow(base, exp)
+            if base == var && !expr_contains_var(arena, exp, var)
             // x^(1/n) or x^k type
-            if !gens.contains(&expr) {
-                gens.push(expr);
-            }
+            && !gens.contains(&expr) =>
+        {
+            gens.push(expr);
         }
         ExprNode::Add(ref children) | ExprNode::Mul(ref children) => {
             for &c in children {

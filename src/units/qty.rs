@@ -1,6 +1,6 @@
 //! Generic dimensioned quantity wrapper.
 //!
-//! [`Qty<D>`] pairs a symbolic [`Ex`] expression with a compile-time dimension
+//! [`Qty<D>`] pairs a symbolic [`Ex`](crate::api::expr::Ex) expression with a compile-time dimension
 //! `D = Dim<L, M, T, I, Th, N, J>`. Arithmetic is forwarded to `Ex` while
 //! typenum enforces dimensional correctness:
 //!
@@ -316,7 +316,7 @@ impl<L, M, T, I, Th, N, J> SameDim<Dim<L, M, T, I, Th, N, J>> for Dim<L, M, T, I
 
 /// Trait for converting a `Qty<D>` to a named type with compile-time dimension verification.
 ///
-/// Used by the [`dim!`] macro. When the computed dimension doesn't match the target type,
+/// Used by the [`dim!`](crate::dim) macro. When the computed dimension doesn't match the target type,
 /// the compiler produces a clear error message via `#[diagnostic::on_unimplemented]`.
 #[diagnostic::on_unimplemented(
     message = "dimension mismatch: expression does not produce `{Self}`",

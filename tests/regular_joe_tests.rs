@@ -15,7 +15,7 @@ fn readme_quick_example_differentiate() {
     let x = ctx.symbol("x");
 
     // Build an expression and differentiate
-    let f = expr!(ctx, x^3 - 2*x + 1);
+    let f = expr!(ctx, x ^ 3 - 2 * x + 1);
     let df = f.diff(&x);
     // README says: 3*x^2 - 2
     let s = format!("{df}");
@@ -31,7 +31,7 @@ fn readme_quick_example_solve() {
     let x = ctx.symbol("x");
 
     // README says roots of x^2 - 5x + 6 are [3, 2]
-    let roots = expr!(ctx, x^2 - 5*x + 6).solve_or_empty(&x);
+    let roots = expr!(ctx, x ^ 2 - 5 * x + 6).solve_or_empty(&x);
     let mut root_strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     root_strs.sort();
     assert!(
@@ -46,7 +46,7 @@ fn readme_quick_example_trig_identity() {
     let x = ctx.symbol("x");
 
     // README says sin(x)^2 + cos(x)^2 simplifies to 1
-    let trig = expr!(ctx, sin(x)^2 + cos(x)^2);
+    let trig = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2);
     let simplified = trig.simplify();
     assert_eq!(
         format!("{simplified}"),
@@ -60,7 +60,7 @@ fn readme_quick_example_codegen() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
-    let f = expr!(ctx, x^3 - 2*x + 1);
+    let f = expr!(ctx, x ^ 3 - 2 * x + 1);
     let df = f.diff(&x);
 
     // README says to_rust_fn produces a function
@@ -80,7 +80,7 @@ fn readme_quick_example_compile_closure() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
-    let f = expr!(ctx, x^3 - 2*x + 1);
+    let f = expr!(ctx, x ^ 3 - 2 * x + 1);
     let df = f.diff(&x);
 
     // README says: grad(&[2.0]) should give 10.0
@@ -103,7 +103,7 @@ fn readme_diff_sin_x_squared() {
     symplex::syms!(ctx; x);
 
     // README: d/dx sin(x^2) = 2*x*cos(x^2)
-    let result = expr!(ctx, sin(x^2)).diff(&x);
+    let result = expr!(ctx, sin(x ^ 2)).diff(&x);
     let s = format!("{result}");
     assert!(
         s.contains("2") && s.contains("x") && s.contains("cos"),
@@ -189,7 +189,7 @@ fn readme_factor_x4_minus_1() {
     symplex::syms!(ctx; x);
 
     // README: x^4 - 1 = (x - 1)*(x + 1)*(x^2 + 1)
-    let result = expr!(ctx, x^4 - 1).factor(&x);
+    let result = expr!(ctx, x ^ 4 - 1).factor(&x);
     let _s = format!("{result}");
     // Verify by expanding back
     let expanded = result.expand();
@@ -207,7 +207,7 @@ fn readme_expand_x_plus_1_cubed() {
     symplex::syms!(ctx; x);
 
     // README: (x+1)^3 = x^3 + 3*x^2 + 3*x + 1
-    let result = expr!(ctx, (x + 1)^3).expand();
+    let result = expr!(ctx, (x + 1) ^ 3).expand();
     let s = format!("{result}");
     assert!(
         s.contains("x^3") && s.contains("3"),
@@ -221,7 +221,7 @@ fn readme_cancel_x2_minus_1_over_x_minus_1() {
     symplex::syms!(ctx; x);
 
     // README: (x^2 - 1) / (x - 1) cancels to x + 1
-    let result = expr!(ctx, (x^2 - 1) / (x - 1)).cancel(&x);
+    let result = expr!(ctx, (x ^ 2 - 1) / (x - 1)).cancel(&x);
     let s = format!("{result}");
     assert!(
         s == "x + 1" || s == "1 + x",
@@ -239,7 +239,7 @@ fn readme_solve_quadratic() {
     symplex::syms!(ctx; x);
 
     // README: x^2 - 5x + 6 = 0 → [3, 2]
-    let roots = expr!(ctx, x^2 - 5*x + 6).solve(&x);
+    let roots = expr!(ctx, x ^ 2 - 5 * x + 6).solve(&x);
     let roots = roots.expect("solve should succeed for a quadratic");
     let root_vals: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     assert!(
@@ -273,7 +273,7 @@ fn readme_solve_inequality() {
     symplex::syms!(ctx; x);
 
     // README: x^2 - 4 > 0 → (-∞, -2) ∪ (2, ∞)
-    let result = expr!(ctx, x^2 - 4).solve_gt(&x);
+    let result = expr!(ctx, x ^ 2 - 4).solve_gt(&x);
     let s = format!("{result}");
     assert!(
         s.contains("-2") && s.contains("2"),
@@ -360,11 +360,7 @@ fn six_divided_by_three_is_two() {
 fn one_third_plus_one_sixth_is_one_half() {
     let ctx = Context::new();
     let result = &ctx.rational(1, 3) + &ctx.rational(1, 6);
-    assert_eq!(
-        format!("{result}"),
-        "1/2",
-        "1/3 + 1/6 should be 1/2"
-    );
+    assert_eq!(format!("{result}"), "1/2", "1/3 + 1/6 should be 1/2");
 }
 
 #[test]
@@ -519,11 +515,7 @@ fn ln_of_e_is_one() {
     // You need .eval() (or .simplify()) for this.
     // A regular user would expect .simplify() to handle it.
     let via_eval = result.eval();
-    assert_eq!(
-        format!("{via_eval}"),
-        "1",
-        "ln(e).eval() should be 1"
-    );
+    assert_eq!(format!("{via_eval}"), "1", "ln(e).eval() should be 1");
 
     // Document that .simplify() does NOT catch this:
     let via_simplify = result.simplify();
@@ -596,7 +588,7 @@ fn expand_a_plus_b_squared() {
     symplex::syms!(ctx; a, b);
 
     // (a + b)^2 = a^2 + 2*a*b + b^2
-    let result = expr!(ctx, (a + b)^2).expand();
+    let result = expr!(ctx, (a + b) ^ 2).expand();
     let s = format!("{result}");
     assert!(
         s.contains("a^2") && s.contains("b^2"),
@@ -615,7 +607,7 @@ fn factor_x_squared_minus_four() {
     symplex::syms!(ctx; x);
 
     // x^2 - 4 = (x-2)(x+2)
-    let result = expr!(ctx, x^2 - 4).factor(&x);
+    let result = expr!(ctx, x ^ 2 - 4).factor(&x);
     let s = format!("{result}");
     assert!(
         s.contains("x - 2") || s.contains("x + 2") || s.contains("(x - 2)"),
@@ -628,15 +620,12 @@ fn factor_then_expand_roundtrip() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
 
-    let original = expr!(ctx, x^2 - 5*x + 6);
+    let original = expr!(ctx, x ^ 2 - 5 * x + 6);
     let factored = original.factor(&x);
     let back = factored.expand();
     let s_original = format!("{}", original.expand());
     let s_back = format!("{back}");
-    assert_eq!(
-        s_original, s_back,
-        "factor then expand should roundtrip"
-    );
+    assert_eq!(s_original, s_back, "factor then expand should roundtrip");
 }
 
 #[test]
@@ -645,7 +634,7 @@ fn cancel_simplifies_common_factors() {
     symplex::syms!(ctx; x);
 
     // (x^2 - 4) / (x - 2) = x + 2
-    let result = expr!(ctx, (x^2 - 4) / (x - 2)).cancel(&x);
+    let result = expr!(ctx, (x ^ 2 - 4) / (x - 2)).cancel(&x);
     let s = format!("{result}");
     assert!(
         s == "x + 2" || s == "2 + x",
@@ -659,7 +648,7 @@ fn cancel_x_cubed_minus_x_over_x() {
     symplex::syms!(ctx; x);
 
     // (x^3 - x) / x = x^2 - 1
-    let result = expr!(ctx, (x^3 - x) / x).cancel(&x);
+    let result = expr!(ctx, (x ^ 3 - x) / x).cancel(&x);
     let s = format!("{result}");
     assert!(
         s.contains("x^2") && s.contains("1"),
@@ -692,7 +681,11 @@ fn derivative_of_sin_is_cos() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.sin().diff(&x);
-    assert_eq!(format!("{result}"), "cos(x)", "d/dx(sin(x)) should be cos(x)");
+    assert_eq!(
+        format!("{result}"),
+        "cos(x)",
+        "d/dx(sin(x)) should be cos(x)"
+    );
 }
 
 #[test]
@@ -737,7 +730,7 @@ fn chain_rule() {
     let x = ctx.symbol("x");
 
     // d/dx(sin(x^2)) = 2x*cos(x^2)
-    let result = expr!(ctx, sin(x^2)).diff(&x);
+    let result = expr!(ctx, sin(x ^ 2)).diff(&x);
     let val = result.eval_f64_with(&[(&x, 1)]).unwrap();
     let expected = 2.0 * 1.0_f64.cos(); // 2*1*cos(1)
     assert!(
@@ -767,11 +760,7 @@ fn integrate_x_squared() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(2).integrate(&x);
-    assert_eq!(
-        format!("{result}"),
-        "1/3*x^3",
-        "∫x² dx should be x³/3"
-    );
+    assert_eq!(format!("{result}"), "1/3*x^3", "∫x² dx should be x³/3");
 }
 
 #[test]
@@ -791,11 +780,7 @@ fn definite_integral_x_squared_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
-    assert_eq!(
-        format!("{result}"),
-        "1/3",
-        "∫₀¹ x² dx should be 1/3"
-    );
+    assert_eq!(format!("{result}"), "1/3", "∫₀¹ x² dx should be 1/3");
 }
 
 #[test]
@@ -803,11 +788,7 @@ fn limit_one_over_x_at_infinity() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = (1 / &x).limit(&x, &ctx.infinity());
-    assert_eq!(
-        format!("{result}"),
-        "0",
-        "lim(x→∞) 1/x should be 0"
-    );
+    assert_eq!(format!("{result}"), "0", "lim(x→∞) 1/x should be 0");
 }
 
 #[test]
@@ -847,7 +828,7 @@ fn double_angle_sin_numerically() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
-    let lhs = expr!(ctx, sin(2*x));
+    let lhs = expr!(ctx, sin(2 * x));
     let rhs = expr!(ctx, 2 * sin(x) * cos(x));
 
     let lhs_val = lhs.eval_f64_with(&[(&x, 1)]).unwrap();
@@ -865,8 +846,8 @@ fn double_angle_cos_numerically() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
-    let lhs = expr!(ctx, cos(2*x));
-    let rhs = expr!(ctx, cos(x)^2 - sin(x)^2);
+    let lhs = expr!(ctx, cos(2 * x));
+    let rhs = expr!(ctx, cos(x) ^ 2 - sin(x) ^ 2);
 
     let lhs_val = lhs.eval_f64_with(&[(&x, 1)]).unwrap();
     let rhs_val = rhs.eval_f64_with(&[(&x, 1)]).unwrap();
@@ -887,7 +868,7 @@ fn solve_linear_equation() {
     let x = ctx.symbol("x");
 
     // 2x - 6 = 0 → x = 3
-    let roots = expr!(ctx, 2*x - 6).solve_or_empty(&x);
+    let roots = expr!(ctx, 2 * x - 6).solve_or_empty(&x);
     assert_eq!(roots.len(), 1, "linear equation should have 1 root");
     assert_eq!(format!("{}", roots[0]), "3", "2x - 6 = 0 → x = 3");
 }
@@ -898,11 +879,8 @@ fn solve_x_squared_equals_zero() {
     let x = ctx.symbol("x");
 
     // x^2 = 0 → x = 0
-    let roots = expr!(ctx, x^2).solve_or_empty(&x);
-    assert!(
-        !roots.is_empty(),
-        "x² = 0 should have root x = 0"
-    );
+    let roots = expr!(ctx, x ^ 2).solve_or_empty(&x);
+    assert!(!roots.is_empty(), "x² = 0 should have root x = 0");
     assert_eq!(format!("{}", roots[0]), "0", "x² = 0 → x = 0");
 }
 
@@ -912,7 +890,7 @@ fn solve_cubic_with_three_integer_roots() {
     let x = ctx.symbol("x");
 
     // x^3 - 6x^2 + 11x - 6 = (x-1)(x-2)(x-3)
-    let roots = expr!(ctx, x^3 - 6*x^2 + 11*x - 6).solve_or_empty(&x);
+    let roots = expr!(ctx, x ^ 3 - 6 * x ^ 2 + 11 * x - 6).solve_or_empty(&x);
     let mut root_strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     root_strs.sort();
     assert_eq!(
@@ -928,7 +906,7 @@ fn solve_x_squared_minus_2_gives_irrational_roots() {
     let x = ctx.symbol("x");
 
     // x^2 - 2 = 0 → x = ±√2
-    let roots = expr!(ctx, x^2 - 2).solve_or_empty(&x);
+    let roots = expr!(ctx, x ^ 2 - 2).solve_or_empty(&x);
     assert_eq!(roots.len(), 2, "x²-2=0 should have 2 roots");
 
     // Check numerically
@@ -947,7 +925,7 @@ fn solve_quartic_with_four_roots() {
     let x = ctx.symbol("x");
 
     // x^4 - 5x^2 + 4 = (x^2-1)(x^2-4) = (x-1)(x+1)(x-2)(x+2)
-    let roots = expr!(ctx, x^4 - 5*x^2 + 4).solve_or_empty(&x);
+    let roots = expr!(ctx, x ^ 4 - 5 * x ^ 2 + 4).solve_or_empty(&x);
     let mut root_strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     root_strs.sort();
     assert_eq!(
@@ -966,10 +944,14 @@ fn substitute_number_for_variable() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
-    let f = expr!(ctx, x^2 + 3*x + 2);
+    let f = expr!(ctx, x ^ 2 + 3 * x + 2);
     let result = f.subs_i64(&x, 2);
     // 4 + 6 + 2 = 12
-    assert_eq!(format!("{result}"), "12", "f(2) where f=x²+3x+2 should be 12");
+    assert_eq!(
+        format!("{result}"),
+        "12",
+        "f(2) where f=x²+3x+2 should be 12"
+    );
 }
 
 #[test]
@@ -977,7 +959,7 @@ fn substitute_expression_for_variable() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
 
-    let f = expr!(ctx, x^2 + 1);
+    let f = expr!(ctx, x ^ 2 + 1);
     let result = f.subs(&x, &expr!(ctx, y + 1));
     let expanded = result.expand();
     let s = format!("{expanded}");
@@ -994,7 +976,7 @@ fn numerical_eval_with_multiple_vars() {
     symplex::syms!(ctx; x, y);
 
     // f(x,y) = x^2 + y^2
-    let f = expr!(ctx, x^2 + y^2);
+    let f = expr!(ctx, x ^ 2 + y ^ 2);
     let val = f.eval_f64_with(&[(&x, 3), (&y, 4)]).unwrap();
     assert!(
         (val - 25.0).abs() < 1e-10,
@@ -1105,16 +1087,15 @@ fn compile_simple_polynomial() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
-    let f = expr!(ctx, x^3 - 2*x + 1);
-    let compiled = f.compile(&["x"]).expect("compile should work for polynomial");
+    let f = expr!(ctx, x ^ 3 - 2 * x + 1);
+    let compiled = f
+        .compile(&["x"])
+        .expect("compile should work for polynomial");
     assert!(
         (compiled(&[3.0]) - 22.0).abs() < 1e-10,
         "f(3) = 27 - 6 + 1 = 22"
     );
-    assert!(
-        (compiled(&[0.0]) - 1.0).abs() < 1e-10,
-        "f(0) = 1"
-    );
+    assert!((compiled(&[0.0]) - 1.0).abs() < 1e-10, "f(0) = 1");
     assert!(
         (compiled(&[-1.0]) - 2.0).abs() < 1e-10,
         "f(-1) = -1 + 2 + 1 = 2"
@@ -1155,7 +1136,7 @@ fn to_rust_fn_has_correct_name() {
 fn latex_basic_polynomial() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = expr!(ctx, x^3 - 2*x + 1);
+    let f = expr!(ctx, x ^ 3 - 2 * x + 1);
     let latex = f.to_latex();
     assert!(
         latex.contains("x^{3}") || latex.contains("x^3"),
@@ -1213,11 +1194,7 @@ fn matrix_symbolic_determinant() {
     let x = ctx.symbol("x");
     let m = matrix![ctx, [x, 1], [0, x]];
     let det = m.det().unwrap();
-    assert_eq!(
-        format!("{det}"),
-        "x^2",
-        "det([[x,1],[0,x]]) should be x²"
-    );
+    assert_eq!(format!("{det}"), "x^2", "det([[x,1],[0,x]]) should be x²");
 }
 
 #[test]
@@ -1240,16 +1217,16 @@ fn matrix_times_inverse_is_identity() {
 
 #[test]
 fn stirling2_basic() {
-    use symplex::combinatorics::stirling2;
     use num_bigint::BigInt;
+    use symplex::combinatorics::stirling2;
     // README: stirling2(10, 4) = Some(34105)
     assert_eq!(stirling2(10, 4), Some(BigInt::from(34105)));
 }
 
 #[test]
 fn partition_count_100() {
-    use symplex::combinatorics::partition_count;
     use num_bigint::BigInt;
+    use symplex::combinatorics::partition_count;
     // README: partition_count(100) = Some(190569292)
     assert_eq!(partition_count(100), Some(BigInt::from(190569292)));
 }
@@ -1267,8 +1244,8 @@ fn isprime_basic() {
 
 #[test]
 fn factorint_360() {
-    use symplex::ntheory::factorint;
     use num_bigint::BigInt;
+    use symplex::ntheory::factorint;
     // README: factorint(360) = [(2,3), (3,2), (5,1)]
     let factors = factorint(360);
     assert!(
@@ -1281,8 +1258,8 @@ fn factorint_360() {
 
 #[test]
 fn mod_inverse_basic() {
-    use symplex::ntheory::mod_inverse;
     use num_bigint::BigInt;
+    use symplex::ntheory::mod_inverse;
     // README: mod_inverse(17, 43) = Some(38)
     assert_eq!(mod_inverse(17, 43), Some(BigInt::from(38)));
     // Verify: 17 * 38 mod 43 = 646 mod 43 = 646 - 15*43 = 646 - 645 = 1
@@ -1321,7 +1298,7 @@ fn simplify_trig_identity_plus_x() {
     let x = ctx.symbol("x");
 
     // sin²(x) + cos²(x) + x should simplify to 1 + x
-    let expr = expr!(ctx, sin(x)^2 + cos(x)^2 + x);
+    let expr = expr!(ctx, sin(x) ^ 2 + cos(x) ^ 2 + x);
     let result = expr.simplify_trig();
     let s = format!("{result}");
     assert!(
@@ -1340,7 +1317,7 @@ fn from_examples_partial_derivatives() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
 
-    let h = expr!(ctx, x^2 * y + y^3);
+    let h = expr!(ctx, x ^ 2 * y + y ^ 3);
     let dh_dx = h.diff(&x);
     let dh_dy = h.diff(&y);
 
@@ -1362,11 +1339,7 @@ fn from_examples_higher_order_derivative() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(5).diff_n(&x, 4);
-    assert_eq!(
-        format!("{result}"),
-        "120*x",
-        "d⁴/dx⁴(x⁵) should be 120*x"
-    );
+    assert_eq!(format!("{result}"), "120*x", "d⁴/dx⁴(x⁵) should be 120*x");
 }
 
 #[test]
@@ -1413,14 +1386,14 @@ fn from_examples_factoring() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
 
-    let f1 = expr!(ctx, x^2 - 1).factor(&x);
+    let f1 = expr!(ctx, x ^ 2 - 1).factor(&x);
     let s1 = format!("{f1}");
     assert!(
         s1.contains("(x - 1)") && s1.contains("(x + 1)"),
         "x²-1 should factor as (x-1)(x+1), got: {s1}"
     );
 
-    let f2 = expr!(ctx, x^2 + 2*x + 1).factor(&x);
+    let f2 = expr!(ctx, x ^ 2 + 2 * x + 1).factor(&x);
     let s2 = format!("{f2}");
     assert!(
         s2.contains("x + 1"),
@@ -1472,13 +1445,11 @@ fn polysys_circle_and_line() {
     symplex::syms!(ctx; x, y);
 
     // x^2 + y^2 = 1 and x + y = 1
-    let eq1 = expr!(ctx, x^2 + y^2 - 1);
+    let eq1 = expr!(ctx, x ^ 2 + y ^ 2 - 1);
     let eq2 = expr!(ctx, x + y - 1);
-    let solutions = symplex::polysys::solve_system_ex(
-        &[eq1.clone(), eq2.clone()],
-        &[x.clone(), y.clone()],
-    )
-    .unwrap();
+    let solutions =
+        symplex::polysys::solve_system_ex(&[eq1.clone(), eq2.clone()], &[x.clone(), y.clone()])
+            .unwrap();
 
     // Should have 2 solutions: (0, 1) and (1, 0)
     assert_eq!(
@@ -1490,14 +1461,8 @@ fn polysys_circle_and_line() {
 
     // Verify each solution
     for sol in &solutions {
-        let r1 = eq1
-            .subs(&x, &sol[0])
-            .subs(&y, &sol[1])
-            .eval();
-        let r2 = eq2
-            .subs(&x, &sol[0])
-            .subs(&y, &sol[1])
-            .eval();
+        let r1 = eq1.subs(&x, &sol[0]).subs(&y, &sol[1]).eval();
+        let r2 = eq2.subs(&x, &sol[0]).subs(&y, &sol[1]).eval();
         assert_eq!(
             format!("{r1}"),
             "0",
@@ -1550,10 +1515,7 @@ fn eval_f64_on_symbol_gives_useful_error() {
     let err = x.eval_f64().unwrap_err();
     let msg = format!("{err}");
     // The error message should mention something about free symbols or unevaluated
-    assert!(
-        !msg.is_empty(),
-        "error message should not be empty"
-    );
+    assert!(!msg.is_empty(), "error message should not be empty");
 }
 
 #[test]
@@ -1602,7 +1564,7 @@ fn diff_then_integrate_polynomial() {
     let x = ctx.symbol("x");
 
     // f(x) = x^3 - 2*x^2 + x
-    let f = expr!(ctx, x^3 - 2*x^2 + x);
+    let f = expr!(ctx, x ^ 3 - 2 * x ^ 2 + x);
     let df = f.diff(&x);
     let anti = df.integrate(&x);
 
@@ -1621,7 +1583,7 @@ fn integrate_then_diff_polynomial() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
-    let f = expr!(ctx, x^4 + 3*x^2 - 7);
+    let f = expr!(ctx, x ^ 4 + 3 * x ^ 2 - 7);
     let anti = f.integrate(&x);
     let roundtrip = anti.diff(&x);
 
@@ -1706,7 +1668,11 @@ fn assume_positive_affects_queries() {
     let x = ctx.symbol("x");
 
     // Without assumption, positivity is unknown
-    assert_eq!(x.is_positive(), None, "bare symbol: is_positive should be None");
+    assert_eq!(
+        x.is_positive(),
+        None,
+        "bare symbol: is_positive should be None"
+    );
 
     // With assumption
     let x_pos = x.assume(Assumption::Positive);
@@ -1756,7 +1722,7 @@ fn ode_exponential_decay() {
     symplex::syms!(ctx; x, y);
 
     // y' + 2y = 0 → y = C*exp(-2x)
-    let ode = expr!(ctx, diff(y, x) + 2*y);
+    let ode = expr!(ctx, diff(y, x) + 2 * y);
     let sol = ode.solve_ode(&y, &x);
     assert!(
         !sol.has_unevaluated(),
@@ -1868,7 +1834,7 @@ fn three_variable_expression() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y, z);
 
-    let f = expr!(ctx, x^2 + y^2 + z^2);
+    let f = expr!(ctx, x ^ 2 + y ^ 2 + z ^ 2);
     let val = f.eval_f64_with(&[(&x, 1), (&y, 2), (&z, 3)]).unwrap();
     assert!(
         (val - 14.0).abs() < 1e-10,
@@ -1881,7 +1847,7 @@ fn partial_derivative_of_multivariable() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
 
-    let f = expr!(ctx, x^2 * y + x * y^2);
+    let f = expr!(ctx, x ^ 2 * y + x * y ^ 2);
     let fx = f.diff(&x);
     let fy = f.diff(&y);
 
@@ -1967,7 +1933,7 @@ fn expr_macro_nested_functions() {
 fn expr_macro_complex_expression() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let e = expr!(ctx, x^3 - 3*x^2 + 3*x - 1);
+    let e = expr!(ctx, x ^ 3 - 3 * x ^ 2 + 3 * x - 1);
     // This is (x-1)^3; at x=2 it should be 1
     let val = e.eval_f64_with(&[(&x, 2)]).unwrap();
     assert!(
@@ -1986,7 +1952,7 @@ fn readme_codegen_example_compiles_and_runs() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
-    let f = expr!(ctx, x^3 - 2*x + 1);
+    let f = expr!(ctx, x ^ 3 - 2 * x + 1);
     let df = f.diff(&x);
 
     // Compile to closure
@@ -2041,10 +2007,7 @@ fn zero_to_the_zero() {
     let result = ctx.int(0).powi(0);
     let s = format!("{result}");
     // Most CAS systems say 0^0 = 1
-    assert!(
-        s == "1" || s == "0^0",
-        "0^0 is conventionally 1, got: {s}"
-    );
+    assert!(s == "1" || s == "0^0", "0^0 is conventionally 1, got: {s}");
 }
 
 #[test]
@@ -2053,10 +2016,7 @@ fn very_large_integer() {
     let big = ctx.int(1_000_000);
     let result = &big * &big;
     let s = format!("{result}");
-    assert_eq!(
-        s, "1000000000000",
-        "10^6 * 10^6 should be 10^12"
-    );
+    assert_eq!(s, "1000000000000", "10^6 * 10^6 should be 10^12");
 }
 
 #[test]
@@ -2102,7 +2062,7 @@ fn integrate_hard_function_returns_unevaluated() {
 fn free_symbols_of_polynomial() {
     let ctx = Context::new();
     symplex::syms!(ctx; x, y);
-    let f = expr!(ctx, x^2 + y + 1);
+    let f = expr!(ctx, x ^ 2 + y + 1);
     let syms = f.free_symbols();
     let names: Vec<String> = syms.iter().map(|s| format!("{s}")).collect();
     assert!(
@@ -2131,28 +2091,20 @@ fn free_symbols_of_constant() {
 fn check_solution_correct_root() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let eq = expr!(ctx, x^2 - 4);
+    let eq = expr!(ctx, x ^ 2 - 4);
     // x=2 is a root
     let verified = eq.check_solution(&x, &ctx.int(2));
-    assert_eq!(
-        verified,
-        Some(true),
-        "x=2 should satisfy x²-4=0"
-    );
+    assert_eq!(verified, Some(true), "x=2 should satisfy x²-4=0");
 }
 
 #[test]
 fn check_solution_wrong_root() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let eq = expr!(ctx, x^2 - 4);
+    let eq = expr!(ctx, x ^ 2 - 4);
     // x=3 is NOT a root
     let verified = eq.check_solution(&x, &ctx.int(3));
-    assert_eq!(
-        verified,
-        Some(false),
-        "x=3 should NOT satisfy x²-4=0"
-    );
+    assert_eq!(verified, Some(false), "x=3 should NOT satisfy x²-4=0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2170,11 +2122,7 @@ fn eval_simplifies_arithmetic() {
 fn eval_rational_arithmetic() {
     let ctx = Context::new();
     let result = (&ctx.rational(1, 2) + &ctx.rational(1, 3)).eval();
-    assert_eq!(
-        format!("{result}"),
-        "5/6",
-        "1/2 + 1/3 should eval to 5/6"
-    );
+    assert_eq!(format!("{result}"), "5/6", "1/2 + 1/3 should eval to 5/6");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2227,7 +2175,7 @@ fn is_zero_structural_checks() {
 fn json_roundtrip_basic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let f = expr!(ctx, x^2 + 1);
+    let f = expr!(ctx, x ^ 2 + 1);
 
     // Serialize via to_json
     let json = f.to_json().unwrap();

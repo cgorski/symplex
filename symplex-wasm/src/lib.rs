@@ -3,8 +3,8 @@
 //! Exposes CAS functionality to JavaScript via wasm-bindgen.
 //! Designed for interactive math notebooks and robotics demos.
 
-use wasm_bindgen::prelude::*;
 use symplex::prelude::*;
+use wasm_bindgen::prelude::*;
 
 /// Initialize panic hook for better error messages in browser console.
 #[wasm_bindgen(start)]

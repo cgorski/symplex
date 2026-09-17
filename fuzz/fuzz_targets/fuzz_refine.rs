@@ -12,8 +12,10 @@ fuzz_target!(|data: &[u8]| {
     let shape = data[0];
     let assumption_byte = data[1];
 
+    let ctx = Context::new();
+
     // Create a variable with a random assumption
-    let x = symplex::var("fuzz_x");
+    let x = ctx.symbol("fuzz_x");
     let assumption = match assumption_byte % 8 {
         0 => Assumption::Positive,
         1 => Assumption::Negative,
@@ -32,20 +34,20 @@ fuzz_target!(|data: &[u8]| {
         1 => x.sign(),
         2 => x.floor(),
         3 => x.ceiling(),
-        4 => x.powi(2).sqrt(),           // sqrt(x^2)
-        5 => x.abs().powi(2),            // abs(x)^2
-        6 => (&x + &symplex::int(1)).abs(), // abs(x + 1)
-        7 => x.sign().powi(2),           // sign(x)^2
+        4 => x.powi(2).sqrt(),         // sqrt(x^2)
+        5 => x.abs().powi(2),          // abs(x)^2
+        6 => (&x + &ctx.int(1)).abs(), // abs(x + 1)
+        7 => x.sign().powi(2),         // sign(x)^2
         8 => {
-            let y = symplex::var("fuzz_y").assume(Assumption::Positive);
-            (&x + &y).abs()              // abs(x + y)
+            let y = ctx.symbol("fuzz_y").assume(Assumption::Positive);
+            (&x + &y).abs() // abs(x + y)
         }
         9 => {
-            let neg_one = symplex::int(-1);
-            neg_one.pow(&x)              // (-1)^x
+            let neg_one = ctx.int(-1);
+            neg_one.pow(&x) // (-1)^x
         }
-        10 => x.abs().abs(),             // abs(abs(x))
-        _ => x.clone(),                  // just x
+        10 => x.abs().abs(), // abs(abs(x))
+        _ => x.clone(),      // just x
     };
 
     // refine() must never panic
@@ -58,7 +60,7 @@ fuzz_target!(|data: &[u8]| {
     let _ = format!("{refined}");
 
     // Also test refine_with (temporary assumptions)
-    let y = symplex::var("fuzz_y2");
+    let y = ctx.symbol("fuzz_y2");
     let expr2 = y.abs();
     let refined2 = expr2.refine_with(&[(&y, Assumption::Positive)]);
     let _ = format!("{refined2}");

@@ -145,12 +145,11 @@ pub fn logarithmic_part(a: &Poly, d: &Poly) -> LogPartResult {
             }
         } else {
             // Irreducible factor of degree > 1: roots are algebraic numbers
-            // not in ℚ.  We store the minimal polynomial and the original
-            // integrand data for potential later processing.
+            // not in ℚ.  The minimal polynomial is passed on to the
+            // log-to-real (Lazard-Rioboo-Trager) stage, which recomputes
+            // the log arguments from the subresultant PRS.
             terms.push(LogTerm::Algebraic {
                 min_poly: factor.clone(),
-                numer: a.clone(),
-                denom: d.clone(),
             });
         }
     }

@@ -11,11 +11,12 @@
 //! use symplex::units::*;
 //! use symplex::units::constants;
 //!
-//! let ctx = symplex::api::context::Context::new();
+//! let ctx = Context::new();
 //! let c = constants::speed_of_light(&ctx);
 //! let m = Mass::symbol(&ctx, "m");
 //! let energy = Energy::from_ex(m.inner() * c.inner() * c.inner());  // E = mc²
-//! // Displays as "c^2*m", not "89875517873681764*m"
+//! // Displays symbolically, not as "89875517873681764*m"
+//! assert_eq!(format!("{}", energy.inner()), "m*c^2");
 //! ```
 
 use super::dim::*;

@@ -38,8 +38,8 @@ use crate::base::node::{ExprId, ExprNode};
 /// A serializable expression tree.
 ///
 /// This is a standalone tree (not arena-indexed) that can be serialized
-/// to JSON or any serde-supported format. Use [`Ex::to_tree()`] to
-/// convert from an expression handle, and [`Context::from_tree()`] to
+/// to JSON or any serde-supported format. Use [`Ex::to_tree()`](crate::api::expr::Ex::to_tree) to
+/// convert from an expression handle, and [`Context::from_tree()`](crate::api::context::Context::from_tree) to
 /// convert back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]

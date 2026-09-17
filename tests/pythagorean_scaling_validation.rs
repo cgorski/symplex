@@ -78,25 +78,15 @@ fn numerical_check(expr: &Ex, expected: &Ex, var: &Ex, label: &str) {
 /// Numerically verify a two-variable identity at several points.
 fn numerical_check_2var(expr: &Ex, expected: &Ex, v1: &Ex, v2: &Ex, label: &str) {
     for &(p1, p2) in &[(1_i64, 2_i64), (2, 3), (3, 5)] {
-        let val_expr = expr
-            .subs_i64(v1, p1)
-            .subs_i64(v2, p2)
-            .eval()
-            .eval_f64();
-        let val_expected = expected
-            .subs_i64(v1, p1)
-            .subs_i64(v2, p2)
-            .eval()
-            .eval_f64();
-        match (val_expr, val_expected) {
-            (Ok(a), Ok(b)) => {
-                assert!(
-                    common::approx_eq(a, b, 1e-9),
-                    "{label} at ({p1},{p2}): got {a}, expected {b} (diff={})",
-                    (a - b).abs()
-                );
-            }
-            _ => {} // skip failures
+        let val_expr = expr.subs_i64(v1, p1).subs_i64(v2, p2).eval().eval_f64();
+        let val_expected = expected.subs_i64(v1, p1).subs_i64(v2, p2).eval().eval_f64();
+        // Skip points where either side fails to evaluate numerically.
+        if let (Ok(a), Ok(b)) = (val_expr, val_expected) {
+            assert!(
+                common::approx_eq(a, b, 1e-9),
+                "{label} at ({p1},{p2}): got {a}, expected {b} (diff={})",
+                (a - b).abs()
+            );
         }
     }
 }
@@ -120,7 +110,10 @@ fn fu_directly_on_2_sin2_plus_2_cos2() {
 
     // fu() should reduce this to 2
     eprintln!("[fu direct] 2·sin²(x) + 2·cos²(x) → {display}");
-    assert_eq!(display, "2", "fu() should simplify 2·sin²(x) + 2·cos²(x) to 2");
+    assert_eq!(
+        display, "2",
+        "fu() should simplify 2·sin²(x) + 2·cos²(x) to 2"
+    );
 }
 
 #[test]
@@ -154,7 +147,10 @@ fn simplify_on_basic_pythagorean() {
     let result = expr.simplify();
     let display = format!("{result}");
     eprintln!("[simplify basic] sin²(x) + cos²(x) → {display}");
-    assert_eq!(display, "1", "simplify() should handle the basic Pythagorean identity");
+    assert_eq!(
+        display, "1",
+        "simplify() should handle the basic Pythagorean identity"
+    );
 }
 
 #[test]
@@ -262,7 +258,10 @@ fn fu_on_3_sin2_plus_3_cos2() {
     let display = format!("{result}");
 
     eprintln!("[fu] 3·sin²(x) + 3·cos²(x) → {display}");
-    assert_eq!(display, "3", "fu() should simplify 3·sin²(x) + 3·cos²(x) to 3");
+    assert_eq!(
+        display, "3",
+        "fu() should simplify 3·sin²(x) + 3·cos²(x) to 3"
+    );
 }
 
 #[test]
@@ -279,7 +278,10 @@ fn smart_simplify_on_3_sin2_plus_3_cos2() {
 
     let three = ctx.int(3);
     numerical_check(&result, &three, &x, "smart_simplify on 3·sin²+3·cos²");
-    assert_eq!(display, "3", "smart_simplify should reduce 3·sin²+3·cos² to 3");
+    assert_eq!(
+        display, "3",
+        "smart_simplify should reduce 3·sin²+3·cos² to 3"
+    );
 }
 
 #[test]
@@ -362,7 +364,10 @@ fn fu_on_y_sin2_plus_y_cos2() {
     //   = y
     // Check numerically first.
     numerical_check_2var(&result, &y, &x, &y, "fu on y·sin²+y·cos²");
-    assert_eq!(display, "y", "fu() should simplify y·sin²(x)+y·cos²(x) to y");
+    assert_eq!(
+        display, "y",
+        "fu() should simplify y·sin²(x)+y·cos²(x) to y"
+    );
 }
 
 #[test]
@@ -426,7 +431,13 @@ fn smart_simplify_on_2y_sin2_plus_2y_cos2() {
     eprintln!("[smart_simplify] 2y·sin²(x) + 2y·cos²(x) → {display}");
 
     let expected = &ctx.int(2) * &y;
-    numerical_check_2var(&result, &expected, &x, &y, "smart_simplify on 2y·sin²+2y·cos²");
+    numerical_check_2var(
+        &result,
+        &expected,
+        &x,
+        &y,
+        "smart_simplify on 2y·sin²+2y·cos²",
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -545,9 +556,7 @@ fn numerical_soundness_scaled_pythagorean() {
                 let two = ctx.int(2);
                 &(&x.sin().powi(2) / &two) + &(&x.cos().powi(2) / &two)
             },
-            {
-                &ctx.int(1) / &ctx.int(2)
-            },
+            { &ctx.int(1) / &ctx.int(2) },
         ),
         (
             "-1·sin²+-1·cos²",
@@ -629,7 +638,10 @@ fn comparison_matrix_2sin2_2cos2() {
     // smart_simplify works via Strategy 4: factor_terms extracts the common
     // coefficient 2, exposing bare sin²(x)+cos²(x) which the Pythagorean
     // pattern rule reduces to 1, giving 2·1 = 2.
-    assert_eq!(d_smart, "2", "smart_simplify() must simplify to 2 (Strategy 4: factor_terms + Pythagorean rule)");
+    assert_eq!(
+        d_smart, "2",
+        "smart_simplify() must simplify to 2 (Strategy 4: factor_terms + Pythagorean rule)"
+    );
 
     // Numerical correctness — all results must be numerically equal to 2.
     let two = ctx.int(2);

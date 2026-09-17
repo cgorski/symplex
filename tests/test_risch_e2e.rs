@@ -27,16 +27,14 @@ fn verify_ftc(integrand: &Ex, result: &Ex, x: &Ex, points: &[i64], tol: f64, lab
         let lhs = d_result.eval_f64_with(&[(x, pt)]);
         let rhs = integrand.eval_f64_with(&[(x, pt)]);
         match (lhs, rhs) {
-            (Ok(l), Ok(r)) => {
-                if l.is_finite() && r.is_finite() {
-                    let err = (l - r).abs();
-                    let scale = r.abs().max(1.0);
-                    assert!(
-                        err / scale < tol,
-                        "{label}: FTC failed at x={pt}: d/dx(result)={l:.8}, integrand={r:.8}, err={err:.2e}"
-                    );
-                    checked += 1;
-                }
+            (Ok(l), Ok(r)) if l.is_finite() && r.is_finite() => {
+                let err = (l - r).abs();
+                let scale = r.abs().max(1.0);
+                assert!(
+                    err / scale < tol,
+                    "{label}: FTC failed at x={pt}: d/dx(result)={l:.8}, integrand={r:.8}, err={err:.2e}"
+                );
+                checked += 1;
             }
             _ => {
                 // Evaluation failed at this point (singularity, etc.) — skip.

@@ -87,13 +87,13 @@ impl Context {
         }
     }
 
-    /// Helper — wrap an [`ExprId`] into a user-facing [`Ex`] handle.
+    /// Helper — wrap an [`ExprId`] into a user-facing [`Ex`](crate::api::expr::Ex) handle.
     #[inline]
     fn make_ex(&self, id: ExprId) -> crate::api::expr::Ex {
         crate::api::expr::Ex::from_raw_parts(self.id, Arc::clone(&self.inner), id)
     }
 
-    /// Helper — wrap an [`ExprId`] into a user-facing [`SetEx`] handle.
+    /// Helper — wrap an [`ExprId`] into a user-facing [`SetEx`](crate::api::expr::SetEx) handle.
     #[inline]
     fn make_set_ex(&self, id: ExprId) -> crate::api::expr::SetEx {
         crate::api::expr::SetEx::from_raw_parts(self.id, Arc::clone(&self.inner), id)

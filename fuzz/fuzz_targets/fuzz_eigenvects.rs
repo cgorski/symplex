@@ -18,8 +18,10 @@ fuzz_target!(|data: &[u8]| {
         (2, &data[..4])
     };
 
+    let ctx = Context::new();
+
     // Build matrix from bytes as small integers in [-10, 10]
-    let var = symplex::var("fuzz_lambda");
+    let var = ctx.symbol("fuzz_lambda");
     let rows: Vec<Vec<Ex>> = (0..n)
         .map(|i| {
             (0..n)
@@ -27,7 +29,7 @@ fuzz_target!(|data: &[u8]| {
                     let byte = entries[i * n + j];
                     // Map 0..255 to -10..10
                     let val = (byte as i64 % 21) - 10;
-                    symplex::int(val)
+                    ctx.int(val)
                 })
                 .collect()
         })

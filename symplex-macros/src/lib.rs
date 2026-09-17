@@ -148,17 +148,17 @@ fn generate_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> {
                     // Due to precedence, `-1/2` parses as `Neg(1) / 2`.
                     // Without this, the codegen emits `(-(1)) / (2)` which
                     // is Rust integer division yielding 0.
-                    if let MathExpr::Neg(inner_lhs) = lhs.as_ref() {
-                        if let (Some(p), Some(q)) = (inner_lhs.as_int(), rhs.as_int()) {
-                            if q == 0 {
-                                return Err(syn::Error::new(
-                                    Span::call_site(),
-                                    "division by zero in expr!()",
-                                ));
-                            }
-                            let neg_p = -p;
-                            return Ok(quote! { #ctx.rational(#neg_p, #q) });
+                    if let MathExpr::Neg(inner_lhs) = lhs.as_ref()
+                        && let (Some(p), Some(q)) = (inner_lhs.as_int(), rhs.as_int())
+                    {
+                        if q == 0 {
+                            return Err(syn::Error::new(
+                                Span::call_site(),
+                                "division by zero in expr!()",
+                            ));
                         }
+                        let neg_p = -p;
+                        return Ok(quote! { #ctx.rational(#neg_p, #q) });
                     }
                     let lhs_code = generate_expr(ctx, lhs)?;
                     let rhs_code = generate_expr(ctx, rhs)?;
@@ -511,19 +511,19 @@ fn generate_dim_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> 
                     });
                 }
                 // -int / int → rational(-n, q)
-                if let MathExpr::Neg(inner_lhs) = lhs.as_ref() {
-                    if let (Some(p), Some(q)) = (inner_lhs.as_int(), rhs.as_int()) {
-                        if q == 0 {
-                            return Err(syn::Error::new(
-                                Span::call_site(),
-                                "division by zero in dim!()",
-                            ));
-                        }
-                        let neg_p = -p;
-                        return Ok(quote! {
-                            ::symplex::units::Dimensionless::from_ex(#ctx.rational(#neg_p, #q)).as_qty()
-                        });
+                if let MathExpr::Neg(inner_lhs) = lhs.as_ref()
+                    && let (Some(p), Some(q)) = (inner_lhs.as_int(), rhs.as_int())
+                {
+                    if q == 0 {
+                        return Err(syn::Error::new(
+                            Span::call_site(),
+                            "division by zero in dim!()",
+                        ));
                     }
+                    let neg_p = -p;
+                    return Ok(quote! {
+                        ::symplex::units::Dimensionless::from_ex(#ctx.rational(#neg_p, #q)).as_qty()
+                    });
                 }
                 let l = generate_dim_expr(ctx, lhs)?;
                 let r = generate_dim_expr(ctx, rhs)?;
@@ -536,13 +536,13 @@ fn generate_dim_expr(ctx: &Ident, expr: &MathExpr) -> syn::Result<TokenStream2> 
                     return generate_dim_pow(ctx, lhs, n);
                 }
                 // Negative integer exponent: x^(-n) = 1 / x^n
-                if let MathExpr::Neg(inner_rhs) = rhs.as_ref() {
-                    if let Some(n) = inner_rhs.as_int() {
-                        let pow_code = generate_dim_pow(ctx, lhs, n)?;
-                        return Ok(quote! {
-                            (::symplex::units::Dimensionless::from_ex(#ctx.int(1)).as_qty() / (#pow_code))
-                        });
-                    }
+                if let MathExpr::Neg(inner_rhs) = rhs.as_ref()
+                    && let Some(n) = inner_rhs.as_int()
+                {
+                    let pow_code = generate_dim_pow(ctx, lhs, n)?;
+                    return Ok(quote! {
+                        (::symplex::units::Dimensionless::from_ex(#ctx.int(1)).as_qty() / (#pow_code))
+                    });
                 }
                 // Non-integer exponent: fall back to inner Ex operations.
                 // This loses dimension tracking — result is Dimensionless.
@@ -618,7 +618,7 @@ fn generate_dim_pow(ctx: &Ident, base: &MathExpr, n: i64) -> syn::Result<TokenSt
     if n == 1 {
         return generate_dim_expr(ctx, base);
     }
-    if n >= 2 && n <= 8 {
+    if (2..=8).contains(&n) {
         // Expand x^n = x * x * ... * x  (n factors).
         // Each factor is an independent evaluation of `base` so the
         // type-level dimension products compose correctly.
@@ -867,11 +867,9 @@ impl RuleCodeGen {
                 Err(syn::Error::new(
                     id.span(),
                     format!(
-                        "unknown identifier '{}' in rule!(). \
-                         Use '{}' for a wild, or a known constant (pi, E, I, oo, nan, zoo), \
-                         or an integer literal.",
-                        name,
-                        format!("{}_", name)
+                        "unknown identifier '{name}' in rule!(). \
+                         Use '{name}_' for a wild, or a known constant (pi, E, I, oo, nan, zoo), \
+                         or an integer literal."
                     ),
                 ))
             }

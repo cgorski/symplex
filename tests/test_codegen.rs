@@ -142,7 +142,10 @@ fn codegen_abs_and_sign() {
     assert!(code.contains(".abs()"), "missing abs() in:\n{code}");
     // sign(x) is codegen'd as an inline if-else (not .signum()) to
     // correctly handle sign(0) = 0  (Rust's f64::signum treats ±0 differently).
-    assert!(code.contains("if x > 0.0"), "missing sign if-else in:\n{code}");
+    assert!(
+        code.contains("if x > 0.0"),
+        "missing sign if-else in:\n{code}"
+    );
 }
 
 #[test]

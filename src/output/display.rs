@@ -834,13 +834,12 @@ fn push_mul_factors(arena: &Arena, factors: &[ExprId], _mul_prec: u8, stack: &mu
     let mut denom_bases: SmallVec<[ExprId; 6]> = SmallVec::new();
 
     for &f in factors {
-        if let ExprNode::Pow(base, exp) = arena.node(f) {
-            if let ExprNode::Num(nid) = arena.node(*exp) {
-                if *arena.num(*nid) == Ratio::from(BigInt::from(-1)) {
-                    denom_bases.push(*base);
-                    continue;
-                }
-            }
+        if let ExprNode::Pow(base, exp) = arena.node(f)
+            && let ExprNode::Num(nid) = arena.node(*exp)
+            && *arena.num(*nid) == Ratio::from(BigInt::from(-1))
+        {
+            denom_bases.push(*base);
+            continue;
         }
         numer.push(f);
     }
@@ -865,10 +864,9 @@ fn push_mul_factors(arena: &Arena, factors: &[ExprId], _mul_prec: u8, stack: &mu
         let base = denom_bases[0];
         // Parenthesise compound bases: .../(x + y), .../(a*b), etc.
         let base_prec = match arena.node(base) {
-            ExprNode::Add(_)
-            | ExprNode::Mul(_)
-            | ExprNode::Neg(_)
-            | ExprNode::Pow(_, _) => PREC_MUL + 1,
+            ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) | ExprNode::Pow(_, _) => {
+                PREC_MUL + 1
+            }
             _ => PREC_MUL,
         };
         stack.push(WorkItem::Expr(base, base_prec));

@@ -24,9 +24,7 @@ fn heuristic_valid_1_plus_1_over_x_to_the_x() {
     let base = &x.powi(-1) + 1;
     let expr = base.pow(&x);
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     let expected = std::f64::consts::E;
     assert!(
         (val - expected).abs() < 1e-6,
@@ -43,9 +41,7 @@ fn heuristic_valid_1_minus_1_over_x_to_the_x() {
     let base = 1 - &x.powi(-1);
     let expr = base.pow(&x);
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     let expected = 1.0 / std::f64::consts::E;
     assert!(
         (val - expected).abs() < 1e-6,
@@ -64,9 +60,7 @@ fn heuristic_valid_1_plus_a_over_x_to_bx() {
     let exponent = &x * 3;
     let expr = base.pow(&exponent);
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     let expected = (6.0_f64).exp(); // e^6 ≈ 403.43
     assert!(
         (val - expected).abs() / expected < 1e-6,
@@ -84,9 +78,7 @@ fn heuristic_valid_1_plus_1_over_x2_to_the_x() {
     let base = 1 + &x.powi(-2);
     let expr = base.pow(&x);
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     assert!(
         (val - 1.0).abs() < 1e-6,
         "lim (1+1/x²)^x should be 1, got {val}"
@@ -120,9 +112,7 @@ fn heuristic_valid_1_plus_3_over_x_to_the_x() {
     let base = 1 + &(3 / &x);
     let expr = base.pow(&x);
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     let expected = (3.0_f64).exp();
     assert!(
         (val - expected).abs() / expected < 1e-6,
@@ -146,9 +136,7 @@ fn bug_inf_pow_0_x_to_the_1_over_x() {
     // x^(1/x)
     let expr = x.pow(&x.powi(-1));
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     assert!(
         (val - 1.0).abs() < 1e-6,
         "lim x^(1/x) should be 1, got {val}"
@@ -167,9 +155,7 @@ fn const_base_2_to_the_1_over_x() {
     // 2^(1/x)
     let expr = ctx.int(2).pow(&x.powi(-1));
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     assert!(
         (val - 1.0).abs() < 1e-6,
         "lim 2^(1/x) should be 1, got {val}"
@@ -188,9 +174,7 @@ fn inf_pow_0_x_to_the_1_over_x2() {
     // x^(1/x²)
     let expr = x.pow(&x.powi(-2));
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     assert!(
         (val - 1.0).abs() < 1e-6,
         "lim x^(1/x²) should be 1, got {val}"
@@ -208,9 +192,7 @@ fn bug_inf_pow_0_x2_to_the_1_over_x() {
     // (x²)^(1/x)
     let expr = x.powi(2).pow(&x.powi(-1));
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     assert!(
         (val - 1.0).abs() < 1e-6,
         "lim (x²)^(1/x) should be 1, got {val}"
@@ -229,9 +211,7 @@ fn bug_exp_x_to_the_1_over_x() {
     // exp(x)^(1/x) = e
     let expr = x.exp().pow(&x.powi(-1));
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     let expected = std::f64::consts::E;
     assert!(
         (val - expected).abs() < 1e-6,
@@ -251,9 +231,7 @@ fn bug_1_plus_x_to_the_1_over_x() {
     let base = &x + 1;
     let expr = base.pow(&x.powi(-1));
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     assert!(
         (val - 1.0).abs() < 1e-6,
         "lim (1+x)^(1/x) should be 1, got {val}"
@@ -276,9 +254,7 @@ fn zero_pow_zero_1_over_x_to_the_1_over_x() {
     // (1/x)^(1/x)
     let expr = x.powi(-1).pow(&x.powi(-1));
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     assert!(
         (val - 1.0).abs() < 1e-6,
         "lim (1/x)^(1/x) should be 1, got {val}"
@@ -319,12 +295,10 @@ fn gruntz_handles_exp_x_ln_1_plus_1_over_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // exp(x · ln(1 + 1/x))
-    let inner = (&x * (1 + &x.powi(-1)).ln());
+    let inner = &x * (1 + &x.powi(-1)).ln();
     let expr = inner.exp();
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     let expected = std::f64::consts::E;
     assert!(
         (val - expected).abs() < 1e-6,
@@ -342,9 +316,7 @@ fn gruntz_handles_exp_ln_x_over_x() {
     let inner = &x.ln() / &x;
     let expr = inner.exp();
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     assert!(
         (val - 1.0).abs() < 1e-6,
         "lim exp(ln(x)/x) should be 1, got {val}"
@@ -361,9 +333,7 @@ fn gruntz_handles_exp_2_ln_x_over_x() {
     let inner = &(&x.ln() * 2) / &x;
     let expr = inner.exp();
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     assert!(
         (val - 1.0).abs() < 1e-6,
         "lim exp(2·ln(x)/x) should be 1, got {val}"
@@ -403,9 +373,7 @@ fn heuristic_valid_1_plus_1_over_x_to_x_neg_inf() {
     let expr = base.pow(&x);
     let neg_inf = -ctx.infinity();
     let result = expr.limit(&x, &neg_inf);
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     let expected = std::f64::consts::E;
     assert!(
         (val - expected).abs() < 1e-6,
@@ -426,9 +394,7 @@ fn heuristic_valid_rational_coefficient() {
     let base = 1 + &(&ctx.int(5) / &(&ctx.int(3) * &x));
     let expr = base.pow(&x);
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     let expected = (5.0_f64 / 3.0).exp();
     assert!(
         (val - expected).abs() / expected < 1e-4,
@@ -445,9 +411,7 @@ fn heuristic_valid_1_plus_1_over_x_to_2x() {
     let exponent = &x * 2;
     let expr = base.pow(&exponent);
     let result = expr.limit(&x, &ctx.infinity());
-    let val = result
-        .eval_f64()
-        .expect("limit should evaluate to f64");
+    let val = result.eval_f64().expect("limit should evaluate to f64");
     let expected = std::f64::consts::E.powi(2);
     assert!(
         (val - expected).abs() / expected < 1e-6,

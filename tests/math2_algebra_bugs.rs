@@ -193,7 +193,10 @@ fn solve_cubic_all_rational_verify() {
 
     let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     assert!(strs.contains(&"1".to_string()), "missing root 1: {strs:?}");
-    assert!(strs.contains(&"-2".to_string()), "missing root -2: {strs:?}");
+    assert!(
+        strs.contains(&"-2".to_string()),
+        "missing root -2: {strs:?}"
+    );
     assert!(strs.contains(&"3".to_string()), "missing root 3: {strs:?}");
 }
 
@@ -328,10 +331,7 @@ fn factor_x4_minus_1() {
     let s = format!("{factored}");
 
     // It should not contain x^4 (it should be fully factored)
-    assert!(
-        !s.contains("x^4"),
-        "x⁴-1 should be factored, but got: {s}"
-    );
+    assert!(!s.contains("x^4"), "x⁴-1 should be factored, but got: {s}");
 
     // Verify numerical equivalence
     assert_equal_at_points(&poly, &factored, &x, "factor(x⁴-1)");
@@ -362,10 +362,7 @@ fn factor_x3_minus_1() {
     assert_equal_at_points(&poly, &factored, &x, "factor(x³-1)");
 
     let s = format!("{factored}");
-    assert!(
-        !s.contains("x^3"),
-        "x³-1 should be factored, got: {s}"
-    );
+    assert!(!s.contains("x^3"), "x³-1 should be factored, got: {s}");
 }
 
 #[test]
@@ -399,12 +396,7 @@ fn factor_expand_roundtrip_cubic() {
     let poly = expr!(ctx, x ^ 3 - 6 * x ^ 2 + 11 * x - 6);
     let factored = poly.factor(&x);
     let re_expanded = factored.expand().eval();
-    assert_equal_at_points(
-        &poly,
-        &re_expanded,
-        &x,
-        "expand(factor(x³-6x²+11x-6))",
-    );
+    assert_equal_at_points(&poly, &re_expanded, &x, "expand(factor(x³-6x²+11x-6))");
 }
 
 #[test]
@@ -459,10 +451,7 @@ fn factor_difference_of_cubes() {
     assert_equal_at_points(&poly, &factored, &x, "factor(x³-8)");
 
     let s = format!("{factored}");
-    assert!(
-        !s.contains("x^3"),
-        "x³-8 should be factored, got: {s}"
-    );
+    assert!(!s.contains("x^3"), "x³-8 should be factored, got: {s}");
 }
 
 #[test]
@@ -475,10 +464,7 @@ fn factor_sum_of_cubes() {
     assert_equal_at_points(&poly, &factored, &x, "factor(x³+8)");
 
     let s = format!("{factored}");
-    assert!(
-        !s.contains("x^3"),
-        "x³+8 should be factored, got: {s}"
-    );
+    assert!(!s.contains("x^3"), "x³+8 should be factored, got: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -596,11 +582,7 @@ fn simplify_double_negative() {
     // -(-x) should simplify to x
     let expr = -(-&x);
     let simplified = expr.simplify();
-    assert_eq!(
-        format!("{simplified}"),
-        "x",
-        "-(-x) should simplify to x"
-    );
+    assert_eq!(format!("{simplified}"), "x", "-(-x) should simplify to x");
 }
 
 #[test]
@@ -623,11 +605,7 @@ fn simplify_x_over_x() {
     // x/x should simplify to 1
     let expr = &x / &x;
     let simplified = expr.simplify();
-    assert_eq!(
-        format!("{simplified}"),
-        "1",
-        "x/x should simplify to 1"
-    );
+    assert_eq!(format!("{simplified}"), "1", "x/x should simplify to 1");
 }
 
 #[test]
@@ -667,11 +645,7 @@ fn simplify_sqrt_of_square_is_abs() {
     // √(x²) should simplify to |x|
     let expr = x.powi(2).sqrt();
     let simplified = expr.simplify();
-    assert_eq!(
-        format!("{simplified}"),
-        "abs(x)",
-        "√(x²) should be |x|"
-    );
+    assert_eq!(format!("{simplified}"), "abs(x)", "√(x²) should be |x|");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -760,11 +734,13 @@ fn subs_into_sum() {
     let f = expr!(ctx, x ^ 2 + 2 * x + 1);
     let result = f.subs(&x, &(&a + &b)).expand().eval();
     // At a=1, b=2: f(3) = 9+6+1 = 16
-    let v = result.subs_i64(&a, 1).subs_i64(&b, 2).eval().eval_f64().expect("eval");
-    assert!(
-        approx(v, 16.0, 1e-10),
-        "f(1+2) should be 16, got {v}"
-    );
+    let v = result
+        .subs_i64(&a, 1)
+        .subs_i64(&b, 2)
+        .eval()
+        .eval_f64()
+        .expect("eval");
+    assert!(approx(v, 16.0, 1e-10), "f(1+2) should be 16, got {v}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -857,10 +833,7 @@ fn poly_gcd_basic() {
         );
         // At x=-1 it should be nonzero (since (x-1) at x=-1 is -2)
         let vm1 = eval_at(&g, &x, -1);
-        assert!(
-            vm1.abs() > 0.1,
-            "gcd should be nonzero at x=-1, got {vm1}"
-        );
+        assert!(vm1.abs() > 0.1, "gcd should be nonzero at x=-1, got {vm1}");
     }
 }
 
@@ -995,12 +968,14 @@ fn system_parabola_line() {
         assert!(
             r1.is_zero_structural(),
             "y-x² not satisfied: residual {r1} at ({}, {})",
-            sol[0], sol[1]
+            sol[0],
+            sol[1]
         );
         assert!(
             r2.is_zero_structural(),
             "y-x-2 not satisfied: residual {r2} at ({}, {})",
-            sol[0], sol[1]
+            sol[0],
+            sol[1]
         );
     }
 }
@@ -1123,11 +1098,7 @@ fn coefficients_extraction() {
     let poly = expr!(ctx, x ^ 2 - 5 * x + 6);
     if let Some(coeffs) = poly.coeffs(&x) {
         assert_eq!(coeffs.len(), 3, "quadratic should have 3 coefficients");
-        assert_eq!(
-            format!("{}", coeffs[0]),
-            "6",
-            "constant term should be 6"
-        );
+        assert_eq!(format!("{}", coeffs[0]), "6", "constant term should be 6");
         assert_eq!(
             format!("{}", coeffs[1]),
             "-5",
@@ -1198,8 +1169,7 @@ fn solve_and_factor_agree_on_roots() {
     for root in &roots {
         let v = factored.subs(&x, root).eval().simplify();
         assert!(
-            v.is_zero_structural()
-                || v.eval_f64().map(|f| f.abs() < 1e-10).unwrap_or(false),
+            v.is_zero_structural() || v.eval_f64().map(|f| f.abs() < 1e-10).unwrap_or(false),
             "root {root} from solve is not a root of factored form, residual = {v}"
         );
     }
@@ -1219,7 +1189,12 @@ fn factor_then_expand_is_identity() {
     for poly in &polys {
         let factored = poly.factor(&x);
         let re_expanded = factored.expand().eval();
-        assert_equal_at_points(poly, &re_expanded, &x, &format!("factor/expand roundtrip for {poly}"));
+        assert_equal_at_points(
+            poly,
+            &re_expanded,
+            &x,
+            &format!("factor/expand roundtrip for {poly}"),
+        );
     }
 }
 
@@ -1232,7 +1207,10 @@ fn cancel_and_simplify_agree() {
     let cancelled = expr.cancel(&x);
     // x+2 at x=5 should be 7
     let v = eval_at(&cancelled, &x, 5);
-    assert!(approx(v, 7.0, 1e-10), "cancel((x²-4)/(x-2)) at x=5 should be 7, got {v}");
+    assert!(
+        approx(v, 7.0, 1e-10),
+        "cancel((x²-4)/(x-2)) at x=5 should be 7, got {v}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1255,7 +1233,10 @@ fn solve_already_zero() {
     let x = ctx.symbol("x");
     // 0 = 0 → all x satisfy, returns empty by convention
     let roots = ctx.int(0).solve_or_empty(&x);
-    assert!(roots.is_empty(), "0=0 should return empty (infinitely many solutions)");
+    assert!(
+        roots.is_empty(),
+        "0=0 should return empty (infinitely many solutions)"
+    );
 }
 
 #[test]
@@ -1595,8 +1576,14 @@ fn differentiate_then_solve_for_critical_points() {
     assert_eq!(critical.len(), 2, "f'(x)=3x²-3 should have 2 roots");
 
     let strs: Vec<String> = critical.iter().map(|r| format!("{r}")).collect();
-    assert!(strs.contains(&"1".to_string()), "missing critical point 1: {strs:?}");
-    assert!(strs.contains(&"-1".to_string()), "missing critical point -1: {strs:?}");
+    assert!(
+        strs.contains(&"1".to_string()),
+        "missing critical point 1: {strs:?}"
+    );
+    assert!(
+        strs.contains(&"-1".to_string()),
+        "missing critical point -1: {strs:?}"
+    );
 }
 
 #[test]
@@ -1638,16 +1625,19 @@ fn system_tangent_circles() {
     let eq1 = expr!(ctx, x ^ 2 + y ^ 2 - 4);
     let eq2 = expr!(ctx, (x - 3) ^ 2 + y ^ 2 - 1);
     let eq2_expanded = eq2.expand().eval();
-    let solutions =
-        symplex::polysys::solve_system_ex(
-            &[eq1.clone(), eq2_expanded.clone()],
-            &[x.clone(), y.clone()],
-        )
-        .unwrap();
+    let solutions = symplex::polysys::solve_system_ex(
+        &[eq1.clone(), eq2_expanded.clone()],
+        &[x.clone(), y.clone()],
+    )
+    .unwrap();
 
     assert_eq!(solutions.len(), 1, "tangent circles should have 1 solution");
     // Verify
-    let r1 = eq1.subs(&x, &solutions[0][0]).subs(&y, &solutions[0][1]).eval().simplify();
+    let r1 = eq1
+        .subs(&x, &solutions[0][0])
+        .subs(&y, &solutions[0][1])
+        .eval()
+        .simplify();
     assert!(
         r1.is_zero_structural(),
         "solution should satisfy eq1, residual = {r1}"
@@ -1693,13 +1683,23 @@ fn expand_square_of_difference() {
     let expr = (&a - &b).powi(2);
     let expanded = expr.expand().eval();
     // At a=5, b=3: (5-3)² = 4
-    let v = expanded.subs_i64(&a, 5).subs_i64(&b, 3).eval().eval_f64().unwrap();
+    let v = expanded
+        .subs_i64(&a, 5)
+        .subs_i64(&b, 3)
+        .eval()
+        .eval_f64()
+        .unwrap();
     assert!(
         approx(v, 4.0, 1e-10),
         "(a-b)² at a=5,b=3 should be 4, got {v}"
     );
     // At a=1, b=4: (1-4)² = 9
-    let v = expanded.subs_i64(&a, 1).subs_i64(&b, 4).eval().eval_f64().unwrap();
+    let v = expanded
+        .subs_i64(&a, 1)
+        .subs_i64(&b, 4)
+        .eval()
+        .eval_f64()
+        .unwrap();
     assert!(
         approx(v, 9.0, 1e-10),
         "(a-b)² at a=1,b=4 should be 9, got {v}"
@@ -1716,7 +1716,12 @@ fn cancel_bivariate_difference_of_squares() {
     let expr = &numer / &denom;
     let cancelled = expr.cancel(&x);
     // Evaluate at x=5, y=2: should be 7
-    let v = cancelled.subs_i64(&x, 5).subs_i64(&y, 2).eval().eval_f64().unwrap();
+    let v = cancelled
+        .subs_i64(&x, 5)
+        .subs_i64(&y, 2)
+        .eval()
+        .eval_f64()
+        .unwrap();
     assert!(
         approx(v, 7.0, 1e-10),
         "(x²-y²)/(x-y) cancelled at x=5,y=2 should be 7, got {v}"
@@ -1778,10 +1783,7 @@ fn poly_gcd_shared_quadratic_factor() {
     if let Some(g) = a.poly_gcd(&b, &x) {
         // gcd should vanish at x=1 and x=-1
         let v1 = eval_at(&g, &x, 1);
-        assert!(
-            approx(v1, 0.0, 1e-9),
-            "gcd should vanish at x=1, got {v1}"
-        );
+        assert!(approx(v1, 0.0, 1e-9), "gcd should vanish at x=1, got {v1}");
         let vm1 = eval_at(&g, &x, -1);
         assert!(
             approx(vm1, 0.0, 1e-9),
@@ -1789,10 +1791,7 @@ fn poly_gcd_shared_quadratic_factor() {
         );
         // gcd should be nonzero at x=2
         let v2 = eval_at(&g, &x, 2);
-        assert!(
-            v2.abs() > 0.1,
-            "gcd should be nonzero at x=2, got {v2}"
-        );
+        assert!(v2.abs() > 0.1, "gcd should be nonzero at x=2, got {v2}");
         // Degree should be 2
         if let Some(deg) = g.degree(&x) {
             assert_eq!(deg, 2, "gcd degree should be 2, got {deg}");

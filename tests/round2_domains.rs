@@ -395,10 +395,7 @@ fn unit_arithmetic_energy_equals_force_times_distance() {
     let f = Force::symbol(&ctx, "F");
     let d = Length::symbol(&ctx, "d");
     let w: Energy = symplex::dim!(ctx, Energy: f * d);
-    let w_num = w
-        .subs(&f, &ctx.int(100))
-        .subs(&d, &ctx.int(5))
-        .eval();
+    let w_num = w.subs(&f, &ctx.int(100)).subs(&d, &ctx.int(5)).eval();
     assert_close(w_num.eval_f64().unwrap(), 500.0, 1e-10, "W = 100 * 5");
 }
 
@@ -408,10 +405,7 @@ fn unit_arithmetic_power_equals_energy_over_time() {
     let e = Energy::symbol(&ctx, "E");
     let t = Time::symbol(&ctx, "t");
     let p: Power = symplex::dim!(ctx, Power: e / t);
-    let p_num = p
-        .subs(&e, &ctx.int(1000))
-        .subs(&t, &ctx.int(10))
-        .eval();
+    let p_num = p.subs(&e, &ctx.int(1000)).subs(&t, &ctx.int(10)).eval();
     assert_close(p_num.eval_f64().unwrap(), 100.0, 1e-10, "P = 1000/10");
 }
 
@@ -421,10 +415,7 @@ fn unit_arithmetic_ohms_law_voltage() {
     let i = Current::symbol(&ctx, "I");
     let r = Resistance::symbol(&ctx, "R");
     let v: Voltage = symplex::dim!(ctx, Voltage: i * r);
-    let v_num = v
-        .subs(&i, &ctx.int(3))
-        .subs(&r, &ctx.int(100))
-        .eval();
+    let v_num = v.subs(&i, &ctx.int(3)).subs(&r, &ctx.int(100)).eval();
     assert_close(v_num.eval_f64().unwrap(), 300.0, 1e-10, "V = 3 * 100");
 }
 
@@ -590,7 +581,10 @@ fn unit_runtime_dimension_inference_mismatch() {
     let force_ex = &m_sym * &a_sym;
     // Trying to create a Velocity from a Force expression should fail
     let result = Velocity::checked_from_ex(force_ex, &dims);
-    assert!(result.is_err(), "Force expression misidentified as Velocity");
+    assert!(
+        result.is_err(),
+        "Force expression misidentified as Velocity"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -821,8 +815,18 @@ fn matrix_non_square_transpose() {
     assert_eq!(m.shape(), (2, 3));
     let t = m.transpose();
     assert_eq!(t.shape(), (3, 2));
-    assert_close(t.get(2, 0).eval_f64().unwrap(), 3.0, 1e-12, "transpose (2,0)");
-    assert_close(t.get(0, 1).eval_f64().unwrap(), 4.0, 1e-12, "transpose (0,1)");
+    assert_close(
+        t.get(2, 0).eval_f64().unwrap(),
+        3.0,
+        1e-12,
+        "transpose (2,0)",
+    );
+    assert_close(
+        t.get(0, 1).eval_f64().unwrap(),
+        4.0,
+        1e-12,
+        "transpose (0,1)",
+    );
 }
 
 #[test]
@@ -847,9 +851,19 @@ fn matrix_non_square_matmul() {
     // c[0][1] = 1*8 + 2*10 + 3*12 = 8+20+36 = 64
     assert_close(c.get(0, 1).eval_f64().unwrap(), 64.0, 1e-10, "matmul [0,1]");
     // c[1][0] = 4*7 + 5*9 + 6*11 = 28+45+66 = 139
-    assert_close(c.get(1, 0).eval_f64().unwrap(), 139.0, 1e-10, "matmul [1,0]");
+    assert_close(
+        c.get(1, 0).eval_f64().unwrap(),
+        139.0,
+        1e-10,
+        "matmul [1,0]",
+    );
     // c[1][1] = 4*8 + 5*10 + 6*12 = 32+50+72 = 154
-    assert_close(c.get(1, 1).eval_f64().unwrap(), 154.0, 1e-10, "matmul [1,1]");
+    assert_close(
+        c.get(1, 1).eval_f64().unwrap(),
+        154.0,
+        1e-10,
+        "matmul [1,1]",
+    );
 }
 
 #[test]
@@ -891,9 +905,8 @@ fn matrix_lu_2x2() {
     let (l, u, perm) = m.lu().expect("LU should succeed for non-singular 2×2");
     // Verify P*A = L*U by reconstructing
     let lu = l.matmul(&u).unwrap();
-    for i in 0..2 {
+    for (i, &orig_row) in perm.iter().enumerate().take(2) {
         for j in 0..2 {
-            let orig_row = perm[i];
             let expected = m.get(orig_row, j).eval_f64().unwrap();
             let actual = lu.get(i, j).eval().eval_f64().unwrap();
             assert_close(actual, expected, 1e-10, &format!("LU[{i},{j}]"));
@@ -912,9 +925,8 @@ fn matrix_lu_3x3() {
     .unwrap();
     let (l, u, perm) = m.lu().expect("LU should succeed");
     let lu = l.matmul(&u).unwrap();
-    for i in 0..3 {
+    for (i, &orig_row) in perm.iter().enumerate().take(3) {
         for j in 0..3 {
-            let orig_row = perm[i];
             let expected = m.get(orig_row, j).eval_f64().unwrap();
             let actual = lu.get(i, j).eval().eval_f64().unwrap();
             assert_close(actual, expected, 1e-10, &format!("LU 3×3 [{i},{j}]"));
@@ -1377,7 +1389,12 @@ fn matrix_frobenius_norm() {
     .unwrap();
     let n = m.norm().eval();
     // ||M||_F = sqrt(1+4+9+16) = sqrt(30)
-    assert_close(n.eval_f64().unwrap(), 30.0_f64.sqrt(), 1e-10, "Frobenius norm");
+    assert_close(
+        n.eval_f64().unwrap(),
+        30.0_f64.sqrt(),
+        1e-10,
+        "Frobenius norm",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1630,8 +1647,18 @@ fn quaternion_180_z_rotation_matrix() {
     let q = Quaternion::new(ctx.int(0), ctx.int(0), ctx.int(0), ctx.int(1));
     let r = q.to_rotation_matrix();
     // Expected: R = [[-1,0,0],[0,-1,0],[0,0,1]]
-    assert_close(r.get(0, 0).eval().eval_f64().unwrap(), -1.0, 1e-10, "R[0,0]");
-    assert_close(r.get(1, 1).eval().eval_f64().unwrap(), -1.0, 1e-10, "R[1,1]");
+    assert_close(
+        r.get(0, 0).eval().eval_f64().unwrap(),
+        -1.0,
+        1e-10,
+        "R[0,0]",
+    );
+    assert_close(
+        r.get(1, 1).eval().eval_f64().unwrap(),
+        -1.0,
+        1e-10,
+        "R[1,1]",
+    );
     assert_close(r.get(2, 2).eval().eval_f64().unwrap(), 1.0, 1e-10, "R[2,2]");
     assert_close(r.get(0, 1).eval().eval_f64().unwrap(), 0.0, 1e-10, "R[0,1]");
 }
@@ -1838,9 +1865,17 @@ fn vector_gradient_polynomial() {
     assert_eq!(g.shape(), (2, 1));
     // ∂f/∂x = 2x + 2y
     // ∂f/∂y = 2x + 2y
-    let gx = g.get(0, 0).subs(&x, &ctx.int(1)).subs(&y, &ctx.int(1)).eval();
+    let gx = g
+        .get(0, 0)
+        .subs(&x, &ctx.int(1))
+        .subs(&y, &ctx.int(1))
+        .eval();
     assert_close(gx.eval_f64().unwrap(), 4.0, 1e-10, "∂f/∂x at (1,1)");
-    let gy = g.get(1, 0).subs(&x, &ctx.int(1)).subs(&y, &ctx.int(1)).eval();
+    let gy = g
+        .get(1, 0)
+        .subs(&x, &ctx.int(1))
+        .subs(&y, &ctx.int(1))
+        .eval();
     assert_close(gy.eval_f64().unwrap(), 4.0, 1e-10, "∂f/∂y at (1,1)");
 }
 
@@ -1890,7 +1925,12 @@ fn vector_curl_of_gradient_is_zero() {
             .subs(&y, &ctx.int(1))
             .subs(&z, &ctx.int(1))
             .eval();
-        assert_close(val.eval_f64().unwrap(), 0.0, 1e-10, &format!("curl(grad f)[{i}]"));
+        assert_close(
+            val.eval_f64().unwrap(),
+            0.0,
+            1e-10,
+            &format!("curl(grad f)[{i}]"),
+        );
     }
 }
 
@@ -1946,7 +1986,7 @@ fn vector_is_solenoidal_constant_field() {
 // 5. CONTROL SYSTEMS
 // ═══════════════════════════════════════════════════════════════════════════
 
-use symplex::control::{is_routh_stable, routh_array, TransferFunction};
+use symplex::control::{TransferFunction, is_routh_stable, routh_array};
 
 // ---------------------------------------------------------------------------
 // 5a. Transfer function construction and evaluation
@@ -2020,7 +2060,12 @@ fn control_tf_unity_feedback() {
     let gcl = g.feedback();
     // G_cl(0) = num(0) / (den(0)+num(0)) = 10 / (1+10) = 10/11
     let dc = gcl.dc_gain().eval();
-    assert_close(dc.eval_f64().unwrap(), 10.0 / 11.0, 1e-10, "feedback DC gain");
+    assert_close(
+        dc.eval_f64().unwrap(),
+        10.0 / 11.0,
+        1e-10,
+        "feedback DC gain",
+    );
 }
 
 #[test]
@@ -2033,7 +2078,12 @@ fn control_tf_feedback_with_controller() {
     let gcl = g.feedback_with(&h);
     // G_cl(0) = (1*1) / (1*1 + 1*2) = 1/3
     let dc = gcl.dc_gain().eval();
-    assert_close(dc.eval_f64().unwrap(), 1.0 / 3.0, 1e-10, "feedback_with DC gain");
+    assert_close(
+        dc.eval_f64().unwrap(),
+        1.0 / 3.0,
+        1e-10,
+        "feedback_with DC gain",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2253,8 +2303,8 @@ fn control_state_space_discretize() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 use symplex::robotics::{
-    dh_matrix, fk_chain, fk_position, fk_rotation, homogeneous, rot_euler, rot_x, rot_y, rot_z,
-    skew3, translation, EulerConvention,
+    EulerConvention, dh_matrix, fk_chain, fk_position, fk_rotation, homogeneous, rot_euler, rot_x,
+    rot_y, rot_z, skew3, translation,
 };
 
 // ---------------------------------------------------------------------------
@@ -2852,11 +2902,7 @@ fn combinatorics_stirling1_unsigned_row_sum_is_n_factorial() {
             sum += unsigned;
         }
         let fact: i64 = (1..=n as i64).product::<i64>().max(1);
-        assert_eq!(
-            sum,
-            BigInt::from(fact),
-            "sum |s({n}, k)| = {n}! = {fact}"
-        );
+        assert_eq!(sum, BigInt::from(fact), "sum |s({n}, k)| = {n}! = {fact}");
     }
 }
 
@@ -2910,10 +2956,7 @@ fn combinatorics_multinomial_reduces_to_binomial() {
 fn combinatorics_multinomial_all_ones_is_factorial() {
     // n! / (1! * 1! * ... * 1!) = n!
     assert_eq!(multinomial(5, &[1, 1, 1, 1, 1]), Some(BigInt::from(120)));
-    assert_eq!(
-        multinomial(6, &[1, 1, 1, 1, 1, 1]),
-        Some(BigInt::from(720))
-    );
+    assert_eq!(multinomial(6, &[1, 1, 1, 1, 1, 1]), Some(BigInt::from(720)));
 }
 
 #[test]

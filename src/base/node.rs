@@ -67,18 +67,18 @@ impl fmt::Debug for CtxId {
 ///
 /// * **Atoms** – leaves that carry no child expressions (`Num`, `Symbol`,
 ///   mathematical constants, and special values).
-/// * **Operators** – internal nodes with one or more child [`ExprId`]s.
+/// * **Operators** – internal nodes with one or more child `ExprId`s.
 /// * **Calculus forms** – `Derivative` and `Integral`, which record both the
 ///   body expression and the variable of differentiation / integration.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ExprNode {
     // -- atoms ---------------------------------------------------------------
     /// A numeric literal.  The actual value lives in the number side‐table
-    /// and is looked up via the contained [`NumId`].
+    /// and is looked up via the contained `NumId`.
     Num(NumId),
 
     /// A symbolic name (variable, constant, or function name).  The actual
-    /// string is stored in the symbol table and looked up via [`SymbolId`].
+    /// string is stored in the symbol table and looked up via `SymbolId`.
     Symbol(SymbolId),
 
     /// The mathematical constant π ≈ 3.14159…
@@ -251,7 +251,7 @@ pub enum ExprNode {
 
     // -- composite forms -----------------------------------------------------
     /// Application of a user‐defined or library function identified by
-    /// [`SymbolId`] to a list of argument expressions.
+    /// `SymbolId` to a list of argument expressions.
     Apply(SymbolId, SmallVec<[ExprId; 2]>),
 
     /// Formal derivative: d/d(var) of an expression.
@@ -339,7 +339,7 @@ pub const INTERVAL_BOTH_OPEN: u8 = 0x03;
 pub const INTERVAL_BOTH_CLOSED: u8 = 0x00;
 
 impl ExprNode {
-    /// Returns all child [`ExprId`]s contained in this node.
+    /// Returns all child `ExprId`s contained in this node.
     ///
     /// For atoms (numbers, symbols, constants, and special values) the
     /// returned collection is empty.  For compound nodes the children are
@@ -461,7 +461,7 @@ impl ExprNode {
         }
     }
 
-    /// Calls `f` for each child [`ExprId`] without allocating.
+    /// Calls `f` for each child `ExprId` without allocating.
     ///
     /// This is the zero-allocation alternative to [`children()`](Self::children).
     /// Prefer this in hot paths (tree walks, display) where the allocation

@@ -10,7 +10,7 @@
 //! - [`Props`] — a bitflag set naming mathematical properties.
 //! - [`Assumptions`] — a pair of `Props` sets (`known_true`, `known_false`)
 //!   representing three-valued knowledge about an expression.
-//! - [`AssumptionCache`] — a cache mapping [`ExprId`] → [`Assumptions`],
+//! - [`AssumptionCache`] — a cache mapping `ExprId` → [`Assumptions`],
 //!   with methods to query and compute properties.
 //!
 //! # Inference rules
@@ -676,7 +676,7 @@ impl Assumptions {
 // Assumption cache + property handlers
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Cache of computed assumptions, indexed by [`ExprId`].
+/// Cache of computed assumptions, indexed by `ExprId`.
 ///
 /// Lives on the [`Context`](crate::api::context::Context) separately from
 /// the arena to avoid lock-ordering issues.

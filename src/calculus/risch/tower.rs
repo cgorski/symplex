@@ -156,11 +156,19 @@ impl DifferentialExtension {
     }
 
     /// Decrement the working level (move one step toward the base).
+    ///
+    /// Not yet used by the production integrator (which currently handles
+    /// single-level towers); kept for the multi-level recursion.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn decrement_level(&mut self) {
         self.current_level -= 1;
     }
 
     /// Increment the working level (move one step toward the outermost).
+    ///
+    /// Not yet used by the production integrator (which currently handles
+    /// single-level towers); kept for the multi-level recursion.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn increment_level(&mut self) {
         if self.current_level < self.levels.len() as isize - 1 {
             self.current_level += 1;
@@ -677,6 +685,11 @@ pub fn extract_poly_in_ext_mut(
 ///
 /// This works at the arena `ExprId` level — the result is a symbolic
 /// expression in the arena, not a polynomial.
+///
+/// Not yet called from the production integrator, which uses the
+/// polynomial-level derivation in `poly_ops`; kept (and unit-tested) for
+/// the general multi-level tower.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn derivation(arena: &mut Arena, expr: ExprId, de: &DifferentialExtension) -> ExprId {
     if de.levels.is_empty() {
         // Base case: no extensions, just d/dx.

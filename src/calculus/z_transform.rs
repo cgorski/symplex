@@ -1,7 +1,7 @@
 //! Z-transform and inverse z-transform for discrete-time signal analysis.
 //!
 //! Table-based implementation covering common discrete-time sequences.
-//! The z-transform of a sequence x[n] is X(z) = Σ x[n] z⁻ⁿ.
+//! The z-transform of a sequence x\[n\] is X(z) = Σ x\[n\] z⁻ⁿ.
 //!
 //! # Supported transforms (forward)
 //!
@@ -196,7 +196,7 @@ fn extract_linear_coeff(arena: &mut Arena, expr: ExprId, n_var: ExprId) -> Optio
     Some(arena.intern(ExprNode::Num(nid)))
 }
 
-/// Convert a Ratio<BigInt> to an ExprId.
+/// Convert a `Ratio<BigInt>` to an `ExprId`.
 fn rational_to_expr(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
     let nid = arena.intern_num(r.clone());
     arena.intern(ExprNode::Num(nid))

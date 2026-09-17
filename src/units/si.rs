@@ -1,9 +1,9 @@
 //! Named newtype wrappers for 30 SI physical quantities.
 //!
-//! Each newtype wraps an [`Ex`] and provides compile-time dimensional safety
+//! Each newtype wraps an [`Ex`](crate::api::expr::Ex) and provides compile-time dimensional safety
 //! with clear error messages (e.g. "expected `Force`, found `Mass`").
 //!
-//! Constructors like [`symbol()`], [`constant()`], and [`rational()`] take
+//! Constructors like `symbol()`, `constant()`, and `rational()` take
 //! a `&Context` parameter so that unit expressions live in the same context
 //! as your other expressions — no hidden global state, no cross-context panics.
 //!
@@ -80,7 +80,7 @@ macro_rules! define_quantity {
             /// Create from a symbolic expression with runtime dimension validation.
             ///
             /// Checks that the expression's inferred dimension matches this type's
-            /// dimension using the provided [`DimMap`]. Returns an error if the
+            /// dimension using the provided [`DimMap`](crate::units::inference::DimMap). Returns an error if the
             /// dimensions don't match.
             ///
             /// Use this instead of `from_ex` when you want runtime validation
@@ -126,7 +126,7 @@ macro_rules! define_quantity {
             /// Borrow the inner Ex.
             pub fn inner(&self) -> &Ex { &self.0 }
 
-            /// Convert to generic Qty<D>.
+            /// Convert to generic `Qty<D>`.
             pub fn as_qty(self) -> Qty<$dim> { Qty::from_ex(self.0) }
 
             /// Runtime dimension name.

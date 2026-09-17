@@ -36,7 +36,7 @@ pub struct Dim<L, M, T, I, Th, N, J> {
 // ---------------------------------------------------------------------------
 
 // --- Base / dimensionless ---
-/// SI dimension for Dimensionless quantities: all exponents zero [1].
+/// SI dimension for Dimensionless quantities: all exponents zero \[1\].
 pub type DimensionlessDim = Dim<Z0, Z0, Z0, Z0, Z0, Z0, Z0>;
 /// SI dimension for Angle: dimensionless [radian, rad]. Same as `DimensionlessDim`.
 pub type AngleDim = Dim<Z0, Z0, Z0, Z0, Z0, Z0, Z0>; // same as Dimensionless

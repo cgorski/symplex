@@ -3965,9 +3965,9 @@ impl Expr<Numeric> {
 
     /// Internal: domain-aware adaptive sampling for plotting.
     ///
-    /// Uses [`calculus_util::singularities`] to find excluded points,
-    /// [`calculus_util::estimate_frequency`] to determine sampling density,
-    /// and [`sampling::sample_compiled`] for adaptive refinement.
+    /// Uses [`calculus_util::singularities`](crate::calculus::calculus_util::singularities) to find excluded points,
+    /// [`calculus_util::estimate_frequency`](crate::calculus::calculus_util::estimate_frequency) to determine sampling density,
+    /// and [`sampling::sample_compiled`](crate::plotting::sampling::sample_compiled) for adaptive refinement.
     fn sample_expression(&self, var: &Ex, a: f64, b: f64) -> crate::plotting::sampling::PlotData {
         use crate::base::node::ExprNode;
 

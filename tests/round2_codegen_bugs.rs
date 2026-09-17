@@ -101,14 +101,11 @@ fn check_compile_vs_eval_rational(
         let from_compile = compiled(&[fval]);
         let subst = ctx.rational(p, q);
         let from_eval = expr.subs(var, &subst).eval_f64();
-        match from_eval {
-            Ok(expected) => {
-                assert!(
-                    approx_eq(from_compile, expected, 1e-8),
-                    "MISMATCH for `{expr}` at {var_name}={p}/{q}: compile={from_compile}, eval={expected}"
-                );
-            }
-            Err(_) => {}
+        if let Ok(expected) = from_eval {
+            assert!(
+                approx_eq(from_compile, expected, 1e-8),
+                "MISMATCH for `{expr}` at {var_name}={p}/{q}: compile={from_compile}, eval={expected}"
+            );
         }
     }
 }
@@ -405,10 +402,7 @@ fn codegen_imaginary_unit_error() {
     let i_expr = symplex::parse::parse(&ctx, "I").unwrap();
     let f = &x + &i_expr;
     let result = f.to_rust_fn("has_i", &["x"]);
-    assert!(
-        result.is_err(),
-        "codegen with imaginary unit should error"
-    );
+    assert!(result.is_err(), "codegen with imaginary unit should error");
 }
 
 #[test]
@@ -574,10 +568,7 @@ fn compile_at_negative_values() {
     let x = ctx.symbol("x");
     let f = x.powi(3) + 1;
     let compiled = f.compile(&["x"]).unwrap();
-    assert!(
-        (compiled(&[-2.0]) - (-7.0)).abs() < 1e-10,
-        "(-2)^3+1 = -7"
-    );
+    assert!((compiled(&[-2.0]) - (-7.0)).abs() < 1e-10, "(-2)^3+1 = -7");
     assert!(compiled(&[-1.0]).abs() < 1e-10, "(-1)^3+1 = 0");
 }
 
@@ -849,10 +840,7 @@ fn latex_pi_and_e() {
         "pi should render as \\pi: {pi_latex}"
     );
     let e_latex = ctx.e().to_latex();
-    assert!(
-        e_latex.contains('e'),
-        "e should contain 'e': {e_latex}"
-    );
+    assert!(e_latex.contains('e'), "e should contain 'e': {e_latex}");
 }
 
 #[test]
@@ -992,9 +980,7 @@ fn assert_roundtrip(ctx: &Context, expr: &Ex, label: &str) {
             );
         }
         Err(e) => {
-            panic!(
-                "parse failed for {label}: display='{displayed}', error: {e}"
-            );
+            panic!("parse failed for {label}: display='{displayed}', error: {e}");
         }
     }
 }
@@ -1035,11 +1021,7 @@ fn roundtrip_polynomial() {
         reparsed.err()
     );
     if let Ok(r) = reparsed {
-        assert_eq!(
-            format!("{r}"),
-            displayed,
-            "polynomial round-trip mismatch"
-        );
+        assert_eq!(format!("{r}"), displayed, "polynomial round-trip mismatch");
     }
 }
 
@@ -1394,7 +1376,7 @@ fn precision_sin_squared_plus_cos_squared() {
     let f = x.sin().powi(2) + x.cos().powi(2);
     let compiled = f.compile(&["x"]).unwrap();
     // sin²(x) + cos²(x) = 1 for all x
-    for v in [0.0, 0.1, 1.0, 2.0, 3.14, 100.0, -5.0] {
+    for v in [0.0, 0.1, 1.0, 2.0, std::f64::consts::PI, 100.0, -5.0] {
         let result = compiled(&[v]);
         assert!(
             (result - 1.0).abs() < 1e-12,
@@ -1413,10 +1395,7 @@ fn precision_tan_vs_sin_over_cos() {
     for v in [0.1, 0.5, 1.0, -0.5, 2.0] {
         let t = c_tan(&[v]);
         let r = c_ratio(&[v]);
-        assert!(
-            approx_eq(t, r, 1e-10),
-            "tan({v})={t} vs sin/cos={r}"
-        );
+        assert!(approx_eq(t, r, 1e-10), "tan({v})={t} vs sin/cos={r}");
     }
 }
 
@@ -1509,7 +1488,11 @@ fn sign_function_semantics() {
     if let Some(func) = compiled {
         assert_eq!(func(&[5.0]), 1.0, "sign(5) should be 1");
         assert_eq!(func(&[-3.0]), -1.0, "sign(-3) should be -1");
-        assert_eq!(func(&[0.0]), 0.0, "sign(0) should be 0 (mathematical convention)");
+        assert_eq!(
+            func(&[0.0]),
+            0.0,
+            "sign(0) should be 0 (mathematical convention)"
+        );
     }
 }
 
@@ -1659,6 +1642,7 @@ fn compile_powi_expansion_numerical_correctness() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
+#[allow(clippy::erasing_op)] // Symbolic `x * 0` is exactly what's under test.
 fn codegen_zero_coefficient() {
     let ctx = Context::new();
     let x = ctx.symbol("x");

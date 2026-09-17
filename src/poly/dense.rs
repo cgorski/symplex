@@ -2,7 +2,7 @@
 //!
 //! This module defines [`Poly`] as a type alias for
 //! `GenPoly<Ratio<BigInt>>`, inheriting all generic polynomial arithmetic
-//! from [`GenPoly`](super::generic::GenPoly).  It adds ℚ-specific
+//! from [`GenPoly`].  It adds ℚ-specific
 //! operations that depend on integer structure:
 //!
 //! - [`has_integer_coeffs`](GenPoly::has_integer_coeffs) — check all denominators are 1

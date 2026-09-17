@@ -8,14 +8,21 @@ error[E0277]: cannot add `&symplex::units::Torque` to `&symplex::units::Energy`
 help: the following other types implement trait `std::ops::Add<Rhs>`
  --> src/units/si.rs
   |
+  |           impl ops::Add for $name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^ `symplex::units::Energy` implements `std::ops::Add`
+...
+  |           impl ops::Add<&$name> for &$name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&symplex::units::Energy` implements `std::ops::Add`
+...
+  |           impl ops::Add<$name> for &$name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&symplex::units::Energy` implements `std::ops::Add<symplex::units::Energy>`
+...
+  |           impl ops::Add<&$name> for $name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `symplex::units::Energy` implements `std::ops::Add<&symplex::units::Energy>`
+...
   | / define_quantity!(
   | |     /// Energy \[J = kg·m²/s²\].
   | |     Energy, EnergyDim, "Energy", "J"
   | | );
-  | | ^
-  | | |
-  | | `&symplex::units::Energy` implements `std::ops::Add<symplex::units::Energy>`
-  | | `&symplex::units::Energy` implements `std::ops::Add`
-  | |_`symplex::units::Energy` implements `std::ops::Add<&symplex::units::Energy>`
-  |   `symplex::units::Energy` implements `std::ops::Add`
+  | |_- in this macro invocation
   = note: this error originates in the macro `define_quantity` (in Nightly builds, run with -Z macro-backtrace for more info)

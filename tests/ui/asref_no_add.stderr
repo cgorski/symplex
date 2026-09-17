@@ -8,14 +8,21 @@ error[E0277]: cannot add `&symplex::units::Mass` to `&symplex::units::Force`
 help: the following other types implement trait `std::ops::Add<Rhs>`
  --> src/units/si.rs
   |
+  |           impl ops::Add for $name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^ `symplex::units::Force` implements `std::ops::Add`
+...
+  |           impl ops::Add<&$name> for &$name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&symplex::units::Force` implements `std::ops::Add`
+...
+  |           impl ops::Add<$name> for &$name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&symplex::units::Force` implements `std::ops::Add<symplex::units::Force>`
+...
+  |           impl ops::Add<&$name> for $name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `symplex::units::Force` implements `std::ops::Add<&symplex::units::Force>`
+...
   | / define_quantity!(
   | |     /// Force \[N = kg·m/s²\].
   | |     Force, ForceDim, "Force", "N"
   | | );
-  | | ^
-  | | |
-  | | `&symplex::units::Force` implements `std::ops::Add<symplex::units::Force>`
-  | | `&symplex::units::Force` implements `std::ops::Add`
-  | |_`symplex::units::Force` implements `std::ops::Add<&symplex::units::Force>`
-  |   `symplex::units::Force` implements `std::ops::Add`
+  | |_- in this macro invocation
   = note: this error originates in the macro `define_quantity` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -133,14 +133,16 @@ fn convergence_expand_vs_factor() {
     let (forms, converged) = iterate_simplify(&expr, 20);
     print_trace("2*(x + 1) via .simplify()", &forms, converged);
 
-    if let Some(cycle) = detect_cycle(&forms) {
-        if cycle.1 > 1 {
-            panic!(
-                "OSCILLATION in 2*(x+1): cycle of length {} starting at iteration {}.\n\
+    if let Some(cycle) = detect_cycle(&forms)
+        && cycle.1 > 1
+    {
+        panic!(
+            "OSCILLATION in 2*(x+1): cycle of length {} starting at iteration {}.\n\
                  Forms: {:?}",
-                cycle.1, cycle.0, &forms[cycle.0..cycle.0 + cycle.1 + 1]
-            );
-        }
+            cycle.1,
+            cycle.0,
+            &forms[cycle.0..cycle.0 + cycle.1 + 1]
+        );
     }
     // Even if it doesn't oscillate, it should converge within 20 iterations
     assert!(
@@ -160,13 +162,13 @@ fn convergence_expand_vs_factor_larger() {
     let (forms, converged) = iterate_simplify(&expr, 20);
     print_trace("3*(x + y + 1) via .simplify()", &forms, converged);
 
-    if let Some(cycle) = detect_cycle(&forms) {
-        if cycle.1 > 1 {
-            panic!(
-                "OSCILLATION in 3*(x+y+1): cycle length {} at iteration {}",
-                cycle.1, cycle.0
-            );
-        }
+    if let Some(cycle) = detect_cycle(&forms)
+        && cycle.1 > 1
+    {
+        panic!(
+            "OSCILLATION in 3*(x+y+1): cycle length {} at iteration {}",
+            cycle.1, cycle.0
+        );
     }
     assert!(
         converged.is_some(),
@@ -190,15 +192,15 @@ fn convergence_sin_squared() {
     let (forms, converged) = iterate_simplify(&expr, 20);
     print_trace("sin²(x) via .simplify()", &forms, converged);
 
-    if let Some(cycle) = detect_cycle(&forms) {
-        if cycle.1 > 1 {
-            panic!(
-                "OSCILLATION in sin²(x): cycle length {} at iteration {}.\nForms: {:?}",
-                cycle.1,
-                cycle.0,
-                &forms[cycle.0..std::cmp::min(forms.len(), cycle.0 + cycle.1 + 1)]
-            );
-        }
+    if let Some(cycle) = detect_cycle(&forms)
+        && cycle.1 > 1
+    {
+        panic!(
+            "OSCILLATION in sin²(x): cycle length {} at iteration {}.\nForms: {:?}",
+            cycle.1,
+            cycle.0,
+            &forms[cycle.0..std::cmp::min(forms.len(), cycle.0 + cycle.1 + 1)]
+        );
     }
     assert!(
         converged.is_some(),
@@ -217,13 +219,13 @@ fn convergence_half_angle_form() {
     let (forms, converged) = iterate_simplify(&expr, 20);
     print_trace("(1 - cos(2x))/2 via .simplify()", &forms, converged);
 
-    if let Some(cycle) = detect_cycle(&forms) {
-        if cycle.1 > 1 {
-            panic!(
-                "OSCILLATION in (1-cos(2x))/2: cycle length {} at iteration {}",
-                cycle.1, cycle.0
-            );
-        }
+    if let Some(cycle) = detect_cycle(&forms)
+        && cycle.1 > 1
+    {
+        panic!(
+            "OSCILLATION in (1-cos(2x))/2: cycle length {} at iteration {}",
+            cycle.1, cycle.0
+        );
     }
     assert!(
         converged.is_some(),
@@ -268,13 +270,13 @@ fn convergence_exp_ln_sum() {
     let (forms, converged) = iterate_simplify(&expr, 20);
     print_trace("exp(ln(x) + ln(y)) via .simplify()", &forms, converged);
 
-    if let Some(cycle) = detect_cycle(&forms) {
-        if cycle.1 > 1 {
-            panic!(
-                "OSCILLATION in exp(ln(x)+ln(y)): cycle length {} at iteration {}",
-                cycle.1, cycle.0
-            );
-        }
+    if let Some(cycle) = detect_cycle(&forms)
+        && cycle.1 > 1
+    {
+        panic!(
+            "OSCILLATION in exp(ln(x)+ln(y)): cycle length {} at iteration {}",
+            cycle.1, cycle.0
+        );
     }
     assert!(
         converged.is_some(),
@@ -311,13 +313,13 @@ fn convergence_smart_simplify_expand_factor() {
     let (forms, converged) = iterate_smart_simplify(&expr, 20);
     print_trace("2*(x+1) via .simplify()", &forms, converged);
 
-    if let Some(cycle) = detect_cycle(&forms) {
-        if cycle.1 > 1 {
-            panic!(
-                "OSCILLATION via smart_simplify on 2*(x+1): cycle length {}",
-                cycle.1
-            );
-        }
+    if let Some(cycle) = detect_cycle(&forms)
+        && cycle.1 > 1
+    {
+        panic!(
+            "OSCILLATION via smart_simplify on 2*(x+1): cycle length {}",
+            cycle.1
+        );
     }
     assert!(
         converged.is_some(),
@@ -334,13 +336,13 @@ fn convergence_smart_simplify_trig() {
     let (forms, converged) = iterate_smart_simplify(&expr, 20);
     print_trace("sin²(x) via .simplify()", &forms, converged);
 
-    if let Some(cycle) = detect_cycle(&forms) {
-        if cycle.1 > 1 {
-            panic!(
-                "OSCILLATION via smart_simplify on sin²(x): cycle length {}",
-                cycle.1
-            );
-        }
+    if let Some(cycle) = detect_cycle(&forms)
+        && cycle.1 > 1
+    {
+        panic!(
+            "OSCILLATION via smart_simplify on sin²(x): cycle length {}",
+            cycle.1
+        );
     }
     assert!(
         converged.is_some(),
@@ -553,14 +555,14 @@ fn convergence_nested_trig() {
     let (forms, converged) = iterate_simplify(&expr, 20);
     print_trace("sin(2x) via .simplify()", &forms, converged);
 
-    if let Some(cycle) = detect_cycle(&forms) {
-        if cycle.1 > 1 {
-            panic!(
-                "OSCILLATION in sin(2x): cycle length {} at iteration {}.\n\
+    if let Some(cycle) = detect_cycle(&forms)
+        && cycle.1 > 1
+    {
+        panic!(
+            "OSCILLATION in sin(2x): cycle length {} at iteration {}.\n\
                  This likely means expand_trig and fu are fighting.",
-                cycle.1, cycle.0
-            );
-        }
+            cycle.1, cycle.0
+        );
     }
     assert!(
         converged.is_some(),
@@ -581,13 +583,13 @@ fn convergence_cos_double_angle() {
     let (forms, converged) = iterate_simplify(&expr, 20);
     print_trace("cos(2x) via .simplify()", &forms, converged);
 
-    if let Some(cycle) = detect_cycle(&forms) {
-        if cycle.1 > 1 {
-            panic!(
-                "OSCILLATION in cos(2x): cycle length {} at iteration {}",
-                cycle.1, cycle.0
-            );
-        }
+    if let Some(cycle) = detect_cycle(&forms)
+        && cycle.1 > 1
+    {
+        panic!(
+            "OSCILLATION in cos(2x): cycle length {} at iteration {}",
+            cycle.1, cycle.0
+        );
     }
     assert!(
         converged.is_some(),
@@ -607,11 +609,7 @@ fn convergence_trig_times_polynomial() {
     // (sin²(x) + cos²(x)) * (x + 1) should simplify to x + 1
     let expr = &(&x.sin().powi(2) + &x.cos().powi(2)) * &(&x + 1);
     let (forms, converged) = iterate_simplify(&expr, 20);
-    print_trace(
-        "(sin²+cos²)*(x+1) via .simplify()",
-        &forms,
-        converged,
-    );
+    print_trace("(sin²+cos²)*(x+1) via .simplify()", &forms, converged);
 
     assert!(
         converged.is_some(),
@@ -707,9 +705,7 @@ fn full_simplify_iterated_convergence_suite() {
     for (label, expr) in &test_cases {
         let (forms, converged) = iterate_full_simplify(expr, 5);
 
-        let has_cycle = detect_cycle(&forms)
-            .map(|c| c.1 > 1)
-            .unwrap_or(false);
+        let has_cycle = detect_cycle(&forms).map(|c| c.1 > 1).unwrap_or(false);
 
         let status = if has_cycle {
             any_failed = true;
@@ -723,9 +719,7 @@ fn full_simplify_iterated_convergence_suite() {
 
         let final_form = forms.last().unwrap();
         let n_iters = converged.unwrap_or(forms.len() - 1);
-        println!(
-            "  {status:18} {label:30} → {final_form:30} (iters: {n_iters})"
-        );
+        println!("  {status:18} {label:30} → {final_form:30} (iters: {n_iters})");
     }
 
     if any_failed {

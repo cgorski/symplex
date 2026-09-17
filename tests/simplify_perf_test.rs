@@ -239,10 +239,7 @@ fn perf_deep_nesting() {
     }
 
     println!("  Input:  {expr}");
-    println!(
-        "  (display length: {} chars)",
-        format!("{expr}").len()
-    );
+    println!("  (display length: {} chars)", format!("{expr}").len());
     let simplified = expr.simplify();
     println!("  simplify()       → {simplified}");
     let smart = expr.simplify();
@@ -276,10 +273,7 @@ fn perf_deep_nesting() {
     for _ in 0..20 {
         deep = deep.sin();
     }
-    println!(
-        "  (display length: {} chars)",
-        format!("{deep}").len()
-    );
+    println!("  (display length: {} chars)", format!("{deep}").len());
 
     let (_, avg) = bench(|| {
         let _ = deep.simplify();

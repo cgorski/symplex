@@ -11,14 +11,7 @@ use symplex::prelude::*;
 
 /// Check that two expressions agree numerically at several points.
 /// Uses subs_i64 + eval_f64. Skips points where either side fails/NaN/Inf.
-fn assert_numerically_equal(
-    a: &Ex,
-    b: &Ex,
-    var: &Ex,
-    points: &[i64],
-    tol: f64,
-    msg: &str,
-) {
+fn assert_numerically_equal(a: &Ex, b: &Ex, var: &Ex, points: &[i64], tol: f64, msg: &str) {
     for &pt in points {
         let a_val = a.subs_i64(var, pt).eval_f64();
         let b_val = b.subs_i64(var, pt).eval_f64();
@@ -30,9 +23,7 @@ fn assert_numerically_equal(
                 continue;
             }
             if av.is_infinite() || bv.is_infinite() {
-                panic!(
-                    "{msg} at x={pt}: one side infinite ({av} vs {bv})"
-                );
+                panic!("{msg} at x={pt}: one side infinite ({av} vs {bv})");
             }
             let diff = (av - bv).abs();
             let scale = av.abs().max(bv.abs()).max(1.0);
@@ -61,8 +52,14 @@ fn expand_factor_roundtrip_quadratic() {
     let p = &x.powi(2) - &(&x * 5) + 6;
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
-    assert_numerically_equal(&p, &re_expanded, &x, INT_POINTS, 1e-10,
-        "expand(factor(x²-5x+6))");
+    assert_numerically_equal(
+        &p,
+        &re_expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "expand(factor(x²-5x+6))",
+    );
     // Also check structural equality
     assert_eq!(
         format!("{}", p.expand()),
@@ -79,8 +76,14 @@ fn expand_factor_roundtrip_cubic() {
     let p = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6;
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
-    assert_numerically_equal(&p, &re_expanded, &x, INT_POINTS, 1e-10,
-        "expand(factor(cubic))");
+    assert_numerically_equal(
+        &p,
+        &re_expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "expand(factor(cubic))",
+    );
 }
 
 #[test]
@@ -91,8 +94,14 @@ fn expand_factor_roundtrip_quartic() {
     let p = &x.powi(4) - 1;
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
-    assert_numerically_equal(&p, &re_expanded, &x, INT_POINTS, 1e-10,
-        "expand(factor(x⁴-1))");
+    assert_numerically_equal(
+        &p,
+        &re_expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "expand(factor(x⁴-1))",
+    );
 }
 
 #[test]
@@ -119,8 +128,14 @@ fn expand_factor_roundtrip_with_coefficients() {
     let p = &(&x.powi(2) * 2) + &(&x * 6) + 4;
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
-    assert_numerically_equal(&p, &re_expanded, &x, INT_POINTS, 1e-10,
-        "expand(factor(2x²+6x+4))");
+    assert_numerically_equal(
+        &p,
+        &re_expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "expand(factor(2x²+6x+4))",
+    );
 }
 
 #[test]
@@ -131,8 +146,14 @@ fn expand_factor_roundtrip_difference_of_cubes() {
     let p = &x.powi(3) - 8;
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
-    assert_numerically_equal(&p, &re_expanded, &x, INT_POINTS, 1e-10,
-        "expand(factor(x³-8))");
+    assert_numerically_equal(
+        &p,
+        &re_expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "expand(factor(x³-8))",
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -183,8 +204,7 @@ fn ftc_polynomial_mixed() {
     // f = 3x^3 - 2x^2 + 5x - 7
     let f = &(&x.powi(3) * 3) - &(&x.powi(2) * 2) + &(&x * 5) - 7;
     let roundtrip = f.integrate(&x).diff(&x);
-    assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-10,
-        "FTC: 3x³-2x²+5x-7");
+    assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-10, "FTC: 3x³-2x²+5x-7");
 }
 
 #[test]
@@ -226,8 +246,7 @@ fn ftc_exp() {
     let f = x.exp();
     let anti = f.integrate(&x);
     let roundtrip = anti.diff(&x);
-    assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-10,
-        "FTC: exp(x)");
+    assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-10, "FTC: exp(x)");
 }
 
 /// d/dx(∫ 1/x dx) == 1/x
@@ -239,8 +258,7 @@ fn ftc_one_over_x() {
     let anti = f.integrate(&x);
     let roundtrip = anti.diff(&x);
     // Only test at positive points to avoid abs issues
-    assert_numerically_equal(&f, &roundtrip, &x, POS_POINTS, 1e-10,
-        "FTC: 1/x");
+    assert_numerically_equal(&f, &roundtrip, &x, POS_POINTS, 1e-10, "FTC: 1/x");
 }
 
 /// d/dx(∫ x*exp(x) dx) == x*exp(x)
@@ -252,8 +270,14 @@ fn ftc_x_exp() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-8,
-            "FTC: x*exp(x)");
+        assert_numerically_equal(
+            &f,
+            &roundtrip,
+            &x,
+            &[-2, -1, 0, 1, 2],
+            1e-8,
+            "FTC: x*exp(x)",
+        );
     }
 }
 
@@ -266,8 +290,7 @@ fn ftc_x_sin() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8,
-            "FTC: x*sin(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8, "FTC: x*sin(x)");
     }
 }
 
@@ -280,8 +303,7 @@ fn ftc_ln() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, POS_POINTS, 1e-10,
-            "FTC: ln(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, POS_POINTS, 1e-10, "FTC: ln(x)");
     }
 }
 
@@ -294,8 +316,7 @@ fn ftc_sin_squared() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8,
-            "FTC: sin²(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8, "FTC: sin²(x)");
     }
 }
 
@@ -308,8 +329,7 @@ fn ftc_cos_squared() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8,
-            "FTC: cos²(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8, "FTC: cos²(x)");
     }
 }
 
@@ -322,8 +342,14 @@ fn ftc_exp_neg_x2() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-8,
-            "FTC: exp(-x²)");
+        assert_numerically_equal(
+            &f,
+            &roundtrip,
+            &x,
+            &[-2, -1, 0, 1, 2],
+            1e-8,
+            "FTC: exp(-x²)",
+        );
     }
 }
 
@@ -474,7 +500,8 @@ fn full_simplify_idempotent_polynomial() {
     let s1 = e.simplify();
     let s2 = s1.simplify();
     assert_eq!(
-        format!("{s1}"), format!("{s2}"),
+        format!("{s1}"),
+        format!("{s2}"),
         "full_simplify not idempotent for x³+x²+x+1"
     );
 }
@@ -487,7 +514,8 @@ fn full_simplify_idempotent_trig() {
     let s1 = e.simplify();
     let s2 = s1.simplify();
     assert_eq!(
-        format!("{s1}"), format!("{s2}"),
+        format!("{s1}"),
+        format!("{s2}"),
         "full_simplify not idempotent for sin²+cos²"
     );
 }
@@ -510,8 +538,14 @@ fn eval_consistency_simplify_preserves_values() {
 
     for (label, e) in &exprs {
         let simplified = e.simplify();
-        assert_numerically_equal(e, &simplified, &x, POS_POINTS, 1e-10,
-            &format!("eval consistency: simplify({label})"));
+        assert_numerically_equal(
+            e,
+            &simplified,
+            &x,
+            POS_POINTS,
+            1e-10,
+            &format!("eval consistency: simplify({label})"),
+        );
     }
 }
 
@@ -529,8 +563,14 @@ fn eval_consistency_expand_preserves_values() {
 
     for (label, e) in &cases {
         let expanded = e.expand();
-        assert_numerically_equal(&e, &expanded, &x, INT_POINTS, 1e-10,
-            &format!("eval consistency: expand({label})"));
+        assert_numerically_equal(
+            e,
+            &expanded,
+            &x,
+            INT_POINTS,
+            1e-10,
+            &format!("eval consistency: expand({label})"),
+        );
     }
 }
 
@@ -548,8 +588,14 @@ fn eval_consistency_factor_preserves_values() {
 
     for (label, e) in &cases {
         let factored = e.factor(&x);
-        assert_numerically_equal(&e, &factored, &x, INT_POINTS, 1e-10,
-            &format!("eval consistency: factor({label})"));
+        assert_numerically_equal(
+            e,
+            &factored,
+            &x,
+            INT_POINTS,
+            1e-10,
+            &format!("eval consistency: factor({label})"),
+        );
     }
 }
 
@@ -565,8 +611,14 @@ fn commutativity_diff_expand_polynomial() {
     let f = (&x + 1).powi(3);
     let diff_expand = f.expand().diff(&x);
     let expand_diff = f.diff(&x).expand();
-    assert_numerically_equal(&diff_expand, &expand_diff, &x, INT_POINTS, 1e-10,
-        "diff(expand((x+1)³)) vs expand(diff((x+1)³))");
+    assert_numerically_equal(
+        &diff_expand,
+        &expand_diff,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "diff(expand((x+1)³)) vs expand(diff((x+1)³))",
+    );
 }
 
 #[test]
@@ -576,8 +628,14 @@ fn commutativity_diff_expand_product() {
     let f = &(&x + 1) * &(&x - 2);
     let diff_expand = f.expand().diff(&x);
     let expand_diff = f.diff(&x).expand();
-    assert_numerically_equal(&diff_expand, &expand_diff, &x, INT_POINTS, 1e-10,
-        "diff(expand((x+1)(x-2))) vs expand(diff((x+1)(x-2)))");
+    assert_numerically_equal(
+        &diff_expand,
+        &expand_diff,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "diff(expand((x+1)(x-2))) vs expand(diff((x+1)(x-2)))",
+    );
 }
 
 #[test]
@@ -587,8 +645,14 @@ fn commutativity_diff_expand_quartic() {
     let f = (&x + 1).powi(4);
     let diff_expand = f.expand().diff(&x);
     let expand_diff = f.diff(&x).expand();
-    assert_numerically_equal(&diff_expand, &expand_diff, &x, INT_POINTS, 1e-10,
-        "diff(expand((x+1)⁴)) vs expand(diff((x+1)⁴))");
+    assert_numerically_equal(
+        &diff_expand,
+        &expand_diff,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "diff(expand((x+1)⁴)) vs expand(diff((x+1)⁴))",
+    );
 }
 
 /// simplify(subs(f, x, a)) vs subs(simplify(f), x, a) — numerical check
@@ -605,10 +669,14 @@ fn commutativity_simplify_subs() {
         let subs_then_simplify = e.subs(&x, &val_ex).simplify().eval_f64();
 
         if let (Ok(a), Ok(b)) = (simplify_then_subs, subs_then_simplify) {
-            if a.is_nan() || b.is_nan() { continue; }
+            if a.is_nan() || b.is_nan() {
+                continue;
+            }
             let diff = (a - b).abs();
-            assert!(diff < 1e-10,
-                "simplify/subs commutativity at x={pt}: {a} vs {b} (diff={diff})");
+            assert!(
+                diff < 1e-10,
+                "simplify/subs commutativity at x={pt}: {a} vs {b} (diff={diff})"
+            );
         }
     }
 }
@@ -623,8 +691,14 @@ fn commutativity_diff_simplify() {
 
     let diff_simp = e.simplify().diff(&x);
     let simp_diff = e.diff(&x).simplify();
-    assert_numerically_equal(&diff_simp, &simp_diff, &x, INT_POINTS, 1e-8,
-        "diff(simplify(sin²+cos²+x²)) vs simplify(diff(sin²+cos²+x²))");
+    assert_numerically_equal(
+        &diff_simp,
+        &simp_diff,
+        &x,
+        INT_POINTS,
+        1e-8,
+        "diff(simplify(sin²+cos²+x²)) vs simplify(diff(sin²+cos²+x²))",
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -651,8 +725,14 @@ fn latex_nonempty_basics() {
         let latex = e.to_latex();
         assert!(!latex.is_empty(), "LaTeX empty for {label}");
         // LaTeX should not contain Rust debug formatting
-        assert!(!latex.contains("ExprId"), "LaTeX contains debug output for {label}: {latex}");
-        assert!(!latex.contains("Arena"), "LaTeX contains debug output for {label}: {latex}");
+        assert!(
+            !latex.contains("ExprId"),
+            "LaTeX contains debug output for {label}: {latex}"
+        );
+        assert!(
+            !latex.contains("Arena"),
+            "LaTeX contains debug output for {label}: {latex}"
+        );
     }
 }
 
@@ -661,11 +741,7 @@ fn latex_nonempty_basics() {
 fn display_vs_latex_consistency() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let cases: Vec<(&str, Ex)> = vec![
-        ("x", x.clone()),
-        ("42", ctx.int(42)),
-        ("x+1", &x + 1),
-    ];
+    let cases: Vec<(&str, Ex)> = vec![("x", x.clone()), ("42", ctx.int(42)), ("x+1", &x + 1)];
 
     for (label, e) in &cases {
         let display = format!("{e}");
@@ -725,8 +801,10 @@ fn latex_inline_wrapping() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let inline = x.to_latex_inline();
-    assert!(inline.starts_with('$') && inline.ends_with('$'),
-        "inline LaTeX not wrapped in $: {inline}");
+    assert!(
+        inline.starts_with('$') && inline.ends_with('$'),
+        "inline LaTeX not wrapped in $: {inline}"
+    );
 }
 
 /// to_latex_display should wrap in $$...$$
@@ -735,8 +813,10 @@ fn latex_display_wrapping() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let display = x.to_latex_display();
-    assert!(display.starts_with("$$") && display.ends_with("$$"),
-        "display LaTeX not wrapped in $$: {display}");
+    assert!(
+        display.starts_with("$$") && display.ends_with("$$"),
+        "display LaTeX not wrapped in $$: {display}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -759,7 +839,8 @@ fn check_compile_consistency(f: &Ex, x: &Ex, points: &[i64], tol: f64, label: &s
             if sv.is_nan() && compiled_val.is_nan() {
                 continue;
             }
-            if sv.is_infinite() && compiled_val.is_infinite()
+            if sv.is_infinite()
+                && compiled_val.is_infinite()
                 && sv.signum() == compiled_val.signum()
             {
                 continue;
@@ -879,8 +960,10 @@ fn compile_consistency_two_vars() {
                 let compiled_val = compiled(&[xv, yv]);
                 let expected = xv * xv + yv * yv;
                 let diff = (compiled_val - expected).abs();
-                assert!(diff < 1e-10,
-                    "compile(x²+y²) at ({xv},{yv}): {compiled_val} vs {expected}");
+                assert!(
+                    diff < 1e-10,
+                    "compile(x²+y²) at ({xv},{yv}): {compiled_val} vs {expected}"
+                );
             }
         }
     }
@@ -896,20 +979,21 @@ fn assert_valid_rust_code(code: &str, fn_name: &str) {
         code.contains(&format!("pub fn {fn_name}")),
         "missing 'pub fn {fn_name}' in:\n{code}"
     );
-    assert!(
-        code.contains("-> f64"),
-        "missing '-> f64' in:\n{code}"
-    );
+    assert!(code.contains("-> f64"), "missing '-> f64' in:\n{code}");
     // Balanced braces
     let opens = code.chars().filter(|&c| c == '{').count();
     let closes = code.chars().filter(|&c| c == '}').count();
-    assert_eq!(opens, closes,
-        "unbalanced braces ({opens} open vs {closes} close) in:\n{code}");
+    assert_eq!(
+        opens, closes,
+        "unbalanced braces ({opens} open vs {closes} close) in:\n{code}"
+    );
     // Balanced parentheses
     let open_parens = code.chars().filter(|&c| c == '(').count();
     let close_parens = code.chars().filter(|&c| c == ')').count();
-    assert_eq!(open_parens, close_parens,
-        "unbalanced parentheses ({open_parens} vs {close_parens}) in:\n{code}");
+    assert_eq!(
+        open_parens, close_parens,
+        "unbalanced parentheses ({open_parens} vs {close_parens}) in:\n{code}"
+    );
 }
 
 #[test]
@@ -985,8 +1069,10 @@ fn codegen_vs_compile_consistency() {
             let compiled_val = compiled(&[pt]);
             let expected = pt.powi(3) - 2.0 * pt + 1.0;
             let diff = (compiled_val - expected).abs();
-            assert!(diff < 1e-10,
-                "codegen/compile mismatch at x={pt}: compiled={compiled_val}, expected={expected}");
+            assert!(
+                diff < 1e-10,
+                "codegen/compile mismatch at x={pt}: compiled={compiled_val}, expected={expected}"
+            );
         }
     }
 }
@@ -1009,8 +1095,14 @@ fn diff_linearity() {
     let diff_combined = combined.diff(&x);
     let diff_separate = &(&f.diff(&x) * 3) + &(&g.diff(&x) * 5);
 
-    assert_numerically_equal(&diff_combined, &diff_separate, &x, INT_POINTS, 1e-10,
-        "diff linearity: 3sin+5exp");
+    assert_numerically_equal(
+        &diff_combined,
+        &diff_separate,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "diff linearity: 3sin+5exp",
+    );
 }
 
 /// Leibniz rule: d/dx(f*g) == f'*g + f*g'
@@ -1025,8 +1117,14 @@ fn diff_leibniz_rule() {
     let product_diff = product.diff(&x);
     let leibniz = &(&f.diff(&x) * &g) + &(&f * &g.diff(&x));
 
-    assert_numerically_equal(&product_diff, &leibniz, &x, INT_POINTS, 1e-10,
-        "Leibniz: d/dx(sin*exp) vs sin'*exp + sin*exp'");
+    assert_numerically_equal(
+        &product_diff,
+        &leibniz,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "Leibniz: d/dx(sin*exp) vs sin'*exp + sin*exp'",
+    );
 }
 
 /// Chain rule: d/dx(f(g(x))) == f'(g(x)) * g'(x)
@@ -1041,8 +1139,14 @@ fn diff_chain_rule_sin_x2() {
     let diff_composite = composite.diff(&x);
     let expected = &x.powi(2).cos() * &(&x * 2);
 
-    assert_numerically_equal(&diff_composite, &expected, &x, INT_POINTS, 1e-10,
-        "chain rule: d/dx sin(x²)");
+    assert_numerically_equal(
+        &diff_composite,
+        &expected,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "chain rule: d/dx sin(x²)",
+    );
 }
 
 /// Expanding then factoring a polynomial should be numerically consistent
@@ -1057,8 +1161,14 @@ fn expand_then_factor_numerical() {
         let factored = expanded.factor(&x);
         let re_expanded = factored.expand();
 
-        assert_numerically_equal(&expanded, &re_expanded, &x, INT_POINTS, 1e-10,
-            &format!("expand/factor roundtrip for (x-{a})(x-{b})"));
+        assert_numerically_equal(
+            &expanded,
+            &re_expanded,
+            &x,
+            INT_POINTS,
+            1e-10,
+            &format!("expand/factor roundtrip for (x-{a})(x-{b})"),
+        );
     }
 }
 
@@ -1070,8 +1180,14 @@ fn cancel_preserves_values() {
     let e = &(&x.powi(2) - 1) / &(&x - 1);
     let cancelled = e.cancel(&x);
     // Test at points where x != 1
-    assert_numerically_equal(&e, &cancelled, &x, &[-3, -2, -1, 2, 3, 4, 5], 1e-10,
-        "cancel (x²-1)/(x-1)");
+    assert_numerically_equal(
+        &e,
+        &cancelled,
+        &x,
+        &[-3, -2, -1, 2, 3, 4, 5],
+        1e-10,
+        "cancel (x²-1)/(x-1)",
+    );
 }
 
 /// Higher-degree cancel
@@ -1083,8 +1199,14 @@ fn cancel_cubic_preserves_values() {
     let e = &(&x.powi(3) - &x) / &(&x.powi(2) - 1);
     let cancelled = e.cancel(&x);
     // Test at points where denominator != 0
-    assert_numerically_equal(&e, &cancelled, &x, &[-3, -2, 2, 3, 4, 5], 1e-10,
-        "cancel (x³-x)/(x²-1)");
+    assert_numerically_equal(
+        &e,
+        &cancelled,
+        &x,
+        &[-3, -2, 2, 3, 4, 5],
+        1e-10,
+        "cancel (x³-x)/(x²-1)",
+    );
 }
 
 /// Solve roots should actually be zeros of the polynomial
@@ -1097,7 +1219,10 @@ fn solve_roots_are_zeros() {
         ("x²-4", &x.powi(2) - 4),
         ("x²-1", &x.powi(2) - 1),
         ("x²+x-6", &x.powi(2) + &x - 6),
-        ("x³-6x²+11x-6", &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6),
+        (
+            "x³-6x²+11x-6",
+            &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6,
+        ),
     ];
 
     for (label, p) in &polys {
@@ -1128,8 +1253,10 @@ fn series_approximation_accuracy() {
     let exact = 1.0f64.sin();
     if let Ok(sv) = series_val {
         let diff = (sv - exact).abs();
-        assert!(diff < 0.001,
-            "sin Maclaurin order 7 at x=1: series={sv}, exact={exact}, diff={diff}");
+        assert!(
+            diff < 0.001,
+            "sin Maclaurin order 7 at x=1: series={sv}, exact={exact}, diff={diff}"
+        );
     }
 
     // exp(x) Maclaurin, order 10
@@ -1138,8 +1265,10 @@ fn series_approximation_accuracy() {
     let exact = 1.0f64.exp();
     if let Ok(sv) = series_val {
         let diff = (sv - exact).abs();
-        assert!(diff < 0.001,
-            "exp Maclaurin order 10 at x=1: series={sv}, exact={exact}, diff={diff}");
+        assert!(
+            diff < 0.001,
+            "exp Maclaurin order 10 at x=1: series={sv}, exact={exact}, diff={diff}"
+        );
     }
 }
 
@@ -1153,8 +1282,7 @@ fn series_of_polynomial_exact() {
     // x^2 + 3x + 5, series to order 5 (above degree 2)
     let p = &x.powi(2) + &(&x * 3) + 5;
     let s = p.series(&x, &zero, 5);
-    assert_numerically_equal(&p, &s, &x, INT_POINTS, 1e-10,
-        "series(x²+3x+5, order=5)");
+    assert_numerically_equal(&p, &s, &x, INT_POINTS, 1e-10, "series(x²+3x+5, order=5)");
 }
 
 /// trig_expand then trig_combine should round-trip numerically
@@ -1169,8 +1297,14 @@ fn trig_expand_combine_roundtrip() {
     let original = angle.sin();
     let expanded = original.expand_trig();
     // Verify the expansion preserves value
-    assert_numerically_equal(&original, &expanded, &x, INT_POINTS, 1e-10,
-        "sin(2x) expand_trig value preservation");
+    assert_numerically_equal(
+        &original,
+        &expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "sin(2x) expand_trig value preservation",
+    );
 }
 
 /// expand_log should preserve values
@@ -1201,8 +1335,14 @@ fn double_diff_consistency() {
     let d2_direct = f.diff_n(&x, 2);
     let d2_sequential = f.diff(&x).diff(&x);
 
-    assert_numerically_equal(&d2_direct, &d2_sequential, &x, INT_POINTS, 1e-10,
-        "d²/dx²(x⁴+sin(x)) direct vs sequential");
+    assert_numerically_equal(
+        &d2_direct,
+        &d2_sequential,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "d²/dx²(x⁴+sin(x)) direct vs sequential",
+    );
 }
 
 /// Triple differentiation
@@ -1215,8 +1355,14 @@ fn triple_diff_consistency() {
     let d3_direct = f.diff_n(&x, 3);
     let d3_sequential = f.diff(&x).diff(&x).diff(&x);
 
-    assert_numerically_equal(&d3_direct, &d3_sequential, &x, INT_POINTS, 1e-10,
-        "d³/dx³(x⁵) direct vs sequential");
+    assert_numerically_equal(
+        &d3_direct,
+        &d3_sequential,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "d³/dx³(x⁵) direct vs sequential",
+    );
 }
 
 /// Verify that diff of a constant w.r.t. a variable is zero
@@ -1289,8 +1435,11 @@ fn pythagorean_identity_simplifies_to_one() {
     let x = ctx.symbol("x");
     let e = &x.sin().powi(2) + &x.cos().powi(2);
     let simplified = e.simplify();
-    assert_eq!(format!("{simplified}"), "1",
-        "sin²(x)+cos²(x) should simplify to 1");
+    assert_eq!(
+        format!("{simplified}"),
+        "1",
+        "sin²(x)+cos²(x) should simplify to 1"
+    );
 }
 
 /// Verify expand of (a+b)^n matches the binomial theorem
@@ -1302,14 +1451,12 @@ fn binomial_expansion_consistency() {
     // (x+1)^2 = x^2 + 2x + 1
     let e2 = (&x + 1).powi(2).expand();
     let expected2 = &x.powi(2) + &(&x * 2) + 1;
-    assert_numerically_equal(&e2, &expected2, &x, INT_POINTS, 1e-10,
-        "binomial (x+1)²");
+    assert_numerically_equal(&e2, &expected2, &x, INT_POINTS, 1e-10, "binomial (x+1)²");
 
     // (x+1)^3 = x^3 + 3x^2 + 3x + 1
     let e3 = (&x + 1).powi(3).expand();
     let expected3 = &x.powi(3) + &(&x.powi(2) * 3) + &(&x * 3) + 1;
-    assert_numerically_equal(&e3, &expected3, &x, INT_POINTS, 1e-10,
-        "binomial (x+1)³");
+    assert_numerically_equal(&e3, &expected3, &x, INT_POINTS, 1e-10, "binomial (x+1)³");
 }
 
 /// compile of a simplified expression should give same results as compile of original
@@ -1329,8 +1476,10 @@ fn compile_simplify_consistency() {
             let vs = cs(&[pt]);
             let diff = (vo - vs).abs();
             let scale = vo.abs().max(vs.abs()).max(1.0);
-            assert!(diff / scale < 1e-10,
-                "compile/simplify mismatch at x={pt}: orig={vo}, simp={vs}");
+            assert!(
+                diff / scale < 1e-10,
+                "compile/simplify mismatch at x={pt}: orig={vo}, simp={vs}"
+            );
         }
     }
 }
@@ -1347,8 +1496,7 @@ fn subs_i64_vs_subs_int() {
         let via_subs = f.subs(&x, &ctx.int(pt)).eval_f64();
         if let (Ok(a), Ok(b)) = (via_subs_i64, via_subs) {
             let diff = (a - b).abs();
-            assert!(diff < 1e-14,
-                "subs_i64 vs subs(int) at x={pt}: {a} vs {b}");
+            assert!(diff < 1e-14, "subs_i64 vs subs(int) at x={pt}: {a} vs {b}");
         }
     }
 }
@@ -1371,8 +1519,10 @@ fn has_unevaluated_false_for_basic_integrals() {
 
     for (label, f) in &basic_integrands {
         let anti = f.integrate(&x);
-        assert!(!anti.has_unevaluated(),
-            "∫ {label} dx has unevaluated nodes: {anti}");
+        assert!(
+            !anti.has_unevaluated(),
+            "∫ {label} dx has unevaluated nodes: {anti}"
+        );
     }
 }
 
@@ -1386,21 +1536,33 @@ fn free_symbols_consistency() {
     // x + y has free symbols {x, y}
     let e = &x + &y;
     let syms = e.free_symbols();
-    assert_eq!(syms.len(), 2, "x+y should have 2 free symbols, got {}", syms.len());
+    assert_eq!(
+        syms.len(),
+        2,
+        "x+y should have 2 free symbols, got {}",
+        syms.len()
+    );
 
     // After substituting x, only y remains
     let e2 = e.subs(&x, &ctx.int(5));
     let syms2 = e2.free_symbols();
-    assert!(syms2.len() <= 1,
-        "5+y should have ≤1 free symbols, got {}: {:?}", syms2.len(),
-        syms2.iter().map(|s| format!("{s}")).collect::<Vec<_>>());
+    assert!(
+        syms2.len() <= 1,
+        "5+y should have ≤1 free symbols, got {}: {:?}",
+        syms2.len(),
+        syms2.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
+    );
 
     // After substituting y too, zero free symbols
     let e3 = e2.subs(&y, &ctx.int(3));
     let syms3 = e3.free_symbols();
-    assert_eq!(syms3.len(), 0,
-        "5+3 should have 0 free symbols, got {}: {:?}", syms3.len(),
-        syms3.iter().map(|s| format!("{s}")).collect::<Vec<_>>());
+    assert_eq!(
+        syms3.len(),
+        0,
+        "5+3 should have 0 free symbols, got {}: {:?}",
+        syms3.len(),
+        syms3.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
+    );
 }
 
 /// count_ops should be non-negative and reasonable
@@ -1411,17 +1573,26 @@ fn count_ops_reasonable() {
 
     // A constant has 0 ops (it's a leaf)
     let c = ctx.int(42);
-    assert!(c.count_ops() == 0 || c.count_ops() == 1,
-        "constant should have 0 or 1 ops, got {}", c.count_ops());
+    assert!(
+        c.count_ops() == 0 || c.count_ops() == 1,
+        "constant should have 0 or 1 ops, got {}",
+        c.count_ops()
+    );
 
     // A symbol has 0 ops
-    assert!(x.count_ops() == 0 || x.count_ops() == 1,
-        "symbol should have 0 or 1 ops, got {}", x.count_ops());
+    assert!(
+        x.count_ops() == 0 || x.count_ops() == 1,
+        "symbol should have 0 or 1 ops, got {}",
+        x.count_ops()
+    );
 
     // x^2 + x + 1 should have at least 2 ops (add, pow)
     let e = &x.powi(2) + &x + 1;
-    assert!(e.count_ops() >= 2,
-        "x²+x+1 should have >= 2 ops, got {}", e.count_ops());
+    assert!(
+        e.count_ops() >= 2,
+        "x²+x+1 should have >= 2 ops, got {}",
+        e.count_ops()
+    );
 }
 
 /// Verifying that expand(a * (b + c)) == expand(a*b + a*c)
@@ -1439,11 +1610,21 @@ fn distributive_law() {
     for &xv in &[1i64, 2, 3] {
         for &yv in &[1i64, 2, 3] {
             for &zv in &[1i64, 2, 3] {
-                let lv = lhs.subs_i64(&x, xv).subs_i64(&y, yv).subs_i64(&z, zv).eval_f64();
-                let rv = rhs.subs_i64(&x, xv).subs_i64(&y, yv).subs_i64(&z, zv).eval_f64();
+                let lv = lhs
+                    .subs_i64(&x, xv)
+                    .subs_i64(&y, yv)
+                    .subs_i64(&z, zv)
+                    .eval_f64();
+                let rv = rhs
+                    .subs_i64(&x, xv)
+                    .subs_i64(&y, yv)
+                    .subs_i64(&z, zv)
+                    .eval_f64();
                 if let (Ok(l), Ok(r)) = (lv, rv) {
-                    assert!((l - r).abs() < 1e-10,
-                        "distributive: x({y}+{z}) vs xy+xz at ({xv},{yv},{zv}): {l} vs {r}");
+                    assert!(
+                        (l - r).abs() < 1e-10,
+                        "distributive: x({y}+{z}) vs xy+xz at ({xv},{yv},{zv}): {l} vs {r}"
+                    );
                 }
             }
         }
@@ -1470,12 +1651,18 @@ fn nested_simplify_preserves_value() {
 
         if let (Ok(v0), Ok(v1), Ok(v2), Ok(v3)) = (v0, v1, v2, v3) {
             let tol = 1e-10;
-            assert!((v0 - v1).abs() < tol,
-                "simplify changed value at x={pt}: {v0} → {v1}");
-            assert!((v1 - v2).abs() < tol,
-                "double simplify changed value at x={pt}: {v1} → {v2}");
-            assert!((v2 - v3).abs() < tol,
-                "triple simplify changed value at x={pt}: {v2} → {v3}");
+            assert!(
+                (v0 - v1).abs() < tol,
+                "simplify changed value at x={pt}: {v0} → {v1}"
+            );
+            assert!(
+                (v1 - v2).abs() < tol,
+                "double simplify changed value at x={pt}: {v1} → {v2}"
+            );
+            assert!(
+                (v2 - v3).abs() < tol,
+                "triple simplify changed value at x={pt}: {v2} → {v3}"
+            );
         }
     }
 }
@@ -1509,8 +1696,14 @@ fn ftc_monomial_batch() {
         for n in 0..=5i64 {
             let f = &x.powi(n) * c;
             let roundtrip = f.integrate(&x).diff(&x);
-            assert_numerically_equal(&f, &roundtrip, &x, &[1, 2, 3], 1e-10,
-                &format!("FTC monomial {c}*x^{n}"));
+            assert_numerically_equal(
+                &f,
+                &roundtrip,
+                &x,
+                &[1, 2, 3],
+                1e-10,
+                &format!("FTC monomial {c}*x^{n}"),
+            );
         }
     }
 }
@@ -1527,8 +1720,14 @@ fn factor_expand_batch() {
             let expanded = product.expand();
             let factored = expanded.factor(&x);
             let re_expanded = factored.expand();
-            assert_numerically_equal(&expanded, &re_expanded, &x, &[10, 20, -10], 1e-10,
-                &format!("factor/expand (x-{a})(x-{b})"));
+            assert_numerically_equal(
+                &expanded,
+                &re_expanded,
+                &x,
+                &[10, 20, -10],
+                1e-10,
+                &format!("factor/expand (x-{a})(x-{b})"),
+            );
         }
     }
 }
@@ -1542,8 +1741,7 @@ fn smart_simplify_idempotent() {
     let s1 = e.simplify();
     let s2 = s1.simplify();
     // At minimum, they should agree numerically even if not structurally equal
-    assert_numerically_equal(&s1, &s2, &x, INT_POINTS, 1e-10,
-        "smart_simplify idempotent");
+    assert_numerically_equal(&s1, &s2, &x, INT_POINTS, 1e-10, "smart_simplify idempotent");
 }
 
 /// Compile should handle zero-arg constant expressions
@@ -1557,8 +1755,7 @@ fn compile_constant_expression() {
         let val = f(&[]);
         let expected = std::f64::consts::PI.powi(2);
         let diff = (val - expected).abs();
-        assert!(diff < 1e-10,
-            "compile(π²): {val} vs {expected}");
+        assert!(diff < 1e-10, "compile(π²): {val} vs {expected}");
     }
 }
 
@@ -1574,8 +1771,7 @@ fn compile_eulers_number() {
         let val = compiled(&[1.0]);
         let expected = std::f64::consts::E;
         let diff = (val - expected).abs();
-        assert!(diff < 1e-10,
-            "compile(x*e) at x=1: {val} vs {expected}");
+        assert!(diff < 1e-10, "compile(x*e) at x=1: {val} vs {expected}");
     }
 }
 
@@ -1595,8 +1791,10 @@ fn eval_expand_consistency_complex() {
         if let (Ok(ov), Ok(ev)) = (o_val, e_val) {
             let diff = (ov - ev).abs();
             let scale = ov.abs().max(1.0);
-            assert!(diff / scale < 1e-10,
-                "expand (x+1)⁵ at x={pt}: {ov} vs {ev}");
+            assert!(
+                diff / scale < 1e-10,
+                "expand (x+1)⁵ at x={pt}: {ov} vs {ev}"
+            );
         }
     }
 }
@@ -1632,11 +1830,15 @@ fn compile_variable_ordering() {
 
     if let (Some(fxy), Some(fyx)) = (c_xy, c_yx) {
         // fxy([2, 3]) should give 2 - 3 = -1
-        assert!((fxy(&[2.0, 3.0]) - (-1.0)).abs() < 1e-10,
-            "compile x-y with [x,y] at (2,3)");
+        assert!(
+            (fxy(&[2.0, 3.0]) - (-1.0)).abs() < 1e-10,
+            "compile x-y with [x,y] at (2,3)"
+        );
         // fyx([2, 3]) should give 3 - 2 = 1 (y=2, x=3)
-        assert!((fyx(&[2.0, 3.0]) - 1.0).abs() < 1e-10,
-            "compile x-y with [y,x] at (2,3)");
+        assert!(
+            (fyx(&[2.0, 3.0]) - 1.0).abs() < 1e-10,
+            "compile x-y with [y,x] at (2,3)"
+        );
     }
 }
 
@@ -1656,16 +1858,26 @@ fn diff_sum_is_sum_of_diffs() {
     let x = ctx.symbol("x");
 
     let terms: Vec<Ex> = (1..=5).map(|n| x.powi(n)).collect();
-    let sum: Ex = terms.iter().skip(1).fold(terms[0].clone(), |acc, t| &acc + t);
+    let sum: Ex = terms
+        .iter()
+        .skip(1)
+        .fold(terms[0].clone(), |acc, t| &acc + t);
 
     let diff_sum = sum.diff(&x);
-    let sum_diffs: Ex = terms.iter().map(|t| t.diff(&x)).skip(1).fold(
-        terms[0].diff(&x),
-        |acc, d| &acc + &d,
-    );
+    let sum_diffs: Ex = terms
+        .iter()
+        .map(|t| t.diff(&x))
+        .skip(1)
+        .fold(terms[0].diff(&x), |acc, d| &acc + &d);
 
-    assert_numerically_equal(&diff_sum, &sum_diffs, &x, INT_POINTS, 1e-10,
-        "d/dx(sum) vs sum(d/dx) for x+x²+...+x⁵");
+    assert_numerically_equal(
+        &diff_sum,
+        &sum_diffs,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "d/dx(sum) vs sum(d/dx) for x+x²+...+x⁵",
+    );
 }
 
 /// After evaluation, is_zero_structural should be consistent
@@ -1674,11 +1886,16 @@ fn is_zero_structural_consistency() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let zero = &x - &x;
-    assert!(zero.is_zero_structural(),
-        "x - x should be structurally zero");
+    assert!(
+        zero.is_zero_structural(),
+        "x - x should be structurally zero"
+    );
 
     let also_zero = ctx.int(0);
-    assert!(also_zero.is_zero_structural(), "0 should be structurally zero");
+    assert!(
+        also_zero.is_zero_structural(),
+        "0 should be structurally zero"
+    );
 }
 
 /// is_one_structural consistency
@@ -1707,8 +1924,10 @@ fn codegen_for_derivative() {
             let ev = df.subs_i64(&x, pt as i64).eval_f64();
             if let Ok(ev) = ev {
                 let diff = (cv - ev).abs();
-                assert!(diff < 1e-8,
-                    "codegen vs eval for df at x={pt}: {cv} vs {ev}");
+                assert!(
+                    diff < 1e-8,
+                    "codegen vs eval for df at x={pt}: {cv} vs {ev}"
+                );
             }
         }
     }
@@ -1769,6 +1988,7 @@ fn simplify_sum_of_same() {
 
 /// Verify x * 0 = 0
 #[test]
+#[allow(clippy::erasing_op)] // Symbolic `x * 0` is exactly what's under test.
 fn multiply_by_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -1840,8 +2060,7 @@ fn cse_preserves_values() {
 
         if let (Ok(ov), Ok(cv)) = (orig_val, cse_val) {
             let diff = (ov - cv).abs();
-            assert!(diff < 1e-10,
-                "CSE changed value at x={pt}: {ov} vs {cv}");
+            assert!(diff < 1e-10, "CSE changed value at x={pt}: {ov} vs {cv}");
         }
     }
 }
@@ -1855,8 +2074,10 @@ fn compile_zero_args_for_constant() {
     let compiled = c.compile(&[]);
     if let Some(f) = compiled {
         let val = f(&[]);
-        assert!((val - 42.0).abs() < 1e-10,
-            "compile(42) with no args: {val}");
+        assert!(
+            (val - 42.0).abs() < 1e-10,
+            "compile(42) with no args: {val}"
+        );
     }
 }
 
@@ -1874,8 +2095,14 @@ fn factor_expand_repeated_root() {
     let p = &x.powi(3) - &(&x.powi(2) * 3) + &(&x * 3) - 1;
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
-    assert_numerically_equal(&p, &re_expanded, &x, INT_POINTS, 1e-10,
-        "factor/expand x³-3x²+3x-1 (repeated root)");
+    assert_numerically_equal(
+        &p,
+        &re_expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "factor/expand x³-3x²+3x-1 (repeated root)",
+    );
 }
 
 /// Degree-5 polynomial: x^5 - x
@@ -1886,8 +2113,14 @@ fn factor_expand_degree5() {
     let p = &x.powi(5) - &x;
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
-    assert_numerically_equal(&p, &re_expanded, &x, INT_POINTS, 1e-10,
-        "factor/expand x⁵-x");
+    assert_numerically_equal(
+        &p,
+        &re_expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "factor/expand x⁵-x",
+    );
 }
 
 /// Polynomial with rational coefficients: 1/2 * x^2 + 3/4 * x + 1/8
@@ -1895,13 +2128,17 @@ fn factor_expand_degree5() {
 fn expand_factor_rational_coefficients() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let p = &(&x.powi(2) * &ctx.rational(1, 2))
-          + &(&x * &ctx.rational(3, 4))
-          + &ctx.rational(1, 8);
+    let p = &(&x.powi(2) * &ctx.rational(1, 2)) + &(&x * &ctx.rational(3, 4)) + &ctx.rational(1, 8);
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
-    assert_numerically_equal(&p, &re_expanded, &x, POS_POINTS, 1e-10,
-        "factor/expand with rational coefficients");
+    assert_numerically_equal(
+        &p,
+        &re_expanded,
+        &x,
+        POS_POINTS,
+        1e-10,
+        "factor/expand with rational coefficients",
+    );
 }
 
 /// Factor then expand of x^6 - 1 (cyclotomic)
@@ -1912,8 +2149,14 @@ fn factor_expand_cyclotomic_x6_minus_1() {
     let p = &x.powi(6) - 1;
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
-    assert_numerically_equal(&p, &re_expanded, &x, INT_POINTS, 1e-10,
-        "factor/expand x⁶-1");
+    assert_numerically_equal(
+        &p,
+        &re_expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "factor/expand x⁶-1",
+    );
 }
 
 /// Expand of deeply nested: ((x+1)^2 + 1)^2
@@ -1924,8 +2167,14 @@ fn expand_deeply_nested() {
     let inner = &(&x + 1).powi(2) + 1;
     let outer = inner.powi(2);
     let expanded = outer.expand();
-    assert_numerically_equal(&outer, &expanded, &x, INT_POINTS, 1e-10,
-        "expand ((x+1)²+1)²");
+    assert_numerically_equal(
+        &outer,
+        &expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "expand ((x+1)²+1)²",
+    );
 }
 
 // ── FTC edge cases ──────────────────────────────────────────────────────
@@ -1940,8 +2189,7 @@ fn ftc_tan() {
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
         // Avoid points where tan diverges
-        assert_numerically_equal(&f, &roundtrip, &x, &[-1, 1, 2], 1e-8,
-            "FTC: tan(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, &[-1, 1, 2], 1e-8, "FTC: tan(x)");
     }
 }
 
@@ -1954,8 +2202,14 @@ fn ftc_x2_exp() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-8,
-            "FTC: x²·exp(x)");
+        assert_numerically_equal(
+            &f,
+            &roundtrip,
+            &x,
+            &[-2, -1, 0, 1, 2],
+            1e-8,
+            "FTC: x²·exp(x)",
+        );
     }
 }
 
@@ -1968,8 +2222,7 @@ fn ftc_rational_arctan() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8,
-            "FTC: 1/(1+x²)");
+        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8, "FTC: 1/(1+x²)");
     }
 }
 
@@ -1982,8 +2235,7 @@ fn ftc_x_over_x2_plus_1() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8,
-            "FTC: x/(x²+1)");
+        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8, "FTC: x/(x²+1)");
     }
 }
 
@@ -1996,8 +2248,7 @@ fn ftc_sin_cos_product() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8,
-            "FTC: sin(x)·cos(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8, "FTC: sin(x)·cos(x)");
     }
 }
 
@@ -2010,8 +2261,7 @@ fn ftc_exp_2x() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-8,
-            "FTC: exp(2x)");
+        assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-8, "FTC: exp(2x)");
     }
 }
 
@@ -2024,8 +2274,7 @@ fn ftc_cos_3x() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8,
-            "FTC: cos(3x)");
+        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8, "FTC: cos(3x)");
     }
 }
 
@@ -2038,8 +2287,7 @@ fn ftc_x_neg_half() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, &[1, 2, 3, 4], 1e-8,
-            "FTC: x^(-1/2)");
+        assert_numerically_equal(&f, &roundtrip, &x, &[1, 2, 3, 4], 1e-8, "FTC: x^(-1/2)");
     }
 }
 
@@ -2052,8 +2300,7 @@ fn ftc_sqrt_x() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, POS_POINTS, 1e-8,
-            "FTC: sqrt(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, POS_POINTS, 1e-8, "FTC: sqrt(x)");
     }
 }
 
@@ -2068,8 +2315,11 @@ fn full_simplify_idempotent_complex() {
     let s1 = e.simplify();
     let s2 = s1.simplify();
     assert_eq!(
-        format!("{s1}"), format!("{s2}"),
-        "full_simplify not idempotent for (sin²+cos²)·(x+1): '{}' vs '{}'", s1, s2
+        format!("{s1}"),
+        format!("{s2}"),
+        "full_simplify not idempotent for (sin²+cos²)·(x+1): '{}' vs '{}'",
+        s1,
+        s2
     );
 }
 
@@ -2121,8 +2371,14 @@ fn eval_consistency_different_polynomial_forms() {
     let factored = &(&(&x - 1) * &(&x - 2)) * &(&x - 3);
     // Expanded form: x^3 - 6x^2 + 11x - 6
     let expanded = &x.powi(3) - &(&x.powi(2) * 6) + &(&x * 11) - 6;
-    assert_numerically_equal(&factored, &expanded, &x, INT_POINTS, 1e-10,
-        "factored vs expanded cubic");
+    assert_numerically_equal(
+        &factored,
+        &expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "factored vs expanded cubic",
+    );
 }
 
 /// Simplification path should not lose precision
@@ -2135,8 +2391,14 @@ fn eval_consistency_simplify_precision() {
     let b = &(&x - 1) * &(&x + 1);
     let a_simp = a.simplify();
     let b_simp = b.simplify();
-    assert_numerically_equal(&a_simp, &b_simp, &x, INT_POINTS, 1e-10,
-        "simplify((x²-1)) vs simplify((x-1)(x+1))");
+    assert_numerically_equal(
+        &a_simp,
+        &b_simp,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "simplify((x²-1)) vs simplify((x-1)(x+1))",
+    );
 }
 
 /// Verify that diff then integrate of a polynomial gives back the same polynomial
@@ -2147,16 +2409,18 @@ fn integrate_diff_recovers_up_to_constant() {
     let x = ctx.symbol("x");
     // f = x^3 + 2x + 5
     let f = &x.powi(3) + &(&x * 2) + 5;
-    let df = f.diff(&x);  // 3x^2 + 2
-    let anti_df = df.integrate(&x);  // x^3 + 2x + C for some C
+    let df = f.diff(&x); // 3x^2 + 2
+    let anti_df = df.integrate(&x); // x^3 + 2x + C for some C
     // anti_df - f should be a constant (independent of x)
     let diff_expr = &anti_df - &f;
     let v1 = diff_expr.subs_i64(&x, 1).eval_f64();
     let v2 = diff_expr.subs_i64(&x, 5).eval_f64();
     if let (Ok(a), Ok(b)) = (v1, v2) {
         let d = (a - b).abs();
-        assert!(d < 1e-10,
-            "∫(d/dx f) - f should be constant, but varies: at x=1: {a}, at x=5: {b}, diff={d}");
+        assert!(
+            d < 1e-10,
+            "∫(d/dx f) - f should be constant, but varies: at x=1: {a}, at x=5: {b}, diff={d}"
+        );
     }
 }
 
@@ -2175,8 +2439,10 @@ fn compile_vs_eval_pi_expression() {
             let ev = f.subs_i64(&x, pt).eval_f64();
             if let Ok(ev) = ev {
                 let diff = (cv - ev).abs();
-                assert!(diff < 1e-10,
-                    "compile vs eval sin(πx) at x={pt}: compile={cv}, eval={ev}");
+                assert!(
+                    diff < 1e-10,
+                    "compile vs eval sin(πx) at x={pt}: compile={cv}, eval={ev}"
+                );
             }
         }
     }
@@ -2198,8 +2464,10 @@ fn compile_original_vs_simplified() {
             let vs = cs(&[pt]);
             let diff = (vo - vs).abs();
             let scale = vo.abs().max(vs.abs()).max(1.0);
-            assert!(diff / scale < 1e-10,
-                "compile(exp(ln(x))) vs compile(simplified) at {pt}: {vo} vs {vs}");
+            assert!(
+                diff / scale < 1e-10,
+                "compile(exp(ln(x))) vs compile(simplified) at {pt}: {vo} vs {vs}"
+            );
         }
     }
 }
@@ -2218,8 +2486,10 @@ fn compile_factored_vs_expanded() {
             let ve = ce(&[pt]);
             let vf = cf(&[pt]);
             let diff = (ve - vf).abs();
-            assert!(diff < 1e-10,
-                "compile(expanded) vs compile(factored) at x={pt}: {ve} vs {vf}");
+            assert!(
+                diff < 1e-10,
+                "compile(expanded) vs compile(factored) at x={pt}: {ve} vs {vf}"
+            );
         }
     }
 }
@@ -2236,8 +2506,13 @@ fn commutativity_diff_trig_expand() {
     let diff_then_expand = f.diff(&x).expand_trig();
     let expand_then_diff = f.expand_trig().diff(&x);
     assert_numerically_equal(
-        &diff_then_expand, &expand_then_diff, &x, INT_POINTS, 1e-8,
-        "diff(expand_trig(sin(2x))) vs expand_trig(diff(sin(2x)))");
+        &diff_then_expand,
+        &expand_then_diff,
+        &x,
+        INT_POINTS,
+        1e-8,
+        "diff(expand_trig(sin(2x))) vs expand_trig(diff(sin(2x)))",
+    );
 }
 
 /// simplify(expand(f)) should agree with expand(simplify(f)) numerically
@@ -2249,8 +2524,13 @@ fn commutativity_simplify_expand() {
     let simp_expand = f.simplify().expand();
     let expand_simp = f.expand().simplify();
     assert_numerically_equal(
-        &simp_expand, &expand_simp, &x, INT_POINTS, 1e-8,
-        "simplify(expand(f)) vs expand(simplify(f))");
+        &simp_expand,
+        &expand_simp,
+        &x,
+        INT_POINTS,
+        1e-8,
+        "simplify(expand(f)) vs expand(simplify(f))",
+    );
 }
 
 /// factor(simplify(f)) vs simplify(factor(f)) for a polynomial
@@ -2262,8 +2542,13 @@ fn commutativity_simplify_factor() {
     let simp_fac = f.simplify().factor(&x);
     let fac_simp = f.factor(&x).simplify();
     assert_numerically_equal(
-        &simp_fac, &fac_simp, &x, INT_POINTS, 1e-10,
-        "simplify(factor(x³-x)) vs factor(simplify(x³-x))");
+        &simp_fac,
+        &fac_simp,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "simplify(factor(x³-x)) vs factor(simplify(x³-x))",
+    );
 }
 
 // ── LaTeX adversarial ───────────────────────────────────────────────────
@@ -2287,7 +2572,10 @@ fn latex_nested_powers() {
     let latex = e.to_latex();
     assert!(!latex.is_empty(), "LaTeX of (x²)³ is empty");
     // Should contain x somewhere
-    assert!(latex.contains("x"), "LaTeX of (x²)³ should contain x: {latex}");
+    assert!(
+        latex.contains("x"),
+        "LaTeX of (x²)³ should contain x: {latex}"
+    );
 }
 
 /// LaTeX of a sum of products
@@ -2310,8 +2598,10 @@ fn latex_sqrt_command() {
     let x = ctx.symbol("x");
     let e = x.sqrt();
     let latex = e.to_latex();
-    assert!(latex.contains("sqrt") || latex.contains("frac{1}{2}") || latex.contains("^{1/2}"),
-        "sqrt LaTeX should use \\sqrt or show 1/2 power: {latex}");
+    assert!(
+        latex.contains("sqrt") || latex.contains("frac{1}{2}") || latex.contains("^{1/2}"),
+        "sqrt LaTeX should use \\sqrt or show 1/2 power: {latex}"
+    );
 }
 
 /// LaTeX of exp should use e^ or \exp
@@ -2321,8 +2611,10 @@ fn latex_exp_rendering() {
     let x = ctx.symbol("x");
     let e = x.exp();
     let latex = e.to_latex();
-    assert!(latex.contains("exp") || latex.contains("e^") || latex.contains("\\mathrm{e}"),
-        "exp LaTeX: {latex}");
+    assert!(
+        latex.contains("exp") || latex.contains("e^") || latex.contains("\\mathrm{e}"),
+        "exp LaTeX: {latex}"
+    );
 }
 
 /// LaTeX consistency: simplify then latex vs latex then (manually comparing)
@@ -2447,8 +2739,7 @@ fn integration_linearity() {
     // These might differ by a constant, but their derivatives should be the same
     let d1 = int_2x.diff(&x);
     let d2 = two_int_x.diff(&x);
-    assert_numerically_equal(&d1, &d2, &x, INT_POINTS, 1e-10,
-        "d/dx(∫2x) vs d/dx(2·∫x)");
+    assert_numerically_equal(&d1, &d2, &x, INT_POINTS, 1e-10, "d/dx(∫2x) vs d/dx(2·∫x)");
 }
 
 /// Integration of sum = sum of integrals (additivity) checked via diff roundtrip
@@ -2464,8 +2755,14 @@ fn integration_additivity() {
     // Differentiate both — should recover f + g
     let d1 = int_sum.diff(&x);
     let d2 = sum_int.diff(&x);
-    assert_numerically_equal(&d1, &d2, &x, INT_POINTS, 1e-8,
-        "d/dx(∫(f+g)) vs d/dx(∫f + ∫g)");
+    assert_numerically_equal(
+        &d1,
+        &d2,
+        &x,
+        INT_POINTS,
+        1e-8,
+        "d/dx(∫(f+g)) vs d/dx(∫f + ∫g)",
+    );
 }
 
 /// Verify power rule: ∫ x^n dx = x^(n+1)/(n+1) for several n
@@ -2479,8 +2776,14 @@ fn integration_power_rule_structural() {
         let anti = f.integrate(&x);
         // Expected: x^(n+1) / (n+1)
         let expected = &x.powi(n + 1) / &ctx.int(n + 1);
-        assert_numerically_equal(&anti, &expected, &x, POS_POINTS, 1e-10,
-            &format!("∫ x^{n} dx = x^{}/{}?", n + 1, n + 1));
+        assert_numerically_equal(
+            &anti,
+            &expected,
+            &x,
+            POS_POINTS,
+            1e-10,
+            &format!("∫ x^{n} dx = x^{}/{}?", n + 1, n + 1),
+        );
     }
 }
 
@@ -2494,8 +2797,14 @@ fn factor_product_identity() {
     let b = &x.powi(2) + 1;
     let product = (&a * &b).expand();
     let expected = &x.powi(4) - 1;
-    assert_numerically_equal(&product, &expected, &x, INT_POINTS, 1e-10,
-        "(x²-1)(x²+1) = x⁴-1");
+    assert_numerically_equal(
+        &product,
+        &expected,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "(x²-1)(x²+1) = x⁴-1",
+    );
 }
 
 /// The derivative of sin should be cos, verified structurally
@@ -2547,8 +2856,10 @@ fn compile_of_derivative() {
             let cv = c(&[pt]);
             let expected = 4.0 * pt.powi(3) + pt.cos();
             let diff = (cv - expected).abs();
-            assert!(diff < 1e-8,
-                "compile(d/dx(x⁴+sin(x))) at x={pt}: {cv} vs {expected}");
+            assert!(
+                diff < 1e-8,
+                "compile(d/dx(x⁴+sin(x))) at x={pt}: {cv} vs {expected}"
+            );
         }
     }
 }
@@ -2567,8 +2878,7 @@ fn compile_of_integral() {
                 let cv = c(&[pt]);
                 let expected = pt.powi(3) / 3.0;
                 let diff = (cv - expected).abs();
-                assert!(diff < 1e-8,
-                    "compile(∫x²dx) at x={pt}: {cv} vs {expected}");
+                assert!(diff < 1e-8, "compile(∫x²dx) at x={pt}: {cv} vs {expected}");
             }
         }
     }
@@ -2583,20 +2893,24 @@ fn binomial_higher_degrees() {
     // (x+1)^4
     let e4 = (&x + 1).powi(4);
     let expanded4 = e4.expand();
-    assert_numerically_equal(&e4, &expanded4, &x, INT_POINTS, 1e-10,
-        "binomial (x+1)⁴");
+    assert_numerically_equal(&e4, &expanded4, &x, INT_POINTS, 1e-10, "binomial (x+1)⁴");
 
     // (x+1)^5
     let e5 = (&x + 1).powi(5);
     let expanded5 = e5.expand();
-    assert_numerically_equal(&e5, &expanded5, &x, INT_POINTS, 1e-10,
-        "binomial (x+1)⁵");
+    assert_numerically_equal(&e5, &expanded5, &x, INT_POINTS, 1e-10, "binomial (x+1)⁵");
 
     // (x+2)^3
     let e_2_3 = (&x + 2).powi(3);
     let expanded_2_3 = e_2_3.expand();
-    assert_numerically_equal(&e_2_3, &expanded_2_3, &x, INT_POINTS, 1e-10,
-        "binomial (x+2)³");
+    assert_numerically_equal(
+        &e_2_3,
+        &expanded_2_3,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "binomial (x+2)³",
+    );
 }
 
 /// Verify that multiple substitutions commute
@@ -2615,10 +2929,8 @@ fn subs_commutativity() {
     let v1 = path1.eval_f64();
     let v2 = path2.eval_f64();
     if let (Ok(a), Ok(b)) = (v1, v2) {
-        assert!((a - b).abs() < 1e-10,
-            "subs commutativity: {a} vs {b}");
-        assert!((a - 25.0).abs() < 1e-10,
-            "3² + 4² should be 25, got {a}");
+        assert!((a - b).abs() < 1e-10, "subs commutativity: {a} vs {b}");
+        assert!((a - 25.0).abs() < 1e-10, "3² + 4² should be 25, got {a}");
     }
 }
 
@@ -2629,14 +2941,12 @@ fn eval_f64_rational_exact() {
     let r = ctx.rational(1, 3);
     let v = r.eval_f64();
     if let Ok(v) = v {
-        assert!((v - 1.0/3.0).abs() < 1e-15,
-            "1/3 eval_f64: {v}");
+        assert!((v - 1.0 / 3.0).abs() < 1e-15, "1/3 eval_f64: {v}");
     }
     let r2 = ctx.rational(22, 7);
     let v2 = r2.eval_f64();
     if let Ok(v) = v2 {
-        assert!((v - 22.0/7.0).abs() < 1e-15,
-            "22/7 eval_f64: {v}");
+        assert!((v - 22.0 / 7.0).abs() < 1e-15, "22/7 eval_f64: {v}");
     }
 }
 
@@ -2646,12 +2956,7 @@ fn diff_power_rule_structural() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
-    let cases: Vec<(i64, &str)> = vec![
-        (2, "2*x"),
-        (3, "3*x^2"),
-        (4, "4*x^3"),
-        (5, "5*x^4"),
-    ];
+    let cases: Vec<(i64, &str)> = vec![(2, "2*x"), (3, "3*x^2"), (4, "4*x^3"), (5, "5*x^4")];
 
     for (n, expected) in cases {
         let df = x.powi(n).diff(&x);
@@ -2676,7 +2981,9 @@ fn integrate_diff_constant_offset() {
     for (label, f) in &functions {
         let df = f.diff(&x);
         let anti_df = df.integrate(&x);
-        if anti_df.has_unevaluated() { continue; }
+        if anti_df.has_unevaluated() {
+            continue;
+        }
         // anti_df - f should be a constant
         let residual = &anti_df - f;
         let v1 = residual.subs_i64(&x, 1).eval_f64();
@@ -2684,8 +2991,10 @@ fn integrate_diff_constant_offset() {
         let v3 = residual.subs_i64(&x, 5).eval_f64();
         if let (Ok(a), Ok(b), Ok(c)) = (v1, v2, v3) {
             let max_diff = (a - b).abs().max((b - c).abs()).max((a - c).abs());
-            assert!(max_diff < 1e-8,
-                "∫(d/dx {label}) - {label} should be constant, diffs: {a}, {b}, {c}");
+            assert!(
+                max_diff < 1e-8,
+                "∫(d/dx {label}) - {label} should be constant, diffs: {a}, {b}, {c}"
+            );
         }
     }
 }
@@ -2719,8 +3028,14 @@ fn simplify_preserves_rational() {
     // (x/2 + x/3) should simplify to 5x/6
     let e = &(&x / &ctx.int(2)) + &(&x / &ctx.int(3));
     let simplified = e.simplify();
-    assert_numerically_equal(&e, &simplified, &x, INT_POINTS, 1e-10,
-        "simplify(x/2 + x/3)");
+    assert_numerically_equal(
+        &e,
+        &simplified,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "simplify(x/2 + x/3)",
+    );
 }
 
 /// Verify that x^0 is 1 for nonzero x, even after simplify
@@ -2742,8 +3057,14 @@ fn cancel_quadratic_linear() {
     let cancelled = e.cancel(&x);
     // Check structural result
     let expected = &x + 2;
-    assert_numerically_equal(&cancelled, &expected, &x, &[-3, -1, 0, 1, 3, 4, 5], 1e-10,
-        "cancel (x²-4)/(x-2) = x+2");
+    assert_numerically_equal(
+        &cancelled,
+        &expected,
+        &x,
+        &[-3, -1, 0, 1, 3, 4, 5],
+        1e-10,
+        "cancel (x²-4)/(x-2) = x+2",
+    );
 }
 
 /// Verify that diff and factor commute numerically on a polynomial
@@ -2759,8 +3080,14 @@ fn diff_factor_numerical_consistency() {
     let p_factored = p.factor(&x);
     let p_factored_diff = p_factored.diff(&x);
     // These might not be structurally equal, but should agree numerically
-    assert_numerically_equal(&dp_factored, &p_factored_diff, &x, INT_POINTS, 1e-8,
-        "factor(diff(p)) vs diff(factor(p))");
+    assert_numerically_equal(
+        &dp_factored,
+        &p_factored_diff,
+        &x,
+        INT_POINTS,
+        1e-8,
+        "factor(diff(p)) vs diff(factor(p))",
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2803,8 +3130,14 @@ fn full_simplify_pythagorean_in_product() {
     let s = e.simplify();
     // Numerically it should equal x²-1
     let expected = &x.powi(2) - 1;
-    assert_numerically_equal(&s, &expected, &x, INT_POINTS, 1e-10,
-        "full_simplify((sin²+cos²)*(x+1)*(x-1)) = x²-1");
+    assert_numerically_equal(
+        &s,
+        &expected,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "full_simplify((sin²+cos²)*(x+1)*(x-1)) = x²-1",
+    );
 }
 
 /// simplify of 0 * sin(x) should be 0
@@ -2865,8 +3198,7 @@ fn ftc_sinh() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-8,
-            "FTC: sinh(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-8, "FTC: sinh(x)");
     }
 }
 
@@ -2879,8 +3211,7 @@ fn ftc_cosh() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-8,
-            "FTC: cosh(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, &[-2, -1, 0, 1, 2], 1e-8, "FTC: cosh(x)");
     }
 }
 
@@ -2895,8 +3226,7 @@ fn ftc_sec_squared() {
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
         // Avoid x near ±π/2 where cos → 0
-        assert_numerically_equal(&f, &roundtrip, &x, &[-1, 0, 1], 1e-8,
-            "FTC: sec²(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, &[-1, 0, 1], 1e-8, "FTC: sec²(x)");
     }
 }
 
@@ -2909,8 +3239,7 @@ fn ftc_x_ln_x() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, &[1, 2, 3, 4, 5], 1e-8,
-            "FTC: x·ln(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, &[1, 2, 3, 4, 5], 1e-8, "FTC: x·ln(x)");
     }
 }
 
@@ -2924,8 +3253,7 @@ fn ftc_partial_fractions() {
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
         // Avoid x=±1 where denominator is zero; use x=2,3,4,5
-        assert_numerically_equal(&f, &roundtrip, &x, &[2, 3, 4, 5], 1e-8,
-            "FTC: 1/(x²-1)");
+        assert_numerically_equal(&f, &roundtrip, &x, &[2, 3, 4, 5], 1e-8, "FTC: 1/(x²-1)");
     }
 }
 
@@ -2938,8 +3266,7 @@ fn ftc_x3_sin() {
     let anti = f.integrate(&x);
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
-        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-6,
-            "FTC: x³·sin(x)");
+        assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-6, "FTC: x³·sin(x)");
     }
 }
 
@@ -2954,7 +3281,8 @@ fn factor_perfect_square() {
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
     assert_eq!(
-        format!("{}", p.expand()), format!("{re_expanded}"),
+        format!("{}", p.expand()),
+        format!("{re_expanded}"),
         "factor/expand of perfect square"
     );
 }
@@ -2968,8 +3296,14 @@ fn factor_irreducible_over_q() {
     let factored = p.factor(&x);
     let re_expanded = factored.expand();
     // Should be the same as original since it's irreducible over Q
-    assert_numerically_equal(&p, &re_expanded, &x, INT_POINTS, 1e-10,
-        "factor/expand of x²+1 (irreducible over Q)");
+    assert_numerically_equal(
+        &p,
+        &re_expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "factor/expand of x²+1 (irreducible over Q)",
+    );
 }
 
 /// Expand of (x+y)^2 with two variables
@@ -3005,9 +3339,16 @@ fn expand_trivariate() {
     let e = (&(&x + &y) + &z).powi(2);
     let expanded = e.expand();
     let ov = e.subs_i64(&x, 2).subs_i64(&y, 3).subs_i64(&z, 4).eval_f64();
-    let ev = expanded.subs_i64(&x, 2).subs_i64(&y, 3).subs_i64(&z, 4).eval_f64();
+    let ev = expanded
+        .subs_i64(&x, 2)
+        .subs_i64(&y, 3)
+        .subs_i64(&z, 4)
+        .eval_f64();
     if let (Ok(a), Ok(b)) = (ov, ev) {
-        assert!((a - b).abs() < 1e-10, "expand (x+y+z)² at (2,3,4): {a} vs {b}");
+        assert!(
+            (a - b).abs() < 1e-10,
+            "expand (x+y+z)² at (2,3,4): {a} vs {b}"
+        );
         assert!((a - 81.0).abs() < 1e-10, "(2+3+4)² should be 81, got {a}");
     }
 }
@@ -3019,12 +3360,21 @@ fn expand_three_binomials() {
     let x = ctx.symbol("x");
     let product = &(&(&x + 1) * &(&x + 2)) * &(&x + 3);
     let expanded = product.expand();
-    assert_numerically_equal(&product, &expanded, &x, INT_POINTS, 1e-10,
-        "expand (x+1)(x+2)(x+3)");
+    assert_numerically_equal(
+        &product,
+        &expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "expand (x+1)(x+2)(x+3)",
+    );
     // At x=0: (1)(2)(3)=6
     let v = expanded.subs_i64(&x, 0).eval_f64();
     if let Ok(v) = v {
-        assert!((v - 6.0).abs() < 1e-10, "(0+1)(0+2)(0+3) should be 6, got {v}");
+        assert!(
+            (v - 6.0).abs() < 1e-10,
+            "(0+1)(0+2)(0+3) should be 6, got {v}"
+        );
     }
 }
 
@@ -3038,31 +3388,45 @@ fn eval_at_zero_edge_cases() {
 
     // sin(0) = 0
     let v = x.sin().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v { assert!(v.abs() < 1e-15, "sin(0) = {v}"); }
+    if let Ok(v) = v {
+        assert!(v.abs() < 1e-15, "sin(0) = {v}");
+    }
 
     // cos(0) = 1
     let v = x.cos().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v { assert!((v - 1.0).abs() < 1e-15, "cos(0) = {v}"); }
+    if let Ok(v) = v {
+        assert!((v - 1.0).abs() < 1e-15, "cos(0) = {v}");
+    }
 
     // exp(0) = 1
     let v = x.exp().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v { assert!((v - 1.0).abs() < 1e-15, "exp(0) = {v}"); }
+    if let Ok(v) = v {
+        assert!((v - 1.0).abs() < 1e-15, "exp(0) = {v}");
+    }
 
     // sinh(0) = 0
     let v = x.sinh().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v { assert!(v.abs() < 1e-15, "sinh(0) = {v}"); }
+    if let Ok(v) = v {
+        assert!(v.abs() < 1e-15, "sinh(0) = {v}");
+    }
 
     // cosh(0) = 1
     let v = x.cosh().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v { assert!((v - 1.0).abs() < 1e-15, "cosh(0) = {v}"); }
+    if let Ok(v) = v {
+        assert!((v - 1.0).abs() < 1e-15, "cosh(0) = {v}");
+    }
 
     // tanh(0) = 0
     let v = x.tanh().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v { assert!(v.abs() < 1e-15, "tanh(0) = {v}"); }
+    if let Ok(v) = v {
+        assert!(v.abs() < 1e-15, "tanh(0) = {v}");
+    }
 
     // atan(0) = 0
     let v = x.atan().subs_i64(&x, 0).eval_f64();
-    if let Ok(v) = v { assert!(v.abs() < 1e-15, "atan(0) = {v}"); }
+    if let Ok(v) = v {
+        assert!(v.abs() < 1e-15, "atan(0) = {v}");
+    }
 }
 
 /// Large integer arithmetic: expand((x+1)^10) and check at x=1 → 2^10 = 1024
@@ -3074,14 +3438,18 @@ fn expand_large_power_numerical() {
     let expanded = e.expand();
     let v = expanded.subs_i64(&x, 1).eval_f64();
     if let Ok(v) = v {
-        assert!((v - 1024.0).abs() < 1e-6,
-            "expand((x+1)^10) at x=1 should be 1024, got {v}");
+        assert!(
+            (v - 1024.0).abs() < 1e-6,
+            "expand((x+1)^10) at x=1 should be 1024, got {v}"
+        );
     }
     // Also check the unexpanded form gives the same
     let v_orig = e.subs_i64(&x, 1).eval_f64();
     if let (Ok(vo), Ok(ve)) = (v_orig, expanded.subs_i64(&x, 1).eval_f64()) {
-        assert!((vo - ve).abs() < 1e-6,
-            "expand vs original at x=1: {vo} vs {ve}");
+        assert!(
+            (vo - ve).abs() < 1e-6,
+            "expand vs original at x=1: {vo} vs {ve}"
+        );
     }
 }
 
@@ -3150,8 +3518,10 @@ fn latex_negative_coefficient() {
     let latex = e.to_latex();
     assert!(!latex.is_empty(), "LaTeX of -3x is empty");
     // Should contain 3 and x in some form
-    assert!(latex.contains("3") && latex.contains("x"),
-        "LaTeX of -3x should contain 3 and x: {latex}");
+    assert!(
+        latex.contains("3") && latex.contains("x"),
+        "LaTeX of -3x should contain 3 and x: {latex}"
+    );
 }
 
 /// LaTeX of deeply nested expression
@@ -3163,8 +3533,14 @@ fn latex_deeply_nested() {
     let e = x.ln().exp().cos().sin();
     let latex = e.to_latex();
     assert!(!latex.is_empty(), "LaTeX of deeply nested expr is empty");
-    assert!(latex.contains("\\sin"), "LaTeX should contain \\sin: {latex}");
-    assert!(latex.contains("\\cos"), "LaTeX should contain \\cos: {latex}");
+    assert!(
+        latex.contains("\\sin"),
+        "LaTeX should contain \\sin: {latex}"
+    );
+    assert!(
+        latex.contains("\\cos"),
+        "LaTeX should contain \\cos: {latex}"
+    );
 }
 
 /// LaTeX of a sum with many terms
@@ -3176,7 +3552,10 @@ fn latex_many_terms() {
     let e = &x.powi(5) + &x.powi(4) + &x.powi(3) + &x.powi(2) + &x + 1;
     let latex = e.to_latex();
     assert!(!latex.is_empty());
-    assert!(latex.contains("x"), "LaTeX of polynomial should contain x: {latex}");
+    assert!(
+        latex.contains("x"),
+        "LaTeX of polynomial should contain x: {latex}"
+    );
 }
 
 /// LaTeX of a fraction with polynomial numerator and denominator
@@ -3303,10 +3682,7 @@ fn cube_expansion_identity() {
     let y = ctx.symbol("y");
     let lhs = (&x + &y).powi(3).expand();
     // a³+3a²b+3ab²+b³
-    let rhs = &x.powi(3)
-        + &(&(&x.powi(2) * &y) * 3)
-        + &(&(&x * &y.powi(2)) * 3)
-        + &y.powi(3);
+    let rhs = &x.powi(3) + &(&(&x.powi(2) * &y) * 3) + &(&(&x * &y.powi(2)) * 3) + &y.powi(3);
     for &xv in &[1i64, 2, -1] {
         for &yv in &[1i64, 2, -1] {
             let lv = lhs.subs_i64(&x, xv).subs_i64(&y, yv).eval_f64();
@@ -3335,8 +3711,14 @@ fn diff_quotient_rule() {
     let gp = g.diff(&x);
     let quotient_rule = &(&(&fp * &g) - &(&f * &gp)) / &g.powi(2);
     // Avoid x=0 where sin(x)=0
-    assert_numerically_equal(&dq, &quotient_rule, &x, &[-3, -2, -1, 1, 2, 3], 1e-8,
-        "quotient rule: d/dx(x²/sin(x))");
+    assert_numerically_equal(
+        &dq,
+        &quotient_rule,
+        &x,
+        &[-3, -2, -1, 1, 2, 3],
+        1e-8,
+        "quotient rule: d/dx(x²/sin(x))",
+    );
 }
 
 /// Verify that expand distributes over addition of products
@@ -3352,8 +3734,10 @@ fn expand_sum_of_distributed_products() {
     let v_orig = e.subs_i64(&x, 3).subs_i64(&y, 4).eval_f64();
     let v_exp = expanded.subs_i64(&x, 3).subs_i64(&y, 4).eval_f64();
     if let (Ok(a), Ok(b)) = (v_orig, v_exp) {
-        assert!((a - b).abs() < 1e-10,
-            "expand sum of products at (3,4): {a} vs {b}");
+        assert!(
+            (a - b).abs() < 1e-10,
+            "expand sum of products at (3,4): {a} vs {b}"
+        );
     }
 }
 
@@ -3365,8 +3749,11 @@ fn expand_idempotent() {
     let e = (&x + 1).powi(4);
     let e1 = e.expand();
     let e2 = e1.expand();
-    assert_eq!(format!("{e1}"), format!("{e2}"),
-        "expand not idempotent for (x+1)^4");
+    assert_eq!(
+        format!("{e1}"),
+        format!("{e2}"),
+        "expand not idempotent for (x+1)^4"
+    );
 }
 
 /// Verify diff of an expanded expression equals diff then expand
@@ -3377,8 +3764,11 @@ fn diff_of_expanded_vs_expand_of_diffed() {
     let f = (&x + 1).powi(5);
     let a = f.expand().diff(&x);
     let b = f.diff(&x).expand();
-    assert_eq!(format!("{a}"), format!("{b}"),
-        "diff(expand((x+1)^5)) should equal expand(diff((x+1)^5)) structurally");
+    assert_eq!(
+        format!("{a}"),
+        format!("{b}"),
+        "diff(expand((x+1)^5)) should equal expand(diff((x+1)^5)) structurally"
+    );
 }
 
 /// Verify that subs into a derivative gives the correct value
@@ -3393,8 +3783,10 @@ fn subs_into_derivative() {
         let numerical = 3.0 * (pt as f64).powi(2) + (pt as f64).cos();
         if let Ok(sv) = symbolic {
             let diff = (sv - numerical).abs();
-            assert!(diff < 1e-10,
-                "d/dx(x³+sin(x)) at x={pt}: symbolic={sv}, numerical={numerical}");
+            assert!(
+                diff < 1e-10,
+                "d/dx(x³+sin(x)) at x={pt}: symbolic={sv}, numerical={numerical}"
+            );
         }
     }
 }
@@ -3410,8 +3802,7 @@ fn ftc_one_over_1_plus_x() {
     if !anti.has_unevaluated() {
         let roundtrip = anti.diff(&x);
         // Only test at x > -1 to avoid the singularity
-        assert_numerically_equal(&f, &roundtrip, &x, POS_POINTS, 1e-8,
-            "FTC: 1/(1+x)");
+        assert_numerically_equal(&f, &roundtrip, &x, POS_POINTS, 1e-8, "FTC: 1/(1+x)");
     }
 }
 
@@ -3431,8 +3822,10 @@ fn compile_after_full_simplify() {
             let vs = cs(&[pt]);
             let diff = (vo - vs).abs();
             let scale = vo.abs().max(vs.abs()).max(1.0);
-            assert!(diff / scale < 1e-10,
-                "compile(original) vs compile(full_simplified) at x={pt}: {vo} vs {vs}");
+            assert!(
+                diff / scale < 1e-10,
+                "compile(original) vs compile(full_simplified) at x={pt}: {vo} vs {vs}"
+            );
         }
     }
 }
@@ -3455,8 +3848,10 @@ fn display_contains_variable_names() {
     for (label, e, expected_substrings) in &cases {
         let s = format!("{e}");
         for sub in expected_substrings {
-            assert!(s.contains(sub),
-                "Display of {label} should contain '{sub}': got '{s}'");
+            assert!(
+                s.contains(sub),
+                "Display of {label} should contain '{sub}': got '{s}'"
+            );
         }
     }
 }
@@ -3490,8 +3885,7 @@ fn solve_substitute_verify_quartic() {
     for root in &roots {
         let val = p.subs(&x, root).eval_f64();
         if let Ok(v) = val {
-            assert!(v.abs() < 1e-8,
-                "root {root} of x⁴-5x²+4 gives {v}, not 0");
+            assert!(v.abs() < 1e-8, "root {root} of x⁴-5x²+4 gives {v}, not 0");
         }
     }
 }
@@ -3505,8 +3899,14 @@ fn diff_constant_multiple() {
         let f = &x.sin() * c;
         let df = f.diff(&x);
         let expected = &x.cos() * c;
-        assert_numerically_equal(&df, &expected, &x, INT_POINTS, 1e-10,
-            &format!("d/dx({c}·sin(x)) = {c}·cos(x)"));
+        assert_numerically_equal(
+            &df,
+            &expected,
+            &x,
+            INT_POINTS,
+            1e-10,
+            &format!("d/dx({c}·sin(x)) = {c}·cos(x)"),
+        );
     }
 }
 
@@ -3517,8 +3917,14 @@ fn second_derivative_sin() {
     let x = ctx.symbol("x");
     let d2 = x.sin().diff_n(&x, 2);
     let neg_sin = -&x.sin();
-    assert_numerically_equal(&d2, &neg_sin, &x, INT_POINTS, 1e-10,
-        "d²/dx² sin(x) = -sin(x)");
+    assert_numerically_equal(
+        &d2,
+        &neg_sin,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "d²/dx² sin(x) = -sin(x)",
+    );
 }
 
 /// Verify second derivative of cos = -cos
@@ -3528,8 +3934,14 @@ fn second_derivative_cos() {
     let x = ctx.symbol("x");
     let d2 = x.cos().diff_n(&x, 2);
     let neg_cos = -&x.cos();
-    assert_numerically_equal(&d2, &neg_cos, &x, INT_POINTS, 1e-10,
-        "d²/dx² cos(x) = -cos(x)");
+    assert_numerically_equal(
+        &d2,
+        &neg_cos,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "d²/dx² cos(x) = -cos(x)",
+    );
 }
 
 /// Verify fourth derivative of sin = sin (full cycle)
@@ -3539,8 +3951,7 @@ fn fourth_derivative_sin() {
     let x = ctx.symbol("x");
     let d4 = x.sin().diff_n(&x, 4);
     let sin_x = x.sin();
-    assert_numerically_equal(&d4, &sin_x, &x, INT_POINTS, 1e-10,
-        "d⁴/dx⁴ sin(x) = sin(x)");
+    assert_numerically_equal(&d4, &sin_x, &x, INT_POINTS, 1e-10, "d⁴/dx⁴ sin(x) = sin(x)");
 }
 
 /// Verify fourth derivative of exp = exp (eigenfunction)
@@ -3550,8 +3961,14 @@ fn fourth_derivative_exp() {
     let x = ctx.symbol("x");
     let d4 = x.exp().diff_n(&x, 4);
     let exp_x = x.exp();
-    assert_numerically_equal(&d4, &exp_x, &x, &[-2, -1, 0, 1, 2], 1e-10,
-        "d⁴/dx⁴ exp(x) = exp(x)");
+    assert_numerically_equal(
+        &d4,
+        &exp_x,
+        &x,
+        &[-2, -1, 0, 1, 2],
+        1e-10,
+        "d⁴/dx⁴ exp(x) = exp(x)",
+    );
 }
 
 /// Verify that expand then simplify of (sin²+cos²)^n gives 1 for small n
@@ -3566,8 +3983,10 @@ fn simplify_pythagorean_powers() {
         for &pt in &[1, 2, 3] {
             let v = simplified.subs_i64(&x, pt).eval_f64();
             if let Ok(v) = v {
-                assert!((v - 1.0).abs() < 1e-10,
-                    "(sin²+cos²)^{n} simplified to {simplified}, value at x={pt}: {v}");
+                assert!(
+                    (v - 1.0).abs() < 1e-10,
+                    "(sin²+cos²)^{n} simplified to {simplified}, value at x={pt}: {v}"
+                );
             }
         }
     }
@@ -3585,8 +4004,10 @@ fn compile_abs_times_sign() {
             let cv = c(&[pt]);
             // abs(x) * sign(x) = x
             let diff = (cv - pt).abs();
-            assert!(diff < 1e-10,
-                "compile(|x|·sign(x)) at x={pt}: {cv} (expected {pt})");
+            assert!(
+                diff < 1e-10,
+                "compile(|x|·sign(x)) at x={pt}: {cv} (expected {pt})"
+            );
         }
     }
 }
@@ -3602,8 +4023,7 @@ fn eval_negative_exponent() {
         let expected = (pt as f64).powi(-3);
         if let Ok(v) = v {
             let diff = (v - expected).abs();
-            assert!(diff < 1e-10,
-                "x^(-3) at x={pt}: {v} vs {expected}");
+            assert!(diff < 1e-10, "x^(-3) at x={pt}: {v} vs {expected}");
         }
     }
 }
@@ -3616,8 +4036,7 @@ fn trig_identity_tan_sec() {
     let lhs = &ctx.int(1) + &x.tan().powi(2);
     let rhs = x.cos().powi(-2);
     // Avoid x near π/2 where cos → 0
-    assert_numerically_equal(&lhs, &rhs, &x, &[-1, 0, 1], 1e-8,
-        "1+tan²(x) vs 1/cos²(x)");
+    assert_numerically_equal(&lhs, &rhs, &x, &[-1, 0, 1], 1e-8, "1+tan²(x) vs 1/cos²(x)");
 }
 
 /// Verify double angle: sin(2x) = 2*sin(x)*cos(x)
@@ -3627,8 +4046,14 @@ fn trig_double_angle_sin() {
     let x = ctx.symbol("x");
     let lhs = (&x * 2).sin();
     let rhs = &(&x.sin() * &x.cos()) * 2;
-    assert_numerically_equal(&lhs, &rhs, &x, INT_POINTS, 1e-10,
-        "sin(2x) vs 2·sin(x)·cos(x)");
+    assert_numerically_equal(
+        &lhs,
+        &rhs,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "sin(2x) vs 2·sin(x)·cos(x)",
+    );
 }
 
 /// Verify double angle: cos(2x) = cos²(x) - sin²(x)
@@ -3638,8 +4063,14 @@ fn trig_double_angle_cos() {
     let x = ctx.symbol("x");
     let lhs = (&x * 2).cos();
     let rhs = &x.cos().powi(2) - &x.sin().powi(2);
-    assert_numerically_equal(&lhs, &rhs, &x, INT_POINTS, 1e-10,
-        "cos(2x) vs cos²(x)-sin²(x)");
+    assert_numerically_equal(
+        &lhs,
+        &rhs,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "cos(2x) vs cos²(x)-sin²(x)",
+    );
 }
 
 /// Verify hyperbolic identity: cosh²(x) - sinh²(x) = 1
@@ -3651,8 +4082,7 @@ fn hyperbolic_identity() {
     for &pt in &[-2, -1, 0, 1, 2] {
         let v = e.subs_i64(&x, pt).eval_f64();
         if let Ok(v) = v {
-            assert!((v - 1.0).abs() < 1e-10,
-                "cosh²(x)-sinh²(x) at x={pt}: {v}");
+            assert!((v - 1.0).abs() < 1e-10, "cosh²(x)-sinh²(x) at x={pt}: {v}");
         }
     }
 }
@@ -3667,8 +4097,10 @@ fn simplify_hyperbolic_identity() {
     for &pt in &[-2, -1, 0, 1, 2] {
         let v = simplified.subs_i64(&x, pt).eval_f64();
         if let Ok(v) = v {
-            assert!((v - 1.0).abs() < 1e-10,
-                "simplify(cosh²-sinh²) at x={pt}: {v}");
+            assert!(
+                (v - 1.0).abs() < 1e-10,
+                "simplify(cosh²-sinh²) at x={pt}: {v}"
+            );
         }
     }
 }
@@ -3688,8 +4120,14 @@ fn cancel_cubic_minus_8_over_x_minus_2() {
     let cancelled = e.cancel(&x);
     let expected = &x.powi(2) + &(&x * 2) + 4;
     // Avoid x=2 where denominator is zero
-    assert_numerically_equal(&cancelled, &expected, &x, &[-3, -1, 0, 1, 3, 4, 5], 1e-10,
-        "cancel (x³-8)/(x-2) = x²+2x+4");
+    assert_numerically_equal(
+        &cancelled,
+        &expected,
+        &x,
+        &[-3, -1, 0, 1, 3, 4, 5],
+        1e-10,
+        "cancel (x³-8)/(x-2) = x²+2x+4",
+    );
 }
 
 /// cancel((x^4 - 1)/(x^2 - 1)) should give x^2 + 1
@@ -3701,8 +4139,14 @@ fn cancel_x4_minus_1_over_x2_minus_1() {
     let cancelled = e.cancel(&x);
     let expected = &x.powi(2) + 1;
     // Avoid x=±1
-    assert_numerically_equal(&cancelled, &expected, &x, &[-3, -2, 0, 2, 3, 4], 1e-10,
-        "cancel (x⁴-1)/(x²-1) = x²+1");
+    assert_numerically_equal(
+        &cancelled,
+        &expected,
+        &x,
+        &[-3, -2, 0, 2, 3, 4],
+        1e-10,
+        "cancel (x⁴-1)/(x²-1) = x²+1",
+    );
 }
 
 /// cancel of an already-reduced fraction should not change it
@@ -3712,8 +4156,14 @@ fn cancel_already_reduced() {
     let x = ctx.symbol("x");
     let e = &(&x + 1) / &(&x + 2);
     let cancelled = e.cancel(&x);
-    assert_numerically_equal(&e, &cancelled, &x, &[-4, -3, 0, 1, 3, 5], 1e-10,
-        "cancel of already-reduced (x+1)/(x+2)");
+    assert_numerically_equal(
+        &e,
+        &cancelled,
+        &x,
+        &[-4, -3, 0, 1, 3, 5],
+        1e-10,
+        "cancel of already-reduced (x+1)/(x+2)",
+    );
 }
 
 /// cancel((x^2 - 2x + 1)/(x - 1)) = x - 1 (perfect square numerator)
@@ -3725,8 +4175,14 @@ fn cancel_perfect_square_numerator() {
     let cancelled = e.cancel(&x);
     let expected = &x - 1;
     // Avoid x=1
-    assert_numerically_equal(&cancelled, &expected, &x, &[-3, -2, -1, 0, 2, 3, 5], 1e-10,
-        "cancel (x²-2x+1)/(x-1) = x-1");
+    assert_numerically_equal(
+        &cancelled,
+        &expected,
+        &x,
+        &[-3, -2, -1, 0, 2, 3, 5],
+        1e-10,
+        "cancel (x²-2x+1)/(x-1) = x-1",
+    );
 }
 
 // ── Nested operation consistency ────────────────────────────────────────
@@ -3739,8 +4195,11 @@ fn nested_expand_simplify_expand() {
     let f = (&x + 1).powi(3);
     let once = f.expand();
     let triple = f.expand().simplify().expand();
-    assert_eq!(format!("{once}"), format!("{triple}"),
-        "expand(simplify(expand((x+1)³))) should equal expand((x+1)³)");
+    assert_eq!(
+        format!("{once}"),
+        format!("{triple}"),
+        "expand(simplify(expand((x+1)³))) should equal expand((x+1)³)"
+    );
 }
 
 /// factor(expand(factor(p))) should equal factor(p) numerically
@@ -3751,8 +4210,14 @@ fn nested_factor_expand_factor() {
     let p = &x.powi(3) - &x;
     let once = p.factor(&x);
     let triple = p.factor(&x).expand().factor(&x);
-    assert_numerically_equal(&once, &triple, &x, INT_POINTS, 1e-10,
-        "factor(expand(factor(x³-x)))");
+    assert_numerically_equal(
+        &once,
+        &triple,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "factor(expand(factor(x³-x)))",
+    );
 }
 
 /// simplify(expand(simplify(e))) should agree numerically with simplify(e)
@@ -3763,8 +4228,14 @@ fn nested_simplify_expand_simplify() {
     let e = &x.sin().powi(2) + &x.cos().powi(2) + &x.powi(2);
     let once = e.simplify();
     let triple = e.simplify().expand().simplify();
-    assert_numerically_equal(&once, &triple, &x, INT_POINTS, 1e-10,
-        "simplify(expand(simplify(sin²+cos²+x²)))");
+    assert_numerically_equal(
+        &once,
+        &triple,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "simplify(expand(simplify(sin²+cos²+x²)))",
+    );
 }
 
 /// diff(integrate(diff(f))) should equal diff(f) for nice functions
@@ -3777,8 +4248,14 @@ fn nested_diff_integrate_diff() {
     let anti_df = df.integrate(&x);
     if !anti_df.has_unevaluated() {
         let d_anti_df = anti_df.diff(&x);
-        assert_numerically_equal(&df, &d_anti_df, &x, INT_POINTS, 1e-8,
-            "diff(integrate(diff(x⁴+sin(x))))");
+        assert_numerically_equal(
+            &df,
+            &d_anti_df,
+            &x,
+            INT_POINTS,
+            1e-8,
+            "diff(integrate(diff(x⁴+sin(x))))",
+        );
     }
 }
 
@@ -3796,8 +4273,10 @@ fn nested_integrate_diff_integrate() {
     let v1 = residual.subs_i64(&x, 1).eval_f64();
     let v2 = residual.subs_i64(&x, 5).eval_f64();
     if let (Ok(a), Ok(b)) = (v1, v2) {
-        assert!((a - b).abs() < 1e-10,
-            "integrate(diff(integrate(x³))) - integrate(x³) should be const: {a} vs {b}");
+        assert!(
+            (a - b).abs() < 1e-10,
+            "integrate(diff(integrate(x³))) - integrate(x³) should be const: {a} vs {b}"
+        );
     }
 }
 
@@ -3810,8 +4289,11 @@ fn eval_f64_pi_accuracy() {
     let pi = ctx.pi();
     let v = pi.eval_f64();
     if let Ok(v) = v {
-        assert!((v - std::f64::consts::PI).abs() < 1e-15,
-            "eval_f64(π) = {v}, expected {}", std::f64::consts::PI);
+        assert!(
+            (v - std::f64::consts::PI).abs() < 1e-15,
+            "eval_f64(π) = {v}, expected {}",
+            std::f64::consts::PI
+        );
     }
 }
 
@@ -3822,8 +4304,11 @@ fn eval_f64_e_accuracy() {
     let e = ctx.e();
     let v = e.eval_f64();
     if let Ok(v) = v {
-        assert!((v - std::f64::consts::E).abs() < 1e-15,
-            "eval_f64(e) = {v}, expected {}", std::f64::consts::E);
+        assert!(
+            (v - std::f64::consts::E).abs() < 1e-15,
+            "eval_f64(e) = {v}, expected {}",
+            std::f64::consts::E
+        );
     }
 }
 
@@ -3835,8 +4320,10 @@ fn eval_f64_sin_pi_over_4() {
     let v = val.eval_f64();
     let expected = std::f64::consts::FRAC_1_SQRT_2;
     if let Ok(v) = v {
-        assert!((v - expected).abs() < 1e-10,
-            "sin(π/4) = {v}, expected {expected}");
+        assert!(
+            (v - expected).abs() < 1e-10,
+            "sin(π/4) = {v}, expected {expected}"
+        );
     }
 }
 
@@ -3854,8 +4341,10 @@ fn eval_nested_substitution() {
     let v = g.subs_i64(&x, 1).eval_f64();
     let expected = 1.0 + 1.0f64.sin().powi(2);
     if let Ok(v) = v {
-        assert!((v - expected).abs() < 1e-10,
-            "x²+sin²(x) at x=1: {v} vs {expected}");
+        assert!(
+            (v - expected).abs() < 1e-10,
+            "x²+sin²(x) at x=1: {v} vs {expected}"
+        );
     }
 }
 
@@ -3866,8 +4355,7 @@ fn eval_f64_large_rational() {
     let r = ctx.rational(355, 113); // Famous approximation to π
     let v = r.eval_f64();
     if let Ok(v) = v {
-        assert!((v - 355.0 / 113.0).abs() < 1e-15,
-            "355/113 eval_f64: {v}");
+        assert!((v - 355.0 / 113.0).abs() < 1e-15, "355/113 eval_f64: {v}");
     }
 }
 
@@ -3943,7 +4431,10 @@ fn compile_floor() {
     let compiled = f.compile(&["x"]);
     if let Some(c) = compiled {
         assert!((c(&[2.7]) - 2.0).abs() < 1e-10, "floor(2.7) should be 2");
-        assert!((c(&[-1.3]) - (-2.0)).abs() < 1e-10, "floor(-1.3) should be -2");
+        assert!(
+            (c(&[-1.3]) - (-2.0)).abs() < 1e-10,
+            "floor(-1.3) should be -2"
+        );
     }
 }
 
@@ -3956,7 +4447,10 @@ fn compile_ceiling() {
     let compiled = f.compile(&["x"]);
     if let Some(c) = compiled {
         assert!((c(&[2.1]) - 3.0).abs() < 1e-10, "ceil(2.1) should be 3");
-        assert!((c(&[-1.7]) - (-1.0)).abs() < 1e-10, "ceil(-1.7) should be -1");
+        assert!(
+            (c(&[-1.7]) - (-1.0)).abs() < 1e-10,
+            "ceil(-1.7) should be -1"
+        );
     }
 }
 
@@ -3972,8 +4466,10 @@ fn compile_three_vars_symmetric() {
     if let Some(c) = compiled {
         let v = c(&[2.0, 3.0, 5.0]);
         let expected = 2.0 * 3.0 + 3.0 * 5.0 + 5.0 * 2.0; // 6+15+10=31
-        assert!((v - expected).abs() < 1e-10,
-            "compile(xy+yz+zx) at (2,3,5): {v} vs {expected}");
+        assert!(
+            (v - expected).abs() < 1e-10,
+            "compile(xy+yz+zx) at (2,3,5): {v} vs {expected}"
+        );
     }
 }
 
@@ -3989,9 +4485,15 @@ fn expand_degree_check() {
         let expanded = (&x + 1).powi(n).expand();
         // The leading term should contain x^n
         let s = format!("{expanded}");
-        let power_str = if n == 1 { "x".to_string() } else { format!("x^{n}") };
-        assert!(s.contains(&power_str),
-            "expand((x+1)^{n}) should contain {power_str}: got {s}");
+        let power_str = if n == 1 {
+            "x".to_string()
+        } else {
+            format!("x^{n}")
+        };
+        assert!(
+            s.contains(&power_str),
+            "expand((x+1)^{n}) should contain {power_str}: got {s}"
+        );
     }
 }
 
@@ -4007,15 +4509,19 @@ fn expand_product_of_linears() {
     for root in 1..=4i64 {
         let v = expanded.subs_i64(&x, root).eval_f64();
         if let Ok(v) = v {
-            assert!(v.abs() < 1e-10,
-                "expanded product should be 0 at x={root}, got {v}");
+            assert!(
+                v.abs() < 1e-10,
+                "expanded product should be 0 at x={root}, got {v}"
+            );
         }
     }
     // At x=5: (4)(3)(2)(1) = 24
     let v = expanded.subs_i64(&x, 5).eval_f64();
     if let Ok(v) = v {
-        assert!((v - 24.0).abs() < 1e-10,
-            "expanded product at x=5 should be 24, got {v}");
+        assert!(
+            (v - 24.0).abs() < 1e-10,
+            "expanded product at x=5 should be 24, got {v}"
+        );
     }
 }
 
@@ -4031,8 +4537,10 @@ fn factor_finds_roots() {
     for root in [1i64, -3] {
         let v = factored.subs_i64(&x, root).eval_f64();
         if let Ok(v) = v {
-            assert!(v.abs() < 1e-10,
-                "factored form should be 0 at x={root}, got {v}");
+            assert!(
+                v.abs() < 1e-10,
+                "factored form should be 0 at x={root}, got {v}"
+            );
         }
     }
 }
@@ -4050,8 +4558,13 @@ fn diff_series_vs_series_diff() {
     let diff_series_expanded = diff_series.expand();
     let series_diff_expanded = series_diff.expand();
     assert_numerically_equal(
-        &diff_series_expanded, &series_diff_expanded, &x, &[0, 1], 1e-2,
-        "diff(series(sin)) vs series(diff(sin)) at small x");
+        &diff_series_expanded,
+        &series_diff_expanded,
+        &x,
+        &[0, 1],
+        1e-2,
+        "diff(series(sin)) vs series(diff(sin)) at small x",
+    );
 }
 
 /// Verify that expand_trig(sin(3x)) gives the correct triple-angle formula
@@ -4062,8 +4575,14 @@ fn trig_expand_triple_angle() {
     let f = (&x * 3).sin();
     let expanded = f.expand_trig();
     // sin(3x) = 3sin(x) - 4sin³(x)
-    assert_numerically_equal(&f, &expanded, &x, INT_POINTS, 1e-10,
-        "expand_trig(sin(3x)) numerical consistency");
+    assert_numerically_equal(
+        &f,
+        &expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "expand_trig(sin(3x)) numerical consistency",
+    );
 }
 
 /// Verify that expand_trig(cos(3x)) is numerically consistent
@@ -4073,8 +4592,14 @@ fn trig_expand_cos_triple_angle() {
     let x = ctx.symbol("x");
     let f = (&x * 3).cos();
     let expanded = f.expand_trig();
-    assert_numerically_equal(&f, &expanded, &x, INT_POINTS, 1e-10,
-        "expand_trig(cos(3x)) numerical consistency");
+    assert_numerically_equal(
+        &f,
+        &expanded,
+        &x,
+        INT_POINTS,
+        1e-10,
+        "expand_trig(cos(3x)) numerical consistency",
+    );
 }
 
 // ── Edge cases in arithmetic ────────────────────────────────────────────
@@ -4088,8 +4613,14 @@ fn power_addition_rule() {
         for m in 1..=4i64 {
             let lhs = &x.powi(n) * &x.powi(m);
             let rhs = x.powi(n + m);
-            assert_numerically_equal(&lhs, &rhs, &x, POS_POINTS, 1e-10,
-                &format!("x^{n}·x^{m} = x^{}", n + m));
+            assert_numerically_equal(
+                &lhs,
+                &rhs,
+                &x,
+                POS_POINTS,
+                1e-10,
+                &format!("x^{n}·x^{m} = x^{}", n + m),
+            );
         }
     }
 }
@@ -4103,8 +4634,14 @@ fn power_multiplication_rule() {
         for m in 1..=3i64 {
             let lhs = x.powi(n).powi(m);
             let rhs = x.powi(n * m);
-            assert_numerically_equal(&lhs, &rhs, &x, POS_POINTS, 1e-10,
-                &format!("(x^{n})^{m} = x^{}", n * m));
+            assert_numerically_equal(
+                &lhs,
+                &rhs,
+                &x,
+                POS_POINTS,
+                1e-10,
+                &format!("(x^{n})^{m} = x^{}", n * m),
+            );
         }
     }
 }
@@ -4123,8 +4660,10 @@ fn power_of_product_rule() {
                 let lv = lhs.subs_i64(&x, xv).subs_i64(&y, yv).eval_f64();
                 let rv = rhs.subs_i64(&x, xv).subs_i64(&y, yv).eval_f64();
                 if let (Ok(a), Ok(b)) = (lv, rv) {
-                    assert!((a - b).abs() < 1e-8,
-                        "(xy)^{n} vs x^{n}·y^{n} at ({xv},{yv}): {a} vs {b}");
+                    assert!(
+                        (a - b).abs() < 1e-8,
+                        "(xy)^{n} vs x^{n}·y^{n} at ({xv},{yv}): {a} vs {b}"
+                    );
                 }
             }
         }
@@ -4139,8 +4678,14 @@ fn negative_power_reciprocal() {
     for n in 1..=4i64 {
         let lhs = x.powi(-n);
         let rhs = &ctx.int(1) / &x.powi(n);
-        assert_numerically_equal(&lhs, &rhs, &x, &[-3, -2, -1, 1, 2, 3], 1e-10,
-            &format!("x^(-{n}) = 1/x^{n}"));
+        assert_numerically_equal(
+            &lhs,
+            &rhs,
+            &x,
+            &[-3, -2, -1, 1, 2, 3],
+            1e-10,
+            &format!("x^(-{n}) = 1/x^{n}"),
+        );
     }
 }
 
@@ -4162,8 +4707,7 @@ fn one_to_any_power() {
         let e = ctx.int(1).powi(n);
         let v = e.eval_f64();
         if let Ok(v) = v {
-            assert!((v - 1.0).abs() < 1e-15,
-                "1^{n} should be 1, got {v}");
+            assert!((v - 1.0).abs() < 1e-15, "1^{n} should be 1, got {v}");
         }
     }
 }
@@ -4176,8 +4720,7 @@ fn zero_to_positive_power() {
         let e = ctx.int(0).powi(n);
         let v = e.eval_f64();
         if let Ok(v) = v {
-            assert!(v.abs() < 1e-15,
-                "0^{n} should be 0, got {v}");
+            assert!(v.abs() < 1e-15, "0^{n} should be 0, got {v}");
         }
     }
 }
@@ -4203,8 +4746,10 @@ fn codegen_compile_agreement() {
     for (label, e) in &cases {
         let codegen_ok = e.to_rust_fn("test_fn", &["x"]).is_ok();
         let compile_ok = e.compile(&["x"]).is_some();
-        assert_eq!(codegen_ok, compile_ok,
-            "{label}: codegen={codegen_ok}, compile={compile_ok} — should agree");
+        assert_eq!(
+            codegen_ok, compile_ok,
+            "{label}: codegen={codegen_ok}, compile={compile_ok} — should agree"
+        );
     }
 }
 
@@ -4238,8 +4783,10 @@ fn codegen_mixed_signs() {
 fn assert_latex_balanced_braces(latex: &str, label: &str) {
     let opens = latex.chars().filter(|&c| c == '{').count();
     let closes = latex.chars().filter(|&c| c == '}').count();
-    assert_eq!(opens, closes,
-        "LaTeX unbalanced braces for {label}: {opens} open vs {closes} close in: {latex}");
+    assert_eq!(
+        opens, closes,
+        "LaTeX unbalanced braces for {label}: {opens} open vs {closes} close in: {latex}"
+    );
 }
 
 /// LaTeX balanced braces for many expression types
@@ -4308,8 +4855,10 @@ fn workflow_build_diff_simplify_compile_eval() {
             let cv = c(&[pt]);
             let expected = 3.0 * pt.powi(2) - 2.0;
             let diff = (cv - expected).abs();
-            assert!(diff < 1e-10,
-                "workflow at x={pt}: compile={cv}, expected={expected}");
+            assert!(
+                diff < 1e-10,
+                "workflow at x={pt}: compile={cv}, expected={expected}"
+            );
         }
     }
 }
@@ -4321,8 +4870,14 @@ fn workflow_integrate_diff_simplify_verify() {
     let x = ctx.symbol("x");
     let f = &x.sin() + &x.powi(2);
     let roundtrip = f.integrate(&x).diff(&x).simplify();
-    assert_numerically_equal(&f, &roundtrip, &x, INT_POINTS, 1e-8,
-        "workflow: simplify(diff(integrate(sin(x)+x²)))");
+    assert_numerically_equal(
+        &f,
+        &roundtrip,
+        &x,
+        INT_POINTS,
+        1e-8,
+        "workflow: simplify(diff(integrate(sin(x)+x²)))",
+    );
 }
 
 /// Full workflow: build → expand → factor → verify
@@ -4335,7 +4890,8 @@ fn workflow_expand_factor_verify() {
     let factored = expanded.factor(&x);
     let re_expanded = factored.expand();
     assert_eq!(
-        format!("{expanded}"), format!("{re_expanded}"),
+        format!("{expanded}"),
+        format!("{re_expanded}"),
         "workflow: expand → factor → expand roundtrip"
     );
 }
@@ -4355,7 +4911,6 @@ fn workflow_series_then_diff() {
     let ev = d_exact.subs_i64(&x, 1).eval_f64();
     if let (Ok(s), Ok(e)) = (sv, ev) {
         let diff = (s - e).abs();
-        assert!(diff < 0.01,
-            "series(exp,6).diff at x=1: {s} vs {e}");
+        assert!(diff < 0.01, "series(exp,6).diff at x=1: {s} vs {e}");
     }
 }

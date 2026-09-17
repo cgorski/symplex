@@ -158,9 +158,8 @@ fn det_product_chain_abc() {
     let b = matrix![ctx, [2, 0], [1, 3]];
     let c = matrix![ctx, [1, 1], [0, 2]];
     let det_abc = (&(&a * &b) * &c).det().unwrap().eval();
-    let det_sep = (&(&a.det().unwrap().eval() * &b.det().unwrap().eval())
-        * &c.det().unwrap().eval())
-    .eval();
+    let det_sep =
+        (&(&a.det().unwrap().eval() * &b.det().unwrap().eval()) * &c.det().unwrap().eval()).eval();
     assert_eq!(
         format!("{det_abc}"),
         format!("{det_sep}"),
@@ -203,7 +202,8 @@ fn det_transpose_equals_det_4x4() {
 #[test]
 fn det_transpose_equals_det_5x5() {
     let ctx = Context::new();
-    let a = matrix![ctx,
+    let a = matrix![
+        ctx,
         [2, 1, 0, 0, 3],
         [1, 3, 2, 0, 0],
         [0, 2, 4, 1, 0],
@@ -305,7 +305,8 @@ fn inverse_of_product_rule() {
 #[test]
 fn det_times_det_inverse_is_one() {
     let ctx = Context::new();
-    let a = matrix![ctx,
+    let a = matrix![
+        ctx,
         [2, 1, 0, 0, 3],
         [1, 3, 2, 0, 0],
         [0, 2, 4, 1, 0],
@@ -510,11 +511,11 @@ fn lu_reconstruction() {
     let a = matrix![ctx, [2, 1, 1], [4, 3, 3], [8, 7, 9]];
     if let Some((l, u, perm)) = a.lu() {
         let lu = &l * &u;
-        for i in 0..a.nrows() {
+        for (i, &pi) in perm.iter().enumerate().take(a.nrows()) {
             for j in 0..a.ncols() {
                 assert_eq!(
                     format!("{}", lu.get(i, j).eval().simplify()),
-                    format!("{}", a.get(perm[i], j).eval()),
+                    format!("{}", a.get(pi, j).eval()),
                     "L·U = P·A  ({i},{j})"
                 );
             }
@@ -614,8 +615,30 @@ fn primality_twin_primes() {
 #[test]
 fn factorisation_roundtrip_small() {
     let values = [
-        2, 3, 4, 6, 12, 36, 60, 100, 128, 243, 360, 625, 720, 1000, 2187, 2310,
-        5040, 10007, 16807, 55440, 100003, 720720, 999983, 1000000007i64,
+        2,
+        3,
+        4,
+        6,
+        12,
+        36,
+        60,
+        100,
+        128,
+        243,
+        360,
+        625,
+        720,
+        1000,
+        2187,
+        2310,
+        5040,
+        10007,
+        16807,
+        55440,
+        100003,
+        720720,
+        999983,
+        1000000007i64,
     ];
     for &n in &values {
         let factors = factorint(n);
@@ -649,8 +672,13 @@ fn factorisation_of_prime_is_itself() {
 
 #[test]
 fn factorisation_prime_powers() {
-    let cases: [(i64, i64, u32); 5] =
-        [(8, 2, 3), (27, 3, 3), (128, 2, 7), (2187, 3, 7), (65536, 2, 16)];
+    let cases: [(i64, i64, u32); 5] = [
+        (8, 2, 3),
+        (27, 3, 3),
+        (128, 2, 7),
+        (2187, 3, 7),
+        (65536, 2, 16),
+    ];
     for (n, base, exp) in cases {
         let f = factorint(n);
         assert_eq!(f, vec![(bi(base), exp)], "{n} = {base}^{exp}");
@@ -688,8 +716,7 @@ fn mod_inverse_verify_product() {
         (123456789, 998244353),
     ];
     for (a, n) in cases {
-        let inv = mod_inverse(a, n)
-            .unwrap_or_else(|| panic!("mod_inverse({a},{n}) should exist"));
+        let inv = mod_inverse(a, n).unwrap_or_else(|| panic!("mod_inverse({a},{n}) should exist"));
         let prod = (bi(a) * &inv) % bi(n);
         let prod = (&prod + bi(n)) % bi(n); // normalise
         assert_eq!(prod, bi(1), "{a}·{inv} mod {n} should be 1");
@@ -835,11 +862,7 @@ fn totient_prime_powers() {
         (49, 7, 2),
     ];
     for (n, p, k) in cases {
-        assert_eq!(
-            totient(n),
-            bi(p).pow(k) - bi(p).pow(k - 1),
-            "φ({n})"
-        );
+        assert_eq!(totient(n), bi(p).pow(k) - bi(p).pow(k - 1), "φ({n})");
     }
 }
 
@@ -864,10 +887,7 @@ fn divisor_properties() {
 fn divisor_count_multiplicative() {
     for &(m, n) in &[(3i64, 4), (5, 6), (7, 9), (8, 15), (11, 13)] {
         assert!(is_coprime(m, n));
-        assert_eq!(
-            divisor_count(m * n),
-            divisor_count(m) * divisor_count(n),
-        );
+        assert_eq!(divisor_count(m * n), divisor_count(m) * divisor_count(n),);
     }
 }
 
@@ -897,11 +917,7 @@ fn legendre_symbol_multiplicative() {
             let ls_ab = legendre_symbol((a * b) % p, p);
             let ls_a = legendre_symbol(a, p);
             let ls_b = legendre_symbol(b, p);
-            assert_eq!(
-                ls_ab,
-                ls_a * ls_b,
-                "({a}·{b}/{p}) vs ({a}/{p})·({b}/{p})"
-            );
+            assert_eq!(ls_ab, ls_a * ls_b, "({a}·{b}/{p}) vs ({a}/{p})·({b}/{p})");
         }
     }
 }
@@ -1009,7 +1025,12 @@ fn negative_inputs() {
 fn binomial_symmetry() {
     for n in 0..=12u64 {
         for k in 0..=n {
-            assert_eq!(binom(n, k), binom(n, n - k), "C({n},{k}) = C({n},{})", n - k);
+            assert_eq!(
+                binom(n, k),
+                binom(n, n - k),
+                "C({n},{k}) = C({n},{})",
+                n - k
+            );
         }
     }
 }
@@ -1059,7 +1080,13 @@ fn vandermonde_identity() {
 fn binomial_alternating_sum() {
     for n in 1..=15u64 {
         let sum: BigInt = (0..=n)
-            .map(|k| if k % 2 == 0 { binom(n, k) } else { -binom(n, k) })
+            .map(|k| {
+                if k % 2 == 0 {
+                    binom(n, k)
+                } else {
+                    -binom(n, k)
+                }
+            })
             .sum();
         assert_eq!(sum, BigInt::zero(), "Σ(−1)^k C({n},k)=0");
     }
@@ -1071,10 +1098,7 @@ fn binomial_alternating_sum() {
 fn multinomial_is_binomial() {
     for n in 0..=12u64 {
         for k in 0..=n {
-            assert_eq!(
-                multinomial(n, &[k, n - k]).unwrap(),
-                binom(n, k),
-            );
+            assert_eq!(multinomial(n, &[k, n - k]).unwrap(), binom(n, k),);
         }
     }
 }
@@ -1358,10 +1382,7 @@ fn crt_i64_three_large_moduli() {
     // FIXED: previously panicked with overflow.  Now delegates to BigInt.
     // The combined modulus (~10^27) exceeds i64::MAX, so the result may
     // not fit in i64 — but the function must not panic.
-    let result = crt_i64(
-        &[2, 3, 5],
-        &[999_999_937, 999_999_929, 999_999_893],
-    );
+    let result = crt_i64(&[2, 3, 5], &[999_999_937, 999_999_929, 999_999_893]);
     // Cross-check: BigInt version gives the authoritative answer.
     let big = crt(
         &[bi(2), bi(3), bi(5)],
@@ -1405,7 +1426,8 @@ fn eigenvalue_product_is_det_2x2() {
 fn det_5x5_cross_check() {
     // Verify via cofactor along row 0 of a 5×5
     let ctx = Context::new();
-    let a = matrix![ctx,
+    let a = matrix![
+        ctx,
         [1, 2, 3, 4, 5],
         [2, 3, 1, 5, 4],
         [3, 1, 2, 4, 5],

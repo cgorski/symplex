@@ -61,7 +61,7 @@ enum FPSKind {
     },
     /// Truncated polynomial (fallback: just the first N terms).
     Truncated {
-        /// Coefficients indexed by power: coeffs[k] = coefficient of x^k.
+        /// Coefficients indexed by power: `coeffs[k]` = coefficient of `x^k`.
         coeffs: Vec<CachedCoeff>,
     },
 }

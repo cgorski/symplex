@@ -14,7 +14,7 @@
 //!   transcendental elementary functions.
 //! - **Phase 5** ([`rde`]): Risch differential equation solver (`y' + fy = g`).
 //!
-//! All core algorithms operate at the [`Poly`](crate::poly::dense::Poly) /
+//! All core algorithms operate at the [`Poly`] /
 //! `Ratio<BigInt>` level.  The [`try_risch_rational`] function bridges
 //! from the arena world to the polynomial world using the existing
 //! [`polybridge`](crate::poly::polybridge) infrastructure.
@@ -93,12 +93,7 @@ pub enum LogTerm {
     ///
     /// Used when the resultant has irreducible factors of degree > 1
     /// whose roots are algebraic numbers not in ℚ.
-    Algebraic {
-        min_poly: Poly,
-        /// The original numerator and denominator, for reconstruction.
-        numer: Poly,
-        denom: Poly,
-    },
+    Algebraic { min_poly: Poly },
 }
 
 /// Result of the Risch integration.
@@ -352,20 +347,24 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
         let b_gp = &a_gp - &dprime_t_gp;
 
         // Compute PRS, extract degree-1 member.
-        let prs = crate::poly::generic::GenPoly::<crate::poly::ratfn::RationalFn>::euclidean_prs(&d_gp, &b_gp);
-        let h_prs_opt: Option<crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn>> = match prs.get(&1) {
-            Some(h) => {
-                let monic: crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn> = h.make_monic();
-                Some(monic)
-            }
-            None => {
-                tracing::debug!(
-                    prs_degrees = ?prs.keys().collect::<Vec<_>>(),
-                    "try_risch_rational: no degree-1 PRS member for log_to_real"
-                );
-                None
-            }
-        };
+        let prs = crate::poly::generic::GenPoly::<crate::poly::ratfn::RationalFn>::euclidean_prs(
+            &d_gp, &b_gp,
+        );
+        let h_prs_opt: Option<crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn>> =
+            match prs.get(&1) {
+                Some(h) => {
+                    let monic: crate::poly::generic::GenPoly<crate::poly::ratfn::RationalFn> =
+                        h.make_monic();
+                    Some(monic)
+                }
+                None => {
+                    tracing::debug!(
+                        prs_degrees = ?prs.keys().collect::<Vec<_>>(),
+                        "try_risch_rational: no degree-1 PRS member for log_to_real"
+                    );
+                    None
+                }
+            };
 
         let log_to_real_terms: Option<Vec<ExprId>> = 'ltr: {
             let h_prs = match h_prs_opt {
@@ -470,23 +469,15 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
                     "A_alg must be divisible by gcd(A_alg, h_denom)"
                 );
 
-                let alg_num_id =
-                    crate::poly::polybridge::poly_to_expr(arena, &a_reduced, var);
-                let alg_den_id =
-                    crate::poly::polybridge::poly_to_expr(arena, &d_reduced, var);
+                let alg_num_id = crate::poly::polybridge::poly_to_expr(arena, &a_reduced, var);
+                let alg_den_id = crate::poly::polybridge::poly_to_expr(arena, &d_reduced, var);
                 let algebraic_remainder = arena.div(alg_num_id, alg_den_id);
 
-                tracing::debug!(
-                    "try_risch_rational: recursively integrating algebraic remainder"
-                );
-                let alg_integral = crate::transforms::integrate::integrate(
-                    arena,
-                    algebraic_remainder,
-                    var,
-                );
+                tracing::debug!("try_risch_rational: recursively integrating algebraic remainder");
+                let alg_integral =
+                    crate::transforms::integrate::integrate(arena, algebraic_remainder, var);
 
-                let alg_has_uneval =
-                    crate::base::walk::has_unevaluated(arena, alg_integral);
+                let alg_has_uneval = crate::base::walk::has_unevaluated(arena, alg_integral);
                 tracing::debug!(
                     has_unevaluated = alg_has_uneval,
                     "try_risch_rational: algebraic remainder integration complete"
@@ -501,36 +492,33 @@ pub fn try_risch_rational(arena: &mut Arena, expr: ExprId, var: ExprId) -> Optio
                     // mathematical answer in implicit form, better than
                     // an unevaluated Integral).
                     let mut rootsum_emitted = false;
-                    if let Some(ref h_prs_val) = h_prs_opt {
-                        if h_prs_val.degree() == Some(1) {
-                            let t_rs = arena.symbol("__rs_t");
-                            let h1 = h_prs_val.coeff(1);
-                            let h0 = h_prs_val.coeff(0);
-                            let h1_expr =
-                                crate::poly::polybridge::ratfn_to_expr(arena, &h1, t_rs);
-                            let h0_expr =
-                                crate::poly::polybridge::ratfn_to_expr(arena, &h0, t_rs);
-                            let h1_x = arena.mul(&[h1_expr, var]);
-                            let h_expr = arena.add(&[h1_x, h0_expr]);
+                    if let Some(ref h_prs_val) = h_prs_opt
+                        && h_prs_val.degree() == Some(1)
+                    {
+                        let t_rs = arena.symbol("__rs_t");
+                        let h1 = h_prs_val.coeff(1);
+                        let h0 = h_prs_val.coeff(0);
+                        let h1_expr = crate::poly::polybridge::ratfn_to_expr(arena, &h1, t_rs);
+                        let h0_expr = crate::poly::polybridge::ratfn_to_expr(arena, &h0, t_rs);
+                        let h1_x = arena.mul(&[h1_expr, var]);
+                        let h_expr = arena.add(&[h1_x, h0_expr]);
 
-                            for term in &log_result.terms {
-                                if let LogTerm::Algebraic { min_poly, .. } = term {
-                                    let poly_expr = crate::poly::polybridge::poly_to_expr(
-                                        arena, min_poly, t_rs,
-                                    );
-                                    let ln_h = arena.ln(h_expr);
-                                    let body = arena.mul(&[t_rs, ln_h]);
-                                    let rootsum = arena
-                                        .intern(ExprNode::RootSum(poly_expr, body, t_rs));
-                                    tracing::debug!(
-                                        min_poly_degree = ?min_poly.degree(),
-                                        "try_risch_rational: emitting RootSum for algebraic factor"
-                                    );
-                                    terms.push(rootsum);
-                                }
+                        for term in &log_result.terms {
+                            if let LogTerm::Algebraic { min_poly, .. } = term {
+                                let poly_expr =
+                                    crate::poly::polybridge::poly_to_expr(arena, min_poly, t_rs);
+                                let ln_h = arena.ln(h_expr);
+                                let body = arena.mul(&[t_rs, ln_h]);
+                                let rootsum =
+                                    arena.intern(ExprNode::RootSum(poly_expr, body, t_rs));
+                                tracing::debug!(
+                                    min_poly_degree = ?min_poly.degree(),
+                                    "try_risch_rational: emitting RootSum for algebraic factor"
+                                );
+                                terms.push(rootsum);
                             }
-                            rootsum_emitted = true;
                         }
+                        rootsum_emitted = true;
                     }
 
                     if !rootsum_emitted {
@@ -756,7 +744,11 @@ mod tests {
             "constant term denominator should be 1"
         );
         let c0_numer = c0.numer();
-        assert_eq!(c0_numer.degree(), Some(1), "constant term should be linear in t");
+        assert_eq!(
+            c0_numer.degree(),
+            Some(1),
+            "constant term should be linear in t"
+        );
         assert_eq!(c0_numer.coeff(0), r(0, 1), "constant of -3t should be 0");
         assert_eq!(c0_numer.coeff(1), r(-3, 1), "slope of -3t should be -3");
     }
@@ -779,7 +771,12 @@ mod tests {
         let q_expr = arena.add(&[term_9t2, term_3t, one]);
 
         let roots = crate::transforms::solve::solve(&mut arena, q_expr, t);
-        assert_eq!(roots.len(), 2, "quadratic should have 2 roots, got {}", roots.len());
+        assert_eq!(
+            roots.len(),
+            2,
+            "quadratic should have 2 roots, got {}",
+            roots.len()
+        );
 
         // Decompose each root into (Re, Im)
         let mut pos_im_found = false;
@@ -802,7 +799,8 @@ mod tests {
                 let expected_im = 3.0_f64.sqrt() / 6.0;
                 assert!(
                     (im_v.abs() - expected_im).abs() < 1e-10,
-                    "|Im| should be √3/6 ≈ {expected_im}, got {}", im_v.abs()
+                    "|Im| should be √3/6 ≈ {expected_im}, got {}",
+                    im_v.abs()
                 );
                 if im_v > 0.0 {
                     pos_im_found = true;
@@ -810,12 +808,21 @@ mod tests {
                     neg_im_found = true;
                 }
             } else {
-                panic!("Could not evaluate root to f64: {}", display(&arena, root.value));
+                panic!(
+                    "Could not evaluate root to f64: {}",
+                    display(&arena, root.value)
+                );
             }
         }
 
-        assert!(pos_im_found, "should have a root with positive imaginary part");
-        assert!(neg_im_found, "should have a root with negative imaginary part");
+        assert!(
+            pos_im_found,
+            "should have a root with positive imaginary part"
+        );
+        assert!(
+            neg_im_found,
+            "should have a root with negative imaginary part"
+        );
     }
 
     #[test]

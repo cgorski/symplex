@@ -32,7 +32,7 @@ use num_traits::ToPrimitive;
 /// ```
 ///
 /// Parameters can be symbolic expressions (e.g. a joint variable `theta`)
-/// or numeric constants built with [`crate::int`].
+/// or numeric constants built with [`Context::int`](crate::api::context::Context::int).
 ///
 /// # Examples
 ///
@@ -496,15 +496,19 @@ pub type DhParams<'a> = (&'a Angle, &'a Length, &'a Length, &'a Angle);
 /// use symplex::units::si::*;
 /// use symplex::robotics::fk_position_typed;
 ///
-/// let theta1 = Angle::symbol("theta1");
-/// let l1 = Length::rational(3, 10);
-/// let zero_l = Length::zero();
-/// let zero_a = Angle::zero();
+/// let ctx = Context::new();
+/// let theta1 = Angle::symbol(&ctx, "theta1");
+/// let l1 = Length::rational(&ctx, 3, 10);
+/// let zero_l = Length::zero(&ctx);
+/// let zero_a = Angle::zero(&ctx);
 ///
 /// let (px, py, pz) = fk_position_typed(&[
 ///     (&theta1, &zero_l, &l1, &zero_a),
 /// ]);
 /// // px, py, pz are Length — guaranteed at compile time
+/// assert_eq!(format!("{}", px.inner()), "3/10*cos(theta1)");
+/// assert_eq!(format!("{}", py.inner()), "3/10*sin(theta1)");
+/// assert_eq!(format!("{}", pz.inner()), "0");
 /// ```
 pub fn fk_position_typed(dh_params: &[DhParams<'_>]) -> (Length, Length, Length) {
     let untyped: Vec<(&Ex, &Ex, &Ex, &Ex)> = dh_params

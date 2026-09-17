@@ -31,8 +31,13 @@ fn div_one_by_zero_no_panic() {
     // It must not be "1" or some finite number
     eprintln!("1/0 = {s}");
     assert!(
-        s.contains("zoo") || s.contains("oo") || s.contains("∞") || s.contains("nan")
-            || s.contains("NaN") || s.contains("undef") || s.contains("1/0"),
+        s.contains("zoo")
+            || s.contains("oo")
+            || s.contains("∞")
+            || s.contains("nan")
+            || s.contains("NaN")
+            || s.contains("undef")
+            || s.contains("1/0"),
         "1/0 should be some infinity/undefined sentinel, got: {s}"
     );
 }
@@ -56,10 +61,7 @@ fn div_symbol_by_zero_no_panic() {
     let s = format!("{result}");
     eprintln!("x/0 = {s}");
     // Should produce some form of infinity/undefined, not just "x"
-    assert!(
-        s != "x",
-        "x/0 should not simplify to just 'x', got: {s}"
-    );
+    assert!(s != "x", "x/0 should not simplify to just 'x', got: {s}");
 }
 
 #[test]
@@ -80,10 +82,7 @@ fn zero_to_neg_one_no_panic() {
     let result = zero.powi(-1);
     let s = format!("{result}");
     eprintln!("0^(-1) = {s}");
-    assert!(
-        s != "0",
-        "0^(-1) should not be 0, got: {s}"
-    );
+    assert!(s != "0", "0^(-1) should not be 0, got: {s}");
 }
 
 #[test]
@@ -93,10 +92,7 @@ fn zero_to_neg_two_no_panic() {
     let result = zero.powi(-2);
     let s = format!("{result}");
     eprintln!("0^(-2) = {s}");
-    assert!(
-        s != "0",
-        "0^(-2) should not be 0, got: {s}"
-    );
+    assert!(s != "0", "0^(-2) should not be 0, got: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -289,10 +285,7 @@ fn deeply_nested_multiplication_chain() {
     }
     let s = format!("{expr}");
     eprintln!("x^50 = {s}");
-    assert!(
-        s.contains("50"),
-        "product of 50 x's should be x^50: {s}"
-    );
+    assert!(s.contains("50"), "product of 50 x's should be x^50: {s}");
 }
 
 #[test]
@@ -361,10 +354,7 @@ fn integrate_x_to_neg_one_is_ln() {
     let x = ctx.symbol("x");
     let result = x.powi(-1).integrate(&x);
     let s = format!("{result}");
-    assert!(
-        s.contains("ln"),
-        "∫ x^(-1) dx should be ln(|x|), got: {s}"
-    );
+    assert!(s.contains("ln"), "∫ x^(-1) dx should be ln(|x|), got: {s}");
 }
 
 #[test]
@@ -414,7 +404,10 @@ fn solve_one_eq_zero() {
     eprintln!("solve(1, x) = {result:?}");
     match result {
         Ok(roots) => {
-            assert!(roots.is_empty(), "1=0 should have no solutions, got: {roots:?}");
+            assert!(
+                roots.is_empty(),
+                "1=0 should have no solutions, got: {roots:?}"
+            );
         }
         Err(e) => {
             eprintln!("solve(1, x) errored (acceptable): {e}");
@@ -427,7 +420,10 @@ fn solve_or_empty_constant_nonzero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = ctx.int(42).solve_or_empty(&x);
-    assert!(result.is_empty(), "42=0 should have no solutions, got: {result:?}");
+    assert!(
+        result.is_empty(),
+        "42=0 should have no solutions, got: {result:?}"
+    );
 }
 
 #[test]
@@ -447,7 +443,12 @@ fn solve_already_factored() {
     // x * (x - 1) * (x + 1) = 0
     let expr = &x * &(&x - 1) * &(&x + 1);
     let roots = expr.solve_or_empty(&x);
-    assert_eq!(roots.len(), 3, "x(x-1)(x+1)=0 should have 3 roots, got {}", roots.len());
+    assert_eq!(
+        roots.len(),
+        3,
+        "x(x-1)(x+1)=0 should have 3 roots, got {}",
+        roots.len()
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -508,7 +509,11 @@ fn diff_y_wrt_x_is_zero() {
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
     let result = y.diff(&x);
-    assert_eq!(format!("{result}"), "0", "dy/dx should be 0 for independent symbols");
+    assert_eq!(
+        format!("{result}"),
+        "0",
+        "dy/dx should be 0 for independent symbols"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -737,7 +742,10 @@ fn expand_square_binomial() {
     let expanded = expr.expand();
     let s = format!("{expanded}");
     // Should be x^2 + 2*x + 1
-    assert!(s.contains("x^2"), "(x+1)^2 expanded should contain x^2: {s}");
+    assert!(
+        s.contains("x^2"),
+        "(x+1)^2 expanded should contain x^2: {s}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -763,7 +771,10 @@ fn series_polynomial_is_exact() {
     let result = poly.series(&x, &zero, 5);
     let s = format!("{result}");
     let s_orig = format!("{poly}");
-    assert_eq!(s, s_orig, "series of polynomial should be exact: got {s} vs {s_orig}");
+    assert_eq!(
+        s, s_orig,
+        "series of polynomial should be exact: got {s} vs {s_orig}"
+    );
 }
 
 #[test]
@@ -858,7 +869,10 @@ fn eval_f64_with_free_symbol_in_expr_should_fail() {
     let x = ctx.symbol("x");
     let expr = x.powi(2) + 1;
     let result = expr.eval_f64();
-    assert!(result.is_err(), "eval_f64 on expr with free symbol should fail");
+    assert!(
+        result.is_err(),
+        "eval_f64 on expr with free symbol should fail"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -887,7 +901,10 @@ fn compile_single_var() {
     let expr = x.powi(2) + 1;
     let f = expr.compile(&["x"]).unwrap();
     let val = f(&[3.0]);
-    assert!((val - 10.0).abs() < 1e-10, "x^2+1 at x=3 should be 10, got {val}");
+    assert!(
+        (val - 10.0).abs() < 1e-10,
+        "x^2+1 at x=3 should be 10, got {val}"
+    );
 }
 
 #[test]
@@ -898,7 +915,10 @@ fn compile_wrong_var_name() {
     // Compile with wrong variable name — should probably fail or produce NaN
     let result = expr.compile(&["y"]);
     match result {
-        Some(f) => eprintln!("compile(x^2, [y]) returned a function, f(&[1.0]) = {}", f(&[1.0])),
+        Some(f) => eprintln!(
+            "compile(x^2, [y]) returned a function, f(&[1.0]) = {}",
+            f(&[1.0])
+        ),
         None => eprintln!("compile(x^2, [y]) returned None — acceptable"),
     }
 }
@@ -1004,8 +1024,8 @@ fn pythagorean_identity() {
 #[test]
 fn boolean_true_and_false() {
     let ctx = Context::new();
-    let t = ctx.int(1).gt(&ctx.int(0));  // true
-    let f = ctx.int(0).gt(&ctx.int(1));  // false
+    let t = ctx.int(1).gt(&ctx.int(0)); // true
+    let f = ctx.int(0).gt(&ctx.int(1)); // false
     let result = t.and(&f);
     let s = format!("{}", result.eval());
     eprintln!("true & false = {s}");
@@ -1018,8 +1038,8 @@ fn boolean_true_and_false() {
 #[test]
 fn boolean_true_or_false() {
     let ctx = Context::new();
-    let t = ctx.int(1).gt(&ctx.int(0));  // true
-    let f = ctx.int(0).gt(&ctx.int(1));  // false
+    let t = ctx.int(1).gt(&ctx.int(0)); // true
+    let f = ctx.int(0).gt(&ctx.int(1)); // false
     let result = t.or(&f);
     let s = format!("{}", result.eval());
     eprintln!("true | false = {s}");
@@ -1050,7 +1070,10 @@ fn nan_plus_anything_is_nan() {
     let x = ctx.symbol("x");
     let result = &n + &x;
     let s = format!("{result}");
-    assert!(s.contains("nan") || s.contains("NaN"), "nan + x should be nan, got: {s}");
+    assert!(
+        s.contains("nan") || s.contains("NaN"),
+        "nan + x should be nan, got: {s}"
+    );
 }
 
 #[test]
@@ -1059,7 +1082,10 @@ fn nan_times_anything_is_nan() {
     let n = ctx.nan();
     let result = &n * &ctx.int(5);
     let s = format!("{result}");
-    assert!(s.contains("nan") || s.contains("NaN"), "nan * 5 should be nan, got: {s}");
+    assert!(
+        s.contains("nan") || s.contains("NaN"),
+        "nan * 5 should be nan, got: {s}"
+    );
 }
 
 #[test]
@@ -1068,7 +1094,10 @@ fn nan_simplify_is_nan() {
     let n = ctx.nan();
     let result = n.simplify();
     let s = format!("{result}");
-    assert!(s.contains("nan") || s.contains("NaN"), "simplify(nan) should be nan, got: {s}");
+    assert!(
+        s.contains("nan") || s.contains("NaN"),
+        "simplify(nan) should be nan, got: {s}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1082,7 +1111,10 @@ fn zoo_plus_zoo_is_nan() {
     let z2 = zoo(&ctx);
     let result = &z1 + &z2;
     let s = format!("{result}");
-    assert!(s.contains("nan") || s.contains("NaN"), "zoo + zoo should be nan, got: {s}");
+    assert!(
+        s.contains("nan") || s.contains("NaN"),
+        "zoo + zoo should be nan, got: {s}"
+    );
 }
 
 #[test]
@@ -1169,7 +1201,10 @@ fn display_negative_rational() {
     let expr = ctx.rational(-1, 3);
     let s = format!("{expr}");
     eprintln!("-1/3 display = {s}");
-    assert!(s.contains("-") && s.contains("1") && s.contains("3"), "display of -1/3: {s}");
+    assert!(
+        s.contains("-") && s.contains("1") && s.contains("3"),
+        "display of -1/3: {s}"
+    );
 }
 
 #[test]
@@ -1202,7 +1237,10 @@ fn latex_fraction() {
     let ctx = Context::new();
     let s = ctx.rational(1, 2).to_latex();
     eprintln!("LaTeX 1/2 = {s}");
-    assert!(s.contains("frac") || s.contains("1") && s.contains("2"), "LaTeX of 1/2: {s}");
+    assert!(
+        s.contains("frac") || s.contains("1") && s.contains("2"),
+        "LaTeX of 1/2: {s}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1240,7 +1278,10 @@ fn factorint_zero() {
 fn factorint_one() {
     let result = symplex::ntheory::factorint(1);
     eprintln!("factorint(1) = {result:?}");
-    assert!(result.is_empty(), "1 has empty factorization, got: {result:?}");
+    assert!(
+        result.is_empty(),
+        "1 has empty factorization, got: {result:?}"
+    );
 }
 
 #[test]
@@ -1307,7 +1348,10 @@ fn equation_trivially_false() {
     // 0 = 1 — no solution
     let eq = symplex::eq::Equation::new(ctx.int(0), ctx.int(1));
     let roots = eq.solve_or_empty(&x);
-    assert!(roots.is_empty(), "0 = 1 should have no solutions, got: {roots:?}");
+    assert!(
+        roots.is_empty(),
+        "0 = 1 should have no solutions, got: {roots:?}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1400,7 +1444,11 @@ fn abs_of_abs_simplifies() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.abs().abs().simplify();
-    assert_eq!(format!("{result}"), "abs(x)", "||x|| should simplify to |x|");
+    assert_eq!(
+        format!("{result}"),
+        "abs(x)",
+        "||x|| should simplify to |x|"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1480,7 +1528,12 @@ fn solve_then_verify_solutions() {
     // x^3 - 6x^2 + 11x - 6 = (x-1)(x-2)(x-3) = 0
     let expr = &x.powi(3) - &x.powi(2) * 6 + &x * 11 - 6;
     let roots = expr.solve_or_empty(&x);
-    assert_eq!(roots.len(), 3, "cubic should have 3 roots, got {}", roots.len());
+    assert_eq!(
+        roots.len(),
+        3,
+        "cubic should have 3 roots, got {}",
+        roots.len()
+    );
     // Verify each root
     for root in &roots {
         let val = expr.subs(&x, root);
@@ -1551,7 +1604,7 @@ fn serde_roundtrip_nan() {
 
 #[test]
 fn expr_macro_just_integer() {
-    let ctx = Context::new();
+    let _ctx = Context::new();
     let result = expr!(ctx, 0);
     assert_eq!(format!("{result}"), "0");
 }
@@ -1568,7 +1621,7 @@ fn expr_macro_negative() {
 fn expr_macro_nested_parens() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = expr!(ctx, ((x + 1)));
+    let result = expr!(ctx, (x + 1));
     let s = format!("{result}");
     assert!(s.contains("x") && s.contains("1"), "((x+1)) = {s}");
 }
@@ -1584,7 +1637,11 @@ fn eval_is_idempotent() {
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
     let e1 = expr.eval();
     let e2 = e1.eval();
-    assert_eq!(format!("{e1}"), format!("{e2}"), "eval should be idempotent");
+    assert_eq!(
+        format!("{e1}"),
+        format!("{e2}"),
+        "eval should be idempotent"
+    );
 }
 
 #[test]
@@ -1594,7 +1651,11 @@ fn simplify_is_idempotent() {
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
     let s1 = expr.simplify();
     let s2 = s1.simplify();
-    assert_eq!(format!("{s1}"), format!("{s2}"), "simplify should be idempotent");
+    assert_eq!(
+        format!("{s1}"),
+        format!("{s2}"),
+        "simplify should be idempotent"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1632,7 +1693,11 @@ fn does_not_contain_absent_symbol() {
 #[test]
 fn mod_inverse_coprime() {
     let result = symplex::ntheory::mod_inverse(3_i64, 7_i64);
-    assert_eq!(result, Some(num_bigint::BigInt::from(5)), "3^(-1) mod 7 = 5");
+    assert_eq!(
+        result,
+        Some(num_bigint::BigInt::from(5)),
+        "3^(-1) mod 7 = 5"
+    );
 }
 
 #[test]
@@ -1644,7 +1709,11 @@ fn mod_inverse_not_coprime() {
 #[test]
 fn mod_inverse_one() {
     let result = symplex::ntheory::mod_inverse(1_i64, 7_i64);
-    assert_eq!(result, Some(num_bigint::BigInt::from(1)), "1^(-1) mod 7 = 1");
+    assert_eq!(
+        result,
+        Some(num_bigint::BigInt::from(1)),
+        "1^(-1) mod 7 = 1"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1818,10 +1887,7 @@ fn second_derivative_x_cubed() {
     let result = x.powi(3).diff(&x).diff(&x);
     let s = format!("{result}");
     // d²/dx² x³ = 6x
-    assert!(
-        s == "6*x",
-        "d²/dx² x³ should be 6*x, got: {s}"
-    );
+    assert!(s == "6*x", "d²/dx² x³ should be 6*x, got: {s}");
 }
 
 #[test]
@@ -1987,10 +2053,7 @@ fn integrate_x_to_large_power() {
     // ∫ x^99 dx = x^100 / 100
     let result = x.powi(99).integrate(&x);
     let s = format!("{result}");
-    assert!(
-        s.contains("100"),
-        "∫ x^99 dx should contain 100: {s}"
-    );
+    assert!(s.contains("100"), "∫ x^99 dx should contain 100: {s}");
 }
 
 #[test]
@@ -2166,7 +2229,10 @@ fn diff_multivar_partial_x() {
     let result = expr.diff(&x);
     let val = result.subs_i64(&x, 2).subs_i64(&y, 3).eval_f64().unwrap();
     // 2*2*3 + 3^2 = 12 + 9 = 21
-    assert!((val - 21.0).abs() < 1e-10, "∂f/∂x at (2,3) should be 21, got {val}");
+    assert!(
+        (val - 21.0).abs() < 1e-10,
+        "∂f/∂x at (2,3) should be 21, got {val}"
+    );
 }
 
 #[test]
@@ -2179,7 +2245,10 @@ fn diff_multivar_partial_y() {
     let result = expr.diff(&y);
     let val = result.subs_i64(&x, 2).subs_i64(&y, 3).eval_f64().unwrap();
     // 2^2 + 2*2*3 = 4 + 12 = 16
-    assert!((val - 16.0).abs() < 1e-10, "∂f/∂y at (2,3) should be 16, got {val}");
+    assert!(
+        (val - 16.0).abs() < 1e-10,
+        "∂f/∂y at (2,3) should be 16, got {val}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2196,7 +2265,11 @@ fn factorial_large_no_crash() {
         let s = arena.display(result).to_string();
         eprintln!("100! has {} digits", s.len());
         // 100! has 158 digits
-        assert!(s.len() > 150, "100! should have > 150 digits, got {}", s.len());
+        assert!(
+            s.len() > 150,
+            "100! should have > 150 digits, got {}",
+            s.len()
+        );
     });
 }
 
@@ -2211,10 +2284,7 @@ fn integrate_sin() {
     let result = x.sin().integrate(&x);
     let s = format!("{result}");
     // ∫ sin(x) dx = -cos(x)
-    assert!(
-        s.contains("cos"),
-        "∫ sin(x) dx should contain cos: {s}"
-    );
+    assert!(s.contains("cos"), "∫ sin(x) dx should contain cos: {s}");
 }
 
 #[test]
@@ -2224,10 +2294,7 @@ fn integrate_cos() {
     let result = x.cos().integrate(&x);
     let s = format!("{result}");
     // ∫ cos(x) dx = sin(x)
-    assert!(
-        s.contains("sin"),
-        "∫ cos(x) dx should contain sin: {s}"
-    );
+    assert!(s.contains("sin"), "∫ cos(x) dx should contain sin: {s}");
 }
 
 #[test]
@@ -2237,10 +2304,7 @@ fn integrate_exp() {
     let result = x.exp().integrate(&x);
     let s = format!("{result}");
     // ∫ exp(x) dx = exp(x)
-    assert!(
-        s.contains("exp"),
-        "∫ exp(x) dx should contain exp: {s}"
-    );
+    assert!(s.contains("exp"), "∫ exp(x) dx should contain exp: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2254,7 +2318,12 @@ fn solve_x_squared_plus_one() {
     // x^2 + 1 = 0 → x = ±i
     let roots = (x.powi(2) + 1).solve_or_empty(&x);
     eprintln!("x^2+1=0 roots: {roots:?}");
-    assert_eq!(roots.len(), 2, "x^2+1=0 should have 2 complex roots, got {}", roots.len());
+    assert_eq!(
+        roots.len(),
+        2,
+        "x^2+1=0 should have 2 complex roots, got {}",
+        roots.len()
+    );
     let mut strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     strs.sort();
     eprintln!("root strings: {strs:?}");
@@ -2267,8 +2336,8 @@ fn solve_x_squared_plus_one() {
 
 #[test]
 fn gcd_with_zero() {
-    use num_integer::Integer;
     use num_bigint::BigInt;
+    use num_integer::Integer;
     let a = BigInt::from(0);
     let b = BigInt::from(5);
     let g = a.gcd(&b);
@@ -2277,8 +2346,8 @@ fn gcd_with_zero() {
 
 #[test]
 fn gcd_both_zero() {
-    use num_integer::Integer;
     use num_bigint::BigInt;
+    use num_integer::Integer;
     let a = BigInt::from(0);
     let b = BigInt::from(0);
     let g = a.gcd(&b);
@@ -2533,7 +2602,10 @@ fn eval_f64_infinity() {
     let result = inf.eval_f64();
     eprintln!("eval_f64(oo) = {result:?}");
     match result {
-        Ok(v) => assert!(v.is_infinite() && v > 0.0, "eval_f64(oo) should be +inf, got {v}"),
+        Ok(v) => assert!(
+            v.is_infinite() && v > 0.0,
+            "eval_f64(oo) should be +inf, got {v}"
+        ),
         Err(e) => eprintln!("eval_f64(oo) errored (acceptable): {e}"),
     }
 }
@@ -2703,7 +2775,10 @@ fn limit_handles_infinity_correctly() {
     let expr = ctx.int(1) / &x;
     let result = expr.limit(&x, &ctx.infinity());
     let s = format!("{result}");
-    assert_eq!(s, "0", "lim(x→∞) 1/x should be 0 via limit engine, got: {s}");
+    assert_eq!(
+        s, "0",
+        "lim(x→∞) 1/x should be 0 via limit engine, got: {s}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2747,7 +2822,10 @@ fn eval_f64_zero_over_zero() {
     let ctx = Context::new();
     let zero = ctx.int(0);
     let result = (&zero / &zero).eval_f64();
-    assert!(result.is_err(), "eval_f64(0/0) should be Err since 0/0 is NaN, got: {result:?}");
+    assert!(
+        result.is_err(),
+        "eval_f64(0/0) should be Err since 0/0 is NaN, got: {result:?}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -31,15 +31,9 @@ fn zoo(ctx: &Context) -> Ex {
 /// Assert the display representation equals `expected`.
 fn assert_displays_as(expr: &Ex, expected: &str, label: &str) {
     let actual = format!("{expr}");
-    assert_eq!(actual, expected, "{label}: expected \"{expected}\", got \"{actual}\"");
-}
-
-/// Assert the display representation is one of the accepted alternatives.
-fn assert_displays_as_one_of(expr: &Ex, options: &[&str], label: &str) {
-    let actual = format!("{expr}");
-    assert!(
-        options.contains(&actual.as_str()),
-        "{label}: expected one of {options:?}, got \"{actual}\""
+    assert_eq!(
+        actual, expected,
+        "{label}: expected \"{expected}\", got \"{actual}\""
     );
 }
 
@@ -501,10 +495,7 @@ fn zero_pow_infinity() {
     let s = format!("{result}");
     eprintln!("0^oo = {s}");
     // After fix: assert_displays_as(&result, "0", "0^oo");
-    assert!(
-        s == "0" || s == "0^oo",
-        "0^oo should be 0, got: {s}"
-    );
+    assert!(s == "0" || s == "0^oo", "0^oo should be 0, got: {s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -647,10 +638,7 @@ fn zoo_pow_infinity() {
     // Acceptable: 0 (SymPy), nan, or unevaluated. NOT oo or zoo.
     // The proposed fix should not blindly return oo here.
     assert!(
-        s == "0"
-            || s.contains("nan")
-            || s.contains("NaN")
-            || s.contains("zoo"),
+        s == "0" || s.contains("nan") || s.contains("NaN") || s.contains("zoo"),
         "zoo^oo should be 0, nan, or unevaluated (not oo), got: {s}"
     );
 }
@@ -665,10 +653,7 @@ fn zoo_pow_neg_infinity() {
     let s = format!("{result}");
     eprintln!("zoo^(-oo) = {s}");
     assert!(
-        s == "0"
-            || s.contains("nan")
-            || s.contains("NaN")
-            || s.contains("zoo"),
+        s == "0" || s.contains("nan") || s.contains("NaN") || s.contains("zoo"),
         "zoo^(-oo) should be 0, nan, or unevaluated, got: {s}"
     );
 }
@@ -947,6 +932,7 @@ fn verify_canonical_accepts_infinity_atoms() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn summary_status_report() {
     let ctx = Context::new();
     let inf = ctx.infinity();
@@ -961,106 +947,26 @@ fn summary_status_report() {
 
     let cases: Vec<(&str, Box<dyn Fn() -> Ex>, &[&str])> = vec![
         // (label, expression_builder, acceptable_outputs)
-        (
-            "oo^2 = oo",
-            Box::new(|| inf.powi(2)),
-            &["oo"],
-        ),
-        (
-            "oo^(1/2) = oo",
-            Box::new(|| inf.pow(&half)),
-            &["oo"],
-        ),
-        (
-            "oo^(-1) = 0",
-            Box::new(|| inf.powi(-1)),
-            &["0"],
-        ),
-        (
-            "oo^(-2) = 0",
-            Box::new(|| inf.powi(-2)),
-            &["0"],
-        ),
-        (
-            "oo^(-1/2) = 0",
-            Box::new(|| inf.pow(&neg_half)),
-            &["0"],
-        ),
-        (
-            "(-oo)^2 = oo",
-            Box::new(|| neg_inf.powi(2)),
-            &["oo"],
-        ),
-        (
-            "(-oo)^3 = -oo",
-            Box::new(|| neg_inf.powi(3)),
-            &["-oo"],
-        ),
-        (
-            "(-oo)^(-1) = 0",
-            Box::new(|| neg_inf.powi(-1)),
-            &["0"],
-        ),
-        (
-            "(-oo)^(-2) = 0",
-            Box::new(|| neg_inf.powi(-2)),
-            &["0"],
-        ),
-        (
-            "(-oo)^(-3) = 0",
-            Box::new(|| neg_inf.powi(-3)),
-            &["0"],
-        ),
-        (
-            "zoo^2 = zoo",
-            Box::new(|| z.powi(2)),
-            &["zoo"],
-        ),
-        (
-            "zoo^(1/2) = zoo",
-            Box::new(|| z.pow(&half)),
-            &["zoo"],
-        ),
-        (
-            "zoo^(-1) = 0",
-            Box::new(|| z.powi(-1)),
-            &["0"],
-        ),
-        (
-            "zoo^(-2) = 0",
-            Box::new(|| z.powi(-2)),
-            &["0"],
-        ),
-        (
-            "zoo^(-1/2) = 0",
-            Box::new(|| z.pow(&neg_half)),
-            &["0"],
-        ),
-        (
-            "0^oo = 0",
-            Box::new(|| zero.pow(&inf)),
-            &["0"],
-        ),
-        (
-            "0^(-oo) = zoo",
-            Box::new(|| zero.pow(&neg_inf)),
-            &["zoo"],
-        ),
-        (
-            "0^zoo = nan",
-            Box::new(|| zero.pow(&z)),
-            &["nan", "NaN"],
-        ),
-        (
-            "oo^oo = oo",
-            Box::new(|| inf.pow(&inf)),
-            &["oo"],
-        ),
-        (
-            "oo^(-oo) = 0",
-            Box::new(|| inf.pow(&neg_inf)),
-            &["0"],
-        ),
+        ("oo^2 = oo", Box::new(|| inf.powi(2)), &["oo"]),
+        ("oo^(1/2) = oo", Box::new(|| inf.pow(&half)), &["oo"]),
+        ("oo^(-1) = 0", Box::new(|| inf.powi(-1)), &["0"]),
+        ("oo^(-2) = 0", Box::new(|| inf.powi(-2)), &["0"]),
+        ("oo^(-1/2) = 0", Box::new(|| inf.pow(&neg_half)), &["0"]),
+        ("(-oo)^2 = oo", Box::new(|| neg_inf.powi(2)), &["oo"]),
+        ("(-oo)^3 = -oo", Box::new(|| neg_inf.powi(3)), &["-oo"]),
+        ("(-oo)^(-1) = 0", Box::new(|| neg_inf.powi(-1)), &["0"]),
+        ("(-oo)^(-2) = 0", Box::new(|| neg_inf.powi(-2)), &["0"]),
+        ("(-oo)^(-3) = 0", Box::new(|| neg_inf.powi(-3)), &["0"]),
+        ("zoo^2 = zoo", Box::new(|| z.powi(2)), &["zoo"]),
+        ("zoo^(1/2) = zoo", Box::new(|| z.pow(&half)), &["zoo"]),
+        ("zoo^(-1) = 0", Box::new(|| z.powi(-1)), &["0"]),
+        ("zoo^(-2) = 0", Box::new(|| z.powi(-2)), &["0"]),
+        ("zoo^(-1/2) = 0", Box::new(|| z.pow(&neg_half)), &["0"]),
+        ("0^oo = 0", Box::new(|| zero.pow(&inf)), &["0"]),
+        ("0^(-oo) = zoo", Box::new(|| zero.pow(&neg_inf)), &["zoo"]),
+        ("0^zoo = nan", Box::new(|| zero.pow(&z)), &["nan", "NaN"]),
+        ("oo^oo = oo", Box::new(|| inf.pow(&inf)), &["oo"]),
+        ("oo^(-oo) = 0", Box::new(|| inf.pow(&neg_inf)), &["0"]),
     ];
 
     eprintln!("\n╔══════════════════════════════════════════════════════════════╗");

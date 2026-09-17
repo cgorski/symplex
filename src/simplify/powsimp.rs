@@ -24,7 +24,7 @@ use smallvec::SmallVec;
 
 /// Simplify powers: combine like bases in products, walking the full tree.
 ///
-/// At every `Mul` node the factors are decomposed via [`as_base_exp`]
+/// At every `Mul` node the factors are decomposed via [`as_base_exp`](crate::base::arena::Arena::as_base_exp)
 /// (extended to treat `exp(a)` as `E^a`), grouped by base, and
 /// exponents summed.  The result is rebuilt through the canonical
 /// constructors so all invariants are preserved.
@@ -142,19 +142,17 @@ fn powdenest_pow(arena: &mut Arena, original: ExprId, base: ExprId, exp: ExprId)
     };
 
     // Check safety: exponent must be integer, OR all factors nonneg.
-    let exp_is_integer = arena
-        .as_num(exp)
-        .is_some_and(|r| r.is_integer());
+    let exp_is_integer = arena.as_num(exp).is_some_and(|r| r.is_integer());
     let all_factors_nonneg = children.iter().all(|&c| {
         // A factor is nonneg if it's a positive rational number or a Pow
         // with a positive rational base (e.g., √5 = Pow(5, 1/2)).
         if let Some(r) = arena.as_num(c) {
             return !r.is_negative();
         }
-        if let ExprNode::Pow(inner_base, _) = arena.node(c) {
-            if let Some(r) = arena.as_num(*inner_base) {
-                return r.is_positive();
-            }
+        if let ExprNode::Pow(inner_base, _) = arena.node(c)
+            && let Some(r) = arena.as_num(*inner_base)
+        {
+            return r.is_positive();
         }
         false
     });
@@ -226,9 +224,7 @@ fn powsimp_base_mul(arena: &mut Arena, original: ExprId, children: &[ExprId]) ->
         let (base, exp) = extended_base_exp(arena, child);
 
         // Only group if the base is a nonneg rational number.
-        let base_is_nonneg_rational = arena
-            .as_num(base)
-            .is_some_and(|r| !r.is_negative());
+        let base_is_nonneg_rational = arena.as_num(base).is_some_and(|r| !r.is_negative());
 
         if !base_is_nonneg_rational {
             ungrouped.push(child);
@@ -408,7 +404,10 @@ mod tests {
 
         let result = powdenest(&mut a, expr);
         let s = display(&a, result);
-        assert!(s.contains("8"), "powdenest((x·2)³) should contain 8, got: {s}");
+        assert!(
+            s.contains("8"),
+            "powdenest((x·2)³) should contain 8, got: {s}"
+        );
     }
 
     // ── powsimp_base tests ─────────────────────────────────────────

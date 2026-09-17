@@ -362,7 +362,7 @@ fn thread_safety_8_threads_create_and_diff() {
                 let x = ctx.symbol(&format!("x{i}"));
                 let mut expr = x.clone();
                 for k in 1..=20 {
-                    expr = &expr + &ctx.int(k) * &x.powi(k as i64);
+                    expr = &expr + &ctx.int(k) * &x.powi(k);
                 }
                 let diff = expr.diff(&x);
                 let integ = expr.integrate(&x);
@@ -394,7 +394,7 @@ fn thread_safety_shared_symbol_concurrent_diff() {
             let barrier = barrier.clone();
             thread::spawn(move || {
                 barrier.wait();
-                let expr = &x.powi(i as i64 + 2) + &x * ctx.int(i + 1);
+                let expr = &x.powi(i + 2) + &x * ctx.int(i + 1);
                 let d = expr.diff(&x);
                 format!("{d}")
             })
@@ -620,9 +620,7 @@ fn serde_roundtrip_many_iterations() {
     }
     // Final round-trip should still match original display
     let final_ctx = Context::new();
-    let final_expr = final_ctx
-        .from_json(&current_json)
-        .expect("final from_json");
+    let final_expr = final_ctx.from_json(&current_json).expect("final from_json");
     let x_final = final_ctx.symbol("x");
     for &pt in &[0i64, 1, 2] {
         let v_orig = common::eval_at_i64(&expr, &x, pt);
@@ -769,10 +767,7 @@ fn cancel_x10_minus_1_over_x5_minus_1() {
     let elapsed = t0.elapsed();
     let s = format!("{cancelled}");
     eprintln!("[cancel] (x^10-1)/(x^5-1): {elapsed:?} → {s}");
-    assert!(
-        elapsed.as_secs() < 30,
-        "cancel took too long: {elapsed:?}"
-    );
+    assert!(elapsed.as_secs() < 30, "cancel took too long: {elapsed:?}");
 
     // Verify: should equal x^5 + 1 at various points (avoiding x=1 where denom=0)
     for &pt in &[0i64, 2, 3, -1, -2] {
@@ -1087,7 +1082,9 @@ fn compile_large_polynomial() {
             );
         }
     } else {
-        eprintln!("[compile_large_poly] compile returned None — expression may contain non-compilable constructs");
+        eprintln!(
+            "[compile_large_poly] compile returned None — expression may contain non-compilable constructs"
+        );
     }
 }
 
@@ -1236,9 +1233,7 @@ fn substitution_chain_100() {
 fn free_symbols_large_expression() {
     let ctx = Context::new();
     // Build expression with 50 different symbols
-    let symbols: Vec<Ex> = (0..50)
-        .map(|i| ctx.symbol(&format!("x{i}")))
-        .collect();
+    let symbols: Vec<Ex> = (0..50).map(|i| ctx.symbol(&format!("x{i}"))).collect();
     let mut expr = ctx.int(0);
     for (i, s) in symbols.iter().enumerate() {
         expr = &expr + &(s.powi(2) + ctx.int(i as i64));
@@ -1314,7 +1309,7 @@ fn thread_safety_concurrent_factor_cancel() {
                 );
                 // Cancelled should be x^(deg/2) + 1
                 let vc = common::eval_at_i64(&cancelled, &x, 2);
-                let expected = 2.0_f64.powi((deg / 2) as i32) + 1.0;
+                let expected = 2.0_f64.powi(deg / 2) + 1.0;
                 assert!(
                     common::approx_eq(vc, expected, 1e-6),
                     "thread {i}: cancel value at x=2: got {vc}, expected {expected}"

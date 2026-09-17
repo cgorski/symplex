@@ -340,7 +340,7 @@ pub(crate) fn poly_to_expr(arena: &mut Arena, poly: &Poly, var: ExprId) -> ExprI
     }
 }
 
-/// Convert a [`RationalFn`] (a rational function `p(var)/q(var)`) to an
+/// Convert a [`RationalFn`](crate::poly::ratfn::RationalFn) (a rational function `p(var)/q(var)`) to an
 /// arena expression.
 ///
 /// Uses [`poly_to_expr`] for both the numerator and denominator polynomials.

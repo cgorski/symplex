@@ -30,7 +30,10 @@ fn assert_exprs_equal_in_domain(a: &Ex, b: &Ex, var: &Ex, label: &str) {
             );
         }
     }
-    assert!(checked > 0, "{label}: no evaluation points succeeded — test is vacuous");
+    assert!(
+        checked > 0,
+        "{label}: no evaluation points succeeded — test is vacuous"
+    );
 }
 
 /// FTC check: d/dx(∫ f dx) should equal f, verified numerically.
@@ -60,7 +63,10 @@ fn assert_ftc_custom(integrand: &Ex, var: &Ex, label: &str) -> String {
             );
         }
     }
-    assert!(checked > 0, "FTC {label}: no evaluation points succeeded — test is vacuous");
+    assert!(
+        checked > 0,
+        "FTC {label}: no evaluation points succeeded — test is vacuous"
+    );
     s
 }
 
@@ -90,7 +96,10 @@ fn assert_ftc_domain(integrand: &Ex, var: &Ex, points: &[f64], tol: f64, label: 
             );
         }
     }
-    assert!(checked > 0, "FTC {label}: no evaluation points succeeded — test is vacuous");
+    assert!(
+        checked > 0,
+        "FTC {label}: no evaluation points succeeded — test is vacuous"
+    );
     s
 }
 
@@ -202,12 +211,7 @@ fn diff_higher_order_exp() {
     let f = x.exp();
     for n in 1..=6 {
         let dn = f.diff_n(&x, n);
-        assert_exprs_equal_in_domain(
-            &dn,
-            &f,
-            &x,
-            &format!("d^{n}/dx^{n} exp(x) = exp(x)"),
-        );
+        assert_exprs_equal_in_domain(&dn, &f, &x, &format!("d^{n}/dx^{n} exp(x) = exp(x)"));
     }
 }
 
@@ -550,7 +554,10 @@ fn definite_integral_x_squared_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
-    let val = result.eval().eval_f64().expect("definite integral should evaluate");
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("definite integral should evaluate");
     assert!(
         (val - 1.0 / 3.0).abs() < 1e-10,
         "∫₀¹ x² dx should be 1/3, got {val}"
@@ -563,7 +570,10 @@ fn definite_integral_sin_0_to_pi() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.sin().definite_integral(&x, &ctx.int(0), &ctx.pi());
-    let val = result.eval().eval_f64().expect("definite integral should evaluate");
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("definite integral should evaluate");
     assert!(
         (val - 2.0).abs() < 1e-10,
         "∫₀^π sin(x) dx should be 2, got {val}"
@@ -576,7 +586,10 @@ fn definite_integral_exp_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.exp().definite_integral(&x, &ctx.int(0), &ctx.int(1));
-    let val = result.eval().eval_f64().expect("definite integral should evaluate");
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("definite integral should evaluate");
     let expected = std::f64::consts::E - 1.0;
     assert!(
         (val - expected).abs() < 1e-10,
@@ -591,7 +604,10 @@ fn definite_integral_1_over_x_1_to_e() {
     let x = ctx.symbol("x");
     let integrand = &ctx.int(1) / &x;
     let result = integrand.definite_integral(&x, &ctx.int(1), &ctx.e());
-    let val = result.eval().eval_f64().expect("definite integral should evaluate");
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("definite integral should evaluate");
     assert!(
         (val - 1.0).abs() < 1e-10,
         "∫₁^e 1/x dx should be 1, got {val}"
@@ -645,12 +661,7 @@ fn integrate_linearity_constant_factor() {
     let x = ctx.symbol("x");
     let combined = (&ctx.int(5) * &x.sin()).integrate(&x);
     let separate = &ctx.int(5) * &x.sin().integrate(&x);
-    assert_exprs_equal_in_domain(
-        &combined,
-        &separate,
-        &x,
-        "constant factor in integration",
-    );
+    assert_exprs_equal_in_domain(&combined, &separate, &x, "constant factor in integration");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -725,10 +736,7 @@ fn limit_x_ln_x_at_0_from_right() {
     let result = expr.try_limit(&x, &ctx.int(0));
     if let Ok(r) = result {
         let val = r.eval_f64().expect("limit should be numeric");
-        assert!(
-            val.abs() < 1e-8,
-            "lim(x→0+) x*ln(x) should be 0, got {val}"
-        );
+        assert!(val.abs() < 1e-8, "lim(x→0+) x*ln(x) should be 0, got {val}");
     }
 }
 
@@ -750,11 +758,7 @@ fn limit_x_exp_neg_x_at_infinity() {
     let expr = &x * &(-&x).exp();
     let result = expr.try_limit(&x, &ctx.infinity());
     if let Ok(r) = result {
-        assert_eq!(
-            format!("{r}"),
-            "0",
-            "lim(x→∞) x·exp(-x) should be 0"
-        );
+        assert_eq!(format!("{r}"), "0", "lim(x→∞) x·exp(-x) should be 0");
     }
 }
 
@@ -1014,11 +1018,7 @@ fn series_convergence_exp() {
     for order in [3u32, 5, 7, 9] {
         let series = x.exp().maclaurin(&x, order);
         let expanded = series.expand().eval();
-        if let Ok(val) = expanded
-            .subs(&x, &ctx.rational(1, 2))
-            .eval()
-            .eval_f64()
-        {
+        if let Ok(val) = expanded.subs(&x, &ctx.rational(1, 2)).eval().eval_f64() {
             let err = (val - exact).abs();
             assert!(
                 err < prev_err,
@@ -1038,11 +1038,7 @@ fn series_convergence_sin() {
     for order in [3u32, 5, 7, 9] {
         let series = x.sin().maclaurin(&x, order);
         let expanded = series.expand().eval();
-        if let Ok(val) = expanded
-            .subs(&x, &ctx.rational(1, 2))
-            .eval()
-            .eval_f64()
-        {
+        if let Ok(val) = expanded.subs(&x, &ctx.rational(1, 2)).eval().eval_f64() {
             let err = (val - exact).abs();
             assert!(
                 err < prev_err,
@@ -1104,7 +1100,10 @@ fn series_exp_around_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = x.exp().series(&x, &ctx.int(1), 6);
-    assert!(!series.has_unevaluated(), "exp(x) series around 1 should work");
+    assert!(
+        !series.has_unevaluated(),
+        "exp(x) series around 1 should work"
+    );
     let expanded = series.expand().eval();
 
     // At x=1 (the expansion point): should be exactly e
@@ -1130,12 +1129,18 @@ fn series_ln_around_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let series = x.ln().series(&x, &ctx.int(1), 8);
-    assert!(!series.has_unevaluated(), "ln(x) series around 1 should work");
+    assert!(
+        !series.has_unevaluated(),
+        "ln(x) series around 1 should work"
+    );
     let expanded = series.expand().eval();
 
     // At x=1: ln(1) = 0
     let val = eval_series_at(&expanded, &x, 1, 1);
-    assert!(val.abs() < 1e-12, "ln(x) series at x=1 should be 0, got {val}");
+    assert!(
+        val.abs() < 1e-12,
+        "ln(x) series at x=1 should be 0, got {val}"
+    );
 
     // At x = 1.1: ln(1.1) ≈ 0.09531
     let val2 = eval_series_at(&expanded, &x, 11, 10);
@@ -1226,11 +1231,7 @@ fn limit_constant_is_constant() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = ctx.int(42).limit(&x, &ctx.int(0));
-    assert_eq!(
-        format!("{result}"),
-        "42",
-        "lim(x→0) 42 should be 42"
-    );
+    assert_eq!(format!("{result}"), "42", "lim(x→0) 42 should be 42");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1363,7 +1364,11 @@ fn diff_power_rule_fractional_exponent() {
     let df = f.diff(&x);
 
     // At x = 4: should be 1/(2*sqrt(4)) = 1/4 = 0.25
-    let val = df.subs(&x, &ctx.int(4)).eval().eval_f64().expect("should eval");
+    let val = df
+        .subs(&x, &ctx.int(4))
+        .eval()
+        .eval_f64()
+        .expect("should eval");
     assert!(
         (val - 0.25).abs() < 1e-10,
         "d/dx sqrt(x) at x=4 should be 0.25, got {val}"
@@ -1378,7 +1383,11 @@ fn diff_exponential_with_constant_base() {
     let f = ctx.int(2).pow(&x);
     let df = f.diff(&x);
 
-    let val = df.subs(&x, &ctx.int(1)).eval().eval_f64().expect("should eval");
+    let val = df
+        .subs(&x, &ctx.int(1))
+        .eval()
+        .eval_f64()
+        .expect("should eval");
     let expected = 2.0 * 2.0_f64.ln();
     assert!(
         (val - expected).abs() < 1e-9,
@@ -1400,10 +1409,7 @@ fn diff_x_to_the_x() {
     let got = df.subs(&x, &ctx.int(2)).eval().eval_f64();
     let want = expected.subs(&x, &ctx.int(2)).eval().eval_f64();
     if let (Ok(g), Ok(w)) = (got, want) {
-        assert!(
-            (g - w).abs() < 1e-6,
-            "d/dx x^x at x=2: got {g}, want {w}"
-        );
+        assert!((g - w).abs() < 1e-6, "d/dx x^x at x=2: got {g}, want {w}");
     }
 }
 
@@ -1422,14 +1428,8 @@ fn integrate_derivative_recovers_original_up_to_constant() {
     let antideriv = df.integrate(&x);
 
     // antideriv - f should be a constant (evaluate at two points, same value)
-    let diff_at_1 = (&antideriv - &f)
-        .subs(&x, &ctx.int(1))
-        .eval()
-        .eval_f64();
-    let diff_at_2 = (&antideriv - &f)
-        .subs(&x, &ctx.int(2))
-        .eval()
-        .eval_f64();
+    let diff_at_1 = (&antideriv - &f).subs(&x, &ctx.int(1)).eval().eval_f64();
+    let diff_at_2 = (&antideriv - &f).subs(&x, &ctx.int(2)).eval().eval_f64();
     if let (Ok(d1), Ok(d2)) = (diff_at_1, diff_at_2) {
         assert!(
             (d1 - d2).abs() < 1e-8,
@@ -1579,7 +1579,10 @@ fn definite_integral_symmetry_odd_function() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(3).definite_integral(&x, &ctx.int(-1), &ctx.int(1));
-    let val = result.eval().eval_f64().expect("definite integral should evaluate");
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("definite integral should evaluate");
     assert!(
         val.abs() < 1e-10,
         "∫₋₁¹ x³ dx should be 0 (odd function), got {val}"
@@ -1592,7 +1595,10 @@ fn definite_integral_symmetry_even_function() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(2).definite_integral(&x, &ctx.int(-1), &ctx.int(1));
-    let val = result.eval().eval_f64().expect("definite integral should evaluate");
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("definite integral should evaluate");
     assert!(
         (val - 2.0 / 3.0).abs() < 1e-10,
         "∫₋₁¹ x² dx should be 2/3, got {val}"
@@ -1780,13 +1786,7 @@ fn integrate_arcsin_x() {
         return;
     }
     // Domain: |x| < 1
-    assert_ftc_domain(
-        &integrand,
-        &x,
-        &[0.1, 0.3, 0.5, 0.7],
-        1e-7,
-        "∫arcsin(x) dx",
-    );
+    assert_ftc_domain(&integrand, &x, &[0.1, 0.3, 0.5, 0.7], 1e-7, "∫arcsin(x) dx");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1841,7 +1841,7 @@ fn series_exp_exact_coefficient_check() {
     let series = x.exp().maclaurin(&x, 7);
     let expanded = series.expand().eval();
     let val = eval_series_at(&expanded, &x, 1, 1);
-    let partial_sum: f64 = 1.0 + 1.0 + 0.5 + 1.0/6.0 + 1.0/24.0 + 1.0/120.0 + 1.0/720.0;
+    let partial_sum: f64 = 1.0 + 1.0 + 0.5 + 1.0 / 6.0 + 1.0 / 24.0 + 1.0 / 120.0 + 1.0 / 720.0;
     assert!(
         (val - partial_sum).abs() < 1e-12,
         "exp(x) order-7 series at x=1: got {val}, expected {partial_sum}"
@@ -1857,7 +1857,7 @@ fn series_sin_exact_coefficient_check() {
     let series = x.sin().maclaurin(&x, 8);
     let expanded = series.expand().eval();
     let val = eval_series_at(&expanded, &x, 1, 1);
-    let partial_sum: f64 = 1.0 - 1.0/6.0 + 1.0/120.0 - 1.0/5040.0;
+    let partial_sum: f64 = 1.0 - 1.0 / 6.0 + 1.0 / 120.0 - 1.0 / 5040.0;
     assert!(
         (val - partial_sum).abs() < 1e-10,
         "sin(x) order-8 series at x=1: got {val}, expected partial sum {partial_sum}"
@@ -1873,7 +1873,7 @@ fn series_cos_exact_coefficient_check() {
     let series = x.cos().maclaurin(&x, 7);
     let expanded = series.expand().eval();
     let val = eval_series_at(&expanded, &x, 1, 1);
-    let partial_sum: f64 = 1.0 - 0.5 + 1.0/24.0 - 1.0/720.0;
+    let partial_sum: f64 = 1.0 - 0.5 + 1.0 / 24.0 - 1.0 / 720.0;
     assert!(
         (val - partial_sum).abs() < 1e-10,
         "cos(x) order-7 series at x=1: got {val}, expected partial sum {partial_sum}"
@@ -1891,7 +1891,10 @@ fn definite_integral_1_over_1_plus_x2_0_to_1() {
     let x = ctx.symbol("x");
     let integrand = &ctx.int(1) / &(&x.powi(2) + 1);
     let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.int(1));
-    let val = result.eval().eval_f64().expect("definite integral should evaluate");
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("definite integral should evaluate");
     let expected = std::f64::consts::FRAC_PI_4;
     assert!(
         (val - expected).abs() < 1e-10,
@@ -1922,7 +1925,10 @@ fn definite_integral_cos_squared_0_to_pi() {
     let x = ctx.symbol("x");
     let integrand = x.cos().powi(2);
     let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.pi());
-    let val = result.eval().eval_f64().expect("definite integral should evaluate");
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("definite integral should evaluate");
     let expected = std::f64::consts::PI / 2.0;
     assert!(
         (val - expected).abs() < 1e-8,
@@ -1937,7 +1943,10 @@ fn definite_integral_sin_squared_0_to_pi() {
     let x = ctx.symbol("x");
     let integrand = x.sin().powi(2);
     let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.pi());
-    let val = result.eval().eval_f64().expect("definite integral should evaluate");
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("definite integral should evaluate");
     let expected = std::f64::consts::PI / 2.0;
     assert!(
         (val - expected).abs() < 1e-8,
@@ -1951,7 +1960,10 @@ fn definite_integral_x_squared_neg1_to_2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.powi(2).definite_integral(&x, &ctx.int(-1), &ctx.int(2));
-    let val = result.eval().eval_f64().expect("definite integral should evaluate");
+    let val = result
+        .eval()
+        .eval_f64()
+        .expect("definite integral should evaluate");
     assert!(
         (val - 3.0).abs() < 1e-10,
         "∫₋₁² x² dx should be 3, got {val}"
@@ -2121,7 +2133,7 @@ fn limit_sin_ax_over_sin_bx_at_0() {
     if let Ok(r) = result {
         let val = r.eval_f64().expect("limit should evaluate");
         assert!(
-            (val - 2.0/3.0).abs() < 1e-8,
+            (val - 2.0 / 3.0).abs() < 1e-8,
             "lim(x→0) sin(2x)/sin(3x) should be 2/3, got {val}"
         );
     }
@@ -2384,13 +2396,7 @@ fn integrate_x_ln_x() {
     if s.contains("Integral") {
         return;
     }
-    assert_ftc_domain(
-        &integrand,
-        &x,
-        &[0.5, 1.0, 1.5, 2.0],
-        1e-7,
-        "∫x·ln(x) dx",
-    );
+    assert_ftc_domain(&integrand, &x, &[0.5, 1.0, 1.5, 2.0], 1e-7, "∫x·ln(x) dx");
 }
 
 #[test]
@@ -2551,8 +2557,16 @@ fn diff_of_exp_a_x_is_a_exp_a_x() {
     let expected = &a * &(&a * &x).exp();
 
     // Check at (a, x) = (2, 1): expected = 2*exp(2)
-    let got = df.subs(&a, &ctx.int(2)).subs(&x, &ctx.int(1)).eval().eval_f64();
-    let want = expected.subs(&a, &ctx.int(2)).subs(&x, &ctx.int(1)).eval().eval_f64();
+    let got = df
+        .subs(&a, &ctx.int(2))
+        .subs(&x, &ctx.int(1))
+        .eval()
+        .eval_f64();
+    let want = expected
+        .subs(&a, &ctx.int(2))
+        .subs(&x, &ctx.int(1))
+        .eval()
+        .eval_f64();
     if let (Ok(g), Ok(w)) = (got, want) {
         assert!(
             (g - w).abs() < 1e-8,
@@ -2571,8 +2585,16 @@ fn diff_of_sin_a_x_is_a_cos_a_x() {
     let df = f.diff(&x);
     let expected = &a * &(&a * &x).cos();
 
-    let got = df.subs(&a, &ctx.int(3)).subs(&x, &ctx.int(1)).eval().eval_f64();
-    let want = expected.subs(&a, &ctx.int(3)).subs(&x, &ctx.int(1)).eval().eval_f64();
+    let got = df
+        .subs(&a, &ctx.int(3))
+        .subs(&x, &ctx.int(1))
+        .eval()
+        .eval_f64();
+    let want = expected
+        .subs(&a, &ctx.int(3))
+        .subs(&x, &ctx.int(1))
+        .eval()
+        .eval_f64();
     if let (Ok(g), Ok(w)) = (got, want) {
         assert!(
             (g - w).abs() < 1e-8,
@@ -3081,13 +3103,7 @@ fn integrate_x_over_x_plus_1_squared() {
     if s.contains("Integral") {
         return;
     }
-    assert_ftc_domain(
-        &integrand,
-        &x,
-        &[0.5, 1.0, 2.0, 3.0],
-        1e-7,
-        "∫x/(x+1)² dx",
-    );
+    assert_ftc_domain(&integrand, &x, &[0.5, 1.0, 2.0, 3.0], 1e-7, "∫x/(x+1)² dx");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3188,7 +3204,11 @@ fn diff_of_x_to_negative_fraction() {
     let f = x.pow(&ctx.rational(-1, 2));
     let df = f.diff(&x);
     // At x = 4: (-1/2) * 4^(-3/2) = (-1/2) * (1/8) = -1/16 = -0.0625
-    let val = df.subs(&x, &ctx.int(4)).eval().eval_f64().expect("should eval");
+    let val = df
+        .subs(&x, &ctx.int(4))
+        .eval()
+        .eval_f64()
+        .expect("should eval");
     assert!(
         (val - (-0.0625)).abs() < 1e-10,
         "d/dx x^(-1/2) at x=4 should be -0.0625, got {val}"
@@ -3203,9 +3223,13 @@ fn diff_of_rational_power() {
     let f = x.pow(&ctx.rational(2, 3));
     let df = f.diff(&x);
     // At x = 8: (2/3) * 8^(-1/3) = (2/3) * (1/2) = 1/3 ≈ 0.3333
-    let val = df.subs(&x, &ctx.int(8)).eval().eval_f64().expect("should eval");
+    let val = df
+        .subs(&x, &ctx.int(8))
+        .eval()
+        .eval_f64()
+        .expect("should eval");
     assert!(
-        (val - 1.0/3.0).abs() < 1e-9,
+        (val - 1.0 / 3.0).abs() < 1e-9,
         "d/dx x^(2/3) at x=8 should be 1/3, got {val}"
     );
 }
@@ -3218,8 +3242,16 @@ fn diff_second_derivative_of_arctan() {
     let d2 = x.atan().diff_n(&x, 2);
     let expected = &(&ctx.int(-2) * &x) / &(&x.powi(2) + 1).powi(2);
     // At x = 1: -2/(1+1)² = -2/4 = -0.5
-    let got = d2.subs(&x, &ctx.int(1)).eval().eval_f64().expect("should eval");
-    let want = expected.subs(&x, &ctx.int(1)).eval().eval_f64().expect("should eval");
+    let got = d2
+        .subs(&x, &ctx.int(1))
+        .eval()
+        .eval_f64()
+        .expect("should eval");
+    let want = expected
+        .subs(&x, &ctx.int(1))
+        .eval()
+        .eval_f64()
+        .expect("should eval");
     assert!(
         (got - want).abs() < 1e-9,
         "d²/dx²(arctan(x)) at x=1: got {got}, want {want}"
@@ -3270,7 +3302,9 @@ fn definite_integral_reversal() {
     assert!(
         (v_fwd + v_bwd).abs() < 1e-10,
         "∫₀¹ x² dx + ∫₁⁰ x² dx should be 0: got {} + {} = {}",
-        v_fwd, v_bwd, v_fwd + v_bwd
+        v_fwd,
+        v_bwd,
+        v_fwd + v_bwd
     );
 }
 
@@ -3308,7 +3342,8 @@ fn series_sin_has_no_even_power_terms() {
     assert!(
         (val_pos + val_neg).abs() < 1e-12,
         "sin(x) series should be odd: s(0.5)={val_pos}, s(-0.5)={val_neg}, \
-         sum={}", val_pos + val_neg
+         sum={}",
+        val_pos + val_neg
     );
 }
 
@@ -3324,7 +3359,8 @@ fn series_cos_has_no_odd_power_terms() {
     assert!(
         (val_pos - val_neg).abs() < 1e-12,
         "cos(x) series should be even: s(0.5)={val_pos}, s(-0.5)={val_neg}, \
-         diff={}", val_pos - val_neg
+         diff={}",
+        val_pos - val_neg
     );
 }
 
@@ -3386,10 +3422,7 @@ fn limit_1_over_1_plus_exp_neg_x_at_neg_infinity() {
     let result = expr.try_limit(&x, &ctx.neg_infinity());
     if let Ok(r) = result {
         let val = r.eval_f64().expect("limit should evaluate");
-        assert!(
-            val.abs() < 1e-8,
-            "lim(x→-∞) sigmoid should be 0, got {val}"
-        );
+        assert!(val.abs() < 1e-8, "lim(x→-∞) sigmoid should be 0, got {val}");
     }
 }
 

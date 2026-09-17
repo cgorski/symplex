@@ -15,7 +15,7 @@
 //!
 //! # References
 //!
-//! - Bronstein, *Symbolic Integration I*, §2.3–2.5 (generalized to k[θ] for k = ℚ(x))
+//! - Bronstein, *Symbolic Integration I*, §2.3–2.5 (generalized to k\[θ\] for k = ℚ(x))
 //! - The algorithms are identical to the base-level versions but operate on
 //!   `GenPoly<RationalFn>` instead of `Poly<Ratio<BigInt>>`.
 

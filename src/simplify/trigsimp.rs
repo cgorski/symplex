@@ -6,7 +6,7 @@
 //!
 //! Multiple strategies are attempted (choice-set approach) and the
 //! result with the fewest operations (measured by
-//! [`count_ops`](crate::simplify::simplify_engine::count_ops)) is returned.
+//! [`count_ops`]) is returned.
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};

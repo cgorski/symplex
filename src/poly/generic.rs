@@ -482,10 +482,7 @@ impl<C: Field> GenPoly<C> {
     ///
     /// Assumes `deg(a) >= deg(b)`.  If not, the arguments are swapped
     /// internally.
-    pub fn euclidean_prs(
-        a: &Self,
-        b: &Self,
-    ) -> std::collections::BTreeMap<usize, Self> {
+    pub fn euclidean_prs(a: &Self, b: &Self) -> std::collections::BTreeMap<usize, Self> {
         let mut prs = std::collections::BTreeMap::new();
 
         if a.is_zero() || b.is_zero() {

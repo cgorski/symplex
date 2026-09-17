@@ -76,7 +76,10 @@ fn perf_analysis_all() {
     println!();
     println!("══════════════════════════════════════════════════════════════════════════");
     println!("  PERFORMANCE ANALYSIS: Does 10× iteration in .simplify() matter?");
-    println!("  Mode: --release    Iterations per measurement: {}", ITERATIONS);
+    println!(
+        "  Mode: --release    Iterations per measurement: {}",
+        ITERATIONS
+    );
     println!("══════════════════════════════════════════════════════════════════════════");
 
     // ═══════════════════════════════════════════════════════════════════
@@ -218,17 +221,17 @@ fn perf_analysis_all() {
         divider("2a. Eigenvalues of 3×3 integer matrix");
         {
             let lambda = ctx.symbol("lambda");
-            let m = symplex::matrix![ctx,
-                [1, 2, 0],
-                [0, 3, 1],
-                [2, 0, 4]
-            ];
+            let m = symplex::matrix![ctx, [1, 2, 0], [0, 3, 1], [2, 0, 4]];
 
             match m.eigenvals(&lambda) {
                 Ok(vals) => {
                     for (i, v) in vals.iter().enumerate() {
                         let s = format!("{v}");
-                        let display = if s.len() > 70 { format!("{}...", &s[..67]) } else { s };
+                        let display = if s.len() > 70 {
+                            format!("{}...", &s[..67])
+                        } else {
+                            s
+                        };
                         println!("  lambda_{} = {}", i + 1, display);
                     }
                 }
@@ -244,12 +247,7 @@ fn perf_analysis_all() {
         // 2b. Determinant of 4×4 integer matrix
         divider("2b. Determinant of 4×4 integer matrix");
         {
-            let m = symplex::matrix![ctx,
-                [2, 1, 3, 1],
-                [1, 0, 2, 1],
-                [3, 2, 1, 0],
-                [1, 1, 0, 2]
-            ];
+            let m = symplex::matrix![ctx, [2, 1, 3, 1], [1, 0, 2, 1], [3, 2, 1, 0], [1, 1, 0, 2]];
 
             let det = m.det().unwrap().eval();
             println!("  det = {det}");
@@ -264,11 +262,12 @@ fn perf_analysis_all() {
         divider("2c. Determinant of 4×4 symbolic matrix");
         {
             symplex::syms!(ctx; a, b, c, d);
-            let m = symplex::matrix![ctx,
-                [a + 1, b,     c,     0    ],
-                [b,     a - 1, 0,     d    ],
-                [c,     0,     a + 2, b    ],
-                [0,     d,     b,     a - 2]
+            let m = symplex::matrix![
+                ctx,
+                [a + 1, b, c, 0],
+                [b, a - 1, 0, d],
+                [c, 0, a + 2, b],
+                [0, d, b, a - 2]
             ];
 
             match m.det() {
@@ -288,11 +287,7 @@ fn perf_analysis_all() {
         // 2d. Inverse of 3×3
         divider("2d. Inverse of 3×3 integer matrix");
         {
-            let m = symplex::matrix![ctx,
-                [1, 2, 3],
-                [0, 1, 4],
-                [5, 6, 0]
-            ];
+            let m = symplex::matrix![ctx, [1, 2, 3], [0, 1, 4], [5, 6, 0]];
 
             match m.inv() {
                 Ok(mi) => println!("  inv[0][0] = {}", mi.get(0, 0)),
@@ -308,11 +303,7 @@ fn perf_analysis_all() {
         // 2e. Inverse + multiply round-trip
         divider("2e. Full round-trip: inv(3×3) then A * A^-1");
         {
-            let m = symplex::matrix![ctx,
-                [2, 1, 0],
-                [1, 3, 2],
-                [0, 2, 4]
-            ];
+            let m = symplex::matrix![ctx, [2, 1, 0], [1, 3, 2], [0, 2, 4]];
 
             let avg = bench(|| {
                 let mi = m.inv().unwrap();
@@ -420,7 +411,10 @@ fn perf_analysis_all() {
 
             report(".eval().simplify()      on (3x+2).subs(x,5)", avg_simplify);
             report(".eval().simplify() on (3x+2).subs(x,5)", avg_full);
-            println!("  => Ratio full/simple: {}", ratio_str(avg_simplify, avg_full));
+            println!(
+                "  => Ratio full/simple: {}",
+                ratio_str(avg_simplify, avg_full)
+            );
         }
     }
 
@@ -446,9 +440,15 @@ fn perf_analysis_all() {
         {
             let expr = &x.sin().powi(2) + &x.cos().powi(2);
 
-            let avg_simplify = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_smart    = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full     = bench(|| { let _ = black_box(expr.simplify()); });
+            let avg_simplify = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_smart = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_full = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
 
             report("symplex .simplify()", avg_simplify);
             report("symplex .simplify()", avg_smart);
@@ -472,11 +472,17 @@ fn perf_analysis_all() {
         divider("x^3 + 2x + 1");
         {
             let expr = &x.powi(3) + &x * 2 + 1;
-            let avg = bench(|| { let _ = black_box(expr.simplify()); });
+            let avg = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
             report("symplex .simplify()", avg);
             let ms = avg.as_nanos() as f64 / 1_000_000.0;
             if ms > 0.0 {
-                println!("  => vs SymPy ~5-20 ms: symplex is {:.0}x-{:.0}x faster", 5.0 / ms, 20.0 / ms);
+                println!(
+                    "  => vs SymPy ~5-20 ms: symplex is {:.0}x-{:.0}x faster",
+                    5.0 / ms,
+                    20.0 / ms
+                );
             }
         }
 
@@ -485,11 +491,17 @@ fn perf_analysis_all() {
         {
             symplex::syms!(ctx; y);
             let ode = expr!(ctx, diff(y, x) + 2 * y);
-            let avg = bench(|| { let _ = black_box(ode.solve_ode(&y, &x)); });
+            let avg = bench(|| {
+                let _ = black_box(ode.solve_ode(&y, &x));
+            });
             report("symplex solve_ode(y' + 2y = 0)", avg);
             let ms = avg.as_nanos() as f64 / 1_000_000.0;
             if ms > 0.0 {
-                println!("  => vs SymPy dsolve ~50-200 ms: symplex is {:.0}x-{:.0}x faster", 50.0 / ms, 200.0 / ms);
+                println!(
+                    "  => vs SymPy dsolve ~50-200 ms: symplex is {:.0}x-{:.0}x faster",
+                    50.0 / ms,
+                    200.0 / ms
+                );
             }
         }
     }
@@ -519,13 +531,24 @@ fn perf_analysis_all() {
             let ctx = Context::new();
             let x = ctx.symbol("x");
             println!("  Expression: {x}");
-            let avg_smart = bench(|| { let _ = black_box(x.simplify()); });
-            let avg_simp  = bench(|| { let _ = black_box(x.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(x.simplify()); });
+            let avg_smart = bench(|| {
+                let _ = black_box(x.simplify());
+            });
+            let avg_simp = bench(|| {
+                let _ = black_box(x.simplify());
+            });
+            let avg_full = bench(|| {
+                let _ = black_box(x.simplify());
+            });
             report("smart_simplify(x)", avg_smart);
             report("simplify(x)", avg_simp);
             report("full_simplify(x)", avg_full);
-            rows.push(Row { label: "x (atom)", smart: avg_smart, simp: avg_simp, full: avg_full });
+            rows.push(Row {
+                label: "x (atom)",
+                smart: avg_smart,
+                simp: avg_simp,
+                full: avg_full,
+            });
         }
 
         // 5b. Polynomial
@@ -535,13 +558,24 @@ fn perf_analysis_all() {
             let x = ctx.symbol("x");
             let expr = &x.powi(3) + &x * 2 + 1;
             println!("  Expression: {expr}");
-            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
+            let avg_smart = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_simp = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_full = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
-            rows.push(Row { label: "x^3+2x+1 (poly)", smart: avg_smart, simp: avg_simp, full: avg_full });
+            rows.push(Row {
+                label: "x^3+2x+1 (poly)",
+                smart: avg_smart,
+                simp: avg_simp,
+                full: avg_full,
+            });
         }
 
         // 5c. Trig identity
@@ -554,13 +588,24 @@ fn perf_analysis_all() {
             println!("  smart_simplify -> {}", expr.simplify());
             println!("  simplify       -> {}", expr.simplify());
             println!("  full_simplify  -> {}", expr.simplify());
-            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
+            let avg_smart = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_simp = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_full = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
-            rows.push(Row { label: "sin^2+cos^2 (trig)", smart: avg_smart, simp: avg_simp, full: avg_full });
+            rows.push(Row {
+                label: "sin^2+cos^2 (trig)",
+                smart: avg_smart,
+                simp: avg_simp,
+                full: avg_full,
+            });
         }
 
         // 5d. Complex cleanup: (3 + 2*i) - 2*i
@@ -571,13 +616,24 @@ fn perf_analysis_all() {
             let expr = &(&ctx.int(3) + &(&i_val * 2)) - &(&i_val * 2);
             println!("  Expression: {expr}");
             println!("  full_simplify -> {}", expr.simplify());
-            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
+            let avg_smart = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_simp = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_full = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
-            rows.push(Row { label: "3+2i-2i (cleanup)", smart: avg_smart, simp: avg_simp, full: avg_full });
+            rows.push(Row {
+                label: "3+2i-2i (cleanup)",
+                smart: avg_smart,
+                simp: avg_simp,
+                full: avg_full,
+            });
         }
 
         // 5e. Exp/Ln: e^(ln(x))
@@ -588,13 +644,24 @@ fn perf_analysis_all() {
             let expr = x.ln().exp();
             println!("  Expression: {expr}");
             println!("  full_simplify -> {}", expr.simplify());
-            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
+            let avg_smart = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_simp = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_full = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
-            rows.push(Row { label: "e^(ln(x)) (exp)", smart: avg_smart, simp: avg_simp, full: avg_full });
+            rows.push(Row {
+                label: "e^(ln(x)) (exp)",
+                smart: avg_smart,
+                simp: avg_simp,
+                full: avg_full,
+            });
         }
 
         // 5f. Algebraic: (x+1)^2 - x^2 - 2x
@@ -605,13 +672,24 @@ fn perf_analysis_all() {
             let expr = &(&x + 1).powi(2) - &x.powi(2) - &x * 2;
             println!("  Expression: {expr}");
             println!("  full_simplify -> {}", expr.simplify());
-            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
+            let avg_smart = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_simp = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_full = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
-            rows.push(Row { label: "(x+1)^2-x^2-2x", smart: avg_smart, simp: avg_simp, full: avg_full });
+            rows.push(Row {
+                label: "(x+1)^2-x^2-2x",
+                smart: avg_smart,
+                simp: avg_simp,
+                full: avg_full,
+            });
         }
 
         // 5g. Pythagorean + constant
@@ -622,22 +700,41 @@ fn perf_analysis_all() {
             let expr = &(&x.sin().powi(2) + &x.cos().powi(2)) + 5;
             println!("  Expression: {expr}");
             println!("  full_simplify -> {}", expr.simplify());
-            let avg_smart = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_simp  = bench(|| { let _ = black_box(expr.simplify()); });
-            let avg_full  = bench(|| { let _ = black_box(expr.simplify()); });
+            let avg_smart = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_simp = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
+            let avg_full = bench(|| {
+                let _ = black_box(expr.simplify());
+            });
             report("smart_simplify()", avg_smart);
             report("simplify()", avg_simp);
             report("full_simplify()", avg_full);
-            rows.push(Row { label: "sin^2+cos^2+5", smart: avg_smart, simp: avg_simp, full: avg_full });
+            rows.push(Row {
+                label: "sin^2+cos^2+5",
+                smart: avg_smart,
+                simp: avg_simp,
+                full: avg_full,
+            });
         }
     }
 
     // Summary table
     println!();
-    println!("  +---------------------------+--------------+--------------+--------------+----------+");
-    println!("  | Expression                | smart_simp   | simplify     | full_simp    | ratio    |");
-    println!("  |                           |              |              | (iterated)   | full/smt |");
-    println!("  +---------------------------+--------------+--------------+--------------+----------+");
+    println!(
+        "  +---------------------------+--------------+--------------+--------------+----------+"
+    );
+    println!(
+        "  | Expression                | smart_simp   | simplify     | full_simp    | ratio    |"
+    );
+    println!(
+        "  |                           |              |              | (iterated)   | full/smt |"
+    );
+    println!(
+        "  +---------------------------+--------------+--------------+--------------+----------+"
+    );
     for r in &rows {
         let ratio = ratio_str(r.smart, r.full);
         println!(
@@ -649,7 +746,9 @@ fn perf_analysis_all() {
             ratio,
         );
     }
-    println!("  +---------------------------+--------------+--------------+--------------+----------+");
+    println!(
+        "  +---------------------------+--------------+--------------+--------------+----------+"
+    );
 
     // ═══════════════════════════════════════════════════════════════════
     // 6. THE VERDICT: simulating the actual ODE workload
@@ -686,7 +785,10 @@ fn perf_analysis_all() {
             }
         }
         let elapsed = start.elapsed();
-        println!("  Total for 500 subs+eval+simplify:      {}", fmt_duration(elapsed));
+        println!(
+            "  Total for 500 subs+eval+simplify:      {}",
+            fmt_duration(elapsed)
+        );
         elapsed
     };
 
@@ -716,7 +818,10 @@ fn perf_analysis_all() {
             }
         }
         let elapsed = start.elapsed();
-        println!("  Total for 500 subs+eval+full_simplify: {}", fmt_duration(elapsed));
+        println!(
+            "  Total for 500 subs+eval+full_simplify: {}",
+            fmt_duration(elapsed)
+        );
         elapsed
     };
 
@@ -768,10 +873,21 @@ fn perf_analysis_all() {
     println!("  Measured workload: 500 calls to subs+eval+[simplify variant]");
     println!("  (simulates an ODE solver doing ~100 simplify calls across 5 exprs)");
     println!();
-    println!("    simplify() total:      {:>12}  ({:.3} ms)", fmt_duration(total_a), total_a_ms);
-    println!("    full_simplify() total: {:>12}  ({:.3} ms)", fmt_duration(total_b), total_b_ms);
+    println!(
+        "    simplify() total:      {:>12}  ({:.3} ms)",
+        fmt_duration(total_a),
+        total_a_ms
+    );
+    println!(
+        "    full_simplify() total: {:>12}  ({:.3} ms)",
+        fmt_duration(total_b),
+        total_b_ms
+    );
     println!("    Ratio (full/simple):   {:.2}x", ratio_ab);
-    println!("    Absolute difference:   {:.3} ms for 500 calls", delta_ms.abs());
+    println!(
+        "    Absolute difference:   {:.3} ms for 500 calls",
+        delta_ms.abs()
+    );
     if delta_ms > 0.0 {
         println!("    Per-call overhead:     {:.3} ms", delta_ms / 500.0);
     }
@@ -787,16 +903,28 @@ fn perf_analysis_all() {
 
     if total_b_ms < 100.0 {
         println!("  VERDICT: The 10x theoretical slowdown is IMPERCEPTIBLE.");
-        println!("           {:.1} ms total for 500 calls is below human perception.", total_b_ms);
+        println!(
+            "           {:.1} ms total for 500 calls is below human perception.",
+            total_b_ms
+        );
     } else if total_b_ms < 1000.0 {
         println!("  VERDICT: The 10x theoretical slowdown is NEGLIGIBLE.");
-        println!("           {:.1} ms total for 500 calls is under 1 second.", total_b_ms);
+        println!(
+            "           {:.1} ms total for 500 calls is under 1 second.",
+            total_b_ms
+        );
     } else if total_b_ms < 5000.0 {
         println!("  VERDICT: The 10x theoretical slowdown is ACCEPTABLE.");
-        println!("           {:.1} ms total fits within typical ODE solve budget.", total_b_ms);
+        println!(
+            "           {:.1} ms total fits within typical ODE solve budget.",
+            total_b_ms
+        );
     } else {
         println!("  VERDICT: The 10x theoretical slowdown MAY BE NOTICEABLE.");
-        println!("           {:.1} ms total -- consider profiling hotspots.", total_b_ms);
+        println!(
+            "           {:.1} ms total -- consider profiling hotspots.",
+            total_b_ms
+        );
     }
 
     println!();

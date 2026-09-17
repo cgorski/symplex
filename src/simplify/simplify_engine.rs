@@ -193,12 +193,7 @@ fn update_best(arena: &Arena, best: &mut ExprId, best_ops: &mut usize, candidate
 ///
 /// Used for Strategy 1 (eval) so that canonical forms like `-sin(x)` win
 /// over `sin(-x)` even when they have the same number of operations.
-fn update_best_or_equal(
-    arena: &Arena,
-    best: &mut ExprId,
-    best_ops: &mut usize,
-    candidate: ExprId,
-) {
+fn update_best_or_equal(arena: &Arena, best: &mut ExprId, best_ops: &mut usize, candidate: ExprId) {
     let ops = count_ops(arena, candidate);
     if ops <= *best_ops && candidate != *best {
         *best = candidate;
@@ -569,17 +564,12 @@ pub(crate) fn unified_simplify(
                 max_ops,
                 "unified_simplify: global bloat guard triggered, stopping"
             );
-            return SimplifyResult {
-                expr: current,
-            };
+            return SimplifyResult { expr: current };
         }
 
         // Cycle detection: stop if we've seen this expression before.
         if !seen.insert(next) {
-            tracing::debug!(
-                iteration = i,
-                "unified_simplify: cycle detected, stopping"
-            );
+            tracing::debug!(iteration = i, "unified_simplify: cycle detected, stopping");
             // Return the better of current vs next (in case the cycle
             // revisits the optimal form).
             let best = if next_ops <= count_ops(arena, current) {
@@ -587,31 +577,20 @@ pub(crate) fn unified_simplify(
             } else {
                 current
             };
-            return SimplifyResult {
-                expr: best,
-            };
+            return SimplifyResult { expr: best };
         }
 
         // Fixpoint: expression didn't change.
         if next == current {
-            tracing::debug!(
-                iteration = i,
-                "unified_simplify: fixpoint reached"
-            );
-            return SimplifyResult {
-                expr: current,
-            };
+            tracing::debug!(iteration = i, "unified_simplify: fixpoint reached");
+            return SimplifyResult { expr: current };
         }
 
         current = next;
     }
 
-    tracing::debug!(
-        "unified_simplify: max iterations reached"
-    );
-    SimplifyResult {
-        expr: current,
-    }
+    tracing::debug!("unified_simplify: max iterations reached");
+    SimplifyResult { expr: current }
 }
 
 /// Legacy wrapper — iterates `smart_simplify` to fixpoint with default options.
@@ -619,8 +598,6 @@ pub(crate) fn unified_simplify(
 pub(crate) fn full_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     unified_simplify(arena, expr, &SimplifyOpts::default()).expr
 }
-
-
 
 #[cfg(test)]
 mod tests {

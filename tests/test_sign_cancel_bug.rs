@@ -16,11 +16,7 @@ fn check_linearity(a: &Ex, b: &Ex, x: &Ex) -> Option<String> {
     let sum_diffs = &diff_a + &diff_b;
     let difference = &diff_sum - &sum_diffs;
     let s = format!("{difference}");
-    if s == "0" {
-        None
-    } else {
-        Some(s)
-    }
+    if s == "0" { None } else { Some(s) }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -83,7 +79,11 @@ fn repro_abs_x_plus_neg_abs_x() {
     let d_sum = sum.diff(&x);
     println!("d/dx(|x| + (-|x|)) = {d_sum}");
 
-    assert_eq!(format!("{sum_diffs}"), "0", "sign(x) + (-sign(x)) should cancel");
+    assert_eq!(
+        format!("{sum_diffs}"),
+        "0",
+        "sign(x) + (-sign(x)) should cancel"
+    );
     assert_eq!(format!("{d_sum}"), "0");
 }
 
@@ -146,7 +146,10 @@ fn sign_nodes_are_deduplicated() {
     let s2 = format!("{d2}");
     println!("d1 = {s1}");
     println!("d2 = {s2}");
-    assert_eq!(s1, s2, "Two diff(abs(x)) calls should produce identical results");
+    assert_eq!(
+        s1, s2,
+        "Two diff(abs(x)) calls should produce identical results"
+    );
 
     // Now check they cancel
     let diff = &d1 - &d2;
@@ -390,11 +393,7 @@ fn sign_cancellation_after_add() {
     let neg_sign_via_mul = &sign_x * &ctx.int(-1);
     let sum2 = &sign_x + &neg_sign_via_mul;
     println!("sign(x) + sign(x)*(-1) = {sum2}");
-    assert_eq!(
-        format!("{sum2}"),
-        "0",
-        "sign(x) + (-1)*sign(x) should be 0"
-    );
+    assert_eq!(format!("{sum2}"), "0", "sign(x) + (-1)*sign(x) should be 0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

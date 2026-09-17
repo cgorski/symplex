@@ -141,7 +141,10 @@ fn sort_key_different_symbols_different_keys() {
     // If sort keys were the same, we'd get wrong canonicalization.
     // The expression should contain both x and y.
     let s = fmt(&sum_x_first);
-    assert!(s.contains('x') && s.contains('y'), "sum should contain both symbols: {s}");
+    assert!(
+        s.contains('x') && s.contains('y'),
+        "sum should contain both symbols: {s}"
+    );
 }
 
 #[test]
@@ -188,8 +191,14 @@ fn sort_key_complex_expression_different_build_orders() {
     let s2 = fmt(&expr2);
     let s3 = fmt(&expr3);
 
-    assert_eq!(s1, s2, "sin(x)+x^2+3 built in different orders should match: '{s1}' vs '{s2}'");
-    assert_eq!(s2, s3, "same expression, third build order: '{s2}' vs '{s3}'");
+    assert_eq!(
+        s1, s2,
+        "sin(x)+x^2+3 built in different orders should match: '{s1}' vs '{s2}'"
+    );
+    assert_eq!(
+        s2, s3,
+        "same expression, third build order: '{s2}' vs '{s3}'"
+    );
 }
 
 #[test]
@@ -215,7 +224,7 @@ fn sort_key_constants_ordering() {
     // Pi, E, and i should have distinct canonical forms
     let ctx = Context::new();
     let pi = ctx.pi();
-    let e = ctx.symbol("e"); // Note: ctx.e() may not exist, use a real constant if available
+    let _e = ctx.symbol("e"); // Note: ctx.e() may not exist, use a real constant if available
     let i_unit = ctx.i_unit();
 
     let s_pi = fmt(&pi);
@@ -237,7 +246,10 @@ fn sort_key_add_with_negation() {
     // These should be equivalent after canonicalization
     let s1 = fmt(&expr1);
     let s2 = fmt(&expr2);
-    assert_eq!(s1, s2, "x-y and -y+x should canonicalize identically: '{s1}' vs '{s2}'");
+    assert_eq!(
+        s1, s2,
+        "x-y and -y+x should canonicalize identically: '{s1}' vs '{s2}'"
+    );
 }
 
 #[test]
@@ -289,7 +301,7 @@ fn sort_key_number_vs_symbol_ordering() {
     let two = ctx.int(2);
 
     let sum = &x + &two;
-    let s = fmt(&sum);
+    let _s = fmt(&sum);
 
     // The canonical form should be deterministic
     // According to sort_key.rs, RANK_NUM=0 < RANK_SYMBOL=20
@@ -297,7 +309,11 @@ fn sort_key_number_vs_symbol_ordering() {
     // (or the number is collected as a coefficient).
     // Just verify it's deterministic:
     let sum2 = &two + &x;
-    assert_eq!(fmt(&sum), fmt(&sum2), "number+symbol order should be canonical");
+    assert_eq!(
+        fmt(&sum),
+        fmt(&sum2),
+        "number+symbol order should be canonical"
+    );
 }
 
 #[test]
@@ -331,10 +347,14 @@ fn walk_free_symbols_simple_add() {
 
     let expr = &x + &y;
     let syms = expr.free_symbols();
-    let mut names: Vec<String> = syms.iter().map(|s| fmt(s)).collect();
+    let mut names: Vec<String> = syms.iter().map(fmt).collect();
     names.sort();
 
-    assert_eq!(names, vec!["x", "y"], "free_symbols(x+y) should be {{x, y}}");
+    assert_eq!(
+        names,
+        vec!["x", "y"],
+        "free_symbols(x+y) should be {{x, y}}"
+    );
 }
 
 #[test]
@@ -344,7 +364,7 @@ fn walk_free_symbols_function() {
 
     let expr = x.sin();
     let syms = expr.free_symbols();
-    let names: Vec<String> = syms.iter().map(|s| fmt(s)).collect();
+    let names: Vec<String> = syms.iter().map(fmt).collect();
 
     assert_eq!(names, vec!["x"], "free_symbols(sin(x)) should be {{x}}");
 }
@@ -358,7 +378,7 @@ fn walk_free_symbols_number_only() {
     assert!(
         syms.is_empty(),
         "free_symbols(5) should be empty, got: {:?}",
-        syms.iter().map(|s| fmt(s)).collect::<Vec<_>>()
+        syms.iter().map(fmt).collect::<Vec<_>>()
     );
 }
 
@@ -370,7 +390,7 @@ fn walk_free_symbols_no_duplicates() {
     // x + x = 2*x — should still only have {x}
     let expr = &x + &x;
     let syms = expr.free_symbols();
-    let names: Vec<String> = syms.iter().map(|s| fmt(s)).collect();
+    let names: Vec<String> = syms.iter().map(fmt).collect();
 
     assert_eq!(
         names.len(),
@@ -390,7 +410,7 @@ fn walk_free_symbols_nested() {
 
     let expr = &x.sin() + &(&y * &z.cos());
     let syms = expr.free_symbols();
-    let mut names: Vec<String> = syms.iter().map(|s| fmt(s)).collect();
+    let mut names: Vec<String> = syms.iter().map(fmt).collect();
     names.sort();
 
     assert_eq!(
@@ -413,7 +433,7 @@ fn walk_free_symbols_constant_expression() {
     assert!(
         syms.is_empty(),
         "free_symbols(pi+2) should be empty (constants aren't free symbols), got: {:?}",
-        syms.iter().map(|s| fmt(s)).collect::<Vec<_>>()
+        syms.iter().map(fmt).collect::<Vec<_>>()
     );
 }
 
@@ -475,10 +495,14 @@ fn walk_free_symbols_power() {
 
     let expr = x.pow(&n);
     let syms = expr.free_symbols();
-    let mut names: Vec<String> = syms.iter().map(|s| fmt(s)).collect();
+    let mut names: Vec<String> = syms.iter().map(fmt).collect();
     names.sort();
 
-    assert_eq!(names, vec!["n", "x"], "free_symbols(x^n) should be {{n, x}}");
+    assert_eq!(
+        names,
+        vec!["n", "x"],
+        "free_symbols(x^n) should be {{n, x}}"
+    );
 }
 
 #[test]
@@ -500,7 +524,10 @@ fn walk_deep_expression_no_stack_overflow() {
         1,
         "deeply nested expression should still find x"
     );
-    assert!(expr.contains(&x), "deeply nested expression should contain x");
+    assert!(
+        expr.contains(&x),
+        "deeply nested expression should contain x"
+    );
 }
 
 #[test]
@@ -524,7 +551,7 @@ fn walk_free_symbols_mul_same_symbol() {
 
     let expr = &x * &x;
     let syms = expr.free_symbols();
-    let names: Vec<String> = syms.iter().map(|s| fmt(s)).collect();
+    let names: Vec<String> = syms.iter().map(fmt).collect();
 
     assert_eq!(
         names.len(),
@@ -658,7 +685,10 @@ fn pretty_deeply_nested_no_panic() {
 
     // Should not panic
     let pretty = expr.pretty();
-    assert!(!pretty.is_empty(), "deeply nested pretty should not be empty");
+    assert!(
+        !pretty.is_empty(),
+        "deeply nested pretty should not be empty"
+    );
 }
 
 #[test]
@@ -666,7 +696,11 @@ fn pretty_integer_is_simple() {
     let ctx = Context::new();
     let n = ctx.int(42);
     let pretty = n.pretty();
-    assert_eq!(pretty.trim(), "42", "pretty-print of 42 should be '42', got '{pretty}'");
+    assert_eq!(
+        pretty.trim(),
+        "42",
+        "pretty-print of 42 should be '42', got '{pretty}'"
+    );
 }
 
 #[test]
@@ -674,7 +708,11 @@ fn pretty_symbol_is_name() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let pretty = x.pretty();
-    assert_eq!(pretty.trim(), "x", "pretty-print of x should be 'x', got '{pretty}'");
+    assert_eq!(
+        pretty.trim(),
+        "x",
+        "pretty-print of x should be 'x', got '{pretty}'"
+    );
 }
 
 #[test]
@@ -961,13 +999,7 @@ fn rewrite_sin_to_exp_roundtrip() {
 
     // Should be numerically equivalent to sin(x)
     assert!(
-        numerical_eq_1var(
-            &sin_x,
-            &back_to_trig,
-            &x,
-            &[0, 1, 2, -1, -2, 3],
-            1e-9
-        ),
+        numerical_eq_1var(&sin_x, &back_to_trig, &x, &[0, 1, 2, -1, -2, 3], 1e-9),
         "sin(x) -> exp -> trig roundtrip should be numerically equivalent. \
          Original: {}, Roundtrip: {}",
         fmt(&sin_x),
@@ -985,13 +1017,7 @@ fn rewrite_cos_to_exp_roundtrip() {
     let back_to_trig = as_exp.rewrite_as_trig();
 
     assert!(
-        numerical_eq_1var(
-            &cos_x,
-            &back_to_trig,
-            &x,
-            &[0, 1, 2, -1, -2, 3],
-            1e-9
-        ),
+        numerical_eq_1var(&cos_x, &back_to_trig, &x, &[0, 1, 2, -1, -2, 3], 1e-9),
         "cos(x) -> exp -> trig roundtrip should be numerically equivalent. \
          Original: {}, Roundtrip: {}",
         fmt(&cos_x),
@@ -1298,7 +1324,7 @@ fn walk_and_pretty_integration() {
 
     // Walk: verify free symbols
     let syms = expr.free_symbols();
-    let mut names: Vec<String> = syms.iter().map(|s| fmt(s)).collect();
+    let mut names: Vec<String> = syms.iter().map(fmt).collect();
     names.sort();
     assert_eq!(names, vec!["x", "y"]);
 
@@ -1429,9 +1455,13 @@ fn walk_free_symbols_imaginary_unit() {
 
     let expr = &i * &x;
     let syms = expr.free_symbols();
-    let names: Vec<String> = syms.iter().map(|s| fmt(s)).collect();
+    let names: Vec<String> = syms.iter().map(fmt).collect();
 
-    assert_eq!(names, vec!["x"], "free_symbols(i*x) should be just {{x}}, got {names:?}");
+    assert_eq!(
+        names,
+        vec!["x"],
+        "free_symbols(i*x) should be just {{x}}, got {names:?}"
+    );
 }
 
 #[test]
@@ -1442,7 +1472,7 @@ fn walk_free_symbols_pi_not_free() {
 
     let expr = &pi * &x;
     let syms = expr.free_symbols();
-    let names: Vec<String> = syms.iter().map(|s| fmt(s)).collect();
+    let names: Vec<String> = syms.iter().map(fmt).collect();
 
     assert_eq!(
         names,
@@ -1496,7 +1526,11 @@ fn pretty_zero() {
     let ctx = Context::new();
     let zero = ctx.int(0);
     let pretty = zero.pretty();
-    assert_eq!(pretty.trim(), "0", "pretty-print of 0 should be '0': '{pretty}'");
+    assert_eq!(
+        pretty.trim(),
+        "0",
+        "pretty-print of 0 should be '0': '{pretty}'"
+    );
 }
 
 #[test]
@@ -1552,8 +1586,8 @@ fn rewrite_preserves_free_symbols() {
     let rewritten = sin_x.rewrite_as_exp();
     let rewritten_syms = rewritten.free_symbols();
 
-    let orig_names: Vec<String> = original_syms.iter().map(|s| fmt(s)).collect();
-    let new_names: Vec<String> = rewritten_syms.iter().map(|s| fmt(s)).collect();
+    let orig_names: Vec<String> = original_syms.iter().map(fmt).collect();
+    let new_names: Vec<String> = rewritten_syms.iter().map(fmt).collect();
 
     assert_eq!(
         orig_names, new_names,

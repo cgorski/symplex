@@ -1,6 +1,6 @@
 //! Assumption-aware expression refinement.
 //!
-//! [`refine`] simplifies an expression using known mathematical properties
+//! [`refine`](crate::api::expr::Ex::refine) simplifies an expression using known mathematical properties
 //! of its subexpressions.  Unlike [`simplify`](super::simplify_engine),
 //! which performs structural rewriting, `refine` uses the assumption system
 //! to apply rewrites that are only valid under certain conditions.
@@ -15,7 +15,7 @@
 //! # Architecture
 //!
 //! The implementation uses a **two-phase approach** to work within the
-//! constraints of [`walk_and_rebuild`], whose transform closure receives
+//! constraints of [`walk_and_rebuild`](crate::base::walk::walk_and_rebuild), whose transform closure receives
 //! only `&Arena` (immutable):
 //!
 //! 1. **Pre-compute**: walk the expression in post-order, querying the

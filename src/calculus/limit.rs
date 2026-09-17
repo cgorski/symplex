@@ -72,11 +72,8 @@ pub(crate) fn limit(
                 // Try to compute lim(exp * (base - 1)).
                 // Use Gruntz for this inner limit — the product is typically
                 // a simple rational function that Gruntz handles well.
-                if let Ok(inner_lim) =
-                    crate::calculus::gruntz::gruntz(arena, product, var, point)
-                {
-                    let is_inf =
-                        inner_lim == arena.infinity() || inner_lim == arena.neg_infinity();
+                if let Ok(inner_lim) = crate::calculus::gruntz::gruntz(arena, product, var, point) {
+                    let is_inf = inner_lim == arena.infinity() || inner_lim == arena.neg_infinity();
                     if !is_inf {
                         tracing::debug!("limit: 1^∞ heuristic succeeded, inner limit is finite");
                         let result = arena.exp(inner_lim);

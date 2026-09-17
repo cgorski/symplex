@@ -248,7 +248,7 @@ fn factorial_bigint(n: u64) -> BigInt {
     result
 }
 
-/// Convert a Ratio<BigInt> to an ExprId.
+/// Convert a `Ratio<BigInt>` to an `ExprId`.
 fn rational_to_expr(arena: &mut Arena, r: &Ratio<BigInt>) -> ExprId {
     let nid = arena.intern_num(r.clone());
     arena.intern(ExprNode::Num(nid))

@@ -6,45 +6,146 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+  RUST_BACKTRACE: 1
+  # The compile-fail UI snapshots (`tests/ui/*.stderr`) are tied to a specific
+  # rustc's diagnostic wording.  They run on exactly this toolchain; bump it
+  # together with `TRYBUILD=overwrite cargo test --test ui_tests`.
+  UI_TOOLCHAIN: "1.95.0"
 
 jobs:
-  test:
-    name: Test
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --all-targets
-      - run: cargo test --doc
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+      - run: cargo fmt --all --manifest-path symplex-macros/Cargo.toml -- --check
+      - run: cargo fmt --all --manifest-path symplex-build/Cargo.toml -- --check
+      - run: cargo fmt --all --manifest-path symplex-wasm/Cargo.toml -- --check
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --manifest-path symplex-macros/Cargo.toml -- -D warnings
+      - run: cargo clippy --all-targets --manifest-path symplex-build/Cargo.toml -- -D warnings
+      - run: cargo clippy --all-targets --manifest-path symplex-wasm/Cargo.toml -- -D warnings
 
-  fmt:
-    name: Format
+  test:
+    name: Test (stable)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # UI snapshot tests are toolchain-pinned; see the `ui` job.
+      - run: cargo test --all-targets -- --skip units_compile_fail
+      - run: cargo test --doc
+
+  ui:
+    name: UI compile-fail tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.UI_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --test ui_tests
+
+  subcrates:
+    name: Sub-crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            symplex-macros
+            symplex-build
+            symplex-wasm
+            fuzz
+      - name: symplex-macros
+        run: cargo test --manifest-path symplex-macros/Cargo.toml
+      - name: symplex-build
+        run: cargo test --manifest-path symplex-build/Cargo.toml
+      - name: symplex-wasm (native)
+        run: cargo test --manifest-path symplex-wasm/Cargo.toml
+      - name: symplex-wasm (wasm32)
+        run: cargo check --manifest-path symplex-wasm/Cargo.toml --target wasm32-unknown-unknown
+      - name: fuzz targets build
+        run: cargo check --manifest-path fuzz/Cargo.toml
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --document-private-items
+      - run: cargo doc --no-deps --manifest-path symplex-build/Cargo.toml
+      - name: Install mdBook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+      - run: mdbook build book
 
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.0"
+      - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets
+      - run: cargo check --all-targets --manifest-path symplex-macros/Cargo.toml
+      - run: cargo check --all-targets --manifest-path symplex-build/Cargo.toml
+      - run: cargo check --all-targets --manifest-path symplex-wasm/Cargo.toml
+
+  examples:
+    name: Examples run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run every non-interactive example
+        run: |
+          set -euo pipefail
+          for f in examples/*.rs; do
+            name=$(basename "$f" .rs)
+            # The REPL reads stdin; everything else must run to completion.
+            if [ "$name" = "repl" ]; then continue; fi
+            echo "::group::$name"
+            timeout 300 cargo run --quiet --example "$name" </dev/null
+            echo "::endgroup::"
+          done

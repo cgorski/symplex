@@ -1,6 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use symplex::prelude::*;
 
 fuzz_target!(|data: &[u8]| {
     // Need at least 8 bytes to construct an f64
@@ -14,25 +15,18 @@ fuzz_target!(|data: &[u8]| {
 
     // Skip NaN, infinity, and values outside the domain of the principal branch.
     // W(x) is defined for x >= -1/e on the principal branch.
-    if raw_f64.is_nan() || raw_f64.is_infinite() {
+    if raw_f64.is_nan() || raw_f64.is_infinite() || raw_f64.abs() > 1e15 {
         return;
     }
 
-    // Map to a reasonable range: [-0.36, 100]
+    // Map to a reasonable range: [-0.36, 100].
     // -1/e ≈ -0.3679, so -0.36 is safely inside the domain.
-    let x_f64 = if raw_f64.abs() > 1e15 {
-        return;
-    } else {
-        // Clamp to domain
-        let clamped = raw_f64.rem_euclid(100.36) - 0.36;
-        clamped
-    };
+    let x_f64 = raw_f64.rem_euclid(100.36) - 0.36;
+
+    let ctx = Context::new();
 
     // Build LambertW(x) as a symplex expression
-    let x_val = symplex::rational(
-        (x_f64 * 1000.0).round() as i64,
-        1000,
-    );
+    let x_val = ctx.rational((x_f64 * 1000.0).round() as i64, 1000);
     let w_expr = x_val.lambertw();
 
     // Attempt numerical evaluation — must never panic
@@ -75,7 +69,7 @@ fuzz_target!(|data: &[u8]| {
     let _ = w_expr.pretty_ascii();
 
     // Test differentiation doesn't panic
-    let x_sym = symplex::var("fuzz_lw_x");
+    let x_sym = ctx.symbol("fuzz_lw_x");
     let w_sym = x_sym.lambertw();
     let _ = w_sym.diff(&x_sym);
 });

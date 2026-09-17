@@ -46,11 +46,6 @@ fn try_parse(input: &str) -> Result<String, String> {
     }
 }
 
-/// Parse a string and return the Ex, panicking on error.
-fn must_parse(ctx: &Context, input: &str) -> Ex {
-    parse(ctx, input).unwrap_or_else(|e| panic!("failed to parse '{input}': {e}"))
-}
-
 /// Build an expression programmatically, display it, parse the display string,
 /// display the parsed result, and assert the two display strings match.
 fn assert_round_trip(expr: &Ex, label: &str) {
@@ -154,7 +149,10 @@ fn a_deeply_nested_with_ops() {
     let ctx = Context::new();
     let result = parse(&ctx, &s);
     // Should be caught by the depth guard — not panic/overflow.
-    assert!(result.is_err(), "expected depth-limit error for depth {depth}");
+    assert!(
+        result.is_err(),
+        "expected depth-limit error for depth {depth}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -441,9 +439,9 @@ fn assert_string_round_trip(input: &str) {
     let display1 = format!("{expr1}");
     let expr2 = match parse(&ctx, &display1) {
         Ok(e) => e,
-        Err(e) => panic!(
-            "Second parse failed for '{input}':\n  display1: '{display1}'\n  error: {e}"
-        ),
+        Err(e) => {
+            panic!("Second parse failed for '{input}':\n  display1: '{display1}'\n  error: {e}")
+        }
     };
     let display2 = format!("{expr2}");
     assert_eq!(
@@ -891,7 +889,7 @@ fn c_identifier_inf() {
 }
 
 #[test]
-fn c_identifier_Inf() {
+fn c_identifier_inf_capitalized() {
     assert_parse_no_panic("Inf");
 }
 
@@ -1020,19 +1018,13 @@ fn c_double_comma_in_func() {
 
 #[test]
 fn d_long_addition_1000_terms() {
-    let expr_str: String = (0..1000)
-        .map(|_| "x")
-        .collect::<Vec<_>>()
-        .join("+");
+    let expr_str: String = (0..1000).map(|_| "x").collect::<Vec<_>>().join("+");
     assert_parse_no_panic(&expr_str);
 }
 
 #[test]
 fn d_long_multiplication_500_terms() {
-    let expr_str: String = (0..500)
-        .map(|_| "x")
-        .collect::<Vec<_>>()
-        .join("*");
+    let expr_str: String = (0..500).map(|_| "x").collect::<Vec<_>>().join("*");
     assert_parse_no_panic(&expr_str);
 }
 
@@ -1099,7 +1091,11 @@ fn d_deeply_nested_sin_100_ok() {
     let ctx = Context::new();
     let result = parse(&ctx, &s);
     // 100 deep is under the physical stack limit — should succeed.
-    assert!(result.is_ok(), "100-deep sin nesting should parse, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "100-deep sin nesting should parse, got: {:?}",
+        result.err()
+    );
 }
 
 /// Probe the boundary more precisely: 200-deep nesting.
@@ -1306,7 +1302,7 @@ fn d_sympy_double_star() {
 }
 
 #[test]
-fn d_sympy_Abs() {
+fn d_sympy_abs_capitalized() {
     assert_parse_no_panic("Abs(x)");
 }
 

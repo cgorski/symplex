@@ -51,9 +51,9 @@ pub struct CodegenOptions {
     pub math_backend: MathBackend,
     /// Floating-point precision.
     pub precision: Precision,
-    /// Add #[inline] annotation to generated functions.
+    /// Add `#[inline]` annotation to generated functions.
     pub inline: bool,
-    /// Add #[must_use] annotation.
+    /// Add `#[must_use]` annotation.
     pub must_use: bool,
     /// Run CSE before code generation.
     pub cse: bool,
@@ -84,7 +84,7 @@ impl Default for CodegenOptions {
 
 impl CodegenOptions {
     /// Configuration for no_std embedded targets.
-    /// Uses cfg-gated math backend and adds #[inline].
+    /// Uses cfg-gated math backend and adds `#[inline]`.
     pub fn no_std() -> Self {
         Self {
             math_backend: MathBackend::CfgGated,
@@ -94,7 +94,7 @@ impl CodegenOptions {
     }
 
     /// Configuration for embedded f32 targets (e.g., Cortex-M4F).
-    /// Uses cfg-gated math backend, f32 precision, and #[inline].
+    /// Uses cfg-gated math backend, f32 precision, and `#[inline]`.
     pub fn embedded_f32() -> Self {
         Self {
             math_backend: MathBackend::CfgGated,
@@ -1032,7 +1032,8 @@ fn expr_to_rust_cse(
             "cannot generate Rust code for unevaluated DSolve".to_string(),
         )),
         ExprNode::RootSum(_, _, _) => Err(SymplexError::NotImplemented(
-            "cannot generate Rust code for RootSum (implicit sum over polynomial roots)".to_string(),
+            "cannot generate Rust code for RootSum (implicit sum over polynomial roots)"
+                .to_string(),
         )),
         ExprNode::ConditionSet(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for ConditionSet".to_string(),
@@ -1365,7 +1366,15 @@ fn eval_unary_f64(func: &str, val: f64) -> Option<f64> {
         "asinh" => val.asinh(),
         "acosh" => val.acosh(),
         "atanh" => val.atanh(),
-        "signum" => if val > 0.0 { 1.0 } else if val < 0.0 { -1.0 } else { 0.0 },
+        "signum" => {
+            if val > 0.0 {
+                1.0
+            } else if val < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        }
         "floor" => val.floor(),
         "ceil" => val.ceil(),
         "sqrt" => val.sqrt(),
@@ -2112,7 +2121,10 @@ mod tests {
 
         let sign_x = a.sign(x);
         let code = expr_to_rust(&a, sign_x, &["x"], &default_opts()).unwrap();
-        assert!(code.contains("if x > 0.0_f64"), "sign(x) should emit inline if-expression, got: {code}");
+        assert!(
+            code.contains("if x > 0.0_f64"),
+            "sign(x) should emit inline if-expression, got: {code}"
+        );
     }
 
     #[test]

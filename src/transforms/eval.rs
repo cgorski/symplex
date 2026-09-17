@@ -302,8 +302,7 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 else if let ExprNode::Exp(inner) = arena.node(nb).clone() {
                     let product = arena.mul(&[inner, ne]);
                     arena.exp(product)
-                }
-                else if nb == base && ne == exp {
+                } else if nb == base && ne == exp {
                     id
                 } else {
                     arena.pow(nb, ne)
@@ -1050,7 +1049,9 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     tracing::debug!("eval: RootSum expanded via rootsum_doit");
                     expanded
                 } else if let Some(rational_val) =
-                    crate::calculus::risch::log_to_real::vieta_rootsum_poly_body(arena, poly, body, sumvar)
+                    crate::calculus::risch::log_to_real::vieta_rootsum_poly_body(
+                        arena, poly, body, sumvar,
+                    )
                 {
                     // Body is a polynomial in sumvar — Vieta's formulas give
                     // the exact rational sum without finding roots.

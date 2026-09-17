@@ -1260,7 +1260,7 @@ impl Matrix {
                 .filter(|(_, c)| **c > 0)
                 .map(|(i, c)| (i + 1, *c))
                 .collect();
-            blocks.sort_by(|a, b| b.0.cmp(&a.0));
+            blocks.sort_by_key(|b| std::cmp::Reverse(b.0));
 
             // Build generalized eigenvectors for each block.
             let mut eig_basis: Vec<Matrix> = Vec::new();

@@ -8,14 +8,21 @@ error[E0277]: cannot add `&symplex::units::Length` to `&symplex::units::Mass`
 help: the following other types implement trait `std::ops::Add<Rhs>`
  --> src/units/si.rs
   |
+  |           impl ops::Add for $name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^ `symplex::units::Mass` implements `std::ops::Add`
+...
+  |           impl ops::Add<&$name> for &$name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&symplex::units::Mass` implements `std::ops::Add`
+...
+  |           impl ops::Add<$name> for &$name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&symplex::units::Mass` implements `std::ops::Add<symplex::units::Mass>`
+...
+  |           impl ops::Add<&$name> for $name {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `symplex::units::Mass` implements `std::ops::Add<&symplex::units::Mass>`
+...
   | / define_quantity!(
   | |     /// Mass \[kg\].
   | |     Mass, MassDim, "Mass", "kg"
   | | );
-  | | ^
-  | | |
-  | | `&symplex::units::Mass` implements `std::ops::Add<symplex::units::Mass>`
-  | | `&symplex::units::Mass` implements `std::ops::Add`
-  | |_`symplex::units::Mass` implements `std::ops::Add<&symplex::units::Mass>`
-  |   `symplex::units::Mass` implements `std::ops::Add`
+  | |_- in this macro invocation
   = note: this error originates in the macro `define_quantity` (in Nightly builds, run with -Z macro-backtrace for more info)

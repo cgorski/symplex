@@ -55,16 +55,15 @@ fn crt_oracle(remainders: &[i64], moduli: &[i64]) -> Option<i64> {
 fn try_crt_i64(remainders: &[i64], moduli: &[i64]) -> Result<Option<i64>, String> {
     let r = remainders.to_vec();
     let m = moduli.to_vec();
-    panic::catch_unwind(move || crt_i64(&r, &m))
-        .map_err(|e| {
-            if let Some(s) = e.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = e.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "unknown panic".to_string()
-            }
-        })
+    panic::catch_unwind(move || crt_i64(&r, &m)).map_err(|e| {
+        if let Some(s) = e.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = e.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        }
+    })
 }
 
 /// Verify that the CRT result satisfies all congruences.
@@ -139,9 +138,7 @@ fn two_large_coprime_moduli_overflow_detected() {
                 msg.contains("overflow"),
                 "expected overflow panic, got: {msg}"
             );
-            eprintln!(
-                "[BUG CONFIRMED] crt_i64 panicked with overflow for 2 large moduli: {msg}"
-            );
+            eprintln!("[BUG CONFIRMED] crt_i64 panicked with overflow for 2 large moduli: {msg}");
         }
         Ok(Some(val)) => {
             // Release mode: silent wrapping — wrong answer is also the bug.
@@ -262,7 +259,10 @@ fn four_large_coprime_moduli() {
     let r_big: Vec<BigInt> = remainders.iter().map(|&r| bi(r)).collect();
     let m_big: Vec<BigInt> = moduli.iter().map(|&m| bi(m)).collect();
     let big_result = crt(&r_big, &m_big);
-    assert!(big_result.is_some(), "BigInt CRT must solve 4 coprime moduli");
+    assert!(
+        big_result.is_some(),
+        "BigInt CRT must solve 4 coprime moduli"
+    );
     let big_val = big_result.unwrap();
 
     // Verify BigInt oracle satisfies congruences.
@@ -315,7 +315,10 @@ fn five_large_coprime_moduli_exceeds_i128() {
     let r_big: Vec<BigInt> = remainders.iter().map(|&r| bi(r)).collect();
     let m_big: Vec<BigInt> = moduli.iter().map(|&m| bi(m)).collect();
     let big_result = crt(&r_big, &m_big);
-    assert!(big_result.is_some(), "BigInt CRT must solve 5 coprime moduli");
+    assert!(
+        big_result.is_some(),
+        "BigInt CRT must solve 5 coprime moduli"
+    );
     let big_val = big_result.unwrap();
 
     // Verify congruences.
@@ -333,8 +336,7 @@ fn five_large_coprime_moduli_exceeds_i128() {
     );
 
     // The combined modulus product:
-    let combined_modulus: BigInt =
-        moduli.iter().fold(BigInt::from(1), |acc, &m| acc * bi(m));
+    let combined_modulus: BigInt = moduli.iter().fold(BigInt::from(1), |acc, &m| acc * bi(m));
     eprintln!(
         "[INFO] Combined modulus has {} digits (~10^{})",
         combined_modulus.to_string().len(),
@@ -387,10 +389,7 @@ fn extended_gcd_i64_coefficients_within_bounds() {
     let moduli = [10_007i64, 10_009]; // both prime, product ~10^8
 
     let result = try_crt_i64(&remainders, &moduli);
-    assert!(
-        result.is_ok(),
-        "crt_i64 should not panic for modest moduli"
-    );
+    assert!(result.is_ok(), "crt_i64 should not panic for modest moduli");
     let val = result.unwrap().expect("system is solvable");
     assert!(
         verify_crt_result(val, &remainders, &moduli),
@@ -409,17 +408,20 @@ fn boundary_moduli_sizes() {
     // Product of two moduli m₁*m₂ must fit in i64 for the *result* to
     // fit, but intermediate arithmetic overflows earlier.
     let test_cases: Vec<(i64, i64)> = vec![
-        (1_009, 1_013),             // ~10^3: fine
-        (10_007, 10_009),           // ~10^4: fine
-        (100_003, 100_019),         // ~10^5: fine
-        (1_000_003, 1_000_033),     // ~10^6: may overflow intermediates
-        (10_000_019, 10_000_079),   // ~10^7: likely overflows
-        (100_000_007, 100_000_037), // ~10^8: definitely overflows
+        (1_009, 1_013),                 // ~10^3: fine
+        (10_007, 10_009),               // ~10^4: fine
+        (100_003, 100_019),             // ~10^5: fine
+        (1_000_003, 1_000_033),         // ~10^6: may overflow intermediates
+        (10_000_019, 10_000_079),       // ~10^7: likely overflows
+        (100_000_007, 100_000_037),     // ~10^8: definitely overflows
         (1_000_000_007, 1_000_000_009), // ~10^9: definitely overflows
     ];
 
     eprintln!("\n  Boundary analysis for two coprime moduli:");
-    eprintln!("  {:>14} {:>14}  {:>20}  {}", "m1", "m2", "m1*m2 (approx)", "crt_i64 status");
+    eprintln!(
+        "  {:>14} {:>14}  {:>20}  crt_i64 status",
+        "m1", "m2", "m1*m2 (approx)"
+    );
     eprintln!("  {}", "-".repeat(75));
 
     for (m1, m2) in &test_cases {
@@ -463,7 +465,10 @@ fn multi_moduli_i128_limit_analysis() {
     ];
 
     eprintln!("\n  Multi-moduli scaling analysis (all primes ~10^9):");
-    eprintln!("  {:>5}  {:>50}  {:>12}  {}", "k", "combined modulus (digits)", "fits i128?", "BigInt CRT");
+    eprintln!(
+        "  {:>5}  {:>50}  {:>12}  BigInt CRT",
+        "k", "combined modulus (digits)", "fits i128?"
+    );
     eprintln!("  {}", "-".repeat(90));
 
     let i128_max = BigInt::from(i128::MAX);
@@ -520,7 +525,7 @@ fn regression_pair_from_bug_report() {
 
     // crt_i64 currently fails.
     let i64_result = try_crt_i64(&remainders, &moduli);
-    let is_buggy = matches!(i64_result, Err(_))
+    let is_buggy = i64_result.is_err()
         || matches!(i64_result, Ok(Some(v)) if crt_oracle(&remainders, &moduli) != Some(v));
     if is_buggy {
         eprintln!("[BUG CONFIRMED] regression_pair_from_bug_report: crt_i64 fails");
@@ -547,7 +552,10 @@ fn regression_triple_from_bug_report() {
     if is_buggy {
         eprintln!("[BUG CONFIRMED] regression_triple_from_bug_report: crt_i64 panics");
     } else {
-        eprintln!("[INFO] regression_triple_from_bug_report: crt_i64 returned {:?}", i64_result);
+        eprintln!(
+            "[INFO] regression_triple_from_bug_report: crt_i64 returned {:?}",
+            i64_result
+        );
     }
 }
 
@@ -645,7 +653,10 @@ fn i128_simulation_four_large_moduli_intermediate_overflow() {
     // The checked_mul in our simulation will return None if i128 overflows.
     // Combined modulus ~10^36, but intermediate mul can reach ~10^45.
     // So this should be None (either from overflow or from i64 truncation).
-    assert_eq!(sim, None, "4 large ~10^9 moduli overflow even i128 intermediates");
+    assert_eq!(
+        sim, None,
+        "4 large ~10^9 moduli overflow even i128 intermediates"
+    );
 }
 
 #[test]
@@ -677,8 +688,8 @@ fn result_fits_i64_but_intermediates_overflow() {
     // The CRT result is in [0, m1*m2), so it fits in i64.
     // But the intermediate `modulus * step * p` can still overflow i64.
     let test_pairs: Vec<([i64; 2], [i64; 2])> = vec![
-        ([1, 2], [2_000_000_011, 3_000_000_019]),  // product ~6×10^18 < i64::MAX
-        ([0, 0], [1_000_000_007, 1_000_000_009]),   // trivial remainders
+        ([1, 2], [2_000_000_011, 3_000_000_019]), // product ~6×10^18 < i64::MAX
+        ([0, 0], [1_000_000_007, 1_000_000_009]), // trivial remainders
         ([999_999, 888_888], [1_000_000_007, 1_000_000_009]),
     ];
 
@@ -690,8 +701,7 @@ fn result_fits_i64_but_intermediates_overflow() {
 
         eprintln!(
             "    m=[{}, {}] r=[{}, {}]:  oracle={:?}  i64={:?}  i128={:?}",
-            moduli[0], moduli[1], remainders[0], remainders[1],
-            oracle, i64_result, i128_result
+            moduli[0], moduli[1], remainders[0], remainders[1], oracle, i64_result, i128_result
         );
 
         // The oracle and i128 simulation should agree.

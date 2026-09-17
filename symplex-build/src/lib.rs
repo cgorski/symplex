@@ -21,13 +21,15 @@
 //! use symplex::robotics::*;
 //!
 //! fn main() {
-//!     vars!(theta1, theta2);
-//!     let l1 = symplex::rational(3, 10);  // 0.3m
-//!     let l2 = symplex::rational(1, 4);   // 0.25m
+//!     let ctx = Context::new();
+//!     symplex::syms!(ctx; theta1, theta2);
+//!     let zero = ctx.int(0);
+//!     let l1 = ctx.rational(3, 10);  // 0.3m
+//!     let l2 = ctx.rational(1, 4);   // 0.25m
 //!
 //!     let (x, y, _z) = fk_position(&[
-//!         (&theta1, &symplex::int(0), &l1, &symplex::int(0)),
-//!         (&theta2, &symplex::int(0), &l2, &symplex::int(0)),
+//!         (&theta1, &zero, &l1, &zero),
+//!         (&theta2, &zero, &l2, &zero),
 //!     ]);
 //!
 //!     let j = jacobian(&[&x, &y], &[&theta1, &theta2]);
@@ -211,11 +213,7 @@ impl CodeGen {
             first_fn = false;
 
             let code = match gfn {
-                GeneratedFn::Scalar {
-                    name,
-                    expr,
-                    params,
-                } => {
+                GeneratedFn::Scalar { name, expr, params } => {
                     let param_refs: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
                     expr.to_rust_fn_with_options(name, &param_refs, &fn_options)?
                 }
@@ -285,9 +283,7 @@ impl CodeGen {
                             output.push_str(&format!(
                                 "        let result = {fn_name}({args_str});\n"
                             ));
-                            output.push_str(&format!(
-                                "        for i in 0..{total} {{\n"
-                            ));
+                            output.push_str(&format!("        for i in 0..{total} {{\n"));
                             output.push_str("            assert!(result[i].is_finite(), \"entry {} is not finite: {}\", i, result[i]);\n");
                             output.push_str("        }\n");
                         }
@@ -346,8 +342,8 @@ fn append_cfg_gated_module(out: &mut String, precision: Precision) {
     };
 
     let funcs = [
-        "sin", "cos", "tan", "exp", "ln", "abs", "sqrt", "cbrt", "asin", "acos", "atan",
-        "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "floor", "ceil", "signum",
+        "sin", "cos", "tan", "exp", "ln", "abs", "sqrt", "cbrt", "asin", "acos", "atan", "sinh",
+        "cosh", "tanh", "asinh", "acosh", "atanh", "floor", "ceil", "signum",
     ];
 
     // std version
@@ -379,8 +375,8 @@ fn append_cfg_gated_module(out: &mut String, precision: Precision) {
     out.push_str("#[cfg(not(feature = \"std\"))]\n");
     out.push_str("mod math {\n");
     let libm_funcs = [
-        "sin", "cos", "tan", "exp", "abs", "sqrt", "cbrt", "asin", "acos", "atan",
-        "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "floor", "ceil",
+        "sin", "cos", "tan", "exp", "abs", "sqrt", "cbrt", "asin", "acos", "atan", "sinh", "cosh",
+        "tanh", "asinh", "acosh", "atanh", "floor", "ceil",
     ];
     for func in &libm_funcs {
         out.push_str(&format!(
@@ -422,32 +418,32 @@ fn strip_cfg_gated_module(code: &str) -> String {
     while let Some(line) = lines.next() {
         if line.starts_with("#[cfg(") && line.contains("feature") {
             // Check if next line is "mod math {"
-            if let Some(&next) = lines.peek() {
-                if next.starts_with("mod math {") {
-                    // Consume the "mod math {" line and skip the whole block
-                    lines.next();
-                    let mut brace_depth = 1;
-                    while brace_depth > 0 {
-                        if let Some(inner) = lines.next() {
-                            for ch in inner.chars() {
-                                if ch == '{' {
-                                    brace_depth += 1;
-                                } else if ch == '}' {
-                                    brace_depth -= 1;
-                                }
+            if let Some(&next) = lines.peek()
+                && next.starts_with("mod math {")
+            {
+                // Consume the "mod math {" line and skip the whole block
+                lines.next();
+                let mut brace_depth = 1;
+                while brace_depth > 0 {
+                    if let Some(inner) = lines.next() {
+                        for ch in inner.chars() {
+                            if ch == '{' {
+                                brace_depth += 1;
+                            } else if ch == '}' {
+                                brace_depth -= 1;
                             }
-                        } else {
-                            break;
                         }
+                    } else {
+                        break;
                     }
-                    // After closing brace, skip any blank line
-                    if let Some(&next_after) = lines.peek() {
-                        if next_after.trim().is_empty() {
-                            lines.next();
-                        }
-                    }
-                    continue;
                 }
+                // After closing brace, skip any blank line
+                if let Some(&next_after) = lines.peek()
+                    && next_after.trim().is_empty()
+                {
+                    lines.next();
+                }
+                continue;
             }
         }
 
@@ -538,29 +534,28 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
     let content = fs::read_to_string(path.as_ref())?;
     let config: RobotConfig = toml::from_str(&content)?;
 
+    // All symbolic work for this robot lives in a single private context.
+    let ctx = Context::new();
+
     // Build DH parameters from config — create symbolic variables for each theta
-    let theta_vars: Vec<Ex> = config
+    let theta_vars: Vec<Ex> = config.joints.iter().map(|j| ctx.symbol(&j.theta)).collect();
+
+    // Hold the numeric constants in vecs so the borrows below stay valid.
+    let d_vals: Vec<Ex> = config
         .joints
         .iter()
-        .map(|j| symplex::var(&j.theta))
+        .map(|j| float_to_expr(&ctx, j.d))
         .collect();
-
-    let dh_params: Vec<(&Ex, &Ex, &Ex, &Ex)> = {
-        // We need to keep owned expressions alive for d, a, alpha
-        // so we collect them first.
-        Vec::new()
-    };
-
-    // We need to hold the numeric constants in a vec so borrows are valid.
-    let d_vals: Vec<Ex> = config.joints.iter().map(|j| float_to_expr(j.d)).collect();
-    let a_vals: Vec<Ex> = config.joints.iter().map(|j| float_to_expr(j.a)).collect();
+    let a_vals: Vec<Ex> = config
+        .joints
+        .iter()
+        .map(|j| float_to_expr(&ctx, j.a))
+        .collect();
     let alpha_vals: Vec<Ex> = config
         .joints
         .iter()
-        .map(|j| float_to_expr(j.alpha))
+        .map(|j| float_to_expr(&ctx, j.alpha))
         .collect();
-
-    let _ = dh_params; // drop the empty placeholder
 
     let dh_params: Vec<(&Ex, &Ex, &Ex, &Ex)> = theta_vars
         .iter()
@@ -590,10 +585,7 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
             "jacobian" => {
                 let (x, y, _z) = symplex::robotics::fk_position(&dh_params);
                 let theta_refs: Vec<&Ex> = theta_vars.iter().collect();
-                let j = symplex::matrix::jacobian(
-                    &[&x, &y],
-                    &theta_refs,
-                );
+                let j = symplex::matrix::jacobian(&[&x, &y], &theta_refs);
                 codegen = codegen.add_matrix_fn("jacobian", &j, &theta_names);
             }
             other => {
@@ -605,20 +597,20 @@ pub fn from_toml(path: impl AsRef<Path>) -> Result<CodeGen, Box<dyn std::error::
     Ok(codegen)
 }
 
-/// Convert an `f64` to an exact symplex expression.
+/// Convert an `f64` DH parameter to an exact symplex expression.
 ///
-/// If the value is an integer, use `symplex::int()`. Otherwise approximate
-/// with a rational via `symplex::rational()` scaled by 1_000_000.
-fn float_to_expr(v: f64) -> Ex {
+/// Integers become `ctx.int()`.  Other values are rounded to the nearest
+/// millionth and stored as a reduced rational (`0.3` → `3/10`), which is
+/// what a human-written robot spec almost always means.
+fn float_to_expr(ctx: &Context, v: f64) -> Ex {
     if v == 0.0 {
-        symplex::int(0)
+        ctx.int(0)
     } else if v == (v as i64) as f64 {
-        symplex::int(v as i64)
+        ctx.int(v as i64)
     } else {
-        // Approximate the float as p/q with q = 1_000_000 for reasonable precision
         let scale = 1_000_000i64;
         let p = (v * scale as f64).round() as i64;
-        symplex::rational(p, scale)
+        ctx.rational(p, scale)
     }
 }
 
@@ -653,8 +645,10 @@ pub fn robot_arm(joints: &[(&str, f64, f64, f64)]) -> RobotArmBuilder {
 /// Builder for generating code for a serial robot arm.
 ///
 /// Created by [`robot_arm()`]. Accumulates requested functions and then
-/// delegates to [`CodeGen`] for final output.
+/// delegates to [`CodeGen`] for final output.  All symbolic work happens
+/// in a private [`Context`] owned by the builder.
 pub struct RobotArmBuilder {
+    ctx: Context,
     joints: Vec<(String, f64, f64, f64)>,
     codegen: CodeGen,
     generated_fk: bool,
@@ -664,6 +658,7 @@ pub struct RobotArmBuilder {
 impl RobotArmBuilder {
     fn new(joints: Vec<(String, f64, f64, f64)>) -> Self {
         Self {
+            ctx: Context::new(),
             joints,
             codegen: CodeGen::new(),
             generated_fk: false,
@@ -673,31 +668,35 @@ impl RobotArmBuilder {
 
     /// Build the symbolic DH parameter tuples and theta variable list.
     fn build_dh(&self) -> (Vec<Ex>, Vec<Ex>, Vec<Ex>, Vec<Ex>) {
+        let ctx = &self.ctx;
         let thetas: Vec<Ex> = self
             .joints
             .iter()
-            .map(|(name, _, _, _)| symplex::var(name))
+            .map(|(name, _, _, _)| ctx.symbol(name))
             .collect();
         let d_vals: Vec<Ex> = self
             .joints
             .iter()
-            .map(|(_, d, _, _)| float_to_expr(*d))
+            .map(|(_, d, _, _)| float_to_expr(ctx, *d))
             .collect();
         let a_vals: Vec<Ex> = self
             .joints
             .iter()
-            .map(|(_, _, a, _)| float_to_expr(*a))
+            .map(|(_, _, a, _)| float_to_expr(ctx, *a))
             .collect();
         let alpha_vals: Vec<Ex> = self
             .joints
             .iter()
-            .map(|(_, _, _, alpha)| float_to_expr(*alpha))
+            .map(|(_, _, _, alpha)| float_to_expr(ctx, *alpha))
             .collect();
         (thetas, d_vals, a_vals, alpha_vals)
     }
 
     fn theta_names_owned(&self) -> Vec<String> {
-        self.joints.iter().map(|(name, _, _, _)| name.clone()).collect()
+        self.joints
+            .iter()
+            .map(|(name, _, _, _)| name.clone())
+            .collect()
     }
 
     /// Generate forward kinematics position functions (`fk_x`, `fk_y`, `fk_z`).
@@ -706,7 +705,14 @@ impl RobotArmBuilder {
         let dh: Vec<(&Ex, &Ex, &Ex, &Ex)> = thetas
             .iter()
             .enumerate()
-            .map(|(i, t)| (t as &Ex, &d_vals[i] as &Ex, &a_vals[i] as &Ex, &alpha_vals[i] as &Ex))
+            .map(|(i, t)| {
+                (
+                    t as &Ex,
+                    &d_vals[i] as &Ex,
+                    &a_vals[i] as &Ex,
+                    &alpha_vals[i] as &Ex,
+                )
+            })
             .collect();
         let owned_names = self.theta_names_owned();
         let theta_names: Vec<&str> = owned_names.iter().map(|s| s.as_str()).collect();
@@ -729,7 +735,14 @@ impl RobotArmBuilder {
         let dh: Vec<(&Ex, &Ex, &Ex, &Ex)> = thetas
             .iter()
             .enumerate()
-            .map(|(i, t)| (t as &Ex, &d_vals[i] as &Ex, &a_vals[i] as &Ex, &alpha_vals[i] as &Ex))
+            .map(|(i, t)| {
+                (
+                    t as &Ex,
+                    &d_vals[i] as &Ex,
+                    &a_vals[i] as &Ex,
+                    &alpha_vals[i] as &Ex,
+                )
+            })
             .collect();
         let owned_names = self.theta_names_owned();
         let theta_names: Vec<&str> = owned_names.iter().map(|s| s.as_str()).collect();
@@ -768,10 +781,7 @@ impl RobotArmBuilder {
     }
 
     /// Write generated code to an explicit path.
-    pub fn write_to_path(
-        self,
-        path: impl AsRef<Path>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn write_to_path(self, path: impl AsRef<Path>) -> Result<(), Box<dyn std::error::Error>> {
         self.codegen.write_to_path(path)
     }
 
@@ -814,6 +824,106 @@ mod tests {
             "expected header comment in generated output, got: {code}"
         );
         // No functions registered → no function bodies
-        assert!(!code.contains("fn "), "expected no function definitions in empty codegen");
+        assert!(
+            !code.contains("fn "),
+            "expected no function definitions in empty codegen"
+        );
+    }
+
+    #[test]
+    fn float_to_expr_is_exact_and_reduced() {
+        let ctx = Context::new();
+        assert_eq!(format!("{}", float_to_expr(&ctx, 0.0)), "0");
+        assert_eq!(format!("{}", float_to_expr(&ctx, 2.0)), "2");
+        assert_eq!(format!("{}", float_to_expr(&ctx, -3.0)), "-3");
+        assert_eq!(format!("{}", float_to_expr(&ctx, 0.3)), "3/10");
+        assert_eq!(format!("{}", float_to_expr(&ctx, 0.25)), "1/4");
+    }
+
+    #[test]
+    fn robot_arm_generates_fk_and_jacobian() {
+        let code = robot_arm(&[("theta1", 0.0, 0.3, 0.0), ("theta2", 0.0, 0.25, 0.0)])
+            .generate_all()
+            .into_codegen()
+            .generate()
+            .unwrap();
+
+        for name in ["fk_x", "fk_y", "fk_z", "jacobian"] {
+            assert!(
+                code.contains(&format!("fn {name}(")),
+                "expected `{name}` in generated code:\n{code}"
+            );
+        }
+        assert!(code.contains("theta1: f64") && code.contains("theta2: f64"));
+        // Planar arm: the Jacobian is 2×2 → flat array of 4.
+        assert!(code.contains("[f64; 4]"), "expected 2×2 Jacobian:\n{code}");
+    }
+
+    #[test]
+    fn robot_arm_no_std_emits_single_math_module() {
+        let code = robot_arm(&[("q", 0.0, 1.0, 0.0)])
+            .no_std()
+            .generate_all()
+            .into_codegen()
+            .generate()
+            .unwrap();
+        // The cfg-gated math module must be emitted exactly once (std + libm variants).
+        assert_eq!(code.matches("mod math {").count(), 2, "{code}");
+    }
+
+    #[test]
+    fn from_toml_round_trip() {
+        let dir = std::env::temp_dir().join(format!("symplex_build_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("robot.toml");
+        fs::write(
+            &path,
+            r#"
+[robot]
+name = "two_link"
+
+[[joints]]
+theta = "theta1"
+a = 0.3
+
+[[joints]]
+theta = "theta2"
+a = 0.25
+
+[generate]
+functions = ["fk", "jacobian"]
+"#,
+        )
+        .unwrap();
+
+        let code = from_toml(&path).unwrap().generate().unwrap();
+        assert!(code.contains("fn fk_x("), "{code}");
+        assert!(code.contains("fn jacobian("), "{code}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn from_toml_rejects_unknown_function() {
+        let dir = std::env::temp_dir().join(format!("symplex_build_bad_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("robot.toml");
+        fs::write(
+            &path,
+            r#"
+[robot]
+name = "r"
+[[joints]]
+theta = "q"
+[generate]
+functions = ["dynamics"]
+"#,
+        )
+        .unwrap();
+        let err = from_toml(&path)
+            .err()
+            .expect("unknown function should error");
+        assert!(err.to_string().contains("dynamics"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

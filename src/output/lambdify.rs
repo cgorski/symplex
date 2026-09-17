@@ -91,10 +91,10 @@ fn is_neg_one(arena: &Arena, id: ExprId) -> bool {
     if let Some(r) = arena.as_num(id) {
         return *r == num_rational::Ratio::from_integer((-1).into());
     }
-    if let ExprNode::Neg(inner) = arena.node(id) {
-        if let Some(r) = arena.as_num(*inner) {
-            return r.is_one();
-        }
+    if let ExprNode::Neg(inner) = arena.node(id)
+        && let Some(r) = arena.as_num(*inner)
+    {
+        return r.is_one();
     }
     false
 }
@@ -148,37 +148,36 @@ fn compile_recursive(
                 let mut exp_idx = None;
                 let mut neg_one_idx = None;
                 for (i, &child) in children.iter().enumerate() {
-                    if exp_idx.is_none() {
-                        if let ExprNode::Exp(_) = arena.node(child) {
-                            exp_idx = Some(i);
-                        }
+                    if exp_idx.is_none()
+                        && let ExprNode::Exp(_) = arena.node(child)
+                    {
+                        exp_idx = Some(i);
                     }
                     if neg_one_idx.is_none() && is_neg_one(arena, child) {
                         neg_one_idx = Some(i);
                     }
                 }
-                if let (Some(ei), Some(ni)) = (exp_idx, neg_one_idx) {
-                    if ei != ni {
-                        if let ExprNode::Exp(inner) = arena.node(children[ei]).clone() {
-                            compile_recursive(arena, inner, var_map, out)?;
-                            out.push(Instruction::ExpM1);
-                            // Compile remaining children and add them
-                            let mut first = true;
-                            for (i, &child) in children.iter().enumerate() {
-                                if i != ei && i != ni {
-                                    compile_recursive(arena, child, var_map, out)?;
-                                    if !first {
-                                        out.push(Instruction::Add);
-                                    }
-                                    first = false;
-                                }
-                            }
+                if let (Some(ei), Some(ni)) = (exp_idx, neg_one_idx)
+                    && ei != ni
+                    && let ExprNode::Exp(inner) = arena.node(children[ei]).clone()
+                {
+                    compile_recursive(arena, inner, var_map, out)?;
+                    out.push(Instruction::ExpM1);
+                    // Compile remaining children and add them
+                    let mut first = true;
+                    for (i, &child) in children.iter().enumerate() {
+                        if i != ei && i != ni {
+                            compile_recursive(arena, child, var_map, out)?;
                             if !first {
                                 out.push(Instruction::Add);
                             }
-                            return Some(());
+                            first = false;
                         }
                     }
+                    if !first {
+                        out.push(Instruction::Add);
+                    }
+                    return Some(());
                 }
             }
             compile_recursive(arena, children[0], var_map, out)?;
@@ -203,12 +202,12 @@ fn compile_recursive(
             // This avoids f64::powf(negative, frac) → NaN for odd roots.
             if let Some(r) = arena.as_num(exp) {
                 // Integer exponent → powi (handles negative bases correctly)
-                if r.is_integer() {
-                    if let Ok(n) = i32::try_from(r.to_integer()) {
-                        compile_recursive(arena, base, var_map, out)?;
-                        out.push(Instruction::Powi(n));
-                        return Some(());
-                    }
+                if r.is_integer()
+                    && let Ok(n) = i32::try_from(r.to_integer())
+                {
+                    compile_recursive(arena, base, var_map, out)?;
+                    out.push(Instruction::Powi(n));
+                    return Some(());
                 }
                 let (numer, denom) = (r.numer().clone(), r.denom().clone());
                 // exp == 1/2 → sqrt
@@ -225,7 +224,9 @@ fn compile_recursive(
                 }
                 // General odd-denominator fractional exponent →
                 // sign(base) * |base|^(p/q)  (sign-preserving real root)
-                if !r.denom().is_one() && r.denom() % num_bigint::BigInt::from(2) != num_bigint::BigInt::from(0) {
+                if !r.denom().is_one()
+                    && r.denom() % num_bigint::BigInt::from(2) != num_bigint::BigInt::from(0)
+                {
                     compile_recursive(arena, base, var_map, out)?;
                     out.push(Instruction::Sign);
                     compile_recursive(arena, base, var_map, out)?;
@@ -263,18 +264,18 @@ fn compile_recursive(
         }
         ExprNode::Ln(inner) => {
             // Pattern: ln(1 + x) → Ln1p(x)  (better precision near zero)
-            if let ExprNode::Add(ref ch) = arena.node(inner).clone() {
-                if ch.len() == 2 {
-                    if is_one(arena, ch[0]) {
-                        compile_recursive(arena, ch[1], var_map, out)?;
-                        out.push(Instruction::Ln1p);
-                        return Some(());
-                    }
-                    if is_one(arena, ch[1]) {
-                        compile_recursive(arena, ch[0], var_map, out)?;
-                        out.push(Instruction::Ln1p);
-                        return Some(());
-                    }
+            if let ExprNode::Add(ref ch) = arena.node(inner).clone()
+                && ch.len() == 2
+            {
+                if is_one(arena, ch[0]) {
+                    compile_recursive(arena, ch[1], var_map, out)?;
+                    out.push(Instruction::Ln1p);
+                    return Some(());
+                }
+                if is_one(arena, ch[1]) {
+                    compile_recursive(arena, ch[0], var_map, out)?;
+                    out.push(Instruction::Ln1p);
+                    return Some(());
                 }
             }
             compile_recursive(arena, inner, var_map, out)?;
@@ -534,7 +535,13 @@ fn execute(instructions: &[Instruction], args: &[f64]) -> f64 {
             }
             Instruction::Sign => {
                 let a = stack.pop().unwrap_or(0.0);
-                stack.push(if a > 0.0 { 1.0 } else if a < 0.0 { -1.0 } else { 0.0 });
+                stack.push(if a > 0.0 {
+                    1.0
+                } else if a < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                });
             }
             Instruction::Heaviside => {
                 let a = stack.pop().unwrap_or(0.0);

@@ -1,8 +1,8 @@
 //! Dimensional calculus: differentiation and integration that track
 //! physical dimensions through the type system.
 //!
-//! Differentiation divides dimensions: d(Qty<D1>)/d(Qty<D2>) → Qty<D1/D2>
-//! Integration multiplies dimensions: ∫ Qty<D1> d(Qty<D2>) → Qty<D1*D2>
+//! Differentiation divides dimensions: `d(Qty<D1>)/d(Qty<D2>) → Qty<D1/D2>`
+//! Integration multiplies dimensions: `∫ Qty<D1> d(Qty<D2>) → Qty<D1*D2>`
 //!
 //! Named newtypes use `.as_qty()` before calling these functions,
 //! then convert back via `.into()`:

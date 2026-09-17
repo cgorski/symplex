@@ -1096,13 +1096,8 @@ fn eval_node(
             // Step 3+4: Evaluate body at each root and sum.
             let mut sum = c_zero(prec);
             for (k, root) in roots.iter().enumerate() {
-                let term = evalf_subtree_with_sub(
-                    arena, body_id, sumvar_id, root, prec, rm, cc,
-                )?;
-                tracing::trace!(
-                    root_idx = k,
-                    "evalf: RootSum — evaluated body at root"
-                );
+                let term = evalf_subtree_with_sub(arena, body_id, sumvar_id, root, prec, rm, cc)?;
+                tracing::trace!(root_idx = k, "evalf: RootSum — evaluated body at root");
                 sum = c_add(&sum, &term, prec, rm);
             }
 

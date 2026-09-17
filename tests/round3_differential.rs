@@ -45,13 +45,7 @@ enum CompareResult {
 }
 
 /// Compare compile vs subs+eval_f64 at a given f64 point for a single-variable expression.
-fn compare_at(
-    expr: &Ex,
-    var: &Ex,
-    var_name: &str,
-    val: f64,
-    ctx: &Context,
-) -> CompareResult {
+fn compare_at(expr: &Ex, var: &Ex, var_name: &str, val: f64, ctx: &Context) -> CompareResult {
     let compiled = match expr.compile(&[var_name]) {
         Some(f) => f,
         None => {
@@ -273,14 +267,7 @@ fn diff_trig_pythagorean_identity() {
     let x = ctx.symbol("x");
     // sin(x)^2 + cos(x)^2 should always be 1
     let expr = x.sin().powi(2) + x.cos().powi(2);
-    assert_paths_agree(
-        &ctx,
-        &expr,
-        &x,
-        "x",
-        STANDARD_VALS,
-        "sin(x)^2 + cos(x)^2",
-    );
+    assert_paths_agree(&ctx, &expr, &x, "x", STANDARD_VALS, "sin(x)^2 + cos(x)^2");
 }
 
 // ── Exponential ────────────────────────────────────────────────────────
@@ -985,10 +972,7 @@ fn edge_sqrt_at_zero_and_negative() {
 
     // sqrt(-1) should be NaN in real domain
     let sqrt_neg = sqrt_compiled(&[-1.0]);
-    assert!(
-        sqrt_neg.is_nan(),
-        "sqrt(-1) should be NaN, got {sqrt_neg}"
-    );
+    assert!(sqrt_neg.is_nan(), "sqrt(-1) should be NaN, got {sqrt_neg}");
 }
 
 #[test]
@@ -1181,9 +1165,7 @@ fn multi_unused_variable_does_not_affect_result() {
 
     // Expression only uses x, compiled with ["x", "y"]
     let expr = x.powi(2) + 1;
-    let compiled = expr
-        .compile(&["x", "y"])
-        .expect("extra var should be fine");
+    let compiled = expr.compile(&["x", "y"]).expect("extra var should be fine");
 
     // y value (999) should be irrelevant
     assert!(
@@ -1242,14 +1224,7 @@ fn diff_nested_trig_deep() {
 
     // sin(cos(sin(x)))
     let expr = x.sin().cos().sin();
-    assert_paths_agree(
-        &ctx,
-        &expr,
-        &x,
-        "x",
-        STANDARD_VALS,
-        "sin(cos(sin(x)))",
-    );
+    assert_paths_agree(&ctx, &expr, &x, "x", STANDARD_VALS, "sin(cos(sin(x)))");
 }
 
 #[test]
@@ -1268,14 +1243,7 @@ fn diff_hyperbolic_identity_cosh_sq_minus_sinh_sq() {
         );
     }
 
-    assert_paths_agree(
-        &ctx,
-        &expr,
-        &x,
-        "x",
-        STANDARD_VALS,
-        "cosh(x)^2 - sinh(x)^2",
-    );
+    assert_paths_agree(&ctx, &expr, &x, "x", STANDARD_VALS, "cosh(x)^2 - sinh(x)^2");
 }
 
 #[test]
@@ -1305,14 +1273,7 @@ fn diff_pow_with_pi_and_e_constants() {
 
     // pi * x + e
     let expr = &pi * &x + &e;
-    assert_paths_agree(
-        &ctx,
-        &expr,
-        &x,
-        "x",
-        &[-1.0, 0.0, 1.0, 2.0],
-        "pi*x + e",
-    );
+    assert_paths_agree(&ctx, &expr, &x, "x", &[-1.0, 0.0, 1.0, 2.0], "pi*x + e");
 }
 
 #[test]
@@ -1539,13 +1500,10 @@ fn diff_systematic_sweep_all_expressions() {
 
             match eval_result {
                 Ok(eval_val) => {
-                    if !approx_eq_rel(compile_val, eval_val, 1e-10)
-                        && !(compile_val.is_nan() && eval_val.is_nan())
-                    {
+                    let both_nan = compile_val.is_nan() && eval_val.is_nan();
+                    if !both_nan && !approx_eq_rel(compile_val, eval_val, 1e-10) {
                         let rel_err = if eval_val.abs().max(compile_val.abs()) > 1e-300 {
-                            ((eval_val - compile_val)
-                                / eval_val.abs().max(compile_val.abs()))
-                            .abs()
+                            ((eval_val - compile_val) / eval_val.abs().max(compile_val.abs())).abs()
                         } else {
                             (eval_val - compile_val).abs()
                         };
@@ -1655,10 +1613,7 @@ fn regression_cos_at_pi() {
 
     let compiled = expr.compile(&["x"]).unwrap();
     let val = compiled(&[std::f64::consts::PI]);
-    assert!(
-        (val + 1.0).abs() < 1e-14,
-        "cos(pi) = {val}, expected -1"
-    );
+    assert!((val + 1.0).abs() < 1e-14, "cos(pi) = {val}, expected -1");
 }
 
 #[test]
@@ -1740,10 +1695,7 @@ fn consistency_compile_and_codegen_same_expressions() {
             compile_ok,
             "{desc}: compile returned None but should succeed"
         );
-        assert!(
-            codegen_ok,
-            "{desc}: to_rust_fn failed but should succeed"
-        );
+        assert!(codegen_ok, "{desc}: to_rust_fn failed but should succeed");
     }
 }
 
@@ -1838,20 +1790,17 @@ fn aggressive_negative_base_pow_via_compile() {
     let eval_result = expr.subs_i64(&x, -8).eval_f64();
 
     // Document the outcome regardless of what happens
-    eprintln!(
-        "x^(1/3) at x=-8: compile={compile_val}, eval={eval_result:?}"
-    );
+    eprintln!("x^(1/3) at x=-8: compile={compile_val}, eval={eval_result:?}");
 
     // compile uses f64::powf(-8.0, 1.0/3.0) which gives NaN
-    if compile_val.is_nan() {
-        if let Ok(eval_val) = &eval_result {
-            if !eval_val.is_nan() {
-                eprintln!(
-                    "BUG: x^(1/3) at x=-8: compile=NaN but eval={eval_val} \
+    if compile_val.is_nan()
+        && let Ok(eval_val) = &eval_result
+        && !eval_val.is_nan()
+    {
+        eprintln!(
+            "BUG: x^(1/3) at x=-8: compile=NaN but eval={eval_val} \
                      — compile path cannot compute real cube root of negative numbers"
-                );
-            }
-        }
+        );
     }
 }
 
@@ -1942,14 +1891,7 @@ fn aggressive_double_negation() {
     let x = ctx.symbol("x");
     let expr = -(-&x);
 
-    assert_paths_agree(
-        &ctx,
-        &expr,
-        &x,
-        "x",
-        STANDARD_VALS,
-        "--x (double negation)",
-    );
+    assert_paths_agree(&ctx, &expr, &x, "x", STANDARD_VALS, "--x (double negation)");
 }
 
 #[test]
@@ -2080,14 +2022,8 @@ fn aggressive_floor_ceil_at_integers() {
 
     for n in -5..=5 {
         let v = n as f64;
-        assert_eq!(
-            compiled_floor(&[v]), v,
-            "floor({v}) should be {v}"
-        );
-        assert_eq!(
-            compiled_ceil(&[v]), v,
-            "ceil({v}) should be {v}"
-        );
+        assert_eq!(compiled_floor(&[v]), v, "floor({v}) should be {v}");
+        assert_eq!(compiled_ceil(&[v]), v, "ceil({v}) should be {v}");
     }
 }
 
@@ -2212,14 +2148,7 @@ fn aggressive_pow_one_gives_x() {
     let x = ctx.symbol("x");
     let expr = x.powi(1);
 
-    assert_paths_agree(
-        &ctx,
-        &expr,
-        &x,
-        "x",
-        STANDARD_VALS,
-        "x^1 should equal x",
-    );
+    assert_paths_agree(&ctx, &expr, &x, "x", STANDARD_VALS, "x^1 should equal x");
 }
 
 #[test]
@@ -2231,10 +2160,7 @@ fn aggressive_sum_of_cubes_identity() {
     let y = ctx.symbol("y");
 
     let lhs = (&x + &y).powi(3);
-    let rhs = x.powi(3)
-        + &x.powi(2) * &y * 3
-        + &x * &y.powi(2) * 3
-        + y.powi(3);
+    let rhs = x.powi(3) + &x.powi(2) * &y * 3 + &x * &y.powi(2) * 3 + y.powi(3);
 
     let compiled_lhs = lhs.compile(&["x", "y"]).unwrap();
     let compiled_rhs = rhs.compile(&["x", "y"]).unwrap();
@@ -2411,7 +2337,8 @@ fn aggressive_powi_large_exponents() {
     let val = compiled(&[2.0]);
     assert!(
         approx_eq_rel(val, 1.0 / 1024.0, 1e-10),
-        "2^(-10) = {val}, expected {}", 1.0 / 1024.0
+        "2^(-10) = {val}, expected {}",
+        1.0 / 1024.0
     );
 }
 
@@ -2426,10 +2353,7 @@ fn aggressive_zero_expression() {
     if let Some(compiled) = expr.compile(&["x"]) {
         for &v in STANDARD_VALS {
             let got = compiled(&[v]);
-            assert!(
-                approx_eq_rel(got, 0.0, 1e-15),
-                "0*x at x={v}: got {got}"
-            );
+            assert!(approx_eq_rel(got, 0.0, 1e-15), "0*x at x={v}: got {got}");
         }
     }
 }
@@ -2441,12 +2365,5 @@ fn aggressive_identity_expression() {
     let x = ctx.symbol("x");
     let expr = &x * &ctx.int(1);
 
-    assert_paths_agree(
-        &ctx,
-        &expr,
-        &x,
-        "x",
-        STANDARD_VALS,
-        "1*x should equal x",
-    );
+    assert_paths_agree(&ctx, &expr, &x, "x", STANDARD_VALS, "1*x should equal x");
 }

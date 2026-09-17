@@ -63,7 +63,8 @@ fn trig_double_angle_cos2x_from_cos2_minus_sin2() {
     let simplified = expr.simplify();
     assert!(
         numerical_eq_1var(&expr, &simplified, &x, &[1, 2, 3], 1e-10),
-        "cos²(x)-sin²(x) simplify broke numerical equivalence: {}", fmt(&simplified)
+        "cos²(x)-sin²(x) simplify broke numerical equivalence: {}",
+        fmt(&simplified)
     );
 }
 
@@ -85,7 +86,8 @@ fn trig_pythagorean_scaled() {
     let simplified = expr.simplify();
     assert!(
         numerical_eq_1var(&expr, &simplified, &x, &[1, 2, 3], 1e-10),
-        "3*(sin²+cos²) simplify broke numerical equivalence: {}", fmt(&simplified)
+        "3*(sin²+cos²) simplify broke numerical equivalence: {}",
+        fmt(&simplified)
     );
 }
 
@@ -115,7 +117,8 @@ fn trig_nested_cos_of_sin() {
     let simplified = expr.simplify();
     assert!(
         numerical_eq_1var(&expr, &simplified, &x, &[1, 2, 3], 1e-10),
-        "cos(sin(x)) simplify broke numerical equivalence: {}", fmt(&simplified)
+        "cos(sin(x)) simplify broke numerical equivalence: {}",
+        fmt(&simplified)
     );
 }
 
@@ -146,10 +149,7 @@ fn trig_expand_cos_4x() {
     let expr = (&x * 4).cos();
     let expanded = expr.expand_trig();
     let s = fmt(&expanded);
-    assert!(
-        !s.contains("4*x"),
-        "cos(4x) should be expanded, got: {s}"
-    );
+    assert!(!s.contains("4*x"), "cos(4x) should be expanded, got: {s}");
     assert!(
         numerical_eq_1var(&expr, &expanded, &x, &[1, 2, 3], 1e-10),
         "cos(4x) trig_expand broke numerical equivalence: {s}"
@@ -251,11 +251,17 @@ fn trig_hyperbolic_identity_cosh2_minus_sinh2() {
         let v1 = simplified.subs_i64(&x, p).eval().eval_f64();
         let v2 = full.subs_i64(&x, p).eval().eval_f64();
         match v1 {
-            Ok(v) => assert!((v - 1.0).abs() < 1e-9, "simplified cosh²-sinh² at x={p}: {v}"),
+            Ok(v) => assert!(
+                (v - 1.0).abs() < 1e-9,
+                "simplified cosh²-sinh² at x={p}: {v}"
+            ),
             Err(e) => panic!("simplified eval failed at x={p}: {e}"),
         }
         match v2 {
-            Ok(v) => assert!((v - 1.0).abs() < 1e-9, "full_simplified cosh²-sinh² at x={p}: {v}"),
+            Ok(v) => assert!(
+                (v - 1.0).abs() < 1e-9,
+                "full_simplified cosh²-sinh² at x={p}: {v}"
+            ),
             Err(e) => panic!("full_simplified eval failed at x={p}: {e}"),
         }
     }
@@ -357,7 +363,11 @@ fn log_roundtrip_expand_combine() {
     // Numerically check at positive integer values
     for (pa, pb) in [(2, 3), (5, 7)] {
         let v_orig = original.subs_i64(&a, pa).subs_i64(&b, pb).eval().eval_f64();
-        let v_recom = recombined.subs_i64(&a, pa).subs_i64(&b, pb).eval().eval_f64();
+        let v_recom = recombined
+            .subs_i64(&a, pa)
+            .subs_i64(&b, pb)
+            .eval()
+            .eval_f64();
         match (v_orig, v_recom) {
             (Ok(o), Ok(r)) => assert!(
                 (o - r).abs() < 1e-10,
@@ -376,8 +386,10 @@ fn log_exp_simplify() {
     let expr = x.exp().ln();
     let simplified = expr.simplify();
     assert_eq!(
-        fmt(&simplified), "x",
-        "ln(exp(x)) should simplify to x, got: {}", fmt(&simplified)
+        fmt(&simplified),
+        "x",
+        "ln(exp(x)) should simplify to x, got: {}",
+        fmt(&simplified)
     );
 }
 
@@ -389,8 +401,10 @@ fn exp_log_simplify() {
     let expr = x.ln().exp();
     let simplified = expr.simplify();
     assert_eq!(
-        fmt(&simplified), "x",
-        "exp(ln(x)) should simplify to x, got: {}", fmt(&simplified)
+        fmt(&simplified),
+        "x",
+        "exp(ln(x)) should simplify to x, got: {}",
+        fmt(&simplified)
     );
 }
 
@@ -399,7 +413,12 @@ fn log_of_one_is_zero() {
     let ctx = Context::new();
     let expr = ctx.int(1).ln();
     let evaled = expr.eval();
-    assert_eq!(fmt(&evaled), "0", "ln(1) should eval to 0, got: {}", fmt(&evaled));
+    assert_eq!(
+        fmt(&evaled),
+        "0",
+        "ln(1) should eval to 0, got: {}",
+        fmt(&evaled)
+    );
 }
 
 #[test]
@@ -407,7 +426,12 @@ fn log_of_e_is_one() {
     let ctx = Context::new();
     let expr = ctx.e().ln();
     let evaled = expr.eval();
-    assert_eq!(fmt(&evaled), "1", "ln(e) should eval to 1, got: {}", fmt(&evaled));
+    assert_eq!(
+        fmt(&evaled),
+        "1",
+        "ln(e) should eval to 1, got: {}",
+        fmt(&evaled)
+    );
 }
 
 #[test]
@@ -424,10 +448,7 @@ fn log_of_negative_number_is_complex() {
         Ok((re, im)) => {
             eprintln!("ln(-1) complex: ({re}, {im})");
             // re should be ~0, im should be ~pi
-            assert!(
-                re.abs() < 1e-9,
-                "ln(-1) real part should be 0, got: {re}"
-            );
+            assert!(re.abs() < 1e-9, "ln(-1) real part should be 0, got: {re}");
             assert!(
                 (im.abs() - std::f64::consts::PI).abs() < 1e-9,
                 "ln(-1) imaginary part should be ±π, got: {im}"
@@ -540,10 +561,7 @@ fn pow_combine_exponents_xa_times_xb() {
         .eval()
         .eval_f64();
     match (val_orig, val_simp) {
-        (Ok(o), Ok(s)) => assert!(
-            (o - s).abs() < 1e-6,
-            "x^a*x^b simplify broke: {o} vs {s}"
-        ),
+        (Ok(o), Ok(s)) => assert!((o - s).abs() < 1e-6, "x^a*x^b simplify broke: {o} vs {s}"),
         _ => eprintln!("evaluation failed for x^a*x^b test"),
     }
 }
@@ -648,10 +666,7 @@ fn expand_binomial_large_exponent() {
     let val_expanded = expanded.subs_i64(&a, 1).subs_i64(&b, 1).eval().eval_f64();
     let val_original = expr.subs_i64(&a, 1).subs_i64(&b, 1).eval().eval_f64();
     match (val_original, val_expanded) {
-        (Ok(o), Ok(e)) => assert!(
-            (o - e).abs() < 1e-6,
-            "(a+b)^10 expand broke: {o} vs {e}"
-        ),
+        (Ok(o), Ok(e)) => assert!((o - e).abs() < 1e-6, "(a+b)^10 expand broke: {o} vs {e}"),
         _ => panic!("eval failed for (a+b)^10"),
     }
     // Also check at a=2, b=3: (2+3)^10 = 5^10 = 9765625
@@ -870,7 +885,10 @@ fn eval_pi_is_recognizable() {
     let ctx = Context::new();
     let pi = ctx.pi();
     let s = fmt(&pi);
-    assert!(s.contains("pi") || s.contains("π"), "pi should display as pi, got: {s}");
+    assert!(
+        s.contains("pi") || s.contains("π"),
+        "pi should display as pi, got: {s}"
+    );
     let val = pi.eval_f64();
     match val {
         Ok(v) => assert!(
@@ -886,7 +904,10 @@ fn eval_e_is_recognizable() {
     let ctx = Context::new();
     let e = ctx.e();
     let s = fmt(&e);
-    assert!(s.contains("E") || s.contains("e"), "e should display properly, got: {s}");
+    assert!(
+        s.contains("E") || s.contains("e"),
+        "e should display properly, got: {s}"
+    );
     let val = e.eval_f64();
     match val {
         Ok(v) => assert!(
@@ -1007,7 +1028,8 @@ fn equals_pythagorean_identity() {
     // But simplify should handle it:
     let simplified = lhs.simplify();
     assert_eq!(
-        fmt(&simplified), "1",
+        fmt(&simplified),
+        "1",
         "sin²+cos² should simplify to 1 even if equals doesn't detect it"
     );
 }
@@ -1099,8 +1121,10 @@ fn refine_abs_positive() {
     let expr = x.abs();
     let refined = expr.refine();
     assert_eq!(
-        fmt(&refined), "x",
-        "abs(x) with positive x should refine to x, got: {}", fmt(&refined)
+        fmt(&refined),
+        "x",
+        "abs(x) with positive x should refine to x, got: {}",
+        fmt(&refined)
     );
 }
 
@@ -1128,7 +1152,8 @@ fn refine_with_temporary_assumptions() {
     let expr = x.abs();
     let refined = expr.refine_with(&[(&x, Assumption::Positive)]);
     assert_eq!(
-        fmt(&refined), "x",
+        fmt(&refined),
+        "x",
         "abs(x) with temp positive assumption should be x, got: {}",
         fmt(&refined)
     );
@@ -1149,10 +1174,7 @@ fn refine_sqrt_x_squared_negative_x() {
     // Check numerically by substituting x = -5: should give 5
     let val = refined.subs_i64(&x, -5).eval().eval_f64();
     match val {
-        Ok(v) => assert!(
-            (v - 5.0).abs() < 1e-10,
-            "sqrt((-5)²) should be 5, got {v}"
-        ),
+        Ok(v) => assert!((v - 5.0).abs() < 1e-10, "sqrt((-5)²) should be 5, got {v}"),
         Err(e) => panic!("eval failed: {e}"),
     }
 }
@@ -1227,6 +1249,7 @@ fn expand_then_simplify_restores() {
 }
 
 #[test]
+#[allow(clippy::erasing_op)] // Symbolic `x * 0` is exactly what's under test.
 fn simplify_zero_times_anything() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -1263,7 +1286,8 @@ fn trig_expand_cos_2x_identity() {
     // Numerical equivalence
     assert!(
         numerical_eq_1var(&cos_2x, &expanded, &x, &[1, 2, 3, 4], 1e-10),
-        "cos(2x) expand_trig broke, result: {}", fmt(&expanded)
+        "cos(2x) expand_trig broke, result: {}",
+        fmt(&expanded)
     );
 }
 
@@ -1303,8 +1327,10 @@ fn smart_simplify_pythagorean() {
     let expr = &x.sin().powi(2) + &x.cos().powi(2);
     let result = expr.simplify();
     assert_eq!(
-        fmt(&result), "1",
-        "smart_simplify should get sin²+cos²=1, got: {}", fmt(&result)
+        fmt(&result),
+        "1",
+        "smart_simplify should get sin²+cos²=1, got: {}",
+        fmt(&result)
     );
 }
 
@@ -1502,7 +1528,12 @@ fn power_simplify_rational_exponent() {
     let ctx = Context::new();
     let four = ctx.int(4);
     let result = four.sqrt().eval();
-    assert_eq!(fmt(&result), "2", "sqrt(4) should be 2, got: {}", fmt(&result));
+    assert_eq!(
+        fmt(&result),
+        "2",
+        "sqrt(4) should be 2, got: {}",
+        fmt(&result)
+    );
 }
 
 #[test]
@@ -1516,10 +1547,7 @@ fn power_simplify_27_cbrt() {
     // May or may not simplify to 3 depending on implementation
     let val = evaled.eval_f64();
     match val {
-        Ok(v) => assert!(
-            (v - 3.0).abs() < 1e-10,
-            "27^(1/3) should be 3, got {v}"
-        ),
+        Ok(v) => assert!((v - 3.0).abs() < 1e-10, "27^(1/3) should be 3, got {v}"),
         Err(e) => panic!("eval failed: {e}"),
     }
 }
@@ -1532,8 +1560,10 @@ fn refine_floor_of_integer() {
     let expr = n.floor();
     let refined = expr.refine();
     assert_eq!(
-        fmt(&refined), "n",
-        "floor(integer) should refine to n, got: {}", fmt(&refined)
+        fmt(&refined),
+        "n",
+        "floor(integer) should refine to n, got: {}",
+        fmt(&refined)
     );
 }
 
@@ -1570,8 +1600,18 @@ fn pow_symbolic_double_pow_xa_b_simplify() {
     let expr = x.pow(&a).pow(&b);
     let simplified = expr.simplify();
     // Numerically: x=2, a=3, b=2 => (2^3)^2 = 64 = 2^6
-    let v_orig = expr.subs_i64(&x, 2).subs_i64(&a, 3).subs_i64(&b, 2).eval().eval_f64();
-    let v_simp = simplified.subs_i64(&x, 2).subs_i64(&a, 3).subs_i64(&b, 2).eval().eval_f64();
+    let v_orig = expr
+        .subs_i64(&x, 2)
+        .subs_i64(&a, 3)
+        .subs_i64(&b, 2)
+        .eval()
+        .eval_f64();
+    let v_simp = simplified
+        .subs_i64(&x, 2)
+        .subs_i64(&a, 3)
+        .subs_i64(&b, 2)
+        .eval()
+        .eval_f64();
     match (v_orig, v_simp) {
         (Ok(o), Ok(s)) => assert!(
             (o - s).abs() < 1e-6,
@@ -1685,12 +1725,11 @@ fn log_exp_without_real_assumption() {
     for p in [1, 2, -1, -3] {
         let v_orig = expr.subs_i64(&x, p).eval().eval_f64();
         let v_simp = simplified.subs_i64(&x, p).eval().eval_f64();
-        match (v_orig, v_simp) {
-            (Ok(o), Ok(s)) => assert!(
+        if let (Ok(o), Ok(s)) = (v_orig, v_simp) {
+            assert!(
                 (o - s).abs() < 1e-9,
                 "ln(exp(x)) simplify wrong at x={p}: {o} vs {s}"
-            ),
-            _ => {}
+            )
         }
     }
 }
@@ -1714,10 +1753,7 @@ fn log_expand_respects_negative_exponents() {
     let v_orig = expr.subs_i64(&x, 10).subs_i64(&y, 2).eval().eval_f64();
     let v_exp = expanded.subs_i64(&x, 10).subs_i64(&y, 2).eval().eval_f64();
     match (v_orig, v_exp) {
-        (Ok(o), Ok(e)) => assert!(
-            (o - e).abs() < 1e-10,
-            "ln(x/y) expand broke: {o} vs {e}"
-        ),
+        (Ok(o), Ok(e)) => assert!((o - e).abs() < 1e-10, "ln(x/y) expand broke: {o} vs {e}"),
         _ => eprintln!("ln(x/y) eval issue"),
     }
 }
@@ -1804,7 +1840,8 @@ fn trig_simplify_1_minus_sin_squared() {
     // Numerically must be equivalent
     assert!(
         numerical_eq_1var(&expr, &simplified, &x, &[1, 2, 3, 4], 1e-10),
-        "1-sin²(x) simplify broke: {}", fmt(&simplified)
+        "1-sin²(x) simplify broke: {}",
+        fmt(&simplified)
     );
 }
 
@@ -1834,10 +1871,7 @@ fn trig_sinh_of_zero() {
     let evaled = expr.eval();
     let val = evaled.eval_f64();
     match val {
-        Ok(v) => assert!(
-            v.abs() < 1e-15,
-            "sinh(0) should be 0, got {v}"
-        ),
+        Ok(v) => assert!(v.abs() < 1e-15, "sinh(0) should be 0, got {v}"),
         Err(e) => panic!("sinh(0) eval failed: {e}"),
     }
 }
@@ -1849,10 +1883,7 @@ fn trig_cosh_of_zero() {
     let evaled = expr.eval();
     let val = evaled.eval_f64();
     match val {
-        Ok(v) => assert!(
-            (v - 1.0).abs() < 1e-15,
-            "cosh(0) should be 1, got {v}"
-        ),
+        Ok(v) => assert!((v - 1.0).abs() < 1e-15, "cosh(0) should be 1, got {v}"),
         Err(e) => panic!("cosh(0) eval failed: {e}"),
     }
 }
@@ -1910,10 +1941,14 @@ fn expand_product_of_three_sums() {
     let expanded = expr.expand();
     // At a=1,b=1,c=1,d=1,e=1,f=1 => 2*2*2 = 8
     let val = expanded
-        .subs_i64(&a, 1).subs_i64(&b, 1)
-        .subs_i64(&c, 1).subs_i64(&d, 1)
-        .subs_i64(&e, 1).subs_i64(&f, 1)
-        .eval().eval_f64();
+        .subs_i64(&a, 1)
+        .subs_i64(&b, 1)
+        .subs_i64(&c, 1)
+        .subs_i64(&d, 1)
+        .subs_i64(&e, 1)
+        .subs_i64(&f, 1)
+        .eval()
+        .eval_f64();
     match val {
         Ok(v) => assert!((v - 8.0).abs() < 1e-10, "expected 8, got {v}"),
         Err(e) => panic!("eval failed: {e}"),
@@ -2126,10 +2161,7 @@ fn refine_neg_one_to_even_power() {
     for p in [0, 1, 2, 3, -1] {
         let val = expr.subs_i64(&n, p).eval().eval_f64();
         match val {
-            Ok(v) => assert!(
-                (v - 1.0).abs() < 1e-10,
-                "(-1)^(2*{p}) should be 1, got {v}"
-            ),
+            Ok(v) => assert!((v - 1.0).abs() < 1e-10, "(-1)^(2*{p}) should be 1, got {v}"),
             Err(e) => eprintln!("(-1)^(2*{p}) eval failed: {e}"),
         }
     }
@@ -2195,7 +2227,8 @@ fn simplify_mixed_hyp_trig_no_panic() {
     let simplified = expr.simplify();
     assert!(
         numerical_eq_1var(&expr, &simplified, &x, &[1, 2, 3], 1e-10),
-        "mixed sinh+sin simplify broke: {}", fmt(&simplified)
+        "mixed sinh+sin simplify broke: {}",
+        fmt(&simplified)
     );
 }
 
@@ -2278,13 +2311,20 @@ fn log_combine_three_logs() {
         "3 ln terms should combine to 1, got {ln_count}: {s}"
     );
     // Numerical check
-    let v_orig = expr.subs_i64(&a, 2).subs_i64(&b, 3).subs_i64(&c, 5).eval().eval_f64();
-    let v_comb = combined.subs_i64(&a, 2).subs_i64(&b, 3).subs_i64(&c, 5).eval().eval_f64();
+    let v_orig = expr
+        .subs_i64(&a, 2)
+        .subs_i64(&b, 3)
+        .subs_i64(&c, 5)
+        .eval()
+        .eval_f64();
+    let v_comb = combined
+        .subs_i64(&a, 2)
+        .subs_i64(&b, 3)
+        .subs_i64(&c, 5)
+        .eval()
+        .eval_f64();
     match (v_orig, v_comb) {
-        (Ok(o), Ok(c)) => assert!(
-            (o - c).abs() < 1e-10,
-            "3-log combine broke: {o} vs {c}"
-        ),
+        (Ok(o), Ok(c)) => assert!((o - c).abs() < 1e-10, "3-log combine broke: {o} vs {c}"),
         _ => eprintln!("3-log combine eval issue"),
     }
 }
@@ -2407,10 +2447,7 @@ fn bug_cosh2_minus_sinh2_not_simplified_symbolically() {
     let expr = &x.cosh().powi(2) - &x.sinh().powi(2);
     let simplified = expr.simplify();
     let s = fmt(&simplified);
-    assert_eq!(
-        s, "1",
-        "cosh²(x) - sinh²(x) should simplify to 1, got: {s}"
-    );
+    assert_eq!(s, "1", "cosh²(x) - sinh²(x) should simplify to 1, got: {s}");
 }
 
 #[test]
@@ -2480,19 +2517,20 @@ fn bug_ln_exp_no_assumption_correctness() {
     // If simplify returns "x" without checking domain, that's a
     // potential correctness issue for complex analysis use cases.
     if s == "x" {
-        eprintln!("NOTE: ln(exp(x)) simplified to x without Real assumption — \
-                    this is only correct on the principal branch");
+        eprintln!(
+            "NOTE: ln(exp(x)) simplified to x without Real assumption — \
+                    this is only correct on the principal branch"
+        );
     }
     // Verify numerical correctness at least for real integer points
     for p in [1, 2, -1, -3] {
         let v_orig = expr.subs_i64(&x, p).eval().eval_f64();
         let v_simp = simplified.subs_i64(&x, p).eval().eval_f64();
-        match (v_orig, v_simp) {
-            (Ok(o), Ok(s)) => assert!(
+        if let (Ok(o), Ok(s)) = (v_orig, v_simp) {
+            assert!(
                 (o - s).abs() < 1e-9,
                 "ln(exp(x)) wrong at x={p}: {o} vs {s}"
-            ),
-            _ => {}
+            )
         }
     }
 }
@@ -2604,10 +2642,7 @@ fn bug_cos_neg_x_simplify_to_cos_x() {
     let expr = (-&x).cos();
     let simplified = expr.simplify();
     let s = fmt(&simplified);
-    assert_eq!(
-        s, "cos(x)",
-        "cos(-x) should simplify to cos(x), got: {s}"
-    );
+    assert_eq!(s, "cos(x)", "cos(-x) should simplify to cos(x), got: {s}");
 }
 
 #[test]
@@ -2669,10 +2704,7 @@ fn bug_exp_ln_should_always_simplify() {
     let expr = x.ln().exp();
     let simplified = expr.simplify();
     let s = fmt(&simplified);
-    assert_eq!(
-        s, "x",
-        "exp(ln(x)) should always simplify to x, got: {s}"
-    );
+    assert_eq!(s, "x", "exp(ln(x)) should always simplify to x, got: {s}");
 }
 
 #[test]

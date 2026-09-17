@@ -334,10 +334,7 @@ mod tests {
             s.contains("exp"),
             "sinh rewrite should produce exponentials: {s}"
         );
-        assert!(
-            !s.contains("sinh"),
-            "sinh should not survive rewrite: {s}"
-        );
+        assert!(!s.contains("sinh"), "sinh should not survive rewrite: {s}");
     }
 
     #[test]
@@ -352,10 +349,7 @@ mod tests {
             s.contains("exp"),
             "cosh rewrite should produce exponentials: {s}"
         );
-        assert!(
-            !s.contains("cosh"),
-            "cosh should not survive rewrite: {s}"
-        );
+        assert!(!s.contains("cosh"), "cosh should not survive rewrite: {s}");
     }
 
     #[test]
@@ -370,10 +364,7 @@ mod tests {
             s.contains("exp"),
             "tanh rewrite should produce exponentials: {s}"
         );
-        assert!(
-            !s.contains("tanh"),
-            "tanh should not survive rewrite: {s}"
-        );
+        assert!(!s.contains("tanh"), "tanh should not survive rewrite: {s}");
     }
 
     #[test]

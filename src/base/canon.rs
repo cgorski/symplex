@@ -10,7 +10,7 @@
 //! 1. Flatten nested `Add` (explicit stack, no recursion).
 //! 2. Combine like terms: `2*x + 3*x → 5*x`.
 //! 3. Numeric constant collected separately, placed first if nonzero.
-//! 4. Remaining terms sorted by [`SortKey`].
+//! 4. Remaining terms sorted by [`SortKey`](crate::base::sort_key::SortKey).
 //! 5. Zero-coefficient terms dropped.
 //! 6. `NaN` propagation: any `NaN` term ⟹ result is `NaN`.
 //!
@@ -20,7 +20,7 @@
 //! 2. Collect running numeric coefficient.
 //! 3. Combine like bases: `x * x → x²`, `x² * x³ → x⁵`.
 //! 4. Numeric coefficient placed first if ≠ 1.
-//! 5. Remaining factors sorted by [`SortKey`].
+//! 5. Remaining factors sorted by [`SortKey`](crate::base::sort_key::SortKey).
 //! 6. Zero propagation: any zero factor ⟹ result is `0` (unless ∞ involved ⟹ `NaN`).
 //! 7. `NaN` propagation.
 //!
@@ -572,10 +572,8 @@ fn handle_mul_with_zoo(
     while let Some(id) = remaining.pop() {
         match arena.node(id).clone() {
             ExprNode::NaN => return arena.nan,
-            ExprNode::Num(nid) => {
-                if arena.num(nid).is_zero() {
-                    return arena.nan;
-                }
+            ExprNode::Num(nid) if arena.num(nid).is_zero() => {
+                return arena.nan;
             }
             ExprNode::Mul(children) => {
                 remaining.extend_from_slice(&children);
@@ -824,9 +822,7 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return arena.zero;
     }
     // (-∞)^∞ → NaN, (-∞)^(-∞) → NaN (indeterminate: ∞ is not an integer).
-    if base == arena.neg_infinity
-        && (exp == arena.infinity || exp == arena.neg_infinity)
-    {
+    if base == arena.neg_infinity && (exp == arena.infinity || exp == arena.neg_infinity) {
         return arena.nan;
     }
 
@@ -847,9 +843,7 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
     }
     // zoo^zoo, zoo^∞, zoo^(-∞) → NaN.
     if base == arena.complex_infinity
-        && (exp == arena.complex_infinity
-            || exp == arena.infinity
-            || exp == arena.neg_infinity)
+        && (exp == arena.complex_infinity || exp == arena.infinity || exp == arena.neg_infinity)
     {
         return arena.nan;
     }

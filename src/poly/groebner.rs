@@ -694,11 +694,11 @@ enum EchelonResult {
 /// Each echelon row stores:
 ///   - `pivot`: the pivot column in the vector part
 ///   - `vec_part`: the reduced vector (length d)
-///   - `coeff_part`: expresses the echelon row as Σ coeff_part[i] * v_i
+///   - `coeff_part`: expresses the echelon row as Σ `coeff_part[i] * v_i`
 ///     where v_i are the original independent input vectors
 ///
 /// When a new vector is checked:
-///   - If dependent: returns coefficients c such that nf = Σ c[i] * v_i
+///   - If dependent: returns coefficients c such that nf = Σ `c[i] * v_i`
 ///   - If independent: adds it as a new echelon row
 type EchelonRow = (usize, Vec<Ratio<BigInt>>, Vec<Ratio<BigInt>>);
 

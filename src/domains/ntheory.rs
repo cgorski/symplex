@@ -261,7 +261,10 @@ fn factorint_i64(n: i64) -> Vec<(i64, u32)> {
     }
 
     if n > 1 {
-        factors.push((i64::try_from(n).expect("cofactor fits in i64 after factoring i64 input"), 1));
+        factors.push((
+            i64::try_from(n).expect("cofactor fits in i64 after factoring i64 input"),
+            1,
+        ));
     }
 
     factors
@@ -517,10 +520,10 @@ pub fn nextprime(n: impl Into<BigInt>) -> BigInt {
     if let Some(n_i64) = n.to_i64() {
         // Guard: skip i64 fast path near i64::MAX to avoid overflow in
         // candidate arithmetic (n+1, n+2, candidate+=2 can all wrap).
-        if n_i64 <= i64::MAX - 1000 {
-            if let Some(result) = nextprime_i64(n_i64) {
-                return BigInt::from(result);
-            }
+        if n_i64 <= i64::MAX - 1000
+            && let Some(result) = nextprime_i64(n_i64)
+        {
+            return BigInt::from(result);
         }
     }
     // BigInt path

@@ -11,7 +11,7 @@ use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::Zero;
 use symplex::groebner::{groebner_basis, is_groebner_basis, is_zero_dimensional};
-use symplex::multipoly::{multipoly_vars, GrevLex, MultiPoly};
+use symplex::multipoly::{GrevLex, MultiPoly, multipoly_vars};
 use symplex::polysys::{solve_polynomial_system, solve_system_ex};
 use symplex::prelude::*;
 
@@ -21,10 +21,6 @@ use symplex::prelude::*;
 
 fn rat(n: i64) -> Ratio<BigInt> {
     Ratio::from_integer(BigInt::from(n))
-}
-
-fn ratio(p: i64, q: i64) -> Ratio<BigInt> {
-    Ratio::new(BigInt::from(p), BigInt::from(q))
 }
 
 /// Sort solutions for order-independent comparison.
@@ -79,7 +75,7 @@ fn gcd_coprime_polynomials() {
     let one = MultiPoly::<GrevLex>::from_int(1, 1);
 
     let p1: MultiPoly<GrevLex> = &xm * &xm + one.clone(); // x²+1
-    let p2: MultiPoly<GrevLex> = &xm - &one;               // x-1
+    let p2: MultiPoly<GrevLex> = &xm - &one; // x-1
 
     // Verify they have no common root: p1(1)=2 ≠ 0
     assert_eq!(p1.eval(&[rat(1)]), rat(2));
@@ -98,7 +94,7 @@ fn gcd_common_factor_via_groebner() {
     let x = MultiPoly::<GrevLex>::var(1, 0);
     let one = MultiPoly::<GrevLex>::from_int(1, 1);
 
-    let p1: MultiPoly<GrevLex> = &x * &x - one;  // (x-1)(x+1)
+    let p1: MultiPoly<GrevLex> = &x * &x - one; // (x-1)(x+1)
     let p2: MultiPoly<GrevLex> = &x * &x - x.clone(); // x(x-1)
 
     assert_eq!(p1.eval(&[rat(1)]), rat(0));
@@ -165,8 +161,8 @@ fn resultant_coprime_nonzero() {
     // System {x=0, x-1=0} should have no solution (resultant ≠ 0)
     let x = MultiPoly::<GrevLex>::var(1, 0);
     let one = MultiPoly::<GrevLex>::from_int(1, 1);
-    let p1 = x.clone();  // x
-    let p2 = &x - &one;  // x - 1
+    let p1 = x.clone(); // x
+    let p2 = &x - &one; // x - 1
 
     let sols = solve_polynomial_system(&[p1, p2]).unwrap();
     assert!(
@@ -351,10 +347,7 @@ fn groebner_is_groebner_basis_validates_correctly() {
     let p2 = x - y - 1i64;
 
     let gb = groebner_basis(&[p1, p2]);
-    assert!(
-        is_groebner_basis(&gb),
-        "computed GB should pass validation"
-    );
+    assert!(is_groebner_basis(&gb), "computed GB should pass validation");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -414,15 +407,15 @@ fn solve_system_ex_no_solution() {
     let eq2 = &x + &y - 2;
 
     let result = solve_system_ex(&[eq1, eq2], &[x.clone(), y.clone()]);
-    match result {
-        Ok(sols) => assert!(
+    // An `Err` is also acceptable for an inconsistent system.
+    if let Ok(sols) = result {
+        assert!(
             sols.is_empty(),
             "inconsistent system should yield no solutions, got {:?}",
             sols.iter()
                 .map(|s| s.iter().map(|v| format!("{v}")).collect::<Vec<_>>())
                 .collect::<Vec<_>>()
-        ),
-        Err(_) => {} // also acceptable
+        );
     }
 }
 
@@ -526,8 +519,16 @@ fn solve_quadratic_two_integer_roots() {
     let expr = &x.powi(2) - &x * 5 + 6;
     let roots = solve_strings(&expr, &x);
     assert_eq!(roots.len(), 2, "expected 2 roots, got {:?}", roots);
-    assert!(roots.contains(&"2".to_string()), "missing root 2: {:?}", roots);
-    assert!(roots.contains(&"3".to_string()), "missing root 3: {:?}", roots);
+    assert!(
+        roots.contains(&"2".to_string()),
+        "missing root 2: {:?}",
+        roots
+    );
+    assert!(
+        roots.contains(&"3".to_string()),
+        "missing root 3: {:?}",
+        roots
+    );
 }
 
 #[test]
@@ -629,10 +630,7 @@ fn solve_cubic_one_rational_root() {
     symplex::syms!(ctx; x);
     let expr = &x.powi(3) - 1;
     let roots = expr.solve(&x).unwrap();
-    assert!(
-        !roots.is_empty(),
-        "x³-1 should have at least 1 root"
-    );
+    assert!(!roots.is_empty(), "x³-1 should have at least 1 root");
     let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     assert!(
         strs.contains(&"1".to_string()),
@@ -649,10 +647,7 @@ fn solve_cubic_with_known_roots_verify() {
     symplex::syms!(ctx; x);
     let expr = &x.powi(3) - &x.powi(2) * 3 + &x * 3 - 1;
     let roots = expr.solve(&x).unwrap();
-    assert!(
-        !roots.is_empty(),
-        "(x-1)³ should have at least 1 root"
-    );
+    assert!(!roots.is_empty(), "(x-1)³ should have at least 1 root");
     let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
     assert!(
         strs.contains(&"1".to_string()),
@@ -729,11 +724,7 @@ fn solve_product_of_factors() {
     assert_eq!(roots.len(), 3, "expected 3 roots, got {:?}", roots);
     assert!(roots.contains(&"0".to_string()), "missing 0: {:?}", roots);
     assert!(roots.contains(&"1".to_string()), "missing 1: {:?}", roots);
-    assert!(
-        roots.contains(&"-2".to_string()),
-        "missing -2: {:?}",
-        roots
-    );
+    assert!(roots.contains(&"-2".to_string()), "missing -2: {:?}", roots);
 }
 
 #[test]
@@ -750,7 +741,11 @@ fn solve_high_degree_with_rational_roots() {
         roots.iter().map(|r| format!("{r}")).collect::<Vec<_>>()
     );
     let strs: Vec<String> = roots.iter().map(|r| format!("{r}")).collect();
-    assert!(strs.contains(&"0".to_string()), "missing root 0: {:?}", strs);
+    assert!(
+        strs.contains(&"0".to_string()),
+        "missing root 0: {:?}",
+        strs
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1030,10 +1025,10 @@ fn algebraic_golden_ratio_identity() {
     // One root should be the golden ratio ≈ 1.618
     let mut found_phi = false;
     for r in &roots {
-        if let Ok(val) = r.eval_f64() {
-            if (val - 1.618033988749895).abs() < 1e-6 {
-                found_phi = true;
-            }
+        if let Ok(val) = r.eval_f64()
+            && (val - 1.618033988749895).abs() < 1e-6
+        {
+            found_phi = true;
         }
     }
     assert!(found_phi, "should find golden ratio among roots of x²-x-1");
@@ -1087,7 +1082,10 @@ fn ineq_x_squared_minus_4_gt_0() {
     let expr = &x.powi(2) - 4;
     let result = expr.solve_gt(&x);
     let s = format!("{result}");
-    assert!(!s.contains("EmptySet"), "x²-4 > 0 should have solutions: {s}");
+    assert!(
+        !s.contains("EmptySet"),
+        "x²-4 > 0 should have solutions: {s}"
+    );
 
     // Interior points
     common::assert_positive_at(&expr, &x, 3, "x²-4 > 0 at x=3");
@@ -1104,7 +1102,10 @@ fn ineq_x_squared_minus_4_le_0() {
     let expr = &x.powi(2) - 4;
     let result = expr.solve_le(&x);
     let s = format!("{result}");
-    assert!(!s.contains("EmptySet"), "x²-4 <= 0 should have solutions: {s}");
+    assert!(
+        !s.contains("EmptySet"),
+        "x²-4 <= 0 should have solutions: {s}"
+    );
     // x=0 → 0-4 = -4 ≤ 0 ✓
     common::assert_negative_at(&expr, &x, 0, "x²-4 <= 0 at x=0");
 }
@@ -1224,14 +1225,8 @@ fn ineq_x_ge_includes_zero() {
     symplex::syms!(ctx; x);
     let result = x.solve_ge(&x);
     let s = format!("{result}");
-    assert!(
-        !s.contains("EmptySet"),
-        "x >= 0 should not be empty: {s}"
-    );
-    assert!(
-        s.contains("0"),
-        "x >= 0 solution should reference 0: {s}"
-    );
+    assert!(!s.contains("EmptySet"), "x >= 0 should not be empty: {s}");
+    assert!(s.contains("0"), "x >= 0 solution should reference 0: {s}");
 }
 
 #[test]
@@ -1241,14 +1236,8 @@ fn ineq_x_le_includes_zero() {
     symplex::syms!(ctx; x);
     let result = x.solve_le(&x);
     let s = format!("{result}");
-    assert!(
-        !s.contains("EmptySet"),
-        "x <= 0 should not be empty: {s}"
-    );
-    assert!(
-        s.contains("0"),
-        "x <= 0 solution should reference 0: {s}"
-    );
+    assert!(!s.contains("EmptySet"), "x <= 0 should not be empty: {s}");
+    assert!(s.contains("0"), "x <= 0 solution should reference 0: {s}");
 }
 
 #[test]
@@ -1320,10 +1309,7 @@ fn solve_cubic_verify_cardano_roots() {
         "x³+x-2 should have rational root 1, got {:?}",
         strs
     );
-    assert!(
-        !roots.is_empty(),
-        "should find at least 1 root"
-    );
+    assert!(!roots.is_empty(), "should find at least 1 root");
 }
 
 #[test]
@@ -1388,7 +1374,12 @@ fn solve_very_simple_linear() {
     let ctx = Context::new();
     symplex::syms!(ctx; x);
     let roots = solve_strings(&x, &x);
-    assert_eq!(roots, vec!["0"], "solve(x, x) should be [0], got {:?}", roots);
+    assert_eq!(
+        roots,
+        vec!["0"],
+        "solve(x, x) should be [0], got {:?}",
+        roots
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1444,7 +1435,11 @@ fn polysys_empty_input() {
     let result = solve_polynomial_system(&[]);
     assert!(result.is_ok());
     let sols = result.unwrap();
-    assert_eq!(sols.len(), 1, "empty system should have 1 (trivial) solution");
+    assert_eq!(
+        sols.len(),
+        1,
+        "empty system should have 1 (trivial) solution"
+    );
     assert!(sols[0].is_empty(), "trivial solution should be empty vec");
 }
 
@@ -1557,8 +1552,7 @@ fn solve_quintic_with_known_rational_roots() {
     // = (x-1)(x-2)(x-3)(x-4)(x-5)
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let expr = &x.powi(5) - &x.powi(4) * 15 + &x.powi(3) * 85 - &x.powi(2) * 225 + &x * 274
-        - 120;
+    let expr = &x.powi(5) - &x.powi(4) * 15 + &x.powi(3) * 85 - &x.powi(2) * 225 + &x * 274 - 120;
     let roots = expr.solve(&x).unwrap();
     assert!(
         roots.len() >= 5,
@@ -1590,17 +1584,14 @@ fn solve_depressed_cubic_needs_cardano() {
     symplex::syms!(ctx; x);
     let expr = &x.powi(3) - 2;
     let roots = expr.solve(&x).unwrap();
-    assert!(
-        !roots.is_empty(),
-        "x³ - 2 should have roots"
-    );
+    assert!(!roots.is_empty(), "x³ - 2 should have roots");
     // At least one real root should be ≈ cbrt(2)
     let mut found_real = false;
     for r in &roots {
-        if let Ok(val) = r.eval_f64() {
-            if (val - 1.2599210498948732).abs() < 1e-4 {
-                found_real = true;
-            }
+        if let Ok(val) = r.eval_f64()
+            && (val - 1.2599210498948732).abs() < 1e-4
+        {
+            found_real = true;
         }
     }
     assert!(found_real, "should find cbrt(2) among roots of x³ - 2");
@@ -1626,7 +1617,10 @@ fn ineq_linear_gt_with_coefficient() {
     let expr = &x * 2 - 6;
     let result = expr.solve_gt(&x);
     let s = format!("{result}");
-    assert!(!s.contains("EmptySet"), "2x-6 > 0 should have solutions: {s}");
+    assert!(
+        !s.contains("EmptySet"),
+        "2x-6 > 0 should have solutions: {s}"
+    );
     // x=4 → 8-6=2 > 0 ✓
     common::assert_positive_at(&expr, &x, 4, "2x-6 > 0 at x=4");
     // x=2 → 4-6=-2 < 0 ✗
@@ -1641,7 +1635,10 @@ fn ineq_negative_leading_coeff_lt() {
     let expr = -&x.powi(2) + 1;
     let result = expr.solve_lt(&x);
     let s = format!("{result}");
-    assert!(!s.contains("EmptySet"), "-x²+1 < 0 should have solutions: {s}");
+    assert!(
+        !s.contains("EmptySet"),
+        "-x²+1 < 0 should have solutions: {s}"
+    );
     // x=2 → -4+1=-3 < 0 ✓
     common::assert_negative_at(&expr, &x, 2, "-x²+1 < 0 at x=2");
     // x=0 → 0+1=1 > 0, so 1 < 0 is false

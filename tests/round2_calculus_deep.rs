@@ -22,13 +22,7 @@ use symplex::prelude::*;
 ///   d/dx(∫ f dx) ≈ f   at several test points.
 ///
 /// Returns `(antiderivative_display, is_unevaluated)`.
-fn ftc_check(
-    integrand: &Ex,
-    var: &Ex,
-    points: &[f64],
-    tol: f64,
-    label: &str,
-) -> (String, bool) {
+fn ftc_check(integrand: &Ex, var: &Ex, points: &[f64], tol: f64, label: &str) -> (String, bool) {
     let antideriv = integrand.integrate(var);
     let s = format!("{antideriv}");
     let is_uneval = s.contains("Integral") || antideriv.has_unevaluated();
@@ -48,18 +42,19 @@ fn ftc_check(
         let orig_val = integrand.subs(var, &pt).eval().eval_f64();
         let deriv_val = deriv.subs(var, &pt).eval().eval_f64();
 
-        if let (Ok(o), Ok(d)) = (orig_val, deriv_val) {
-            if o.is_finite() && d.is_finite() {
-                checked += 1;
-                let scale = o.abs().max(d.abs()).max(1.0);
-                assert!(
-                    (o - d).abs() < tol * scale,
-                    "FTC FAILED for {label} at {var}={pt_f}: \
+        if let (Ok(o), Ok(d)) = (orig_val, deriv_val)
+            && o.is_finite()
+            && d.is_finite()
+        {
+            checked += 1;
+            let scale = o.abs().max(d.abs()).max(1.0);
+            assert!(
+                (o - d).abs() < tol * scale,
+                "FTC FAILED for {label} at {var}={pt_f}: \
                      integrand={o}, d/dx(antideriv)={d}, diff={}, \
                      antideriv='{antideriv}', deriv='{deriv}'",
-                    (o - d).abs(),
-                );
-            }
+                (o - d).abs(),
+            );
         }
     }
 
@@ -115,13 +110,7 @@ fn integrate_x_squared_sin_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &x.powi(2) * &x.sin();
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.5, 1.0, 1.5, 2.0],
-        1e-6,
-        "∫x²sin(x)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.5, 1.0, 1.5, 2.0], 1e-6, "∫x²sin(x)dx");
 
     if is_uneval {
         panic!(
@@ -138,13 +127,7 @@ fn integrate_x_cos_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &x * &x.cos();
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.5, 1.0, 1.5, 2.0],
-        1e-6,
-        "∫x·cos(x)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.5, 1.0, 1.5, 2.0], 1e-6, "∫x·cos(x)dx");
 
     if is_uneval {
         panic!(
@@ -160,13 +143,7 @@ fn integrate_x_exp_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &x * &x.exp();
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.3, 0.7, 1.0, 1.5],
-        1e-6,
-        "∫x·exp(x)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.3, 0.7, 1.0, 1.5], 1e-6, "∫x·exp(x)dx");
 
     if is_uneval {
         panic!(
@@ -183,13 +160,7 @@ fn integrate_x_squared_exp_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &x.powi(2) * &x.exp();
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.3, 0.7, 1.0, 1.5],
-        1e-6,
-        "∫x²·exp(x)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.3, 0.7, 1.0, 1.5], 1e-6, "∫x²·exp(x)dx");
 
     if is_uneval {
         panic!(
@@ -205,13 +176,7 @@ fn integrate_one_over_one_plus_x_squared() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &ctx.int(1) / &(&x.powi(2) + &ctx.int(1));
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.0, 0.5, 1.0, 2.0],
-        1e-6,
-        "∫1/(1+x²)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.0, 0.5, 1.0, 2.0], 1e-6, "∫1/(1+x²)dx");
 
     if is_uneval {
         panic!(
@@ -251,13 +216,7 @@ fn integrate_sin_squared_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = x.sin().powi(2);
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.3, 0.7, 1.0, 1.5],
-        1e-6,
-        "∫sin²(x)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.3, 0.7, 1.0, 1.5], 1e-6, "∫sin²(x)dx");
 
     if is_uneval {
         panic!(
@@ -273,13 +232,7 @@ fn integrate_cos_squared_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = x.cos().powi(2);
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.3, 0.7, 1.0, 1.5],
-        1e-6,
-        "∫cos²(x)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.3, 0.7, 1.0, 1.5], 1e-6, "∫cos²(x)dx");
 
     if is_uneval {
         panic!(
@@ -449,7 +402,8 @@ fn definite_integral_reversed_bounds_negates() {
     let rv = reversed.eval_f64().expect("reversed evals");
     assert!(
         (fv + rv).abs() < 1e-10,
-        "Reversing bounds should negate: forward={fv}, reversed={rv}, sum={}", fv + rv
+        "Reversing bounds should negate: forward={fv}, reversed={rv}, sum={}",
+        fv + rv
     );
 }
 
@@ -841,9 +795,7 @@ fn series_one_over_one_minus_x_geometric() {
             "1/(1-x) series at x=1/2 should be {expected}, got: {v} (series: {result})"
         );
     } else {
-        panic!(
-            "1/(1-x) series should evaluate numerically at x=1/2, series: {result}"
-        );
+        panic!("1/(1-x) series should evaluate numerically at x=1/2, series: {result}");
     }
 }
 
@@ -924,7 +876,10 @@ fn series_constant_is_itself() {
     let zero = ctx.int(0);
     let s = ctx.int(7).series(&x, &zero, 4);
     let result = format!("{s}");
-    assert_eq!(result, "7", "Series of constant 7 should be 7, got: {result}");
+    assert_eq!(
+        result, "7",
+        "Series of constant 7 should be 7, got: {result}"
+    );
 }
 
 #[test]
@@ -962,7 +917,9 @@ fn laurent_series_1_over_x() {
                 let d = arena.display(result).to_string();
                 // Should contain a negative power of x
                 assert!(
-                    d.contains("x^-1") || d.contains("x^(-1)") || d.contains("1/x")
+                    d.contains("x^-1")
+                        || d.contains("x^(-1)")
+                        || d.contains("1/x")
                         || d.contains("x^{-1}"),
                     "Laurent of 1/x should have x^(-1) term: {d}"
                 );
@@ -1286,13 +1243,16 @@ fn inverse_laplace_omega_over_s2_plus_omega2() {
         !result.has_unevaluated(),
         "L⁻¹{{2/(s²+4)}} should not be unevaluated: {d}"
     );
-    // At t=π/4: sin(π/2) = 1
+    // At t=π/4: sin(π/2) = 1.  Substitute the same rational approximation
+    // of π/4 on both sides so the comparison is exact in the approximation.
+    let (t_num, t_den) = (7854_i64, 10000_i64);
+    let t_val = t_num as f64 / t_den as f64;
     if let Ok(v) = result
-        .subs(&t, &ctx.rational(7854, 10000))
+        .subs(&t, &ctx.rational(t_num, t_den))
         .eval()
         .eval_f64()
     {
-        let expected = (2.0 * 0.7854_f64).sin();
+        let expected = (2.0 * t_val).sin();
         assert!(
             (v - expected).abs() < 0.01,
             "L⁻¹{{2/(s²+4)}} at t≈π/4 should be ≈{expected}, got: {v}"
@@ -1344,9 +1304,7 @@ fn laplace_roundtrip_exp() {
             );
         }
     } else {
-        panic!(
-            "Laplace roundtrip of exp(2t) gave unevaluated form: {recovered}"
-        );
+        panic!("Laplace roundtrip of exp(2t) gave unevaluated form: {recovered}");
     }
 }
 
@@ -1370,9 +1328,7 @@ fn laplace_roundtrip_sin() {
             );
         }
     } else {
-        panic!(
-            "Laplace roundtrip of sin(3t) gave unevaluated form: {recovered}"
-        );
+        panic!("Laplace roundtrip of sin(3t) gave unevaluated form: {recovered}");
     }
 }
 
@@ -1396,9 +1352,7 @@ fn laplace_roundtrip_cos() {
             );
         }
     } else {
-        panic!(
-            "Laplace roundtrip of cos(5t) gave unevaluated form: {recovered}"
-        );
+        panic!("Laplace roundtrip of cos(5t) gave unevaluated form: {recovered}");
     }
 }
 
@@ -1488,7 +1442,7 @@ fn z_transform_sin() {
             let z_val = 3.0_f64;
             let mut direct_sum = 0.0;
             for k in 0..50 {
-                direct_sum += (k as f64).sin() * z_val.powi(-(k as i32));
+                direct_sum += (k as f64).sin() * z_val.powi(-k);
             }
             if let Ok(v) = r.subs(&z, &ctx.int(3)).eval().eval_f64() {
                 assert!(
@@ -1519,7 +1473,7 @@ fn z_transform_cos() {
             let z_val = 3.0_f64;
             let mut direct_sum = 0.0;
             for k in 0..50 {
-                direct_sum += (k as f64).cos() * z_val.powi(-(k as i32));
+                direct_sum += (k as f64).cos() * z_val.powi(-k);
             }
             if let Ok(v) = r.subs(&z, &ctx.int(3)).eval().eval_f64() {
                 assert!(
@@ -1542,9 +1496,7 @@ fn z_transform_roundtrip_exponential() {
 
     // Z{2^n} = z/(z-2),  then Z⁻¹ should recover 2^n
     let two_n = ctx.int(2).pow(&n);
-    let transformed = two_n
-        .z_transform(&n, &z)
-        .expect("Z{2^n} should succeed");
+    let transformed = two_n.z_transform(&n, &z).expect("Z{2^n} should succeed");
     let recovered = transformed
         .inverse_z_transform(&z, &n)
         .expect("Z⁻¹{z/(z-2)} should succeed");
@@ -1891,11 +1843,7 @@ fn convergence_p_series_p3_converges() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let body = k.powi(-3);
-    assert_eq!(
-        body.is_convergent(&k),
-        Some(true),
-        "Σ 1/k³ should converge"
-    );
+    assert_eq!(body.is_convergent(&k), Some(true), "Σ 1/k³ should converge");
 }
 
 #[test]
@@ -1975,11 +1923,7 @@ fn convergence_constant_zero_converges() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let body = ctx.int(0);
-    assert_eq!(
-        body.is_convergent(&k),
-        Some(true),
-        "Σ 0 should converge"
-    );
+    assert_eq!(body.is_convergent(&k), Some(true), "Σ 0 should converge");
 }
 
 #[test]
@@ -1987,11 +1931,7 @@ fn convergence_constant_nonzero_diverges() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let body = ctx.int(7);
-    assert_eq!(
-        body.is_convergent(&k),
-        Some(false),
-        "Σ 7 should diverge"
-    );
+    assert_eq!(body.is_convergent(&k), Some(false), "Σ 7 should diverge");
 }
 
 #[test]
@@ -1999,11 +1939,7 @@ fn convergence_growing_k_squared_diverges() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let body = k.powi(2); // k² (grows)
-    assert_eq!(
-        body.is_convergent(&k),
-        Some(false),
-        "Σ k² should diverge"
-    );
+    assert_eq!(body.is_convergent(&k), Some(false), "Σ k² should diverge");
 }
 
 #[test]
@@ -2017,7 +1953,7 @@ fn convergence_geometric_base_1_diverges() {
     // The engine might recognize 1^k as constant 1 or as geometric with |r|=1
     // Either way it should diverge (or be inconclusive if 1^k is simplified to 1)
     assert!(
-        result == Some(false) || result == None,
+        result == Some(false) || result.is_none(),
         "Σ 1^k should diverge or be inconclusive, got: {result:?}"
     );
 }
@@ -2327,10 +2263,7 @@ fn laplace_roundtrip_t() {
 
     let forward = t.laplace(&t, &s);
     let d_fwd = format!("{forward}");
-    assert!(
-        !forward.has_unevaluated(),
-        "L{{t}} should succeed: {d_fwd}"
-    );
+    assert!(!forward.has_unevaluated(), "L{{t}} should succeed: {d_fwd}");
 
     let roundtrip = forward.inverse_laplace(&s, &t);
     let d_rt = format!("{roundtrip}");
@@ -2575,13 +2508,7 @@ fn integrate_1_over_x_squared_plus_a() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &ctx.int(1) / &(&x.powi(2) + &ctx.int(4));
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.0, 0.5, 1.0, 2.0],
-        1e-6,
-        "∫1/(x²+4)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.0, 0.5, 1.0, 2.0], 1e-6, "∫1/(x²+4)dx");
 
     if is_uneval {
         panic!(
@@ -2597,13 +2524,7 @@ fn integrate_exp_2x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = (&x * 2).exp();
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.0, 0.5, 1.0],
-        1e-6,
-        "∫exp(2x)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.0, 0.5, 1.0], 1e-6, "∫exp(2x)dx");
 
     if is_uneval {
         panic!(
@@ -2619,13 +2540,7 @@ fn integrate_sin_2x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = (&x * 2).sin();
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.3, 0.7, 1.0, 1.5],
-        1e-6,
-        "∫sin(2x)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.3, 0.7, 1.0, 1.5], 1e-6, "∫sin(2x)dx");
 
     if is_uneval {
         panic!(
@@ -2660,9 +2575,7 @@ fn inverse_z_transform_z_over_z_minus_1_squared() {
             }
         }
         Err(e) => {
-            panic!(
-                "BUG: Z⁻¹{{z/(z-1)²}} should succeed (expected: n): {e}"
-            );
+            panic!("BUG: Z⁻¹{{z/(z-1)²}} should succeed (expected: n): {e}");
         }
     }
 }
@@ -2715,11 +2628,7 @@ fn convergence_scaled_harmonic_diverges() {
     let k = ctx.symbol("k");
     let body = &ctx.int(3) * &k.powi(-1);
     let result = body.is_convergent(&k);
-    assert_eq!(
-        result,
-        Some(false),
-        "Σ 3/k should diverge, got: {result:?}"
-    );
+    assert_eq!(result, Some(false), "Σ 3/k should diverge, got: {result:?}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3108,13 +3017,7 @@ fn integrate_1_over_x_plus_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &ctx.int(1) / &(&x + 1);
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.5, 1.0, 2.0, 3.0],
-        1e-6,
-        "∫1/(x+1)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.5, 1.0, 2.0, 3.0], 1e-6, "∫1/(x+1)dx");
 
     if is_uneval {
         panic!(
@@ -3130,13 +3033,7 @@ fn integrate_x_over_x_squared_plus_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &x / &(&x.powi(2) + &ctx.int(1));
-    let (s, is_uneval) = ftc_check(
-        &integrand,
-        &x,
-        &[0.5, 1.0, 2.0],
-        1e-6,
-        "∫x/(x²+1)dx",
-    );
+    let (s, is_uneval) = ftc_check(&integrand, &x, &[0.5, 1.0, 2.0], 1e-6, "∫x/(x²+1)dx");
 
     if is_uneval {
         panic!(
@@ -3156,7 +3053,7 @@ fn integrate_partial_fractions_1_over_x2_minus_1() {
     let (s, is_uneval) = ftc_check(
         &integrand,
         &x,
-        &[2.0, 3.0, 5.0],  // avoid x = ±1
+        &[2.0, 3.0, 5.0], // avoid x = ±1
         1e-6,
         "∫1/(x²-1)dx",
     );
@@ -3381,8 +3278,14 @@ fn series_of_diff_equals_diff_of_series() {
     let diff_then_series = f.diff(&x).series(&x, &zero, order - 1).expand().eval();
 
     // Both should agree at x = 0.5
-    let v1 = series_then_diff.subs(&x, &ctx.rational(1, 2)).eval().eval_f64();
-    let v2 = diff_then_series.subs(&x, &ctx.rational(1, 2)).eval().eval_f64();
+    let v1 = series_then_diff
+        .subs(&x, &ctx.rational(1, 2))
+        .eval()
+        .eval_f64();
+    let v2 = diff_then_series
+        .subs(&x, &ctx.rational(1, 2))
+        .eval()
+        .eval_f64();
 
     if let (Ok(a), Ok(b)) = (v1, v2) {
         assert!(

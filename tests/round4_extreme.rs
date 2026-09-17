@@ -9,9 +9,9 @@
 
 mod common;
 
-use symplex::prelude::*;
-use symplex::ntheory;
 use num_bigint::BigInt;
+use symplex::ntheory;
+use symplex::prelude::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -227,19 +227,17 @@ fn definite_integral_x_squared_neg1_to_1() {
                     "∫₋₁^1 x² dx should be 2/3, got {val}"
                 );
             }
-            Err(_) => {
-                match eval_f64_ex(&result) {
-                    Ok(val) => {
-                        assert!(
-                            approx(val, 2.0 / 3.0, 1e-10),
-                            "∫₋₁^1 x² dx should be 2/3, got {val}"
-                        );
-                    }
-                    Err(e) => {
-                        panic!("∫₋₁^1 x² dx: could not verify = 2/3: {s2} / {s} / {e}");
-                    }
+            Err(_) => match eval_f64_ex(&result) {
+                Ok(val) => {
+                    assert!(
+                        approx(val, 2.0 / 3.0, 1e-10),
+                        "∫₋₁^1 x² dx should be 2/3, got {val}"
+                    );
                 }
-            }
+                Err(e) => {
+                    panic!("∫₋₁^1 x² dx: could not verify = 2/3: {s2} / {s} / {e}");
+                }
+            },
         }
     }
 }
@@ -557,7 +555,7 @@ fn complex_addition() {
     let ctx = Context::new();
     let i = ctx.i_unit();
     let a = ctx.int(2) + &i * 3; // 2+3i
-    let b = ctx.int(4) - &i;     // 4-i
+    let b = ctx.int(4) - &i; // 4-i
     let result = (&a + &b).eval();
     let s = format!("{result}");
     eprintln!("(2+3i) + (4-i) = {s}");
@@ -598,21 +596,28 @@ fn solve_system_circle_meets_line() {
     let solutions = substituted.solve(&x);
     match solutions {
         Ok(sols) => {
-            eprintln!("Solutions for x: {:?}", sols.iter().map(|s| format!("{s}")).collect::<Vec<_>>());
+            eprintln!(
+                "Solutions for x: {:?}",
+                sols.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
+            );
             // Should find x=0 and x=1
             let mut found_0 = false;
             let mut found_1 = false;
             for sol in &sols {
-                match eval_f64_ex(sol) {
-                    Ok(v) => {
-                        if approx(v, 0.0, 1e-10) { found_0 = true; }
-                        if approx(v, 1.0, 1e-10) { found_1 = true; }
+                if let Ok(v) = eval_f64_ex(sol) {
+                    if approx(v, 0.0, 1e-10) {
+                        found_0 = true;
                     }
-                    Err(_) => {}
+                    if approx(v, 1.0, 1e-10) {
+                        found_1 = true;
+                    }
                 }
             }
-            assert!(found_0 && found_1, "Expected solutions x=0 and x=1, got: {:?}",
-                    sols.iter().map(|s| format!("{s}")).collect::<Vec<_>>());
+            assert!(
+                found_0 && found_1,
+                "Expected solutions x=0 and x=1, got: {:?}",
+                sols.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
+            );
         }
         Err(e) => {
             eprintln!("Solver failed on circle-line: {e}");
@@ -645,15 +650,18 @@ fn solve_cubic_unity() {
     let x = ctx.symbol("x");
     let expr = x.powi(3) - 1;
     let solutions = expr.solve(&x).expect("should solve x³-1=0");
-    eprintln!("x³-1=0 solutions: {:?}", solutions.iter().map(|s| format!("{s}")).collect::<Vec<_>>());
+    eprintln!(
+        "x³-1=0 solutions: {:?}",
+        solutions.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
+    );
 
     // At least one real root: x = 1
     let mut found_one = false;
     for sol in &solutions {
-        if let Ok(v) = eval_f64_ex(sol) {
-            if approx(v, 1.0, 1e-10) {
-                found_one = true;
-            }
+        if let Ok(v) = eval_f64_ex(sol)
+            && approx(v, 1.0, 1e-10)
+        {
+            found_one = true;
         }
     }
     assert!(found_one, "x³-1=0 should have real root x=1");
@@ -666,15 +674,22 @@ fn solve_quartic_unity() {
     let x = ctx.symbol("x");
     let expr = x.powi(4) - 1;
     let solutions = expr.solve(&x).expect("should solve x⁴-1=0");
-    eprintln!("x⁴-1=0 solutions: {:?}", solutions.iter().map(|s| format!("{s}")).collect::<Vec<_>>());
+    eprintln!(
+        "x⁴-1=0 solutions: {:?}",
+        solutions.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
+    );
     // Should have 4 roots (real or complex)
     // At minimum, ±1 should be found
     let mut found_pos1 = false;
     let mut found_neg1 = false;
     for sol in &solutions {
         if let Ok(v) = eval_f64_ex(sol) {
-            if approx(v, 1.0, 1e-10) { found_pos1 = true; }
-            if approx(v, -1.0, 1e-10) { found_neg1 = true; }
+            if approx(v, 1.0, 1e-10) {
+                found_pos1 = true;
+            }
+            if approx(v, -1.0, 1e-10) {
+                found_neg1 = true;
+            }
         }
     }
     assert!(found_pos1, "x⁴-1=0 should have root x=1");
@@ -687,12 +702,18 @@ fn solve_linear_system_2x2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let eq1 = &x + &y * 2 - 5;  // x + 2y - 5 = 0
-    let eq2 = &x * 3 - &y - 1;  // 3x - y - 1 = 0
+    let eq1 = &x + &y * 2 - 5; // x + 2y - 5 = 0
+    let eq2 = &x * 3 - &y - 1; // 3x - y - 1 = 0
     let solution = ctx.solve_system(&[eq1, eq2], &[x.clone(), y.clone()]);
     match solution {
         Some(pairs) => {
-            eprintln!("Linear system solution: {:?}", pairs.iter().map(|(v,s)| format!("{v}={s}")).collect::<Vec<_>>());
+            eprintln!(
+                "Linear system solution: {:?}",
+                pairs
+                    .iter()
+                    .map(|(v, s)| format!("{v}={s}"))
+                    .collect::<Vec<_>>()
+            );
             assert_eq!(pairs.len(), 2);
             let x_val = eval_f64_ex(&pairs[0].1).expect("x value");
             let y_val = eval_f64_ex(&pairs[1].1).expect("y value");
@@ -927,21 +948,13 @@ fn simplify_difference_of_squares() {
     eprintln!("(x²-y²)/(x-y) cancelled w.r.t. x = {s}");
 
     // Verify numerically: at x=3, y=1: should be 4
-    let test_val = cancelled
-        .subs_i64(&x, 3)
-        .subs_i64(&y, 1)
-        .eval()
-        .eval_f64();
+    let test_val = cancelled.subs_i64(&x, 3).subs_i64(&y, 1).eval().eval_f64();
     if let Ok(v) = test_val {
         assert!(approx(v, 4.0, 1e-10), "(3²-1²)/(3-1) should be 4, got {v}");
     }
 
     // At x=5, y=2: should be 7
-    let test_val2 = cancelled
-        .subs_i64(&x, 5)
-        .subs_i64(&y, 2)
-        .eval()
-        .eval_f64();
+    let test_val2 = cancelled.subs_i64(&x, 5).subs_i64(&y, 2).eval().eval_f64();
     if let Ok(v) = test_val2 {
         assert!(approx(v, 7.0, 1e-10), "(5²-2²)/(5-2) should be 7, got {v}");
     }
@@ -960,11 +973,7 @@ fn trig_addition_formula_sin() {
 
     // Check numerically at several points
     for &(xv, yv) in &[(1_i64, 2_i64), (3, 1), (2, 5), (-1, 3)] {
-        let val = diff
-            .subs_i64(&x, xv)
-            .subs_i64(&y, yv)
-            .eval()
-            .eval_f64();
+        let val = diff.subs_i64(&x, xv).subs_i64(&y, yv).eval().eval_f64();
         if let Ok(v) = val {
             assert!(
                 approx(v, 0.0, 1e-10),
@@ -1049,12 +1058,18 @@ fn cancel_cubic_minus_8() {
     // At x=3: (27-8)/(3-2) = 19, also 9+6+4 = 19
     let val = cancelled.subs_i64(&x, 3).eval().eval_f64();
     if let Ok(v) = val {
-        assert!(approx(v, 19.0, 1e-10), "(x³-8)/(x-2) at x=3 should be 19, got {v}");
+        assert!(
+            approx(v, 19.0, 1e-10),
+            "(x³-8)/(x-2) at x=3 should be 19, got {v}"
+        );
     }
     // At x=5: (125-8)/(5-2) = 117/3 = 39, also 25+10+4 = 39
     let val2 = cancelled.subs_i64(&x, 5).eval().eval_f64();
     if let Ok(v) = val2 {
-        assert!(approx(v, 39.0, 1e-10), "(x³-8)/(x-2) at x=5 should be 39, got {v}");
+        assert!(
+            approx(v, 39.0, 1e-10),
+            "(x³-8)/(x-2) at x=5 should be 39, got {v}"
+        );
     }
 }
 
@@ -1070,11 +1085,7 @@ fn trig_addition_formula_cos() {
     let diff = &lhs - &rhs;
 
     for &(xv, yv) in &[(1_i64, 2_i64), (3, 1), (2, 5), (-1, 3)] {
-        let val = diff
-            .subs_i64(&x, xv)
-            .subs_i64(&y, yv)
-            .eval()
-            .eval_f64();
+        let val = diff.subs_i64(&x, xv).subs_i64(&y, yv).eval().eval_f64();
         if let Ok(v) = val {
             assert!(
                 approx(v, 0.0, 1e-10),
@@ -1113,11 +1124,13 @@ fn matrix_det_product_2x2() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![
         vec![ctx.int(5), ctx.int(6)],
         vec![ctx.int(7), ctx.int(8)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let ab = &a * &b;
     let det_ab = ab.det().expect("det(AB)");
@@ -1142,12 +1155,14 @@ fn matrix_det_product_3x3() {
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(0), ctx.int(1), ctx.int(4)],
         vec![ctx.int(5), ctx.int(6), ctx.int(0)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![
         vec![ctx.int(2), ctx.int(0), ctx.int(1)],
         vec![ctx.int(3), ctx.int(1), ctx.int(0)],
         vec![ctx.int(0), ctx.int(2), ctx.int(1)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let ab = &a * &b;
     let det_ab = ab.det().expect("det(AB)");
@@ -1171,12 +1186,14 @@ fn matrix_transpose_of_product() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
-    ]).unwrap(); // 2×3
+    ])
+    .unwrap(); // 2×3
     let b = Matrix::new(vec![
         vec![ctx.int(7), ctx.int(8)],
         vec![ctx.int(9), ctx.int(10)],
         vec![ctx.int(11), ctx.int(12)],
-    ]).unwrap(); // 3×2
+    ])
+    .unwrap(); // 3×2
 
     let ab = &a * &b; // 2×2
     let ab_t = ab.transpose();
@@ -1207,7 +1224,8 @@ fn cayley_hamilton_2x2() {
     let a = Matrix::new(vec![
         vec![ctx.int(3), ctx.int(1)],
         vec![ctx.int(2), ctx.int(5)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let trace = a.trace().expect("trace");
     let det = a.det().expect("det");
@@ -1215,8 +1233,8 @@ fn cayley_hamilton_2x2() {
     let ident = Matrix::identity(&ctx, 2);
 
     // A² - tr(A)·A + det(A)·I should be zero matrix
-    let ta = &a * &trace;   // tr(A)·A
-    let di = &ident * &det;  // det(A)·I
+    let ta = &a * &trace; // tr(A)·A
+    let di = &ident * &det; // det(A)·I
     // result = A² - tr(A)·A + det(A)·I
     let step1 = &a2 - &ta;
     let result = &step1 + &di;
@@ -1252,7 +1270,8 @@ fn matrix_inverse_product_is_identity() {
     let a = Matrix::new(vec![
         vec![ctx.int(2), ctx.int(1)],
         vec![ctx.int(1), ctx.int(3)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let a_inv = a.inv().expect("A should be invertible");
     let product = &a * &a_inv;
@@ -1272,10 +1291,7 @@ fn matrix_inverse_product_is_identity() {
                     let simplified = product.get(i, j).simplify();
                     let s = format!("{simplified}");
                     let exp_s = if i == j { "1" } else { "0" };
-                    assert!(
-                        s == exp_s,
-                        "A·A⁻¹[{i},{j}] = {s}, expected {exp_s}"
-                    );
+                    assert!(s == exp_s, "A·A⁻¹[{i},{j}] = {s}, expected {exp_s}");
                 }
             }
         }
@@ -1290,7 +1306,8 @@ fn matrix_det_transpose() {
         vec![ctx.int(1), ctx.int(2), ctx.int(3)],
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
         vec![ctx.int(7), ctx.int(8), ctx.int(10)], // not singular
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let det_a = a.det().expect("det(A)");
     let det_at = a.transpose().det().expect("det(A^T)");
@@ -1313,28 +1330,44 @@ fn matrix_det_transpose() {
 fn ntheory_gcd_zero_zero() {
     let result = ntheory::gcd(0_i64, 0_i64);
     // By convention gcd(0,0) = 0
-    assert_eq!(result, BigInt::from(0), "gcd(0,0) should be 0, got {result}");
+    assert_eq!(
+        result,
+        BigInt::from(0),
+        "gcd(0,0) should be 0, got {result}"
+    );
 }
 
 /// gcd(0, n) = |n|
 #[test]
 fn ntheory_gcd_zero_n() {
     let result = ntheory::gcd(0_i64, 12_i64);
-    assert_eq!(result, BigInt::from(12), "gcd(0,12) should be 12, got {result}");
+    assert_eq!(
+        result,
+        BigInt::from(12),
+        "gcd(0,12) should be 12, got {result}"
+    );
 }
 
 /// gcd(n, 0) = |n|
 #[test]
 fn ntheory_gcd_n_zero() {
     let result = ntheory::gcd(15_i64, 0_i64);
-    assert_eq!(result, BigInt::from(15), "gcd(15,0) should be 15, got {result}");
+    assert_eq!(
+        result,
+        BigInt::from(15),
+        "gcd(15,0) should be 15, got {result}"
+    );
 }
 
 /// gcd with negatives
 #[test]
 fn ntheory_gcd_negative() {
     let result = ntheory::gcd(-12_i64, 8_i64);
-    assert_eq!(result, BigInt::from(4), "gcd(-12,8) should be 4, got {result}");
+    assert_eq!(
+        result,
+        BigInt::from(4),
+        "gcd(-12,8) should be 4, got {result}"
+    );
 }
 
 /// isprime(1) must be false
@@ -1361,7 +1394,10 @@ fn ntheory_isprime_negative_seven() {
     // By standard convention, primes are positive integers > 1
     // isprime(-7) should be false
     let result = ntheory::isprime(-7_i64);
-    assert!(!result, "isprime(-7) should be false (primes are positive), got {result}");
+    assert!(
+        !result,
+        "isprime(-7) should be false (primes are positive), got {result}"
+    );
 }
 
 /// isprime(2) must be true
@@ -1388,14 +1424,22 @@ fn ntheory_factorint_zero() {
     let result = ntheory::factorint(0_i64);
     eprintln!("factorint(0) = {:?}", result);
     // Convention: factorint(0) returns empty
-    assert!(result.is_empty(), "factorint(0) should be empty, got {:?}", result);
+    assert!(
+        result.is_empty(),
+        "factorint(0) should be empty, got {:?}",
+        result
+    );
 }
 
 /// factorint(1) — should return empty (no prime factors)
 #[test]
 fn ntheory_factorint_one() {
     let result = ntheory::factorint(1_i64);
-    assert!(result.is_empty(), "factorint(1) should be empty, got {:?}", result);
+    assert!(
+        result.is_empty(),
+        "factorint(1) should be empty, got {:?}",
+        result
+    );
 }
 
 /// factorint(-12) = factors of |-12| = 12 = 2²·3
@@ -1409,7 +1453,10 @@ fn ntheory_factorint_negative() {
         let pi: i64 = p.try_into().expect("prime should fit in i64");
         product *= pi.pow(*e);
     }
-    assert_eq!(product, 12, "factorint(-12) factors should multiply to 12, got {product}");
+    assert_eq!(
+        product, 12,
+        "factorint(-12) factors should multiply to 12, got {product}"
+    );
 }
 
 /// nextprime(i64::MAX - 10) — test near the boundary. Should not panic.
@@ -1423,14 +1470,21 @@ fn ntheory_nextprime_near_i64_max() {
     eprintln!("nextprime({n}) = {result}");
     // Result should be > n and prime
     assert!(result > n, "nextprime should return something > input");
-    assert!(ntheory::isprime(result.clone()), "nextprime result should be prime");
+    assert!(
+        ntheory::isprime(result.clone()),
+        "nextprime result should be prime"
+    );
 }
 
 /// nextprime(2) should be 3
 #[test]
 fn ntheory_nextprime_2() {
     let result = ntheory::nextprime(2_i64);
-    assert_eq!(result, BigInt::from(3), "nextprime(2) should be 3, got {result}");
+    assert_eq!(
+        result,
+        BigInt::from(3),
+        "nextprime(2) should be 3, got {result}"
+    );
 }
 
 /// totient(1) = 1
@@ -1451,14 +1505,22 @@ fn ntheory_totient_twelve() {
 #[test]
 fn ntheory_lcm_zero() {
     let result = ntheory::lcm(0_i64, 5_i64);
-    assert_eq!(result, BigInt::from(0), "lcm(0,5) should be 0, got {result}");
+    assert_eq!(
+        result,
+        BigInt::from(0),
+        "lcm(0,5) should be 0, got {result}"
+    );
 }
 
 /// lcm(4, 6) = 12
 #[test]
 fn ntheory_lcm_4_6() {
     let result = ntheory::lcm(4_i64, 6_i64);
-    assert_eq!(result, BigInt::from(12), "lcm(4,6) should be 12, got {result}");
+    assert_eq!(
+        result,
+        BigInt::from(12),
+        "lcm(4,6) should be 12, got {result}"
+    );
 }
 
 /// mobius(1) = 1
@@ -1486,7 +1548,11 @@ fn ntheory_mobius_four() {
 #[test]
 fn ntheory_mod_inverse() {
     let result = ntheory::mod_inverse(3_i64, 7_i64).expect("inverse exists");
-    assert_eq!(result, BigInt::from(5), "3^(-1) mod 7 should be 5, got {result}");
+    assert_eq!(
+        result,
+        BigInt::from(5),
+        "3^(-1) mod 7 should be 5, got {result}"
+    );
 }
 
 /// mod_inverse(2, 4) = None (gcd(2,4)=2, no inverse)
@@ -1515,7 +1581,11 @@ fn limit_sinx_over_x() {
         Ok(v) => assert!(approx(v, 1.0, 1e-10), "lim sin(x)/x should be 1, got {v}"),
         Err(_) => {
             let simplified = result.simplify();
-            assert_eq!(format!("{simplified}"), "1", "lim sin(x)/x should be 1, got {s}");
+            assert_eq!(
+                format!("{simplified}"),
+                "1",
+                "lim sin(x)/x should be 1, got {s}"
+            );
         }
     }
 }
@@ -1533,7 +1603,10 @@ fn limit_exp_minus_1_over_x() {
     eprintln!("lim(x→0) (exp(x)-1)/x = {s}");
 
     match eval_f64_ex(&result) {
-        Ok(v) => assert!(approx(v, 1.0, 1e-10), "lim (exp(x)-1)/x should be 1, got {v}"),
+        Ok(v) => assert!(
+            approx(v, 1.0, 1e-10),
+            "lim (exp(x)-1)/x should be 1, got {v}"
+        ),
         Err(_) => {
             let simplified = result.simplify();
             assert_eq!(format!("{simplified}"), "1", "lim (exp(x)-1)/x should be 1");
@@ -1574,7 +1647,10 @@ fn limit_one_minus_cos_over_x_sq() {
     eprintln!("lim(x→0) (1-cos(x))/x² = {s}");
 
     match eval_f64_ex(&result) {
-        Ok(v) => assert!(approx(v, 0.5, 1e-10), "lim (1-cos(x))/x² should be 1/2, got {v}"),
+        Ok(v) => assert!(
+            approx(v, 0.5, 1e-10),
+            "lim (1-cos(x))/x² should be 1/2, got {v}"
+        ),
         Err(_) => {
             assert!(s == "1/2", "lim (1-cos(x))/x² should be 1/2, got {s}");
         }
@@ -1838,16 +1914,37 @@ fn expand_then_verify_x_plus_1_fifth() {
     eprintln!("(x+1)^5 expanded = {s_exp}");
 
     // Verify expanded form at x=2: (3)^5 = 243
-    let val = expanded.subs_i64(&x, 2).eval().eval_f64().expect("should eval");
-    assert!(approx(val, 243.0, 1e-10), "(x+1)^5 at x=2 should be 243, got {val}");
+    let val = expanded
+        .subs_i64(&x, 2)
+        .eval()
+        .eval_f64()
+        .expect("should eval");
+    assert!(
+        approx(val, 243.0, 1e-10),
+        "(x+1)^5 at x=2 should be 243, got {val}"
+    );
 
     // And at x=0: 1^5 = 1
-    let val0 = expanded.subs_i64(&x, 0).eval().eval_f64().expect("should eval");
-    assert!(approx(val0, 1.0, 1e-10), "(x+1)^5 at x=0 should be 1, got {val0}");
+    let val0 = expanded
+        .subs_i64(&x, 0)
+        .eval()
+        .eval_f64()
+        .expect("should eval");
+    assert!(
+        approx(val0, 1.0, 1e-10),
+        "(x+1)^5 at x=0 should be 1, got {val0}"
+    );
 
     // Coefficients: should be 1, 5, 10, 10, 5, 1 (Pascal's triangle)
-    let val1 = expanded.subs_i64(&x, 1).eval().eval_f64().expect("should eval");
-    assert!(approx(val1, 32.0, 1e-10), "(x+1)^5 at x=1 should be 32, got {val1}");
+    let val1 = expanded
+        .subs_i64(&x, 1)
+        .eval()
+        .eval_f64()
+        .expect("should eval");
+    assert!(
+        approx(val1, 32.0, 1e-10),
+        "(x+1)^5 at x=1 should be 32, got {val1}"
+    );
 }
 
 /// Polynomial GCD: gcd(x²-1, x²+2x+1) = x+1
@@ -1856,8 +1953,8 @@ fn poly_gcd_test() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let one = ctx.int(1);
-    let p1 = x.powi(2) - &one;             // x²-1 = (x-1)(x+1)
-    let p2 = x.powi(2) + &x * 2 + &one;    // x²+2x+1 = (x+1)²
+    let p1 = x.powi(2) - &one; // x²-1 = (x-1)(x+1)
+    let p2 = x.powi(2) + &x * 2 + &one; // x²+2x+1 = (x+1)²
     let g = p1.poly_gcd(&p2, &x);
     match g {
         Some(gcd) => {
@@ -1896,9 +1993,17 @@ fn vietas_formulas_quadratic() {
     let r2 = eval_f64_ex(&solutions[1]).expect("root 2");
     eprintln!("roots: {r1}, {r2}");
     // r1 + r2 = 5 (= -b)
-    assert!(approx(r1 + r2, 5.0, 1e-10), "sum of roots should be 5, got {}", r1 + r2);
+    assert!(
+        approx(r1 + r2, 5.0, 1e-10),
+        "sum of roots should be 5, got {}",
+        r1 + r2
+    );
     // r1 * r2 = 6 (= c)
-    assert!(approx(r1 * r2, 6.0, 1e-10), "product of roots should be 6, got {}", r1 * r2);
+    assert!(
+        approx(r1 * r2, 6.0, 1e-10),
+        "product of roots should be 6, got {}",
+        r1 * r2
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2098,7 +2203,10 @@ fn expand_large_binomial() {
     // Verify at x=2, y=3: should be 5^10 = 9765625
     let val2 = expanded.subs_i64(&x, 2).subs_i64(&y, 3).eval().eval_f64();
     if let Ok(v) = val2 {
-        assert!(approx(v, 9765625.0, 1e-6), "(2+3)^10 should be 9765625, got {v}");
+        assert!(
+            approx(v, 9765625.0, 1e-6),
+            "(2+3)^10 should be 9765625, got {v}"
+        );
     }
 }
 
@@ -2142,7 +2250,10 @@ fn simplify_preserves_value_stress() {
     let x = ctx.symbol("x");
 
     let exprs: Vec<(&str, Ex)> = vec![
-        ("x^3 + 3*x^2 + 3*x + 1", x.powi(3) + x.powi(2) * 3 + &x * 3 + 1),
+        (
+            "x^3 + 3*x^2 + 3*x + 1",
+            x.powi(3) + x.powi(2) * 3 + &x * 3 + 1,
+        ),
         ("sin(x)^2 + cos(x)^2", x.sin().powi(2) + x.cos().powi(2)),
         ("(x^2 - 1)/(x + 1)", (x.powi(2) - 1) / (&x + &ctx.int(1))),
         ("exp(2*ln(x))", (&x.ln() * 2).exp()),
@@ -2170,7 +2281,10 @@ fn eval_complex_real_expression() {
     let expr = ctx.int(42);
     let (re, im) = eval_c64(&expr).expect("should evaluate");
     assert!(approx(re, 42.0, 1e-10), "real part should be 42, got {re}");
-    assert!(approx(im, 0.0, 1e-10), "imaginary part should be 0, got {im}");
+    assert!(
+        approx(im, 0.0, 1e-10),
+        "imaginary part should be 0, got {im}"
+    );
 }
 
 /// Multiple substitutions in one go
@@ -2184,7 +2298,10 @@ fn multi_subs_consistency() {
     // subs x=2, y=5: 4 + 15 - 7 = 12
     let result = expr.subs_i64(&x, 2).subs_i64(&y, 5).eval();
     let val = eval_f64_ex(&result).expect("should evaluate");
-    assert!(approx(val, 12.0, 1e-10), "x²+3y-7 at x=2,y=5 should be 12, got {val}");
+    assert!(
+        approx(val, 12.0, 1e-10),
+        "x²+3y-7 at x=2,y=5 should be 12, got {val}"
+    );
 }
 
 /// 0! = 1
@@ -2287,8 +2404,15 @@ fn ntheory_divisor_count() {
 fn ntheory_divisors_twelve() {
     let mut result = ntheory::divisors(12_i64);
     result.sort();
-    let expected: Vec<BigInt> = vec![1, 2, 3, 4, 6, 12].into_iter().map(BigInt::from).collect();
-    assert_eq!(result, expected, "divisors(12) should be [1,2,3,4,6,12], got {:?}", result);
+    let expected: Vec<BigInt> = vec![1, 2, 3, 4, 6, 12]
+        .into_iter()
+        .map(BigInt::from)
+        .collect();
+    assert_eq!(
+        result, expected,
+        "divisors(12) should be [1,2,3,4,6,12], got {:?}",
+        result
+    );
 }
 
 /// is_square(16) = true, is_square(15) = false
@@ -2312,42 +2436,68 @@ fn ntheory_is_coprime() {
 #[test]
 fn ntheory_prevprime_two() {
     let result = ntheory::prevprime(2_i64);
-    assert!(result.is_none(), "prevprime(2) should be None, got {:?}", result);
+    assert!(
+        result.is_none(),
+        "prevprime(2) should be None, got {:?}",
+        result
+    );
 }
 
 /// prevprime(3) = 2
 #[test]
 fn ntheory_prevprime_three() {
     let result = ntheory::prevprime(3_i64);
-    assert_eq!(result, Some(BigInt::from(2)), "prevprime(3) should be 2, got {:?}", result);
+    assert_eq!(
+        result,
+        Some(BigInt::from(2)),
+        "prevprime(3) should be 2, got {:?}",
+        result
+    );
 }
 
 /// prevprime(10) = 7
 #[test]
 fn ntheory_prevprime_ten() {
     let result = ntheory::prevprime(10_i64);
-    assert_eq!(result, Some(BigInt::from(7)), "prevprime(10) should be 7, got {:?}", result);
+    assert_eq!(
+        result,
+        Some(BigInt::from(7)),
+        "prevprime(10) should be 7, got {:?}",
+        result
+    );
 }
 
 /// prevprime(1) = None
 #[test]
 fn ntheory_prevprime_one() {
     let result = ntheory::prevprime(1_i64);
-    assert!(result.is_none(), "prevprime(1) should be None, got {:?}", result);
+    assert!(
+        result.is_none(),
+        "prevprime(1) should be None, got {:?}",
+        result
+    );
 }
 
 /// prevprime(0) = None
 #[test]
 fn ntheory_prevprime_zero() {
     let result = ntheory::prevprime(0_i64);
-    assert!(result.is_none(), "prevprime(0) should be None, got {:?}", result);
+    assert!(
+        result.is_none(),
+        "prevprime(0) should be None, got {:?}",
+        result
+    );
 }
 
 /// prevprime(-5) = None
 #[test]
 fn ntheory_prevprime_negative() {
     let result = ntheory::prevprime(-5_i64);
-    assert!(result.is_none(), "prevprime(-5) should be None, got {:?}", result);
+    assert!(
+        result.is_none(),
+        "prevprime(-5) should be None, got {:?}",
+        result
+    );
 }
 
 /// isqrt(i64::MAX) — should not panic or overflow internally
@@ -2398,7 +2548,11 @@ fn ntheory_factorint_i64_max() {
             product *= p;
         }
     }
-    assert_eq!(product, BigInt::from(i64::MAX), "factors of i64::MAX should multiply back");
+    assert_eq!(
+        product,
+        BigInt::from(i64::MAX),
+        "factors of i64::MAX should multiply back"
+    );
 }
 
 /// CRT basic: x ≡ 2 mod 3, x ≡ 3 mod 5 → x ≡ 8 mod 15
@@ -2412,7 +2566,11 @@ fn ntheory_crt_basic() {
             // x mod 15 should be 8
             let fifteen = BigInt::from(15);
             let normalized = ((&x % &fifteen) + &fifteen) % &fifteen;
-            assert_eq!(normalized, BigInt::from(8), "CRT: x ≡ 2 mod 3, x ≡ 3 mod 5 → x mod 15 = 8, got {normalized}");
+            assert_eq!(
+                normalized,
+                BigInt::from(8),
+                "CRT: x ≡ 2 mod 3, x ≡ 3 mod 5 → x mod 15 = 8, got {normalized}"
+            );
         }
         None => panic!("CRT should find a solution"),
     }
@@ -2424,14 +2582,21 @@ fn ntheory_crt_incompatible() {
     let remainders = vec![BigInt::from(0), BigInt::from(1)];
     let moduli = vec![BigInt::from(2), BigInt::from(2)];
     let result = ntheory::crt(&remainders, &moduli);
-    assert!(result.is_none(), "CRT with incompatible congruences should return None");
+    assert!(
+        result.is_none(),
+        "CRT with incompatible congruences should return None"
+    );
 }
 
 /// mod_pow(2, 10, 1000) = 24
 #[test]
 fn ntheory_mod_pow_basic() {
     let result = ntheory::mod_pow(2_i64, 10_i64, 1000_i64);
-    assert_eq!(result, BigInt::from(24), "2^10 mod 1000 = 1024 mod 1000 = 24, got {result}");
+    assert_eq!(
+        result,
+        BigInt::from(24),
+        "2^10 mod 1000 = 1024 mod 1000 = 24, got {result}"
+    );
 }
 
 /// mod_pow(base, 0, m) = 1 for m > 1
@@ -2464,7 +2629,10 @@ fn solve_quintic_no_radical() {
     let expr = x.powi(5) + &x + 1;
     match expr.solve(&x) {
         Ok(sols) => {
-            eprintln!("x⁵+x+1=0 solutions: {:?}", sols.iter().map(|s| format!("{s}")).collect::<Vec<_>>());
+            eprintln!(
+                "x⁵+x+1=0 solutions: {:?}",
+                sols.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
+            );
             // Verify each claimed solution actually satisfies the equation
             for sol in &sols {
                 if let Ok((re, im)) = eval_c64(sol) {
@@ -2543,11 +2711,13 @@ fn matrix_trace_additive() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let b = Matrix::new(vec![
         vec![ctx.int(5), ctx.int(6)],
         vec![ctx.int(7), ctx.int(8)],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let sum = &a + &b;
     let tr_sum = sum.trace().expect("tr(A+B)");
@@ -2557,7 +2727,10 @@ fn matrix_trace_additive() {
 
     let v1 = eval_f64_ex(&tr_sum).expect("eval tr(A+B)");
     let v2 = eval_f64_ex(&tr_a_plus_tr_b).expect("eval tr(A)+tr(B)");
-    assert!(approx(v1, v2, 1e-10), "tr(A+B)={v1} should equal tr(A)+tr(B)={v2}");
+    assert!(
+        approx(v1, v2, 1e-10),
+        "tr(A+B)={v1} should equal tr(A)+tr(B)={v2}"
+    );
 }
 
 /// det(kA) = k^n * det(A) for n×n matrix
@@ -2567,7 +2740,8 @@ fn matrix_det_scalar_multiple() {
     let a = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(2)],
         vec![ctx.int(3), ctx.int(4)],
-    ]).unwrap();
+    ])
+    .unwrap();
     let k = ctx.int(3);
     let ka = &a * &k;
     let det_ka = ka.det().expect("det(kA)");
@@ -2577,7 +2751,10 @@ fn matrix_det_scalar_multiple() {
 
     let v1 = eval_f64_ex(&det_ka).expect("eval det(kA)");
     let v2 = eval_f64_ex(&expected).expect("eval k²·det(A)");
-    assert!(approx(v1, v2, 1e-10), "det(3A)={v1} should equal 9·det(A)={v2}");
+    assert!(
+        approx(v1, v2, 1e-10),
+        "det(3A)={v1} should equal 9·det(A)={v2}"
+    );
 }
 
 /// sinh and cosh identity: cosh²(x) - sinh²(x) = 1

@@ -1,6 +1,6 @@
-//! Algebraic number field arithmetic: elements of ℚ(α) = ℚ[t]/(m(t)).
+//! Algebraic number field arithmetic: elements of ℚ(α) = ℚ\[t\]/(m(t)).
 //!
-//! An [`AlgNum`] represents an element of an algebraic number field,
+//! An `AlgNum` represents an element of an algebraic number field,
 //! stored as a polynomial representative `repr ∈ ℚ[t]` of degree < deg(m),
 //! together with the irreducible minimal polynomial `m(t)`.
 //!
@@ -18,7 +18,7 @@
 //! - **Cross-check**: if both methods produce a result and disagree, a
 //!   warning is logged and the exact answer is trusted.
 //!
-//! The [`AlgNum`] struct (Ring/Field arithmetic in ℚ(α)) is tested
+//! The `AlgNum` struct (Ring/Field arithmetic in ℚ(α)) is tested
 //! infrastructure not yet used in production, but available for future
 //! use (e.g., exact simplification of nested radicals).
 //!
@@ -75,7 +75,6 @@ use num_traits::{One, Signed, Zero};
 use super::dense::Poly;
 use super::generic::GenPoly;
 use super::sturm::SturmChain;
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sign determination helpers
@@ -196,25 +195,25 @@ pub fn minimal_polynomial(
 
         // Power: n^{p/q} where n is a positive integer
         ExprNode::Pow(base, exp) => {
-            if let Some(base_r) = arena.as_num(base) {
-                if let Some(exp_r) = arena.as_num(exp) {
-                    if base_r.is_positive() && !exp_r.is_integer() {
-                        // n^{p/q}: minimal polynomial is t^q - n^p
-                        let p_int = exp_r.numer().clone();
-                        let q_int = exp_r.denom().clone();
-                        let q_usize: usize = (&q_int).try_into().ok()?;
-                        // n^p as a rational
-                        let n_pow_p = rational_pow(base_r, &p_int)?;
-                        // t^q - n^p = [-n^p, 0, 0, ..., 0, 1] with 1 at position q
-                        let mut coeffs = vec![Ratio::zero(); q_usize + 1];
-                        coeffs[0] = -n_pow_p;
-                        coeffs[q_usize] = rat(1, 1);
-                        let mp = Poly::from_coeffs(coeffs);
-                        // Factor and pick the irreducible factor containing
-                        // the root n^{p/q}.
-                        return pick_irreducible_factor(&mp, base_r, exp_r);
-                    }
-                }
+            if let Some(base_r) = arena.as_num(base)
+                && let Some(exp_r) = arena.as_num(exp)
+                && base_r.is_positive()
+                && !exp_r.is_integer()
+            {
+                // n^{p/q}: minimal polynomial is t^q - n^p
+                let p_int = exp_r.numer().clone();
+                let q_int = exp_r.denom().clone();
+                let q_usize: usize = (&q_int).try_into().ok()?;
+                // n^p as a rational
+                let n_pow_p = rational_pow(base_r, &p_int)?;
+                // t^q - n^p = [-n^p, 0, 0, ..., 0, 1] with 1 at position q
+                let mut coeffs = vec![Ratio::zero(); q_usize + 1];
+                coeffs[0] = -n_pow_p;
+                coeffs[q_usize] = rat(1, 1);
+                let mp = Poly::from_coeffs(coeffs);
+                // Factor and pick the irreducible factor containing
+                // the root n^{p/q}.
+                return pick_irreducible_factor(&mp, base_r, exp_r);
             }
             // General symbolic power — try recursion on base/exp if possible.
             // For now, only handle the numeric-base rational-exp case above.
@@ -265,7 +264,7 @@ pub fn minimal_polynomial(
             let mut symbolic: Vec<crate::base::node::ExprId> = Vec::new();
             for &child in children.iter() {
                 if let Some(r) = arena.as_num(child) {
-                    rational_coeff = rational_coeff * r.clone();
+                    rational_coeff *= r.clone();
                 } else {
                     symbolic.push(child);
                 }
@@ -406,7 +405,7 @@ fn minpoly_rational_mul(mp_alpha: &Poly, r: &Ratio<BigInt>) -> Poly {
     for k in 0..=deg {
         let c = mp_alpha.coeff(k);
         coeffs.push(c * r_power.clone());
-        r_power = r_power * r_inv.clone();
+        r_power *= r_inv.clone();
     }
     let result = Poly::from_coeffs(coeffs);
     result.make_monic()
@@ -481,9 +480,7 @@ pub fn exact_is_zero(
         }
         // Other roots share the interval with 0 — cannot fully resolve
         // via isolation alone.  Fall through to numerical heuristic.
-        tracing::trace!(
-            "exact_is_zero: interval has roots besides 0, relying on numerical approx"
-        );
+        tracing::trace!("exact_is_zero: interval has roots besides 0, relying on numerical approx");
     }
 
     // Fallback: trust the numerical approximation (correct for all practical
@@ -556,11 +553,7 @@ pub fn exact_sign(
             }
         } else {
             // 0 is not a root, so the root in this interval is nonzero.
-            if approx > 0.0 {
-                Some(1)
-            } else {
-                Some(-1)
-            }
+            if approx > 0.0 { Some(1) } else { Some(-1) }
         }
     }
 }
@@ -740,12 +733,10 @@ fn substitute_shift(p: &Poly, x_val: &Ratio<BigInt>) -> Poly {
             let x_power = rational_pow_usize(x_val, k - j);
             let coeff_j = &a_k * &binom * &sign * &x_power;
             // Add coeff_j to the j-th coefficient of result.
-            let mut result_coeffs: Vec<Ratio<BigInt>> = (0..=std::cmp::max(
-                result.degree().unwrap_or(0),
-                j,
-            ))
-                .map(|i| result.coeff(i))
-                .collect();
+            let mut result_coeffs: Vec<Ratio<BigInt>> =
+                (0..=std::cmp::max(result.degree().unwrap_or(0), j))
+                    .map(|i| result.coeff(i))
+                    .collect();
             while result_coeffs.len() <= j {
                 result_coeffs.push(Ratio::zero());
             }
@@ -915,8 +906,8 @@ fn binomial_rational(n: usize, k: usize) -> Ratio<BigInt> {
     let k = k.min(n - k);
     let mut result = rat(1, 1);
     for i in 0..k {
-        result = result * Ratio::from_integer(BigInt::from(n - i));
-        result = result / Ratio::from_integer(BigInt::from(i + 1));
+        result *= Ratio::from_integer(BigInt::from(n - i));
+        result /= Ratio::from_integer(BigInt::from(i + 1));
     }
     result
 }
@@ -970,7 +961,10 @@ mod tests {
         // min_poly of 3/4 is t - 3/4, but we return monic integer-coeff form:
         // 4t - 3 → monic: t - 3/4
         assert_eq!(mp.degree(), Some(1));
-        assert!(num_traits::Zero::is_zero(&mp.eval(&r(3, 4))), "3/4 should be a root");
+        assert!(
+            num_traits::Zero::is_zero(&mp.eval(&r(3, 4))),
+            "3/4 should be a root"
+        );
     }
 
     #[test]
@@ -1068,25 +1062,45 @@ mod tests {
 
     /// Helper: assert that `is_zero_checked` agrees with `eval_const_f64`
     /// for the given expression.
-    fn assert_zero_check_agrees(arena: &mut crate::base::arena::Arena, expr: crate::base::node::ExprId, label: &str) {
+    fn assert_zero_check_agrees(
+        arena: &mut crate::base::arena::Arena,
+        expr: crate::base::node::ExprId,
+        label: &str,
+    ) {
         let f64_val = crate::transforms::evalf::eval_const_f64(arena, expr);
         let checked = is_zero_checked(arena, expr);
         let f64_says_zero = f64_val.map(|v| v.abs() < 1e-14);
         if let (Some(c), Some(f)) = (checked, f64_says_zero) {
-            assert_eq!(c, f, "cross-check MISMATCH for {label}: is_zero_checked={c}, f64_says_zero={f}, f64_val={f64_val:?}");
+            assert_eq!(
+                c, f,
+                "cross-check MISMATCH for {label}: is_zero_checked={c}, f64_says_zero={f}, f64_val={f64_val:?}"
+            );
         }
     }
 
     /// Helper: assert that `sign_checked` agrees with `eval_const_f64`
     /// for the given expression.
-    fn assert_sign_check_agrees(arena: &mut crate::base::arena::Arena, expr: crate::base::node::ExprId, label: &str) {
+    fn assert_sign_check_agrees(
+        arena: &mut crate::base::arena::Arena,
+        expr: crate::base::node::ExprId,
+        label: &str,
+    ) {
         let f64_val = crate::transforms::evalf::eval_const_f64(arena, expr);
         let checked = sign_checked(arena, expr);
         let f64_sign: Option<i8> = f64_val.map(|v| {
-            if v > 1e-14 { 1 } else if v < -1e-14 { -1 } else { 0 }
+            if v > 1e-14 {
+                1
+            } else if v < -1e-14 {
+                -1
+            } else {
+                0
+            }
         });
         if let (Some(c), Some(f)) = (checked, f64_sign) {
-            assert_eq!(c, f, "cross-check MISMATCH for {label}: sign_checked={c}, f64_sign={f}, f64_val={f64_val:?}");
+            assert_eq!(
+                c, f,
+                "cross-check MISMATCH for {label}: sign_checked={c}, f64_sign={f}, f64_val={f64_val:?}"
+            );
         }
     }
 
@@ -1347,8 +1361,8 @@ mod tests {
         let sqrt2 = arena.pow(n2, half);
         let sqrt3 = arena.pow(n3, half);
         let sum = arena.add(&[sqrt2, sqrt3]);
-        let mp = minimal_polynomial(&mut arena, sum)
-            .expect("minimal_polynomial must succeed for √2+√3");
+        let mp =
+            minimal_polynomial(&mut arena, sum).expect("minimal_polynomial must succeed for √2+√3");
         assert_eq!(mp.degree(), Some(4), "degree must be exactly 4");
         // Coefficients: t⁴ - 10t² + 1 = [1, 0, -10, 0, 1]
         assert_eq!(mp.coeff(0), r(1, 1), "constant term must be 1");
@@ -1410,7 +1424,10 @@ mod tests {
         let val = crate::transforms::evalf::eval_const_f64(&mut arena, sum)
             .expect("√2+√3+√5 must evaluate");
         // √2+√3+√5 ≈ 1.414 + 1.732 + 2.236 ≈ 5.382
-        assert!((val - 5.382).abs() < 0.01, "sanity: √2+√3+√5 ≈ 5.382, got {val}");
+        assert!(
+            (val - 5.382).abs() < 0.01,
+            "sanity: √2+√3+√5 ≈ 5.382, got {val}"
+        );
 
         let mp = minimal_polynomial(&mut arena, sum);
         if let Some(ref mp) = mp {
@@ -1447,7 +1464,10 @@ mod tests {
 
         let val = crate::transforms::evalf::eval_const_f64(&mut arena, prod)
             .expect("√2·√3·√5 must evaluate");
-        assert!((val - 30.0_f64.sqrt()).abs() < 1e-10, "sanity: √2·√3·√5 = √30");
+        assert!(
+            (val - 30.0_f64.sqrt()).abs() < 1e-10,
+            "sanity: √2·√3·√5 = √30"
+        );
 
         let mp = minimal_polynomial(&mut arena, prod);
         if let Some(ref mp) = mp {
@@ -1544,8 +1564,8 @@ mod tests {
         let neg_sqrt5 = arena.neg(sqrt5);
         let expr = arena.add(&[sqrt2, sqrt3, neg_sqrt5]);
 
-        let val = crate::transforms::evalf::eval_const_f64(&mut arena, expr)
-            .expect("must evaluate");
+        let val =
+            crate::transforms::evalf::eval_const_f64(&mut arena, expr).expect("must evaluate");
         assert!(val > 0.5, "√2+√3-√5 ≈ 0.728, got {val}");
 
         assert_eq!(
@@ -1666,10 +1686,7 @@ mod tests {
         let mut arena = crate::base::arena::Arena::new();
         let pi = arena.pi;
         let result = is_zero_checked(&mut arena, pi);
-        assert!(
-            result != Some(true),
-            "π is not zero!"
-        );
+        assert!(result != Some(true), "π is not zero!");
     }
 
     #[test]
@@ -1745,8 +1762,8 @@ mod tests {
         if is_nary {
             // The N-ary fold path fires.  Test rigorously.
             let mp = minimal_polynomial(&mut arena, sum3);
-            let val = crate::transforms::evalf::eval_const_f64(&mut arena, sum3)
-                .expect("must evaluate");
+            let val =
+                crate::transforms::evalf::eval_const_f64(&mut arena, sum3).expect("must evaluate");
 
             if let Some(ref mp) = mp {
                 // HARD CHECK: polynomial must vanish at the value.
@@ -1797,11 +1814,7 @@ mod tests {
         // Try constructing with all 4 terms
         let sum = arena.add(&[sqrt2, sqrt3, neg_sqrt2, neg_sqrt3]);
         let result = is_zero_checked(&mut arena, sum);
-        assert_eq!(
-            result,
-            Some(true),
-            "√2+√3-√2-√3 must be zero"
-        );
+        assert_eq!(result, Some(true), "√2+√3-√2-√3 must be zero");
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1819,8 +1832,7 @@ mod tests {
         let sqrt3 = arena.pow(n3, half);
         let sum = arena.add(&[sqrt2, sqrt3]);
 
-        let mp = minimal_polynomial(&mut arena, sum)
-            .expect("must succeed for √2+√3");
+        let mp = minimal_polynomial(&mut arena, sum).expect("must succeed for √2+√3");
         assert_eq!(mp.degree(), Some(4));
         assert_eq!(mp.coeff(0), r(1, 1));
         assert_eq!(mp.coeff(1), r(0, 1));
@@ -1835,13 +1847,16 @@ mod tests {
 
         // Check OTHER roots don't coincide: √2-√3, -√2+√3, -√2-√3
         let other_roots = [
-            2.0_f64.sqrt() - 3.0_f64.sqrt(), // ≈ -0.318
+            2.0_f64.sqrt() - 3.0_f64.sqrt(),  // ≈ -0.318
             -2.0_f64.sqrt() + 3.0_f64.sqrt(), // ≈ 0.318
             -2.0_f64.sqrt() - 3.0_f64.sqrt(), // ≈ -3.146
         ];
         for root in &other_roots {
             let res = eval_poly_at_f64(&mp, *root);
-            assert!(res.abs() < 1e-6, "p({root}) = {res}, expected ≈ 0 (it's a root too)");
+            assert!(
+                res.abs() < 1e-6,
+                "p({root}) = {res}, expected ≈ 0 (it's a root too)"
+            );
         }
 
         assert_eq!(is_zero_checked(&mut arena, sum), Some(false));
@@ -1859,8 +1874,7 @@ mod tests {
         let sqrt2 = arena.pow(n2, half);
         let expr = arena.sub(sqrt2, one);
 
-        let mp = minimal_polynomial(&mut arena, expr)
-            .expect("must succeed for √2-1");
+        let mp = minimal_polynomial(&mut arena, expr).expect("must succeed for √2-1");
         assert_eq!(mp.degree(), Some(2));
         // √2-1 is root of t² + 2t - 1 = 0 (completing the square: (t+1)²=2)
         assert_eq!(mp.coeff(0), r(-1, 1));
@@ -2022,9 +2036,12 @@ mod tests {
         let diff = a.sub(sq, rhs);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
+        assert_eq!(
+            result,
+            Some(true),
             "BUG: (√2+√3)²-5-2√6 should be zero. Got {result:?}, node={:?}",
-            a.node(diff));
+            a.node(diff)
+        );
     }
 
     #[test]
@@ -2044,8 +2061,11 @@ mod tests {
         let diff = a.sub(phi_sq_minus_phi, n1);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: φ²-φ-1 should be zero. Got {result:?}");
+        assert_eq!(
+            result,
+            Some(true),
+            "BUG: φ²-φ-1 should be zero. Got {result:?}"
+        );
     }
 
     #[test]
@@ -2061,8 +2081,12 @@ mod tests {
         let diff = a.sub(two_sqrt2, sqrt8);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: 2√2 - √8 = 0. Got {result:?}, node={:?}", a.node(diff));
+        assert_eq!(
+            result,
+            Some(true),
+            "BUG: 2√2 - √8 = 0. Got {result:?}, node={:?}",
+            a.node(diff)
+        );
     }
 
     #[test]
@@ -2079,8 +2103,7 @@ mod tests {
         let diff = a.sub(sqrt50, five_sqrt2);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: √50 - 5√2 = 0. Got {result:?}");
+        assert_eq!(result, Some(true), "BUG: √50 - 5√2 = 0. Got {result:?}");
     }
 
     #[test]
@@ -2097,8 +2120,7 @@ mod tests {
         let diff = a.sub(cbrt4, cbrt2_sq);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: ∛4 - (∛2)² = 0. Got {result:?}");
+        assert_eq!(result, Some(true), "BUG: ∛4 - (∛2)² = 0. Got {result:?}");
     }
 
     #[test]
@@ -2113,8 +2135,7 @@ mod tests {
         let diff = a.sub(prod, n2);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: √2·√2-2 = 0. Got {result:?}");
+        assert_eq!(result, Some(true), "BUG: √2·√2-2 = 0. Got {result:?}");
     }
 
     #[test]
@@ -2134,8 +2155,11 @@ mod tests {
         let expr = a.add(&[prod, n1]);
         let expr = crate::transforms::eval::eval(&mut a, expr);
         let result = is_zero_checked(&mut a, expr);
-        assert_eq!(result, Some(true),
-            "BUG: (√2+√3)(√2-√3)+1 = 0. Got {result:?}");
+        assert_eq!(
+            result,
+            Some(true),
+            "BUG: (√2+√3)(√2-√3)+1 = 0. Got {result:?}"
+        );
     }
 
     #[test]
@@ -2151,8 +2175,12 @@ mod tests {
         let diff = a.sub(inv_sqrt2, sqrt2_over_2);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: 1/√2 - √2/2 = 0. Got {result:?}, node={:?}", a.node(diff));
+        assert_eq!(
+            result,
+            Some(true),
+            "BUG: 1/√2 - √2/2 = 0. Got {result:?}, node={:?}",
+            a.node(diff)
+        );
     }
 
     #[test]
@@ -2169,8 +2197,12 @@ mod tests {
         let diff = a.sub(lhs, rhs);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: 1/(√2+1)-(√2-1) = 0. Got {result:?}, node={:?}", a.node(diff));
+        assert_eq!(
+            result,
+            Some(true),
+            "BUG: 1/(√2+1)-(√2-1) = 0. Got {result:?}, node={:?}",
+            a.node(diff)
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -2194,8 +2226,10 @@ mod tests {
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_1);
         assert!(val.is_some(), "BUG: ∫1/(x²+1) must evaluate at x=1");
         let v = val.unwrap();
-        assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-10,
-            "BUG: ∫1/(x²+1) at x=1 should be π/4 ≈ 0.7854, got {v}");
+        assert!(
+            (v - std::f64::consts::FRAC_PI_4).abs() < 1e-10,
+            "BUG: ∫1/(x²+1) at x=1 should be π/4 ≈ 0.7854, got {v}"
+        );
     }
 
     #[test]
@@ -2217,8 +2251,10 @@ mod tests {
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_0);
         assert!(val.is_some(), "BUG: ∫1/(x²+2x+2) must evaluate at x=0");
         let v = val.unwrap();
-        assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-10,
-            "BUG: ∫1/(x²+2x+2) at x=0 should be π/4, got {v}");
+        assert!(
+            (v - std::f64::consts::FRAC_PI_4).abs() < 1e-10,
+            "BUG: ∫1/(x²+2x+2) at x=0 should be π/4, got {v}"
+        );
     }
 
     #[test]
@@ -2239,8 +2275,10 @@ mod tests {
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_1);
         assert!(val.is_some(), "BUG: ∫2x/(x²+1) must evaluate at x=1");
         let v = val.unwrap();
-        assert!((v - 2.0_f64.ln()).abs() < 1e-10,
-            "BUG: ∫2x/(x²+1) at x=1 should be ln(2) ≈ 0.6931, got {v}");
+        assert!(
+            (v - 2.0_f64.ln()).abs() < 1e-10,
+            "BUG: ∫2x/(x²+1) at x=1 should be ln(2) ≈ 0.6931, got {v}"
+        );
     }
 
     #[test]
@@ -2256,8 +2294,10 @@ mod tests {
         let sum = a.add(&[sin2, cos2]);
         let simplified = a.trigsimp_expr(sum);
         let simplified = crate::transforms::eval::eval(&mut a, simplified);
-        assert_eq!(simplified, a.one,
-            "BUG: sin²(x)+cos²(x) should simplify to 1");
+        assert_eq!(
+            simplified, a.one,
+            "BUG: sin²(x)+cos²(x) should simplify to 1"
+        );
     }
 
     #[test]
@@ -2277,8 +2317,11 @@ mod tests {
         let at_3 = crate::transforms::eval::eval(&mut a, at_3);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_3);
         assert!(val.is_some(), "BUG: d/dx(∫x²dx) must evaluate at x=3");
-        assert!((val.unwrap() - 9.0).abs() < 1e-10,
-            "BUG: d/dx(∫x²dx) at x=3 should be 9, got {:?}", val);
+        assert!(
+            (val.unwrap() - 9.0).abs() < 1e-10,
+            "BUG: d/dx(∫x²dx) at x=3 should be 9, got {:?}",
+            val
+        );
     }
 
     #[test]
@@ -2295,8 +2338,10 @@ mod tests {
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_1);
         assert!(val.is_some(), "BUG: ∫e^x must evaluate at x=1");
         let v = val.unwrap();
-        assert!((v - std::f64::consts::E).abs() < 1e-10,
-            "BUG: ∫e^x at x=1 should be e ≈ 2.7183, got {v}");
+        assert!(
+            (v - std::f64::consts::E).abs() < 1e-10,
+            "BUG: ∫e^x at x=1 should be e ≈ 2.7183, got {v}"
+        );
     }
 
     #[test]
@@ -2316,8 +2361,11 @@ mod tests {
         let at_10 = crate::transforms::subs::subs(&mut a, expanded, x, ten);
         let at_10 = crate::transforms::eval::eval(&mut a, at_10);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_10);
-        assert_eq!(val, Some(132.0),
-            "BUG: (x+1)(x+2) at x=10 should be 132, got {val:?}");
+        assert_eq!(
+            val,
+            Some(132.0),
+            "BUG: (x+1)(x+2) at x=10 should be 132, got {val:?}"
+        );
     }
 
     #[test]
@@ -2333,8 +2381,11 @@ mod tests {
         let at_0 = crate::transforms::eval::eval(&mut a, at_0);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_0);
         assert!(val.is_some(), "BUG: d/dx(sin(x)) must evaluate at x=0");
-        assert!((val.unwrap() - 1.0).abs() < 1e-10,
-            "BUG: d/dx(sin(x)) at x=0 should be cos(0)=1, got {:?}", val);
+        assert!(
+            (val.unwrap() - 1.0).abs() < 1e-10,
+            "BUG: d/dx(sin(x)) at x=0 should be cos(0)=1, got {:?}",
+            val
+        );
     }
 
     #[test]
@@ -2350,8 +2401,11 @@ mod tests {
         let at_2 = crate::transforms::eval::eval(&mut a, at_2);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_2);
         assert!(val.is_some(), "BUG: d/dx(ln(x)) must evaluate at x=2");
-        assert!((val.unwrap() - 0.5).abs() < 1e-10,
-            "BUG: d/dx(ln(x)) at x=2 should be 0.5, got {:?}", val);
+        assert!(
+            (val.unwrap() - 0.5).abs() < 1e-10,
+            "BUG: d/dx(ln(x)) at x=2 should be 0.5, got {:?}",
+            val
+        );
     }
 
     #[test]
@@ -2369,8 +2423,11 @@ mod tests {
         let at_5 = crate::transforms::subs::subs(&mut a, d2, x, five);
         let at_5 = crate::transforms::eval::eval(&mut a, at_5);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_5);
-        assert_eq!(val, Some(30.0),
-            "BUG: d²/dx²(x³) at x=5 should be 30, got {val:?}");
+        assert_eq!(
+            val,
+            Some(30.0),
+            "BUG: d²/dx²(x³) at x=5 should be 30, got {val:?}"
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -2388,8 +2445,11 @@ mod tests {
         let diff = a.sub(sqrt2, approx);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let sign = sign_checked(&mut a, diff);
-        assert_eq!(sign, Some(1),
-            "BUG: √2 - 14142/10000 is small positive. Got sign={sign:?}");
+        assert_eq!(
+            sign,
+            Some(1),
+            "BUG: √2 - 14142/10000 is small positive. Got sign={sign:?}"
+        );
     }
 
     #[test]
@@ -2403,8 +2463,11 @@ mod tests {
         let diff = a.sub(sqrt2, approx);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let sign = sign_checked(&mut a, diff);
-        assert_eq!(sign, Some(-1),
-            "BUG: √2 - 141422/100000 is small negative. Got sign={sign:?}");
+        assert_eq!(
+            sign,
+            Some(-1),
+            "BUG: √2 - 141422/100000 is small negative. Got sign={sign:?}"
+        );
     }
 
     #[test]
@@ -2418,8 +2481,11 @@ mod tests {
         let diff = a.sub(sqrt2, approx);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(false),
-            "BUG: √2 - 7071/5000 is not zero. Got {result:?}");
+        assert_eq!(
+            result,
+            Some(false),
+            "BUG: √2 - 7071/5000 is not zero. Got {result:?}"
+        );
     }
 
     #[test]
@@ -2429,8 +2495,10 @@ mod tests {
         let val = crate::transforms::evalf::eval_const_f64(&mut a, pi);
         assert!(val.is_some(), "BUG: π must evaluate");
         let v = val.unwrap();
-        assert!((v - std::f64::consts::PI).abs() < 1e-10,
-            "BUG: π should be 3.14159..., got {v}");
+        assert!(
+            (v - std::f64::consts::PI).abs() < 1e-10,
+            "BUG: π should be 3.14159..., got {v}"
+        );
     }
 
     #[test]
@@ -2440,8 +2508,10 @@ mod tests {
         let val = crate::transforms::evalf::eval_const_f64(&mut a, e);
         assert!(val.is_some(), "BUG: e must evaluate");
         let v = val.unwrap();
-        assert!((v - std::f64::consts::E).abs() < 1e-10,
-            "BUG: e should be 2.71828..., got {v}");
+        assert!(
+            (v - std::f64::consts::E).abs() < 1e-10,
+            "BUG: e should be 2.71828..., got {v}"
+        );
     }
 
     #[test]
@@ -2452,11 +2522,16 @@ mod tests {
         let sinx = a.sin(x);
         let ratio = a.div(sinx, x);
         let zero = a.zero;
-        let lim = a.limit_expr(ratio, x, zero)
+        let lim = a
+            .limit_expr(ratio, x, zero)
             .expect("BUG: limit_expr failed for sin(x)/x");
         let lim = crate::transforms::eval::eval(&mut a, lim);
-        assert_eq!(lim, a.one,
-            "BUG: lim sin(x)/x → 0 should be 1, got node={:?}", a.node(lim));
+        assert_eq!(
+            lim,
+            a.one,
+            "BUG: lim sin(x)/x → 0 should be 1, got node={:?}",
+            a.node(lim)
+        );
     }
 
     #[test]
@@ -2475,8 +2550,11 @@ mod tests {
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_1);
         assert!(val.is_some(), "BUG: d/dx sin(x²) must evaluate at x=1");
         let expected = 2.0 * 1.0_f64.cos();
-        assert!((val.unwrap() - expected).abs() < 1e-10,
-            "BUG: d/dx sin(x²) at x=1 should be 2cos(1) ≈ {expected}, got {:?}", val);
+        assert!(
+            (val.unwrap() - expected).abs() < 1e-10,
+            "BUG: d/dx sin(x²) at x=1 should be 2cos(1) ≈ {expected}, got {:?}",
+            val
+        );
     }
 
     #[test]
@@ -2487,7 +2565,8 @@ mod tests {
         let x = a.symbol("x");
         let ex = a.exp(x);
         let zero = a.zero;
-        let series = a.series_expr(ex, x, zero, 4u32)
+        let series = a
+            .series_expr(ex, x, zero, 4u32)
             .expect("BUG: series_expr failed for e^x");
         let series = crate::transforms::eval::eval(&mut a, series);
         let tenth = a.rational(1, 10);
@@ -2496,8 +2575,10 @@ mod tests {
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_01);
         assert!(val.is_some(), "BUG: Taylor e^x must evaluate at x=0.1");
         let v = val.unwrap();
-        assert!((v - 0.1_f64.exp()).abs() < 1e-4,
-            "BUG: Taylor e^x(4th order) at x=0.1 should be ≈ 1.10517, got {v}");
+        assert!(
+            (v - 0.1_f64.exp()).abs() < 1e-4,
+            "BUG: Taylor e^x(4th order) at x=0.1 should be ≈ 1.10517, got {v}"
+        );
     }
 
     #[test]
@@ -2512,16 +2593,27 @@ mod tests {
         let neg5x = a.mul(&[neg5, x]);
         let poly = a.add(&[x2, neg5x, six]);
         let roots = crate::transforms::solve::solve(&mut a, poly, x);
-        assert_eq!(roots.len(), 2,
-            "BUG: x²-5x+6 should have 2 roots, got {}", roots.len());
-        let mut vals: Vec<f64> = roots.iter()
+        assert_eq!(
+            roots.len(),
+            2,
+            "BUG: x²-5x+6 should have 2 roots, got {}",
+            roots.len()
+        );
+        let mut vals: Vec<f64> = roots
+            .iter()
             .filter_map(|r| crate::transforms::evalf::eval_const_f64(&mut a, r.value))
             .collect();
         vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert!((vals[0] - 2.0).abs() < 1e-10,
-            "BUG: first root should be 2, got {}", vals[0]);
-        assert!((vals[1] - 3.0).abs() < 1e-10,
-            "BUG: second root should be 3, got {}", vals[1]);
+        assert!(
+            (vals[0] - 2.0).abs() < 1e-10,
+            "BUG: first root should be 2, got {}",
+            vals[0]
+        );
+        assert!(
+            (vals[1] - 3.0).abs() < 1e-10,
+            "BUG: second root should be 3, got {}",
+            vals[1]
+        );
     }
 
     #[test]
@@ -2538,8 +2630,11 @@ mod tests {
         let det = a.sub(ad, bc);
         let det = crate::transforms::eval::eval(&mut a, det);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, det);
-        assert_eq!(val, Some(-2.0),
-            "BUG: det([[1,2],[3,4]]) should be -2, got {val:?}");
+        assert_eq!(
+            val,
+            Some(-2.0),
+            "BUG: det([[1,2],[3,4]]) should be -2, got {val:?}"
+        );
     }
 
     #[test]
@@ -2579,8 +2674,11 @@ mod tests {
         let det = a.add(&[det, t3]);
         let det = crate::transforms::eval::eval(&mut a, det);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, det);
-        assert_eq!(val, Some(0.0),
-            "BUG: det of singular 3x3 should be 0, got {val:?}");
+        assert_eq!(
+            val,
+            Some(0.0),
+            "BUG: det of singular 3x3 should be 0, got {val:?}"
+        );
     }
 
     #[test]
@@ -2607,14 +2705,18 @@ mod tests {
             let roots_y = crate::transforms::solve::solve(&mut a, eq2_sub, y);
             if !roots_y.is_empty() {
                 let y_val = crate::transforms::evalf::eval_const_f64(&mut a, roots_y[0].value);
-                assert!(y_val.is_some_and(|v| (v - 2.0).abs() < 1e-10),
-                    "BUG: y should be 2, got {y_val:?}");
+                assert!(
+                    y_val.is_some_and(|v| (v - 2.0).abs() < 1e-10),
+                    "BUG: y should be 2, got {y_val:?}"
+                );
                 // Substitute back: x = 3 - 2 = 1
                 let x_final = crate::transforms::subs::subs(&mut a, x_val, y, roots_y[0].value);
                 let x_final = crate::transforms::eval::eval(&mut a, x_final);
                 let x_val_f64 = crate::transforms::evalf::eval_const_f64(&mut a, x_final);
-                assert!(x_val_f64.is_some_and(|v| (v - 1.0).abs() < 1e-10),
-                    "BUG: x should be 1, got {x_val_f64:?}");
+                assert!(
+                    x_val_f64.is_some_and(|v| (v - 1.0).abs() < 1e-10),
+                    "BUG: x should be 1, got {x_val_f64:?}"
+                );
             }
         }
     }
@@ -2636,8 +2738,11 @@ mod tests {
         let at_pi2 = crate::transforms::eval::eval(&mut a, at_pi2);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_pi2);
         assert!(val.is_some(), "BUG: d/dx(x·sin(x)) must evaluate at x=π/2");
-        assert!((val.unwrap() - 1.0).abs() < 1e-10,
-            "BUG: d/dx(x·sin(x)) at x=π/2 should be 1, got {:?}", val);
+        assert!(
+            (val.unwrap() - 1.0).abs() < 1e-10,
+            "BUG: d/dx(x·sin(x)) at x=π/2 should be 1, got {:?}",
+            val
+        );
     }
 
     #[test]
@@ -2657,8 +2762,11 @@ mod tests {
         let at_val = crate::transforms::eval::eval(&mut a, at_val);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, at_val);
         assert!(val.is_some(), "BUG: d/dx(∫sin(x)dx) must evaluate at x=π/6");
-        assert!((val.unwrap() - 0.5).abs() < 1e-10,
-            "BUG: d/dx(∫sin(x)dx) at x=π/6 should be 0.5, got {:?}", val);
+        assert!(
+            (val.unwrap() - 0.5).abs() < 1e-10,
+            "BUG: d/dx(∫sin(x)dx) at x=π/6 should be 0.5, got {:?}",
+            val
+        );
     }
 
     #[test]
@@ -2671,8 +2779,10 @@ mod tests {
         let val = crate::transforms::evalf::eval_const_f64(&mut a, sqrt2);
         assert!(val.is_some(), "BUG: √2 must evaluate");
         let v = val.unwrap();
-        assert!((v - std::f64::consts::SQRT_2).abs() < 1e-14,
-            "BUG: √2 should be 1.41421356237..., got {v}");
+        assert!(
+            (v - std::f64::consts::SQRT_2).abs() < 1e-14,
+            "BUG: √2 should be 1.41421356237..., got {v}"
+        );
     }
 
     #[test]
@@ -2684,8 +2794,7 @@ mod tests {
         let result = a.pow(n2, neg1);
         let result = crate::transforms::eval::eval(&mut a, result);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, result);
-        assert_eq!(val, Some(0.5),
-            "BUG: 2^(-1) should be 0.5, got {val:?}");
+        assert_eq!(val, Some(0.5), "BUG: 2^(-1) should be 0.5, got {val:?}");
     }
 
     #[test]
@@ -2697,8 +2806,11 @@ mod tests {
         let result = crate::transforms::eval::eval(&mut a, result);
         let val = crate::transforms::evalf::eval_const_f64(&mut a, result);
         // Most CAS systems return 1 for 0^0.
-        assert!(val == Some(1.0) || result == a.one,
-            "BUG: 0^0 should be 1, got val={val:?}, node={:?}", a.node(result));
+        assert!(
+            val == Some(1.0) || result == a.one,
+            "BUG: 0^0 should be 1, got val={val:?}, node={:?}",
+            a.node(result)
+        );
     }
 
     #[test]
@@ -2715,10 +2827,16 @@ mod tests {
         // Check it's the right number: should be 2^64-1
         if let Some(r) = a.as_num(result) {
             let expected: u64 = u64::MAX; // 2^64-1
-            assert_eq!(r.to_string(), expected.to_string(),
-                "BUG: 2^64-1 should be {expected}, got {r}");
+            assert_eq!(
+                r.to_string(),
+                expected.to_string(),
+                "BUG: 2^64-1 should be {expected}, got {r}"
+            );
         } else {
-            panic!("BUG: 2^64-1 should be a number, got node={:?}", a.node(result));
+            panic!(
+                "BUG: 2^64-1 should be a number, got node={:?}",
+                a.node(result)
+            );
         }
     }
 
@@ -2748,15 +2866,19 @@ mod tests {
         // Or scaled by a constant.  Just check it divides both.
         assert!(val.is_some(), "BUG: poly gcd must evaluate");
         let v = val.unwrap();
-        assert!(v.abs() > 0.1,
-            "BUG: gcd(x²-1, x²-2x+1) at x=5 should be nonzero, got {v}");
+        assert!(
+            v.abs() > 0.1,
+            "BUG: gcd(x²-1, x²-2x+1) at x=5 should be nonzero, got {v}"
+        );
         // Check it divides p1 at x=5: p1(5) = 24, should be divisible by gcd(5)
         let p1_at_5 = crate::transforms::subs::subs(&mut a, p1, x, five);
         let p1_at_5 = crate::transforms::eval::eval(&mut a, p1_at_5);
         let p1_val = crate::transforms::evalf::eval_const_f64(&mut a, p1_at_5).unwrap();
         let remainder = p1_val / v;
-        assert!((remainder - remainder.round()).abs() < 1e-10,
-            "BUG: gcd should divide p1. p1(5)={p1_val}, gcd(5)={v}, ratio={remainder}");
+        assert!(
+            (remainder - remainder.round()).abs() < 1e-10,
+            "BUG: gcd should divide p1. p1(5)={p1_val}, gcd(5)={v}, ratio={remainder}"
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -2779,9 +2901,12 @@ mod tests {
         let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, diff);
         eprintln!("hard_near_zero: √2 - 665857/470832 f64 = {f64_val:?}");
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(false),
+        assert_eq!(
+            result,
+            Some(false),
             "BUG: √2 - 665857/470832 ≈ -1.6e-12 is NONZERO but is_zero_checked says {result:?}. \
-             f64={f64_val:?}. This is a critical failure in the ambiguous zone.");
+             f64={f64_val:?}. This is a critical failure in the ambiguous zone."
+        );
     }
 
     #[test]
@@ -2798,8 +2923,11 @@ mod tests {
         let diff = a.sub(sqrt2, close_approx);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let sign = sign_checked(&mut a, diff);
-        assert_eq!(sign, Some(-1),
-            "BUG: √2 - 665857/470832 is tiny negative. sign_checked says {sign:?}");
+        assert_eq!(
+            sign,
+            Some(-1),
+            "BUG: √2 - 665857/470832 is tiny negative. sign_checked says {sign:?}"
+        );
     }
 
     #[test]
@@ -2814,11 +2942,9 @@ mod tests {
         let diff = a.sub(sqrt2, approx);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(false),
-            "BUG: √2 - 1393/985 is nonzero");
+        assert_eq!(result, Some(false), "BUG: √2 - 1393/985 is nonzero");
         let sign = sign_checked(&mut a, diff);
-        assert_eq!(sign, Some(1),
-            "BUG: √2 - 1393/985 is positive");
+        assert_eq!(sign, Some(1), "BUG: √2 - 1393/985 is positive");
     }
 
     #[test]
@@ -2834,11 +2960,9 @@ mod tests {
         let diff = a.sub(sqrt_n2p1, n);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(false),
-            "BUG: √(10000²+1)-10000 is nonzero");
+        assert_eq!(result, Some(false), "BUG: √(10000²+1)-10000 is nonzero");
         let sign = sign_checked(&mut a, diff);
-        assert_eq!(sign, Some(1),
-            "BUG: √(10000²+1)-10000 is positive");
+        assert_eq!(sign, Some(1), "BUG: √(10000²+1)-10000 is positive");
     }
 
     #[test]
@@ -2872,9 +2996,12 @@ mod tests {
         let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, expr);
         eprintln!("hard_minpoly_identity: (√2+√3)⁴-10(√2+√3)²+1 f64 = {f64_val:?}");
         let result = is_zero_checked(&mut a, expr);
-        assert_eq!(result, Some(true),
+        assert_eq!(
+            result,
+            Some(true),
             "BUG: (√2+√3)⁴-10(√2+√3)²+1 = 0 (minimal poly identity). \
-             is_zero_checked says {result:?}, f64={f64_val:?}");
+             is_zero_checked says {result:?}, f64={f64_val:?}"
+        );
     }
 
     #[test]
@@ -2894,10 +3021,16 @@ mod tests {
         let diff = a.sub(lhs, rhs);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, diff);
-        eprintln!("hard_rationalize: 1/(√3+√2)-(√3-√2) f64 = {f64_val:?}, node = {:?}", a.node(diff));
+        eprintln!(
+            "hard_rationalize: 1/(√3+√2)-(√3-√2) f64 = {f64_val:?}, node = {:?}",
+            a.node(diff)
+        );
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: 1/(√3+√2)-(√3-√2) = 0. Got {result:?}, f64={f64_val:?}");
+        assert_eq!(
+            result,
+            Some(true),
+            "BUG: 1/(√3+√2)-(√3-√2) = 0. Got {result:?}, f64={f64_val:?}"
+        );
     }
 
     #[test]
@@ -2912,8 +3045,10 @@ mod tests {
         let sqrt2 = a.pow(n2, half);
         let expr = a.add(&[x, sqrt2]);
         let result = is_zero_checked(&mut a, expr);
-        assert!(result.is_none(),
-            "BUG: x+√2 has a free variable — is_zero_checked must return None, got {result:?}");
+        assert!(
+            result.is_none(),
+            "BUG: x+√2 has a free variable — is_zero_checked must return None, got {result:?}"
+        );
     }
 
     #[test]
@@ -2936,11 +3071,17 @@ mod tests {
         let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, expr);
         eprintln!("hard_sign_near_zero: √5-√3-√2+1 f64 = {f64_val:?}");
         let result = is_zero_checked(&mut a, expr);
-        assert_eq!(result, Some(false),
-            "BUG: √5-√3-√2+1 ≈ 0.09, nonzero. Got {result:?}");
+        assert_eq!(
+            result,
+            Some(false),
+            "BUG: √5-√3-√2+1 ≈ 0.09, nonzero. Got {result:?}"
+        );
         let sign = sign_checked(&mut a, expr);
-        assert_eq!(sign, Some(1),
-            "BUG: √5-√3-√2+1 ≈ 0.09, positive. Got {sign:?}");
+        assert_eq!(
+            sign,
+            Some(1),
+            "BUG: √5-√3-√2+1 ≈ 0.09, positive. Got {sign:?}"
+        );
     }
 
     #[test]
@@ -2969,11 +3110,16 @@ mod tests {
         // Known value: ∫₀¹ 1/(x⁴+1) dx ≈ 0.86697298...
         // (via Wolfram Alpha / numerical integration)
         if let Some(v) = val {
-            assert!((v - 0.86697298).abs() < 1e-4,
-                "BUG: ∫₀¹ 1/(x⁴+1)dx should be ≈ 0.8670, got {v}");
+            assert!(
+                (v - 0.86697298).abs() < 1e-4,
+                "BUG: ∫₀¹ 1/(x⁴+1)dx should be ≈ 0.8670, got {v}"
+            );
         } else {
-            eprintln!("hard_integrate_x4+1: could not evaluate definite integral numerically. \
-                       Result node: {:?}", a.node(definite));
+            eprintln!(
+                "hard_integrate_x4+1: could not evaluate definite integral numerically. \
+                       Result node: {:?}",
+                a.node(definite)
+            );
             // Don't assert failure — the integration may produce a form
             // that can't be evaluated at specific points.
         }
@@ -3001,10 +3147,14 @@ mod tests {
         // Numerical value: ≈ ln(1)/3 + ... (partial fractions)
         // Just verify it evaluates to SOME finite number.
         if let Some(v) = val {
-            assert!(v.is_finite(),
-                "BUG: ∫1/(x³-1) at x=2 should be finite, got {v}");
-            assert!(v.abs() < 100.0,
-                "BUG: ∫1/(x³-1) at x=2 should be reasonable, got {v}");
+            assert!(
+                v.is_finite(),
+                "BUG: ∫1/(x³-1) at x=2 should be finite, got {v}"
+            );
+            assert!(
+                v.abs() < 100.0,
+                "BUG: ∫1/(x³-1) at x=2 should be reasonable, got {v}"
+            );
         }
     }
 
@@ -3033,10 +3183,13 @@ mod tests {
         let result = is_zero_checked(&mut a, diff);
         // MUST be Some(false).  If it's Some(true), the exact methods
         // failed to override the f64 tolerance — that's the critical bug.
-        assert_eq!(result, Some(false),
+        assert_eq!(
+            result,
+            Some(false),
             "CRITICAL BUG: √2 - 14142135623731/10000000000000 is nonzero, but \
              is_zero_checked says {result:?}. f64={f64_val:?}. \
-             The exact method must override the f64 tolerance in the ambiguous zone.");
+             The exact method must override the f64 tolerance in the ambiguous zone."
+        );
     }
 
     #[test]
@@ -3054,9 +3207,12 @@ mod tests {
         let diff = a.sub(sqrt2, close);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let sign = sign_checked(&mut a, diff);
-        assert_eq!(sign, Some(-1),
+        assert_eq!(
+            sign,
+            Some(-1),
             "BUG: √2 - 14142135623731/10000000000000 is tiny negative, \
-             sign_checked says {sign:?}");
+             sign_checked says {sign:?}"
+        );
     }
 
     #[test]
@@ -3080,8 +3236,11 @@ mod tests {
         let f64_val = crate::transforms::evalf::eval_const_f64(&mut a, diff);
         eprintln!("hard_double_rat: 1/(√5+√3)-(√5-√3)/2 f64 = {f64_val:?}");
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: 1/(√5+√3)-(√5-√3)/2 = 0. Got {result:?}, f64={f64_val:?}");
+        assert_eq!(
+            result,
+            Some(true),
+            "BUG: 1/(√5+√3)-(√5-√3)/2 = 0. Got {result:?}, f64={f64_val:?}"
+        );
     }
 
     #[test]
@@ -3097,8 +3256,7 @@ mod tests {
         let diff = a.sub(cubed, n2);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: (∛2)³ - 2 = 0. Got {result:?}");
+        assert_eq!(result, Some(true), "BUG: (∛2)³ - 2 = 0. Got {result:?}");
     }
 
     #[test]
@@ -3114,8 +3272,7 @@ mod tests {
         let diff = a.sub(power, n5);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: (⁴√5)⁴ - 5 = 0. Got {result:?}");
+        assert_eq!(result, Some(true), "BUG: (⁴√5)⁴ - 5 = 0. Got {result:?}");
     }
 
     #[test]
@@ -3138,8 +3295,12 @@ mod tests {
         let diff = a.sub(prod, n1);
         let diff = crate::transforms::eval::eval(&mut a, diff);
         let result = is_zero_checked(&mut a, diff);
-        assert_eq!(result, Some(true),
-            "BUG: √2·√3/√6 - 1 = 0. Got {result:?}, node={:?}", a.node(diff));
+        assert_eq!(
+            result,
+            Some(true),
+            "BUG: √2·√3/√6 - 1 = 0. Got {result:?}, node={:?}",
+            a.node(diff)
+        );
     }
 
     #[test]
@@ -3151,16 +3312,22 @@ mod tests {
         let half = a.rational(1, 2);
         let primes = [2i64, 3, 5, 7, 11, 13];
         for i in 0..primes.len() {
-            for j in (i+1)..primes.len() {
+            for j in (i + 1)..primes.len() {
                 let pi = a.int(primes[i]);
                 let pj = a.int(primes[j]);
                 let si = a.pow(pi, half);
                 let sj = a.pow(pj, half);
                 let diff = a.sub(si, sj);
                 let sign = sign_checked(&mut a, diff);
-                assert_eq!(sign, Some(-1),
+                assert_eq!(
+                    sign,
+                    Some(-1),
                     "BUG: √{} - √{} should be negative (√{} < √{}), got {sign:?}",
-                    primes[i], primes[j], primes[i], primes[j]);
+                    primes[i],
+                    primes[j],
+                    primes[i],
+                    primes[j]
+                );
             }
         }
     }

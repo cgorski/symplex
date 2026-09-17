@@ -1054,12 +1054,9 @@ fn leadterm(
                 // that the exponent x·ln(1+1/x) → ∞ instead of → 1.
                 let delta = arena.sub(arg, c_arg);
                 let delta = crate::transforms::eval::eval(arena, delta);
-                if !arena.is_zero_structural(delta)
-                    && crate::base::walk::contains(arena, delta, w)
+                if !arena.is_zero_structural(delta) && crate::base::walk::contains(arena, delta, w)
                 {
-                    tracing::debug!(
-                        "gruntz::leadterm: ln(arg) with arg→1, using ln(1+δ) ≈ δ"
-                    );
+                    tracing::debug!("gruntz::leadterm: ln(arg) with arg→1, using ln(1+δ) ≈ δ");
                     return leadterm(arena, delta, w, logw);
                 }
                 return Ok((arena.zero(), arena.zero()));

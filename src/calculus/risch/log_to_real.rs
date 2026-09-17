@@ -23,7 +23,7 @@
 //!
 //! 1. Solve `q(t) = 0` for complex roots (exact radicals via Cardano/Ferrari
 //!    for degree ≤ 4).
-//! 2. Decompose each root into `(Re, Im)` via [`as_real_imag`].
+//! 2. Decompose each root into `(Re, Im)` via [`as_real_imag`](crate::base::complex::as_real_imag).
 //! 3. For each conjugate pair `(u, v)` with `v > 0`:
 //!    a. Evaluate `h(u+iv, x)` and separate `A(x) + iB(x)`.
 //!    b. Emit `u · ln(A² + B²) + v · log_to_atan(A, B)`.
@@ -118,8 +118,7 @@ pub(crate) fn log_to_atan_deg1(
     let two = arena.int(2);
 
     // Check if b1 = 0 (B is constant — the common case).
-    let b1_is_zero = crate::poly::algebraic::is_zero_checked(arena, b1)
-        .unwrap_or(false);
+    let b1_is_zero = crate::poly::algebraic::is_zero_checked(arena, b1).unwrap_or(false);
 
     if b1_is_zero {
         tracing::debug!("log_to_atan_deg1: b1 ≈ 0, B is constant → single atan");
@@ -149,8 +148,7 @@ pub(crate) fn log_to_atan_deg1(
     let r = arena.sub(a0, q_b0);
     let r = crate::transforms::eval::eval(arena, r);
 
-    let r_is_zero = crate::poly::algebraic::is_zero_checked(arena, r)
-        .unwrap_or(false);
+    let r_is_zero = crate::poly::algebraic::is_zero_checked(arena, r).unwrap_or(false);
 
     if r_is_zero {
         // Division is exact: F = 2 · atan(q)
@@ -273,8 +271,7 @@ pub(crate) fn log_to_real(
         let v_val = crate::transforms::eval::eval(arena, im_raw);
 
         // Check imaginary part: cross-checked zero test.
-        let v_is_zero = crate::poly::algebraic::is_zero_checked(arena, v_val)
-            .unwrap_or(false);
+        let v_is_zero = crate::poly::algebraic::is_zero_checked(arena, v_val).unwrap_or(false);
 
         if v_is_zero {
             // Real root — skip (handled by rational LogTerm path).
@@ -286,10 +283,7 @@ pub(crate) fn log_to_real(
         // Sign test: keep roots with positive imaginary part.
         let v_sign = crate::poly::algebraic::sign_checked(arena, v_val);
         if v_sign == Some(1) {
-            tracing::trace!(
-                idx,
-                "log_to_real: found root with positive Im"
-            );
+            tracing::trace!(idx, "log_to_real: found root with positive Im");
             pairs.push((u_val, v_val));
         }
 
@@ -306,13 +300,13 @@ pub(crate) fn log_to_real(
             let (_, im_j_raw) = crate::base::complex::as_real_imag(arena, roots[j].value);
             let v_j = crate::transforms::eval::eval(arena, im_j_raw);
             let v_j_f64 = crate::transforms::evalf::eval_const_f64(arena, v_j);
-            if let Some(vj) = v_j_f64 {
-                if (vj + v_f64).abs() < 1e-10 {
-                    // Conjugate found.
-                    tracing::trace!(j, "log_to_real: conjugate root found and marked");
-                    used[j] = true;
-                    break;
-                }
+            if let Some(vj) = v_j_f64
+                && (vj + v_f64).abs() < 1e-10
+            {
+                // Conjugate found.
+                tracing::trace!(j, "log_to_real: conjugate root found and marked");
+                used[j] = true;
+                break;
             }
         }
     }
@@ -414,14 +408,11 @@ pub(crate) fn log_to_real(
 
         // ln term: u_j · ln(|h|²)
         // ── Check if u_j = 0 (pure imaginary root) ────────────────
-        let u_is_zero = crate::poly::algebraic::is_zero_checked(arena, *u_j)
-            .unwrap_or(false);
+        let u_is_zero = crate::poly::algebraic::is_zero_checked(arena, *u_j).unwrap_or(false);
 
         // ── Check if B(x) = 0 (imaginary part vanishes) ───────────
-        let im_h1_is_zero = crate::poly::algebraic::is_zero_checked(arena, im_h1)
-            .unwrap_or(false);
-        let im_h0_is_zero = crate::poly::algebraic::is_zero_checked(arena, im_h0)
-            .unwrap_or(false);
+        let im_h1_is_zero = crate::poly::algebraic::is_zero_checked(arena, im_h1).unwrap_or(false);
+        let im_h0_is_zero = crate::poly::algebraic::is_zero_checked(arena, im_h0).unwrap_or(false);
         let b_is_zero = im_h1_is_zero && im_h0_is_zero;
 
         if u_is_zero && b_is_zero {
@@ -449,8 +440,7 @@ pub(crate) fn log_to_real(
             tracing::debug!(pair_idx, "log_to_real: B ≈ 0, ln-only term (no atan)");
         } else {
             // ── Build atan via log_to_atan_deg1 ────────────────────────
-            let atan_result =
-                log_to_atan_deg1(arena, var, re_h1, re_h0, im_h1, im_h0);
+            let atan_result = log_to_atan_deg1(arena, var, re_h1, re_h0, im_h1, im_h0);
 
             match atan_result {
                 Some(atan_expr) => {
@@ -502,9 +492,7 @@ pub(crate) fn log_to_real(
 /// The input polynomial must be monic (leading coefficient = 1).
 ///
 /// Returns `None` if the polynomial is zero, constant, or not monic.
-pub(crate) fn vieta_elementary_symmetric(
-    poly: &Poly,
-) -> Option<Vec<Ratio<BigInt>>> {
+pub(crate) fn vieta_elementary_symmetric(poly: &Poly) -> Option<Vec<Ratio<BigInt>>> {
     let n = poly.degree()?;
     if n == 0 {
         return None;
@@ -543,10 +531,7 @@ pub(crate) fn vieta_elementary_symmetric(
 /// ```
 ///
 /// Returns `p_1, p_2, ..., p_max_k`.
-pub(crate) fn vieta_power_sums(
-    elementary: &[Ratio<BigInt>],
-    max_k: usize,
-) -> Vec<Ratio<BigInt>> {
+pub(crate) fn vieta_power_sums(elementary: &[Ratio<BigInt>], max_k: usize) -> Vec<Ratio<BigInt>> {
     let n = elementary.len(); // degree of the polynomial
     let one: Ratio<BigInt> = Ratio::from_integer(BigInt::from(1));
     let neg_one: Ratio<BigInt> = Ratio::from_integer(BigInt::from(-1));
@@ -566,14 +551,14 @@ pub(crate) fn vieta_power_sums(
                 // k - i == 0 → this shouldn't happen since i ≤ k-1
                 continue;
             };
-            pk = pk + sign * e_i * p_km;
+            pk += sign * e_i * p_km;
         }
 
         // For k ≤ n: add the (-1)^{k-1} · k · e_k term
         if k <= n {
             let sign = if (k - 1) % 2 == 0 { &one } else { &neg_one };
             let k_rat = Ratio::from_integer(BigInt::from(k));
-            pk = pk + sign * &k_rat * &elementary[k - 1];
+            pk += sign * &k_rat * &elementary[k - 1];
         }
 
         p.push(pk);
@@ -631,7 +616,7 @@ pub(crate) fn vieta_rootsum_poly_body(
     for k in 1..=body_deg {
         let c_k = body_poly.coeff(k);
         if !c_k.is_zero() && k <= power_sums.len() {
-            result = result + &c_k * &power_sums[k - 1];
+            result += &c_k * &power_sums[k - 1];
         }
     }
 
@@ -644,7 +629,7 @@ pub(crate) fn vieta_rootsum_poly_body(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Try to expand a `RootSum(poly, body, sumvar)` into an explicit sum
-/// by finding the roots of the polynomial via [`solve`].
+/// by finding the roots of the polynomial via [`solve`](crate::transforms::solve::solve).
 ///
 /// For degree ≤ 4 polynomials, `solve` produces exact radical roots
 /// (quadratic formula, Cardano, Ferrari).  Each root is substituted
@@ -677,17 +662,16 @@ pub(crate) fn rootsum_doit(
 
     // Check that we got the expected number of roots (= degree of poly).
     let poly_obj = crate::poly::polybridge::expr_to_poly(arena, poly_id, sumvar_id);
-    if let Some(ref p) = poly_obj {
-        if let Some(deg) = p.degree() {
-            if roots.len() != deg {
-                tracing::debug!(
-                    expected = deg,
-                    found = roots.len(),
-                    "rootsum_doit: solve found fewer roots than polynomial degree, cannot expand fully"
-                );
-                return None;
-            }
-        }
+    if let Some(ref p) = poly_obj
+        && let Some(deg) = p.degree()
+        && roots.len() != deg
+    {
+        tracing::debug!(
+            expected = deg,
+            found = roots.len(),
+            "rootsum_doit: solve found fewer roots than polynomial degree, cannot expand fully"
+        );
+        return None;
     }
 
     tracing::debug!(
@@ -785,7 +769,11 @@ mod tests {
         };
 
         let result = vieta_rootsum_poly_body(&arena, poly_expr, t, t);
-        assert_eq!(result, Some(r(-3, 1)), "sum of roots of t²+3t+2 should be -3");
+        assert_eq!(
+            result,
+            Some(r(-3, 1)),
+            "sum of roots of t²+3t+2 should be -3"
+        );
     }
 
     #[test]
@@ -803,7 +791,11 @@ mod tests {
         let body = arena.pow(t, two); // t²
 
         let result = vieta_rootsum_poly_body(&arena, poly_expr, body, t);
-        assert_eq!(result, Some(r(5, 1)), "sum of squares of roots of t²+3t+2 should be 5");
+        assert_eq!(
+            result,
+            Some(r(5, 1)),
+            "sum of squares of roots of t²+3t+2 should be 5"
+        );
     }
 
     #[test]
@@ -821,7 +813,11 @@ mod tests {
         };
 
         let result = vieta_rootsum_poly_body(&arena, poly_expr, seven, t);
-        assert_eq!(result, Some(r(14, 1)), "RootSum with constant body 7 over degree-2 poly = 14");
+        assert_eq!(
+            result,
+            Some(r(14, 1)),
+            "RootSum with constant body 7 over degree-2 poly = 14"
+        );
     }
 
     fn r(n: i64, d: i64) -> Ratio<BigInt> {
@@ -932,10 +928,8 @@ mod tests {
 
         // h(t,x) = x - 3t as GenPoly<RationalFn>
         let neg_3t = RationalFn::from_poly(Poly::from_coeffs(vec![r(0, 1), r(-3, 1)]));
-        let h_prs: GenPoly<RationalFn> = GenPoly::from_coeffs(vec![
-            neg_3t,
-            RationalFn::from_rational(r(1, 1)),
-        ]);
+        let h_prs: GenPoly<RationalFn> =
+            GenPoly::from_coeffs(vec![neg_3t, RationalFn::from_rational(r(1, 1))]);
 
         let terms = log_to_real(&mut arena, x, &q, &h_prs);
         assert!(

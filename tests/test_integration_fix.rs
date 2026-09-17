@@ -119,12 +119,7 @@ fn phase1_one_over_x_minus_1_times_x2_plus_4() {
         "∫ 1/((x-1)(x²+4)) dx should be fully evaluated: {anti}"
     );
 
-    let gt = numerical_integrate(
-        |x| 1.0 / ((x - 1.0) * (x * x + 4.0)),
-        2.0,
-        3.0,
-        100_000,
-    );
+    let gt = numerical_integrate(|x| 1.0 / ((x - 1.0) * (x * x + 4.0)), 2.0, 3.0, 100_000);
     let val = definite(&anti, &x, 2, 3).expect("should evaluate");
     assert!(
         (val - gt).abs() < 1e-6,
@@ -178,12 +173,7 @@ fn phase2_x_over_quartic_plus_quadratic_plus_1() {
         "∫ x/(x⁴+x²+1) dx should be fully evaluated: {anti}"
     );
 
-    let gt = numerical_integrate(
-        |x| x / (x.powi(4) + x * x + 1.0),
-        2.0,
-        3.0,
-        100_000,
-    );
+    let gt = numerical_integrate(|x| x / (x.powi(4) + x * x + 1.0), 2.0, 3.0, 100_000);
     let val = definite(&anti, &x, 2, 3).expect("should evaluate");
     assert!(
         (val - gt).abs() < 1e-6,
@@ -205,12 +195,7 @@ fn phase2_one_over_x4_plus_x2_plus_1() {
         "∫ 1/(x⁴+x²+1) dx should be fully evaluated: {anti}"
     );
 
-    let gt = numerical_integrate(
-        |x| 1.0 / (x.powi(4) + x * x + 1.0),
-        2.0,
-        3.0,
-        100_000,
-    );
+    let gt = numerical_integrate(|x| 1.0 / (x.powi(4) + x * x + 1.0), 2.0, 3.0, 100_000);
     let val = definite(&anti, &x, 2, 3).expect("should evaluate");
     assert!(
         (val - gt).abs() < 1e-6,
@@ -242,12 +227,7 @@ fn phase3_one_over_quadratic_with_sqrt2() {
     );
 
     let sqrt2_f = std::f64::consts::SQRT_2;
-    let gt = numerical_integrate(
-        |x| 1.0 / (x * x + sqrt2_f * x + 1.0),
-        0.0,
-        2.0,
-        100_000,
-    );
+    let gt = numerical_integrate(|x| 1.0 / (x * x + sqrt2_f * x + 1.0), 0.0, 2.0, 100_000);
     let fa = anti.subs(&x, &ctx.int(0)).eval().eval_f64().unwrap();
     let fb = anti.subs(&x, &ctx.int(2)).eval().eval_f64().unwrap();
     let val = fb - fa;
@@ -358,7 +338,11 @@ fn phase5_sqrt_squared_at_construction() {
     let ctx = Context::new();
     let sqrt5 = ctx.int(5).sqrt();
     let result = sqrt5.powi(2);
-    assert_eq!(format!("{result}"), "5", "(√5)² should be 5 at construction");
+    assert_eq!(
+        format!("{result}"),
+        "5",
+        "(√5)² should be 5 at construction"
+    );
 }
 
 #[test]
@@ -367,7 +351,11 @@ fn phase5_cbrt_cubed_at_construction() {
     let ctx = Context::new();
     let cbrt2 = ctx.int(2).cbrt();
     let result = cbrt2.powi(3);
-    assert_eq!(format!("{result}"), "2", "(∛2)³ should be 2 at construction");
+    assert_eq!(
+        format!("{result}"),
+        "2",
+        "(∛2)³ should be 2 at construction"
+    );
 }
 
 #[test]

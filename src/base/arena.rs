@@ -424,7 +424,7 @@ impl Arena {
     }
 
     /// Computes the [`SortKey`] for a node by delegating to
-    /// [`sort_key::compute_sort_key`] with closures that resolve through
+    /// [`sort_key::compute_sort_key`](crate::base::sort_key::compute_sort_key) with closures that resolve through
     /// `self`.
     fn compute_sort_key_for(&self, node: &ExprNode) -> SortKey {
         compute_sort_key(
@@ -669,14 +669,14 @@ impl Arena {
 
     /// Structural substitution: replace `old` with `new` in `expr`.
     ///
-    /// Delegates to [`subs::subs`].
+    /// Delegates to [`subs::subs`](crate::transforms::subs::subs).
     pub fn subs_structural(&mut self, expr: ExprId, old: ExprId, new: ExprId) -> ExprId {
         crate::transforms::subs::subs(self, expr, old, new)
     }
 
     /// Simultaneous structural substitution of multiple pairs.
     ///
-    /// Delegates to [`subs::subs_map`].
+    /// Delegates to [`subs::subs_map`](crate::transforms::subs::subs_map).
     pub fn subs_map_structural(
         &mut self,
         expr: ExprId,
@@ -687,7 +687,7 @@ impl Arena {
 
     /// Differentiate `expr` with respect to `var`.
     ///
-    /// Delegates to [`diff::diff`].
+    /// Delegates to [`diff::diff`](crate::transforms::diff::diff).
     pub fn diff_wrt(&mut self, expr: ExprId, var: ExprId) -> ExprId {
         crate::transforms::diff::diff(self, expr, var)
     }
@@ -705,21 +705,21 @@ impl Arena {
     /// Algebraic expansion: distribute products over sums, expand
     /// integer powers of sums.
     ///
-    /// Delegates to [`expand::expand`].
+    /// Delegates to [`expand::expand`](crate::transforms::expand::expand).
     pub fn expand_expr(&mut self, expr: ExprId) -> ExprId {
         crate::transforms::expand::expand(self, expr)
     }
 
     /// Exact evaluation of known special values (sin(0)→0, cos(π)→-1, etc.).
     ///
-    /// Delegates to [`eval::eval`].
+    /// Delegates to [`eval::eval`](crate::transforms::eval::eval).
     pub fn eval_expr(&mut self, expr: ExprId) -> ExprId {
         crate::transforms::eval::eval(self, expr)
     }
 
     /// Solve `expr = 0` for `var`.
     ///
-    /// Returns a vector of solutions. Delegates to [`solve::solve`].
+    /// Returns a vector of solutions. Delegates to [`solve::solve`](crate::transforms::solve::solve).
     pub fn solve_for(
         &mut self,
         expr: ExprId,
@@ -731,7 +731,7 @@ impl Arena {
     /// Cancel common polynomial factors in a rational expression.
     ///
     /// `var` is the symbol to treat as the polynomial variable.
-    /// Delegates to [`polybridge::cancel`].
+    /// Delegates to [`polybridge::cancel`](crate::poly::polybridge::cancel).
     pub fn cancel_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
         crate::poly::polybridge::cancel(self, expr, var)
     }
@@ -741,14 +741,14 @@ impl Arena {
     /// Converts to a univariate polynomial in `var` and rebuilds,
     /// naturally grouping coefficients by power.
     /// Returns unchanged if not polynomial in `var`.
-    /// Delegates to [`polybridge::collect`].
+    /// Delegates to [`polybridge::collect`](crate::poly::polybridge::collect).
     pub fn collect_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
         crate::poly::polybridge::collect(self, expr, var)
     }
 
     /// Combine fractions in an Add over a common denominator.
     ///
-    /// Delegates to [`polybridge::together`].
+    /// Delegates to [`polybridge::together`](crate::poly::polybridge::together).
     pub fn together_expr(&mut self, expr: ExprId) -> ExprId {
         crate::poly::polybridge::together(self, expr)
     }
@@ -757,7 +757,7 @@ impl Arena {
     ///
     /// Returns an unevaluated `Integral` node for integrands that
     /// don't match any known rule.
-    /// Delegates to [`integrate::integrate`].
+    /// Delegates to [`integrate::integrate`](crate::transforms::integrate::integrate).
     pub fn integrate_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
         crate::transforms::integrate::integrate(self, expr, var)
     }
@@ -767,7 +767,7 @@ impl Arena {
     ///
     /// Returns `Err` if the series cannot be computed (e.g., pole at the
     /// expansion point).
-    /// Delegates to [`series::series`].
+    /// Delegates to [`series::series`](crate::calculus::series::series).
     pub fn series_expr(
         &mut self,
         expr: ExprId,
@@ -788,7 +788,7 @@ impl Arena {
     /// Factor a polynomial expression into a product of linear factors.
     ///
     /// Returns the expression unchanged if no rational roots are found.
-    /// Delegates to [`factor::factor`].
+    /// Delegates to [`factor::factor`](crate::simplify::factor::factor).
     pub fn factor_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
         crate::simplify::factor::factor(self, expr, var)
     }
@@ -796,7 +796,7 @@ impl Arena {
     /// Return the degree of `expr` as a polynomial in `var`.
     ///
     /// Returns `None` if not polynomial or if the zero polynomial.
-    /// Delegates to [`polybridge::poly_degree`].
+    /// Delegates to [`polybridge::poly_degree`](crate::poly::polybridge::poly_degree).
     pub fn degree_of(&self, expr: ExprId, var: ExprId) -> Option<usize> {
         crate::poly::polybridge::poly_degree(self, expr, var)
     }
@@ -805,7 +805,7 @@ impl Arena {
     /// in ascending degree order.
     ///
     /// Returns `None` if not polynomial in `var`.
-    /// Delegates to [`polybridge::poly_coefficients`].
+    /// Delegates to [`polybridge::poly_coefficients`](crate::poly::polybridge::poly_coefficients).
     pub fn coefficients_of(&mut self, expr: ExprId, var: ExprId) -> Option<Vec<ExprId>> {
         crate::poly::polybridge::poly_coefficients(self, expr, var)
     }
@@ -813,7 +813,7 @@ impl Arena {
     /// Compute the limit of `expr` as `var` approaches `point`.
     ///
     /// Returns `Err` if the limit cannot be determined.
-    /// Delegates to [`limit::limit`].
+    /// Delegates to [`limit::limit`](crate::calculus::limit::limit).
     pub fn limit_expr(
         &mut self,
         expr: ExprId,
@@ -825,14 +825,14 @@ impl Arena {
 
     /// Decompose `expr` into (numerator, denominator).
     ///
-    /// Delegates to [`polybridge::as_numer_denom`].
+    /// Delegates to [`polybridge::as_numer_denom`](crate::poly::polybridge::as_numer_denom).
     pub fn as_numer_denom_expr(&mut self, expr: ExprId) -> (ExprId, ExprId) {
         crate::poly::polybridge::as_numer_denom(self, expr)
     }
 
     /// Partial fraction decomposition of `expr` with respect to `var`.
     ///
-    /// Delegates to [`apart::apart`].
+    /// Delegates to [`apart::apart`](crate::transforms::apart::apart).
     pub fn apart_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
         crate::transforms::apart::apart(self, expr, var)
     }
@@ -840,7 +840,7 @@ impl Arena {
     /// Expand trigonometric functions with composite arguments.
     ///
     /// `sin(a+b) → sin(a)cos(b) + cos(a)sin(b)`, etc.
-    /// Delegates to [`trig_expand::expand_trig`].
+    /// Delegates to [`trig_expand::expand_trig`](crate::simplify::trig_expand::expand_trig).
     pub fn expand_trig_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::trig_expand::expand_trig(self, expr)
     }
@@ -848,32 +848,32 @@ impl Arena {
     /// Expand logarithmic expressions.
     ///
     /// `ln(a*b) → ln(a)+ln(b)`, `ln(a^n) → n*ln(a)`, etc.
-    /// Delegates to [`log_expand::expand_log`].
+    /// Delegates to [`log_expand::expand_log`](crate::simplify::log_expand::expand_log).
     pub fn expand_log_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::log_expand::expand_log(self, expr)
     }
 
     /// Combine logarithmic terms: `ln(a)+ln(b) → ln(a*b)`, `n*ln(a) → ln(a^n)`.
-    /// Delegates to [`log_combine::log_combine`].
+    /// Delegates to [`log_combine::log_combine`](crate::simplify::log_combine::log_combine).
     pub fn log_combine_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::log_combine::log_combine(self, expr)
     }
 
     /// Apply trig product-to-sum and double-angle identities.
     /// `sin(a)*cos(b) → ½[sin(a+b)+sin(a-b)]`, etc.
-    /// Delegates to [`trig_combine::trig_combine`].
+    /// Delegates to [`trig_combine::trig_combine`](crate::simplify::trig_combine::trig_combine).
     pub fn trig_combine_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::trig_combine::trig_combine(self, expr)
     }
 
     /// Try multiple simplification strategies and return the simplest result.
-    /// Delegates to [`simplify_engine::smart_simplify`].
+    /// Delegates to [`simplify_engine::smart_simplify`](crate::simplify::simplify_engine::smart_simplify).
     pub fn smart_simplify_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::simplify_engine::smart_simplify(self, expr)
     }
 
     /// Count the number of operations (non-atom nodes) in an expression.
-    /// Delegates to [`simplify_engine::count_ops`].
+    /// Delegates to [`simplify_engine::count_ops`](crate::simplify::simplify_engine::count_ops).
     pub fn count_ops(&self, expr: ExprId) -> usize {
         crate::simplify::simplify_engine::count_ops(self, expr)
     }
@@ -882,7 +882,7 @@ impl Arena {
     ///
     /// Tries multiple Pythagorean replacement strategies and picks the
     /// result with the fewest operations.
-    /// Delegates to [`trigsimp::trigsimp`].
+    /// Delegates to [`trigsimp::trigsimp`](crate::simplify::trigsimp::trigsimp).
     pub fn trigsimp_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::trigsimp::trigsimp(self, expr)
     }
@@ -891,7 +891,7 @@ impl Arena {
     ///
     /// Cancels common factorial terms in products, e.g.
     /// `n! / (n-1)!` → `n`.
-    /// Delegates to [`combsimp::combsimp`].
+    /// Delegates to [`combsimp::combsimp`](crate::simplify::combsimp::combsimp).
     pub fn combsimp_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::combsimp::combsimp(self, expr)
     }
@@ -900,7 +900,7 @@ impl Arena {
     ///
     /// Tries rational approximations, π-multiples, and square roots
     /// within the given `tolerance`.
-    /// Delegates to [`nsimplify::nsimplify`].
+    /// Delegates to [`nsimplify::nsimplify`](crate::simplify::nsimplify::nsimplify).
     pub fn nsimplify_expr(&mut self, expr: ExprId, tol: f64) -> ExprId {
         crate::simplify::nsimplify::nsimplify(self, expr, tol)
     }
@@ -908,7 +908,7 @@ impl Arena {
     /// Combine like bases in products with symbolic exponents.
     ///
     /// `x^a * x^b → x^(a+b)` even when `a` and `b` are not numeric.
-    /// Delegates to [`powsimp::powsimp`].
+    /// Delegates to [`powsimp::powsimp`](crate::simplify::powsimp::powsimp).
     pub fn powsimp_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::powsimp::powsimp(self, expr)
     }
@@ -916,7 +916,7 @@ impl Arena {
     /// Rewrite trig functions as complex exponentials.
     ///
     /// `sin(x) → (exp(ix) − exp(−ix)) / (2i)`, etc.
-    /// Delegates to [`rewrite::rewrite_as_exp`].
+    /// Delegates to [`rewrite::rewrite_as_exp`](crate::simplify::rewrite::rewrite_as_exp).
     pub fn rewrite_as_exp_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::rewrite::rewrite_as_exp(self, expr)
     }
@@ -924,27 +924,27 @@ impl Arena {
     /// Rewrite complex exponentials as trig functions (Euler's formula).
     ///
     /// `exp(ix) → cos(x) + i·sin(x)`, etc.
-    /// Delegates to [`rewrite::rewrite_as_trig`].
+    /// Delegates to [`rewrite::rewrite_as_trig`](crate::simplify::rewrite::rewrite_as_trig).
     pub fn rewrite_as_trig_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::rewrite::rewrite_as_trig(self, expr)
     }
 
     /// Factor out the GCD of numeric coefficients from a sum.
     /// `2x + 2y → 2(x + y)`.
-    /// Delegates to [`factor_terms::factor_terms`].
+    /// Delegates to [`factor_terms::factor_terms`](crate::simplify::factor_terms::factor_terms).
     pub fn factor_terms_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::factor_terms::factor_terms(self, expr)
     }
 
     /// Factor out the GCD of numeric coefficients, returning `(gcd, inner)` as expression IDs.
-    /// Delegates to [`factor_terms::factor_terms_pair`].
+    /// Delegates to [`factor_terms::symbolic_factor_terms_pair`](crate::simplify::factor_terms::symbolic_factor_terms_pair).
     pub fn factor_terms_pair_expr(&mut self, expr: ExprId) -> (ExprId, ExprId) {
         crate::simplify::factor_terms::symbolic_factor_terms_pair(self, expr)
     }
 
     /// Rationalize the denominator of a fraction containing square roots.
     /// `1/√2 → √2/2`, `1/(1+√2) → √2-1`.
-    /// Delegates to [`radsimp::rationalize_denom`].
+    /// Delegates to [`radsimp::rationalize_denom`](crate::simplify::radsimp::rationalize_denom).
     pub fn rationalize_denom_expr(&mut self, expr: ExprId) -> ExprId {
         crate::simplify::radsimp::rationalize_denom(self, expr)
     }
@@ -955,7 +955,7 @@ impl Arena {
     /// by which variables they depend on. Returns a vec of
     /// `(dependent_vars, product_of_factors)` pairs.
     ///
-    /// Delegates to [`separatevars::separatevars`].
+    /// Delegates to [`separatevars::separatevars`](crate::domains::separatevars::separatevars).
     pub fn separatevars_expr(
         &mut self,
         expr: ExprId,
@@ -966,7 +966,7 @@ impl Arena {
 
     /// Decompose an expression into real and imaginary parts.
     /// Returns `(re, im)` such that `expr = re + im * i`.
-    /// Delegates to [`complex::as_real_imag`].
+    /// Delegates to [`complex::as_real_imag`](crate::base::complex::as_real_imag).
     pub fn as_real_imag_expr(&mut self, expr: ExprId) -> (ExprId, ExprId) {
         crate::base::complex::as_real_imag(self, expr)
     }
@@ -1078,11 +1078,7 @@ impl Arena {
         if coeff == Ratio::one() {
             self.intern(ExprNode::Abs(expr))
         } else {
-            let abs_coeff = if coeff < Ratio::zero() {
-                -coeff
-            } else {
-                coeff
-            };
+            let abs_coeff = if coeff < Ratio::zero() { -coeff } else { coeff };
             let abs_term = self.abs(term); // recursive: canonicalises inner
             self.make_coeff_term(abs_coeff, abs_term)
         }
@@ -1498,7 +1494,7 @@ impl Arena {
 
     /// Compute the residue of `expr` at `var = point`.
     ///
-    /// Delegates to [`residue::residue`].
+    /// Delegates to [`residue::residue`](crate::calculus::residue::residue).
     pub fn residue_expr(
         &mut self,
         expr: ExprId,
@@ -1510,7 +1506,7 @@ impl Arena {
 
     /// Compute the Fourier series of `expr` over [-π, π] with `n_terms` harmonics.
     ///
-    /// Delegates to [`fourier::fourier_series`].
+    /// Delegates to [`fourier::fourier_series`](crate::calculus::fourier::fourier_series).
     pub fn fourier_series_expr(&mut self, expr: ExprId, var: ExprId, n_terms: u32) -> ExprId {
         crate::calculus::fourier::fourier_series(self, expr, var, n_terms)
     }
@@ -1518,7 +1514,7 @@ impl Arena {
     /// Compute the Laplace transform of `expr` with respect to time variable `t`,
     /// producing a function of frequency variable `s`.
     ///
-    /// Delegates to [`laplace::laplace_transform`].
+    /// Delegates to [`laplace::laplace_transform`](crate::calculus::laplace::laplace_transform).
     pub fn laplace_transform_expr(
         &mut self,
         expr: ExprId,
@@ -1531,7 +1527,7 @@ impl Arena {
     /// Compute the inverse Laplace transform of `expr` (function of `s`)
     /// back to a function of time variable `t`.
     ///
-    /// Delegates to [`laplace::inverse_laplace_transform`].
+    /// Delegates to [`laplace::inverse_laplace_transform`](crate::calculus::laplace::inverse_laplace_transform).
     pub fn inverse_laplace_transform_expr(
         &mut self,
         expr: ExprId,
@@ -1544,7 +1540,7 @@ impl Arena {
     /// Compute the Fourier transform of `expr` with respect to time variable `t`,
     /// producing a function of frequency variable `omega`.
     ///
-    /// Delegates to [`fourier_transform::fourier_transform`].
+    /// Delegates to [`fourier_transform::fourier_transform`](crate::calculus::fourier_transform::fourier_transform).
     pub fn fourier_transform_expr(
         &mut self,
         expr: ExprId,
@@ -1557,7 +1553,7 @@ impl Arena {
     /// Compute the inverse Fourier transform of `expr` (function of `omega`)
     /// back to a function of time variable `t`.
     ///
-    /// Delegates to [`fourier_transform::inverse_fourier_transform`].
+    /// Delegates to [`fourier_transform::inverse_fourier_transform`](crate::calculus::fourier_transform::inverse_fourier_transform).
     pub fn inverse_fourier_transform_expr(
         &mut self,
         expr: ExprId,
@@ -1573,7 +1569,7 @@ impl Arena {
     /// Returns `Ok(series)` if the Laurent series could be computed,
     /// or `Err` if it could not.
     ///
-    /// Delegates to [`series::laurent_series`].
+    /// Delegates to [`series::laurent_series`](crate::calculus::series::laurent_series).
     pub fn laurent_series_expr(
         &mut self,
         expr: ExprId,
@@ -1614,7 +1610,7 @@ impl Arena {
 
     /// Build a canonical interval `[start, end]` (or open variants based on `flags`).
     ///
-    /// Delegates to [`canon::canon_interval`] for degenerate-case handling.
+    /// Delegates to [`canon::canon_interval`](crate::base::canon::canon_interval) for degenerate-case handling.
     pub(crate) fn interval(&mut self, start: ExprId, end: ExprId, flags: u8) -> ExprId {
         crate::base::canon::canon_interval(self, start, end, flags)
     }
@@ -1649,7 +1645,7 @@ impl Arena {
 
     /// Solve `expr rel 0` for `var`, returning the solution as a set `ExprId`.
     ///
-    /// Delegates to [`inequalities::solve_inequality`].
+    /// Delegates to [`inequalities::solve_inequality`](crate::transforms::inequalities::solve_inequality).
     pub(crate) fn solve_inequality_expr(
         &mut self,
         expr: ExprId,
@@ -1661,7 +1657,7 @@ impl Arena {
 
     /// Solve `expr = 0`, returning solutions as a `FiniteSet` `ExprId`.
     ///
-    /// Delegates to [`inequalities::solveset`].
+    /// Delegates to [`inequalities::solveset`](crate::transforms::inequalities::solveset).
     pub(crate) fn solveset_expr(&mut self, expr: ExprId, var: ExprId) -> ExprId {
         crate::transforms::inequalities::solveset(self, expr, var)
     }
@@ -1670,7 +1666,7 @@ impl Arena {
 
     /// Attempt closed-form evaluation of `Σ_{var=lower}^{upper} body`.
     ///
-    /// Delegates to [`sum_eval::eval_sum_symbolic`]. Returns `Some(result)`
+    /// Delegates to [`sum_eval::eval_sum_symbolic`](crate::transforms::sum_eval::eval_sum_symbolic). Returns `Some(result)`
     /// if a closed form was found, `None` otherwise.
     pub(crate) fn eval_sum_symbolic_expr(
         &mut self,
@@ -1689,7 +1685,7 @@ impl Arena {
     /// Returns `Some(true)` if convergent, `Some(false)` if divergent,
     /// `None` if the test is inconclusive.
     ///
-    /// Delegates to [`convergence::is_convergent`].
+    /// Delegates to [`convergence::is_convergent`](crate::calculus::convergence::is_convergent).
     pub(crate) fn is_convergent_expr(&mut self, body: ExprId, var: ExprId) -> Option<bool> {
         crate::calculus::convergence::is_convergent(self, body, var)
     }

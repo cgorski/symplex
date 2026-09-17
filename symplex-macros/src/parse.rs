@@ -190,15 +190,6 @@ impl MathExpr {
         }
     }
 
-    /// Returns `true` if this is an identifier ending in `_`.
-    #[cfg(test)]
-    pub fn is_wild(&self) -> bool {
-        match self {
-            MathExpr::Ident(id) => id.to_string().ends_with('_'),
-            _ => false,
-        }
-    }
-
     /// Collect all unique wild identifiers in this expression.
     pub fn collect_wilds(&self) -> Vec<Ident> {
         let mut wilds = Vec::new();
@@ -208,10 +199,10 @@ impl MathExpr {
 
     fn collect_wilds_inner(&self, wilds: &mut Vec<Ident>) {
         match self {
-            MathExpr::Ident(id) if id.to_string().ends_with('_') => {
-                if !wilds.iter().any(|w| w == id) {
-                    wilds.push(id.clone());
-                }
+            MathExpr::Ident(id)
+                if id.to_string().ends_with('_') && !wilds.iter().any(|w| w == id) =>
+            {
+                wilds.push(id.clone());
             }
             MathExpr::BinOp { lhs, rhs, .. } => {
                 lhs.collect_wilds_inner(wilds);
@@ -281,13 +272,8 @@ fn parse_expr_bp(input: ParseStream, min_bp: u8) -> syn::Result<MathExpr> {
     let mut lhs = parse_prefix(input)?;
 
     // Parse infix operators as long as they bind tightly enough.
-    loop {
-        // Peek at the next token to see if it's a binary operator.
-        let op = match peek_binop(input) {
-            Some(op) => op,
-            None => break, // No more infix operators — done.
-        };
-
+    // `peek_binop` returning `None` means no more infix operators — done.
+    while let Some(op) = peek_binop(input) {
         let (left_bp, right_bp) = infix_bp(op);
         if left_bp < min_bp {
             break; // This operator doesn't bind tightly enough.

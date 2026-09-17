@@ -41,7 +41,7 @@ use crate::base::walk;
 
 /// Identifies a pattern variable ("wild") inside a [`Pattern`].
 ///
-/// Wilds are created via [`Arena::wild`] and are represented in the
+/// Wilds are created via `Arena::wild` and are represented in the
 /// expression tree as special `Symbol` nodes whose names start with `_w`.
 /// During matching, a wild binds to whatever sub-expression it is
 /// matched against.  If the same `WildId` appears multiple times in a
@@ -485,7 +485,7 @@ impl std::fmt::Debug for Rule {
 
 /// A record of one simplification step.
 ///
-/// Produced by [`apply_rules`] to enable "show your work" functionality.
+/// Produced by `apply_rules` to enable "show your work" functionality.
 #[derive(Clone, Debug)]
 pub struct Step {
     /// The name of the rule that fired.

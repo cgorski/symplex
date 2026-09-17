@@ -1,6 +1,6 @@
 //! A non-locking, read-only view of an expression node.
 //!
-//! [`ExprView`] is passed to the closure in [`Expr::replace()`].
+//! [`ExprView`] is passed to the closure in [`Expr::replace()`](crate::api::expr::Expr::replace).
 //! It provides structural inspection of the current node without
 //! acquiring any locks.  You **cannot** call `.sin()`, `.expand()`,
 //! `format!()`, or any mutating/locking method on this type.
@@ -20,7 +20,7 @@ pub struct ExprView<'a> {
 }
 
 impl<'a> ExprView<'a> {
-    /// Returns the [`ExprId`] of the viewed expression.
+    /// Returns the `ExprId` of the viewed expression.
     #[inline]
     pub fn id(&self) -> ExprId {
         self.id

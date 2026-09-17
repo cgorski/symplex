@@ -2,8 +2,8 @@
 //! inputs, and in unusual orderings to find panics, incorrect error handling,
 //! and silent corruption.
 
-use symplex::prelude::*;
 use symplex::matrix;
+use symplex::prelude::*;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CATEGORY A: Compile/eval with wrong inputs
@@ -166,7 +166,10 @@ fn a9_eval_f64_large_integer() {
     let result = big.eval_f64();
     match result {
         Ok(val) => {
-            assert!(val > 0.0, "large int should eval to positive f64, got {val}");
+            assert!(
+                val > 0.0,
+                "large int should eval to positive f64, got {val}"
+            );
         }
         Err(e) => {
             // Acceptable if library has precision concerns
@@ -219,7 +222,11 @@ fn b3_matrix_1x1_det() {
     let five = ctx.int(5);
     let m = Matrix::new(vec![vec![five.clone()]]).unwrap();
     let d = m.det().unwrap();
-    assert_eq!(format!("{d}"), "5", "BUG: det of [[5]] should be 5, got {d}");
+    assert_eq!(
+        format!("{d}"),
+        "5",
+        "BUG: det of [[5]] should be 5, got {d}"
+    );
 }
 
 #[test]
@@ -271,10 +278,7 @@ fn b6_det_non_square() {
     ])
     .unwrap();
     let result = m.det();
-    assert!(
-        result.is_err(),
-        "BUG: det of 2×3 matrix should return Err"
-    );
+    assert!(result.is_err(), "BUG: det of 2×3 matrix should return Err");
 }
 
 #[test]
@@ -363,10 +367,7 @@ fn b12_matrix_inv_zero_matrix() {
     ])
     .unwrap();
     let result = m.inv();
-    assert!(
-        result.is_err(),
-        "BUG: inv of zero matrix should return Err"
-    );
+    assert!(result.is_err(), "BUG: inv of zero matrix should return Err");
 }
 
 #[test]
@@ -397,9 +398,15 @@ fn b14_identity_matrix_inv() {
             let entry = inv.get(i, j).eval();
             let s = format!("{entry}");
             if i == j {
-                assert_eq!(s, "1", "BUG: I^-1 diagonal entry ({i},{j}) = {s}, expected 1");
+                assert_eq!(
+                    s, "1",
+                    "BUG: I^-1 diagonal entry ({i},{j}) = {s}, expected 1"
+                );
             } else {
-                assert_eq!(s, "0", "BUG: I^-1 off-diagonal entry ({i},{j}) = {s}, expected 0");
+                assert_eq!(
+                    s, "0",
+                    "BUG: I^-1 off-diagonal entry ({i},{j}) = {s}, expected 0"
+                );
             }
         }
     }
@@ -421,7 +428,8 @@ fn c1_solve_zero_for_x() {
         Ok(sols) => {
             // Empty is acceptable (means "trivially true for all x" or "no specific root")
             // A single solution of 0 might also appear if solver treats it as polynomial.
-            eprintln!("solve(0, x) returned {} solution(s): {:?}",
+            eprintln!(
+                "solve(0, x) returned {} solution(s): {:?}",
                 sols.len(),
                 sols.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
             );
@@ -461,10 +469,7 @@ fn c3_solve_x_for_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let solutions = x.solve_or_empty(&x);
-    assert!(
-        !solutions.is_empty(),
-        "BUG: solve(x, x) should find x=0"
-    );
+    assert!(!solutions.is_empty(), "BUG: solve(x, x) should find x=0");
     if !solutions.is_empty() {
         let s = format!("{}", solutions[0]);
         assert_eq!(s, "0", "BUG: solve(x, x) should give 0, got {s}");
@@ -485,7 +490,10 @@ fn c4_solve_x_squared() {
     // All solutions should be 0
     for sol in &solutions {
         let s = format!("{sol}");
-        assert_eq!(s, "0", "BUG: solve(x^2, x) should only have root 0, got {s}");
+        assert_eq!(
+            s, "0",
+            "BUG: solve(x^2, x) should only have root 0, got {s}"
+        );
     }
 }
 
@@ -583,7 +591,11 @@ fn c8_solve_linear() {
     let x = ctx.symbol("x");
     let expr = &(&x * 2) - 6;
     let solutions = expr.solve_or_empty(&x);
-    assert_eq!(solutions.len(), 1, "BUG: solve(2x-6, x) should have 1 solution");
+    assert_eq!(
+        solutions.len(),
+        1,
+        "BUG: solve(2x-6, x) should have 1 solution"
+    );
     let s = format!("{}", solutions[0]);
     assert_eq!(s, "3", "BUG: solve(2x-6, x) should give 3, got {s}");
 }
@@ -700,7 +712,10 @@ fn d6_series_exp_at_zero_order_4() {
     let expanded = result.expand().eval();
     let s = format!("{expanded}");
     eprintln!("series(exp(x), x, 0, 4) = {s}");
-    assert!(s.contains("x"), "series of exp(x) should contain x terms: {s}");
+    assert!(
+        s.contains("x"),
+        "series of exp(x) should contain x terms: {s}"
+    );
 }
 
 #[test]
@@ -789,7 +804,11 @@ fn e5_zero_is_zero() {
     // 0.is_zero() should be Some(true)
     let ctx = Context::new();
     let z = ctx.int(0);
-    assert_eq!(z.is_zero(), Some(true), "BUG: 0.is_zero() should be Some(true)");
+    assert_eq!(
+        z.is_zero(),
+        Some(true),
+        "BUG: 0.is_zero() should be Some(true)"
+    );
 }
 
 #[test]
@@ -898,7 +917,8 @@ fn f1_concurrent_simplify_and_diff() {
         .collect();
 
     for (i, h) in handles.into_iter().enumerate() {
-        h.join().unwrap_or_else(|e| panic!("Thread {i} panicked: {e:?}"));
+        h.join()
+            .unwrap_or_else(|e| panic!("Thread {i} panicked: {e:?}"));
     }
 }
 
@@ -969,7 +989,8 @@ fn f3_concurrent_eval_f64() {
         .collect();
 
     for (i, h) in handles.into_iter().enumerate() {
-        h.join().unwrap_or_else(|e| panic!("Thread {i} panicked: {e:?}"));
+        h.join()
+            .unwrap_or_else(|e| panic!("Thread {i} panicked: {e:?}"));
     }
 }
 
@@ -1004,7 +1025,8 @@ fn f4_concurrent_solve() {
         .collect();
 
     for (i, h) in handles.into_iter().enumerate() {
-        h.join().unwrap_or_else(|e| panic!("Thread {i} panicked: {e:?}"));
+        h.join()
+            .unwrap_or_else(|e| panic!("Thread {i} panicked: {e:?}"));
     }
 }
 
@@ -1081,7 +1103,10 @@ fn g6_very_long_symbol_name() {
     let expr = &sym + 1;
     let deriv = expr.diff(&sym);
     let s = format!("{deriv}");
-    assert_eq!(s, "1", "BUG: diff of long-named symbol should be 1, got {s}");
+    assert_eq!(
+        s, "1",
+        "BUG: diff of long-named symbol should be 1, got {s}"
+    );
 }
 
 #[test]
@@ -1362,11 +1387,10 @@ fn g25_is_constant_checks() {
     let pi = ctx.pi();
     let expr_with_x = &x + 1;
 
-    assert_eq!(five.is_constant(), true, "BUG: 5 should be constant");
-    assert_eq!(pi.is_constant(), true, "BUG: pi should be constant");
-    assert_eq!(
-        expr_with_x.is_constant(),
-        false,
+    assert!(five.is_constant(), "BUG: 5 should be constant");
+    assert!(pi.is_constant(), "BUG: pi should be constant");
+    assert!(
+        !expr_with_x.is_constant(),
         "BUG: x+1 should not be constant"
     );
 }

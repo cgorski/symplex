@@ -589,10 +589,7 @@ pub fn routh_array(coeffs: &[Ex]) -> Vec<Vec<Ex>> {
         let mut pivot = prev[0].clone();
 
         // Epsilon method: if pivot is zero, check if entire row is zero
-        let pivot_is_zero = pivot
-            .eval_f64()
-            .map(|v| v.abs() < 1e-30)
-            .unwrap_or(false);
+        let pivot_is_zero = pivot.eval_f64().map(|v| v.abs() < 1e-30).unwrap_or(false);
 
         if pivot_is_zero {
             // Epsilon method: replace zero pivot with small ε to preserve

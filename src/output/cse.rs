@@ -221,7 +221,7 @@ fn find_and_apply_partial_overlaps(
             .into_iter()
             .filter(|(_, shared)| shared.len() >= 2)
             .collect();
-        pairs.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        pairs.sort_by_key(|p| std::cmp::Reverse(p.1.len()));
 
         for ((idx_a, idx_b), shared_children) in pairs {
             let (parent_a, _) = &node_children[idx_a];

@@ -219,7 +219,11 @@ fn rule_abs_abs_trace() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.abs().abs();
-    assert_eq!(format!("{expr}"), "abs(x)", "abs(abs(x)) should canonicalize to abs(x)");
+    assert_eq!(
+        format!("{expr}"),
+        "abs(x)",
+        "abs(abs(x)) should canonicalize to abs(x)"
+    );
 }
 
 #[test]
@@ -926,7 +930,8 @@ fn simplify_pythagorean_fires() {
     let x = ctx.symbol("x");
     let result = (&x.sin().powi(2) + &x.cos().powi(2)).simplify();
     assert_eq!(
-        format!("{result}"), "1",
+        format!("{result}"),
+        "1",
         "pythagorean simplification should produce 1"
     );
 }

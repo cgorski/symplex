@@ -1,7 +1,7 @@
 //! User-facing expression handle.
 //!
 //! [`Ex`] is a lightweight handle to a symbolic expression. It holds a
-//! reference-counted pointer to the shared [`ContextInner`] (which
+//! reference-counted pointer to the shared `ContextInner` (which
 //! contains both the arena and the assumption cache) plus an expression ID.
 //! Clone is cheap (~5ns, just an Arc clone + u32 copy).
 //!
@@ -53,6 +53,9 @@ use tracing::debug_span;
 use crate::api::context::ContextInner;
 use crate::base::errors::SymplexError;
 use crate::base::node::{CtxId, ExprId};
+
+/// Options controlling [`Expr::simplify_with`].
+pub use crate::simplify::simplify_engine::SimplifyOpts;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sort system — compile-time expression typing
@@ -252,7 +255,7 @@ impl<S: Sort> Expr<S> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl<S: Sort> Expr<S> {
-    /// Returns the raw [`ExprId`] inside this handle.
+    /// Returns the raw `ExprId` inside this handle.
     ///
     /// **Note:** This is an opaque arena-local index.  It is only
     /// meaningful within the [`Context`](crate::api::context::Context)
@@ -263,7 +266,7 @@ impl<S: Sort> Expr<S> {
         self.id
     }
 
-    /// Returns the [`CtxId`] that this expression belongs to.
+    /// Returns the `CtxId` that this expression belongs to.
     #[inline]
     pub fn ctx_id(&self) -> CtxId {
         self.ctx_id
@@ -306,7 +309,7 @@ impl<S: Sort> Expr<S> {
     /// Returns `true` if `needle` appears as a sub-expression of `self`.
     ///
     /// This is a structural check — it walks the expression DAG and
-    /// returns `true` if any node has the same [`ExprId`] as `needle`.
+    /// returns `true` if any node has the same `ExprId` as `needle`.
     #[must_use]
     pub fn contains(&self, needle: &Ex) -> bool {
         let needle_id = self.checked_id(needle);
@@ -636,8 +639,8 @@ impl<S: Sort> Expr<S> {
     ///
     /// This is the "just make this simpler" function.  For finer control,
     /// use [`simplify_with`](Self::simplify_with) or the domain-specific
-    /// methods ([`simplify_trig`](crate::api::expr_funcs),
-    /// [`simplify_powers`](crate::api::expr_funcs), etc.).
+    /// methods ([`simplify_trig`](Ex::simplify_trig),
+    /// [`simplify_powers`](Ex::simplify_powers), etc.).
     ///
     /// # Examples
     ///
@@ -671,14 +674,12 @@ impl<S: Sort> Expr<S> {
 
     /// Like [`simplify`](Expr::simplify), but with configurable options.
     ///
-    /// Use [`SimplifyOpts`](crate::simplify::simplify_engine::SimplifyOpts)
-    /// to control iteration count, request a trace, etc.
+    /// Use [`SimplifyOpts`] to control the fixpoint iteration count.
     ///
     /// # Examples
     ///
     /// ```
     /// use symplex::prelude::*;
-    /// use symplex::simplify::simplify_engine::SimplifyOpts;
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
@@ -689,18 +690,11 @@ impl<S: Sort> Expr<S> {
     /// assert_eq!(format!("{}", result), "1");
     /// ```
     #[must_use = "returns the simplified form; does not modify in place"]
-    pub fn simplify_with(
-        &self,
-        opts: &crate::simplify::simplify_engine::SimplifyOpts,
-    ) -> Expr<S> {
+    pub fn simplify_with(&self, opts: &SimplifyOpts) -> Expr<S> {
         let _span = debug_span!("simplify_with", expr = ?self.id).entered();
         let result = {
             let mut inner = self.inner.write();
-            crate::simplify::simplify_engine::unified_simplify(
-                &mut inner.arena,
-                self.id,
-                opts,
-            )
+            crate::simplify::simplify_engine::unified_simplify(&mut inner.arena, self.id, opts)
         };
         self.wrap(result.expr)
     }

@@ -151,7 +151,7 @@ pub mod prelude {
     pub use crate::api::context::Context;
     pub use crate::api::eq::Equation;
     pub use crate::api::expr::{
-        BoolEx, Boolean, Ex, Expr, ExprType, Numeric, SetEx, SetValued, Sort,
+        BoolEx, Boolean, Ex, Expr, ExprType, Numeric, SetEx, SetValued, SimplifyOpts, Sort,
     };
     pub use crate::api::expr_view::ExprView;
     pub use crate::base::assumptions::{Assumption, Assumptions, Props};
