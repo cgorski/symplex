@@ -4,11 +4,12 @@
 //!
 //! * one-sided limits (`Direction`, `limit_dir`, `limit_left`, `limit_right`);
 //! * the public Fourier transform API (`fourier_transform`,
-//!   `inverse_fourier_transform`, with a selectable [`FourierConvention`]);
+//!   `inverse_fourier_transform`, with a selectable `FourierConvention`);
 //! * the Mellin transform API (`mellin_transform`, `inverse_mellin_transform`);
-//! * Laplace helpers (`laplace_initial_value`, `laplace_final_value`,
-//!   `laplace_convolution`);
-//! * Fourier series on arbitrary intervals (`fourier_series_on`).
+//! * Laplace helpers (`laplace_initial_value`, `laplace_final_value`);
+//! * Fourier series on arbitrary intervals (`fourier_series_on`,
+//!   `FourierSeries`);
+//! * the Z-transform (`z_transform`, `inverse_z_transform`).
 
 use tracing::debug_span;
 
@@ -445,6 +446,251 @@ impl Expr<Numeric> {
         sf.try_limit_right(s, &ctx.int(0))
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Fourier series
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The trigonometric Fourier series of a function on an interval `[a, b]`
+/// (period `T = b − a`, fundamental frequency `ω₀ = 2π/T`):
+///
+/// `f(x) ~ a₀/2 + Σ_{k≥1} [a_k cos(kω₀x) + b_k sin(kω₀x)]`
+///
+/// with `a_k = (2/T) ∫_a^b f(x) cos(kω₀x) dx` and
+/// `b_k = (2/T) ∫_a^b f(x) sin(kω₀x) dx`. Produced by
+/// `Ex::fourier_series_on`; the first `n` harmonics are stored, further
+/// coefficients are computed on demand.
+///
+/// ```
+/// use symplex::prelude::*;
+///
+/// let ctx = Context::new();
+/// let x = ctx.symbol("x");
+/// // Sawtooth f(x) = x on [-π, π]: b_k = 2(-1)^{k+1}/k, all a_k = 0
+/// let fs = x.fourier_series_on(&x, &(-ctx.pi()), &ctx.pi(), 3).unwrap();
+/// assert_eq!(format!("{}", fs.a0), "0");
+/// assert_eq!(fs.bn.iter().map(|b| b.to_string()).collect::<Vec<_>>(), ["2", "-1", "2/3"]);
+/// assert_eq!(format!("{}", fs.coefficient_b(4)), "-1/2");
+/// assert_eq!(fs.truncate(2), 2 * x.sin() - (2 * &x).sin());
+/// ```
+#[derive(Debug, Clone)]
+pub struct FourierSeries {
+    /// The expanded function.
+    pub function: Ex,
+    /// The expansion variable.
+    pub var: Ex,
+    /// Left end of the interval.
+    pub lower: Ex,
+    /// Right end of the interval.
+    pub upper: Ex,
+    /// The period `T = upper − lower`.
+    pub period: Ex,
+    /// The constant coefficient `a₀` (the series' constant term is `a₀/2`).
+    pub a0: Ex,
+    /// Cosine coefficients `a₁, …, aₙ`.
+    pub an: Vec<Ex>,
+    /// Sine coefficients `b₁, …, bₙ`.
+    pub bn: Vec<Ex>,
+}
+
+impl FourierSeries {
+    /// The fundamental angular frequency `ω₀ = 2π/T`.
+    #[must_use]
+    pub fn omega0(&self) -> Ex {
+        let ctx = self.var.context();
+        2 * ctx.pi() / &self.period
+    }
+
+    /// Number of stored harmonics.
+    #[must_use]
+    pub fn n_terms(&self) -> usize {
+        self.an.len()
+    }
+
+    fn raw_coefficient(&self, k: u32, sine: bool) -> Ex {
+        let ctx = self.var.context();
+        let arg = (ctx.int(i64::from(k)) * self.omega0() * &self.var).eval();
+        let kernel = if sine { arg.sin() } else { arg.cos() };
+        let integrand = &self.function * kernel;
+        let integral = integrand.integrate_definite(&self.var, &self.lower, &self.upper);
+        (2 * integral / &self.period).simplify().eval()
+    }
+
+    /// Cosine coefficient `a_k` (`k = 0` gives `a₀`). Coefficients beyond
+    /// the stored ones are integrated on demand; the result may contain an
+    /// unevaluated `Integral` if the integral has no closed form.
+    #[must_use]
+    pub fn coefficient_a(&self, k: u32) -> Ex {
+        if k == 0 {
+            return self.a0.clone();
+        }
+        if let Some(a) = self.an.get(k as usize - 1) {
+            return a.clone();
+        }
+        self.raw_coefficient(k, false)
+    }
+
+    /// Sine coefficient `b_k` (`b₀ = 0`).
+    #[must_use]
+    pub fn coefficient_b(&self, k: u32) -> Ex {
+        if k == 0 {
+            return self.var.context().int(0);
+        }
+        if let Some(b) = self.bn.get(k as usize - 1) {
+            return b.clone();
+        }
+        self.raw_coefficient(k, true)
+    }
+
+    /// Complex coefficient `c_k = (1/T) ∫_a^b f(x) e^{−ikω₀x} dx` of the
+    /// exponential form `f(x) ~ Σ_k c_k e^{ikω₀x}`, for any integer `k`:
+    /// `c₀ = a₀/2`, `c_k = (a_k − i b_k)/2`, `c_{−k} = (a_k + i b_k)/2`.
+    #[must_use]
+    pub fn coefficient_c(&self, k: i64) -> Ex {
+        let ctx = self.var.context();
+        if k == 0 {
+            return (&self.a0 / 2).eval();
+        }
+        let m = k.unsigned_abs() as u32;
+        let a = self.coefficient_a(m);
+        let b = self.coefficient_b(m);
+        let i = ctx.i_unit();
+        let c = if k > 0 {
+            (&a - &i * &b) / 2
+        } else {
+            (&a + &i * &b) / 2
+        };
+        c.eval()
+    }
+
+    /// Partial sum `a₀/2 + Σ_{k=1}^{n} [a_k cos(kω₀x) + b_k sin(kω₀x)]`.
+    /// Harmonics beyond the stored ones are computed on demand.
+    #[must_use]
+    pub fn truncate(&self, n: u32) -> Ex {
+        let ctx = self.var.context();
+        let mut sum = &self.a0 / 2;
+        let w0 = self.omega0();
+        for k in 1..=n {
+            let arg = (ctx.int(i64::from(k)) * &w0 * &self.var).eval();
+            let a = self.coefficient_a(k);
+            let b = self.coefficient_b(k);
+            if !a.is_zero_structural() {
+                sum = &sum + &a * arg.cos();
+            }
+            if !b.is_zero_structural() {
+                sum = &sum + &b * arg.sin();
+            }
+        }
+        sum.eval()
+    }
+}
+
+impl Expr<Numeric> {
+    /// Fourier series of this expression in `var` on the interval
+    /// `[lower, upper]`, with the first `n_terms` harmonics computed.
+    ///
+    /// Coefficients are exact definite integrals
+    /// ([`integrate_definite`](Self::integrate_definite)), so piecewise,
+    /// `|x|`, `sign` and `Heaviside` inputs (square, sawtooth and triangle
+    /// waves) work. Returns the `FourierSeries` with `a0`, `an`, `bn`,
+    /// `period` and the `truncate` /
+    /// `coefficient_c` helpers.
+    ///
+    /// # Errors
+    ///
+    /// * `InvalidArgument` if `var` is not a symbol or the interval is
+    ///   degenerate.
+    /// * `ComputationFailed` if a coefficient integral has no closed form.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // Square wave sign(x) on [-π, π]: b_k = 4/(kπ) for odd k
+    /// let sq = x.sign().fourier_series_on(&x, &(-ctx.pi()), &ctx.pi(), 3).unwrap();
+    /// assert_eq!(sq.coefficient_b(1), 4 / ctx.pi());
+    /// assert_eq!(sq.coefficient_b(3), 4 / (3 * ctx.pi()));
+    /// assert!(sq.coefficient_b(2).is_zero_structural());
+    /// // Triangle wave |x| on [-π, π]: a₀ = π, a_k = -4/(k²π) for odd k
+    /// let tri = x.abs().fourier_series_on(&x, &(-ctx.pi()), &ctx.pi(), 2).unwrap();
+    /// assert_eq!(format!("{}", tri.a0), "pi");
+    /// assert_eq!(format!("{}", tri.coefficient_a(1)), "-4/pi");
+    /// assert_eq!(format!("{}", tri.coefficient_a(2)), "0");
+    /// ```
+    pub fn fourier_series_on(
+        &self,
+        var: &Ex,
+        lower: &Ex,
+        upper: &Ex,
+        n_terms: u32,
+    ) -> Result<FourierSeries, SymplexError> {
+        let ctx = self.context();
+        let var_id = self.checked_id(var);
+        let _ = self.checked_id(lower);
+        let _ = self.checked_id(upper);
+        {
+            let inner = self.inner.read();
+            if !matches!(
+                inner.arena.node(var_id),
+                crate::base::node::ExprNode::Symbol(_)
+            ) {
+                return Err(SymplexError::InvalidArgument {
+                    operation: "fourier_series_on",
+                    reason: "the expansion variable must be a symbol".into(),
+                });
+            }
+        }
+        let period = (upper - lower).eval();
+        if period.is_zero_structural() || period.is_positive() == Some(false) {
+            return Err(SymplexError::InvalidArgument {
+                operation: "fourier_series_on",
+                reason: format!("the interval [{lower}, {upper}] must have positive length"),
+            });
+        }
+        let _span =
+            debug_span!("fourier_series_on", expr = ?self.raw_id(), var = ?var_id).entered();
+
+        let check = |c: Ex, what: String| -> Result<Ex, SymplexError> {
+            if c.has_unevaluated() {
+                Err(SymplexError::ComputationFailed {
+                    operation: "fourier_series_on",
+                    reason: format!("the coefficient integral for {what} has no closed form: {c}"),
+                })
+            } else {
+                Ok(c)
+            }
+        };
+
+        let a0_int = self.integrate_definite(var, lower, upper);
+        let a0 = check((2 * a0_int / &period).simplify().eval(), "a_0".into())?;
+        let mut series = FourierSeries {
+            function: self.clone(),
+            var: var.clone(),
+            lower: lower.clone(),
+            upper: upper.clone(),
+            period,
+            a0,
+            an: Vec::with_capacity(n_terms as usize),
+            bn: Vec::with_capacity(n_terms as usize),
+        };
+        for k in 1..=n_terms {
+            let a = check(series.raw_coefficient(k, false), format!("a_{k}"))?;
+            let b = check(series.raw_coefficient(k, true), format!("b_{k}"))?;
+            series.an.push(a);
+            series.bn.push(b);
+        }
+        let _ = ctx;
+        Ok(series)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Z-transform
+// ═══════════════════════════════════════════════════════════════════════════
+
+// `Ex::z_transform` / `Ex::inverse_z_transform` live in
+// `crate::calculus::z_transform` (pre-existing public API).
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Mellin transform

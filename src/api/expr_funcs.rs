@@ -1591,6 +1591,15 @@ impl Expr<Numeric> {
     pub fn fourier_series(&self, var: &Ex, n_terms: u32) -> Ex {
         let var_id = self.checked_id(var);
         let _span = debug_span!("fourier_series", expr = ?self.raw_id(), var = ?var_id).entered();
+        // Prefer the exact definite-integral coefficients (handles |x|,
+        // sign, Heaviside and piecewise inputs); fall back to the
+        // antiderivative-based expansion when a coefficient has no closed
+        // form.
+        let ctx = self.context();
+        let pi = ctx.pi();
+        if let Ok(series) = self.fourier_series_on(var, &(-&pi), &pi, n_terms) {
+            return series.truncate(n_terms);
+        }
         let id = self
             .inner
             .write()
