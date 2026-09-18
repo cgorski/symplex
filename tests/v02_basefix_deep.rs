@@ -75,7 +75,7 @@ fn parser_rejects_excessive_nesting_cleanly() {
     on_small_stack(|| {
         let (ctx, _x, e) = nest_sin_plus_one(2000);
         let s = e.to_string();
-        let err = ctx.parse(&s).err().expect("depth limit");
+        let err = ctx.parse(&s).expect_err("depth limit");
         assert!(err.to_string().contains("nesting too deep"), "{err}");
         // Well inside the limit round-trips exactly.
         let (ctx, _x, e) = nest_sin_plus_one(100);

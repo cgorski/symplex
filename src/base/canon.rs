@@ -1296,6 +1296,7 @@ pub(crate) fn canon_set_intersection(arena: &mut Arena, sets: &[ExprId]) -> Expr
 /// cost is proportional to the DAG, not the unfolded tree.
 ///
 /// This is intended for use in `debug_assert!` and property-based tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn verify_canonical(arena: &mut Arena, id: ExprId) -> Vec<String> {
     let mut errors = Vec::new();
     let mut visited: FxHashSet<ExprId> = FxHashSet::default();
