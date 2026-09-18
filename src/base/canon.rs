@@ -453,6 +453,8 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     // can produce `Mul([1, -1, √2])` (two Num children) instead of
     // `Mul([-1, √2])`.
     let mut result_args: SmallVec<[ExprId; 6]> = SmallVec::new();
+    // Set when `canon_pow` hands back a product (see below).
+    let mut has_nested_mul = false;
 
     for (base, exp) in factors {
         if exp == arena.one {
@@ -461,6 +463,11 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
             if let Some(val) = arena.as_num(base) {
                 coeff *= val.clone();
                 continue;
+            }
+            // Exponents that sum to 1 on a `Pow(Mul(…), e)` base expose the
+            // product itself: `√(-ω²)·√(-ω²) → -ω²`.
+            if matches!(arena.node(base), ExprNode::Mul(_)) {
+                has_nested_mul = true;
             }
             result_args.push(base);
         } else if arena.is_zero_structural(exp) {
@@ -477,8 +484,35 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
                 coeff *= val.clone();
                 continue;
             }
+            if matches!(arena.node(pow_id), ExprNode::Mul(_)) {
+                has_nested_mul = true;
+            }
             result_args.push(pow_id);
         }
+    }
+
+    // A factor can turn out to be a *product*: `canon_pow` performs radical
+    // extraction after exponent grouping (`√6·√3 → 18^(1/2) → 3·√2`),
+    // handles negative bases (`(-4)^(1/2) → 2·i`), distributes integer
+    // powers over a `Mul` base after exponents combined
+    // (`(x·y)^(1/2)·(x·y)^(3/2) → x²·y²`), and a `Mul` base whose exponents
+    // sum to 1 is exposed directly.  Its children must be merged with the
+    // other factors (they may share bases or carry a numeric coefficient),
+    // so re-canonicalise the whole product once.  The recursive call sees
+    // only flat, already-canonical factors and therefore terminates.
+    if has_nested_mul && !coeff.is_zero() {
+        tracing::trace!("canon_mul: canon_pow produced a Mul factor; re-flattening");
+        let mut all: SmallVec<[ExprId; 8]> = SmallVec::new();
+        if !coeff.is_one() {
+            let nid = arena.intern_num(coeff);
+            all.push(arena.intern(ExprNode::Num(nid)));
+        }
+        all.extend(result_args);
+        if saw_infinity {
+            // Sign was already folded into `coeff` when `-∞` was consumed.
+            all.push(arena.infinity);
+        }
+        return canon_mul(arena, &all);
     }
 
     // Re-check for zero after absorbing numeric factors.
