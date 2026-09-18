@@ -884,11 +884,11 @@ fn compile_constant() {
     let ctx = Context::new();
     let f = ctx.int(42).compile(&[]);
     match f {
-        Some(func) => {
+        Ok(func) => {
             let val = func(&[]);
             assert!((val - 42.0).abs() < 1e-10);
         }
-        None => {
+        Err(_) => {
             eprintln!("compile of constant with no args returned None");
         }
     }
@@ -915,11 +915,11 @@ fn compile_wrong_var_name() {
     // Compile with wrong variable name — should probably fail or produce NaN
     let result = expr.compile(&["y"]);
     match result {
-        Some(f) => eprintln!(
+        Ok(f) => eprintln!(
             "compile(x^2, [y]) returned a function, f(&[1.0]) = {}",
             f(&[1.0])
         ),
-        None => eprintln!("compile(x^2, [y]) returned None — acceptable"),
+        Err(_) => eprintln!("compile(x^2, [y]) returned Err — acceptable"),
     }
 }
 
@@ -1917,8 +1917,8 @@ fn compile_empty_args_for_constant() {
     let ctx = Context::new();
     let five = ctx.int(5);
     match five.compile(&[]) {
-        Some(f) => assert!((f(&[]) - 5.0).abs() < 1e-10),
-        None => eprintln!("compile(5, []) returned None — acceptable"),
+        Ok(f) => assert!((f(&[]) - 5.0).abs() < 1e-10),
+        Err(_) => eprintln!("compile(5, []) returned Err — acceptable"),
     }
 }
 

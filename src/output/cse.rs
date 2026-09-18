@@ -84,16 +84,13 @@ pub(crate) fn cse_multi(arena: &mut Arena, exprs: &[ExprId]) -> CseMultiResult {
 
     // Phase 3: Identify nodes worth extracting.
     // A node is worth extracting if:
-    // - It appears 2+ times
+    // - It appears 2+ times (3+ for trivially cheap nodes, see `min_uses`)
     // - It's not an atom (no point extracting a number or symbol)
-    let mut extract: Vec<ExprId> = ref_count
-        .iter()
-        .filter(|&(id, count)| *count >= 2 && !arena.node(*id).is_atom())
-        .map(|(&id, _)| id)
-        .collect();
-
-    // Sort by post-order position (extract inner expressions first).
-    // Build a combined post-order from all roots.
+    // - It's not boolean-valued (cheap, and code generators want to keep
+    //   conditions as native booleans)
+    //
+    // Iterate in post-order (deterministic, dependencies first) rather than
+    // in hash-map order so binding numbering is stable.
     let mut combined_post_order: Vec<ExprId> = Vec::new();
     let mut combined_visited: FxHashSet<ExprId> = FxHashSet::default();
     for &root in &current_exprs {
@@ -104,13 +101,14 @@ pub(crate) fn cse_multi(arena: &mut Arena, exprs: &[ExprId]) -> CseMultiResult {
             }
         }
     }
-
-    let position: FxHashMap<ExprId, usize> = combined_post_order
+    let extract: Vec<ExprId> = combined_post_order
         .iter()
-        .enumerate()
-        .map(|(i, &id)| (id, i))
+        .copied()
+        .filter(|&id| {
+            let count = ref_count.get(&id).copied().unwrap_or(0);
+            count >= min_uses(arena, id)
+        })
         .collect();
-    extract.sort_by_key(|id| position.get(id).copied().unwrap_or(0));
 
     // Phase 4: Build replacement bindings.
     let mut bindings: Vec<(ExprId, ExprId)> = Vec::new();
@@ -136,6 +134,41 @@ pub(crate) fn cse_multi(arena: &mut Arena, exprs: &[ExprId]) -> CseMultiResult {
     CseMultiResult {
         bindings,
         exprs: final_exprs,
+    }
+}
+
+/// Minimum number of references for a node to be worth a temporary.
+///
+/// Returns `usize::MAX` for nodes that are never extracted (atoms and
+/// boolean-valued nodes), 3 for trivially cheap nodes whose extraction would
+/// cost about as much as recomputing them (a negated or scaled atom, an atom
+/// squared or inverted), and 2 otherwise.
+fn min_uses(arena: &Arena, id: ExprId) -> usize {
+    let node = arena.node(id);
+    if node.is_atom() {
+        return usize::MAX;
+    }
+    let is_atom = |c: ExprId| arena.node(c).is_atom();
+    match node {
+        ExprNode::BoolTrue
+        | ExprNode::BoolFalse
+        | ExprNode::Gt(_, _)
+        | ExprNode::Ge(_, _)
+        | ExprNode::Eq_(_, _)
+        | ExprNode::Ne(_, _)
+        | ExprNode::And(_)
+        | ExprNode::Or(_)
+        | ExprNode::Not(_) => usize::MAX,
+        ExprNode::Neg(x) if is_atom(*x) => 3,
+        ExprNode::Mul(ch) if ch.len() == 2 && arena.as_num(ch[0]).is_some() && is_atom(ch[1]) => 3,
+        ExprNode::Pow(b, e) if is_atom(*b) => {
+            let two = num_bigint::BigUint::from(2u32);
+            let small = arena
+                .as_num(*e)
+                .is_some_and(|r| r.is_integer() && *r.numer().magnitude() <= two);
+            if small { 3 } else { 2 }
+        }
+        _ => 2,
     }
 }
 
@@ -216,12 +249,13 @@ fn find_and_apply_partial_overlaps(
         // We process at most one overlap per parent to avoid conflicting rewrites.
         let mut rewritten: FxHashSet<ExprId> = FxHashSet::default();
 
-        // Sort pairs by number of shared children descending (greedily pick largest overlaps).
+        // Sort pairs by number of shared children descending (greedily pick
+        // largest overlaps); break ties by parent position for determinism.
         let mut pairs: Vec<((usize, usize), Vec<ExprId>)> = pair_shared
             .into_iter()
             .filter(|(_, shared)| shared.len() >= 2)
             .collect();
-        pairs.sort_by_key(|p| std::cmp::Reverse(p.1.len()));
+        pairs.sort_by_key(|p| (std::cmp::Reverse(p.1.len()), p.0));
 
         for ((idx_a, idx_b), shared_children) in pairs {
             let (parent_a, _) = &node_children[idx_a];

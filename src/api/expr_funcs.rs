@@ -3222,13 +3222,35 @@ impl Expr<Numeric> {
 
     // ── Code generation ────────────────────────────────────────────
 
-    /// Compile this expression into a callable closure for fast numerical evaluation.
+    /// Compile this expression into a fast numerical function.
     ///
     /// `var_names` specifies the variable-to-index mapping: the returned
-    /// closure takes `&[f64]` where index 0 corresponds to `var_names[0]`, etc.
+    /// function takes `&[f64]` where index 0 corresponds to `var_names[0]`,
+    /// etc.  The result is a `CompiledFn`:
+    /// `Clone + Send + Sync`, callable like a closure (`f(&[x])`) or via
+    /// `f.call(&[x])` / `f.try_call(&[x])`, with `f.arity()` reporting the
+    /// expected argument count.
     ///
-    /// Returns `None` if the expression contains nodes that cannot be
-    /// numerically evaluated (e.g., `ImaginaryUnit`, unevaluated integrals).
+    /// The expression is constant-folded (`eval()`) and common
+    /// subexpressions are shared before lowering to a stack-VM program.
+    /// Every numerically evaluable node is supported, including the
+    /// special functions (`gamma`, `lgamma`, `digamma`, `erf`, `erfc`,
+    /// `lambertw`, `beta`, `factorial`, `binomial`), Bessel functions and
+    /// orthogonal polynomials with constant integer order, `fibonacci`,
+    /// `lucas`, `harmonic`, `factorial2`, rising/falling factorials,
+    /// `min`/`max`/`floor`/`ceiling`/`sign`/`heaviside`/`atan2`, and
+    /// `piecewise` with relational and boolean conditions.  `DiracDelta`
+    /// evaluates to `0.0` everywhere (its pointwise value away from the
+    /// support); `Heaviside(0)` is `0.5`.
+    ///
+    /// # Errors
+    ///
+    /// * [`SymplexError::FreeSymbol`] if a symbol is not listed in `var_names`.
+    /// * [`SymplexError::NotImplemented`] for nodes with no numerical meaning
+    ///   (`ImaginaryUnit`, unevaluated `Integral`/`Derivative`/`Sum`, sets,
+    ///   user-defined `Apply` nodes, Bessel/orthogonal-polynomial nodes whose
+    ///   order is not a constant integer).  The message names the node.
+    /// * [`SymplexError::InvalidArgument`] for duplicate parameter names.
     ///
     /// # Examples
     ///
@@ -3240,19 +3262,65 @@ impl Expr<Numeric> {
     /// let f = &x.powi(2) + 1;
     /// let func = f.compile(&["x"]).expect("should compile");
     /// assert!((func(&[3.0]) - 10.0).abs() < 1e-10);
+    /// assert_eq!(func.arity(), 1);
+    ///
+    /// // Special functions are supported too.
+    /// let g = x.gamma().compile(&["x"]).unwrap();
+    /// assert!((g.call(&[5.0]) - 24.0).abs() < 1e-12);
+    ///
+    /// // Free symbols are an error, not a silent NaN.
+    /// let y = ctx.symbol("y");
+    /// assert!(matches!((&x + &y).compile(&["x"]), Err(SymplexError::FreeSymbol { .. })));
     /// ```
-    #[allow(clippy::type_complexity)]
-    pub fn compile(&self, var_names: &[&str]) -> Option<Box<dyn Fn(&[f64]) -> f64 + Send + Sync>> {
-        // Pre-pass: run eval() to catch exact-zero terms (sin(0)→0, exp(0)→1,
-        // cos(π)→-1, perfect-square roots, etc.) before code emission.
-        // This is cheap (single bottom-up walk) and can eliminate entire
-        // subexpressions, improving both precision and performance.
-        let evaled_id = {
-            let mut inner = self.inner.write();
-            crate::transforms::eval::eval(&mut inner.arena, self.raw_id())
+    pub fn compile(
+        &self,
+        var_names: &[&str],
+    ) -> Result<crate::output::lambdify::CompiledFn, SymplexError> {
+        let mut inner = self.inner.write();
+        crate::output::lambdify::compile(&mut inner.arena, self.raw_id(), var_names)
+    }
+
+    /// Compile several expressions into one vector-valued numerical function.
+    ///
+    /// All expressions must belong to the same context.  A single
+    /// common-subexpression-elimination pass is shared across all outputs,
+    /// so this is the efficient way to evaluate gradients, Jacobians, or any
+    /// family of expressions with overlapping structure.  The returned
+    /// `CompiledFnVec` offers
+    /// `call(&args, &mut out)`, `call_vec(&args)`, `try_call`, `arity()` and
+    /// `len()`.
+    ///
+    /// An empty `exprs` slice yields a function with zero outputs.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`compile`](Self::compile).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let y = ctx.symbol("y");
+    /// let f = &x.powi(2) * &y + &x.sin();
+    /// let grad = Ex::compile_many(&[&f.diff(&x), &f.diff(&y)], &["x", "y"]).unwrap();
+    /// let g = grad.call_vec(&[1.0, 2.0]);
+    /// assert!((g[0] - (4.0 + 1f64.cos())).abs() < 1e-12); // 2xy + cos x
+    /// assert!((g[1] - 1.0).abs() < 1e-12);                 // x^2
+    /// ```
+    pub fn compile_many(
+        exprs: &[&Ex],
+        var_names: &[&str],
+    ) -> Result<crate::output::lambdify::CompiledFnVec, SymplexError> {
+        let Some(first) = exprs.first() else {
+            return crate::output::lambdify::compile_many_empty(var_names);
         };
-        let inner = self.inner.read();
-        crate::output::lambdify::lambdify(&inner.arena, evaled_id, var_names)
+        let ids: Vec<crate::base::node::ExprId> =
+            exprs.iter().map(|e| first.checked_id(e)).collect();
+        let mut inner = first.inner.write();
+        crate::output::lambdify::compile_many(&mut inner.arena, &ids, var_names)
     }
 
     /// Perform common subexpression elimination (CSE).
@@ -3263,6 +3331,11 @@ impl Expr<Numeric> {
     ///
     /// Returns a list of `(name, value)` bindings and the rewritten
     /// expression where common subexpressions are replaced by their names.
+    /// Bindings are ordered by first occurrence (post-order), so a binding
+    /// only refers to earlier bindings and the numbering is deterministic.
+    /// Trivially cheap nodes (a negated or scaled atom, `x^2`, `x^-1`) are
+    /// only extracted when used three or more times; boolean-valued nodes
+    /// are never extracted.
     ///
     /// # Examples
     ///
@@ -3288,6 +3361,46 @@ impl Expr<Numeric> {
             .map(|(name, val)| (self.wrap(name), self.wrap(val)))
             .collect();
         (bindings, self.wrap(result.expr))
+    }
+
+    /// Common subexpression elimination across several expressions.
+    ///
+    /// Temporaries are shared by all inputs, which is what code generators
+    /// and [`compile_many`](Self::compile_many) need for gradients and
+    /// Jacobians.  Returns the shared `(name, value)` bindings and the
+    /// rewritten expressions (in input order).  All expressions must belong
+    /// to the same context; an empty input yields empty outputs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let s = x.sin();
+    /// let (bindings, exprs) = Ex::cse_many(&[&(&s + 1), &s.powi(3)]);
+    /// assert_eq!(exprs.len(), 2);
+    /// assert_eq!(bindings.len(), 1); // sin(x) shared by both
+    /// assert_eq!(format!("{}", bindings[0].1), "sin(x)");
+    /// ```
+    pub fn cse_many(exprs: &[&Ex]) -> (Vec<(Ex, Ex)>, Vec<Ex>) {
+        let Some(first) = exprs.first() else {
+            return (Vec::new(), Vec::new());
+        };
+        let ids: Vec<crate::base::node::ExprId> =
+            exprs.iter().map(|e| first.checked_id(e)).collect();
+        let result = {
+            let mut guard = first.inner.write();
+            crate::output::cse::cse_multi(&mut guard.arena, &ids)
+        };
+        let bindings = result
+            .bindings
+            .into_iter()
+            .map(|(name, val)| (first.wrap(name), first.wrap(val)))
+            .collect();
+        let exprs = result.exprs.into_iter().map(|id| first.wrap(id)).collect();
+        (bindings, exprs)
     }
 
     /// Generate a Rust function body as a string.
@@ -3337,6 +3450,82 @@ impl Expr<Numeric> {
     ) -> Result<String, SymplexError> {
         let mut guard = self.inner.write();
         crate::output::codegen::to_rust_fn_with_options(
+            &mut guard.arena,
+            self.raw_id(),
+            name,
+            args,
+            options,
+        )
+    }
+
+    /// Generate a self-contained C99 function as a string.
+    ///
+    /// The output starts with `#include <math.h>`, followed by any
+    /// `static inline symplex_*` helper functions the expression needs
+    /// (Lambert W, digamma, Bessel functions, orthogonal polynomials,
+    /// integer sequences, … — everything `<math.h>` lacks), then the
+    /// function itself with `const double tN = …;` temporaries for common
+    /// subexpressions.  Functions available in `<math.h>` (`tgamma`,
+    /// `lgamma`, `erf`, `erfc`, `fma`, `expm1`, `log1p`, …) are used
+    /// directly; integer powers `|n| ≤ 4` of simple operands become repeated
+    /// multiplication, other powers use `pow`.  Piecewise expressions become
+    /// ternary chains ending in `NAN`.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`to_rust_fn`](Self::to_rust_fn):
+    /// [`SymplexError::FreeSymbol`] for unbound symbols and
+    /// [`SymplexError::NotImplemented`] for nodes without numerical meaning
+    /// (the message names the node).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let code = (x.sin().powi(2) + x.lambertw()).to_c_fn("f", &["x"]).unwrap();
+    /// assert!(code.contains("#include <math.h>"));
+    /// assert!(code.contains("double f(double x) {"));
+    /// assert!(code.contains("static inline double symplex_lambert_w0(double x)"));
+    /// ```
+    pub fn to_c_fn(&self, name: &str, args: &[&str]) -> Result<String, SymplexError> {
+        let mut guard = self.inner.write();
+        crate::output::codegen::codegen_c::to_c_fn(&mut guard.arena, self.raw_id(), name, args)
+    }
+
+    /// Generate a C99 function with custom options.
+    ///
+    /// Honoured [`CodegenOptions`](crate::output::codegen::CodegenOptions)
+    /// fields: `precision` (`double` / `float` with the `f`-suffixed math
+    /// functions), `cse`, `inline` (`static inline`), `use_mul_add` (`fma`),
+    /// `checked_domain` (`assert` preconditions) and `emit_runtime` (set to
+    /// `false` and paste
+    /// [`CodegenOptions::c_runtime`](crate::output::codegen::CodegenOptions::c_runtime)
+    /// once when several functions share a translation unit).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::matrix::{CodegenOptions, Precision};
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let opts = CodegenOptions { precision: Precision::F32, inline: true, ..Default::default() };
+    /// let code = x.exp().to_c_fn_with_options("f", &["x"], &opts).unwrap();
+    /// assert!(code.contains("static inline float f(float x) {"));
+    /// assert!(code.contains("expf(x)"));
+    /// ```
+    pub fn to_c_fn_with_options(
+        &self,
+        name: &str,
+        args: &[&str],
+        options: &crate::output::codegen::CodegenOptions,
+    ) -> Result<String, SymplexError> {
+        let mut guard = self.inner.write();
+        crate::output::codegen::codegen_c::to_c_fn_with_options(
             &mut guard.arena,
             self.raw_id(),
             name,
@@ -3945,7 +4134,7 @@ impl Expr<Numeric> {
         let var_name = format!("{var}");
         let compiled = self.compile(&[&var_name]);
         match compiled {
-            Some(f) => {
+            Ok(f) => {
                 let opts = crate::plotting::sampling::SampleOptions {
                     min_points,
                     ..Default::default()
@@ -3958,7 +4147,7 @@ impl Expr<Numeric> {
                     &opts,
                 )
             }
-            None => {
+            Err(_) => {
                 // Fallback: symbolic substitution
                 let n = min_points.max(2);
                 let step = (b - a) / (n as f64 - 1.0);
@@ -4078,14 +4267,14 @@ impl Expr<Numeric> {
         let step = (b - a) / (n as f64 - 1.0);
 
         match compiled {
-            Some(f) => (0..n)
+            Ok(f) => (0..n)
                 .map(|i| {
                     let x = a + i as f64 * step;
                     let y = f(&[x]);
                     (x, y)
                 })
                 .collect(),
-            None => {
+            Err(_) => {
                 // Fallback: use symbolic substitution + eval_f64
                 (0..n)
                     .map(|i| {
@@ -4121,12 +4310,12 @@ impl Expr<Numeric> {
         let var_name = format!("{var}");
         let compiled = self.compile(&[&var_name]);
         match compiled {
-            Some(f) => {
+            Ok(f) => {
                 crate::plotting::data_export::DataTable::from_evaluation("x", "f(x)", points, |x| {
                     f(&[x])
                 })
             }
-            None => {
+            Err(_) => {
                 let values: Vec<(f64, f64)> = points
                     .iter()
                     .map(|&x| {

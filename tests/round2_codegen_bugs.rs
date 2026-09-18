@@ -66,7 +66,7 @@ fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
 fn check_compile_vs_eval(expr: &Ex, var: &Ex, var_name: &str, test_vals: &[i64]) {
     let compiled = expr
         .compile(&[var_name])
-        .unwrap_or_else(|| panic!("expression `{expr}` should compile"));
+        .unwrap_or_else(|_| panic!("expression `{expr}` should compile"));
     for &v in test_vals {
         let from_compile = compiled(&[v as f64]);
         let from_eval = expr.subs_i64(var, v).eval_f64();
@@ -95,7 +95,7 @@ fn check_compile_vs_eval_rational(
 ) {
     let compiled = expr
         .compile(&[var_name])
-        .unwrap_or_else(|| panic!("expression `{expr}` should compile"));
+        .unwrap_or_else(|_| panic!("expression `{expr}` should compile"));
     for &(p, q) in test_vals {
         let fval = p as f64 / q as f64;
         let from_compile = compiled(&[fval]);
@@ -1249,7 +1249,7 @@ fn compile_missing_variable_returns_none() {
     let f = &x + &y;
     let compiled = f.compile(&["x"]); // y is unbound
     assert!(
-        compiled.is_none(),
+        compiled.is_err(),
         "compile should return None when expression has unbound variable"
     );
 }
@@ -1444,13 +1444,14 @@ fn codegen_and_compile_agree_trig_composition() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Edge: compile returns None for unsupported nodes
+// Edge: compile and codegen agree on piecewise
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn compile_piecewise_returns_none() {
-    // BUG FINDING: lambdify does not support Piecewise, returning None,
-    // while to_rust_fn codegen DOES support it. This is an asymmetry.
+fn compile_piecewise_matches_codegen() {
+    // Historically compile() rejected Piecewise while to_rust_fn supported
+    // it.  Since 0.2 both back-ends handle it; compile() evaluates the
+    // conditions in order and picks the first true branch.
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let zero = ctx.zero();
@@ -1458,13 +1459,14 @@ fn compile_piecewise_returns_none() {
     let neg_x = -&x;
     let f = Ex::piecewise(&[(&x, &cond), (&neg_x, &x.le(&zero))]);
 
-    let compiled = f.compile(&["x"]);
-    assert!(
-        compiled.is_none(),
-        "compile() should return None for piecewise (lambdify doesn't handle it)"
-    );
+    let compiled = f
+        .compile(&["x"])
+        .expect("compile() should support piecewise");
+    assert_eq!(compiled(&[3.0]), 3.0, "x > 0 branch");
+    assert_eq!(compiled(&[-2.0]), 2.0, "x <= 0 branch");
+    assert_eq!(compiled(&[0.0]), 0.0, "boundary");
 
-    // But codegen should succeed
+    // And codegen should succeed
     let code = f.to_rust_fn("abs_pw", &["x"]);
     assert!(
         code.is_ok(),
@@ -1485,7 +1487,7 @@ fn sign_function_semantics() {
     let f = symplex::parse::parse(&ctx, "sign(x)").unwrap();
     let compiled = f.compile(&["x"]);
 
-    if let Some(func) = compiled {
+    if let Ok(func) = compiled {
         assert_eq!(func(&[5.0]), 1.0, "sign(5) should be 1");
         assert_eq!(func(&[-3.0]), -1.0, "sign(-3) should be -1");
         assert_eq!(
@@ -1502,7 +1504,7 @@ fn heaviside_function_at_zero() {
     let f = symplex::parse::parse(&ctx, "Heaviside(x)").unwrap();
     let compiled = f.compile(&["x"]);
 
-    if let Some(func) = compiled {
+    if let Ok(func) = compiled {
         assert_eq!(func(&[1.0]), 1.0, "heaviside(1) should be 1");
         assert_eq!(func(&[-1.0]), 0.0, "heaviside(-1) should be 0");
         // Heaviside(0) = 0.5 by convention in the implementation

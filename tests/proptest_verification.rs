@@ -27,7 +27,7 @@ proptest! {
         let mut bail = common::BailCounter::new("lambdify_matches_evalf");
 
         // lambdify path
-        if let Some(f) = poly.compile(&["x"]) {
+        if let Ok(f) = poly.compile(&["x"]) {
             let lambdify_result = f(&[pt as f64]);
 
             // evalf path
@@ -54,7 +54,7 @@ proptest! {
         let x = ctx.symbol("x");
         let expr = &x.sin().powi(2) + &x.cos().powi(2);
 
-        if let Some(f) = expr.compile(&["x"]) {
+        if let Ok(f) = expr.compile(&["x"]) {
             let result = f(&[pt as f64]);
             // sin²+cos² should be 1.0 everywhere
             prop_assert!((result - 1.0).abs() < 1e-10,

@@ -1528,13 +1528,13 @@ fn compile_with_wrong_var_name() {
     // it should either fail or produce wrong results
     let compiled = f.compile(&["y"]);
     // This is worth testing — user might accidentally name vars wrong
-    if let Some(ref func) = compiled {
+    if let Ok(ref func) = compiled {
         // If it compiles, evaluating should probably give NaN or something
         let val = func(&[5.0]);
         // The expression is x+1 but we said the var is "y", so x is unbound
         // A good library would refuse to compile; let's see what happens
         assert!(
-            val.is_nan() || (val - 1.0).abs() < 1e-10 || compiled.is_none(),
+            val.is_nan() || (val - 1.0).abs() < 1e-10 || compiled.is_err(),
             "compiling x+1 with var 'y' should either fail or treat x as 0/NaN, got: {val}"
         );
     }

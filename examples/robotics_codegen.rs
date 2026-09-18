@@ -197,7 +197,7 @@ fn main() {
 
         // Symbolic evaluation (substitute integer approximations for display)
         // For exact comparison we use compile()
-        if let Some(px_fn) = px.compile(&["theta1", "theta2", "theta3"]) {
+        if let Ok(px_fn) = px.compile(&["theta1", "theta2", "theta3"]) {
             let sym_x = px_fn(&[*t1, *t2, *t3]);
             let sym_y = py
                 .compile(&["theta1", "theta2", "theta3"])

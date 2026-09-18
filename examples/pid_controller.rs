@@ -186,7 +186,7 @@ fn main() {
     }
 
     // Compile and test numerically
-    if let Some(f) = pid_simplified.compile(&["error", "integral", "derivative"]) {
+    if let Ok(f) = pid_simplified.compile(&["error", "integral", "derivative"]) {
         println!("Numerical verification:");
         // Step response: error=1.0, no integral or derivative yet
         println!("  u(e=1.0, i=0, d=0)   = {:.2}", f(&[1.0, 0.0, 0.0]));

@@ -9,6 +9,13 @@ use crate::base::node::{ExprId, ExprNode};
 use num_traits::ToPrimitive;
 use rustc_hash::FxHashMap;
 
+/// C99 code generation.
+pub(crate) mod codegen_c;
+/// Shared `f64` special-function runtime (also embedded into generated code).
+pub(crate) mod numeric_rt;
+/// Extraction of runtime sections for embedding into generated Rust code.
+pub(crate) mod rt_embed;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CodegenOptions types
 // ═══════════════════════════════════════════════════════════════════════════
@@ -65,6 +72,22 @@ pub struct CodegenOptions {
     /// The uom type name for the return value (e.g., "Length").
     /// Only used when `unit_annotation` is `UnitAnnotation::Uom`.
     pub return_unit: Option<String>,
+    /// Fuse `a*b + c` patterns into `mul_add` / `fma` calls (default `true`).
+    ///
+    /// Fused multiply-add rounds once instead of twice, so results can differ
+    /// from a plain `a*b + c` in the last bit; disable for bit-exact
+    /// reproduction of unfused arithmetic.
+    pub use_mul_add: bool,
+    /// Emit `debug_assert!` domain checks (e.g. `ln(x)` requires `x > 0`,
+    /// `sqrt(x)` requires `x >= 0`, `lambertw(x)` requires `x >= -1/e`).
+    /// Default `false`.  Checks compile away in release builds.
+    pub checked_domain: bool,
+    /// Emit the `mod symplex_rt { … }` special-function runtime preamble when
+    /// the generated function needs it (default `true`).
+    ///
+    /// Set to `false` when concatenating many generated functions into one
+    /// file and emit the runtime once via [`CodegenOptions::runtime_module`].
+    pub emit_runtime: bool,
 }
 
 impl Default for CodegenOptions {
@@ -78,11 +101,56 @@ impl Default for CodegenOptions {
             unit_annotation: UnitAnnotation::None,
             param_units: Vec::new(),
             return_unit: None,
+            use_mul_add: true,
+            checked_domain: false,
+            emit_runtime: true,
         }
     }
 }
 
 impl CodegenOptions {
+    /// The complete special-function runtime module (`mod symplex_rt { … }`)
+    /// for this configuration's math backend, containing *every* helper.
+    ///
+    /// Generated functions only embed the helpers they use.  When many
+    /// functions are concatenated into one file, set
+    /// [`emit_runtime`](Self::emit_runtime) to `false` and place the output
+    /// of this method once at the top of the file instead.
+    ///
+    /// ```
+    /// use symplex::matrix::CodegenOptions;
+    ///
+    /// let rt = CodegenOptions::default().runtime_module();
+    /// assert!(rt.starts_with("#[allow(dead_code, clippy::all)]\nmod symplex_rt {"));
+    /// assert!(rt.contains("pub fn gamma("));
+    /// assert!(rt.contains("pub fn bessel_k("));
+    /// ```
+    #[must_use]
+    pub fn runtime_module(&self) -> String {
+        let all = rt_embed::all_helper_fns();
+        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+        rt_embed::runtime_module(self.math_backend, &refs).unwrap_or_default()
+    }
+
+    /// The complete C99 helper library (`static inline symplex_*` functions)
+    /// used by [`Ex::to_c_fn`](crate::api::expr::Expr::to_c_fn), with its
+    /// `#include <math.h>`.
+    ///
+    /// Generated C functions only embed the helpers they use; when several
+    /// functions share one translation unit, set
+    /// [`emit_runtime`](Self::emit_runtime) to `false` and paste this once.
+    ///
+    /// ```
+    /// use symplex::matrix::CodegenOptions;
+    ///
+    /// let rt = CodegenOptions::default().c_runtime();
+    /// assert!(rt.contains("#include <math.h>"));
+    /// assert!(rt.contains("static inline double symplex_lambert_w0(double x)"));
+    /// ```
+    #[must_use]
+    pub fn c_runtime(&self) -> String {
+        codegen_c::c_runtime_source()
+    }
     /// Configuration for no_std embedded targets.
     /// Uses cfg-gated math backend and adds `#[inline]`.
     pub fn no_std() -> Self {
@@ -351,12 +419,6 @@ pub(crate) fn to_rust_fn_with_options(
 
     let mut lines = Vec::new();
 
-    // Cfg-gated math module
-    if options.math_backend == MathBackend::CfgGated {
-        append_cfg_gated_module(&mut lines, options.precision);
-        lines.push(String::new());
-    }
-
     // Uom use statements (before annotations so they appear at the top)
     if options.unit_annotation == UnitAnnotation::Uom {
         emit_uom_use_statements(&mut lines, options);
@@ -441,7 +503,36 @@ pub(crate) fn to_rust_fn_with_options(
     }
     lines.push("}".to_string());
 
-    Ok(lines.join("\n"))
+    Ok(assemble_with_preambles(lines, options))
+}
+
+/// Prepend the cfg-gated `mod math` block (for [`MathBackend::CfgGated`]) and
+/// the `mod symplex_rt` special-function runtime (when the body uses it and
+/// [`CodegenOptions::emit_runtime`] is set) to an emitted function.
+///
+/// The order is always `mod math`, then `mod symplex_rt`, then the function,
+/// so tooling that strips the cfg-gated block keeps working.
+fn assemble_with_preambles(body: Vec<String>, options: &CodegenOptions) -> String {
+    let body_text = body.join("\n");
+    let mut out = String::new();
+    if options.math_backend == MathBackend::CfgGated {
+        let mut lines = Vec::new();
+        append_cfg_gated_module(&mut lines, options.precision);
+        out.push_str(&lines.join("\n"));
+        out.push_str("\n\n");
+    }
+    if options.emit_runtime {
+        let used = rt_embed::used_helpers(&body_text);
+        if !used.is_empty() {
+            let refs: Vec<&str> = used.iter().map(String::as_str).collect();
+            if let Some(module) = rt_embed::runtime_module(options.math_backend, &refs) {
+                out.push_str(&module);
+                out.push_str("\n\n");
+            }
+        }
+    }
+    out.push_str(&body_text);
+    out
 }
 
 /// Generate a Rust function that computes a matrix and returns a flat array.
@@ -481,12 +572,6 @@ pub(crate) fn matrix_to_rust_fn(
     }
 
     let mut lines = Vec::new();
-
-    // Cfg-gated math module
-    if options.math_backend == MathBackend::CfgGated {
-        append_cfg_gated_module(&mut lines, options.precision);
-        lines.push(String::new());
-    }
 
     // Uom use statements
     if options.unit_annotation == UnitAnnotation::Uom {
@@ -572,7 +657,9 @@ pub(crate) fn matrix_to_rust_fn(
         } else {
             raw_code
         };
-        if i == 0 {
+        if total == 1 {
+            lines.push(format!("    [{code}]"));
+        } else if i == 0 {
             lines.push(format!("    [{code},"));
         } else if i + 1 == total {
             lines.push(format!("     {code}]"));
@@ -583,7 +670,7 @@ pub(crate) fn matrix_to_rust_fn(
 
     lines.push("}".to_string());
 
-    Ok(lines.join("\n"))
+    Ok(assemble_with_preambles(lines, options))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -799,7 +886,9 @@ fn expr_to_rust_cse(
                 non_fma_children.push(child);
             }
 
-            if !fma_children.is_empty() && (!non_fma_children.is_empty() || fma_children.len() >= 2)
+            if options.use_mul_add
+                && !fma_children.is_empty()
+                && (!non_fma_children.is_empty() || fma_children.len() >= 2)
             {
                 return emit_fma_chain(
                     arena,
@@ -912,6 +1001,21 @@ fn expr_to_rust_cse(
                 if *r.numer() == 1.into() && *r.denom() == 3.into() {
                     return emit_unary_call(&b, "cbrt", options);
                 }
+                // Odd denominator q: real root b^(p/q) = (sign(b)|b|^(1/q))^p.
+                // Matches `compile()`: |b|^e, with the sign of b for odd p.
+                let two = num_bigint::BigInt::from(2);
+                if (r.denom() % &two) != num_bigint::BigInt::from(0) {
+                    let odd_numer = (r.numer() % &two) != num_bigint::BigInt::from(0);
+                    let e = expr_to_rust_cse(arena, exp, var_names, options, cse_constants)?;
+                    let abs_b = emit_unary_call(&format!("({b})"), "abs", options)?;
+                    let mag = emit_powf(&abs_b, &e, options)?;
+                    let s = options.precision.suffix();
+                    return Ok(if odd_numer {
+                        format!("((if {b} < 0.0{s} {{ -1.0{s} }} else {{ 1.0{s} }}) * {mag})")
+                    } else {
+                        mag
+                    });
+                }
             }
             let e = expr_to_rust_cse(arena, exp, var_names, options, cse_constants)?;
             emit_powf(&b, &e, options)
@@ -982,21 +1086,37 @@ fn expr_to_rust_cse(
             }
             Ok(code)
         }
+        // Special functions → shared runtime helpers
+        ExprNode::Gamma(x) => emit_rt_unary(arena, x, "gamma", var_names, options, cse_constants),
+        ExprNode::LogGamma(x) => {
+            emit_rt_unary(arena, x, "lgamma", var_names, options, cse_constants)
+        }
+        ExprNode::Digamma(x) => {
+            emit_rt_unary(arena, x, "digamma", var_names, options, cse_constants)
+        }
+        ExprNode::Erf(x) => emit_rt_unary(arena, x, "erf", var_names, options, cse_constants),
+        ExprNode::Erfc(x) => emit_rt_unary(arena, x, "erfc", var_names, options, cse_constants),
+        ExprNode::LambertW(x) => {
+            emit_rt_unary(arena, x, "lambert_w0", var_names, options, cse_constants)
+        }
+        ExprNode::Factorial(x) => {
+            emit_rt_unary(arena, x, "factorial", var_names, options, cse_constants)
+        }
+        ExprNode::Beta(a, b) => {
+            emit_rt_binary(arena, a, b, "beta", var_names, options, cse_constants)
+        }
+        ExprNode::Binomial(n, k) => {
+            emit_rt_binary(arena, n, k, "binomial", var_names, options, cse_constants)
+        }
+        ExprNode::Apply(sid, ref apply_args) => {
+            let fname = arena.symbols.name(sid).to_string();
+            emit_rt_apply(arena, &fname, apply_args, var_names, options, cse_constants)
+        }
         // Unsupported nodes
         ExprNode::ImaginaryUnit => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for imaginary unit".to_string(),
         )),
-        ExprNode::Factorial(_) | ExprNode::Binomial(_, _) => Err(SymplexError::NotImplemented(
-            "cannot generate Rust code for combinatorial functions".to_string(),
-        )),
-        ExprNode::Gamma(_)
-        | ExprNode::LogGamma(_)
-        | ExprNode::Digamma(_)
-        | ExprNode::Erf(_)
-        | ExprNode::Erfc(_)
-        | ExprNode::LambertW(_)
-        | ExprNode::Beta(_, _)
-        | ExprNode::Re(_)
+        ExprNode::Re(_)
         | ExprNode::Im(_)
         | ExprNode::Conjugate(_)
         | ExprNode::Arg(_)
@@ -1007,12 +1127,9 @@ fn expr_to_rust_cse(
         | ExprNode::Zeta(_)
         | ExprNode::Polygamma(_, _)
         | ExprNode::KroneckerDelta(_, _) => Err(SymplexError::NotImplemented(
-            "cannot generate Rust code for special functions (gamma, erf, beta, lambertw, \
-             re/im/conjugate/arg, Si/Ci/Ei/li, zeta, polygamma, KroneckerDelta)"
+            "cannot generate Rust code for re/im/conjugate/arg, Si/Ci/Ei/li, zeta, polygamma, \
+             or KroneckerDelta yet"
                 .to_string(),
-        )),
-        ExprNode::Apply(_, _) => Err(SymplexError::NotImplemented(
-            "cannot generate Rust code for user-defined Apply nodes".to_string(),
         )),
         ExprNode::Derivative(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for unevaluated Derivative".to_string(),
@@ -1057,6 +1174,7 @@ fn expr_to_rust_cse(
         ExprNode::Piecewise(ref branches) => {
             codegen_piecewise(arena, branches, var_names, options, cse_constants)
         }
+        // Boolean node in numeric position: 1.0 when true, 0.0 otherwise.
         ExprNode::BoolTrue
         | ExprNode::BoolFalse
         | ExprNode::Gt(_, _)
@@ -1065,10 +1183,12 @@ fn expr_to_rust_cse(
         | ExprNode::Ne(_, _)
         | ExprNode::And(_)
         | ExprNode::Or(_)
-        | ExprNode::Not(_) => Err(SymplexError::NotImplemented(format!(
-            "cannot generate Rust f64 code for boolean/relational node: {:?}",
-            arena.node(id)
-        ))),
+        | ExprNode::Not(_) => {
+            let cond = bool_to_rust(arena, id, var_names, options, cse_constants)?;
+            Ok(format!(
+                "(if {cond} {{ 1.0{suffix} }} else {{ 0.0{suffix} }})"
+            ))
+        }
         ExprNode::EmptySet
         | ExprNode::UniversalSet
         | ExprNode::Interval(_, _, _)
@@ -1340,14 +1460,15 @@ fn emit_numopt_call(
     libm_name: &str,
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
-    Ok(match options.math_backend {
+    let call = match options.math_backend {
         MathBackend::Std => format!("{arg_code}.{std_method}()"),
         MathBackend::Libm => {
             let ft = options.precision.type_name();
             format!("libm::{libm_name}({arg_code} as f64) as {ft}")
         }
         MathBackend::CfgGated => format!("math::{libm_name}({arg_code})"),
-    })
+    };
+    Ok(wrap_domain_check(&call, arg_code, std_method, options))
 }
 
 fn try_const_eval_f64(arena: &Arena, id: ExprId) -> Option<f64> {
@@ -1801,7 +1922,7 @@ fn emit_unary_call(
     func: &str,
     options: &CodegenOptions,
 ) -> Result<String, SymplexError> {
-    Ok(match options.math_backend {
+    let call = match options.math_backend {
         MathBackend::Std => format!("{arg_code}.{func}()"),
         MathBackend::Libm => {
             let libm_fn = libm_function_name(func);
@@ -1811,7 +1932,206 @@ fn emit_unary_call(
             )
         }
         MathBackend::CfgGated => format!("math::{func}({arg_code})"),
+    };
+    Ok(wrap_domain_check(&call, arg_code, func, options))
+}
+
+/// Domain precondition for a unary function, as a Rust boolean expression
+/// over `v` (already-resolved argument code), plus a human-readable name.
+fn domain_condition(func: &str, v: &str, suffix: &str) -> Option<String> {
+    Some(match func {
+        "ln" => format!("{v} > 0.0{suffix}"),
+        "sqrt" => format!("{v} >= 0.0{suffix}"),
+        "asin" | "acos" => format!("({v}).abs() <= 1.0{suffix}"),
+        "acosh" => format!("{v} >= 1.0{suffix}"),
+        "atanh" => format!("({v}).abs() < 1.0{suffix}"),
+        "ln_1p" | "log1p" => format!("{v} > -1.0{suffix}"),
+        "lambert_w0" => format!("{v} >= -0.36787944117144233{suffix}"),
+        "bessel_y" | "bessel_k" => format!("{v} > 0.0{suffix}"),
+        "gamma" | "lgamma" | "digamma" | "factorial" => {
+            let shift = if func == "factorial" { " + 1.0" } else { "" };
+            format!("!(({v}{shift}) <= 0.0{suffix} && ({v}{shift}).fract() == 0.0{suffix})")
+        }
+        _ => return None,
     })
+}
+
+/// When `checked_domain` is enabled, wrap `call` in a block that asserts the
+/// argument lies in the function's domain (debug builds only).
+fn wrap_domain_check(call: &str, arg_code: &str, func: &str, options: &CodegenOptions) -> String {
+    if !options.checked_domain {
+        return call.to_string();
+    }
+    let suffix = options.precision.suffix();
+    match domain_condition(func, arg_code, suffix) {
+        Some(cond) => format!(
+            "{{ debug_assert!({cond}, \"{func}: argument {{}} outside domain\", {arg_code}); {call} }}"
+        ),
+        None => call.to_string(),
+    }
+}
+
+/// Constant-fold a unary runtime helper when its argument is known.
+fn eval_rt_unary(func: &str, v: f64) -> Option<f64> {
+    use numeric_rt as rt;
+    Some(match func {
+        "gamma" => rt::gamma(v),
+        "lgamma" => rt::lgamma(v),
+        "digamma" => rt::digamma(v),
+        "erf" => rt::erf(v),
+        "erfc" => rt::erfc(v),
+        "lambert_w0" => rt::lambert_w0(v),
+        "factorial" => rt::factorial(v),
+        _ => return None,
+    })
+}
+
+/// Call a runtime helper: `symplex_rt::NAME([order,] args)` with `f32`
+/// casts around the float arguments as needed.
+fn rt_call(func: &str, order: Option<i32>, args: &[String], options: &CodegenOptions) -> String {
+    let module = rt_embed::MODULE_NAME;
+    let mut parts: Vec<String> = Vec::with_capacity(args.len() + 1);
+    if let Some(n) = order {
+        parts.push(format!("{n}"));
+    }
+    match options.precision {
+        Precision::F64 => {
+            parts.extend(args.iter().cloned());
+            format!("{module}::{func}({})", parts.join(", "))
+        }
+        Precision::F32 => {
+            parts.extend(args.iter().map(|a| format!("{a} as f64")));
+            format!("{module}::{func}({}) as f32", parts.join(", "))
+        }
+    }
+}
+
+/// Emit a unary special function through the shared runtime.
+fn emit_rt_unary(
+    arena: &Arena,
+    arg: ExprId,
+    func: &str,
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Result<String, SymplexError> {
+    if let Some(val) = try_const_eval_f64(arena, arg)
+        && let Some(result) = eval_rt_unary(func, val)
+        && result.is_finite()
+    {
+        let suffix = options.precision.suffix();
+        return Ok(format!("{}{}", format_float(result), suffix));
+    }
+    let code = expr_to_rust_cse(arena, arg, var_names, options, cse_constants)?;
+    let call = rt_call(func, None, std::slice::from_ref(&code), options);
+    Ok(wrap_domain_check(&call, &code, func, options))
+}
+
+/// Emit a binary special function through the shared runtime.
+fn emit_rt_binary(
+    arena: &Arena,
+    a: ExprId,
+    b: ExprId,
+    func: &str,
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Result<String, SymplexError> {
+    let ca = expr_to_rust_cse(arena, a, var_names, options, cse_constants)?;
+    let cb = expr_to_rust_cse(arena, b, var_names, options, cse_constants)?;
+    Ok(rt_call(func, None, &[ca, cb], options))
+}
+
+/// Resolve a compile-time integer order/degree for Bessel functions and
+/// orthogonal polynomials.
+fn const_order(arena: &Arena, id: ExprId, what: &str) -> Result<i32, SymplexError> {
+    if let Some(r) = arena.as_num(id)
+        && r.is_integer()
+        && let Some(n) = r.numer().to_i32()
+    {
+        return Ok(n);
+    }
+    if let ExprNode::Neg(inner) = arena.node(id)
+        && let Some(r) = arena.as_num(*inner)
+        && r.is_integer()
+        && let Some(n) = r.numer().to_i32()
+    {
+        return Ok(-n);
+    }
+    Err(SymplexError::NotImplemented(format!(
+        "{what} requires a constant integer order/degree, got `{}`",
+        arena.display(id)
+    )))
+}
+
+/// Emit library `Apply` nodes (Bessel functions, orthogonal polynomials,
+/// integer sequences, factorial variants) through the shared runtime.
+fn emit_rt_apply(
+    arena: &Arena,
+    fname: &str,
+    args: &[ExprId],
+    var_names: &[&str],
+    options: &CodegenOptions,
+    cse_constants: &FxHashMap<usize, f64>,
+) -> Result<String, SymplexError> {
+    use crate::base::arena as names;
+    let arity_err = |n: usize| {
+        SymplexError::NotImplemented(format!(
+            "cannot generate code for `{fname}` with {} argument(s) (expected {n})",
+            args.len()
+        ))
+    };
+    let ordered = match fname {
+        n if n == names::FN_BESSELJ => Some("bessel_j"),
+        n if n == names::FN_BESSELY => Some("bessel_y"),
+        n if n == names::FN_BESSELI => Some("bessel_i"),
+        n if n == names::FN_BESSELK => Some("bessel_k"),
+        n if n == names::FN_LEGENDRE => Some("legendre_p"),
+        n if n == names::FN_CHEBYSHEV_T => Some("chebyshev_t"),
+        n if n == names::FN_CHEBYSHEV_U => Some("chebyshev_u"),
+        n if n == names::FN_HERMITE => Some("hermite_h"),
+        n if n == names::FN_LAGUERRE => Some("laguerre_l"),
+        _ => None,
+    };
+    if let Some(helper) = ordered {
+        if args.len() != 2 {
+            return Err(arity_err(2));
+        }
+        let order = const_order(arena, args[0], fname)?;
+        let x = expr_to_rust_cse(arena, args[1], var_names, options, cse_constants)?;
+        let call = rt_call(helper, Some(order), std::slice::from_ref(&x), options);
+        return Ok(wrap_domain_check(&call, &x, helper, options));
+    }
+    let unary = match fname {
+        n if n == names::FN_FIBONACCI => Some("fibonacci"),
+        n if n == names::FN_LUCAS => Some("lucas"),
+        n if n == names::FN_HARMONIC => Some("harmonic"),
+        n if n == names::FN_FACTORIAL2 => Some("factorial2"),
+        _ => None,
+    };
+    if let Some(helper) = unary {
+        if args.len() != 1 {
+            return Err(arity_err(1));
+        }
+        let x = expr_to_rust_cse(arena, args[0], var_names, options, cse_constants)?;
+        return Ok(rt_call(helper, None, &[x], options));
+    }
+    let binary = match fname {
+        n if n == names::FN_RISING_FACTORIAL => Some("rising_factorial"),
+        n if n == names::FN_FALLING_FACTORIAL => Some("falling_factorial"),
+        _ => None,
+    };
+    if let Some(helper) = binary {
+        if args.len() != 2 {
+            return Err(arity_err(2));
+        }
+        let a = expr_to_rust_cse(arena, args[0], var_names, options, cse_constants)?;
+        let b = expr_to_rust_cse(arena, args[1], var_names, options, cse_constants)?;
+        return Ok(rt_call(helper, None, &[a, b], options));
+    }
+    Err(SymplexError::NotImplemented(format!(
+        "cannot generate Rust code for user-defined Apply node `{fname}`"
+    )))
 }
 
 /// Emit a powi call.

@@ -826,7 +826,7 @@ fn latex_display_wrapping() {
 /// f.compile(&["x"])(val) should match f.subs_i64(x, val).eval_f64()
 fn check_compile_consistency(f: &Ex, x: &Ex, points: &[i64], tol: f64, label: &str) {
     let compiled = f.compile(&["x"]);
-    if compiled.is_none() {
+    if compiled.is_err() {
         // Some expressions can't be compiled (unevaluated, etc.)
         return;
     }
@@ -954,7 +954,7 @@ fn compile_consistency_two_vars() {
     let y = ctx.symbol("y");
     let f = &x.powi(2) + &y.powi(2);
     let compiled = f.compile(&["x", "y"]);
-    if let Some(compiled) = compiled {
+    if let Ok(compiled) = compiled {
         for &xv in &[-2.0, 0.0, 1.0, 3.0] {
             for &yv in &[-1.0, 0.0, 2.0, 4.0] {
                 let compiled_val = compiled(&[xv, yv]);
@@ -1063,7 +1063,7 @@ fn codegen_vs_compile_consistency() {
     let code_result = f.to_rust_fn("test_fn", &["x"]);
 
     // Both should succeed or both should fail
-    if let (Some(compiled), Ok(_code)) = (compiled, code_result) {
+    if let (Ok(compiled), Ok(_code)) = (compiled, code_result) {
         // Verify they agree on values
         for &pt in &[-3.0, -1.0, 0.0, 1.0, 2.5, 5.0] {
             let compiled_val = compiled(&[pt]);
@@ -1470,7 +1470,7 @@ fn compile_simplify_consistency() {
     let c_orig = e.compile(&["x"]);
     let c_simp = simplified.compile(&["x"]);
 
-    if let (Some(co), Some(cs)) = (c_orig, c_simp) {
+    if let (Ok(co), Ok(cs)) = (c_orig, c_simp) {
         for &pt in &[-3.0, -1.0, 0.0, 1.0, 2.5] {
             let vo = co(&[pt]);
             let vs = cs(&[pt]);
@@ -1751,7 +1751,7 @@ fn compile_constant_expression() {
     let pi = ctx.pi();
     let e = pi.powi(2);
     let compiled = e.compile(&[]);
-    if let Some(f) = compiled {
+    if let Ok(f) = compiled {
         let val = f(&[]);
         let expected = std::f64::consts::PI.powi(2);
         let diff = (val - expected).abs();
@@ -1767,7 +1767,7 @@ fn compile_eulers_number() {
     let e_const = ctx.e();
     let f = &x * &e_const;
     let compiled = f.compile(&["x"]);
-    if let Some(compiled) = compiled {
+    if let Ok(compiled) = compiled {
         let val = compiled(&[1.0]);
         let expected = std::f64::consts::E;
         let diff = (val - expected).abs();
@@ -1828,7 +1828,7 @@ fn compile_variable_ordering() {
     let c_xy = f.compile(&["x", "y"]);
     let c_yx = f.compile(&["y", "x"]);
 
-    if let (Some(fxy), Some(fyx)) = (c_xy, c_yx) {
+    if let (Ok(fxy), Ok(fyx)) = (c_xy, c_yx) {
         // fxy([2, 3]) should give 2 - 3 = -1
         assert!(
             (fxy(&[2.0, 3.0]) - (-1.0)).abs() < 1e-10,
@@ -1918,7 +1918,7 @@ fn codegen_for_derivative() {
 
     // Also verify compiled derivative matches
     let compiled = df.compile(&["x"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         for &pt in &[0.0, 1.0, 2.0, -1.0] {
             let cv = c(&[pt]);
             let ev = df.subs_i64(&x, pt as i64).eval_f64();
@@ -2072,7 +2072,7 @@ fn compile_zero_args_for_constant() {
     let ctx = Context::new();
     let c = ctx.int(42);
     let compiled = c.compile(&[]);
-    if let Some(f) = compiled {
+    if let Ok(f) = compiled {
         let val = f(&[]);
         assert!(
             (val - 42.0).abs() < 1e-10,
@@ -2433,7 +2433,7 @@ fn compile_vs_eval_pi_expression() {
     let x = ctx.symbol("x");
     let f = (&x * &ctx.pi()).sin();
     let compiled = f.compile(&["x"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         for &pt in &[0i64, 1, 2] {
             let cv = c(&[pt as f64]);
             let ev = f.subs_i64(&x, pt).eval_f64();
@@ -2458,7 +2458,7 @@ fn compile_original_vs_simplified() {
     let s = e.simplify();
     let c_orig = e.compile(&["x"]);
     let c_simp = s.compile(&["x"]);
-    if let (Some(co), Some(cs)) = (c_orig, c_simp) {
+    if let (Ok(co), Ok(cs)) = (c_orig, c_simp) {
         for &pt in &[1.0, 2.0, 3.0, 4.5] {
             let vo = co(&[pt]);
             let vs = cs(&[pt]);
@@ -2481,7 +2481,7 @@ fn compile_factored_vs_expanded() {
     let factored = expanded.factor(&x);
     let c_exp = expanded.compile(&["x"]);
     let c_fac = factored.compile(&["x"]);
-    if let (Some(ce), Some(cf)) = (c_exp, c_fac) {
+    if let (Ok(ce), Ok(cf)) = (c_exp, c_fac) {
         for &pt in &[-3.0, 0.0, 1.0, 2.0, 3.0, 5.0] {
             let ve = ce(&[pt]);
             let vf = cf(&[pt]);
@@ -2851,7 +2851,7 @@ fn compile_of_derivative() {
     let f = &x.powi(4) + &x.sin();
     let df = f.diff(&x); // 4x^3 + cos(x)
     let compiled = df.compile(&["x"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         for &pt in &[-2.0, -1.0, 0.0, 1.0, 2.0, 3.0] {
             let cv = c(&[pt]);
             let expected = 4.0 * pt.powi(3) + pt.cos();
@@ -2873,7 +2873,7 @@ fn compile_of_integral() {
     let anti = f.integrate(&x); // x^3/3
     if !anti.has_unevaluated() {
         let compiled = anti.compile(&["x"]);
-        if let Some(c) = compiled {
+        if let Ok(c) = compiled {
             for &pt in &[1.0, 2.0, 3.0, 4.0] {
                 let cv = c(&[pt]);
                 let expected = pt.powi(3) / 3.0;
@@ -3461,7 +3461,7 @@ fn compile_vs_eval_nested_functions() {
     // sin(exp(x)) + cos(ln(x+2))
     let f = &x.exp().sin() + &(&x + 2).ln().cos();
     let compiled = f.compile(&["x"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         for &pt in &[0i64, 1, 2, 3] {
             let cv = c(&[pt as f64]);
             let ev = f.subs_i64(&x, pt).eval_f64();
@@ -3493,7 +3493,7 @@ fn compile_rational_function() {
     let x = ctx.symbol("x");
     let f = &(&x.powi(2) + 1) / &(&x.powi(2) - 4);
     let compiled = f.compile(&["x"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         // Avoid x=±2 where denominator is 0
         for &pt in &[-3.0, -1.0, 0.0, 1.0, 3.0, 4.0] {
             let cv = c(&[pt]);
@@ -3816,7 +3816,7 @@ fn compile_after_full_simplify() {
     // Both should give the same numerical values
     let c_orig = e.compile(&["x"]);
     let c_simp = s.compile(&["x"]);
-    if let (Some(co), Some(cs)) = (c_orig, c_simp) {
+    if let (Ok(co), Ok(cs)) = (c_orig, c_simp) {
         for &pt in &[-2.0, -1.0, 0.0, 1.0, 2.0, 3.0] {
             let vo = co(&[pt]);
             let vs = cs(&[pt]);
@@ -3999,7 +3999,7 @@ fn compile_abs_times_sign() {
     let x = ctx.symbol("x");
     let f = &x.abs() * &x.sign();
     let compiled = f.compile(&["x"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         for &pt in &[-3.0, -1.0, 1.0, 2.0, 5.0] {
             let cv = c(&[pt]);
             // abs(x) * sign(x) = x
@@ -4416,7 +4416,7 @@ fn compile_sign() {
     let x = ctx.symbol("x");
     let f = x.sign();
     let compiled = f.compile(&["x"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         assert!((c(&[5.0]) - 1.0).abs() < 1e-10, "sign(5) should be 1");
         assert!((c(&[-3.0]) - (-1.0)).abs() < 1e-10, "sign(-3) should be -1");
     }
@@ -4429,7 +4429,7 @@ fn compile_floor() {
     let x = ctx.symbol("x");
     let f = x.floor();
     let compiled = f.compile(&["x"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         assert!((c(&[2.7]) - 2.0).abs() < 1e-10, "floor(2.7) should be 2");
         assert!(
             (c(&[-1.3]) - (-2.0)).abs() < 1e-10,
@@ -4445,7 +4445,7 @@ fn compile_ceiling() {
     let x = ctx.symbol("x");
     let f = x.ceiling();
     let compiled = f.compile(&["x"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         assert!((c(&[2.1]) - 3.0).abs() < 1e-10, "ceil(2.1) should be 3");
         assert!(
             (c(&[-1.7]) - (-1.0)).abs() < 1e-10,
@@ -4463,7 +4463,7 @@ fn compile_three_vars_symmetric() {
     let z = ctx.symbol("z");
     let f = &(&x * &y) + &(&y * &z) + &(&z * &x);
     let compiled = f.compile(&["x", "y", "z"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         let v = c(&[2.0, 3.0, 5.0]);
         let expected = 2.0 * 3.0 + 3.0 * 5.0 + 5.0 * 2.0; // 6+15+10=31
         assert!(
@@ -4745,7 +4745,7 @@ fn codegen_compile_agreement() {
 
     for (label, e) in &cases {
         let codegen_ok = e.to_rust_fn("test_fn", &["x"]).is_ok();
-        let compile_ok = e.compile(&["x"]).is_some();
+        let compile_ok = e.compile(&["x"]).is_ok();
         assert_eq!(
             codegen_ok, compile_ok,
             "{label}: codegen={codegen_ok}, compile={compile_ok} — should agree"
@@ -4850,7 +4850,7 @@ fn workflow_build_diff_simplify_compile_eval() {
     let df = f.diff(&x); // 3x² - 2
     let df_simplified = df.simplify();
     let compiled = df_simplified.compile(&["x"]);
-    if let Some(c) = compiled {
+    if let Ok(c) = compiled {
         for &pt in &[-2.0, -1.0, 0.0, 1.0, 2.0, 3.0] {
             let cv = c(&[pt]);
             let expected = 3.0 * pt.powi(2) - 2.0;
