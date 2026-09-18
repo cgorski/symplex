@@ -1176,12 +1176,62 @@ pub(crate) fn limit_at_infinity(arena: &mut Arena, f: ExprId, var: ExprId) -> Op
             return Some(eval::eval(arena, p));
         }
     }
-    if crate::calculus::convergence::growth_exponents(arena, f, var).and_then(|g| g.tends_to_zero())
+    // Growth analysis needs monomial factors: replace every polynomial
+    // factor `P(k)` (rational coefficients) by its leading term `lc·k^d`,
+    // which has the same asymptotic growth.
+    let dominant = dominant_factor_form(arena, f, var);
+    if crate::calculus::convergence::growth_exponents(arena, dominant, var)
+        .and_then(|g| g.tends_to_zero())
         == Some(true)
     {
         return Some(arena.zero);
     }
     None
+}
+
+/// Replace polynomial factors of `f` (with rational coefficients, degree
+/// ≥ 1) by their leading monomials.  Only the growth rate is preserved.
+fn dominant_factor_form(arena: &mut Arena, f: ExprId, var: ExprId) -> ExprId {
+    let factors = mul_factors(arena, f);
+    let mut out = Vec::with_capacity(factors.len());
+    let mut changed = false;
+    for g in factors {
+        let replaced = match arena.node(g).clone() {
+            ExprNode::Add(_) => polybridge::expr_to_poly(arena, g, var).and_then(|p| {
+                let d = p.degree()?;
+                let lc = p.leading_coeff()?.clone();
+                let ce = rat_expr(arena, lc);
+                let kd = pow_rat(arena, var, &rat_i(d as i64));
+                Some(arena.mul(&[ce, kd]))
+            }),
+            ExprNode::Pow(base, exp)
+                if matches!(arena.node(base), ExprNode::Add(_)) && !depends_on(arena, exp, var) =>
+            {
+                polybridge::expr_to_poly(arena, base, var).and_then(|p| {
+                    let d = p.degree()?;
+                    let lc = p.leading_coeff()?.clone();
+                    let ce = rat_expr(arena, lc);
+                    let kd = pow_rat(arena, var, &rat_i(d as i64));
+                    let mono = arena.mul(&[ce, kd]);
+                    Some(arena.pow(mono, exp))
+                })
+            }
+            _ => None,
+        };
+        match replaced {
+            Some(r) => {
+                changed = true;
+                out.push(r);
+            }
+            None => out.push(g),
+        }
+    }
+    if changed {
+        let p = mul_all(arena, &out);
+        eval::eval(arena, p)
+    } else {
+        f
+    }
 }
 
 /// `lim_{k→∞}` of a rational function with rational coefficients.
@@ -1537,6 +1587,127 @@ fn shape_polynomial(
 // Binomial sums
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Stirling numbers of the second kind `S(m, j)` for `0 ≤ j ≤ m`.
+fn stirling_second_row(m: usize) -> Vec<Rat> {
+    // S(0,0) = 1; S(m, j) = j·S(m−1, j) + S(m−1, j−1).
+    let mut row = vec![Rat::one()];
+    for _ in 0..m {
+        let mut next = vec![Rat::zero(); row.len() + 1];
+        for (j, s) in row.iter().enumerate() {
+            next[j] += rat_i(j as i64) * s;
+            next[j + 1] += s;
+        }
+        row = next;
+    }
+    row
+}
+
+/// `Σ_{k=0}^{n} P(k)·C(n,k)·x^k` for a polynomial `P` (symbolic `k`-free
+/// coefficients allowed) via the falling-factorial basis:
+/// `k^(j)·C(n,k) = n^(j)·C(n−j, k−j)`, so the sum is
+/// `Σ_j s_j·n^(j)·x^j·(1+x)^{n−j}` where `P(k) = Σ_j s_j·k^(j)`.
+fn binomial_poly_sum(
+    arena: &mut Arena,
+    body: ExprId,
+    var: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+) -> Option<ExprId> {
+    if as_i64(arena, lo) != Some(0) {
+        return None;
+    }
+    let mut consts = Vec::new();
+    let mut poly_factors = Vec::new();
+    let mut binomial_n: Option<ExprId> = None;
+    let mut x_parts = Vec::new();
+    for f in mul_factors(arena, body) {
+        if !depends_on(arena, f, var) {
+            consts.push(f);
+            continue;
+        }
+        match arena.node(f).clone() {
+            ExprNode::Binomial(n, kk) if kk == var && !depends_on(arena, n, var) => {
+                if binomial_n.is_some() {
+                    return None;
+                }
+                binomial_n = Some(n);
+            }
+            ExprNode::Pow(base, exp)
+                if !depends_on(arena, base, var) && depends_on(arena, exp, var) =>
+            {
+                let (a, b) = linear_in(arena, exp, var)?;
+                x_parts.push(pow_rat(arena, base, &a));
+                if !b.is_zero() {
+                    consts.push(pow_rat(arena, base, &b));
+                }
+            }
+            _ => {
+                sym_poly_in(arena, f, var)?;
+                poly_factors.push(f);
+            }
+        }
+    }
+    let n = binomial_n?;
+    if poly_factors.is_empty() {
+        return None; // the shape table handles the pure cases
+    }
+    let diff = arena.sub(hi, n);
+    let diff = eval::eval(arena, diff);
+    if !arena.is_zero_structural(diff) {
+        return None;
+    }
+    let p_expr = mul_all(arena, &poly_factors);
+    let monomials = sym_poly_in(arena, p_expr, var)?;
+    let deg = monomials.iter().map(|(d, _)| *d).max()?;
+    // x (the geometric base) and 1 + x.
+    let x = if x_parts.is_empty() {
+        arena.one
+    } else {
+        let xx = mul_all(arena, &x_parts);
+        eval::eval(arena, xx)
+    };
+    if as_rat(arena, x) == Some(-Rat::one()) {
+        return None; // (1+x)^{n−j} = 0^{n−j} needs a case split; leave to Gosper
+    }
+    let one = arena.one;
+    let one_plus_x = arena.add(&[one, x]);
+    let one_plus_x = eval::eval(arena, one_plus_x);
+    // Falling-factorial coefficients s_j = Σ_m c_m S(m, j).
+    let mut s: Vec<Vec<ExprId>> = vec![Vec::new(); deg + 1];
+    for (m, c) in &monomials {
+        let row = stirling_second_row(*m);
+        for (j, st) in row.iter().enumerate() {
+            if st.is_zero() {
+                continue;
+            }
+            let se = rat_expr(arena, st.clone());
+            s[j].push(arena.mul(&[se, *c]));
+        }
+    }
+    let mut terms = Vec::new();
+    let mut falling = arena.one; // n^(j)
+    for (j, parts) in s.iter().enumerate() {
+        if j > 0 {
+            let shift = arena.int(-(j as i64 - 1));
+            let factor = arena.add(&[n, shift]);
+            falling = arena.mul(&[falling, factor]);
+        }
+        if parts.is_empty() {
+            continue;
+        }
+        let sj = add_all(arena, parts);
+        let xj = pow_rat(arena, x, &rat_i(j as i64));
+        let nj = arena.int(-(j as i64));
+        let n_minus_j = arena.add(&[n, nj]);
+        let tail = arena.pow(one_plus_x, n_minus_j);
+        terms.push(arena.mul(&[sj, falling, xj, tail]));
+    }
+    let total = add_all(arena, &terms);
+    consts.push(total);
+    let result = mul_all(arena, &consts);
+    Some(eval::eval(arena, result))
+}
+
 fn binomial_sum(
     arena: &mut Arena,
     body: ExprId,
@@ -1544,6 +1715,9 @@ fn binomial_sum(
     lo: ExprId,
     hi: ExprId,
 ) -> Option<ExprId> {
+    if let Some(r) = binomial_poly_sum(arena, body, var, lo, hi) {
+        return Some(r);
+    }
     let shape = term_shape(arena, body, var)?;
     if shape.binomials.len() != 1 || !shape.facts.is_empty() {
         return None;

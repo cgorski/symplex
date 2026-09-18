@@ -207,7 +207,7 @@ fn geometric_symbolic_ratio_is_piecewise() {
 }
 
 #[test]
-fn infinite_geometric() {
+fn infinite_geometric_convergent() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let inf = ctx.infinity();
@@ -220,6 +220,34 @@ fn infinite_geometric() {
         half.pow(&k).summation(&k, &ctx.int(1), &inf).to_string(),
         "1"
     );
+    // Σ (2/3)^k = 3
+    assert_eq!(
+        ctx.rational(2, 3)
+            .pow(&k)
+            .summation(&k, &ctx.int(0), &inf)
+            .to_string(),
+        "3"
+    );
+    // Σ (−1/2)^k = 2/3
+    assert_eq!(
+        ctx.rational(-1, 2)
+            .pow(&k)
+            .summation(&k, &ctx.int(0), &inf)
+            .to_string(),
+        "2/3"
+    );
+    // Σ e^{-k} = 1/(1 − e^{-1})
+    let s = (-&k).exp().summation(&k, &ctx.int(0), &inf);
+    let v = s.eval_f64().unwrap();
+    assert!(approx(v, 1.0 / (1.0 - (-1f64).exp()), 1e-12), "{s} = {v}");
+}
+
+#[test]
+fn infinite_arithmetico_geometric() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let inf = ctx.infinity();
+    let half = ctx.rational(1, 2);
     // Σ k/2^k = 2, Σ k²/2^k = 6, Σ k³/2^k = 26
     assert_eq!(
         (&k * &half.pow(&k))
@@ -239,22 +267,20 @@ fn infinite_geometric() {
             .to_string(),
         "26"
     );
-    // Σ (2/3)^k = 3
+    // Σ k (1/3)^k = 3/4
     assert_eq!(
-        ctx.rational(2, 3)
-            .pow(&k)
+        (&k * &ctx.rational(1, 3).pow(&k))
             .summation(&k, &ctx.int(0), &inf)
             .to_string(),
-        "3"
+        "3/4"
     );
-    // Σ (−1/2)^k = 2/3
-    assert_eq!(
-        ctx.rational(-1, 2)
-            .pow(&k)
-            .summation(&k, &ctx.int(0), &inf)
-            .to_string(),
-        "2/3"
-    );
+}
+
+#[test]
+fn infinite_geometric_divergent_and_symbolic_ratio() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let inf = ctx.infinity();
     // Σ 2^k diverges → oo ; try_ → Divergent
     assert_eq!(
         ctx.int(2)
@@ -267,6 +293,11 @@ fn infinite_geometric() {
         ctx.int(2).pow(&k).try_summation(&k, &ctx.int(0), &inf),
         Err(SymplexError::Divergent { .. })
     ));
+    // |r| = 1 with r = −1: oscillating divergence
+    assert!(matches!(
+        ctx.int(-1).pow(&k).try_summation(&k, &ctx.int(0), &inf),
+        Err(SymplexError::Divergent { .. })
+    ));
     // Σ (−2)^k: oscillating divergence keeps the Sum node, try_ → Divergent
     let osc = ctx.int(-2).pow(&k).summation(&k, &ctx.int(0), &inf);
     assert!(osc.to_string().contains("Sum"), "{osc}");
@@ -274,15 +305,15 @@ fn infinite_geometric() {
         ctx.int(-2).pow(&k).try_summation(&k, &ctx.int(0), &inf),
         Err(SymplexError::Divergent { .. })
     ));
-    // Σ x^k with symbolic x: convergence unknown → unevaluated
+    // Σ x^k with symbolic x: convergence unknown (no |x| < 1 assumption
+    // vocabulary) → unevaluated rather than a conditional answer
     let x = ctx.symbol("x");
     let s = x.pow(&k).summation(&k, &ctx.int(0), &inf);
     assert!(s.has_unevaluated());
     assert!(x.pow(&k).try_summation(&k, &ctx.int(0), &inf).is_err());
-    // Σ e^{-k} = 1/(1 − e^{-1})
-    let s = (-&k).exp().summation(&k, &ctx.int(0), &inf);
-    let v = s.eval_f64().unwrap();
-    assert!(approx(v, 1.0 / (1.0 - (-1f64).exp()), 1e-12), "{s} = {v}");
+    // Even a positive symbol is not enough (x = 2 would diverge)
+    let p = ctx.symbol_with("p", &[Assumption::Positive]);
+    assert!(p.pow(&k).summation(&k, &ctx.int(0), &inf).has_unevaluated());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -494,12 +525,11 @@ fn catalan_constant_from_alternating_odd_squares() {
 }
 
 #[test]
-fn odd_and_alternating_constants() {
+fn odd_denominator_p_series() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let inf = ctx.infinity();
     let pi = std::f64::consts::PI;
-    let m1 = ctx.int(-1);
     // Σ_{k≥0} 1/(2k+1)² = π²/8
     let s = (&k * 2 + 1).powi(-2).summation(&k, &ctx.int(0), &inf);
     assert_eq!(s.to_string(), "1/8*pi^2");
@@ -509,21 +539,27 @@ fn odd_and_alternating_constants() {
         approx(s.eval_f64().unwrap(), pi.powi(4) / 96.0, 1e-12),
         "{s}"
     );
+    // Shifted start: Σ_{k≥1} 1/(2k+1)² = π²/8 − 1
+    let s = (&k * 2 + 1).powi(-2).summation(&k, &ctx.int(1), &inf);
+    assert!(
+        approx(s.eval_f64().unwrap(), pi * pi / 8.0 - 1.0, 1e-12),
+        "{s}"
+    );
+}
+
+#[test]
+fn alternating_p_series_constants() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let inf = ctx.infinity();
+    let pi = std::f64::consts::PI;
+    let m1 = ctx.int(-1);
     // Σ (−1)^(k+1)/k = ln 2
     let s = (m1.pow(&(&k + 1)) / &k).summation(&k, &ctx.int(1), &inf);
     assert_eq!(s.to_string(), "ln(2)");
     // Σ (−1)^k/k = −ln 2
     let s = (m1.pow(&k) / &k).summation(&k, &ctx.int(1), &inf);
     assert!(approx(s.eval_f64().unwrap(), -(2f64).ln(), 1e-12), "{s}");
-    // Σ (−1)^k/(2k+1) = π/4
-    let s = (m1.pow(&k) / (&k * 2 + 1)).summation(&k, &ctx.int(0), &inf);
-    assert_eq!(s.to_string(), "1/4*pi");
-    // Σ (−1)^k/(2k+1)³ = π³/32
-    let s = (m1.pow(&k) / (&k * 2 + 1).powi(3)).summation(&k, &ctx.int(0), &inf);
-    assert!(
-        approx(s.eval_f64().unwrap(), pi.powi(3) / 32.0, 1e-12),
-        "{s}"
-    );
     // Σ (−1)^(k+1)/k² = π²/12
     let s = (m1.pow(&(&k + 1)) * k.powi(-2)).summation(&k, &ctx.int(1), &inf);
     assert_eq!(s.to_string(), "1/12*pi^2");
@@ -539,11 +575,30 @@ fn odd_and_alternating_constants() {
         approx(s.eval_f64().unwrap(), 1.0 - (2f64).ln(), 1e-12),
         "{s}"
     );
-    // Alternating with |terms| not → 0 is divergent
-    assert!(matches!(
-        m1.pow(&k).try_summation(&k, &ctx.int(0), &inf),
-        Err(SymplexError::Divergent { .. })
-    ));
+}
+
+#[test]
+fn alternating_odd_denominator_constants() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let inf = ctx.infinity();
+    let pi = std::f64::consts::PI;
+    let m1 = ctx.int(-1);
+    // Σ (−1)^k/(2k+1) = π/4
+    let s = (m1.pow(&k) / (&k * 2 + 1)).summation(&k, &ctx.int(0), &inf);
+    assert_eq!(s.to_string(), "1/4*pi");
+    // Shifted start: Σ_{k≥1} (−1)^k/(2k+1) = π/4 − 1
+    let s = (m1.pow(&k) / (&k * 2 + 1)).summation(&k, &ctx.int(1), &inf);
+    assert!(approx(s.eval_f64().unwrap(), pi / 4.0 - 1.0, 1e-12), "{s}");
+    // Σ (−1)^k/(2k+1)³ = π³/32
+    let s = (m1.pow(&k) / (&k * 2 + 1).powi(3)).summation(&k, &ctx.int(0), &inf);
+    assert!(
+        approx(s.eval_f64().unwrap(), pi.powi(3) / 32.0, 1e-12),
+        "{s}"
+    );
+    // Σ_{k≥1} (−1)^(k+1)/(2k−1) = π/4  (β = −1/2, so the (−1)^n sign factor matters)
+    let s = (m1.pow(&(&k + 1)) / (&k * 2 - 1)).summation(&k, &ctx.int(1), &inf);
+    assert!(approx(s.eval_f64().unwrap(), pi / 4.0, 1e-12), "{s}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -606,58 +661,160 @@ fn binomial_identities() {
     }
 }
 
+#[test]
+fn binomial_polynomial_weights() {
+    // Σ P(k) C(n,k) x^k for arbitrary polynomials P via the falling-factorial basis.
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let n = ctx.symbol("n");
+    let x = ctx.symbol("x");
+    let zero = ctx.int(0);
+    let c = n.binomial(&k);
+    let check = |body: &Ex, closed: &Ex| {
+        assert!(!closed.has_unevaluated(), "{body} → {closed}");
+        for nv in [0i64, 1, 2, 3, 6, 9] {
+            for xv in [1i64, 2, -3] {
+                let b = body.subs_i64(&n, nv).subs_i64(&x, xv);
+                let expected = brute_sum(&b, &k, 0, nv);
+                let got = closed.subs_i64(&n, nv).subs_i64(&x, xv).eval();
+                assert_eq!(
+                    got.to_string(),
+                    expected.to_string(),
+                    "{body} at n={nv}, x={xv}: {closed}"
+                );
+            }
+        }
+    };
+    // Σ k(k−1) C(n,k) = n(n−1) 2^(n−2)
+    let body = &(&k * &(&k - 1)) * &c;
+    let s = body.summation(&k, &zero, &n);
+    assert_eq!(s.to_string(), "n*2^(n - 2)*(n - 1)");
+    check(&body, &s);
+    // Σ k³ C(n,k) = n²(n+3) 2^(n−3)
+    let body = &k.powi(3) * &c;
+    check(&body, &body.summation(&k, &zero, &n));
+    // Σ (k² + 1) C(n,k) x^k
+    let body = &(&k.powi(2) + 1) * &c * &x.pow(&k);
+    check(&body, &body.summation(&k, &zero, &n));
+    // Σ (2k − n)² C(n,k) = n 2^n   (variance of the binomial distribution)
+    let body = &(&k * 2 - &n).powi(2) * &c;
+    let s = body.summation(&k, &zero, &n);
+    check(&body, &s);
+    assert_eq!(s.subs_i64(&n, 10).eval().to_string(), "10240");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Power series recognition
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Compare `Σ body` (from `lo` to ∞) with `expected` numerically at `x = 7/10`.
+fn check_power_series(body: &Ex, k: &Ex, lo: i64, x: &Ex, expected: &Ex) {
+    let ctx = body.context();
+    let s = body.summation(k, &ctx.int(lo), &ctx.infinity());
+    assert!(!s.has_unevaluated(), "Σ {body} → {s}");
+    let sv = s.subs(x, &ctx.rational(7, 10)).eval_f64().unwrap();
+    let ev = expected.subs(x, &ctx.rational(7, 10)).eval_f64().unwrap();
+    assert!(
+        approx(sv, ev, 1e-10),
+        "Σ {body} = {s}, expected {expected}: {sv} vs {ev}"
+    );
+}
+
 #[test]
-fn power_series_recognition() {
+fn power_series_exponential_family() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let x = ctx.symbol("x");
-    let inf = ctx.infinity();
-    let zero = ctx.int(0);
+    let kf = k.factorial();
+    let two_k = &k * 2;
+    let two_k1 = &k * 2 + 1;
+    let m1 = ctx.int(-1);
+    assert_eq!(
+        (x.pow(&k) / &kf)
+            .summation(&k, &ctx.int(0), &ctx.infinity())
+            .to_string(),
+        "exp(x)"
+    );
+    check_power_series(&(x.pow(&two_k1) / two_k1.factorial()), &k, 0, &x, &x.sinh());
+    check_power_series(&(x.pow(&two_k) / two_k.factorial()), &k, 0, &x, &x.cosh());
+    check_power_series(&(&k * &x.pow(&k) / &kf), &k, 0, &x, &(&x * &x.exp()));
+    check_power_series(&((&x * 2).pow(&k) / &kf), &k, 0, &x, &(&x * 2).exp());
+    check_power_series(
+        &(m1.pow(&k) * x.pow(&two_k) / kf.clone()),
+        &k,
+        0,
+        &x,
+        &(-&x.powi(2)).exp(),
+    );
+    // Numeric arguments: Σ 1/k! = e, Σ 1/(2k)! = cosh 1
     let one = ctx.int(1);
+    assert_eq!(
+        (&one / &kf)
+            .summation(&k, &ctx.int(0), &ctx.infinity())
+            .to_string(),
+        "E"
+    );
+    let s = (&one / &two_k.factorial()).summation(&k, &ctx.int(0), &ctx.infinity());
+    assert!(approx(s.eval_f64().unwrap(), 1f64.cosh(), 1e-12), "{s}");
+}
+
+#[test]
+fn power_series_trigonometric_and_bessel() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let x = ctx.symbol("x");
+    let zero = ctx.int(0);
+    let inf = ctx.infinity();
     let m1 = ctx.int(-1);
     let kf = k.factorial();
     let two_k = &k * 2;
     let two_k1 = &k * 2 + 1;
-    let cases: [(Ex, i64, Ex); 9] = [
-        (x.pow(&k) / &kf, 0, x.exp()),
-        (m1.pow(&k) * x.pow(&two_k1) / two_k1.factorial(), 0, x.sin()),
-        (m1.pow(&k) * x.pow(&two_k) / two_k.factorial(), 0, x.cos()),
-        (x.pow(&two_k1) / two_k1.factorial(), 0, x.sinh()),
-        (x.pow(&two_k) / two_k.factorial(), 0, x.cosh()),
-        (&k * &x.pow(&k) / &kf, 0, &x * &x.exp()),
-        (
-            m1.pow(&k) * x.pow(&two_k) / (ctx.int(4).pow(&k) * kf.powi(2)),
-            0,
-            x.bessel_j(&zero),
-        ),
-        ((&x * 2).pow(&k) / &kf, 0, (&x * 2).exp()),
-        (
-            m1.pow(&k) * x.pow(&two_k) / kf.clone(),
-            0,
-            (-&x.powi(2)).exp(),
-        ),
-    ];
+    check_power_series(
+        &(m1.pow(&k) * x.pow(&two_k1) / two_k1.factorial()),
+        &k,
+        0,
+        &x,
+        &x.sin(),
+    );
+    check_power_series(
+        &(m1.pow(&k) * x.pow(&two_k) / two_k.factorial()),
+        &k,
+        0,
+        &x,
+        &x.cos(),
+    );
+    // J₀(x) = Σ (−1)^k (x/2)^(2k) / k!²
+    check_power_series(
+        &(m1.pow(&k) * x.pow(&two_k) / (ctx.int(4).pow(&k) * kf.powi(2))),
+        &k,
+        0,
+        &x,
+        &x.bessel_j(&zero),
+    );
     // I₀ has no numeric evaluator yet: check the symbolic result only.
     let i0 = (x.pow(&two_k) / (ctx.int(4).pow(&k) * kf.powi(2))).summation(&k, &zero, &inf);
     assert_eq!(i0.to_string(), x.bessel_i(&zero).to_string());
-    for (body, lo, expected) in cases {
-        let s = body.summation(&k, &ctx.int(lo), &inf);
-        assert!(!s.has_unevaluated(), "Σ {body} → {s}");
-        // compare numerically at x = 0.7
-        let sv = s.subs(&x, &ctx.rational(7, 10)).eval_f64().unwrap();
-        let ev = expected.subs(&x, &ctx.rational(7, 10)).eval_f64().unwrap();
-        assert!(
-            approx(sv, ev, 1e-10),
-            "Σ {body} = {s}, expected {expected}: {sv} vs {ev}"
-        );
-    }
-    // Restricted-domain entries need a numeric argument (symbolic x → unevaluated):
-    // atan(1/2), atanh(1/2), asin(1/2) = π/6, atan(1) = π/4
+    // Σ (−1)^k/(2k+1)! = sin 1
+    let s = (m1.pow(&k) / &two_k1.factorial()).summation(&k, &zero, &inf);
+    assert!(approx(s.eval_f64().unwrap(), 1f64.sin(), 1e-12), "{s}");
+}
+
+#[test]
+fn power_series_restricted_domain_needs_numeric_argument() {
+    // atan / atanh / asin / ln(1−x) entries converge only for |x| ≤ 1, so a
+    // symbolic x stays unevaluated while a numeric x inside the disc evaluates.
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let x = ctx.symbol("x");
+    let zero = ctx.int(0);
+    let one = ctx.int(1);
+    let inf = ctx.infinity();
+    let m1 = ctx.int(-1);
+    let kf = k.factorial();
+    let two_k = &k * 2;
+    let two_k1 = &k * 2 + 1;
     let h = ctx.rational(1, 2);
+    // atan(1/2), atanh(1/2), asin(1/2) = π/6
     let s = (m1.pow(&k) * h.pow(&two_k1) / &two_k1).summation(&k, &zero, &inf);
     assert!(approx(s.eval_f64().unwrap(), 0.5f64.atan(), 1e-12), "{s}");
     let s = (h.pow(&two_k1) / &two_k1).summation(&k, &zero, &inf);
@@ -691,16 +848,22 @@ fn power_series_recognition() {
     ));
     // Symbolic x with a restricted domain stays unevaluated
     assert!((x.pow(&k) / &k).summation(&k, &one, &inf).has_unevaluated());
+}
+
+#[test]
+fn power_series_skipped_leading_terms_and_erf() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let x = ctx.symbol("x");
+    let zero = ctx.int(0);
+    let inf = ctx.infinity();
+    let m1 = ctx.int(-1);
+    let kf = k.factorial();
+    let two_k1 = &k * 2 + 1;
     // Skipped leading terms: Σ_{k≥2} x^k/k! = e^x − 1 − x
     let s = (x.pow(&k) / &kf).summation(&k, &ctx.int(2), &inf);
     let sv = s.subs(&x, &ctx.rational(1, 2)).eval_f64().unwrap();
     assert!(approx(sv, 0.5f64.exp() - 1.5, 1e-12), "{s}");
-    // Σ 1/k! = e, Σ 1/(2k)! = cosh 1, Σ (−1)^k/(2k+1)! = sin 1
-    assert_eq!((&one / &kf).summation(&k, &zero, &inf).to_string(), "E");
-    let s = (&one / &two_k.factorial()).summation(&k, &zero, &inf);
-    assert!(approx(s.eval_f64().unwrap(), 1f64.cosh(), 1e-12), "{s}");
-    let s = (m1.pow(&k) / &two_k1.factorial()).summation(&k, &zero, &inf);
-    assert!(approx(s.eval_f64().unwrap(), 1f64.sin(), 1e-12), "{s}");
     // Σ (−1)^k/(k!(2k+1)) = (√π/2) erf(1)
     let s = (m1.pow(&k) / (&kf * &two_k1)).summation(&k, &zero, &inf);
     assert!(!s.has_unevaluated(), "{s}");
@@ -737,6 +900,28 @@ fn gosper_summable_terms() {
     // Infinite Gosper-summable: Σ_{k≥1} k/(k+1)! = 1
     let s = body.summation(&k, &ctx.int(1), &ctx.infinity());
     assert_eq!(s.to_string(), "1");
+}
+
+#[test]
+fn gosper_infinite_with_factorial_ratio_tail() {
+    // Σ_{k≥0} k³·k!/(k+5)! — Gosper finds g(N) = P(N)·(N+1)!/(N+6)! + 25/288
+    // and the tail P(N)·(N+1)!/(N+6)! → 0 (degree 4 over degree 5).
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let n = ctx.symbol("n");
+    let body = &k.factorial() * &k.powi(3) / (&k + 5).factorial();
+    let s = body.summation(&k, &ctx.int(0), &n);
+    check_closed_sum(&body, &k, &n, 0, &s, &[0, 1, 2, 5, 8]);
+    let s = body.summation(&k, &ctx.int(0), &ctx.infinity());
+    assert_eq!(s.to_string(), "25/288");
+    // Partial sums in floating point: k³/((k+1)(k+2)(k+3)(k+4)(k+5)), tail ~ 1/N.
+    let partial: f64 = (0..200_000u64)
+        .map(|k| {
+            let k = k as f64;
+            k.powi(3) / ((k + 1.0) * (k + 2.0) * (k + 3.0) * (k + 4.0) * (k + 5.0))
+        })
+        .sum();
+    assert!(approx(partial, 25.0 / 288.0, 1e-4), "partial {partial}");
 }
 
 #[test]
@@ -826,7 +1011,7 @@ fn eval_path_uses_the_engine() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn products_closed_forms() {
+fn products_factorial_and_power_forms() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let n = ctx.symbol("n");
@@ -835,8 +1020,37 @@ fn products_closed_forms() {
     assert_eq!(k.product_over(&k, &one, &n).to_string(), "n!");
     assert_eq!(ctx.int(3).product_over(&k, &one, &n).to_string(), "3^n");
     assert_eq!(k.powi(2).product_over(&k, &one, &n).to_string(), "n!^2");
+    // Π 2k = 2^n n!
     let p = (&k * 2).product_over(&k, &one, &n);
+    assert_eq!(p.to_string(), "2^n*n!");
     check_closed_prod(&(&k * 2), &k, &n, 1, &p, &[1, 2, 5]);
+    // Π (2k − 1) = (2n)!/(2^n n!)
+    let body = &k * 2 - 1;
+    let p = body.product_over(&k, &one, &n);
+    assert_eq!(p.to_string(), "2^(-n)*(2*n)!/n!");
+    check_closed_prod(&body, &k, &n, 1, &p, &[1, 2, 4, 6]);
+    // Π a^k = a^(n(n+1)/2);  Π e^k = e^(n(n+1)/2);  Π 2^(k²) = 2^(Σ k²)
+    let p = a.pow(&k).product_over(&k, &one, &n);
+    assert_eq!(p.subs_i64(&n, 4).eval().to_string(), "a^10");
+    let p = k.exp().product_over(&k, &one, &n);
+    assert_eq!(p.subs_i64(&n, 4).eval().to_string(), "exp(10)");
+    let p = ctx.int(2).pow(&k.powi(2)).product_over(&k, &one, &n);
+    assert_eq!(p.subs_i64(&n, 3).eval().to_string(), "16384");
+    // Split Π f·g:  Π k·2^k = n!·2^(n(n+1)/2)
+    let body = &k * &ctx.int(2).pow(&k);
+    let p = body.product_over(&k, &one, &n);
+    check_closed_prod(&body, &k, &n, 1, &p, &[1, 2, 4]);
+    let body = &k.powi(2) * &(&k + 1);
+    let p = body.product_over(&k, &one, &n);
+    check_closed_prod(&body, &k, &n, 1, &p, &[1, 2, 4]);
+}
+
+#[test]
+fn products_rational_telescoping() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let n = ctx.symbol("n");
+    let one = ctx.int(1);
     assert_eq!(
         (&one + &k.powi(-1)).product_over(&k, &one, &n).to_string(),
         "n + 1"
@@ -849,23 +1063,6 @@ fn products_closed_forms() {
             .to_string(),
         "1/2"
     );
-    let body = &k * 2 - 1;
-    let p = body.product_over(&k, &one, &n);
-    assert_eq!(p.to_string(), "2^(-n)*(2*n)!/n!");
-    check_closed_prod(&body, &k, &n, 1, &p, &[1, 2, 4, 6]);
-    // Π (k + a) = Γ(n + a + 1)/Γ(a + 1)
-    let p = (&k + &a).product_over(&k, &one, &n);
-    assert_eq!(p.to_string(), "(a + n)!/a!");
-    for (nv, av) in [(3i64, 2i64), (5, 1), (4, 7)] {
-        let expected = brute_prod(&(&k + &a).subs_i64(&a, av), &k, 1, nv);
-        let got = p.subs_i64(&n, nv).subs_i64(&a, av).eval();
-        assert_eq!(got.to_string(), expected.to_string(), "{p}");
-    }
-    // Π a^k = a^(n(n+1)/2);  Π e^k = e^(n(n+1)/2)
-    let p = a.pow(&k).product_over(&k, &one, &n);
-    assert_eq!(p.subs_i64(&n, 4).eval().to_string(), "a^10");
-    let p = k.exp().product_over(&k, &one, &n);
-    assert_eq!(p.subs_i64(&n, 4).eval().to_string(), "exp(10)");
     // Π (k+1)/k telescopes to n + 1 as a rational function product
     let body = &(&k + 1) / &k;
     assert_eq!(body.product_over(&k, &one, &n).to_string(), "n + 1");
@@ -877,6 +1074,31 @@ fn products_closed_forms() {
         body.product_over(&k, &one, &ctx.infinity()).to_string(),
         "0"
     );
+}
+
+#[test]
+fn products_symbolic_shift_gamma_ratio() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let n = ctx.symbol("n");
+    let a = ctx.symbol("a");
+    let one = ctx.int(1);
+    // Π_{k=1}^{n} (k + a) = Γ(n + a + 1)/Γ(a + 1) = (a + n)!/a!
+    let p = (&k + &a).product_over(&k, &one, &n);
+    assert_eq!(p.to_string(), "(a + n)!/a!");
+    for (nv, av) in [(3i64, 2i64), (5, 1), (4, 7)] {
+        let expected = brute_prod(&(&k + &a).subs_i64(&a, av), &k, 1, nv);
+        let got = p.subs_i64(&n, nv).subs_i64(&a, av).eval();
+        assert_eq!(got.to_string(), expected.to_string(), "{p}");
+    }
+    // Π_{k=0}^{n} (k + a) = Γ(a + n + 1)/Γ(a)  (rising factorial a^(n+1))
+    let p = (&k + &a).product_over(&k, &ctx.int(0), &n);
+    assert_eq!(p.to_string(), "(a + n)!/Gamma(a)");
+    for (nv, av) in [(2i64, 3i64), (4, 1)] {
+        let expected = brute_prod(&(&k + &a).subs_i64(&a, av), &k, 0, nv);
+        let got = p.subs_i64(&n, nv).subs_i64(&a, av).eval();
+        assert_eq!(got.to_string(), expected.to_string(), "{p}");
+    }
 }
 
 #[test]

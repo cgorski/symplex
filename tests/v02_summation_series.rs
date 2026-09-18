@@ -255,12 +255,11 @@ fn fps_coefficients_general_terms_and_truncation() {
 }
 
 #[test]
-fn fps_arithmetic_identities() {
+fn fps_mul_and_inverse_identities() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let s = x.sin().fps_maclaurin(&x);
     let c = x.cos().fps_maclaurin(&x);
-    let e = x.exp().fps_maclaurin(&x);
     // sin·cos = sin(2x)/2
     let sc = s.mul(&c).unwrap();
     let half_sin2x = (&x * 2).sin().fps_maclaurin(&x).scale(&ctx.rational(1, 2));
@@ -280,17 +279,32 @@ fn fps_arithmetic_identities() {
     // sec x = 1 + x²/2 + 5x⁴/24 + 61x⁶/720
     let sec = c.inverse().unwrap();
     assert_eq!(sec.coefficient_rational(6), Some(rat(61, 720)));
-    // tan = sin · sec ; reversion(tan) = atan
+    // tan = sin · sec
     let tan = s.mul(&sec).unwrap();
     assert_eq!(tan.coefficient_rational(5), Some(rat(2, 15)));
+    assert_eq!(
+        tan.coefficient_rational(7),
+        x.tan().fps_maclaurin(&x).coefficient_rational(7)
+    );
+}
+
+#[test]
+fn fps_reversion_lagrange_inversion() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let s = x.sin().fps_maclaurin(&x);
+    let e = x.exp().fps_maclaurin(&x);
+    // reversion(tan) = atan
+    let tan = x.tan().fps_maclaurin(&x);
     let atan = tan.reversion().unwrap();
     assert_eq!(
         atan.truncate(8).to_string(),
         "-1/7*x^7 + 1/5*x^5 - 1/3*x^3 + x"
     );
-    // reversion(sin) = asin ; reversion(e^x − 1) = ln(1 + x)
+    // reversion(sin) = asin
     let asin = s.reversion().unwrap();
     assert_eq!(asin.coefficient_rational(5), Some(rat(3, 40)));
+    // reversion(e^x − 1) = ln(1 + x)
     let em1 = e
         .sub(&FormalPowerSeries::from_coefficients(
             &x,
@@ -303,11 +317,30 @@ fn fps_arithmetic_identities() {
         ln1p.truncate(5).to_string(),
         "-1/4*x^4 + 1/3*x^3 - 1/2*x^2 + x"
     );
+    // reversion needs f(0) = 0 and f'(0) ≠ 0
+    assert!(x.cos().fps_maclaurin(&x).reversion().is_err());
+    assert!(x.powi(2).fps_maclaurin(&x).reversion().is_err());
+}
+
+#[test]
+fn fps_compose_derivative_integral_and_preconditions() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let s = x.sin().fps_maclaurin(&x);
+    let c = x.cos().fps_maclaurin(&x);
+    let e = x.exp().fps_maclaurin(&x);
     // compose: cos(sin x)
     let cs = c.compose(&s).unwrap();
     check_series(&x.sin().cos(), &cs.truncate(8), &x, (1, 5), 1e-6);
+    // exp(sin x) via compose equals the engine's expansion
+    let es = e.compose(&s).unwrap();
+    assert_eq!(
+        es.truncate(6).to_string(),
+        x.sin().exp().maclaurin(&x, 6).to_string()
+    );
     // integral of 1/(1+x) = ln(1+x)
     let inv = (&ctx.int(1) + &x).powi(-1).fps_maclaurin(&x).integral();
+    let ln1p = (&ctx.int(1) + &x).ln().fps_maclaurin(&x);
     for k in 0..8 {
         assert_eq!(
             inv.coefficient_rational(k),
@@ -321,11 +354,17 @@ fn fps_arithmetic_identities() {
         assert_eq!(de.coefficient_rational(k), e.coefficient_rational(k));
     }
     // preconditions
-    assert!(s.inverse().is_err());
-    assert!(c.reversion().is_err());
-    assert!(e.compose(&c).is_err());
+    assert!(s.inverse().is_err(), "1/sin x has a pole");
+    assert!(
+        e.compose(&c).is_err(),
+        "inner series must vanish at the point"
+    );
     let y = ctx.symbol("y");
     assert!(s.add(&y.sin().fps_maclaurin(&y)).is_err());
+    assert!(
+        s.add(&x.sin().fps(&x, &ctx.int(1))).is_err(),
+        "different expansion points"
+    );
 }
 
 #[test]
@@ -351,58 +390,113 @@ fn fps_about_nonzero_point_and_laurent() {
 // Convergence
 // ═══════════════════════════════════════════════════════════════════════════
 
+fn check_convergence(cases: &[(Ex, Option<bool>, &str)], k: &Ex) {
+    for (body, expected, label) in cases {
+        let start = std::time::Instant::now();
+        assert_eq!(body.is_convergent(k), *expected, "Σ {label}  ({body})");
+        assert!(
+            start.elapsed().as_secs_f64() < 2.0,
+            "Σ {label}: convergence test too slow"
+        );
+    }
+}
+
 #[test]
-fn convergence_tests_are_decisive_when_they_should_be() {
+fn convergence_p_series_and_rational_terms() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
     let one = ctx.int(1);
+    check_convergence(
+        &[
+            (k.powi(-2), Some(true), "1/k²"),
+            (k.powi(-1), Some(false), "1/k"),
+            (k.pow(&ctx.rational(-1, 2)), Some(false), "1/√k"),
+            (k.pow(&ctx.rational(-3, 2)), Some(true), "1/k^(3/2)"),
+            (&k / &(&k + 1), Some(false), "k/(k+1)"),
+            (k.powi(-1) - (&k + 1).powi(-1), Some(true), "1/k − 1/(k+1)"),
+            (&one / &(&k.powi(2) + 1), Some(true), "1/(k²+1)"),
+            (&k / &(&k.powi(2) + 1), Some(false), "k/(k²+1)"),
+            (ctx.int(1).pow(&k), Some(false), "1^k"),
+        ],
+        &k,
+    );
+}
+
+#[test]
+fn convergence_factorial_and_geometric_terms() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    check_convergence(
+        &[
+            (&k.factorial() / &k.pow(&k), Some(true), "k!/k^k"),
+            (&ctx.int(2).pow(&k) / &k.factorial(), Some(true), "2^k/k!"),
+            (&k.powi(10) / &ctx.int(2).pow(&k), Some(true), "k^10/2^k"),
+            (
+                &k.factorial() / &ctx.int(10).pow(&k),
+                Some(false),
+                "k!/10^k",
+            ),
+            (
+                &(&k * 2).factorial() / &(&k.factorial().powi(2) * &ctx.int(4).pow(&k)),
+                Some(false),
+                "C(2k,k)/4^k",
+            ),
+            (
+                &(&k * 2).factorial() / &(&k.factorial().powi(2) * &ctx.int(5).pow(&k)),
+                Some(true),
+                "C(2k,k)/5^k",
+            ),
+            (
+                ctx.rational(1, 2).pow(&k) * &k.powi(3),
+                Some(true),
+                "k³/2^k",
+            ),
+            (k.pow(&k) / k.factorial(), Some(false), "k^k/k!"),
+            (k.pow(&k) / (&k * 3).factorial(), Some(true), "k^k/(3k)!"),
+            (ctx.e().pow(&k) / &k.factorial(), Some(true), "e^k/k!"),
+            (ctx.pi().pow(&(-&k)), Some(true), "π^{-k}"),
+            ((-&k).exp(), Some(true), "e^{-k}"),
+        ],
+        &k,
+    );
+}
+
+#[test]
+fn convergence_alternating_and_bounded_factors() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
     let m1 = ctx.int(-1);
-    let cases: Vec<(Ex, Option<bool>, &str)> = vec![
-        (k.powi(-2), Some(true), "1/k²"),
-        (k.powi(-1), Some(false), "1/k"),
-        (&one / &(&k * &k.ln().powi(2)), Some(true), "1/(k ln² k)"),
-        (&one / &(&k * &k.ln()), Some(false), "1/(k ln k)"),
-        (m1.pow(&k) / &k, Some(true), "(−1)^k/k"),
-        (&k.factorial() / &k.pow(&k), Some(true), "k!/k^k"),
-        (&ctx.int(2).pow(&k) / &k.factorial(), Some(true), "2^k/k!"),
-        (&k / &(&k + 1), Some(false), "k/(k+1)"),
-        (k.pow(&ctx.rational(-1, 2)), Some(false), "1/√k"),
-        (&k.powi(10) / &ctx.int(2).pow(&k), Some(true), "k^10/2^k"),
-        (
-            &k.factorial() / &ctx.int(10).pow(&k),
-            Some(false),
-            "k!/10^k",
-        ),
-        (
-            &(&k * 2).factorial() / &(&k.factorial().powi(2) * &ctx.int(4).pow(&k)),
-            Some(false),
-            "C(2k,k)/4^k",
-        ),
-        (
-            &(&k * 2).factorial() / &(&k.factorial().powi(2) * &ctx.int(5).pow(&k)),
-            Some(true),
-            "C(2k,k)/5^k",
-        ),
-        (&k.sin() / &k.powi(2), Some(true), "sin k/k²"),
-        (&k.sin() / &k, None, "sin k/k"),
-        (k.powi(-1) - (&k + 1).powi(-1), Some(true), "1/k − 1/(k+1)"),
-        (&one / &(&k.powi(2) + 1), Some(true), "1/(k²+1)"),
-        (&k / &(&k.powi(2) + 1), Some(false), "k/(k²+1)"),
-        (
-            ctx.rational(1, 2).pow(&k) * &k.powi(3),
-            Some(true),
-            "k³/2^k",
-        ),
-        (k.pow(&k) / k.factorial(), Some(false), "k^k/k!"),
-        (k.pow(&k) / (&k * 3).factorial(), Some(true), "k^k/(3k)!"),
-        (ctx.e().pow(&k) / &k.factorial(), Some(true), "e^k/k!"),
-        (ctx.pi().pow(&(-&k)), Some(true), "π^{-k}"),
-        (ctx.int(1).pow(&k), Some(false), "1^k"),
-    ];
-    for (body, expected, label) in cases {
-        assert_eq!(body.is_convergent(&k), expected, "Σ {label}  ({body})");
-    }
-    // absolute convergence
+    check_convergence(
+        &[
+            (m1.pow(&k) / &k, Some(true), "(−1)^k/k"),
+            (m1.pow(&k) / k.sqrt(), Some(true), "(−1)^k/√k"),
+            (&k.sin() / &k.powi(2), Some(true), "sin k/k²"),
+            (&k.sin() / &k, None, "sin k/k"),
+        ],
+        &k,
+    );
+}
+
+#[test]
+fn convergence_log_terms_via_integral_test() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let one = ctx.int(1);
+    check_convergence(
+        &[
+            (&one / &(&k * &k.ln().powi(2)), Some(true), "1/(k ln² k)"),
+            (&one / &(&k * &k.ln()), Some(false), "1/(k ln k)"),
+            (&k.ln() / &k.powi(2), Some(true), "ln k/k²"),
+        ],
+        &k,
+    );
+}
+
+#[test]
+fn absolute_convergence_and_symbolic_parameters() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let m1 = ctx.int(-1);
     let alt = m1.pow(&k) / &k;
     assert_eq!(alt.is_absolutely_convergent(&k), Some(false));
     let alt2 = m1.pow(&k) / &k.powi(2);
@@ -411,10 +505,16 @@ fn convergence_tests_are_decisive_when_they_should_be() {
         (&k.sin() / &k.powi(2)).is_absolutely_convergent(&k),
         Some(true)
     );
+    assert_eq!(
+        (m1.pow(&k) / k.sqrt()).is_absolutely_convergent(&k),
+        Some(false)
+    );
     // symbolic parameter: decided when the factorial dominates, otherwise unknown
     let x = ctx.symbol("x");
     assert_eq!((x.pow(&k) / k.factorial()).is_convergent(&k), Some(true));
     assert_eq!(x.pow(&k).is_convergent(&k), None);
+    // the summation index must be a symbol
+    assert_eq!(k.powi(-2).is_convergent(&ctx.int(2)), None);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
