@@ -163,10 +163,112 @@ fn n_pow(n: &Ex, j: usize) -> Ex {
     }
 }
 
+/// Node budget for the closed form (before and after fitting the initial
+/// values); exceeding it is reported as "expression swell" instead of
+/// letting simplification of nested radicals spin.
+const RSOLVE_BUDGET: usize = crate::domains::matrix::EXPRESSION_BUDGET / 4;
+
+/// Fit the constants of `a(n) = Σ C_k r_kⁿ` (all roots simple, no forcing)
+/// to `a(0), …, a(m−1)` through the closed-form inverse of the Vandermonde
+/// matrix: with `L_k(x) = Π_{i≠k} (x − r_i)/(r_k − r_i) = Σ_j ℓ_{kj} xʲ`,
+/// `C_k = Σ_j ℓ_{kj} a_j`.  This avoids symbolic Gaussian elimination on
+/// algebraic (`RootOf` / radical) entries, which is slow and swells.
+///
+/// Returns `None` when the shape does not apply (repeated roots, a root
+/// `0`, complex pairs in real form, a particular solution, or fewer
+/// initial values than roots).
+fn fit_vandermonde(roots: &[(Ex, usize)], n: &Ex, ics: &[Ex]) -> Option<Ex> {
+    let ctx = n.context();
+    if roots.len() != ics.len() || roots.is_empty() {
+        return None;
+    }
+    let i_unit = ctx.i_unit();
+    if roots
+        .iter()
+        .any(|(r, m)| *m != 1 || r.is_zero_structural() || r.contains(&i_unit))
+    {
+        return None;
+    }
+    let rs: Vec<Ex> = roots.iter().map(|(r, _)| r.clone()).collect();
+    let m = rs.len();
+    let mut closed = ctx.zero();
+    for k in 0..m {
+        // Numerator coefficients of Π_{i≠k} (x − r_i), ascending in x.
+        let mut num: Vec<Ex> = vec![ctx.one()];
+        let mut denom = ctx.one();
+        for (i, ri) in rs.iter().enumerate() {
+            if i == k {
+                continue;
+            }
+            let mut next: Vec<Ex> = vec![ctx.zero(); num.len() + 1];
+            for (j, c) in num.iter().enumerate() {
+                next[j + 1] = (&next[j + 1] + c).eval();
+                next[j] = (&next[j] - &(c * ri)).eval();
+            }
+            num = next;
+            let d = (&rs[k] - ri).eval();
+            if d.is_zero_structural() {
+                return None; // repeated root that slipped through
+            }
+            denom = (&denom * &d).eval();
+        }
+        let mut ck = ctx.zero();
+        for (j, a) in ics.iter().enumerate() {
+            if a.is_zero_structural() {
+                continue;
+            }
+            ck = (&ck + &(&num[j] * a)).eval();
+        }
+        let ck = (&ck / &denom).eval();
+        if ck.is_zero_structural() {
+            continue;
+        }
+        let term = if rs[k].is_one_structural() {
+            ck
+        } else {
+            &ck * &rs[k].pow(n)
+        };
+        closed = &closed + &term;
+    }
+    Some(closed.eval())
+}
+
+fn swell_check(exprs: &[&Ex]) -> Result<(), SymplexError> {
+    let mut total = 0usize;
+    for e in exprs {
+        total +=
+            crate::domains::matrix::tree_size_capped(e, RSOLVE_BUDGET - total.min(RSOLVE_BUDGET));
+        if total > RSOLVE_BUDGET {
+            return Err(SymplexError::ComputationFailed {
+                operation: "rsolve_linear",
+                reason: format!(
+                    "expression swell: the closed form exceeds the budget of {RSOLVE_BUDGET} \
+                     expression nodes"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Characteristic roots with multiplicities (`(root, multiplicity)`).
+///
+/// The characteristic polynomial is factored over ℤ.  Linear and quadratic
+/// irreducible factors are solved exactly (rationals, quadratic radicals);
+/// the roots of an irreducible factor of degree ≥ 3 are represented as
+/// `RootOf(factor, k)` — Cardano / Ferrari radicals for those roots are
+/// nested cube roots (often with unevaluable `re`/`im` parts) whose
+/// simplification does not terminate in practice, whereas `RootOf` values
+/// evaluate numerically to any precision.
 fn characteristic_roots(coeffs: &[Ex], n: &Ex) -> Result<Vec<(Ex, usize)>, SymplexError> {
     let ctx = n.context();
-    let r = ctx.symbol("__r_rsolve");
+    // Bound variable of the characteristic polynomial (it only survives
+    // inside `RootOf` nodes, so it must differ from the index symbol).
+    let r = if format!("{n}") == "r" {
+        ctx.symbol("_r")
+    } else {
+        ctx.symbol("r")
+    };
     // Build Σ c_k r^k as a rational polynomial when possible.
     let mut rat_coeffs = Vec::with_capacity(coeffs.len());
     for c in coeffs {
@@ -181,17 +283,34 @@ fn characteristic_roots(coeffs: &[Ex], n: &Ex) -> Result<Vec<(Ex, usize)>, Sympl
         }
     }
     let poly = crate::poly::Poly::from_coeffs(rat_coeffs);
+    let (_content, factors) = poly.factor_over_z();
     let mut roots: Vec<(Ex, usize)> = Vec::new();
-    for (factor, mult) in poly.squarefree_factors() {
-        let (f_expr, sols) = {
+    for (factor, mult) in factors {
+        let mult = mult as usize;
+        let degree = factor.degree().unwrap_or(0);
+        if degree == 0 {
+            continue;
+        }
+        let f_expr = {
             let mut inner = ctx.inner.write();
-            let f_expr =
-                crate::poly::polybridge::poly_to_expr(&mut inner.arena, &factor, r.raw_id());
-            let sols = crate::transforms::solve::solve(&mut inner.arena, f_expr, r.raw_id());
-            (f_expr, sols)
+            crate::poly::polybridge::poly_to_expr(&mut inner.arena, &factor, r.raw_id())
         };
-        let _ = f_expr;
-        if sols.is_empty() {
+        if degree >= 3 {
+            for k in 0..degree {
+                let root = {
+                    let mut inner = ctx.inner.write();
+                    let idx = inner.arena.int(k as i64);
+                    inner.arena.intern(ExprNode::RootOf(f_expr, idx))
+                };
+                roots.push((r.wrap(root), mult));
+            }
+            continue;
+        }
+        let sols = {
+            let mut inner = ctx.inner.write();
+            crate::transforms::solve::solve(&mut inner.arena, f_expr, r.raw_id())
+        };
+        if sols.len() != degree {
             return Err(SymplexError::ComputationFailed {
                 operation: "rsolve_linear",
                 reason: "could not find the characteristic roots".into(),
@@ -495,9 +614,18 @@ pub fn rsolve_linear(
         }
     }
     let general = general.eval();
+    swell_check(&[&general])?;
 
     if ics.is_empty() || constants.is_empty() {
         return Ok(general.simplify());
+    }
+
+    // Homogeneous with simple roots: closed-form Vandermonde inverse.
+    if forcing.is_none_or(|f| f.eval().is_zero_structural())
+        && let Some(fitted) = fit_vandermonde(&roots, n, ics)
+    {
+        swell_check(&[&fitted])?;
+        return Ok(fitted.simplify());
     }
 
     // Fit initial values a(0..len).
@@ -506,7 +634,10 @@ pub fn rsolve_linear(
         .enumerate()
         .map(|(k, v)| (general.subs_i64(n, k as i64).eval() - v).eval())
         .collect();
-    crate::api::expr_solve_ext::fit_constants(&general, &constants, &eqs, "rsolve_linear")
+    let fitted =
+        crate::api::expr_solve_ext::fit_constants(&general, &constants, &eqs, "rsolve_linear")?;
+    swell_check(&[&fitted])?;
+    Ok(fitted)
 }
 
 /// Closed form of `P(n) = Π_{k=0}^{n-1} p(k)` for constant or linear `p`.

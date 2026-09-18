@@ -9,16 +9,7 @@ use symplex::prelude::*;
 use v02_oracle_common::*;
 
 /// Library bugs surfaced by this file (strict xfail — see common module).
-const KNOWN_BUGS: &[KnownBug] = &[(
-    "rsolve",
-    "linear",
-    "third_order_irrational_roots",
-    // BUG: rsolve_linear([-6, 5, -1, 1], None, n, [1, 0, 0]) does not
-    // terminate (>10 min) — the characteristic cubic r^3 - r^2 + 5r - 6 has
-    // one real irrational and two complex roots.  SymPy's rsolve returns
-    // a closed form in CRootOf within a second.
-    "rsolve_linear hangs on a cubic characteristic polynomial with irrational roots",
-)];
+const KNOWN_BUGS: &[KnownBug] = &[];
 
 /// Regression: `solve_system_ex` used to return points that were not
 /// solutions (Cardano cube roots of negative radicands were evaluated on
@@ -55,9 +46,10 @@ fn bug_solve_system_ex_empty_for_solvable_system() {
     assert_eq!(sols.len(), 4, "got {sols:?}");
 }
 
-/// Reproducer: `rsolve_linear` hangs (run with a timeout!).
+/// Regression: `rsolve_linear` used to hang on an irreducible cubic
+/// characteristic polynomial (Cardano radicals never simplified); the
+/// roots are now `RootOf` values.
 #[test]
-#[ignore = "BUG: rsolve_linear([-6, 5, -1, 1], None, n, [1, 0, 0]) does not terminate"]
 fn bug_rsolve_linear_hangs_on_irrational_cubic_roots() {
     let ctx = Context::new();
     let n = ctx.symbol("n");
@@ -65,7 +57,7 @@ fn bug_rsolve_linear_hangs_on_irrational_cubic_roots() {
     let sol =
         symplex::rsolve::rsolve_linear(&coeffs, None, &n, &[ctx.int(1), ctx.int(0), ctx.int(0)])
             .unwrap();
-    // a(0..) = 1, 0, 0, 6, 6, 6, 42, 78, 78, 330, ...
+    // a(n+3) = a(n+2) - 5 a(n+1) + 6 a(n): a(0..) = 1, 0, 0, 6, 6, -24, …
     assert!((sol.subs_i64(&n, 3).eval_f64().unwrap() - 6.0).abs() < 1e-9);
 }
 
