@@ -73,15 +73,37 @@ fn is_unit_three_valued() {
     );
 }
 
-#[test]
-fn rotation_matrix_round_trip_symbolic_and_numeric() {
+/// Symbolic round trip `R → q → R` for one elementary rotation; the
+/// entries come back as rational-trig expressions (`1 − 2sin²θ/(2cosθ+2)`)
+/// that `Matrix::equals` must recognise as `cosθ`.
+fn rotation_round_trip_symbolic(rot: fn(&Ex) -> Matrix) {
     let ctx = Context::new();
     let th = ctx.symbol_with("theta", &[Assumption::Positive]);
-    for r in [rot_x(&th), rot_y(&th), rot_z(&th)] {
-        let q = Quaternion::from_rotation_matrix(&r).unwrap();
-        let back = q.to_rotation_matrix().simplify();
-        assert_eq!(back.equals(&r), Some(true), "{back}");
-    }
+    let r = rot(&th);
+    let q = Quaternion::from_rotation_matrix(&r).unwrap();
+    assert_eq!(q.is_unit(), Some(true));
+    let back = q.to_rotation_matrix();
+    assert_eq!(back.equals(&r), Some(true), "{back}");
+}
+
+#[test]
+fn rotation_matrix_round_trip_symbolic_x() {
+    rotation_round_trip_symbolic(rot_x);
+}
+
+#[test]
+fn rotation_matrix_round_trip_symbolic_y() {
+    rotation_round_trip_symbolic(rot_y);
+}
+
+#[test]
+fn rotation_matrix_round_trip_symbolic_z() {
+    rotation_round_trip_symbolic(rot_z);
+}
+
+#[test]
+fn rotation_matrix_round_trip_numeric() {
+    let ctx = Context::new();
     // Numeric, including 180° rotations (trace = −1 → non-trace Shepperd branches)
     for r in [
         rot_x(&ctx.pi()),

@@ -228,9 +228,15 @@ fn predicates_three_valued() {
     assert_eq!(herm.is_symmetric(), Some(false));
     assert_eq!(herm.adjoint(), herm);
 
+    // Orthogonality needs no realness; unitarity conjugates the entries, so
+    // for a possibly-complex `x` it is undecidable and for real `x` it holds.
     let rot = Matrix::new(vec![vec![x.cos(), -&x.sin()], vec![x.sin(), x.cos()]]).unwrap();
     assert_eq!(rot.is_orthogonal(), Some(true));
-    assert_eq!(rot.is_unitary(), Some(true));
+    assert_eq!(rot.is_unitary(), None);
+    let r = ctx.symbol_with("r", &[Assumption::Real]);
+    let rot_real = Matrix::new(vec![vec![r.cos(), -&r.sin()], vec![r.sin(), r.cos()]]).unwrap();
+    assert_eq!(rot_real.is_orthogonal(), Some(true));
+    assert_eq!(rot_real.is_unitary(), Some(true));
     let phase = Matrix::new(vec![vec![i.clone(), ctx.int(0)], vec![ctx.int(0), -&i]]).unwrap();
     assert_eq!(phase.is_unitary(), Some(true));
     assert_eq!(phase.is_orthogonal(), Some(false));

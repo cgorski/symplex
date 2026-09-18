@@ -14,6 +14,21 @@
 use crate::domains::matrix::Matrix;
 use crate::prelude::*;
 
+/// Ascending coefficients of `expr` viewed as a polynomial in `var`,
+/// allowing symbolic (var-free) coefficients.
+///
+/// [`Ex::coeffs`] only handles rational coefficients; transfer functions
+/// such as `K·ωₙ² / (s² + 2ζωₙ s + ωₙ²)` need the symbolic variant.
+/// Returns `None` if `var` occurs in a non-polynomial position.
+fn poly_coeffs_symbolic(expr: &Ex, var: &Ex) -> Option<Vec<Ex>> {
+    let var_id = expr.checked_id(var);
+    let mut inner = expr.inner.write();
+    let ids =
+        crate::transforms::solve::symbolic_poly_coeffs(&mut inner.arena, expr.raw_id(), var_id)?;
+    drop(inner);
+    Some(ids.into_iter().map(|id| expr.wrap(id)).collect())
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // State-Space Model
 // ═══════════════════════════════════════════════════════════════════════════
@@ -608,14 +623,10 @@ impl TransferFunction {
             operation: "TransferFunction::to_state_space",
             reason,
         };
-        let den =
-            self.den.expand().coeffs(&self.var).ok_or_else(|| {
-                inv("denominator is not a polynomial in the Laplace variable".into())
-            })?;
-        let num =
-            self.num.expand().coeffs(&self.var).ok_or_else(|| {
-                inv("numerator is not a polynomial in the Laplace variable".into())
-            })?;
+        let den = poly_coeffs_symbolic(&self.den, &self.var)
+            .ok_or_else(|| inv("denominator is not a polynomial in the Laplace variable".into()))?;
+        let num = poly_coeffs_symbolic(&self.num, &self.var)
+            .ok_or_else(|| inv("numerator is not a polynomial in the Laplace variable".into()))?;
         let n = den.len().saturating_sub(1);
         if n == 0 {
             return Err(inv("denominator must have degree ≥ 1".into()));

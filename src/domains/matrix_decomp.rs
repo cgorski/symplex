@@ -20,9 +20,15 @@
 //!   [`Matrix::matrix_pow_symbolic`], [`Matrix::matrix_sqrt`].
 //! * **Calculus:** [`hessian`], [`wronskian`].
 
-use crate::api::expr::Ex;
+use crate::api::expr::{Ex, ExprType};
 use crate::base::errors::SymplexError;
-use crate::domains::matrix::{Matrix, all3, ex_is_nonnegative, ex_is_positive, ex_is_zero};
+use crate::domains::matrix::{
+    Matrix, all3, budget_check, ex_is_nonnegative, ex_is_positive, ex_is_zero,
+};
+
+/// Orthogonal basis vectors and the upper-triangular coefficient matrix
+/// produced by [`gram_schmidt_cols`], both as raw row-major `Vec`s.
+type GramSchmidtParts = (Vec<Vec<Ex>>, Vec<Vec<Ex>>);
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
     SymplexError::InvalidArgument {
@@ -42,7 +48,7 @@ fn failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
 fn dot_vec(a: &[Ex], b: &[Ex]) -> Ex {
     let mut acc = &a[0] * &b[0];
     for k in 1..a.len() {
-        acc = acc + &a[k] * &b[k];
+        acc += &a[k] * &b[k];
     }
     acc
 }
@@ -54,16 +60,22 @@ fn dot_vec(a: &[Ex], b: &[Ex]) -> Ex {
 /// Gram–Schmidt orthogonalisation of a list of column vectors.
 ///
 /// Returns vectors spanning the same space, pairwise orthogonal (and of
-/// unit length if `normalize` is set).  Radicals are kept exact
-/// (`1/√2`, …); entries are passed through `simplify()`.
+/// unit length if `normalize` is set).  Radicals are kept exact: a
+/// normalised entry is `uᵢ · ‖u‖⁻¹` with the norm left as `√(‖u‖²)`, so
+/// that dot products of the results cancel structurally (`qᵢ·qⱼ` is
+/// `0`, `qᵢ·qᵢ` is `1` without further simplification).  Symbolic entries
+/// are simplified; constant entries are only constant-folded.
 ///
 /// # Errors
 ///
 /// - [`SymplexError::InvalidArgument`] if `vectors` is empty, any vector
 ///   is not a column vector, or lengths differ.
 /// - [`SymplexError::ComputationFailed`] if the vectors are linearly
-///   dependent (a residual vector is provably zero).  Symbolic residuals
-///   whose zero-ness cannot be decided are assumed non-zero.
+///   dependent (a residual vector is provably zero), or if symbolic
+///   entries swell beyond
+///   [`EXPRESSION_BUDGET`](crate::domains::matrix::EXPRESSION_BUDGET).
+///   Symbolic residuals whose zero-ness cannot be decided are assumed
+///   non-zero.
 ///
 /// # Examples
 ///
@@ -76,8 +88,9 @@ fn dot_vec(a: &[Ex], b: &[Ex]) -> Ex {
 /// let v2 = matrix![ctx, [1], [0]];
 /// let q = gram_schmidt(&[v1, v2], true).unwrap();
 /// // q0 = (1/√2, 1/√2), q1 = (1/√2, −1/√2)
-/// assert_eq!(q[0][(0, 0)].powi(2).simplify(), ctx.rational(1, 2));
-/// assert_eq!(symplex::matrix::dot(&q[0], &q[1]).simplify(), ctx.int(0));
+/// assert_eq!(q[0][(0, 0)].powi(2), ctx.rational(1, 2));
+/// assert_eq!(symplex::matrix::dot(&q[0], &q[1]), ctx.int(0));
+/// assert_eq!(symplex::matrix::dot(&q[1], &q[1]), ctx.int(1));
 /// ```
 pub fn gram_schmidt(vectors: &[Matrix], normalize: bool) -> Result<Vec<Matrix>, SymplexError> {
     if vectors.is_empty() {
@@ -116,29 +129,40 @@ fn gram_schmidt_cols(
     cols: &[Vec<Ex>],
     normalize: bool,
     op: &'static str,
-) -> Result<(Vec<Vec<Ex>>, Vec<Vec<Ex>>), SymplexError> {
+) -> Result<GramSchmidtParts, SymplexError> {
     let k = cols.len();
     let zero = cols[0][0].context().zero();
     let mut q: Vec<Vec<Ex>> = Vec::with_capacity(k);
     let mut r: Vec<Vec<Ex>> = vec![vec![zero.clone(); k]; k];
+    // Constant entries only need folding; `simplify` would rewrite the
+    // radicals inconsistently (`√(2/3)` vs `2^(-1/2)·√3`) and break the
+    // structural cancellation of dot products.
+    let tidy = |e: Ex| {
+        if e.is_constant() {
+            e.eval()
+        } else {
+            e.simplify()
+        }
+    };
 
     for j in 0..k {
         let mut u = cols[j].clone();
         for i in 0..j {
             // r_ij = q_i · a_j  (q_i normalised) or (q_i · a_j)/(q_i · q_i) otherwise
             let proj = if normalize {
-                dot_vec(&q[i], &cols[j]).simplify()
+                tidy(dot_vec(&q[i], &cols[j]))
             } else {
                 let qq = dot_vec(&q[i], &q[i]);
-                (&dot_vec(&q[i], &cols[j]) / &qq).simplify()
+                tidy(&dot_vec(&q[i], &cols[j]) / &qq)
             };
             for (u_e, q_e) in u.iter_mut().zip(q[i].iter()) {
                 *u_e = &*u_e - &(&proj * q_e);
             }
             r[i][j] = proj;
         }
-        let u: Vec<Ex> = u.into_iter().map(|e| e.simplify()).collect();
-        let norm_sq = dot_vec(&u, &u).simplify();
+        budget_check(u.iter(), op)?;
+        let u: Vec<Ex> = u.into_iter().map(tidy).collect();
+        let norm_sq = tidy(dot_vec(&u, &u));
         if ex_is_zero(&norm_sq) == Some(true) {
             return Err(failed(
                 op,
@@ -149,8 +173,17 @@ fn gram_schmidt_cols(
         }
         if normalize {
             let norm = norm_sq.sqrt();
-            r[j][j] = norm.simplify();
-            q.push(u.iter().map(|e| (e / &norm).simplify()).collect());
+            let one = cols[0][0].context().one();
+            // `√(1/n)` displays nicely for rational `n` and cancels against
+            // `√n` structurally (canonical numeric radicals); for symbolic
+            // `n` only `n^(-1/2)` is guaranteed to cancel.
+            let inv_norm = if norm_sq.expr_type() == ExprType::Number {
+                (&one / &norm_sq).sqrt()
+            } else {
+                &one / &norm
+            };
+            r[j][j] = norm;
+            q.push(u.iter().map(|e| tidy(e * &inv_norm)).collect());
         } else {
             r[j][j] = cols[0][0].context().one();
             q.push(u);
@@ -169,7 +202,8 @@ impl Matrix {
     /// # Errors
     ///
     /// Returns [`SymplexError::ComputationFailed`] if the columns are
-    /// linearly dependent.
+    /// linearly dependent or symbolic entries swell beyond
+    /// [`EXPRESSION_BUDGET`](crate::domains::matrix::EXPRESSION_BUDGET).
     ///
     /// # Examples
     ///
@@ -184,6 +218,7 @@ impl Matrix {
     /// assert!(r[(1, 0)].is_zero_structural());
     /// ```
     pub fn qr(&self) -> Result<(Matrix, Matrix), SymplexError> {
+        budget_check(self.iter(), "qr")?;
         if self.rank() < self.ncols() {
             return Err(failed(
                 "qr",
@@ -252,7 +287,7 @@ impl Matrix {
         for j in 0..n {
             let mut sum_sq = zero.clone();
             for item in l[j].iter().take(j) {
-                sum_sq = sum_sq + item.powi(2);
+                sum_sq += item.powi(2);
             }
             let diag = (self.get(j, j) - &sum_sq).simplify();
             match ex_is_positive(&diag) {
@@ -276,7 +311,7 @@ impl Matrix {
             for i in (j + 1)..n {
                 let mut sum_prod = zero.clone();
                 for (l_ik, l_jk) in l[i].iter().zip(l[j].iter()).take(j) {
-                    sum_prod = sum_prod + &(l_ik * l_jk);
+                    sum_prod += &(l_ik * l_jk);
                 }
                 let num = self.get(i, j) - &sum_prod;
                 l[i][j] = (&num / &l[j][j]).simplify();
@@ -336,7 +371,7 @@ impl Matrix {
             // d_j = a_jj − Σ_{k<j} l_jk² d_k
             let mut acc = zero.clone();
             for k in 0..j {
-                acc = acc + &l[j][k].powi(2) * &d[k];
+                acc += &l[j][k].powi(2) * &d[k];
             }
             let dj = (self.get(j, j) - &acc).simplify();
             if ex_is_zero(&dj) == Some(true) {
@@ -350,7 +385,7 @@ impl Matrix {
             for i in (j + 1)..n {
                 let mut acc = zero.clone();
                 for k in 0..j {
-                    acc = acc + &(&l[i][k] * &l[j][k]) * &d[k];
+                    acc += &(&l[i][k] * &l[j][k]) * &d[k];
                 }
                 l[i][j] = (&(self.get(i, j) - &acc) / &d[j]).simplify();
             }
@@ -549,7 +584,7 @@ impl Matrix {
         let sums = (0..self.ncols()).map(|j| {
             let mut acc = self.get(0, j).abs();
             for i in 1..self.nrows() {
-                acc = acc + self.get(i, j).abs();
+                acc += self.get(i, j).abs();
             }
             acc
         });
@@ -562,7 +597,7 @@ impl Matrix {
         let sums = (0..self.nrows()).map(|i| {
             let mut acc = self.get(i, 0).abs();
             for j in 1..self.ncols() {
-                acc = acc + self.get(i, j).abs();
+                acc += self.get(i, j).abs();
             }
             acc
         });
@@ -600,7 +635,7 @@ impl Matrix {
         let ctx = self.context();
         let mut acc = ctx.zero();
         for e in self.iter() {
-            acc = acc + e.abs().pow(p);
+            acc += e.abs().pow(p);
         }
         let inv_p = &ctx.one() / p;
         Ok(acc.pow(&inv_p))

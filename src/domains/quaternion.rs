@@ -24,7 +24,7 @@
 
 use crate::api::expr::Ex;
 use crate::base::errors::SymplexError;
-use crate::domains::matrix::{Matrix, all3, ex_is_positive, ex_is_zero};
+use crate::domains::matrix::{Matrix, all3, ex_is_positive, ex_is_zero, sqrt_rationalized};
 pub use crate::domains::robotics::EulerConvention;
 
 fn invalid(operation: &'static str, reason: impl Into<String>) -> SymplexError {
@@ -431,7 +431,9 @@ impl Quaternion {
                     )
                 }
             };
-            let q = q.simplify();
+            // All entries are constants: fold them (`simplify` is slow on
+            // trig-of-rational constants and adds nothing numerically).
+            let q = q.eval();
             // Canonical sign: w ≥ 0.
             let q = if ex_is_positive(&(-&q.w)) == Some(true) {
                 -&q
@@ -480,6 +482,8 @@ impl Quaternion {
 
     /// Recover `(axis, angle)` with `axis` a 3×1 unit column vector and
     /// `angle = 2·atan2(|v|, w) ∈ [0, 2π)`, where `v` is the vector part.
+    /// When `w` is provably positive the equivalent `2·atan(|v|/w)` is used,
+    /// which the evaluator can fold for exact constants (`π/2` below).
     ///
     /// # Errors
     ///
@@ -499,20 +503,35 @@ impl Quaternion {
     /// assert_eq!(angle.eval(), ctx.pi() / 2);
     /// ```
     pub fn to_axis_angle(&self) -> Result<(Matrix, Ex), SymplexError> {
-        let v_norm_sq = &self.x.powi(2) + &self.y.powi(2) + &self.z.powi(2);
+        let v_norm_sq = (&self.x.powi(2) + &self.y.powi(2) + &self.z.powi(2)).eval();
         if ex_is_zero(&v_norm_sq) == Some(true) {
             return Err(failed(
                 "Quaternion::to_axis_angle",
                 "vector part is zero (identity rotation): the axis is undefined",
             ));
         }
-        let v_norm = v_norm_sq.sqrt();
+        // Rationalised for constants (`√(1/2)` → `√2/2`) so that it matches
+        // the evaluator's form of `cos(π/4)` and quotients fold exactly.
+        let v_norm = sqrt_rationalized(&v_norm_sq);
+        let tidy = |e: Ex| {
+            if e.is_constant() {
+                e.eval()
+            } else {
+                e.simplify()
+            }
+        };
         let axis = Matrix::col_vector(vec![
-            (&self.x / &v_norm).simplify(),
-            (&self.y / &v_norm).simplify(),
-            (&self.z / &v_norm).simplify(),
+            tidy(&self.x.eval() / &v_norm),
+            tidy(&self.y.eval() / &v_norm),
+            tidy(&self.z.eval() / &v_norm),
         ]);
-        let angle = (&v_norm.atan2(&self.w) * 2).simplify();
+        let w = self.w.eval();
+        let half_angle = if ex_is_positive(&w) == Some(true) {
+            (&v_norm / &w).atan()
+        } else {
+            v_norm.atan2(&w)
+        };
+        let angle = tidy(&half_angle * 2);
         Ok((axis, angle))
     }
 
@@ -557,7 +576,9 @@ impl Quaternion {
     /// gimbal lock (`|theta|` at the range boundary) `phi` and `psi` are
     /// not unique; the returned pair is still a valid factorisation.
     ///
-    /// Assumes a unit quaternion.
+    /// Assumes a unit quaternion.  Symbolic results are simplified;
+    /// constant ones (angles given as numbers) are only constant-folded,
+    /// since they are meant to be evaluated numerically.
     ///
     /// # Examples
     ///
@@ -594,7 +615,14 @@ impl Quaternion {
                 e(2, 0).atan2(&e(2, 1)),
             ),
         };
-        (phi.simplify(), theta.simplify(), psi.simplify())
+        let tidy = |e: Ex| {
+            if e.is_constant() {
+                e.eval()
+            } else {
+                e.simplify()
+            }
+        };
+        (tidy(phi), tidy(theta), tidy(psi))
     }
 
     /// Rotate a 3×1 column vector: `v' = q ⊗ (0, v) ⊗ q*`.
@@ -1197,54 +1225,63 @@ mod tests {
         assert!(Quaternion::identity(&ctx).to_axis_angle().is_err());
     }
 
-    #[test]
-    fn euler_round_trips_all_conventions() {
+    /// Euler round trip for one convention over three angle triples.
+    fn euler_round_trip(conv: EulerConvention) {
         let ctx = Context::new();
         let angles: [(f64, f64, f64); 3] = [(0.3, -0.4, 0.7), (-1.2, 0.9, 2.5), (2.0, 1.1, -0.6)];
-        for conv in [
-            EulerConvention::ZYX,
-            EulerConvention::XYZ,
-            EulerConvention::ZXZ,
-        ] {
-            for (a, b, c) in angles {
-                // ZXZ needs theta in (0, π)
-                let b = if matches!(conv, EulerConvention::ZXZ) {
-                    b.abs()
-                } else {
-                    b
-                };
-                let (ea, eb, ec) = (
-                    ctx.rational((a * 1e6) as i64, 1_000_000),
-                    ctx.rational((b * 1e6) as i64, 1_000_000),
-                    ctx.rational((c * 1e6) as i64, 1_000_000),
-                );
-                let qq = Quaternion::from_euler(&ea, &eb, &ec, conv);
-                // Rotation matrix agrees with rot_euler
-                let m = qq.to_rotation_matrix().eval_f64().unwrap();
-                let r = rot_euler(&ea, &eb, &ec, conv).eval_f64().unwrap();
-                for i in 0..3 {
-                    for j in 0..3 {
-                        assert!(approx(m[i][j], r[i][j]), "{conv:?} ({i},{j})");
-                    }
+        for (a, b, c) in angles {
+            // ZXZ needs theta in (0, π)
+            let b = if matches!(conv, EulerConvention::ZXZ) {
+                b.abs()
+            } else {
+                b
+            };
+            let (ea, eb, ec) = (
+                ctx.rational((a * 1e6) as i64, 1_000_000),
+                ctx.rational((b * 1e6) as i64, 1_000_000),
+                ctx.rational((c * 1e6) as i64, 1_000_000),
+            );
+            let qq = Quaternion::from_euler(&ea, &eb, &ec, conv);
+            // Rotation matrix agrees with rot_euler
+            let m = qq.to_rotation_matrix().eval_f64().unwrap();
+            let r = rot_euler(&ea, &eb, &ec, conv).eval_f64().unwrap();
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!(approx(m[i][j], r[i][j]), "{conv:?} ({i},{j})");
                 }
-                // Euler angles recovered
-                let (pa, pb, pc) = qq.to_euler(conv);
-                let (pa, pb, pc) = (
-                    pa.eval_f64().unwrap(),
-                    pb.eval_f64().unwrap(),
-                    pc.eval_f64().unwrap(),
-                );
-                let exp = [
-                    ea.eval_f64().unwrap(),
-                    eb.eval_f64().unwrap(),
-                    ec.eval_f64().unwrap(),
-                ];
-                assert!(
-                    approx(pa, exp[0]) && approx(pb, exp[1]) && approx(pc, exp[2]),
-                    "{conv:?}: got ({pa}, {pb}, {pc}) expected {exp:?}"
-                );
             }
+            // Euler angles recovered
+            let (pa, pb, pc) = qq.to_euler(conv);
+            let (pa, pb, pc) = (
+                pa.eval_f64().unwrap(),
+                pb.eval_f64().unwrap(),
+                pc.eval_f64().unwrap(),
+            );
+            let exp = [
+                ea.eval_f64().unwrap(),
+                eb.eval_f64().unwrap(),
+                ec.eval_f64().unwrap(),
+            ];
+            assert!(
+                approx(pa, exp[0]) && approx(pb, exp[1]) && approx(pc, exp[2]),
+                "{conv:?}: got ({pa}, {pb}, {pc}) expected {exp:?}"
+            );
         }
+    }
+
+    #[test]
+    fn euler_round_trip_zyx() {
+        euler_round_trip(EulerConvention::ZYX);
+    }
+
+    #[test]
+    fn euler_round_trip_xyz() {
+        euler_round_trip(EulerConvention::XYZ);
+    }
+
+    #[test]
+    fn euler_round_trip_zxz() {
+        euler_round_trip(EulerConvention::ZXZ);
     }
 
     #[test]

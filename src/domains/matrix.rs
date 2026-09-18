@@ -90,6 +90,16 @@ fn failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
     }
 }
 
+/// Re-attribute an error raised by a helper (e.g. `det` inside `inv`) to
+/// the public operation the caller invoked, keeping the reason.
+pub(crate) fn reop(e: SymplexError, operation: &'static str) -> SymplexError {
+    match e {
+        SymplexError::ComputationFailed { reason, .. } => failed(operation, reason),
+        SymplexError::InvalidArgument { reason, .. } => invalid(operation, reason),
+        other => other,
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Three-valued scalar helpers (shared with matrix_decomp / quaternion)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -97,7 +107,9 @@ fn failed(operation: &'static str, reason: impl Into<String>) -> SymplexError {
 /// Three-valued zero test for a scalar expression.
 ///
 /// Layers: structural zero → assumption system → `eval().simplify()` →
-/// numeric evaluation for constants.  Returns `None` when the sign cannot
+/// numeric evaluation for constants → `together().simplify()` (common
+/// denominator, catches rational-function identities such as
+/// `1 − 2sin²θ/(2cosθ + 2) − cosθ`).  Returns `None` when the value cannot
 /// be decided symbolically (e.g. a free symbol without assumptions).
 pub(crate) fn ex_is_zero(e: &Ex) -> Option<bool> {
     if e.is_zero_structural() {
@@ -113,17 +125,74 @@ pub(crate) fn ex_is_zero(e: &Ex) -> Option<bool> {
     if let Some(b) = s.is_zero() {
         return Some(b);
     }
-    if s.is_constant() {
-        if let Ok((re, im)) = s.eval_complex64() {
-            if re == 0.0 && im == 0.0 {
+    // Numeric constants (including `RootOf`, whose bound variable
+    // `is_constant` would report as free): decide by evaluation.
+    if let Ok((re, im)) = s.eval_complex64() {
+        if re == 0.0 && im == 0.0 {
+            return Some(true);
+        }
+        if re.abs() > 1e-12 || im.abs() > 1e-12 {
+            return Some(false);
+        }
+        return None;
+    }
+    // Symbolic with fractions: bring over a common denominator and retry.
+    // Skipped when radicals are present: `together` then routes through a
+    // canonicalisation path that is not yet robust for products of radicals.
+    if !has_radical(&s) {
+        let t = s.together();
+        if t != s {
+            let t = t.simplify();
+            if t.is_zero_structural() {
                 return Some(true);
             }
-            if re.abs() > 1e-12 || im.abs() > 1e-12 {
-                return Some(false);
+            if let Some(b) = t.is_zero() {
+                return Some(b);
             }
         }
     }
     None
+}
+
+/// Does `e` contain a power with a numeric non-integer exponent (a radical)?
+fn has_radical(e: &Ex) -> bool {
+    use crate::base::node::ExprNode;
+    let inner = e.inner.read();
+    let arena = &inner.arena;
+    let mut stack = vec![e.raw_id()];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let ExprNode::Pow(_, exp) = arena.node(id)
+            && let Some(r) = arena.as_num(*exp)
+            && !r.is_integer()
+        {
+            return true;
+        }
+        stack.extend(arena.node(id).children());
+    }
+    false
+}
+
+/// Does `e` contain a `RootOf` node?
+fn has_root_of(e: &Ex) -> bool {
+    use crate::base::node::ExprNode;
+    let inner = e.inner.read();
+    let arena = &inner.arena;
+    let mut stack = vec![e.raw_id()];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if matches!(arena.node(id), ExprNode::RootOf(..)) {
+            return true;
+        }
+        stack.extend(arena.node(id).children());
+    }
+    false
 }
 
 /// Three-valued "is strictly positive" test for a scalar expression.
@@ -135,9 +204,7 @@ pub(crate) fn ex_is_positive(e: &Ex) -> Option<bool> {
     if let Some(b) = s.is_positive() {
         return Some(b);
     }
-    if s.is_constant()
-        && let Ok(v) = s.eval_f64()
-    {
+    if let Ok(v) = s.eval_f64() {
         return Some(v > 0.0);
     }
     None
@@ -152,9 +219,7 @@ pub(crate) fn ex_is_nonnegative(e: &Ex) -> Option<bool> {
     if let Some(b) = s.is_nonnegative() {
         return Some(b);
     }
-    if s.is_constant()
-        && let Ok(v) = s.eval_f64()
-    {
+    if let Ok(v) = s.eval_f64() {
         return Some(v >= 0.0);
     }
     None
@@ -171,6 +236,99 @@ pub(crate) fn all3(iter: impl IntoIterator<Item = Option<bool>>) -> Option<bool>
         }
     }
     if unknown { None } else { Some(true) }
+}
+
+/// Square root of `e` with rational radicands rationalised: for a positive
+/// rational `p/q` returns `√(p·q) / q` (so `√(1/2)` becomes `√2/2`, matching
+/// the form the evaluator produces for `cos(π/4)`), otherwise `e.sqrt()`.
+///
+/// Used wherever a norm is divided out (Gram–Schmidt, quaternion axis
+/// extraction) so that products of the resulting radicals cancel
+/// structurally instead of needing `simplify()`.
+pub(crate) fn sqrt_rationalized(e: &Ex) -> Ex {
+    if let Some(r) = e.as_rational()
+        && r.numer().sign() == num_bigint::Sign::Plus
+    {
+        let ctx = e.context();
+        let p = ctx.from_bigint(r.numer().clone());
+        let q = ctx.from_bigint(r.denom().clone());
+        return &(&p * &q).sqrt() / &q;
+    }
+    e.sqrt()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Expression-swell budget
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Upper bound on the total expression-tree size (nodes, counted without
+/// sharing) of the operands and intermediate results of the symbolic
+/// algorithms that can swell: [`Matrix::det`], [`Matrix::inv`],
+/// [`Matrix::solve`], [`Matrix::diagonalize`], [`Matrix::jordan_form`],
+/// [`Matrix::matrix_exp`] and [`Matrix::qr`].
+///
+/// When the budget is exceeded these return
+/// [`SymplexError::ComputationFailed`] whose reason starts with
+/// `"expression swell"` instead of running for an unbounded time.  The
+/// value is calibrated so that everything below it finishes in well under
+/// a minute: a fully symbolic 7×7 determinant (5040 terms, ≈ 40 000 nodes)
+/// passes, an 8×8 one (≈ 360 000 nodes, many minutes) is rejected.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+///
+/// let ctx = Context::new();
+/// // A tiny DAG whose *tree* is enormous: eₙ₊₁ = sin(eₙ) + cos(eₙ).
+/// let mut e = ctx.symbol("x");
+/// for _ in 0..16 {
+///     e = &e.sin() + &e.cos();
+/// }
+/// let m = Matrix::new(vec![vec![e.clone(), ctx.int(1)], vec![ctx.int(1), e]]).unwrap();
+/// let err = m.inv().unwrap_err();
+/// assert!(err.to_string().contains("expression swell"), "{err}");
+/// ```
+pub const EXPRESSION_BUDGET: usize = 100_000;
+
+/// Tree size of `e` (nodes, without sharing), stopping as soon as `cap` is
+/// exceeded.  Iterative, so deep expressions cannot overflow the stack.
+pub(crate) fn tree_size_capped(e: &Ex, cap: usize) -> usize {
+    let inner = e.inner.read();
+    let arena = &inner.arena;
+    let mut stack = vec![e.raw_id()];
+    let mut count = 0usize;
+    while let Some(id) = stack.pop() {
+        count += 1;
+        if count > cap {
+            break;
+        }
+        stack.extend(arena.node(id).children());
+    }
+    count
+}
+
+/// Return `Err(ComputationFailed)` if the combined tree size of `entries`
+/// exceeds [`EXPRESSION_BUDGET`].
+pub(crate) fn budget_check<'a>(
+    entries: impl IntoIterator<Item = &'a Ex>,
+    operation: &'static str,
+) -> Result<(), SymplexError> {
+    let mut total = 0usize;
+    for e in entries {
+        total += tree_size_capped(e, EXPRESSION_BUDGET - total);
+        if total > EXPRESSION_BUDGET {
+            return Err(failed(
+                operation,
+                format!(
+                    "expression swell: intermediate result exceeds the budget of \
+                     {EXPRESSION_BUDGET} expression nodes; simplify the input or \
+                     substitute numeric values first"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -662,6 +820,12 @@ impl Matrix {
         Ok(())
     }
 
+    /// Return `Err(ComputationFailed)` if the entries together exceed
+    /// [`EXPRESSION_BUDGET`] tree nodes.
+    fn check_budget(&self, operation: &'static str) -> Result<(), SymplexError> {
+        budget_check(self.iter(), operation)
+    }
+
     /// `true` if every entry is a rational number literal.
     fn all_numeric(&self) -> bool {
         self.iter().all(|e| e.expr_type() == ExprType::Number)
@@ -882,7 +1046,9 @@ impl Matrix {
     ///
     /// # Errors
     ///
-    /// Returns [`SymplexError::InvalidArgument`] if the matrix is not square.
+    /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
+    /// - [`SymplexError::ComputationFailed`] if the entries or an
+    ///   intermediate result exceed [`EXPRESSION_BUDGET`].
     ///
     /// # Examples
     ///
@@ -896,6 +1062,7 @@ impl Matrix {
     /// ```
     pub fn det(&self) -> Result<Ex, SymplexError> {
         self.require_square("det")?;
+        self.check_budget("det")?;
         let n = self.nrows;
         Ok(match n {
             1 => self.rows[0][0].clone(),
@@ -910,7 +1077,7 @@ impl Matrix {
             _ if self.all_numeric() => self.det_bareiss(),
             _ => {
                 // det(A) = (−1)ⁿ · [constant coefficient of det(λI − A)]
-                let coeffs = self.berkowitz_monic();
+                let coeffs = self.berkowitz_monic("det")?;
                 let c0 = coeffs[n].clone();
                 if n % 2 == 1 { -c0 } else { c0 }
             }
@@ -954,19 +1121,10 @@ impl Matrix {
     }
 
     /// Find a non-zero pivot in column k, rows k..n (structural, then evaluated).
-    #[allow(clippy::needless_range_loop)]
     fn find_bareiss_pivot(m: &[Vec<Ex>], k: usize, n: usize) -> Option<usize> {
-        for i in k..n {
-            if !m[i][k].is_zero_structural() {
-                return Some(i);
-            }
-        }
-        for i in k..n {
-            if !m[i][k].eval().is_zero_structural() {
-                return Some(i);
-            }
-        }
-        None
+        (k..n)
+            .find(|&i| !m[i][k].is_zero_structural())
+            .or_else(|| (k..n).find(|&i| !m[i][k].eval().is_zero_structural()))
     }
 
     /// Berkowitz's division-free characteristic polynomial.
@@ -975,7 +1133,10 @@ impl Matrix {
     /// `[1, c_{n−1}, …, c_0]` (length `n + 1`).  Every coefficient is a
     /// fully expanded polynomial in the matrix entries.  Requires a square
     /// matrix (checked by callers).
-    fn berkowitz_monic(&self) -> Vec<Ex> {
+    ///
+    /// Returns `Err(ComputationFailed)` (reported under `operation`) if the
+    /// expanded coefficients exceed [`EXPRESSION_BUDGET`] at any stage.
+    fn berkowitz_monic(&self, operation: &'static str) -> Result<Vec<Ex>, SymplexError> {
         let n = self.nrows;
         let one = self.ctx_one();
         let zero = self.ctx_zero();
@@ -1001,7 +1162,7 @@ impl Matrix {
                         .map(|i| {
                             let mut acc = zero.clone();
                             for (idx, j) in (s + 1..n).enumerate() {
-                                acc = acc + &self.rows[i][j] * &c[idx];
+                                acc += &self.rows[i][j] * &c[idx];
                             }
                             acc.expand()
                         })
@@ -1010,7 +1171,7 @@ impl Matrix {
                 }
                 let mut rc = zero.clone();
                 for (ri, ci) in r.iter().zip(c.iter()) {
-                    rc = rc + *ri * ci;
+                    rc += *ri * ci;
                 }
                 diags.push((-rc).expand());
             }
@@ -1022,14 +1183,15 @@ impl Matrix {
                 let mut acc = zero.clone();
                 for (j, v) in vec.iter().enumerate().take(k) {
                     if j <= i {
-                        acc = acc + &diags[i - j] * v;
+                        acc += &diags[i - j] * v;
                     }
                 }
                 next_vec.push(acc.expand());
             }
             vec = next_vec;
+            budget_check(vec.iter().chain(c.iter()), operation)?;
         }
-        vec
+        Ok(vec)
     }
 
     /// Apply a function to every element, producing a new matrix.
@@ -1157,7 +1319,9 @@ impl Matrix {
     /// # Errors
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
-    /// - [`SymplexError::ComputationFailed`] if the determinant is zero.
+    /// - [`SymplexError::ComputationFailed`] if the determinant is zero or
+    ///   the entries / intermediate results exceed [`EXPRESSION_BUDGET`]
+    ///   ("expression swell").
     ///
     /// # Examples
     ///
@@ -1172,7 +1336,8 @@ impl Matrix {
     /// ```
     pub fn inv(&self) -> Result<Matrix, SymplexError> {
         self.require_square("inv")?;
-        let d = self.det()?;
+        self.check_budget("inv")?;
+        let d = self.det().map_err(|e| reop(e, "inv"))?;
         if ex_is_zero(&d) == Some(true) {
             return Err(failed("inv", "matrix is singular (determinant is zero)"));
         }
@@ -1185,7 +1350,8 @@ impl Matrix {
             let eye = Matrix::identity(&self.ctx(), n);
             return self.solve(&eye);
         }
-        let adj = self.adjugate()?;
+        let adj = self.adjugate().map_err(|e| reop(e, "inv"))?;
+        budget_check(adj.iter().chain(std::iter::once(&d)), "inv")?;
         let one_over_det = &self.ctx_one() / &d;
         Ok(adj.scale(&one_over_det))
     }
@@ -1204,7 +1370,8 @@ impl Matrix {
     /// - [`SymplexError::InvalidArgument`] if `A` is not square or `A` and
     ///   `b` have different row counts.
     /// - [`SymplexError::ComputationFailed`] if the system is singular
-    ///   (no unique solution).
+    ///   (no unique solution) or the entries / solution exceed
+    ///   [`EXPRESSION_BUDGET`].
     ///
     /// # Examples
     ///
@@ -1231,7 +1398,9 @@ impl Matrix {
         }
 
         let augmented = Matrix::hstack(&[self, b])?;
+        augmented.check_budget("solve")?;
         let (rref_mat, pivots) = augmented.rref();
+        rref_mat.check_budget("solve")?;
 
         if pivots.len() != n || pivots.iter().any(|&p| p >= n) {
             return Err(failed(
@@ -1323,8 +1492,9 @@ impl Matrix {
     /// ```
     pub fn char_poly_coeffs(&self) -> Result<Vec<Ex>, SymplexError> {
         self.require_square("char_poly_coeffs")?;
+        self.check_budget("char_poly_coeffs")?;
         let n = self.nrows;
-        let monic = self.berkowitz_monic(); // det(λI − A), highest first
+        let monic = self.berkowitz_monic("char_poly_coeffs")?; // det(λI − A), highest first
         let sign_flip = n % 2 == 1;
         Ok((0..=n)
             .map(|k| {
@@ -1362,7 +1532,7 @@ impl Matrix {
             if c.is_zero_structural() {
                 continue;
             }
-            acc = acc + c * &var.powi(k as i64);
+            acc += c * &var.powi(k as i64);
         }
         Ok(acc.expand())
     }
@@ -1370,11 +1540,32 @@ impl Matrix {
     /// Eigenvalues with algebraic multiplicities: `[(λ, multiplicity), …]`.
     ///
     /// The characteristic polynomial is factored over ℤ (exact
-    /// multiplicities); each irreducible factor is then solved.  Roots of
-    /// irreducible factors of degree ≥ 5 are returned as `RootOf`
-    /// expressions whose bound variable displays as `λ`.  For 1×1 and 2×2
-    /// matrices with symbolic entries the closed-form (quadratic) formula
-    /// is used.
+    /// multiplicities); each irreducible factor is then solved.  Rational
+    /// and quadratic roots are returned in closed form.  Irreducible
+    /// cubic/quartic factors are solved in radicals only when the result is
+    /// compact (binomial-like after depressing, e.g. `λ³ − 2` or
+    /// `λ⁴ − 10λ² + 1`); otherwise — and always for degree ≥ 5 — the roots
+    /// are exact `RootOf` expressions whose bound variable displays as `λ`
+    /// and which evaluate numerically via `eval_f64`/`eval_complex64`.
+    /// (The general Cardano/Ferrari formulas produce nested complex cube
+    /// roots that make eigenvectors and `P⁻¹` swell exponentially.)  For
+    /// 1×1 and 2×2 matrices with symbolic entries the closed-form
+    /// (quadratic) formula is used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// // Symmetric with an irreducible cubic characteristic polynomial.
+    /// let m = matrix![ctx, [4, 1, 2], [1, 3, 1], [2, 1, 5]];
+    /// let ev = m.eigenvals_with_multiplicity().unwrap();
+    /// assert_eq!(ev.len(), 3);
+    /// assert!(ev.iter().all(|(v, m)| *m == 1 && v.to_string().starts_with("RootOf")));
+    /// let sum: f64 = ev.iter().map(|(v, _)| v.eval_f64().unwrap()).sum();
+    /// assert!((sum - 12.0).abs() < 1e-9); // Σλ = tr(A)
+    /// ```
     ///
     /// If the solver cannot find every root, the multiplicities sum to less
     /// than `n` and a warning is logged.
@@ -1401,13 +1592,22 @@ impl Matrix {
             let mut acc = coeffs[0].clone();
             for (k, c) in coeffs.iter().enumerate().skip(1) {
                 if !c.is_zero_structural() {
-                    acc = acc + c * &lam.powi(k as i64);
+                    acc += c * &lam.powi(k as i64);
                 }
             }
             acc.expand()
         };
 
-        let mut pairs = eigvals_with_multiplicity(&cp, lam);
+        // 1×1 / 2×2 with symbolic coefficients: the explicit linear /
+        // quadratic formula (with a friendly square root of the
+        // discriminant) beats the generic solver, whose `√(−ω²)` forms
+        // stop `A − λI` pivots from cancelling.
+        let symbolic = coeffs.iter().any(|c| c.expr_type() != ExprType::Number);
+        let mut pairs = if n <= 2 && symbolic {
+            low_degree_roots(&coeffs)
+        } else {
+            eigvals_with_multiplicity(&cp, lam)
+        };
         let mut total: usize = pairs.iter().map(|(_, m)| *m).sum();
 
         // Closed-form fallback for low degree with symbolic coefficients.
@@ -1575,8 +1775,8 @@ impl Matrix {
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
     /// - [`SymplexError::ComputationFailed`] if the matrix is not
-    ///   diagonalizable or the eigenvalue solver could not find all
-    ///   eigenvalues.
+    ///   diagonalizable, the eigenvalue solver could not find all
+    ///   eigenvalues, or the eigenvectors exceed [`EXPRESSION_BUDGET`].
     ///
     /// # Examples
     ///
@@ -1591,11 +1791,12 @@ impl Matrix {
     /// ```
     pub fn diagonalize(&self) -> Result<(Matrix, Matrix), SymplexError> {
         self.require_square("diagonalize")?;
+        self.check_budget("diagonalize")?;
         debug!(
             "diagonalize: attempting for {}×{} matrix",
             self.nrows, self.ncols
         );
-        let eigvs = self.eigenvects()?;
+        let eigvs = self.eigenvects().map_err(|e| reop(e, "diagonalize"))?;
         let n = self.nrows;
         let mut total_vecs = 0usize;
         for (_, alg_mult, vecs) in &eigvs {
@@ -1624,6 +1825,7 @@ impl Matrix {
             }
         }
         let p = Matrix::hstack(&p_cols)?;
+        p.check_budget("diagonalize")?;
         let d = Matrix::diag(&diag_entries);
         Ok((p, d))
     }
@@ -1639,7 +1841,8 @@ impl Matrix {
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
     /// - [`SymplexError::ComputationFailed`] if the eigenvalue solver cannot
-    ///   find all eigenvalues.
+    ///   find all eigenvalues or an intermediate result exceeds
+    ///   [`EXPRESSION_BUDGET`].
     ///
     /// # Examples
     ///
@@ -1654,11 +1857,12 @@ impl Matrix {
     /// ```
     pub fn jordan_form(&self) -> Result<(Matrix, Matrix), SymplexError> {
         self.require_square("jordan_form")?;
+        self.check_budget("jordan_form")?;
         let n = self.nrows;
         debug!(n, "jordan_form: computing for {}×{} matrix", n, n);
         let eye = Matrix::identity(&self.ctx(), n);
 
-        let eigvs = self.eigenvects()?;
+        let eigvs = self.eigenvects().map_err(|e| reop(e, "jordan_form"))?;
 
         // Fast path: diagonalizable.
         let total_vecs: usize = eigvs.iter().map(|(_, _, v)| v.len()).sum();
@@ -1698,6 +1902,7 @@ impl Matrix {
                 }
                 chain.push(nullity);
                 power = power.matmul(&a_minus_lambda)?;
+                power.check_budget("jordan_form")?;
             }
 
             // block_counts[i] = number of Jordan blocks of size (i+1).
@@ -1777,6 +1982,7 @@ impl Matrix {
         let j = Matrix::from_rows_unchecked(jordan_rows);
         let col_refs: Vec<&Matrix> = basis_cols.iter().collect();
         let p = Matrix::hstack(&col_refs)?;
+        p.check_budget("jordan_form")?;
         Ok((p, j))
     }
 
@@ -1872,7 +2078,8 @@ impl Matrix {
     ///
     /// - [`SymplexError::InvalidArgument`] if the matrix is not square.
     /// - [`SymplexError::ComputationFailed`] if the Jordan form cannot be
-    ///   computed (eigenvalues not found in closed form).
+    ///   computed (eigenvalues not found in closed form) or the result
+    ///   exceeds [`EXPRESSION_BUDGET`].
     ///
     /// # Examples
     ///
@@ -1925,13 +2132,18 @@ impl Matrix {
         let n = self.nrows;
         let ctx = self.ctx();
 
-        let (p, j) = self.jordan_form().map_err(|e| {
-            failed(
+        let (p, j) = self.jordan_form().map_err(|e| match e {
+            SymplexError::ComputationFailed { reason, .. }
+                if reason.starts_with("expression swell") =>
+            {
+                failed("matrix_exp", reason)
+            }
+            e => failed(
                 "matrix_exp",
                 format!(
                     "Jordan form unavailable ({e}); use exp_series(order) for a truncated approximation"
                 ),
-            )
+            ),
         })?;
 
         let mut exp_j_rows: Vec<Vec<Ex>> = vec![vec![self.ctx_zero(); n]; n];
@@ -1960,10 +2172,10 @@ impl Matrix {
                     let d = jj - i;
                     let factorial_val = ctx.int(factorial_usize(d) as i64);
                     let mut entry = &exp_lambda / &factorial_val;
-                    if d > 0 {
-                        if let Some(t) = t {
-                            entry = entry * t.powi(d as i64);
-                        }
+                    if d > 0
+                        && let Some(t) = t
+                    {
+                        entry *= t.powi(d as i64);
                     }
                     exp_j_rows[col + i][col + jj] = entry;
                 }
@@ -1972,14 +2184,36 @@ impl Matrix {
         }
         let exp_j = Matrix::from_rows_unchecked(exp_j_rows);
 
-        let p_inv = p.inv().map_err(|_| {
-            failed(
+        let p_inv = p.inv().map_err(|e| match e {
+            SymplexError::ComputationFailed { reason, .. }
+                if reason.starts_with("expression swell") =>
+            {
+                failed("matrix_exp", reason)
+            }
+            _ => failed(
                 "matrix_exp",
                 "eigenvector matrix is singular (internal inconsistency)",
-            )
+            ),
         })?;
         let result = p.matmul(&exp_j)?.matmul(&p_inv)?;
-        Ok(result.map(|e| e.simplify()))
+        result.check_budget("matrix_exp")?;
+        let i_unit = ctx.i_unit();
+        Ok(result.map(|e| {
+            // `simplify` cannot do anything useful with `RootOf` values but
+            // is very slow on them; constant folding is all they need.
+            if has_root_of(e) {
+                return e.eval();
+            }
+            let s = e.simplify();
+            // Complex-conjugate eigenvalue pairs: Euler's formula turns
+            // `½e^{iωt} + ½e^{−iωt}` into `cos(ωt)` (valid for any complex
+            // argument, so no realness assumption is needed).
+            if s.contains(&i_unit) {
+                s.rewrite_as_trig().expand().simplify()
+            } else {
+                s
+            }
+        }))
     }
 
     // ── Pseudo-inverse ─────────────────────────────────────────────────
@@ -2065,16 +2299,45 @@ fn low_degree_roots(coeffs: &[Ex]) -> Vec<(Ex, usize)> {
                 let root = (-c1 / &denom).eval();
                 return vec![(root, 2)];
             }
-            // Keep `sqrt(disc)` rather than simplifying to `abs(…)`: as a
-            // *set* the two roots are the same either way, and the radical
-            // form is friendlier for downstream algebra.
-            let sq = disc.sqrt();
+            let sq = quadratic_sqrt(&disc);
             let r1 = (&(-c1 + &sq) / &denom).eval();
             let r2 = (&(-c1 - &sq) / &denom).eval();
             vec![(r1, 1), (r2, 1)]
         }
         _ => Vec::new(),
     }
+}
+
+/// A square root of `disc` for the quadratic formula.
+///
+/// Any `r` with `r² = disc` yields the same *set* `{(−b ± r)/2a}`, so we
+/// are free to pick the friendliest one.  When `±disc` is a perfect square
+/// (`4ω²`, `(a−d)²`, …) the evaluator returns `2·|ω|`; dropping the
+/// absolute value (the other sign is also a square root) gives `2ω`, and
+/// for negative discriminants `2·i·ω` instead of `√(−4ω²)`.  The nice form
+/// matters downstream: `A − λI` pivots then cancel structurally, which is
+/// what makes `eigenvects` / `matrix_exp` of e.g. `[[0, −ω], [ω, 0]]` work
+/// without sign assumptions on `ω`.  Falls back to `disc.sqrt()`.
+fn quadratic_sqrt(disc: &Ex) -> Ex {
+    use crate::base::node::ExprNode;
+    let ctx = disc.context();
+    let strip_abs = |e: &Ex| {
+        e.replace(|v| match v.node() {
+            ExprNode::Abs(inner) => Some(e.wrap(*inner)),
+            _ => None,
+        })
+    };
+    for (base, factor) in [(disc.clone(), ctx.one()), ((-disc).eval(), ctx.i_unit())] {
+        let root = strip_abs(&base.sqrt().simplify());
+        if has_radical(&root) {
+            continue;
+        }
+        let check = (&root.powi(2).expand() - &base.expand()).expand();
+        if check.is_zero_structural() {
+            return (&factor * &root).eval();
+        }
+    }
+    disc.sqrt()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2596,7 +2859,20 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
             crate::poly::polybridge::poly_to_expr(&mut write_inner.arena, factor, var.raw_id());
         drop(write_inner);
         let factor_ex = char_poly.wrap(factor_expr);
-        let roots = factor_ex.solve_or_empty(var);
+        let roots = if (3..=4).contains(&degree) && !radical_form_is_compact(factor) {
+            // Irreducible cubic/quartic without a compact radical form: the
+            // Cardano/Ferrari expressions (nested complex cube roots) make
+            // every downstream step — eigenvectors, P⁻¹, simplify — swell
+            // exponentially.  `RootOf` is exact, small and numerically
+            // evaluable, so it is the better closed form here.
+            debug!(
+                degree,
+                "eigvals_via_poly_factor: irreducible factor without compact radicals → RootOf"
+            );
+            (0..degree).map(|i| root_of(&factor_ex, i)).collect()
+        } else {
+            factor_ex.solve_or_empty(var)
+        };
         if roots.is_empty() {
             warn!(
                 "eigenvals: irreducible factor of degree {} yielded no roots — \
@@ -2618,6 +2894,47 @@ fn eigvals_via_poly_factor(char_poly: &Ex, var: &Ex) -> Option<Vec<(Ex, usize)>>
         }
     }
     Some(eigen_pairs)
+}
+
+/// `RootOf(poly, index)` — the `index`-th root (Aberth ordering: by real
+/// part, then imaginary part) of the univariate polynomial `poly`.
+fn root_of(poly: &Ex, index: usize) -> Ex {
+    let mut inner = poly.inner.write();
+    let idx = inner.arena.int(index as i64);
+    let id = inner
+        .arena
+        .intern(crate::base::node::ExprNode::RootOf(poly.raw_id(), idx));
+    drop(inner);
+    poly.wrap(id)
+}
+
+/// Does an irreducible cubic or quartic over ℤ have a *compact* radical
+/// form worth returning instead of `RootOf`?
+///
+/// After the Tschirnhaus shift `x = y − b/(n·a)` the polynomial is
+/// "depressed"; if the remaining odd-degree coefficient vanishes the
+/// roots are a rational shift plus a single cube root (cubic `y³ + q`)
+/// or nested square roots (biquadratic `y⁴ + p·y² + r`).  Everything else
+/// needs the full Cardano/Ferrari formulas, whose casus-irreducibilis
+/// complex cube roots are enormous and unsimplifiable.
+fn radical_form_is_compact(f: &crate::poly::dense::Poly) -> bool {
+    use num_bigint::BigInt;
+    let Some(n) = f.degree() else { return true };
+    let c = |i: usize| f.coeff(i);
+    let k = |v: i64| num_rational::Ratio::from_integer(BigInt::from(v));
+    match n {
+        // y³ + p y + q with p = (3ac − b²)/(3a²): compact iff p = 0.
+        3 => &(&c(3) * &c(1)) * &k(3) == &c(2) * &c(2),
+        // Linear coefficient of the depressed quartic ∝ b³ − 4abc + 8a²d.
+        4 => {
+            let (a, b, cc, d) = (c(4), c(3), c(2), c(1));
+            let b3 = &(&b * &b) * &b;
+            let abc = &(&(&a * &b) * &cc) * &k(4);
+            let aad = &(&(&a * &a) * &d) * &k(8);
+            &(&b3 - &abc) + &aad == k(0)
+        }
+        _ => true,
+    }
 }
 
 /// Fallback: derivative-based multiplicity detection.
@@ -2661,8 +2978,9 @@ fn eigvals_via_derivative(char_poly: &Ex, var: &Ex) -> Vec<(Ex, usize)> {
 
 /// Zero test used inside the eigen-family (pivot selection in
 /// `A − λI`): structural, then the simplifying three-valued test, then —
-/// for constant expressions such as nested radicals that `simplify` cannot
-/// collapse — numeric evaluation with a tight tolerance.
+/// for constant expressions such as nested radicals or `RootOf` values
+/// that `simplify` cannot collapse — numeric evaluation with a tight
+/// tolerance.
 ///
 /// The numeric fallback is sound here because `λ` is an exact eigenvalue:
 /// `A − λI` *is* singular, so a pivot candidate that evaluates to ~1e-15
@@ -2677,8 +2995,7 @@ fn eigen_zero_test(e: &Ex) -> bool {
     match ex_is_zero(e) {
         Some(b) => b,
         None => {
-            e.is_constant()
-                && matches!(e.eval_complex64(), Ok((re, im)) if re.abs() < 1e-10 && im.abs() < 1e-10)
+            matches!(e.eval_complex64(), Ok((re, im)) if re.abs() < 1e-10 && im.abs() < 1e-10)
         }
     }
 }
@@ -2713,8 +3030,9 @@ fn factorial_usize(n: usize) -> usize {
     (1..=n).product::<usize>().max(1)
 }
 
-/// Pick a vector from `candidates` that is linearly independent from all
-/// vectors in `exclude`.  Uses RREF to check independence.
+/// Pick a vector from `candidates` that lies outside the span of
+/// `exclude` (which may itself be linearly dependent or contain
+/// duplicates).  A candidate qualifies when appending it raises the rank.
 fn pick_independent_vec(
     candidates: &[Matrix],
     exclude: &[&Matrix],
@@ -2725,11 +3043,12 @@ fn pick_independent_vec(
     if exclude.is_empty() {
         return Ok(Some(candidates[0].clone()));
     }
+    let base_rank = Matrix::hstack(exclude)?.rank_semantic();
     for candidate in candidates {
         let mut cols: Vec<&Matrix> = exclude.to_vec();
         cols.push(candidate);
         let combined = Matrix::hstack(&cols)?;
-        if combined.rank_semantic() == cols.len() {
+        if combined.rank_semantic() > base_rank {
             return Ok(Some(candidate.clone()));
         }
     }
@@ -3446,7 +3765,7 @@ mod tests {
         // Cross-check against Laplace expansion along the first row.
         let mut expected = ctx.zero();
         for j in 0..4 {
-            expected = expected + m.get(0, j) * &m.cofactor(0, j).unwrap();
+            expected += m.get(0, j) * &m.cofactor(0, j).unwrap();
         }
         assert!((&d - &expected).expand().is_zero_structural());
     }
@@ -3869,13 +4188,18 @@ mod tests {
 
         let rot = Matrix::from_i64(&ctx, &[&[0, 1], &[-1, 0]]).unwrap();
         let et = rot.matrix_exp_t(&t).unwrap();
-        // Compare with [[cos t, sin t], [−sin t, cos t]] numerically at t = 0.7
+        // Exactly [[cos t, sin t], [−sin t, cos t]] (Euler rewrite of e^{±it}).
+        assert_eq!(et.get(0, 0), &t.cos());
+        assert_eq!(et.get(0, 1), &t.sin());
+        assert_eq!(et.get(1, 0), &(-&t.sin()));
+        assert_eq!(et.get(1, 1), &t.cos());
+        // …and numerically at t = 0.7
         let at = et.subs(&t, &ctx.rational(7, 10));
         let expect = [[0.7f64.cos(), 0.7f64.sin()], [-0.7f64.sin(), 0.7f64.cos()]];
-        for i in 0..2 {
-            for j in 0..2 {
+        for (i, row) in expect.iter().enumerate() {
+            for (j, want) in row.iter().enumerate() {
                 let (re, im) = at.get(i, j).eval_complex64().unwrap();
-                assert!((re - expect[i][j]).abs() < 1e-12, "({i},{j}) re={re}");
+                assert!((re - want).abs() < 1e-12, "({i},{j}) re={re}");
                 assert!(im.abs() < 1e-12, "({i},{j}) im={im}");
             }
         }

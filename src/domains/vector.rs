@@ -460,7 +460,7 @@ pub fn line_integral_scalar(f: &Ex, vars: &[&Ex], curve: &[Ex], t: &Ex, a: &Ex, 
     let mut speed_sq = ctx.zero();
     for (v, c) in vars.iter().zip(curve.iter()) {
         f_on_curve = f_on_curve.subs(v, c);
-        speed_sq = speed_sq + c.diff(t).powi(2);
+        speed_sq += c.diff(t).powi(2);
     }
     let integrand = (&f_on_curve * &speed_sq.simplify().sqrt()).simplify();
     definite(&integrand, t, a, b)
@@ -513,7 +513,7 @@ pub fn line_integral_vector(
         for (v, cc) in vars.iter().zip(curve.iter()) {
             fi = fi.subs(v, cc);
         }
-        integrand = integrand + &fi * &c.diff(t);
+        integrand += &fi * &c.diff(t);
     }
     definite(&integrand.simplify(), t, a, b)
 }

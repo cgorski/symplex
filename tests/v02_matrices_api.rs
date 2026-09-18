@@ -8,11 +8,24 @@ fn mi(ctx: &Context, rows: &[&[i64]]) -> Matrix {
     Matrix::from_i64(ctx, rows).unwrap()
 }
 
-/// Every entry of `m` simplifies to zero.
+/// Every entry of `m` is zero: structurally after `expand().eval()`,
+/// numerically (|·| < 1e-9) for constants the simplifier cannot collapse
+/// (nested radicals in denominators), or structurally after `simplify()`.
 fn assert_zero(m: &Matrix, label: &str) {
     for i in 0..m.nrows() {
         for j in 0..m.ncols() {
-            let d = m.get(i, j).expand().eval().simplify();
+            let d = m.get(i, j).expand().eval();
+            if d.is_zero_structural() {
+                continue;
+            }
+            if let Ok((re, im)) = d.eval_complex64() {
+                assert!(
+                    re.abs() < 1e-9 && im.abs() < 1e-9,
+                    "{label}: ({i},{j}) ≈ {re}+{im}i"
+                );
+                continue;
+            }
+            let d = d.simplify();
             assert!(d.is_zero_structural(), "{label}: ({i},{j}) = {d}");
         }
     }
@@ -130,22 +143,41 @@ fn eigen_symbolic_2x2_closed_form() {
 }
 
 #[test]
-fn diagonalize_and_jordan_reconstruct() {
+fn diagonalize_reconstructs_quadratic_radical_eigenvalues() {
     let ctx = Context::new();
-    let m = matrix![ctx, [4, 1, 2], [1, 3, 1], [2, 1, 5]];
-    // Symmetric with distinct eigenvalues (irrational) → diagonalizable.
+    // det(A − λI) = (1 − λ)(λ² − 4λ + 2): eigenvalues 1 and 2 ± √2
+    // (irrational but quadratic → closed-form radicals are kept).
+    let m = matrix![ctx, [2, 2, 1], [1, 2, 1], [0, 0, 1]];
     assert_eq!(m.is_diagonalizable(), Some(true));
     let (p, d) = m.diagonalize().unwrap();
     assert_eq!(d.is_diagonal(), Some(true));
+    assert!(d.iter().all(|e| !e.to_string().contains("RootOf")), "{d}");
+    let two_root_two = &ctx.int(2) + &ctx.int(2).sqrt();
+    assert!(
+        d.diagonal()
+            .iter()
+            .any(|e| e.equals(&two_root_two) == Some(true)),
+        "{d}"
+    );
     let back = &(&p * &d) * &p.inv().unwrap();
-    let diff = (&back - &m).eval();
-    for i in 0..3 {
-        for j in 0..3 {
-            let v = diff.get(i, j).simplify().eval_f64().unwrap();
-            assert!(v.abs() < 1e-9, "P D P⁻¹ ≠ A at ({i},{j}): {v}");
-        }
-    }
+    assert_zero(&(&back - &m), "P D P⁻¹ = A");
+}
 
+#[test]
+fn diagonalize_reconstructs_rational_eigenvalues() {
+    let ctx = Context::new();
+    let m = matrix![ctx, [4, 1, 2], [0, 3, 1], [0, 0, 5]];
+    let (p, d) = m.diagonalize().unwrap();
+    let mut diag: Vec<String> = d.diagonal().iter().map(|e| e.to_string()).collect();
+    diag.sort();
+    assert_eq!(diag, ["3", "4", "5"]);
+    let back = (&(&p * &d) * &p.inv().unwrap()).eval();
+    assert_eq!(back, m);
+}
+
+#[test]
+fn jordan_form_reconstructs_defective_3x3() {
+    let ctx = Context::new();
     // Defective 3×3: one Jordan block of size 2 and one of size 1.
     let j3 = matrix![ctx, [5, 1, 0], [0, 5, 0], [0, 0, 7]];
     assert_eq!(j3.is_diagonalizable(), Some(false));
@@ -153,6 +185,162 @@ fn diagonalize_and_jordan_reconstruct() {
     let (p, j) = j3.jordan_form().unwrap();
     assert_zero(&(&(&(&p * &j) * &p.inv().unwrap()) - &j3), "P J P⁻¹ = A");
     assert!(j.get(0, 1).is_one_structural() || j.get(1, 2).is_one_structural());
+}
+
+#[test]
+fn jordan_form_two_nilpotent_blocks() {
+    let ctx = Context::new();
+    let n = matrix![ctx, [0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1], [0, 0, 0, 0]];
+    let (p, j) = n.jordan_form().unwrap();
+    assert_eq!((&(&p * &j) * &p.inv().unwrap()).eval(), n);
+    let ones = j.iter().filter(|e| e.is_one_structural()).count();
+    assert_eq!(ones, 2, "two J₂(0) blocks: {j}");
+}
+
+/// Irreducible cubic characteristic polynomial (casus irreducibilis):
+/// the Cardano forms would make `P⁻¹` swell without bound, so the eigen
+/// family must answer with `RootOf` values — quickly.
+#[test]
+fn cubic_eigenvalues_use_rootof_and_finish_fast() {
+    let ctx = Context::new();
+    let m = matrix![ctx, [4, 1, 2], [1, 3, 1], [2, 1, 5]];
+    let start = std::time::Instant::now();
+    let ev = m.eigenvals().unwrap();
+    assert_eq!(ev.len(), 3);
+    for e in &ev {
+        let s = e.to_string();
+        assert!(
+            s.contains("RootOf") && s.contains('λ') && !s.contains("__"),
+            "{s}"
+        );
+    }
+    let (p, d) = m.diagonalize().unwrap();
+    let back = &(&p * &d) * &p.inv().unwrap();
+    for i in 0..3 {
+        for j in 0..3 {
+            let v = (back.get(i, j) - m.get(i, j)).eval_f64().unwrap();
+            assert!(v.abs() < 1e-9, "P D P⁻¹ ≠ A at ({i},{j}): {v}");
+        }
+    }
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn compact_cubic_and_biquadratic_keep_radicals() {
+    let ctx = Context::new();
+    // λ³ = 2 → cbrt(2)·ωᵏ (companion matrix)
+    let c = matrix![ctx, [0, 0, 2], [1, 0, 0], [0, 1, 0]];
+    let ev = c.eigenvals().unwrap();
+    assert_eq!(ev.len(), 3);
+    assert!(
+        ev.iter().all(|e| !e.to_string().contains("RootOf")),
+        "{ev:?}"
+    );
+    let real = ev
+        .iter()
+        .filter_map(|e| e.eval_f64().ok())
+        .find(|v| (v - 2f64.cbrt()).abs() < 1e-9);
+    assert!(real.is_some(), "{ev:?}");
+    // λ⁴ − 10λ² + 1 → ±√2 ± √3
+    let b = matrix![
+        ctx,
+        [0, 0, 0, -1],
+        [1, 0, 0, 0],
+        [0, 1, 0, 10],
+        [0, 0, 1, 0]
+    ];
+    let ev = b.eigenvals().unwrap();
+    assert_eq!(ev.len(), 4);
+    assert!(
+        ev.iter().all(|e| !e.to_string().contains("RootOf")),
+        "{ev:?}"
+    );
+    let mut vals: Vec<f64> = ev.iter().map(|e| e.eval_f64().unwrap()).collect();
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let (s2, s3) = (2f64.sqrt(), 3f64.sqrt());
+    let expect = [-s2 - s3, -s3 + s2, s3 - s2, s2 + s3];
+    for (g, e) in vals.iter().zip(expect) {
+        assert!((g - e).abs() < 1e-9, "{vals:?}");
+    }
+}
+
+#[test]
+fn matrix_exp_t_rotation_generator_gives_trig() {
+    let ctx = Context::new();
+    let (w, t) = (ctx.symbol("omega"), ctx.symbol("t"));
+    let g = Matrix::new(vec![vec![ctx.zero(), -&w], vec![w.clone(), ctx.zero()]]).unwrap();
+    let e = g.matrix_exp_t(&t).unwrap();
+    let wt = &w * &t;
+    assert_eq!(e[(0, 0)], wt.cos());
+    assert_eq!(e[(1, 1)], wt.cos());
+    assert_eq!(e[(1, 0)], wt.sin());
+    assert_eq!(e[(0, 1)], -&wt.sin());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Expression-swell budget
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A tiny DAG whose tree is enormous (≈ 2¹⁸ nodes): eₙ₊₁ = sin(eₙ) + cos(eₙ).
+fn huge_tree(ctx: &Context) -> Ex {
+    let mut e = ctx.symbol("x");
+    for _ in 0..16 {
+        e = &e.sin() + &e.cos();
+    }
+    e
+}
+
+fn is_swell<T>(r: Result<T, SymplexError>) -> bool {
+    matches!(r, Err(SymplexError::ComputationFailed { reason, .. }) if reason.starts_with("expression swell"))
+}
+
+#[test]
+fn budget_rejects_huge_inputs_quickly() {
+    let ctx = Context::new();
+    let e = huge_tree(&ctx);
+    let m = Matrix::new(vec![
+        vec![e.clone(), ctx.int(1)],
+        vec![ctx.int(1), e.clone()],
+    ])
+    .unwrap();
+    let start = std::time::Instant::now();
+    assert!(is_swell(m.det()));
+    assert!(is_swell(m.inv()));
+    assert!(is_swell(m.solve(&matrix![ctx, [1], [1]])));
+    assert!(is_swell(m.char_poly_coeffs()));
+    assert!(is_swell(m.diagonalize()));
+    assert!(is_swell(m.jordan_form()));
+    assert!(is_swell(m.matrix_exp()));
+    assert!(is_swell(m.qr()));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn budget_passes_ordinary_symbolic_work() {
+    let ctx = Context::new();
+    let syms: Vec<Ex> = (0..25).map(|k| ctx.symbol(&format!("a{k}"))).collect();
+    let m = Matrix::from_fn(5, 5, |i, j| syms[i * 5 + j].clone());
+    let start = std::time::Instant::now();
+    let d = m.det().unwrap();
+    assert_eq!(d.term_count(), 120);
+    let lam = ctx.symbol("lambda");
+    let cp = m.char_poly(&lam).unwrap();
+    // Leading term (−λ)⁵ present, constant term is det(A).
+    assert!(cp.contains(&lam.powi(5)), "{cp}");
+    assert_eq!(cp.subs(&lam, &ctx.zero()).expand(), d.expand());
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        start.elapsed()
+    );
 }
 
 #[test]
