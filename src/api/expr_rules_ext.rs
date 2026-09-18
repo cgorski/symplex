@@ -1,7 +1,7 @@
 //! Public rewrite-rule engine and simplification extensions on [`Ex`](crate::api::expr::Ex).
 //!
 //! This module is the user-facing half of the pattern-matching engine in
-//! [`crate::transforms::pattern`].  It provides:
+//! `crate::transforms::pattern` (crate-internal).  It provides:
 //!
 //! * [`Rule`] — a named rewrite rule built from two expressions
 //!   (`lhs → rhs`) whose symbols ending in `_` are wildcards, optionally
@@ -24,7 +24,7 @@
 //! | `rest__`    | *sequence* wildcard: absorbs the remaining terms of an `Add`/`Mul`, possibly none (binding to `0`/`1`) |
 //!
 //! `Add` and `Mul` are matched associatively and commutatively with a
-//! bounded backtracking search (see [`MATCH_BUDGET`](crate::transforms::pattern::MATCH_BUDGET));
+//! bounded backtracking search (see the internal `MATCH_BUDGET` constant);
 //! every other node is matched structurally.
 //!
 //! # Example

@@ -47,8 +47,6 @@ use crate::base::assumptions::Props;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 
-pub use crate::api::expr_rules_ext::Step;
-
 // ═══════════════════════════════════════════════════════════════════════════
 // WildId — pattern variable identifier
 // ═══════════════════════════════════════════════════════════════════════════

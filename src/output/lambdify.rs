@@ -1,7 +1,7 @@
 //! Compile symbolic expressions to callable numerical functions.
 //!
-//! [`compile`] lowers one or more expressions into a compact stack-VM
-//! program ([`Program`]) after a shared common-subexpression-elimination
+//! [`Ex::compile`](crate::api::expr::Ex::compile) lowers one or more expressions into a compact stack-VM
+//! program after a shared common-subexpression-elimination
 //! pass.  The program is wrapped in [`CompiledFn`] (scalar) or
 //! [`CompiledFnVec`] (vector-valued) handles that are `Clone + Send + Sync`
 //! and evaluate without touching the arena or taking any locks.
@@ -11,7 +11,7 @@
 //! binomials), Bessel functions and orthogonal polynomials with integer
 //! order, integer sequences, piecewise expressions and boolean/relational
 //! nodes (represented as `0.0`/`1.0`).  The special-function algorithms live
-//! in [`numeric_rt`](crate::output::codegen::numeric_rt) and are shared with
+//! in the crate-internal `numeric_rt` module and are shared with
 //! the Rust code generator, so `compile()` and `to_rust_fn()` agree bit for
 //! bit on those routines.
 //!

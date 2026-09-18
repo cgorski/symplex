@@ -142,10 +142,24 @@ pub use api::context;
 pub use api::eq;
 /// The core expression handle and types.
 pub use api::expr;
+/// Operator overloads and scalar-conversion traits (`ToEx`, `Scalar`).
+pub use api::expr_ops;
+/// Public rewrite-rule engine: `Rule`, `RuleSet`, `Bindings`, `RewriteOpts`, `Step`.
+pub use api::expr_rules_ext as rules;
+/// Set-algebra and boolean-logic helpers (`reduce_inequalities`).
+pub use api::expr_sets_ext as sets_api;
+/// Solver entry points beyond `Ex::solve`: `linsolve`, `LinearSolution`, `GeneralSolution`, Newton systems.
+pub use api::expr_solve_ext as solvers;
 /// A non-locking, read-only view of an expression node for use in `replace()`.
 pub use api::expr_view;
 /// Convenience macros for building expressions.
 pub use api::macros;
+
+// output
+/// Code-generation options and compiled numeric functions.
+pub use output::codegen;
+/// Compiled numeric closures (`CompiledFn`, `CompiledFnVec`).
+pub use output::lambdify;
 
 // ── Proc macro re-exports ──────────────────────────────────────────────
 pub use symplex_macros::{dim, eq, expr, matrix, rule};
@@ -177,14 +191,26 @@ pub mod prelude {
     pub use crate::api::expr::{
         BoolEx, Boolean, Ex, Expr, ExprType, Numeric, SetEx, SetValued, SimplifyOpts, Sort,
     };
+    pub use crate::api::expr_ops::{Scalar, ToEx};
+    pub use crate::api::expr_rules_ext::{
+        Bindings, RewriteOpts, RewriteStrategy, Rule, RuleSet, Step,
+    };
+    pub use crate::api::expr_sets_ext::reduce_inequalities;
+    pub use crate::api::expr_solve_ext::{
+        GeneralSolution, LinearSolution, NewtonOpts, ZeroForm, linsolve, linsolve_matrix,
+        solve_numeric_system, solve_numeric_system_with,
+    };
     pub use crate::api::expr_view::ExprView;
     pub use crate::base::assumptions::{Assumption, Assumptions, Props};
     pub use crate::base::config::EvalConfig;
     pub use crate::base::errors::SymplexError;
+    pub use crate::calculus::definite::QuadOpts;
     pub use crate::domains::control::{StateSpace, TransferFunction};
     pub use crate::domains::matrix::Matrix;
     pub use crate::domains::quaternion::Quaternion;
-    pub use crate::transforms::pattern::Step;
+    pub use crate::output::codegen::{CodegenOptions, MathBackend, Precision};
+    pub use crate::output::lambdify::{CompiledFn, CompiledFnVec};
+    pub use crate::transforms::expand::ExpandOpts;
     pub use symplex_macros::{dim, eq, expr, matrix, rule};
 
     // NOTE: `vars!`, `syms!`, and `sym!` are `#[macro_export]` macros and

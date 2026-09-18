@@ -31,7 +31,7 @@
 //!   precedence than `*` and `+`, so `x ^ 2 * 3 + 1` would silently mean
 //!   `x ^ (2 * 3 + 1) = x^7`.  A power operator that reads correctly in
 //!   Rust source is impossible; use [`Ex::powi`](crate::expr::Ex::powi),
-//!   [`Ex::pow`](crate::expr::Ex::pow), or the [`expr!`](crate::expr) macro
+//!   [`Ex::pow`](crate::expr::Ex::pow), or the [`expr!`](macro@crate::expr) macro
 //!   (which re-parses `^` with mathematical precedence).
 //! * **`From<i64>` / `FromStr` for `Ex`.**  An expression must live in a
 //!   [`Context`]; there is no global context to build it in.  Use
