@@ -77,7 +77,7 @@ fn main() {
     let basis = integer_nullspace(&k).unwrap();
     for (i, b) in basis.iter().enumerate() {
         let img = (&k * b).eval();
-        assert_eq!(img.is_zero_matrix(), Some(true));
+        assert_eq!(img.is_zero(), Some(true));
         println!("k{i} = {:?}   A·k{i} = {img}", b.col(0));
     }
     // Rational nullspace scaled to integers spans only an index-2 sublattice.

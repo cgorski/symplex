@@ -628,6 +628,41 @@ fn display_lists_expression_then_generators() {
     );
 }
 
+/// `Display` follows `terms()` (lex-descending), not the arena's canonical
+/// order, so the leading term comes first and coefficients are printed with
+/// their sign folded into the separator.
+#[test]
+fn display_prints_terms_in_lex_descending_order() {
+    let (ctx, x, y) = ctx_xy();
+    let p = Poly::new(&(&x + 2 * &y).powi(3), &[&x, &y]).unwrap();
+    assert_eq!(s(&p), "Poly(x^3 + 6*x^2*y + 12*x*y^2 + 8*y^3, x, y)");
+    // Leading term first even when the arena would print it elsewhere.
+    let q = Poly::new(&(&x.powi(3) + 4 * &x.powi(2) * &y - &y.powi(3)), &[&x, &y]).unwrap();
+    assert_eq!(s(&q), "Poly(x^3 + 4*x^2*y - y^3, x, y)");
+    // Negative leading coefficient, rational coefficients, constant term.
+    let r = Poly::new(
+        &(-&x.powi(2) + ctx.rational(3, 2) * &x - ctx.rational(1, 4)),
+        &[&x],
+    )
+    .unwrap();
+    assert_eq!(s(&r), "Poly(-x^2 + 3/2*x - 1/4, x)");
+    // Symbolic coefficients: sums are parenthesised, negatives fold into
+    // the separator, constant terms are printed bare.
+    let (_c, j, rr, f, e) = motivating();
+    let m = Poly::new(&e, &[&rr, &f]).unwrap();
+    assert_eq!(s(&m), "Poly(j*r^2 + (j + 1)*r*f + 3, r, f)");
+    let n = Poly::new(&(-2 * &j * &rr + &j + 1), &[&rr]).unwrap();
+    assert_eq!(s(&n), "Poly(-2*j*r + j + 1, r)");
+    // Zero polynomial.
+    let z = Poly::zero(&ctx, &[&x, &y]).unwrap();
+    assert_eq!(s(&z), "Poly(0, x, y)");
+    // Round trip: the printed body re-parses to the same polynomial.
+    let body = s(&q);
+    let body = &body["Poly(".len()..body.len() - ", x, y".len() - 1];
+    let back = Poly::new(&ctx.parse(body).unwrap(), &[&x, &y]).unwrap();
+    assert!(back.equals(&q), "{body}");
+}
+
 #[test]
 fn debug_and_clone_work() {
     let (_ctx, x, _y) = ctx_xy();

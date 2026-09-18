@@ -22,7 +22,7 @@ fn main() {
 
     let e = (&x + &y * 2).powi(2) * &x - &y.powi(3);
     let p = e.as_poly(&[&x, &y]).unwrap();
-    println!("{p}");                                    // Poly(x^3 + 4*x*y^2 - y^3 + 4*y*x^2, x, y)
+    println!("{p}");                                    // Poly(x^3 + 4*x^2*y + 4*x*y^2 - y^3, x, y)
     for (mono, coeff) in p.terms() {
         println!("x^{} y^{}  ·  {coeff}", mono[0], mono[1]);
     }

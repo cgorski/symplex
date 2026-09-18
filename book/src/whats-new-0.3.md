@@ -41,7 +41,7 @@ Measured while preparing this page (`grep -c '#[test]'` over `src/` and `tests/`
 
 ## Matrix ergonomics
 
-`extract(&rows, &cols)`, `select_rows`, `select_cols`, `delete_row`, `delete_col`; three-valued `is_zero_matrix` and `is_integer_matrix`; `nnz`; `subs_map` (simultaneous substitution); and exact conversions to and from the `num` types — `to_rational_rows`, `to_bigint_rows`, `Matrix::from_ratio`, `Matrix::from_bigint`, `Matrix::from_f64_rows` (each float becomes the exact dyadic rational it denotes). These are the glue between `Matrix` and the LP / normal-form modules.
+`extract(&rows, &cols)`, `select_rows`, `select_cols`, `delete_row`, `delete_col`; the three-valued `is_integer_matrix` (next to the existing `is_zero`); `nnz`; `subs_map` (simultaneous substitution); and exact conversions to and from the `num` types — `to_rational_rows`, `to_bigint_rows`, `Matrix::from_ratio`, `Matrix::from_bigint`, `Matrix::from_f64_rows` (each float becomes the exact dyadic rational it denotes). These are the glue between `Matrix` and the LP / normal-form modules.
 
 → [Matrices: selecting sub-matrices](./guide/matrices.md#selecting-sub-matrices-and-exact-conversion) · [Integer normal forms](./guide/matrices.md#integer-normal-forms)
 

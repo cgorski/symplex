@@ -17,8 +17,11 @@
 //!                       lⱼ ≤ xⱼ ≤ uⱼ                 (default 0 ≤ xⱼ < ∞)
 //! ```
 //!
-//! [`linprog`] is a SciPy-shaped convenience wrapper and
-//! [`feasible_nonneg`] answers "is there an `x ≥ 0` with `A x = b`?" exactly.
+//! [`linprog`] is a SciPy-shaped convenience wrapper; [`feasible_nonneg`]
+//! answers "is there an `x ≥ 0` with `A x = b`?" exactly,
+//! [`feasible_nonneg_certified`] additionally returns the Farkas certificate
+//! when the answer is no, and [`nonneg_combination`] asks the same question
+//! about a target vector and a list of generating vectors (cone membership).
 //!
 //! # Algorithm and cost
 //!
@@ -81,6 +84,8 @@
 //! // Shadow prices: the first constraint is binding with price 3.
 //! assert_eq!(sol.duals, vec![qi(3), qi(0)]);
 //! ```
+
+use std::fmt;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -364,6 +369,14 @@ impl LpSolution {
     /// The optimal point as exact rational expressions in `ctx`.
     pub fn x_ex(&self, ctx: &Context) -> Vec<Ex> {
         self.x.iter().map(|v| ctx.from_ratio(v.clone())).collect()
+    }
+
+    /// The shadow prices as exact rational expressions in `ctx`.
+    pub fn duals_ex(&self, ctx: &Context) -> Vec<Ex> {
+        self.duals
+            .iter()
+            .map(|v| ctx.from_ratio(v.clone()))
+            .collect()
     }
 
     fn infeasible(farkas: Option<Vec<Q>>) -> Self {
@@ -971,8 +984,74 @@ pub fn linprog(
     p.solve()
 }
 
+/// One-line human-readable summary: status, point, objective and duals.
+///
+/// ```
+/// use symplex::linprog::{LpProblem, qi};
+///
+/// let sol = LpProblem::maximize(vec![qi(3), qi(2)])
+///     .le(vec![qi(1), qi(1)], qi(4))
+///     .le(vec![qi(1), qi(3)], qi(6))
+///     .solve()
+///     .unwrap();
+/// assert_eq!(sol.to_string(), "Optimal: x = (4, 0), objective = 12, duals = (3, 0)");
+/// ```
+impl fmt::Display for LpSolution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let list = |v: &[Q]| {
+            let parts: Vec<String> = v.iter().map(ToString::to_string).collect();
+            format!("({})", parts.join(", "))
+        };
+        match self.status {
+            LpStatus::Optimal => {
+                write!(f, "Optimal: x = {}", list(&self.x))?;
+                if let Some(obj) = &self.objective {
+                    write!(f, ", objective = {obj}")?;
+                }
+                write!(f, ", duals = {}", list(&self.duals))
+            }
+            LpStatus::Infeasible => match &self.farkas {
+                Some(y) => write!(f, "Infeasible: Farkas certificate y = {}", list(y)),
+                None => write!(f, "Infeasible: contradictory bounds"),
+            },
+            LpStatus::Unbounded => write!(f, "Unbounded"),
+        }
+    }
+}
+
+/// Outcome of an exact feasibility question (see [`feasible_nonneg_certified`]
+/// and [`nonneg_combination`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Feasibility {
+    /// A witness `x ≥ 0` with `A x = b`.
+    Feasible(Vec<Q>),
+    /// No such `x`; `farkas` is a vector `y` with `Aᵀy ≥ 0` and `yᵀb < 0`
+    /// (one entry per equation), which proves it.
+    Infeasible {
+        /// The Farkas certificate, `None` only if the solver could not
+        /// produce one (never the case for pure equality systems).
+        farkas: Option<Vec<Q>>,
+    },
+}
+
+impl Feasibility {
+    /// The witness, if feasible.
+    pub fn witness(&self) -> Option<&[Q]> {
+        match self {
+            Feasibility::Feasible(x) => Some(x),
+            Feasibility::Infeasible { .. } => None,
+        }
+    }
+
+    /// `true` for [`Feasibility::Feasible`].
+    pub fn is_feasible(&self) -> bool {
+        matches!(self, Feasibility::Feasible(_))
+    }
+}
+
 /// Exact feasibility of `A x = b, x ≥ 0`: `Some(x)` with a solution, or
-/// `None` if none exists.
+/// `None` if none exists.  Use [`feasible_nonneg_certified`] when you also
+/// want the Farkas certificate for the infeasible case.
 ///
 /// This is the question behind many certificate searches (Farkas,
 /// Positivstellensatz-style combinations, Carathéodory decompositions);
@@ -1020,6 +1099,111 @@ pub fn feasible_nonneg(a_eq: &[Vec<Q>], b_eq: &[Q]) -> Result<Option<Vec<Q>>, Sy
         LpStatus::Infeasible => None,
         // A zero objective cannot be unbounded.
         LpStatus::Unbounded => None,
+    })
+}
+
+/// Like [`feasible_nonneg`], but an infeasible system comes back with its
+/// Farkas certificate: a `y` (one entry per equation) with `Aᵀy ≥ 0`
+/// component-wise and `yᵀb < 0`, so `x ≥ 0 ⇒ yᵀ(Ax) ≥ 0 > yᵀb`.
+///
+/// # Errors
+///
+/// As [`feasible_nonneg`].
+///
+/// # Examples
+///
+/// ```
+/// use symplex::linprog::{feasible_nonneg_certified, Feasibility, qi};
+///
+/// // x + y = 1  and  x + y = 2 cannot both hold.
+/// let a = [vec![qi(1), qi(1)], vec![qi(1), qi(1)]];
+/// match feasible_nonneg_certified(&a, &[qi(1), qi(2)]).unwrap() {
+///     Feasibility::Infeasible { farkas: Some(y) } => {
+///         // Aᵀy = (y₀ + y₁, y₀ + y₁) ≥ 0  and  y₀ + 2·y₁ < 0
+///         let g = &y[0] + &y[1];
+///         assert!(g >= qi(0));
+///         assert!(&y[0] + &y[1] * qi(2) < qi(0));
+///     }
+///     other => panic!("expected a certificate, got {other:?}"),
+/// }
+/// ```
+pub fn feasible_nonneg_certified(a_eq: &[Vec<Q>], b_eq: &[Q]) -> Result<Feasibility, SymplexError> {
+    let Some(first) = a_eq.first() else {
+        return Err(invalid(
+            "feasible_nonneg_certified",
+            "need at least one equation to determine the number of variables",
+        ));
+    };
+    let n = first.len();
+    if n == 0 {
+        return Err(invalid(
+            "feasible_nonneg_certified",
+            "equations must have at least one variable",
+        ));
+    }
+    let sol = linprog(&vec![Q::zero(); n], &[], &[], a_eq, b_eq, &[])?;
+    Ok(match sol.status {
+        LpStatus::Optimal => Feasibility::Feasible(sol.x),
+        LpStatus::Infeasible => Feasibility::Infeasible { farkas: sol.farkas },
+        // A zero objective cannot be unbounded.
+        LpStatus::Unbounded => Feasibility::Infeasible { farkas: None },
+    })
+}
+
+/// Is `target` a non-negative combination `Σ λⱼ vⱼ` of the `vectors`?
+///
+/// The cone-membership form of [`feasible_nonneg_certified`]: the vectors
+/// are the *columns* of `A` (each `vectors[j]` has one entry per coordinate
+/// of `target`), and the answer is the coefficient vector `λ ≥ 0` or a
+/// Farkas certificate `y` with `y·vⱼ ≥ 0` for every `j` and `y·target < 0`
+/// (a hyperplane separating `target` from the cone).
+///
+/// # Errors
+///
+/// [`SymplexError::InvalidArgument`] if `vectors` is empty or some vector
+/// has a different length than `target`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::linprog::{nonneg_combination, Feasibility, q, qi};
+///
+/// // (1, 1) = ½·(2, 0) + 1·(0, 1)
+/// let cone = [vec![qi(2), qi(0)], vec![qi(0), qi(1)]];
+/// assert_eq!(
+///     nonneg_combination(&cone, &[qi(1), qi(1)]).unwrap(),
+///     Feasibility::Feasible(vec![q(1, 2), qi(1)])
+/// );
+/// // (−1, 1) is outside the cone spanned by (2, 0) and (0, 1).
+/// assert!(!nonneg_combination(&cone, &[qi(-1), qi(1)]).unwrap().is_feasible());
+/// ```
+pub fn nonneg_combination(vectors: &[Vec<Q>], target: &[Q]) -> Result<Feasibility, SymplexError> {
+    if vectors.is_empty() {
+        return Err(invalid("nonneg_combination", "need at least one vector"));
+    }
+    let m = target.len();
+    if m == 0 {
+        return Err(invalid(
+            "nonneg_combination",
+            "target must have at least one coordinate",
+        ));
+    }
+    if let Some((j, v)) = vectors.iter().enumerate().find(|(_, v)| v.len() != m) {
+        return Err(invalid(
+            "nonneg_combination",
+            format!(
+                "vector {j} has {} coordinates but the target has {m}",
+                v.len()
+            ),
+        ));
+    }
+    // Rows of A are coordinates, columns are the vectors.
+    let a_eq: Vec<Vec<Q>> = (0..m)
+        .map(|i| vectors.iter().map(|v| v[i].clone()).collect())
+        .collect();
+    feasible_nonneg_certified(&a_eq, target).map_err(|e| match e {
+        SymplexError::InvalidArgument { reason, .. } => invalid("nonneg_combination", reason),
+        other => other,
     })
 }
 

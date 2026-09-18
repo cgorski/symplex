@@ -59,7 +59,7 @@ fn main() {
     symplex::syms!(ctx; x);
 
     println!("{}", expr!(ctx, (x^2 - 1) / (x - 1)).cancel(&x));       // x + 1
-    println!("{}", expr!(ctx, 1 / (x^2 - 1)).partial_fractions(&x));  // -1/2*1/(x + 1) + 1/2*1/(x - 1)
+    println!("{}", expr!(ctx, 1 / (x^2 - 1)).partial_fractions(&x));  // -1/(2*(x + 1)) + 1/(2*(x - 1))
     println!("{}", (1 / &x + 1 / (&x + 1)).together());
     let (num, den) = expr!(ctx, (x + 1) / (x - 1)).as_numer_denom();
     println!("{num} / {den}");

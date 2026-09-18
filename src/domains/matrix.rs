@@ -3044,32 +3044,6 @@ impl Matrix {
         Ok(Matrix::from_rows_unchecked(data))
     }
 
-    /// Is every entry zero?  Three-valued: `Some(true)` when every entry
-    /// simplifies to zero, `Some(false)` when some entry is provably
-    /// non-zero, `None` when an entry cannot be decided (a free symbol
-    /// without assumptions).
-    ///
-    /// Same decision procedure as [`is_zero`](Self::is_zero); the longer
-    /// name reads unambiguously next to `Ex::is_zero`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// assert_eq!(matrix![ctx, [0, 0], [0, 0]].is_zero_matrix(), Some(true));
-    /// assert_eq!(matrix![ctx, [0, 1]].is_zero_matrix(), Some(false));
-    /// assert_eq!(Matrix::new(vec![vec![x.clone(), ctx.int(0)]]).unwrap().is_zero_matrix(), None);
-    /// // (x + 1)^2 - x^2 - 2x - 1 simplifies to zero.
-    /// let e = &(&x + 1).powi(2) - &(&x.powi(2) + &(&x * 2) + 1);
-    /// assert_eq!(Matrix::new(vec![vec![e]]).unwrap().is_zero_matrix(), Some(true));
-    /// ```
-    pub fn is_zero_matrix(&self) -> Option<bool> {
-        all3(self.iter().map(ex_is_zero))
-    }
-
     /// Is every entry an integer literal?  Three-valued: `Some(true)` when
     /// every entry is an integer literal, `Some(false)` when some entry is a
     /// non-integer *numeric* literal (`1/2`), `None` when some entry is

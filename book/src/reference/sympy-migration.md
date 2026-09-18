@@ -196,7 +196,7 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `M.extract(rows, cols)` | `m.extract(&rows, &cols)?` |
 | `M[rows, :]`, `M[:, cols]` | `m.select_rows(&rows)?`, `m.select_cols(&cols)?` |
 | `M.row_del(i)`, `M.col_del(j)` | `m.delete_row(i)?`, `m.delete_col(j)?` (returns a new matrix) |
-| `M.is_zero_matrix` | `m.is_zero_matrix()` → `Option<bool>` |
+| `M.is_zero` | `m.is_zero()` → `Option<bool>` |
 | `all(e.is_integer for e in M)` | `m.is_integer_matrix()` → `Option<bool>` |
 | `M.subs({x: y, y: x})` (simultaneous) | `m.subs_map(&[(&x, &y), (&y, &x)])` |
 | `Matrix(rows)` from `Rational`/`int`/`float` data | `Matrix::from_ratio(&ctx, &rows)?`, `Matrix::from_bigint`, `Matrix::from_f64_rows` (exact dyadic) |

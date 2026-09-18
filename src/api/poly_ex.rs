@@ -1171,9 +1171,80 @@ impl Poly {
     }
 }
 
+/// `Poly(<terms in lex-descending order>, g₁, g₂, …)`.
+///
+/// Unlike [`Poly::to_ex`], whose printed form follows the arena's canonical
+/// term order, the terms here appear in the same order as
+/// [`Poly::terms`], so the leading term is printed first:
+///
+/// ```
+/// use symplex::prelude::*;
+///
+/// let ctx = Context::new();
+/// let (x, y, a) = (ctx.symbol("x"), ctx.symbol("y"), ctx.symbol("a"));
+/// let p = (&x + 2 * &y).powi(2).as_poly(&[&x, &y]).unwrap();
+/// assert_eq!(p.to_string(), "Poly(x^2 + 4*x*y + 4*y^2, x, y)");
+/// let q = (&a * &x.powi(2) - (&a + 1) * &x - 3).as_poly(&[&x]).unwrap();
+/// assert_eq!(q.to_string(), "Poly(a*x^2 + (-a - 1)*x - 3, x)");   // as SymPy prints it
+/// ```
 impl fmt::Display for Poly {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Poly({}", self.to_ex())?;
+        write!(f, "Poly(")?;
+        if self.terms.is_empty() {
+            write!(f, "0")?;
+        }
+        for (i, (exps, coeff)) in self.terms.iter().rev().enumerate() {
+            let monomial: Vec<String> = exps
+                .iter()
+                .zip(&self.gens)
+                .filter(|(e, _)| **e > 0)
+                .map(|(e, g)| {
+                    if *e == 1 {
+                        g.to_string()
+                    } else {
+                        format!("{g}^{e}")
+                    }
+                })
+                .collect();
+            let monomial = monomial.join("*");
+
+            // Sign and magnitude of the coefficient.
+            let (negative, magnitude) = match coeff.as_rational() {
+                Some(r) => {
+                    let abs = r.abs();
+                    let s = if abs.is_integer() {
+                        abs.numer().to_string()
+                    } else {
+                        format!("{}/{}", abs.numer(), abs.denom())
+                    };
+                    (r.is_negative(), s)
+                }
+                None => {
+                    let s = coeff.to_string();
+                    if coeff.expr_type() == ExprType::Add && !monomial.is_empty() {
+                        (false, format!("({s})"))
+                    } else if let Some(rest) = s.strip_prefix('-') {
+                        (true, rest.to_string())
+                    } else {
+                        (false, s)
+                    }
+                }
+            };
+
+            match (i, negative) {
+                (0, false) => {}
+                (0, true) => write!(f, "-")?,
+                (_, false) => write!(f, " + ")?,
+                (_, true) => write!(f, " - ")?,
+            }
+            if monomial.is_empty() {
+                write!(f, "{magnitude}")?;
+            } else if magnitude == "1" {
+                write!(f, "{monomial}")?;
+            } else {
+                write!(f, "{magnitude}*{monomial}")?;
+            }
+        }
         for g in &self.gens {
             write!(f, ", {g}")?;
         }

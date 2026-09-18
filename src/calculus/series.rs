@@ -1343,7 +1343,7 @@ mod tests {
         let root = a.sqrt(x2p1);
         let g = a.sub(root, x);
         let s = series_at_infinity(&mut a, g, x, 4, false).unwrap();
-        assert_eq!(display(&a, s), "-1/8*x^(-3) + 1/2*1/x");
+        assert_eq!(display(&a, s), "-1/8*x^(-3) + 1/(2*x)");
     }
 
     #[test]

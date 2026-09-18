@@ -143,7 +143,7 @@ fn main() {
     let stencil = [&x - &h, x.clone(), &x + &h];
     let w = finite_diff_weights(1, &stencil, &x);
     println!("{:?}", w.iter().map(|e| e.to_string()).collect::<Vec<_>>());
-    // ["-1/2*1/h", "0", "1/2*1/h"]
+    // ["-1/(2*h)", "0", "1/(2*h)"]
     println!("{}", x.powi(3).differentiate_finite(&x, &stencil, 1).expand());   // h^2 + 3*x^2
     println!("{}", x.powi(4).differentiate_finite(&x, &stencil, 2).expand());   // 2*h^2 + 12*x^2
 }

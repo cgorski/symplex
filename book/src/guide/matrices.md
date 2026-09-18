@@ -39,7 +39,7 @@ Element-wise helpers: `map`, `map_indexed`, `subs`, `subs_map`, `eval`, `expand`
 
 ## Selecting sub-matrices and exact conversion
 
-New in 0.3: `extract(&rows, &cols)` (SymPy's `Matrix.extract`; indices may repeat or reorder), `select_rows`, `select_cols`, `delete_row`, `delete_col`; the three-valued structure tests `is_zero_matrix` and `is_integer_matrix`; `nnz` (structurally non-zero entries); and lossless conversions to and from the `num` types — `to_rational_rows`, `to_bigint_rows`, `Matrix::from_ratio`, `Matrix::from_bigint`, `Matrix::from_f64_rows` (each `f64` becomes the *exact* dyadic rational it represents) — which is how a `Matrix` is handed to the exact [LP solver](./exact-lp.md) and the [integer normal forms](./integer-lattices.md). (As elsewhere on this page, multi-row matrix output is compacted onto one line in the comments; a single-row matrix really does print as `[[…]]`.)
+New in 0.3: `extract(&rows, &cols)` (SymPy's `Matrix.extract`; indices may repeat or reorder), `select_rows`, `select_cols`, `delete_row`, `delete_col`; the three-valued structure test `is_integer_matrix` (a companion to the existing `is_zero`); `nnz` (structurally non-zero entries); and lossless conversions to and from the `num` types — `to_rational_rows`, `to_bigint_rows`, `Matrix::from_ratio`, `Matrix::from_bigint`, `Matrix::from_f64_rows` (each `f64` becomes the *exact* dyadic rational it represents) — which is how a `Matrix` is handed to the exact [LP solver](./exact-lp.md) and the [integer normal forms](./integer-lattices.md). (As elsewhere on this page, multi-row matrix output is compacted onto one line in the comments; a single-row matrix really does print as `[[…]]`.)
 
 ```rust
 use symplex::prelude::*;
@@ -53,7 +53,7 @@ fn main() {
     println!("{}", m.select_rows(&[0, 2]).unwrap());                    // [[1, 2, 3], [7, 8, 9]]
     println!("{}", m.select_cols(&[1]).unwrap());                       // [[2], [5], [8]]
     println!("{}", m.delete_row(1).unwrap().delete_col(1).unwrap());     // [[1, 3], [7, 9]]
-    println!("{} {:?} {:?}", m.nnz(), m.is_zero_matrix(), m.is_integer_matrix());   // 9 Some(false) Some(true)
+    println!("{} {:?} {:?}", m.nnz(), m.is_zero(), m.is_integer_matrix());   // 9 Some(false) Some(true)
     println!("{:?}", m.to_bigint_rows().unwrap()[2]);                    // [7, 8, 9]
     println!("{}", m.extract(&[3], &[0]).unwrap_err());
     // extract: invalid argument: row index 3 out of range for 3 rows
@@ -70,13 +70,13 @@ fn main() {
     symplex::syms!(ctx; x, y);
     let s = Matrix::new(vec![vec![x.clone(), y.clone()]]).unwrap();
     println!("{}", s.subs_map(&[(&x, &y), (&y, &x)]));                 // [[y, x]]   (simultaneous)
-    println!("{:?} {:?} {}", s.is_zero_matrix(), s.is_integer_matrix(), s.nnz());   // None None 2
+    println!("{:?} {:?} {}", s.is_zero(), s.is_integer_matrix(), s.nnz());   // None None 2
     let z = Matrix::new(vec![vec![&(&x + 1).powi(2) - &(&x.powi(2) + &x * 2 + 1)]]).unwrap();
-    println!("{:?} {}", z.is_zero_matrix(), z.nnz());                   // Some(true) 1
+    println!("{:?} {}", z.is_zero(), z.nnz());                   // Some(true) 1
 }
 ```
 
-`is_zero_matrix` simplifies each entry, so it recognises `(x + 1)² − x² − 2x − 1` as zero; `nnz` is purely structural and counts that entry. `from_f64_rows` is deliberately exact — use `Context::from_f64_nice` entry-wise when you want `0.1` read as `1/10`.
+`is_zero` simplifies each entry, so it recognises `(x + 1)² − x² − 2x − 1` as zero; `nnz` is purely structural and counts that entry. `from_f64_rows` is deliberately exact — use `Context::from_f64_nice` entry-wise when you want `0.1` read as `1/10`.
 
 ## Eigenvalues, eigenvectors, Jordan form
 

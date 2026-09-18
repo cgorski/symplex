@@ -109,7 +109,7 @@ fn main() {
     // 1/24*x^4 + 1/6*x^3 + 1/2*x^2 + x + 1
     println!("{}", (1 / &x.sin()).series(&x, &ctx.int(0), 4));     // Laurent: 1/x + x/6 + …
     println!("{}", (&(&x.powi(2) + 1).sqrt() - &x).series_at_infinity(&x, 4));
-    // -1/8*x^(-3) + 1/2*1/x
+    // -1/8*x^(-3) + 1/(2*x)
 }
 ```
 

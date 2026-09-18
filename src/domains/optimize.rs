@@ -410,7 +410,7 @@ pub fn newton_root(
         if !fx.is_finite() {
             return Err(failed(
                 OP,
-                format!("f({x}) = {fx} is not finite; the iteration diverged"),
+                format!("f({x:e}) = {fx:e} is not finite; the iteration diverged"),
             ));
         }
         if fx == 0.0 {
@@ -420,7 +420,7 @@ pub fn newton_root(
         if !dfx.is_finite() || dfx == 0.0 {
             return Err(failed(
                 OP,
-                format!("derivative f'({x}) = {dfx} vanishes or is not finite"),
+                format!("derivative f'({x:e}) = {dfx:e} vanishes or is not finite"),
             ));
         }
         let step = fx / dfx;
@@ -428,7 +428,7 @@ pub fn newton_root(
         if !x_new.is_finite() {
             return Err(failed(
                 OP,
-                format!("iterate became non-finite after the step {step:e} from x = {x}"),
+                format!("iterate became non-finite after the step {step:e} from x = {x:e}"),
             ));
         }
         if step.abs() <= opts.xtol + opts.rtol * x_new.abs() {

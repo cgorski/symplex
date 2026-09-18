@@ -183,7 +183,7 @@ fn asymptotic_expansions_at_infinity() {
     assert_eq!(s.to_string(), "x^(-2) - 1/x - x^(-3) + 1");
     let f = (&x.powi(2) + 1).sqrt() - &x;
     let s = f.series_at_infinity(&x, 6);
-    assert_eq!(s.to_string(), "-1/8*x^(-3) + 1/16*x^(-5) + 1/2*1/x");
+    assert_eq!(s.to_string(), "-1/8*x^(-3) + 1/16*x^(-5) + 1/(2*x)");
     // x·sin(1/x) = 1 − 1/(6x²) + 1/(120x⁴)
     let f = &x * &(&one / &x).sin();
     let s = f.series_at_infinity(&x, 5);

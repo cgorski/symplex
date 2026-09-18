@@ -151,49 +151,49 @@ fn delete_row_then_col_equals_minor_matrix() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// is_zero_matrix / is_integer_matrix — three-valued
+// is_zero / is_integer_matrix — three-valued
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn is_zero_matrix_literal_zero() {
+fn is_zero_literal_zero() {
     let ctx = Context::new();
-    assert_eq!(Matrix::zeros(&ctx, 2, 3).is_zero_matrix(), Some(true));
+    assert_eq!(Matrix::zeros(&ctx, 2, 3).is_zero(), Some(true));
 }
 
 #[test]
-fn is_zero_matrix_literal_nonzero() {
+fn is_zero_literal_nonzero() {
     let ctx = Context::new();
-    assert_eq!(matrix![ctx, [0, 0], [0, 1]].is_zero_matrix(), Some(false));
+    assert_eq!(matrix![ctx, [0, 0], [0, 1]].is_zero(), Some(false));
 }
 
 #[test]
-fn is_zero_matrix_symbolic_unknown() {
+fn is_zero_symbolic_unknown() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let m = Matrix::new(vec![vec![ctx.int(0), x]]).unwrap();
-    assert_eq!(m.is_zero_matrix(), None);
+    assert_eq!(m.is_zero(), None);
 }
 
 #[test]
-fn is_zero_matrix_symbolic_identity_is_zero() {
+fn is_zero_symbolic_identity_is_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // sin²x + cos²x − 1 simplifies to zero.
     let e = &(&x.sin().powi(2) + &x.cos().powi(2)) - 1;
     let m = Matrix::new(vec![vec![e, ctx.int(0)]]).unwrap();
-    assert_eq!(m.is_zero_matrix(), Some(true));
+    assert_eq!(m.is_zero(), Some(true));
 }
 
 #[test]
-fn is_zero_matrix_positive_symbol_is_false() {
+fn is_zero_positive_symbol_is_false() {
     let ctx = Context::new();
     let p = ctx.symbol_with("p", &[Assumption::Positive]);
     let m = Matrix::new(vec![vec![p]]).unwrap();
-    assert_eq!(m.is_zero_matrix(), Some(false));
+    assert_eq!(m.is_zero(), Some(false));
 }
 
 #[test]
-fn is_zero_matrix_agrees_with_is_zero() {
+fn is_zero_agrees_with_is_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     for m in [
@@ -201,7 +201,7 @@ fn is_zero_matrix_agrees_with_is_zero() {
         matrix![ctx, [0, 2]],
         Matrix::new(vec![vec![x]]).unwrap(),
     ] {
-        assert_eq!(m.is_zero_matrix(), m.is_zero());
+        assert_eq!(m.is_zero(), m.is_zero());
     }
 }
 

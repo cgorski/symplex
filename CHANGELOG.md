@@ -23,8 +23,9 @@ some results, never their value.
 
 Measured at release: 92 `ExprNode` variants (unchanged), ~11,000 `#[test]`
 functions (~154K lines of tests, 273 integration-test files), ~174K lines in
-`src/`, 608 doctests in the main crate, and a SymPy 1.14 oracle extended
-with 0.3 fixtures (`tests/fixtures/v03_cross_validation.json`).
+`src/`, ~600 doctests in the main crate, and a SymPy 1.14 oracle extended
+with 455 fixtures for the 0.3 features
+(`tests/fixtures/v03_cross_validation.json`).
 
 ### Behaviour changes
 
@@ -43,6 +44,11 @@ Not breaking — no signature changed — but results may print differently.
   denominator coefficient) instead of `together` followed by a per-symbol
   `cancel`.  Same value; nested fractions that 0.2 left uncancelled are
   now cancelled.
+- `Display`: a product with a rational coefficient *and* inverse factors is
+  printed as one fraction.  `1/2*1/j*(j - 1)` is now `(j - 1)/(2*j)`,
+  `4/3*1/pi*sin(3*x)` is `4*sin(3*x)/(3*pi)`, `-1/2*1/(x + 1)` is
+  `-1/(2*(x + 1))`, and `x - 3*y*1/z` is `x - 3*y/z`.  Products without an
+  inverse factor are unchanged (`1/2*x`), as is `x^(-2)`.
 
 ### Added
 
@@ -118,7 +124,8 @@ Not breaking — no signature changed — but results may print differently.
 - Selection: `extract(rows, cols)`, `select_rows`, `select_cols`,
   `delete_row`, `delete_col` (index lists may repeat or reorder; empty or
   out-of-range is `InvalidArgument`).
-- Three-valued structure: `is_zero_matrix`, `is_integer_matrix`.
+- Three-valued structure test `is_integer_matrix` (alongside the existing
+  `is_zero`).
 - Exact numeric conversion: `to_rational_rows`, `to_bigint_rows`,
   `Matrix::from_ratio`, `Matrix::from_bigint`, `Matrix::from_f64_rows`
   (exact dyadic; `NaN`/`∞` rejected).

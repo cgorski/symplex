@@ -53,8 +53,8 @@ fn main() {
     for s in (&a * &x.powi(2) + &b * &x + &c).solve(&x).unwrap() {
         println!("{s}");
     }
-    // 1/2*1/a*(-b + sqrt(-4*a*c + b^2))
-    // 1/2*1/a*(-b - sqrt(-4*a*c + b^2))
+    // (-b + sqrt(-4*a*c + b^2))/(2*a)
+    // (-b - sqrt(-4*a*c + b^2))/(2*a)
 
     // x²/a + 2x + a = 0: the discriminant 4 − 4 simplifies to 0 → one double root
     for s in (&x.powi(2) / &a + &x * 2 + &a).solve(&x).unwrap() {

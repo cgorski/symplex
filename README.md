@@ -372,7 +372,7 @@ matrix![ctx, [0, 1, 0], [0, 0, 1], [1, 1, 0]].eigenvals().unwrap();   // [RootOf
 // 0.3: index-list extraction, exact rationals in and out, three-valued structure tests
 m.extract(&[1, 0], &[0]).unwrap();                    // [[1], [2]]
 Matrix::from_ratio(&ctx, &[vec![q(1, 2), q(3, 1)]]).unwrap();   // [[1/2, 3]]
-(&m - &m.transpose()).is_zero_matrix();               // Some(true)   (m is symmetric)
+(&m - &m.transpose()).is_zero();               // Some(true)   (m is symmetric)
 ```
 
 Also: LU, LDLᵀ, Gram–Schmidt, Jordan form, pseudo-inverse, Kronecker product, rank/nullspace/rowspace, norms, least squares, Hessian, Wronskian, quaternions, vector calculus in Cartesian/cylindrical/spherical coordinates, state-space ↔ transfer function; `select_rows`/`select_cols`/`delete_row`/`delete_col`, `from_bigint`/`from_f64_rows`, `to_rational_rows`/`to_bigint_rows`, `is_integer_matrix`, `subs_map`, `nnz`.
@@ -431,7 +431,7 @@ let a = ctx.symbol_with("a", &[Assumption::Positive]);
 t.sin().laplace(&t, &s);                              // 1/(s^2 + 1)
 ((&s * -2).exp() / &s).inverse_laplace(&s, &t);       // H(t - 2)
 x.sign().fourier_series_on(&x, &(-ctx.pi()), &ctx.pi(), 5).unwrap().truncate(5);
-                                                      // 4*sin(x)/pi + 4/3*1/pi*sin(3*x) + 4/5*1/pi*sin(5*x)
+                                                      // 4*sin(x)/pi + 4*sin(3*x)/(3*pi) + 4*sin(5*x)/(5*pi)
 ```
 
 ### Number Theory and Combinatorics

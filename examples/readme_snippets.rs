@@ -498,7 +498,7 @@ fn linear_algebra() {
     let fr = Matrix::from_ratio(&ctx, &[vec![q(1, 2), q(3, 1)]]).unwrap();
     println!("{fr}");
     assert_eq!(fr.get(0, 0), &ctx.rational(1, 2));
-    assert_eq!((&m - &m.transpose()).is_zero_matrix(), Some(true));
+    assert_eq!((&m - &m.transpose()).is_zero(), Some(true));
 }
 
 fn exact_optimization() {
@@ -600,7 +600,7 @@ fn transforms() {
     println!("{mf} on {strip}\n{sq}");
     assert_eq!(
         sq.to_string(),
-        "4*sin(x)/pi + 4/3*1/pi*sin(3*x) + 4/5*1/pi*sin(5*x)"
+        "4*sin(x)/pi + 4*sin(3*x)/(3*pi) + 4*sin(5*x)/(5*pi)"
     );
 }
 

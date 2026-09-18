@@ -12,7 +12,8 @@ use num_rational::Ratio;
 use num_traits::{Signed, Zero};
 use proptest::prelude::*;
 use symplex::linprog::{
-    LpProblem, LpSolution, LpStatus, Objective, Q, feasible_nonneg, linprog, linprog_matrix, q, qi,
+    Feasibility, LpProblem, LpSolution, LpStatus, Objective, Q, feasible_nonneg,
+    feasible_nonneg_certified, linprog, linprog_matrix, nonneg_combination, q, qi,
 };
 use symplex::matrix::Matrix;
 use symplex::prelude::*;
@@ -1150,6 +1151,140 @@ fn x_ex_produces_exact_rationals_in_context() {
         .ge(vec![qi(3), qi(1)], qi(1))
         .solve();
     assert_eq!(sol.x_ex(&ctx), vec![ctx.rational(1, 5), ctx.rational(2, 5)]);
+}
+
+#[test]
+fn duals_ex_matches_duals() {
+    let ctx = Context::new();
+    let sol = LpProblem::maximize(vec![qi(3), qi(2)])
+        .le(vec![qi(1), qi(1)], qi(4))
+        .le(vec![qi(1), qi(3)], qi(6))
+        .solve()
+        .unwrap();
+    let d = sol.duals_ex(&ctx);
+    assert_eq!(d.len(), sol.duals.len());
+    for (e, r) in d.iter().zip(&sol.duals) {
+        assert_eq!(e.as_rational().as_ref(), Some(r));
+    }
+}
+
+#[test]
+fn display_summarises_every_status() {
+    let opt = LpProblem::maximize(vec![qi(3), qi(2)])
+        .le(vec![qi(1), qi(1)], qi(4))
+        .le(vec![qi(1), qi(3)], qi(6))
+        .solve()
+        .unwrap();
+    assert_eq!(
+        opt.to_string(),
+        "Optimal: x = (4, 0), objective = 12, duals = (3, 0)"
+    );
+    let frac = LpProblem::minimize(vec![qi(1), qi(1)])
+        .ge(vec![qi(1), qi(2)], qi(1))
+        .ge(vec![qi(3), qi(1)], qi(1))
+        .solve()
+        .unwrap();
+    assert!(
+        frac.to_string()
+            .starts_with("Optimal: x = (1/5, 2/5), objective = 3/5"),
+        "{frac}"
+    );
+    let inf = LpProblem::minimize(vec![qi(1), qi(1)])
+        .le(vec![qi(1), qi(1)], qi(1))
+        .ge(vec![qi(1), qi(1)], qi(2))
+        .solve()
+        .unwrap();
+    assert!(
+        inf.to_string()
+            .starts_with("Infeasible: Farkas certificate y = ("),
+        "{inf}"
+    );
+    let unb = LpProblem::maximize(vec![qi(1), qi(1)])
+        .le(vec![qi(1), qi(-1)], qi(1))
+        .solve()
+        .unwrap();
+    assert_eq!(unb.to_string(), "Unbounded");
+}
+
+#[test]
+fn feasible_nonneg_certified_agrees_with_feasible_nonneg_and_certifies() {
+    // Feasible: x/3 + y/7 = 1, x − y = 0.
+    let a = [vec![q(1, 3), q(1, 7)], vec![qi(1), qi(-1)]];
+    let b = [qi(1), qi(0)];
+    let plain = feasible_nonneg(&a, &b).unwrap().unwrap();
+    match feasible_nonneg_certified(&a, &b).unwrap() {
+        Feasibility::Feasible(x) => {
+            assert_eq!(x, plain);
+            assert_eq!(x, vec![q(21, 10), q(21, 10)]);
+        }
+        other => panic!("expected feasible, got {other:?}"),
+    }
+
+    // Infeasible: x + y = 1 and x + y = 2.  Verify the Farkas inequality
+    // Aᵀy ≥ 0, yᵀb < 0 exactly.
+    let a = [vec![qi(1), qi(1)], vec![qi(1), qi(1)]];
+    let b = [qi(1), qi(2)];
+    assert!(feasible_nonneg(&a, &b).unwrap().is_none());
+    let res = feasible_nonneg_certified(&a, &b).unwrap();
+    assert!(!res.is_feasible());
+    assert!(res.witness().is_none());
+    let Feasibility::Infeasible { farkas: Some(y) } = res else {
+        panic!("expected a Farkas certificate, got {res:?}");
+    };
+    assert_eq!(y.len(), 2);
+    for j in 0..2 {
+        let g: Q = a.iter().zip(&y).map(|(row, yi)| &row[j] * yi).sum();
+        assert!(g >= Q::zero(), "(Aᵀy)_{j} = {g}");
+    }
+    let yb: Q = y.iter().zip(&b).map(|(u, v)| u * v).sum();
+    assert!(yb < Q::zero(), "yᵀb = {yb}");
+}
+
+#[test]
+fn nonneg_combination_is_cone_membership_by_columns() {
+    // (1, 1) = ½·(2, 0) + 1·(0, 1)
+    let cone = [vec![qi(2), qi(0)], vec![qi(0), qi(1)]];
+    assert_eq!(
+        nonneg_combination(&cone, &[qi(1), qi(1)]).unwrap(),
+        Feasibility::Feasible(vec![q(1, 2), qi(1)])
+    );
+    // A target with a negative first coordinate is separated by y = (1, 0):
+    // y·(2,0) = 2 ≥ 0, y·(0,1) = 0 ≥ 0, y·(−1, 1) = −1 < 0.
+    match nonneg_combination(&cone, &[qi(-1), qi(1)]).unwrap() {
+        Feasibility::Infeasible { farkas: Some(y) } => {
+            for v in &cone {
+                assert!(dot(&y, v) >= Q::zero());
+            }
+            assert!(dot(&y, &[qi(-1), qi(1)]) < Q::zero());
+        }
+        other => panic!("expected a certificate, got {other:?}"),
+    }
+    // Three linearly independent generators in ℚ³: the decomposition is
+    // unique, so membership is decided by the sign of the unique solution.
+    let gens = [
+        vec![qi(1), qi(0), qi(0)],
+        vec![qi(1), qi(1), qi(0)],
+        vec![qi(1), qi(1), qi(1)],
+    ];
+    // (3, 2, 1) = 1·(1,0,0) + 1·(1,1,0) + 1·(1,1,1)
+    assert_eq!(
+        nonneg_combination(&gens, &[qi(3), qi(2), qi(1)]).unwrap(),
+        Feasibility::Feasible(vec![qi(1), qi(1), qi(1)])
+    );
+    // (1, 2, 3) = 0·(1,0,0) − 1·(1,1,0) + 3·(1,1,1) needs a negative
+    // coefficient, so it is outside the cone; the certificate separates it.
+    match nonneg_combination(&gens, &[qi(1), qi(2), qi(3)]).unwrap() {
+        Feasibility::Infeasible { farkas: Some(y) } => {
+            for v in &gens {
+                assert!(dot(&y, v) >= Q::zero());
+            }
+            assert!(dot(&y, &[qi(1), qi(2), qi(3)]) < Q::zero());
+        }
+        other => panic!("expected a certificate, got {other:?}"),
+    }
+    // Errors: jagged / empty input.
+    assert!(nonneg_combination(&[], &[qi(1)]).is_err());
+    assert!(nonneg_combination(&[vec![qi(1)]], &[qi(1), qi(2)]).is_err());
 }
 
 #[test]

@@ -900,9 +900,31 @@ fn push_func(name: &'static str, arg: ExprId, stack: &mut Vec<WorkItem>) {
 /// Each factor that is an Add gets a parent precedence of `PREC_MUL + 1`
 /// to force parenthesisation.
 fn push_mul_factors(arena: &Arena, factors: &[ExprId], _mul_prec: u8, stack: &mut Vec<WorkItem>) {
-    // Split into numerator and denominator (Pow(base, -1)) factors so that
-    // e.g. `1/x * 1/y * (x+y)` renders as `(x + y)/(x*y)` instead of
-    // the less-readable `1/x*1/y*(x + y)`.
+    // A leading numeric literal is the coefficient; it is folded into the
+    // fraction (numerator `p`, denominator `q`) when inverse factors exist.
+    if let Some((&first, rest)) = factors.split_first()
+        && let ExprNode::Num(nid) = arena.node(first)
+    {
+        push_mul_with_coeff(arena, Some(arena.num(*nid).clone()), rest, stack);
+    } else {
+        push_mul_with_coeff(arena, None, factors, stack);
+    }
+}
+
+/// Push `coeff * factors` onto the stack in reverse order.
+///
+/// The factors are split into numerator factors and denominator bases
+/// (`Pow(base, -1)`), and a rational coefficient `p/q` contributes `p` to
+/// the numerator and `q` to the denominator, so that
+/// `1/2 * (j - 1) * j⁻¹` renders as `(j - 1)/(2*j)` and `1/x * 1/y * (x+y)`
+/// as `(x + y)/(x*y)` rather than `1/2*1/j*(j - 1)` / `1/x*1/y*(x + y)`.
+/// Without inverse factors the coefficient is printed as-is: `1/2*j`.
+fn push_mul_with_coeff(
+    arena: &Arena,
+    coeff: Option<Ratio<BigInt>>,
+    factors: &[ExprId],
+    stack: &mut Vec<WorkItem>,
+) {
     let mut numer: SmallVec<[ExprId; 6]> = SmallVec::new();
     let mut denom_bases: SmallVec<[ExprId; 6]> = SmallVec::new();
 
@@ -917,23 +939,33 @@ fn push_mul_factors(arena: &Arena, factors: &[ExprId], _mul_prec: u8, stack: &mu
         numer.push(f);
     }
 
-    // Skip fraction display when there are no inverse factors, or when the
-    // numerator contains a non-integer rational (avoids ambiguous "1/2/x").
-    let any_frac_numer = numer.iter().any(|&f| {
-        if let ExprNode::Num(nid) = arena.node(f) {
-            !arena.num(*nid).is_integer()
-        } else {
-            false
+    // No inverse factors: plain product `coeff*f1*f2*…`.
+    if denom_bases.is_empty() {
+        if !numer.is_empty() {
+            push_plain_mul_factors(arena, &numer, stack);
         }
-    });
-
-    if denom_bases.is_empty() || any_frac_numer {
-        push_plain_mul_factors(arena, factors, stack);
+        match coeff {
+            Some(c) if numer.is_empty() => stack.push(WorkItem::Owned(rational_literal(&c))),
+            Some(c) if c == Ratio::from(BigInt::from(-1)) => stack.push(WorkItem::Lit("-")),
+            Some(c) if c != Ratio::from(BigInt::from(1)) => {
+                stack.push(WorkItem::Lit("*"));
+                stack.push(WorkItem::Owned(rational_literal(&c)));
+            }
+            Some(_) => {}
+            None if numer.is_empty() => stack.push(WorkItem::Lit("1")),
+            None => {}
+        }
         return;
     }
 
+    let (p, q) = match coeff {
+        Some(c) => (c.numer().clone(), c.denom().clone()),
+        None => (BigInt::from(1), BigInt::from(1)),
+    };
+    let q_is_one = q == BigInt::from(1);
+
     // ── Denominator ────────────────────────────────────────────
-    if denom_bases.len() == 1 {
+    if q_is_one && denom_bases.len() == 1 {
         let base = denom_bases[0];
         // Parenthesise compound bases: .../(x + y), .../(a*b), etc.
         let base_prec = match arena.node(base) {
@@ -944,18 +976,26 @@ fn push_mul_factors(arena: &Arena, factors: &[ExprId], _mul_prec: u8, stack: &mu
         };
         stack.push(WorkItem::Expr(base, base_prec));
     } else {
-        // Multiple denom factors: .../(a*b*c)
+        // Several denominator factors (possibly including `q`): .../(q*a*b)
         stack.push(WorkItem::Lit(")"));
         push_plain_mul_factors(arena, &denom_bases, stack);
+        if !q_is_one {
+            stack.push(WorkItem::Lit("*"));
+            stack.push(WorkItem::Owned(q.to_string()));
+        }
         stack.push(WorkItem::Lit("("));
     }
 
     stack.push(WorkItem::Lit("/"));
 
     // ── Numerator ──────────────────────────────────────────────
+    let p_is_one = p == BigInt::from(1);
+    let p_is_neg_one = p == BigInt::from(-1);
     if numer.is_empty() {
-        stack.push(WorkItem::Lit("1"));
-    } else if numer.len() == 1 {
+        stack.push(WorkItem::Owned(p.to_string()));
+        return;
+    }
+    if numer.len() == 1 {
         let f = numer[0];
         let prec = match arena.node(f) {
             ExprNode::Add(_) => PREC_MUL + 1,
@@ -965,6 +1005,45 @@ fn push_mul_factors(arena: &Arena, factors: &[ExprId], _mul_prec: u8, stack: &mu
     } else {
         push_plain_mul_factors(arena, &numer, stack);
     }
+    if p_is_neg_one {
+        stack.push(WorkItem::Lit("-"));
+    } else if !p_is_one {
+        stack.push(WorkItem::Lit("*"));
+        stack.push(WorkItem::Owned(p.to_string()));
+    }
+}
+
+/// `p` or `p/q` for a rational literal.
+fn rational_literal(r: &Ratio<BigInt>) -> String {
+    if r.denom() == &BigInt::from(1) {
+        format!("{}", r.numer())
+    } else {
+        format!("{}/{}", r.numer(), r.denom())
+    }
+}
+
+/// Render `coeff * factors` to a string with the same fraction folding as
+/// [`push_mul_with_coeff`].  Used where the caller needs an owned string
+/// (negative-coefficient terms inside a sum).
+fn render_mul_with_coeff(
+    arena: &Arena,
+    coeff: Option<Ratio<BigInt>>,
+    factors: &[ExprId],
+) -> String {
+    let mut stack: Vec<WorkItem> = Vec::with_capacity(16);
+    push_mul_with_coeff(arena, coeff, factors, &mut stack);
+    let mut out = String::new();
+    while let Some(item) = stack.pop() {
+        match item {
+            WorkItem::Lit(s) => out.push_str(s),
+            WorkItem::Owned(s) => out.push_str(&s),
+            WorkItem::Expr(eid, par_prec) => {
+                // `expand_expr` only pushes onto the stack; it cannot fail.
+                let _ = expand_expr(arena, eid, par_prec, &mut stack);
+            }
+        }
+    }
+    out
 }
 
 /// Push Mul factors joined by `*` without fraction splitting.
@@ -990,27 +1069,8 @@ fn neg_coeff_mul_display(arena: &Arena, id: ExprId) -> String {
         && let Some(&first) = children.first()
         && let ExprNode::Num(nid) = arena.node(first)
     {
-        let r = arena.num(*nid);
-        let pos_r = -r.clone();
-        let coeff_str = if pos_r.denom() == &BigInt::from(1) {
-            format!("{}", pos_r.numer())
-        } else {
-            format!("{}/{}", pos_r.numer(), pos_r.denom())
-        };
-
-        // Build remaining factors
-        let rest: Vec<String> = children[1..]
-            .iter()
-            .map(|&child| arena.display(child).to_string())
-            .collect();
-
-        if rest.is_empty() {
-            coeff_str
-        } else if coeff_str == "1" {
-            rest.join("*")
-        } else {
-            format!("{}*{}", coeff_str, rest.join("*"))
-        }
+        let pos_r = -arena.num(*nid).clone();
+        render_mul_with_coeff(arena, Some(pos_r), &children[1..])
     } else {
         arena.display(id).to_string()
     }
@@ -1096,6 +1156,61 @@ mod tests {
         let mut a = Arena::new();
         let x = a.symbol("x");
         assert_display!(a, x, "x");
+    }
+
+    /// A rational coefficient is folded into the fraction when inverse
+    /// factors are present, and left alone otherwise.
+    #[test]
+    fn display_rational_coefficient_folds_into_fraction() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let y = a.symbol("y");
+        let j = a.symbol("j");
+        let half = a.rational(1, 2);
+        let neg_half = a.rational(-1, 2);
+        let two = a.int(2);
+        let three = a.int(3);
+        let neg_one = a.neg_one;
+
+        // (j - 1) * j^-1 * 1/2  →  (j - 1)/(2*j)
+        let jm1 = a.sub(j, a.one);
+        let inv_j = a.pow(j, neg_one);
+        let e = a.mul(&[half, inv_j, jm1]);
+        assert_display!(a, e, "(j - 1)/(2*j)");
+
+        // 1/2 * x^-1  →  1/(2*x);  -1/2 * x^-1  →  -1/(2*x)
+        let inv_x = a.pow(x, neg_one);
+        let e = a.mul(&[half, inv_x]);
+        assert_display!(a, e, "1/(2*x)");
+        let e = a.mul(&[neg_half, inv_x]);
+        assert_display!(a, e, "-1/(2*x)");
+
+        // Several denominator factors: x * y^-1 * j^-1 * 2/3  →  2*x/(3*j*y)
+        let inv_y = a.pow(y, neg_one);
+        let two_thirds = a.rational(2, 3);
+        let e = a.mul(&[two_thirds, x, inv_y, inv_j]);
+        assert_display!(a, e, "2*x/(3*j*y)");
+
+        // Integer coefficient: unchanged behaviour.
+        let e = a.mul(&[three, x, inv_y]);
+        assert_display!(a, e, "3*x/y");
+        let e = a.mul(&[two, inv_y]);
+        assert_display!(a, e, "2/y");
+
+        // No inverse factor: the coefficient stays in front.
+        let e = a.mul(&[half, x]);
+        assert_display!(a, e, "1/2*x");
+        let e = a.mul(&[neg_half, x]);
+        assert_display!(a, e, "-1/2*x");
+
+        // Inside a sum, a negative fractional term prints as " - a/(b)".
+        let t = a.mul(&[neg_half, inv_x]);
+        let s = a.add(&[x, t]);
+        assert_display!(a, s, "x - 1/(2*x)");
+        let t = a.mul(&[three, y, inv_x]);
+        let nt = a.neg(t);
+        let s = a.add(&[x, nt]);
+        assert_display!(a, s, "-3*y/x + x");
     }
 
     #[test]

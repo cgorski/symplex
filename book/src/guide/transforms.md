@@ -95,10 +95,10 @@ fn main() {
     symplex::syms!(ctx; x);
     let pi = ctx.pi();
     let square = x.sign().fourier_series_on(&x, &(-&pi), &pi, 5).unwrap();
-    println!("{}", square.truncate(5));      // 4*sin(x)/pi + 4/3*1/pi*sin(3*x) + 4/5*1/pi*sin(5*x)
+    println!("{}", square.truncate(5));      // 4*sin(x)/pi + 4*sin(3*x)/(3*pi) + 4*sin(5*x)/(5*pi)
     println!("{} {}", square.coefficient_b(1), square.coefficient_b(2));   // 4/pi 0
     let tri = x.abs().fourier_series_on(&x, &(-&pi), &pi, 3).unwrap();
-    println!("{} {}", tri.a0, tri.truncate(3));   // pi  -4*1/pi*cos(x) - 4/9*1/pi*cos(3*x) + 1/2*pi
+    println!("{} {}", tri.a0, tri.truncate(3));   // pi -4*cos(x)/pi - 4*cos(3*x)/(9*pi) + 1/2*pi
     let parab = x.powi(2).fourier_series_on(&x, &ctx.int(-1), &ctx.int(1), 2).unwrap();
     println!("{}", parab.truncate(2));       // -4*pi^(-2)*cos(x*pi) + pi^(-2)*cos(2*x*pi) + 1/3
 }

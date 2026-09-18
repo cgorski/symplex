@@ -195,11 +195,7 @@ fn assert_kernel_invariants(a: &Matrix, label: &str) -> Vec<Matrix> {
             "{label}: kernel vector {k} integer"
         );
         let prod = (a * v).eval();
-        assert_eq!(
-            prod.is_zero_matrix(),
-            Some(true),
-            "{label}: A·k{k} = {prod}"
-        );
+        assert_eq!(prod.is_zero(), Some(true), "{label}: A·k{k} = {prod}");
     }
     if !basis.is_empty() {
         // The vectors are independent and span a *saturated* lattice
