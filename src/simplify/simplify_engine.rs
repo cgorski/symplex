@@ -417,6 +417,27 @@ pub(crate) fn smart_simplify_traced(
         best.consider(arena, cancel_best, "eval+cancel+rules", cancel_steps);
     }
 
+    // Strategy 7b: eval → together → cancel → rules.  `cancel` works on a single
+    // fraction; a *sum* of fractions (`a/(a+1) + 1/(a+1) - 1`) first needs a
+    // common denominator.  Only worthwhile when there is both an Add and a
+    // negative power somewhere in the tree.
+    if flags.has_add && flags.has_neg_pow {
+        let rules = crate::transforms::pattern::basic_rules(arena);
+        let evaled = crate::transforms::eval::eval(arena, expr);
+        let combined = crate::poly::polybridge::together(arena, evaled);
+        let mut s7b = crate::transforms::eval::eval(arena, combined);
+        let free = crate::base::walk::free_symbols(arena, s7b);
+        for &sym in &free {
+            let cancelled = crate::poly::polybridge::cancel(arena, s7b, sym);
+            let cancelled_eval = crate::transforms::eval::eval(arena, cancelled);
+            if count_ops(arena, cancelled_eval) < count_ops(arena, s7b) {
+                s7b = cancelled_eval;
+            }
+        }
+        let (s7b, steps) = crate::transforms::pattern::apply_rules(arena, s7b, &rules);
+        best.consider(arena, s7b, "eval+together+cancel+rules", steps);
+    }
+
     // Strategy 8: eval → refine (assumption-aware) (only if refinable nodes present)
     if flags.has_abs || flags.has_sign || flags.has_floor_ceil || flags.has_pow {
         let s8_eval = crate::transforms::eval::eval(arena, expr);

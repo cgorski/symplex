@@ -34,9 +34,8 @@ pub(crate) fn eval_sum_symbolic(
 #[allow(dead_code)]
 /// Attempt closed-form evaluation of `Π_{var=lower}^{upper} body`.
 ///
-/// Same contract as [`eval_sum_symbolic`].  `eval()` does not call this yet;
-/// wire it into the `Product_` arm of `transforms::eval` exactly like the
-/// `Sum` arm calls [`eval_sum_symbolic`].
+/// Same contract as [`eval_sum_symbolic`]; called from the `Product_` arm of
+/// `transforms::eval`.
 pub(crate) fn eval_product_symbolic(
     arena: &mut Arena,
     body: ExprId,

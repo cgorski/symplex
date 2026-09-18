@@ -2,7 +2,7 @@
 //!
 //! Every method here treats `self` as a univariate polynomial in an
 //! explicitly supplied variable `var`, converting through
-//! [`polybridge`](crate::poly::polybridge) to the exact dense
+//! the crate-internal `polybridge` module to the exact dense
 //! [`Poly`](crate::poly::Poly) representation, performing the computation
 //! there, and converting back.  Methods that return `Option` yield `None`
 //! when the expression is not polynomial in `var` (or when the operation is

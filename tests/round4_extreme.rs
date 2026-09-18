@@ -704,9 +704,11 @@ fn solve_linear_system_2x2() {
     let y = ctx.symbol("y");
     let eq1 = &x + &y * 2 - 5; // x + 2y - 5 = 0
     let eq2 = &x * 3 - &y - 1; // 3x - y - 1 = 0
-    let solution = ctx.solve_system(&[eq1, eq2], &[x.clone(), y.clone()]);
+    let solution = ctx
+        .solve_system(&[eq1, eq2], &[x.clone(), y.clone()])
+        .expect("linear input");
     match solution {
-        Some(pairs) => {
+        LinearSolution::Unique(pairs) => {
             eprintln!(
                 "Linear system solution: {:?}",
                 pairs
@@ -720,8 +722,8 @@ fn solve_linear_system_2x2() {
             assert!(approx(x_val, 1.0, 1e-10), "x should be 1, got {x_val}");
             assert!(approx(y_val, 2.0, 1e-10), "y should be 2, got {y_val}");
         }
-        None => {
-            panic!("Linear system should have a unique solution");
+        other => {
+            panic!("Linear system should have a unique solution, got {other:?}");
         }
     }
 }

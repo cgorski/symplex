@@ -1897,7 +1897,7 @@ fn integrate_node(
                 let neg_one_r =
                     num_rational::Ratio::<num_bigint::BigInt>::from_integer((-1).into());
                 if *n_val == neg_one_r {
-                    return make_apply(arena, "li", &[var]);
+                    return arena.li(var);
                 }
             }
 
@@ -2082,7 +2082,7 @@ fn integrate_node(
                 let ln_x = arena.ln(var);
                 let ln_ln_x = arena.ln(ln_x);
                 let x_ln_ln_x = arena.mul(&[var, ln_ln_x]);
-                let li_x = make_apply(arena, "li", &[var]);
+                let li_x = arena.li(var);
                 return arena.sub(x_ln_ln_x, li_x);
             }
             // Try u-substitution: if inner = a*x + b (linear),
@@ -3816,16 +3816,16 @@ fn try_special_function_integral(
 
     // Match the function factor against known special functions.
     let sf_result = match arena.node(func_factor).clone() {
-        ExprNode::Sin(inner) if inner == var => Some(make_apply(arena, "Si", &[var])),
-        ExprNode::Cos(inner) if inner == var => Some(make_apply(arena, "Ci", &[var])),
-        ExprNode::Exp(inner) if inner == var => Some(make_apply(arena, "Ei", &[var])),
+        ExprNode::Sin(inner) if inner == var => Some(arena.si(var)),
+        ExprNode::Cos(inner) if inner == var => Some(arena.ci(var)),
+        ExprNode::Exp(inner) if inner == var => Some(arena.ei(var)),
         ExprNode::Exp(inner) => {
             // exp(-x)/x → -Ei(-x)
             if let ExprNode::Neg(neg_inner) = arena.node(inner).clone()
                 && neg_inner == var
             {
                 let neg_var = arena.neg(var);
-                let ei = make_apply(arena, "Ei", &[neg_var]);
+                let ei = arena.ei(neg_var);
                 let neg_ei = arena.neg(ei);
                 return Some(wrap_with_constants(arena, neg_ei, constants));
             }
@@ -3857,17 +3857,6 @@ fn wrap_with_constants(arena: &mut Arena, result: ExprId, constants: &[ExprId]) 
         all.push(result);
         arena.mul(&all)
     }
-}
-
-/// Create an `Apply` node for a named special function.
-fn make_apply(arena: &mut Arena, name: &str, args: &[ExprId]) -> ExprId {
-    let sym_node = arena.symbol(name);
-    let sid = match arena.node(sym_node) {
-        ExprNode::Symbol(s) => *s,
-        _ => unreachable!(),
-    };
-    let args_sv: SmallVec<[ExprId; 2]> = args.iter().copied().collect();
-    arena.intern(ExprNode::Apply(sid, args_sv))
 }
 
 #[cfg(test)]

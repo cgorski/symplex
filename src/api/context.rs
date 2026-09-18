@@ -610,14 +610,20 @@ impl Context {
 
     // ── Linear system solving ──────────────────────────────────────────
 
-    /// Solve a system of linear equations.
+    /// Solve a system of linear equations (convenience wrapper over
+    /// [`linsolve`](crate::api::expr_solve_ext::linsolve)).
     ///
-    /// Each equation in `equations` is an expression that equals zero.
-    /// `variables` are the symbols to solve for.
+    /// Each equation in `equations` is an expression that equals zero (or an
+    /// [`Equation`](crate::api::eq::Equation)); `variables` are the symbols to
+    /// solve for.  Coefficients may be symbolic.  The result distinguishes a
+    /// unique solution, a parametric family (free variables), and an
+    /// inconsistent system — see
+    /// [`LinearSolution`](crate::api::expr_solve_ext::LinearSolution).
     ///
-    /// Returns `Some(vec![(var1, val1), (var2, val2), ...])` if a unique
-    /// solution exists, or `None` if the system is underdetermined,
-    /// overdetermined, or inconsistent.
+    /// # Errors
+    ///
+    /// Returns [`SymplexError::InvalidArgument`](crate::base::errors::SymplexError::InvalidArgument) if the equations are not
+    /// linear in `variables` or the input is empty.
     ///
     /// # Examples
     ///
@@ -629,32 +635,20 @@ impl Context {
     /// // x + y = 3, x - y = 1  →  x = 2, y = 1
     /// let eq1 = &x + &y - 3;
     /// let eq2 = &x - &y - 1;
-    /// let solution = ctx.solve_system(&[eq1, eq2], &[x, y]).unwrap();
-    /// assert_eq!(solution.len(), 2);
-    /// assert_eq!(format!("{}", solution[0].1), "2");
-    /// assert_eq!(format!("{}", solution[1].1), "1");
+    /// match ctx.solve_system(&[eq1, eq2], &[x, y]).unwrap() {
+    ///     LinearSolution::Unique(pairs) => {
+    ///         assert_eq!(format!("{}", pairs[0].1), "2");
+    ///         assert_eq!(format!("{}", pairs[1].1), "1");
+    ///     }
+    ///     other => panic!("expected a unique solution, got {other:?}"),
+    /// }
     /// ```
-    pub fn solve_system(
+    pub fn solve_system<E: crate::api::expr_solve_ext::ZeroForm>(
         &self,
-        equations: &[crate::api::expr::Ex],
+        equations: &[E],
         variables: &[crate::api::expr::Ex],
-    ) -> Option<Vec<(crate::api::expr::Ex, crate::api::expr::Ex)>> {
-        let eq_ids: Vec<crate::base::node::ExprId> = equations.iter().map(|e| e.raw_id()).collect();
-        let var_ids: Vec<crate::base::node::ExprId> =
-            variables.iter().map(|v| v.raw_id()).collect();
-
-        let mut inner = self.inner.write();
-        let result =
-            crate::domains::linalg::solve_linear_system(&mut inner.arena, &eq_ids, &var_ids)?;
-        drop(inner);
-
-        Some(
-            result
-                .pairs
-                .into_iter()
-                .map(|(var_id, val_id)| (self.make_ex(var_id), self.make_ex(val_id)))
-                .collect(),
-        )
+    ) -> Result<crate::api::expr_solve_ext::LinearSolution, crate::base::errors::SymplexError> {
+        crate::api::expr_solve_ext::linsolve(equations, variables)
     }
 
     // ── Arena compaction (generational GC) ─────────────────────────────

@@ -1061,6 +1061,16 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                     }
                 });
 
+                // Try closed-form symbolic evaluation first (Π k = n!, telescoping,
+                // Π a^f(k) = a^Σf, …), mirroring the `Sum` arm above.
+                if let Some(closed) =
+                    crate::transforms::sum_eval::eval_product_symbolic(arena, nbody, nvar, nlo, nhi)
+                {
+                    let result = eval(arena, closed);
+                    cache.insert(id, result);
+                    continue;
+                }
+
                 if let (Some(lo_val), Some(hi_val)) = (lo_int, hi_int) {
                     if hi_val < lo_val {
                         // Empty range: product is 1

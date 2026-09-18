@@ -142,14 +142,24 @@ pub use api::context;
 pub use api::eq;
 /// The core expression handle and types.
 pub use api::expr;
+/// Complex-analysis methods on `Ex` (`re`, `im`, `conjugate`, `arg`, `polar`, …).
+pub use api::expr_complex;
+/// Definite / improper / numeric integration methods on `Ex`.
+pub use api::expr_integrate_ext as integrate_api;
 /// Operator overloads and scalar-conversion traits (`ToEx`, `Scalar`).
 pub use api::expr_ops;
+/// Polynomial-algebra methods on `Ex` (resultant, discriminant, division, numeric roots, …).
+pub use api::expr_poly_ext as poly_api;
 /// Public rewrite-rule engine: `Rule`, `RuleSet`, `Bindings`, `RewriteOpts`, `Step`.
 pub use api::expr_rules_ext as rules;
+/// Summation, products, series and formal-power-series methods on `Ex`.
+pub use api::expr_series_ext as series_api;
 /// Set-algebra and boolean-logic helpers (`reduce_inequalities`).
 pub use api::expr_sets_ext as sets_api;
 /// Solver entry points beyond `Ex::solve`: `linsolve`, `LinearSolution`, `GeneralSolution`, Newton systems.
 pub use api::expr_solve_ext as solvers;
+/// Integral transforms (Fourier, Mellin, Laplace helpers) and directional limits on `Ex`.
+pub use api::expr_transforms_ext as transforms_api;
 /// A non-locking, read-only view of an expression node for use in `replace()`.
 pub use api::expr_view;
 /// Convenience macros for building expressions.
@@ -200,14 +210,18 @@ pub mod prelude {
         GeneralSolution, LinearSolution, NewtonOpts, ZeroForm, linsolve, linsolve_matrix,
         solve_numeric_system, solve_numeric_system_with,
     };
+    pub use crate::api::expr_transforms_ext::{Direction, FourierConvention, FourierSeries};
     pub use crate::api::expr_view::ExprView;
     pub use crate::base::assumptions::{Assumption, Assumptions, Props};
     pub use crate::base::config::EvalConfig;
     pub use crate::base::errors::SymplexError;
     pub use crate::calculus::definite::QuadOpts;
+    pub use crate::calculus::formal_series::FormalPowerSeries;
     pub use crate::domains::control::{StateSpace, TransferFunction};
     pub use crate::domains::matrix::Matrix;
     pub use crate::domains::quaternion::Quaternion;
+    pub use crate::domains::robotics::EulerConvention;
+    pub use crate::domains::vector::CoordinateSystem;
     pub use crate::output::codegen::{CodegenOptions, MathBackend, Precision};
     pub use crate::output::lambdify::{CompiledFn, CompiledFnVec};
     pub use crate::transforms::expand::ExpandOpts;
