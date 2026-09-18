@@ -63,6 +63,11 @@ const MAX_LITERALS: usize = 50_000;
 const MAX_TRUTH_TABLE_VARS: usize = 8;
 /// Fixpoint iterations for `simplify_bool`.
 const MAX_SIMPLIFY_PASSES: usize = 6;
+/// Maximum number of dual children (terms/clauses) considered for
+/// consensus / resolution in one connective.
+const MAX_CONSENSUS_TERMS: usize = 32;
+/// Maximum number of term-pair examinations in one consensus pass.
+const MAX_CONSENSUS_STEPS: usize = 4096;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Relational atoms
@@ -502,6 +507,15 @@ fn simplify_connective(arena: &mut Arena, is_and: bool, children: &[ExprId]) -> 
         }
     }
 
+    // 4b. Consensus / resolution among the dual children:
+    //   (C ∧ l) ∨ (C ∧ ¬l) → C          (C ∨ l) ∧ (C ∨ ¬l) → C
+    // and the consensus theorem (a term implied by the resolvent of two
+    // others is redundant).
+    let reduced_duals = consensus(arena, is_and, reduced_duals);
+    if reduced_duals.contains(&absorbing) {
+        return absorbing;
+    }
+
     // 5. Assemble deterministically.
     let mut out: Vec<ExprId> =
         Vec::with_capacity(merged.len() + opaque.len() + reduced_duals.len());
@@ -520,6 +534,183 @@ fn simplify_connective(arena: &mut Arena, is_and: bool, children: &[ExprId]) -> 
     } else {
         arena.or(&out)
     }
+}
+
+/// Outcome of comparing two dual children in [`consensus`].
+enum Resolution {
+    /// Both terms are replaced by this one (they differed in a single
+    /// literal position and the two literals combine).
+    Merge(Vec<ExprId>),
+    /// The two terms differ in one complementary literal (plus possibly
+    /// others); any third term containing every literal of this resolvent
+    /// is redundant.
+    Redundant(Vec<ExprId>),
+}
+
+/// Compare two dual children (`And`-terms inside an `Or` when `is_and`
+/// is `false`, `Or`-clauses inside an `And` when it is `true`) given as
+/// sorted literal lists.
+fn resolve(arena: &mut Arena, is_and: bool, t1: &[ExprId], t2: &[ExprId]) -> Option<Resolution> {
+    let common: Vec<ExprId> = t1.iter().copied().filter(|l| t2.contains(l)).collect();
+    let d1: Vec<ExprId> = t1.iter().copied().filter(|l| !t2.contains(l)).collect();
+    let d2: Vec<ExprId> = t2.iter().copied().filter(|l| !t1.contains(l)).collect();
+    if d1.is_empty() || d2.is_empty() {
+        return None; // subsumption is handled by the fixpoint / absorption
+    }
+
+    // Two literals "combine" when they are relationals on the same pair
+    // (the connective inside the dual merges their masks) or an opaque
+    // atom and its negation.  `None` = do not combine; `Some(None)` =
+    // the combination is the dual's identity (the position disappears);
+    // `Some(Some(l))` = the combined literal.
+    let combine = |arena: &mut Arena, l1: ExprId, l2: ExprId| -> Option<Option<ExprId>> {
+        if let (Some(r1), Some(r2)) = (rel_of(arena, l1), rel_of(arena, l2))
+            && (r1.a, r1.b) == (r2.a, r2.b)
+        {
+            // Inside an Or-term (`is_and == false`) the literals are
+            // conjoined across terms as `l1 ∨ l2` (mask union); inside an
+            // And-clause they combine as `l1 ∧ l2` (mask intersection).
+            let mask = if is_and {
+                r1.mask & r2.mask
+            } else {
+                r1.mask | r2.mask
+            };
+            let folded = fold_rel(arena, Rel { mask, ..r1 });
+            let identity_inside = if is_and {
+                arena.bool_false
+            } else {
+                arena.bool_true
+            };
+            return Some(if folded == identity_inside {
+                None
+            } else {
+                Some(folded)
+            });
+        }
+        if neg_lit(arena, l1) == l2 {
+            return Some(None);
+        }
+        None
+    };
+
+    if d1.len() == 1 && d2.len() == 1 {
+        if let Some(combined) = combine(arena, d1[0], d2[0]) {
+            let mut term = common;
+            if let Some(l) = combined {
+                term.push(l);
+                term.sort_by(|&x, &y| arena.sort_key(x).cmp(arena.sort_key(y)));
+            }
+            return Some(Resolution::Merge(term));
+        }
+        return None;
+    }
+
+    // Exactly one complementary pair across the differing literals → the
+    // resolvent `(t1 \ l) ∪ (t2 \ ¬l)` is implied by `t1 ∨ t2` (resp.
+    // implies `t1 ∧ t2`), so a third term containing it is redundant.
+    let mut pair: Option<(ExprId, ExprId)> = None;
+    for &l1 in &d1 {
+        for &l2 in &d2 {
+            if combine(arena, l1, l2) == Some(None) {
+                if pair.is_some() {
+                    return None; // two complementary positions: no consensus
+                }
+                pair = Some((l1, l2));
+            }
+        }
+    }
+    let (l1, l2) = pair?;
+    let mut resolvent: Vec<ExprId> = t1.iter().copied().filter(|&l| l != l1).collect();
+    for &l in t2 {
+        if l != l2 && !resolvent.contains(&l) {
+            resolvent.push(l);
+        }
+    }
+    Some(Resolution::Redundant(resolvent))
+}
+
+/// Consensus / resolution among the dual children of a connective
+/// (bounded by [`MAX_CONSENSUS_TERMS`] and [`MAX_CONSENSUS_STEPS`]).
+///
+/// * `(C ∧ l) ∨ (C ∧ ¬l) → C`, and more generally two terms differing in
+///   one position whose literals combine (`x > 0` with `x = 0` → `x ≥ 0`);
+/// * consensus theorem: with `(C₁ ∧ l) ∨ (C₂ ∧ ¬l)` present, a term that
+///   contains every literal of `C₁ ∪ C₂` is dropped.
+///
+/// The dual statements hold for `Or`-clauses inside an `And`.
+fn consensus(arena: &mut Arena, is_and: bool, duals: Vec<ExprId>) -> Vec<ExprId> {
+    if duals.len() < 2 || duals.len() > MAX_CONSENSUS_TERMS {
+        return duals;
+    }
+    let mut terms: Vec<Vec<ExprId>> = duals
+        .iter()
+        .map(|&d| match arena.node(d) {
+            ExprNode::Or(ch) | ExprNode::And(ch) => ch.to_vec(),
+            _ => vec![d],
+        })
+        .collect();
+    let mut budget = MAX_CONSENSUS_STEPS;
+    let mut changed = true;
+    let mut any_change = false;
+    'restart: while changed && budget > 0 {
+        changed = false;
+        for i in 0..terms.len() {
+            for j in (i + 1)..terms.len() {
+                budget -= 1;
+                if budget == 0 {
+                    break 'restart;
+                }
+                match resolve(arena, is_and, &terms[i], &terms[j]) {
+                    Some(Resolution::Merge(term)) => {
+                        tracing::trace!("consensus: merged two terms differing in one literal");
+                        terms[i] = term;
+                        terms.remove(j);
+                        changed = true;
+                        any_change = true;
+                        continue 'restart;
+                    }
+                    Some(Resolution::Redundant(resolvent)) => {
+                        let before = terms.len();
+                        let (ti, tj) = (terms[i].clone(), terms[j].clone());
+                        terms.retain(|t| {
+                            *t == ti || *t == tj || !resolvent.iter().all(|l| t.contains(l))
+                        });
+                        if terms.len() != before {
+                            tracing::trace!("consensus: dropped a term implied by a resolvent");
+                            changed = true;
+                            any_change = true;
+                            continue 'restart;
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+    if !any_change {
+        return duals;
+    }
+    // An empty term is the dual's identity (`true` inside an `Or`, `false`
+    // inside an `And`), i.e. the outer connective's absorbing element.
+    if terms.iter().any(Vec::is_empty) {
+        return vec![if is_and {
+            arena.bool_false
+        } else {
+            arena.bool_true
+        }];
+    }
+    terms
+        .into_iter()
+        .map(|t| {
+            if t.len() == 1 {
+                t[0]
+            } else if is_and {
+                arena.or(&t)
+            } else {
+                arena.and(&t)
+            }
+        })
+        .collect()
 }
 
 /// One bottom-up pass over an NNF expression.
@@ -1422,7 +1613,9 @@ pub(crate) fn eval_bool(
 
 /// Simplify every `Piecewise` node in an expression:
 ///
-/// * conditions are simplified with [`simplify_bool`];
+/// * conditions are folded under the assumption system with [`eval_bool`]
+///   (`x > 0` is `true` for a positive symbol) and then simplified with
+///   [`simplify_bool`];
 /// * branches with a `false` condition are dropped;
 /// * evaluation stops at the first `true` condition;
 /// * a branch whose condition repeats an earlier one is unreachable and
@@ -1433,6 +1626,7 @@ pub(crate) fn eval_bool(
 pub(crate) fn piecewise_simplify(arena: &mut Arena, root: ExprId) -> ExprId {
     let order = crate::base::walk::post_order_ids(arena, root);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut assumptions = AssumptionCache::new();
     for &id in &order {
         let new = match arena.node(id).clone() {
             ExprNode::Piecewise(pairs) => {
@@ -1443,6 +1637,7 @@ pub(crate) fn piecewise_simplify(arena: &mut Arena, root: ExprId) -> ExprId {
                 for &(v, c) in &pairs {
                     let nv = cache.get(&v).copied().unwrap_or(v);
                     let nc = cache.get(&c).copied().unwrap_or(c);
+                    let nc = eval_bool(arena, &mut assumptions, nc);
                     let nc = simplify_bool(arena, nc);
                     if nc == f || !seen_conds.insert(nc) {
                         continue;
