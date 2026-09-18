@@ -137,7 +137,8 @@ fn bessel_i_reference_values() {
         30,
         "1.26606587775200833559824462521",
     );
-    assert_prefix(&one.bessel_i(&one), 30, "0.56515910399248502720769602760");
+    // I₁(1) = 0.5651591039924850272076960276098… — the 30th digit rounds up.
+    assert_prefix(&one.bessel_i(&one), 30, "0.56515910399248502720769602761");
     assert_prefix(
         &ctx.int(2).bessel_i(&ctx.int(2)),
         20,
@@ -145,10 +146,11 @@ fn bessel_i_reference_values() {
     );
     assert_prefix(&ctx.int(30).bessel_i(&ctx.int(0)), 15, "781672297823.977");
     // non-integer order
+    // I_{1/3}(2) = 2.15878258137286302395… — rounds up at 20 digits.
     assert_prefix(
         &ctx.int(2).bessel_i(&ctx.rational(1, 3)),
         20,
-        "2.1587825813728630239",
+        "2.158782581372863024",
     );
     // I_{-n} = I_n; I_n(-x) = (-1)^n I_n(x)
     assert_eq!(
@@ -170,13 +172,18 @@ fn bessel_k_reference_values() {
         "0.42102443824070833333562737921",
     );
     assert_prefix(&one.bessel_k(&one), 30, "0.60190723019723457473754000153");
+    // K₂(3) = 0.0615104584717420376569… — the 20th digit rounds up.
     assert_prefix(
         &ctx.int(3).bessel_k(&ctx.int(2)),
         20,
-        "0.061510458471742037656",
+        "0.061510458471742037657",
     );
-    // Large argument (asymptotic regime)
-    assert_prefix(&ctx.int(50).bessel_k(&ctx.int(0)), 15, "3.41016774978949");
+    // Large argument (asymptotic regime); K₀(50) = 3.410167749789496…e-23
+    assert_prefix(
+        &ctx.int(50).bessel_k(&ctx.int(0)),
+        15,
+        "3.4101677497895e-23",
+    );
     // Half-integer order has a closed form: K_{1/2}(x) = √(π/(2x)) e^{-x}
     let k_half = one.bessel_k(&ctx.rational(1, 2)).eval_f64().unwrap();
     let expected = (std::f64::consts::PI / 2.0).sqrt() * (-1.0f64).exp();
@@ -184,7 +191,7 @@ fn bessel_k_reference_values() {
     assert_prefix(
         &ctx.int(2).bessel_k(&ctx.rational(1, 3)),
         20,
-        "0.11654496129616524875",
+        "0.11654496129616524876",
     );
     // Undefined for x <= 0
     assert!(ctx.int(0).bessel_k(&ctx.int(0)).eval_f64().is_err());

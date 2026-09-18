@@ -23,6 +23,30 @@
 //!
 //! The rules are derived from the same mathematical ontology as SymPy's
 //! assumption system, but compiled into bitmask operations for speed.
+//!
+//! # Sign properties and infinities
+//!
+//! `positive`, `negative`, `nonnegative` and `nonpositive` are *extended
+//! real* notions: `oo` is positive and `-oo` is negative (SymPy's
+//! `extended_positive` / `extended_negative`).  Consequently a sign
+//! property alone implies `extended_real`, `nonzero` (for the strict ones)
+//! and the negations of the opposite signs — but **not** `real`, `finite`
+//! or `complex`.  Those follow from `extended_real ∧ finite → real`:
+//!
+//! | value  | positive | extended_real | finite | real  | complex | infinite |
+//! |--------|----------|---------------|--------|-------|---------|----------|
+//! | `1`    | true     | true          | true   | true  | true    | false    |
+//! | `oo`   | true     | true          | false  | false | false   | true     |
+//! | `-oo`  | false    | true          | false  | false | false   | true     |
+//! | `zoo`  | false    | false         | false  | false | false   | true     |
+//! | `I`    | false    | false         | true   | false | true    | false    |
+//! | `nan`  | unknown  | unknown       | unknown| unknown | unknown | unknown |
+//!
+//! A symbol *declared* `Positive` (via `Context::symbol_with`, `sym!` or
+//! `Ex::assume`) is nevertheless a finite positive number, as in SymPy:
+//! [`Assumptions::normalize_declared`] adds `finite` to declared sets that
+//! carry a sign unless finiteness was declared explicitly.  Declaring a
+//! contradictory set panics.
 
 use bitflags::bitflags;
 use num_bigint::BigInt;
@@ -427,10 +451,58 @@ impl Assumptions {
         self.known_true.intersects(self.known_false)
     }
 
+    /// Normalise a set of assumptions *declared on a symbol*.
+    ///
+    /// The sign properties (`positive`, `negative`, `nonnegative`,
+    /// `nonpositive`) are extended-real notions in the lattice — `oo` is
+    /// positive — so on their own they do not imply `real`.  A symbol that
+    /// a user declares `Positive`, however, is meant to be an ordinary
+    /// (finite) positive number, exactly as in SymPy.  This method encodes
+    /// that convention: when finiteness was not declared either way and the
+    /// set carries a sign property or is known `!real`, `finite` is added,
+    /// from which `real` (for signed symbols) follows.
+    ///
+    /// Symbols declared only `ExtendedReal` stay agnostic about finiteness,
+    /// and an explicit `Infinite` / `NotFinite` is always respected
+    /// (`[Positive, Infinite]` describes `+oo`).
+    ///
+    /// The result is forward-chained.  Idempotent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let mut pos = Assumptions::default();
+    /// pos.assert_true(Props::POSITIVE);
+    /// assert_eq!(pos.query(Props::REAL), None, "could be +oo");
+    /// pos.normalize_declared();
+    /// assert_eq!(pos.query(Props::FINITE), Some(true));
+    /// assert_eq!(pos.query(Props::REAL), Some(true));
+    ///
+    /// let mut ext = Assumptions::default();
+    /// ext.assert_true(Props::EXTENDED_REAL);
+    /// ext.normalize_declared();
+    /// assert_eq!(ext.query(Props::FINITE), None);
+    /// ```
+    pub fn normalize_declared(&mut self) {
+        self.forward_chain();
+        if self.query(Props::FINITE).is_some() {
+            return;
+        }
+        let signed = self.known_true.intersects(
+            Props::POSITIVE | Props::NEGATIVE | Props::NONNEGATIVE | Props::NONPOSITIVE,
+        );
+        let not_real = self.known_false.contains(Props::REAL);
+        if signed || not_real {
+            self.assert_true(Props::FINITE);
+        }
+    }
+
     /// Does everything known in `other` follow from `self`?
     ///
     /// `self` is forward-chained first, so `implies` sees derived facts:
-    /// asserting `positive` implies `{real, nonzero, !negative}`.
+    /// asserting `positive` implies `{extended_real, nonzero, !negative}`.
     /// A contradictory `self` implies everything.
     ///
     /// # Examples
@@ -440,10 +512,10 @@ impl Assumptions {
     ///
     /// let mut pos = Assumptions::default();
     /// pos.assert_true(Props::POSITIVE);
-    /// let mut real_nonzero = Assumptions::default();
-    /// real_nonzero.known_true = Props::REAL | Props::NONZERO;
-    /// assert!(pos.implies(&real_nonzero));
-    /// assert!(!real_nonzero.implies(&pos));
+    /// let mut ext_nonzero = Assumptions::default();
+    /// ext_nonzero.known_true = Props::EXTENDED_REAL | Props::NONZERO;
+    /// assert!(pos.implies(&ext_nonzero));
+    /// assert!(!ext_nonzero.implies(&pos));
     /// ```
     pub fn implies(&self, other: &Assumptions) -> bool {
         let mut me = *self;
@@ -616,56 +688,43 @@ impl Assumptions {
                 self.known_false |= Props::INFINITE;
             }
 
-            // positive → nonnegative, nonzero, real, finite, !negative, !zero, !nonpositive
+            // extended_real → commutative, !imaginary
+            if self.known_true.contains(Props::EXTENDED_REAL) {
+                self.known_true |= Props::COMMUTATIVE;
+                self.known_false |= Props::IMAGINARY;
+            }
+
+            // The four sign properties live in the *extended* reals: `oo` is
+            // positive.  They therefore imply `extended_real` but not `real`
+            // or `finite`; `real` follows from `extended_real ∧ finite` (beta
+            // rule below).
+
+            // positive → nonnegative, nonzero, extended_real, !negative, !zero, !nonpositive
             if self.known_true.contains(Props::POSITIVE) {
-                self.known_true |= Props::NONNEGATIVE
-                    | Props::NONZERO
-                    | Props::REAL
-                    | Props::COMPLEX
-                    | Props::FINITE
-                    | Props::COMMUTATIVE
-                    | Props::HERMITIAN;
-                self.known_false |= Props::NEGATIVE
-                    | Props::ZERO
-                    | Props::NONPOSITIVE
-                    | Props::IMAGINARY
-                    | Props::INFINITE;
+                self.known_true |=
+                    Props::NONNEGATIVE | Props::NONZERO | Props::EXTENDED_REAL | Props::COMMUTATIVE;
+                self.known_false |=
+                    Props::NEGATIVE | Props::ZERO | Props::NONPOSITIVE | Props::IMAGINARY;
             }
 
-            // negative → nonpositive, nonzero, real, finite, !positive, !zero, !nonnegative
+            // negative → nonpositive, nonzero, extended_real, !positive, !zero, !nonnegative
             if self.known_true.contains(Props::NEGATIVE) {
-                self.known_true |= Props::NONPOSITIVE
-                    | Props::NONZERO
-                    | Props::REAL
-                    | Props::COMPLEX
-                    | Props::FINITE
-                    | Props::COMMUTATIVE
-                    | Props::HERMITIAN;
-                self.known_false |= Props::POSITIVE
-                    | Props::ZERO
-                    | Props::NONNEGATIVE
-                    | Props::IMAGINARY
-                    | Props::INFINITE;
+                self.known_true |=
+                    Props::NONPOSITIVE | Props::NONZERO | Props::EXTENDED_REAL | Props::COMMUTATIVE;
+                self.known_false |=
+                    Props::POSITIVE | Props::ZERO | Props::NONNEGATIVE | Props::IMAGINARY;
             }
 
-            // nonnegative → real, !negative
+            // nonnegative → extended_real, !negative
             if self.known_true.contains(Props::NONNEGATIVE) {
-                self.known_true |= Props::REAL
-                    | Props::COMPLEX
-                    | Props::FINITE
-                    | Props::COMMUTATIVE
-                    | Props::HERMITIAN;
-                self.known_false |= Props::NEGATIVE | Props::IMAGINARY | Props::INFINITE;
+                self.known_true |= Props::EXTENDED_REAL | Props::COMMUTATIVE;
+                self.known_false |= Props::NEGATIVE | Props::IMAGINARY;
             }
 
-            // nonpositive → real, !positive
+            // nonpositive → extended_real, !positive
             if self.known_true.contains(Props::NONPOSITIVE) {
-                self.known_true |= Props::REAL
-                    | Props::COMPLEX
-                    | Props::FINITE
-                    | Props::COMMUTATIVE
-                    | Props::HERMITIAN;
-                self.known_false |= Props::POSITIVE | Props::IMAGINARY | Props::INFINITE;
+                self.known_true |= Props::EXTENDED_REAL | Props::COMMUTATIVE;
+                self.known_false |= Props::POSITIVE | Props::IMAGINARY;
             }
 
             // zero → even, finite, nonneg, nonpos, real, integer, rational, algebraic, complex, !nonzero
@@ -785,23 +844,30 @@ impl Assumptions {
                 self.known_false |= Props::INFINITE;
             }
 
-            // infinite → !finite, !zero, nonzero
+            // infinite → !finite, nonzero, and nothing that lives in ℂ (which
+            // is finite by definition): !complex, !real, !imaginary, …
             if self.known_true.contains(Props::INFINITE) {
                 self.known_true |= Props::NONZERO;
                 self.known_false |= Props::FINITE
                     | Props::ZERO
+                    | Props::COMPLEX
+                    | Props::REAL
+                    | Props::IMAGINARY
                     | Props::INTEGER
                     | Props::RATIONAL
+                    | Props::IRRATIONAL
                     | Props::ALGEBRAIC
+                    | Props::TRANSCENDENTAL
                     | Props::EVEN
                     | Props::ODD
                     | Props::PRIME
                     | Props::COMPOSITE;
             }
 
-            // ── Contrapositives ──────────────────────────────────
+            // ── Contrapositives ────────────────────────────────────
 
             // !complex → !real, !rational, !integer, !algebraic, !transcendental, !imaginary
+            // (the sign properties are *not* excluded: `oo` is !complex yet positive)
             if self.known_false.contains(Props::COMPLEX) {
                 self.known_false |= Props::REAL
                     | Props::RATIONAL
@@ -810,10 +876,6 @@ impl Assumptions {
                     | Props::TRANSCENDENTAL
                     | Props::IMAGINARY
                     | Props::IRRATIONAL
-                    | Props::POSITIVE
-                    | Props::NEGATIVE
-                    | Props::NONNEGATIVE
-                    | Props::NONPOSITIVE
                     | Props::ZERO
                     | Props::EVEN
                     | Props::ODD
@@ -823,19 +885,25 @@ impl Assumptions {
                     | Props::ANTIHERMITIAN;
             }
 
-            // !real → !rational, !integer, !positive, !negative, !nonneg, !nonpos, !irrational
+            // !real → !rational, !integer, !irrational, !zero, …
+            // (again not the sign properties, which are extended-real notions)
             if self.known_false.contains(Props::REAL) {
                 self.known_false |= Props::RATIONAL
                     | Props::INTEGER
-                    | Props::POSITIVE
-                    | Props::NEGATIVE
-                    | Props::NONNEGATIVE
-                    | Props::NONPOSITIVE
                     | Props::IRRATIONAL
                     | Props::EVEN
                     | Props::ODD
                     | Props::PRIME
                     | Props::COMPOSITE
+                    | Props::ZERO;
+            }
+
+            // !extended_real → !positive, !negative, !nonnegative, !nonpositive, !zero
+            if self.known_false.contains(Props::EXTENDED_REAL) {
+                self.known_false |= Props::POSITIVE
+                    | Props::NEGATIVE
+                    | Props::NONNEGATIVE
+                    | Props::NONPOSITIVE
                     | Props::ZERO;
             }
 
@@ -854,9 +922,10 @@ impl Assumptions {
                 self.known_false |= Props::EVEN | Props::ODD | Props::PRIME | Props::COMPOSITE;
             }
 
-            // !finite → infinite
+            // !finite → infinite, !complex (ℂ ⊂ finite)
             if self.known_false.contains(Props::FINITE) {
                 self.known_true |= Props::INFINITE;
+                self.known_false |= Props::COMPLEX;
             }
 
             // !infinite → finite
@@ -940,6 +1009,13 @@ impl Assumptions {
             // !real ∧ finite → !extended_real  (contrapositive of the above)
             if self.known_false.contains(Props::REAL) && self.known_true.contains(Props::FINITE) {
                 self.known_false.insert(Props::EXTENDED_REAL);
+            }
+
+            // extended_real ∧ !real → infinite  (extended_real = real ∨ ±∞)
+            if self.known_true.contains(Props::EXTENDED_REAL)
+                && self.known_false.contains(Props::REAL)
+            {
+                self.known_true.insert(Props::INFINITE);
             }
 
             // Check fixpoint.
@@ -1058,6 +1134,20 @@ impl AssumptionCache {
             }
             _ => Assumptions::default(), // Apply, Derivative, Integral, formal nodes, …
         };
+
+        // Close the handler's facts under the implication rules *before*
+        // caching, so that a property first asked for later (or first
+        // reached through a parent's `compute`) gets the same answer as one
+        // asked for directly.
+        let mut result = result;
+        result.forward_chain();
+        if result.is_contradictory() {
+            tracing::debug!(
+                node = ?arena.node(id),
+                assumptions = %result,
+                "assumptions: handler produced a contradictory set"
+            );
+        }
 
         // Cache the result.
         self.cache.insert(id, result);
@@ -1741,7 +1831,25 @@ impl AssumptionCache {
     }
 
     /// Store user-supplied symbol assumptions in the cache.
+    ///
+    /// The set is normalised with [`Assumptions::normalize_declared`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the declared assumptions are self-contradictory (e.g.
+    /// `Positive` together with `Negative`, or `Integer` with
+    /// `Irrational`).  Declaring impossible facts about a symbol is a
+    /// programming error, on a par with mixing expressions from two
+    /// contexts.
     pub fn set_symbol_assumptions(&mut self, id: ExprId, assumptions: Assumptions) {
+        let mut assumptions = assumptions;
+        assumptions.normalize_declared();
+        assert!(
+            !assumptions.is_contradictory(),
+            "contradictory assumptions declared on symbol {id:?}: {assumptions} \
+             (properties {} are both asserted and denied)",
+            assumptions.known_true & assumptions.known_false
+        );
         self.cache.insert(id, assumptions);
     }
 }
@@ -1915,6 +2023,9 @@ fn compute_imaginary_unit() -> Assumptions {
     a
 }
 
+/// `oo`: positive, extended real, infinite — and therefore not finite, not
+/// real and not complex (ℂ is finite).  Matches SymPy's model of `oo`
+/// (`extended_positive`, `infinite`, `!finite`, `!real`, `!complex`).
 fn compute_infinity() -> Assumptions {
     let mut a = Assumptions::default();
     a.known_true |= Props::INFINITE
@@ -1924,20 +2035,27 @@ fn compute_infinity() -> Assumptions {
         | Props::NONZERO
         | Props::COMMUTATIVE;
     a.known_false |= Props::FINITE
+        | Props::REAL
+        | Props::COMPLEX
         | Props::NEGATIVE
         | Props::NONPOSITIVE
         | Props::ZERO
         | Props::INTEGER
         | Props::RATIONAL
+        | Props::IRRATIONAL
         | Props::ALGEBRAIC
+        | Props::TRANSCENDENTAL
         | Props::IMAGINARY
         | Props::EVEN
         | Props::ODD
         | Props::PRIME
         | Props::COMPOSITE;
+    a.forward_chain();
+    debug_assert!(!a.is_contradictory(), "oo: {a}");
     a
 }
 
+/// `-oo`: the mirror image of [`compute_infinity`].
 fn compute_neg_infinity() -> Assumptions {
     let mut a = Assumptions::default();
     a.known_true |= Props::INFINITE
@@ -1947,39 +2065,57 @@ fn compute_neg_infinity() -> Assumptions {
         | Props::NONZERO
         | Props::COMMUTATIVE;
     a.known_false |= Props::FINITE
+        | Props::REAL
+        | Props::COMPLEX
         | Props::POSITIVE
         | Props::NONNEGATIVE
         | Props::ZERO
         | Props::INTEGER
         | Props::RATIONAL
+        | Props::IRRATIONAL
         | Props::ALGEBRAIC
+        | Props::TRANSCENDENTAL
         | Props::IMAGINARY
         | Props::EVEN
         | Props::ODD
         | Props::PRIME
         | Props::COMPOSITE;
+    a.forward_chain();
+    debug_assert!(!a.is_contradictory(), "-oo: {a}");
     a
 }
 
+/// `zoo`: infinite with no direction — not extended real, so no sign.
 fn compute_complex_infinity() -> Assumptions {
     let mut a = Assumptions::default();
     a.known_true |= Props::INFINITE | Props::NONZERO | Props::COMMUTATIVE;
     a.known_false |= Props::FINITE
         | Props::EXTENDED_REAL
         | Props::REAL
+        | Props::COMPLEX
+        | Props::POSITIVE
+        | Props::NEGATIVE
+        | Props::NONNEGATIVE
+        | Props::NONPOSITIVE
         | Props::ZERO
         | Props::INTEGER
         | Props::RATIONAL
+        | Props::IRRATIONAL
         | Props::ALGEBRAIC
+        | Props::TRANSCENDENTAL
+        | Props::IMAGINARY
         | Props::EVEN
         | Props::ODD
         | Props::PRIME
         | Props::COMPOSITE;
+    a.forward_chain();
+    debug_assert!(!a.is_contradictory(), "zoo: {a}");
     a
 }
 
+/// `nan`: nothing numeric can be said about it (it is not even
+/// `infinite`); only `commutative` holds.
 fn compute_nan() -> Assumptions {
-    // NaN: we know essentially nothing, except it's commutative.
     let mut a = Assumptions::default();
     a.known_true |= Props::COMMUTATIVE;
     a
@@ -2068,14 +2204,65 @@ mod tests {
     }
 
     #[test]
-    fn positive_implies_real_nonneg_nonzero() {
+    fn positive_implies_extended_real_nonneg_nonzero() {
         let mut a = Assumptions::default();
         a.assert_true(Props::POSITIVE);
         assert_eq!(a.query(Props::NONNEGATIVE), Some(true));
         assert_eq!(a.query(Props::NONZERO), Some(true));
-        assert_eq!(a.query(Props::REAL), Some(true));
+        assert_eq!(a.query(Props::EXTENDED_REAL), Some(true));
+        assert_eq!(a.query(Props::REAL), None, "could be +oo");
+        assert_eq!(a.query(Props::FINITE), None, "could be +oo");
         assert_eq!(a.query(Props::NEGATIVE), Some(false));
         assert_eq!(a.query(Props::ZERO), Some(false));
+        // With finiteness the real line is recovered.
+        a.assert_true(Props::FINITE);
+        assert_eq!(a.query(Props::REAL), Some(true));
+        assert_eq!(a.query(Props::COMPLEX), Some(true));
+        assert!(!a.is_contradictory());
+    }
+
+    #[test]
+    fn positive_and_infinite_is_consistent() {
+        let mut a = Assumptions::default();
+        a.assert_true(Props::POSITIVE);
+        a.assert_true(Props::INFINITE);
+        assert!(!a.is_contradictory(), "{a}");
+        assert_eq!(a.query(Props::REAL), Some(false));
+        assert_eq!(a.query(Props::COMPLEX), Some(false));
+        assert_eq!(a.query(Props::EXTENDED_REAL), Some(true));
+        // ¬ real ∧ extended_real → infinite
+        let mut b = Assumptions::default();
+        b.assert_true(Props::EXTENDED_REAL);
+        b.assert_false(Props::REAL);
+        assert_eq!(b.query(Props::INFINITE), Some(true));
+    }
+
+    #[test]
+    fn normalize_declared_makes_signed_symbols_finite() {
+        let mut pos = Assumptions::default();
+        pos.assert_true(Props::POSITIVE);
+        pos.normalize_declared();
+        assert_eq!(pos.query(Props::FINITE), Some(true));
+        assert_eq!(pos.query(Props::REAL), Some(true));
+        pos.normalize_declared();
+        assert_eq!(pos.query(Props::REAL), Some(true), "idempotent");
+
+        let mut ext = Assumptions::default();
+        ext.assert_true(Props::EXTENDED_REAL);
+        ext.normalize_declared();
+        assert_eq!(ext.query(Props::FINITE), None);
+
+        let mut pos_inf = Assumptions::default();
+        pos_inf.assert_true(Props::POSITIVE);
+        pos_inf.assert_true(Props::INFINITE);
+        pos_inf.normalize_declared();
+        assert_eq!(pos_inf.query(Props::FINITE), Some(false));
+        assert!(!pos_inf.is_contradictory());
+
+        let mut not_real = Assumptions::default();
+        not_real.assert_false(Props::REAL);
+        not_real.normalize_declared();
+        assert_eq!(not_real.query(Props::POSITIVE), Some(false));
     }
 
     #[test]
@@ -2245,9 +2432,11 @@ mod tests {
         a.assert_true(Props::POSITIVE);
         assert_eq!(a.query(Props::NONNEGATIVE), Some(true));
         assert_eq!(a.query(Props::NONZERO), Some(true));
-        assert_eq!(a.query(Props::REAL), Some(true));
         assert_eq!(a.query(Props::EXTENDED_REAL), Some(true));
+        assert_eq!(a.query(Props::COMMUTATIVE), Some(true));
         assert_eq!(a.query(Props::NONPOSITIVE), Some(false));
+        assert_eq!(a.query(Props::NEGATIVE), Some(false));
+        assert_eq!(a.query(Props::ZERO), Some(false));
         assert_eq!(a.query(Props::IMAGINARY), Some(false));
     }
 
@@ -2366,12 +2555,17 @@ mod tests {
             known_true: Props::REAL,
             known_false: Props::empty(),
         };
+        let ext_real = Assumptions {
+            known_true: Props::EXTENDED_REAL,
+            known_false: Props::empty(),
+        };
         let not_neg = Assumptions {
             known_true: Props::empty(),
             known_false: Props::NEGATIVE,
         };
-        assert!(pos.implies(&real));
+        assert!(pos.implies(&ext_real));
         assert!(pos.implies(&not_neg));
+        assert!(!pos.implies(&real), "positive alone could be +oo");
         assert!(!real.implies(&pos));
         assert!(
             pos.implies(&Assumptions::default()),
