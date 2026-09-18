@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Added
+
+- `symplex::certificates` — exact, machine-checkable non-negativity
+  certificates on a box.  `prove_nonnegative_on_box(goal, &[(var, lo, hi)],
+  degree)` searches for a Handelman certificate
+  `goal = Σ λₖ · Π (xᵢ − lᵢ)^a (uᵢ − xᵢ)^b`, `λ ≥ 0`, by exact LP (weighted to
+  prefer few, low-degree products), **re-verifies the identity with exact
+  `Poly` arithmetic** before returning, and otherwise either refutes the
+  claim with an exact counterexample (`BoxOutcome::Refuted { point, value }`)
+  or reports `BoxOutcome::Unknown { farkas, degree }` (e.g. when the goal
+  touches zero inside the box, where no Handelman certificate exists).
+  `Certificate::{terms, product, product_expr, identity, verify, degree}`,
+  `is_nonnegative_on_box` (three-valued convenience),
+  `Poly::express_as_nonneg_combination(basis)` (the LP step alone), and
+  `Ex::prove_nonnegative_on_box`.
+- `Certificate::to_lean(name)` / `to_lean_with`: a Lean 4 / Mathlib theorem
+  `theorem name (x y : ℝ) (h_x_lo : …) … : 0 ≤ goal := by nlinarith […]`
+  whose hints are exactly the certificate's products (`mul_nonneg
+  (sub_nonneg.mpr h_x_lo) (sub_nonneg.mpr h_y_hi)`, …); linear certificates
+  use `linarith`; unused bounds are underscored for the linter.  Every
+  theorem produced by `examples/certificates_to_lean.rs` was compiled
+  against Mathlib (Lean 4.30.0) with no errors or warnings.
+
 ## [0.3.1] - 2026-09-18
 
 Driven by field notes from downstream tools built on 0.3.0.  Additive only

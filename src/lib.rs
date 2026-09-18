@@ -186,6 +186,8 @@ pub use output::tree;
 pub use plotting::data_export;
 
 // domains
+/// Exact, machine-checkable non-negativity certificates on boxes (Handelman), with Lean export.
+pub use domains::certificates;
 /// Combinatorics: Stirling numbers, multinomial coefficients, partition counting.
 pub use domains::combinatorics;
 /// Control systems: state-space models, transfer functions, stability analysis.

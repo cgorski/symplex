@@ -93,7 +93,7 @@ fn unsupported(what: impl std::fmt::Display) -> SymplexError {
 }
 
 /// A Lean identifier: plain when it is one already, otherwise `«…»`-quoted.
-fn lean_ident(name: &str) -> String {
+pub(crate) fn lean_ident(name: &str) -> String {
     let mut chars = name.chars();
     let ok_start = chars
         .next()

@@ -2,6 +2,8 @@
 //! former `tests/v03_*.rs` file). Run one module with e.g.
 //! `cargo test --test v03 v03_linprog::`.
 
+#[path = "v03/v03_certificates.rs"]
+mod v03_certificates;
 #[path = "v03/v03_linprog.rs"]
 mod v03_linprog;
 #[path = "v03/v03_matrix_ergonomics.rs"]

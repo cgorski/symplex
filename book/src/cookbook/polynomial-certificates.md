@@ -234,3 +234,42 @@ Every term on the right is a product of factors that are non-negative on the box
 - `Poly::scale`, `Poly::add`, `Poly::equals` and `Ex::ratsimp` — two independent verifications
 - `ntheory::rational_lcm_of_denominators` — the integer form of the certificate
 - `Ex::poly_is_nonnegative_on` — exact sign of a univariate polynomial on an interval
+
+## The one-call version, and a proof Lean can check
+
+Everything above is what `symplex::certificates::prove_nonnegative_on_box` does for you: it enumerates the products of the box inequalities up to a degree, solves the exact LP (preferring few, low-degree products), **re-verifies the identity with exact polynomial arithmetic**, and — when the claim is false — returns an exact counterexample instead. `Certificate::to_lean` then writes the result as a Mathlib theorem whose proof is `nlinarith` over precisely the products of the certificate, so Lean only has to check linear arithmetic.
+
+```rust
+use symplex::certificates::{prove_nonnegative_on_box, BoxOutcome};
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let (r, f) = (ctx.symbol("r"), ctx.symbol("f"));
+    let goal = ctx.rational(1, 4) - (&r - &f / 2).powi(2);
+    let bounds = [
+        (r.clone(), ctx.int(0), ctx.rational(1, 2)),
+        (f.clone(), ctx.int(0), ctx.int(1)),
+    ];
+    match prove_nonnegative_on_box(&goal, &bounds, 2).unwrap() {
+        BoxOutcome::Proved(cert) => {
+            println!("{cert}");
+            // -1/4*f^2 + f*r - r^2 + 1/4 = 1/2*f*r + 1/4*f*(-f + 1) + r*(-r + 1/2) + 1/2*(-r + 1/2)*(-f + 1), 0 ≤ r ≤ 1/2, 0 ≤ f ≤ 1
+            assert!(cert.verify());
+            print!("{}", cert.to_lean("quarter_bound").unwrap());
+        }
+        BoxOutcome::Refuted { point, value } => println!("false: goal = {value} at {point:?}"),
+        BoxOutcome::Unknown { degree, .. } => println!("no certificate of degree {degree}"),
+    }
+}
+```
+
+The emitted theorem:
+
+```lean
+theorem quarter_bound (r f : ℝ) (h_r_lo : (0 : ℝ) ≤ r) (h_r_hi : r ≤ (1 / 2 : ℝ)) (h_f_lo : (0 : ℝ) ≤ f) (h_f_hi : f ≤ (1 : ℝ)) :
+    0 ≤ -(f ^ 2 / 4) + f * r - r ^ 2 + (1 / 4 : ℝ) := by
+  nlinarith [mul_nonneg (sub_nonneg.mpr h_r_hi) (sub_nonneg.mpr h_f_hi), mul_nonneg (sub_nonneg.mpr h_f_lo) (sub_nonneg.mpr h_f_hi), mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_r_hi), mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_f_lo)]
+```
+
+This compiles against Mathlib (Lean 4.30.0) without errors or warnings; `cargo run --example certificates_to_lean out.lean` writes a file with several such theorems that you can check with `lake env lean out.lean` inside any Mathlib project. The `(r − ¼)²`-style case from the previous section comes back as `BoxOutcome::Unknown` at every degree — exactly the interior-zero limitation of Handelman's theorem — and a false claim such as `xy − ½ ≥ 0` on the unit square is `Refuted { point: (0, 0), value: -1/2 }`.

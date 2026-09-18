@@ -501,6 +501,50 @@ fn linear_algebra() {
     assert_eq!((&m - &m.transpose()).is_zero(), Some(true));
 }
 
+fn certified_inequalities() {
+    println!("\n--- Certified Inequalities and Lean Export ---");
+    use symplex::certificates::{BoxOutcome, prove_nonnegative_on_box};
+    let ctx = Context::new();
+    syms!(ctx; x, y);
+    let square = [
+        (x.clone(), ctx.int(0), ctx.int(1)),
+        (y.clone(), ctx.int(0), ctx.int(1)),
+    ];
+
+    let cert = match prove_nonnegative_on_box(&(1 - &x * &y), &square, 2).unwrap() {
+        BoxOutcome::Proved(c) => c,
+        other => panic!("{other:?}"),
+    };
+    println!("{cert}");
+    assert_eq!(
+        cert.to_string(),
+        "-x*y + 1 = -y + y*(-x + 1) + 1, 0 ≤ x ≤ 1, 0 ≤ y ≤ 1"
+    );
+    assert!(cert.verify());
+    let lean = cert.to_lean("one_minus_xy").unwrap();
+    print!("{lean}");
+    assert_eq!(
+        lean,
+        "theorem one_minus_xy (x y : ℝ) (_h_x_lo : (0 : ℝ) ≤ x) (h_x_hi : x ≤ (1 : ℝ)) (h_y_lo : (0 : ℝ) ≤ y) (h_y_hi : y ≤ (1 : ℝ)) :\n    0 ≤ -(x * y) + 1 := by\n  nlinarith [sub_nonneg.mpr h_y_hi, mul_nonneg (sub_nonneg.mpr h_x_hi) (sub_nonneg.mpr h_y_lo)]\n"
+    );
+
+    match prove_nonnegative_on_box(&(&x * &y - ctx.rational(1, 2)), &square, 2).unwrap() {
+        BoxOutcome::Refuted { point, value } => {
+            println!("refuted at {point:?}: {value}");
+            assert_eq!(value.to_string(), "-1/2");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        ((&x - 1) / (2 * &x)).to_lean().unwrap(),
+        "(x - 1) / (2 * x)"
+    );
+    assert_eq!(
+        x.sqrt().gt(&ctx.int(0)).to_lean().unwrap(),
+        "0 < Real.sqrt x"
+    );
+}
+
 fn exact_optimization() {
     println!("\n--- Exact Optimization and Integer Lattices ---");
     use symplex::linprog::{feasible_nonneg, q, qi};
@@ -791,6 +835,7 @@ fn main() {
     sets_and_logic();
     linear_algebra();
     exact_optimization();
+    certified_inequalities();
     transforms();
     number_theory();
     numerical_toolbox();

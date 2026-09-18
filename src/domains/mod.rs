@@ -1,3 +1,4 @@
+pub mod certificates;
 pub mod combinatorics;
 pub mod control;
 pub mod diophantine;

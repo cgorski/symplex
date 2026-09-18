@@ -418,6 +418,33 @@ matrix![ctx, [2, 1, 1]].integer_nullspace().unwrap(); // [(1, 0, −2)ᵀ, (0, 1
 
 Also: `linprog` (SciPy-shaped), `linprog_matrix` (from `Matrix` data), per-variable bounds and free variables, `nonneg_combination` / `feasible_nonneg_certified` (cone membership with the separating Farkas vector on failure), `column_hermite_normal_form` (SymPy's convention), `smith_normal_form_with_transforms`, `is_unimodular`, `lattice_determinant`.
 
+### Certified Inequalities and Lean Export
+
+`certificates::prove_nonnegative_on_box` proves `goal ≥ 0` on a box with a Handelman certificate — an exact identity `goal = Σ λₖ·Π(xᵢ − lᵢ)^a(uᵢ − xᵢ)^b` with `λ ≥ 0` found by the exact LP and **re-verified with exact polynomial arithmetic** — or refutes the claim with an exact counterexample. The certificate exports as a Lean 4 / Mathlib theorem whose proof is `nlinarith` over exactly those products; `Ex::to_lean()` renders any elementary expression in Mathlib syntax.
+
+```rust
+use symplex::certificates::{prove_nonnegative_on_box, BoxOutcome};
+let ctx = Context::new();
+syms!(ctx; x, y);
+let square = [(x.clone(), ctx.int(0), ctx.int(1)), (y.clone(), ctx.int(0), ctx.int(1))];
+
+let cert = match prove_nonnegative_on_box(&(1 - &x * &y), &square, 2).unwrap() {
+    BoxOutcome::Proved(c) => c,
+    other => panic!("{other:?}"),
+};
+cert.to_string();                                     // -x*y + 1 = -y + y*(-x + 1) + 1, 0 ≤ x ≤ 1, 0 ≤ y ≤ 1
+cert.verify();                                        // true — exact re-check, independent of the LP
+cert.to_lean("one_minus_xy").unwrap();
+// theorem one_minus_xy (x y : ℝ) (_h_x_lo : (0 : ℝ) ≤ x) (h_x_hi : x ≤ (1 : ℝ)) (h_y_lo : (0 : ℝ) ≤ y) (h_y_hi : y ≤ (1 : ℝ)) :
+//     0 ≤ -(x * y) + 1 := by
+//   nlinarith [sub_nonneg.mpr h_y_hi, mul_nonneg (sub_nonneg.mpr h_x_hi) (sub_nonneg.mpr h_y_lo)]
+
+prove_nonnegative_on_box(&(&x * &y - ctx.rational(1, 2)), &square, 2).unwrap();
+                                                      // Refuted { point: [0, 0], value: -1/2 }
+((&x - 1) / (2 * &x)).to_lean().unwrap();             // "(x - 1) / (2 * x)"
+x.sqrt().gt(&ctx.int(0)).to_lean().unwrap();          // "0 < Real.sqrt x"
+```
+
 ### Transforms
 
 ```rust
@@ -686,6 +713,7 @@ cargo run --example readme_snippets         # Every code block in this README, e
 **New in 0.3:**
 ```
 cargo run --example polynomials             # Poly views with symbolic coefficients, ratsimp, linear certificates, exact sign on an interval
+cargo run --example certificates_to_lean    # Handelman certificates on a box (exact LP, exactly re-verified) exported as Mathlib theorems
 cargo run --example exact_lp                # Exact simplex: optima, shadow prices, Farkas certificates, feasible_nonneg, linprog_matrix
 cargo run --example integer_lattices        # Row/column HNF with transforms, Smith normal form, integer nullspace, unimodularity, lattice index
 cargo run --example numeric_optimization    # Brent/Newton roots, Nelder–Mead, differential evolution, polynomial fits (f64 and exact)
