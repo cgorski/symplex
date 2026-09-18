@@ -21,7 +21,10 @@
 //! 3. Combine like bases: `x * x → x²`, `x² * x³ → x⁵`.
 //! 4. Numeric coefficient placed first if ≠ 1.
 //! 5. Remaining factors sorted by [`SortKey`](crate::base::sort_key::SortKey).
-//! 6. Zero propagation: any zero factor ⟹ result is `0` (unless ∞ involved ⟹ `NaN`).
+//! 6. Zero propagation: any zero factor ⟹ result is `0`, except that
+//!    `0 × (±∞ | zoo | nan) ⟹ NaN` regardless of argument order.  Function
+//!    applications of unknown finiteness (`Γ(zoo)`, `exp(-∞)`) count as
+//!    finite here because construction never evaluates them.
 //! 7. `NaN` propagation.
 //!
 //! ## Pow
@@ -203,19 +206,46 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 // Mul
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Check whether `id` is an `Add` node with at least one infinity child.
-fn is_add_with_infinity(arena: &Arena, id: ExprId) -> bool {
-    if let ExprNode::Add(ref children) = arena.node(id).clone() {
-        for &child in children {
-            match arena.node(child) {
-                ExprNode::Infinity | ExprNode::NegInfinity | ExprNode::ComplexInfinity => {
-                    return true;
-                }
-                _ => {}
+/// Result of `0 × (all other factors)` inside [`canon_mul`].
+///
+/// The rule is independent of argument order:
+///
+/// * `0 × (±∞ | zoo | nan) → nan`, also when the special value is hidden
+///   inside a nested `Mul`, `Neg`, or (non-canonical) `Add` among the
+///   factors that have not been processed yet, or among the bases already
+///   collected;
+/// * otherwise `0 × anything → 0`.  This includes function applications of
+///   unknown finiteness such as `Γ(zoo)` or `exp(-∞)`: construction never
+///   evaluates functions, so they are treated as finite here.
+///
+/// `saw_infinity` reports whether an infinity was already consumed from the
+/// factor list before the coefficient became zero.
+fn zero_times_rest<'a>(
+    arena: &Arena,
+    saw_infinity: bool,
+    remaining: impl IntoIterator<Item = &'a ExprId>,
+) -> ExprId {
+    if saw_infinity {
+        return arena.nan;
+    }
+    let mut stack: SmallVec<[ExprId; 16]> = remaining.into_iter().copied().collect();
+    while let Some(id) = stack.pop() {
+        match arena.node(id) {
+            ExprNode::NaN
+            | ExprNode::Infinity
+            | ExprNode::NegInfinity
+            | ExprNode::ComplexInfinity => {
+                tracing::debug!("canon_mul: 0 * ∞ → NaN");
+                return arena.nan;
             }
+            ExprNode::Mul(children) | ExprNode::Add(children) => {
+                stack.extend_from_slice(children);
+            }
+            ExprNode::Neg(inner) => stack.push(*inner),
+            _ => {}
         }
     }
-    false
+    arena.zero
 }
 
 /// Build a canonical `Mul` node from the given factors.
@@ -290,19 +320,10 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
                 let val = arena.num(nid).clone();
                 coeff *= val;
                 if coeff.is_zero() {
-                    // 0 * anything: check for infinity → NaN.
-                    if saw_infinity {
-                        return arena.nan;
-                    }
-                    // 0 * Add(…∞…) → NaN: infinity hidden inside a sum
-                    if bases.keys().any(|&id| is_add_with_infinity(arena, id))
-                        || stack.iter().any(|&id| is_add_with_infinity(arena, id))
-                    {
-                        tracing::debug!("canon_mul: 0 * Add(…∞…) → NaN");
-                        return arena.nan;
-                    }
-                    // Short-circuit: the rest doesn't matter.
-                    return arena.zero;
+                    // 0 × rest: `nan` if any infinity/NaN is involved
+                    // (already seen, still on the stack, or hidden in a
+                    // collected base), otherwise `0`.
+                    return zero_times_rest(arena, saw_infinity, stack.iter().chain(bases.keys()));
                 }
             }
 
@@ -322,15 +343,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 
     // If coefficient became zero during processing.
     if coeff.is_zero() {
-        if saw_infinity {
-            return arena.nan;
-        }
-        // 0 * Add(…∞…) → NaN: infinity hidden inside a sum
-        if bases.keys().any(|&id| is_add_with_infinity(arena, id)) {
-            tracing::debug!("canon_mul: 0 * Add(…∞…) → NaN");
-            return arena.nan;
-        }
-        return arena.zero;
+        return zero_times_rest(arena, saw_infinity, bases.keys());
     }
 
     // Build the combined factors.
@@ -470,18 +483,7 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
 
     // Re-check for zero after absorbing numeric factors.
     if coeff.is_zero() {
-        if saw_infinity {
-            return arena.nan;
-        }
-        // 0 * Add(…∞…) → NaN: infinity hidden inside a sum
-        if result_args
-            .iter()
-            .any(|&id| is_add_with_infinity(arena, id))
-        {
-            tracing::debug!("canon_mul: 0 * Add(…∞…) → NaN");
-            return arena.nan;
-        }
-        return arena.zero;
+        return zero_times_rest(arena, saw_infinity, result_args.iter());
     }
 
     // Now prepend the numeric coefficient (if not 1, or if there are
