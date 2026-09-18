@@ -12,7 +12,7 @@
 
 use tracing::debug_span;
 
-use crate::api::expr::{Ex, Expr, Numeric};
+use crate::api::expr::{BoolEx, Ex, Expr, Numeric};
 use crate::base::errors::SymplexError;
 
 pub use crate::calculus::fourier_transform::FourierConvention;
@@ -335,6 +335,113 @@ impl Expr<Numeric> {
                 w_id,
                 t_id,
                 convention,
+            )
+        };
+        r.map(|id| self.wrap(id))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mellin transform
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Expr<Numeric> {
+    /// Mellin transform `M{f}(s) = ∫₀^∞ x^{s−1} f(x) dx` of this expression
+    /// (a function of `x`) as a function of `s`, together with the
+    /// *fundamental strip* `a < Re(s) < b` on which the integral converges,
+    /// returned as a boolean condition on `Re(s)`.
+    ///
+    /// Table: `e^{−x} → Γ(s)`, `e^{−x²} → Γ(s/2)/2`, `1/(1+x) → π/sin(πs)`,
+    /// `1/(1+x)^ν → B(s, ν−s)`, `H(1−x)·x^a → 1/(s+a)`, `H(x−1)·x^a →
+    /// −1/(s+a)`, `H(1−x)(1−x)^b → B(s, b+1)`, `sin x → Γ(s) sin(πs/2)`,
+    /// `cos x → Γ(s) cos(πs/2)`, `ln(1+x) → π/(s sin πs)`; rules: linearity,
+    /// `x^a f → F(s+a)`, `f(ax) → a^{−s}F(s)`, `f(x^b) → F(s/b)/|b|`,
+    /// `f′ → −(s−1)F(s−1)`, `ln(x) f → F′(s)`.
+    ///
+    /// Parameters are treated as real; sign conditions (`a > 0` in
+    /// `e^{−ax}`) are checked through the assumption system and an
+    /// unprovable condition is an error.
+    ///
+    /// # Errors
+    ///
+    /// * `InvalidArgument` if `x`/`s` are not distinct symbols.
+    /// * `ComputationFailed` if no rule applies, a sign assumption is
+    ///   missing, or the strips of two summands do not overlap.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let s = ctx.symbol("s");
+    ///
+    /// let (f, strip) = (-&x).exp().mellin_transform(&x, &s).unwrap();
+    /// assert_eq!(f, s.gamma());
+    /// assert_eq!(format!("{strip}"), "re(s) > 0");
+    ///
+    /// // x² e^{-3x}: power rule and scaling rule
+    /// let (g, strip) = (x.powi(2) * (&x * -3).exp()).mellin_transform(&x, &s).unwrap();
+    /// assert_eq!(g, ctx.int(3).pow(&(-&s - 2)) * (&s + 2).gamma());
+    /// assert_eq!(format!("{strip}"), "re(s) > -2");
+    ///
+    /// // 1/(1+x)³ → B(s, 3 − s) on 0 < Re s < 3
+    /// let (h, strip) = (1 / (1 + &x).powi(3)).mellin_transform(&x, &s).unwrap();
+    /// assert_eq!(h, s.beta(&(3 - &s)));
+    /// assert_eq!(format!("{strip}"), "re(s) > 0 & 3 > re(s)");
+    /// ```
+    pub fn mellin_transform(&self, x: &Ex, s: &Ex) -> Result<(Ex, BoolEx), SymplexError> {
+        let x_id = self.checked_id(x);
+        let s_id = self.checked_id(s);
+        let _span = debug_span!("mellin_transform", expr = ?self.raw_id(), x = ?x_id).entered();
+        let r = {
+            let mut inner = self.inner.write();
+            crate::calculus::mellin::mellin_transform(&mut inner.arena, self.raw_id(), x_id, s_id)
+        };
+        r.map(|(f, cond)| (self.wrap(f), self.wrap_as(cond)))
+    }
+
+    /// Inverse Mellin transform of this expression (a function of `s`) as a
+    /// function of `x`, by table lookup (`Γ(s/b) → b e^{−x^b}`,
+    /// `π/sin(πs) → 1/(1+x)`, `B(s, ν−s) → (1+x)^{−ν}`, `B(s, b+1) →
+    /// H(1−x)(1−x)^b`, `1/(s+a) → x^a H(1−x)`, `Γ(s) sin(πs/2) → sin x`, …)
+    /// with the shift (`G(s+a) → x^a g`) and scaling (`a^{−s}G → g(ax)`)
+    /// rules applied in reverse.
+    ///
+    /// A Mellin transform determines its function only together with a
+    /// strip. Where the table entry is ambiguous (`1/(s + a)` is the
+    /// transform of `x^a H(1−x)` on `Re s > −a` and of `−x^a H(x−1)` on
+    /// `Re s < −a`) the strip to the **right** of the pole is chosen.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let s = ctx.symbol("s");
+    /// assert_eq!(s.gamma().inverse_mellin_transform(&s, &x).unwrap(), (-&x).exp());
+    /// let f = (ctx.pi() / (ctx.pi() * &s).sin()).inverse_mellin_transform(&s, &x).unwrap();
+    /// assert_eq!(f, 1 / (&x + 1));
+    /// // round trip through the shift and scaling rules
+    /// let g = x.powi(2) * (&x * -3).exp();
+    /// let (big_g, _) = g.mellin_transform(&x, &s).unwrap();
+    /// assert_eq!(big_g.inverse_mellin_transform(&s, &x).unwrap(), g);
+    /// ```
+    pub fn inverse_mellin_transform(&self, s: &Ex, x: &Ex) -> Result<Ex, SymplexError> {
+        let s_id = self.checked_id(s);
+        let x_id = self.checked_id(x);
+        let _span =
+            debug_span!("inverse_mellin_transform", expr = ?self.raw_id(), s = ?s_id).entered();
+        let r = {
+            let mut inner = self.inner.write();
+            crate::calculus::mellin::inverse_mellin_transform(
+                &mut inner.arena,
+                self.raw_id(),
+                s_id,
+                x_id,
             )
         };
         r.map(|id| self.wrap(id))
