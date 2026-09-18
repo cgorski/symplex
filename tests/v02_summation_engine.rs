@@ -421,10 +421,76 @@ fn zeta_even_closed_forms() {
         approx(s.eval_f64().unwrap(), 3.0 * pi.powi(4) / 90.0, 1e-12),
         "{s}"
     );
-    // Odd p ≥ 3: unevaluated for now (Zeta node hook)
+}
+
+#[test]
+fn zeta_odd_uses_zeta_node() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let inf = ctx.infinity();
+    // Σ 1/k³ = ζ(3) (Apéry's constant), Σ 1/k⁵ = ζ(5)
     let s = k.powi(-3).summation(&k, &ctx.int(1), &inf);
+    assert_eq!(s.to_string(), "zeta(3)");
+    assert!(!s.has_unevaluated());
+    assert!(approx(
+        s.eval_f64().unwrap(),
+        1.202_056_903_159_594_3,
+        1e-12
+    ));
+    assert_eq!(
+        k.powi(-3)
+            .try_summation(&k, &ctx.int(1), &inf)
+            .unwrap()
+            .to_string(),
+        "zeta(3)"
+    );
+    assert_eq!(
+        k.powi(-5).summation(&k, &ctx.int(1), &inf).to_string(),
+        "zeta(5)"
+    );
+    // Shifted start: Σ_{k≥2} 1/k³ = ζ(3) − 1
+    let s = k.powi(-3).summation(&k, &ctx.int(2), &inf);
+    assert!(
+        approx(s.eval_f64().unwrap(), 1.202_056_903_159_594_3 - 1.0, 1e-12),
+        "{s}"
+    );
+    // Odd powers of odd integers: Σ_{k≥0} 1/(2k+1)³ = (7/8) ζ(3)
+    let s = (&k * 2 + 1).powi(-3).summation(&k, &ctx.int(0), &inf);
+    assert!(
+        approx(
+            s.eval_f64().unwrap(),
+            7.0 / 8.0 * 1.202_056_903_159_594_3,
+            1e-12
+        ),
+        "{s}"
+    );
+    // Alternating: Σ (−1)^(k+1)/k³ = (3/4) ζ(3)
+    let s = (ctx.int(-1).pow(&(&k + 1)) * k.powi(-3)).summation(&k, &ctx.int(1), &inf);
+    assert!(
+        approx(s.eval_f64().unwrap(), 0.75 * 1.202_056_903_159_594_3, 1e-12),
+        "{s}"
+    );
+}
+
+#[test]
+fn catalan_constant_from_alternating_odd_squares() {
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let inf = ctx.infinity();
+    // Σ_{k≥0} (−1)^k/(2k+1)² = G
+    let body = ctx.int(-1).pow(&k) / (&k * 2 + 1).powi(2);
+    let s = body.summation(&k, &ctx.int(0), &inf);
+    assert_eq!(s.to_string(), "Catalan");
+    assert!(approx(s.eval_f64().unwrap(), 0.915_965_594_177_219, 1e-12));
+    // Shifted start: Σ_{k≥1} (−1)^k/(2k+1)² = G − 1
+    let s = body.summation(&k, &ctx.int(1), &inf);
+    assert!(
+        approx(s.eval_f64().unwrap(), 0.915_965_594_177_219 - 1.0, 1e-12),
+        "{s}"
+    );
+    // β(4) has no closed form: unevaluated, not wrong
+    let s = (ctx.int(-1).pow(&k) / (&k * 2 + 1).powi(4)).summation(&k, &ctx.int(0), &inf);
     assert!(s.has_unevaluated(), "{s}");
-    assert!(k.powi(-3).try_summation(&k, &ctx.int(1), &inf).is_err());
 }
 
 #[test]

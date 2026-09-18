@@ -36,6 +36,22 @@ use crate::simplify::combsimp;
 use crate::transforms::eval;
 use crate::transforms::subs;
 
+/// Largest certificate polynomial degree Gosper's algorithm will attempt.
+///
+/// The certificate is found by solving a dense `(n+d+1) × (d+1)` rational
+/// linear system; degrees beyond this cap are declined (the sum is left
+/// unevaluated) so that the algorithm terminates in bounded time.
+pub(crate) const MAX_CERTIFICATE_DEGREE: usize = 64;
+
+/// Largest shift `h` examined when computing the dispersion set
+/// `{h ≥ 0 : gcd(A(k), B(k+h)) ≠ 1}` in the Gosper normal form.
+///
+/// A shift `h` in the dispersion set contributes a factor of degree
+/// `h·deg d` to `c`, so large shifts also make every later step expensive;
+/// sums with such widely separated poles are handled by the partial-fraction
+/// telescoping in `calculus::summation` instead.
+pub(crate) const MAX_DISPERSION: i64 = 100;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Polynomial shift: p(k) → p(k + n)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -62,44 +78,28 @@ pub(crate) fn poly_shift(p: &Poly, n: i64) -> Poly {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Helper: find non-negative integer roots of a polynomial
+// Helper: root-modulus bound
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Return all non-negative integer roots of `p`, sorted ascending.
-fn non_negative_integer_roots(p: &Poly) -> Vec<i64> {
-    let deg = match p.degree() {
-        Some(d) => d,
-        None => return vec![], // zero poly — every value is a root; return empty
-    };
-
-    // Cauchy bound: all roots r satisfy |r| ≤ 1 + max(|a_i / a_n|)
-    let lc = p.leading_coeff().unwrap().abs();
+/// Cauchy bound `1 + maxᵢ |aᵢ / aₙ|` on the modulus of every (complex) root of
+/// `p`, rounded up to an integer.  Returns `0` for constants.
+fn root_modulus_bound(p: &Poly) -> Option<BigInt> {
+    let deg = p.degree()?;
+    if deg == 0 {
+        return Some(BigInt::zero());
+    }
+    let lc = p.leading_coeff()?.abs();
     if lc.is_zero() {
-        return vec![];
+        return None;
     }
     let mut max_ratio = Ratio::<BigInt>::zero();
     for i in 0..deg {
-        let c = p.coeff(i).abs();
-        let ratio = &c / &lc;
+        let ratio = p.coeff(i).abs() / &lc;
         if ratio > max_ratio {
             max_ratio = ratio;
         }
     }
-    let bound_rat = Ratio::<BigInt>::one() + max_ratio;
-    let bound_big = bound_rat.ceil().to_integer();
-    let bound: i64 = bound_big.to_i64().unwrap_or(500).min(500);
-
-    let mut roots = Vec::new();
-    for h in 0..=bound {
-        let val = p.eval(&Ratio::from_integer(BigInt::from(h)));
-        if val.is_zero() {
-            roots.push(h);
-            if roots.len() > deg {
-                break; // can't have more roots than the degree
-            }
-        }
-    }
-    roots
+    Some((Ratio::<BigInt>::one() + max_ratio).ceil().to_integer())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -116,6 +116,15 @@ fn non_negative_integer_roots(p: &Poly) -> Vec<i64> {
 /// ```
 ///
 /// with `gcd(A_monic(k), B_monic(k+h)) = 1` for every non-negative integer `h`.
+///
+/// The dispersion set `{h : gcd(A(k), B(k+h)) ≠ 1}` is found by a direct
+/// gcd scan over `0 ≤ h ≤ bound(A) + bound(B)`, where `bound(·)` is the
+/// Cauchy root-modulus bound: a common root `r` of `A(k)` and `B(k+h)`
+/// satisfies `|r| ≤ bound(A)` and `|r + h| ≤ bound(B)`, so no larger `h`
+/// can occur.  The scan is capped at [`MAX_DISPERSION`]; beyond that the
+/// normal form may be incomplete, which can only make the certificate step
+/// *fail* (the identity `p/q = a·c(k+1)/(b·c(k))` always holds, and a found
+/// certificate is verified exactly), never produce a wrong antidifference.
 ///
 /// Returns `None` if the inputs are degenerate (e.g. zero polynomials).
 #[must_use]
@@ -147,23 +156,16 @@ pub(crate) fn gosper_normal(p: &Poly, q: &Poly) -> Option<(Poly, Poly, Poly)> {
     let mut b = q.make_monic(); // B_monic
     let mut c = Poly::from_int(1);
 
-    // Compute R(h) = res_k(A(k), B(k+h)) via evaluation–interpolation.
     let deg_a = a.degree().unwrap_or(0);
     let deg_b = b.degree().unwrap_or(0);
-    let res_deg = deg_a * deg_b; // upper bound on degree of R(h)
 
-    if res_deg > 0 {
-        let num_pts = res_deg + 1;
-        let mut points: Vec<(i64, Ratio<BigInt>)> = Vec::with_capacity(num_pts);
-        for h in 0..num_pts {
-            let b_shifted = poly_shift(&b, h as i64);
-            let res_val = Poly::resultant(&a, &b_shifted);
-            points.push((h as i64, res_val));
-        }
-        let r_poly = crate::poly::lagrange_interpolate_rational(&points);
-
-        let roots = non_negative_integer_roots(&r_poly);
-        for &i in roots.iter() {
+    if deg_a > 0 && deg_b > 0 {
+        let bound = root_modulus_bound(&a)? + root_modulus_bound(&b)?;
+        let bound = bound.to_i64().unwrap_or(MAX_DISPERSION).min(MAX_DISPERSION);
+        for i in 0..=bound {
+            if a.is_constant() || b.is_constant() {
+                break;
+            }
             let b_shifted_i = poly_shift(&b, i);
             let d = Poly::gcd(&a, &b_shifted_i);
             if d.is_constant() {
@@ -367,19 +369,39 @@ fn compute_degree_bound(
         b_m1.coeff(deg_bm)
     };
 
-    if deg_a == deg_bm && lc_a == lc_b {
-        // Leading terms cancel — the operator drops degree by at least one,
-        // so we need a larger x.  The safe bound is deg(c) + 1; in pathological
-        // cases of further cancellation this is still sufficient because the
-        // solver will set the extra leading coefficients to zero.
-        Some(deg_c + 1)
+    let bound = if deg_a == deg_bm && lc_a == lc_b {
+        // Leading terms cancel, so `a(k)·x(k+1) − b(k−1)·x(k)` has degree at
+        // most `n + d − 1`.  Its `k^{n+d−1}` coefficient is
+        // `(lc·d + A − B)·x_d` where `A`, `B` are the next-to-leading
+        // coefficients; when `d₀ = (B − A)/lc` is a non-negative integer that
+        // coefficient vanishes too and `x` may need degree `d₀`.
+        let mut d = deg_c + 1;
+        if n >= 1 {
+            let next_a = a.coeff(n - 1);
+            let next_b = b_m1.coeff(n - 1);
+            let d0 = (&next_b - &next_a) / &lc_a;
+            if d0.is_integer() && !d0.is_negative() {
+                let d0 = d0.to_integer().to_usize()?;
+                d = d.max(d0);
+            }
+        }
+        d
     } else if deg_c >= n {
-        Some(deg_c - n)
+        deg_c - n
     } else {
         // The operator strictly increases degree, but c has lower degree.
         // Try degree 0 anyway — the system will be inconsistent if no solution.
-        Some(0)
+        0
+    };
+    if bound > MAX_CERTIFICATE_DEGREE {
+        tracing::debug!(
+            "gosper: certificate degree bound {} exceeds cap {}",
+            bound,
+            MAX_CERTIFICATE_DEGREE
+        );
+        return None;
     }
+    Some(bound)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -782,34 +804,72 @@ mod tests {
         assert_eq!(val_direct, val_shifted);
     }
 
-    // ── non_negative_integer_roots ──────────────────────────────────
+    // ── root_modulus_bound ──────────────────────────────────────────
 
     #[test]
-    fn roots_simple_linear() {
-        // p(h) = h - 3, root at h = 3
+    fn root_bound_linear() {
+        // h − 3: root 3 ≤ 1 + 3
         let p = Poly::from_coeffs(vec![r(-3), r(1)]);
-        assert_eq!(non_negative_integer_roots(&p), vec![3]);
+        assert_eq!(root_modulus_bound(&p), Some(BigInt::from(4)));
     }
 
     #[test]
-    fn roots_quadratic() {
-        // p(h) = (h - 1)(h - 2) = h² - 3h + 2
-        let p = Poly::from_coeffs(vec![r(2), r(-3), r(1)]);
-        assert_eq!(non_negative_integer_roots(&p), vec![1, 2]);
+    fn root_bound_quadratic_with_scaling() {
+        // 2h² − 6h + 4 = 2(h−1)(h−2): 1 + max(3, 2) = 4 ≥ 2
+        let p = Poly::from_coeffs(vec![r(4), r(-6), r(2)]);
+        assert_eq!(root_modulus_bound(&p), Some(BigInt::from(4)));
     }
 
     #[test]
-    fn roots_no_nonneg() {
-        // p(h) = h + 5, root at h = -5
-        let p = Poly::from_coeffs(vec![r(5), r(1)]);
-        assert!(non_negative_integer_roots(&p).is_empty());
+    fn root_bound_constant_and_zero() {
+        assert_eq!(root_modulus_bound(&Poly::from_int(7)), Some(BigInt::zero()));
+        assert_eq!(root_modulus_bound(&Poly::zero()), None);
+        // h: only root is 0 ≤ 1
+        assert_eq!(root_modulus_bound(&Poly::x()), Some(BigInt::from(1)));
     }
 
     #[test]
-    fn roots_at_zero() {
-        // p(h) = h, root at h = 0
-        let p = Poly::x();
-        assert_eq!(non_negative_integer_roots(&p), vec![0]);
+    fn normal_form_high_degree_is_fast() {
+        // ratio of k⁸·2ᵏ: p = 2(k+1)⁸, q = k⁸ → a = 2, b = 1, c = k⁸.
+        let kp1 = Poly::from_coeffs(vec![r(1), r(1)]);
+        let mut p = Poly::from_int(2);
+        let mut q = Poly::from_int(1);
+        for _ in 0..8 {
+            p = &p * &kp1;
+            q = &q * &Poly::x();
+        }
+        let start = std::time::Instant::now();
+        let (a, b, c) = gosper_normal(&p, &q).unwrap();
+        assert!(start.elapsed().as_secs_f64() < 1.0, "normal form too slow");
+        assert_eq!(a, Poly::from_int(2));
+        assert_eq!(b, Poly::from_int(1));
+        assert_eq!(c, q);
+    }
+
+    #[test]
+    fn normal_form_dispersion_beyond_cap_is_declined_safely() {
+        // p = k + 1000, q = k: the shift 1000 exceeds MAX_DISPERSION, so the
+        // normal form keeps a = k + 1000, b = k (incomplete but still an
+        // identity), and the certificate for c = 1 does not exist.
+        let p = Poly::from_coeffs(vec![r(1000), r(1)]);
+        let q = Poly::x();
+        let start = std::time::Instant::now();
+        let (a, b, c) = gosper_normal(&p, &q).unwrap();
+        assert!(start.elapsed().as_secs_f64() < 2.0);
+        assert_eq!(c, Poly::from_int(1));
+        for kv in 1..=5 {
+            let k_val = r(kv);
+            let k1_val = r(kv + 1);
+            let lhs = &p.eval(&k_val) / &q.eval(&k_val);
+            let rhs = &(&a.eval(&k_val) * &c.eval(&k1_val)) / &(&b.eval(&k_val) * &c.eval(&k_val));
+            assert_eq!(lhs, rhs);
+        }
+        // Within the cap the same structure is fully normalised.
+        let p = Poly::from_coeffs(vec![r(40), r(1)]);
+        let (a, b, c) = gosper_normal(&p, &q).unwrap();
+        assert_eq!(a, Poly::from_int(1));
+        assert_eq!(b, Poly::from_int(1));
+        assert_eq!(c.degree(), Some(40));
     }
 
     // ── gosper_normal ───────────────────────────────────────────────
@@ -983,6 +1043,153 @@ mod tests {
         let evaluated = subs::subs(&mut arena, result, n, three);
         let evaluated = eval::eval(&mut arena, evaluated);
         assert_eq!(display(&arena, evaluated), "23");
+    }
+
+    /// `Σ_{k=lo}^{n} body` via Gosper, checked against direct enumeration.
+    fn check_gosper(arena: &mut Arena, body: ExprId, k: ExprId, lo: i64, ns: &[i64]) -> ExprId {
+        let n = arena.symbol("n");
+        let lo_id = arena.int(lo);
+        let result = gosper_sum(arena, body, k, lo_id, n)
+            .unwrap_or_else(|| panic!("{} should be Gosper-summable", display(arena, body)));
+        for &nv in ns {
+            let mut terms = Vec::new();
+            for i in lo..=nv {
+                let iv = arena.int(i);
+                let t = subs::subs(arena, body, k, iv);
+                terms.push(eval::eval(arena, t));
+            }
+            let expected = arena.add(&terms);
+            let expected = eval::eval(arena, expected);
+            let nv_id = arena.int(nv);
+            let got = subs::subs(arena, result, n, nv_id);
+            let got = eval::eval(arena, got);
+            assert_eq!(
+                display(arena, got),
+                display(arena, expected),
+                "n = {nv}: {}",
+                display(arena, result)
+            );
+        }
+        result
+    }
+
+    #[test]
+    fn sum_k_times_2_pow_k() {
+        // Σ_{k=0}^{n} k·2^k = (n−1)·2^(n+1) + 2
+        let mut arena = Arena::new();
+        let k = arena.symbol("k");
+        let two = arena.int(2);
+        let two_k = arena.pow(two, k);
+        let body = arena.mul(&[k, two_k]);
+        check_gosper(&mut arena, body, k, 0, &[0, 1, 2, 5, 10]);
+    }
+
+    #[test]
+    fn sum_quadratic_times_3_pow_k() {
+        // Σ_{k=0}^{n} (k² + k)·3^k
+        let mut arena = Arena::new();
+        let k = arena.symbol("k");
+        let three = arena.int(3);
+        let three_k = arena.pow(three, k);
+        let two = arena.int(2);
+        let k2 = arena.pow(k, two);
+        let quad = arena.add(&[k2, k]);
+        let body = arena.mul(&[quad, three_k]);
+        check_gosper(&mut arena, body, k, 0, &[0, 1, 3, 6]);
+    }
+
+    #[test]
+    fn sum_reciprocal_k_k_plus_1() {
+        // Σ_{k=1}^{n} 1/(k(k+1)) = 1 − 1/(n+1)
+        let mut arena = Arena::new();
+        let k = arena.symbol("k");
+        let one = arena.one;
+        let k1 = arena.add(&[k, one]);
+        let denom = arena.mul(&[k, k1]);
+        let body = arena.div(one, denom);
+        let result = check_gosper(&mut arena, body, k, 1, &[1, 2, 3, 9]);
+        assert!(!walk::has_unevaluated(&arena, result));
+    }
+
+    #[test]
+    fn is_hypergeometric_ratios() {
+        let mut arena = Arena::new();
+        let k = arena.symbol("k");
+        let n = arena.symbol("n");
+        let kf = arena.factorial(k);
+        let r = is_hypergeometric(&mut arena, kf, k).unwrap();
+        assert_eq!(display(&arena, r), "k + 1");
+        // C(n, k): ratio (n − k)/(k + 1)
+        let c = arena.binomial(n, k);
+        let r = is_hypergeometric(&mut arena, c, k).unwrap();
+        let five = arena.int(5);
+        let two = arena.int(2);
+        let at = subs::subs(&mut arena, r, n, five);
+        let at = subs::subs(&mut arena, at, k, two);
+        let at = eval::eval(&mut arena, at);
+        assert_eq!(display(&arena, at), "1");
+        // constant term → ratio 1
+        let r = is_hypergeometric(&mut arena, n, k).unwrap();
+        assert_eq!(display(&arena, r), "1");
+        // not hypergeometric
+        let s = arena.sin(k);
+        assert!(is_hypergeometric(&mut arena, s, k).is_none());
+        let kk = arena.pow(k, k);
+        assert!(is_hypergeometric(&mut arena, kk, k).is_none());
+        let h = arena.harmonic(k);
+        assert!(is_hypergeometric(&mut arena, h, k).is_none());
+        // the summation index must be a symbol
+        assert!(is_hypergeometric(&mut arena, kf, five).is_none());
+    }
+
+    #[test]
+    fn certificate_degree_bound_uses_second_coefficients() {
+        // Σ k³: ratio (k+1)³/k³ → normal form a = b = 1, c = k³, so the
+        // operator is the forward difference and x has degree 4 = deg c + 1.
+        let a = Poly::from_int(1);
+        let b = Poly::from_int(1);
+        let c = Poly::from_coeffs(vec![r(0), r(0), r(0), r(1)]);
+        let x = gosper_certificate(&a, &b, &c).expect("certificate");
+        assert_eq!(x.degree(), Some(4));
+        // a = k² − 3k, b = k² + k − 3 so b(k−1) = k² − k − 3, c = 1.  Leading
+        // terms agree; the k-coefficients are A = −3 and B = −1, so
+        // d₀ = (B − A)/lc = 2.  The unique solution is
+        // x = −2/9·k² + 4/9·k + 1/3 (degree 2): for x = u·k + v one gets
+        // L(x) = −u·k² − 2v·k + 3v, which is never 1, so the naive bound
+        // deg c + 1 = 1 would wrongly report "not summable".
+        let a = Poly::from_coeffs(vec![r(0), r(-3), r(1)]);
+        let b = Poly::from_coeffs(vec![r(-3), r(1), r(1)]);
+        let c = Poly::from_int(1);
+        assert_eq!(
+            poly_shift(&b, -1),
+            Poly::from_coeffs(vec![r(-3), r(-1), r(1)])
+        );
+        let x = gosper_certificate(&a, &b, &c).expect("degree-2 certificate");
+        assert_eq!(x.degree(), Some(2));
+        assert_eq!(
+            x,
+            Poly::from_coeffs(vec![
+                Ratio::new(BigInt::from(1), BigInt::from(3)),
+                Ratio::new(BigInt::from(4), BigInt::from(9)),
+                Ratio::new(BigInt::from(-2), BigInt::from(9))
+            ])
+        );
+        let lhs = &(&a * &poly_shift(&x, 1)) - &(&poly_shift(&b, -1) * &x);
+        assert_eq!(lhs, c);
+    }
+
+    #[test]
+    fn certificate_degree_cap_declines_huge_systems() {
+        // a = b = 1 and c = k^70: the certificate would need degree 71 > cap.
+        let a = Poly::from_int(1);
+        let b = Poly::from_int(1);
+        let c = Poly::monomial(r(1), MAX_CERTIFICATE_DEGREE + 6);
+        let start = std::time::Instant::now();
+        assert!(gosper_certificate(&a, &b, &c).is_none());
+        assert!(start.elapsed().as_secs_f64() < 1.0);
+        // Just under the cap is still attempted (and solved).
+        let c = Poly::monomial(r(1), 8);
+        assert!(gosper_certificate(&a, &b, &c).is_some());
     }
 
     #[test]

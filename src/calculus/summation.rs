@@ -33,12 +33,8 @@
 //! (`Σ xᵏ/k! = eˣ`, `Σ (−1)ᵏ x²ᵏ⁺¹/(2k+1)! = sin x`, `Σ xᵏ/k = −ln(1−x)`, …),
 //! and proves divergence where it can.
 //!
-//! # Post-merge hook
-//!
-//! `Σ 1/k^p` for odd `p ≥ 3` (and other values of the Riemann zeta function
-//! without an elementary closed form) are currently returned unevaluated.
-//! Once a `Zeta` node exists, the crate-internal `zeta_value` helper in this
-//! module is the single place to emit it.
+//! Values without an elementary closed form use the dedicated nodes:
+//! `Σ 1/k³ = ζ(3)` (`Zeta`), `Σ (−1)^k/(2k+1)² = G` (`Catalan`).
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -966,14 +962,19 @@ pub(crate) fn euler_number(n: usize) -> BigInt {
     e[n].clone()
 }
 
-/// Closed form of `ζ(p)` for integer `p ≥ 2` where one exists.
+/// Exact value of `ζ(p)` for integer `p ≥ 2`.
 ///
-/// Returns `Some(expr)` for even `p` (`ζ(2) = π²/6`, `ζ(4) = π⁴/90`, …).
-/// Odd `p ≥ 3` has no elementary closed form; this returns `None` until a
-/// `Zeta` node exists (post-merge hook: emit `Zeta(p)` here).
+/// Even `p` gives the elementary closed form (`ζ(2) = π²/6`, `ζ(4) = π⁴/90`,
+/// …, via Bernoulli numbers); odd `p ≥ 3` has no elementary closed form and
+/// is returned as the `Zeta(p)` node (`ζ(3)` is Apéry's constant).
+/// Returns `None` for `p < 2` (the harmonic series diverges).
 pub(crate) fn zeta_value(arena: &mut Arena, p: usize) -> Option<ExprId> {
-    if p < 2 || p % 2 == 1 {
+    if p < 2 {
         return None;
+    }
+    if p % 2 == 1 {
+        let pe = arena.int(p as i64);
+        return Some(arena.zeta(pe));
     }
     let r = zeta_even_rational(p / 2);
     let re = rat_expr(arena, r);
@@ -997,10 +998,14 @@ fn eta_value(arena: &mut Arena, p: usize) -> Option<ExprId> {
 }
 
 /// Dirichlet beta `β(p) = Σ_{k≥0} (−1)^k/(2k+1)^p`; closed form for odd `p`:
-/// `β(2m+1) = (−1)^m E_{2m} π^{2m+1} / (4^{m+1} (2m)!)`.
+/// `β(2m+1) = (−1)^m E_{2m} π^{2m+1} / (4^{m+1} (2m)!)`, and `β(2) = G`
+/// (Catalan's constant).  Even `p ≥ 4` has no known closed form.
 fn dirichlet_beta_value(arena: &mut Arena, p: usize) -> Option<ExprId> {
+    if p == 2 {
+        return Some(arena.catalan);
+    }
     if p.is_multiple_of(2) {
-        return None; // β(2) is Catalan's constant — no node yet.
+        return None;
     }
     let m = (p - 1) / 2;
     let e = euler_number(m);
@@ -1980,9 +1985,12 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
         let v = arena.mul(&[sign_beta, inner]);
         eval::eval(arena, v)
     } else if (&beta * rat_i(2)).is_integer() {
-        // (k + n + 1/2)^(−p) = 2^p (2k + 2n + 1)^(−p):
-        // Σ_{k=lo}^{∞} (−1)^k (k+β)^(−p) = 2^p (−1)^{s} [β(p) − Σ_{j=0}^{s−1} (−1)^j (2j+1)^(−p)],  s = lo + β − 1/2
-        let s = &q - Rat::new(BigInt::one(), BigInt::from(2));
+        // β = n + 1/2:  (k + β)^(−p) = 2^p (2(k+n) + 1)^(−p).  With j = k + n,
+        // Σ_{k=lo}^{∞} (−1)^k (k+β)^(−p) = 2^p (−1)^n [β(p) − Σ_{j=0}^{s−1} (−1)^j (2j+1)^(−p)],
+        // where s = lo + n is the first index of the tail.
+        let half = Rat::new(BigInt::one(), BigInt::from(2));
+        let n = &beta - &half;
+        let s = &q - &half;
         if !s.is_integer() || s.is_negative() {
             return None;
         }
@@ -1990,6 +1998,7 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
         if si > MAX_TELESCOPE_SHIFT {
             return None;
         }
+        let ni = n.to_integer().to_i64()?;
         let beta_p = dirichlet_beta_value(arena, p)?;
         let mut acc = Rat::zero();
         for j in 0..si {
@@ -1998,8 +2007,12 @@ fn p_series_infinite(arena: &mut Arena, shape: &TermShape, lo: ExprId) -> Option
         }
         let ce = rat_expr(arena, -acc);
         let inner = arena.add(&[beta_p, ce]);
-        let scale =
-            rat_pow_i(&rat_i(2), p as i64) * if si % 2 == 0 { Rat::one() } else { -Rat::one() };
+        let scale = rat_pow_i(&rat_i(2), p as i64)
+            * if ni.rem_euclid(2) == 0 {
+                Rat::one()
+            } else {
+                -Rat::one()
+            };
         let se = rat_expr(arena, scale);
         let v = arena.mul(&[se, inner]);
         eval::eval(arena, v)

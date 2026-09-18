@@ -932,7 +932,9 @@ fn apply_fn(arena: &mut Arena, kind: FnKind, a: &TSeries) -> Option<TSeries> {
             };
             Some(TSeries::add(arena, &t1, &t2))
         }
-        FnKind::Ln1p => unreachable!("ln is handled by apply_ln"),
+        // `ln` is dispatched to `apply_ln` (it needs the constant term split
+        // differently); a direct `Ln1p` request has no meaning here.
+        FnKind::Ln1p => None,
         _ => {
             if !u0_zero {
                 return None; // fallback: differentiate
