@@ -6,6 +6,8 @@
 mod v03_assumptions_poly;
 #[path = "v03/v03_certificates.rs"]
 mod v03_certificates;
+#[path = "v03/v03_exact_matrix.rs"]
+mod v03_exact_matrix;
 #[path = "v03/v03_linprog.rs"]
 mod v03_linprog;
 #[path = "v03/v03_matrix_ergonomics.rs"]

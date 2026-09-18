@@ -6,6 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.3.5] - 2026-09-18
+
+### Added
+
+- **Exact matrix core.**  `matrix::{QMatrix, ZMatrix}` (aliases of
+  `ExactMatrix<Ratio<BigInt>>` / `ExactMatrix<BigInt>`, both in the
+  prelude): dense row-major matrices with no expression arena behind
+  them.  Construction (`new`, `from_i64`, `from_fn`, `from_flat`, `zeros`,
+  `identity`, `diag`, `row_vector`, `col_vector`), access (`get`,
+  `try_get`, `row`, `col`, `diagonal`, `rows`, `iter`, `as_slice`,
+  `to_rows`, `into_flat`, indexing), shape ops (`transpose`, `submatrix`,
+  `hstack`, `vstack`, `map`), arithmetic (`add`, `sub`, `neg`, `scale`,
+  `matmul`, `trace`, operators `+ − *`), `is_zero`, `is_identity`, and
+  `Display`/`Debug` in the `Matrix` layout.
+  - `QMatrix`: `rref`, `rank`, `nullspace`, `columnspace`, `rowspace`,
+    `det`, `inv`, `solve` (square, multiple right-hand sides),
+    `clear_denominators`, `to_zmatrix`, `is_integer`, `to_matrix`.  Every
+    elimination is **fraction-free** (Bareiss Gauss–Jordan on the
+    row-wise integerised matrix): intermediate entries are minors of the
+    input, all divisions are exact, and no gcd runs in the inner loop.
+  - `ZMatrix`: Bareiss `det`, `rank`, `content`,
+    `hermite_normal_form[_with_transform]`, `column_hermite_normal_form`,
+    `smith_normal_form[_with_transforms]`, `integer_nullspace`,
+    `is_unimodular`, `lattice_determinant`, `to_qmatrix`, `to_matrix`.
+  - Conversions: `TryFrom<&Matrix>` for both (constant arithmetic is
+    folded first; a symbolic entry is `InvalidArgument`), `From<ZMatrix>
+    for QMatrix`.
+- `examples/exact_matrices.rs`, `benches/exact_matrix.rs`; book: a
+  "0.3.5: the exact matrix core" section on the What's New page, a new
+  section in the Matrices guide, performance notes in the LP and lattice
+  guides.
+
+### Changed
+
+- `Matrix::{rref, rank, nullspace, columnspace, rowspace, left_nullspace,
+  det, inv, solve, solve_least_squares, pinv}`, `linsolve`,
+  `linsolve_matrix` and every function in `normalforms` now detect
+  all-rational input and run on `QMatrix`/`ZMatrix`, converting back at
+  the end.  Results are unchanged (the RREF is unique; parametric
+  `linsolve` solutions go through the same `tidy` step and print
+  identically); a 30×30 rational `inv` drops from 470 ms to 10 ms, `rref`
+  of a 30×36 from 208 ms to 4 ms, `linsolve_matrix` 30×30 from 135 ms to
+  1.5 ms.  The `Ex`-based Bareiss determinant that only served numeric
+  matrices is gone; symbolic matrices take the same paths as before.
+- `linprog`: the simplex tableau pivots on **integers with a common
+  denominator** (Bareiss/Edmonds integer pivoting).  Each constraint row
+  is scaled once to clear denominators (its artificial gets phase-1 cost
+  `1/sᵢ` and the scale is divided back out of the duals and Farkas
+  vectors); every pivot keeps the tableau integral; ratio and sign tests
+  are cross-multiplied integer comparisons with no gcd in the loop.  The
+  entering/leaving choices are made on the same rational values as
+  before, so the pivot sequence is the same: on 4,000 random LPs with
+  fractional data, degenerate rows, all three relations, free and
+  two-sided-bounded variables, `x`, objective, duals and Farkas vectors
+  are byte-identical to 0.3.4.  A 40-row × 100-variable program goes from
+  1.1 s to 40 ms, 60 × 160 from 2.8 s to 80 ms, and Handelman certificate
+  searches run 4–7× faster.
+- `normalforms` is now a thin wrapper over `ZMatrix`; error messages and
+  conventions are unchanged.
+
+### Infrastructure
+
+- Decision recorded after benchmarking `num-bigint 0.4` against `dashu
+  0.6` on the exact-linear-algebra kernels: dashu is ~9× faster on
+  Gauss–Jordan over `Ratio` but only 1.2–2× on integer kernels — the gap
+  is `Ratio`'s per-operation gcd, not bignum speed.  Fraction-free
+  elimination on `num-bigint` beats dashu's rational elimination by 5×
+  and the previous code by 40×, so `num-bigint` stays and the public
+  `Ratio<BigInt>` types are untouched.
+- `tests/v03/v03_exact_matrix.rs`: the exact core against textbook
+  Gauss–Jordan, the `Matrix` fast paths against the core, the numeric
+  `linsolve` route against the symbolic one, random fractional LPs against
+  the exact KKT conditions, Farkas certificates on fractional data, and a
+  40×40 rational inverse.  A white-box `linprog` unit test covers the
+  tableau's negative common denominator after an artificial is driven out
+  on a negative pivot.
+- `symplex` and `symplex-build` at 0.3.5; `symplex-macros` unchanged at
+  0.3.0.  Additive over 0.3.4.
+
 ## [0.3.4] - 2026-09-18
 
 ### Added

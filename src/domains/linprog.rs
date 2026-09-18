@@ -1,11 +1,12 @@
 //! Exact linear programming over ℚ: two-phase simplex with Bland's rule,
 //! dual values and Farkas infeasibility certificates.
 //!
-//! Everything is computed with `Ratio<BigInt>` arithmetic, so optima,
-//! dual values and certificates are *exact* — no tolerances, no
-//! "numerically infeasible" verdicts.  The numeric core works on dense
-//! tableaux; use [`linprog_matrix`] to feed [`Matrix`] data whose entries
-//! are numeric literals.
+//! Everything is exact — no tolerances, no "numerically infeasible"
+//! verdicts.  Problem data, optima, duals and certificates are
+//! `Ratio<BigInt>`; internally the dense tableau pivots on integers with a
+//! common denominator (see [Algorithm and cost](#algorithm-and-cost)).
+//! Use [`linprog_matrix`] to feed [`Matrix`] data whose entries are
+//! numeric literals.
 //!
 //! # Problem form
 //!
@@ -31,9 +32,18 @@
 //! slack, every row gets an artificial (their columns double as `B⁻¹`, from
 //! which the duals are read), free variables are split `x = x⁺ − x⁻`, finite
 //! lower bounds are shifted away and a finite *upper* bound on a variable
-//! that also has a lower bound costs one extra row.  Exact rationals make
-//! each pivot `O(m·n)` big-number operations; a 100-row × 200-variable
-//! problem with default bounds solves in seconds in release builds.
+//! that also has a lower bound costs one extra row.
+//!
+//! The tableau is kept **integral** (Bareiss/Edmonds integer pivoting):
+//! each constraint row is scaled once by the lcm of its denominators, and
+//! every pivot applies the fraction-free rule `row ← (row·p − row[s]·pivot_row)
+//! / d`, so all entries are integers sharing the common denominator `d`
+//! (the current pivot, `±det B`).  Entering and leaving variables are
+//! chosen from the same rational values a `Ratio` tableau would hold — the
+//! pivot sequence, optimum, duals and certificates are identical — but no
+//! gcd is computed in the pivot loop.  Each pivot is `O(m·n)` big-integer
+//! operations; a 60-row × 160-variable problem with default bounds solves
+//! in under 100 ms in a release build.
 //!
 //! # Duals and certificates
 //!
@@ -88,6 +98,7 @@
 use std::fmt;
 
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{One, Signed, Zero};
 
@@ -594,13 +605,40 @@ fn standardize(p: &LpProblem) -> Standardized {
 /// Dense tableau for `min c·z s.t. A z = b, z ≥ 0` with one artificial
 /// column per row.  Column layout: `[z columns | artificials | rhs]`.
 ///
-/// `obj` holds the reduced costs `dⱼ = cⱼ − c_B B⁻¹ Aⱼ` and, in its last
-/// entry, `−(current objective value)`.  Because the artificial columns
-/// start as the identity, at any time they hold `B⁻¹`, and
-/// `d[art_i] = c_{art_i} − yᵢ` where `y = c_B B⁻¹` are the current duals.
+/// **Integer pivoting.**  Every constraint row `i` is first multiplied by
+/// `row_scale[i]`, the least common multiple of its denominators, so the
+/// initial tableau is integral.  Pivots then follow Bareiss's fraction-free
+/// Gauss–Jordan rule: all entries stay integers and share one common
+/// denominator `d` (the current pivot, `±det B` of the scaled system).
+/// The rational tableau entry is `rows[i][j] / d`; the reduced cost is
+/// `obj[j] / (d · obj_scale)` where `obj_scale` clears the denominators of
+/// the current cost vector.  Sign tests and the ratio test are integer
+/// comparisons (cross-multiplied), so no gcd runs inside the pivot loop.
+///
+/// Scaling row `i` by `sᵢ` turns its artificial `aᵢ` into `a'ᵢ = sᵢ·aᵢ`.
+/// Phase 1 therefore gives `a'ᵢ` the cost `1/sᵢ`, so that its objective is
+/// still `Σ aᵢ`, every reduced cost is the same rational a `Ratio` tableau
+/// of the unscaled system would hold, and the pivot sequence (Dantzig /
+/// Bland choices, ratio tests, tie-breaks) is identical to it.
+///
+/// `obj` holds `d·obj_scale` times the reduced costs
+/// `cⱼ − c_B B⁻¹ Aⱼ` and, in its last entry, `−(current objective value)`
+/// at the same scale.  Because the artificial columns start as the
+/// identity, at any time they hold `d·B⁻¹`, and the duals of the scaled
+/// system are `y'ᵢ = c_{a'ᵢ} − obj[a'ᵢ]/(d·obj_scale)`; the duals of the
+/// caller's rows are `yᵢ = sᵢ · y'ᵢ`.
 struct Tableau {
-    rows: Vec<Vec<Q>>,
-    obj: Vec<Q>,
+    /// Row-major `m × width` integer tableau.
+    rows: Vec<BigInt>,
+    width: usize,
+    obj: Vec<BigInt>,
+    /// Common denominator of `rows` (sign may be negative after an
+    /// artificial is driven out on a negative pivot).
+    d: BigInt,
+    /// Positive integer clearing the denominators of the installed costs.
+    obj_scale: BigInt,
+    /// Positive integer each constraint row was multiplied by.
+    row_scale: Vec<BigInt>,
     basis: Vec<usize>,
     m: usize,
     /// Number of genuine (non-artificial) columns.
@@ -618,25 +656,40 @@ enum Step {
     Unbounded,
 }
 
+/// Least common multiple of the denominators of `values`.
+fn denominator_lcm<'a>(values: impl Iterator<Item = &'a Q>) -> BigInt {
+    values.fold(BigInt::one(), |l, q| l.lcm(q.denom()))
+}
+
 impl Tableau {
     fn new(std: &Standard) -> Self {
         let m = std.a.len();
         let n = std.c.len();
         let width = n + m + 1;
-        let zero = Q::zero();
-        let one = Q::one();
-        let mut rows = Vec::with_capacity(m);
+        let mut rows = Vec::with_capacity(m * width);
+        let mut row_scale = Vec::with_capacity(m);
         for i in 0..m {
-            let mut row = Vec::with_capacity(width);
-            row.extend(std.a[i].iter().cloned());
-            row.extend((0..m).map(|k| if k == i { one.clone() } else { zero.clone() }));
-            row.push(std.b[i].clone());
-            rows.push(row);
+            let s = denominator_lcm(std.a[i].iter().chain(std::iter::once(&std.b[i])));
+            let scaled = |q: &Q| q.numer() * (&s / q.denom());
+            rows.extend(std.a[i].iter().map(scaled));
+            rows.extend((0..m).map(|k| {
+                if k == i {
+                    BigInt::one()
+                } else {
+                    BigInt::zero()
+                }
+            }));
+            rows.push(scaled(&std.b[i]));
+            row_scale.push(s);
         }
         let basis: Vec<usize> = (0..m).map(|i| n + i).collect();
         Tableau {
             rows,
-            obj: vec![zero; width],
+            width,
+            obj: vec![BigInt::zero(); width],
+            d: BigInt::one(),
+            obj_scale: BigInt::one(),
+            row_scale,
             basis,
             m,
             n,
@@ -651,60 +704,106 @@ impl Tableau {
         self.n + self.m
     }
 
+    #[inline]
+    fn row(&self, i: usize) -> &[BigInt] {
+        &self.rows[i * self.width..(i + 1) * self.width]
+    }
+
+    /// Sign of the rational value `z / d`.
+    #[inline]
+    fn sign_of(&self, z: &BigInt) -> std::cmp::Ordering {
+        use std::cmp::Ordering::*;
+        match (z.sign(), self.d.sign()) {
+            (num_bigint::Sign::NoSign, _) => Equal,
+            (a, b) if a == b => Greater,
+            _ => Less,
+        }
+    }
+
+    /// Rational value of a tableau entry.
+    #[inline]
+    fn value(&self, z: &BigInt) -> Q {
+        Ratio::new(z.clone(), self.d.clone())
+    }
+
     /// Install a new objective (`costs` over all `n + m` columns) and price
-    /// out the current basis so that `obj` holds true reduced costs.
+    /// out the current basis so that `obj` holds true reduced costs (times
+    /// `d · obj_scale`).
     fn set_objective(&mut self, costs: &[Q]) {
-        let width = self.rhs_col() + 1;
-        let mut obj = vec![Q::zero(); width];
-        obj[..costs.len()].clone_from_slice(costs);
+        let width = self.width;
+        let s = denominator_lcm(costs.iter());
+        let int_cost = |q: &Q| q.numer() * (&s / q.denom());
+        let mut obj = vec![BigInt::zero(); width];
+        for (o, c) in obj.iter_mut().zip(costs) {
+            if !c.is_zero() {
+                *o = int_cost(c) * &self.d;
+            }
+        }
         for (i, &k) in self.basis.iter().enumerate() {
-            let f = obj[k].clone();
+            let f = int_cost(&costs[k]);
             if f.is_zero() {
                 continue;
             }
-            let row = &self.rows[i];
-            for (o, r) in obj.iter_mut().zip(row.iter()) {
+            let row = self.row(i);
+            for (o, r) in obj.iter_mut().zip(row) {
                 if !r.is_zero() {
                     *o -= &f * r;
                 }
             }
         }
         self.obj = obj;
+        self.obj_scale = s;
     }
 
+    /// Fraction-free pivot on `(r, s)`: every other row `i` (and the
+    /// objective row) becomes `(row_i·p − row_i[s]·row_r) / d`, the pivot
+    /// row is unchanged, and `d ← p`.
     fn pivot(&mut self, r: usize, s: usize) {
-        let p = self.rows[r][s].clone();
-        if !p.is_one() {
-            for v in self.rows[r].iter_mut() {
-                if !v.is_zero() {
-                    *v = std::mem::take(v) / &p;
+        let w = self.width;
+        let prow: Vec<BigInt> = self.rows[r * w..(r + 1) * w]
+            .iter_mut()
+            .map(std::mem::take)
+            .collect();
+        let p = prow[s].clone();
+        let d = std::mem::replace(&mut self.d, p.clone());
+        let update_row = |row: &mut [BigInt]| {
+            let f = std::mem::take(&mut row[s]);
+            if f.is_zero() {
+                for v in row.iter_mut() {
+                    if !v.is_zero() {
+                        let t = &*v * &p;
+                        debug_assert!((&t % &d).is_zero(), "integer pivoting: inexact division");
+                        *v = t / &d;
+                    }
                 }
+                return;
             }
-        }
-        let pivot_row = std::mem::take(&mut self.rows[r]);
-        for (i, row) in self.rows.iter_mut().enumerate() {
+            for (j, (v, pr)) in row.iter_mut().zip(prow.iter()).enumerate() {
+                if j == s {
+                    continue;
+                }
+                let t = if pr.is_zero() {
+                    &*v * &p
+                } else if v.is_zero() {
+                    -(&f * pr)
+                } else {
+                    &*v * &p - &f * pr
+                };
+                debug_assert!((&t % &d).is_zero(), "integer pivoting: inexact division");
+                *v = t / &d;
+            }
+        };
+        for i in 0..self.m {
             if i == r {
                 continue;
             }
-            let f = row[s].clone();
-            if f.is_zero() {
-                continue;
-            }
-            for (v, pr) in row.iter_mut().zip(pivot_row.iter()) {
-                if !pr.is_zero() {
-                    *v -= &f * pr;
-                }
-            }
+            update_row(&mut self.rows[i * w..(i + 1) * w]);
         }
-        let f = self.obj[s].clone();
-        if !f.is_zero() {
-            for (v, pr) in self.obj.iter_mut().zip(pivot_row.iter()) {
-                if !pr.is_zero() {
-                    *v -= &f * pr;
-                }
-            }
-        }
-        self.rows[r] = pivot_row;
+        update_row(&mut self.obj);
+        self.rows[r * w..(r + 1) * w]
+            .iter_mut()
+            .zip(prow)
+            .for_each(|(slot, v)| *slot = v);
         self.basis[r] = s;
         self.pivots_done += 1;
     }
@@ -712,6 +811,7 @@ impl Tableau {
     /// Run the simplex method on the current objective, considering only
     /// columns `< limit` as candidates to enter the basis.
     fn run(&mut self, limit: usize) -> Result<Step, SymplexError> {
+        use std::cmp::Ordering;
         loop {
             if self.pivots_done >= self.max_pivots {
                 return Err(failed(
@@ -725,46 +825,69 @@ impl Tableau {
             }
             // Entering column: Dantzig (most negative reduced cost, lowest
             // index on ties) or Bland (lowest index with negative cost).
-            let mut entering: Option<usize> = None;
+            // Reduced costs share the positive factor |d|·obj_scale, so the
+            // integer entries compare like the rationals once oriented by
+            // the sign of d.  The scaled artificial a'ᵢ = sᵢ·aᵢ has reduced
+            // cost rc(aᵢ)/sᵢ; multiplying by sᵢ compares the reduced cost of
+            // the *unscaled* artificial, so Dantzig's choice is exactly the
+            // one a `Ratio` tableau of the caller's system would make.
+            let neg = self.d.is_negative();
+            let oriented = |z: &BigInt, j: usize| {
+                let v = if neg { -z } else { z.clone() };
+                if j >= self.n {
+                    v * &self.row_scale[j - self.n]
+                } else {
+                    v
+                }
+            };
+            let mut entering: Option<(usize, BigInt)> = None;
             for j in 0..limit {
-                if !self.obj[j].is_negative() {
+                if self.sign_of(&self.obj[j]) != Ordering::Less {
                     continue;
                 }
-                match entering {
-                    None => entering = Some(j),
-                    Some(e) if self.obj[j] < self.obj[e] => entering = Some(j),
-                    Some(_) => {}
+                let v = oriented(&self.obj[j], j);
+                match &entering {
+                    Some((_, best)) if v >= *best => {}
+                    _ => entering = Some((j, v)),
                 }
                 if self.bland {
                     break;
                 }
             }
-            let Some(s) = entering else {
+            let Some((s, _)) = entering else {
                 return Ok(Step::Optimal);
             };
-            // Leaving row: minimum ratio, ties broken by smallest basic index.
+            // Leaving row: minimum ratio rhsᵢ/aᵢₛ (d cancels), ties broken by
+            // smallest basic index.  Every eligible aᵢₛ has the sign of d, so
+            // rhsᵢ/aᵢₛ < rhsₗ/aₗₛ  ⇔  rhsᵢ·aₗₛ < rhsₗ·aᵢₛ  (cross-multiplication
+            // by a positive product; no gcd needed).
             let rhs = self.rhs_col();
-            let mut leaving: Option<(usize, Q)> = None;
+            let mut leaving: Option<usize> = None;
             for i in 0..self.m {
-                let a = &self.rows[i][s];
-                if !a.is_positive() {
+                let a = &self.row(i)[s];
+                if self.sign_of(a) != Ordering::Greater {
                     continue;
                 }
-                let ratio = &self.rows[i][rhs] / a;
-                let better = match &leaving {
+                let better = match leaving {
                     None => true,
-                    Some((lr, lratio)) => {
-                        ratio < *lratio || (ratio == *lratio && self.basis[i] < self.basis[*lr])
+                    Some(l) => {
+                        let (ri, rl) = (&self.row(i)[rhs], &self.row(l)[rhs]);
+                        let al = &self.row(l)[s];
+                        match (ri * al).cmp(&(rl * a)) {
+                            Ordering::Less => true,
+                            Ordering::Equal => self.basis[i] < self.basis[l],
+                            Ordering::Greater => false,
+                        }
                     }
                 };
                 if better {
-                    leaving = Some((i, ratio));
+                    leaving = Some(i);
                 }
             }
-            let Some((r, ratio)) = leaving else {
+            let Some(r) = leaving else {
                 return Ok(Step::Unbounded);
             };
-            if ratio.is_zero() {
+            if self.row(r)[rhs].is_zero() {
                 self.bland = true;
             }
             self.pivot(r, s);
@@ -777,10 +900,15 @@ impl Tableau {
         let mut z = vec![Q::zero(); self.n];
         for (i, &k) in self.basis.iter().enumerate() {
             if k < self.n {
-                z[k] = self.rows[i][rhs].clone();
+                z[k] = self.value(&self.row(i)[rhs]);
             }
         }
         z
+    }
+
+    /// `−(current objective value)` — the last entry of the objective row.
+    fn neg_objective(&self) -> Q {
+        Ratio::new(self.obj[self.rhs_col()].clone(), &self.d * &self.obj_scale)
     }
 
     /// Pivot artificial variables out of the basis wherever possible.
@@ -791,17 +919,39 @@ impl Tableau {
             if self.basis[r] < self.n {
                 continue;
             }
-            if let Some(s) = (0..self.n).find(|&j| !self.rows[r][j].is_zero()) {
+            if let Some(s) = (0..self.n).find(|&j| !self.row(r)[j].is_zero()) {
                 self.pivot(r, s);
             }
         }
     }
 
-    /// Current duals `y = c_B B⁻¹` read off the artificial columns:
-    /// `yᵢ = c_{art_i} − d[art_i]`.
-    fn duals(&self, art_cost: &Q) -> Vec<Q> {
+    /// Phase-1 cost vector over all `n + m` columns: `0` for genuine
+    /// columns and `1/sᵢ` for the (scaled) artificial of row `i`, so that
+    /// the phase-1 objective is `Σ aᵢ` of the unscaled system.
+    fn phase1_costs(&self) -> Vec<Q> {
+        let mut costs = vec![Q::zero(); self.n + self.m];
+        for (c, s) in costs[self.n..].iter_mut().zip(&self.row_scale) {
+            *c = Ratio::new(BigInt::one(), s.clone());
+        }
+        costs
+    }
+
+    /// Current duals of the caller's (unscaled) rows: `yᵢ = sᵢ · (c_{a'ᵢ} −
+    /// reduced cost of a'ᵢ)`, where the artificial's cost is `1/sᵢ` in
+    /// phase 1 and `0` in phase 2.
+    fn duals(&self, phase1: bool) -> Vec<Q> {
+        let denom = &self.d * &self.obj_scale;
         (0..self.m)
-            .map(|i| art_cost - &self.obj[self.n + i])
+            .map(|i| {
+                let s = &self.row_scale[i];
+                let reduced = Ratio::new(self.obj[self.n + i].clone(), denom.clone());
+                let scaled_reduced = reduced * Ratio::from_integer(s.clone());
+                if phase1 {
+                    Q::one() - scaled_reduced
+                } else {
+                    -scaled_reduced
+                }
+            })
             .collect()
     }
 }
@@ -820,10 +970,7 @@ fn solve_lp(p: &LpProblem) -> Result<LpSolution, SymplexError> {
     let n = t.n;
 
     // Phase 1: minimise the sum of the artificials.
-    let mut phase1 = vec![Q::zero(); n + m];
-    for v in phase1[n..].iter_mut() {
-        *v = Q::one();
-    }
+    let phase1 = t.phase1_costs();
     t.set_objective(&phase1);
     match t.run(n + m)? {
         Step::Optimal => {}
@@ -832,11 +979,11 @@ fn solve_lp(p: &LpProblem) -> Result<LpSolution, SymplexError> {
             return Err(failed("linprog", "phase 1 reported unbounded"));
         }
     }
-    let infeasibility = -t.obj[t.rhs_col()].clone();
+    let infeasibility = -t.neg_objective();
     if infeasibility.is_positive() {
         // Farkas certificate from the phase-1 duals, mapped back to the
         // caller's rows (bound rows are absorbed into the box infimum).
-        let y_std = t.duals(&Q::one());
+        let y_std = t.duals(true);
         let farkas: Vec<Q> = (0..sf.m_orig)
             .map(|i| -(&sf.row_sign[i] * &y_std[i]))
             .collect();
@@ -878,7 +1025,7 @@ fn solve_lp(p: &LpProblem) -> Result<LpSolution, SymplexError> {
         objective
     );
 
-    let y_std = t.duals(&Q::zero());
+    let y_std = t.duals(false);
     let dir = match p.objective {
         Objective::Minimize => Q::one(),
         Objective::Maximize => -Q::one(),
@@ -1397,6 +1544,53 @@ mod tests {
             .unwrap();
         assert_eq!(sol.status, LpStatus::Optimal);
         assert_eq!(sol.x, vec![qi(-3)]);
+    }
+
+    /// White-box: an artificial that stays basic at level zero after
+    /// phase 1 is driven out on a *negative* genuine entry, which flips the
+    /// sign of the integer tableau's common denominator `d`.  Phase 2 must
+    /// then pivot and read values correctly with `d < 0`.
+    #[test]
+    fn negative_common_denominator_after_driving_out_artificials() {
+        // Row 0: −x − y = 0 (rhs 0, so it is not negated by standardise;
+        // both genuine entries are negative, so phase 1 never pivots on
+        // them).  Row 1: x + z ≤ 5.  Objective: minimise z, which forces a
+        // phase-2 pivot (the slack of row 1 enters).
+        let p = LpProblem::minimize(vec![qi(0), qi(0), qi(1)])
+            .eq(vec![qi(-1), qi(-1), qi(0)], qi(0))
+            .le(vec![qi(1), qi(0), qi(1)], qi(5));
+        let Standardized::Ready(sf) = standardize(&p) else {
+            panic!("bounds are fine");
+        };
+        let mut t = Tableau::new(&sf);
+        let (m, n) = (t.m, t.n);
+        let phase1 = t.phase1_costs();
+        t.set_objective(&phase1);
+        assert!(matches!(t.run(n + m).unwrap(), Step::Optimal));
+        assert!(t.neg_objective().is_zero(), "feasible");
+        assert!(t.basis[0] >= n, "artificial of row 0 still basic");
+        assert!(t.d.is_positive());
+        t.drive_out_artificials();
+        assert!(t.basis[0] < n, "artificial driven out");
+        assert!(
+            t.d.is_negative(),
+            "pivot on a negative entry flips the common denominator (d = {})",
+            t.d
+        );
+        let pivots_before = t.pivots_done;
+        let mut phase2 = vec![Q::zero(); n + m];
+        phase2[..n].clone_from_slice(&sf.c);
+        t.set_objective(&phase2);
+        assert!(matches!(t.run(n).unwrap(), Step::Optimal));
+        assert!(t.pivots_done > pivots_before, "phase 2 pivoted with d < 0");
+        let z = t.solution();
+        assert!(z.iter().all(|v| !v.is_negative()), "z = {z:?}");
+        // Cross-check the end-to-end driver on the same problem.
+        let sol = p.solve().unwrap();
+        assert_eq!(sol.status, LpStatus::Optimal);
+        assert_eq!(sol.x, vec![qi(0), qi(0), qi(0)]);
+        assert_eq!(sol.objective, Some(qi(0)));
+        assert_eq!(sol.duals[1], qi(0));
     }
 
     #[test]

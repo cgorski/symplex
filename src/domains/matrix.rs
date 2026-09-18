@@ -11,6 +11,13 @@
 //! [`matrix_decomp`](crate::domains::matrix_decomp) but are all methods
 //! on `Matrix`.
 //!
+//! [`QMatrix`] and [`ZMatrix`] are plain exact matrices over ℚ and ℤ
+//! (`Ratio<BigInt>` / `BigInt` entries, no expression arena).  The exact
+//! linear algebra of `Matrix` — `rref`, `rank`, `nullspace`, `det`, `inv`,
+//! `solve`, `linsolve_matrix`, the normal forms — routes through them
+//! automatically whenever every entry is a rational literal, using
+//! fraction-free (Bareiss) elimination.
+//!
 //! # API conventions
 //!
 //! * **Shape preconditions** (non-square input, mismatched dimensions,
@@ -43,6 +50,7 @@ use tracing::{debug, trace, warn};
 
 // Re-export codegen option types so users can access them from the public
 // `symplex::matrix` module (the `codegen` module itself is pub(crate)).
+pub use crate::domains::exact_matrix::{ExactMatrix, ExactScalar, QMatrix, ZMatrix};
 pub use crate::output::codegen::{CodegenOptions, MathBackend, Precision};
 
 /// A dense matrix of symbolic expressions.
@@ -430,7 +438,7 @@ impl Matrix {
 
     /// Build a matrix from validated parts without re-checking.
     #[inline]
-    fn from_rows_unchecked(rows: Vec<Vec<Ex>>) -> Self {
+    pub(crate) fn from_rows_unchecked(rows: Vec<Vec<Ex>>) -> Self {
         let nrows = rows.len();
         let ncols = rows.first().map_or(0, Vec::len);
         debug_assert!(nrows > 0 && ncols > 0);
@@ -881,9 +889,11 @@ impl Matrix {
         budget_check(self.iter(), operation)
     }
 
-    /// `true` if every entry is a rational number literal.
-    fn all_numeric(&self) -> bool {
-        self.iter().all(|e| e.expr_type() == ExprType::Number)
+    /// The matrix as a [`QMatrix`] if every entry is a rational literal
+    /// (the exact fast path of `rref`, `det`, `inv`, `solve`, …).
+    pub(crate) fn as_qmatrix(&self) -> Option<QMatrix> {
+        let rows = self.to_rational_rows()?;
+        QMatrix::new(rows).ok()
     }
 
     /// Does any entry contain `sym` as a sub-expression?
@@ -1119,6 +1129,12 @@ impl Matrix {
         self.require_square("det")?;
         self.check_budget("det")?;
         let n = self.nrows;
+        if n > 3
+            && let Some(q) = self.as_qmatrix()
+        {
+            let d = q.det().map_err(|e| reop(e, "det"))?;
+            return Ok(self.ctx().from_ratio(d));
+        }
         Ok(match n {
             1 => self.rows[0][0].clone(),
             2 => {
@@ -1129,7 +1145,6 @@ impl Matrix {
                 &(a * d) - &(b * c)
             }
             3 => det_cofactor_inner(&self.rows),
-            _ if self.all_numeric() => self.det_bareiss(),
             _ => {
                 // det(A) = (−1)ⁿ · [constant coefficient of det(λI − A)]
                 let coeffs = self.berkowitz_monic("det")?;
@@ -1137,49 +1152,6 @@ impl Matrix {
                 if n % 2 == 1 { -c0 } else { c0 }
             }
         })
-    }
-
-    /// Determinant via Bareiss fraction-free elimination.
-    ///
-    /// O(n³) element operations.  Every division is exact by Sylvester's
-    /// identity, which for rational-number entries means no fractions
-    /// ever appear in intermediate results.
-    fn det_bareiss(&self) -> Ex {
-        let n = self.nrows();
-        let mut m: Vec<Vec<Ex>> = self.rows.clone();
-        let mut sign = 1i64;
-        let mut prev_pivot = self.ctx_one();
-
-        for k in 0..n - 1 {
-            let pivot_row = Self::find_bareiss_pivot(&m, k, n);
-            match pivot_row {
-                None => return self.ctx_zero(),
-                Some(pr) if pr != k => {
-                    m.swap(k, pr);
-                    sign = -sign;
-                }
-                _ => {}
-            }
-            let pivot = m[k][k].clone();
-            for i in (k + 1)..n {
-                for j in (k + 1)..n {
-                    let numer = &(&pivot * &m[i][j]) - &(&m[i][k] * &m[k][j]);
-                    m[i][j] = (&numer / &prev_pivot).eval();
-                }
-                m[i][k] = self.ctx_zero();
-            }
-            prev_pivot = pivot;
-        }
-
-        let det = m[n - 1][n - 1].clone();
-        if sign < 0 { -det } else { det }
-    }
-
-    /// Find a non-zero pivot in column k, rows k..n (structural, then evaluated).
-    fn find_bareiss_pivot(m: &[Vec<Ex>], k: usize, n: usize) -> Option<usize> {
-        (k..n)
-            .find(|&i| !m[i][k].is_zero_structural())
-            .or_else(|| (k..n).find(|&i| !m[i][k].eval().is_zero_structural()))
     }
 
     /// Berkowitz's division-free characteristic polynomial.
@@ -1391,6 +1363,15 @@ impl Matrix {
     /// ```
     pub fn inv(&self) -> Result<Matrix, SymplexError> {
         self.require_square("inv")?;
+        if let Some(q) = self.as_qmatrix() {
+            return match q.inv() {
+                Ok(inv) => Ok(inv.to_matrix(&self.ctx())),
+                Err(SymplexError::ComputationFailed { .. }) => {
+                    Err(failed("inv", "matrix is singular (determinant is zero)"))
+                }
+                Err(e) => Err(reop(e, "inv")),
+            };
+        }
         self.check_budget("inv")?;
         let d = self.det().map_err(|e| reop(e, "inv"))?;
         if ex_is_zero(&d) == Some(true) {
@@ -1400,10 +1381,6 @@ impl Matrix {
         if n == 1 {
             let one_over_det = &self.ctx_one() / &d;
             return Ok(Matrix::from_rows_unchecked(vec![vec![one_over_det]]));
-        }
-        if self.all_numeric() {
-            let eye = Matrix::identity(&self.ctx(), n);
-            return self.solve(&eye);
         }
         let adj = self.adjugate().map_err(|e| reop(e, "inv"))?;
         budget_check(adj.iter().chain(std::iter::once(&d)), "inv")?;
@@ -1450,6 +1427,10 @@ impl Matrix {
                     n, self.ncols, b.nrows
                 ),
             ));
+        }
+
+        if let (Some(qa), Some(qb)) = (self.as_qmatrix(), b.as_qmatrix()) {
+            return qa.solve(&qb).map(|x| x.to_matrix(&self.ctx()));
         }
 
         let augmented = Matrix::hstack(&[self, b])?;
@@ -2641,6 +2622,12 @@ impl Matrix {
 
     /// RREF with a caller-supplied zero test for pivot selection.
     fn rref_by(&self, is_zero: &dyn Fn(&Ex) -> bool) -> (Matrix, Vec<usize>) {
+        // Rational literals: every zero test agrees, so the fraction-free
+        // exact core gives the same (unique) RREF and pivots.
+        if let Some(q) = self.as_qmatrix() {
+            let (r, pivots) = q.rref();
+            return (r.to_matrix(&self.ctx()), pivots);
+        }
         let nrows = self.nrows;
         let ncols = self.ncols;
         let mut rows: Vec<Vec<Ex>> = self.rows.clone();

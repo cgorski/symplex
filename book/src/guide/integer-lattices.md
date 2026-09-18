@@ -4,6 +4,8 @@
 
 The most common operations are also available as methods: `Matrix::hermite_normal_form`, `Matrix::smith_normal_form`, `Matrix::integer_nullspace`.
 
+Since 0.3.5 the algorithms live on [`ZMatrix`](./matrices.md#exact-matrices-over-ℚ-and-ℤ-qmatrix-and-zmatrix), a plain `BigInt` matrix with no expression arena behind it; the `normalforms` functions convert a `Matrix` to a `ZMatrix`, run the same code and convert back. When your data is already integer, call `ZMatrix::hermite_normal_form()` and friends directly — they return `ZMatrix` values and need no `Context`, and the row/column conventions are identical.
+
 ## Hermite normal form (row style): `H = U·A`
 
 `hermite_normal_form(&a)` returns the row-style HNF: a row-echelon matrix with **positive pivots**, every entry **above** a pivot reduced into `[0, pivot)`, and zero rows at the bottom. There is a unimodular `U` (`det U = ±1`) with `H = U·A`; `hermite_normal_form_with_transform` returns `(H, U)`. Because this `H` is unique, the function is idempotent and `HNF(V·A) = HNF(A)` for every unimodular `V` — the rows of `H` are a canonical basis of the row lattice of `A`.

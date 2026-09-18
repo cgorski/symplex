@@ -16,13 +16,15 @@ so a test's full name is `<module>::<test>` inside the `<group>` binary
 (`cargo test --test unit test_parser::` runs everything from the former
 `tests/test_parser.rs`; `cargo test --test unit poly_` runs every test whose
 name contains `poly_`).  Why: 277 separately linked debug binaries took
-~6.5 min to link and ~13 GB of `target/`; nine take seconds.
+~6.5 min to link and ~13 GB of `target/`; nine take seconds.  A new
+`v0N.rs` group is added per minor release; everything else goes into an
+existing group.
 
 ## Layout
 
 | Binary / path | What it is |
 |---|---|
-| `v03.rs` → `v03/v03_*.rs` | Feature tests written alongside the 0.3 API (`poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog`, `normalforms`, `matrix_ergonomics`, `optimize`). |
+| `v03.rs` → `v03/v03_*.rs` | Feature tests written alongside the 0.3 API (`poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog`, `normalforms`, `matrix_ergonomics`, `optimize`, `certificates`, `assumptions_poly`, `user_notes`; 0.3.5: `exact_matrix` — `QMatrix`/`ZMatrix` against textbook Gauss–Jordan, the `Matrix` fast paths, the numeric `linsolve` route, the integer-pivoting simplex against exact KKT conditions). |
 | `v03_oracle.rs` → `v03_oracle/v03_oracle_*.rs` | **SymPy oracle for the 0.3 API**: `v03_oracle_poly` (`Poly`/`as_poly`: `as_dict`, degrees, `LC`, `all_coeffs`, exact `eval`, `nroots`; symbolic-coefficient `degree`/`coeff`; `ratsimp` vs `cancel`; `poly_fit_exact`; Brent roots), `v03_oracle_linprog` (exact LP vs `sympy.solvers.simplex`; objective compared exactly, the point checked for feasibility/optimality since LP vertices are not unique), `v03_oracle_normalforms` (column/row HNF, Smith form, integer kernel, lattice determinant, `gcd_many`/`lcm_many`; handles SymPy's dropped zero columns), `v03_oracle_meta` (consistency of `fixtures/v03_cross_validation.json`: consumers, `fixture_count`, unique keys, size). |
 | `v02.rs` → `v02/v02_*.rs` | Feature tests written alongside the 0.2 API (matrices, sets, transforms, …). |
 | `v02_oracle.rs` → `v02_oracle/v02_oracle_*.rs` | **SymPy oracle for the 0.2 API** (see below). One `#[test]` per fixture subcategory. `v02_oracle_meta` checks the fixture files (every subcategory has a consumer, ids/keys, size). |

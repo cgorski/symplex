@@ -12,6 +12,8 @@ use crate::api::expr::{Ex, SimplifyOpts};
 use crate::base::arena::Arena;
 use crate::base::errors::SymplexError;
 use crate::base::node::{ExprId, ExprNode};
+use crate::domains::exact_matrix::QMatrix;
+use crate::domains::linprog::Q;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Symbolic RREF solver
@@ -207,6 +209,10 @@ pub(crate) fn rref_solve(
         }
     }
 
+    if let Some(result) = rref_solve_rational(&mat, n_vars, unknowns) {
+        return Ok(result);
+    }
+
     let mut pivots: Vec<usize> = Vec::new();
     let mut pivot_row = 0usize;
 
@@ -304,6 +310,57 @@ pub(crate) fn rref_solve(
     }
 
     Ok(SymbolicLinearResult {
+        values,
+        free,
+        inconsistent: false,
+    })
+}
+
+/// Exact fast path of [`rref_solve`] for an augmented matrix whose entries
+/// are all rational literals: fraction-free elimination on a [`QMatrix`]
+/// instead of expression arithmetic.  Returns `None` if any entry is
+/// symbolic.
+fn rref_solve_rational(
+    mat: &[Vec<Ex>],
+    n_vars: usize,
+    unknowns: &[Ex],
+) -> Option<SymbolicLinearResult> {
+    let rows: Vec<Vec<Q>> = mat
+        .iter()
+        .map(|r| r.iter().map(Ex::as_rational).collect())
+        .collect::<Option<_>>()?;
+    let aug = QMatrix::new(rows).ok()?;
+    let (r, pivots) = aug.rref_limited(n_vars);
+    let rank = pivots.len();
+    // Rows below the rank are zero in the coefficient part; a nonzero
+    // right-hand side there means `0 = c`.
+    if (rank..aug.nrows()).any(|i| !r[(i, n_vars)].is_zero()) {
+        return Some(SymbolicLinearResult {
+            values: Vec::new(),
+            free: Vec::new(),
+            inconsistent: true,
+        });
+    }
+    let mut is_pivot = vec![false; n_vars];
+    for &c in &pivots {
+        is_pivot[c] = true;
+    }
+    let free: Vec<usize> = (0..n_vars).filter(|&c| !is_pivot[c]).collect();
+    let ctx = unknowns.first()?.context();
+    let mut values: Vec<Ex> = unknowns.to_vec();
+    for (i, &pc) in pivots.iter().enumerate() {
+        let mut v = ctx.from_ratio(r[(i, n_vars)].clone());
+        for &f in &free {
+            let c = &r[(i, f)];
+            if !c.is_zero() {
+                v -= ctx.from_ratio(c.clone()) * &unknowns[f];
+            }
+        }
+        // Same clean-up as the symbolic path, so parametric solutions print
+        // identically whichever route produced them.
+        values[pc] = if free.is_empty() { v } else { tidy(&v) };
+    }
+    Some(SymbolicLinearResult {
         values,
         free,
         inconsistent: false,

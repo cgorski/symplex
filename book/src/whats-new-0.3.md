@@ -51,6 +51,29 @@ Measured while preparing this page (`grep -c '#[test]'` over `src/` and `tests/`
 
 → [Numerical Optimisation](./guide/numerical-optimization.md)
 
+## 0.3.5: the exact matrix core
+
+Everything numeric that used to run through the expression arena — RREF, rank, nullspace, determinant, inverse, linear solves, the integer normal forms and the simplex tableau — now runs on plain `BigInt` / `Ratio<BigInt>` storage with fraction-free algorithms. Nothing changed signature (`cargo-semver-checks` 223/223); the speed-ups apply to existing code automatically.
+
+**`QMatrix` and `ZMatrix`** (in the prelude and in `symplex::matrix`) are dense row-major matrices with `Ratio<BigInt>` / `BigInt` entries: constructors (`new`, `from_i64`, `from_fn`, `identity`, `zeros`, `diag`, `row_vector`, `col_vector`, `from_flat`), indexing and slicing (`get`, `try_get`, `row`, `col`, `submatrix`, `hstack`, `vstack`), arithmetic (`add`, `sub`, `matmul`, `scale`, `transpose`, `trace`, the operators `+ − *`) and `Display`/`Debug` in the same layout as `Matrix`. `QMatrix` computes `rref`, `rank`, `nullspace`, `columnspace`, `rowspace`, `det`, `inv` and `solve` **fraction-free**: rows are scaled to integers and reduced with Bareiss's Gauss–Jordan rule, whose intermediate values are minors of the input, so all divisions are exact and no gcd runs in the inner loop. `ZMatrix` carries the Bareiss determinant, `rank`, `content`, the Hermite and Smith normal forms with transforms, `integer_nullspace`, `is_unimodular` and `lattice_determinant`. Conversions are explicit and lossless: `ZMatrix::try_from(&matrix)` / `QMatrix::try_from(&matrix)` (constant arithmetic is folded first; a symbolic entry is an error, not an approximation), `to_matrix(&ctx)`, `to_qmatrix`, `to_zmatrix`, `clear_denominators`.
+
+**`Matrix` routes rational input through the core.** `Matrix::{rref, rank, nullspace, columnspace, rowspace, left_nullspace, det, inv, solve, solve_least_squares, pinv}`, `linsolve`, `linsolve_matrix` and every function in `symplex::normalforms` detect an all-rational matrix and run on `QMatrix`/`ZMatrix`. Results are unchanged (the RREF is unique; parametric `linsolve` solutions print identically); only the time changes. Measured in a release build on random integer matrices with entries in `[−9, 9]`:
+
+| Operation | 0.3.4 | 0.3.5 |
+|---|---|---|
+| `Matrix::rref`, 30×36 | 208 ms | 4.2 ms |
+| `Matrix::det`, 30×30 | 42 ms | 0.55 ms |
+| `Matrix::solve`, 30×30 | 138 ms | 1.5 ms |
+| `Matrix::inv`, 30×30 | 470 ms | 10 ms |
+| `linsolve_matrix`, 30×30 | 135 ms | 1.5 ms |
+| `Matrix::inv`, 60×60 | — | 118 ms |
+
+**Integer-pivoting simplex.** The LP tableau in `symplex::linprog` is now integral with a common denominator (Bareiss / Edmonds integer pivoting): each constraint row is scaled once to clear its denominators, every pivot keeps all entries integers, and the ratio and sign tests are cross-multiplied integer comparisons. The entering and leaving choices are made on the same rational values as before, so the pivot sequence is the same — on 4,000 random LPs with fractional data, degenerate rows, all three relations and free/two-sided-bounded variables, `x`, objective, duals and Farkas vectors are byte-identical to 0.3.4 — and certificate-sized problems run 5–30× faster (40 rows × 100 variables: 1.1 s → 40 ms; 60 × 160: 2.8 s → 80 ms; the degree-5 three-variable Handelman search: 3.6 s → 0.9 s).
+
+**Why not a faster bignum crate?** Before building this, `num-bigint 0.4` was benchmarked against `dashu 0.6` on these kernels. dashu was ~9× faster on Gauss–Jordan over rationals but only 1.2–2× faster on integer kernels — the gap was `Ratio`'s per-operation gcd normalisation, not raw bignum speed. Fraction-free elimination over `num-bigint` beat *dashu's rational* elimination by 5× and the old code by 40×, with no change to the public `Ratio<BigInt>` types (`as_rational`, `linprog::Q`, the `num_*` re-exports). So `num-bigint` stays.
+
+→ [Matrices: exact matrices over ℚ and ℤ](./guide/matrices.md#exact-matrices-over-ℚ-and-ℤ-qmatrix-and-zmatrix) · [Exact Linear Programming: performance](./guide/exact-lp.md#performance)
+
 ## Behaviour changes
 
 There are **no signature-breaking changes** in 0.3. Two behaviours changed in ways an existing program could observe:

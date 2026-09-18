@@ -112,8 +112,12 @@ src/
 ├── plotting/     Adaptive sampling, textplot, SVG, TikZ, data export, RK4
 ├── domains/      matrix.rs + matrix_decomp.rs (QR, Cholesky, LDL, Gram–Schmidt, structure
 │                 tests, norms, hessian, wronskian, 0.3 selection/conversion helpers),
-│                 linalg.rs (rref/linsolve), linprog.rs (exact two-phase simplex, duals,
-│                 Farkas certificates), normalforms.rs (Hermite/Smith normal forms, integer
+│                 exact_matrix.rs (0.3.5: QMatrix/ZMatrix over Ratio<BigInt>/BigInt, the
+│                 fraction-free Gauss–Jordan kernel and Bareiss determinant, HNF/SNF cores;
+│                 Matrix routes all-rational input here), linalg.rs (symbolic rref/linsolve
+│                 with the numeric fast path), linprog.rs (exact two-phase simplex on an
+│                 integer-pivoting tableau, duals, Farkas certificates), normalforms.rs
+│                 (Matrix wrappers over ZMatrix: Hermite/Smith normal forms, integer
 │                 nullspace, unimodularity, lattice index), optimize.rs (Brent/bisection/Newton,
 │                 Nelder–Mead, golden section, differential evolution, least-squares fits),
 │                 control, dynamics, robotics, quaternion, vector (coordinate systems), ntheory

@@ -221,6 +221,69 @@ fn main() {
 }
 ```
 
+## Exact matrices over ℚ and ℤ: `QMatrix` and `ZMatrix`
+
+`Matrix` stores expressions, and every entry operation goes through the expression arena (canonicalisation, hash-consing, a write lock). That is what you want for symbolic matrices and pure overhead for numeric ones. 0.3.5 adds `QMatrix` (entries `Ratio<BigInt>`) and `ZMatrix` (entries `BigInt`) — both in the prelude and in `symplex::matrix` — as plain row-major `Vec<T>` matrices with the same shape rules, indexing, `Display`/`Debug` layout and `Result`-returning arithmetic as `Matrix`.
+
+All rational eliminations are **fraction-free**: the rows are scaled to integers and reduced with Bareiss's Gauss–Jordan variant, whose intermediate entries are minors of the input, so every division is exact and no gcd runs in the inner loop. On a 60×72 integer matrix that is about 40× faster than Gauss–Jordan over `Ratio<BigInt>` and two orders of magnitude faster than the same elimination over expressions.
+
+```rust
+use symplex::prelude::*;
+use symplex::linprog::q;            // exact rational literal: q(1, 2) = 1/2
+
+fn main() {
+    let a = QMatrix::from_i64(&[&[2, 1], &[1, 3]]).unwrap();
+    let b = QMatrix::new(vec![vec![q(1, 2)], vec![q(1, 3)]]).unwrap();
+    println!("{}", a.solve(&b).unwrap().transpose());       // [[7/30, 1/30]]
+    println!("{}", a.det().unwrap());                        // 5
+    println!("{}", a.inv().unwrap());                        // [[3/5, -1/5], [-1/5, 2/5]]
+
+    // The 4×4 Hilbert matrix: det = 1/6048000, integral inverse.
+    let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64));
+    println!("{} {}", h.det().unwrap(), h.inv().unwrap().is_integer());   // 1/6048000 true
+
+    let s = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6], &[7, 8, 9]]).unwrap();
+    let (r, pivots) = s.rref();
+    println!("{r:?} {pivots:?}");
+    // QMatrix(3×3, [[1, 0, -1], [0, 1, 2], [0, 0, 0]]) [0, 1]
+    println!("{}", s.nullspace()[0].transpose());            // [[1, -2, 1]]
+
+    // ℤ: Bareiss determinant, Hermite and Smith forms, integer kernels.
+    let z = ZMatrix::from_i64(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]).unwrap();
+    let (hnf, u) = z.hermite_normal_form_with_transform();
+    println!("{hnf:?} det U = {}", u.det().unwrap());
+    // ZMatrix(3×3, [[2, 4, 4], [0, 6, 0], [0, 0, 12]]) det U = -1
+    println!("{:?}", z.smith_normal_form().diagonal());     // [2, 6, 12]
+    println!("{:?}", ZMatrix::from_i64(&[&[2, 1, 1]]).unwrap().integer_nullspace());
+    // [ZMatrix(3×1, [[1], [0], [-2]]), ZMatrix(3×1, [[0], [1], [-1]])]
+}
+```
+
+`QMatrix` has `rref`, `rank`, `nullspace`, `columnspace`, `rowspace`, `det`, `inv`, `solve` (square, several right-hand sides), `clear_denominators` (`(Z, s)` with `Z = s·A` integral) and `to_zmatrix`; `ZMatrix` has `det`, `rank`, `content`, `hermite_normal_form[_with_transform]`, `column_hermite_normal_form`, `smith_normal_form[_with_transforms]`, `integer_nullspace`, `is_unimodular`, `lattice_determinant` and `to_qmatrix`. Both have `transpose`, `submatrix`, `hstack`/`vstack`, `map`, `scale`, `trace`, the operators `+ − *`, and `is_zero`/`is_identity`.
+
+Conversions are explicit and lossless. `ZMatrix::try_from(&m)` / `QMatrix::try_from(&m)` accept a `Matrix` whose entries are all integer / rational literals (constant arithmetic such as `1/3 + 1/6` is folded first; a symbol is an `InvalidArgument` error, not an approximation), and `to_matrix(&ctx)` goes back:
+
+```rust
+use symplex::prelude::*;
+use symplex::linprog::q;
+
+fn main() {
+    let ctx = Context::new();
+    let m = matrix![ctx, [1, 2], [3, 4]];
+    let z = ZMatrix::try_from(&m).unwrap();
+    println!("{}", z.to_qmatrix().inv().unwrap().to_matrix(&ctx));   // [[-2, 1], [3/2, -1/2]]
+    let (zc, s) = QMatrix::new(vec![vec![q(1, 2), q(1, 3)], vec![q(2, 1), q(-1, 6)]])
+        .unwrap()
+        .clear_denominators();
+    println!("{zc:?} {s}");        // ZMatrix(2×2, [[3, 2], [12, -1]]) 6
+    let half = Matrix::new(vec![vec![ctx.rational(1, 2)]]).unwrap();
+    println!("{}", ZMatrix::try_from(&half).unwrap_err());
+    // ZMatrix::try_from: invalid argument: every entry must be an integer literal (fractions and symbolic entries are not allowed)
+}
+```
+
+You rarely need to convert by hand: `Matrix::{rref, rank, nullspace, columnspace, rowspace, left_nullspace, det, inv, solve, solve_least_squares, pinv}`, `linsolve` / `linsolve_matrix` and every function in `symplex::normalforms` detect all-rational input and route through `QMatrix`/`ZMatrix` themselves, returning the same `Matrix` results as before (the RREF is unique, so pivots and entries are identical). A single symbolic entry sends the whole matrix down the expression path. Use the exact types directly when the data is numeric from the start — LP formulations, coefficient matrices from `Poly::coefficient_matrix`, lattices — to skip the arena round trip.
+
 ## Integer normal forms
 
 For a matrix of integer literals, 0.3 adds `hermite_normal_form` (row style, `H = U·A`), `smith_normal_form` (`S = U·A·V`, invariant factors) and `integer_nullspace` (a ℤ-basis of the integer kernel) as methods, with the transform-returning and column-convention variants in `symplex::normalforms`. Non-integer entries are an `InvalidArgument` error, not a rounding.
@@ -269,4 +332,4 @@ fn main() {
 - **Vector calculus** (`symplex::vector`): `gradient`, `divergence`, `curl`, `laplacian`, and their `_in(&CoordinateSystem)` variants for cylindrical and spherical coordinates; `directional_derivative`, `line_integral_scalar`, `line_integral_vector`, `scalar_potential`; `is_conservative`/`is_irrotational`/`is_solenoidal` return `Option<bool>`.
 - **Control** (`symplex::control`): `StateSpace` (poles, stability, controllability, observability, ZOH discretisation, `to_transfer_function`) and `TransferFunction` (series/parallel/feedback algebra, Routh–Hurwitz, `to_state_space`).
 
-See `cargo run --example matrix_decompositions`, `matrix_algebra`, `control_system` and `integer_lattices`.
+See `cargo run --example matrix_decompositions`, `matrix_algebra`, `exact_matrices`, `control_system` and `integer_lattices`.

@@ -3,6 +3,7 @@ pub mod combinatorics;
 pub mod control;
 pub mod diophantine;
 pub mod dynamics;
+pub(crate) mod exact_matrix;
 pub(crate) mod linalg;
 pub mod linprog;
 pub mod matrix;

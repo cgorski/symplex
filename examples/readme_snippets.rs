@@ -499,6 +499,22 @@ fn linear_algebra() {
     println!("{fr}");
     assert_eq!(fr.get(0, 0), &ctx.rational(1, 2));
     assert_eq!((&m - &m.transpose()).is_zero(), Some(true));
+
+    // 0.3.5: QMatrix / ZMatrix — plain exact matrices over ℚ / ℤ
+    let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64));
+    assert_eq!(h.det().unwrap(), q(1, 6_048_000));
+    assert_eq!(h.inv().unwrap()[(3, 3)], q(2800, 1));
+    let (r, pivots) = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6]]).unwrap().rref();
+    println!("rref = {r:?}, pivots = {pivots:?}");
+    assert_eq!(r, QMatrix::from_i64(&[&[1, 0, -1], &[0, 1, 2]]).unwrap());
+    assert_eq!(pivots, vec![0, 1]);
+    let s = ZMatrix::from_i64(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]])
+        .unwrap()
+        .smith_normal_form();
+    assert_eq!(
+        s,
+        ZMatrix::from_i64(&[&[2, 0, 0], &[0, 6, 0], &[0, 0, 12]]).unwrap()
+    );
 }
 
 fn certified_inequalities() {

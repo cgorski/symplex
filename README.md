@@ -373,13 +373,24 @@ matrix![ctx, [0, 1, 0], [0, 0, 1], [1, 1, 0]].eigenvals().unwrap();   // [RootOf
 m.extract(&[1, 0], &[0]).unwrap();                    // [[1], [2]]
 Matrix::from_ratio(&ctx, &[vec![q(1, 2), q(3, 1)]]).unwrap();   // [[1/2, 3]]
 (&m - &m.transpose()).is_zero();               // Some(true)   (m is symmetric)
+
+// 0.3.5: QMatrix / ZMatrix — plain exact matrices over ℚ / ℤ, no expression arena.
+// Fraction-free (Bareiss) elimination: a 30×30 rational inverse takes 10 ms, not 470.
+let h = QMatrix::from_fn(4, 4, |i, j| q(1, (i + j + 1) as i64));   // Hilbert matrix
+h.det().unwrap();                                     // 1/6048000
+h.inv().unwrap()[(3, 3)];                             // 2800   (the inverse is integral)
+let (r, pivots) = QMatrix::from_i64(&[&[1, 2, 3], &[4, 5, 6]]).unwrap().rref();
+// r = [[1, 0, -1], [0, 1, 2]], pivots = [0, 1]
+ZMatrix::from_i64(&[&[2, 4, 4], &[-6, 6, 12], &[10, -4, -16]]).unwrap().smith_normal_form();
 ```
+
+`Matrix::{rref, rank, nullspace, det, inv, solve}`, `linsolve`/`linsolve_matrix` and the normal forms route through `QMatrix`/`ZMatrix` automatically whenever every entry is a rational literal, so existing code gets the speed-up without changes.
 
 Also: LU, LDLᵀ, Gram–Schmidt, Jordan form, pseudo-inverse, Kronecker product, rank/nullspace/rowspace, norms, least squares, Hessian, Wronskian, quaternions, vector calculus in Cartesian/cylindrical/spherical coordinates, state-space ↔ transfer function; `select_rows`/`select_cols`/`delete_row`/`delete_col`, `from_bigint`/`from_f64_rows`, `to_rational_rows`/`to_bigint_rows`, `is_integer_matrix`, `subs_map`, `nnz`.
 
 ### Exact Optimization and Integer Lattices
 
-Linear programs are solved over ℚ by a two-phase simplex with Bland's rule: optima, shadow prices and Farkas infeasibility certificates are exact, never "infeasible to within tolerance". Integer matrices get Hermite and Smith normal forms with unimodular transforms, and ℤ-bases of integer kernels.
+Linear programs are solved over ℚ by a two-phase simplex with Bland's rule: optima, shadow prices and Farkas infeasibility certificates are exact, never "infeasible to within tolerance". Since 0.3.5 the tableau pivots on integers with a common denominator (no rational normalisation in the inner loop), which makes certificate-sized problems 5–30× faster. Integer matrices get Hermite and Smith normal forms with unimodular transforms, and ℤ-bases of integer kernels.
 
 ```rust
 use symplex::linprog::{feasible_nonneg, q, qi};
