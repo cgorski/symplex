@@ -53,6 +53,13 @@ pub(crate) fn is_real(arena: &Arena, id: ExprId) -> Option<bool> {
     query_prop(arena, id, Props::REAL)
 }
 
+/// Cheap structural test: is the node at `id` real-valued by construction
+/// (a number, a real constant, `abs`, `re`, `im`, `arg`, …)?  `false` only
+/// means "not obviously real", never "provably complex".
+pub(crate) fn is_real_node(arena: &Arena, id: ExprId) -> bool {
+    is_intrinsically_real(arena.node(id))
+}
+
 /// Nodes that are real-valued by definition regardless of their argument.
 fn is_intrinsically_real(node: &ExprNode) -> bool {
     matches!(

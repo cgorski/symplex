@@ -1437,29 +1437,21 @@ fn g27_eval_rational() {
 
 #[test]
 fn g28_rational_zero_denominator() {
-    // ctx.rational(1, 0) — division by zero in construction
-    // Should panic or return inf/nan — test that the library handles it
+    // ctx.rational(1, 0) — division by zero in construction.  Fixed in
+    // 0.2 numfix: it is the same library-level value as `ctx.int(1) /
+    // ctx.int(0)` (`zoo`), and `0/0` is `nan`; no panic.
     let ctx = Context::new();
-    // This may panic — if it does, that's actually reasonable for division by zero
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let r = ctx.rational(1, 0);
         format!("{r}")
     }));
-    // BUG: `Context::rational(p, 0)` panics inside `num-rational`
-    // ("denominator == 0") and the method has no `# Panics` section; a
-    // library-level result (`zoo`, like `ctx.int(1) / ctx.int(0)`) or a
-    // documented panic would be the honest contract.  Until fixed we pin the
-    // observed behaviour so a silent change is noticed.
-    assert!(
-        result.is_err(),
-        "ctx.rational(1, 0) no longer panics: {result:?} — update this test"
-    );
+    assert_eq!(result.ok().as_deref(), Some("zoo"));
     assert_eq!(format!("{}", &ctx.int(1) / &ctx.int(0)), "zoo");
+    assert_eq!(ctx.rational(0, 0), ctx.nan());
 }
 
-/// Reproducer for the panic above; un-ignore once `rational(p, 0)` is handled.
+/// Regression for the former panic in `rational(p, 0)`.
 #[test]
-#[ignore = "BUG: Context::rational(1, 0) panics (num-rational denominator == 0) instead of returning zoo"]
 fn bug_rational_zero_denominator_panics() {
     let ctx = Context::new();
     let r = ctx.rational(1, 0);

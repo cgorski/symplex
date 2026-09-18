@@ -1264,6 +1264,122 @@ pub fn factorint(n: impl Into<BigInt>) -> Vec<(BigInt, u32)> {
     factorint_big_internal(&n)
 }
 
+/// Bounded partial factorisation for radical extraction.
+///
+/// Returns `(factors, cofactor)` with `|n| = ∏ pᵢ^{eᵢ} · cofactor`.  The
+/// work is bounded so the function is safe to call from hot construction
+/// paths (`√n` canonicalisation): trial division by the primes below 2¹⁶,
+/// then — for whatever remains — a primality test and a perfect-power
+/// check, and a full [`factorint`] only when the remaining composite has
+/// at most `max_bits` bits (Pollard rho on a `b`-bit semiprime costs
+/// `~2^{b/4}` steps).  A larger composite is returned unfactored as
+/// `cofactor` (which is then `> 1`); otherwise `cofactor == 1`.
+///
+/// Returns `(vec![], 1)` for `n ∈ {-1, 0, 1}`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::ntheory::factorint_bounded;
+/// use num_bigint::BigInt;
+///
+/// let (f, c) = factorint_bounded(&BigInt::from(3_912_608_155_036_063i64), 64);
+/// assert_eq!(f, vec![(BigInt::from(7), 1), (BigInt::from(23_641_997), 2)]);
+/// assert_eq!(c, BigInt::from(1));
+///
+/// // 2^127 − 1 is prime: recognised without any factoring effort.
+/// let m127 = (BigInt::from(1) << 127) - 1;
+/// let (f, c) = factorint_bounded(&m127, 64);
+/// assert_eq!(f, vec![(m127, 1)]);
+/// assert_eq!(c, BigInt::from(1));
+///
+/// // A 40-digit semiprime with 20-digit prime factors is left alone.
+/// let p = BigInt::parse_bytes(b"18446744073709551629", 10).unwrap(); // > 2^64, prime
+/// let q = BigInt::parse_bytes(b"18446744073709551653", 10).unwrap(); // prime
+/// let (f, c) = factorint_bounded(&(&p * &q * 4), 64);
+/// assert_eq!(f, vec![(BigInt::from(2), 2)]);
+/// assert_eq!(c, &p * &q);
+/// ```
+pub fn factorint_bounded(n: &BigInt, max_bits: u64) -> (Vec<(BigInt, u32)>, BigInt) {
+    let mut n = n.abs();
+    if n <= BigInt::one() {
+        return (vec![], BigInt::one());
+    }
+    let mut factors: Vec<(BigInt, u32)> = Vec::new();
+
+    // Trial division by the primes below 2^16 (cheap on machine words).
+    if let Some(mut small) = n.to_u64() {
+        for &p in small_primes() {
+            let p = p as u64;
+            if p * p > small {
+                break;
+            }
+            if small.is_multiple_of(p) {
+                let mut count = 0u32;
+                while small.is_multiple_of(p) {
+                    small /= p;
+                    count += 1;
+                }
+                factors.push((BigInt::from(p), count));
+            }
+        }
+        n = BigInt::from(small);
+    } else {
+        for &p in small_primes() {
+            if (&n % p).is_zero() {
+                let mut count = 0u32;
+                while (&n % p).is_zero() {
+                    n /= p;
+                    count += 1;
+                }
+                factors.push((BigInt::from(p), count));
+            }
+        }
+    }
+
+    if n.is_one() {
+        return (factors, n);
+    }
+
+    // Any remainder below 2^32 has no prime factor below 2^16, so it is prime.
+    if n < BigInt::from((TRIAL_DIVISION_LIMIT as u64) * (TRIAL_DIVISION_LIMIT as u64)) {
+        merge_factors(&mut factors, vec![(n, 1)]);
+        return (factors, BigInt::one());
+    }
+    // Known-cheap to factor: finish the job.
+    if n.bits() <= max_bits {
+        merge_factors(&mut factors, factorint(n));
+        return (factors, BigInt::one());
+    }
+
+    // Large remainder: only the cheap structural checks.
+    if isprime_big_internal(&n) {
+        merge_factors(&mut factors, vec![(n, 1)]);
+        return (factors, BigInt::one());
+    }
+    if let Some((base, e)) = perfect_power_big(&n) {
+        let (inner, cof) = factorint_bounded(&base, max_bits);
+        merge_factors(
+            &mut factors,
+            inner.into_iter().map(|(p, k)| (p, k * e)).collect(),
+        );
+        // An unfactored cofactor of the base contributes `cof^e`.
+        return (factors, cof.pow(e));
+    }
+    (factors, n)
+}
+
+/// Merge `more` (sorted or not) into the sorted `(prime, exponent)` list.
+fn merge_factors(factors: &mut Vec<(BigInt, u32)>, more: Vec<(BigInt, u32)>) {
+    for (p, e) in more {
+        match factors.iter_mut().find(|(q, _)| *q == p) {
+            Some((_, k)) => *k += e,
+            None => factors.push((p, e)),
+        }
+    }
+    factors.sort_by(|a, b| a.0.cmp(&b.0));
+}
+
 /// Returns the smallest prime strictly greater than `n`.
 ///
 /// Accepts any integer type.

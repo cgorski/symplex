@@ -41,7 +41,7 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Pow as NumPow, Signed, Zero};
+use num_traits::{One, Pow as NumPow, Signed, ToPrimitive, Zero};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::{SmallVec, smallvec};
 
@@ -891,34 +891,15 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
         return result;
     }
 
-    // Radical simplification: extract perfect k-th power factors from
-    // positive integer bases with fractional exponents.
-    // E.g., sqrt(12) → 2*sqrt(3), cbrt(24) → 2*cbrt(3).
+    // Radical normal form for positive rational bases with fractional
+    // exponents (see [`canon_radical`]): `√12 → 2√3`, `√(4/9) → 2/3`,
+    // `√(1/2) = 2^(-1/2) = √2/2`, `∛54 → 3∛2`.
     if let (Some(base_r), Some(exp_r)) = (arena.as_num(base).cloned(), arena.as_num(exp).cloned())
-        && base_r.is_integer()
         && base_r.is_positive()
         && !exp_r.is_integer()
+        && let Some(result) = canon_radical(arena, base, &base_r, exp, &exp_r)
     {
-        let q: u32 = exp_r.denom().clone().try_into().unwrap_or(0);
-        let p: u32 = exp_r.numer().clone().try_into().unwrap_or(0);
-        let n: u64 = base_r.to_integer().try_into().unwrap_or(0);
-        if q > 1 && p > 0 && n > 1 {
-            let (outside, inside) = extract_perfect_power(n, q);
-            if outside > 1
-                && outside <= i64::MAX as u64
-                && inside <= i64::MAX as u64
-                && let Some(outside_pow) = outside.checked_pow(p)
-                && outside_pow <= i64::MAX as u64
-            {
-                let outside_expr = arena.int(outside_pow as i64);
-                if inside == 1 {
-                    return outside_expr;
-                }
-                let inside_base = arena.int(inside as i64);
-                let inside_radical = arena.pow(inside_base, exp);
-                return arena.mul(&[outside_expr, inside_radical]);
-            }
-        }
+        return result;
     }
 
     let result = arena.intern(ExprNode::Pow(base, exp));
@@ -987,30 +968,127 @@ fn eval_numeric_pow(arena: &mut Arena, b: &Ratio<BigInt>, e: &Ratio<BigInt>) -> 
     Some(arena.intern(ExprNode::Num(nid)))
 }
 
-/// Extract perfect k-th power factors from `n`.
+/// Normal form of `r^(a/b)` for a positive rational `r` and a non-integer
+/// rational exponent `a/b` (`b > 1`), or `None` when nothing changes.
 ///
-/// Returns `(outside, inside)` such that `outside^k * inside == n` and
-/// `inside` has no prime factor with exponent ≥ k.
+/// The canonical form has an **integer base ≥ 2**, a **positive** exponent
+/// in `(0, ∞)` and a **radicand free of `b`-th power factors** (as far as
+/// the bounded factorisation can tell):
+///
+/// * `(p/q)^(a/b) → p^(a/b) · q^(-a/b)` — the rational base is split;
+/// * `n^(-a/b) → n^(-k-1) · n^((b-s)/b)` with `a = k·b + s`, `0 < s < b` —
+///   the denominator is rationalised (`2^(-1/2) = √2/2`), matching SymPy;
+/// * `n^(a/b) → outside^a · inside^(a/b)` with `n = outside^b · inside`
+///   (`√12 = 2√3`, `√(4/9) = 2/3`, `∛54 = 3∛2`).
+///
+/// Consequently `√(1/2)`, `1/√2`, `2^(-1/2)` and `√2/2` all canonicalise
+/// to the same `Mul(1/2, Pow(2, 1/2))`.
+fn canon_radical(
+    arena: &mut Arena,
+    base: ExprId,
+    base_r: &Ratio<BigInt>,
+    exp: ExprId,
+    exp_r: &Ratio<BigInt>,
+) -> Option<ExprId> {
+    debug_assert!(base_r.is_positive() && !exp_r.is_integer());
+
+    // (p/q)^(a/b) → p^(a/b) · q^(-a/b).
+    if !base_r.is_integer() {
+        tracing::trace!("canon_radical: splitting rational base");
+        let p = arena.big_int(base_r.numer().clone());
+        let q = arena.big_int(base_r.denom().clone());
+        let neg_exp = {
+            let nid = arena.intern_num(-exp_r.clone());
+            arena.intern(ExprNode::Num(nid))
+        };
+        let p_pow = canon_pow(arena, p, exp);
+        let q_pow = canon_pow(arena, q, neg_exp);
+        return Some(arena.mul(&[p_pow, q_pow]));
+    }
+
+    // Integer base n ≥ 2 from here on (n = 1 was folded by the caller).
+    let n = base_r.to_integer();
+    if n <= BigInt::one() {
+        return None;
+    }
+
+    // n^(-a/b) → n^(-(k+1)) · n^((b-s)/b),  a = k·b + s.
+    if exp_r.is_negative() {
+        tracing::trace!("canon_radical: rationalising negative fractional exponent");
+        let a = -exp_r.numer().clone();
+        let b = exp_r.denom().clone();
+        let (k, s) = num_integer::Integer::div_rem(&a, &b);
+        let pos_exp = {
+            let nid = arena.intern_num(Ratio::new(&b - &s, b.clone()));
+            arena.intern(ExprNode::Num(nid))
+        };
+        let int_exp = {
+            let nid = arena.intern_num(Ratio::from_integer(-(k + BigInt::one())));
+            arena.intern(ExprNode::Num(nid))
+        };
+        let coeff = canon_pow(arena, base, int_exp);
+        let radical = canon_pow(arena, base, pos_exp);
+        return Some(arena.mul(&[coeff, radical]));
+    }
+
+    // n^(a/b), a > 0: pull perfect b-th powers out of n.
+    let b: u32 = exp_r.denom().to_u32()?;
+    let a: u32 = exp_r.numer().to_u32()?;
+    let (outside, inside) = split_perfect_power(&n, b);
+    if outside.is_one() {
+        return None;
+    }
+    tracing::trace!("canon_radical: extracted perfect power factor");
+    let outside_pow = NumPow::pow(outside, a);
+    let outside_expr = arena.big_int(outside_pow);
+    if inside.is_one() {
+        return Some(outside_expr);
+    }
+    let inside_base = arena.big_int(inside);
+    let inside_radical = arena.intern(ExprNode::Pow(inside_base, exp));
+    Some(arena.mul(&[outside_expr, inside_radical]))
+}
+
+/// Composite cofactors with more bits than this are not factored during
+/// canonicalisation (`√n` is then left with the cofactor inside the
+/// radical).  About 25 decimal digits: Pollard rho on such a semiprime is
+/// still a few million machine-word steps, which is the most we are willing
+/// to spend at construction time.
+const RADICAL_FACTOR_MAX_BITS: u64 = 84;
+
+/// Split a positive integer as `n = outside^k · inside` where `inside` has no
+/// prime factor with exponent `≥ k` among the factors found by the bounded
+/// factorisation ([`crate::domains::ntheory::factorint_bounded`]).
+///
+/// Exact `k`-th powers are recognised first via an integer root, so
+/// `√(p²)` folds even for huge primes `p`.
 ///
 /// # Examples
 ///
-/// - `extract_perfect_power(12, 2)` → `(2, 3)` because 12 = 2²·3
-/// - `extract_perfect_power(8, 3)`  → `(2, 1)` because 8 = 2³
-/// - `extract_perfect_power(7, 2)`  → `(1, 7)` (7 is square-free)
-fn extract_perfect_power(mut n: u64, k: u32) -> (u64, u64) {
-    let mut outside = 1u64;
-    let mut d = 2u64;
-    while let Some(dk) = d.checked_pow(k) {
-        if dk > n {
-            break;
-        }
-        while n.is_multiple_of(dk) {
-            n /= dk;
-            outside *= d;
-        }
-        d += 1;
+/// - `split_perfect_power(12, 2)` → `(2, 3)` because 12 = 2²·3
+/// - `split_perfect_power(8, 3)`  → `(2, 1)` because 8 = 2³
+/// - `split_perfect_power(7, 2)`  → `(1, 7)` (7 is square-free)
+pub(crate) fn split_perfect_power(n: &BigInt, k: u32) -> (BigInt, BigInt) {
+    if k < 2 || *n <= BigInt::one() {
+        return (BigInt::one(), n.clone());
     }
-    (outside, n)
+    let root = n.nth_root(k);
+    if NumPow::pow(root.clone(), k) == *n {
+        return (root, BigInt::one());
+    }
+    let (factors, cofactor) =
+        crate::domains::ntheory::factorint_bounded(n, RADICAL_FACTOR_MAX_BITS);
+    let mut outside = BigInt::one();
+    let mut inside = cofactor;
+    for (p, e) in factors {
+        if e >= k {
+            outside *= NumPow::pow(p.clone(), e / k);
+        }
+        if e % k > 0 {
+            inside *= NumPow::pow(p, e % k);
+        }
+    }
+    (outside, inside)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2298,14 +2376,34 @@ mod tests {
     }
 
     #[test]
-    fn extract_perfect_power_basic() {
-        assert_eq!(extract_perfect_power(12, 2), (2, 3));
-        assert_eq!(extract_perfect_power(8, 2), (2, 2));
-        assert_eq!(extract_perfect_power(18, 2), (3, 2));
-        assert_eq!(extract_perfect_power(9, 2), (3, 1));
-        assert_eq!(extract_perfect_power(7, 2), (1, 7));
-        assert_eq!(extract_perfect_power(8, 3), (2, 1));
-        assert_eq!(extract_perfect_power(24, 3), (2, 3));
-        assert_eq!(extract_perfect_power(1, 2), (1, 1));
+    fn split_perfect_power_basic() {
+        let sp = |n: i64, k: u32| {
+            let (o, i) = split_perfect_power(&BigInt::from(n), k);
+            (o.try_into().unwrap_or(-1i64), i.try_into().unwrap_or(-1i64))
+        };
+        assert_eq!(sp(12, 2), (2, 3));
+        assert_eq!(sp(8, 2), (2, 2));
+        assert_eq!(sp(18, 2), (3, 2));
+        assert_eq!(sp(9, 2), (3, 1));
+        assert_eq!(sp(7, 2), (1, 7));
+        assert_eq!(sp(8, 3), (2, 1));
+        assert_eq!(sp(24, 3), (2, 3));
+        assert_eq!(sp(1, 2), (1, 1));
+        // 7 · 23641997² — used to trial-divide up to 2.4·10⁷.
+        assert_eq!(sp(3_912_608_155_036_063, 2), (23_641_997, 7));
+    }
+
+    #[test]
+    fn split_perfect_power_leaves_large_composite_alone() {
+        // (10^20 + 39)(10^20 + 5559) · 4: only the 2² is pulled out.
+        let n = BigInt::parse_bytes(b"40000000000000002239200000000000000867204", 10).unwrap();
+        let (o, i) = split_perfect_power(&n, 2);
+        assert_eq!(o, BigInt::from(2));
+        assert_eq!(&i * 4, n);
+        // but an exact square of a huge prime is still recognised.
+        let p = BigInt::parse_bytes(b"10000000000000000051", 10).unwrap();
+        let (o, i) = split_perfect_power(&(&p * &p * 3), 2);
+        assert_eq!(o, p);
+        assert_eq!(i, BigInt::from(3));
     }
 }

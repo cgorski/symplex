@@ -2464,26 +2464,28 @@ fn arb_euler_gamma(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Compute the Hankel auxiliary functions P_ν(z) and Q_ν(z) for the
-/// Bessel asymptotic expansion.
+/// Bessel asymptotic expansion (DLMF §10.17).
 ///
 /// P_ν(z) = Σ_{k=0}^{N} (-1)^k · a_{2k}(ν) / z^{2k}
 /// Q_ν(z) = Σ_{k=0}^{N} (-1)^k · a_{2k+1}(ν) / z^{2k+1}
 ///
-/// where a_k(ν) = [(1/2-ν)_k · (1/2+ν)_k] / [(-2)^k · k!]
+/// where a_k(ν) = (4ν²−1²)(4ν²−3²)⋯(4ν²−(2k−1)²) / (k! · 8^k)
+/// (DLMF 10.17.1), so a_k = a_{k−1} · (4ν² − (2k−1)²) / (8k).
 ///
 /// Uses optimal truncation: stops when terms start increasing (divergent
 /// series).  The error is bounded by the first omitted term for real
-/// positive z (Stieltjes bound, DLMF §10.17).
+/// positive z (DLMF §10.17(iii)).  The returned flag is `true` when the
+/// truncation happened because the terms fell below `2^{-prec}` relative
+/// to the sums — i.e. the expansion actually delivered `prec` bits.  When
+/// it is `false` the series started diverging before reaching the target
+/// and the caller must fall back to the power series.
 fn hankel_pq(
     order: &BigFloat,
     z: &BigFloat,
     prec: usize,
     rm: RoundingMode,
     _cc: &mut Consts,
-) -> (BigFloat, BigFloat) {
-    // Compute coefficients a_k incrementally:
-    // a_0 = 1
-    // a_{k+1} = a_k · -(4ν² - (2k+1)²) / (8(k+1))
+) -> (BigFloat, BigFloat, bool) {
     let one = BigFloat::from_i32(1, prec);
     let four = BigFloat::from_i32(4, prec);
     let eight = BigFloat::from_i32(8, prec);
@@ -2492,25 +2494,25 @@ fn hankel_pq(
 
     let z_inv = one.div(z, prec, rm);
 
-    // P and Q accumulators.
-    let mut p_sum = one.clone(); // a_0 = 1 contributes to P (even index)
-    let mut q_sum = BigFloat::new(prec); // Q starts at 0
+    // P and Q accumulators; the k = 0 term (a_0 = 1) is added by the loop.
+    let mut p_sum = BigFloat::new(prec);
+    let mut q_sum = BigFloat::new(prec);
 
     let mut a_k = one.clone(); // a_0 = 1
     let mut z_power = one.clone(); // z^0 = 1
 
-    // Maximum terms: approximately |z| terms before divergence.
-    let z_f64 = z.exponent().unwrap_or(0) as f64 * 0.693; // rough |z|
-    let max_terms = (2.0 * z_f64.exp() + 20.0).min(10000.0) as usize;
+    // The terms reach their minimum near k ≈ 2|z|; allow a little slack.
+    let max_terms = (3 * prec + 100).min(100_000);
 
     let mut prev_a_abs: Option<BigFloat> = None;
+    let mut converged = false;
 
     for k in 0..max_terms {
         if k > 0 {
-            // a_k = a_{k-1} · -(4ν² - (2k-1)²) / (8k)
+            // a_k = a_{k-1} · (4ν² - (2k-1)²) / (8k)
             let two_km1 = BigFloat::from_i32((2 * k as i32) - 1, prec);
             let two_km1_sq = two_km1.mul(&two_km1, prec, rm);
-            let numer = four_nu_sq.sub(&two_km1_sq, prec, rm).neg();
+            let numer = four_nu_sq.sub(&two_km1_sq, prec, rm);
             let k_bf = BigFloat::from_i32(k as i32, prec);
             let denom = eight.mul(&k_bf, prec, rm);
             a_k = a_k.mul(&numer, prec, rm).div(&denom, prec, rm);
@@ -2533,14 +2535,14 @@ fn hankel_pq(
         }
 
         // Convergence: term negligible relative to accumulated sums.
-        if let Some(t_exp) = term.exponent() {
-            let p_exp = p_sum.exponent().unwrap_or(0);
-            let q_exp = q_sum.exponent().unwrap_or(0);
-            let ref_exp = p_exp.max(q_exp);
-            if (ref_exp as i64 - t_exp as i64) > prec as i64 {
-                tracing::trace!(k, "hankel_pq: converged (term negligible)");
-                break;
-            }
+        let p_exp = p_sum.exponent().unwrap_or(0);
+        let q_exp = q_sum.exponent().unwrap_or(0);
+        let ref_exp = p_exp.max(q_exp);
+        let t_exp = term.exponent().unwrap_or(i32::MIN / 2);
+        if k > 0 && (ref_exp as i64 - t_exp as i64) > prec as i64 {
+            tracing::trace!(k, "hankel_pq: converged (term negligible)");
+            converged = true;
+            break;
         }
 
         prev_a_abs = Some(term_abs);
@@ -2564,7 +2566,76 @@ fn hankel_pq(
         }
     }
 
-    (p_sum, q_sum)
+    (p_sum, q_sum, converged)
+}
+
+/// Smallest `|x|` at which the Hankel expansion is expected to reach `wp`
+/// bits for order `ν`.
+///
+/// The smallest term of the (divergent) expansion is `~e^{−2|x|}` times a
+/// factor that grows like `e^{2|ν|}` (the first `|ν|` coefficients are
+/// inflated by `4ν²/(2j−1)²`), so `2|x| ≳ (wp + 3|ν|)·ln 2`.  This is
+/// only a heuristic for choosing the algorithm; [`hankel_pq`] reports
+/// whether it actually converged.
+fn hankel_threshold(wp: usize, order_abs: f64) -> f64 {
+    (wp as f64 + 3.0 * order_abs) * std::f64::consts::LN_2 / 2.0 + 4.0
+}
+
+/// Evaluate `J_ν(x)` (`want_j == true`) or `Y_ν(x)` via the Hankel
+/// asymptotic expansion at `x > 0`,
+///
+/// ```text
+/// J_ν(x) = √(2/(πx)) · [cos(ω)·P_ν(x) − sin(ω)·Q_ν(x)]
+/// Y_ν(x) = √(2/(πx)) · [sin(ω)·P_ν(x) + cos(ω)·Q_ν(x)],   ω = x − νπ/2 − π/4
+/// ```
+///
+/// Returns `None` when the expansion does not reach `wp` bits at this
+/// `x` (the caller then uses the power series).
+fn bessel_jy_hankel(
+    order: &BigFloat,
+    x: &BigFloat,
+    want_j: bool,
+    wp: usize,
+    rm: RoundingMode,
+    cc: &mut Consts,
+) -> Option<BigFloat> {
+    // The phase ω = x − νπ/2 − π/4 loses the leading `log2 x` bits of x to
+    // cancellation, so the trigonometric part needs that many extra bits.
+    let wp = wp + x.exponent().unwrap_or(0).max(0) as usize;
+    let mut xw = x.clone();
+    let _ = xw.set_precision(wp, rm);
+    let mut nu = order.clone();
+    let _ = nu.set_precision(wp, rm);
+
+    let (p_val, q_val, converged) = hankel_pq(&nu, &xw, wp, rm, cc);
+    if !converged {
+        tracing::trace!("bessel_jy_hankel: expansion did not reach target precision");
+        return None;
+    }
+    let pi = cc.pi(wp, rm).clone();
+    let two = BigFloat::from_i32(2, wp);
+    let four = BigFloat::from_i32(4, wp);
+
+    let two_over_pi_x = two.div(&pi.mul(&xw, wp, rm), wp, rm);
+    let amplitude = two_over_pi_x.sqrt(wp, rm);
+
+    let nu_pi_half = nu.mul(&pi, wp, rm).div(&two, wp, rm);
+    let pi_quarter = pi.div(&four, wp, rm);
+    let phase = xw.sub(&nu_pi_half, wp, rm).sub(&pi_quarter, wp, rm);
+
+    let cos_phase = phase.cos(wp, rm, cc);
+    let sin_phase = phase.sin(wp, rm, cc);
+
+    let combo = if want_j {
+        cos_phase
+            .mul(&p_val, wp, rm)
+            .sub(&sin_phase.mul(&q_val, wp, rm), wp, rm)
+    } else {
+        sin_phase
+            .mul(&p_val, wp, rm)
+            .add(&cos_phase.mul(&q_val, wp, rm), wp, rm)
+    };
+    Some(amplitude.mul(&combo, wp, rm))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2573,11 +2644,14 @@ fn hankel_pq(
 
 /// Arbitrary-precision Bessel function of the first kind J_ν(x).
 ///
-/// Uses ascending power series for small |x|:
-///   J_ν(x) = Σ_{k=0}^{N} (-1)^k · (x/2)^(ν+2k) / (k! · Γ(ν+k+1))
-///
-/// For large |x|, uses Hankel asymptotic leading term:
-///   J_ν(x) ≈ √(2/(πx)) · cos(x - νπ/2 - π/4)
+/// * `|x|` below [`hankel_threshold`] (or whenever the asymptotic expansion
+///   cannot reach the target precision): ascending power series
+///   `J_ν(x) = Σ_k (-1)^k (x/2)^(ν+2k) / (k! Γ(ν+k+1))`.  Its terms grow
+///   to `~e^{|x|}` before the alternating sum cancels down to `O(1)`, so
+///   the working precision is raised by [`cancellation_guard_bits`] — this
+///   makes the series correct at *any* `x`, merely slower for huge `x`.
+/// * Otherwise the Hankel expansion with the full `P/Q` series
+///   ([`bessel_jy_hankel`]), whose optimal-truncation error is `~e^{−2|x|}`.
 fn arb_bessel_j(
     order: &BigFloat,
     x: &BigFloat,
@@ -2618,14 +2692,34 @@ fn arb_bessel_j(
         return Ok(if order_int % 2 == 0 { j } else { j.neg() });
     }
 
-    // Threshold: use series for |x| < sqrt(wp), asymptotic for larger.
-    let threshold = ((wp as f64) * 0.5).sqrt() + 5.0;
+    // Large |x|: Hankel asymptotic expansion (J is even/odd in x for
+    // integer order; non-integer order with x < 0 is complex and rejected).
+    if x_f64.abs() >= hankel_threshold(wp, order_f64.abs()) {
+        if x.is_negative() {
+            if !is_int_order {
+                return Err(SymplexError::Unevaluable {
+                    reason: "BesselJ of negative argument with non-integer order is complex".into(),
+                });
+            }
+            let j = arb_bessel_j(order, &x.abs(), prec, rm, cc)?;
+            return Ok(if order_int % 2 == 0 { j } else { j.neg() });
+        }
+        if let Some(j) = bessel_jy_hankel(order, x, true, wp, rm, cc) {
+            return Ok(round_to(j, prec, rm));
+        }
+    }
 
-    if x_f64.abs() < threshold {
-        // ── Ascending series ──────────────────────────────────────
-        // J_ν(x) = (x/2)^ν · Σ_{k=0}^N (-1)^k · (x/2)^{2k} / (k! · Γ(ν+k+1))
+    // ── Ascending series with cancellation guard bits ──────────────────
+    // J_ν(x) = (x/2)^ν · Σ_{k=0}^N (-1)^k · (x/2)^{2k} / (k! · Γ(ν+k+1))
+    {
+        let wp = wp + cancellation_guard_bits(x_f64.abs());
+        let mut xw = x.clone();
+        let _ = xw.set_precision(wp, rm);
+        let mut order_w = order.clone();
+        let _ = order_w.set_precision(wp, rm);
+        let order = &order_w;
         let two = BigFloat::from_i32(2, wp);
-        let x_half = x.div(&two, wp, rm);
+        let x_half = xw.div(&two, wp, rm);
         let x_half_sq = x_half.mul(&x_half, wp, rm);
         let neg_x_half_sq = x_half_sq.neg();
 
@@ -2653,7 +2747,9 @@ fn arb_bessel_j(
         let mut term = BigFloat::from_i32(1, wp).div(&gamma_nu1, wp, rm);
         sum = sum.add(&term, wp, rm);
 
-        let max_terms = (wp as f64 * 0.8) as usize + 40;
+        // The terms peak near k ≈ |x|/2 and then decay super-exponentially;
+        // `|x| + wp` comfortably covers the tail down to 2^{-wp}.
+        let max_terms = (x_f64.abs() * 1.5) as usize + wp + 40;
         for k in 1..=max_terms {
             // term *= (-x²/4) / (k · (ν + k))
             let k_bf = BigFloat::from_i32(k as i32, wp);
@@ -2662,8 +2758,9 @@ fn arb_bessel_j(
             term = term.mul(&neg_x_half_sq, wp, rm);
             term = term.div(&denom, wp, rm);
 
-            // Convergence check.
-            if let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
+            // Convergence check (only once past the peak of the terms).
+            if (k as f64) > x_f64.abs() / 2.0
+                && let (Some(t_exp), Some(s_exp)) = (term.exponent(), sum.exponent())
                 && (s_exp as i64 - t_exp as i64) > wp as i64
             {
                 tracing::trace!(k, "arb_bessel_j: series converged");
@@ -2673,42 +2770,17 @@ fn arb_bessel_j(
             sum = sum.add(&term, wp, rm);
         }
 
-        Ok(prefix.mul(&sum, wp, rm))
-    } else {
-        // ── Hankel asymptotic with full P/Q series ────────────────
-        // J_ν(x) = √(2/(πx)) · [cos(ω)·P_ν(x) - sin(ω)·Q_ν(x)]
-        // where ω = x - νπ/2 - π/4
-        tracing::trace!("arb_bessel_j: using full Hankel P/Q expansion");
-        let (p_val, q_val) = hankel_pq(order, x, wp, rm, cc);
-        let pi = cc.pi(wp, rm).clone();
-        let two = BigFloat::from_i32(2, wp);
-        let four = BigFloat::from_i32(4, wp);
-
-        let two_over_pi_x = two.div(&pi.mul(x, wp, rm), wp, rm);
-        let amplitude = two_over_pi_x.sqrt(wp, rm);
-
-        let nu_pi_half = order.mul(&pi, wp, rm).div(&two, wp, rm);
-        let pi_quarter = pi.div(&four, wp, rm);
-        let phase = x.sub(&nu_pi_half, wp, rm).sub(&pi_quarter, wp, rm);
-
-        let cos_phase = phase.cos(wp, rm, cc);
-        let sin_phase = phase.sin(wp, rm, cc);
-
-        // J = amplitude * (cos(ω)·P - sin(ω)·Q)
-        let term1 = cos_phase.mul(&p_val, wp, rm);
-        let term2 = sin_phase.mul(&q_val, wp, rm);
-        Ok(amplitude.mul(&term1.sub(&term2, wp, rm), wp, rm))
+        Ok(round_to(prefix.mul(&sum, wp, rm), prec, rm))
     }
 }
 
-/// Arbitrary-precision Bessel function of the second kind Y_ν(x).
+/// Arbitrary-precision Bessel function of the second kind Y_ν(x), `x > 0`.
 ///
-/// For integer order ν = n, uses the Neumann series:
-///   Y_n(x) = (2/π)·J_n(x)·[ln(x/2) + γ] - (1/π)·Σ_{k=0}^{n-1} (n-k-1)!/k! · (x/2)^{2k-n}
-///             - (1/π)·Σ_{k=0}^∞ [ψ(k+1)+ψ(n+k+1)]·(-1)^k·(x/2)^{n+2k}/(k!·(n+k)!)
-///
-/// For v1 simplicity: uses asymptotic leading term for large |x| and
-/// the relation via J for moderate |x| with the logarithmic series for Y_0.
+/// * Large `x` (see [`hankel_threshold`]): Hankel expansion
+///   ([`bessel_jy_hankel`]), falling back to the series if it cannot reach
+///   the target precision.
+/// * Otherwise, integer order `n` only: the Neumann series (A&S 9.1.11)
+///   with guard bits for the `e^{x}` cancellation.
 fn arb_bessel_y(
     order: &BigFloat,
     x: &BigFloat,
@@ -2737,31 +2809,11 @@ fn arb_bessel_y(
         return Ok(if order_int % 2 == 0 { y } else { y.neg() });
     }
 
-    let threshold = ((wp as f64) * 0.5).sqrt() + 5.0;
-
-    if x_f64 >= threshold {
-        // ── Hankel asymptotic with full P/Q series ────────────────
-        // Y_ν(x) = √(2/(πx)) · [sin(ω)·P_ν(x) + cos(ω)·Q_ν(x)]
-        tracing::trace!("arb_bessel_y: using full Hankel P/Q expansion");
-        let (p_val, q_val) = hankel_pq(order, x, wp, rm, cc);
-        let pi = cc.pi(wp, rm).clone();
-        let two = BigFloat::from_i32(2, wp);
-        let four = BigFloat::from_i32(4, wp);
-
-        let two_over_pi_x = two.div(&pi.mul(x, wp, rm), wp, rm);
-        let amplitude = two_over_pi_x.sqrt(wp, rm);
-
-        let nu_pi_half = order.mul(&pi, wp, rm).div(&two, wp, rm);
-        let pi_quarter = pi.div(&four, wp, rm);
-        let phase = x.sub(&nu_pi_half, wp, rm).sub(&pi_quarter, wp, rm);
-
-        let sin_phase = phase.sin(wp, rm, cc);
-        let cos_phase = phase.cos(wp, rm, cc);
-
-        // Y = amplitude * (sin(ω)·P + cos(ω)·Q)
-        let term1 = sin_phase.mul(&p_val, wp, rm);
-        let term2 = cos_phase.mul(&q_val, wp, rm);
-        return Ok(amplitude.mul(&term1.add(&term2, wp, rm), wp, rm));
+    if x_f64 >= hankel_threshold(wp, order_f64.abs())
+        && let Some(y) = bessel_jy_hankel(order, x, false, wp, rm, cc)
+    {
+        tracing::trace!("arb_bessel_y: used Hankel P/Q expansion");
+        return Ok(round_to(y, prec, rm));
     }
 
     // ── Small |x|, integer order n ≥ 0: Neumann series (A&S 9.1.11) ─────

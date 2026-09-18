@@ -132,6 +132,40 @@ impl CodegenOptions {
         rt_embed::runtime_module(self.math_backend, &refs).unwrap_or_default()
     }
 
+    /// The `mod symplex_rt { … }` block containing exactly the helpers that
+    /// `generated_code` references as `symplex_rt::name(…)` (plus their
+    /// transitive dependencies), or `None` when the code uses none.
+    ///
+    /// This is what a single [`Ex::to_rust_fn`](crate::api::expr::Expr::to_rust_fn)
+    /// embeds when [`emit_runtime`](Self::emit_runtime) is set; use it to
+    /// emit one shared runtime for a file assembled from several functions
+    /// generated with `emit_runtime: false`.
+    ///
+    /// ```
+    /// use symplex::matrix::CodegenOptions;
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let opts = CodegenOptions { emit_runtime: false, ..Default::default() };
+    /// let g = x.gamma().to_rust_fn_with_options("g", &["x"], &opts).unwrap();
+    /// let e = x.erf().to_rust_fn_with_options("e", &["x"], &opts).unwrap();
+    /// let body = format!("{g}\n{e}");
+    /// let rt = opts.runtime_module_for(&body).expect("gamma/erf need the runtime");
+    /// assert!(rt.contains("pub fn gamma(") && rt.contains("pub fn erf("));
+    /// assert!(!rt.contains("pub fn bessel_k("));
+    /// assert!(opts.runtime_module_for("fn f(x: f64) -> f64 { x }").is_none());
+    /// ```
+    #[must_use]
+    pub fn runtime_module_for(&self, generated_code: &str) -> Option<String> {
+        let used = rt_embed::used_helpers(generated_code);
+        if used.is_empty() {
+            return None;
+        }
+        let refs: Vec<&str> = used.iter().map(String::as_str).collect();
+        rt_embed::runtime_module(self.math_backend, &refs)
+    }
+
     /// The complete C99 helper library (`static inline symplex_*` functions)
     /// used by [`Ex::to_c_fn`](crate::api::expr::Expr::to_c_fn), with its
     /// `#include <math.h>`.
@@ -727,20 +761,18 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
     lines.push(String::new());
     lines.push("#[cfg(not(feature = \"std\"))]".to_string());
     lines.push("mod math {".to_string());
+    // Same names as the std module; `libm` spells a few differently
+    // (`ln` → `log`, `abs` → `fabs`), which `libm_function_name` resolves.
     for func in &[
-        "sin", "cos", "tan", "exp", "abs", "sqrt", "cbrt", "asin", "acos", "atan", "sinh", "cosh",
-        "tanh", "asinh", "acosh", "atanh", "floor", "ceil",
+        "sin", "cos", "tan", "exp", "ln", "abs", "sqrt", "cbrt", "asin", "acos", "atan", "sinh",
+        "cosh", "tanh", "asinh", "acosh", "atanh", "floor", "ceil",
     ] {
         let method = *func;
+        let libm_fn = libm_function_name(method);
         lines.push(format!(
-            "    #[inline] pub fn {method}(x: {ft}) -> {ft} {{ libm::{method}({} as f64) as {ft} }}",
-            "x"
+            "    #[inline] pub fn {method}(x: {ft}) -> {ft} {{ libm::{libm_fn}(x as f64) as {ft} }}"
         ));
     }
-    // ln maps to log in libm
-    lines.push(format!(
-        "    #[inline] pub fn ln(x: {ft}) -> {ft} {{ libm::log(x as f64) as {ft} }}"
-    ));
     lines.push(format!(
         "    #[inline] pub fn signum(x: {ft}) -> {ft} {{ if x > 0.0 {{ 1.0 }} else if x < 0.0 {{ -1.0 }} else {{ 0.0 }} }}"
     ));
