@@ -26,25 +26,273 @@
 use num_bigint::BigInt;
 use num_rational::Ratio;
 use num_traits::{One, Signed};
+use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 
 use crate::base::arena::Arena;
+use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ExpandOpts
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Hints controlling [`Ex::expand_with`](crate::api::expr::Ex::expand_with).
+///
+/// Every rewrite is value-preserving.  The hints that are only valid
+/// under side conditions (`power_base`, `power_exp`, `log`) are guarded by
+/// the assumption system unless [`force`](Self::force) is set:
+///
+/// | Hint          | Rewrite                              | Guard (unless `force`) |
+/// |---------------|--------------------------------------|------------------------|
+/// | `mul`         | `a·(b + c) → a·b + a·c`              | none                   |
+/// | `multinomial` | `(a + b)^n → …` for integer `n ≥ 0`  | none                   |
+/// | `power_base`  | `(x·y)^e → x^e·y^e`                  | `e ∈ ℤ`, or every factor known non-negative |
+/// | `power_exp`   | `x^(a+b) → x^a·x^b`                   | `x = e`, `x > 0`, all summands numeric same-sign, or all summands known integers |
+/// | `log`         | `ln(a·b) → ln a + ln b`, `ln(a^n) → n·ln a` | arguments known positive (`n` real) |
+/// | `trig`        | `sin(a + b) → sin a cos b + cos a sin b`, … | none            |
+/// | `deep`        | also expand inside function arguments | —                      |
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::macros::ExpandOpts;
+///
+/// let ctx = Context::new();
+/// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+/// let expr = (&x * &y).ln();
+/// // Default: logs are not expanded.
+/// assert_eq!(format!("{}", expr.expand_with(&ExpandOpts::default())), "ln(x*y)");
+/// // With `log` + `force` the identity is applied unconditionally.
+/// let opts = ExpandOpts::default().log(true).force(true);
+/// assert_eq!(format!("{}", expr.expand_with(&opts)), "ln(x) + ln(y)");
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpandOpts {
+    /// Distribute products over sums (default `true`).
+    pub mul: bool,
+    /// Expand non-negative integer powers of sums (default `true`).
+    pub multinomial: bool,
+    /// Distribute powers over products, `(x·y)^e → x^e·y^e` (default `true`, guarded).
+    pub power_base: bool,
+    /// Split sums in exponents, `x^(a+b) → x^a·x^b` (default `true`, guarded).
+    pub power_exp: bool,
+    /// Expand logarithms of products / powers (default `false`, guarded).
+    pub log: bool,
+    /// Expand trigonometric functions of sums and multiples (default `false`).
+    pub trig: bool,
+    /// Recurse into function arguments (default `true`).  When `false`,
+    /// only the algebraic skeleton reachable through `Add`/`Mul`/`Pow`
+    /// from the root is expanded.
+    pub deep: bool,
+    /// Apply the guarded rewrites unconditionally (default `false`).
+    pub force: bool,
+}
+
+impl Default for ExpandOpts {
+    fn default() -> Self {
+        ExpandOpts {
+            mul: true,
+            multinomial: true,
+            power_base: true,
+            power_exp: true,
+            log: false,
+            trig: false,
+            deep: true,
+            force: false,
+        }
+    }
+}
+
+impl ExpandOpts {
+    /// No hints enabled (only `deep`); combine with the builder methods.
+    #[must_use]
+    pub fn none() -> Self {
+        ExpandOpts {
+            mul: false,
+            multinomial: false,
+            power_base: false,
+            power_exp: false,
+            log: false,
+            trig: false,
+            deep: true,
+            force: false,
+        }
+    }
+
+    /// Every hint enabled (still guarded unless `force`).
+    #[must_use]
+    pub fn all() -> Self {
+        ExpandOpts {
+            mul: true,
+            multinomial: true,
+            power_base: true,
+            power_exp: true,
+            log: true,
+            trig: true,
+            deep: true,
+            force: false,
+        }
+    }
+
+    /// Builder: set `mul`.
+    #[must_use]
+    pub fn with_mul(mut self, v: bool) -> Self {
+        self.mul = v;
+        self
+    }
+    /// Builder: set `multinomial`.
+    #[must_use]
+    pub fn multinomial(mut self, v: bool) -> Self {
+        self.multinomial = v;
+        self
+    }
+    /// Builder: set `power_base`.
+    #[must_use]
+    pub fn power_base(mut self, v: bool) -> Self {
+        self.power_base = v;
+        self
+    }
+    /// Builder: set `power_exp`.
+    #[must_use]
+    pub fn power_exp(mut self, v: bool) -> Self {
+        self.power_exp = v;
+        self
+    }
+    /// Builder: set `log`.
+    #[must_use]
+    pub fn log(mut self, v: bool) -> Self {
+        self.log = v;
+        self
+    }
+    /// Builder: set `trig`.
+    #[must_use]
+    pub fn trig(mut self, v: bool) -> Self {
+        self.trig = v;
+        self
+    }
+    /// Builder: set `deep`.
+    #[must_use]
+    pub fn deep(mut self, v: bool) -> Self {
+        self.deep = v;
+        self
+    }
+    /// Builder: set `force`.
+    #[must_use]
+    pub fn force(mut self, v: bool) -> Self {
+        self.force = v;
+        self
+    }
+}
 
 /// Fully expand an expression: distribute products over sums and
 /// expand integer powers of sums.
 ///
 /// The result is a sum of products — no unexpanded `Mul(…, Add(…))`
 /// or `Pow(Add(…), positive_int)` nodes remain.
+///
+/// Equivalent to [`expand_with`] with [`ExpandOpts::default()`].
 pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
+    expand_with(arena, expr, &ExpandOpts::default())
+}
+
+/// The set of nodes reachable from `root` through `Add`/`Mul`/`Pow`
+/// edges only (the "algebraic skeleton"), used for `deep = false`.
+fn algebraic_skeleton(arena: &Arena, root: ExprId) -> FxHashSet<ExprId> {
+    let mut set = FxHashSet::default();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if !set.insert(id) {
+            continue;
+        }
+        match arena.node(id) {
+            ExprNode::Add(ch) | ExprNode::Mul(ch) => stack.extend(ch.iter().copied()),
+            ExprNode::Pow(b, e) => {
+                stack.push(*b);
+                stack.push(*e);
+            }
+            _ => {}
+        }
+    }
+    set
+}
+
+/// Expand with explicit hints — see [`ExpandOpts`].
+pub(crate) fn expand_with(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) -> ExprId {
     // Bottom-up: expand children first, then handle the current node.
     let post_order = walk::post_order_ids(arena, expr);
     let mut cache = rustc_hash::FxHashMap::<ExprId, ExprId>::default();
+    let skeleton = if opts.deep {
+        None
+    } else {
+        Some(algebraic_skeleton(arena, expr))
+    };
+    let mut assumptions = AssumptionCache::new();
 
     for &id in &post_order {
+        if let Some(sk) = &skeleton
+            && !sk.contains(&id)
+        {
+            // Outside the algebraic skeleton: leave untouched.
+            cache.insert(id, id);
+            continue;
+        }
         let node = arena.node(id).clone();
         let expanded = match node {
+            // Mul without the `mul` hint: just rebuild.
+            ExprNode::Mul(ref children) if !opts.mul => {
+                let new_children: SmallVec<[ExprId; 6]> = children
+                    .iter()
+                    .map(|&c| cache.get(&c).copied().unwrap_or(c))
+                    .collect();
+                if new_children == *children {
+                    id
+                } else {
+                    arena.mul(&new_children)
+                }
+            }
+
+            // exp(a + b) → exp(a)·exp(b) under the `power_exp` hint (always
+            // valid; `e^(a+b)` is canonicalised to an `Exp` node, so the
+            // `Pow` path below never sees it).
+            ExprNode::Exp(inner) if opts.power_exp => {
+                let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+                match arena.node(new_inner).clone() {
+                    ExprNode::Add(children) => {
+                        let factors: SmallVec<[ExprId; 6]> =
+                            children.iter().map(|&c| arena.exp(c)).collect();
+                        arena.mul(&factors)
+                    }
+                    _ => rebuild_unary_expanded(arena, id, inner, &cache, Arena::exp),
+                }
+            }
+
+            // Ln with the `log` hint.
+            ExprNode::Ln(inner) if opts.log => {
+                let new_inner = cache.get(&inner).copied().unwrap_or(inner);
+                crate::simplify::log_expand::expand_ln_node_guarded(
+                    arena,
+                    &mut assumptions,
+                    new_inner,
+                    opts.force,
+                )
+            }
+
+            // Trig functions with the `trig` hint.
+            ExprNode::Sin(inner) if opts.trig => {
+                let rebuilt = rebuild_unary_expanded(arena, id, inner, &cache, Arena::sin);
+                crate::simplify::trig_expand::expand_trig(arena, rebuilt)
+            }
+            ExprNode::Cos(inner) if opts.trig => {
+                let rebuilt = rebuild_unary_expanded(arena, id, inner, &cache, Arena::cos);
+                crate::simplify::trig_expand::expand_trig(arena, rebuilt)
+            }
+            ExprNode::Tan(inner) if opts.trig => {
+                let rebuilt = rebuild_unary_expanded(arena, id, inner, &cache, Arena::tan);
+                crate::simplify::trig_expand::expand_trig(arena, rebuilt)
+            }
             // Add: expand each child, then re-add.
             ExprNode::Add(ref children) => {
                 let new_children: SmallVec<[ExprId; 6]> = children
@@ -72,7 +320,7 @@ pub(crate) fn expand(arena: &mut Arena, expr: ExprId) -> ExprId {
             ExprNode::Pow(base, exp) => {
                 let new_base = cache.get(&base).copied().unwrap_or(base);
                 let new_exp = cache.get(&exp).copied().unwrap_or(exp);
-                expand_pow(arena, new_base, new_exp)
+                expand_pow(arena, &mut assumptions, new_base, new_exp, opts)
             }
 
             // Neg: expand the inner, then negate.
@@ -404,19 +652,31 @@ fn expand_mul(arena: &mut Arena, factors: &[ExprId]) -> ExprId {
 /// 1. **Multinomial**: `(a + b)^n` for non-negative integer `n`
 /// 2. **Power-of-product**: `(x·y)^n` → `x^n · y^n`
 /// 3. **Sum exponent**: `x^(a+b)` → `x^a · x^b`
-fn expand_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId {
+fn expand_pow(
+    arena: &mut Arena,
+    assumptions: &mut AssumptionCache,
+    base: ExprId,
+    exp: ExprId,
+    opts: &ExpandOpts,
+) -> ExprId {
     // ── Step 1: Multinomial expansion for Add^positive_int ──
-    if let Some(result) = try_multinomial_expand(arena, base, exp) {
+    if opts.multinomial
+        && let Some(result) = try_multinomial_expand(arena, base, exp)
+    {
         return result;
     }
 
     // ── Step 2: (x·y)^n → x^n · y^n ──
-    if let Some(result) = expand_power_base(arena, base, exp) {
+    if opts.power_base
+        && let Some(result) = expand_power_base(arena, assumptions, base, exp, opts.force)
+    {
         return result;
     }
 
     // ── Step 3: x^(a+b) → x^a · x^b ──
-    if let Some(result) = expand_power_exp(arena, base, exp) {
+    if opts.power_exp
+        && let Some(result) = expand_power_exp(arena, assumptions, base, exp, opts.force)
+    {
         return result;
     }
 
@@ -474,7 +734,21 @@ fn try_multinomial_expand(arena: &mut Arena, base: ExprId, exp: ExprId) -> Optio
 /// here would create new `Pow` nodes that aren't visited in the current
 /// bottom-up pass, breaking expand-idempotency (e.g. `(-x)^2` would
 /// stay as `(-x)^2` on the first expand but become `x^2` on the second).
-fn expand_power_base(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId> {
+///
+/// # Validity guard
+///
+/// `(x·y)^e = x^e·y^e` holds for every integer `e`, and for arbitrary
+/// `e` when the factors are non-negative reals; it fails in general
+/// (`√((−1)(−1)) = 1 ≠ √(−1)·√(−1) = −1`).  Unless `force` is set, the
+/// rewrite therefore requires the exponent to be an integer or every
+/// factor to be known non-negative through the assumption system.
+fn expand_power_base(
+    arena: &mut Arena,
+    assumptions: &mut AssumptionCache,
+    base: ExprId,
+    exp: ExprId,
+    force: bool,
+) -> Option<ExprId> {
     // Skip when exponent is a positive integer — those cases are
     // already fully handled by canonicalization or multinomial expansion.
     if let Some(r) = arena.as_num(exp)
@@ -483,12 +757,25 @@ fn expand_power_base(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<Exp
     {
         return None;
     }
-    if let ExprNode::Mul(ref children) = arena.node(base).clone() {
-        let factors: Vec<ExprId> = children.iter().map(|&c| arena.pow(c, exp)).collect();
-        Some(arena.mul(&factors))
-    } else {
-        None
+    let children = match arena.node(base).clone() {
+        ExprNode::Mul(children) => children,
+        _ => return None,
+    };
+    let exp_is_integer = arena.as_num(exp).is_some_and(|r| r.is_integer())
+        || assumptions.query(arena, exp, Props::INTEGER) == Some(true);
+    let all_nonneg = force
+        || exp_is_integer
+        || children
+            .iter()
+            .all(|&c| assumptions.query(arena, c, Props::NONNEGATIVE) == Some(true));
+    if !all_nonneg {
+        tracing::trace!(
+            "expand_power_base: guard rejected (exponent not integer, factors not known non-negative)"
+        );
+        return None;
     }
+    let factors: Vec<ExprId> = children.iter().map(|&c| arena.pow(c, exp)).collect();
+    Some(arena.mul(&factors))
 }
 
 /// Expand `x^(a+b+c)` → `x^a · x^b · x^c` when exponent is a sum.
@@ -497,18 +784,31 @@ fn expand_power_base(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<Exp
 /// (or is Euler's `e`).  For negative bases with fractional exponents, the
 /// identity fails due to complex branch cuts.  We also allow the split when
 /// all exponent summands are provably same-sign (all ≥ 0 or all ≤ 0),
-/// because integer exponents don't introduce branch-cut issues.
-fn expand_power_exp(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<ExprId> {
+/// because integer exponents don't introduce branch-cut issues, when all
+/// summands are known integers, or when `force` is set.
+fn expand_power_exp(
+    arena: &mut Arena,
+    assumptions: &mut AssumptionCache,
+    base: ExprId,
+    exp: ExprId,
+    force: bool,
+) -> Option<ExprId> {
     if let ExprNode::Add(ref children) = arena.node(exp).clone() {
         // Always safe for e^(a+b) = e^a · e^b
         let is_euler_e = base == arena.e_const();
 
-        // Safe if base is a known positive numeric literal
+        // Safe if base is a known positive numeric literal or known positive
+        // through the assumption system.
         let base_known_positive = if let Some(r) = arena.as_num(base) {
             r.is_positive()
         } else {
-            false
+            assumptions.query(arena, base, Props::POSITIVE) == Some(true)
         };
+
+        // Safe if every summand is a known integer.
+        let all_integer = children
+            .iter()
+            .all(|&c| assumptions.query(arena, c, Props::INTEGER) == Some(true));
 
         // Safe if all exponent summands have known same sign
         let all_same_sign = {
@@ -531,7 +831,7 @@ fn expand_power_exp(arena: &mut Arena, base: ExprId, exp: ExprId) -> Option<Expr
             all_nonneg || all_nonpos
         };
 
-        if is_euler_e || base_known_positive || all_same_sign {
+        if force || is_euler_e || base_known_positive || all_same_sign || all_integer {
             let factors: Vec<ExprId> = children.iter().map(|&e| arena.pow(base, e)).collect();
             return Some(arena.mul(&factors));
         }

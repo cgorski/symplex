@@ -56,9 +56,13 @@ fn expand_power_exp_with_integer_addend() {
 
 #[test]
 fn expand_power_base_simple() {
+    // (x*y)^a = x^a * y^a is only an identity for non-negative bases (or
+    // integer a): for x = y = -1, a = 1/2 the left side is 1 and the right
+    // side is -1.  Since 0.2 `expand` guards the rewrite with the
+    // assumption system, so the symbols are declared positive here.
     let ctx = Context::new();
-    let x = ctx.symbol("x");
-    let y = ctx.symbol("y");
+    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let y = ctx.symbol_with("y", &[Assumption::Positive]);
     let a = ctx.symbol("a");
     // (x*y)^a should expand to x^a * y^a
     let expr = (&x * &y).pow(&a);
@@ -71,11 +75,26 @@ fn expand_power_base_simple() {
 }
 
 #[test]
-fn expand_power_base_three_factors() {
+fn expand_power_base_blocked_for_unassumed_symbols() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let y = ctx.symbol("y");
-    let z = ctx.symbol("z");
+    let a = ctx.symbol("a");
+    let expr = (&x * &y).pow(&a);
+    let expanded = expr.expand();
+    assert_eq!(
+        format!("{expanded}"),
+        format!("{expr}"),
+        "(x*y)^a must not split without positivity information"
+    );
+}
+
+#[test]
+fn expand_power_base_three_factors() {
+    let ctx = Context::new();
+    let x = ctx.symbol_with("x", &[Assumption::Positive]);
+    let y = ctx.symbol_with("y", &[Assumption::Positive]);
+    let z = ctx.symbol_with("z", &[Assumption::Positive]);
     let n = ctx.symbol("n");
     // (x*y*z)^n → x^n * y^n * z^n
     let expr = (&x * &y * &z).pow(&n);

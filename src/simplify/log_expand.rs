@@ -6,30 +6,48 @@
 //! - `ln(a / b)` → `ln(a) - ln(b)` (i.e., `ln(a * b^(-1))`)
 //! - `ln(a^n)` → `n * ln(a)`
 //!
-//! These rules are always valid for positive real arguments. The function
-//! applies them unconditionally — the caller is responsible for ensuring
-//! the arguments are in the appropriate domain.
+//! These rules are always valid for positive real arguments.
+//! [`expand_log`] applies them unconditionally (`force = true`);
+//! [`expand_log_with`] with `force = false` only expands when every
+//! factor is known positive (and, for `ln(a^n)`, `n` is known real)
+//! through the assumption system.
 
 use crate::base::arena::Arena;
+use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use num_traits::Signed;
 use rustc_hash::FxHashMap;
 
-/// Expand logarithmic expressions.
+/// Expand logarithmic expressions unconditionally.
 ///
 /// Walks the expression bottom-up and applies log expansion rules
 /// to `Ln` nodes whose arguments are products, quotients, or powers.
+/// Equivalent to [`expand_log_with`] with `force = true`.
 pub(crate) fn expand_log(arena: &mut Arena, expr: ExprId) -> ExprId {
+    expand_log_with(arena, expr, true)
+}
+
+/// Expand logarithmic expressions, honouring the positivity guard unless
+/// `force` is set.
+///
+/// # Branch reasoning
+///
+/// For complex arguments `ln(a·b) = ln a + ln b + 2πi·k` where `k ∈ {−1, 0, 1}`
+/// depends on the arguments' phases, and `ln(a^n) = n·ln a` fails as
+/// soon as `n·arg(a)` leaves `(−π, π]`.  Both identities are exact when
+/// the arguments are positive reals, which is what the guard checks.
+pub(crate) fn expand_log_with(arena: &mut Arena, expr: ExprId, force: bool) -> ExprId {
     let post_order = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut assumptions = AssumptionCache::new();
 
     for &id in &post_order {
         let node = arena.node(id).clone();
         let expanded = match node {
             ExprNode::Ln(inner) => {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
-                expand_ln_node(arena, inner)
+                expand_ln_node_guarded(arena, &mut assumptions, inner, force)
             }
             // Rebuild other nodes with expanded children.
             ExprNode::Add(ref children) => {
@@ -77,6 +95,35 @@ pub(crate) fn expand_log(arena: &mut Arena, expr: ExprId) -> ExprId {
     }
 
     cache.get(&expr).copied().unwrap_or(expr)
+}
+
+/// Expand a single `ln(inner)` node, checking the positivity guard first
+/// unless `force` is set.  Returns `ln(inner)` unchanged when the guard
+/// rejects.
+pub(crate) fn expand_ln_node_guarded(
+    arena: &mut Arena,
+    assumptions: &mut AssumptionCache,
+    inner: ExprId,
+    force: bool,
+) -> ExprId {
+    if !force {
+        let ok = match arena.node(inner).clone() {
+            // Every factor must be a positive real (then so is its
+            // reciprocal, which the a^(-n) branch below relies on).
+            ExprNode::Mul(ref children) => children
+                .iter()
+                .all(|&c| assumptions.query(arena, c, Props::POSITIVE) == Some(true)),
+            ExprNode::Pow(base, exp) => {
+                assumptions.query(arena, base, Props::POSITIVE) == Some(true)
+                    && assumptions.query(arena, exp, Props::REAL) == Some(true)
+            }
+            _ => true,
+        };
+        if !ok {
+            return arena.ln(inner);
+        }
+    }
+    expand_ln_node(arena, inner)
 }
 
 /// Expand a single `ln(inner)` node.

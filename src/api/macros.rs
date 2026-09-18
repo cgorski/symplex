@@ -1,7 +1,18 @@
-//! Convenience macros for creating symbolic variables.
+//! Convenience macros for creating symbolic variables, plus the public
+//! rewrite-engine and simplification option types.
 //!
 //! These macros reduce boilerplate when declaring multiple symbols or
 //! symbols with assumptions.
+//!
+//! The type re-exports at the bottom of this module ([`Rule`],
+//! [`RuleSet`], [`Bindings`], [`RewriteOpts`], [`RewriteStrategy`],
+//! [`Step`], [`ExpandOpts`]) make the rewrite-rule engine reachable from
+//! a stable public path; the prelude re-exports them as well.
+
+// ── Rewrite-engine / simplification option types ───────────────────────
+
+pub use crate::api::expr_rules_ext::{Bindings, RewriteOpts, RewriteStrategy, Rule, RuleSet, Step};
+pub use crate::transforms::expand::ExpandOpts;
 
 /// Declare multiple symbolic variables at once.
 ///
@@ -21,6 +32,27 @@
 /// ```
 #[macro_export]
 macro_rules! syms {
+    ($ctx:expr; $($name:ident),+ $(,)?) => {
+        $(
+            let $name = $ctx.symbol(stringify!($name));
+        )+
+    };
+}
+
+/// Declare multiple symbolic variables at once (alias of [`syms!`]).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::vars;
+///
+/// let ctx = Context::new();
+/// vars!(ctx; a, b);
+/// assert_eq!(format!("{}", &a * &b), "a*b");
+/// ```
+#[macro_export]
+macro_rules! vars {
     ($ctx:expr; $($name:ident),+ $(,)?) => {
         $(
             let $name = $ctx.symbol(stringify!($name));
