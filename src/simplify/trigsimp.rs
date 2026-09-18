@@ -621,4 +621,68 @@ mod tests {
             display(&arena, result)
         );
     }
+
+    // ── trig identity rules ────────────────────────────────────────
+
+    #[test]
+    fn identity_rules_sum_difference_double_angle() {
+        let mut arena = Arena::new();
+        let (x, y) = (sym(&mut arena, "x"), sym(&mut arena, "y"));
+        let rules = trig_identity_rules(&mut arena);
+        let (sx, cx, sy, cy) = (arena.sin(x), arena.cos(x), arena.sin(y), arena.cos(y));
+        let t1 = arena.mul(&[sx, cy]);
+        let t2 = arena.mul(&[cx, sy]);
+        let e = arena.add(&[t1, t2]);
+        let (r, steps) = crate::transforms::pattern::apply_rules(&mut arena, e, &rules);
+        assert_eq!(display(&arena, r), "sin(x + y)");
+        assert_eq!(steps[0].rule_name, "sin_add");
+        let two = arena.int(2);
+        let d = arena.mul(&[two, sx, cx]);
+        let (r, _) = crate::transforms::pattern::apply_rules(&mut arena, d, &rules);
+        assert_eq!(display(&arena, r), "sin(2*x)");
+        let sh = arena.sinh(x);
+        let ch = arena.cosh(x);
+        let dh = arena.mul(&[two, sh, ch]);
+        let (r, _) = crate::transforms::pattern::apply_rules(&mut arena, dh, &rules);
+        assert_eq!(display(&arena, r), "sinh(2*x)");
+    }
+
+    #[test]
+    fn identity_rules_do_not_fire_on_mismatch() {
+        let mut arena = Arena::new();
+        let (x, y, z) = (
+            sym(&mut arena, "x"),
+            sym(&mut arena, "y"),
+            sym(&mut arena, "z"),
+        );
+        let rules = trig_identity_rules(&mut arena);
+        let (sx, cx, sz, cy) = (arena.sin(x), arena.cos(x), arena.sin(z), arena.cos(y));
+        let t1 = arena.mul(&[sx, cy]);
+        let t2 = arena.mul(&[cx, sz]);
+        let e = arena.add(&[t1, t2]);
+        let (r, steps) = crate::transforms::pattern::apply_rules(&mut arena, e, &rules);
+        assert_eq!(r, e);
+        assert!(steps.is_empty());
+    }
+
+    #[test]
+    fn trigsimp_uses_identity_rules() {
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let (cx, sx) = (arena.cos(x), arena.sin(x));
+        let two = arena.int(2);
+        let c2 = arena.pow(cx, two);
+        let s2 = arena.pow(sx, two);
+        let neg_two = arena.int(-2);
+        let t = arena.mul(&[neg_two, s2]);
+        let one = arena.one;
+        let e = arena.add(&[one, t]); // 1 - 2 sin^2
+        let r = trigsimp(&mut arena, e);
+        assert_eq!(display(&arena, r), "cos(2*x)");
+        let two_c2 = arena.mul(&[two, c2]);
+        let neg_one = arena.neg_one;
+        let f = arena.add(&[two_c2, neg_one]);
+        let r = trigsimp(&mut arena, f);
+        assert_eq!(display(&arena, r), "cos(2*x)");
+    }
 }

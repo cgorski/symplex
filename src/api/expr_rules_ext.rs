@@ -270,7 +270,7 @@ enum Guard {
 ///
 /// Symbols in `lhs` whose names end in `_` are wildcards; a name ending
 /// in `__` is a *sequence* wildcard that absorbs the remaining terms of
-/// an `Add`/`Mul` (see the [module docs](self)).  The right-hand side is
+/// an `Add`/`Mul` (see the `Ex::rewrite` docs).  The right-hand side is
 /// either a template expression (wildcards are substituted) or a closure
 /// receiving the [`Bindings`].
 ///
@@ -1353,10 +1353,20 @@ impl Expr<Numeric> {
         self.transform(crate::simplify::factor_terms::signsimp)
     }
 
-    /// Denest powers: `(a·b)^e → a^e·b^e`, `(x^a)^b → x^(ab)` and
-    /// `√(x²) → |x|` / `x`, each only when valid (see the table in
-    /// [`powdenest_with`](crate::simplify::powsimp::powdenest_with)).
-    /// With `force = true` every symbol is treated as positive.
+    /// Denest powers, each rewrite only when it is an identity:
+    ///
+    /// | Rewrite                    | Condition (any of)                                   |
+    /// |----------------------------|------------------------------------------------------|
+    /// | `(a·b)^e → a^e·b^e`        | `e ∈ ℤ`; all factors known non-negative; `force`    |
+    /// | `(x^a)^b → x^(a·b)`        | `b ∈ ℤ`; `x > 0` and `a` real; `force`               |
+    /// | `√(x²) → x`                | `x ≥ 0`; `force`                                     |
+    /// | `√(x²) → ∣x∣`              | `x` real (not known non-real)                        |
+    ///
+    /// `(x^a)^b = exp(b·Log(exp(a·Log x)))` equals `x^(ab)` exactly when
+    /// `Im(a·Log x) ∈ (−π, π]` — guaranteed for `x > 0` and real `a` — or
+    /// when `b` is an integer.  `√(x²) = |x|` needs `x` real (`√(i²) = i`).
+    /// With `force = true` every symbol is treated as positive (like SymPy's
+    /// `powdenest(force=True)`).
     ///
     /// # Examples
     ///

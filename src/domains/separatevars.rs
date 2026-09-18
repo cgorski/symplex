@@ -235,4 +235,51 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0.len(), 2); // depends on both x and y
     }
+
+    // ── additive / dict separation ─────────────────────────────────
+
+    #[test]
+    fn additive_groups_by_dependency() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let sx = a.sin(x);
+        let two = a.int(2);
+        let y2 = a.pow(y, two);
+        let xy = a.mul(&[x, y]);
+        let three = a.int(3);
+        let e = a.add(&[sx, y2, xy, three]);
+        let groups = separatevars_additive(&mut a, e, &[x, y]);
+        assert_eq!(groups.len(), 4);
+        assert!(groups.iter().any(|(d, g)| d.is_empty() && *g == three));
+        assert!(groups.iter().any(|(d, g)| d.len() == 2 && *g == xy));
+    }
+
+    #[test]
+    fn dict_separable_product_and_failure() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let sx = a.sin(x);
+        let two = a.int(2);
+        let e = a.mul(&[two, sx, y]);
+        let f = separatevars_dict(&mut a, e, &[x, y]).expect("separable");
+        assert_eq!(a.display(f[0]).to_string(), "2*sin(x)");
+        assert_eq!(f[1], y);
+        let sum = a.add(&[x, y]);
+        assert!(separatevars_dict(&mut a, sum, &[x, y]).is_none());
+        assert!(separatevars_dict(&mut a, e, &[]).is_none());
+    }
+
+    #[test]
+    fn dict_factors_sums_before_separating() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let xy = a.mul(&[x, y]);
+        let two = a.int(2);
+        let y2 = a.pow(y, two);
+        let xy2 = a.mul(&[x, y2]);
+        let e = a.add(&[xy, xy2]); // x*y + x*y^2
+        let f = separatevars_dict(&mut a, e, &[x, y]).expect("separable after factoring");
+        assert_eq!(f[0], x);
+        assert_eq!(a.display(f[1]).to_string(), "y*(y + 1)");
+    }
 }

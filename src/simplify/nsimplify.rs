@@ -534,4 +534,40 @@ mod tests {
         let result = nsimplify(&mut arena, x, 1e-10);
         assert_eq!(result, x);
     }
+
+    // ── nsimplify_with_constants ───────────────────────────────────
+
+    #[test]
+    fn constants_recognise_multiple_offset_and_power() {
+        let mut a = Arena::new();
+        let consts = default_constants(&mut a);
+        let two_pi = a.rational(628318530717958, 100000000000000);
+        let r = nsimplify_with_constants(&mut a, two_pi, &consts, 1e-9);
+        assert_eq!(a.display(r).to_string(), "2*pi");
+        let one_plus_e = a.rational(3718281828459045, 1000000000000000);
+        let r = nsimplify_with_constants(&mut a, one_plus_e, &consts, 1e-9);
+        assert_eq!(a.display(r).to_string(), "1 + E");
+        let sqrt_e = a.rational(1648721270700128, 1000000000000000);
+        let r = nsimplify_with_constants(&mut a, sqrt_e, &consts, 1e-9);
+        assert_eq!(a.display(r).to_string(), "exp(1/2)");
+    }
+
+    #[test]
+    fn constants_prefer_small_rationals_and_leave_unknowns() {
+        let mut a = Arena::new();
+        let consts = default_constants(&mut a);
+        let third = a.rational(333333333, 1000000000);
+        let r = nsimplify_with_constants(&mut a, third, &consts, 1e-6);
+        assert_eq!(a.display(r).to_string(), "1/3");
+        let odd = a.rational(1234567891, 1000000000);
+        assert_eq!(nsimplify_with_constants(&mut a, odd, &consts, 1e-12), odd);
+        let x = a.symbol("x");
+        assert_eq!(nsimplify_with_constants(&mut a, x, &consts, 1e-9), x);
+    }
+
+    #[test]
+    fn default_constant_table_has_eight_entries() {
+        let mut a = Arena::new();
+        assert_eq!(default_constants(&mut a).len(), 8);
+    }
 }

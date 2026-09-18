@@ -594,4 +594,66 @@ mod tests {
         let result = powsimp_base(&mut a, expr);
         assert_eq!(result, expr, "symbolic bases should not combine");
     }
+
+    // ── powdenest_with ─────────────────────────────────────────────
+
+    fn set_assumption(a: &mut Arena, sym: ExprId, prop: crate::base::assumptions::Props) {
+        if let ExprNode::Symbol(sid) = *a.node(sym) {
+            let mut asm = crate::base::assumptions::Assumptions::default();
+            asm.assert_true(prop);
+            asm.forward_chain();
+            a.set_symbol_assumptions(sid, asm);
+        }
+    }
+
+    #[test]
+    fn powdenest_with_nested_symbolic_powers() {
+        let mut a = Arena::new();
+        let (x, p, q) = (a.symbol("x"), a.symbol("p"), a.symbol("q"));
+        let inner = a.pow(x, p);
+        let e = a.pow(inner, q);
+        assert_eq!(
+            powdenest_with(&mut a, e, false),
+            e,
+            "no assumptions: unchanged"
+        );
+        let forced = powdenest_with(&mut a, e, true);
+        assert_eq!(a.display(forced).to_string(), "x^(p*q)");
+        // Integer outer exponent is always valid.
+        let three = a.int(3);
+        let cubed = a.pow(inner, three);
+        let r = powdenest_with(&mut a, cubed, false);
+        assert_eq!(a.display(r).to_string(), "x^(3*p)");
+    }
+
+    #[test]
+    fn powdenest_with_positive_base_real_exponent() {
+        let mut a = Arena::new();
+        let (x, p, q) = (a.symbol("x"), a.symbol("p"), a.symbol("q"));
+        set_assumption(&mut a, x, Props::POSITIVE);
+        set_assumption(&mut a, p, Props::REAL);
+        let inner = a.pow(x, p);
+        let e = a.pow(inner, q);
+        let r = powdenest_with(&mut a, e, false);
+        assert_eq!(a.display(r).to_string(), "x^(p*q)");
+    }
+
+    #[test]
+    fn powdenest_with_sqrt_of_square() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let half = a.rational(1, 2);
+        let sq = a.pow(x, two);
+        let e = a.pow(sq, half);
+        let r = powdenest_with(&mut a, e, false);
+        assert_eq!(a.display(r).to_string(), "abs(x)");
+        let f = powdenest_with(&mut a, e, true);
+        assert_eq!(f, x);
+        let n = a.symbol("n");
+        set_assumption(&mut a, n, Props::NONNEGATIVE);
+        let nsq = a.pow(n, two);
+        let en = a.pow(nsq, half);
+        assert_eq!(powdenest_with(&mut a, en, false), n);
+    }
 }

@@ -233,9 +233,15 @@ pub(crate) fn expand_with(arena: &mut Arena, expr: ExprId, opts: &ExpandOpts) ->
 
     for &id in &post_order {
         if let Some(sk) = &skeleton
-            && !sk.contains(&id)
+            && (!sk.contains(&id)
+                || !matches!(
+                    arena.node(id),
+                    ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Pow(_, _)
+                ))
         {
-            // Outside the algebraic skeleton: leave untouched.
+            // `deep = false`: nodes outside the algebraic skeleton, and
+            // function nodes on its boundary, are left untouched (their
+            // arguments are not rebuilt even if shared with expanded parts).
             cache.insert(id, id);
             continue;
         }
@@ -1480,6 +1486,83 @@ mod tests {
         assert!(
             s.contains("exp("),
             "e^(a+b) should remain as exp(...), got: {s}"
+        );
+    }
+
+    // ── expand_with / ExpandOpts ───────────────────────────────────
+
+    #[test]
+    fn expand_with_mul_off_keeps_products() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let sum = a.add(&[x, y]);
+        let e = a.mul(&[x, sum]);
+        let opts = ExpandOpts::none();
+        assert_eq!(expand_with(&mut a, e, &opts), e);
+        let opts = ExpandOpts::none().with_mul(true);
+        let r = expand_with(&mut a, e, &opts);
+        assert_eq!(display(&a, r), "x^2 + x*y");
+    }
+
+    #[test]
+    fn expand_with_deep_false_skips_function_arguments() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let sum = a.add(&[x, y]);
+        let two = a.int(2);
+        let sq = a.pow(sum, two);
+        let s = a.sin(sq);
+        let e = a.add(&[s, sq]);
+        let shallow = expand_with(&mut a, e, &ExpandOpts::default().deep(false));
+        assert_eq!(display(&a, shallow), "x^2 + 2*x*y + y^2 + sin((x + y)^2)");
+        let deep = expand_with(&mut a, e, &ExpandOpts::default());
+        assert!(display(&a, deep).contains("sin(x^2"));
+    }
+
+    #[test]
+    fn expand_power_base_guard_blocks_symbolic_factors() {
+        let mut a = Arena::new();
+        let (x, y, n) = (sym(&mut a, "x"), sym(&mut a, "y"), sym(&mut a, "n"));
+        let xy = a.mul(&[x, y]);
+        let e = a.pow(xy, n);
+        assert_eq!(expand(&mut a, e), e);
+        let forced = expand_with(&mut a, e, &ExpandOpts::default().force(true));
+        assert_eq!(display(&a, forced), "x^n*y^n");
+        let m3 = a.int(-3);
+        let int_pow = a.pow(xy, m3);
+        let r = expand(&mut a, int_pow);
+        assert_eq!(display(&a, r), "x^(-3)*y^(-3)");
+    }
+
+    #[test]
+    fn expand_exp_of_sum_splits() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let sum = a.add(&[x, y]);
+        let e = a.exp(sum);
+        let r = expand(&mut a, e);
+        assert_eq!(display(&a, r), "exp(x)*exp(y)");
+        let opts = ExpandOpts::default().power_exp(false);
+        assert_eq!(expand_with(&mut a, e, &opts), e);
+    }
+
+    #[test]
+    fn expand_opts_builders() {
+        let o = ExpandOpts::none()
+            .log(true)
+            .trig(true)
+            .multinomial(true)
+            .power_base(true)
+            .power_exp(true);
+        assert!(o.log && o.trig && o.multinomial && o.power_base && o.power_exp && !o.mul);
+        assert!(!ExpandOpts::all().deep(false).deep);
+        assert_eq!(
+            ExpandOpts::default(),
+            ExpandOpts::none()
+                .with_mul(true)
+                .multinomial(true)
+                .power_base(true)
+                .power_exp(true)
         );
     }
 }

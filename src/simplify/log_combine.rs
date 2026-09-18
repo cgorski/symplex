@@ -351,4 +351,32 @@ mod tests {
         let after = display(&a, result);
         assert_eq!(before, after, "x + y should be unchanged");
     }
+
+    // ── guarded combination ────────────────────────────────────────
+
+    #[test]
+    fn guarded_combine_requires_positive_arguments() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let lnx = a.ln(x);
+        let lny = a.ln(y);
+        let e = a.add(&[lnx, lny]);
+        assert_eq!(log_combine_with(&mut a, e, false), e);
+        let r = log_combine_with(&mut a, e, true);
+        assert_eq!(display(&a, r), "ln(x*y)");
+        if let ExprNode::Symbol(sid) = *a.node(x) {
+            let mut asm = crate::base::assumptions::Assumptions::default();
+            asm.assert_true(crate::base::assumptions::Props::POSITIVE);
+            asm.forward_chain();
+            a.set_symbol_assumptions(sid, asm);
+        }
+        // Only ln(x) is known positive: nothing to combine (need two).
+        assert_eq!(log_combine_with(&mut a, e, false), e);
+        let two = a.int(2);
+        let two_lnx = a.mul(&[two, lnx]);
+        let r = log_combine_with(&mut a, two_lnx, false);
+        assert_eq!(display(&a, r), "ln(x^2)");
+        let two_lny = a.mul(&[two, lny]);
+        assert_eq!(log_combine_with(&mut a, two_lny, false), two_lny);
+    }
 }

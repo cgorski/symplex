@@ -344,4 +344,68 @@ mod tests {
         // Should attempt rationalization
         assert!(s != display(&a, expr), "should change: {s}");
     }
+
+    // ── sqrtdenest ─────────────────────────────────────────────────
+
+    fn sqrt_of(a: &mut Arena, n: i64) -> ExprId {
+        let v = a.int(n);
+        a.sqrt(v)
+    }
+
+    #[test]
+    fn sqrtdenest_three_plus_two_sqrt_two() {
+        let mut a = Arena::new();
+        let s2 = sqrt_of(&mut a, 2);
+        let two = a.int(2);
+        let three = a.int(3);
+        let t = a.mul(&[two, s2]);
+        let radicand = a.add(&[three, t]);
+        let e = a.sqrt(radicand);
+        let r = sqrtdenest(&mut a, e);
+        assert_eq!(display(&a, r), "sqrt(2) + 1");
+    }
+
+    #[test]
+    fn sqrtdenest_five_minus_two_sqrt_six() {
+        let mut a = Arena::new();
+        let s6 = sqrt_of(&mut a, 6);
+        let m2 = a.int(-2);
+        let five = a.int(5);
+        let t = a.mul(&[m2, s6]);
+        let radicand = a.add(&[five, t]);
+        let e = a.sqrt(radicand);
+        let r = sqrtdenest(&mut a, e);
+        assert_eq!(display(&a, r), "sqrt(3) - sqrt(2)");
+    }
+
+    #[test]
+    fn sqrtdenest_non_square_discriminant_unchanged() {
+        let mut a = Arena::new();
+        let s2 = sqrt_of(&mut a, 2);
+        let two = a.int(2);
+        let radicand = a.add(&[two, s2]); // 2 + √2: d = 4 - 2 = 2
+        let e = a.sqrt(radicand);
+        assert_eq!(sqrtdenest(&mut a, e), e);
+    }
+
+    #[test]
+    fn sqrtdenest_negative_constant_unchanged() {
+        let mut a = Arena::new();
+        let s2 = sqrt_of(&mut a, 2);
+        let two = a.int(2);
+        let m3 = a.int(-3);
+        let t = a.mul(&[two, s2]);
+        let radicand = a.add(&[m3, t]); // -3 + 2√2 < 0
+        let e = a.sqrt(radicand);
+        assert_eq!(sqrtdenest(&mut a, e), e);
+    }
+
+    #[test]
+    fn rational_sqrt_helper() {
+        let r = |p: i64, q: i64| Ratio::new(BigInt::from(p), BigInt::from(q));
+        assert_eq!(rational_sqrt(&r(9, 4)), Some(r(3, 2)));
+        assert_eq!(rational_sqrt(&r(2, 1)), None);
+        assert_eq!(rational_sqrt(&r(-4, 1)), None);
+        assert_eq!(rational_sqrt(&r(0, 1)), Some(r(0, 1)));
+    }
 }

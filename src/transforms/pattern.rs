@@ -1027,9 +1027,11 @@ fn base_exp_ext(arena: &Arena, id: ExprId) -> (ExprId, ExprId) {
     }
 }
 
-/// `base^exp`, producing `exp(…)` for base `e`.
+/// `base^exp`, producing `exp(…)` for base `e` (and `1` for a zero exponent).
 fn make_pow_ext(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId {
-    if base == arena.e_const() {
+    if exp == arena.zero {
+        arena.one
+    } else if base == arena.e_const() {
         arena.exp(exp)
     } else {
         arena.pow(base, exp)
@@ -1095,6 +1097,12 @@ pub(crate) fn subs_algebraic(arena: &mut Arena, expr: ExprId, old: ExprId, new: 
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
 
     for &id in &post_order {
+        // An exact occurrence is replaced before its children are rebuilt
+        // (otherwise `√x → y` would first turn the inner `x` into `y²`).
+        if id == old {
+            cache.insert(id, new);
+            continue;
+        }
         let rebuilt = if arena.node(id).is_atom() {
             id
         } else {
@@ -2327,6 +2335,248 @@ mod tests {
             result, x,
             "ln(exp(x)) should simplify to x with Real assumption"
         );
+    }
+
+    // ── AC matching (0.2 engine) ──────────────────────────────────────────
+
+    /// Build a pattern from an expression whose `_`-suffixed symbols are wilds.
+    fn pat(a: &Arena, root: ExprId) -> Pattern {
+        pattern_from_expr(a, root).0
+    }
+
+    fn binding(a: &Arena, p: &Pattern, b: &Substitution, name: &str) -> Option<ExprId> {
+        let wild_expr = p.wilds.keys().copied().find(|&id| match a.node(id) {
+            ExprNode::Symbol(sid) => a.symbol_name(*sid) == name,
+            _ => false,
+        })?;
+        b.get(&p.wilds[&wild_expr]).copied()
+    }
+
+    #[test]
+    fn ac_two_wild_structured_terms_any_order() {
+        let mut a = Arena::new();
+        let (x, y) = (a.symbol("x"), a.symbol("y"));
+        let (aw, bw) = (a.symbol("a_"), a.symbol("b_"));
+        // sin(a_)cos(b_) + cos(a_)sin(b_)
+        let (sa, cb, ca, sb) = (a.sin(aw), a.cos(bw), a.cos(aw), a.sin(bw));
+        let t1 = a.mul(&[sa, cb]);
+        let t2 = a.mul(&[ca, sb]);
+        let root = a.add(&[t1, t2]);
+        let p = pat(&a, root);
+        // subject: cos(y)sin(x) + sin(y)cos(x)
+        let (sx, cy, cx, sy) = (a.sin(x), a.cos(y), a.cos(x), a.sin(y));
+        let u1 = a.mul(&[cy, sx]);
+        let u2 = a.mul(&[cx, sy]);
+        let subj = a.add(&[u1, u2]);
+        let m = match_pattern(&mut a, &p, subj).expect("should match");
+        assert_eq!(binding(&a, &p, &m, "a_"), Some(x));
+        assert_eq!(binding(&a, &p, &m, "b_"), Some(y));
+    }
+
+    #[test]
+    fn ac_last_plain_wild_absorbs_rest() {
+        let mut a = Arena::new();
+        let (x, y, z) = (a.symbol("x"), a.symbol("y"), a.symbol("z"));
+        let aw = a.symbol("a_");
+        let sx = a.sin(x);
+        let root = a.add(&[sx, aw]); // sin(x) + a_
+        let p = pat(&a, root);
+        let subj = a.add(&[sx, y, z]);
+        let m = match_pattern(&mut a, &p, subj).expect("should match");
+        let yz = a.add(&[y, z]);
+        assert_eq!(binding(&a, &p, &m, "a_"), Some(yz));
+    }
+
+    #[test]
+    fn ac_sequence_wild_may_be_empty() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let rest = a.symbol("rest__");
+        let sx = a.sin(x);
+        let root = a.add(&[sx, rest]);
+        let p = pat(&a, root);
+        // Single-term subject: rest__ → 0
+        let m = match_pattern(&mut a, &p, sx).expect("should match");
+        assert_eq!(binding(&a, &p, &m, "rest__"), Some(a.zero));
+        // Multi-term subject: rest__ → the leftovers
+        let (y, z) = (a.symbol("y"), a.symbol("z"));
+        let subj = a.add(&[sx, y, z]);
+        let m = match_pattern(&mut a, &p, subj).expect("should match");
+        let yz = a.add(&[y, z]);
+        assert_eq!(binding(&a, &p, &m, "rest__"), Some(yz));
+    }
+
+    #[test]
+    fn ac_partial_match_reports_leftover_only_at_root() {
+        let mut a = Arena::new();
+        let (x, y) = (a.symbol("x"), a.symbol("y"));
+        let aw = a.symbol("a_");
+        let two = a.int(2);
+        let (s, c) = (a.sin(aw), a.cos(aw));
+        let s2 = a.pow(s, two);
+        let c2 = a.pow(c, two);
+        let root = a.add(&[s2, c2]);
+        let p = pat(&a, root);
+        let (sx, cx) = (a.sin(x), a.cos(x));
+        let sx2 = a.pow(sx, two);
+        let cx2 = a.pow(cx, two);
+        let subj = a.add(&[sx2, cx2, y]);
+        assert!(
+            match_pattern(&mut a, &p, subj).is_none(),
+            "whole-node match must fail"
+        );
+        let partial = match_all(&mut a, &p, subj, true, 1, MATCH_BUDGET);
+        assert_eq!(partial.len(), 1);
+        assert_eq!(partial[0].leftover.as_slice(), &[y]);
+    }
+
+    #[test]
+    fn ac_mul_coefficient_splitting() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let aw = a.symbol("a_");
+        let two = a.int(2);
+        let (s, c) = (a.sin(aw), a.cos(aw));
+        let root = a.mul(&[two, s, c]);
+        let p = pat(&a, root);
+        let six = a.int(6);
+        let (sx, cx) = (a.sin(x), a.cos(x));
+        let subj = a.mul(&[six, sx, cx]);
+        let m = match_all(&mut a, &p, subj, true, 1, MATCH_BUDGET);
+        assert_eq!(m.len(), 1);
+        let three = a.int(3);
+        assert_eq!(m[0].leftover.as_slice(), &[three]);
+        // Coefficient 1 in the subject is not split.
+        let plain = a.mul(&[sx, cx]);
+        assert!(match_all(&mut a, &p, plain, true, 1, MATCH_BUDGET).is_empty());
+    }
+
+    #[test]
+    fn ac_nested_add_without_absorber_must_consume_all() {
+        let mut a = Arena::new();
+        let (x, y) = (a.symbol("x"), a.symbol("y"));
+        let aw = a.symbol("a_");
+        let one = a.one;
+        let inner = a.add(&[aw, one]);
+        let root = a.sin(inner); // sin(a_ + 1)
+        let p = pat(&a, root);
+        let two = a.int(2);
+        let bad = a.add(&[x, y, two]);
+        let bad_s = a.sin(bad);
+        assert!(match_pattern(&mut a, &p, bad_s).is_none());
+        let good = a.add(&[x, y, one]);
+        let good_s = a.sin(good);
+        let m = match_pattern(&mut a, &p, good_s).expect("should match");
+        let xy = a.add(&[x, y]);
+        assert_eq!(binding(&a, &p, &m, "a_"), Some(xy));
+    }
+
+    #[test]
+    fn ac_budget_exhaustion_terminates() {
+        let mut a = Arena::new();
+        // Pattern a_ + b_ + c_ + d_ vs a 40-term sum, asking for many results
+        // so the search would enumerate ~40·39·38 assignments without a cap.
+        let wilds: Vec<ExprId> = ["a_", "b_", "c_", "d_"]
+            .iter()
+            .map(|n| a.symbol(n))
+            .collect();
+        let root = a.add(&wilds);
+        let p = pat(&a, root);
+        let terms: Vec<ExprId> = (0..40).map(|i| a.symbol(&format!("t{i}"))).collect();
+        let subj = a.add(&terms);
+        let start = std::time::Instant::now();
+        let results = match_all(&mut a, &p, subj, false, usize::MAX, 500);
+        assert!(start.elapsed().as_millis() < 500);
+        assert!(
+            results.len() < 500,
+            "budget must bound the enumeration: {}",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn pattern_from_expr_detects_wild_naming() {
+        let mut a = Arena::new();
+        let (x, aw, rest) = (a.symbol("x"), a.symbol("a_"), a.symbol("rest__"));
+        let under = a.symbol("_"); // a lone underscore is not a wild
+        let root = a.add(&[x, aw, rest, under]);
+        let (p, names) = pattern_from_expr(&a, root);
+        assert_eq!(p.wilds.len(), 2);
+        let mut ns: Vec<&String> = names.values().collect();
+        ns.sort();
+        assert_eq!(ns, ["a_", "rest__"]);
+        assert!(is_sequence_wild_symbol(&a, rest));
+        assert!(!is_sequence_wild_symbol(&a, aw));
+    }
+
+    #[test]
+    fn tree_size_counts_with_multiplicity() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let sx = a.sin(x);
+        let two = a.int(2);
+        // sin(x)^2 * sin(x): DAG has sin(x) once, tree has it twice.
+        let sq = a.pow(sx, two);
+        let prod = a.mul(&[sq, sx]);
+        let dag = crate::simplify::simplify_engine::count_ops(&a, prod);
+        let tree = tree_size_capped(&a, prod, 1000);
+        assert!(tree > dag);
+        assert_eq!(tree_size_capped(&a, prod, 3), 3, "saturates at the cap");
+    }
+
+    // ── subs_algebraic ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn subs_algebraic_power_cases() {
+        let mut a = Arena::new();
+        let (x, y) = (a.symbol("x"), a.symbol("y"));
+        let two = a.int(2);
+        let old = a.pow(x, two);
+        let four = a.int(4);
+        let x4 = a.pow(x, four);
+        let r = subs_algebraic(&mut a, x4, old, y);
+        assert_eq!(display(&a, r), "y^2");
+        let three = a.int(3);
+        let x3 = a.pow(x, three);
+        let r = subs_algebraic(&mut a, x3, old, y);
+        assert_eq!(display(&a, r), "x*y");
+        let m2 = a.int(-2);
+        let xm2 = a.pow(x, m2);
+        let r = subs_algebraic(&mut a, xm2, old, y);
+        assert_eq!(display(&a, r), "1/y");
+        assert_eq!(
+            subs_algebraic(&mut a, x, old, y),
+            x,
+            "x is not a multiple of x^2"
+        );
+    }
+
+    #[test]
+    fn subs_algebraic_product_and_sum_cases() {
+        let mut a = Arena::new();
+        let (x, y, z, w) = (a.symbol("x"), a.symbol("y"), a.symbol("z"), a.symbol("w"));
+        let two = a.int(2);
+        let xy = a.mul(&[x, y]);
+        let e = a.mul(&[two, x, y, z]);
+        let r = subs_algebraic(&mut a, e, xy, w);
+        assert_eq!(display(&a, r), "2*w*z");
+        let (p, q, r, d) = (a.symbol("p"), a.symbol("q"), a.symbol("r"), a.symbol("d"));
+        let pq = a.add(&[p, q]);
+        let pqr = a.add(&[p, q, r]);
+        let r = subs_algebraic(&mut a, pqr, pq, d);
+        assert_eq!(display(&a, r), "d + r");
+    }
+
+    #[test]
+    fn subs_algebraic_exp_as_power() {
+        let mut a = Arena::new();
+        let (x, t) = (a.symbol("x"), a.symbol("t"));
+        let ex = a.exp(x);
+        let two = a.int(2);
+        let two_x = a.mul(&[two, x]);
+        let e2x = a.exp(two_x);
+        let r = subs_algebraic(&mut a, e2x, ex, t);
+        assert_eq!(display(&a, r), "t^2");
     }
 
     #[test]

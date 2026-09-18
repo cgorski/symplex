@@ -984,4 +984,94 @@ mod tests {
         assert!(gcd_s.contains("sin"), "GCD should be sin(x), got: {gcd_s}");
         let _inner_s = display(&a, inner);
     }
+
+    // ── signsimp / collect helpers ────────────────────────────────
+
+    fn disp(a: &Arena, id: ExprId) -> String {
+        a.display(id).to_string()
+    }
+
+    #[test]
+    fn signsimp_even_and_odd_powers() {
+        let mut a = Arena::new();
+        let (x, y) = (a.symbol("x"), a.symbol("y"));
+        let y_minus_x = a.sub(y, x);
+        let two = a.int(2);
+        let three = a.int(3);
+        let sq = a.pow(y_minus_x, two);
+        let cu = a.pow(y_minus_x, three);
+        let r2 = signsimp(&mut a, sq);
+        assert_eq!(disp(&a, r2), "(x - y)^2");
+        let r3 = signsimp(&mut a, cu);
+        assert_eq!(disp(&a, r3), "-(x - y)^3");
+        // Already normalised: unchanged.
+        let x_minus_y = a.sub(x, y);
+        let ok = a.pow(x_minus_y, two);
+        assert_eq!(signsimp(&mut a, ok), ok);
+    }
+
+    #[test]
+    fn signsimp_mul_factors() {
+        let mut a = Arena::new();
+        let (x, y, z) = (a.symbol("x"), a.symbol("y"), a.symbol("z"));
+        let y_minus_x = a.sub(y, x);
+        let e = a.mul(&[z, y_minus_x]);
+        let r = signsimp(&mut a, e);
+        assert_eq!(disp(&a, r), "-z*(x - y)");
+        // Non-integer power: untouched.
+        let half = a.rational(1, 2);
+        let sq = a.pow(y_minus_x, half);
+        assert_eq!(signsimp(&mut a, sq), sq);
+    }
+
+    #[test]
+    fn collect_powers_groups_symbolic_exponents() {
+        let mut a = Arena::new();
+        let (x, y, z, n) = (a.symbol("x"), a.symbol("y"), a.symbol("z"), a.symbol("n"));
+        let xn = a.pow(x, n);
+        let t1 = a.mul(&[y, xn]);
+        let t2 = a.mul(&[z, xn]);
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let e = a.add(&[t1, t2, x2]);
+        let r = collect_powers(&mut a, e, x);
+        assert_eq!(disp(&a, r), "x^2 + x^n*(y + z)");
+        // Nothing to group: unchanged.
+        let f = a.add(&[t1, x2]);
+        assert_eq!(collect_powers(&mut a, f, x), f);
+        // Non-Add: unchanged.
+        assert_eq!(collect_powers(&mut a, t1, x), t1);
+    }
+
+    #[test]
+    fn collect_const_factors_content_inside_mul_and_pow() {
+        let mut a = Arena::new();
+        let (x, y, z) = (a.symbol("x"), a.symbol("y"), a.symbol("z"));
+        let two = a.int(2);
+        let four = a.int(4);
+        let t1 = a.mul(&[two, x]);
+        let t2 = a.mul(&[four, y]);
+        let sum = a.add(&[t1, t2]);
+        let e = a.mul(&[z, sum]);
+        let r = collect_const(&mut a, e);
+        assert_eq!(disp(&a, r), "2*z*(x + 2*y)");
+        let p = a.pow(sum, two);
+        let r = collect_const(&mut a, p);
+        assert_eq!(disp(&a, r), "4*(x + 2*y)^2");
+        // Top-level sum cannot hold the factor: unchanged.
+        assert_eq!(collect_const(&mut a, sum), sum);
+    }
+
+    #[test]
+    fn rcollect_recurses_into_coefficients() {
+        let mut a = Arena::new();
+        let (x, y, z) = (a.symbol("x"), a.symbol("y"), a.symbol("z"));
+        let xy = a.mul(&[x, y]);
+        let xz = a.mul(&[x, z]);
+        let e = a.add(&[xy, xz]);
+        let inner = a.sin(e);
+        let r = rcollect(&mut a, inner, &[x]);
+        assert_eq!(disp(&a, r), "sin(x*(y + z))");
+        assert_eq!(rcollect(&mut a, inner, &[]), inner);
+    }
 }
