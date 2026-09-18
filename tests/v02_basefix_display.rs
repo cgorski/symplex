@@ -26,9 +26,16 @@ fn roundtrip(ctx: &Context, e: &Ex) {
 #[test]
 fn rational_base_negative_fractional_exponent() {
     let ctx = Context::new();
+    // Numeric radicals are rationalised at construction (0.2 numfix):
+    // (2/3)^(-1/2) = √(3/2) = √6/2.  The parenthesised `(p/q)^(…)` display
+    // is exercised with a symbolic exponent below.
     let e = ctx.rational(2, 3).pow(&ctx.rational(-1, 2));
-    assert_eq!(s(&e), "(2/3)^(-1/2)");
+    assert_eq!(s(&e), "1/2*sqrt(6)");
     roundtrip(&ctx, &e);
+    let x = ctx.symbol("x");
+    let f = ctx.rational(2, 3).pow(&(-&x / 2));
+    assert_eq!(s(&f), "(2/3)^(-1/2*x)");
+    roundtrip(&ctx, &f);
 }
 
 #[test]
@@ -79,14 +86,15 @@ fn rational_base_inside_products_and_sums() {
 }
 
 #[test]
-fn rational_base_radical_forms_unchanged() {
+fn rational_base_radical_forms_rationalised() {
     let ctx = Context::new();
-    // sqrt / cbrt of a rational keep their function form.
+    // sqrt / cbrt of a rational are rationalised (0.2 numfix normal form):
+    // √(2/3) = √6/3, ∛(2/3) = ∛2·3^(2/3)/3 (the same form SymPy produces).
     let e = ctx.rational(2, 3).sqrt();
-    assert_eq!(s(&e), "sqrt(2/3)");
+    assert_eq!(s(&e), "1/3*sqrt(6)");
     roundtrip(&ctx, &e);
     let c = ctx.rational(2, 3).pow(&ctx.rational(1, 3));
-    assert_eq!(s(&c), "cbrt(2/3)");
+    assert_eq!(s(&c), "1/3*cbrt(2)*3^(2/3)");
     roundtrip(&ctx, &c);
 }
 
@@ -95,10 +103,10 @@ fn positive_integer_bases_need_no_parens() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     assert_eq!(s(&ctx.int(2).pow(&x)), "2^x");
-    assert_eq!(s(&ctx.int(2).pow(&ctx.rational(-1, 2))), "2^(-1/2)");
+    assert_eq!(s(&ctx.int(2).pow(&ctx.rational(3, 2))), "2^(3/2)");
     assert_eq!(s(&x.pow(&ctx.rational(2, 3))), "x^(2/3)");
     roundtrip(&ctx, &ctx.int(2).pow(&x));
-    roundtrip(&ctx, &ctx.int(2).pow(&ctx.rational(-1, 2)));
+    roundtrip(&ctx, &ctx.int(2).pow(&ctx.rational(3, 2)));
 }
 
 #[test]

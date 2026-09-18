@@ -2555,23 +2555,11 @@ fn eval_ln(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
 }
 
 /// Factor out the largest perfect q-th power from n.
-/// Returns (k, m) such that n = k^q * m and m has no q-th power factors.
+/// Returns (k, m) such that n = k^q * m and m has no q-th power factors
+/// (bounded factorisation — see [`crate::base::canon::split_perfect_power`]).
 fn extract_perfect_power(n: &BigInt, q: usize) -> Option<(BigInt, BigInt)> {
-    let mut k = BigInt::from(1);
-    let mut m = n.clone();
-    let mut d = BigInt::from(2);
-    while &d * &d <= m {
-        let mut power = BigInt::from(1);
-        for _ in 0..q {
-            power *= &d;
-        }
-        while (&m % &power).is_zero() {
-            m /= &power;
-            k *= &d;
-        }
-        d += 1;
-    }
-    Some((k, m))
+    let q = u32::try_from(q).ok()?;
+    Some(crate::base::canon::split_perfect_power(n, q))
 }
 
 /// Evaluate `Pow(base, exp)` when the exponent is a fractional 1/2 (square root)
