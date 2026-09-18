@@ -1354,11 +1354,11 @@ mod tests {
         let ts = expand_maclaurin(&mut a, f, x, 1, false).unwrap();
         assert_eq!(ts.shift(), -65);
         assert!(ts.known() >= 1);
-        let c = ts.coefficient(&mut a, -65);
+        let c = ts.coefficient(&a, -65);
         assert_eq!(display(&a, c), "1");
-        let c = ts.coefficient(&mut a, -64);
+        let c = ts.coefficient(&a, -64);
         assert_eq!(display(&a, c), "-65");
-        let c = ts.coefficient(&mut a, -63);
+        let c = ts.coefficient(&a, -63);
         assert_eq!(display(&a, c), "2145");
     }
 
