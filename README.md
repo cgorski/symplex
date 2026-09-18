@@ -223,7 +223,7 @@ let p = (&a * &x.powi(2) + &x * &y * 3 - &y + 1).as_poly(&[&x, &y]).unwrap();
 p.terms();                                            // [([2, 0], a), ([1, 1], 3), ([0, 1], -1), ([0, 0], 1)]
 p.coeff_monomial(&[1, 1]).unwrap();                   // 3
 p.total_degree();                                     // Some(2)
-p.eval_gen(&x, &ctx.int(2)).unwrap();                 // Poly(4*a + 5*y + 1, y)
+p.eval_gen(&x, &ctx.int(2)).unwrap();                 // Poly(5*y + 4*a + 1, y)
 p.derivative(&x).unwrap().to_ex();                    // 2*a*x + 3*y
 
 // Rational normal form: nested fractions collapse to one cancelled fraction
@@ -416,7 +416,7 @@ a.smith_normal_form().unwrap();                       // [[2, 0, 0], [0, 6, 0], 
 matrix![ctx, [2, 1, 1]].integer_nullspace().unwrap(); // [(1, 0, −2)ᵀ, (0, 1, −1)ᵀ] — generates every integer solution
 ```
 
-Also: `linprog` (SciPy-shaped), `linprog_matrix` (from `Matrix` data), per-variable bounds and free variables, `column_hermite_normal_form` (SymPy's convention), `smith_normal_form_with_transforms`, `is_unimodular`, `lattice_determinant`.
+Also: `linprog` (SciPy-shaped), `linprog_matrix` (from `Matrix` data), per-variable bounds and free variables, `nonneg_combination` / `feasible_nonneg_certified` (cone membership with the separating Farkas vector on failure), `column_hermite_normal_form` (SymPy's convention), `smith_normal_form_with_transforms`, `is_unimodular`, `lattice_determinant`.
 
 ### Transforms
 

@@ -230,7 +230,29 @@ fn main() {
 }
 ```
 
-Note the orientation: `feasible_nonneg` takes **rows** of `A`, so when your generators are naturally columns (vectors, or polynomials laid out by `Poly::coefficient_matrix`), transpose first — or use `Matrix::to_rational_rows()` on a `Matrix` that is already in row form. When the search fails and you want the Farkas certificate too, pose the same equalities through `LpProblem::minimize(vec![Q::zero(); n]).eq(…)` and read `farkas`.
+Note the orientation: `feasible_nonneg` takes **rows** of `A`. When your generators are naturally columns — a list of vectors, or polynomials laid out by `Poly::coefficient_matrix` — use `nonneg_combination(&vectors, &target)` instead, which asks the cone-membership question directly. Both have a certified form: `feasible_nonneg_certified` and `nonneg_combination` return a `Feasibility`, whose `Infeasible { farkas }` variant carries the separating vector `y` (`y·vⱼ ≥ 0` for every generator, `y·target < 0`), so there is no need to re-pose the system as an `LpProblem` to obtain the proof of impossibility.
+
+```rust
+use symplex::linprog::{Feasibility, Q, nonneg_combination, qi};
+
+fn show(v: &[Q]) -> String {
+    format!("({})", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "))
+}
+
+fn main() {
+    let cone = [vec![qi(1), qi(0), qi(1)], vec![qi(0), qi(1), qi(1)], vec![qi(1), qi(1), qi(0)]];
+    match nonneg_combination(&cone, &[qi(2), qi(3), qi(3)]).unwrap() {
+        Feasibility::Feasible(lambda) => println!("λ = {}", show(&lambda)),      // λ = (1, 2, 1)
+        Feasibility::Infeasible { .. } => println!("outside the cone"),
+    }
+    // (1, 0, 0) is outside: it would need λ₁ + λ₃ = 1, λ₂ + λ₃ = 0, λ₁ + λ₂ = 0.
+    match nonneg_combination(&cone, &[qi(1), qi(0), qi(0)]).unwrap() {
+        Feasibility::Infeasible { farkas: Some(y) } => println!("separating y = {}", show(&y)),   // separating y = (-1, 1, 1)
+        other => println!("{other:?}"),
+    }
+    // y·(1,0,1) = 0, y·(0,1,1) = 2, y·(1,1,0) = 0 are all ≥ 0, while y·(1,0,0) = −1 < 0.
+}
+```
 
 ## SciPy-shaped `linprog`
 

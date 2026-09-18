@@ -1255,3 +1255,152 @@ proptest! {
         prop_assert_eq!(p.derivative(&y).unwrap().to_ex(), e.diff(&y).expand());
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Property: interval sign tests vs. an independent root-based oracle
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A polynomial given by its rational roots with multiplicities, a leading
+/// sign, and an optional irreducible quadratic factor (no real roots).
+#[derive(Clone, Debug)]
+struct RootSpec {
+    roots: Vec<(i64, i64, u32)>, // (numerator, denominator, multiplicity)
+    negative: bool,
+    quadratic: bool, // multiply by (x^2 + 1)
+}
+
+fn root_spec() -> impl Strategy<Value = RootSpec> {
+    (
+        prop::collection::vec((-6i64..=6, 1i64..=4, 1u32..=3), 0..=3),
+        any::<bool>(),
+        any::<bool>(),
+    )
+        .prop_map(|(roots, negative, quadratic)| RootSpec {
+            roots,
+            negative,
+            quadratic,
+        })
+}
+
+/// An interval endpoint: a small rational, or infinite.
+#[derive(Clone, Copy, Debug)]
+enum End {
+    Fin(i64, i64),
+    Inf,
+}
+
+fn endpoint() -> impl Strategy<Value = End> {
+    prop_oneof![
+        4 => (-8i64..=8, 1i64..=4).prop_map(|(n, d)| End::Fin(n, d)),
+        1 => Just(End::Inf),
+    ]
+}
+
+/// Sign of `f` at a rational point from the root list (independent of the
+/// library): sign(c) · ∏ sign(x − rᵢ)^{mᵢ}.
+fn oracle_sign(spec: &RootSpec, at: &Ratio<BigInt>) -> i32 {
+    let mut s: i32 = if spec.negative { -1 } else { 1 };
+    for &(n, d, m) in &spec.roots {
+        let r = rat(n, d);
+        let diff = at - &r;
+        if diff == Ratio::from(BigInt::from(0)) {
+            return 0;
+        }
+        if diff < Ratio::from(BigInt::from(0)) && m % 2 == 1 {
+            s = -s;
+        }
+    }
+    s
+}
+
+/// Independent decision: `f ≥ 0` (resp. `> 0`) on `[lo, hi]`.
+fn oracle_nonneg(
+    spec: &RootSpec,
+    lo: Option<Ratio<BigInt>>,
+    hi: Option<Ratio<BigInt>>,
+    strict: bool,
+) -> bool {
+    let inside_open =
+        |r: &Ratio<BigInt>| lo.as_ref().is_none_or(|l| r > l) && hi.as_ref().is_none_or(|h| r < h);
+    let inside_closed = |r: &Ratio<BigInt>| {
+        lo.as_ref().is_none_or(|l| r >= l) && hi.as_ref().is_none_or(|h| r <= h)
+    };
+    // A root of odd multiplicity strictly inside flips the sign.
+    for &(n, d, m) in &spec.roots {
+        let r = rat(n, d);
+        if m % 2 == 1 && inside_open(&r) {
+            return false;
+        }
+        if strict && inside_closed(&r) {
+            return false;
+        }
+    }
+    // Otherwise the sign is constant on the interval away from roots:
+    // sample a point in the interior that is not a root.
+    let roots: Vec<Ratio<BigInt>> = spec.roots.iter().map(|&(n, d, _)| rat(n, d)).collect();
+    let mut sample = match (&lo, &hi) {
+        (Some(l), Some(h)) => (l + h) / Ratio::from(BigInt::from(2)),
+        (Some(l), None) => l + Ratio::from(BigInt::from(1)),
+        (None, Some(h)) => h - Ratio::from(BigInt::from(1)),
+        (None, None) => Ratio::from(BigInt::from(0)),
+    };
+    // Nudge off any root (stay inside the interval).
+    let mut step = rat(1, 1000);
+    while roots.contains(&sample) {
+        sample += &step;
+        step /= Ratio::from(BigInt::from(2));
+    }
+    if let (Some(l), Some(h)) = (&lo, &hi)
+        && l == h
+    {
+        // Degenerate interval: the value at the single point decides.
+        let s = oracle_sign(spec, l);
+        return if strict { s > 0 } else { s >= 0 };
+    }
+    oracle_sign(spec, &sample) > 0
+}
+
+fn build_from_roots(ctx: &Context, x: &Ex, spec: &RootSpec) -> Ex {
+    let mut f = if spec.negative {
+        ctx.int(-1)
+    } else {
+        ctx.int(1)
+    };
+    for &(n, d, m) in &spec.roots {
+        f *= (x - ctx.rational(n, d)).powi(i64::from(m));
+    }
+    if spec.quadratic {
+        f *= x.powi(2) + 1;
+    }
+    f.expand()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(96))]
+
+    #[test]
+    fn prop_interval_sign_matches_root_oracle(spec in root_spec(), a in endpoint(), b in endpoint()) {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let f = build_from_roots(&ctx, &x, &spec);
+        // Order the finite endpoints; `Inf` on the left means −∞.
+        let (lo, hi) = match (a, b) {
+            (End::Fin(n1, d1), End::Fin(n2, d2)) => {
+                let (r1, r2) = (rat(n1, d1), rat(n2, d2));
+                if r1 <= r2 { (Some(r1), Some(r2)) } else { (Some(r2), Some(r1)) }
+            }
+            (End::Fin(n, d), End::Inf) => (Some(rat(n, d)), None),
+            (End::Inf, End::Fin(n, d)) => (None, Some(rat(n, d))),
+            (End::Inf, End::Inf) => (None, None),
+        };
+        let lo_ex = lo.clone().map_or_else(|| ctx.neg_infinity(), |r| ctx.from_ratio(r));
+        let hi_ex = hi.clone().map_or_else(|| ctx.infinity(), |r| ctx.from_ratio(r));
+
+        let got_nonneg = f.poly_is_nonnegative_on(&x, &lo_ex, &hi_ex);
+        let got_pos = f.poly_is_positive_on(&x, &lo_ex, &hi_ex);
+        let want_nonneg = oracle_nonneg(&spec, lo.clone(), hi.clone(), false);
+        let want_pos = oracle_nonneg(&spec, lo, hi, true);
+        prop_assert_eq!(got_nonneg, Some(want_nonneg), "f = {} nonneg on [{}, {}]", f, lo_ex, hi_ex);
+        prop_assert_eq!(got_pos, Some(want_pos), "f = {} positive on [{}, {}]", f, lo_ex, hi_ex);
+    }
+}

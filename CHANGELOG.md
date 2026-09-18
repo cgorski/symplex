@@ -100,8 +100,12 @@ Not breaking — no signature changed — but results may print differently.
   alone are contradictory).  Sign conventions documented in the module docs.
 - `linprog(c, A_ub, b_ub, A_eq, b_eq, bounds)` (SciPy-shaped),
   `feasible_nonneg(A, b)` ("is there `x ≥ 0` with `Ax = b`?", exactly),
-  `linprog_matrix(Objective, &c, A_ub, b_ub, A_eq, b_eq)` on `Matrix` data
-  with numeric-literal entries, and the literal helpers `q(n, d)`, `qi(n)`.
+  `feasible_nonneg_certified` and the column-oriented `nonneg_combination
+  (vectors, target)` returning `Feasibility::{Feasible(x), Infeasible {
+  farkas }}`, `linprog_matrix(Objective, &c, A_ub, b_ub, A_eq, b_eq)` on
+  `Matrix` data with numeric-literal entries, `LpSolution::duals_ex`, a
+  one-line `Display` for `LpSolution`, and the literal helpers `q(n, d)`,
+  `qi(n)`.
 - `prelude` re-exports `LpProblem`, `LpSolution`, `LpStatus`.
 
 **Integer normal forms** (`symplex::normalforms`)

@@ -286,7 +286,7 @@ pub mod prelude {
     pub use crate::calculus::definite::QuadOpts;
     pub use crate::calculus::formal_series::FormalPowerSeries;
     pub use crate::domains::control::{StateSpace, TransferFunction};
-    pub use crate::domains::linprog::{LpProblem, LpSolution, LpStatus};
+    pub use crate::domains::linprog::{Feasibility, LpProblem, LpSolution, LpStatus};
     pub use crate::domains::matrix::Matrix;
     pub use crate::domains::optimize::{MinimizeOpts, MinimizeResult, RootOpts};
     pub use crate::domains::quaternion::Quaternion;

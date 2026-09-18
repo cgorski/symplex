@@ -253,7 +253,7 @@ fn polynomials() {
     assert_eq!(p.total_degree(), Some(2));
     let at2 = p.eval_gen(&x, &ctx.int(2)).unwrap();
     println!("p(x = 2) = {at2}");
-    assert_eq!(at2.to_string(), "Poly(4*a + 5*y + 1, y)");
+    assert_eq!(at2.to_string(), "Poly(5*y + 4*a + 1, y)");
     let dp = p.derivative(&x).unwrap().to_ex();
     assert_eq!(dp.to_string(), "2*a*x + 3*y");
 
