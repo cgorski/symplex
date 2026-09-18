@@ -678,7 +678,17 @@ impl Arena {
     /// Creates (or retrieves) a rational expression `p/q`.
     ///
     /// The ratio is automatically reduced to lowest terms by `num_rational`.
+    /// A zero denominator does not panic: `p/0` with `p ≠ 0` is `zoo`
+    /// (complex infinity) and `0/0` is `nan`, mirroring `1/0` built through
+    /// division.
     pub fn rational(&mut self, p: i64, q: i64) -> ExprId {
+        if q == 0 {
+            return if p == 0 {
+                self.nan
+            } else {
+                self.complex_infinity
+            };
+        }
         let num_id = self.intern_num(Ratio::new(BigInt::from(p), BigInt::from(q)));
         self.intern(ExprNode::Num(num_id))
     }

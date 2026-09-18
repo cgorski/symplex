@@ -251,7 +251,22 @@ impl Context {
         self.int(1)
     }
 
-    /// Creates a rational expression `p/q`.
+    /// Creates a rational expression `p/q`, reduced to lowest terms.
+    ///
+    /// A zero denominator never panics: `p/0` with `p ≠ 0` is `zoo`
+    /// (complex infinity) and `0/0` is `nan` — the same values that
+    /// `ctx.int(p) / ctx.int(0)` produces.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(format!("{}", ctx.rational(6, -4)), "-3/2");
+    /// assert_eq!(ctx.rational(1, 0), ctx.complex_infinity());
+    /// assert_eq!(ctx.rational(-7, 0), ctx.complex_infinity());
+    /// assert_eq!(ctx.rational(0, 0), ctx.nan());
+    /// assert_eq!(ctx.rational(1, 0), ctx.int(1) / ctx.int(0));
+    /// ```
     pub fn rational(&self, p: i64, q: i64) -> crate::api::expr::Ex {
         let id = self.inner.write().arena.rational(p, q);
         self.make_ex(id)
