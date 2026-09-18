@@ -1399,13 +1399,16 @@ impl Expr<Numeric> {
         }
     }
 
-    /// Compute the Taylor series around `point` to the given `order`.
+    /// Compute the Taylor / Laurent series around `point` with every term
+    /// of exponent `< order` in `(var − point)`.
     ///
-    /// Returns the truncated polynomial with `order` terms:
-    /// `f(a) + f'(a)(x-a) + f''(a)(x-a)²/2! + ...`
-    ///
-    /// If `point` is zero, this is a Maclaurin series.
-    /// If the series cannot be computed, returns a formal `Series` node.
+    /// Poles at `point` give negative powers (`1/sin x = 1/x + x/6 + …`);
+    /// `point = ±∞` gives the asymptotic expansion in `1/var` (see
+    /// [`series_at_infinity`](Self::series_at_infinity)).  Elementary
+    /// functions use closed-form coefficients, so high orders stay fast.
+    /// If no Laurent expansion exists (fractional-power or logarithmic
+    /// singularity, essential singularity) a formal `Series` node is
+    /// returned; see [`try_series`](Self::try_series).
     ///
     /// # Examples
     ///
@@ -1414,12 +1417,16 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let zero = ctx.int(0);
-    /// let expr = x.exp();
-    /// let s = expr.series(&x, &zero, 4);
-    /// let expanded = s.expand().eval();
-    /// let result = format!("{expanded}");
-    /// assert!(result.contains("x"), "should have x term: {result}");
+    /// let s = x.exp().series(&x, &ctx.int(0), 4);
+    /// assert_eq!(s.to_string(), "1/6*x^3 + 1/2*x^2 + x + 1");
+    ///
+    /// // ln x about 1
+    /// let s = x.ln().series(&x, &ctx.int(1), 3);
+    /// assert_eq!(s.to_string(), "x - 1/2*(x - 1)^2 - 1");
+    ///
+    /// // Laurent expansion at a pole
+    /// let s = (&ctx.int(1) / &x.sin()).series(&x, &ctx.int(0), 2);
+    /// assert_eq!(s.to_string(), "1/x + 1/6*x");
     /// ```
     #[must_use = "returns the series expansion; does not modify in place"]
     pub fn series(&self, var: &Ex, point: &Ex, order: u32) -> Ex {
@@ -1463,8 +1470,8 @@ impl Expr<Numeric> {
         }
     }
 
-    /// Compute the Maclaurin series (Taylor series around 0) to the
-    /// given `order`.
+    /// Compute the Maclaurin series (Taylor series around 0) with every
+    /// term of exponent `< order`.
     ///
     /// This is a convenience shorthand for `self.series(var, &zero, order)`
     /// that avoids needing to construct a zero expression manually.
@@ -1477,10 +1484,10 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let s = x.sin().maclaurin(&x, 4);
-    /// let result = s.expand().eval();
-    /// let text = format!("{result}");
-    /// assert!(text.contains("x"), "should have x term: {text}");
+    /// assert_eq!(x.sin().maclaurin(&x, 6).to_string(), "1/120*x^5 - 1/6*x^3 + x");
+    /// assert_eq!(x.atan().maclaurin(&x, 6).to_string(), "1/5*x^5 - 1/3*x^3 + x");
+    /// // sqrt(x)·sin(x) is a Puiseux series: kept as a formal node
+    /// assert!((&x.sqrt() * &x.sin()).maclaurin(&x, 4).has_unevaluated());
     /// ```
     #[must_use = "returns the series expansion; does not modify in place"]
     pub fn maclaurin(&self, var: &Ex, order: u32) -> Ex {
