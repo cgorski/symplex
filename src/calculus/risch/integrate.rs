@@ -662,7 +662,6 @@ mod tests {
             RischResult::Elementary {
                 rational_numer,
                 log_terms,
-                arena_expr: _,
                 ..
             } => {
                 // Rational part should be zero (1/x has no Hermite reduction).
@@ -686,7 +685,6 @@ mod tests {
             RischResult::Elementary {
                 rational_numer,
                 log_terms,
-                arena_expr: _,
                 ..
             } => {
                 assert!(log_terms.is_empty(), "1/x² should have no log terms");

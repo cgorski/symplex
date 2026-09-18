@@ -2656,7 +2656,8 @@ fn symbolic_quadratic_coeffs(
                     }
                 } else if let ExprNode::Pow(base, exp) = arena.node(mc).clone() {
                     if base == var {
-                        if let Some(e) = arena.as_num(exp) {
+                        {
+                            let e = arena.as_num(exp)?;
                             if *e == num_rational::Ratio::from_integer(2.into()) {
                                 has_var_sq = true;
                             } else if e.is_integer()
@@ -2667,8 +2668,6 @@ fn symbolic_quadratic_coeffs(
                                 // fractional power of var — not polynomial
                                 return None;
                             }
-                        } else {
-                            return None; // symbolic exponent of var
                         }
                     } else if contains_var(arena, mc, var_sym) {
                         return None; // non-trivial var dependence

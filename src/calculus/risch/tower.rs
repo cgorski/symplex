@@ -580,7 +580,8 @@ fn extract_terms(
                     theta_power += 1;
                 } else if let ExprNode::Pow(base, exp) = arena.node(child).clone() {
                     if base == ext_var {
-                        if let Some(r) = arena.as_num(exp) {
+                        {
+                            let r = arena.as_num(exp)?;
                             if r.is_integer() && !(*r).is_negative() {
                                 if let Ok(n) = usize::try_from(r.to_integer()) {
                                     theta_power += n;
@@ -590,8 +591,6 @@ fn extract_terms(
                             } else {
                                 return None; // fractional or negative power of θ
                             }
-                        } else {
-                            return None; // symbolic exponent of θ
                         }
                     } else {
                         return None; // complex θ-dependent factor

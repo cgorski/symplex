@@ -1572,9 +1572,9 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 fn find_preferred_resolvent_root(resolvent: &Poly, p_rat: &Ratio<BigInt>) -> Option<Ratio<BigInt>> {
     let (int_poly, _scale) = clear_denominators(resolvent);
     let a0 = int_poly.coeff(0).to_integer();
-    let an = match int_poly.leading_coeff() {
-        Some(v) => v.to_integer(),
-        None => return None,
+    let an = {
+        let v = int_poly.leading_coeff()?;
+        v.to_integer()
     };
 
     let two_r = Ratio::from_integer(BigInt::from(2));
@@ -2264,11 +2264,9 @@ pub(crate) fn try_solve_linear_symbolic(
         }
 
         // Term contains var — try to extract a linear coefficient.
-        if let Some(coeff) = extract_var_coeff_in_product(arena, term, var) {
+        {
+            let coeff = extract_var_coeff_in_product(arena, term, var)?;
             coeff_parts.push(coeff);
-        } else {
-            // var appears in a non-linear way (e.g. var^2, sin(var))
-            return None;
         }
     }
 

@@ -311,7 +311,7 @@ impl MathBox {
             } else {
                 mid_r
             };
-            lines.push(format!("{}{}{}", lc, &inner.lines[i], rc));
+            lines.push(format!("{}{}{}", lc, inner.lines[i], rc));
         }
 
         MathBox {

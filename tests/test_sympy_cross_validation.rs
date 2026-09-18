@@ -974,11 +974,10 @@ fn parse_matrix_from_json(
                 serde_json::Value::Number(n) => {
                     if let Some(i) = n.as_i64() {
                         ctx.int(i)
-                    } else if let Some(f) = n.as_f64() {
+                    } else {
+                        let f = n.as_f64()?;
                         let s = format!("{}", f);
                         symplex::parse::parse(ctx, &s).ok()?
-                    } else {
-                        return None;
                     }
                 }
                 serde_json::Value::String(s) => symplex::parse::parse(ctx, s).ok()?,

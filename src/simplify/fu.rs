@@ -681,7 +681,8 @@ fn try_cos_addition_formula(arena: &mut Arena, term1: ExprId, term2: ExprId) -> 
     let sin_pair;
 
     // One term should be cos*cos, the other sin*sin
-    if let Some(p) = extract_same_type_pair(arena, term1) {
+    {
+        let p = extract_same_type_pair(arena, term1)?;
         if !p.is_sin {
             cos_pair = p;
             sin_pair = extract_same_type_pair(arena, term2)?;
@@ -696,8 +697,6 @@ fn try_cos_addition_formula(arena: &mut Arena, term1: ExprId, term2: ExprId) -> 
             }
             cos_pair = p2;
         }
-    } else {
-        return None;
     }
 
     // Check argument matching: cos(a)*cos(b) and sin(a)*sin(b) with same a,b

@@ -1005,11 +1005,9 @@ fn try_first_order_linear_general(
     let mut p_x_terms: Vec<ExprId> = Vec::new();
 
     for &yt in &y_terms {
-        if let Some(px) = extract_coeff_of_func(arena, yt, func, func_sym, var_sym) {
+        {
+            let px = extract_coeff_of_func(arena, yt, func, func_sym, var_sym)?;
             p_x_terms.push(px);
-        } else {
-            // Non-linear in y
-            return None;
         }
     }
 
@@ -2844,11 +2842,8 @@ fn parse_forcing_term(arena: &mut Arena, term: ExprId, var: ExprId) -> Option<Fo
                 b = freq.abs();
             }
             _ => {
-                if let Some(r) = arena.as_num(f) {
-                    coeff *= r.clone();
-                } else {
-                    return None;
-                }
+                let r = arena.as_num(f)?;
+                coeff *= r.clone();
             }
         }
     }

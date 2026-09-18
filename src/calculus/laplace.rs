@@ -1009,10 +1009,9 @@ fn try_tn_exp(
             } else {
                 return None;
             }
-        } else if let Some(_ti) = t_idx {
-            n_val = 1;
         } else {
-            return None;
+            let _ti = t_idx?;
+            n_val = 1;
         }
 
         // Check no other dependent factors remain

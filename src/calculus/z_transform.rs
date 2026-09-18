@@ -131,6 +131,12 @@ fn do_forward(
 }
 
 /// `expr = a·n + b` with `a`, `b` free of `n`.
+/// If `e` is a negative integer literal, return it as `BigInt` (`Some(-m)`).
+fn negative_integer_exponent(arena: &Arena, e: ExprId) -> Option<num_bigint::BigInt> {
+    let r = arena.as_num(e)?;
+    (r.is_integer() && r.is_negative()).then(|| r.to_integer())
+}
+
 fn linear_in(arena: &mut Arena, expr: ExprId, n_var: ExprId) -> Option<(ExprId, ExprId)> {
     if expr == n_var {
         return Some((arena.one, arena.zero));
@@ -1098,24 +1104,30 @@ fn try_extended_inverse(
                 }
                 others.push(k);
             }
+            // `(z − a)^{−m}` with monic linear base: a pole of order m at a.
+            // (Written without an `if let` match guard: those are unstable on
+            // the 1.93 MSRV.)
             ExprNode::Pow(base, e)
-                if pole.is_none()
-                    && let Some(r) = arena.as_num(e).cloned()
-                    && r.is_integer()
-                    && r.is_negative()
-                    && let Some((c1, c0)) = linear_in(arena, base, z_var)
-                    && c1 == one =>
+                if pole.is_none() && negative_integer_exponent(arena, e).is_some() =>
             {
-                let a = arena.neg(c0);
-                let a = crate::transforms::eval::eval(arena, a);
-                let m: u64 =
-                    (-r.to_integer())
-                        .try_into()
-                        .map_err(|_| SymplexError::ComputationFailed {
-                            operation: "inverse_z_transform",
-                            reason: "power too large".into(),
-                        })?;
-                pole = Some((a, m));
+                let Some(neg_m) = negative_integer_exponent(arena, e) else {
+                    unreachable!("checked by the match guard");
+                };
+                match linear_in(arena, base, z_var) {
+                    Some((c1, c0)) if c1 == one => {
+                        let a = arena.neg(c0);
+                        let a = crate::transforms::eval::eval(arena, a);
+                        let m: u64 =
+                            (-neg_m)
+                                .try_into()
+                                .map_err(|_| SymplexError::ComputationFailed {
+                                    operation: "inverse_z_transform",
+                                    reason: "power too large".into(),
+                                })?;
+                        pole = Some((a, m));
+                    }
+                    _ => others.push(k),
+                }
             }
             ExprNode::Exp(arg) if others.is_empty() && pole.is_none() => {
                 // e^{1/z} → 1/n!
