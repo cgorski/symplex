@@ -16,6 +16,7 @@ make changes safely, and submit contributions.
 - [How to Add a New Function](#how-to-add-a-new-function)
 - [How to Add a New Node Type](#how-to-add-a-new-node-type)
 - [Testing](#testing)
+- [Continuous Integration](#continuous-integration)
 - [Code Style](#code-style)
 - [Common Pitfalls](#common-pitfalls)
 
@@ -29,8 +30,15 @@ git clone https://github.com/cgorski/symplex
 cd symplex
 cargo build
 
-# Run the test suite (~6,000 tests)
+# Run the test suite (~10,000 tests; a few minutes in debug)
 cargo test
+
+# Run the 0.2 feature suites only
+cargo test --test 'v02_*'
+
+# Run the examples and the book (CI does both)
+for f in examples/*.rs; do n=$(basename "$f" .rs); [ "$n" = repl ] || cargo run -q --example "$n"; done
+mdbook build book
 
 # Run a single test file
 cargo test --test test_known_answers
@@ -52,26 +60,57 @@ RUST_LOG=symplex=debug cargo run --example quickstart
 
 ## Architecture
 
-The source code is organized into 10 directories under `src/`. Each directory
-is a layer in the dependency hierarchy — modules may depend on layers below
-them but should not reach upward.
+The source code (~163K lines at 0.2.0) is organized into 10 directories under
+`src/`. Each directory is a layer in the dependency hierarchy — modules may
+depend on layers below them but should not reach upward.
 
 ```
 src/
-├── base/         Expression nodes, arena, tree traversal, canonicalization, assumptions
-├── poly/         Dense/sparse polynomials, Gröbner bases, Sturm sequences, root finding,
-│                 algebraic number fields (ℚ(α) = ℚ[t]/(m(t)))
-├── transforms/   Differentiation, integration, evaluation, solving, pattern matching
-├── simplify/     Trig, power, log, combinatorial simplification, Fu's algorithm,
-│                 radical simplification (powdenest, powsimp_base)
-├── calculus/     Series, limits, Laplace, ODE, Gosper summation, formal power series,
-│                 Risch algorithm, Lazard-Rioboo-Trager log-to-real conversion
-├── output/       Display, LaTeX, Rust codegen, CSE, JSON serialization, parser
+├── base/         Expression nodes (node.rs, 91 variants), arena (hash-consing), tree
+│                 traversal (walk.rs), canonicalization, assumptions, sort keys, compaction,
+│                 numeric.rs (exact f64 ↔ rational), bernoulli.rs, complex.rs, errors.rs
+├── poly/         Dense/sparse/generic polynomials, factor_zassenhaus.rs (Berlekamp–Zassenhaus
+│                 over ℤ + Kronecker multivariate), Gröbner bases, polysys.rs, Sturm sequences,
+│                 root finding (roots.rs), algebraic number fields ℚ(α) (algebraic.rs), ratfn.rs
+├── transforms/   diff, integrate (+ heurisch, trig_integ, apart), eval, evalf, expand, solve,
+│                 inequalities, pattern.rs (AC matcher), subs, sum_eval,
+│                 sets.rs (set-algebra normal form), logic.rs (boolean simplifier, DPLL,
+│                 piecewise), rsolve.rs (recurrences)
+├── simplify/     simplify_engine (multi-strategy fixpoint + tracing), rewrite.rs, trig/hyp
+│                 (fu.rs, trigsimp, trig_expand, trig_combine), powsimp/radsimp (powdenest,
+│                 sqrtdenest), log_expand/log_combine, combsimp, nsimplify, refine, factor_terms
+├── calculus/     definite.rs (definite/improper integration, GK15 quadrature), summation.rs,
+│                 gosper.rs, convergence.rs, series.rs, formal_series.rs, finite_diff.rs,
+│                 limit.rs + gruntz.rs, residue.rs, laplace.rs, fourier.rs (series),
+│                 fourier_transform.rs, mellin.rs, z_transform.rs, ode.rs, risch/ (tower,
+│                 hermite, rde, rothstein_trager, log_to_real)
+├── output/       display, pretty, latex, parse, tree (JSON), cse, lambdify (stack-VM compile),
+│                 codegen.rs (Rust) + codegen/{codegen_c.rs (C99), numeric_rt.rs (shared f64
+│                 special-function runtime), rt_embed.rs (embedding `mod symplex_rt`)}
 ├── plotting/     Adaptive sampling, textplot, SVG, TikZ, data export, RK4
-├── domains/      Matrices, control systems, dynamics, robotics, number theory, vectors
-├── units/        Compile-time dimensional analysis, quantity types, physical constants
-└── api/          Public types (Ex, Context), all public methods, operator overloads
+├── domains/      matrix.rs + matrix_decomp.rs (QR, Cholesky, LDL, Gram–Schmidt, structure
+│                 tests, norms, hessian, wronskian), linalg.rs (rref/linsolve), control,
+│                 dynamics, robotics, quaternion, vector (coordinate systems), ntheory
+│                 (rho/ECM, BPSW, sqrt_mod, dlog, continued fractions), diophantine,
+│                 combinatorics, separatevars
+├── units/        Compile-time dimensional analysis, quantity types, conversions, constants
+└── api/          context.rs, expr.rs (Expr<S>), expr_funcs.rs (most methods), expr_ops.rs
+                  (operators, Scalar/ToEx, Context ingestion), eq.rs (Equation), macros.rs,
+                  expr_view.rs, and the 0.2 extension files:
+                  expr_complex.rs (re/im/conjugate/arg + Si/Ci/Ei/li/ζ/polygamma),
+                  expr_integrate_ext.rs (definite/numeric integration, residue_at_infinity),
+                  expr_series_ext.rs (summation/products/convergence/series at ∞),
+                  expr_solve_ext.rs (linsolve, LinearSolution, solve_general, Newton, IVPs),
+                  expr_sets_ext.rs (SetEx/BoolEx algebra, reduce_inequalities, piecewise),
+                  expr_rules_ext.rs (Rule/RuleSet/rewrite/simplify_traced + gap-fill simplifiers),
+                  expr_transforms_ext.rs (directional limits, Fourier/Mellin, FourierSeries),
+                  expr_poly_ext.rs (resultant/discriminant/division/roots on Ex)
 ```
+
+Companion crates: `symplex-macros/` (proc macros), `symplex-build/` (build-time
+codegen for `no_std`), `symplex-wasm/` (wasm-bindgen bindings + `Session`),
+`fuzz/` (cargo-fuzz targets), `probes/` (developer diagnostics, not compiled by
+default), `book/` (mdBook), `benches/` (criterion).
 
 **Dependency flow** (each layer may only call downward):
 
@@ -85,7 +124,7 @@ base → poly → transforms → simplify → calculus
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `ExprNode` | `src/base/node.rs` | The expression tree — ~80 variants (Add, Mul, Sin, Integral, RootOf, RootSum, etc.) |
+| `ExprNode` | `src/base/node.rs` | The expression tree — 91 variants (Add, Mul, Sin, Integral, Re/Im/Conjugate/Arg, Zeta, Polygamma, RootOf, RootSum, Interval, etc.) |
 | `Arena` | `src/base/arena.rs` | Hash-consed expression storage. All nodes live here. |
 | `ExprId` | `src/base/node.rs` | A `u32` index into the arena. This is how expressions are referenced internally. |
 | `Context` | `src/api/context.rs` | User-facing entry point. Owns an arena + assumption cache. |
@@ -95,7 +134,11 @@ base → poly → transforms → simplify → calculus
 | `RationalFn` | `src/poly/ratfn.rs` | Rational function `p(x)/q(x)` in ℚ(x). Implements `Field`, enabling `GenPoly<RationalFn>`. |
 | `AlgNum` | `src/poly/algebraic.rs` | Element of ℚ(α) = ℚ[t]/(m(t)). Implements `Ring` + `Field` with exact zero/sign testing. |
 | `MultiPoly` | `src/poly/multipoly.rs` | Sparse multivariate polynomial. |
-| `Matrix` | `src/domains/matrix.rs` | Symbolic matrix (Vec of Vec of Ex). |
+| `Matrix` | `src/domains/matrix.rs` | Symbolic matrix (Vec of Vec of Ex); decompositions in `matrix_decomp.rs`. |
+| `Rule` / `RuleSet` | `src/api/expr_rules_ext.rs` | Public rewrite rules over `Pattern` (`src/transforms/pattern.rs`). |
+| `CompiledFn` | `src/output/lambdify.rs` | Stack-VM compiled numeric closure (`Clone + Send + Sync`). |
+| `LinearSolution` | `src/api/expr_solve_ext.rs` | `Unique` / `Parametric` / `Inconsistent` result of `linsolve`. |
+| `FormalPowerSeries` | `src/calculus/formal_series.rs` | Lazy exact power series over `Ex`. |
 
 ### How Expressions Work
 
@@ -175,9 +218,13 @@ compiler enforces this — you can't access `.id` directly.
 
 ### No Panics Rule
 
-The symbolic layer has **zero panics** except for the cross-context guard.
-Every operation that can fail returns `Result` or produces an unevaluated form.
-Never use `.unwrap()` or `.expect()` in library code (tests are fine).
+The symbolic layer has **zero panics** except for two documented logic
+errors: the cross-context guard, and `std::iter::Sum`/`Product` for `Ex` on an
+*empty* iterator (there is no context to build `0`/`1` in — users are steered
+to `Context::sum`/`product` or `Option<Ex>`). Every other operation that can
+fail returns `Result`, `Option`, or an unevaluated form. Never use `.unwrap()`,
+`.expect()`, `unreachable!()` or `panic!()` in library code (tests are fine);
+`debug_assert!` is acceptable for internal invariants.
 
 ---
 
@@ -213,9 +260,14 @@ let anti = expr.try_integrate(&x)?;
 ```
 
 Every method that can produce an unevaluated form has a `try_` twin:
-`try_diff`, `try_integrate`, `try_limit`, `try_series`, `try_laplace`,
+`try_diff`, `try_integrate`, `try_integrate_definite`, `try_limit`,
+`try_limit_left/right/dir`, `try_series`, `try_maclaurin`,
+`try_series_at_infinity`, `try_summation`, `try_product_over`, `try_laplace`,
 `try_inverse_laplace`, `try_residue`, `try_gosper_sum`, `try_solve_ode`,
 `try_solve_gt/ge/lt/le`.
+
+`RootOf` and `RootSum` are complete algebraic answers and are **not**
+counted by `has_unevaluated()` (changed in 0.2).
 
 The `try_` variant calls the base method, then checks `has_unevaluated()`.
 Zero code duplication.
@@ -225,21 +277,33 @@ Zero code duplication.
 Operations crossing from symbolic to numeric always return `Result`:
 
 ```rust
-expr.eval_f64()         // Err if free symbols remain
-expr.eval_complex64()   // Err if can't evaluate
-expr.compile()          // Err if unsupported nodes
-expr.to_rust_fn("f")    // Err if can't generate code
+expr.eval_f64()                 // Err if free symbols remain
+expr.eval_complex64()           // Err if can't evaluate
+expr.compile(&["x"])            // Err(FreeSymbol / NotImplemented) — Result<CompiledFn>
+expr.to_rust_fn("f", &["x"])    // Err if can't generate code
+expr.to_c_fn("f", &["x"])       // same, C99
+expr.integrate_numeric(&x, &a, &b)   // Err if quadrature does not converge
 ```
+
+Mathematical outcomes that are facts rather than failures also travel as
+`Result`/enum variants: `solve` → `Err(InfiniteSolutions)` for identities and
+`Err(NoSolution)` for contradictions; `try_integrate_definite` →
+`Err(Divergent)`; `linsolve` → `Ok(LinearSolution::Inconsistent)`.
 
 ### Pattern 4: Queries → `Option`
 
 Three-valued queries (yes / no / can't determine):
 
 ```rust
-expr.is_positive()   // Some(true), Some(false), or None
-expr.degree(&x)      // Some(3) or None (not polynomial)
-expr.equals(&other)  // Some(true), Some(false), or None
+expr.is_positive()      // Some(true), Some(false), or None
+expr.degree(&x)         // Some(3) or None (not polynomial)
+expr.equals(&other)     // Some(true), Some(false), or None
+set.contains(&e)        // set membership
+matrix.is_symmetric()   // structure tests on matrices are three-valued
 ```
+
+A new query must return `None` when it cannot decide — never guess. Symbols
+without assumptions may be complex; do not assume realness.
 
 ### Pattern 5: Structural preconditions → `Result`
 
@@ -249,24 +313,28 @@ Matrix operations that require specific shapes:
 matrix.det()          // Err if non-square
 matrix.inv()          // Err if singular
 matrix.matmul(&other) // Err if dimensions don't match
+matrix.cholesky()     // Err if not symmetric / positive definite
+matrix.minor(i, j)    // Err if out of range
 ```
 
 ---
 
 ## Expression Nodes
 
-The `ExprNode` enum in `src/base/node.rs` has ~80 variants. They fall into categories:
+The `ExprNode` enum in `src/base/node.rs` has 91 variants. They fall into categories:
 
 | Category | Examples | How they work |
 |----------|---------|---------------|
-| **Atoms** | `Num(NumId)`, `Symbol(SymbolId)`, `Pi`, `E`, `ImaginaryUnit` | Leaf nodes, no children |
+| **Atoms** | `Num(NumId)`, `Symbol(SymbolId)`, `Pi`, `E`, `ImaginaryUnit`, `EulerGamma`, `Catalan`, `GoldenRatio`, `Infinity`, `ComplexInfinity`, `NaN` | Leaf nodes, no children |
 | **N-ary arithmetic** | `Add(SmallVec)`, `Mul(SmallVec)` | Flattened associative ops |
 | **Binary arithmetic** | `Pow(ExprId, ExprId)` | Base, exponent |
-| **Functions** | `Sin(ExprId)`, `Exp(ExprId)`, `Gamma(ExprId)` | Unary or binary |
+| **Functions** | `Sin(ExprId)`, `Exp(ExprId)`, `Gamma(ExprId)`, `Zeta`, `Si`/`Ci`/`Ei`/`Li`, `Polygamma(n, x)`, `KroneckerDelta(i, j)` | Unary or binary |
+| **Complex** | `Re`, `Im`, `Conjugate`, `Arg` | Only constructed when realness is unknown |
 | **Calculus** | `Derivative(body, var)`, `Integral(body, var)` | Formal/unevaluated |
-| **Unevaluated** | `Limit`, `Series`, `LaplaceTransform`, `RootOf`, `DSolve`, `ConditionSet` | Formal results when computation can't produce a closed form |
+| **Unevaluated** | `Limit`, `Series`, `Sum`, `Product_`, `LaplaceTransform`, `Residue`, `DSolve`, `ConditionSet` | Formal results when computation can't produce a closed form |
+| **Algebraic answers** | `RootOf(poly, index)`, `RootSum(poly, body, var)` | Exact descriptions of algebraic numbers; *not* unevaluated |
 | **Boolean** | `BoolTrue`, `Gt`, `And`, `Or`, `Not` | For inequalities and logic |
-| **Sets** | `Interval`, `FiniteSet`, `SetUnion` | For solution sets |
+| **Sets** | `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`, `SetComplement`, `EmptySet`, `UniversalSet` | For solution sets; `transforms/sets.rs` computes the normal form |
 | **Piecewise** | `Piecewise(Vec<(value, condition)>)` | Conditional expressions |
 
 Every node has a `children()` method that returns its child `ExprId`s. This is
@@ -332,10 +400,20 @@ display, or special evaluation rules), add to `ExprNode`:
 
 14. **`src/poly/polybridge.rs`**: Add to the `=> None` arm (not polynomial).
 
-15. **`src/output/codegen.rs`** and **`src/output/lambdify.rs`**: Add code
-    generation support or add to the "unsupported" arm.
+15. **`src/output/codegen.rs`**, **`src/output/codegen/codegen_c.rs`** and
+    **`src/output/lambdify.rs`**: Add code generation support (Rust, C99,
+    stack-VM) or add to the "unsupported" arm. If a numeric helper is needed,
+    add it to `src/output/codegen/numeric_rt.rs` so that `compile`,
+    `to_rust_fn` (via `rt_embed.rs`) and the C runtime share one
+    implementation.
 
-16. **Tests**: Add tests in an appropriate test file.
+16. **`src/base/complex.rs`**: If the function is real-analytic, teach
+    `conjugate`/`re`/`im` how it behaves (conjugation commutes with it).
+
+17. **`src/output/parse.rs`** round-trip: `parse(&ctx, &format!("{expr}"))`
+    must reproduce the node.
+
+18. **Tests**: Add tests in an appropriate test file (see below).
 
 ---
 
@@ -362,19 +440,27 @@ Follow the same steps as adding a new function (above), plus:
 
 ### Test Organization
 
-Tests are in `tests/` (integration tests) and inline `#[cfg(test)]` modules
-(unit tests). There are ~6,000 tests total.
+Tests are in `tests/` (integration tests, ~7,650 `#[test]` functions in 240
+files) and inline `#[cfg(test)]` modules (~2,500 unit tests). Total at 0.2.0:
+**10,177** tests plus ~520 doctests.
 
 | Category | Files | What they test |
 |----------|-------|----------------|
 | `test_known_answers.rs` | 256 tests | Exact symbolic results against textbook answers |
-| `test_sympy_cross_validation.rs` | 263 fixtures | Results compared against SymPy 1.14 |
-| `test_correctness_audit.rs` | 108 fixtures | FTC verification, definite integrals |
-| `proptest_*.rs` | ~130 properties | Algebraic axioms, idempotence, value preservation |
+| `test_sympy_cross_validation.rs` | 263 fixtures | Results compared against SymPy 1.14 (`tests/fixtures/sympy_cross_validation.json`) |
+| `test_correctness_audit.rs` | 108 fixtures | FTC verification, definite integrals (`tests/fixtures/new_capabilities.json`) |
+| `v02_<area>_<topic>.rs` | 40 files, 782 tests | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `sets_*`, `simplify_*`, `solving_*`, `summation_*`, `transforms_*` |
+| `proptest_*.rs`, `test_quality_props.rs`, `test_units_proptest.rs` | ~180 properties | Algebraic axioms, idempotence, value preservation, round-trips |
 | `test_cross_context.rs` | 17 tests | Cross-context safety guards |
-| `test_ode_comprehensive.rs` | 44 tests | All 13 ODE solver classes |
+| `test_ode_comprehensive.rs` | 44 tests | ODE solver classes |
 | `test_rootof.rs` | 13 tests | RootOf solver + numerical evaluation |
 | `test_hard_math.rs` | 52 tests | Edge cases and negative tests |
+| `ui_tests.rs` + `tests/ui/*.rs` | trybuild | Compile-fail snapshots for the units type system (`Mass + Length` must not compile) |
+| `round*_*.rs`, `math*_bugs.rs`, `bugfinder*.rs` | many | Regression suites from bug-hunting rounds |
+
+Naming convention for new work: `tests/v02_<area>_<topic>.rs` (or the
+appropriate `test_*.rs`), one behaviour per test function, named for the
+mathematical fact it checks (`divergent_interior_pole_is_err`, not `test1`).
 
 ### Running Specific Tests
 
@@ -393,7 +479,52 @@ cargo test --lib
 
 # Run only doc-tests
 cargo test --doc
+
+# Everything CI runs on stable (UI snapshots excluded — see below)
+cargo test --lib --bins --tests --examples -- --skip units_compile_fail
+cargo test --benches
 ```
+
+### SymPy oracle fixtures
+
+Three JSON fixture files under `tests/fixtures/` hold results computed by
+SymPy and are consumed by `test_sympy_cross_validation.rs`,
+`test_correctness_audit.rs` and the `v02_*` suites. Regenerate them with the
+scripts in `scripts/` inside a Python virtualenv with SymPy installed:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate && pip install sympy
+python3 scripts/generate_sympy_fixtures.py > tests/fixtures/sympy_cross_validation.json 2> fixture_generation.log
+python3 scripts/generate_new_fixtures.py    # new_capabilities.json
+python3 scripts/gen_new_fixtures.py          # new_features_cross_validation.json
+```
+
+Each fixture records the SymPy version and generation time; a test compares
+symplex's result numerically (at several points) or structurally, never by
+string equality with SymPy's printer.
+
+### UI compile-fail snapshots
+
+`tests/ui/*.stderr` are tied to a specific rustc's diagnostic wording, so
+they run only on the pinned toolchain (`UI_TOOLCHAIN` in `.github/workflows/ci.yml`,
+currently `1.95.0`). When bumping that toolchain, refresh the snapshots and
+review the diff:
+
+```bash
+TRYBUILD=overwrite cargo +1.95.0 test --test ui_tests
+```
+
+### Timeouts and granularity
+
+- Every test must finish in well under a second in debug mode; suites that
+  exercise budgets (Gruntz, rewrite, eigenvalue swell) assert wall-clock bounds
+  with `std::time::Instant` (see `v02_transforms_limits.rs`).
+- Keep one mathematical fact per test function. Long "kitchen sink" tests
+  hide which behaviour regressed and defeat `--skip`/filtering.
+- Property tests that skip cases must use `common::BailCounter` and call
+  `assert_not_vacuous()` / `assert_skip_rate_below(rate)` so a test that
+  skips everything fails instead of passing vacuously.
+- Use `timeout` when running long suites locally; CI has per-job limits.
 
 ### Test Helpers
 
@@ -402,9 +533,15 @@ cargo test --doc
 | Helper | Purpose |
 |--------|---------|
 | `assert_math_eq(a, b, var, label)` | Numerical equality at multiple points |
+| `assert_math_eq_rational(…)` | Same, at rational points (avoids float artefacts) |
 | `assert_ftc_tol(integrand, var, tol, label)` | FTC: d/dx(∫f dx) ≈ f |
 | `verify_roots(poly, var, roots, tol)` | Substitute roots back, check ≈ 0 |
+| `verify_ode_first_order(…)` | Substitute an ODE solution back |
+| `assert_simplify_preserves_value(…)`, `assert_expand_preserves_value(…)` | Value preservation under rewriting |
+| `assert_canonical_eq(a, b, label)`, `canonical_eq` | Structural equality after canonicalisation |
+| `assert_display_eq`, `assert_display_contains` | Display checks (use sparingly) |
 | `approx_eq(a, b, tol)` | Float comparison with NaN/Inf handling |
+| `BailCounter` | Skip-rate accounting for property tests |
 
 All helpers extract the context from the expressions passed to them (via
 `expr.context()`) rather than using any global. This prevents cross-context
@@ -438,7 +575,45 @@ mixing.
    if !roots.is_empty() {
        common::verify_roots(&poly, &x, &roots, 1e-6);
    }
+   // Divergent integrals must not produce a finite number
+   assert!(matches!(
+       x.powi(-2).try_integrate_definite(&x, &ctx.int(-1), &ctx.int(1)),
+       Err(SymplexError::Divergent { .. })
+   ));
    ```
+
+5. **Assumptions are part of the test**: a symbol without `Real` may be
+   complex. If a result is only true for `a > 0`, declare it
+   (`ctx.symbol_with("a", &[Assumption::Positive])`) and add a second test
+   showing the unassumed case stays unevaluated.
+
+6. **Examples are tests too**: every `examples/*.rs` runs in CI and must exit
+   0 in a few seconds. `examples/readme_snippets.rs` mirrors every code block
+   in `README.md` — update it when you change the README.
+
+---
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main`:
+
+| Job | What it does |
+|-----|--------------|
+| **Format** | `cargo fmt --check` for the main crate, `symplex-macros`, `symplex-build`, `symplex-wasm` |
+| **Clippy** | `cargo clippy --all-targets -- -D warnings` for all four crates |
+| **Test (stable)** | `cargo test --lib --bins --tests --examples -- --skip units_compile_fail`, `cargo test --benches`, `cargo test --doc` |
+| **UI compile-fail tests** | `cargo test --test ui_tests` on the pinned `UI_TOOLCHAIN` (1.95.0) |
+| **Sub-crates** | `cargo test` for `symplex-macros`, `symplex-build`, `symplex-wasm` (native); `cargo check --target wasm32-unknown-unknown` for `symplex-wasm`; `cargo check` for `fuzz/` |
+| **Docs** | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --document-private-items` (main crate and `symplex-build`), then `mdbook build book` |
+| **MSRV** | `cargo check --all-targets` on Rust 1.93.0 for all four crates |
+| **Examples run** | Every `examples/*.rs` except `repl` is run to completion with a 300 s timeout |
+
+`.github/workflows/deploy-book.yml` builds the mdBook and deploys it to GitHub
+Pages on pushes to `main`.
+
+`RUSTFLAGS=-D warnings` is set globally, so a new warning anywhere fails CI.
+Before opening a PR run at least `cargo fmt --all`, `cargo clippy --all-targets`,
+`cargo test`, `cargo doc --no-deps`, and the examples.
 
 ---
 
@@ -484,7 +659,9 @@ The arena is behind a `parking_lot::RwLock`. Follow these rules:
 ### Proc Macros
 
 The five proc macros (`expr!`, `matrix!`, `eq!`, `dim!`, `rule!`) live in
-`symplex-macros/`. They all take an explicit first argument:
+`symplex-macros/`; the declarative macros (`syms!`, `sym!`, `vars!`,
+`const_assert_dim!`) live in `src/api/macros.rs` and `src/units/assert_macros.rs`.
+They all take an explicit first argument:
 
 | Macro | Syntax | First arg |
 |-------|--------|-----------|
@@ -492,9 +669,13 @@ The five proc macros (`expr!`, `matrix!`, `eq!`, `dim!`, `rule!`) live in
 | `matrix!` | `matrix![ctx, [1,2], [3,4]]` | Context variable |
 | `eq!` | `eq!(ctx, x^2 = 1)` | Context variable |
 | `dim!` | `dim!(ctx, Force: &m * &a)` | Context variable |
-| `rule!` | `rule!(arena, "name", LHS => RHS)` | Arena variable |
-| `syms!` | `syms!(ctx; x, y, z)` | Context (semicolon separator) |
+| `rule!` | `rule!(arena, "name", LHS => RHS)` | Arena variable (inside `ctx.with_arena_mut`; wrap with `RuleSet::from_macro_rules`) |
+| `syms!` / `vars!` | `syms!(ctx; x, y, z)` | Context (semicolon separator) |
 | `sym!` | `sym!(ctx; t, Positive)` | Context (semicolon separator) |
+
+Note that `expr!` requires every identifier to be a local `Ex` variable of the
+same name, and a purely numeric `expr!(ctx, 2^10)` does not compile (the
+literals are `i64`); build constants with `ctx.int`/`ctx.rational` instead.
 
 Declaration macros use semicolons. Expression macros use commas.
 

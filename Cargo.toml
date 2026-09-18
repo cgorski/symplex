@@ -4,12 +4,12 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"
-description = "A fast, correct symbolic mathematics library for Rust with compile-time dimensional analysis, robotics, and code generation"
+description = "Exact symbolic mathematics for Rust: calculus, summation, solving, linear algebra, transforms, compile-time dimensional analysis, and Rust/C code generation"
 repository = "https://github.com/cgorski/symplex"
 homepage = "https://github.com/cgorski/symplex"
 documentation = "https://docs.rs/symplex"
 readme = "README.md"
-keywords = ["symbolic", "math", "cas", "robotics", "units"]
+keywords = ["symbolic", "math", "cas", "codegen", "robotics"]
 categories = ["mathematics", "science", "development-tools::build-utils"]
 
 [dependencies]

@@ -10,7 +10,7 @@
 //! ```toml
 //! # Cargo.toml
 //! [build-dependencies]
-//! symplex-build = "0.1"
+//! symplex-build = "0.2"
 //! ```
 //!
 //! ```rust,no_run
@@ -89,6 +89,37 @@ impl CodeGen {
     }
 
     /// Set custom code generation options.
+    ///
+    /// Every registered function is emitted with these options.  Note that
+    /// [`CodegenOptions::emit_runtime`] (default `true`) makes *each*
+    /// function that uses a special function (`gamma`, `lambertw`, Bessel,
+    /// …) carry its own `mod symplex_rt { … }` block, so a file with two
+    /// such functions would define the module twice.  For multi-function
+    /// files set `emit_runtime: false` here and prepend
+    /// [`CodegenOptions::runtime_module`] once to the output of
+    /// [`generate`](Self::generate):
+    ///
+    /// ```rust,no_run
+    /// use symplex::matrix::{CodegenOptions, MathBackend};
+    /// use symplex::prelude::*;
+    /// use symplex_build::CodeGen;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let opts = CodegenOptions {
+    ///     math_backend: MathBackend::CfgGated,
+    ///     emit_runtime: false,
+    ///     ..Default::default()
+    /// };
+    /// let body = CodeGen::new()
+    ///     .options(opts.clone())
+    ///     .add_scalar_fn("g", &x.gamma(), &["x"])
+    ///     .add_scalar_fn("w", &x.lambertw(), &["x"])
+    ///     .generate()
+    ///     .unwrap();
+    /// let file = format!("{}\n{body}", opts.runtime_module());
+    /// std::fs::write("robot_math.rs", file).unwrap();
+    /// ```
     pub fn options(mut self, options: CodegenOptions) -> Self {
         self.options = options;
         self
@@ -163,9 +194,15 @@ impl CodeGen {
 
     /// Generate the full source file as a `String`.
     ///
-    /// 1. If the math backend is `CfgGated`, emits the cfg-gated math module.
+    /// 1. If the math backend is `CfgGated`, emits the cfg-gated math module
+    ///    (once; the per-function copies are stripped).
     /// 2. For each registered function, calls the appropriate symplex codegen method.
     /// 3. If test generation is enabled, emits a `#[cfg(test)]` module.
+    ///
+    /// The special-function runtime (`mod symplex_rt`) is **not** deduplicated:
+    /// if more than one registered function needs it, set
+    /// `CodegenOptions::emit_runtime = false` via [`options`](Self::options)
+    /// and prepend [`CodegenOptions::runtime_module`] to the result yourself.
     pub fn generate(&self) -> Result<String, Box<dyn std::error::Error>> {
         let mut output = String::new();
 
@@ -335,6 +372,14 @@ impl Default for CodeGen {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Emit the cfg-gated math wrapper module into the given string buffer.
+///
+/// The module must provide every `math::*` function the symplex Rust backend
+/// can emit with [`MathBackend::CfgGated`]: the elementary functions,
+/// `atan2`, `powf`/`powi`, `min`/`max`, the numerically-optimised forms
+/// `expm1`, `log1p`, `log2`, `exp2`, the fused multiply-add `fma`, and
+/// `sin_cos` (used when both `sin(x)` and `cos(x)` appear).  The `std`
+/// variant delegates to inherent `f64`/`f32` methods; the `no_std` variant
+/// delegates to the `libm` crate.
 fn append_cfg_gated_module(out: &mut String, precision: Precision) {
     let ft = match precision {
         Precision::F64 => "f64",
@@ -369,20 +414,43 @@ fn append_cfg_gated_module(out: &mut String, precision: Precision) {
     out.push_str(&format!(
         "    #[inline] pub fn max(a: {ft}, b: {ft}) -> {ft} {{ a.max(b) }}\n"
     ));
+    out.push_str(&format!(
+        "    #[inline] pub fn expm1(x: {ft}) -> {ft} {{ x.exp_m1() }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn log1p(x: {ft}) -> {ft} {{ x.ln_1p() }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn log2(x: {ft}) -> {ft} {{ x.log2() }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn exp2(x: {ft}) -> {ft} {{ x.exp2() }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn fma(a: {ft}, b: {ft}, c: {ft}) -> {ft} {{ a.mul_add(b, c) }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn sin_cos(x: {ft}) -> ({ft}, {ft}) {{ x.sin_cos() }}\n"
+    ));
     out.push_str("}\n\n");
 
-    // no_std (libm) version
+    // no_std (libm) version.  `libm` names differ from the inherent methods
+    // for `abs` (`fabs`) and `ln` (`log`); `signum` and `sin_cos` have no
+    // direct counterpart and are composed.
     out.push_str("#[cfg(not(feature = \"std\"))]\n");
     out.push_str("mod math {\n");
     let libm_funcs = [
-        "sin", "cos", "tan", "exp", "abs", "sqrt", "cbrt", "asin", "acos", "atan", "sinh", "cosh",
-        "tanh", "asinh", "acosh", "atanh", "floor", "ceil",
+        "sin", "cos", "tan", "exp", "sqrt", "cbrt", "asin", "acos", "atan", "sinh", "cosh", "tanh",
+        "asinh", "acosh", "atanh", "floor", "ceil",
     ];
     for func in &libm_funcs {
         out.push_str(&format!(
             "    #[inline] pub fn {func}(x: {ft}) -> {ft} {{ libm::{func}(x as f64) as {ft} }}\n"
         ));
     }
+    out.push_str(&format!(
+        "    #[inline] pub fn abs(x: {ft}) -> {ft} {{ libm::fabs(x as f64) as {ft} }}\n"
+    ));
     out.push_str(&format!(
         "    #[inline] pub fn ln(x: {ft}) -> {ft} {{ libm::log(x as f64) as {ft} }}\n"
     ));
@@ -403,6 +471,24 @@ fn append_cfg_gated_module(out: &mut String, precision: Precision) {
     ));
     out.push_str(&format!(
         "    #[inline] pub fn max(a: {ft}, b: {ft}) -> {ft} {{ libm::fmax(a as f64, b as f64) as {ft} }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn expm1(x: {ft}) -> {ft} {{ libm::expm1(x as f64) as {ft} }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn log1p(x: {ft}) -> {ft} {{ libm::log1p(x as f64) as {ft} }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn log2(x: {ft}) -> {ft} {{ libm::log2(x as f64) as {ft} }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn exp2(x: {ft}) -> {ft} {{ libm::exp2(x as f64) as {ft} }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn fma(a: {ft}, b: {ft}, c: {ft}) -> {ft} {{ libm::fma(a as f64, b as f64, c as f64) as {ft} }}\n"
+    ));
+    out.push_str(&format!(
+        "    #[inline] pub fn sin_cos(x: {ft}) -> ({ft}, {ft}) {{ (libm::sin(x as f64) as {ft}, libm::cos(x as f64) as {ft}) }}\n"
     ));
     out.push_str("}\n");
 }
