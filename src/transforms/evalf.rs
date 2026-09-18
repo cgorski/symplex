@@ -67,6 +67,29 @@ pub(crate) fn evalf(arena: &Arena, expr: ExprId, digits: u32) -> Result<String, 
         });
     }
 
+    // Free symbols make the whole expression unevaluable; report the
+    // offending symbol by name up front instead of surfacing an internal
+    // cache miss from some parent node later.  Bound variables (a `Sum`
+    // index, a `RootOf` polynomial variable, …) are not free and are
+    // handled by the sub-tree evaluators below.
+    let free = walk::free_symbols(arena, expr);
+    if !free.is_empty() {
+        let mut names: Vec<&str> = free
+            .iter()
+            .filter_map(|&id| match arena.node(id) {
+                ExprNode::Symbol(sid) => Some(arena.symbol_name(*sid)),
+                _ => None,
+            })
+            .collect();
+        names.sort_unstable();
+        if let Some(name) = names.first() {
+            debug!(symbol = name, "evalf: expression has free symbols");
+            return Err(SymplexError::FreeSymbol {
+                name: (*name).to_owned(),
+            });
+        }
+    }
+
     let rm = RoundingMode::ToEven;
     let mut cc = Consts::new().map_err(|e| {
         SymplexError::NotImplemented(format!("astro-float constants init failed: {e:?}"))
@@ -3996,10 +4019,51 @@ fn format_complex(
     }
 }
 
+/// Round a decimal digit string `0.d1d2d3…` to `digits` significant digits.
+///
+/// Rounds to nearest, ties to even (the digits beyond the requested
+/// count are exact decimal digits of the binary value, so an exact tie is
+/// a genuine `…5000…`).  Carries propagate leftwards; a carry out of the
+/// leading digit (`9.9996 → 10.00`) is reported as an exponent increment
+/// so the caller can re-place the decimal point.
+///
+/// Returns `(rounded_digits, exponent_increment)`; when `mantissa` has no
+/// more than `digits` digits it is returned unchanged.
+fn round_decimal_digits(mantissa: &[u8], digits: usize) -> (Vec<u8>, i64) {
+    if digits == 0 || mantissa.len() <= digits {
+        return (mantissa.to_vec(), 0);
+    }
+    let mut kept: Vec<u8> = mantissa[..digits].to_vec();
+    let next = mantissa[digits];
+    let rest_nonzero = mantissa[digits + 1..].iter().any(|&d| d != 0);
+    let round_up = match next.cmp(&5) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        // Exactly half: ties to even.
+        std::cmp::Ordering::Equal => rest_nonzero || kept[digits - 1] % 2 == 1,
+    };
+    if !round_up {
+        return (kept, 0);
+    }
+    // Propagate the carry from the last kept digit leftwards.
+    for d in kept.iter_mut().rev() {
+        if *d == 9 {
+            *d = 0;
+        } else {
+            *d += 1;
+            return (kept, 0);
+        }
+    }
+    // Carried out of the leading digit: 0.999… → 1.000… × 10.
+    kept[0] = 1;
+    (kept, 1)
+}
+
 /// Format a `BigFloat` as a decimal string with `digits` significant digits.
 ///
 /// Uses astro-float's `convert_to_radix` for reliable base-10 conversion,
-/// then formats the result with proper decimal point placement.
+/// rounds to `digits` significant digits, then formats the result with
+/// proper decimal point placement.
 fn format_decimal(
     val: &BigFloat,
     digits: u32,
@@ -4028,16 +4092,17 @@ fn format_decimal(
     // representing the value 0.d1d2d3... × 10^exponent.
     // So the actual value is d1.d2d3... × 10^(exponent-1).
 
-    // Truncate to requested digit count.
-    let n = (digits as usize).min(mantissa.len());
+    // Round (not truncate) to the requested digit count.
+    let (rounded, exp_carry) = round_decimal_digits(&mantissa, digits as usize);
+    let n = rounded.len();
     if n == 0 {
         return Ok("0".to_string());
     }
 
-    let digit_chars: Vec<char> = mantissa[..n].iter().map(|&d| (b'0' + d) as char).collect();
+    let digit_chars: Vec<char> = rounded.iter().map(|&d| (b'0' + d) as char).collect();
 
     // The "adjusted exponent" is exponent-1 (shifting from 0.ddd to d.ddd notation).
-    let adj_exp = exponent as i64 - 1;
+    let adj_exp = exponent as i64 - 1 + exp_carry;
 
     // Decide between plain decimal and scientific notation.
     if adj_exp >= 0 && (adj_exp as usize) < n {
@@ -4211,7 +4276,7 @@ mod tests {
     #[test]
     fn constant_e_15_digits() {
         let a = Arena::new();
-        assert_evalf_starts_with(&a, a.e_const, 15, "2.71828182845904");
+        assert_evalf_starts_with(&a, a.e_const, 15, "2.71828182845905");
     }
 
     // ── Arithmetic ──────────────────────────────────────────────────
@@ -4292,7 +4357,7 @@ mod tests {
         let mut a = Arena::new();
         let one = a.one;
         let expr = a.exp(one);
-        assert_evalf_starts_with(&a, expr, 15, "2.71828182845904");
+        assert_evalf_starts_with(&a, expr, 15, "2.71828182845905");
     }
 
     #[test]
@@ -4690,7 +4755,7 @@ mod tests {
         let ci = a.ci(one);
         assert_evalf_starts_with(&a, ci, 20, "0.33740392290096813466");
         let ei = a.ei(one);
-        assert_evalf_starts_with(&a, ei, 20, "1.8951178163559367554");
+        assert_evalf_starts_with(&a, ei, 20, "1.8951178163559367555");
         let li = a.li(two);
         assert_evalf_starts_with(&a, li, 20, "1.0451637801174927848");
     }
@@ -4717,7 +4782,7 @@ mod tests {
         assert_evalf_starts_with(&a, z3, 30, "1.20205690315959428539973816151");
         let half = a.rational(1, 2);
         let zh = a.zeta(half);
-        assert_evalf_starts_with(&a, zh, 20, "-1.4603545088095868128");
+        assert_evalf_starts_with(&a, zh, 20, "-1.4603545088095868129");
         // ζ(−5/2) > 0 (ζ is positive on (−4, −2); ζ(−3) = 1/120).
         let neg = a.rational(-5, 2);
         let zn = a.zeta(neg);
@@ -4748,11 +4813,11 @@ mod tests {
         let zero = a.zero;
         let one = a.one;
         let i0 = a.besseli(zero, one);
-        assert_evalf_starts_with(&a, i0, 20, "1.2660658777520083355");
+        assert_evalf_starts_with(&a, i0, 20, "1.2660658777520083356");
         let k0 = a.besselk(zero, one);
-        assert_evalf_starts_with(&a, k0, 20, "0.42102443824070833333");
+        assert_evalf_starts_with(&a, k0, 20, "0.42102443824070833334");
         let k1 = a.besselk(one, one);
-        assert_evalf_starts_with(&a, k1, 20, "0.60190723019723457473");
+        assert_evalf_starts_with(&a, k1, 20, "0.60190723019723457474");
     }
 
     #[test]
