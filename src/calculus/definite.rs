@@ -458,9 +458,12 @@ fn has_bad_atom(arena: &Arena, root: ExprId) -> bool {
                 return true;
             }
             ExprNode::Ln(inner) if arena.is_zero_structural(*inner) => return true,
+            // 0^e is only a plain finite value for a positive numeric e;
+            // 0^{-n} is infinite and 0^{a} with symbolic a depends on the
+            // sign of a (it may hide a divergence).
             ExprNode::Pow(base, exp)
                 if arena.is_zero_structural(*base)
-                    && arena.as_num(*exp).is_some_and(|r| r.is_negative()) =>
+                    && !arena.as_num(*exp).is_some_and(|r| r.is_positive()) =>
             {
                 return true;
             }
@@ -954,12 +957,52 @@ fn integrate_piece(
     }
 
     // Parametric antiderivatives come wrapped in a Piecewise over the
-    // parameter (e.g. ∫ xⁿ: n ≠ −1 vs n = −1).  Evaluate branch-wise.
+    // parameter (e.g. ∫ xⁿ: n ≠ −1 vs n = −1).  Conditions that the
+    // assumption system can decide are resolved first; the remaining
+    // branches are evaluated individually.  A divergence in an undecided
+    // branch is reported as "cannot compute" (the answer depends on the
+    // parameter), not as a divergence of the whole integral.
     if let ExprNode::Piecewise(pairs) = arena.node(anti).clone() {
-        let mut out: Vec<(ExprId, ExprId)> = Vec::with_capacity(pairs.len());
+        let mut live: Vec<(ExprId, ExprId)> = Vec::new();
         for (val, cond) in pairs.iter() {
-            let v = evaluate_antiderivative(arena, f, *val, x, p, depth)?;
-            out.push((v, *cond));
+            match decide_condition(arena, *cond) {
+                Some(false) => continue,
+                Some(true) => {
+                    live.push((*val, arena.bool_true()));
+                    break;
+                }
+                None => live.push((*val, *cond)),
+            }
+        }
+        if live.len() == 1 {
+            return evaluate_antiderivative(arena, f, live[0].0, x, p, depth);
+        }
+        let mut out: Vec<(ExprId, ExprId)> = Vec::with_capacity(live.len());
+        let mut all_divergent = !live.is_empty();
+        for (val, cond) in live {
+            match evaluate_antiderivative(arena, f, val, x, p, depth) {
+                Ok(v) => {
+                    all_divergent = false;
+                    out.push((v, cond));
+                }
+                Err(SymplexError::Divergent { .. }) => {
+                    if all_divergent {
+                        continue;
+                    }
+                    return Err(failed(
+                        "convergence depends on a parameter (some branches diverge)",
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if all_divergent {
+            return Err(divergent("every parameter branch diverges"));
+        }
+        if out.len() < 2 {
+            return Err(failed(
+                "convergence depends on a parameter (some branches diverge)",
+            ));
         }
         return Ok(arena.piecewise(&out));
     }
@@ -1270,6 +1313,12 @@ fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> EndVal {
     if params.is_empty() && !has_unbounded_oscillation(arena, g, u) {
         let inf = arena.infinity();
         if let Ok(l) = crate::calculus::limit::limit(arena, g, u, inf) {
+            // The engine occasionally leaks its internal dummy symbols into
+            // a half-finished result; a limit of a parameter-free
+            // expression must itself be parameter-free.
+            if !walk::free_symbols(arena, l).is_empty() {
+                return EndVal::Unknown;
+            }
             if l == arena.infinity() || l == arena.neg_infinity() {
                 let sign: i8 = if l == arena.infinity() { 1 } else { -1 };
                 if numeric_growth_sanity(arena, g, u, sign) {
@@ -1677,16 +1726,21 @@ fn pow_limit(
         });
         return match bv {
             LimVal::Finite(b) => {
-                if e_sign == Ordering::Less && sign_of(arena, b) == Some(Ordering::Equal) {
-                    LimVal::Unknown
-                } else {
-                    let p = arena.pow(b, exp);
-                    let p = safe_eval(arena, p);
-                    if is_finite_value(arena, p, u) {
-                        LimVal::Finite(p)
+                let b_zero = sign_of(arena, b) == Some(Ordering::Equal);
+                if b_zero {
+                    // 0^e: 0 for e > 0, undefined/infinite otherwise.
+                    return if e_sign == Ordering::Greater {
+                        LimVal::Finite(arena.zero())
                     } else {
                         LimVal::Unknown
-                    }
+                    };
+                }
+                let p = arena.pow(b, exp);
+                let p = safe_eval(arena, p);
+                if is_finite_value(arena, p, u) {
+                    LimVal::Finite(p)
+                } else {
+                    LimVal::Unknown
                 }
             }
             LimVal::PosInf => match e_sign {
@@ -2175,6 +2229,61 @@ fn sign_at(arena: &mut Arena, g: ExprId, x: ExprId, mid: ExprId) -> Result<Order
     } else {
         Ordering::Greater
     })
+}
+
+/// Decide a parameter condition (no integration variable involved) with
+/// the assumption system: `Some(true/false)` or `None` if undecidable.
+fn decide_condition(arena: &mut Arena, cond: ExprId) -> Option<bool> {
+    let order = walk::post_order_ids(arena, cond);
+    let mut vals: FxHashMap<ExprId, Option<bool>> = FxHashMap::default();
+    for id in order {
+        let node = arena.node(id).clone();
+        let v: Option<bool> = match node {
+            ExprNode::BoolTrue => Some(true),
+            ExprNode::BoolFalse => Some(false),
+            ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
+                let d = arena.sub(a, b);
+                let d = safe_eval(arena, d);
+                let s = sign_of(arena, d);
+                match node {
+                    ExprNode::Gt(..) => s.map(|s| s == Ordering::Greater),
+                    ExprNode::Ge(..) => s.map(|s| s != Ordering::Less),
+                    ExprNode::Eq_(..) => s.map(|s| s == Ordering::Equal),
+                    _ => s.map(|s| s != Ordering::Equal),
+                }
+            }
+            ExprNode::And(children) => {
+                let parts: Vec<Option<bool>> = children
+                    .iter()
+                    .map(|c| vals.get(c).copied().flatten())
+                    .collect();
+                if parts.contains(&Some(false)) {
+                    Some(false)
+                } else if parts.iter().all(|p| *p == Some(true)) {
+                    Some(true)
+                } else {
+                    None
+                }
+            }
+            ExprNode::Or(children) => {
+                let parts: Vec<Option<bool>> = children
+                    .iter()
+                    .map(|c| vals.get(c).copied().flatten())
+                    .collect();
+                if parts.contains(&Some(true)) {
+                    Some(true)
+                } else if parts.iter().all(|p| *p == Some(false)) {
+                    Some(false)
+                } else {
+                    None
+                }
+            }
+            ExprNode::Not(inner) => vals.get(&inner).copied().flatten().map(|b| !b),
+            _ => None,
+        };
+        vals.insert(id, v);
+    }
+    vals.get(&cond).copied().flatten()
 }
 
 /// Truth value of a boolean condition at `x = mid`.

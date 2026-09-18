@@ -1625,3 +1625,47 @@ fn cas_style_result_is_unevaluated_not_wrong() {
     assert!(v.has_unevaluated(), "{v}");
     assert!(v.eval_f64().is_err());
 }
+
+#[test]
+fn symbolic_exponent_at_singular_endpoint_needs_assumptions() {
+    // ∫₀¹ xᵃ dx = 1/(a+1) only for a > −1; with unknown a it must not be guessed.
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let a = ctx.symbol("a");
+    let r = x
+        .pow(&a)
+        .try_integrate_definite(&x, &ctx.int(0), &ctx.int(1));
+    assert!(r.is_err(), "{r:?}");
+    let ap = ctx.symbol_with("ap", &[Assumption::Positive]);
+    let v = x
+        .pow(&ap)
+        .try_integrate_definite(&x, &ctx.int(0), &ctx.int(1))
+        .unwrap();
+    let at2 = v.subs(&ap, &ctx.int(2)).eval().eval_f64().unwrap();
+    assert!((at2 - 1.0 / 3.0).abs() < 1e-12, "{v}");
+}
+
+#[test]
+fn periodic_poles_are_all_found() {
+    // 1/sin x on [0, 10] has poles at 0, π, 2π, 3π → diverges.
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    check_divergent(
+        "1/sin on [0,10]",
+        &(&ctx.int(1) / &x.sin()),
+        &x,
+        &ctx.int(0),
+        &ctx.int(10),
+    );
+    // tan on [2, 4] contains the pole at 3π/2 ≈ 4.71? no — π/2 ≈ 1.57 and 3π/2 ≈ 4.71 are outside: finite.
+    check(
+        "tan on [2,4]",
+        &x.tan(),
+        &x,
+        &ctx.int(2),
+        &ctx.int(4),
+        (2f64.cos().abs() / 4f64.cos().abs()).ln(),
+    );
+    // tan on [4, 5]: pole at 3π/2 inside → diverges
+    check_divergent("tan on [4,5]", &x.tan(), &x, &ctx.int(4), &ctx.int(5));
+}

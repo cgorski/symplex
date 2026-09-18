@@ -56,7 +56,27 @@ pub(crate) fn residue(
     if point == arena.infinity() {
         return residue_at_infinity(arena, expr, var);
     }
+    let result = residue_inner(arena, expr, var, point)?;
+    // The limit engine can leak internal dummy symbols into a half-finished
+    // result; a residue may only mention symbols of the input.
+    let mut allowed: Vec<ExprId> = walk::free_symbols(arena, expr);
+    allowed.extend(walk::free_symbols(arena, point));
+    if walk::free_symbols(arena, result)
+        .iter()
+        .any(|s| !allowed.contains(s))
+    {
+        return Err(failed("limit engine returned an incomplete result"));
+    }
+    Ok(result)
+}
 
+/// [`residue`] without the final symbol-leak check.
+fn residue_inner(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+) -> Result<ExprId, SymplexError> {
     // Shift the pole to the origin: g(t) = f(point + t).
     let t = arena.symbol("__res_t");
     let shifted_var = arena.add(&[point, t]);
