@@ -1382,4 +1382,47 @@ mod tests {
         let s = a.display(expr).to_string();
         assert!(!s.contains("+ -"), "should not have '+ -' pattern: {s}");
     }
+
+    // ── 0.2 nodes ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn display_named_constants() {
+        let a = Arena::new();
+        assert_display!(a, a.euler_gamma, "EulerGamma");
+        assert_display!(a, a.catalan, "Catalan");
+        assert_display!(a, a.golden_ratio, "GoldenRatio");
+    }
+
+    #[test]
+    fn display_complex_and_special_nodes() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let n = a.symbol("n");
+        let cases = [
+            (a.intern(ExprNode::Re(x)), "re(x)"),
+            (a.intern(ExprNode::Im(x)), "im(x)"),
+            (a.intern(ExprNode::Conjugate(x)), "conjugate(x)"),
+            (a.intern(ExprNode::Arg(x)), "arg(x)"),
+            (a.intern(ExprNode::Si(x)), "Si(x)"),
+            (a.intern(ExprNode::Ci(x)), "Ci(x)"),
+            (a.intern(ExprNode::Ei(x)), "Ei(x)"),
+            (a.intern(ExprNode::Li(x)), "li(x)"),
+            (a.intern(ExprNode::Zeta(x)), "zeta(x)"),
+            (a.intern(ExprNode::Polygamma(n, x)), "polygamma(n, x)"),
+            (
+                a.intern(ExprNode::KroneckerDelta(n, x)),
+                "KroneckerDelta(n, x)",
+            ),
+        ];
+        for (id, expected) in cases {
+            assert_display!(a, id, expected);
+        }
+        // Function nodes behave as atoms w.r.t. precedence: no extra parens.
+        let re_x = a.intern(ExprNode::Re(x));
+        let two = a.int(2);
+        let prod = a.mul(&[two, re_x]);
+        assert_display!(a, prod, "2*re(x)");
+        let sq = a.pow(re_x, two);
+        assert_display!(a, sq, "re(x)^2");
+    }
 }

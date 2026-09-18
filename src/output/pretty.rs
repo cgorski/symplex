@@ -1230,4 +1230,59 @@ mod tests {
         let nf = a.factorial(n);
         assert_eq!(pp(&a, nf), "n!");
     }
+
+    // ── 0.2 nodes ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn pretty_named_constants() {
+        let a = Arena::new();
+        assert_eq!(pp(&a, a.euler_gamma), "γ");
+        assert_eq!(pp(&a, a.catalan), "G");
+        assert_eq!(pp(&a, a.golden_ratio), "φ");
+        assert_eq!(pp_ascii(&a, a.euler_gamma), "EulerGamma");
+        assert_eq!(pp_ascii(&a, a.catalan), "Catalan");
+        assert_eq!(pp_ascii(&a, a.golden_ratio), "GoldenRatio");
+    }
+
+    #[test]
+    fn pretty_complex_nodes() {
+        let mut a = Arena::new();
+        let z = sym(&mut a, "z");
+        let re_z = a.intern(ExprNode::Re(z));
+        assert_eq!(pp(&a, re_z), "re(z)");
+        let arg_z = a.intern(ExprNode::Arg(z));
+        assert_eq!(pp_ascii(&a, arg_z), "arg(z)");
+        let conj_z = a.intern(ExprNode::Conjugate(z));
+        // Unicode: overline above the argument.
+        let rendered = pp(&a, conj_z);
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(lines.len(), 2, "{rendered}");
+        assert_eq!(lines[0].trim(), "‾");
+        assert_eq!(lines[1].trim(), "z");
+        assert_eq!(pp_ascii(&a, conj_z), "conjugate(z)");
+    }
+
+    #[test]
+    fn pretty_special_functions() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let n = sym(&mut a, "n");
+        let si = a.intern(ExprNode::Si(x));
+        assert_eq!(pp(&a, si), "Si(x)");
+        let li = a.intern(ExprNode::Li(x));
+        assert_eq!(pp_ascii(&a, li), "li(x)");
+        let zeta = a.intern(ExprNode::Zeta(x));
+        assert_eq!(pp(&a, zeta), "ζ(x)");
+        assert_eq!(pp_ascii(&a, zeta), "zeta(x)");
+        let pg = a.intern(ExprNode::Polygamma(n, x));
+        let rendered = pp(&a, pg);
+        assert!(
+            rendered.contains('ψ') && rendered.contains("(n)"),
+            "{rendered}"
+        );
+        assert_eq!(pp_ascii(&a, pg), "polygamma(n, x)");
+        let kd = a.intern(ExprNode::KroneckerDelta(n, x));
+        assert_eq!(pp(&a, kd), "δ(n,x)");
+        assert_eq!(pp_ascii(&a, kd), "KroneckerDelta(n, x)");
+    }
 }

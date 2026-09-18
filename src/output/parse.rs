@@ -1311,4 +1311,56 @@ mod tests {
         let simplified = result.simplify();
         assert_eq!(format!("{simplified}"), "1");
     }
+
+    // ── 0.2 nodes ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_named_constants() {
+        let ctx = Context::new();
+        assert_eq!(parse(&ctx, "EulerGamma").unwrap(), ctx.euler_gamma());
+        assert_eq!(parse(&ctx, "Catalan").unwrap(), ctx.catalan());
+        assert_eq!(parse(&ctx, "GoldenRatio").unwrap(), ctx.golden_ratio());
+        assert_eq!(parse(&ctx, "zoo").unwrap(), ctx.complex_infinity());
+        assert_eq!(
+            parse_and_display("EulerGamma + Catalan"),
+            "EulerGamma + Catalan"
+        );
+    }
+
+    #[test]
+    fn parse_complex_functions() {
+        let ctx = Context::new();
+        let z = ctx.symbol("z");
+        assert_eq!(parse(&ctx, "re(z)").unwrap(), z.re());
+        assert_eq!(parse(&ctx, "im(z)").unwrap(), z.im());
+        assert_eq!(parse(&ctx, "conjugate(z)").unwrap(), z.conjugate());
+        assert_eq!(parse(&ctx, "conj(z)").unwrap(), z.conjugate());
+        assert_eq!(parse(&ctx, "arg(z)").unwrap(), z.arg());
+        assert_eq!(parse_and_display("Re(3 + 4*I)"), "3");
+        assert_eq!(parse_and_display("im(3 + 4*I)"), "4");
+    }
+
+    #[test]
+    fn parse_special_functions() {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let n = ctx.symbol("n");
+        assert_eq!(parse(&ctx, "Si(x)").unwrap(), x.si());
+        assert_eq!(parse(&ctx, "Ci(x)").unwrap(), x.ci());
+        assert_eq!(parse(&ctx, "Ei(x)").unwrap(), x.ei());
+        assert_eq!(parse(&ctx, "li(x)").unwrap(), x.li());
+        assert_eq!(parse(&ctx, "zeta(x)").unwrap(), x.zeta());
+        assert_eq!(parse(&ctx, "polygamma(n, x)").unwrap(), x.polygamma(&n));
+        assert_eq!(
+            parse(&ctx, "KroneckerDelta(n, x)").unwrap(),
+            x.kronecker_delta(&n)
+        );
+        assert_eq!(
+            parse(&ctx, "kronecker_delta(n, x)").unwrap(),
+            x.kronecker_delta(&n)
+        );
+        assert_eq!(parse_and_display("zeta(2)"), "1/6*pi^2");
+        assert_eq!(parse_and_display("Si(0)"), "0");
+        assert_eq!(parse_and_display("atan2(1, 1)"), "atan2(1, 1)");
+    }
 }

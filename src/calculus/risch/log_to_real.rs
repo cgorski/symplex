@@ -266,7 +266,16 @@ pub(crate) fn log_to_real(
             continue;
         }
 
-        let (re_raw, im_raw) = crate::base::complex::as_real_imag(arena, root.value);
+        // The decomposition must be exact (no opaque `re(…)`/`im(…)` nodes):
+        // nested Cardano/Ferrari radicals of complex numbers cannot be split
+        // into real algebraic parts, and using them would only produce an
+        // unusable `ln`/`atan` form.  Bail out so the caller can fall back.
+        let parts = crate::base::complex::decompose(arena, root.value);
+        if !parts.exact {
+            tracing::debug!(idx, "log_to_real: root has no exact Re/Im decomposition");
+            return None;
+        }
+        let (re_raw, im_raw) = (parts.re, parts.im);
         let u_val = crate::transforms::eval::eval(arena, re_raw);
         let v_val = crate::transforms::eval::eval(arena, im_raw);
 

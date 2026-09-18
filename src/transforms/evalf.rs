@@ -4599,4 +4599,177 @@ mod tests {
             "Y_0(1) should be ~0.0883, got {result}"
         );
     }
+
+    // ── 0.2: named constants ───────────────────────────────────────────────
+
+    #[test]
+    fn euler_gamma_and_catalan_high_precision() {
+        let a = Arena::new();
+        assert_evalf_starts_with(
+            &a,
+            a.euler_gamma,
+            60,
+            "0.57721566490153286060651209008240243104215933593992359880576",
+        );
+        assert_evalf_starts_with(
+            &a,
+            a.catalan,
+            60,
+            "0.91596559417721901505460351493238411077414937428167213426649",
+        );
+        assert_evalf_starts_with(
+            &a,
+            a.golden_ratio,
+            40,
+            "1.61803398874989484820458683436563811772",
+        );
+    }
+
+    #[test]
+    fn bigint_to_bigfloat_is_exact_for_huge_integers() {
+        // 2^200 + 1 is far beyond i128; its BigFloat must keep all bits.
+        let n = (BigInt::from(1) << 200) + BigInt::from(1);
+        let bf = bigint_to_bigfloat(&n, 256);
+        let two200 = BigFloat::from_i32(2, 256).powi(200, 256, RoundingMode::ToEven);
+        let diff = bf.sub(&two200, 256, RoundingMode::ToEven);
+        assert_eq!(diff, BigFloat::from_i32(1, 256));
+    }
+
+    #[test]
+    fn bf_pow_handles_exactly_representable_results() {
+        // BigFloat::pow would hang on 4^(1/2) = 2; bf_pow must not.
+        let mut cc = Consts::new().unwrap();
+        let rm = RoundingMode::ToEven;
+        let four = BigFloat::from_i32(4, 160);
+        let half = BigFloat::from_f64(0.5, 160);
+        let r = bf_pow(&four, &half, 160, rm, &mut cc);
+        let diff = r.sub(&BigFloat::from_i32(2, 160), 160, rm);
+        assert!(
+            diff.is_zero() || diff.exponent().is_none_or(|e| e < -140),
+            "4^0.5 = {r}"
+        );
+        // integer exponent path
+        let three = BigFloat::from_i32(3, 160);
+        let r = bf_pow(&three, &BigFloat::from_i32(5, 160), 160, rm, &mut cc);
+        assert_eq!(r, BigFloat::from_i32(243, 160));
+        let r = bf_pow(&three, &BigFloat::from_i32(-1, 160), 160, rm, &mut cc);
+        let back = r.mul(&three, 160, rm);
+        let d = back.sub(&BigFloat::from_i32(1, 160), 160, rm);
+        assert!(d.is_zero() || d.exponent().is_none_or(|e| e < -140));
+    }
+
+    // ── 0.2: special functions ──────────────────────────────────────────────
+
+    #[test]
+    fn si_ci_ei_li_at_one_and_two() {
+        let mut a = Arena::new();
+        let one = a.one;
+        let two = a.int(2);
+        let si = a.si(one);
+        assert_evalf_starts_with(&a, si, 20, "0.94608307036718301494");
+        let ci = a.ci(one);
+        assert_evalf_starts_with(&a, ci, 20, "0.33740392290096813466");
+        let ei = a.ei(one);
+        assert_evalf_starts_with(&a, ei, 20, "1.8951178163559367554");
+        let li = a.li(two);
+        assert_evalf_starts_with(&a, li, 20, "1.0451637801174927848");
+    }
+
+    #[test]
+    fn si_asymptotic_and_series_regimes_agree() {
+        // Evaluate Si(40) at two precisions: at low precision the asymptotic
+        // expansion is used (40 > 160·ln2 ≈ 111 is false …), so force the
+        // regimes by comparing against the same value at higher precision
+        // where the series is used.
+        let mut a = Arena::new();
+        let x = a.int(200);
+        let si = a.si(x);
+        let lo = evalf(&a, si, 12).unwrap(); // asymptotic (200 > 128·ln2)
+        let hi = evalf(&a, si, 120).unwrap(); // series (200 < 472·ln2)
+        assert!(hi.starts_with(&lo[..12]), "{lo} vs {hi}");
+    }
+
+    #[test]
+    fn zeta_borwein_and_functional_equation() {
+        let mut a = Arena::new();
+        let three = a.int(3);
+        let z3 = a.zeta(three);
+        assert_evalf_starts_with(&a, z3, 30, "1.20205690315959428539973816151");
+        let half = a.rational(1, 2);
+        let zh = a.zeta(half);
+        assert_evalf_starts_with(&a, zh, 20, "-1.4603545088095868128");
+        // ζ(−5/2) > 0 (ζ is positive on (−4, −2); ζ(−3) = 1/120).
+        let neg = a.rational(-5, 2);
+        let zn = a.zeta(neg);
+        assert_evalf_starts_with(&a, zn, 15, "0.00851692877785");
+        // ζ(−1/2) < 0
+        let neg_half = a.rational(-1, 2);
+        let znh = a.zeta(neg_half);
+        assert_evalf_starts_with(&a, znh, 15, "-0.20788622497735");
+    }
+
+    #[test]
+    fn polygamma_matches_trigamma_closed_forms() {
+        let mut a = Arena::new();
+        // Build the node structurally so the exact folding does not kick in.
+        let one = a.one;
+        let x = a.rational(7, 3);
+        let pg = a.intern(ExprNode::Polygamma(one, x));
+        assert_evalf_starts_with(&a, pg, 20, "0.53309712542709408179");
+        // ψ'(1/2) = π²/2 through the numerical path
+        let half = a.rational(1, 2);
+        let pg_half = a.intern(ExprNode::Polygamma(one, half));
+        assert_evalf_starts_with(&a, pg_half, 20, "4.9348022005446793094");
+    }
+
+    #[test]
+    fn bessel_i_k_reference() {
+        let mut a = Arena::new();
+        let zero = a.zero;
+        let one = a.one;
+        let i0 = a.besseli(zero, one);
+        assert_evalf_starts_with(&a, i0, 20, "1.2660658777520083355");
+        let k0 = a.besselk(zero, one);
+        assert_evalf_starts_with(&a, k0, 20, "0.42102443824070833333");
+        let k1 = a.besselk(one, one);
+        assert_evalf_starts_with(&a, k1, 20, "0.60190723019723457473");
+    }
+
+    #[test]
+    fn orthogonal_polynomials_large_degree() {
+        let mut a = Arena::new();
+        let n = a.int(100);
+        let third = a.rational(1, 3);
+        let t = a.chebyshev_t(n, third);
+        let s = evalf(&a, t, 15).unwrap();
+        let v: f64 = s.parse().unwrap();
+        let expected = (100.0 * (1.0f64 / 3.0).acos()).cos();
+        assert!((v - expected).abs() < 1e-12, "{v} vs {expected}");
+        let p = a.legendre(n, a.one);
+        assert_evalf_starts_with(&a, p, 10, "1");
+    }
+
+    #[test]
+    fn complex_nodes_evaluate_numerically() {
+        let mut a = Arena::new();
+        let z = a.symbol("z");
+        let re_z = a.intern(ExprNode::Re(z));
+        let arg_z = a.intern(ExprNode::Arg(z));
+        let conj_z = a.intern(ExprNode::Conjugate(z));
+        let three = a.int(3);
+        let four = a.int(4);
+        let four_i = a.mul(&[four, a.i_unit]);
+        let w = a.add(&[three, four_i]);
+        // Substitute structurally *without* refolding: intern the nodes
+        // directly on w.
+        let _ = re_z;
+        let re_w = a.intern(ExprNode::Re(w));
+        let arg_w = a.intern(ExprNode::Arg(w));
+        let conj_w = a.intern(ExprNode::Conjugate(w));
+        let _ = (arg_z, conj_z);
+        assert_eq!(evalf(&a, re_w, 10).unwrap(), "3");
+        assert_evalf_starts_with(&a, arg_w, 15, "0.92729521800161");
+        let s = evalf(&a, conj_w, 10).unwrap();
+        assert!(s.contains('3') && s.contains('4') && s.contains('-'), "{s}");
+    }
 }

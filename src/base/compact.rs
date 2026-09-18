@@ -474,4 +474,31 @@ mod tests {
             src_count
         );
     }
+
+    #[test]
+    fn transfer_new_constants_and_function_nodes() {
+        let mut src = Arena::new();
+        let z = src.symbol("z");
+        let n = src.symbol("n");
+        let re_z = src.intern(ExprNode::Re(z));
+        let conj_z = src.intern(ExprNode::Conjugate(z));
+        let pg = src.intern(ExprNode::Polygamma(n, z));
+        let kd = src.intern(ExprNode::KroneckerDelta(n, z));
+        let si = src.intern(ExprNode::Si(z));
+        let consts = src.add(&[src.euler_gamma, src.catalan, src.golden_ratio]);
+        let root = src.add(&[re_z, conj_z, pg, kd, si, consts]);
+
+        let mut dst = Arena::new();
+        let mut map = FxHashMap::default();
+        let new_root = transfer_subtree(&src, &mut dst, root, &mut map);
+
+        assert_eq!(
+            dst.display(new_root).to_string(),
+            src.display(root).to_string()
+        );
+        // Pre-interned constants map onto the destination's own singletons.
+        assert_eq!(map[&src.euler_gamma], dst.euler_gamma);
+        assert_eq!(map[&src.catalan], dst.catalan);
+        assert_eq!(map[&src.golden_ratio], dst.golden_ratio);
+    }
 }

@@ -1528,4 +1528,40 @@ mod tests {
             "coefficient times variable shouldn't use cdot: {latex}"
         );
     }
+
+    // ── 0.2 nodes ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn latex_named_constants() {
+        let ctx = crate::api::context::Context::new();
+        assert_eq!(ctx.euler_gamma().to_latex(), r"\gamma");
+        assert_eq!(ctx.catalan().to_latex(), "G");
+        assert_eq!(ctx.golden_ratio().to_latex(), r"\phi");
+    }
+
+    #[test]
+    fn latex_complex_nodes() {
+        let ctx = crate::api::context::Context::new();
+        let z = ctx.symbol("z");
+        assert_eq!(z.re().to_latex(), r"\Re\left(z\right)");
+        assert_eq!(z.im().to_latex(), r"\Im\left(z\right)");
+        assert_eq!(z.conjugate().to_latex(), r"\overline{z}");
+        assert_eq!(z.arg().to_latex(), r"\arg\left(z\right)");
+        let sum = &z + 1;
+        assert_eq!(sum.conjugate().to_latex(), r"\overline{z} + 1");
+    }
+
+    #[test]
+    fn latex_special_functions() {
+        let ctx = crate::api::context::Context::new();
+        let x = ctx.symbol("x");
+        let n = ctx.symbol("n");
+        assert_eq!(x.si().to_latex(), r"\operatorname{Si}\left(x\right)");
+        assert_eq!(x.ci().to_latex(), r"\operatorname{Ci}\left(x\right)");
+        assert_eq!(x.ei().to_latex(), r"\operatorname{Ei}\left(x\right)");
+        assert_eq!(x.li().to_latex(), r"\operatorname{li}\left(x\right)");
+        assert_eq!(x.zeta().to_latex(), r"\zeta\left(x\right)");
+        assert_eq!(x.polygamma(&n).to_latex(), r"\psi^{(n)}\left(x\right)");
+        assert_eq!(x.kronecker_delta(&n).to_latex(), r"\delta_{n x}");
+    }
 }

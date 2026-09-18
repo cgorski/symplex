@@ -1384,4 +1384,60 @@ mod tests {
         let back = tree_to_expr(&mut a, &tree);
         assert_eq!(display(&a, back), "Integral(sin(x), x)");
     }
+
+    // ── 0.2 nodes ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn roundtrip_named_constants() {
+        let mut a = Arena::new();
+        for id in [a.euler_gamma, a.catalan, a.golden_ratio] {
+            let tree = expr_to_tree(&a, id);
+            let json = serde_json::to_string(&tree).unwrap();
+            let tree2: ExprTree = serde_json::from_str(&json).unwrap();
+            assert_eq!(tree2, tree);
+            assert_eq!(tree_to_expr(&mut a, &tree2), id);
+        }
+        assert_eq!(expr_to_tree(&a, a.euler_gamma), ExprTree::EulerGamma);
+        assert_eq!(expr_to_tree(&a, a.catalan), ExprTree::Catalan);
+        assert_eq!(expr_to_tree(&a, a.golden_ratio), ExprTree::GoldenRatio);
+    }
+
+    #[test]
+    fn roundtrip_complex_and_special_nodes() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let n = a.symbol("n");
+        let nodes = [
+            a.intern(ExprNode::Re(x)),
+            a.intern(ExprNode::Im(x)),
+            a.intern(ExprNode::Conjugate(x)),
+            a.intern(ExprNode::Arg(x)),
+            a.intern(ExprNode::Si(x)),
+            a.intern(ExprNode::Ci(x)),
+            a.intern(ExprNode::Ei(x)),
+            a.intern(ExprNode::Li(x)),
+            a.intern(ExprNode::Zeta(x)),
+            a.intern(ExprNode::Polygamma(n, x)),
+            a.intern(ExprNode::KroneckerDelta(n, x)),
+        ];
+        for id in nodes {
+            let tree = expr_to_tree(&a, id);
+            let json = serde_json::to_string(&tree).unwrap();
+            let tree2: ExprTree = serde_json::from_str(&json).unwrap();
+            let back = tree_to_expr(&mut a, &tree2);
+            assert_eq!(back, id, "round trip of {}", display(&a, id));
+        }
+    }
+
+    #[test]
+    fn tree_to_expr_uses_canonical_constructors() {
+        // Deserialising `Zeta(2)` folds to π²/6, like the constructor does.
+        let mut a = Arena::new();
+        let two = a.int(2);
+        let tree = ExprTree::Zeta {
+            arg: Box::new(expr_to_tree(&a, two)),
+        };
+        let id = tree_to_expr(&mut a, &tree);
+        assert_eq!(display(&a, id), "1/6*pi^2");
+    }
 }

@@ -69,7 +69,7 @@ impl Expr<Numeric> {
     ///
     /// let x = ctx.symbol_with("x", &[Assumption::Real]);
     /// assert!(x.im().is_zero_structural());
-    /// assert_eq!(format!("{}", x.exp().mul(&i).im()), "exp(x)");
+    /// assert_eq!(format!("{}", (&x.exp() * &i).im()), "exp(x)");
     /// ```
     #[must_use]
     pub fn im(&self) -> Ex {

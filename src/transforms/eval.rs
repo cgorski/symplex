@@ -4004,4 +4004,123 @@ mod tests {
         let expected = arena.int(-2);
         assert_eq!(result, expected, "(-8)^(1/3) should be -2");
     }
+
+    // ── 0.2 special functions ─────────────────────────────────────────────
+
+    #[test]
+    fn eval_zeta_table() {
+        let mut a = Arena::new();
+        let cases: [(i64, &str); 8] = [
+            (0, "-1/2"),
+            (-1, "-1/12"),
+            (-2, "0"),
+            (-3, "1/120"),
+            (-9, "-1/132"),
+            (2, "1/6*pi^2"),
+            (4, "1/90*pi^4"),
+            (14, "2/18243225*pi^14"),
+        ];
+        for (s, expected) in cases {
+            let sid = a.int(s);
+            let z = a.zeta(sid);
+            assert_eq!(display(&a, z), expected, "zeta({s})");
+        }
+        let one = a.one;
+        assert_eq!(a.zeta(one), a.complex_infinity);
+        let three = a.int(3);
+        let z3 = a.zeta(three);
+        assert!(matches!(a.node(z3), ExprNode::Zeta(_)));
+        // Huge even arguments are left symbolic (no gigantic rationals).
+        let big = a.int(400);
+        let zb = a.zeta(big);
+        assert!(matches!(a.node(zb), ExprNode::Zeta(_)));
+    }
+
+    #[test]
+    fn eval_si_ci_ei_li_special_points() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        assert_eq!(a.si(a.zero), a.zero);
+        let si_inf = a.si(a.infinity);
+        assert_eq!(display(&a, si_inf), "1/2*pi");
+        let neg_x = a.neg(x);
+        let si_neg = a.si(neg_x);
+        let si_x = a.si(x);
+        assert_eq!(si_neg, a.neg(si_x));
+        assert_eq!(a.ci(a.infinity), a.zero);
+        assert_eq!(a.ei(a.neg_infinity), a.zero);
+        assert_eq!(a.li(a.zero), a.zero);
+        assert_eq!(a.li(a.one), a.neg_infinity);
+        let ex = a.exp(x);
+        let li_ex = a.li(ex);
+        let ei_x = a.ei(x);
+        assert_eq!(li_ex, ei_x);
+        // eval() refolds after substitution
+        let si_x = a.si(x);
+        let sub = a.subs_structural(si_x, x, a.zero);
+        assert_eq!(sub, a.zero);
+    }
+
+    #[test]
+    fn eval_polygamma_and_digamma_values() {
+        let mut a = Arena::new();
+        let one = a.one;
+        let two = a.int(2);
+        let half = a.rational(1, 2);
+        // ψ'(1) = ζ(2)
+        let p11 = a.polygamma(one, one);
+        let z2 = a.zeta(two);
+        assert_eq!(p11, z2);
+        // ψ''(1/2) = −14 ζ(3)
+        let p2h = a.polygamma(two, half);
+        assert_eq!(display(&a, p2h), "-14*zeta(3)");
+        // ψ'(4) = π²/6 − 1 − 1/4 − 1/9 = π²/6 − 49/36
+        let four = a.int(4);
+        let p14 = a.polygamma(one, four);
+        assert_eq!(display(&a, p14), "1/6*pi^2 - 49/36");
+        // ψ(4) = −γ + 11/6
+        let d4 = a.digamma(four);
+        let d4e = eval(&mut a, d4);
+        assert_eq!(display(&a, d4e), "-EulerGamma + 11/6");
+        // order 0 → digamma node
+        let x = sym(&mut a, "x");
+        let p0 = a.polygamma(a.zero, x);
+        assert!(matches!(a.node(p0), ExprNode::Digamma(_)));
+        // non-integer order stays symbolic
+        let ph = a.polygamma(half, x);
+        assert!(matches!(a.node(ph), ExprNode::Polygamma(_, _)));
+    }
+
+    #[test]
+    fn eval_kronecker_delta_values() {
+        let mut a = Arena::new();
+        let i = sym(&mut a, "i");
+        let j = sym(&mut a, "j");
+        assert_eq!(a.kronecker_delta(i, i), a.one);
+        let two = a.int(2);
+        let three = a.int(3);
+        assert_eq!(a.kronecker_delta(two, three), a.zero);
+        assert_eq!(a.kronecker_delta(two, two), a.one);
+        let ip1 = a.add(&[i, a.one]);
+        assert_eq!(a.kronecker_delta(ip1, i), a.zero);
+        let d1 = a.kronecker_delta(i, j);
+        let d2 = a.kronecker_delta(j, i);
+        assert_eq!(d1, d2, "canonical argument order");
+        assert!(matches!(a.node(d1), ExprNode::KroneckerDelta(_, _)));
+    }
+
+    #[test]
+    fn eval_refolds_complex_nodes() {
+        let mut a = Arena::new();
+        let z = sym(&mut a, "z");
+        let re_z = a.re(z);
+        assert!(matches!(a.node(re_z), ExprNode::Re(_)));
+        let three = a.int(3);
+        let four = a.int(4);
+        let four_i = a.mul(&[a.i_unit, four]);
+        let w = a.add(&[three, four_i]);
+        let sub = a.subs_structural(re_z, z, w);
+        let folded = eval(&mut a, sub);
+        assert_eq!(folded, three);
+    }
 }

@@ -1603,4 +1603,121 @@ mod tests {
         let result = diff_with_deps(&mut a, y, three, &deps);
         assert_eq!(result, a.zero);
     }
+
+    // ── 0.2 nodes ────────────────────────────────────────────────────────────
+
+    fn real_sym(a: &mut Arena, name: &str) -> ExprId {
+        use crate::base::assumptions::{Assumptions, Props};
+        let id = a.symbol(name);
+        if let ExprNode::Symbol(sid) = a.node(id).clone() {
+            let mut asm = Assumptions::default();
+            asm.assert_true(Props::REAL);
+            a.set_symbol_assumptions(sid, asm);
+        }
+        id
+    }
+
+    #[test]
+    fn diff_named_constants_are_zero() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        for c in [a.euler_gamma, a.catalan, a.golden_ratio] {
+            assert_eq!(diff(&mut a, c, x), a.zero);
+        }
+    }
+
+    /// Differentiate and render.
+    fn dd(a: &mut Arena, f: ExprId, x: ExprId) -> String {
+        let d = diff(a, f, x);
+        display(a, d)
+    }
+
+    #[test]
+    fn diff_special_functions() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let si = a.si(x);
+        assert_eq!(dd(&mut a, si, x), "sin(x)/x");
+        let ci = a.ci(x);
+        assert_eq!(dd(&mut a, ci, x), "cos(x)/x");
+        let ei = a.ei(x);
+        assert_eq!(dd(&mut a, ei, x), "exp(x)/x");
+        let li = a.li(x);
+        assert_eq!(dd(&mut a, li, x), "1/ln(x)");
+        let dg = a.digamma(x);
+        assert_eq!(dd(&mut a, dg, x), "polygamma(1, x)");
+        let two = a.int(2);
+        let pg = a.polygamma(two, x);
+        assert_eq!(dd(&mut a, pg, x), "polygamma(3, x)");
+        let z = a.zeta(x);
+        let dz = diff(&mut a, z, x);
+        assert!(matches!(a.node(dz), ExprNode::Derivative(_, _)));
+        let y = sym(&mut a, "y");
+        let kd = a.kronecker_delta(x, y);
+        assert_eq!(diff(&mut a, kd, x), a.zero);
+        // chain rule through Si(x²)
+        let x2 = a.pow(x, two);
+        let si_x2 = a.si(x2);
+        assert_eq!(dd(&mut a, si_x2, x), "2*sin(x^2)/x");
+    }
+
+    #[test]
+    fn diff_complex_nodes_require_real_variable() {
+        let mut a = Arena::new();
+        let t = real_sym(&mut a, "t");
+        let z = sym(&mut a, "z");
+        let two = a.int(2);
+        let t2 = a.pow(t, two);
+        let f = a.mul(&[z, t2]);
+        let re_f = a.re(f);
+        assert_eq!(dd(&mut a, re_f, t), "2*t*re(z)");
+        let im_f = a.im(f);
+        assert_eq!(dd(&mut a, im_f, t), "2*t*im(z)");
+        let cf = a.conjugate(f);
+        assert_eq!(dd(&mut a, cf, t), "2*t*conjugate(z)");
+        // arg(z·e^t)' = im(1) = 0
+        let et = a.exp(t);
+        let g = a.mul(&[z, et]);
+        let ag = a.arg(g);
+        assert_eq!(diff(&mut a, ag, t), a.zero);
+        // Non-real variable → formal derivative.
+        let x = sym(&mut a, "x");
+        let re_x = a.re(x);
+        let d = diff(&mut a, re_x, x);
+        assert!(matches!(a.node(d), ExprNode::Derivative(_, _)));
+    }
+
+    #[test]
+    fn diff_bessel_and_orthogonal_apply() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let nu = sym(&mut a, "nu");
+        let j = a.besselj(nu, x);
+        let dj = diff(&mut a, j, x);
+        let half = a.rational(1, 2);
+        let nm1 = a.sub(nu, a.one);
+        let np1 = a.add(&[nu, a.one]);
+        let jm = a.besselj(nm1, x);
+        let jp = a.besselj(np1, x);
+        let diffj = a.sub(jm, jp);
+        let expected = a.mul(&[half, diffj]);
+        assert_eq!(dj, expected);
+        let k = a.besselk(nu, x);
+        let dk = diff(&mut a, k, x);
+        let km = a.besselk(nm1, x);
+        let kp = a.besselk(np1, x);
+        let sumk = a.add(&[km, kp]);
+        let neg_half = a.rational(-1, 2);
+        let expected = a.mul(&[neg_half, sumk]);
+        assert_eq!(dk, expected);
+        let n = sym(&mut a, "n");
+        let t = a.chebyshev_t(n, x);
+        assert_eq!(dd(&mut a, t, x), "n*chebyshev_u(n - 1, x)");
+        let h = a.hermite(n, x);
+        assert_eq!(dd(&mut a, h, x), "2*n*hermite(n - 1, x)");
+        // Order depending on the variable falls back to a formal derivative.
+        let jx = a.besselj(x, x);
+        let d = diff(&mut a, jx, x);
+        assert!(crate::base::walk::has_unevaluated(&a, d));
+    }
 }

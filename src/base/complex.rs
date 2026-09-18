@@ -448,6 +448,44 @@ fn decompose_node(
                 };
             }
 
+            // Exact complex base z = a + bi with a real exponent e, where b is
+            // *provably non-zero*: principal branch via the polar form
+            //   z^e = |z|^e (cos(e·arg z) + i·sin(e·arg z)),
+            //   |z|^e = (a² + b²)^{e/2},  arg z = atan2(b, a).
+            // (Matches e.g. re((1+i)^{1/3}) = 2^{1/6} cos(π/12).)
+            //
+            // The non-zero requirement matters: if b is a symbolic quantity
+            // that happens to vanish (e.g. nested Cardano radicals), z lies on
+            // the branch cut of z^e and `atan2(b, a)` could pick either side,
+            // silently flipping the branch.  Those cases stay opaque.
+            if bp.exact
+                && ep.exact
+                && ep.im == arena.zero
+                && (arena.as_num(exp).is_some()
+                    || assumptions.query(arena, exp, Props::REAL) == Some(true))
+                && (arena.as_num(bp.im).is_some_and(|r| !r.is_zero())
+                    || assumptions.query(arena, bp.im, Props::NONZERO) == Some(true))
+            {
+                let theta = arg(arena, base);
+                if !matches!(arena.node(theta), ExprNode::Arg(_)) {
+                    let two = arena.int(2);
+                    let a2 = arena.pow(bp.re, two);
+                    let b2 = arena.pow(bp.im, two);
+                    let r2 = arena.add(&[a2, b2]);
+                    let half = arena.rational(1, 2);
+                    let half_e = arena.mul(&[half, exp]);
+                    let modulus_e = arena.pow(r2, half_e);
+                    let angle = arena.mul(&[exp, theta]);
+                    let c = fcos(arena, angle);
+                    let s = fsin(arena, angle);
+                    return Parts {
+                        re: arena.mul(&[modulus_e, c]),
+                        im: arena.mul(&[modulus_e, s]),
+                        exact: true,
+                    };
+                }
+            }
+
             // Branch cuts (non-integer powers of possibly negative or
             // complex bases): unevaluated.
             opaque(arena, id)
@@ -1310,6 +1348,42 @@ mod tests {
         let sp = a.sqrt(p);
         assert_eq!(re(&mut a, sp), sp);
         assert_eq!(im(&mut a, sp), a.zero);
+    }
+
+    #[test]
+    fn complex_power_polar_form_when_imaginary_part_is_nonzero() {
+        let mut a = Arena::new();
+        let one = a.one;
+        let z = a.add(&[one, a.i_unit]); // 1 + i
+        let third = a.rational(1, 3);
+        let c = a.pow(z, third);
+        let p = decompose(&mut a, c);
+        assert!(p.exact);
+        assert_eq!(display(&a, p.re), "2^(1/6)*cos(1/12*pi)");
+        assert_eq!(display(&a, p.im), "2^(1/6)*sin(1/12*pi)");
+        // Symbolic real x with a provably non-zero imaginary part.
+        let x = real_sym(&mut a, "x");
+        let w = a.add(&[x, a.i_unit]);
+        let cw = a.pow(w, third);
+        let pw = decompose(&mut a, cw);
+        assert!(pw.exact);
+        assert_eq!(display(&a, pw.re), "(x^2 + 1)^(1/6)*cos(1/3*atan2(1, x))");
+    }
+
+    #[test]
+    fn complex_power_stays_opaque_when_imaginary_part_may_vanish() {
+        // y real but possibly zero: (x + i y)^(1/3) could sit on the branch
+        // cut, so no polar decomposition is attempted.
+        let mut a = Arena::new();
+        let x = real_sym(&mut a, "x");
+        let y = real_sym(&mut a, "y");
+        let iy = a.mul(&[a.i_unit, y]);
+        let w = a.add(&[x, iy]);
+        let third = a.rational(1, 3);
+        let cw = a.pow(w, third);
+        let pw = decompose(&mut a, cw);
+        assert!(!pw.exact);
+        assert!(matches!(a.node(pw.re), ExprNode::Re(_)));
     }
 
     #[test]

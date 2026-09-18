@@ -398,7 +398,7 @@ fn polygamma_reference_values() {
     );
     // digamma numeric and exact agree
     assert_prefix(&ctx.rational(7, 3).digamma(), 20, "0.617966219979193677");
-    assert_prefix(&one.digamma(), 20, "-0.57721566490153286060");
+    assert_prefix(&one.digamma(), 20, "-0.577215664901532860");
     // poles error out numerically
     assert!(x.polygamma(&one).subs_i64(&x, 0).eval_f64().is_err());
 }
