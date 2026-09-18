@@ -194,7 +194,7 @@ pub(crate) fn canon_add(arena: &mut Arena, args: &[ExprId]) -> ExprId {
     };
     #[cfg(debug_assertions)]
     {
-        let errors = verify_canonical(arena, result);
+        let errors = verify_canonical_shallow(arena, result);
         if !errors.is_empty() {
             tracing::debug!("canon_add: non-canonical result: {:?}", errors);
         }
@@ -586,9 +586,9 @@ pub(crate) fn canon_mul(arena: &mut Arena, args: &[ExprId]) -> ExprId {
         _ => arena.intern(ExprNode::Mul(result_args)),
     };
     debug_assert!(
-        verify_canonical(arena, result).is_empty(),
+        verify_canonical_shallow(arena, result).is_empty(),
         "canon_mul produced non-canonical result: {:?}",
-        verify_canonical(arena, result)
+        verify_canonical_shallow(arena, result)
     );
     result
 }
@@ -924,7 +924,7 @@ pub(crate) fn canon_pow(arena: &mut Arena, base: ExprId, exp: ExprId) -> ExprId 
     let result = arena.intern(ExprNode::Pow(base, exp));
     #[cfg(debug_assertions)]
     {
-        let errors = verify_canonical(arena, result);
+        let errors = verify_canonical_shallow(arena, result);
         if !errors.is_empty() {
             tracing::debug!("canon_pow: non-canonical result: {:?}", errors);
         }
@@ -1084,7 +1084,7 @@ pub(crate) fn canon_neg(arena: &mut Arena, expr: ExprId) -> ExprId {
     };
     #[cfg(debug_assertions)]
     {
-        let errors = verify_canonical(arena, result);
+        let errors = verify_canonical_shallow(arena, result);
         if !errors.is_empty() {
             tracing::debug!("canon_neg: non-canonical result: {:?}", errors);
         }
@@ -1291,13 +1291,35 @@ pub(crate) fn canon_set_intersection(arena: &mut Arena, sets: &[ExprId]) -> Expr
 /// Returns a list of violations found. An empty list means the
 /// expression is properly canonical.
 ///
+/// Every node reachable from `id` is checked once (the walk is over the
+/// hash-consed DAG with a visited set, using an explicit stack), so the
+/// cost is proportional to the DAG, not the unfolded tree.
+///
 /// This is intended for use in `debug_assert!` and property-based tests.
 pub(crate) fn verify_canonical(arena: &mut Arena, id: ExprId) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut visited: FxHashSet<ExprId> = FxHashSet::default();
+    let mut stack: Vec<ExprId> = vec![id];
+    while let Some(cur) = stack.pop() {
+        if !visited.insert(cur) {
+            continue;
+        }
+        verify_node(arena, cur, &mut errors);
+        arena.node(cur).for_each_child(|c| stack.push(c));
+    }
+    errors
+}
+
+/// Check the canonical-form invariants of the node `id` itself (not its
+/// descendants).  Constructors call this in debug builds on the node they
+/// just built: the children were verified when *they* were built.
+pub(crate) fn verify_canonical_shallow(arena: &mut Arena, id: ExprId) -> Vec<String> {
     let mut errors = Vec::new();
     verify_node(arena, id, &mut errors);
     errors
 }
 
+/// The per-node invariants behind [`verify_canonical`]; does not recurse.
 fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
     match arena.node(id).clone() {
         ExprNode::Add(ref children) => {
@@ -1344,10 +1366,6 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
                     }
                 }
             }
-            // Recurse into children
-            for &child in children {
-                verify_node(arena, child, errors);
-            }
         }
         ExprNode::Mul(ref children) => {
             // 1. Must have >= 2 children
@@ -1384,10 +1402,6 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
                     "Mul has {num_count} Num children (should be at most 1)"
                 ));
             }
-            // Recurse
-            for &child in children {
-                verify_node(arena, child, errors);
-            }
         }
         ExprNode::Neg(inner) => {
             // 1. No double negation
@@ -1402,7 +1416,6 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
             if matches!(arena.node(inner), ExprNode::Num(_)) {
                 errors.push("Neg(Num) should be folded into negative Num".to_string());
             }
-            verify_node(arena, inner, errors);
         }
         ExprNode::Pow(base, exp) => {
             // 1. exp should not be 0 (should be 1)
@@ -1417,8 +1430,6 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
             if base == arena.one {
                 errors.push("Pow(1, x) should be 1".to_string());
             }
-            verify_node(arena, base, errors);
-            verify_node(arena, exp, errors);
         }
         ExprNode::And(ref children) | ExprNode::Or(ref children) => {
             let label = if matches!(arena.node(id), ExprNode::And(_)) {
@@ -1449,17 +1460,9 @@ fn verify_node(arena: &mut Arena, id: ExprId, errors: &mut Vec<String>) {
                     ));
                 }
             }
-            // Recurse into children
-            for &child in children {
-                verify_node(arena, child, errors);
-            }
         }
-        // Atoms and functions: recurse into children
-        _ => {
-            for &child in arena.node(id).children().iter() {
-                verify_node(arena, child, errors);
-            }
-        }
+        // Atoms and functions carry no ordering invariants of their own.
+        _ => {}
     }
 }
 

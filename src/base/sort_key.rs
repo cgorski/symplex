@@ -15,11 +15,27 @@
 //!    rank, each with a unique sub-rank.
 //!
 //! The [`compute_sort_key`] function builds a [`SortKey`] for a given
-//! [`ExprNode`] by recursively combining the keys of its children via
+//! [`ExprNode`] by combining the (already computed) keys of its children via
 //! caller-provided closures.  This keeps the module decoupled from any
 //! particular arena or storage backend.
+//!
+//! # Bounded size
+//!
+//! A key is the rank byte(s) of the node followed by the keys of its
+//! children.  Left unbounded, that concatenation grows with the size of the
+//! *unfolded tree*, not the hash-consed DAG: for `e ← sin(e) + cos(e)` the
+//! key doubles at every step and construction becomes exponential.  Keys are
+//! therefore capped at [`MAX_KEY_BYTES`]; a key that would be longer is cut
+//! to that prefix and suffixed with a 64-bit structural digest of the whole
+//! (pre-truncation) byte string.  Because a child's stored key already
+//! carries its own digest when it was truncated, the digest depends only on
+//! the expression's structure — never on arena allocation order — so the
+//! resulting order is a deterministic total preorder that agrees with the
+//! unbounded lexicographic order whenever two keys differ within the first
+//! [`MAX_KEY_BYTES`] bytes.
 
 use std::fmt;
+use std::hash::Hasher;
 
 use smallvec::SmallVec;
 
@@ -204,12 +220,19 @@ const SET_COMPLEMENT: u8 = 6;
 // SortKey
 // ---------------------------------------------------------------------------
 
+/// Maximum number of structural bytes kept in a [`SortKey`].
+///
+/// Keys longer than this are truncated and suffixed with an 8-byte digest
+/// (see the module docs), so no stored key exceeds `MAX_KEY_BYTES + 8`
+/// bytes and building a node's key costs `O(arity · MAX_KEY_BYTES)` at most.
+pub const MAX_KEY_BYTES: usize = 256;
+
 /// A compact byte sequence whose lexicographic order defines the canonical
 /// ordering of expression nodes.
 ///
 /// The inner [`SmallVec`] is stack-allocated for keys up to 24 bytes, which
 /// covers the vast majority of leaf and simple composite nodes without a heap
-/// allocation.
+/// allocation.  No key is longer than [`MAX_KEY_BYTES`]` + 8`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct SortKey(SmallVec<[u8; 24]>);
 
@@ -236,6 +259,31 @@ impl SortKey {
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
+    }
+
+    /// Was this key cut to [`MAX_KEY_BYTES`] and suffixed with a digest?
+    #[inline]
+    pub fn is_truncated(&self) -> bool {
+        self.0.len() > MAX_KEY_BYTES
+    }
+
+    /// Enforce the size bound: keys longer than [`MAX_KEY_BYTES`] are cut
+    /// to that prefix and suffixed with a 64-bit digest of the full byte
+    /// string, so that distinct long keys still (almost surely) compare
+    /// unequal and the order stays deterministic.
+    ///
+    /// A non-truncated key of exactly `MAX_KEY_BYTES` bytes is a proper
+    /// prefix of any truncated key sharing those bytes and thus sorts
+    /// first — consistent with the unbounded lexicographic order.
+    fn bound(mut self) -> Self {
+        if self.0.len() > MAX_KEY_BYTES {
+            let mut h = rustc_hash::FxHasher::default();
+            h.write(&self.0);
+            let digest = h.finish().to_be_bytes();
+            self.0.truncate(MAX_KEY_BYTES);
+            self.0.extend_from_slice(&digest);
+        }
+        self
     }
 }
 
@@ -899,7 +947,7 @@ pub fn compute_sort_key(
         }
     }
 
-    key
+    key.bound()
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,6 +1082,37 @@ mod tests {
                 assert!(keys[i] < keys[j], "constant sub-ranks must be ordered");
             }
         }
+    }
+
+    #[test]
+    fn long_keys_are_bounded_and_deterministic() {
+        // A child key that is already at the bound.
+        let big = SortKey(SmallVec::from_slice(&vec![7u8; MAX_KEY_BYTES]));
+        let get = |_| big.clone();
+        let add = ExprNode::Add(smallvec![ExprId(0), ExprId(1)]);
+        let k1 = compute_sort_key(&add, get, |_| unreachable!(), |_| unreachable!());
+        assert!(k1.is_truncated());
+        assert_eq!(k1.as_bytes().len(), MAX_KEY_BYTES + 8);
+        // Same structure → identical key (digest depends only on bytes).
+        let k2 = compute_sort_key(&add, get, |_| unreachable!(), |_| unreachable!());
+        assert_eq!(k1, k2);
+        // Different structure with the same prefix → different digest.
+        let add3 = ExprNode::Add(smallvec![ExprId(0), ExprId(1), ExprId(2)]);
+        let k3 = compute_sort_key(&add3, get, |_| unreachable!(), |_| unreachable!());
+        assert!(k3.is_truncated());
+        assert_ne!(k1, k3);
+        assert_eq!(
+            k1.as_bytes()[..MAX_KEY_BYTES],
+            k3.as_bytes()[..MAX_KEY_BYTES]
+        );
+        // A non-truncated key sharing the prefix sorts before a truncated one.
+        let exact = SortKey(SmallVec::from_slice(&k1.as_bytes()[..MAX_KEY_BYTES]));
+        assert!(!exact.is_truncated());
+        assert!(exact < k1);
+        // Short keys are untouched.
+        let small = atom_key(&ExprNode::Pi);
+        assert!(!small.is_truncated());
+        assert_eq!(small.as_bytes().len(), 2);
     }
 
     #[test]
