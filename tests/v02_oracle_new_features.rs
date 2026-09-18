@@ -19,31 +19,12 @@ const TOL: f64 = 1e-9;
 
 /// Library bugs surfaced by this file (strict xfail — see common module).
 /// Subcategory `"*"` matches any subcategory of the category.
-const KNOWN_BUGS: &[KnownBug] = &[
-    // BUG: bessel_j / bessel_y evaluate to wrong values once the argument
-    // exceeds ~12 (e.g. J0(20) = 0.333 instead of 0.167, J5(20) = 0.018
-    // instead of 0.151, Y0(30) = -0.236 instead of -0.117) — the series /
-    // asymptotic switch-over loses accuracy.  Values at x ≤ 10 are correct
-    // to 1e-16.
-    ("bessel", "*", "J0(15)", "besselj inaccurate for x >~ 12"),
-    ("bessel", "*", "J3(15)", "besselj inaccurate for x >~ 12"),
-    ("bessel", "*", "J0(20)", "besselj inaccurate for x >~ 12"),
-    ("bessel", "*", "J1(20)", "besselj inaccurate for x >~ 12"),
-    ("bessel", "*", "J2(20)", "besselj inaccurate for x >~ 12"),
-    ("bessel", "*", "J5(20)", "besselj inaccurate for x >~ 12"),
-    ("bessel", "*", "J0(30)", "besselj inaccurate for x >~ 12"),
-    ("bessel", "*", "J1(30)", "besselj inaccurate for x >~ 12"),
-    ("bessel", "*", "J0(50)", "besselj inaccurate for x >~ 12"),
-    ("bessel", "*", "Y0(15)", "bessely inaccurate for x >~ 12"),
-    ("bessel", "*", "Y0(20)", "bessely inaccurate for x >~ 12"),
-    ("bessel", "*", "Y5(20)", "bessely inaccurate for x >~ 12"),
-    ("bessel", "*", "Y0(30)", "bessely inaccurate for x >~ 12"),
-    ("bessel", "*", "Y1(50)", "bessely inaccurate for x >~ 12"),
-];
+const KNOWN_BUGS: &[KnownBug] = &[];
 
-/// Reproducer for the large-argument Bessel bug.  SymPy: J0(20) = 0.16702466434058315.
+/// Regression for the large-argument Bessel bug (fixed: the Hankel `P/Q`
+/// expansion double-counted `a_0` and switched on too early).
+/// SymPy: J0(20) = 0.16702466434058315.
 #[test]
-#[ignore = "BUG: bessel_j(0, 20) evaluates to 0.3329 instead of 0.1670 (wrong for x >~ 12)"]
 fn bug_besselj_large_argument() {
     let ctx = Context::new();
     let v = ctx.int(20).bessel_j(&ctx.int(0)).eval_f64().unwrap();
