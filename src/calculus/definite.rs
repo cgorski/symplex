@@ -823,7 +823,7 @@ fn numeric_guard(
         if !walk::free_symbols(arena, w_eval).iter().all(|&s| s == x) {
             return None; // parametric — cannot sample
         }
-        let func = crate::output::lambdify::lambdify(arena, w_eval, &[&x_name])?;
+        let func = crate::output::lambdify::compile(arena, w_eval, &[&x_name]).ok()?;
         let mut prev: Option<(f64, f64)> = None;
         for &t in &grid {
             let v = func(&[t]);
@@ -1361,7 +1361,7 @@ fn numeric_growth_sanity(arena: &mut Arena, g: ExprId, u: ExprId, sign: i8) -> b
         ExprNode::Symbol(sid) => arena.symbol_name(*sid).to_string(),
         _ => return true,
     };
-    let Some(func) = crate::output::lambdify::lambdify(arena, g, &[&u_name]) else {
+    let Ok(func) = crate::output::lambdify::compile(arena, g, &[&u_name]) else {
         return true;
     };
     let samples = [func(&[1e2]), func(&[1e4]), func(&[1e6])];
@@ -1392,7 +1392,7 @@ fn numeric_limit_sanity(arena: &mut Arena, g: ExprId, u: ExprId, l: ExprId) -> b
     let Some(lv) = calculus_util::expr_to_f64(arena, l) else {
         return true;
     };
-    let Some(func) = crate::output::lambdify::lambdify(arena, g, &[&u_name]) else {
+    let Ok(func) = crate::output::lambdify::compile(arena, g, &[&u_name]) else {
         return true;
     };
     let g3 = func(&[1e3]);

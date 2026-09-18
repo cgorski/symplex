@@ -247,13 +247,12 @@ impl Expr<Numeric> {
             }
         }
 
-        let func =
-            crate::output::lambdify::lambdify(arena, evaled, &[&var_name]).ok_or_else(|| {
-                SymplexError::NotImplemented(format!(
-                    "integrand {} contains nodes that cannot be compiled for numeric quadrature",
-                    arena.display(evaled)
-                ))
-            })?;
+        let func = crate::output::lambdify::compile(arena, evaled, &[&var_name]).map_err(|e| {
+            SymplexError::NotImplemented(format!(
+                "integrand {} cannot be compiled for numeric quadrature: {e}",
+                arena.display(evaled)
+            ))
+        })?;
         drop(inner);
 
         let f = |t: f64| func(&[t]);
