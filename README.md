@@ -435,7 +435,8 @@ let cert = match prove_nonnegative_on_box(&(1 - &x * &y), &square, 2).unwrap() {
 cert.to_string();                                     // -x*y + 1 = -y + y*(-x + 1) + 1, 0 ≤ x ≤ 1, 0 ≤ y ≤ 1
 cert.verify();                                        // true — exact re-check, independent of the LP
 cert.to_lean("one_minus_xy").unwrap();
-// theorem one_minus_xy (x y : ℝ) (_h_x_lo : (0 : ℝ) ≤ x) (h_x_hi : x ≤ (1 : ℝ)) (h_y_lo : (0 : ℝ) ≤ y) (h_y_hi : y ≤ (1 : ℝ)) :
+// theorem one_minus_xy (x y : ℝ) (_h_x_lo : (0 : ℝ) ≤ x) (h_x_hi : x ≤ (1 : ℝ)) (h_y_lo : (0 : ℝ) ≤ y)
+//     (h_y_hi : y ≤ (1 : ℝ)) :
 //     0 ≤ -(x * y) + 1 := by
 //   nlinarith [sub_nonneg.mpr h_y_hi, mul_nonneg (sub_nonneg.mpr h_x_hi) (sub_nonneg.mpr h_y_lo)]
 

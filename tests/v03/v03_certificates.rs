@@ -302,7 +302,7 @@ fn lean_output_is_stable() {
     ));
     assert_eq!(
         quarter.to_lean("quarter_bound").unwrap(),
-        "theorem quarter_bound (r f : ℝ) (h_r_lo : (0 : ℝ) ≤ r) (h_r_hi : r ≤ (1 / 2 : ℝ)) (h_f_lo : (0 : ℝ) ≤ f) (h_f_hi : f ≤ (1 : ℝ)) :\n    0 ≤ -(f ^ 2 / 4) + f * r - r ^ 2 + (1 / 4 : ℝ) := by\n  nlinarith [mul_nonneg (sub_nonneg.mpr h_r_hi) (sub_nonneg.mpr h_f_hi), mul_nonneg (sub_nonneg.mpr h_f_lo) (sub_nonneg.mpr h_f_hi), mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_r_hi), mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_f_lo)]\n"
+        "theorem quarter_bound (r f : ℝ) (h_r_lo : (0 : ℝ) ≤ r) (h_r_hi : r ≤ (1 / 2 : ℝ))\n    (h_f_lo : (0 : ℝ) ≤ f) (h_f_hi : f ≤ (1 : ℝ)) :\n    0 ≤ -(f ^ 2 / 4) + f * r - r ^ 2 + (1 / 4 : ℝ) := by\n  nlinarith [mul_nonneg (sub_nonneg.mpr h_r_hi) (sub_nonneg.mpr h_f_hi),\n    mul_nonneg (sub_nonneg.mpr h_f_lo) (sub_nonneg.mpr h_f_hi),\n    mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_r_hi),\n    mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_f_lo)]\n"
     );
 
     let one_product = proved(prove_nonnegative_on_box(
@@ -326,7 +326,7 @@ fn lean_output_is_stable() {
     ));
     assert_eq!(
         linear.to_lean("linear_only").unwrap(),
-        "theorem linear_only (x y : ℝ) (h_x_lo : (1 / 2 : ℝ) ≤ x) (_h_x_hi : x ≤ (3 : ℝ)) (h_y_lo : (0 : ℝ) ≤ y) (_h_y_hi : y ≤ (1 : ℝ)) :\n    0 ≤ 3 * x + 2 * y - 1 := by\n  linarith [sub_nonneg.mpr h_y_lo, sub_nonneg.mpr h_x_lo]\n"
+        "theorem linear_only (x y : ℝ) (h_x_lo : (1 / 2 : ℝ) ≤ x) (_h_x_hi : x ≤ (3 : ℝ))\n    (h_y_lo : (0 : ℝ) ≤ y) (_h_y_hi : y ≤ (1 : ℝ)) :\n    0 ≤ 3 * x + 2 * y - 1 := by\n  linarith [sub_nonneg.mpr h_y_lo, sub_nonneg.mpr h_x_lo]\n"
     );
 }
 
@@ -535,7 +535,7 @@ fn halfline_square_factor_for_interior_double_zero() {
     check_halfline_numerically(&cert);
     assert_eq!(
         cert.to_lean("square_inside").unwrap(),
-        "theorem square_inside (j : ℝ) (h_j_lo : (3 : ℝ) ≤ j) :\n    0 ≤ j ^ 4 - 10 * j ^ 3 + 26 * j ^ 2 - 10 * j + 25 := by\n  have hk : 0 ≤ j - (3 : ℝ) := sub_nonneg.mpr h_j_lo\n  nlinarith [sq_nonneg (j - 5), mul_nonneg (sq_nonneg (j - 5)) (hk), mul_nonneg (sq_nonneg (j - 5)) (pow_nonneg hk 2)]\n"
+        "theorem square_inside (j : ℝ) (h_j_lo : (3 : ℝ) ≤ j) :\n    0 ≤ j ^ 4 - 10 * j ^ 3 + 26 * j ^ 2 - 10 * j + 25 := by\n  have hk : 0 ≤ j - (3 : ℝ) := sub_nonneg.mpr h_j_lo\n  nlinarith [sq_nonneg (j - 5), mul_nonneg (sq_nonneg (j - 5)) (hk),\n    mul_nonneg (sq_nonneg (j - 5)) (pow_nonneg hk 2)]\n"
     );
 }
 
@@ -648,5 +648,46 @@ fn real_line_certificate_splits_into_two_halves() {
         prove_nonnegative_on_reals(&(&x.powi(2) - 1), &x, &ctx.int(0), 10)
             .unwrap()
             .is_none()
+    );
+}
+
+#[test]
+fn lean_output_respects_mathlib_line_width() {
+    use symplex::lean::{MATHLIB_LINE_WIDTH, wrap_lean};
+    let ctx = Context::new();
+    let (r, f) = (ctx.symbol("r"), ctx.symbol("f"));
+    let cert = proved(prove_nonnegative_on_box(
+        &(ctx.rational(1, 4) - (&r - &f / 2).powi(2)),
+        &[
+            (r.clone(), ctx.int(0), ctx.rational(1, 2)),
+            (f.clone(), ctx.int(0), ctx.int(1)),
+        ],
+        2,
+    ));
+    let text = cert.to_lean("quarter_bound").unwrap();
+    assert!(
+        text.lines()
+            .all(|l| l.chars().count() <= MATHLIB_LINE_WIDTH),
+        "{text}"
+    );
+    // Hint lists break after commas and keep `nlinarith [` together.
+    assert!(text.contains("  nlinarith [mul_nonneg"), "{text}");
+    assert!(text.contains("),\n    mul_nonneg"), "{text}");
+    // Wrapping is idempotent and never changes the token stream.
+    assert_eq!(wrap_lean(&text, MATHLIB_LINE_WIDTH), text);
+    fn tokens(t: &str) -> Vec<&str> {
+        t.split_whitespace().collect()
+    }
+    let narrow = wrap_lean(&text, 60);
+    assert!(narrow.lines().all(|l| l.chars().count() <= 60), "{narrow}");
+    assert_eq!(tokens(&narrow), tokens(&text));
+    // Guillemet identifiers are never split.
+    let odd = wrap_lean(
+        "theorem t («a long name» : ℝ) («another long one» : ℝ) : 0 ≤ 1 := by\n  linarith\n",
+        40,
+    );
+    assert!(
+        odd.contains("«a long name»") && odd.contains("«another long one»"),
+        "{odd}"
     );
 }

@@ -1146,6 +1146,20 @@ impl AssumptionCache {
         // asked for directly.
         let mut result = result;
         result.forward_chain();
+
+        // Exact sign of a univariate polynomial with rational coefficients in
+        // a real-assumed symbol, when the structural rules left it open
+        // (`3u² + 2u + 1` for `u ≥ 0`, `x² - 2x + 2` for real `x`, …).
+        if matches!(node, ExprNode::Add(_))
+            && result.query(Props::POSITIVE).is_none()
+            && result.query(Props::NEGATIVE).is_none()
+        {
+            let extra = polynomial_sign_facts(arena, id);
+            if extra != Assumptions::default() {
+                result.merge(&extra);
+                result.forward_chain();
+            }
+        }
         if result.is_contradictory() {
             tracing::debug!(
                 node = ?arena.node(id),
@@ -2154,6 +2168,104 @@ fn is_small_prime(n: u64) -> bool {
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Polynomial sign fallback (Sturm)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Largest degree for which the Sturm-based sign fallback is attempted.
+const POLY_SIGN_MAX_DEGREE: usize = 24;
+
+/// Sign facts for `id` when it is a polynomial with rational coefficients
+/// in exactly one symbol whose assumptions place it on a known part of the
+/// real line.  Decided exactly with square-free factoring and Sturm
+/// sequences; returns an empty set when not applicable or undecidable.
+fn polynomial_sign_facts(arena: &Arena, id: ExprId) -> Assumptions {
+    use crate::api::expr_poly_ext::{Endpoint, poly_sign_on_interval};
+    use num_rational::Ratio;
+
+    let mut facts = Assumptions::default();
+    let syms = crate::base::walk::free_symbols(arena, id);
+    let [var] = syms.as_slice() else {
+        return facts;
+    };
+    let ExprNode::Symbol(sid) = arena.node(*var) else {
+        return facts;
+    };
+    let sym = compute_symbol(arena, *sid);
+    if sym.query(Props::REAL) != Some(true) {
+        return facts;
+    }
+    let Some(f) = crate::poly::polybridge::expr_to_poly(arena, id, *var) else {
+        return facts;
+    };
+    let deg = f.degree().unwrap_or(0);
+    if deg == 0 || deg > POLY_SIGN_MAX_DEGREE {
+        return facts;
+    }
+
+    // The symbol's domain as a closed interval plus whether the finite
+    // endpoint is excluded (`x > 0` rather than `x ≥ 0`).
+    let zero = Ratio::from_integer(BigInt::from(0));
+    let (lo, hi, open_at) = if sym.query(Props::POSITIVE) == Some(true) {
+        (
+            Endpoint::Finite(zero.clone()),
+            Endpoint::PosInf,
+            Some(zero.clone()),
+        )
+    } else if sym.query(Props::NONNEGATIVE) == Some(true) {
+        (Endpoint::Finite(zero.clone()), Endpoint::PosInf, None)
+    } else if sym.query(Props::NEGATIVE) == Some(true) {
+        (
+            Endpoint::NegInf,
+            Endpoint::Finite(zero.clone()),
+            Some(zero.clone()),
+        )
+    } else if sym.query(Props::NONPOSITIVE) == Some(true) {
+        (Endpoint::NegInf, Endpoint::Finite(zero.clone()), None)
+    } else {
+        (Endpoint::NegInf, Endpoint::PosInf, None)
+    };
+
+    // A polynomial that is positive (≥ 0) on the closed domain is so on the
+    // open one; for strict positivity on an open-ended domain the excluded
+    // endpoint may be a root, so re-count roots away from it.
+    let strict_on_domain = |g: &crate::poly::Poly| -> bool {
+        if poly_sign_on_interval(g, &lo, &hi, true) {
+            return true;
+        }
+        let Some(a) = &open_at else {
+            return false;
+        };
+        // g ≥ 0 on the closed domain, g(a) = 0, and no other root inside.
+        if !poly_sign_on_interval(g, &lo, &hi, false) || !g.eval(a).is_zero() {
+            return false;
+        }
+        let bound = crate::poly::sturm::cauchy_bound(g) + Ratio::from_integer(BigInt::from(1));
+        let chain = crate::poly::sturm::SturmChain::new(g);
+        let roots_closed = match (&lo, &hi) {
+            (Endpoint::Finite(l), Endpoint::PosInf) => chain.count_roots_in_closed(l, &bound),
+            (Endpoint::NegInf, Endpoint::Finite(h)) => chain.count_roots_in_closed(&(-bound), h),
+            _ => return false,
+        };
+        roots_closed == 1
+    };
+
+    let neg_f = f.neg();
+    if strict_on_domain(&f) {
+        facts.assert_true(Props::POSITIVE);
+    } else if poly_sign_on_interval(&f, &lo, &hi, false) {
+        facts.assert_true(Props::NONNEGATIVE);
+    } else if strict_on_domain(&neg_f) {
+        facts.assert_true(Props::NEGATIVE);
+    } else if poly_sign_on_interval(&neg_f, &lo, &hi, false) {
+        facts.assert_true(Props::NONPOSITIVE);
+    }
+    if facts != Assumptions::default() {
+        facts.assert_true(Props::REAL);
+    }
+    facts
+}
 
 #[cfg(test)]
 mod tests {

@@ -33,9 +33,12 @@ fn num_expr(arena: &mut Arena, r: Ratio<BigInt>) -> ExprId {
 /// Interpret an expression as an exact rational endpoint, accepting `±∞`
 /// as `None` for the corresponding side.  Returns `Err(())` for anything
 /// else (symbols, π, …).
-enum Endpoint {
+pub(crate) enum Endpoint {
+    /// A finite rational endpoint.
     Finite(Ratio<BigInt>),
+    /// `-∞`.
     NegInf,
+    /// `+∞`.
     PosInf,
 }
 
@@ -61,7 +64,7 @@ fn sign_of(r: &Ratio<BigInt>) -> i8 {
 
 /// Exact decision of `f ≥ 0` (or `f > 0` when `strict`) on the closed
 /// interval between the two endpoints.
-fn poly_sign_on_interval(f: &Poly, lo: &Endpoint, hi: &Endpoint, strict: bool) -> bool {
+pub(crate) fn poly_sign_on_interval(f: &Poly, lo: &Endpoint, hi: &Endpoint, strict: bool) -> bool {
     // Empty interval: vacuously true.
     match (lo, hi) {
         (Endpoint::PosInf, _) | (_, Endpoint::NegInf) => return true,

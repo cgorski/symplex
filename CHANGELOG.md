@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [0.3.4] - 2026-09-18
+
+### Added
+
+- Sign facts for univariate polynomials with rational coefficients in a
+  real-assumed symbol are now decided exactly (square-free factoring +
+  Sturm sequences) when the structural assumption rules are silent:
+  `(3u² + 2u + 1).is_positive()` is `Some(true)` for `u ≥ 0`,
+  `(x² − 2x + 2).is_positive()` is `Some(true)` for real `x`,
+  `(x − 1)²` is `is_nonnegative() == Some(true)` but `is_positive() ==
+  None`, `x² − 1` stays `None`.  The symbol's own sign assumptions
+  (`Positive`, `NonNegative`, `Negative`, `NonPositive`) restrict the
+  domain; an excluded endpoint may be a root (`p² + p > 0` for `p > 0`).
+  Everything downstream benefits: `simplify` drops `abs(·)` and folds
+  `sqrt(p²)`/`sign(p)`, `ln(p).is_real()`, `compare_numeric`, `BoolEx::eval`
+  of `p > 0`.  Guarded to degree ≤ 24; symbols without a `Real` assumption
+  (possibly complex) are untouched.
+- `lean::wrap_lean(text, width)` and `lean::MATHLIB_LINE_WIDTH`: re-flow
+  Lean source at spaces, preferring breaks after commas (hint lists) and
+  between binders (signatures), with Lean-compatible continuation
+  indentation.  All certificate emitters (`Certificate`,
+  `HalfLineCertificate`, `RealLineCertificate`) now produce output that
+  passes Mathlib's `linter.style.longLine` — verified by compiling the
+  wrapped output with the linter enabled.  `Ex::to_lean` stays single-line
+  for embedding.
+
+### Infrastructure
+
+- `symplex` and `symplex-build` at 0.3.4; `symplex-macros` unchanged at
+  0.3.0.  Additive over 0.3.3.
+
 ## [0.3.3] - 2026-09-18
 
 ### Added

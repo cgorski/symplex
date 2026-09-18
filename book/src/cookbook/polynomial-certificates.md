@@ -267,12 +267,16 @@ fn main() {
 The emitted theorem:
 
 ```lean
-theorem quarter_bound (r f : ℝ) (h_r_lo : (0 : ℝ) ≤ r) (h_r_hi : r ≤ (1 / 2 : ℝ)) (h_f_lo : (0 : ℝ) ≤ f) (h_f_hi : f ≤ (1 : ℝ)) :
+theorem quarter_bound (r f : ℝ) (h_r_lo : (0 : ℝ) ≤ r) (h_r_hi : r ≤ (1 / 2 : ℝ))
+    (h_f_lo : (0 : ℝ) ≤ f) (h_f_hi : f ≤ (1 : ℝ)) :
     0 ≤ -(f ^ 2 / 4) + f * r - r ^ 2 + (1 / 4 : ℝ) := by
-  nlinarith [mul_nonneg (sub_nonneg.mpr h_r_hi) (sub_nonneg.mpr h_f_hi), mul_nonneg (sub_nonneg.mpr h_f_lo) (sub_nonneg.mpr h_f_hi), mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_r_hi), mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_f_lo)]
+  nlinarith [mul_nonneg (sub_nonneg.mpr h_r_hi) (sub_nonneg.mpr h_f_hi),
+    mul_nonneg (sub_nonneg.mpr h_f_lo) (sub_nonneg.mpr h_f_hi),
+    mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_r_hi),
+    mul_nonneg (sub_nonneg.mpr h_r_lo) (sub_nonneg.mpr h_f_lo)]
 ```
 
-This compiles against Mathlib (Lean 4.30.0) without errors or warnings; `cargo run --example certificates_to_lean out.lean` writes a file with several such theorems that you can check with `lake env lean out.lean` inside any Mathlib project. The `(r − ¼)²`-style case from the previous section comes back as `BoxOutcome::Unknown` at every degree — exactly the interior-zero limitation of Handelman's theorem — and a false claim such as `xy − ½ ≥ 0` on the unit square is `Refuted { point: (0, 0), value: -1/2 }`.
+This compiles against Mathlib (Lean 4.30.0) without errors or warnings — including with `linter.style.longLine` on, since every emitter wraps at 100 columns (`lean::wrap_lean`); `cargo run --example certificates_to_lean out.lean` writes a file with several such theorems that you can check with `lake env lean out.lean` inside any Mathlib project. The `(r − ¼)²`-style case from the previous section comes back as `BoxOutcome::Unknown` at every degree — exactly the interior-zero limitation of Handelman's theorem — and a false claim such as `xy − ½ ≥ 0` on the unit square is `Refuted { point: (0, 0), value: -1/2 }`.
 
 ## Half-lines, interior double zeros, and the whole real line
 
@@ -308,7 +312,8 @@ fn main() {
 theorem square_inside (j : ℝ) (h_j_lo : (3 : ℝ) ≤ j) :
     0 ≤ j ^ 4 - 10 * j ^ 3 + 26 * j ^ 2 - 10 * j + 25 := by
   have hk : 0 ≤ j - (3 : ℝ) := sub_nonneg.mpr h_j_lo
-  nlinarith [sq_nonneg (j - 5), mul_nonneg (sq_nonneg (j - 5)) (hk), mul_nonneg (sq_nonneg (j - 5)) (pow_nonneg hk 2)]
+  nlinarith [sq_nonneg (j - 5), mul_nonneg (sq_nonneg (j - 5)) (hk),
+    mul_nonneg (sq_nonneg (j - 5)) (pow_nonneg hk 2)]
 ```
 
 When the shift alone is not enough — `j² − j + 1` on `j ≥ 0` has a negative coefficient — the certificate carries the multiplier: `(j + 1)·(j² − j + 1) = j³ + 1`, and the Lean proof shows `0 ≤ (1 + (j - 0)) ^ 1 * (j ^ 2 - j + 1)` with `nlinarith [pow_nonneg hk 3]` and divides by the positive factor with `nonneg_of_mul_nonneg_right`. A tight minimum costs a larger exponent (`4j² − 6j + 3` needs `N = 12`), which is Pólya's theorem being honest about how close to zero the goal gets.

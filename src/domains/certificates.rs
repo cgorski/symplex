@@ -63,7 +63,7 @@ use crate::api::expr::Ex;
 use crate::api::poly_ex::Poly;
 use crate::base::errors::SymplexError;
 use crate::domains::linprog::{Feasibility, LpProblem, LpStatus, nonneg_combination};
-use crate::output::lean::{LeanOpts, lean_ident};
+use crate::output::lean::{LeanOpts, MATHLIB_LINE_WIDTH, lean_ident, wrap_lean};
 
 type Q = Ratio<BigInt>;
 
@@ -360,7 +360,7 @@ impl Certificate {
         } else {
             format!("  nlinarith [{}]", hints.join(", "))
         };
-        Ok(format!("{sig}{tactic}\n"))
+        Ok(wrap_lean(&format!("{sig}{tactic}\n"), MATHLIB_LINE_WIDTH))
     }
 }
 
@@ -1068,7 +1068,7 @@ impl HalfLineCertificate {
                 "  have hpos : 0 < (1 + ({k})) ^ {n} := pow_pos (by linarith) {n}\n  have hprod : 0 ≤ (1 + ({k})) ^ {n} * ({goal}) := by nlinarith{hint_list}\n  exact nonneg_of_mul_nonneg_right hprod hpos\n"
             ));
         }
-        Ok(out)
+        Ok(wrap_lean(&out, MATHLIB_LINE_WIDTH))
     }
 }
 
@@ -1344,13 +1344,14 @@ impl RealLineCertificate {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        Ok(format!(
+        let text = format!(
             "theorem {} ({v} : {}) : 0 ≤ {goal} := by\n  rcases le_total {a} {v} with h_{base}_lo | h_{base}_hi\n  · -- {a} ≤ {v}\n{}\n  · -- {v} ≤ {a}\n{}\n",
             lean_ident(theorem_name),
             opts.real_type,
             indent(body(&up)),
             indent(body(&lo)),
-        ))
+        );
+        Ok(wrap_lean(&text, MATHLIB_LINE_WIDTH))
     }
 }
 

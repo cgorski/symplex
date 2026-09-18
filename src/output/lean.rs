@@ -594,6 +594,111 @@ fn render_piecewise(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Line wrapping
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Mathlib's maximum line length (`linter.style.longLine`).
+pub const MATHLIB_LINE_WIDTH: usize = 100;
+
+/// Re-flow Lean source so that no line exceeds `width` columns, breaking
+/// only at spaces, preferring a space right after a comma (so a
+/// `nlinarith [a, b, c]` hint list breaks between hints) and otherwise the
+/// shallowest bracket depth (so a `theorem` signature breaks between
+/// binders).  Continuation lines are indented four
+/// columns past a `theorem`/`lemma`/`example` line and two past anything
+/// else, which is more than the enclosing block in every case Lean's
+/// indentation-sensitive parser cares about.  Lines that cannot be split
+/// (a single token longer than `width`) are left as they are.
+///
+/// The certificate emitters ([`Certificate::to_lean`](crate::certificates::Certificate::to_lean)
+/// and friends) apply this at [`MATHLIB_LINE_WIDTH`]; [`Ex::to_lean`](crate::api::expr::Ex::to_lean)
+/// returns a single line so it can be embedded anywhere, and callers wrap
+/// the finished statement with this function.
+///
+/// ```
+/// use symplex::lean::wrap_lean;
+///
+/// let long = "theorem t (x y : ℝ) (h_x_lo : (0 : ℝ) ≤ x) (h_x_hi : x ≤ (1 : ℝ)) (h_y_lo : (0 : ℝ) ≤ y) :\n    0 ≤ x := by\n  linarith\n";
+/// let wrapped = wrap_lean(long, 60);
+/// assert!(wrapped.lines().all(|l| l.chars().count() <= 60));
+/// assert!(wrapped.starts_with("theorem t (x y : ℝ) (h_x_lo : (0 : ℝ) ≤ x)\n    (h_x_hi : x ≤ (1 : ℝ))"), "{wrapped}");
+/// ```
+pub fn wrap_lean(text: &str, width: usize) -> String {
+    let mut out = String::with_capacity(text.len() + 64);
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = match line.strip_suffix('\n') {
+            Some(b) => (b, "\n"),
+            None => (line, ""),
+        };
+        wrap_line(body, width, &mut out);
+        out.push_str(newline);
+    }
+    out
+}
+
+fn wrap_line(line: &str, width: usize, out: &mut String) {
+    let indent = line.chars().take_while(|c| *c == ' ').count();
+    let trimmed = &line[indent..];
+    let is_decl = trimmed.starts_with("theorem ")
+        || trimmed.starts_with("lemma ")
+        || trimmed.starts_with("example ");
+    let cont_indent = indent + if is_decl { 4 } else { 2 };
+    let mut current: Vec<char> = line.chars().collect();
+    let mut current_indent = indent;
+    loop {
+        if current.len() <= width {
+            out.extend(current.iter());
+            return;
+        }
+        // Candidate break positions: spaces (not in the indent), scored by
+        // bracket depth, then "after a comma", then latest.
+        let mut depth: i32 = 0;
+        let mut best: Option<(u8, i32, usize)> = None;
+        let mut in_guillemets = false;
+        for (i, &c) in current.iter().enumerate() {
+            match c {
+                '«' => in_guillemets = true,
+                '»' => in_guillemets = false,
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ' ' if i > current_indent && !in_guillemets => {
+                    if i > width {
+                        break;
+                    }
+                    // Keep `nlinarith [` / `linarith [` together.
+                    if current.get(i + 1) == Some(&'[') {
+                        continue;
+                    }
+                    // Prefer breaking right after a comma (hint lists), then
+                    // at the shallowest bracket depth (between binders), then
+                    // as late as possible.
+                    let after_comma = i > 0 && current[i - 1] == ',';
+                    let key = (u8::from(!after_comma), depth, usize::MAX - i);
+                    if best.is_none_or(|b| key < b) {
+                        best = Some(key);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some((_, _, inv_pos)) = best else {
+            // No usable break point: emit as is.
+            out.extend(current.iter());
+            return;
+        };
+        let pos = usize::MAX - inv_pos;
+        let head: String = current[..pos].iter().collect();
+        out.push_str(head.trim_end());
+        out.push('\n');
+        let rest: String = current[pos + 1..].iter().collect();
+        let mut next: Vec<char> = " ".repeat(cont_indent).chars().collect();
+        next.extend(rest.trim_start().chars());
+        current = next;
+        current_indent = cont_indent;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Public API
 // ═══════════════════════════════════════════════════════════════════════════
 

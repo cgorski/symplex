@@ -242,6 +242,8 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | SymPy | symplex |
 |-------|---------|
 | `sstr(expr)` then hand-edit for Lean / Mathlib | `expr.to_lean()?` — Mathlib spacing (`2 * j + 1`, `j ^ 2`), `(3 / 31 : ℝ)`, `(j - 1) / (2 * j)`, `Real.sin x`, `0 < x ∧ x < 1` for a `BoolEx`; `to_lean_with(&LeanOpts { .. })` for the carrier type / ascribing every integer |
+| (wrap Lean output to ≤ 100 columns by hand) | `lean::wrap_lean(&text, lean::MATHLIB_LINE_WIDTH)`; the certificate emitters already do this |
+| `ask(Q.positive(3*u**2 + 2*u + 1))` with `u` declared positive — usually `None` | `e.is_positive()` → `Some(true)` for a rational-coefficient polynomial in one real-assumed symbol (exact Sturm decision); `is_nonnegative`, `is_negative`, `is_nonpositive` likewise |
 | `lambdify([x], expr)` | `expr.compile(&["x"])` → `Result<CompiledFn>` (`Clone + Send + Sync`, `arity()`, `try_call()`) |
 | `lambdify([x, y], [f1, f2])` | `Ex::compile_many(&[&f1, &f2], &["x", "y"])` → `Result<CompiledFnVec>` (shared CSE) |
 | `rust_code(expr)` | `expr.to_rust_fn("name", &["x"])` → `Result<String>` (`to_rust_fn_with_options` for `f32`, `no_std`, `checked_domain`, …) |

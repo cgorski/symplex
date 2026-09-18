@@ -525,7 +525,7 @@ fn certified_inequalities() {
     print!("{lean}");
     assert_eq!(
         lean,
-        "theorem one_minus_xy (x y : ℝ) (_h_x_lo : (0 : ℝ) ≤ x) (h_x_hi : x ≤ (1 : ℝ)) (h_y_lo : (0 : ℝ) ≤ y) (h_y_hi : y ≤ (1 : ℝ)) :\n    0 ≤ -(x * y) + 1 := by\n  nlinarith [sub_nonneg.mpr h_y_hi, mul_nonneg (sub_nonneg.mpr h_x_hi) (sub_nonneg.mpr h_y_lo)]\n"
+        "theorem one_minus_xy (x y : ℝ) (_h_x_lo : (0 : ℝ) ≤ x) (h_x_hi : x ≤ (1 : ℝ)) (h_y_lo : (0 : ℝ) ≤ y)\n    (h_y_hi : y ≤ (1 : ℝ)) :\n    0 ≤ -(x * y) + 1 := by\n  nlinarith [sub_nonneg.mpr h_y_hi, mul_nonneg (sub_nonneg.mpr h_x_hi) (sub_nonneg.mpr h_y_lo)]\n"
     );
 
     match prove_nonnegative_on_box(&(&x * &y - ctx.rational(1, 2)), &square, 2).unwrap() {
