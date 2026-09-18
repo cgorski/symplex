@@ -169,12 +169,18 @@ pub use domains::control;
 pub use domains::diophantine;
 /// Lagrangian dynamics: equations of motion, mass matrix, Coriolis, gravity.
 pub use domains::dynamics;
+/// Exact linear programming over ℚ (two-phase simplex, duals, Farkas certificates).
+pub use domains::linprog;
 /// Symbolic matrix type and operations.
 pub use domains::matrix;
 /// Additional matrix decompositions (QR, Gram–Schmidt) and structure tests.
 pub use domains::matrix_decomp;
+/// Integer matrix normal forms: Hermite, Smith, unimodular transforms, integer kernels.
+pub use domains::normalforms;
 /// Number theory: primality, factorization, divisors, modular arithmetic.
 pub use domains::ntheory;
+/// Numerical optimisation and root bracketing (Brent, Nelder–Mead, polynomial fitting).
+pub use domains::optimize;
 /// Symbolic quaternion algebra for attitude representation.
 pub use domains::quaternion;
 /// Robotics kinematics: DH parameters, forward kinematics, rotations.
@@ -197,6 +203,8 @@ pub use api::expr_integrate_ext as integrate_api;
 pub use api::expr_ops;
 /// Polynomial-algebra methods on `Ex` (resultant, discriminant, division, numeric roots, …).
 pub use api::expr_poly_ext as poly_api;
+/// Public sparse polynomial view (`Poly`) over explicit generators.
+pub use api::poly_ex;
 /// Public rewrite-rule engine: `Rule`, `RuleSet`, `Bindings`, `RewriteOpts`, `Step`.
 pub use api::expr_rules_ext as rules;
 /// Summation, products, series and formal-power-series methods on `Ex`.

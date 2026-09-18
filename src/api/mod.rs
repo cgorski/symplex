@@ -13,3 +13,4 @@ pub mod expr_solve_ext;
 pub mod expr_transforms_ext;
 pub mod expr_view;
 pub mod macros;
+pub mod poly_ex;
