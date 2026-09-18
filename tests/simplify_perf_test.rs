@@ -131,7 +131,7 @@ fn perf_large_polynomial() {
     let mut expr = ctx.int(21);
     for i in 1..=20i64 {
         let coeff = ctx.int(i);
-        expr = expr + coeff * x.powi(21 - i);
+        expr += coeff * x.powi(21 - i);
     }
 
     println!("  Input:  {expr}");
