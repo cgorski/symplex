@@ -277,7 +277,6 @@ fn workflow_solve_verify_substitute_quadratic() {
 #[test]
 fn workflow_matrix_eigenvalue_properties() {
     let ctx = Context::new();
-    let lam = ctx.symbol("lambda");
 
     // [[2, 1], [1, 2]]
     let m = Matrix::new(vec![
@@ -302,7 +301,7 @@ fn workflow_matrix_eigenvalue_properties() {
     );
 
     // Step 2: eigenvalues
-    let eigs = m.eigenvals(&lam).unwrap();
+    let eigs = m.eigenvals().unwrap();
     assert_eq!(eigs.len(), 2, "2x2 matrix should have 2 eigenvalues");
 
     let mut eig_vals: Vec<f64> = eigs

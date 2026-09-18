@@ -138,7 +138,7 @@ fn main() {
     //
     // We check this by comparing the off-diagonal entries.
     let is_sym = mm_double.is_symmetric();
-    println!("\nMass matrix symmetric? {is_sym}");
+    println!("\nMass matrix symmetric? {is_sym:?}");
 
     // ── Gravity vector ─────────────────────────────────────────────
     let gv_double = gravity_vector(&pe_double, &[&q1, &q2]);

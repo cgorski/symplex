@@ -1190,8 +1190,7 @@ fn process_matrix_eigenvalue(ctx: &Context, fixture: &Fixture) -> Status {
         None => return Status::NotImplemented("no eigenvalues in fixture".into()),
     };
 
-    let lambda = ctx.symbol("lambda");
-    let computed = mat.eigenvals(&lambda).unwrap();
+    let computed = mat.eigenvals().unwrap();
 
     if computed.is_empty() {
         return Status::NotImplemented("eigenvalue solver returned empty".into());

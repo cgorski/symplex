@@ -60,7 +60,7 @@ fn main() {
     // ── Poles (eigenvalues of A) ───────────────────────────────────
 
     println!("\n--- Pole Analysis ---");
-    let poles = sys.poles(&s);
+    let poles = sys.poles();
     println!(
         "Poles: {:?}",
         poles.iter().map(|p| format!("{p}")).collect::<Vec<_>>()
@@ -209,7 +209,7 @@ fn main() {
             // Verify: eigenvalues of (A - BK) should be the desired poles
             let bk = &b * &k;
             let a_cl = &a - &bk;
-            let cl_poles = a_cl.eigenvals(&s).unwrap();
+            let cl_poles = a_cl.eigenvals().unwrap();
             println!(
                 "Closed-loop poles: {:?}",
                 cl_poles.iter().map(|p| format!("{p}")).collect::<Vec<_>>()
@@ -266,7 +266,7 @@ fn main() {
     println!("  {bd}");
 
     // Check discrete-time stability: all eigenvalues inside unit circle
-    let disc_poles = discrete.poles(&s);
+    let disc_poles = discrete.poles();
     println!(
         "\nDiscrete poles: {:?}",
         disc_poles

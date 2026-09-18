@@ -48,8 +48,7 @@ fn state_space_poles_2x2() {
     let d = Matrix::new(vec![vec![ctx.int(0)]]).unwrap();
     let ss = StateSpace::new(a, b, c, d);
 
-    let s = ctx.symbol("s");
-    let poles = ss.poles(&s);
+    let poles = ss.poles();
     assert_eq!(poles.len(), 2, "Expected 2 poles, got {}", poles.len());
 
     let mut pole_strs: Vec<String> = poles.iter().map(|p| format!("{p}")).collect();
@@ -624,8 +623,7 @@ fn state_space_1x1_system() {
     assert!(ss.is_controllable());
     assert!(ss.is_observable());
 
-    let s = ctx.symbol("s");
-    let poles = ss.poles(&s);
+    let poles = ss.poles();
     assert_eq!(poles.len(), 1);
     assert_eq!(format!("{}", poles[0]), "-2");
 }

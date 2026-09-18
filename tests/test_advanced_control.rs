@@ -69,7 +69,6 @@ fn cholesky_2x2() {
 
     let l = a
         .cholesky()
-        .unwrap()
         .expect("Cholesky should succeed for SPD matrix");
 
     // Verify L is lower triangular: L[0][1] should be 0
@@ -97,7 +96,6 @@ fn cholesky_3x3() {
 
     let l = a
         .cholesky()
-        .unwrap()
         .expect("Cholesky should succeed for SPD matrix");
 
     // Verify L * Lᵀ = A numerically
@@ -124,8 +122,8 @@ fn cholesky_not_positive_definite() {
     .unwrap();
 
     assert!(
-        a.cholesky().unwrap().is_none(),
-        "Cholesky should return None for non-positive-definite matrix"
+        a.cholesky().is_err(),
+        "Cholesky should return Err for non-positive-definite matrix"
     );
 }
 
@@ -134,10 +132,7 @@ fn cholesky_identity() {
     // I₃ → L = I₃
     let ctx = Context::new();
     let eye = Matrix::identity(&ctx, 3);
-    let l = eye
-        .cholesky()
-        .unwrap()
-        .expect("Cholesky of identity should succeed");
+    let l = eye.cholesky().expect("Cholesky of identity should succeed");
 
     // L should be the identity
     assert_matrix_approx(&l, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 1e-12);
@@ -300,8 +295,7 @@ fn ackermann_simple() {
     // Verify closed-loop eigenvalues of (A - BK)
     let bk = b.matmul(&k).unwrap();
     let a_cl = a.sub(&bk).unwrap();
-    let s = ctx.symbol("s");
-    let mut eigs = a_cl.eigenvals(&s).unwrap();
+    let mut eigs = a_cl.eigenvals().unwrap();
     eigs.sort_by(|a, b| {
         let va = a.eval_f64().unwrap_or(f64::NAN);
         let vb = b.eval_f64().unwrap_or(f64::NAN);

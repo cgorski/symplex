@@ -250,8 +250,7 @@ fn b5_matrix_1x1_eigenvals() {
     let ctx = Context::new();
     let five = ctx.int(5);
     let m = Matrix::new(vec![vec![five]]).unwrap();
-    let lam = ctx.symbol("lambda");
-    let evals = m.eigenvals(&lam);
+    let evals = m.eigenvals();
     match evals {
         Ok(vals) => {
             assert!(
@@ -306,8 +305,7 @@ fn b8_eigenvals_non_square() {
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
     ])
     .unwrap();
-    let lam = ctx.symbol("lambda");
-    let result = m.eigenvals(&lam);
+    let result = m.eigenvals();
     assert!(
         result.is_err(),
         "BUG: eigenvals of non-square matrix should return Err"
