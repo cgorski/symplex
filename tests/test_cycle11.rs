@@ -485,18 +485,36 @@ fn sum_symbolic() {
     assert!(s.contains("3") && s.contains("x"), "x+x+x = 3*x: {s}");
 }
 
+// v0.2: `Sum`/`Product` on an empty iterator no longer conjure a fresh
+// `Context` (whose result could not be mixed with the caller's
+// expressions). They panic; `Context::sum`/`Context::product` and the
+// `Option<Ex>` collectors are the empty-safe forms.
+
 #[test]
 fn sum_empty_is_zero() {
+    let ctx = Context::new();
     let terms: Vec<Ex> = vec![];
-    let total: Ex = terms.into_iter().sum();
+    let total: Ex = ctx.sum(terms);
     assert_eq!(format!("{total}"), "0");
+    let none: Option<Ex> = Vec::<Ex>::new().into_iter().sum();
+    assert!(none.is_none());
 }
 
 #[test]
 fn product_empty_is_one() {
+    let ctx = Context::new();
     let factors: Vec<Ex> = vec![];
-    let total: Ex = factors.into_iter().product();
+    let total: Ex = ctx.product(factors);
     assert_eq!(format!("{total}"), "1");
+    let none: Option<Ex> = Vec::<Ex>::new().into_iter().product();
+    assert!(none.is_none());
+}
+
+#[test]
+#[should_panic(expected = "empty iterator")]
+fn sum_empty_iterator_panics() {
+    let terms: Vec<Ex> = vec![];
+    let _: Ex = terms.into_iter().sum();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

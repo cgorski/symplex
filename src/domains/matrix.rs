@@ -476,7 +476,7 @@ impl Matrix {
                         let mut acc: Ex = &self.rows[i][0] * &other.rows[0][j];
                         for k in 1..p {
                             let term = &self.rows[i][k] * &other.rows[k][j];
-                            acc = acc + term;
+                            acc += term;
                         }
                         acc
                     })
@@ -507,7 +507,7 @@ impl Matrix {
         }
         let mut acc = self.rows[0][0].clone();
         for i in 1..self.nrows {
-            acc = acc + &self.rows[i][i];
+            acc += &self.rows[i][i];
         }
         Ok(acc)
     }
@@ -1589,7 +1589,7 @@ impl Matrix {
             // L[j][j] = sqrt(A[j][j] - sum(L[j][k]^2 for k < j))
             let mut sum_sq = zero.clone();
             for item in l_rows[j].iter().take(j) {
-                sum_sq = sum_sq + item.powi(2);
+                sum_sq += item.powi(2);
             }
             let diag = self.get(j, j) - &sum_sq;
             let diag_simplified = diag.simplify();
@@ -1605,7 +1605,7 @@ impl Matrix {
             for i in (j + 1)..n {
                 let mut sum_prod = zero.clone();
                 for (l_ik, l_jk) in l_rows[i].iter().zip(l_rows[j].iter()).take(j) {
-                    sum_prod = sum_prod + &(l_ik * l_jk);
+                    sum_prod += &(l_ik * l_jk);
                 }
                 let num = self.get(i, j) - &sum_prod;
                 l_rows[i][j] = &num / &l_rows[j][j];
@@ -1971,7 +1971,7 @@ impl Matrix {
         let mut sum = self.ctx_zero();
         for row in &self.rows {
             for elem in row {
-                sum = sum + &(elem * elem);
+                sum += &(elem * elem);
             }
         }
         sum.sqrt()
@@ -2368,7 +2368,7 @@ pub fn dot(a: &Matrix, b: &Matrix) -> Ex {
     );
     let mut sum = a.get(0, 0) * b.get(0, 0);
     for i in 1..a.nrows() {
-        sum = sum + &(a.get(i, 0) * b.get(i, 0));
+        sum += &(a.get(i, 0) * b.get(i, 0));
     }
     sum
 }

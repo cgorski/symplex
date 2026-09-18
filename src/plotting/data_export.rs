@@ -3,6 +3,21 @@
 //! Supports CSV, TSV, JSON, Markdown, HTML, and LaTeX output from
 //! structured table data. Includes helpers for point data, function
 //! evaluation tables, and frequency response data.
+//!
+//! Tables are usually produced by
+//! [`Ex::eval_table`](crate::expr::Ex::eval_table) or
+//! [`Ex::plot_data`](crate::expr::Ex::plot_data) +
+//! [`DataTable::from_points`]; every export method is infallible and
+//! returns a `String`.
+//!
+//! ```
+//! use symplex::prelude::*;
+//!
+//! let ctx = Context::new();
+//! let x = ctx.symbol("x");
+//! let table = x.powi(2).eval_table(&x, &[0.0, 0.5, 1.0]).unwrap();
+//! assert_eq!(table.to_csv(), "x,f(x)\n0,0\n0.5,0.25\n1,1\n");
+//! ```
 
 /// Format a floating-point value with reasonable precision.
 ///
@@ -49,6 +64,20 @@ fn csv_escape(value: &str) -> String {
 }
 
 /// A table of data with headers, supporting multiple export formats.
+///
+/// Cells are stored as already-formatted strings; numeric cells use up to
+/// six significant decimals (`0.333333`), scientific notation outside
+/// `[1e-4, 1e6)`, and `NaN` / `Inf` / `-Inf` for non-finite values.
+///
+/// ```
+/// use symplex::data_export::DataTable;
+///
+/// let t = DataTable::from_points("t", "v", &[(0.0, 1.0), (1.0, 0.5)]);
+/// assert_eq!(t.nrows(), 2);
+/// assert_eq!(t.ncols(), 2);
+/// assert_eq!(t.rows[1], vec!["1", "0.5"]);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataTable {
     /// Column headers.
     pub headers: Vec<String>,
@@ -58,11 +87,31 @@ pub struct DataTable {
 
 impl DataTable {
     /// Create a table from headers and rows of strings.
+    ///
+    /// Rows shorter than `headers` are padded with empty cells on export.
+    ///
+    /// ```
+    /// use symplex::data_export::DataTable;
+    ///
+    /// let t = DataTable::new(
+    ///     vec!["name".into(), "value".into()],
+    ///     vec![vec!["pi".into(), "3.14159".into()]],
+    /// );
+    /// assert_eq!(t.to_tsv(), "name\tvalue\npi\t3.14159\n");
+    /// ```
     pub fn new(headers: Vec<String>, rows: Vec<Vec<String>>) -> Self {
         Self { headers, rows }
     }
 
     /// Create a table from (x, y) point data.
+    ///
+    /// ```
+    /// use symplex::data_export::DataTable;
+    ///
+    /// let t = DataTable::from_points("x", "y", &[(0.0, 0.0), (0.5, 0.25), (1.0, f64::NAN)]);
+    /// assert_eq!(t.rows[1], vec!["0.5", "0.25"]);
+    /// assert_eq!(t.rows[2][1], "NaN");
+    /// ```
     pub fn from_points(x_label: &str, y_label: &str, points: &[(f64, f64)]) -> Self {
         let headers = vec![x_label.to_string(), y_label.to_string()];
         let rows = points
@@ -72,8 +121,15 @@ impl DataTable {
         Self { headers, rows }
     }
 
-    /// Create a table from evaluating an expression at multiple points.
+    /// Create a table from evaluating a function at multiple points.
     /// `eval_fn` takes x and returns y.
+    ///
+    /// ```
+    /// use symplex::data_export::DataTable;
+    ///
+    /// let t = DataTable::from_evaluation("x", "2x", &[1.0, 2.0], |x| 2.0 * x);
+    /// assert_eq!(t.rows, vec![vec!["1", "2"], vec!["2", "4"]]);
+    /// ```
     pub fn from_evaluation(
         x_label: &str,
         y_label: &str,
@@ -88,7 +144,18 @@ impl DataTable {
         Self { headers, rows }
     }
 
-    /// Create a multi-column table from evaluating multiple expressions.
+    /// Create a multi-column table from evaluating several functions at the
+    /// same x-values.
+    ///
+    /// ```
+    /// use symplex::data_export::DataTable;
+    ///
+    /// let sq = |x: f64| x * x;
+    /// let cube = |x: f64| x * x * x;
+    /// let t = DataTable::from_multi_eval("x", &["x^2", "x^3"], &[2.0, 3.0], &[&sq, &cube]);
+    /// assert_eq!(t.headers, vec!["x", "x^2", "x^3"]);
+    /// assert_eq!(t.rows[1], vec!["3", "9", "27"]);
+    /// ```
     pub fn from_multi_eval(
         x_label: &str,
         y_labels: &[&str],
@@ -112,7 +179,15 @@ impl DataTable {
         Self { headers, rows }
     }
 
-    /// Export as CSV string.
+    /// Export as CSV (RFC 4180 quoting for cells containing `,`, `"` or
+    /// newlines).
+    ///
+    /// ```
+    /// use symplex::data_export::DataTable;
+    ///
+    /// let t = DataTable::new(vec!["a,b".into(), "c".into()], vec![vec!["1".into(), "x\"y".into()]]);
+    /// assert_eq!(t.to_csv(), "\"a,b\",c\n1,\"x\"\"y\"\n");
+    /// ```
     pub fn to_csv(&self) -> String {
         let mut out = String::new();
         // Header line
@@ -129,6 +204,13 @@ impl DataTable {
     }
 
     /// Export as TSV (tab-separated) string.
+    ///
+    /// ```
+    /// use symplex::data_export::DataTable;
+    ///
+    /// let t = DataTable::from_points("x", "y", &[(1.0, 2.0)]);
+    /// assert_eq!(t.to_tsv(), "x\ty\n1\t2\n");
+    /// ```
     pub fn to_tsv(&self) -> String {
         let mut out = String::new();
         out.push_str(&self.headers.join("\t"));
@@ -140,7 +222,16 @@ impl DataTable {
         out
     }
 
-    /// Export as JSON array of objects.
+    /// Export as a JSON array of objects (one object per row, keyed by
+    /// header).  Cells that parse as numbers are emitted as JSON numbers,
+    /// everything else as strings.
+    ///
+    /// ```
+    /// use symplex::data_export::DataTable;
+    ///
+    /// let t = DataTable::from_points("x", "y", &[(1.0, 2.5)]);
+    /// assert_eq!(t.to_json(), "[\n  {\"x\": 1, \"y\": 2.5}\n]");
+    /// ```
     pub fn to_json(&self) -> String {
         let mut out = String::new();
         out.push_str("[\n");
@@ -171,7 +262,16 @@ impl DataTable {
         out
     }
 
-    /// Export as Markdown table.
+    /// Export as a GitHub-flavoured Markdown table with aligned columns.
+    ///
+    /// ```
+    /// use symplex::data_export::DataTable;
+    ///
+    /// let t = DataTable::from_points("x", "y", &[(1.0, 2.0)]);
+    /// let md = t.to_markdown();
+    /// assert!(md.starts_with("| x   | y   |\n|-----|-----|\n"));
+    /// assert!(md.contains("| 1   | 2   |"));
+    /// ```
     pub fn to_markdown(&self) -> String {
         // Compute column widths
         let ncols = self.headers.len();
@@ -215,7 +315,16 @@ impl DataTable {
         out
     }
 
-    /// Export as HTML table.
+    /// Export as an HTML `<table>` (cells are HTML-escaped).
+    ///
+    /// ```
+    /// use symplex::data_export::DataTable;
+    ///
+    /// let t = DataTable::new(vec!["a<b".into()], vec![vec!["1".into()]]);
+    /// let html = t.to_html();
+    /// assert!(html.contains("<th>a&lt;b</th>"));
+    /// assert!(html.contains("<td>1</td>"));
+    /// ```
     pub fn to_html(&self) -> String {
         let mut out = String::new();
         out.push_str("<table>\n");
@@ -239,7 +348,17 @@ impl DataTable {
         out
     }
 
-    /// Export as LaTeX tabular environment (booktabs style).
+    /// Export as a LaTeX `tabular` environment (booktabs rules; headers in
+    /// math mode; `_` and `%` escaped).
+    ///
+    /// ```
+    /// use symplex::data_export::DataTable;
+    ///
+    /// let t = DataTable::from_points("x", "f(x)", &[(0.0, 1.0)]);
+    /// let tex = t.to_latex();
+    /// assert!(tex.starts_with("\\begin{tabular}{r r}\n\\toprule\n$x$ & $f(x)$ \\\\\n"));
+    /// assert!(tex.ends_with("\\bottomrule\n\\end{tabular}"));
+    /// ```
     pub fn to_latex(&self) -> String {
         let ncols = self.headers.len();
         let col_spec = vec!["r"; ncols].join(" ");
@@ -308,6 +427,14 @@ fn json_escape_string(s: &str) -> String {
 }
 
 /// Frequency response data for Bode plots and similar exports.
+///
+/// ```
+/// use symplex::data_export::FreqResponseData;
+///
+/// let fr = FreqResponseData::new(vec![1.0, 10.0], vec![0.0, -20.0], vec![0.0, -90.0]);
+/// assert_eq!(fr.to_csv(), "omega_rad_s,magnitude_dB,phase_deg\n1,0,0\n10,-20,-90\n");
+/// ```
+#[derive(Debug, Clone, PartialEq)]
 pub struct FreqResponseData {
     /// Angular frequencies in rad/s.
     pub frequencies: Vec<f64>,
@@ -346,7 +473,18 @@ impl FreqResponseData {
         out
     }
 
-    /// Export as JSON array of objects.
+    /// Export as a JSON array of `{omega_rad_s, magnitude_dB, phase_deg}`
+    /// objects.  Missing entries in a shorter vector are emitted as `NaN`.
+    ///
+    /// ```
+    /// use symplex::data_export::FreqResponseData;
+    ///
+    /// let fr = FreqResponseData::new(vec![1.0], vec![-3.0], vec![-45.0]);
+    /// assert_eq!(
+    ///     fr.to_json(),
+    ///     "[\n  {\"omega_rad_s\": 1, \"magnitude_dB\": -3, \"phase_deg\": -45}\n]"
+    /// );
+    /// ```
     pub fn to_json(&self) -> String {
         let mut out = String::new();
         out.push_str("[\n");

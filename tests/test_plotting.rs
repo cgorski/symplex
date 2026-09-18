@@ -13,7 +13,7 @@ use symplex::prelude::*;
 fn textplot_sin_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let plot = x.sin().textplot(&x, 0.0, 2.0 * PI);
+    let plot = x.sin().textplot(&x, 0.0, 2.0 * PI).unwrap();
     assert!(!plot.is_empty(), "textplot should produce non-empty output");
 
     // Should contain plot marker characters
@@ -45,7 +45,7 @@ fn textplot_sin_x() {
 fn svg_sin_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let svg = x.sin().to_svg(&x, 0.0, 2.0 * PI);
+    let svg = x.sin().to_svg(&x, 0.0, 2.0 * PI).unwrap();
     assert!(
         svg.contains("<svg"),
         "SVG output should contain <svg tag:\n{svg}"
@@ -73,7 +73,7 @@ fn svg_sin_x() {
 fn svg_has_axes() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let svg = x.powi(2).to_svg(&x, -2.0, 2.0);
+    let svg = x.powi(2).to_svg(&x, -2.0, 2.0).unwrap();
 
     // Should have axis border rect
     assert!(
@@ -114,8 +114,8 @@ fn svg_multi_series() {
     // Since svg_plot is pub(crate), we verify via the public API by
     // checking that each expression produces different data, and test
     // structural properties from to_svg output.
-    let svg_sin = x.sin().to_svg(&x, 0.0, 2.0 * PI);
-    let svg_cos = x.cos().to_svg(&x, 0.0, 2.0 * PI);
+    let svg_sin = x.sin().to_svg(&x, 0.0, 2.0 * PI).unwrap();
+    let svg_cos = x.cos().to_svg(&x, 0.0, 2.0 * PI).unwrap();
 
     // Each individual SVG should have at least 1 polyline
     assert!(
@@ -140,7 +140,7 @@ fn svg_multi_series() {
 fn tikz_sin_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let tikz = x.sin().to_tikz(&x, 0.0, 2.0 * PI);
+    let tikz = x.sin().to_tikz(&x, 0.0, 2.0 * PI).unwrap();
     assert!(
         tikz.contains("\\begin{axis}"),
         "TikZ output should contain \\begin{{axis}}:\n{tikz}"
@@ -171,7 +171,7 @@ fn tikz_sin_x() {
 fn tikz_has_coordinates() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let tikz = x.powi(2).to_tikz(&x, 0.0, 3.0);
+    let tikz = x.powi(2).to_tikz(&x, 0.0, 3.0).unwrap();
 
     // Should contain "coordinates" keyword
     assert!(
@@ -217,7 +217,7 @@ fn rk4_exponential_decay() {
     let exp_neg_x = neg_x.exp();
 
     // Evaluate exp(-1) via the symbolic engine
-    let data = exp_neg_x.plot_data(&x, 0.0, 1.0, 11);
+    let data = exp_neg_x.plot_data(&x, 0.0, 1.0, 11).unwrap();
     assert!(!data.is_empty(), "plot_data should return points");
 
     // The last point should be at x=1, y≈e^{-1}≈0.36788
@@ -246,7 +246,7 @@ fn rk4_harmonic_oscillator() {
     // for cos(x) gives cos(0)≈1, cos(π)≈-1, cos(2π)≈1.
     let x = ctx.symbol("x");
     let cos_x = x.cos();
-    let data = cos_x.plot_data(&x, 0.0, 2.0 * PI, 201);
+    let data = cos_x.plot_data(&x, 0.0, 2.0 * PI, 201).unwrap();
 
     // Find the point nearest to x=0
     let y_at_0 = data[0].1;
@@ -278,7 +278,7 @@ fn rk4_harmonic_oscillator() {
 fn plot_data_sin_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let data = x.sin().plot_data(&x, 0.0, 2.0 * PI, 100);
+    let data = x.sin().plot_data(&x, 0.0, 2.0 * PI, 100).unwrap();
 
     assert_eq!(
         data.len(),
@@ -323,7 +323,7 @@ fn plot_data_sin_x() {
 fn eval_table_quadratic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]);
+    let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]).unwrap();
 
     assert_eq!(table.nrows(), 3, "eval_table should have 3 rows");
     assert_eq!(
@@ -358,7 +358,7 @@ fn eval_table_quadratic() {
 fn data_table_to_csv() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0, 3.0]);
+    let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0, 3.0]).unwrap();
     let csv = table.to_csv();
 
     // Should have a header line
@@ -399,7 +399,7 @@ fn textplot_handles_asymptote() {
     let one_over_x = ctx.int(1) / &x;
 
     // This should not panic, even though 1/x has a singularity at x=0
-    let plot = one_over_x.textplot(&x, -2.0, 2.0);
+    let plot = one_over_x.textplot(&x, -2.0, 2.0).unwrap();
 
     // Should produce some output (might have NaN gaps but shouldn't crash)
     assert!(
@@ -422,7 +422,7 @@ fn textplot_handles_asymptote() {
 fn plot_data_constant_function() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let data = ctx.int(5).plot_data(&x, 0.0, 10.0, 50);
+    let data = ctx.int(5).plot_data(&x, 0.0, 10.0, 50).unwrap();
     assert_eq!(data.len(), 50);
     // All y values should be 5.0
     for (_xv, yv) in &data {
@@ -441,7 +441,7 @@ fn plot_data_polynomial() {
     let x = ctx.symbol("x");
     // f(x) = x^3 - x
     let f = x.powi(3) - &x;
-    let data = f.plot_data(&x, -2.0, 2.0, 5);
+    let data = f.plot_data(&x, -2.0, 2.0, 5).unwrap();
     assert_eq!(data.len(), 5);
 
     // At x = -2: (-2)^3 - (-2) = -8 + 2 = -6
@@ -470,7 +470,7 @@ fn plot_data_polynomial() {
 fn svg_output_is_well_formed() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let svg = x.powi(2).to_svg(&x, -1.0, 1.0);
+    let svg = x.powi(2).to_svg(&x, -1.0, 1.0).unwrap();
 
     // Count opening and closing SVG tags
     let open_svg = svg.matches("<svg").count();
@@ -489,7 +489,7 @@ fn svg_output_is_well_formed() {
 fn tikz_grid_option() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let tikz = x.sin().to_tikz(&x, 0.0, PI);
+    let tikz = x.sin().to_tikz(&x, 0.0, PI).unwrap();
     assert!(
         tikz.contains("grid=major"),
         "TikZ output should include grid=major"
@@ -500,7 +500,10 @@ fn tikz_grid_option() {
 fn eval_table_with_trig() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let table = x.sin().eval_table(&x, &[0.0, std::f64::consts::FRAC_PI_2]);
+    let table = x
+        .sin()
+        .eval_table(&x, &[0.0, std::f64::consts::FRAC_PI_2])
+        .unwrap();
     assert_eq!(table.nrows(), 2);
 
     // sin(0) = 0
@@ -514,7 +517,7 @@ fn eval_table_with_trig() {
 fn eval_table_to_markdown() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]);
+    let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]).unwrap();
     let md = table.to_markdown();
 
     // Markdown table should have header separator
@@ -536,7 +539,7 @@ fn textplot_large_range() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // Test with a larger range to exercise the formatting
-    let plot = x.sin().textplot(&x, -10.0, 10.0);
+    let plot = x.sin().textplot(&x, -10.0, 10.0).unwrap();
     assert!(!plot.is_empty());
     let line_count = plot.lines().count();
     // Default height is 21, plus title/axis labels
@@ -551,7 +554,7 @@ fn plot_data_respects_n_parameter() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     for n in [2, 10, 50, 200] {
-        let data = x.sin().plot_data(&x, 0.0, 1.0, n);
+        let data = x.sin().plot_data(&x, 0.0, 1.0, n).unwrap();
         assert_eq!(
             data.len(),
             n,

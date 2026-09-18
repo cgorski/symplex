@@ -1110,15 +1110,37 @@ impl Expr<Numeric> {
         self
     }
 
-    /// Mathematical equality: attempts to determine if `self - other == 0`.
+    /// Mathematical equality: attempts to determine whether `self == other`
+    /// as mathematical objects.
     ///
-    /// Uses layered detection:
-    /// 1. Structural identity (same `ExprId` — O(1))
-    /// 2. Compute `self - other` and check if canonically zero
-    /// 3. Expand `self - other` and check again
+    /// Three-valued:
     ///
-    /// Returns `Some(true)` if provably equal, `Some(false)` if provably
-    /// not equal, or `None` if unknown.
+    /// * `Some(true)` — `self − other` is structurally zero, or becomes zero
+    ///   after [`expand`](Self::expand) or [`simplify`](Self::simplify), or
+    ///   the assumption system proves the difference is zero.
+    /// * `Some(false)` — the difference (possibly after expand/simplify)
+    ///   is a **nonzero rational constant**, the assumption system proves it
+    ///   nonzero (e.g. `x² + 1` for real `x`), or both sides are constants
+    ///   (no free symbols) whose 16-digit numeric values differ by more
+    ///   than `1e-9` relative.
+    /// * `None` — undetermined.  In particular `x.equals(&y)` for distinct
+    ///   free symbols is `None`, not `Some(false)`; use
+    ///   [`probably_equal`](Self::probably_equal) for a randomized test.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!((&x + 1).powi(2).equals(&(&x.powi(2) + &x * 2 + 1)), Some(true));
+    /// assert_eq!((&x.sin().powi(2) + &x.cos().powi(2)).equals(&ctx.one()), Some(true));
+    /// assert_eq!(x.equals(&(&x + 1)), Some(false));
+    /// assert_eq!(ctx.int(1).equals(&ctx.int(2)), Some(false));
+    /// assert_eq!(ctx.pi().equals(&ctx.rational(22, 7)), Some(false));
+    /// assert_eq!(x.equals(&ctx.symbol("y")), None);
+    /// ```
     #[must_use]
     pub fn equals(&self, other: &Ex) -> Option<bool> {
         // Layer 1: structural identity (same arena node).
@@ -1127,26 +1149,57 @@ impl Expr<Numeric> {
             return Some(true);
         }
 
-        // Layer 2: compute self - other and check if zero.
+        // Layer 2: compute self - other; zero ⇒ equal, nonzero literal ⇒ not.
         let diff = self - other;
-        if diff.is_zero_structural() {
-            return Some(true);
+        if let Some(known) = Self::equals_from_difference(&diff) {
+            return Some(known);
         }
 
         // Layer 3: expand the difference and check again.
         let expanded = diff.expand();
-        if expanded.is_zero_structural() {
-            return Some(true);
+        if let Some(known) = Self::equals_from_difference(&expanded) {
+            return Some(known);
         }
 
         // Layer 4: simplify the difference (catches trig identities, etc.)
         let simplified = diff.simplify();
-        if simplified.is_zero_structural() {
+        if let Some(known) = Self::equals_from_difference(&simplified) {
+            return Some(known);
+        }
+
+        // Layer 5: assumption system on the simplified difference.
+        if simplified.is_zero() == Some(true) {
             return Some(true);
+        }
+        if simplified.is_nonzero() == Some(true) {
+            return Some(false);
+        }
+
+        // Layer 6: both sides are constants — compare 16-digit numeric values.
+        if simplified.is_constant()
+            && let (Ok((ar, ai)), Ok((br, bi))) = (self.eval_complex64(), other.eval_complex64())
+        {
+            let scale = 1.0_f64.max(ar.hypot(ai)).max(br.hypot(bi));
+            if (ar - br).hypot(ai - bi) > 1e-9 * scale {
+                return Some(false);
+            }
         }
 
         // Could not determine equality.
         None
+    }
+
+    /// `Some(true)` if `diff` is structurally zero, `Some(false)` if it is a
+    /// nonzero numeric literal, `None` otherwise.
+    fn equals_from_difference(diff: &Ex) -> Option<bool> {
+        let inner = diff.inner.read();
+        if inner.arena.is_zero_structural(diff.raw_id()) {
+            return Some(true);
+        }
+        match inner.arena.node(diff.raw_id()) {
+            crate::base::node::ExprNode::Num(_) => Some(false),
+            _ => None,
+        }
     }
 
     // ── Calculus ───────────────────────────────────────────────────
@@ -3958,35 +4011,98 @@ impl Expr<Numeric> {
 
     // ── Evaluation shortcuts (Wave P4) ─────────────────────────────
 
-    /// Substitute multiple integer values and evaluate to f64.
+    /// Substitute values for symbols (simultaneously) and evaluate to `f64`.
     ///
-    /// Combines `subs_i64` for each variable, then `eval()`, then `evalf_f64()`.
-    pub fn eval_f64_with(&self, subs: &[(&Ex, i64)]) -> Result<f64, SymplexError> {
-        let mut result = self.clone();
-        for (var, val) in subs {
-            result = result.subs_i64(var, *val);
+    /// The values may be any [`ToEx`](crate::eq::ToEx) type: integers,
+    /// `f64` (converted **exactly** — `0.1` is the dyadic
+    /// `3602879701896397/36028797018963968`, which is what you want when
+    /// the goal is a numeric answer), `BigInt`, `Ratio<BigInt>`, or `Ex`.
+    /// All values in one call must have the same Rust type.
+    ///
+    /// Substitution goes through [`subs_map`](Self::subs_map) (simultaneous),
+    /// then [`eval`](Self::eval), then [`eval_f64`](Self::eval_f64).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`eval_f64`](Self::eval_f64): free symbols left unbound, or a
+    /// result that is not a real number.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let f = &x.powi(2) + &y;
+    /// assert_eq!(f.eval_f64_with(&[(&x, 3), (&y, 1)]).unwrap(), 10.0);
+    /// assert_eq!(f.eval_f64_with(&[(&x, 0.5), (&y, 0.25)]).unwrap(), 0.5);
+    /// assert!(f.eval_f64_with(&[(&x, 1.0)]).is_err()); // y unbound
+    /// ```
+    pub fn eval_f64_with<V: crate::api::expr_ops::ToEx>(
+        &self,
+        subs: &[(&Ex, V)],
+    ) -> Result<f64, SymplexError> {
+        let bound = self.subs_map_with(subs).eval();
+        if let Some(free) = bound.free_symbols().into_iter().next() {
+            return Err(SymplexError::FreeSymbol {
+                name: format!("{free}"),
+            });
         }
-        result.eval().eval_f64()
+        bound.eval_f64()
     }
 
-    /// Substitute multiple rational values and evaluate to f64.
+    /// Substitute multiple rational values `p/q` and evaluate to `f64`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!((&x * 4).eval_f64_with_rational(&[(&x, 1, 2)]).unwrap(), 2.0);
+    /// ```
     pub fn eval_f64_with_rational(&self, subs: &[(&Ex, i64, i64)]) -> Result<f64, SymplexError> {
         let ctx = self.context();
-        let mut result = self.clone();
-        for (var, p, q) in subs {
-            let val = ctx.rational(*p, *q);
-            result = result.subs(var, &val);
-        }
-        result.eval().eval_f64()
+        let vals: Vec<Ex> = subs.iter().map(|(_, p, q)| ctx.rational(*p, *q)).collect();
+        let pairs: Vec<(&Ex, &Ex)> = subs.iter().map(|(v, _, _)| *v).zip(vals.iter()).collect();
+        self.subs_map(&pairs).eval().eval_f64()
     }
 
     /// Substitute multiple integer values simultaneously.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// assert_eq!(format!("{}", (&x + &y).subs_map_i64(&[(&x, 1), (&y, 2)])), "3");
+    /// ```
+    #[must_use = "returns a new expression with substitutions applied"]
     pub fn subs_map_i64(&self, subs: &[(&Ex, i64)]) -> Ex {
-        let mut result = self.clone();
-        for (var, val) in subs {
-            result = result.subs_i64(var, *val);
-        }
-        result
+        self.subs_map_with(subs)
+    }
+
+    /// Substitute values of any [`ToEx`](crate::eq::ToEx) type
+    /// simultaneously (no evaluation).
+    ///
+    /// `f64` values are converted exactly; use
+    /// [`Context::from_f64_nice`](crate::context::Context::from_f64_nice)
+    /// first if you want `0.1 → 1/10`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let e = (&x * &y).subs_map_with(&[(&x, 0.5), (&y, 4.0)]);
+    /// assert_eq!(format!("{e}"), "2");
+    /// ```
+    #[must_use = "returns a new expression with substitutions applied"]
+    pub fn subs_map_with<V: crate::api::expr_ops::ToEx>(&self, subs: &[(&Ex, V)]) -> Ex {
+        let ctx = self.context();
+        let vals: Vec<Ex> = subs.iter().map(|(_, v)| v.to_ex(&ctx)).collect();
+        let pairs: Vec<(&Ex, &Ex)> = subs.iter().map(|(s, _)| *s).zip(vals.iter()).collect();
+        self.subs_map(&pairs)
     }
 
     // ── Special function methods (Wave P5) ─────────────────────────
@@ -4249,14 +4365,89 @@ impl Expr<Numeric> {
 
     // ── Plotting API (Wave P6) ─────────────────────────────────────
 
+    /// Validate the common plotting arguments and return the variable name.
+    ///
+    /// Checks: `var` is a symbol, `a`/`b` are finite with `a < b`, and no
+    /// free symbol other than `var` occurs in `self`.
+    fn plot_check_args(
+        &self,
+        var: &Ex,
+        bounds: Option<(f64, f64)>,
+        operation: &'static str,
+    ) -> Result<String, SymplexError> {
+        use crate::base::node::ExprNode;
+
+        let var_id = self.checked_id(var);
+        let is_symbol = matches!(self.inner.read().arena.node(var_id), ExprNode::Symbol(_));
+        if !is_symbol {
+            return Err(SymplexError::InvalidArgument {
+                operation,
+                reason: format!("plot variable must be a symbol, got `{var}`"),
+            });
+        }
+        if let Some((a, b)) = bounds {
+            if !a.is_finite() || !b.is_finite() {
+                return Err(SymplexError::InvalidArgument {
+                    operation,
+                    reason: format!("plot range must be finite, got [{a}, {b}]"),
+                });
+            }
+            if a >= b {
+                return Err(SymplexError::InvalidArgument {
+                    operation,
+                    reason: format!("plot range must satisfy a < b, got [{a}, {b}]"),
+                });
+            }
+        }
+        if let Some(other) = self.free_symbols().into_iter().find(|s| s != var) {
+            return Err(SymplexError::FreeSymbol {
+                name: format!("{other}"),
+            });
+        }
+        Ok(format!("{var}"))
+    }
+
+    /// Build a fast `f64 → f64` evaluator for `self` in `var`.
+    ///
+    /// Uses [`compile`](Self::compile) when the expression is compilable.
+    /// Nodes without a compiled form (user `Apply`, unevaluated integrals,
+    /// …) fall back to exact substitution of the sample point followed by
+    /// [`eval_f64`](Self::eval_f64); points where that fails yield `NaN`.
+    fn plot_evaluator(
+        &self,
+        var: &Ex,
+        var_name: &str,
+    ) -> Result<Box<dyn Fn(f64) -> f64 + Send + Sync>, SymplexError> {
+        match self.compile(&[var_name]) {
+            Ok(f) => Ok(Box::new(move |x: f64| f(&[x]))),
+            Err(SymplexError::NotImplemented(_)) => {
+                let expr = self.clone();
+                let var = var.clone();
+                let ctx = self.context();
+                Ok(Box::new(move |x: f64| match ctx.from_f64(x) {
+                    Ok(v) => expr.subs(&var, &v).eval().eval_f64().unwrap_or(f64::NAN),
+                    Err(_) => f64::NAN,
+                }))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Internal: domain-aware adaptive sampling for plotting.
     ///
     /// Uses [`calculus_util::singularities`](crate::calculus::calculus_util::singularities) to find excluded points,
     /// [`calculus_util::estimate_frequency`](crate::calculus::calculus_util::estimate_frequency) to determine sampling density,
     /// and [`sampling::sample_compiled`](crate::plotting::sampling::sample_compiled) for adaptive refinement.
-    fn sample_expression(&self, var: &Ex, a: f64, b: f64) -> crate::plotting::sampling::PlotData {
+    fn sample_expression(
+        &self,
+        var: &Ex,
+        a: f64,
+        b: f64,
+        operation: &'static str,
+    ) -> Result<crate::plotting::sampling::PlotData, SymplexError> {
         use crate::base::node::ExprNode;
 
+        let var_name = self.plot_check_args(var, Some((a, b)), operation)?;
         let var_id = self.checked_id(var);
 
         // Step 1: Domain analysis (needs write lock for singularities)
@@ -4288,50 +4479,36 @@ impl Expr<Numeric> {
             }
         }; // write lock dropped
 
-        // Step 2: Compile and sample (compile acquires a read lock)
-        let var_name = format!("{var}");
-        let compiled = self.compile(&[&var_name]);
-        match compiled {
-            Ok(f) => {
-                let opts = crate::plotting::sampling::SampleOptions {
-                    min_points,
-                    ..Default::default()
-                };
-                let f_single = move |x: f64| -> f64 { f(&[x]) };
-                crate::plotting::sampling::sample_compiled(
-                    &f_single,
-                    (a, b),
-                    &excluded_points,
-                    &opts,
-                )
-            }
-            Err(_) => {
-                // Fallback: symbolic substitution
-                let n = min_points.max(2);
-                let step = (b - a) / (n as f64 - 1.0);
-                let points: Vec<(f64, f64)> = (0..n)
-                    .map(|i| {
-                        let x = a + i as f64 * step;
-                        let (p, q) = f64_to_rational_approx(x);
-                        let val = self.context().rational(p, q);
-                        let y = self.subs(var, &val).eval().eval_f64().unwrap_or(f64::NAN);
-                        (x, y)
-                    })
-                    .collect();
-                crate::plotting::sampling::PlotData {
-                    points,
-                    asymptotes: Vec::new(),
-                    excluded: excluded_points,
-                }
-            }
+        // Step 2: Build the evaluator and sample.
+        let f = self.plot_evaluator(var, &var_name)?;
+        let opts = crate::plotting::sampling::SampleOptions {
+            min_points,
+            ..Default::default()
+        };
+        let data = crate::plotting::sampling::sample_compiled(&*f, (a, b), &excluded_points, &opts);
+        if !data.points.iter().any(|(_, y)| y.is_finite()) {
+            return Err(SymplexError::ComputationFailed {
+                operation,
+                reason: format!("`{self}` has no finite real values on [{a}, {b}]"),
+            });
         }
+        Ok(data)
     }
 
-    /// Generate ASCII art plot of this expression over `[a, b]`.
+    /// Generate an ASCII-art plot of this expression over `[a, b]`.
     ///
     /// Compiles the expression for fast numerical evaluation, performs
-    /// domain-aware adaptive sampling, and renders the result as a
-    /// character grid.
+    /// domain-aware adaptive sampling (singularities are detected and
+    /// skipped), and renders the result as a 60×21 character grid.
+    ///
+    /// # Errors
+    ///
+    /// * [`SymplexError::InvalidArgument`] if `var` is not a symbol, or the
+    ///   range is not finite with `a < b`.
+    /// * [`SymplexError::FreeSymbol`] if the expression contains a symbol
+    ///   other than `var`.
+    /// * [`SymplexError::ComputationFailed`] if the expression has no finite
+    ///   real value anywhere on the range.
     ///
     /// # Examples
     ///
@@ -4340,19 +4517,32 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let plot = x.sin().textplot(&x, 0.0, 6.28);
-    /// assert!(!plot.is_empty());
+    /// let plot = x.sin().textplot(&x, 0.0, 6.28).unwrap();
+    /// assert!(plot.lines().count() >= 21);
+    ///
+    /// let y = ctx.symbol("y");
+    /// assert!(matches!((&x + &y).textplot(&x, 0.0, 1.0), Err(SymplexError::FreeSymbol { .. })));
+    /// assert!(x.textplot(&x, 1.0, 0.0).is_err());
     /// ```
-    #[must_use]
-    pub fn textplot(&self, var: &Ex, a: f64, b: f64) -> String {
-        let plot_data = self.sample_expression(var, a, b);
-        crate::plotting::textplot::textplot(&plot_data.points, 60, 21, None)
+    pub fn textplot(&self, var: &Ex, a: f64, b: f64) -> Result<String, SymplexError> {
+        let plot_data = self.sample_expression(var, a, b, "textplot")?;
+        Ok(crate::plotting::textplot::textplot(
+            &plot_data.points,
+            60,
+            21,
+            None,
+        ))
     }
 
-    /// Generate SVG plot of this expression over `[a, b]`.
+    /// Generate an SVG plot of this expression over `[a, b]`.
     ///
-    /// Returns a self-contained SVG string with axes, grid, and the
-    /// function curve rendered as a `<polyline>`.
+    /// Returns a self-contained SVG document with axes, grid, and the
+    /// function curve rendered as `<polyline>` segments (one per
+    /// continuous branch).
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`textplot`](Self::textplot).
     ///
     /// # Examples
     ///
@@ -4361,21 +4551,26 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let svg = x.sin().to_svg(&x, 0.0, 6.28);
-    /// assert!(svg.contains("<svg"));
+    /// let svg = x.sin().to_svg(&x, 0.0, 6.28).unwrap();
+    /// assert!(svg.starts_with("<svg") || svg.contains("<svg"));
+    /// assert!(svg.contains("</svg>"));
     /// ```
-    #[must_use]
-    pub fn to_svg(&self, var: &Ex, a: f64, b: f64) -> String {
-        let plot_data = self.sample_expression(var, a, b);
+    pub fn to_svg(&self, var: &Ex, a: f64, b: f64) -> Result<String, SymplexError> {
+        let plot_data = self.sample_expression(var, a, b, "to_svg")?;
         let series = vec![(plot_data.points.as_slice(), "f(x)")];
         let opts = crate::plotting::svg_plot::SvgPlotOptions::default();
-        crate::plotting::svg_plot::svg_plot(&series, &opts)
+        Ok(crate::plotting::svg_plot::svg_plot(&series, &opts))
     }
 
     /// Generate TikZ/PGFplots code for this expression over `[a, b]`.
     ///
-    /// Returns a string containing a complete `tikzpicture` environment
-    /// with axis options and coordinate data.
+    /// Returns a complete `tikzpicture` environment with axis options and
+    /// coordinate data, ready to `\input` into a LaTeX document that loads
+    /// `pgfplots`.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`textplot`](Self::textplot).
     ///
     /// # Examples
     ///
@@ -4384,27 +4579,36 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let tikz = x.sin().to_tikz(&x, 0.0, 6.28);
+    /// let tikz = x.sin().to_tikz(&x, 0.0, 6.28).unwrap();
     /// assert!(tikz.contains("\\begin{axis}"));
+    /// assert!(tikz.contains("\\end{tikzpicture}"));
     /// ```
-    #[must_use]
-    pub fn to_tikz(&self, var: &Ex, a: f64, b: f64) -> String {
-        let plot_data = self.sample_expression(var, a, b);
-        crate::plotting::tikz_plot::tikz_plot(
+    pub fn to_tikz(&self, var: &Ex, a: f64, b: f64) -> Result<String, SymplexError> {
+        let plot_data = self.sample_expression(var, a, b, "to_tikz")?;
+        Ok(crate::plotting::tikz_plot::tikz_plot(
             &[(&plot_data.points, "f(x)")],
             None,
             Some("x"),
             Some("y"),
             false,
             false,
-        )
+        ))
     }
 
-    /// Generate `(x, y)` sample data for this expression over `[a, b]`.
+    /// Generate `(x, y)` sample data for this expression at `n`
+    /// uniformly-spaced points over `[a, b]` (both endpoints included).
     ///
-    /// Compiles the expression to a closure and evaluates it at `n`
-    /// uniformly-spaced points. Points where the function is not finite
-    /// produce `NaN` y-values.
+    /// Points where the function is not a finite real number produce `NaN`
+    /// y-values, so the returned vector always has exactly `n` entries.
+    ///
+    /// # Errors
+    ///
+    /// * [`SymplexError::InvalidArgument`] if `var` is not a symbol, `n < 2`,
+    ///   or the range is not finite with `a < b`.
+    /// * [`SymplexError::FreeSymbol`] if the expression contains a symbol
+    ///   other than `var`.
+    /// * [`SymplexError::ComputationFailed`] if *every* sample is
+    ///   non-finite (e.g. `ln(x)` on `[-2, -1]`).
     ///
     /// # Examples
     ///
@@ -4413,45 +4617,58 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let data = x.powi(2).plot_data(&x, 0.0, 1.0, 10);
-    /// assert_eq!(data.len(), 10);
+    /// let data = x.powi(2).plot_data(&x, 0.0, 1.0, 11).unwrap();
+    /// assert_eq!(data.len(), 11);
+    /// assert!((data[5].1 - 0.25).abs() < 1e-12); // x = 0.5
+    ///
+    /// assert!(x.plot_data(&x, 0.0, 1.0, 1).is_err());
+    /// assert!(x.ln().plot_data(&x, -2.0, -1.0, 5).is_err());
     /// ```
-    #[must_use]
-    pub fn plot_data(&self, var: &Ex, a: f64, b: f64, n: usize) -> Vec<(f64, f64)> {
-        // Extract variable name from the expression.
-        let var_name = format!("{var}");
-        let compiled = self.compile(&[&var_name]);
-        let n = n.max(2);
+    pub fn plot_data(
+        &self,
+        var: &Ex,
+        a: f64,
+        b: f64,
+        n: usize,
+    ) -> Result<Vec<(f64, f64)>, SymplexError> {
+        let var_name = self.plot_check_args(var, Some((a, b)), "plot_data")?;
+        if n < 2 {
+            return Err(SymplexError::InvalidArgument {
+                operation: "plot_data",
+                reason: format!("need at least 2 sample points, got {n}"),
+            });
+        }
+        let f = self.plot_evaluator(var, &var_name)?;
         let step = (b - a) / (n as f64 - 1.0);
-
-        match compiled {
-            Ok(f) => (0..n)
-                .map(|i| {
-                    let x = a + i as f64 * step;
-                    let y = f(&[x]);
-                    (x, y)
-                })
-                .collect(),
-            Err(_) => {
-                // Fallback: use symbolic substitution + eval_f64
-                (0..n)
-                    .map(|i| {
-                        let x = a + i as f64 * step;
-                        let (p, q) = f64_to_rational_approx(x);
-                        let val = self.context().rational(p, q);
-                        let y = self.subs(var, &val).eval().eval_f64().unwrap_or(f64::NAN);
-                        (x, y)
-                    })
-                    .collect()
-            }
+        let data: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                // Hit the right endpoint exactly.
+                let x = if i + 1 == n { b } else { a + i as f64 * step };
+                (x, f(x))
+            })
+            .collect();
+        if !data.iter().any(|(_, y)| y.is_finite()) {
+            return Err(SymplexError::ComputationFailed {
+                operation: "plot_data",
+                reason: format!("`{self}` has no finite real values on [{a}, {b}]"),
+            });
         }
+        Ok(data)
     }
 
-    /// Export evaluation table as a [`DataTable`](crate::plotting::data_export::DataTable).
+    /// Evaluate this expression at each of `points` and return a two-column
+    /// [`DataTable`](crate::plotting::data_export::DataTable) (`x`, `f(x)`)
+    /// for export to CSV, JSON, Markdown, LaTeX, ….
     ///
-    /// Evaluates this expression at each point in `points` and returns
-    /// a two-column table (`x`, `f(x)`) suitable for export to CSV,
-    /// JSON, LaTeX, and other formats.
+    /// Non-finite results are recorded as `NaN` / `Inf` cells; they are not
+    /// an error.
+    ///
+    /// # Errors
+    ///
+    /// * [`SymplexError::InvalidArgument`] if `var` is not a symbol or any
+    ///   input point is not finite.
+    /// * [`SymplexError::FreeSymbol`] if the expression contains a symbol
+    ///   other than `var`.
     ///
     /// # Examples
     ///
@@ -4460,72 +4677,33 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]);
+    /// let table = x.powi(2).eval_table(&x, &[0.0, 1.0, 2.0]).unwrap();
     /// assert_eq!(table.nrows(), 3);
+    /// assert_eq!(table.rows[2], vec!["2", "4"]);
+    /// assert!(table.to_csv().starts_with("x,f(x)\n"));
     /// ```
-    #[must_use]
-    pub fn eval_table(&self, var: &Ex, points: &[f64]) -> crate::plotting::data_export::DataTable {
-        let var_name = format!("{var}");
-        let compiled = self.compile(&[&var_name]);
-        match compiled {
-            Ok(f) => {
-                crate::plotting::data_export::DataTable::from_evaluation("x", "f(x)", points, |x| {
-                    f(&[x])
-                })
-            }
-            Err(_) => {
-                let values: Vec<(f64, f64)> = points
-                    .iter()
-                    .map(|&x| {
-                        let (p, q) = f64_to_rational_approx(x);
-                        let val = self.context().rational(p, q);
-                        let y = self.subs(var, &val).eval().eval_f64().unwrap_or(f64::NAN);
-                        (x, y)
-                    })
-                    .collect();
-                crate::plotting::data_export::DataTable::from_points("x", "f(x)", &values)
-            }
+    pub fn eval_table(
+        &self,
+        var: &Ex,
+        points: &[f64],
+    ) -> Result<crate::plotting::data_export::DataTable, SymplexError> {
+        let var_name = self.plot_check_args(var, None, "eval_table")?;
+        if let Some(bad) = points.iter().find(|p| !p.is_finite()) {
+            return Err(SymplexError::InvalidArgument {
+                operation: "eval_table",
+                reason: format!("input points must be finite, got {bad}"),
+            });
         }
+        let f = self.plot_evaluator(var, &var_name)?;
+        Ok(crate::plotting::data_export::DataTable::from_evaluation(
+            "x", "f(x)", points, f,
+        ))
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helper: parse complex evalf strings
 // ═══════════════════════════════════════════════════════════════════════════
-
-/// Convert an `f64` to a `(numerator, denominator)` rational approximation.
-///
-/// Uses a denominator of 10^9 for up to ~9 digits of decimal precision,
-/// then reduces by the GCD. This is used as a fallback when `compile()`
-/// fails and we need to substitute numeric values symbolically.
-fn f64_to_rational_approx(x: f64) -> (i64, i64) {
-    if x == 0.0 {
-        return (0, 1);
-    }
-    if !x.is_finite() {
-        return (if x > 0.0 { i64::MAX } else { i64::MIN }, 1);
-    }
-    // If the value is very close to an integer, just return it.
-    let rounded = x.round();
-    if (x - rounded).abs() < 1e-12 && rounded.abs() < i64::MAX as f64 {
-        return (rounded as i64, 1);
-    }
-    let denom: i64 = 1_000_000_000; // 10^9
-    let numer = (x * denom as f64).round() as i64;
-    let g = gcd_i64(numer.unsigned_abs(), denom as u64) as i64;
-    (numer / g, denom / g)
-}
-
-/// Simple GCD for unsigned 64-bit integers (Euclidean algorithm).
-fn gcd_i64(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
-    }
-    a.max(1)
-}
-
 /// Parse the string output of `evalf()` into a complex (f64, f64) pair.
 ///
 /// Handles formats:

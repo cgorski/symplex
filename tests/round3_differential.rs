@@ -1812,7 +1812,7 @@ fn aggressive_high_order_polynomial() {
     // x^10 + x^9 + ... + x + 1  (geometric sum)
     let mut expr = ctx.int(1);
     for i in 1..=10 {
-        expr = expr + x.powi(i);
+        expr += x.powi(i);
     }
 
     assert_paths_agree(

@@ -217,7 +217,7 @@ fn sturm_root_counting() {
     // Wilkinson-style: 10 real roots.
     let mut w = ctx.int(1);
     for k in 1..=10 {
-        w = w * (&x - k);
+        w *= &x - k;
     }
     assert_eq!(w.expand().count_real_roots(&x), Some(10));
 }
