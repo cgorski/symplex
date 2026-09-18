@@ -1466,12 +1466,12 @@ fn quadrature_errors() {
         Err(SymplexError::FreeSymbol { .. })
     ));
     // Special functions with a numeric runtime (Γ here) are integrable
-    // numerically: ∫₁² Γ(x) dx = 0.42278433509846713… (Wolfram).
+    // numerically: ∫₁² Γ(x) dx = 0.92274595068063… (independent Simpson check).
     let g = x
         .gamma()
         .integrate_numeric(&x, &ctx.int(1), &ctx.int(2))
         .unwrap();
-    assert!((g - 0.422_784_335_098_467_1).abs() < 1e-9, "{g}");
+    assert!((g - 0.922_745_950_680_630_7).abs() < 1e-9, "{g}");
     // Nodes with no real-valued runtime are rejected, not approximated.
     assert!(matches!(
         x.zeta().integrate_numeric(&x, &ctx.int(2), &ctx.int(3)),

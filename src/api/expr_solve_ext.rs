@@ -433,26 +433,24 @@ impl Default for NewtonOpts {
     }
 }
 
-/// A compiled numeric closure over a slice of variable values.
-type CompiledFn = Box<dyn Fn(&[f64]) -> f64 + Send + Sync>;
-
-/// Callable scalar function of `k` variables, compiled when possible.
+/// Callable scalar function of `k` variables, compiled when possible and
+/// falling back to exact substitution + `eval_f64` otherwise.
 enum Evaluator {
-    Compiled(CompiledFn),
+    Compiled(crate::output::lambdify::CompiledFn),
     Symbolic(Ex, Vec<Ex>),
 }
 
 impl Evaluator {
     fn new(expr: &Ex, vars: &[Ex], names: &[&str]) -> Self {
         match expr.compile(names) {
-            Some(f) => Evaluator::Compiled(f),
-            None => Evaluator::Symbolic(expr.clone(), vars.to_vec()),
+            Ok(f) => Evaluator::Compiled(f),
+            Err(_) => Evaluator::Symbolic(expr.clone(), vars.to_vec()),
         }
     }
 
     fn call(&self, x: &[f64]) -> Result<f64, SymplexError> {
         match self {
-            Evaluator::Compiled(f) => Ok(f(x)),
+            Evaluator::Compiled(f) => Ok(f.call(x)),
             Evaluator::Symbolic(expr, vars) => {
                 let mut e = expr.clone();
                 for (v, &xv) in vars.iter().zip(x) {

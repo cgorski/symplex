@@ -3104,14 +3104,14 @@ impl Expr<Numeric> {
         };
         let eval_f = |x: f64| -> Result<f64, SymplexError> {
             match &compiled_f {
-                Some(f) => Ok(f(&[x])),
-                None => self.subs(var, &to_ex(x)?).eval_f64(),
+                Ok(f) => Ok(f(&[x])),
+                Err(_) => self.subs(var, &to_ex(x)?).eval_f64(),
             }
         };
         let eval_fp = |x: f64| -> Result<f64, SymplexError> {
             match &compiled_fp {
-                Some(f) => Ok(f(&[x])),
-                None => deriv.subs(var, &to_ex(x)?).eval_f64(),
+                Ok(f) => Ok(f(&[x])),
+                Err(_) => deriv.subs(var, &to_ex(x)?).eval_f64(),
             }
         };
 
