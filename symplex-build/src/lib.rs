@@ -90,14 +90,13 @@ impl CodeGen {
 
     /// Set custom code generation options.
     ///
-    /// Every registered function is emitted with these options.  Note that
-    /// [`CodegenOptions::emit_runtime`] (default `true`) makes *each*
-    /// function that uses a special function (`gamma`, `lambertw`, Bessel,
-    /// …) carry its own `mod symplex_rt { … }` block, so a file with two
-    /// such functions would define the module twice.  For multi-function
-    /// files set `emit_runtime: false` here and prepend
-    /// [`CodegenOptions::runtime_module`] once to the output of
-    /// [`generate`](Self::generate):
+    /// Every registered function is emitted with these options.  The
+    /// special-function runtime (`mod symplex_rt`, needed by `gamma`,
+    /// `lambertw`, Bessel functions, …) is emitted **once** at the top of
+    /// the file when [`CodegenOptions::emit_runtime`] is `true` (the
+    /// default) and at least one function needs it.  Set `emit_runtime:
+    /// false` to leave it out entirely — e.g. when several generated files
+    /// share one copy of [`CodegenOptions::runtime_module`]:
     ///
     /// ```rust,no_run
     /// use symplex::matrix::{CodegenOptions, MathBackend};
@@ -117,8 +116,8 @@ impl CodeGen {
     ///     .add_scalar_fn("w", &x.lambertw(), &["x"])
     ///     .generate()
     ///     .unwrap();
-    /// let file = format!("{}\n{body}", opts.runtime_module());
-    /// std::fs::write("robot_math.rs", file).unwrap();
+    /// std::fs::write("robot_math.rs", body).unwrap();
+    /// std::fs::write("symplex_rt.rs", opts.runtime_module()).unwrap();
     /// ```
     pub fn options(mut self, options: CodegenOptions) -> Self {
         self.options = options;
@@ -196,13 +195,11 @@ impl CodeGen {
     ///
     /// 1. If the math backend is `CfgGated`, emits the cfg-gated math module
     ///    (once; the per-function copies are stripped).
-    /// 2. For each registered function, calls the appropriate symplex codegen method.
-    /// 3. If test generation is enabled, emits a `#[cfg(test)]` module.
-    ///
-    /// The special-function runtime (`mod symplex_rt`) is **not** deduplicated:
-    /// if more than one registered function needs it, set
-    /// `CodegenOptions::emit_runtime = false` via [`options`](Self::options)
-    /// and prepend [`CodegenOptions::runtime_module`] to the result yourself.
+    /// 2. If [`CodegenOptions::emit_runtime`] is set and any registered
+    ///    function uses a special function, emits the `mod symplex_rt`
+    ///    runtime once, containing exactly the helpers the file needs.
+    /// 3. For each registered function, calls the appropriate symplex codegen method.
+    /// 4. If test generation is enabled, emits a `#[cfg(test)]` module.
     pub fn generate(&self) -> Result<String, Box<dyn std::error::Error>> {
         let mut output = String::new();
 
@@ -215,10 +212,6 @@ impl CodeGen {
             output.push('\n');
         }
 
-        // We delegate cfg-gated module emission to the per-function codegen,
-        // but we want it emitted only once at the top if CfgGated is selected.
-        // So we generate a dummy options set with Std backend for the individual
-        // functions after emitting the shared module once.
         let emit_cfg_module = self.options.math_backend == MathBackend::CfgGated;
 
         if emit_cfg_module {
@@ -227,25 +220,18 @@ impl CodeGen {
             output.push('\n');
         }
 
-        // For individual function codegen, use the same options but avoid
-        // re-emitting the cfg-gated module for each function.
-        let fn_options = if emit_cfg_module {
-            // Use Std backend so individual codegen doesn't re-emit the module,
-            // but the generated code already references `math::sin()` etc.
-            // Actually, we need to keep CfgGated so the expr_to_rust emits
-            // `math::sin(x)` style calls. The module itself is already emitted.
-            // Unfortunately the upstream codegen always prepends the module.
-            // So we just use the original options and strip duplicate modules
-            // from the per-function output.
-            self.options.clone()
-        } else {
-            self.options.clone()
+        // Per-function codegen never embeds the runtime: it is emitted once
+        // for the whole file below, after we know which helpers are used.
+        let fn_options = CodegenOptions {
+            emit_runtime: false,
+            ..self.options.clone()
         };
 
+        let mut functions = String::new();
         let mut first_fn = true;
         for gfn in &self.functions {
             if !first_fn {
-                output.push('\n');
+                functions.push('\n');
             }
             first_fn = false;
 
@@ -268,12 +254,20 @@ impl CodeGen {
             // from the per-function output to avoid duplicates.
             if emit_cfg_module {
                 let stripped = strip_cfg_gated_module(&code);
-                output.push_str(&stripped);
+                functions.push_str(&stripped);
             } else {
-                output.push_str(&code);
+                functions.push_str(&code);
             }
-            output.push('\n');
+            functions.push('\n');
         }
+
+        if self.options.emit_runtime
+            && let Some(runtime) = self.options.runtime_module_for(&functions)
+        {
+            output.push_str(&runtime);
+            output.push_str("\n\n");
+        }
+        output.push_str(&functions);
 
         // Generate test module if requested
         if self.generate_tests && !self.test_points.is_empty() {
@@ -1049,6 +1043,99 @@ functions = ["fk_matrix"]
             .unwrap();
         // The cfg-gated math module must be emitted exactly once (std + libm variants).
         assert_eq!(code.matches("mod math {").count(), 2, "{code}");
+    }
+
+    /// Two functions that each need the special-function runtime.
+    fn two_special_fns(opts: CodegenOptions) -> CodeGen {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let y = ctx.symbol("y");
+        CodeGen::new()
+            .options(opts)
+            .add_scalar_fn("g", &(x.gamma() + &y), &["x", "y"])
+            .add_scalar_fn("e", &(x.erf() * &y), &["x", "y"])
+    }
+
+    #[test]
+    fn generate_emits_runtime_module_once_for_two_special_functions() {
+        let code = two_special_fns(CodegenOptions::default())
+            .generate()
+            .unwrap();
+        assert_eq!(code.matches("mod symplex_rt {").count(), 1, "{code}");
+        assert!(code.contains("pub fn gamma(") && code.contains("pub fn erf("), "{code}");
+        assert!(code.contains("fn g(") && code.contains("fn e("), "{code}");
+        // The runtime precedes the functions that use it.
+        assert!(code.find("mod symplex_rt {").unwrap() < code.find("fn g(").unwrap());
+        // Only the helpers the file needs are embedded.
+        assert!(!code.contains("pub fn bessel_k("), "{code}");
+    }
+
+    #[test]
+    fn generate_emits_runtime_module_once_in_no_std_mode() {
+        let code = two_special_fns(CodegenOptions::no_std())
+            .generate()
+            .unwrap();
+        assert_eq!(code.matches("mod symplex_rt {").count(), 1, "{code}");
+        assert_eq!(code.matches("mod math {").count(), 2, "{code}");
+        // Order: mod math, mod symplex_rt, functions.
+        let math_pos = code.find("mod math {").unwrap();
+        let rt_pos = code.find("mod symplex_rt {").unwrap();
+        let fn_pos = code.find("fn g(").unwrap();
+        assert!(math_pos < rt_pos && rt_pos < fn_pos, "{code}");
+    }
+
+    #[test]
+    fn generate_honours_emit_runtime_false() {
+        let opts = CodegenOptions {
+            emit_runtime: false,
+            ..Default::default()
+        };
+        let code = two_special_fns(opts).generate().unwrap();
+        assert_eq!(code.matches("mod symplex_rt {").count(), 0, "{code}");
+        assert!(code.contains("symplex_rt::gamma("), "{code}");
+    }
+
+    #[test]
+    fn generate_omits_runtime_when_unused() {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let code = CodeGen::new()
+            .add_scalar_fn("f", &(x.sin() + x.powi(2)), &["x"])
+            .generate()
+            .unwrap();
+        assert!(!code.contains("mod symplex_rt"), "{code}");
+    }
+
+    /// The two-function file must compile as a library (skipped when
+    /// `rustc` is not on the PATH).
+    #[test]
+    fn generated_file_with_two_special_functions_compiles() {
+        let Ok(out) = std::process::Command::new("rustc")
+            .arg("--version")
+            .output()
+        else {
+            eprintln!("rustc not available; skipping compile check");
+            return;
+        };
+        if !out.status.success() {
+            return;
+        }
+        let code = two_special_fns(CodegenOptions::default())
+            .generate()
+            .unwrap();
+        let dir = std::env::temp_dir().join(format!("symplex_build_rt_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("gen.rs");
+        fs::write(&src, format!("#![allow(dead_code)]\n{code}")).unwrap();
+        let out = std::process::Command::new("rustc")
+            .args(["--crate-type", "lib", "--edition", "2024", "-o"])
+            .arg(dir.join("gen.rlib"))
+            .arg(&src)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(out.status.success(), "generated file failed to compile:\n{stderr}\n{code}");
     }
 
     #[test]
