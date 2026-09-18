@@ -95,6 +95,32 @@ fn tf_to_state_space_symbolic_coefficients() {
     assert!((&back.num - &num).expand().is_zero_structural());
 }
 
+/// Irreducible cubic denominator: the poles are exact `RootOf` values,
+/// which still evaluate numerically for the stability test.
+#[test]
+fn stability_with_rootof_poles() {
+    let ctx = Context::new();
+    let s = ctx.symbol("s");
+    // s³ + 2s² + 3s + 1: no rational root, Routh-stable (2·3 > 1·1).
+    let g = TransferFunction::from_coeffs(&[1], &[1, 3, 2, 1], &s);
+    let ss = g.to_state_space().unwrap();
+    let poles = ss.poles();
+    assert_eq!(poles.len(), 3);
+    assert!(
+        poles.iter().all(|p| p.to_string().contains("RootOf")),
+        "{poles:?}"
+    );
+    for p in &poles {
+        let (re, _) = p.eval_complex64().unwrap();
+        assert!(re < 0.0, "{p} has re = {re}");
+    }
+    assert_eq!(ss.is_stable(), Some(true));
+    assert_eq!(
+        symplex::control::is_routh_stable(&[ctx.int(1), ctx.int(3), ctx.int(2), ctx.int(1)]),
+        Some(true)
+    );
+}
+
 #[test]
 fn tf_to_state_space_errors() {
     let ctx = Context::new();
