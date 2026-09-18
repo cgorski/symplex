@@ -727,20 +727,18 @@ fn append_cfg_gated_module(lines: &mut Vec<String>, precision: Precision) {
     lines.push(String::new());
     lines.push("#[cfg(not(feature = \"std\"))]".to_string());
     lines.push("mod math {".to_string());
+    // Same names as the std module; `libm` spells a few differently
+    // (`ln` → `log`, `abs` → `fabs`), which `libm_function_name` resolves.
     for func in &[
-        "sin", "cos", "tan", "exp", "abs", "sqrt", "cbrt", "asin", "acos", "atan", "sinh", "cosh",
-        "tanh", "asinh", "acosh", "atanh", "floor", "ceil",
+        "sin", "cos", "tan", "exp", "ln", "abs", "sqrt", "cbrt", "asin", "acos", "atan", "sinh",
+        "cosh", "tanh", "asinh", "acosh", "atanh", "floor", "ceil",
     ] {
         let method = *func;
+        let libm_fn = libm_function_name(method);
         lines.push(format!(
-            "    #[inline] pub fn {method}(x: {ft}) -> {ft} {{ libm::{method}({} as f64) as {ft} }}",
-            "x"
+            "    #[inline] pub fn {method}(x: {ft}) -> {ft} {{ libm::{libm_fn}(x as f64) as {ft} }}"
         ));
     }
-    // ln maps to log in libm
-    lines.push(format!(
-        "    #[inline] pub fn ln(x: {ft}) -> {ft} {{ libm::log(x as f64) as {ft} }}"
-    ));
     lines.push(format!(
         "    #[inline] pub fn signum(x: {ft}) -> {ft} {{ if x > 0.0 {{ 1.0 }} else if x < 0.0 {{ -1.0 }} else {{ 0.0 }} }}"
     ));
