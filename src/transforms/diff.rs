@@ -760,6 +760,42 @@ fn diff_node(
             arena.intern(ExprNode::Derivative(id, v))
         }
 
+        // ── DefiniteIntegral: Leibniz integral rule ─────────────────
+        // d/dt ∫_{a(t)}^{b(t)} f(x, t) dx
+        //   = f(b, t)·b'(t) − f(a, t)·a'(t) + ∫_{a}^{b} ∂f/∂t dx
+        //
+        // The integration variable is bound inside the body: when `t` is
+        // that variable the body contributes nothing (only bounds that
+        // happen to mention `t` do, which the two boundary terms handle).
+        ExprNode::DefiniteIntegral(body, int_var, lo, hi) => {
+            let var_is_bound = matches!(arena.node(int_var), ExprNode::Symbol(s) if *s == var);
+            let mut terms: SmallVec<[ExprId; 3]> = SmallVec::new();
+
+            let d_hi = get_deriv(cache, hi, arena);
+            if !arena.is_zero_structural(d_hi) {
+                let f_hi = arena.subs_structural(body, int_var, hi);
+                terms.push(arena.mul(&[f_hi, d_hi]));
+            }
+            let d_lo = get_deriv(cache, lo, arena);
+            if !arena.is_zero_structural(d_lo) {
+                let f_lo = arena.subs_structural(body, int_var, lo);
+                let t = arena.mul(&[f_lo, d_lo]);
+                terms.push(arena.neg(t));
+            }
+            if !var_is_bound {
+                let d_body = get_deriv(cache, body, arena);
+                if !arena.is_zero_structural(d_body) {
+                    terms.push(arena.definite_integral(d_body, int_var, lo, hi));
+                }
+            }
+
+            match terms.len() {
+                0 => arena.zero,
+                1 => terms[0],
+                _ => arena.add(&terms),
+            }
+        }
+
         // ── Floor/Ceiling: piecewise constant → derivative is 0 ────
         ExprNode::Floor(_) | ExprNode::Ceiling(_) => arena.zero,
 

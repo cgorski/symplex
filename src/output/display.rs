@@ -124,6 +124,7 @@ fn prec_of(node: &ExprNode) -> u8 {
         | ExprNode::Apply(_, _)
         | ExprNode::Derivative(_, _)
         | ExprNode::Integral(_, _)
+        | ExprNode::DefiniteIntegral(_, _, _, _)
         | ExprNode::Limit(_, _, _)
         | ExprNode::Series(_, _, _, _)
         | ExprNode::LaplaceTransform(_, _, _)
@@ -631,6 +632,20 @@ fn expand_expr(
 
         ExprNode::Integral(body, var) => {
             stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(var, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(body, 0));
+            stack.push(WorkItem::Lit("Integral("));
+        }
+
+        // `Integral(body, var, lo, hi)` — the 4-argument form the parser
+        // accepts, so Display round-trips.
+        ExprNode::DefiniteIntegral(body, var, lo, hi) => {
+            stack.push(WorkItem::Lit(")"));
+            stack.push(WorkItem::Expr(hi, 0));
+            stack.push(WorkItem::Lit(", "));
+            stack.push(WorkItem::Expr(lo, 0));
+            stack.push(WorkItem::Lit(", "));
             stack.push(WorkItem::Expr(var, 0));
             stack.push(WorkItem::Lit(", "));
             stack.push(WorkItem::Expr(body, 0));
@@ -1284,6 +1299,19 @@ mod tests {
         };
         let i = a.intern(ExprNode::Integral(x_sq, x));
         assert_display!(a, i, "Integral(x^2, x)");
+    }
+
+    #[test]
+    fn display_definite_integral() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let x_sq = {
+            let two = a.int(2);
+            a.pow(x, two)
+        };
+        let one = a.one;
+        let i = a.intern(ExprNode::DefiniteIntegral(x_sq, x, a.zero, one));
+        assert_display!(a, i, "Integral(x^2, x, 0, 1)");
     }
 
     // ── Composite ────────────────────────────────────────────────────

@@ -1137,6 +1137,9 @@ fn expr_to_rust_cse(
         ExprNode::Integral(_, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for unevaluated Integral".to_string(),
         )),
+        ExprNode::DefiniteIntegral(_, _, _, _) => Err(SymplexError::NotImplemented(
+            "cannot generate Rust code for unevaluated DefiniteIntegral".to_string(),
+        )),
         ExprNode::Sum(_, _, _, _) => Err(SymplexError::NotImplemented(
             "cannot generate Rust code for symbolic Sum".to_string(),
         )),

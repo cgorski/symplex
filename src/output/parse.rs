@@ -401,9 +401,13 @@ impl<'a> Parser<'a> {
                     return match name_lower.as_str() {
                         "series" => Ok(arena
                             .intern(crate::base::node::ExprNode::Series(arg, arg2, arg3, arg4))),
+                        // `Integral(f, x, a, b)` — the Display form of a
+                        // definite integral; the constructor applies only
+                        // the cheap folds (`a == b`, constant integrand).
+                        "integral" => Ok(arena.definite_integral(arg, arg2, arg3, arg4)),
                         _ => Err(ParseError {
                             message: format!(
-                                "unknown 4-argument function '{}'. Supported: Series",
+                                "unknown 4-argument function '{}'. Supported: Series, Integral",
                                 name
                             ),
                             position: self.lexer.pos,
@@ -456,13 +460,15 @@ impl<'a> Parser<'a> {
                 "conditionset" => {
                     Ok(arena.intern(crate::base::node::ExprNode::ConditionSet(arg, arg2)))
                 }
+                // `Integral(f, x)` — the Display form of an indefinite integral.
+                "integral" => Ok(arena.intern(crate::base::node::ExprNode::Integral(arg, arg2))),
                 "atan2" => Ok(arena.atan2(arg, arg2)),
                 "polygamma" => Ok(arena.polygamma(arg, arg2)),
                 "kroneckerdelta" | "kronecker_delta" => Ok(arena.kronecker_delta(arg, arg2)),
                 _ => Err(ParseError {
                     message: format!(
                         "unknown 2-argument function '{}'. Supported: log, atan2, polygamma, \
-                         KroneckerDelta, RootOf, ConditionSet",
+                         KroneckerDelta, RootOf, ConditionSet, Integral",
                         name
                     ),
                     position: self.lexer.pos,
@@ -524,7 +530,7 @@ impl<'a> Parser<'a> {
                      gamma, erf, erfc, heaviside, diracdelta, lambertw, factorial, digamma, loggamma, \
                      re, im, conjugate, arg, Si, Ci, Ei, li, zeta, polygamma, KroneckerDelta, \
                      Limit, RootOf, ConditionSet, LaplaceTransform, InverseLaplaceTransform, \
-                     Residue, DSolve, Series",
+                     Residue, DSolve, Series, Integral",
                     name
                 ),
                 position: self.lexer.pos,

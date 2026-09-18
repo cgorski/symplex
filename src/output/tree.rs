@@ -396,6 +396,17 @@ pub enum ExprTree {
         /// The variable of integration.
         var: Box<ExprTree>,
     },
+    /// Formal definite integral: `∫_lower^upper body dvar`.
+    DefiniteIntegral {
+        /// The integrand.
+        body: Box<ExprTree>,
+        /// The variable of integration (bound inside `body`).
+        var: Box<ExprTree>,
+        /// Lower bound of integration.
+        lower: Box<ExprTree>,
+        /// Upper bound of integration.
+        upper: Box<ExprTree>,
+    },
     /// Symbolic summation: Sum(body, var, lower, upper).
     Sum {
         /// The expression being summed.
@@ -720,6 +731,12 @@ pub(crate) fn expr_to_tree(arena: &Arena, id: ExprId) -> ExprTree {
         ExprNode::Integral(body, var) => ExprTree::Integral {
             body: Box::new(expr_to_tree(arena, body)),
             var: Box::new(expr_to_tree(arena, var)),
+        },
+        ExprNode::DefiniteIntegral(body, var, lo, hi) => ExprTree::DefiniteIntegral {
+            body: Box::new(expr_to_tree(arena, body)),
+            var: Box::new(expr_to_tree(arena, var)),
+            lower: Box::new(expr_to_tree(arena, lo)),
+            upper: Box::new(expr_to_tree(arena, hi)),
         },
         ExprNode::Sum(body, var, lo, hi) => ExprTree::Sum {
             body: Box::new(expr_to_tree(arena, body)),
@@ -1081,6 +1098,18 @@ pub(crate) fn tree_to_expr(arena: &mut Arena, tree: &ExprTree) -> ExprId {
             let v = tree_to_expr(arena, var);
             arena.intern(ExprNode::Integral(b, v))
         }
+        ExprTree::DefiniteIntegral {
+            body,
+            var,
+            lower,
+            upper,
+        } => {
+            let b = tree_to_expr(arena, body);
+            let v = tree_to_expr(arena, var);
+            let lo = tree_to_expr(arena, lower);
+            let hi = tree_to_expr(arena, upper);
+            arena.definite_integral(b, v, lo, hi)
+        }
         ExprTree::Sum {
             body,
             var,
@@ -1383,6 +1412,21 @@ mod tests {
         let tree = expr_to_tree(&a, expr);
         let back = tree_to_expr(&mut a, &tree);
         assert_eq!(display(&a, back), "Integral(sin(x), x)");
+    }
+
+    #[test]
+    fn roundtrip_definite_integral() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let body = a.pow(x, x);
+        let one = a.one;
+        let expr = a.definite_integral(body, x, a.zero, one);
+        let tree = expr_to_tree(&a, expr);
+        let json = serde_json::to_string(&tree).unwrap();
+        let tree2: ExprTree = serde_json::from_str(&json).unwrap();
+        assert_eq!(tree2, tree);
+        assert_eq!(tree_to_expr(&mut a, &tree2), expr);
+        assert_eq!(display(&a, expr), "Integral(x^x, x, 0, 1)");
     }
 
     // ── 0.2 nodes ──────────────────────────────────────────────────────────

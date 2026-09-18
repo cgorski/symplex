@@ -241,6 +241,9 @@ fn remap_node(
         // ── 4-child nodes ────────────────────────────────────────────────
         ExprNode::Sum(body, var, lo, hi) => ExprNode::Sum(m(body), m(var), m(lo), m(hi)),
         ExprNode::Product_(body, var, lo, hi) => ExprNode::Product_(m(body), m(var), m(lo), m(hi)),
+        ExprNode::DefiniteIntegral(body, var, lo, hi) => {
+            ExprNode::DefiniteIntegral(m(body), m(var), m(lo), m(hi))
+        }
 
         // ── New formal/unevaluated nodes ─────────────────────────────────
         ExprNode::Limit(a, b, c) => ExprNode::Limit(m(a), m(b), m(c)),

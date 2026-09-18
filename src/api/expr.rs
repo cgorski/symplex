@@ -132,7 +132,8 @@ pub enum ExprType {
     Integral,
     /// A set expression (interval, finite set, union, intersection, complement).
     Set,
-    /// A formal/unevaluated computation (Limit, Series, LaplaceTransform, etc.)
+    /// A formal/unevaluated computation (DefiniteIntegral, Limit, Series,
+    /// LaplaceTransform, etc.)
     Unevaluated,
 }
 
@@ -494,7 +495,8 @@ impl<S: Sort> Expr<S> {
             | crate::base::node::ExprNode::SetUnion(_)
             | crate::base::node::ExprNode::SetIntersection(_)
             | crate::base::node::ExprNode::SetComplement(_, _) => ExprType::Set,
-            crate::base::node::ExprNode::Limit(..)
+            crate::base::node::ExprNode::DefiniteIntegral(..)
+            | crate::base::node::ExprNode::Limit(..)
             | crate::base::node::ExprNode::Series(..)
             | crate::base::node::ExprNode::LaplaceTransform(..)
             | crate::base::node::ExprNode::InverseLaplaceTransform(..)

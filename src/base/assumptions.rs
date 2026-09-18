@@ -1132,6 +1132,11 @@ impl AssumptionCache {
             ExprNode::Min(ref args) | ExprNode::Max(ref args) => {
                 self.compute_all_real_to_real(arena, args)
             }
+            // ∫ₐᵇ f dx is real when the integrand and both bounds are real
+            // (convergence is not asserted here — only the codomain).
+            ExprNode::DefiniteIntegral(body, _, lo, hi) => {
+                self.compute_all_real_to_real(arena, &[body, lo, hi])
+            }
             _ => Assumptions::default(), // Apply, Derivative, Integral, formal nodes, …
         };
 

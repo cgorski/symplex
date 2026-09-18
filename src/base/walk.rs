@@ -227,6 +227,18 @@ pub(crate) fn rebuild_with_cache(
             }
         }
 
+        ExprNode::DefiniteIntegral(body, var, lo, hi) => {
+            let nb = cache.get(&body).copied().unwrap_or(body);
+            let nv = cache.get(&var).copied().unwrap_or(var);
+            let nl = cache.get(&lo).copied().unwrap_or(lo);
+            let nh = cache.get(&hi).copied().unwrap_or(hi);
+            if nb == body && nv == var && nl == lo && nh == hi {
+                id
+            } else {
+                arena.definite_integral(nb, nv, nl, nh)
+            }
+        }
+
         // Unary: Neg, Sin, Cos, Tan, Exp, Ln, Sqrt, Abs
         ExprNode::Neg(inner) => rebuild_unary(arena, id, inner, cache, Arena::neg),
         ExprNode::Sin(inner) => rebuild_unary(arena, id, inner, cache, Arena::sin),
@@ -712,6 +724,7 @@ pub(crate) fn all_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
 /// |-------------------------------|------------------------------------------|
 /// | `Sum(body, var, lo, hi)`      | `body` (not `lo`, `hi`)                  |
 /// | `Product_(body, var, lo, hi)` | `body` (not `lo`, `hi`)                  |
+/// | `DefiniteIntegral(body, var, lo, hi)` | `body` (not `lo`, `hi`)          |
 /// | `RootSum(poly, body, var)`    | `body` (`poly` is a polynomial in `var`) |
 /// | `ConditionSet(var, cond)`     | `cond`                                   |
 /// | `RootOf(poly, idx)`           | `poly`, when it has exactly one symbol   |
@@ -760,7 +773,9 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
                     result.push(id);
                 }
             }
-            ExprNode::Sum(body, var, lo, hi) | ExprNode::Product_(body, var, lo, hi) => {
+            ExprNode::Sum(body, var, lo, hi)
+            | ExprNode::Product_(body, var, lo, hi)
+            | ExprNode::DefiniteIntegral(body, var, lo, hi) => {
                 stack.push((*lo, sc));
                 stack.push((*hi, sc));
                 let inner = extend_scope(&mut scopes, sc, *var);
@@ -796,9 +811,9 @@ pub(crate) fn free_symbols(arena: &Arena, root: ExprId) -> Vec<ExprId> {
 }
 
 /// Returns `true` if the expression tree rooted at `root` contains any
-/// unevaluated formal node: `Integral`, `Derivative`, `Limit`, `Series`,
-/// `LaplaceTransform`, `InverseLaplaceTransform`, `Residue`, `DSolve`,
-/// `ConditionSet`, formal `Sum`, or formal `Product_`.
+/// unevaluated formal node: `Integral`, `DefiniteIntegral`, `Derivative`,
+/// `Limit`, `Series`, `LaplaceTransform`, `InverseLaplaceTransform`,
+/// `Residue`, `DSolve`, `ConditionSet`, formal `Sum`, or formal `Product_`.
 ///
 /// `RootOf` and `RootSum` are **not** counted: they are complete algebraic
 /// answers (an exact description of a polynomial root / a sum over all
@@ -814,6 +829,7 @@ pub(crate) fn has_unevaluated(arena: &Arena, root: ExprId) -> bool {
         }
         match arena.node(id) {
             ExprNode::Integral(..)
+            | ExprNode::DefiniteIntegral(..)
             | ExprNode::Derivative(..)
             | ExprNode::Limit(..)
             | ExprNode::Series(..)

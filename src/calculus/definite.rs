@@ -70,22 +70,59 @@ const GUARD_SAMPLES: usize = 129;
 // Seam: unevaluated definite integral
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Build the unevaluated form of `∫ₐᵇ f dx`.
+/// Build the unevaluated form of `∫ₐᵇ f dx`: an
+/// [`ExprNode::DefiniteIntegral`] node with the bounds preserved.
 ///
-/// **Post-merge swap point.**  There is no bounded-integral node in the
-/// expression tree yet; until `ExprNode::DefiniteIntegral(body, var, lo, hi)`
-/// lands this returns the indefinite `Integral(f, x)` node so that
-/// `has_unevaluated()` reports the result correctly.  Every "cannot
-/// evaluate" fallback in the definite-integration API routes through this
-/// single function, so switching to the new node is a one-line change.
+/// Every "cannot evaluate" fallback in the definite-integration API routes
+/// through this single function.  The node constructor applies only the
+/// structural folds (`a == b`, constant integrand over a finite interval,
+/// reversed numeric bounds); it never attempts integration, so this cannot
+/// loop back into [`integrate_definite`].
 pub(crate) fn unevaluated_definite(
     arena: &mut Arena,
     f: ExprId,
     x: ExprId,
-    _a: ExprId,
-    _b: ExprId,
+    a: ExprId,
+    b: ExprId,
 ) -> ExprId {
-    arena.intern(ExprNode::Integral(f, x))
+    arena.definite_integral(f, x, a, b)
+}
+
+/// Evaluate every `DefiniteIntegral` node inside `f`, innermost first
+/// (the "doit" operation for formal definite integrals).
+///
+/// Nodes that still cannot be evaluated — no closed form, or a proven
+/// divergence — are left in place.  Used by [`integrate_definite`] so that
+/// an integrand containing a formal definite integral (the fallback result
+/// of an earlier call, or the `∫ ∂f/∂t dx` term of a Leibniz derivative) is
+/// resolved before the outer integration runs, and exposed as
+/// `Ex::eval_integrals`.  Bounded: each node is visited once; the inner
+/// evaluations go through [`integrate_range`], never back through this
+/// function.
+pub(crate) fn evaluate_inner_definite(arena: &mut Arena, f: ExprId) -> ExprId {
+    if !contains_node(arena, f, |n| matches!(n, ExprNode::DefiniteIntegral(..))) {
+        return f;
+    }
+    let post_order = walk::post_order_ids(arena, f);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    for &id in &post_order {
+        let node = arena.node(id).clone();
+        let rebuilt = match node {
+            ExprNode::DefiniteIntegral(body, var, lo, hi) => {
+                let nb = cache.get(&body).copied().unwrap_or(body);
+                let nl = cache.get(&lo).copied().unwrap_or(lo);
+                let nh = cache.get(&hi).copied().unwrap_or(hi);
+                match integrate_range(arena, nb, var, nl, nh, 1) {
+                    Ok(v) if !walk::contains(arena, v, var) => safe_eval(arena, v),
+                    _ => arena.definite_integral(nb, var, nl, nh),
+                }
+            }
+            _ if node.is_atom() => id,
+            _ => walk::rebuild_with_cache(arena, id, &cache),
+        };
+        cache.insert(id, rebuilt);
+    }
+    cache.get(&f).copied().unwrap_or(f)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -93,6 +130,11 @@ pub(crate) fn unevaluated_definite(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Compute the definite integral `∫ₐᵇ f dx` on the arena.
+///
+/// If `f` is, or contains, an unevaluated [`ExprNode::DefiniteIntegral`]
+/// (for instance the fallback result of an earlier call, or the
+/// `∫ ∂f/∂t dx` term produced by differentiating one), those inner
+/// integrals are evaluated first, innermost out.
 ///
 /// Returns:
 ///
@@ -151,6 +193,7 @@ pub fn integrate_definite(
         });
     }
     let f = safe_eval(arena, f);
+    let f = evaluate_inner_definite(arena, f);
     let a = safe_eval(arena, a);
     let b = safe_eval(arena, b);
     let result = integrate_range(arena, f, x, a, b, 0)?;

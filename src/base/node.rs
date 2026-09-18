@@ -350,6 +350,16 @@ pub enum ExprNode {
     /// `Integral(body, var)` represents ∫ `body` d`var`.
     Integral(ExprId, ExprId),
 
+    /// Formal definite integral: ∫ₗₒʰⁱ expr d(var).
+    ///
+    /// `DefiniteIntegral(body, var, lo, hi)` represents `∫_lo^hi body dvar`.
+    /// It is the unevaluated form returned by definite integration when no
+    /// closed form can be established, so that the bounds are preserved for
+    /// display, differentiation (Leibniz rule) and numeric quadrature.
+    /// `var` is bound inside `body` only; `lo` and `hi` are in the outer
+    /// scope.
+    DefiniteIntegral(ExprId, ExprId, ExprId, ExprId),
+
     /// Symbolic summation: Sum(body, var, lower, upper).
     Sum(ExprId, ExprId, ExprId, ExprId),
 
@@ -506,10 +516,11 @@ impl ExprNode {
             | ExprNode::DSolve(a, b, c)
             | ExprNode::RootSum(a, b, c) => smallvec![*a, *b, *c],
 
-            // 4-ary: Sum, Product_, Series
+            // 4-ary: Sum, Product_, Series, DefiniteIntegral
             ExprNode::Sum(a, b, c, d)
             | ExprNode::Product_(a, b, c, d)
-            | ExprNode::Series(a, b, c, d) => {
+            | ExprNode::Series(a, b, c, d)
+            | ExprNode::DefiniteIntegral(a, b, c, d) => {
                 smallvec![*a, *b, *c, *d]
             }
 
@@ -657,7 +668,8 @@ impl ExprNode {
             // 4-ary
             ExprNode::Sum(a, b, c, d)
             | ExprNode::Product_(a, b, c, d)
-            | ExprNode::Series(a, b, c, d) => {
+            | ExprNode::Series(a, b, c, d)
+            | ExprNode::DefiniteIntegral(a, b, c, d) => {
                 f(*a);
                 f(*b);
                 f(*c);
@@ -764,7 +776,10 @@ impl ExprNode {
             | ExprNode::Residue(..)
             | ExprNode::DSolve(..)
             | ExprNode::RootSum(..) => 3,
-            ExprNode::Sum(..) | ExprNode::Product_(..) | ExprNode::Series(..) => 4,
+            ExprNode::Sum(..)
+            | ExprNode::Product_(..)
+            | ExprNode::Series(..)
+            | ExprNode::DefiniteIntegral(..) => 4,
             ExprNode::Neg(_)
             | ExprNode::Floor(_)
             | ExprNode::Ceiling(_)
@@ -948,6 +963,13 @@ impl fmt::Debug for ExprNode {
             ExprNode::Integral(body, var) => {
                 f.debug_tuple("Integral").field(body).field(var).finish()
             }
+            ExprNode::DefiniteIntegral(body, var, lo, hi) => f
+                .debug_tuple("DefiniteIntegral")
+                .field(body)
+                .field(var)
+                .field(lo)
+                .field(hi)
+                .finish(),
             ExprNode::Sum(body, var, lo, hi) => f
                 .debug_tuple("Sum")
                 .field(body)
