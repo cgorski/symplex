@@ -23,9 +23,15 @@ impl Expr<Numeric> {
     /// enumeration for small concrete ranges, Faulhaber's formula (any
     /// degree, Bernoulli numbers), partial-fraction telescoping, harmonic
     /// numbers, geometric and arithmetico-geometric series, binomial
-    /// identities, Gosper's algorithm, and — for infinite sums — p-series
-    /// (`ζ(2m)` in closed form), alternating series, and a table of
-    /// classical power series (`Σ xᵏ/k! = eˣ`, `sin`, `cos`, `atan`, …).
+    /// identities (`Σ P(k)·C(n,k)·xᵏ` for any polynomial `P`), Gosper's
+    /// algorithm, and — for infinite sums — p-series (`ζ(2m)` in closed
+    /// form, `ζ(2m+1)` as a `zeta` node, `Σ (−1)ᵏ/(2k+1)² = G`), alternating
+    /// series, and a table of classical power series (`Σ xᵏ/k! = eˣ`, `sin`,
+    /// `cos`, `atan`, …).
+    ///
+    /// Convergence of a geometric series with a *symbolic* ratio cannot be
+    /// decided (there is no `|r| < 1` assumption), so `Σ_{k≥0} rᵏ` with
+    /// symbolic `r` stays unevaluated; numeric ratios are decided exactly.
     ///
     /// When no closed form is known the formal `Sum` node is returned.
     /// Sums that provably diverge to `±∞` evaluate to `oo` / `-oo`; for
@@ -53,6 +59,10 @@ impl Expr<Numeric> {
     /// let x = ctx.symbol("x");
     /// let e = (x.pow(&k) / k.factorial()).summation(&k, &ctx.int(0), &ctx.infinity());
     /// assert_eq!(e.to_string(), "exp(x)");
+    ///
+    /// // Σ_{k=1}^{∞} 1/k³ = ζ(3)
+    /// let apery = k.powi(-3).summation(&k, &ctx.int(1), &ctx.infinity());
+    /// assert_eq!(apery.to_string(), "zeta(3)");
     /// ```
     #[must_use = "returns the evaluated sum; does not modify in place"]
     pub fn summation(&self, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {

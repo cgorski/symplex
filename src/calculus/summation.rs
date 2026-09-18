@@ -778,14 +778,33 @@ fn partial_sum_fn(arena: &mut Arena, x: ExprId, integer_offsets: bool) -> ExprId
 /// `T(N) = Σ_i c_i G_m(N + β_i)` re-expressed relative to the smallest `β`
 /// in the group, so that integer-shifted poles telescope exactly.
 ///
+/// Poles more than [`MAX_TELESCOPE_SHIFT`] beyond the smallest `β` are not
+/// expanded term by term; for `m = 1` they keep their own
+/// `harmonic` / `digamma` value instead (still exact, just less compact).
 /// Returns `None` if the group needs a generalised harmonic number
-/// (`m ≥ 2` with non-zero total coefficient).
+/// (`m ≥ 2` with non-zero total coefficient, or a far `m ≥ 2` pole).
 fn pole_group_partial(arena: &mut Arena, group: &[PoleTerm], n_expr: ExprId) -> Option<ExprId> {
     let m = group[0].m;
     let b0 = group[0].beta.clone();
-    let csum: Rat = group.iter().map(|p| p.c.clone()).sum();
     let integer_offsets = b0.is_integer();
     let mut terms = Vec::new();
+    let mut csum = Rat::zero();
+    let mut far = Vec::new();
+    for p in group {
+        let d = (&p.beta - &b0).to_integer().to_i64()?;
+        if d > MAX_TELESCOPE_SHIFT {
+            far.push(p);
+            continue;
+        }
+        csum += &p.c;
+        for j in 1..=d {
+            let shift = &b0 + rat_i(j);
+            let x = add_rat(arena, n_expr, &shift);
+            let inv = pow_rat(arena, x, &rat_i(-(m as i64)));
+            let ce = rat_expr(arena, p.c.clone());
+            terms.push(arena.mul(&[ce, inv]));
+        }
+    }
     if !csum.is_zero() {
         if m != 1 {
             return None;
@@ -795,18 +814,14 @@ fn pole_group_partial(arena: &mut Arena, group: &[PoleTerm], n_expr: ExprId) -> 
         let ce = rat_expr(arena, csum);
         terms.push(arena.mul(&[ce, g]));
     }
-    for p in group {
-        let d = (&p.beta - &b0).to_integer().to_i64()?;
-        if d > MAX_TELESCOPE_SHIFT {
+    for p in far {
+        if m != 1 {
             return None;
         }
-        for j in 1..=d {
-            let shift = &b0 + rat_i(j);
-            let x = add_rat(arena, n_expr, &shift);
-            let inv = pow_rat(arena, x, &rat_i(-(m as i64)));
-            let ce = rat_expr(arena, p.c.clone());
-            terms.push(arena.mul(&[ce, inv]));
-        }
+        let x = add_rat(arena, n_expr, &p.beta);
+        let g = partial_sum_fn(arena, x, integer_offsets);
+        let ce = rat_expr(arena, p.c.clone());
+        terms.push(arena.mul(&[ce, g]));
     }
     Some(add_all(arena, &terms))
 }
@@ -876,31 +891,41 @@ fn rational_sum_infinite(
             // Σ_{k=lo}^{∞} Σ_i c_i/(k+β_i) = −Σ_i c_i ψ(lo + β_i)   (Σ c_i = 0 overall)
             // Within the group, ψ(x + d) = ψ(x) + Σ_{j<d} 1/(x+j), so only the
             // group's total coefficient multiplies a ψ / harmonic value.
+            // Poles shifted by more than MAX_TELESCOPE_SHIFT keep their own ψ.
             let x0 = add_rat(arena, lo, &b0);
-            if !csum.is_zero() {
-                let g = if use_harmonic && b0.is_integer() {
+            let psi = |arena: &mut Arena, x: ExprId, integer: bool| -> ExprId {
+                if use_harmonic && integer {
                     // ψ(x) = H_{x−1} − γ; γ cancels overall.
                     let one = arena.one;
-                    let xm1 = arena.sub(x0, one);
+                    let xm1 = arena.sub(x, one);
                     let xm1 = eval::eval(arena, xm1);
                     arena.harmonic(xm1)
                 } else {
-                    arena.digamma(x0)
-                };
-                let ce = rat_expr(arena, -csum.clone());
-                parts.push(arena.mul(&[ce, g]));
-            }
+                    arena.digamma(x)
+                }
+            };
+            let mut near_sum = Rat::zero();
             for p in &group {
                 let d = (&p.beta - &b0).to_integer().to_i64()?;
                 if d > MAX_TELESCOPE_SHIFT {
-                    return None;
+                    let x = add_rat(arena, lo, &p.beta);
+                    let g = psi(arena, x, p.beta.is_integer());
+                    let ce = rat_expr(arena, -p.c.clone());
+                    parts.push(arena.mul(&[ce, g]));
+                    continue;
                 }
+                near_sum += &p.c;
                 for j in 0..d {
                     let x = add_rat(arena, x0, &rat_i(j));
                     let inv = pow_rat(arena, x, &(-Rat::one()));
                     let ce = rat_expr(arena, -p.c.clone());
                     parts.push(arena.mul(&[ce, inv]));
                 }
+            }
+            if !near_sum.is_zero() {
+                let g = psi(arena, x0, b0.is_integer());
+                let ce = rat_expr(arena, -near_sum);
+                parts.push(arena.mul(&[ce, g]));
             }
         } else if csum.is_zero() {
             // Pure telescoping: −Σ_i c_i Σ_{j=0}^{d_i−1} (lo + β_0 + j)^(−m)
@@ -3306,13 +3331,23 @@ mod tests {
         let ninety = arena.int(90);
         let expected = arena.div(pi4, ninety);
         assert_eq!(s, expected, "got {}", arena.display(s));
-        // ζ(3) → unevaluated (Zeta hook)
+        // ζ(3) → Zeta(3) node (Apéry's constant has no elementary form)
         let m3 = arena.int(-3);
         let body = arena.pow(k, m3);
-        assert_eq!(
-            summation(&mut arena, body, k, one, inf),
-            SumOutcome::Unevaluated
-        );
+        let s = closed(summation(&mut arena, body, k, one, inf));
+        assert_eq!(arena.display(s).to_string(), "zeta(3)");
+        // Σ (−1)^k/(2k+1)² = Catalan
+        let two = arena.int(2);
+        let two_k = arena.mul(&[two, k]);
+        let odd = arena.add(&[two_k, one]);
+        let m2 = arena.int(-2);
+        let inv_sq = arena.pow(odd, m2);
+        let neg_one = arena.neg_one;
+        let alt = arena.pow(neg_one, k);
+        let body = arena.mul(&[alt, inv_sq]);
+        let zero = arena.zero;
+        let s = closed(summation(&mut arena, body, k, zero, inf));
+        assert_eq!(s, arena.catalan);
     }
 
     #[test]

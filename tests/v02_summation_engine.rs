@@ -376,6 +376,27 @@ fn telescoping_infinite_sums() {
 }
 
 #[test]
+fn telescoping_beyond_shift_cap_uses_harmonic_numbers() {
+    // Poles 250 apart exceed the explicit telescoping cap (200 terms), so the
+    // result is expressed with harmonic numbers instead of 250 fractions.
+    let ctx = Context::new();
+    let k = ctx.symbol("k");
+    let n = ctx.symbol("n");
+    let body = &ctx.int(1) / &(&k * &(&k + 250));
+    let start = std::time::Instant::now();
+    let s = body.summation(&k, &ctx.int(1), &n);
+    assert!(start.elapsed().as_secs_f64() < 2.0);
+    assert!(!s.has_unevaluated(), "{s}");
+    // Two harmonic terms plus the constant H_250/250 (a large exact rational).
+    assert_eq!(s.to_string().matches("harmonic").count(), 2, "{s}");
+    check_closed_sum(&body, &k, &n, 1, &s, &[1, 2, 5]);
+    // Σ_{k≥1} 1/(k(k+250)) = H_250 / 250
+    let s = body.summation(&k, &ctx.int(1), &ctx.infinity());
+    let expected = ctx.int(250).harmonic() / 250;
+    assert_eq!(s.eval().to_string(), expected.eval().to_string(), "{s}");
+}
+
+#[test]
 fn harmonic_type_sums() {
     let ctx = Context::new();
     let k = ctx.symbol("k");
