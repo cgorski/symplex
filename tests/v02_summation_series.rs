@@ -9,6 +9,17 @@ use symplex::finite_diff::{apply_finite_diff, equispaced_grid, finite_diff_weigh
 use symplex::formal_series::FormalPowerSeries;
 use symplex::prelude::*;
 
+/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
+/// shared CI runners (`CI` is set), which are several times slower and noisy.
+fn time_budget(secs: u64) -> std::time::Duration {
+    let mult = if std::env::var_os("CI").is_some() {
+        5
+    } else {
+        1
+    };
+    std::time::Duration::from_secs(secs * mult)
+}
+
 fn rat(p: i64, q: i64) -> Ratio<BigInt> {
     Ratio::new(BigInt::from(p), BigInt::from(q))
 }
@@ -63,7 +74,7 @@ fn maclaurin_of_special_functions_is_exact_and_fast() {
     // High order stays fast (closed-form coefficients, no 40 derivatives).
     let start = std::time::Instant::now();
     let s = x.tan().maclaurin(&x, 40);
-    assert!(start.elapsed().as_secs_f64() < 5.0, "tan series too slow");
+    assert!(start.elapsed() < time_budget(5), "tan series too slow");
     assert!(s.to_string().contains("x^39"), "{s}");
     let s = x.erf().maclaurin(&x, 6);
     check_series(&x.erf(), &s, &x, (1, 10), 1e-8);
@@ -395,7 +406,7 @@ fn check_convergence(cases: &[(Ex, Option<bool>, &str)], k: &Ex) {
         let start = std::time::Instant::now();
         assert_eq!(body.is_convergent(k), *expected, "Σ {label}  ({body})");
         assert!(
-            start.elapsed().as_secs_f64() < 2.0,
+            start.elapsed() < time_budget(2),
             "Σ {label}: convergence test too slow"
         );
     }

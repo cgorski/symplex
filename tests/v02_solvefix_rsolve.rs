@@ -13,6 +13,17 @@ use std::time::{Duration, Instant};
 use symplex::prelude::*;
 use symplex::rsolve::rsolve_linear;
 
+/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
+/// shared CI runners (`CI` is set), which are several times slower and noisy.
+fn time_budget(secs: u64) -> std::time::Duration {
+    let mult = if std::env::var_os("CI").is_some() {
+        5
+    } else {
+        1
+    };
+    std::time::Duration::from_secs(secs * mult)
+}
+
 /// `a(k)` from the closed form.
 fn seq_at(sol: &Ex, n: &Ex, k: i64) -> f64 {
     sol.subs_i64(n, k)
@@ -61,20 +72,20 @@ fn check_closed_form(coeffs_i: &[i64], ics_i: &[i64], upto: usize, budget: Durat
 #[test]
 fn irreducible_cubic_terminates_quickly_and_matches_recurrence() {
     // r³ − r² + 5r − 6: one real irrational root and a complex pair.
-    let sol = check_closed_form(&[-6, 5, -1, 1], &[1, 0, 0], 10, Duration::from_secs(2));
+    let sol = check_closed_form(&[-6, 5, -1, 1], &[1, 0, 0], 10, time_budget(2));
     assert!(format!("{sol}").contains("RootOf"), "{sol}");
 }
 
 #[test]
 fn irreducible_cubic_with_three_real_roots() {
     // r³ − 3r + 1 (casus irreducibilis).
-    check_closed_form(&[1, -3, 0, 1], &[1, 2, 3], 10, Duration::from_secs(2));
+    check_closed_form(&[1, -3, 0, 1], &[1, 2, 3], 10, time_budget(2));
 }
 
 #[test]
 fn irreducible_quartic_characteristic_polynomial() {
     // r⁴ + r + 1 has no rational roots and is irreducible over ℚ.
-    check_closed_form(&[1, 1, 0, 0, 1], &[1, 0, 0, 0], 10, Duration::from_secs(2));
+    check_closed_form(&[1, 1, 0, 0, 1], &[1, 0, 0, 0], 10, time_budget(2));
 }
 
 #[test]
@@ -84,7 +95,7 @@ fn general_solution_of_irreducible_cubic_uses_rootof_and_three_constants() {
     let coeffs = [ctx.int(-6), ctx.int(5), ctx.int(-1), ctx.int(1)];
     let t = Instant::now();
     let g = rsolve_linear(&coeffs, None, &n, &[]).unwrap();
-    assert!(t.elapsed() < Duration::from_secs(2));
+    assert!(t.elapsed() < time_budget(2));
     for k in 1..=3 {
         assert!(g.contains(&ctx.symbol(&format!("C{k}"))), "{g}");
     }

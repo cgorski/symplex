@@ -9,6 +9,17 @@
 
 use symplex::prelude::*;
 
+/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
+/// shared CI runners (`CI` is set), which are several times slower and noisy.
+fn time_budget(secs: u64) -> std::time::Duration {
+    let mult = if std::env::var_os("CI").is_some() {
+        5
+    } else {
+        1
+    };
+    std::time::Duration::from_secs(secs * mult)
+}
+
 /// Relation of the table entries (`expr rel 0`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Rel {
@@ -352,7 +363,7 @@ fn run_rows(range: std::ops::Range<usize>) {
             );
         }
         assert!(
-            t.elapsed() < std::time::Duration::from_secs(2),
+            t.elapsed() < time_budget(2),
             "{name} took {:?}",
             t.elapsed()
         );

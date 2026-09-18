@@ -9,6 +9,17 @@
 use std::time::{Duration, Instant};
 use symplex::prelude::*;
 
+/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
+/// shared CI runners (`CI` is set), which are several times slower and noisy.
+fn time_budget(secs: u64) -> std::time::Duration {
+    let mult = if std::env::var_os("CI").is_some() {
+        5
+    } else {
+        1
+    };
+    std::time::Duration::from_secs(secs * mult)
+}
+
 fn doubling(depth: usize) -> (Ex, Duration) {
     let ctx = Context::new();
     let x = ctx.symbol("x");
@@ -24,7 +35,7 @@ fn doubling(depth: usize) -> (Ex, Duration) {
 fn sin_cos_doubling_depth_30_is_fast() {
     let (e, elapsed) = doubling(30);
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < time_budget(2),
         "depth-30 doubling took {elapsed:?}"
     );
     // Still a well-formed expression: two summands, both function nodes.
@@ -64,7 +75,7 @@ fn deep_sums_of_wide_products_stay_fast() {
         q = nq;
     }
     let elapsed = start.elapsed();
-    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+    assert!(elapsed < time_budget(2), "took {elapsed:?}");
     // (Do not display `p`: its unfolded tree, and hence the string, has
     // ~2^25 nodes.  Structural queries stay cheap.)
     // p*q + q*p + 1 combines to 2*p*q + 1.

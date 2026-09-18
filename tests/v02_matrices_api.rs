@@ -4,6 +4,17 @@
 use symplex::matrix::Matrix;
 use symplex::prelude::*;
 
+/// Wall-clock hang guard.  Two seconds on a developer machine; scaled up on
+/// shared CI runners (`CI` is set), which are several times slower and noisy.
+fn time_budget(secs: u64) -> std::time::Duration {
+    let mult = if std::env::var_os("CI").is_some() {
+        5
+    } else {
+        1
+    };
+    std::time::Duration::from_secs(secs * mult)
+}
+
 fn mi(ctx: &Context, rows: &[&[i64]]) -> Matrix {
     Matrix::from_i64(ctx, rows).unwrap()
 }
@@ -255,7 +266,7 @@ fn cubic_eigenvalues_use_rootof_and_finish_fast() {
         }
     }
     assert!(
-        start.elapsed() < std::time::Duration::from_secs(2),
+        start.elapsed() < time_budget(2),
         "took {:?}",
         start.elapsed()
     );
@@ -348,11 +359,7 @@ fn budget_rejects_huge_inputs_quickly() {
     assert!(is_swell(m.jordan_form()));
     assert!(is_swell(m.matrix_exp()));
     assert!(is_swell(m.qr()));
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(2),
-        "{:?}",
-        start.elapsed()
-    );
+    assert!(start.elapsed() < time_budget(2), "{:?}", start.elapsed());
 }
 
 #[test]
@@ -368,11 +375,7 @@ fn budget_passes_ordinary_symbolic_work() {
     // Leading term (−λ)⁵ present, constant term is det(A).
     assert!(cp.contains(&lam.powi(5)), "{cp}");
     assert_eq!(cp.subs(&lam, &ctx.zero()).expand(), d.expand());
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(2),
-        "{:?}",
-        start.elapsed()
-    );
+    assert!(start.elapsed() < time_budget(2), "{:?}", start.elapsed());
 }
 
 #[test]
