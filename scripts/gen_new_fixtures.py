@@ -1,385 +1,292 @@
 #!/usr/bin/env python3
-"""Generate SymPy cross-validation fixtures for new symplex features.
+"""Generate SymPy cross-validation fixtures for the 0.1→0.2 "new features"
+(eigenvectors, Jordan form, LambertW, Bessel functions, refine, inverse
+hyperbolic integrals, erf special values, matrix exponential).
 
-Run from the symplex project root with the .venv that has sympy installed:
-    .venv/bin/python3 scripts/gen_new_fixtures.py
+Output: ``tests/fixtures/new_features_cross_validation.json``, consumed by
+``tests/v02_oracle_new_features.rs``.
 
-Outputs JSON to stdout. Redirect to merge into the fixture file.
+Deterministic (no timestamps, sorted keys) and bounded: every fixture's
+SymPy computation runs under ``PER_FIXTURE_TIMEOUT``; a timeout / error is
+recorded as ``sympy_timeout`` / ``sympy_error`` instead of dropping the case.
+
+Usage:
+    /Users/chris.gorski/repos/math/symplex/.venv/bin/python scripts/gen_new_fixtures.py
+    ... --check     # exit 1 if the committed file would change
 """
 
+from __future__ import annotations
+
 import json
+import math
+import os
+import signal
 import sys
+from collections import Counter
+
 import sympy
-from sympy import *
+from sympy import (
+    Abs,
+    E,
+    Integer,
+    LambertW,
+    Matrix,
+    Rational,
+    Symbol,
+    acosh,
+    asinh,
+    atanh,
+    besselj,
+    bessely,
+    ceiling,
+    erf,
+    erfc,
+    eye,
+    floor,
+    integrate,
+    log,
+    oo,
+    refine,
+    sign,
+    sqrt,
+    symbols,
+    zeros,
+)
+
+x, y = symbols("x y")
+PER_FIXTURE_TIMEOUT = 20.0
+
+
+class _FixtureTimeout(Exception):
+    pass
+
+
+def _on_alarm(signum, frame):
+    raise _FixtureTimeout()
+
 
 fixtures = []
-x, y = symbols('x y')
 
 
-def eval_at(expr, subs_dict):
-    """Evaluate an expression at given substitution points, returning complex value."""
+def add(category, subcategory, fields, compute, key=None):
+    """Register one fixture.  ``key`` must be unique within the category
+    (defaults to the subcategory, or to ``fields["input"]`` when present)."""
+    if key is None:
+        key = fields["input"] if isinstance(fields.get("input"), str) else subcategory
+    fx = {"category": category, "subcategory": subcategory, "key": key}
+    fx.update(fields)
+    signal.signal(signal.SIGALRM, _on_alarm)
+    signal.setitimer(signal.ITIMER_REAL, PER_FIXTURE_TIMEOUT)
     try:
-        result = expr.evalf(subs=subs_dict)
-        # Try to convert to complex; if it fails (symbolic residue), skip
-        re_part = float(re(result).evalf())
-        im_part = float(im(result).evalf())
-        return {
-            'subs': {str(k): float(v) for k, v in subs_dict.items()},
-            'value': {'re': re_part, 'im': im_part}
-        }
-    except (TypeError, ValueError):
+        fx.update(compute())
+    except _FixtureTimeout:
+        fx["sympy_timeout"] = True
+        print(f"  TIMEOUT {category}:{subcategory}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — recorded in the fixture
+        fx["sympy_error"] = f"{type(e).__name__}: {e}"
+        print(f"  ERROR   {category}:{subcategory}: {e}", file=sys.stderr)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    fixtures.append(fx)
+
+
+def numval(expr):
+    v = complex(sympy.N(expr, 30))
+    if not (math.isfinite(v.real) and math.isfinite(v.imag)):
         return None
+    return {"re": v.real, "im": 0.0 if abs(v.imag) < 1e-18 else v.imag}
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Eigenvector fixtures
-# ═══════════════════════════════════════════════════════════════════════════
-
-# 2x2 distinct eigenvalues
-A = Matrix([[2, 1], [0, 3]])
-for val, mult, vecs in A.eigenvects():
-    fixtures.append({
-        'category': 'eigenvects',
-        'subcategory': '2x2_distinct',
-        'input_matrix': [[str(A[i, j]) for j in range(2)] for i in range(2)],
-        'eigenvalue': str(val),
-        'multiplicity': mult,
-        'eigenvector': [str(v) for v in vecs[0]],
-    })
-
-# 2x2 defective (repeated eigenvalue, geometric mult < algebraic mult)
-B = Matrix([[1, 1], [0, 1]])
-for val, mult, vecs in B.eigenvects():
-    fixtures.append({
-        'category': 'eigenvects',
-        'subcategory': '2x2_defective',
-        'input_matrix': [[str(B[i, j]) for j in range(2)] for i in range(2)],
-        'eigenvalue': str(val),
-        'multiplicity': mult,
-        'eigenvector_count': len(vecs),
-    })
-
-# 3x3 diagonal
-C = Matrix([[5, 0, 0], [0, -3, 0], [0, 0, 7]])
-for val, mult, vecs in C.eigenvects():
-    fixtures.append({
-        'category': 'eigenvects',
-        'subcategory': '3x3_diagonal',
-        'input_matrix': [[str(C[i, j]) for j in range(3)] for i in range(3)],
-        'eigenvalue': str(val),
-        'multiplicity': mult,
-    })
-
-# 2x2 symmetric (real eigenvalues guaranteed)
-S = Matrix([[4, 2], [2, 1]])
-for val, mult, vecs in S.eigenvects():
-    fixtures.append({
-        'category': 'eigenvects',
-        'subcategory': '2x2_symmetric',
-        'input_matrix': [[str(S[i, j]) for j in range(2)] for i in range(2)],
-        'eigenvalue': str(val),
-        'multiplicity': mult,
-        'eigenvector': [str(v) for v in vecs[0]],
-    })
-
-# 3x3 upper triangular
-T = Matrix([[1, 2, 3], [0, 4, 5], [0, 0, 6]])
-for val, mult, vecs in T.eigenvects():
-    fixtures.append({
-        'category': 'eigenvects',
-        'subcategory': '3x3_upper_triangular',
-        'input_matrix': [[str(T[i, j]) for j in range(3)] for i in range(3)],
-        'eigenvalue': str(val),
-        'multiplicity': mult,
-    })
+def mat_str(m):
+    return [[str(m[i, j]) for j in range(m.cols)] for i in range(m.rows)]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Jordan form fixtures
-# ═══════════════════════════════════════════════════════════════════════════
-
-# 2x2 defective
-P2, J2 = B.jordan_form()
-fixtures.append({
-    'category': 'jordan_form',
-    'subcategory': '2x2_defective',
-    'input_matrix': [[str(B[i, j]) for j in range(2)] for i in range(2)],
-    'jordan_matrix': [[str(J2[i, j]) for j in range(2)] for i in range(2)],
-})
-
-# 3x3 diagonal (trivial Jordan = diagonal)
-_, J3 = C.jordan_form()
-fixtures.append({
-    'category': 'jordan_form',
-    'subcategory': '3x3_diagonal',
-    'input_matrix': [[str(C[i, j]) for j in range(3)] for i in range(3)],
-    'jordan_matrix': [[str(J3[i, j]) for j in range(3)] for i in range(3)],
-})
-
-# 4x4 mixed blocks: eigenvalue 2 with 2x2 block, eigenvalues 3 and 4 with 1x1
-D = Matrix([[2, 1, 0, 0], [0, 2, 0, 0], [0, 0, 3, 0], [0, 0, 0, 4]])
-_, JD = D.jordan_form()
-fixtures.append({
-    'category': 'jordan_form',
-    'subcategory': '4x4_mixed',
-    'input_matrix': [[str(D[i, j]) for j in range(4)] for i in range(4)],
-    'jordan_matrix': [[str(JD[i, j]) for j in range(4)] for i in range(4)],
-})
-
-# Identity matrix (trivial)
-I2 = eye(2)
-_, JI = I2.jordan_form()
-fixtures.append({
-    'category': 'jordan_form',
-    'subcategory': '2x2_identity',
-    'input_matrix': [[str(I2[i, j]) for j in range(2)] for i in range(2)],
-    'jordan_matrix': [[str(JI[i, j]) for j in range(2)] for i in range(2)],
-})
-
-# Nilpotent
-N = Matrix([[0, 1], [0, 0]])
-_, JN = N.jordan_form()
-fixtures.append({
-    'category': 'jordan_form',
-    'subcategory': '2x2_nilpotent',
-    'input_matrix': [[str(N[i, j]) for j in range(2)] for i in range(2)],
-    'jordan_matrix': [[str(JN[i, j]) for j in range(2)] for i in range(2)],
-})
+def mat_num(m):
+    return [[numval(m[i, j]) for j in range(m.cols)] for i in range(m.rows)]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# LambertW fixtures
-# ═══════════════════════════════════════════════════════════════════════════
+# ── eigenvects ─────────────────────────────────────────────────────────
+eig_cases = [
+    ("2x2_distinct", Matrix([[2, 1], [0, 3]])),
+    ("2x2_defective", Matrix([[1, 1], [0, 1]])),
+    ("3x3_diagonal", Matrix([[5, 0, 0], [0, -3, 0], [0, 0, 7]])),
+    ("2x2_symmetric", Matrix([[4, 2], [2, 1]])),
+    ("3x3_upper_triangular", Matrix([[1, 2, 3], [0, 4, 5], [0, 0, 6]])),
+    ("3x3_repeated_full_geometric", Matrix([[2, 0, 0], [0, 2, 0], [0, 0, 5]])),
+    ("2x2_rotation_complex", Matrix([[0, -1], [1, 0]])),
+]
+for label, A in eig_cases:
 
-fixtures.append({
-    'category': 'lambertw', 'subcategory': 'eval_symbolic',
-    'input': '0', 'expected': '0',
-})
-fixtures.append({
-    'category': 'lambertw', 'subcategory': 'eval_symbolic',
-    'input': 'E', 'expected': '1',
-})
-fixtures.append({
-    'category': 'lambertw', 'subcategory': 'eval_symbolic',
-    'input': '-1/E', 'expected': '-1',
-})
-fixtures.append({
-    'category': 'lambertw', 'subcategory': 'eval_symbolic',
-    'input': '-log(2)/2', 'expected': str(LambertW(-log(2) / 2)),
-})
+    def compute(A=A):
+        out = []
+        for val, mult, vecs in A.eigenvects():
+            out.append({"eigenvalue": numval(val), "algebraic_multiplicity": int(mult), "geometric_multiplicity": len(vecs)})
+        out.sort(key=lambda d: (round(d["eigenvalue"]["re"], 9), round(d["eigenvalue"]["im"], 9)))
+        return {"eigenspaces": out}
 
-# Numerical evaluations
-for val in [Rational(1, 2), Integer(5), Rational(1, 10), Integer(10)]:
-    w = float(LambertW(val).evalf())
-    fixtures.append({
-        'category': 'lambertw', 'subcategory': 'eval_numerical',
-        'input': str(val), 'expected_float': w,
-    })
+    add("eigenvects", label, {"input_matrix": mat_str(A)}, compute, key=label)
 
+# ── jordan_form ────────────────────────────────────────────────────────
+jordan_cases = [
+    ("2x2_defective", Matrix([[1, 1], [0, 1]])),
+    ("3x3_diagonal", Matrix([[5, 0, 0], [0, -3, 0], [0, 0, 7]])),
+    ("4x4_mixed", Matrix([[2, 1, 0, 0], [0, 2, 0, 0], [0, 0, 3, 0], [0, 0, 0, 4]])),
+    ("2x2_identity", eye(2)),
+    ("2x2_nilpotent", Matrix([[0, 1], [0, 0]])),
+]
+for label, A in jordan_cases:
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Bessel fixtures
-# ═══════════════════════════════════════════════════════════════════════════
+    def compute(A=A):
+        _, J = A.jordan_form()
+        diag = sorted((numval(J[i, i]) for i in range(J.rows)), key=lambda d: (d["re"], d["im"]))
+        ones = sum(1 for i in range(J.rows - 1) if J[i, i + 1] != 0)
+        return {"jordan_matrix": mat_str(J), "jordan_diag": diag, "superdiag_ones": ones}
 
+    add("jordan_form", label, {"input_matrix": mat_str(A)}, compute, key=label)
+
+# ── LambertW ───────────────────────────────────────────────────────────
+for inp in ["0", "E", "-1/E", "-log(2)/2", "2*log(2)", "3*log(3)"]:
+
+    def compute(inp=inp):
+        r = LambertW(sympy.sympify(inp))
+        return {"expected": str(r), "value": numval(r)}
+
+    add("lambertw", "eval_symbolic", {"input": inp}, compute)
+for val in [Rational(1, 2), Integer(5), Rational(1, 10), Integer(10), Integer(100), Rational(-1, 4)]:
+
+    def compute(val=val):
+        return {"value": numval(LambertW(val))}
+
+    add("lambertw", "eval_numerical", {"input": str(val)}, compute)
+
+# ── Bessel ─────────────────────────────────────────────────────────────
 bessel_cases = [
-    ('J', 0, 0.0),
-    ('J', 0, 1.0),
-    ('J', 0, 5.0),
-    ('J', 0, 10.0),
-    ('J', 1, 0.0),
-    ('J', 1, 1.0),
-    ('J', 1, 5.0),
-    ('J', 2, 3.0),
-    ('Y', 0, 1.0),
-    ('Y', 0, 5.0),
-    ('Y', 1, 1.0),
-    ('Y', 1, 2.0),
-    ('Y', 2, 3.0),
+    ("J", 0, "0"), ("J", 0, "1"), ("J", 0, "5"), ("J", 0, "10"), ("J", 1, "0"), ("J", 1, "1"), ("J", 1, "5"),
+    ("J", 2, "3"), ("J", 3, "7/2"), ("J", 5, "10"), ("J", 0, "12"), ("J", 0, "15"), ("J", 3, "15"),
+    ("J", 0, "20"), ("J", 1, "20"), ("J", 2, "20"), ("J", 5, "20"), ("J", 0, "30"), ("J", 1, "30"), ("J", 0, "50"),
+    ("Y", 0, "1"), ("Y", 0, "5"), ("Y", 1, "1"), ("Y", 1, "2"), ("Y", 2, "3"), ("Y", 3, "15/2"), ("Y", 5, "10"),
+    ("Y", 0, "12"), ("Y", 0, "15"), ("Y", 0, "20"), ("Y", 5, "20"), ("Y", 0, "30"), ("Y", 1, "50"),
 ]
-
 for kind, order, xval in bessel_cases:
-    if kind == 'J':
-        val = float(besselj(order, xval).evalf()) if xval != 0 else (1.0 if order == 0 else 0.0)
-    else:
-        if xval == 0:
-            continue  # Y is singular at 0
-        val = float(bessely(order, xval).evalf())
-    fixtures.append({
-        'category': 'bessel',
-        'subcategory': f'{kind}{order}',
-        'x': xval,
-        'expected': val,
-    })
 
+    def compute(kind=kind, order=order, xval=xval):
+        xe = sympy.sympify(xval)
+        r = besselj(order, xe) if kind == "J" else bessely(order, xe)
+        return {"value": numval(r)}
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Refine fixtures
-# ═══════════════════════════════════════════════════════════════════════════
+    add("bessel", f"{kind}{order}", {"kind": kind, "order": order, "x": xval}, compute, key=f"{kind}{order}({xval})")
 
+# ── refine ─────────────────────────────────────────────────────────────
 refine_cases = [
-    ('abs_positive', 'Abs(x)', 'positive', 'x'),
-    ('abs_negative', 'Abs(x)', 'negative', '-x'),
-    ('abs_nonnegative', 'Abs(x)', 'nonnegative', 'x'),
-    ('sign_positive', 'sign(x)', 'positive', '1'),
-    ('sign_negative', 'sign(x)', 'negative', '-1'),
-    ('sign_zero', 'sign(x)', 'zero', '0'),
-    ('sqrt_x2_positive', 'sqrt(x**2)', 'positive', 'x'),
-    ('sqrt_x2_real', 'sqrt(x**2)', 'real', 'Abs(x)'),
-    ('floor_integer', 'floor(x)', 'integer', 'x'),
-    ('ceiling_integer', 'ceiling(x)', 'integer', 'x'),
+    ("abs_positive", "Abs(x)", "positive"),
+    ("abs_negative", "Abs(x)", "negative"),
+    ("abs_nonnegative", "Abs(x)", "nonnegative"),
+    ("sign_positive", "sign(x)", "positive"),
+    ("sign_negative", "sign(x)", "negative"),
+    ("sign_zero", "sign(x)", "zero"),
+    ("sqrt_x2_positive", "sqrt(x**2)", "positive"),
+    ("sqrt_x2_real", "sqrt(x**2)", "real"),
+    ("floor_integer", "floor(x)", "integer"),
+    ("ceiling_integer", "ceiling(x)", "integer"),
+    ("abs_x2_real", "Abs(x**2)", "real"),
+    ("sqrt_x2_negative", "sqrt(x**2)", "negative"),
 ]
+SAMPLE = {"positive": ["1/2", "3", "7"], "negative": ["-1/2", "-3", "-7"], "nonnegative": ["0", "2", "5"],
+          "zero": ["0"], "real": ["-3", "0", "5/2"], "integer": ["-4", "0", "9"]}
+for label, input_str, assumption in refine_cases:
 
-# Verify against SymPy's refine
-for subcat, input_str, assumption, expected_str in refine_cases:
-    xsym = Symbol('x', **{assumption: True})
-    expr = eval(input_str, {'x': xsym, 'Abs': Abs, 'sign': sign,
-                            'sqrt': sqrt, 'floor': floor, 'ceiling': ceiling})
-    result = refine(expr)
-    fixtures.append({
-        'category': 'refine',
-        'subcategory': subcat,
-        'input': input_str.replace('x', 'x'),
-        'assumptions': assumption,
-        'expected': expected_str,
-        'sympy_result': str(result),
-    })
+    def compute(input_str=input_str, assumption=assumption):
+        xsym = Symbol("x", **{assumption: True})
+        expr = eval(input_str, {"x": xsym, "Abs": Abs, "sign": sign, "sqrt": sqrt, "floor": floor, "ceiling": ceiling})
+        result = refine(expr)
+        pts = []
+        for p in SAMPLE[assumption]:
+            pe = sympy.sympify(p)
+            pts.append({"subs": {"x": float(pe)}, "value": numval(result.subs(xsym, pe))})
+        return {"sympy_result": str(result), "eval_points": pts, "sympy_ops": int(sympy.count_ops(result))}
 
+    add("refine", label, {"input": input_str, "assumptions": assumption}, compute, key=label)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Integration fixtures (inverse hyperbolic)
-# ═══════════════════════════════════════════════════════════════════════════
+# ── inverse hyperbolic antiderivatives ─────────────────────────────────
+for label, f, pts in [
+    ("asinh", asinh(x), [Rational(1, 2), Rational(3, 2), 3]),
+    ("acosh", acosh(x), [Rational(3, 2), 2, 3]),
+    ("atanh", atanh(x), [Rational(1, 4), Rational(1, 2), Rational(3, 4)]),
+    ("x_asinh", x * asinh(x), [Rational(1, 2), Rational(3, 2), 3]),
+]:
 
-anti_asinh = integrate(asinh(x), x)
-anti_acosh = integrate(acosh(x), x)
-anti_atanh = integrate(atanh(x), x)
+    def compute(f=f, pts=pts):
+        F = integrate(f, x)
+        out = {"sympy_result": str(F)}
+        if F.has(sympy.Integral):
+            out["sympy_unevaluated"] = True
+            return out
+        out["eval_points"] = [{"subs": {"x": float(p)}, "value": numval(F.subs(x, p))} for p in pts]
+        return out
 
-asinh_pts = [eval_at(anti_asinh, {x: Rational(1, 2)}),
-             eval_at(anti_asinh, {x: Rational(3, 2)}),
-             eval_at(anti_asinh, {x: Integer(3)})]
-fixtures.append({
-    'category': 'integrate', 'subcategory': 'asinh',
-    'input': 'asinh(x)', 'variable': 'x',
-    'sympy_result': str(anti_asinh),
-    'eval_points': [p for p in asinh_pts if p is not None],
-})
+    add("integrate", label, {"input": str(f), "variable": "x"}, compute, key=label)
 
-acosh_pts = [eval_at(anti_acosh, {x: Rational(3, 2)}),
-             eval_at(anti_acosh, {x: Integer(2)}),
-             eval_at(anti_acosh, {x: Integer(5)})]
-fixtures.append({
-    'category': 'integrate', 'subcategory': 'acosh',
-    'input': 'acosh(x)', 'variable': 'x',
-    'sympy_result': str(anti_acosh),
-    'eval_points': [p for p in acosh_pts if p is not None],
-})
+# ── erf / erfc special values ──────────────────────────────────────────
+for label, expr in [
+    ("erf_zero", erf(0)), ("erf_inf", erf(oo)), ("erf_neg_inf", erf(-oo)), ("erfc_zero", erfc(0)), ("erfc_inf", erfc(oo)),
+    ("erfc_neg_inf", erfc(-oo)), ("erf_one", erf(1)), ("erfc_two", erfc(2)), ("erf_minus_half", erf(Rational(-1, 2))),
+]:
 
-atanh_pts = [eval_at(anti_atanh, {x: Rational(1, 4)}),
-             eval_at(anti_atanh, {x: Rational(1, 2)}),
-             eval_at(anti_atanh, {x: Rational(3, 4)})]
-fixtures.append({
-    'category': 'integrate', 'subcategory': 'atanh',
-    'input': 'atanh(x)', 'variable': 'x',
-    'sympy_result': str(anti_atanh),
-    'eval_points': [p for p in atanh_pts if p is not None],
-})
+    def compute(expr=expr):
+        return {"expected": str(expr), "value": numval(expr)}
 
+    inp = str(expr) if not expr.is_number or expr.free_symbols else label
+    add("eval", label, {"input": {"erf_zero": "erf(0)", "erf_inf": "erf(oo)", "erf_neg_inf": "erf(-oo)", "erfc_zero": "erfc(0)",
+                                  "erfc_inf": "erfc(oo)", "erfc_neg_inf": "erfc(-oo)", "erf_one": "erf(1)", "erfc_two": "erfc(2)",
+                                  "erf_minus_half": "erf(-1/2)"}[label]}, compute)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# erf/erfc fixtures
-# ═══════════════════════════════════════════════════════════════════════════
+# ── matrix exponential ─────────────────────────────────────────────────
+for label, M in [
+    ("zero_matrix", zeros(2)),
+    ("rotation_generator", Matrix([[0, 1], [-1, 0]])),
+    ("nilpotent", Matrix([[0, 1], [0, 0]])),
+    ("diagonal", Matrix([[2, 0], [0, 3]])),
+    ("identity", eye(2)),
+    ("shear_scaled", Matrix([[1, 2], [0, 1]])),
+]:
 
-fixtures.append({
-    'category': 'eval', 'subcategory': 'erf_zero',
-    'input': 'erf(0)', 'expected': '0',
-})
-fixtures.append({
-    'category': 'eval', 'subcategory': 'erf_inf',
-    'input': 'erf(oo)', 'expected': '1',
-})
-fixtures.append({
-    'category': 'eval', 'subcategory': 'erf_neg_inf',
-    'input': 'erf(-oo)', 'expected': '-1',
-})
-fixtures.append({
-    'category': 'eval', 'subcategory': 'erfc_zero',
-    'input': 'erfc(0)', 'expected': '1',
-})
-fixtures.append({
-    'category': 'eval', 'subcategory': 'erfc_inf',
-    'input': 'erfc(oo)', 'expected': '0',
-})
+    def compute(M=M):
+        Em = M.exp()
+        return {"result": mat_str(Em), "result_numeric": mat_num(Em)}
 
+    add("matrix_exp", label, {"input_matrix": mat_str(M)}, compute, key=label)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Matrix exponential fixtures
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Zero matrix → identity
-M0 = zeros(2)
-expM0 = M0.exp()
-fixtures.append({
-    'category': 'matrix_exp', 'subcategory': 'zero_matrix',
-    'input_matrix': [['0', '0'], ['0', '0']],
-    'result': [[str(expM0[i, j]) for j in range(2)] for i in range(2)],
-})
-
-# Rotation generator [[0,1],[-1,0]] → [[cos(1), sin(1)], [-sin(1), cos(1)]]
-MR = Matrix([[0, 1], [-1, 0]])
-expMR = MR.exp()
-fixtures.append({
-    'category': 'matrix_exp', 'subcategory': 'rotation_generator',
-    'input_matrix': [['0', '1'], ['-1', '0']],
-    'result': [[str(expMR[i, j]) for j in range(2)] for i in range(2)],
-})
-
-# Nilpotent [[0,1],[0,0]] → [[1,1],[0,1]]
-MN = Matrix([[0, 1], [0, 0]])
-expMN = MN.exp()
-fixtures.append({
-    'category': 'matrix_exp', 'subcategory': 'nilpotent',
-    'input_matrix': [['0', '1'], ['0', '0']],
-    'result': [[str(expMN[i, j]) for j in range(2)] for i in range(2)],
-})
-
-# Diagonal [[2,0],[0,3]]
-MD = Matrix([[2, 0], [0, 3]])
-expMD = MD.exp()
-fixtures.append({
-    'category': 'matrix_exp', 'subcategory': 'diagonal',
-    'input_matrix': [['2', '0'], ['0', '3']],
-    'result': [[str(expMD[i, j]) for j in range(2)] for i in range(2)],
-})
-
-# Identity
-MI = eye(2)
-expMI = MI.exp()
-fixtures.append({
-    'category': 'matrix_exp', 'subcategory': 'identity',
-    'input_matrix': [['1', '0'], ['0', '1']],
-    'result': [[str(expMI[i, j]) for j in range(2)] for i in range(2)],
-})
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Output
-# ═══════════════════════════════════════════════════════════════════════════
-
-output = {
-    'generated_by': f'SymPy {sympy.__version__}',
-    'description': 'Cross-validation fixtures for new symplex features',
-    'fixture_count': len(fixtures),
-    'categories': {},
-    'fixtures': fixtures,
-}
-
-# Count by category
+# ── output ─────────────────────────────────────────────────────────────
+fixtures.sort(key=lambda f: (f["category"], f["subcategory"], f["key"]))
+seen = set()
 for f in fixtures:
-    cat = f['category']
-    output['categories'][cat] = output['categories'].get(cat, 0) + 1
-
-json.dump(output, sys.stdout, indent=2)
-print()  # trailing newline
-
-print(f"\nGenerated {len(fixtures)} fixtures:", file=sys.stderr)
-for cat, count in sorted(output['categories'].items()):
+    ident = (f["category"], f["key"])
+    assert ident not in seen, f"duplicate key {ident}"
+    seen.add(ident)
+for i, f in enumerate(fixtures, 1):
+    f["id"] = i
+output = {
+    "generated_by": f"SymPy {sympy.__version__}",
+    "generator": "scripts/gen_new_fixtures.py",
+    "description": "Cross-validation fixtures for new symplex features",
+    "fixture_count": len(fixtures),
+    "categories": dict(sorted(Counter(f["category"] for f in fixtures).items())),
+    "fixtures": fixtures,
+}
+text = json.dumps(output, indent=2, sort_keys=True) + "\n"
+out_path = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "fixtures", "new_features_cross_validation.json"
+)
+if "--check" in sys.argv:
+    with open(out_path) as fh:
+        if fh.read() != text:
+            print("MISMATCH: fixture file differs from generator output", file=sys.stderr)
+            sys.exit(1)
+    print("OK: fixture file is up to date", file=sys.stderr)
+else:
+    with open(out_path, "w") as fh:
+        fh.write(text)
+    print(f"Wrote {out_path}", file=sys.stderr)
+print(f"Generated {len(fixtures)} fixtures:", file=sys.stderr)
+for cat, count in output["categories"].items():
     print(f"  {cat}: {count}", file=sys.stderr)

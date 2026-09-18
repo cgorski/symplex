@@ -18,14 +18,21 @@ Covers every category:
   special_func      (3):  factorial(3)
 
 Usage:
-    cd math/symplex
-    source .venv/bin/activate
-    python3 scripts/generate_sympy_fixtures.py > tests/fixtures/sympy_cross_validation.json 2>fixture_generation.log
+    /Users/chris.gorski/repos/math/symplex/.venv/bin/python scripts/generate_sympy_fixtures.py
+        # writes tests/fixtures/sympy_cross_validation.json (deterministic)
+    ... --stdout         # print JSON to stdout instead
+    ... --check          # exit 1 if the committed file would change
+
+Determinism & bounds: no timestamps, ``sort_keys=True``; every SymPy
+computation runs under ``PER_FIXTURE_TIMEOUT`` (SIGALRM).  A fixture whose
+computation times out is *kept* with ``"sympy_timeout": true`` (the consumer
+reports it as SKIPPED_ORACLE) rather than silently dropped.
 """
 
-import datetime
 import json
 import math
+import os
+import signal
 import sys
 import traceback
 
@@ -51,6 +58,66 @@ from sympy import (
 )
 
 x, y = sp.symbols("x y")
+
+PER_FIXTURE_TIMEOUT = 20.0  # seconds of wall clock per SymPy computation
+TIMEOUT_MARKER = "<<SYMPY_TIMEOUT>>"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Per-fixture timeout
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class _FixtureTimeout(Exception):
+    pass
+
+
+class TimedOut:
+    """Sentinel standing in for a SymPy result that did not arrive in time.
+
+    It behaves like an empty / unevaluable object so the surrounding fixture
+    code keeps working; ``finalize()`` turns any fixture that mentions it into
+    ``{"sympy_timeout": true}``."""
+
+    free_symbols = frozenset()
+
+    def __str__(self):
+        return TIMEOUT_MARKER
+
+    __repr__ = __str__
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        return 0
+
+    def removeO(self):
+        return self
+
+    def has(self, *_):
+        return False
+
+    def __getattr__(self, _name):
+        raise _FixtureTimeout("result timed out")
+
+
+def _on_alarm(signum, frame):
+    raise _FixtureTimeout()
+
+
+def bounded(fn, *args, **kwargs):
+    """Call ``fn(*args, **kwargs)`` with a wall-clock limit; return
+    ``TimedOut()`` if the limit is hit."""
+    signal.signal(signal.SIGALRM, _on_alarm)
+    signal.setitimer(signal.ITIMER_REAL, PER_FIXTURE_TIMEOUT)
+    try:
+        return fn(*args, **kwargs)
+    except _FixtureTimeout:
+        print(f"  TIMEOUT: {getattr(fn, '__name__', fn)}{args}", file=sys.stderr)
+        return TimedOut()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -96,6 +163,8 @@ def subs_display(subs_dict):
 
 def make_eval_points(expr, pts=None):
     """Generate eval_points list, auto-detecting 1-var vs 2-var."""
+    if isinstance(expr, TimedOut):
+        return []
     if pts is None:
         pts = STD_PTS_XY if y in expr.free_symbols else STD_PTS_X
     result = []
@@ -108,6 +177,8 @@ def make_eval_points(expr, pts=None):
 
 def make_value(expr):
     """Evaluate a constant expression to {"re": ..., "im": ...} or None."""
+    if isinstance(expr, TimedOut):
+        return None
     try:
         val = complex(expr.evalf())
         re_part = val.real
@@ -166,7 +237,7 @@ def gen_diff():
     ]
     for s in basic:
         expr = sp.sympify(s)
-        result = sp.diff(expr, x)
+        result = bounded(sp.diff, expr, x)
         fixtures.append(
             {
                 "category": "diff",
@@ -193,7 +264,7 @@ def gen_diff():
     ]
     for s in trig:
         expr = sp.sympify(s)
-        result = sp.diff(expr, x)
+        result = bounded(sp.diff, expr, x)
         fixtures.append(
             {
                 "category": "diff",
@@ -220,7 +291,7 @@ def gen_diff():
     ]
     for s in exp_log:
         expr = sp.sympify(s)
-        result = sp.diff(expr, x)
+        result = bounded(sp.diff, expr, x)
         fixtures.append(
             {
                 "category": "diff",
@@ -244,7 +315,7 @@ def gen_diff():
     ]
     for s in hyp:
         expr = sp.sympify(s)
-        result = sp.diff(expr, x)
+        result = bounded(sp.diff, expr, x)
         fixtures.append(
             {
                 "category": "diff",
@@ -270,7 +341,7 @@ def gen_diff():
     ]
     for s in chain:
         expr = sp.sympify(s)
-        result = sp.diff(expr, x)
+        result = bounded(sp.diff, expr, x)
         fixtures.append(
             {
                 "category": "diff",
@@ -297,7 +368,7 @@ def gen_diff():
     ]
     for s, order in higher:
         expr = sp.sympify(s)
-        result = sp.diff(expr, x, order)
+        result = bounded(sp.diff, expr, x, order)
         fixtures.append(
             {
                 "category": "diff",
@@ -325,7 +396,7 @@ def gen_diff():
     for s, dv in partial:
         expr = sp.sympify(s)
         diff_sym = x if dv == "x" else y
-        result = sp.diff(expr, diff_sym)
+        result = bounded(sp.diff, expr, diff_sym)
         fixtures.append(
             {
                 "category": "diff",
@@ -363,7 +434,7 @@ def gen_integrate():
     ]
     for s in basic:
         expr = sp.sympify(s)
-        result = sp.integrate(expr, x)
+        result = bounded(sp.integrate, expr, x)
         fixtures.append(
             {
                 "category": "integrate",
@@ -390,7 +461,7 @@ def gen_integrate():
     ]
     for s in trig:
         expr = sp.sympify(s)
-        result = sp.integrate(expr, x)
+        result = bounded(sp.integrate, expr, x)
         fixtures.append(
             {
                 "category": "integrate",
@@ -415,7 +486,7 @@ def gen_integrate():
     ]
     for s in exp_log:
         expr = sp.sympify(s)
-        result = sp.integrate(expr, x)
+        result = bounded(sp.integrate, expr, x)
         fixtures.append(
             {
                 "category": "integrate",
@@ -438,7 +509,7 @@ def gen_integrate():
     ]
     for s in by_parts:
         expr = sp.sympify(s)
-        result = sp.integrate(expr, x)
+        result = bounded(sp.integrate, expr, x)
         fixtures.append(
             {
                 "category": "integrate",
@@ -463,7 +534,7 @@ def gen_integrate():
     ]
     for s in rational:
         expr = sp.sympify(s)
-        result = sp.integrate(expr, x)
+        result = bounded(sp.integrate, expr, x)
         fixtures.append(
             {
                 "category": "integrate",
@@ -510,7 +581,7 @@ def gen_definite_integral():
         expr = sp.sympify(expr_str)
         lower = sp.sympify(lower_str)
         upper = sp.sympify(upper_str)
-        result = sp.integrate(expr, (x, lower, upper))
+        result = bounded(sp.integrate, expr, (x, lower, upper))
         value = make_value(result)
 
         fixture = {
@@ -549,7 +620,7 @@ def gen_simplify():
     ]
     for s in trig_cases:
         expr = sp.sympify(s)
-        result = sp.simplify(expr)
+        result = bounded(sp.simplify, expr)
         fixtures.append(
             {
                 "category": "simplify",
@@ -574,7 +645,7 @@ def gen_simplify():
     ]
     for s in alg_cases:
         expr = sp.sympify(s)
-        result = sp.simplify(expr)
+        result = bounded(sp.simplify, expr)
         fixtures.append(
             {
                 "category": "simplify",
@@ -596,7 +667,7 @@ def gen_simplify():
     ]
     for s in exp_log_cases:
         expr = sp.sympify(s)
-        result = sp.simplify(expr)
+        result = bounded(sp.simplify, expr)
         fixtures.append(
             {
                 "category": "simplify",
@@ -632,7 +703,7 @@ def gen_expand():
     ]
     for s in alg:
         expr = sp.sympify(s)
-        result = sp.expand(expr)
+        result = bounded(sp.expand, expr)
         fixtures.append(
             {
                 "category": "expand",
@@ -655,7 +726,7 @@ def gen_expand():
     ]
     for s in trig:
         expr = sp.sympify(s)
-        result = sp.expand_trig(expr)
+        result = bounded(sp.expand_trig, expr)
         fixtures.append(
             {
                 "category": "expand",
@@ -680,7 +751,7 @@ def gen_solve():
 
     def _make_solve(expr_str, subcat):
         expr = sp.sympify(expr_str)
-        roots = sp.solve(expr, x)
+        roots = bounded(sp.solve, expr, x)
         root_data = []
         for r in roots:
             try:
@@ -819,7 +890,7 @@ def gen_series():
 
     for s in cases:
         expr = sp.sympify(s)
-        result = sp.series(expr, x, 0, 6).removeO()
+        result = bounded(lambda: sp.series(expr, x, 0, 6).removeO())
         fixtures.append(
             {
                 "category": "series",
@@ -863,7 +934,7 @@ def gen_limit():
 
     for expr_str, var, point in cases:
         expr = sp.sympify(expr_str)
-        result = sp.limit(expr, var, point)
+        result = bounded(sp.limit, expr, var, point)
         value = make_value(result)
 
         fixture = {
@@ -901,7 +972,7 @@ def gen_matrix():
     ]
     for mat_data in det_cases:
         m = Matrix(mat_data)
-        det_val = m.det()
+        det_val = bounded(m.det)
         value = make_value(det_val)
         fixture = {
             "category": "matrix",
@@ -925,7 +996,18 @@ def gen_matrix():
     for mat_data in inv_cases:
         m = Matrix(mat_data)
         try:
-            inv = m.inv()
+            inv = bounded(m.inv)
+            if isinstance(inv, TimedOut):
+                fixtures.append(
+                    {
+                        "category": "matrix",
+                        "subcategory": "inverse",
+                        "matrix": mat_data,
+                        "operation": "inverse",
+                        "sympy_result": TIMEOUT_MARKER,
+                    }
+                )
+                continue
             fixtures.append(
                 {
                     "category": "matrix",
@@ -948,7 +1030,18 @@ def gen_matrix():
     ]
     for mat_data in eig_cases:
         m = Matrix(mat_data)
-        eigenvals = m.eigenvals()  # dict: eigenvalue -> multiplicity
+        eigenvals = bounded(m.eigenvals)  # dict: eigenvalue -> multiplicity
+        if isinstance(eigenvals, TimedOut):
+            fixtures.append(
+                {
+                    "category": "matrix",
+                    "subcategory": "eigenvalue",
+                    "matrix": mat_data,
+                    "operation": "eigenvalues",
+                    "sympy_result": TIMEOUT_MARKER,
+                }
+            )
+            continue
         eig_list = []
         for eigval, mult in sorted(
             eigenvals.items(),
@@ -984,7 +1077,7 @@ def gen_matrix():
     ]
     for mat_data in trace_cases:
         m = Matrix(mat_data)
-        tr = m.trace()
+        tr = bounded(m.trace)
         value = make_value(tr)
         fixture = {
             "category": "matrix",
@@ -1041,7 +1134,7 @@ def gen_algebra():
     ]
     for s in factor_cases:
         expr = sp.sympify(s)
-        result = sp.factor(expr)
+        result = bounded(sp.factor, expr)
         fixtures.append(
             {
                 "category": "algebra",
@@ -1064,7 +1157,7 @@ def gen_algebra():
     for s, var_str in collect_cases:
         expr = sp.sympify(s)
         var = x if var_str == "x" else y
-        result = sp.collect(expr, var)
+        result = bounded(sp.collect, expr, var)
         fixtures.append(
             {
                 "category": "algebra",
@@ -1087,7 +1180,7 @@ def gen_algebra():
     ]
     for s in together_cases:
         expr = sp.sympify(s)
-        result = sp.together(expr)
+        result = bounded(sp.together, expr)
         fixtures.append(
             {
                 "category": "algebra",
@@ -1109,7 +1202,7 @@ def gen_algebra():
     ]
     for s in cancel_cases:
         expr = sp.sympify(s)
-        result = sp.cancel(expr)
+        result = bounded(sp.cancel, expr)
         fixtures.append(
             {
                 "category": "algebra",
@@ -1131,7 +1224,7 @@ def gen_algebra():
     ]
     for s in apart_cases:
         expr = sp.sympify(s)
-        result = sp.apart(expr, x)
+        result = bounded(sp.apart, expr, x)
         fixtures.append(
             {
                 "category": "algebra",
@@ -1163,7 +1256,7 @@ def gen_evalf():
     ]
 
     for input_str, expr in cases:
-        result = expr.evalf(50)
+        result = bounded(expr.evalf, 50)
         fixtures.append(
             {
                 "category": "evalf",
@@ -1187,7 +1280,7 @@ def gen_special_func():
     factorial_cases = [5, 10, 0]
 
     for n in factorial_cases:
-        result = sp.factorial(n)
+        result = bounded(sp.factorial, n)
         value = make_value(result)
         fixtures.append(
             {
@@ -1250,22 +1343,46 @@ def main():
             traceback.print_exc(file=sys.stderr)
             errors.append(f"{name}: {e}")
 
-    # Assign sequential IDs
+    # Assign sequential IDs and turn timeout sentinels into an explicit flag.
+    timeouts = 0
     for i, f in enumerate(all_fixtures, 1):
         f["id"] = i
+        if f.get("sympy_result") == TIMEOUT_MARKER:
+            del f["sympy_result"]
+            f["sympy_timeout"] = True
+            f.pop("eval_points", None)
+            f.pop("value", None)
+            timeouts += 1
 
     output = {
         "generated_by": f"SymPy {sp.__version__}",
-        "generated_at": datetime.datetime.now().isoformat(),
+        "generator": "scripts/generate_sympy_fixtures.py",
         "fixture_count": len(all_fixtures),
         "fixtures": all_fixtures,
     }
+    text = json.dumps(output, indent=2, sort_keys=True) + "\n"
 
-    json.dump(output, sys.stdout, indent=2)
-    print("", file=sys.stdout)  # trailing newline
+    out_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "tests",
+        "fixtures",
+        "sympy_cross_validation.json",
+    )
+    if "--stdout" in sys.argv:
+        sys.stdout.write(text)
+    elif "--check" in sys.argv:
+        with open(out_path) as fh:
+            if fh.read() != text:
+                print("MISMATCH: fixture file differs from generator output", file=sys.stderr)
+                sys.exit(1)
+        print("OK: fixture file is up to date", file=sys.stderr)
+    else:
+        with open(out_path, "w") as fh:
+            fh.write(text)
+        print(f"Wrote {out_path}", file=sys.stderr)
 
     print(f"\n{'=' * 60}", file=sys.stderr)
-    print(f"Total fixtures generated: {len(all_fixtures)}", file=sys.stderr)
+    print(f"Total fixtures generated: {len(all_fixtures)} ({timeouts} SymPy timeouts)", file=sys.stderr)
     if len(all_fixtures) == total_expected:
         print(f"Count matches expected: {total_expected}", file=sys.stderr)
     else:

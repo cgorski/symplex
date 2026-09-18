@@ -588,12 +588,11 @@ fn diff_multi_x_plus_y() {
             .subs(&y, &ctx.int(yv as i64))
             .eval_f64();
 
-        if let Ok(ev) = eval_val {
-            assert!(
-                approx_eq_rel(compile_val, ev, 1e-10),
-                "x+y at ({xv},{yv}): compile={compile_val}, eval={ev}"
-            );
-        }
+        let ev = eval_val.expect("eval_val must evaluate");
+        assert!(
+            approx_eq_rel(compile_val, ev, 1e-10),
+            "x+y at ({xv},{yv}): compile={compile_val}, eval={ev}"
+        );
     }
 }
 
@@ -822,17 +821,16 @@ fn edge_at_zero() {
         );
 
         let eval_result = expr.subs_i64(&x, 0).eval_f64();
-        if let Ok(eval_val) = eval_result {
-            assert!(
-                approx_eq_rel(eval_val, *expected, 1e-10),
-                "{desc}: eval_f64 at 0 = {eval_val}, expected {expected}"
-            );
-            // Cross-check: compile and eval agree
-            assert!(
-                approx_eq_rel(compile_val, eval_val, 1e-10),
-                "{desc}: compile ({compile_val}) != eval ({eval_val}) at x=0"
-            );
-        }
+        let eval_val = eval_result.expect("eval_result must evaluate");
+        assert!(
+            approx_eq_rel(eval_val, *expected, 1e-10),
+            "{desc}: eval_f64 at 0 = {eval_val}, expected {expected}"
+        );
+        // Cross-check: compile and eval agree
+        assert!(
+            approx_eq_rel(compile_val, eval_val, 1e-10),
+            "{desc}: compile ({compile_val}) != eval ({eval_val}) at x=0"
+        );
     }
 }
 
@@ -2072,12 +2070,11 @@ fn aggressive_compile_vs_eval_at_rationals() {
             let compile_val = compiled(&[fval]);
             let rat = ctx.rational(p, q);
             let eval_result = expr.subs(&x, &rat).eval_f64();
-            if let Ok(eval_val) = eval_result {
-                assert!(
-                    approx_eq_rel(compile_val, eval_val, 1e-9),
-                    "{desc} at x={p}/{q}: compile={compile_val}, eval={eval_val}"
-                );
-            }
+            let eval_val = eval_result.expect("eval_result must evaluate");
+            assert!(
+                approx_eq_rel(compile_val, eval_val, 1e-9),
+                "{desc} at x={p}/{q}: compile={compile_val}, eval={eval_val}"
+            );
         }
     }
 }
@@ -2121,14 +2118,15 @@ fn aggressive_pow_zero_gives_one() {
 
     // The symbolic engine may simplify x^0 to 1 immediately, so compile
     // might just push the constant 1.  Either way the result must be 1.
-    if let Ok(compiled) = expr.compile(&["x"]) {
-        for &v in &[-2.0, -1.0, 0.0, 1.0, 2.0] {
-            let got = compiled(&[v]);
-            assert!(
-                approx_eq_rel(got, 1.0, 1e-10),
-                "x^0 at x={v}: compile={got}, expected 1"
-            );
-        }
+    let compiled = expr
+        .compile(&["x"])
+        .expect("expr.compile(&[\"x\"]) must evaluate");
+    for &v in &[-2.0, -1.0, 0.0, 1.0, 2.0] {
+        let got = compiled(&[v]);
+        assert!(
+            approx_eq_rel(got, 1.0, 1e-10),
+            "x^0 at x={v}: compile={got}, expected 1"
+        );
     }
 
     // eval path
@@ -2282,12 +2280,11 @@ fn aggressive_multivar_eval_vs_compile_cross_check() {
             .subs(&y, &ctx.int(yv))
             .eval_f64();
 
-        if let Ok(ev) = eval_val {
-            assert!(
-                approx_eq_rel(compile_val, ev, 1e-9),
-                "x^2*sin(y)+y*exp(x) at ({xv},{yv}): compile={compile_val}, eval={ev}"
-            );
-        }
+        let ev = eval_val.expect("eval_val must evaluate");
+        assert!(
+            approx_eq_rel(compile_val, ev, 1e-9),
+            "x^2*sin(y)+y*exp(x) at ({xv},{yv}): compile={compile_val}, eval={ev}"
+        );
     }
 }
 
@@ -2350,11 +2347,12 @@ fn aggressive_zero_expression() {
     let expr = &x * &ctx.int(0);
 
     // Might simplify to 0, so compile could be trivial
-    if let Ok(compiled) = expr.compile(&["x"]) {
-        for &v in STANDARD_VALS {
-            let got = compiled(&[v]);
-            assert!(approx_eq_rel(got, 0.0, 1e-15), "0*x at x={v}: got {got}");
-        }
+    let compiled = expr
+        .compile(&["x"])
+        .expect("expr.compile(&[\"x\"]) must evaluate");
+    for &v in STANDARD_VALS {
+        let got = compiled(&[v]);
+        assert!(approx_eq_rel(got, 0.0, 1e-15), "0*x at x={v}: got {got}");
     }
 }
 

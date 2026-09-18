@@ -422,21 +422,11 @@ fn c1_solve_zero_for_x() {
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
     let result = zero.solve(&x);
-    match result {
-        Ok(sols) => {
-            // Empty is acceptable (means "trivially true for all x" or "no specific root")
-            // A single solution of 0 might also appear if solver treats it as polynomial.
-            eprintln!(
-                "solve(0, x) returned {} solution(s): {:?}",
-                sols.len(),
-                sols.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
-            );
-        }
-        Err(e) => {
-            // An error is tolerable — must not panic
-            eprintln!("solve(0, x) returned Err: {e}");
-        }
-    }
+    // 0 = 0 holds for every x: reported as the dedicated InfiniteSolutions variant.
+    assert!(
+        matches!(result, Err(SymplexError::InfiniteSolutions { .. })),
+        "solve(0, x) = {result:?}"
+    );
 }
 
 #[test]
@@ -502,21 +492,30 @@ fn c5_solve_sin_x() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.sin();
-    let result = expr.solve(&x);
-    match result {
-        Ok(sols) => {
-            // At minimum x=0 should be among solutions
-            eprintln!(
-                "solve(sin(x), x) returned {} solution(s): {:?}",
-                sols.len(),
-                sols.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
-            );
-        }
-        Err(e) => {
-            // Acceptable — transcendental with infinite solutions
-            eprintln!("solve(sin(x), x) returned Err: {e}");
-        }
+    // `solve` returns the principal-branch roots 0 and pi (SymPy's `solve`
+    // gives the same two); every returned root must actually be a root.
+    let sols = expr.solve(&x).expect("sin(x) = 0 is solvable");
+    let mut strs: Vec<String> = sols.iter().map(|s| s.to_string()).collect();
+    strs.sort();
+    assert_eq!(strs, ["0", "pi"], "solve(sin(x), x)");
+    for s in &sols {
+        let r = expr.subs(&x, s).eval_f64().unwrap();
+        assert!(r.abs() < 1e-12, "sin({s}) = {r}");
     }
+    // The full solution set needs the integer parameter of `solve_general`.
+    let fam = expr.solve_general(&x).unwrap();
+    assert_eq!(fam.parameters.len(), 1);
+    let at_k3: Vec<f64> = fam
+        .instance(3)
+        .iter()
+        .map(|e| e.eval_f64().unwrap())
+        .collect();
+    assert!(
+        at_k3
+            .iter()
+            .all(|v| (v / std::f64::consts::PI - (v / std::f64::consts::PI).round()).abs() < 1e-12),
+        "{at_k3:?}"
+    );
 }
 
 #[test]
@@ -565,21 +564,19 @@ fn c7_solve_x_squared_plus_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = &x.powi(2) + 1;
-    let result = expr.solve(&x);
-    match result {
-        Ok(sols) => {
-            eprintln!(
-                "solve(x^2 + 1, x) returned {} solution(s): {:?}",
-                sols.len(),
-                sols.iter().map(|s| format!("{s}")).collect::<Vec<_>>()
-            );
-            // Should have 2 complex roots: i and -i
-            // Even if empty, that's OK for a real-only solver
-        }
-        Err(e) => {
-            eprintln!("solve(x^2 + 1, x) returned Err: {e}");
-        }
-    }
+    // Two complex roots ±i.
+    let sols = expr.solve(&x).expect("x^2 + 1 = 0 has complex roots");
+    let mut vals: Vec<(f64, f64)> = sols.iter().map(|s| s.eval_complex64().unwrap()).collect();
+    vals.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    assert_eq!(vals.len(), 2, "solve(x^2 + 1, x) = {sols:?}");
+    assert!(
+        (vals[0].0).abs() < 1e-12 && (vals[0].1 + 1.0).abs() < 1e-12,
+        "{vals:?}"
+    );
+    assert!(
+        (vals[1].0).abs() < 1e-12 && (vals[1].1 - 1.0).abs() < 1e-12,
+        "{vals:?}"
+    );
 }
 
 #[test]
@@ -605,11 +602,12 @@ fn c9_solve_or_empty_on_impossible() {
     let x = ctx.symbol("x");
     let expr = x.exp() + x.sin() + 1;
     let solutions = expr.solve_or_empty(&x);
-    // Just must not panic — any result is acceptable
-    eprintln!(
-        "solve_or_empty(exp(x)+sin(x)+1, x) returned {} solution(s)",
-        solutions.len()
-    );
+    // Anything returned must be a genuine root (there are real roots near
+    // x ≈ -1.9, but a transcendental solver may honestly return nothing).
+    for s in &solutions {
+        let r = expr.subs(&x, s).eval_f64().unwrap_or(f64::NAN);
+        assert!(r.abs() < 1e-9, "claimed root {s} has residual {r}");
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -625,9 +623,8 @@ fn d1_series_1_over_x_at_zero() {
     let zero = ctx.int(0);
     let expr = &ctx.int(1) / &x;
     let result = expr.series(&x, &zero, 5);
-    let s = format!("{result}");
-    eprintln!("series(1/x, x, 0, 5) = {s}");
-    // Must not panic — any result is acceptable
+    // The Laurent expansion of 1/x at 0 is exactly 1/x.
+    assert_eq!(result, expr, "series(1/x, x, 0, 5) = {result}");
 }
 
 #[test]
@@ -667,9 +664,13 @@ fn d3_series_ln_at_zero() {
     let zero = ctx.int(0);
     let expr = x.ln();
     let result = expr.series(&x, &zero, 5);
-    let s = format!("{result}");
-    eprintln!("series(ln(x), x, 0, 5) = {s}");
-    // Must not panic
+    // ln has a logarithmic branch point at 0 — no power series exists.  An
+    // unevaluated `Series` node is the honest answer; a polynomial would be wrong.
+    assert!(
+        result.has_unevaluated(),
+        "series(ln(x), x, 0, 5) = {result}"
+    );
+    assert!(expr.try_series(&x, &zero, 5).is_err());
 }
 
 #[test]
@@ -681,9 +682,12 @@ fn d4_series_exp_1_over_x_at_zero() {
     let one_over_x = &ctx.int(1) / &x;
     let expr = one_over_x.exp();
     let result = expr.series(&x, &zero, 5);
-    let s = format!("{result}");
-    eprintln!("series(exp(1/x), x, 0, 5) = {s}");
-    // Must not panic
+    // Essential singularity: no Laurent series with finitely many negative
+    // powers exists.  Must stay unevaluated rather than fabricate a polynomial.
+    assert!(
+        result.has_unevaluated(),
+        "series(exp(1/x), x, 0, 5) = {result}"
+    );
 }
 
 #[test]
@@ -694,9 +698,11 @@ fn d5_series_order_zero() {
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
     let result = x.series(&x, &zero, 0);
-    let s = format!("{result}");
-    eprintln!("series(x, x, 0, 0) = {s}");
-    // Must not panic. Order 0 means just the constant term = f(0) = 0
+    // Zero terms requested: the empty sum.  (f(0) = 0 here as well.)
+    assert!(result.is_zero_structural(), "series(x, x, 0, 0) = {result}");
+    // One term: the constant f(0) = 0; two terms: x itself.
+    assert!(x.series(&x, &zero, 1).is_zero_structural());
+    assert_eq!(x.series(&x, &zero, 2), x);
 }
 
 #[test]
@@ -707,13 +713,21 @@ fn d6_series_exp_at_zero_order_4() {
     let zero = ctx.int(0);
     let expr = x.exp();
     let result = expr.series(&x, &zero, 4);
+    // 1 + x + x^2/2 + x^3/6: compare coefficients exactly.
     let expanded = result.expand().eval();
-    let s = format!("{expanded}");
-    eprintln!("series(exp(x), x, 0, 4) = {s}");
-    assert!(
-        s.contains("x"),
-        "series of exp(x) should contain x terms: {s}"
+    assert_eq!(expanded.coeff(&x, 0), Some(ctx.int(1)), "{expanded}");
+    assert_eq!(expanded.coeff(&x, 1), Some(ctx.int(1)), "{expanded}");
+    assert_eq!(
+        expanded.coeff(&x, 2),
+        Some(ctx.rational(1, 2)),
+        "{expanded}"
     );
+    assert_eq!(
+        expanded.coeff(&x, 3),
+        Some(ctx.rational(1, 6)),
+        "{expanded}"
+    );
+    assert_eq!(expanded.degree(&x), Some(3), "{expanded}");
 }
 
 #[test]
@@ -724,9 +738,7 @@ fn d7_series_constant() {
     let zero = ctx.int(0);
     let five = ctx.int(5);
     let result = five.series(&x, &zero, 3);
-    let s = format!("{result}");
-    eprintln!("series(5, x, 0, 3) = {s}");
-    // Should be just "5"
+    assert_eq!(result, five, "series(5, x, 0, 3) = {result}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1067,8 +1079,8 @@ fn g3_factor_pure_number() {
     let x = ctx.symbol("x");
     let twelve = ctx.int(12);
     let result = twelve.factor(&x);
-    let s = format!("{result}");
-    eprintln!("factor(12, x) = {s}");
+    // A constant has no polynomial factors in x: returned unchanged.
+    assert_eq!(result, twelve, "factor(12, x) = {result}");
     // Should be 12 or equivalent — must not panic
 }
 
@@ -1126,8 +1138,10 @@ fn g8_symbol_with_prime() {
     let ctx = Context::new();
     let x_prime = ctx.symbol("x'");
     let expr = &x_prime + 1;
-    let s = format!("{expr}");
-    eprintln!("Expression with x': {s}");
+    // Unusual symbol names round-trip through Display and stay distinct from `x`.
+    assert_eq!(format!("{expr}"), "x' + 1");
+    assert_ne!(x_prime, ctx.symbol("x"));
+    assert_eq!(expr.free_symbols().len(), 1);
     // Must not panic
 }
 
@@ -1233,7 +1247,8 @@ fn g16_factorize_zero() {
     let ctx = Context::new();
     let zero = ctx.int(0);
     let factors = zero.factorize();
-    eprintln!("factorize(0) = {:?}", factors);
+    // 0 has no prime factorisation.
+    assert!(factors.is_none(), "factorize(0) = {factors:?}");
     // Must not panic. None is acceptable.
 }
 
@@ -1243,7 +1258,12 @@ fn g17_factorize_one() {
     let ctx = Context::new();
     let one = ctx.int(1);
     let factors = one.factorize();
-    eprintln!("factorize(1) = {:?}", factors);
+    // 1 is the empty product.
+    assert_eq!(
+        factors.as_deref(),
+        Some(&[][..]),
+        "factorize(1) = {factors:?}"
+    );
     // Should be Some([]) or None — must not panic
 }
 
@@ -1253,7 +1273,10 @@ fn g18_factorize_negative() {
     let ctx = Context::new();
     let n = ctx.int(-12);
     let factors = n.factorize();
-    eprintln!("factorize(-12) = {:?}", factors);
+    // Sign is dropped (documented for `ntheory::factorint`): |-12| = 2^2 * 3.
+    let f = factors.expect("factorize(-12)");
+    let shown: Vec<(String, u32)> = f.iter().map(|(p, e)| (p.to_string(), *e)).collect();
+    assert_eq!(shown, [("2".to_string(), 2), ("3".to_string(), 1)]);
     // Must not panic
 }
 
@@ -1309,20 +1332,19 @@ fn g21_arithmetic_with_infinity() {
 
     // inf + x
     let r1 = &inf + &x;
-    let s1 = format!("{r1}");
-    eprintln!("inf + x = {s1}");
+    // oo + x absorbs the finite symbol (SymPy: oo + x = oo).
+    assert_eq!(r1, inf, "inf + x = {r1}");
 
-    // inf * 2
+    // inf * 2 = oo
     let r2 = &inf * 2;
-    let s2 = format!("{r2}");
-    eprintln!("inf * 2 = {s2}");
+    assert_eq!(r2, inf, "inf * 2 = {r2}");
 
-    // 0 * inf — indeterminate
+    // 0 * inf is indeterminate.
+    // BUG: symplex folds it to 0 (SymPy: nan) — see
+    // `bug_indeterminate_zero_times_infinity` in bugfinder1_edge_cases.rs.
     let zero = ctx.int(0);
     let r3 = &zero * &inf;
-    let s3 = format!("{r3}");
-    eprintln!("0 * inf = {s3}");
-    // Must not panic
+    assert!(!r3.has_unevaluated(), "0 * inf = {r3}");
 }
 
 #[test]
@@ -1332,14 +1354,12 @@ fn g22_arithmetic_with_nan() {
     let nan = ctx.nan();
     let x = ctx.symbol("x");
 
+    // NaN is absorbing.
     let r1 = &nan + &x;
-    let s1 = format!("{r1}");
-    eprintln!("nan + x = {s1}");
+    assert_eq!(r1, nan, "nan + x = {r1}");
 
     let r2 = &nan * &ctx.int(2);
-    let s2 = format!("{r2}");
-    eprintln!("nan * 2 = {s2}");
-    // Must not panic
+    assert_eq!(r2, nan, "nan * 2 = {r2}");
 }
 
 #[test]
@@ -1425,8 +1445,25 @@ fn g28_rational_zero_denominator() {
         let r = ctx.rational(1, 0);
         format!("{r}")
     }));
-    eprintln!("ctx.rational(1, 0) result: {:?}", result);
-    // Either panic or some representation is OK — we just document the behavior
+    // BUG: `Context::rational(p, 0)` panics inside `num-rational`
+    // ("denominator == 0") and the method has no `# Panics` section; a
+    // library-level result (`zoo`, like `ctx.int(1) / ctx.int(0)`) or a
+    // documented panic would be the honest contract.  Until fixed we pin the
+    // observed behaviour so a silent change is noticed.
+    assert!(
+        result.is_err(),
+        "ctx.rational(1, 0) no longer panics: {result:?} — update this test"
+    );
+    assert_eq!(format!("{}", &ctx.int(1) / &ctx.int(0)), "zoo");
+}
+
+/// Reproducer for the panic above; un-ignore once `rational(p, 0)` is handled.
+#[test]
+#[ignore = "BUG: Context::rational(1, 0) panics (num-rational denominator == 0) instead of returning zoo"]
+fn bug_rational_zero_denominator_panics() {
+    let ctx = Context::new();
+    let r = ctx.rational(1, 0);
+    assert_eq!(format!("{r}"), "zoo");
 }
 
 #[test]
@@ -1480,9 +1517,10 @@ fn g32_count_ops_empty_and_atom() {
     let x = ctx.symbol("x");
 
     // count_ops of a number and symbol should be 0 or 1 — must not panic
-    let ops_five = five.count_ops();
-    let ops_x = x.count_ops();
-    eprintln!("count_ops(5) = {ops_five}, count_ops(x) = {ops_x}");
+    // Atoms have no operations; x + 5 has exactly one.
+    assert_eq!(five.count_ops(), 0);
+    assert_eq!(x.count_ops(), 0);
+    assert_eq!((&x + &five).count_ops(), 1);
 }
 
 #[test]
@@ -1696,13 +1734,13 @@ fn g45_args_of_various_types() {
     let pow = x.powi(2);
     let sin_x = x.sin();
 
-    let _ = five.args();
-    let _ = x.args();
-    let _ = sum.args();
-    let _ = prod.args();
-    let _ = pow.args();
-    let _ = sin_x.args();
-    // None of these should panic
+    // Atoms have no children; compound nodes expose exactly their operands.
+    assert!(five.args().is_empty());
+    assert!(x.args().is_empty());
+    assert_eq!(sum.args().len(), 2, "args(x + 5) = {:?}", sum.args());
+    assert_eq!(prod.args().len(), 2, "args(x * 5) = {:?}", prod.args());
+    assert_eq!(pow.args(), vec![x.clone(), ctx.int(2)], "args(x^2)");
+    assert_eq!(sin_x.args(), vec![x.clone()], "args(sin x)");
 }
 
 #[test]
@@ -1725,8 +1763,7 @@ fn g47_equals_structural_vs_mathematical() {
     let e1 = (&x + 1).powi(2);
     let e2 = &x.powi(2) + &(&x * 2) + 1;
     let result = e1.equals(&e2);
-    eprintln!("(x+1)^2 equals x^2+2x+1? = {:?}", result);
-    // Should be Some(true) but None is tolerable
+    assert_eq!(result, Some(true), "(x+1)^2 equals x^2+2x+1?");
     assert_ne!(
         result,
         Some(false),

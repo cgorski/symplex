@@ -500,8 +500,24 @@ fn repro_depth2_abs_of_subtraction() {
 // Step 8: Exhaustive depth-2 combinations (the proptest shape)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Full sweep: ~470 × 470 depth-2 pairs, ~33 s in a debug build.  Kept
+/// runnable (`--ignored`) for deep investigations; the regular suite runs
+/// the deterministic 1-in-7 sample below (~4 s) which covers every
+/// depth-2 expression on both sides.
 #[test]
+#[ignore = "slow (~33 s): exhaustive 220k-pair sweep; the sampled variant runs by default"]
 fn exhaustive_depth2_linearity() {
+    depth2_linearity_sweep(1);
+}
+
+#[test]
+fn sampled_depth2_linearity() {
+    depth2_linearity_sweep(7);
+}
+
+/// Check d/dx linearity over all depth-2 pairs `(a, b)` whose flat index is
+/// a multiple of `stride` (stride 1 = exhaustive).
+fn depth2_linearity_sweep(stride: usize) {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
@@ -539,9 +555,14 @@ fn exhaustive_depth2_linearity() {
 
     let mut failures = Vec::new();
 
-    // Test linearity for all depth-2 pairs
+    // Test linearity for the selected depth-2 pairs
+    let mut idx = 0usize;
     for (na, a) in &d2 {
         for (nb, b) in &d2 {
+            idx += 1;
+            if !idx.is_multiple_of(stride) {
+                continue;
+            }
             if let Some(diff) = check_linearity(a, b, &x) {
                 let msg = format!("  a={na}, b={nb}: difference = {diff}");
                 if !failures.contains(&msg) {

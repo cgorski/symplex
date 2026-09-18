@@ -101,12 +101,11 @@ fn check_compile_vs_eval_rational(
         let from_compile = compiled(&[fval]);
         let subst = ctx.rational(p, q);
         let from_eval = expr.subs(var, &subst).eval_f64();
-        if let Ok(expected) = from_eval {
-            assert!(
-                approx_eq(from_compile, expected, 1e-8),
-                "MISMATCH for `{expr}` at {var_name}={p}/{q}: compile={from_compile}, eval={expected}"
-            );
-        }
+        let expected = from_eval.expect("from_eval must evaluate");
+        assert!(
+            approx_eq(from_compile, expected, 1e-8),
+            "MISMATCH for `{expr}` at {var_name}={p}/{q}: compile={from_compile}, eval={expected}"
+        );
     }
 }
 
@@ -1020,9 +1019,8 @@ fn roundtrip_polynomial() {
         "failed to parse polynomial '{displayed}': {:?}",
         reparsed.err()
     );
-    if let Ok(r) = reparsed {
-        assert_eq!(format!("{r}"), displayed, "polynomial round-trip mismatch");
-    }
+    let r = reparsed.expect("reparsed must evaluate");
+    assert_eq!(format!("{r}"), displayed, "polynomial round-trip mismatch");
 }
 
 #[test]
@@ -1071,9 +1069,8 @@ fn roundtrip_power() {
         "should parse power '{displayed}': {:?}",
         reparsed.err()
     );
-    if let Ok(r) = reparsed {
-        assert_eq!(format!("{r}"), displayed, "power round-trip mismatch");
-    }
+    let r = reparsed.expect("reparsed must evaluate");
+    assert_eq!(format!("{r}"), displayed, "power round-trip mismatch");
 }
 
 #[test]
@@ -1487,15 +1484,14 @@ fn sign_function_semantics() {
     let f = symplex::parse::parse(&ctx, "sign(x)").unwrap();
     let compiled = f.compile(&["x"]);
 
-    if let Ok(func) = compiled {
-        assert_eq!(func(&[5.0]), 1.0, "sign(5) should be 1");
-        assert_eq!(func(&[-3.0]), -1.0, "sign(-3) should be -1");
-        assert_eq!(
-            func(&[0.0]),
-            0.0,
-            "sign(0) should be 0 (mathematical convention)"
-        );
-    }
+    let func = compiled.expect("compiled must evaluate");
+    assert_eq!(func(&[5.0]), 1.0, "sign(5) should be 1");
+    assert_eq!(func(&[-3.0]), -1.0, "sign(-3) should be -1");
+    assert_eq!(
+        func(&[0.0]),
+        0.0,
+        "sign(0) should be 0 (mathematical convention)"
+    );
 }
 
 #[test]
@@ -1504,12 +1500,11 @@ fn heaviside_function_at_zero() {
     let f = symplex::parse::parse(&ctx, "Heaviside(x)").unwrap();
     let compiled = f.compile(&["x"]);
 
-    if let Ok(func) = compiled {
-        assert_eq!(func(&[1.0]), 1.0, "heaviside(1) should be 1");
-        assert_eq!(func(&[-1.0]), 0.0, "heaviside(-1) should be 0");
-        // Heaviside(0) = 0.5 by convention in the implementation
-        assert_eq!(func(&[0.0]), 0.5, "heaviside(0) should be 0.5");
-    }
+    let func = compiled.expect("compiled must evaluate");
+    assert_eq!(func(&[1.0]), 1.0, "heaviside(1) should be 1");
+    assert_eq!(func(&[-1.0]), 0.0, "heaviside(-1) should be 0");
+    // Heaviside(0) = 0.5 by convention in the implementation
+    assert_eq!(func(&[0.0]), 0.5, "heaviside(0) should be 0.5");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

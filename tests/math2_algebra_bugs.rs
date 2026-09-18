@@ -823,18 +823,17 @@ fn poly_gcd_basic() {
     // gcd(x²-1, x²-2x+1) = gcd((x-1)(x+1), (x-1)²) = x-1
     let a = expr!(ctx, x ^ 2 - 1);
     let b = expr!(ctx, x ^ 2 - 2 * x + 1);
-    if let Some(g) = a.poly_gcd(&b, &x) {
-        // The GCD should be (x-1) or a scalar multiple
-        // At x=1 it should be 0
-        let v1 = eval_at(&g, &x, 1);
-        assert!(
-            approx(v1, 0.0, 1e-9),
-            "gcd(x²-1, (x-1)²) should vanish at x=1, got {v1}"
-        );
-        // At x=-1 it should be nonzero (since (x-1) at x=-1 is -2)
-        let vm1 = eval_at(&g, &x, -1);
-        assert!(vm1.abs() > 0.1, "gcd should be nonzero at x=-1, got {vm1}");
-    }
+    let g = a.poly_gcd(&b, &x).expect("a.poly_gcd(&b, &x) must be Some");
+    // The GCD should be (x-1) or a scalar multiple
+    // At x=1 it should be 0
+    let v1 = eval_at(&g, &x, 1);
+    assert!(
+        approx(v1, 0.0, 1e-9),
+        "gcd(x²-1, (x-1)²) should vanish at x=1, got {v1}"
+    );
+    // At x=-1 it should be nonzero (since (x-1) at x=-1 is -2)
+    let vm1 = eval_at(&g, &x, -1);
+    assert!(vm1.abs() > 0.1, "gcd should be nonzero at x=-1, got {vm1}");
 }
 
 #[test]
@@ -844,15 +843,14 @@ fn poly_gcd_coprime() {
     // gcd(x+1, x+2) should be 1 (constant)
     let a = &x + 1;
     let b = &x + 2;
-    if let Some(g) = a.poly_gcd(&b, &x) {
-        // Should be a constant (degree 0)
-        let v0 = eval_at(&g, &x, 0);
-        let v5 = eval_at(&g, &x, 5);
-        assert!(
-            approx(v0, v5, 1e-9),
-            "gcd(x+1,x+2) should be constant, but varies: {v0} vs {v5}"
-        );
-    }
+    let g = a.poly_gcd(&b, &x).expect("a.poly_gcd(&b, &x) must be Some");
+    // Should be a constant (degree 0)
+    let v0 = eval_at(&g, &x, 0);
+    let v5 = eval_at(&g, &x, 5);
+    assert!(
+        approx(v0, v5, 1e-9),
+        "gcd(x+1,x+2) should be constant, but varies: {v0} vs {v5}"
+    );
 }
 
 #[test]
@@ -1096,20 +1094,19 @@ fn coefficients_extraction() {
     let x = ctx.symbol("x");
     // x² - 5x + 6 has coefficients [6, -5, 1]
     let poly = expr!(ctx, x ^ 2 - 5 * x + 6);
-    if let Some(coeffs) = poly.coeffs(&x) {
-        assert_eq!(coeffs.len(), 3, "quadratic should have 3 coefficients");
-        assert_eq!(format!("{}", coeffs[0]), "6", "constant term should be 6");
-        assert_eq!(
-            format!("{}", coeffs[1]),
-            "-5",
-            "linear coefficient should be -5"
-        );
-        assert_eq!(
-            format!("{}", coeffs[2]),
-            "1",
-            "leading coefficient should be 1"
-        );
-    }
+    let coeffs = poly.coeffs(&x).expect("poly.coeffs(&x) must be Some");
+    assert_eq!(coeffs.len(), 3, "quadratic should have 3 coefficients");
+    assert_eq!(format!("{}", coeffs[0]), "6", "constant term should be 6");
+    assert_eq!(
+        format!("{}", coeffs[1]),
+        "-5",
+        "linear coefficient should be -5"
+    );
+    assert_eq!(
+        format!("{}", coeffs[2]),
+        "1",
+        "leading coefficient should be 1"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1780,21 +1777,20 @@ fn poly_gcd_shared_quadratic_factor() {
     // gcd should be x²-1
     let a = expr!(ctx, x ^ 3 + 3 * x ^ 2 - x - 3);
     let b = expr!(ctx, x ^ 3 - 5 * x ^ 2 - x + 5);
-    if let Some(g) = a.poly_gcd(&b, &x) {
-        // gcd should vanish at x=1 and x=-1
-        let v1 = eval_at(&g, &x, 1);
-        assert!(approx(v1, 0.0, 1e-9), "gcd should vanish at x=1, got {v1}");
-        let vm1 = eval_at(&g, &x, -1);
-        assert!(
-            approx(vm1, 0.0, 1e-9),
-            "gcd should vanish at x=-1, got {vm1}"
-        );
-        // gcd should be nonzero at x=2
-        let v2 = eval_at(&g, &x, 2);
-        assert!(v2.abs() > 0.1, "gcd should be nonzero at x=2, got {v2}");
-        // Degree should be 2
-        if let Some(deg) = g.degree(&x) {
-            assert_eq!(deg, 2, "gcd degree should be 2, got {deg}");
-        }
+    let g = a.poly_gcd(&b, &x).expect("a.poly_gcd(&b, &x) must be Some");
+    // gcd should vanish at x=1 and x=-1
+    let v1 = eval_at(&g, &x, 1);
+    assert!(approx(v1, 0.0, 1e-9), "gcd should vanish at x=1, got {v1}");
+    let vm1 = eval_at(&g, &x, -1);
+    assert!(
+        approx(vm1, 0.0, 1e-9),
+        "gcd should vanish at x=-1, got {vm1}"
+    );
+    // gcd should be nonzero at x=2
+    let v2 = eval_at(&g, &x, 2);
+    assert!(v2.abs() > 0.1, "gcd should be nonzero at x=2, got {v2}");
+    // Degree should be 2
+    if let Some(deg) = g.degree(&x) {
+        assert_eq!(deg, 2, "gcd degree should be 2, got {deg}");
     }
 }

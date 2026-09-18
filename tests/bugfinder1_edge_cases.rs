@@ -70,8 +70,8 @@ fn div_neg_one_by_zero_no_panic() {
     let neg_one = ctx.int(-1);
     let zero = ctx.int(0);
     let result = &neg_one / &zero;
-    let s = format!("{result}");
-    eprintln!("-1/0 = {s}");
+    // Division of a nonzero constant by zero is complex infinity (SymPy: zoo).
+    assert_eq!(result, ctx.complex_infinity(), "-1/0 = {result}");
 }
 
 #[test]
@@ -131,8 +131,19 @@ fn neg_one_to_third_no_panic() {
     let neg_one = ctx.int(-1);
     let third = ctx.rational(1, 3);
     let result = neg_one.pow(&third);
-    let s = format!("{result}");
-    eprintln!("(-1)^(1/3) = {s}");
+    // Whatever branch is chosen, the result must be a cube root of -1.
+    // NOTE: symplex rewrites (-1)^(1/3) to cbrt(-1) and evaluates it on
+    // the real branch (-1); SymPy/Mathematica use the principal value
+    // 1/2 + sqrt(3)/2*I.  This is a convention divergence, documented here.
+    let (re, im) = result
+        .eval_complex64()
+        .expect("cube root of -1 is a number");
+    let cube_re = re * re * re - 3.0 * re * im * im;
+    let cube_im = 3.0 * re * re * im - im * im * im;
+    assert!(
+        (cube_re + 1.0).abs() < 1e-12 && cube_im.abs() < 1e-12,
+        "({re} + {im}i)^3 != -1"
+    );
 }
 
 #[test]
@@ -249,11 +260,10 @@ fn large_exponent_diff_no_crash() {
 #[test]
 fn very_large_rational_no_crash() {
     let ctx = Context::new();
-    // Create a very large rational number
+    // Create a very large rational number (already in lowest terms).
     let big = ctx.rational(999999999999999999_i64, 1000000000000000000_i64);
-    let s = format!("{big}");
-    eprintln!("big rational = {s}");
-    // It should simplify or at least not crash
+    assert_eq!(format!("{big}"), "999999999999999999/1000000000000000000");
+    assert!((big.eval_f64().unwrap() - 0.999999999999999999).abs() < 1e-15);
 }
 
 #[test]
@@ -363,9 +373,12 @@ fn diff_x_to_half() {
     let x = ctx.symbol("x");
     let half = ctx.rational(1, 2);
     let result = x.pow(&half).diff(&x);
-    let s = format!("{result}");
-    eprintln!("d/dx x^(1/2) = {s}");
-    // Should be 1/(2*sqrt(x)) or equivalent
+    // d/dx x^(1/2) = 1/(2*sqrt(x)): at x = 4 this is 1/4.
+    let v = result.subs_i64(&x, 4).eval_f64().unwrap();
+    assert!(
+        (v - 0.25).abs() < 1e-12,
+        "d/dx x^(1/2) = {result}, at 4 = {v}"
+    );
 }
 
 #[test]
@@ -374,9 +387,12 @@ fn diff_x_to_neg_half() {
     let x = ctx.symbol("x");
     let neg_half = ctx.rational(-1, 2);
     let result = x.pow(&neg_half).diff(&x);
-    let s = format!("{result}");
-    eprintln!("d/dx x^(-1/2) = {s}");
-    // Should be -1/(2*x^(3/2)) or equivalent
+    // d/dx x^(-1/2) = -1/(2*x^(3/2)): at x = 4 this is -1/16.
+    let v = result.subs_i64(&x, 4).eval_f64().unwrap();
+    assert!(
+        (v + 0.0625).abs() < 1e-12,
+        "d/dx x^(-1/2) = {result}, at 4 = {v}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -390,8 +406,11 @@ fn solve_zero_eq_zero() {
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
     let result = zero.solve(&x);
-    eprintln!("solve(0, x) = {result:?}");
-    // Should either return an error or some indication of "all x"
+    // 0 = 0 is an identity: every x is a solution, reported as an error variant.
+    assert!(
+        matches!(result, Err(SymplexError::InfiniteSolutions { .. })),
+        "solve(0, x) = {result:?}"
+    );
 }
 
 #[test]
@@ -782,11 +801,15 @@ fn series_order_zero_is_constant_term() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let zero = ctx.int(0);
-    // series of exp(x) around 0, order 0 → should be 1 (the 0th term)
+    // `order` counts terms: order 0 is the empty sum (SymPy: O(1)), order 1
+    // is the constant term, order 2 adds the linear term.
     let result = x.exp().series(&x, &zero, 0);
-    let s = format!("{result}");
-    eprintln!("exp(x) series order 0 = {s}");
-    // Might be "1" or empty or have other behavior
+    assert!(
+        result.is_zero_structural(),
+        "exp(x) series with 0 terms = {result}"
+    );
+    assert_eq!(format!("{}", x.exp().series(&x, &zero, 1)), "1");
+    assert_eq!(format!("{}", x.exp().series(&x, &zero, 2)), "x + 1");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -814,11 +837,15 @@ fn limit_one_over_x_at_zero_no_panic() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = ctx.int(1) / &x;
-    // 1/x as x→0 is +∞ from the right, -∞ from the left — zoo
+    // 1/x as x→0 is +∞ from the right, -∞ from the left: the two-sided
+    // limit does not exist and must NOT be reported as a finite number.
     let result = expr.limit(&x, &ctx.int(0));
-    let s = format!("{result}");
-    eprintln!("lim(x→0) 1/x = {s}");
-    // Should be some form of infinity, not a finite number
+    assert!(
+        result.has_unevaluated(),
+        "two-sided lim 1/x at 0 = {result}"
+    );
+    assert_eq!(expr.limit_right(&x, &ctx.int(0)), ctx.infinity());
+    assert_eq!(expr.limit_left(&x, &ctx.int(0)), ctx.neg_infinity());
 }
 
 #[test]
@@ -912,15 +939,14 @@ fn compile_wrong_var_name() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let expr = x.powi(2);
-    // Compile with wrong variable name — should probably fail or produce NaN
+    // Compiling with the wrong variable name leaves `x` free: that is an
+    // error, never a function that silently returns garbage.
     let result = expr.compile(&["y"]);
-    match result {
-        Ok(f) => eprintln!(
-            "compile(x^2, [y]) returned a function, f(&[1.0]) = {}",
-            f(&[1.0])
-        ),
-        Err(_) => eprintln!("compile(x^2, [y]) returned Err — acceptable"),
-    }
+    assert!(
+        matches!(result, Err(SymplexError::FreeSymbol { ref name }) if name == "x"),
+        "compile(x^2, [y]) = {:?}",
+        result.map(|_| "a function")
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -941,9 +967,8 @@ fn factor_constant() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = ctx.int(6).factor(&x);
-    let s = format!("{result}");
-    eprintln!("factor(6, x) = {s}");
-    // 6 is a constant polynomial — factoring wrt x should leave it as-is
+    // 6 is a constant polynomial — factoring wrt x leaves it as-is.
+    assert_eq!(result, ctx.int(6), "factor(6, x) = {result}");
 }
 
 #[test]
@@ -1054,9 +1079,10 @@ fn comparison_same_symbol() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let result = x.gt(&x);
-    let s = format!("{result}");
-    eprintln!("x > x = {s}");
-    // x > x should be false
+    // x > x is structurally kept, but simplification/evaluation must give False.
+    assert_eq!(format!("{}", result.simplify()), "False");
+    assert_eq!(format!("{}", result.eval()), "False");
+    assert_eq!(format!("{}", x.ge(&x).simplify()), "True");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1123,9 +1149,28 @@ fn zoo_times_zero_no_panic() {
     let z = zoo(&ctx);
     let zero = ctx.int(0);
     let result = &z * &zero;
-    let s = format!("{result}");
-    eprintln!("zoo * 0 = {s}");
-    // zoo * 0 is indeterminate
+    // zoo * 0 is indeterminate.  A finite number here would be wrong.
+    // BUG: symplex currently folds `0 * zoo` and `0 * oo` to 0 (SymPy: nan);
+    // see `bug_indeterminate_zero_times_infinity` below.
+    assert!(
+        !result.has_unevaluated(),
+        "zoo * 0 should evaluate: {result}"
+    );
+}
+
+/// Reproducer: `0 * oo` and `0 * zoo` are indeterminate (SymPy: `nan`), but
+/// symplex's multiplication short-circuits `0 * anything = 0`.
+#[test]
+#[ignore = "BUG: 0 * oo and 0 * zoo evaluate to 0; the indeterminate form should be nan"]
+fn bug_indeterminate_zero_times_infinity() {
+    let ctx = Context::new();
+    let zero = ctx.int(0);
+    assert_eq!((&zero * &ctx.infinity()).eval(), ctx.nan(), "0 * oo");
+    assert_eq!(
+        (&zero * &ctx.complex_infinity()).eval(),
+        ctx.nan(),
+        "0 * zoo"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1270,8 +1315,8 @@ fn isprime_two() {
 #[test]
 fn factorint_zero() {
     let result = symplex::ntheory::factorint(0);
-    eprintln!("factorint(0) = {result:?}");
-    // 0 has no prime factorization
+    // 0 has no prime factorization: the empty list (documented; SymPy gives {0: 1}).
+    assert!(result.is_empty(), "factorint(0) = {result:?}");
 }
 
 #[test]
@@ -1287,8 +1332,12 @@ fn factorint_one() {
 #[test]
 fn factorint_negative() {
     let result = symplex::ntheory::factorint(-12);
-    eprintln!("factorint(-12) = {result:?}");
-    // Should handle negatives gracefully
+    // Documented: the sign is dropped, |−12| = 2² · 3.
+    let want = vec![
+        (num_bigint::BigInt::from(2), 2u32),
+        (num_bigint::BigInt::from(3), 1u32),
+    ];
+    assert_eq!(result, want, "factorint(-12)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1304,8 +1353,12 @@ fn stirling2_zero_zero() {
 #[test]
 fn stirling2_negative() {
     let result = symplex::combinatorics::stirling2(-1, 2);
-    eprintln!("S(-1, 2) = {result:?}");
-    // Should be 0 or None
+    // No partitions of a negative-size set: 0 (not a panic, not None).
+    assert_eq!(
+        result,
+        Some(num_bigint::BigInt::from(0)),
+        "S(-1, 2) = {result:?}"
+    );
 }
 
 #[test]
@@ -1336,9 +1389,13 @@ fn equation_trivially_true() {
     let x = ctx.symbol("x");
     // x = x is trivially true — solve should indicate identity
     let eq = symplex::eq::Equation::new(x.clone(), x.clone());
-    let roots = eq.solve_or_empty(&x);
-    eprintln!("solve(x = x, x) = {roots:?}");
-    // Could be empty (meaning "all x"), or contain 0 (from x - x = 0)
+    // `solve` reports the identity explicitly; `solve_or_empty` maps that to [].
+    assert!(
+        matches!(eq.solve(&x), Err(SymplexError::InfiniteSolutions { .. })),
+        "solve(x = x) = {:?}",
+        eq.solve(&x)
+    );
+    assert!(eq.solve_or_empty(&x).is_empty());
 }
 
 #[test]
@@ -1754,9 +1811,11 @@ fn big_integer_multiplication_no_overflow() {
     let ctx = Context::new();
     let big = ctx.int(i64::MAX);
     let result = &big * &big;
-    let s = format!("{result}");
-    eprintln!("i64::MAX * i64::MAX = {s}");
-    // Should be i64::MAX^2 — a very large number, not overflow
+    // (2^63 - 1)^2 = 85070591730234615847396907784232501249 — exact, no overflow.
+    assert_eq!(
+        format!("{result}"),
+        "85070591730234615847396907784232501249"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1832,9 +1891,8 @@ fn factor_non_polynomial_no_crash() {
     let x = ctx.symbol("x");
     let expr = x.sin() + 1;
     let result = expr.factor(&x);
-    let s = format!("{result}");
-    eprintln!("factor(sin(x)+1, x) = {s}");
-    // Should return the expression unchanged or some reasonable result
+    // Non-polynomial input is returned unchanged.
+    assert_eq!(result, expr, "factor(sin(x)+1, x) = {result}");
 }
 
 #[test]
@@ -1843,8 +1901,9 @@ fn cancel_non_polynomial_no_crash() {
     let x = ctx.symbol("x");
     let expr = &x.sin() / &x.cos();
     let result = expr.cancel(&x);
-    let s = format!("{result}");
-    eprintln!("cancel(sin(x)/cos(x), x) = {s}");
+    // Nothing to cancel; the value must be preserved (tan(1) at x = 1).
+    let v = result.subs_i64(&x, 1).eval_f64().unwrap();
+    assert!((v - 1f64.tan()).abs() < 1e-12, "cancel(sin/cos) = {result}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1862,9 +1921,10 @@ fn symbol_with_positive_assumption() {
 fn symbol_with_real_assumption() {
     let ctx = Context::new();
     let x = ctx.symbol_with("x", &[Assumption::Real]);
-    // Should know it's real
-    let result = x.is_real();
-    eprintln!("is_real(x with Real) = {result:?}");
+    assert_eq!(x.is_real(), Some(true));
+    // Real says nothing about the sign.
+    assert_eq!(x.is_positive(), None);
+    assert_eq!(x.is_imaginary(), Some(false));
 }
 
 #[test]
@@ -2113,10 +2173,8 @@ fn power_of_power_mixed_positive_x() {
     let x = ctx.symbol_with("x", &[Assumption::Positive]);
     let half = ctx.rational(1, 2);
     let result = x.powi(4).pow(&half).simplify();
-    let s = format!("{result}");
-    eprintln!("(x^4)^(1/2) [x>0] simplified = {s}");
-    // For positive x: sqrt(x^4) = x^2
-    // This may or may not simplify depending on how assumptions flow to powsimp.
+    // For positive x: sqrt(x^4) = x^2.
+    assert_eq!(result, x.powi(2), "(x^4)^(1/2) [x>0] simplified = {result}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2166,9 +2224,18 @@ fn solve_gt_positive_definite() {
     // x^2 + 1 > 0 is always true
     let expr = x.powi(2) + 1;
     let result = expr.solve_gt(&x);
-    let s = format!("{result}");
-    eprintln!("x^2 + 1 > 0: {s}");
-    // Should be (-∞, ∞) or "Reals"
+    // Always true: the whole real line.
+    assert_eq!(
+        result.contains(&ctx.int(-7)),
+        Some(true),
+        "x^2 + 1 > 0: {result}"
+    );
+    assert_eq!(result.contains(&ctx.int(0)), Some(true));
+    assert_eq!(
+        result.simplify(),
+        ctx.reals().simplify(),
+        "x^2 + 1 > 0: {result}"
+    );
 }
 
 #[test]
@@ -2178,9 +2245,8 @@ fn solve_gt_never_true() {
     // -x^2 - 1 > 0 is never true
     let expr = -x.powi(2) - 1;
     let result = expr.solve_gt(&x);
-    let s = format!("{result}");
-    eprintln!("-x^2 - 1 > 0: {s}");
-    // Should be empty set
+    // Never true: the empty set.
+    assert_eq!(result.is_empty(), Some(true), "-x^2 - 1 > 0: {result}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2559,17 +2625,23 @@ fn interval_construction() {
     let a = ctx.int(0);
     let b = ctx.int(1);
     let interval = ctx.interval(&a, &b, false, false);
-    let s = format!("{interval}");
-    eprintln!("(0, 1) = {s}");
-    // Should display as some form of (0, 1)
+    // (left_open, right_open) = (false, false) is the CLOSED interval [0, 1].
+    assert_eq!(format!("{interval}"), "[0, 1]");
+    assert_eq!(interval.contains(&ctx.int(0)), Some(true));
+    assert_eq!(interval.contains(&ctx.int(1)), Some(true));
+    assert_eq!(interval.contains(&ctx.int(2)), Some(false));
+    let open = ctx.interval(&a, &b, true, true);
+    assert_eq!(format!("{open}"), "(0, 1)");
+    assert_eq!(open.contains(&ctx.int(0)), Some(false));
 }
 
 #[test]
 fn empty_set_display() {
     let ctx = Context::new();
     let empty = ctx.empty_set();
-    let s = format!("{empty}");
-    eprintln!("empty set = {s}");
+    assert_eq!(format!("{empty}"), "EmptySet");
+    assert_eq!(empty.is_empty(), Some(true));
+    assert_eq!(empty.contains(&ctx.int(0)), Some(false));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2749,9 +2821,8 @@ fn eval_one_over_infinity() {
     let inf = ctx.infinity();
     let expr = ctx.int(1) / &inf;
     let evald = expr.eval();
-    let s = format!("{evald}");
-    eprintln!("eval(1/oo) = {s}");
-    // Even after eval, 1/oo stays as 1/oo
+    // 1/oo = 0 (SymPy agrees).
+    assert!(evald.is_zero_structural(), "eval(1/oo) = {evald}");
 }
 
 /// Check if .simplify() resolves 1/oo to 0.
@@ -2761,8 +2832,10 @@ fn simplify_one_over_infinity() {
     let inf = ctx.infinity();
     let expr = ctx.int(1) / &inf;
     let simplified = expr.simplify();
-    let s = format!("{simplified}");
-    eprintln!("simplify(1/oo) = {s}");
+    assert!(
+        simplified.is_zero_structural(),
+        "simplify(1/oo) = {simplified}"
+    );
 }
 
 /// Check if limit correctly handles 1/oo even though direct arithmetic doesn't.
@@ -2869,9 +2942,9 @@ fn solve_wrt_constant_no_crash() {
     let x = ctx.symbol("x");
     let two = ctx.int(2);
     let expr = &x + 1;
-    // Solving x+1=0 for "2" (a constant, not a variable) is weird but shouldn't crash
+    // Solving x+1=0 for "2" (a constant, not a variable) is rejected, not a panic.
     let result = expr.solve(&two);
-    eprintln!("solve(x+1, 2) = {result:?}");
+    assert!(result.is_err(), "solve(x+1, 2) = {result:?}");
 }
 
 /// Diff wrt a constant (not a variable) — should just return 0.

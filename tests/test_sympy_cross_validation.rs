@@ -11,6 +11,8 @@
 //! FAIL           = symplex produces a result but it's numerically WRONG compared to SymPy
 //! NOT_IMPLEMENTED = symplex returns an error or unevaluated form (honest: we tried, couldn't)
 //! UNSUPPORTED_API = symplex doesn't have the public API for this operation
+//! SKIPPED_ORACLE  = SymPy itself timed out while generating the fixture
+//!                   (`"sympy_timeout": true`); recorded and printed, never hidden
 //!
 //! NO skipping because an eval point is "inconvenient".
 //! NO hiding wrong limit results as "inaccuracy".
@@ -26,8 +28,6 @@ const TOLERANCE: f64 = 1e-6;
 #[derive(serde::Deserialize)]
 struct FixtureFile {
     generated_by: String,
-    #[allow(dead_code)]
-    generated_at: Option<String>,
     fixture_count: usize,
     fixtures: Vec<Fixture>,
 }
@@ -83,6 +83,9 @@ struct Fixture {
     // Evalf precision
     #[serde(default)]
     digits: Option<u32>,
+    /// Set by the generator when SymPy exceeded the per-fixture timeout.
+    #[serde(default)]
+    sympy_timeout: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -122,6 +125,7 @@ enum Status {
     Fail(String),
     NotImplemented(String),
     UnsupportedApi(String),
+    SkippedOracle(String),
 }
 
 #[derive(Default, Clone)]
@@ -130,11 +134,12 @@ struct CategoryStats {
     failed: usize,
     not_impl: usize,
     no_api: usize,
+    skipped_oracle: usize,
 }
 
 impl CategoryStats {
     fn total(&self) -> usize {
-        self.passed + self.failed + self.not_impl + self.no_api
+        self.passed + self.failed + self.not_impl + self.no_api + self.skipped_oracle
     }
 }
 
@@ -408,10 +413,19 @@ fn cross_validate_against_sympy() {
         let entry = stats.entry(key.clone()).or_default();
         let desc = fixture_desc(fixture);
 
-        let result = process_fixture(&ctx, fixture);
+        let result = if fixture.sympy_timeout {
+            Status::SkippedOracle("SymPy timed out while generating this fixture".into())
+        } else {
+            process_fixture(&ctx, fixture)
+        };
         match result {
             Status::Pass => {
                 entry.passed += 1;
+            }
+            Status::SkippedOracle(reason) => {
+                entry.skipped_oracle += 1;
+                let msg = format!("SKIPPED_ORACLE id={} {} — {}", fixture.id, desc, reason);
+                not_impls.push(msg);
             }
             Status::Fail(reason) => {
                 entry.failed += 1;
@@ -435,8 +449,8 @@ fn cross_validate_against_sympy() {
 
     println!("\n{}", "=".repeat(80));
     println!(
-        "{:<30} {:>6} {:>6} {:>8} {:>7}",
-        "Category", "Pass", "Fail", "NotImpl", "NoAPI"
+        "{:<30} {:>6} {:>6} {:>8} {:>7} {:>9}",
+        "Category", "Pass", "Fail", "NotImpl", "NoAPI", "SkipOrcl"
     );
     println!("{}", "-".repeat(80));
 
@@ -447,19 +461,20 @@ fn cross_validate_against_sympy() {
     for key in &sorted_keys {
         let s = &stats[key];
         println!(
-            "{:<30} {:>6} {:>6} {:>8} {:>7}",
-            key, s.passed, s.failed, s.not_impl, s.no_api
+            "{:<30} {:>6} {:>6} {:>8} {:>7} {:>9}",
+            key, s.passed, s.failed, s.not_impl, s.no_api, s.skipped_oracle
         );
         total.passed += s.passed;
         total.failed += s.failed;
         total.not_impl += s.not_impl;
         total.no_api += s.no_api;
+        total.skipped_oracle += s.skipped_oracle;
     }
 
     println!("{}", "-".repeat(80));
     println!(
-        "{:<30} {:>6} {:>6} {:>8} {:>7}",
-        "TOTAL", total.passed, total.failed, total.not_impl, total.no_api
+        "{:<30} {:>6} {:>6} {:>8} {:>7} {:>9}",
+        "TOTAL", total.passed, total.failed, total.not_impl, total.no_api, total.skipped_oracle
     );
     println!("{}", "=".repeat(80));
     println!(

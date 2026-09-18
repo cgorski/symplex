@@ -1,639 +1,841 @@
 {
-  "generated_by": "SymPy 1.14.0",
-  "description": "Cross-validation fixtures for new symplex features",
-  "fixture_count": 60,
   "categories": {
-    "eigenvects": 11,
+    "bessel": 33,
+    "eigenvects": 7,
+    "eval": 9,
+    "integrate": 4,
     "jordan_form": 5,
-    "lambertw": 8,
-    "bessel": 13,
-    "refine": 10,
-    "integrate": 3,
-    "eval": 5,
-    "matrix_exp": 5
+    "lambertw": 12,
+    "matrix_exp": 6,
+    "refine": 12
   },
+  "description": "Cross-validation fixtures for new symplex features",
+  "fixture_count": 88,
   "fixtures": [
     {
-      "category": "eigenvects",
-      "subcategory": "2x2_distinct",
-      "input_matrix": [
-        [
-          "2",
-          "1"
-        ],
-        [
-          "0",
-          "3"
-        ]
-      ],
-      "eigenvalue": "2",
-      "multiplicity": 1,
-      "eigenvector": [
-        "1",
-        "0"
-      ]
-    },
-    {
-      "category": "eigenvects",
-      "subcategory": "2x2_distinct",
-      "input_matrix": [
-        [
-          "2",
-          "1"
-        ],
-        [
-          "0",
-          "3"
-        ]
-      ],
-      "eigenvalue": "3",
-      "multiplicity": 1,
-      "eigenvector": [
-        "1",
-        "1"
-      ]
-    },
-    {
-      "category": "eigenvects",
-      "subcategory": "2x2_defective",
-      "input_matrix": [
-        [
-          "1",
-          "1"
-        ],
-        [
-          "0",
-          "1"
-        ]
-      ],
-      "eigenvalue": "1",
-      "multiplicity": 2,
-      "eigenvector_count": 1
-    },
-    {
-      "category": "eigenvects",
-      "subcategory": "3x3_diagonal",
-      "input_matrix": [
-        [
-          "5",
-          "0",
-          "0"
-        ],
-        [
-          "0",
-          "-3",
-          "0"
-        ],
-        [
-          "0",
-          "0",
-          "7"
-        ]
-      ],
-      "eigenvalue": "-3",
-      "multiplicity": 1
-    },
-    {
-      "category": "eigenvects",
-      "subcategory": "3x3_diagonal",
-      "input_matrix": [
-        [
-          "5",
-          "0",
-          "0"
-        ],
-        [
-          "0",
-          "-3",
-          "0"
-        ],
-        [
-          "0",
-          "0",
-          "7"
-        ]
-      ],
-      "eigenvalue": "5",
-      "multiplicity": 1
-    },
-    {
-      "category": "eigenvects",
-      "subcategory": "3x3_diagonal",
-      "input_matrix": [
-        [
-          "5",
-          "0",
-          "0"
-        ],
-        [
-          "0",
-          "-3",
-          "0"
-        ],
-        [
-          "0",
-          "0",
-          "7"
-        ]
-      ],
-      "eigenvalue": "7",
-      "multiplicity": 1
-    },
-    {
-      "category": "eigenvects",
-      "subcategory": "2x2_symmetric",
-      "input_matrix": [
-        [
-          "4",
-          "2"
-        ],
-        [
-          "2",
-          "1"
-        ]
-      ],
-      "eigenvalue": "0",
-      "multiplicity": 1,
-      "eigenvector": [
-        "-1/2",
-        "1"
-      ]
-    },
-    {
-      "category": "eigenvects",
-      "subcategory": "2x2_symmetric",
-      "input_matrix": [
-        [
-          "4",
-          "2"
-        ],
-        [
-          "2",
-          "1"
-        ]
-      ],
-      "eigenvalue": "5",
-      "multiplicity": 1,
-      "eigenvector": [
-        "2",
-        "1"
-      ]
-    },
-    {
-      "category": "eigenvects",
-      "subcategory": "3x3_upper_triangular",
-      "input_matrix": [
-        [
-          "1",
-          "2",
-          "3"
-        ],
-        [
-          "0",
-          "4",
-          "5"
-        ],
-        [
-          "0",
-          "0",
-          "6"
-        ]
-      ],
-      "eigenvalue": "1",
-      "multiplicity": 1
-    },
-    {
-      "category": "eigenvects",
-      "subcategory": "3x3_upper_triangular",
-      "input_matrix": [
-        [
-          "1",
-          "2",
-          "3"
-        ],
-        [
-          "0",
-          "4",
-          "5"
-        ],
-        [
-          "0",
-          "0",
-          "6"
-        ]
-      ],
-      "eigenvalue": "4",
-      "multiplicity": 1
-    },
-    {
-      "category": "eigenvects",
-      "subcategory": "3x3_upper_triangular",
-      "input_matrix": [
-        [
-          "1",
-          "2",
-          "3"
-        ],
-        [
-          "0",
-          "4",
-          "5"
-        ],
-        [
-          "0",
-          "0",
-          "6"
-        ]
-      ],
-      "eigenvalue": "6",
-      "multiplicity": 1
-    },
-    {
-      "category": "jordan_form",
-      "subcategory": "2x2_defective",
-      "input_matrix": [
-        [
-          "1",
-          "1"
-        ],
-        [
-          "0",
-          "1"
-        ]
-      ],
-      "jordan_matrix": [
-        [
-          "1",
-          "1"
-        ],
-        [
-          "0",
-          "1"
-        ]
-      ]
-    },
-    {
-      "category": "jordan_form",
-      "subcategory": "3x3_diagonal",
-      "input_matrix": [
-        [
-          "5",
-          "0",
-          "0"
-        ],
-        [
-          "0",
-          "-3",
-          "0"
-        ],
-        [
-          "0",
-          "0",
-          "7"
-        ]
-      ],
-      "jordan_matrix": [
-        [
-          "-3",
-          "0",
-          "0"
-        ],
-        [
-          "0",
-          "5",
-          "0"
-        ],
-        [
-          "0",
-          "0",
-          "7"
-        ]
-      ]
-    },
-    {
-      "category": "jordan_form",
-      "subcategory": "4x4_mixed",
-      "input_matrix": [
-        [
-          "2",
-          "1",
-          "0",
-          "0"
-        ],
-        [
-          "0",
-          "2",
-          "0",
-          "0"
-        ],
-        [
-          "0",
-          "0",
-          "3",
-          "0"
-        ],
-        [
-          "0",
-          "0",
-          "0",
-          "4"
-        ]
-      ],
-      "jordan_matrix": [
-        [
-          "2",
-          "1",
-          "0",
-          "0"
-        ],
-        [
-          "0",
-          "2",
-          "0",
-          "0"
-        ],
-        [
-          "0",
-          "0",
-          "3",
-          "0"
-        ],
-        [
-          "0",
-          "0",
-          "0",
-          "4"
-        ]
-      ]
-    },
-    {
-      "category": "jordan_form",
-      "subcategory": "2x2_identity",
-      "input_matrix": [
-        [
-          "1",
-          "0"
-        ],
-        [
-          "0",
-          "1"
-        ]
-      ],
-      "jordan_matrix": [
-        [
-          "1",
-          "0"
-        ],
-        [
-          "0",
-          "1"
-        ]
-      ]
-    },
-    {
-      "category": "jordan_form",
-      "subcategory": "2x2_nilpotent",
-      "input_matrix": [
-        [
-          "0",
-          "1"
-        ],
-        [
-          "0",
-          "0"
-        ]
-      ],
-      "jordan_matrix": [
-        [
-          "0",
-          "1"
-        ],
-        [
-          "0",
-          "0"
-        ]
-      ]
-    },
-    {
-      "category": "lambertw",
-      "subcategory": "eval_symbolic",
-      "input": "0",
-      "expected": "0"
-    },
-    {
-      "category": "lambertw",
-      "subcategory": "eval_symbolic",
-      "input": "E",
-      "expected": "1"
-    },
-    {
-      "category": "lambertw",
-      "subcategory": "eval_symbolic",
-      "input": "-1/E",
-      "expected": "-1"
-    },
-    {
-      "category": "lambertw",
-      "subcategory": "eval_symbolic",
-      "input": "-log(2)/2",
-      "expected": "-log(2)"
-    },
-    {
-      "category": "lambertw",
-      "subcategory": "eval_numerical",
-      "input": "1/2",
-      "expected_float": 0.35173371124919584
-    },
-    {
-      "category": "lambertw",
-      "subcategory": "eval_numerical",
-      "input": "5",
-      "expected_float": 1.3267246652422002
-    },
-    {
-      "category": "lambertw",
-      "subcategory": "eval_numerical",
-      "input": "1/10",
-      "expected_float": 0.09127652716086226
-    },
-    {
-      "category": "lambertw",
-      "subcategory": "eval_numerical",
-      "input": "10",
-      "expected_float": 1.7455280027406994
-    },
-    {
       "category": "bessel",
+      "id": 1,
+      "key": "J0(0)",
+      "kind": "J",
+      "order": 0,
       "subcategory": "J0",
-      "x": 0.0,
-      "expected": 1.0
+      "value": {
+        "im": 0.0,
+        "re": 1.0
+      },
+      "x": "0"
     },
     {
       "category": "bessel",
+      "id": 2,
+      "key": "J0(1)",
+      "kind": "J",
+      "order": 0,
       "subcategory": "J0",
-      "x": 1.0,
-      "expected": 0.7651976865579666
+      "value": {
+        "im": 0.0,
+        "re": 0.7651976865579666
+      },
+      "x": "1"
     },
     {
       "category": "bessel",
+      "id": 3,
+      "key": "J0(10)",
+      "kind": "J",
+      "order": 0,
       "subcategory": "J0",
-      "x": 5.0,
-      "expected": -0.1775967713143383
+      "value": {
+        "im": 0.0,
+        "re": -0.24593576445134835
+      },
+      "x": "10"
     },
     {
       "category": "bessel",
+      "id": 4,
+      "key": "J0(12)",
+      "kind": "J",
+      "order": 0,
       "subcategory": "J0",
-      "x": 10.0,
-      "expected": -0.24593576445134835
+      "value": {
+        "im": 0.0,
+        "re": 0.047689310796833535
+      },
+      "x": "12"
     },
     {
       "category": "bessel",
+      "id": 5,
+      "key": "J0(15)",
+      "kind": "J",
+      "order": 0,
+      "subcategory": "J0",
+      "value": {
+        "im": 0.0,
+        "re": -0.014224472826780772
+      },
+      "x": "15"
+    },
+    {
+      "category": "bessel",
+      "id": 6,
+      "key": "J0(20)",
+      "kind": "J",
+      "order": 0,
+      "subcategory": "J0",
+      "value": {
+        "im": 0.0,
+        "re": 0.16702466434058316
+      },
+      "x": "20"
+    },
+    {
+      "category": "bessel",
+      "id": 7,
+      "key": "J0(30)",
+      "kind": "J",
+      "order": 0,
+      "subcategory": "J0",
+      "value": {
+        "im": 0.0,
+        "re": -0.08636798358104021
+      },
+      "x": "30"
+    },
+    {
+      "category": "bessel",
+      "id": 8,
+      "key": "J0(5)",
+      "kind": "J",
+      "order": 0,
+      "subcategory": "J0",
+      "value": {
+        "im": 0.0,
+        "re": -0.1775967713143383
+      },
+      "x": "5"
+    },
+    {
+      "category": "bessel",
+      "id": 9,
+      "key": "J0(50)",
+      "kind": "J",
+      "order": 0,
+      "subcategory": "J0",
+      "value": {
+        "im": 0.0,
+        "re": 0.055812327669251816
+      },
+      "x": "50"
+    },
+    {
+      "category": "bessel",
+      "id": 10,
+      "key": "J1(0)",
+      "kind": "J",
+      "order": 1,
       "subcategory": "J1",
-      "x": 0.0,
-      "expected": 0.0
+      "value": {
+        "im": 0.0,
+        "re": 0.0
+      },
+      "x": "0"
     },
     {
       "category": "bessel",
+      "id": 11,
+      "key": "J1(1)",
+      "kind": "J",
+      "order": 1,
       "subcategory": "J1",
-      "x": 1.0,
-      "expected": 0.4400505857449335
+      "value": {
+        "im": 0.0,
+        "re": 0.4400505857449335
+      },
+      "x": "1"
     },
     {
       "category": "bessel",
+      "id": 12,
+      "key": "J1(20)",
+      "kind": "J",
+      "order": 1,
       "subcategory": "J1",
-      "x": 5.0,
-      "expected": -0.32757913759146523
+      "value": {
+        "im": 0.0,
+        "re": 0.06683312417585005
+      },
+      "x": "20"
     },
     {
       "category": "bessel",
+      "id": 13,
+      "key": "J1(30)",
+      "kind": "J",
+      "order": 1,
+      "subcategory": "J1",
+      "value": {
+        "im": 0.0,
+        "re": -0.11875106261662294
+      },
+      "x": "30"
+    },
+    {
+      "category": "bessel",
+      "id": 14,
+      "key": "J1(5)",
+      "kind": "J",
+      "order": 1,
+      "subcategory": "J1",
+      "value": {
+        "im": 0.0,
+        "re": -0.32757913759146523
+      },
+      "x": "5"
+    },
+    {
+      "category": "bessel",
+      "id": 15,
+      "key": "J2(20)",
+      "kind": "J",
+      "order": 2,
       "subcategory": "J2",
-      "x": 3.0,
-      "expected": 0.4860912605858911
+      "value": {
+        "im": 0.0,
+        "re": -0.16034135192299814
+      },
+      "x": "20"
     },
     {
       "category": "bessel",
+      "id": 16,
+      "key": "J2(3)",
+      "kind": "J",
+      "order": 2,
+      "subcategory": "J2",
+      "value": {
+        "im": 0.0,
+        "re": 0.4860912605858911
+      },
+      "x": "3"
+    },
+    {
+      "category": "bessel",
+      "id": 17,
+      "key": "J3(15)",
+      "kind": "J",
+      "order": 3,
+      "subcategory": "J3",
+      "value": {
+        "im": 0.0,
+        "re": -0.19401825782012264
+      },
+      "x": "15"
+    },
+    {
+      "category": "bessel",
+      "id": 18,
+      "key": "J3(7/2)",
+      "kind": "J",
+      "order": 3,
+      "subcategory": "J3",
+      "value": {
+        "im": 0.0,
+        "re": 0.38677011171688136
+      },
+      "x": "7/2"
+    },
+    {
+      "category": "bessel",
+      "id": 19,
+      "key": "J5(10)",
+      "kind": "J",
+      "order": 5,
+      "subcategory": "J5",
+      "value": {
+        "im": 0.0,
+        "re": -0.23406152818679363
+      },
+      "x": "10"
+    },
+    {
+      "category": "bessel",
+      "id": 20,
+      "key": "J5(20)",
+      "kind": "J",
+      "order": 5,
+      "subcategory": "J5",
+      "value": {
+        "im": 0.0,
+        "re": 0.15116976798239498
+      },
+      "x": "20"
+    },
+    {
+      "category": "bessel",
+      "id": 21,
+      "key": "Y0(1)",
+      "kind": "Y",
+      "order": 0,
       "subcategory": "Y0",
-      "x": 1.0,
-      "expected": 0.08825696421567696
+      "value": {
+        "im": 0.0,
+        "re": 0.08825696421567696
+      },
+      "x": "1"
     },
     {
       "category": "bessel",
+      "id": 22,
+      "key": "Y0(12)",
+      "kind": "Y",
+      "order": 0,
       "subcategory": "Y0",
-      "x": 5.0,
-      "expected": -0.30851762524903376
+      "value": {
+        "im": 0.0,
+        "re": -0.22523731263436145
+      },
+      "x": "12"
     },
     {
       "category": "bessel",
+      "id": 23,
+      "key": "Y0(15)",
+      "kind": "Y",
+      "order": 0,
+      "subcategory": "Y0",
+      "value": {
+        "im": 0.0,
+        "re": 0.20546429603891828
+      },
+      "x": "15"
+    },
+    {
+      "category": "bessel",
+      "id": 24,
+      "key": "Y0(20)",
+      "kind": "Y",
+      "order": 0,
+      "subcategory": "Y0",
+      "value": {
+        "im": 0.0,
+        "re": 0.06264059680938383
+      },
+      "x": "20"
+    },
+    {
+      "category": "bessel",
+      "id": 25,
+      "key": "Y0(30)",
+      "kind": "Y",
+      "order": 0,
+      "subcategory": "Y0",
+      "value": {
+        "im": 0.0,
+        "re": -0.11729573168666403
+      },
+      "x": "30"
+    },
+    {
+      "category": "bessel",
+      "id": 26,
+      "key": "Y0(5)",
+      "kind": "Y",
+      "order": 0,
+      "subcategory": "Y0",
+      "value": {
+        "im": 0.0,
+        "re": -0.30851762524903376
+      },
+      "x": "5"
+    },
+    {
+      "category": "bessel",
+      "id": 27,
+      "key": "Y1(1)",
+      "kind": "Y",
+      "order": 1,
       "subcategory": "Y1",
-      "x": 1.0,
-      "expected": -0.7812128213002887
+      "value": {
+        "im": 0.0,
+        "re": -0.7812128213002887
+      },
+      "x": "1"
     },
     {
       "category": "bessel",
+      "id": 28,
+      "key": "Y1(2)",
+      "kind": "Y",
+      "order": 1,
       "subcategory": "Y1",
-      "x": 2.0,
-      "expected": -0.10703243154093754
+      "value": {
+        "im": 0.0,
+        "re": -0.10703243154093754
+      },
+      "x": "2"
     },
     {
       "category": "bessel",
+      "id": 29,
+      "key": "Y1(50)",
+      "kind": "Y",
+      "order": 1,
+      "subcategory": "Y1",
+      "value": {
+        "im": 0.0,
+        "re": -0.05679566856201477
+      },
+      "x": "50"
+    },
+    {
+      "category": "bessel",
+      "id": 30,
+      "key": "Y2(3)",
+      "kind": "Y",
+      "order": 2,
       "subcategory": "Y2",
-      "x": 3.0,
-      "expected": -0.16040039348492374
+      "value": {
+        "im": 0.0,
+        "re": -0.16040039348492374
+      },
+      "x": "3"
     },
     {
-      "category": "refine",
-      "subcategory": "abs_positive",
-      "input": "Abs(x)",
-      "assumptions": "positive",
-      "expected": "x",
-      "sympy_result": "x"
+      "category": "bessel",
+      "id": 31,
+      "key": "Y3(15/2)",
+      "kind": "Y",
+      "order": 3,
+      "subcategory": "Y3",
+      "value": {
+        "im": 0.0,
+        "re": 0.15970759193793513
+      },
+      "x": "15/2"
     },
     {
-      "category": "refine",
-      "subcategory": "abs_negative",
-      "input": "Abs(x)",
-      "assumptions": "negative",
-      "expected": "-x",
-      "sympy_result": "-x"
+      "category": "bessel",
+      "id": 32,
+      "key": "Y5(10)",
+      "kind": "Y",
+      "order": 5,
+      "subcategory": "Y5",
+      "value": {
+        "im": 0.0,
+        "re": 0.13540304768936232
+      },
+      "x": "10"
     },
     {
-      "category": "refine",
-      "subcategory": "abs_nonnegative",
-      "input": "Abs(x)",
-      "assumptions": "nonnegative",
-      "expected": "x",
-      "sympy_result": "x"
+      "category": "bessel",
+      "id": 33,
+      "key": "Y5(20)",
+      "kind": "Y",
+      "order": 5,
+      "subcategory": "Y5",
+      "value": {
+        "im": 0.0,
+        "re": -0.10003576788953243
+      },
+      "x": "20"
     },
     {
-      "category": "refine",
-      "subcategory": "sign_positive",
-      "input": "sign(x)",
-      "assumptions": "positive",
+      "category": "eigenvects",
+      "eigenspaces": [
+        {
+          "algebraic_multiplicity": 2,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 1.0
+          },
+          "geometric_multiplicity": 1
+        }
+      ],
+      "id": 34,
+      "input_matrix": [
+        [
+          "1",
+          "1"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ],
+      "key": "2x2_defective",
+      "subcategory": "2x2_defective"
+    },
+    {
+      "category": "eigenvects",
+      "eigenspaces": [
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 2.0
+          },
+          "geometric_multiplicity": 1
+        },
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 3.0
+          },
+          "geometric_multiplicity": 1
+        }
+      ],
+      "id": 35,
+      "input_matrix": [
+        [
+          "2",
+          "1"
+        ],
+        [
+          "0",
+          "3"
+        ]
+      ],
+      "key": "2x2_distinct",
+      "subcategory": "2x2_distinct"
+    },
+    {
+      "category": "eigenvects",
+      "eigenspaces": [
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": -1.0,
+            "re": 0.0
+          },
+          "geometric_multiplicity": 1
+        },
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 1.0,
+            "re": 0.0
+          },
+          "geometric_multiplicity": 1
+        }
+      ],
+      "id": 36,
+      "input_matrix": [
+        [
+          "0",
+          "-1"
+        ],
+        [
+          "1",
+          "0"
+        ]
+      ],
+      "key": "2x2_rotation_complex",
+      "subcategory": "2x2_rotation_complex"
+    },
+    {
+      "category": "eigenvects",
+      "eigenspaces": [
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 0.0
+          },
+          "geometric_multiplicity": 1
+        },
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 5.0
+          },
+          "geometric_multiplicity": 1
+        }
+      ],
+      "id": 37,
+      "input_matrix": [
+        [
+          "4",
+          "2"
+        ],
+        [
+          "2",
+          "1"
+        ]
+      ],
+      "key": "2x2_symmetric",
+      "subcategory": "2x2_symmetric"
+    },
+    {
+      "category": "eigenvects",
+      "eigenspaces": [
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": -3.0
+          },
+          "geometric_multiplicity": 1
+        },
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 5.0
+          },
+          "geometric_multiplicity": 1
+        },
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 7.0
+          },
+          "geometric_multiplicity": 1
+        }
+      ],
+      "id": 38,
+      "input_matrix": [
+        [
+          "5",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "-3",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "7"
+        ]
+      ],
+      "key": "3x3_diagonal",
+      "subcategory": "3x3_diagonal"
+    },
+    {
+      "category": "eigenvects",
+      "eigenspaces": [
+        {
+          "algebraic_multiplicity": 2,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 2.0
+          },
+          "geometric_multiplicity": 2
+        },
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 5.0
+          },
+          "geometric_multiplicity": 1
+        }
+      ],
+      "id": 39,
+      "input_matrix": [
+        [
+          "2",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "2",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "5"
+        ]
+      ],
+      "key": "3x3_repeated_full_geometric",
+      "subcategory": "3x3_repeated_full_geometric"
+    },
+    {
+      "category": "eigenvects",
+      "eigenspaces": [
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 1.0
+          },
+          "geometric_multiplicity": 1
+        },
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 4.0
+          },
+          "geometric_multiplicity": 1
+        },
+        {
+          "algebraic_multiplicity": 1,
+          "eigenvalue": {
+            "im": 0.0,
+            "re": 6.0
+          },
+          "geometric_multiplicity": 1
+        }
+      ],
+      "id": 40,
+      "input_matrix": [
+        [
+          "1",
+          "2",
+          "3"
+        ],
+        [
+          "0",
+          "4",
+          "5"
+        ],
+        [
+          "0",
+          "0",
+          "6"
+        ]
+      ],
+      "key": "3x3_upper_triangular",
+      "subcategory": "3x3_upper_triangular"
+    },
+    {
+      "category": "eval",
       "expected": "1",
-      "sympy_result": "1"
+      "id": 41,
+      "input": "erf(oo)",
+      "key": "erf(oo)",
+      "subcategory": "erf_inf",
+      "value": {
+        "im": 0.0,
+        "re": 1.0
+      }
     },
     {
-      "category": "refine",
-      "subcategory": "sign_negative",
-      "input": "sign(x)",
-      "assumptions": "negative",
+      "category": "eval",
+      "expected": "-erf(1/2)",
+      "id": 42,
+      "input": "erf(-1/2)",
+      "key": "erf(-1/2)",
+      "subcategory": "erf_minus_half",
+      "value": {
+        "im": 0.0,
+        "re": -0.5204998778130465
+      }
+    },
+    {
+      "category": "eval",
       "expected": "-1",
-      "sympy_result": "-1"
+      "id": 43,
+      "input": "erf(-oo)",
+      "key": "erf(-oo)",
+      "subcategory": "erf_neg_inf",
+      "value": {
+        "im": 0.0,
+        "re": -1.0
+      }
     },
     {
-      "category": "refine",
-      "subcategory": "sign_zero",
-      "input": "sign(x)",
-      "assumptions": "zero",
+      "category": "eval",
+      "expected": "erf(1)",
+      "id": 44,
+      "input": "erf(1)",
+      "key": "erf(1)",
+      "subcategory": "erf_one",
+      "value": {
+        "im": 0.0,
+        "re": 0.8427007929497149
+      }
+    },
+    {
+      "category": "eval",
       "expected": "0",
-      "sympy_result": "0"
+      "id": 45,
+      "input": "erf(0)",
+      "key": "erf(0)",
+      "subcategory": "erf_zero",
+      "value": {
+        "im": 0.0,
+        "re": 0.0
+      }
     },
     {
-      "category": "refine",
-      "subcategory": "sqrt_x2_positive",
-      "input": "sqrt(x**2)",
-      "assumptions": "positive",
-      "expected": "x",
-      "sympy_result": "x"
+      "category": "eval",
+      "expected": "0",
+      "id": 46,
+      "input": "erfc(oo)",
+      "key": "erfc(oo)",
+      "subcategory": "erfc_inf",
+      "value": {
+        "im": 0.0,
+        "re": 0.0
+      }
     },
     {
-      "category": "refine",
-      "subcategory": "sqrt_x2_real",
-      "input": "sqrt(x**2)",
-      "assumptions": "real",
-      "expected": "Abs(x)",
-      "sympy_result": "Abs(x)"
+      "category": "eval",
+      "expected": "2",
+      "id": 47,
+      "input": "erfc(-oo)",
+      "key": "erfc(-oo)",
+      "subcategory": "erfc_neg_inf",
+      "value": {
+        "im": 0.0,
+        "re": 2.0
+      }
     },
     {
-      "category": "refine",
-      "subcategory": "floor_integer",
-      "input": "floor(x)",
-      "assumptions": "integer",
-      "expected": "x",
-      "sympy_result": "x"
+      "category": "eval",
+      "expected": "erfc(2)",
+      "id": 48,
+      "input": "erfc(2)",
+      "key": "erfc(2)",
+      "subcategory": "erfc_two",
+      "value": {
+        "im": 0.0,
+        "re": 0.004677734981047266
+      }
     },
     {
-      "category": "refine",
-      "subcategory": "ceiling_integer",
-      "input": "ceiling(x)",
-      "assumptions": "integer",
-      "expected": "x",
-      "sympy_result": "x"
+      "category": "eval",
+      "expected": "1",
+      "id": 49,
+      "input": "erfc(0)",
+      "key": "erfc(0)",
+      "subcategory": "erfc_zero",
+      "value": {
+        "im": 0.0,
+        "re": 1.0
+      }
     },
     {
       "category": "integrate",
-      "subcategory": "asinh",
-      "input": "asinh(x)",
-      "variable": "x",
-      "sympy_result": "x*asinh(x) - sqrt(x**2 + 1)",
+      "id": 50,
+      "input": "acosh(x)",
+      "key": "acosh",
+      "subcategory": "acosh",
+      "sympy_result": "Integral(acosh(x), x)",
+      "sympy_unevaluated": true,
+      "variable": "x"
+    },
+    {
+      "category": "integrate",
       "eval_points": [
         {
           "subs": {
             "x": 0.5
           },
           "value": {
-            "re": -0.8774280762200931,
-            "im": 0.0
+            "im": 0.0,
+            "re": -0.8774280762200931
           }
         },
         {
@@ -641,8 +843,8 @@
             "x": 1.5
           },
           "value": {
-            "re": -0.01063081180133069,
-            "im": 0.0
+            "im": 0.0,
+            "re": -0.01063081180133069
           }
         },
         {
@@ -650,34 +852,28 @@
             "x": 3.0
           },
           "value": {
-            "re": 2.293061717527821,
-            "im": 0.0
+            "im": 0.0,
+            "re": 2.293061717527821
           }
         }
-      ]
+      ],
+      "id": 51,
+      "input": "asinh(x)",
+      "key": "asinh",
+      "subcategory": "asinh",
+      "sympy_result": "x*asinh(x) - sqrt(x**2 + 1)",
+      "variable": "x"
     },
     {
       "category": "integrate",
-      "subcategory": "acosh",
-      "input": "acosh(x)",
-      "variable": "x",
-      "sympy_result": "Integral(acosh(x), x)",
-      "eval_points": []
-    },
-    {
-      "category": "integrate",
-      "subcategory": "atanh",
-      "input": "atanh(x)",
-      "variable": "x",
-      "sympy_result": "x*atanh(x) + log(x + 1) - atanh(x)",
       "eval_points": [
         {
           "subs": {
             "x": 0.25
           },
           "value": {
-            "re": 0.03158394240196325,
-            "im": 0.0
+            "im": 0.0,
+            "re": 0.03158394240196325
           }
         },
         {
@@ -685,8 +881,8 @@
             "x": 0.5
           },
           "value": {
-            "re": 0.13081203594113697,
-            "im": 0.0
+            "im": 0.0,
+            "re": 0.13081203594113697
           }
         },
         {
@@ -694,56 +890,97 @@
             "x": 0.75
           },
           "value": {
-            "re": 0.31637701930350853,
-            "im": 0.0
+            "im": 0.0,
+            "re": 0.31637701930350853
           }
         }
-      ]
+      ],
+      "id": 52,
+      "input": "atanh(x)",
+      "key": "atanh",
+      "subcategory": "atanh",
+      "sympy_result": "x*atanh(x) + log(x + 1) - atanh(x)",
+      "variable": "x"
     },
     {
-      "category": "eval",
-      "subcategory": "erf_zero",
-      "input": "erf(0)",
-      "expected": "0"
+      "category": "integrate",
+      "eval_points": [
+        {
+          "subs": {
+            "x": 0.5
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.04070018580361444
+          }
+        },
+        {
+          "subs": {
+            "x": 1.5
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.9667585596202773
+          }
+        },
+        {
+          "subs": {
+            "x": 3.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 6.265912436226033
+          }
+        }
+      ],
+      "id": 53,
+      "input": "x*asinh(x)",
+      "key": "x_asinh",
+      "subcategory": "x_asinh",
+      "sympy_result": "x**2*asinh(x)/2 - x*sqrt(x**2 + 1)/4 + asinh(x)/4",
+      "variable": "x"
     },
     {
-      "category": "eval",
-      "subcategory": "erf_inf",
-      "input": "erf(oo)",
-      "expected": "1"
-    },
-    {
-      "category": "eval",
-      "subcategory": "erf_neg_inf",
-      "input": "erf(-oo)",
-      "expected": "-1"
-    },
-    {
-      "category": "eval",
-      "subcategory": "erfc_zero",
-      "input": "erfc(0)",
-      "expected": "1"
-    },
-    {
-      "category": "eval",
-      "subcategory": "erfc_inf",
-      "input": "erfc(oo)",
-      "expected": "0"
-    },
-    {
-      "category": "matrix_exp",
-      "subcategory": "zero_matrix",
+      "category": "jordan_form",
+      "id": 54,
       "input_matrix": [
         [
-          "0",
-          "0"
+          "1",
+          "1"
         ],
         [
           "0",
-          "0"
+          "1"
         ]
       ],
-      "result": [
+      "jordan_diag": [
+        {
+          "im": 0.0,
+          "re": 1.0
+        },
+        {
+          "im": 0.0,
+          "re": 1.0
+        }
+      ],
+      "jordan_matrix": [
+        [
+          "1",
+          "1"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ],
+      "key": "2x2_defective",
+      "subcategory": "2x2_defective",
+      "superdiag_ones": 1
+    },
+    {
+      "category": "jordan_form",
+      "id": 55,
+      "input_matrix": [
         [
           "1",
           "0"
@@ -752,11 +989,485 @@
           "0",
           "1"
         ]
-      ]
+      ],
+      "jordan_diag": [
+        {
+          "im": 0.0,
+          "re": 1.0
+        },
+        {
+          "im": 0.0,
+          "re": 1.0
+        }
+      ],
+      "jordan_matrix": [
+        [
+          "1",
+          "0"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ],
+      "key": "2x2_identity",
+      "subcategory": "2x2_identity",
+      "superdiag_ones": 0
+    },
+    {
+      "category": "jordan_form",
+      "id": 56,
+      "input_matrix": [
+        [
+          "0",
+          "1"
+        ],
+        [
+          "0",
+          "0"
+        ]
+      ],
+      "jordan_diag": [
+        {
+          "im": 0.0,
+          "re": 0.0
+        },
+        {
+          "im": 0.0,
+          "re": 0.0
+        }
+      ],
+      "jordan_matrix": [
+        [
+          "0",
+          "1"
+        ],
+        [
+          "0",
+          "0"
+        ]
+      ],
+      "key": "2x2_nilpotent",
+      "subcategory": "2x2_nilpotent",
+      "superdiag_ones": 1
+    },
+    {
+      "category": "jordan_form",
+      "id": 57,
+      "input_matrix": [
+        [
+          "5",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "-3",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "7"
+        ]
+      ],
+      "jordan_diag": [
+        {
+          "im": 0.0,
+          "re": -3.0
+        },
+        {
+          "im": 0.0,
+          "re": 5.0
+        },
+        {
+          "im": 0.0,
+          "re": 7.0
+        }
+      ],
+      "jordan_matrix": [
+        [
+          "-3",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "5",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "7"
+        ]
+      ],
+      "key": "3x3_diagonal",
+      "subcategory": "3x3_diagonal",
+      "superdiag_ones": 0
+    },
+    {
+      "category": "jordan_form",
+      "id": 58,
+      "input_matrix": [
+        [
+          "2",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "2",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "3",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "0",
+          "4"
+        ]
+      ],
+      "jordan_diag": [
+        {
+          "im": 0.0,
+          "re": 2.0
+        },
+        {
+          "im": 0.0,
+          "re": 2.0
+        },
+        {
+          "im": 0.0,
+          "re": 3.0
+        },
+        {
+          "im": 0.0,
+          "re": 4.0
+        }
+      ],
+      "jordan_matrix": [
+        [
+          "2",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "2",
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "3",
+          "0"
+        ],
+        [
+          "0",
+          "0",
+          "0",
+          "4"
+        ]
+      ],
+      "key": "4x4_mixed",
+      "subcategory": "4x4_mixed",
+      "superdiag_ones": 1
+    },
+    {
+      "category": "lambertw",
+      "id": 59,
+      "input": "-1/4",
+      "key": "-1/4",
+      "subcategory": "eval_numerical",
+      "value": {
+        "im": 0.0,
+        "re": -0.3574029561813889
+      }
+    },
+    {
+      "category": "lambertw",
+      "id": 60,
+      "input": "1/10",
+      "key": "1/10",
+      "subcategory": "eval_numerical",
+      "value": {
+        "im": 0.0,
+        "re": 0.09127652716086226
+      }
+    },
+    {
+      "category": "lambertw",
+      "id": 61,
+      "input": "1/2",
+      "key": "1/2",
+      "subcategory": "eval_numerical",
+      "value": {
+        "im": 0.0,
+        "re": 0.35173371124919584
+      }
+    },
+    {
+      "category": "lambertw",
+      "id": 62,
+      "input": "10",
+      "key": "10",
+      "subcategory": "eval_numerical",
+      "value": {
+        "im": 0.0,
+        "re": 1.7455280027406994
+      }
+    },
+    {
+      "category": "lambertw",
+      "id": 63,
+      "input": "100",
+      "key": "100",
+      "subcategory": "eval_numerical",
+      "value": {
+        "im": 0.0,
+        "re": 3.38563014029005
+      }
+    },
+    {
+      "category": "lambertw",
+      "id": 64,
+      "input": "5",
+      "key": "5",
+      "subcategory": "eval_numerical",
+      "value": {
+        "im": 0.0,
+        "re": 1.3267246652422002
+      }
+    },
+    {
+      "category": "lambertw",
+      "expected": "-1",
+      "id": 65,
+      "input": "-1/E",
+      "key": "-1/E",
+      "subcategory": "eval_symbolic",
+      "value": {
+        "im": 0.0,
+        "re": -1.0
+      }
+    },
+    {
+      "category": "lambertw",
+      "expected": "-log(2)",
+      "id": 66,
+      "input": "-log(2)/2",
+      "key": "-log(2)/2",
+      "subcategory": "eval_symbolic",
+      "value": {
+        "im": 0.0,
+        "re": -0.6931471805599453
+      }
+    },
+    {
+      "category": "lambertw",
+      "expected": "0",
+      "id": 67,
+      "input": "0",
+      "key": "0",
+      "subcategory": "eval_symbolic",
+      "value": {
+        "im": 0.0,
+        "re": 0.0
+      }
+    },
+    {
+      "category": "lambertw",
+      "expected": "log(2)",
+      "id": 68,
+      "input": "2*log(2)",
+      "key": "2*log(2)",
+      "subcategory": "eval_symbolic",
+      "value": {
+        "im": 0.0,
+        "re": 0.6931471805599453
+      }
+    },
+    {
+      "category": "lambertw",
+      "expected": "LambertW(3*log(3))",
+      "id": 69,
+      "input": "3*log(3)",
+      "key": "3*log(3)",
+      "subcategory": "eval_symbolic",
+      "value": {
+        "im": 0.0,
+        "re": 1.0986122886681098
+      }
+    },
+    {
+      "category": "lambertw",
+      "expected": "1",
+      "id": 70,
+      "input": "E",
+      "key": "E",
+      "subcategory": "eval_symbolic",
+      "value": {
+        "im": 0.0,
+        "re": 1.0
+      }
     },
     {
       "category": "matrix_exp",
-      "subcategory": "rotation_generator",
+      "id": 71,
+      "input_matrix": [
+        [
+          "2",
+          "0"
+        ],
+        [
+          "0",
+          "3"
+        ]
+      ],
+      "key": "diagonal",
+      "result": [
+        [
+          "exp(2)",
+          "0"
+        ],
+        [
+          "0",
+          "exp(3)"
+        ]
+      ],
+      "result_numeric": [
+        [
+          {
+            "im": 0.0,
+            "re": 7.38905609893065
+          },
+          {
+            "im": 0.0,
+            "re": 0.0
+          }
+        ],
+        [
+          {
+            "im": 0.0,
+            "re": 0.0
+          },
+          {
+            "im": 0.0,
+            "re": 20.085536923187668
+          }
+        ]
+      ],
+      "subcategory": "diagonal"
+    },
+    {
+      "category": "matrix_exp",
+      "id": 72,
+      "input_matrix": [
+        [
+          "1",
+          "0"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ],
+      "key": "identity",
+      "result": [
+        [
+          "E",
+          "0"
+        ],
+        [
+          "0",
+          "E"
+        ]
+      ],
+      "result_numeric": [
+        [
+          {
+            "im": 0.0,
+            "re": 2.718281828459045
+          },
+          {
+            "im": 0.0,
+            "re": 0.0
+          }
+        ],
+        [
+          {
+            "im": 0.0,
+            "re": 0.0
+          },
+          {
+            "im": 0.0,
+            "re": 2.718281828459045
+          }
+        ]
+      ],
+      "subcategory": "identity"
+    },
+    {
+      "category": "matrix_exp",
+      "id": 73,
+      "input_matrix": [
+        [
+          "0",
+          "1"
+        ],
+        [
+          "0",
+          "0"
+        ]
+      ],
+      "key": "nilpotent",
+      "result": [
+        [
+          "1",
+          "1"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ],
+      "result_numeric": [
+        [
+          {
+            "im": 0.0,
+            "re": 1.0
+          },
+          {
+            "im": 0.0,
+            "re": 1.0
+          }
+        ],
+        [
+          {
+            "im": 0.0,
+            "re": 0.0
+          },
+          {
+            "im": 0.0,
+            "re": 1.0
+          }
+        ]
+      ],
+      "subcategory": "nilpotent"
+    },
+    {
+      "category": "matrix_exp",
+      "id": 74,
       "input_matrix": [
         [
           "0",
@@ -767,6 +1478,7 @@
           "0"
         ]
       ],
+      "key": "rotation_generator",
       "result": [
         [
           "cos(1)",
@@ -776,79 +1488,578 @@
           "-sin(1)",
           "cos(1)"
         ]
-      ]
-    },
-    {
-      "category": "matrix_exp",
-      "subcategory": "nilpotent",
-      "input_matrix": [
+      ],
+      "result_numeric": [
         [
-          "0",
-          "1"
+          {
+            "im": 0.0,
+            "re": 0.5403023058681398
+          },
+          {
+            "im": 0.0,
+            "re": 0.8414709848078965
+          }
         ],
         [
-          "0",
-          "0"
+          {
+            "im": 0.0,
+            "re": -0.8414709848078965
+          },
+          {
+            "im": 0.0,
+            "re": 0.5403023058681398
+          }
         ]
       ],
-      "result": [
-        [
-          "1",
-          "1"
-        ],
-        [
-          "0",
-          "1"
-        ]
-      ]
+      "subcategory": "rotation_generator"
     },
     {
       "category": "matrix_exp",
-      "subcategory": "diagonal",
-      "input_matrix": [
-        [
-          "2",
-          "0"
-        ],
-        [
-          "0",
-          "3"
-        ]
-      ],
-      "result": [
-        [
-          "exp(2)",
-          "0"
-        ],
-        [
-          "0",
-          "exp(3)"
-        ]
-      ]
-    },
-    {
-      "category": "matrix_exp",
-      "subcategory": "identity",
+      "id": 75,
       "input_matrix": [
         [
           "1",
-          "0"
+          "2"
         ],
         [
           "0",
           "1"
         ]
       ],
+      "key": "shear_scaled",
       "result": [
         [
           "E",
-          "0"
+          "2*E"
         ],
         [
           "0",
           "E"
         ]
-      ]
+      ],
+      "result_numeric": [
+        [
+          {
+            "im": 0.0,
+            "re": 2.718281828459045
+          },
+          {
+            "im": 0.0,
+            "re": 5.43656365691809
+          }
+        ],
+        [
+          {
+            "im": 0.0,
+            "re": 0.0
+          },
+          {
+            "im": 0.0,
+            "re": 2.718281828459045
+          }
+        ]
+      ],
+      "subcategory": "shear_scaled"
+    },
+    {
+      "category": "matrix_exp",
+      "id": 76,
+      "input_matrix": [
+        [
+          "0",
+          "0"
+        ],
+        [
+          "0",
+          "0"
+        ]
+      ],
+      "key": "zero_matrix",
+      "result": [
+        [
+          "1",
+          "0"
+        ],
+        [
+          "0",
+          "1"
+        ]
+      ],
+      "result_numeric": [
+        [
+          {
+            "im": 0.0,
+            "re": 1.0
+          },
+          {
+            "im": 0.0,
+            "re": 0.0
+          }
+        ],
+        [
+          {
+            "im": 0.0,
+            "re": 0.0
+          },
+          {
+            "im": 0.0,
+            "re": 1.0
+          }
+        ]
+      ],
+      "subcategory": "zero_matrix"
+    },
+    {
+      "assumptions": "negative",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": -0.5
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.5
+          }
+        },
+        {
+          "subs": {
+            "x": -3.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 3.0
+          }
+        },
+        {
+          "subs": {
+            "x": -7.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 7.0
+          }
+        }
+      ],
+      "id": 77,
+      "input": "Abs(x)",
+      "key": "abs_negative",
+      "subcategory": "abs_negative",
+      "sympy_ops": 1,
+      "sympy_result": "-x"
+    },
+    {
+      "assumptions": "nonnegative",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": 0.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.0
+          }
+        },
+        {
+          "subs": {
+            "x": 2.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 2.0
+          }
+        },
+        {
+          "subs": {
+            "x": 5.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 5.0
+          }
+        }
+      ],
+      "id": 78,
+      "input": "Abs(x)",
+      "key": "abs_nonnegative",
+      "subcategory": "abs_nonnegative",
+      "sympy_ops": 0,
+      "sympy_result": "x"
+    },
+    {
+      "assumptions": "positive",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": 0.5
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.5
+          }
+        },
+        {
+          "subs": {
+            "x": 3.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 3.0
+          }
+        },
+        {
+          "subs": {
+            "x": 7.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 7.0
+          }
+        }
+      ],
+      "id": 79,
+      "input": "Abs(x)",
+      "key": "abs_positive",
+      "subcategory": "abs_positive",
+      "sympy_ops": 0,
+      "sympy_result": "x"
+    },
+    {
+      "assumptions": "real",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": -3.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 9.0
+          }
+        },
+        {
+          "subs": {
+            "x": 0.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.0
+          }
+        },
+        {
+          "subs": {
+            "x": 2.5
+          },
+          "value": {
+            "im": 0.0,
+            "re": 6.25
+          }
+        }
+      ],
+      "id": 80,
+      "input": "Abs(x**2)",
+      "key": "abs_x2_real",
+      "subcategory": "abs_x2_real",
+      "sympy_ops": 1,
+      "sympy_result": "x**2"
+    },
+    {
+      "assumptions": "integer",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": -4.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": -4.0
+          }
+        },
+        {
+          "subs": {
+            "x": 0.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.0
+          }
+        },
+        {
+          "subs": {
+            "x": 9.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 9.0
+          }
+        }
+      ],
+      "id": 81,
+      "input": "ceiling(x)",
+      "key": "ceiling_integer",
+      "subcategory": "ceiling_integer",
+      "sympy_ops": 0,
+      "sympy_result": "x"
+    },
+    {
+      "assumptions": "integer",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": -4.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": -4.0
+          }
+        },
+        {
+          "subs": {
+            "x": 0.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.0
+          }
+        },
+        {
+          "subs": {
+            "x": 9.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 9.0
+          }
+        }
+      ],
+      "id": 82,
+      "input": "floor(x)",
+      "key": "floor_integer",
+      "subcategory": "floor_integer",
+      "sympy_ops": 0,
+      "sympy_result": "x"
+    },
+    {
+      "assumptions": "negative",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": -0.5
+          },
+          "value": {
+            "im": 0.0,
+            "re": -1.0
+          }
+        },
+        {
+          "subs": {
+            "x": -3.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": -1.0
+          }
+        },
+        {
+          "subs": {
+            "x": -7.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": -1.0
+          }
+        }
+      ],
+      "id": 83,
+      "input": "sign(x)",
+      "key": "sign_negative",
+      "subcategory": "sign_negative",
+      "sympy_ops": 1,
+      "sympy_result": "-1"
+    },
+    {
+      "assumptions": "positive",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": 0.5
+          },
+          "value": {
+            "im": 0.0,
+            "re": 1.0
+          }
+        },
+        {
+          "subs": {
+            "x": 3.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 1.0
+          }
+        },
+        {
+          "subs": {
+            "x": 7.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 1.0
+          }
+        }
+      ],
+      "id": 84,
+      "input": "sign(x)",
+      "key": "sign_positive",
+      "subcategory": "sign_positive",
+      "sympy_ops": 0,
+      "sympy_result": "1"
+    },
+    {
+      "assumptions": "zero",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": 0.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.0
+          }
+        }
+      ],
+      "id": 85,
+      "input": "sign(x)",
+      "key": "sign_zero",
+      "subcategory": "sign_zero",
+      "sympy_ops": 0,
+      "sympy_result": "0"
+    },
+    {
+      "assumptions": "negative",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": -0.5
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.5
+          }
+        },
+        {
+          "subs": {
+            "x": -3.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 3.0
+          }
+        },
+        {
+          "subs": {
+            "x": -7.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 7.0
+          }
+        }
+      ],
+      "id": 86,
+      "input": "sqrt(x**2)",
+      "key": "sqrt_x2_negative",
+      "subcategory": "sqrt_x2_negative",
+      "sympy_ops": 1,
+      "sympy_result": "-x"
+    },
+    {
+      "assumptions": "positive",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": 0.5
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.5
+          }
+        },
+        {
+          "subs": {
+            "x": 3.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 3.0
+          }
+        },
+        {
+          "subs": {
+            "x": 7.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 7.0
+          }
+        }
+      ],
+      "id": 87,
+      "input": "sqrt(x**2)",
+      "key": "sqrt_x2_positive",
+      "subcategory": "sqrt_x2_positive",
+      "sympy_ops": 0,
+      "sympy_result": "x"
+    },
+    {
+      "assumptions": "real",
+      "category": "refine",
+      "eval_points": [
+        {
+          "subs": {
+            "x": -3.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 3.0
+          }
+        },
+        {
+          "subs": {
+            "x": 0.0
+          },
+          "value": {
+            "im": 0.0,
+            "re": 0.0
+          }
+        },
+        {
+          "subs": {
+            "x": 2.5
+          },
+          "value": {
+            "im": 0.0,
+            "re": 2.5
+          }
+        }
+      ],
+      "id": 88,
+      "input": "sqrt(x**2)",
+      "key": "sqrt_x2_real",
+      "subcategory": "sqrt_x2_real",
+      "sympy_ops": 1,
+      "sympy_result": "Abs(x)"
     }
-  ]
+  ],
+  "generated_by": "SymPy 1.14.0",
+  "generator": "scripts/gen_new_fixtures.py"
 }

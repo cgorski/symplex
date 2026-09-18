@@ -640,36 +640,68 @@ fn correctness_audit_against_sympy() {
             .get("category")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
+        let id = raw.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let label = raw
+            .get("label")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string();
 
-        match category {
-            "definite_integral" => {
-                if let Ok(f) = serde_json::from_value::<DefiniteIntegralFixture>(raw.clone()) {
-                    outcomes.push(process_definite_integral(&ctx, &f));
-                }
-            }
+        // Oracle gaps recorded by the generator are reported, never dropped.
+        let oracle_gap = if raw.get("sympy_timeout").and_then(|v| v.as_bool()) == Some(true) {
+            Some("SymPy timed out while generating this fixture".to_string())
+        } else {
+            raw.get("sympy_error")
+                .and_then(|v| v.as_str())
+                .map(|e| format!("SymPy error while generating this fixture: {e}"))
+        };
+        if let Some(reason) = oracle_gap {
+            outcomes.push(TestOutcome {
+                id,
+                category: category.to_string(),
+                label,
+                status: Status::Skip,
+                detail: format!("SKIPPED_ORACLE: {reason}"),
+            });
+            continue;
+        }
+
+        // A fixture that does not deserialise is a generator/consumer
+        // mismatch: report it as a skip with the reason instead of silently
+        // ignoring it.
+        let outcome = match category {
+            "definite_integral" => serde_json::from_value::<DefiniteIntegralFixture>(raw.clone())
+                .map(|f| process_definite_integral(&ctx, &f)),
             "ftc_check" => {
-                if let Ok(f) = serde_json::from_value::<FtcFixture>(raw.clone()) {
-                    outcomes.push(process_ftc(&ctx, &f));
-                }
+                serde_json::from_value::<FtcFixture>(raw.clone()).map(|f| process_ftc(&ctx, &f))
             }
-            "simplify_verify" => {
-                if let Ok(f) = serde_json::from_value::<SimplifyFixture>(raw.clone()) {
-                    outcomes.push(process_simplify(&ctx, &f));
-                }
-            }
+            "simplify_verify" => serde_json::from_value::<SimplifyFixture>(raw.clone())
+                .map(|f| process_simplify(&ctx, &f)),
             "gosper_sum" => {
-                if let Ok(f) = serde_json::from_value::<GosperFixture>(raw.clone()) {
-                    outcomes.push(process_gosper(&f));
-                }
+                serde_json::from_value::<GosperFixture>(raw.clone()).map(|f| process_gosper(&f))
             }
-            "series_verify" => {
-                if let Ok(f) = serde_json::from_value::<SeriesFixture>(raw.clone()) {
-                    outcomes.push(process_series(&ctx, &f));
-                }
-            }
+            "series_verify" => serde_json::from_value::<SeriesFixture>(raw.clone())
+                .map(|f| process_series(&ctx, &f)),
             other => {
-                println!("  SKIP unknown category: {}", other);
+                outcomes.push(TestOutcome {
+                    id,
+                    category: other.to_string(),
+                    label,
+                    status: Status::Skip,
+                    detail: "unknown category (no consumer)".into(),
+                });
+                continue;
             }
+        };
+        match outcome {
+            Ok(o) => outcomes.push(o),
+            Err(e) => outcomes.push(TestOutcome {
+                id,
+                category: category.to_string(),
+                label,
+                status: Status::Skip,
+                detail: format!("fixture does not deserialise: {e}"),
+            }),
         }
     }
 
@@ -728,25 +760,23 @@ fn correctness_audit_against_sympy() {
         println!("  ACCURACY (pass / (pass+fail)): {:.1}%", accuracy);
     }
 
-    // The test passes as long as we processed something.
-    // Individual failures are informational — they tell us WHERE we diverge from SymPy.
-    // We do NOT assert zero failures because some may be known divergences.
-    // Instead, we assert that at least 50% of tested fixtures pass.
+    // Honesty policy: a numerically WRONG result fails the test.  Skips
+    // (unevaluated / oracle gaps / deserialisation problems) are printed
+    // above and are informational.
     assert!(
         !outcomes.is_empty(),
         "No fixtures were processed — is the JSON file empty?"
     );
-
-    if tested > 0 {
-        let pass_rate = total_pass as f64 / tested as f64;
-        assert!(
-            pass_rate >= 0.50,
-            "Correctness pass rate {:.1}% is below 50% threshold ({} pass, {} fail)",
-            pass_rate * 100.0,
-            total_pass,
-            total_fail
-        );
-    }
+    assert_eq!(
+        file.fixtures.len(),
+        outcomes.len(),
+        "every fixture must produce exactly one outcome"
+    );
+    assert_eq!(
+        total_fail, 0,
+        "{} fixture(s) produced WRONG results ({} pass, {} skip); see ❌ lines above",
+        total_fail, total_pass, total_skip
+    );
 }
 
 /// Focused test: verify that basic polynomial integrals are numerically exact.

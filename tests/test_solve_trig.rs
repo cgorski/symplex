@@ -55,12 +55,11 @@ fn solve_sin_x_eq_half_verify_numerically() {
     // π − asin(1/2) ≈ 2.6180.  We verify by substitution.
     let asin_half = x.sin().subs(&x, &ctx.rational(1, 2).asin());
     let val = eval(&asin_half);
-    if let Some(v) = val {
-        assert!(
-            approx_zero(v - 0.5, 1e-10),
-            "sin(asin(1/2)) should ≈ 0.5, got {v}"
-        );
-    }
+    let v = val.expect("val must be Some");
+    assert!(
+        approx_zero(v - 0.5, 1e-10),
+        "sin(asin(1/2)) should ≈ 0.5, got {v}"
+    );
 
     // The set string should have exactly 2 elements (FiniteSet with 2 entries).
     // FiniteSet is printed as `{elem1, elem2}`.
@@ -103,9 +102,8 @@ fn solve_cos_x_eq_zero_verify() {
     let half = ctx.rational(1, 2);
     let pi_half = &pi * &half;
     let val = eval(&pi_half.cos());
-    if let Some(v) = val {
-        assert!(approx_zero(v, 1e-10), "cos(π/2) should ≈ 0, got {v}");
-    }
+    let v = val.expect("val must be Some");
+    assert!(approx_zero(v, 1e-10), "cos(π/2) should ≈ 0, got {v}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -142,12 +140,11 @@ fn solve_tan_x_eq_one_verify() {
     // atan(1) ≈ π/4 ≈ 0.7854
     let atan1 = one.atan();
     let substituted = tan_minus_one.subs(&x, &atan1);
-    if let Some(v) = eval(&substituted) {
-        assert!(
-            approx_zero(v, 1e-10),
-            "tan(atan(1)) - 1 should ≈ 0, got {v}"
-        );
-    }
+    let v = eval(&substituted).expect("eval(&substituted) must be Some");
+    assert!(
+        approx_zero(v, 1e-10),
+        "tan(atan(1)) - 1 should ≈ 0, got {v}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -281,9 +278,8 @@ fn solve_exp_x_eq_one_verify() {
     // Substitute x = 0: exp(0) - 1 = 0
     let zero = ctx.int(0);
     let substituted = expr.subs(&x, &zero);
-    if let Some(v) = eval(&substituted) {
-        assert!(approx_zero(v, 1e-15), "exp(0) - 1 should be 0, got {v}");
-    }
+    let v = eval(&substituted).expect("eval(&substituted) must be Some");
+    assert!(approx_zero(v, 1e-15), "exp(0) - 1 should be 0, got {v}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -749,12 +749,11 @@ fn series_tan_around_zero() {
     let numer = (test_pt * 10000.0) as i64;
     let val_series = eval_rational(&expanded, &x, numer, 10000);
     let expected = test_pt.tan();
-    if let Ok(vs) = val_series {
-        assert!(
-            approx(vs, expected, 1e-4),
-            "tan(x) series at x={test_pt}: series={vs}, exact={expected}"
-        );
-    }
+    let vs = val_series.expect("val_series must evaluate");
+    assert!(
+        approx(vs, expected, 1e-4),
+        "tan(x) series at x={test_pt}: series={vs}, exact={expected}"
+    );
 }
 
 /// Series of 1/(1-x) around 0 = 1 + x + x² + x³ + ...
@@ -775,12 +774,11 @@ fn series_geometric() {
     let numer = (test_pt * 10000.0) as i64;
     let val_series = eval_rational(&expanded, &x, numer, 10000);
     let expected = 1.0 / (1.0 - test_pt);
-    if let Ok(vs) = val_series {
-        assert!(
-            approx(vs, expected, 1e-4),
-            "1/(1-x) series at x={test_pt}: series={vs}, exact={expected}"
-        );
-    }
+    let vs = val_series.expect("val_series must evaluate");
+    assert!(
+        approx(vs, expected, 1e-4),
+        "1/(1-x) series at x={test_pt}: series={vs}, exact={expected}"
+    );
 }
 
 /// Series of 1/(1-x)² around 0 = 1 + 2x + 3x² + 4x³ + ...
@@ -802,12 +800,11 @@ fn series_one_over_1_minus_x_squared() {
     let numer = (test_pt * 10000.0) as i64;
     let val_series = eval_rational(&expanded, &x, numer, 10000);
     let expected = 1.0 / (1.0 - test_pt).powi(2);
-    if let Ok(vs) = val_series {
-        assert!(
-            approx(vs, expected, 1e-3),
-            "1/(1-x)² series at x={test_pt}: series={vs}, exact={expected}"
-        );
-    }
+    let vs = val_series.expect("val_series must evaluate");
+    assert!(
+        approx(vs, expected, 1e-3),
+        "1/(1-x)² series at x={test_pt}: series={vs}, exact={expected}"
+    );
 }
 
 /// Series of exp(x) around 0: 1 + x + x²/2 + x³/6 + ...
@@ -827,12 +824,11 @@ fn series_exp_at_zero() {
     let numer = (test_pt * 10000.0) as i64;
     let val_series = eval_rational(&expanded, &x, numer, 10000);
     let expected = test_pt.exp();
-    if let Ok(vs) = val_series {
-        assert!(
-            approx(vs, expected, 1e-4),
-            "exp(x) series at x={test_pt}: series={vs}, exact={expected}"
-        );
-    }
+    let vs = val_series.expect("val_series must evaluate");
+    assert!(
+        approx(vs, expected, 1e-4),
+        "exp(x) series at x={test_pt}: series={vs}, exact={expected}"
+    );
 }
 
 /// Series of ln(1+x) around 0: x - x²/2 + x³/3 - x⁴/4 + ...
@@ -853,12 +849,11 @@ fn series_ln_1_plus_x() {
     let numer = (test_pt * 10000.0) as i64;
     let val_series = eval_rational(&expanded, &x, numer, 10000);
     let expected = (1.0 + test_pt).ln();
-    if let Ok(vs) = val_series {
-        assert!(
-            approx(vs, expected, 1e-4),
-            "ln(1+x) series at x={test_pt}: series={vs}, exact={expected}"
-        );
-    }
+    let vs = val_series.expect("val_series must evaluate");
+    assert!(
+        approx(vs, expected, 1e-4),
+        "ln(1+x) series at x={test_pt}: series={vs}, exact={expected}"
+    );
 }
 
 /// Series of sin(x) around 0: x - x³/6 + x⁵/120 - ...
@@ -878,12 +873,11 @@ fn series_sin_at_zero() {
     let numer = (test_pt * 10000.0) as i64;
     let val_series = eval_rational(&expanded, &x, numer, 10000);
     let expected = test_pt.sin();
-    if let Ok(vs) = val_series {
-        assert!(
-            approx(vs, expected, 1e-5),
-            "sin(x) series at x={test_pt}: series={vs}, exact={expected}"
-        );
-    }
+    let vs = val_series.expect("val_series must evaluate");
+    assert!(
+        approx(vs, expected, 1e-5),
+        "sin(x) series at x={test_pt}: series={vs}, exact={expected}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -904,12 +898,11 @@ fn simplify_sin_arcsin() {
     for &pt in &[0.3_f64, 0.5, 0.7, -0.3] {
         let numer = (pt * 1000.0) as i64;
         let val = eval_rational(&simplified, &x, numer, 1000);
-        if let Ok(v) = val {
-            assert!(
-                approx(v, pt, 1e-10),
-                "sin(arcsin({pt})) should be {pt}, got {v}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, pt, 1e-10),
+            "sin(arcsin({pt})) should be {pt}, got {v}"
+        );
     }
 }
 
@@ -926,12 +919,11 @@ fn simplify_ln_exp() {
     // Verify numerically
     for &pt in &[-2_i64, -1, 0, 1, 2, 3] {
         let val = simplified.subs_i64(&x, pt).eval().eval_f64();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, pt as f64, 1e-10),
-                "ln(exp({pt})) should be {pt}, got {v}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, pt as f64, 1e-10),
+            "ln(exp({pt})) should be {pt}, got {v}"
+        );
     }
 }
 
@@ -951,15 +943,13 @@ fn simplify_difference_of_squares() {
 
     // Verify numerically: at x=3, y=1: should be 4
     let test_val = cancelled.subs_i64(&x, 3).subs_i64(&y, 1).eval().eval_f64();
-    if let Ok(v) = test_val {
-        assert!(approx(v, 4.0, 1e-10), "(3²-1²)/(3-1) should be 4, got {v}");
-    }
+    let v = test_val.expect("test_val must evaluate");
+    assert!(approx(v, 4.0, 1e-10), "(3²-1²)/(3-1) should be 4, got {v}");
 
     // At x=5, y=2: should be 7
     let test_val2 = cancelled.subs_i64(&x, 5).subs_i64(&y, 2).eval().eval_f64();
-    if let Ok(v) = test_val2 {
-        assert!(approx(v, 7.0, 1e-10), "(5²-2²)/(5-2) should be 7, got {v}");
-    }
+    let v = test_val2.expect("test_val2 must evaluate");
+    assert!(approx(v, 7.0, 1e-10), "(5²-2²)/(5-2) should be 7, got {v}");
 }
 
 /// sin(x+y) - sin(x)cos(y) - cos(x)sin(y) should be 0
@@ -976,12 +966,11 @@ fn trig_addition_formula_sin() {
     // Check numerically at several points
     for &(xv, yv) in &[(1_i64, 2_i64), (3, 1), (2, 5), (-1, 3)] {
         let val = diff.subs_i64(&x, xv).subs_i64(&y, yv).eval().eval_f64();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, 0.0, 1e-10),
-                "sin(x+y) - sin(x)cos(y) - cos(x)sin(y) at x={xv}, y={yv}: got {v}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, 0.0, 1e-10),
+            "sin(x+y) - sin(x)cos(y) - cos(x)sin(y) at x={xv}, y={yv}: got {v}"
+        );
     }
 }
 
@@ -999,12 +988,11 @@ fn trig_double_angle_cos() {
 
     for &pt in &[0_i64, 1, 2, 3, -1, -2] {
         let val = diff.subs_i64(&x, pt).eval().eval_f64();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, 0.0, 1e-10),
-                "cos(2x) - cos²(x) + sin²(x) at x={pt}: got {v}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, 0.0, 1e-10),
+            "cos(2x) - cos²(x) + sin²(x) at x={pt}: got {v}"
+        );
     }
 }
 
@@ -1017,12 +1005,11 @@ fn pythagorean_identity() {
 
     for &pt in &[0_i64, 1, 2, 3, -1, -5, 10] {
         let val = expr.subs_i64(&x, pt).eval().eval_f64();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, 1.0, 1e-10),
-                "sin²({pt}) + cos²({pt}) should be 1, got {v}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, 1.0, 1e-10),
+            "sin²({pt}) + cos²({pt}) should be 1, got {v}"
+        );
     }
 }
 
@@ -1036,12 +1023,11 @@ fn simplify_exp_ln() {
 
     for &pt in &[1_i64, 2, 3, 5, 10] {
         let val = simplified.subs_i64(&x, pt).eval().eval_f64();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, pt as f64, 1e-10),
-                "exp(ln({pt})) should be {pt}, got {v}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, pt as f64, 1e-10),
+            "exp(ln({pt})) should be {pt}, got {v}"
+        );
     }
 }
 
@@ -1059,20 +1045,18 @@ fn cancel_cubic_minus_8() {
 
     // At x=3: (27-8)/(3-2) = 19, also 9+6+4 = 19
     let val = cancelled.subs_i64(&x, 3).eval().eval_f64();
-    if let Ok(v) = val {
-        assert!(
-            approx(v, 19.0, 1e-10),
-            "(x³-8)/(x-2) at x=3 should be 19, got {v}"
-        );
-    }
+    let v = val.expect("val must evaluate");
+    assert!(
+        approx(v, 19.0, 1e-10),
+        "(x³-8)/(x-2) at x=3 should be 19, got {v}"
+    );
     // At x=5: (125-8)/(5-2) = 117/3 = 39, also 25+10+4 = 39
     let val2 = cancelled.subs_i64(&x, 5).eval().eval_f64();
-    if let Ok(v) = val2 {
-        assert!(
-            approx(v, 39.0, 1e-10),
-            "(x³-8)/(x-2) at x=5 should be 39, got {v}"
-        );
-    }
+    let v = val2.expect("val2 must evaluate");
+    assert!(
+        approx(v, 39.0, 1e-10),
+        "(x³-8)/(x-2) at x=5 should be 39, got {v}"
+    );
 }
 
 /// cos(x+y) - cos(x)cos(y) + sin(x)sin(y) should be 0
@@ -1088,12 +1072,11 @@ fn trig_addition_formula_cos() {
 
     for &(xv, yv) in &[(1_i64, 2_i64), (3, 1), (2, 5), (-1, 3)] {
         let val = diff.subs_i64(&x, xv).subs_i64(&y, yv).eval().eval_f64();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, 0.0, 1e-10),
-                "cos(x+y) - cos(x)cos(y) + sin(x)sin(y) at x={xv}, y={yv}: got {v}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, 0.0, 1e-10),
+            "cos(x+y) - cos(x)cos(y) + sin(x)sin(y) at x={xv}, y={yv}: got {v}"
+        );
     }
 }
 
@@ -1106,12 +1089,11 @@ fn trig_tan_identity() {
 
     for &pt in &[1_i64, 2, 3, -1, -2] {
         let val = diff.subs_i64(&x, pt).eval().eval_f64();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, 0.0, 1e-10),
-                "tan(x) - sin(x)/cos(x) at x={pt}: got {v}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, 0.0, 1e-10),
+            "tan(x) - sin(x)/cos(x) at x={pt}: got {v}"
+        );
     }
 }
 
@@ -1676,12 +1658,11 @@ fn diff_x_to_the_x() {
     // Verify numerically at x=2: d/dx[x^x] = x^x(ln(x)+1) = 4(ln(2)+1) ≈ 6.7726
     let expected_at_2 = 4.0 * (2.0_f64.ln() + 1.0);
     let val = deriv.subs_i64(&x, 2).eval().eval_f64();
-    if let Ok(v) = val {
-        assert!(
-            approx(v, expected_at_2, 1e-6),
-            "d/dx[x^x] at x=2 should be {expected_at_2}, got {v}"
-        );
-    }
+    let v = val.expect("val must evaluate");
+    assert!(
+        approx(v, expected_at_2, 1e-6),
+        "d/dx[x^x] at x=2 should be {expected_at_2}, got {v}"
+    );
 }
 
 /// Chain rule: d/dx[sin(x²)] = 2x·cos(x²)
@@ -1697,12 +1678,11 @@ fn diff_chain_rule_sin_x_sq() {
         let numer = (pt * 1000.0) as i64;
         let val = eval_rational(&deriv, &x, numer, 1000);
         let expected = 2.0 * pt * (pt * pt).cos();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, expected, 1e-8),
-                "d/dx[sin(x²)] at x={pt}: got {v}, expected {expected}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, expected, 1e-8),
+            "d/dx[sin(x²)] at x={pt}: got {v}, expected {expected}"
+        );
     }
 }
 
@@ -1718,12 +1698,11 @@ fn diff_product_rule_x2_sinx() {
         let numer = (pt * 1000.0) as i64;
         let val = eval_rational(&deriv, &x, numer, 1000);
         let expected = 2.0 * pt * pt.sin() + pt * pt * pt.cos();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, expected, 1e-8),
-                "d/dx[x²sin(x)] at x={pt}: got {v}, expected {expected}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, expected, 1e-8),
+            "d/dx[x²sin(x)] at x={pt}: got {v}, expected {expected}"
+        );
     }
 }
 
@@ -1738,12 +1717,11 @@ fn diff_second_derivative_exp() {
     for &pt in &[0_i64, 1, 2] {
         let val = d2.subs_i64(&x, pt).eval().eval_f64();
         let expected = (pt as f64).exp();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, expected, 1e-9),
-                "d²/dx²[exp(x)] at x={pt}: got {v}, expected {expected}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, expected, 1e-9),
+            "d²/dx²[exp(x)] at x={pt}: got {v}, expected {expected}"
+        );
     }
 }
 
@@ -1759,12 +1737,11 @@ fn diff_arctan() {
         let numer = (pt * 1000.0) as i64;
         let val = eval_rational(&deriv, &x, numer, 1000);
         let expected = 1.0 / (1.0 + pt * pt);
-        if let Ok(v) = val {
-            assert!(
-                approx(v, expected, 1e-8),
-                "d/dx[atan(x)] at x={pt}: got {v}, expected {expected}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, expected, 1e-8),
+            "d/dx[atan(x)] at x={pt}: got {v}, expected {expected}"
+        );
     }
 }
 
@@ -1779,12 +1756,11 @@ fn diff_third_derivative_x5() {
     for &pt in &[1_i64, 2, 3, -1] {
         let val = d3.subs_i64(&x, pt).eval().eval_f64();
         let expected = 60.0 * (pt as f64).powi(2);
-        if let Ok(v) = val {
-            assert!(
-                approx(v, expected, 1e-9),
-                "d³/dx³[x⁵] at x={pt}: got {v}, expected {expected}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, expected, 1e-9),
+            "d³/dx³[x⁵] at x={pt}: got {v}, expected {expected}"
+        );
     }
 }
 
@@ -2030,9 +2006,8 @@ fn parse_nested_functions() {
     let s = format!("{result}");
     eprintln!("sin(0) parsed = {s}");
     let val = eval_f64_ex(&result);
-    if let Ok(v) = val {
-        assert!(approx(v, 0.0, 1e-10), "sin(0) should be 0, got {v}");
-    }
+    let v = val.expect("val must evaluate");
+    assert!(approx(v, 0.0, 1e-10), "sin(0) should be 0, got {v}");
 }
 
 /// Parse and evaluate factorial
@@ -2180,9 +2155,8 @@ fn substitution_deep_nesting() {
     // Substitute x=0 — should be 0 (since sin(0) = 0)
     let result = expr.subs_i64(&x, 0).eval();
     let val = eval_f64_ex(&result);
-    if let Ok(v) = val {
-        assert!(approx(v, 0.0, 1e-10), "sin^20(0) should be 0, got {v}");
-    }
+    let v = val.expect("val must evaluate");
+    assert!(approx(v, 0.0, 1e-10), "sin^20(0) should be 0, got {v}");
 }
 
 /// Expand a large polynomial: (x+y)^10
@@ -2198,18 +2172,16 @@ fn expand_large_binomial() {
 
     // Verify at x=1, y=1: should be 2^10 = 1024
     let val = expanded.subs_i64(&x, 1).subs_i64(&y, 1).eval().eval_f64();
-    if let Ok(v) = val {
-        assert!(approx(v, 1024.0, 1e-10), "(1+1)^10 should be 1024, got {v}");
-    }
+    let v = val.expect("val must evaluate");
+    assert!(approx(v, 1024.0, 1e-10), "(1+1)^10 should be 1024, got {v}");
 
     // Verify at x=2, y=3: should be 5^10 = 9765625
     let val2 = expanded.subs_i64(&x, 2).subs_i64(&y, 3).eval().eval_f64();
-    if let Ok(v) = val2 {
-        assert!(
-            approx(v, 9765625.0, 1e-6),
-            "(2+3)^10 should be 9765625, got {v}"
-        );
-    }
+    let v = val2.expect("val2 must evaluate");
+    assert!(
+        approx(v, 9765625.0, 1e-6),
+        "(2+3)^10 should be 9765625, got {v}"
+    );
 }
 
 /// Symbolic differentiation preserves eval: d/dx[expr].eval() at a point
@@ -2768,12 +2740,11 @@ fn hyperbolic_pythagorean_identity() {
 
     for &pt in &[0_i64, 1, 2, -1, -2] {
         let val = expr.subs_i64(&x, pt).eval().eval_f64();
-        if let Ok(v) = val {
-            assert!(
-                approx(v, 1.0, 1e-10),
-                "cosh²({pt}) - sinh²({pt}) should be 1, got {v}"
-            );
-        }
+        let v = val.expect("val must evaluate");
+        assert!(
+            approx(v, 1.0, 1e-10),
+            "cosh²({pt}) - sinh²({pt}) should be 1, got {v}"
+        );
     }
 }
 
@@ -2787,12 +2758,11 @@ fn diff_sinh() {
     for &pt in &[0_i64, 1, 2, -1] {
         let vd = deriv.subs_i64(&x, pt).eval().eval_f64();
         let expected = (pt as f64).cosh();
-        if let Ok(v) = vd {
-            assert!(
-                approx(v, expected, 1e-9),
-                "d/dx[sinh(x)] at x={pt}: got {v}, expected {expected}"
-            );
-        }
+        let v = vd.expect("vd must evaluate");
+        assert!(
+            approx(v, expected, 1e-9),
+            "d/dx[sinh(x)] at x={pt}: got {v}, expected {expected}"
+        );
     }
 }
 
@@ -2806,11 +2776,10 @@ fn diff_cosh() {
     for &pt in &[0_i64, 1, 2, -1] {
         let vd = deriv.subs_i64(&x, pt).eval().eval_f64();
         let expected = (pt as f64).sinh();
-        if let Ok(v) = vd {
-            assert!(
-                approx(v, expected, 1e-9),
-                "d/dx[cosh(x)] at x={pt}: got {v}, expected {expected}"
-            );
-        }
+        let v = vd.expect("vd must evaluate");
+        assert!(
+            approx(v, expected, 1e-9),
+            "d/dx[cosh(x)] at x={pt}: got {v}, expected {expected}"
+        );
     }
 }
