@@ -342,6 +342,111 @@ impl Expr<Numeric> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Laplace helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Expr<Numeric> {
+    /// Initial value theorem: `f(0⁺) = lim_{s→∞} s·F(s)` for this Laplace
+    /// transform `F(s)`.
+    ///
+    /// An infinite initial value (e.g. `f = 1/√t`, `F = √(π/s)`) is returned
+    /// as the extended-real value `oo`.
+    ///
+    /// # Errors
+    ///
+    /// `ComputationFailed` if the limit does not exist or cannot be computed.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let s = ctx.symbol("s");
+    /// // F(s) = (s + 2)/(s² + 3s + 5)  →  f(0⁺) = 1
+    /// let f = (&s + 2) / (s.powi(2) + 3 * &s + 5);
+    /// assert_eq!(format!("{}", f.laplace_initial_value(&s).unwrap()), "1");
+    /// // F(s) = 1/(s² + 1) (f = sin t)  →  f(0⁺) = 0
+    /// assert_eq!(format!("{}", (1 / (s.powi(2) + 1)).laplace_initial_value(&s).unwrap()), "0");
+    /// ```
+    pub fn laplace_initial_value(&self, s: &Ex) -> Result<Ex, SymplexError> {
+        let sf = s * self;
+        sf.try_limit(s, &s.context().infinity())
+    }
+
+    /// Final value theorem: `lim_{t→∞} f(t) = lim_{s→0⁺} s·F(s)` for this
+    /// Laplace transform `F(s)`.
+    ///
+    /// The theorem only holds when every pole of `s·F(s)` lies in the open
+    /// left half-plane. When `s·F(s)` is a rational function whose poles can
+    /// be located, this is verified and a violation is reported as
+    /// `Divergent` instead of returning a meaningless number; for
+    /// non-rational transforms (e.g. delays `e^{−as}F(s)`) the caller is
+    /// responsible for the precondition.
+    ///
+    /// # Errors
+    ///
+    /// * `Divergent` if `s·F(s)` has a pole with non-negative real part.
+    /// * `ComputationFailed` if the poles cannot be located or the limit
+    ///   cannot be computed.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let s = ctx.symbol("s");
+    /// // Step response of a stable first-order system: F(s) = 3/(s(s + 2)) → 3/2
+    /// let f = 3 / (&s * (&s + 2));
+    /// assert_eq!(format!("{}", f.laplace_final_value(&s).unwrap()), "3/2");
+    /// // e^{t} has no final value: the pole at s = 1 is detected.
+    /// assert!(matches!(
+    ///     (1 / (&s - 1)).laplace_final_value(&s),
+    ///     Err(SymplexError::Divergent { .. })
+    /// ));
+    /// ```
+    pub fn laplace_final_value(&self, s: &Ex) -> Result<Ex, SymplexError> {
+        let ctx = s.context();
+        let sf = (s * self).together();
+        let (_, den) = sf.as_numer_denom();
+        if den.is_polynomial(s) && !den.free_symbols().is_empty() {
+            let poles = den.solve_or_empty(s);
+            if poles.is_empty() {
+                return Err(SymplexError::ComputationFailed {
+                    operation: "laplace_final_value",
+                    reason: format!(
+                        "cannot locate the poles of s·F(s) (denominator {den}) to verify the final value theorem"
+                    ),
+                });
+            }
+            for p in &poles {
+                let re = match p.eval_complex64() {
+                    Ok((re, _)) => re,
+                    Err(_) => match p.re().is_negative() {
+                        Some(true) => -1.0,
+                        Some(false) => 0.0,
+                        None => {
+                            return Err(SymplexError::ComputationFailed {
+                                operation: "laplace_final_value",
+                                reason: format!(
+                                    "cannot determine the sign of Re({p}) (a pole of s·F(s))"
+                                ),
+                            });
+                        }
+                    },
+                };
+                if re >= 0.0 {
+                    return Err(SymplexError::Divergent {
+                        operation: "laplace_final_value",
+                        reason: format!(
+                            "s·F(s) has a pole at s = {p} with non-negative real part, so f(t) has no finite limit"
+                        ),
+                    });
+                }
+            }
+        }
+        sf.try_limit_right(s, &ctx.int(0))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Mellin transform
 // ═══════════════════════════════════════════════════════════════════════════
 
