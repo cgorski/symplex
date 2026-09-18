@@ -15,6 +15,7 @@ use tracing::debug_span;
 use crate::api::expr::{Ex, Expr, Numeric};
 use crate::base::errors::SymplexError;
 
+pub use crate::calculus::fourier_transform::FourierConvention;
 pub use crate::calculus::limit::Direction;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -157,5 +158,185 @@ impl Expr<Numeric> {
     /// Fallible right-hand limit. See [`try_limit_dir`](Self::try_limit_dir).
     pub fn try_limit_right(&self, var: &Ex, point: &Ex) -> Result<Ex, SymplexError> {
         self.try_limit_dir(var, point, Direction::Right)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Fourier transform
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Expr<Numeric> {
+    /// Fourier transform `F(ω) = ∫_{−∞}^{∞} f(t) e^{−iωt} dt` of this
+    /// expression (a function of `t`) as a function of `omega`.
+    ///
+    /// This is the non-unitary angular-frequency convention; see
+    /// [`fourier_transform_with`](Self::fourier_transform_with) for the
+    /// others. The transform is computed from a table (`δ`, constants,
+    /// `H(t)`, `sign(t)`, `1/t`, `|t|`, rectangular windows, `e^{−a|t|}`,
+    /// Gaussians, `tⁿ e^{−at} H(t)`, `cos`/`sin`, `sinc`) together with
+    /// linearity, time shift, modulation, scaling, the derivative rule and
+    /// `t·f(t) → i F′(ω)`.
+    ///
+    /// Symbols other than `t` and `omega` are treated as **real**
+    /// parameters. Conditions such as `a > 0` in `e^{−a|t|}` are checked
+    /// through the assumption system (declare `a` with
+    /// `Assumption::Positive`); an unprovable condition is an error.
+    ///
+    /// # Errors
+    ///
+    /// * `InvalidArgument` if `t`/`omega` are not distinct symbols.
+    /// * `ComputationFailed` if no rule applies, a required sign assumption
+    ///   is missing, or the result would need a distribution that cannot be
+    ///   represented (e.g. `δ′`). There is no unevaluated node for Fourier
+    ///   transforms, so this API is `Result`-only.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let t = ctx.symbol("t");
+    /// let w = ctx.symbol("w");
+    /// let a = ctx.symbol_with("a", &[Assumption::Positive]);
+    ///
+    /// // e^{-a|t|}  →  2a/(a² + ω²)
+    /// let f = (-&a * t.abs()).exp().fourier_transform(&t, &w).unwrap();
+    /// assert_eq!(format!("{f}"), "2*a/(a^2 + w^2)");
+    ///
+    /// // Rectangular window H(t + 1) − H(t − 1)  →  2 sin(ω)/ω
+    /// let rect = (&t + 1).heaviside() - (&t - 1).heaviside();
+    /// let r = rect.fourier_transform(&t, &w).unwrap();
+    /// assert_eq!(format!("{r}"), "2*sin(w)/w");
+    ///
+    /// // e^{-2t} H(t)  →  1/(iω + 2)
+    /// let g = ((&t * -2).exp() * t.heaviside()).fourier_transform(&t, &w).unwrap();
+    /// assert_eq!(g, 1 / (ctx.i_unit() * &w + 2));
+    ///
+    /// // Unknown sign → Err rather than a guess.
+    /// let b = ctx.symbol("b");
+    /// assert!((-&b * t.abs()).exp().fourier_transform(&t, &w).is_err());
+    /// ```
+    pub fn fourier_transform(&self, t: &Ex, omega: &Ex) -> Result<Ex, SymplexError> {
+        self.fourier_transform_with(t, omega, FourierConvention::NonUnitaryAngular)
+    }
+
+    /// Fourier transform in the given [`FourierConvention`].
+    ///
+    /// | convention            | `F =`                                  |
+    /// |-----------------------|----------------------------------------|
+    /// | `NonUnitaryAngular`   | `∫ f(t) e^{−iωt} dt`                   |
+    /// | `UnitaryAngular`      | `(1/√(2π)) ∫ f(t) e^{−iωt} dt`         |
+    /// | `Ordinary`            | `∫ f(t) e^{−2πiνt} dt` (`omega` is `ν`)  |
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::fourier_transform::FourierConvention;
+    ///
+    /// let ctx = Context::new();
+    /// let t = ctx.symbol("t");
+    /// let nu = ctx.symbol("nu");
+    /// // Gaussian e^{-πt²} is its own transform in the ordinary convention.
+    /// let g = (-(ctx.pi() * t.powi(2))).exp();
+    /// let f = g
+    ///     .fourier_transform_with(&t, &nu, FourierConvention::Ordinary)
+    ///     .unwrap();
+    /// assert_eq!(f, (-(ctx.pi() * nu.powi(2))).exp());
+    /// ```
+    pub fn fourier_transform_with(
+        &self,
+        t: &Ex,
+        omega: &Ex,
+        convention: FourierConvention,
+    ) -> Result<Ex, SymplexError> {
+        let t_id = self.checked_id(t);
+        let w_id = self.checked_id(omega);
+        let _span = debug_span!("fourier_transform", expr = ?self.raw_id(), t = ?t_id).entered();
+        let r = {
+            let mut inner = self.inner.write();
+            crate::calculus::fourier_transform::fourier_transform_with(
+                &mut inner.arena,
+                self.raw_id(),
+                t_id,
+                w_id,
+                convention,
+            )
+        };
+        r.map(|id| self.wrap(id))
+    }
+
+    /// Inverse Fourier transform `f(t) = (1/2π) ∫ F(ω) e^{iωt} dω` of this
+    /// expression (a function of `omega`) as a function of `t`, in the
+    /// non-unitary angular convention.
+    ///
+    /// Handles `δ(ω − ω₀)`, constants, `H(ω)`, `sign(ω)`, `1/ω`,
+    /// `1/(iω − a)ⁿ`, `1/(ω² + a²)`, `ω/(ω² + a²)`, Gaussians, `sin(aω)/ω`,
+    /// `cos(aω)`/`sin(aω)`, rectangular windows in `ω`, plus linearity,
+    /// shift, modulation, scaling and `ωⁿ G(ω) → (−i)ⁿ g⁽ⁿ⁾(t)`.
+    ///
+    /// # Errors
+    ///
+    /// As for [`fourier_transform`](Self::fourier_transform).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let t = ctx.symbol("t");
+    /// let w = ctx.symbol("w");
+    /// // 1/(iω + 3)  →  e^{-3t} H(t)
+    /// let big_f = 1 / (ctx.i_unit() * &w + 3);
+    /// let f = big_f.inverse_fourier_transform(&w, &t).unwrap();
+    /// assert_eq!(format!("{f}"), "exp(-3*t)*H(t)");
+    /// // 2/(ω² + 1)  →  e^{-|t|}
+    /// let g = (2 / (w.powi(2) + 1)).inverse_fourier_transform(&w, &t).unwrap();
+    /// assert_eq!(format!("{g}"), "exp(-abs(t))");
+    /// ```
+    pub fn inverse_fourier_transform(&self, omega: &Ex, t: &Ex) -> Result<Ex, SymplexError> {
+        self.inverse_fourier_transform_with(omega, t, FourierConvention::NonUnitaryAngular)
+    }
+
+    /// Inverse Fourier transform in the given [`FourierConvention`]
+    /// (see [`fourier_transform_with`](Self::fourier_transform_with)).
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::fourier_transform::FourierConvention;
+    ///
+    /// let ctx = Context::new();
+    /// let t = ctx.symbol("t");
+    /// let w = ctx.symbol("w");
+    /// let f = (-t.abs()).exp();
+    /// let big_f = f
+    ///     .fourier_transform_with(&t, &w, FourierConvention::UnitaryAngular)
+    ///     .unwrap();
+    /// let back = big_f
+    ///     .inverse_fourier_transform_with(&w, &t, FourierConvention::UnitaryAngular)
+    ///     .unwrap();
+    /// assert_eq!(format!("{back}"), "exp(-abs(t))");
+    /// ```
+    pub fn inverse_fourier_transform_with(
+        &self,
+        omega: &Ex,
+        t: &Ex,
+        convention: FourierConvention,
+    ) -> Result<Ex, SymplexError> {
+        let w_id = self.checked_id(omega);
+        let t_id = self.checked_id(t);
+        let _span = debug_span!("inverse_fourier_transform", expr = ?self.raw_id(), omega = ?w_id)
+            .entered();
+        let r = {
+            let mut inner = self.inner.write();
+            crate::calculus::fourier_transform::inverse_fourier_transform_with(
+                &mut inner.arena,
+                self.raw_id(),
+                w_id,
+                t_id,
+                convention,
+            )
+        };
+        r.map(|id| self.wrap(id))
     }
 }
