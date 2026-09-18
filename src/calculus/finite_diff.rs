@@ -1,58 +1,45 @@
 //! Finite difference methods: weights, application, and differentiation.
 //!
-//! This module implements:
-//! - **Fornberg's algorithm** (1988) for computing finite difference weights
-//!   for arbitrary-order derivatives on arbitrary grids.
-//! - **`apply_finite_diff`** — apply computed weights to function values.
-//! - **`differentiate_finite`** — replace symbolic derivatives with finite
-//!   difference approximations.
+//! * [`finite_diff_weights`] — Fornberg weights for the `order`-th
+//!   derivative on an arbitrary grid (exact rationals / exact expressions).
+//! * [`finite_diff_weights_table`] — the full Fornberg table for all
+//!   derivative orders `0..=order` and all grid prefixes.
+//! * [`apply_finite_diff`] — `Σ wᵢ yᵢ` for given function values.
+//! * [`equispaced_grid`] — `[x₀ − n·h, …, x₀, …, x₀ + n·h]`.
+//! * [`Ex::differentiate_finite`](crate::api::expr::Ex::differentiate_finite)
+//!   — finite-difference approximation of an expression's derivative.
 //!
-//! All arithmetic is performed symbolically through the arena, so weights
-//! are exact rational numbers.
+//! All arithmetic is symbolic and exact.
+//!
+//! ```
+//! use symplex::prelude::*;
+//! use symplex::finite_diff::finite_diff_weights;
+//!
+//! let ctx = Context::new();
+//! let grid = [ctx.int(-1), ctx.int(0), ctx.int(1)];
+//! let w = finite_diff_weights(2, &grid, &ctx.int(0));
+//! let s: Vec<String> = w.iter().map(|e| e.to_string()).collect();
+//! assert_eq!(s, ["1", "-2", "1"]);
+//! ```
 
-use smallvec::SmallVec;
-
+use crate::api::context::Context;
+use crate::api::expr::Ex;
 use crate::base::arena::Arena;
-use crate::base::node::{ExprId, ExprNode, SymbolId};
+use crate::base::errors::SymplexError;
+use crate::base::node::{ExprId, ExprNode};
+use crate::base::walk;
+use crate::transforms::eval;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Fornberg's algorithm
+// Fornberg's algorithm (arena level)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Compute finite difference weights for derivatives of order `0..=order`
-/// at point `x0`, given grid points `x_list`.
+/// Fornberg's table `delta[m][n][ν]`: weight of grid point `ν` for the
+/// `m`-th derivative using the first `n+1` grid points.
 ///
-/// Returns a 3D structure `result[m][n]` where:
-/// - `m` is the derivative order (`0..=order`)
-/// - `n` is the number of grid points used (`0..=N` where `N = x_list.len() - 1`)
-/// - Each `result[m][n]` is a `Vec<ExprId>` of length `n+1`, giving the
-///   weight for each grid point `x_list[0..=n]`.
-///
-/// The final weights for derivative order `m` using all `N+1` grid points
-/// are in `result[m][N]`.
-///
-/// # Algorithm
-///
-/// This implements the algorithm from:
 /// B. Fornberg, "Generation of Finite Difference Formulas on Arbitrarily
-/// Spaced Grids", Mathematics of Computation 51(184), 1988, pp. 699–706.
-///
-/// The recurrence fills a 3D array `delta[m][n][nu]`:
-/// ```text
-/// delta[0][0][0] = 1
-/// c1 = 1
-/// for n = 1..N:
-///     c2 = 1
-///     for nu = 0..n-1:
-///         c3 = x_list[n] - x_list[nu]
-///         c2 *= c3
-///         for m = 0..min(n, M):
-///             delta[m][n][nu] = ((x[n]-x0)*delta[m][n-1][nu] - m*delta[m-1][n-1][nu]) / c3
-///     for m = 0..min(n, M):
-///         delta[m][n][n] = c1/c2 * (m*delta[m-1][n-1][n-1] - (x[n-1]-x0)*delta[m][n-1][n-1])
-///     c1 = c2
-/// ```
-pub fn finite_diff_weights(
+/// Spaced Grids", *Math. Comp.* 51 (1988), 699–706.
+pub(crate) fn fornberg_table(
     arena: &mut Arena,
     order: usize,
     x_list: &[ExprId],
@@ -68,11 +55,9 @@ pub fn finite_diff_weights(
         return vec![Vec::new(); order + 1];
     }
 
-    let big_m = order; // maximum derivative order
-    let big_n = n_points - 1; // maximum grid index
+    let big_m = order;
+    let big_n = n_points - 1;
 
-    // Allocate: delta[m][n] is a Vec of length n+1
-    // m ranges 0..=big_m, n ranges 0..=big_n
     let mut delta: Vec<Vec<Vec<ExprId>>> = Vec::with_capacity(big_m + 1);
     for _m in 0..=big_m {
         let mut level_m = Vec::with_capacity(big_n + 1);
@@ -82,28 +67,19 @@ pub fn finite_diff_weights(
         delta.push(level_m);
     }
 
-    // delta[0][0][0] = 1
     delta[0][0][0] = arena.one;
-
     let mut c1 = arena.one;
 
     for n in 1..=big_n {
         let mut c2 = arena.one;
-
         for nu in 0..n {
-            // c3 = x_list[n] - x_list[nu]
             let c3 = arena.sub(x_list[n], x_list[nu]);
-            // c2 *= c3
             c2 = arena.mul(&[c2, c3]);
-
             let m_max = std::cmp::min(n, big_m);
             for m in 0..=m_max {
-                // delta[m][n][nu] = ((x_list[n] - x0) * delta[m][n-1][nu]
-                //                    - m * delta[m-1][n-1][nu]) / c3
                 let x_n_minus_x0 = arena.sub(x_list[n], x0);
                 let prev = delta[m][n - 1][nu];
                 let first_term = arena.mul(&[x_n_minus_x0, prev]);
-
                 let second_term = if m == 0 {
                     arena.zero
                 } else {
@@ -111,19 +87,14 @@ pub fn finite_diff_weights(
                     let prev_m = delta[m - 1][n - 1][nu];
                     arena.mul(&[m_id, prev_m])
                 };
-
                 let numer = arena.sub(first_term, second_term);
                 let val = arena.div(numer, c3);
-                let val = crate::transforms::eval::eval(arena, val);
-                delta[m][n][nu] = val;
+                delta[m][n][nu] = eval::eval(arena, val);
             }
         }
-
         let m_max = std::cmp::min(n, big_m);
         for m in 0..=m_max {
-            // delta[m][n][n] = c1/c2 * (m*delta[m-1][n-1][n-1] - (x_list[n-1]-x0)*delta[m][n-1][n-1])
             let ratio = arena.div(c1, c2);
-
             let m_term = if m == 0 {
                 arena.zero
             } else {
@@ -131,194 +102,288 @@ pub fn finite_diff_weights(
                 let prev_m = delta[m - 1][n - 1][n - 1];
                 arena.mul(&[m_id, prev_m])
             };
-
             let x_prev_minus_x0 = arena.sub(x_list[n - 1], x0);
             let prev = delta[m][n - 1][n - 1];
             let second = arena.mul(&[x_prev_minus_x0, prev]);
-
             let bracket = arena.sub(m_term, second);
             let val = arena.mul(&[ratio, bracket]);
-            let val = crate::transforms::eval::eval(arena, val);
-            delta[m][n][n] = val;
+            delta[m][n][n] = eval::eval(arena, val);
         }
-
         c1 = c2;
     }
 
     delta
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Apply finite differences
-// ═══════════════════════════════════════════════════════════════════════════
+/// Weights for the `order`-th derivative at `x0` using all of `x_list`.
+pub(crate) fn weights_arena(
+    arena: &mut Arena,
+    order: usize,
+    x_list: &[ExprId],
+    x0: ExprId,
+) -> Vec<ExprId> {
+    if x_list.is_empty() {
+        return Vec::new();
+    }
+    let table = fornberg_table(arena, order, x_list, x0);
+    let n = x_list.len() - 1;
+    match table.get(order).and_then(|t| t.get(n)) {
+        Some(w) => w.clone(),
+        None => vec![arena.zero; x_list.len()],
+    }
+}
 
-/// Apply finite difference weights to approximate the derivative of order
-/// `order` at `x0`, given grid points `x_list` and corresponding function
-/// values `y_list`.
-///
-/// Computes `Σ weight_i * y_i` where the weights come from Fornberg's
-/// algorithm using all grid points.
-///
-/// # Panics
-///
-/// Panics if `x_list` and `y_list` have different lengths, or if either
-/// is empty.
-pub fn apply_finite_diff(
+/// `Σ wᵢ yᵢ` (arena level).
+pub(crate) fn apply_arena(
     arena: &mut Arena,
     order: usize,
     x_list: &[ExprId],
     y_list: &[ExprId],
     x0: ExprId,
 ) -> ExprId {
-    tracing::debug!("finite_diff: applying order {} derivative", order);
-    assert_eq!(
-        x_list.len(),
-        y_list.len(),
-        "x_list and y_list must have the same length"
-    );
-    assert!(!x_list.is_empty(), "x_list must be non-empty");
-
-    let weights_all = finite_diff_weights(arena, order, x_list, x0);
-    let n = x_list.len() - 1;
-
-    // Extract the weights for derivative order `order`, using all N+1 points
-    if order >= weights_all.len() || n >= weights_all[order].len() {
-        return arena.zero;
-    }
-
-    let weights = &weights_all[order][n];
-
-    let mut terms: SmallVec<[ExprId; 8]> = SmallVec::new();
-    for (i, &w) in weights.iter().enumerate() {
-        if i < y_list.len() && !arena.is_zero_structural(w) {
-            let term = arena.mul(&[w, y_list[i]]);
-            terms.push(term);
+    let weights = weights_arena(arena, order, x_list, x0);
+    let mut terms = Vec::with_capacity(weights.len());
+    for (w, y) in weights.iter().zip(y_list) {
+        if !arena.is_zero_structural(*w) {
+            terms.push(arena.mul(&[*w, *y]));
         }
     }
-
-    if terms.is_empty() {
-        arena.zero
-    } else if terms.len() == 1 {
-        terms[0]
-    } else {
-        arena.add(&terms)
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Differentiate finite
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Replace derivative nodes in `expr` with central finite difference
-/// approximations.
-///
-/// When encountering `Derivative(f, x)`, replaces it with the central
-/// difference formula:
-///
-/// ```text
-/// (f(x + h/2) - f(x - h/2)) / h
-/// ```
-///
-/// where `h` is a new symbol `_h`. For higher-order derivatives, the
-/// transformation is applied repeatedly.
-///
-/// This is useful for converting symbolic derivative expressions into
-/// numerical approximation formulas.
-pub fn differentiate_finite(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
-    let var_sym = match arena.node(var) {
-        ExprNode::Symbol(sid) => *sid,
-        _ => return expr,
+    let s = match terms.len() {
+        0 => arena.zero,
+        1 => terms[0],
+        _ => arena.add(&terms),
     };
-
-    differentiate_finite_inner(arena, expr, var, var_sym)
+    eval::eval(arena, s)
 }
 
-fn differentiate_finite_inner(
+// ═══════════════════════════════════════════════════════════════════════════
+// Public Ex-based API
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn ctx_of(exprs: &[Ex], fallback: &Ex) -> Context {
+    exprs.first().unwrap_or(fallback).context()
+}
+
+fn wrap(ctx: &Context, id: ExprId) -> Ex {
+    Ex::from_raw_parts(ctx.id, std::sync::Arc::clone(&ctx.inner), id)
+}
+
+/// Finite difference weights for the `order`-th derivative at `x0` using
+/// every point of `x_list` (Fornberg's algorithm, exact arithmetic).
+///
+/// Returns one weight per grid point.  The grid points may be symbolic
+/// (e.g. `x − h, x, x + h`).
+///
+/// # Panics
+///
+/// Panics if the expressions come from different contexts.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::finite_diff::finite_diff_weights;
+///
+/// let ctx = Context::new();
+/// let grid = [ctx.int(0), ctx.int(1), ctx.int(2), ctx.int(3)];
+/// let w = finite_diff_weights(1, &grid, &ctx.int(0));
+/// let s: Vec<String> = w.iter().map(|e| e.to_string()).collect();
+/// assert_eq!(s, ["-11/6", "3", "-3/2", "1/3"]);
+/// ```
+#[must_use]
+pub fn finite_diff_weights(order: usize, x_list: &[Ex], x0: &Ex) -> Vec<Ex> {
+    let ctx = ctx_of(x_list, x0);
+    let ids: Vec<ExprId> = x_list.iter().map(|x| x0.checked_id(x)).collect();
+    let x0_id = x0.raw_id();
+    let w = {
+        let mut inner = ctx.inner.write();
+        weights_arena(&mut inner.arena, order, &ids, x0_id)
+    };
+    w.into_iter().map(|id| wrap(&ctx, id)).collect()
+}
+
+/// The full Fornberg table `table[m][n]` — weights for derivative order
+/// `m ∈ 0..=order` using the first `n+1` grid points (`n ∈ 0..x_list.len()`).
+///
+/// # Panics
+///
+/// Panics if the expressions come from different contexts.
+#[must_use]
+pub fn finite_diff_weights_table(order: usize, x_list: &[Ex], x0: &Ex) -> Vec<Vec<Vec<Ex>>> {
+    let ctx = ctx_of(x_list, x0);
+    let ids: Vec<ExprId> = x_list.iter().map(|x| x0.checked_id(x)).collect();
+    let x0_id = x0.raw_id();
+    let table = {
+        let mut inner = ctx.inner.write();
+        fornberg_table(&mut inner.arena, order, &ids, x0_id)
+    };
+    table
+        .into_iter()
+        .map(|level| {
+            level
+                .into_iter()
+                .map(|w| w.into_iter().map(|id| wrap(&ctx, id)).collect())
+                .collect()
+        })
+        .collect()
+}
+
+/// Approximate the `order`-th derivative at `x0` from grid points `x_list`
+/// and function values `y_list`: `Σ wᵢ yᵢ` with Fornberg weights.
+///
+/// Returns [`SymplexError::InvalidArgument`] if the lists are empty or of
+/// different lengths.
+///
+/// # Panics
+///
+/// Panics if the expressions come from different contexts.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::finite_diff::apply_finite_diff;
+///
+/// let ctx = Context::new();
+/// // f(x) = x², grid −1, 0, 1 → f'' = 2 exactly
+/// let xs = [ctx.int(-1), ctx.int(0), ctx.int(1)];
+/// let ys = [ctx.int(1), ctx.int(0), ctx.int(1)];
+/// let d2 = apply_finite_diff(2, &xs, &ys, &ctx.int(0)).unwrap();
+/// assert_eq!(d2.to_string(), "2");
+/// ```
+pub fn apply_finite_diff(
+    order: usize,
+    x_list: &[Ex],
+    y_list: &[Ex],
+    x0: &Ex,
+) -> Result<Ex, SymplexError> {
+    if x_list.is_empty() || x_list.len() != y_list.len() {
+        return Err(SymplexError::InvalidArgument {
+            operation: "apply_finite_diff",
+            reason: format!(
+                "x_list ({}) and y_list ({}) must be non-empty and of equal length",
+                x_list.len(),
+                y_list.len()
+            ),
+        });
+    }
+    let ctx = ctx_of(x_list, x0);
+    let xs: Vec<ExprId> = x_list.iter().map(|x| x0.checked_id(x)).collect();
+    let ys: Vec<ExprId> = y_list.iter().map(|y| x0.checked_id(y)).collect();
+    let x0_id = x0.raw_id();
+    let id = {
+        let mut inner = ctx.inner.write();
+        apply_arena(&mut inner.arena, order, &xs, &ys, x0_id)
+    };
+    Ok(wrap(&ctx, id))
+}
+
+/// Equispaced grid `[center − n·h, …, center, …, center + n·h]` with
+/// `2·half_width + 1` points.
+///
+/// # Panics
+///
+/// Panics if `center` and `h` come from different contexts.
+///
+/// ```
+/// use symplex::prelude::*;
+/// use symplex::finite_diff::equispaced_grid;
+///
+/// let ctx = Context::new();
+/// let x = ctx.symbol("x");
+/// let h = ctx.symbol("h");
+/// let grid = equispaced_grid(&x, &h, 1);
+/// let s: Vec<String> = grid.iter().map(|e| e.to_string()).collect();
+/// assert_eq!(s, ["-h + x", "x", "h + x"]);
+/// ```
+#[must_use]
+pub fn equispaced_grid(center: &Ex, h: &Ex, half_width: usize) -> Vec<Ex> {
+    let ctx = center.context();
+    let h_id = center.checked_id(h);
+    let c_id = center.raw_id();
+    let ids = {
+        let mut inner = ctx.inner.write();
+        let arena = &mut inner.arena;
+        let mut grid = Vec::with_capacity(2 * half_width + 1);
+        for i in -(half_width as i64)..=(half_width as i64) {
+            if i == 0 {
+                grid.push(c_id);
+            } else {
+                let i_id = arena.int(i);
+                let offset = arena.mul(&[i_id, h_id]);
+                grid.push(arena.add(&[c_id, offset]));
+            }
+        }
+        grid
+    };
+    ids.into_iter().map(|id| wrap(&ctx, id)).collect()
+}
+
+/// Backend for [`Ex::differentiate_finite`](crate::api::expr::Ex::differentiate_finite).
+pub(crate) fn differentiate_finite(expr: &Ex, var: &Ex, points: &[Ex], order: usize) -> Ex {
+    let var_id = expr.checked_id(var);
+    let pts: Vec<ExprId> = points.iter().map(|p| expr.checked_id(p)).collect();
+    let id = {
+        let mut inner = expr.inner.write();
+        differentiate_finite_arena(&mut inner.arena, expr.raw_id(), var_id, &pts, order)
+    };
+    expr.wrap(id)
+}
+
+/// Replace `Derivative(·, var)` chains by their finite differences, then
+/// apply the `order`-th difference to the whole expression.
+fn differentiate_finite_arena(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
-    _var_sym: SymbolId,
+    points: &[ExprId],
+    order: usize,
 ) -> ExprId {
-    let node = arena.node(expr).clone();
-
-    match node {
-        ExprNode::Derivative(body, wrt) => {
-            // Check if this is a derivative w.r.t. our variable
-            if wrt == var {
-                // Create the step size symbol h
-                let h = arena.symbol("_h");
-                let two = arena.int(2);
-                let half_h = arena.div(h, two);
-
-                // f(x + h/2)
-                let x_plus = arena.add(&[var, half_h]);
-                let f_plus = crate::transforms::subs::subs(arena, body, var, x_plus);
-
-                // f(x - h/2)
-                let x_minus = arena.sub(var, half_h);
-                let f_minus = crate::transforms::subs::subs(arena, body, var, x_minus);
-
-                // (f(x + h/2) - f(x - h/2)) / h
-                let diff = arena.sub(f_plus, f_minus);
-                arena.div(diff, h)
-            } else {
-                // Derivative w.r.t. a different variable — recurse into body
-                let new_body = differentiate_finite_inner(arena, body, var, _var_sym);
-                arena.intern(ExprNode::Derivative(new_body, wrt))
+    if points.is_empty() {
+        return expr;
+    }
+    // 1. Replace formal derivative nodes bottom-up (explicit post-order).
+    let ids = walk::post_order_ids(arena, expr);
+    let mut cache: rustc_hash::FxHashMap<ExprId, ExprId> = rustc_hash::FxHashMap::default();
+    for id in ids {
+        let node = arena.node(id).clone();
+        let new_id = if let ExprNode::Derivative(body, wrt) = node
+            && wrt == var
+        {
+            // Collapse nested Derivative(Derivative(f, var), var) → order m.
+            let mut m = 1usize;
+            let mut f = body;
+            while let ExprNode::Derivative(b2, w2) = arena.node(f).clone()
+                && w2 == var
+            {
+                m += 1;
+                f = b2;
             }
-        }
-
-        // Recurse into compound expressions
-        ExprNode::Add(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children
-                .iter()
-                .map(|&c| differentiate_finite_inner(arena, c, var, _var_sym))
-                .collect();
-            arena.add(&new_children)
-        }
-        ExprNode::Mul(ref children) => {
-            let new_children: SmallVec<[ExprId; 6]> = children
-                .iter()
-                .map(|&c| differentiate_finite_inner(arena, c, var, _var_sym))
-                .collect();
-            arena.mul(&new_children)
-        }
-        ExprNode::Pow(base, exp) => {
-            let new_base = differentiate_finite_inner(arena, base, var, _var_sym);
-            let new_exp = differentiate_finite_inner(arena, exp, var, _var_sym);
-            arena.pow(new_base, new_exp)
-        }
-        ExprNode::Neg(inner) => {
-            let new_inner = differentiate_finite_inner(arena, inner, var, _var_sym);
-            arena.neg(new_inner)
-        }
-
-        // Atoms and everything else: return as-is
-        _ => expr,
+            let f = cache.get(&f).copied().unwrap_or(f);
+            finite_difference_of(arena, f, var, points, m)
+        } else {
+            crate::base::walk::rebuild_with_cache(arena, id, &cache)
+        };
+        cache.insert(id, new_id);
+    }
+    let replaced = cache.get(&expr).copied().unwrap_or(expr);
+    // 2. Apply the requested order to the whole expression.
+    if order == 0 {
+        replaced
+    } else {
+        finite_difference_of(arena, replaced, var, points, order)
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Convenience: standard stencils
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Create a standard equispaced grid `[x0 - n*h, ..., x0, ..., x0 + n*h]`
-/// centered at `x0` with step `h` and `2n+1` points.
-///
-/// Returns the grid as a Vec of ExprIds.
-pub fn equispaced_grid(arena: &mut Arena, x0: ExprId, h: ExprId, half_width: usize) -> Vec<ExprId> {
-    let mut grid = Vec::with_capacity(2 * half_width + 1);
-    for i in -(half_width as i64)..=(half_width as i64) {
-        if i == 0 {
-            grid.push(x0);
-        } else {
-            let i_id = arena.int(i);
-            let offset = arena.mul(&[i_id, h]);
-            let point = arena.add(&[x0, offset]);
-            grid.push(point);
-        }
-    }
-    grid
+/// `Σ wᵢ f(var → pointsᵢ)` with Fornberg weights for derivative `order` at `var`.
+fn finite_difference_of(
+    arena: &mut Arena,
+    f: ExprId,
+    var: ExprId,
+    points: &[ExprId],
+    order: usize,
+) -> ExprId {
+    let ys: Vec<ExprId> = points
+        .iter()
+        .map(|&p| crate::transforms::subs::subs(arena, f, var, p))
+        .collect();
+    apply_arena(arena, order, points, &ys, var)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -328,249 +393,131 @@ pub fn equispaced_grid(arena: &mut Arena, x0: ExprId, h: ExprId, half_width: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base::arena::Arena;
-    use num_bigint::BigInt;
-    use num_rational::Ratio;
 
-    fn sym(a: &mut Arena, name: &str) -> ExprId {
-        a.symbol(name)
-    }
-
-    fn display(a: &Arena, id: ExprId) -> String {
-        a.display(id).to_string()
-    }
-
-    /// Extract the rational value of an expression, if it is a Num node.
-    fn as_rat(a: &Arena, id: ExprId) -> Option<Ratio<BigInt>> {
-        a.as_num(id).cloned()
+    fn strs(v: &[Ex]) -> Vec<String> {
+        v.iter().map(|e| e.to_string()).collect()
     }
 
     #[test]
     fn forward_diff_weights_two_points() {
-        // Forward difference: grid [0, 1], x0 = 0
-        // 1st derivative weights: [-1, 1]
-        let mut a = Arena::new();
-        let zero = a.zero;
-        let one = a.one;
-        let x_list = vec![zero, one];
-
-        let weights = finite_diff_weights(&mut a, 1, &x_list, zero);
-
-        // weights[1][1] should be the 1st derivative weights using 2 points
-        let w = &weights[1][1];
-        assert_eq!(w.len(), 2);
-
-        let w0 = as_rat(&a, w[0]).expect("weight 0 should be rational");
-        let w1 = as_rat(&a, w[1]).expect("weight 1 should be rational");
-
-        assert_eq!(w0, Ratio::from_integer(BigInt::from(-1)));
-        assert_eq!(w1, Ratio::from_integer(BigInt::from(1)));
+        let ctx = Context::new();
+        let w = finite_diff_weights(1, &[ctx.int(0), ctx.int(1)], &ctx.int(0));
+        assert_eq!(strs(&w), ["-1", "1"]);
     }
 
     #[test]
-    fn central_diff_first_deriv() {
-        // Central difference: grid [-1, 0, 1], x0 = 0
-        // 1st derivative weights: [-1/2, 0, 1/2]
-        let mut a = Arena::new();
-        let zero = a.zero;
-        let neg_one = a.int(-1);
-        let one = a.one;
-        let x_list = vec![neg_one, zero, one];
-
-        let weights = finite_diff_weights(&mut a, 1, &x_list, zero);
-
-        let w = &weights[1][2]; // derivative order 1, using all 3 points
-        assert_eq!(w.len(), 3);
-
-        let w0 = as_rat(&a, w[0]).expect("weight 0");
-        let w1 = as_rat(&a, w[1]).expect("weight 1");
-        let w2 = as_rat(&a, w[2]).expect("weight 2");
-
-        assert_eq!(w0, Ratio::new(BigInt::from(-1), BigInt::from(2)));
-        assert_eq!(w1, Ratio::from_integer(BigInt::from(0)));
-        assert_eq!(w2, Ratio::new(BigInt::from(1), BigInt::from(2)));
-    }
-
-    #[test]
-    fn central_diff_second_deriv() {
-        // Central difference: grid [-1, 0, 1], x0 = 0
-        // 2nd derivative weights: [1, -2, 1]
-        let mut a = Arena::new();
-        let zero = a.zero;
-        let neg_one = a.int(-1);
-        let one = a.one;
-        let x_list = vec![neg_one, zero, one];
-
-        let weights = finite_diff_weights(&mut a, 2, &x_list, zero);
-
-        let w = &weights[2][2];
-        assert_eq!(w.len(), 3);
-
-        let w0 = as_rat(&a, w[0]).expect("weight 0");
-        let w1 = as_rat(&a, w[1]).expect("weight 1");
-        let w2 = as_rat(&a, w[2]).expect("weight 2");
-
-        assert_eq!(w0, Ratio::from_integer(BigInt::from(1)));
-        assert_eq!(w1, Ratio::from_integer(BigInt::from(-2)));
-        assert_eq!(w2, Ratio::from_integer(BigInt::from(1)));
-    }
-
-    #[test]
-    fn apply_finite_diff_quadratic_exact() {
-        // f(x) = x^2, grid = [-1, 0, 1], evaluate 1st derivative at x=0
-        // f'(0) should be exactly 0 for x^2
-        // weights: [-1/2, 0, 1/2], y_values: [1, 0, 1]
-        // result = -1/2 * 1 + 0 * 0 + 1/2 * 1 = 0
-        let mut a = Arena::new();
-        let zero = a.zero;
-        let neg_one = a.int(-1);
-        let one = a.one;
-
-        let x_list = vec![neg_one, zero, one];
-        let y_list = vec![one, zero, one]; // f(-1)=1, f(0)=0, f(1)=1
-
-        let result = apply_finite_diff(&mut a, 1, &x_list, &y_list, zero);
-        let result_eval = crate::transforms::eval::eval(&mut a, result);
-
-        assert!(
-            a.is_zero_structural(result_eval),
-            "derivative of x^2 at 0 should be 0, got {}",
-            display(&a, result_eval)
-        );
-    }
-
-    #[test]
-    fn apply_finite_diff_quadratic_second_deriv() {
-        // f(x) = x^2, grid = [-1, 0, 1], 2nd derivative at x=0
-        // weights: [1, -2, 1], y_values: [1, 0, 1]
-        // result = 1*1 + (-2)*0 + 1*1 = 2
-        let mut a = Arena::new();
-        let zero = a.zero;
-        let neg_one = a.int(-1);
-        let one = a.one;
-
-        let x_list = vec![neg_one, zero, one];
-        let y_list = vec![one, zero, one];
-
-        let result = apply_finite_diff(&mut a, 2, &x_list, &y_list, zero);
-        let result_eval = crate::transforms::eval::eval(&mut a, result);
-
-        let two = a.int(2);
+    fn central_diff_first_and_second() {
+        let ctx = Context::new();
+        let grid = [ctx.int(-1), ctx.int(0), ctx.int(1)];
         assert_eq!(
-            result_eval,
-            two,
-            "2nd derivative of x^2 should be 2, got {}",
-            display(&a, result_eval)
+            strs(&finite_diff_weights(1, &grid, &ctx.int(0))),
+            ["-1/2", "0", "1/2"]
         );
-    }
-
-    #[test]
-    fn apply_finite_diff_linear_first_deriv() {
-        // f(x) = 3x + 1, grid = [0, 1], 1st derivative at x=0
-        // weights: [-1, 1], y = [1, 4]
-        // result = -1*1 + 1*4 = 3
-        let mut a = Arena::new();
-        let zero = a.zero;
-        let one = a.one;
-
-        let x_list = vec![zero, one];
-        let y0 = a.int(1); // f(0) = 1
-        let y1 = a.int(4); // f(1) = 4
-        let y_list = vec![y0, y1];
-
-        let result = apply_finite_diff(&mut a, 1, &x_list, &y_list, zero);
-        let result_eval = crate::transforms::eval::eval(&mut a, result);
-
-        let three = a.int(3);
         assert_eq!(
-            result_eval,
-            three,
-            "derivative of 3x+1 should be 3, got {}",
-            display(&a, result_eval)
+            strs(&finite_diff_weights(2, &grid, &ctx.int(0))),
+            ["1", "-2", "1"]
         );
     }
 
     #[test]
-    fn differentiate_finite_replaces_derivative() {
-        // Create a formal derivative node Derivative(x^2, x) and apply
-        // differentiate_finite — should produce a finite difference expression.
-        let mut a = Arena::new();
-        let x = sym(&mut a, "x");
-        let two = a.int(2);
-        let x2 = a.pow(x, two);
-        let deriv_node = a.intern(ExprNode::Derivative(x2, x));
-
-        let result = differentiate_finite(&mut a, deriv_node, x);
-
-        // The result should NOT contain a Derivative node
-        let s = display(&a, result);
-        assert!(
-            !s.contains("Derivative"),
-            "should not contain unevaluated Derivative: {s}"
+    fn zeroth_derivative_is_interpolation() {
+        let ctx = Context::new();
+        let grid = [ctx.int(0), ctx.int(1), ctx.int(2)];
+        assert_eq!(
+            strs(&finite_diff_weights(0, &grid, &ctx.int(0))),
+            ["1", "0", "0"]
         );
-        // It should mention _h (the step size symbol)
-        assert!(s.contains("_h"), "should contain step size symbol _h: {s}");
     }
 
     #[test]
-    fn zeroth_derivative_weights_are_interpolation() {
-        // Zeroth derivative weights at a grid point are just the
-        // Lagrange interpolation weights.
-        // Grid: [0, 1, 2], x0 = 0 → weights should be [1, 0, 0]
-        let mut a = Arena::new();
-        let zero = a.zero;
-        let one = a.one;
-        let two = a.int(2);
-        let x_list = vec![zero, one, two];
-
-        let weights = finite_diff_weights(&mut a, 0, &x_list, zero);
-
-        let w = &weights[0][2];
-        assert_eq!(w.len(), 3);
-
-        let w0 = as_rat(&a, w[0]).expect("weight 0");
-        let w1 = as_rat(&a, w[1]).expect("weight 1");
-        let w2 = as_rat(&a, w[2]).expect("weight 2");
-
-        assert_eq!(w0, Ratio::from_integer(BigInt::from(1)));
-        assert_eq!(w1, Ratio::from_integer(BigInt::from(0)));
-        assert_eq!(w2, Ratio::from_integer(BigInt::from(0)));
+    fn four_point_forward() {
+        let ctx = Context::new();
+        let grid = [ctx.int(0), ctx.int(1), ctx.int(2), ctx.int(3)];
+        assert_eq!(
+            strs(&finite_diff_weights(1, &grid, &ctx.int(0))),
+            ["-11/6", "3", "-3/2", "1/3"]
+        );
     }
 
     #[test]
-    fn equispaced_grid_produces_correct_count() {
-        let mut a = Arena::new();
-        let zero = a.zero;
-        let h = sym(&mut a, "h");
-        let grid = equispaced_grid(&mut a, zero, h, 2);
-        // half_width=2 → 5 points: [-2h, -h, 0, h, 2h]
-        assert_eq!(grid.len(), 5);
+    fn symbolic_step_weights() {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let h = ctx.symbol("h");
+        let grid = equispaced_grid(&x, &h, 1);
+        let w = finite_diff_weights(1, &grid, &x);
+        // [-1/(2h), 0, 1/(2h)]
+        assert_eq!(w[1].to_string(), "0");
+        let sum = (&w[0] + &w[2]).simplify();
+        assert_eq!(sum.to_string(), "0");
+        let prod = (&w[2] * &h * 2).simplify();
+        assert_eq!(prod.to_string(), "1");
     }
 
     #[test]
-    fn four_point_first_deriv_weights() {
-        // Forward-biased 4-point stencil: grid [0, 1, 2, 3], x0 = 0
-        // Known 1st derivative weights: [-11/6, 3, -3/2, 1/3]
-        let mut a = Arena::new();
-        let zero = a.zero;
-        let one = a.one;
-        let two = a.int(2);
-        let three = a.int(3);
-        let x_list = vec![zero, one, two, three];
+    fn apply_quadratic_second_derivative() {
+        let ctx = Context::new();
+        let xs = [ctx.int(-1), ctx.int(0), ctx.int(1)];
+        let ys = [ctx.int(1), ctx.int(0), ctx.int(1)];
+        let d2 = apply_finite_diff(2, &xs, &ys, &ctx.int(0)).unwrap();
+        assert_eq!(d2.to_string(), "2");
+        let d1 = apply_finite_diff(1, &xs, &ys, &ctx.int(0)).unwrap();
+        assert_eq!(d1.to_string(), "0");
+        assert!(apply_finite_diff(1, &xs, &ys[..2], &ctx.int(0)).is_err());
+        assert!(apply_finite_diff(1, &[], &[], &ctx.int(0)).is_err());
+    }
 
-        let weights = finite_diff_weights(&mut a, 1, &x_list, zero);
-        let w = &weights[1][3]; // 1st derivative, all 4 points
+    #[test]
+    fn table_shape() {
+        let ctx = Context::new();
+        let grid = [ctx.int(0), ctx.int(1), ctx.int(2)];
+        let t = finite_diff_weights_table(2, &grid, &ctx.int(0));
+        assert_eq!(t.len(), 3);
+        assert_eq!(t[1].len(), 3);
+        assert_eq!(t[1][2].len(), 3);
+        assert_eq!(strs(&t[1][1]), ["-1", "1"]);
+    }
 
-        assert_eq!(w.len(), 4);
+    #[test]
+    fn differentiate_finite_polynomial_exact() {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let h = ctx.symbol("h");
+        let grid = equispaced_grid(&x, &h, 1);
+        // central difference of x²: exactly 2x
+        let d = x.powi(2).differentiate_finite(&x, &grid, 1).expand();
+        assert_eq!(d.to_string(), "2*x");
+        // second difference of x³: exactly 6x
+        let d2 = x.powi(3).differentiate_finite(&x, &grid, 2).expand();
+        assert_eq!(d2.to_string(), "6*x");
+    }
 
-        let w0 = as_rat(&a, w[0]).expect("weight 0");
-        let w1 = as_rat(&a, w[1]).expect("weight 1");
-        let w2 = as_rat(&a, w[2]).expect("weight 2");
-        let w3 = as_rat(&a, w[3]).expect("weight 3");
+    #[test]
+    fn differentiate_finite_replaces_derivative_nodes() {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let h = ctx.symbol("h");
+        let grid = equispaced_grid(&x, &h, 1);
+        let e = x.sin().formal_diff(&x);
+        let d = e.differentiate_finite(&x, &grid, 0);
+        let s = d.to_string();
+        assert!(!s.contains("Derivative"), "{s}");
+        assert!(s.contains("sin(") && s.contains("h + x"), "{s}");
+        // nested derivative → second difference
+        let e2 = x.powi(3).formal_diff(&x).formal_diff(&x);
+        let d2 = e2.differentiate_finite(&x, &grid, 0).expand();
+        assert_eq!(d2.to_string(), "6*x");
+        // non-derivative expressions pass through with order 0
+        let same = x.powi(2).differentiate_finite(&x, &grid, 0);
+        assert_eq!(same.to_string(), "x^2");
+    }
 
-        assert_eq!(w0, Ratio::new(BigInt::from(-11), BigInt::from(6)));
-        assert_eq!(w1, Ratio::from_integer(BigInt::from(3)));
-        assert_eq!(w2, Ratio::new(BigInt::from(-3), BigInt::from(2)));
-        assert_eq!(w3, Ratio::new(BigInt::from(1), BigInt::from(3)));
+    #[test]
+    fn equispaced_grid_count() {
+        let ctx = Context::new();
+        let x = ctx.symbol("x");
+        let h = ctx.symbol("h");
+        assert_eq!(equispaced_grid(&x, &h, 2).len(), 5);
+        assert_eq!(equispaced_grid(&x, &h, 0).len(), 1);
     }
 }

@@ -3,6 +3,9 @@
 //! Tests exercise the public `Ex::fps()` and `Ex::fps_maclaurin()` API,
 //! verifying coefficient extraction, closed-form detection, and truncation
 //! for known elementary functions.
+//!
+//! (0.2: `FormalPowerSeries` is fully `Ex`-based — `coefficient_rational`
+//! returns `Option<Ratio>`, `truncate(n)` needs no arena.)
 
 use symplex::prelude::*;
 
@@ -14,7 +17,12 @@ use symplex::prelude::*;
 fn assert_coeff_eq(series: &symplex::formal_series::FormalPowerSeries, k: usize, p: i64, q: i64) {
     use num_bigint::BigInt;
     use num_rational::Ratio;
-    let actual = series.coefficient_rational(k);
+    let actual = series.coefficient_rational(k).unwrap_or_else(|| {
+        panic!(
+            "coefficient a_{k} is not rational: {}",
+            series.coefficient(k)
+        )
+    });
     let expected = Ratio::new(BigInt::from(p), BigInt::from(q));
     assert_eq!(
         actual,
@@ -26,9 +34,9 @@ fn assert_coeff_eq(series: &symplex::formal_series::FormalPowerSeries, k: usize,
 
 fn assert_coeff_zero(series: &symplex::formal_series::FormalPowerSeries, k: usize) {
     assert!(
-        series.coefficient_rational(k).is_zero(),
+        series.coefficient_rational(k).is_some_and(|r| r.is_zero()),
         "coefficient a_{k} should be 0, got {}",
-        series.coefficient_rational(k),
+        series.coefficient(k),
         k = k
     );
 }
@@ -241,14 +249,15 @@ fn fps_exp_truncate_5_terms() {
     let exp_x = x.exp();
 
     let series = exp_x.fps(&x, &zero);
-    let _truncated = ctx.with_arena_mut(|arena| {
-        let t = series.truncate(arena, 5);
-        let expanded = arena.expand_expr(t);
-        arena.eval_expr(expanded)
-    });
+    let truncated = series.truncate(5).expand().eval();
 
     // Also compute via maclaurin for comparison
     let mac = exp_x.maclaurin(&x, 5).expand().eval();
+    assert_eq!(
+        format!("{truncated}"),
+        format!("{mac}"),
+        "FPS truncate should match Maclaurin"
+    );
 
     let mac_s = format!("{mac}");
     assert!(mac_s.contains("x"), "maclaurin should have x: {mac_s}");
@@ -270,7 +279,7 @@ fn fps_coefficient_access_exp_5() {
     use num_bigint::BigInt;
     use num_rational::Ratio;
     let c5 = series.coefficient_rational(5);
-    assert_eq!(c5, Ratio::new(BigInt::from(1), BigInt::from(120)));
+    assert_eq!(c5, Some(Ratio::new(BigInt::from(1), BigInt::from(120))));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -324,5 +333,7 @@ fn fps_non_elementary_falls_back_to_truncated() {
     use num_bigint::BigInt;
     use num_rational::Ratio;
     let c0 = series.coefficient_rational(0);
-    assert_eq!(c0, Ratio::from_integer(BigInt::from(1)));
+    assert_eq!(c0, Some(Ratio::from_integer(BigInt::from(1))));
+    // a_1 = exp(0) + cos(0) = 2
+    assert_eq!(series.coefficient(1).to_string(), "2");
 }
