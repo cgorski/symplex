@@ -8,6 +8,7 @@
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
+use crate::transforms::pattern::RawStep;
 use num_bigint::BigInt;
 use num_traits::Signed;
 use rustc_hash::FxHashSet;
@@ -20,7 +21,14 @@ pub struct SimplifyOpts {
     /// Maximum number of fixpoint iterations (default: 10).
     /// Each iteration runs the full `smart_simplify` strategy set.
     pub max_iterations: usize,
-    /// Whether to collect a trace of rewrite-rule firings (default: false).
+    /// Whether to collect a trace of the strategies and rewrite rules that
+    /// changed the expression (default: false).
+    ///
+    /// The trace is returned by
+    /// [`Ex::simplify_traced`](crate::api::expr::Ex::simplify_traced) (which
+    /// switches this flag on automatically); `simplify_with` computes the
+    /// trace when the flag is set but has no way to return it, so the
+    /// flag is harmless there.
     pub trace: bool,
 }
 
@@ -62,6 +70,9 @@ impl SimplifyOpts {
 pub struct SimplifyResult {
     /// The simplified expression.
     pub expr: ExprId,
+    /// Trace of the strategies / rules that changed the expression
+    /// (empty unless [`SimplifyOpts::trace`] was set).
+    pub steps: Vec<RawStep>,
 }
 
 /// Count the number of operations (nodes) in an expression.
@@ -180,24 +191,54 @@ fn compute_flags(arena: &Arena, expr: ExprId) -> ExprFlags {
     flags
 }
 
-/// Helper: update `best` / `best_ops` if `candidate` has a strictly lower op-count.
-fn update_best(arena: &Arena, best: &mut ExprId, best_ops: &mut usize, candidate: ExprId) {
-    let ops = count_ops(arena, candidate);
-    if ops < *best_ops {
-        *best = candidate;
-        *best_ops = ops;
-    }
+/// The best candidate found so far by [`smart_simplify`], with the name
+/// of the strategy that produced it and the rule steps that fired inside
+/// that strategy (for tracing).
+struct Best {
+    expr: ExprId,
+    ops: usize,
+    strategy: &'static str,
+    steps: Vec<RawStep>,
 }
 
-/// Like [`update_best`], but accepts equal op-count candidates too.
-///
-/// Used for Strategy 1 (eval) so that canonical forms like `-sin(x)` win
-/// over `sin(-x)` even when they have the same number of operations.
-fn update_best_or_equal(arena: &Arena, best: &mut ExprId, best_ops: &mut usize, candidate: ExprId) {
-    let ops = count_ops(arena, candidate);
-    if ops <= *best_ops && candidate != *best {
-        *best = candidate;
-        *best_ops = ops;
+impl Best {
+    /// Replace the best candidate if `candidate` has a strictly lower op-count.
+    fn consider(
+        &mut self,
+        arena: &Arena,
+        candidate: ExprId,
+        strategy: &'static str,
+        steps: Vec<RawStep>,
+    ) {
+        let ops = count_ops(arena, candidate);
+        tracing::trace!(strategy, ops, "strategy evaluated");
+        if ops < self.ops {
+            self.expr = candidate;
+            self.ops = ops;
+            self.strategy = strategy;
+            self.steps = steps;
+        }
+    }
+
+    /// Like [`consider`](Self::consider), but accepts equal op-count candidates too.
+    ///
+    /// Used for Strategy 1 (eval) so that canonical forms like `-sin(x)` win
+    /// over `sin(-x)` even when they have the same number of operations.
+    fn consider_or_equal(
+        &mut self,
+        arena: &Arena,
+        candidate: ExprId,
+        strategy: &'static str,
+        steps: Vec<RawStep>,
+    ) {
+        let ops = count_ops(arena, candidate);
+        tracing::trace!(strategy, ops, "strategy evaluated");
+        if ops <= self.ops && candidate != self.expr {
+            self.expr = candidate;
+            self.ops = ops;
+            self.strategy = strategy;
+            self.steps = steps;
+        }
     }
 }
 
@@ -217,41 +258,47 @@ fn update_best_or_equal(arena: &Arena, best: &mut ExprId, best_ops: &mut usize, 
 /// If the best result is more than 1.7× the complexity of the original,
 /// the original is returned (to prevent "simplification" that makes things worse).
 pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
+    smart_simplify_traced(arena, expr).0
+}
+
+/// [`smart_simplify`] that also reports which strategy produced the result
+/// and the rewrite-rule steps that fired inside it.
+///
+/// The returned `&'static str` is the winning strategy name (`"none"`
+/// when the expression was returned unchanged).
+pub(crate) fn smart_simplify_traced(
+    arena: &mut Arena,
+    expr: ExprId,
+) -> (ExprId, &'static str, Vec<RawStep>) {
     let flags = compute_flags(arena, expr);
 
     // Early exit for atoms — nothing to simplify
     if flags.is_atom {
         tracing::debug!("smart_simplify: early exit for atom expression");
-        return expr;
+        return (expr, "none", Vec::new());
     }
 
     let original_ops = count_ops(arena, expr);
-    let mut best = expr;
-    let mut best_ops = original_ops;
+    let mut best = Best {
+        expr,
+        ops: original_ops,
+        strategy: "none",
+        steps: Vec::new(),
+    };
 
     // Strategy 1: eval only (always try — cheap)
-    // Use update_best_or_equal so that eval's canonical forms (e.g. -sin(x)
+    // Use consider_or_equal so that eval's canonical forms (e.g. -sin(x)
     // over sin(-x)) win even at equal op count.  This fixes Bug 14 (odd
     // function parity normalisation).
     let s1 = crate::transforms::eval::eval(arena, expr);
-    tracing::trace!(
-        strategy = "eval",
-        ops = count_ops(arena, s1),
-        "strategy evaluated"
-    );
-    update_best_or_equal(arena, &mut best, &mut best_ops, s1);
+    best.consider_or_equal(arena, s1, "eval", Vec::new());
 
     // Strategy 2: eval → pattern rules (only if trig/exp/hyp present)
     if flags.has_trig || flags.has_exp_ln || flags.has_hyp {
         let rules = crate::transforms::pattern::basic_rules(arena);
         let s2_eval = crate::transforms::eval::eval(arena, expr);
-        let (s2, _) = crate::transforms::pattern::apply_rules(arena, s2_eval, &rules);
-        tracing::trace!(
-            strategy = "eval+rules",
-            ops = count_ops(arena, s2),
-            "strategy evaluated"
-        );
-        update_best_or_equal(arena, &mut best, &mut best_ops, s2);
+        let (s2, steps) = crate::transforms::pattern::apply_rules(arena, s2_eval, &rules);
+        best.consider_or_equal(arena, s2, "eval+rules", steps);
     } else {
         tracing::debug!("smart_simplify: skipping pattern rules (no trig/exp/hyp nodes)");
     }
@@ -262,13 +309,8 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         let s3_eval = crate::transforms::eval::eval(arena, expr);
         let s3_expand = crate::transforms::expand::expand(arena, s3_eval);
         let s3_eval2 = crate::transforms::eval::eval(arena, s3_expand);
-        let (s3, _) = crate::transforms::pattern::apply_rules(arena, s3_eval2, &rules);
-        tracing::trace!(
-            strategy = "eval+expand+rules",
-            ops = count_ops(arena, s3),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s3);
+        let (s3, steps) = crate::transforms::pattern::apply_rules(arena, s3_eval2, &rules);
+        best.consider(arena, s3, "eval+expand+rules", steps);
     }
 
     // Strategy 4: eval → factor_terms (symbolic) → simplify (only if has Add)
@@ -277,18 +319,14 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         let s4_eval = crate::transforms::eval::eval(arena, expr);
         let (gcd_id, s4_inner) =
             crate::simplify::factor_terms::symbolic_factor_terms_pair(arena, s4_eval);
-        let (s4_simplified, _) = crate::transforms::pattern::apply_rules(arena, s4_inner, &rules);
+        let (s4_simplified, steps) =
+            crate::transforms::pattern::apply_rules(arena, s4_inner, &rules);
         let s4 = if gcd_id == arena.one {
             s4_simplified
         } else {
             arena.mul(&[gcd_id, s4_simplified])
         };
-        tracing::trace!(
-            strategy = "eval+factor+rules",
-            ops = count_ops(arena, s4),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s4);
+        best.consider(arena, s4, "eval+factor+rules", steps);
     } else {
         tracing::debug!("smart_simplify: skipping factor_terms (no Add nodes)");
     }
@@ -299,13 +337,8 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         let s5_eval = crate::transforms::eval::eval(arena, expr);
         let s5_trig = crate::simplify::trig_expand::expand_trig(arena, s5_eval);
         let s5_eval2 = crate::transforms::eval::eval(arena, s5_trig);
-        let (s5, _) = crate::transforms::pattern::apply_rules(arena, s5_eval2, &rules);
-        tracing::trace!(
-            strategy = "eval+trig_expand+rules",
-            ops = count_ops(arena, s5),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s5);
+        let (s5, steps) = crate::transforms::pattern::apply_rules(arena, s5_eval2, &rules);
+        best.consider(arena, s5, "eval+trig_expand+rules", steps);
     } else {
         tracing::debug!("smart_simplify: skipping trig_expand (no trig nodes)");
     }
@@ -314,12 +347,7 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     if flags.has_trig {
         let s5b_eval = crate::transforms::eval::eval(arena, expr);
         let s5b_fu = crate::simplify::fu::fu(arena, s5b_eval);
-        tracing::trace!(
-            strategy = "eval+fu",
-            ops = count_ops(arena, s5b_fu),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s5b_fu);
+        best.consider(arena, s5b_fu, "eval+fu", Vec::new());
     } else {
         tracing::debug!("smart_simplify: skipping fu (no trig nodes)");
     }
@@ -338,14 +366,19 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         } else {
             arena.mul(&[gcd_id, s5c_fu])
         };
-        tracing::trace!(
-            strategy = "eval+factor+fu",
-            ops = count_ops(arena, s5c),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s5c);
+        best.consider(arena, s5c, "eval+factor+fu", Vec::new());
     } else {
         tracing::debug!("smart_simplify: skipping factor+fu (no trig+add nodes)");
+    }
+
+    // Strategy 5d: eval → trig identity rules (sum/difference, double angle,
+    // hyperbolic double angle) → eval (only if trig/hyperbolic present)
+    if flags.has_trig || flags.has_hyp {
+        let rules = crate::simplify::trigsimp::trig_identity_rules(arena);
+        let s5d_eval = crate::transforms::eval::eval(arena, expr);
+        let (s5d_rules, steps) = crate::transforms::pattern::apply_rules(arena, s5d_eval, &rules);
+        let s5d = crate::transforms::eval::eval(arena, s5d_rules);
+        best.consider(arena, s5d, "eval+trig_identities", steps);
     }
 
     // Strategy 6: eval → logcombine → simplify (only if has Ln nodes)
@@ -353,13 +386,8 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         let rules = crate::transforms::pattern::basic_rules(arena);
         let s6_eval = crate::transforms::eval::eval(arena, expr);
         let s6_log = crate::simplify::log_combine::log_combine(arena, s6_eval);
-        let (s6, _) = crate::transforms::pattern::apply_rules(arena, s6_log, &rules);
-        tracing::trace!(
-            strategy = "eval+logcombine+rules",
-            ops = count_ops(arena, s6),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s6);
+        let (s6, steps) = crate::transforms::pattern::apply_rules(arena, s6_log, &rules);
+        best.consider(arena, s6, "eval+logcombine+rules", steps);
     } else {
         tracing::debug!("smart_simplify: skipping logcombine (no exp/ln nodes)");
     }
@@ -373,23 +401,20 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         let free = crate::base::walk::free_symbols(arena, evaled);
         let mut cancel_best = evaled;
         let mut cancel_best_ops = count_ops(arena, evaled);
+        let mut cancel_steps: Vec<RawStep> = Vec::new();
         for &sym in &free {
             let cancelled = crate::poly::polybridge::cancel(arena, evaled, sym);
             let cancelled_eval = crate::transforms::eval::eval(arena, cancelled);
-            let (cancelled_simp, _) =
+            let (cancelled_simp, steps) =
                 crate::transforms::pattern::apply_rules(arena, cancelled_eval, &rules);
             let ops = count_ops(arena, cancelled_simp);
             if ops < cancel_best_ops {
                 cancel_best = cancelled_simp;
                 cancel_best_ops = ops;
+                cancel_steps = steps;
             }
         }
-        tracing::trace!(
-            strategy = "eval+cancel+rules",
-            ops = cancel_best_ops,
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, cancel_best);
+        best.consider(arena, cancel_best, "eval+cancel+rules", cancel_steps);
     }
 
     // Strategy 8: eval → refine (assumption-aware) (only if refinable nodes present)
@@ -401,12 +426,7 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         // that still reads symbol-level assumptions from the arena.
         let mut temp_assumptions = crate::base::assumptions::AssumptionCache::new();
         let s8 = crate::simplify::refine::refine_full(arena, &mut temp_assumptions, s8_eval);
-        tracing::trace!(
-            strategy = "eval+refine",
-            ops = count_ops(arena, s8),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s8);
+        best.consider(arena, s8, "eval+refine", Vec::new());
     } else {
         tracing::debug!("smart_simplify: skipping refine (no abs/sign/floor/ceil/pow nodes)");
     }
@@ -416,12 +436,7 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         let s9_eval = crate::transforms::eval::eval(arena, expr);
         let s9_pow = crate::simplify::powsimp::powsimp(arena, s9_eval);
         let s9 = crate::transforms::eval::eval(arena, s9_pow);
-        tracing::trace!(
-            strategy = "eval+powsimp",
-            ops = count_ops(arena, s9),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s9);
+        best.consider(arena, s9, "eval+powsimp", Vec::new());
     } else {
         tracing::debug!("smart_simplify: skipping powsimp (no Pow nodes)");
     }
@@ -431,12 +446,7 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         let s10_eval = crate::transforms::eval::eval(arena, expr);
         let s10_comb = crate::simplify::combsimp::combsimp(arena, s10_eval);
         let s10 = crate::transforms::eval::eval(arena, s10_comb);
-        tracing::trace!(
-            strategy = "eval+combsimp",
-            ops = count_ops(arena, s10),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s10);
+        best.consider(arena, s10, "eval+combsimp", Vec::new());
     } else {
         tracing::debug!("smart_simplify: skipping combsimp (no factorial/gamma nodes)");
     }
@@ -446,14 +456,19 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         let s11_eval = crate::transforms::eval::eval(arena, expr);
         let s11_rad = crate::simplify::radsimp::rationalize_denom(arena, s11_eval);
         let s11 = crate::transforms::eval::eval(arena, s11_rad);
-        tracing::trace!(
-            strategy = "eval+radsimp",
-            ops = count_ops(arena, s11),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s11);
+        best.consider(arena, s11, "eval+radsimp", Vec::new());
     } else {
         tracing::debug!("smart_simplify: skipping radsimp (no sqrt+neg_pow nodes)");
+    }
+
+    // Strategy 11b: eval → sqrtdenest → eval (only if has sqrt)
+    //
+    // √(3 + 2√2) → 1 + √2, √(5 − 2√6) → √3 − √2.
+    if flags.has_sqrt {
+        let s11b_eval = crate::transforms::eval::eval(arena, expr);
+        let s11b_den = crate::simplify::radsimp::sqrtdenest(arena, s11b_eval);
+        let s11b = crate::transforms::eval::eval(arena, s11b_den);
+        best.consider(arena, s11b, "eval+sqrtdenest", Vec::new());
     }
 
     // Strategy 12: eval → powdenest → powsimp_base → eval (only if has Pow)
@@ -471,42 +486,25 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
         let s12_denest = crate::simplify::powsimp::powdenest(arena, s12_eval);
         let s12_base = crate::simplify::powsimp::powsimp_base(arena, s12_denest);
         let s12 = crate::transforms::eval::eval(arena, s12_base);
-        tracing::trace!(
-            strategy = "eval+powdenest+powsimp_base+eval",
-            ops = count_ops(arena, s12),
-            changed = (s12 != s12_eval),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s12);
+        best.consider(arena, s12, "eval+powdenest+powsimp_base+eval", Vec::new());
 
         // Also try the individual strategies alone (one may help where
         // the other doesn't, and the combined chain may increase op count).
         let s12b_denest = crate::simplify::powsimp::powdenest(arena, s12_eval);
         let s12b = crate::transforms::eval::eval(arena, s12b_denest);
-        tracing::trace!(
-            strategy = "eval+powdenest",
-            ops = count_ops(arena, s12b),
-            changed = (s12b != s12_eval),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s12b);
+        best.consider(arena, s12b, "eval+powdenest", Vec::new());
 
         let s12c_base = crate::simplify::powsimp::powsimp_base(arena, s12_eval);
         let s12c = crate::transforms::eval::eval(arena, s12c_base);
-        tracing::trace!(
-            strategy = "eval+powsimp_base",
-            ops = count_ops(arena, s12c),
-            changed = (s12c != s12_eval),
-            "strategy evaluated"
-        );
-        update_best(arena, &mut best, &mut best_ops, s12c);
+        best.consider(arena, s12c, "eval+powsimp_base", Vec::new());
     } else {
         tracing::debug!("smart_simplify: skipping powdenest/powsimp_base (no Pow nodes)");
     }
 
     tracing::debug!(
         ops_original = original_ops,
-        ops_result = best_ops,
+        ops_result = best.ops,
+        strategy = best.strategy,
         node_count = flags.node_count,
         has_trig = flags.has_trig,
         has_hyp = flags.has_hyp,
@@ -521,11 +519,11 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
     );
 
     // Guard: don't return something much more complex than original
-    if original_ops > 0 && best_ops as f64 > 1.7 * original_ops as f64 {
-        return expr;
+    if original_ops > 0 && best.ops as f64 > 1.7 * original_ops as f64 {
+        return (expr, "none", Vec::new());
     }
 
-    best
+    (best.expr, best.strategy, best.steps)
 }
 
 /// Unified simplification engine — iterates [`smart_simplify`] to a fixpoint.
@@ -541,6 +539,10 @@ pub(crate) fn smart_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {
 ///   oscillation (e.g., expand ↔ factor trading off at equal op-count).
 /// * **Fixpoint check:** iteration stops as soon as the expression
 ///   doesn't change.
+///
+/// When `opts.trace` is set, every iteration that changes the expression
+/// contributes a `strategy:<name>` step followed by the rule-level steps
+/// that fired inside the winning strategy.
 pub(crate) fn unified_simplify(
     arena: &mut Arena,
     expr: ExprId,
@@ -551,9 +553,10 @@ pub(crate) fn unified_simplify(
     let mut current = expr;
     let mut seen = FxHashSet::default();
     seen.insert(current);
+    let mut trace: Vec<RawStep> = Vec::new();
 
     for i in 0..opts.max_iterations {
-        let next = smart_simplify(arena, current);
+        let (next, strategy, rule_steps) = smart_simplify_traced(arena, current);
 
         // Global bloat guard: never exceed 2× the original expression.
         let next_ops = count_ops(arena, next);
@@ -564,7 +567,10 @@ pub(crate) fn unified_simplify(
                 max_ops,
                 "unified_simplify: global bloat guard triggered, stopping"
             );
-            return SimplifyResult { expr: current };
+            return SimplifyResult {
+                expr: current,
+                steps: trace,
+            };
         }
 
         // Cycle detection: stop if we've seen this expression before.
@@ -573,26 +579,50 @@ pub(crate) fn unified_simplify(
             // Return the better of current vs next (in case the cycle
             // revisits the optimal form).
             let best = if next_ops <= count_ops(arena, current) {
+                if opts.trace && next != current {
+                    trace.push(RawStep {
+                        rule_name: format!("strategy:{strategy}"),
+                        before: current,
+                        after: next,
+                    });
+                    trace.extend(rule_steps);
+                }
                 next
             } else {
                 current
             };
-            return SimplifyResult { expr: best };
+            return SimplifyResult {
+                expr: best,
+                steps: trace,
+            };
         }
 
         // Fixpoint: expression didn't change.
         if next == current {
             tracing::debug!(iteration = i, "unified_simplify: fixpoint reached");
-            return SimplifyResult { expr: current };
+            return SimplifyResult {
+                expr: current,
+                steps: trace,
+            };
         }
 
+        if opts.trace {
+            trace.push(RawStep {
+                rule_name: format!("strategy:{strategy}"),
+                before: current,
+                after: next,
+            });
+            trace.extend(rule_steps);
+        }
         current = next;
     }
 
     tracing::debug!("unified_simplify: max iterations reached");
-    SimplifyResult { expr: current }
+    SimplifyResult {
+        expr: current,
+        steps: trace,
+    }
 }
-
 /// Legacy wrapper — iterates `smart_simplify` to fixpoint with default options.
 #[allow(dead_code)]
 pub(crate) fn full_simplify(arena: &mut Arena, expr: ExprId) -> ExprId {

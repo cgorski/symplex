@@ -6,9 +6,13 @@
 //! - `2x + 2y → 2(x + y)`
 //! - `3x² + 6x → 3x(x + 2)`
 //! - `m*g*l + m*g*x → m*g*(l + x)`
+//!
+//! Also home to the related term-grouping utilities [`signsimp`],
+//! [`collect_const`], [`collect_powers`] and [`rcollect`].
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::walk;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::Ratio;
@@ -318,6 +322,301 @@ pub(crate) fn factor_terms(arena: &mut Arena, expr: ExprId) -> ExprId {
         return inner;
     }
     arena.mul(&[gcd, inner])
+}
+
+// ---------------------------------------------------------------------------
+// signsimp — sign normalisation of sums inside products and powers
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if the leading symbolic (non-numeric) term of the `Add`
+/// `id` has a negative coefficient.
+///
+/// "Leading" follows the *display* order (highest-degree polynomial term
+/// first, then functions, then constants), so the normalised sign is the
+/// one a user sees: `-x + y` has leading term `-x`.
+fn add_has_negative_leading_term(arena: &mut Arena, id: ExprId) -> bool {
+    let mut children = match arena.node(id) {
+        ExprNode::Add(c) => c.clone(),
+        _ => return false,
+    };
+    children.sort_by_key(|&c| crate::output::common::display_sort_key(arena, c));
+    for &child in &children {
+        if arena.as_num(child).is_some() {
+            continue;
+        }
+        let (coeff, _) = arena.as_coeff_term(child);
+        return coeff.is_negative();
+    }
+    false
+}
+
+/// Sign normalisation.
+///
+/// Canonical forms already fold `−(−x + y)` into `x − y` and distribute
+/// numeric factors over sums.  What remains is the sign of sums that sit
+/// inside products or powers, where `(−x + y)^2` and `(x − y)^2` are
+/// distinct nodes.  `signsimp` extracts `−1` from every such sum whose
+/// first symbolic term is negative:
+///
+/// - `(−x + y)^2 → (x − y)^2`
+/// - `(−x + y)^3 → −(x − y)^3`
+/// - `z·(−x + y) → −z·(x − y)`
+/// - `(−x − y)·(−a + b) → (x + y)·(a − b)`
+///
+/// Only integer exponents are touched (for `(−s)^e` with non-integer `e`
+/// the branch of the power would change).  The walk is bottom-up.
+pub(crate) fn signsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let post_order = walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+
+    for &id in &post_order {
+        let rebuilt = walk::rebuild_with_cache(arena, id, &cache);
+        let result = match arena.node(rebuilt).clone() {
+            ExprNode::Pow(base, exp) => {
+                let exp_int = arena
+                    .as_num(exp)
+                    .filter(|r| r.is_integer())
+                    .map(|r| r.to_integer());
+                match exp_int {
+                    Some(n) if add_has_negative_leading_term(arena, base) => {
+                        let neg_base = arena.neg(base);
+                        let p = arena.pow(neg_base, exp);
+                        if n.is_even() { p } else { arena.neg(p) }
+                    }
+                    _ => rebuilt,
+                }
+            }
+            ExprNode::Mul(children) => {
+                let mut flips = 0usize;
+                let mut new_children: SmallVec<[ExprId; 6]> = SmallVec::new();
+                for &c in &children {
+                    if add_has_negative_leading_term(arena, c) {
+                        flips += 1;
+                        new_children.push(arena.neg(c));
+                    } else {
+                        new_children.push(c);
+                    }
+                }
+                if flips == 0 {
+                    rebuilt
+                } else {
+                    if flips % 2 == 1 {
+                        new_children.push(arena.neg_one);
+                    }
+                    arena.mul(&new_children)
+                }
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, result);
+    }
+
+    cache.get(&expr).copied().unwrap_or(expr)
+}
+
+// ---------------------------------------------------------------------------
+// collect_const / collect_powers / rcollect
+// ---------------------------------------------------------------------------
+
+/// Factor the rational content out of every sum that is a factor of a
+/// product or the base of a power: `z·(2x + 4y) → 2·z·(x + 2y)`,
+/// `(2x + 4y)^2 → 4·(x + 2y)^2`.
+///
+/// A top-level sum is returned unchanged: the canonical form distributes
+/// a numeric coefficient over a sum, so `2·(x + 2y)` cannot be
+/// represented as a single node — use
+/// [`factor_terms_pair`] for the `(coefficient, inner)` pair.
+pub(crate) fn collect_const(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let post_order = walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+
+    for &id in &post_order {
+        let rebuilt = walk::rebuild_with_cache(arena, id, &cache);
+        let result = match arena.node(rebuilt).clone() {
+            ExprNode::Pow(base, exp) if matches!(arena.node(base), ExprNode::Add(_)) => {
+                let (g, inner) = numeric_factor_terms_pair(arena, base);
+                if g.is_one() {
+                    rebuilt
+                } else {
+                    let g_id = num_expr(arena, g);
+                    let g_pow = arena.pow(g_id, exp);
+                    let inner_pow = arena.pow(inner, exp);
+                    arena.mul(&[g_pow, inner_pow])
+                }
+            }
+            ExprNode::Mul(children) => {
+                let mut changed = false;
+                let mut new_children: SmallVec<[ExprId; 6]> = SmallVec::new();
+                for &c in &children {
+                    if matches!(arena.node(c), ExprNode::Add(_)) {
+                        let (g, inner) = numeric_factor_terms_pair(arena, c);
+                        if !g.is_one() {
+                            changed = true;
+                            new_children.push(num_expr(arena, g));
+                            new_children.push(inner);
+                            continue;
+                        }
+                    }
+                    new_children.push(c);
+                }
+                if changed {
+                    arena.mul(&new_children)
+                } else {
+                    rebuilt
+                }
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, result);
+    }
+
+    cache.get(&expr).copied().unwrap_or(expr)
+}
+
+/// Group the terms of a sum by the power of `var` they contain, allowing
+/// symbolic exponents: `y·x^a + z·x^a + x^2 → (y + z)·x^a + x^2`.
+///
+/// Each term is split into `coefficient · var^e` (`e = 1` for a bare
+/// `var`, `e = 0` when `var` does not occur as a factor); terms with the
+/// same `e` are combined.  Non-`Add` expressions are returned unchanged.
+pub(crate) fn collect_powers(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+    let children = match arena.node(expr) {
+        ExprNode::Add(c) => c.clone(),
+        _ => return expr,
+    };
+
+    // exponent → coefficient terms (insertion ordered)
+    let mut groups: Vec<(ExprId, SmallVec<[ExprId; 4]>)> = Vec::new();
+    let mut index: FxHashMap<ExprId, usize> = FxHashMap::default();
+
+    for &term in &children {
+        let (exp, coeff) = split_power_of(arena, term, var);
+        match index.get(&exp) {
+            Some(&i) => groups[i].1.push(coeff),
+            None => {
+                index.insert(exp, groups.len());
+                groups.push((exp, smallvec::smallvec![coeff]));
+            }
+        }
+    }
+
+    if groups.iter().all(|(_, c)| c.len() == 1) {
+        return expr;
+    }
+
+    let mut new_terms: SmallVec<[ExprId; 6]> = SmallVec::new();
+    for (exp, coeffs) in &groups {
+        let coeff_sum = if coeffs.len() == 1 {
+            coeffs[0]
+        } else {
+            arena.add(coeffs)
+        };
+        if *exp == arena.zero {
+            new_terms.push(coeff_sum);
+        } else {
+            let p = arena.pow(var, *exp);
+            new_terms.push(arena.mul(&[coeff_sum, p]));
+        }
+    }
+    arena.add(&new_terms)
+}
+
+/// Split `term` into `(exponent, coefficient)` with `term = coefficient · var^exponent`.
+fn split_power_of(arena: &mut Arena, term: ExprId, var: ExprId) -> (ExprId, ExprId) {
+    let (base, exp) = arena.as_base_exp(term);
+    if base == var {
+        return (exp, arena.one);
+    }
+    if let ExprNode::Mul(children) = arena.node(term).clone() {
+        let mut rest: SmallVec<[ExprId; 6]> = SmallVec::new();
+        let mut found: Option<ExprId> = None;
+        for &c in &children {
+            let (b, e) = arena.as_base_exp(c);
+            if found.is_none() && b == var {
+                found = Some(e);
+            } else {
+                rest.push(c);
+            }
+        }
+        if let Some(e) = found {
+            let coeff = match rest.len() {
+                0 => arena.one,
+                1 => rest[0],
+                _ => arena.mul(&rest),
+            };
+            return (e, coeff);
+        }
+    }
+    (arena.zero, term)
+}
+
+/// Recursively collect every sum in `expr` by the given variables, in
+/// order: each `Add` node is grouped by powers of `vars[0]`, the
+/// resulting coefficients by `vars[1]`, and so on.
+pub(crate) fn rcollect(arena: &mut Arena, expr: ExprId, vars: &[ExprId]) -> ExprId {
+    if vars.is_empty() {
+        return expr;
+    }
+    let post_order = walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+
+    for &id in &post_order {
+        let rebuilt = walk::rebuild_with_cache(arena, id, &cache);
+        let result = if matches!(arena.node(rebuilt), ExprNode::Add(_)) {
+            collect_by_vars(arena, rebuilt, vars)
+        } else {
+            rebuilt
+        };
+        cache.insert(id, result);
+    }
+
+    cache.get(&expr).copied().unwrap_or(expr)
+}
+
+/// Collect one sum by `vars[0]`, then its coefficients by the rest.
+fn collect_by_vars(arena: &mut Arena, sum: ExprId, vars: &[ExprId]) -> ExprId {
+    let Some((&first, rest)) = vars.split_first() else {
+        return sum;
+    };
+    let collected = collect_powers(arena, sum, first);
+    if rest.is_empty() {
+        return collected;
+    }
+    // Recurse into the coefficient of every power of `first`.
+    let children = match arena.node(collected) {
+        ExprNode::Add(c) => c.clone(),
+        _ => return collect_by_vars_term(arena, collected, first, rest),
+    };
+    let new_children: SmallVec<[ExprId; 6]> = children
+        .iter()
+        .map(|&t| collect_by_vars_term(arena, t, first, rest))
+        .collect();
+    arena.add(&new_children)
+}
+
+/// Apply [`collect_by_vars`] to the coefficient part of one `coeff · var^e` term.
+fn collect_by_vars_term(arena: &mut Arena, term: ExprId, var: ExprId, rest: &[ExprId]) -> ExprId {
+    let (exp, coeff) = split_power_of(arena, term, var);
+    let new_coeff = if matches!(arena.node(coeff), ExprNode::Add(_)) {
+        collect_by_vars(arena, coeff, rest)
+    } else {
+        coeff
+    };
+    if new_coeff == coeff {
+        return term;
+    }
+    if exp == arena.zero {
+        new_coeff
+    } else {
+        let p = arena.pow(var, exp);
+        arena.mul(&[new_coeff, p])
+    }
+}
+
+/// Intern a rational number as an expression node.
+fn num_expr(arena: &mut Arena, r: Ratio<BigInt>) -> ExprId {
+    let nid = arena.intern_num(r);
+    arena.intern(ExprNode::Num(nid))
 }
 
 // ---------------------------------------------------------------------------
@@ -684,5 +983,95 @@ mod tests {
         let gcd_s = display(&a, gcd);
         assert!(gcd_s.contains("sin"), "GCD should be sin(x), got: {gcd_s}");
         let _inner_s = display(&a, inner);
+    }
+
+    // ── signsimp / collect helpers ────────────────────────────────
+
+    fn disp(a: &Arena, id: ExprId) -> String {
+        a.display(id).to_string()
+    }
+
+    #[test]
+    fn signsimp_even_and_odd_powers() {
+        let mut a = Arena::new();
+        let (x, y) = (a.symbol("x"), a.symbol("y"));
+        let y_minus_x = a.sub(y, x);
+        let two = a.int(2);
+        let three = a.int(3);
+        let sq = a.pow(y_minus_x, two);
+        let cu = a.pow(y_minus_x, three);
+        let r2 = signsimp(&mut a, sq);
+        assert_eq!(disp(&a, r2), "(x - y)^2");
+        let r3 = signsimp(&mut a, cu);
+        assert_eq!(disp(&a, r3), "-(x - y)^3");
+        // Already normalised: unchanged.
+        let x_minus_y = a.sub(x, y);
+        let ok = a.pow(x_minus_y, two);
+        assert_eq!(signsimp(&mut a, ok), ok);
+    }
+
+    #[test]
+    fn signsimp_mul_factors() {
+        let mut a = Arena::new();
+        let (x, y, z) = (a.symbol("x"), a.symbol("y"), a.symbol("z"));
+        let y_minus_x = a.sub(y, x);
+        let e = a.mul(&[z, y_minus_x]);
+        let r = signsimp(&mut a, e);
+        assert_eq!(disp(&a, r), "-z*(x - y)");
+        // Non-integer power: untouched.
+        let half = a.rational(1, 2);
+        let sq = a.pow(y_minus_x, half);
+        assert_eq!(signsimp(&mut a, sq), sq);
+    }
+
+    #[test]
+    fn collect_powers_groups_symbolic_exponents() {
+        let mut a = Arena::new();
+        let (x, y, z, n) = (a.symbol("x"), a.symbol("y"), a.symbol("z"), a.symbol("n"));
+        let xn = a.pow(x, n);
+        let t1 = a.mul(&[y, xn]);
+        let t2 = a.mul(&[z, xn]);
+        let two = a.int(2);
+        let x2 = a.pow(x, two);
+        let e = a.add(&[t1, t2, x2]);
+        let r = collect_powers(&mut a, e, x);
+        assert_eq!(disp(&a, r), "x^2 + x^n*(y + z)");
+        // Nothing to group: unchanged.
+        let f = a.add(&[t1, x2]);
+        assert_eq!(collect_powers(&mut a, f, x), f);
+        // Non-Add: unchanged.
+        assert_eq!(collect_powers(&mut a, t1, x), t1);
+    }
+
+    #[test]
+    fn collect_const_factors_content_inside_mul_and_pow() {
+        let mut a = Arena::new();
+        let (x, y, z) = (a.symbol("x"), a.symbol("y"), a.symbol("z"));
+        let two = a.int(2);
+        let four = a.int(4);
+        let t1 = a.mul(&[two, x]);
+        let t2 = a.mul(&[four, y]);
+        let sum = a.add(&[t1, t2]);
+        let e = a.mul(&[z, sum]);
+        let r = collect_const(&mut a, e);
+        assert_eq!(disp(&a, r), "2*z*(x + 2*y)");
+        let p = a.pow(sum, two);
+        let r = collect_const(&mut a, p);
+        assert_eq!(disp(&a, r), "4*(x + 2*y)^2");
+        // Top-level sum cannot hold the factor: unchanged.
+        assert_eq!(collect_const(&mut a, sum), sum);
+    }
+
+    #[test]
+    fn rcollect_recurses_into_coefficients() {
+        let mut a = Arena::new();
+        let (x, y, z) = (a.symbol("x"), a.symbol("y"), a.symbol("z"));
+        let xy = a.mul(&[x, y]);
+        let xz = a.mul(&[x, z]);
+        let e = a.add(&[xy, xz]);
+        let inner = a.sin(e);
+        let r = rcollect(&mut a, inner, &[x]);
+        assert_eq!(disp(&a, r), "sin(x*(y + z))");
+        assert_eq!(rcollect(&mut a, inner, &[]), inner);
     }
 }

@@ -67,6 +67,105 @@ pub(crate) fn separatevars(
         .collect()
 }
 
+/// Additive separation: partition the terms of a sum by the variables
+/// they depend on.
+///
+/// `f(x) + g(y) + h(x, y) + 3` becomes the groups `([x], f(x))`,
+/// `([y], g(y))`, `([x, y], h(x, y))`, `([], 3)`.  Non-`Add` expressions
+/// form a single group.  Terms with the same dependency set are summed.
+pub(crate) fn separatevars_additive(
+    arena: &mut Arena,
+    expr: ExprId,
+    vars: &[ExprId],
+) -> Vec<(Vec<ExprId>, ExprId)> {
+    let children = match arena.node(expr).clone() {
+        ExprNode::Add(c) => c.to_vec(),
+        _ => {
+            let dep = dependent_vars(arena, expr, vars);
+            return vec![(dep, expr)];
+        }
+    };
+
+    let mut groups: Vec<(Vec<ExprId>, Vec<ExprId>)> = Vec::new();
+    for &term in &children {
+        let dep = dependent_vars(arena, term, vars);
+        match groups.iter_mut().find(|(g, _)| *g == dep) {
+            Some((_, terms)) => terms.push(term),
+            None => groups.push((dep, vec![term])),
+        }
+    }
+
+    groups
+        .into_iter()
+        .map(|(dep, terms)| {
+            let sum = if terms.len() == 1 {
+                terms[0]
+            } else {
+                arena.add(&terms)
+            };
+            (dep, sum)
+        })
+        .collect()
+}
+
+/// Multiplicative separation into one factor per variable.
+///
+/// Returns `Some(factors)` with `factors[i]` depending on `vars[i]` only
+/// (or `1`) such that the product of all factors equals `expr`, or `None`
+/// when some factor depends on two or more of the variables.  Any factor
+/// free of every variable is multiplied into the *first* variable's
+/// factor so that the product is exact.
+///
+/// Before giving up, a sum is first written as `content · (…)` via
+/// [`symbolic_factor_terms_pair`](crate::simplify::factor_terms::symbolic_factor_terms_pair)
+/// so that `x·y + x·z = x·(y + z)` separates when `y + z` involves a
+/// single variable.
+pub(crate) fn separatevars_dict(
+    arena: &mut Arena,
+    expr: ExprId,
+    vars: &[ExprId],
+) -> Option<Vec<ExprId>> {
+    if vars.is_empty() {
+        return None;
+    }
+    // Try the expression as-is, then its factored form.
+    if let Some(r) = try_separate_dict(arena, expr, vars) {
+        return Some(r);
+    }
+    if matches!(arena.node(expr), ExprNode::Add(_)) {
+        let (content, inner) =
+            crate::simplify::factor_terms::symbolic_factor_terms_pair(arena, expr);
+        if content != arena.one {
+            let factored = arena.mul(&[content, inner]);
+            if factored != expr {
+                return try_separate_dict(arena, factored, vars);
+            }
+        }
+    }
+    None
+}
+
+fn try_separate_dict(arena: &mut Arena, expr: ExprId, vars: &[ExprId]) -> Option<Vec<ExprId>> {
+    let groups = separatevars(arena, expr, vars);
+    let mut factors: Vec<ExprId> = vec![arena.one; vars.len()];
+    let mut coeff: Vec<ExprId> = Vec::new();
+    for (dep, product) in groups {
+        match dep.len() {
+            0 => coeff.push(product),
+            1 => {
+                let i = vars.iter().position(|&v| v == dep[0])?;
+                factors[i] = arena.mul(&[factors[i], product]);
+            }
+            _ => return None,
+        }
+    }
+    if !coeff.is_empty() {
+        coeff.push(factors[0]);
+        factors[0] = arena.mul(&coeff);
+    }
+    Some(factors)
+}
+
 /// Determine which of `vars` appear as free symbols in `expr`.
 fn dependent_vars(arena: &Arena, expr: ExprId, vars: &[ExprId]) -> Vec<ExprId> {
     let factor_syms = crate::base::walk::free_symbols(arena, expr);
@@ -135,5 +234,52 @@ mod tests {
         let result = separatevars(&mut a, xy_sum, &[x, y]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0.len(), 2); // depends on both x and y
+    }
+
+    // ── additive / dict separation ─────────────────────────────────
+
+    #[test]
+    fn additive_groups_by_dependency() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let sx = a.sin(x);
+        let two = a.int(2);
+        let y2 = a.pow(y, two);
+        let xy = a.mul(&[x, y]);
+        let three = a.int(3);
+        let e = a.add(&[sx, y2, xy, three]);
+        let groups = separatevars_additive(&mut a, e, &[x, y]);
+        assert_eq!(groups.len(), 4);
+        assert!(groups.iter().any(|(d, g)| d.is_empty() && *g == three));
+        assert!(groups.iter().any(|(d, g)| d.len() == 2 && *g == xy));
+    }
+
+    #[test]
+    fn dict_separable_product_and_failure() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let sx = a.sin(x);
+        let two = a.int(2);
+        let e = a.mul(&[two, sx, y]);
+        let f = separatevars_dict(&mut a, e, &[x, y]).expect("separable");
+        assert_eq!(a.display(f[0]).to_string(), "2*sin(x)");
+        assert_eq!(f[1], y);
+        let sum = a.add(&[x, y]);
+        assert!(separatevars_dict(&mut a, sum, &[x, y]).is_none());
+        assert!(separatevars_dict(&mut a, e, &[]).is_none());
+    }
+
+    #[test]
+    fn dict_factors_sums_before_separating() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let xy = a.mul(&[x, y]);
+        let two = a.int(2);
+        let y2 = a.pow(y, two);
+        let xy2 = a.mul(&[x, y2]);
+        let e = a.add(&[xy, xy2]); // x*y + x*y^2
+        let f = separatevars_dict(&mut a, e, &[x, y]).expect("separable after factoring");
+        assert_eq!(f[0], x);
+        assert_eq!(a.display(f[1]).to_string(), "y*(y + 1)");
     }
 }

@@ -6,27 +6,49 @@
 //! - `n * ln(a)` → `ln(a^n)`
 //!
 //! This is the inverse of [`expand_log`](crate::simplify::log_expand::expand_log).
+//!
+//! [`log_combine`] applies the rules unconditionally (`force = true`);
+//! [`log_combine_with`] with `force = false` only combines logarithms
+//! whose arguments are known positive (and, for `n·ln a`, whose
+//! coefficient is known real) through the assumption system.
 
 use crate::base::arena::Arena;
+use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use rustc_hash::FxHashMap;
 
-/// Combine logarithmic expressions.
+/// Combine logarithmic expressions unconditionally.
 ///
 /// Walks the expression bottom-up and applies log combination rules:
 ///
 /// - Sums containing multiple `ln` terms are combined into a single
 ///   logarithm of a product.
 /// - Products of the form `n · ln(a)` are rewritten as `ln(a^n)`.
+///
+/// Equivalent to [`log_combine_with`] with `force = true`.
 pub(crate) fn log_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
+    log_combine_with(arena, expr, true)
+}
+
+/// Combine logarithmic expressions, honouring the positivity guard unless
+/// `force` is set.
+///
+/// # Branch reasoning
+///
+/// `ln a + ln b = ln(a·b)` holds exactly when `arg a + arg b ∈ (−π, π]`,
+/// and `n·ln a = ln(a^n)` when `n·arg a ∈ (−π, π]`; both are guaranteed
+/// for positive real arguments (and real `n`), which is what the guard
+/// requires.  With `force` the identities are applied regardless.
+pub(crate) fn log_combine_with(arena: &mut Arena, expr: ExprId, force: bool) -> ExprId {
     let post_order = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut assumptions = AssumptionCache::new();
 
     for &id in &post_order {
         let node = arena.node(id).clone();
         let combined = match node {
-            // ── n-ary product ──────────────────────────────────────────
+            // ── n-ary product ──────────────────────────────────────
             // If exactly one factor is `Ln(arg)` and there is at least one
             // other factor, rewrite `coeff · ln(arg)` → `ln(arg ^ coeff)`.
             ExprNode::Mul(ref children) => {
@@ -35,10 +57,10 @@ pub(crate) fn log_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
                     .map(|&c| cache.get(&c).copied().unwrap_or(c))
                     .collect();
 
-                combine_mul_ln(arena, id, children, &new)
+                combine_mul_ln(arena, &mut assumptions, id, children, &new, force)
             }
 
-            // ── n-ary sum ──────────────────────────────────────────────
+            // ── n-ary sum ──────────────────────────────────────────
             // Collect all `Ln(…)` children, combine into a single log of
             // a product, and keep non-log children untouched.
             ExprNode::Add(ref children) => {
@@ -47,7 +69,7 @@ pub(crate) fn log_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
                     .map(|&c| cache.get(&c).copied().unwrap_or(c))
                     .collect();
 
-                combine_add_ln(arena, id, children, &new)
+                combine_add_ln(arena, &mut assumptions, id, children, &new, force)
             }
 
             // ── rebuild other nodes with cached children ───────────────
@@ -89,7 +111,14 @@ pub(crate) fn log_combine(arena: &mut Arena, expr: ExprId) -> ExprId {
 ///
 /// Otherwise, rebuild the node with cached children (or return the
 /// original id when nothing changed).
-fn combine_mul_ln(arena: &mut Arena, id: ExprId, original: &[ExprId], new: &[ExprId]) -> ExprId {
+fn combine_mul_ln(
+    arena: &mut Arena,
+    assumptions: &mut AssumptionCache,
+    id: ExprId,
+    original: &[ExprId],
+    new: &[ExprId],
+    force: bool,
+) -> ExprId {
     // Scan for Ln factors.
     let mut ln_index: Option<usize> = None;
     let mut ln_count: usize = 0;
@@ -124,6 +153,14 @@ fn combine_mul_ln(arena: &mut Arena, id: ExprId, original: &[ExprId], new: &[Exp
             arena.mul(&coeff_factors)
         };
 
+        // Guard: n·ln(a) = ln(a^n) needs a > 0 and n real.
+        let guard_ok = force
+            || (assumptions.query(arena, ln_arg, Props::POSITIVE) == Some(true)
+                && assumptions.query(arena, coeff, Props::REAL) == Some(true));
+        if !guard_ok {
+            return if new == original { id } else { arena.mul(new) };
+        }
+
         let powered = arena.pow(ln_arg, coeff);
         arena.ln(powered)
     } else if new == original {
@@ -139,13 +176,24 @@ fn combine_mul_ln(arena: &mut Arena, id: ExprId, original: &[ExprId], new: &[Exp
 /// Non-log children are kept as-is. If fewer than two `Ln` terms are
 /// found, the node is returned unchanged (or rebuilt if children were
 /// modified by the cache).
-fn combine_add_ln(arena: &mut Arena, id: ExprId, original: &[ExprId], new: &[ExprId]) -> ExprId {
+fn combine_add_ln(
+    arena: &mut Arena,
+    assumptions: &mut AssumptionCache,
+    id: ExprId,
+    original: &[ExprId],
+    new: &[ExprId],
+    force: bool,
+) -> ExprId {
     // Partition children into ln-inner-arguments and everything else.
+    // Without `force`, only logarithms of known-positive arguments are
+    // eligible for combination.
     let mut ln_inner_args: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
     let mut others: smallvec::SmallVec<[ExprId; 6]> = smallvec::SmallVec::new();
 
     for &child in new {
-        if let ExprNode::Ln(inner) = *arena.node(child) {
+        if let ExprNode::Ln(inner) = *arena.node(child)
+            && (force || assumptions.query(arena, inner, Props::POSITIVE) == Some(true))
+        {
             ln_inner_args.push(inner);
         } else {
             others.push(child);
@@ -302,5 +350,33 @@ mod tests {
         let result = log_combine(&mut a, expr);
         let after = display(&a, result);
         assert_eq!(before, after, "x + y should be unchanged");
+    }
+
+    // ── guarded combination ────────────────────────────────────────
+
+    #[test]
+    fn guarded_combine_requires_positive_arguments() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let lnx = a.ln(x);
+        let lny = a.ln(y);
+        let e = a.add(&[lnx, lny]);
+        assert_eq!(log_combine_with(&mut a, e, false), e);
+        let r = log_combine_with(&mut a, e, true);
+        assert_eq!(display(&a, r), "ln(x*y)");
+        if let ExprNode::Symbol(sid) = *a.node(x) {
+            let mut asm = crate::base::assumptions::Assumptions::default();
+            asm.assert_true(crate::base::assumptions::Props::POSITIVE);
+            asm.forward_chain();
+            a.set_symbol_assumptions(sid, asm);
+        }
+        // Only ln(x) is known positive: nothing to combine (need two).
+        assert_eq!(log_combine_with(&mut a, e, false), e);
+        let two = a.int(2);
+        let two_lnx = a.mul(&[two, lnx]);
+        let r = log_combine_with(&mut a, two_lnx, false);
+        assert_eq!(display(&a, r), "ln(x^2)");
+        let two_lny = a.mul(&[two, lny]);
+        assert_eq!(log_combine_with(&mut a, two_lny, false), two_lny);
     }
 }

@@ -15,9 +15,12 @@
 //!   integer).  Handles `(½·√5)² → ¼·5 = 5/4`.
 
 use crate::base::arena::Arena;
+use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 
+use num_bigint::BigInt;
+use num_rational::Ratio;
 use num_traits::Signed;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -132,6 +135,125 @@ pub(crate) fn powdenest(arena: &mut Arena, expr: ExprId) -> ExprId {
     }
 
     cache.get(&expr).copied().unwrap_or(expr)
+}
+
+/// Full power denesting, assumption-aware.
+///
+/// In addition to the product distribution of [`powdenest`], this handles
+/// nested powers and square roots of squares:
+///
+/// | Rewrite                    | Condition (any of)                                   |
+/// |----------------------------|------------------------------------------------------|
+/// | `(a·b)^e → a^e·b^e`        | `e ∈ ℤ`; all factors but at most one known non-negative; `force` |
+/// | `(x^a)^b → x^(a·b)`        | `b ∈ ℤ`; `x > 0` and `a` real; `force`               |
+/// | `√(x²) → x`                | `x ≥ 0`; `force`                                     |
+/// | `√(x²) → ∣x∣`              | `x` real (not known non-real)                        |
+///
+/// # Branch reasoning
+///
+/// `(x^a)^b = exp(b·Log(exp(a·Log x)))` equals `x^(ab) = exp(ab·Log x)`
+/// exactly when `Log(exp(a·Log x)) = a·Log x`, i.e. `Im(a·Log x) ∈ (−π, π]`
+/// — guaranteed for `x > 0` and real `a` — or when `b` is an integer
+/// (integer powers of `exp(z)` are `exp(bz)` regardless of branch).
+/// `√(x²) = |x|` needs `x` real: for `x = i`, `√(i²) = i ≠ |i| = 1`.
+///
+/// With `force = true` every symbol is treated as positive (like SymPy's
+/// `powdenest(force=True)`), so all rewrites fire unconditionally.
+pub(crate) fn powdenest_with(arena: &mut Arena, expr: ExprId, force: bool) -> ExprId {
+    let post_order = walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut assumptions = AssumptionCache::new();
+
+    for &id in &post_order {
+        let rebuilt = walk::rebuild_with_cache(arena, id, &cache);
+
+        let result = match arena.node(rebuilt).clone() {
+            ExprNode::Pow(base, exp) => {
+                let distributed = if force {
+                    powdenest_pow_forced(arena, rebuilt, base, exp)
+                } else {
+                    powdenest_pow(arena, rebuilt, base, exp)
+                };
+                if distributed != rebuilt {
+                    distributed
+                } else if let ExprNode::Mul(children) = arena.node(base).clone() {
+                    // Assumption-aware factor check: all factors but at most one
+                    // known non-negative (see `expand::at_most_one_non_nonneg`).
+                    if crate::transforms::expand::at_most_one_non_nonneg(
+                        arena,
+                        &mut assumptions,
+                        &children,
+                    ) {
+                        powdenest_pow_forced(arena, rebuilt, base, exp)
+                    } else {
+                        rebuilt
+                    }
+                } else {
+                    denest_pow_pow(arena, &mut assumptions, rebuilt, base, exp, force)
+                }
+            }
+            _ => rebuilt,
+        };
+
+        cache.insert(id, result);
+    }
+
+    cache.get(&expr).copied().unwrap_or(expr)
+}
+
+/// `(x^a)^b` / `√(x²)` handling for [`powdenest_with`].
+fn denest_pow_pow(
+    arena: &mut Arena,
+    assumptions: &mut AssumptionCache,
+    original: ExprId,
+    base: ExprId,
+    exp: ExprId,
+    force: bool,
+) -> ExprId {
+    let (inner_base, inner_exp) = match arena.node(base) {
+        ExprNode::Pow(b, e) => (*b, *e),
+        _ => return original,
+    };
+
+    let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+    let two = Ratio::from_integer(BigInt::from(2));
+    let is_sqrt_of_square =
+        arena.as_num(exp) == Some(&half) && arena.as_num(inner_exp) == Some(&two);
+
+    if is_sqrt_of_square {
+        if force || assumptions.query(arena, inner_base, Props::NONNEGATIVE) == Some(true) {
+            return inner_base;
+        }
+        if assumptions.query(arena, inner_base, Props::REAL) != Some(false) {
+            return arena.abs(inner_base);
+        }
+        return original;
+    }
+
+    let outer_integer = arena.as_num(exp).is_some_and(|r| r.is_integer())
+        || assumptions.query(arena, exp, Props::INTEGER) == Some(true);
+    let base_positive_real_exp = assumptions.query(arena, inner_base, Props::POSITIVE)
+        == Some(true)
+        && assumptions.query(arena, inner_exp, Props::REAL) == Some(true);
+
+    if force || outer_integer || base_positive_real_exp {
+        let product = arena.mul(&[inner_exp, exp]);
+        return arena.pow(inner_base, product);
+    }
+    original
+}
+
+/// Unconditional `(a·b)^e → a^e·b^e` (used by `force`).
+fn powdenest_pow_forced(arena: &mut Arena, original: ExprId, base: ExprId, exp: ExprId) -> ExprId {
+    let children = match arena.node(base).clone() {
+        ExprNode::Mul(c) => c,
+        _ => return original,
+    };
+    let distributed: SmallVec<[ExprId; 6]> = children
+        .iter()
+        .map(|&factor| arena.pow(factor, exp))
+        .collect();
+    arena.mul(&distributed)
 }
 
 /// Try to distribute a single `Pow(base, exp)` when base is a `Mul`.
@@ -473,5 +595,67 @@ mod tests {
 
         let result = powsimp_base(&mut a, expr);
         assert_eq!(result, expr, "symbolic bases should not combine");
+    }
+
+    // ── powdenest_with ─────────────────────────────────────────────
+
+    fn set_assumption(a: &mut Arena, sym: ExprId, prop: crate::base::assumptions::Props) {
+        if let ExprNode::Symbol(sid) = *a.node(sym) {
+            let mut asm = crate::base::assumptions::Assumptions::default();
+            asm.assert_true(prop);
+            asm.forward_chain();
+            a.set_symbol_assumptions(sid, asm);
+        }
+    }
+
+    #[test]
+    fn powdenest_with_nested_symbolic_powers() {
+        let mut a = Arena::new();
+        let (x, p, q) = (a.symbol("x"), a.symbol("p"), a.symbol("q"));
+        let inner = a.pow(x, p);
+        let e = a.pow(inner, q);
+        assert_eq!(
+            powdenest_with(&mut a, e, false),
+            e,
+            "no assumptions: unchanged"
+        );
+        let forced = powdenest_with(&mut a, e, true);
+        assert_eq!(a.display(forced).to_string(), "x^(p*q)");
+        // Integer outer exponent is always valid.
+        let three = a.int(3);
+        let cubed = a.pow(inner, three);
+        let r = powdenest_with(&mut a, cubed, false);
+        assert_eq!(a.display(r).to_string(), "x^(3*p)");
+    }
+
+    #[test]
+    fn powdenest_with_positive_base_real_exponent() {
+        let mut a = Arena::new();
+        let (x, p, q) = (a.symbol("x"), a.symbol("p"), a.symbol("q"));
+        set_assumption(&mut a, x, Props::POSITIVE);
+        set_assumption(&mut a, p, Props::REAL);
+        let inner = a.pow(x, p);
+        let e = a.pow(inner, q);
+        let r = powdenest_with(&mut a, e, false);
+        assert_eq!(a.display(r).to_string(), "x^(p*q)");
+    }
+
+    #[test]
+    fn powdenest_with_sqrt_of_square() {
+        let mut a = Arena::new();
+        let x = a.symbol("x");
+        let two = a.int(2);
+        let half = a.rational(1, 2);
+        let sq = a.pow(x, two);
+        let e = a.pow(sq, half);
+        let r = powdenest_with(&mut a, e, false);
+        assert_eq!(a.display(r).to_string(), "abs(x)");
+        let f = powdenest_with(&mut a, e, true);
+        assert_eq!(f, x);
+        let n = a.symbol("n");
+        set_assumption(&mut a, n, Props::NONNEGATIVE);
+        let nsq = a.pow(n, two);
+        let en = a.pow(nsq, half);
+        assert_eq!(powdenest_with(&mut a, en, false), n);
     }
 }

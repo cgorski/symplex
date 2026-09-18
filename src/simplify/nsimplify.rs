@@ -10,8 +10,149 @@
 //! within the given tolerance. If nothing is found, the original
 //! expression is returned unchanged.
 
+use num_bigint::BigInt;
+use num_rational::Ratio;
+use num_traits::{One, Signed, ToPrimitive, Zero};
+
 use crate::base::arena::Arena;
-use crate::base::node::ExprId;
+use crate::base::node::{ExprId, ExprNode};
+use crate::base::numeric::f64_to_ratio_approx;
+
+/// Largest denominator accepted for the rational factor / offset in
+/// [`nsimplify_with_constants`].
+const CONST_MAX_DENOM: u64 = 1_000;
+
+/// Largest numerator / denominator accepted for the rational exponent in
+/// the `c^(p/q)` form of [`nsimplify_with_constants`].
+const CONST_MAX_EXP: i64 = 12;
+
+/// The default constant table used by
+/// [`Ex::nsimplify`](crate::api::expr::Ex::nsimplify):
+/// `π, e, √2, √3, √5, ln 2, φ, γ`.
+pub(crate) fn default_constants(arena: &mut Arena) -> Vec<ExprId> {
+    let half = arena.rational(1, 2);
+    let two = arena.int(2);
+    let three = arena.int(3);
+    let five = arena.int(5);
+    let sqrt2 = arena.pow(two, half);
+    let sqrt3 = arena.pow(three, half);
+    let sqrt5 = arena.pow(five, half);
+    let ln2 = arena.ln(two);
+    vec![
+        arena.pi,
+        arena.e_const(),
+        sqrt2,
+        sqrt3,
+        sqrt5,
+        ln2,
+        arena.golden_ratio(),
+        arena.euler_gamma(),
+    ]
+}
+
+/// Recognise a numerical expression as a simple combination of the given
+/// constants.
+///
+/// After trying a plain rational, each constant `c` (evaluated to `f64`)
+/// is tested in turn for the forms
+///
+/// 1. `q·c`  — `q` rational with denominator ≤ 1000,
+/// 2. `q + c` — likewise,
+/// 3. `c^(p/q)` — `|p|, q ≤ 12` (only for `c > 0`, `c ≠ 1`),
+///
+/// accepting the first candidate whose value is within `tolerance` of the
+/// input.  Falls back to the π-multiple / square-root heuristics of
+/// [`nsimplify`].  Returns the input unchanged if nothing matches or it
+/// cannot be evaluated.
+pub(crate) fn nsimplify_with_constants(
+    arena: &mut Arena,
+    expr: ExprId,
+    constants: &[ExprId],
+    tolerance: f64,
+) -> ExprId {
+    let val = match eval_to_f64(arena, expr) {
+        Some(v) if v.is_finite() => v,
+        _ => return expr,
+    };
+
+    // Small-denominator rationals win over constant combinations (so that
+    // `3` is not reported as `q·π` under a loose tolerance); larger
+    // denominators are only tried after the constant forms.
+    if let Some(q) = f64_to_ratio_approx(val, 100)
+        && let Some(qf) = q.to_f64()
+        && (qf - val).abs() < tolerance
+    {
+        return num_expr(arena, q);
+    }
+
+    let const_vals: Vec<(ExprId, f64)> = constants
+        .iter()
+        .filter_map(|&c| eval_to_f64(arena, c).map(|v| (c, v)))
+        .filter(|(_, v)| v.is_finite() && v.abs() > 1e-12)
+        .collect();
+
+    // 1. q·c
+    for &(c, cv) in &const_vals {
+        if let Some(q) = f64_to_ratio_approx(val / cv, CONST_MAX_DENOM)
+            && !q.is_zero()
+            && let Some(qf) = q.to_f64()
+            && (qf * cv - val).abs() < tolerance
+        {
+            return arena.make_coeff_term(q, c);
+        }
+    }
+
+    // 2. q + c
+    for &(c, cv) in &const_vals {
+        if let Some(q) = f64_to_ratio_approx(val - cv, CONST_MAX_DENOM)
+            && let Some(qf) = q.to_f64()
+            && (qf + cv - val).abs() < tolerance
+        {
+            if q.is_zero() {
+                return c;
+            }
+            let q_id = num_expr(arena, q);
+            return arena.add(&[q_id, c]);
+        }
+    }
+
+    // 3. c^(p/q)
+    if val > 0.0 {
+        for &(c, cv) in &const_vals {
+            if cv <= 0.0 || (cv - 1.0).abs() < 1e-12 {
+                continue;
+            }
+            let t = val.ln() / cv.ln();
+            for q in 1..=CONST_MAX_EXP {
+                let p = (t * q as f64).round() as i64;
+                if p == 0 || p.abs() > CONST_MAX_EXP {
+                    continue;
+                }
+                let approx = cv.powf(p as f64 / q as f64);
+                if (approx - val).abs() < tolerance {
+                    let e = Ratio::new(BigInt::from(p), BigInt::from(q));
+                    if e.is_one() {
+                        return c;
+                    }
+                    let e_id = num_expr(arena, e);
+                    return arena.pow(c, e_id);
+                }
+            }
+        }
+    }
+
+    if let Some(r) = find_rational(arena, val, tolerance) {
+        return r;
+    }
+
+    nsimplify(arena, expr, tolerance)
+}
+
+/// Intern a rational number as an expression node.
+fn num_expr(arena: &mut Arena, r: Ratio<BigInt>) -> ExprId {
+    let nid = arena.intern_num(r);
+    arena.intern(ExprNode::Num(nid))
+}
 
 /// Try to find a simple closed-form for a numerical expression.
 ///
@@ -392,5 +533,41 @@ mod tests {
         // Free symbol — can't evaluate
         let result = nsimplify(&mut arena, x, 1e-10);
         assert_eq!(result, x);
+    }
+
+    // ── nsimplify_with_constants ───────────────────────────────────
+
+    #[test]
+    fn constants_recognise_multiple_offset_and_power() {
+        let mut a = Arena::new();
+        let consts = default_constants(&mut a);
+        let two_pi = a.rational(628318530717958, 100000000000000);
+        let r = nsimplify_with_constants(&mut a, two_pi, &consts, 1e-9);
+        assert_eq!(a.display(r).to_string(), "2*pi");
+        let one_plus_e = a.rational(3718281828459045, 1000000000000000);
+        let r = nsimplify_with_constants(&mut a, one_plus_e, &consts, 1e-9);
+        assert_eq!(a.display(r).to_string(), "1 + E");
+        let sqrt_e = a.rational(1648721270700128, 1000000000000000);
+        let r = nsimplify_with_constants(&mut a, sqrt_e, &consts, 1e-9);
+        assert_eq!(a.display(r).to_string(), "exp(1/2)");
+    }
+
+    #[test]
+    fn constants_prefer_small_rationals_and_leave_unknowns() {
+        let mut a = Arena::new();
+        let consts = default_constants(&mut a);
+        let third = a.rational(333333333, 1000000000);
+        let r = nsimplify_with_constants(&mut a, third, &consts, 1e-6);
+        assert_eq!(a.display(r).to_string(), "1/3");
+        let odd = a.rational(1234567891, 1000000000);
+        assert_eq!(nsimplify_with_constants(&mut a, odd, &consts, 1e-12), odd);
+        let x = a.symbol("x");
+        assert_eq!(nsimplify_with_constants(&mut a, x, &consts, 1e-9), x);
+    }
+
+    #[test]
+    fn default_constant_table_has_eight_entries() {
+        let mut a = Arena::new();
+        assert_eq!(default_constants(&mut a).len(), 8);
     }
 }

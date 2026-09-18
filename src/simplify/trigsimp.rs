@@ -12,6 +12,7 @@ use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use crate::simplify::simplify_engine::count_ops;
+use crate::transforms::pattern::{Pattern, Rule};
 
 /// Walk the expression tree and return `true` if any node matches the predicate.
 /// Short-circuits on first match for efficiency.
@@ -74,7 +75,10 @@ pub(crate) fn trigsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
     // Strategy 6: expand_trig then eval + simplify
     let s5 = strategy_expand_trig_then_simplify(arena, expr);
 
-    let candidates = [s0, s1, s2, s3, s4, s5];
+    // Strategy 7: sum/difference, double-angle and hyperbolic identity rules
+    let s6 = strategy_trig_identity_rules(arena, expr);
+
+    let candidates = [s0, s1, s2, s3, s4, s5, s6];
     let _strategy_names = [
         "original",
         "pattern_rules",
@@ -82,6 +86,7 @@ pub(crate) fn trigsimp(arena: &mut Arena, expr: ExprId) -> ExprId {
         "cos2_to_1_minus_sin2",
         "trig_combine",
         "expand_trig_then_simplify",
+        "trig_identity_rules",
     ];
 
     // Pick the candidate with the lowest operation count.
@@ -158,7 +163,285 @@ fn strategy_expand_trig_then_simplify(arena: &mut Arena, expr: ExprId) -> ExprId
     result
 }
 
-// ── Shared replacement infrastructure ──────────────────────────────────
+// ── Strategy 7: trig identity rules ──────────────────────────────────────────
+
+/// Apply [`trig_identity_rules`] to a fixpoint (bounded), then eval.
+fn strategy_trig_identity_rules(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let rules = trig_identity_rules(arena);
+    let mut current = crate::transforms::eval::eval(arena, expr);
+    for _ in 0..8 {
+        let (next, steps) = crate::transforms::pattern::apply_rules(arena, current, &rules);
+        let next = crate::transforms::eval::eval(arena, next);
+        if steps.is_empty() || next == current {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+/// Build a two-wild pattern rule `lhs → rhs` from closures over the wild ids.
+fn rule2(
+    arena: &mut Arena,
+    name: &'static str,
+    lhs: impl Fn(&mut Arena, ExprId, ExprId) -> ExprId,
+    rhs: impl Fn(&mut Arena, ExprId, ExprId) -> ExprId,
+) -> Rule {
+    let (a, wa) = arena.wild();
+    let (b, wb) = arena.wild();
+    let root = lhs(arena, a, b);
+    let template = rhs(arena, a, b);
+    let mut wilds = rustc_hash::FxHashMap::default();
+    wilds.insert(a, wa);
+    wilds.insert(b, wb);
+    Rule::new(name, Pattern { root, wilds }, template)
+}
+
+/// Build a one-wild pattern rule `lhs → rhs`.
+fn rule1(
+    arena: &mut Arena,
+    name: &'static str,
+    lhs: impl Fn(&mut Arena, ExprId) -> ExprId,
+    rhs: impl Fn(&mut Arena, ExprId) -> ExprId,
+) -> Rule {
+    let (a, wa) = arena.wild();
+    let root = lhs(arena, a);
+    let template = rhs(arena, a);
+    let mut wilds = rustc_hash::FxHashMap::default();
+    wilds.insert(a, wa);
+    Rule::new(name, Pattern { root, wilds }, template)
+}
+
+/// Trigonometric and hyperbolic identity rules, matched
+/// associatively-commutatively (so they fire inside larger sums and
+/// products):
+///
+/// | Rule                     | Rewrite                                          |
+/// |--------------------------|--------------------------------------------------|
+/// | `sin_add`                | `sin a·cos b + cos a·sin b → sin(a + b)`          |
+/// | `sin_sub`                | `sin a·cos b − cos a·sin b → sin(a − b)`          |
+/// | `cos_add`                | `cos a·cos b − sin a·sin b → cos(a + b)`          |
+/// | `cos_sub`                | `cos a·cos b + sin a·sin b → cos(a − b)`          |
+/// | `cos_double_sq`          | `cos²a − sin²a → cos 2a`                         |
+/// | `cos_double_sin`         | `1 − 2·sin²a → cos 2a`                           |
+/// | `cos_double_cos`         | `2·cos²a − 1 → cos 2a`                           |
+/// | `sin_double`             | `2·sin a·cos a → sin 2a` (any numeric multiple)  |
+/// | `one_minus_cos_sq`       | `1 − cos²a → sin²a`                              |
+/// | `one_minus_sin_sq`       | `1 − sin²a → cos²a`                              |
+/// | `sinh_double`            | `2·sinh a·cosh a → sinh 2a`                      |
+/// | `cosh_double`            | `cosh²a + sinh²a → cosh 2a`                      |
+/// | `cosh_sinh_sq`           | `cosh²a − sinh²a → 1`                            |
+/// | `sin_div_cos` / `sinh_div_cosh` | `sin a / cos a → tan a`, `sinh a / cosh a → tanh a` |
+///
+/// Every rule is an exact identity for all complex arguments.
+pub(crate) fn trig_identity_rules(arena: &mut Arena) -> Vec<Rule> {
+    let two = arena.int(2);
+    let neg_two = arena.int(-2);
+    let neg_one = arena.neg_one;
+    let one = arena.one;
+
+    vec![
+        rule2(
+            arena,
+            "sin_add",
+            |ar, a, b| {
+                let (sa, cb, ca, sb) = (ar.sin(a), ar.cos(b), ar.cos(a), ar.sin(b));
+                let t1 = ar.mul(&[sa, cb]);
+                let t2 = ar.mul(&[ca, sb]);
+                ar.add(&[t1, t2])
+            },
+            |ar, a, b| {
+                let s = ar.add(&[a, b]);
+                ar.sin(s)
+            },
+        ),
+        rule2(
+            arena,
+            "sin_sub",
+            |ar, a, b| {
+                let (sa, cb, ca, sb) = (ar.sin(a), ar.cos(b), ar.cos(a), ar.sin(b));
+                let t1 = ar.mul(&[sa, cb]);
+                let t2 = ar.mul(&[neg_one, ca, sb]);
+                ar.add(&[t1, t2])
+            },
+            |ar, a, b| {
+                let d = ar.sub(a, b);
+                ar.sin(d)
+            },
+        ),
+        rule2(
+            arena,
+            "cos_add",
+            |ar, a, b| {
+                let (ca, cb, sa, sb) = (ar.cos(a), ar.cos(b), ar.sin(a), ar.sin(b));
+                let t1 = ar.mul(&[ca, cb]);
+                let t2 = ar.mul(&[neg_one, sa, sb]);
+                ar.add(&[t1, t2])
+            },
+            |ar, a, b| {
+                let s = ar.add(&[a, b]);
+                ar.cos(s)
+            },
+        ),
+        rule2(
+            arena,
+            "cos_sub",
+            |ar, a, b| {
+                let (ca, cb, sa, sb) = (ar.cos(a), ar.cos(b), ar.sin(a), ar.sin(b));
+                let t1 = ar.mul(&[ca, cb]);
+                let t2 = ar.mul(&[sa, sb]);
+                ar.add(&[t1, t2])
+            },
+            |ar, a, b| {
+                let d = ar.sub(a, b);
+                ar.cos(d)
+            },
+        ),
+        rule1(
+            arena,
+            "cos_double_sq",
+            |ar, a| {
+                let (ca, sa) = (ar.cos(a), ar.sin(a));
+                let c2 = ar.pow(ca, two);
+                let s2 = ar.pow(sa, two);
+                let ns2 = ar.mul(&[neg_one, s2]);
+                ar.add(&[c2, ns2])
+            },
+            |ar, a| {
+                let d = ar.mul(&[two, a]);
+                ar.cos(d)
+            },
+        ),
+        rule1(
+            arena,
+            "cos_double_sin",
+            |ar, a| {
+                let sa = ar.sin(a);
+                let s2 = ar.pow(sa, two);
+                let t = ar.mul(&[neg_two, s2]);
+                ar.add(&[one, t])
+            },
+            |ar, a| {
+                let d = ar.mul(&[two, a]);
+                ar.cos(d)
+            },
+        ),
+        rule1(
+            arena,
+            "cos_double_cos",
+            |ar, a| {
+                let ca = ar.cos(a);
+                let c2 = ar.pow(ca, two);
+                let t = ar.mul(&[two, c2]);
+                ar.add(&[neg_one, t])
+            },
+            |ar, a| {
+                let d = ar.mul(&[two, a]);
+                ar.cos(d)
+            },
+        ),
+        rule1(
+            arena,
+            "sin_double",
+            |ar, a| {
+                let (sa, ca) = (ar.sin(a), ar.cos(a));
+                ar.mul(&[two, sa, ca])
+            },
+            |ar, a| {
+                let d = ar.mul(&[two, a]);
+                ar.sin(d)
+            },
+        ),
+        rule1(
+            arena,
+            "one_minus_cos_sq",
+            |ar, a| {
+                let ca = ar.cos(a);
+                let c2 = ar.pow(ca, two);
+                let t = ar.mul(&[neg_one, c2]);
+                ar.add(&[one, t])
+            },
+            |ar, a| {
+                let sa = ar.sin(a);
+                ar.pow(sa, two)
+            },
+        ),
+        rule1(
+            arena,
+            "one_minus_sin_sq",
+            |ar, a| {
+                let sa = ar.sin(a);
+                let s2 = ar.pow(sa, two);
+                let t = ar.mul(&[neg_one, s2]);
+                ar.add(&[one, t])
+            },
+            |ar, a| {
+                let ca = ar.cos(a);
+                ar.pow(ca, two)
+            },
+        ),
+        rule1(
+            arena,
+            "sinh_double",
+            |ar, a| {
+                let (sa, ca) = (ar.sinh(a), ar.cosh(a));
+                ar.mul(&[two, sa, ca])
+            },
+            |ar, a| {
+                let d = ar.mul(&[two, a]);
+                ar.sinh(d)
+            },
+        ),
+        rule1(
+            arena,
+            "cosh_double",
+            |ar, a| {
+                let (ca, sa) = (ar.cosh(a), ar.sinh(a));
+                let c2 = ar.pow(ca, two);
+                let s2 = ar.pow(sa, two);
+                ar.add(&[c2, s2])
+            },
+            |ar, a| {
+                let d = ar.mul(&[two, a]);
+                ar.cosh(d)
+            },
+        ),
+        rule1(
+            arena,
+            "cosh_sinh_sq",
+            |ar, a| {
+                let (ca, sa) = (ar.cosh(a), ar.sinh(a));
+                let c2 = ar.pow(ca, two);
+                let s2 = ar.pow(sa, two);
+                let ns2 = ar.mul(&[neg_one, s2]);
+                ar.add(&[c2, ns2])
+            },
+            |ar, _a| ar.one,
+        ),
+        rule1(
+            arena,
+            "sin_div_cos",
+            |ar, a| {
+                let (sa, ca) = (ar.sin(a), ar.cos(a));
+                let inv = ar.pow(ca, neg_one);
+                ar.mul(&[sa, inv])
+            },
+            |ar, a| ar.tan(a),
+        ),
+        rule1(
+            arena,
+            "sinh_div_cosh",
+            |ar, a| {
+                let (sa, ca) = (ar.sinh(a), ar.cosh(a));
+                let inv = ar.pow(ca, neg_one);
+                ar.mul(&[sa, inv])
+            },
+            |ar, a| ar.tanh(a),
+        ),
+    ]
+}
+
+// ── Shared replacement infrastructure ──────────────────────────────────────
 
 /// Which trig function's square to replace.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -337,5 +620,69 @@ mod tests {
             expr_ops,
             display(&arena, result)
         );
+    }
+
+    // ── trig identity rules ────────────────────────────────────────
+
+    #[test]
+    fn identity_rules_sum_difference_double_angle() {
+        let mut arena = Arena::new();
+        let (x, y) = (sym(&mut arena, "x"), sym(&mut arena, "y"));
+        let rules = trig_identity_rules(&mut arena);
+        let (sx, cx, sy, cy) = (arena.sin(x), arena.cos(x), arena.sin(y), arena.cos(y));
+        let t1 = arena.mul(&[sx, cy]);
+        let t2 = arena.mul(&[cx, sy]);
+        let e = arena.add(&[t1, t2]);
+        let (r, steps) = crate::transforms::pattern::apply_rules(&mut arena, e, &rules);
+        assert_eq!(display(&arena, r), "sin(x + y)");
+        assert_eq!(steps[0].rule_name, "sin_add");
+        let two = arena.int(2);
+        let d = arena.mul(&[two, sx, cx]);
+        let (r, _) = crate::transforms::pattern::apply_rules(&mut arena, d, &rules);
+        assert_eq!(display(&arena, r), "sin(2*x)");
+        let sh = arena.sinh(x);
+        let ch = arena.cosh(x);
+        let dh = arena.mul(&[two, sh, ch]);
+        let (r, _) = crate::transforms::pattern::apply_rules(&mut arena, dh, &rules);
+        assert_eq!(display(&arena, r), "sinh(2*x)");
+    }
+
+    #[test]
+    fn identity_rules_do_not_fire_on_mismatch() {
+        let mut arena = Arena::new();
+        let (x, y, z) = (
+            sym(&mut arena, "x"),
+            sym(&mut arena, "y"),
+            sym(&mut arena, "z"),
+        );
+        let rules = trig_identity_rules(&mut arena);
+        let (sx, cx, sz, cy) = (arena.sin(x), arena.cos(x), arena.sin(z), arena.cos(y));
+        let t1 = arena.mul(&[sx, cy]);
+        let t2 = arena.mul(&[cx, sz]);
+        let e = arena.add(&[t1, t2]);
+        let (r, steps) = crate::transforms::pattern::apply_rules(&mut arena, e, &rules);
+        assert_eq!(r, e);
+        assert!(steps.is_empty());
+    }
+
+    #[test]
+    fn trigsimp_uses_identity_rules() {
+        let mut arena = Arena::new();
+        let x = sym(&mut arena, "x");
+        let (cx, sx) = (arena.cos(x), arena.sin(x));
+        let two = arena.int(2);
+        let c2 = arena.pow(cx, two);
+        let s2 = arena.pow(sx, two);
+        let neg_two = arena.int(-2);
+        let t = arena.mul(&[neg_two, s2]);
+        let one = arena.one;
+        let e = arena.add(&[one, t]); // 1 - 2 sin^2
+        let r = trigsimp(&mut arena, e);
+        assert_eq!(display(&arena, r), "cos(2*x)");
+        let two_c2 = arena.mul(&[two, c2]);
+        let neg_one = arena.neg_one;
+        let f = arena.add(&[two_c2, neg_one]);
+        let r = trigsimp(&mut arena, f);
+        assert_eq!(display(&arena, r), "cos(2*x)");
     }
 }

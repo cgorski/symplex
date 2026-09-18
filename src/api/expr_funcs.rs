@@ -2326,7 +2326,10 @@ impl Expr<Numeric> {
     /// Converts the expression to a univariate polynomial in `var`
     /// and rebuilds it, naturally grouping coefficients by power.
     ///
-    /// Returns the expression unchanged if it is not polynomial in `var`.
+    /// When the expression is not polynomial in `var` (symbolic or
+    /// negative exponents), the terms of the sum are grouped by the exact
+    /// power of `var` they contain instead:
+    /// `y·x^a + z·x^a + x^2 → (y + z)·x^a + x^2`.
     ///
     /// # Examples
     ///
@@ -2339,11 +2342,24 @@ impl Expr<Numeric> {
     /// let collected = expr.collect(&x);
     /// // Terms are grouped by powers of x.
     /// assert_eq!(format!("{collected}"), "x^2 + x*y + y");
+    ///
+    /// // Symbolic exponents:
+    /// let (a, z) = (ctx.symbol("a"), ctx.symbol("z"));
+    /// let expr = &y * &x.pow(&a) + &z * &x.pow(&a);
+    /// assert_eq!(format!("{}", expr.collect(&x)), "x^a*(y + z)");
     /// ```
     #[must_use = "returns the collected form; does not modify in place"]
     pub fn collect(&self, var: &Ex) -> Ex {
         let var_id = self.checked_id(var);
-        let id = self.inner.write().arena.collect_expr(self.raw_id(), var_id);
+        let id = {
+            let mut inner = self.inner.write();
+            let poly = inner.arena.collect_expr(self.raw_id(), var_id);
+            if poly == self.raw_id() {
+                crate::simplify::factor_terms::collect_powers(&mut inner.arena, poly, var_id)
+            } else {
+                poly
+            }
+        };
         self.wrap(id)
     }
 

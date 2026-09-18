@@ -6,30 +6,48 @@
 //! - `ln(a / b)` → `ln(a) - ln(b)` (i.e., `ln(a * b^(-1))`)
 //! - `ln(a^n)` → `n * ln(a)`
 //!
-//! These rules are always valid for positive real arguments. The function
-//! applies them unconditionally — the caller is responsible for ensuring
-//! the arguments are in the appropriate domain.
+//! These rules are always valid for positive real arguments.
+//! [`expand_log`] applies them unconditionally (`force = true`);
+//! [`expand_log_with`] with `force = false` only expands when every
+//! factor is known positive (and, for `ln(a^n)`, `n` is known real)
+//! through the assumption system.
 
 use crate::base::arena::Arena;
+use crate::base::assumptions::{AssumptionCache, Props};
 use crate::base::node::{ExprId, ExprNode};
 use crate::base::walk;
 use num_traits::Signed;
 use rustc_hash::FxHashMap;
 
-/// Expand logarithmic expressions.
+/// Expand logarithmic expressions unconditionally.
 ///
 /// Walks the expression bottom-up and applies log expansion rules
 /// to `Ln` nodes whose arguments are products, quotients, or powers.
+/// Equivalent to [`expand_log_with`] with `force = true`.
 pub(crate) fn expand_log(arena: &mut Arena, expr: ExprId) -> ExprId {
+    expand_log_with(arena, expr, true)
+}
+
+/// Expand logarithmic expressions, honouring the positivity guard unless
+/// `force` is set.
+///
+/// # Branch reasoning
+///
+/// For complex arguments `ln(a·b) = ln a + ln b + 2πi·k` where `k ∈ {−1, 0, 1}`
+/// depends on the arguments' phases, and `ln(a^n) = n·ln a` fails as
+/// soon as `n·arg(a)` leaves `(−π, π]`.  Both identities are exact when
+/// the arguments are positive reals, which is what the guard checks.
+pub(crate) fn expand_log_with(arena: &mut Arena, expr: ExprId, force: bool) -> ExprId {
     let post_order = walk::post_order_ids(arena, expr);
     let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut assumptions = AssumptionCache::new();
 
     for &id in &post_order {
         let node = arena.node(id).clone();
         let expanded = match node {
             ExprNode::Ln(inner) => {
                 let inner = cache.get(&inner).copied().unwrap_or(inner);
-                expand_ln_node(arena, inner)
+                expand_ln_node_guarded(arena, &mut assumptions, inner, force)
             }
             // Rebuild other nodes with expanded children.
             ExprNode::Add(ref children) => {
@@ -79,7 +97,40 @@ pub(crate) fn expand_log(arena: &mut Arena, expr: ExprId) -> ExprId {
     cache.get(&expr).copied().unwrap_or(expr)
 }
 
+/// Expand a single `ln(inner)` node, checking the positivity guard first
+/// unless `force` is set.  Returns `ln(inner)` unchanged when the guard
+/// rejects.
+pub(crate) fn expand_ln_node_guarded(
+    arena: &mut Arena,
+    assumptions: &mut AssumptionCache,
+    inner: ExprId,
+    force: bool,
+) -> ExprId {
+    if !force {
+        let ok = match arena.node(inner).clone() {
+            // Every factor must be a positive real (then so is its
+            // reciprocal, which the a^(-n) branch below relies on).
+            ExprNode::Mul(ref children) => children
+                .iter()
+                .all(|&c| assumptions.query(arena, c, Props::POSITIVE) == Some(true)),
+            ExprNode::Pow(base, exp) => {
+                assumptions.query(arena, base, Props::POSITIVE) == Some(true)
+                    && assumptions.query(arena, exp, Props::REAL) == Some(true)
+            }
+            _ => true,
+        };
+        if !ok {
+            return arena.ln(inner);
+        }
+    }
+    expand_ln_node(arena, inner)
+}
+
 /// Expand a single `ln(inner)` node.
+///
+/// Factors of a product are expanded one level further (`ln(x·y²) →
+/// ln x + 2·ln y`); a canonical `Mul` never nests another `Mul`, so this
+/// recursion is bounded to one level.
 fn expand_ln_node(arena: &mut Arena, inner: ExprId) -> ExprId {
     match arena.node(inner).clone() {
         // ln(a * b * ...) → ln(a) + ln(b) + ...
@@ -87,7 +138,7 @@ fn expand_ln_node(arena: &mut Arena, inner: ExprId) -> ExprId {
             let terms: Vec<ExprId> = children
                 .iter()
                 .map(|&child| {
-                    // Check for negative exponent: a^(-n) contributes -ln(a^n)
+                    // Check for negative exponent: a^(-n) contributes -n·ln(a)
                     if let ExprNode::Pow(base, exp) = arena.node(child).clone()
                         && let Some(r) = arena.as_num(exp)
                         && r.is_negative()
@@ -98,10 +149,10 @@ fn expand_ln_node(arena: &mut Arena, inner: ExprId) -> ExprId {
                             arena.intern(ExprNode::Num(nid))
                         };
                         let pos_pow = arena.pow(base, pos_exp);
-                        let ln_pos = arena.ln(pos_pow);
+                        let ln_pos = expand_ln_factor(arena, pos_pow);
                         return arena.neg(ln_pos);
                     }
-                    arena.ln(child)
+                    expand_ln_factor(arena, child)
                 })
                 .collect();
             if terms.len() == 1 {
@@ -119,6 +170,17 @@ fn expand_ln_node(arena: &mut Arena, inner: ExprId) -> ExprId {
 
         // Nothing to expand.
         _ => arena.ln(inner),
+    }
+}
+
+/// `ln(factor)` for one factor of a product: powers become `n·ln(a)`.
+fn expand_ln_factor(arena: &mut Arena, factor: ExprId) -> ExprId {
+    match arena.node(factor).clone() {
+        ExprNode::Pow(base, exp) => {
+            let ln_base = arena.ln(base);
+            arena.mul(&[exp, ln_base])
+        }
+        _ => arena.ln(factor),
     }
 }
 
@@ -214,5 +276,41 @@ mod tests {
         let pass2 = expand_log(&mut a, pass1);
         let s = display(&a, pass2);
         assert!(s.contains("ln(x)") && s.contains("ln(y)"), "got: {s}");
+    }
+
+    // ── guarded expansion ──────────────────────────────────────────
+
+    #[test]
+    fn guarded_expand_requires_positive_factors() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let xy = a.mul(&[x, y]);
+        let e = a.ln(xy);
+        assert_eq!(expand_log_with(&mut a, e, false), e);
+        let forced = expand_log_with(&mut a, e, true);
+        assert_eq!(display(&a, forced), "ln(x) + ln(y)");
+        // Positive symbols pass the guard.
+        for s in [x, y] {
+            if let ExprNode::Symbol(sid) = *a.node(s) {
+                let mut asm = crate::base::assumptions::Assumptions::default();
+                asm.assert_true(crate::base::assumptions::Props::POSITIVE);
+                asm.forward_chain();
+                a.set_symbol_assumptions(sid, asm);
+            }
+        }
+        let guarded = expand_log_with(&mut a, e, false);
+        assert_eq!(display(&a, guarded), "ln(x) + ln(y)");
+    }
+
+    #[test]
+    fn expand_ln_of_product_with_power_factor() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let two = a.int(2);
+        let y2 = a.pow(y, two);
+        let xy2 = a.mul(&[x, y2]);
+        let e = a.ln(xy2);
+        let r = expand_log(&mut a, e);
+        assert_eq!(display(&a, r), "2*ln(y) + ln(x)");
     }
 }
