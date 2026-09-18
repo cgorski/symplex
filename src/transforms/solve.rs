@@ -341,7 +341,16 @@ pub(crate) fn parse_evalf_magnitude(s: &str) -> Option<f64> {
     }
     // Complex: split on the last '+' or '-' that separates the parts.
     let body = s.replace('*', "");
-    let body = body.trim_end_matches(['I', 'i']);
+    let body = body.trim_end_matches(['I', 'i']).trim();
+    // Pure imaginary: "i", "-i", "2.5i".
+    match body {
+        "" | "+" => return Some(1.0),
+        "-" => return Some(1.0),
+        _ => {}
+    }
+    if let Ok(v) = body.parse::<f64>() {
+        return Some(v.abs());
+    }
     let mut split_at = None;
     for (i, ch) in body.char_indices().skip(1) {
         if (ch == '+' || ch == '-') && !body[..i].ends_with('e') && !body[..i].ends_with('E') {
@@ -350,7 +359,13 @@ pub(crate) fn parse_evalf_magnitude(s: &str) -> Option<f64> {
     }
     let idx = split_at?;
     let re: f64 = body[..idx].trim().parse().ok()?;
-    let im: f64 = body[idx..].trim().parse().ok()?;
+    // The imaginary part is printed as "- 1.5e-3" (space after the sign).
+    let im_text: String = body[idx..].chars().filter(|c| !c.is_whitespace()).collect();
+    let im: f64 = match im_text.as_str() {
+        "+" => 1.0,
+        "-" => -1.0,
+        t => t.parse().ok()?,
+    };
     Some(re.hypot(im))
 }
 
@@ -1162,9 +1177,28 @@ fn solve_cubic_cardano(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
     let u_arg = arena.add(&[neg_q_half, sqrt_disc]);
     let v_arg = arena.sub(neg_q_half, sqrt_disc);
 
-    let third = arena.rational(1, 3);
-    let u = arena.pow(u_arg, third);
-    let v = arena.pow(v_arg, third);
+    // Cardano's formula needs the *real* cube roots of the two radicands
+    // (their product must be −p/3).  A `Pow(negative, 1/3)` node is
+    // evaluated on the principal complex branch by `evalf`, which would
+    // silently produce wrong roots, so a radicand that is provably
+    // negative is written as −cbrt(|radicand|).  The signs follow from the
+    // exact rational data: for Δ ≥ 0, √Δ ≥ |q|/2 exactly when p ≥ 0.
+    let (p_rat, q_rat, disc_rat) = {
+        let three_r = Ratio::from_integer(BigInt::from(3));
+        let nine_r = Ratio::from_integer(BigInt::from(9));
+        let two_r = Ratio::from_integer(BigInt::from(2));
+        let four_r = Ratio::from_integer(BigInt::from(4));
+        let twenty_seven_r = Ratio::from_integer(BigInt::from(27));
+        let p_r = (&three_r * &a * &c - &b * &b) / (&three_r * &a * &a);
+        let q_r = (&two_r * &b * &b * &b - &nine_r * &a * &b * &c + &twenty_seven_r * &a * &a * &d)
+            / (&twenty_seven_r * &a * &a * &a);
+        let disc_r = &q_r * &q_r / &four_r + &p_r * &p_r * &p_r / &twenty_seven_r;
+        (p_r, q_r, disc_r)
+    };
+    let (u_sign, v_sign) = cardano_radicand_signs(&p_rat, &q_rat, &disc_rat);
+
+    let u = real_cbrt_with_sign(arena, u_arg, u_sign);
+    let v = real_cbrt_with_sign(arena, v_arg, v_sign);
 
     let t1 = arena.add(&[u, v]);
 
@@ -1204,6 +1238,73 @@ fn solve_cubic_cardano(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
         Solution { value: x2s },
         Solution { value: x3s },
     ]
+}
+
+/// Signs of the Cardano radicands `−q/2 + √Δ` and `−q/2 − √Δ` for the
+/// depressed cubic `t³ + pt + q` with `Δ = q²/4 + p³/27`.
+///
+/// Returns `(sign_u, sign_v)` with values in `{-1, 0, 1}`; `0` is also used
+/// when `Δ < 0` (complex radicands, principal branch is correct there).
+fn cardano_radicand_signs(p: &Ratio<BigInt>, q: &Ratio<BigInt>, disc: &Ratio<BigInt>) -> (i8, i8) {
+    use std::cmp::Ordering;
+    if disc.is_negative() {
+        return (0, 0);
+    }
+    let neg_q_sign: i8 = match q.cmp(&Ratio::zero()) {
+        Ordering::Less => 1,
+        Ordering::Equal => 0,
+        Ordering::Greater => -1,
+    };
+    if disc.is_zero() {
+        // Both radicands equal −q/2.
+        return (neg_q_sign, neg_q_sign);
+    }
+    // Δ > 0: √Δ > |q|/2 ⇔ p > 0; √Δ = |q|/2 ⇔ p = 0; √Δ < |q|/2 ⇔ p < 0.
+    let p_sign = match p.cmp(&Ratio::zero()) {
+        Ordering::Less => -1i8,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    };
+    let u_sign = if neg_q_sign >= 0 {
+        // −q/2 ≥ 0 and √Δ > 0 ⇒ positive.
+        1
+    } else {
+        // −q/2 < 0: sign decided by whether √Δ exceeds |q|/2.
+        p_sign
+    };
+    let v_sign = if neg_q_sign <= 0 {
+        -1
+    } else {
+        // −q/2 > 0: −q/2 − √Δ is positive iff √Δ < q/2 ⇔ p < 0.
+        -p_sign
+    };
+    (u_sign, v_sign)
+}
+
+/// Build the real cube root of `arg` given its known sign: `cbrt(arg)` for
+/// a positive radicand, `−cbrt(−arg)` for a negative one (so that no cube
+/// root of a negative real is ever emitted), `0` for a zero radicand.  An
+/// unknown sign (`0` for a complex radicand) falls back to the principal
+/// branch `arg^(1/3)`.
+fn real_cbrt_with_sign(arena: &mut Arena, arg: ExprId, sign: i8) -> ExprId {
+    let third = arena.rational(1, 3);
+    match sign {
+        1 => arena.pow(arg, third),
+        -1 => {
+            let neg_arg = arena.neg(arg);
+            let neg_arg = crate::transforms::eval::eval(arena, neg_arg);
+            let root = arena.pow(neg_arg, third);
+            arena.neg(root)
+        }
+        _ => {
+            // Zero radicand (exactly), or complex radicand (principal branch).
+            let ev = crate::transforms::eval::eval(arena, arg);
+            if arena.is_zero_structural(ev) {
+                return arena.zero;
+            }
+            arena.pow(arg, third)
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1256,6 +1357,54 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
     //   p = (8ac - 3b²) / (8a²)
     //   q = (b³ - 4abc + 8a²d) / (8a³)
     //   r = (-3b⁴ + 256a³e - 64a²bd + 16ab²c) / (256a⁴)
+
+    // Exact rational depressed coefficients (also used for the biquadratic
+    // shortcut below and for the resolvent-root filter).
+    let (p_rat, q_rat, r_rat) = {
+        let r3 = Ratio::from_integer(BigInt::from(3));
+        let r4 = Ratio::from_integer(BigInt::from(4));
+        let r8 = Ratio::from_integer(BigInt::from(8));
+        let r16 = Ratio::from_integer(BigInt::from(16));
+        let r64 = Ratio::from_integer(BigInt::from(64));
+        let r256 = Ratio::from_integer(BigInt::from(256));
+        let a2 = &a * &a;
+        let a3 = &a2 * &a;
+        let a4 = &a3 * &a;
+        let b2 = &b * &b;
+        let p_r = (&r8 * &a * &c - &r3 * &b2) / (&r8 * &a2);
+        let q_r = (&b2 * &b - &r4 * &a * &b * &c + &r8 * &a2 * &d) / (&r8 * &a3);
+        let r_r = (-&r3 * &b2 * &b2 + &r256 * &a3 * &e - &r64 * &a2 * &b * &d
+            + &r16 * &a * &b2 * &c)
+            / (&r256 * &a4);
+        (p_r, q_r, r_r)
+    };
+
+    // Biquadratic t⁴ + pt² + r = 0 (q = 0): Ferrari's factorisation
+    // degenerates (k = √(2m − p) = 0 for the rational resolvent root
+    // m = p/2, giving 0/0), so solve the quadratic in s = t² and take
+    // t = ±√s instead.
+    if q_rat.is_zero() {
+        let quad = Poly::from_coeffs(vec![r_rat.clone(), p_rat.clone(), Ratio::one()]);
+        let s_roots = solve_quadratic(arena, &quad);
+        let four_a = Ratio::from_integer(BigInt::from(4)) * &a;
+        let shift_rat = &b / &four_a;
+        let shift = rational_to_expr(arena, &shift_rat);
+        let half = arena.rational(1, 2);
+        let mut out: Vec<Solution> = Vec::new();
+        for s in s_roots {
+            let s_ev = crate::transforms::eval::eval(arena, s.value);
+            let t_pos = arena.pow(s_ev, half);
+            let t_neg = arena.neg(t_pos);
+            for t in [t_pos, t_neg] {
+                let x = arena.sub(t, shift);
+                let x = crate::transforms::eval::eval(arena, x);
+                if !out.iter().any(|o| o.value == x) {
+                    out.push(Solution { value: x });
+                }
+            }
+        }
+        return out;
+    }
 
     let a_id = rational_to_expr(arena, &a);
     let b_id = rational_to_expr(arena, &b);
@@ -1334,13 +1483,9 @@ fn solve_quartic_ferrari(arena: &mut Arena, poly: &Poly) -> Vec<Solution> {
 
     let resolvent_poly = Poly::from_coeffs(vec![rc0, rc1, rc2, rc3]);
 
-    // Compute p as a rational for filtering resolvent roots.
-    // We need 2m - p ≠ 0 for a non-degenerate Ferrari factorization.
-    let p_rat = {
-        let eight_r = Ratio::from_integer(BigInt::from(8));
-        let three_r = Ratio::from_integer(BigInt::from(3));
-        (&eight_r * &a * &c - &three_r * &b * &b) / (&eight_r * &a * &a)
-    };
+    // We need 2m - p ≠ 0 for a non-degenerate Ferrari factorization; with
+    // q ≠ 0 (guaranteed above) m = p/2 is never a resolvent root.
+    debug_assert!(!q_rat.is_zero());
 
     // Try rational roots of the resolvent cubic first.
     // This avoids the *casus irreducibilis* problem where Cardano's formula

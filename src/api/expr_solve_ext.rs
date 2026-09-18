@@ -885,7 +885,12 @@ pub(crate) fn fit_constants(
             for (c, v) in &pairs {
                 sol = sol.subs(c, v);
             }
-            Ok(sol.eval().simplify())
+            // Substituting algebraic constants can swell the expression;
+            // bound the work before simplifying.
+            crate::domains::matrix::budget_check([&sol], operation)?;
+            let sol = sol.eval();
+            crate::domains::matrix::budget_check([&sol], operation)?;
+            Ok(sol.simplify())
         }
         Ok(LinearSolution::Parametric { solution, free }) => {
             let mut sol = general.clone();
@@ -894,6 +899,7 @@ pub(crate) fn fit_constants(
                     sol = sol.subs(c, v);
                 }
             }
+            crate::domains::matrix::budget_check([&sol], operation)?;
             Ok(sol.eval().simplify())
         }
         Err(_) => {

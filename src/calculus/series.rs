@@ -140,7 +140,27 @@ pub(crate) fn series_at_infinity(
     let inv_x = arena.div(one, var);
     let inv_x = if negative { arena.neg(inv_x) } else { inv_x };
     let back = subs::subs(arena, poly, t, inv_x);
-    Ok(eval::eval(arena, back))
+    let result = eval::eval(arena, back);
+    // Never return a bogus expansion: a coefficient that is infinite,
+    // undefined or an unevaluated limit means the expansion failed.
+    if contains_singular_atom(arena, result) || walk::has_unevaluated(arena, result) {
+        return Err(SymplexError::ComputationFailed {
+            operation: "series_at_infinity",
+            reason: format!(
+                "no asymptotic expansion in powers of 1/{}: a coefficient is singular",
+                arena.display(var)
+            ),
+        });
+    }
+    Ok(result)
+}
+
+/// `true` if the expression contains `∞`, `−∞`, `zoo`, or `NaN` anywhere.
+fn contains_singular_atom(arena: &Arena, id: ExprId) -> bool {
+    walk::contains(arena, id, arena.infinity)
+        || walk::contains(arena, id, arena.neg_infinity)
+        || walk::contains(arena, id, arena.complex_infinity)
+        || walk::contains(arena, id, arena.nan)
 }
 
 /// Compute a Laurent series expansion of `expr` in `var` around `point`.
@@ -782,7 +802,7 @@ fn expand_with_precision(
                 None => {
                     if id == expr || fallbacks_used < MAX_FALLBACK_NODES {
                         fallbacks_used += 1;
-                        taylor_by_differentiation(arena, id, var, n)
+                        taylor_by_differentiation(arena, id, var, n, one_sided)
                     } else {
                         None
                     }
@@ -1053,11 +1073,18 @@ fn pow_rational(arena: &mut Arena, a: &TSeries, alpha: ExprId, one_sided: bool) 
 }
 
 /// Taylor coefficients by repeated differentiation at `0`.
+///
+/// When direct substitution of `0` into a derivative is singular or
+/// indeterminate (`atan(1/t)` at `t = 0` gives `atan(zoo)`), the
+/// coefficient is the *limit* of that derivative at `0` — one-sided
+/// (`0⁺`) for expansions at `±∞`, two-sided otherwise.  A limit that does
+/// not exist or is not finite means there is no Taylor expansion.
 fn taylor_by_differentiation(
     arena: &mut Arena,
     expr: ExprId,
     var: ExprId,
     n: i64,
+    one_sided: bool,
 ) -> Option<TSeries> {
     let zero = arena.zero;
     let mut coeffs = Vec::with_capacity(n.max(0) as usize);
@@ -1066,14 +1093,20 @@ fn taylor_by_differentiation(
     for k in 0..n {
         let at0 = subs::subs(arena, current, var, zero);
         let value = eval::eval(arena, at0);
-        if value == arena.infinity
-            || value == arena.neg_infinity
-            || value == arena.nan
-            || value == arena.complex_infinity
-            || walk::has_unevaluated(arena, value)
-        {
-            return None;
-        }
+        let value = if is_finite_constant(arena, value, var) {
+            value
+        } else {
+            let dir = if one_sided {
+                crate::calculus::limit::Direction::Right
+            } else {
+                crate::calculus::limit::Direction::Both
+            };
+            let lim = crate::calculus::limit::limit_dir(arena, current, var, zero, dir).ok()?;
+            if !is_finite_constant(arena, lim, var) {
+                return None;
+            }
+            lim
+        };
         let coeff = if k == 0 {
             value
         } else {
@@ -1092,6 +1125,14 @@ fn taylor_by_differentiation(
         known: n,
         coeffs,
     })
+}
+
+/// A finite, fully evaluated constant (no `±∞`, `zoo`, `NaN`, hidden
+/// singularity such as `ln 0`, unevaluated node, or occurrence of `var`).
+fn is_finite_constant(arena: &Arena, value: ExprId, var: ExprId) -> bool {
+    value != arena.infinity
+        && value != arena.neg_infinity
+        && crate::calculus::limit::is_valid_limit_value(arena, value, var)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

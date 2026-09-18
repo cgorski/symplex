@@ -9,24 +9,20 @@ use symplex::prelude::*;
 use v02_oracle_common::*;
 
 /// Library bugs surfaced by this file (strict xfail — see common module).
-const KNOWN_BUGS: &[KnownBug] = &[(
-    "series_at_infinity",
-    "laurent",
-    "atan(x)",
-    // BUG: series_at_infinity(atan(x)) returns the garbage expression
-    // `atan(zoo)` (not flagged as unevaluated) instead of pi/2 - 1/x + 1/(3x^3) - …
-    "series_at_infinity(atan(x)) returns atan(zoo)",
-)];
+const KNOWN_BUGS: &[KnownBug] = &[];
 
-/// Reproducer for the `atan(zoo)` bug above.  Un-ignore once fixed.
+/// Regression: `series_at_infinity(atan(x))` used to return the garbage
+/// expression `atan(zoo)` as its constant term.
 #[test]
-#[ignore = "BUG: series_at_infinity(atan(x), 5) returns atan(zoo); SymPy: pi/2 - 1/x + 1/(3*x**3)"]
 fn bug_series_at_infinity_atan_returns_atan_zoo() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
+    // `n_terms` bounds the exponent of 1/x (exclusive), as for
+    // `series_at_infinity(x/(x+1), 3)` = 1 - 1/x + 1/x^2; six terms give
+    // pi/2 - 1/x + 1/(3x^3) - 1/(5x^5), accurate to ~1e-8 at x = 10.
     let s = x
         .atan()
-        .try_series_at_infinity(&x, 5)
+        .try_series_at_infinity(&x, 6)
         .expect("a Laurent series");
     assert!(!s.contains(&ctx.complex_infinity()), "got {s}");
     let at_10 = s.subs_i64(&x, 10).eval_f64().unwrap();
