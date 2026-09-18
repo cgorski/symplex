@@ -11,6 +11,16 @@ documentation = "https://docs.rs/symplex"
 readme = "README.md"
 keywords = ["symbolic", "math", "cas", "codegen", "robotics"]
 categories = ["mathematics", "science", "development-tools::build-utils"]
+# Keep the published tarball to what `cargo test` / `cargo doc` need.
+exclude = [
+    "/book",
+    "/probes",
+    "/scripts",
+    "/.github",
+    "/fuzz",
+    "/symplex-wasm",
+    "/*.log",
+]
 
 [dependencies]
 symplex-macros = { version = "0.2.0", path = "symplex-macros" }
