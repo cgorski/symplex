@@ -23,7 +23,9 @@
 //!
 //! # Satisfiability
 //!
-//! [`is_tautology`], [`is_contradiction`] and [`satisfiable`] first try a
+//! [`BoolEx::is_tautology`](crate::expr::BoolEx::is_tautology),
+//! [`BoolEx::is_contradiction`](crate::expr::BoolEx::is_contradiction) and
+//! [`BoolEx::satisfiable`](crate::expr::BoolEx::satisfiable) first try a
 //! propositional search (each relational pair is a 3-valued variable, each
 //! opaque atom a 2-valued one; ≤ 24 variables, bounded budget).  A
 //! propositional proof is always sound.  When the propositional answer is
@@ -55,6 +57,8 @@ const MAX_SAT_VARS: usize = 24;
 const SAT_BUDGET: usize = 200_000;
 /// Maximum number of clauses produced by CNF/DNF distribution.
 const MAX_CLAUSES: usize = 4096;
+/// Maximum total number of literals produced by CNF/DNF distribution.
+const MAX_LITERALS: usize = 50_000;
 /// Maximum number of variables for a truth table.
 const MAX_TRUTH_TABLE_VARS: usize = 8;
 /// Fixpoint iterations for `simplify_bool`.
@@ -569,6 +573,55 @@ pub(crate) fn simplify_bool(arena: &mut Arena, root: ExprId) -> ExprId {
     cur
 }
 
+/// Simplify the numeric operands of every relational atom with the
+/// numeric simplification engine, then apply [`simplify_bool`].
+///
+/// Operands are simplified individually (memoised), which keeps the cost
+/// linear in the number of atoms instead of running the whole engine over
+/// a large boolean tree.
+pub(crate) fn simplify_bool_full(arena: &mut Arena, root: ExprId) -> ExprId {
+    use crate::simplify::simplify_engine::{SimplifyOpts, unified_simplify};
+
+    let atoms_list = atoms(arena, root);
+    let opts = SimplifyOpts::default();
+    let mut operand_memo: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+    let mut pairs: Vec<(ExprId, ExprId)> = Vec::new();
+    for atom in atoms_list {
+        let (a, b) = match arena.node(atom) {
+            ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
+                (*a, *b)
+            }
+            _ => continue,
+        };
+        let mut simp = |arena: &mut Arena, e: ExprId| -> ExprId {
+            if let Some(&s) = operand_memo.get(&e) {
+                return s;
+            }
+            let s = unified_simplify(arena, e, &opts).expr;
+            operand_memo.insert(e, s);
+            s
+        };
+        let na = simp(arena, a);
+        let nb = simp(arena, b);
+        if na == a && nb == b {
+            continue;
+        }
+        let new_atom = match arena.node(atom).clone() {
+            ExprNode::Gt(..) => arena.gt(na, nb),
+            ExprNode::Ge(..) => arena.ge(na, nb),
+            ExprNode::Eq_(..) => arena.eq_(na, nb),
+            _ => arena.ne_(na, nb),
+        };
+        pairs.push((atom, new_atom));
+    }
+    let rebuilt = if pairs.is_empty() {
+        root
+    } else {
+        arena.subs_map_structural(root, &pairs)
+    };
+    simplify_bool(arena, rebuilt)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CNF / DNF
 // ═══════════════════════════════════════════════════════════════════════════
@@ -580,6 +633,15 @@ type Clauses = Vec<Vec<ExprId>>;
 /// Combine two clause lists by cross product (the "distributing" side).
 fn cross(a: &Clauses, b: &Clauses) -> Option<Clauses> {
     if a.len().saturating_mul(b.len()) > MAX_CLAUSES {
+        return None;
+    }
+    let la: usize = a.iter().map(Vec::len).sum();
+    let lb: usize = b.iter().map(Vec::len).sum();
+    if la
+        .saturating_mul(b.len())
+        .saturating_add(lb.saturating_mul(a.len()))
+        > MAX_LITERALS
+    {
         return None;
     }
     let mut out = Vec::with_capacity(a.len() * b.len());
@@ -651,7 +713,9 @@ fn distribute(arena: &mut Arena, root: ExprId, cnf: bool) -> ExprId {
                             None => return nnf, // blow-up guard
                         }
                     }
-                    if acc.len() > MAX_CLAUSES {
+                    if acc.len() > MAX_CLAUSES
+                        || acc.iter().map(Vec::len).sum::<usize>() > MAX_LITERALS
+                    {
                         return nnf;
                     }
                 }
@@ -694,9 +758,15 @@ fn distribute(arena: &mut Arena, root: ExprId, cnf: bool) -> ExprId {
         }
     }
     cleaned.sort_by_key(Vec::len);
+    // Subsumption is quadratic; only worth it for modest clause counts.
+    let check_subsumption = cleaned.len() <= 512;
     let mut kept: Vec<Vec<ExprId>> = Vec::new();
+    let mut seen: FxHashSet<Vec<ExprId>> = FxHashSet::default();
     for c in cleaned {
-        let subsumed = kept.iter().any(|k| k.iter().all(|l| c.contains(l)));
+        if !seen.insert(c.clone()) {
+            continue;
+        }
+        let subsumed = check_subsumption && kept.iter().any(|k| k.iter().all(|l| c.contains(l)));
         if !subsumed {
             kept.push(c);
         }
@@ -830,10 +900,23 @@ impl Formula {
     fn var_count(&self) -> usize {
         self.pair_keys.len() + self.atom_keys.len()
     }
+}
 
-    /// Three-valued evaluation under a partial assignment.
-    /// `pairs[i]` is the set of states still possible for pair `i`.
-    fn eval(&self, pairs: &[u8], atoms: &[Option<bool>]) -> Option<bool> {
+/// Outcome of one unit-propagation round.
+enum Prop {
+    /// The root is determined under the current assignment.
+    Determined(bool),
+    /// A forced literal contradicts the assignment.
+    Conflict,
+    /// Some variable was narrowed; propagate again.
+    Changed,
+    /// Nothing more can be inferred; branch.
+    Stuck,
+}
+
+impl Formula {
+    /// Bottom-up values of every node under a partial assignment.
+    fn values(&self, pairs: &[u8], atoms: &[Option<bool>]) -> Vec<Option<bool>> {
         let mut vals: Vec<Option<bool>> = Vec::with_capacity(self.nodes.len());
         for n in &self.nodes {
             let v = match n {
@@ -880,7 +963,76 @@ impl Formula {
             };
             vals.push(v);
         }
-        vals[self.root]
+        vals
+    }
+
+    /// Three-valued evaluation under a partial assignment.
+    /// `pairs[i]` is the set of states still possible for pair `i`.
+    fn eval(&self, pairs: &[u8], atoms: &[Option<bool>]) -> Option<bool> {
+        self.values(pairs, atoms)[self.root]
+    }
+
+    /// One round of unit propagation towards making the root `target`.
+    fn propagate(&self, target: bool, pairs: &mut [u8], atoms: &mut [Option<bool>]) -> Prop {
+        let vals = self.values(pairs, atoms);
+        if let Some(v) = vals[self.root] {
+            return Prop::Determined(v);
+        }
+        // Top-down wants (children have smaller indices than parents).
+        let mut want: Vec<Option<bool>> = vec![None; self.nodes.len()];
+        want[self.root] = Some(target);
+        let mut changed = false;
+        for i in (0..self.nodes.len()).rev() {
+            let Some(w) = want[i] else { continue };
+            if vals[i].is_some() {
+                continue;
+            }
+            match &self.nodes[i] {
+                FNode::Const(_) => {}
+                FNode::Rel(p, mask) => {
+                    let m = if w { *mask } else { ALL & !mask };
+                    let new = pairs[*p] & m;
+                    if new == 0 {
+                        return Prop::Conflict;
+                    }
+                    if new != pairs[*p] {
+                        pairs[*p] = new;
+                        changed = true;
+                    }
+                }
+                FNode::Atom(a, pos) => {
+                    let v = w == *pos;
+                    match atoms[*a] {
+                        Some(cur) if cur != v => return Prop::Conflict,
+                        Some(_) => {}
+                        None => {
+                            atoms[*a] = Some(v);
+                            changed = true;
+                        }
+                    }
+                }
+                FNode::And(ch) | FNode::Or(ch) => {
+                    let is_and = matches!(self.nodes[i], FNode::And(_));
+                    // "All children forced" when (And wants true) or (Or wants false);
+                    // "single undetermined child forced" otherwise.
+                    let all = is_and == w;
+                    let undetermined: Vec<usize> =
+                        ch.iter().copied().filter(|&c| vals[c].is_none()).collect();
+                    let forced: &[usize] = if all || undetermined.len() == 1 {
+                        &undetermined
+                    } else {
+                        &[]
+                    };
+                    for &c in forced {
+                        match want[c] {
+                            Some(prev) if prev != w => return Prop::Conflict,
+                            _ => want[c] = Some(w),
+                        }
+                    }
+                }
+            }
+        }
+        if changed { Prop::Changed } else { Prop::Stuck }
     }
 }
 
@@ -891,66 +1043,93 @@ fn search_for(f: &Formula, target: bool) -> Option<bool> {
     if f.var_count() > MAX_SAT_VARS {
         return None;
     }
-    let mut pairs = vec![ALL; f.pair_keys.len()];
-    let mut atoms = vec![None; f.atom_keys.len()];
+    let pairs = vec![ALL; f.pair_keys.len()];
+    let atoms = vec![None; f.atom_keys.len()];
     let mut budget = SAT_BUDGET;
-    search_rec(f, target, &mut pairs, &mut atoms, &mut budget)
+    search_rec(f, target, pairs, atoms, &mut budget)
 }
 
-/// Depth is bounded by the number of variables (≤ 24), not by the size
-/// of the expression tree.
+/// DPLL with unit propagation.  Recursion depth is bounded by the number
+/// of variables (≤ 24), not by the size of the expression tree.
 fn search_rec(
     f: &Formula,
     target: bool,
-    pairs: &mut [u8],
-    atoms: &mut [Option<bool>],
+    mut pairs: Vec<u8>,
+    mut atoms: Vec<Option<bool>>,
     budget: &mut usize,
 ) -> Option<bool> {
-    if *budget == 0 {
-        return None;
+    loop {
+        if *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        match f.propagate(target, &mut pairs, &mut atoms) {
+            Prop::Determined(v) => return Some(v == target),
+            Prop::Conflict => return Some(false),
+            Prop::Changed => continue,
+            Prop::Stuck => break,
+        }
     }
-    *budget -= 1;
-    if let Some(v) = f.eval(pairs, atoms) {
-        return Some(v == target);
-    }
-    if let Some(i) = pairs.iter().position(|&s| s == ALL) {
+    // Branch on the most constrained undecided pair first.
+    let pick = pairs
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.count_ones() > 1)
+        .min_by_key(|(_, s)| s.count_ones())
+        .map(|(i, _)| i);
+    if let Some(i) = pick {
+        let allowed = pairs[i];
         for state in [LT, EQ, GT] {
-            pairs[i] = state;
-            match search_rec(f, target, pairs, atoms, budget) {
-                Some(true) => {
-                    pairs[i] = ALL;
-                    return Some(true);
-                }
+            if allowed & state == 0 {
+                continue;
+            }
+            let mut p2 = pairs.clone();
+            p2[i] = state;
+            match search_rec(f, target, p2, atoms.clone(), budget) {
+                Some(true) => return Some(true),
                 Some(false) => {}
-                None => {
-                    pairs[i] = ALL;
-                    return None;
-                }
+                None => return None,
             }
         }
-        pairs[i] = ALL;
         return Some(false);
     }
     if let Some(i) = atoms.iter().position(Option::is_none) {
         for v in [true, false] {
-            atoms[i] = Some(v);
-            match search_rec(f, target, pairs, atoms, budget) {
-                Some(true) => {
-                    atoms[i] = None;
-                    return Some(true);
-                }
+            let mut a2 = atoms.clone();
+            a2[i] = Some(v);
+            match search_rec(f, target, pairs.clone(), a2, budget) {
+                Some(true) => return Some(true),
                 Some(false) => {}
-                None => {
-                    atoms[i] = None;
-                    return None;
-                }
+                None => return None,
             }
         }
-        atoms[i] = None;
         return Some(false);
     }
-    // Fully assigned but still undetermined cannot happen.
+    // Fully assigned but undetermined cannot happen.
     None
+}
+
+/// Are the relational pairs mutually independent and unconstrained?
+///
+/// True when every pair `(a, b)` has `a - b` linear in a single free
+/// symbol that occurs in no other pair.  Then every pair can realise each
+/// of `<`, `=`, `>` independently of the others, and propositional
+/// answers are exact.
+fn pairs_independent(arena: &mut Arena, f: &Formula) -> bool {
+    let mut used: FxHashSet<ExprId> = FxHashSet::default();
+    for &(a, b) in &f.pair_keys {
+        let d = arena.sub(a, b);
+        let d = crate::transforms::eval::eval(arena, d);
+        let syms = crate::base::walk::free_symbols(arena, d);
+        if syms.len() != 1 || !used.insert(syms[0]) {
+            return false;
+        }
+        match crate::poly::polybridge::expr_to_poly(arena, d, syms[0]) {
+            Some(p) if p.degree() == Some(1) => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// If every relational atom of `root` is univariate in one common free
@@ -987,7 +1166,7 @@ pub(crate) fn is_tautology(arena: &mut Arena, root: ExprId) -> Option<bool> {
     let f = Formula::build(arena, s);
     match search_for(&f, false) {
         Some(false) => return Some(true), // no falsifying assignment
-        Some(true) if f.pair_keys.is_empty() => return Some(false),
+        Some(true) if pairs_independent(arena, &f) => return Some(false),
         _ => {}
     }
     univariate_status(arena, s).map(|(_, full)| full)
@@ -1005,7 +1184,7 @@ pub(crate) fn is_contradiction(arena: &mut Arena, root: ExprId) -> Option<bool> 
     let f = Formula::build(arena, s);
     match search_for(&f, true) {
         Some(false) => return Some(true), // no satisfying assignment
-        Some(true) if f.pair_keys.is_empty() => return Some(false),
+        Some(true) if pairs_independent(arena, &f) => return Some(false),
         _ => {}
     }
     univariate_status(arena, s).map(|(empty, _)| empty)
@@ -1515,10 +1694,55 @@ mod tests {
         // x > 0 alone: satisfiable, not tautology
         assert_eq!(satisfiable(&mut f.arena, gt0), Some(true));
         assert_eq!(is_tautology(&mut f.arena, gt0), Some(false));
-        // multivariate relational: undecided
+        // independent linear pairs in distinct symbols: propositional answer is exact
         let gy = f.arena.gt(f.y, f.zero);
         let both = f.arena.and(&[gt0, gy]);
-        assert_eq!(satisfiable(&mut f.arena, both), None);
+        assert_eq!(satisfiable(&mut f.arena, both), Some(true));
+        assert_eq!(is_tautology(&mut f.arena, both), Some(false));
+        // dependent multivariate relationals: honest None
+        let gxy = f.arena.gt(f.x, f.y);
+        let dep = f.arena.and(&[gxy, gt0]);
+        assert_eq!(satisfiable(&mut f.arena, dep), None);
+        assert_eq!(is_tautology(&mut f.arena, gxy), None);
+        // non-linear pair is not "free": x² > 0 is not a tautology propositionally
+        // but x² ≥ 0 is decided exactly through the solver
+        let two = f.arena.int(2);
+        let x2 = f.arena.pow(f.x, two);
+        let ge0 = f.arena.ge(x2, f.zero);
+        assert_eq!(is_tautology(&mut f.arena, ge0), Some(true));
+        let lt0 = f.arena.gt(f.zero, x2);
+        assert_eq!(satisfiable(&mut f.arena, lt0), Some(false));
+    }
+
+    #[test]
+    fn unit_propagation_solves_pigeonhole() {
+        let mut f = fx();
+        let p = |arena: &mut Arena, i: usize, j: usize| {
+            let s = arena.symbol(&format!("p{i}{j}"));
+            let zero = arena.zero;
+            arena.gt(s, zero)
+        };
+        let mut clauses: Vec<ExprId> = Vec::new();
+        for i in 0..4 {
+            let a = p(&mut f.arena, i, 0);
+            let b = p(&mut f.arena, i, 1);
+            let c = p(&mut f.arena, i, 2);
+            clauses.push(f.arena.or(&[a, b, c]));
+        }
+        for j in 0..3 {
+            for i in 0..4 {
+                for k in (i + 1)..4 {
+                    let a = p(&mut f.arena, i, j);
+                    let b = p(&mut f.arena, k, j);
+                    let na = f.arena.not(a);
+                    let nb = f.arena.not(b);
+                    clauses.push(f.arena.or(&[na, nb]));
+                }
+            }
+        }
+        let php = f.arena.and(&clauses);
+        assert_eq!(satisfiable(&mut f.arena, php), Some(false));
+        assert_eq!(is_contradiction(&mut f.arena, php), Some(true));
     }
 
     #[test]

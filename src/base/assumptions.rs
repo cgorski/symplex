@@ -89,6 +89,57 @@ bitflags! {
         const HERMITIAN       = 1 << 21;
         /// Equal to the negation of its conjugate transpose.
         const ANTIHERMITIAN   = 1 << 22;
+        /// Element of ℝ ∪ {−∞, +∞} (every real is an extended real; so are `±oo`).
+        const EXTENDED_REAL   = 1 << 23;
+    }
+}
+
+/// `(flag, lowercase name)` for every property, in bit order.
+const PROP_NAMES: [(Props, &str); 24] = [
+    (Props::COMMUTATIVE, "commutative"),
+    (Props::COMPLEX, "complex"),
+    (Props::REAL, "real"),
+    (Props::RATIONAL, "rational"),
+    (Props::INTEGER, "integer"),
+    (Props::ALGEBRAIC, "algebraic"),
+    (Props::TRANSCENDENTAL, "transcendental"),
+    (Props::IRRATIONAL, "irrational"),
+    (Props::IMAGINARY, "imaginary"),
+    (Props::POSITIVE, "positive"),
+    (Props::NEGATIVE, "negative"),
+    (Props::NONNEGATIVE, "nonnegative"),
+    (Props::NONPOSITIVE, "nonpositive"),
+    (Props::ZERO, "zero"),
+    (Props::NONZERO, "nonzero"),
+    (Props::EVEN, "even"),
+    (Props::ODD, "odd"),
+    (Props::PRIME, "prime"),
+    (Props::COMPOSITE, "composite"),
+    (Props::FINITE, "finite"),
+    (Props::INFINITE, "infinite"),
+    (Props::HERMITIAN, "hermitian"),
+    (Props::ANTIHERMITIAN, "antihermitian"),
+    (Props::EXTENDED_REAL, "extended_real"),
+];
+
+impl std::fmt::Display for Props {
+    /// Comma-separated lowercase property names in bit order
+    /// (e.g. `positive, real, nonzero`); the empty set prints as `none`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut first = true;
+        for (flag, name) in PROP_NAMES {
+            if self.contains(flag) {
+                if !first {
+                    f.write_str(", ")?;
+                }
+                f.write_str(name)?;
+                first = false;
+            }
+        }
+        if first {
+            f.write_str("none")?;
+        }
+        Ok(())
     }
 }
 
@@ -142,6 +193,8 @@ pub enum Assumption {
     Hermitian,
     /// Equal to the negation of its conjugate transpose.
     AntiHermitian,
+    /// Element of ℝ ∪ {−∞, +∞}.
+    ExtendedReal,
     // Negated forms
     /// Assert not real.
     NotReal,
@@ -159,6 +212,38 @@ pub enum Assumption {
     NotZero,
     /// Assert not finite.
     NotFinite,
+    /// Assert not commutative.
+    NotCommutative,
+    /// Assert not algebraic.
+    NotAlgebraic,
+    /// Assert not transcendental.
+    NotTranscendental,
+    /// Assert not irrational.
+    NotIrrational,
+    /// Assert not (purely) imaginary.
+    NotImaginary,
+    /// Assert not nonnegative (i.e. negative or not real).
+    NotNonNegative,
+    /// Assert not nonpositive (i.e. positive or not real).
+    NotNonPositive,
+    /// Assert not nonzero.
+    NotNonZero,
+    /// Assert not even.
+    NotEven,
+    /// Assert not odd.
+    NotOdd,
+    /// Assert not prime.
+    NotPrime,
+    /// Assert not composite.
+    NotComposite,
+    /// Assert not infinite.
+    NotInfinite,
+    /// Assert not Hermitian.
+    NotHermitian,
+    /// Assert not anti-Hermitian.
+    NotAntiHermitian,
+    /// Assert not an extended real.
+    NotExtendedReal,
 }
 
 impl Assumption {
@@ -189,6 +274,7 @@ impl Assumption {
             Assumption::Infinite => (Props::INFINITE, true),
             Assumption::Hermitian => (Props::HERMITIAN, true),
             Assumption::AntiHermitian => (Props::ANTIHERMITIAN, true),
+            Assumption::ExtendedReal => (Props::EXTENDED_REAL, true),
             Assumption::NotReal => (Props::REAL, false),
             Assumption::NotComplex => (Props::COMPLEX, false),
             Assumption::NotInteger => (Props::INTEGER, false),
@@ -197,6 +283,89 @@ impl Assumption {
             Assumption::NotNegative => (Props::NEGATIVE, false),
             Assumption::NotZero => (Props::ZERO, false),
             Assumption::NotFinite => (Props::FINITE, false),
+            Assumption::NotCommutative => (Props::COMMUTATIVE, false),
+            Assumption::NotAlgebraic => (Props::ALGEBRAIC, false),
+            Assumption::NotTranscendental => (Props::TRANSCENDENTAL, false),
+            Assumption::NotIrrational => (Props::IRRATIONAL, false),
+            Assumption::NotImaginary => (Props::IMAGINARY, false),
+            Assumption::NotNonNegative => (Props::NONNEGATIVE, false),
+            Assumption::NotNonPositive => (Props::NONPOSITIVE, false),
+            Assumption::NotNonZero => (Props::NONZERO, false),
+            Assumption::NotEven => (Props::EVEN, false),
+            Assumption::NotOdd => (Props::ODD, false),
+            Assumption::NotPrime => (Props::PRIME, false),
+            Assumption::NotComposite => (Props::COMPOSITE, false),
+            Assumption::NotInfinite => (Props::INFINITE, false),
+            Assumption::NotHermitian => (Props::HERMITIAN, false),
+            Assumption::NotAntiHermitian => (Props::ANTIHERMITIAN, false),
+            Assumption::NotExtendedReal => (Props::EXTENDED_REAL, false),
+        }
+    }
+
+    /// The assumption asserting the opposite truth value of the same
+    /// property (`Positive` ↔ `NotPositive`, `Zero` ↔ `NotZero`, …).
+    ///
+    /// `negate` is an involution: `a.negate().negate() == a`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// assert_eq!(Assumption::Positive.negate(), Assumption::NotPositive);
+    /// assert_eq!(Assumption::NotReal.negate(), Assumption::Real);
+    /// assert_eq!(Assumption::Even.negate().negate(), Assumption::Even);
+    /// ```
+    pub fn negate(self) -> Assumption {
+        match self {
+            Assumption::Commutative => Assumption::NotCommutative,
+            Assumption::Complex => Assumption::NotComplex,
+            Assumption::Real => Assumption::NotReal,
+            Assumption::Rational => Assumption::NotRational,
+            Assumption::Integer => Assumption::NotInteger,
+            Assumption::Algebraic => Assumption::NotAlgebraic,
+            Assumption::Transcendental => Assumption::NotTranscendental,
+            Assumption::Irrational => Assumption::NotIrrational,
+            Assumption::Imaginary => Assumption::NotImaginary,
+            Assumption::Positive => Assumption::NotPositive,
+            Assumption::Negative => Assumption::NotNegative,
+            Assumption::NonNegative => Assumption::NotNonNegative,
+            Assumption::NonPositive => Assumption::NotNonPositive,
+            Assumption::Zero => Assumption::NotZero,
+            Assumption::NonZero => Assumption::NotNonZero,
+            Assumption::Even => Assumption::NotEven,
+            Assumption::Odd => Assumption::NotOdd,
+            Assumption::Prime => Assumption::NotPrime,
+            Assumption::Composite => Assumption::NotComposite,
+            Assumption::Finite => Assumption::NotFinite,
+            Assumption::Infinite => Assumption::NotInfinite,
+            Assumption::Hermitian => Assumption::NotHermitian,
+            Assumption::AntiHermitian => Assumption::NotAntiHermitian,
+            Assumption::ExtendedReal => Assumption::NotExtendedReal,
+            Assumption::NotReal => Assumption::Real,
+            Assumption::NotComplex => Assumption::Complex,
+            Assumption::NotInteger => Assumption::Integer,
+            Assumption::NotRational => Assumption::Rational,
+            Assumption::NotPositive => Assumption::Positive,
+            Assumption::NotNegative => Assumption::Negative,
+            Assumption::NotZero => Assumption::Zero,
+            Assumption::NotFinite => Assumption::Finite,
+            Assumption::NotCommutative => Assumption::Commutative,
+            Assumption::NotAlgebraic => Assumption::Algebraic,
+            Assumption::NotTranscendental => Assumption::Transcendental,
+            Assumption::NotIrrational => Assumption::Irrational,
+            Assumption::NotImaginary => Assumption::Imaginary,
+            Assumption::NotNonNegative => Assumption::NonNegative,
+            Assumption::NotNonPositive => Assumption::NonPositive,
+            Assumption::NotNonZero => Assumption::NonZero,
+            Assumption::NotEven => Assumption::Even,
+            Assumption::NotOdd => Assumption::Odd,
+            Assumption::NotPrime => Assumption::Prime,
+            Assumption::NotComposite => Assumption::Composite,
+            Assumption::NotInfinite => Assumption::Infinite,
+            Assumption::NotHermitian => Assumption::Hermitian,
+            Assumption::NotAntiHermitian => Assumption::AntiHermitian,
+            Assumption::NotExtendedReal => Assumption::ExtendedReal,
         }
     }
 }
@@ -258,6 +427,68 @@ impl Assumptions {
         self.known_true.intersects(self.known_false)
     }
 
+    /// Does everything known in `other` follow from `self`?
+    ///
+    /// `self` is forward-chained first, so `implies` sees derived facts:
+    /// asserting `positive` implies `{real, nonzero, !negative}`.
+    /// A contradictory `self` implies everything.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let mut pos = Assumptions::default();
+    /// pos.assert_true(Props::POSITIVE);
+    /// let mut real_nonzero = Assumptions::default();
+    /// real_nonzero.known_true = Props::REAL | Props::NONZERO;
+    /// assert!(pos.implies(&real_nonzero));
+    /// assert!(!real_nonzero.implies(&pos));
+    /// ```
+    pub fn implies(&self, other: &Assumptions) -> bool {
+        let mut me = *self;
+        me.forward_chain();
+        if me.is_contradictory() {
+            return true;
+        }
+        me.known_true.contains(other.known_true) && me.known_false.contains(other.known_false)
+    }
+}
+
+impl std::fmt::Display for Assumptions {
+    /// Lists the active properties: known-true names, then known-false
+    /// names prefixed with `!`, comma-separated (e.g.
+    /// `positive, real, nonzero, !negative, !zero`).  Prints `unknown`
+    /// when nothing is known.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut first = true;
+        for (flag, name) in PROP_NAMES {
+            if self.known_true.contains(flag) {
+                if !first {
+                    f.write_str(", ")?;
+                }
+                f.write_str(name)?;
+                first = false;
+            }
+        }
+        for (flag, name) in PROP_NAMES {
+            if self.known_false.contains(flag) {
+                if !first {
+                    f.write_str(", ")?;
+                }
+                f.write_str("!")?;
+                f.write_str(name)?;
+                first = false;
+            }
+        }
+        if first {
+            f.write_str("unknown")?;
+        }
+        Ok(())
+    }
+}
+
+impl Assumptions {
     /// Merge knowledge from another assumption set.
     ///
     /// Any property known in `other` but unknown in `self` is copied.
@@ -313,15 +544,23 @@ impl Assumptions {
                     Props::INFINITE | Props::IMAGINARY | Props::TRANSCENDENTAL | Props::IRRATIONAL;
             }
 
-            // irrational → real, !rational
+            // irrational → real, nonzero, !rational, !integer
             if self.known_true.contains(Props::IRRATIONAL) {
                 self.known_true |= Props::REAL
                     | Props::COMPLEX
                     | Props::FINITE
                     | Props::COMMUTATIVE
-                    | Props::HERMITIAN;
-                self.known_false |=
-                    Props::RATIONAL | Props::INTEGER | Props::INFINITE | Props::IMAGINARY;
+                    | Props::HERMITIAN
+                    | Props::NONZERO;
+                self.known_false |= Props::RATIONAL
+                    | Props::INTEGER
+                    | Props::INFINITE
+                    | Props::IMAGINARY
+                    | Props::ZERO
+                    | Props::EVEN
+                    | Props::ODD
+                    | Props::PRIME
+                    | Props::COMPOSITE;
             }
 
             // algebraic → complex, finite, commutative
@@ -337,26 +576,38 @@ impl Assumptions {
                     Props::ALGEBRAIC | Props::RATIONAL | Props::INTEGER | Props::INFINITE;
             }
 
-            // real → complex, finite, commutative, hermitian, !imaginary
+            // real → extended_real, complex, finite, commutative, hermitian, !imaginary
             if self.known_true.contains(Props::REAL) {
-                self.known_true |=
-                    Props::COMPLEX | Props::FINITE | Props::COMMUTATIVE | Props::HERMITIAN;
+                self.known_true |= Props::EXTENDED_REAL
+                    | Props::COMPLEX
+                    | Props::FINITE
+                    | Props::COMMUTATIVE
+                    | Props::HERMITIAN;
                 self.known_false |= Props::IMAGINARY | Props::INFINITE;
             }
 
-            // imaginary → complex, finite, commutative, !real, antihermitian
+            // imaginary → complex, finite, nonzero, commutative, antihermitian, !real
             if self.known_true.contains(Props::IMAGINARY) {
-                self.known_true |=
-                    Props::COMPLEX | Props::FINITE | Props::COMMUTATIVE | Props::ANTIHERMITIAN;
+                self.known_true |= Props::COMPLEX
+                    | Props::FINITE
+                    | Props::NONZERO
+                    | Props::COMMUTATIVE
+                    | Props::ANTIHERMITIAN;
                 self.known_false |= Props::REAL
+                    | Props::EXTENDED_REAL
                     | Props::INFINITE
+                    | Props::ZERO
                     | Props::POSITIVE
                     | Props::NEGATIVE
                     | Props::NONNEGATIVE
                     | Props::NONPOSITIVE
                     | Props::INTEGER
                     | Props::RATIONAL
-                    | Props::IRRATIONAL;
+                    | Props::IRRATIONAL
+                    | Props::EVEN
+                    | Props::ODD
+                    | Props::PRIME
+                    | Props::COMPOSITE;
             }
 
             // complex → commutative, finite
@@ -613,6 +864,11 @@ impl Assumptions {
                 self.known_true |= Props::FINITE;
             }
 
+            // !extended_real → !real (and hence !rational, … via the !real rule)
+            if self.known_false.contains(Props::EXTENDED_REAL) {
+                self.known_false |= Props::REAL;
+            }
+
             // ── Beta rules: join conditions ──────────────────────
 
             // nonnegative ∧ nonzero → positive
@@ -662,6 +918,28 @@ impl Assumptions {
             // integer ∧ !odd → even
             if self.known_true.contains(Props::INTEGER) && self.known_false.contains(Props::ODD) {
                 self.known_true.insert(Props::EVEN);
+            }
+
+            // transcendental ∧ real → irrational
+            // (complex transcendental numbers exist, so only over ℝ)
+            if self
+                .known_true
+                .contains(Props::TRANSCENDENTAL | Props::REAL)
+            {
+                self.known_true.insert(Props::IRRATIONAL);
+            }
+
+            // extended_real ∧ finite → real
+            if self
+                .known_true
+                .contains(Props::EXTENDED_REAL | Props::FINITE)
+            {
+                self.known_true.insert(Props::REAL);
+            }
+
+            // !real ∧ finite → !extended_real  (contrapositive of the above)
+            if self.known_false.contains(Props::REAL) && self.known_true.contains(Props::FINITE) {
+                self.known_false.insert(Props::EXTENDED_REAL);
             }
 
             // Check fixpoint.
@@ -1356,6 +1634,7 @@ fn compute_pi() -> Assumptions {
         | Props::NONNEGATIVE
         | Props::NONZERO
         | Props::REAL
+        | Props::EXTENDED_REAL
         | Props::COMPLEX
         | Props::FINITE
         | Props::COMMUTATIVE
@@ -1383,6 +1662,7 @@ fn compute_e() -> Assumptions {
         | Props::NONNEGATIVE
         | Props::NONZERO
         | Props::REAL
+        | Props::EXTENDED_REAL
         | Props::COMPLEX
         | Props::FINITE
         | Props::COMMUTATIVE
@@ -1414,6 +1694,7 @@ fn compute_imaginary_unit() -> Assumptions {
         | Props::NONZERO
         | Props::ANTIHERMITIAN;
     a.known_false |= Props::REAL
+        | Props::EXTENDED_REAL
         | Props::RATIONAL
         | Props::INTEGER
         | Props::POSITIVE
@@ -1435,6 +1716,7 @@ fn compute_imaginary_unit() -> Assumptions {
 fn compute_infinity() -> Assumptions {
     let mut a = Assumptions::default();
     a.known_true |= Props::INFINITE
+        | Props::EXTENDED_REAL
         | Props::POSITIVE
         | Props::NONNEGATIVE
         | Props::NONZERO
@@ -1457,6 +1739,7 @@ fn compute_infinity() -> Assumptions {
 fn compute_neg_infinity() -> Assumptions {
     let mut a = Assumptions::default();
     a.known_true |= Props::INFINITE
+        | Props::EXTENDED_REAL
         | Props::NEGATIVE
         | Props::NONPOSITIVE
         | Props::NONZERO
@@ -1480,6 +1763,8 @@ fn compute_complex_infinity() -> Assumptions {
     let mut a = Assumptions::default();
     a.known_true |= Props::INFINITE | Props::NONZERO | Props::COMMUTATIVE;
     a.known_false |= Props::FINITE
+        | Props::EXTENDED_REAL
+        | Props::REAL
         | Props::ZERO
         | Props::INTEGER
         | Props::RATIONAL
@@ -1644,6 +1929,329 @@ mod tests {
         assert_eq!(a.query(Props::INTEGER), Some(true));
         assert_eq!(a.query(Props::POSITIVE), Some(true));
         assert_eq!(a.query(Props::COMPOSITE), Some(false));
+        assert_eq!(a.query(Props::RATIONAL), Some(true));
+        assert_eq!(a.query(Props::NONZERO), Some(true));
+    }
+
+    // ── 0.2 forward-chain rules ─────────────────────────────────────────
+
+    #[test]
+    fn even_and_odd_imply_integer() {
+        let mut e = Assumptions::default();
+        e.assert_true(Props::EVEN);
+        assert_eq!(e.query(Props::INTEGER), Some(true));
+        assert_eq!(e.query(Props::RATIONAL), Some(true));
+        assert_eq!(e.query(Props::ODD), Some(false));
+        let mut o = Assumptions::default();
+        o.assert_true(Props::ODD);
+        assert_eq!(o.query(Props::INTEGER), Some(true));
+        assert_eq!(o.query(Props::EVEN), Some(false));
+        assert_eq!(o.query(Props::NONZERO), Some(true));
+        assert_eq!(o.query(Props::ZERO), Some(false));
+    }
+
+    #[test]
+    fn zero_full_chain() {
+        let mut a = Assumptions::default();
+        a.assert_true(Props::ZERO);
+        for p in [
+            Props::EVEN,
+            Props::NONNEGATIVE,
+            Props::NONPOSITIVE,
+            Props::FINITE,
+            Props::ALGEBRAIC,
+            Props::RATIONAL,
+            Props::INTEGER,
+            Props::REAL,
+            Props::COMPLEX,
+            Props::EXTENDED_REAL,
+        ] {
+            assert_eq!(a.query(p), Some(true), "zero ⇒ {p}");
+        }
+        for p in [
+            Props::NONZERO,
+            Props::POSITIVE,
+            Props::NEGATIVE,
+            Props::ODD,
+            Props::PRIME,
+            Props::IRRATIONAL,
+            Props::TRANSCENDENTAL,
+            Props::IMAGINARY,
+            Props::INFINITE,
+        ] {
+            assert_eq!(a.query(p), Some(false), "zero ⇒ ¬{p}");
+        }
+    }
+
+    #[test]
+    fn integer_rational_algebraic_complex_tower() {
+        let mut i = Assumptions::default();
+        i.assert_true(Props::INTEGER);
+        assert_eq!(i.query(Props::RATIONAL), Some(true));
+        let mut r = Assumptions::default();
+        r.assert_true(Props::RATIONAL);
+        assert_eq!(r.query(Props::ALGEBRAIC), Some(true));
+        assert_eq!(r.query(Props::IRRATIONAL), Some(false));
+        assert_eq!(r.query(Props::TRANSCENDENTAL), Some(false));
+        let mut al = Assumptions::default();
+        al.assert_true(Props::ALGEBRAIC);
+        assert_eq!(al.query(Props::COMPLEX), Some(true));
+        assert_eq!(al.query(Props::TRANSCENDENTAL), Some(false));
+        // algebraic does not imply real (i is algebraic)
+        assert_eq!(al.query(Props::REAL), None);
+    }
+
+    #[test]
+    fn irrational_implies_real_nonzero_nonint() {
+        let mut a = Assumptions::default();
+        a.assert_true(Props::IRRATIONAL);
+        assert_eq!(a.query(Props::REAL), Some(true));
+        assert_eq!(a.query(Props::NONZERO), Some(true));
+        assert_eq!(a.query(Props::ZERO), Some(false));
+        assert_eq!(a.query(Props::INTEGER), Some(false));
+        assert_eq!(a.query(Props::RATIONAL), Some(false));
+        assert_eq!(a.query(Props::EVEN), Some(false));
+        assert_eq!(a.query(Props::PRIME), Some(false));
+        // √2 is irrational and algebraic: neither algebraic nor transcendental is decided
+        assert_eq!(a.query(Props::ALGEBRAIC), None);
+        assert_eq!(a.query(Props::TRANSCENDENTAL), None);
+    }
+
+    #[test]
+    fn transcendental_real_implies_irrational_but_complex_alone_does_not() {
+        let mut t = Assumptions::default();
+        t.assert_true(Props::TRANSCENDENTAL);
+        assert_eq!(
+            t.query(Props::IRRATIONAL),
+            None,
+            "transcendental alone: unknown"
+        );
+        assert_eq!(t.query(Props::RATIONAL), Some(false));
+        t.assert_true(Props::REAL);
+        assert_eq!(t.query(Props::IRRATIONAL), Some(true));
+        assert_eq!(t.query(Props::NONZERO), Some(true));
+        // asserting the opposite order also works
+        let mut t2 = Assumptions::default();
+        t2.assert_true(Props::REAL);
+        t2.assert_true(Props::TRANSCENDENTAL);
+        assert_eq!(t2.query(Props::IRRATIONAL), Some(true));
+    }
+
+    #[test]
+    fn positive_full_chain() {
+        let mut a = Assumptions::default();
+        a.assert_true(Props::POSITIVE);
+        assert_eq!(a.query(Props::NONNEGATIVE), Some(true));
+        assert_eq!(a.query(Props::NONZERO), Some(true));
+        assert_eq!(a.query(Props::REAL), Some(true));
+        assert_eq!(a.query(Props::EXTENDED_REAL), Some(true));
+        assert_eq!(a.query(Props::NONPOSITIVE), Some(false));
+        assert_eq!(a.query(Props::IMAGINARY), Some(false));
+    }
+
+    #[test]
+    fn imaginary_implies_nonzero_complex_not_real() {
+        let mut a = Assumptions::default();
+        a.assert_true(Props::IMAGINARY);
+        assert_eq!(a.query(Props::NONZERO), Some(true));
+        assert_eq!(a.query(Props::ZERO), Some(false));
+        assert_eq!(a.query(Props::COMPLEX), Some(true));
+        assert_eq!(a.query(Props::REAL), Some(false));
+        assert_eq!(a.query(Props::EXTENDED_REAL), Some(false));
+        assert_eq!(a.query(Props::INTEGER), Some(false));
+        assert_eq!(a.query(Props::POSITIVE), Some(false));
+        assert_eq!(a.query(Props::EVEN), Some(false));
+    }
+
+    #[test]
+    fn extended_real_rules() {
+        let mut r = Assumptions::default();
+        r.assert_true(Props::REAL);
+        assert_eq!(r.query(Props::EXTENDED_REAL), Some(true));
+
+        let mut ef = Assumptions::default();
+        ef.assert_true(Props::EXTENDED_REAL);
+        assert_eq!(ef.query(Props::REAL), None, "could be ±∞");
+        ef.assert_true(Props::FINITE);
+        assert_eq!(ef.query(Props::REAL), Some(true));
+
+        let mut ne = Assumptions::default();
+        ne.assert_false(Props::EXTENDED_REAL);
+        assert_eq!(ne.query(Props::REAL), Some(false));
+        assert_eq!(ne.query(Props::POSITIVE), Some(false));
+
+        let mut nr = Assumptions::default();
+        nr.assert_false(Props::REAL);
+        assert_eq!(nr.query(Props::EXTENDED_REAL), None, "could be ±∞");
+        nr.assert_true(Props::FINITE);
+        assert_eq!(nr.query(Props::EXTENDED_REAL), Some(false));
+
+        let arena = Arena::new();
+        let mut cache = AssumptionCache::new();
+        assert_eq!(
+            cache.query(&arena, arena.infinity, Props::EXTENDED_REAL),
+            Some(true)
+        );
+        assert_eq!(
+            cache.query(&arena, arena.neg_infinity, Props::EXTENDED_REAL),
+            Some(true)
+        );
+        assert_eq!(
+            cache.query(&arena, arena.complex_infinity, Props::EXTENDED_REAL),
+            Some(false)
+        );
+        assert_eq!(
+            cache.query(&arena, arena.i_unit, Props::EXTENDED_REAL),
+            Some(false)
+        );
+        assert_eq!(
+            cache.query(&arena, arena.pi, Props::EXTENDED_REAL),
+            Some(true)
+        );
+        assert_eq!(
+            cache.query(&arena, arena.one, Props::EXTENDED_REAL),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn contradictions_from_new_chains() {
+        let mut a = Assumptions::default();
+        a.assert_true(Props::IRRATIONAL);
+        a.assert_true(Props::ZERO);
+        assert!(a.is_contradictory(), "irrational ∧ zero");
+
+        let mut b = Assumptions::default();
+        b.assert_true(Props::IMAGINARY);
+        b.assert_true(Props::ZERO);
+        assert!(b.is_contradictory(), "imaginary ∧ zero");
+
+        let mut c = Assumptions::default();
+        c.assert_true(Props::TRANSCENDENTAL);
+        c.assert_true(Props::REAL);
+        c.assert_true(Props::RATIONAL);
+        assert!(c.is_contradictory(), "transcendental ∧ real ∧ rational");
+
+        let mut d = Assumptions::default();
+        d.assert_true(Props::EXTENDED_REAL);
+        d.assert_true(Props::FINITE);
+        d.assert_false(Props::REAL);
+        assert!(d.is_contradictory(), "extended_real ∧ finite ∧ ¬real");
+
+        let mut e = Assumptions::default();
+        e.assert_true(Props::EVEN);
+        e.assert_false(Props::INTEGER);
+        assert!(e.is_contradictory(), "even ∧ ¬integer");
+
+        let mut f = Assumptions::default();
+        f.assert_true(Props::PRIME);
+        f.assert_true(Props::NEGATIVE);
+        assert!(f.is_contradictory(), "prime ∧ negative");
+
+        let mut ok = Assumptions::default();
+        ok.assert_true(Props::IRRATIONAL);
+        ok.assert_true(Props::POSITIVE);
+        assert!(!ok.is_contradictory());
+    }
+
+    // ── implies / negate / Display ─────────────────────────────────────────────
+
+    #[test]
+    fn implies_uses_derived_facts() {
+        let mut pos = Assumptions::default();
+        pos.assert_true(Props::POSITIVE);
+        let real = Assumptions {
+            known_true: Props::REAL,
+            known_false: Props::empty(),
+        };
+        let not_neg = Assumptions {
+            known_true: Props::empty(),
+            known_false: Props::NEGATIVE,
+        };
+        assert!(pos.implies(&real));
+        assert!(pos.implies(&not_neg));
+        assert!(!real.implies(&pos));
+        assert!(
+            pos.implies(&Assumptions::default()),
+            "everything implies nothing"
+        );
+        assert!(pos.implies(&pos));
+        // unchained self still works
+        let raw = Assumptions {
+            known_true: Props::INTEGER,
+            known_false: Props::empty(),
+        };
+        assert!(raw.implies(&real));
+        // contradictory implies everything
+        let bad = Assumptions {
+            known_true: Props::ZERO,
+            known_false: Props::ZERO,
+        };
+        assert!(bad.implies(&pos));
+    }
+
+    #[test]
+    fn negate_is_an_involution_and_flips_value() {
+        let all = [
+            Assumption::Commutative,
+            Assumption::Complex,
+            Assumption::Real,
+            Assumption::Rational,
+            Assumption::Integer,
+            Assumption::Algebraic,
+            Assumption::Transcendental,
+            Assumption::Irrational,
+            Assumption::Imaginary,
+            Assumption::Positive,
+            Assumption::Negative,
+            Assumption::NonNegative,
+            Assumption::NonPositive,
+            Assumption::Zero,
+            Assumption::NonZero,
+            Assumption::Even,
+            Assumption::Odd,
+            Assumption::Prime,
+            Assumption::Composite,
+            Assumption::Finite,
+            Assumption::Infinite,
+            Assumption::Hermitian,
+            Assumption::AntiHermitian,
+            Assumption::ExtendedReal,
+        ];
+        for a in all {
+            let n = a.negate();
+            assert_ne!(a, n);
+            assert_eq!(n.negate(), a, "{a:?}");
+            let (p, v) = a.to_prop_value();
+            let (np, nv) = n.to_prop_value();
+            assert_eq!(p, np, "{a:?}");
+            assert_eq!(v, !nv, "{a:?}");
+        }
+        assert_eq!(Assumption::NotZero.negate(), Assumption::Zero);
+        assert_eq!(
+            Assumption::NotExtendedReal.to_prop_value(),
+            (Props::EXTENDED_REAL, false)
+        );
+    }
+
+    #[test]
+    fn display_lists_active_props() {
+        assert_eq!(Assumptions::default().to_string(), "unknown");
+        let a = Assumptions {
+            known_true: Props::POSITIVE | Props::REAL,
+            known_false: Props::ZERO,
+        };
+        assert_eq!(a.to_string(), "real, positive, !zero");
+        let mut chained = Assumptions::default();
+        chained.assert_true(Props::PRIME);
+        let s = chained.to_string();
+        assert!(
+            s.starts_with("commutative, complex, real, rational, integer"),
+            "{s}"
+        );
+        assert!(s.contains("prime") && s.contains("!composite"), "{s}");
+        assert_eq!(Props::empty().to_string(), "none");
+        assert_eq!((Props::EVEN | Props::INTEGER).to_string(), "integer, even");
     }
 
     // ── Numeric assumptions ─────────────────────────────────────────

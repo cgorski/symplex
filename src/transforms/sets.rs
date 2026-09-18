@@ -1,14 +1,15 @@
 //! Set algebra: interval arithmetic, membership, subset tests, inf/sup, measure.
 //!
 //! Sets in symplex are subsets of the real line built from the set nodes in
-//! [`ExprNode`]: `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`,
+//! `ExprNode`: `Interval`, `FiniteSet`, `SetUnion`, `SetIntersection`,
 //! `SetComplement` (relative complement `A \ B`), `EmptySet`,
 //! `UniversalSet` (identified with ℝ for the purposes of this module) and
 //! `ConditionSet`.
 //!
 //! Construction is structural — `[0, 2] ∩ [1, 3]` is stored as a
 //! `SetIntersection` node.  This module provides the *evaluator*:
-//! [`simplify_set`] rewrites a set expression into a **normal form**
+//! [`SetEx::simplify`](crate::expr::SetEx::simplify) rewrites a set
+//! expression into a **normal form**
 //!
 //! > a union of pairwise-disjoint, ascending, non-adjacent intervals,
 //! > followed by one finite set of isolated points,
@@ -25,8 +26,8 @@
 //! decided", never "false".
 //!
 //! The public entry points are the methods on
-//! [`SetEx`](crate::api::expr::SetEx); everything in this module takes
-//! `&mut Arena` + [`ExprId`].
+//! [`SetEx`](crate::expr::SetEx); everything in this module takes
+//! `&mut Arena` + `ExprId`.
 
 use std::cmp::Ordering;
 
@@ -920,7 +921,13 @@ pub(crate) fn cmp_exprs(arena: &mut Arena, p: ExprId, q: ExprId) -> Option<Order
 }
 
 /// Is `elem` an element of the set `set`?
+///
+/// The literal `UniversalSet` contains everything; the real line
+/// `(-∞, ∞)` contains an element only if it is known to be real.
 pub(crate) fn set_contains(arena: &mut Arena, set: ExprId, elem: ExprId) -> Option<bool> {
+    if set == arena.universal_set {
+        return Some(true);
+    }
     let ev = evaluate(arena, &[set], &[elem]);
     let elem_pos = ev.table.pos_of(elem);
     let elem_ev = ev.table.ev(elem);
@@ -1328,6 +1335,28 @@ pub(crate) fn as_finite_set(arena: &mut Arena, set: ExprId) -> Option<Vec<ExprId
     }
 }
 
+/// `And` with constant folding (`true` dropped, `false` absorbing).
+fn mk_and(arena: &mut Arena, parts: &[ExprId]) -> ExprId {
+    let t = arena.bool_true;
+    let f = arena.bool_false;
+    if parts.contains(&f) {
+        return f;
+    }
+    let kept: Vec<ExprId> = parts.iter().copied().filter(|&p| p != t).collect();
+    arena.and(&kept)
+}
+
+/// `Or` with constant folding (`false` dropped, `true` absorbing).
+fn mk_or(arena: &mut Arena, parts: &[ExprId]) -> ExprId {
+    let t = arena.bool_true;
+    let f = arena.bool_false;
+    if parts.contains(&t) {
+        return t;
+    }
+    let kept: Vec<ExprId> = parts.iter().copied().filter(|&p| p != f).collect();
+    arena.or(&kept)
+}
+
 /// Membership of `var` in `set` as a boolean expression.
 ///
 /// Returns `Err(InvalidArgument)` if `set` contains a node that is not a
@@ -1363,27 +1392,27 @@ pub(crate) fn to_condition(
             }
             ExprNode::FiniteSet(elems) => {
                 let eqs: Vec<ExprId> = elems.iter().map(|&e| arena.eq_(var, e)).collect();
-                arena.or(&eqs)
+                mk_or(arena, &eqs)
             }
             ExprNode::SetUnion(children) => {
                 let parts: Vec<ExprId> = children
                     .iter()
                     .map(|c| memo.get(c).copied().unwrap_or(arena.bool_false))
                     .collect();
-                arena.or(&parts)
+                mk_or(arena, &parts)
             }
             ExprNode::SetIntersection(children) => {
                 let parts: Vec<ExprId> = children
                     .iter()
                     .map(|c| memo.get(c).copied().unwrap_or(arena.bool_true))
                     .collect();
-                arena.and(&parts)
+                mk_and(arena, &parts)
             }
             ExprNode::SetComplement(a, b) => {
                 let ca = memo.get(&a).copied().unwrap_or(arena.bool_true);
                 let cb = memo.get(&b).copied().unwrap_or(arena.bool_false);
                 let ncb = arena.not(cb);
-                arena.and(&[ca, ncb])
+                mk_and(arena, &[ca, ncb])
             }
             ExprNode::ConditionSet(v, cond) => crate::transforms::subs::subs(arena, cond, v, var),
             other => {

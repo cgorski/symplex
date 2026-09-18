@@ -517,8 +517,9 @@ pub fn reduce_inequalities(conds: &[BoolEx], var: &Ex) -> Result<SetEx, SymplexE
 impl Expr<Boolean> {
     /// Simplify a boolean expression.
     ///
-    /// Numeric sub-expressions are simplified with the numeric engine,
-    /// then boolean algebra is applied: flattening of nested `and`/`or`,
+    /// The operands of every relational atom are simplified with the
+    /// numeric engine (each operand individually, memoised), then boolean
+    /// algebra is applied: flattening of nested `and`/`or`,
     /// duplicate removal, constant folding, negation pushed to the atoms
     /// (De Morgan, double negation, `¬(a < b) = a ≥ b`), absorption
     /// (`A ∧ (A ∨ B) = A`), complements (`A ∧ ¬A = false`), merging of
@@ -547,13 +548,7 @@ impl Expr<Boolean> {
         let _span = debug_span!("bool_simplify", expr = ?self.raw_id()).entered();
         let id = {
             let mut inner = self.inner.write();
-            let numeric = crate::simplify::simplify_engine::unified_simplify(
-                &mut inner.arena,
-                self.raw_id(),
-                &crate::simplify::simplify_engine::SimplifyOpts::default(),
-            )
-            .expr;
-            crate::transforms::logic::simplify_bool(&mut inner.arena, numeric)
+            crate::transforms::logic::simplify_bool_full(&mut inner.arena, self.raw_id())
         };
         self.wrap(id)
     }
@@ -669,10 +664,13 @@ impl Expr<Boolean> {
     /// Is this formula true under every assignment?  Three-valued.
     ///
     /// A propositional proof (each relational pair is a three-valued
-    /// variable, opaque atoms are two-valued; up to 24 variables) gives
-    /// `Some(true)`.  If that is inconclusive and every atom is a
-    /// relational in one common free symbol, the question is decided
-    /// exactly through the inequality solver.  Otherwise `None`.
+    /// variable, opaque atoms are two-valued; DPLL with unit propagation,
+    /// up to 24 variables) gives `Some(true)`.  A propositional
+    /// counter-example is trusted only when the atoms are independent
+    /// (each relational is linear in its own symbol).  If neither applies
+    /// and every atom is a relational in one common free symbol, the
+    /// question is decided exactly through the inequality solver.
+    /// Otherwise `None`.
     ///
     /// # Examples
     ///
@@ -714,8 +712,9 @@ impl Expr<Boolean> {
     }
 
     /// Does some assignment make this formula true?  Three-valued
-    /// (`None` when the question cannot be decided — e.g. relationals in
-    /// several variables that are propositionally consistent).
+    /// (`None` when the question cannot be decided — e.g. relationals
+    /// that share variables non-trivially and are propositionally
+    /// consistent).
     ///
     /// # Examples
     ///
@@ -726,7 +725,10 @@ impl Expr<Boolean> {
     /// let x = ctx.symbol("x");
     /// let y = ctx.symbol("y");
     /// assert_eq!(x.gt(&ctx.int(0)).satisfiable(), Some(true));
-    /// assert_eq!(x.gt(&ctx.int(0)).and(&y.gt(&ctx.int(0))).satisfiable(), None);
+    /// // independent linear atoms: exact
+    /// assert_eq!(x.gt(&ctx.int(0)).and(&y.gt(&ctx.int(0))).satisfiable(), Some(true));
+    /// // x > y and x > 0 share x: undecided rather than guessed
+    /// assert_eq!(x.gt(&y).and(&x.gt(&ctx.int(0))).satisfiable(), None);
     /// ```
     #[must_use]
     pub fn satisfiable(&self) -> Option<bool> {
