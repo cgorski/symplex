@@ -102,9 +102,9 @@ fn apply_function_to_both_sides() {
 }
 
 #[test]
-fn to_zero_form() {
+fn to_zero_equation() {
     let (ctx, x) = setup();
-    let z = Equation::new(x.powi(2), &x + 6).to_zero_form();
+    let z = Equation::new(x.powi(2), &x + 6).to_zero_equation();
     assert_eq!(z.rhs(), &ctx.zero());
     assert_eq!(z.lhs(), &(&x.powi(2) - &x - 6));
     assert_eq!(z.to_expr(), z.lhs().clone());

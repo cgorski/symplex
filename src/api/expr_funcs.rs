@@ -4013,7 +4013,7 @@ impl Expr<Numeric> {
 
     /// Substitute values for symbols (simultaneously) and evaluate to `f64`.
     ///
-    /// The values may be any [`ToEx`](crate::expr_ops::ToEx) type: integers,
+    /// The values may be any [`ToEx`](crate::eq::ToEx) type: integers,
     /// `f64` (converted **exactly** — `0.1` is the dyadic
     /// `3602879701896397/36028797018963968`, which is what you want when
     /// the goal is a numeric answer), `BigInt`, `Ratio<BigInt>`, or `Ex`.
@@ -4082,7 +4082,7 @@ impl Expr<Numeric> {
         self.subs_map_with(subs)
     }
 
-    /// Substitute values of any [`ToEx`](crate::expr_ops::ToEx) type
+    /// Substitute values of any [`ToEx`](crate::eq::ToEx) type
     /// simultaneously (no evaluation).
     ///
     /// `f64` values are converted exactly; use

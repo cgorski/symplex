@@ -117,18 +117,22 @@ impl Equation {
         }
     }
 
-    /// Move everything to the left: `lhs - rhs = 0`.
+    /// Move everything to the left: the equation `lhs - rhs = 0`.
+    ///
+    /// For the bare expression `lhs - rhs` use [`to_expr`](Self::to_expr)
+    /// (or the [`ZeroForm`](crate::polysys::ZeroForm) trait, which the
+    /// solvers accept).
     ///
     /// ```
     /// use symplex::prelude::*;
     ///
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
-    /// let eq = Equation::new(x.powi(2), &x + 2).to_zero_form();
+    /// let eq = Equation::new(x.powi(2), &x + 2).to_zero_equation();
     /// assert_eq!(format!("{eq}"), "x^2 - x - 2 = 0");
     /// ```
     #[must_use]
-    pub fn to_zero_form(&self) -> Equation {
+    pub fn to_zero_equation(&self) -> Equation {
         Equation {
             lhs: &self.lhs - &self.rhs,
             rhs: self.lhs.context().zero(),
@@ -499,7 +503,7 @@ mod tests {
         let eq = Equation::new(x.clone(), ctx.int(3));
         let sq = eq.apply(|s| s.powi(2));
         assert_eq!(sq, Equation::new(x.powi(2), ctx.int(9)));
-        let z = sq.to_zero_form();
+        let z = sq.to_zero_equation();
         assert_eq!(z.rhs(), &ctx.zero());
         assert_eq!(z.lhs(), &(&x.powi(2) - 9));
     }

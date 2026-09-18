@@ -227,7 +227,7 @@ fn f64_to_id(arena: &mut Arena, v: f64) -> ExprId {
 /// A Rust value that can be turned into an exact expression in a [`Context`].
 ///
 /// Implemented for every [`Scalar`] (`i32`, `i64`, `i128`, `u32`, `u64`,
-/// `f64` with exact dyadic conversion — see the [module docs](self) —
+/// `f64` with exact dyadic conversion — see [`Context::from_f64`] —
 /// [`BigInt`], [`Ratio<BigInt>`]) and for `Ex` / `&Ex` themselves
 /// (identity, with a cross-context check).  This is the bound used by APIs
 /// that accept "a number or an expression", such as

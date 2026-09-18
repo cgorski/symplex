@@ -116,7 +116,7 @@ fn plot_data_falls_back_for_uncompilable_nodes() {
 #[test]
 fn textplot_ok_has_grid_and_markers() {
     let (_ctx, x) = setup();
-    let plot = x.sin().textplot(&x, 0.0, 6.28).unwrap();
+    let plot = x.sin().textplot(&x, 0.0, std::f64::consts::TAU).unwrap();
     assert!(plot.lines().count() >= 21);
     assert!(plot.contains('.') || plot.contains('/') || plot.contains('\\'));
 }
