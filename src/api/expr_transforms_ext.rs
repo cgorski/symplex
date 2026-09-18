@@ -2,7 +2,7 @@
 //!
 //! This module hosts the 0.2 additions to the transform API:
 //!
-//! * one-sided limits ([`Direction`], `limit_dir`, `limit_left`, `limit_right`);
+//! * one-sided limits (`Direction`, `limit_dir`, `limit_left`, `limit_right`);
 //! * the public Fourier transform API (`fourier_transform`,
 //!   `inverse_fourier_transform`, with a selectable [`FourierConvention`]);
 //! * the Mellin transform API (`mellin_transform`, `inverse_mellin_transform`);
@@ -23,18 +23,23 @@ pub use crate::calculus::limit::Direction;
 
 impl Expr<Numeric> {
     /// Compute the limit of this expression as `var` approaches `point`
-    /// from the given [`Direction`].
+    /// from the given `Direction`.
     ///
-    /// * [`Direction::Right`]: `x → a⁺` (values slightly larger than `a`)
-    /// * [`Direction::Left`]: `x → a⁻` (values slightly smaller than `a`)
-    /// * [`Direction::Both`]: two-sided; both one-sided limits must agree.
+    /// * `Direction::Right`: `x → a⁺` (values slightly larger than `a`)
+    /// * `Direction::Left`: `x → a⁻` (values slightly smaller than `a`)
+    /// * `Direction::Both` (the default): two-sided; both one-sided limits
+    ///   must exist and agree.
     ///
     /// For `point = ±∞` the direction is irrelevant.
     ///
-    /// If the limit does not exist or cannot be determined, a formal
-    /// `Limit(expr, var, point)` node is returned (check with
-    /// [`has_unevaluated`](Self::has_unevaluated)). The node does not yet
-    /// record the direction.
+    /// If the limit does not exist or cannot be determined, the formal
+    /// two-sided `Limit(expr, var, point)` node is returned (check with
+    /// [`has_unevaluated`](Self::has_unevaluated)). The node has no
+    /// direction slot, so an uncomputable one-sided limit is represented by
+    /// the same node as the two-sided one.
+    ///
+    /// Pathological inputs are cut off by an internal work budget and
+    /// likewise come back as the unevaluated node.
     ///
     /// # Examples
     ///
@@ -77,7 +82,7 @@ impl Expr<Numeric> {
     /// does not exist or cannot be computed.
     ///
     /// `±∞` are legitimate limit values and are returned as `Ok`. When the
-    /// two one-sided limits of a [`Direction::Both`] request differ, the
+    /// two one-sided limits of a `Direction::Both` request differ, the
     /// error is `ComputationFailed` with a reason of the form
     /// `"left and right limits differ: left = …, right = …"`.
     ///
@@ -112,7 +117,7 @@ impl Expr<Numeric> {
     }
 
     /// Left-hand limit `lim_{var → point⁻}`. Shorthand for
-    /// [`limit_dir`](Self::limit_dir) with [`Direction::Left`].
+    /// [`limit_dir`](Self::limit_dir) with `Direction::Left`.
     ///
     /// ```
     /// use symplex::prelude::*;
@@ -128,7 +133,7 @@ impl Expr<Numeric> {
     }
 
     /// Right-hand limit `lim_{var → point⁺}`. Shorthand for
-    /// [`limit_dir`](Self::limit_dir) with [`Direction::Right`].
+    /// [`limit_dir`](Self::limit_dir) with `Direction::Right`.
     ///
     /// ```
     /// use symplex::prelude::*;

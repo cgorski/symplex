@@ -12,23 +12,32 @@
 //!    `Γ(∞) = ∞`, …), then the Gruntz algorithm, then polynomial-degree
 //!    analysis as a last resort.
 //! 3. **Finite point:**
-//!    a. **Safe direct substitution.** Every `var`-dependent sub-expression is
-//!       evaluated at the point bottom-up; if none is singular (`∞`, `zoo`,
-//!       `NaN`, `ln 0`, `0^0`, a pole of `Γ`, …) and no discontinuous node
-//!       (`sign`, `H`, `⌊·⌋`, `⌈·⌉`, `Piecewise`) sits exactly at its
-//!       discontinuity, the substituted value *is* the limit.
-//!    b. **Compositional rule** for an outer continuous unary function.
-//!    c. **One-sided Gruntz.** `x = a ± 1/w` reduces `x → a^±` to
-//!       `w → +∞`, which the Gruntz algorithm handles (with `Abs`, `Sign`,
-//!       `Heaviside`, `Floor`, `Ceiling`, `Piecewise`, `Min`, `Max` resolved
-//!       by their eventual sign as `w → ∞`). For [`Direction::Both`] both
-//!       one-sided limits are computed and must agree.
-//!    d. **L'Hôpital + series fallback** for expressions without
-//!       discontinuous nodes.
+//!    - **Safe direct substitution.** Every `var`-dependent sub-expression is
+//!      evaluated at the point bottom-up; if none is singular (`∞`, `zoo`,
+//!      `NaN`, `ln 0`, `0^0`, a pole of `Γ`, …) and no discontinuous node
+//!      (`sign`, `H`, `⌊·⌋`, `⌈·⌉`, `Piecewise`) sits exactly at its
+//!      discontinuity, the substituted value *is* the limit.
+//!    - **Compositional rule** for an outer continuous unary function.
+//!    - **One-sided Gruntz.** `x = a ± 1/w` reduces `x → a^±` to
+//!      `w → +∞`, which the Gruntz algorithm handles (with `Abs`, `Sign`,
+//!      `Heaviside`, `Floor`, `Ceiling`, `Piecewise`, `Min`, `Max` resolved
+//!      by their eventual sign as `w → ∞`). For [`Direction::Both`] both
+//!      one-sided limits are computed and must agree.
+//!    - **L'Hôpital + series fallback** for expressions without
+//!      discontinuous nodes.
 //!
 //! Every candidate result is validated: it must be free of `var`, free of
 //! internal dummy symbols, free of unevaluated nodes, and must not be `NaN` or
 //! complex infinity. `+∞` and `−∞` are legitimate limit values.
+//!
+//! # Termination
+//!
+//! Every recursion is depth-capped, and the Gruntz engine additionally
+//! carries a work budget (see `gruntz::Budget`) that bounds the total number
+//! of MRV rewrites, leading-term extractions and series terms, and refuses
+//! to expand intermediate expressions above a fixed size. A pathological
+//! input therefore returns an unevaluated `Limit` node quickly instead of
+//! spinning.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -380,6 +389,29 @@ fn try_direct_substitution(
     var: ExprId,
     point: ExprId,
 ) -> Option<ExprId> {
+    let v = safe_substitute(arena, expr, var, point)?;
+    if is_valid_limit_value(arena, v, var) && v != arena.infinity() && v != arena.neg_infinity() {
+        Some(v)
+    } else {
+        None
+    }
+}
+
+/// Bottom-up substitution `var = point` that returns `None` as soon as any
+/// `var`-dependent sub-expression is singular at the point (`∞`, `zoo`,
+/// `NaN`, `ln 0`, `0^0`, a pole of `Γ`, a discontinuous node exactly at its
+/// discontinuity, …).
+///
+/// Unlike a plain `subs` + `eval`, this never lets canonicalization fold an
+/// indeterminate form (`0 · Γ(zoo) → 0`) into a plausible number. The value
+/// returned may still contain other symbols (including internal dummies);
+/// see [`try_direct_substitution`] for the fully validated variant.
+pub(crate) fn safe_substitute(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+) -> Option<ExprId> {
     let post = crate::base::walk::post_order_ids(arena, expr);
     let mut values: FxHashMap<ExprId, ExprId> = FxHashMap::default();
 
@@ -476,12 +508,7 @@ fn try_direct_substitution(
         values.insert(id, v);
     }
 
-    let v = *values.get(&expr)?;
-    if is_valid_limit_value(arena, v, var) && v != arena.infinity() && v != arena.neg_infinity() {
-        Some(v)
-    } else {
-        None
-    }
+    values.get(&expr).copied()
 }
 
 /// A "definite" constant: numeric, or a symbolic constant with a known sign.
@@ -1474,12 +1501,13 @@ pub(crate) fn limit_at_infinity(
     let expanded = crate::transforms::expand::expand(arena, simplified);
     let evaled = crate::transforms::eval::eval(arena, expanded);
 
+    // Only a *provably continuous* substitution `t = 0` is trusted: a raw
+    // `subs` + `eval` folds forms such as `0·Γ(zoo)` into `0`.
     let zero = arena.zero();
-    let at_zero = arena.subs_structural(evaled, t, zero);
-    let at_zero_eval = crate::transforms::eval::eval(arena, at_zero);
-
-    if is_finite_result(arena, at_zero_eval) {
-        return Ok(at_zero_eval);
+    if let Some(at_zero) = try_direct_substitution(arena, evaled, t, zero)
+        && is_finite_result(arena, at_zero)
+    {
+        return Ok(at_zero);
     }
 
     // ── Strategy 2: Polynomial degree analysis on the substituted form ──
