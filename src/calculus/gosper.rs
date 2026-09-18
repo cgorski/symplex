@@ -386,12 +386,11 @@ fn compute_degree_bound(
             }
         }
         d
-    } else if deg_c >= n {
-        deg_c - n
     } else {
-        // The operator strictly increases degree, but c has lower degree.
-        // Try degree 0 anyway — the system will be inconsistent if no solution.
-        0
+        // deg(L x) = deg x + n exactly, so deg x = deg c − n.  When c has
+        // lower degree we still try degree 0; the system is then simply
+        // inconsistent if no solution exists.
+        deg_c.saturating_sub(n)
     };
     if bound > MAX_CERTIFICATE_DEGREE {
         tracing::debug!(

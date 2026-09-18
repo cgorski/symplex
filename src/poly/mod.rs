@@ -14,7 +14,6 @@ pub mod traits;
 // Re-export the type alias and ℚ-specific free function.
 // Poly is now `type Poly = GenPoly<Ratio<BigInt>>` defined in dense.rs.
 pub(crate) use dense::Poly;
-pub(crate) use dense::lagrange_interpolate_rational;
 
 /// Maximum coefficient magnitude for rational root divisor enumeration.
 pub(crate) const MAX_DIVISOR_COEFFICIENT: u64 = 1_000_000_000;
