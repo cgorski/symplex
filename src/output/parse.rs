@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
+use smallvec::SmallVec;
 
 use crate::api::context::Context;
 use crate::api::expr::Ex;
@@ -94,6 +95,12 @@ enum Token {
     LParen,
     RParen,
     Comma,
+    /// Postfix factorial `!`.
+    Bang,
+    /// `=` (only inside `Sum(body, k=lo..hi)` / `Product(…)`).
+    Eq,
+    /// `..` range separator (only inside `Sum` / `Product`).
+    DotDot,
     Eof,
 }
 
@@ -158,6 +165,20 @@ impl<'a> Lexer<'a> {
             b',' => {
                 self.pos += 1;
                 Ok(Token::Comma)
+            }
+            b'!' => {
+                self.pos += 1;
+                Ok(Token::Bang)
+            }
+            b'=' => {
+                self.pos += 1;
+                Ok(Token::Eq)
+            }
+            b'.' if self.pos + 1 < self.input.len()
+                && self.input.as_bytes()[self.pos + 1] == b'.' =>
+            {
+                self.pos += 2;
+                Ok(Token::DotDot)
             }
             b'0'..=b'9' => {
                 let start = self.pos;
@@ -278,6 +299,13 @@ impl<'a> Parser<'a> {
 
         // Infix loop
         loop {
+            // Postfix factorial binds tighter than every infix operator:
+            // `2^3!` is `2^(3!)` and `x!^2` is `(x!)^2`.
+            if self.current == Token::Bang {
+                self.advance()?;
+                lhs = arena.intern(ExprNode::Factorial(lhs));
+                continue;
+            }
             let (op, l_bp, r_bp, implicit) = match &self.current {
                 Token::Plus => ('+', 1, 2, false),
                 Token::Minus => ('-', 1, 2, false),
@@ -367,6 +395,9 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Largest number of arguments accepted by any function.
+    const MAX_FN_ARGS: usize = 32;
+
     fn parse_function_call(&mut self, arena: &mut Arena, name: &str) -> Result<ExprId, ParseError> {
         self.expect(&Token::LParen)?;
 
@@ -378,103 +409,205 @@ impl<'a> Parser<'a> {
             });
         }
 
-        let arg = self.parse_expr(arena, 0)?;
-
-        // Multi-argument functions: check for comma
-        if self.current == Token::Comma {
-            self.advance()?;
-            let arg2 = self.parse_expr(arena, 0)?;
-
-            // Check for 3rd argument
-            if self.current == Token::Comma {
-                self.advance()?;
-                let arg3 = self.parse_expr(arena, 0)?;
-
-                // Check for 4th argument
-                if self.current == Token::Comma {
-                    self.advance()?;
-                    let arg4 = self.parse_expr(arena, 0)?;
-                    self.expect(&Token::RParen)?;
-
-                    // 4-argument functions
-                    let name_lower = name.to_ascii_lowercase();
-                    return match name_lower.as_str() {
-                        "series" => Ok(arena
-                            .intern(crate::base::node::ExprNode::Series(arg, arg2, arg3, arg4))),
-                        _ => Err(ParseError {
-                            message: format!(
-                                "unknown 4-argument function '{}'. Supported: Series",
-                                name
-                            ),
-                            position: self.lexer.pos,
-                        }),
-                    };
-                }
-
-                self.expect(&Token::RParen)?;
-
-                // 3-argument functions
-                let name_lower = name.to_ascii_lowercase();
-                return match name_lower.as_str() {
-                    "limit" => {
-                        Ok(arena.intern(crate::base::node::ExprNode::Limit(arg, arg2, arg3)))
-                    }
-                    "laplacetransform" => Ok(arena.intern(
-                        crate::base::node::ExprNode::LaplaceTransform(arg, arg2, arg3),
-                    )),
-                    "inverselaplacetransform" => Ok(arena.intern(
-                        crate::base::node::ExprNode::InverseLaplaceTransform(arg, arg2, arg3),
-                    )),
-                    "residue" => {
-                        Ok(arena.intern(crate::base::node::ExprNode::Residue(arg, arg2, arg3)))
-                    }
-                    "dsolve" => {
-                        Ok(arena.intern(crate::base::node::ExprNode::DSolve(arg, arg2, arg3)))
-                    }
-                    _ => Err(ParseError {
-                        message: format!(
-                            "unknown 3-argument function '{}'. Supported: Limit, LaplaceTransform, InverseLaplaceTransform, Residue, DSolve",
-                            name
-                        ),
-                        position: self.lexer.pos,
-                    }),
-                };
-            }
-
-            self.expect(&Token::RParen)?;
-
-            // 2-argument functions
-            let name_lower = name.to_ascii_lowercase();
-            return match name_lower.as_str() {
-                "log" => {
-                    // log(x, base) = ln(x) / ln(base)
-                    let ln_x = arena.ln(arg);
-                    let ln_base = arena.ln(arg2);
-                    Ok(arena.div(ln_x, ln_base))
-                }
-                "rootof" => Ok(arena.intern(crate::base::node::ExprNode::RootOf(arg, arg2))),
-                "conditionset" => {
-                    Ok(arena.intern(crate::base::node::ExprNode::ConditionSet(arg, arg2)))
-                }
-                "atan2" => Ok(arena.atan2(arg, arg2)),
-                "polygamma" => Ok(arena.polygamma(arg, arg2)),
-                "kroneckerdelta" | "kronecker_delta" => Ok(arena.kronecker_delta(arg, arg2)),
-                _ => Err(ParseError {
-                    message: format!(
-                        "unknown 2-argument function '{}'. Supported: log, atan2, polygamma, \
-                         KroneckerDelta, RootOf, ConditionSet",
-                        name
-                    ),
-                    position: self.lexer.pos,
-                }),
-            };
-        }
-
-        self.expect(&Token::RParen)?;
-
         // Case-insensitive function name matching for SymPy compatibility
         let name_lower = name.to_ascii_lowercase();
-        match name_lower.as_str() {
+        let mut args: Vec<ExprId> = vec![self.parse_expr(arena, 0)?];
+
+        // `Sum(body, k=lo..hi)` / `Product(body, k=lo..hi)` — the display form.
+        if matches!(name_lower.as_str(), "sum" | "product") && self.current == Token::Comma {
+            self.advance()?;
+            let var = self.parse_expr(arena, 0)?;
+            if self.current == Token::Eq {
+                self.advance()?;
+                let lo = self.parse_expr(arena, 0)?;
+                self.expect(&Token::DotDot)?;
+                let hi = self.parse_expr(arena, 0)?;
+                self.expect(&Token::RParen)?;
+                return self.make_sum_product(arena, name, &name_lower, args[0], var, lo, hi);
+            }
+            args.push(var);
+        }
+
+        while self.current == Token::Comma {
+            self.advance()?;
+            if args.len() >= Self::MAX_FN_ARGS {
+                return Err(ParseError {
+                    message: format!(
+                        "function '{}' has too many arguments (max {})",
+                        name,
+                        Self::MAX_FN_ARGS
+                    ),
+                    position: self.lexer.pos,
+                });
+            }
+            args.push(self.parse_expr(arena, 0)?);
+        }
+        self.expect(&Token::RParen)?;
+
+        // Variadic functions.
+        if matches!(name_lower.as_str(), "min" | "max") {
+            if args.len() < 2 {
+                return Err(ParseError {
+                    message: format!("function '{}' requires at least 2 arguments", name),
+                    position: self.lexer.pos,
+                });
+            }
+            let ids: SmallVec<[ExprId; 4]> = args.iter().copied().collect();
+            return Ok(arena.intern(if name_lower == "min" {
+                ExprNode::Min(ids)
+            } else {
+                ExprNode::Max(ids)
+            }));
+        }
+
+        match args.len() {
+            1 => self.call_1(arena, name, &name_lower, args[0]),
+            2 => self.call_2(arena, name, &name_lower, args[0], args[1]),
+            3 => self.call_3(arena, name, &name_lower, args[0], args[1], args[2]),
+            4 => self.call_4(arena, name, &name_lower, args[0], args[1], args[2], args[3]),
+            n => Err(ParseError {
+                message: format!(
+                    "unknown {n}-argument function '{}'. Only min and max take more than 4 arguments",
+                    name
+                ),
+                position: self.lexer.pos,
+            }),
+        }
+    }
+
+    /// Build `Sum`/`Product` after validating that the index is a symbol.
+    #[allow(clippy::too_many_arguments)]
+    fn make_sum_product(
+        &self,
+        arena: &mut Arena,
+        name: &str,
+        name_lower: &str,
+        body: ExprId,
+        var: ExprId,
+        lo: ExprId,
+        hi: ExprId,
+    ) -> Result<ExprId, ParseError> {
+        if !matches!(arena.node(var), ExprNode::Symbol(_)) {
+            return Err(ParseError {
+                message: format!(
+                    "the index of '{}' must be a symbol, got '{}'",
+                    name,
+                    arena.display(var)
+                ),
+                position: self.lexer.pos,
+            });
+        }
+        Ok(arena.intern(if name_lower == "sum" {
+            ExprNode::Sum(body, var, lo, hi)
+        } else {
+            ExprNode::Product_(body, var, lo, hi)
+        }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn call_4(
+        &self,
+        arena: &mut Arena,
+        name: &str,
+        name_lower: &str,
+        arg: ExprId,
+        arg2: ExprId,
+        arg3: ExprId,
+        arg4: ExprId,
+    ) -> Result<ExprId, ParseError> {
+        match name_lower {
+            "series" => Ok(arena.intern(ExprNode::Series(arg, arg2, arg3, arg4))),
+            // SymPy-style `Sum(f, k, a, b)` / `Product(f, k, a, b)`.
+            "sum" | "product" => {
+                self.make_sum_product(arena, name, name_lower, arg, arg2, arg3, arg4)
+            }
+            _ => Err(ParseError {
+                message: format!(
+                    "unknown 4-argument function '{}'. Supported: Series, Sum, Product",
+                    name
+                ),
+                position: self.lexer.pos,
+            }),
+        }
+    }
+
+    fn call_3(
+        &self,
+        arena: &mut Arena,
+        name: &str,
+        name_lower: &str,
+        arg: ExprId,
+        arg2: ExprId,
+        arg3: ExprId,
+    ) -> Result<ExprId, ParseError> {
+        match name_lower {
+            "limit" => Ok(arena.intern(ExprNode::Limit(arg, arg2, arg3))),
+            "laplacetransform" => Ok(arena.intern(ExprNode::LaplaceTransform(arg, arg2, arg3))),
+            "inverselaplacetransform" => {
+                Ok(arena.intern(ExprNode::InverseLaplaceTransform(arg, arg2, arg3)))
+            }
+            "residue" => Ok(arena.intern(ExprNode::Residue(arg, arg2, arg3))),
+            "dsolve" => Ok(arena.intern(ExprNode::DSolve(arg, arg2, arg3))),
+            _ => Err(ParseError {
+                message: format!(
+                    "unknown 3-argument function '{}'. Supported: Limit, LaplaceTransform, \
+                     InverseLaplaceTransform, Residue, DSolve, min, max",
+                    name
+                ),
+                position: self.lexer.pos,
+            }),
+        }
+    }
+
+    fn call_2(
+        &self,
+        arena: &mut Arena,
+        name: &str,
+        name_lower: &str,
+        arg: ExprId,
+        arg2: ExprId,
+    ) -> Result<ExprId, ParseError> {
+        match name_lower {
+            "log" => {
+                // log(x, base) = ln(x) / ln(base)
+                let ln_x = arena.ln(arg);
+                let ln_base = arena.ln(arg2);
+                Ok(arena.div(ln_x, ln_base))
+            }
+            "rootof" => Ok(arena.intern(ExprNode::RootOf(arg, arg2))),
+            "conditionset" => Ok(arena.intern(ExprNode::ConditionSet(arg, arg2))),
+            "atan2" => Ok(arena.atan2(arg, arg2)),
+            "polygamma" => Ok(arena.polygamma(arg, arg2)),
+            "kroneckerdelta" | "kronecker_delta" => Ok(arena.kronecker_delta(arg, arg2)),
+            // Combinatorics / special functions (`C(n, k)` and `B(a, b)` are
+            // the display forms).
+            "binomial" | "c" => Ok(arena.binomial(arg, arg2)),
+            "beta" | "b" => Ok(arena.beta(arg, arg2)),
+            // Bessel functions: order first, as in SymPy and in the display.
+            "besselj" => Ok(arena.besselj(arg, arg2)),
+            "bessely" => Ok(arena.bessely(arg, arg2)),
+            "besseli" => Ok(arena.besseli(arg, arg2)),
+            "besselk" => Ok(arena.besselk(arg, arg2)),
+            _ => Err(ParseError {
+                message: format!(
+                    "unknown 2-argument function '{}'. Supported: log, atan2, polygamma, \
+                     binomial, beta, besselj, bessely, besseli, besselk, min, max, \
+                     KroneckerDelta, RootOf, ConditionSet",
+                    name
+                ),
+                position: self.lexer.pos,
+            }),
+        }
+    }
+
+    fn call_1(
+        &self,
+        arena: &mut Arena,
+        name: &str,
+        name_lower: &str,
+        arg: ExprId,
+    ) -> Result<ExprId, ParseError> {
+        match name_lower {
             "sin" => Ok(arena.sin(arg)),
             "cos" => Ok(arena.cos(arg)),
             "tan" => Ok(arena.tan(arg)),
@@ -502,10 +635,42 @@ impl<'a> Parser<'a> {
             "diracdelta" | "dirac_delta" => {
                 Ok(arena.intern(crate::base::node::ExprNode::DiracDelta(arg)))
             }
-            "lambertw" => Ok(arena.intern(crate::base::node::ExprNode::LambertW(arg))),
+            "lambertw" | "w" => Ok(arena.intern(crate::base::node::ExprNode::LambertW(arg))),
             "factorial" => Ok(arena.intern(crate::base::node::ExprNode::Factorial(arg))),
             "digamma" => Ok(arena.intern(crate::base::node::ExprNode::Digamma(arg))),
             "loggamma" => Ok(arena.intern(crate::base::node::ExprNode::LogGamma(arg))),
+            // Reciprocal trig / hyperbolic functions (no dedicated nodes;
+            // the same forms `Ex::cot` & co. build).
+            "cot" => {
+                let c = arena.cos(arg);
+                let s = arena.sin(arg);
+                Ok(arena.div(c, s))
+            }
+            "sec" => {
+                let c = arena.cos(arg);
+                Ok(arena.div(arena.one, c))
+            }
+            "csc" => {
+                let s = arena.sin(arg);
+                Ok(arena.div(arena.one, s))
+            }
+            "coth" => {
+                let c = arena.cosh(arg);
+                let s = arena.sinh(arg);
+                Ok(arena.div(c, s))
+            }
+            "sech" => {
+                let c = arena.cosh(arg);
+                Ok(arena.div(arena.one, c))
+            }
+            "csch" => {
+                let s = arena.sinh(arg);
+                Ok(arena.div(arena.one, s))
+            }
+            "acot" | "arccot" => {
+                let inv = arena.div(arena.one, arg);
+                Ok(arena.atan(inv))
+            }
             // Complex analysis
             "re" => Ok(arena.re(arg)),
             "im" => Ok(arena.im(arg)),
@@ -519,12 +684,14 @@ impl<'a> Parser<'a> {
             "zeta" => Ok(arena.zeta(arg)),
             _ => Err(ParseError {
                 message: format!(
-                    "unknown function '{}'. Supported: sin, cos, tan, exp, ln, log, sqrt, cbrt, abs, \
-                     asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, sign, floor, ceil, \
-                     gamma, erf, erfc, heaviside, diracdelta, lambertw, factorial, digamma, loggamma, \
-                     re, im, conjugate, arg, Si, Ci, Ei, li, zeta, polygamma, KroneckerDelta, \
-                     Limit, RootOf, ConditionSet, LaplaceTransform, InverseLaplaceTransform, \
-                     Residue, DSolve, Series",
+                    "unknown function '{}'. Supported: sin, cos, tan, cot, sec, csc, exp, ln, log, \
+                     sqrt, cbrt, abs, asin, acos, atan, acot, sinh, cosh, tanh, coth, sech, csch, \
+                     asinh, acosh, atanh, sign, floor, ceil, gamma, erf, erfc, heaviside, \
+                     diracdelta, lambertw, factorial, digamma, loggamma, re, im, conjugate, arg, \
+                     Si, Ci, Ei, li, zeta, polygamma, binomial, beta, besselj, bessely, besseli, \
+                     besselk, min, max, KroneckerDelta, Limit, RootOf, ConditionSet, \
+                     LaplaceTransform, InverseLaplaceTransform, Residue, DSolve, Series, Sum, \
+                     Product",
                     name
                 ),
                 position: self.lexer.pos,
