@@ -1,3 +1,71 @@
-# error handling
+# Error Handling
 
-*This chapter is under development. See the [examples](https://github.com/cgorski/symplex/tree/main/examples) and [API documentation](https://docs.rs/symplex) for current coverage.*
+symplex has one error type, `SymplexError` (in the prelude; `#[non_exhaustive]`, implements `std::error::Error` via `thiserror`). The symbolic layer never panics except for the cross-context guard; every other failure is either an unevaluated node (see [API Patterns](./api-patterns.md)) or one of the variants below.
+
+## Variants
+
+| Variant | Fields | Raised by |
+|---------|--------|-----------|
+| `FreeSymbol { name }` | the unbound symbol | `eval_f64`, `compile`, `to_rust_fn`, `to_c_fn`, `integrate_numeric`, `eval_f64_with` when a symbol is not supplied |
+| `Unevaluable { reason }` | | numeric evaluation of a node with no finite value (`oo`, `zoo`, a set, …), a non-real integration bound |
+| `PrecisionExhausted { requested, achieved }` | | `eval_decimal` when the working precision cannot deliver the requested digits |
+| `NotImplemented(String)` | names the node | `compile`/codegen on a node without numerical meaning (unevaluated `Integral`, `Apply`, Bessel with symbolic order, …) |
+| `ComputationFailed { operation, reason }` | which operation, why | every `try_*` method when the result is unevaluated; `fourier_transform`/`mellin_transform`/`z_transform` when no rule applies; `solve` when no method applies; `solve_ode_ivp` when constants cannot be fitted; `integrate_numeric` when quadrature does not converge |
+| `Divergent { operation, reason }` | | `try_integrate_definite` when the integral is *proven* divergent; `laplace_final_value` for a pole in the closed right half-plane |
+| `NoSolution { operation, reason }` | | `solve` / `solve_general` on a contradiction or range violation (`sin x = 2`); `solve_ode_ivp` with contradictory initial conditions |
+| `InfiniteSolutions { operation, reason }` | | `solve` on an identity; `polysys::solve_system_ex` on a positive-dimensional system |
+| `InvalidArgument { operation, reason }` | | malformed input: a non-symbol variable, duplicate parameter names, wrong shapes (`cholesky` on a non-symmetric matrix, `norm_p` on a non-vector), `linsolve` with a non-linear equation, `Rule::try_new` with an unbound wildcard, `CompiledFn::try_call` with the wrong arity |
+| `ContradictoryAssumptions { symbol, a, b }` | | declaring a symbol both `Positive` and `Negative`, etc. |
+
+Because the enum is `#[non_exhaustive]`, always include a wildcard arm when matching.
+
+## Matching on outcomes
+
+```rust
+use symplex::prelude::*;
+
+fn main() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+
+    for eq in [&x.powi(2) - 4, &x - &x, &x.sin() - 2, &x.exp().ln().exp() - &x.exp()] {
+        match eq.solve(&x) {
+            Ok(roots) => println!("{eq} = 0 → {roots:?}"),
+            Err(SymplexError::InfiniteSolutions { reason, .. }) => println!("{eq} = 0 → identity: {reason}"),
+            Err(SymplexError::NoSolution { reason, .. }) => println!("{eq} = 0 → no solution: {reason}"),
+            Err(SymplexError::ComputationFailed { reason, .. }) => println!("{eq} = 0 → could not solve: {reason}"),
+            Err(e) => println!("{eq} = 0 → {e}"),
+        }
+    }
+
+    match x.powi(-2).try_integrate_definite(&x, &ctx.int(-1), &ctx.int(1)) {
+        Err(SymplexError::Divergent { reason, .. }) => println!("divergent: {reason}"),
+        Err(SymplexError::ComputationFailed { .. }) => println!("undecided"),
+        other => println!("{other:?}"),
+    }
+}
+```
+
+## Unevaluated nodes vs. errors
+
+The base methods (`integrate`, `limit`, `summation`, …) return an unevaluated node and never fail; the `try_` twin turns that into `Err(ComputationFailed)`. Choose based on the caller:
+
+- **Interactive / exploratory code**: use the base method and print the result; an `Integral(…)` node is informative.
+- **Pipelines and code generation**: use `try_` so that a missing closed form stops the pipeline instead of producing a function that calls `Integral`.
+
+## `Option` is not an error
+
+Three-valued queries (`is_positive`, `equals`, `SetEx::contains`, `Matrix::is_symmetric`, …) return `None` for "cannot decide". That is an answer, not a failure — typically it means a symbol needs an assumption (`ctx.symbol_with("a", &[Assumption::Positive])`).
+
+## Panics
+
+The symbolic layer panics in exactly two situations, both programming errors:
+
+1. **Cross-context mixing** — combining expressions from different `Context`s. The message names the operation.
+2. **Empty `Sum`/`Product` iterators** — `iter.sum::<Ex>()` on an empty iterator has no context to build `0` in. Use `ctx.sum(iter)` / `ctx.product(iter)`, or collect into `Option<Ex>` (which yields `None`).
+
+Library code never uses `unwrap`/`expect` on user data; if you find a panic elsewhere, it is a bug — please report it with the expression that triggered it.
+
+## Configuration limits
+
+`EvalConfig { max_pow_exponent, max_result_digits, max_evalf_precision }` (via `Context::with_config`) caps the size of intermediate results. Exceeding a cap leaves the expression unevaluated (`2^5000` stays a `Pow` node) rather than consuming unbounded memory. Simplification, rewriting and eigenvalue computations have their own internal budgets (`MAX_REWRITE_OPS`, `MATCH_BUDGET`, `EXPRESSION_BUDGET`, the Gruntz work budget) that make them return the best result so far instead of hanging.

@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
+[What's New in 0.2](./whats-new-0.2.md)
 
 ---
 
@@ -15,12 +16,18 @@
 # Guide
 
 - [Calculus](./guide/calculus.md)
+- [Definite Integration and Quadrature](./guide/definite-integration.md)
+- [Summation and Series](./guide/summation.md)
+- [Complex Analysis and Special Functions](./guide/complex-analysis.md)
 - [Algebra](./guide/algebra.md)
+- [The Rule Engine](./guide/rule-engine.md)
 - [Solving Equations](./guide/solving.md)
+- [Sets and Logic](./guide/sets-and-logic.md)
 - [Matrices](./guide/matrices.md)
+- [Transforms](./guide/transforms.md)
+- [Number Theory and Combinatorics](./guide/number-theory.md)
 - [Code Generation](./guide/code-generation.md)
 - [Dimensional Analysis](./guide/units.md)
-- [Number Theory and Combinatorics](./guide/number-theory.md)
 
 ---
 
@@ -39,4 +46,5 @@
 
 - [API Patterns](./reference/api-patterns.md)
 - [Error Handling](./reference/error-handling.md)
+- [Migrating from 0.1 to 0.2](./reference/migrating-0.2.md)
 - [Migrating from SymPy](./reference/sympy-migration.md)

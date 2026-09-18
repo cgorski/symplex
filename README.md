@@ -6,15 +6,18 @@ Symbolic mathematics for Rust.
 [![docs.rs](https://docs.rs/symplex/badge.svg)](https://docs.rs/symplex)
 [![License](https://img.shields.io/crates/l/symplex.svg)](LICENSE-MIT)
 
-> **Pre-release.** The API is unstable. Feedback welcome.
+> **Pre-release.** The API is unstable; 0.2 contains breaking changes from 0.1
+> (see [Migrating from 0.1](#migrating-from-01)). Feedback welcome.
 >
 > Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, conventions, and how to get started.
+> The full changelog is in [CHANGELOG.md](CHANGELOG.md); the user guide is
+> [The Symplex Book](book/src/SUMMARY.md).
 
 ---
 
 ## What This Is
 
-symplex is a symbolic computation library. It manipulates mathematical expressions exactly — using arbitrary-precision rational arithmetic, not floating-point — and can differentiate, integrate, solve equations, simplify, and generate optimized Rust code from symbolic results.
+symplex is a symbolic computation library. It manipulates mathematical expressions exactly — using arbitrary-precision rational arithmetic, not floating-point — and can differentiate, integrate, sum, solve equations and systems, simplify, transform, and generate optimized Rust or C code from symbolic results.
 
 It is designed for Rust developers working in robotics, control systems, physics simulation, signal processing, or anywhere that symbolic math feeds into numerical code.
 
@@ -30,24 +33,27 @@ fn main() {
     // Build an expression and differentiate
     let f = expr!(ctx, x^3 - 2*x + 1);
     let df = f.diff(&x);
-    println!("f'(x) = {df}");                      // 3*x^2 - 2
+    println!("f'(x) = {df}");                        // 3*x^2 - 2
 
-    // Solve an equation
-    let roots = expr!(ctx, x^2 - 5*x + 6).solve_or_empty(&x);
-    println!("roots: {roots:?}");                   // [3, 2]
+    // Solve an equation (identities and contradictions are errors, not [])
+    let roots = expr!(ctx, x^2 - 5*x + 6).solve(&x).unwrap();
+    println!("roots: {roots:?}");                     // [Ex(3), Ex(2)]
+
+    // Definite integral — improper and divergent cases are handled honestly
+    let gauss = expr!(ctx, exp(-x^2)).integrate_definite(&x, &ctx.neg_infinity(), &ctx.infinity());
+    println!("∫ e^(-x²) dx = {gauss}");                // sqrt(pi)
 
     // Simplify a trig identity
-    let trig = expr!(ctx, sin(x)^2 + cos(x)^2);
-    println!("{}", trig.simplify());                // 1
+    println!("{}", expr!(ctx, sin(x)^2 + cos(x)^2).simplify());   // 1
 
     // Generate optimized Rust code from a symbolic result
     let code = df.to_rust_fn("gradient", &["x"]).unwrap();
     println!("{code}");
     // → pub fn gradient(x: f64) -> f64 { 3_f64.mul_add(x.powi(2), -2_f64) }
 
-    // Or compile to a callable closure — no codegen, just fast evaluation
+    // Or compile to a callable — no codegen, just fast evaluation
     let grad = df.compile(&["x"]).unwrap();
-    println!("f'(2) = {}", grad(&[2.0]));           // 10.0
+    println!("f'(2) = {}", grad(&[2.0]));             // 10.0
 }
 ```
 
@@ -59,8 +65,8 @@ cargo add symplex
 
 ## When to Use This
 
-- You need symbolic differentiation, integration, or equation solving and want to stay in Rust.
-- You are generating numerical code from symbolic derivations — Jacobians, transfer functions, filter coefficients, control laws.
+- You need symbolic differentiation, integration, summation, or equation solving and want to stay in Rust.
+- You are generating numerical code from symbolic derivations — Jacobians, transfer functions, filter coefficients, control laws — as Rust or C99.
 - You need compile-time dimensional analysis for physical quantities.
 - You need thread-safe symbolic computation without a GIL or global interpreter lock.
 - You want exact rational arithmetic (`1/3` stays as `1/3`, not `0.33333...`).
@@ -68,9 +74,9 @@ cargo add symplex
 ## When Not to Use This
 
 - You need a mature CAS with decades of community validation — use [SymPy](https://www.sympy.org/). It has broader coverage, more special functions, and a much larger test corpus.
-- You need geometry, statistics, tensor algebra, or PDE solving — these are not yet available.
+- You need geometry, statistics, tensor algebra, or PDE solving — these are not available.
 - You need interactive notebook-style exploration — symplex is a library, not an application. (Though see `cargo run --example repl` for a basic REPL.)
-- You need results verified against extensive known-answer databases — symplex has ~6,000 tests, but SymPy has orders of magnitude more coverage.
+- You need results verified against extensive known-answer databases — symplex has ~10,000 tests including SymPy cross-validation fixtures, but SymPy has orders of magnitude more coverage.
 
 ---
 
@@ -78,164 +84,318 @@ cargo add symplex
 
 ### Calculus
 
-Differentiation handles the chain rule, product rule, and all elementary functions. Integration uses 15+ strategies including by-parts, u-substitution, partial fractions, trig substitution, Risch algorithm, Lazard-Rioboo-Trager log-to-real conversion, and heuristic integration. Radical coefficients (e.g., `√5` from cyclotomic denominators) are handled exactly via algebraic number field arithmetic.
+Differentiation handles the chain rule, product rule, all elementary functions, and the special functions (Bessel, orthogonal polynomials, `digamma → polygamma`). Indefinite integration uses 15+ strategies including by-parts, u-substitution, partial fractions, trig substitution, the Risch algorithm, Lazard–Rioboo–Trager log-to-real conversion, and heuristic integration. Radical coefficients (e.g., `√5` from cyclotomic denominators) are handled exactly via algebraic number field arithmetic.
 
 ```rust
 let ctx = Context::new();
 syms!(ctx; x);
 
-// Differentiation
-expr!(ctx, sin(x^2)).diff(&x);                    // 2*x*cos(x^2)
+expr!(ctx, sin(x^2)).diff(&x);                      // 2*x*cos(x^2)
+expr!(ctx, x * exp(x)).integrate(&x);               // x*exp(x) - exp(x)
+expr!(ctx, sin(x) / x).limit(&x, &ctx.int(0));      // 1  (Gruntz algorithm)
+expr!(ctx, exp(x)).series(&x, &ctx.int(0), 5);      // 1 + x + x^2/2 + x^3/6 + x^4/24
 
-// Integration
-expr!(ctx, x * exp(x)).integrate(&x);             // x*exp(x) - exp(x)
-
-// Limits (Gruntz algorithm)
-expr!(ctx, sin(x) / x).limit(&x, &ctx.int(0));    // 1
-
-// Taylor / Maclaurin series
-expr!(ctx, exp(x)).series(&x, &ctx.int(0), 5);    // 1 + x + x^2/2 + x^3/6 + x^4/24
-
-// Laplace transforms (forward and inverse)
-let (s, t) = (ctx.symbol("s"), ctx.symbol("t"));
-t.sin().laplace(&t, &s);                          // 1/(s^2 + 1)
-
-// Gosper hypergeometric summation
-// Formal power series with closed-form coefficient extraction
-// Finite differences (Fornberg algorithm)
+// One-sided limits; the two-sided limit stays a `Limit` node when they disagree
+(1 / &x).limit_right(&x, &ctx.int(0));              // oo
+(1 / &x).limit_left(&x, &ctx.int(0));               // -oo
 ```
 
-### Algebra
+### Definite, Improper and Numeric Integration
 
-Polynomial operations work over ℚ using arbitrary-precision rational arithmetic. Gröbner basis computation uses Buchberger's algorithm with FGLM order conversion.
+`integrate_definite` locates interior singularities, treats infinite bounds and endpoint singularities as improper integrals via one-sided limits, resolves `Abs`/`Heaviside`/`DiracDelta`/`Piecewise` integrands, and consults a table of ~30 classical improper integrals (with symbolic parameters under assumptions). Divergence is reported, never hidden.
 
 ```rust
 let ctx = Context::new();
 syms!(ctx; x);
+let (zero, one, inf) = (ctx.int(0), ctx.int(1), ctx.infinity());
 
-// Factoring over ℤ
-expr!(ctx, x^4 - 1).factor(&x);                   // (x - 1)*(x + 1)*(x^2 + 1)
+x.powi(2).integrate_definite(&x, &zero, &one);                  // 1/3
+(-&x).exp().integrate_definite(&x, &zero, &inf);                // 1
+(&x.sin() / &x).integrate_definite(&x, &zero, &inf);            // 1/2*pi
+x.ln().integrate_definite(&x, &zero, &one);                     // -1
+x.abs().integrate_definite(&x, &ctx.int(-2), &ctx.int(3));      // 13/2
 
-// Expansion
-expr!(ctx, (x + 1)^3).expand();                   // x^3 + 3*x^2 + 3*x + 1
+// ∫₋₁¹ dx/x² diverges: F(1) − F(−1) = −2 would be wrong, so it is an error
+let r = x.powi(-2).try_integrate_definite(&x, &ctx.int(-1), &one);
+assert!(matches!(r, Err(SymplexError::Divergent { .. })));
 
-// Common-factor cancellation
-expr!(ctx, (x^2 - 1) / (x - 1)).cancel(&x);       // x + 1
+// Adaptive Gauss–Kronrod (G7/K15) quadrature when there is no closed form
+let v = x.powi(2).exp().integrate_numeric(&x, &zero, &one).unwrap();   // 1.4626517459…
 
-// Partial fraction decomposition
-// Polynomial GCD, resultant, square-free factorization
-// Gröbner bases for polynomial system solving
-// Multivariate sparse polynomials with pluggable monomial orderings
+// Residues at poles of any order, and at infinity
+let z = ctx.symbol("z");
+(&z.exp() / &z.powi(3)).residue(&z, &zero);                     // 1/2
+(1 / (&z.powi(2) + 1)).residue_at_infinity(&z);                 // 0
+```
+
+### Summation, Products and Series
+
+```rust
+let ctx = Context::new();
+syms!(ctx; k, x);
+let n = ctx.symbol_with("n", &[Assumption::Integer, Assumption::Positive]);
+let (zero, one, inf) = (ctx.int(0), ctx.int(1), ctx.infinity());
+
+k.powi(5).summation(&k, &one, &n);                    // 1/6*n^6 + 1/2*n^5 + 5/12*n^4 - 1/12*n^2
+(&k * &ctx.int(2).pow(&k)).summation(&k, &zero, &n);  // 2^(n + 1)*(n - 1) + 2   (Gosper)
+n.binomial(&k).summation(&k, &zero, &n);              // 2^n
+k.powi(-2).summation(&k, &one, &inf);                 // 1/6*pi^2
+k.powi(-3).summation(&k, &one, &inf);                 // zeta(3)   (odd p: symbolic)
+(&x.pow(&k) / &k.factorial()).summation(&k, &zero, &inf);   // exp(x)
+(1 - k.powi(-2)).product_over(&k, &ctx.int(2), &inf); // 1/2
+
+(1 / &k).is_convergent(&k);                           // Some(false)
+
+// Formal power series: lazy exact coefficients and closed-form general terms
+let s = x.sin().fps_maclaurin(&x);
+s.coefficient(51);                                    // -1/1551118753287382280224243016469303211063259720016986112000000000000
+s.general_term(&k);                                   // Some(sin(1/2*k*pi)/k!)
+s.reversion().unwrap().coefficients(6);               // asin: [0, 1, 0, 1/6, 0, 3/40]
+```
+
+### Complex Analysis and Special Functions
+
+`re`, `im`, `conjugate`, `arg` are honest about unknown realness: with no assumption on `z`, `z.re()` is the unevaluated `re(z)`.
+
+```rust
+let ctx = Context::new();
+let z = ctx.symbol("z");
+let x = ctx.symbol_with("x", &[Assumption::Real]);
+let y = ctx.symbol_with("y", &[Assumption::Real]);
+let i = ctx.i_unit();
+
+let w = &x + &i * &y;
+w.conjugate();                                        // x - y*I
+w.abs_squared();                                      // x^2 + y^2
+w.exp().as_real_imag();                               // (cos(y)*exp(x), sin(y)*exp(x))
+z.re();                                               // re(z)   — not assumed real
+z.exp().re();                                         // cos(im(z))*exp(re(z))
+(1 / &ctx.int(0)).eval();                             // zoo   (complex infinity)
+
+// New constants and special functions with exact values and evalf
+ctx.int(1).digamma().eval();                          // -EulerGamma
+ctx.int(4).zeta().eval();                             // 1/90*pi^4
+ctx.int(1).polygamma(&ctx.int(1)).eval();             // 1/6*pi^2
+ctx.infinity().si().eval();                           // 1/2*pi
+ctx.catalan().eval_decimal(30).unwrap();              // 0.915965594177219015054603514932
+```
+
+Also: Gamma, log-gamma, erf/erfc, Beta, Lambert W, Bessel J/Y/I/K, Legendre/Chebyshev/Hermite/Laguerre polynomials, `Si`/`Ci`/`Ei`/`li`, Kronecker delta — all with arbitrary-precision evaluation.
+
+### Algebra and Factoring
+
+Polynomial operations work over ℚ using arbitrary-precision rational arithmetic. Univariate factoring over ℤ uses Berlekamp–Zassenhaus (any degree); multivariate factoring uses Kronecker substitution. Gröbner bases use Buchberger's algorithm with FGLM order conversion.
+
+```rust
+let ctx = Context::new();
+syms!(ctx; x, y);
+
+expr!(ctx, x^12 - 1).factor(&x);                      // (x - 1)*(x + 1)*(x^2 + x + 1)*(x^2 + 1)*(x^2 - x + 1)*(x^4 - x^2 + 1)
+expr!(ctx, x^3 - x*y^2 + x^2 - y^2).factor_all();     // (x + 1)*(x + y)*(x - y)
+expr!(ctx, (x + 1)^3).expand();                       // x^3 + 3*x^2 + 3*x + 1
+expr!(ctx, (x^2 - 1) / (x - 1)).cancel(&x);           // x + 1
+
+// Polynomial algebra on Ex: resultant, discriminant, division, gcdex, real-root isolation, …
+expr!(ctx, x^3 - x).discriminant(&x);                 // Some(4)
+expr!(ctx, x^5 - x - 1).count_real_roots(&x);         // Some(1)
+expr!(ctx, x^4 + 1).is_irreducible(&x);               // Some(true)
+```
+
+### Simplification and the Rule Engine
+
+`simplify()` tries a dozen strategies and iterates to a fixpoint. The pattern-matching engine behind it is public in 0.2: build your own rules (symbols ending in `_` are wildcards, `rest__` absorbs the rest of a sum or product), rewrite with them, trace what fired, and interleave them with the built-in simplifier.
+
+```rust
+let ctx = Context::new();
+syms!(ctx; x, y);
+let (a, b) = (ctx.symbol("a_"), ctx.symbol("b_"));
+
+let rules = RuleSet::from_rules(vec![
+    Rule::new("sin_sq", &a.sin().powi(2), &(1 - &a.cos().powi(2))),
+    Rule::new("ln_add", &(&a.ln() + &b.ln()), &(&a * &b).ln()),
+]);
+(&x.sin().powi(2) + 3).rewrite(&rules);               // -cos(x)^2 + 4
+(&x.ln() + &y.ln()).rewrite(&rules);                  // ln(x*y)
+
+let (result, steps) = (&x.sin().powi(2) + &x.cos().powi(2)).simplify_traced(&SimplifyOpts::default());
+// result = 1; steps name the strategy and the rules that fired
+
+x.powi(4).subs_algebraic(&x.powi(2), &y);             // y^2   (plain subs would leave x^4)
+(ctx.int(5) + ctx.int(24).sqrt()).sqrt().sqrtdenest();  // sqrt(2) + sqrt(3)
 ```
 
 ### Equation Solving
 
-Polynomial equations are solved through quartic by radicals. Degree ≥ 5 produces `RootOf` nodes with numerical evaluation. Transcendental equations use inversion peeling and Lambert W.
+Polynomial equations are solved through quartic by radicals; degree ≥ 5 produces `RootOf` nodes with numerical evaluation. Transcendental equations use inversion peeling and Lambert W. `solve` never lies: identities are `Err(InfiniteSolutions)`, contradictions and range violations are `Err(NoSolution)`.
 
 ```rust
 let ctx = Context::new();
-syms!(ctx; x);
+syms!(ctx; x, y, z);
 
-// Polynomial solving
-expr!(ctx, x^2 - 5*x + 6).solve(&x);             // Ok([3, 2])
+expr!(ctx, x^2 - 5*x + 6).solve(&x);                  // Ok([3, 2])
+(&x.sin() - &ctx.rational(1, 2)).solve(&x);           // Ok([1/6*pi, 5/6*pi])
+(&x.sin() - 2).solve(&x);                             // Err(NoSolution)
+(&x - &x).solve(&x);                                  // Err(InfiniteSolutions)
 
-// Transcendental
-expr!(ctx, exp(x) - 5).solve(&x);                 // Ok([ln(5)])
+// All periodic solutions, with an integer parameter
+let fam = (&x.sin() - &ctx.rational(1, 2)).solve_general(&x).unwrap();
+// fam.solutions = [2*n*pi + 1/6*pi, 2*n*pi + 5/6*pi], fam.parameters = [n]
 
-// Systems via Gröbner bases
-symplex::polysys::solve_system_ex(&[eq1, eq2], &[x, y]);
+// Linear systems: unique / parametric / inconsistent, symbolic coefficients allowed
+let sol = linsolve(&[&x + &y + &z - 6, &x - &y - 2], &[x.clone(), y.clone(), z.clone()]).unwrap();
+// LinearSolution::Parametric { solution: [x = -z/2 + 4, y = -z/2 + 2, z = z], free: [z] }
 
-// Inequalities (sign-chart method)
-expr!(ctx, x^2 - 4).solve_gt(&x);                 // (-∞, -2) ∪ (2, ∞)
+// Polynomial systems via Gröbner bases (algebraic solutions)
+symplex::polysys::solve_system_ex(&[&x.powi(2) + &y.powi(2) - 1, &x - &y], &[x.clone(), y.clone()]);
+// Ok([[√2/2, √2/2], [-√2/2, -√2/2]])
 
-// ODE solving — 13 classes: separable, linear, Bernoulli, Euler-Cauchy,
-// exact, integrating factor, variation of parameters, systems via matrix exp
+// Inequalities (sign-chart method), including absolute values
+expr!(ctx, x^2 - 4).solve_gt(&x);                     // (2, oo) ∪ (-oo, -2)
+(&(&x - 1).abs() - 2).solve_lt(&x);                   // (-1, 3)
+```
+
+### Differential Equations and Recurrences
+
+16 ODE classes (separable, linear, Bernoulli, Riccati, Euler–Cauchy, exact, integrating factor, Clairaut, nth-order constant-coefficient, variation of parameters, systems via matrix exponential, …), initial-value problems, and linear recurrences.
+
+```rust
+let ctx = Context::new();
+syms!(ctx; x, n);
+let y = ctx.symbol("y");
+let (d1, d2) = (y.formal_diff(&x), y.formal_diff(&x).formal_diff(&x));
+
+(&d2 + &y).solve_ode(&y, &x);                         // y = C1*sin(x) + C2*cos(x)
+(&d2 + &y).solve_ode_ivp(&y, &x, &[(0, ctx.int(0), ctx.int(0)), (1, ctx.int(0), ctx.int(1))]);
+                                                      // Ok(sin(x))
+(&d1 * &x - &y - &d1.powi(2)).classify_ode(&y, &x);   // Clairaut
+
+// a(n+2) = a(n+1) + a(n), a(0) = 0, a(1) = 1  →  Binet's formula
+symplex::rsolve::rsolve_linear(&[ctx.int(-1), ctx.int(-1), ctx.int(1)], None, &n, &[ctx.int(0), ctx.int(1)]);
+```
+
+### Sets and Logic
+
+`SetEx` and `BoolEx` are first-class: intervals, finite sets, unions with a normal form, three-valued queries, and boolean normal forms with a DPLL satisfiability check.
+
+```rust
+let ctx = Context::new();
+syms!(ctx; x, p, q);
+
+let a = ctx.interval(&ctx.int(0), &ctx.int(5), false, false);    // [0, 5]
+let b = ctx.interval(&ctx.int(3), &ctx.int(10), true, false);    // (3, 10]
+a.intersection(&b).simplify();                        // (3, 5]
+a.symmetric_difference(&b);                           // [0, 3] ∪ (5, 10]
+a.contains(&ctx.int(7));                              // Some(false)
+a.contains(&x);                                       // None
+a.union(&b).measure();                                // Some(10)
+
+let conds = [x.gt(&ctx.int(0)), x.le(&ctx.int(5)), (&x.powi(2) - 4).gt(&ctx.int(0))];
+reduce_inequalities(&conds, &x);                      // Ok((2, 5])
+
+let (pp, qq) = (p.gt(&ctx.int(0)), q.gt(&ctx.int(0)));
+pp.and(&qq).or(&pp).simplify();                       // p > 0
+pp.and(&qq).not().to_nnf();                           // 0 >= p | 0 >= q
+pp.or(&pp.not()).is_tautology();                      // Some(true)
 ```
 
 ### Linear Algebra
 
-Symbolic matrices support eigenvalue computation, Jordan normal form, matrix exponential, and characteristic polynomial extraction.
+Symbolic matrices with exact decompositions. The eigen family needs no dummy variable in 0.2, structure tests are three-valued, and preconditions are `Result`s.
 
 ```rust
 let ctx = Context::new();
-let m = matrix![ctx, [1, 2], [3, 4]];
+syms!(ctx; t, n);
+let m = matrix![ctx, [2, 1], [1, 2]];
 
-m.det().unwrap();                                  // -2
-m.inv().unwrap();                                  // [[-2, 1], [3/2, -1/2]]
-m.eigenvals(&ctx.symbol("λ")).unwrap();
-m.char_poly(&ctx.symbol("λ")).unwrap();            // λ^2 - 5*λ - 2
+m.det().unwrap();                                     // 3
+m.eigenvals().unwrap();                               // [3, 1]
+m.char_poly(&ctx.symbol("λ")).unwrap();               // λ^2 - 4*λ + 3
+m.diagonalize().unwrap();                             // (P, D)
+m.matrix_exp_t(&t).unwrap();                          // [[e^(3t)/2 + e^t/2, …], …]
+m.matrix_pow_symbolic(&n).unwrap();                   // [[3^n/2 + 1/2, 3^n/2 - 1/2], …]
+m.matrix_sqrt().unwrap();
 
-// Jordan normal form, diagonalization, matrix exponential
-// Cholesky, LU, pseudo-inverse
-// Kronecker product, rank, nullspace
+let spd = matrix![ctx, [4, 12, -16], [12, 37, -43], [-16, -43, 98]];
+spd.cholesky().unwrap();                              // [[2,0,0],[6,1,0],[-8,5,3]]
+spd.is_positive_definite();                           // Some(true)
+matrix![ctx, [1, 1, 0], [1, 0, 1], [0, 1, 1]].qr().unwrap();   // exact radicals
+
+// Irreducible characteristic polynomials give exact, evaluable RootOf eigenvalues
+matrix![ctx, [0, 1, 0], [0, 0, 1], [1, 1, 0]].eigenvals().unwrap();   // [RootOf(λ^3 - λ - 1, 0), …]
 ```
 
-### Special Functions and Transforms
+Also: LU, LDLᵀ, Gram–Schmidt, Jordan form, pseudo-inverse, Kronecker product, rank/nullspace/rowspace, norms, least squares, Hessian, Wronskian, quaternions, vector calculus in Cartesian/cylindrical/spherical coordinates, state-space ↔ transfer function.
 
-The library includes Bessel functions, Gamma, erf, Beta, Lambert W, and orthogonal polynomial families (Legendre, Chebyshev, Hermite, Laguerre). All support arbitrary-precision numerical evaluation.
+### Transforms
 
 ```rust
 let ctx = Context::new();
-syms!(ctx; x, t, s);
+syms!(ctx; t, w, s, x);
+let a = ctx.symbol_with("a", &[Assumption::Positive]);
 
-// Laplace / inverse Laplace
-t.exp().laplace(&t, &s);                          // 1/(s - 1)
-
-// Bessel, Gamma, erf, Beta, LambertW
-x.bessel_j(&ctx.int(0));
-x.gamma();
-x.erf();
-
-// Arbitrary-precision evaluation
-ctx.int(1).digamma().eval_decimal(50).unwrap();    // -γ to 50 digits
+(-&a * t.abs()).exp().fourier_transform(&t, &w);      // Ok(2*a/(a^2 + w^2))
+(-t.powi(2)).exp().fourier_transform(&t, &w);         // Ok(sqrt(pi)*exp(-1/4*w^2))
+(1 / (1 + &x)).mellin_transform(&x, &s);              // Ok((pi/sin(s*pi), re(s) > 0 & 1 > re(s)))
+t.sin().laplace(&t, &s);                              // 1/(s^2 + 1)
+((&s * -2).exp() / &s).inverse_laplace(&s, &t);       // H(t - 2)
+x.sign().fourier_series_on(&x, &(-ctx.pi()), &ctx.pi(), 5).unwrap().truncate(5);
+                                                      // 4*sin(x)/pi + 4/3*1/pi*sin(3*x) + 4/5*1/pi*sin(5*x)
 ```
 
-### Combinatorics and Number Theory
+### Number Theory and Combinatorics
 
-Stirling numbers, multinomial coefficients, integer partition counting, primality testing (deterministic Miller-Rabin), factorization, modular arithmetic, and the Chinese Remainder Theorem.
+Pollard–Brent rho + ECM factorization, BPSW primality, modular square roots and discrete logarithms, continued fractions, Diophantine equations, and integer sequences.
 
 ```rust
-use symplex::combinatorics::*;
 use symplex::ntheory::*;
+use symplex::diophantine;
+use symplex::combinatorics::*;
 
-// Stirling numbers of the second kind
-stirling2(10, 4);                                  // Some(34105)
-
-// Integer partitions
-partition_count(100);                              // Some(190569292)
-
-// Primality and factorization (works for i64 and BigInt)
-isprime(104729);                                   // true
-factorint(360);                                    // [(2,3), (3,2), (5,1)]
-
-// Modular arithmetic
-mod_inverse(17, 43);                               // Some(38)
-crt_i64(&[2, 3, 2], &[3, 5, 7]);                  // Some(23)
+isprime(561);                                         // false (Carmichael number)
+factorint(1_099_532_599_387u64);                      // [(1048583, 1), (1048589, 1)]  — ~1 ms
+sqrt_mod(2, 7);                                       // Some(3)
+discrete_log(3, 13, 17);                              // Some(4)
+primepi(1_000_000);                                   // Some(78498)
+continued_fraction_periodic(23);                      // Some(([4], [1, 3, 1, 8]))
+diophantine::pell(61);                                // Some((1766319049, 226153980))
+diophantine::sum_of_two_squares(65);                  // Some((4, 7))
+stirling2(10, 4);                                     // Some(34105)
+partition_count(100);                                 // Some(190569292)
+crt_i64(&[2, 3, 2], &[3, 5, 7]);                      // Some(23)
 ```
 
-### Code Generation
+### Code Generation: Rust, C99 and Compiled Closures
 
-Symbolic expressions compile to optimized Rust functions with common subexpression elimination. The generated code uses `mul_add` and `powi` for numerical stability and performance.
+Symbolic expressions compile to optimized Rust or C functions with common subexpression elimination, `mul_add`/`fma`, integer powers as multiplications, optional domain assertions, and a self-contained special-function runtime.
 
 ```rust
 let ctx = Context::new();
-syms!(ctx; x);
-let f = expr!(ctx, x^3 - 2*x + 1);
+syms!(ctx; x, y);
+let f = &x.sin().powi(2) + &(&x * 2 + &y).exp() * 3;
 
-// Generate a Rust function as a String
-let code = f.diff(&x).to_rust_fn("f_prime", &["x"]).unwrap();
-// → pub fn f_prime(x: f64) -> f64 { 3_f64.mul_add(x.powi(2), -2_f64) }
+f.to_rust_fn("f", &["x", "y"]).unwrap();
+// pub fn f(x: f64, y: f64) -> f64 { 3_f64.mul_add(2_f64.mul_add(x, y).exp(), x.sin().powi(2)) }
 
-// Common subexpression elimination
-let (subs, result) = f.cse();
+f.to_c_fn("f", &["x", "y"]).unwrap();
+// #include <math.h>
+// double f(double x, double y) { return fma(3.0, exp(fma(2.0, x, y)), pow(sin(x), 2.0)); }
 
-// Compile to a callable closure (no codegen, no file I/O)
-let compiled = f.compile(&["x"]).unwrap();
-assert!((compiled(&[3.0]) - 22.0).abs() < 1e-10);
+// Special functions embed only the helpers they need (Rust: `mod symplex_rt`; C: `static inline`)
+x.lambertw().to_c_fn("w0", &["x"]).unwrap();          // contains symplex_lambert_w0
 
-// LaTeX rendering
-f.to_latex();                                      // x^{3} - 2 x + 1
+let opts = CodegenOptions { precision: Precision::F32, checked_domain: true, ..Default::default() };
+x.ln().to_c_fn_with_options("g", &["x"], &opts).unwrap();   // float g(float x) { return assert(x > 0.0f), logf(x); }
+
+// Compiled closures: Result, arity-checked, Send + Sync; gradients share one CSE pass
+let cf = f.compile(&["x", "y"]).unwrap();
+cf(&[0.5, 0.25]);
+let grad = Ex::compile_many(&[&f.diff(&x), &f.diff(&y)], &["x", "y"]).unwrap();
+grad.call_vec(&[0.5, 0.25]);
+
+f.to_latex();                                          // \sin^{2}\left(x\right) + 3\exp\left(2x + y\right)
 ```
+
+For `build.rs` pipelines and `no_std` targets see [`symplex-build`](symplex-build/README.md); for the browser see [`symplex-wasm`](symplex-wasm/README.md).
 
 ### Compile-Time Dimensional Analysis
 
@@ -248,13 +408,14 @@ let ctx = Context::new();
 let m = Mass::symbol(&ctx, "m");
 let a = Acceleration::symbol(&ctx, "a");
 
-// dim! macro: type-safe dimensional arithmetic
-let force = dim!(ctx, Force: &m * &a);             // F = m·a [N]
+// dim! macro: the `: Force` annotation is a compile-time assertion
+let force = dim!(ctx, Force: m * a);               // F = m·a [N]
 
 // Typed calculus: d(Length)/d(Time) → Velocity
-let t = Time::symbol(&ctx, "t");
-let position = Length::from_ex(expr!(ctx, 1/2 * a * t^2));
-let velocity: Velocity = position.diff_wrt(&t);    // a·t [m/s]
+syms!(ctx; g, t);                                  // raw symbols for expr!
+let t_var = Time::symbol(&ctx, "t");
+let position = Length::from_ex(expr!(ctx, 1/2 * g * t^2));
+let velocity: Velocity = position.diff_wrt(&t_var);   // g·t [m/s]
 
 // 30 named quantity types, ~100 unit conversions (all exact rationals)
 // Mass + Length → compile error
@@ -264,7 +425,7 @@ let velocity: Velocity = position.diff_wrt(&t);    // a·t [m/s]
 
 ## Design Principles
 
-1. **Exact by default.** Every number is `Ratio<BigInt>`. No floating-point contamination. `0.1 + 0.2 == 3/10`, not `0.30000000000000004`. Floats only appear on explicit `eval_f64()`.
+1. **Exact by default.** Every number is `Ratio<BigInt>`. No floating-point contamination. `0.1 + 0.2 == 3/10`, not `0.30000000000000004`. Floats only appear on explicit `eval_f64()`, `compile()`, or `integrate_numeric()`. `Context::from_f64` converts a float to its exact dyadic rational; `from_f64_approx` to the nearest bounded-denominator rational.
 
 2. **Explicit contexts.** Every expression belongs to a `Context`. No hidden global state. Mixing expressions from different contexts is caught immediately (compiler-enforced private field + runtime guard).
 
@@ -274,7 +435,7 @@ let velocity: Velocity = position.diff_wrt(&t);    // a·t [m/s]
 
 5. **No recursion.** All tree traversals use explicit stacks. Deep expressions don't blow the call stack.
 
-6. **Never silently wrong.** Numerical evaluation returns `Result`. Operations that can't produce a closed form return unevaluated symbolic nodes — `∫x^x dx` returns `Integral(x^x, x)`, not garbage.
+6. **Never silently wrong.** Numerical evaluation returns `Result`. Operations that can't produce a closed form return unevaluated symbolic nodes — `∫x^x dx` returns `Integral(x^x, x)`, not garbage. `∫₋₁¹ dx/x²` is `Err(Divergent)`, not `−2`. `re(z)` stays `re(z)` unless `z` is known to be real.
 
 ---
 
@@ -287,7 +448,8 @@ Every symbolic operation that might not produce a closed-form result has two ent
 | Give me math | `integrate(&x)` | `Ex` (always — may contain `Integral` nodes) | Interactive exploration, chaining |
 | Fail if you can't | `try_integrate(&x)` | `Result<Ex>` | Pipelines, codegen, safety-critical |
 
-Check any expression for unevaluated forms:
+`try_` twins exist for `diff`, `integrate`, `integrate_definite`, `limit`, `limit_left/right/dir`, `series`, `series_at_infinity`, `summation`, `product_over`, `laplace`, `inverse_laplace`, `residue`, `gosper_sum`, `solve_ode`, `solve_gt/ge/lt/le`. Check any expression for unevaluated forms:
+
 ```rust
 let anti = hard_expr.integrate(&x);
 if anti.has_unevaluated() {
@@ -295,57 +457,108 @@ if anti.has_unevaluated() {
 }
 ```
 
-Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`) return `Ex` with no `try_` variant — "unchanged" is a valid answer.
+(`RootOf` and `RootSum` are *not* unevaluated: they are complete algebraic answers.)
 
-Numeric boundary operations (`eval_f64`, `to_rust_fn`) always return `Result` — crossing from symbols to numbers can fail if free symbols remain. The `compile` method returns `Option` — `None` when the expression contains constructs that cannot be numerically evaluated.
+Operations that always succeed (`simplify`, `expand`, `eval`, `factor`, `subs`, `rewrite`) return `Ex` with no `try_` variant — "unchanged" is a valid answer.
 
-Queries (`is_positive`, `degree`, `equals`) return `Option<bool>` or `Option<T>` — three-valued: yes, no, or unknown.
+**`Result` boundaries.** Crossing from symbols to numbers (`eval_f64`, `eval_decimal`, `compile`, `to_rust_fn`, `to_c_fn`, `integrate_numeric`) always returns `Result`. So do operations with structural preconditions (`Matrix::inv`, `cholesky`, `lu`, `minor`, `matmul`) and solvers whose failure is a mathematical fact: `solve` returns `Err(InfiniteSolutions)` for identities and `Err(NoSolution)` for contradictions, `try_integrate_definite` returns `Err(Divergent)`, `laplace_final_value` returns `Err(Divergent)` for unstable poles. Transform APIs without an unevaluated node (`fourier_transform`, `mellin_transform`, `z_transform`) are `Result`-only.
+
+**Three-valued queries.** `is_positive`, `equals`, `is_convergent`, `SetEx::contains`, `is_subset`, `Matrix::is_symmetric`, `is_diagonalizable`, `is_positive_definite`, `BoolEx::is_tautology`, `vector::is_conservative` … return `Option<bool>`: yes, no, or unknown. `degree`, `resultant`, `discriminant`, `hypergeometric_ratio` return `Option<T>`.
 
 ---
 
 ## Comparison with SymPy
 
-| Feature | symplex | SymPy |
-|---------|---------|-------|
+| Feature | symplex 0.2 | SymPy |
+|---------|-------------|-------|
 | Arithmetic | Exact `Ratio<BigInt>` | Exact (similar) |
-| Differentiation | Complete | Complete |
-| Integration | 15+ strategies including Risch + LRT log-to-real | Risch + heurisch (broader) |
-| Polynomial solving | Through quartic + RootOf | Through quartic + CRootOf |
-| Series expansion | Taylor / Laurent / FPS | + O() notation |
-| Limits | Gruntz algorithm | Gruntz (more mature) |
-| Simplification | 24 rules + Fu's trig algorithm | More strategies |
-| Matrices | Eigenvalues, Jordan form, exp | More decompositions |
-| ODE solving | 13 classes | More classes |
-| Laplace / Z-transforms | Table-based | Broader tables |
-| Combinatorics | Stirling, Bell, partitions, multinomial | Broader (permutation groups, etc.) |
-| Number theory | Primality, factorization, CRT, modular | Broader (Diophantine, quadratic forms) |
-| Radical simplification | Construction-time (`√2·√3 → √6`) | Construction-time (similar) |
+| Differentiation | Complete, incl. Bessel/orthogonal/polygamma | Complete |
+| Indefinite integration | 15+ strategies incl. Risch + LRT log-to-real | Risch + heurisch + Meijer G (broader) |
+| Definite / improper integration | Singularity detection, ~30-entry improper table, divergence reported as `Err` | Meijer G-based; much broader table |
+| Numeric integration | Adaptive G7/K15 quadrature | via mpmath (more algorithms) |
+| Summation | Faulhaber, Gosper, telescoping, binomial, p-series, power-series recognition | + Zeilberger, hypergeometric closed forms (broader) |
+| Polynomial solving | Through quartic + `RootOf` | Through quartic + `CRootOf` |
+| General solutions | `solve_general` (periodic families) | `solveset` with `ImageSet` |
+| Linear systems | `linsolve` (unique / parametric / inconsistent, symbolic) | `linsolve` (similar) |
+| Polynomial systems | Gröbner + FGLM, algebraic solutions | Gröbner, more strategies |
+| Series expansion | Taylor / Laurent / at ∞ / formal power series with general terms | + `O()` notation, Puiseux |
+| Limits | Gruntz with work budget, one-sided | Gruntz (more mature) |
+| Simplification | Multi-strategy fixpoint + public rule engine with AC matching, tracing | More strategies; `replace`/`Wild` patterns |
+| Factoring | Berlekamp–Zassenhaus (any degree), multivariate via Kronecker | Zassenhaus + Wang (faster multivariate), algebraic extensions |
+| Matrices | Eigen/Jordan/exp/sqrt/pow, QR, Cholesky, LDL, LU, `RootOf` eigenvalues | More decompositions (SVD, Schur), sparse |
+| ODE solving | 16 classes, IVPs, systems | More classes, hints, series solutions |
+| Recurrences | Linear constant-coefficient, first-order | `rsolve` (poly/rational/hyper) |
+| Transforms | Laplace, Fourier (3 conventions), Mellin (with strip), Z, Fourier series | Broader tables, Hankel, cosine/sine |
+| Sets & logic | Interval algebra, three-valued queries, NNF/CNF/DNF, DPLL | Richer set types (`ImageSet`, `ConditionSet`), `satisfiable` |
+| Number theory | rho/ECM, BPSW, sqrt_mod, dlog, Pell, two squares | Broader (quadratic forms, general Diophantine) |
+| Combinatorics | Stirling, Bell, partitions, derangements, multinomial | Broader (permutation groups, etc.) |
+| Special functions | Γ, ψ⁽ⁿ⁾, erf, B, W, Bessel, Si/Ci/Ei/li, ζ, orthogonal polys | Many more (hypergeometric, elliptic, Meijer G) |
 | Algebraic numbers | `ℚ(α)` field with exact zero/sign testing | `AlgebraicNumber` + `ANP` |
-| Code generation | Optimized Rust with CSE | Python / C / Fortran |
-| Dimensional analysis | Compile-time type checking | Not built-in |
+| Code generation | Rust and C99 with CSE, `fma`, embedded special-function runtime | Python / C / Fortran / Rust / Julia via `codegen` |
+| Dimensional analysis | Compile-time type checking | Runtime `physics.units` |
 | Thread safety | `Send + Sync`, no GIL | GIL-bound |
 | Expression type safety | `Ex` / `BoolEx` / `SetEx` at compile time | Runtime only |
-| Language | Rust (compiled, ~103K lines) | Python (interpreted) |
+| Language | Rust (compiled, ~163K lines, 91 node types) | Python (interpreted) |
 
-**Where SymPy is stronger:** geometry, statistics, tensor algebra, quantum mechanics, Diophantine equations, PDE solving, and 30 years of community contributions and testing.
+**Where SymPy is stronger:** geometry, statistics, tensor algebra, quantum mechanics, general Diophantine equations, PDE solving, hypergeometric/Meijer-G machinery, and 30 years of community contributions and testing.
 
-**Where symplex is different:** compile-time dimensional analysis, thread safety, Rust code generation with CSE, exact arithmetic without Python overhead, algebraic number field arithmetic with exact zero/sign testing, and construction-time radical simplification. Operations that can't complete return honest unevaluated forms (including `RootSum` for degree ≥ 5 polynomial root sums) rather than hanging.
+**Where symplex is different:** compile-time dimensional analysis, thread safety, Rust *and* C code generation with an embedded runtime, exact arithmetic without Python overhead, algebraic number field arithmetic with exact zero/sign testing, and construction-time radical simplification. Operations that can't complete return honest unevaluated forms or `Err` rather than guessing.
+
+---
+
+## Migrating from 0.1
+
+The [CHANGELOG](CHANGELOG.md#breaking) lists every breaking change with its replacement. The ones most likely to touch your code:
+
+| 0.1 | 0.2 |
+|-----|-----|
+| `expr.compile(&["x"])` → `Option<…>` | `expr.compile(&["x"])?` → `Result<CompiledFn>` (`arity()`, `try_call()`) |
+| `expr.definite_integral(&x, &a, &b)` | `expr.integrate_definite(&x, &a, &b)` / `try_integrate_definite` (`Err(Divergent)`) |
+| `solve` returned `Ok(vec![])` for identities | `Err(InfiniteSolutions)` / `Err(NoSolution)`; roots are `eval`'d |
+| `m.eigenvals(&lam)`, `m.jordan_form(&lam)`, `m.matrix_exp(&t)` | `m.eigenvals()`, `m.jordan_form()`, `m.matrix_exp()` / `m.matrix_exp_t(&t)` |
+| `m.cholesky()` → `Option`, `m.lu()` → tuple | both `Result` |
+| `m.minor(i, j)` → sub-matrix | `m.minor(i, j)` → `Result<Ex>`; sub-matrix is `m.minor_matrix(i, j)` |
+| `m.is_symmetric()` → `bool` | `Option<bool>` (also `is_diagonalizable`, `vector::is_conservative`, …) |
+| `ctx.solve_system(…)` → `Vec` | `Result<LinearSolution>` (`Unique` / `Parametric` / `Inconsistent`) |
+| `z.re()` assumed `z` real | `re(z)` stays symbolic; declare `Assumption::Real` |
+| `has_unevaluated()` true for `RootOf` | `RootOf`/`RootSum` are answers, not unevaluated forms |
+| `expr.textplot(…)` → `String` | `Result<String>` (all plotting methods) |
+| `iter.sum::<Ex>()` on empty iterator → `0` | panics; use `ctx.sum(iter)` or `Option<Ex>` |
+
+The book's [migration guide](book/src/reference/migrating-0.2.md) has worked examples.
 
 ---
 
 ## Examples
 
+Every example is self-contained and runs in a few seconds; CI runs all of them.
+
 **Getting started:**
 ```
 cargo run --example quickstart              # Tour of core operations
 cargo run --example repl                    # Interactive expression evaluation
+cargo run --example readme_snippets         # Every code block in this README, executed
+```
+
+**New in 0.2:**
+```
+cargo run --example definite_integration    # Improper integrals, divergence detection, quadrature, residues
+cargo run --example summation_and_series    # Σ/Π closed forms, convergence, formal power series, finite differences
+cargo run --example complex_analysis        # re/im/conjugate/arg, new constants, Si/Ci/Ei/ζ/polygamma
+cargo run --example rule_engine             # Custom rewrite rules, tracing, subs_algebraic, targeted simplifiers
+cargo run --example linear_systems_and_ivp  # solve semantics, linsolve, solve_general, ODE IVPs, rsolve
+cargo run --example sets_and_logic          # Interval algebra, reduce_inequalities, CNF/DNF, tautology
+cargo run --example factoring_and_ntheory   # Zassenhaus factoring, factorint, sqrt_mod, Pell, continued fractions
+cargo run --example transforms              # Fourier, Mellin, Laplace, Fourier series, Z, one-sided limits
+cargo run --example matrix_decompositions   # QR, Cholesky, LDL, Jordan, matrix_exp_t, RootOf eigenvalues
+cargo run --example c_codegen               # C99 backend, embedded runtime, compile_many (compiles the C if cc exists)
 ```
 
 **Engineering workflows:**
 ```
 cargo run --example pid_controller          # PID design → stability → Rust codegen
 cargo run --example robotics_codegen        # DH parameters → Jacobian → optimized Rust
-cargo run --example control_system          # State-space, transfer functions, pole placement
+cargo run --example control_system          # State-space, transfer functions, pole placement, ZOH
 cargo run --example signal_filter           # Bilinear transform → digital filter → codegen
 cargo run --example dynamics                # Lagrangian mechanics, equations of motion
 cargo run --example inverse_kinematics      # 2-DOF IK via Gröbner bases
@@ -395,9 +608,11 @@ Core: `num-bigint`, `num-rational`, `num-traits`, `num-integer`, `smallvec`, `ru
 
 Proc macros: `syn`, `quote`, `proc-macro2`.
 
+Companion crates: [`symplex-build`](symplex-build/README.md) (build-time codegen for `no_std` firmware), [`symplex-wasm`](symplex-wasm/README.md) (browser bindings).
+
 ## Requirements
 
-Rust 1.93+ (Edition 2024).
+Rust 1.93+ (Edition 2024). No optional features; pure Rust on every platform Rust targets, including `wasm32-unknown-unknown`.
 
 ## License
 

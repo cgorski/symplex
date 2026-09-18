@@ -192,6 +192,8 @@ let area = expr!(ctx, x^2).integrate_definite(&x, &zero, &one);
 println!("{area}");   // 1/3
 ```
 
+Definite integration is *not* a naive `F(b) − F(a)`: it looks for singularities inside the interval, handles infinite bounds, and reports divergence instead of returning a wrong number. See [Definite Integration and Quadrature](../guide/definite-integration.md).
+
 When integration cannot find a closed form, it returns an unevaluated `Integral` node rather than failing silently:
 
 ```rust
@@ -219,19 +221,17 @@ match hard.try_integrate(&x) {
 
 ## Simplification
 
-`.simplify()` applies a single pass of rewrite rules (trigonometric identities, logarithm rules, power simplification):
+`.simplify()` tries a dozen strategies (evaluation, expansion, factoring, trigonometric, logarithmic, power and radical rules, assumption-aware refinement, …), keeps the result with the fewest operations, and iterates to a fixpoint:
 
 ```rust
 let expr = expr!(ctx, sin(x)^2 + cos(x)^2);
 println!("{}", expr.simplify());   // 1
-```
 
-`.full_simplify()` tries multiple strategies (expand, factor, trig, log, combinatorial) and picks the result with the fewest operations:
-
-```rust
 let expr = (&x + 1).powi(2) - &x.powi(2) - &x * 2;
-println!("{}", expr.full_simplify());   // 1
+println!("{}", expr.simplify());   // 1
 ```
+
+`.simplify_with(&SimplifyOpts::single_pass())` runs one pass; `.simplify_traced(&SimplifyOpts::default())` also returns the strategies and rules that fired. Targeted simplifiers (`simplify_trig`, `expand_log`, `sqrtdenest`, `powdenest`, …) and your own rewrite rules are covered in [Algebra](../guide/algebra.md) and [The Rule Engine](../guide/rule-engine.md).
 
 ## Putting It Together
 

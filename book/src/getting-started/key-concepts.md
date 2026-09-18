@@ -88,28 +88,37 @@ let anti = expr.try_integrate(&x)?;
 
 The `try_` variant calls the base method, then checks `has_unevaluated()`. There is zero code duplication between the two.
 
-Available: `try_diff`, `try_integrate`, `try_limit`, `try_series`, `try_laplace`, `try_inverse_laplace`, `try_residue`, `try_gosper_sum`, `try_solve_ode`.
+Available: `try_diff`, `try_integrate`, `try_integrate_definite`, `try_limit`, `try_limit_left`/`right`/`dir`, `try_series`, `try_series_at_infinity`, `try_maclaurin`, `try_summation`, `try_product_over`, `try_laplace`, `try_inverse_laplace`, `try_residue`, `try_gosper_sum`, `try_solve_ode`, `try_solve_gt`/`ge`/`lt`/`le`.
+
+Some `try_` variants carry extra information in the error: `try_integrate_definite` returns `Err(SymplexError::Divergent { .. })` when the integral is *proven* to diverge, as opposed to `Err(ComputationFailed)` when no closed form was found.
 
 ### Pattern 3: Numeric boundary → `Result`
 
 Operations that cross from symbolic to numeric always return `Result`, because the conversion can fail if free symbols remain:
 
 ```rust
-expr.eval_f64()          // Err if free symbols remain
-expr.eval_complex64()    // Err if can't evaluate
-expr.eval_decimal(30)    // Err if precision exhausted
-expr.compile(&["x"])     // None if unsupported nodes
-expr.to_rust_fn("f", &["x"])  // Err if can't generate code
+expr.eval_f64()                  // Err if free symbols remain
+expr.eval_complex64()            // Err if can't evaluate
+expr.eval_decimal(30)            // Err if precision exhausted
+expr.compile(&["x"])             // Err(FreeSymbol / NotImplemented) → Result<CompiledFn>
+expr.to_rust_fn("f", &["x"])     // Err if can't generate code
+expr.to_c_fn("f", &["x"])        // same, C99
+expr.integrate_numeric(&x, &a, &b)   // Err if the quadrature does not converge
 ```
+
+Solvers whose failure is a mathematical fact also use `Result`: `solve` returns `Err(InfiniteSolutions)` for an identity and `Err(NoSolution)` for a contradiction or range violation (`sin x = 2`); `linsolve` returns `Ok(LinearSolution::Inconsistent)` because inconsistency is a legitimate answer, but `Err(InvalidArgument)` for non-linear input.
 
 ### Pattern 4: Queries → `Option`
 
 Three-valued queries return `Option` — the answer might be yes, no, or "can't determine":
 
 ```rust
-expr.is_positive()    // Some(true), Some(false), or None
-expr.degree(&x)       // Some(3) or None (not a polynomial)
-expr.equals(&other)   // Some(true), Some(false), or None
+expr.is_positive()        // Some(true), Some(false), or None
+expr.degree(&x)           // Some(3) or None (not a polynomial)
+expr.equals(&other)       // Some(true), Some(false), or None
+expr.is_convergent(&k)    // decisive answers only
+set.contains(&elem)       // set membership
+matrix.is_symmetric()     // structure tests on matrices are three-valued too
 ```
 
 ### Pattern 5: Structural preconditions → `Result`
@@ -120,6 +129,8 @@ Operations with structural requirements (e.g., matrix operations that require sp
 matrix.det()           // Err if non-square
 matrix.inv()           // Err if singular
 matrix.matmul(&other)  // Err if dimensions don't match
+matrix.cholesky()      // Err if not symmetric / not positive definite
+matrix.minor(0, 0)     // Err if out of range (the sub-matrix is minor_matrix)
 ```
 
 ## Unevaluated Forms
@@ -147,11 +158,15 @@ Common unevaluated forms:
 | Node | Meaning |
 |------|---------|
 | `Derivative(f, x)` | Derivative that couldn't be computed |
-| `Integral(f, x)` | Antiderivative not found |
-| `Limit(f, x, a)` | Limit couldn't be determined |
+| `Integral(f, x)` | Antiderivative not found (also used for a definite integral that could not be decided — the bounds are currently not shown) |
+| `Limit(f, x, a)` | Limit couldn't be determined (including a two-sided limit whose one-sided limits differ) |
 | `Series(f, x, a, n)` | Series expansion failed |
-| `RootOf(poly, index)` | Root of a polynomial of degree ≥ 5 |
+| `Sum(f, k, a, b)` / `Product(f, k, a, b)` | No closed form for the sum / product |
+| `LaplaceTransform(f, t, s)` | Not in the Laplace table |
+| `re(z)`, `im(z)`, `conjugate(z)`, `arg(z)` | Realness of `z` unknown |
 | `stirling2(n, k)` | Stirling number with symbolic arguments |
+
+`RootOf(poly, index)` and `RootSum(poly, body, var)` are **not** unevaluated: they are complete, exact descriptions of algebraic numbers (with numerical evaluation), so `has_unevaluated()` returns `false` for them and `try_` methods accept them.
 
 ## Evaluation Configuration
 
@@ -179,7 +194,9 @@ let n = sym!(ctx; n, Integer);     // n ∈ ℤ
 
 With `x` declared positive, `sqrt(x²)` simplifies to `x` (without the assumption, the result is `|x|` or stays as `sqrt(x²)`).
 
-Available assumptions: `Positive`, `Negative`, `NonNegative`, `NonPositive`, `Integer`, `Real`, `Complex`, `Even`, `Odd`, `Prime`, `Finite`, `Zero`, `NonZero`.
+Assumptions matter for correctness, not just for prettier output. Without `Real`, `z.re()` stays `re(z)`, `√(z²)` does not become `|z|`, and `∫₀^∞ e^(−a x) dx` will not simplify to `1/a` (it needs `a > 0`).
+
+Available assumptions include `Positive`, `Negative`, `NonNegative`, `NonPositive`, `Integer`, `Real`, `ExtendedReal`, `Complex`, `Even`, `Odd`, `Prime`, `Finite`, `Zero`, `NonZero`, and their negations (`NotPositive`, `NotZero`, …). `ctx.symbol_with("a", &[Assumption::Positive])` is the non-macro form; `Assumptions::implies` and `Assumption::negate` let you reason about them programmatically.
 
 ## Next Steps
 

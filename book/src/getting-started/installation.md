@@ -10,7 +10,7 @@ Or add it directly to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-symplex = "0.1"
+symplex = "0.2"
 ```
 
 ## Minimum Supported Rust Version
@@ -41,6 +41,14 @@ All dependencies are MIT or Apache-2.0 licensed. There are no LGPL, GPL, or prop
 ## Feature Flags
 
 symplex currently has no optional feature flags. All functionality is included by default. This may change in future releases as the library grows.
+
+## Companion Crates
+
+| Crate | Purpose |
+|-------|---------|
+| `symplex-macros` | The `expr!`, `matrix!`, `eq!`, `dim!`, `rule!` procedural macros (a dependency of `symplex`; you do not add it yourself) |
+| [`symplex-build`](https://github.com/cgorski/symplex/tree/main/symplex-build) | Build-time code generation: run the CAS in `build.rs` and emit `no_std` Rust for firmware |
+| [`symplex-wasm`](https://github.com/cgorski/symplex/tree/main/symplex-wasm) | `wasm-bindgen` bindings with a persistent `Session` for browser notebooks and demos |
 
 ## Dependencies
 

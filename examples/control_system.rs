@@ -265,21 +265,36 @@ fn main() {
     let bd = &discrete.b;
     println!("  {bd}");
 
-    // Check discrete-time stability: all eigenvalues inside unit circle
-    let disc_poles = discrete.poles();
-    println!(
-        "\nDiscrete poles: {:?}",
-        disc_poles
-            .iter()
-            .map(|p| format!("{p}"))
-            .collect::<Vec<_>>()
-    );
-
-    match discrete.is_stable() {
-        Some(true) => println!("Discrete system stable: yes"),
-        Some(false) => println!("Discrete system stable: no"),
-        None => println!("Discrete system stable: undetermined"),
+    // Check discrete-time stability: all eigenvalues strictly inside the
+    // unit circle.  `StateSpace::is_stable()` is the *continuous-time*
+    // criterion (Re λ < 0) and must not be used on a discretised system.
+    //
+    // The Taylor-approximated Ad has large rational entries, so we solve
+    // the characteristic polynomial directly instead of calling
+    // `discrete.poles()`, whose exact radical simplification is slow on
+    // ~17-digit coefficients.
+    let lambda = ctx.symbol("lambda");
+    let disc_poles = discrete
+        .a
+        .char_poly(&lambda)
+        .unwrap()
+        .solve_or_empty(&lambda);
+    println!("\nDiscrete poles (z-plane):");
+    let mut all_inside = true;
+    for p in &disc_poles {
+        let (re, im) = p.eval_complex64().unwrap();
+        let modulus = (re * re + im * im).sqrt();
+        all_inside &= modulus < 1.0;
+        println!(
+            "  z = {re:.6} {} {:.6}i   |z| = {modulus:.6}",
+            if im < 0.0 { "-" } else { "+" },
+            im.abs()
+        );
     }
+    println!(
+        "Discrete system stable (all |z| < 1): {}",
+        if all_inside { "yes" } else { "no" }
+    );
 
     // ════════════════════════════════════════════════════════════════
     // Part 6: Laplace Transform Usage
@@ -296,7 +311,7 @@ fn main() {
     println!("G(s) = {gs}");
 
     // Inverse Laplace to get impulse response h(t)
-    let ht = gs.inverse_laplace(&s, &t);
+    let ht = gs.inverse_laplace(&s, &t).simplify();
     println!("h(t) = L⁻¹{{G(s)}} = {ht}");
 
     // Forward Laplace of some common signals

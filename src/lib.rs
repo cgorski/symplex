@@ -1,14 +1,26 @@
 //! **symplex** — a fast, correct symbolic mathematics library for Rust.
 //!
-//! Symplex is a symbolic mathematics library designed around seven principles:
+//! Expressions are exact (`Ratio<BigInt>` arithmetic, hash-consed in a
+//! [`Context`](prelude::Context) arena) and the library can differentiate,
+//! integrate (indefinite, definite, improper, numeric), sum, take limits and
+//! series, solve equations, systems, ODEs and recurrences, simplify with a
+//! public rewrite-rule engine, work with sets and boolean logic, do exact
+//! linear algebra, apply Laplace/Fourier/Mellin/Z transforms, and generate
+//! optimized Rust or C99 code. See the [README](https://github.com/cgorski/symplex)
+//! and [The Symplex Book](https://cgorski.github.io/symplex/) for a guided tour,
+//! and `CHANGELOG.md` for the 0.1 → 0.2 breaking changes.
+//!
+//! Symplex is designed around seven principles:
 //!
 //! 1. **Construction is cheap, evaluation is explicit.** Constructors only
 //!    canonicalize (flatten, sort, combine). No expansion, no function
 //!    evaluation, no identity application. Call `.eval()`, `.expand()`, or
 //!    `.simplify()` when *you* choose.
 //!
-//! 2. **Never silently wrong.** Operations return `Result::Err` instead of
-//!    silent wrong answers. Structural substitution by default.
+//! 2. **Never silently wrong.** Operations return `Result::Err`, an
+//!    unevaluated node, or `None` instead of a guess: `∫₋₁¹ dx/x²` is
+//!    `Err(Divergent)`, `solve(x − x)` is `Err(InfiniteSolutions)`, `re(z)` stays
+//!    `re(z)` until `z` is known to be real. Structural substitution by default.
 //!
 //! 3. **One representation per concept.** One assumption system. One polynomial
 //!    type. One number type. One solve function.
@@ -18,8 +30,22 @@
 //! 5. **No recursive tree walks.** All traversals use explicit stacks.
 //!
 //! 6. **The compiler is the API contract.** `pub` = stable. `pub(crate)` = internal.
+//!    `Ex`, `BoolEx` and `SetEx` are distinct types.
 //!
-//! 7. **Extensible without inheritance.** Custom functions via registered rules.
+//! 7. **Extensible without inheritance.** Custom functions via registered rules
+//!    ([`Rule`](prelude::Rule), [`RuleSet`](prelude::RuleSet)).
+//!
+//! # API model
+//!
+//! * Operations for which "unevaluated" is a valid answer return
+//!   [`Ex`](prelude::Ex) and have a `try_` twin returning `Result`
+//!   (`integrate` / `try_integrate`, `integrate_definite` /
+//!   `try_integrate_definite`, `summation` / `try_summation`, …).
+//! * Numeric boundaries (`eval_f64`, `compile`, `to_rust_fn`, `to_c_fn`,
+//!   `integrate_numeric`) and structural preconditions (`Matrix::inv`,
+//!   `cholesky`) return `Result`.
+//! * Queries (`is_positive`, `equals`, `SetEx::contains`,
+//!   `Matrix::is_symmetric`) return `Option<bool>`: yes, no, or unknown.
 //!
 //! # Quick Start
 //!
@@ -31,7 +57,28 @@
 //! syms!(ctx; x, y);
 //! let expr = &x * &x + &x * 2 + 1;
 //! assert_eq!(format!("{expr}"), "x^2 + 2*x + 1");
+//!
+//! // Differentiate, integrate over an infinite range, solve, compile.
+//! assert_eq!(format!("{}", expr.diff(&x)), "2*x + 2");
+//! let gauss = (-x.powi(2)).exp().integrate_definite(&x, &ctx.neg_infinity(), &ctx.infinity());
+//! assert_eq!(format!("{gauss}"), "sqrt(pi)");
+//! let roots = (&x.powi(2) - 4).solve(&x).unwrap();
+//! assert_eq!(roots.len(), 2);
+//! let f = expr.compile(&["x"]).unwrap();
+//! assert_eq!(f(&[2.0]), 9.0);
 //! ```
+//!
+//! # Module map
+//!
+//! The [`prelude`] re-exports everything most programs need. Domain modules
+//! are re-exported at the crate root: [`ntheory`], [`diophantine`],
+//! [`combinatorics`], [`mod@matrix`], [`matrix_decomp`], [`vector`],
+//! [`quaternion`], [`control`], [`robotics`], [`dynamics`], [`polysys`],
+//! [`groebner`], [`factor_zassenhaus`], [`definite`], [`summation`],
+//! [`formal_series`], [`finite_diff`], [`fourier_transform`], [`mellin`],
+//! [`z_transform`], [`ode`], [`rsolve`], [`sets`], [`logic`], [`parse`],
+//! [`tree`], [`codegen`], [`lambdify`], [`units`], [`assumptions`],
+//! [`numeric`], [`errors`], [`config`].
 
 #![warn(missing_docs)]
 
