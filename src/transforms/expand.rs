@@ -744,10 +744,13 @@ fn try_multinomial_expand(arena: &mut Arena, base: ExprId, exp: ExprId) -> Optio
 /// # Validity guard
 ///
 /// `(x·y)^e = x^e·y^e` holds for every integer `e`, and for arbitrary
-/// `e` when the factors are non-negative reals; it fails in general
-/// (`√((−1)(−1)) = 1 ≠ √(−1)·√(−1) = −1`).  Unless `force` is set, the
-/// rewrite therefore requires the exponent to be an integer or every
-/// factor to be known non-negative through the assumption system.
+/// `e` whenever the arguments of the factors add up without wrapping
+/// past `±π` — in particular when all factors but at most one are
+/// non-negative reals (so `(−√2)^(1/2) = (−1)^(1/2)·2^(1/4)` is fine).  It
+/// fails in general (`√((−1)(−1)) = 1 ≠ √(−1)·√(−1) = −1`).  Unless
+/// `force` is set, the rewrite therefore requires the exponent to be an
+/// integer or at most one factor not known non-negative through the
+/// assumption system.
 fn expand_power_base(
     arena: &mut Arena,
     assumptions: &mut AssumptionCache,
@@ -769,12 +772,8 @@ fn expand_power_base(
     };
     let exp_is_integer = arena.as_num(exp).is_some_and(|r| r.is_integer())
         || assumptions.query(arena, exp, Props::INTEGER) == Some(true);
-    let all_nonneg = force
-        || exp_is_integer
-        || children
-            .iter()
-            .all(|&c| assumptions.query(arena, c, Props::NONNEGATIVE) == Some(true));
-    if !all_nonneg {
+    let allowed = force || exp_is_integer || at_most_one_non_nonneg(arena, assumptions, &children);
+    if !allowed {
         tracing::trace!(
             "expand_power_base: guard rejected (exponent not integer, factors not known non-negative)"
         );
@@ -782,6 +781,21 @@ fn expand_power_base(
     }
     let factors: Vec<ExprId> = children.iter().map(|&c| arena.pow(c, exp)).collect();
     Some(arena.mul(&factors))
+}
+
+/// `true` if all but at most one of `factors` are known non-negative
+/// (the single unconstrained factor then carries the whole argument, so
+/// `(a·P)^e = a^e·P^e` exactly).
+pub(crate) fn at_most_one_non_nonneg(
+    arena: &Arena,
+    assumptions: &mut AssumptionCache,
+    factors: &[ExprId],
+) -> bool {
+    let unknown = factors
+        .iter()
+        .filter(|&&c| assumptions.query(arena, c, Props::NONNEGATIVE) != Some(true))
+        .count();
+    unknown <= 1
 }
 
 /// Expand `x^(a+b+c)` → `x^a · x^b · x^c` when exponent is a sum.
@@ -1564,5 +1578,29 @@ mod tests {
                 .power_base(true)
                 .power_exp(true)
         );
+    }
+
+    #[test]
+    fn expand_power_base_allows_single_unknown_factor() {
+        let mut a = Arena::new();
+        let (x, y) = (sym(&mut a, "x"), sym(&mut a, "y"));
+        let two = a.int(2);
+        let half = a.rational(1, 2);
+        // sqrt(2*x) → sqrt(2)*sqrt(x): only one factor of unknown sign.
+        let two_x = a.mul(&[two, x]);
+        let e = a.pow(two_x, half);
+        let r = expand(&mut a, e);
+        assert_eq!(display(&a, r), "sqrt(2)*sqrt(x)");
+        // sqrt(x*y): two unknown factors → blocked.
+        let xy = a.mul(&[x, y]);
+        let f = a.pow(xy, half);
+        assert_eq!(expand(&mut a, f), f);
+        // (-sqrt(2))^(1/2) → (-1)^(1/2) * 2^(1/4): -1 is the single non-nonneg factor.
+        let s2 = a.pow(two, half);
+        let neg_s2 = a.neg(s2);
+        let g = a.pow(neg_s2, half);
+        let rg = expand(&mut a, g);
+        assert_ne!(rg, g);
+        assert_eq!(display(&a, rg), "sqrt(sqrt(2))*I");
     }
 }

@@ -259,10 +259,19 @@ macro_rules! assert_simplify_preserves_value {
 #[test]
 fn neg_exp_ln_different_structure() {
     let ctx = Context::new();
-    // exp(ln(x) + 1) should NOT simplify to x (the +1 prevents matching)
+    // exp(ln(x) + 1) should NOT simplify to x (the +1 prevents matching).
+    // Since 0.2 `expand` splits exp(a + b) → exp(a)·exp(b), so the correct
+    // simplification exp(ln(x))·e = x·E is produced instead.
     let x = ctx.symbol("x");
     let expr = (&x.ln() + 1).exp();
-    assert_simplify_unchanged!(expr);
+    let result = expr.simplify();
+    let s = format!("{result}");
+    assert_ne!(s, "x", "exp(ln(x) + 1) must not become x");
+    assert_eq!(s, "x*E");
+    let pt = ctx.rational(7, 3);
+    let before = expr.subs(&x, &pt).eval_f64().unwrap();
+    let after = result.subs(&x, &pt).eval_f64().unwrap();
+    assert!((before - after).abs() < 1e-10);
 }
 
 #[test]
@@ -329,10 +338,18 @@ fn neg_pythagorean_wrong_functions() {
 #[test]
 fn neg_cosh_sinh_wrong_sign() {
     let ctx = Context::new();
-    // cosh(x)^2 + sinh(x)^2 should NOT simplify to 1 (wrong sign, identity is cosh²-sinh²)
+    // cosh(x)^2 + sinh(x)^2 should NOT simplify to 1 (wrong sign, identity is cosh²-sinh²).
+    // Since 0.2 the hyperbolic double-angle rule gives cosh(2x), which is exact.
     let x = ctx.symbol("x");
     let expr = &x.cosh().powi(2) + &x.sinh().powi(2);
-    assert_simplify_unchanged!(expr);
+    let result = expr.simplify();
+    let s = format!("{result}");
+    assert_ne!(s, "1", "cosh² + sinh² must not become 1");
+    assert_eq!(s, "cosh(2*x)");
+    let pt = ctx.rational(3, 5);
+    let before = expr.subs(&x, &pt).eval_f64().unwrap();
+    let after = result.subs(&x, &pt).eval_f64().unwrap();
+    assert!((before - after).abs() < 1e-10);
 }
 
 #[test]

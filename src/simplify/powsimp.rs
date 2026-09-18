@@ -144,7 +144,7 @@ pub(crate) fn powdenest(arena: &mut Arena, expr: ExprId) -> ExprId {
 ///
 /// | Rewrite                    | Condition (any of)                                   |
 /// |----------------------------|------------------------------------------------------|
-/// | `(a·b)^e → a^e·b^e`        | `e ∈ ℤ`; all factors known non-negative; `force`    |
+/// | `(a·b)^e → a^e·b^e`        | `e ∈ ℤ`; all factors but at most one known non-negative; `force` |
 /// | `(x^a)^b → x^(a·b)`        | `b ∈ ℤ`; `x > 0` and `a` real; `force`               |
 /// | `√(x²) → x`                | `x ≥ 0`; `force`                                     |
 /// | `√(x²) → ∣x∣`              | `x` real (not known non-real)                        |
@@ -177,11 +177,13 @@ pub(crate) fn powdenest_with(arena: &mut Arena, expr: ExprId, force: bool) -> Ex
                 if distributed != rebuilt {
                     distributed
                 } else if let ExprNode::Mul(children) = arena.node(base).clone() {
-                    // Assumption-aware factor check: every factor known non-negative.
-                    if children
-                        .iter()
-                        .all(|&c| assumptions.query(arena, c, Props::NONNEGATIVE) == Some(true))
-                    {
+                    // Assumption-aware factor check: all factors but at most one
+                    // known non-negative (see `expand::at_most_one_non_nonneg`).
+                    if crate::transforms::expand::at_most_one_non_nonneg(
+                        arena,
+                        &mut assumptions,
+                        &children,
+                    ) {
                         powdenest_pow_forced(arena, rebuilt, base, exp)
                     } else {
                         rebuilt
