@@ -2719,7 +2719,59 @@ fn eval_abs(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {
         }
     }
 
+    // Complex modulus of a numeric constant: |a + b·i| = √(a² + b²) whenever
+    // the real/imaginary decomposition is exact, both parts are arithmetic
+    // constants (numbers, π, e, … combined with + − × ^, so radicals are
+    // included) and the imaginary part is structurally non-zero:
+    // |3 + 4i| = 5, |1 + i| = √2, |1 + √3·i| = 2, |e + πi| = √(e² + π²).
+    // Real constants are left to the sign-aware simplifier (`√(π²)` would
+    // be a step backwards), as are transcendental parts (|e^{i}| stays put
+    // rather than becoming √(sin²1 + cos²1)).
+    if !crate::base::complex::is_real_node(arena, inner)
+        && crate::base::walk::free_symbols(arena, inner).is_empty()
+    {
+        let parts = crate::base::complex::decompose(arena, inner);
+        if parts.exact
+            && parts.im != arena.zero
+            && is_arithmetic_constant(arena, parts.re)
+            && is_arithmetic_constant(arena, parts.im)
+        {
+            tracing::trace!("eval_abs: folding modulus of a numeric complex constant");
+            let two = arena.int(2);
+            let re2 = arena.pow(parts.re, two);
+            let im2 = arena.pow(parts.im, two);
+            let sum = arena.add(&[re2, im2]);
+            let sum = eval(arena, sum);
+            let half = arena.rational(1, 2);
+            return Some(arena.pow(sum, half));
+        }
+    }
+
     None
+}
+
+/// True when `id` is built only from numbers, named real constants and
+/// `Add`/`Mul`/`Neg`/`Pow` — i.e. an exact constant whose square is again
+/// such a constant (`3`, `√3`, `π/2`, `1 + √2`), with no symbols and no
+/// transcendental function applications.
+fn is_arithmetic_constant(arena: &Arena, id: ExprId) -> bool {
+    crate::base::walk::post_order_ids(arena, id)
+        .iter()
+        .all(|&n| {
+            matches!(
+                arena.node(n),
+                ExprNode::Num(_)
+                    | ExprNode::Pi
+                    | ExprNode::E
+                    | ExprNode::EulerGamma
+                    | ExprNode::Catalan
+                    | ExprNode::GoldenRatio
+                    | ExprNode::Add(_)
+                    | ExprNode::Mul(_)
+                    | ExprNode::Neg(_)
+                    | ExprNode::Pow(_, _)
+            )
+        })
 }
 
 fn eval_sign(arena: &mut Arena, inner: ExprId) -> Option<ExprId> {

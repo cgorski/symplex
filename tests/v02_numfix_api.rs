@@ -1,8 +1,80 @@
 //! Regression tests for small API-level numeric bugs fixed in 0.2 numfix:
 //!
 //! * `Context::rational(p, 0)` panicked inside `num-rational`.
+//! * `abs(3 + 4i)` was not folded to `5` by `eval`/`simplify`.
 
 use symplex::prelude::*;
+
+// ── abs of numeric complex constants ─────────────────────────────────────
+
+#[test]
+fn abs_of_3_plus_4i_is_5() {
+    let ctx = Context::new();
+    let z = ctx.int(3) + ctx.int(4) * ctx.i_unit();
+    assert_eq!(z.abs().eval(), ctx.int(5));
+    assert_eq!(z.abs().simplify(), ctx.int(5));
+    // abs_squared already worked; keep them consistent.
+    assert_eq!(z.abs_squared().eval(), ctx.int(25));
+}
+
+#[test]
+fn abs_of_pure_imaginary_units() {
+    let ctx = Context::new();
+    let i = ctx.i_unit();
+    assert_eq!(i.abs().eval(), ctx.int(1), "abs(i)");
+    assert_eq!((ctx.int(2) * &i).abs().eval(), ctx.int(2), "abs(2i)");
+    assert_eq!((ctx.int(-2) * &i).abs().eval(), ctx.int(2), "abs(-2i)");
+    assert_eq!((-&i).abs().eval(), ctx.int(1), "abs(-i)");
+}
+
+#[test]
+fn abs_of_complex_constant_with_irrational_modulus() {
+    let ctx = Context::new();
+    let i = ctx.i_unit();
+    assert_eq!(
+        (ctx.int(1) + &i).abs().eval(),
+        ctx.int(2).sqrt(),
+        "abs(1+i)"
+    );
+    assert_eq!(
+        (ctx.rational(1, 2) + ctx.rational(1, 3) * &i).abs().eval(),
+        ctx.rational(1, 6) * ctx.int(13).sqrt(),
+        "abs(1/2 + i/3)"
+    );
+}
+
+#[test]
+fn abs_of_complex_constant_with_radical_parts() {
+    let ctx = Context::new();
+    let i = ctx.i_unit();
+    // |1 + √3 i| = 2
+    assert_eq!(
+        (ctx.int(1) + ctx.int(3).sqrt() * &i).abs().eval(),
+        ctx.int(2)
+    );
+    // |(1 + i)²| = |2i| = 2
+    assert_eq!((ctx.int(1) + &i).powi(2).abs().eval(), ctx.int(2));
+    // |e + π i| = √(e² + π²)
+    let z = (ctx.e() + ctx.pi() * &i).abs().eval();
+    let want = (2.0f64.exp() + std::f64::consts::PI.powi(2)).sqrt();
+    assert!(!format!("{z}").contains("abs"), "{z}");
+    assert!((z.eval_f64().unwrap() - want).abs() < 1e-14, "{z}");
+}
+
+#[test]
+fn abs_fold_leaves_symbolic_and_real_arguments_alone() {
+    let ctx = Context::new();
+    let i = ctx.i_unit();
+    let x = ctx.symbol("x");
+    let z = (&x + &i).abs();
+    assert_eq!(z.eval(), z, "abs(x + i) must stay symbolic");
+    // A real constant is not rewritten as √(π²).
+    assert_eq!(format!("{}", ctx.pi().abs().eval()), "abs(pi)");
+    // Transcendental parts are not expanded into √(sin² + cos²).
+    assert_eq!(format!("{}", i.exp().abs().eval()), "abs(exp(I))");
+}
+
+// ── Context::rational with zero denominator ────────────────────────────
 
 #[test]
 fn rational_with_zero_denominator_is_complex_infinity() {
