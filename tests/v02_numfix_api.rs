@@ -2,8 +2,48 @@
 //!
 //! * `Context::rational(p, 0)` panicked inside `num-rational`.
 //! * `abs(3 + 4i)` was not folded to `5` by `eval`/`simplify`.
+//! * `expr_type()` reported `Unevaluated` for `RootOf` while
+//!   `has_unevaluated()` (correctly) did not.
 
+use symplex::expr::ExprType;
 use symplex::prelude::*;
+
+// ── expr_type / has_unevaluated consistency for RootOf ───────────────────────
+
+#[test]
+fn rootof_is_a_constant_not_unevaluated() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    // x⁵ − x − 1 is irreducible over ℚ: the solver returns RootOf values.
+    let roots = (&x.powi(5) - &x - 1).solve_or_empty(&x);
+    assert_eq!(roots.len(), 5);
+    for r in &roots {
+        assert!(format!("{r}").contains("RootOf"), "{r}");
+        assert!(!r.has_unevaluated(), "{r} is a complete algebraic value");
+        assert_ne!(r.expr_type(), ExprType::Unevaluated, "{r}");
+        assert_eq!(r.expr_type(), ExprType::Constant, "{r}");
+        assert!(r.free_symbols().is_empty(), "{r}");
+    }
+}
+
+#[test]
+fn rootof_inside_expression_is_not_unevaluated() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let r = (&x.powi(5) - &x - 1).solve_or_empty(&x).remove(0);
+    let e = &r * 2 + 1;
+    assert!(!e.has_unevaluated());
+    assert_eq!(e.expr_type(), ExprType::Add);
+    // Genuinely formal nodes still report both ways.
+    let lim = x.sin().limit(&x, &ctx.int(0));
+    if lim.has_unevaluated() {
+        assert_eq!(lim.expr_type(), ExprType::Unevaluated);
+    }
+    let integ = x.exp().pow(&x.powi(2)).integrate(&x);
+    if integ.has_unevaluated() {
+        assert_eq!(integ.expr_type(), ExprType::Integral);
+    }
+}
 
 // ── abs of numeric complex constants ─────────────────────────────────────
 

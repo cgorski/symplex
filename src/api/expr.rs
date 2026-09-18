@@ -133,6 +133,12 @@ pub enum ExprType {
     /// A set expression (interval, finite set, union, intersection, complement).
     Set,
     /// A formal/unevaluated computation (Limit, Series, LaplaceTransform, etc.)
+    ///
+    /// Every expression of this type also reports
+    /// [`has_unevaluated`](Expr::has_unevaluated).  `RootOf`/`RootSum` are
+    /// *not* unevaluated: they are exact algebraic values and classify as
+    /// [`Constant`](Self::Constant) (numeric polynomial) or
+    /// [`Function`](Self::Function) (parametric polynomial).
     Unevaluated,
 }
 
@@ -494,13 +500,22 @@ impl<S: Sort> Expr<S> {
             | crate::base::node::ExprNode::SetUnion(_)
             | crate::base::node::ExprNode::SetIntersection(_)
             | crate::base::node::ExprNode::SetComplement(_, _) => ExprType::Set,
+            // `RootOf`/`RootSum` are complete algebraic values, not pending
+            // computations (consistent with `has_unevaluated`, which does not
+            // report them): a constant when the polynomial has numeric
+            // coefficients, otherwise a function of its parameters.
+            crate::base::node::ExprNode::RootOf(..) | crate::base::node::ExprNode::RootSum(..) => {
+                if crate::base::walk::free_symbols(&inner.arena, self.id).is_empty() {
+                    ExprType::Constant
+                } else {
+                    ExprType::Function
+                }
+            }
             crate::base::node::ExprNode::Limit(..)
             | crate::base::node::ExprNode::Series(..)
             | crate::base::node::ExprNode::LaplaceTransform(..)
             | crate::base::node::ExprNode::InverseLaplaceTransform(..)
             | crate::base::node::ExprNode::Residue(..)
-            | crate::base::node::ExprNode::RootOf(..)
-            | crate::base::node::ExprNode::RootSum(..)
             | crate::base::node::ExprNode::DSolve(..)
             | crate::base::node::ExprNode::ConditionSet(..) => ExprType::Unevaluated,
         }
