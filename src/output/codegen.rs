@@ -131,6 +131,26 @@ impl CodegenOptions {
         let refs: Vec<&str> = all.iter().map(String::as_str).collect();
         rt_embed::runtime_module(self.math_backend, &refs).unwrap_or_default()
     }
+
+    /// The complete C99 helper library (`static inline symplex_*` functions)
+    /// used by [`Ex::to_c_fn`](crate::api::expr::Expr::to_c_fn), with its
+    /// `#include <math.h>`.
+    ///
+    /// Generated C functions only embed the helpers they use; when several
+    /// functions share one translation unit, set
+    /// [`emit_runtime`](Self::emit_runtime) to `false` and paste this once.
+    ///
+    /// ```
+    /// use symplex::matrix::CodegenOptions;
+    ///
+    /// let rt = CodegenOptions::default().c_runtime();
+    /// assert!(rt.contains("#include <math.h>"));
+    /// assert!(rt.contains("static inline double symplex_lambert_w0(double x)"));
+    /// ```
+    #[must_use]
+    pub fn c_runtime(&self) -> String {
+        codegen_c::c_runtime_source()
+    }
     /// Configuration for no_std embedded targets.
     /// Uses cfg-gated math backend and adds `#[inline]`.
     pub fn no_std() -> Self {
@@ -976,6 +996,21 @@ fn expr_to_rust_cse(
                 // cbrt: exponent == 1/3
                 if *r.numer() == 1.into() && *r.denom() == 3.into() {
                     return emit_unary_call(&b, "cbrt", options);
+                }
+                // Odd denominator q: real root b^(p/q) = (sign(b)|b|^(1/q))^p.
+                // Matches `compile()`: |b|^e, with the sign of b for odd p.
+                let two = num_bigint::BigInt::from(2);
+                if (r.denom() % &two) != num_bigint::BigInt::from(0) {
+                    let odd_numer = (r.numer() % &two) != num_bigint::BigInt::from(0);
+                    let e = expr_to_rust_cse(arena, exp, var_names, options, cse_constants)?;
+                    let abs_b = emit_unary_call(&format!("({b})"), "abs", options)?;
+                    let mag = emit_powf(&abs_b, &e, options)?;
+                    let s = options.precision.suffix();
+                    return Ok(if odd_numer {
+                        format!("((if {b} < 0.0{s} {{ -1.0{s} }} else {{ 1.0{s} }}) * {mag})")
+                    } else {
+                        mag
+                    });
                 }
             }
             let e = expr_to_rust_cse(arena, exp, var_names, options, cse_constants)?;

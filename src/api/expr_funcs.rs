@@ -3287,7 +3287,7 @@ impl Expr<Numeric> {
     ///
     /// `var_names` specifies the variable-to-index mapping: the returned
     /// function takes `&[f64]` where index 0 corresponds to `var_names[0]`,
-    /// etc.  The result is a [`CompiledFn`](crate::output::lambdify::CompiledFn):
+    /// etc.  The result is a `CompiledFn`:
     /// `Clone + Send + Sync`, callable like a closure (`f(&[x])`) or via
     /// `f.call(&[x])` / `f.try_call(&[x])`, with `f.arity()` reporting the
     /// expected argument count.
@@ -3347,7 +3347,7 @@ impl Expr<Numeric> {
     /// common-subexpression-elimination pass is shared across all outputs,
     /// so this is the efficient way to evaluate gradients, Jacobians, or any
     /// family of expressions with overlapping structure.  The returned
-    /// [`CompiledFnVec`](crate::output::lambdify::CompiledFnVec) offers
+    /// `CompiledFnVec` offers
     /// `call(&args, &mut out)`, `call_vec(&args)`, `try_call`, `arity()` and
     /// `len()`.
     ///
@@ -3392,6 +3392,11 @@ impl Expr<Numeric> {
     ///
     /// Returns a list of `(name, value)` bindings and the rewritten
     /// expression where common subexpressions are replaced by their names.
+    /// Bindings are ordered by first occurrence (post-order), so a binding
+    /// only refers to earlier bindings and the numbering is deterministic.
+    /// Trivially cheap nodes (a negated or scaled atom, `x^2`, `x^-1`) are
+    /// only extracted when used three or more times; boolean-valued nodes
+    /// are never extracted.
     ///
     /// # Examples
     ///
@@ -3417,6 +3422,46 @@ impl Expr<Numeric> {
             .map(|(name, val)| (self.wrap(name), self.wrap(val)))
             .collect();
         (bindings, self.wrap(result.expr))
+    }
+
+    /// Common subexpression elimination across several expressions.
+    ///
+    /// Temporaries are shared by all inputs, which is what code generators
+    /// and [`compile_many`](Self::compile_many) need for gradients and
+    /// Jacobians.  Returns the shared `(name, value)` bindings and the
+    /// rewritten expressions (in input order).  All expressions must belong
+    /// to the same context; an empty input yields empty outputs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let s = x.sin();
+    /// let (bindings, exprs) = Ex::cse_many(&[&(&s + 1), &s.powi(3)]);
+    /// assert_eq!(exprs.len(), 2);
+    /// assert_eq!(bindings.len(), 1); // sin(x) shared by both
+    /// assert_eq!(format!("{}", bindings[0].1), "sin(x)");
+    /// ```
+    pub fn cse_many(exprs: &[&Ex]) -> (Vec<(Ex, Ex)>, Vec<Ex>) {
+        let Some(first) = exprs.first() else {
+            return (Vec::new(), Vec::new());
+        };
+        let ids: Vec<crate::base::node::ExprId> =
+            exprs.iter().map(|e| first.checked_id(e)).collect();
+        let result = {
+            let mut guard = first.inner.write();
+            crate::output::cse::cse_multi(&mut guard.arena, &ids)
+        };
+        let bindings = result
+            .bindings
+            .into_iter()
+            .map(|(name, val)| (first.wrap(name), first.wrap(val)))
+            .collect();
+        let exprs = result.exprs.into_iter().map(|id| first.wrap(id)).collect();
+        (bindings, exprs)
     }
 
     /// Generate a Rust function body as a string.
@@ -3466,6 +3511,82 @@ impl Expr<Numeric> {
     ) -> Result<String, SymplexError> {
         let mut guard = self.inner.write();
         crate::output::codegen::to_rust_fn_with_options(
+            &mut guard.arena,
+            self.raw_id(),
+            name,
+            args,
+            options,
+        )
+    }
+
+    /// Generate a self-contained C99 function as a string.
+    ///
+    /// The output starts with `#include <math.h>`, followed by any
+    /// `static inline symplex_*` helper functions the expression needs
+    /// (Lambert W, digamma, Bessel functions, orthogonal polynomials,
+    /// integer sequences, … — everything `<math.h>` lacks), then the
+    /// function itself with `const double tN = …;` temporaries for common
+    /// subexpressions.  Functions available in `<math.h>` (`tgamma`,
+    /// `lgamma`, `erf`, `erfc`, `fma`, `expm1`, `log1p`, …) are used
+    /// directly; integer powers `|n| ≤ 4` of simple operands become repeated
+    /// multiplication, other powers use `pow`.  Piecewise expressions become
+    /// ternary chains ending in `NAN`.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`to_rust_fn`](Self::to_rust_fn):
+    /// [`SymplexError::FreeSymbol`] for unbound symbols and
+    /// [`SymplexError::NotImplemented`] for nodes without numerical meaning
+    /// (the message names the node).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let code = (x.sin().powi(2) + x.lambertw()).to_c_fn("f", &["x"]).unwrap();
+    /// assert!(code.contains("#include <math.h>"));
+    /// assert!(code.contains("double f(double x) {"));
+    /// assert!(code.contains("static inline double symplex_lambert_w0(double x)"));
+    /// ```
+    pub fn to_c_fn(&self, name: &str, args: &[&str]) -> Result<String, SymplexError> {
+        let mut guard = self.inner.write();
+        crate::output::codegen::codegen_c::to_c_fn(&mut guard.arena, self.raw_id(), name, args)
+    }
+
+    /// Generate a C99 function with custom options.
+    ///
+    /// Honoured [`CodegenOptions`](crate::output::codegen::CodegenOptions)
+    /// fields: `precision` (`double` / `float` with the `f`-suffixed math
+    /// functions), `cse`, `inline` (`static inline`), `use_mul_add` (`fma`),
+    /// `checked_domain` (`assert` preconditions) and `emit_runtime` (set to
+    /// `false` and paste
+    /// [`CodegenOptions::c_runtime`](crate::output::codegen::CodegenOptions::c_runtime)
+    /// once when several functions share a translation unit).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::matrix::{CodegenOptions, Precision};
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let opts = CodegenOptions { precision: Precision::F32, inline: true, ..Default::default() };
+    /// let code = x.exp().to_c_fn_with_options("f", &["x"], &opts).unwrap();
+    /// assert!(code.contains("static inline float f(float x) {"));
+    /// assert!(code.contains("expf(x)"));
+    /// ```
+    pub fn to_c_fn_with_options(
+        &self,
+        name: &str,
+        args: &[&str],
+        options: &crate::output::codegen::CodegenOptions,
+    ) -> Result<String, SymplexError> {
+        let mut guard = self.inner.write();
+        crate::output::codegen::codegen_c::to_c_fn_with_options(
             &mut guard.arena,
             self.raw_id(),
             name,

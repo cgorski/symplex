@@ -729,8 +729,12 @@ fn numerical_precision_patterns() {
     // odd roots of negatives are real
     let h = x.pow(&ctx.rational(1, 3)).compile(&["x"]).unwrap();
     assert_eq!(h(&[-8.0]), -2.0);
+    // Real roots with odd denominator: (-32)^(2/5) = ((-32)^(1/5))^2 = 4,
+    // (-32)^(3/5) = -8.
     let k = x.pow(&ctx.rational(2, 5)).compile(&["x"]).unwrap();
-    assert_close(k(&[-32.0]), -4.0, 1e-15, "(-32)^(2/5) sign-preserving");
+    assert_close(k(&[-32.0]), 4.0, 1e-15, "(-32)^(2/5)");
+    let k3 = x.pow(&ctx.rational(3, 5)).compile(&["x"]).unwrap();
+    assert_close(k3(&[-32.0]), -8.0, 1e-15, "(-32)^(3/5)");
     // division peephole: exactly one rounding
     let d = (&x / &ctx.int(3)).compile(&["x"]).unwrap();
     assert_eq!(d(&[1.0]), 1.0 / 3.0);

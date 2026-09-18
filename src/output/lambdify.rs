@@ -829,17 +829,29 @@ impl<'a> Emitter<'a> {
                             return Ok(());
                         }
                     }
-                    // Odd denominator: real root, sign-preserving: sign(b)·|b|^e
-                    if (r.denom() % num_bigint::BigInt::from(2)) != Zero::zero() {
-                        self.push_seq(&[
-                            Task::Node(base),
-                            Task::Emit(Instruction::Sign),
-                            Task::Node(base),
-                            Task::Emit(Instruction::Abs),
-                            Task::Node(exp),
-                            Task::Emit(Instruction::Pow),
-                            Task::Emit(Instruction::Mul),
-                        ]);
+                    // Odd denominator q: the real root b^(p/q) = (sign(b)|b|^(1/q))^p,
+                    // i.e. |b|^e with the sign of b restored only for odd p.
+                    let two = num_bigint::BigInt::from(2);
+                    if (r.denom() % &two) != Zero::zero() {
+                        let odd_numer = (r.numer() % &two) != Zero::zero();
+                        if odd_numer {
+                            self.push_seq(&[
+                                Task::Node(base),
+                                Task::Emit(Instruction::Sign),
+                                Task::Node(base),
+                                Task::Emit(Instruction::Abs),
+                                Task::Node(exp),
+                                Task::Emit(Instruction::Pow),
+                                Task::Emit(Instruction::Mul),
+                            ]);
+                        } else {
+                            self.push_seq(&[
+                                Task::Node(base),
+                                Task::Emit(Instruction::Abs),
+                                Task::Node(exp),
+                                Task::Emit(Instruction::Pow),
+                            ]);
+                        }
                         return Ok(());
                     }
                 }
