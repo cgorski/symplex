@@ -151,10 +151,10 @@ pub fn integrate_definite(
         });
     }
     let f = safe_eval(arena, f);
-    let a = eval::eval(arena, a);
-    let b = eval::eval(arena, b);
+    let a = safe_eval(arena, a);
+    let b = safe_eval(arena, b);
     let result = integrate_range(arena, f, x, a, b, 0)?;
-    let result = eval::eval(arena, result);
+    let result = safe_eval(arena, result);
     if walk::contains(arena, result, x) {
         return Err(SymplexError::ComputationFailed {
             operation: "integrate_definite",
@@ -295,7 +295,7 @@ fn constant_over(
     }
     let width = arena.sub(b, a);
     let v = arena.mul(&[c, width]);
-    Ok(eval::eval(arena, v))
+    Ok(safe_eval(arena, v))
 }
 
 /// Sum the integrals over consecutive pieces.  A proven divergence on any
@@ -324,7 +324,7 @@ fn integrate_pieces(
         return Err(e);
     }
     let s = arena.add(&total);
-    Ok(eval::eval(arena, s))
+    Ok(safe_eval(arena, s))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -389,7 +389,7 @@ fn cmp_points(arena: &mut Arena, p: ExprId, q: ExprId) -> Option<Ordering> {
     }
     // Symbolic: sign of q − p via assumptions.
     let d = arena.sub(q, p);
-    let d = eval::eval(arena, d);
+    let d = safe_eval(arena, d);
     match sign_of(arena, d) {
         Some(Ordering::Greater) => Some(Ordering::Less),
         Some(Ordering::Less) => Some(Ordering::Greater),
@@ -816,7 +816,7 @@ fn numeric_guard(
     let grid = guard_grid(lo, hi);
     let mut all_ok = true;
     for w in watched {
-        let w_eval = eval::eval(arena, w);
+        let w_eval = safe_eval(arena, w);
         if !walk::free_symbols(arena, w_eval).iter().all(|&s| s == x) {
             return None; // parametric — cannot sample
         }
@@ -870,7 +870,7 @@ fn integrate_piece(
                 let half = integrate_range(arena, f, x, zero, inf, depth + 1)?;
                 let two = arena.int(2);
                 let v = arena.mul(&[two, half]);
-                return Ok(eval::eval(arena, v));
+                return Ok(safe_eval(arena, v));
             }
             Some(Parity::Odd) => {
                 // Each half must converge on its own.
@@ -908,7 +908,7 @@ fn integrate_piece(
                 let v = integrate_piece(arena, f, x, &half, depth + 1)?;
                 let two = arena.int(2);
                 let v = arena.mul(&[two, v]);
-                return Ok(eval::eval(arena, v));
+                return Ok(safe_eval(arena, v));
             }
             Some(Parity::Odd) => {
                 if !p.lo_sing && !p.hi_sing {
@@ -937,9 +937,9 @@ fn integrate_piece(
         let t = fresh_symbol(arena, "defr", depth);
         let neg_t = arena.neg(t);
         let g = subs::subs(arena, f, x, neg_t);
-        let g = eval::eval(arena, g);
+        let g = safe_eval(arena, g);
         let neg_hi = arena.neg(p.hi);
-        let neg_hi = eval::eval(arena, neg_hi);
+        let neg_hi = safe_eval(arena, neg_hi);
         let inf = arena.infinity();
         if let Some(v) = table_lookup(arena, g, t, neg_hi, inf) {
             return Ok(v);
@@ -948,7 +948,7 @@ fn integrate_piece(
 
     // ── Antiderivative ──────────────────────────────────────────────
     let anti = crate::transforms::integrate::integrate(arena, f, x);
-    let anti = eval::eval(arena, anti);
+    let anti = safe_eval(arena, anti);
     if walk::has_unevaluated(arena, anti) {
         return fallback_without_antiderivative(arena, f, x, p);
     }
@@ -1047,7 +1047,7 @@ fn evaluate_antiderivative(
             }
         }
         let s = arena.add(&total);
-        return Ok(eval::eval(arena, s));
+        return Ok(safe_eval(arena, s));
     }
 
     match ftc(arena, anti, x, p)? {
@@ -1082,7 +1082,7 @@ fn ftc(
     match (hi_val, lo_val) {
         (EndVal::Finite(h), EndVal::Finite(l)) => {
             let d = arena.sub(h, l);
-            Ok(Some(eval::eval(arena, d)))
+            Ok(Some(safe_eval(arena, d)))
         }
         _ => Ok(None),
     }
@@ -1140,7 +1140,7 @@ fn diverges_near(arena: &mut Arena, f: ExprId, x: ExprId, c: ExprId, side: Side)
             Side::FromLeft => arena.neg(scaled),
         }
     };
-    let h = eval::eval(arena, h);
+    let h = safe_eval(arena, h);
     match limit_pos_inf(arena, h, u) {
         EndVal::Infinite(_) => true,
         EndVal::Finite(v) => sign_of(arena, v).is_some_and(|s| s != Ordering::Equal),
@@ -1208,7 +1208,7 @@ fn endpoint_value(
         // has no jump-type nodes (its continuous extension equals the
         // one-sided limit for elementary F).
         let v = subs::subs(arena, anti, x, c);
-        let v = eval::eval(arena, v);
+        let v = safe_eval(arena, v);
         if is_finite_value(arena, v, x) && (!singular || !has_jump_node(arena, anti)) {
             return EndVal::Finite(v);
         }
@@ -1221,7 +1221,7 @@ fn endpoint_value(
             Side::FromLeft => arena.sub(c, inv_u),
         };
         let g = subs::subs(arena, anti, x, repl);
-        let g = eval::eval(arena, g);
+        let g = safe_eval(arena, g);
         return limit_pos_inf(arena, g, u);
     }
     if c == arena.infinity() {
@@ -1231,7 +1231,7 @@ fn endpoint_value(
     let u = fresh_symbol(arena, "defu", 1);
     let neg_u = arena.neg(u);
     let g = subs::subs(arena, anti, x, neg_u);
-    let g = eval::eval(arena, g);
+    let g = safe_eval(arena, g);
     limit_pos_inf(arena, g, u)
 }
 
@@ -1242,7 +1242,7 @@ fn endpoint_value(
 /// answers are checked against numeric samples.
 fn limit_pos_inf(arena: &mut Arena, g: ExprId, u: ExprId) -> EndVal {
     if !walk::contains(arena, g, u) {
-        let v = eval::eval(arena, g);
+        let v = safe_eval(arena, g);
         return if is_finite_value(arena, v, u) {
             EndVal::Finite(v)
         } else {
@@ -1411,7 +1411,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                         LimVal::Bounded
                     } else {
                         let s = arena.add(&finite);
-                        LimVal::Finite(eval::eval(arena, s))
+                        LimVal::Finite(safe_eval(arena, s))
                     }
                 }
                 ExprNode::Mul(children) => {
@@ -1439,7 +1439,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                             arena.one()
                         } else {
                             let m = arena.mul(&finite);
-                            eval::eval(arena, m)
+                            safe_eval(arena, m)
                         };
                         let psign = sign_of(arena, prod);
                         if infs > 0 {
@@ -1473,7 +1473,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
                         LimVal::Finite(v) => {
                             let n = arena.neg(v);
-                            LimVal::Finite(eval::eval(arena, n))
+                            LimVal::Finite(safe_eval(arena, n))
                         }
                         LimVal::PosInf => LimVal::NegInf,
                         LimVal::NegInf => LimVal::PosInf,
@@ -1489,7 +1489,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
                         LimVal::Finite(v) => {
                             let e = arena.exp(v);
-                            LimVal::Finite(eval::eval(arena, e))
+                            LimVal::Finite(safe_eval(arena, e))
                         }
                         LimVal::PosInf => LimVal::PosInf,
                         LimVal::NegInf => LimVal::Finite(arena.zero()),
@@ -1502,7 +1502,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                         Some(Ordering::Equal) => LimVal::NegInf,
                         Some(_) => {
                             let l = arena.ln(v);
-                            LimVal::Finite(eval::eval(arena, l))
+                            LimVal::Finite(safe_eval(arena, l))
                         }
                         None => LimVal::Unknown,
                     },
@@ -1513,7 +1513,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                 {
                     LimVal::Finite(v) => {
                         let a = arena.atan(v);
-                        LimVal::Finite(eval::eval(arena, a))
+                        LimVal::Finite(safe_eval(arena, a))
                     }
                     LimVal::PosInf => {
                         let half_pi = arena.rational(1, 2);
@@ -1535,7 +1535,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                             } else {
                                 arena.erf(v)
                             };
-                            LimVal::Finite(eval::eval(arena, r))
+                            LimVal::Finite(safe_eval(arena, r))
                         }
                         LimVal::PosInf => LimVal::Finite(arena.one()),
                         LimVal::NegInf => LimVal::Finite(arena.neg_one()),
@@ -1546,7 +1546,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                 {
                     LimVal::Finite(v) => {
                         let r = arena.erfc(v);
-                        LimVal::Finite(eval::eval(arena, r))
+                        LimVal::Finite(safe_eval(arena, r))
                     }
                     LimVal::PosInf => LimVal::Finite(arena.zero()),
                     LimVal::NegInf => LimVal::Finite(arena.int(2)),
@@ -1560,7 +1560,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                             } else {
                                 arena.cos(v)
                             };
-                            LimVal::Finite(eval::eval(arena, r))
+                            LimVal::Finite(safe_eval(arena, r))
                         }
                         LimVal::PosInf | LimVal::NegInf | LimVal::Bounded => LimVal::Bounded,
                         LimVal::Unknown => LimVal::Unknown,
@@ -1574,7 +1574,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                             } else {
                                 arena.asinh(v)
                             };
-                            LimVal::Finite(eval::eval(arena, r))
+                            LimVal::Finite(safe_eval(arena, r))
                         }
                         LimVal::PosInf => LimVal::PosInf,
                         LimVal::NegInf => LimVal::NegInf,
@@ -1585,7 +1585,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                 {
                     LimVal::Finite(v) => {
                         let r = arena.cosh(v);
-                        LimVal::Finite(eval::eval(arena, r))
+                        LimVal::Finite(safe_eval(arena, r))
                     }
                     LimVal::PosInf | LimVal::NegInf => LimVal::PosInf,
                     _ => LimVal::Unknown,
@@ -1594,7 +1594,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                     match vals.get(&inner).copied().unwrap_or(LimVal::Unknown) {
                         LimVal::Finite(v) => {
                             let r = arena.abs(v);
-                            LimVal::Finite(eval::eval(arena, r))
+                            LimVal::Finite(safe_eval(arena, r))
                         }
                         LimVal::PosInf | LimVal::NegInf => LimVal::PosInf,
                         LimVal::Bounded => LimVal::Bounded,
@@ -1621,7 +1621,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                             } else {
                                 arena.gamma(v)
                             };
-                            LimVal::Finite(eval::eval(arena, r))
+                            LimVal::Finite(safe_eval(arena, r))
                         }
                         _ => LimVal::Unknown,
                     }
@@ -1634,7 +1634,7 @@ fn compositional_limit(arena: &mut Arena, g: ExprId, u: ExprId) -> LimVal {
                                 ExprNode::Acos(_) => arena.acos(v),
                                 _ => arena.atanh(v),
                             };
-                            let r = eval::eval(arena, r);
+                            let r = safe_eval(arena, r);
                             if is_finite_value(arena, r, u) {
                                 LimVal::Finite(r)
                             } else {
@@ -1681,7 +1681,7 @@ fn pow_limit(
                     LimVal::Unknown
                 } else {
                     let p = arena.pow(b, exp);
-                    let p = eval::eval(arena, p);
+                    let p = safe_eval(arena, p);
                     if is_finite_value(arena, p, u) {
                         LimVal::Finite(p)
                     } else {
@@ -1717,7 +1717,7 @@ fn pow_limit(
         // Constant base c > 0: c^{g(u)}.
         let one = arena.one();
         let c_minus_1 = arena.sub(base, one);
-        let c_minus_1 = eval::eval(arena, c_minus_1);
+        let c_minus_1 = safe_eval(arena, c_minus_1);
         let Some(cmp1) = sign_of(arena, c_minus_1) else {
             return LimVal::Unknown;
         };
@@ -1727,7 +1727,7 @@ fn pow_limit(
         return match (ev, cmp1) {
             (LimVal::Finite(e), _) => {
                 let p = arena.pow(base, e);
-                LimVal::Finite(eval::eval(arena, p))
+                LimVal::Finite(safe_eval(arena, p))
             }
             (_, Ordering::Equal) => LimVal::Finite(arena.one()),
             (LimVal::PosInf, Ordering::Greater) | (LimVal::NegInf, Ordering::Less) => {
@@ -1756,7 +1756,7 @@ enum Parity {
 /// Is `lo` structurally or numerically `−hi`?
 fn is_negation_of(arena: &mut Arena, lo: ExprId, hi: ExprId) -> bool {
     let neg_hi = arena.neg(hi);
-    let neg_hi = eval::eval(arena, neg_hi);
+    let neg_hi = safe_eval(arena, neg_hi);
     cmp_points(arena, lo, neg_hi) == Some(Ordering::Equal)
 }
 
@@ -1764,24 +1764,24 @@ fn is_negation_of(arena: &mut Arena, lo: ExprId, hi: ExprId) -> bool {
 fn parity(arena: &mut Arena, f: ExprId, x: ExprId) -> Option<Parity> {
     let neg_x = arena.neg(x);
     let g = subs::subs(arena, f, x, neg_x);
-    let g = eval::eval(arena, g);
-    let fe = eval::eval(arena, f);
+    let g = safe_eval(arena, g);
+    let fe = safe_eval(arena, f);
     if g == fe {
         return Some(Parity::Even);
     }
     let neg_g = arena.neg(g);
-    let neg_g = eval::eval(arena, neg_g);
+    let neg_g = safe_eval(arena, neg_g);
     if neg_g == fe {
         return Some(Parity::Odd);
     }
     // Simplification-based check.
     let d = arena.sub(g, fe);
-    let d = eval::eval(arena, d);
+    let d = safe_eval(arena, d);
     if arena.is_zero_structural(d) || simplifies_to_zero(arena, d) {
         return Some(Parity::Even);
     }
     let s = arena.add(&[g, fe]);
-    let s = eval::eval(arena, s);
+    let s = safe_eval(arena, s);
     if arena.is_zero_structural(s) || simplifies_to_zero(arena, s) {
         return Some(Parity::Odd);
     }
@@ -1791,7 +1791,7 @@ fn parity(arena: &mut Arena, f: ExprId, x: ExprId) -> Option<Parity> {
 /// Run the unified simplifier and test for structural zero.
 fn simplifies_to_zero(arena: &mut Arena, id: ExprId) -> bool {
     let expanded = expand::expand(arena, id);
-    let expanded = eval::eval(arena, expanded);
+    let expanded = safe_eval(arena, expanded);
     if arena.is_zero_structural(expanded) {
         return true;
     }
@@ -1889,13 +1889,13 @@ fn delta_integral(
     }
     let neg_beta = arena.neg(beta);
     let c = arena.div(neg_beta, alpha);
-    let c = eval::eval(arena, c);
+    let c = safe_eval(arena, c);
     match position_in(arena, c, a, b) {
         Position::Inside => {
             let rc = subs::subs(arena, rest, x, c);
             let abs_alpha = arena.abs(alpha);
             let v = arena.div(rc, abs_alpha);
-            Ok(eval::eval(arena, v))
+            Ok(safe_eval(arena, v))
         }
         Position::Below | Position::Above => Ok(arena.zero()),
         Position::AtLower | Position::AtUpper => Err(failed(
@@ -1928,7 +1928,7 @@ fn heaviside_integral(
     };
     let neg_beta = arena.neg(beta);
     let c = arena.div(neg_beta, alpha);
-    let c = eval::eval(arena, c);
+    let c = safe_eval(arena, c);
     let pos = position_in(arena, c, a, b);
     let (lo, hi) = match (alpha_sign, pos) {
         // H(x − c): support is x > c.
@@ -2047,7 +2047,7 @@ fn split_piecewise_like(
         total.push(v);
     }
     let s = arena.add(&total);
-    Ok(eval::eval(arena, s))
+    Ok(safe_eval(arena, s))
 }
 
 /// A rational point strictly inside `(lo, hi)` (infinite ends allowed).
@@ -2143,7 +2143,7 @@ fn resolve_at(
         match target {
             Some((old, new)) => {
                 current = subs::subs(arena, current, old, new);
-                current = eval::eval(arena, current);
+                current = safe_eval(arena, current);
             }
             None => return Ok(current),
         }
@@ -2154,7 +2154,7 @@ fn resolve_at(
 /// Numeric value of `g` at `x = mid`.
 fn value_at(arena: &mut Arena, g: ExprId, x: ExprId, mid: ExprId) -> Result<f64, SymplexError> {
     let gm = subs::subs(arena, g, x, mid);
-    let gm = eval::eval(arena, gm);
+    let gm = safe_eval(arena, gm);
     if !walk::free_symbols(arena, gm).is_empty() {
         return Err(failed(
             "piecewise structure depends on symbolic parameters; cannot resolve",
@@ -2327,7 +2327,7 @@ fn with_coeff(arena: &mut Arena, coeff: &[ExprId], v: ExprId) -> ExprId {
     let mut all: Vec<ExprId> = coeff.to_vec();
     all.push(v);
     let r = arena.mul(&all);
-    eval::eval(arena, r)
+    safe_eval(arena, r)
 }
 
 /// `x^p` → `p` (as an expression); `x` → `1`.
@@ -2467,17 +2467,17 @@ fn beta_of(arena: &mut Arena, p: ExprId, q: ExprId) -> Option<ExprId> {
             let pp = arena.mul(&[p, pi]);
             let s = arena.sin(pp);
             let r = arena.div(pi, s);
-            return Some(eval::eval(arena, r));
+            return Some(safe_eval(arena, r));
         }
     }
     let gp = gamma_of(arena, p)?;
     let gq = gamma_of(arena, q)?;
     let pq = arena.add(&[p, q]);
-    let pq = eval::eval(arena, pq);
+    let pq = safe_eval(arena, pq);
     let gpq = gamma_of(arena, pq)?;
     let num = arena.mul(&[gp, gq]);
     let r = arena.div(num, gpq);
-    Some(eval::eval(arena, r))
+    Some(safe_eval(arena, r))
 }
 
 /// `ζ(2k)` exactly via Bernoulli numbers.
@@ -2551,7 +2551,7 @@ fn as_binomial_in_x(
             arena.one()
         } else {
             let m = arena.mul(&coeff);
-            eval::eval(arena, m)
+            safe_eval(arena, m)
         };
         cx = Some((c, n));
     }
@@ -2672,7 +2672,7 @@ fn table_zero_inf(arena: &mut Arena, dep: &[ExprId], x: ExprId) -> Option<ExprId
     let one = arena.one();
     let p = s.x_pow.unwrap_or(arena.zero());
     let p1 = arena.add(&[p, one]);
-    let p1 = eval::eval(arena, p1);
+    let p1 = safe_eval(arena, p1);
     let h = HalfLine { s, p, p1 };
 
     let entries: [HalfLineEntry; 10] = [
@@ -2715,7 +2715,7 @@ fn entry_exp_linear(arena: &mut Arena, h: &HalfLine, x: ExprId) -> Option<ExprId
     }
     let e_c0 = arena.exp(c0);
     let a = arena.neg(c1);
-    let a = eval::eval(arena, a);
+    let a = safe_eval(arena, a);
     if !is_positive(arena, a) {
         return None;
     }
@@ -2769,7 +2769,7 @@ fn entry_exp_gaussian(arena: &mut Arena, h: &HalfLine, x: ExprId) -> Option<Expr
     }
     let e_c0 = arena.exp(c0);
     let a = arena.neg(c2);
-    let a = eval::eval(arena, a);
+    let a = safe_eval(arena, a);
     if !is_positive(arena, a) {
         return None;
     }
@@ -2779,7 +2779,7 @@ fn entry_exp_gaussian(arena: &mut Arena, h: &HalfLine, x: ExprId) -> Option<Expr
             return None;
         }
         let s_arg = arena.mul(&[half, h.p1]);
-        let s_arg = eval::eval(arena, s_arg);
+        let s_arg = safe_eval(arena, s_arg);
         let g = gamma_of(arena, s_arg)?;
         let neg_s = arena.neg(s_arg);
         let a_pow = arena.pow(a, neg_s);
@@ -3100,7 +3100,7 @@ fn table_full_line(arena: &mut Arena, dep: &[ExprId], x: ExprId) -> Option<ExprI
         let p = s.x_pow.unwrap_or(arena.zero());
         let [c0, c1, c2] = quadratic_coeffs(arena, arg, x)?;
         let a = arena.neg(c2);
-        let a = eval::eval(arena, a);
+        let a = safe_eval(arena, a);
         if !is_positive(arena, a) {
             return None;
         }
@@ -3139,7 +3139,7 @@ fn table_zero_one(arena: &mut Arena, dep: &[ExprId], x: ExprId) -> Option<ExprId
     let p = s.x_pow.unwrap_or(arena.zero());
     let one = arena.one();
     let p_plus_1 = arena.add(&[p, one]);
-    let p_plus_1 = eval::eval(arena, p_plus_1);
+    let p_plus_1 = safe_eval(arena, p_plus_1);
 
     // ── x^p ln(x)^n → (−1)^n n! / (p+1)^{n+1} ─────────────────────
     if let Some((larg, n)) = s.ln.clone()
@@ -3193,19 +3193,19 @@ fn table_zero_one(arena: &mut Arena, dep: &[ExprId], x: ExprId) -> Option<ExprId
             let beta_c = coeffs[0];
             let lead = coeffs[n];
             let neg_lead = arena.neg(lead);
-            let neg_lead = eval::eval(arena, neg_lead);
+            let neg_lead = safe_eval(arena, neg_lead);
             if cmp_points(arena, beta_c, neg_lead) == Some(Ordering::Equal)
                 && is_positive(arena, beta_c)
             {
                 let q_plus_1 = arena.add(&[q, one]);
-                let q_plus_1 = eval::eval(arena, q_plus_1);
+                let q_plus_1 = safe_eval(arena, q_plus_1);
                 if !is_positive(arena, q_plus_1) || !is_positive(arena, p_plus_1) {
                     return None;
                 }
                 let n_r = Ratio::from_integer(BigInt::from(n));
                 let inv_n = ratio_expr(arena, &(Ratio::one() / n_r.clone()));
                 let s_arg = arena.mul(&[inv_n, p_plus_1]);
-                let s_arg = eval::eval(arena, s_arg);
+                let s_arg = safe_eval(arena, s_arg);
                 let b = beta_of(arena, s_arg, q_plus_1)?;
                 let beta_pow = arena.pow(beta_c, q);
                 return Some(arena.mul(&[inv_n, beta_pow, b]));
@@ -3278,7 +3278,7 @@ fn table_zero_one(arena: &mut Arena, dep: &[ExprId], x: ExprId) -> Option<ExprId
             let r = arena.rational(num, den);
             let v = arena.mul(&[r, pi2]);
             let out = arena.div(v, k);
-            Some(eval::eval(arena, out))
+            Some(safe_eval(arena, out))
         };
         return match dc.len() {
             2 => {
@@ -3565,7 +3565,7 @@ fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: Interval) -> Opt
                 arena.one()
             } else {
                 let mm = arena.mul(&coeff);
-                eval::eval(arena, mm)
+                safe_eval(arena, mm)
             };
             b_c = Some((bc, kind));
         }
@@ -3573,7 +3573,7 @@ fn table_trig(arena: &mut Arena, dep: &[ExprId], x: ExprId, iv: Interval) -> Opt
         // Need a > |b|.
         let abs_b = arena.abs(b_c);
         let diff_ab = arena.sub(a_c, abs_b);
-        let diff_ab = eval::eval(arena, diff_ab);
+        let diff_ab = safe_eval(arena, diff_ab);
         if !is_positive(arena, diff_ab) {
             return None;
         }

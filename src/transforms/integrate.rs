@@ -1045,7 +1045,7 @@ fn try_weierstrass_substitution(
 /// powers (e.g. `2/((1+t²)(2 + (1−t²)/(1+t²)))`) are combined bottom-up
 /// first, then the whole expression is split into numerator/denominator
 /// and cancelled.
-fn clear_nested_fractions(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
+pub(crate) fn clear_nested_fractions(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
     let mut current = expr;
     // Bottom-up: combine every inner sum over a common denominator.
     for _ in 0..16 {

@@ -68,6 +68,9 @@ pub(crate) fn residue(
         return Ok(arena.zero());
     }
 
+    // Clear nested fractions (e.g. from f(1/t)) so that the denominator is a
+    // genuine polynomial whenever f is rational.
+    let g = crate::transforms::integrate::clear_nested_fractions(arena, g, t);
     let (numer, denom) = crate::poly::polybridge::as_numer_denom(arena, g);
 
     if let Some(coeffs) = calculus_util::poly_coeffs_symbolic(arena, denom, t) {

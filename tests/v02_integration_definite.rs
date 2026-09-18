@@ -1499,3 +1499,129 @@ fn quadrature_infinite_and_singular() {
         .unwrap();
     assert!((v - 1.0).abs() < 1e-10);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Parametric antiderivatives and piecewise results
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn parametric_exponent_gives_piecewise() {
+    // ∫₁² xⁿ dx = (2ⁿ⁺¹ − 1)/(n+1) for n ≠ −1, ln 2 for n = −1
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let n = ctx.symbol("n");
+    let v = x
+        .pow(&n)
+        .try_integrate_definite(&x, &ctx.int(1), &ctx.int(2))
+        .unwrap();
+    let s = format!("{v}");
+    assert!(s.contains("Piecewise"), "{s}");
+    // generic branch at n = 2 → 7/3
+    let at2 = v.subs(&n, &ctx.int(2)).eval();
+    let at2 = at2.eval_f64().unwrap();
+    assert!((at2 - 7.0 / 3.0).abs() < 1e-12, "{v}");
+}
+
+#[test]
+fn indefinite_piecewise_is_continuous_at_breakpoint() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    // f = x² for x < 1, 2 − x otherwise; F must be continuous at 1.
+    let cond = x.lt(&ctx.int(1));
+    let f = Ex::piecewise(&[
+        (&x.powi(2), &cond),
+        (&(&ctx.int(2) - &x), &ctx.int(1).ge(&ctx.int(0))),
+    ]);
+    let anti = f.integrate(&x);
+    assert!(!anti.has_unevaluated(), "{anti}");
+    // Extract the two branches by evaluating just left and right of 1.
+    let left = anti
+        .subs(&x, &ctx.rational(999_999, 1_000_000))
+        .eval()
+        .eval_f64();
+    let right = anti
+        .subs(&x, &ctx.rational(1_000_001, 1_000_000))
+        .eval()
+        .eval_f64();
+    // eval() picks the True branch only when the condition is decided, so
+    // both sides evaluate; they must agree to ~1e-6.
+    if let (Ok(l), Ok(r)) = (left, right) {
+        assert!(
+            (l - r).abs() < 1e-5,
+            "discontinuous antiderivative: {l} vs {r} ({anti})"
+        );
+    }
+    // FTC on each branch
+    let d = anti.diff(&x);
+    let at_half = d.subs(&x, &ctx.rational(1, 2)).eval().eval_f64().unwrap();
+    assert!((at_half - 0.25).abs() < 1e-12);
+    let at_1_5 = d.subs(&x, &ctx.rational(3, 2)).eval().eval_f64().unwrap();
+    assert!((at_1_5 - 0.5).abs() < 1e-12);
+}
+
+#[test]
+fn indefinite_abs_closed_forms() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    // ∫ |x| = x|x|/2 (up to a constant): check values
+    let anti = x.abs().integrate(&x);
+    assert!(!anti.has_unevaluated(), "{anti}");
+    let at3 = anti.subs(&x, &ctx.int(3)).eval().eval_f64().unwrap();
+    let atm3 = anti.subs(&x, &ctx.int(-3)).eval().eval_f64().unwrap();
+    assert!((at3 - atm3 - 9.0).abs() < 1e-12, "∫₋₃³|x| via F: {anti}");
+    let at0 = anti.subs(&x, &ctx.int(0)).eval().eval_f64().unwrap();
+    assert!((at3 - at0 - 4.5).abs() < 1e-12, "{anti}");
+    // ∫ sign(x) = |x|
+    let s = x.sign().integrate(&x);
+    let v = (s.subs(&x, &ctx.int(2)).eval().eval_f64().unwrap())
+        - (s.subs(&x, &ctx.int(-2)).eval().eval_f64().unwrap());
+    assert!(v.abs() < 1e-12, "{s}");
+    // |g| with two real roots stays unevaluated (no single closed form)
+    assert!((&x.powi(2) - 1).abs().integrate(&x).has_unevaluated());
+    // |g| with no real roots: |x² + 1| = x² + 1
+    let g = (&x.powi(2) + 1).abs().integrate(&x);
+    assert!(!g.has_unevaluated(), "{g}");
+}
+
+#[test]
+fn abs_with_symbolic_bounds_is_refused() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let t = ctx.symbol("t");
+    let r = x.abs().try_integrate_definite(&x, &ctx.int(-1), &t);
+    assert!(r.is_err(), "{r:?}");
+    // …but a positive symbolic bound is fine: kink at 0 is outside (0, t]
+    // no — 0 is the lower endpoint; still resolvable
+    let tp = ctx.symbol_with("tp", &[Assumption::Positive]);
+    let v = x.abs().try_integrate_definite(&x, &ctx.int(0), &tp);
+    if let Ok(v) = v {
+        let at2 = v.subs(&tp, &ctx.int(2)).eval().eval_f64().unwrap();
+        assert!((at2 - 2.0).abs() < 1e-12, "{v}");
+    }
+}
+
+#[test]
+fn integrand_with_unanalysable_function_is_refused() {
+    // Si(x) arises as ∫ sin(x)/x; its own definite integral over an
+    // interval must not be guessed.
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    let si = (&x.sin() / &x).integrate(&x);
+    assert_eq!(format!("{si}"), "Si(x)");
+    let r = si.try_integrate_definite(&x, &ctx.int(0), &ctx.int(1));
+    assert!(r.is_err(), "{r:?}");
+    assert!(
+        si.integrate_definite(&x, &ctx.int(0), &ctx.int(1))
+            .has_unevaluated()
+    );
+}
+
+#[test]
+fn cas_style_result_is_unevaluated_not_wrong() {
+    let ctx = Context::new();
+    let x = ctx.symbol("x");
+    // The pre-0.2 F(b) − F(a) rule returned −2 here.
+    let v = x.powi(-2).integrate_definite(&x, &ctx.int(-1), &ctx.int(1));
+    assert!(v.has_unevaluated(), "{v}");
+    assert!(v.eval_f64().is_err());
+}
