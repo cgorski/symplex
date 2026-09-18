@@ -1,4 +1,4 @@
-//! Extended solving methods on [`Ex`](crate::api::expr::Ex): general solutions, systems, recurrences, IVPs.
+//! Extended solving methods on [`Ex`]: general solutions, systems, recurrences, IVPs.
 //!
 //! This module hosts the 0.2 solving additions:
 //!

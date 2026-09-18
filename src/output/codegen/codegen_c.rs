@@ -1,6 +1,6 @@
 //! C99 code generation from symbolic expressions.
 //!
-//! [`to_c_fn_with_options`] emits a self-contained C99 translation unit
+//! `to_c_fn_with_options` emits a self-contained C99 translation unit
 //! fragment: `#include <math.h>`, any `static inline` helper functions the
 //! expression needs (Lambert W, digamma, Bessel functions, orthogonal
 //! polynomials, integer sequences, …) and the function itself, using
@@ -9,7 +9,7 @@
 //! Functions available in `<math.h>` are used directly (`sin`, `exp`, `pow`,
 //! `tgamma`, `lgamma`, `erf`, `erfc`, `fma`, `fmin`, `fmax`, `expm1`,
 //! `log1p`, …).  The helpers mirror the algorithms of the shared Rust runtime
-//! ([`numeric_rt`](super::numeric_rt)) so that `compile()`, `to_rust_fn()`
+//! (`numeric_rt`) so that `compile()`, `to_rust_fn()`
 //! and `to_c_fn()` agree.
 //!
 //! The emitter walks the expression with an explicit stack (no recursion).

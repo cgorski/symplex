@@ -1062,7 +1062,10 @@ functions = ["fk_matrix"]
             .generate()
             .unwrap();
         assert_eq!(code.matches("mod symplex_rt {").count(), 1, "{code}");
-        assert!(code.contains("pub fn gamma(") && code.contains("pub fn erf("), "{code}");
+        assert!(
+            code.contains("pub fn gamma(") && code.contains("pub fn erf("),
+            "{code}"
+        );
         assert!(code.contains("fn g(") && code.contains("fn e("), "{code}");
         // The runtime precedes the functions that use it.
         assert!(code.find("mod symplex_rt {").unwrap() < code.find("fn g(").unwrap());
@@ -1135,7 +1138,10 @@ functions = ["fk_matrix"]
             .unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         let _ = fs::remove_dir_all(&dir);
-        assert!(out.status.success(), "generated file failed to compile:\n{stderr}\n{code}");
+        assert!(
+            out.status.success(),
+            "generated file failed to compile:\n{stderr}\n{code}"
+        );
     }
 
     #[test]

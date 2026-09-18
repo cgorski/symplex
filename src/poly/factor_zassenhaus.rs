@@ -1132,7 +1132,7 @@ fn z_primitive_part(f: &ZPoly) -> ZPoly {
     f.iter().map(|x| x / &c).collect()
 }
 
-/// Exact division in ℤ[x]; `None` if `g ∤ f` (or `g = 0`).
+/// Exact division in ℤ\[x\]; `None` if `g ∤ f` (or `g = 0`).
 fn z_div_exact(f: &ZPoly, g: &ZPoly) -> Option<ZPoly> {
     let dg = z_degree(g)?;
     let Some(df) = z_degree(f) else {

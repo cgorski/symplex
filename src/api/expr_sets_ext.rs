@@ -1,4 +1,4 @@
-//! Set-algebra, boolean-logic, and piecewise methods on `SetEx` / `BoolEx` / [`Ex`](crate::api::expr::Ex).
+//! Set-algebra, boolean-logic, and piecewise methods on `SetEx` / `BoolEx` / [`Ex`].
 //!
 //! * [`SetEx`] — normal-form evaluation ([`simplify`](SetEx::simplify)),
 //!   eager set operations (`difference`, `symmetric_difference`,

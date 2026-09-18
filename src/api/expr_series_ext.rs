@@ -1,4 +1,4 @@
-//! Summation, products, and series extension methods on [`Ex`](crate::api::expr::Ex).
+//! Summation, products, and series extension methods on [`Ex`].
 //!
 //! * [`Ex::summation`] / [`Ex::try_summation`] — symbolic `Σ`
 //! * [`Ex::product_over`] / [`Ex::try_product_over`] — symbolic `Π`

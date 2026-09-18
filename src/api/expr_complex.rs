@@ -1,4 +1,4 @@
-//! Complex-analysis methods on [`Ex`](crate::api::expr::Ex): `re`, `im`,
+//! Complex-analysis methods on [`Ex`]: `re`, `im`,
 //! `conjugate`, `arg`, polar form — plus the 0.2 special-function
 //! constructors (`si`, `ci`, `ei`, `li`, `zeta`, `polygamma`,
 //! `kronecker_delta`).

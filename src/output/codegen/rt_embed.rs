@@ -1,10 +1,10 @@
 //! Embedding of the shared numeric runtime into generated Rust code.
 //!
-//! The source of [`numeric_rt`](super::numeric_rt) is included verbatim at
+//! The source of `numeric_rt` is included verbatim at
 //! build time and split on its `// @@begin NAME` / `// @@end NAME` markers.
 //! Generated functions reference helpers as `symplex_rt::gamma(x)`; after a
-//! function body has been emitted, [`used_helpers`] scans it and
-//! [`runtime_module`] produces a `mod symplex_rt { … }` block containing
+//! function body has been emitted, `used_helpers` scans it and
+//! `runtime_module` produces a `mod symplex_rt { … }` block containing
 //! exactly the sections that are needed (plus transitive dependencies), with
 //! the primitive math layer rewritten for the selected [`MathBackend`].
 

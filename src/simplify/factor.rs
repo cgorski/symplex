@@ -13,7 +13,7 @@
 //! 2. Otherwise, if the expression is a polynomial in a handful of symbols,
 //!    convert it to a [`MultiPoly`](crate::poly::multipoly::MultiPoly) and
 //!    factor by Kronecker substitution
-//!    ([`factor_multivariate`](crate::poly::factor_zassenhaus::factor_multivariate)).
+//!    ([`factor_multivariate`]).
 //! 3. Convert the factors back to expressions and build the product.
 //!
 //! Every factorization is verified by multiplying back before it is

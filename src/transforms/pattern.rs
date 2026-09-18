@@ -928,7 +928,7 @@ impl std::fmt::Debug for Rule {
 /// A record of one rewrite step at the arena level.
 ///
 /// Produced by [`apply_rules`] and the simplification engine; converted
-/// to the user-facing [`Step`] by the `Ex` layer.
+/// to the user-facing `Step` (in `api::expr_rules_ext`) by the `Ex` layer.
 #[derive(Clone, Debug)]
 pub struct RawStep {
     /// The name of the rule (or simplification strategy) that fired.

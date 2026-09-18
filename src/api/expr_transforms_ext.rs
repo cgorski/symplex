@@ -1,4 +1,4 @@
-//! Integral transforms (Fourier, Mellin) and directional limits on [`Ex`](crate::api::expr::Ex).
+//! Integral transforms (Fourier, Mellin) and directional limits on [`Ex`].
 //!
 //! This module hosts the 0.2 additions to the transform API:
 //!

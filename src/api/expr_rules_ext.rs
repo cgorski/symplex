@@ -1,4 +1,4 @@
-//! Public rewrite-rule engine and simplification extensions on [`Ex`](crate::api::expr::Ex).
+//! Public rewrite-rule engine and simplification extensions on [`Ex`].
 //!
 //! This module is the user-facing half of the pattern-matching engine in
 //! `crate::transforms::pattern` (crate-internal).  It provides:

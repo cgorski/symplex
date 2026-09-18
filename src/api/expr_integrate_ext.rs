@@ -1,4 +1,4 @@
-//! Definite / improper / numeric integration methods on [`Ex`](crate::api::expr::Ex).
+//! Definite / improper / numeric integration methods on [`Ex`].
 
 use tracing::debug_span;
 

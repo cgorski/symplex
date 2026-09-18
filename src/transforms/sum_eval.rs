@@ -4,7 +4,7 @@
 //! telescoping, geometric / arithmetico-geometric series, binomial
 //! identities, Gosper's algorithm, p-series and power-series recognition,
 //! …) live in [`crate::calculus::summation`].  This module only adapts the
-//! engine's [`SumOutcome`](crate::calculus::summation::SumOutcome) to the
+//! engine's [`SumOutcome`] to the
 //! `Option<ExprId>` contract that `eval` expects.
 
 use crate::base::arena::Arena;

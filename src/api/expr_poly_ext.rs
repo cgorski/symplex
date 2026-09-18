@@ -1,9 +1,9 @@
-//! Polynomial-algebra methods on [`Ex`](crate::api::expr::Ex): resultant, discriminant, square-free, division, numeric roots.
+//! Polynomial-algebra methods on [`Ex`]: resultant, discriminant, square-free, division, numeric roots.
 //!
 //! Every method here treats `self` as a univariate polynomial in an
 //! explicitly supplied variable `var`, converting through
 //! the crate-internal `polybridge` module to the exact dense
-//! [`Poly`](crate::poly::Poly) representation, performing the computation
+//! [`Poly`] representation, performing the computation
 //! there, and converting back.  Methods that return `Option` yield `None`
 //! when the expression is not polynomial in `var` (or when the operation is
 //! undefined, e.g. the discriminant of a constant).
