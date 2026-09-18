@@ -317,7 +317,7 @@ fn e2e_definite_x_squared_0_to_1() {
     // ∫₀¹ x² dx = 1/3
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = expr!(ctx, x ^ 2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = expr!(ctx, x ^ 2).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let s = format!("{result}");
     assert_eq!(s, "1/3", "∫₀¹ x² dx should be 1/3, got: {s}");
 }
@@ -327,7 +327,7 @@ fn e2e_definite_sin_0_to_pi() {
     // ∫₀^π sin(x) dx = 2
     let ctx = Context::new();
     symplex::syms!(ctx; x);
-    let result = x.sin().definite_integral(&x, &ctx.int(0), &ctx.pi());
+    let result = x.sin().integrate_definite(&x, &ctx.int(0), &ctx.pi());
     let result_eval = result.eval();
     let s = format!("{result_eval}");
     assert_eq!(s, "2", "∫₀^π sin(x) dx should be 2, got: {s}");

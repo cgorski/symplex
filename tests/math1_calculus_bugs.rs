@@ -553,7 +553,7 @@ fn definite_integral_x_squared_0_to_1() {
     // ∫₀¹ x² dx = 1/3
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = x.powi(2).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let val = result
         .eval()
         .eval_f64()
@@ -569,7 +569,7 @@ fn definite_integral_sin_0_to_pi() {
     // ∫₀^π sin(x) dx = 2
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.sin().definite_integral(&x, &ctx.int(0), &ctx.pi());
+    let result = x.sin().integrate_definite(&x, &ctx.int(0), &ctx.pi());
     let val = result
         .eval()
         .eval_f64()
@@ -585,7 +585,7 @@ fn definite_integral_exp_0_to_1() {
     // ∫₀¹ exp(x) dx = e - 1
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.exp().definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = x.exp().integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let val = result
         .eval()
         .eval_f64()
@@ -603,7 +603,7 @@ fn definite_integral_1_over_x_1_to_e() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &ctx.int(1) / &x;
-    let result = integrand.definite_integral(&x, &ctx.int(1), &ctx.e());
+    let result = integrand.integrate_definite(&x, &ctx.int(1), &ctx.e());
     let val = result
         .eval()
         .eval_f64()
@@ -1578,7 +1578,7 @@ fn definite_integral_symmetry_odd_function() {
     // ∫₋₁¹ x³ dx = 0 (odd function on symmetric interval)
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.powi(3).definite_integral(&x, &ctx.int(-1), &ctx.int(1));
+    let result = x.powi(3).integrate_definite(&x, &ctx.int(-1), &ctx.int(1));
     let val = result
         .eval()
         .eval_f64()
@@ -1594,7 +1594,7 @@ fn definite_integral_symmetry_even_function() {
     // ∫₋₁¹ x² dx = 2 * ∫₀¹ x² dx = 2/3
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.powi(2).definite_integral(&x, &ctx.int(-1), &ctx.int(1));
+    let result = x.powi(2).integrate_definite(&x, &ctx.int(-1), &ctx.int(1));
     let val = result
         .eval()
         .eval_f64()
@@ -1890,7 +1890,7 @@ fn definite_integral_1_over_1_plus_x2_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &ctx.int(1) / &(&x.powi(2) + 1);
-    let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = integrand.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let val = result
         .eval()
         .eval_f64()
@@ -1909,7 +1909,7 @@ fn definite_integral_x_exp_neg_x_0_to_inf() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &x * &(-&x).exp();
-    let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.infinity());
+    let result = integrand.integrate_definite(&x, &ctx.int(0), &ctx.infinity());
     if let Ok(val) = result.eval().eval_f64() {
         assert!(
             (val - 1.0).abs() < 1e-8,
@@ -1924,7 +1924,7 @@ fn definite_integral_cos_squared_0_to_pi() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = x.cos().powi(2);
-    let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.pi());
+    let result = integrand.integrate_definite(&x, &ctx.int(0), &ctx.pi());
     let val = result
         .eval()
         .eval_f64()
@@ -1942,7 +1942,7 @@ fn definite_integral_sin_squared_0_to_pi() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = x.sin().powi(2);
-    let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.pi());
+    let result = integrand.integrate_definite(&x, &ctx.int(0), &ctx.pi());
     let val = result
         .eval()
         .eval_f64()
@@ -1959,7 +1959,7 @@ fn definite_integral_x_squared_neg1_to_2() {
     // ∫₋₁² x² dx = [x³/3]₋₁² = 8/3 - (-1/3) = 9/3 = 3
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.powi(2).definite_integral(&x, &ctx.int(-1), &ctx.int(2));
+    let result = x.powi(2).integrate_definite(&x, &ctx.int(-1), &ctx.int(2));
     let val = result
         .eval()
         .eval_f64()
@@ -2486,7 +2486,7 @@ fn definite_integral_x_exp_x_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &x * &x.exp();
-    let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = integrand.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let val = result.eval().eval_f64().expect("should evaluate");
     assert!(
         (val - 1.0).abs() < 1e-10,
@@ -2500,7 +2500,7 @@ fn definite_integral_x_sin_x_0_to_pi() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &x * &x.sin();
-    let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.pi());
+    let result = integrand.integrate_definite(&x, &ctx.int(0), &ctx.pi());
     let val = result.eval().eval_f64().expect("should evaluate");
     let expected = std::f64::consts::PI;
     assert!(
@@ -2515,7 +2515,7 @@ fn definite_integral_exp_neg_x_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = (-&x).exp();
-    let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = integrand.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let val = result.eval().eval_f64().expect("should evaluate");
     let expected = 1.0 - (-1.0_f64).exp();
     assert!(
@@ -2879,7 +2879,9 @@ fn definite_integral_sin_x_over_x_limit_check() {
     // ∫₀^(π/2) cos(x) dx = [sin(x)]₀^(π/2) = sin(π/2) - sin(0) = 1
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.cos().definite_integral(&x, &ctx.int(0), &(&ctx.pi() / 2));
+    let result = x
+        .cos()
+        .integrate_definite(&x, &ctx.int(0), &(&ctx.pi() / 2));
     let val = result.eval().eval_f64().expect("should evaluate");
     assert!(
         (val - 1.0).abs() < 1e-10,
@@ -2893,7 +2895,7 @@ fn definite_integral_2x_exp_x2_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &(&ctx.int(2) * &x) * &x.powi(2).exp();
-    let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = integrand.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let val = result.eval().eval_f64().expect("should evaluate");
     let expected = std::f64::consts::E - 1.0;
     assert!(
@@ -2908,7 +2910,7 @@ fn definite_integral_1_over_x_1_to_2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = &ctx.int(1) / &x;
-    let result = integrand.definite_integral(&x, &ctx.int(1), &ctx.int(2));
+    let result = integrand.integrate_definite(&x, &ctx.int(1), &ctx.int(2));
     let val = result.eval().eval_f64().expect("should evaluate");
     let expected = 2.0_f64.ln();
     assert!(
@@ -3295,8 +3297,8 @@ fn definite_integral_reversal() {
     // ∫₀¹ x² dx = 1/3 and ∫₁⁰ x² dx = -1/3
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let forward = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
-    let backward = x.powi(2).definite_integral(&x, &ctx.int(1), &ctx.int(0));
+    let forward = x.powi(2).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
+    let backward = x.powi(2).integrate_definite(&x, &ctx.int(1), &ctx.int(0));
     let v_fwd = forward.eval().eval_f64().expect("should eval");
     let v_bwd = backward.eval().eval_f64().expect("should eval");
     assert!(
@@ -3314,9 +3316,9 @@ fn definite_integral_additivity() {
     // = 2 = 1/2 + 3/2
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let full = x.clone().definite_integral(&x, &ctx.int(0), &ctx.int(2));
-    let part1 = x.clone().definite_integral(&x, &ctx.int(0), &ctx.int(1));
-    let part2 = x.clone().definite_integral(&x, &ctx.int(1), &ctx.int(2));
+    let full = x.clone().integrate_definite(&x, &ctx.int(0), &ctx.int(2));
+    let part1 = x.clone().integrate_definite(&x, &ctx.int(0), &ctx.int(1));
+    let part2 = x.clone().integrate_definite(&x, &ctx.int(1), &ctx.int(2));
     let v_full = full.eval().eval_f64().expect("should eval");
     let v_parts = part1.eval().eval_f64().expect("p1") + part2.eval().eval_f64().expect("p2");
     assert!(

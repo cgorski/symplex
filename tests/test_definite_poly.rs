@@ -11,7 +11,7 @@ fn definite_integral_x_squared_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // ∫₀¹ x² dx = 1/3
-    let result = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = x.powi(2).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     assert_eq!(format!("{result}"), "1/3");
 }
 
@@ -20,7 +20,7 @@ fn definite_integral_constant() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // ∫₀³ 5 dx = 15
-    let result = ctx.int(5).definite_integral(&x, &ctx.int(0), &ctx.int(3));
+    let result = ctx.int(5).integrate_definite(&x, &ctx.int(0), &ctx.int(3));
     assert_eq!(format!("{result}"), "15");
 }
 
@@ -29,7 +29,7 @@ fn definite_integral_linear() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // ∫₀² x dx = 2
-    let result = x.definite_integral(&x, &ctx.int(0), &ctx.int(2));
+    let result = x.integrate_definite(&x, &ctx.int(0), &ctx.int(2));
     assert_eq!(format!("{result}"), "2");
 }
 
@@ -39,7 +39,7 @@ fn definite_integral_polynomial() {
     let x = ctx.symbol("x");
     // ∫₁² (x^2 + x) dx = [x^3/3 + x^2/2]₁² = (8/3 + 2) - (1/3 + 1/2) = 14/3 - 5/6 = 23/6
     let expr = &x.powi(2) + &x;
-    let result = expr.definite_integral(&x, &ctx.int(1), &ctx.int(2));
+    let result = expr.integrate_definite(&x, &ctx.int(1), &ctx.int(2));
     assert_eq!(format!("{result}"), "23/6");
 }
 
@@ -48,7 +48,7 @@ fn definite_integral_sin_0_to_pi() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // ∫₀^π sin(x) dx = [-cos(x)]₀^π = -cos(π) - (-cos(0)) = 1 + 1 = 2
-    let result = x.sin().definite_integral(&x, &ctx.int(0), &ctx.pi());
+    let result = x.sin().integrate_definite(&x, &ctx.int(0), &ctx.pi());
     let evaled = result.eval();
     assert_eq!(format!("{evaled}"), "2");
 }
@@ -57,7 +57,7 @@ fn definite_integral_sin_0_to_pi() {
 fn definite_integral_same_bounds_is_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.powi(2).definite_integral(&x, &ctx.int(3), &ctx.int(3));
+    let result = x.powi(2).integrate_definite(&x, &ctx.int(3), &ctx.int(3));
     assert_eq!(format!("{result}"), "0");
 }
 

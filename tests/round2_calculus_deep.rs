@@ -281,7 +281,7 @@ fn definite_sin_0_to_pi_equals_2() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // ∫₀^π sin(x) dx = [-cos(x)]₀^π = -cos(π) + cos(0) = 1 + 1 = 2
-    let result = x.sin().definite_integral(&x, &ctx.int(0), &ctx.pi());
+    let result = x.sin().integrate_definite(&x, &ctx.int(0), &ctx.pi());
     let evaled = result.eval();
     let s = format!("{evaled}");
     assert_eq!(s, "2", "∫₀^π sin(x)dx should be exactly 2, got: {s}");
@@ -292,7 +292,7 @@ fn definite_x_squared_0_to_1_equals_one_third() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // ∫₀¹ x² dx = 1/3
-    let result = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = x.powi(2).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let s = format!("{result}");
     assert_eq!(s, "1/3", "∫₀¹ x²dx should be 1/3, got: {s}");
 }
@@ -302,7 +302,7 @@ fn definite_x_cubed_0_to_1_equals_one_quarter() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // ∫₀¹ x³ dx = 1/4
-    let result = x.powi(3).definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = x.powi(3).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let s = format!("{result}");
     assert_eq!(s, "1/4", "∫₀¹ x³dx should be 1/4, got: {s}");
 }
@@ -313,7 +313,7 @@ fn definite_cos_0_to_pi_half_equals_1() {
     let x = ctx.symbol("x");
     // ∫₀^{π/2} cos(x) dx = sin(π/2) - sin(0) = 1 - 0 = 1
     let pi_half = &ctx.pi() / &ctx.int(2);
-    let result = x.cos().definite_integral(&x, &ctx.int(0), &pi_half);
+    let result = x.cos().integrate_definite(&x, &ctx.int(0), &pi_half);
     let evaled = result.eval();
     let s = format!("{evaled}");
     assert_eq!(s, "1", "∫₀^{{π/2}} cos(x)dx should be 1, got: {s}");
@@ -324,7 +324,7 @@ fn definite_exp_0_to_1_is_e_minus_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     // ∫₀¹ exp(x) dx = e - 1
-    let result = x.exp().definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = x.exp().integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let evaled = result.eval();
     if let Ok(v) = evaled.eval_f64() {
         let expected = std::f64::consts::E - 1.0;
@@ -347,7 +347,7 @@ fn definite_sin_0_to_2pi_equals_0() {
     let x = ctx.symbol("x");
     // ∫₀^{2π} sin(x) dx = 0 (full period)
     let two_pi = &ctx.int(2) * &ctx.pi();
-    let result = x.sin().definite_integral(&x, &ctx.int(0), &two_pi);
+    let result = x.sin().integrate_definite(&x, &ctx.int(0), &two_pi);
     let evaled = result.eval();
     let s = format!("{evaled}");
     assert_eq!(s, "0", "∫₀^{{2π}} sin(x)dx should be 0, got: {s}");
@@ -359,9 +359,9 @@ fn definite_integral_additivity() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
 
-    let full = x.definite_integral(&x, &ctx.int(0), &ctx.int(2));
-    let part1 = x.definite_integral(&x, &ctx.int(0), &ctx.int(1));
-    let part2 = x.definite_integral(&x, &ctx.int(1), &ctx.int(2));
+    let full = x.integrate_definite(&x, &ctx.int(0), &ctx.int(2));
+    let part1 = x.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
+    let part2 = x.integrate_definite(&x, &ctx.int(1), &ctx.int(2));
 
     let full_v = full.eval_f64().expect("full integral evals");
     let sum_v = {
@@ -382,7 +382,7 @@ fn definite_polynomial_high_degree() {
     let x = ctx.symbol("x");
     // ∫₀¹ (x⁴ + x³ + x² + x + 1) dx = 1/5 + 1/4 + 1/3 + 1/2 + 1 = 137/60
     let poly = &(&(&(&x.powi(4) + &x.powi(3)) + &x.powi(2)) + &x) + &ctx.int(1);
-    let result = poly.definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = poly.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let v = result.eval_f64().expect("should evaluate to f64");
     let expected = 137.0 / 60.0;
     assert!(
@@ -396,8 +396,8 @@ fn definite_integral_reversed_bounds_negates() {
     // ∫_b^a f dx = -∫_a^b f dx
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let forward = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(3));
-    let reversed = x.powi(2).definite_integral(&x, &ctx.int(3), &ctx.int(0));
+    let forward = x.powi(2).integrate_definite(&x, &ctx.int(0), &ctx.int(3));
+    let reversed = x.powi(2).integrate_definite(&x, &ctx.int(3), &ctx.int(0));
     let fv = forward.eval_f64().expect("forward evals");
     let rv = reversed.eval_f64().expect("reversed evals");
     assert!(
@@ -2064,8 +2064,8 @@ fn laplace_derivative_property() {
 fn definite_integral_reversed_bounds_negate() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let fwd = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(3));
-    let rev = x.powi(2).definite_integral(&x, &ctx.int(3), &ctx.int(0));
+    let fwd = x.powi(2).integrate_definite(&x, &ctx.int(0), &ctx.int(3));
+    let rev = x.powi(2).integrate_definite(&x, &ctx.int(3), &ctx.int(0));
     let fv = fwd.eval_f64().expect("forward evals");
     let rv = rev.eval_f64().expect("reversed evals");
     assert!(
@@ -2078,7 +2078,7 @@ fn definite_integral_reversed_bounds_negate() {
 fn definite_integral_same_bounds_is_zero() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.sin().definite_integral(&x, &ctx.int(5), &ctx.int(5));
+    let result = x.sin().integrate_definite(&x, &ctx.int(5), &ctx.int(5));
     let v = result.eval_f64().expect("same-bounds evals");
     assert!(v.abs() < 1e-10, "∫_a^a f dx should be 0, got: {v}");
 }
@@ -2976,7 +2976,7 @@ fn definite_cos_0_to_2pi_equals_0() {
     let x = ctx.symbol("x");
     // ∫₀^{2π} cos(x) dx = sin(2π) - sin(0) = 0
     let two_pi = &ctx.int(2) * &ctx.pi();
-    let result = x.cos().definite_integral(&x, &ctx.int(0), &two_pi);
+    let result = x.cos().integrate_definite(&x, &ctx.int(0), &two_pi);
     let evaled = result.eval();
     let s = format!("{evaled}");
     assert_eq!(s, "0", "∫₀^{{2π}} cos(x)dx should be 0, got: {s}");
@@ -3081,7 +3081,7 @@ fn definite_integral_matches_antideriv_evaluation() {
     let a = ctx.int(1);
     let b = ctx.int(2);
 
-    let direct = f.definite_integral(&x, &a, &b);
+    let direct = f.integrate_definite(&x, &a, &b);
     let antideriv = f.integrate(&x);
     let manual = &antideriv.subs(&x, &b) - &antideriv.subs(&x, &a);
 

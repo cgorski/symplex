@@ -657,7 +657,7 @@ fn process_definite_integral(ctx: &Context, fixture: &Fixture) -> Status {
         None => return Status::NotImplemented(format!("can't parse upper bound: {}", upper_str)),
     };
 
-    let result = expr.definite_integral(&var, &lower, &upper);
+    let result = expr.integrate_definite(&var, &lower, &upper);
 
     // Check for unevaluated form
     let result_str = format!("{}", result);

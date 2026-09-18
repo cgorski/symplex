@@ -188,7 +188,7 @@ Definite integrals:
 ```rust
 let zero = ctx.int(0);
 let one = ctx.int(1);
-let area = expr!(ctx, x^2).definite_integral(&x, &zero, &one);
+let area = expr!(ctx, x^2).integrate_definite(&x, &zero, &one);
 println!("{area}");   // 1/3
 ```
 

@@ -161,7 +161,7 @@ fn definite_integral_sin_0_to_pi() {
     let zero = ctx.int(0);
     let pi = ctx.pi();
 
-    let result = x.sin().definite_integral(&x, &zero, &pi);
+    let result = x.sin().integrate_definite(&x, &zero, &pi);
     let s = format!("{result}");
     eprintln!("∫₀^π sin(x) dx = {s}");
 
@@ -208,7 +208,7 @@ fn definite_integral_x_squared_neg1_to_1() {
     let neg1 = ctx.int(-1);
     let pos1 = ctx.int(1);
 
-    let result = x.powi(2).definite_integral(&x, &neg1, &pos1);
+    let result = x.powi(2).integrate_definite(&x, &neg1, &pos1);
     let s = format!("{result}");
     eprintln!("∫₋₁^1 x² dx = {s}");
 
@@ -247,7 +247,7 @@ fn definite_integral_x_squared_neg1_to_1() {
 fn definite_integral_x_cubed_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let result = x.powi(3).definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = x.powi(3).integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let s = format!("{}", result.simplify());
     eprintln!("∫₀^1 x³ dx = {s}");
     if s != "1/4" {
@@ -2662,7 +2662,7 @@ fn definite_integral_gaussian_0_to_1() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
     let integrand = (-x.powi(2)).exp(); // exp(-x²)
-    let result = integrand.definite_integral(&x, &ctx.int(0), &ctx.int(1));
+    let result = integrand.integrate_definite(&x, &ctx.int(0), &ctx.int(1));
     let s = format!("{result}");
     eprintln!("∫₀^1 exp(-x²) dx = {s}");
     // If it evaluates, check numerically

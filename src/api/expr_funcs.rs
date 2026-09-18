@@ -1333,32 +1333,6 @@ impl Expr<Numeric> {
         }
     }
 
-    /// Compute a definite integral: `∫_lower^upper self dx`.
-    ///
-    /// Computes the antiderivative via [`integrate`](Ex::integrate),
-    /// then evaluates `F(upper) - F(lower)`. If the antiderivative
-    /// is unevaluated (returned an `Integral` node), the result will
-    /// contain unevaluated terms.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use symplex::prelude::*;
-    ///
-    /// let ctx = Context::new();
-    /// let x = ctx.symbol("x");
-    /// // ∫₀¹ x² dx = 1/3
-    /// let result = x.powi(2).definite_integral(&x, &ctx.int(0), &ctx.int(1));
-    /// assert_eq!(format!("{result}"), "1/3");
-    /// ```
-    #[must_use = "returns the definite integral value"]
-    pub fn definite_integral(&self, var: &Ex, lower: &Ex, upper: &Ex) -> Ex {
-        let anti = self.integrate(var);
-        let f_upper = anti.subs(var, upper);
-        let f_lower = anti.subs(var, lower);
-        &f_upper - &f_lower
-    }
-
     /// Compute the Taylor series around `point` to the given `order`.
     ///
     /// Returns the truncated polynomial with `order` terms:
@@ -1483,8 +1457,12 @@ impl Expr<Numeric> {
     /// Compute the residue of this expression at `var = point`.
     ///
     /// The residue is the coefficient of `1/(x-a)` in the Laurent series
-    /// expansion of the function around `a`. For a simple pole at `a`,
-    /// this equals `lim_{x→a} (x-a) * f(x)`.
+    /// expansion of the function around `a`.  Poles of any order are
+    /// handled: the order `m` is detected from the denominator (or by
+    /// limits for non-polynomial denominators) and
+    /// `Res = 1/(m−1)! · d^{m−1}/dx^{m−1} [(x−a)^m f(x)]` at `x = a`.
+    /// Essential singularities and undetectable cases yield a formal
+    /// `Residue` node.
     ///
     /// # Examples
     ///
@@ -1497,6 +1475,10 @@ impl Expr<Numeric> {
     /// let f = &ctx.int(1) / &x;
     /// let result = f.residue(&x, &ctx.int(0));
     /// assert_eq!(format!("{result}"), "1");
+    ///
+    /// // Double pole: Res(e^x / x², x=0) = 1
+    /// let g = &x.exp() / &x.powi(2);
+    /// assert_eq!(format!("{}", g.residue(&x, &ctx.int(0))), "1");
     /// ```
     #[must_use = "returns the residue value; does not modify in place"]
     pub fn residue(&self, var: &Ex, point: &Ex) -> Ex {

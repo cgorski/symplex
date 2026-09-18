@@ -213,7 +213,7 @@ fn main() {
     ];
 
     for (label, expr, lo, hi) in &def_cases {
-        let result = expr.definite_integral(&x, lo, hi);
+        let result = expr.integrate_definite(&x, lo, hi);
         let evaled = result.eval();
         println!("  {label} = {evaled}");
     }
