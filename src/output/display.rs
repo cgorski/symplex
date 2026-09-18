@@ -58,6 +58,19 @@ pub(crate) const PREC_MUL: u8 = 60;
 /// Addition / subtraction (lowest precedence for composed expressions).
 pub(crate) const PREC_ADD: u8 = 40;
 
+/// Does a numeric literal need parentheses when it is the base of a power?
+///
+/// `-2^x` re-parses as `-(2^x)` and `2/3^x` as `2/(3^x)`, so negative and
+/// non-integer rationals must be wrapped: `(-2)^x`, `(2/3)^x`.
+fn num_base_needs_parens(arena: &Arena, id: ExprId) -> bool {
+    if let ExprNode::Num(nid) = arena.node(id) {
+        let r = arena.num(*nid);
+        r.is_negative() || !r.is_integer()
+    } else {
+        false
+    }
+}
+
 /// Return the precedence of a node.
 fn prec_of(node: &ExprNode) -> u8 {
     match node {
@@ -407,6 +420,7 @@ fn expand_expr(
                     | ExprNode::Mul(_)
                     | ExprNode::Neg(_)
                     | ExprNode::Pow(_, _) => PREC_MUL + 1,
+                    _ if num_base_needs_parens(arena, base) => PREC_ATOM + 1,
                     _ => PREC_MUL,
                 };
                 stack.push(WorkItem::Expr(base, base_prec));
@@ -418,6 +432,9 @@ fn expand_expr(
                     | ExprNode::Mul(_)
                     | ExprNode::Neg(_)
                     | ExprNode::Pow(_, _) => PREC_POW + 1,
+                    // `(-2)^x`, `(2/3)^x` — a bare `-2^x` / `2/3^x` re-parses
+                    // with the wrong grouping.
+                    _ if num_base_needs_parens(arena, base) => PREC_ATOM + 1,
                     _ => PREC_POW,
                 };
 

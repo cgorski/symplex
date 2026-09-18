@@ -219,13 +219,25 @@ fn render_mul_factor(arena: &Arena, id: ExprId) -> String {
 }
 
 /// Render a Pow base, wrapping compound expressions in \left(...\right).
+///
+/// Besides sums/products/negations this also wraps nested powers (a bare
+/// `x^{a}^{b}` is a LaTeX "double superscript" error) and negative or
+/// non-integer numeric bases (`\left(-2\right)^{x}`,
+/// `\left(\frac{2}{3}\right)^{x}`).
 fn render_pow_base(arena: &Arena, base: ExprId) -> String {
     let s = latex_to_string(arena, base);
-    match arena.node(base) {
-        ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) => {
-            format!("\\left({}\\right)", s)
+    let wrap = match arena.node(base) {
+        ExprNode::Add(_) | ExprNode::Mul(_) | ExprNode::Neg(_) | ExprNode::Pow(_, _) => true,
+        ExprNode::Num(nid) => {
+            let r = arena.num(*nid);
+            r.is_negative() || !r.is_integer()
         }
-        _ => s,
+        _ => false,
+    };
+    if wrap {
+        format!("\\left({}\\right)", s)
+    } else {
+        s
     }
 }
 
