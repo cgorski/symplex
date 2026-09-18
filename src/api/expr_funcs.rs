@@ -4043,7 +4043,13 @@ impl Expr<Numeric> {
         &self,
         subs: &[(&Ex, V)],
     ) -> Result<f64, SymplexError> {
-        self.subs_map_with(subs).eval().eval_f64()
+        let bound = self.subs_map_with(subs).eval();
+        if let Some(free) = bound.free_symbols().into_iter().next() {
+            return Err(SymplexError::FreeSymbol {
+                name: format!("{free}"),
+            });
+        }
+        bound.eval_f64()
     }
 
     /// Substitute multiple rational values `p/q` and evaluate to `f64`.
