@@ -1084,76 +1084,28 @@ fn eval_node(
                 branches = pairs.len(),
                 "evalf: Piecewise — evaluating conditions"
             );
+            // Branches are examined in order.  The first condition that is
+            // decidedly true selects its value; a decidedly false condition
+            // is skipped.  An *undecided* condition is an error — falling
+            // through to a later `True` branch would be silently wrong.
             for &(value_id, cond_id) in pairs.iter() {
-                // Check if condition is literally BoolTrue
-                if cond_id == arena.bool_true {
-                    return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
-                }
-                // Check if condition is literally BoolFalse — skip
-                if cond_id == arena.bool_false {
-                    continue;
-                }
-                // Try to evaluate relational conditions numerically
-                match arena.node(cond_id) {
-                    ExprNode::Gt(a, b) => {
-                        if let (Some(av), Some(bv)) = (cache.get(a), cache.get(b))
-                            && av.1.is_zero()
-                            && bv.1.is_zero()
-                        {
-                            let diff = av.0.sub(&bv.0, prec, rm);
-                            if diff.is_positive() {
-                                return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
-                            }
-                            continue; // condition is false
-                        }
+                match decide_condition(arena, cond_id, cache, prec, rm) {
+                    Some(true) => {
+                        return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
                     }
-                    ExprNode::Ge(a, b) => {
-                        if let (Some(av), Some(bv)) = (cache.get(a), cache.get(b))
-                            && av.1.is_zero()
-                            && bv.1.is_zero()
-                        {
-                            let diff = av.0.sub(&bv.0, prec, rm);
-                            if diff.is_positive() || diff.is_zero() {
-                                return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
-                            }
-                            continue;
-                        }
+                    Some(false) => continue,
+                    None => {
+                        return Err(SymplexError::Unevaluable {
+                            reason: format!(
+                                "cannot evaluate piecewise: condition `{}` is undecided",
+                                arena.display(cond_id)
+                            ),
+                        });
                     }
-                    ExprNode::Eq_(a, b) => {
-                        if let (Some(av), Some(bv)) = (cache.get(a), cache.get(b))
-                            && av.1.is_zero()
-                            && bv.1.is_zero()
-                        {
-                            let diff = av.0.sub(&bv.0, prec, rm);
-                            if diff.is_zero() {
-                                return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
-                            }
-                            continue;
-                        }
-                    }
-                    ExprNode::Not(inner) => {
-                        if *inner == arena.bool_true {
-                            continue; // Not(True) = False
-                        }
-                        if *inner == arena.bool_false {
-                            return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
-                        }
-                    }
-                    _ => {}
                 }
-            }
-            // No condition was definitively true — only fall back if last branch is an explicit else (BoolTrue)
-            if let Some(&(value_id, cond_id)) = pairs.last() {
-                if matches!(arena.node(cond_id), ExprNode::BoolTrue) {
-                    debug!("evalf: Piecewise — using explicit else branch");
-                    return eval_node_or_subtree(arena, value_id, cache, prec, rm, cc);
-                }
-                tracing::warn!(
-                    "evalf: Piecewise — no condition resolved and last branch is not an else; returning error"
-                );
             }
             Err(SymplexError::Unevaluable {
-                reason: "cannot evaluate piecewise: no condition is definitively true and no else branch exists".into(),
+                reason: "cannot evaluate piecewise: every condition is false".into(),
             })
         }
 
@@ -1377,6 +1329,74 @@ fn evalf_subtree_with_sub(
         .ok_or_else(|| SymplexError::Unevaluable {
             reason: "subtree evaluation with substitution failed".into(),
         })
+}
+
+/// Decide a boolean condition numerically using already-evaluated operands.
+///
+/// Relational nodes compare the cached real values of their operands;
+/// `And`/`Or`/`Not` are combined with three-valued logic.  Returns `None`
+/// when any needed operand is missing from the cache (free symbol, complex
+/// value, unsupported node), so the caller can refuse rather than guess.
+fn decide_condition(
+    arena: &Arena,
+    cond: ExprId,
+    cache: &FxHashMap<ExprId, Complex>,
+    prec: usize,
+    rm: RoundingMode,
+) -> Option<bool> {
+    // Real-valued difference `a - b` when both operands are cached reals.
+    let real_diff = |a: &ExprId, b: &ExprId| -> Option<BigFloat> {
+        let (av, bv) = (cache.get(a)?, cache.get(b)?);
+        if av.1.is_zero() && bv.1.is_zero() {
+            Some(av.0.sub(&bv.0, prec, rm))
+        } else {
+            None
+        }
+    };
+
+    let order = walk::post_order_ids(arena, cond);
+    let mut truth: FxHashMap<ExprId, Option<bool>> = FxHashMap::default();
+    for &id in &order {
+        let v: Option<bool> = match arena.node(id) {
+            ExprNode::BoolTrue => Some(true),
+            ExprNode::BoolFalse => Some(false),
+            ExprNode::Gt(a, b) => real_diff(a, b).map(|d| d.is_positive()),
+            ExprNode::Ge(a, b) => real_diff(a, b).map(|d| d.is_positive() || d.is_zero()),
+            ExprNode::Eq_(a, b) => real_diff(a, b).map(|d| d.is_zero()),
+            ExprNode::Ne(a, b) => real_diff(a, b).map(|d| !d.is_zero()),
+            ExprNode::Not(inner) => truth.get(inner).copied().flatten().map(|b| !b),
+            ExprNode::And(kids) => {
+                let vals: Vec<Option<bool>> = kids
+                    .iter()
+                    .map(|k| truth.get(k).copied().flatten())
+                    .collect();
+                if vals.contains(&Some(false)) {
+                    Some(false)
+                } else if vals.iter().all(|v| *v == Some(true)) {
+                    Some(true)
+                } else {
+                    None
+                }
+            }
+            ExprNode::Or(kids) => {
+                let vals: Vec<Option<bool>> = kids
+                    .iter()
+                    .map(|k| truth.get(k).copied().flatten())
+                    .collect();
+                if vals.contains(&Some(true)) {
+                    Some(true)
+                } else if vals.iter().all(|v| *v == Some(false)) {
+                    Some(false)
+                } else {
+                    None
+                }
+            }
+            // Numeric operands and anything else carry no truth value.
+            _ => None,
+        };
+        truth.insert(id, v);
+    }
+    truth.get(&cond).copied().flatten()
 }
 
 /// Return the cached value for `id`, or fall back to calling `eval_node`.

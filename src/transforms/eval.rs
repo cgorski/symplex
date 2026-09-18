@@ -526,29 +526,36 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
             }
 
             // ── Piecewise ──────────────────────────────────────────
+            //
+            // Branches are examined *in order*.  A `False` condition is
+            // dropped, a `True` condition selects its branch and makes
+            // every later branch unreachable, and an undecided condition
+            // stops the search — a later `True` must never shadow an
+            // earlier branch whose condition is still open.
             ExprNode::Piecewise(ref pairs) => {
-                let new: smallvec::SmallVec<[(ExprId, ExprId); 3]> = pairs
-                    .iter()
-                    .map(|&(val, cond)| {
-                        let nv = cache.get(&val).copied().unwrap_or(val);
-                        let nc = cache.get(&cond).copied().unwrap_or(cond);
-                        (nv, nc)
-                    })
-                    .collect();
-                // Try to find the first piece whose condition is BoolTrue.
-                let mut result: Option<ExprId> = None;
-                for &(val, cond) in &new {
-                    if cond == arena.bool_true {
-                        result = Some(val);
+                let t = arena.bool_true;
+                let f = arena.bool_false;
+                let mut kept: smallvec::SmallVec<[(ExprId, ExprId); 3]> = smallvec::SmallVec::new();
+                for &(val, cond) in pairs.iter() {
+                    let nv = cache.get(&val).copied().unwrap_or(val);
+                    let nc = cache.get(&cond).copied().unwrap_or(cond);
+                    if nc == f {
+                        continue;
+                    }
+                    kept.push((nv, nc));
+                    if nc == t {
                         break;
                     }
                 }
-                if let Some(val) = result {
-                    val
-                } else if new == *pairs {
+                if kept.is_empty() {
+                    // Every branch was ruled out: the function is undefined.
+                    arena.nan
+                } else if kept.len() == 1 && kept[0].1 == t {
+                    kept[0].0
+                } else if kept == *pairs {
                     id
                 } else {
-                    arena.intern(ExprNode::Piecewise(new))
+                    arena.intern(ExprNode::Piecewise(kept))
                 }
             }
 
