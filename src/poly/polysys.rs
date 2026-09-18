@@ -572,7 +572,29 @@ pub fn solve_system_ex(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexE
             .iter()
             .map(|p| multipoly_to_expr(arena, p, &var_ids))
             .collect();
-        solve_triangular_symbolic(arena, &basis_exprs, &var_ids)
+        let candidates = solve_triangular_symbolic(arena, &basis_exprs, &var_ids);
+        // Never return an unverified tuple: every candidate must satisfy
+        // every *original* equation numerically.  Back-substitution through
+        // radicals can produce spurious combinations (a root of the
+        // eliminant paired with the wrong branch of another variable).
+        let degrees: Vec<usize> = nonzero
+            .iter()
+            .map(|p| p.total_degree().unwrap_or(0) as usize)
+            .collect();
+        let nonzero_eq_ids: Vec<ExprId> = eq_ids
+            .iter()
+            .copied()
+            .filter(|&id| !arena.is_zero_structural(id))
+            .collect();
+        let checks: Vec<(ExprId, usize)> = if nonzero_eq_ids.len() == degrees.len() {
+            nonzero_eq_ids.into_iter().zip(degrees).collect()
+        } else {
+            eq_ids.iter().map(|&id| (id, 1)).collect()
+        };
+        candidates
+            .into_iter()
+            .filter(|sol| tuple_satisfies_all(arena, &checks, &var_ids, sol) == Some(true))
+            .collect::<Vec<_>>()
     };
 
     // Wrap and simplify.
@@ -585,6 +607,73 @@ pub fn solve_system_ex(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexE
         })
         .collect();
     Ok(result)
+}
+
+/// Relative tolerance for the numeric residual check of a candidate
+/// solution tuple (evaluated at 30 significant digits, so genuine
+/// solutions have residuals around 1e-25 relative).
+const RESIDUAL_REL_TOL: f64 = 1e-8;
+
+/// Numerically verify that `vals` (one value per entry of `vars`) satisfies
+/// every equation in `eqs`.
+///
+/// Each equation is substituted, evaluated exactly, and — when that does
+/// not settle it — evaluated numerically as a complex number; the residual
+/// must be below [`RESIDUAL_REL_TOL`] relative to `(1 + max|vᵢ|)^deg`.
+///
+/// Returns `Some(true)` when every residual is negligible, `Some(false)`
+/// when some residual is clearly nonzero, and `None` when a residual could
+/// not be evaluated (callers must treat `None` as *unverified*).
+fn tuple_satisfies_all(
+    arena: &mut Arena,
+    eqs: &[(ExprId, usize)],
+    vars: &[ExprId],
+    vals: &[ExprId],
+) -> Option<bool> {
+    if vars.len() != vals.len() {
+        return None;
+    }
+    // Magnitude scale of the solution point.
+    let mut max_abs = 0.0f64;
+    for &v in vals {
+        let ev = crate::transforms::eval::eval(arena, v);
+        if crate::base::walk::has_unevaluated(arena, ev) {
+            return None;
+        }
+        let s = crate::transforms::evalf::evalf(arena, ev, 30).ok()?;
+        let mag = crate::transforms::solve::parse_evalf_magnitude(&s)?;
+        if !mag.is_finite() {
+            return Some(false);
+        }
+        max_abs = max_abs.max(mag);
+    }
+    let pairs: Vec<(ExprId, ExprId)> = vars.iter().copied().zip(vals.iter().copied()).collect();
+    for &(eq, deg) in eqs {
+        let s = crate::transforms::subs::subs_map(arena, eq, &pairs);
+        let s = crate::transforms::eval::eval(arena, s);
+        if arena.is_zero_structural(s) {
+            continue;
+        }
+        if let Some(r) = arena.as_num(s) {
+            if r.is_zero() {
+                continue;
+            }
+            return Some(false);
+        }
+        if !crate::base::walk::free_symbols(arena, s).is_empty() {
+            return None;
+        }
+        let text = crate::transforms::evalf::evalf(arena, s, 30).ok()?;
+        let residual = crate::transforms::solve::parse_evalf_magnitude(&text)?;
+        if !residual.is_finite() {
+            return Some(false);
+        }
+        let scale = (1.0 + max_abs).powi(deg.min(64) as i32);
+        if residual > RESIDUAL_REL_TOL * scale {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -618,6 +707,22 @@ fn constant_is_zero(arena: &mut Arena, e: ExprId) -> Option<bool> {
         return Some(mag < 1e-10);
     }
     None
+}
+
+/// Does `p`, viewed as a polynomial in `var`, have coefficients that are
+/// all (exactly or numerically) zero?  Such a polynomial is the result of
+/// substituting an algebraic root whose radical form `eval` could not
+/// reduce to `0`; it must not be used as a pivot.
+fn poly_vanishes_numerically(arena: &mut Arena, p: ExprId, var: ExprId) -> bool {
+    let Some(coeffs) = crate::transforms::solve::symbolic_poly_coeffs(arena, p, var) else {
+        return false;
+    };
+    if coeffs.is_empty() {
+        return true;
+    }
+    coeffs
+        .iter()
+        .all(|&c| constant_is_zero(arena, c) == Some(true))
 }
 
 /// Substitute `var := value` into `exprs`, evaluate, and drop the ones
@@ -699,10 +804,28 @@ fn solve_triangular_symbolic(
         }
     }
 
-    if let Some(&(_, pivot)) = univariate.iter().min_by_key(|(d, _)| *d) {
-        let roots = match crate::transforms::solve::solve_classified(arena, pivot, last) {
-            crate::transforms::solve::SolveOutcome::Solutions(s) => s,
-            _ => return vec![],
+    if !univariate.is_empty() {
+        // Lowest degree first.  A polynomial whose coefficients all vanish
+        // for the roots substituted so far (exactly or numerically) carries
+        // no information about `last`: skip it and use the next one.
+        univariate.sort_by_key(|(d, _)| *d);
+        let mut chosen: Option<(ExprId, Vec<crate::transforms::solve::Solution>)> = None;
+        for &(_, cand) in &univariate {
+            if poly_vanishes_numerically(arena, cand, last) {
+                continue;
+            }
+            match crate::transforms::solve::solve_classified(arena, cand, last) {
+                crate::transforms::solve::SolveOutcome::Solutions(s) if !s.is_empty() => {
+                    chosen = Some((cand, s));
+                    break;
+                }
+                crate::transforms::solve::SolveOutcome::Solutions(_) => continue,
+                crate::transforms::solve::SolveOutcome::Identity => continue,
+                crate::transforms::solve::SolveOutcome::NoSolution(_) => return vec![],
+            }
+        }
+        let Some((pivot, roots)) = chosen else {
+            return vec![];
         };
         let mut all = Vec::new();
         for root in roots {
@@ -732,11 +855,22 @@ fn solve_triangular_symbolic(
         return all;
     }
 
-    if let Some(&(_, pivot)) = with_last.iter().min_by_key(|(d, _)| *d) {
+    if !with_last.is_empty() {
         // Solve for `last` with coefficients depending on earlier variables.
-        let roots = match crate::transforms::solve::solve_classified(arena, pivot, last) {
-            crate::transforms::solve::SolveOutcome::Solutions(s) if !s.is_empty() => s,
-            _ => return vec![],
+        with_last.sort_by_key(|(d, _)| *d);
+        let mut chosen: Option<(ExprId, Vec<crate::transforms::solve::Solution>)> = None;
+        for &(_, cand) in &with_last {
+            match crate::transforms::solve::solve_classified(arena, cand, last) {
+                crate::transforms::solve::SolveOutcome::Solutions(s) if !s.is_empty() => {
+                    chosen = Some((cand, s));
+                    break;
+                }
+                crate::transforms::solve::SolveOutcome::NoSolution(_) => return vec![],
+                _ => continue,
+            }
+        }
+        let Some((pivot, roots)) = chosen else {
+            return vec![];
         };
         let mut all = Vec::new();
         for root in roots {

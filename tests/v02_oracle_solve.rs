@@ -9,40 +9,21 @@ use symplex::prelude::*;
 use v02_oracle_common::*;
 
 /// Library bugs surfaced by this file (strict xfail — see common module).
-const KNOWN_BUGS: &[KnownBug] = &[
-    (
-        "nonlinear_system",
-        "polynomial",
-        "x**2 + y - 3 ; x - y**2 + 1",
-        // BUG: solve_system_ex returns 4 (x, y) pairs whose y satisfies the
-        // eliminated quartic but whose x does NOT satisfy x^2 + y - 3 = 0
-        // (residual ≈ -1.53 + 1.43i).  SymPy: 4 correct solutions, e.g.
-        // (2.1875, -1.7855).
-        "solve_system_ex returns wrong x for a quartic-resultant system",
-    ),
-    (
-        "nonlinear_system",
-        "polynomial",
-        "x*y - 1 ; x**2 - y**2 - 3",
-        // BUG: solve_system_ex returns Ok([]) (claims no solutions) although
-        // the system has 4: (±1.8174, ±0.5503) and (±0.5503i, ∓1.8174i).
-        "solve_system_ex returns an empty solution set for a solvable system",
-    ),
-    (
-        "rsolve",
-        "linear",
-        "third_order_irrational_roots",
-        // BUG: rsolve_linear([-6, 5, -1, 1], None, n, [1, 0, 0]) does not
-        // terminate (>10 min) — the characteristic cubic r^3 - r^2 + 5r - 6 has
-        // one real irrational and two complex roots.  SymPy's rsolve returns
-        // a closed form in CRootOf within a second.
-        "rsolve_linear hangs on a cubic characteristic polynomial with irrational roots",
-    ),
-];
+const KNOWN_BUGS: &[KnownBug] = &[(
+    "rsolve",
+    "linear",
+    "third_order_irrational_roots",
+    // BUG: rsolve_linear([-6, 5, -1, 1], None, n, [1, 0, 0]) does not
+    // terminate (>10 min) — the characteristic cubic r^3 - r^2 + 5r - 6 has
+    // one real irrational and two complex roots.  SymPy's rsolve returns
+    // a closed form in CRootOf within a second.
+    "rsolve_linear hangs on a cubic characteristic polynomial with irrational roots",
+)];
 
-/// Reproducer: `solve_system_ex` returns a point that is not a solution.
+/// Regression: `solve_system_ex` used to return points that were not
+/// solutions (Cardano cube roots of negative radicands were evaluated on
+/// the principal complex branch).
 #[test]
-#[ignore = "BUG: solve_system_ex([x^2+y-3, x-y^2+1]) returns x values with residual ~1.5 in the first equation"]
 fn bug_solve_system_ex_wrong_x_component() {
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
@@ -62,9 +43,9 @@ fn bug_solve_system_ex_wrong_x_component() {
     }
 }
 
-/// Reproducer: `solve_system_ex` claims a solvable system has no solutions.
+/// Regression: `solve_system_ex` used to claim this solvable system has
+/// no solutions (biquadratic eliminant hit a 0/0 in Ferrari's method).
 #[test]
-#[ignore = "BUG: solve_system_ex([x*y-1, x^2-y^2-3]) returns Ok([]) but the system has 4 solutions"]
 fn bug_solve_system_ex_empty_for_solvable_system() {
     let ctx = Context::new();
     let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
