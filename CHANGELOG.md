@@ -8,6 +8,56 @@ Until 1.0, minor releases may contain breaking changes; they are listed first.
 
 ## [Unreleased]
 
+Driven by field notes from downstream tools built on 0.3.0.  Additive only
+(verified with `cargo-semver-checks` against 0.3.0).
+
+### Added
+
+- The exact-arithmetic crates are re-exported — `symplex::num_bigint`,
+  `num_rational`, `num_integer`, `num_traits` — so a downstream crate can
+  name `Ratio<BigInt>` (from `as_rational`, `linprog::Q`, `Matrix::from_ratio`,
+  …) without adding and version-matching those crates itself.
+- `Ex::as_ratio_parts() -> Option<(BigInt, BigInt)>` and
+  `Ex::as_ratio_i128() -> Option<(i128, i128)>`: numerator and denominator of
+  a rational literal (SymPy's `Rational.p` / `.q`).
+- `Poly::{count_real_roots, count_real_roots_in(lo, hi), real_roots_isolate,
+  is_nonnegative_on(lo, hi), is_positive_on(lo, hi)}` — the Sturm-based
+  primitives that were only reachable through `Ex` — and `Poly::shift(gen, a)`
+  (Taylor shift; "all coefficients of `p(k + a)` are `≥ 0`" is the
+  certificate-style sufficient condition for `p ≥ 0` on `[a, ∞)`).
+- `Ex::count_real_roots_in(var, lo, hi)`; the old name `roots_count_real`
+  stays as an alias (no deprecation warning in a patch release) and is
+  removed in 0.4.
+- `Ex::to_lean()` / `to_lean_with(&LeanOpts)` (`symplex::lean`): Lean 4 /
+  Mathlib rendering with Mathlib spacing (`2 * j + 1`, `j ^ 2`), ascribed
+  rational literals (`(3 / 31 : ℝ)`), single-fraction division
+  (`(j - 1) / (2 * j)`), `⁻¹` for negative powers, `Real.sin`/`Real.exp`/
+  `Real.sqrt`/`Real.pi`/`|x|`/`⌊x⌋`, relations and connectives for `BoolEx`
+  (`0 < x ∧ x < 1`), `if … then … else` for `Piecewise`.  Nodes without a
+  standard Mathlib spelling are `Err(NotImplemented)`.
+
+### Behaviour changes
+
+- `Ex::as_numer_denom` follows SymPy: a rational literal splits into
+  integers (`3/31` → `(3, 31)`), a rational coefficient splits
+  (`2/3·x` → `(2*x, 3)`), and sums are combined over a common denominator at
+  every depth (`x/2 + 1/3` → `(3*x + 2, 6)`, `1/x + 1/y` → `(x + y, x*y)`).
+  Previously a rational literal was an atom (`(3/31, 1)`) and a sum was
+  returned whole.  Still no cancellation (`ratsimp` does that).
+- `Ex::together` is deep: fractions nested inside numerators, denominators,
+  products and integer powers are flattened into one quotient.  Previously
+  only a top-level sum was combined, so `Poly::new` on the numerator of a
+  `together()` result could silently see a rational function.
+
+### Fixed
+
+- `eval` was not idempotent on `exp(f)^g`: `(1/exp(-1)).eval()` gave
+  `exp(1)`, and only a second `eval` gave `E`.  The rewritten exponent is
+  now evaluated in the same pass.
+- `laplace_final_value` located poles of `s·F(s)` without cancelling the
+  factor `s`, which with the deep `together` would have reported a spurious
+  pole at the origin for `F(s) = 3/s − 2/(s + 1)`; it now uses `ratsimp`.
+
 ### Infrastructure
 
 - The ~275 integration-test source files are compiled into nine test

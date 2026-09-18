@@ -355,8 +355,11 @@ pub(crate) fn eval(arena: &mut Arena, expr: ExprId) -> ExprId {
                 // Placed in eval (not canon_pow) so the solver's intermediate
                 // Pow(Exp(x), k) nodes survive until substitution completes.
                 else if let ExprNode::Exp(inner) = arena.node(nb).clone() {
+                    // Re-evaluate the new argument so `exp(-1)^(-1)` becomes
+                    // `E`, not an `exp(1)` that a second `eval` would fold.
                     let product = arena.mul(&[inner, ne]);
-                    arena.exp(product)
+                    let product = eval(arena, product);
+                    eval_exp(arena, product).unwrap_or_else(|| arena.exp(product))
                 } else if nb == base && ne == exp {
                     id
                 } else {

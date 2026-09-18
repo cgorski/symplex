@@ -34,6 +34,7 @@ Before the translation table, a few structural differences to be aware of:
 | `x**2 + 2*x + 1` | `&x.powi(2) + &x * 2 + 1` |
 | `x**2 + 2*x + 1` | `expr!(ctx, x^2 + 2*x + 1)` |
 | `Rational(1, 3)` | `ctx.rational(1, 3)` |
+| `r.p`, `r.q` (numerator / denominator of a `Rational`) | `e.as_ratio_i128()` → `Option<(i128, i128)>`, `e.as_ratio_parts()` → `Option<(BigInt, BigInt)>`; the full `Ratio<BigInt>` via `e.as_rational()` (types re-exported as `symplex::num_rational` / `symplex::num_bigint`) |
 | `Integer(42)` | `ctx.int(42)` |
 | `pi` | `ctx.pi()` |
 | `E` | `ctx.e()` |
@@ -99,9 +100,11 @@ Before the translation table, a few structural differences to be aware of:
 | `div(f, g, x)`, `gcdex(f, g, x)` | `f.poly_div(&g, &x)`, `f.poly_gcdex(&g, &x)` |
 | `decompose(f, x)`, `interpolate(points, x)` | `f.decompose(&x)`, `Ex::poly_interpolate(&points, &x)` |
 | `Poly(f).nroots()`, `real_roots(f)`, `count_roots(f)` | `f.nroots(&x, digits)`, `f.real_roots_isolate(&x)`, `f.count_real_roots(&x)` |
+| `Poly(f).count_roots(inf, sup)` | `f.count_real_roots_in(&x, &lo, &hi)` / `p.count_real_roots_in(&lo, &hi)` on a `Poly` (endpoints rational or `±∞`) |
 | `cancel(expr)` (all variables) / `ratsimp(expr)` | `expr.ratsimp()` — rational normal form, opaque non-rational subexpressions treated as indeterminates |
 | `cancel(expr, x)` | `expr.cancel(&x)` |
-| `fraction(together(expr))`, `fraction(cancel(expr))` | `expr.together().as_numer_denom()`, `expr.ratsimp().as_numer_denom()` |
+| `expr.as_numer_denom()`, `fraction(expr)` | `expr.as_numer_denom()` — same semantics: `3/31` → `(3, 31)`, `x/2 + 1/3` → `(3*x + 2, 6)`, sums combined at every depth, nothing cancelled |
+| `fraction(together(expr))`, `fraction(cancel(expr))` | `expr.as_numer_denom()` (already deep), `expr.ratsimp().as_numer_denom()` |
 | `apart(expr, x)` | `expr.partial_fractions(&x)` |
 | `together(expr)` | `expr.together()` |
 | `collect(expr, x)` | `expr.collect(&x)` |
@@ -142,6 +145,9 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 | `p + q`, `p * q`, `p ** 3`, `p.diff(x)` | `p.add(&q)?`, `p.mul(&q)?`, `p.pow(3)?`, `p.derivative(&x)?` |
 | `p.primitive()`, `p.monic()` | `p.content_and_primitive()`, `p.monic()` |
 | `Poly(e, x).nroots()` | `e.as_poly(&[&x]).unwrap().nroots(digits)?` (or `e.nroots(&x, digits)?`) |
+| `Poly(e, x).count_roots(a, b)`, `real_roots` | `p.count_real_roots_in(&a, &b)`, `p.count_real_roots()`, `p.real_roots_isolate()` |
+| `Poly(e, x).shift(a)` | `p.shift(&x, &a)?` — `p(x + a)`; all coefficients `≥ 0` after shifting by `a` certifies `p ≥ 0` on `[a, ∞)` |
+| (no equivalent) | `p.is_nonnegative_on(&lo, &hi)`, `p.is_positive_on(&lo, &hi)` → `Option<bool>` (exact, Sturm) |
 | `Interval(lo, hi).is_subset(solve_univariate_inequality(e >= 0, x))` | `e.poly_is_nonnegative_on(&x, &lo, &hi)` (and `poly_is_positive_on`) → `Option<bool>`, exact Sturm-based decision |
 | `groebner([f, g], x, y)` | `groebner::groebner_basis(&[f.to_multipoly()?, g.to_multipoly()?])`, back with `Poly::from_multipoly` |
 | `Matrix` of coefficients by hand | `Poly::monomial_basis(&polys)?`, `Poly::coefficient_matrix(&polys, &basis)?` |
@@ -235,6 +241,7 @@ See [Polynomials as Data](../guide/polynomials.md). Generators are explicit; any
 
 | SymPy | symplex |
 |-------|---------|
+| `sstr(expr)` then hand-edit for Lean / Mathlib | `expr.to_lean()?` — Mathlib spacing (`2 * j + 1`, `j ^ 2`), `(3 / 31 : ℝ)`, `(j - 1) / (2 * j)`, `Real.sin x`, `0 < x ∧ x < 1` for a `BoolEx`; `to_lean_with(&LeanOpts { .. })` for the carrier type / ascribing every integer |
 | `lambdify([x], expr)` | `expr.compile(&["x"])` → `Result<CompiledFn>` (`Clone + Send + Sync`, `arity()`, `try_call()`) |
 | `lambdify([x, y], [f1, f2])` | `Ex::compile_many(&[&f1, &f2], &["x", "y"])` → `Result<CompiledFnVec>` (shared CSE) |
 | `rust_code(expr)` | `expr.to_rust_fn("name", &["x"])` → `Result<String>` (`to_rust_fn_with_options` for `f32`, `no_std`, `checked_domain`, …) |

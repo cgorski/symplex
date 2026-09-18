@@ -362,8 +362,10 @@ fn run_rows(range: std::ops::Range<usize>) {
                 "display of the solution of {name}"
             );
         }
+        // Hang guard only: a row normally takes well under a second, but the
+        // whole suite running in parallel can stretch one to ~2.5 s.
         assert!(
-            t.elapsed() < time_budget(2),
+            t.elapsed() < time_budget(5),
             "{name} took {:?}",
             t.elapsed()
         );

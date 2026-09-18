@@ -890,7 +890,8 @@ impl Expr<Numeric> {
         Some(SturmChain::new(&f).count_real_roots())
     }
 
-    /// Number of distinct real roots in the closed interval `[lo, hi]`.
+    /// Number of distinct real roots in the closed interval `[lo, hi]`
+    /// (Sturm's theorem; SymPy's `Poly.count_roots(inf, sup)`).
     ///
     /// `lo` and `hi` must be exact rational numbers or `±∞`
     /// (`Context::infinity`, `Context::neg_infinity`).  Returns `None` for
@@ -904,11 +905,11 @@ impl Expr<Numeric> {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let f = &x.powi(3) - &x;   // roots −1, 0, 1
-    /// assert_eq!(f.roots_count_real(&x, &ctx.int(0), &ctx.int(5)), Some(2));
-    /// assert_eq!(f.roots_count_real(&x, &ctx.rational(1, 2), &ctx.infinity()), Some(1));
+    /// assert_eq!(f.count_real_roots_in(&x, &ctx.int(0), &ctx.int(5)), Some(2));
+    /// assert_eq!(f.count_real_roots_in(&x, &ctx.rational(1, 2), &ctx.infinity()), Some(1));
     /// ```
     #[must_use]
-    pub fn roots_count_real(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<usize> {
+    pub fn count_real_roots_in(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<usize> {
         let var_id = self.checked_id(var);
         let lo_id = self.checked_id(lo);
         let hi_id = self.checked_id(hi);
@@ -932,6 +933,16 @@ impl Expr<Numeric> {
             Endpoint::NegInf => return Some(0),
         };
         Some(chain.count_roots_in_closed(&lo_r, &hi_r))
+    }
+
+    /// Former name of [`count_real_roots_in`](Self::count_real_roots_in).
+    ///
+    /// Kept (without a deprecation warning, so `-D warnings` builds are not
+    /// broken by a patch release) for 0.3 source compatibility; it is removed
+    /// in 0.4 — new code should call `count_real_roots_in`.
+    #[must_use]
+    pub fn roots_count_real(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<usize> {
+        self.count_real_roots_in(var, lo, hi)
     }
 
     /// Isolating intervals for the distinct real roots of `self` in `var`.

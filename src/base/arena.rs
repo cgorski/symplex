@@ -809,11 +809,11 @@ impl Arena {
         crate::poly::polybridge::collect(self, expr, var)
     }
 
-    /// Combine fractions in an Add over a common denominator.
+    /// Combine all fractions in `expr` — at every depth — into one quotient.
     ///
-    /// Delegates to [`polybridge::together`](crate::poly::polybridge::together).
+    /// Delegates to [`polybridge::together_deep`](crate::poly::polybridge::together_deep).
     pub fn together_expr(&mut self, expr: ExprId) -> ExprId {
-        crate::poly::polybridge::together(self, expr)
+        crate::poly::polybridge::together_deep(self, expr)
     }
 
     /// Compute the indefinite integral of `expr` with respect to `var`.
@@ -886,11 +886,13 @@ impl Arena {
         crate::calculus::limit::limit(self, expr, var, point)
     }
 
-    /// Decompose `expr` into (numerator, denominator).
+    /// Decompose `expr` into (numerator, denominator), deeply: rational
+    /// literals split into integers, sums are combined over a common
+    /// denominator, products and integer powers distribute.
     ///
-    /// Delegates to [`polybridge::as_numer_denom`](crate::poly::polybridge::as_numer_denom).
+    /// Delegates to [`polybridge::fraction_parts`](crate::poly::polybridge::fraction_parts).
     pub fn as_numer_denom_expr(&mut self, expr: ExprId) -> (ExprId, ExprId) {
-        crate::poly::polybridge::as_numer_denom(self, expr)
+        crate::poly::polybridge::fraction_parts(self, expr)
     }
 
     /// Partial fraction decomposition of `expr` with respect to `var`.

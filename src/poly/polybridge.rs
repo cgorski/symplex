@@ -862,21 +862,159 @@ pub(crate) fn together(arena: &mut Arena, expr: ExprId) -> ExprId {
 
     // Try polynomial LCM for a simpler common denominator; fall back to
     // the product of distinct denominators when poly conversion fails.
-    if let Some(result) = try_together_poly_lcm(arena, &parts, &unique_denoms) {
-        return result;
+    let (n, d) = match try_together_poly_lcm(arena, &parts, &unique_denoms) {
+        Some(nd) => nd,
+        None => together_product_fallback(arena, &parts, &unique_denoms),
+    };
+    arena.div(n, d)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Deep fraction decomposition (public `as_numer_denom` / `together`)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Deep `(numerator, denominator)` decomposition with the semantics of
+/// SymPy's `as_numer_denom`:
+///
+/// * a rational literal `p/q` is `(p, q)`;
+/// * a sum is combined over a common denominator (polynomial LCM when the
+///   denominators are univariate, product of the distinct denominators
+///   otherwise), recursively, so nested fractions are flattened;
+/// * a product multiplies numerators and denominators (a rational
+///   coefficient `p/q` contributes `p` above and `q` below);
+/// * an integer power `f^k` is `(n^k, d^k)`, swapped for negative `k`;
+/// * everything else (symbols, constants, function applications, powers
+///   with a non-integer exponent) is opaque: `(expr, 1)`.
+///
+/// No common factors are cancelled; use `ratsimp` for that.  The walk is
+/// iterative (post-order with a cache).
+pub(crate) fn fraction_parts(arena: &mut Arena, expr: ExprId) -> (ExprId, ExprId) {
+    let one = arena.one;
+    let order = walk::post_order_ids(arena, expr);
+    let mut cache: FxHashMap<ExprId, (ExprId, ExprId)> = FxHashMap::default();
+    let lookup = |cache: &FxHashMap<ExprId, (ExprId, ExprId)>, id: ExprId| {
+        cache.get(&id).copied().unwrap_or((id, one))
+    };
+
+    for &id in &order {
+        let node = arena.node(id).clone();
+        let parts = match node {
+            ExprNode::Num(nid) => {
+                let r = arena.num(nid).clone();
+                if r.is_integer() {
+                    (id, one)
+                } else {
+                    let n = arena.big_int(r.numer().clone());
+                    let d = arena.big_int(r.denom().clone());
+                    (n, d)
+                }
+            }
+            ExprNode::Add(children) => {
+                let parts: Vec<(ExprId, ExprId)> =
+                    children.iter().map(|&c| lookup(&cache, c)).collect();
+                combine_fraction_sum(arena, &parts)
+            }
+            ExprNode::Mul(children) => {
+                let mut numers: SmallVec<[ExprId; 6]> = SmallVec::new();
+                let mut denoms: SmallVec<[ExprId; 6]> = SmallVec::new();
+                for &c in children.iter() {
+                    let (n, d) = lookup(&cache, c);
+                    if n != one {
+                        numers.push(n);
+                    }
+                    if d != one {
+                        denoms.push(d);
+                    }
+                }
+                (
+                    product_or_one(arena, &numers),
+                    product_or_one(arena, &denoms),
+                )
+            }
+            ExprNode::Pow(base, exp) => match arena.as_num(exp).cloned() {
+                Some(k) if k.is_integer() && !k.is_zero() => {
+                    let (bn, bd) = lookup(&cache, base);
+                    if bn == base && bd == one {
+                        // Opaque base with a plain integer power: keep as is
+                        // (negative exponents are the denominator).
+                        if k.is_negative() {
+                            let m = arena.big_int(-k.to_integer());
+                            (one, arena.pow(base, m))
+                        } else {
+                            (id, one)
+                        }
+                    } else {
+                        let m = arena.big_int(k.to_integer().abs());
+                        let bn_m = arena.pow(bn, m);
+                        let bd_m = arena.pow(bd, m);
+                        if k.is_negative() {
+                            (bd_m, bn_m)
+                        } else {
+                            (bn_m, bd_m)
+                        }
+                    }
+                }
+                _ => (id, one),
+            },
+            ExprNode::Neg(inner) => {
+                let (n, d) = lookup(&cache, inner);
+                (arena.neg(n), d)
+            }
+            _ => (id, one),
+        };
+        cache.insert(id, parts);
     }
-    together_product_fallback(arena, &parts, &unique_denoms)
+    lookup(&cache, expr)
+}
+
+/// Deep [`together`]: `fraction_parts` rebuilt as a single quotient.
+///
+/// Note that a purely numeric common denominator cannot survive
+/// canonicalisation (`(3x + 2)/6` is stored as `1/2*x + 1/3`), so for such
+/// inputs the result prints like the input; `fraction_parts` still reports
+/// `(3x + 2, 6)`.
+pub(crate) fn together_deep(arena: &mut Arena, expr: ExprId) -> ExprId {
+    let (n, d) = fraction_parts(arena, expr);
+    if d == arena.one { n } else { arena.div(n, d) }
+}
+
+fn product_or_one(arena: &mut Arena, factors: &[ExprId]) -> ExprId {
+    match factors.len() {
+        0 => arena.one,
+        1 => factors[0],
+        _ => arena.mul(factors),
+    }
+}
+
+/// Combine `Σ nᵢ/dᵢ` into one `(numerator, denominator)` pair.
+fn combine_fraction_sum(arena: &mut Arena, parts: &[(ExprId, ExprId)]) -> (ExprId, ExprId) {
+    let one = arena.one;
+    if parts.iter().all(|&(_, d)| d == one) {
+        let numers: SmallVec<[ExprId; 6]> = parts.iter().map(|&(n, _)| n).collect();
+        return (arena.add(&numers), one);
+    }
+    let mut unique_denoms: Vec<ExprId> = Vec::new();
+    for &(_, d) in parts {
+        if d != one && !unique_denoms.contains(&d) {
+            unique_denoms.push(d);
+        }
+    }
+    match try_together_poly_lcm(arena, parts, &unique_denoms) {
+        Some(nd) => nd,
+        None => together_product_fallback(arena, parts, &unique_denoms),
+    }
 }
 
 /// Attempt to combine fractions using polynomial LCM of the denominators.
 ///
-/// Returns `Some(combined_expr)` on success, `None` if polynomial conversion
-/// fails for any denominator (e.g. multiple variables, transcendental denoms).
+/// Returns `Some((numerator, denominator))` on success, `None` if polynomial
+/// conversion fails for any denominator (e.g. multiple variables,
+/// transcendental denoms).
 fn try_together_poly_lcm(
     arena: &mut Arena,
     parts: &[(ExprId, ExprId)],
     unique_denoms: &[ExprId],
-) -> Option<ExprId> {
+) -> Option<(ExprId, ExprId)> {
     if unique_denoms.is_empty() {
         return None;
     }
@@ -940,7 +1078,7 @@ fn try_together_poly_lcm(
     }
 
     let numer_sum = arena.add(&scaled_numers);
-    Some(arena.div(numer_sum, common_denom_expr))
+    Some((numer_sum, common_denom_expr))
 }
 
 /// Fallback: use the product of distinct denominators as the common denominator.
@@ -948,7 +1086,7 @@ fn together_product_fallback(
     arena: &mut Arena,
     parts: &[(ExprId, ExprId)],
     unique_denoms: &[ExprId],
-) -> ExprId {
+) -> (ExprId, ExprId) {
     let common_denom = if unique_denoms.len() == 1 {
         unique_denoms[0]
     } else {
@@ -982,7 +1120,7 @@ fn together_product_fallback(
     }
 
     let numer_sum = arena.add(&scaled_numers);
-    arena.div(numer_sum, common_denom)
+    (numer_sum, common_denom)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

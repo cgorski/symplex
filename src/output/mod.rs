@@ -4,6 +4,7 @@ pub(crate) mod cse;
 pub(crate) mod display;
 pub mod lambdify;
 pub(crate) mod latex;
+pub mod lean;
 pub mod parse;
 pub(crate) mod pretty;
 pub mod tree;

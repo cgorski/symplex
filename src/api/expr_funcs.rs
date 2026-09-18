@@ -2397,14 +2397,22 @@ impl Expr<Numeric> {
         self.wrap(id)
     }
 
-    /// Combine fractions over a common denominator.
+    /// Combine every fraction in the expression — at any depth — into a
+    /// single quotient `numerator / denominator`.
     ///
-    /// For a sum of terms, decomposes each into numerator/denominator,
-    /// computes a common denominator, scales each numerator, and
-    /// rebuilds as a single fraction.
+    /// Sums are put over a common denominator (the polynomial LCM when the
+    /// denominators are univariate, otherwise the product of the distinct
+    /// denominators), products multiply numerators and denominators, and
+    /// integer powers distribute, so fractions nested inside numerators or
+    /// denominators are flattened too.  Function arguments are left alone.
+    /// **No common factors are cancelled** — that is
+    /// [`ratsimp`](Self::ratsimp), which also normalises the result.
     ///
-    /// Returns the expression unchanged if it is not a sum or if all
-    /// terms already have denominator 1.
+    /// The pieces are available separately from
+    /// [`as_numer_denom`](Self::as_numer_denom); note that a purely numeric
+    /// common denominator cannot survive canonicalisation as a quotient
+    /// (`(3x + 2)/6` is stored as `1/2*x + 1/3`), while `as_numer_denom`
+    /// still reports `(3*x + 2, 6)`.
     ///
     /// # Examples
     ///
@@ -2413,11 +2421,11 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
-    /// let expr = &x.powi(-1) + &y.powi(-1);
-    /// let combined = expr.together();
-    /// // 1/x + 1/y → (x + y) / (x*y)
-    /// let s = format!("{combined}");
-    /// assert!(s.contains("x*y"), "should have common denom x*y: {s}");
+    /// assert_eq!((1 / &x + 1 / &y).together().to_string(), "(x + y)/(x*y)");
+    /// // Nested: the inner fraction is flattened as well.
+    /// let nested = (&x + 1 / &y) / (&x - 1);
+    /// let (n, d) = nested.together().as_numer_denom();
+    /// assert_eq!((n.to_string(), d.to_string()), ("x*y + 1".to_string(), "y*(x - 1)".to_string()));
     /// ```
     #[must_use = "returns the combined form; does not modify in place"]
     pub fn together(&self) -> Ex {
@@ -2777,10 +2785,21 @@ impl Expr<Numeric> {
         }
     }
 
-    /// Decompose this expression into (numerator, denominator).
+    /// Decompose this expression into `(numerator, denominator)` with
+    /// `self == numerator / denominator`, the same way SymPy's
+    /// `as_numer_denom` does.
     ///
-    /// For `a / b` (expressed as `a * b^(-1)`), returns `(a, b)`.
-    /// For expressions without a denominator, returns `(self, 1)`.
+    /// * A rational literal splits into integers: `3/31` → `(3, 31)`.
+    /// * A rational coefficient splits too: `2/3 * x` → `(2*x, 3)`.
+    /// * A sum is combined over a common denominator at every depth
+    ///   (see [`together`](Self::together)): `x/2 + 1/3` → `(3*x + 2, 6)`,
+    ///   `1/x + 1/y` → `(x + y, x*y)`.
+    /// * Function arguments are opaque; anything without a denominator is
+    ///   `(self, 1)`.
+    ///
+    /// Nothing is cancelled: `((x² − 1)/(x − 1)).as_numer_denom()` is
+    /// `(x^2 - 1, x - 1)`.  Call [`ratsimp`](Self::ratsimp) first when a
+    /// reduced fraction is wanted.
     ///
     /// # Examples
     ///
@@ -2789,10 +2808,12 @@ impl Expr<Numeric> {
     ///
     /// let ctx = Context::new();
     /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
-    /// let expr = &x / &y;
-    /// let (n, d) = expr.as_numer_denom();
-    /// assert_eq!(format!("{n}"), "x");
-    /// assert_eq!(format!("{d}"), "y");
+    /// let s = |(n, d): (Ex, Ex)| (n.to_string(), d.to_string());
+    /// assert_eq!(s((&x / &y).as_numer_denom()), ("x".into(), "y".into()));
+    /// assert_eq!(s(ctx.rational(3, 31).as_numer_denom()), ("3".into(), "31".into()));
+    /// assert_eq!(s((&x * 2 / 3).as_numer_denom()), ("2*x".into(), "3".into()));
+    /// assert_eq!(s((&x / 2 + ctx.rational(1, 3)).as_numer_denom()), ("3*x + 2".into(), "6".into()));
+    /// assert_eq!(s((1 / &x + 1 / &y).as_numer_denom()), ("x + y".into(), "x*y".into()));
     /// ```
     #[must_use]
     pub fn as_numer_denom(&self) -> (Ex, Ex) {

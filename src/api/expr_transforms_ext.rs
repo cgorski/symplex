@@ -405,7 +405,9 @@ impl Expr<Numeric> {
     /// ```
     pub fn laplace_final_value(&self, s: &Ex) -> Result<Ex, SymplexError> {
         let ctx = s.context();
-        let sf = (s * self).together();
+        // Cancel before locating poles: the factor `s` in `s·F(s)` must be
+        // allowed to remove a pole at the origin (`s · 3/s = 3`).
+        let sf = (s * self).ratsimp();
         let (_, den) = sf.as_numer_denom();
         if den.is_polynomial(s) && !den.free_symbols().is_empty() {
             let poles = den.solve_or_empty(s);

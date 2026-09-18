@@ -851,9 +851,144 @@ impl Poly {
         }
         self.to_ex().nroots(&self.gens[0], digits)
     }
+
+    /// The single generator of a univariate polynomial with rational
+    /// coefficients, or `None` (the precondition of the real-root and sign
+    /// queries below).
+    fn univariate_rational_gen(&self) -> Option<&Ex> {
+        if self.gens.len() == 1 && self.has_rational_coeffs() {
+            self.gens.first()
+        } else {
+            None
+        }
+    }
+
+    /// Number of distinct real roots (Sturm's theorem); `None` unless the
+    /// polynomial is univariate with rational coefficients.  See
+    /// [`Ex::count_real_roots`].
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!((&x.powi(3) - &x).as_poly(&[&x]).unwrap().count_real_roots(), Some(3));
+    /// assert_eq!((&x.powi(2) + 1).as_poly(&[&x]).unwrap().count_real_roots(), Some(0));
+    /// ```
+    #[must_use]
+    pub fn count_real_roots(&self) -> Option<usize> {
+        let x = self.univariate_rational_gen()?;
+        self.to_ex().count_real_roots(x)
+    }
+
+    /// Number of distinct real roots in the closed interval `[lo, hi]`
+    /// (SymPy's `Poly.count_roots(inf, sup)`); endpoints are exact rationals
+    /// or `±∞`.  `None` unless the polynomial is univariate with rational
+    /// coefficients.  See [`Ex::count_real_roots_in`].
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let p = (&x.powi(3) - &x).as_poly(&[&x]).unwrap();   // roots −1, 0, 1
+    /// assert_eq!(p.count_real_roots_in(&ctx.int(0), &ctx.infinity()), Some(2));
+    /// assert_eq!(p.count_real_roots_in(&ctx.rational(1, 2), &ctx.infinity()), Some(1));
+    /// assert_eq!(p.count_real_roots_in(&ctx.int(2), &ctx.int(9)), Some(0));
+    /// ```
+    #[must_use]
+    pub fn count_real_roots_in(&self, lo: &Ex, hi: &Ex) -> Option<usize> {
+        let x = self.univariate_rational_gen()?;
+        self.to_ex().count_real_roots_in(x, lo, hi)
+    }
+
+    /// Isolating intervals `(lo, hi)` with exact rational endpoints for the
+    /// distinct real roots, sorted; empty unless univariate with rational
+    /// coefficients.  See [`Ex::real_roots_isolate`].
+    #[must_use]
+    pub fn real_roots_isolate(&self) -> Vec<(Ex, Ex)> {
+        match self.univariate_rational_gen() {
+            Some(x) => self.to_ex().real_roots_isolate(x),
+            None => Vec::new(),
+        }
+    }
+
+    /// Exact decision `p(x) ≥ 0` for every `x ∈ [lo, hi]` (endpoints
+    /// rational or `±∞`); `None` unless univariate with rational
+    /// coefficients.  See [`Ex::poly_is_nonnegative_on`].
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let j = ctx.symbol("j");
+    /// let p = (&j.powi(3) - 6 * &j.powi(2) + 11 * &j - 6).as_poly(&[&j]).unwrap(); // (j-1)(j-2)(j-3)
+    /// assert_eq!(p.is_nonnegative_on(&ctx.int(3), &ctx.infinity()), Some(true));
+    /// assert_eq!(p.is_nonnegative_on(&ctx.int(2), &ctx.infinity()), Some(false));
+    /// assert_eq!(p.is_positive_on(&ctx.int(3), &ctx.infinity()), Some(false)); // zero at 3
+    /// ```
+    #[must_use]
+    pub fn is_nonnegative_on(&self, lo: &Ex, hi: &Ex) -> Option<bool> {
+        let x = self.univariate_rational_gen()?;
+        self.to_ex().poly_is_nonnegative_on(x, lo, hi)
+    }
+
+    /// Exact decision `p(x) > 0` for every `x ∈ [lo, hi]`; see
+    /// [`is_nonnegative_on`](Self::is_nonnegative_on) and
+    /// [`Ex::poly_is_positive_on`].
+    #[must_use]
+    pub fn is_positive_on(&self, lo: &Ex, hi: &Ex) -> Option<bool> {
+        let x = self.univariate_rational_gen()?;
+        self.to_ex().poly_is_positive_on(x, lo, hi)
+    }
+
+    /// Taylor shift of one generator: `p(…, g + a, …)`.
+    ///
+    /// A shift by the left endpoint turns a half-line question into a sign
+    /// question about coefficients: if every coefficient of `p(k + a)` is
+    /// non-negative then `p ≥ 0` on `[a, ∞)` (a sufficient, certificate-style
+    /// criterion; [`is_nonnegative_on`](Self::is_nonnegative_on) is the exact
+    /// one).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` if `var` is not a generator or `a` mentions one.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let j = ctx.symbol("j");
+    /// let p = (&j.powi(2) - 4 * &j + 3).as_poly(&[&j]).unwrap();      // (j-1)(j-3)
+    /// let shifted = p.shift(&j, &ctx.int(3)).unwrap();                 // p(j + 3) = j^2 + 2j
+    /// assert_eq!(shifted.to_string(), "Poly(j^2 + 2*j, j)");
+    /// assert!(shifted.coeffs().iter().all(|c| c.is_negative() == Some(false)));
+    /// ```
+    pub fn shift(&self, var: &Ex, a: &Ex) -> Result<Poly, SymplexError> {
+        let probe = self.ctx.zero();
+        let gen_id = probe.checked_id(var);
+        if !self.gens.iter().any(|g| g.raw_id() == gen_id) {
+            return Err(invalid("Poly::shift", "not a generator of this polynomial"));
+        }
+        for g in &self.gens {
+            if a.contains(g) {
+                return Err(invalid(
+                    "Poly::shift",
+                    "the shift must not mention a generator",
+                ));
+            }
+        }
+        let replacement = var + a;
+        let shifted = self.to_ex().subs(var, &replacement);
+        let gens: Vec<&Ex> = self.gens.iter().collect();
+        Poly::new(&shifted, &gens).ok_or_else(|| SymplexError::ComputationFailed {
+            operation: "Poly::shift",
+            reason: "shifted expression is not polynomial in the generators".into(),
+        })
+    }
 }
 
-// ── Arithmetic ─────────────────────────────────────────────────────────────
+// ── Arithmetic ──────────────────────────────────────────────────────────────────────────
 
 impl Poly {
     fn check_same_gens(&self, other: &Poly, operation: &'static str) -> Result<(), SymplexError> {

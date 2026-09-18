@@ -195,25 +195,28 @@ fn sturm_root_counting() {
     let (ctx, x) = ctx_x();
     let f = &x.powi(3) - &x; // roots −1, 0, 1
     assert_eq!(f.count_real_roots(&x), Some(3));
-    assert_eq!(f.roots_count_real(&x, &ctx.int(-1), &ctx.int(1)), Some(3));
-    assert_eq!(f.roots_count_real(&x, &ctx.int(0), &ctx.int(1)), Some(2));
     assert_eq!(
-        f.roots_count_real(&x, &ctx.rational(1, 2), &ctx.int(10)),
-        Some(1)
-    );
-    assert_eq!(
-        f.roots_count_real(&x, &ctx.neg_infinity(), &ctx.rational(-1, 2)),
-        Some(1)
-    );
-    assert_eq!(
-        f.roots_count_real(&x, &ctx.neg_infinity(), &ctx.infinity()),
+        f.count_real_roots_in(&x, &ctx.int(-1), &ctx.int(1)),
         Some(3)
     );
-    assert_eq!(f.roots_count_real(&x, &ctx.int(5), &ctx.int(1)), Some(0));
+    assert_eq!(f.count_real_roots_in(&x, &ctx.int(0), &ctx.int(1)), Some(2));
+    assert_eq!(
+        f.count_real_roots_in(&x, &ctx.rational(1, 2), &ctx.int(10)),
+        Some(1)
+    );
+    assert_eq!(
+        f.count_real_roots_in(&x, &ctx.neg_infinity(), &ctx.rational(-1, 2)),
+        Some(1)
+    );
+    assert_eq!(
+        f.count_real_roots_in(&x, &ctx.neg_infinity(), &ctx.infinity()),
+        Some(3)
+    );
+    assert_eq!(f.count_real_roots_in(&x, &ctx.int(5), &ctx.int(1)), Some(0));
     assert_eq!((&x.powi(2) + 1).count_real_roots(&x), Some(0));
     // Repeated roots counted once.
     assert_eq!((&x - 2).powi(3).expand().count_real_roots(&x), Some(1));
-    assert!(f.roots_count_real(&x, &ctx.pi(), &ctx.int(1)).is_none());
+    assert!(f.count_real_roots_in(&x, &ctx.pi(), &ctx.int(1)).is_none());
     // Wilkinson-style: 10 real roots.
     let mut w = ctx.int(1);
     for k in 1..=10 {

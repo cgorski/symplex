@@ -1296,12 +1296,25 @@ fn endpoint() -> impl Strategy<Value = End> {
     ]
 }
 
+/// Distinct roots with their total multiplicities (`4/4` and `3/3` are the
+/// same root, so their multiplicities add up).
+fn merged_roots(spec: &RootSpec) -> Vec<(Ratio<BigInt>, u32)> {
+    let mut out: Vec<(Ratio<BigInt>, u32)> = Vec::new();
+    for &(n, d, m) in &spec.roots {
+        let r = rat(n, d);
+        match out.iter_mut().find(|(q, _)| *q == r) {
+            Some((_, mult)) => *mult += m,
+            None => out.push((r, m)),
+        }
+    }
+    out
+}
+
 /// Sign of `f` at a rational point from the root list (independent of the
 /// library): sign(c) · ∏ sign(x − rᵢ)^{mᵢ}.
 fn oracle_sign(spec: &RootSpec, at: &Ratio<BigInt>) -> i32 {
     let mut s: i32 = if spec.negative { -1 } else { 1 };
-    for &(n, d, m) in &spec.roots {
-        let r = rat(n, d);
+    for (r, m) in merged_roots(spec) {
         let diff = at - &r;
         if diff == Ratio::from(BigInt::from(0)) {
             return 0;
@@ -1326,8 +1339,7 @@ fn oracle_nonneg(
         lo.as_ref().is_none_or(|l| r >= l) && hi.as_ref().is_none_or(|h| r <= h)
     };
     // A root of odd multiplicity strictly inside flips the sign.
-    for &(n, d, m) in &spec.roots {
-        let r = rat(n, d);
+    for (r, m) in merged_roots(spec) {
         if m % 2 == 1 && inside_open(&r) {
             return false;
         }

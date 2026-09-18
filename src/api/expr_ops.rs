@@ -1355,6 +1355,53 @@ impl Ex {
         inner.arena.as_num(self.raw_id()).cloned()
     }
 
+    /// Numerator and denominator (lowest terms, denominator positive) if this
+    /// expression is a rational literal — SymPy's `Rational.p` / `.q`.
+    ///
+    /// Unlike [`as_numer_denom`](Self::as_numer_denom), which decomposes
+    /// *any* expression symbolically, this returns plain integers and only
+    /// for numbers.  Call [`eval`](Self::eval) first to fold constant
+    /// arithmetic such as `1/3 + 1/6`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    /// use symplex::num_bigint::BigInt;
+    ///
+    /// let ctx = Context::new();
+    /// let (p, q) = ctx.rational(6, -4).as_ratio_parts().unwrap();
+    /// assert_eq!((p, q), (BigInt::from(-3), BigInt::from(2)));
+    /// assert_eq!(ctx.int(7).as_ratio_parts(), Some((BigInt::from(7), BigInt::from(1))));
+    /// assert!(ctx.symbol("x").as_ratio_parts().is_none());
+    /// ```
+    #[must_use]
+    pub fn as_ratio_parts(&self) -> Option<(BigInt, BigInt)> {
+        let r = self.as_rational()?;
+        let (n, d) = r.into_raw();
+        Some((n, d))
+    }
+
+    /// Numerator and denominator as machine integers, if this expression is a
+    /// rational literal whose parts fit in `i128`.
+    ///
+    /// The convenient form for comparing with literals or feeding other
+    /// exact-arithmetic code without touching `BigInt`:
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// assert_eq!(ctx.rational(3, 31).as_ratio_i128(), Some((3, 31)));
+    /// assert_eq!((ctx.rational(1, 3) + ctx.rational(1, 6)).as_ratio_i128(), Some((1, 2)));
+    /// assert_eq!(ctx.int(-4).as_ratio_i128(), Some((-4, 1)));
+    /// // Too large for i128 → None (use `as_ratio_parts`).
+    /// assert!(ctx.from_bigint(symplex::num_bigint::BigInt::from(2).pow(200)).as_ratio_i128().is_none());
+    /// ```
+    #[must_use]
+    pub fn as_ratio_i128(&self) -> Option<(i128, i128)> {
+        let r = self.as_rational()?;
+        Some((r.numer().to_i128()?, r.denom().to_i128()?))
+    }
+
     /// The exact value if this expression is an integer literal.
     ///
     /// ```

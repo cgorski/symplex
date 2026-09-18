@@ -16,3 +16,5 @@ mod v03_poly_symbolic_coeffs;
 mod v03_poly_view;
 #[path = "v03/v03_ratsimp.rs"]
 mod v03_ratsimp;
+#[path = "v03/v03_user_notes.rs"]
+mod v03_user_notes;

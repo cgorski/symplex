@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2e3de5bdd864c689707f03c133c46c0adbf5df31cf90ef393f211a96b939e001 # shrinks to spec = RootSpec { roots: [(4, 4, 1), (3, 3, 1)], negative: false, quadratic: false }, a = Fin(0, 1), b = Fin(5, 1)

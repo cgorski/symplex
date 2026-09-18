@@ -114,6 +114,17 @@ pub mod units;
 
 // ── Public re-exports (backwards-compatible crate-root paths) ──────────
 
+// The exact-arithmetic crates whose types appear in the public API
+// (`Ratio<BigInt>` from `as_rational`, `linprog::Q`, `poly_fit_exact`,
+// `Matrix::from_ratio`, …).  Re-exported so a downstream crate can name and
+// manipulate those values without adding — and version-matching — the crates
+// itself: `symplex::num_rational::Ratio`, `symplex::num_bigint::BigInt`,
+// `symplex::num_traits::{Zero, One, Signed}`, `symplex::num_integer::Integer`.
+pub use num_bigint;
+pub use num_integer;
+pub use num_rational;
+pub use num_traits;
+
 // base
 /// Assumption system for symbolic variables.
 pub use base::assumptions;
@@ -163,6 +174,8 @@ pub use transforms::rsolve;
 pub use transforms::sets;
 
 // output
+/// Lean 4 / Mathlib rendering (`Ex::to_lean`, `LeanOpts`).
+pub use output::lean;
 /// Runtime expression parser — convert strings to symbolic expressions.
 pub use output::parse;
 /// Serializable expression tree for interchange (JSON, etc.).
