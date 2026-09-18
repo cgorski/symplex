@@ -21,7 +21,7 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{Signed, Zero};
+use num_traits::{Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
@@ -103,6 +103,19 @@ impl SubsSet {
         result
     }
 
+    /// Undo all substitutions (dummy → expr) in an expression.
+    ///
+    /// Used when this set loses an MRV comparison: its elements are no
+    /// longer "most rapidly varying" and must reappear as ordinary
+    /// sub-expressions of `x` rather than as opaque dummies.
+    fn undo_subs(&self, arena: &mut Arena, e: ExprId) -> ExprId {
+        let mut result = e;
+        for (&orig, &dummy) in &self.exprs {
+            result = crate::transforms::subs::subs(arena, result, dummy, orig);
+        }
+        result
+    }
+
     /// Union two SubsSets (merge b into self).
     fn union_with(&mut self, other: &SubsSet) {
         for (&expr, &dummy) in &other.exprs {
@@ -174,7 +187,12 @@ fn log_of(arena: &mut Arena, e: ExprId) -> ExprId {
 // Sign determination
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Determine the sign of `e` for large `x`: +1, -1, or 0.
+/// Determine the *eventual* sign of `e` for large `x`: +1, -1, or 0.
+///
+/// Mirrors SymPy's `gruntz.sign`: `e ≈ c₀·ω^{e₀}` with `ω → 0⁺`, so the
+/// sign of `e` for large `x` is the sign of `c₀` (recursively). Unlike a
+/// limit-based test this is correct for expressions that tend to zero
+/// (`1/x` has eventual sign `+1`, `−1/x` has `−1`).
 fn sign_at_inf(
     arena: &mut Arena,
     e: ExprId,
@@ -190,6 +208,8 @@ fn sign_at_inf(
         });
     }
 
+    let e = crate::transforms::eval::eval(arena, e);
+
     if !crate::base::walk::contains(arena, e, x) {
         tracing::trace!("gruntz::sign_at_inf: constant expression");
         return sign_of_constant(arena, e);
@@ -203,94 +223,90 @@ fn sign_at_inf(
         return Ok(1);
     }
 
-    // Pow(x, n) where n is a positive integer: positive for large x
-    if let ExprNode::Pow(base, exp) = arena.node(e).clone()
-        && base == x
-        && let Some(r) = arena.as_num(exp)
-        && r.is_positive()
-    {
-        tracing::trace!("gruntz::sign_at_inf: x^(positive) → +1");
-        return Ok(1);
-    }
-
-    if let ExprNode::Exp(_) = arena.node(e) {
-        tracing::trace!("gruntz::sign_at_inf: exp() is always positive → +1");
-        return Ok(1);
-    }
-
-    tracing::trace!("gruntz::sign_at_inf: computing limit to determine sign");
-    let lim = limitinf(arena, e, x, depth + 1, counter)?;
-    let result = sign_of_constant(arena, lim);
-    tracing::debug!(sign = ?result, "gruntz::sign_at_inf result");
-    result
-}
-
-/// Determine the sign of a constant expression (no free variable x).
-fn sign_of_constant(
-    arena: &mut Arena,
-    e: ExprId,
-) -> Result<i32, crate::base::errors::SymplexError> {
-    if arena.is_zero_structural(e) {
-        return Ok(0);
-    }
-    if e == arena.pi() || e == arena.e_const() || e == arena.infinity() {
-        return Ok(1);
-    }
-    if e == arena.neg_infinity() {
-        return Ok(-1);
-    }
-
-    // Try numeric check
-    if let Some(r) = arena.as_num(e) {
-        let r = r.clone();
-        return Ok(if r.is_positive() {
-            1
-        } else if r.is_negative() {
-            -1
-        } else {
-            0
-        });
-    }
-
-    // Evaluate and retry
-    let evaled = crate::transforms::eval::eval(arena, e);
-    if let Some(r) = arena.as_num(evaled) {
-        let r = r.clone();
-        return Ok(if r.is_positive() {
-            1
-        } else if r.is_negative() {
-            -1
-        } else {
-            0
-        });
-    }
-
-    // Structural cases
     match arena.node(e).clone() {
-        ExprNode::Neg(inner) => {
-            let s = sign_of_constant(arena, inner)?;
-            Ok(-s)
+        // Pow(x, c) with a real constant exponent: positive for large x > 0
+        ExprNode::Pow(base, exp) if base == x => {
+            if arena.as_num(exp).is_some() {
+                tracing::trace!("gruntz::sign_at_inf: x^c → +1");
+                return Ok(1);
+            }
         }
-        ExprNode::Mul(ref children) => {
+        ExprNode::Exp(_) => {
+            tracing::trace!("gruntz::sign_at_inf: exp() is always positive → +1");
+            return Ok(1);
+        }
+        ExprNode::Neg(inner) => {
+            return sign_at_inf(arena, inner, x, depth + 1, counter).map(|s| -s);
+        }
+        ExprNode::Mul(children) => {
             let mut result = 1i32;
-            for &child in children {
-                let s = sign_of_constant(arena, child)?;
+            for c in children {
+                let s = sign_at_inf(arena, c, x, depth + 1, counter)?;
                 if s == 0 {
                     return Ok(0);
                 }
                 result *= s;
             }
-            Ok(result)
+            return Ok(result);
         }
-        ExprNode::Exp(_) => Ok(1),
-        _ => {
-            // Last resort: try evalf
-            Err(crate::base::errors::SymplexError::ComputationFailed {
-                operation: "gruntz::sign_of_constant",
-                reason: "cannot determine sign".into(),
-            })
-        }
+        _ => {}
     }
+
+    tracing::trace!("gruntz::sign_at_inf: computing leading term to determine sign");
+    let (c0, _e0) = mrv_leadterm(arena, e, x, depth + 1, counter)?;
+    if contains_foreign_dummy(arena, c0, x) {
+        return Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz::sign_at_inf",
+            reason: "leading coefficient is not a genuine constant".into(),
+        });
+    }
+    if arena.is_zero_structural(c0) {
+        return Ok(0);
+    }
+    let result = sign_at_inf(arena, c0, x, depth + 1, counter);
+    tracing::debug!(sign = ?result, "gruntz::sign_at_inf result");
+    result
+}
+
+/// Determine the sign of a constant expression (no free variable x).
+///
+/// Consults symbol assumptions (`a > 0`) through
+/// [`limit::const_sign`](crate::calculus::limit::const_sign).
+fn sign_of_constant(
+    arena: &mut Arena,
+    e: ExprId,
+) -> Result<i32, crate::base::errors::SymplexError> {
+    match crate::calculus::limit::const_sign(arena, e) {
+        Some(s) => Ok(s),
+        None => Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz::sign_of_constant",
+            reason: format!("cannot determine the sign of {}", arena.display(e)),
+        }),
+    }
+}
+
+/// `true` if `e` contains an internal dummy symbol other than `x` itself.
+///
+/// Used to detect leading coefficients that still depend on the Gruntz
+/// `ω` variable — a sign that the leading-term extraction gave up.
+fn contains_foreign_dummy(arena: &Arena, e: ExprId, x: ExprId) -> bool {
+    let mut stack = vec![e];
+    let mut visited = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        if id != x
+            && let ExprNode::Symbol(sid) = arena.node(id)
+        {
+            let name = arena.symbol_name(*sid);
+            if name.starts_with("__gw") || name.starts_with("__lim") {
+                return true;
+            }
+        }
+        arena.node(id).for_each_child(|c| stack.push(c));
+    }
+    false
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -616,14 +632,17 @@ fn mrv_max1(
             tracing::debug!(
                 "gruntz::mrv_max1: s1 grows faster — keeping s1, rewriting e2 with s1 dummies"
             );
-            let rw_e2 = s1.do_subs(arena, e2);
+            // s2's elements are no longer MRV: restore them, then apply s1.
+            let restored = s2.undo_subs(arena, e2);
+            let rw_e2 = s1.do_subs(arena, restored);
             Ok((s1.clone(), e1, rw_e2))
         }
         GrowthOrder::Less => {
             tracing::debug!(
                 "gruntz::mrv_max1: s2 grows faster — keeping s2, rewriting e1 with s2 dummies"
             );
-            let rw_e1 = s2.do_subs(arena, e1);
+            let restored = s1.undo_subs(arena, e1);
+            let rw_e1 = s2.do_subs(arena, restored);
             Ok((s2.clone(), rw_e1, e2))
         }
         GrowthOrder::Equal => {
@@ -752,8 +771,9 @@ fn rewrite(
         }
     };
 
-    // Determine sign of g's exponent
-    let sig = sign_at_inf(arena, g_exp, x, depth + 1, counter).unwrap_or(1);
+    // Determine sign of g's exponent (g_exp → ±∞ by construction of the
+    // MRV set, so this decides whether ω = g or ω = 1/g).
+    let sig = sign_at_inf(arena, g_exp, x, depth + 1, counter)?;
     tracing::debug!(
         sign = sig,
         "gruntz::rewrite: sign of representative's exponent"
@@ -853,13 +873,29 @@ fn rewrite(
 /// Extract the leading term of `f` as a power of `w`.
 ///
 /// Returns `(c0, e0)` where `f ≈ c0 * w^e0` as `w → 0`.
-/// `c0` may depend on other variables but NOT on `w`.
+/// `c0` may depend on other variables (including `x`) but NOT on `w`.
+///
+/// `x`, `depth` and `counter` are threaded through so that sign decisions
+/// for divergent arguments (`atan(g)` with `g → ±∞`) can use
+/// [`sign_at_inf`].
+#[allow(clippy::too_many_arguments)]
 fn leadterm(
     arena: &mut Arena,
     f: ExprId,
     w: ExprId,
     logw: ExprId,
+    x: ExprId,
+    depth: usize,
+    counter: &mut u32,
 ) -> Result<(ExprId, ExprId), crate::base::errors::SymplexError> {
+    if depth > MAX_DEPTH {
+        tracing::warn!("gruntz::leadterm: max depth exceeded");
+        return Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz::leadterm",
+            reason: "maximum recursion depth exceeded".into(),
+        });
+    }
+
     // If f doesn't depend on w: (f, 0)
     if !crate::base::walk::contains(arena, f, w) {
         tracing::trace!("gruntz::leadterm: constant wrt ω → (f, 0)");
@@ -880,7 +916,7 @@ fn leadterm(
             let mut total_coeff = arena.one();
             let mut total_exp = arena.zero();
             for &child in children {
-                let (c, e) = leadterm(arena, child, w, logw)?;
+                let (c, e) = leadterm(arena, child, w, logw, x, depth + 1, counter)?;
                 total_coeff = arena.mul(&[total_coeff, c]);
                 total_exp = arena.add(&[total_exp, e]);
             }
@@ -891,13 +927,22 @@ fn leadterm(
 
         ExprNode::Pow(base, exp) if !crate::base::walk::contains(arena, exp, w) => {
             tracing::trace!("gruntz::leadterm: Pow with constant exponent");
-            let (c_b, e_b) = leadterm(arena, base, w, logw)?;
+            let (c_b, e_b) = leadterm(arena, base, w, logw, x, depth + 1, counter)?;
             let new_coeff = arena.pow(c_b, exp);
             let new_exp = arena.mul(&[e_b, exp]);
             Ok((
                 crate::transforms::eval::eval(arena, new_coeff),
                 crate::transforms::eval::eval(arena, new_exp),
             ))
+        }
+
+        // b^g with ω-dependent exponent: b^g = exp(g·ln b).
+        ExprNode::Pow(base, exp) => {
+            tracing::trace!("gruntz::leadterm: Pow with ω-dependent exponent → exp(g·ln b)");
+            let ln_b = arena.ln(base);
+            let prod = arena.mul(&[exp, ln_b]);
+            let as_exp = arena.exp(prod);
+            leadterm(arena, as_exp, w, logw, x, depth + 1, counter)
         }
 
         ExprNode::Add(ref children) => {
@@ -912,7 +957,7 @@ fn leadterm(
             // Find the term with the SMALLEST exponent (it dominates as w→0)
             let mut terms: Vec<(ExprId, ExprId, Ratio<BigInt>)> = Vec::new();
             for &child in children {
-                let (c, e) = leadterm(arena, child, w, logw)?;
+                let (c, e) = leadterm(arena, child, w, logw, x, depth + 1, counter)?;
                 let e_eval = crate::transforms::eval::eval(arena, e);
                 let e_num = arena.as_num(e_eval).cloned();
                 if let Some(r) = e_num {
@@ -940,7 +985,7 @@ fn leadterm(
 
             // If the leading coefficients cancel to 0 OR the coefficient
             // still depends on w (meaning further decomposition is needed),
-            // fall back to series expansion on the full expression.
+            // fall back to series expansion.
             //
             // Example: (exp(w) - 1)/w after expansion is exp(w)/w - 1/w.
             // Both terms have exponent -1. Coefficient sum is exp(w) - 1,
@@ -956,48 +1001,9 @@ fn leadterm(
                 tracing::debug!(
                     coeff = %coeff_display,
                     full_expr = %f_display,
-                    "gruntz::leadterm: Add coefficients cancel or depend on ω, using function expansion"
+                    "gruntz::leadterm: Add coefficients cancel or depend on ω, using series expansion"
                 );
-
-                // Strategy 1: Expand individual exp/sin/cos as Taylor series,
-                // substitute back, simplify algebraically. This avoids pole issues
-                // with full series expansion (e.g., (exp(w)-1)/w has a pole at w=0
-                // but exp(w) = 1 + w + w²/2 + ... is well-behaved).
-                let func_expanded = expand_functions_as_series(arena, f, w, 6);
-                if func_expanded != f {
-                    let simplified = crate::transforms::eval::eval(arena, func_expanded);
-                    let simplified = crate::transforms::expand::expand(arena, simplified);
-                    let simplified = crate::transforms::eval::eval(arena, simplified);
-                    let simp_display = arena.display(simplified).to_string();
-                    tracing::debug!(result = %simp_display, "gruntz::leadterm: after function expansion");
-                    if !arena.is_zero_structural(simplified) && simplified != f {
-                        return leadterm(arena, simplified, w, logw);
-                    }
-                }
-
-                // Strategy 2: Full series expansion (works for non-pole cases)
-                let zero = arena.zero();
-                for order in 2..10 {
-                    if let Ok(series) = crate::calculus::series::series(arena, f, w, zero, order) {
-                        let expanded = crate::transforms::expand::expand(arena, series);
-                        let evaled = crate::transforms::eval::eval(arena, expanded);
-                        let series_display = arena.display(evaled).to_string();
-                        tracing::debug!(order, series = %series_display, "gruntz::leadterm: full series expansion result");
-                        if evaled != f
-                            && !arena.is_zero_structural(evaled)
-                            && evaled != arena.zero()
-                        {
-                            return leadterm(arena, evaled, w, logw);
-                        }
-                    } else {
-                        tracing::trace!(
-                            order,
-                            "gruntz::leadterm: full series expansion failed at this order"
-                        );
-                    }
-                }
-                // If nothing works, the limit is likely 0
-                return Ok((arena.zero(), arena.zero()));
+                return leadterm_add_by_series(arena, f, w, logw, &min_exp, x, depth, counter);
             }
 
             Ok((coeff_sum, leading_exp_id))
@@ -1005,13 +1011,13 @@ fn leadterm(
 
         ExprNode::Neg(inner) => {
             tracing::trace!("gruntz::leadterm: Neg");
-            let (c, e) = leadterm(arena, inner, w, logw)?;
+            let (c, e) = leadterm(arena, inner, w, logw, x, depth + 1, counter)?;
             Ok((arena.neg(c), e))
         }
 
         ExprNode::Exp(arg) if crate::base::walk::contains(arena, arg, w) => {
             tracing::trace!("gruntz::leadterm: Exp(arg) where arg depends on ω");
-            let (c_arg, e_arg) = leadterm(arena, arg, w, logw)?;
+            let (c_arg, e_arg) = leadterm(arena, arg, w, logw, x, depth + 1, counter)?;
             let e_eval = crate::transforms::eval::eval(arena, e_arg);
             if let Some(r) = arena.as_num(e_eval) {
                 let r = r.clone();
@@ -1025,14 +1031,19 @@ fn leadterm(
                     return Ok((crate::transforms::eval::eval(arena, coeff), arena.zero()));
                 }
             }
-            // Negative exponent: exp(stuff) with stuff → ∞. Treat as O(1).
-            Ok((f, arena.zero()))
+            // Negative exponent: exp(g) with g → ±∞ is its own comparability
+            // class and should have been rewritten in terms of ω by the MRV
+            // machinery.  Reaching here means the analysis is inconsistent.
+            Err(crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz::leadterm",
+                reason: "exp of a divergent argument was not captured by the MRV set".into(),
+            })
         }
 
         ExprNode::Ln(arg) if crate::base::walk::contains(arena, arg, w) => {
             tracing::trace!("gruntz::leadterm: Ln(arg) where arg depends on ω");
             // ln(c * w^e) = ln(c) + e*ln(w) = ln(c) + e*logw
-            let (c_arg, e_arg) = leadterm(arena, arg, w, logw)?;
+            let (c_arg, e_arg) = leadterm(arena, arg, w, logw, x, depth + 1, counter)?;
             let e_eval = crate::transforms::eval::eval(arena, e_arg);
             if arena.is_zero_structural(e_eval) {
                 // arg → c_arg as w → 0, so ln(arg) → ln(c_arg)
@@ -1045,19 +1056,12 @@ fn leadterm(
                 // We have ln(1 + δ) where δ = arg − c_arg → 0 as w → 0.
                 // Taylor: ln(1 + δ) = δ − δ²/2 + δ³/3 − …
                 // The leading term of ln(1 + δ) equals the leading term of δ.
-                //
-                // This resolves the ∞·0 form in limits like
-                //   lim(x→∞) x·ln(1+1/x):
-                // After rewriting in terms of w, we need leadterm(ln(1+w))
-                // to return (1, 1) [i.e. ≈ w], NOT (0, 0) [i.e. ≈ ln(1) = 0].
-                // Without this, the Gruntz algorithm incorrectly concludes
-                // that the exponent x·ln(1+1/x) → ∞ instead of → 1.
                 let delta = arena.sub(arg, c_arg);
                 let delta = crate::transforms::eval::eval(arena, delta);
                 if !arena.is_zero_structural(delta) && crate::base::walk::contains(arena, delta, w)
                 {
                     tracing::debug!("gruntz::leadterm: ln(arg) with arg→1, using ln(1+δ) ≈ δ");
-                    return leadterm(arena, delta, w, logw);
+                    return leadterm(arena, delta, w, logw, x, depth + 1, counter);
                 }
                 return Ok((arena.zero(), arena.zero()));
             }
@@ -1069,102 +1073,32 @@ fn leadterm(
             Ok((crate::transforms::eval::eval(arena, coeff), arena.zero()))
         }
 
-        // ── Trig/hyperbolic functions: use Taylor approximation ──
-        // sin(t) ≈ t for small t, cos(t) ≈ 1, tan(t) ≈ t
-        // sinh(t) ≈ t, cosh(t) ≈ 1, tanh(t) ≈ t
-        ExprNode::Sin(inner) if crate::base::walk::contains(arena, inner, w) => {
-            tracing::trace!("gruntz::leadterm: Sin(inner) where inner depends on ω");
-            let (c_inner, e_inner) = leadterm(arena, inner, w, logw)?;
-            let e_eval = crate::transforms::eval::eval(arena, e_inner);
-            if let Some(r) = arena.as_num(e_eval) {
-                if r.is_positive() {
-                    // inner → 0: sin(inner) ≈ inner → (c_inner, e_inner)
-                    tracing::trace!("gruntz::leadterm: sin(→0) ≈ inner");
-                    return Ok((c_inner, e_inner));
-                }
-                if r.is_zero() {
-                    // inner → c_inner: sin(inner) → sin(c_inner)
-                    let val = arena.sin(c_inner);
-                    return Ok((crate::transforms::eval::eval(arena, val), arena.zero()));
-                }
-            }
-            // sin(→∞) oscillates — treat as O(1) bounded
-            Ok((f, arena.zero()))
-        }
-        ExprNode::Cos(inner) if crate::base::walk::contains(arena, inner, w) => {
-            tracing::trace!("gruntz::leadterm: Cos(inner) where inner depends on ω");
-            let (c_inner, e_inner) = leadterm(arena, inner, w, logw)?;
-            let e_eval = crate::transforms::eval::eval(arena, e_inner);
-            if let Some(r) = arena.as_num(e_eval) {
-                if r.is_positive() {
-                    // inner → 0: cos(inner) ≈ 1 → (1, 0)
-                    tracing::trace!("gruntz::leadterm: cos(→0) ≈ 1");
-                    return Ok((arena.one(), arena.zero()));
-                }
-                if r.is_zero() {
-                    let val = arena.cos(c_inner);
-                    return Ok((crate::transforms::eval::eval(arena, val), arena.zero()));
-                }
-            }
-            Ok((f, arena.zero()))
-        }
-        ExprNode::Tan(inner) if crate::base::walk::contains(arena, inner, w) => {
-            tracing::trace!("gruntz::leadterm: Tan(inner) where inner depends on ω");
-            let (c_inner, e_inner) = leadterm(arena, inner, w, logw)?;
-            let e_eval = crate::transforms::eval::eval(arena, e_inner);
-            if let Some(r) = arena.as_num(e_eval) {
-                if r.is_positive() {
-                    // inner → 0: tan(inner) ≈ inner
-                    return Ok((c_inner, e_inner));
-                }
-                if r.is_zero() {
-                    let val = arena.tan(c_inner);
-                    return Ok((crate::transforms::eval::eval(arena, val), arena.zero()));
-                }
-            }
-            Ok((f, arena.zero()))
-        }
-        ExprNode::Sinh(inner) if crate::base::walk::contains(arena, inner, w) => {
-            let (c_inner, e_inner) = leadterm(arena, inner, w, logw)?;
-            let e_eval = crate::transforms::eval::eval(arena, e_inner);
-            if let Some(r) = arena.as_num(e_eval) {
-                if r.is_positive() {
-                    return Ok((c_inner, e_inner)); // sinh(t) ≈ t
-                }
-                if r.is_zero() {
-                    let val = arena.sinh(c_inner);
-                    return Ok((crate::transforms::eval::eval(arena, val), arena.zero()));
-                }
-            }
-            Ok((f, arena.zero()))
-        }
-        ExprNode::Cosh(inner) if crate::base::walk::contains(arena, inner, w) => {
-            let (c_inner, e_inner) = leadterm(arena, inner, w, logw)?;
-            let e_eval = crate::transforms::eval::eval(arena, e_inner);
-            if let Some(r) = arena.as_num(e_eval) {
-                if r.is_positive() {
-                    return Ok((arena.one(), arena.zero())); // cosh(t) ≈ 1
-                }
-                if r.is_zero() {
-                    let val = arena.cosh(c_inner);
-                    return Ok((crate::transforms::eval::eval(arena, val), arena.zero()));
-                }
-            }
-            Ok((f, arena.zero()))
-        }
-        ExprNode::Tanh(inner) if crate::base::walk::contains(arena, inner, w) => {
-            let (c_inner, e_inner) = leadterm(arena, inner, w, logw)?;
-            let e_eval = crate::transforms::eval::eval(arena, e_inner);
-            if let Some(r) = arena.as_num(e_eval) {
-                if r.is_positive() {
-                    return Ok((c_inner, e_inner)); // tanh(t) ≈ t
-                }
-                if r.is_zero() {
-                    let val = arena.tanh(c_inner);
-                    return Ok((crate::transforms::eval::eval(arena, val), arena.zero()));
-                }
-            }
-            Ok((f, arena.zero()))
+        // ── Unary functions of an ω-dependent argument ──
+        ExprNode::Sin(inner)
+        | ExprNode::Cos(inner)
+        | ExprNode::Tan(inner)
+        | ExprNode::Asin(inner)
+        | ExprNode::Acos(inner)
+        | ExprNode::Atan(inner)
+        | ExprNode::Sinh(inner)
+        | ExprNode::Cosh(inner)
+        | ExprNode::Tanh(inner)
+        | ExprNode::Asinh(inner)
+        | ExprNode::Acosh(inner)
+        | ExprNode::Atanh(inner)
+        | ExprNode::Erf(inner)
+        | ExprNode::Erfc(inner)
+        | ExprNode::Gamma(inner)
+        | ExprNode::LogGamma(inner)
+        | ExprNode::Digamma(inner)
+        | ExprNode::LambertW(inner)
+        | ExprNode::Factorial(inner)
+        | ExprNode::Abs(inner)
+        | ExprNode::Sign(inner)
+        | ExprNode::Heaviside(inner)
+            if crate::base::walk::contains(arena, inner, w) =>
+        {
+            unary_leadterm(arena, f, &node, inner, w, logw, x, depth, counter)
         }
 
         // Fallback: try series expansion
@@ -1177,14 +1111,432 @@ fn leadterm(
                     return Ok((evaled, arena.zero()));
                 }
                 if evaled != f {
-                    return leadterm(arena, evaled, w, logw);
+                    return leadterm(arena, evaled, w, logw, x, depth + 1, counter);
                 }
             }
-            // Ultimate fallback
-            tracing::debug!("gruntz::leadterm: treating as O(1) coefficient");
-            Ok((f, arena.zero()))
+            Err(crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz::leadterm",
+                reason: format!(
+                    "cannot determine the leading behaviour of {}",
+                    arena.display(f)
+                ),
+            })
         }
     }
+}
+
+/// Rebuild a unary function node of the same kind as `template` applied to
+/// `arg`.
+fn apply_unary(arena: &mut Arena, template: &ExprNode, arg: ExprId) -> ExprId {
+    match template {
+        ExprNode::Sin(_) => arena.sin(arg),
+        ExprNode::Cos(_) => arena.cos(arg),
+        ExprNode::Tan(_) => arena.tan(arg),
+        ExprNode::Asin(_) => arena.asin(arg),
+        ExprNode::Acos(_) => arena.acos(arg),
+        ExprNode::Atan(_) => arena.atan(arg),
+        ExprNode::Sinh(_) => arena.sinh(arg),
+        ExprNode::Cosh(_) => arena.cosh(arg),
+        ExprNode::Tanh(_) => arena.tanh(arg),
+        ExprNode::Asinh(_) => arena.asinh(arg),
+        ExprNode::Acosh(_) => arena.acosh(arg),
+        ExprNode::Atanh(_) => arena.atanh(arg),
+        ExprNode::Erf(_) => arena.erf(arg),
+        ExprNode::Erfc(_) => arena.erfc(arg),
+        ExprNode::Gamma(_) => arena.gamma(arg),
+        ExprNode::LogGamma(_) => arena.log_gamma(arg),
+        ExprNode::Digamma(_) => arena.digamma(arg),
+        ExprNode::LambertW(_) => arena.lambertw(arg),
+        ExprNode::Factorial(_) => arena.factorial(arg),
+        ExprNode::Abs(_) => arena.abs(arg),
+        ExprNode::Sign(_) => arena.sign(arg),
+        ExprNode::Heaviside(_) => arena.heaviside(arg),
+        ExprNode::Exp(_) => arena.exp(arg),
+        ExprNode::Ln(_) => arena.ln(arg),
+        _ => arg,
+    }
+}
+
+/// `true` if `F(c)` is a pole/undefined point for the function kind.
+fn unary_is_singular_at(arena: &Arena, template: &ExprNode, c: ExprId) -> bool {
+    let r = arena.as_num(c);
+    match template {
+        ExprNode::Gamma(_) | ExprNode::LogGamma(_) | ExprNode::Digamma(_) => match r {
+            Some(r) => r.is_integer() && !r.is_positive(),
+            None => false,
+        },
+        ExprNode::Factorial(_) => match r {
+            Some(r) => r.is_integer() && r.is_negative(),
+            None => false,
+        },
+        ExprNode::Atanh(_) => match r {
+            Some(r) => r.abs() == Ratio::from_integer(BigInt::from(1)),
+            None => false,
+        },
+        ExprNode::Sign(_) | ExprNode::Heaviside(_) => match r {
+            Some(r) => r.is_zero(),
+            None => !arena.is_zero_structural(c) && false,
+        },
+        _ => false,
+    }
+}
+
+/// Leading term of `F(inner)` for a unary function `F`.
+///
+/// * `inner → 0`: expand `F` at 0 and take the first non-vanishing term.
+/// * `inner → c` (finite): `F(c)` if nonzero, otherwise expand `F(c + δ)`.
+/// * `inner → ±∞`: use the known asymptotic value of `F` (via the eventual
+///   sign of the argument); bounded oscillating functions are treated as
+///   `O(1)` and unbounded ones are rejected.
+#[allow(clippy::too_many_arguments)]
+fn unary_leadterm(
+    arena: &mut Arena,
+    f: ExprId,
+    template: &ExprNode,
+    inner: ExprId,
+    w: ExprId,
+    logw: ExprId,
+    x: ExprId,
+    depth: usize,
+    counter: &mut u32,
+) -> Result<(ExprId, ExprId), crate::base::errors::SymplexError> {
+    let (c_in, e_in) = leadterm(arena, inner, w, logw, x, depth + 1, counter)?;
+    let e_eval = crate::transforms::eval::eval(arena, e_in);
+    let Some(r) = arena.as_num(e_eval).cloned() else {
+        return Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz::leadterm",
+            reason: "non-numeric exponent in function argument".into(),
+        });
+    };
+    let zero = arena.zero();
+
+    if r.is_positive() {
+        // inner → 0.
+        if unary_is_singular_at(arena, template, zero) {
+            // Γ(t) ≈ 1/t and ψ(t) ≈ −1/t near the origin.
+            if matches!(template, ExprNode::Gamma(_) | ExprNode::Digamma(_)) {
+                let neg_e = arena.neg(e_in);
+                let inv_c = arena.pow(c_in, arena.neg_one());
+                let inv_c = crate::transforms::eval::eval(arena, inv_c);
+                let coeff = if matches!(template, ExprNode::Gamma(_)) {
+                    inv_c
+                } else {
+                    arena.neg(inv_c)
+                };
+                return Ok((coeff, crate::transforms::eval::eval(arena, neg_e)));
+            }
+            return Err(crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz::leadterm",
+                reason: "function has a pole at the limit of its argument".into(),
+            });
+        }
+        tracing::trace!("gruntz::leadterm: F(inner) with inner → 0, expanding F at 0");
+        let t = fresh_dummy(arena, counter);
+        let ft = apply_unary(arena, template, t);
+        let p = crate::calculus::series::series(arena, ft, t, zero, 6)?;
+        let p0 = crate::transforms::subs::subs(arena, p, t, zero);
+        let p0 = crate::transforms::eval::eval(arena, p0);
+        if !arena.is_zero_structural(p0) {
+            return Ok((p0, zero));
+        }
+        let p_inner = crate::transforms::subs::subs(arena, p, t, inner);
+        let p_inner = crate::transforms::eval::eval(arena, p_inner);
+        if arena.is_zero_structural(p_inner) || p_inner == f {
+            return Err(crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz::leadterm",
+                reason: "series expansion of function did not resolve the leading term".into(),
+            });
+        }
+        return leadterm(arena, p_inner, w, logw, x, depth + 1, counter);
+    }
+
+    if r.is_zero() {
+        // inner → c_in (a constant, possibly depending on x).
+        if unary_is_singular_at(arena, template, c_in) {
+            // Γ(−n + δ) ≈ (−1)ⁿ / (n!·δ) at its poles.
+            if let ExprNode::Gamma(_) = template
+                && let Some(cn) = arena.as_num(c_in).cloned()
+                && cn.is_integer()
+                && !cn.is_positive()
+            {
+                let n = (-cn.to_integer()).to_u64().unwrap_or(0);
+                let mut fact = BigInt::from(1u64);
+                for i in 2..=n {
+                    fact *= BigInt::from(i);
+                }
+                let sign = if n % 2 == 0 { 1 } else { -1 };
+                let coeff_rat = Ratio::from_integer(BigInt::from(sign)) / Ratio::from_integer(fact);
+                let coeff = {
+                    let nid = arena.intern_num(coeff_rat);
+                    arena.intern(ExprNode::Num(nid))
+                };
+                let delta = arena.sub(inner, c_in);
+                let delta = crate::transforms::eval::eval(arena, delta);
+                if arena.is_zero_structural(delta) {
+                    return Err(crate::base::errors::SymplexError::ComputationFailed {
+                        operation: "gruntz::leadterm",
+                        reason: "Γ evaluated exactly at a pole".into(),
+                    });
+                }
+                let inv_delta = arena.pow(delta, arena.neg_one());
+                let approx = arena.mul(&[coeff, inv_delta]);
+                return leadterm(arena, approx, w, logw, x, depth + 1, counter);
+            }
+            return Err(crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz::leadterm",
+                reason: "function has a pole at the limit of its argument".into(),
+            });
+        }
+        let v = apply_unary(arena, template, c_in);
+        let v = crate::transforms::eval::eval(arena, v);
+        if is_infinite(arena, v) || v == arena.nan() {
+            return Err(crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz::leadterm",
+                reason: "function value is infinite at the limit of its argument".into(),
+            });
+        }
+        if !arena.is_zero_structural(v) {
+            return Ok((v, zero));
+        }
+        // F(c) = 0: expand F(c + δ) with δ = inner − c → 0.
+        let delta = arena.sub(inner, c_in);
+        let delta = crate::transforms::eval::eval(arena, delta);
+        if arena.is_zero_structural(delta) {
+            return Ok((zero, zero));
+        }
+        tracing::trace!("gruntz::leadterm: F(c) = 0, expanding F(c + δ)");
+        let t = fresh_dummy(arena, counter);
+        let arg = arena.add(&[c_in, t]);
+        let ft = apply_unary(arena, template, arg);
+        let p = crate::calculus::series::series(arena, ft, t, zero, 6)?;
+        let p_delta = crate::transforms::subs::subs(arena, p, t, delta);
+        let p_delta = crate::transforms::eval::eval(arena, p_delta);
+        if arena.is_zero_structural(p_delta) || p_delta == f {
+            return Err(crate::base::errors::SymplexError::ComputationFailed {
+                operation: "gruntz::leadterm",
+                reason: "series expansion of function did not resolve the leading term".into(),
+            });
+        }
+        return leadterm(arena, p_delta, w, logw, x, depth + 1, counter);
+    }
+
+    // inner → ±∞: sign of the leading coefficient decides the side.
+    let s = if crate::base::walk::contains(arena, c_in, x) {
+        sign_at_inf(arena, c_in, x, depth + 1, counter)?
+    } else {
+        sign_of_constant(arena, c_in)?
+    };
+    let pos = s > 0;
+    let unbounded = || {
+        Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz::leadterm",
+            reason: "unbounded function of a divergent argument".into(),
+        })
+    };
+    match template {
+        ExprNode::Atan(_) => {
+            let two = arena.int(2);
+            let pi = arena.pi();
+            let half_pi = arena.div(pi, two);
+            let v = if pos { half_pi } else { arena.neg(half_pi) };
+            Ok((v, zero))
+        }
+        ExprNode::Erf(_) | ExprNode::Tanh(_) | ExprNode::Sign(_) => {
+            let v = if pos { arena.one() } else { arena.neg_one() };
+            Ok((v, zero))
+        }
+        ExprNode::Erfc(_) => {
+            if pos {
+                // erfc(+∞) decays like exp(−t²): not a power of ω.
+                unbounded()
+            } else {
+                Ok((arena.int(2), zero))
+            }
+        }
+        ExprNode::Heaviside(_) => Ok((if pos { arena.one() } else { zero }, zero)),
+        ExprNode::Abs(_) => {
+            if s == 0 {
+                return unbounded();
+            }
+            let c = if pos { c_in } else { arena.neg(c_in) };
+            Ok((crate::transforms::eval::eval(arena, c), e_in))
+        }
+        // Bounded oscillation: O(1), keep the function as the coefficient.
+        ExprNode::Sin(_) | ExprNode::Cos(_) => Ok((f, zero)),
+        // W(u) ~ ln u as u → +∞ (leading order only).
+        ExprNode::LambertW(_) if pos => {
+            let ln_inner = arena.ln(inner);
+            leadterm(arena, ln_inner, w, logw, x, depth + 1, counter)
+        }
+        _ => unbounded(),
+    }
+}
+
+/// Resolve an `Add` whose leading coefficients cancel (or still depend on
+/// `w`) by series expansion.
+///
+/// The sum is first *normalised* so that every pole in `w` is explicit
+/// (`(A)^k → w^{ek}·(A·w^{−e})^k`, `ln A → e·logw + ln(A·w^{−e})`, `b^g →
+/// exp(g·ln b)`), then multiplied by `w^{−e_min}` to make it regular at
+/// `w = 0`, and finally expanded as a Taylor series in `w`.
+#[allow(clippy::too_many_arguments)]
+fn leadterm_add_by_series(
+    arena: &mut Arena,
+    f: ExprId,
+    w: ExprId,
+    logw: ExprId,
+    min_exp: &Ratio<BigInt>,
+    x: ExprId,
+    depth: usize,
+    counter: &mut u32,
+) -> Result<(ExprId, ExprId), crate::base::errors::SymplexError> {
+    let zero = arena.zero();
+    let min_exp_id = {
+        let nid = arena.intern_num(min_exp.clone());
+        arena.intern(ExprNode::Num(nid))
+    };
+
+    // Strategy 1: normalise poles and expand as a regular Taylor series.
+    if let Ok(normalized) = normalize_poles(arena, f, w, logw, x, depth, counter) {
+        let neg_min = {
+            let nid = arena.intern_num(-min_exp.clone());
+            arena.intern(ExprNode::Num(nid))
+        };
+        let w_shift = arena.pow(w, neg_min);
+        let g = arena.mul(&[normalized, w_shift]);
+        let g = crate::transforms::eval::eval(arena, g);
+        let g = crate::transforms::expand::expand(arena, g);
+        let g = crate::transforms::eval::eval(arena, g);
+        let g_display = arena.display(g).to_string();
+        tracing::debug!(regular = %g_display, "gruntz::leadterm_add_by_series: normalised expression");
+
+        for order in [3u32, 5, 8] {
+            match crate::calculus::series::series(arena, g, w, zero, order) {
+                Ok(s) => {
+                    let h = crate::transforms::expand::expand(arena, s);
+                    let h = crate::transforms::eval::eval(arena, h);
+                    if arena.is_zero_structural(h) {
+                        continue;
+                    }
+                    let h_display = arena.display(h).to_string();
+                    tracing::debug!(order, series = %h_display, "gruntz::leadterm_add_by_series: series");
+                    let (c, e) = leadterm(arena, h, w, logw, x, depth + 1, counter)?;
+                    if arena.is_zero_structural(c) {
+                        continue;
+                    }
+                    let e_total = arena.add(&[e, min_exp_id]);
+                    let e_total = crate::transforms::eval::eval(arena, e_total);
+                    return Ok((c, e_total));
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    // Strategy 2: expand individual functions as Taylor series, substitute
+    // back, simplify algebraically, and retry.
+    let func_expanded = expand_functions_as_series(arena, f, w, 6);
+    if func_expanded != f {
+        let simplified = crate::transforms::eval::eval(arena, func_expanded);
+        let simplified = crate::transforms::expand::expand(arena, simplified);
+        let simplified = crate::transforms::eval::eval(arena, simplified);
+        if !arena.is_zero_structural(simplified) && simplified != f {
+            return leadterm(arena, simplified, w, logw, x, depth + 1, counter);
+        }
+    }
+
+    // Strategy 3: full series expansion of f itself (works when f is
+    // regular at w = 0).
+    for order in 2..10 {
+        if let Ok(series) = crate::calculus::series::series(arena, f, w, zero, order) {
+            let expanded = crate::transforms::expand::expand(arena, series);
+            let evaled = crate::transforms::eval::eval(arena, expanded);
+            if evaled != f && !arena.is_zero_structural(evaled) {
+                return leadterm(arena, evaled, w, logw, x, depth + 1, counter);
+            }
+        } else {
+            break;
+        }
+    }
+
+    Err(crate::base::errors::SymplexError::ComputationFailed {
+        operation: "gruntz::leadterm",
+        reason: "leading coefficients cancel and series expansion failed".into(),
+    })
+}
+
+/// Make every pole in `w` explicit so that `f · w^{−e_min}` is regular at
+/// `w = 0` and amenable to Taylor expansion. See [`leadterm_add_by_series`].
+#[allow(clippy::too_many_arguments)]
+fn normalize_poles(
+    arena: &mut Arena,
+    f: ExprId,
+    w: ExprId,
+    logw: ExprId,
+    x: ExprId,
+    depth: usize,
+    counter: &mut u32,
+) -> Result<ExprId, crate::base::errors::SymplexError> {
+    let post = crate::base::walk::post_order_ids(arena, f);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+
+    for &id in &post {
+        if !crate::base::walk::contains(arena, id, w) {
+            cache.insert(id, id);
+            continue;
+        }
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let node = arena.node(rebuilt).clone();
+        let new = match node {
+            ExprNode::Pow(base, k)
+                if base != w
+                    && !crate::base::walk::contains(arena, k, w)
+                    && crate::base::walk::contains(arena, base, w)
+                    && matches!(arena.node(base), ExprNode::Add(_)) =>
+            {
+                let (_, e) = leadterm(arena, base, w, logw, x, depth + 1, counter)?;
+                let e = crate::transforms::eval::eval(arena, e);
+                if arena.as_num(e).is_some() && !arena.is_zero_structural(e) {
+                    let neg_e = arena.neg(e);
+                    let w_neg_e = arena.pow(w, neg_e);
+                    let scaled = arena.mul(&[base, w_neg_e]);
+                    let scaled = crate::transforms::expand::expand(arena, scaled);
+                    let scaled = crate::transforms::eval::eval(arena, scaled);
+                    let ek = arena.mul(&[e, k]);
+                    let w_ek = arena.pow(w, ek);
+                    let regular_pow = arena.pow(scaled, k);
+                    arena.mul(&[w_ek, regular_pow])
+                } else {
+                    rebuilt
+                }
+            }
+            ExprNode::Pow(base, k) if crate::base::walk::contains(arena, k, w) => {
+                let ln_b = arena.ln(base);
+                let prod = arena.mul(&[k, ln_b]);
+                arena.exp(prod)
+            }
+            ExprNode::Ln(arg) => {
+                let (_, e) = leadterm(arena, arg, w, logw, x, depth + 1, counter)?;
+                let e = crate::transforms::eval::eval(arena, e);
+                if arena.as_num(e).is_some() && !arena.is_zero_structural(e) {
+                    let neg_e = arena.neg(e);
+                    let w_neg_e = arena.pow(w, neg_e);
+                    let scaled = arena.mul(&[arg, w_neg_e]);
+                    let scaled = crate::transforms::expand::expand(arena, scaled);
+                    let scaled = crate::transforms::eval::eval(arena, scaled);
+                    let e_logw = arena.mul(&[e, logw]);
+                    let ln_scaled = arena.ln(scaled);
+                    arena.add(&[e_logw, ln_scaled])
+                } else {
+                    rebuilt
+                }
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+
+    Ok(cache.get(&f).copied().unwrap_or(f))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1270,7 +1622,7 @@ fn mrv_leadterm(
     tracing::debug!(rewritten_f = %f_display, w = %w_display, logw = %logw_display, "gruntz::mrv_leadterm: Step 4 — extracting leading term from rewritten expression");
 
     // Step 4: Extract leading term
-    let (c0, e0) = leadterm(arena, f, w, logw)?;
+    let (c0, e0) = leadterm(arena, f, w, logw, x, depth + 1, counter)?;
 
     let c0_display = arena.display(c0).to_string();
     let e0_display = arena.display(e0).to_string();
@@ -1309,6 +1661,15 @@ pub(crate) fn limitinf(
         return Ok(e);
     }
 
+    // Rewrite into a "tractable" form: tan → sin/cos, hyperbolic → exp,
+    // inverse hyperbolic → ln, and resolve sign-dependent functions
+    // (abs, sign, H, floor, piecewise, min, max) by their eventual sign.
+    let e = rewrite_tractable(arena, e, x, depth, counter)?;
+    if !crate::base::walk::contains(arena, e, x) {
+        let v = crate::transforms::eval::eval(arena, e);
+        return Ok(v);
+    }
+
     let e_display = arena.display(e).to_string();
     let x_display = arena.display(x).to_string();
     tracing::debug!(depth, expr = %e_display, var = %x_display, "gruntz::limitinf: computing limit at infinity");
@@ -1321,6 +1682,11 @@ pub(crate) fn limitinf(
     let e0_display = arena.display(e0_eval).to_string();
     tracing::debug!(c0 = %c0_display, e0 = %e0_display, "gruntz::limitinf: leading term extracted, checking exponent sign");
 
+    // f ≈ 0·ω^e0 → the expression vanishes identically.
+    if arena.is_zero_structural(c0) {
+        return Ok(arena.zero());
+    }
+
     // Determine sign of e0
     let e0_sign = if let Some(r) = arena.as_num(e0_eval) {
         let r = r.clone();
@@ -1332,8 +1698,23 @@ pub(crate) fn limitinf(
             0
         }
     } else {
-        sign_at_inf(arena, e0_eval, x, depth + 1, counter).unwrap_or(0)
+        sign_at_inf(arena, e0_eval, x, depth + 1, counter)?
     };
+
+    // A coefficient that still contains ω (or another dummy) is a bounded
+    // oscillation marker (`sin`/`cos` of a divergent argument).  Multiplied
+    // by something that vanishes it still gives 0; otherwise there is no
+    // limit — refuse rather than leak internal symbols into the answer.
+    if contains_foreign_dummy(arena, c0, x) {
+        if e0_sign > 0 {
+            tracing::info!("gruntz::limitinf: bounded × vanishing → limit is 0");
+            return Ok(arena.zero());
+        }
+        return Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz::limitinf",
+            reason: "expression has no limit (bounded oscillation)".into(),
+        });
+    }
 
     match e0_sign {
         s if s > 0 => {
@@ -1341,12 +1722,17 @@ pub(crate) fn limitinf(
             Ok(arena.zero())
         }
         s if s < 0 => {
-            let c0_sign = sign_at_inf(arena, c0, x, depth + 1, counter).unwrap_or(1);
+            let c0_sign = sign_at_inf(arena, c0, x, depth + 1, counter)?;
             tracing::info!(c0_sign, "gruntz::limitinf: e0 < 0 → limit is ±∞");
-            if c0_sign >= 0 {
+            if c0_sign > 0 {
                 Ok(arena.infinity())
-            } else {
+            } else if c0_sign < 0 {
                 Ok(arena.neg_infinity())
+            } else {
+                Err(crate::base::errors::SymplexError::ComputationFailed {
+                    operation: "gruntz::limitinf",
+                    reason: "indeterminate 0·∞ form in leading term".into(),
+                })
             }
         }
         _ => {
@@ -1357,10 +1743,329 @@ pub(crate) fn limitinf(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Public entry point
+// Tractable rewriting
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// `true` if `e` contains a node that [`rewrite_tractable`] would touch.
+fn needs_tractable_rewrite(arena: &Arena, e: ExprId) -> bool {
+    let mut stack = vec![e];
+    let mut visited = rustc_hash::FxHashSet::default();
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let node = arena.node(id);
+        if matches!(
+            node,
+            ExprNode::Tan(_)
+                | ExprNode::Sinh(_)
+                | ExprNode::Cosh(_)
+                | ExprNode::Tanh(_)
+                | ExprNode::Asinh(_)
+                | ExprNode::Acosh(_)
+                | ExprNode::Atanh(_)
+                | ExprNode::Abs(_)
+                | ExprNode::Sign(_)
+                | ExprNode::Heaviside(_)
+                | ExprNode::DiracDelta(_)
+                | ExprNode::Floor(_)
+                | ExprNode::Ceiling(_)
+                | ExprNode::Piecewise(_)
+                | ExprNode::Min(_)
+                | ExprNode::Max(_)
+        ) {
+            return true;
+        }
+        node.for_each_child(|c| stack.push(c));
+    }
+    false
+}
+
+/// Rewrite `e` into a form the Gruntz machinery handles well, using the
+/// fact that `x → +∞`:
+///
+/// * `tan u → sin u / cos u`
+/// * `sinh u, cosh u, tanh u → ` exponentials
+/// * `asinh u, acosh u, atanh u → ` logarithms
+/// * `|u| → ±u`, `sign u → ±1`, `H(u) → 0/1`, `δ(u) → 0` by the eventual
+///   sign of `u`
+/// * `⌊u⌋, ⌈u⌉ → n` when `u` converges to a finite value
+/// * `min/max → ` the eventually smallest/largest argument
+/// * `Piecewise → ` the branch whose condition eventually holds
+///
+/// Nodes whose eventual sign cannot be determined are left untouched.
+fn rewrite_tractable(
+    arena: &mut Arena,
+    e: ExprId,
+    x: ExprId,
+    depth: usize,
+    counter: &mut u32,
+) -> Result<ExprId, crate::base::errors::SymplexError> {
+    if !needs_tractable_rewrite(arena, e) {
+        return Ok(e);
+    }
+
+    let post = crate::base::walk::post_order_ids(arena, e);
+    let mut cache: FxHashMap<ExprId, ExprId> = FxHashMap::default();
+
+    for &id in &post {
+        if !crate::base::walk::contains(arena, id, x) {
+            cache.insert(id, id);
+            continue;
+        }
+        let rebuilt = crate::base::walk::rebuild_with_cache(arena, id, &cache);
+        let node = arena.node(rebuilt).clone();
+        let new = match node {
+            ExprNode::Tan(u) => {
+                let s = arena.sin(u);
+                let c = arena.cos(u);
+                arena.div(s, c)
+            }
+            ExprNode::Sinh(u) => {
+                let neg_u = arena.neg(u);
+                let ep = arena.exp(u);
+                let em = arena.exp(neg_u);
+                let diff = arena.sub(ep, em);
+                let two = arena.int(2);
+                arena.div(diff, two)
+            }
+            ExprNode::Cosh(u) => {
+                let neg_u = arena.neg(u);
+                let ep = arena.exp(u);
+                let em = arena.exp(neg_u);
+                let sum = arena.add(&[ep, em]);
+                let two = arena.int(2);
+                arena.div(sum, two)
+            }
+            ExprNode::Tanh(u) => {
+                let two = arena.int(2);
+                let two_u = arena.mul(&[two, u]);
+                let e2u = arena.exp(two_u);
+                let one = arena.one();
+                let num = arena.sub(e2u, one);
+                let den = arena.add(&[e2u, one]);
+                arena.div(num, den)
+            }
+            ExprNode::Asinh(u) => {
+                let two = arena.int(2);
+                let u2 = arena.pow(u, two);
+                let one = arena.one();
+                let inner = arena.add(&[u2, one]);
+                let root = arena.sqrt(inner);
+                let sum = arena.add(&[u, root]);
+                arena.ln(sum)
+            }
+            ExprNode::Acosh(u) => {
+                let two = arena.int(2);
+                let u2 = arena.pow(u, two);
+                let one = arena.one();
+                let inner = arena.sub(u2, one);
+                let root = arena.sqrt(inner);
+                let sum = arena.add(&[u, root]);
+                arena.ln(sum)
+            }
+            ExprNode::Atanh(u) => {
+                let one = arena.one();
+                let p = arena.add(&[one, u]);
+                let m = arena.sub(one, u);
+                let lp = arena.ln(p);
+                let lm = arena.ln(m);
+                let diff = arena.sub(lp, lm);
+                let two = arena.int(2);
+                arena.div(diff, two)
+            }
+            ExprNode::Abs(u) => match sign_at_inf(arena, u, x, depth + 1, counter) {
+                Ok(s) if s > 0 => u,
+                Ok(s) if s < 0 => arena.neg(u),
+                _ => rebuilt,
+            },
+            ExprNode::Sign(u) => match sign_at_inf(arena, u, x, depth + 1, counter) {
+                Ok(s) => arena.int(s as i64),
+                Err(_) => rebuilt,
+            },
+            ExprNode::Heaviside(u) => match sign_at_inf(arena, u, x, depth + 1, counter) {
+                Ok(s) if s > 0 => arena.one(),
+                Ok(s) if s < 0 => arena.zero(),
+                _ => rebuilt,
+            },
+            ExprNode::DiracDelta(u) => match sign_at_inf(arena, u, x, depth + 1, counter) {
+                Ok(s) if s != 0 => arena.zero(),
+                _ => rebuilt,
+            },
+            ExprNode::Floor(u) | ExprNode::Ceiling(u) => {
+                let is_floor = matches!(node, ExprNode::Floor(_));
+                match limitinf(arena, u, x, depth + 1, counter) {
+                    Ok(l) if !is_infinite(arena, l) => match arena.as_num(l).cloned() {
+                        Some(r) if r.is_integer() => {
+                            let n_id = l;
+                            let diff = arena.sub(u, n_id);
+                            match sign_at_inf(arena, diff, x, depth + 1, counter) {
+                                Ok(s) => {
+                                    let one = arena.one();
+                                    if s > 0 {
+                                        if is_floor {
+                                            n_id
+                                        } else {
+                                            arena.add(&[n_id, one])
+                                        }
+                                    } else if s < 0 {
+                                        if is_floor { arena.sub(n_id, one) } else { n_id }
+                                    } else {
+                                        n_id
+                                    }
+                                }
+                                Err(_) => rebuilt,
+                            }
+                        }
+                        Some(r) => {
+                            let v = if is_floor { r.floor() } else { r.ceil() };
+                            let nid = arena.intern_num(v);
+                            arena.intern(ExprNode::Num(nid))
+                        }
+                        None => rebuilt,
+                    },
+                    _ => rebuilt,
+                }
+            }
+            ExprNode::Min(ref args) | ExprNode::Max(ref args) => {
+                let is_min = matches!(node, ExprNode::Min(_));
+                let args = args.clone();
+                let mut best = args[0];
+                let mut ok = true;
+                for &a in &args[1..] {
+                    let diff = arena.sub(a, best);
+                    match sign_at_inf(arena, diff, x, depth + 1, counter) {
+                        Ok(s) => {
+                            if (is_min && s < 0) || (!is_min && s > 0) {
+                                best = a;
+                            }
+                        }
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok { best } else { rebuilt }
+            }
+            ExprNode::Piecewise(ref pairs) => {
+                let pairs = pairs.clone();
+                let mut chosen = None;
+                for &(val, cond) in &pairs {
+                    match eventually_true(arena, cond, x, depth, counter) {
+                        Some(true) => {
+                            chosen = Some(val);
+                            break;
+                        }
+                        Some(false) => continue,
+                        None => break,
+                    }
+                }
+                chosen.unwrap_or(rebuilt)
+            }
+            _ => rebuilt,
+        };
+        cache.insert(id, new);
+    }
+
+    let result = cache.get(&e).copied().unwrap_or(e);
+    if result != e {
+        let r_display = arena.display(result).to_string();
+        tracing::debug!(rewritten = %r_display, "gruntz::rewrite_tractable");
+    }
+    Ok(crate::transforms::eval::eval(arena, result))
+}
+
+/// Decide whether a boolean condition holds for all sufficiently large `x`.
+fn eventually_true(
+    arena: &mut Arena,
+    cond: ExprId,
+    x: ExprId,
+    depth: usize,
+    counter: &mut u32,
+) -> Option<bool> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let node = arena.node(cond).clone();
+    match node {
+        ExprNode::BoolTrue => Some(true),
+        ExprNode::BoolFalse => Some(false),
+        ExprNode::Gt(a, b) | ExprNode::Ge(a, b) | ExprNode::Eq_(a, b) | ExprNode::Ne(a, b) => {
+            let diff = arena.sub(a, b);
+            let s = sign_at_inf(arena, diff, x, depth + 1, counter).ok()?;
+            Some(match node {
+                ExprNode::Gt(..) => s > 0,
+                ExprNode::Ge(..) => s >= 0,
+                ExprNode::Eq_(..) => s == 0,
+                _ => s != 0,
+            })
+        }
+        ExprNode::And(children) => {
+            let mut all_true = true;
+            for c in children {
+                match eventually_true(arena, c, x, depth + 1, counter) {
+                    Some(true) => {}
+                    Some(false) => return Some(false),
+                    None => all_true = false,
+                }
+            }
+            if all_true { Some(true) } else { None }
+        }
+        ExprNode::Or(children) => {
+            let mut all_false = true;
+            for c in children {
+                match eventually_true(arena, c, x, depth + 1, counter) {
+                    Some(true) => return Some(true),
+                    Some(false) => {}
+                    None => all_false = false,
+                }
+            }
+            if all_false { Some(false) } else { None }
+        }
+        ExprNode::Not(inner) => eventually_true(arena, inner, x, depth + 1, counter).map(|b| !b),
+        _ => None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Public entry points
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Validate a Gruntz result: it must not contain the variable or any
+/// internal dummy symbol.
+fn validate_result(
+    arena: &Arena,
+    r: ExprId,
+    x: ExprId,
+) -> Result<ExprId, crate::base::errors::SymplexError> {
+    if crate::base::walk::contains(arena, r, x) || contains_foreign_dummy(arena, r, x) {
+        return Err(crate::base::errors::SymplexError::ComputationFailed {
+            operation: "gruntz",
+            reason: "expression has no limit or the limit could not be determined".into(),
+        });
+    }
+    Ok(r)
+}
+
+/// Compute `lim(x→+∞) e` using the Gruntz algorithm, with result validation.
+///
+/// This is the entry point used by the one-sided limit machinery in
+/// [`limit`](crate::calculus::limit), after the substitution `x = a ± 1/w`.
+pub(crate) fn limit_pos_inf(
+    arena: &mut Arena,
+    e: ExprId,
+    x: ExprId,
+) -> Result<ExprId, crate::base::errors::SymplexError> {
+    let mut counter: u32 = 0;
+    let r = limitinf(arena, e, x, 0, &mut counter)?;
+    validate_result(arena, r, x)
+}
+
 /// Compute `lim(z → z0) e` using the Gruntz algorithm.
+///
+/// For a finite `z0` this computes the *right-hand* limit `z → z0⁺` via the
+/// substitution `z = z0 + 1/x`, `x → +∞`.
 pub(crate) fn gruntz(
     arena: &mut Arena,
     e: ExprId,
@@ -1372,7 +2077,8 @@ pub(crate) fn gruntz(
 
     if z0 == arena.infinity() {
         tracing::debug!("gruntz: limit at +∞");
-        return limitinf(arena, e, z, 0, &mut gruntz_counter);
+        let r = limitinf(arena, e, z, 0, &mut gruntz_counter)?;
+        return validate_result(arena, r, z);
     }
 
     if z0 == arena.neg_infinity() {
@@ -1380,7 +2086,9 @@ pub(crate) fn gruntz(
         let x = fresh_dummy(arena, &mut gruntz_counter);
         let neg_x = arena.neg(x);
         let e_sub = crate::transforms::subs::subs(arena, e, z, neg_x);
-        return limitinf(arena, e_sub, x, 0, &mut gruntz_counter);
+        let r = limitinf(arena, e_sub, x, 0, &mut gruntz_counter)?;
+        let r = validate_result(arena, r, x)?;
+        return validate_result(arena, r, z);
     }
 
     let e_display = arena.display(e).to_string();
@@ -1403,7 +2111,9 @@ pub(crate) fn gruntz(
 
     let simplified_display = arena.display(e_simplified).to_string();
     tracing::debug!(simplified = %simplified_display, "gruntz: finite-point expression simplified, calling limitinf");
-    limitinf(arena, e_simplified, x, 0, &mut gruntz_counter)
+    let r = limitinf(arena, e_simplified, x, 0, &mut gruntz_counter)?;
+    let r = validate_result(arena, r, x)?;
+    validate_result(arena, r, z)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
