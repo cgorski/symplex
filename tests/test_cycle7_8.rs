@@ -646,8 +646,12 @@ fn solve_non_polynomial_returns_ok_via_inversion() {
 fn solve_constant_nonzero_no_solutions() {
     let ctx = Context::new();
     let x = ctx.symbol("x");
-    let roots = ctx.int(5).solve(&x).unwrap();
-    assert!(roots.is_empty(), "5=0 has no solutions");
+    // 0.2: a contradiction is reported as Err(NoSolution); solve_or_empty gives [].
+    assert!(
+        matches!(ctx.int(5).solve(&x), Err(SymplexError::NoSolution { .. })),
+        "5=0 has no solutions"
+    );
+    assert!(ctx.int(5).solve_or_empty(&x).is_empty());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
