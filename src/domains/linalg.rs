@@ -114,8 +114,23 @@ pub(crate) fn extract_linear_row(
 /// denominator when that is shorter.
 fn tidy(e: &Ex) -> Ex {
     let s = e.eval().simplify();
-    let t = s.together().simplify();
-    if t.count_ops() < s.count_ops() { t } else { s }
+    // Combine over a common denominator and expand the numerator so that
+    // cancellations like -a*b + b*(a+1) → b are found.
+    let (num, den) = s.together().as_numer_denom();
+    let num = num.expand().eval();
+    let t = if den.is_one_structural() {
+        num
+    } else {
+        (&num / &den).eval()
+    };
+    // Prefer the single-fraction form unless it is clearly larger
+    // (`count_ops` is DAG-based, so a shared denominator makes the split
+    // form look deceptively small; allow one extra node for the fraction).
+    if t.count_ops() <= s.count_ops() + 1 {
+        t
+    } else {
+        s
+    }
 }
 
 /// Light-weight normalisation used between elimination steps.
@@ -125,7 +140,11 @@ fn normalize(e: &Ex) -> Ex {
         return e1;
     }
     let e2 = e1.simplify_with(&SimplifyOpts::single_pass());
-    if e2.count_ops() <= e1.count_ops() { e2 } else { e1 }
+    if e2.count_ops() <= e1.count_ops() {
+        e2
+    } else {
+        e1
+    }
 }
 
 /// `true` if `e` is a numeric literal.
@@ -217,9 +236,9 @@ pub(crate) fn rref_solve(
         // Candidate pivots: prefer numeric nonzero, then simplest symbolic.
         let mut numeric: Option<usize> = None;
         let mut symbolic: Option<(usize, usize)> = None; // (row, ops)
-        for r in pivot_row..m {
-            let e = normalize(&mat[r][col]);
-            mat[r][col] = e.clone();
+        for (r, row) in mat.iter_mut().enumerate().skip(pivot_row) {
+            let e = normalize(&row[col]);
+            row[col] = e.clone();
             if is_nonzero_number(&e) {
                 numeric = Some(r);
                 break;
@@ -230,7 +249,7 @@ pub(crate) fn rref_solve(
                     symbolic = Some((r, ops));
                 }
             } else {
-                mat[r][col] = e.context().zero();
+                row[col] = e.context().zero();
             }
         }
         let found = match (numeric, symbolic) {
@@ -243,31 +262,32 @@ pub(crate) fn rref_solve(
         }
         // Scale pivot row.
         let pv = mat[pivot_row][col].clone();
-        for j in 0..ncols {
+        for (j, entry) in mat[pivot_row].iter_mut().enumerate() {
             if j == col {
-                mat[pivot_row][j] = pv.context().one();
+                *entry = pv.context().one();
             } else {
-                let v = &mat[pivot_row][j] / &pv;
-                mat[pivot_row][j] = normalize(&v);
+                let v = &*entry / &pv;
+                *entry = normalize(&v);
             }
         }
         // Eliminate in all other rows.
-        for i in 0..m {
+        let pivot_vals = mat[pivot_row].clone();
+        for (i, row) in mat.iter_mut().enumerate() {
             if i == pivot_row {
                 continue;
             }
-            let factor = normalize(&mat[i][col]);
+            let factor = normalize(&row[col]);
             if entry_is_zero(&factor) {
-                mat[i][col] = factor.context().zero();
+                row[col] = factor.context().zero();
                 continue;
             }
-            for j in 0..ncols {
+            for (j, entry) in row.iter_mut().enumerate() {
                 if j == col {
-                    mat[i][j] = factor.context().zero();
+                    *entry = factor.context().zero();
                 } else {
-                    let t = &factor * &mat[pivot_row][j];
-                    let v = &mat[i][j] - &t;
-                    mat[i][j] = normalize(&v);
+                    let t = &factor * &pivot_vals[j];
+                    let v = &*entry - &t;
+                    *entry = normalize(&v);
                 }
             }
         }

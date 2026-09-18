@@ -2841,11 +2841,8 @@ impl Expr<Numeric> {
         let var_id = self.checked_id(var);
         let _span = debug_span!("solve", expr = ?self.raw_id(), var = ?var_id).entered();
         let mut inner = self.inner.write();
-        let outcome = crate::transforms::solve::solve_classified(
-            &mut inner.arena,
-            self.raw_id(),
-            var_id,
-        );
+        let outcome =
+            crate::transforms::solve::solve_classified(&mut inner.arena, self.raw_id(), var_id);
         match outcome {
             crate::transforms::solve::SolveOutcome::Solutions(solutions) => {
                 if !solutions.is_empty() {
@@ -3203,18 +3200,18 @@ impl Expr<Numeric> {
         let mut bracket: Option<(f64, f64, f64, f64)> = None; // (lo, f_lo, hi, f_hi)
         let mut prev: Option<(f64, f64)> = None; // previous iterate for secant
 
-        let update_bracket =
-            |bracket: &mut Option<(f64, f64, f64, f64)>, xn: f64, fn_: f64| {
-                if let Some((lo, f_lo, hi, f_hi)) = *bracket {
-                    if xn > lo && xn < hi {
-                        if (fn_ < 0.0) == (f_lo < 0.0) {
-                            *bracket = Some((xn, fn_, hi, f_hi));
-                        } else {
-                            *bracket = Some((lo, f_lo, xn, fn_));
-                        }
-                    }
+        let update_bracket = |bracket: &mut Option<(f64, f64, f64, f64)>, xn: f64, fn_: f64| {
+            if let Some((lo, f_lo, hi, f_hi)) = *bracket
+                && xn > lo
+                && xn < hi
+            {
+                if (fn_ < 0.0) == (f_lo < 0.0) {
+                    *bracket = Some((xn, fn_, hi, f_hi));
+                } else {
+                    *bracket = Some((lo, f_lo, xn, fn_));
                 }
-            };
+            }
+        };
 
         for _ in 0..max_iterations {
             if fx.abs() < tolerance {

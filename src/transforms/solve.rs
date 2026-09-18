@@ -118,7 +118,12 @@ pub(crate) fn solve_general(
 }
 
 /// Shared implementation of [`solve_classified`] and [`solve_general`].
-fn solve_impl(arena: &mut Arena, expr: ExprId, var: ExprId, period: Option<ExprId>) -> SolveOutcome {
+fn solve_impl(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: ExprId,
+    period: Option<ExprId>,
+) -> SolveOutcome {
     match solve_raw(arena, expr, var, period) {
         SolveOutcome::Solutions(s) => finalize_solutions(arena, s),
         other => other,

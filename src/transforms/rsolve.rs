@@ -49,7 +49,6 @@ fn constant(ctx: &crate::api::context::Context, k: usize) -> Ex {
     ctx.symbol(&format!("C{k}"))
 }
 
-
 /// Rational value of a numeric literal.
 fn as_rational(e: &Ex) -> Option<num_rational::Ratio<num_bigint::BigInt>> {
     e.inner.read().arena.as_num(e.raw_id()).cloned()
@@ -318,15 +317,21 @@ fn particular_solution(
     // Coefficients in n must all vanish.
     let eqs: Vec<Ex> = {
         let mut inner = ctx.inner.write();
-        let coeffs =
-            crate::transforms::solve::symbolic_poly_coeffs(&mut inner.arena, residual.raw_id(), n.raw_id())
-                .ok_or_else(|| SymplexError::ComputationFailed {
-                    operation: "rsolve_linear",
-                    reason: "forcing residual is not polynomial in n".into(),
-                })?;
+        let coeffs = crate::transforms::solve::symbolic_poly_coeffs(
+            &mut inner.arena,
+            residual.raw_id(),
+            n.raw_id(),
+        )
+        .ok_or_else(|| SymplexError::ComputationFailed {
+            operation: "rsolve_linear",
+            reason: "forcing residual is not polynomial in n".into(),
+        })?;
         coeffs.into_iter().map(|id| residual.wrap(id)).collect()
     };
-    let eqs: Vec<Ex> = eqs.into_iter().filter(|e| !e.is_zero_structural()).collect();
+    let eqs: Vec<Ex> = eqs
+        .into_iter()
+        .filter(|e| !e.is_zero_structural())
+        .collect();
     if eqs.is_empty() {
         return Ok(ctx.zero());
     }
@@ -347,7 +352,11 @@ fn particular_solution(
             // Underdetermined trial: set free unknowns to zero.
             let mut sol = trial_poly(0);
             for (a, v) in &solution {
-                let v = if free.contains(a) { ctx.zero() } else { v.clone() };
+                let v = if free.contains(a) {
+                    ctx.zero()
+                } else {
+                    v.clone()
+                };
                 sol = sol.subs(a, &v);
             }
             for f in &free {
@@ -457,18 +466,21 @@ pub fn rsolve_linear(
             };
             let mut groups: Vec<(Ex, Vec<Ex>)> = Vec::new();
             for t in &terms {
-                let ft = parse_forcing_term(t, n).ok_or_else(|| SymplexError::ComputationFailed {
-                    operation: "rsolve_linear",
-                    reason: format!("unsupported forcing term: {t}"),
-                })?;
+                let ft =
+                    parse_forcing_term(t, n).ok_or_else(|| SymplexError::ComputationFailed {
+                        operation: "rsolve_linear",
+                        reason: format!("unsupported forcing term: {t}"),
+                    })?;
                 let entry = match groups.iter_mut().find(|(b, _)| *b == ft.base) {
                     Some(e) => e,
                     None => {
                         groups.push((ft.base.clone(), Vec::new()));
-                        groups.last_mut().ok_or_else(|| SymplexError::ComputationFailed {
-                            operation: "rsolve_linear",
-                            reason: "internal grouping error".into(),
-                        })?
+                        groups
+                            .last_mut()
+                            .ok_or_else(|| SymplexError::ComputationFailed {
+                                operation: "rsolve_linear",
+                                reason: "internal grouping error".into(),
+                            })?
                     }
                 };
                 if entry.1.len() <= ft.degree {
@@ -564,12 +576,7 @@ fn product_closed_form(p: &Ex, k: &Ex, n: &Ex) -> Ex {
 /// let sol = rsolve_first_order(&(&n + 1), &ctx.int(0), &n, Some(&ctx.int(1))).unwrap();
 /// assert_eq!(format!("{sol}"), "n!");
 /// ```
-pub fn rsolve_first_order(
-    p: &Ex,
-    q: &Ex,
-    n: &Ex,
-    a0: Option<&Ex>,
-) -> Result<Ex, SymplexError> {
+pub fn rsolve_first_order(p: &Ex, q: &Ex, n: &Ex, a0: Option<&Ex>) -> Result<Ex, SymplexError> {
     let _ = n.checked_id(p);
     let _ = n.checked_id(q);
     let ctx = n.context();
@@ -601,7 +608,11 @@ pub fn rsolve_first_order(
     let sum = Ex::symbolic_sum(&body, &k, &ctx.int(0), &upper).closed_form_sum();
     let total = (&big_p * &(&start + &sum)).eval();
     let s = total.simplify();
-    Ok(if s.count_ops() <= total.count_ops() { s } else { total })
+    Ok(if s.count_ops() <= total.count_ops() {
+        s
+    } else {
+        total
+    })
 }
 
 #[cfg(test)]
@@ -617,9 +628,13 @@ mod tests {
     fn hanoi() {
         let ctx = Context::new();
         let n = ctx.symbol("n");
-        let sol =
-            rsolve_linear(&[ctx.int(-2), ctx.int(1)], Some(&ctx.int(1)), &n, &[ctx.int(0)])
-                .unwrap();
+        let sol = rsolve_linear(
+            &[ctx.int(-2), ctx.int(1)],
+            Some(&ctx.int(1)),
+            &n,
+            &[ctx.int(0)],
+        )
+        .unwrap();
         for k in 0..8 {
             assert!((at(&sol, &n, k) - (2f64.powi(k as i32) - 1.0)).abs() < 1e-9);
         }
@@ -638,7 +653,11 @@ mod tests {
         .unwrap();
         let (mut a, mut b) = (0.0, 1.0);
         for k in 0..12 {
-            assert!((at(&sol, &n, k) - a).abs() < 1e-8, "a({k}) = {}", at(&sol, &n, k));
+            assert!(
+                (at(&sol, &n, k) - a).abs() < 1e-8,
+                "a({k}) = {}",
+                at(&sol, &n, k)
+            );
             let c = a + b;
             a = b;
             b = c;
@@ -651,10 +670,12 @@ mod tests {
         // a(n+2) - 4a(n+1) + 4a(n) = 0 → (C1 + C2 n) 2^n
         let ctx = Context::new();
         let n = ctx.symbol("n");
-        let sol =
-            rsolve_linear(&[ctx.int(4), ctx.int(-4), ctx.int(1)], None, &n, &[]).unwrap();
+        let sol = rsolve_linear(&[ctx.int(4), ctx.int(-4), ctx.int(1)], None, &n, &[]).unwrap();
         let s = format!("{sol}");
-        assert!(s.contains("C1") && s.contains("C2") && s.contains("2^n"), "{s}");
+        assert!(
+            s.contains("C1") && s.contains("C2") && s.contains("2^n"),
+            "{s}"
+        );
     }
 
     #[test]
@@ -693,8 +714,13 @@ mod tests {
         let ctx = Context::new();
         let n = ctx.symbol("n");
         let three_n = ctx.int(3).pow(&n);
-        let sol = rsolve_linear(&[ctx.int(-2), ctx.int(1)], Some(&three_n), &n, &[ctx.int(0)])
-            .unwrap();
+        let sol = rsolve_linear(
+            &[ctx.int(-2), ctx.int(1)],
+            Some(&three_n),
+            &n,
+            &[ctx.int(0)],
+        )
+        .unwrap();
         for k in 0..8 {
             let e = 3f64.powi(k as i32) - 2f64.powi(k as i32);
             assert!((at(&sol, &n, k) - e).abs() < 1e-8);
@@ -738,8 +764,13 @@ mod tests {
         assert!(rsolve_linear(&[ctx.int(1)], None, &n, &[]).is_err());
         assert!(rsolve_linear(&[ctx.int(1), ctx.int(0)], None, &n, &[]).is_err());
         assert!(
-            rsolve_linear(&[ctx.int(1), ctx.int(1)], None, &n, &[ctx.int(0), ctx.int(1)])
-                .is_err()
+            rsolve_linear(
+                &[ctx.int(1), ctx.int(1)],
+                None,
+                &n,
+                &[ctx.int(0), ctx.int(1)]
+            )
+            .is_err()
         );
     }
 }

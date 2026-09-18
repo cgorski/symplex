@@ -526,9 +526,7 @@ pub fn solve_system_ex(eqs: &[Ex], vars: &[Ex]) -> Result<Vec<Vec<Ex>>, SymplexE
     // Linear systems: delegate to the symbolic linear solver.
     if nonzero.iter().all(|p| p.total_degree().unwrap_or(0) <= 1) {
         return match linsolve(eqs, vars)? {
-            LinearSolution::Unique(pairs) => {
-                Ok(vec![pairs.into_iter().map(|(_, v)| v).collect()])
-            }
+            LinearSolution::Unique(pairs) => Ok(vec![pairs.into_iter().map(|(_, v)| v).collect()]),
             LinearSolution::Inconsistent => Ok(vec![]),
             LinearSolution::Parametric { free, .. } => {
                 let names: Vec<String> = free.iter().map(|f| format!("{f}")).collect();
@@ -766,7 +764,6 @@ fn solve_triangular_symbolic(
     // prevent this; treat as no solution rather than inventing one.
     vec![]
 }
-
 
 /// Convert a general [`MultiPoly<Lex>`] to a symbolic expression in the
 /// arena, using the given variable ExprIds.

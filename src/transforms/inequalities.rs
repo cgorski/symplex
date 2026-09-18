@@ -316,7 +316,11 @@ fn try_solve_abs_inequality(
     let x_lo = arena.div(neg_k_minus_b, a);
     let x_hi = crate::transforms::eval::eval(arena, x_hi);
     let x_lo = crate::transforms::eval::eval(arena, x_lo);
-    let (lo, hi) = if a_sign > 0 { (x_lo, x_hi) } else { (x_hi, x_lo) };
+    let (lo, hi) = if a_sign > 0 {
+        (x_lo, x_hi)
+    } else {
+        (x_hi, x_lo)
+    };
 
     Some(match rel {
         Relation::Lt => arena.interval(lo, hi, INTERVAL_BOTH_OPEN),
@@ -370,10 +374,14 @@ fn sign_of(arena: &mut Arena, e: ExprId) -> Option<i8> {
     // Symbolic: consult stored symbol assumptions for a bare symbol.
     if let crate::base::node::ExprNode::Symbol(sid) = arena.node(ev) {
         let a = arena.symbol_assumptions(*sid);
-        if a.known_true.contains(crate::base::assumptions::Props::POSITIVE) {
+        if a.known_true
+            .contains(crate::base::assumptions::Props::POSITIVE)
+        {
             return Some(1);
         }
-        if a.known_true.contains(crate::base::assumptions::Props::NEGATIVE) {
+        if a.known_true
+            .contains(crate::base::assumptions::Props::NEGATIVE)
+        {
             return Some(-1);
         }
     }

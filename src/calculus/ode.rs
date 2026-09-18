@@ -2740,9 +2740,9 @@ fn shifted_coefficient(p: &[Rat], j: usize, lambda: &CQ) -> CQ {
     // p^(j)(λ)/j! = Σ_{k≥j} C(k, j) a_k λ^{k-j}
     let mut acc = CQ::real(num_traits::Zero::zero());
     let mut lambda_pow = CQ::real(num_traits::One::one());
-    for k in j..p.len() {
+    for (k, a_k) in p.iter().enumerate().skip(j) {
         let binom = binomial_rat(k, j);
-        let term = lambda_pow.scale(&(&p[k] * binom));
+        let term = lambda_pow.scale(&(a_k * binom));
         acc = acc.add(&term);
         lambda_pow = lambda_pow.mul(lambda);
     }
@@ -2884,7 +2884,9 @@ fn particular_for_group(
     let lambda = CQ::new(a.clone(), b.clone());
     let n = p.len() - 1;
     // c_j = p^(j)(λ)/j!
-    let c: Vec<CQ> = (0..=n).map(|j| shifted_coefficient(p, j, &lambda)).collect();
+    let c: Vec<CQ> = (0..=n)
+        .map(|j| shifted_coefficient(p, j, &lambda))
+        .collect();
     let s = c.iter().position(|cj| !cj.is_zero())?;
     let d = q.len().checked_sub(1)?;
     let m = d + s;
@@ -3001,7 +3003,10 @@ fn homogeneous_basis_cc(arena: &mut Arena, coeffs: &[Rat], var: ExprId) -> Optio
                     break;
                 }
             }
-            let beta = if arena.as_num(im).is_some_and(num_traits::Signed::is_negative) {
+            let beta = if arena
+                .as_num(im)
+                .is_some_and(num_traits::Signed::is_negative)
+            {
                 neg_im
             } else {
                 im
@@ -3516,7 +3521,6 @@ pub fn classify_ode(arena: &mut Arena, expr: ExprId, func: ExprId, var: ExprId) 
             }
         }
 
-
         // Check for homogeneous coefficient: y' = f(y/x)
         // Substitute y = v*x in the RHS; if result is free of x → homogeneous
         if let ExprNode::Add(ref hc_children) = arena.node(expr).clone() {
@@ -3791,11 +3795,11 @@ pub fn solve_ode_system(a_matrix: &Matrix, t_var: &Ex) -> Option<Vec<Ex>> {
 ///
 /// # Errors
 ///
-/// - [`SymplexError::InvalidArgument`] if `A` is not square or `x0` has
+/// - [`SymplexError::InvalidArgument`](crate::base::errors::SymplexError::InvalidArgument) if `A` is not square or `x0` has
 ///   the wrong length.
-/// - [`SymplexError::ComputationFailed`] if the general solution cannot be
+/// - [`SymplexError::ComputationFailed`](crate::base::errors::SymplexError::ComputationFailed) if the general solution cannot be
 ///   found or the constants cannot be determined.
-/// - [`SymplexError::NoSolution`] if the initial data is contradictory.
+/// - [`SymplexError::NoSolution`](crate::base::errors::SymplexError::NoSolution) if the initial data is contradictory.
 ///
 /// # Examples
 ///
@@ -3828,10 +3832,11 @@ pub fn solve_ode_system_ivp(
             reason: format!("expected {n} initial values, got {}", x0.len()),
         });
     }
-    let general = solve_ode_system(a_matrix, t_var).ok_or_else(|| SymplexError::ComputationFailed {
-        operation: "solve_ode_system_ivp",
-        reason: "could not solve the homogeneous system".into(),
-    })?;
+    let general =
+        solve_ode_system(a_matrix, t_var).ok_or_else(|| SymplexError::ComputationFailed {
+            operation: "solve_ode_system_ivp",
+            reason: "could not solve the homogeneous system".into(),
+        })?;
     let ctx = t_var.context();
     let constants: Vec<Ex> = (1..=n).map(|i| ctx.symbol(&format!("C{i}"))).collect();
     let zero = ctx.int(0);

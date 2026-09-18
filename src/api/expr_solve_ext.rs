@@ -333,12 +333,12 @@ impl Ex {
     /// let ctx = Context::new();
     /// let x = ctx.symbol("x");
     /// let eq = &x.sin() - &ctx.rational(1, 2);
-    /// let gen = eq.solve_general(&x).unwrap();
-    /// assert_eq!(gen.solutions.len(), 2);
-    /// assert_eq!(gen.parameters.len(), 1);
+    /// let fam = eq.solve_general(&x).unwrap();
+    /// assert_eq!(fam.solutions.len(), 2);
+    /// assert_eq!(fam.parameters.len(), 1);
     /// // Every member of every family satisfies the equation.
     /// for k in -2..=2 {
-    ///     for s in gen.instance(k) {
+    ///     for s in fam.instance(k) {
     ///         let residual = eq.subs(&x, &s).eval_f64().unwrap();
     ///         assert!(residual.abs() < 1e-12);
     ///     }
@@ -433,9 +433,12 @@ impl Default for NewtonOpts {
     }
 }
 
+/// A compiled numeric closure over a slice of variable values.
+type CompiledFn = Box<dyn Fn(&[f64]) -> f64 + Send + Sync>;
+
 /// Callable scalar function of `k` variables, compiled when possible.
 enum Evaluator {
-    Compiled(Box<dyn Fn(&[f64]) -> f64 + Send + Sync>),
+    Compiled(CompiledFn),
     Symbolic(Ex, Vec<Ex>),
 }
 
@@ -483,15 +486,15 @@ fn gauss_solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
     let n = b.len();
     for col in 0..n {
         // Partial pivoting.
-        let mut best = col;
-        let mut best_val = a[col][col].abs();
-        for r in (col + 1)..n {
-            let v = a[r][col].abs();
-            if v > best_val {
-                best = r;
-                best_val = v;
-            }
-        }
+        let (best, best_val) = a
+            .iter()
+            .enumerate()
+            .skip(col)
+            .map(|(r, row)| (r, row[col].abs()))
+            .fold(
+                (col, -1.0_f64),
+                |acc, cur| if cur.1 > acc.1 { cur } else { acc },
+            );
         if best_val < 1e-300 || !best_val.is_finite() {
             return None;
         }
@@ -499,16 +502,17 @@ fn gauss_solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
             a.swap(col, best);
             b.swap(col, best);
         }
-        for r in (col + 1)..n {
-            let f = a[r][col] / a[col][col];
+        let pivot_row = a[col].clone();
+        let pivot_b = b[col];
+        for (r, row) in a.iter_mut().enumerate().skip(col + 1) {
+            let f = row[col] / pivot_row[col];
             if f == 0.0 {
                 continue;
             }
-            for c in col..n {
-                let sub = f * a[col][c];
-                a[r][c] -= sub;
+            for (entry, p) in row.iter_mut().zip(&pivot_row).skip(col) {
+                *entry -= f * p;
             }
-            b[r] -= f * b[col];
+            b[r] -= f * pivot_b;
         }
     }
     let mut x = vec![0.0; n];
@@ -547,11 +551,7 @@ fn inf_norm(v: &[f64]) -> f64 {
 /// assert!((sol[0] - r).abs() < 1e-10 && (sol[1] - r).abs() < 1e-10);
 /// ```
 #[allow(dead_code)] // public API; reachable once re-exported from lib.rs
-pub fn solve_numeric_system(
-    eqs: &[Ex],
-    vars: &[Ex],
-    x0: &[f64],
-) -> Result<Vec<f64>, SymplexError> {
+pub fn solve_numeric_system(eqs: &[Ex], vars: &[Ex], x0: &[f64]) -> Result<Vec<f64>, SymplexError> {
     solve_numeric_system_with(eqs, vars, x0, &NewtonOpts::default())
 }
 
@@ -646,9 +646,7 @@ pub fn solve_numeric_system_with(
             None => {
                 return Err(SymplexError::ComputationFailed {
                     operation: "solve_numeric_system",
-                    reason: format!(
-                        "Jacobian is singular at x = {x:?} (residual norm {norm:.3e})"
-                    ),
+                    reason: format!("Jacobian is singular at x = {x:?} (residual norm {norm:.3e})"),
                 });
             }
         };
@@ -770,6 +768,74 @@ impl Ex {
     }
 }
 
+impl Ex {
+    /// Solve the Riccati equation `self = 0`, i.e.
+    /// `y' = q₀(x) + q₁(x)·y + q₂(x)·y²`, given a known particular
+    /// solution `particular`.
+    ///
+    /// The substitution `y = y_p + 1/v` reduces the equation to the linear
+    /// ODE `v' + (q₁ + 2·q₂·y_p)·v = −q₂`; the result is `y_p + 1/v` with the
+    /// integration constant `C1`.
+    ///
+    /// # Errors
+    ///
+    /// - [`SymplexError::InvalidArgument`] if `self` is not a Riccati
+    ///   equation in `func` or `particular` does not satisfy it.
+    /// - [`SymplexError::ComputationFailed`] if the linear equation for
+    ///   `v` cannot be solved in closed form.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// // y' = y² - 2/x² has the particular solution y = 1/x
+    /// let ode = &y.formal_diff(&x) - &y.powi(2) + &(&ctx.int(2) / &x.powi(2));
+    /// let sol = ode.solve_riccati(&y, &x, &(&ctx.int(1) / &x)).unwrap();
+    /// assert!(sol.contains(&ctx.symbol("C1")));
+    /// assert!(ode.check_ode_solution(&sol, &y, &x));
+    /// ```
+    pub fn solve_riccati(&self, func: &Ex, var: &Ex, particular: &Ex) -> Result<Ex, SymplexError> {
+        let func_id = self.checked_id(func);
+        let var_id = self.checked_id(var);
+        let part_id = self.checked_id(particular);
+        let mut inner = self.inner.write();
+        match crate::calculus::ode::solve_riccati(
+            &mut inner.arena,
+            self.raw_id(),
+            func_id,
+            var_id,
+            part_id,
+        ) {
+            Some(res) => {
+                let sol = res.solution;
+                drop(inner);
+                let sol = self.wrap(sol);
+                if sol.has_unevaluated() {
+                    return Err(SymplexError::ComputationFailed {
+                        operation: "solve_riccati",
+                        reason: format!(
+                            "linear equation for the substitution could not be solved in closed form: {sol}"
+                        ),
+                    });
+                }
+                Ok(sol)
+            }
+            None => {
+                drop(inner);
+                Err(SymplexError::InvalidArgument {
+                    operation: "solve_riccati",
+                    reason: format!(
+                        "not a Riccati equation in {func}, or {particular} is not a particular solution"
+                    ),
+                })
+            }
+        }
+    }
+}
+
 /// Fit integration constants to initial conditions `(k, x0, value)`.
 pub(crate) fn apply_initial_conditions(
     general: &Ex,
@@ -855,10 +921,14 @@ pub(crate) fn fit_constants(
                     operation,
                     reason: format!("could not solve for {c}: {e}"),
                 })?;
-                let value = roots.first().cloned().ok_or_else(|| SymplexError::ComputationFailed {
-                    operation,
-                    reason: format!("no value of {c} satisfies {eq} = 0"),
-                })?;
+                let value =
+                    roots
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| SymplexError::ComputationFailed {
+                            operation,
+                            reason: format!("no value of {c} satisfies {eq} = 0"),
+                        })?;
                 sol = sol.subs(&c, &value);
                 remaining = remaining
                     .iter()
