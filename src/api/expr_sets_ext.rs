@@ -672,6 +672,10 @@ impl Expr<Boolean> {
     /// question is decided exactly through the inequality solver.
     /// Otherwise `None`.
     ///
+    /// Declared assumptions are respected: relationals they decide are
+    /// folded first, and symbols carrying restricting assumptions are not
+    /// treated as ranging over all of ℝ.
+    ///
     /// # Examples
     ///
     /// ```
@@ -684,11 +688,28 @@ impl Expr<Boolean> {
     /// // x > 1 → x > 0 is not propositional, but exact on the real line:
     /// assert_eq!(x.gt(&ctx.int(1)).implies(&p).is_tautology(), Some(true));
     /// assert_eq!(p.is_tautology(), Some(false));
+    /// // with an assumption, t > 0 holds everywhere t is defined:
+    /// let t = ctx.symbol_with("t", &[Assumption::Positive]);
+    /// assert_eq!(t.gt(&ctx.int(0)).is_tautology(), Some(true));
     /// ```
     #[must_use]
     pub fn is_tautology(&self) -> Option<bool> {
         let mut inner = self.inner.write();
-        crate::transforms::logic::is_tautology(&mut inner.arena, self.raw_id())
+        let folded = Self::fold_with_assumptions(&mut inner, self.raw_id());
+        crate::transforms::logic::is_tautology(&mut inner.arena, folded)
+    }
+
+    /// Fold relationals decided by the assumption system (the first step
+    /// of every decision procedure, so declared assumptions such as
+    /// `Positive` are respected).
+    fn fold_with_assumptions(inner: &mut crate::api::context::ContextInner, id: ExprId) -> ExprId {
+        let crate::api::context::ContextInner {
+            ref mut arena,
+            ref assumptions,
+            ..
+        } = *inner;
+        let mut guard = assumptions.lock();
+        crate::transforms::logic::eval_bool(arena, &mut guard, id)
     }
 
     /// Is this formula false under every assignment?  Three-valued; see
@@ -708,7 +729,8 @@ impl Expr<Boolean> {
     #[must_use]
     pub fn is_contradiction(&self) -> Option<bool> {
         let mut inner = self.inner.write();
-        crate::transforms::logic::is_contradiction(&mut inner.arena, self.raw_id())
+        let folded = Self::fold_with_assumptions(&mut inner, self.raw_id());
+        crate::transforms::logic::is_contradiction(&mut inner.arena, folded)
     }
 
     /// Does some assignment make this formula true?  Three-valued
@@ -733,7 +755,8 @@ impl Expr<Boolean> {
     #[must_use]
     pub fn satisfiable(&self) -> Option<bool> {
         let mut inner = self.inner.write();
-        crate::transforms::logic::satisfiable(&mut inner.arena, self.raw_id())
+        let folded = Self::fold_with_assumptions(&mut inner, self.raw_id());
+        crate::transforms::logic::satisfiable(&mut inner.arena, folded)
     }
 
     /// The distinct atomic sub-formulas (relationals and opaque

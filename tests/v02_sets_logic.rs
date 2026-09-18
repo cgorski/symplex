@@ -256,6 +256,27 @@ fn relational_decisions_are_exact_over_the_reals() {
 }
 
 #[test]
+fn decisions_respect_assumptions() {
+    let ctx = Context::new();
+    let t = ctx.symbol_with("t", &[Assumption::Positive]);
+    let n = ctx.symbol_with("n", &[Assumption::Integer]);
+    assert_eq!(t.gt(&ctx.int(0)).is_tautology(), Some(true));
+    assert_eq!(t.gt(&ctx.int(-1)).is_tautology(), Some(true));
+    assert_eq!(t.lt(&ctx.int(0)).satisfiable(), Some(false));
+    assert_eq!(t.le(&ctx.int(0)).is_contradiction(), Some(true));
+    // undecided rather than wrong: n² ≥ n holds for integers but not reals
+    let claim = n.powi(2).ge(&n);
+    assert_ne!(claim.is_tautology(), Some(false));
+    // t < 5 is neither a tautology nor a contradiction for positive t;
+    // the solver route is disabled for constrained symbols, so no guess
+    assert_ne!(t.lt(&ctx.int(5)).is_tautology(), Some(true));
+    assert_ne!(t.lt(&ctx.int(5)).is_contradiction(), Some(true));
+    // an unconstrained symbol still gets the exact answer
+    let x = ctx.symbol("x");
+    assert_eq!(x.lt(&ctx.int(5)).is_tautology(), Some(false));
+}
+
+#[test]
 fn atoms_and_truth_table() {
     let ctx = Context::new();
     let x = ctx.symbol("x");

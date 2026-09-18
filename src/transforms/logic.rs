@@ -1109,19 +1109,50 @@ fn search_rec(
     None
 }
 
+/// Does the symbol range over all of ℝ, i.e. carry no assumption that
+/// restricts its value (sign, integrality, rationality, …)?
+fn symbol_is_free(arena: &Arena, sym: ExprId) -> bool {
+    const RESTRICTING: Props = Props::POSITIVE
+        .union(Props::NEGATIVE)
+        .union(Props::NONNEGATIVE)
+        .union(Props::NONPOSITIVE)
+        .union(Props::ZERO)
+        .union(Props::NONZERO)
+        .union(Props::INTEGER)
+        .union(Props::RATIONAL)
+        .union(Props::IRRATIONAL)
+        .union(Props::ALGEBRAIC)
+        .union(Props::TRANSCENDENTAL)
+        .union(Props::EVEN)
+        .union(Props::ODD)
+        .union(Props::PRIME)
+        .union(Props::COMPOSITE)
+        .union(Props::IMAGINARY)
+        .union(Props::INFINITE);
+    match arena.node(sym) {
+        ExprNode::Symbol(sid) => {
+            let a = arena.symbol_assumptions(*sid);
+            !a.known_true.intersects(RESTRICTING)
+                && !a.known_false.intersects(RESTRICTING)
+                && a.query(Props::REAL) != Some(false)
+        }
+        _ => false,
+    }
+}
+
 /// Are the relational pairs mutually independent and unconstrained?
 ///
 /// True when every pair `(a, b)` has `a - b` linear in a single free
-/// symbol that occurs in no other pair.  Then every pair can realise each
-/// of `<`, `=`, `>` independently of the others, and propositional
-/// answers are exact.
+/// symbol (no restricting assumptions) that occurs in no other pair.
+/// Then every pair can realise each of `<`, `=`, `>` independently of the
+/// others, and propositional answers are exact.
 fn pairs_independent(arena: &mut Arena, f: &Formula) -> bool {
     let mut used: FxHashSet<ExprId> = FxHashSet::default();
     for &(a, b) in &f.pair_keys {
         let d = arena.sub(a, b);
         let d = crate::transforms::eval::eval(arena, d);
         let syms = crate::base::walk::free_symbols(arena, d);
-        if syms.len() != 1 || !used.insert(syms[0]) {
+        if syms.len() != 1 || !symbol_is_free(arena, syms[0]) || !used.insert(syms[0]) {
             return false;
         }
         match crate::poly::polybridge::expr_to_poly(arena, d, syms[0]) {
@@ -1133,10 +1164,10 @@ fn pairs_independent(arena: &mut Arena, f: &Formula) -> bool {
 }
 
 /// If every relational atom of `root` is univariate in one common free
-/// symbol, return that symbol.
+/// symbol that ranges over all of ℝ, return that symbol.
 fn single_variable(arena: &Arena, root: ExprId) -> Option<ExprId> {
     let syms = crate::base::walk::free_symbols(arena, root);
-    if syms.len() != 1 {
+    if syms.len() != 1 || !symbol_is_free(arena, syms[0]) {
         return None;
     }
     Some(syms[0])
