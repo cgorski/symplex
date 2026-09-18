@@ -1,1 +1,841 @@
 //! Polynomial-algebra methods on [`Ex`](crate::api::expr::Ex): resultant, discriminant, square-free, division, numeric roots.
+//!
+//! Every method here treats `self` as a univariate polynomial in an
+//! explicitly supplied variable `var`, converting through
+//! [`polybridge`](crate::poly::polybridge) to the exact dense
+//! [`Poly`](crate::poly::Poly) representation, performing the computation
+//! there, and converting back.  Methods that return `Option` yield `None`
+//! when the expression is not polynomial in `var` (or when the operation is
+//! undefined, e.g. the discriminant of a constant).
+
+use num_bigint::BigInt;
+use num_rational::Ratio;
+use num_traits::{One, Signed, Zero};
+
+use crate::api::expr::{Ex, Expr, Numeric};
+use crate::base::arena::Arena;
+use crate::base::errors::SymplexError;
+use crate::base::node::{ExprId, ExprNode};
+use crate::poly::Poly;
+use crate::poly::polybridge::{expr_to_poly, poly_to_expr};
+use crate::poly::sturm::SturmChain;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Arena-level helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Intern a rational number as an expression node.
+fn num_expr(arena: &mut Arena, r: Ratio<BigInt>) -> ExprId {
+    let nid = arena.intern_num(r);
+    arena.intern(ExprNode::Num(nid))
+}
+
+/// Interpret an expression as an exact rational endpoint, accepting `±∞`
+/// as `None` for the corresponding side.  Returns `Err(())` for anything
+/// else (symbols, π, …).
+enum Endpoint {
+    Finite(Ratio<BigInt>),
+    NegInf,
+    PosInf,
+}
+
+fn endpoint(arena: &Arena, id: ExprId) -> Option<Endpoint> {
+    match arena.node(id) {
+        ExprNode::Num(nid) => Some(Endpoint::Finite(arena.num(*nid).clone())),
+        ExprNode::Infinity => Some(Endpoint::PosInf),
+        ExprNode::NegInfinity => Some(Endpoint::NegInf),
+        _ => None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// impl Expr<Numeric> — polynomial algebra
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Expr<Numeric> {
+    // ── Factoring conveniences ─────────────────────────────────────
+
+    /// Factor over ℤ with the variable(s) inferred from the free symbols.
+    ///
+    /// With one free symbol this is [`factor`](Self::factor) in that symbol;
+    /// with two to four symbols the polynomial is factored as a multivariate
+    /// polynomial (Kronecker substitution).  Expressions that are not
+    /// polynomial, have no free symbols, or are already irreducible are
+    /// returned unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let (x, y) = (ctx.symbol("x"), ctx.symbol("y"));
+    /// let f = (&x.powi(2) - &y.powi(2)).factor_all();
+    /// let s = format!("{f}");
+    /// assert!(s.contains("x - y") && s.contains("x + y"), "{s}");
+    /// ```
+    #[must_use = "returns the factored form; does not modify in place"]
+    pub fn factor_all(&self) -> Ex {
+        let id = {
+            let mut inner = self.inner.write();
+            crate::simplify::factor::factor_auto(&mut inner.arena, self.raw_id())
+        };
+        self.wrap(id)
+    }
+
+    /// Factor over ℤ and return the pieces: `(content, [(factor, mult), …])`
+    /// with `self = content · ∏ factorᵢ^multᵢ`.
+    ///
+    /// Non-polynomial or constant input yields `(1, [(self, 1)])`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // 2x³ − 2x² − 2x + 2 = 2 (x − 1)² (x + 1)
+    /// let f = &x.powi(3) * 2 - &x.powi(2) * 2 - &x * 2 + 2;
+    /// let (content, factors) = f.factor_list(&x);
+    /// assert_eq!(format!("{content}"), "2");
+    /// assert_eq!(factors.len(), 2);
+    /// assert_eq!(factors.iter().map(|(_, m)| *m).max(), Some(2));
+    /// ```
+    #[must_use]
+    pub fn factor_list(&self, var: &Ex) -> (Ex, Vec<(Ex, u32)>) {
+        let var_id = self.checked_id(var);
+        let (c, fs) = {
+            let mut inner = self.inner.write();
+            crate::simplify::factor::factor_list(&mut inner.arena, self.raw_id(), Some(var_id))
+        };
+        (
+            self.wrap(c),
+            fs.into_iter().map(|(f, m)| (self.wrap(f), m)).collect(),
+        )
+    }
+
+    /// Like [`factor_list`](Self::factor_list) with the variables inferred
+    /// from the free symbols (see [`factor_all`](Self::factor_all)).
+    #[must_use]
+    pub fn factor_list_all(&self) -> (Ex, Vec<(Ex, u32)>) {
+        let (c, fs) = {
+            let mut inner = self.inner.write();
+            crate::simplify::factor::factor_list(&mut inner.arena, self.raw_id(), None)
+        };
+        (
+            self.wrap(c),
+            fs.into_iter().map(|(f, m)| (self.wrap(f), m)).collect(),
+        )
+    }
+
+    // ── Resultant / discriminant ───────────────────────────────────
+
+    /// Resultant `res_var(self, other)` of two polynomials in `var`.
+    ///
+    /// The resultant vanishes exactly when the two polynomials share a
+    /// root.  Returns `None` if either expression is not polynomial in
+    /// `var`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = &x.powi(2) - 1;
+    /// let g = &x - 1;
+    /// assert_eq!(format!("{}", f.resultant(&g, &x).unwrap()), "0");
+    /// let h = &x - 3;
+    /// assert_eq!(format!("{}", f.resultant(&h, &x).unwrap()), "8");
+    /// ```
+    #[must_use]
+    pub fn resultant(&self, other: &Ex, var: &Ex) -> Option<Ex> {
+        let other_id = self.checked_id(other);
+        let var_id = self.checked_id(var);
+        let id = {
+            let mut inner = self.inner.write();
+            let a = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            let b = expr_to_poly(&inner.arena, other_id, var_id)?;
+            let r = Poly::resultant(&a, &b);
+            num_expr(&mut inner.arena, r)
+        };
+        Some(self.wrap(id))
+    }
+
+    /// Discriminant of `self` as a polynomial in `var`.
+    ///
+    /// `disc(f) = (−1)^{n(n−1)/2} · res(f, f′) / lc(f)`; it is zero iff the
+    /// polynomial has a repeated root.  Returns `None` for non-polynomial
+    /// or constant input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // ax² + bx + c has discriminant b² − 4ac: x² + 3x + 1 → 5
+    /// let f = &x.powi(2) + &x * 3 + 1;
+    /// assert_eq!(format!("{}", f.discriminant(&x).unwrap()), "5");
+    /// // (x − 1)² has a repeated root
+    /// let g = &x.powi(2) - &x * 2 + 1;
+    /// assert_eq!(format!("{}", g.discriminant(&x).unwrap()), "0");
+    /// ```
+    #[must_use]
+    pub fn discriminant(&self, var: &Ex) -> Option<Ex> {
+        let var_id = self.checked_id(var);
+        let id = {
+            let mut inner = self.inner.write();
+            let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            let d = f.discriminant()?;
+            num_expr(&mut inner.arena, d)
+        };
+        Some(self.wrap(id))
+    }
+
+    // ── Square-free ────────────────────────────────────────────────
+
+    /// Square-free decomposition over ℤ: `(content, [(a₁, 1), (a₂, 2), …])`
+    /// with `self = content · ∏ aᵢ^i`, each `aᵢ` square-free and pairwise
+    /// coprime.
+    ///
+    /// Returns `None` for non-polynomial or constant input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // x⁵ − x⁴ − x + 1 = (x − 1)(x⁴ − 1) = (x − 1)² · (x + 1)(x² + 1)
+    /// let f = &x.powi(5) - &x.powi(4) - &x + 1;
+    /// let (content, parts) = f.sqf_list(&x).unwrap();
+    /// assert_eq!(format!("{content}"), "1");
+    /// let mults: Vec<u32> = parts.iter().map(|(_, m)| *m).collect();
+    /// assert_eq!(mults, vec![1, 2]);
+    /// ```
+    #[must_use]
+    pub fn sqf_list(&self, var: &Ex) -> Option<(Ex, Vec<(Ex, u32)>)> {
+        let var_id = self.checked_id(var);
+        let (c, parts) = {
+            let mut inner = self.inner.write();
+            let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            if f.degree().unwrap_or(0) == 0 {
+                return None;
+            }
+            let (content, parts) = f.sqf_list();
+            let c = num_expr(&mut inner.arena, content);
+            let parts: Vec<(ExprId, u32)> = parts
+                .iter()
+                .map(|(p, m)| (poly_to_expr(&mut inner.arena, p, var_id), *m))
+                .collect();
+            (c, parts)
+        };
+        Some((
+            self.wrap(c),
+            parts.into_iter().map(|(p, m)| (self.wrap(p), m)).collect(),
+        ))
+    }
+
+    /// Square-free part: the product of the distinct irreducible factors of
+    /// `self` (primitive, positive leading coefficient).
+    ///
+    /// Returns `None` for non-polynomial or constant input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = (&x - 1).powi(3) * (&x + 2);
+    /// let sf = f.expand().square_free_part(&x).unwrap();
+    /// assert_eq!(format!("{sf}"), "x^2 + x - 2");
+    /// ```
+    #[must_use]
+    pub fn square_free_part(&self, var: &Ex) -> Option<Ex> {
+        let var_id = self.checked_id(var);
+        let id = {
+            let mut inner = self.inner.write();
+            let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            if f.degree().unwrap_or(0) == 0 {
+                return None;
+            }
+            let (_c, parts) = f.sqf_list();
+            let mut prod = Poly::from_int(1);
+            for (p, _) in &parts {
+                prod = &prod * p;
+            }
+            poly_to_expr(&mut inner.arena, &prod, var_id)
+        };
+        Some(self.wrap(id))
+    }
+
+    /// Is `self` square-free as a polynomial in `var` (no repeated roots)?
+    ///
+    /// Returns `None` for non-polynomial or constant input.
+    #[must_use]
+    pub fn is_squarefree(&self, var: &Ex) -> Option<bool> {
+        let var_id = self.checked_id(var);
+        let inner = self.inner.read();
+        let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+        f.is_squarefree()
+    }
+
+    /// Is `self` irreducible over ℚ as a polynomial in `var`?
+    ///
+    /// Returns `None` for non-polynomial or constant input.  Non-unit
+    /// content is ignored (`2x + 2` is irreducible).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!((&x.powi(4) + 1).is_irreducible(&x), Some(true));
+    /// assert_eq!((&x.powi(4) + 4).is_irreducible(&x), Some(false));
+    /// assert_eq!(ctx.int(3).is_irreducible(&x), None);
+    /// ```
+    #[must_use]
+    pub fn is_irreducible(&self, var: &Ex) -> Option<bool> {
+        let var_id = self.checked_id(var);
+        let inner = self.inner.read();
+        let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+        crate::poly::factor_zassenhaus::is_irreducible_z(&f)
+    }
+
+    // ── Division ───────────────────────────────────────────────────
+
+    /// Polynomial division with remainder: `(quotient, remainder)` with
+    /// `self = quotient · other + remainder` and
+    /// `deg remainder < deg other`.
+    ///
+    /// Returns `None` if either expression is not polynomial in `var` or
+    /// if `other` is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = &x.powi(3) + 1;
+    /// let g = &x + 1;
+    /// let (q, r) = f.poly_div(&g, &x).unwrap();
+    /// assert_eq!(format!("{q}"), "x^2 - x + 1");
+    /// assert_eq!(format!("{r}"), "0");
+    /// ```
+    #[must_use]
+    pub fn poly_div(&self, other: &Ex, var: &Ex) -> Option<(Ex, Ex)> {
+        let other_id = self.checked_id(other);
+        let var_id = self.checked_id(var);
+        let (q, r) = {
+            let mut inner = self.inner.write();
+            let a = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            let b = expr_to_poly(&inner.arena, other_id, var_id)?;
+            if b.is_zero() {
+                return None;
+            }
+            let (q, r) = a.div_rem(&b);
+            let q = poly_to_expr(&mut inner.arena, &q, var_id);
+            let r = poly_to_expr(&mut inner.arena, &r, var_id);
+            (q, r)
+        };
+        Some((self.wrap(q), self.wrap(r)))
+    }
+
+    /// Polynomial quotient (see [`poly_div`](Self::poly_div)).
+    #[must_use]
+    pub fn poly_quo(&self, other: &Ex, var: &Ex) -> Option<Ex> {
+        self.poly_div(other, var).map(|(q, _)| q)
+    }
+
+    /// Polynomial remainder (see [`poly_div`](Self::poly_div)).
+    #[must_use]
+    pub fn poly_rem(&self, other: &Ex, var: &Ex) -> Option<Ex> {
+        self.poly_div(other, var).map(|(_, r)| r)
+    }
+
+    /// Extended Euclidean algorithm: `(s, t, g)` with
+    /// `s · self + t · other = g = gcd(self, other)` and `g` monic.
+    ///
+    /// Returns `None` if either expression is not polynomial in `var`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = &x.powi(2) - 1;
+    /// let g = &x.powi(2) - &x * 2 + 1;   // (x − 1)²
+    /// let (s, t, gcd) = f.poly_gcdex(&g, &x).unwrap();
+    /// assert_eq!(format!("{gcd}"), "x - 1");
+    /// let check = (&s * &f + &t * &g).expand();
+    /// assert_eq!(format!("{check}"), "x - 1");
+    /// ```
+    #[must_use]
+    pub fn poly_gcdex(&self, other: &Ex, var: &Ex) -> Option<(Ex, Ex, Ex)> {
+        let other_id = self.checked_id(other);
+        let var_id = self.checked_id(var);
+        let (s, t, g) = {
+            let mut inner = self.inner.write();
+            let a = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            let b = expr_to_poly(&inner.arena, other_id, var_id)?;
+            let (s, t, g) = Poly::extended_gcd(&a, &b);
+            let s = poly_to_expr(&mut inner.arena, &s, var_id);
+            let t = poly_to_expr(&mut inner.arena, &t, var_id);
+            let g = poly_to_expr(&mut inner.arena, &g, var_id);
+            (s, t, g)
+        };
+        Some((self.wrap(s), self.wrap(t), self.wrap(g)))
+    }
+
+    // ── Structure ──────────────────────────────────────────────────
+
+    /// Functional decomposition `self = g₁ ∘ g₂ ∘ … ∘ gₖ` into
+    /// indecomposable polynomials, outermost first.
+    ///
+    /// Indecomposable polynomials return `vec![self]`; non-polynomial or
+    /// constant input returns an empty vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// // x⁴ + 2x² + 1 = (x² + 2x + 1) ∘ x²
+    /// let f = &x.powi(4) + &x.powi(2) * 2 + 1;
+    /// let parts: Vec<String> = f.decompose(&x).iter().map(|p| format!("{p}")).collect();
+    /// assert_eq!(parts, vec!["x^2 + 2*x + 1", "x^2"]);
+    /// ```
+    #[must_use]
+    pub fn decompose(&self, var: &Ex) -> Vec<Ex> {
+        let var_id = self.checked_id(var);
+        let ids: Vec<ExprId> = {
+            let mut inner = self.inner.write();
+            let Some(f) = expr_to_poly(&inner.arena, self.raw_id(), var_id) else {
+                return vec![];
+            };
+            if f.degree().unwrap_or(0) == 0 {
+                return vec![];
+            }
+            f.decompose()
+                .iter()
+                .map(|p| poly_to_expr(&mut inner.arena, p, var_id))
+                .collect()
+        };
+        ids.into_iter().map(|id| self.wrap(id)).collect()
+    }
+
+    /// Split into `(content, primitive_part)` where `content` is the
+    /// rational GCD of the coefficients (signed so that the primitive part
+    /// has a positive leading coefficient) and `self = content ·
+    /// primitive_part`.
+    ///
+    /// Non-polynomial input returns `(1, self)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = &x.powi(2) * -4 + &x * 6;
+    /// let (c, p) = f.content_primitive(&x);
+    /// assert_eq!(format!("{c}"), "-2");
+    /// assert_eq!(format!("{p}"), "2*x^2 - 3*x");
+    /// ```
+    #[must_use]
+    pub fn content_primitive(&self, var: &Ex) -> (Ex, Ex) {
+        let var_id = self.checked_id(var);
+        let result = {
+            let mut inner = self.inner.write();
+            match expr_to_poly(&inner.arena, self.raw_id(), var_id) {
+                Some(f) if !f.is_zero() => {
+                    let mut c = f.content();
+                    let mut p = f.primitive_part();
+                    if p.leading_coeff().is_some_and(|lc| lc.is_negative()) {
+                        c = -c;
+                        p = -&p;
+                    }
+                    let c = num_expr(&mut inner.arena, c);
+                    let p = poly_to_expr(&mut inner.arena, &p, var_id);
+                    Some((c, p))
+                }
+                _ => None,
+            }
+        };
+        match result {
+            Some((c, p)) => (self.wrap(c), self.wrap(p)),
+            None => {
+                let one = self.inner.read().arena.one;
+                (self.wrap(one), self.clone())
+            }
+        }
+    }
+
+    /// Leading coefficient of `self` as a polynomial in `var`.
+    ///
+    /// Returns `None` for non-polynomial input; the zero polynomial has
+    /// leading coefficient `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = &x.powi(3) * 5 - &x + 2;
+    /// assert_eq!(format!("{}", f.leading_coeff(&x).unwrap()), "5");
+    /// assert!(x.sin().leading_coeff(&x).is_none());
+    /// ```
+    #[must_use]
+    pub fn leading_coeff(&self, var: &Ex) -> Option<Ex> {
+        let var_id = self.checked_id(var);
+        let id = {
+            let mut inner = self.inner.write();
+            let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            let lc = f.leading_coeff().cloned().unwrap_or_else(Ratio::zero);
+            num_expr(&mut inner.arena, lc)
+        };
+        Some(self.wrap(id))
+    }
+
+    /// Monic version of `self` (divide by the leading coefficient).
+    ///
+    /// Returns `None` for non-polynomial input or the zero polynomial.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = &x.powi(2) * 2 + &x * 4;
+    /// assert_eq!(format!("{}", f.monic(&x).unwrap()), "x^2 + 2*x");
+    /// ```
+    #[must_use]
+    pub fn monic(&self, var: &Ex) -> Option<Ex> {
+        let var_id = self.checked_id(var);
+        let id = {
+            let mut inner = self.inner.write();
+            let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            if f.is_zero() {
+                return None;
+            }
+            let m = f.make_monic();
+            poly_to_expr(&mut inner.arena, &m, var_id)
+        };
+        Some(self.wrap(id))
+    }
+
+    /// Composition `self(other)`: substitute the polynomial `other` for
+    /// `var` and expand.
+    ///
+    /// Returns `None` if either expression is not polynomial in `var`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = &x.powi(2) + 1;
+    /// let g = &x - 1;
+    /// assert_eq!(format!("{}", f.poly_compose(&g, &x).unwrap()), "x^2 - 2*x + 2");
+    /// ```
+    #[must_use]
+    pub fn poly_compose(&self, other: &Ex, var: &Ex) -> Option<Ex> {
+        let other_id = self.checked_id(other);
+        let var_id = self.checked_id(var);
+        let id = {
+            let mut inner = self.inner.write();
+            let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            let g = expr_to_poly(&inner.arena, other_id, var_id)?;
+            let c = f.compose(&g);
+            poly_to_expr(&mut inner.arena, &c, var_id)
+        };
+        Some(self.wrap(id))
+    }
+
+    /// Taylor shift `self(var + a)` for a rational constant `a`.
+    ///
+    /// Returns `None` if `self` is not polynomial in `var` or `a` is not
+    /// an exact rational number.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = x.powi(2);
+    /// assert_eq!(format!("{}", f.poly_shift(&x, &ctx.int(1)).unwrap()), "x^2 + 2*x + 1");
+    /// ```
+    #[must_use]
+    pub fn poly_shift(&self, var: &Ex, a: &Ex) -> Option<Ex> {
+        let var_id = self.checked_id(var);
+        let a_id = self.checked_id(a);
+        let id = {
+            let mut inner = self.inner.write();
+            let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            let shift = inner.arena.as_num(a_id)?.clone();
+            let s = f.taylor_shift(&shift);
+            poly_to_expr(&mut inner.arena, &s, var_id)
+        };
+        Some(self.wrap(id))
+    }
+
+    /// Reciprocal polynomial `varⁿ · self(1/var)` (coefficients reversed).
+    ///
+    /// Returns `None` if `self` is not polynomial in `var`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = &x.powi(3) * 2 + &x * 3 + 5;
+    /// assert_eq!(format!("{}", f.poly_reverse(&x).unwrap()), "5*x^3 + 3*x^2 + 2");
+    /// ```
+    #[must_use]
+    pub fn poly_reverse(&self, var: &Ex) -> Option<Ex> {
+        let var_id = self.checked_id(var);
+        let id = {
+            let mut inner = self.inner.write();
+            let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+            let r = f.reverse();
+            poly_to_expr(&mut inner.arena, &r, var_id)
+        };
+        Some(self.wrap(id))
+    }
+
+    /// Lagrange interpolation: the unique polynomial in `var` of degree
+    /// `< points.len()` passing through the given `(x, y)` points.
+    ///
+    /// All coordinates must be exact rational numbers (integers or
+    /// `Context::rational`).  Returns `None` for non-rational coordinates
+    /// or duplicate abscissae.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let pts = [(ctx.int(0), ctx.int(1)), (ctx.int(1), ctx.int(2)), (ctx.int(2), ctx.int(5))];
+    /// let p = Ex::poly_interpolate(&pts, &x).unwrap();
+    /// assert_eq!(format!("{p}"), "x^2 + 1");
+    /// ```
+    #[must_use]
+    pub fn poly_interpolate(points: &[(Ex, Ex)], var: &Ex) -> Option<Ex> {
+        let var_id = var.raw_id();
+        let id = {
+            let mut inner = var.inner.write();
+            let mut pts: Vec<(Ratio<BigInt>, Ratio<BigInt>)> = Vec::with_capacity(points.len());
+            for (px, py) in points {
+                let xi = var.checked_id(px);
+                let yi = var.checked_id(py);
+                let xr = inner.arena.as_num(xi)?.clone();
+                let yr = inner.arena.as_num(yi)?.clone();
+                pts.push((xr, yr));
+            }
+            let p = crate::poly::dense::lagrange_interpolate_points(&pts)?;
+            poly_to_expr(&mut inner.arena, &p, var_id)
+        };
+        Some(var.wrap(id))
+    }
+
+    // ── Real roots (Sturm) ─────────────────────────────────────────
+
+    /// Number of distinct real roots of `self` as a polynomial in `var`.
+    ///
+    /// Uses a Sturm sequence, so the count is exact.  Returns `None` for
+    /// non-polynomial or constant input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!((&x.powi(3) - &x).count_real_roots(&x), Some(3));
+    /// assert_eq!((&x.powi(2) + 1).count_real_roots(&x), Some(0));
+    /// ```
+    #[must_use]
+    pub fn count_real_roots(&self, var: &Ex) -> Option<usize> {
+        let var_id = self.checked_id(var);
+        let inner = self.inner.read();
+        let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+        if f.degree().unwrap_or(0) == 0 {
+            return None;
+        }
+        Some(SturmChain::new(&f).count_real_roots())
+    }
+
+    /// Number of distinct real roots in the closed interval `[lo, hi]`.
+    ///
+    /// `lo` and `hi` must be exact rational numbers or `±∞`
+    /// (`Context::infinity`, `Context::neg_infinity`).  Returns `None` for
+    /// non-polynomial or constant input, or non-rational bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let f = &x.powi(3) - &x;   // roots −1, 0, 1
+    /// assert_eq!(f.roots_count_real(&x, &ctx.int(0), &ctx.int(5)), Some(2));
+    /// assert_eq!(f.roots_count_real(&x, &ctx.rational(1, 2), &ctx.infinity()), Some(1));
+    /// ```
+    #[must_use]
+    pub fn roots_count_real(&self, var: &Ex, lo: &Ex, hi: &Ex) -> Option<usize> {
+        let var_id = self.checked_id(var);
+        let lo_id = self.checked_id(lo);
+        let hi_id = self.checked_id(hi);
+        let inner = self.inner.read();
+        let f = expr_to_poly(&inner.arena, self.raw_id(), var_id)?;
+        if f.degree().unwrap_or(0) == 0 {
+            return None;
+        }
+        let lo_e = endpoint(&inner.arena, lo_id)?;
+        let hi_e = endpoint(&inner.arena, hi_id)?;
+        let chain = SturmChain::new(&f);
+        let bound = crate::poly::sturm::cauchy_bound(&f) + Ratio::one();
+        let lo_r = match lo_e {
+            Endpoint::Finite(r) => r,
+            Endpoint::NegInf => -bound.clone(),
+            Endpoint::PosInf => return Some(0),
+        };
+        let hi_r = match hi_e {
+            Endpoint::Finite(r) => r,
+            Endpoint::PosInf => bound,
+            Endpoint::NegInf => return Some(0),
+        };
+        Some(chain.count_roots_in_closed(&lo_r, &hi_r))
+    }
+
+    /// Isolating intervals for the distinct real roots of `self` in `var`.
+    ///
+    /// Each returned `(lo, hi)` pair has exact rational endpoints, contains
+    /// exactly one real root, and has width at most `1/1024`; a rational
+    /// root that is hit exactly is returned as `(r, r)`.  Intervals are
+    /// sorted.  Non-polynomial or constant input yields an empty vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let iv = (&x.powi(2) - 2).real_roots_isolate(&x);
+    /// assert_eq!(iv.len(), 2);
+    /// let hi = iv[1].1.eval_f64().unwrap();
+    /// let lo = iv[1].0.eval_f64().unwrap();
+    /// assert!(lo <= 2f64.sqrt() && 2f64.sqrt() <= hi);
+    /// ```
+    #[must_use]
+    pub fn real_roots_isolate(&self, var: &Ex) -> Vec<(Ex, Ex)> {
+        let var_id = self.checked_id(var);
+        let ids: Vec<(ExprId, ExprId)> = {
+            let mut inner = self.inner.write();
+            let Some(f) = expr_to_poly(&inner.arena, self.raw_id(), var_id) else {
+                return vec![];
+            };
+            if f.degree().unwrap_or(0) == 0 {
+                return vec![];
+            }
+            let chain = SturmChain::new(&f);
+            let width = Ratio::new(BigInt::one(), BigInt::from(1024));
+            chain
+                .isolate_all_real_roots()
+                .into_iter()
+                .map(|(lo, hi)| {
+                    let (lo, hi) = if lo == hi {
+                        (lo, hi)
+                    } else {
+                        chain.refine_interval(&lo, &hi, &width)
+                    };
+                    let lo_id = num_expr(&mut inner.arena, lo);
+                    let hi_id = num_expr(&mut inner.arena, hi);
+                    (lo_id, hi_id)
+                })
+                .collect()
+        };
+        ids.into_iter()
+            .map(|(lo, hi)| (self.wrap(lo), self.wrap(hi)))
+            .collect()
+    }
+
+    // ── Numeric roots ──────────────────────────────────────────────
+
+    /// All complex roots of `self` as a polynomial in `var`, numerically,
+    /// as `(re, im)` pairs sorted by real then imaginary part.  A `k`-fold
+    /// root appears `k` times.
+    ///
+    /// `digits` requests the working precision (clamped to a sensible
+    /// range; the output is `f64` so more than ~16 digits has no visible
+    /// effect).  Uses Aberth–Ehrlich simultaneous iteration on each
+    /// square-free part.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` if `self` is not a non-constant polynomial in
+    /// `var`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// let roots = (&x.powi(2) + 1).nroots(&x, 15).unwrap();
+    /// assert_eq!(roots.len(), 2);
+    /// assert!(roots.iter().all(|(re, im)| re.abs() < 1e-12 && (im.abs() - 1.0).abs() < 1e-12));
+    /// ```
+    pub fn nroots(&self, var: &Ex, digits: u32) -> Result<Vec<(f64, f64)>, SymplexError> {
+        let var_id = self.checked_id(var);
+        let inner = self.inner.read();
+        let f = expr_to_poly(&inner.arena, self.raw_id(), var_id).ok_or_else(|| {
+            SymplexError::InvalidArgument {
+                operation: "nroots",
+                reason: "expression is not a polynomial in the given variable".into(),
+            }
+        })?;
+        if f.degree().unwrap_or(0) == 0 {
+            return Err(SymplexError::InvalidArgument {
+                operation: "nroots",
+                reason: "polynomial must have degree ≥ 1".into(),
+            });
+        }
+        // ~3.33 bits per decimal digit, plus guard bits; never below 128.
+        let prec_bits = ((digits.clamp(1, 200) as f64) * 3.33).ceil() as usize + 64;
+        let prec_bits = prec_bits.max(128);
+        Ok(crate::poly::roots::nroots_f64(&f, prec_bits))
+    }
+}

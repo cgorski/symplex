@@ -8,6 +8,7 @@
 //! - [`has_integer_coeffs`](GenPoly::has_integer_coeffs) — check all denominators are 1
 //! - [`content`](GenPoly::content) / [`primitive_part`](GenPoly::primitive_part) — integer GCD of coefficients
 //! - [`factor_over_z`](GenPoly::factor_over_z) — full factorization over ℤ
+//!   (Berlekamp–Zassenhaus, see [`super::factor_zassenhaus`])
 //! - [`derivative`](GenPoly::derivative) — specialized O(1)-per-coefficient version
 //!
 //! The generic operations (add, mul, div_rem, gcd, extended_gcd,
@@ -80,54 +81,55 @@ impl GenPoly<Ratio<BigInt>> {
         self.scale(&(Ratio::one() / c))
     }
 
-    /// Factor this polynomial over ℤ.
+    /// Is this polynomial square-free over ℚ (no repeated roots)?
     ///
-    /// Returns `(content, factors)` where:
-    /// - `content` is the rational GCD of all coefficients, with sign chosen
-    ///   so that each factor has a positive leading coefficient.
-    /// - `factors` is a list of `(irreducible_factor, multiplicity)` pairs.
+    /// Constants and the zero polynomial return `None`.
+    pub fn is_squarefree(&self) -> Option<bool> {
+        let d = self.degree()?;
+        if d == 0 {
+            return None;
+        }
+        let g = Poly::gcd(self, &self.derivative());
+        Some(g.degree() == Some(0))
+    }
+
+    /// Square-free decomposition over ℤ: `(content, [(a₁, 1), (a₂, 2), …])`
+    /// with `self = content · ∏ aᵢ^i`, each `aᵢ` primitive, square-free,
+    /// pairwise coprime, with positive leading coefficient.
     ///
-    /// The original polynomial equals `content * ∏ factor^multiplicity`.
-    pub fn factor_over_z(&self) -> (Ratio<BigInt>, Vec<(Poly, u32)>) {
+    /// Constants return `(c, [])`; zero returns `(0, [])`.
+    pub fn sqf_list(&self) -> (Ratio<BigInt>, Vec<(Poly, u32)>) {
         if self.is_zero() {
             return (Ratio::zero(), vec![]);
         }
         if self.is_constant() {
             return (self.coeff(0), vec![]);
         }
-
-        // 1. Extract content and make primitive.
         let mut content = self.content();
         let mut prim = self.primitive_part();
-
-        // Ensure positive leading coefficient.
         if prim.leading_coeff().is_some_and(|lc| lc.is_negative()) {
             content = -content;
             prim = -&prim;
         }
+        (content, square_free_decomposition(&prim))
+    }
 
-        let deg = prim.degree().unwrap_or(0);
-        if deg <= 1 {
-            return (content, vec![(prim, 1)]);
-        }
-
-        // 2. Square-free decomposition.
-        let sfd = square_free_decomposition(&prim);
-
-        // 3. Factor each square-free component into irreducibles.
-        let mut all_factors: Vec<(Poly, u32)> = Vec::new();
-        for (sf, mult) in sfd {
-            let irreducibles = factor_squarefree(&sf);
-            for irr in irreducibles {
-                all_factors.push((irr, mult));
-            }
-        }
-
-        if all_factors.is_empty() {
-            all_factors.push((prim, 1));
-        }
-
-        (content, all_factors)
+    /// Factor this polynomial over ℤ.
+    ///
+    /// Returns `(content, factors)` where:
+    /// - `content` is the rational GCD of all coefficients, with sign chosen
+    ///   so that each factor has a positive leading coefficient.
+    /// - `factors` is a list of `(irreducible_factor, multiplicity)` pairs,
+    ///   sorted by degree then coefficients.
+    ///
+    /// The original polynomial equals `content * ∏ factor^multiplicity`.
+    ///
+    /// This is a thin wrapper around
+    /// [`factor_zassenhaus_with_content`](super::factor_zassenhaus::factor_zassenhaus_with_content):
+    /// content extraction, Yun's square-free decomposition, then
+    /// Berlekamp–Zassenhaus on each square-free part.
+    pub fn factor_over_z(&self) -> (Ratio<BigInt>, Vec<(Poly, u32)>) {
+        super::factor_zassenhaus::factor_zassenhaus_with_content(self)
     }
 }
 
@@ -182,6 +184,39 @@ pub(crate) fn lagrange_interpolate_rational(points: &[(i64, Ratio<BigInt>)]) -> 
     result
 }
 
+/// Lagrange interpolation through points with rational abscissae.
+///
+/// Returns the unique polynomial of degree `< points.len()` passing through
+/// every `(xᵢ, yᵢ)`, or `None` if two abscissae coincide.  An empty input
+/// yields the zero polynomial.
+pub(crate) fn lagrange_interpolate_points(
+    points: &[(Ratio<BigInt>, Ratio<BigInt>)],
+) -> Option<Poly> {
+    let n = points.len();
+    let mut result = Poly::zero();
+    for i in 0..n {
+        let (xi, yi) = &points[i];
+        let mut basis = Poly::from_int(1);
+        let mut denom = Ratio::one();
+        for (j, (xj, _)) in points.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let diff = xi - xj;
+            if diff.is_zero() {
+                return None;
+            }
+            basis = &basis * &Poly::from_coeffs(vec![-xj.clone(), Ratio::one()]);
+            denom *= diff;
+        }
+        if yi.is_zero() {
+            continue;
+        }
+        result = &result + &basis.scale(&(yi / denom));
+    }
+    Some(result)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Private helpers: rational GCD
 // ═══════════════════════════════════════════════════════════════════════════
@@ -201,8 +236,9 @@ fn rational_gcd(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
 /// positive leading coefficient.
 ///
 /// Returns `[(a₁, 1), (a₂, 2), …]` where `f = ∏ aᵢ^i` (up to a unit)
-/// and each `aᵢ` is square-free and pairwise coprime.
-fn square_free_decomposition(f: &Poly) -> Vec<(Poly, u32)> {
+/// and each `aᵢ` is square-free, primitive with positive leading
+/// coefficient, and pairwise coprime.
+pub(crate) fn square_free_decomposition(f: &Poly) -> Vec<(Poly, u32)> {
     let deg = match f.degree() {
         Some(d) if d >= 1 => d,
         _ => return vec![],
@@ -263,7 +299,7 @@ fn square_free_decomposition(f: &Poly) -> Vec<(Poly, u32)> {
 }
 
 /// Return a copy of `p` with positive leading coefficient.
-fn ensure_positive_lc(p: &Poly) -> Poly {
+pub(crate) fn ensure_positive_lc(p: &Poly) -> Poly {
     match p.leading_coeff() {
         Some(lc) if lc.is_negative() => -p,
         _ => p.clone(),
@@ -271,76 +307,17 @@ fn ensure_positive_lc(p: &Poly) -> Poly {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Private helpers: irreducible factoring of square-free polynomials
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Factor a square-free, primitive polynomial into irreducible factors
-/// over ℤ using the Rational Root Theorem followed by Kronecker's method.
-fn factor_squarefree(f: &Poly) -> Vec<Poly> {
-    let deg = match f.degree() {
-        Some(d) if d >= 1 => d,
-        _ => return vec![f.clone()],
-    };
-
-    if deg == 1 {
-        return vec![ensure_positive_lc(f)];
-    }
-
-    // Step 1: extract all linear factors via the Rational Root Theorem.
-    let (mut remaining, mut factors) = extract_rational_roots(f);
-
-    if remaining.degree().unwrap_or(0) == 0 {
-        return factors;
-    }
-    if remaining.degree() == Some(1) {
-        factors.push(ensure_positive_lc(&remaining));
-        return factors;
-    }
-
-    // Step 2: Kronecker's method for degree-2 … degree-⌊n/2⌋.
-    let max_trial = (remaining.degree().unwrap_or(0) / 2).min(super::MAX_KRONECKER_DEGREE);
-    if remaining.degree().unwrap_or(0) / 2 > super::MAX_KRONECKER_DEGREE {
-        tracing::debug!(
-            "factoring: Kronecker method capped at degree {}; irreducible factors of higher degree will be missed",
-            super::MAX_KRONECKER_DEGREE
-        );
-    }
-    for trial_deg in 2..=max_trial {
-        loop {
-            let rem_deg = remaining.degree().unwrap_or(0);
-            if rem_deg < 2 * trial_deg {
-                break;
-            }
-            match kronecker_find_factor(&remaining, trial_deg) {
-                Some((fac, quot)) => {
-                    // The factor might itself be reducible — recurse.
-                    factors.extend(factor_squarefree(&fac));
-                    remaining = quot;
-                }
-                None => break,
-            }
-        }
-        if remaining.degree().unwrap_or(0) < 2 {
-            break;
-        }
-    }
-
-    // Whatever remains is irreducible (or we couldn't split it further).
-    if remaining.degree().unwrap_or(0) >= 1 {
-        factors.push(ensure_positive_lc(&remaining));
-    }
-
-    factors
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Private helpers: Rational Root Theorem
+// Crate-private helpers: Rational Root Theorem
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Extract all linear factors using the Rational Root Theorem.
 ///
-/// Returns `(remaining, linear_factors)`.
-fn extract_rational_roots(f: &Poly) -> (Poly, Vec<Poly>) {
+/// Returns `(remaining, linear_factors)`.  Used by
+/// [`factor_squarefree_z`](super::factor_zassenhaus::factor_squarefree_z)
+/// as a cheap pre-pass before Berlekamp–Zassenhaus.  The search is capped
+/// (see [`MAX_DIVISOR_COMBINATIONS`](super::MAX_DIVISOR_COMBINATIONS)), so
+/// `remaining` may still have rational roots when the caps are hit.
+pub(crate) fn extract_rational_roots(f: &Poly) -> (Poly, Vec<Poly>) {
     let mut remaining = f.clone();
     let mut factors: Vec<Poly> = Vec::new();
 
@@ -428,14 +405,16 @@ fn extract_rational_roots(f: &Poly) -> (Poly, Vec<Poly>) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Private helpers: Kronecker's method
+// Crate-private helpers: Kronecker's method
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Try to find a non-trivial factor of `f` with degree exactly
 /// `trial_deg` using Kronecker's method.
 ///
-/// Returns `Some((factor, quotient))` on success.
-fn kronecker_find_factor(f: &Poly, trial_deg: usize) -> Option<(Poly, Poly)> {
+/// Returns `Some((factor, quotient))` on success.  Kept as a fallback for
+/// the (rare) case where Berlekamp–Zassenhaus exhausts its recombination
+/// budget; see [`super::factor_zassenhaus`].
+pub(crate) fn kronecker_find_factor(f: &Poly, trial_deg: usize) -> Option<(Poly, Poly)> {
     let f_deg = f.degree()?;
     if trial_deg == 0 || trial_deg * 2 > f_deg {
         return None;

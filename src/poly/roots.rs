@@ -296,11 +296,48 @@ pub(crate) fn rootof_eval_f64(poly: &Poly, index: usize) -> Option<(f64, f64)> {
 }
 
 /// Convert a `BigFloat` to `f64` (best-effort).
-#[allow(dead_code)]
 fn bigfloat_to_f64(bf: &BigFloat) -> f64 {
     // Try direct conversion via the Display trait
     let s = format!("{}", bf);
     s.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+/// All complex roots of `poly` as `(re, im)` pairs in `f64`, with
+/// multiplicities (a `k`-fold root appears `k` times).
+///
+/// The polynomial is first split into square-free parts (Yun) so that
+/// Aberth's method only ever sees simple roots, where it converges
+/// cubically; each root is then replicated according to its multiplicity.
+/// `prec_bits` is the working precision handed to [`aberth_roots`]
+/// (at least 128 is recommended for full `f64` accuracy).
+///
+/// Roots are sorted by real part, then imaginary part.  Constants and the
+/// zero polynomial produce an empty vector.
+pub(crate) fn nroots_f64(poly: &Poly, prec_bits: usize) -> Vec<(f64, f64)> {
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    if poly.degree().unwrap_or(0) == 0 {
+        return out;
+    }
+    let (_content, parts) = poly.sqf_list();
+    for (part, mult) in parts {
+        if part.degree().unwrap_or(0) == 0 {
+            continue;
+        }
+        let max_iter = 100 + 20 * part.degree().unwrap_or(0);
+        let roots = aberth_roots(&part, prec_bits, max_iter);
+        for (re, im) in roots {
+            let pair = (bigfloat_to_f64(&re), bigfloat_to_f64(&im));
+            for _ in 0..mult {
+                out.push(pair);
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    out
 }
 
 #[cfg(test)]
@@ -406,5 +443,32 @@ mod tests {
         let poly = poly_from_coeffs(&[-1, 0, 1]); // degree 2
         assert!(rootof_eval_f64(&poly, 2).is_none());
         assert!(rootof_eval_f64(&poly, 100).is_none());
+    }
+
+    #[test]
+    fn nroots_with_multiplicity() {
+        // (x - 1)^2 (x + 2) = x^3 - 3x + 2
+        let poly = poly_from_coeffs(&[2, -3, 0, 1]);
+        let roots = nroots_f64(&poly, 128);
+        assert_eq!(roots.len(), 3);
+        assert!((roots[0].0 + 2.0).abs() < 1e-12, "{roots:?}");
+        assert!((roots[1].0 - 1.0).abs() < 1e-12, "{roots:?}");
+        assert!((roots[2].0 - 1.0).abs() < 1e-12, "{roots:?}");
+        assert!(roots.iter().all(|r| r.1.abs() < 1e-12));
+    }
+
+    #[test]
+    fn nroots_wilkinson_like_degree_10() {
+        // ∏ (x - k) for k = 1..10
+        let mut poly = poly_from_coeffs(&[1]);
+        for k in 1..=10 {
+            poly = &poly * &poly_from_coeffs(&[-k, 1]);
+        }
+        let roots = nroots_f64(&poly, 192);
+        assert_eq!(roots.len(), 10);
+        for (i, r) in roots.iter().enumerate() {
+            assert!((r.0 - (i as f64 + 1.0)).abs() < 1e-8, "root {i}: {r:?}");
+            assert!(r.1.abs() < 1e-8);
+        }
     }
 }

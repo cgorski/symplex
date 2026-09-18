@@ -12,7 +12,7 @@
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::Signed;
+use num_traits::{Signed, Zero};
 
 use crate::poly::Poly;
 
@@ -143,30 +143,95 @@ impl SturmChain {
         b: &Ratio<BigInt>,
         max_depth: u32,
     ) -> Vec<(Ratio<BigInt>, Ratio<BigInt>)> {
+        // Explicit stack (no recursion); intervals are pushed right-first so
+        // that the output comes out sorted left to right.
+        let two = Ratio::from_integer(BigInt::from(2));
         let mut result = Vec::new();
-        self.isolate_recurse(a, b, max_depth, &mut result);
+        let mut stack: Vec<(Ratio<BigInt>, Ratio<BigInt>, u32)> =
+            vec![(a.clone(), b.clone(), max_depth)];
+        while let Some((lo, hi, depth)) = stack.pop() {
+            let n = self.count_roots_in(&lo, &hi);
+            if n == 0 {
+                continue;
+            }
+            if n == 1 || depth == 0 {
+                result.push((lo, hi));
+                continue;
+            }
+            let mid = (&lo + &hi) / &two;
+            stack.push((mid.clone(), hi, depth - 1));
+            stack.push((lo, mid, depth - 1));
+        }
         result
     }
 
-    fn isolate_recurse(
+    /// Isolate **all** distinct real roots of the polynomial into disjoint
+    /// rational intervals, each containing exactly one root.
+    ///
+    /// The search starts from the Cauchy root bound.  Every returned pair
+    /// `(lo, hi)` satisfies `lo < hi` and has exactly one root in `(lo, hi]`,
+    /// except that a root which is exactly hit by a bisection point is
+    /// reported as the degenerate interval `(r, r)`.  Intervals are sorted.
+    pub fn isolate_all_real_roots(&self) -> Vec<(Ratio<BigInt>, Ratio<BigInt>)> {
+        let Some(p) = self.chain.first() else {
+            return vec![];
+        };
+        if p.degree().unwrap_or(0) == 0 {
+            return vec![];
+        }
+        let bound = cauchy_bound(p) + Ratio::from_integer(BigInt::from(1));
+        let neg_bound = -bound.clone();
+        let raw = self.isolate_roots_in(&neg_bound, &bound, 256);
+        raw.into_iter()
+            .map(|(lo, hi)| {
+                if p.eval(&hi).is_zero() {
+                    (hi.clone(), hi)
+                } else {
+                    (lo, hi)
+                }
+            })
+            .collect()
+    }
+
+    /// Shrink an isolating interval `(lo, hi]` (containing exactly one root)
+    /// by bisection until its width is at most `max_width`.
+    ///
+    /// A root hit exactly by a bisection point is returned as `(r, r)`.
+    pub fn refine_interval(
         &self,
-        a: &Ratio<BigInt>,
-        b: &Ratio<BigInt>,
-        depth: u32,
-        out: &mut Vec<(Ratio<BigInt>, Ratio<BigInt>)>,
-    ) {
-        let n = self.count_roots_in(a, b);
-        if n == 0 {
-            return;
-        }
-        if n == 1 || depth == 0 {
-            out.push((a.clone(), b.clone()));
-            return;
-        }
+        lo: &Ratio<BigInt>,
+        hi: &Ratio<BigInt>,
+        max_width: &Ratio<BigInt>,
+    ) -> (Ratio<BigInt>, Ratio<BigInt>) {
         let two = Ratio::from_integer(BigInt::from(2));
-        let mid = (a + b) / two;
-        self.isolate_recurse(a, &mid, depth - 1, out);
-        self.isolate_recurse(&mid, b, depth - 1, out);
+        let mut lo = lo.clone();
+        let mut hi = hi.clone();
+        // Guard against pathological inputs: at most 512 halvings.
+        for _ in 0..512 {
+            if &hi - &lo <= *max_width || lo == hi {
+                break;
+            }
+            let mid = (&lo + &hi) / &two;
+            if self.chain.first().is_some_and(|p| p.eval(&mid).is_zero()) {
+                return (mid.clone(), mid);
+            }
+            if self.count_roots_in(&lo, &mid) == 1 {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        (lo, hi)
+    }
+
+    /// Count distinct real roots in the **closed** interval `[a, b]`.
+    pub fn count_roots_in_closed(&self, a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> usize {
+        if a > b {
+            return 0;
+        }
+        let open_right = self.count_roots_in(a, b);
+        let at_a = self.chain.first().is_some_and(|p| p.eval(a).is_zero());
+        open_right + usize::from(at_a)
     }
 
     /// Return the sign of the leading coefficient of the first (original)
@@ -180,6 +245,27 @@ impl SturmChain {
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Cauchy root bound: every root `z` of `p` satisfies
+/// `|z| ≤ 1 + maxᵢ |aᵢ / aₙ|`.
+pub(crate) fn cauchy_bound(p: &Poly) -> Ratio<BigInt> {
+    let one = Ratio::from_integer(BigInt::from(1));
+    let Some(n) = p.degree() else {
+        return one;
+    };
+    if n == 0 {
+        return one;
+    }
+    let lc = p.coeff(n);
+    let mut max = Ratio::from_integer(BigInt::from(0));
+    for i in 0..n {
+        let r = (p.coeff(i) / &lc).abs();
+        if r > max {
+            max = r;
+        }
+    }
+    max + one
+}
 
 /// Sign of the leading coefficient: +1, −1, or 0 (for zero poly).
 fn leading_sign(p: &Poly) -> i8 {
@@ -325,6 +411,53 @@ mod tests {
         let p = Poly::from_coeffs(vec![r(1), r(-2), r(1)]); // (x-1)^2
         let chain = SturmChain::new(&p);
         assert_eq!(chain.count_real_roots(), 1);
+    }
+
+    /// isolate_all_real_roots on x^3 - x with exact rational roots
+    #[test]
+    fn isolate_all_x3_minus_x() {
+        let p = Poly::from_coeffs(vec![r(0), r(-1), r(0), r(1)]);
+        let chain = SturmChain::new(&p);
+        let iv = chain.isolate_all_real_roots();
+        assert_eq!(iv.len(), 3);
+        // Sorted and each contains exactly one root.
+        for w in iv.windows(2) {
+            assert!(w[0].1 <= w[1].0);
+        }
+        for (lo, hi) in &iv {
+            if lo == hi {
+                assert!(p.eval(lo).is_zero());
+            } else {
+                assert_eq!(chain.count_roots_in(lo, hi), 1);
+            }
+        }
+    }
+
+    /// isolate_all_real_roots on x^2 - 2: two irrational roots
+    #[test]
+    fn isolate_all_x2_minus_2() {
+        let p = Poly::from_coeffs(vec![r(-2), r(0), r(1)]);
+        let chain = SturmChain::new(&p);
+        let iv = chain.isolate_all_real_roots();
+        assert_eq!(iv.len(), 2);
+        assert!(iv[0].1 <= r(0) && iv[1].0 >= r(0));
+        // Refinement tightens the brackets around ±√2 ≈ ±1.414.
+        let width = Ratio::new(BigInt::from(1), BigInt::from(100));
+        let (lo, hi) = chain.refine_interval(&iv[1].0, &iv[1].1, &width);
+        assert!(&hi - &lo <= width);
+        assert!(lo < Ratio::new(BigInt::from(1415), BigInt::from(1000)));
+        assert!(hi > Ratio::new(BigInt::from(1414), BigInt::from(1000)));
+    }
+
+    /// count_roots_in_closed includes the left endpoint
+    #[test]
+    fn closed_interval_count() {
+        let p = Poly::from_coeffs(vec![r(0), r(-1), r(0), r(1)]); // roots -1, 0, 1
+        let chain = SturmChain::new(&p);
+        assert_eq!(chain.count_roots_in_closed(&r(-1), &r(1)), 3);
+        assert_eq!(chain.count_roots_in(&r(-1), &r(1)), 2);
+        assert_eq!(chain.count_roots_in_closed(&r(0), &r(0)), 1);
+        assert_eq!(chain.count_roots_in_closed(&r(2), &r(1)), 0);
     }
 
     /// leading_sign_of_original

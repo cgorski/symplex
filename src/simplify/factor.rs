@@ -1,101 +1,176 @@
-//! Polynomial factoring via rational root finding + Kronecker's method.
+//! Polynomial factoring over ℤ for symbolic expressions.
 //!
-//! This module implements [`factor`], which attempts to factor a
-//! polynomial expression over ℤ into a product of irreducible factors
-//! with their multiplicities.
+//! This module implements [`factor`], [`factor_auto`] and [`factor_list`],
+//! which factor a polynomial expression over ℤ into a product of irreducible
+//! factors with their multiplicities.
 //!
 //! # Algorithm
 //!
-//! 1. Convert the expression to a [`Poly`] in the given variable.
-//! 2. Call [`Poly::factor_over_z`] which performs:
-//!    a. Content extraction (GCD of all coefficients).
-//!    b. Square-free decomposition (Yun's algorithm).
-//!    c. Rational root extraction (Rational Root Theorem).
-//!    d. Higher-degree factor finding (Kronecker's method).
+//! 1. Convert the expression to a univariate [`Poly`] in the given variable.
+//!    If that succeeds, call [`Poly::factor_over_z`] (content extraction,
+//!    Yun's square-free decomposition, Berlekamp–Zassenhaus — see
+//!    [`crate::poly::factor_zassenhaus`]).
+//! 2. Otherwise, if the expression is a polynomial in a handful of symbols,
+//!    convert it to a [`MultiPoly`](crate::poly::multipoly::MultiPoly) and
+//!    factor by Kronecker substitution
+//!    ([`factor_multivariate`](crate::poly::factor_zassenhaus::factor_multivariate)).
 //! 3. Convert the factors back to expressions and build the product.
-//! 4. If the poly-level factoring finds nothing new, fall back to
-//!    the expression-level solver for rational roots.
 //!
-//! # Improvements over the previous version
-//!
-//! - Finds non-linear factors (e.g. x²+1 in x⁴−1).
-//! - Handles repeated roots via square-free decomposition.
-//! - Extracts content for any polynomial, including linear ones.
+//! Every factorization is verified by multiplying back before it is
+//! returned; expressions that are not polynomial are returned unchanged.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
-use num_traits::{One, Signed, Zero};
+use num_traits::One;
 
 use crate::base::arena::Arena;
 use crate::base::node::{ExprId, ExprNode};
+use crate::base::walk;
 use crate::poly::Poly;
+use crate::poly::factor_zassenhaus::factor_multivariate;
 use crate::poly::polybridge;
 
-/// Factor a polynomial expression into a product of irreducible factors.
+/// Maximum number of distinct symbols handled by the multivariate path.
+const MAX_MULTIVARIATE_SYMBOLS: usize = 4;
+
+/// Rational content plus `(factor expression, multiplicity)` pairs.
+type FactorParts = (Ratio<BigInt>, Vec<(ExprId, u32)>);
+
+/// Factor a polynomial expression in `var` into a product of irreducible
+/// factors over ℤ.
 ///
-/// Returns the expression unchanged if it is not polynomial in `var`
-/// or if no factorisation can be found.
+/// Returns the expression unchanged if it is not polynomial in `var`, if it
+/// is constant in `var`, or if it is already irreducible with unit content.
 pub(crate) fn factor(arena: &mut Arena, expr: ExprId, var: ExprId) -> ExprId {
-    // Step 1: Convert to polynomial.
-    let poly = match polybridge::expr_to_poly(arena, expr, var) {
-        Some(p) => p,
-        None => return expr,
-    };
-
-    // Trivial cases.
-    if poly.is_zero() || poly.is_constant() {
-        return expr;
+    match factor_parts(arena, expr, Some(var)) {
+        Some((content, factors)) if is_nontrivial(&content, &factors) => {
+            build_factored_expr(arena, &content, &factors)
+        }
+        _ => expr,
     }
-
-    let degree = match poly.degree() {
-        Some(d) => d,
-        None => return expr,
-    };
-
-    // Step 2: Try enhanced polynomial factoring (SFD + rational roots + Kronecker).
-    let (content, factors) = poly.factor_over_z();
-
-    let nontrivial = factors.len() > 1 || factors.iter().any(|(_, m)| *m > 1) || !content.is_one();
-
-    if nontrivial {
-        return build_factored_expr(arena, var, &content, &factors);
-    }
-
-    // Step 3: No non-trivial poly-level factoring found.
-    if degree <= 1 {
-        return expr; // Linear or constant — already factored.
-    }
-
-    // Step 4: Fallback — use the expression-level solver for rational roots.
-    // This catches edge cases that the poly-level approach may miss.
-    factor_via_solver(arena, expr, var, &poly)
 }
 
-/// Build a symbolic expression from the factored polynomial form.
+/// Factor a polynomial expression with the variable(s) inferred from its
+/// free symbols.
 ///
-/// Constructs `content * ∏ factor^mult`.
+/// With exactly one free symbol this is [`factor`] in that symbol; with
+/// two to four symbols the multivariate path is used.  Expressions with
+/// no free symbols, too many symbols, or non-polynomial structure are
+/// returned unchanged.
+pub(crate) fn factor_auto(arena: &mut Arena, expr: ExprId) -> ExprId {
+    match factor_parts(arena, expr, None) {
+        Some((content, factors)) if is_nontrivial(&content, &factors) => {
+            build_factored_expr(arena, &content, &factors)
+        }
+        _ => expr,
+    }
+}
+
+/// Factor and return the pieces: `(content, [(factor, multiplicity), …])`
+/// such that `expr = content · ∏ factorᵢ^multᵢ`.
+///
+/// If `var` is `None` the variables are inferred as in [`factor_auto`].
+/// For inputs that cannot be factored (non-polynomial, constant, …) the
+/// result is `(1, [(expr, 1)])`.
+pub(crate) fn factor_list(
+    arena: &mut Arena,
+    expr: ExprId,
+    var: Option<ExprId>,
+) -> (ExprId, Vec<(ExprId, u32)>) {
+    match factor_parts(arena, expr, var) {
+        Some((content, factors)) => {
+            let content_id = {
+                let nid = arena.intern_num(content);
+                arena.intern(ExprNode::Num(nid))
+            };
+            (content_id, factors)
+        }
+        None => (arena.one, vec![(expr, 1)]),
+    }
+}
+
+/// Shared driver: returns the rational content and the irreducible factors
+/// (as expressions) or `None` if the expression is not a non-constant
+/// polynomial in the chosen variable(s).
+fn factor_parts(arena: &mut Arena, expr: ExprId, var: Option<ExprId>) -> Option<FactorParts> {
+    let mut syms = walk::free_symbols(arena, expr);
+    syms.sort_by_key(|id| id.0);
+    syms.dedup();
+
+    match var {
+        Some(v) => {
+            if let Some(poly) = polybridge::expr_to_poly(arena, expr, v) {
+                return factor_univariate(arena, &poly, v);
+            }
+            if !syms.contains(&v) {
+                return None;
+            }
+            factor_multi(arena, expr, &syms)
+        }
+        None => match syms.len() {
+            0 => None,
+            1 => {
+                let v = syms[0];
+                let poly = polybridge::expr_to_poly(arena, expr, v)?;
+                factor_univariate(arena, &poly, v)
+            }
+            _ => factor_multi(arena, expr, &syms),
+        },
+    }
+}
+
+fn factor_univariate(arena: &mut Arena, poly: &Poly, var: ExprId) -> Option<FactorParts> {
+    if poly.is_zero() || poly.is_constant() {
+        return None;
+    }
+    let (content, factors) = poly.factor_over_z();
+    let factor_ids = factors
+        .iter()
+        .map(|(f, m)| (polybridge::poly_to_expr(arena, f, var), *m))
+        .collect();
+    Some((content, factor_ids))
+}
+
+fn factor_multi(arena: &mut Arena, expr: ExprId, syms: &[ExprId]) -> Option<FactorParts> {
+    if syms.len() < 2 || syms.len() > MAX_MULTIVARIATE_SYMBOLS {
+        return None;
+    }
+    let mp = polybridge::expr_to_multipoly(arena, expr, syms)?;
+    if mp.is_zero() || mp.total_degree().unwrap_or(0) == 0 {
+        return None;
+    }
+    let (content, factors) = factor_multivariate(&mp)?;
+    let factor_ids = factors
+        .iter()
+        .map(|(f, m)| (polybridge::multipoly_to_expr(arena, f, syms), *m))
+        .collect();
+    Some((content, factor_ids))
+}
+
+/// A factorization is worth reporting if it has more than one factor, a
+/// repeated factor, or a non-unit content.
+fn is_nontrivial(content: &Ratio<BigInt>, factors: &[(ExprId, u32)]) -> bool {
+    factors.len() > 1 || factors.iter().any(|(_, m)| *m > 1) || !content.is_one()
+}
+
+/// Build `content · ∏ factor^mult` as an expression.
 fn build_factored_expr(
     arena: &mut Arena,
-    var: ExprId,
     content: &Ratio<BigInt>,
-    factors: &[(Poly, u32)],
+    factors: &[(ExprId, u32)],
 ) -> ExprId {
-    let mut parts: Vec<ExprId> = Vec::new();
+    let mut parts: Vec<ExprId> = Vec::with_capacity(factors.len() + 1);
 
-    // Add content if it isn't 1.
     if !content.is_one() {
         let nid = arena.intern_num(content.clone());
-        let cid = arena.intern(ExprNode::Num(nid));
-        parts.push(cid);
+        parts.push(arena.intern(ExprNode::Num(nid)));
     }
 
-    // Add each factor (possibly raised to a power).
-    for (factor, mult) in factors {
-        let fexpr = polybridge::poly_to_expr(arena, factor, var);
-        if *mult == 1 {
+    for &(fexpr, mult) in factors {
+        if mult == 1 {
             parts.push(fexpr);
         } else {
-            let exp = arena.int(*mult as i64);
+            let exp = arena.int(mult as i64);
             parts.push(arena.pow(fexpr, exp));
         }
     }
@@ -105,118 +180,6 @@ fn build_factored_expr(
         1 => parts[0],
         _ => arena.mul(&parts),
     }
-}
-
-/// Fallback factoring using the expression-level equation solver.
-///
-/// This is the original algorithm: find rational roots via `solve`,
-/// divide out the corresponding linear factors, and return the product.
-fn factor_via_solver(arena: &mut Arena, expr: ExprId, var: ExprId, poly: &Poly) -> ExprId {
-    // Extract content (GCD of all coefficients).
-    let content = poly_content(poly);
-    let primitive = if content != Ratio::one() {
-        poly.scale(&(Ratio::one() / &content))
-    } else {
-        poly.clone()
-    };
-
-    // Find rational roots of the primitive polynomial via the solver.
-    let prim_expr = polybridge::poly_to_expr(arena, &primitive, var);
-    let solutions = crate::transforms::solve::solve(arena, prim_expr, var);
-    if solutions.is_empty() {
-        return expr; // No rational roots found.
-    }
-
-    // For each root, divide out (x − root) repeatedly (handles multiplicity).
-    let mut remaining = primitive;
-    let mut factors: Vec<ExprId> = Vec::new();
-
-    for sol in &solutions {
-        // Extract the rational value of the root.
-        let root_rational = match arena.node(sol.value) {
-            ExprNode::Num(nid) => arena.num(*nid).clone(),
-            _ => continue, // Non-rational root, skip.
-        };
-
-        // Build the linear factor (x − r) as a Poly.
-        let linear = Poly::from_coeffs(vec![-root_rational.clone(), Ratio::one()]);
-
-        // Divide out this factor as many times as possible (multiplicity).
-        loop {
-            let (quotient, rem) = remaining.div_rem(&linear);
-            if rem.is_zero() {
-                remaining = quotient;
-                let root_id = sol.value;
-                let factor_expr = arena.sub(var, root_id);
-                factors.push(factor_expr);
-            } else {
-                break;
-            }
-        }
-    }
-
-    if factors.is_empty() {
-        return expr; // No roots produced clean division.
-    }
-
-    // Build the result as content × product_of_factors × remainder.
-    let remainder_expr = polybridge::poly_to_expr(arena, &remaining, var);
-    let remainder_is_one = arena.is_one_structural(remainder_expr);
-
-    let mut all_parts: Vec<ExprId> = Vec::new();
-
-    // Add content if ≠ 1.
-    if content != Ratio::one() {
-        let content_nid = arena.intern_num(content);
-        let content_id = arena.intern(ExprNode::Num(content_nid));
-        all_parts.push(content_id);
-    }
-
-    all_parts.extend_from_slice(&factors);
-
-    if !remainder_is_one {
-        all_parts.push(remainder_expr);
-    }
-
-    if all_parts.len() == 1 {
-        all_parts[0]
-    } else {
-        arena.mul(&all_parts)
-    }
-}
-
-/// Compute the content (GCD of all coefficients) of a polynomial.
-fn poly_content(poly: &Poly) -> Ratio<BigInt> {
-    let coeffs = poly.coeffs();
-    if coeffs.is_empty() {
-        return Ratio::one();
-    }
-
-    // Start with the first nonzero coefficient.
-    let mut result: Option<Ratio<BigInt>> = None;
-    for c in coeffs {
-        if c.is_zero() {
-            continue;
-        }
-        match &result {
-            None => result = Some(c.abs()),
-            Some(g) => {
-                let a = g.clone();
-                let b = c.abs();
-                result = Some(rational_gcd(&a, &b));
-            }
-        }
-    }
-
-    result.unwrap_or_else(Ratio::one)
-}
-
-/// GCD of two positive rationals: gcd(a/b, c/d) = gcd(a,c) / lcm(b,d).
-fn rational_gcd(a: &Ratio<BigInt>, b: &Ratio<BigInt>) -> Ratio<BigInt> {
-    use num_integer::Integer;
-    let num_gcd = a.numer().gcd(b.numer());
-    let den_lcm = a.denom().lcm(b.denom());
-    Ratio::new(num_gcd, den_lcm)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -234,6 +197,11 @@ mod tests {
 
     fn display(a: &Arena, id: ExprId) -> String {
         a.display(id).to_string()
+    }
+
+    fn powi(a: &mut Arena, base: ExprId, n: i64) -> ExprId {
+        let e = a.int(n);
+        a.pow(base, e)
     }
 
     #[test]
@@ -335,5 +303,73 @@ mod tests {
         let five = a.int(5);
         let result = factor(&mut a, five, x);
         assert_eq!(display(&a, result), "5");
+    }
+
+    #[test]
+    fn factor_x12_minus_1_fully() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let x12 = powi(&mut a, x, 12);
+        let one = a.one;
+        let expr = a.sub(x12, one);
+        let (content, factors) = factor_list(&mut a, expr, Some(x));
+        assert_eq!(display(&a, content), "1");
+        assert_eq!(factors.len(), 6, "τ(12) = 6 cyclotomic factors");
+        let factored = factor(&mut a, expr, x);
+        let s = display(&a, factored);
+        assert!(s.contains("x^4 - x^2 + 1"), "should contain Φ12: {s}");
+    }
+
+    #[test]
+    fn factor_multivariate_difference_of_squares() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        let x2 = powi(&mut a, x, 2);
+        let y2 = powi(&mut a, y, 2);
+        let expr = a.sub(x2, y2);
+        let result = factor(&mut a, expr, x);
+        let s = display(&a, result);
+        assert!(
+            s.contains("x - y") && s.contains("x + y"),
+            "x^2 - y^2 should factor: {s}"
+        );
+    }
+
+    #[test]
+    fn factor_auto_single_symbol() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let x2 = powi(&mut a, x, 2);
+        let one = a.one;
+        let expr = a.sub(x2, one);
+        let result = factor_auto(&mut a, expr);
+        assert!(!display(&a, result).contains("x^2"));
+    }
+
+    #[test]
+    fn factor_auto_multivariate_with_content() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let y = sym(&mut a, "y");
+        // x^2 y - y = y (x - 1)(x + 1)
+        let x2 = powi(&mut a, x, 2);
+        let x2y = a.mul(&[x2, y]);
+        let expr = a.sub(x2y, y);
+        let (content, factors) = factor_list(&mut a, expr, None);
+        assert_eq!(display(&a, content), "1");
+        assert_eq!(factors.len(), 3);
+        let names: Vec<String> = factors.iter().map(|(f, _)| display(&a, *f)).collect();
+        assert!(names.iter().any(|n| n == "y"), "{names:?}");
+    }
+
+    #[test]
+    fn factor_list_non_polynomial() {
+        let mut a = Arena::new();
+        let x = sym(&mut a, "x");
+        let expr = a.sin(x);
+        let (content, factors) = factor_list(&mut a, expr, Some(x));
+        assert_eq!(content, a.one);
+        assert_eq!(factors, vec![(expr, 1)]);
     }
 }

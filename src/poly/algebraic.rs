@@ -1,72 +1,57 @@
-//! Algebraic number field arithmetic: elements of ℚ(α) = ℚ\[t\]/(m(t)).
+//! Exact zero and sign testing for algebraic constants via minimal
+//! polynomials and Sturm sequences.
 //!
-//! An `AlgNum` represents an element of an algebraic number field,
-//! stored as a polynomial representative `repr ∈ ℚ[t]` of degree < deg(m),
-//! together with the irreducible minimal polynomial `m(t)`.
+//! This module answers two questions about a constant arena expression
+//! built from rationals, radicals (`n^{p/q}`), `i`, sums, products and
+//! negations — *is it zero?* and *what is its sign?* — **exactly**, without
+//! trusting floating-point cancellation.
 //!
-//! # Production Status
+//! # What is here
 //!
-//! **This module is wired into production code.**  The standalone functions
-//! [`is_zero_checked`] and [`sign_checked`] are used in `log_to_real.rs`
-//! and `integrate.rs` for zero/sign testing of algebraic constant
-//! expressions.  They use a cross-checked strategy:
+//! - [`minimal_polynomial`] — computes a polynomial `m ∈ ℚ[t]` with
+//!   `m(α) = 0` for an algebraic constant `α` given as an arena expression,
+//!   by structural recursion:
+//!   - rational `r` → `t − r`;
+//!   - `n^{p/q}` → the irreducible factor of `t^q − n^p` vanishing at the
+//!     real value;
+//!   - `i` → `t² + 1`;
+//!   - `a + b` → the irreducible factor of `res_y(m_a(y), m_b(t − y))`
+//!     vanishing at the numerical value of `a + b`;
+//!   - `a · b` → likewise with `res_y(m_a(y), y^{deg m_b} m_b(t / y))`;
+//!   - `−a` → `m_a(−t)`.
 //!
-//! - **Primary**: [`eval_const_f64`](crate::transforms::evalf::eval_const_f64)
-//!   (fast, battle-tested).
-//! - **Fallback**: [`exact_is_zero`] / [`exact_sign`] (Sturm-based) when
-//!   the f64 value is within `1e-10` of zero (the ambiguous zone).
-//! - **Cross-check**: if both methods produce a result and disagree, a
-//!   warning is logged and the exact answer is trusted.
+//!   Resultants are computed by evaluation/interpolation over
+//!   [`GenPoly`]; the factor selection uses `factor_over_z` plus a numerical
+//!   evaluation to pick the factor that actually vanishes.
+//! - [`exact_is_zero`] / [`exact_sign`] — given the minimal polynomial,
+//!   isolate the real root nearest to the `f64` value of the expression with
+//!   a [`SturmChain`] and decide zero-ness/sign from the isolating interval.
+//! - [`is_zero_checked`] / [`sign_checked`] — the production entry points
+//!   (used by `log_to_real.rs` and `integrate.rs`).  They evaluate with
+//!   [`eval_const_f64`](crate::transforms::evalf::eval_const_f64) first and
+//!   only fall back to the exact machinery inside the ambiguous zone
+//!   `|v| < 1e-10`; if the two methods disagree a warning is logged and the
+//!   exact answer wins.
 //!
-//! The `AlgNum` struct (Ring/Field arithmetic in ℚ(α)) is tested
-//! infrastructure not yet used in production, but available for future
-//! use (e.g., exact simplification of nested radicals).
+//! There is **no** `AlgNum` element type in this module: arithmetic in
+//! `ℚ(α) = ℚ[t]/(m(t))` is not implemented here.  Everything operates on
+//! minimal polynomials and arena expressions directly.
 //!
-//! ## Completed milestones
+//! # Limitations
 //!
-//! 1. ✅ `pick_factor_by_numerical_eval` evaluates the target expression
-//!    via `eval_const_f64` and selects the vanishing irreducible factor
-//! 2. ✅ Cross-validation tests verify `is_zero_checked`/`sign_checked`
-//!    agree with `eval_const_f64` for integration-relevant expressions
-//! 3. ✅ `is_zero_checked`/`sign_checked` wired into `log_to_real.rs`
-//!    and `integrate.rs` with cross-checking against `eval_const_f64`
-//!
-//! # Arithmetic
-//!
-//! - **Addition / Subtraction**: polynomial addition (no reduction needed
-//!   since deg(repr) < deg(m)).
-//! - **Multiplication**: polynomial multiplication followed by reduction
-//!   modulo `m(t)`.
-//! - **Division**: compute the multiplicative inverse via
-//!   [`extended_gcd(repr, m)`](crate::poly::generic::GenPoly::extended_gcd),
-//!   then multiply.  The Bézout coefficient gives `repr⁻¹ mod m`.
-//!
-//! # Zero and Sign Testing
-//!
-//! - **Zero-testing is exact**: an element is zero if and only if its
-//!   representative polynomial is the zero polynomial after reduction.
-//!   No floating-point tolerance.
-//! - **Sign-testing** uses Sturm sequences and root isolation on the
-//!   representative polynomial, evaluated at the distinguished real root
-//!   of the minimal polynomial.
-//!
-//! # Minimal Polynomial Computation
-//!
-//! The [`minimal_polynomial`] function computes the minimal polynomial
-//! of an arena expression over ℚ by recursive composition:
-//! - Rational numbers: `m(t) = t - r`
-//! - `n^{p/q}`: `m(t) = t^q - n^p`
-//! - `a + b`: via resultant `res_y(m_a(y), m_b(x - y))`
-//! - `a · b`: via resultant with appropriate scaling
-//!
-//! **Note:** The factor selection step after resultant computation is
-//! currently heuristic — see Production Status above.
+//! - Only the expression shapes listed above are recognised; anything else
+//!   (`π`, `e`, free symbols, transcendental functions) yields `None`.
+//! - The resultant-based composition produces a polynomial that *has* `α`
+//!   as a root; the minimal polynomial is obtained by factoring and
+//!   selecting the right irreducible factor numerically, which relies on
+//!   roots of the resultant being separated by more than the `f64`
+//!   evaluation error.
 //!
 //! # References
 //!
 //! - Cohen, *A Course in Computational Algebraic Number Theory*, Springer
 //! - Bronstein, *Symbolic Integration I*, §1.2–1.4
-//! - SymPy `polys/numberfields/minpoly.py` and `core/numbers.py::AlgebraicNumber`
+//! - SymPy `polys/numberfields/minpoly.py`
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -912,16 +897,11 @@ fn binomial_rational(n: usize, k: usize) -> Ratio<BigInt> {
     result
 }
 
-/// Convert an f64 to a rational approximation (for root isolation).
+/// Convert an `f64` to the exact rational it represents (for root
+/// isolation).  Non-finite inputs map to `0`, which only affects which
+/// isolating interval is picked as "nearest" — never correctness.
 fn f64_to_rational_approx(x: f64) -> Ratio<BigInt> {
-    if x == 0.0 {
-        return Ratio::zero();
-    }
-    // Multiply by 2^53 to get an integer mantissa.
-    let bits = 53i64;
-    let scale = 2.0_f64.powi(bits as i32);
-    let mantissa = (x * scale).round() as i64;
-    Ratio::new(BigInt::from(mantissa), BigInt::from(1i64 << bits))
+    crate::base::numeric::f64_to_ratio_exact(x).unwrap_or_else(Ratio::zero)
 }
 
 /// Distance from a point to an interval (0 if inside).

@@ -1,5 +1,6 @@
-//! Combinatorial functions: Stirling numbers, multinomial coefficients,
-//! and integer partition counting.
+//! Combinatorial functions: binomial and multinomial coefficients, Stirling,
+//! Bell and Catalan numbers, derangements, and integer partitions (counting
+//! and enumeration).
 //!
 //! **Unified API** — every function accepts arbitrary-precision integers via
 //! `impl Into<BigInt>`.  Returns `Option<BigInt>` where `None` means the
@@ -32,7 +33,7 @@
 //! ```
 
 use num_bigint::BigInt;
-use num_traits::{One, Signed, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Stirling numbers of the second kind: S(n, k)
@@ -371,6 +372,238 @@ fn partition_count_usize(n: usize) -> BigInt {
     }
 
     table[n].clone()
+}
+
+/// Alias for [`partition_count`]: the number of integer partitions `p(n)`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::combinatorics::npartitions;
+/// use num_bigint::BigInt;
+/// assert_eq!(npartitions(100), Some(BigInt::from(190_569_292u64)));
+/// ```
+pub fn npartitions(n: impl Into<BigInt>) -> Option<BigInt> {
+    partition_count(n)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Partition enumeration
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Lazy iterator over the integer partitions of `n` in reverse
+/// lexicographic order (each partition is a non-increasing `Vec<u64>`).
+///
+/// Created by [`partitions`].  `partitions(0)` yields the single empty
+/// partition.
+#[derive(Debug, Clone)]
+pub struct PartitionIter {
+    /// Current partition (non-increasing); `None` once exhausted.
+    current: Option<Vec<u64>>,
+}
+
+impl Iterator for PartitionIter {
+    type Item = Vec<u64>;
+
+    fn next(&mut self) -> Option<Vec<u64>> {
+        let cur = self.current.take()?;
+        // Compute the successor (Kelleher–O'Sullivan style): find the
+        // rightmost part > 1, decrement it, and redistribute the remainder
+        // into parts no larger than the new value.
+        let mut next = cur.clone();
+        // Count trailing ones.
+        let ones = next.iter().rev().take_while(|&&p| p == 1).count();
+        next.truncate(next.len() - ones);
+        match next.pop() {
+            None => {
+                // cur was all ones (or empty): this was the last partition.
+                self.current = None;
+            }
+            Some(last) => {
+                let new_part = last - 1;
+                let mut remainder = ones as u64 + 1; // freed by decrementing `last`
+                next.push(new_part);
+                while remainder >= new_part {
+                    next.push(new_part);
+                    remainder -= new_part;
+                }
+                if remainder > 0 {
+                    next.push(remainder);
+                }
+                self.current = Some(next);
+            }
+        }
+        Some(cur)
+    }
+}
+
+/// All integer partitions of `n`, lazily, in reverse lexicographic order
+/// (`[n]` first, `[1, 1, …, 1]` last).
+///
+/// The iterator is cheap to create; consuming all `p(n)` partitions is
+/// only feasible for moderate `n` (`p(60) ≈ 10⁶`, `p(100) ≈ 1.9·10⁸`).
+///
+/// # Examples
+///
+/// ```
+/// use symplex::combinatorics::partitions;
+///
+/// let parts: Vec<Vec<u64>> = partitions(4).collect();
+/// assert_eq!(parts, vec![vec![4], vec![3, 1], vec![2, 2], vec![2, 1, 1], vec![1, 1, 1, 1]]);
+/// assert_eq!(partitions(10).count(), 42);
+/// assert_eq!(partitions(0).collect::<Vec<_>>(), vec![Vec::<u64>::new()]);
+/// ```
+pub fn partitions(n: u64) -> PartitionIter {
+    PartitionIter {
+        current: Some(if n == 0 { vec![] } else { vec![n] }),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Binomial, Bell, Catalan, derangements
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Binomial coefficient `C(n, k)` for integer `n` (any sign) and `k ≥ 0`.
+///
+/// For negative `n` the generalised definition
+/// `C(n, k) = n(n−1)⋯(n−k+1)/k!` is used, so
+/// `C(−n, k) = (−1)ᵏ C(n+k−1, k)`.  Returns `0` for `k < 0` or
+/// `0 ≤ n < k`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::combinatorics::binomial;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(binomial(10, 3), BigInt::from(120));
+/// assert_eq!(binomial(5, 7), BigInt::from(0));
+/// assert_eq!(binomial(-3, 2), BigInt::from(6));    // (−3)(−4)/2
+/// assert_eq!(binomial(100, 50).to_string(), "100891344545564193334812497256");
+/// ```
+pub fn binomial(n: impl Into<BigInt>, k: impl Into<BigInt>) -> BigInt {
+    let n: BigInt = n.into();
+    let k: BigInt = k.into();
+    if k.is_negative() {
+        return BigInt::zero();
+    }
+    if !n.is_negative() && k > n {
+        return BigInt::zero();
+    }
+    // Use symmetry for non-negative n to keep k small.
+    let k = if !n.is_negative() && &k * 2 > n {
+        &n - &k
+    } else {
+        k
+    };
+    let Some(k) = k.to_u64() else {
+        return BigInt::zero();
+    };
+    let mut result = BigInt::one();
+    for i in 0..k {
+        result = result * (&n - BigInt::from(i)) / BigInt::from(i + 1);
+    }
+    result
+}
+
+/// Bell number `Bₙ`: the number of set partitions of an `n`-element set
+/// (`1, 1, 2, 5, 15, 52, 203, …`).
+///
+/// Computed with the Bell triangle in `O(n²)` big-integer additions.
+/// Returns `Some(0)` for negative `n`; `None` if `n` doesn't fit in
+/// `usize`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::combinatorics::bell;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(bell(0), Some(BigInt::from(1)));
+/// assert_eq!(bell(5), Some(BigInt::from(52)));
+/// assert_eq!(bell(10), Some(BigInt::from(115_975)));
+/// ```
+pub fn bell(n: impl Into<BigInt>) -> Option<BigInt> {
+    let n: BigInt = n.into();
+    if n.is_negative() {
+        return Some(BigInt::zero());
+    }
+    let n = n.to_usize()?;
+    if n == 0 {
+        return Some(BigInt::one());
+    }
+    // Bell triangle: row[0] = last element of the previous row,
+    // row[i] = row[i-1] + prev[i-1].  B_n = first element of row n.
+    let mut prev = vec![BigInt::one()];
+    for _ in 1..=n {
+        let mut row = Vec::with_capacity(prev.len() + 1);
+        row.push(prev.last().cloned().unwrap_or_else(BigInt::one));
+        for i in 0..prev.len() {
+            let next = &row[i] + &prev[i];
+            row.push(next);
+        }
+        prev = row;
+    }
+    prev.first().cloned()
+}
+
+/// Catalan number `Cₙ = (2n)! / ((n+1)! n!)` (`1, 1, 2, 5, 14, 42, …`).
+///
+/// Returns `Some(0)` for negative `n`; `None` if `n` doesn't fit in `u64`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::combinatorics::catalan;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(catalan(0), Some(BigInt::from(1)));
+/// assert_eq!(catalan(5), Some(BigInt::from(42)));
+/// assert_eq!(catalan(15), Some(BigInt::from(9_694_845)));
+/// ```
+pub fn catalan(n: impl Into<BigInt>) -> Option<BigInt> {
+    let n: BigInt = n.into();
+    if n.is_negative() {
+        return Some(BigInt::zero());
+    }
+    let n = n.to_u64()?;
+    Some(binomial(2 * n, n) / BigInt::from(n + 1))
+}
+
+/// Number of derangements `!n` (permutations with no fixed point):
+/// `1, 0, 1, 2, 9, 44, 265, …`.
+///
+/// Uses the recurrence `!n = (n − 1)(!(n−1) + !(n−2))`.  Returns
+/// `Some(0)` for negative `n`; `None` if `n` doesn't fit in `u64`.
+///
+/// # Examples
+///
+/// ```
+/// use symplex::combinatorics::derangements;
+/// use num_bigint::BigInt;
+///
+/// assert_eq!(derangements(0), Some(BigInt::from(1)));
+/// assert_eq!(derangements(1), Some(BigInt::from(0)));
+/// assert_eq!(derangements(4), Some(BigInt::from(9)));
+/// assert_eq!(derangements(10), Some(BigInt::from(1_334_961)));
+/// ```
+pub fn derangements(n: impl Into<BigInt>) -> Option<BigInt> {
+    let n: BigInt = n.into();
+    if n.is_negative() {
+        return Some(BigInt::zero());
+    }
+    let n = n.to_u64()?;
+    if n == 0 {
+        return Some(BigInt::one());
+    }
+    let mut a = BigInt::one(); // !0
+    let mut b = BigInt::zero(); // !1
+    for i in 2..=n {
+        let next = BigInt::from(i - 1) * (&a + &b);
+        a = b;
+        b = next;
+    }
+    Some(b)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
