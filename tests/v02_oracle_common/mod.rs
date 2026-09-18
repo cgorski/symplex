@@ -53,6 +53,9 @@ pub struct Fixture {
     pub id: usize,
     pub category: String,
     pub subcategory: String,
+    /// Stable identifier within `category:subcategory` (defaults to empty for
+    /// fixture files that key on the subcategory alone).
+    #[serde(default)]
     pub key: String,
     #[serde(default)]
     pub sympy_timeout: bool,
@@ -286,18 +289,43 @@ pub fn run_with_known_bugs(
     process: impl Fn(&Context, &Fixture) -> Status + Send + Sync + 'static,
 ) {
     let file = fixture_file();
+    run_fixtures(
+        &file.fixtures,
+        &file.generated_by,
+        category,
+        Some(subcategory),
+        known_bugs,
+        process,
+    );
+}
+
+/// Core runner over an arbitrary fixture slice.  `subcategory = None` runs a
+/// whole category (used by fixture files keyed on category alone).
+pub fn run_fixtures(
+    fixtures: &'static [Fixture],
+    generated_by: &str,
+    category: &str,
+    subcategory: Option<&str>,
+    known_bugs: &[KnownBug],
+    process: impl Fn(&Context, &Fixture) -> Status + Send + Sync + 'static,
+) {
     let process: Processor = std::sync::Arc::new(process);
     let mut stats = Stats::default();
     let mut lines: Vec<String> = Vec::new();
     let start = std::time::Instant::now();
-    for fx in file
-        .fixtures
+    let label = match subcategory {
+        Some(s) => format!("{category}:{s}"),
+        None => category.to_string(),
+    };
+    for fx in fixtures
         .iter()
-        .filter(|f| f.category == category && f.subcategory == subcategory)
+        .filter(|f| f.category == category && subcategory.is_none_or(|s| f.subcategory == s))
     {
         let known = known_bugs
             .iter()
-            .find(|(c, s, k, _)| *c == category && *s == subcategory && *k == fx.key)
+            .find(|(c, s, k, _)| {
+                *c == category && (*s == fx.subcategory || *s == "*") && *k == fx.key
+            })
             .map(|(_, _, _, reason)| *reason);
         let status = match fx.oracle_missing() {
             Some(reason) => Status::SkippedOracle(reason),
@@ -357,7 +385,7 @@ pub fn run_with_known_bugs(
     let elapsed = start.elapsed();
     println!(
         "{:<36} pass={:>3} fail={:>3} known_bug={:>2} not_impl={:>3} no_api={:>2} skipped_oracle={:>2}  ({:.2}s, {})",
-        format!("{category}:{subcategory}"),
+        label,
         stats.pass,
         stats.fail,
         stats.known_bug,
@@ -365,19 +393,19 @@ pub fn run_with_known_bugs(
         stats.no_api,
         stats.skipped_oracle,
         elapsed.as_secs_f64(),
-        file.generated_by
+        generated_by
     );
     for l in &lines {
         println!("{l}");
     }
     assert!(
         stats.total() > 0,
-        "no fixtures found for {category}:{subcategory} — generator/consumer out of sync"
+        "no fixtures found for {label} — generator/consumer out of sync"
     );
     assert_eq!(
         stats.unexpected_pass,
         0,
-        "{} known-bug entr{} in {category}:{subcategory} now pass — remove them from KNOWN_BUGS",
+        "{} known-bug entr{} in {label} now pass — remove them from KNOWN_BUGS",
         stats.unexpected_pass,
         if stats.unexpected_pass == 1 {
             "y"
@@ -387,7 +415,7 @@ pub fn run_with_known_bugs(
     );
     assert_eq!(
         stats.fail, 0,
-        "{} fixture(s) in {category}:{subcategory} produced WRONG results (see FAIL lines above); \
+        "{} fixture(s) in {label} produced WRONG results (see FAIL lines above); \
          known_bug={} not_impl={} no_api={} skipped_oracle={} are informational",
         stats.fail, stats.known_bug, stats.not_impl, stats.no_api, stats.skipped_oracle
     );

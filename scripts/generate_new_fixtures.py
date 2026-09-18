@@ -10,16 +10,23 @@ This script produces ground-truth values from SymPy for:
   - Series expansion coefficients
 
 Usage:
-    cd math/symplex
-    python3 scripts/generate_new_fixtures.py
+    /Users/chris.gorski/repos/math/symplex/.venv/bin/python scripts/generate_new_fixtures.py
+        # writes tests/fixtures/new_capabilities.json (deterministic)
+    ... --check   # exit 1 if the committed file would change
+
+Deterministic (no timestamps, sorted keys) and bounded: every fixture is
+built under ``PER_FIXTURE_TIMEOUT`` seconds; a fixture that times out or
+whose SymPy computation raises is *kept* with ``sympy_timeout`` /
+``sympy_error`` so the consumer can report it as SKIPPED instead of the case
+silently vanishing.
 
 Requires: sympy >= 1.12
 """
 
 import json
 import os
+import signal
 import sys
-import datetime
 
 try:
     import sympy as sp
@@ -37,6 +44,39 @@ def next_id():
     global fixture_id
     fixture_id += 1
     return fixture_id
+
+
+PER_FIXTURE_TIMEOUT = 20.0  # seconds of wall clock per fixture
+
+
+class _FixtureTimeout(Exception):
+    pass
+
+
+def _on_alarm(signum, frame):
+    raise _FixtureTimeout()
+
+
+def guarded(category, subcategory, label, make_fn, *args):
+    """Build one fixture under a wall-clock limit.  Never drops a case: a
+    timeout yields ``{"sympy_timeout": true}``, a failure ``{"sympy_error"}``."""
+    signal.signal(signal.SIGALRM, _on_alarm)
+    signal.setitimer(signal.ITIMER_REAL, PER_FIXTURE_TIMEOUT)
+    try:
+        fx = make_fn(*args)
+    except _FixtureTimeout:
+        print(f"  TIMEOUT {label}", file=sys.stderr)
+        fx = {"sympy_timeout": True}
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    if fx is None:
+        fx = {"sympy_error": "generator could not build this fixture (see log)"}
+    if isinstance(fx, dict) and "__error__" in fx:
+        fx = {"sympy_error": fx["__error__"]}
+    if "category" not in fx:
+        fx.update({"id": next_id(), "category": category, "subcategory": subcategory, "label": label})
+    fixtures.append(fx)
+    return fx
 
 
 def safe_float(val):
@@ -93,7 +133,7 @@ def make_definite_integral_fixture(label, integrand, var, lo, hi, category_tag="
         }
     except Exception as e:
         print(f"  SKIP {label}: {e}", file=sys.stderr)
-        return None
+        return {"__error__": f"{type(e).__name__}: {e}"}
 
 
 def make_ftc_fixture(label, integrand, var, test_points, category_tag="ftc_check"):
@@ -132,7 +172,7 @@ def make_ftc_fixture(label, integrand, var, test_points, category_tag="ftc_check
         }
     except Exception as e:
         print(f"  SKIP ftc {label}: {e}", file=sys.stderr)
-        return None
+        return {"__error__": f"{type(e).__name__}: {e}"}
 
 
 def make_ode_fixture(label, ode_expr, func, var, category_tag="ode"):
@@ -178,7 +218,7 @@ def make_ode_fixture(label, ode_expr, func, var, category_tag="ode"):
         }
     except Exception as e:
         print(f"  SKIP ode {label}: {e}", file=sys.stderr)
-        return None
+        return {"__error__": f"{type(e).__name__}: {e}"}
 
 
 def make_simplify_fixture(label, original, simplified_expected, test_points):
@@ -235,7 +275,7 @@ def make_gosper_fixture(label, summand_expr, var, lo, hi):
         }
     except Exception as e:
         print(f"  SKIP gosper {label}: {e}", file=sys.stderr)
-        return None
+        return {"__error__": f"{type(e).__name__}: {e}"}
 
 
 def make_series_fixture(label, expr_sym, var, point, order):
@@ -276,7 +316,7 @@ def make_series_fixture(label, expr_sym, var, point, order):
         }
     except Exception as e:
         print(f"  SKIP series {label}: {e}", file=sys.stderr)
-        return None
+        return {"__error__": f"{type(e).__name__}: {e}"}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -354,9 +394,7 @@ definite_cases = [
 
 for case in definite_cases:
     label, integrand, var, lo, hi, tag = case
-    f = make_definite_integral_fixture(label, integrand, var, lo, hi, tag)
-    if f is not None:
-        fixtures.append(f)
+    guarded("definite_integral", tag, label, make_definite_integral_fixture, label, integrand, var, lo, hi, tag)
 
 # ── 2. FTC verification (integrand vs derivative of antiderivative) ──
 print("  FTC verification points...", file=sys.stderr)
@@ -396,9 +434,7 @@ for label, integrand, var, tag in ftc_cases:
     # Restrict domain for asin
     if "asin" in label:
         pts = [sp.Rational(1, 4), sp.Rational(1, 3), sp.Rational(1, 2)]
-    f = make_ftc_fixture(label, integrand, var, pts, tag)
-    if f is not None:
-        fixtures.append(f)
+    guarded("ftc_check", tag, label, make_ftc_fixture, label, integrand, var, pts, tag)
 
 # ── 3. Simplification identity verification ──────────────────────────
 print("  Simplification identities...", file=sys.stderr)
@@ -418,9 +454,7 @@ simp_cases = [
 ]
 
 for label, orig, expected in simp_cases:
-    f = make_simplify_fixture(label, orig, expected, simp_points)
-    if f is not None:
-        fixtures.append(f)
+    guarded("simplify_verify", "trig_identity", label, make_simplify_fixture, label, orig, expected, simp_points)
 
 # ── 4. Gosper summation verification ─────────────────────────────────
 print("  Gosper sums...", file=sys.stderr)
@@ -437,9 +471,7 @@ gosper_cases = [
 ]
 
 for label, summand, var, lo, hi in gosper_cases:
-    f = make_gosper_fixture(label, summand, var, lo, hi)
-    if f is not None:
-        fixtures.append(f)
+    guarded("gosper_sum", "closed_form", label, make_gosper_fixture, label, summand, var, lo, hi)
 
 # ── 5. Series expansion verification ─────────────────────────────────
 print("  Series expansions...", file=sys.stderr)
@@ -459,9 +491,7 @@ series_cases = [
 ]
 
 for label, expr_sym, var, point, order in series_cases:
-    f = make_series_fixture(label, expr_sym, var, point, order)
-    if f is not None:
-        fixtures.append(f)
+    guarded("series_verify", "taylor", label, make_series_fixture, label, expr_sym, var, point, order)
 
 # ── 6. Parametric integration with specific parameter values ─────────
 print("  Parametric integrals at specific parameter values...", file=sys.stderr)
@@ -479,9 +509,7 @@ param_cases = [
 
 for label, integrand, var, a_val, lo, hi in param_cases:
     concrete = integrand.subs(a, a_val)
-    f = make_definite_integral_fixture(label, concrete, var, lo, hi, "parametric_concrete")
-    if f is not None:
-        fixtures.append(f)
+    guarded("definite_integral", "parametric_concrete", label, make_definite_integral_fixture, label, concrete, var, lo, hi, "parametric_concrete")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -490,7 +518,7 @@ for label, integrand, var, a_val, lo, hi in param_cases:
 
 output = {
     "generated_by": f"SymPy {sp.__version__}",
-    "generated_at": datetime.datetime.now().isoformat(),
+    "generator": "scripts/generate_new_fixtures.py",
     "fixture_count": len(fixtures),
     "description": "Correctness audit fixtures for symplex new capabilities",
     "categories": {
@@ -510,10 +538,19 @@ out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 os.makedirs(out_dir, exist_ok=True)
 
 out_path = os.path.join(out_dir, "new_capabilities.json")
-with open(out_path, "w") as f:
-    json.dump(output, f, indent=2)
-
-print(f"\nGenerated {len(fixtures)} fixtures -> {out_path}", file=sys.stderr)
+text = json.dumps(output, indent=2, sort_keys=True) + "\n"
+if "--check" in sys.argv:
+    with open(out_path) as f:
+        if f.read() != text:
+            print("MISMATCH: fixture file differs from generator output", file=sys.stderr)
+            sys.exit(1)
+    print("OK: fixture file is up to date", file=sys.stderr)
+else:
+    with open(out_path, "w") as f:
+        f.write(text)
+    print(f"\nGenerated {len(fixtures)} fixtures -> {out_path}", file=sys.stderr)
+gaps = [f for f in fixtures if f.get("sympy_timeout") or f.get("sympy_error")]
+print(f"  oracle gaps kept (timeout/error): {len(gaps)}", file=sys.stderr)
 
 # Print summary by category
 from collections import Counter
