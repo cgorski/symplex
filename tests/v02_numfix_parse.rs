@@ -139,9 +139,9 @@ fn parse_lambertw_display_alias() {
 #[test]
 fn parse_unknown_function_still_errors() {
     let ctx = Context::new();
-    let err = ctx.parse("frobnicate(x)").err().expect("unknown function");
+    let err = ctx.parse("frobnicate(x)").expect_err("unknown function");
     assert!(err.to_string().contains("unknown function"), "{err}");
-    let err = ctx.parse("besselj(x)").err().expect("wrong arity");
+    let err = ctx.parse("besselj(x)").expect_err("wrong arity");
     assert!(err.to_string().contains("unknown function"), "{err}");
     assert!(ctx.parse("1 = 2").is_err());
     assert!(ctx.parse("1..2").is_err());
