@@ -1,0 +1,62 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+#
+# Policy: symplex is pure Rust.  No crate in the dependency graph (including
+# dev-dependencies and build-dependencies) may compile or link C/C++ code or
+# depend on a system library.  Run `cargo deny check` locally; CI runs it too.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses only; anything else must be added here deliberately.
+# (Only licenses actually present in the graph are listed, so an unexpected
+# license fails the check instead of being silently allowed.)
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+# Anything that compiles C/C++ or binds a system library is forbidden.
+deny = [
+    { crate = "cc", reason = "pure Rust only: no C/C++ compilation" },
+    { crate = "cmake", reason = "pure Rust only: no C/C++ build systems" },
+    { crate = "pkg-config", reason = "pure Rust only: no system libraries" },
+    { crate = "vcpkg", reason = "pure Rust only: no system libraries" },
+    { crate = "bindgen", reason = "pure Rust only: no C bindings" },
+    { crate = "cxx", reason = "pure Rust only: no C++ interop" },
+    { crate = "openssl", reason = "pure Rust only (use rustls if TLS is ever needed)" },
+    { crate = "openssl-sys", reason = "pure Rust only" },
+    { crate = "libz-sys", reason = "pure Rust only" },
+    { crate = "zstd-sys", reason = "pure Rust only" },
+    { crate = "gmp-mpfr-sys", reason = "pure Rust only: no GMP/MPFR (rug)" },
+    { crate = "rug", reason = "pure Rust only: rug links GMP" },
+    { crate = "flint-sys", reason = "pure Rust only: no FLINT" },
+    { crate = "openblas-src", reason = "pure Rust only: no BLAS/LAPACK" },
+    { crate = "netlib-src", reason = "pure Rust only: no BLAS/LAPACK" },
+    { crate = "intel-mkl-src", reason = "pure Rust only: no BLAS/LAPACK" },
+    { crate = "blas-sys", reason = "pure Rust only: no BLAS/LAPACK" },
+    { crate = "lapack-sys", reason = "pure Rust only: no BLAS/LAPACK" },
+    { crate = "coin_cbc", reason = "pure Rust only: no COIN-OR C libraries" },
+    { crate = "highs-sys", reason = "pure Rust only: no HiGHS" },
+    { crate = "z3-sys", reason = "pure Rust only" },
+    { crate = "python3-sys", reason = "pure Rust only" },
+    { crate = "pyo3", reason = "pure Rust only: no CPython embedding" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

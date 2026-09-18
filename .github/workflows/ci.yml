@@ -19,8 +19,7 @@ env:
   CARGO_INCREMENTAL: 0
   RUSTFLAGS: -D warnings
   RUST_BACKTRACE: 1
-  # ~265 debug test binaries with full debuginfo exhaust the runner's disk
-  # (the linker dies with SIGBUS).  Line tables are enough for backtraces.
+  # Line tables are enough for backtraces and keep the test binaries small.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
   # The compile-fail UI snapshots (`tests/ui/*.stderr`) are tied to a specific
@@ -56,25 +55,31 @@ jobs:
       - run: cargo clippy --all-targets --manifest-path symplex-build/Cargo.toml -- -D warnings
       - run: cargo clippy --all-targets --manifest-path symplex-wasm/Cargo.toml -- -D warnings
 
+  deny:
+    name: Dependency policy (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Pure-Rust policy (no C/C++ or system libraries), licence allow-list,
+      # advisories and registry sources — see deny.toml.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
   test:
     name: Test (stable)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # UI snapshot tests are toolchain-pinned; see the `ui` job.  Benches
-      # run separately because the criterion harness rejects `--skip`.
+      # The integration tests are grouped into a handful of binaries
+      # (tests/README.md), so the whole suite links in seconds.  UI snapshot
+      # tests are toolchain-pinned; see the `ui` job.  Benches run separately
+      # because the criterion harness rejects `--skip`.
       - run: cargo test --lib --bins --tests --examples -- --skip units_compile_fail
       - run: cargo test --benches
       - run: cargo test --doc
-      - name: Disk usage after tests
-        if: always()
-        run: du -sh target && df -h /
 
   ui:
     name: UI compile-fail tests

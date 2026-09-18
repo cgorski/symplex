@@ -32,17 +32,20 @@ cargo build
 
 # Run the test suite (~11,000 tests; a few minutes in debug)
 cargo test
+# ... or, recommended: one process per test with per-test timeouts
+# (`.config/nextest.toml`; `cargo install cargo-nextest`)
+cargo nextest run
 
-# Run the 0.3 / 0.2 feature suites only
-cargo test --test 'v03_*'
-cargo test --test 'v02_*'
+# Run the 0.3 / 0.2 feature suites only (one test binary each)
+cargo test --test v03
+cargo test --test v02
 
 # Run the examples and the book (CI does both)
 for f in examples/*.rs; do n=$(basename "$f" .rs); [ "$n" = repl ] || cargo run -q --example "$n"; done
 mdbook build book
 
-# Run a single test file
-cargo test --test test_known_answers
+# Run a single test module (former file `tests/test_known_answers.rs`)
+cargo test --test unit test_known_answers::
 
 # Run doc-tests only
 cargo test --doc
@@ -55,7 +58,22 @@ cargo run --example quickstart
 
 # With tracing output (see simplification steps, integration attempts, etc.)
 RUST_LOG=symplex=debug cargo run --example quickstart
+
+# Dependency policy check (CI runs this too; `cargo install cargo-deny`)
+cargo deny check
 ```
+
+### Dependency policy
+
+symplex is **pure Rust**: no crate in the graph — including dev- and
+build-dependencies — may compile C/C++ or link a system library (no `*-sys`
+crates, `cc`, `cmake`, `pkg-config`, GMP/MPFR, BLAS/LAPACK, HiGHS, …), and
+every licence must be on the permissive allow-list.  `deny.toml` encodes this
+and `cargo deny check` enforces it (bans, licences, advisories, registry
+sources).  Adding a dependency means: check it is pure Rust on *every* target
+Rust supports (including `wasm32-unknown-unknown`), prefer
+`default-features = false`, and extend `deny.toml` deliberately if a new
+licence appears.
 
 ---
 
@@ -453,40 +471,56 @@ Follow the same steps as adding a new function (above), plus:
 
 ### Test Organization
 
-Tests are in `tests/` (integration tests, ~8,450 `#[test]` functions in 273
-files) and inline `#[cfg(test)]` modules (~2,580 unit tests). Total at 0.3.0:
-**~11,000** tests plus ~610 doctests.
+Tests are in `tests/` (integration tests, ~8,450 `#[test]` functions in ~275
+source files) and inline `#[cfg(test)]` modules (~2,580 unit tests). Total at
+0.3.0: **~11,000** tests plus ~610 doctests.
 
-| Category | Files | What they test |
-|----------|-------|----------------|
-| `test_known_answers.rs` | 256 tests | Exact symbolic results against textbook answers |
-| `test_sympy_cross_validation.rs` | 263 fixtures | Results compared against SymPy 1.14 (`tests/fixtures/sympy_cross_validation.json`) |
-| `test_correctness_audit.rs` | 108 fixtures | FTC verification, definite integrals (`tests/fixtures/new_capabilities.json`) |
-| `v03_<area>.rs` | 7 files, 400 tests | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize` |
-| `v02_<area>_<topic>.rs` | 40 files, 782 tests | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `sets_*`, `simplify_*`, `solving_*`, `summation_*`, `transforms_*` |
-| `proptest_*.rs`, `test_quality_props.rs`, `test_units_proptest.rs` | ~180 properties | Algebraic axioms, idempotence, value preservation, round-trips |
-| `test_cross_context.rs` | 17 tests | Cross-context safety guards |
-| `test_ode_comprehensive.rs` | 44 tests | ODE solver classes |
-| `test_rootof.rs` | 13 tests | RootOf solver + numerical evaluation |
-| `test_hard_math.rs` | 52 tests | Edge cases and negative tests |
-| `ui_tests.rs` + `tests/ui/*.rs` | trybuild | Compile-fail snapshots for the units type system (`Mass + Length` must not compile) |
-| `round*_*.rs`, `math*_bugs.rs`, `bugfinder*.rs` | many | Regression suites from bug-hunting rounds |
+The integration-test sources are grouped into **nine test binaries** (linking
+277 separate debug binaries took ~6.5 min and ~13 GB of `target/`). Each
+former top-level file is a module of its group, so a test is addressed as
+`<module>::<test>` inside `--test <group>`:
 
-Naming convention for new work: `tests/v03_<area>[_<topic>].rs` (or the
-appropriate `test_*.rs`), one behaviour per test function, named for the
-mathematical fact it checks (`divergent_interior_pole_is_err`, not `test1`).
+| Binary (`--test …`) | Sources | What they test |
+|---------------------|---------|----------------|
+| `v03` | `tests/v03/v03_<area>.rs` (7 modules, ~400 tests) | One suite per 0.3 feature: `poly_view`, `poly_symbolic_coeffs`, `ratsimp`, `linprog` (full KKT check of every optimum, Farkas vector verified), `normalforms` (defining invariants, not pinned answers), `matrix_ergonomics`, `optimize` |
+| `v03_oracle` | `tests/v03_oracle/v03_oracle_*.rs` | SymPy oracle for the 0.3 API (`tests/fixtures/v03_cross_validation.json`) |
+| `v02` | `tests/v02/v02_<area>_<topic>.rs` (62 modules, ~1,050 tests) | One suite per 0.2 feature area: `backends_{c,codegen,compile,cse}`, `basefix_*`, `ergonomics_*`, `integration_{battery,definite,residue}`, `matrices_*`, `nodes_*`, `ntheory_*`, `numfix_*`, `sets_*`, `simplify_*`, `solvefix_*`, `solving_*`, `summation_*`, `transforms_*` |
+| `v02_oracle` | `tests/v02_oracle/v02_oracle_*.rs` | SymPy oracle for the 0.2 API (`tests/fixtures/v02_cross_validation.json`); see `tests/README.md` |
+| `unit` | `tests/unit/test_*.rs` (156 modules, ~3,950 tests) | Unit-style suites per module / feature, e.g. `test_known_answers` (256 exact symbolic results against textbook answers), `test_sympy_cross_validation` (263 fixtures against SymPy 1.14, `tests/fixtures/sympy_cross_validation.json`), `test_correctness_audit` (108 fixtures: FTC verification, definite integrals, `tests/fixtures/new_capabilities.json`), `test_cross_context` (cross-context safety guards), `test_ode_comprehensive` (ODE solver classes), `test_rootof` (RootOf solver + numerical evaluation), `test_hard_math` (edge cases and negative tests) |
+| `legacy` | `tests/legacy/{round*_*,math*_bugs,bugfinder*,*_validation,…}.rs` (23 modules) | Regression suites from bug-hunting rounds |
+| `proptests` | `tests/proptests/{proptest_*,test_proptest_new,test_quality_props,test_units_proptest}.rs` (~180 properties) | Algebraic axioms, idempotence, value preservation, round-trips. `<stem>.proptest-regressions` files live next to the sources |
+| `perf` | `tests/perf/{simplify_perf_test,perf_analysis}.rs` | `#[ignore]`d benchmarks (`--release -- --ignored --nocapture`) |
+| `ui_tests` | `tests/ui_tests.rs` + `tests/ui/*.rs` | trybuild compile-fail snapshots for the units type system (`Mass + Length` must not compile) |
+
+Naming convention for new work: `tests/v03/v03_<area>[_<topic>].rs` (or the
+appropriate `tests/unit/test_*.rs`), one behaviour per test function, named
+for the mathematical fact it checks (`divergent_interior_pole_is_err`, not
+`test1`). Register a new file in its group root (`tests/v03.rs`, …) with
+`#[path = "v03/<file>.rs"] mod <file>;` — do not add new top-level
+`tests/*.rs` files, each one is another linked binary. Inside a module use
+`use super::common;` (not `mod common;`) and `include_str!("../fixtures/…")`.
 
 ### Running Specific Tests
 
 ```bash
-# Run one test file
-cargo test --test test_known_answers
+# Recommended: cargo-nextest — one process per test, parallel across binaries,
+# per-test timeouts from .config/nextest.toml (a hang is killed and reported)
+cargo nextest run
+cargo nextest run -E 'test(/^v03::/)'                      # one binary
+cargo nextest run -E 'test(/^unit::test_known_answers::/)' # one former file
 
-# Run one test function
-cargo test --test test_known_answers diff_power_rule
+# Run one test binary
+cargo test --test v03
+
+# Run one module (the former file tests/test_known_answers.rs)
+cargo test --test unit test_known_answers::
+
+# Run one test function (module-qualified, or just a substring)
+cargo test --test unit test_known_answers::diff_power_rule
+cargo test --test unit poly_
 
 # Run with output visible
-cargo test --test test_known_answers -- --nocapture
+cargo test --test unit test_known_answers:: -- --nocapture
 
 # Run only lib unit tests (faster)
 cargo test --lib
@@ -536,7 +570,7 @@ TRYBUILD=overwrite cargo +1.95.0 test --test ui_tests
 
 - Every test must finish in well under a second in debug mode; suites that
   exercise budgets (Gruntz, rewrite, eigenvalue swell) assert wall-clock bounds
-  with `std::time::Instant` (see `v02_transforms_limits.rs`).
+  with `std::time::Instant` (see `tests/v02/v02_transforms_limits.rs`).
 - Keep one mathematical fact per test function. Long "kitchen sink" tests
   hide which behaviour regressed and defeat `--skip`/filtering.
 - Property tests that skip cases must use `common::BailCounter` and call

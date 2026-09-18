@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
+## [Unreleased]
+
+### Infrastructure
+
+- The ~275 integration-test source files are compiled into nine test
+  binaries (`tests/{v03,v03_oracle,v02,v02_oracle,unit,legacy,proptests,
+  perf}.rs` plus `ui_tests`); every test keeps its name as
+  `<module>::<test>`.  Linking dropped from ~6.5 min / 13 GB to seconds, and
+  the CI disk-space workaround is gone.  See `tests/README.md` for the
+  layout and the `cargo test --test <group> <module>::` / `cargo nextest run
+  -E …` invocations.
+- `.config/nextest.toml`: `cargo nextest run` executes one process per test
+  with per-test wall-clock limits (`default` and `ci` profiles).
+- `deny.toml` + a `cargo deny check` CI job enforce the pure-Rust dependency
+  policy (no C/C++ or system libraries), a licence allow-list, advisories and
+  registry sources.
+- Removed the assertion-free `tests/zz_probe_tmp.rs` left over from 0.2.
+
 ## [0.3.0] - 2026-09-18
 
 **Polynomials as data, exact certificates.**  This release makes the

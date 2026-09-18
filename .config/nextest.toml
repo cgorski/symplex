@@ -1,0 +1,21 @@
+# cargo-nextest configuration (https://nexte.st/docs/configuration/).
+#
+# `cargo nextest run` executes every test in its own process, in parallel
+# across all test binaries, with a per-test wall-clock limit — so a single
+# hanging case is reported and killed instead of stalling the whole suite.
+# `cargo test` continues to work unchanged.
+
+[profile.default]
+# A test running longer than this is reported as SLOW; after `terminate-after`
+# such periods it is killed and counted as a failure.
+slow-timeout = { period = "30s", terminate-after = 4 }
+# Show a one-line status for every failing / slow test, not just the summary.
+status-level = "slow"
+final-status-level = "flaky"
+fail-fast = false
+
+[profile.ci]
+# Shared CI runners are several times slower than a developer machine.
+slow-timeout = { period = "60s", terminate-after = 5 }
+retries = 0
+fail-fast = false

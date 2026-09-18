@@ -1,7 +1,8 @@
 //! Shared test infrastructure for symplex integration tests.
 //!
-//! Include in any test file with `mod common;` at the top,
-//! then use `common::assert_math_eq(...)` etc.
+//! Declared once (`mod common;`) in each group root (`tests/unit.rs`, …);
+//! inside a test module write `use super::common;` at the top, then use
+//! `common::assert_math_eq(...)` etc.
 //!
 //! **Policy:** All helpers use `expect()`/`unwrap()` by default — no silent
 //! bailouts. If evaluation can legitimately fail for some inputs (e.g. in

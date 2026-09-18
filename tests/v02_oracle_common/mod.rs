@@ -1,4 +1,5 @@
-//! Shared plumbing for the symplex 0.2 SymPy oracle (`tests/v02_oracle_*.rs`).
+//! Shared plumbing for the symplex 0.2 SymPy oracle
+//! (`tests/v02_oracle/v02_oracle_*.rs`; also reused by `tests/v03_oracle.rs`).
 //!
 //! Fixtures come from `tests/fixtures/v02_cross_validation.json`, generated
 //! by `scripts/generate_v02_fixtures.py`.  Each consumer test file handles a
