@@ -15,8 +15,20 @@
 //! | cos(ωt) | s/(s²+ω²) |
 //! | sinh(at) | a/(s²-a²) |
 //! | cosh(at) | s/(s²-a²) |
+//! | t^ν (ν > −1) | Γ(ν+1)/s^(ν+1) |
+//! | ln t | −(γ + ln s)/s |
+//! | δ(t − a), H(t − a) | e^(−as), e^(−as)/s |
+//! | Jₙ(at) | (√(s²+a²) − s)ⁿ / (aⁿ √(s²+a²)) |
+//! | erf(a√t) | a/(s √(s + a²)) |
+//! | sin(at)/t, (1 − cos at)/t | atan(a/s), ½ ln(1 + a²/s²) |
 //!
-//! Plus linearity and frequency shift (exp(at)·f(t) → F(s-a)).
+//! Plus linearity, frequency shift (exp(at)·f(t) → F(s-a)), time shift
+//! (f(t−a)H(t−a) → e^(−as)F(s)), frequency differentiation
+//! (tⁿ f(t) → (−1)ⁿ F⁽ⁿ⁾(s)) and division by t (f(t)/t → ∫_s^∞ F(u) du).
+//!
+//! The inverse handles arbitrary proper rational functions through partial
+//! fractions (repeated and complex roots), `e^(−as)F(s)` (delay), `s^(−ν)`,
+//! `1/√(s²+a²)`, `atan(a/s)`, `1/(s√(s+a²))` and constants (`δ`).
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -113,6 +125,14 @@ fn do_forward(
     // ── Try table rules ──
     tracing::debug!("laplace: trying table forward");
     if let Some(result) = try_table_forward(arena, expr, t, t_sym, s) {
+        return Ok(result);
+    }
+    if let Some(result) = try_special_forward(arena, expr, t, s)? {
+        return Ok(result);
+    }
+
+    // ── Division by t: L{f(t)/t} = ∫_s^∞ F(u) du ──
+    if let Some(result) = try_divide_by_t(arena, expr, t, t_sym, s)? {
         return Ok(result);
     }
 
@@ -369,6 +389,358 @@ fn try_table_forward(
 
 // ─── Time-shift rule ─────────────────────────────────────────────────────
 
+// ─── Special functions and distributions ─────────────────────────────────────────────────
+
+fn fail(reason: impl Into<String>) -> SymplexError {
+    SymplexError::ComputationFailed {
+        operation: "laplace_transform",
+        reason: reason.into(),
+    }
+}
+
+/// Sign of a real parameter via numbers and assumptions.
+fn param_sign(arena: &mut Arena, e: ExprId) -> Option<i32> {
+    crate::calculus::limit::const_sign(arena, e)
+}
+
+fn need_sign(arena: &Arena, e: ExprId, cond: &str) -> SymplexError {
+    fail(format!(
+        "requires {cond} (declare the sign of {} with Assumption::Positive / Assumption::Negative)",
+        arena.display(e)
+    ))
+}
+
+/// `expr = a·t + b` with `a`, `b` free of `t`.
+fn linear_in(arena: &mut Arena, expr: ExprId, t: ExprId) -> Option<(ExprId, ExprId)> {
+    if expr == t {
+        return Some((arena.one, arena.zero));
+    }
+    if !contains_var(arena, expr, t) {
+        return Some((arena.zero, expr));
+    }
+    match arena.node(expr).clone() {
+        ExprNode::Neg(inner) => {
+            let (a, b) = linear_in(arena, inner, t)?;
+            Some((arena.neg(a), arena.neg(b)))
+        }
+        ExprNode::Mul(children) => {
+            let mut coeff = Vec::new();
+            let mut seen = false;
+            for &c in &children {
+                if c == t {
+                    if seen {
+                        return None;
+                    }
+                    seen = true;
+                } else if contains_var(arena, c, t) {
+                    return None;
+                } else {
+                    coeff.push(c);
+                }
+            }
+            if !seen {
+                return None;
+            }
+            let a = if coeff.is_empty() {
+                arena.one
+            } else {
+                arena.mul(&coeff)
+            };
+            Some((a, arena.zero))
+        }
+        ExprNode::Add(children) => {
+            let mut a_terms = Vec::new();
+            let mut b_terms = Vec::new();
+            for &c in &children {
+                let (a, b) = linear_in(arena, c, t)?;
+                if !arena.is_zero_structural(a) {
+                    a_terms.push(a);
+                }
+                if !arena.is_zero_structural(b) {
+                    b_terms.push(b);
+                }
+            }
+            let a = arena.add(&a_terms);
+            let b = arena.add(&b_terms);
+            Some((a, b))
+        }
+        _ => None,
+    }
+}
+
+/// Table entries beyond the elementary ones: `t^ν`, `ln t`, `δ(t−a)`,
+/// `H(t−a)`, `Jₙ(at)`, `erf(a√t)`.
+fn try_special_forward(
+    arena: &mut Arena,
+    expr: ExprId,
+    t: ExprId,
+    s: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    let one = arena.one;
+    let two = arena.int(2);
+    let expr = flatten_nested_power(arena, expr);
+    match arena.node(expr).clone() {
+        // t^ν → Γ(ν + 1)/s^{ν+1}, ν > −1 (non-integer or symbolic ν)
+        ExprNode::Pow(base, nu) if base == t && !contains_var(arena, nu, t) => {
+            let nu_p1 = arena.add(&[nu, one]);
+            let nu_p1 = crate::transforms::eval::eval(arena, nu_p1);
+            match param_sign(arena, nu_p1) {
+                Some(sg) if sg > 0 => {}
+                Some(_) => {
+                    return Err(fail("t^ν with ν ≤ −1 is not Laplace transformable"));
+                }
+                None => return Err(need_sign(arena, nu_p1, "ν > −1 in t^ν")),
+            }
+            let g = arena.gamma(nu_p1);
+            let g = crate::transforms::eval::eval(arena, g);
+            let neg = arena.neg(nu_p1);
+            let s_pow = arena.pow(s, neg);
+            Ok(Some(arena.mul(&[g, s_pow])))
+        }
+        // ln t → −(γ + ln s)/s
+        ExprNode::Ln(arg) if arg == t => {
+            let gamma = arena.euler_gamma();
+            let ln_s = arena.ln(s);
+            let sum = arena.add(&[gamma, ln_s]);
+            let r = arena.div(sum, s);
+            Ok(Some(arena.neg(r)))
+        }
+        // δ(t − a) → e^{−as} (a ≥ 0)
+        ExprNode::DiracDelta(arg) => {
+            let Some((k, b)) = linear_in(arena, arg, t) else {
+                return Ok(None);
+            };
+            if k != one {
+                return Ok(None);
+            }
+            let a = arena.neg(b);
+            let a = crate::transforms::eval::eval(arena, a);
+            match param_sign(arena, a) {
+                Some(0) => return Ok(Some(one)),
+                Some(sg) if sg > 0 => {}
+                Some(_) => return Ok(Some(arena.zero)),
+                None => return Err(need_sign(arena, a, "a ≥ 0 in δ(t − a)")),
+            }
+            let as_ = arena.mul(&[a, s]);
+            let neg = arena.neg(as_);
+            Ok(Some(arena.exp(neg)))
+        }
+        // H(t − a) → e^{−as}/s (a ≥ 0)
+        ExprNode::Heaviside(arg) => {
+            let Some((k, b)) = linear_in(arena, arg, t) else {
+                return Ok(None);
+            };
+            if k != one {
+                return Ok(None);
+            }
+            let a = arena.neg(b);
+            let a = crate::transforms::eval::eval(arena, a);
+            match param_sign(arena, a) {
+                Some(sg) if sg > 0 => {}
+                Some(_) => return Ok(Some(arena.div(one, s))),
+                None => return Err(need_sign(arena, a, "a ≥ 0 in H(t − a)")),
+            }
+            let as_ = arena.mul(&[a, s]);
+            let neg = arena.neg(as_);
+            let e = arena.exp(neg);
+            Ok(Some(arena.div(e, s)))
+        }
+        // Jₙ(at) → (√(s²+a²) − s)ⁿ / (aⁿ √(s²+a²)), integer n ≥ 0
+        ExprNode::Apply(name, args)
+            if arena.symbol_name(name) == crate::base::arena::FN_BESSELJ && args.len() == 2 =>
+        {
+            let order = args[0];
+            let arg = args[1];
+            let Some(n) = arena.as_num(order).cloned() else {
+                return Ok(None);
+            };
+            if !n.is_integer() || n.is_negative() {
+                return Ok(None);
+            }
+            let n: u32 = n
+                .to_integer()
+                .try_into()
+                .map_err(|_| fail("Bessel order too large"))?;
+            let Some((a, b)) = linear_in(arena, arg, t) else {
+                return Ok(None);
+            };
+            if !arena.is_zero_structural(b) {
+                return Ok(None);
+            }
+            let s2 = arena.pow(s, two);
+            let a2 = arena.pow(a, two);
+            let sum = arena.add(&[s2, a2]);
+            let root = arena.sqrt(sum);
+            if n == 0 {
+                return Ok(Some(arena.div(one, root)));
+            }
+            let n_id = arena.int(i64::from(n));
+            let diff = arena.sub(root, s);
+            let num = arena.pow(diff, n_id);
+            let an = arena.pow(a, n_id);
+            let den = arena.mul(&[an, root]);
+            Ok(Some(arena.div(num, den)))
+        }
+        // erf(a√t) → a/(s√(s + a²)), a > 0
+        ExprNode::Erf(arg) => {
+            let half = arena.rational(1, 2);
+            let sqrt_t = arena.pow(t, half);
+            let (a, inner) = match arena.node(arg).clone() {
+                ExprNode::Pow(..) if arg == sqrt_t => (one, sqrt_t),
+                ExprNode::Mul(ch) => {
+                    let rest: Vec<ExprId> = ch.iter().copied().filter(|&c| c != sqrt_t).collect();
+                    if rest.len() + 1 != ch.len() || rest.iter().any(|&c| contains_var(arena, c, t))
+                    {
+                        return Ok(None);
+                    }
+                    (arena.mul(&rest), sqrt_t)
+                }
+                _ => return Ok(None),
+            };
+            let _ = inner;
+            match param_sign(arena, a) {
+                Some(sg) if sg > 0 => {}
+                Some(_) => return Ok(None),
+                None => return Err(need_sign(arena, a, "a > 0 in erf(a√t)")),
+            }
+            let a2 = arena.pow(a, two);
+            let sum = arena.add(&[s, a2]);
+            let root = arena.sqrt(sum);
+            let den = arena.mul(&[s, root]);
+            Ok(Some(arena.div(a, den)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// `((b)^p)^q → b^{pq}` for numeric `p`, `q` — the form `1/√x` takes after
+/// canonicalization. Valid on the Laplace domain (`t > 0`, `Re s > 0`).
+fn flatten_nested_power(arena: &mut Arena, expr: ExprId) -> ExprId {
+    if let ExprNode::Pow(inner, q) = arena.node(expr).clone()
+        && let ExprNode::Pow(base, p) = arena.node(inner).clone()
+        && arena.as_num(p).is_some()
+        && arena.as_num(q).is_some()
+    {
+        let pq = arena.mul(&[p, q]);
+        let pq = crate::transforms::eval::eval(arena, pq);
+        return arena.pow(base, pq);
+    }
+    expr
+}
+
+/// `L{f(t)/t} = ∫_s^∞ F(u) du`, valid when `f(t)/t` is integrable at 0.
+///
+/// Special cases `sin(at)/t → atan(a/s)` and `(1 − cos at)/t → ½ ln(1 +
+/// a²/s²)` are recognised directly; everything else goes through the
+/// definite integral of the transform of the numerator.
+fn try_divide_by_t(
+    arena: &mut Arena,
+    expr: ExprId,
+    t: ExprId,
+    t_sym: SymbolId,
+    s: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    let ExprNode::Mul(children) = arena.node(expr).clone() else {
+        return Ok(None);
+    };
+    let inv_t = arena.pow(t, arena.neg_one);
+    if !children.contains(&inv_t) {
+        return Ok(None);
+    }
+    let rest: Vec<ExprId> = children.iter().copied().filter(|&c| c != inv_t).collect();
+    if rest.is_empty() {
+        return Err(fail(
+            "1/t is not Laplace transformable (not integrable at 0)",
+        ));
+    }
+    let g = arena.mul(&rest);
+
+    // Direct entries.
+    let one = arena.one;
+    let two = arena.int(2);
+    match arena.node(g).clone() {
+        ExprNode::Sin(arg) => {
+            if let Some((a, b)) = linear_in(arena, arg, t)
+                && arena.is_zero_structural(b)
+            {
+                let ratio = arena.div(a, s);
+                return Ok(Some(arena.atan(ratio)));
+            }
+        }
+        ExprNode::Add(terms) if terms.len() == 2 && terms.contains(&one) => {
+            let other = if terms[0] == one { terms[1] } else { terms[0] };
+            // `−cos(at)` is `Neg(cos)` or `Mul(-1, cos)` depending on canonical form.
+            let neg_cos = match arena.node(other).clone() {
+                ExprNode::Neg(c) => Some(c),
+                ExprNode::Mul(ch) if ch.len() == 2 && ch.contains(&arena.neg_one) => {
+                    Some(if ch[0] == arena.neg_one { ch[1] } else { ch[0] })
+                }
+                _ => None,
+            };
+            if let Some(c) = neg_cos
+                && let ExprNode::Cos(arg) = arena.node(c).clone()
+                && let Some((a, b)) = linear_in(arena, arg, t)
+                && arena.is_zero_structural(b)
+            {
+                let a2 = arena.pow(a, two);
+                let s2 = arena.pow(s, two);
+                let ratio = arena.div(a2, s2);
+                let arg = arena.add(&[one, ratio]);
+                let ln = arena.ln(arg);
+                return Ok(Some(arena.div(ln, two)));
+            }
+        }
+        _ => {}
+    }
+
+    // General: integrate G(u) from s to ∞.
+    let zero = arena.zero;
+    let g0 = crate::calculus::limit::safe_substitute(arena, g, t, zero);
+    match g0 {
+        Some(v) if arena.is_zero_structural(v) => {}
+        _ => {
+            return Err(fail(format!(
+                "{}/t is not integrable at t = 0 (numerator does not vanish there)",
+                arena.display(g)
+            )));
+        }
+    }
+    let big_g = do_forward(arena, g, t, t_sym, s)?;
+    let u = arena.symbol("__lap_u");
+    let big_g_u = crate::transforms::subs::subs(arena, big_g, s, u);
+    let inf = arena.infinity();
+    let ok = |arena: &Arena, r: ExprId| {
+        !contains_var(arena, r, u) && !crate::base::walk::has_unevaluated(arena, r)
+    };
+    if let Ok(integral) = crate::calculus::definite::integrate_definite(arena, big_g_u, u, s, inf)
+        && ok(arena, integral)
+    {
+        return Ok(Some(integral));
+    }
+    // The definite integrator refuses ∞ − ∞ forms such as
+    // [ln(u+2) − ln(u+1)]_s^∞; take the antiderivative and let the limit
+    // engine resolve the upper end.
+    let anti = crate::transforms::integrate::integrate(arena, big_g_u, u);
+    if crate::base::walk::has_unevaluated(arena, anti) {
+        return Err(fail("∫_s^∞ F(u) du has no closed form"));
+    }
+    let at_inf = crate::calculus::limit::limit(arena, anti, u, inf)
+        .map_err(|e| fail(format!("∫_s^∞ F(u) du: {e}")))?;
+    if at_inf == inf || at_inf == arena.neg_infinity() {
+        return Err(fail("∫_s^∞ F(u) du diverges"));
+    }
+    let at_s = crate::transforms::subs::subs(arena, anti, u, s);
+    let r = arena.sub(at_inf, at_s);
+    let r = crate::transforms::eval::eval(arena, r);
+    if ok(arena, r) {
+        Ok(Some(r))
+    } else {
+        Err(fail("∫_s^∞ F(u) du has no closed form"))
+    }
+}
+
+// ─── Time-shift rule ─────────────────────────────────────────────────────────────────────────
+
 /// Try the time-shift rule: L{H(t-a)·f(t)} = exp(-a·s)·L{f(t+a)}
 ///
 /// Detects a `Heaviside(t - a)` factor in a Mul node, shifts f(t) → f(t+a),
@@ -435,22 +807,17 @@ fn extract_shift(arena: &mut Arena, expr: ExprId, t: ExprId, _t_sym: SymbolId) -
     if expr == t {
         return Some(arena.zero);
     }
-
-    // Try polynomial approach: expr should be t - a, i.e. linear with coeff 1
-    let poly = crate::poly::polybridge::expr_to_poly(arena, expr, t)?;
-    if poly.degree()? != 1 {
+    // expr = t + b (symbolic b allowed) → a = −b; the shift must be ≥ 0.
+    let (k, b) = linear_in(arena, expr, t)?;
+    if k != arena.one {
         return None;
     }
-    // Coefficient of t must be 1
-    let a1 = poly.coeff(1);
-    if !a1.is_one() {
-        return None;
+    let a = arena.neg(b);
+    let a = crate::transforms::eval::eval(arena, a);
+    match param_sign(arena, a) {
+        Some(sg) if sg >= 0 => Some(a),
+        _ => None,
     }
-    // Constant term is -a, so a = -constant
-    let c0 = poly.coeff(0);
-    let a_val = -c0;
-    let a_id = rational_to_expr(arena, &a_val);
-    Some(a_id)
 }
 
 // ─── Frequency differentiation ───────────────────────────────────────────
@@ -764,11 +1131,28 @@ fn do_inverse(
         return Ok(arena.neg(result));
     }
 
+    // ── Constant c → c·δ(t) ──
+    if !contains_var(arena, expr, s) {
+        let d = arena.dirac_delta(t);
+        return Ok(arena.mul(&[expr, d]));
+    }
+
     // ── Factor out constants (not containing s) ──
     let (coeff, body) = split_independent(arena, expr, s);
     if coeff != arena.one {
         let result = do_inverse(arena, body, s, t, depth + 1)?;
         return Ok(arena.mul(&[coeff, result]));
+    }
+
+    // ── Delay: e^{−as} G(s) → g(t − a) H(t − a) ──
+    if let Some(result) = try_inverse_delay(arena, expr, s, t, depth)? {
+        return Ok(result);
+    }
+
+    // ── Special entries: s^{−ν}, 1/√(s²+a²), atan(a/s), 1/(s√(s+a²)), ln(s)/s,
+    //    and rational forms with symbolic parameters ──
+    if let Some(result) = try_special_inverse(arena, expr, s, t)? {
+        return Ok(result);
     }
 
     // ── Try table lookup ──
@@ -789,7 +1173,277 @@ fn do_inverse(
     })
 }
 
-// ─── Inverse table rules ─────────────────────────────────────────────────
+fn ifail(reason: impl Into<String>) -> SymplexError {
+    SymplexError::ComputationFailed {
+        operation: "inverse_laplace_transform",
+        reason: reason.into(),
+    }
+}
+
+/// `e^{−as}·G(s) → g(t − a)·H(t − a)` for `a ≥ 0` (second shifting theorem).
+fn try_inverse_delay(
+    arena: &mut Arena,
+    expr: ExprId,
+    s: ExprId,
+    t: ExprId,
+    depth: u32,
+) -> Result<Option<ExprId>, SymplexError> {
+    let children: Vec<ExprId> = match arena.node(expr).clone() {
+        ExprNode::Mul(ch) => ch.iter().copied().collect(),
+        ExprNode::Exp(_) => vec![expr],
+        _ => return Ok(None),
+    };
+    let mut delay: Option<ExprId> = None;
+    let mut rest: Vec<ExprId> = Vec::new();
+    for &c in &children {
+        if delay.is_none()
+            && let ExprNode::Exp(arg) = arena.node(c).clone()
+            && let Some((k, b)) = linear_in(arena, arg, s)
+            && arena.is_zero_structural(b)
+        {
+            // arg = k·s = −a·s
+            let a = arena.neg(k);
+            let a = crate::transforms::eval::eval(arena, a);
+            match param_sign(arena, a) {
+                Some(sg) if sg > 0 => {
+                    delay = Some(a);
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        rest.push(c);
+    }
+    let Some(a) = delay else {
+        return Ok(None);
+    };
+    if rest.is_empty() {
+        // e^{−as} alone → δ(t − a)
+        let t_minus_a = arena.sub(t, a);
+        return Ok(Some(arena.dirac_delta(t_minus_a)));
+    }
+    let g = arena.mul(&rest);
+    let g_t = do_inverse(arena, g, s, t, depth + 1)?;
+    let t_minus_a = arena.sub(t, a);
+    let shifted = crate::transforms::subs::subs(arena, g_t, t, t_minus_a);
+    let h = arena.heaviside(t_minus_a);
+    Ok(Some(arena.mul(&[shifted, h])))
+}
+
+/// Inverse entries beyond rational functions with numeric coefficients.
+fn try_special_inverse(
+    arena: &mut Arena,
+    expr: ExprId,
+    s: ExprId,
+    t: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    let one = arena.one;
+    let two = arena.int(2);
+    let neg_one = arena.neg_one;
+    let neg_half = arena.rational(-1, 2);
+    let expr = flatten_nested_power(arena, expr);
+    match arena.node(expr).clone() {
+        // s^{−ν} → t^{ν−1}/Γ(ν), ν > 0 non-integer or symbolic
+        ExprNode::Pow(base, e) if base == s && !contains_var(arena, e, s) => {
+            let nu = arena.neg(e);
+            let nu = crate::transforms::eval::eval(arena, nu);
+            if arena.as_num(nu).is_some_and(|r| r.is_integer()) {
+                return Ok(None); // integer powers: rational-function path
+            }
+            match param_sign(arena, nu) {
+                Some(sg) if sg > 0 => {}
+                Some(_) => {
+                    return Err(ifail(
+                        "s^k with k ≥ 0 is not an inverse-transformable function",
+                    ));
+                }
+                None => {
+                    return Err(ifail(format!(
+                        "requires ν > 0 in s^(-ν) (declare the sign of {} with Assumption::Positive)",
+                        arena.display(nu)
+                    )));
+                }
+            }
+            let nu_m1 = arena.sub(nu, one);
+            let tp = arena.pow(t, nu_m1);
+            let g = arena.gamma(nu);
+            let g = crate::transforms::eval::eval(arena, g);
+            Ok(Some(arena.div(tp, g)))
+        }
+        // 1/√(s² + a²) → J₀(at);  1/(s − a)^n and 1/(s² + a²) with symbolic a
+        ExprNode::Pow(base, e) if !contains_var(arena, e, s) => {
+            let s2 = arena.pow(s, two);
+            // (s² + a²)^{−1/2} and (s² + a²)^{−1}
+            if let ExprNode::Add(terms) = arena.node(base).clone()
+                && terms.len() == 2
+                && terms.contains(&s2)
+            {
+                let a2 = if terms[0] == s2 { terms[1] } else { terms[0] };
+                if contains_var(arena, a2, s) {
+                    return Ok(None);
+                }
+                let a = match arena.node(a2).clone() {
+                    ExprNode::Pow(b, k) if k == two && param_sign(arena, b) == Some(1) => b,
+                    _ => {
+                        if arena.as_num(a2).is_some() && e == neg_one {
+                            return Ok(None); // numeric: rational-function path
+                        }
+                        match param_sign(arena, a2) {
+                            Some(1) => {
+                                let r = arena.sqrt(a2);
+                                crate::transforms::eval::eval(arena, r)
+                            }
+                            _ => return Ok(None),
+                        }
+                    }
+                };
+                let at = arena.mul(&[a, t]);
+                if e == neg_half {
+                    let zero = arena.zero;
+                    return Ok(Some(arena.besselj(zero, at)));
+                }
+                if e == neg_one {
+                    let sn = arena.sin(at);
+                    return Ok(Some(arena.div(sn, a)));
+                }
+                return Ok(None);
+            }
+            // (k s + b)^{−n} with symbolic coefficients → t^{n−1} e^{−(b/k) t}/(kⁿ (n−1)!)
+            if let Some((k, b)) = linear_in(arena, base, s)
+                && !arena.is_zero_structural(k)
+                && let Some(r) = arena.as_num(e).cloned()
+                && r.is_integer()
+                && r.is_negative()
+            {
+                if arena.as_num(k).is_some() && arena.as_num(b).is_some() {
+                    return Ok(None); // numeric: rational-function path
+                }
+                let n: u64 = (-r.to_integer())
+                    .try_into()
+                    .map_err(|_| ifail("power too large"))?;
+                let a = arena.div(b, k);
+                let a = arena.neg(a);
+                let at = arena.mul(&[a, t]);
+                let ex = arena.exp(at);
+                let n_id = arena.int(n as i64);
+                let kn = arena.pow(k, n_id);
+                let nm1 = n - 1;
+                let tp = if nm1 == 0 {
+                    one
+                } else {
+                    let m = arena.int(nm1 as i64);
+                    arena.pow(t, m)
+                };
+                let f = factorial_bigint(nm1);
+                let f_id = rational_to_expr(arena, &Ratio::from_integer(f));
+                let den = arena.mul(&[kn, f_id]);
+                let num = arena.mul(&[tp, ex]);
+                return Ok(Some(arena.div(num, den)));
+            }
+            Ok(None)
+        }
+        // atan(a/s) → sin(at)/t
+        ExprNode::Atan(arg) => {
+            let inv_s = arena.pow(s, neg_one);
+            let a = match arena.node(arg).clone() {
+                ExprNode::Pow(..) if arg == inv_s => one,
+                ExprNode::Mul(ch) if ch.contains(&inv_s) => {
+                    let rest: Vec<ExprId> = ch.iter().copied().filter(|&c| c != inv_s).collect();
+                    if rest.iter().any(|&c| contains_var(arena, c, s)) {
+                        return Ok(None);
+                    }
+                    arena.mul(&rest)
+                }
+                _ => return Ok(None),
+            };
+            let at = arena.mul(&[a, t]);
+            let sn = arena.sin(at);
+            Ok(Some(arena.div(sn, t)))
+        }
+        ExprNode::Mul(children) => {
+            let kids: Vec<ExprId> = children
+                .iter()
+                .map(|&k| flatten_nested_power(arena, k))
+                .collect();
+            let inv_s = arena.pow(s, neg_one);
+            // A sum inside a product (e.g. −(γ + ln s)/s): distribute and let
+            // linearity handle the pieces.
+            if kids
+                .iter()
+                .any(|&k| matches!(arena.node(k), ExprNode::Add(_)))
+            {
+                let expanded = crate::transforms::expand::expand(arena, expr);
+                if expanded != expr && matches!(arena.node(expanded), ExprNode::Add(_)) {
+                    return do_inverse(arena, expanded, s, t, 1).map(Some);
+                }
+            }
+            // ln(s)/s → −(ln t + γ)
+            if kids.len() == 2 && kids.contains(&inv_s) {
+                let other = if kids[0] == inv_s { kids[1] } else { kids[0] };
+                if let ExprNode::Ln(arg) = arena.node(other).clone()
+                    && arg == s
+                {
+                    let ln_t = arena.ln(t);
+                    let g = arena.euler_gamma();
+                    let sum = arena.add(&[ln_t, g]);
+                    return Ok(Some(arena.neg(sum)));
+                }
+                // s/(s² + a²) with symbolic a → cos(at)  (kids = [s, (s²+a²)^{-1}])
+            }
+            if kids.len() == 2 && kids.contains(&s) {
+                let other = if kids[0] == s { kids[1] } else { kids[0] };
+                let s2 = arena.pow(s, two);
+                if let ExprNode::Pow(base, e) = arena.node(other).clone()
+                    && e == neg_one
+                    && let ExprNode::Add(terms) = arena.node(base).clone()
+                    && terms.len() == 2
+                    && terms.contains(&s2)
+                {
+                    let a2 = if terms[0] == s2 { terms[1] } else { terms[0] };
+                    if arena.as_num(a2).is_some() || contains_var(arena, a2, s) {
+                        return Ok(None);
+                    }
+                    let a = match arena.node(a2).clone() {
+                        ExprNode::Pow(b, k) if k == two && param_sign(arena, b) == Some(1) => b,
+                        _ if param_sign(arena, a2) == Some(1) => {
+                            let r = arena.sqrt(a2);
+                            crate::transforms::eval::eval(arena, r)
+                        }
+                        _ => return Ok(None),
+                    };
+                    let at = arena.mul(&[a, t]);
+                    return Ok(Some(arena.cos(at)));
+                }
+            }
+            // 1/(s√(s + a²)) → erf(a√t)/a
+            if kids.len() == 2 && kids.contains(&inv_s) {
+                let other = if kids[0] == inv_s { kids[1] } else { kids[0] };
+                if let ExprNode::Pow(base, e) = arena.node(other).clone()
+                    && e == neg_half
+                    && let Some((k, a2)) = linear_in(arena, base, s)
+                    && k == one
+                    && param_sign(arena, a2) == Some(1)
+                {
+                    let a = match arena.node(a2).clone() {
+                        ExprNode::Pow(b, kk) if kk == two && param_sign(arena, b) == Some(1) => b,
+                        _ => {
+                            let r = arena.sqrt(a2);
+                            crate::transforms::eval::eval(arena, r)
+                        }
+                    };
+                    let rt = arena.sqrt(t);
+                    let arg = arena.mul(&[a, rt]);
+                    let er = arena.erf(arg);
+                    return Ok(Some(arena.div(er, a)));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
+// ─── Inverse table rules ─────────────────────────────────────────────────────────────────────
 
 fn try_table_inverse(arena: &mut Arena, expr: ExprId, s: ExprId, t: ExprId) -> Option<ExprId> {
     // If expr doesn't contain s at all, it can't be a valid F(s).

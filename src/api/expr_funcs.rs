@@ -1611,6 +1611,15 @@ impl Expr<Numeric> {
     pub fn fourier_series(&self, var: &Ex, n_terms: u32) -> Ex {
         let var_id = self.checked_id(var);
         let _span = debug_span!("fourier_series", expr = ?self.raw_id(), var = ?var_id).entered();
+        // Prefer the exact definite-integral coefficients (handles |x|,
+        // sign, Heaviside and piecewise inputs); fall back to the
+        // antiderivative-based expansion when a coefficient has no closed
+        // form.
+        let ctx = self.context();
+        let pi = ctx.pi();
+        if let Ok(series) = self.fourier_series_on(var, &(-&pi), &pi, n_terms) {
+            return series.truncate(n_terms);
+        }
         let id = self
             .inner
             .write()
@@ -1765,39 +1774,29 @@ impl Expr<Numeric> {
     /// ```
     #[must_use = "returns the limit value; does not modify in place"]
     pub fn limit(&self, var: &Ex, point: &Ex) -> Ex {
-        let var_id = self.checked_id(var);
-        let point_id = self.checked_id(point);
-        let _span = debug_span!("limit", expr = ?self.raw_id(), var = ?var_id).entered();
-        let mut inner = self.inner.write();
-        match inner.arena.limit_expr(self.raw_id(), var_id, point_id) {
-            Ok(id) => {
-                drop(inner);
-                self.wrap(id)
-            }
-            Err(_) => {
-                let id = inner.arena.intern(crate::base::node::ExprNode::Limit(
-                    self.raw_id(),
-                    var_id,
-                    point_id,
-                ));
-                drop(inner);
-                self.wrap(id)
-            }
-        }
+        // Two-sided limit: both one-sided limits must exist and agree.
+        // See `limit_dir` for the directional variants.
+        self.limit_dir(var, point, crate::calculus::limit::Direction::Both)
     }
 
-    /// Like [`limit`](Self::limit), but returns `Err` if the result
-    /// contains unevaluated forms (e.g. a formal `Limit` node).
+    /// Like [`limit`](Self::limit), but returns `Err` if the limit does not
+    /// exist or cannot be computed.
+    ///
+    /// `±∞` are legitimate limit values (`Ok(oo)`), matching the analytic
+    /// notion of a limit in the extended reals. When the left and right
+    /// limits differ the error reason reads
+    /// `"left and right limits differ: left = …, right = …"`.
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let x = ctx.symbol("x");
+    /// assert_eq!(format!("{}", x.exp().try_limit(&x, &ctx.infinity()).unwrap()), "oo");
+    /// assert!((1 / &x).try_limit(&x, &ctx.int(0)).is_err());
+    /// ```
     pub fn try_limit(&self, var: &Ex, point: &Ex) -> Result<Ex, SymplexError> {
-        let result = self.limit(var, point);
-        if result.has_unevaluated() {
-            Err(SymplexError::ComputationFailed {
-                operation: "limit",
-                reason: "could not compute limit".into(),
-            })
-        } else {
-            Ok(result)
-        }
+        self.try_limit_dir(var, point, crate::calculus::limit::Direction::Both)
     }
 
     // ── Algebra ────────────────────────────────────────────────────

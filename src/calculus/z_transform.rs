@@ -14,8 +14,27 @@
 //! | cos(ωn)           | z·(z−cos(ω)) / (z²−2z·cos(ω)+1)          |
 //! | aⁿ·sin(ωn)        | a·z·sin(ω) / (z²−2a·z·cos(ω)+a²)        |
 //! | aⁿ·cos(ωn)        | z·(z−a·cos(ω)) / (z²−2a·z·cos(ω)+a²)    |
+//! | nᵏ·x\[n\]         | (−z d/dz)ᵏ X(z)  (so n²aⁿ, n³, …)         |
+//! | δ\[n−k\]           | z⁻ᵏ                                       |
+//! | H(n−k)            | z⁻ᵏ·z/(z−1)                              |
+//! | C(n, k)           | z/(z−1)^(k+1)                             |
+//! | 1/n!              | e^(1/z)                                   |
+//! | aⁿ·x\[n\]         | X(z/a)                                    |
+//! | x\[n−k\]·H(n−k)  | z⁻ᵏ·X(z)                                 |
 //!
 //! Plus linearity (sum of terms) and constant factor extraction.
+//!
+//! The inverse handles rational `X(z)` through partial fractions (terms
+//! `z/(z−a)ᵐ → C(n, m−1) a^(n−m+1)`, `1/(z−a)ᵐ` via the delay rule),
+//! constants (`δ\[n\]`), `z⁻ᵏ` (`δ\[n−k\]`), `z⁻ᵏ X(z)` (delay) and the
+//! trigonometric forms.
+//!
+//! Unit samples in inverse results are `KroneckerDelta(n, k)`; on input both
+//! `KroneckerDelta(n, k)` and `DiracDelta(n − k)` are accepted.
+//! Discrete unit steps in inverse results are written `H(n − k + 1/2)`:
+//! for integer `n` this is exactly `u[n − k]` (`1` for `n ≥ k`, else `0`)
+//! under every convention for `H(0)`. Both `H(n − k)` and `H(n − k + 1/2)`
+//! are accepted on input, with `H(0)` read as `1`.
 
 use num_bigint::BigInt;
 use num_rational::Ratio;
@@ -100,10 +119,323 @@ fn do_forward(
         return Ok(result);
     }
 
+    // ── Extended entries and rules ──
+    if let Some(result) = try_extended_forward(arena, expr, n_var, n_sym, z_var)? {
+        return Ok(result);
+    }
+
     Err(SymplexError::ComputationFailed {
         operation: "z_transform",
-        reason: "cannot transform expression".to_string(),
+        reason: format!("cannot transform {}", arena.display(expr)),
     })
+}
+
+/// `expr = a·n + b` with `a`, `b` free of `n`.
+fn linear_in(arena: &mut Arena, expr: ExprId, n_var: ExprId) -> Option<(ExprId, ExprId)> {
+    if expr == n_var {
+        return Some((arena.one, arena.zero));
+    }
+    if !contains_var(arena, expr, n_var) {
+        return Some((arena.zero, expr));
+    }
+    match arena.node(expr).clone() {
+        ExprNode::Neg(inner) => {
+            let (a, b) = linear_in(arena, inner, n_var)?;
+            Some((arena.neg(a), arena.neg(b)))
+        }
+        ExprNode::Mul(children) => {
+            let mut coeff = Vec::new();
+            let mut seen = false;
+            for &c in &children {
+                if c == n_var {
+                    if seen {
+                        return None;
+                    }
+                    seen = true;
+                } else if contains_var(arena, c, n_var) {
+                    return None;
+                } else {
+                    coeff.push(c);
+                }
+            }
+            if !seen {
+                return None;
+            }
+            let a = if coeff.is_empty() {
+                arena.one
+            } else {
+                arena.mul(&coeff)
+            };
+            Some((a, arena.zero))
+        }
+        ExprNode::Add(children) => {
+            let mut a_terms = Vec::new();
+            let mut b_terms = Vec::new();
+            for &c in &children {
+                let (a, b) = linear_in(arena, c, n_var)?;
+                if !arena.is_zero_structural(a) {
+                    a_terms.push(a);
+                }
+                if !arena.is_zero_structural(b) {
+                    b_terms.push(b);
+                }
+            }
+            let a = arena.add(&a_terms);
+            let b = arena.add(&b_terms);
+            Some((a, b))
+        }
+        _ => None,
+    }
+}
+
+/// Non-negative integer shift `k` from a step argument `n − k` or
+/// `n − k + 1/2` (the form produced by [`discrete_step`]).
+fn shift_of(arena: &mut Arena, arg: ExprId, n_var: ExprId) -> Option<u64> {
+    let (a, b) = linear_in(arena, arg, n_var)?;
+    if a != arena.one {
+        return None;
+    }
+    let b = arena.as_num(b)?.clone();
+    // b = −k  or  b = −k + 1/2
+    let half = Ratio::new(BigInt::from(1), BigInt::from(2));
+    let k = if b.is_integer() { -b } else { half - b };
+    if !k.is_integer() || k.is_negative() {
+        return None;
+    }
+    k.to_integer().try_into().ok()
+}
+
+/// The unit sample `δ[n − k]` as `KroneckerDelta(n, k)`.
+fn kronecker(arena: &mut Arena, n_var: ExprId, k: i64) -> ExprId {
+    let k_id = arena.int(k);
+    arena.kronecker_delta(n_var, k_id)
+}
+
+/// The discrete unit step `u[n − k]` (`1` for `n ≥ k`, `0` otherwise),
+/// written as `H(n − k + 1/2)` so that it evaluates to exactly `0` or `1`
+/// at every integer regardless of the `H(0) = 1/2` convention.
+fn discrete_step(arena: &mut Arena, n_var: ExprId, k: i64) -> ExprId {
+    let off = arena.rational(1 - 2 * k, 2);
+    let arg = arena.add(&[n_var, off]);
+    arena.heaviside(arg)
+}
+
+fn zfail(reason: impl Into<String>) -> SymplexError {
+    SymplexError::ComputationFailed {
+        operation: "z_transform",
+        reason: reason.into(),
+    }
+}
+
+/// Extended forward entries: `δ[n−k]`, `H(n−k)`, `C(n, k)`, `1/n!`, the
+/// `n·x[n] → −z X′(z)` rule (powers of `n`), scaling `aⁿ x[n] → X(z/a)` and
+/// the delay `x[n−k] H(n−k) → z^{−k} X(z)`.
+fn try_extended_forward(
+    arena: &mut Arena,
+    expr: ExprId,
+    n_var: ExprId,
+    n_sym: SymbolId,
+    z_var: ExprId,
+) -> Result<Option<ExprId>, SymplexError> {
+    let one = arena.one;
+    match arena.node(expr).clone() {
+        // δ[n − k] → z^{−k}  (as `DiracDelta(n − k)` or `KroneckerDelta(n, k)`)
+        ExprNode::DiracDelta(arg) => {
+            let Some(k) = shift_of(arena, arg, n_var) else {
+                return Ok(None);
+            };
+            let neg_k = arena.int(-(k as i64));
+            Ok(Some(arena.pow(z_var, neg_k)))
+        }
+        ExprNode::KroneckerDelta(i, j) => {
+            let k = if i == n_var {
+                j
+            } else if j == n_var {
+                i
+            } else {
+                return Ok(None);
+            };
+            let Some(k) = arena.as_num(k).cloned() else {
+                return Ok(None);
+            };
+            if !k.is_integer() || k.is_negative() {
+                return Ok(None);
+            }
+            let neg_k = rational_to_expr(arena, &-k);
+            Ok(Some(arena.pow(z_var, neg_k)))
+        }
+        // H(n − k) → z^{−k} z/(z − 1)
+        ExprNode::Heaviside(arg) => {
+            let Some(k) = shift_of(arena, arg, n_var) else {
+                return Ok(None);
+            };
+            let one_minus_k = arena.int(1 - k as i64);
+            let zp = arena.pow(z_var, one_minus_k);
+            let z_minus_1 = arena.sub(z_var, one);
+            Ok(Some(arena.div(zp, z_minus_1)))
+        }
+        // C(n, k) → z/(z − 1)^{k+1}
+        ExprNode::Binomial(top, k) if top == n_var && !contains_var(arena, k, n_var) => {
+            let k_p1 = arena.add(&[k, one]);
+            let z_minus_1 = arena.sub(z_var, one);
+            let den = arena.pow(z_minus_1, k_p1);
+            Ok(Some(arena.div(z_var, den)))
+        }
+        // 1/n! → e^{1/z}
+        ExprNode::Pow(base, e) if e == arena.neg_one => {
+            if let ExprNode::Factorial(arg) = arena.node(base).clone()
+                && arg == n_var
+            {
+                let inv_z = arena.div(one, z_var);
+                return Ok(Some(arena.exp(inv_z)));
+            }
+            Ok(None)
+        }
+        // nᵏ (k ≥ 2) → (−z d/dz)^{k−1} Z{n}
+        ExprNode::Pow(base, e) if base == n_var => {
+            let Some(k) = arena.as_num(e).cloned() else {
+                return Ok(None);
+            };
+            if !k.is_integer() || !k.is_positive() {
+                return Ok(None);
+            }
+            let k: u32 = k
+                .to_integer()
+                .try_into()
+                .map_err(|_| zfail("power too large"))?;
+            let z_minus_1 = arena.sub(z_var, one);
+            let two = arena.int(2);
+            let den = arena.pow(z_minus_1, two);
+            let mut x = arena.div(z_var, den); // Z{n}
+            for _ in 1..k {
+                x = neg_z_derivative(arena, x, z_var);
+            }
+            Ok(Some(x))
+        }
+        ExprNode::Mul(children) => {
+            let kids: Vec<ExprId> = children.iter().copied().collect();
+            // Delay: x[n − k]·H(n − k) → z^{−k} X(z)
+            for (i, &c) in kids.iter().enumerate() {
+                if let ExprNode::Heaviside(arg) = arena.node(c).clone()
+                    && let Some(k) = shift_of(arena, arg, n_var)
+                {
+                    let rest: Vec<ExprId> = kids
+                        .iter()
+                        .enumerate()
+                        .filter(|&(j, _)| j != i)
+                        .map(|(_, &c)| c)
+                        .collect();
+                    let g = if rest.is_empty() {
+                        one
+                    } else {
+                        arena.mul(&rest)
+                    };
+                    let k_id = arena.int(k as i64);
+                    let n_plus_k = arena.add(&[n_var, k_id]);
+                    let g_shifted = crate::transforms::subs::subs(arena, g, n_var, n_plus_k);
+                    let g_shifted = crate::transforms::eval::eval(arena, g_shifted);
+                    let gz = do_forward(arena, g_shifted, n_var, n_sym, z_var)?;
+                    let neg_k = arena.int(-(k as i64));
+                    let zk = arena.pow(z_var, neg_k);
+                    return Ok(Some(arena.mul(&[zk, gz])));
+                }
+            }
+            // Powers of n: nᵏ·g[n] → (−z d/dz)ᵏ G(z)
+            let mut n_power: u32 = 0;
+            let mut rest: Vec<ExprId> = Vec::new();
+            for &c in &kids {
+                if c == n_var {
+                    n_power += 1;
+                } else if let ExprNode::Pow(base, e) = arena.node(c).clone()
+                    && base == n_var
+                    && let Some(k) = arena.as_num(e).cloned()
+                    && k.is_integer()
+                    && k.is_positive()
+                {
+                    let k: u32 = k
+                        .to_integer()
+                        .try_into()
+                        .map_err(|_| zfail("power too large"))?;
+                    n_power += k;
+                } else {
+                    rest.push(c);
+                }
+            }
+            if n_power > 0 && !rest.is_empty() {
+                let g = arena.mul(&rest);
+                let mut x = do_forward(arena, g, n_var, n_sym, z_var)?;
+                for _ in 0..n_power {
+                    x = neg_z_derivative(arena, x, z_var);
+                }
+                return Ok(Some(x));
+            }
+            // Scaling: aⁿ·g[n] → G(z/a)
+            for (i, &c) in kids.iter().enumerate() {
+                if let ExprNode::Pow(base, e) = arena.node(c).clone()
+                    && e == n_var
+                    && !contains_var(arena, base, n_var)
+                {
+                    let rest: Vec<ExprId> = kids
+                        .iter()
+                        .enumerate()
+                        .filter(|&(j, _)| j != i)
+                        .map(|(_, &c)| c)
+                        .collect();
+                    if rest.is_empty() {
+                        return Ok(None);
+                    }
+                    let g = arena.mul(&rest);
+                    let gz = do_forward(arena, g, n_var, n_sym, z_var)?;
+                    let z_over_a = arena.div(z_var, base);
+                    let scaled = crate::transforms::subs::subs(arena, gz, z_var, z_over_a);
+                    return Ok(Some(scaled));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// `−z·dX/dz`, kept as a single fraction.
+///
+/// For `X = N(z)/B(z)ᵐ` with `B` linear in `z` (every table entry except
+/// the trigonometric ones) the quotient rule is applied by hand so that the
+/// result is `−z(N′B − mB′N)/B^{m+1}` with an expanded numerator — the form
+/// the inverse transform recognises. Otherwise the generic derivative is
+/// combined with `together`/`cancel`.
+fn neg_z_derivative(arena: &mut Arena, x: ExprId, z_var: ExprId) -> ExprId {
+    let (num, den) = crate::poly::polybridge::as_numer_denom(arena, x);
+    let (base, m) = match arena.node(den).clone() {
+        ExprNode::Pow(b, e)
+            if arena
+                .as_num(e)
+                .is_some_and(|r| r.is_integer() && r.is_positive()) =>
+        {
+            (b, e)
+        }
+        _ => (den, arena.one),
+    };
+    if den != arena.one && linear_in(arena, base, z_var).is_some() {
+        let n_prime = crate::transforms::diff::diff(arena, num, z_var);
+        let b_prime = crate::transforms::diff::diff(arena, base, z_var);
+        let t1 = arena.mul(&[n_prime, base]);
+        let t2 = arena.mul(&[m, b_prime, num]);
+        let diff = arena.sub(t1, t2);
+        let new_num = arena.mul(&[z_var, diff]);
+        let new_num = arena.neg(new_num);
+        let new_num = crate::transforms::expand::expand(arena, new_num);
+        let new_num = crate::transforms::eval::eval(arena, new_num);
+        let m_p1 = arena.add(&[m, arena.one]);
+        let new_den = arena.pow(base, m_p1);
+        return arena.div(new_num, new_den);
+    }
+    let d = crate::transforms::diff::diff(arena, x, z_var);
+    let zd = arena.mul(&[z_var, d]);
+    let r = arena.neg(zd);
+    let r = crate::poly::polybridge::together(arena, r);
+    let r = crate::poly::polybridge::cancel(arena, r, z_var);
+    crate::transforms::eval::eval(arena, r)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -548,11 +880,27 @@ fn do_inverse(
         return Ok(arena.neg(result));
     }
 
+    // ── Constant c → c·δ[n] ──
+    if !contains_var(arena, expr, z_var) {
+        let d = kronecker(arena, n_var, 0);
+        return Ok(arena.mul(&[expr, d]));
+    }
+
     // ── Factor out constants (not containing z) ──
     let (coeff, body) = split_independent(arena, expr, z_var);
     if coeff != arena.one {
         let result = do_inverse(arena, body, z_var, n_var, depth + 1)?;
         return Ok(arena.mul(&[coeff, result]));
+    }
+
+    // ── Trigonometric forms with symbolic/irrational parameters ──
+    if let Some(result) = try_trig_inverse_general(arena, expr, z_var, n_var) {
+        return Ok(result);
+    }
+
+    // ── Extended entries: z^{−k}, delay, z/(z−a)^m, 1/(z−a)^m, e^{1/z} ──
+    if let Some(result) = try_extended_inverse(arena, expr, z_var, n_var, depth)? {
+        return Ok(result);
     }
 
     // ── Try table lookup ──
@@ -568,8 +916,295 @@ fn do_inverse(
 
     Err(SymplexError::ComputationFailed {
         operation: "inverse_z_transform",
-        reason: "cannot invert expression".to_string(),
+        reason: format!("cannot invert {}", arena.display(expr)),
     })
+}
+
+/// `(αz² + βz)/(z² − 2az·cosω + a²)` → `α·aⁿcos(ωn) + (β + αa·cosω)/(a·sinω)·aⁿsin(ωn)`,
+/// recognising `cos ω` structurally in the denominator (so `ω` and `a` may
+/// be symbolic or irrational).
+fn try_trig_inverse_general(
+    arena: &mut Arena,
+    expr: ExprId,
+    z_var: ExprId,
+    n_var: ExprId,
+) -> Option<ExprId> {
+    let (numer, denom) = crate::poly::polybridge::as_numer_denom(arena, expr);
+    let one = arena.one;
+    let two = arena.int(2);
+    let z2 = arena.pow(z_var, two);
+    let ExprNode::Add(terms) = arena.node(denom).clone() else {
+        return None;
+    };
+    if terms.len() != 3 || !terms.contains(&z2) {
+        return None;
+    }
+    // Linear term c·z and constant q.
+    let mut lin: Option<ExprId> = None;
+    let mut q: Option<ExprId> = None;
+    for &t in &terms {
+        if t == z2 {
+            continue;
+        }
+        if !contains_var(arena, t, z_var) {
+            q = Some(t);
+        } else if let Some((c, b)) = linear_in(arena, t, z_var)
+            && arena.is_zero_structural(b)
+        {
+            lin = Some(c);
+        } else {
+            return None;
+        }
+    }
+    let (c, q) = (lin?, q?);
+    // c = −2·a·cos(ω): find the Cos factor.
+    let factors: Vec<ExprId> = match arena.node(c).clone() {
+        ExprNode::Mul(ch) => ch.iter().copied().collect(),
+        ExprNode::Neg(inner) => {
+            let mut v = vec![arena.neg_one];
+            match arena.node(inner).clone() {
+                ExprNode::Mul(ch) => v.extend(ch.iter().copied()),
+                _ => v.push(inner),
+            }
+            v
+        }
+        _ => return None,
+    };
+    let mut omega: Option<ExprId> = None;
+    let mut rest: Vec<ExprId> = Vec::new();
+    for &f in &factors {
+        if let ExprNode::Cos(w) = arena.node(f).clone()
+            && omega.is_none()
+        {
+            omega = Some(w);
+        } else {
+            rest.push(f);
+        }
+    }
+    let omega = omega?;
+    // rest = −2a
+    let rest_prod = arena.mul(&rest);
+    let neg_two = arena.int(-2);
+    let a = arena.div(rest_prod, neg_two);
+    let a = crate::transforms::eval::eval(arena, a);
+    // Consistency: q must equal a².
+    let a2 = arena.pow(a, two);
+    let a2 = crate::transforms::eval::eval(arena, a2);
+    let q_e = crate::transforms::eval::eval(arena, q);
+    if a2 != q_e {
+        let d = arena.sub(a2, q_e);
+        let d = crate::transforms::expand::expand(arena, d);
+        let d = crate::transforms::eval::eval(arena, d);
+        if !arena.is_zero_structural(d) {
+            return None;
+        }
+    }
+    // Numerator: αz² + βz (γ = 0).
+    let numer_x = crate::transforms::expand::expand(arena, numer);
+    let numer_terms: Vec<ExprId> = match arena.node(numer_x).clone() {
+        ExprNode::Add(ch) => ch.iter().copied().collect(),
+        _ => vec![numer_x],
+    };
+    let mut alpha = arena.zero;
+    let mut beta = arena.zero;
+    for &t in &numer_terms {
+        if !contains_var(arena, t, z_var) {
+            return None;
+        }
+        // t = k·z² or k·z
+        let (k, is_sq) = match arena.node(t).clone() {
+            _ if t == z_var => (one, false),
+            _ if t == z2 => (one, true),
+            ExprNode::Mul(ch) => {
+                let mut coeff = Vec::new();
+                let mut kind: Option<bool> = None;
+                for &f in &ch {
+                    if f == z_var && kind.is_none() {
+                        kind = Some(false);
+                    } else if f == z2 && kind.is_none() {
+                        kind = Some(true);
+                    } else if contains_var(arena, f, z_var) {
+                        return None;
+                    } else {
+                        coeff.push(f);
+                    }
+                }
+                (arena.mul(&coeff), kind?)
+            }
+            _ => return None,
+        };
+        if is_sq {
+            alpha = arena.add(&[alpha, k]);
+        } else {
+            beta = arena.add(&[beta, k]);
+        }
+    }
+    let wn = arena.mul(&[omega, n_var]);
+    let cos_wn = arena.cos(wn);
+    let sin_wn = arena.sin(wn);
+    let an = arena.pow(a, n_var);
+    let cos_w = arena.cos(omega);
+    let sin_w = arena.sin(omega);
+    // β + α·a·cosω
+    let acos = arena.mul(&[alpha, a, cos_w]);
+    let sin_coeff_num = arena.add(&[beta, acos]);
+    let a_sin = arena.mul(&[a, sin_w]);
+    let sin_coeff = arena.div(sin_coeff_num, a_sin);
+    let cos_term = arena.mul(&[alpha, an, cos_wn]);
+    let sin_term = arena.mul(&[sin_coeff, an, sin_wn]);
+    let r = arena.add(&[cos_term, sin_term]);
+    Some(crate::transforms::eval::eval(arena, r))
+}
+
+/// Extended inverse entries.
+///
+/// * `z^{−k} → δ[n − k]` and `z^{−k} X(z) → x[n−k] H(n−k)` (delay);
+/// * `z/(z − a)^m → C(n, m−1) a^{n−m+1}` and `1/(z − a)^m` via the delay
+///   rule, with symbolic `a` allowed;
+/// * `e^{1/z} → 1/n!`.
+fn try_extended_inverse(
+    arena: &mut Arena,
+    expr: ExprId,
+    z_var: ExprId,
+    n_var: ExprId,
+    depth: u32,
+) -> Result<Option<ExprId>, SymplexError> {
+    let one = arena.one;
+    // Factor classification.
+    let kids: Vec<ExprId> = match arena.node(expr).clone() {
+        ExprNode::Mul(ch) => ch.iter().copied().collect(),
+        _ => vec![expr],
+    };
+    let mut z_power: i64 = 0; // net power of z among plain z factors
+    let mut pole: Option<(ExprId, u64)> = None; // (a, m) from (z − a)^{−m}
+    let mut others: Vec<ExprId> = Vec::new();
+    for &k in &kids {
+        if k == z_var {
+            z_power += 1;
+            continue;
+        }
+        match arena.node(k).clone() {
+            ExprNode::Pow(base, e) if base == z_var => {
+                if let Some(r) = arena.as_num(e)
+                    && r.is_integer()
+                {
+                    z_power += i64::try_from(r.to_integer()).map_err(|_| {
+                        SymplexError::ComputationFailed {
+                            operation: "inverse_z_transform",
+                            reason: "power too large".into(),
+                        }
+                    })?;
+                    continue;
+                }
+                others.push(k);
+            }
+            ExprNode::Pow(base, e)
+                if pole.is_none()
+                    && let Some(r) = arena.as_num(e).cloned()
+                    && r.is_integer()
+                    && r.is_negative()
+                    && let Some((c1, c0)) = linear_in(arena, base, z_var)
+                    && c1 == one =>
+            {
+                let a = arena.neg(c0);
+                let a = crate::transforms::eval::eval(arena, a);
+                let m: u64 =
+                    (-r.to_integer())
+                        .try_into()
+                        .map_err(|_| SymplexError::ComputationFailed {
+                            operation: "inverse_z_transform",
+                            reason: "power too large".into(),
+                        })?;
+                pole = Some((a, m));
+            }
+            ExprNode::Exp(arg) if others.is_empty() && pole.is_none() => {
+                // e^{1/z} → 1/n!
+                let inv_z = arena.pow(z_var, arena.neg_one);
+                if arg == inv_z && kids.len() == 1 {
+                    let f = arena.factorial(n_var);
+                    return Ok(Some(arena.div(one, f)));
+                }
+                others.push(k);
+            }
+            _ => others.push(k),
+        }
+    }
+
+    // Pure z^{−k} → δ[n − k]
+    if pole.is_none() && others.is_empty() {
+        if z_power <= 0 {
+            return Ok(Some(kronecker(arena, n_var, -z_power)));
+        }
+        return Err(SymplexError::ComputationFailed {
+            operation: "inverse_z_transform",
+            reason: "positive powers of z correspond to non-causal sequences".into(),
+        });
+    }
+
+    // z^{1−m}·… with a pole: z/(z − a)^m → C(n, m−1) a^{n−m+1}
+    if let Some((a, m)) = pole
+        && others.is_empty()
+    {
+        // expr = z^{p} (z − a)^{−m}; write as z^{p−1} · [z/(z−a)^m].
+        let delay = 1 - z_power; // z^{p−1} = z^{−delay}
+        if delay < 0 {
+            return Ok(None); // improper: leave to partial fractions
+        }
+        // C(n, m−1) written as the falling factorial n(n−1)…(n−m+2)/(m−1)!,
+        // which evaluates to 0 for 0 ≤ n < m−1 (a `Binomial` node with
+        // k > n does not currently evaluate).
+        let m_minus_1 = arena.int(m as i64 - 1);
+        let exp = arena.sub(n_var, m_minus_1);
+        let a_pow = arena.pow(a, exp);
+        let base = if m == 1 {
+            arena.pow(a, n_var)
+        } else {
+            let mut factors = Vec::with_capacity(m as usize);
+            for j in 0..(m - 1) {
+                let jj = arena.int(j as i64);
+                factors.push(arena.sub(n_var, jj));
+            }
+            let fact: i64 = (1..m as i64).product();
+            let inv_fact = arena.rational(1, fact);
+            factors.push(inv_fact);
+            factors.push(a_pow);
+            arena.mul(&factors)
+        };
+        let base = crate::transforms::eval::eval(arena, base);
+        if delay == 0 {
+            return Ok(Some(base));
+        }
+        let k = arena.int(delay);
+        let n_minus_k = arena.sub(n_var, k);
+        let shifted = crate::transforms::subs::subs(arena, base, n_var, n_minus_k);
+        let h = discrete_step(arena, n_var, delay);
+        return Ok(Some(arena.mul(&[shifted, h])));
+    }
+
+    // General delay: z^{−k}·X(z) with X in the table.
+    if z_power < 0 {
+        let mut rest = others.clone();
+        if let Some((a, m)) = pole {
+            let base = arena.sub(z_var, a);
+            let neg_m = arena.int(-(m as i64));
+            rest.push(arena.pow(base, neg_m));
+        }
+        // Keep one factor of z with X if the rest is a proper `z/(…)` form.
+        let x = arena.mul(&rest);
+        let xz = arena.mul(&[z_var, x]);
+        let (k, inner) = if let Ok(r) = do_inverse(arena, xz, z_var, n_var, depth + 1) {
+            (-z_power + 1, r)
+        } else {
+            (-z_power, do_inverse(arena, x, z_var, n_var, depth + 1)?)
+        };
+        let k_id = arena.int(k);
+        let n_minus_k = arena.sub(n_var, k_id);
+        let shifted = crate::transforms::subs::subs(arena, inner, n_var, n_minus_k);
+        let h = discrete_step(arena, n_var, k);
+        return Ok(Some(arena.mul(&[shifted, h])));
+    }
+
+    Ok(None)
 }
 
 // ─── Inverse table rules ─────────────────────────────────────────────────
@@ -818,15 +1453,19 @@ fn try_trig_inverse_structural(
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl Ex {
-    /// Compute the z-transform of this expression.
+    /// Unilateral Z-transform `X(z) = Σ_{n≥0} x[n] z^{−n}` of this sequence
+    /// (a function of the integer index `n`).
     ///
-    /// Transforms x(n) → X(z) for discrete-time sequences using a
-    /// table of known transforms.
+    /// Table: constants, `aⁿ`, `nᵏ aⁿ` (via `Z{n x[n]} = −z X′(z)`),
+    /// `sin(ωn)`, `cos(ωn)`, `aⁿ sin(ωn)`, `aⁿ cos(ωn)`, `H(n − k)`,
+    /// `δ[n − k]`, `C(n, k)`, `1/n!`; rules: linearity, scaling
+    /// `aⁿ x[n] → X(z/a)`, delay `x[n − k] H(n − k) → z^{−k} X(z)`.
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `n` — the discrete-time index variable
-    /// * `z` — the z-domain variable
+    /// `ComputationFailed` if `n`/`z` are not symbols or no rule applies.
+    /// There is no unevaluated Z-transform node, so this API is
+    /// `Result`-only.
     ///
     /// # Examples
     ///
@@ -839,25 +1478,33 @@ impl Ex {
     /// let half = ctx.rational(1, 2);
     /// // Z{(1/2)^n} = z/(z − 1/2)
     /// let result = half.pow(&n).z_transform(&n, &z).unwrap();
+    /// assert_eq!(result, &z / (&z - half));
+    /// // n² → z(z + 1)/(z − 1)³
+    /// let x = n.powi(2).z_transform(&n, &z).unwrap();
+    /// let expected = &z * (&z + 1) / (&z - 1).powi(3);
+    /// assert!((&x - &expected).simplify().is_zero_structural(), "{x}");
+    /// // δ[n − 3] → z⁻³
+    /// assert_eq!((&n - 3).dirac_delta().z_transform(&n, &z).unwrap(), z.powi(-3));
     /// ```
     #[must_use = "returns the z-transform; does not modify in place"]
     pub fn z_transform(&self, n: &Ex, z: &Ex) -> Result<Ex, SymplexError> {
+        let n_id = self.checked_id(n);
+        let z_id = self.checked_id(z);
         let id = {
             let mut guard = self.inner.write();
-            z_transform(&mut guard.arena, self.raw_id(), n.raw_id(), z.raw_id())?
+            z_transform(&mut guard.arena, self.raw_id(), n_id, z_id)?
         };
         Ok(self.wrap(id))
     }
 
-    /// Compute the inverse z-transform.
+    /// Inverse (unilateral) Z-transform of this expression (a function of
+    /// `z`) as a sequence in `n`.
     ///
-    /// Transforms X(z) → x(n) for z-domain expressions using table
-    /// lookup and partial fraction decomposition.
-    ///
-    /// # Arguments
-    ///
-    /// * `z` — the z-domain variable
-    /// * `n` — the discrete-time index variable
+    /// Rational `X(z)` is handled through partial fractions in `z`
+    /// (`z/(z − a)ᵐ → C(n, m−1) a^{n−m+1}`, `1/(z − a)ᵐ` through the delay
+    /// rule), together with constants (`δ[n]`), `z^{−k}` (`δ[n − k]`),
+    /// `z^{−k} X(z)` (`x[n−k] H(n−k)`), `e^{1/z}` (`1/n!`) and the
+    /// trigonometric forms.
     ///
     /// # Examples
     ///
@@ -869,13 +1516,18 @@ impl Ex {
     /// let z = ctx.symbol("z");
     /// // Z⁻¹{z/(z−2)} = 2ⁿ
     /// let xz = &z / &(&z - 2);
-    /// let result = xz.inverse_z_transform(&z, &n).unwrap();
+    /// assert_eq!(format!("{}", xz.inverse_z_transform(&z, &n).unwrap()), "2^n");
+    /// // Z⁻¹{z⁻²} = δ[n − 2]
+    /// let d = (1 / z.powi(2)).inverse_z_transform(&z, &n).unwrap();
+    /// assert_eq!(format!("{d}"), "KroneckerDelta(2, n)");
     /// ```
     #[must_use = "returns the inverse z-transform; does not modify in place"]
     pub fn inverse_z_transform(&self, z: &Ex, n: &Ex) -> Result<Ex, SymplexError> {
+        let z_id = self.checked_id(z);
+        let n_id = self.checked_id(n);
         let id = {
             let mut guard = self.inner.write();
-            inverse_z_transform(&mut guard.arena, self.raw_id(), z.raw_id(), n.raw_id())?
+            inverse_z_transform(&mut guard.arena, self.raw_id(), z_id, n_id)?
         };
         Ok(self.wrap(id))
     }
