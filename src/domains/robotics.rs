@@ -372,10 +372,12 @@ pub fn rot_euler(phi: &Ex, theta: &Ex, psi: &Ex, convention: EulerConvention) ->
 // 2-DOF Planar Inverse Kinematics
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Convert an f64 value to a rational approximation by scaling to millionths.
-fn f64_to_ratio(v: f64) -> Ratio<BigInt> {
-    let scaled = (v * 1_000_000.0).round() as i64;
-    Ratio::new(BigInt::from(scaled), BigInt::from(1_000_000i64))
+/// Best rational approximation of an `f64` with denominator ≤ 10⁶
+/// (continued-fraction convergents), so `0.1 → 1/10` and `1/3` round-trips.
+///
+/// Returns `None` for NaN / ±∞.
+fn f64_to_ratio(v: f64) -> Option<Ratio<BigInt>> {
+    crate::base::numeric::f64_to_ratio_approx(v, 1_000_000)
 }
 
 /// Solve 2-DOF planar inverse kinematics algebraically.
@@ -401,15 +403,20 @@ fn f64_to_ratio(v: f64) -> Ratio<BigInt> {
 /// ```
 ///
 /// Returns all solution branches as `(θ₁, θ₂)` pairs in radians.
-/// Returns an empty vec if the target is unreachable.
+/// Returns an empty vec if the target is unreachable or any input is
+/// not a finite number.
 pub fn inverse_kinematics_2dof(l1: f64, l2: f64, target_x: f64, target_y: f64) -> Vec<(f64, f64)> {
     // Variables: 0=s1, 1=c1, 2=s2, 3=c2
     let nv = 4;
 
-    let rl1 = f64_to_ratio(l1);
-    let rl2 = f64_to_ratio(l2);
-    let rtx = f64_to_ratio(target_x);
-    let rty = f64_to_ratio(target_y);
+    let (Some(rl1), Some(rl2), Some(rtx), Some(rty)) = (
+        f64_to_ratio(l1),
+        f64_to_ratio(l2),
+        f64_to_ratio(target_x),
+        f64_to_ratio(target_y),
+    ) else {
+        return vec![];
+    };
 
     let s1 = MultiPoly::<GrevLex>::var(nv, 0);
     let c1 = MultiPoly::<GrevLex>::var(nv, 1);

@@ -220,10 +220,9 @@ fn perf_analysis_all() {
         // 2a. Eigenvalues of 3×3
         divider("2a. Eigenvalues of 3×3 integer matrix");
         {
-            let lambda = ctx.symbol("lambda");
             let m = symplex::matrix![ctx, [1, 2, 0], [0, 3, 1], [2, 0, 4]];
 
-            match m.eigenvals(&lambda) {
+            match m.eigenvals() {
                 Ok(vals) => {
                     for (i, v) in vals.iter().enumerate() {
                         let s = format!("{v}");
@@ -239,7 +238,7 @@ fn perf_analysis_all() {
             }
 
             let avg = bench(|| {
-                let _ = black_box(m.eigenvals(&lambda));
+                let _ = black_box(m.eigenvals());
             });
             report("eigenvals(3×3)", avg);
         }

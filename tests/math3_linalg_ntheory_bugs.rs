@@ -366,7 +366,7 @@ fn eigenvalues_are_char_poly_roots_2x2() {
     symplex::syms!(ctx; lam);
     let a = matrix![ctx, [2, 1], [1, 3]];
     let cp = a.char_poly(&lam).unwrap();
-    for ev in a.eigenvals(&lam).unwrap() {
+    for ev in a.eigenvals().unwrap() {
         assert_eq!(
             cp.check_solution(&lam, &ev),
             Some(true),
@@ -378,10 +378,9 @@ fn eigenvalues_are_char_poly_roots_2x2() {
 #[test]
 fn eigenvalues_diagonal() {
     let ctx = Context::new();
-    symplex::syms!(ctx; lam);
     let a = Matrix::diag(&[ctx.int(3), ctx.int(7), ctx.int(11)]);
     let mut evs: Vec<String> = a
-        .eigenvals(&lam)
+        .eigenvals()
         .unwrap()
         .iter()
         .map(|e| format!("{e}"))
@@ -393,10 +392,9 @@ fn eigenvalues_diagonal() {
 #[test]
 fn eigenvalues_upper_triangular() {
     let ctx = Context::new();
-    symplex::syms!(ctx; lam);
     let a = matrix![ctx, [1, 5, 3], [0, 2, 8], [0, 0, 4]];
     let mut evs: Vec<String> = a
-        .eigenvals(&lam)
+        .eigenvals()
         .unwrap()
         .iter()
         .map(|e| format!("{e}"))
@@ -489,7 +487,7 @@ fn nullspace_vectors_in_kernel() {
 fn cholesky_reconstruction() {
     let ctx = Context::new();
     let a = matrix![ctx, [4, 2], [2, 3]];
-    if let Ok(Some(l)) = a.cholesky() {
+    if let Ok(l) = a.cholesky() {
         let product = &l * &l.transpose();
         for i in 0..2 {
             for j in 0..2 {
@@ -509,7 +507,7 @@ fn cholesky_reconstruction() {
 fn lu_reconstruction() {
     let ctx = Context::new();
     let a = matrix![ctx, [2, 1, 1], [4, 3, 3], [8, 7, 9]];
-    if let Some((l, u, perm)) = a.lu() {
+    if let Ok((l, u, perm)) = a.lu() {
         let lu = &l * &u;
         for (i, &pi) in perm.iter().enumerate().take(a.nrows()) {
             for j in 0..a.ncols() {
@@ -530,9 +528,9 @@ fn symmetric_matrix_eigenvalues_are_roots() {
     let ctx = Context::new();
     symplex::syms!(ctx; lam);
     let a = matrix![ctx, [4, 1, 2], [1, 3, 1], [2, 1, 5]];
-    assert!(a.is_symmetric());
+    assert_eq!(a.is_symmetric(), Some(true));
     let cp = a.char_poly(&lam).unwrap();
-    for ev in a.eigenvals(&lam).unwrap() {
+    for ev in a.eigenvals().unwrap() {
         assert_eq!(
             cp.check_solution(&lam, &ev),
             Some(true),
@@ -1397,9 +1395,8 @@ fn crt_i64_three_large_moduli() {
 #[test]
 fn eigenvalue_sum_is_trace_2x2() {
     let ctx = Context::new();
-    symplex::syms!(ctx; lam);
     let a = matrix![ctx, [4, 1], [2, 3]];
-    let evs = a.eigenvals(&lam).unwrap();
+    let evs = a.eigenvals().unwrap();
     if evs.len() == 2 {
         let sum = (&evs[0] + &evs[1]).eval().simplify();
         let tr = a.trace().unwrap().eval();
@@ -1410,9 +1407,8 @@ fn eigenvalue_sum_is_trace_2x2() {
 #[test]
 fn eigenvalue_product_is_det_2x2() {
     let ctx = Context::new();
-    symplex::syms!(ctx; lam);
     let a = matrix![ctx, [4, 1], [2, 3]];
-    let evs = a.eigenvals(&lam).unwrap();
+    let evs = a.eigenvals().unwrap();
     if evs.len() == 2 {
         let prod = (&evs[0] * &evs[1]).eval().simplify();
         let det = a.det().unwrap().eval();

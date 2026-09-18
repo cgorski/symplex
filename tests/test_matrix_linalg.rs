@@ -16,21 +16,21 @@ fn minor_2x2_removes_row_and_col() {
     ])
     .unwrap();
     // Removing row 0, col 0 → [[4]]
-    let m00 = m.minor(0, 0).unwrap();
+    let m00 = m.minor_matrix(0, 0).unwrap();
     assert_eq!(m00.nrows(), 1);
     assert_eq!(m00.ncols(), 1);
     assert_eq!(format!("{}", m00.get(0, 0)), "4");
 
     // Removing row 0, col 1 → [[3]]
-    let m01 = m.minor(0, 1).unwrap();
+    let m01 = m.minor_matrix(0, 1).unwrap();
     assert_eq!(format!("{}", m01.get(0, 0)), "3");
 
     // Removing row 1, col 0 → [[2]]
-    let m10 = m.minor(1, 0).unwrap();
+    let m10 = m.minor_matrix(1, 0).unwrap();
     assert_eq!(format!("{}", m10.get(0, 0)), "2");
 
     // Removing row 1, col 1 → [[1]]
-    let m11 = m.minor(1, 1).unwrap();
+    let m11 = m.minor_matrix(1, 1).unwrap();
     assert_eq!(format!("{}", m11.get(0, 0)), "1");
 }
 
@@ -44,7 +44,7 @@ fn minor_3x3_produces_2x2() {
     ])
     .unwrap();
     // Remove row 1, col 1 → [[1,3],[7,9]]
-    let sub = m.minor(1, 1).unwrap();
+    let sub = m.minor_matrix(1, 1).unwrap();
     assert_eq!(sub.nrows(), 2);
     assert_eq!(sub.ncols(), 2);
     assert_eq!(format!("{}", sub.get(0, 0)), "1");
@@ -305,13 +305,12 @@ fn char_poly_1x1() {
 fn eigenvals_2x2() {
     let ctx = Context::new();
     // [[2,1],[1,2]] → eigenvalues 1, 3
-    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
         vec![ctx.int(2), ctx.int(1)],
         vec![ctx.int(1), ctx.int(2)],
     ])
     .unwrap();
-    let evals = m.eigenvals(&lambda).unwrap();
+    let evals = m.eigenvals().unwrap();
     assert_eq!(
         evals.len(),
         2,
@@ -332,14 +331,13 @@ fn eigenvals_2x2() {
 fn eigenvals_3x3_diagonal() {
     let ctx = Context::new();
     // diag(1, 2, 3) → eigenvalues 1, 2, 3
-    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(0), ctx.int(0)],
         vec![ctx.int(0), ctx.int(2), ctx.int(0)],
         vec![ctx.int(0), ctx.int(0), ctx.int(3)],
     ])
     .unwrap();
-    let evals = m.eigenvals(&lambda).unwrap();
+    let evals = m.eigenvals().unwrap();
     assert_eq!(
         evals.len(),
         3,
@@ -360,9 +358,8 @@ fn eigenvals_3x3_diagonal() {
 fn eigenvals_identity() {
     let ctx = Context::new();
     // I_2 → eigenvalue 1 (double)
-    let lambda = ctx.symbol("lambda");
     let id = Matrix::identity(&ctx, 2);
-    let evals = id.eigenvals(&lambda).unwrap();
+    let evals = id.eigenvals().unwrap();
     // The solver may return [1, 1] or just [1] depending on multiplicity handling.
     assert!(
         !evals.is_empty(),
@@ -380,9 +377,8 @@ fn eigenvals_identity() {
 #[test]
 fn eigenvals_1x1() {
     let ctx = Context::new();
-    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![vec![ctx.int(7)]]).unwrap();
-    let evals = m.eigenvals(&lambda).unwrap();
+    let evals = m.eigenvals().unwrap();
     assert_eq!(evals.len(), 1, "1x1 should have 1 eigenvalue");
     assert_eq!(format!("{}", evals[0]), "7");
 }
@@ -400,7 +396,7 @@ fn minor_non_square_panics() {
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
     ])
     .unwrap();
-    let _ = m.minor(0, 0).unwrap();
+    let _ = m.minor_matrix(0, 0).unwrap();
 }
 
 #[test]
@@ -446,8 +442,7 @@ fn eigenvector_satisfies_eigenvalue_equation() {
     .unwrap();
 
     // Verify eigenvalues first
-    let lambda = ctx.symbol("lambda");
-    let evals = a.eigenvals(&lambda).unwrap();
+    let evals = a.eigenvals().unwrap();
     assert_eq!(evals.len(), 2, "should have 2 eigenvalues");
 
     // Eigenvector for λ=1: v = [1, -1]
@@ -502,7 +497,7 @@ fn complex_eigenvalues_rotation_matrix() {
     );
 
     // The solver returns complex eigenvalues ±i
-    let evals = m.eigenvals(&lambda).unwrap();
+    let evals = m.eigenvals().unwrap();
     assert_eq!(
         evals.len(),
         2,
@@ -574,13 +569,12 @@ fn det_inverse_equals_reciprocal_det() {
 fn eigenvals_2x2_irrational() {
     let ctx = Context::new();
     // [[0, 2], [1, 0]] has eigenvalues ±√2
-    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
         vec![ctx.int(0), ctx.int(2)],
         vec![ctx.int(1), ctx.int(0)],
     ])
     .unwrap();
-    let evals = m.eigenvals(&lambda).unwrap();
+    let evals = m.eigenvals().unwrap();
     assert_eq!(
         evals.len(),
         2,
@@ -628,14 +622,13 @@ fn det_equals_det_transpose() {
 fn eigenvals_3x3_upper_triangular() {
     let ctx = Context::new();
     // Upper-triangular [[1,5,3],[0,2,7],[0,0,3]] has eigenvalues 1, 2, 3
-    let lambda = ctx.symbol("lambda");
     let m = Matrix::new(vec![
         vec![ctx.int(1), ctx.int(5), ctx.int(3)],
         vec![ctx.int(0), ctx.int(2), ctx.int(7)],
         vec![ctx.int(0), ctx.int(0), ctx.int(3)],
     ])
     .unwrap();
-    let evals = m.eigenvals(&lambda).unwrap();
+    let evals = m.eigenvals().unwrap();
     assert_eq!(
         evals.len(),
         3,

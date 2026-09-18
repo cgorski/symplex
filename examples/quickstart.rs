@@ -191,7 +191,7 @@ fn main() {
         println!("M⁻¹ = {inv}");
     }
 
-    let eigenvals = m.eigenvals(&x).unwrap();
+    let eigenvals = m.eigenvals().unwrap();
     println!(
         "Eigenvalues: {:?}",
         eigenvals.iter().map(|e| format!("{e}")).collect::<Vec<_>>()

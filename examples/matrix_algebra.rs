@@ -91,7 +91,7 @@ fn main() {
     // ── 4. Eigenvalues ─────────────────────────────────────────────
     println!("\n--- Eigenvalues ---");
 
-    let eigenvals = a.eigenvals(&x).unwrap();
+    let eigenvals = a.eigenvals().unwrap();
     println!(
         "Eigenvalues of A: {:?}",
         eigenvals.iter().map(|e| format!("{e}")).collect::<Vec<_>>()
@@ -110,7 +110,7 @@ fn main() {
     // 3×3 eigenvalues
     let c = matrix![ctx, [1, 2, 0], [0, 3, 1], [0, 0, 2]];
     println!("\nC = {c}");
-    let eigenvals_c = c.eigenvals(&x).unwrap();
+    let eigenvals_c = c.eigenvals().unwrap();
     println!(
         "Eigenvalues of C: {:?}",
         eigenvals_c
@@ -159,7 +159,7 @@ fn main() {
     let lu_mat = matrix![ctx, [2, 1, 1], [4, 3, 3], [8, 7, 9]];
     println!("M = {lu_mat}");
 
-    if let Some((l, u, perm)) = lu_mat.lu() {
+    if let Ok((l, u, perm)) = lu_mat.lu() {
         println!("L = {l}");
         println!("U = {u}");
         println!("Permutation: {perm:?}");
@@ -176,7 +176,7 @@ fn main() {
 
     let spd = matrix![ctx, [4, 2], [2, 3]]; // symmetric positive definite
     println!("SPD matrix: {spd}");
-    if let Ok(Some(chol)) = spd.cholesky() {
+    if let Ok(chol) = spd.cholesky() {
         println!("L (Cholesky) = {chol}");
         let product = &chol * &chol.transpose();
         println!("L·Lᵀ = {product}");
@@ -236,13 +236,13 @@ fn main() {
     println!("\n--- Properties ---");
 
     println!("A is square: {}", a.is_square());
-    println!("A is symmetric: {}", a.is_symmetric());
+    println!("A is symmetric: {:?}", a.is_symmetric());
 
     let non_sym = matrix![ctx, [1, 2], [3, 4]];
-    println!("[[1,2],[3,4]] is symmetric: {}", non_sym.is_symmetric());
+    println!("[[1,2],[3,4]] is symmetric: {:?}", non_sym.is_symmetric());
 
     let sym = matrix![ctx, [1, 2], [2, 1]];
-    println!("[[1,2],[2,1]] is symmetric: {}", sym.is_symmetric());
+    println!("[[1,2],[2,1]] is symmetric: {:?}", sym.is_symmetric());
 
     // ── 12. Jacobian Computation ───────────────────────────────────
     println!("\n--- Jacobian ---");

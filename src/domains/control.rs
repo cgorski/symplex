@@ -14,6 +14,21 @@
 use crate::domains::matrix::Matrix;
 use crate::prelude::*;
 
+/// Ascending coefficients of `expr` viewed as a polynomial in `var`,
+/// allowing symbolic (var-free) coefficients.
+///
+/// [`Ex::coeffs`] only handles rational coefficients; transfer functions
+/// such as `K·ωₙ² / (s² + 2ζωₙ s + ωₙ²)` need the symbolic variant.
+/// Returns `None` if `var` occurs in a non-polynomial position.
+fn poly_coeffs_symbolic(expr: &Ex, var: &Ex) -> Option<Vec<Ex>> {
+    let var_id = expr.checked_id(var);
+    let mut inner = expr.inner.write();
+    let ids =
+        crate::transforms::solve::symbolic_poly_coeffs(&mut inner.arena, expr.raw_id(), var_id)?;
+    drop(inner);
+    Some(ids.into_iter().map(|id| expr.wrap(id)).collect())
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // State-Space Model
 // ═══════════════════════════════════════════════════════════════════════════
@@ -115,13 +130,12 @@ impl StateSpace {
         self.c.nrows()
     }
 
-    /// Poles of the system (eigenvalues of A).
+    /// Poles of the system (eigenvalues of A), repeated with multiplicity.
     ///
-    /// The `var` parameter is the symbolic variable used to compute
-    /// the characteristic polynomial. The returned expressions are
-    /// the roots of `det(var·I - A) = 0`.
-    pub fn poles(&self, var: &Ex) -> Vec<Ex> {
-        self.a.eigenvals(var).unwrap_or_default()
+    /// Returns an empty vector if the eigenvalue solver cannot find any
+    /// root of the characteristic polynomial.
+    pub fn poles(&self) -> Vec<Ex> {
+        self.a.eigenvals().unwrap_or_default()
     }
 
     /// Characteristic polynomial: det(sI - A).
@@ -132,6 +146,56 @@ impl StateSpace {
         let si = Matrix::identity(&self.ctx(), n).scale(s);
         let si_minus_a = si.sub(&self.a).expect("sub: shapes must match");
         si_minus_a.det().expect("det: matrix must be square")
+    }
+
+    /// Transfer function `G(s) = C (sI − A)⁻¹ B + D` of a single-input,
+    /// single-output system.
+    ///
+    /// The result has denominator `det(sI − A)` and numerator
+    /// `C·adj(sI − A)·B + D·det(sI − A)`, both expanded polynomials in
+    /// `s`; common factors are **not** cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SymplexError::InvalidArgument`] if the system is not SISO.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let s = ctx.symbol("s");
+    /// // ẋ = [[0, 1], [-2, -3]] x + [0, 1] u,  y = [1, 0] x
+    /// let ss = StateSpace::new(
+    ///     matrix![ctx, [0, 1], [-2, -3]],
+    ///     matrix![ctx, [0], [1]],
+    ///     matrix![ctx, [1, 0]],
+    ///     matrix![ctx, [0]],
+    /// );
+    /// let g = ss.to_transfer_function(&s).unwrap();
+    /// // G(s) = 1 / (s² + 3s + 2)
+    /// assert_eq!(g.num, ctx.int(1));
+    /// assert_eq!(g.den, &s.powi(2) + &s * 3 + 2);
+    /// ```
+    pub fn to_transfer_function(&self, s: &Ex) -> Result<TransferFunction, SymplexError> {
+        if self.num_inputs() != 1 || self.num_outputs() != 1 {
+            return Err(SymplexError::InvalidArgument {
+                operation: "StateSpace::to_transfer_function",
+                reason: format!(
+                    "requires a SISO system, got {} input(s) and {} output(s)",
+                    self.num_inputs(),
+                    self.num_outputs()
+                ),
+            });
+        }
+        let n = self.num_states();
+        let si_minus_a = Matrix::identity(&self.ctx(), n).scale(s).sub(&self.a)?;
+        let den = si_minus_a.det()?.expand();
+        let adj = si_minus_a.adjugate()?;
+        let c_adj_b = self.c.matmul(&adj)?.matmul(&self.b)?;
+        let num = (c_adj_b.get(0, 0) + &(self.d.get(0, 0) * &den)).expand();
+        Ok(TransferFunction::new(num, den, s.clone()))
     }
 
     /// Controllability matrix: \[B, AB, A²B, ..., Aⁿ⁻¹B\].
@@ -186,8 +250,10 @@ impl StateSpace {
     /// Returns `Some(false)` if any pole can be shown to have non-negative real part.
     /// Returns `None` if stability cannot be determined symbolically.
     pub fn is_stable(&self) -> Option<bool> {
-        let s = self.ctx().symbol("__s_stability");
-        let poles = self.poles(&s);
+        let poles = self.poles();
+        if poles.len() < self.num_states() {
+            return None; // not all eigenvalues found
+        }
         for pole in &poles {
             // Try real evaluation first
             if let Ok(val) = pole.eval_f64() {
@@ -512,6 +578,84 @@ impl TransferFunction {
         let num = self.num.subs(&self.var, s_val).eval();
         let den = self.den.subs(&self.var, s_val).eval();
         &num / &den
+    }
+
+    /// State-space realisation in **controllable canonical form**.
+    ///
+    /// For a proper transfer function with monic-normalised denominator
+    /// `sⁿ + aₙ₋₁sⁿ⁻¹ + … + a₀` and numerator `bₙsⁿ + … + b₀`:
+    ///
+    /// ```text
+    /// A = [ 0    1    0  …  0   ]   B = [0]   C = [b₀−a₀bₙ, …, bₙ₋₁−aₙ₋₁bₙ]   D = [bₙ]
+    ///     [ 0    0    1  …  0   ]       [0]
+    ///     [ …                  ]       […]
+    ///     [−a₀ −a₁ −a₂ … −aₙ₋₁]       [1]
+    /// ```
+    ///
+    /// Coefficients may be symbolic.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SymplexError::InvalidArgument`] if numerator or denominator
+    /// is not a polynomial in the Laplace variable, the denominator is
+    /// constant, or the transfer function is improper (`deg num > deg den`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use symplex::prelude::*;
+    ///
+    /// let ctx = Context::new();
+    /// let s = ctx.symbol("s");
+    /// let g = TransferFunction::from_coeffs(&[1], &[2, 3, 1], &s); // 1/(s²+3s+2)
+    /// let ss = g.to_state_space().unwrap();
+    /// assert_eq!(ss.a, matrix![ctx, [0, 1], [-2, -3]]);
+    /// assert_eq!(ss.b, matrix![ctx, [0], [1]]);
+    /// assert_eq!(ss.c, matrix![ctx, [1, 0]]);
+    /// // Round trip
+    /// let back = ss.to_transfer_function(&s).unwrap();
+    /// assert_eq!(back.den, g.den.expand());
+    /// assert_eq!(back.num, g.num);
+    /// ```
+    pub fn to_state_space(&self) -> Result<StateSpace, SymplexError> {
+        let ctx = self.ctx();
+        let inv = |reason: String| SymplexError::InvalidArgument {
+            operation: "TransferFunction::to_state_space",
+            reason,
+        };
+        let den = poly_coeffs_symbolic(&self.den, &self.var)
+            .ok_or_else(|| inv("denominator is not a polynomial in the Laplace variable".into()))?;
+        let num = poly_coeffs_symbolic(&self.num, &self.var)
+            .ok_or_else(|| inv("numerator is not a polynomial in the Laplace variable".into()))?;
+        let n = den.len().saturating_sub(1);
+        if n == 0 {
+            return Err(inv("denominator must have degree ≥ 1".into()));
+        }
+        if num.len() > den.len() {
+            return Err(inv(format!(
+                "improper transfer function: numerator degree {} > denominator degree {}",
+                num.len() - 1,
+                n
+            )));
+        }
+        // Normalise so the denominator is monic.
+        let lead = &den[n];
+        let a_coef: Vec<Ex> = den.iter().take(n).map(|c| (c / lead).eval()).collect();
+        let mut b_coef: Vec<Ex> = num.iter().map(|c| (c / lead).eval()).collect();
+        b_coef.resize(n + 1, ctx.zero());
+        let bn = b_coef[n].clone();
+
+        let a = Matrix::from_fn(n, n, |i, j| {
+            if i + 1 < n {
+                if j == i + 1 { ctx.one() } else { ctx.zero() }
+            } else {
+                -&a_coef[j]
+            }
+        });
+        let b = Matrix::from_fn(n, 1, |i, _| if i + 1 == n { ctx.one() } else { ctx.zero() });
+        let c = Matrix::from_fn(1, n, |_, j| (&b_coef[j] - &(&a_coef[j] * &bn)).eval());
+        let d = Matrix::new(vec![vec![bn]])?;
+        Ok(StateSpace::new(a, b, c, d))
     }
 }
 

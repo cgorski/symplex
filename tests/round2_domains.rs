@@ -942,7 +942,7 @@ fn matrix_lu_singular_returns_none() {
         vec![ctx.int(2), ctx.int(4)],
     ])
     .unwrap();
-    assert!(m.lu().is_none(), "LU of singular matrix should return None");
+    assert!(m.lu().is_err(), "LU of singular matrix should return Err");
 }
 
 // ---------------------------------------------------------------------------
@@ -958,8 +958,9 @@ fn matrix_cholesky_positive_definite() {
         vec![ctx.int(2), ctx.int(3)],
     ])
     .unwrap();
-    let result = m.cholesky().unwrap();
-    let l = result.expect("Cholesky should succeed for SPD matrix");
+    let l = m
+        .cholesky()
+        .expect("Cholesky should succeed for SPD matrix");
 
     // Verify L * Lᵀ = A
     let lt = l.transpose();
@@ -983,8 +984,7 @@ fn matrix_cholesky_3x3_spd() {
         vec![ctx.int(0), ctx.int(2), ctx.int(6)],
     ])
     .unwrap();
-    let result = m.cholesky().unwrap();
-    let l = result.expect("Cholesky should succeed for 3×3 SPD");
+    let l = m.cholesky().expect("Cholesky should succeed for 3×3 SPD");
     let lt = l.transpose();
     let product = l.matmul(&lt).unwrap();
     for i in 0..3 {
@@ -1005,10 +1005,10 @@ fn matrix_cholesky_not_positive_definite_returns_none() {
         vec![ctx.int(2), ctx.int(1)],
     ])
     .unwrap();
-    let result = m.cholesky().unwrap();
+    let result = m.cholesky();
     assert!(
-        result.is_none(),
-        "Cholesky should return None for non-PD matrix"
+        result.is_err(),
+        "Cholesky should return Err for non-PD matrix"
     );
 }
 
@@ -1059,8 +1059,7 @@ fn matrix_pinv_square_nonsingular() {
 fn matrix_exp_zero_matrix() {
     let ctx = Context::new();
     let z = Matrix::zeros(&ctx, 2, 2);
-    let var = ctx.symbol("lambda");
-    let result = z.matrix_exp(&var).unwrap();
+    let result = z.matrix_exp().unwrap();
     // e^0 = I
     for i in 0..2 {
         for j in 0..2 {
@@ -1075,8 +1074,7 @@ fn matrix_exp_zero_matrix() {
 fn matrix_exp_identity_matrix() {
     let ctx = Context::new();
     let id = Matrix::identity(&ctx, 2);
-    let var = ctx.symbol("lambda");
-    let result = id.matrix_exp(&var).unwrap();
+    let result = id.matrix_exp().unwrap();
     // e^I = e * I
     let e_val = std::f64::consts::E;
     for i in 0..2 {
@@ -1096,8 +1094,7 @@ fn matrix_exp_non_square_errors() {
         vec![ctx.int(4), ctx.int(5), ctx.int(6)],
     ])
     .unwrap();
-    let var = ctx.symbol("lambda");
-    let result = m.matrix_exp(&var);
+    let result = m.matrix_exp();
     assert!(result.is_err(), "matrix_exp of non-square should error");
 }
 
@@ -1361,7 +1358,7 @@ fn matrix_is_symmetric_true() {
         vec![ctx.int(3), ctx.int(6), ctx.int(9)],
     ])
     .unwrap();
-    assert!(m.is_symmetric());
+    assert_eq!(m.is_symmetric(), Some(true));
 }
 
 #[test]
@@ -1372,7 +1369,7 @@ fn matrix_is_symmetric_false() {
         vec![ctx.int(3), ctx.int(4)],
     ])
     .unwrap();
-    assert!(!m.is_symmetric());
+    assert_eq!(m.is_symmetric(), Some(false));
 }
 
 // ---------------------------------------------------------------------------
@@ -1962,8 +1959,9 @@ fn vector_is_conservative_gradient_field() {
     // F = grad(x²+y²+z²) = [2x, 2y, 2z] — conservative
     let f = &x.powi(2) + &y.powi(2) + &z.powi(2);
     let field = gradient(&f, &[&x, &y, &z]);
-    assert!(
+    assert_eq!(
         is_conservative(&field, &[&x, &y, &z]),
+        Some(true),
         "gradient field should be conservative"
     );
 }
@@ -1976,8 +1974,9 @@ fn vector_is_solenoidal_constant_field() {
     let z = ctx.symbol("z");
     // Constant field has zero divergence
     let field = Matrix::col_vector(vec![ctx.int(1), ctx.int(2), ctx.int(3)]);
-    assert!(
+    assert_eq!(
         is_solenoidal(&field, &[&x, &y, &z]),
+        Some(true),
         "constant field should be solenoidal"
     );
 }

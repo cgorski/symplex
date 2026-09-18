@@ -223,7 +223,7 @@ fn lu_singular_returns_none() {
         vec![ctx.int(2), ctx.int(4)],
     ])
     .unwrap();
-    assert!(m.lu().is_none(), "singular matrix should return None");
+    assert!(m.lu().is_err(), "singular matrix should return Err");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -319,7 +319,7 @@ fn is_symmetric_true() {
         vec![ctx.int(2), ctx.int(1)],
     ])
     .unwrap();
-    assert!(m.is_symmetric());
+    assert_eq!(m.is_symmetric(), Some(true));
 }
 
 #[test]
@@ -330,7 +330,7 @@ fn is_symmetric_false() {
         vec![ctx.int(3), ctx.int(1)],
     ])
     .unwrap();
-    assert!(!m.is_symmetric());
+    assert_eq!(m.is_symmetric(), Some(false));
 }
 
 #[test]

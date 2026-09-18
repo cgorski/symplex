@@ -21,7 +21,6 @@ fuzz_target!(|data: &[u8]| {
     let ctx = Context::new();
 
     // Build matrix from bytes as small integers in [-10, 10]
-    let var = ctx.symbol("fuzz_lambda");
     let rows: Vec<Vec<Ex>> = (0..n)
         .map(|i| {
             (0..n)
@@ -41,7 +40,7 @@ fuzz_target!(|data: &[u8]| {
     };
 
     // eigenvects() must never panic — it returns Result
-    let eigvs = match m.eigenvects(&var) {
+    let eigvs = match m.eigenvects() {
         Ok(ev) => ev,
         Err(_) => return, // solver couldn't find eigenvalues — that's fine
     };

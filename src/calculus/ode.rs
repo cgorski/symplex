@@ -3913,8 +3913,7 @@ pub fn solve_ode_system_nonhomogeneous(
     let neg_one = ctx.int(-1);
     let neg_a = a_matrix.scale(&neg_one);
     let neg_at = neg_a.scale(t_var);
-    let lambda_sym = ctx.symbol("__ode_lambda");
-    let exp_neg_at = neg_at.matrix_exp(&lambda_sym).unwrap_or_else(|_| {
+    let exp_neg_at = neg_at.matrix_exp().unwrap_or_else(|_| {
         neg_at
             .exp_series(12)
             .expect("exp_series: matrix must be square")
@@ -3935,7 +3934,7 @@ pub fn solve_ode_system_nonhomogeneous(
 
     // Multiply by exp(At)
     let at = a_matrix.scale(t_var);
-    let exp_at = at.matrix_exp(&lambda_sym).unwrap_or_else(|_| {
+    let exp_at = at.matrix_exp().unwrap_or_else(|_| {
         at.exp_series(12)
             .expect("exp_series: matrix must be square")
     });
@@ -4007,9 +4006,8 @@ fn solve_ode_system_diagonal(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex>
 fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
     let ctx = t_var.context();
     let m = a_matrix.scale(t_var);
-    let lambda_sym = ctx.symbol("__ode_series_lambda");
     let exp_m = m
-        .matrix_exp(&lambda_sym)
+        .matrix_exp()
         .unwrap_or_else(|_| m.exp_series(12).expect("exp_series: matrix must be square"));
     let constants: Vec<Ex> = (1..=n).map(|i| ctx.symbol(&format!("C{i}"))).collect();
     let c_vec = Matrix::col_vector(constants);
@@ -4027,8 +4025,7 @@ fn solve_ode_system_series(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Vec<Ex> {
 /// eigenvector computation fails.
 fn solve_ode_system_eigen(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec<Ex>> {
     let ctx = t_var.context();
-    let lambda_sym = ctx.symbol("__ode_lambda");
-    let eigenvalues = match a_matrix.eigenvals(&lambda_sym) {
+    let eigenvalues = match a_matrix.eigenvals() {
         Ok(ev) => ev,
         Err(_) => return None,
     };
@@ -4036,6 +4033,14 @@ fn solve_ode_system_eigen(a_matrix: &Matrix, t_var: &Ex, n: usize) -> Option<Vec
     // Need at least n eigenvalues (counting algebraic multiplicity from solver)
     if eigenvalues.len() < n {
         return None;
+    }
+    // Repeated eigenvalues may be defective (fewer eigenvectors than
+    // multiplicity); this path takes one eigenvector per eigenvalue, so
+    // defer to the Jordan-form based matrix exponential instead.
+    for i in 0..eigenvalues.len() {
+        if eigenvalues[i + 1..].contains(&eigenvalues[i]) {
+            return None;
+        }
     }
 
     let i_unit = ctx.i_unit();
