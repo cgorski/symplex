@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Until 1.0, minor releases may contain breaking changes; they are listed first.
 
-## [Unreleased]
+## [0.3.1] - 2026-09-18
 
 Driven by field notes from downstream tools built on 0.3.0.  Additive only
 (verified with `cargo-semver-checks` against 0.3.0).
@@ -73,6 +73,9 @@ Driven by field notes from downstream tools built on 0.3.0.  Additive only
   policy (no C/C++ or system libraries), a licence allow-list, advisories and
   registry sources.
 - Removed the assertion-free `tests/zz_probe_tmp.rs` left over from 0.2.
+- `symplex-wasm`: dropped the unused `web-sys` dependency.
+- `symplex` and `symplex-build` at 0.3.1; `symplex-macros` is unchanged at
+  0.3.0.
 
 ## [0.3.0] - 2026-09-18
 
